@@ -7,7 +7,7 @@
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "Wafer/Compiler/CompilationInternal.h"
-#include "Wafer/Compiler/ExecutableBundleInternal.h"
+#include "Wafer/Compiler/PhysicalTileExecutablesInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -83,10 +83,12 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
   return context;
 }
 
-llvm::Error rewriteGemmAsOrientationChain(TargetLLVMModuleBundle &bundle) {
-  if (bundle.getModules().size() != 16)
+llvm::Error
+rewriteGemmAsOrientationChain(TargetLLVMModules &targetLLVMModules) {
+  if (targetLLVMModules.getModules().size() != 16)
     return llvm::createStringError("expected complete physical Tile domain");
-  for (const TargetLLVMModule &immutableTargetModule : bundle.getModules()) {
+  for (const TargetLLVMModule &immutableTargetModule :
+       targetLLVMModules.getModules()) {
     TargetLLVMModule &targetModule =
         const_cast<TargetLLVMModule &>(immutableTargetModule);
     llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
@@ -149,8 +151,8 @@ llvm::Error rewriteGemmAsOrientationChain(TargetLLVMModuleBundle &bundle) {
   return llvm::Error::success();
 }
 
-llvm::Expected<TargetLLVMModuleBundle>
-buildOrientedGemmTargetBundle(std::string &diagnosticText) {
+llvm::Expected<TargetLLVMModules>
+compileOrientedGemmTargetModules(std::string &diagnosticText) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -184,52 +186,51 @@ module {
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<ExecutableBundle> executable =
-      compiler::detail::buildExecutableBundle(
+  llvm::Expected<PhysicalTileExecutables> executable =
+      compiler::detail::buildPhysicalTileExecutables(
           context, *tensorProgram, std::move(program), *config,
           OptimizationConfig::none(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      compileExecutableBundleToTargetLLVMModules(*executable, diagnostics);
-  if (!bundle)
-    return bundle.takeError();
-  if (llvm::Error error = rewriteGemmAsOrientationChain(*bundle))
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      compilePhysicalTileExecutablesToTargetLLVMModules(*executable,
+                                                        diagnostics);
+  if (!targetLLVMModules)
+    return targetLLVMModules.takeError();
+  if (llvm::Error error = rewriteGemmAsOrientationChain(*targetLLVMModules))
     return std::move(error);
-  return std::move(*bundle);
+  return std::move(*targetLLVMModules);
 }
 
-class RecordingTargetSink final : public TargetTransactionSink {
+class RecordingTargetSink final : public TargetCommandSink {
 public:
   llvm::Error begin(const TargetCallInvocationDescriptor &) override {
     return llvm::Error::success();
   }
-  llvm::Expected<uint64_t>
-  issue(const TargetTransaction &transaction) override {
-    transactions.push_back(transaction);
+  llvm::Expected<uint64_t> issue(const TargetCommand &command) override {
+    commands.push_back(command);
     return nextEvent++;
   }
   llvm::Error completeTile(PhysicalCardId, PhysicalTileId,
                            LaunchSlotId) override {
     return llvm::Error::success();
   }
-  llvm::Error prepareCommit() override { return llvm::Error::success(); }
-  void commit() override {}
+  llvm::Error completeInvocation() override { return llvm::Error::success(); }
   void abort(llvm::StringRef) override {}
 
   uint64_t nextEvent = 1;
-  std::vector<TargetTransaction> transactions;
+  std::vector<TargetCommand> commands;
 };
 
 TEST(SystemCTargetModelOrientedGemmIntegrationTest,
      ExecutesNNNTTNTTThroughVersionedTargetABI) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      buildOrientedGemmTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  ASSERT_EQ(bundle->getModules().size(), 16u);
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      compileOrientedGemmTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  ASSERT_EQ(targetLLVMModules->getModules().size(), 16u);
 
   NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
       LogicalFormat::F16, PhysicalTensorLayout::Tensor, {16, 2, 2}));
@@ -252,7 +253,7 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
   }
   std::vector<TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
-  for (const TargetLLVMModule &module : bundle->getModules()) {
+  for (const TargetLLVMModule &module : targetLLVMModules->getModules()) {
     const int64_t launchSlot = module.getLaunchSlotId().getValue();
     arguments.push_back({module.getPhysicalCardId(),
                          module.getPhysicalTileId(),
@@ -301,30 +302,31 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
 
   RecordingTargetSink recording;
   llvm::Expected<TargetCallExecutionResult> decoded =
-      executeTargetCallFrontend(*bundle, arguments, recording);
+      executeTargetCallFrontend(*targetLLVMModules, arguments, recording);
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
-  std::array<std::vector<std::pair<TargetGemmOrientation, TargetGemmOrientation>>, 16>
+  std::array<
+      std::vector<std::pair<TargetGemmOrientation, TargetGemmOrientation>>, 16>
       orientationsByLaunchSlot;
-  for (const TargetTransaction &transaction : recording.transactions)
-    if (const auto *gemm =
-            std::get_if<TargetGemmTransaction>(&transaction.payload)) {
-      const int64_t launchSlot = transaction.launchSlotId.getValue();
+  for (const TargetCommand &command : recording.commands)
+    if (const auto *gemm = std::get_if<TargetGemmCommand>(&command.payload)) {
+      const int64_t launchSlot = command.launchSlotId.getValue();
       ASSERT_GE(launchSlot, 0);
       ASSERT_LT(launchSlot, 16);
       orientationsByLaunchSlot[static_cast<size_t>(launchSlot)].emplace_back(
           gemm->lhsOrientation, gemm->rhsOrientation);
     }
-  const std::vector<std::pair<TargetGemmOrientation, TargetGemmOrientation>> expectedOrder{
-      {TargetGemmOrientation::Normal, TargetGemmOrientation::Normal},
-      {TargetGemmOrientation::Normal, TargetGemmOrientation::Transpose},
-      {TargetGemmOrientation::Transpose, TargetGemmOrientation::Normal},
-      {TargetGemmOrientation::Transpose, TargetGemmOrientation::Transpose}};
+  const std::vector<std::pair<TargetGemmOrientation, TargetGemmOrientation>>
+      expectedOrder{
+          {TargetGemmOrientation::Normal, TargetGemmOrientation::Normal},
+          {TargetGemmOrientation::Normal, TargetGemmOrientation::Transpose},
+          {TargetGemmOrientation::Transpose, TargetGemmOrientation::Normal},
+          {TargetGemmOrientation::Transpose, TargetGemmOrientation::Transpose}};
   for (const auto &orientations : orientationsByLaunchSlot)
     EXPECT_EQ(orientations, expectedOrder);
 
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, arguments);
+      createTargetCallExecutable(*targetLLVMModules, arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
   llvm::Expected<TargetModelResult> result = executeSystemCTargetModel(

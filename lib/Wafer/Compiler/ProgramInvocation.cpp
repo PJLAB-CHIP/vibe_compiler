@@ -173,16 +173,18 @@ llvm::Expected<ProgramTensor> ProgramTensor::loadNpy(llvm::StringRef path) {
 }
 
 llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
-    const ExecutableBundle &bundle, llvm::StringRef packageRoot,
+    const PhysicalTileExecutables &physicalTileExecutables,
+    llvm::StringRef packageRoot,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs) {
   if (packageRoot.empty())
     return invalid("program invocation package root must not be empty");
-  if (bundle.getPhysicalTileExecutables().empty())
+  if (physicalTileExecutables.getPhysicalTileExecutables().empty())
     return invalid("program invocation executable domain must not be empty");
   std::vector<ProgramTileInvocation> invocations;
-  invocations.reserve(bundle.getPhysicalTileExecutables().size());
+  invocations.reserve(
+      physicalTileExecutables.getPhysicalTileExecutables().size());
   for (const PhysicalTileExecutable &tile :
-       bundle.getPhysicalTileExecutables()) {
+       physicalTileExecutables.getPhysicalTileExecutables()) {
     if (tile.getPhysicalCardId() != PhysicalCardId(0))
       return invalid(
           "program invocation supports only the current single-card domain");
@@ -227,7 +229,9 @@ llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
     invocations.push_back(std::move(invocation));
   }
   const auto &firstBindings =
-      bundle.getPhysicalTileExecutables().front().getProgramBindings();
+      physicalTileExecutables.getPhysicalTileExecutables()
+          .front()
+          .getProgramBindings();
   if (globalInputs.size() !=
       llvm::count_if(firstBindings, [](const ProgramResourceBinding &binding) {
         return binding.role == ProgramResourceRole::UserInput;

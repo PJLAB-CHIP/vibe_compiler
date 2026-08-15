@@ -22,7 +22,7 @@ namespace wafer::compiler::detail {
 /// resulting Card/Tile IR, never by serializing this object.
 struct WholeDAGNodePlacement {
   CardDAGNodeID node = 0;
-  /// Result axis to which the selected parallel iterator projects.  The
+  /// Result axis to which the selected parallel iterator maps.  The
   /// CardProgram output-shard carrier consumes this axis; keeping both fields
   /// prevents a result dimension from standing in for iterator semantics.
   unsigned shardDimension = 0;
@@ -99,7 +99,7 @@ struct WholeDAGResourceReservation {
 /// One actual use of WholeDAGScheduleState while validating and ordering a
 /// candidate.  Keeping the finite symbolic-wave trace makes it possible to
 /// test that search-policy scheduling really exercised ready/running/completed
-/// state without publishing a shadow schedule in IR.
+/// state without storing a shadow schedule in IR.
 struct WholeDAGCandidateSchedule {
   llvm::SmallVector<WholeDAGNodePlacement, 16> nodePlacements;
   llvm::SmallVector<RunningOpWave, 32> dispatchedWaves;

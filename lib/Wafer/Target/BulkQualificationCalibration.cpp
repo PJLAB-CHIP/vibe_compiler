@@ -29,7 +29,7 @@ llvm::Error calibrateBulkBackend(const BulkExecutionEnvironment &environment,
     return run.takeError();
   llvm::json::Object record{
       {"schema", kCalibrationSchema},
-      {"adapter_digest", getBulkAdapterIdentityDigest()},
+      {"adapter_digest", getBulkAdapterContractDigest()},
       {"spec", specJSON(run->testCase.getSpec())},
       {"spec_digest", run->testCase.getSpec().getDigest()},
       {"semantic_profile_digest",
@@ -63,7 +63,7 @@ llvm::Error calibrateBulkBackend(const BulkExecutionEnvironment &environment,
       {"backend_formal_fma",
        static_cast<int64_t>(run->backend.evidence.formalFusedMultiplyAdds)},
   };
-  return publishNoReplace(outputPath, canonicalJSON(std::move(record)));
+  return writeFileNoReplace(outputPath, canonicalJSON(std::move(record)));
 }
 
 } // namespace wafer

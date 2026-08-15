@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fast closed-schema and identity tests for managed SystemC artifacts."""
+"""Fast closed-schema and identity tests for managed SystemC files."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from systemc_deps import (
     RECORD_KIND,
     RECORD_SCHEMA_VERSION,
     RECORD_STATUS,
-    REQUIRED_ARTIFACTS,
+    REQUIRED_FILES,
     REQUIRED_GATES,
     SNAPSHOT_KIND,
     canonical_json,
@@ -41,17 +41,17 @@ def make_fixture(root: pathlib.Path) -> tuple[pathlib.Path, dict[str, object]]:
         stream.add(source, arcname=source_top)
     versions = dict(versions)
     versions["WAFER_SYSTEMC_SHA256"] = sha256_file(archive)
-    artifacts: dict[str, dict[str, object]] = {}
-    for name in sorted(REQUIRED_ARTIFACTS):
+    files: dict[str, dict[str, object]] = {}
+    for name in sorted(REQUIRED_FILES):
         path = (
             archive
             if name == "systemc-archive"
-            else root / "install" / "systemc" / f"{name}.artifact"
+            else root / "install" / "systemc" / f"{name}.file"
         )
         if name != "systemc-archive":
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(f"managed SystemC fixture: {name}\n".encode())
-        artifacts[name] = {
+        files[name] = {
             "path": path.relative_to(root).as_posix(),
             "sha256": sha256_file(path),
             "size": path.stat().st_size,
@@ -78,7 +78,7 @@ def make_fixture(root: pathlib.Path) -> tuple[pathlib.Path, dict[str, object]]:
             name: {"path": f"/fixture/{name}", "version": "fixture 1", "sha256": "2" * 64}
             for name in ("cmake", "cxx")
         },
-        "artifacts": artifacts,
+        "artifacts": files,
         "licenses": {
             "license": {"artifact": "license", "spdx": "Apache-2.0"},
             "notice": {"artifact": "notice", "spdx": "Apache-2.0"},
@@ -133,7 +133,7 @@ class SystemCDependencyRecordTest(unittest.TestCase):
 
     def test_valid_record_produces_closed_absolute_snapshot(self) -> None:
         resolved = validate_record(self.record_path, self.root, self.versions)
-        self.assertEqual(set(resolved), REQUIRED_ARTIFACTS)
+        self.assertEqual(set(resolved), REQUIRED_FILES)
         snapshot = make_snapshot(self.record_path, self.root, self.versions)
         self.assertEqual(snapshot["kind"], SNAPSHOT_KIND)
         self.assertEqual(snapshot["record_sha256"], sha256_file(self.record_path))
@@ -151,7 +151,7 @@ class SystemCDependencyRecordTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not canonical JSON"):
             validate_record(self.record_path, self.root, self.versions)
 
-    def test_changed_artifact_source_and_gate_are_rejected(self) -> None:
+    def test_changed_file_source_and_gate_are_rejected(self) -> None:
         entry = self.record["artifacts"]["systemc-library"]
         (self.root / entry["path"]).write_bytes(b"tampered\n")
         with self.assertRaisesRegex(RuntimeError, "identity mismatch"):

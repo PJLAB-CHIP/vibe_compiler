@@ -145,7 +145,7 @@ evaluateFormalConvert(const ResolvedNumericCommand &command,
           FormalNumericBackendKind::LLVMAPFloatAPInt)
     return formalError(
         FormalNumericErrorCode::UnsupportedResolvedCommand,
-        "the resolved command has no complete formal convert identity");
+        "the resolved command has no complete formal convert key");
 
   const NumericCommandKey &key = command.getCommandKey();
   const NumericCTConvertCommand *convert = key.getCTConvert();
@@ -160,8 +160,8 @@ evaluateFormalConvert(const ResolvedNumericCommand &command,
     return formalError(FormalNumericErrorCode::UnsupportedResolvedCommand,
                        "the resolved convert key lost its validated route");
   const TargetConvertRoute &route = *routeRecord;
-  const NumericCTConvertSemanticsIdentity &routePolicy =
-      *semantics.getCTConvertIdentity();
+  const NumericCTConvertSemanticsKey &routePolicy =
+      *semantics.getCTConvertKey();
   if (semantics.getModelProfile() != command.getPattern().getModelProfile() ||
       routePolicy.getFamily() != key.getFamily() ||
       routePolicy.getCTConvertOpcode() != convert->opcode)
@@ -311,7 +311,7 @@ evaluateFormalConvert(const ResolvedNumericCommand &command,
         isNaNClass(classification->valueClass)) {
       return formalError(
           FormalNumericErrorCode::FloatToIntegerNonFinite,
-          "NaN and infinity do not commit a floating-to-integer result");
+          "NaN and infinity do not produce a floating-to-integer result");
     }
 
     llvm::APFloat floating = decodeFloat(*canonicalSource);
@@ -351,7 +351,7 @@ executeFormalConvert(FormalNumericExecutionContext &context,
       evaluateFormalConvert(command, source);
   if (!result)
     return result.takeError();
-  context.recordCommittedFlags(result->flags);
+  context.mergeExceptionFlags(result->flags);
   return std::move(*result);
 }
 

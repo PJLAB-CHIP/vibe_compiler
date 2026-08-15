@@ -111,7 +111,7 @@ decodeCompactProgramTensor(const compiler::ProgramTensor &tensor,
   if (!descriptor || descriptor->bitpacked)
     return invocationError(
         TargetModelInvocationErrorCode::UnsupportedProgramTensor,
-        "compact source invocation does not admit bitpacked program tensors");
+        "compact source invocation does not support bitpacked program tensors");
   std::optional<int64_t> expected = compiler::computeProgramTensorByteCount(
       tensor.getDType(), tensor.getShape());
   if (!expected || *expected != static_cast<int64_t>(tensor.getBytes().size()))
@@ -149,7 +149,7 @@ encodeCompactProgramTensor(llvm::ArrayRef<RawLogicalValue> values,
   if (!descriptor || descriptor->bitpacked)
     return invocationError(
         TargetModelInvocationErrorCode::UnsupportedProgramTensor,
-        "compact target output does not admit bitpacked program tensors");
+        "compact target output does not support bitpacked program tensors");
   const uint64_t elementBytes = descriptor->storageBits / 8;
   if (elementBytes == 0 ||
       values.size() > std::numeric_limits<size_t>::max() / elementBytes)
@@ -199,8 +199,8 @@ bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
 llvm::StringRef
 stringifyTargetModelInvocationErrorCode(TargetModelInvocationErrorCode code) {
   switch (code) {
-  case TargetModelInvocationErrorCode::InvalidBundleDomain:
-    return "invalid-bundle-domain";
+  case TargetModelInvocationErrorCode::InvalidPhysicalTileDomain:
+    return "invalid-physical-tile-domain";
   case TargetModelInvocationErrorCode::InvalidProgramInvocation:
     return "invalid-program-invocation";
   case TargetModelInvocationErrorCode::InvalidKernelABISlot:
@@ -283,21 +283,22 @@ decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
 }
 
 llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
-    const compiler::ExecutableBundle &executableBundle,
-    const compiler::TargetLLVMModuleBundle &targetLLVMModuleBundle,
+    const compiler::PhysicalTileExecutables &physicalTileExecutables,
+    const compiler::TargetLLVMModules &targetLLVMModules,
     llvm::ArrayRef<compiler::ProgramTileInvocation> programInvocations) {
-  const auto &tiles = executableBundle.getPhysicalTileExecutables();
-  const auto &modules = targetLLVMModuleBundle.getModules();
-  if (executableBundle.getExecutionConfig() !=
-          targetLLVMModuleBundle.getExecutionConfig() ||
+  const auto &tiles = physicalTileExecutables.getPhysicalTileExecutables();
+  const auto &modules = targetLLVMModules.getModules();
+  if (physicalTileExecutables.getExecutionConfig() !=
+          targetLLVMModules.getExecutionConfig() ||
       tiles.size() != modules.size() ||
       tiles.size() != programInvocations.size() ||
       tiles.size() !=
-          static_cast<size_t>(
-              executableBundle.getExecutionConfig().getPhysicalTileCount()))
-    return invocationError(TargetModelInvocationErrorCode::InvalidBundleDomain,
-                           "source, physical Tile executable, and target LLVM "
-                           "launch domains are not identical");
+          static_cast<size_t>(physicalTileExecutables.getExecutionConfig()
+                                  .getPhysicalTileCount()))
+    return invocationError(
+        TargetModelInvocationErrorCode::InvalidPhysicalTileDomain,
+        "source, physical Tile executable, and target LLVM "
+        "launch domains are not identical");
 
   std::vector<compiler::TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputBindings;
@@ -324,7 +325,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
         invocation.physicalCardId != tile.getPhysicalCardId() ||
         invocation.physicalTileId != tile.getPhysicalTileId())
       return invocationError(
-          TargetModelInvocationErrorCode::InvalidBundleDomain,
+          TargetModelInvocationErrorCode::InvalidPhysicalTileDomain,
           "physical Tile executable or target LLVM launch order is not "
           "canonical");
 
@@ -438,7 +439,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
   }
 
   llvm::Expected<compiler::TargetCallExecutable> executable =
-      compiler::prepareTargetCallFrontend(targetLLVMModuleBundle, arguments);
+      compiler::createTargetCallExecutable(targetLLVMModules, arguments);
   if (!executable)
     return invocationError(
         TargetModelInvocationErrorCode::FrontendPreparationFailure,

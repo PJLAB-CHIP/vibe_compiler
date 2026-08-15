@@ -569,9 +569,7 @@ class ProtocolTest(unittest.TestCase):
             / "Inputs"
             / "wafer_ncc_probe_plan.c"
         ).read_text()
-        execute = source.split(
-            "uint32_t wafer_ncc_probe_execute_plan(", maxsplit=1
-        )[1]
+        execute = source.split("wafer_ncc_probe_execute_plan(", maxsplit=1)[1]
         requested_wait = execute.index("hooks->requested_wait(")
         boundary_oracle = execute.index(
             "WAFER_NCC_ORACLE_BOUNDARY", requested_wait
@@ -582,14 +580,14 @@ class ProtocolTest(unittest.TestCase):
         self.assertLess(requested_wait, boundary_oracle)
         self.assertLess(boundary_oracle, safety_drain)
 
-    def test_seeded_spm_is_published_before_prepare_and_issue(self) -> None:
+    def test_seeded_spm_is_visible_before_prepare_and_issue(self) -> None:
         plan_source = (
             pathlib.Path(__file__).resolve().parent
             / "Inputs"
             / "wafer_ncc_probe_plan.c"
         ).read_text()
         execute = plan_source.split(
-            "uint32_t wafer_ncc_probe_execute_plan(", maxsplit=1
+            "wafer_ncc_probe_execute_plan(", maxsplit=1
         )[1]
         seed_loop = execute.index("adapter->seed(")
         seed_complete = execute.index("hooks->seed_complete(", seed_loop)
@@ -604,12 +602,12 @@ class ProtocolTest(unittest.TestCase):
             / "Inputs"
             / "wafer_ncc_execution_probe.c"
         ).read_text()
-        seed_publish = device_source.split(
+        seed_visibility = device_source.split(
             "static int wafer_ncc_v2_seed_complete(", maxsplit=1
         )[1].split("\n}", maxsplit=1)[0]
-        self.assertIn('volatile("fence iorw, iorw"', seed_publish)
-        self.assertIn('volatile("sync"', seed_publish)
-        self.assertIn('volatile("sync.is"', seed_publish)
+        self.assertIn('volatile("fence iorw, iorw"', seed_visibility)
+        self.assertIn('volatile("sync"', seed_visibility)
+        self.assertIn('volatile("sync.is"', seed_visibility)
 
     def test_wait_overhead_cases_cover_every_engine(self) -> None:
         cases = execution_probe.SUITES["wait-overhead-manual"]
@@ -1301,7 +1299,7 @@ class ProtocolTest(unittest.TestCase):
                 case, execution_probe.BOARD_ALL_SAFE_CASES
             )
             self.assertIn(
-                case, execution_probe.BOARD_ALL_PREFLIGHT_CASES
+                case, execution_probe.BOARD_ALL_VALIDATION_CASES
             )
             self.assertEqual(
                 execution_probe.case_sample_count(case, 3), 3
@@ -1466,7 +1464,7 @@ class ProtocolTest(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                case not in execution_probe.BOARD_ALL_PREFLIGHT_CASES
+                case not in execution_probe.BOARD_ALL_VALIDATION_CASES
                 for case in pending
             )
         )
@@ -2122,7 +2120,7 @@ class ProtocolTest(unittest.TestCase):
             + execution_probe.V2_DEPTH_PLUS_ONE_CASES
         ):
             self.assertNotIn(case, execution_probe.BOARD_ALL_SAFE_CASES)
-            self.assertIn(case, execution_probe.BOARD_ALL_PREFLIGHT_CASES)
+            self.assertIn(case, execution_probe.BOARD_ALL_VALIDATION_CASES)
         self.assertEqual(len(execution_probe.V2_LARGE_BACKLOG_CASES), 12)
         self.assertEqual(
             len(execution_probe.V2_LARGE_BACKLOG_SINGLE_CASES), 8
@@ -2155,14 +2153,14 @@ class ProtocolTest(unittest.TestCase):
             )
         )
         execution_probe.validate_catalog_resource_layout(
-            execution_probe.BOARD_ALL_PREFLIGHT_CASES
+            execution_probe.BOARD_ALL_VALIDATION_CASES
         )
         maximum_ddr_end = max(
             execution_probe.V2_OUTPUT_SLOT_BASE
             + identity.slot * execution_probe.V2_OUTPUT_SLOT_STRIDE
             + 2 * execution_probe.V2_OUTPUT_GUARD_BYTES
             + case.plan.lanes[identity.lane].dma_envelope_bytes()
-            for case in execution_probe.BOARD_ALL_PREFLIGHT_CASES
+            for case in execution_probe.BOARD_ALL_VALIDATION_CASES
             for identity in case.plan.issue_identities()
         )
         self.assertLess(maximum_ddr_end, execution_probe.RESOURCE_BYTES)
@@ -2261,9 +2259,9 @@ class ProtocolTest(unittest.TestCase):
         cmake = (
             pathlib.Path(__file__).resolve().parents[1] / "CMakeLists.txt"
         ).read_text()
-        self.assertIn("wafer-board-ncc-all-safe-observations", cmake)
-        self.assertIn("wafer-runtime-ncc-safe-observations-no-card", cmake)
-        self.assertIn("join${_wafer_ncc_join_mask}-unjoined-boundary", cmake)
+        self.assertNotIn("wafer-board-ncc-all-safe-observations", cmake)
+        self.assertNotIn("wafer-runtime-ncc-safe-observations-no-card", cmake)
+        self.assertNotIn("join${_wafer_ncc_join_mask}-unjoined-boundary", cmake)
 
 
 if __name__ == "__main__":

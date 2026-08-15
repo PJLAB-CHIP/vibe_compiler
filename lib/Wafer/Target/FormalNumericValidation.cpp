@@ -71,7 +71,7 @@ validateResolvedExecution(const ResolvedNumericCommand &command,
       command.getFormalBackendKind() != backend)
     return formalError(
         FormalNumericErrorCode::UnsupportedResolvedCommand,
-        "the resolved command has no complete matching formal identity");
+        "the resolved command has no complete matching formal key");
   return llvm::Error::success();
 }
 
@@ -85,34 +85,32 @@ validateElementwiseResolvedCommand(const ResolvedNumericCommand &command) {
   const NumericCTElementwiseCommand *elementwise =
       command.getCommandKey().getCTElementwise();
   const NumericSemanticsProfile &semantics = *command.getSemantics();
-  const NumericCTElementwiseSemanticsIdentity *identity =
-      semantics.getCTElementwiseIdentity();
-  if (!elementwise || !identity ||
+  const NumericCTElementwiseSemanticsKey *key = semantics.getCTElementwiseKey();
+  if (!elementwise || !key ||
       semantics.getModelProfile() != command.getPattern().getModelProfile() ||
-      identity->getOperation() != elementwise->operation ||
+      key->getOperation() != elementwise->operation ||
       !isLLVMElementwiseOperation(elementwise->operation) ||
       elementwise->inputs.empty() ||
-      identity->getInputFormat() != elementwise->inputs.front().getFormat() ||
-      identity->getDestinationFormat() !=
-          elementwise->destination.getFormat() ||
+      key->getInputFormat() != elementwise->inputs.front().getFormat() ||
+      key->getDestinationFormat() != elementwise->destination.getFormat() ||
       elementwise->inputs.size() !=
           getNumericElementwiseArity(elementwise->operation))
     return formalError(FormalNumericErrorCode::UnsupportedResolvedCommand,
                        "resolved elementwise semantics and exact key disagree");
   for (const NumericTensorKey &input : elementwise->inputs)
-    if (input.getFormat() != identity->getInputFormat())
+    if (input.getFormat() != key->getInputFormat())
       return formalError(
           FormalNumericErrorCode::UnsupportedResolvedCommand,
           "resolved elementwise key has heterogeneous input formats");
 
   const bool logic = isNumericElementwiseLogic(elementwise->operation);
   const bool relation = isNumericElementwiseRelation(elementwise->operation);
-  if ((!logic && identity->getInputFormat() != LogicalFormat::F16 &&
-       identity->getInputFormat() != LogicalFormat::BF16 &&
-       identity->getInputFormat() != LogicalFormat::F32) ||
-      (logic && identity->getInputFormat() != LogicalFormat::Bool) ||
-      identity->getDestinationFormat() !=
-          (relation ? LogicalFormat::Bool : identity->getInputFormat()))
+  if ((!logic && key->getInputFormat() != LogicalFormat::F16 &&
+       key->getInputFormat() != LogicalFormat::BF16 &&
+       key->getInputFormat() != LogicalFormat::F32) ||
+      (logic && key->getInputFormat() != LogicalFormat::Bool) ||
+      key->getDestinationFormat() !=
+          (relation ? LogicalFormat::Bool : key->getInputFormat()))
     return formalError(FormalNumericErrorCode::UnsupportedResolvedCommand,
                        "elementwise format is outside the LLVM model subset");
 
@@ -186,16 +184,15 @@ llvm::Error validateGemmResolvedCommand(const ResolvedNumericCommand &command) {
     return error;
   const NumericNEGemmCommand *gemm = command.getCommandKey().getNEGemm();
   const NumericSemanticsProfile &semantics = *command.getSemantics();
-  const NumericNEGemmSemanticsIdentity *identity =
-      semantics.getNEGemmIdentity();
-  if (!gemm || !identity ||
+  const NumericNEGemmSemanticsKey *key = semantics.getNEGemmKey();
+  if (!gemm || !key ||
       semantics.getModelProfile() != command.getPattern().getModelProfile() ||
-      identity->getFormat() != gemm->lhs.getFormat() ||
-      gemm->rhs.getFormat() != identity->getFormat() ||
-      gemm->destination.getFormat() != identity->getFormat() ||
-      (identity->getFormat() != LogicalFormat::F16 &&
-       identity->getFormat() != LogicalFormat::BF16 &&
-       identity->getFormat() != LogicalFormat::F32) ||
+      key->getFormat() != gemm->lhs.getFormat() ||
+      gemm->rhs.getFormat() != key->getFormat() ||
+      gemm->destination.getFormat() != key->getFormat() ||
+      (key->getFormat() != LogicalFormat::F16 &&
+       key->getFormat() != LogicalFormat::BF16 &&
+       key->getFormat() != LogicalFormat::F32) ||
       semantics.getRoundingModePolicy() != NumericRoundingMode::NearestEven ||
       semantics.getRoundingPointPolicy() !=
           NumericRoundingPointPolicy::GemmFusedMultiplyAddAndDestination ||
@@ -240,15 +237,15 @@ validateReduceResolvedCommand(const ResolvedNumericCommand &command) {
   const NumericNativeCTReduceCommand *reduce =
       command.getCommandKey().getNativeCTReduce();
   const NumericSemanticsProfile &semantics = *command.getSemantics();
-  const NumericNativeCTReduceSemanticsIdentity *identity =
-      semantics.getNativeCTReduceIdentity();
-  if (!reduce || !identity ||
+  const NumericNativeCTReduceSemanticsKey *key =
+      semantics.getNativeCTReduceKey();
+  if (!reduce || !key ||
       semantics.getModelProfile() != command.getPattern().getModelProfile() ||
-      identity->getOperation() != NumericReduceOperation::Sum ||
-      reduce->operation != identity->getOperation() ||
-      identity->getFormat() != LogicalFormat::F32 ||
-      reduce->input.getFormat() != identity->getFormat() ||
-      reduce->destination.getFormat() != identity->getFormat() ||
+      key->getOperation() != NumericReduceOperation::Sum ||
+      reduce->operation != key->getOperation() ||
+      key->getFormat() != LogicalFormat::F32 ||
+      reduce->input.getFormat() != key->getFormat() ||
+      reduce->destination.getFormat() != key->getFormat() ||
       semantics.getRoundingModePolicy() != NumericRoundingMode::NearestEven ||
       semantics.getRoundingPointPolicy() !=
           NumericRoundingPointPolicy::ReductionStep ||

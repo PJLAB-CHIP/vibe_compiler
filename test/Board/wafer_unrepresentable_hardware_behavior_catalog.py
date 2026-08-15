@@ -2,14 +2,14 @@
 """Typed fail-closed gates for hardware behavior with no observable ABI.
 
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   Version-matched NCC request/record fields and the sustained SPM pilot
   request/record contract, plus the explicitly qualified ArgMin catalog rows.
 - Current stage responsibility:
   Prove that queue resident occupancy and physical SPM bank identity cannot
   be represented by those contracts; keep every unenumerated ArgMin numeric
   domain closed; and reject any board request that claims otherwise.
-- Output artifact / IR:
+- Output IR / files:
   A typed preparation rejection.  No board package, scheduler hint, bank
   side table, or inferred occupancy value is produced.
 - Downstream consumer:

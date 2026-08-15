@@ -38,7 +38,7 @@ BUILD_OPTIONS = {
     "DNNL_LIBRARY_TYPE": "STATIC",
     "ONEDNN_BUILD_GRAPH": "OFF",
 }
-REQUIRED_ARTIFACTS = {
+REQUIRED_FILES = {
     "onednn-archive",
     "onednn-library",
     "onednn-c-header",
@@ -100,7 +100,7 @@ def _regular_file(path: pathlib.Path) -> pathlib.Path:
     path = reject_symlink_path(path)
     metadata = path.stat()
     if not stat.S_ISREG(metadata.st_mode):
-        raise RuntimeError(f"managed bulk artifact is not a regular file: {path}")
+        raise RuntimeError(f"managed bulk file is not a regular file: {path}")
     return path
 
 
@@ -116,22 +116,22 @@ def _closed_object(value: Any, keys: set[str], context: str) -> dict[str, Any]:
     return value
 
 
-def _relative_artifact(root: pathlib.Path, record: dict[str, Any], name: str) -> pathlib.Path:
-    artifacts = record["artifacts"]
+def _relative_file(root: pathlib.Path, record: dict[str, Any], name: str) -> pathlib.Path:
+    files = record["artifacts"]
     entry = _closed_object(
-        artifacts[name], {"path", "sha256", "size"}, f"artifact {name}"
+        files[name], {"path", "sha256", "size"}, f"file {name}"
     )
     relative = entry["path"]
     if not isinstance(relative, str) or not relative or pathlib.PurePosixPath(relative).is_absolute():
-        raise RuntimeError(f"artifact {name} path must be a nonempty relative path")
+        raise RuntimeError(f"file {name} path must be a nonempty relative path")
     path = _regular_file(root / pathlib.PurePosixPath(relative))
     try:
         path.relative_to(root)
     except ValueError as error:
-        raise RuntimeError(f"artifact {name} escapes the managed root") from error
+        raise RuntimeError(f"file {name} escapes the managed root") from error
     digest = sha256_file(path)
     if entry["sha256"] != digest or entry["size"] != path.stat().st_size:
-        raise RuntimeError(f"artifact {name} identity mismatch")
+        raise RuntimeError(f"file {name} identity mismatch")
     return path
 
 
@@ -193,7 +193,7 @@ def validate_record(
     ):
         raise RuntimeError("bulk dependency source tree digest is invalid")
 
-    archive = _relative_artifact(root, record, "onednn-archive")
+    archive = _relative_file(root, record, "onednn-archive")
     expected_archive_name = f"oneDNN-{versions['WAFER_ONEDNN_COMMIT']}.tar.gz"
     if archive.name != expected_archive_name or sha256_file(archive) != versions["WAFER_ONEDNN_SHA256"]:
         raise RuntimeError("bulk dependency source archive mismatch")
@@ -223,10 +223,10 @@ def validate_record(
         if not all(isinstance(identity[key], str) and identity[key] for key in identity):
             raise RuntimeError(f"toolchain {name} identity is incomplete")
 
-    artifacts = record["artifacts"]
-    if not isinstance(artifacts, dict) or set(artifacts) != REQUIRED_ARTIFACTS:
-        raise RuntimeError("bulk dependency artifact closure mismatch")
-    resolved = {name: _relative_artifact(root, record, name) for name in sorted(artifacts)}
+    files = record["artifacts"]
+    if not isinstance(files, dict) or set(files) != REQUIRED_FILES:
+        raise RuntimeError("bulk dependency file closure mismatch")
+    resolved = {name: _relative_file(root, record, name) for name in sorted(files)}
 
     licenses = _closed_object(
         record["licenses"], {"oneDNN", "third-party-programs"}, "licenses"
@@ -275,7 +275,7 @@ def validate_record(
                 f"bulk dependency gate log escapes the managed root: {gate['name']}"
             ) from error
         if log in seen_logs:
-            raise RuntimeError("bulk dependency gates reuse one log artifact")
+            raise RuntimeError("bulk dependency gates reuse one log file")
         seen_logs.add(log)
         if (
             not isinstance(gate["log_sha256"], str)
@@ -293,7 +293,7 @@ def make_snapshot(
 ) -> dict[str, Any]:
     root = reject_symlink_path(root)
     versions = load_versions() if versions is None else versions
-    artifacts = validate_record(record_path, root, versions)
+    files = validate_record(record_path, root, versions)
     record_path = _regular_file(record_path)
     return {
         "schema_version": 1,
@@ -305,7 +305,7 @@ def make_snapshot(
         "commit": versions["WAFER_ONEDNN_COMMIT"],
         "artifacts": {
             name: {"path": path.as_posix(), "sha256": sha256_file(path)}
-            for name, path in sorted(artifacts.items())
+            for name, path in sorted(files.items())
         },
     }
 

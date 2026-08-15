@@ -6,7 +6,7 @@
 #include "Wafer/Compiler/GlobalTileRelation.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
-#include "Wafer/IR/Common/OpVerifierUtils.h"
+#include "Wafer/IR/Common/WaferIRVerification.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
@@ -670,7 +670,7 @@ normalizeNoCPeerReceivePreparation(llvm::ArrayRef<mlir::ModuleOp> rankModules,
 
     // Preparation is moved only within its own structured occurrence. The
     // later Direct-DTE all-rank gate proves whole-program message progress;
-    // block identity is not used as a surrogate for global acyclicity.
+    // block membership is not used as a surrogate for global acyclicity.
     for (mlir::Block *block : communicationBlocks) {
       mlir::Operation *firstTransportIssue = nullptr;
       llvm::SmallVector<CommPeerRecvOp, 8> receives;
@@ -751,7 +751,7 @@ mlir::LogicalResult NoCCommunicationActionPoint::materialize(
     int64_t communicationId =
         findNextNoCCommunicationId(isolatedCanonicalInstrModules);
     if (communicationId < 0)
-      return fail(failureReason, "NoC communication identity space exhausted");
+      return fail(failureReason, "NoC communication ID space exhausted");
 
     // Every composed fanout recipe follows the same current-IR dependency
     // order. Each exact helper re-proves its own capability on this one
@@ -761,9 +761,9 @@ mlir::LogicalResult NoCCommunicationActionPoint::materialize(
                                    : NoCFanoutKind::ReceiveForward;
     const unsigned partial =
         materializeNoCPartialReductions(isolatedCanonicalInstrModules, program);
-    const unsigned output = materializeNoCOutputPublications(
+    const unsigned output = materializeNoCReplicatedOutputDataflow(
         isolatedCanonicalInstrModules, program, communicationId, kind);
-    const unsigned intermediate = materializeNoCIntermediateHandoffs(
+    const unsigned intermediate = materializeNoCIntermediateRoutes(
         isolatedCanonicalInstrModules, program, communicationId, kind);
     const unsigned boundary = materializeNoCTypedBoundaryFanouts(
         isolatedCanonicalInstrModules, program, communicationId, kind);
@@ -815,9 +815,9 @@ mlir::LogicalResult NoCCommunicationActionProvider::query(
       hasNoCPartialReductionOpportunity(currentCanonicalInstrModules, program);
   const bool hasFanout =
       findNextNoCCommunicationId(currentCanonicalInstrModules) >= 0 &&
-      (hasNoCOutputPublicationOpportunity(currentCanonicalInstrModules,
-                                          program) ||
-       hasNoCIntermediateHandoffOpportunity(currentCanonicalInstrModules,
+      (hasNoCReplicatedOutputDataflowOpportunity(currentCanonicalInstrModules,
+                                                 program) ||
+       hasNoCIntermediateRoutingOpportunity(currentCanonicalInstrModules,
                                             program) ||
        hasNoCTypedBoundaryFanoutOpportunity(currentCanonicalInstrModules,
                                             program));

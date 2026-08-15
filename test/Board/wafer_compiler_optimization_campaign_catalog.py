@@ -202,21 +202,22 @@ PRODUCTION_PIPELINE_ANCHORS = (
         "stageTargetPackage",
     ),
     _anchor(
-        "lib/Wafer/Compiler/ExecutableBundle.cpp",
-        "CoordinatedDataflowSearchSession::create",
-        "beginCoordinatedExecutableFinalization",
-        "advanceCoordinatedExecutableFinalization",
-        "selectAdmittedCoordinatedExecutable",
+        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
+        "WholeCardCandidateSearchSession::create",
     ),
     _anchor(
-        "lib/Wafer/Compiler/CoordinatedExecutableFinalization.cpp",
-        "beginCoordinatedExecutableFinalization",
-        "advanceCoordinatedExecutableFinalization",
+        "lib/Wafer/Compiler/WholeCardCandidateEvaluation.cpp",
+        "beginWholeCardCandidateEvaluation",
+        "advanceWholeCardCandidateEvaluation",
+    ),
+    _anchor(
+        "lib/Wafer/Compiler/WholeCardCandidateSelection.cpp",
+        "selectEvaluatedWholeCardCandidate",
     ),
     _anchor(
         "lib/Wafer/Pipelines/Pipelines.cpp",
-        "buildFinalizeScheduledRankCandidatePipeline",
-        "buildPlanDDRMemoryPipeline",
+        "buildLowerTileRegionToInstrPipeline",
+        "addAssignDDROffsetsPass",
     ),
 )
 
@@ -574,7 +575,7 @@ CAMPAIGN_CASES = (
             StructuralOracleKind.TARGET_CALL_RELATION,
             (
                 "the optimized scheduler bodies contain more multiply callsites",
-                "the optimized manifest publishes fewer workspace bytes",
+                "the optimized manifest declares fewer workspace bytes",
             ),
             NumericOracleKind.FULL_EXACT,
             (
@@ -843,10 +844,10 @@ ORDER_HOST_GATES = (
     "unittests/Transforms/PhysicalDataflow/ReadyOrderTest.cpp",
 )
 SELECTION_HOST_GATES = (
-    "unittests/Compiler/CoordinatedDataflowSearchTest.cpp",
-    "unittests/Compiler/CoordinatedExecutableAdmissionTest.cpp",
-    "unittests/Compiler/CoordinatedVariantSelectionTest.cpp",
-    "unittests/Compiler/WholeVariantResourceAcceptanceTest.cpp",
+    "unittests/Compiler/WholeCardCandidateSearchTest.cpp",
+    "unittests/Compiler/LowerWholeCardInstrModulesTest.cpp",
+    "unittests/Compiler/WholeCardCandidateSelectionTest.cpp",
+    "unittests/Compiler/WholeCardResourceCostValidationTest.cpp",
 )
 MEMORY_HOST_GATES = (
     "unittests/Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp",
@@ -868,7 +869,7 @@ PRODUCTION_OWNER_BY_AXIS = {
         "TargetImplementationKind::GenericReciprocal",
     ),
     "dependent-tiling-and-tail-coverage": _anchor(
-        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
         "buildStructuredTraversalProposals",
     ),
     "producer-fusion-and-relation-propagation": _anchor(
@@ -885,18 +886,18 @@ PRODUCTION_OWNER_BY_AXIS = {
     ),
     "fixed-cx-ncx-gemm-absorption": _anchor(
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/NamedComputeLowering.cpp",
-        "getOrMaterialize(op.getDpsInputs()[0], MemLayout::Cx",
+        "getOrMaterializeStructuredInput(",
     ),
     "physical-version-reuse": _anchor(
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/BodyEmitter.cpp",
         "TileRegionBodyEmitter::record",
     ),
     "movement-resident-cut-elimination": _anchor(
-        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
         "materializeCompleteRankTileResidencySibling",
     ),
     "whole-tensor-share-winner": _anchor(
-        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
         "CandidateTileResidencyAction::SelectiveSpill",
     ),
     "consumer-local-recompute-winner": _anchor(
@@ -932,7 +933,7 @@ PRODUCTION_OWNER_BY_AXIS = {
         "scheduleIndependentInstructionsByReadyOrder",
     ),
     "static-fixed-slot-overlap-selection": _anchor(
-        "lib/Wafer/Compiler/CoordinatedExecutableFinalization.cpp",
+        "lib/Wafer/Compiler/WholeCardCandidateEvaluation.cpp",
         "deriveFixedSlotAction",
     ),
     "collective-direct": _anchor(
@@ -949,11 +950,11 @@ PRODUCTION_OWNER_BY_AXIS = {
     ),
     "stablehlo-normalization-and-canonicalization": _anchor(
         "lib/Wafer/Pipelines/Pipelines.cpp",
-        "addStablehloToLinalgBody",
+        "buildStablehloToLinalgPipeline",
     ),
     "function-boundary-bufferization-alias": _anchor(
         "lib/Wafer/Pipelines/Pipelines.cpp",
-        "getFunctionBoundaryBufferizationOptions",
+        "addInstrFunctionBoundaryBufferizationPass",
     ),
     "index-relation-and-traversal-legality": _anchor(
         "lib/Wafer/Analysis/PhysicalDataflow/IndexRelation.cpp",
@@ -968,16 +969,16 @@ PRODUCTION_OWNER_BY_AXIS = {
         "scheduleIndependentInstructionsByReadyOrder",
     ),
     "resource-aware-neighbor-generation": _anchor(
-        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
+        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
         "buildLocalConnectionChoicePool",
     ),
     "bounded-joint-search-and-baseline-fallback": _anchor(
-        "lib/Wafer/Compiler/CoordinatedDataflowSearch.cpp",
-        "deriveStructuralFrontier",
+        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
+        "deriveStructuredCandidates",
     ),
-    "whole-variant-pareto-and-atomic-commit": _anchor(
-        "lib/Wafer/Compiler/CoordinatedVariantSelection.cpp",
-        "selectAdmittedCoordinatedExecutable",
+    "whole-variant-pareto-and-atomic-selection": _anchor(
+        "lib/Wafer/Compiler/WholeCardCandidateSelection.cpp",
+        "selectEvaluatedWholeCardCandidate",
     ),
     "spm-lifetime-placement-and-packing": _anchor(
         "lib/Wafer/Transforms/SPM/PlanSPMMemory.cpp",
@@ -1154,7 +1155,7 @@ OPTIMIZATION_AXES = (
         "numeric-candidate-rewrite",
         AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
         "rewrite-exact-negative-gates",
-        "INT8 CT arithmetic is rejected before target publication.",
+        "INT8 CT arithmetic is rejected before target code generation.",
         host_assets=REWRITE_HOST_GATES,
     ),
     _axis(
@@ -1184,7 +1185,7 @@ OPTIMIZATION_AXES = (
         "long-steady-elementwise-add",
         (
             "A legal rotating fixed-slot candidate is useful only when normal "
-            "production selection publishes a distinct executable."
+            "production selection produces a distinct executable."
         ),
         observables=(
             "scheduler body difference",
@@ -1215,7 +1216,7 @@ OPTIMIZATION_AXES = (
         ),
         host_assets=(
             "unittests/Conversion/CommunicationAlternativesTest.cpp",
-            "unittests/Compiler/CoordinatedExecutableFinalizationTest.cpp",
+            "unittests/Compiler/WholeCardCandidateEvaluationTest.cpp",
         ),
     ),
     _axis(
@@ -1288,7 +1289,7 @@ OPTIMIZATION_AXES = (
     ),
     _axis(
         "bounded-joint-search-and-baseline-fallback",
-        "candidate-frontier",
+        "candidate-set",
         AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
         "selection-resource-exact-gates",
         (
@@ -1298,7 +1299,7 @@ OPTIMIZATION_AXES = (
         host_assets=SELECTION_HOST_GATES,
     ),
     _axis(
-        "whole-variant-pareto-and-atomic-commit",
+        "whole-variant-pareto-and-atomic-selection",
         "all-rank-coordination",
         AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
         "selection-resource-exact-gates",

@@ -29,7 +29,7 @@ namespace wafer::compiler {
 class TargetToolchain;
 
 /// Invocation-local diagnostic policy. Detailed timing never changes source
-/// semantics, candidate admission, selection, or published artifacts.
+/// semantics, candidate verification, selection, or written outputs.
 enum class CompilationTimingMode { Disabled, Detailed };
 
 /// Validated execution facts for the current single-card compiler boundary.
@@ -110,32 +110,34 @@ public:
   static CompilationOptions
   standard(OptimizationConfig optimizations = OptimizationConfig::search(),
            CompilationTimingMode timing = CompilationTimingMode::Disabled) {
-    return CompilationOptions(/*profileCompanion=*/false, optimizations,
+    return CompilationOptions(/*profileInstrumentation=*/false, optimizations,
                               timing);
   }
 
-  /// Requests a production-artifact profile companion. The ordinary package is
-  /// compiled exactly once; the companion contains profile-only captures for
-  /// that same accepted complete-card physical Tile artifact.
+  /// Requests a profile instrumentation for the production package. The
+  /// ordinary package is compiled exactly once; the instrumentation contains
+  /// profile-only captures for that same accepted physical-Tile executable set.
   static llvm::Expected<CompilationOptions>
   profile(const ExecutionConfig &executionConfig,
           OptimizationConfig optimizations = OptimizationConfig::search(),
           CompilationTimingMode timing = CompilationTimingMode::Disabled);
 
-  bool shouldProduceProfileCompanion() const { return profileCompanion; }
+  bool shouldProduceProfileInstrumentation() const {
+    return profileInstrumentation;
+  }
   OptimizationConfig getOptimizationConfig() const { return optimizations; }
   bool shouldReportDetailedTiming() const {
     return timing == CompilationTimingMode::Detailed;
   }
 
 private:
-  explicit CompilationOptions(bool profileCompanion,
+  explicit CompilationOptions(bool profileInstrumentation,
                               OptimizationConfig optimizations,
                               CompilationTimingMode timing)
-      : profileCompanion(profileCompanion), optimizations(optimizations),
-        timing(timing) {}
+      : profileInstrumentation(profileInstrumentation),
+        optimizations(optimizations), timing(timing) {}
 
-  bool profileCompanion;
+  bool profileInstrumentation;
   OptimizationConfig optimizations;
   CompilationTimingMode timing;
 };
@@ -163,8 +165,8 @@ struct ProgramResourceBinding {
 };
 
 /// Optional same-invocation compiler inspection output. It is deliberately
-/// separate from executable, package and runtime artifacts and must never be
-/// used to recover compilation semantics.
+/// separate from executable IR, package files, and runtime state and must never
+/// be used to recover compilation semantics.
 struct PhysicalTileIRTrace {
   PhysicalCardId physicalCardId{0};
   PhysicalTileId physicalTileId{0};
@@ -205,7 +207,7 @@ public:
   }
 
 private:
-  friend struct ExecutableBundleBuilder;
+  friend struct PhysicalTileExecutablesBuilder;
 
   PhysicalTileExecutable(PhysicalCardId physicalCardId,
                          PhysicalTileId physicalTileId,
@@ -235,15 +237,14 @@ private:
   DDRAllocationContract ddrAllocationContract;
 };
 
-/// Atomic owner of the all-and-only available physical Tile domain for one
-/// card. The context is owned alongside all modules and is destroyed only
-/// after the Tile programs.
-class ExecutableBundle {
+/// Owns the complete physical Tile executable domain. The context is owned
+/// alongside all modules and is destroyed only after the Tile programs.
+class PhysicalTileExecutables {
 public:
-  ExecutableBundle(ExecutableBundle &&) = default;
-  ExecutableBundle &operator=(ExecutableBundle &&) = default;
-  ExecutableBundle(const ExecutableBundle &) = delete;
-  ExecutableBundle &operator=(const ExecutableBundle &) = delete;
+  PhysicalTileExecutables(PhysicalTileExecutables &&) = default;
+  PhysicalTileExecutables &operator=(PhysicalTileExecutables &&) = default;
+  PhysicalTileExecutables(const PhysicalTileExecutables &) = delete;
+  PhysicalTileExecutables &operator=(const PhysicalTileExecutables &) = delete;
 
   const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
   const std::vector<PhysicalTileExecutable> &
@@ -255,12 +256,13 @@ public:
   }
 
 private:
-  friend struct ExecutableBundleBuilder;
+  friend struct PhysicalTileExecutablesBuilder;
 
-  ExecutableBundle(ExecutionConfig executionConfig,
-                   RuntimeLaunchContract runtimeLaunchContract,
-                   std::shared_ptr<mlir::MLIRContext> context,
-                   std::vector<PhysicalTileExecutable> physicalTileExecutables)
+  PhysicalTileExecutables(
+      ExecutionConfig executionConfig,
+      RuntimeLaunchContract runtimeLaunchContract,
+      std::shared_ptr<mlir::MLIRContext> context,
+      std::vector<PhysicalTileExecutable> physicalTileExecutables)
       : executionConfig(executionConfig),
         runtimeLaunchContract(std::move(runtimeLaunchContract)),
         context(std::move(context)),
@@ -272,18 +274,17 @@ private:
   std::vector<PhysicalTileExecutable> physicalTileExecutables;
 };
 
-/// Runs the production transaction with an explicit typed product request.
-/// It traverses executable, target-artifact and typed package boundaries; the
+/// Compiles the source program and writes the requested package directory.
+/// It traverses executable, target-module and typed package boundaries; the
 /// final root becomes visible only after canonical manifest readback verifies
-/// every source tensor-program and target module member. The returned bundle
-/// is the same owner-backed accepted physical-Tile domain consumed by target
-/// artifact and package assembly; downstream gates must not rebuild it from
-/// the published package.
+/// every source tensor-program and target module member. The returned value is
+/// the same physical-Tile executable domain consumed by target code generation
+/// and package writing; downstream consumers must not rebuild it from files.
 /// When profiling is requested, the ordinary output remains the production
-/// package, and a verified sibling `<output>.profile` companion is published
-/// only after the ordinary artifact and its profile-only captures have
-/// completed their compiler-owned gates.
-mlir::FailureOr<ExecutableBundle>
+/// package, and a verified sibling `<output>.profile` instrumentation is
+/// written only after the ordinary package and its profile-only captures have
+/// passed their respective validation steps.
+mlir::FailureOr<PhysicalTileExecutables>
 compileProgram(CompilationRequest request,
                llvm::StringRef outputProgramDirectory,
                llvm::StringRef xlaSpmdPartitionerHelper,

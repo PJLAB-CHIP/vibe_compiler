@@ -34,13 +34,13 @@
 # CHAIN-SAME: active_tiles=16
 # CHAIN-SAME: peer_transfers=0
 # CHAIN-SAME: actual_fused_edges=0
-# CHAIN: wafer-compile: published verified package with num-partitions=1 physical-tiles=16:
+# CHAIN: wafer-compile: wrote verified package with num-partitions=1 physical-tiles=16:
 
 # SPATIAL: wafer-compile: whole-card-selection
 # SPATIAL-SAME: active_tiles=16
 # SPATIAL-SAME: peer_transfers=0
 # SPATIAL-SAME: actual_fused_edges=0
-# SPATIAL: wafer-compile: published verified package with num-partitions=1 physical-tiles=16:
+# SPATIAL: wafer-compile: wrote verified package with num-partitions=1 physical-tiles=16:
 
 # CROSS-NOT: whole-card-search policy=none
 # CROSS: wafer-compile: whole-card-baseline-controller search_states=0 placement_enumeration=0 candidate_family=0
@@ -50,7 +50,7 @@
 # CROSS-SAME: peer_transfers={{[1-9][0-9]*}}
 # CROSS-SAME: peer_bytes={{[1-9][0-9]*}}
 # CROSS-SAME: actual_fused_edges=0
-# CROSS: wafer-compile: published verified package with num-partitions=1 physical-tiles=16:
+# CROSS: wafer-compile: wrote verified package with num-partitions=1 physical-tiles=16:
 
 # CROSS-INSTR: wafer.instr.dte_recv
 # CROSS-INSTR: wafer.instr.dte_send

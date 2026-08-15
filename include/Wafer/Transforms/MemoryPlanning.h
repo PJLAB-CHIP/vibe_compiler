@@ -56,8 +56,9 @@ checkTileRegionSPMCapacity(TileRegionOp region, int64_t spmBase,
                            int64_t spmLimit, int64_t spmAlignment,
                            SPMMemoryPlanningFailure *failure = nullptr);
 
-/// Direct query/apply kernel for a caller-owned private Module transaction.
-/// Production admission uses the AnalysisManager-aware DDR pass adapter.
+/// Direct query/apply kernel for a caller-owned private Module. The caller
+/// discards the Module on failure. Whole-executable lowering uses the
+/// AnalysisManager-aware DDR pass adapter.
 mlir::LogicalResult planDDRMemoryModule(mlir::ModuleOp moduleOp,
                                         int64_t ddrAlignmentBytes,
                                         int64_t ddrCapacityBytes,

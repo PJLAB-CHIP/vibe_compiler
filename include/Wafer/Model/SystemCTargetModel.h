@@ -44,7 +44,8 @@ private:
   std::string detail;
 };
 
-/// One atomically published card-owned output allocation. physical Tile and
+/// One card-owned output allocation returned after successful execution.
+/// Physical Tile and
 /// slot fields identify the canonical ABI view used for decoding; aliased
 /// views from other Tiles do not create duplicate result objects.
 struct TargetModelOutput {
@@ -57,13 +58,13 @@ struct TargetModelOutput {
   std::vector<uint8_t> bytes;
 };
 
-/// Atomically published result. SystemC objects and private memory are not
-/// retained by this value.
+/// Complete model result. SystemC objects and private memory are not retained
+/// by this value.
 struct TargetModelResult {
   TargetIdentityId targetIdentity;
   ModelProfileId modelProfile;
   int64_t completedTileCount = 0;
-  uint64_t issuedTransactionCount = 0;
+  uint64_t issuedCommandCount = 0;
   uint64_t systemCThreadProcessCount = 0;
   uint64_t finalDeltaCount = 0;
   FormalNumericExceptionFlags numericFlags;
@@ -74,7 +75,7 @@ struct TargetModelResult {
   uint64_t bulkMatmulInvocationCount = 0;
   uint64_t bulkReorderInvocationCount = 0;
   uint64_t bulkFormalFusedMultiplyAddCount = 0;
-  std::vector<std::string> bulkAdmissionRecordDigests;
+  std::vector<std::string> bulkQualificationRecordDigests;
   std::vector<std::string> bulkManagedReferenceEnvironmentDigests;
   std::vector<std::string> managedReferenceTensorEnvironmentDigests;
   std::vector<std::string> managedReferenceTensorImplementations;

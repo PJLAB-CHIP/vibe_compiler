@@ -22,9 +22,9 @@ option(WAFER_ENABLE_SPMD_PARTITIONER_DEPS
 option(WAFER_ENABLE_RUNTIME_DEPS
   "Enable future runtime/driver SDK dependency roots" OFF)
 option(WAFER_ENABLE_NUMERIC_MODEL_DEPS
-  "Enable exact managed SoftFloat/TestFloat/GMP/MPFR numeric-model artifacts" OFF)
+  "Enable exact managed SoftFloat/TestFloat/GMP/MPFR numeric-model files" OFF)
 option(WAFER_ENABLE_BULK_MODEL_DEPS
-  "Enable the exact managed oneDNN bulk functional-model artifact" OFF)
+  "Enable the exact managed oneDNN bulk functional-model files" OFF)
 option(WAFER_ENABLE_SYSTEMC_MODEL
   "Enable the exact managed SystemC functional-event model dependency" OFF)
 option(WAFER_FETCH_GTEST

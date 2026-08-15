@@ -9,14 +9,14 @@
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
-  当前frontend program、TensorProgram、CardProgram/TileRegion、Instr、CardExecutable、target modules/artifacts、
+- Upstream IR / input:
+  当前frontend program、TensorProgram、CardProgram/TileRegion、Instr、CardExecutable、target LLVM modules/linked ELF、
   ExecutablePackage、runtime/model invocation及其CMake libraries。
 - Current stage responsibility:
-  按稳定IR/artifact边界组织public API、internal helper、translation unit和build依赖；保证physical-dataflow selection、
-  conversion、target publication、runtime和model各有唯一owner，并删除旧架构旁路。
-- Output artifact / IR:
-  依赖单向、职责可检查的libraries/tools/tests；不改变各owner定义的IR/artifact语义，也不产生第二份schema或sidecar。
+  按稳定IR/output边界组织public API、internal helper、translation unit和build依赖；保证physical-dataflow selection、
+  conversion、target writing、runtime和model各有唯一owner，并删除旧架构旁路。
+- Output IR / files:
+  依赖单向、职责可检查的libraries/tools/tests；不改变各owner定义的IR/output语义，也不产生第二份schema或sidecar。
 - Downstream consumer:
   Wafer named pipelines、wafer-compile、wafer-run、TargetCall/SystemC和configured host/board tests。
 - User-level driver / named pipeline:
@@ -35,8 +35,8 @@ Pipeline position:
 
 - IR语义与verifier归对应Dialect/ODS和实现文件；
 - query-local analysis只从current IR派生，可失效、可重算，不序列化；
-- transformation只物化一个IR边界，不同时承担selection、allocation和publication；
-- public typed artifact由其header定义，serializer/parser/verifier引用同一enum/key/version；
+- transformation只物化一个IR边界，不同时承担selection、allocation和writing；
+- public typed output由其header定义，serializer/parser/verifier引用同一enum/key/version；
 - target ABI descriptor、format/identity、package schema和runtime launch contract各只有一个代码事实源；
 - tests只构造/消费public合同，不实现另一个parser、selector、router或oracle。
 
@@ -53,16 +53,16 @@ recipe、staging builder、failure bookkeeping和单library协作helper放在 `l
 - 为迁移保留同义old/new方法、enum、field或wrapper；
 - 用opaque bag、side table、名字约定或serialized candidate plan穿越stage；
 - 把一个internal bridge的symbol提升为runtime/public ABI；
-- 从test helper、Markdown marker或artifact filename恢复协议事实。
+- 从test helper、Markdown marker或output filename恢复协议事实。
 
 ### 2.3 Translation unit
 
 一个实现文件只承担一个可命名动作。需要“并且”连接两个独立stage时拆分：
 
 - analysis与mutation分开；
-- candidate generation、actual materialization、exact admission与selection分开；
-- ABI preparation、LLVM translation、device link、readback与package publication分开；
-- package parse、serialize、semantic verify、runtime preflight和board execution分开；
+- candidate generation、actual materialization、exact verification与selection分开；
+- ABI preparation、LLVM translation、device link、readback与package writing分开；
+- package parse、serialize、semantic verify、runtime validation和board execution分开；
 - TargetCall decode、functional kernel、SystemC scheduling和numeric codec分开。
 
 顶层driver只编排typed substage，不重写业务逻辑；不为此另造`Facade`架构层。internal helper不可复制公共verifier的规则。
@@ -79,7 +79,7 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
 
 ### 3.2 Physical-dataflow selection 与 materialization
 
-`Compiler`是整图physical-dataflow决策唯一owner，源码按下列artifact动作组织：
+`Compiler`是整图physical-dataflow决策唯一owner，源码按下列output动作组织：
 
 - semantic-alternative builder：从current TensorProgram typed SSA证明资格，并把每个算法/参数点构造成isolated actual
   TensorProgram alternative；proof、算法名和参数向量不越过actual IR边界；
@@ -87,11 +87,11 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
   partial choices，惰性生成spatial/temporal/TileRegion/fusion/layout/movement/communication/buffering候选；
 - CardProgram/TileRegion materialization：只把当前choice写入isolated actual IR并运行对应verifier；
 - Tile-local evaluation executor：只并行互不共享可写IR的evaluation work，并维持deterministic output order；
-- Instr realization/finalization：对selected Tile program物化worker/slot/order，fresh重建completion并执行late physical finalization；
-- CardExecutable admission：只验证card-scoped actual结果，不生成repair。
+- Instr construction and physical verification：对selected Tile program物化worker/slot/order，fresh重建required joins并执行memory、transport和ABI验证；
+- CardExecutable verification：只验证card-scoped actual结果，不生成repair。
 
 现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → selected CardProgram/TileRegion → all-and-only
-physical Tile Instr → CardExecutable。实现索引不得升级为artifact名或要求其它library读取search对象。
+physical Tile Instr → CardExecutable。实现索引不得升级为output名或要求其它library读取search对象。
 
 禁止恢复：
 
@@ -104,7 +104,7 @@ physical Tile Instr → CardExecutable。实现索引不得升级为artifact名�
 
 ### 3.3 Conversion chain
 
-conversion libraries按IR边界组织。稳定artifact流为：
+conversion libraries按IR边界组织。稳定output流为：
 
 ```text
 TensorProgram
@@ -121,8 +121,8 @@ TensorProgram
 - CardProgram/TileProgram内的TileRegion materialization使用structured tiling/reduction interfaces、DPS和IndexRelation，
   负责Tile-local dataflow；
 - TileRegion→Instr lower actual compute/movement/communication，不做全局选择；
-- CardExecutable admission只消费all-and-only finalized Instr并原子验证；
-- target conversion和package publication分别消费CardExecutable与verified target artifacts，不恢复physical choice。
+- CardExecutable verification只消费all-and-only finalized Instr并原子验证；
+- target conversion和package writing分别消费CardExecutable与verified target modules，不恢复physical choice。
 
 不同output/op可拥有不同active Tile set与tile shape；projection不能假设common result tile vector。conversion failure返回
 candidate owner，不在内部反复缩tile或切换算法。
@@ -153,7 +153,7 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 
 ## 4. Target、runtime与model organization
 
-### 4.1 Target conversion/publication
+### 4.1 Target conversion/writing
 
 `lib/Wafer/Compiler`中的target职责按以下边界拆分：
 
@@ -162,8 +162,8 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 - LLVM translation与current metadata verification；
 - optional Grid/Cluster aggregate target-module materialization；
 - device link、ELF/export/digest readback；
-- verified target artifacts atomic publication；
-- ExecutablePackage assembly与profile companion publication。
+- verified target modules atomic writing；
+- ExecutablePackage assembly与profile instrumentation writing。
 
 aggregate module是低层representation，不能吞掉16个explicit Tile interfaces。host TargetCall JIT dispatch是internal
 transaction bridge，不能进入package/runtime ABI文档或public header。
@@ -176,15 +176,15 @@ transaction bridge，不能进入package/runtime ABI文档或public header。
 - JSON parser；
 - serializer；
 - semantic verifier与module readback；
-- no-card session/invocation preflight；
+- no-card session/invocation validation；
 - BoardRuntime generic lifecycle；
 - TX provider adapter；
-- ProfileCompanion strict loader/verifier。
+- ProfileInstrumentation strict loader/verifier。
 
-ExecutablePackage当前manifest schema与profile companion schema的version、fields和verification只在typed runtime owner定义；package的
+ExecutablePackage当前manifest schema与profile instrumentation schema的version、fields和verification只在typed runtime owner定义；package的
 resource scopes与entry completion同样由该owner持有。Python runner只能消费canonical manifest/evidence或调用public tool；
-不得内置另一份schema validator。旧schema reader和兼容translation不存在。profile companion只暴露单一primary executable artifact、
-count/trace captures和一个16-Tile site map，不保留artifact集合shell或重复digest API。
+不得内置另一份schema validator。旧schema reader和兼容translation不存在。profile instrumentation只暴露单一primary executable output、
+count/trace captures和一个16-Tile site map，不保留output集合shell或重复digest API。
 
 ### 4.3 TargetCall与model
 
@@ -211,13 +211,13 @@ model不依赖package parser来重建compiler owners，也不共享vendor runtim
 IR / Support / Target typed facts
   -> Analysis
   -> Conversion / Transforms
-  -> Compiler orchestration and CardExecutable/target publication
-  -> ExecutablePackage / Runtime preflight
+  -> Compiler orchestration and CardExecutable/target writing
+  -> ExecutablePackage / Runtime validation
   -> Board provider or Model consumer
   -> Tools
 ```
 
-禁止runtime/model反向依赖compiler private search，禁止analysis依赖publication，禁止conversion调用tool/runner。CMake target
+禁止runtime/model反向依赖compiler private search，禁止analysis依赖writing，禁止conversion调用tool/runner。CMake target
 明确列出受控source，不依赖glob保住已经删除的文件；删除source时同批删除target/source list和only-for-it test。
 
 独立host build/test按 `nproc`并行。若一个聚合library使无关功能被可选依赖拖住，应拆分target或用明确feature boundary，

@@ -1,6 +1,6 @@
+#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "instr_adapter_plat.h"
 #include "instr_def.h"
-#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -48,17 +48,16 @@ enum WaferTx81ProbeWord {
   WAFER_PROBE_NCC_BASE = 31,
 };
 
-static const uint32_t wafer_tx81_execution_offsets
-    [WAFER_TX81_PMU_COUNTER_COUNT] = {
-        GR_PMU_STATISTICS_WINDOW, GR_PMU_FU_EXE_TIME,   GR_PMU_CT_EXE_TIME,
-        GR_PMU_NE_EXE_TIME,      GR_PMU_RDMA_EXE_TIME, GR_PMU_WDMA_EXE_TIME,
-        GR_PMU_TDMA_EXE_TIME,    GR_PMU_SCALAR_EXE_TIME,
+static const uint32_t
+    wafer_tx81_execution_offsets[WAFER_TX81_PMU_COUNTER_COUNT] = {
+        GR_PMU_STATISTICS_WINDOW, GR_PMU_FU_EXE_TIME,     GR_PMU_CT_EXE_TIME,
+        GR_PMU_NE_EXE_TIME,       GR_PMU_RDMA_EXE_TIME,   GR_PMU_WDMA_EXE_TIME,
+        GR_PMU_TDMA_EXE_TIME,     GR_PMU_SCALAR_EXE_TIME,
 };
 
 static const uint32_t wafer_tx81_instruction_offsets[6] = {
-    GR_PMU_CT_INST_NUMS,   GR_PMU_NE_INST_NUMS,  GR_PMU_RDMA_INST_NUMS,
-    GR_PMU_WDMA_INST_NUMS, GR_PMU_TDMA_INST_NUMS,
-    GR_PMU_SCALAR_INST_NUMS,
+    GR_PMU_CT_INST_NUMS,   GR_PMU_NE_INST_NUMS,   GR_PMU_RDMA_INST_NUMS,
+    GR_PMU_WDMA_INST_NUMS, GR_PMU_TDMA_INST_NUMS, GR_PMU_SCALAR_INST_NUMS,
 };
 
 static const uint32_t wafer_tx81_blocking_offsets[6] = {
@@ -91,7 +90,7 @@ static uint64_t wafer_tx81_probe_read_pmu64(uint32_t low_offset,
   return ((uint64_t)high_after << 32) | low;
 }
 
-static void wafer_tx81_probe_publish_output(uint64_t output_ddr) {
+static void wafer_tx81_probe_write_output(uint64_t output_ddr) {
   enum {
     WAFER_TX81_SUPERVISOR_MODE = 1,
     WAFER_TX81_MACHINE_MODE = 3,
@@ -123,8 +122,7 @@ wafer_tx81_board_probe(uint64_t output_ddr) {
 
   record[WAFER_PROBE_MAGIC] = WAFER_TX81_PROBE_MAGIC;
   record[WAFER_PROBE_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_TX81_PROBE_SCHEMA << 32) |
-      WAFER_TX81_PROBE_WORD_COUNT;
+      ((uint64_t)WAFER_TX81_PROBE_SCHEMA << 32) | WAFER_TX81_PROBE_WORD_COUNT;
   record[WAFER_PROBE_STABLE_COUNTER_MASK] = 0;
   record[WAFER_PROBE_PMU_ENABLE] = wafer_tx81_probe_read_pmu32(GR_PMU_EN);
 
@@ -151,5 +149,5 @@ wafer_tx81_board_probe(uint64_t output_ddr) {
   record[WAFER_PROBE_PMU_BASE] = WAFER_TX81_NCC_PMU_BASE;
   record[WAFER_PROBE_NCC_BASE] = NCC_ADDR;
 
-  wafer_tx81_probe_publish_output(output_ddr);
+  wafer_tx81_probe_write_output(output_ddr);
 }

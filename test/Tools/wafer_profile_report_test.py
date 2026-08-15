@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""No-card tests for production-artifact profile analysis and offline HTML."""
+"""No-card tests for primary-program profile analysis and offline HTML."""
 
 from __future__ import annotations
 
@@ -82,19 +82,19 @@ def _must_reject(module: object, evidence: object, marker: str) -> None:
         )
 
 
-def _test_final_artifact(module: object) -> None:
+def _test_program(module: object) -> None:
     evidence = make_evidence()
     first = module.analyze_evidence(evidence)
     second = module.analyze_evidence(copy.deepcopy(evidence))
     assert first == second
-    assert first["schema_version"] == 9
+    assert first["schema_version"] == 10
     assert first["record_abi"] == "wafer-tx81-profiler-record-v4"
 
     permuted = make_evidence(permute_bindings=True)
     module.validate_evidence(permuted)
-    assert module.analyze_evidence(permuted)["schema_version"] == 9
+    assert module.analyze_evidence(permuted)["schema_version"] == 10
 
-    final = first["final_artifact"]
+    final = first["program"]
     duration = final["duration"]
     assert duration["sample_id"] == "primary"
     assert duration["sample_index"] == 0
@@ -106,7 +106,7 @@ def _test_final_artifact(module: object) -> None:
         duration["measurement_kind"]
         == "tx-stream-kernel-launch-to-completion-envelope"
     )
-    assert duration["scope"] == "production-launch-to-stream-completion"
+    assert duration["scope"] == "primary-launch-to-stream-completion"
     assert not duration["is_engine_only"]
     assert duration["includes_device_control_wait_and_scheduling"]
     assert not duration["includes_host_submit"]
@@ -204,7 +204,7 @@ def _test_final_artifact(module: object) -> None:
     assert hardware_by_engine["DIRECT_DTE"]["estimated_ns"] == 10.0
     assert hardware_by_engine["DIRECT_DTE"]["floor_ns"] is None
     assert hardware_by_engine["DIRECT_DTE"]["measured_to_model_ratio"] is None
-    assert final["output"]["production_execution_validated"]
+    assert final["output"]["primary_output_validated"]
     assert final["output"]["diagnostic_captures_match_primary"]
     assert final["output"]["correctness_status"] == "expected-exact"
     assert len(final["tiles"]) == 16
@@ -396,7 +396,7 @@ def _test_final_artifact(module: object) -> None:
     shared_sample_end = overlap_wdma["observed_end_cycle"]
     overlap_ct["observed_end_cycle"] = shared_sample_end
     overlap_ct_analysis = module.analyze_evidence(overlapping)
-    overlap_rows = overlap_ct_analysis["final_artifact"]["timeline_events"]
+    overlap_rows = overlap_ct_analysis["program"]["timeline_events"]
     overlap_ct_row = next(
         event
         for event in overlap_rows
@@ -576,7 +576,7 @@ def _test_final_artifact(module: object) -> None:
             "between-sites",
         },
         "correctness": {
-            "production-validation-failed",
+            "primary-validation-failed",
             "expected-exact",
             "expected-relaxed-f16",
             "partially-expected",
@@ -745,7 +745,7 @@ def _test_direct_dte(module: object) -> None:
     analysis = module.analyze_evidence(evidence)
     direct = next(
         row
-        for row in analysis["final_artifact"]["tiles"][0]["engines"]
+        for row in analysis["program"]["tiles"][0]["engines"]
         if row["engine"] == "DIRECT_DTE"
     )
     assert direct["wait_window_cpu_cycles"] == (
@@ -764,7 +764,7 @@ def _test_direct_dte(module: object) -> None:
     assert direct["activity_window_count"] == 2
     assert direct["issue_window_count"] == 1
     assert direct["wait_window_count"] == 1
-    timeline = analysis["final_artifact"]["timeline_events"]
+    timeline = analysis["program"]["timeline_events"]
     assert any(
         row["engine"] == "DIRECT_DTE" and row["dte_role"] == "send"
         for row in timeline
@@ -790,7 +790,7 @@ def _test_direct_dte(module: object) -> None:
     raw_analysis = module.analyze_evidence(raw_available)
     raw_direct = next(
         row
-        for row in raw_analysis["final_artifact"]["tiles"][0]["engines"]
+        for row in raw_analysis["program"]["tiles"][0]["engines"]
         if row["engine"] == "DIRECT_DTE"
     )
     assert raw_direct["wait_windows_valid"]
@@ -801,7 +801,7 @@ def _test_direct_dte(module: object) -> None:
     assert raw_direct["raw_pmu_activity"] == 22
     assert raw_direct["raw_pmu_activity_valid"]
     assert raw_direct["raw_pmu_activity_status"] == "Sampled"
-    raw_timeline = raw_analysis["final_artifact"]["timeline_events"]
+    raw_timeline = raw_analysis["program"]["timeline_events"]
     raw_timeline_event = next(
         row
         for row in raw_timeline
@@ -813,7 +813,7 @@ def _test_direct_dte(module: object) -> None:
 
 def _test_cost_attribution(module: object) -> None:
     base = module.analyze_evidence(make_evidence())
-    base_partition = base["final_artifact"]["tiles"][0]["semantic_partition"]
+    base_partition = base["program"]["tiles"][0]["semantic_partition"]
     categories = {row["category"] for row in base_partition["rows"]}
     assert {
         "dte-peer-ready-wait",
@@ -893,7 +893,7 @@ def _test_cost_attribution(module: object) -> None:
     second["operation_begin_cycle"] = first["operation_begin_cycle"] + 2
     second["operation_end_cycle"] = first["operation_end_cycle"] - 2
     analysis = module.analyze_evidence(nested)
-    tile = analysis["final_artifact"]["tiles"][0]
+    tile = analysis["program"]["tiles"][0]
     partition = tile["semantic_partition"]
     assert partition["exclusive_accounting_valid"]
     assert partition["exclusive_cycles"] == partition["entry_cycles"]
@@ -925,12 +925,12 @@ def _test_cost_attribution(module: object) -> None:
     result = module.analyze_evidence(observations)
     zero_row = next(
         row
-        for row in result["final_artifact"]["timeline_events"]
+        for row in result["program"]["timeline_events"]
         if row["tile"] == 0 and row["sequence"] == zero["sequence"]
     )
     ambiguous_row = next(
         row
-        for row in result["final_artifact"]["timeline_events"]
+        for row in result["program"]["timeline_events"]
         if row["tile"] == 0 and row["sequence"] == ambiguous["sequence"]
     )
     assert zero_row["zero_delta_marker"]
@@ -959,7 +959,7 @@ def _test_cost_attribution(module: object) -> None:
     unavailable_analysis = module.analyze_evidence(unavailable)
     unavailable_row = next(
         row
-        for row in unavailable_analysis["final_artifact"]["timeline_events"]
+        for row in unavailable_analysis["program"]["timeline_events"]
         if row["tile"] == 0
         and row["sequence"] == unavailable_event["sequence"]
     )
@@ -976,7 +976,7 @@ def _test_cost_attribution(module: object) -> None:
     )
     unavailable_site = next(
         row
-        for row in unavailable_analysis["final_artifact"]["sites"]
+        for row in unavailable_analysis["program"]["sites"]
         if row["tile"] == 0 and row["site_id"] == unavailable_event["site_id"]
     )
     assert unavailable_site["site_capture_status"] == "Measured"
@@ -1002,7 +1002,7 @@ def _test_cost_attribution(module: object) -> None:
     invalid_site_analysis = module.analyze_evidence(invalid_site_capture)
     invalid_site = next(
         row
-        for row in invalid_site_analysis["final_artifact"]["sites"]
+        for row in invalid_site_analysis["program"]["sites"]
         if row["tile"] == 0 and row["site_id"] == target_site["site_id"]
     )
     assert invalid_site["site_capture_status"] == "Invalid"
@@ -1016,18 +1016,18 @@ def _test_cost_attribution(module: object) -> None:
     ct_counter["recovery"] += 1_000_000
     changed = module.analyze_evidence(unit_isolation)
     assert (
-        changed["final_artifact"]["duration"]["device_elapsed_ns"]
-        == baseline["final_artifact"]["duration"]["device_elapsed_ns"]
+        changed["program"]["duration"]["device_elapsed_ns"]
+        == baseline["program"]["duration"]["device_elapsed_ns"]
     )
     assert (
-        changed["final_artifact"]["tiles"][0]["semantic_partition"]
-        == baseline["final_artifact"]["tiles"][0]["semantic_partition"]
+        changed["program"]["tiles"][0]["semantic_partition"]
+        == baseline["program"]["tiles"][0]["semantic_partition"]
     )
     assert (
-        changed["final_artifact"]["tiles"][0]["engines"][0][
+        changed["program"]["tiles"][0]["engines"][0][
             "engine_execution_time_ns"
         ]
-        > baseline["final_artifact"]["tiles"][0]["engines"][0][
+        > baseline["program"]["tiles"][0]["engines"][0][
             "engine_execution_time_ns"
         ]
     )
@@ -1039,7 +1039,7 @@ def _test_validity(module: object) -> None:
         sample["host_launch_to_completion_ns"] // 2
     )
     analysis = module.analyze_evidence(coarse)
-    duration = analysis["final_artifact"]["duration"]
+    duration = analysis["program"]["duration"]
     assert duration["qualified"]
     assert not duration["host_completion_high_resolution"]
     assert duration["status"] == "Measured"
@@ -1055,7 +1055,7 @@ def _test_validity(module: object) -> None:
     quantized = make_evidence()
     quantized["measurement"]["samples"][0]["device_elapsed_ns"] = 0
     analysis = module.analyze_evidence(quantized)
-    duration = analysis["final_artifact"]["duration"]
+    duration = analysis["program"]["duration"]
     assert duration["qualified"]
     assert duration["status"] == "Measured"
     assert duration["device_elapsed_quantized_zero"]
@@ -1072,7 +1072,7 @@ def _test_validity(module: object) -> None:
     zero_submit = make_evidence()
     zero_submit["measurement"]["samples"][0]["host_submit_ns"] = 0
     analysis = module.analyze_evidence(zero_submit)
-    duration = analysis["final_artifact"]["duration"]
+    duration = analysis["program"]["duration"]
     assert duration["qualified"]
     assert duration["status"] == "Measured"
     assert duration["host_submit_quantized_zero"]
@@ -1090,7 +1090,7 @@ def _test_validity(module: object) -> None:
     sample["host_launch_to_completion_ns"] = 0
     sample["completion_observation_resolution_ns"] = 0
     analysis = module.analyze_evidence(zero_host_envelope)
-    duration = analysis["final_artifact"]["duration"]
+    duration = analysis["program"]["duration"]
     assert duration["qualified"]
     assert duration["status"] == "Measured"
     assert duration["device_elapsed_ns"] == 8_400
@@ -1108,30 +1108,30 @@ def _test_validity(module: object) -> None:
         "diagnostic_captures_match_primary"
     ] = False
     analysis = module.analyze_evidence(mismatch)
-    assert not analysis["final_artifact"]["duration"]["qualified"]
-    assert analysis["final_artifact"]["duration"]["status"] == "Invalid"
+    assert not analysis["program"]["duration"]["qualified"]
+    assert analysis["program"]["duration"]["status"] == "Invalid"
     assert not analysis["validity"]["output_equivalence"]
 
-    production_failure = make_evidence()
-    production_failure["output_validation"]["resources"][0][
-        "production_execution_validated"
+    primary_failure = make_evidence()
+    primary_failure["output_validation"]["resources"][0][
+        "primary_output_validated"
     ] = False
-    analysis = module.analyze_evidence(production_failure)
+    analysis = module.analyze_evidence(primary_failure)
     assert analysis["validity"]["semantic_correctness"] is False
     assert (
-        analysis["final_artifact"]["output"]["correctness_status"]
-        == "production-validation-failed"
+        analysis["program"]["output"]["correctness_status"]
+        == "primary-validation-failed"
     )
-    assert not analysis["final_artifact"]["duration"]["qualified"]
+    assert not analysis["program"]["duration"]["qualified"]
 
     unassessed = make_evidence()
-    unassessed["output_validation"]["mode"] = "same-session-production"
+    unassessed["output_validation"]["mode"] = "same-session-primary"
     for resource in unassessed["output_validation"]["resources"]:
         resource["external_expected_comparison"] = None
     analysis = module.analyze_evidence(unassessed)
     assert analysis["validity"]["semantic_correctness"] is None
     assert (
-        analysis["final_artifact"]["output"]["correctness_status"]
+        analysis["program"]["output"]["correctness_status"]
         == "primary-validated"
     )
     unassessed_report = module.render_report(unassessed, analysis)
@@ -1148,7 +1148,7 @@ def _test_validity(module: object) -> None:
     analysis = module.analyze_evidence(backwards)
     ne = next(
         row
-        for row in analysis["final_artifact"]["tiles"][3]["engines"]
+        for row in analysis["program"]["tiles"][3]["engines"]
         if row["engine"] == "NE"
     )
     assert not ne["engine_execution_time_valid"]
@@ -1156,13 +1156,13 @@ def _test_validity(module: object) -> None:
     assert ne["engine_execution_time_status"] == "Unavailable"
     ne_summary = next(
         row
-        for row in analysis["final_artifact"]["engine_active_time"]["by_engine"]
+        for row in analysis["program"]["engine_active_time"]["by_engine"]
         if row["engine"] == "NE"
     )
     assert ne_summary["available_tile_count"] == 15
     assert ne_summary["active_tile_count"] == 15
     assert ne_summary["status"] == "Incomplete"
-    tile_work = analysis["final_artifact"]["engine_active_time"][
+    tile_work = analysis["program"]["engine_active_time"][
         "per_tile_work_volume"
     ]
     assert tile_work["available_tile_count"] == 15
@@ -1175,7 +1175,7 @@ def _test_validity(module: object) -> None:
     analysis = module.analyze_evidence(zero_active)
     ct_summary = next(
         row
-        for row in analysis["final_artifact"]["engine_active_time"]["by_engine"]
+        for row in analysis["program"]["engine_active_time"]["by_engine"]
         if row["engine"] == "CT"
     )
     assert ct_summary["available_tile_count"] == 16
@@ -1189,7 +1189,7 @@ def _test_validity(module: object) -> None:
     analysis = module.analyze_evidence(unrecovered)
     ct = next(
         row
-        for row in analysis["final_artifact"]["tiles"][2]["engines"]
+        for row in analysis["program"]["tiles"][2]["engines"]
         if row["engine"] == "CT"
     )
     assert not ct["engine_execution_time_valid"]
@@ -1207,7 +1207,7 @@ def _test_validity(module: object) -> None:
     statistics["end"] = statistics["start"] - 1
     statistics["recovery"] = statistics["end"]
     analysis = module.analyze_evidence(bad_statistics_window)
-    tile = analysis["final_artifact"]["tiles"][5]
+    tile = analysis["program"]["tiles"][5]
     assert tile["statistics_window_raw_ticks"] is None
     assert not tile["statistics_window_valid"]
     assert tile["statistics_window_status"] == "Unavailable"
@@ -1222,15 +1222,15 @@ def _test_validity(module: object) -> None:
     for tile in empty["experiment"]["trace"]["tiles"]:
         tile["capacity"] = 0
         tile["count"] = 0
-        tile["preflight_count"] = 0
+        tile["counted_event_count"] = 0
         tile["next_sequence"] = 0
         tile["events"] = []
     analysis = module.analyze_evidence(empty)
     assert analysis["validity"]["trace"]
-    assert analysis["final_artifact"]["timeline_events"] == []
+    assert analysis["program"]["timeline_events"] == []
     assert all(
         site["observation_status"] == "Unavailable"
-        for site in analysis["final_artifact"]["sites"]
+        for site in analysis["program"]["sites"]
     )
 
     reversed_trace = make_evidence()
@@ -1239,13 +1239,13 @@ def _test_validity(module: object) -> None:
     analysis = module.analyze_evidence(reversed_trace)
     assert not analysis["validity"]["trace"]
     assert (
-        analysis["final_artifact"]["tiles"][4]["trace_entry_cpu_cycles"]
+        analysis["program"]["tiles"][4]["trace_entry_cpu_cycles"]
         is None
     )
-    assert analysis["final_artifact"]["tiles"][4]["trace_status"] == "Invalid"
+    assert analysis["program"]["tiles"][4]["trace_status"] == "Invalid"
     assert not any(
         event["tile"] == 4
-        for event in analysis["final_artifact"]["timeline_events"]
+        for event in analysis["program"]["timeline_events"]
     )
 
 
@@ -1254,9 +1254,9 @@ def _test_rejections(module: object) -> None:
     old["schema_version"] = 5
     _must_reject(module, old, "schema_version")
 
-    old_companion = make_evidence()
-    old_companion["identity"]["profile_companion_schema_version"] = 2
-    _must_reject(module, old_companion, "profile_companion_schema_version")
+    old_instrumentation = make_evidence()
+    old_instrumentation["program"]["profile_instrumentation_schema_version"] = 2
+    _must_reject(module, old_instrumentation, "profile_instrumentation_schema_version")
 
     inconsistent_binding = make_evidence(permute_bindings=True)
     inconsistent_binding["experiment"]["clock"][0]["launch_slot"] = 0
@@ -1323,7 +1323,7 @@ def _test_rejections(module: object) -> None:
     _must_reject(module, reversed_host_timing, "must not exceed")
 
     malformed_digest = make_evidence()
-    malformed_digest["identity"]["production_manifest_sha256"] = "sha256:no"
+    malformed_digest["program"]["program_manifest_sha256"] = "sha256:no"
     _must_reject(module, malformed_digest, "64 lowercase hex digits")
 
     legacy_site = make_evidence()
@@ -1332,8 +1332,8 @@ def _test_rejections(module: object) -> None:
 
     legacy_output = make_evidence()
     resource = legacy_output["output_validation"]["resources"][0]
-    resource["production_repeats_exact"] = resource.pop(
-        "production_execution_validated"
+    resource["legacy_output_flag"] = resource.pop(
+        "primary_output_validated"
     )
     _must_reject(module, legacy_output, "unknown keys")
 
@@ -1427,7 +1427,7 @@ def _test_rejections(module: object) -> None:
     for sequence, event in enumerate(trace_tile["events"]):
         event["sequence"] = sequence
     trace_tile["count"] = len(trace_tile["events"])
-    trace_tile["preflight_count"] = len(trace_tile["events"])
+    trace_tile["counted_event_count"] = len(trace_tile["events"])
     trace_tile["next_sequence"] = len(trace_tile["events"])
     _must_reject(
         module,
@@ -1459,7 +1459,7 @@ def _test_rejections(module: object) -> None:
     dte_analysis = module.analyze_evidence(reversed_dte_window)
     dte_row = next(
         row
-        for row in dte_analysis["final_artifact"]["tiles"][0]["engines"]
+        for row in dte_analysis["program"]["tiles"][0]["engines"]
         if row["engine"] == "DIRECT_DTE"
     )
     assert not dte_row["wait_windows_valid"]
@@ -1469,7 +1469,7 @@ def _test_rejections(module: object) -> None:
     assert dte_row["activity_window_count"] == 1
 
 
-def _test_publication(repo: pathlib.Path, module: object) -> None:
+def _test_report_files(repo: pathlib.Path, module: object) -> None:
     evidence = make_evidence()
     with tempfile.TemporaryDirectory() as temporary:
         root = pathlib.Path(temporary)
@@ -1493,8 +1493,8 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
         analysis = json.loads(
             analysis_path.read_text(encoding="utf-8")
         )
-        assert analysis["schema_version"] == 9
-        assert analysis["final_artifact"]["duration"]["qualified"]
+        assert analysis["schema_version"] == 10
+        assert analysis["program"]["duration"]["qualified"]
 
         command = [
             sys.executable,
@@ -1512,12 +1512,12 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
             encoding="utf-8"
         )
     )
-    assert schema["properties"]["schema_version"]["const"] == 10
+    assert schema["properties"]["schema_version"]["const"] == 11
     assert (
-        schema["$defs"]["sharedIdentity"]["properties"][
-            "profile_companion_schema_version"
+        schema["$defs"]["programMetadata"]["properties"][
+            "profile_instrumentation_schema_version"
         ]["const"]
-        == 9
+        == 10
     )
     assert "experiment" in schema["required"]
     assert "static_cost_model" in schema["required"]
@@ -1525,7 +1525,6 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
     assert "candidate" not in schema["$defs"]["site"]["properties"]
     assert "entryTiming" not in schema["$defs"]
     assert set(schema["$defs"]["experiment"]["required"]) == {
-        "artifact",
         "clock",
         "trace",
         "pmu",
@@ -1538,9 +1537,9 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
     assert sample["device_timer_kind"]["const"] == "tx-stream-events"
     assert sample["host_submit_ns"]["minimum"] == 0
     output_resource = schema["$defs"]["outputValidationResource"]
-    assert "production_execution_validated" in output_resource["required"]
+    assert "primary_output_validated" in output_resource["required"]
     assert "diagnostic_captures_match_primary" in output_resource["required"]
-    assert "production_repeats_exact" not in output_resource["properties"]
+    assert "legacy_output_flag" not in output_resource["properties"]
     assert "recovery" in schema["$defs"]["counterSnapshot"]["required"]
     assert "recovery" in schema["$defs"]["counterSnapshot32"]["required"]
     assert schema["$defs"]["event"]["allOf"]
@@ -1564,12 +1563,12 @@ def _test_publication(repo: pathlib.Path, module: object) -> None:
         "overflow",
     }
     assert (
-        schema["$defs"]["sharedIdentity"]["properties"]["record_abi"]["const"]
+        schema["$defs"]["programMetadata"]["properties"]["record_abi"]["const"]
         == "wafer-tx81-profiler-record-v4"
     )
     assert (
-        schema["$defs"]["sharedIdentity"]["properties"][
-            "production_manifest_sha256"
+        schema["$defs"]["programMetadata"]["properties"][
+            "program_manifest_sha256"
         ]["$ref"]
         == "#/$defs/sha256"
     )
@@ -1582,12 +1581,12 @@ def main() -> int:
         else pathlib.Path(__file__).resolve().parents[2]
     )
     module = _load_report_module(repo)
-    _test_final_artifact(module)
+    _test_program(module)
     _test_direct_dte(module)
     _test_cost_attribution(module)
     _test_validity(module)
     _test_rejections(module)
-    _test_publication(repo, module)
+    _test_report_files(repo, module)
     print("wafer_profile_report_test: PASS")
     return 0
 

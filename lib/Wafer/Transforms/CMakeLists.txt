@@ -11,7 +11,7 @@ add_mlir_library(WaferTransforms
   Target/MaterializeExecutionMesh.cpp
   Target/MaterializeTargetTopology.cpp
   Target/LowerInstrToTargetLLVM.cpp
-  Target/TargetCallPreflight.cpp
+  Target/TargetLoweringVerification.cpp
   Target/TargetCallIRAdapter.cpp
   Target/TargetCallLoweringSupport.cpp
   Target/MovementTargetCallLowering.cpp

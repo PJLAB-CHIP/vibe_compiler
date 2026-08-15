@@ -5,8 +5,8 @@
 #include "Wafer/InitWaferDialects.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
-#include "../../lib/Wafer/Compiler/TargetArtifactInternal.h"
+#include "../../lib/Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "../../lib/Wafer/Compiler/TargetCodeGenInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -120,21 +120,24 @@ module {
   ASSERT_TRUE(static_cast<bool>(config));
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  auto bundle = wafer::compiler::detail::buildExecutableBundle(
-      context, *tensorProgram, std::move(program), *config,
-      wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
-  if (!bundle)
-    FAIL() << diagnosticsText << llvm::toString(bundle.takeError());
+  auto physicalTileExecutables =
+      wafer::compiler::detail::buildPhysicalTileExecutables(
+          context, *tensorProgram, std::move(program), *config,
+          wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
+  if (!physicalTileExecutables)
+    FAIL() << diagnosticsText
+           << llvm::toString(physicalTileExecutables.takeError());
   tensorProgram = nullptr;
-  ASSERT_EQ(bundle->getPhysicalTileExecutables().size(), 16u);
+  ASSERT_EQ(physicalTileExecutables->getPhysicalTileExecutables().size(), 16u);
   for (size_t tileIndex = 0;
-       tileIndex < bundle->getPhysicalTileExecutables().size(); ++tileIndex)
-    EXPECT_EQ(
-        bundle->getPhysicalTileExecutables()[tileIndex].getPhysicalTileId(),
-        wafer::PhysicalTileId(static_cast<int64_t>(tileIndex)));
+       tileIndex < physicalTileExecutables->getPhysicalTileExecutables().size();
+       ++tileIndex)
+    EXPECT_EQ(physicalTileExecutables->getPhysicalTileExecutables()[tileIndex]
+                  .getPhysicalTileId(),
+              wafer::PhysicalTileId(static_cast<int64_t>(tileIndex)));
 
   const wafer::compiler::PhysicalTileExecutable &tile =
-      bundle->getPhysicalTileExecutables().front();
+      physicalTileExecutables->getPhysicalTileExecutables().front();
   mlir::func::FuncOp entry =
       tile.getModule().lookupSymbol<mlir::func::FuncOp>(tile.getEntrySymbol());
   ASSERT_TRUE(entry);

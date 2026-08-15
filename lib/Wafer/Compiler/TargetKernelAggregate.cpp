@@ -1,6 +1,6 @@
 //===- TargetKernelAggregate.cpp - Aggregate kernel target module --------===//
 
-#include "TargetArtifactInternal.h"
+#include "TargetCodeGenInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -107,8 +107,7 @@ importIntoContext(const llvm::Module &source, llvm::LLVMContext &context,
   llvm::StringRef bytes(storage.data(), storage.size());
   llvm::MemoryBufferRef buffer(
       bytes,
-      llvm::formatv("wafer.kernel.launch_slot.{0:D5}",
-                    launchSlotId.getValue())
+      llvm::formatv("wafer.kernel.launch_slot.{0:D5}", launchSlotId.getValue())
           .str());
   llvm::Expected<std::unique_ptr<llvm::Module>> imported =
       llvm::parseBitcodeFile(buffer, context);
@@ -139,10 +138,9 @@ scopeLaunchSlotDefinitions(llvm::Module &module, LaunchSlotId launchSlotId,
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "kernel launch-slot entry body is missing");
 
-  const std::string prefix =
-      llvm::formatv("__wafer_kernel_launch_slot_{0:D5}",
-                    launchSlotId.getValue())
-          .str();
+  const std::string prefix = llvm::formatv("__wafer_kernel_launch_slot_{0:D5}",
+                                           launchSlotId.getValue())
+                                 .str();
   const std::string bodyName = prefix + "_main_body";
   uint64_t functionOrdinal = 0;
   for (llvm::Function &function : module.functions()) {
@@ -197,14 +195,11 @@ getOrInsertExactDeclaration(llvm::Module &module, llvm::StringRef symbol,
                                 symbol, module);
 }
 
-llvm::Error createKernelAggregateExports(llvm::Module &module,
-                                         llvm::ArrayRef<std::string> bodyNames,
-                                         llvm::ArrayRef<int64_t>
-                                             physicalTileIdsByLaunchSlot,
-                                         llvm::StringRef mainSymbol,
-                                         uint64_t slotsPerTile,
-                                         KernelEntryABI entryABI,
-                                         bool includePrepare) {
+llvm::Error createKernelAggregateExports(
+    llvm::Module &module, llvm::ArrayRef<std::string> bodyNames,
+    llvm::ArrayRef<int64_t> physicalTileIdsByLaunchSlot,
+    llvm::StringRef mainSymbol, uint64_t slotsPerTile, KernelEntryABI entryABI,
+    bool includePrepare) {
   llvm::LLVMContext &context = module.getContext();
   llvm::Type *voidType = llvm::Type::getVoidTy(context);
   llvm::IntegerType *i32 = llvm::Type::getInt32Ty(context);
@@ -295,8 +290,7 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
           body != nullptr, body ? body->isDeclaration() : 0,
           body ? body->isVarArg() : 0,
           static_cast<unsigned long long>(body ? body->arg_size() : 0));
-    const int64_t physicalTileId =
-        physicalTileIdsByLaunchSlot[launchSlot];
+    const int64_t physicalTileId = physicalTileIdsByLaunchSlot[launchSlot];
     llvm::BasicBlock *slotBlock = llvm::BasicBlock::Create(
         context,
         llvm::formatv("physical_tile.{0}.launch_slot.{1}", physicalTileId,
@@ -353,8 +347,8 @@ llvm::Error createKernelAggregateExports(llvm::Module &module,
 
 } // namespace
 
-llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
-    const TargetLLVMModuleBundle &targetLLVMModules) {
+llvm::Expected<OwnedTargetLLVMModule>
+buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
   const KernelRuntimeLaunchContract *kernel =
       targetLLVMModules.getRuntimeLaunchContract().getKernel();
@@ -405,8 +399,7 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
         source.getPhysicalCardId().getValue() < 0 ||
         source.getPhysicalTileId().getValue() < 0 ||
         source.getPhysicalTileId().getValue() >= kKernelAggregateTileCount ||
-        launchSlot < 0 ||
-        launchSlot >= kKernelAggregateTileCount ||
+        launchSlot < 0 || launchSlot >= kKernelAggregateTileCount ||
         !physicalTileIds.insert(source.getPhysicalTileId().getValue()).second ||
         modulesByLaunchSlot[launchSlot] != nullptr)
       return llvm::createStringError(
@@ -463,10 +456,10 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
         llvm::formatv("wafer.kernel.launch_slot.{0:D5}", launchSlot).str());
     (*imported)->setSourceFileName("");
     if (linker.linkInModule(std::move(*imported)))
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "kernel target launch-slot modules could not be linked into one closed "
-          "module");
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "kernel target launch-slot modules could "
+                                     "not be linked into one closed "
+                                     "module");
   }
 
   internalizeScopedDefinitions(*aggregate);
@@ -475,8 +468,8 @@ llvm::Expected<OwnedTargetLLVMModule> buildKernelAggregateTargetModule(
       RuntimeLaunchPhaseRole::Prepare);
   if (llvm::Error error = createKernelAggregateExports(
           *aggregate, bodyNames, physicalTileIdsByLaunchSlot,
-          first.getEntrySymbol(),
-          first.getKernelABISlots().size(), kernel->entryABI, hasPrepare))
+          first.getEntrySymbol(), first.getKernelABISlots().size(),
+          kernel->entryABI, hasPrepare))
     return std::move(error);
   return OwnedTargetLLVMModule{std::move(context), std::move(aggregate)};
 }

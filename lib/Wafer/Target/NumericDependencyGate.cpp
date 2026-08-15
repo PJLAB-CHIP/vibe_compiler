@@ -18,30 +18,29 @@ llvm::Expected<GateContract>
 expectedGateContract(const NumericDependencyConformanceRecord &record,
                      llvm::StringRef name) {
   constexpr llvm::StringLiteral root = "${NUMERIC_ROOT}";
-  const NumericDependencyToolIdentity *make = record.findTool("make");
-  const NumericDependencyToolIdentity *cc = record.findTool("cc");
-  const NumericDependencySourceIdentity *m4Source = record.findSource("m4");
-  const NumericDependencySourceIdentity *gmpSource = record.findSource("gmp");
-  const NumericDependencySourceIdentity *mpfrSource = record.findSource("mpfr");
-  const NumericDependencyArtifactIdentity *gmp = record.findArtifact("gmp");
-  const NumericDependencyArtifactIdentity *mpfr = record.findArtifact("mpfr");
+  const NumericDependencyToolRecord *make = record.findTool("make");
+  const NumericDependencyToolRecord *cc = record.findTool("cc");
+  const NumericDependencySourceRecord *m4Source = record.findSource("m4");
+  const NumericDependencySourceRecord *gmpSource = record.findSource("gmp");
+  const NumericDependencySourceRecord *mpfrSource = record.findSource("mpfr");
+  const NumericDependencyFileRecord *gmp = record.findFile("gmp");
+  const NumericDependencyFileRecord *mpfr = record.findFile("mpfr");
   if (!make || !cc || !m4Source || !gmpSource || !mpfrSource || !gmp || !mpfr)
     return invalid(ErrorCode::ClosureMismatch,
                    "gate contract inputs are incomplete");
-  const std::string jobs =
-      "-j" + std::to_string(record.getBuildIdentity().jobs);
+  const std::string jobs = "-j" + std::to_string(record.getBuildConfig().jobs);
 
   struct AutotoolsPolicy {
     llvm::StringRef dependency;
-    const NumericDependencySourceIdentity *source;
+    const NumericDependencySourceRecord *source;
     llvm::ArrayRef<std::string> options;
     llvm::StringRef environment;
   };
   const AutotoolsPolicy dependencies[] = {
-      {"m4", m4Source, record.getBuildIdentity().m4ConfigureOptions, "base"},
-      {"gmp", gmpSource, record.getBuildIdentity().gmpConfigureOptions,
+      {"m4", m4Source, record.getBuildConfig().m4ConfigureOptions, "base"},
+      {"gmp", gmpSource, record.getBuildConfig().gmpConfigureOptions,
        "managed"},
-      {"mpfr", mpfrSource, record.getBuildIdentity().mpfrConfigureOptions,
+      {"mpfr", mpfrSource, record.getBuildConfig().mpfrConfigureOptions,
        "mpfr"},
   };
   for (const AutotoolsPolicy &dependency : dependencies) {
@@ -149,7 +148,7 @@ expectedGateContract(const NumericDependencyConformanceRecord &record,
 
 llvm::Error
 validateGateContract(const NumericDependencyConformanceRecord &record,
-                     const NumericDependencyConformanceGateIdentity &gate) {
+                     const NumericDependencyConformanceGateRecord &gate) {
   if (gate.exitCode != 0)
     return invalid(ErrorCode::PolicyMismatch,
                    "numeric conformance gate exit_code is not zero");

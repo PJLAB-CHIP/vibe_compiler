@@ -51,7 +51,7 @@ from numeric_deps import (
     SOFTFLOAT_RAISE_FLAGS,
     SOFTFLOAT_SPECIALIZATION,
     SOFTFLOAT_THREAD_LOCAL,
-    artifact_identity,
+    file_identity,
     atomic_write_json,
     capture_host_toolchain,
     expand_environment,
@@ -62,7 +62,7 @@ from numeric_deps import (
     numeric_gate_contracts,
     numeric_pins,
     prepare_managed_directory,
-    publish_file_noreplace,
+    install_file_noreplace,
     reject_symlink_ancestors,
     relative_managed_path,
     safe_extract_archive,
@@ -330,7 +330,7 @@ def fetch_numeric_sources(
         record = numeric_root / "numeric-model-deps.json"
         if record.exists():
             raise RuntimeError(
-                "managed numeric source root is immutable after conformance record publication"
+                "managed numeric source root is immutable after conformance record write"
             )
         return _fetch_numeric_sources_unlocked(versions, numeric_root)
 
@@ -546,13 +546,13 @@ int main(void) {
             )
         )
 
-    artifacts = {
+    files = {
         "softfloat": softfloat_install / "lib" / "libsoftfloat.a",
         "softfloat-header": softfloat_install / "include" / "softfloat.h",
         "softfloat-types-header": softfloat_install / "include" / "softfloat_types.h",
         "testsoftfloat": testsoftfloat,
     }
-    return artifacts, gates
+    return files, gates
 
 
 def find_versioned_shared_object(directory: pathlib.Path, stem: str) -> pathlib.Path:
@@ -589,7 +589,7 @@ def materialize_loader_soname(
     except OSError:
         shutil.copy2(library, soname)
     if soname.is_symlink() or sha256_file(soname) != sha256_file(library):
-        raise RuntimeError(f"failed to materialize managed lib{stem} SONAME artifact")
+        raise RuntimeError(f"failed to materialize managed lib{stem} SONAME file")
     return soname
 
 
@@ -623,7 +623,7 @@ def copy_numeric_licenses(
 def build_numeric_model_dependencies(
     versions: dict[str, str], numeric_root: pathlib.Path, jobs: int
 ) -> pathlib.Path:
-    """Clean-build and publish one fully conformance-tested dependency record."""
+    """Clean-build dependencies and atomically write their conformance record."""
 
     if jobs < 1:
         raise RuntimeError("numeric dependency job count must be positive")
@@ -634,7 +634,7 @@ def build_numeric_model_dependencies(
         if record_path.exists():
             validate_numeric_record(record_path, numeric_root, versions)
             print(
-                f"Numeric model dependency record already published and valid: {record_path}",
+                f"Numeric model dependency record already exists and is valid: {record_path}",
                 flush=True,
             )
             return record_path
@@ -685,7 +685,7 @@ def build_numeric_model_dependencies(
         if not managed_m4.is_file() or not os.access(managed_m4, os.X_OK):
             raise RuntimeError("managed m4 install did not produce executable bin/m4")
 
-        soft_artifacts, soft_gates = build_softfloat_and_testfloat(
+        soft_files, soft_gates = build_softfloat_and_testfloat(
             softfloat_source=sources["softfloat"][2],
             testfloat_source=sources["testfloat"][2],
             build_root=build_root,
@@ -797,19 +797,19 @@ int main(void) {{
             )
         )
 
-        license_artifacts, license_records = copy_numeric_licenses(
+        license_files, license_records = copy_numeric_licenses(
             sources, install_root
         )
-        artifacts: dict[str, pathlib.Path] = {
+        files: dict[str, pathlib.Path] = {
             "m4": managed_m4,
-            **soft_artifacts,
+            **soft_files,
             "gmp": gmp_library,
             "gmp-soname": gmp_soname,
             "gmp-header": gmp_prefix / "include" / "gmp.h",
             "mpfr": mpfr_library,
             "mpfr-soname": mpfr_soname,
             "mpfr-header": mpfr_prefix / "include" / "mpfr.h",
-            **license_artifacts,
+            **license_files,
         }
         pin_records = {}
         for name, (pin, archive, source) in sources.items():
@@ -831,7 +831,7 @@ int main(void) {{
             gate_records.append(
                 {
                     **{key: value for key, value in gate.items() if key != "log_path"},
-                    "log": artifact_identity(
+                    "log": file_identity(
                         numeric_root, log_path, readelf=readelf
                     ),
                 }
@@ -858,8 +858,8 @@ int main(void) {{
                 "elf_identity_policy": "sha256-build-id-soname-needed-rpath-v1",
             },
             "artifacts": {
-                name: artifact_identity(numeric_root, path, readelf=readelf)
-                for name, path in sorted(artifacts.items())
+                name: file_identity(numeric_root, path, readelf=readelf)
+                for name, path in sorted(files.items())
             },
             "licenses": license_records,
             "conformance": {
@@ -870,10 +870,10 @@ int main(void) {{
         try:
             atomic_write_json(candidate_record, record)
             validate_numeric_record(candidate_record, numeric_root, versions)
-            publish_file_noreplace(candidate_record, record_path)
+            install_file_noreplace(candidate_record, record_path)
         finally:
             candidate_record.unlink(missing_ok=True)
-        print(f"Numeric model dependency record published: {record_path}", flush=True)
+        print(f"Numeric model dependency record installed: {record_path}", flush=True)
         return record_path
 
 
@@ -922,10 +922,10 @@ def capture_bulk_tool(executable: str) -> dict[str, str]:
     }
 
 
-def bulk_artifact_identity(root: pathlib.Path, path: pathlib.Path) -> dict[str, object]:
+def bulk_file_identity(root: pathlib.Path, path: pathlib.Path) -> dict[str, object]:
     path = reject_symlink_ancestors(path)
     if not path.is_file() or path.is_symlink():
-        raise RuntimeError(f"bulk artifact is not a regular file: {path}")
+        raise RuntimeError(f"bulk file is not a regular file: {path}")
     return {
         "path": path.relative_to(root).as_posix(),
         "sha256": sha256_bulk_file(path),
@@ -1097,7 +1097,7 @@ def build_bulk_model_dependencies(
         config_header = install_prefix / "include" / "oneapi" / "dnnl" / "dnnl_config.h"
         for path in (library, c_header, cxx_header, config_header):
             if not path.is_file():
-                raise RuntimeError(f"oneDNN install artifact is missing: {path}")
+                raise RuntimeError(f"oneDNN install file is missing: {path}")
 
         smoke_source = build_root / "bulk-api-smoke.cpp"
         smoke = install_prefix / "bin" / "bulk-api-smoke"
@@ -1135,7 +1135,7 @@ def build_bulk_model_dependencies(
         shutil.copy2(source / "LICENSE", license_path)
         shutil.copy2(source / "THIRD-PARTY-PROGRAMS", third_party_path)
 
-        artifacts = {
+        files = {
             "onednn-archive": archive,
             "onednn-library": library,
             "onednn-c-header": c_header,
@@ -1164,8 +1164,8 @@ def build_bulk_model_dependencies(
             },
             "toolchain": toolchain,
             "artifacts": {
-                name: bulk_artifact_identity(bulk_root, path)
-                for name, path in sorted(artifacts.items())
+                name: bulk_file_identity(bulk_root, path)
+                for name, path in sorted(files.items())
             },
             "licenses": {
                 "oneDNN": {"artifact": "license", "spdx": "Apache-2.0"},
@@ -1180,10 +1180,10 @@ def build_bulk_model_dependencies(
         try:
             atomic_write_json(candidate, record)
             validate_bulk_record(candidate, bulk_root, versions)
-            publish_file_noreplace(candidate, record_path)
+            install_file_noreplace(candidate, record_path)
         finally:
             candidate.unlink(missing_ok=True)
-        print(f"Bulk model dependency record published: {record_path}", flush=True)
+        print(f"Bulk model dependency record installed: {record_path}", flush=True)
         return record_path
 
 
@@ -1232,10 +1232,10 @@ def capture_systemc_tool(executable: str) -> dict[str, str]:
     }
 
 
-def systemc_artifact_identity(root: pathlib.Path, path: pathlib.Path) -> dict[str, object]:
+def systemc_file_identity(root: pathlib.Path, path: pathlib.Path) -> dict[str, object]:
     path = reject_symlink_ancestors(path)
     if not path.is_file() or path.is_symlink():
-        raise RuntimeError(f"SystemC artifact is not a regular file: {path}")
+        raise RuntimeError(f"SystemC file is not a regular file: {path}")
     return {
         "path": path.relative_to(root).as_posix(),
         "sha256": sha256_systemc_file(path),
@@ -1434,7 +1434,7 @@ def build_systemc_model_dependency(
         targets = cmake_dir / "SystemCLanguageTargets.cmake"
         for path in (library, header, tlm_header, config, config_version, targets):
             if not path.is_file() or path.is_symlink():
-                raise RuntimeError(f"SystemC install artifact is missing: {path}")
+                raise RuntimeError(f"SystemC install file is missing: {path}")
 
         consumer_source = build_root / "consumer-source"
         consumer_build = build_root / "consumer-build"
@@ -1488,7 +1488,7 @@ def build_systemc_model_dependency(
         shutil.copy2(source / "LICENSE", license_path)
         shutil.copy2(source / "NOTICE", notice_path)
 
-        artifacts = {
+        files = {
             "systemc-archive": archive,
             "systemc-library": library,
             "systemc-header": header,
@@ -1520,8 +1520,8 @@ def build_systemc_model_dependency(
             },
             "toolchain": toolchain,
             "artifacts": {
-                name: systemc_artifact_identity(systemc_root, path)
-                for name, path in sorted(artifacts.items())
+                name: systemc_file_identity(systemc_root, path)
+                for name, path in sorted(files.items())
             },
             "licenses": {
                 "license": {"artifact": "license", "spdx": "Apache-2.0"},
@@ -1533,10 +1533,10 @@ def build_systemc_model_dependency(
         try:
             atomic_write_json(candidate, record)
             validate_systemc_record(candidate, systemc_root, versions)
-            publish_file_noreplace(candidate, record_path)
+            install_file_noreplace(candidate, record_path)
         finally:
             candidate.unlink(missing_ok=True)
-        print(f"SystemC model dependency record published: {record_path}", flush=True)
+        print(f"SystemC model dependency record installed: {record_path}", flush=True)
         return record_path
 
 
@@ -1611,7 +1611,7 @@ def main() -> int:
         action="store_true",
         help=(
             "clean-build and fully self-test managed numeric-model dependencies, "
-            "then atomically publish their conformance record"
+            "then atomically write their conformance record"
         ),
     )
     parser.add_argument(
@@ -1629,7 +1629,7 @@ def main() -> int:
         action="store_true",
         help=(
             "clean-build and smoke-test the pinned oneDNN bulk-model dependency, "
-            "then atomically publish its conformance record"
+            "then atomically write its conformance record"
         ),
     )
     parser.add_argument(
@@ -1647,7 +1647,7 @@ def main() -> int:
         action="store_true",
         help=(
             "clean-build and delta-event-test the pinned SystemC model dependency, "
-            "then atomically publish its conformance record"
+            "then atomically write its conformance record"
         ),
     )
     parser.add_argument(

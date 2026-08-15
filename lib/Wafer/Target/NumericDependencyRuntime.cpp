@@ -22,19 +22,17 @@ namespace wafer {
 using namespace numeric_dependency_conformance_internal;
 namespace {
 
-llvm::Expected<NumericLoadedObjectIdentity>
+llvm::Expected<NumericLoadedObject>
 verifyLoadedObject(const NumericDependencyConformanceRecord &record,
-                   NumericLoadedObjectIdentity identity,
-                   llvm::StringRef realArtifactName,
-                   llvm::StringRef loaderArtifactName) {
-  const NumericDependencyArtifactIdentity *real =
-      record.findArtifact(realArtifactName);
-  const NumericDependencyArtifactIdentity *loader =
-      record.findArtifact(loaderArtifactName);
+                   NumericLoadedObject loadedObject,
+                   llvm::StringRef realFileName,
+                   llvm::StringRef loaderFileName) {
+  const NumericDependencyFileRecord *real = record.findFile(realFileName);
+  const NumericDependencyFileRecord *loader = record.findFile(loaderFileName);
   if (!real || !loader)
     return invalid(ErrorCode::ClosureMismatch,
-                   "verified record lost loaded-object artifacts");
-  if (!isLowerSHA256(identity.sha256))
+                   "verified record lost loaded-object files");
+  if (!isLowerSHA256(loadedObject.sha256))
     return invalid(ErrorCode::LoadedObjectMismatch,
                    "provider returned an invalid loaded-object SHA256");
 
@@ -42,28 +40,28 @@ verifyLoadedObject(const NumericDependencyConformanceRecord &record,
   if (!root)
     return root.takeError();
   llvm::Expected<ManagedPath> loaded = resolveManagedPath(
-      *root, identity.resolvedPath, RequiredFileType::RegularFile,
-      "loaded " + stringifyNumericLoadedObjectKind(identity.kind),
+      *root, loadedObject.resolvedPath, RequiredFileType::RegularFile,
+      "loaded " + stringifyNumericLoadedObjectKind(loadedObject.kind),
       /*requireRelative=*/false);
   if (!loaded)
     return loaded.takeError();
   llvm::Expected<FileReadback> readback = readRegularFile(
       loaded->resolved, std::numeric_limits<uint64_t>::max(),
-      "loaded " + stringifyNumericLoadedObjectKind(identity.kind));
+      "loaded " + stringifyNumericLoadedObjectKind(loadedObject.kind));
   if (!readback)
     return readback.takeError();
-  if (identity.sha256 != readback->digest)
+  if (loadedObject.sha256 != readback->digest)
     return invalid(ErrorCode::LoadedObjectMismatch,
                    "provider loaded-object digest does not match its file");
   if (loaded->resolved != real->resolvedPath &&
       loaded->resolved != loader->resolvedPath)
     return invalid(ErrorCode::LoadedObjectMismatch,
-                   "loaded object is not the recorded real/loader artifact");
+                   "loaded object is not the recorded real/loader file");
   if (readback->digest != real->sha256 || readback->digest != loader->sha256)
     return invalid(ErrorCode::LoadedObjectMismatch,
                    "loaded object content does not match managed record");
-  identity.resolvedPath = loaded->resolved;
-  return identity;
+  loadedObject.resolvedPath = loaded->resolved;
+  return loadedObject;
 }
 
 } // namespace
@@ -78,8 +76,8 @@ llvm::StringRef stringifyNumericLoadedObjectKind(NumericLoadedObjectKind kind) {
   llvm_unreachable("unknown loaded numeric object kind");
 }
 
-llvm::Expected<NumericLoadedObjectIdentity>
-DladdrNumericLoadedObjectIdentityProvider::identify(
+llvm::Expected<NumericLoadedObject>
+DladdrNumericLoadedObjectProvider::getLoadedObject(
     NumericLoadedObjectKind kind) const {
   const void *symbol = kind == NumericLoadedObjectKind::MPFR ? mpfrSymbolAddress
                                                              : gmpSymbolAddress;
@@ -112,58 +110,58 @@ DladdrNumericLoadedObjectIdentityProvider::identify(
       resolved, std::numeric_limits<uint64_t>::max(), "dladdr loaded object");
   if (!readback)
     return readback.takeError();
-  return NumericLoadedObjectIdentity{kind, resolved.str().str(),
-                                     std::move(readback->digest)};
+  return NumericLoadedObject{kind, resolved.str().str(),
+                             std::move(readback->digest)};
 #else
   return invalid(ErrorCode::LoadedObjectUnavailable,
                  "dladdr loaded-object readback is unavailable on this host");
 #endif
 }
 
-llvm::Expected<NumericDependencyExecutionIdentity>
-verifyNumericDependencyExecutionIdentity(
+llvm::Expected<NumericDependencyExecutionBinding>
+bindNumericDependenciesToLoadedObjects(
     const NumericDependencyConformanceRecord &record,
-    const NumericLoadedObjectIdentityProvider &provider) {
-  llvm::Expected<NumericLoadedObjectIdentity> mpfr =
-      provider.identify(NumericLoadedObjectKind::MPFR);
+    const NumericLoadedObjectProvider &provider) {
+  llvm::Expected<NumericLoadedObject> mpfr =
+      provider.getLoadedObject(NumericLoadedObjectKind::MPFR);
   if (!mpfr)
     return mpfr.takeError();
   if (mpfr->kind != NumericLoadedObjectKind::MPFR)
     return invalid(ErrorCode::LoadedObjectMismatch,
                    "provider returned the wrong MPFR object kind");
-  llvm::Expected<NumericLoadedObjectIdentity> gmp =
-      provider.identify(NumericLoadedObjectKind::GMP);
+  llvm::Expected<NumericLoadedObject> gmp =
+      provider.getLoadedObject(NumericLoadedObjectKind::GMP);
   if (!gmp)
     return gmp.takeError();
   if (gmp->kind != NumericLoadedObjectKind::GMP)
     return invalid(ErrorCode::LoadedObjectMismatch,
                    "provider returned the wrong GMP object kind");
 
-  llvm::Expected<NumericLoadedObjectIdentity> verifiedMPFR =
+  llvm::Expected<NumericLoadedObject> verifiedMPFR =
       verifyLoadedObject(record, std::move(*mpfr), "mpfr", "mpfr-soname");
   if (!verifiedMPFR)
     return verifiedMPFR.takeError();
-  llvm::Expected<NumericLoadedObjectIdentity> verifiedGMP =
+  llvm::Expected<NumericLoadedObject> verifiedGMP =
       verifyLoadedObject(record, std::move(*gmp), "gmp", "gmp-soname");
   if (!verifiedGMP)
     return verifiedGMP.takeError();
 
-  llvm::SHA256 provenance;
-  provenance.update("wafer-numeric-dependency-execution-v1");
-  provenance.update(llvm::StringRef("\0", 1));
-  provenance.update(record.getRecordSHA256());
-  for (const NumericLoadedObjectIdentity *identity :
+  llvm::SHA256 bindingHasher;
+  bindingHasher.update("wafer-numeric-dependency-execution-v1");
+  bindingHasher.update(llvm::StringRef("\0", 1));
+  bindingHasher.update(record.getRecordSHA256());
+  for (const NumericLoadedObject *loadedObject :
        {&*verifiedMPFR, &*verifiedGMP}) {
-    provenance.update(llvm::StringRef("\0", 1));
-    provenance.update(stringifyNumericLoadedObjectKind(identity->kind));
-    provenance.update(llvm::StringRef("\0", 1));
-    provenance.update(identity->resolvedPath);
-    provenance.update(llvm::StringRef("\0", 1));
-    provenance.update(identity->sha256);
+    bindingHasher.update(llvm::StringRef("\0", 1));
+    bindingHasher.update(stringifyNumericLoadedObjectKind(loadedObject->kind));
+    bindingHasher.update(llvm::StringRef("\0", 1));
+    bindingHasher.update(loadedObject->resolvedPath);
+    bindingHasher.update(llvm::StringRef("\0", 1));
+    bindingHasher.update(loadedObject->sha256);
   }
-  return NumericDependencyExecutionIdentity(
+  return NumericDependencyExecutionBinding(
       record.getRecordSHA256().str(),
-      llvm::toHex(provenance.final(), /*LowerCase=*/true),
+      llvm::toHex(bindingHasher.final(), /*LowerCase=*/true),
       std::move(*verifiedMPFR), std::move(*verifiedGMP));
 }
 

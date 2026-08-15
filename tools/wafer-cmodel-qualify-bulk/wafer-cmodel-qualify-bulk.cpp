@@ -1,7 +1,7 @@
 //===- wafer-cmodel-qualify-bulk.cpp - Offline bulk qualification -------===//
 
 #include "Wafer/Compiler/ProgramInvocation.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Model/TargetModelInvocation.h"
 #include "Wafer/Target/BulkQualification.h"
 
@@ -312,6 +312,8 @@ llvm::Error writeSourceSpec(const Options &options) {
   const wafer::PhysicalTensorLayout layout =
       *options.batchCount == 1 ? wafer::PhysicalTensorLayout::Cx
                                : wafer::PhysicalTensorLayout::NCx;
+  const wafer::MemLayout abiLayout =
+      *options.batchCount == 1 ? wafer::MemLayout::Cx : wafer::MemLayout::NCx;
   std::vector<int64_t> lhsShape;
   std::vector<int64_t> rhsShape;
   std::vector<int64_t> destinationShape;
@@ -398,7 +400,7 @@ llvm::Error writeSourceSpec(const Options &options) {
         0,
         "tensor",
         wafer::stringifyLogicalFormat(*format).str(),
-        layout,
+        abiLayout,
         std::vector<int64_t>(shape.begin(), shape.end()),
         static_cast<int64_t>(physicalBytes),
         64};
@@ -475,7 +477,7 @@ int main(int argc, char **argv) {
     if (llvm::Error error = wafer::calibrateBulkBackend(
             *environment, options->spec, options->output, formal, bulk))
       return fail(std::move(error));
-    llvm::outs() << "bulk calibration published: " << options->output << '\n';
+    llvm::outs() << "bulk calibration written: " << options->output << '\n';
     return 0;
   }
   if (options->policy.empty())

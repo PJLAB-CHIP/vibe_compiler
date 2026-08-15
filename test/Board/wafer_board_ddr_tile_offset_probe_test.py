@@ -681,8 +681,8 @@ def compile_package(
         ],
         timeout_seconds=600,
     )
-    if "published verified package" not in result.stdout:
-        raise RuntimeError("wafer-compile did not publish the DDR probe seed")
+    if "wrote verified package" not in result.stdout:
+        raise RuntimeError("wafer-compile did not write the DDR probe seed")
     module_path, bindings = validate_manifest(package)
     return package, module_path, bindings
 
@@ -1519,7 +1519,7 @@ def validate_rank_outputs(
     for allocation in range(ALLOCATION_COUNT):
         # wafer-run materializes every write-only --output binding with its
         # 0xa5 sentinel before launch.  Preserve that exact host-side
-        # publication contract outside the declared device write ranges.
+        # visibility contract outside the declared device write ranges.
         expected = bytearray([OUTPUT_INITIAL]) * RESOURCE_BYTES
         payload = expected_payloads[(rank, allocation)]
         expected_slot = (

@@ -2,16 +2,16 @@
 """Typed board matrix for NCC throughput, balance, and software pipelines.
 
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   For raw engine characterization, a typed bounded NCC request whose packet
   adapters already have exact result/range/count support.  For the three-stage
   family, the accepted production Instr program after scheduling and before
-  package publication.
+  package writing.
 - Current stage responsibility:
   Select matched serial/window experiments, retain exact correctness and
   measurement activation contracts, and reject cells that the current bounded
   probe or production compiler cannot honestly produce.
-- Output artifact / IR:
+- Output IR / files:
   Raw board observations plus a narrow qualification-scoped activation decision.
   This catalog never writes latency constants or a shadow schedule into IR.
 - Downstream consumer:
@@ -56,7 +56,7 @@ MIN_REPEATS = 3
 QUALIFICATION_SPM_ALIGNMENT = 256
 CALIBRATION_SESSION_ENVIRONMENT = "WAFER_CALIBRATION_SESSION_ID"
 RUNTIME_LIFECYCLE = (
-    "preflight",
+    "validation",
     "device-selection",
     "resource-allocation",
     "host-to-device",
@@ -146,9 +146,9 @@ class PipelineCapacity(str, enum.Enum):
 
 @dataclasses.dataclass(frozen=True)
 class PipelineContract:
-    upstream_artifact: str
+    upstream_input: str
     current_stage_responsibility: str
-    output_artifact: str
+    output_files: str
     downstream_consumer: str
     user_level_driver: str
     explicit_non_goals: tuple[str, ...]
@@ -156,13 +156,13 @@ class PipelineContract:
 
 
 PIPELINE_CONTRACT = PipelineContract(
-    upstream_artifact=(
+    upstream_input=(
         "typed bounded NCC request, or accepted production Instr program"
     ),
     current_stage_responsibility=(
         "matched measurement selection and fail-closed activation"
     ),
-    output_artifact=(
+    output_files=(
         "raw board observations plus qualification-scoped activation decision"
     ),
     downstream_consumer="future scheduling and cost calibration",
@@ -1592,7 +1592,7 @@ def evaluate_pair_activation(
     )
 
 
-def production_pipeline_preparation_gate(
+def validate_production_pipeline_inputs(
     package_dir: pathlib.Path | None,
 ) -> ProductionPreparationDecision:
     """Validate the closed compiler-owned fixed-slot qualification sibling."""
@@ -1683,7 +1683,7 @@ def production_pipeline_preparation_gate(
     else:
         package = package_dir.absolute()
         checked = str(package)
-        companion = pathlib.Path(str(package) + ".qualification")
+        instrumentation = pathlib.Path(str(package) + ".qualification")
         try:
             if not package.is_dir() or package.is_symlink():
                 fail("production package is not a regular directory")
@@ -1709,9 +1709,9 @@ def production_pipeline_preparation_gate(
             )
             manifest_digest = digest_bytes(manifest_path.read_bytes())
 
-            if not companion.is_dir() or companion.is_symlink():
+            if not instrumentation.is_dir() or instrumentation.is_symlink():
                 fail("production package has no regular qualification sibling")
-            entries = {entry.name: entry for entry in companion.iterdir()}
+            entries = {entry.name: entry for entry in instrumentation.iterdir()}
             expected_entries = {"activation.json", "attestation.json"}
             if set(entries) != expected_entries:
                 fail(

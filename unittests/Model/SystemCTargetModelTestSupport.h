@@ -4,7 +4,7 @@
 #ifndef WAFER_UNITTESTS_MODEL_SYSTEMCTARGETMODELTESTSUPPORT_H
 #define WAFER_UNITTESTS_MODEL_SYSTEMCTARGETMODELTESTSUPPORT_H
 
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Model/TargetModelMemory.h"
 #include "Wafer/Target/TargetCall.h"
 
@@ -22,13 +22,12 @@ struct DirectDTEInvocationData {
   std::vector<std::vector<uint8_t>> inputBytesByRank;
 };
 
-llvm::Expected<compiler::TargetLLVMModuleBundle>
-buildDirectDTETargetBundle(std::string &diagnosticText,
-                           TargetIdentityId targetIdentity =
-                               TargetIdentityId::waferTx81SingleCard());
+llvm::Expected<compiler::TargetLLVMModules> compileDirectDTETargetModules(
+    std::string &diagnosticText,
+    TargetIdentityId targetIdentity = TargetIdentityId::waferTx81SingleCard());
 
-llvm::Expected<DirectDTEInvocationData>
-buildDirectDTEInvocationData(const compiler::TargetLLVMModuleBundle &bundle);
+llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
+    const compiler::TargetLLVMModules &targetLLVMModules);
 
 struct NCCJoinRewriteResult {
   size_t erasedJoinCount = 0;
@@ -40,7 +39,7 @@ struct NCCJoinRewriteResult {
 /// worker-0 join immediately after every selected Direct-DTE call plus one
 /// terminal join before each entry return.
 llvm::Expected<NCCJoinRewriteResult>
-rewriteNCCJoinsAfter(compiler::TargetLLVMModuleBundle &bundle,
+rewriteNCCJoinsAfter(compiler::TargetLLVMModules &targetLLVMModules,
                      TargetCallBuiltin anchor);
 
 enum class PendingComputeDTEAccessMode : uint8_t {
@@ -62,8 +61,9 @@ struct PendingComputeDTERewriteResult {
 /// DTE receive preparation. Even ranks use elementwise and odd ranks use GEMM,
 /// so one all-rank invocation exercises both typed read footprints.
 llvm::Expected<PendingComputeDTERewriteResult>
-insertPendingComputeBeforeDTEReceive(compiler::TargetLLVMModuleBundle &bundle,
-                                     PendingComputeDTEAccessMode accessMode);
+insertPendingComputeBeforeDTEReceive(
+    compiler::TargetLLVMModules &targetLLVMModules,
+    PendingComputeDTEAccessMode accessMode);
 
 enum class LateJoinDTEAccessMode : uint8_t {
   SourceWrite,
@@ -83,7 +83,7 @@ struct LateJoinDTERewriteResult {
 /// immediately after that issue. This intentionally-invalid ordering covers
 /// source-write and destination-read/write hazards independently.
 llvm::Expected<LateJoinDTERewriteResult>
-insertPendingComputeWithLateJoin(compiler::TargetLLVMModuleBundle &bundle,
+insertPendingComputeWithLateJoin(compiler::TargetLLVMModules &targetLLVMModules,
                                  LateJoinDTEAccessMode accessMode);
 
 } // namespace wafer::model::test

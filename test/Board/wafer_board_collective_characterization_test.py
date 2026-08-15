@@ -450,11 +450,11 @@ def compile_package(
         environment=environment,
     )
     expected = (
-        "wafer-compile: published verified package with "
+        "wafer-compile: wrote verified package with "
         f"execution-ranks={RANK_COUNT}"
     )
     if expected not in result.stdout or not output.is_dir():
-        raise RuntimeError(f"compiler did not publish {alternative}")
+        raise RuntimeError(f"compiler did not write {alternative}")
     if not report_path.is_file():
         raise RuntimeError(
             f"{alternative} compiler omitted its characterization report"

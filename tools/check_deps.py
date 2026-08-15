@@ -805,7 +805,7 @@ def check_minimalloc_snapshot(versions: dict[str, str]) -> None:
         text = read_text(path)
         if "Copyright 2023 Google LLC" not in text:
             raise RuntimeError(f"{rel(path)} lost the upstream copyright notice")
-        if "Modified by the Wafer project" not in text:
+        if "Modified for Wafer" not in text:
             raise RuntimeError(f"{rel(path)} lacks a prominent modification notice")
         for forbidden in ["absl/", "absl::", ".contains(", "std::span"]:
             if forbidden in text:

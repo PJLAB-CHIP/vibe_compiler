@@ -23,12 +23,11 @@ const void *symbolAddress(FunctionPointer symbol) {
 
 void expectLoadedObjectMatchesRecord(
     const wafer::NumericDependencyConformanceRecord &record,
-    const wafer::NumericLoadedObjectIdentity &loaded, llvm::StringRef realName,
+    const wafer::NumericLoadedObject &loaded, llvm::StringRef realName,
     llvm::StringRef loaderName, wafer::NumericLoadedObjectKind expectedKind) {
-  const wafer::NumericDependencyArtifactIdentity *real =
-      record.findArtifact(realName);
-  const wafer::NumericDependencyArtifactIdentity *loader =
-      record.findArtifact(loaderName);
+  const wafer::NumericDependencyFileRecord *real = record.findFile(realName);
+  const wafer::NumericDependencyFileRecord *loader =
+      record.findFile(loaderName);
   ASSERT_NE(real, nullptr);
   ASSERT_NE(loader, nullptr);
   EXPECT_EQ(loaded.kind, expectedKind);
@@ -56,15 +55,15 @@ TEST(NumericManagedDependencyIntegrationTest,
   EXPECT_EQ(record->getRecordPath(), recordPath);
   EXPECT_EQ(record->getRecordSHA256(), expectedRecordSHA256);
 
-  wafer::DladdrNumericLoadedObjectIdentityProvider provider(
+  wafer::DladdrNumericLoadedObjectProvider provider(
       symbolAddress(&mpfr_get_version), symbolAddress(&mpz_init));
-  llvm::Expected<wafer::NumericDependencyExecutionIdentity> execution =
-      wafer::verifyNumericDependencyExecutionIdentity(*record, provider);
+  llvm::Expected<wafer::NumericDependencyExecutionBinding> execution =
+      wafer::bindNumericDependenciesToLoadedObjects(*record, provider);
   ASSERT_TRUE(static_cast<bool>(execution))
       << (execution ? std::string() : llvm::toString(execution.takeError()));
   EXPECT_EQ(execution->getRecordSHA256(), expectedRecordSHA256);
   EXPECT_EQ(execution->getRecordSHA256(), record->getRecordSHA256());
-  EXPECT_EQ(execution->getProvenanceSHA256().size(), 64u);
+  EXPECT_EQ(execution->getBindingSHA256().size(), 64u);
   expectLoadedObjectMatchesRecord(*record, execution->getMPFR(), "mpfr",
                                   "mpfr-soname",
                                   wafer::NumericLoadedObjectKind::MPFR);
@@ -74,9 +73,9 @@ TEST(NumericManagedDependencyIntegrationTest,
 
   EXPECT_STREQ(mpfr_get_version(), MPFR_VERSION_STRING);
   EXPECT_NE(mpfr_buildopt_tls_p(), 0);
-  const wafer::NumericDependencySourceIdentity *mpfrSource =
+  const wafer::NumericDependencySourceRecord *mpfrSource =
       record->findSource("mpfr");
-  const wafer::NumericDependencySourceIdentity *gmpSource =
+  const wafer::NumericDependencySourceRecord *gmpSource =
       record->findSource("gmp");
   ASSERT_NE(mpfrSource, nullptr);
   ASSERT_NE(gmpSource, nullptr);

@@ -77,8 +77,7 @@ typedef struct WaferNccProbeEngineAdapter {
   int (*seed)(void *context, const WaferNccProbeRequest *request,
               const WaferNccProbeIssue *issue);
   int (*prepare)(void *context, const WaferNccProbeRequest *request,
-                 const WaferNccProbeIssue *issue,
-                 uint64_t *preparation_flags);
+                 const WaferNccProbeIssue *issue, uint64_t *preparation_flags);
   int (*issue)(void *context, const WaferNccProbeRequest *request,
                const WaferNccProbeIssue *issue, uint64_t *execute_rc);
   int (*observe)(void *context, const WaferNccProbeRequest *request,
@@ -98,8 +97,8 @@ enum WaferNccProbeSnapshotPhase {
 
 typedef struct WaferNccProbeExecutionHooks {
   /*
-   * Publish all seed-side memory effects before packet construction or issue.
-   * Device probes use this boundary to make weak-order Kcore SPM stores
+   * Make all seed-side memory effects visible before packet construction or
+   * issue. Device probes use this boundary to make weak-order Kcore SPM stores
    * visible to NCC; it is deliberately outside the measured issue window.
    */
   int (*seed_complete)(void *context);
@@ -116,17 +115,18 @@ typedef struct WaferNccProbeExecutionHooks {
 uint32_t wafer_ncc_probe_decode_request(const volatile uint64_t *request_words,
                                         WaferNccProbeRequest *request);
 
-uint32_t wafer_ncc_probe_validate_plan(
-    const WaferNccProbeRequest *request,
-    const WaferNccProbeEngineAdapter *adapters, uint32_t adapter_count);
+uint32_t
+wafer_ncc_probe_validate_plan(const WaferNccProbeRequest *request,
+                              const WaferNccProbeEngineAdapter *adapters,
+                              uint32_t adapter_count);
 
-int wafer_ncc_probe_is_strided_dependency(
-    const WaferNccProbeRequest *request);
+int wafer_ncc_probe_is_strided_dependency(const WaferNccProbeRequest *request);
 
-uint32_t wafer_ncc_probe_execute_plan(
-    const WaferNccProbeRequest *request,
-    const WaferNccProbeEngineAdapter *adapters, uint32_t adapter_count,
-    const WaferNccProbeExecutionHooks *hooks, void *context,
-    volatile uint64_t *record_words);
+uint32_t
+wafer_ncc_probe_execute_plan(const WaferNccProbeRequest *request,
+                             const WaferNccProbeEngineAdapter *adapters,
+                             uint32_t adapter_count,
+                             const WaferNccProbeExecutionHooks *hooks,
+                             void *context, volatile uint64_t *record_words);
 
 #endif

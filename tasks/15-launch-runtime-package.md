@@ -1,6 +1,6 @@
-# Wafer ExecutablePackage、Runtime Preflight 与 Board Launch
+# Wafer ExecutablePackage、Runtime Invocation Planning 与 Board Launch
 
-状态：本文是当前`ExecutablePackage`/runtime launch的唯一现行合同。source-to-package compiler只发布single-card、all-and-only
+状态：本文是当前`ExecutablePackage`/runtime launch的唯一现行合同。source-to-package compiler只写入single-card、all-and-only
 16 physical Tiles 的 schema-v8 package。Q49–Q52分别闭合baseline、能力迁移、统一搜索和scalability；host/no-card
 局部合同闭合不等于Q53 `board-ready`，真实板端matched A/B gate也尚未完成。
 
@@ -8,18 +8,18 @@
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
-  通过admission的`CardExecutable`及其同一transaction中原子验证的target publication view；包含current target
+- Upstream IR / input:
+  通过verification的`CardExecutable`及其同一transaction中原子验证的target writing view；包含current target
   identity/runtime ABI/module format、RuntimeLaunchContract、verified modules，以及exactly 16个带显式
   (card_id, tile_id, launch_slot)的Tile interfaces。
 - Current stage responsibility:
-  从 typed target artifacts组装唯一 schema-v8 manifest与module payload；验证resource scope、ABI slot、entry、
+  从 typed target modules组装唯一 schema-v8 manifest与module payload；验证resource scope、ABI slot、entry、
   transport、module/export和物理Tile domain；no-card构造完整runtime plan；board runtime按同一plan分配、装载、
   提交、等待、readback和cleanup。
-- Output artifact / IR:
+- Output IR / files:
   `ExecutablePackage`：canonical manifest.json与all-and-only referenced modules；其loader形成
   VerifiedPackageManifest与RuntimeInvocationPlan，board执行形成invocation result；profile请求额外产生digest-bound
-  schema-v9 companion。
+  schema-v10 instrumentation。
 - Downstream consumer:
   wafer-run no-card、board runtime provider、profile campaign/report和外部package审计。
 - User-level driver / named pipeline:
@@ -124,8 +124,8 @@ readback并验证所有required statuses；missing、pending、error或不完整
 
 ## 4. Package assembly 与原子发布
 
-compiler只从同一`CardExecutable`绑定的target publication view组装`ExecutablePackage`，不重做target lowering。当前实现类
-`TargetArtifactBundle`只作为该view的迁移索引，不定义稳定artifact。组装顺序：
+compiler只从同一`CardExecutable`绑定的target writing view组装`ExecutablePackage`，不重做target lowering。当前实现类
+`LinkedTargetModules`只记录 linker 写出并校验过的 modules。组装顺序：
 
 1. 验证 ExecutionConfig、launch contract、target identity、format和16 Tile interfaces一致；
 2. 依据typed program bindings建立card-scoped resources；
@@ -138,12 +138,12 @@ compiler只从同一`CardExecutable`绑定的target publication view组装`Execu
 任一失败都销毁本次staging root。已存在package、历史manifest、board output或profile evidence均不能作为输入修补
 当前transaction。
 
-## 5. No-card runtime preflight
+## 5. Runtime invocation planning
 
 no-card消费 `VerifiedPackageManifest`、caller bindings与provider capability description，生成完整
 `RuntimeInvocationPlan`，但不分配device memory、不装载module、不提交任务。
 
-runtime只公开完整invocation preflight；逐Tile plan是完整plan的内部构成，不能由API或`wafer-run`参数单独选择、
+runtime只公开完整invocation planning；逐Tile plan是完整plan的内部构成，不能由API或`wafer-run`参数单独选择、
 资格化或执行。`wafer-run --no-card`与`wafer-run --board`都隐含消费all-and-only 16-Tile domain。
 
 它验证：
@@ -190,24 +190,24 @@ completion使context poisoned；本invocation停止，禁止自动retry/reset/po
 
 板端执行单进程逐case串行。timeout只需在合理bounded范围内，不作为compiler搜索的任意硬性能阈值。
 
-## 7. Profile companion schema v9
+## 7. Profile instrumentation schema v10
 
-profile companion是普通schema-v8 production package的digest-bound sibling；它使用独立且唯一的schema version 9，固定
+profile instrumentation是普通schema-v8 production package的digest-bound sibling；它使用独立且唯一的schema version 10，固定
 `card_count=1`、`tile_count=16`。它只描述：
 
-- 一个selected production artifact；
+- 一个selected production output；
 - count/trace capture packages；
 - typed target-call site map；
 - 从accepted final Instr派生的static work与有来源的rate；
 - production/capture manifest digest关系。
 
-schema-v9没有artifact集合层、role/id、execution package shell或兼容reader。production artifact
+schema-v10没有output集合层、role/id、execution package shell或兼容reader。production output
 直接由activation中的manifest digest绑定用户选择的ordinary package；static cost位于`plan.json`，site map顶层直接包含16个
-Tile rows，capture canonical path只有`captures/count`与`captures/trace`。verified object只在production artifact保存一次
+Tile rows，capture canonical path只有`captures/count`与`captures/trace`。verified object只在production output保存一次
 manifest digest，不再复制外层digest字段。
 
 每个static-cost row和site-map row都携带显式 `(card_id, tile_id, launch_slot)`，并逐Tile与production manifest
-一致。profile companion不存在时普通执行继续；一旦存在，旧schema、stale digest、缺失Tile、错误site或capture package
+一致。profile instrumentation不存在时普通执行继续；一旦存在，旧schema、stale digest、缺失Tile、错误site或capture package
 必须fail closed，不能降级忽略。
 
 profile数据是measurement/evidence，不是Q51 search plan、IR sidecar或runtime repair输入。
@@ -216,7 +216,7 @@ profile数据是measurement/evidence，不是Q51 search plan、IR sidecar或runt
 
 host gate至少覆盖：
 
-- package schema-v8与profile companion schema-v9各自canonical roundtrip、strict fields/limits及所有旧version拒绝；
+- package schema-v8与profile instrumentation schema-v10各自canonical roundtrip、strict fields/limits及所有旧version拒绝；
 - non-identity physical `tile_id`/`launch_slot` mapping；
 - duplicate/missing/unavailable Tile、launch slot、module/export、resource、slot和digest负例；
 - card-scoped共享地址一次分配、Tile-scoped资源隔离及output完整readback；

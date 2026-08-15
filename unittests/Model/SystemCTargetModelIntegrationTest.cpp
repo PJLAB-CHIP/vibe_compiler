@@ -6,7 +6,7 @@
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "Wafer/Compiler/CompilationInternal.h"
-#include "Wafer/Compiler/ExecutableBundleInternal.h"
+#include "Wafer/Compiler/PhysicalTileExecutablesInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -79,12 +79,12 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
 }
 
 struct CompiledElementwiseProgram {
-  ExecutableBundle executable;
-  TargetLLVMModuleBundle target;
+  PhysicalTileExecutables executable;
+  TargetLLVMModules target;
 };
 
 llvm::Expected<CompiledElementwiseProgram>
-buildElementwiseTargetBundle(std::string &diagnosticText) {
+compileElementwiseTargetModules(std::string &diagnosticText) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -123,15 +123,16 @@ module {
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<ExecutableBundle> executable =
-      wafer::compiler::detail::buildExecutableBundle(
+  llvm::Expected<PhysicalTileExecutables> executable =
+      wafer::compiler::detail::buildPhysicalTileExecutables(
           context, *tensorProgram, std::move(program), *config,
           OptimizationConfig::none(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  llvm::Expected<TargetLLVMModuleBundle> target =
-      compileExecutableBundleToTargetLLVMModules(*executable, diagnostics);
+  llvm::Expected<TargetLLVMModules> target =
+      compilePhysicalTileExecutablesToTargetLLVMModules(*executable,
+                                                        diagnostics);
   if (!target)
     return target.takeError();
   return CompiledElementwiseProgram{std::move(*executable), std::move(*target)};
@@ -185,10 +186,10 @@ findProgramBinding(const PhysicalTileExecutable &tile,
 }
 
 TEST(SystemCTargetModelIntegrationTest,
-     ExecutesSourceProducedNumericTransactionsAcrossDeltaCycles) {
+     ExecutesSourceProducedNumericCommandsAcrossDeltaCycles) {
   std::string diagnostics;
   llvm::Expected<CompiledElementwiseProgram> compiled =
-      buildElementwiseTargetBundle(diagnostics);
+      compileElementwiseTargetModules(diagnostics);
   ASSERT_TRUE(static_cast<bool>(compiled))
       << diagnostics << llvm::toString(compiled.takeError());
   const auto &tiles = compiled->executable.getPhysicalTileExecutables();
@@ -198,9 +199,8 @@ TEST(SystemCTargetModelIntegrationTest,
 
   std::vector<TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
-  NumericTensorKey tensorKey = llvm::cantFail(
-      NumericTensorKey::create(LogicalFormat::F32,
-                               PhysicalTensorLayout::Tensor, {8}));
+  NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
+      LogicalFormat::F32, PhysicalTensorLayout::Tensor, {8}));
   const std::vector<RawLogicalValue> lhs =
       makeSequentialF32Values(/*globalOffset=*/0, /*elementCount=*/8, 0.0f);
   std::vector<RawLogicalValue> rhs(8,
@@ -264,7 +264,7 @@ TEST(SystemCTargetModelIntegrationTest,
   }
 
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(compiled->target, arguments);
+      createTargetCallExecutable(compiled->target, arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
   llvm::Expected<TargetModelResult> result = executeSystemCTargetModel(
@@ -276,7 +276,7 @@ TEST(SystemCTargetModelIntegrationTest,
                                       /*maximumMovementSegments=*/256));
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(result->completedTileCount, 16);
-  EXPECT_GE(result->issuedTransactionCount, 8u * 4u);
+  EXPECT_GE(result->issuedCommandCount, 8u * 4u);
   EXPECT_GE(result->systemCThreadProcessCount, 17u);
   EXPECT_GT(result->finalDeltaCount, 0u);
   EXPECT_FALSE(result->systemCVersion.empty());

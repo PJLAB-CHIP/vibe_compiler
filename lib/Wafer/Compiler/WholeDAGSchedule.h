@@ -167,7 +167,7 @@ struct WholeDAGScheduleEvent {
 /// Copyable query-local event state.  Dispatch does not advance time, allowing
 /// independent waves to be placed on disjoint Tile sets at the same event.
 /// advanceToNextEvent completes all waves at the earliest finish time before
-/// publishing newly-ready classes.  Within one node the dependency order is
+/// adding newly-ready classes. Within one node the dependency order is
 /// prologue -> steady -> tail.  Across every DAG edge, data readiness is
 /// conservatively class-matched (producer prologue -> consumer prologue,
 /// steady -> steady, tail -> tail), so a consumer pipeline does not wait for
@@ -201,9 +201,9 @@ public:
   /// Delays a dependency-satisfied wave until an external movement/data-ready
   /// event. This does not create a second dependency graph: it only adds a
   /// finite not-before time to the current wave state.
-  mlir::LogicalResult delayWaveReadinessUntil(
-      SymbolicWaveClass wave, WholeDAGTime time,
-      std::string *failureReason = nullptr);
+  mlir::LogicalResult
+  delayWaveReadinessUntil(SymbolicWaveClass wave, WholeDAGTime time,
+                          std::string *failureReason = nullptr);
 
   /// Advances to an external event strictly before the next running compute
   /// completion (or while no compute is running). Running Tile work remains in

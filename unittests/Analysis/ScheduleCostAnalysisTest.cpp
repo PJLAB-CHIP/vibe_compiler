@@ -1665,7 +1665,8 @@ TEST_F(ScheduleCostAnalysisTest,
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
   // Cross-operation topology is checked once by the CardProgram container and
-  // again by executable admission. A leaf DTE verifier owns only local fields.
+  // again by whole-executable verification. A leaf DTE verifier checks only
+  // local fields.
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*tile0)));
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*tile1)));
 }

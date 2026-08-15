@@ -122,8 +122,8 @@ def compile_seed_package(
         ],
         timeout_seconds=300,
     )
-    if "published verified package" not in result.stdout:
-        raise RuntimeError("wafer-compile did not publish the seed package")
+    if "wrote verified package" not in result.stdout:
+        raise RuntimeError("wafer-compile did not write the seed package")
     return package
 
 
@@ -1877,7 +1877,7 @@ BOARD_ALL_SAFE_CASES = _unique_cases(
     V2_LARGE_BACKLOG_CASES,
     V2_DOUBLE_SLOT_OBSERVATION_CASES,
 )
-BOARD_ALL_PREFLIGHT_CASES = _unique_cases(
+BOARD_ALL_VALIDATION_CASES = _unique_cases(
     BOARD_ALL_SAFE_CASES,
     V2_DOCUMENTED_DEPTH_CASES,
     V2_DEPTH_PLUS_ONE_CASES,
@@ -1905,7 +1905,7 @@ SUITES = {
     "focused": FOCUSED_CASES,
     "calibration": CALIBRATION_CASES,
     "board-all-safe": BOARD_ALL_SAFE_CASES,
-    "board-all-preflight": BOARD_ALL_PREFLIGHT_CASES,
+    "board-all-validation": BOARD_ALL_VALIDATION_CASES,
     "hazard-manual": V2_HAZARD_MANUAL_CASES,
     "constructor-observation": V2_CONSTRUCTOR_CASES,
     "completion-scope-manual": V2_COMPLETION_SCOPE_CASES,
@@ -2331,7 +2331,7 @@ def validate_no_card_protocol_cases() -> None:
         for case in V2_DOUBLE_SLOT_OBSERVATION_CASES
     ):
         raise RuntimeError("double-slot hardware observation is malformed")
-    for case in BOARD_ALL_PREFLIGHT_CASES:
+    for case in BOARD_ALL_VALIDATION_CASES:
         case.plan.request_words()
     overhead_specs = {
         f"{engine.name.lower()}-worker0-r2-{spelling}": schedule
@@ -4923,8 +4923,8 @@ def main() -> int:
         raise RuntimeError("build-smoke requires --no-card")
     if args.suite == "build-smoke" and args.selected_cases:
         raise RuntimeError("--case requires a board execution suite")
-    if args.suite == "board-all-preflight" and not args.no_card:
-        raise RuntimeError("board-all-preflight is a no-card-only suite")
+    if args.suite == "board-all-validation" and not args.no_card:
+        raise RuntimeError("board-all-validation is a no-card-only suite")
     if args.suite in (
         "documented-depth-manual",
         "depth-plus-one-manual",
@@ -4964,7 +4964,7 @@ def main() -> int:
     else:
         validate_no_card_protocol_cases()
 
-    validate_catalog_resource_layout(BOARD_ALL_PREFLIGHT_CASES)
+    validate_catalog_resource_layout(BOARD_ALL_VALIDATION_CASES)
     selected_cases: tuple[GenericProbeCase, ...] = ()
     if args.suite != "build-smoke":
         selected_cases = SUITES[args.suite]

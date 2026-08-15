@@ -3,7 +3,7 @@
 #ifndef WAFER_TOOLS_WAFER_RUN_WAFERPROFILECAMPAIGN_H
 #define WAFER_TOOLS_WAFER_RUN_WAFERPROFILECAMPAIGN_H
 
-#include "Wafer/Runtime/ProfileCompanion.h"
+#include "Wafer/Runtime/ProfileInstrumentation.h"
 #include "WaferRunBoardIO.h"
 
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -19,7 +19,7 @@
 
 namespace wafer::runtime::cli {
 
-inline constexpr uint32_t kBoardProfileEvidenceSchemaVersion = 10;
+inline constexpr uint32_t kBoardProfileEvidenceSchemaVersion = 11;
 
 enum class BoardProfileProtocolLaunch {
   Primary,
@@ -32,7 +32,7 @@ struct BoardProfileProtocolStep {
 };
 
 struct BoardProfileTraceTileAudit {
-  uint64_t preflightCount = 0;
+  uint64_t countedEventCount = 0;
   uint64_t nextSequence = 0;
   uint64_t storedEventCount = 0;
   uint32_t droppedEventCount = 0;
@@ -67,7 +67,7 @@ struct BoardProfileProtocolResult {
 enum class BoardProfileOutputValidationMode {
   ExternalExpected,
   Mixed,
-  SameSessionProduction,
+  SameSessionPrimary,
 };
 
 struct BoardProfileOutputValidationResource {
@@ -77,63 +77,59 @@ struct BoardProfileOutputValidationResource {
   uint64_t bytes = 0;
   std::string referenceSha256;
   std::optional<BoardOutputComparisonKind> externalExpectedComparison;
-  bool productionExecutionValidated = false;
+  bool primaryOutputValidated = false;
   bool diagnosticCapturesMatchPrimary = false;
 };
 
 llvm::StringRef stringifyBoardProfileOutputValidationMode(
     BoardProfileOutputValidationMode mode);
 
-/// Semantic-keyed output oracle for one board profile campaign. The single
-/// uninstrumented production-artifact execution is validated against every
+/// Semantic-keyed output validator for one board profile campaign. The single
+/// uninstrumented profiled-package execution is validated against every
 /// supplied external expected tensor with its exact or relaxed-f16 policy,
-/// then staged as the same-session byte reference. Count and trace results are
+/// then stored as the same-session byte reference. Count and trace results are
 /// first checked against their own external expected tensors, then compared
 /// with the staged primary reference by stable
 /// `(scope, role, role_index)` and exact typed resource contract.
 ///
-/// Reference files are private to the already-created report staging
-/// directory. They are not keyed by ResourceId, resource name, or user path,
-/// and must be removed before report publication.
-class BoardProfileOutputValidationState {
+/// Reference files are private to the report's temporary directory. They are
+/// not keyed by ResourceId, resource name, or user path, and must be removed
+/// before that directory receives its final name.
+class BoardProfileOutputValidator {
 public:
-  explicit BoardProfileOutputValidationState(std::string stagingDirectory);
-  ~BoardProfileOutputValidationState();
-  BoardProfileOutputValidationState(BoardProfileOutputValidationState &&);
-  BoardProfileOutputValidationState &
-  operator=(BoardProfileOutputValidationState &&);
-  BoardProfileOutputValidationState(const BoardProfileOutputValidationState &) =
-      delete;
-  BoardProfileOutputValidationState &
-  operator=(const BoardProfileOutputValidationState &) = delete;
+  explicit BoardProfileOutputValidator(std::string stagingDirectory);
+  ~BoardProfileOutputValidator();
+  BoardProfileOutputValidator(BoardProfileOutputValidator &&);
+  BoardProfileOutputValidator &operator=(BoardProfileOutputValidator &&);
+  BoardProfileOutputValidator(const BoardProfileOutputValidator &) = delete;
+  BoardProfileOutputValidator &
+  operator=(const BoardProfileOutputValidator &) = delete;
 
+  llvm::Error recordPrimaryOutputs(const PackageManifest &manifest,
+                                   const BoardInvocationFilePlan &plan,
+                                   llvm::ArrayRef<BoardRuntimeOutput> outputs);
   llvm::Error
-  establishProductionReference(const PackageManifest &manifest,
-                               const BoardInvocationFilePlan &plan,
-                               llvm::ArrayRef<BoardRuntimeOutput> outputs);
-  llvm::Error
-  validateDiagnosticCapture(const PackageManifest &manifest,
+  validateDiagnosticOutputs(const PackageManifest &manifest,
                             const BoardInvocationFilePlan &plan,
                             llvm::ArrayRef<BoardRuntimeOutput> outputs);
-  llvm::Error finalizeAndRemoveReferences();
+  llvm::Error removeReferenceFiles();
 
   BoardProfileOutputValidationMode getMode() const;
   llvm::ArrayRef<BoardProfileOutputValidationResource> getResources() const;
 
 private:
   llvm::Error
-  validateAgainstReference(const PackageManifest &manifest,
-                           const BoardInvocationFilePlan &plan,
-                           llvm::ArrayRef<BoardRuntimeOutput> outputs);
+  compareWithPrimaryOutputs(const PackageManifest &manifest,
+                            const BoardInvocationFilePlan &plan,
+                            llvm::ArrayRef<BoardRuntimeOutput> outputs);
 
   struct Impl;
   std::unique_ptr<Impl> impl;
 };
 
-/// Tool-internal deterministic protocol seam. It owns the fixed
-/// primary/count/trace launch order, count-before-trace admission, per-trace
-/// audit checks, and finalization boundary; the callback owns one qualified
-/// session and exact output/site validation for each synchronous launch.
+/// Runs the fixed primary/count/trace sequence, checks the count before the
+/// trace launch, and verifies every trace record. The callbacks execute one
+/// qualified board session and consume the verified measurements.
 llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
     uint64_t traceCapacity,
     llvm::function_ref<llvm::Expected<BoardProfileProtocolObservation>(
@@ -141,22 +137,22 @@ llvm::Expected<BoardProfileProtocolResult> runFixedBoardProfileProtocol(
         execute,
     llvm::function_ref<
         llvm::Error(llvm::ArrayRef<BoardProfileMeasurementSample>)>
-        finalize);
+        consumeMeasurements);
 
 #if defined(WAFER_PROFILE_CAMPAIGN_TESTING)
 namespace testing {
 
-struct ProfileReportPublicationResult {
+struct ProfileReportWriteResult {
   std::string runId;
   std::string runDirectory;
   std::string currentEntry;
 };
 
-/// Unit-test seam for the filesystem publication transaction. The stage
+/// Unit-test seam for the staged report-directory update. The stage
 /// callback must create exactly evidence.json, analysis.json, and index.html;
 /// the removal callback permits deterministic old-run deletion failures.
-llvm::Expected<ProfileReportPublicationResult> publishProfileReportForTesting(
-    llvm::StringRef companionRoot,
+llvm::Expected<ProfileReportWriteResult> writeProfileReportForTesting(
+    llvm::StringRef instrumentationRoot,
     llvm::function_ref<llvm::Error(llvm::StringRef runId,
                                    llvm::StringRef stagingDirectory)>
         stage,
@@ -174,11 +170,11 @@ struct BoardProfileCampaignResult {
 /// Executes the compiler-owned, fixed profiler campaign in one qualified
 /// board session. The caller supplies only the ordinary invocation file plan;
 /// all diagnostic capture packages and profiler buffers come from the
-/// verified sibling companion.
+/// verified sibling instrumentation.
 llvm::Expected<BoardProfileCampaignResult>
-runBoardProfileCampaign(const VerifiedProfileCompanion &companion,
-                        const PackageManifest &productionManifest,
-                        const BoardInvocationFilePlan &productionPlan,
+runBoardProfileCampaign(const VerifiedProfileInstrumentation &instrumentation,
+                        const PackageManifest &primaryManifest,
+                        const BoardInvocationFilePlan &primaryPlan,
                         BoardRuntimeDriver &driver);
 
 } // namespace wafer::runtime::cli

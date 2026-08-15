@@ -246,7 +246,7 @@ bubbleSliceThroughUnitCollapse(mlir::IRRewriter &rewriter,
 /// op would consume the already-computed result a second time.  Rebind the
 /// tiled result to the exact same slice of the original tied init.  The slice
 /// remains in the ordinary upstream fusion worklist, so a fill/empty or any
-/// other typed producer keeps its real SSA provenance.
+/// other typed producer keeps its original SSA producer relationship.
 static mlir::LogicalResult
 rebaseFusedDPSInit(mlir::scf::SCFFuseProducerOfSliceResult &fused,
                    std::string *failureReason) {
@@ -788,8 +788,7 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredParallelTraversal(
             nestedBuilder, scope, root, sourceCompute, requestedOutputOffsets,
             requestedOutputSizes, parallelTileSizes, dimension + 1, destination,
             destinationBaseOffsets, sourceOffsets, localOffsets, tileSizes,
-            nestedLoops, operationTemporalTiles, failureReason,
-            operationNodes);
+            nestedLoops, operationTemporalTiles, failureReason, operationNodes);
     tileSizes.pop_back();
     localOffsets.pop_back();
     sourceOffsets.pop_back();

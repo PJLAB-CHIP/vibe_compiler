@@ -7,7 +7,7 @@
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "Wafer/Compiler/CompilationInternal.h"
-#include "Wafer/Compiler/ExecutableBundleInternal.h"
+#include "Wafer/Compiler/PhysicalTileExecutablesInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -79,8 +79,8 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
   return context;
 }
 
-llvm::Expected<TargetLLVMModuleBundle>
-buildBatchedGemmTargetBundle(std::string &diagnosticText) {
+llvm::Expected<TargetLLVMModules>
+compileBatchedGemmTargetModules(std::string &diagnosticText) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
@@ -115,26 +115,26 @@ module {
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<ExecutableBundle> executable =
-      compiler::detail::buildExecutableBundle(
+  llvm::Expected<PhysicalTileExecutables> executable =
+      compiler::detail::buildPhysicalTileExecutables(
           context, *tensorProgram, std::move(program), *config,
           OptimizationConfig::none(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  return compileExecutableBundleToTargetLLVMModules(*executable, diagnostics);
+  return compilePhysicalTileExecutablesToTargetLLVMModules(*executable,
+                                                           diagnostics);
 }
 
-class RecordingTargetSink final : public TargetTransactionSink {
+class RecordingTargetSink final : public TargetCommandSink {
 public:
   llvm::Error begin(const TargetCallInvocationDescriptor &) override {
     began = true;
     return llvm::Error::success();
   }
 
-  llvm::Expected<uint64_t>
-  issue(const TargetTransaction &transaction) override {
-    transactions.push_back(transaction);
+  llvm::Expected<uint64_t> issue(const TargetCommand &command) override {
+    commands.push_back(command);
     return nextEvent++;
   }
 
@@ -142,25 +142,27 @@ public:
                            LaunchSlotId) override {
     return llvm::Error::success();
   }
-  llvm::Error prepareCommit() override { return llvm::Error::success(); }
-  void commit() override { committed = true; }
+  llvm::Error completeInvocation() override {
+    invocationCompleted = true;
+    return llvm::Error::success();
+  }
   void abort(llvm::StringRef) override { aborted = true; }
 
   bool began = false;
-  bool committed = false;
+  bool invocationCompleted = false;
   bool aborted = false;
   uint64_t nextEvent = 1;
-  std::vector<TargetTransaction> transactions;
+  std::vector<TargetCommand> commands;
 };
 
 TEST(SystemCTargetModelBatchedGemmIntegrationTest,
      PreservesImplicitNCxStorageFromSourceThroughTargetModel) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      buildBatchedGemmTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  ASSERT_EQ(bundle->getModules().size(), 16u);
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      compileBatchedGemmTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  ASSERT_EQ(targetLLVMModules->getModules().size(), 16u);
 
   std::vector<TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
@@ -180,7 +182,7 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
                                    {LogicalFormat::F16, UINT64_C(0x3c00)});
   const std::array<const NumericTensorKey *, 2> inputKeys{&lhsKey, &rhsKey};
   const std::array<llvm::ArrayRef<RawLogicalValue>, 2> logicalInputs{lhs, rhs};
-  for (const TargetLLVMModule &module : bundle->getModules()) {
+  for (const TargetLLVMModule &module : targetLLVMModules->getModules()) {
     const int64_t launchSlot = module.getLaunchSlotId().getValue();
     arguments.push_back({module.getPhysicalCardId(),
                          module.getPhysicalTileId(),
@@ -232,22 +234,22 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
 
   // Spatial synthesis shards N across physical Tiles while preserving each
   // batch-2 operation. The numeric execution below uses a separately prepared
-  // frontend from the same complete target bundle and explicit Tile triples.
+  // frontend from the same complete target targetLLVMModules and explicit Tile
+  // triples.
   RecordingTargetSink recordingSink;
   llvm::Expected<TargetCallExecutionResult> decoded =
-      executeTargetCallFrontend(*bundle, arguments, recordingSink);
+      executeTargetCallFrontend(*targetLLVMModules, arguments, recordingSink);
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
   EXPECT_TRUE(recordingSink.began);
-  EXPECT_TRUE(recordingSink.committed);
+  EXPECT_TRUE(recordingSink.invocationCompleted);
   EXPECT_FALSE(recordingSink.aborted);
-  std::vector<const TargetGemmTransaction *> gemms;
-  for (const TargetTransaction &transaction : recordingSink.transactions)
-    if (const auto *gemm =
-            std::get_if<TargetGemmTransaction>(&transaction.payload))
+  std::vector<const TargetGemmCommand *> gemms;
+  for (const TargetCommand &command : recordingSink.commands)
+    if (const auto *gemm = std::get_if<TargetGemmCommand>(&command.payload))
       gemms.push_back(gemm);
   ASSERT_EQ(gemms.size(), 16u);
-  for (const TargetGemmTransaction *gemm : gemms) {
+  for (const TargetGemmCommand *gemm : gemms) {
     EXPECT_EQ(gemm->batchCount, 2u);
     EXPECT_EQ(gemm->m, 1u);
     EXPECT_EQ(gemm->k, 128u);
@@ -255,7 +257,7 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
   }
 
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, arguments);
+      createTargetCallExecutable(*targetLLVMModules, arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
   llvm::Expected<TargetModelResult> result =

@@ -21,13 +21,13 @@ using namespace wafer::model;
 TEST(SystemCTargetModelDTEIntegrationTest,
      ExecutesDTEPrepareThenNCCJoinThenIssueAndExactDTEWait) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(
           diagnostics, TargetIdentityId::waferTx81SingleCard());
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
   llvm::Expected<test::NCCJoinRewriteResult> rewrite =
-      test::rewriteNCCJoinsAfter(*bundle,
+      test::rewriteNCCJoinsAfter(*targetLLVMModules,
                                  TargetCallBuiltin::DirectDTESendPrepare);
   ASSERT_TRUE(static_cast<bool>(rewrite))
       << llvm::toString(rewrite.takeError());
@@ -35,12 +35,12 @@ TEST(SystemCTargetModelDTEIntegrationTest,
   EXPECT_GT(rewrite->insertedJoinCount, 0u);
   EXPECT_GT(rewrite->insertedTerminalJoinCount, 0u);
   llvm::Expected<test::DirectDTEInvocationData> invocation =
-      test::buildDirectDTEInvocationData(*bundle);
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
 
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, invocation->arguments);
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
   llvm::Expected<TargetModelResult> result = executeSystemCTargetModel(
@@ -52,7 +52,7 @@ TEST(SystemCTargetModelDTEIntegrationTest,
                                       /*maximumMovementSegments=*/1024));
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(result->completedRankCount, 16);
-  EXPECT_GE(result->issuedTransactionCount, 16u * 8u);
+  EXPECT_GE(result->issuedCommandCount, 16u * 8u);
   EXPECT_GE(result->systemCThreadProcessCount, 17u);
   EXPECT_GT(result->finalDeltaCount, 0u);
   EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc-v2");

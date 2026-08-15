@@ -1,10 +1,10 @@
 add_mlir_dialect_library(WaferIR
   WaferDialect.cpp
   WaferInterfaces.cpp
-  Common/OpVerifierUtils.cpp
+  Common/WaferIRVerification.cpp
   Instr/ComputeOps.cpp
   Instr/DTEOps.cpp
-  Instr/InstructionVerifierUtils.cpp
+  Instr/InstructionVerification.cpp
   Instr/MovementOps.cpp
   Instr/PeripheralOps.cpp
   Instr/SyncOps.cpp

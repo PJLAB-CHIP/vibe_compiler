@@ -313,7 +313,7 @@ TEST(TargetModelMemoryTest,
   // individual segments. The first segment is writable launch-slot-0 output,
   // while the last names a different Tile's private workspace and is not in
   // launch-slot-0's resource domain. Neither this descriptor nor the valid
-  // write before it may publish any bytes.
+  // write before it may modify any bytes.
   TargetModelStridedByteLayout lateReadOnly{
       2, {UINT32_C(0xf000), 0, 0}, {2, 1, 1}};
   error = expectError(registry.applyAtomically(

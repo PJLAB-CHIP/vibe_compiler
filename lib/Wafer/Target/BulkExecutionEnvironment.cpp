@@ -89,7 +89,7 @@ std::string readHostText(llvm::StringRef path) {
   return (*buffer)->getBuffer().trim().str();
 }
 
-std::string makeStableCPUIdentity() {
+std::string makeStableCPUFingerprint() {
   std::string cpuInfo = readHostText("/proc/cpuinfo");
   if (cpuInfo == "unavailable")
     return cpuInfo;
@@ -106,7 +106,7 @@ std::string makeStableCPUIdentity() {
   return selected.empty() ? "unavailable" : sha256(selected);
 }
 
-std::string makeLoaderIdentity() {
+std::string makeLoaderDigest() {
   std::string maps = readHostText("/proc/self/maps");
   if (maps == "unavailable")
     return maps;
@@ -132,19 +132,19 @@ std::string makeHostPlatformDigest() {
   llvm::raw_svector_ostream stream(payload);
   appendField(stream, "schema", "wafer-host-platform-v1");
   appendField(stream, "process_triple", llvm::sys::getProcessTriple());
-  appendField(stream, "cpu_identity", makeStableCPUIdentity());
+  appendField(stream, "cpu_fingerprint", makeStableCPUFingerprint());
   appendField(stream, "cpu_online",
               readHostText("/sys/devices/system/cpu/online"));
   appendField(stream, "numa_online",
               readHostText("/sys/devices/system/node/online"));
-  appendField(stream, "loader", makeLoaderIdentity());
+  appendField(stream, "loader", makeLoaderDigest());
 #if defined(__linux__)
-  struct utsname identity{};
-  if (::uname(&identity) == 0) {
-    appendField(stream, "kernel_sysname", identity.sysname);
-    appendField(stream, "kernel_release", identity.release);
-    appendField(stream, "kernel_version", identity.version);
-    appendField(stream, "kernel_machine", identity.machine);
+  struct utsname systemInfo{};
+  if (::uname(&systemInfo) == 0) {
+    appendField(stream, "kernel_sysname", systemInfo.sysname);
+    appendField(stream, "kernel_release", systemInfo.release);
+    appendField(stream, "kernel_version", systemInfo.version);
+    appendField(stream, "kernel_machine", systemInfo.machine);
   } else {
     appendField(stream, "kernel", "unavailable");
   }
@@ -253,9 +253,9 @@ createManagedBulkExecutionEnvironment() {
       (llvm::Twine("sha256:") + WAFER_BULK_ONEDNN_LIBRARY_SHA256).str();
   appendField(backendStream, "dependency_record", dependencyRecordDigest);
   appendField(backendStream, "library", libraryDigest);
-  BulkBackendIdentity backend("oneDNN", WAFER_BULK_ONEDNN_VERSION,
-                              WAFER_BULK_ONEDNN_COMMIT, dependencyRecordDigest,
-                              libraryDigest, sha256(backendPayload));
+  BulkBackendDescriptor backend(
+      "oneDNN", WAFER_BULK_ONEDNN_VERSION, WAFER_BULK_ONEDNN_COMMIT,
+      dependencyRecordDigest, libraryDigest, sha256(backendPayload));
 
   std::string cpuName = llvm::sys::getHostCPUName().str();
   std::string featuresDigest = makeFeaturesDigest();

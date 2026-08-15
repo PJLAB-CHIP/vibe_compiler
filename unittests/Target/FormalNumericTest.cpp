@@ -227,7 +227,7 @@ TEST(FormalNumericTest, ExecutesZeroAndBoundarySmokeForAll101Rows) {
   size_t executedRows = 0;
   for (const NumericSemanticsProfile &semantics : profiles) {
     const wafer::TargetConvertRoute &route =
-        semantics.getCTConvertIdentity()->getCTConvertRoute();
+        semantics.getCTConvertKey()->getCTConvertRoute();
     SCOPED_TRACE(
         route.canonicalSpelling.str() + "/" +
         wafer::stringifyNumericRoundingMode(semantics.getRoundingMode()).str());
@@ -711,7 +711,8 @@ TEST(FormalNumericTest, RejectsSourceMismatchAndNoncanonicalEncoding) {
   EXPECT_FALSE(tooWideContext.getAggregateFlags().any());
 }
 
-TEST(FormalNumericTest, EffectFreeConvertCommitsOnlyAfterSuccessfulWrapper) {
+TEST(FormalNumericTest,
+     EffectFreeConvertUpdatesFlagsOnlyAfterSuccessfulWrapper) {
   std::optional<ResolvedNumericCommand> command =
       getResolution(/*fp32_fp16=*/166, NumericRoundingMode::NearestEven);
   ASSERT_TRUE(command.has_value());
@@ -719,7 +720,7 @@ TEST(FormalNumericTest, EffectFreeConvertCommitsOnlyAfterSuccessfulWrapper) {
   FormalNumericExecutionContext context;
   FormalNumericExceptionFlags prior;
   prior.overflow = true;
-  context.recordCommittedFlags(prior);
+  context.mergeExceptionFlags(prior);
   llvm::Expected<FormalNumericResult> evaluated = wafer::evaluateFormalConvert(
       *command, {LogicalFormat::F32, UINT64_C(0x7f812345)});
   ASSERT_TRUE(static_cast<bool>(evaluated))
@@ -728,9 +729,9 @@ TEST(FormalNumericTest, EffectFreeConvertCommitsOnlyAfterSuccessfulWrapper) {
   EXPECT_TRUE(evaluated->flags.invalid);
   EXPECT_EQ(context.getAggregateFlags(), prior);
 
-  std::optional<FormalNumericResult> committed = expectExecute(
+  std::optional<FormalNumericResult> result = expectExecute(
       context, *command, {LogicalFormat::F32, UINT64_C(0x7f812345)});
-  ASSERT_TRUE(committed.has_value());
+  ASSERT_TRUE(result.has_value());
   EXPECT_TRUE(context.getAggregateFlags().overflow);
   EXPECT_TRUE(context.getAggregateFlags().invalid);
   const FormalNumericExceptionFlags beforeFailure = context.getAggregateFlags();
@@ -909,8 +910,8 @@ TEST(FormalNumericTest, ElementwiseBackendRegistryHasCompleteScalarCoverage) {
   size_t mpfrRows = 0;
   for (const NumericSemanticsProfile &semantics :
        wafer::getRegisteredNumericCTElementwiseSemanticsProfiles()) {
-    const wafer::NumericCTElementwiseSemanticsIdentity *identity =
-        semantics.getCTElementwiseIdentity();
+    const wafer::NumericCTElementwiseSemanticsKey *identity =
+        semantics.getCTElementwiseKey();
     ASSERT_NE(identity, nullptr);
     std::optional<ResolvedNumericCommand> command = getElementwiseResolution(
         identity->getOperation(), identity->getInputFormat());

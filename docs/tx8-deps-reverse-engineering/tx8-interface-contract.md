@@ -1007,11 +1007,11 @@ No visible dependency, symbol, header, or build reference proves that either
 seam uses SystemC or TLM. Those frameworks could be internal to the missing
 library, so the implementation technology remains unknown. A vendor delivery
 must include the complete matching development package, transitive libraries,
-model resources, target revision, artifact input contract, numeric profile,
+model resources, target revision, input-file contract, numeric profile,
 thread/time behavior, license, and a reproducible positive path. Until then the
 high-level seam cannot be a verified package provider, and a locally implemented
 low-level packet builder cannot be assumed permissible or labeled vendor-exact.
-Any low-level host seam requires project-owner/legal confirmation of the actual
+Any low-level host seam requires vendor/legal confirmation of the actual
 license terms or an independently auditable specification; independent register
 or board correlation is then still required for a vendor-exact claim.
 
@@ -1227,16 +1227,16 @@ profiling config, group data dump, `D_DteCfgList`, `TileMappingTable`,
 Evidence boundary: the structures and call chain above are statically closed
 for the qualified V5.6 binary and cross-checked against legacy builders and
 installed device modules. The public header still provides no BPM builder or
-layout-version contract. Wafer's sole current schema-v8 publication (the model
-BootParam ABI was first introduced in schema-v4 and schema-v6 was a historical publication) and its board provider
+layout-version contract. Wafer's sole current schema-v8 package format (the model
+BootParam ABI was first introduced in schema-v4 and schema-v6 was a historical format) and its board provider
 now materialize typed graph I/O ordinals, checked sizes/offsets, nested
-allocation lifetimes, module-name identity, and artifact export/readback as
+allocation lifetimes, module-name identity, and module export/readback as
 the explicit nested `entry_abi=tx81-model-bootparam` under the sole
 top-level `kind=model`. That entry ABI remains qualified only for the pinned
 V5.6 runtime digest; it is neither an opaque sidecar nor a silent substitute
 for `kind=kernel`.
 
-## 15. Evidence-to-Design Handoff
+## 15. Evidence-to-Design Mapping
 
 This evidence ledger does not define a minimum production verifier checklist,
 packet acceptance set, compiler entry strategy, runtime provider policy, or
@@ -1246,7 +1246,7 @@ golden-test suite. The recovered facts above feed these numbered owners:
   legality, shape/unit relations, and completion-relevant instruction facts.
 - `tasks/13`: accepted physical transport and stream/DTE relations.
 - `tasks/14`: target command ABI, CRT surface, packet emission, and target
-  artifact checks.
+  file checks.
 - `tasks/15`: package, provider, resource, launch, and runtime completion
   semantics.
 - `tasks/16`: negative, integration, board, and hardware-validation gates.

@@ -58,7 +58,7 @@ EXPECTED_AXIS_KEYS = {
     "ready-order-hazard-negatives",
     "resource-aware-neighbor-generation",
     "bounded-joint-search-and-baseline-fallback",
-    "whole-variant-pareto-and-atomic-commit",
+    "whole-variant-pareto-and-atomic-selection",
     "spm-lifetime-placement-and-packing",
     "ddr-lifetime-placement-and-packing",
     "typed-instruction-lowering-legality",
@@ -170,7 +170,7 @@ def validate_board_output_parser() -> None:
     )
 
 
-def validate_paired_payload_preflight() -> None:
+def validate_paired_payloads() -> None:
     lightweight_cases = {
         key: case
         for key, case in driver.CASES.items()
@@ -233,7 +233,7 @@ def validate_paired_payload_preflight() -> None:
         assert "element 2" in str(error)
     else:
         raise AssertionError(
-            "paired payload preflight accepted an out-of-policy finite mismatch"
+            "paired payload validation accepted an out-of-policy finite mismatch"
         )
 
     nonfinite_winner = [[winner.clone()]]
@@ -252,14 +252,14 @@ def validate_paired_payload_preflight() -> None:
         assert "element 3" in str(error)
     else:
         raise AssertionError(
-            "paired payload preflight accepted a nonfinite oracle"
+            "paired payload validation accepted a nonfinite oracle"
         )
 
 
 def main() -> int:
     repo = pathlib.Path(__file__).resolve().parents[2]
     validate_board_output_parser()
-    validate_paired_payload_preflight()
+    validate_paired_payloads()
     calibration_runner = load_python_asset(
         repo,
         "tools/run_hardware_calibration.py",

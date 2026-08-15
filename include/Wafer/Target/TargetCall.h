@@ -26,7 +26,7 @@ namespace target {
 
 enum class TargetDMADirection : uint8_t { Read, Write };
 
-struct TargetStridedDMATransaction {
+struct TargetStridedDMACommand {
   TargetDMADirection direction;
   uint64_t source;
   uint64_t destination;
@@ -37,7 +37,7 @@ struct TargetStridedDMATransaction {
   LogicalFormat format;
 };
 
-struct TargetGatherScatterTransaction {
+struct TargetGatherScatterCommand {
   uint64_t source;
   uint64_t destination;
   uint32_t byteCount;
@@ -48,21 +48,21 @@ struct TargetGatherScatterTransaction {
   std::array<uint32_t, 3> destinationIterations;
 };
 
-struct TargetMemsetTransaction {
+struct TargetMemsetCommand {
   uint64_t destination;
   uint32_t value;
   uint32_t elementCount;
   LogicalFormat format;
 };
 
-struct TargetBit2FPTransaction {
+struct TargetBit2FPCommand {
   uint64_t source;
   uint64_t destination;
   uint32_t elementCount;
   LogicalFormat format;
 };
 
-struct TargetMaskMoveTransaction {
+struct TargetMaskMoveCommand {
   uint64_t source;
   uint32_t mask;
   uint64_t destination;
@@ -70,7 +70,7 @@ struct TargetMaskMoveTransaction {
   LogicalFormat format;
 };
 
-struct TargetGemmTransaction {
+struct TargetGemmCommand {
   uint64_t lhs;
   uint64_t rhs;
   uint64_t destination;
@@ -83,7 +83,7 @@ struct TargetGemmTransaction {
   TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal;
 };
 
-struct TargetElementwiseTransaction {
+struct TargetElementwiseCommand {
   NumericElementwiseOperation operation;
   uint64_t lhs;
   std::optional<uint64_t> rhs;
@@ -92,7 +92,7 @@ struct TargetElementwiseTransaction {
   LogicalFormat format;
 };
 
-struct TargetReduceTransaction {
+struct TargetReduceCommand {
   NumericReduceOperation operation;
   uint64_t source;
   uint64_t destination;
@@ -101,7 +101,7 @@ struct TargetReduceTransaction {
   LogicalFormat format;
 };
 
-struct TargetConvertTransaction {
+struct TargetConvertCommand {
   TargetConvertOperation operation;
   uint64_t source;
   uint64_t destination;
@@ -110,7 +110,7 @@ struct TargetConvertTransaction {
   std::optional<uint32_t> roundingMode;
 };
 
-struct TargetConvTransaction {
+struct TargetConvCommand {
   TargetConvolutionOperation operation;
   uint64_t input;
   uint64_t weight;
@@ -125,7 +125,7 @@ struct TargetConvTransaction {
   LogicalFormat format;
 };
 
-struct TargetPoolTransaction {
+struct TargetPoolCommand {
   TargetPoolingOperation operation;
   uint64_t input;
   uint64_t valueDestination;
@@ -137,7 +137,7 @@ struct TargetPoolTransaction {
   LogicalFormat format;
 };
 
-struct TargetUnpoolTransaction {
+struct TargetUnpoolCommand {
   TargetUnpoolingOperation operation;
   uint64_t input;
   uint64_t destination;
@@ -150,7 +150,7 @@ struct TargetUnpoolTransaction {
 
 enum class TargetTDMATransformKind : uint8_t { Pad, ImageToColumn };
 
-struct TargetTDMATransformTransaction {
+struct TargetTDMATransformCommand {
   TargetTDMATransformKind kind;
   uint64_t source;
   uint64_t destination;
@@ -161,7 +161,7 @@ struct TargetTDMATransformTransaction {
   LogicalFormat format;
 };
 
-struct TargetPeripheralArgExtremaTransaction {
+struct TargetPeripheralArgExtremaCommand {
   TargetPeripheralOperation operation;
   uint64_t source;
   uint64_t valueDestination;
@@ -170,7 +170,7 @@ struct TargetPeripheralArgExtremaTransaction {
   LogicalFormat format;
 };
 
-struct TargetPeripheralBilinearTransaction {
+struct TargetPeripheralBilinearCommand {
   uint64_t source;
   uint64_t destination;
   uint32_t elementCount;
@@ -179,7 +179,7 @@ struct TargetPeripheralBilinearTransaction {
   std::array<uint32_t, 4> destinationShape;
 };
 
-struct TargetPeripheralLUTTransaction {
+struct TargetPeripheralLUTCommand {
   TargetPeripheralOperation operation;
   uint64_t source;
   uint64_t table;
@@ -189,14 +189,14 @@ struct TargetPeripheralLUTTransaction {
   uint32_t tableElementCount;
 };
 
-struct TargetPeripheralRandomTransaction {
+struct TargetPeripheralRandomCommand {
   std::array<uint64_t, 2> sources;
   std::array<uint64_t, 3> destinations;
   uint32_t elementCount;
   LogicalFormat format;
 };
 
-struct TargetPeripheralElementMaskTransaction {
+struct TargetPeripheralElementMaskCommand {
   uint64_t source;
   uint64_t destination;
   uint32_t elementCount;
@@ -206,14 +206,14 @@ struct TargetPeripheralElementMaskTransaction {
   uint32_t roundingMode;
 };
 
-struct TargetNCCJoinTransaction {
+struct TargetNCCJoinCommand {
   uint32_t participantMask;
 };
-struct TargetDirectDTEBeginTransaction {
+struct TargetDirectDTEBeginCommand {
   uint64_t statusAddress;
   uint32_t participantCount;
 };
-struct TargetDirectDTESendTransaction {
+struct TargetDirectDTESendCommand {
   uint64_t source;
   uint64_t remoteDestination;
   uint32_t byteCount;
@@ -222,34 +222,33 @@ struct TargetDirectDTESendTransaction {
   uint32_t remoteFSM;
   bool highPerformance;
 };
-struct TargetDirectDTESendIssueTransaction {
+struct TargetDirectDTESendIssueCommand {
   uint64_t event;
 };
-struct TargetDirectDTEReceiveTransaction {
+struct TargetDirectDTEReceiveCommand {
   uint64_t destination;
   uint32_t byteCount;
   uint32_t localTile;
   uint32_t remoteTile;
   uint32_t localFSM;
 };
-struct TargetDirectDTEWaitTransaction {
+struct TargetDirectDTEWaitCommand {
   uint64_t event;
 };
-struct TargetDirectDTEFinishTransaction {};
+struct TargetDirectDTEFinishCommand {};
 
-using TargetTransactionPayload = std::variant<
-    TargetStridedDMATransaction, TargetGatherScatterTransaction,
-    TargetMemsetTransaction, TargetBit2FPTransaction, TargetMaskMoveTransaction,
-    TargetGemmTransaction, TargetElementwiseTransaction,
-    TargetReduceTransaction, TargetConvertTransaction, TargetConvTransaction,
-    TargetPoolTransaction, TargetUnpoolTransaction,
-    TargetTDMATransformTransaction, TargetPeripheralArgExtremaTransaction,
-    TargetPeripheralBilinearTransaction, TargetPeripheralLUTTransaction,
-    TargetPeripheralRandomTransaction, TargetPeripheralElementMaskTransaction,
-    TargetNCCJoinTransaction, TargetDirectDTEBeginTransaction,
-    TargetDirectDTESendTransaction, TargetDirectDTESendIssueTransaction,
-    TargetDirectDTEReceiveTransaction, TargetDirectDTEWaitTransaction,
-    TargetDirectDTEFinishTransaction>;
+using TargetCommandPayload = std::variant<
+    TargetStridedDMACommand, TargetGatherScatterCommand, TargetMemsetCommand,
+    TargetBit2FPCommand, TargetMaskMoveCommand, TargetGemmCommand,
+    TargetElementwiseCommand, TargetReduceCommand, TargetConvertCommand,
+    TargetConvCommand, TargetPoolCommand, TargetUnpoolCommand,
+    TargetTDMATransformCommand, TargetPeripheralArgExtremaCommand,
+    TargetPeripheralBilinearCommand, TargetPeripheralLUTCommand,
+    TargetPeripheralRandomCommand, TargetPeripheralElementMaskCommand,
+    TargetNCCJoinCommand, TargetDirectDTEBeginCommand,
+    TargetDirectDTESendCommand, TargetDirectDTESendIssueCommand,
+    TargetDirectDTEReceiveCommand, TargetDirectDTEWaitCommand,
+    TargetDirectDTEFinishCommand>;
 
 } // namespace target
 
@@ -281,7 +280,7 @@ enum class TargetCallResultType : uint8_t { Void, I64 };
 /// The real NCC engine reached by one registered target-call implementation.
 /// Absence means that the call does not submit an NCC engine command. This
 /// closed mapping is shared by profile instrumentation and static site-map
-/// publication; consumers must not recover it from symbol spellings.
+/// emission; consumers must not recover it from symbol spellings.
 enum class TargetCallTSMEngine : uint8_t {
   CT,
   NE,
@@ -294,7 +293,7 @@ enum class TargetCallTSMEngine : uint8_t {
 /// Typed issue-domain metadata owned by the target-call registry. NCC engine
 /// calls carry their worker in one exact registered argument position. Direct
 /// DTE carries no NCC worker because its completion is represented by its
-/// opaque event/wait transaction.
+/// opaque event and wait sequence.
 struct TargetCallIssueDomain {
   TargetCallTSMEngine engine;
   std::optional<size_t> nccWorkerArgument;
@@ -302,8 +301,8 @@ struct TargetCallIssueDomain {
       TargetNCCCompletionBehavior::None;
 };
 
-/// A semantic identity owned by typed compiler enums, never reconstructed
-/// from a symbol spelling by a consumer.
+/// Semantic classification encoded by typed compiler enums, never
+/// reconstructed from a symbol spelling by a consumer.
 using TargetCallSemantic =
     std::variant<TargetCallBuiltin, NumericElementwiseOperation,
                  NumericReduceOperation, TargetConvertOperation,
@@ -311,7 +310,7 @@ using TargetCallSemantic =
                  TargetUnpoolingOperation, TargetPeripheralOperation>;
 
 /// Exact public target-call ABI. The strings and signature widths are a
-/// compiler registry, not a serialized artifact or a packet description.
+/// compiler registry, not a serialized module or a packet description.
 struct TargetCallDescriptor {
   std::string symbol;
   TargetCallResultType result;
@@ -320,7 +319,7 @@ struct TargetCallDescriptor {
   std::optional<TargetCallIssueDomain> issueDomain;
 };
 
-struct TargetCallDecodeContext {
+struct TargetCallDecodeConfig {
   int64_t physicalTileCount;
 };
 
@@ -338,8 +337,7 @@ std::optional<TargetCallTSMEngine>
 getTargetCallTSMEngine(const TargetCallDescriptor &descriptor);
 llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine);
 
-const TargetCallDescriptor &
-getTargetCallDescriptor(TargetCallBuiltin call);
+const TargetCallDescriptor &getTargetCallDescriptor(TargetCallBuiltin call);
 const TargetCallDescriptor &
 getTargetCallDescriptor(NumericElementwiseOperation operation);
 const TargetCallDescriptor &
@@ -359,9 +357,9 @@ getTargetCallDescriptor(TargetPeripheralOperation operation);
 /// Decodes one exact ABI argument vector into the descriptor's typed payload.
 /// This is the only field-position factory shared by the JIT frontend and
 /// downstream functional models.
-llvm::Expected<target::TargetTransactionPayload>
+llvm::Expected<target::TargetCommandPayload>
 decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
-                        const TargetCallDecodeContext &context,
+                        const TargetCallDecodeConfig &config,
                         llvm::ArrayRef<uint64_t> arguments);
 
 /// Decodes the exact NCC worker carried by a registered issue call. Absence

@@ -241,7 +241,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 "run",
                 return_value=types.SimpleNamespace(
                     stdout=(
-                        "wafer-compile: published verified package with "
+                        "wafer-compile: wrote verified package with "
                         "num-partitions=1 physical-tiles=16"
                     ),
                     stderr="",

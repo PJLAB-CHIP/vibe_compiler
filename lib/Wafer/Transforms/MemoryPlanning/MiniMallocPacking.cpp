@@ -121,7 +121,7 @@ PackingResult solveWithMiniMalloc(const StaticPackingProblem &problem,
 
   // Canonicalize positive-size demands independently of input vector order.
   // The source demand index is restored after solving, so owner diagnostics
-  // and commits still address the original LifetimeDemand.
+  // and assigned offsets still address the original LifetimeDemand.
   constexpr unsigned kNotCanonical = std::numeric_limits<unsigned>::max();
   std::vector<unsigned> canonicalForOriginal(problem.demands.size(),
                                              kNotCanonical);

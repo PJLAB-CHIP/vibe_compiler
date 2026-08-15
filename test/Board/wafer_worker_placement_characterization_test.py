@@ -861,24 +861,24 @@ def main() -> int:
     assert cleanup_body.count(
         "WAFER_WP_REC_CLEANUP_ATTEMPT_COUNT"
     ) >= 2
-    failure_publish_start = carrier.index(
-        "static void wafer_wp_publish_launch_failure("
+    failure_write_start = carrier.index(
+        "static void wafer_wp_write_launch_failure("
     )
-    failure_publish_end = carrier.index(
-        "static int wafer_wp_decode_u32(", failure_publish_start
+    failure_write_end = carrier.index(
+        "static int wafer_wp_decode_u32(", failure_write_start
     )
-    failure_publish_body = carrier[
-        failure_publish_start:failure_publish_end
+    failure_write_body = carrier[
+        failure_write_start:failure_write_end
     ]
-    assert failure_publish_body.count(
+    assert failure_write_body.count(
         "wafer_wp_bounded_failure_cleanup("
     ) == 1
-    assert "TsmWaitfinish" not in failure_publish_body
+    assert "TsmWaitfinish" not in failure_write_body
     main_start = carrier.index("wafer_tx81_worker_placement_probe(")
     main_body = carrier[main_start:]
-    assert main_body.count("wafer_wp_publish_launch_failure(") == 3
+    assert main_body.count("wafer_wp_write_launch_failure(") == 3
     assert (
-        main_body.rindex("wafer_wp_publish_launch_failure(")
+        main_body.rindex("wafer_wp_write_launch_failure(")
         < main_body.index("wafer_wp_confirm_matching_joins(")
     )
     assert "attempted_issue_count = ordinal + 1U" in main_body

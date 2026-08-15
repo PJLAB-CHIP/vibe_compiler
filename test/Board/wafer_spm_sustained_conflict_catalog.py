@@ -2,7 +2,7 @@
 """Typed sustained CT/RDMA SPM pilot with matched port-PMU response.
 
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   A rank-one package with three 2 MiB host-visible resources and a typed
   characterization group selected by work size and reciprocal issue order.
 - Current stage responsibility:
@@ -10,7 +10,7 @@ Pipeline position:
   serial/window) from compact, disjoint 4 KiB CT/RDMA operand cells.  For
   each row, read back the RDMA-written range with the same number of WDMA
   packets and bytes while sampling the owner-backed SPM port-0/port-6 PMU.
-- Output artifact / IR:
+- Output IR / files:
   Exact full-SPM snapshots plus versioned device records containing actual
   resource addresses, instruction counts, completion state, pair-only NCC
   PMU, and stable raw SPM port-counter snapshots with restored enable scope.

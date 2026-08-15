@@ -252,7 +252,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         batches = {step.batch for step in steps}
         self.assertTrue(
             {
-                "preflight-profile-heartbeat",
+                "validation-profile-heartbeat",
                 "rank-one-instruction",
                 "rank-one-datamove",
                 "rank-one-memory",
@@ -690,7 +690,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             path.write_bytes(name.encode())
             tools[name] = path
         test = RUNNER.RegisteredTest(
-            "wafer-board-compiler-optimization-artifact-sample",
+            "wafer-board-compiler-optimization-output-sample",
             (
                 "python3",
                 "probe.py",
@@ -711,7 +711,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             30.0,
             "board-0",
         )
-        archived = RUNNER.archive_step_artifacts(
+        archived = RUNNER.collect_step_evidence(
             test, self.root / "archived"
         )
         self.assertIsNotNone(archived)
@@ -784,7 +784,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         )
 
         destination = self.root / "archived-profile"
-        archived = RUNNER.archive_step_artifacts(test, destination)
+        archived = RUNNER.collect_step_evidence(test, destination)
 
         self.assertIsNotNone(archived)
         assert archived is not None
@@ -841,12 +841,12 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
 
         with self.assertRaisesRegex(
             RUNNER.CalibrationRunnerError,
-            "complete three-file public artifact group",
+            "complete three report files",
         ):
-            RUNNER.archive_step_artifacts(test, destination)
+            RUNNER.collect_step_evidence(test, destination)
         self.assertFalse(destination.exists())
 
-    def test_archives_executable_artifacts_for_every_pending_case(
+    def test_archives_executable_files_for_every_pending_case(
         self,
     ) -> None:
         work_dir = self.root / "pending-board-work"
@@ -856,7 +856,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         (work_dir / "device.so").write_bytes(b"ELF")
         (work_dir / "observations.json").write_text("{}\n")
         test = RUNNER.RegisteredTest(
-            "wafer-board-pending-artifact-sample",
+            "wafer-board-pending-output-sample",
             (
                 "python3",
                 "probe.py",
@@ -869,7 +869,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
         )
 
         destination = self.root / "archived-pending"
-        archived = RUNNER.archive_step_artifacts(test, destination)
+        archived = RUNNER.collect_step_evidence(test, destination)
 
         self.assertIsNotNone(archived)
         assert archived is not None
@@ -890,7 +890,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             },
         )
 
-    def test_archives_collective_traffic_and_engine_executable_artifacts(
+    def test_archives_collective_traffic_and_engine_executable_files(
         self,
     ) -> None:
         work_dir = self.root / "board-work"
@@ -905,7 +905,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
             )
         ):
             test = RUNNER.RegisteredTest(
-                f"wafer-board-artifact-sample-{index}",
+                f"wafer-board-output-sample-{index}",
                 (
                     "python3",
                     "probe.py",
@@ -917,7 +917,7 @@ class HardwareCalibrationBatchRunnerTest(unittest.TestCase):
                 "board-0",
             )
             destination = self.root / f"archived-{index}"
-            archived = RUNNER.archive_step_artifacts(test, destination)
+            archived = RUNNER.collect_step_evidence(test, destination)
             self.assertIsNotNone(archived)
             self.assertTrue((destination / "source.mlir").is_file())
             self.assertTrue((destination / "request.meta").is_file())

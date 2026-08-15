@@ -33,18 +33,17 @@ struct StaticFixedSlotPipelineCandidate {
 /// are supported; every wait remains independent of NCC completion and extends
 /// its endpoint buffers' lifetimes. An NCC-produced DTE buffer requires a
 /// preceding typed participant join whose workers exactly own pending source
-/// issues; the join remains an explicit handoff stage. A leading join may
-/// represent the exact loop-tail pending frontier only when every recurrence
-/// conflict is a loop-local allocation that slot rotation can separate; that
-/// transient backedge completion is rebuilt from the pipelined kernel rather
-/// than copied as a steady-state observer. Overlapping endpoint windows, extra
-/// join observers, synchronous NCC writeback, unknown effects/aliases, dynamic
-/// allocation and unsupported recurrence are rejected.
+/// issues; the join remains an explicit synchronization stage. A leading join
+/// may represent the exact loop-tail pending issue set only when every
+/// recurrence conflict is a loop-local allocation that slot rotation can
+/// separate; that transient backedge completion is rebuilt from the pipelined
+/// kernel rather than copied as a steady-state observer. Overlapping endpoint
+/// windows, extra join observers, synchronous NCC writeback, unknown
+/// effects/aliases, dynamic allocation and unsupported recurrence are rejected.
 ///
 /// A single-iteration loop returns an independently owned identity clone with
 /// `stageCount == 1` and no slot allocations. It is not a buffering
-/// alternative; callers may discard that identity when enumerating a
-/// candidate frontier.
+/// alternative; callers may discard that clone when enumerating candidates.
 ///
 /// On success, loop-local static allocations become real loop-external slot
 /// allocations, slot permutation is represented by `scf.for` iter_args/yield,
@@ -59,12 +58,12 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
 
 /// Specialize rotating Direct-DTE buffers in a complete fixed-slot rank tuple.
 ///
-/// Every admitted loop has static positive bounds and a bounded, purely
+/// Every selected loop has static positive bounds and a bounded, purely
 /// periodic loop-carried allocation relation for each Direct-DTE endpoint.
 /// All affected loops are modulo-unrolled by one common period so paired rank
 /// sites retain an isomorphic static execution shape; a residual tail is fully
 /// unrolled. Each surviving DTE site must then resolve through an exact
-/// identity recurrence to one planned SPM allocation. The modules are updated
+/// allocation recurrence to one planned SPM allocation. The modules are updated
 /// atomically only on success.
 mlir::LogicalResult
 specializePeriodicDirectDTESites(llvm::ArrayRef<mlir::ModuleOp> rankModules,

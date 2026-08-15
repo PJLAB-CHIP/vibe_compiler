@@ -39,7 +39,7 @@ struct WholeDAGEdgeDemand {
       producerShardOwnership;
 };
 
-/// Query-local, layout-independent logical demand artifact for one placement.
+/// Query-local, layout-independent logical demand for one placement.
 /// DPS init edges and support-chain edges are absent because their typed
 /// consumer/support lowering contracts own those dependencies.
 struct WholeDAGEdgeDemandPlan {

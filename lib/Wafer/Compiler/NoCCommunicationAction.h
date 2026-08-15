@@ -4,7 +4,7 @@
 #define WAFER_COMPILER_NOCCOMMUNICATIONACTION_H
 
 #include "CoordinatedCommunicationAction.h"
-#include "NoCIntermediateDataflow.h"
+#include "NoCIntermediateRouting.h"
 
 #include "mlir/Support/LogicalResult.h"
 
@@ -34,7 +34,7 @@ unsigned materializeNoCTypedBoundaryFanouts(
 /// Put each newly inserted peer receive and its static allocation ahead of
 /// every transport issue in the same structured block when current SSA/effects
 /// prove that movement safe. Cross-block progress remains an all-rank Direct
-/// DTE admission responsibility.
+/// DTE validation responsibility.
 mlir::LogicalResult
 normalizeNoCPeerReceivePreparation(llvm::ArrayRef<mlir::ModuleOp> rankModules,
                                    std::string *failureReason = nullptr);

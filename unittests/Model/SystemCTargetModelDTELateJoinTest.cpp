@@ -45,14 +45,15 @@ constexpr const char *getExpectedConflict() {
 TEST(SystemCTargetModelDTELateJoinTest,
      ParticipantJoinAfterIssueCannotRetroactivelyOrderTransfer) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(
           diagnostics, TargetIdentityId::waferTx81SingleCard());
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
 
   llvm::Expected<test::LateJoinDTERewriteResult> rewrite =
-      test::insertPendingComputeWithLateJoin(*bundle, getAccessMode());
+      test::insertPendingComputeWithLateJoin(*targetLLVMModules,
+                                             getAccessMode());
   ASSERT_TRUE(static_cast<bool>(rewrite))
       << llvm::toString(rewrite.takeError());
   EXPECT_EQ(rewrite->insertedComputeCount, 16u);
@@ -64,11 +65,11 @@ TEST(SystemCTargetModelDTELateJoinTest,
   EXPECT_EQ(rewrite->insertedLateJoinCount, 16u);
 
   llvm::Expected<test::DirectDTEInvocationData> invocation =
-      test::buildDirectDTEInvocationData(*bundle);
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, invocation->arguments);
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
 

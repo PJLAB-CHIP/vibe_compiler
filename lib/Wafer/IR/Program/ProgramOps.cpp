@@ -3,7 +3,7 @@
 #include "Wafer/IR/Target/PhysicalTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 
-#include "../Common/OpVerifierUtils.h"
+#include "../Common/WaferIRVerification.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
@@ -137,9 +137,8 @@ mlir::LogicalResult CardProgramOp::verify() {
     auto tile = mlir::dyn_cast<TileProgramOp>(operation);
     if (!tile) {
       if (!isCardSharedDeclaration(operation))
-        return emitOpError(
-            "body may contain only card-shared declarations and "
-            "wafer.tile.program operations");
+        return emitOpError("body may contain only card-shared declarations and "
+                           "wafer.tile.program operations");
       continue;
     }
     PhysicalTileId tileId(tile.getTileIdAttr().getInt());

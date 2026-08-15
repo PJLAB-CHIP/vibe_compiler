@@ -33,8 +33,8 @@ uint64_t saturatingMultiply(uint64_t lhs, uint64_t rhs) {
 }
 
 uint64_t getStaticElementWork(const CardDAGNode &node) {
-  if (auto linalg = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(
-          node.operation)) {
+  if (auto linalg =
+          mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(node.operation)) {
     llvm::SmallVector<int64_t, 4> ranges = linalg.getStaticLoopRanges();
     if (!ranges.empty() &&
         llvm::all_of(ranges, [](int64_t extent) { return extent > 0; })) {
@@ -164,11 +164,12 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
         movement.route.empty() ||
         movement.route.front().source != movement.sourceTile ||
         movement.route.back().destination != movement.destinationTile ||
-        llvm::any_of(llvm::enumerate(movement.route), [&](auto indexed) {
-          return indexed.index() != 0 &&
-                 movement.route[indexed.index() - 1].destination !=
-                     indexed.value().source;
-        }) ||
+        llvm::any_of(llvm::enumerate(movement.route),
+                     [&](auto indexed) {
+                       return indexed.index() != 0 &&
+                              movement.route[indexed.index() - 1].destination !=
+                                  indexed.value().source;
+                     }) ||
         !available.contains(movement.sourceTile.getValue()) ||
         !available.contains(movement.destinationTile.getValue()) ||
         !llvm::is_contained(result.nodePlacements[edge->producer].tiles,
@@ -254,10 +255,9 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
   WholeDAGTime ddrAvailableTime = 0;
   llvm::SmallVector<WholeDAGTime, 32> pendingMovementFinishes;
 
-  auto delayProducerSlotReuse = [&](const CardDAGEdge &edge,
-                                    SymbolicWaveClass completed,
-                                    WholeDAGTime finish,
-                                    uint8_t bufferCount) -> mlir::LogicalResult {
+  auto delayProducerSlotReuse =
+      [&](const CardDAGEdge &edge, SymbolicWaveClass completed,
+          WholeDAGTime finish, uint8_t bufferCount) -> mlir::LogicalResult {
     if (bufferCount != 1 || completed.kind == SymbolicWaveKind::Tail)
       return mlir::success();
     SymbolicWaveKind next = completed.kind == SymbolicWaveKind::Prologue
@@ -309,9 +309,10 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
     }
 
     pendingMovementFinishes.erase(
-        llvm::remove_if(pendingMovementFinishes, [&](WholeDAGTime finish) {
-          return finish <= state->getCurrentTime();
-        }),
+        llvm::remove_if(pendingMovementFinishes,
+                        [&](WholeDAGTime finish) {
+                          return finish <= state->getCurrentTime();
+                        }),
         pendingMovementFinishes.end());
     std::optional<WholeDAGTime> nextCompute;
     if (!state->getRunningWaves().empty())
@@ -355,10 +356,9 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
           continue;
         WholeDAGTime start = event->time;
         for (const PhysicalTileDirectedLink &link : movement.route)
-          start = std::max(
-              start,
-              linkAvailableTimes[{link.source.getValue(),
-                                  link.destination.getValue()}]);
+          start = std::max(start,
+                           linkAvailableTimes[{link.source.getValue(),
+                                               link.destination.getValue()}]);
         if (movement.duration >
             std::numeric_limits<WholeDAGTime>::max() - start) {
           setFailure(failureReason,
@@ -370,12 +370,12 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
           linkAvailableTimes[{link.source.getValue(),
                               link.destination.getValue()}] = finish;
           result.resourceReservations.push_back(WholeDAGResourceReservation{
-              WholeDAGReservationResource::NoCLink, movement.edge,
-              link.source, link.destination, start, finish});
+              WholeDAGReservationResource::NoCLink, movement.edge, link.source,
+              link.destination, start, finish});
         }
         pendingMovementFinishes.push_back(finish);
-        result.peerMovementWork = saturatingMultiply(
-            movement.duration, movement.route.size()) >
+        result.peerMovementWork =
+            saturatingMultiply(movement.duration, movement.route.size()) >
                     std::numeric_limits<uint64_t>::max() -
                         result.peerMovementWork
                 ? std::numeric_limits<uint64_t>::max()
@@ -386,8 +386,8 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
                 SymbolicWaveClass{edge->consumer, completed.kind}, finish,
                 failureReason)))
           return mlir::failure();
-        if (mlir::failed(delayProducerSlotReuse(
-                *edge, completed, finish, movement.bufferCount)))
+        if (mlir::failed(delayProducerSlotReuse(*edge, completed, finish,
+                                                movement.bufferCount)))
           return mlir::failure();
       }
 
@@ -397,8 +397,7 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
           continue;
         WholeDAGTime start = event->time;
         if (movement.resource == WholeDAGLocalMovementResource::TileSPM)
-          start = std::max(start,
-                           spmAvailableTimes[movement.tile.getValue()]);
+          start = std::max(start, spmAvailableTimes[movement.tile.getValue()]);
         else
           start = std::max(start, ddrAvailableTime);
         if (movement.duration >
@@ -411,17 +410,15 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
         if (movement.resource == WholeDAGLocalMovementResource::TileSPM) {
           spmAvailableTimes[movement.tile.getValue()] = finish;
           result.spmMovementWork =
-              movement.duration >
-                      std::numeric_limits<uint64_t>::max() -
-                          result.spmMovementWork
+              movement.duration > std::numeric_limits<uint64_t>::max() -
+                                      result.spmMovementWork
                   ? std::numeric_limits<uint64_t>::max()
                   : result.spmMovementWork + movement.duration;
         } else {
           ddrAvailableTime = finish;
           result.ddrMovementWork =
-              movement.duration >
-                      std::numeric_limits<uint64_t>::max() -
-                          result.ddrMovementWork
+              movement.duration > std::numeric_limits<uint64_t>::max() -
+                                      result.ddrMovementWork
                   ? std::numeric_limits<uint64_t>::max()
                   : result.ddrMovementWork + movement.duration;
         }
@@ -434,13 +431,13 @@ mlir::FailureOr<WholeDAGCandidateSchedule> scheduleWholeDAGCandidate(
         if (mlir::failed(state->delayWaveReadinessUntil(
                 SymbolicWaveClass{edge->consumer, completed.kind}, finish,
                 failureReason)) ||
-            mlir::failed(delayProducerSlotReuse(
-                *edge, completed, finish, movement.bufferCount)))
+            mlir::failed(delayProducerSlotReuse(*edge, completed, finish,
+                                                movement.bufferCount)))
           return mlir::failure();
       }
     }
 
-    // Publish all values produced at this event before releasing values whose
+    // Record all values produced at this event before releasing values whose
     // consumers complete at the same event.  This preserves the conservative
     // instantaneous high-water when two class buffers exchange ownership.
     for (SymbolicWaveClass completed : event->completedWaves) {

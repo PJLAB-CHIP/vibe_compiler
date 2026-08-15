@@ -191,93 +191,87 @@ struct ConstantPredicateSelectPlan {
 // own conversion pattern, making the result independent of worklist order.
 static std::optional<ConstantPredicateSelectPlan>
 getConstantPredicateSelectPlan(ComputeElementwiseOp op) {
-    if (op.getKind() != ComputeElementwiseKind::Select ||
-        op.getInputs().size() != 3)
-      return std::nullopt;
+  if (op.getKind() != ComputeElementwiseKind::Select ||
+      op.getInputs().size() != 3)
+    return std::nullopt;
 
-    mlir::Value predicate = op.getInputs().front();
-    auto predicateAlloc = predicate.getDefiningOp<mlir::memref::AllocOp>();
-    if (!predicateAlloc)
-      return std::nullopt;
+  mlir::Value predicate = op.getInputs().front();
+  auto predicateAlloc = predicate.getDefiningOp<mlir::memref::AllocOp>();
+  if (!predicateAlloc)
+    return std::nullopt;
 
-    mlir::OpOperand *selectPredicateUse = &op->getOpOperand(0);
-    ComputeFillOp sourcePredicateFill;
-    InstrFillOp loweredPredicateFill;
-    mlir::Value predicateValue;
-    unsigned selectUseCount = 0;
-    for (mlir::OpOperand &use : predicate.getUses()) {
-      if (&use == selectPredicateUse) {
-        ++selectUseCount;
-        continue;
-      }
-      mlir::Value fillValue;
-      if (auto fill = mlir::dyn_cast<ComputeFillOp>(use.getOwner())) {
-        if (&use != &fill.getDestMutable() || sourcePredicateFill)
-          return std::nullopt;
-        sourcePredicateFill = fill;
-        fillValue = fill.getValue();
-      } else if (auto fill = mlir::dyn_cast<InstrFillOp>(use.getOwner())) {
-        if (&use != &fill.getDestMutable() || loweredPredicateFill)
-          return std::nullopt;
-        loweredPredicateFill = fill;
-        fillValue = fill.getValue();
-      } else {
-        return std::nullopt;
-      }
-      if (predicateValue && predicateValue != fillValue)
-        return std::nullopt;
-      predicateValue = fillValue;
+  mlir::OpOperand *selectPredicateUse = &op->getOpOperand(0);
+  ComputeFillOp sourcePredicateFill;
+  InstrFillOp loweredPredicateFill;
+  mlir::Value predicateValue;
+  unsigned selectUseCount = 0;
+  for (mlir::OpOperand &use : predicate.getUses()) {
+    if (&use == selectPredicateUse) {
+      ++selectUseCount;
+      continue;
     }
-    if (selectUseCount != 1 ||
-        (!sourcePredicateFill && !loweredPredicateFill))
-      return std::nullopt;
-
-    for (mlir::Operation *predicateFill :
-         {sourcePredicateFill.getOperation(),
-          loweredPredicateFill.getOperation()}) {
-      if (!predicateFill)
-        continue;
-      if (predicateFill->getBlock() != op->getBlock() ||
-          !predicateFill->isBeforeInBlock(op))
+    mlir::Value fillValue;
+    if (auto fill = mlir::dyn_cast<ComputeFillOp>(use.getOwner())) {
+      if (&use != &fill.getDestMutable() || sourcePredicateFill)
         return std::nullopt;
+      sourcePredicateFill = fill;
+      fillValue = fill.getValue();
+    } else if (auto fill = mlir::dyn_cast<InstrFillOp>(use.getOwner())) {
+      if (&use != &fill.getDestMutable() || loweredPredicateFill)
+        return std::nullopt;
+      loweredPredicateFill = fill;
+      fillValue = fill.getValue();
+    } else {
+      return std::nullopt;
     }
-
-    auto constant =
-        predicateValue.getDefiningOp<mlir::arith::ConstantOp>();
-    auto valueAttr =
-        constant ? mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue())
-                 : mlir::IntegerAttr{};
-    if (!constant || !constant.getType().isInteger(1) || !valueAttr ||
-        !valueAttr.getType().isInteger(1))
+    if (predicateValue && predicateValue != fillValue)
       return std::nullopt;
+    predicateValue = fillValue;
+  }
+  if (selectUseCount != 1 || (!sourcePredicateFill && !loweredPredicateFill))
+    return std::nullopt;
 
-    unsigned selectedInputIndex = valueAttr.getValue().isZero() ? 2 : 1;
-    mlir::Value selected = op.getInputs()[selectedInputIndex];
-    auto resultType =
-        mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
-    auto selectedType = mlir::dyn_cast<mlir::MemRefType>(selected.getType());
-    if (!resultType || !selectedType || selectedType != resultType)
+  for (mlir::Operation *predicateFill : {sourcePredicateFill.getOperation(),
+                                         loweredPredicateFill.getOperation()}) {
+    if (!predicateFill)
+      continue;
+    if (predicateFill->getBlock() != op->getBlock() ||
+        !predicateFill->isBeforeInBlock(op))
       return std::nullopt;
+  }
 
-    if (mlir::ArrayAttr maps = op.getIndexingMapsAttr()) {
-      if (maps.size() != op.getInputs().size() + 1)
-        return std::nullopt;
-      auto hasIdentityMap = [&](unsigned mapIndex) {
-        auto mapAttr = mlir::dyn_cast<mlir::AffineMapAttr>(maps[mapIndex]);
-        if (!mapAttr)
-          return false;
-        mlir::AffineMap map = mapAttr.getValue();
-        return map.getNumDims() == resultType.getRank() &&
-               map.getNumSymbols() == 0 &&
-               map.getNumResults() == resultType.getRank() && map.isIdentity();
-      };
-      if (!hasIdentityMap(selectedInputIndex) ||
-          !hasIdentityMap(maps.size() - 1))
-        return std::nullopt;
-    }
-    return ConstantPredicateSelectPlan{predicateAlloc, sourcePredicateFill,
-                                       loweredPredicateFill, constant,
-                                       selected};
+  auto constant = predicateValue.getDefiningOp<mlir::arith::ConstantOp>();
+  auto valueAttr = constant
+                       ? mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue())
+                       : mlir::IntegerAttr{};
+  if (!constant || !constant.getType().isInteger(1) || !valueAttr ||
+      !valueAttr.getType().isInteger(1))
+    return std::nullopt;
+
+  unsigned selectedInputIndex = valueAttr.getValue().isZero() ? 2 : 1;
+  mlir::Value selected = op.getInputs()[selectedInputIndex];
+  auto resultType = mlir::dyn_cast<mlir::MemRefType>(op.getResult().getType());
+  auto selectedType = mlir::dyn_cast<mlir::MemRefType>(selected.getType());
+  if (!resultType || !selectedType || selectedType != resultType)
+    return std::nullopt;
+
+  if (mlir::ArrayAttr maps = op.getIndexingMapsAttr()) {
+    if (maps.size() != op.getInputs().size() + 1)
+      return std::nullopt;
+    auto hasIdentityMap = [&](unsigned mapIndex) {
+      auto mapAttr = mlir::dyn_cast<mlir::AffineMapAttr>(maps[mapIndex]);
+      if (!mapAttr)
+        return false;
+      mlir::AffineMap map = mapAttr.getValue();
+      return map.getNumDims() == resultType.getRank() &&
+             map.getNumSymbols() == 0 &&
+             map.getNumResults() == resultType.getRank() && map.isIdentity();
+    };
+    if (!hasIdentityMap(selectedInputIndex) || !hasIdentityMap(maps.size() - 1))
+      return std::nullopt;
+  }
+  return ConstantPredicateSelectPlan{predicateAlloc, sourcePredicateFill,
+                                     loweredPredicateFill, constant, selected};
 }
 
 class ElementwiseLowering
@@ -354,7 +348,7 @@ public:
       return mlir::success();
     }
 
-    // Preflight every map before creating an allocation or an instruction.
+    // Validate every map before creating an allocation or an instruction.
     // A failed conversion therefore cannot leave a partially materialized
     // operand sequence in the pattern rewriter.
     llvm::SmallVector<InputMovementPlan, 3> movementPlans;
@@ -462,7 +456,7 @@ public:
       instrKind = *resolvedInstrKind;
     }
 
-    // Select has a movement-based target sequence. Preflight its copy
+    // Select has a movement-based target sequence. Validate its copy
     // descriptors as well, still before emitting any effect.
     llvm::SmallVector<MovementDescriptorPair> selectCopyDescriptors;
     if (op.getKind() == ComputeElementwiseKind::Select) {

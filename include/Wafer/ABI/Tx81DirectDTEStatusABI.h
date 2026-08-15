@@ -6,9 +6,8 @@
 #include <stdint.h>
 
 /* The value remains at offset zero and owns one complete TX81 cache line so
- * Kcore clean-and-invalidate publication cannot touch another resource. */
-#define WAFER_TX81_DIRECT_DTE_STATUS_ABI                                    \
-  "wafer-direct-dte-status-v2"
+ * Kcore cache writeback and invalidation cannot touch another resource. */
+#define WAFER_TX81_DIRECT_DTE_STATUS_ABI "wafer-direct-dte-status-v2"
 
 enum {
   WAFER_TX81_DIRECT_DTE_STATUS_PENDING = 0,
@@ -28,23 +27,23 @@ enum {
 #error "TX81 Direct DTE status value must remain at offset zero"
 #endif
 
-#if WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES !=                          \
+#if WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES !=                              \
     WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES
 #error "TX81 Direct DTE status storage must own exactly one cache line"
 #endif
 
-#if WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT !=                      \
+#if WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT !=                          \
     WAFER_TX81_DIRECT_DTE_STATUS_CACHE_LINE_BYTES
 #error "TX81 Direct DTE status storage must be cache-line aligned"
 #endif
 
-#if WAFER_TX81_DIRECT_DTE_STATUS_VALUE_OFFSET +                            \
-        WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES >                          \
+#if WAFER_TX81_DIRECT_DTE_STATUS_VALUE_OFFSET +                                \
+        WAFER_TX81_DIRECT_DTE_STATUS_VALUE_BYTES >                             \
     WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES
 #error "TX81 Direct DTE status value must fit in its owned storage"
 #endif
 
-#if (WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT &                      \
+#if (WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT &                          \
      (WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT - 1)) != 0
 #error "TX81 Direct DTE status alignment must be a power of two"
 #endif

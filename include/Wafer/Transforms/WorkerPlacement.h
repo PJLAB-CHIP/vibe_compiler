@@ -36,10 +36,10 @@ struct NCCWorkerPlacementCandidate {
 /// Lanes are assigned deterministically over the finite typed worker domain.
 /// Existing compiler-generated typed joins are discarded in the private clone
 /// and rebuilt from the resulting actual workers and effects, so cross-domain
-/// observers and terminal publication name exactly the pending participants.
+/// observers and terminal joins name exactly the pending participants.
 ///
 /// The source is never modified. Direct-DTE issues remain on their typed
-/// engine and are admitted only when every issue has one exact same-block
+/// engine and are selected only when every issue has one exact same-block
 /// token wait; their memory effects still participate in the rebuilt
 /// cross-engine joins. Existing nonzero placement, physical SPM/DDR offsets,
 /// synchronous host writeback, legacy fences, or unsupported control/effect

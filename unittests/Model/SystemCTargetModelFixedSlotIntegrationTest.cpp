@@ -2,7 +2,7 @@
 
 #include "Wafer/Model/SystemCTargetModel.h"
 
-#include "Wafer/Compiler/ExecutableBundleInternal.h"
+#include "Wafer/Compiler/PhysicalTileExecutablesInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
@@ -100,7 +100,7 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
   return context;
 }
 
-llvm::Expected<ExecutableBundle>
+llvm::Expected<PhysicalTileExecutables>
 buildFixedSlotExecutableForModelTest(std::string &diagnosticText) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
@@ -142,13 +142,13 @@ module {
   program.programUserInputCount = 2;
   program.distributedInputs = {replicatedBoundary(0), replicatedBoundary(1)};
   program.distributedOutputs = {replicatedBoundary(0)};
-  llvm::Expected<ExecutionConfig> config = ExecutionConfig::createForSingleCard(
-      1, RuntimeLaunchKind::Kernel);
+  llvm::Expected<ExecutionConfig> config =
+      ExecutionConfig::createForSingleCard(1, RuntimeLaunchKind::Kernel);
   if (!config)
     return config.takeError();
 
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  return wafer::compiler::detail::buildExecutableBundle(
+  return wafer::compiler::detail::buildPhysicalTileExecutables(
       context, *tensorProgram, std::move(program), *config, diagnostics,
       std::nullopt,
       wafer::compiler::detail::WholeVariantSelectionMode::
@@ -168,16 +168,15 @@ size_t countCallsTo(const llvm::Module &module, llvm::StringRef symbol) {
   return count;
 }
 
-class RecordingTargetSink final : public TargetTransactionSink {
+class RecordingTargetSink final : public TargetCommandSink {
 public:
   llvm::Error begin(const TargetCallInvocationDescriptor &descriptor) override {
     invocation = descriptor;
     return llvm::Error::success();
   }
 
-  llvm::Expected<uint64_t>
-  issue(const TargetTransaction &transaction) override {
-    transactions.push_back(transaction);
+  llvm::Expected<uint64_t> issue(const TargetCommand &command) override {
+    commands.push_back(command);
     return nextEvent++;
   }
 
@@ -186,17 +185,19 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error prepareCommit() override { return llvm::Error::success(); }
-  void commit() override { committed = true; }
+  llvm::Error completeInvocation() override {
+    invocationCompleted = true;
+    return llvm::Error::success();
+  }
   void abort(llvm::StringRef diagnostic) override {
     aborted = diagnostic.str();
   }
 
   std::optional<TargetCallInvocationDescriptor> invocation;
-  std::vector<TargetTransaction> transactions;
+  std::vector<TargetCommand> commands;
   std::vector<int64_t> terminalRanks;
   uint64_t nextEvent = 1;
-  bool committed = false;
+  bool invocationCompleted = false;
   std::string aborted;
 };
 
@@ -221,7 +222,7 @@ const ABIRange *findContainingRange(llvm::ArrayRef<ABIRange> ranges,
 TEST(SystemCTargetModelFixedSlotIntegrationTest,
      ExecutesRotatingSlotsWithOnlyTerminalWorkerJoin) {
   std::string diagnosticText;
-  llvm::Expected<ExecutableBundle> executable =
+  llvm::Expected<PhysicalTileExecutables> executable =
       buildFixedSlotExecutableForModelTest(diagnosticText);
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticText << llvm::toString(executable.takeError());
@@ -298,32 +299,33 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   EXPECT_EQ(spmOffsets.size(), 6u);
 
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<TargetLLVMModuleBundle> targetBundle =
-      compileExecutableBundleToTargetLLVMModules(*executable, diagnostics);
-  ASSERT_TRUE(static_cast<bool>(targetBundle))
-      << diagnosticText << llvm::toString(targetBundle.takeError());
-  ASSERT_EQ(targetBundle->getModules().size(), 1u);
-  const TargetLLVMModule &targetModule = targetBundle->getModules().front();
+  llvm::Expected<TargetLLVMModules> targetModules =
+      compilePhysicalTileExecutablesToTargetLLVMModules(*executable,
+                                                        diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetModules))
+      << diagnosticText << llvm::toString(targetModules.takeError());
+  ASSERT_EQ(targetModules->getModules().size(), 1u);
+  const TargetLLVMModule &targetModule = targetModules->getModules().front();
   EXPECT_EQ(targetModule.getTargetIdentityId(),
             executable->getExecutionConfig().getTargetIdentityId());
 
   const llvm::Module &llvmModule = targetModule.getModule();
   const size_t targetAddCallCount = countCallsTo(
-      llvmModule, getTargetCallDescriptor(NumericElementwiseOperation::Add)
-                      .symbol);
+      llvmModule,
+      getTargetCallDescriptor(NumericElementwiseOperation::Add).symbol);
   EXPECT_EQ(targetAddCallCount, 3u);
-  EXPECT_EQ(countCallsTo(llvmModule,
-                         getTargetCallDescriptor(TargetCallBuiltin::RDMA)
-                             .symbol),
-            targetAddCallCount * 2);
-  EXPECT_EQ(countCallsTo(llvmModule,
-                         getTargetCallDescriptor(TargetCallBuiltin::WDMA)
-                             .symbol),
-            targetAddCallCount);
-  EXPECT_EQ(countCallsTo(llvmModule,
-                         getTargetCallDescriptor(TargetCallBuiltin::NCCJoin)
-                             .symbol),
-            1u);
+  EXPECT_EQ(
+      countCallsTo(llvmModule,
+                   getTargetCallDescriptor(TargetCallBuiltin::RDMA).symbol),
+      targetAddCallCount * 2);
+  EXPECT_EQ(
+      countCallsTo(llvmModule,
+                   getTargetCallDescriptor(TargetCallBuiltin::WDMA).symbol),
+      targetAddCallCount);
+  EXPECT_EQ(
+      countCallsTo(llvmModule,
+                   getTargetCallDescriptor(TargetCallBuiltin::NCCJoin).symbol),
+      1u);
 
   TargetCallRankArguments rankArguments{0, {}};
   std::vector<ABIRange> abiRanges;
@@ -358,35 +360,34 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
 
   RecordingTargetSink recording;
   llvm::Expected<TargetCallExecutionResult> decoded =
-      executeTargetCallFrontend(*targetBundle, arguments, recording);
+      executeTargetCallFrontend(*targetModules, arguments, recording);
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
-  EXPECT_TRUE(recording.committed);
+  EXPECT_TRUE(recording.invocationCompleted);
   EXPECT_TRUE(recording.aborted.empty());
   ASSERT_TRUE(recording.invocation.has_value());
   EXPECT_EQ(recording.invocation->targetIdentity,
             TargetIdentityId::waferTx81SingleCard());
   EXPECT_EQ(recording.terminalRanks, std::vector<int64_t>({0}));
-  EXPECT_EQ(decoded->issuedTransactionCount, recording.transactions.size());
+  EXPECT_EQ(decoded->issuedCommandCount, recording.commands.size());
 
   std::array<std::set<uint64_t>, 2> inputSPMSlots;
   std::set<uint64_t> outputSPMSlots;
-  std::vector<TargetElementwiseTransaction> adds;
+  std::vector<TargetElementwiseCommand> adds;
   std::vector<char> issueKinds;
   size_t readCount = 0;
   size_t writeCount = 0;
   size_t joinCount = 0;
-  size_t firstWrite = recording.transactions.size();
+  size_t firstWrite = recording.commands.size();
   size_t lastRead = 0;
-  for (auto [index, transaction] : llvm::enumerate(recording.transactions)) {
-    EXPECT_EQ(transaction.logicalRank, 0);
-    EXPECT_EQ(transaction.issueOrdinal, index);
+  for (auto [index, command] : llvm::enumerate(recording.commands)) {
+    EXPECT_EQ(command.logicalRank, 0);
+    EXPECT_EQ(command.issueOrdinal, index);
     if (const auto *dma =
-            std::get_if<TargetStridedDMATransaction>(&transaction.payload)) {
-      ASSERT_TRUE(transaction.nccIssueDomain.has_value());
-      EXPECT_EQ(transaction.nccIssueDomain->worker,
-                TargetNCCWorker::Worker1);
-      EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
+            std::get_if<TargetStridedDMACommand>(&command.payload)) {
+      ASSERT_TRUE(command.nccIssueDomain.has_value());
+      EXPECT_EQ(command.nccIssueDomain->worker, TargetNCCWorker::Worker1);
+      EXPECT_EQ(command.nccIssueDomain->completionBehavior,
                 TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
       if (dma->direction == TargetDMADirection::Read) {
         ++readCount;
@@ -414,12 +415,11 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
       continue;
     }
     if (const auto *add =
-            std::get_if<TargetElementwiseTransaction>(&transaction.payload)) {
-      ASSERT_TRUE(transaction.nccIssueDomain.has_value());
-      EXPECT_EQ(transaction.nccIssueDomain->engine, TargetCallTSMEngine::CT);
-      EXPECT_EQ(transaction.nccIssueDomain->worker,
-                TargetNCCWorker::Worker2);
-      EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
+            std::get_if<TargetElementwiseCommand>(&command.payload)) {
+      ASSERT_TRUE(command.nccIssueDomain.has_value());
+      EXPECT_EQ(command.nccIssueDomain->engine, TargetCallTSMEngine::CT);
+      EXPECT_EQ(command.nccIssueDomain->worker, TargetNCCWorker::Worker2);
+      EXPECT_EQ(command.nccIssueDomain->completionBehavior,
                 TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
       EXPECT_EQ(add->operation, NumericElementwiseOperation::Add);
       ASSERT_TRUE(add->rhs.has_value());
@@ -428,19 +428,18 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
       continue;
     }
     if (const auto *join =
-            std::get_if<TargetNCCJoinTransaction>(&transaction.payload)) {
+            std::get_if<TargetNCCJoinCommand>(&command.payload)) {
       ++joinCount;
-      EXPECT_FALSE(transaction.nccIssueDomain.has_value());
-      EXPECT_EQ(join->participantMask,
-                (uint32_t{1}
-                 << static_cast<uint32_t>(TargetNCCWorker::Worker1)) |
-                    (uint32_t{1}
-                     << static_cast<uint32_t>(TargetNCCWorker::Worker2)));
-      EXPECT_EQ(index + 1, recording.transactions.size());
+      EXPECT_FALSE(command.nccIssueDomain.has_value());
+      EXPECT_EQ(
+          join->participantMask,
+          (uint32_t{1} << static_cast<uint32_t>(TargetNCCWorker::Worker1)) |
+              (uint32_t{1} << static_cast<uint32_t>(TargetNCCWorker::Worker2)));
+      EXPECT_EQ(index + 1, recording.commands.size());
       issueKinds.push_back('J');
       continue;
     }
-    FAIL() << "fixed-slot target stream contains an unexpected transaction";
+    FAIL() << "fixed-slot target stream contains an unexpected command";
   }
 
   ASSERT_GE(adds.size(), 3u);
@@ -456,7 +455,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   allDynamicSPMSlots.insert(inputSPMSlots[1].begin(), inputSPMSlots[1].end());
   allDynamicSPMSlots.insert(outputSPMSlots.begin(), outputSPMSlots.end());
   EXPECT_EQ(allDynamicSPMSlots.size(), 6u);
-  for (const TargetElementwiseTransaction &add : adds) {
+  for (const TargetElementwiseCommand &add : adds) {
     EXPECT_NE(inputSPMSlots[0].find(add.lhs), inputSPMSlots[0].end());
     ASSERT_TRUE(add.rhs.has_value());
     EXPECT_NE(inputSPMSlots[1].find(*add.rhs), inputSPMSlots[1].end());
@@ -464,7 +463,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   }
 
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*targetBundle, arguments);
+      createTargetCallExecutable(*targetModules, arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
   llvm::Expected<TargetModelResult> result = executeSystemCTargetModel(
@@ -477,7 +476,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
           /*maximumMovementSegments=*/kElementCount));
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(result->completedRankCount, 1);
-  EXPECT_EQ(result->issuedTransactionCount, recording.transactions.size());
+  EXPECT_EQ(result->issuedCommandCount, recording.commands.size());
   EXPECT_EQ(result->formalNumericCommandCount, adds.size());
   EXPECT_GT(result->finalDeltaCount, 0u);
   EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc-v2");

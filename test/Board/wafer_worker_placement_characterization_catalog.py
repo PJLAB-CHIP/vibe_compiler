@@ -2,7 +2,7 @@
 """Typed real-board worker placement and bounded-progress cases.
 
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   Qualified rank-one package ABI, explicit NCC engine/worker routing, owned
   DDR/SPM ranges, matching-worker completion, and stable PMU readback.
 - Current stage responsibility:
@@ -11,7 +11,7 @@ Pipeline position:
   executable row has an exact guarded result oracle.  Placement/outstanding
   rows retain raw per-issue CONTROL/IB_COUNTER samples; progress rows use a
   tight submit burst followed by a target-only device observation window.
-- Output artifact / IR:
+- Output IR / files:
   Test-only request contracts and profile-scoped raw observations.  No case
   name, inferred arbiter identity, or measured number enters compiler IR.
 - Downstream consumer:

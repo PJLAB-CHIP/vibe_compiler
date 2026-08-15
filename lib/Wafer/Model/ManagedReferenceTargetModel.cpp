@@ -203,12 +203,12 @@ llvm::Error validateRequestIdentity(const TargetModelNumericRequest &request) {
     break;
   }
   case NumericCommandFamily::NEGemm:
-    llvm_unreachable("GEMM returned before request identity dispatch");
+    llvm_unreachable("GEMM returned before request key dispatch");
   }
   if (!expectedDestination ||
       request.destinationTemplate.key != *expectedDestination ||
       request.inputs.size() != expectedInputs.size())
-    return referenceError("request tensor identity does not match command");
+    return referenceError("request tensor key does not match command");
   for (auto [input, expected] : llvm::zip_equal(request.inputs, expectedInputs))
     if (input.key != *expected)
       return referenceError("request input key does not match command");
@@ -329,10 +329,10 @@ llvm::Expected<std::vector<RawLogicalValue>>
 executeConvert(const ResolvedNumericCommand &resolved,
                const NumericCTConvertCommand &command,
                llvm::ArrayRef<std::vector<RawLogicalValue>> inputs) {
-  const NumericCTConvertSemanticsIdentity *identity =
-      resolved.getSemantics()->getCTConvertIdentity();
-  if (!identity ||
-      identity->getEffectiveRoundingMode() != NumericRoundingMode::NearestEven)
+  const NumericCTConvertSemanticsKey *key =
+      resolved.getSemantics()->getCTConvertKey();
+  if (!key ||
+      key->getEffectiveRoundingMode() != NumericRoundingMode::NearestEven)
     return referenceError("convert is not nearest-even");
   const LogicalFormat sourceFormat = command.source.getFormat();
   const LogicalFormat destinationFormat = command.destination.getFormat();

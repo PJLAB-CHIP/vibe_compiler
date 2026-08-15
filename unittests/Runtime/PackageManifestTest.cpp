@@ -87,9 +87,9 @@ protected:
 
   wafer::runtime::PackageManifest makeManifest() const {
     using namespace wafer::runtime;
-    PackageManifest manifest(
-        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
-        makeGridLaunch(), wafer::kCurrentTargetModuleFormat);
+    PackageManifest manifest(wafer::kCurrentTargetIdentity,
+                             wafer::kCurrentKernelRuntimeABI, makeGridLaunch(),
+                             wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
     manifest.cardCount = 1;
     manifest.tileCount = 16;
@@ -136,8 +136,10 @@ protected:
            PackageAccessMode::ReadWrite,
            false});
       manifest.entries.push_back(
-          {EntryId(launchSlot), wafer::PhysicalCardId(0),
-           wafer::PhysicalTileId(physicalTile), LaunchSlotId(launchSlot),
+          {EntryId(launchSlot),
+           wafer::PhysicalCardId(0),
+           wafer::PhysicalTileId(physicalTile),
+           LaunchSlotId(launchSlot),
            ModuleId(0),
            {{0, ResourceId(0), PackageAccessMode::ReadOnly},
             {1, ResourceId(1), PackageAccessMode::WriteOnly},
@@ -157,10 +159,10 @@ protected:
         forceClusterLaunch ||
         (!forceGridLaunch && (allDirectDTE || lastTileDirectDTEOnly));
     const bool shared = true;
-    PackageManifest manifest(
-        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
-        cluster ? makeClusterLaunch() : makeGridLaunch(),
-        wafer::kCurrentTargetModuleFormat);
+    PackageManifest manifest(wafer::kCurrentTargetIdentity,
+                             wafer::kCurrentKernelRuntimeABI,
+                             cluster ? makeClusterLaunch() : makeGridLaunch(),
+                             wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
     manifest.cardCount = 1;
     manifest.tileCount = tileCount;
@@ -480,7 +482,6 @@ TEST_F(PackageManifestTest, RejectsUnsupportedSchemaAndMissingTargetFacts) {
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("missing field 'launch'"),
             std::string::npos);
-
 }
 
 TEST_F(PackageManifestTest, RejectsMalformedTaggedLaunchContract) {
@@ -511,8 +512,7 @@ TEST_F(PackageManifestTest, RejectsMalformedTaggedLaunchContract) {
                  "\"phases\": [\n        \"prepare\",\n        \"main\"\n"
                  "      ]",
                  "incompatible");
-  rejectMutation("      \"form\": \"grid\",\n", "",
-                 "missing field 'form'");
+  rejectMutation("      \"form\": \"grid\",\n", "", "missing field 'form'");
   rejectMutation("\"kind\": \"kernel\",\n      \"form\": \"grid\",\n"
                  "      \"entry_abi\": \"tile-major-pointer-table\"",
                  "\"kind\": \"model\",\n      \"form\": \"grid\",\n"
@@ -542,16 +542,14 @@ TEST_F(PackageManifestTest, ModelLaunchRoundtripUsesExactConditionalFields) {
   std::vector<wafer::runtime::RuntimeInvocationBinding> bindings =
       makeHostBindings(parsed->getManifest());
   llvm::Expected<wafer::runtime::RuntimeInvocationPlan> rejected =
-      wafer::runtime::preflightNoCardRuntimeInvocation(*parsed, bindings,
-                                                       environment);
+      wafer::runtime::planRuntimeInvocation(*parsed, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("does not support"),
             std::string::npos);
   environment.supportedModelEntryABIs = {
       wafer::ModelEntryABI::Tx81ModelBootParam};
   llvm::Expected<wafer::runtime::RuntimeInvocationPlan> plan =
-      wafer::runtime::preflightNoCardRuntimeInvocation(*parsed, bindings,
-                                                       environment);
+      wafer::runtime::planRuntimeInvocation(*parsed, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   ASSERT_EQ(plan->tiles.size(), 16u);
   ASSERT_EQ(plan->tiles.front().phases.size(), 1u);
@@ -728,8 +726,7 @@ TEST_F(PackageManifestTest,
       }));
 }
 
-TEST_F(PackageManifestTest,
-       WholeCardNoCardPreflightIsExactAndSideEffectFree) {
+TEST_F(PackageManifestTest, RuntimeInvocationPlanningIsExactAndSideEffectFree) {
   using namespace wafer::runtime;
   llvm::Expected<VerifiedPackageManifest> verified = verify();
   ASSERT_TRUE(static_cast<bool>(verified))
@@ -740,16 +737,15 @@ TEST_F(PackageManifestTest,
   RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
                                  wafer::kCurrentKernelRuntimeABI,
                                  wafer::kCurrentTargetModuleFormat, 1024};
-  environment.supportedKernelLaunchForms = {
-      wafer::KernelLaunchForm::Grid};
+  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Grid};
   environment.supportedKernelEntryABIs = {
       wafer::KernelEntryABI::TileMajorPointerTable};
   llvm::Expected<RuntimeInvocationPlan> invocation =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+      planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
   llvm::Expected<RuntimeInvocationPlan> repeated =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+      planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(repeated))
       << llvm::toString(repeated.takeError());
   EXPECT_EQ(invocation->cardCount, 1);
@@ -762,8 +758,7 @@ TEST_F(PackageManifestTest,
   EXPECT_EQ(invocation->tiles.front().launchOrder,
             repeated->tiles.front().launchOrder);
   ASSERT_EQ(invocation->tiles.front().resources.size(), 3u);
-  EXPECT_FALSE(
-      invocation->tiles.front().resources.back().externallyBound);
+  EXPECT_FALSE(invocation->tiles.front().resources.back().externallyBound);
   ASSERT_EQ(invocation->tiles.front().phases.size(), 1u);
   EXPECT_EQ(invocation->tiles.front().phases.front().role,
             wafer::RuntimeLaunchPhaseRole::Main);
@@ -771,23 +766,20 @@ TEST_F(PackageManifestTest,
 
   environment.moduleFormat = "elf-other";
   llvm::Expected<RuntimeInvocationPlan> incompatible =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+      planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(incompatible));
   EXPECT_NE(llvm::toString(incompatible.takeError()).find("incompatible"),
             std::string::npos);
   environment.moduleFormat = wafer::kCurrentTargetModuleFormat.str();
 
   environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Cluster};
-  incompatible =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+  incompatible = planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(incompatible));
   EXPECT_NE(llvm::toString(incompatible.takeError()).find("does not support"),
             std::string::npos);
-  environment.supportedKernelLaunchForms = {
-      wafer::KernelLaunchForm::Grid};
+  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Grid};
   environment.supportedKernelEntryABIs.clear();
-  incompatible =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+  incompatible = planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(incompatible));
   EXPECT_NE(llvm::toString(incompatible.takeError()).find("does not support"),
             std::string::npos);
@@ -796,7 +788,7 @@ TEST_F(PackageManifestTest,
 
   bindings.pop_back();
   llvm::Expected<RuntimeInvocationPlan> rejected =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+      planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("missing"),
             std::string::npos);
@@ -804,16 +796,14 @@ TEST_F(PackageManifestTest,
   bindings.push_back(
       {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true});
   bindings.front().bytes = 32;
-  rejected =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+  rejected = planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("does not satisfy"),
             std::string::npos);
 
   bindings.front().bytes = 64;
   environment.maxResourceBytes = 32;
-  rejected =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+  rejected = planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("capacity"),
             std::string::npos);
@@ -846,7 +836,7 @@ TEST_F(PackageManifestTest,
       {ResourceId(0), 64, 256, PackageAccessMode::ReadOnly, true},
       {ResourceId(1), 64, 256, PackageAccessMode::WriteOnly, true}};
   llvm::Expected<RuntimeInvocationPlan> plan =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+      planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   ASSERT_EQ(plan->tiles.size(), 16u);
   for (auto [tile, session] : llvm::enumerate(plan->tiles)) {
@@ -865,13 +855,12 @@ TEST_F(PackageManifestTest, RejectsSharingTileLocalWorkspaceAcrossEntries) {
   llvm::Expected<VerifiedPackageManifest> rejected =
       verifyPackageManifest(std::move(manifest), root);
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(
-      llvm::toString(rejected.takeError()).find("typed physical scope"),
-      std::string::npos);
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("typed physical scope"),
+            std::string::npos);
 }
 
 TEST_F(PackageManifestTest,
-       AllTilePreflightUsesCanonicalLaunchSlotOrderAndExactDomain) {
+       AllTilePlanningUsesCanonicalLaunchSlotOrderAndExactDomain) {
   using namespace wafer::runtime;
   PackageManifest manifest = makeTileManifest(16, /*permuteIdentities=*/true);
   llvm::Expected<VerifiedPackageManifest> verified =
@@ -886,12 +875,11 @@ TEST_F(PackageManifestTest,
   RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
                                  wafer::kCurrentKernelRuntimeABI,
                                  wafer::kCurrentTargetModuleFormat, 1024};
-  environment.supportedKernelLaunchForms = {
-      wafer::KernelLaunchForm::Grid};
+  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Grid};
   environment.supportedKernelEntryABIs = {
       wafer::KernelEntryABI::TileMajorPointerTable};
   llvm::Expected<RuntimeInvocationPlan> plan =
-      preflightNoCardRuntimeInvocation(*verified, bindings, environment);
+      planRuntimeInvocation(*verified, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   EXPECT_EQ(plan->cardCount, 1);
   EXPECT_EQ(plan->tileCount, 16);
@@ -932,7 +920,7 @@ TEST_F(PackageManifestTest,
     return binding.resource == sharedInput;
   }));
   llvm::Expected<RuntimeInvocationPlan> rejected =
-      preflightNoCardRuntimeInvocation(*verified, missing, environment);
+      planRuntimeInvocation(*verified, missing, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("missing"),
             std::string::npos);
@@ -940,7 +928,7 @@ TEST_F(PackageManifestTest,
   std::vector<RuntimeInvocationBinding> extra = bindings;
   extra.push_back(
       {tile15Workspace, 512, 256, PackageAccessMode::ReadWrite, true});
-  rejected = preflightNoCardRuntimeInvocation(*verified, extra, environment);
+  rejected = planRuntimeInvocation(*verified, extra, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("extra"),
             std::string::npos);
@@ -949,15 +937,14 @@ TEST_F(PackageManifestTest,
   duplicate.push_back(*llvm::find_if(duplicate, [&](const auto &binding) {
     return binding.resource == sharedInput;
   }));
-  rejected =
-      preflightNoCardRuntimeInvocation(*verified, duplicate, environment);
+  rejected = planRuntimeInvocation(*verified, duplicate, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("duplicate"),
             std::string::npos);
 }
 
 TEST_F(PackageManifestTest,
-       PreflightPreservesNonIdentityPhysicalTileLaunchBinding) {
+       PlanningPreservesNonIdentityPhysicalTileLaunchBinding) {
   using namespace wafer::runtime;
   PackageManifest manifest = makeTileManifest(16, /*permuteIdentities=*/false);
   auto swapTile = [](wafer::PhysicalTileId tileId) {
@@ -980,11 +967,10 @@ TEST_F(PackageManifestTest,
   RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
                                  wafer::kCurrentKernelRuntimeABI,
                                  wafer::kCurrentTargetModuleFormat, 1024};
-  environment.supportedKernelLaunchForms = {
-      wafer::KernelLaunchForm::Grid};
+  environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Grid};
   environment.supportedKernelEntryABIs = {
       wafer::KernelEntryABI::TileMajorPointerTable};
-  llvm::Expected<RuntimeInvocationPlan> plan = preflightNoCardRuntimeInvocation(
+  llvm::Expected<RuntimeInvocationPlan> plan = planRuntimeInvocation(
       *verified, makeHostBindings(verified->getManifest()), environment);
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   ASSERT_EQ(plan->tiles.size(), 16u);
@@ -995,7 +981,7 @@ TEST_F(PackageManifestTest,
 }
 
 TEST_F(PackageManifestTest,
-       AllTilePreflightRejectsMixedTransportAndMissingCapabilities) {
+       AllTilePlanningRejectsMixedTransportAndMissingCapabilities) {
   using namespace wafer::runtime;
   RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
                                  wafer::kCurrentKernelRuntimeABI,
@@ -1023,9 +1009,9 @@ TEST_F(PackageManifestTest,
   llvm::Expected<VerifiedPackageManifest> verifiedUnsupportedStatus =
       verifyPackageManifest(std::move(unsupportedStatus), root);
   ASSERT_FALSE(static_cast<bool>(verifiedUnsupportedStatus));
-  EXPECT_NE(llvm::toString(verifiedUnsupportedStatus.takeError())
-                .find("Direct DTE"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(verifiedUnsupportedStatus.takeError()).find("Direct DTE"),
+      std::string::npos);
 
   PackageManifest direct = makeTileManifest(16, /*permuteIdentities=*/true,
                                             /*allDirectDTE=*/true);
@@ -1036,22 +1022,21 @@ TEST_F(PackageManifestTest,
   std::vector<RuntimeInvocationBinding> bindings =
       makeHostBindings(verifiedDirect->getManifest());
   llvm::Expected<RuntimeInvocationPlan> rejected =
-      preflightNoCardRuntimeInvocation(*verifiedDirect, bindings, environment);
+      planRuntimeInvocation(*verifiedDirect, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("Direct DTE"),
             std::string::npos);
 
   environment.supportsDirectDTE = true;
   environment.directDTEStatusABI = kDirectDTEStatusABI.str();
-  rejected =
-      preflightNoCardRuntimeInvocation(*verifiedDirect, bindings, environment);
+  rejected = planRuntimeInvocation(*verifiedDirect, bindings, environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("Direct DTE"),
             std::string::npos);
 
   environment.supportsHostWatchdog = true;
   llvm::Expected<RuntimeInvocationPlan> plan =
-      preflightNoCardRuntimeInvocation(*verifiedDirect, bindings, environment);
+      planRuntimeInvocation(*verifiedDirect, bindings, environment);
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   EXPECT_EQ(plan->tileCount, 16);
   ASSERT_EQ(plan->tiles.size(), 16u);
@@ -1069,12 +1054,11 @@ TEST_F(PackageManifestTest,
 TEST_F(PackageManifestTest,
        DirectDTETransportDoesNotSelectTheRuntimeLaunchContract) {
   using namespace wafer::runtime;
-  PackageManifest manifest =
-      makeTileManifest(16, /*permuteIdentities=*/false,
-                       /*allDirectDTE=*/true,
-                       /*lastTileDirectDTEOnly=*/false,
-                       /*forceClusterLaunch=*/false,
-                       /*forceGridLaunch=*/true);
+  PackageManifest manifest = makeTileManifest(16, /*permuteIdentities=*/false,
+                                              /*allDirectDTE=*/true,
+                                              /*lastTileDirectDTEOnly=*/false,
+                                              /*forceClusterLaunch=*/false,
+                                              /*forceGridLaunch=*/true);
   llvm::Expected<VerifiedPackageManifest> verified =
       verifyPackageManifest(std::move(manifest), root);
   ASSERT_TRUE(static_cast<bool>(verified))

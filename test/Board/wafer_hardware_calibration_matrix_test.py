@@ -544,7 +544,7 @@ def main() -> int:
                 assert leaf.oracle, f"{leaf.key}: missing independent oracle"
                 assert leaf.guards, f"{leaf.key}: missing physical guards"
                 assert leaf.completion, (
-                    f"{leaf.key}: missing completion/publication contract"
+                    f"{leaf.key}: missing completion/visibility contract"
                 )
                 assert domain.positive_assets, (
                     f"{leaf.key}: parent domain has no board-positive assets"

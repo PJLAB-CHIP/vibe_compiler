@@ -48,7 +48,7 @@ private:
 
 /// Atomic result of one logical-dense tensor command. Physical Cx/NCx/BOOL
 /// mapping remains a discharged layout-materialization precondition and is not
-/// copied into this result. Flags are the command-local OR of all committed
+/// copied into this result. Flags are the command-local OR of all returned
 /// scalar steps.
 struct FormalTensorNumericResult {
   std::vector<RawLogicalValue> values;
@@ -92,10 +92,10 @@ private:
 
 /// Executes one already-resolved supported convert, elementwise, or GEMM
 /// command over logical-dense raw values. Complete command/profile, input size,
-/// input encoding, and checked work-budget preflight happens before output
+/// input encoding, and checked work-budget validation happens before output
 /// allocation. Native reduction and every static unsupported capability fail
 /// closed. On every error the caller context is unchanged and no result is
-/// published; flags are recorded only after the complete tensor succeeds.
+/// returned; flags are recorded only after the complete tensor succeeds.
 llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
     FormalNumericExecutionContext &context,
     const ResolvedNumericCommand &command,

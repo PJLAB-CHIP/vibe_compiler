@@ -6,7 +6,7 @@
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 
 #include "SystemCBridge.h"
-#include "TargetModelCompletion.h"
+#include "TargetModelTileCommandTracker.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -50,7 +50,7 @@ struct InvocationFailure {
   }
 };
 
-class SystemCTargetModel final : public compiler::TargetTransactionSink {
+class SystemCTargetModel final : public compiler::TargetCommandSink {
 public:
   SystemCTargetModel(compiler::TargetCallExecutable executable,
                      InvocationMemoryRegistry memory,
@@ -114,21 +114,20 @@ public:
     }
 
     llvm::Expected<compiler::TargetCallExecutionResult> frontend =
-        executable.commit();
+        executable.finish();
     if (!frontend)
       return systemCError(SystemCTargetModelErrorCode::InvocationFailure,
                           llvm::toString(frontend.takeError()));
-    if (!publishedResult)
+    if (!completedResult)
       return systemCError(
           SystemCTargetModelErrorCode::ResultInvariantViolation,
-          "frontend commit returned without one published model result");
-    if (publishedResult->completedTileCount != frontend->completedTileCount ||
-        publishedResult->issuedTransactionCount !=
-            frontend->issuedTransactionCount)
+          "target-call execution finished without one model result");
+    if (completedResult->completedTileCount != frontend->completedTileCount ||
+        completedResult->issuedCommandCount != frontend->issuedCommandCount)
       return systemCError(
           SystemCTargetModelErrorCode::ResultInvariantViolation,
           "model result disagrees with target-call frontend counters");
-    return std::move(*publishedResult);
+    return std::move(*completedResult);
   }
 
   llvm::Error
@@ -142,13 +141,13 @@ public:
       return systemCError(
           SystemCTargetModelErrorCode::InvalidLifecycle,
           "sink invocation differs from the closed address plan");
-    tileIdentities.reserve(invocation.tiles.size());
+    tileBindings.reserve(invocation.tiles.size());
     for (size_t index = 0; index < invocation.tiles.size(); ++index) {
       const compiler::TargetCallTileDescriptor &tile = invocation.tiles[index];
       if (tile.launchSlotId.getValue() != static_cast<int64_t>(index))
         return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                             "sink launch-slot order is not canonical");
-      tileIdentities.push_back(
+      tileBindings.push_back(
           {tile.physicalCardId, tile.physicalTileId, tile.launchSlotId});
     }
     begun = true;
@@ -156,41 +155,40 @@ public:
   }
 
   llvm::Expected<uint64_t>
-  issue(const compiler::TargetTransaction &transaction) override {
+  issue(const compiler::TargetCommand &command) override {
     if (!begun || failure)
-      return currentFailureOrLifecycle("transaction arrived before sink begin");
-    const int64_t launchSlot = transaction.launchSlotId.getValue();
+      return currentFailureOrLifecycle("command arrived before sink begin");
+    const int64_t launchSlot = command.launchSlotId.getValue();
     if (launchSlot < 0 ||
         static_cast<uint64_t>(launchSlot) >= tileStates.size())
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
-                          "transaction launch slot is outside the invocation");
-    const TileIdentity &identity =
-        tileIdentities[static_cast<size_t>(launchSlot)];
-    if (transaction.physicalCardId != identity.physicalCardId ||
-        transaction.physicalTileId != identity.physicalTileId)
+                          "command launch slot is outside the invocation");
+    const TileBinding &binding = tileBindings[static_cast<size_t>(launchSlot)];
+    if (command.physicalCardId != binding.physicalCardId ||
+        command.physicalTileId != binding.physicalTileId)
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
-                          "transaction physical Tile identity disagrees with "
+                          "command physical Tile binding disagrees with "
                           "its launch slot");
     TileState &tile = tileStates[static_cast<size_t>(launchSlot)];
-    if (!tile.completion.beginIssue(transaction.issueOrdinal)) {
+    if (!tile.completion.beginIssue(command.issueOrdinal)) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                   "issue-order", launchSlot, transaction.issueOrdinal,
+                   "issue-order", launchSlot, command.issueOrdinal,
                    "Tile issue ordinal is not contiguous");
       return currentFailureOrLifecycle("issue order failure");
     }
-    ++issuedTransactionCount;
+    ++issuedCommandCount;
 
     // Every issue crosses at least one delta before field/address/numeric
     // effects can become visible. The calling JIT stack remains suspended.
     detail::waitSystemCDelta();
-    if (bridgeFailed(transaction, "issue-delta") || failure)
+    if (bridgeFailed(command, "issue-delta") || failure)
       return currentFailureOrLifecycle("issue delta failed");
 
     llvm::Expected<TargetModelCommandEffect> effect =
-        executeTargetModelCommand(transaction, memory, budget, policy);
+        executeTargetModelCommand(command, memory, budget, policy);
     if (!effect) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                   "command-kernel", launchSlot, transaction.issueOrdinal,
+                   "command-kernel", launchSlot, command.issueOrdinal,
                    llvm::toString(effect.takeError()));
       return currentFailureOrLifecycle("command kernel failed");
     }
@@ -201,16 +199,16 @@ public:
       TargetModelManagedReferenceEvidence managedReferenceEvidence =
           effect->managedReferenceEvidence;
       std::optional<PendingNCCMemoryEffect> pendingMemoryEffect;
-      if (transaction.nccIssueDomain &&
-          transaction.nccIssueDomain->completionBehavior ==
+      if (command.nccIssueDomain &&
+          command.nccIssueDomain->completionBehavior ==
               TargetNCCCompletionBehavior::OrderedAsynchronousIssue)
         pendingMemoryEffect = summarizePendingNCCMemoryEffect(*effect);
-      if (llvm::Error error = commitTargetModelCommandEffect(
+      if (llvm::Error error = applyTargetModelCommandEffect(
               memory, numericContext, std::move(*effect))) {
         latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                     "command-commit", launchSlot, transaction.issueOrdinal,
+                     "command-effect", launchSlot, command.issueOrdinal,
                      llvm::toString(std::move(error)));
-        return currentFailureOrLifecycle("command commit failed");
+        return currentFailureOrLifecycle("applying command effect failed");
       }
       if (numericBackend == TargetModelNumericBackend::Formal)
         ++formalNumericCommandCount;
@@ -232,21 +230,20 @@ public:
         bulkMatmulInvocationCount += bulkEvidence.matmulInvocations;
         bulkReorderInvocationCount += bulkEvidence.reorderInvocations;
         bulkFormalFusedMultiplyAddCount += bulkEvidence.formalFusedMultiplyAdds;
-        if (bulkEvidence.provenanceKind ==
-            TargetModelBulkProvenanceKind::ExactQualificationRecord)
-          bulkAdmissionRecordDigests.push_back(
-              std::move(bulkEvidence.provenanceDigest));
-        else if (bulkEvidence.provenanceKind ==
-                 TargetModelBulkProvenanceKind::ManagedReferenceEnvironment) {
+        if (bulkEvidence.evidenceKind ==
+            TargetModelBulkEvidenceKind::ExactQualificationRecord)
+          bulkQualificationRecordDigests.push_back(
+              std::move(bulkEvidence.evidenceDigest));
+        else if (bulkEvidence.evidenceKind ==
+                 TargetModelBulkEvidenceKind::ManagedReferenceEnvironment) {
           if (!llvm::is_contained(bulkManagedReferenceEnvironmentDigests,
-                                  bulkEvidence.provenanceDigest))
+                                  bulkEvidence.evidenceDigest))
             bulkManagedReferenceEnvironmentDigests.push_back(
-                std::move(bulkEvidence.provenanceDigest));
+                std::move(bulkEvidence.evidenceDigest));
         }
       }
-      if (transaction.nccIssueDomain) {
-        const compiler::TargetNCCIssueDomain &domain =
-            *transaction.nccIssueDomain;
+      if (command.nccIssueDomain) {
+        const compiler::TargetNCCIssueDomain &domain = *command.nccIssueDomain;
         if (domain.completionBehavior ==
             TargetNCCCompletionBehavior::SynchronousWriteback) {
           completeNCCParticipantPending(
@@ -254,44 +251,44 @@ public:
           if (failure)
             return currentFailureOrLifecycle(
                 "synchronous NCC writeback failed");
-          markOrdinalComplete(launchSlot, transaction.issueOrdinal);
+          markOrdinalComplete(launchSlot, command.issueOrdinal);
           tryMatchReadyEndpoints();
         } else if (!tile.completion.addNCCPending(domain.worker,
-                                                  transaction.issueOrdinal)) {
+                                                  command.issueOrdinal)) {
           latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                       "ncc-issue-domain", launchSlot, transaction.issueOrdinal,
+                       "ncc-issue-domain", launchSlot, command.issueOrdinal,
                        "NCC issue worker is invalid or already pending");
           return currentFailureOrLifecycle("NCC issue-domain failure");
         } else if (!pendingMemoryEffect ||
                    !pendingNCCMemoryEffects
-                        .try_emplace(std::make_pair(launchSlot,
-                                                    transaction.issueOrdinal),
-                                     std::move(*pendingMemoryEffect))
+                        .try_emplace(
+                            std::make_pair(launchSlot, command.issueOrdinal),
+                            std::move(*pendingMemoryEffect))
                         .second) {
           latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                       "ncc-issue-domain", launchSlot, transaction.issueOrdinal,
+                       "ncc-issue-domain", launchSlot, command.issueOrdinal,
                        "NCC pending memory effect is missing or duplicate");
           return currentFailureOrLifecycle("NCC issue-domain failure");
         }
       } else {
-        markOrdinalComplete(launchSlot, transaction.issueOrdinal);
+        markOrdinalComplete(launchSlot, command.issueOrdinal);
       }
       return UINT64_C(0);
     }
     case TargetModelControlAction::NCCJoin:
-      return processNCCJoin(transaction);
+      return processNCCJoin(command);
     case TargetModelControlAction::DirectDTEBegin:
-      return processDTEBegin(transaction);
+      return processDTEBegin(command);
     case TargetModelControlAction::DirectDTESendPrepare:
-      return processDTESendPrepare(transaction);
+      return processDTESendPrepare(command);
     case TargetModelControlAction::DirectDTESendIssue:
-      return processDTESendIssue(transaction);
+      return processDTESendIssue(command);
     case TargetModelControlAction::DirectDTEReceive:
-      return processDTEReceive(transaction);
+      return processDTEReceive(command);
     case TargetModelControlAction::DirectDTEWait:
-      return processDTEWait(transaction);
+      return processDTEWait(command);
     case TargetModelControlAction::DirectDTEFinish:
-      return processDTEFinish(transaction);
+      return processDTEFinish(command);
     }
     llvm_unreachable("unknown target model control action");
   }
@@ -306,13 +303,12 @@ public:
         static_cast<uint64_t>(launchSlot) >= tileStates.size())
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "completed Tile is outside the invocation");
-    const TileIdentity &identity =
-        tileIdentities[static_cast<size_t>(launchSlot)];
-    if (physicalCardId != identity.physicalCardId ||
-        physicalTileId != identity.physicalTileId ||
-        launchSlotId != identity.launchSlotId)
+    const TileBinding &binding = tileBindings[static_cast<size_t>(launchSlot)];
+    if (physicalCardId != binding.physicalCardId ||
+        physicalTileId != binding.physicalTileId ||
+        launchSlotId != binding.launchSlotId)
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
-                          "completed Tile identity disagrees with its launch "
+                          "completed Tile binding disagrees with its launch "
                           "slot");
     TileState &tile = tileStates[static_cast<size_t>(launchSlot)];
     if (tile.completed || tile.completion.getNextCompletedOrdinal() !=
@@ -335,44 +331,43 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error prepareCommit() override {
+  llvm::Error completeInvocation() override {
     if (failure || completedLaunchSlots.size() != tileStates.size())
       return systemCError(SystemCTargetModelErrorCode::ResultInvariantViolation,
-                          "prepareCommit saw a failure or incomplete Tile");
+                          "invocation has a failure or incomplete Tile");
     for (const DTEEndpoint &endpoint : endpoints)
       if (!endpoint.complete || !endpoint.released)
         return systemCError(
             SystemCTargetModelErrorCode::ResultInvariantViolation,
-            "prepareCommit saw an incomplete or unreleased Direct DTE "
-            "endpoint");
-    if (stagedResult || publishedResult)
+            "invocation has an incomplete or unreleased Direct DTE endpoint");
+    if (completedResult)
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
-                          "model result was prepared or committed twice");
+                          "model result was completed twice");
     std::vector<TargetModelOutput> outputs;
-    std::vector<TargetModelResourceId> publishedOutputResources;
+    std::vector<TargetModelResourceId> outputResources;
     for (const TargetModelPlannedSlot &slot :
          memory.getAddressPlan().getSlots()) {
       if (slot.role != compiler::KernelABISlotRole::Output)
         continue;
-      if (llvm::is_contained(publishedOutputResources, slot.resource))
+      if (llvm::is_contained(outputResources, slot.resource))
         continue;
       llvm::Expected<std::vector<uint8_t>> bytes =
           memory.readSlotSnapshot(slot.launchSlot, slot.slotOrdinal);
       if (!bytes)
         return bytes.takeError();
-      const TileIdentity &identity =
-          tileIdentities[static_cast<size_t>(slot.launchSlot)];
-      publishedOutputResources.push_back(slot.resource);
-      outputs.push_back({slot.resource, identity.physicalCardId,
-                         identity.physicalTileId, identity.launchSlotId,
+      const TileBinding &binding =
+          tileBindings[static_cast<size_t>(slot.launchSlot)];
+      outputResources.push_back(slot.resource);
+      outputs.push_back({slot.resource, binding.physicalCardId,
+                         binding.physicalTileId, binding.launchSlotId,
                          slot.slotOrdinal, slot.resourceIndex,
                          std::move(*bytes)});
     }
-    stagedResult.emplace(
+    completedResult.emplace(
         TargetModelResult{memory.getAddressPlan().getTargetIdentity(),
                           ModelProfileId::formalDeterministicV1(),
                           static_cast<int64_t>(completedLaunchSlots.size()),
-                          issuedTransactionCount,
+                          issuedCommandCount,
                           detail::getSystemCThreadProcessCount(runner),
                           detail::getSystemCDeltaCount(),
                           numericContext.getAggregateFlags(),
@@ -383,7 +378,7 @@ public:
                           bulkMatmulInvocationCount,
                           bulkReorderInvocationCount,
                           bulkFormalFusedMultiplyAddCount,
-                          std::move(bulkAdmissionRecordDigests),
+                          std::move(bulkQualificationRecordDigests),
                           std::move(bulkManagedReferenceEnvironmentDigests),
                           std::move(managedReferenceTensorEnvironmentDigests),
                           std::move(managedReferenceTensorImplementations),
@@ -393,28 +388,21 @@ public:
     return llvm::Error::success();
   }
 
-  void commit() override {
-    assert(stagedResult && !publishedResult &&
-           "prepareCommit must stage exactly one result");
-    publishedResult = std::move(stagedResult);
-  }
-
   void abort(llvm::StringRef diagnostic) override {
     latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
                  "frontend-abort", std::nullopt, std::nullopt, diagnostic);
-    stagedResult.reset();
-    publishedResult.reset();
+    completedResult.reset();
   }
 
 private:
-  struct TileIdentity {
+  struct TileBinding {
     PhysicalCardId physicalCardId;
     PhysicalTileId physicalTileId;
     LaunchSlotId launchSlotId;
   };
 
   struct TileState {
-    detail::TargetModelTileCompletionState completion;
+    detail::TargetModelTileCommandTracker completion;
     bool completed = false;
   };
 
@@ -425,12 +413,12 @@ private:
     uint64_t event = 0;
     EndpointKind kind = EndpointKind::Send;
     int64_t ownerLaunchSlot = -1;
-    /// The endpoint-producing transaction whose asynchronous effect completes
+    /// The endpoint-producing command whose asynchronous effect completes
     /// when the transfer becomes visible. A prepared send has no effect
-    /// ordinal until its explicit issue transaction executes.
+    /// ordinal until its explicit issue command executes.
     std::optional<uint64_t> effectOrdinal;
-    std::optional<target::TargetDirectDTESendTransaction> send;
-    std::optional<target::TargetDirectDTEReceiveTransaction> receive;
+    std::optional<target::TargetDirectDTESendCommand> send;
+    std::optional<target::TargetDirectDTEReceiveCommand> receive;
     detail::SystemCEvent *completionEvent = nullptr;
     detail::SystemCEvent *readinessEvent = nullptr;
     bool peerReady = false;
@@ -443,7 +431,7 @@ private:
     uint64_t event = 0;
     int64_t ownerLaunchSlot = -1;
     uint64_t prepareOrdinal = 0;
-    target::TargetDirectDTESendTransaction send;
+    target::TargetDirectDTESendCommand send;
     bool issued = false;
     bool released = false;
   };
@@ -560,31 +548,29 @@ private:
   }
 
   llvm::Expected<uint64_t>
-  processNCCJoin(const compiler::TargetTransaction &transaction) {
-    const auto &join =
-        std::get<target::TargetNCCJoinTransaction>(transaction.payload);
-    completeNCCParticipantPending(transaction.launchSlotId.getValue(),
+  processNCCJoin(const compiler::TargetCommand &command) {
+    const auto &join = std::get<target::TargetNCCJoinCommand>(command.payload);
+    completeNCCParticipantPending(command.launchSlotId.getValue(),
                                   join.participantMask);
     if (failure)
       return currentFailureOrLifecycle("NCC join failed");
-    markOrdinalComplete(transaction.launchSlotId.getValue(),
-                        transaction.issueOrdinal);
+    markOrdinalComplete(command.launchSlotId.getValue(), command.issueOrdinal);
     tryMatchReadyEndpoints();
     return UINT64_C(0);
   }
 
   llvm::Expected<uint64_t>
-  processDTEBegin(const compiler::TargetTransaction &transaction) {
-    const int64_t launchSlot = transaction.launchSlotId.getValue();
+  processDTEBegin(const compiler::TargetCommand &command) {
+    const int64_t launchSlot = command.launchSlotId.getValue();
     DTEState &state = dteStates[static_cast<size_t>(launchSlot)];
     if (state != DTEState::NotBegun) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, "dte-begin",
-                   launchSlot, transaction.issueOrdinal,
+                   launchSlot, command.issueOrdinal,
                    "Direct DTE begin is duplicate or follows finish");
       return currentFailureOrLifecycle("Direct DTE begin failed");
     }
-    const auto &begin = std::get<target::TargetDirectDTEBeginTransaction>(
-        transaction.payload);
+    const auto &begin =
+        std::get<target::TargetDirectDTEBeginCommand>(command.payload);
     llvm::Expected<TargetModelResolvedRange> status =
         memory.getAddressPlan().resolve(
             launchSlot, TargetModelAddressSpace::CardDDR,
@@ -596,7 +582,7 @@ private:
                                          ? "status address has no ABI slot"
                                          : llvm::toString(status.takeError());
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, "dte-begin",
-                   launchSlot, transaction.issueOrdinal, diagnostic);
+                   launchSlot, command.issueOrdinal, diagnostic);
       return currentFailureOrLifecycle("Direct DTE begin failed");
     }
     const TargetModelPlannedSlot *statusSlot = nullptr;
@@ -608,33 +594,32 @@ private:
     if (!statusSlot ||
         statusSlot->role != compiler::KernelABISlotRole::TransportStatus) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, "dte-begin",
-                   launchSlot, transaction.issueOrdinal,
+                   launchSlot, command.issueOrdinal,
                    "Direct DTE status address is not the transport slot");
       return currentFailureOrLifecycle("Direct DTE begin failed");
     }
     state = DTEState::Active;
-    markOrdinalComplete(launchSlot, transaction.issueOrdinal);
+    markOrdinalComplete(launchSlot, command.issueOrdinal);
     return UINT64_C(0);
   }
 
   llvm::Expected<uint64_t>
-  processDTESendPrepare(const compiler::TargetTransaction &transaction) {
-    const int64_t launchSlot = transaction.launchSlotId.getValue();
+  processDTESendPrepare(const compiler::TargetCommand &command) {
+    const int64_t launchSlot = command.launchSlotId.getValue();
     if (dteStates[static_cast<size_t>(launchSlot)] != DTEState::Active) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                   "dte-send-prepare", launchSlot, transaction.issueOrdinal,
+                   "dte-send-prepare", launchSlot, command.issueOrdinal,
                    "Direct DTE send prepare occurred outside begin/finish");
       return currentFailureOrLifecycle("Direct DTE send prepare failed");
     }
     const auto &send =
-        std::get<target::TargetDirectDTESendTransaction>(transaction.payload);
-    if (!validateTransactionTile(transaction, send.localTile,
-                                 "dte-send-prepare"))
+        std::get<target::TargetDirectDTESendCommand>(command.payload);
+    if (!validateCommandTile(command, send.localTile, "dte-send-prepare"))
       return currentFailureOrLifecycle("Direct DTE send prepare failed");
     for (const PreparedDTESend &prepared : preparedSends)
       if (prepared.ownerLaunchSlot == launchSlot && !prepared.released) {
         latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                     "dte-send-prepare", launchSlot, transaction.issueOrdinal,
+                     "dte-send-prepare", launchSlot, command.issueOrdinal,
                      "Direct DTE sender already has a live prepared event");
         return currentFailureOrLifecycle("Direct DTE send prepare failed");
       }
@@ -642,33 +627,33 @@ private:
     if (!event)
       return event.takeError();
     preparedSends.push_back(
-        {*event, launchSlot, transaction.issueOrdinal, send, false, false});
-    markOrdinalComplete(launchSlot, transaction.issueOrdinal);
+        {*event, launchSlot, command.issueOrdinal, send, false, false});
+    markOrdinalComplete(launchSlot, command.issueOrdinal);
     return *event;
   }
 
   llvm::Expected<uint64_t>
-  processDTESendIssue(const compiler::TargetTransaction &transaction) {
-    const int64_t launchSlot = transaction.launchSlotId.getValue();
+  processDTESendIssue(const compiler::TargetCommand &command) {
+    const int64_t launchSlot = command.launchSlotId.getValue();
     if (dteStates[static_cast<size_t>(launchSlot)] != DTEState::Active) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                   "dte-send-issue", launchSlot, transaction.issueOrdinal,
+                   "dte-send-issue", launchSlot, command.issueOrdinal,
                    "Direct DTE send issue occurred outside begin/finish");
       return currentFailureOrLifecycle("Direct DTE send issue failed");
     }
-    const auto &issue = std::get<target::TargetDirectDTESendIssueTransaction>(
-        transaction.payload);
+    const auto &issue =
+        std::get<target::TargetDirectDTESendIssueCommand>(command.payload);
     PreparedDTESend *prepared = findPreparedSend(issue.event);
     if (!prepared || prepared->ownerLaunchSlot != launchSlot ||
         prepared->issued || prepared->released) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                   "dte-send-issue", launchSlot, transaction.issueOrdinal,
+                   "dte-send-issue", launchSlot, command.issueOrdinal,
                    "Direct DTE send issue names an unknown, foreign, or "
                    "already-issued prepared event");
       return currentFailureOrLifecycle("Direct DTE send issue failed");
     }
     llvm::Expected<DTEEndpoint *> endpoint = issuePreparedDTESend(
-        *prepared, transaction.issueOrdinal, transaction, "dte-send-issue");
+        *prepared, command.issueOrdinal, command, "dte-send-issue");
     if (!endpoint)
       return endpoint.takeError();
     return UINT64_C(0);
@@ -676,12 +661,11 @@ private:
 
   llvm::Expected<DTEEndpoint *> issuePreparedDTESend(
       PreparedDTESend &prepared, std::optional<uint64_t> effectOrdinal,
-      const compiler::TargetTransaction &transaction, llvm::StringRef stage) {
+      const compiler::TargetCommand &command, llvm::StringRef stage) {
     detail::SystemCEvent *completion = detail::createSystemCEvent();
     if (!completion) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
-                   transaction.launchSlotId.getValue(),
-                   transaction.issueOrdinal,
+                   command.launchSlotId.getValue(), command.issueOrdinal,
                    detail::getSystemCBridgeDiagnostic());
       return currentFailureOrLifecycle("Direct DTE send event creation failed");
     }
@@ -689,8 +673,7 @@ private:
     if (!readiness) {
       detail::destroySystemCEvent(completion);
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
-                   transaction.launchSlotId.getValue(),
-                   transaction.issueOrdinal,
+                   command.launchSlotId.getValue(), command.issueOrdinal,
                    detail::getSystemCBridgeDiagnostic());
       return currentFailureOrLifecycle(
           "Direct DTE send readiness event creation failed");
@@ -704,7 +687,7 @@ private:
     tryMatchEndpoint(endpoints.size() - 1);
     while (!endpoint.peerReady && !failure) {
       detail::waitSystemCEvent(endpoint.readinessEvent);
-      if (bridgeFailed(transaction, stage))
+      if (bridgeFailed(command, stage))
         break;
     }
     if (failure)
@@ -713,17 +696,17 @@ private:
   }
 
   llvm::Expected<uint64_t>
-  processDTEReceive(const compiler::TargetTransaction &transaction) {
-    const int64_t launchSlot = transaction.launchSlotId.getValue();
+  processDTEReceive(const compiler::TargetCommand &command) {
+    const int64_t launchSlot = command.launchSlotId.getValue();
     if (dteStates[static_cast<size_t>(launchSlot)] != DTEState::Active) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                   "dte-receive", launchSlot, transaction.issueOrdinal,
+                   "dte-receive", launchSlot, command.issueOrdinal,
                    "Direct DTE receive occurred outside begin/finish");
       return currentFailureOrLifecycle("Direct DTE receive failed");
     }
-    const auto &receive = std::get<target::TargetDirectDTEReceiveTransaction>(
-        transaction.payload);
-    if (!validateTransactionTile(transaction, receive.localTile, "dte-receive"))
+    const auto &receive =
+        std::get<target::TargetDirectDTEReceiveCommand>(command.payload);
+    if (!validateCommandTile(command, receive.localTile, "dte-receive"))
       return currentFailureOrLifecycle("Direct DTE receive failed");
     llvm::Expected<uint64_t> event = allocateEvent();
     if (!event)
@@ -731,12 +714,12 @@ private:
     detail::SystemCEvent *completion = detail::createSystemCEvent();
     if (!completion) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                   "dte-receive", launchSlot, transaction.issueOrdinal,
+                   "dte-receive", launchSlot, command.issueOrdinal,
                    detail::getSystemCBridgeDiagnostic());
       return currentFailureOrLifecycle("Direct DTE event creation failed");
     }
     endpoints.push_back({*event, EndpointKind::Receive, launchSlot,
-                         transaction.issueOrdinal, std::nullopt, receive,
+                         command.issueOrdinal, std::nullopt, receive,
                          completion, nullptr, true, false, false, false});
     tryMatchEndpoint(endpoints.size() - 1);
     if (failure)
@@ -745,15 +728,15 @@ private:
   }
 
   llvm::Expected<uint64_t>
-  processDTEWait(const compiler::TargetTransaction &transaction) {
+  processDTEWait(const compiler::TargetCommand &command) {
     const auto &wait =
-        std::get<target::TargetDirectDTEWaitTransaction>(transaction.payload);
+        std::get<target::TargetDirectDTEWaitCommand>(command.payload);
     PreparedDTESend *prepared = findPreparedSend(wait.event);
-    const int64_t launchSlot = transaction.launchSlotId.getValue();
+    const int64_t launchSlot = command.launchSlotId.getValue();
     if (prepared && prepared->ownerLaunchSlot == launchSlot &&
         !prepared->issued) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, "dte-wait",
-                   launchSlot, transaction.issueOrdinal,
+                   launchSlot, command.issueOrdinal,
                    "Direct DTE wait names a prepared send that was not issued");
       return currentFailureOrLifecycle("Direct DTE wait failed");
     }
@@ -761,14 +744,14 @@ private:
     if (!endpoint || endpoint->ownerLaunchSlot != launchSlot ||
         endpoint->released) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, "dte-wait",
-                   launchSlot, transaction.issueOrdinal,
+                   launchSlot, command.issueOrdinal,
                    "Direct DTE wait names an unknown, foreign, or already "
                    "released event");
       return currentFailureOrLifecycle("Direct DTE wait failed");
     }
     while (!endpoint->complete && !failure) {
       detail::waitSystemCEvent(endpoint->completionEvent);
-      if (bridgeFailed(transaction, "dte-wait"))
+      if (bridgeFailed(command, "dte-wait"))
         break;
     }
     if (failure)
@@ -776,36 +759,36 @@ private:
     endpoint->released = true;
     if (prepared)
       prepared->released = true;
-    markOrdinalComplete(launchSlot, transaction.issueOrdinal);
+    markOrdinalComplete(launchSlot, command.issueOrdinal);
     return UINT64_C(0);
   }
 
   llvm::Expected<uint64_t>
-  processDTEFinish(const compiler::TargetTransaction &transaction) {
-    const int64_t launchSlot = transaction.launchSlotId.getValue();
+  processDTEFinish(const compiler::TargetCommand &command) {
+    const int64_t launchSlot = command.launchSlotId.getValue();
     DTEState &state = dteStates[static_cast<size_t>(launchSlot)];
     if (state != DTEState::Active) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, "dte-finish",
-                   launchSlot, transaction.issueOrdinal,
+                   launchSlot, command.issueOrdinal,
                    "Direct DTE finish occurred outside active state");
       return currentFailureOrLifecycle("Direct DTE finish failed");
     }
     for (const PreparedDTESend &prepared : preparedSends)
       if (prepared.ownerLaunchSlot == launchSlot && !prepared.released) {
         latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                     "dte-finish", launchSlot, transaction.issueOrdinal,
+                     "dte-finish", launchSlot, command.issueOrdinal,
                      "Direct DTE finish precedes exact send wait/release");
         return currentFailureOrLifecycle("Direct DTE finish failed");
       }
     for (const DTEEndpoint &endpoint : endpoints)
       if (endpoint.ownerLaunchSlot == launchSlot && !endpoint.released) {
         latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
-                     "dte-finish", launchSlot, transaction.issueOrdinal,
+                     "dte-finish", launchSlot, command.issueOrdinal,
                      "Direct DTE finish precedes exact endpoint wait/release");
         return currentFailureOrLifecycle("Direct DTE finish failed");
       }
     state = DTEState::Finished;
-    markOrdinalComplete(launchSlot, transaction.issueOrdinal);
+    markOrdinalComplete(launchSlot, command.issueOrdinal);
     return UINT64_C(0);
   }
 
@@ -833,19 +816,18 @@ private:
     return nullptr;
   }
 
-  bool validateTransactionTile(const compiler::TargetTransaction &transaction,
-                               uint32_t payloadPhysicalTile,
-                               llvm::StringRef stage) {
-    const int64_t physicalTile = transaction.physicalTileId.getValue();
+  bool validateCommandTile(const compiler::TargetCommand &command,
+                           uint32_t payloadPhysicalTile,
+                           llvm::StringRef stage) {
+    const int64_t physicalTile = command.physicalTileId.getValue();
     if (physicalTile < 0 ||
         static_cast<uint64_t>(physicalTile) >
             std::numeric_limits<uint32_t>::max() ||
         payloadPhysicalTile != static_cast<uint32_t>(physicalTile)) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
-                   transaction.launchSlotId.getValue(),
-                   transaction.issueOrdinal,
+                   command.launchSlotId.getValue(), command.issueOrdinal,
                    "Direct DTE payload disagrees with the explicit physical "
-                   "Tile identity");
+                   "Tile binding");
       return false;
     }
     return true;
@@ -909,7 +891,7 @@ private:
           latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
                        "dte-match", endpoint.ownerLaunchSlot,
                        endpoint.effectOrdinal,
-                       "duplicate live Direct DTE endpoint identity");
+                       "duplicate live Direct DTE endpoint binding");
           return;
         }
         continue;
@@ -939,7 +921,7 @@ private:
       // only exists after the matching explicit send issue. NCC writes become
       // visible in the shared functional memory at issue time, but Direct DTE
       // remains an external observer. The ordering proof must therefore hold
-      // before peer-ready is published and before send_async could be
+      // before peer-ready is signaled and before send_async could be
       // submitted. A participant join after issue cannot retroactively order
       // the transfer.
       if (hasPendingNCCConflict(sendEndpoint.ownerLaunchSlot, send.source,
@@ -962,7 +944,7 @@ private:
         return;
       }
       // The real CRT's send-issue call does not return until the matching
-      // receiver prepare has published its endpoint. Publish that readiness
+      // receiver prepare has made its endpoint available. Signal readiness
       // only after the issue-time ordering checks have succeeded.
       if (!sendEndpoint.peerReady) {
         sendEndpoint.peerReady = true;
@@ -1068,20 +1050,20 @@ private:
     if (!tile.completion.markComplete(issueOrdinal)) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure,
                    "completion-order", launchSlot, issueOrdinal,
-                   "transaction completion was published twice");
+                   "command completion was recorded twice");
       return;
     }
     detail::notifySystemCEvent(
         tileCompletionEvents[static_cast<size_t>(launchSlot)]);
   }
 
-  bool bridgeFailed(const compiler::TargetTransaction &transaction,
+  bool bridgeFailed(const compiler::TargetCommand &command,
                     llvm::StringRef stage) {
     const std::string diagnostic = detail::getSystemCBridgeDiagnostic();
     if (diagnostic.empty())
       return false;
     latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
-                 transaction.launchSlotId.getValue(), transaction.issueOrdinal,
+                 command.launchSlotId.getValue(), command.issueOrdinal,
                  diagnostic);
     return true;
   }
@@ -1115,7 +1097,7 @@ private:
   TargetModelExecutionPolicy policy;
   std::optional<int64_t> completionFailureLaunchSlot;
   FormalNumericExecutionContext numericContext;
-  std::vector<TileIdentity> tileIdentities;
+  std::vector<TileBinding> tileBindings;
   std::vector<TileState> tileStates;
   std::vector<DTEState> dteStates;
   std::vector<detail::SystemCEvent *> tileCompletionEvents;
@@ -1128,11 +1110,10 @@ private:
       pendingNCCMemoryEffects;
   std::set<int64_t> completedLaunchSlots;
   std::optional<InvocationFailure> failure;
-  std::optional<TargetModelResult> stagedResult;
-  std::optional<TargetModelResult> publishedResult;
+  std::optional<TargetModelResult> completedResult;
   std::string initializationDiagnostic;
   uint64_t nextEvent = 1;
-  uint64_t issuedTransactionCount = 0;
+  uint64_t issuedCommandCount = 0;
   uint64_t formalNumericCommandCount = 0;
   uint64_t managedReferenceNumericCommandCount = 0;
   uint64_t managedReferenceScalarEvaluationCount = 0;
@@ -1140,7 +1121,7 @@ private:
   uint64_t bulkMatmulInvocationCount = 0;
   uint64_t bulkReorderInvocationCount = 0;
   uint64_t bulkFormalFusedMultiplyAddCount = 0;
-  std::vector<std::string> bulkAdmissionRecordDigests;
+  std::vector<std::string> bulkQualificationRecordDigests;
   std::vector<std::string> bulkManagedReferenceEnvironmentDigests;
   std::vector<std::string> managedReferenceTensorEnvironmentDigests;
   std::vector<std::string> managedReferenceTensorImplementations;

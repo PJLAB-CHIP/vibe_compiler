@@ -25,7 +25,7 @@
 namespace wafer::compile_driver {
 bool runTargetModelGate(
     const CommandLineOptions &options,
-    const wafer::compiler::TargetCompilationProduct &product,
+    const wafer::compiler::CompiledProgram &compiledProgram,
     llvm::ArrayRef<IndexedPath> inputPaths,
     llvm::ArrayRef<IndexedPath> expectedPaths, double atol, double rtol,
     wafer::model::TargetModelKernelBudget budget,
@@ -53,16 +53,16 @@ bool runTargetModelGate(
   }
 
   auto programInvocations = wafer::compiler::prepareProgramInvocations(
-      product.getExecutableBundle(), *options.outputProgramDirectory,
-      globalInputs);
+      compiledProgram.getPhysicalTileExecutables(),
+      *options.outputProgramDirectory, globalInputs);
   if (!programInvocations) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(programInvocations.takeError()) << "\n";
     return true;
   }
   auto invocation = wafer::model::prepareTargetModelInvocation(
-      product.getExecutableBundle(), product.getTargetLLVMModuleBundle(),
-      *programInvocations);
+      compiledProgram.getPhysicalTileExecutables(),
+      compiledProgram.getTargetLLVMModules(), *programInvocations);
   if (!invocation) {
     llvm::errs() << "wafer-compile: " << llvm::toString(invocation.takeError())
                  << "\n";
@@ -97,8 +97,9 @@ bool runTargetModelGate(
   }
 
   const auto &physicalTileExecutables =
-      product.getExecutableBundle().getPhysicalTileExecutables();
-  const auto &targetModules = product.getTargetLLVMModuleBundle().getModules();
+      compiledProgram.getPhysicalTileExecutables().getPhysicalTileExecutables();
+  const auto &targetModules =
+      compiledProgram.getTargetLLVMModules().getModules();
   const size_t expectedOutputCount = llvm::count_if(
       targetModules.front().getKernelABISlots(), [](const auto &slot) {
         return slot.role == wafer::compiler::KernelABISlotRole::Output;
@@ -219,7 +220,7 @@ bool runTargetModelGate(
   }
   llvm::outs() << "wafer-compile: target model outputs matched; tiles="
                << result->completedTileCount
-               << " transactions=" << result->issuedTransactionCount
+               << " commands=" << result->issuedCommandCount
                << " systemc_threads=" << result->systemCThreadProcessCount
                << " final_delta=" << result->finalDeltaCount
                << " formal_commands=" << result->formalNumericCommandCount
@@ -233,8 +234,8 @@ bool runTargetModelGate(
                << " bulk_formal_fmas="
                << result->bulkFormalFusedMultiplyAddCount
                << " scheduler=" << result->schedulerIdentity << "\n";
-  for (llvm::StringRef digest : result->bulkAdmissionRecordDigests)
-    llvm::outs() << "wafer-compile: target model bulk admission=" << digest
+  for (llvm::StringRef digest : result->bulkQualificationRecordDigests)
+    llvm::outs() << "wafer-compile: target model bulk qualification=" << digest
                  << "\n";
   for (llvm::StringRef digest : result->bulkManagedReferenceEnvironmentDigests)
     llvm::outs() << "wafer-compile: target model managed-reference environment="

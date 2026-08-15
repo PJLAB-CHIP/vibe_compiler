@@ -1574,7 +1574,7 @@ applyPhysicalLayoutProposal(mlir::ModuleOp module, unsigned proposalOrdinal,
           *candidate, proposalOrdinal, &candidateResult, failureReason)))
     return mlir::failure();
 
-  // Commit only a completely materialized and verified proposal. A rejected
+  // Apply only a completely materialized and verified proposal. A rejected
   // ordinal, exhausted proof/solver budget, or failed typed verifier leaves
   // the caller's actual clone byte-for-byte structurally unchanged.
   module->setAttrs((*candidate)->getAttrs());

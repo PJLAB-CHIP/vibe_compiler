@@ -129,7 +129,7 @@ DDR_ACTIVE_RANK_BOARD_GROUP_KEYS = tuple(
 
 
 class CalibrationRunnerError(RuntimeError):
-    """A preflight or execution failure that must stop the board session."""
+    """A validation or execution failure that must stop the board session."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -153,13 +153,13 @@ class RegisteredTest:
 CALIBRATION_STEPS = (
     CalibrationStep(
         "initial-profile-heartbeat",
-        "preflight-profile-heartbeat",
+        "validation-profile-heartbeat",
         HEARTBEAT_CTEST,
         "qualify the configured rank-one runtime path and establish card health",
     ),
     CalibrationStep(
         "pmu-readonly",
-        "preflight-profile-heartbeat",
+        "validation-profile-heartbeat",
         "wafer-board-ncc-pmu-readonly-probe",
         "qualify read-only PMU enable, scope, split-counter, and delta basis",
     ),
@@ -309,7 +309,7 @@ CALIBRATION_STEPS = (
         "full-card-runtime",
         "wafer-board-kernel-grid-add-profile",
         (
-            "16-rank Add correctness and final-artifact profiler campaign "
+            "16-rank Add correctness and final-output profiler campaign "
             "over the same production package"
         ),
     ),
@@ -402,7 +402,7 @@ EXPLICIT_ONLY_STEPS = (
         "wafer-board-m-sharded-replicated-gemm-profile",
         (
             "16-rank FP16 M-sharded replicated-operand GEMM exact "
-            "correctness and final-artifact profiler campaign"
+            "correctness and final-output profiler campaign"
         ),
     ),
     CalibrationStep(
@@ -420,7 +420,7 @@ EXPLICIT_ONLY_STEPS = (
         "wafer-board-kernel-grid-add",
         (
             "standalone legacy 16-rank kernel-grid Add smoke; superseded by "
-            "the default final-artifact profiler gate"
+            "the default final-output profiler gate"
         ),
     ),
     CalibrationStep(
@@ -636,7 +636,7 @@ EXPLICIT_ONLY_STEPS = (
             "rank-one-pending-queue-saturation",
             f"wafer-board-ncc-{case_name}",
             (
-                "tight documented-boundary queue admission/backpressure "
+                "tight documented-boundary queue acceptance/backpressure "
                 f"observation for {case_name}"
             ),
         )
@@ -1264,7 +1264,7 @@ def profile_report_members(
     current = runs / "current"
     if not current.is_symlink():
         raise CalibrationRunnerError(
-            f"{test.name}: profiler did not publish a managed current report"
+            f"{test.name}: profiler did not write a managed current report"
         )
     try:
         canonical_runs = runs.resolve(strict=True)
@@ -1291,7 +1291,7 @@ def profile_report_members(
     ):
         raise CalibrationRunnerError(
             f"{test.name}: profiler current report is not the complete "
-            "three-file public artifact group"
+            "three report files"
         )
     evidence_path = run_directory / "evidence.json"
     try:
@@ -1314,7 +1314,7 @@ def profile_report_members(
     )
 
 
-def archive_step_artifacts(
+def collect_step_evidence(
     test: RegisteredTest,
     destination: pathlib.Path,
 ) -> dict[str, object] | None:
@@ -1327,7 +1327,7 @@ def archive_step_artifacts(
             f"{test.name}: declared work directory was not produced: {work_dir}"
         )
     durable_suffixes = {".raw", ".json", ".jsonl"}
-    preserves_compiler_artifacts = (
+    preserves_compiler_ir = (
         "pending" in test.labels
         or "compiler-optimization" in test.labels
         or "collective-characterization" in test.labels
@@ -1336,7 +1336,7 @@ def archive_step_artifacts(
         or "pipeline" in test.labels
         or test.name == "wafer-board-cluster-direct-dte"
     )
-    if preserves_compiler_artifacts:
+    if preserves_compiler_ir:
         # Preserve the exact source snapshots and final linked ELFs as
         # read-only audit evidence for pending calibration and paired results.
         durable_suffixes.update({".mlir", ".meta", ".so"})
@@ -1569,17 +1569,17 @@ def execute_calibration(
             if returncode == 0
             else f"CTest process exited with code {returncode}"
         )
-        artifact_error: str | None = None
-        artifacts: dict[str, object] | None = None
+        evidence_error: str | None = None
+        evidence: dict[str, object] | None = None
         try:
-            artifacts = archive_step_artifacts(
+            evidence = collect_step_evidence(
                 registered[step.ctest_name],
-                log_dir / "artifacts" / stem,
+                log_dir / "evidence" / stem,
             )
         except (CalibrationRunnerError, OSError) as error:
-            artifact_error = f"failed to archive durable evidence: {error}"
+            evidence_error = f"failed to archive durable evidence: {error}"
             if junit_error is None:
-                junit_error = artifact_error
+                junit_error = evidence_error
         status = "passed" if junit_error is None else "failed"
         result = {
             "key": step.key,
@@ -1594,10 +1594,10 @@ def execute_calibration(
             "log": str(log_path),
             "junit": str(junit_path),
         }
-        if artifacts is not None:
-            result["artifacts"] = artifacts
-        if artifact_error is not None:
-            result["artifact_error"] = artifact_error
+        if evidence is not None:
+            result["evidence"] = evidence
+        if evidence_error is not None:
+            result["evidence_error"] = evidence_error
         if junit_error is not None:
             result["failure"] = junit_error
         step_results.append(result)

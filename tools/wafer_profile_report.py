@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate production-artifact profiler evidence and publish an offline report."""
+"""Validate primary-program profiler evidence and write an offline report."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ from typing import Any
 
 
 SCHEMA_NAME = "wafer.profile.evidence"
-SCHEMA_VERSION = 10
-COMPANION_SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
+INSTRUMENTATION_SCHEMA_VERSION = 10
 RECORD_ABI = "wafer-tx81-profiler-record-v4"
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
-ANALYSIS_SCHEMA_VERSION = 9
+ANALYSIS_SCHEMA_VERSION = 10
 STATIC_COST_MODEL = "tx81-static-peak-lower-bound-v1"
 STATIC_COST_SCOPE = "complete-final-instruction-program-per-physical-tile"
 TILES = tuple(range(16))
@@ -120,7 +120,7 @@ STATIC_COST_DIRECTIONS = ("north", "east", "south", "west")
 
 
 class EvidenceError(ValueError):
-    """The evidence does not conform to the production-artifact contract."""
+    """The evidence does not conform to the primary-program contract."""
 
 
 def _fail(path: str, message: str) -> None:
@@ -319,13 +319,13 @@ def _validate_counter(
     _boolean(counter["enabled"], f"{path}.enabled")
 
 
-def _validate_identity(evidence: Mapping[str, Any]) -> None:
-    identity = _mapping(evidence["identity"], "identity")
+def _validate_program(evidence: Mapping[str, Any]) -> None:
+    program = _mapping(evidence["program"], "program")
     _exact_keys(
-        identity,
+        program,
         {
-            "production_manifest_sha256",
-            "profile_companion_schema_version",
+            "program_manifest_sha256",
+            "profile_instrumentation_schema_version",
             "target_identity",
             "launch",
             "card_count",
@@ -333,35 +333,35 @@ def _validate_identity(evidence: Mapping[str, Any]) -> None:
             "site_correlation_basis",
             "record_abi",
         },
-        "identity",
+        "program",
     )
     _sha256(
-        identity["production_manifest_sha256"],
-        "identity.production_manifest_sha256",
+        program["program_manifest_sha256"],
+        "program.program_manifest_sha256",
     )
     version = _integer(
-        identity["profile_companion_schema_version"],
-        "identity.profile_companion_schema_version",
+        program["profile_instrumentation_schema_version"],
+        "program.profile_instrumentation_schema_version",
     )
-    if version != COMPANION_SCHEMA_VERSION:
+    if version != INSTRUMENTATION_SCHEMA_VERSION:
         _fail(
-            "identity.profile_companion_schema_version",
-            f"must be {COMPANION_SCHEMA_VERSION}",
+            "program.profile_instrumentation_schema_version",
+            f"must be {INSTRUMENTATION_SCHEMA_VERSION}",
         )
-    _string(identity["target_identity"], "identity.target_identity")
-    _validate_launch(identity["launch"], "identity.launch")
-    if _integer(identity["card_count"], "identity.card_count") != 1:
-        _fail("identity.card_count", "must be 1")
-    if _integer(identity["tile_count"], "identity.tile_count") != 16:
-        _fail("identity.tile_count", "must be 16")
+    _string(program["target_identity"], "program.target_identity")
+    _validate_launch(program["launch"], "program.launch")
+    if _integer(program["card_count"], "program.card_count") != 1:
+        _fail("program.card_count", "must be 1")
+    if _integer(program["tile_count"], "program.tile_count") != 16:
+        _fail("program.tile_count", "must be 16")
     basis = _string(
-        identity["site_correlation_basis"],
-        "identity.site_correlation_basis",
+        program["site_correlation_basis"],
+        "program.site_correlation_basis",
     )
-    if basis != "typed-target-call-ordinal-ssa-identity-occurrence-v2":
-        _fail("identity.site_correlation_basis", "unknown correlation basis")
-    if _string(identity["record_abi"], "identity.record_abi") != RECORD_ABI:
-        _fail("identity.record_abi", f"must be {RECORD_ABI!r}")
+    if basis != "typed-target-call-ordinal-ssa-numbering-occurrence-v3":
+        _fail("program.site_correlation_basis", "unknown correlation basis")
+    if _string(program["record_abi"], "program.record_abi") != RECORD_ABI:
+        _fail("program.record_abi", f"must be {RECORD_ABI!r}")
 
 
 def _validate_topology(evidence: Mapping[str, Any]) -> dict[int, int]:
@@ -461,7 +461,7 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
     allowed_modes = {
         "external-expected",
         "mixed",
-        "same-session-production",
+        "same-session-primary",
     }
     if mode not in allowed_modes:
         _fail("output_validation.mode", f"must be one of {sorted(allowed_modes)}")
@@ -486,7 +486,7 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
                 "bytes",
                 "reference_sha256",
                 "external_expected_comparison",
-                "production_execution_validated",
+                "primary_output_validated",
                 "diagnostic_captures_match_primary",
             },
             path,
@@ -544,8 +544,8 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
             )
         comparisons.append(comparison)
         _boolean(
-            row["production_execution_validated"],
-            f"{path}.production_execution_validated",
+            row["primary_output_validated"],
+            f"{path}.primary_output_validated",
         )
         _boolean(
             row["diagnostic_captures_match_primary"],
@@ -554,7 +554,7 @@ def _validate_output(evidence: Mapping[str, Any]) -> None:
     expected_mode = (
         "external-expected"
         if all(value is not None for value in comparisons)
-        else "same-session-production"
+        else "same-session-primary"
         if all(value is None for value in comparisons)
         else "mixed"
     )
@@ -639,20 +639,7 @@ def _validate_experiment(
     topology: Mapping[int, int],
 ) -> None:
     experiment = _mapping(evidence["experiment"], "experiment")
-    _exact_keys(experiment, {"artifact", "clock", "trace", "pmu"}, "experiment")
-    artifact = _mapping(experiment["artifact"], "experiment.artifact")
-    _exact_keys(
-        artifact,
-        {"digest", "target_identity", "launch", "card_count", "tile_count"},
-        "experiment.artifact",
-    )
-    _sha256(artifact["digest"], "experiment.artifact.digest")
-    _string(artifact["target_identity"], "experiment.artifact.target_identity")
-    _validate_launch(artifact["launch"], "experiment.artifact.launch")
-    if _integer(artifact["card_count"], "experiment.artifact.card_count") != 1:
-        _fail("experiment.artifact.card_count", "must be 1")
-    if _integer(artifact["tile_count"], "experiment.artifact.tile_count") != 16:
-        _fail("experiment.artifact.tile_count", "must be 16")
+    _exact_keys(experiment, {"clock", "trace", "pmu"}, "experiment")
 
     for index, row in enumerate(
         _tile_rows(experiment["clock"], "experiment.clock")
@@ -700,7 +687,7 @@ def _validate_experiment(
                 "entry_end_cycle",
                 "capacity",
                 "count",
-                "preflight_count",
+                "counted_event_count",
                 "next_sequence",
                 "dropped_event_count",
                 "record_flags",
@@ -717,7 +704,7 @@ def _validate_experiment(
             _integer(row[key], f"{path}.{key}", minimum=0, maximum=UINT64_MAX)
         for key in ("capacity", "count"):
             _integer(row[key], f"{path}.{key}", minimum=0)
-        for key in ("preflight_count", "next_sequence"):
+        for key in ("counted_event_count", "next_sequence"):
             _integer(row[key], f"{path}.{key}", minimum=0, maximum=UINT64_MAX)
         for key in ("dropped_event_count", "record_flags"):
             _integer(row[key], f"{path}.{key}", minimum=0, maximum=UINT32_MAX)
@@ -1221,7 +1208,7 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
             "schema",
             "schema_version",
             "run_id",
-            "identity",
+            "program",
             "topology",
             "measurement",
             "output_validation",
@@ -1237,7 +1224,7 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
     if evidence["schema_version"] != SCHEMA_VERSION:
         _fail("schema_version", f"must be {SCHEMA_VERSION}")
     _string(evidence["run_id"], "run_id")
-    _validate_identity(evidence)
+    _validate_program(evidence)
     topology = _validate_topology(evidence)
     _validate_measurement(evidence)
     _validate_output(evidence)
@@ -1246,35 +1233,12 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
     validity = _mapping(evidence["validity"], "validity")
     _exact_keys(
         validity,
-        {"environment", "package_companion", "measurement_basis"},
+        {"environment", "profile_instrumentation", "measurement_basis"},
         "validity",
     )
     for key in validity:
         _boolean(validity[key], f"validity.{key}")
     _validate_experiment(evidence, sites, topology)
-    identity = evidence["identity"]
-    artifact = evidence["experiment"]["artifact"]
-    for key, left, right in (
-        (
-            "digest",
-            identity["production_manifest_sha256"],
-            artifact["digest"],
-        ),
-        ("target_identity", identity["target_identity"], artifact["target_identity"]),
-        ("launch", identity["launch"], artifact["launch"]),
-        (
-            "card_count",
-            identity["card_count"],
-            artifact["card_count"],
-        ),
-        (
-            "tile_count",
-            identity["tile_count"],
-            artifact["tile_count"],
-        ),
-    ):
-        if left != right:
-            _fail(f"experiment.artifact.{key}", "conflicts with identity")
     return evidence
 
 
@@ -2083,7 +2047,7 @@ def _semantic_segments(
             reason = f"after-last-{_site_label(last_site['ref'])}"
             primary, relation = "mixed", "mixed/proxy"
             optimization = (
-                "inspect final completion, output publication and return; Trace "
+                "inspect final completion, output writing and return; Trace "
                 "teardown remains separately visible outside the entry axis"
             )
         else:
@@ -2212,20 +2176,20 @@ def analyze_evidence(value: object) -> dict[str, Any]:
 
     source_validity = evidence["validity"]
     resources = tuple(evidence["output_validation"]["resources"])
-    production_validated = all(
-        row["production_execution_validated"] for row in resources
+    primary_validated = all(
+        row["primary_output_validated"] for row in resources
     )
     captures_match_primary = all(
         row["diagnostic_captures_match_primary"] for row in resources
     )
-    output_equivalence = production_validated and captures_match_primary
+    output_equivalence = primary_validated and captures_match_primary
     comparisons = [row["external_expected_comparison"] for row in resources]
     any_expected = any(item is not None for item in comparisons)
     all_expected = all(item is not None for item in comparisons)
     all_exact = all(item == "exact" for item in comparisons)
-    if not production_validated:
+    if not primary_validated:
         semantic_correctness: bool | None = False
-        correctness_status = "production-validation-failed"
+        correctness_status = "primary-validation-failed"
     elif all_expected and all_exact:
         semantic_correctness = True
         correctness_status = "expected-exact"
@@ -2287,11 +2251,11 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         )
     qualified = bool(
         source_validity["environment"]
-        and source_validity["package_companion"]
+        and source_validity["profile_instrumentation"]
         and source_validity["measurement_basis"]
         and output_equivalence
     )
-    for key in ("environment", "package_companion", "measurement_basis"):
+    for key in ("environment", "profile_instrumentation", "measurement_basis"):
         if not source_validity[key]:
             diagnose("error", f"{key}_failed", f"{key} qualification failed")
 
@@ -2324,7 +2288,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             and int(trace_row["trace_state"]) == TRACE_COMPLETE_STATE
             and int(trace_row["count"]) == len(trace_row["events"])
             and int(trace_row["count"]) <= int(trace_row["capacity"])
-            and int(trace_row["preflight_count"]) == int(trace_row["count"])
+            and int(trace_row["counted_event_count"]) == int(trace_row["count"])
             and int(trace_row["next_sequence"]) == int(trace_row["count"])
             and [int(event["sequence"]) for event in trace_row["events"]]
             == list(range(len(trace_row["events"])))
@@ -2334,7 +2298,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             diagnose(
                 "warning",
                 "trace_protocol_unusable",
-                "trace terminal fields, count preflight, or entry span are inconsistent",
+                "trace terminal fields, count result, or entry span are inconsistent",
                 tile=tile,
             )
         trace_status = (
@@ -2772,14 +2736,14 @@ def analyze_evidence(value: object) -> dict[str, Any]:
                 "completion_loop_bookkeeping_cycles",
             ):
                 optimization_entry = (
-                    "Trace replaces production TsmWaitfinish with this sampled "
-                    "poll loop; optimize the production completion semantic "
+                    "Trace replaces primary TsmWaitfinish with this sampled "
+                    "poll loop; optimize the primary completion semantic "
                     "from its proxy row, not from this instrumentation cost"
                 )
             else:
                 optimization_entry = (
                     "reduce profiler sampling/bookkeeping only; this does "
-                    "not optimize the production artifact"
+                    "not optimize the primary program"
                 )
             overlay_rows.append(
                 {
@@ -3095,11 +3059,11 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         evidence["static_cost_model"], engine_active_time
     )
     validity = {
-        "identity": True,
+        "program_contract": True,
         "output_equivalence": output_equivalence,
         "semantic_correctness": semantic_correctness,
         "environment": bool(source_validity["environment"]),
-        "package_companion": bool(source_validity["package_companion"]),
+        "profile_instrumentation": bool(source_validity["profile_instrumentation"]),
         "measurement_basis": bool(source_validity["measurement_basis"]),
         "host_completion_resolution": high_resolution,
         "trace": trace_all,
@@ -3111,19 +3075,19 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         "schema": ANALYSIS_SCHEMA_NAME,
         "schema_version": ANALYSIS_SCHEMA_VERSION,
         "run_id": evidence["run_id"],
-        "record_abi": evidence["identity"]["record_abi"],
+        "record_abi": evidence["program"]["record_abi"],
         "valid": qualified,
         "validity": validity,
-        "final_artifact": {
-            "artifact_digest": experiment["artifact"]["digest"],
-            "target_identity": experiment["artifact"]["target_identity"],
+        "program": {
+            "package_digest": evidence["program"]["program_manifest_sha256"],
+            "target_identity": evidence["program"]["target_identity"],
             "duration": {
                 "sample_id": "primary",
                 "sample_index": 0,
                 "measurement_kind": (
                     "tx-stream-kernel-launch-to-completion-envelope"
                 ),
-                "scope": "production-launch-to-stream-completion",
+                "scope": "primary-launch-to-stream-completion",
                 "is_engine_only": False,
                 "includes_device_control_wait_and_scheduling": True,
                 "includes_host_submit": False,
@@ -3147,7 +3111,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "hardware_cost_analysis": hardware_cost_analysis,
             "output": {
                 "resource_count": len(resources),
-                "production_execution_validated": production_validated,
+                "primary_output_validated": primary_validated,
                 "diagnostic_captures_match_primary": captures_match_primary,
                 "independent_expected_coverage": (
                     "complete" if all_expected else "partial" if any_expected else "none"
@@ -3176,7 +3140,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
         },
         "diagnostics": diagnostics,
         "method": {
-            "kernel_launch_to_completion": "one uninstrumented Primary production launch measured by same-stream TX start/end events; this launch-to-completion envelope includes device-side dispatch, Kcore control, submits, waits, DTE lifecycle, scheduling gaps, and retirement; it is not engine-only time",
+            "kernel_launch_to_completion": "one uninstrumented Primary primary launch measured by same-stream TX start/end events; this launch-to-completion envelope includes device-side dispatch, Kcore control, submits, waits, DTE lifecycle, scheduling gaps, and retirement; it is not engine-only time",
             "host_submit_time": "host steady-clock provider submit path, including provider argument preparation and stream/event setup where applicable; not pure TX API time",
             "host_envelope_time": "host steady-clock first submit through all-Tile trusted completion; diagnostic envelope, not kernel execution time",
             "host_envelope_ledger": "host envelope is partitioned only on its own clock into host submit and host non-submit envelope; the latter includes host waiting/polling/phase control concurrent with the Primary TX stream envelope, is not pure overhead, and is never reduced by device elapsed",
@@ -3184,8 +3148,8 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "timeline_axis": "tile-local Kcore rdcycle entry span partitioned into named semantic costs; every cycle has an explicit category or reason-specific capture-boundary residual",
             "timeline_scope": "tile-local only; no cross-tile order is inferred",
             "semantic_partition": "exclusive interval-union/subtraction accounting over the trace entry; categories sum exactly once to the entry span",
-            "primary_inclusion_labels": "yes means the production semantic phase is inside the Primary device event; mixed means the trace interval combines production-common control with nested trace-only work that is measured only in the separate overhead overlay; unknown means current evidence cannot establish the production correspondence; no is trace-only",
-            "trace_overhead_overlay": "eight mutually exclusive Trace-run rdcycle instrumentation components; status-poll and completion-loop bookkeeping belong to the sampled replacement for production TsmWaitfinish, while the production-common wait semantic is represented separately by its proxy operation row; all eight are trace-only, aggregate-positioned, and never added to the semantic partition",
+            "primary_inclusion_labels": "yes means the primary semantic phase is inside the Primary device event; mixed means the trace interval combines primary-common control with nested trace-only work that is measured only in the separate overhead overlay; unknown means current evidence cannot establish the primary correspondence; no is trace-only",
+            "trace_overhead_overlay": "eight mutually exclusive Trace-run rdcycle instrumentation components; status-poll and completion-loop bookkeeping belong to the sampled replacement for primary TsmWaitfinish, while the primary-common wait semantic is represented separately by its proxy operation row; all eight are trace-only, aggregate-positioned, and never added to the semantic partition",
             "engine_active_time": "separate Trace diagnostic-run vendor PMU execution time in nanoseconds for each tile and NCC engine; min/average/max are per-tile distributions and cross-tile sums are work volume only; asynchronous engines/tiles may overlap, so no card-wide engine elapsed is inferred or subtracted from the Primary envelope",
             "hardware_cost_model": "non-additive static reference derived from exact final instruction-program work and target peak rates; CT/NE are per-tile arithmetic floors, symmetric DDR is an explicitly labeled whole-card bandwidth heuristic, TDMA time is unavailable, and Direct-DTE exposes only an ideal single-link payload serialization reference rather than collective latency",
             "statistics_window": "aggregate statistics_window is a raw PMU tick delta, not the rdcycle timeline axis and not converted to elapsed time",
@@ -3230,7 +3194,7 @@ button{color:inherit}
 .topbar{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:16px}
 .eyebrow{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);font-weight:750}
 h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);font:11px ui-monospace,SFMono-Regular,Consolas,monospace}
-.artifact-links{display:flex;gap:7px}.artifact-links a{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--accent);text-decoration:none;font-size:11px}
+.program-links{display:flex;gap:7px}.program-links a{padding:6px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--accent);text-decoration:none;font-size:11px}
 .view{display:none}.view.active{display:block}
 .section-head{display:flex;align-items:end;justify-content:space-between;gap:16px;margin:0 0 10px}.section-head>*{min-width:0}
 .section-head h2{font-size:17px;margin:0}.section-head p{margin:2px 0 0;color:var(--muted);font-size:11px}
@@ -3287,7 +3251,7 @@ h1{font-size:23px;margin:3px 0 2px;line-height:1.2}.run-id{color:var(--muted);fo
 .cost-segment:hover,.cost-segment.selected{outline:2px solid #17212b;outline-offset:1px;z-index:3}
 .cost-ncc-submit{background:#8fb7f7}.cost-completion-wait-proxy{background:#d8b4fe}.cost-dte-peer-ready-wait{background:#b9ddd8}.cost-dte-setup-issue{background:#94cec6}.cost-dte-completion-wait{background:#69b8ad}.cost-dte-cleanup{background:#a7d7d0}.cost-dte-issue-aggregate-fallback{background:#6ab7ad}.cost-dte-wait-aggregate-fallback{background:#4c9c92}.cost-site-control{background:#d7dee7}.cost-between-site-gap{background:#eef1f4}.cost-entry-prologue,.cost-entry-epilogue{background:#f3f5f7}
 .cost-capture-boundary-residual{background-color:#fff2d6;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3Cpath d='M-2 8L8-2M2 10L10 2' stroke='%23b26a00' stroke-width='1'/%3E%3C/svg%3E")}
-.trace-cost{background:#f4b7ad}.lane-production{background:#fbfcfd}.lane-separator{border-top:2px solid var(--line-strong)}
+.trace-cost{background:#f4b7ad}.lane-primary{background:#fbfcfd}.lane-separator{border-top:2px solid var(--line-strong)}
 .overlay-stack{display:flex;min-height:28px;margin:2px 0 10px;border:1px solid var(--line);border-radius:5px;overflow:hidden;background:var(--soft)}.overlay-part{min-width:3px;border:0;border-right:1px solid rgba(255,255,255,.8);background:#f4b7ad;cursor:pointer}.overlay-part:nth-child(even){background:#e99387}.overlay-part:hover,.overlay-part.selected{outline:2px solid #17212b;outline-offset:-2px;z-index:2}
 .cost-tables{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:10px;margin-top:10px}.cost-tables>*{min-width:0}.cost-tables .table-wrap{max-width:100%;max-height:310px}
 .detail{min-height:210px}.detail h3{font-size:13px;margin:0 0 10px}.kv{display:grid;grid-template-columns:110px 1fr;gap:5px 8px;font-size:11px}.kv dt{color:var(--muted)}.kv dd{margin:0;overflow-wrap:anywhere}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
@@ -3303,13 +3267,13 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
 .notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:8px 10px;color:#344054;font-size:11px;margin-bottom:9px}
 @supports(display:grid){.split>*:last-child{margin-left:0}.tile-card{margin:0}}
 @media(max-width:1050px){.sidebar{flex-basis:220px;width:220px}.kpis,.overview-kpis{grid-template-columns:repeat(2,1fr)}.split,.cost-tables{grid-template-columns:1fr;flex-direction:column}.split>*:last-child{width:100%;margin:10px 0 0}.method-list{grid-template-columns:1fr}}
-@media(max-width:720px){.shell{display:block}.sidebar{position:static;width:auto;height:auto}.tree{display:none}.main{padding:14px}.nav{grid-template-columns:repeat(2,1fr)}.kpis{grid-template-columns:1fr}.tile-grid{grid-template-columns:repeat(2,1fr)}.tile-card{flex-basis:calc(50% - 6px)}.topbar{display:block}.artifact-links{margin-top:10px}.diag{grid-template-columns:64px minmax(0,1fr);gap:3px 8px}.diag>:nth-child(3){grid-column:1}.diag>:nth-child(4){grid-column:2}}
+@media(max-width:720px){.shell{display:block}.sidebar{position:static;width:auto;height:auto}.tree{display:none}.main{padding:14px}.nav{grid-template-columns:repeat(2,1fr)}.kpis{grid-template-columns:1fr}.tile-grid{grid-template-columns:repeat(2,1fr)}.tile-card{flex-basis:calc(50% - 6px)}.topbar{display:block}.program-links{margin-top:10px}.diag{grid-template-columns:64px minmax(0,1fr);gap:3px 8px}.diag>:nth-child(3){grid-column:1}.diag>:nth-child(4){grid-column:2}}
 </style>
 </head>
 <body>
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="brand-mark">W</div><div><strong>Wafer Profiler</strong><small>Final artifact · Card 0</small></div></div>
+    <div class="brand"><div class="brand-mark">W</div><div><strong>Wafer Profiler</strong><small>Final program · Card 0</small></div></div>
     <nav class="nav" aria-label="Profile views">
       <button class="active" data-view="overview">Overview</button>
       <button data-view="timeline">Trace Timeline</button>
@@ -3324,12 +3288,12 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
   </aside>
   <main class="main">
     <header class="topbar">
-      <div><div class="eyebrow">Production artifact / primary execution</div><h1>最终编译产物板卡 Profile</h1><div class="run-id">run __RUN_ID__</div></div>
-      <div class="artifact-links"><a href="evidence.json">Evidence</a><a href="analysis.json">Analysis</a></div>
+      <div><div class="eyebrow">Primary program / primary execution</div><h1>最终编译产物板卡 Profile</h1><div class="run-id">run __RUN_ID__</div></div>
+      <div class="program-links"><a href="evidence.json">Evidence</a><a href="analysis.json">Analysis</a></div>
     </header>
 
     <section id="view-overview" class="view active" data-view-panel="overview">
-      <div class="section-head"><div><h2>Overview</h2><p>单次Primary production launch；kernel包络、Host诊断和Trace PMU engine active time分域展示。</p></div></div>
+      <div class="section-head"><div><h2>Overview</h2><p>单次Primary primary launch；kernel包络、Host诊断和Trace PMU engine active time分域展示。</p></div></div>
       <div id="statusLegend" class="legend"></div>
       <div class="metric-note status-glossary"><b>Measured</b>：边界和值均由对应计时源直接取得；<b>Sampled</b>：采样 counter；<b>Bounded</b>：只知道活动发生在保守观测窗内，不代表整段持续 busy；<b>Unavailable / Incomplete / Invalid</b>：分别表示该局部证据缺失、采集未闭合或协议不合法。</div>
       <div class="grid kpis overview-kpis">
@@ -3350,7 +3314,7 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
 
     <section id="view-timeline" class="view" data-view-panel="timeline">
       <div class="section-head"><div><h2>Trace Timeline</h2><p>Trace-run Kcore ledger 与 engine evidence 分层；横轴是所选 tile 的 rdcycle entry span。</p></div></div>
-      <div class="notice">Trace-run Kcore ledger 对 entry span 做排他 interval union/subtraction；它仍包含嵌套的 trace instrumentation，因此不能直接相减得到 Primary 各项成本。In Primary 的 yes 表示同一语义阶段存在于 Primary，mixed 表示 production control 与无法定位的 Trace-only 工作混合，unknown 表示当前证据不足，no 表示纯插桩。Primary TX stream launch envelope包含设备侧控制、等待和真实idle，但不含Trace-only instrumentation。Trace-run cost overlay只在独立aggregate bar中显示，绝不伪造时间位置或与ledger相加；NCC engine ns来自另一轮Trace，只是异步work volume。Engine lane的空背景只表示当前没有observation window，不等于engine idle，也不用于补算Primary。</div>
+      <div class="notice">Trace-run Kcore ledger 对 entry span 做排他 interval union/subtraction；它仍包含嵌套的 trace instrumentation，因此不能直接相减得到 Primary 各项成本。In Primary 的 yes 表示同一语义阶段存在于 Primary，mixed 表示 primary control 与无法定位的 Trace-only 工作混合，unknown 表示当前证据不足，no 表示纯插桩。Primary TX stream launch envelope包含设备侧控制、等待和真实idle，但不含Trace-only instrumentation。Trace-run cost overlay只在独立aggregate bar中显示，绝不伪造时间位置或与ledger相加；NCC engine ns来自另一轮Trace，只是异步work volume。Engine lane的空背景只表示当前没有observation window，不等于engine idle，也不用于补算Primary。</div>
       <div class="timeline-key" aria-label="Timeline interval legend">
         <span><i class="key-swatch key-submit"></i><b>实心块</b>：精确 command submit / DTE operation 区间</span>
         <span><i class="key-swatch key-bound"></i><b>浅色虚线框</b>：PMU 活动保守观测范围，不是持续 busy</span>
@@ -3382,7 +3346,7 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
     </section>
 
     <section id="view-sites" class="view" data-view-panel="sites">
-      <div class="section-head"><div><h2>Program / Sites</h2><p>从 trace event 下钻到 compiler-published correlation identity。</p></div></div>
+      <div class="section-head"><div><h2>Program / Sites</h2><p>从 trace event 下钻到 compiler-recorded correlation key。</p></div></div>
       <div class="toolbar"><label>Search <input id="siteSearch" type="search" placeholder="symbol, correlation, position"></label><label>Engine <select id="siteEngine"><option value="">All engines</option></select></label><span id="siteCount" class="spacer"></span></div>
       <div class="table-wrap"><table><thead><tr><th>Tile</th><th>Site</th><th>Kind</th><th>Engine</th><th>Correlation</th><th>Target call</th><th>Position</th><th class="num">Instances</th><th>Site capture</th><th class="num">Activity events</th><th>Engine / phase evidence</th></tr></thead><tbody id="siteRows"></tbody></table></div>
     </section>
@@ -3414,14 +3378,14 @@ pre{margin:0;max-height:520px;overflow:auto;background:#111827;color:#dbe7f5;bor
       <pre id="rawPayload"></pre>
     </section>
 
-    <div class="metric-note" style="margin-top:14px">Stable publication: index.html · analysis.json · evidence.json. Directory and regular files are 0777.</div>
+    <div class="metric-note" style="margin-top:14px">Stable writing: index.html · analysis.json · evidence.json. Directory and regular files are 0777.</div>
   </main>
 </div>
 <script>
 "use strict";
 const analysis=__ANALYSIS__;
 const evidence=__EVIDENCE__;
-const finalArtifact=analysis.final_artifact;
+const profiledProgram=analysis.program;
 const ENGINES=["CT","NE","RDMA","WDMA","TDMA","DIRECT_DTE"];
 const TERMS={
   semantic:{
@@ -3443,7 +3407,7 @@ const TERMS={
     "ncc-pmu-sample":{label:"NCC PMU 采样",definition:"读取 NCC engine PMU counter 的 Trace-only 成本。",not:"Primary 不包含，不能与语义 ledger 相加。"},
     "dte-pmu-sample":{label:"DTE PMU 采样",definition:"启用、读取或恢复 Direct-DTE PMU 的 Trace-only 成本。",not:"Primary 不包含，也不是 DTE 传输耗时。"},
     "event-bookkeeping":{label:"Trace 事件记录",definition:"写入 profiler event record 和维护序号的 Trace-only 成本。",not:"不是被测 target-call 自身耗时。"},
-    "status-poll":{label:"完成状态轮询",definition:"Trace completion loop 读取任务状态的采样成本。",not:"不能冒充 production completion wait；后者在语义 ledger 单列。"},
+    "status-poll":{label:"完成状态轮询",definition:"Trace completion loop 读取任务状态的采样成本。",not:"不能冒充 primary completion wait；后者在语义 ledger 单列。"},
     "site-hook":{label:"调用点钩子",definition:"进入/退出 TARGET_SITE 记录边界的 Trace-only 成本。",not:"Primary 不包含。"},
     "completion-loop-bookkeeping":{label:"完成循环记录",definition:"Trace completion loop 中除状态读取外的记录与控制成本。",not:"不能与 completion-wait-proxy 重复计算。"},
     "entry-setup":{label:"Trace 入口初始化",definition:"Trace entry 时间轴开始前初始化 record/PMU 的成本。",not:"在 entry 轴外，不是 entry-prologue。"},
@@ -3467,14 +3431,14 @@ const TERMS={
   },
   accounting:{
     "yes":{label:"生产执行包含该语义",definition:"同一语义阶段位于未插桩 Primary device event pair 内。",not:"Trace 数值仍不等于 Primary 中该阶段的精确耗时。"},
-    "mixed":{label:"生产控制与 Trace 影响混合",definition:"区间包含 production control，也可能混有当前无法定位的 Trace 影响。",not:"不能直接从 Primary 扣除。"},
+    "mixed":{label:"生产控制与 Trace 影响混合",definition:"区间包含 primary control，也可能混有当前无法定位的 Trace 影响。",not:"不能直接从 Primary 扣除。"},
     "unknown":{label:"是否计入尚不可判定",definition:"当前证据不足以判断与 Primary 的关系。",not:"不能当作零或 idle。"},
     "no":{label:"仅 Trace 插桩",definition:"该成本只由 Count/Trace 诊断执行产生。",not:"不计入未插桩 Primary。"}
   },
   magnitude:{
     "proxy":{label:"Trace 代理值",definition:"语义对应 Primary，但数值来自另一轮 Trace clone。",not:"不是 Primary 的精确分项。"},
-    "mixed/proxy":{label:"混合代理值",definition:"数值来自 Trace clone，且 production 与插桩影响无法完全剥离。",not:"不能解释成单一硬件成本。"},
-    "unknown":{label:"代表关系未知",definition:"当前边界或归属不完整，无法说明该数值怎样代表 production execution。",not:"不能当作零、Primary 分项或 Trace-only 成本。"},
+    "mixed/proxy":{label:"混合代理值",definition:"数值来自 Trace clone，且 primary 与插桩影响无法完全剥离。",not:"不能解释成单一硬件成本。"},
+    "unknown":{label:"代表关系未知",definition:"当前边界或归属不完整，无法说明该数值怎样代表 primary execution。",not:"不能当作零、Primary 分项或 Trace-only 成本。"},
     "trace-only":{label:"仅插桩值",definition:"只描述 Trace instrumentation 本身。",not:"不计入 Primary，也不能与语义 ledger 相加。"}
   },
   interval:{
@@ -3534,11 +3498,11 @@ const TERMS={
     "between-sites":{label:"两个调用点之间",definition:"reason 明确列出前一个和后一个动态 site，用于定位依赖、等待或控制来源。",not:"不能直接称为 engine idle。"}
   },
   correctness:{
-    "production-validation-failed":{label:"最终产物结果校验失败",definition:"至少一个 production execution 输出没有通过结果/guard 校验。",not:"不能用于性能结论。"},
-    "expected-exact":{label:"全部输出与独立期望值精确一致",definition:"所有输出资源都有 independent expected，并按 exact 规则通过 production validation。",not:"不替代 profiler capture 一致性和其它资格门禁。"},
-    "expected-relaxed-f16":{label:"全部输出按 FP16 容差通过",definition:"所有输出资源都有 independent expected，并按允许的 FP16 容差通过 production validation。",not:"不是 bitwise exact。"},
-    "partially-expected":{label:"仅部分输出有独立期望值",definition:"production 结果校验通过，但只有一部分资源覆盖 independent expected comparison。",not:"不能声称完整的独立语义正确性。"},
-    "primary-validated":{label:"生产结果已校验，未提供独立期望值",definition:"production validation 和 guard 已通过，但没有 external independent expected comparison。",not:"不是独立 semantic oracle。"}
+    "primary-validation-failed":{label:"最终产物结果校验失败",definition:"至少一个 primary execution 输出没有通过结果/guard 校验。",not:"不能用于性能结论。"},
+    "expected-exact":{label:"全部输出与独立期望值精确一致",definition:"所有输出资源都有 independent expected，并按 exact 规则通过 primary validation。",not:"不替代 profiler capture 一致性和其它资格门禁。"},
+    "expected-relaxed-f16":{label:"全部输出按 FP16 容差通过",definition:"所有输出资源都有 independent expected，并按允许的 FP16 容差通过 primary validation。",not:"不是 bitwise exact。"},
+    "partially-expected":{label:"仅部分输出有独立期望值",definition:"primary 结果校验通过，但只有一部分资源覆盖 independent expected comparison。",not:"不能声称完整的独立语义正确性。"},
+    "primary-validated":{label:"生产结果已校验，未提供独立期望值",definition:"primary validation 和 guard 已通过，但没有 external independent expected comparison。",not:"不是独立 semantic oracle。"}
   },
   structure:{
     "trace-run-cost-overlay":{label:"Trace 插桩成本分组",definition:"八种 Trace-only 成本行的结构容器；各行互斥，但整体与语义时间轴嵌套。",not:"不能与语义分项相加。"},
@@ -3546,11 +3510,11 @@ const TERMS={
     "trace-overhead-overlay":{label:"Trace-only 成本附加层",definition:"单独记录 profiler 采样和记账成本，避免伪造时间位置。",not:"不是 Primary 的组成部分。"}
   },
   validity:{
-    "identity":{label:"证据身份与 schema",definition:"evidence schema、ABI 和身份字段已通过验证。",not:"不代表板端环境、输出或 PMU 同时有效。"},
-    "output_equivalence":{label:"Primary 与诊断执行输出一致",definition:"production 输出校验通过，且 Count/Trace captures 与 Primary 结果一致。",not:"不等于已有完整 independent expected oracle。"},
+    "program_contract":{label:"程序合同与 schema",definition:"evidence schema、ABI 和程序字段已通过验证。",not:"不代表板端环境、输出或 PMU 同时有效。"},
+    "output_equivalence":{label:"Primary 与诊断执行输出一致",definition:"primary 输出校验通过，且 Count/Trace captures 与 Primary 结果一致。",not:"不等于已有完整 independent expected oracle。"},
     "semantic_correctness":{label:"独立语义期望值覆盖",definition:"有完整 independent expected 时为通过/失败；没有完整覆盖时保持尚未独立判定。",not:"尚未判定不等于 Invalid。"},
     "environment":{label:"板卡环境资格",definition:"本次 evidence 声明的硬件、driver/runtime 与环境门禁已满足。",not:"不能由历史报告替代本次证据。"},
-    "package_companion":{label:"产物与 profiler companion 匹配",definition:"最终 package 和同源 profiler companion 的身份/版本关系有效。",not:"不允许混用旧 companion 或另一份产物。"},
+    "profile_instrumentation":{label:"产物与 profiler instrumentation 匹配",definition:"最终 package 和同源 profiler instrumentation 的身份/版本关系有效。",not:"不允许混用旧 instrumentation 或另一份产物。"},
     "measurement_basis":{label:"Primary 计时基础",definition:"未插桩最终产物的 same-stream device event 计时基础满足合同。",not:"不包含 Host submit，也不等于 Trace clone duration。"},
     "host_completion_resolution":{label:"Host 完成观测分辨率",definition:"Host completion polling 的观测间隔足够细，可作为次级诊断 envelope。",not:"未满足时不否定 device event elapsed，但 Host envelope 不能作高分辨率结论。"},
     "trace":{label:"Trace 采集完整性",definition:"所有 tile 的 Trace 生命周期、容量、terminal 和区间关系闭合。",not:"不自动证明每个 PMU counter 都可归属。"},
@@ -3574,13 +3538,13 @@ const TERM_META={
   role:"无独立单位；只描述当前 tile 在 Direct-DTE operation 中的角色。",
   evidence:"operation 使用 tile-local Kcore rdcycle；整次通信行的 raw PMU 没有校准时间单位。",
   reason:"无独立单位；它解释一行成本来自哪一段边界或哪个动态 site/event。",
-  correctness:"无独立单位；说明 production output validation 与 independent expected 的覆盖程度。",
+  correctness:"无独立单位；说明 primary output validation 与 independent expected 的覆盖程度。",
   structure:"结构术语本身无单位；其行内数值通常为 tile-local Kcore rdcycle。",
   validity:"无独立单位；每一项都是独立资格门禁，三态为通过、门禁未满足或尚未独立判定。"
 };
 const TERM_GUIDANCE={
   semantic:"点击 Timeline 的对应成本块查看该实例边界、Primary 关系和精确 optimization_entry。",
-  trace:"只在 profiler 自身开销过大时优化；不要把它当成 production artifact 优化收益。",
+  trace:"只在 profiler 自身开销过大时优化；不要把它当成 primary program 优化收益。",
   status:"先确认该状态修饰的是 submit、PMU bound、PMU work 还是 capture，再决定是否可用于结论。",
   accounting:"用它判断能否讨论 Primary 语义；不要用它把不同实验轮次的数字直接相减。",
   magnitude:"proxy 用于定位方向，不用于精确拆分 Primary；trace-only 只用于控制观测成本。",
@@ -3593,7 +3557,7 @@ const TERM_GUIDANCE={
   evidence:"按“整次通信等待（总计）”看完整生命周期，按“通信内部步骤”定位分项；两种粒度不重复求和。",
   reason:"先用人话原因定位前后 site 或冲突边界，再查看该成本行的 optimization_entry。",
   correctness:"先确认是否有完整 independent expected；部分覆盖或无覆盖时不要夸大语义正确性结论。",
-  structure:"用语义分项优化 production，用 Trace-only 附加层控制 profiler 自身开销；两层不相加。",
+  structure:"用语义分项优化 primary，用 Trace-only 附加层控制 profiler 自身开销；两层不相加。",
   validity:"未通过项要看具体门禁定义；尚未独立判定应补 oracle，而不是当成失败。"
 };
 const DTE_PHASES=Object.fromEntries(["direct-dte-issue","direct-dte-wait","direct-dte-peer-ready-wait","direct-dte-setup-issue","direct-dte-completion-wait","direct-dte-cleanup"].map(key=>[key,TERMS.event[key].label]));
@@ -3631,8 +3595,8 @@ const semanticReason=value=>{
   return {label:text||"—",definition:"尚无展示说明。",not:"请查看原始字段。"};
 };
 const siteRefText=site=>site==null?"—":`#${site.site_id} / instance ${site.instance_sequence} · ${term("site",site.site_kind).label} (${site.site_kind}) · ${site.target_call_symbol}`;
-const selectedTile=()=>finalArtifact.tiles.find(row=>row.tile===state.tile);
-const tileEvents=()=>finalArtifact.timeline_events.filter(row=>row.tile===state.tile);
+const selectedTile=()=>profiledProgram.tiles.find(row=>row.tile===state.tile);
+const tileEvents=()=>profiledProgram.timeline_events.filter(row=>row.tile===state.tile);
 
 function navigate(view){
   state.view=view;
@@ -3659,7 +3623,7 @@ function selectTile(tile,view="timeline",engine=null){
 
 function focusEvent(tile,siteId,engine,sequence=null){
   const selectedSequence=sequence==null||sequence===""?null:Number(sequence);
-  const event=finalArtifact.timeline_events.find(row=>row.tile===Number(tile)&&row.site_id===Number(siteId)&&(engine==null||engine===""||engine==="null"||row.engine===engine)&&(selectedSequence==null||row.sequence===selectedSequence));
+  const event=profiledProgram.timeline_events.find(row=>row.tile===Number(tile)&&row.site_id===Number(siteId)&&(engine==null||engine===""||engine==="null"||row.engine===engine)&&(selectedSequence==null||row.sequence===selectedSequence));
   if(!event)return;
   state.tile=Number(tile);
   state.selectedEvent=event;
@@ -3682,44 +3646,44 @@ function bindEventLinks(selector){
 }
 
 function buildResourceTree(){
-  q("#resourceTree").innerHTML=`<details open><summary>Card 0 · ${finalArtifact.tiles.length} tiles</summary>${finalArtifact.tiles.map(tile=>`<details><summary>${tileLabel(tile.tile)} · ${escapeHtml(tile.trace_status)}</summary>${ENGINES.map(engine=>`<button type="button" data-tree-tile="${tile.tile}" data-tree-engine="${engine}">${engine}</button>`).join("")}</details>`).join("")}</details>`;
+  q("#resourceTree").innerHTML=`<details open><summary>Card 0 · ${profiledProgram.tiles.length} tiles</summary>${profiledProgram.tiles.map(tile=>`<details><summary>${tileLabel(tile.tile)} · ${escapeHtml(tile.trace_status)}</summary>${ENGINES.map(engine=>`<button type="button" data-tree-tile="${tile.tile}" data-tree-engine="${engine}">${engine}</button>`).join("")}</details>`).join("")}</details>`;
   qa("[data-tree-tile]").forEach(node=>node.addEventListener("click",()=>selectTile(node.dataset.treeTile,"timeline",node.dataset.treeEngine)));
 }
 
 function renderOverview(){
-  const duration=finalArtifact.duration;
-  const engineActive=finalArtifact.engine_active_time;
+  const duration=profiledProgram.duration;
+  const engineActive=profiledProgram.engine_active_time;
   const tileWork=engineActive.per_tile_work_volume;
   q("#statusLegend").innerHTML=STATES.map(statusBadge).join("");
   q("#deviceDuration").textContent=durationText(duration.device_elapsed_ns);
   q("#deviceDurationNote").textContent=duration.device_elapsed_quantized_zero?`${duration.device_timer_kind} · at/below effective timer resolution`:`${duration.device_timer_kind} · TX stream device envelope, not engine-only`;
   q("#engineActiveRange").textContent=durationRange(tileWork.minimum_per_tile_total_work_ns,tileWork.maximum_per_tile_total_work_ns);
-  q("#engineActiveRangeNote").innerHTML=`average ${tileWork.average_per_tile_total_work_ns==null?"—":durationText(tileWork.average_per_tile_total_work_ns)} · ${number(tileWork.available_tile_count)} / ${finalArtifact.tiles.length} complete tiles · five-engine work volume, not latency · ${statusBadge(tileWork.status)}`;
+  q("#engineActiveRangeNote").innerHTML=`average ${tileWork.average_per_tile_total_work_ns==null?"—":durationText(tileWork.average_per_tile_total_work_ns)} · ${number(tileWork.available_tile_count)} / ${profiledProgram.tiles.length} complete tiles · five-engine work volume, not latency · ${statusBadge(tileWork.status)}`;
   q("#hostSubmitDuration").textContent=durationText(duration.host_submit_ns);
   q("#hostSubmitNote").textContent=duration.host_submit_quantized_zero?"separate host diagnostic · at/below host clock resolution":"separate host diagnostic · provider preparation + submit";
   q("#hostEnvelopeDuration").textContent=durationText(duration.host_launch_to_completion_ns);
   q("#hostEnvelopeResolution").textContent=duration.host_envelope_available?`separate host-clock envelope · non-submit ${durationText(duration.host_non_submit_envelope_ns)} · completion observation ≤ ${number(duration.completion_observation_resolution_ns)} ns`:"host completion diagnostic unavailable / quantized zero";
   q("#measurementStatus").innerHTML=statusBadge(duration.status);
   q("#timingRows").innerHTML=[
-    ["Kernel launch → completion","Primary TX stream events",duration.device_elapsed_ns,duration.status,"Uninstrumented production launch envelope: device dispatch, Kcore control, NCC/DTE execution and waits, scheduling gaps, and retirement. Excludes Host and Trace-only work; not engine-only time."],
+    ["Kernel launch → completion","Primary TX stream events",duration.device_elapsed_ns,duration.status,"Uninstrumented primary launch envelope: device dispatch, Kcore control, NCC/DTE execution and waits, scheduling gaps, and retirement. Excludes Host and Trace-only work; not engine-only time."],
     ["Host submit","host steady_clock",duration.host_submit_ns,"Measured","Provider argument preparation, stream/event setup, and submit path. Separate Host diagnostic; not pure TX API time."],
     ["Host non-submit envelope","host steady_clock",duration.host_non_submit_envelope_ns,duration.host_envelope_available?"Measured":"Unavailable","Host wait, completion polling and phase control after submit. It overlaps the Primary TX stream envelope, is not pure overhead, and is never reduced by device elapsed."],
     ["Host launch → trusted completion","host steady_clock",duration.host_launch_to_completion_ns,duration.host_envelope_available?"Measured":"Unavailable",duration.host_envelope_available?`First submit through trusted completion; separate Host-clock envelope; observation gap ≤ ${number(duration.completion_observation_resolution_ns)} ns.`:"Quantized/unavailable host diagnostic; does not invalidate TX stream event elapsed."]
   ].map(row=>`<tr><td><b>${escapeHtml(row[0])}</b></td><td class="mono">${escapeHtml(row[1])}</td><td class="num">${durationText(row[2])}</td><td class="num">${number(row[2])}</td><td>${statusBadge(row[3])}</td><td>${escapeHtml(row[4])}</td></tr>`).join("");
   q("#outputStatus").innerHTML=statusBadge(analysis.validity.output_equivalence?"Measured":"Invalid");
-  q("#outputNote").innerHTML=`${finalArtifact.output.resource_count} resources · ${termValue("correctness",finalArtifact.output.correctness_status)}`;
-  const completeTiles=finalArtifact.tiles.filter(tile=>tile.trace_status==="Measured").length;
-  q("#traceCoverage").textContent=`${completeTiles} / ${finalArtifact.tiles.length}`;
+  q("#outputNote").innerHTML=`${profiledProgram.output.resource_count} resources · ${termValue("correctness",profiledProgram.output.correctness_status)}`;
+  const completeTiles=profiledProgram.tiles.filter(tile=>tile.trace_status==="Measured").length;
+  q("#traceCoverage").textContent=`${completeTiles} / ${profiledProgram.tiles.length}`;
   q("#traceNote").textContent="tile-local complete trace spans";
-  q("#overviewTiles").innerHTML=[...finalArtifact.tiles].sort((left,right)=>left.y-right.y||left.x-right.x).map(tile=>`<button class="tile-card" data-overview-tile="${tile.tile}" type="button"><b>${tileLabel(tile.tile)} ${statusBadge(tile.trace_status)}</b><small>${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · (${tile.x},${tile.y})</small></button>`).join("");
+  q("#overviewTiles").innerHTML=[...profiledProgram.tiles].sort((left,right)=>left.y-right.y||left.x-right.x).map(tile=>`<button class="tile-card" data-overview-tile="${tile.tile}" type="button"><b>${tileLabel(tile.tile)} ${statusBadge(tile.trace_status)}</b><small>${number(tile.trace_entry_cpu_cycles)} Kcore CPU cycles · (${tile.x},${tile.y})</small></button>`).join("");
   qa("[data-overview-tile]").forEach(node=>node.addEventListener("click",()=>selectTile(node.dataset.overviewTile)));
   const methodLabels={kernel_launch_to_completion:"Kernel launch → completion",host_submit_time:"Host submit",host_envelope_time:"Host launch → trusted completion",host_envelope_ledger:"Host envelope ledger",queue_delay:"Queue delay",timeline_axis:"Timeline axis",timeline_scope:"Clock/order",semantic_partition:"Semantic partition",trace_overhead_overlay:"Trace-run cost overlay",engine_active_time:"NCC engine active time",hardware_cost_model:"Hardware cost reference",statistics_window:"Statistics window",ncc_activity_window:"NCC window",direct_dte_time:"Direct-DTE wait",direct_dte_raw_pmu:"Direct-DTE raw"};
   q("#methodList").innerHTML=Object.keys(analysis.method).map(key=>`<div class="method-row"><b>${escapeHtml(methodLabels[key]||key)}</b><span>${escapeHtml(analysis.method[key])}</span></div>`).join("");
   q("#overviewEngineRows").innerHTML=engineActive.by_engine.map(row=>{
-    return `<tr><td>${termCell("engine",row.engine)}</td><td>Trace diagnostic PMU<br><span class="mono">ns · separate-run proxy</span></td><td class="num">${row.minimum_per_tile_ns==null?"—":durationText(row.minimum_per_tile_ns)}</td><td class="num">${row.average_per_tile_ns==null?"—":durationText(row.average_per_tile_ns)}</td><td class="num">${row.maximum_per_tile_ns==null?"—":durationText(row.maximum_per_tile_ns)}</td><td class="num">${number(row.active_tile_count)} / ${finalArtifact.tiles.length}</td><td class="num">${number(row.available_tile_count)} / ${finalArtifact.tiles.length}</td><td class="num">${row.sum_across_tiles_work_ns==null?"—":durationText(row.sum_across_tiles_work_ns)}<br><span class="metric-note">not wall time</span></td><td>${statusBadge(row.status)}</td></tr>`;
+    return `<tr><td>${termCell("engine",row.engine)}</td><td>Trace diagnostic PMU<br><span class="mono">ns · separate-run proxy</span></td><td class="num">${row.minimum_per_tile_ns==null?"—":durationText(row.minimum_per_tile_ns)}</td><td class="num">${row.average_per_tile_ns==null?"—":durationText(row.average_per_tile_ns)}</td><td class="num">${row.maximum_per_tile_ns==null?"—":durationText(row.maximum_per_tile_ns)}</td><td class="num">${number(row.active_tile_count)} / ${profiledProgram.tiles.length}</td><td class="num">${number(row.available_tile_count)} / ${profiledProgram.tiles.length}</td><td class="num">${row.sum_across_tiles_work_ns==null?"—":durationText(row.sum_across_tiles_work_ns)}<br><span class="metric-note">not wall time</span></td><td>${statusBadge(row.status)}</td></tr>`;
   }).join("");
   const modelStatus={["theoretical-lower-bound"]:"理论峰值下界",heuristic:"显式启发式",["reference-only"]:"序列化参考",unavailable:"不可估算"};
-  q("#hardwareCostRows").innerHTML=finalArtifact.hardware_cost_analysis.by_engine.map(row=>{
+  q("#hardwareCostRows").innerHTML=profiledProgram.hardware_cost_analysis.by_engine.map(row=>{
     const work=row.work;
     const perTile=work.minimum_per_tile===work.maximum_per_tile?`${exactInteger(work.minimum_per_tile)} / tile`:`${exactInteger(work.minimum_per_tile)}–${exactInteger(work.maximum_per_tile)} / tile`;
     const workText=work.aggregate==null?"—":`${perTile} ${escapeHtml(work.unit)}<br><span class="metric-note">Σ ${exactInteger(work.aggregate)} ${escapeHtml(work.unit)}</span>`;
@@ -3733,7 +3697,7 @@ function renderOverview(){
 }
 
 function populateSelectors(){
-  const options=finalArtifact.tiles.map(tile=>`<option value="${tile.tile}">${tileLabel(tile.tile)} · (${tile.x},${tile.y})</option>`).join("");
+  const options=profiledProgram.tiles.map(tile=>`<option value="${tile.tile}">${tileLabel(tile.tile)} · (${tile.x},${tile.y})</option>`).join("");
   q("#timelineTile").innerHTML=options;
   q("#engineTile").innerHTML=options;
   q("#siteEngine").innerHTML+=ENGINES.map(engine=>`<option value="${engine}">${engine}</option>`).join("");
@@ -3789,7 +3753,7 @@ function renderTimeline(){
   const semanticMarks=tile.semantic_timeline_segments.map((segment,index)=>`<button class="cost-segment cost-${escapeHtml(segment.category)}${state.selectedCost&&state.selectedCost.scope==="semantic"&&state.selectedCost.index===index?" selected":""}" data-cost-index="${index}" style="left:${segment.plot_begin_fraction*100}%;width:${Math.max(.15,(segment.plot_end_fraction-segment.plot_begin_fraction)*100)}%" title="${escapeHtml(term("semantic",segment.category).label)} · ${escapeHtml(segment.reason)} · ${number(segment.cycles)} cycles" aria-label="${escapeHtml(term("semantic",segment.category).label)} · ${number(segment.cycles)} cycles" type="button"></button>`).join("");
   const traceRows=tile.trace_overhead_overlay.rows;
   const traceMarks=(location)=>traceRows.map((row,index)=>({row,index})).filter(item=>location==="outside-entry"?item.row.location_granularity==="before-entry"||item.row.location_granularity==="after-entry":item.row.location_granularity===location).map(item=>`<button class="overlay-part${state.selectedCost&&state.selectedCost.scope==="trace"&&state.selectedCost.index===item.index?" selected":""}" data-trace-cost-index="${item.index}" style="flex:${Math.max(1,item.row.cycles)} 1 0" title="${escapeHtml(term("trace",item.row.reason).label)} · ${number(item.row.cycles)} cycles · aggregate-only / non-additive" aria-label="${escapeHtml(term("trace",item.row.reason).label)} · ${number(item.row.cycles)} cycles" type="button"></button>`).join("");
-  const semanticLane=`<div class="lane lane-production" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`;
+  const semanticLane=`<div class="lane lane-primary" data-lane-engine="Trace-run Kcore ledger"><div class="lane-label"><b>Trace-run Kcore ledger</b><span>${number(tile.semantic_partition.exclusive_cycles)} cyc</span></div><div class="lane-track">${gridlines}${semanticMarks}</div></div>`;
   const exactEventMark=(event,index,showBound)=>{
     const engine=event.engine;
     const variant=`event-v${index%3}`;
@@ -3900,19 +3864,19 @@ function renderEngines(){
 function renderSites(){
   const query=q("#siteSearch").value.trim().toLowerCase();
   const engine=q("#siteEngine").value;
-  const rows=finalArtifact.sites.filter(site=>(!engine||site.engine===engine)&&(!query||[site.correlation_key,site.target_call_symbol,site.position,site.site_id,site.tile].some(value=>String(value==null?"":value).toLowerCase().indexOf(query)!==-1)));
-  q("#siteCount").textContent=`${rows.length} / ${finalArtifact.sites.length} sites`;
+  const rows=profiledProgram.sites.filter(site=>(!engine||site.engine===engine)&&(!query||[site.correlation_key,site.target_call_symbol,site.position,site.site_id,site.tile].some(value=>String(value==null?"":value).toLowerCase().indexOf(query)!==-1)));
+  q("#siteCount").textContent=`${rows.length} / ${profiledProgram.sites.length} sites`;
   q("#siteRows").innerHTML=rows.length?rows.map(site=>`<tr${site.site_instance_count?` class="interactive-row" tabindex="0" title="Open correlated timeline event" data-event-tile="${site.tile}" data-event-site="${site.site_id}" data-event-engine="${site.engine}"`:""}><td>${tileLabel(site.tile)}</td><td class="mono">${site.site_id}</td><td>${termCell("site",site.site_kind)}</td><td>${site.engine==null?"—":termCell("engine",site.engine)}</td><td>${escapeHtml(site.correlation_key)}</td><td class="mono">#${site.target_call_ordinal} ${escapeHtml(site.target_call_symbol)}</td><td class="mono">${escapeHtml(site.position)}</td><td class="num">${site.site_instance_count}</td><td>${statusBadge(site.site_capture_status)}</td><td class="num">${site.event_count}</td><td>${statusBadge(site.engine_observation_status)}</td></tr>`).join(""):`<tr><td colspan="11" class="empty">No matching sites.</td></tr>`;
   bindEventLinks("#siteRows [data-event-site]");
 }
 
 function renderCommunication(){
   const phaseOrder=Object.keys(DTE_PHASES);
-  const events=finalArtifact.timeline_events
+  const events=profiledProgram.timeline_events
     .filter(event=>Object.prototype.hasOwnProperty.call(DTE_PHASES,event.kind))
     .sort((left,right)=>left.tile-right.tile||left.site_id-right.site_id||phaseOrder.indexOf(left.kind)-phaseOrder.indexOf(right.kind)||left.sequence-right.sequence);
   const leafEvents=events.filter(event=>!["direct-dte-issue","direct-dte-wait"].includes(event.kind));
-  const communication=finalArtifact.communication;
+  const communication=profiledProgram.communication;
   q("#communicationSummary").innerHTML=`<div class="card"><div class="metric-label">发起 / 完成等待</div><div class="metric-value">${communication.issue_event_count} / ${communication.wait_event_count}</div><div class="metric-note">${leafEvents.length} 个通信内部步骤；总计与分步不重复相加</div></div><div class="card"><div class="metric-label">完成等待：发送侧 / 接收侧</div><div class="metric-value">${communication.send_count} / ${communication.receive_count}</div></div><div class="card"><div class="metric-label">有活动的 tile</div><div class="metric-value">${communication.tiles_with_activity.length}</div></div><div class="card"><div class="metric-label">跨 tile 顺序</div><div class="metric-value">${statusBadge("Unavailable")}</div><div class="metric-note">不推断全局 timeline</div></div>`;
   q("#communicationRows").innerHTML=events.length?events.map(event=>{
     const aggregate=["direct-dte-issue","direct-dte-wait"].includes(event.kind);
@@ -4038,7 +4002,7 @@ def generate_report(
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate production-artifact profile evidence and generate HTML."
+        description="Validate primary-program profile evidence and generate HTML."
     )
     parser.add_argument("evidence", type=pathlib.Path)
     parser.add_argument(
@@ -4057,7 +4021,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"profile evidence rejected: {error}", file=os.sys.stderr)
         return 2
     except OSError as error:
-        print(f"cannot publish profile report: {error}", file=os.sys.stderr)
+        print(f"cannot write profile report: {error}", file=os.sys.stderr)
         return 3
     print(f"profile_report: {html_path}")
     print(f"profile_analysis: {analysis_path}")

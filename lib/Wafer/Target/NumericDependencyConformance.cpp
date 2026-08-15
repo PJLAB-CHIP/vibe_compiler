@@ -88,39 +88,38 @@ std::error_code NumericDependencyConformanceError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
-const NumericDependencySourceIdentity *
+const NumericDependencySourceRecord *
 NumericDependencyConformanceRecord::findSource(llvm::StringRef name) const {
-  auto iterator = llvm::find_if(
-      sources, [&](const NumericDependencySourceIdentity &source) {
+  auto iterator =
+      llvm::find_if(sources, [&](const NumericDependencySourceRecord &source) {
         return source.name == name;
       });
   return iterator == sources.end() ? nullptr : &*iterator;
 }
 
-const NumericDependencyArtifactIdentity *
-NumericDependencyConformanceRecord::findArtifact(llvm::StringRef name) const {
-  auto iterator = llvm::find_if(
-      artifacts, [&](const NumericDependencyArtifactIdentity &artifact) {
-        return artifact.name == name;
+const NumericDependencyFileRecord *
+NumericDependencyConformanceRecord::findFile(llvm::StringRef name) const {
+  auto iterator =
+      llvm::find_if(files, [&](const NumericDependencyFileRecord &file) {
+        return file.name == name;
       });
-  return iterator == artifacts.end() ? nullptr : &*iterator;
+  return iterator == files.end() ? nullptr : &*iterator;
 }
 
-const NumericDependencyToolIdentity *
+const NumericDependencyToolRecord *
 NumericDependencyConformanceRecord::findTool(llvm::StringRef name) const {
   auto iterator =
-      llvm::find_if(tools, [&](const NumericDependencyToolIdentity &tool) {
+      llvm::find_if(tools, [&](const NumericDependencyToolRecord &tool) {
         return tool.name == name;
       });
   return iterator == tools.end() ? nullptr : &*iterator;
 }
 
-const NumericDependencyEnvironmentIdentity *
+const NumericDependencyEnvironmentRecord *
 NumericDependencyConformanceRecord::findEnvironment(
     llvm::StringRef name) const {
   auto iterator = llvm::find_if(
-      environments,
-      [&](const NumericDependencyEnvironmentIdentity &environment) {
+      environments, [&](const NumericDependencyEnvironmentRecord &environment) {
         return environment.name == name;
       });
   return iterator == environments.end() ? nullptr : &*iterator;
@@ -241,15 +240,15 @@ readNumericDependencyConformanceRecord(
                              "numeric pin " + name))
       return error;
 
-    NumericDependencySourceIdentity identity;
-    identity.name = name.str();
+    NumericDependencySourceRecord sourceRecord;
+    sourceRecord.name = name.str();
 #define READ_PIN_STRING(Field, Key)                                            \
   do {                                                                         \
     llvm::Expected<std::string> value =                                        \
         requireString(*(*pin)->get(Key), "numeric pin " + name + "." Key);     \
     if (!value)                                                                \
       return value.takeError();                                                \
-    identity.Field = std::move(*value);                                        \
+    sourceRecord.Field = std::move(*value);                                    \
   } while (false)
     READ_PIN_STRING(version, "version");
     READ_PIN_STRING(url, "url");
@@ -258,23 +257,24 @@ readNumericDependencyConformanceRecord(
     READ_PIN_STRING(sourceRelativePath, "source");
     READ_PIN_STRING(sourceTreeSHA256, "source_tree_sha256");
 #undef READ_PIN_STRING
-    if (identity.version.empty() ||
-        !llvm::StringRef(identity.url).starts_with("https://") ||
-        !isLowerSHA256(identity.archiveSHA256) ||
-        !isLowerSHA256(identity.sourceTreeSHA256))
+    if (sourceRecord.version.empty() ||
+        !llvm::StringRef(sourceRecord.url).starts_with("https://") ||
+        !isLowerSHA256(sourceRecord.archiveSHA256) ||
+        !isLowerSHA256(sourceRecord.sourceTreeSHA256))
       return invalid(ErrorCode::TypeMismatch,
-                     "numeric pin " + name + " identity is malformed");
-    if (!pinArchivePaths.insert(identity.archiveRelativePath).second ||
-        !pinSourcePaths.insert(identity.sourceRelativePath).second)
+                     "numeric pin " + name + " record is malformed");
+    if (!pinArchivePaths.insert(sourceRecord.archiveRelativePath).second ||
+        !pinSourcePaths.insert(sourceRecord.sourceRelativePath).second)
       return invalid(ErrorCode::ClosureMismatch,
                      "numeric pin paths are not unique");
 
     llvm::Expected<ManagedPath> archive = resolveManagedPath(
-        *root, identity.archiveRelativePath, RequiredFileType::RegularFile,
+        *root, sourceRecord.archiveRelativePath, RequiredFileType::RegularFile,
         "numeric source archive " + name, /*requireRelative=*/true);
     if (!archive)
       return archive.takeError();
-    llvm::StringRef urlFile = llvm::StringRef(identity.url).rsplit('/').second;
+    llvm::StringRef urlFile =
+        llvm::StringRef(sourceRecord.url).rsplit('/').second;
     if (urlFile.empty() ||
         llvm::sys::path::filename(archive->resolved) != urlFile)
       return invalid(ErrorCode::PolicyMismatch,
@@ -284,13 +284,13 @@ readNumericDependencyConformanceRecord(
                         "numeric source archive " + name);
     if (!archiveReadback)
       return archiveReadback.takeError();
-    if (archiveReadback->digest != identity.archiveSHA256)
+    if (archiveReadback->digest != sourceRecord.archiveSHA256)
       return invalid(ErrorCode::DigestMismatch,
                      "numeric source archive SHA256 mismatch for " + name);
-    identity.archiveResolvedPath = archive->resolved;
+    sourceRecord.archiveResolvedPath = archive->resolved;
 
     llvm::Expected<ManagedPath> source = resolveManagedPath(
-        *root, identity.sourceRelativePath, RequiredFileType::Directory,
+        *root, sourceRecord.sourceRelativePath, RequiredFileType::Directory,
         "numeric source tree " + name, /*requireRelative=*/true);
     if (!source)
       return source.takeError();
@@ -298,86 +298,82 @@ readNumericDependencyConformanceRecord(
         source->resolved, limits, "numeric source tree " + name);
     if (!sourceTreeDigest)
       return sourceTreeDigest.takeError();
-    if (*sourceTreeDigest != identity.sourceTreeSHA256)
+    if (*sourceTreeDigest != sourceRecord.sourceTreeSHA256)
       return invalid(ErrorCode::SourceTreeMismatch,
                      "numeric source tree SHA256 mismatch for " + name);
-    identity.sourceResolvedPath = source->resolved;
-    result.sources.push_back(std::move(identity));
+    sourceRecord.sourceResolvedPath = source->resolved;
+    result.sources.push_back(std::move(sourceRecord));
   }
 
-  llvm::Expected<ParsedBuildIdentity> build =
-      parseBuildIdentity(*(*top)->get("build"));
+  llvm::Expected<ParsedBuildConfig> build =
+      parseBuildConfig(*(*top)->get("build"));
   if (!build)
     return build.takeError();
   result.build = std::move(build->build);
   result.tools = std::move(build->tools);
   result.environments = std::move(build->environments);
-  const NumericDependencyToolIdentity *readelfTool = result.findTool("readelf");
+  const NumericDependencyToolRecord *readelfTool = result.findTool("readelf");
   if (!readelfTool)
     return invalid(ErrorCode::ClosureMismatch,
-                   "numeric readelf tool identity is missing");
+                   "numeric readelf tool record is missing");
 
-  llvm::Expected<const llvm::json::Object *> artifacts =
-      requireObject(*(*top)->get("artifacts"), "numeric dependency artifacts");
-  if (!artifacts)
-    return artifacts.takeError();
-  llvm::StringSet<> artifactAllowed;
-  for (llvm::StringRef name : kRequiredArtifacts)
-    artifactAllowed.insert(name);
-  for (const auto &entry : **artifacts)
-    if (!artifactAllowed.contains(entry.first))
+  llvm::Expected<const llvm::json::Object *> fileEntries =
+      requireObject(*(*top)->get("artifacts"), "numeric dependency files");
+  if (!fileEntries)
+    return fileEntries.takeError();
+  llvm::StringSet<> allowedFiles;
+  for (llvm::StringRef name : kRequiredFiles)
+    allowedFiles.insert(name);
+  for (const auto &entry : **fileEntries)
+    if (!allowedFiles.contains(entry.first))
       return invalid(ErrorCode::UnknownField,
-                     "numeric dependency artifacts has unknown field '" +
+                     "numeric dependency files has unknown field '" +
                          entry.first.str() + "'");
-  for (llvm::StringRef name : kRequiredArtifacts)
-    if (!(*artifacts)->get(name))
+  for (llvm::StringRef name : kRequiredFiles)
+    if (!(*fileEntries)->get(name))
       return invalid(ErrorCode::MissingField,
-                     "numeric dependency artifacts is missing field '" + name +
+                     "numeric dependency files is missing field '" + name +
                          "'");
 
-  llvm::StringSet<> artifactPaths;
-  for (llvm::StringRef name : kRequiredArtifacts) {
-    llvm::Expected<NumericDependencyArtifactIdentity> artifact =
-        parseArtifactIdentity(name, *(*artifacts)->get(name), *root,
-                              readelfTool->resolvedPath);
-    if (!artifact)
-      return artifact.takeError();
-    auto policy = llvm::find_if(kArtifactPathPolicies,
-                                [&](const ArtifactPathPolicy &candidate) {
+  llvm::StringSet<> filePaths;
+  for (llvm::StringRef name : kRequiredFiles) {
+    llvm::Expected<NumericDependencyFileRecord> fileRecord = parseFileRecord(
+        name, *(*fileEntries)->get(name), *root, readelfTool->resolvedPath);
+    if (!fileRecord)
+      return fileRecord.takeError();
+    auto policy = llvm::find_if(kRequiredFilePolicies,
+                                [&](const RequiredFilePolicy &candidate) {
                                   return candidate.name == name;
                                 });
-    if (policy == std::end(kArtifactPathPolicies) ||
-        artifact->relativePath != policy->path)
+    if (policy == std::end(kRequiredFilePolicies) ||
+        fileRecord->relativePath != policy->path)
       return invalid(ErrorCode::PolicyMismatch,
-                     "numeric artifact path mismatch for " + name);
-    if (policy->executable && (artifact->mode & 0111) == 0)
+                     "numeric dependency file path mismatch for " + name);
+    if (policy->executable && (fileRecord->mode & 0111) == 0)
       return invalid(ErrorCode::PolicyMismatch,
-                     "numeric artifact is not executable: " + name);
-    if (!artifactPaths.insert(artifact->relativePath).second)
+                     "numeric dependency file is not executable: " + name);
+    if (!filePaths.insert(fileRecord->relativePath).second)
       return invalid(ErrorCode::ClosureMismatch,
-                     "numeric artifact paths are not unique");
-    result.artifacts.push_back(std::move(*artifact));
+                     "numeric dependency file paths are not unique");
+    result.files.push_back(std::move(*fileRecord));
   }
 
-  const NumericDependencyArtifactIdentity *managedM4 =
-      result.findArtifact("m4");
-  const NumericDependencyArtifactIdentity *softFloat =
-      result.findArtifact("softfloat");
-  const NumericDependencyArtifactIdentity *gmp = result.findArtifact("gmp");
-  const NumericDependencyArtifactIdentity *gmpLoader =
-      result.findArtifact("gmp-soname");
-  const NumericDependencyArtifactIdentity *mpfr = result.findArtifact("mpfr");
-  const NumericDependencyArtifactIdentity *mpfrLoader =
-      result.findArtifact("mpfr-soname");
+  const NumericDependencyFileRecord *managedM4 = result.findFile("m4");
+  const NumericDependencyFileRecord *softFloat = result.findFile("softfloat");
+  const NumericDependencyFileRecord *gmp = result.findFile("gmp");
+  const NumericDependencyFileRecord *gmpLoader = result.findFile("gmp-soname");
+  const NumericDependencyFileRecord *mpfr = result.findFile("mpfr");
+  const NumericDependencyFileRecord *mpfrLoader =
+      result.findFile("mpfr-soname");
   if (!managedM4 || !softFloat || !gmp || !gmpLoader || !mpfr || !mpfrLoader)
     return invalid(ErrorCode::ClosureMismatch,
-                   "numeric artifact closure is incomplete");
+                   "numeric dependency file closure is incomplete");
   if (managedM4->relativePath != result.build.managedM4RelativePath)
     return invalid(ErrorCode::PolicyMismatch,
-                   "managed m4 artifact does not match build policy");
+                   "managed m4 file does not match build policy");
   if (llvm::sys::path::extension(softFloat->resolvedPath) != ".a")
     return invalid(ErrorCode::PolicyMismatch,
-                   "SoftFloat artifact is not a static archive");
+                   "SoftFloat file is not a static archive");
   if (llvm::Error error = validateSharedObjectPair("gmp", *gmp, *gmpLoader))
     return error;
   if (llvm::Error error = validateSharedObjectPair("mpfr", *mpfr, *mpfrLoader))
@@ -385,7 +381,7 @@ readNumericDependencyConformanceRecord(
   if (!mpfr->elf || !gmpLoader->elf || !gmpLoader->elf->soname ||
       !llvm::is_contained(mpfr->elf->needed, *gmpLoader->elf->soname))
     return invalid(ErrorCode::PolicyMismatch,
-                   "MPFR ELF identity does not require recorded GMP SONAME");
+                   "MPFR ELF metadata does not require recorded GMP SONAME");
   std::vector<std::string> mpfrRuntimePaths = mpfr->elf->rpath;
   mpfrRuntimePaths.insert(mpfrRuntimePaths.end(), mpfr->elf->runpath.begin(),
                           mpfr->elf->runpath.end());
@@ -430,26 +426,25 @@ readNumericDependencyConformanceRecord(
         requireString(*(*license)->get("source"), "numeric license source");
     if (!source)
       return source.takeError();
-    llvm::Expected<std::string> artifactName =
-        requireString(*(*license)->get("artifact"), "numeric license artifact");
-    if (!artifactName)
-      return artifactName.takeError();
+    llvm::Expected<std::string> fileName =
+        requireString(*(*license)->get("artifact"), "numeric license file");
+    if (!fileName)
+      return fileName.takeError();
     llvm::Expected<std::string> licenseDigest =
         requireString(*(*license)->get("sha256"), "numeric license SHA256");
     if (!licenseDigest)
       return licenseDigest.takeError();
-    if (*dependency != policy.dependency || *artifactName != policy.name ||
+    if (*dependency != policy.dependency || *fileName != policy.name ||
         !isLowerSHA256(*licenseDigest))
       return invalid(ErrorCode::PolicyMismatch,
                      "numeric license binding mismatch for " + policy.name);
-    const NumericDependencySourceIdentity *dependencySource =
+    const NumericDependencySourceRecord *dependencySource =
         result.findSource(*dependency);
-    const NumericDependencyArtifactIdentity *licenseArtifact =
-        result.findArtifact(*artifactName);
-    if (!dependencySource || !licenseArtifact ||
-        licenseArtifact->sha256 != *licenseDigest || licenseArtifact->elf)
+    const NumericDependencyFileRecord *licenseFile = result.findFile(*fileName);
+    if (!dependencySource || !licenseFile ||
+        licenseFile->sha256 != *licenseDigest || licenseFile->elf)
       return invalid(ErrorCode::ClosureMismatch,
-                     "numeric license artifact binding is incomplete");
+                     "numeric license file binding is incomplete");
     const std::string managedLicenseSource =
         dependencySource->sourceRelativePath + "/" + policy.source.str();
     if (*source != managedLicenseSource)
@@ -467,20 +462,20 @@ readNumericDependencyConformanceRecord(
       return sourceReadback.takeError();
     if (sourceReadback->digest != *licenseDigest)
       return invalid(ErrorCode::DigestMismatch,
-                     "numeric license source/artifact digest mismatch for " +
+                     "numeric license source/file digest mismatch for " +
                          policy.name);
     result.licenses.push_back({policy.name.str(), std::move(*dependency),
                                std::move(*source), sourcePath->resolved,
-                               std::move(*artifactName),
+                               std::move(*fileName),
                                std::move(*licenseDigest)});
   }
 
-  llvm::Expected<const llvm::json::Object *> conformance = requireObject(
-      *(*top)->get("conformance"), "numeric conformance identity");
+  llvm::Expected<const llvm::json::Object *> conformance =
+      requireObject(*(*top)->get("conformance"), "numeric conformance section");
   if (!conformance)
     return conformance.takeError();
   if (llvm::Error error = requireExactKeys(**conformance, {"policy", "gates"},
-                                           "numeric conformance identity"))
+                                           "numeric conformance section"))
     return error;
   llvm::Expected<std::string> policy = requireString(
       *(*conformance)->get("policy"), "numeric conformance policy");
@@ -532,9 +527,9 @@ readNumericDependencyConformanceRecord(
     if (*exitCode > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
       return invalid(ErrorCode::TypeMismatch,
                      "numeric conformance exit_code is out of range");
-    llvm::Expected<NumericDependencyArtifactIdentity> log =
-        parseArtifactIdentity("conformance-log:" + *name, *(*gate)->get("log"),
-                              *root, readelfTool->resolvedPath);
+    llvm::Expected<NumericDependencyFileRecord> log =
+        parseFileRecord("conformance-log:" + *name, *(*gate)->get("log"), *root,
+                        readelfTool->resolvedPath);
     if (!log)
       return log.takeError();
     if (log->relativePath != "conformance/" + *name + ".log")
@@ -546,16 +541,16 @@ readNumericDependencyConformanceRecord(
     if (!gateLogPaths.insert(log->relativePath).second)
       return invalid(ErrorCode::ClosureMismatch,
                      "numeric conformance log paths are not unique");
-    NumericDependencyConformanceGateIdentity gateIdentity{
+    NumericDependencyConformanceGateRecord gateRecord{
         std::move(*name),
         std::move(*command),
         std::move(*cwd),
         std::move(*environment),
         static_cast<int64_t>(*exitCode),
         std::move(*log)};
-    if (llvm::Error error = validateGateContract(result, gateIdentity))
+    if (llvm::Error error = validateGateContract(result, gateRecord))
       return error;
-    result.gates.push_back(std::move(gateIdentity));
+    result.gates.push_back(std::move(gateRecord));
   }
   llvm::StringSet<> requiredGateNames;
   for (llvm::StringRef name : kRequiredGates)

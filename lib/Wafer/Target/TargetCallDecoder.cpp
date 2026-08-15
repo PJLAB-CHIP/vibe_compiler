@@ -37,29 +37,27 @@ static llvm::Error verifyStaticKind(uint32_t actual, uint32_t expected,
       family.str().c_str());
 }
 
-static llvm::Expected<LogicalFormat>
-decodeFormat(TargetFormatEngine engine, uint64_t code) {
+static llvm::Expected<LogicalFormat> decodeFormat(TargetFormatEngine engine,
+                                                  uint64_t code) {
   if (code > std::numeric_limits<uint32_t>::max())
     return llvm::createStringError("target format field does not fit uint32");
-  return decodeTargetFormat(engine,
-                            static_cast<uint32_t>(code));
+  return decodeTargetFormat(engine, static_cast<uint32_t>(code));
 }
 
-static llvm::Expected<TargetTransactionPayload>
-buildBuiltinTransaction(const TargetCallDecodeContext &context,
-                        TargetCallBuiltin builtin,
-                        llvm::ArrayRef<uint64_t> arguments) {
+static llvm::Expected<TargetCommandPayload>
+buildBuiltinCommand(const TargetCallDecodeConfig &config,
+                    TargetCallBuiltin builtin,
+                    llvm::ArrayRef<uint64_t> arguments) {
   switch (builtin) {
   case TargetCallBuiltin::RDMA:
   case TargetCallBuiltin::WDMA: {
     TargetFormatEngine engine = builtin == TargetCallBuiltin::RDMA
                                     ? TargetFormatEngine::RDMA
                                     : TargetFormatEngine::WDMA;
-    llvm::Expected<LogicalFormat> format =
-        decodeFormat(engine, arguments[10]);
+    llvm::Expected<LogicalFormat> format = decodeFormat(engine, arguments[10]);
     if (!format)
       return format.takeError();
-    return TargetTransactionPayload{TargetStridedDMATransaction{
+    return TargetCommandPayload{TargetStridedDMACommand{
         builtin == TargetCallBuiltin::RDMA ? TargetDMADirection::Read
                                            : TargetDMADirection::Write,
         arguments[0], arguments[1], argument32(arguments, 2),
@@ -67,7 +65,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         argumentArray32<3>(arguments, 7), *format}};
   }
   case TargetCallBuiltin::GatherScatter:
-    return TargetTransactionPayload{TargetGatherScatterTransaction{
+    return TargetCommandPayload{TargetGatherScatterCommand{
         arguments[0], arguments[1], argument32(arguments, 2),
         argument32(arguments, 3), argumentArray32<3>(arguments, 4),
         argumentArray32<3>(arguments, 7), argumentArray32<3>(arguments, 10),
@@ -77,16 +75,16 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         decodeFormat(TargetFormatEngine::TDMA, arguments[3]);
     if (!format)
       return format.takeError();
-    return TargetTransactionPayload{
-        TargetMemsetTransaction{arguments[0], argument32(arguments, 1),
-                                argument32(arguments, 2), *format}};
+    return TargetCommandPayload{
+        TargetMemsetCommand{arguments[0], argument32(arguments, 1),
+                            argument32(arguments, 2), *format}};
   }
   case TargetCallBuiltin::Bit2FP: {
     llvm::Expected<LogicalFormat> format =
         decodeFormat(TargetFormatEngine::CT, arguments[3]);
     if (!format)
       return format.takeError();
-    return TargetTransactionPayload{TargetBit2FPTransaction{
+    return TargetCommandPayload{TargetBit2FPCommand{
         arguments[0], arguments[1], argument32(arguments, 2), *format}};
   }
   case TargetCallBuiltin::MaskMove: {
@@ -94,16 +92,16 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
         decodeFormat(TargetFormatEngine::CT, arguments[4]);
     if (!format)
       return format.takeError();
-    return TargetTransactionPayload{TargetMaskMoveTransaction{
-        arguments[0], argument32(arguments, 1), arguments[2],
-        argument32(arguments, 3), *format}};
+    return TargetCommandPayload{
+        TargetMaskMoveCommand{arguments[0], argument32(arguments, 1),
+                              arguments[2], argument32(arguments, 3), *format}};
   }
   case TargetCallBuiltin::Gemm: {
     llvm::Expected<LogicalFormat> format =
         decodeFormat(TargetFormatEngine::NE, arguments[7]);
     if (!format)
       return format.takeError();
-    return TargetTransactionPayload{TargetGemmTransaction{
+    return TargetCommandPayload{TargetGemmCommand{
         arguments[0], arguments[1], arguments[2], argument32(arguments, 3),
         argument32(arguments, 4), argument32(arguments, 5),
         argument32(arguments, 6), *format}};
@@ -115,11 +113,13 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
       return format.takeError();
     uint32_t lhsOrientation = argument32(arguments, 8);
     uint32_t rhsOrientation = argument32(arguments, 9);
-    if (lhsOrientation > static_cast<uint32_t>(TargetGemmOrientation::Transpose) ||
-        rhsOrientation > static_cast<uint32_t>(TargetGemmOrientation::Transpose))
+    if (lhsOrientation >
+            static_cast<uint32_t>(TargetGemmOrientation::Transpose) ||
+        rhsOrientation >
+            static_cast<uint32_t>(TargetGemmOrientation::Transpose))
       return llvm::createStringError(
           "oriented GEMM orientation field is not a closed enum value");
-    return TargetTransactionPayload{TargetGemmTransaction{
+    return TargetCommandPayload{TargetGemmCommand{
         arguments[0], arguments[1], arguments[2], argument32(arguments, 3),
         argument32(arguments, 4), argument32(arguments, 5),
         argument32(arguments, 6), *format,
@@ -137,7 +137,7 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
     std::optional<std::array<uint32_t, 4>> kernelStrides;
     if (imageToColumn)
       kernelStrides = argumentArray32<4>(arguments, 14);
-    return TargetTransactionPayload{TargetTDMATransformTransaction{
+    return TargetCommandPayload{TargetTDMATransformCommand{
         imageToColumn ? TargetTDMATransformKind::ImageToColumn
                       : TargetTDMATransformKind::Pad,
         arguments[0], arguments[1], argumentArray32<4>(arguments, 2),
@@ -150,44 +150,42 @@ buildBuiltinTransaction(const TargetCallDecodeContext &context,
       return llvm::createStringError(
           "NCC join participant mask is empty or outside the target worker "
           "domain");
-    return TargetTransactionPayload{TargetNCCJoinTransaction{participants}};
+    return TargetCommandPayload{TargetNCCJoinCommand{participants}};
   }
   case TargetCallBuiltin::DirectDTEBegin:
   case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
-    if (argument32(arguments, 1) != context.physicalTileCount)
+    if (argument32(arguments, 1) != config.physicalTileCount)
       return llvm::createStringError(
           "Direct-DTE begin participant count does not match the physical "
           "Tile invocation domain");
-    return TargetTransactionPayload{TargetDirectDTEBeginTransaction{
-        arguments[0], argument32(arguments, 1)}};
+    return TargetCommandPayload{
+        TargetDirectDTEBeginCommand{arguments[0], argument32(arguments, 1)}};
   case TargetCallBuiltin::DirectDTESendPrepare:
     if (argument32(arguments, 6) > 1)
       return llvm::createStringError(
           "Direct-DTE high-performance flag is not boolean");
-    return TargetTransactionPayload{TargetDirectDTESendTransaction{
+    return TargetCommandPayload{TargetDirectDTESendCommand{
         arguments[0], arguments[1], argument32(arguments, 2),
         argument32(arguments, 3), argument32(arguments, 4),
         argument32(arguments, 5), argument32(arguments, 6) != 0}};
   case TargetCallBuiltin::DirectDTESendIssue:
-    return TargetTransactionPayload{
-        TargetDirectDTESendIssueTransaction{arguments[0]}};
+    return TargetCommandPayload{TargetDirectDTESendIssueCommand{arguments[0]}};
   case TargetCallBuiltin::DirectDTERecvPrepare:
-    return TargetTransactionPayload{TargetDirectDTEReceiveTransaction{
+    return TargetCommandPayload{TargetDirectDTEReceiveCommand{
         arguments[0], argument32(arguments, 1), argument32(arguments, 2),
         argument32(arguments, 3), argument32(arguments, 4)}};
   case TargetCallBuiltin::DirectDTEWait:
-    return TargetTransactionPayload{
-        TargetDirectDTEWaitTransaction{arguments[0]}};
+    return TargetCommandPayload{TargetDirectDTEWaitCommand{arguments[0]}};
   case TargetCallBuiltin::DirectDTEFinish:
-    return TargetTransactionPayload{TargetDirectDTEFinishTransaction{}};
+    return TargetCommandPayload{TargetDirectDTEFinishCommand{}};
   }
   llvm_unreachable("unknown target-call builtin");
 }
 
-static llvm::Expected<TargetTransactionPayload>
-buildElementwiseTransaction(const TargetCallDecodeContext &context,
-                            NumericElementwiseOperation kind,
-                            llvm::ArrayRef<uint64_t> arguments) {
+static llvm::Expected<TargetCommandPayload>
+buildElementwiseCommand(const TargetCallDecodeConfig &config,
+                        NumericElementwiseOperation kind,
+                        llvm::ArrayRef<uint64_t> arguments) {
   bool unary = arguments.size() == 4;
   size_t destinationIndex = unary ? 1 : 2;
   size_t countIndex = unary ? 2 : 3;
@@ -196,28 +194,28 @@ buildElementwiseTransaction(const TargetCallDecodeContext &context,
       decodeFormat(TargetFormatEngine::CT, arguments[formatIndex]);
   if (!format)
     return format.takeError();
-  return TargetTransactionPayload{TargetElementwiseTransaction{
+  return TargetCommandPayload{TargetElementwiseCommand{
       kind, arguments[0],
       unary ? std::nullopt : std::optional<uint64_t>(arguments[1]),
       arguments[destinationIndex], argument32(arguments, countIndex), *format}};
 }
 
-static llvm::Expected<TargetTransactionPayload>
-buildReduceTransaction(const TargetCallDecodeContext &context,
-                       NumericReduceOperation kind,
-                       llvm::ArrayRef<uint64_t> arguments) {
+static llvm::Expected<TargetCommandPayload>
+buildReduceCommand(const TargetCallDecodeConfig &config,
+                   NumericReduceOperation kind,
+                   llvm::ArrayRef<uint64_t> arguments) {
   llvm::Expected<LogicalFormat> format =
       decodeFormat(TargetFormatEngine::CT, arguments[7]);
   if (!format)
     return format.takeError();
-  return TargetTransactionPayload{TargetReduceTransaction{
+  return TargetCommandPayload{TargetReduceCommand{
       kind, arguments[0], arguments[1], argument32(arguments, 2),
       argumentArray32<4>(arguments, 3), *format}};
 }
 
-static llvm::Expected<TargetTransactionPayload>
-buildConvertTransaction(TargetConvertOperation kind,
-                        llvm::ArrayRef<uint64_t> arguments) {
+static llvm::Expected<TargetCommandPayload>
+buildConvertCommand(TargetConvertOperation kind,
+                    llvm::ArrayRef<uint64_t> arguments) {
   std::optional<uint32_t> zeroPoint;
   std::optional<uint32_t> roundingMode;
   const TargetConvertRoute *route = findTargetConvertRoute(kind.getOpcode());
@@ -232,14 +230,15 @@ buildConvertTransaction(TargetConvertOperation kind,
   case TargetConvertParameterKind::None:
     break;
   }
-  return TargetTransactionPayload{TargetConvertTransaction{
-      kind, arguments[0], arguments[1], argument32(arguments, 2), zeroPoint,
-      roundingMode}};
+  return TargetCommandPayload{
+      TargetConvertCommand{kind, arguments[0], arguments[1],
+                           argument32(arguments, 2), zeroPoint, roundingMode}};
 }
 
-static llvm::Expected<TargetTransactionPayload>
-buildConvTransaction(const TargetCallDecodeContext &context, TargetConvolutionOperation kind,
-                     llvm::ArrayRef<uint64_t> arguments) {
+static llvm::Expected<TargetCommandPayload>
+buildConvCommand(const TargetCallDecodeConfig &config,
+                 TargetConvolutionOperation kind,
+                 llvm::ArrayRef<uint64_t> arguments) {
   if (llvm::Error error = verifyStaticKind(
           argument32(arguments, 3), static_cast<uint32_t>(kind), "convolution"))
     return std::move(error);
@@ -247,7 +246,7 @@ buildConvTransaction(const TargetCallDecodeContext &context, TargetConvolutionOp
       decodeFormat(TargetFormatEngine::NE, arguments[30]);
   if (!format)
     return format.takeError();
-  return TargetTransactionPayload{TargetConvTransaction{
+  return TargetCommandPayload{TargetConvCommand{
       kind, arguments[0], arguments[1], arguments[2],
       argumentArray32<4>(arguments, 4), argumentArray32<4>(arguments, 8),
       argumentArray32<4>(arguments, 12), argumentArray32<4>(arguments, 16),
@@ -255,9 +254,10 @@ buildConvTransaction(const TargetCallDecodeContext &context, TargetConvolutionOp
       argumentArray32<2>(arguments, 28), *format}};
 }
 
-static llvm::Expected<TargetTransactionPayload>
-buildPoolTransaction(const TargetCallDecodeContext &context, TargetPoolingOperation kind,
-                     llvm::ArrayRef<uint64_t> arguments) {
+static llvm::Expected<TargetCommandPayload>
+buildPoolCommand(const TargetCallDecodeConfig &config,
+                 TargetPoolingOperation kind,
+                 llvm::ArrayRef<uint64_t> arguments) {
   bool indexed = kind == TargetPoolingOperation::IndexedMaximum ||
                  kind == TargetPoolingOperation::IndexedMinimum;
   size_t firstField = indexed ? 3 : 2;
@@ -268,7 +268,7 @@ buildPoolTransaction(const TargetCallDecodeContext &context, TargetPoolingOperat
       decodeFormat(TargetFormatEngine::CT, arguments[firstField + 17]);
   if (!format)
     return format.takeError();
-  return TargetTransactionPayload{TargetPoolTransaction{
+  return TargetCommandPayload{TargetPoolCommand{
       kind, arguments[0], arguments[1],
       indexed ? std::optional<uint64_t>(arguments[2]) : std::nullopt,
       argumentArray32<4>(arguments, firstField + 1),
@@ -277,10 +277,10 @@ buildPoolTransaction(const TargetCallDecodeContext &context, TargetPoolingOperat
       argumentArray32<4>(arguments, firstField + 13), *format}};
 }
 
-static llvm::Expected<TargetTransactionPayload>
-buildUnpoolTransaction(const TargetCallDecodeContext &context,
-                       TargetUnpoolingOperation kind,
-                       llvm::ArrayRef<uint64_t> arguments) {
+static llvm::Expected<TargetCommandPayload>
+buildUnpoolCommand(const TargetCallDecodeConfig &config,
+                   TargetUnpoolingOperation kind,
+                   llvm::ArrayRef<uint64_t> arguments) {
   if (llvm::Error error = verifyStaticKind(
           argument32(arguments, 2), static_cast<uint32_t>(kind), "unpool"))
     return std::move(error);
@@ -288,7 +288,7 @@ buildUnpoolTransaction(const TargetCallDecodeContext &context,
       decodeFormat(TargetFormatEngine::CT, arguments[16]);
   if (!format)
     return format.takeError();
-  return TargetTransactionPayload{TargetUnpoolTransaction{
+  return TargetCommandPayload{TargetUnpoolCommand{
       kind, arguments[0], arguments[1],
       kind == TargetUnpoolingOperation::Average
           ? std::nullopt
@@ -297,10 +297,10 @@ buildUnpoolTransaction(const TargetCallDecodeContext &context,
       argumentArray32<4>(arguments, 12), *format}};
 }
 
-static llvm::Expected<TargetTransactionPayload>
-buildPeripheralTransaction(const TargetCallDecodeContext &context,
-                           TargetPeripheralOperation kind,
-                           llvm::ArrayRef<uint64_t> arguments) {
+static llvm::Expected<TargetCommandPayload>
+buildPeripheralCommand(const TargetCallDecodeConfig &config,
+                       TargetPeripheralOperation kind,
+                       llvm::ArrayRef<uint64_t> arguments) {
   size_t addressCount = 0;
   switch (kind) {
   case TargetPeripheralOperation::ArgMaximum:
@@ -335,28 +335,28 @@ buildPeripheralTransaction(const TargetCallDecodeContext &context,
   switch (kind) {
   case TargetPeripheralOperation::ArgMaximum:
   case TargetPeripheralOperation::ArgMinimum:
-    return TargetTransactionPayload{TargetPeripheralArgExtremaTransaction{
+    return TargetCommandPayload{TargetPeripheralArgExtremaCommand{
         kind, arguments[0], arguments[1], arguments[2],
         argument32(arguments, elementIndex), *format}};
   case TargetPeripheralOperation::Bilinear:
-    return TargetTransactionPayload{TargetPeripheralBilinearTransaction{
+    return TargetCommandPayload{TargetPeripheralBilinearCommand{
         arguments[0], arguments[1], argument32(arguments, elementIndex),
         *format, argumentArray32<4>(arguments, addressCount + 3),
         argumentArray32<4>(arguments, addressCount + 7)}};
   case TargetPeripheralOperation::LookupTable16:
   case TargetPeripheralOperation::LookupTable32:
-    return TargetTransactionPayload{TargetPeripheralLUTTransaction{
+    return TargetCommandPayload{TargetPeripheralLUTCommand{
         kind, arguments[0], arguments[1], arguments[2],
         argument32(arguments, elementIndex), *format,
         argument32(arguments, addressCount + 3)}};
   case TargetPeripheralOperation::Random:
-    return TargetTransactionPayload{TargetPeripheralRandomTransaction{
+    return TargetCommandPayload{TargetPeripheralRandomCommand{
         {arguments[0], arguments[1]},
         {arguments[2], arguments[3], arguments[4]},
         argument32(arguments, elementIndex),
         *format}};
   case TargetPeripheralOperation::ElementMask:
-    return TargetTransactionPayload{TargetPeripheralElementMaskTransaction{
+    return TargetCommandPayload{TargetPeripheralElementMaskCommand{
         arguments[0], arguments[1], argument32(arguments, elementIndex),
         *format, argument32(arguments, addressCount + 4),
         argument32(arguments, addressCount + 5),
@@ -370,9 +370,9 @@ buildPeripheralTransaction(const TargetCallDecodeContext &context,
 
 } // namespace
 
-llvm::Expected<target::TargetTransactionPayload>
+llvm::Expected<target::TargetCommandPayload>
 decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
-                        const TargetCallDecodeContext &context,
+                        const TargetCallDecodeConfig &config,
                         llvm::ArrayRef<uint64_t> arguments) {
   if (arguments.size() != descriptor.arguments.size())
     return llvm::createStringError(
@@ -394,22 +394,28 @@ decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
 
   if (const auto *builtin =
           std::get_if<TargetCallBuiltin>(&descriptor.semantic))
-    return buildBuiltinTransaction(context, *builtin, payloadArguments);
+    return buildBuiltinCommand(config, *builtin, payloadArguments);
   if (const auto *kind =
           std::get_if<NumericElementwiseOperation>(&descriptor.semantic))
-    return buildElementwiseTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<NumericReduceOperation>(&descriptor.semantic))
-    return buildReduceTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<TargetConvertOperation>(&descriptor.semantic))
-    return buildConvertTransaction(*kind, payloadArguments);
-  if (const auto *kind = std::get_if<TargetConvolutionOperation>(&descriptor.semantic))
-    return buildConvTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<TargetPoolingOperation>(&descriptor.semantic))
-    return buildPoolTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<TargetUnpoolingOperation>(&descriptor.semantic))
-    return buildUnpoolTransaction(context, *kind, payloadArguments);
-  if (const auto *kind = std::get_if<TargetPeripheralOperation>(&descriptor.semantic))
-    return buildPeripheralTransaction(context, *kind, payloadArguments);
+    return buildElementwiseCommand(config, *kind, payloadArguments);
+  if (const auto *kind =
+          std::get_if<NumericReduceOperation>(&descriptor.semantic))
+    return buildReduceCommand(config, *kind, payloadArguments);
+  if (const auto *kind =
+          std::get_if<TargetConvertOperation>(&descriptor.semantic))
+    return buildConvertCommand(*kind, payloadArguments);
+  if (const auto *kind =
+          std::get_if<TargetConvolutionOperation>(&descriptor.semantic))
+    return buildConvCommand(config, *kind, payloadArguments);
+  if (const auto *kind =
+          std::get_if<TargetPoolingOperation>(&descriptor.semantic))
+    return buildPoolCommand(config, *kind, payloadArguments);
+  if (const auto *kind =
+          std::get_if<TargetUnpoolingOperation>(&descriptor.semantic))
+    return buildUnpoolCommand(config, *kind, payloadArguments);
+  if (const auto *kind =
+          std::get_if<TargetPeripheralOperation>(&descriptor.semantic))
+    return buildPeripheralCommand(config, *kind, payloadArguments);
   llvm_unreachable("unknown target-call semantic");
 }
 

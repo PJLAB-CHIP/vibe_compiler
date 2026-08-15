@@ -111,7 +111,7 @@
 | --- | --- | --- | --- |
 | Triton kernel | `txLaunchKernel` / `KernelLaunch` | AP按固定logical tile id `0..15`划分总grid block，Kcore根据`Start_block_id_*`和`sub_block_num_*`逐block设置pid并调用kernel | stream不是tile selector，也不存在按active-count重编号。当前full-good V5.6中grid1的唯一block落到logical tile 0；一次grid16由logical tile `t`执行pid `t`，缺失tile会丢失对应pid而不会remap，entry可由`__get_pid(dim)`读取block id |
 | C intrinsic / cluster kernel | `ClusterKernelLaunch` / intrinsic launch packet | 用户指定 cluster tile 数，AP 选择连续 tile group 同时运行同一任务 | 支持 1/2/4/8/16 tile；cluster 内可以 DTE 通信 |
-| Model launch | `txLoadGraph` + `txLaunchModel(bpm)` | type-6先按tile id加载16份tile-specific module；type-7把同一BootParam广播到active tiles，各tile调用本地`entry(head)` | 外层host packet type 5只是model envelope，不改变内层type-6 load/type-7 run语义；这是最终模型发射候选，Wafer typed artifact/provider边界由`tasks/15`定义 |
+| Model launch | `txLoadGraph` + `txLaunchModel(bpm)` | type-6先按tile id加载16份tile-specific module；type-7把同一BootParam广播到active tiles，各tile调用本地`entry(head)` | 外层host packet type 5只是model envelope，不改变内层type-6 load/type-7 run语义；这是最终模型发射候选，Wafer typed package/provider边界由`tasks/15`定义 |
 
 ### Host runtime / driver 边界
 
@@ -122,7 +122,7 @@
 | HPGR `tx_runtime` | `firmware_kuiper/kuiper/include/tx_runtime.h`以及digest-qualified V5.6安装产物`tx_runtime.h`/`libhpgr.so`暴露CUDA-like device/memory/stream/event/module/kernel/model/graph/rank/tile/P2P surface。current model链已静态确认type-6 load、type-7 run、同BPM广播和`entry(head)`；completion涉及command slot、async receive thread、`completeSignal`和stream wait | 这是当前最完整的provider evidence，但public header没有BootParam builder或私有布局稳定性承诺；`tasks/15`拥有typed package/runtime合同 |
 | KMD/UAPI | `/dev/accel/dev-N`、`/dev/accel_drv_mgr` 提供runtime allocation、jobs、NPU tile mem、C2C、log、device info、driver topology和driver-level DTE ioctl。当前KMD compute fence在MHU doorbell后直接signal | 该fence本身不证明model/kernel completion；production mapping由`tasks/15`定义和验证 |
 | VS/旧 `Tsm*` runtime | `libvs_runtime.so`桥接部分HPGR API，但`TsmLaunch/TsmLaunchPg/TsmAsyncRun/TsmDeviceSynchronize`等路径在当前构建中是stub/no-op success；D2D/P2P TLV仍有DTE证据价值 | 只证明兼容层和DTE TLV形状，不证明correctness fence或最终ABI；owner为`tasks/15` |
-| x86 CModel动态seam | `libtx8_runtime.so`的`Runtime::SetCModelHandle`会尝试`dlopen`缺失的`libcmodel_runtime_api.so`并解析device/compile/launch/run/copy/tile-info入口 | 当前缺完整host-runtime headers、CModel/HPGR/TsmML libraries和model resources；未证明该seam实际被launch路径消费、使用SystemC或接受Q17/Q18 artifact；owner为`tasks/17` |
+| x86 CModel动态seam | `libtx8_runtime.so`的`Runtime::SetCModelHandle`会尝试`dlopen`缺失的`libcmodel_runtime_api.so`并解析device/compile/launch/run/copy/tile-info入口 | 当前缺完整host-runtime headers、CModel/HPGR/TsmML libraries和model resources；未证明该seam实际被launch路径消费、使用SystemC或接受Q17/Q18 target modules/package；对应设计为`tasks/17` |
 
 逆向 `libtx8_runtime.so` 后，HostRuntime 不能只按公开 runtime PDF 理解。
 当前二进制里的 `Tsm*` 导出函数通过 `Runtime::GetInstance()->_Api()` 转发，
@@ -639,7 +639,7 @@ Q37在当前安装profile上用强sentinel、完整DMA round-trip、PMU前后差
   canonicalize成TDMA I8 byte fill，logical-valid BOOL仍fail closed。该替代路径需独立板端held-out后才能升级为
   supported。
 - Kcore普通load读取复用的cacheable DDR input前需要明确的cache invalidate；NCC DMA completion不会自动建立
-  host H2D到Kcore load的coherence。NCC/Kcore、DTE和host-visible publication继续作为不同completion/visibility域。
+  host H2D到Kcore load的coherence。NCC/Kcore、DTE和host visibility继续作为不同completion/visibility域。
 - `NCC producer -> local drain -> DTE send`和`DTE receive wait -> NCC consumer`已各自通过16-rank exact正向
   case；disjoint NCC/DTE的两种安全wait顺序也正确。没有共同DTE/NCC cycle timer，故不从这些case声明overlap，
   也不允许local drain与DTE wait互相替代。

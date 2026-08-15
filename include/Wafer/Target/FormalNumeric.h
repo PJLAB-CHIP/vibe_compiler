@@ -41,14 +41,14 @@ struct FormalNumericExceptionFlags {
   }
 };
 
-/// A committed formal result. `value` is always a canonical RawLogicalValue;
+/// A completed formal result. `value` is always a canonical RawLogicalValue;
 /// `flags` contains only the flags raised by this operation.
 struct FormalNumericResult {
   RawLogicalValue value;
   FormalNumericExceptionFlags flags;
 };
 
-/// Stable typed reasons for a formal operation that cannot commit a result.
+/// Stable typed reasons for a formal operation that cannot produce a result.
 enum class FormalNumericErrorCode : uint8_t {
   UnsupportedResolvedCommand,
   OperandCountMismatch,
@@ -103,10 +103,10 @@ public:
   }
   void clearAggregateFlags() { aggregateFlags = {}; }
 
-  /// Commits flags only after the caller has completed one whole atomic
-  /// operation or tensor successfully. Scalar evaluators below are
-  /// effect-free; a dispatcher must not call this on a partial/failing path.
-  void recordCommittedFlags(FormalNumericExceptionFlags flags);
+  /// Merges flags after the caller has completed one whole atomic operation or
+  /// tensor successfully. Scalar evaluators below are effect-free; a dispatcher
+  /// must not call this on a partial or failing path.
+  void mergeExceptionFlags(FormalNumericExceptionFlags flags);
 
 private:
   FormalNumericExceptionFlags aggregateFlags;
@@ -122,7 +122,7 @@ evaluateFormalConvert(const ResolvedNumericCommand &command,
 /// target-independent raw logical encodings; LLVM APFloat/APInt are the
 /// production formal arithmetic implementation. Every error, including the
 /// profile-defined float-to-integer reject-no-write outcomes, leaves `context`
-/// unchanged and commits no result.
+/// unchanged and returns no result.
 llvm::Expected<FormalNumericResult>
 executeFormalConvert(FormalNumericExecutionContext &context,
                      const ResolvedNumericCommand &command,

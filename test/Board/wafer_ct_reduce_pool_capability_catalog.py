@@ -374,7 +374,7 @@ def _pool_rows() -> list[CTCapabilityRow]:
                 f"{OPCODE_NAMES[opcode]}-f16-k3x2-s2x1-padded-observed",
                 "padding changes the numeric boundary convention; the case "
                 "therefore checks packet completion and bounded writeback "
-                "without publishing a numeric capability",
+                "without adding a numeric capability row",
                 qualification="pending-board",
             )
         )

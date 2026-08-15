@@ -35,7 +35,7 @@ enum class SoftFloatOracleTininess : uint8_t {
   AfterRounding,
 };
 
-/// Fully typed, preflighted-at-execution oracle request. Only F16 and F32 are
+/// Fully typed oracle request validated at execution. Only F16 and F32 are
 /// accepted. Operand arity and format equality are determined by `operation`;
 /// invalid requests fail before any SoftFloat ambient state is modified.
 struct SoftFloatOracleRequest {

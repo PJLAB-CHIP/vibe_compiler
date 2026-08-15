@@ -3,7 +3,7 @@
 
 // This is the terminal-instruction vertical for the typed CT capability
 // path. It proves real wafer.instr operations, verifier geometry, target
-// format preflight and target-call argument order together; the board probe's
+// format validation and target-call argument order together; the board probe's
 // direct CRT calls do not substitute for this path.
 module {
   func.func @ct_reduce_pool_capability_vertical() {

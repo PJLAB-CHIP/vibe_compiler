@@ -500,7 +500,7 @@ direct DTE helper：
   因此对`txMalloc` status地址的`volatile` scalar store不足以保证后续host D2H看到terminal值。firmware
   `rt_hw_cpu_dcache_ops(FLUSH)`反汇编使用64-byte cache line，并执行`fence; sync; mxstatus`后按当前mode选择
   `dcache.cipa`或`dcache.civa`，再执行`sync.is; fence; sync`。repo-local TX81 CRT以`-mcpu=c908`编译并在每次
-  pending/error/success status publication后复用该clean/invalidate序列；通用target LLVM module仍使用既有RV64 ISA配置。
+  pending/error/success status写入后复用该clean/invalidate序列；通用target LLVM module仍使用既有RV64 ISA配置。
   因为cache operation的作用域是整条64-byte line，current Wafer status-v2以64-byte storage/alignment独占该line，
   其offset 0为唯一有语义的`u32`字段。
 - `init_tile_id(logic_id, row_length)`把逻辑tile id写入`0x2f0454`、当前物理tile寄存器值写入`0x2f0450`、
@@ -912,7 +912,7 @@ correlation schema；profiling identity、timeline correlation 和 calibration �
 意味着这些 C++ symbols 本身不能证明稳定 host ABI；provider adapter、versioning 和
 conformance policy 由 `tasks/15`/`tasks/16` 定义。
 
-## 14. Evidence Handoff
+## 14. Evidence Mapping
 
 本文档只保留 tx8-deps-only 证据底稿和函数级索引。设计与实现状态不由本目录
 hardware/reverse 文档维护；对应唯一 owner 如下：
@@ -923,7 +923,7 @@ hardware/reverse 文档维护；对应唯一 owner 如下：
 | SPM reservation / allocation | `tasks/09-spm-memory-planning.md` |
 | instruction IR / geometry / legality | `tasks/11-instruction-ir.md` |
 | physical transport / communication completion | `tasks/13-communication.md` |
-| target command / CRT / artifact ABI | `tasks/14-target-conversion-module-publication.md` |
+| target command / CRT / module ABI | `tasks/14-target-code-generation.md` |
 | package / provider / runtime completion | `tasks/15-launch-runtime-package.md` |
 | board / profile / conformance gates | `tasks/16-verification-contract.md` |
 

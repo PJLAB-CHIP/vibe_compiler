@@ -98,8 +98,7 @@ using SemanticResourceKey =
 
 SemanticResourceKey semanticKey(const PackageResourceRecord &resource) {
   if (const auto *card = std::get_if<CardResourceScope>(&resource.scope))
-    return {0, card->cardId.getValue(), -1, resource.role,
-            resource.roleIndex};
+    return {0, card->cardId.getValue(), -1, resource.role, resource.roleIndex};
   const auto &tile = std::get<TileResourceScope>(resource.scope);
   return {1, tile.cardId.getValue(), tile.tileId.getValue(), resource.role,
           resource.roleIndex};
@@ -161,8 +160,7 @@ llvm::Error validateRelaxedF16Output(uint64_t resourceId,
 
     const double absoluteError = std::abs(expectedValue - actualValue);
     const double limit = kRelaxedF16AbsoluteTolerance +
-                         kRelaxedF16RelativeTolerance *
-                             std::abs(expectedValue);
+                         kRelaxedF16RelativeTolerance * std::abs(expectedValue);
     const uint32_t ulpDistance =
         orderedF16(expectedBits) > orderedF16(actualBits)
             ? orderedF16(expectedBits) - orderedF16(actualBits)
@@ -182,7 +180,7 @@ llvm::Error validateRelaxedF16Output(uint64_t resourceId,
   return llvm::Error::success();
 }
 
-llvm::Error stageAndPublishRawFiles(
+llvm::Error writeRawFilesViaTemporaryFiles(
     llvm::ArrayRef<std::pair<llvm::StringRef, llvm::ArrayRef<uint8_t>>>
         captures) {
   std::vector<StagedRawFile> staged;
@@ -222,7 +220,7 @@ llvm::Error stageAndPublishRawFiles(
             llvm::sys::fs::rename(file.temporary, file.target)) {
       discardStaged();
       return llvm::createStringError(
-          error, "failed to publish raw output file: " + file.target);
+          error, "failed to replace raw output file: " + file.target);
     }
     file.temporary.clear();
   }
@@ -231,14 +229,12 @@ llvm::Error stageAndPublishRawFiles(
 
 } // namespace
 
-llvm::Expected<BoardInvocationFilePlan>
-prepareBoardInvocationFiles(const PackageManifest &manifest,
-                            BoardRuntimeInvocationRequest request,
-                            llvm::ArrayRef<ResourceFile> resourceFiles,
-                            llvm::ArrayRef<ResourceFile> expectedFiles,
-                            llvm::ArrayRef<ResourceFile> outputFiles,
-                            llvm::ArrayRef<ResourceFile>
-                                relaxedF16ExpectedFiles) {
+llvm::Expected<BoardInvocationFilePlan> prepareBoardInvocationFiles(
+    const PackageManifest &manifest, BoardRuntimeInvocationRequest request,
+    llvm::ArrayRef<ResourceFile> resourceFiles,
+    llvm::ArrayRef<ResourceFile> expectedFiles,
+    llvm::ArrayRef<ResourceFile> outputFiles,
+    llvm::ArrayRef<ResourceFile> relaxedF16ExpectedFiles) {
   llvm::Expected<llvm::DenseMap<uint64_t, std::string>> resources =
       indexResourceFiles(resourceFiles, "--resource");
   if (!resources)
@@ -313,8 +309,7 @@ prepareBoardInvocationFiles(const PackageManifest &manifest,
             llvm::errc::invalid_argument,
             "--expected/--output omit writable ResourceId " +
                 std::to_string(resourceId));
-      const bool useRelaxedF16 =
-          relaxedReference != relaxedF16Expected->end();
+      const bool useRelaxedF16 = relaxedReference != relaxedF16Expected->end();
       if (useRelaxedF16 &&
           (resource.type.dtype != "f16" || resource.bytes % 2 != 0))
         return llvm::createStringError(
@@ -519,8 +514,8 @@ remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
 }
 
 llvm::Error
-validateAndPublishBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
-                               const BoardInvocationFilePlan &plan) {
+validateAndWriteBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
+                             const BoardInvocationFilePlan &plan) {
   if (llvm::Error error = validateBoardOutputs(outputs, plan))
     return error;
 
@@ -531,7 +526,7 @@ validateAndPublishBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
     if (capture != plan.outputPaths.end())
       captures.emplace_back(capture->second, output.bytes);
   }
-  return stageAndPublishRawFiles(captures);
+  return writeRawFilesViaTemporaryFiles(captures);
 }
 
 } // namespace wafer::runtime::cli

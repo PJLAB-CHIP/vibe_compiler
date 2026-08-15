@@ -13,50 +13,49 @@ endforeach()
 set(LLVM_OPTIONAL_SOURCES
   AttentionImplementationAlternative.cpp
   CoordinatedCommunicationAction.cpp
-  CoordinatedDataflowSearch.cpp
-  CoordinatedExecutableAdmission.cpp
-  CoordinatedExecutableFinalization.cpp
-  CoordinatedStructuredCandidateDerivation.cpp
-  CoordinatedStructuredFrontier.cpp
-  CoordinatedVariantSelection.cpp
+  WholeCardCandidateSearch.cpp
+  LowerWholeCardInstrModules.cpp
+  WholeCardCandidateEvaluation.cpp
+  StructuredCandidateDerivation.cpp
+  StructuredCandidateCost.cpp
+  WholeCardCandidateSelection.cpp
   GlobalTileRelation.cpp
   NoCCommunicationAction.cpp
-  NoCIntermediateDataflow.cpp
+  NoCIntermediateRouting.cpp
   NoCPartialDataflow.cpp
   StaticFixedSlotQualification.cpp
   StructuredImplementationAlternative.cpp
-  TargetRankPreflight.cpp
-  WholeVariantResourceAcceptance.cpp
+  WholeCardResourceCostValidation.cpp
 )
 
 add_mlir_library(WaferCompiler
-  AcceptedCallClosure.cpp
+  ExecutableCallClosure.cpp
   Compilation.cpp
   CompilationOrchestration.cpp
   CompilationStages.cpp
   CardExecutableCompilation.cpp
-  WholeCardExecutableAdmission.cpp
+  WholeCardExecutableLowering.cpp
   DirectDTETransport.cpp
-  ExecutableBundle.cpp
+  PhysicalTileExecutables.cpp
   TensorProgramCompilation.cpp
   Package.cpp
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
   ProgramTensorComparison.cpp
-  PhysicalTileFinalization.cpp
+  PhysicalTileMemoryPlanning.cpp
   SpmdCompilationBridge.cpp
   StructuredBufferRelations.cpp
   TargetABIPreparation.cpp
-  TargetArtifact.cpp
-  TargetArtifactPublication.cpp
+  TargetLLVMModule.cpp
+  TargetModuleLinking.cpp
   TargetKernelAggregate.cpp
   TargetDeviceLink.cpp
   TargetLLVMTranslation.cpp
   TargetModuleReadback.cpp
-  TargetPackagePublication.cpp
+  WriteExecutablePackage.cpp
   TargetInstrumentation.cpp
   TileRegionSPMCapacityEvaluation.cpp
-  PhysicalTilePreflight.cpp
+  CompilePhysicalTileLLVMModules.cpp
   SelectedBufferMaterialization.cpp
   TargetCallFrontend.cpp
   WholeDAGCandidateSchedule.cpp
@@ -66,7 +65,7 @@ add_mlir_library(WaferCompiler
   WholeDAGSchedule.cpp
   WholeDAGSchedulePlan.cpp
   WholeCardExecutableSynthesis.cpp
-  WholeCardResourceAcceptance.cpp
+  WholeCardResourceVerification.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

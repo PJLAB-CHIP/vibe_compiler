@@ -2,8 +2,8 @@
 
 #include "StaticFixedSlotQualification.h"
 
-#include "AcceptedCallClosure.h"
 #include "CompilationInternal.h"
+#include "ExecutableCallClosure.h"
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -436,7 +436,7 @@ static llvm::Expected<std::string> stringifyEngine(InstrFamily family) {
 }
 
 static llvm::Expected<StaticFixedSlotIRSummary>
-deriveStaticFixedSlotIRSummary(const AcceptedCallClosure &closure) {
+deriveStaticFixedSlotIRSummary(const ExecutableCallClosure &closure) {
   StaticFixedSlotIRSummary summary;
   llvm::DenseMap<mlir::Operation *, int64_t> rootOrdinals;
   for (mlir::func::FuncOp function : closure.functions) {
@@ -728,10 +728,10 @@ static bool isActualLoopEffectOrIssueOperand(mlir::Operation *operation,
 /// positive static loop whose planned SPM iter args form a multi-root cycle
 /// with at least one cycle-carried iter arg consumed by a real effect/issue in
 /// that loop. Rotation then exercises the other roots dynamically. The
-/// publication companion deliberately derives the stronger complete summary
+/// qualification record deliberately derives the stronger complete summary
 /// separately.
 static llvm::Error
-verifyStaticFixedSlotIRWitness(const AcceptedCallClosure &closure) {
+verifyStaticFixedSlotIRWitness(const ExecutableCallClosure &closure) {
   llvm::DenseMap<mlir::Operation *, int64_t> rootOrdinals;
   llvm::DenseMap<int64_t, mlir::memref::AllocOp> rootsByOrdinal;
   int64_t nextRootOrdinal = 0;
@@ -855,12 +855,13 @@ verifyStaticFixedSlotIRWitness(const AcceptedCallClosure &closure) {
       "loop with current effect/issue consumption");
 }
 
-static llvm::Expected<RankSummary> deriveRankSummary(const RankExecutable &rank) {
+static llvm::Expected<RankSummary>
+deriveRankSummary(const RankExecutable &rank) {
   RankSummary summary;
   summary.logicalRank = rank.getLogicalRank();
 
-  llvm::Expected<AcceptedCallClosure> closure =
-      analyzeAcceptedCallClosure(rank.getModule(), rank.getEntrySymbol());
+  llvm::Expected<ExecutableCallClosure> closure =
+      analyzeExecutableCallClosure(rank.getModule(), rank.getEntrySymbol());
   if (!closure)
     return llvm::joinErrors(
         invalid("fixed-slot qualification accepted call closure is invalid"),
@@ -889,7 +890,8 @@ static llvm::Expected<RankSummary> deriveRankSummary(const RankExecutable &rank)
       if (error)
         return mlir::WalkResult::interrupt();
 
-      NCCSynchronizationContract completion = getNCCSynchronizationContract(operation);
+      NCCSynchronizationContract completion =
+          getNCCSynchronizationContract(operation);
       switch (completion.behavior) {
       case NCCSynchronizationBehavior::None:
         break;
@@ -1018,8 +1020,7 @@ static llvm::Expected<RankSummary> deriveRankSummary(const RankExecutable &rank)
 
   analysis::InstructionProgramCost cost =
       analysis::analyzeInstructionProgramCost(
-          rank.getModule(),
-          analysis::getTargetScheduleCostPolicy());
+          rank.getModule(), analysis::getTargetScheduleCostPolicy());
   if (cost.directDTEComputeOverlapWindowCount.isKnown())
     summary.directDTEComputeOverlapWindowCount =
         cost.directDTEComputeOverlapWindowCount.value;
@@ -1120,10 +1121,11 @@ static void writeRankSummary(llvm::json::OStream &json,
   });
 }
 
-static std::string serializeAttestation(llvm::StringRef manifestDigest,
-                                        const ExecutableBundle &bundle,
-                                        llvm::ArrayRef<RankSummary> ranks,
-                                        bool directDTEComputeOverlap) {
+static std::string
+serializeAttestation(llvm::StringRef manifestDigest,
+                     const PhysicalTileExecutables &physicalTileExecutables,
+                     llvm::ArrayRef<RankSummary> ranks,
+                     bool directDTEComputeOverlap) {
   std::string storage;
   llvm::raw_string_ostream stream(storage);
   {
@@ -1140,9 +1142,11 @@ static std::string serializeAttestation(llvm::StringRef manifestDigest,
       json.attributeObject("target", [&] {
         json.attribute("identity",
                        stringifyTargetIdentityId(
-                           bundle.getExecutionConfig().getTargetIdentityId()));
-        json.attribute("rank_count",
-                       bundle.getExecutionConfig().getRankCount());
+                           physicalTileExecutables.getExecutionConfig()
+                               .getTargetIdentityId()));
+        json.attribute(
+            "rank_count",
+            physicalTileExecutables.getExecutionConfig().getRankCount());
         json.attributeArray("logical_ranks", [&] {
           for (const RankSummary &rank : ranks)
             json.value(rank.logicalRank);
@@ -1181,8 +1185,8 @@ static std::string serializeActivation(llvm::StringRef manifestDigest,
 
 llvm::Error
 verifyStaticFixedSlotQualificationEvidence(const RankExecutable &rank) {
-  llvm::Expected<AcceptedCallClosure> closure =
-      analyzeAcceptedCallClosure(rank.getModule(), rank.getEntrySymbol());
+  llvm::Expected<ExecutableCallClosure> closure =
+      analyzeExecutableCallClosure(rank.getModule(), rank.getEntrySymbol());
   if (!closure)
     return llvm::joinErrors(
         invalid("fixed-slot qualification accepted call closure is invalid"),
@@ -1198,22 +1202,23 @@ bool hasStaticFixedSlotQualificationEvidence(const RankExecutable &rank) {
   return true;
 }
 
-llvm::Error verifyStaticFixedSlotCompanionEvidence(const RankExecutable &rank) {
+llvm::Error verifyStaticFixedSlotProgram(const RankExecutable &rank) {
   llvm::Expected<RankSummary> summary = deriveRankSummary(rank);
   if (!summary)
     return summary.takeError();
   return llvm::Error::success();
 }
 
-mlir::LogicalResult stageStaticFixedSlotQualificationCompanion(
-    llvm::StringRef companionRoot, llvm::StringRef packageRoot,
-    const ExecutableBundle &bundle, bool requireDirectDTEComputeOverlap,
-    llvm::raw_ostream &diagnostics) {
-  const auto &rankExecutables = bundle.getRankExecutables();
+mlir::LogicalResult writeStaticFixedSlotQualificationRecord(
+    llvm::StringRef instrumentationRoot, llvm::StringRef packageRoot,
+    const PhysicalTileExecutables &physicalTileExecutables,
+    bool requireDirectDTEComputeOverlap, llvm::raw_ostream &diagnostics) {
+  const auto &rankExecutables = physicalTileExecutables.getRankExecutables();
   if (rankExecutables.size() !=
-      static_cast<size_t>(bundle.getExecutionConfig().getRankCount())) {
-    reject(diagnostics,
-           "fixed-slot qualification rank domain differs from final bundle");
+      static_cast<size_t>(
+          physicalTileExecutables.getExecutionConfig().getRankCount())) {
+    reject(diagnostics, "fixed-slot qualification rank domain differs from "
+                        "final physicalTileExecutables");
     return mlir::failure();
   }
 
@@ -1246,12 +1251,13 @@ mlir::LogicalResult stageStaticFixedSlotQualificationCompanion(
     reject(diagnostics, llvm::toString(manifestDigest.takeError()));
     return mlir::failure();
   }
-  if (createDirectory(companionRoot, diagnostics))
+  if (createDirectory(instrumentationRoot, diagnostics))
     return mlir::failure();
 
-  const std::string attestation = serializeAttestation(
-      *manifestDigest, bundle, ranks, requireDirectDTEComputeOverlap);
-  llvm::SmallString<256> attestationPath(companionRoot);
+  const std::string attestation =
+      serializeAttestation(*manifestDigest, physicalTileExecutables, ranks,
+                           requireDirectDTEComputeOverlap);
+  llvm::SmallString<256> attestationPath(instrumentationRoot);
   llvm::sys::path::append(attestationPath, "attestation.json");
   if (mlir::failed(
           writeAndVerifyJSON(attestationPath, attestation, diagnostics)))
@@ -1266,7 +1272,7 @@ mlir::LogicalResult stageStaticFixedSlotQualificationCompanion(
   // read-back attestation bytes and the exact staged package manifest bytes.
   const std::string activation =
       serializeActivation(*manifestDigest, *attestationDigest);
-  llvm::SmallString<256> activationPath(companionRoot);
+  llvm::SmallString<256> activationPath(instrumentationRoot);
   llvm::sys::path::append(activationPath, "activation.json");
   return writeAndVerifyJSON(activationPath, activation, diagnostics);
 }

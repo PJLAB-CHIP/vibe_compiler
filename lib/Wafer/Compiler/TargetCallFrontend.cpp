@@ -36,7 +36,7 @@ constexpr llvm::StringLiteral kEntryThunkSymbol = "wafer_target_entry_thunk";
 using HostEntryThunk = void(const uint64_t *);
 
 struct InvocationContext {
-  TargetTransactionSink *sink = nullptr;
+  TargetCommandSink *sink = nullptr;
   std::optional<std::string> failure;
 };
 
@@ -48,7 +48,7 @@ struct TileInvocationContext {
   TargetIdentityId targetIdentity;
   InvocationContext *invocation;
   uint64_t nextIssueOrdinal = 0;
-  uint64_t issuedTransactionCount = 0;
+  uint64_t issuedCommandCount = 0;
 };
 
 struct MaterializedTile {
@@ -57,9 +57,9 @@ struct MaterializedTile {
 };
 
 enum class ExecutableState : uint8_t {
-  Prepared,
+  Ready,
   Running,
-  Committed,
+  Completed,
   Aborted,
 };
 
@@ -91,9 +91,9 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     return 0;
   }
   llvm::ArrayRef<uint64_t> argumentValues(arguments, argumentCount);
-  llvm::Expected<target::TargetTransactionPayload> payload =
-      decodeTargetCallPayload(
-      descriptor, {context->physicalTileCount}, argumentValues);
+  llvm::Expected<target::TargetCommandPayload> payload =
+      decodeTargetCallPayload(descriptor, {context->physicalTileCount},
+                              argumentValues);
   if (!payload) {
     context->invocation->failure = llvm::toString(payload.takeError());
     return 0;
@@ -104,20 +104,20 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     context->invocation->failure = llvm::toString(worker.takeError());
     return 0;
   }
-  TargetTransaction transaction{
-      context->physicalCardId, context->physicalTileId, context->launchSlotId,
-      context->nextIssueOrdinal++, std::move(*payload)};
+  TargetCommand command{context->physicalCardId, context->physicalTileId,
+                        context->launchSlotId, context->nextIssueOrdinal++,
+                        std::move(*payload)};
   if (descriptor.issueDomain && *worker)
-    transaction.nccIssueDomain =
+    command.nccIssueDomain =
         TargetNCCIssueDomain{descriptor.issueDomain->engine, **worker,
                              descriptor.issueDomain->completionBehavior};
   llvm::Expected<uint64_t> issueResult =
-      context->invocation->sink->issue(transaction);
+      context->invocation->sink->issue(command);
   if (!issueResult) {
     context->invocation->failure = llvm::toString(issueResult.takeError());
     return 0;
   }
-  ++context->issuedTransactionCount;
+  ++context->issuedCommandCount;
   return descriptor.result == TargetCallResultType::I64 ? *issueResult : 0;
 }
 
@@ -208,7 +208,8 @@ verifyDescriptorType(const llvm::Function &function,
   return llvm::Error::success();
 }
 
-static llvm::Error preflightModule(const TargetLLVMModule &targetModule) {
+static llvm::Error
+verifyTargetModuleForHostExecution(const TargetLLVMModule &targetModule) {
   const llvm::Module &module = targetModule.getModule();
   llvm::Function *entry = module.getFunction(targetModule.getEntrySymbol());
   if (!entry || entry->isDeclaration())
@@ -393,7 +394,7 @@ static llvm::Error initializeNativeBackend() {
 static llvm::Expected<MaterializedTile>
 materializeTile(const TargetLLVMModule &targetModule,
                 TileInvocationContext &context) {
-  if (llvm::Error error = preflightModule(targetModule))
+  if (llvm::Error error = verifyTargetModuleForHostExecution(targetModule))
     return std::move(error);
   llvm::Expected<std::pair<std::unique_ptr<llvm::LLVMContext>,
                            std::unique_ptr<llvm::Module>>>
@@ -442,17 +443,18 @@ materializeTile(const TargetLLVMModule &targetModule,
 }
 
 static llvm::Expected<TargetCallInvocationDescriptor>
-validateInvocation(const TargetLLVMModuleBundle &bundle,
+validateInvocation(const TargetLLVMModules &targetLLVMModules,
                    llvm::ArrayRef<TargetCallTileArguments> arguments) {
-  const std::vector<TargetLLVMModule> &modules = bundle.getModules();
+  const std::vector<TargetLLVMModule> &modules = targetLLVMModules.getModules();
   if (modules.empty() || modules.size() != arguments.size() ||
-      modules.size() != static_cast<size_t>(
-                            bundle.getExecutionConfig().getPhysicalTileCount()))
+      modules.size() !=
+          static_cast<size_t>(
+              targetLLVMModules.getExecutionConfig().getPhysicalTileCount()))
     return llvm::createStringError(
         "target-call invocation does not cover the complete physical Tile "
         "domain");
   TargetCallInvocationDescriptor descriptor{
-      bundle.getExecutionConfig().getTargetIdentityId(), {}};
+      targetLLVMModules.getExecutionConfig().getTargetIdentityId(), {}};
   descriptor.tiles.reserve(modules.size());
   std::set<std::pair<int64_t, int64_t>> physicalTiles;
   for (size_t index = 0; index < modules.size(); ++index) {
@@ -504,7 +506,7 @@ struct TargetCallExecutable::Impl {
   std::vector<TileInvocationContext> contexts;
   std::vector<MaterializedTile> materialized;
   std::vector<TileExecutionState> tileStates;
-  ExecutableState state = ExecutableState::Prepared;
+  ExecutableState state = ExecutableState::Ready;
 };
 
 TargetCallExecutable::TargetCallExecutable(std::unique_ptr<Impl> impl)
@@ -512,7 +514,7 @@ TargetCallExecutable::TargetCallExecutable(std::unique_ptr<Impl> impl)
 
 TargetCallExecutable::~TargetCallExecutable() {
   if (impl && impl->state == ExecutableState::Running)
-    abort("running target-call executable was destroyed before commit");
+    abort("running target-call executable was destroyed before finish");
 }
 TargetCallExecutable::TargetCallExecutable(TargetCallExecutable &&) = default;
 TargetCallExecutable &
@@ -520,7 +522,7 @@ TargetCallExecutable::operator=(TargetCallExecutable &&other) {
   if (this == &other)
     return *this;
   if (impl && impl->state == ExecutableState::Running)
-    abort("running target-call executable was replaced before commit");
+    abort("running target-call executable was replaced before finish");
   impl = std::move(other.impl);
   return *this;
 }
@@ -532,7 +534,7 @@ TargetCallExecutable::getInvocationDescriptor() const {
 }
 
 void TargetCallExecutable::abort(llvm::StringRef diagnostic) {
-  if (!impl || impl->state == ExecutableState::Committed ||
+  if (!impl || impl->state == ExecutableState::Completed ||
       impl->state == ExecutableState::Aborted)
     return;
   impl->invocation.failure = diagnostic.str();
@@ -541,8 +543,8 @@ void TargetCallExecutable::abort(llvm::StringRef diagnostic) {
     impl->invocation.sink->abort(diagnostic);
 }
 
-llvm::Error TargetCallExecutable::begin(TargetTransactionSink &sink) {
-  if (!impl || impl->state != ExecutableState::Prepared)
+llvm::Error TargetCallExecutable::begin(TargetCommandSink &sink) {
+  if (!impl || impl->state != ExecutableState::Ready)
     return llvm::createStringError(
         "target-call executable cannot begin from its current state");
   impl->invocation.sink = &sink;
@@ -595,37 +597,36 @@ llvm::Error TargetCallExecutable::executeTile(LaunchSlotId launchSlotId) {
   return llvm::Error::success();
 }
 
-llvm::Expected<TargetCallExecutionResult> TargetCallExecutable::commit() {
+llvm::Expected<TargetCallExecutionResult> TargetCallExecutable::finish() {
   if (!impl || impl->state != ExecutableState::Running)
     return llvm::createStringError(
-        "target-call executable cannot commit from its current state");
+        "target-call executable cannot finish from its current state");
   if (!llvm::all_of(impl->tileStates, [](TileExecutionState state) {
         return state == TileExecutionState::Completed;
       })) {
     std::string diagnostic =
-        "target-call executable cannot commit before every Tile completes";
+        "target-call executable cannot finish before every Tile completes";
     abort(diagnostic);
     return llvm::createStringError("%s", diagnostic.c_str());
   }
-  if (llvm::Error error = impl->invocation.sink->prepareCommit()) {
+  if (llvm::Error error = impl->invocation.sink->completeInvocation()) {
     std::string diagnostic = llvm::toString(std::move(error));
     abort(diagnostic);
     return llvm::createStringError("%s", diagnostic.c_str());
   }
-  impl->invocation.sink->commit();
-  impl->state = ExecutableState::Committed;
-  uint64_t issuedTransactionCount = 0;
+  impl->state = ExecutableState::Completed;
+  uint64_t issuedCommandCount = 0;
   for (const TileInvocationContext &context : impl->contexts)
-    issuedTransactionCount += context.issuedTransactionCount;
+    issuedCommandCount += context.issuedCommandCount;
   return TargetCallExecutionResult{
-      static_cast<int64_t>(impl->materialized.size()), issuedTransactionCount};
+      static_cast<int64_t>(impl->materialized.size()), issuedCommandCount};
 }
 
 llvm::Expected<TargetCallExecutable>
-prepareTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
-                          llvm::ArrayRef<TargetCallTileArguments> arguments) {
+createTargetCallExecutable(const TargetLLVMModules &targetLLVMModules,
+                           llvm::ArrayRef<TargetCallTileArguments> arguments) {
   llvm::Expected<TargetCallInvocationDescriptor> invocation =
-      validateInvocation(bundle, arguments);
+      validateInvocation(targetLLVMModules, arguments);
   if (!invocation)
     return invocation.takeError();
   if (llvm::Error error = initializeNativeBackend())
@@ -633,18 +634,19 @@ prepareTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
 
   auto executable = std::make_unique<TargetCallExecutable::Impl>(
       std::move(*invocation), arguments);
-  executable->contexts.reserve(bundle.getModules().size());
-  for (const TargetLLVMModule &module : bundle.getModules())
+  executable->contexts.reserve(targetLLVMModules.getModules().size());
+  for (const TargetLLVMModule &module : targetLLVMModules.getModules())
     executable->contexts.push_back(
         {module.getPhysicalCardId(), module.getPhysicalTileId(),
          module.getLaunchSlotId(),
-         bundle.getExecutionConfig().getPhysicalTileCount(),
+         targetLLVMModules.getExecutionConfig().getPhysicalTileCount(),
          module.getTargetIdentityId(), &executable->invocation});
 
-  executable->materialized.reserve(bundle.getModules().size());
-  for (size_t index = 0; index < bundle.getModules().size(); ++index) {
+  executable->materialized.reserve(targetLLVMModules.getModules().size());
+  for (size_t index = 0; index < targetLLVMModules.getModules().size();
+       ++index) {
     llvm::Expected<MaterializedTile> tile = materializeTile(
-        bundle.getModules()[index], executable->contexts[index]);
+        targetLLVMModules.getModules()[index], executable->contexts[index]);
     if (!tile)
       return tile.takeError();
     executable->materialized.push_back(std::move(*tile));
@@ -653,11 +655,11 @@ prepareTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
 }
 
 llvm::Expected<TargetCallExecutionResult>
-executeTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
+executeTargetCallFrontend(const TargetLLVMModules &targetLLVMModules,
                           llvm::ArrayRef<TargetCallTileArguments> arguments,
-                          TargetTransactionSink &sink) {
+                          TargetCommandSink &sink) {
   llvm::Expected<TargetCallExecutable> executable =
-      prepareTargetCallFrontend(bundle, arguments);
+      createTargetCallExecutable(targetLLVMModules, arguments);
   if (!executable)
     return executable.takeError();
   if (llvm::Error error = executable->begin(sink))
@@ -666,7 +668,7 @@ executeTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
        executable->getInvocationDescriptor().tiles)
     if (llvm::Error error = executable->executeTile(tile.launchSlotId))
       return std::move(error);
-  return executable->commit();
+  return executable->finish();
 }
 
 } // namespace wafer::compiler

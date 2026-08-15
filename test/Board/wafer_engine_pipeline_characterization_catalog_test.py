@@ -538,9 +538,9 @@ class ProductionGateTest(unittest.TestCase):
             "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
         )
 
-        companion = pathlib.Path(str(package) + ".qualification")
-        companion.mkdir()
-        attestation_path = companion / "attestation.json"
+        instrumentation = pathlib.Path(str(package) + ".qualification")
+        instrumentation.mkdir()
+        attestation_path = instrumentation / "attestation.json"
         cls._write_json(
             attestation_path,
             {
@@ -635,7 +635,7 @@ class ProductionGateTest(unittest.TestCase):
             "sha256:"
             + hashlib.sha256(attestation_path.read_bytes()).hexdigest()
         )
-        activation_path = companion / "activation.json"
+        activation_path = instrumentation / "activation.json"
         cls._write_json(
             activation_path,
             {
@@ -697,8 +697,8 @@ class ProductionGateTest(unittest.TestCase):
             },
         )
 
-    def test_gate_rejects_missing_package_and_companion(self) -> None:
-        missing = catalog.production_pipeline_preparation_gate(None)
+    def test_gate_rejects_missing_package_and_qualification(self) -> None:
+        missing = catalog.validate_production_pipeline_inputs(None)
         self.assertFalse(missing.ready)
         self.assertIn(
             "V2_DOUBLE_SLOT_OBSERVATION_CASES",
@@ -719,12 +719,12 @@ class ProductionGateTest(unittest.TestCase):
                 )
                 + "\n"
             )
-            no_companion = (
-                catalog.production_pipeline_preparation_gate(package)
+            no_qualification = (
+                catalog.validate_production_pipeline_inputs(package)
             )
-        self.assertFalse(no_companion.ready)
+        self.assertFalse(no_qualification.ready)
         self.assertTrue(
-            any("qualification sibling" in reason for reason in no_companion.reasons)
+            any("qualification sibling" in reason for reason in no_qualification.reasons)
         )
 
     def test_gate_rejects_package_symlink(self) -> None:
@@ -733,7 +733,7 @@ class ProductionGateTest(unittest.TestCase):
             package, _, _, _ = self._make_valid_package(root)
             package_link = root / "package-link"
             package_link.symlink_to(package, target_is_directory=True)
-            decision = catalog.production_pipeline_preparation_gate(package_link)
+            decision = catalog.validate_production_pipeline_inputs(package_link)
         self.assertFalse(decision.ready)
         self.assertTrue(
             any("not a regular directory" in reason for reason in decision.reasons)
@@ -747,7 +747,7 @@ class ProductionGateTest(unittest.TestCase):
             value = json.loads(manifest.read_text(encoding="utf-8"))
             value["program"] = 0
             self._write_json(manifest, value)
-            decision = catalog.production_pipeline_preparation_gate(package)
+            decision = catalog.validate_production_pipeline_inputs(package)
         self.assertFalse(decision.ready)
         self.assertTrue(
             any("stale manifest binding" in reason for reason in decision.reasons)
@@ -762,7 +762,7 @@ class ProductionGateTest(unittest.TestCase):
                 attestation.read_text(encoding="utf-8") + " ",
                 encoding="utf-8",
             )
-            decision = catalog.production_pipeline_preparation_gate(package)
+            decision = catalog.validate_production_pipeline_inputs(package)
         self.assertFalse(decision.ready)
         self.assertTrue(
             any("tampered" in reason for reason in decision.reasons)
@@ -777,7 +777,7 @@ class ProductionGateTest(unittest.TestCase):
             value["unknown"] = True
             self._write_json(attestation, value)
             self._refresh_attestation_digest(attestation, activation)
-            decision = catalog.production_pipeline_preparation_gate(package)
+            decision = catalog.validate_production_pipeline_inputs(package)
         self.assertFalse(decision.ready)
         self.assertTrue(
             any("unknown=['unknown']" in reason for reason in decision.reasons)
@@ -794,7 +794,7 @@ class ProductionGateTest(unittest.TestCase):
             root["range_end"] = root["bytes"]
             self._write_json(attestation, value)
             self._refresh_attestation_digest(attestation, activation)
-            decision = catalog.production_pipeline_preparation_gate(package)
+            decision = catalog.validate_production_pipeline_inputs(package)
         self.assertFalse(decision.ready)
         self.assertTrue(
             any("outside the allocatable target arena" in reason
@@ -813,7 +813,7 @@ class ProductionGateTest(unittest.TestCase):
             root["range_end"] += 1
             self._write_json(attestation, value)
             self._refresh_attestation_digest(attestation, activation)
-            decision = catalog.production_pipeline_preparation_gate(package)
+            decision = catalog.validate_production_pipeline_inputs(package)
         self.assertFalse(decision.ready)
         self.assertTrue(
             any("not placement-aligned" in reason
@@ -831,18 +831,18 @@ class ProductionGateTest(unittest.TestCase):
             roots[1]["range_end"] = roots[1]["offset"] + roots[1]["bytes"]
             self._write_json(attestation, value)
             self._refresh_attestation_digest(attestation, activation)
-            decision = catalog.production_pipeline_preparation_gate(package)
+            decision = catalog.validate_production_pipeline_inputs(package)
         self.assertFalse(decision.ready)
         self.assertTrue(
             any("intervals overlap" in reason for reason in decision.reasons)
         )
 
-    def test_gate_accepts_valid_manifest_bound_companion(self) -> None:
+    def test_gate_accepts_valid_manifest_bound_qualification(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             package, _, _, _ = self._make_valid_package(
                 pathlib.Path(temporary)
             )
-            decision = catalog.production_pipeline_preparation_gate(package)
+            decision = catalog.validate_production_pipeline_inputs(package)
         self.assertTrue(decision.ready, decision.reasons)
         self.assertEqual(decision.reasons, ())
 

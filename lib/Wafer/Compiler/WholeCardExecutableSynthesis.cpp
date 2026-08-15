@@ -138,7 +138,7 @@ struct WholeCardCandidateTransition {
   uint64_t stableOrdinal = 0;
   /// Stable identity of one candidate emitted by the initial factorized
   /// joint search. Exact allocator-directed temporal and hard-capacity edge
-  /// neighbors inherit it so an admitted repair closes that one search basin
+  /// neighbors inherit it so a successful refinement closes that search branch
   /// without merging distinct spatial/layout/action/buffer seeds.
   uint64_t feedbackRootOrdinal = 0;
   bool nodePlacementCandidate = false;
@@ -147,7 +147,7 @@ struct WholeCardCandidateTransition {
   /// This exact state is an additional two-breakpoint probe created only
   /// after the allocator reported the same limiting allocation on adjacent
   /// states.  It remains part of the ordinary joint-search domain, but an
-  /// admission must not close its family until the retained adjacent state
+  /// a successful check must not close its family until the adjacent state
   /// establishes the coarser exact boundary.
   bool allocationFeedbackLookahead = false;
   /// Exact allocator signature that caused the immediately preceding
@@ -185,7 +185,7 @@ getSPMDemandRelation(const SPMCapacityDemandEvidence &evidence) {
 
 struct AdmittedWholeCardCandidate {
   AdmittedWholeCardCandidate(
-      WholeCardCandidate candidate, AcceptedWholeCardExecutable executable,
+      WholeCardCandidate candidate, WholeCardExecutable executable,
       llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodes,
       uint64_t actualFusedLogicalEdges)
       : candidate(std::move(candidate)), executable(std::move(executable)),
@@ -199,7 +199,7 @@ struct AdmittedWholeCardCandidate {
   operator=(const AdmittedWholeCardCandidate &) = delete;
 
   WholeCardCandidate candidate;
-  AcceptedWholeCardExecutable executable;
+  WholeCardExecutable executable;
   llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodes;
   llvm::SmallVector<analysis::WholeCardInstructionProgramCost, 16> phaseCosts;
   std::optional<analysis::StaticSchedulePlan> schedulePlan;
@@ -1733,9 +1733,9 @@ public:
     return {std::move(entry), true};
   }
 
-  void publish(const std::shared_ptr<Entry> &entry, bool legal,
-               CandidateResourceScheduleSummary summary,
-               std::string failureReason) {
+  void storeResult(const std::shared_ptr<Entry> &entry, bool legal,
+                   CandidateResourceScheduleSummary summary,
+                   std::string failureReason) {
     {
       std::lock_guard<std::mutex> lock(guard);
       entry->legal = legal;
@@ -1931,7 +1931,7 @@ static bool refreshCandidateResourceSchedule(
           /*enforceSPMCapacity=*/false);
   if (mlir::failed(schedule)) {
     if (memo)
-      memo->publish(memoLookup.entry, /*legal=*/false, {}, scheduleFailure);
+      memo->storeResult(memoLookup.entry, /*legal=*/false, {}, scheduleFailure);
     if (failureReason)
       *failureReason = std::move(scheduleFailure);
     return false;
@@ -1940,7 +1940,7 @@ static bool refreshCandidateResourceSchedule(
       schedule->eventCount, schedule->makespan, schedule->peakLiveSPMBytes,
       schedule->spmMovementWork, schedule->ddrMovementWork};
   if (memo)
-    memo->publish(memoLookup.entry, /*legal=*/true, summary, {});
+    memo->storeResult(memoLookup.entry, /*legal=*/true, summary, {});
   applyCandidateResourceScheduleSummary(candidate, summary);
   return true;
 }
@@ -2004,7 +2004,7 @@ static bool refineOperationTemporalVariantOnce(
     bool explicitProducerCanStreamToDDR = false) {
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
 
-  // Only CoupledFusion recursively projects a consumer wave into its
+  // Only CoupledFusion recursively maps a consumer wave into its
   // producer. Ordinary search actions materialize the strategy's exact
   // spatial producer window as one explicit retained, peer, layout or DDR
   // value, so refining the producer op cannot shrink that allocation. The
@@ -2168,7 +2168,7 @@ static bool refineOperationTemporalVariantOnce(
 
   // A function result is materialized from CardOutputSpatialMapping's
   // traversal, not solely from the operation iterator vector. When the
-  // refined operation result is returned directly, project the selected
+  // refined operation result is returned directly, carry the selected
   // iterator coordinate through the Linalg result indexing map and advance
   // the matching observable coordinate as part of the same joint transition.
   // Reduction iterators have no result dimension and therefore correctly do
@@ -2373,7 +2373,7 @@ isLargerThanKnownOperationResultTile(const WholeCardCandidate &candidate,
 /// allocation size. The byte projection only chooses how many adjacent
 /// finite coordinate transitions to compose before the next materialization;
 /// it never accepts capacity. The resulting candidate still crosses the real
-/// fixed-capacity allocator and every downstream admission gate.
+/// fixed-capacity allocator and every downstream executable verification.
 static bool refineAllocationDemandTowardCapacityProbe(
     WholeCardCandidate &candidate, const StaticOutputDomains &outputDomains,
     const CardDAGAnalysis &dag, const SPMCapacityDemandEvidence &demand,
@@ -3026,7 +3026,7 @@ makeLogicalEdgeVariant(const WholeCardCandidate &base,
 /// oversized producer window explicit in one local Tile.  Under the current
 /// lowering contract, retained/recomputed/layout/spill boundaries all
 /// materialize that selected producer window before their boundary action;
-/// only CoupledFusion projects the consumer wave recursively into the
+/// only CoupledFusion maps the consumer wave recursively into the
 /// producer.  This is therefore a structural neighbor justified by the
 /// failed actual state, not a byte-estimate acceptance decision.
 static unsigned
@@ -3453,8 +3453,8 @@ deriveShortlist(const PhysicalTopology &topology, PhysicalCardId cardId,
 
   // Keep the spatial domain factorized. The former prefix expansion
   // materialized a Cartesian product before temporal/layout/resource choices
-  // existed (53-node decode reached 1,136,800 states at node 3 and projected
-  // 168 million at node 4). Here every node still exposes every legal
+  // existed (53-node decode reached 1,136,800 states at node 3 and would have
+  // reached 168 million at node 4). Here every node still exposes every legal
   // iterator-axis/rectangle option, but search evaluates it as one
   // coordinate of a complete whole-card state. Strict improvement is measured
   // after exact edge closure and the common resource calendar. Repeating
@@ -4336,21 +4336,21 @@ static mlir::LogicalResult validateSelectedTileLayouts(
                            })
             : strategy.sourceTile == tile;
     if (materializesProducer && !producerWitness) {
-      failureReason =
-          (llvm::Twine("selected producer layout ") +
-           stringifyMemLayout(strategy.producerLayout) + " for structured node " +
-           llvm::Twine(*producer) + " has no typed actual IR witness on Tile " +
-           llvm::Twine(tile.getValue()))
-              .str();
+      failureReason = (llvm::Twine("selected producer layout ") +
+                       stringifyMemLayout(strategy.producerLayout) +
+                       " for structured node " + llvm::Twine(*producer) +
+                       " has no typed actual IR witness on Tile " +
+                       llvm::Twine(tile.getValue()))
+                          .str();
       return mlir::failure();
     }
     if (strategy.destinationTile == tile && !consumerWitness) {
-      failureReason =
-          (llvm::Twine("selected consumer layout ") +
-           stringifyMemLayout(strategy.consumerLayout) + " for structured node " +
-           llvm::Twine(*consumer) + " has no typed actual IR witness on Tile " +
-           llvm::Twine(tile.getValue()))
-              .str();
+      failureReason = (llvm::Twine("selected consumer layout ") +
+                       stringifyMemLayout(strategy.consumerLayout) +
+                       " for structured node " + llvm::Twine(*consumer) +
+                       " has no typed actual IR witness on Tile " +
+                       llvm::Twine(tile.getValue()))
+                          .str();
       return mlir::failure();
     }
     if (strategy.destinationTile == tile &&
@@ -4365,10 +4365,11 @@ static mlir::LogicalResult validateSelectedTileLayouts(
   return mlir::success();
 }
 
-static PhysicalTileFinalizationFailure::SPMDemandEvidence makeSPMDemandEvidence(
+static PhysicalTileMemoryPlanningFailure::SPMDemandEvidence
+makeSPMDemandEvidence(
     const SPMMemoryPlanningFailure::DemandEvidence &demand,
     const StructuredMaterializationRelations &materializationRelations) {
-  PhysicalTileFinalizationFailure::SPMDemandEvidence evidence{
+  PhysicalTileMemoryPlanningFailure::SPMDemandEvidence evidence{
       demand.location, demand.allocation, demand.type, demand.bytes, {}};
   evidence.userLocations.append(demand.userLocations.begin(),
                                 demand.userLocations.end());
@@ -4394,8 +4395,8 @@ static CardExecutableTileFailure makeTileSPMCapacityFailure(
     const StructuredMaterializationRelations &materializationRelations) {
   CardExecutableTileFailure tileFailure;
   tileFailure.tileId = tileId;
-  PhysicalTileFinalizationFailure &failure = tileFailure.finalization;
-  failure.kind = PhysicalTileFinalizationFailureKind::SPMAllocation;
+  PhysicalTileMemoryPlanningFailure &failure = tileFailure.memoryPlanning;
+  failure.kind = PhysicalTileMemoryPlanningFailureKind::SPMAllocation;
   failure.spmCapacityOverflow =
       planningFailure.kind == SPMMemoryPlanningFailureKind::CapacityOverflow;
   failure.spmPlanningFailureKind = planningFailure.kind;
@@ -4422,10 +4423,11 @@ static void collectSPMCapacityDemandEvidence(
   uint64_t largestSPMCapacityDemandBytes = 0;
   bool selectedExactSPMCausalSet = false;
   for (const CardExecutableTileFailure &tileFailure : tileFailures) {
-    const PhysicalTileFinalizationFailure &failure = tileFailure.finalization;
+    const PhysicalTileMemoryPlanningFailure &failure =
+        tileFailure.memoryPlanning;
     if (!failure.spmCapacityOverflow)
       continue;
-    llvm::SmallVector<PhysicalTileFinalizationFailure::SPMDemandEvidence, 4>
+    llvm::SmallVector<PhysicalTileMemoryPlanningFailure::SPMDemandEvidence, 4>
         largestDemands = failure.spmLargestDemands;
     const bool hasIndividuallyOversizedDemands =
         !failure.spmIndividuallyOversizedDemands.empty();
@@ -4438,14 +4440,14 @@ static void collectSPMCapacityDemandEvidence(
     if (hasExactCausalSet) {
       // One physical Tile's independently oversized set or over-capacity
       // clique is already a complete rejection proof. Choose the first
-      // projected Tile deterministically; mixing independent Tile
+      // failing Tile deterministically; mixing independent Tile
       // certificates would create unrelated joint coordinates and cannot
       // strengthen legality.
       if (selectedExactSPMCausalSet)
         continue;
       selectedExactSPMCausalSet = true;
       spmCapacityDemands.clear();
-      llvm::ArrayRef<PhysicalTileFinalizationFailure::SPMDemandEvidence>
+      llvm::ArrayRef<PhysicalTileMemoryPlanningFailure::SPMDemandEvidence>
           exactCausalDemands(failure.spmCapacityConflictDemands);
       if (hasIndividuallyOversizedDemands)
         exactCausalDemands = failure.spmIndividuallyOversizedDemands;
@@ -4463,7 +4465,7 @@ static void collectSPMCapacityDemandEvidence(
     } else if (selectedExactSPMCausalSet) {
       continue;
     }
-    llvm::ArrayRef<PhysicalTileFinalizationFailure::SPMDemandEvidence>
+    llvm::ArrayRef<PhysicalTileMemoryPlanningFailure::SPMDemandEvidence>
         feedbackDemands(largestDemands);
     if (hasIndividuallyOversizedDemands)
       feedbackDemands = failure.spmIndividuallyOversizedDemands;
@@ -4536,7 +4538,7 @@ static void collectSPMCapacityDemandEvidence(
   }
 }
 
-static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
+static mlir::FailureOr<WholeCardExecutable> materializeCandidate(
     mlir::ModuleOp tensorProgram, const WholeCardCandidate &candidate,
     PhysicalCardId physicalCardId,
     llvm::ArrayRef<PhysicalTileId> expectedTileIds,
@@ -4593,7 +4595,7 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
     return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
   });
   if (tilePrograms.size() != expectedTileIds.size()) {
-    failureGate = "physical-tile-projection";
+    failureGate = "card-program-to-tile-modules";
     failureReason = "CardProgram physical Tile domain is incomplete";
     return mlir::failure();
   }
@@ -4604,7 +4606,7 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
   for (auto [index, tileProgram] : llvm::enumerate(tilePrograms)) {
     const PhysicalTileId tileId(tileProgram.getTileIdAttr().getInt());
     if (tileId != expectedTileIds[index]) {
-      failureGate = "physical-tile-projection";
+      failureGate = "card-program-to-tile-modules";
       failureReason = "CardProgram changed the verified physical Tile domain";
       return mlir::failure();
     }
@@ -4657,7 +4659,7 @@ static mlir::FailureOr<AcceptedWholeCardExecutable> materializeCandidate(
     }
   spmCapacityOverflow = llvm::any_of(
       compilation.tileFailures, [](const CardExecutableTileFailure &failure) {
-        return failure.finalization.spmCapacityOverflow;
+        return failure.memoryPlanning.spmCapacityOverflow;
       });
   collectSPMCapacityDemandEvidence(compilation.tileFailures,
                                    /*composePrimaryAllocationOwner=*/false,
@@ -4799,7 +4801,7 @@ synthesizeDeterministicBaseline(
           "tensor-program-to-card-program");
       mlir::LogicalResult lowered =
           scopedProbe
-              ? lowerTensorProgramToCardProgramFailureProbe(
+              ? lowerTensorProgramToCardProgramForPhysicalTile(
                     tensorProgram, physicalCardId, *scopedProbeTileId,
                     candidate->assignment.mapping, cardProgram, &failureReason,
                     operationNodes, &materializationRelations)
@@ -5084,7 +5086,7 @@ synthesizeDeterministicBaseline(
     // contract (DDR boundaries, zero fusion and one buffer) makes those local
     // proofs complete for SPM;
     // run the unique full CardExecutable seam exactly once for DDR,
-    // transport, resource, ABI and publication-facing executable facts.
+    // transport, resource, ABI and program-output executable facts.
     ++statistics.materializedCandidates;
     CardExecutableCompilationResult compilation =
         compileCardProgramToExecutable(
@@ -5106,7 +5108,7 @@ synthesizeDeterministicBaseline(
       return mlir::failure();
     }
 
-    AcceptedWholeCardExecutable executable = compilation.takeExecutable();
+    WholeCardExecutable executable = compilation.takeExecutable();
     llvm::SmallVector<analysis::WholeCardInstructionProgramCost, 16> phaseCosts;
     mlir::FailureOr<analysis::StaticSchedulePlan> plan =
         buildAcceptedWholeDAGSchedulePlan(
@@ -5604,16 +5606,15 @@ mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(
     llvm::SmallVector<SPMCapacityDemandEvidence, 8> spmCapacityDemands;
     llvm::SmallVector<AcceptedOperationNodeRelation, 64> acceptedOperationNodes;
     std::vector<std::string> tileDataflowIRTrace;
-    mlir::FailureOr<AcceptedWholeCardExecutable> accepted =
-        materializeCandidate(
-            tensorProgram, candidate, physicalCardId, *availableTileIds,
-            operationNodes, *dag, program, executionConfig, diagnostics,
-            resultStatistics.exactGates, &resultStatistics,
-            resultStatistics.rotatingSlotAllocationsMaterialized,
-            candidateActualFusedLogicalEdges, tilePipelineParallelism,
-            preferredSPMFailureProbeTileId, failureGate, failureReason,
-            selectedBufferFailure, indeterminateFailure, spmCapacityOverflow,
-            spmCapacityDemands, acceptedOperationNodes, tileDataflowIRTrace);
+    mlir::FailureOr<WholeCardExecutable> accepted = materializeCandidate(
+        tensorProgram, candidate, physicalCardId, *availableTileIds,
+        operationNodes, *dag, program, executionConfig, diagnostics,
+        resultStatistics.exactGates, &resultStatistics,
+        resultStatistics.rotatingSlotAllocationsMaterialized,
+        candidateActualFusedLogicalEdges, tilePipelineParallelism,
+        preferredSPMFailureProbeTileId, failureGate, failureReason,
+        selectedBufferFailure, indeterminateFailure, spmCapacityOverflow,
+        spmCapacityDemands, acceptedOperationNodes, tileDataflowIRTrace);
     if (mlir::failed(accepted)) {
       if (indeterminateFailure) {
         ++resultStatistics.indeterminateCompilationFailures;
@@ -5628,7 +5629,7 @@ mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(
       }
       ++resultStatistics.materializationRejections;
       if (failureGate == "card-program-materialization" ||
-          failureGate == "physical-tile-projection" ||
+          failureGate == "card-program-to-tile-modules" ||
           failureGate == "selected-fusion-materialization" ||
           failureGate == "selected-layout-materialization" ||
           failureGate == "tile-region-to-instr") {
@@ -6284,7 +6285,8 @@ mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(
                     << " repeated_selected_demand=" << repeated
                     << " temporal_transitions=" << temporalTransitions
                     << " edge_transitions=" << edgeTransitions
-                    << " capacity_probe=1 exact_admission_required=1\n";
+                    << " capacity_check=1"
+                    << " exact_resource_verification_required=1\n";
               } else {
                 ++resultStatistics.resourceScheduleRejections;
                 diagnostics
@@ -6634,7 +6636,7 @@ mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(
                 << " conflict_relations="
                 << allocationFeedbackEndpointDemands.size()
                 << " non_temporal_state_preserved=1"
-                << " exact_admission_required=1"
+                << " exact_resource_verification_required=1"
                 << " source=actual-feedback-root-closure\n";
           }
           if (budgetDeferred != 0 || temporalEndpoint) {
@@ -7130,7 +7132,7 @@ mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(
       << " makespan_ps=" << resultStatistics.selectedMakespanPicoseconds
       << " enabled_terms=" << resultStatistics.enabledDurationTerms << '\n';
   // The comparison summaries intentionally own no actual Tile modules.  Run
-  // the exact pipeline once more for the selected semantic state and publish
+  // the exact pipeline once more for the selected semantic state and return
   // only that fresh executable.  This is an equivalence-preserving memory
   // optimization discovered from measured peak RSS, not a candidate limit.
   std::string selectedFailureGate;
@@ -7143,7 +7145,7 @@ mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(
   llvm::SmallVector<SPMCapacityDemandEvidence, 8> selectedSPMCapacityDemands;
   llvm::SmallVector<AcceptedOperationNodeRelation, 64> selectedOperationNodes;
   std::vector<std::string> selectedTileDataflowIRTrace;
-  mlir::FailureOr<AcceptedWholeCardExecutable> selectedExecutable =
+  mlir::FailureOr<WholeCardExecutable> selectedExecutable =
       materializeCandidate(
           tensorProgram, admitted[selectedIndex]->candidate, physicalCardId,
           *availableTileIds, operationNodes, *dag, program, executionConfig,

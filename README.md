@@ -1,14 +1,14 @@
 # Wafer AI Compiler
 
-Wafer AI Compiler 是面向 Wafer/TX81 单卡目标的 MLIR 编译器、artifact 和 runtime 验证工程。当前主线接收
+Wafer AI Compiler 是面向 Wafer/TX81 单卡目标的 MLIR 编译器与 runtime。当前主线接收
 PyTorch/XLA 导出的 StableHLO program directory，在 card-level GSPMD 边界之后对整张 structured DAG 联合选择
 physical-Tile spatial mapping、temporal tiling、fusion/SPM residency 和 NoC 数据流，生成一个完整的 whole-card
-verified package。仓库同时提供 no-card preflight 和 repo-owned TargetCall/SystemC untimed functional model，
+verified package。仓库同时提供 no-card validation 和 repo-owned TargetCall/SystemC untimed functional model，
 用于在真实板卡接入前验证 compiler、ABI、memory、transport 和数值语义。
 
 logical card partition 和 physical Tile 是两个不同的 domain：`num_partitions` 只属于 GSPMD/global tensor
 boundary，card-local MPMD 由 `wafer.card.program` 和 16 个 `wafer.tile.program` 显式表示。package schema v8
-只发布 all-and-only physical-Tile executable 和 whole-card resource/launch 合同；不再存在 logical rank 直接绑定
+只包含 all-and-only physical-Tile executable 和 whole-card resource/launch 合同；不再存在 logical rank 直接绑定
 Tile、single-Tile entry ABI 或兼容 reader。
 
 ## 编译流水线
@@ -21,15 +21,15 @@ PyTorch/XLA StableHLO program directory
   -> bounded whole-DAG spatial/temporal/dataflow search
   -> wafer.card.program -> all physical wafer.tile.program bodies
   -> Tile IR -> Instr IR + completion + SPM/DDR + Direct-DTE gates
-  -> whole-card exact admission and atomic winner commit
-  -> ExecutableBundle
+  -> whole-card verification and candidate selection
+  -> PhysicalTileExecutables
        ├─ same-lowering Target LLVM -> TargetCall/SystemC
        └─ device link -> typed manifest -> verified package
                             ├─ no-card RuntimeSession
                             └─ configured TX81 RuntimeProvider
 ```
 
-最终 artifact 只保留 accepted typed IR、binding、offset、completion 和 transport 事实。候选 frontier、cost、ordinal、
+最终 IR、target modules 和 package 只保留 accepted typed IR、binding、offset、completion 和 transport 事实。候选集、cost、ordinal、
 analysis 和 rejected state 都是 query-local compiler state，不进入 IR 或 package。
 
 ## 当前能力
@@ -39,14 +39,14 @@ analysis 和 rejected state 都是 query-local compiler state，不进入 IR 或
 - **Whole-DAG 选择**：通过 TilingInterface、SSA use-def、Affine/Presburger relation 和 physical topology 联合选择
   per-op Tile placement、finite temporal tile、local residency 与显式 peer movement；只对有界 shortlist 物化 actual clones。
 - **物理实现**：支持 Tensor/Cx/NCx physical encoding、metadata view、compact/mapped DMA、SPM gather/scatter、
-  relation-backed resident handoff 和 fixed-capacity SPM/DDR packing。
+  relation-backed resident transfer 和 fixed-capacity SPM/DDR packing。
 - **Topology-aware 通信**：cross-Tile edge 从 current SSA/indexing relation 推导 exact demanded domain，只传输 placement
   中缺失的部分；selected CardProgram 内使用显式 peer send/receive/wait。collective lowering 同样由 current
   topology 和实际 Tile group 验证。
 - **Typed target capability**：覆盖 mapped RDMA/WDMA offset、physical-footprint fill、GEMM/batched GEMM 和 versioned
   oriented GEMM ABI。
-- **原子 artifact**：完整 physical-Tile set 通过 DDR、NoC、instruction、event、ABI、device-link、manifest 和 readback gate 后，
-  才发布 `ExecutableBundle`、Target LLVM modules 和 verified package。
+- **原子输出**：完整 physical-Tile set 通过 DDR、NoC、instruction、event、ABI、device-link、manifest 和 readback gate 后，
+  才写入 `PhysicalTileExecutables`、Target LLVM modules 和 verified package。
 - **功能数值验证**：同一 target lowering 可由 TargetCall/SystemC model 消费，并与独立 CPU expected 比较完整输出。
 - **板端 runtime**：`wafer-run`对整个 verified package 建立 typed kernel/model session，执行
   allocation/H2D/load/submit/completion/status/D2H/cleanup；不提供选单个 Tile entry 的入口。
@@ -68,7 +68,7 @@ NoC 和 compute/communication overlap 放入同一个有界搜索，并删除旧
 | 路径 | 内容 |
 | --- | --- |
 | `include/Wafer/` | Dialect、interface、analysis、compiler/runtime 公共接口 |
-| `lib/Wafer/` | Frontend、SPMD、scheduling、conversion、compiler、artifact、runtime 和 model 实现 |
+| `lib/Wafer/` | Frontend、SPMD、scheduling、conversion、compiler、target code generation、runtime 和 model 实现 |
 | `tools/` | `wafer-compile`、`wafer-run`、`wafer-opt`、StableHLO 工具、profile report、依赖 bootstrap 和一致性检查 |
 | `test/` | lit/FileCheck、CLI 和 Python tool tests |
 | `unittests/` | C++ unit、numeric/bulk 和可选 SystemC tests |
@@ -135,10 +135,10 @@ build/wafer-dev/bin/wafer-compile \
   --launch-kind kernel
 ```
 
-`search` 和 `none` 都经过同一 CardProgram、physical-Tile projection 和 exact admission pipeline；`search`启用
+`search` 和 `none` 都经过同一 CardProgram、physical-Tile selection 和 exact verification pipeline；`search`启用
 compiler-owned候选搜索，`none`只生成保守baseline。完整 TargetCall/SystemC 参数通过
 `build/wafer-dev/bin/wafer-compile --help` 查看；target-model
-模式必须提供显式 input、CPU expected、数值 policy 和 resource budget。package可先做无板卡 preflight：
+模式必须提供显式 input、CPU expected、数值 policy 和 resource budget。package可先做无板卡 validation：
 
 ```bash
 build/wafer-dev/bin/wafer-run \
@@ -167,7 +167,7 @@ production package。
 - [`AGENTS.md`](AGENTS.md)：仓库稳定协作、IR、pipeline、验证和提交规则；
 - [`tasks/progress.md`](tasks/progress.md)：当前任务状态和前置关系的唯一入口；
 - [`tasks/README.md`](tasks/README.md)：编号设计文档、pipeline owner 和历史归档导航；
-- [`tasks/01-architecture.md`](tasks/01-architecture.md)：主架构与 artifact DAG；
+- [`tasks/01-architecture.md`](tasks/01-architecture.md)：主架构与 IR/target-module/package DAG；
 - [`tasks/16-verification-contract.md`](tasks/16-verification-contract.md)：分层 verification contract；
 - [`docs/tx81-compiler-hardware-calibration.md`](docs/tx81-compiler-hardware-calibration.md)：当前 profile 可消费的硬件行为与外推边界；
 - [`memory/general_dev.md`](memory/general_dev.md)：本地构建、依赖、调试和验证经验。

@@ -69,8 +69,8 @@ stringifyBulkTensorNumericErrorCode(BulkTensorNumericErrorCode code) {
     return "invalid-input-encoding";
   case BulkTensorNumericErrorCode::InputArityMismatch:
     return "input-arity-mismatch";
-  case BulkTensorNumericErrorCode::AdmissionMismatch:
-    return "admission-mismatch";
+  case BulkTensorNumericErrorCode::QualificationMismatch:
+    return "qualification-mismatch";
   case BulkTensorNumericErrorCode::EnvironmentMismatch:
     return "environment-mismatch";
   case BulkTensorNumericErrorCode::WorkCountOverflow:
@@ -104,7 +104,7 @@ std::error_code BulkTensorNumericError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
-llvm::StringRef getBulkAdapterIdentityDigest() {
+llvm::StringRef getBulkAdapterContractDigest() {
   static const std::string digest = [] {
     llvm::SmallString<512> payload;
     llvm::raw_svector_ostream stream(payload);
@@ -114,7 +114,7 @@ llvm::StringRef getBulkAdapterIdentityDigest() {
     appendField(stream, "backend_primitive",
                 "one-matmul-optional-weight-reorder");
     appendField(stream, "destination", "formal-gemm-finalize-and-target-pack");
-    appendField(stream, "atomic_commit", "private-temporary-before-publish");
+    appendField(stream, "result_write", "copy-after-success");
     return sha256(payload);
   }();
   return digest;

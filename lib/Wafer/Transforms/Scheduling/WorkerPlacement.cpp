@@ -281,7 +281,7 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
       "deriveDisjointNCCWorkerPlacementCandidate");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "deriveDisjointNCCWorkerPlacementCandidate",
-      "preflight");
+      "validation");
   if (failureReason)
     failureReason->clear();
   if (!sourceModule) {
@@ -300,7 +300,8 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
     auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
     hasDTE |=
         instruction && instruction.getInstructionFamily() == InstrFamily::DTE;
-    NCCSynchronizationContract completion = getNCCSynchronizationContract(operation);
+    NCCSynchronizationContract completion =
+        getNCCSynchronizationContract(operation);
     hasUnsupportedObserver |=
         completion.behavior == NCCSynchronizationBehavior::SynchronousWriteback;
     hasNonzeroWorker |=

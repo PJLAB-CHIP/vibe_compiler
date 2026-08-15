@@ -4,7 +4,7 @@
 
 #include "Wafer/Analysis/StaticBufferRange.h"
 #include "Wafer/Compiler/GlobalTileRelation.h"
-#include "Wafer/IR/Common/OpVerifierUtils.h"
+#include "Wafer/IR/Common/WaferIRVerification.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
@@ -62,7 +62,7 @@ struct PartialSpillCut {
   llvm::SmallVector<mlir::memref::DeallocOp, 2> consumerDeallocations;
 };
 
-struct PublisherIdentity {
+struct OutputWriteRegion {
   int64_t outputIndex = -1;
   StaticTileRegion globalTile;
   mlir::Type bufferType;
@@ -95,7 +95,7 @@ struct MessageKey {
 using analysis::StaticBufferRange;
 using analysis::StaticByteRange;
 
-struct ProvenanceBinding {
+struct ReductionExprBinding {
   StaticByteRange bytes;
   unsigned node = 0;
 };
@@ -103,24 +103,24 @@ struct ProvenanceBinding {
 struct CutProtocolProof {
   PartialSpillCut *cut = nullptr;
   ReductionProtocolKey protocol;
-  PublisherIdentity publisher;
-  unsigned publisherNode = 0;
+  OutputWriteRegion writer;
+  unsigned writerNode = 0;
   std::map<MessageKey, unsigned> sendNodes;
   std::set<MessageKey> receiveMessages;
   llvm::SmallVector<mlir::OpOperand *, 8> consumerUses;
-  llvm::SmallVector<ProvenanceBinding, 8> publisherPieces;
-  std::map<MessageKey, ProvenanceBinding> sendBindings;
+  llvm::SmallVector<ReductionExprBinding, 8> writerPieces;
+  std::map<MessageKey, ReductionExprBinding> sendBindings;
 };
 
-enum class ProvenanceNodeKind {
+enum class ReductionExprKind {
   LocalPartial,
   Receive,
   Merge,
-  Project,
+  Slice,
 };
 
-struct ProvenanceNode {
-  ProvenanceNodeKind kind = ProvenanceNodeKind::LocalPartial;
+struct ReductionExpr {
+  ReductionExprKind kind = ReductionExprKind::LocalPartial;
   StaticByteRange bytes;
   int64_t logicalRank = -1;
   MessageKey message;
@@ -128,27 +128,27 @@ struct ProvenanceNode {
   std::optional<InstrElementwiseKind> combiner;
 };
 
-class ProvenanceArena {
+class ReductionExprTable {
 public:
   unsigned createLocal(int64_t logicalRank, StaticByteRange bytes) {
-    ProvenanceNode node;
-    node.kind = ProvenanceNodeKind::LocalPartial;
+    ReductionExpr node;
+    node.kind = ReductionExprKind::LocalPartial;
     node.bytes = bytes;
     node.logicalRank = logicalRank;
-    nodes.push_back(std::move(node));
-    return nodes.size() - 1;
+    expressions.push_back(std::move(node));
+    return expressions.size() - 1;
   }
   unsigned createLocal(int64_t logicalRank) {
     return createLocal(logicalRank, StaticByteRange{});
   }
 
   unsigned createReceive(const MessageKey &message, StaticByteRange bytes) {
-    ProvenanceNode node;
-    node.kind = ProvenanceNodeKind::Receive;
+    ReductionExpr node;
+    node.kind = ReductionExprKind::Receive;
     node.bytes = bytes;
     node.message = message;
-    nodes.push_back(std::move(node));
-    return nodes.size() - 1;
+    expressions.push_back(std::move(node));
+    return expressions.size() - 1;
   }
   unsigned createReceive(const MessageKey &message) {
     return createReceive(message, StaticByteRange{});
@@ -156,40 +156,40 @@ public:
 
   unsigned createMerge(StaticByteRange bytes, llvm::ArrayRef<unsigned> inputs,
                        InstrElementwiseKind combiner) {
-    ProvenanceNode node;
-    node.kind = ProvenanceNodeKind::Merge;
+    ReductionExpr node;
+    node.kind = ReductionExprKind::Merge;
     node.bytes = bytes;
     llvm::append_range(node.inputs, inputs);
     node.combiner = combiner;
-    nodes.push_back(std::move(node));
-    return nodes.size() - 1;
+    expressions.push_back(std::move(node));
+    return expressions.size() - 1;
   }
   unsigned createMerge(llvm::ArrayRef<unsigned> inputs,
                        InstrElementwiseKind combiner) {
     return createMerge(StaticByteRange{}, inputs, combiner);
   }
 
-  unsigned createProject(StaticByteRange bytes, unsigned input) {
-    ProvenanceNode node;
-    node.kind = ProvenanceNodeKind::Project;
+  unsigned createSlice(StaticByteRange bytes, unsigned input) {
+    ReductionExpr node;
+    node.kind = ReductionExprKind::Slice;
     node.bytes = bytes;
     node.inputs.push_back(input);
-    nodes.push_back(std::move(node));
-    return nodes.size() - 1;
+    expressions.push_back(std::move(node));
+    return expressions.size() - 1;
   }
 
   std::optional<StaticByteRange> getNodeBytes(unsigned node) const {
-    if (node == 0 || node >= nodes.size())
+    if (node == 0 || node >= expressions.size())
       return std::nullopt;
-    return nodes[node].bytes;
+    return expressions[node].bytes;
   }
 
-  llvm::ArrayRef<ProvenanceNode> getNodes() const { return nodes; }
+  llvm::ArrayRef<ReductionExpr> getExpressions() const { return expressions; }
 
 private:
   // Node zero is reserved so a default-constructed proof cannot accidentally
-  // name a real provenance expression.
-  llvm::SmallVector<ProvenanceNode, 32> nodes{ProvenanceNode{}};
+  // name a real reduction expression.
+  llvm::SmallVector<ReductionExpr, 32> expressions{ReductionExpr{}};
 };
 
 struct TreeProtocolInventory {
@@ -214,7 +214,7 @@ struct BufferStateEntry {
 class BufferState {
 public:
   std::optional<unsigned> lookup(const StaticBufferRange &storage,
-                                 ProvenanceArena &arena) const {
+                                 ReductionExprTable &expressionTable) const {
     const BufferStateEntry *result = nullptr;
     for (const BufferStateEntry &entry : entries) {
       if (entry.storage.root != storage.root ||
@@ -227,13 +227,14 @@ public:
     }
     if (!result)
       return std::nullopt;
-    std::optional<StaticByteRange> nodeBytes = arena.getNodeBytes(result->node);
+    std::optional<StaticByteRange> nodeBytes =
+        expressionTable.getNodeBytes(result->node);
     if (!nodeBytes ||
         !analysis::staticByteRangeContains(*nodeBytes, storage.bytes))
       return std::nullopt;
     if (*nodeBytes == storage.bytes)
       return result->node;
-    return arena.createProject(storage.bytes, result->node);
+    return expressionTable.createSlice(storage.bytes, result->node);
   }
 
   bool hasRoot(mlir::Value root) const {
@@ -273,8 +274,8 @@ public:
   }
 
   bool exactCover(const StaticBufferRange &storage,
-                  llvm::SmallVectorImpl<ProvenanceBinding> &pieces,
-                  ProvenanceArena &arena) const {
+                  llvm::SmallVectorImpl<ReductionExprBinding> &pieces,
+                  ReductionExprTable &expressionTable) const {
     llvm::SmallVector<const BufferStateEntry *, 8> candidates;
     for (const BufferStateEntry &entry : entries) {
       if (entry.storage.root != storage.root)
@@ -295,8 +296,8 @@ public:
       unsigned node = entry->node;
       if (node == 0)
         return false;
-      node = arena.createProject(entry->storage.bytes, node);
-      pieces.push_back(ProvenanceBinding{entry->storage.bytes, node});
+      node = expressionTable.createSlice(entry->storage.bytes, node);
+      pieces.push_back(ReductionExprBinding{entry->storage.bytes, node});
       cursor = entry->storage.bytes.end;
     }
     return !pieces.empty() && cursor == storage.bytes.end;
@@ -379,15 +380,15 @@ static mlir::Value getAliasRoot(mlir::Value value) {
   return value;
 }
 
-/// Returns an identity suitable for full-buffer provenance. Range-changing
-/// views deliberately fail closed: allocation-root equality alone cannot
-/// prove that two subviews denote the same bytes.
-static std::optional<mlir::Value> getExactBufferIdentity(mlir::Value value) {
-  mlir::Value identity = stripTransparentCasts(value);
-  if (!identity || mlir::isa_and_nonnull<mlir::ViewLikeOpInterface>(
-                       identity.getDefiningOp()))
+/// Returns the whole-buffer value after stripping transparent casts.
+/// Range-changing views deliberately fail closed: allocation-root equality
+/// alone cannot prove that two subviews denote the same bytes.
+static std::optional<mlir::Value> getWholeBufferValue(mlir::Value value) {
+  mlir::Value wholeBuffer = stripTransparentCasts(value);
+  if (!wholeBuffer || mlir::isa_and_nonnull<mlir::ViewLikeOpInterface>(
+                          wholeBuffer.getDefiningOp()))
     return std::nullopt;
-  return identity;
+  return wholeBuffer;
 }
 
 static bool sameRoot(mlir::Value lhs, mlir::Value rhs) {
@@ -580,15 +581,15 @@ collectPartialSpillCuts(mlir::ModuleOp module, int64_t rank) {
     std::optional<int64_t> spillBytes = getPhysicalBytes(root.getType());
     std::optional<int64_t> consumerBytes =
         getPhysicalBytes(load.getDest().getType());
-    std::optional<mlir::Value> producerIdentity =
-        getExactBufferIdentity(store.getSource());
-    std::optional<mlir::Value> consumerIdentity =
-        getExactBufferIdentity(load.getDest());
+    std::optional<mlir::Value> producerWholeBuffer =
+        getWholeBufferValue(store.getSource());
+    std::optional<mlir::Value> consumerWholeBuffer =
+        getWholeBufferValue(load.getDest());
     mlir::Operation *producer =
         findLastWriterBefore(store.getSource(), store.getOperation());
-    if (!producerBytes || !spillBytes || !consumerBytes || !producerIdentity ||
-        !consumerIdentity || *producerBytes != *spillBytes ||
-        *producerBytes != *consumerBytes ||
+    if (!producerBytes || !spillBytes || !consumerBytes ||
+        !producerWholeBuffer || !consumerWholeBuffer ||
+        *producerBytes != *spillBytes || *producerBytes != *consumerBytes ||
         store.getSource().getType() != load.getDest().getType() ||
         !load.getDest().getDefiningOp<mlir::memref::AllocOp>() ||
         !isCompleteStore(store, *producerBytes) ||
@@ -670,21 +671,21 @@ findRankSlice(llvm::ArrayRef<frontend::ProgramRankSlice> slices, int64_t rank) {
   return result;
 }
 
-static std::optional<PublisherIdentity>
-resolvePublisher(InstrWDMAOp store, int64_t rank,
-                 const frontend::FrontendProgramVerificationResult &program,
-                 int64_t expectedBytes) {
-  std::optional<mlir::Value> destinationIdentity =
-      getExactBufferIdentity(store.getDest());
-  std::optional<mlir::Value> sourceIdentity =
-      getExactBufferIdentity(store.getSource());
-  if (!destinationIdentity || !sourceIdentity ||
+static std::optional<OutputWriteRegion>
+resolveOutputWriter(InstrWDMAOp store, int64_t rank,
+                    const frontend::FrontendProgramVerificationResult &program,
+                    int64_t expectedBytes) {
+  std::optional<mlir::Value> destinationWholeBuffer =
+      getWholeBufferValue(store.getDest());
+  std::optional<mlir::Value> sourceWholeBuffer =
+      getWholeBufferValue(store.getSource());
+  if (!destinationWholeBuffer || !sourceWholeBuffer ||
       getPhysicalBytes(store.getSource().getType()) != expectedBytes ||
       getPhysicalBytes(store.getDest().getType()) != expectedBytes ||
       !isCompleteStore(store, expectedBytes))
     return std::nullopt;
 
-  mlir::Value destination = *destinationIdentity;
+  mlir::Value destination = *destinationWholeBuffer;
   auto argument = mlir::dyn_cast<mlir::BlockArgument>(destination);
   if (!argument)
     return std::nullopt;
@@ -735,7 +736,7 @@ resolvePublisher(InstrWDMAOp store, int64_t rank,
     llvm::consumeError(global.takeError());
     return std::nullopt;
   }
-  return PublisherIdentity{binding.index, std::move(*global),
+  return OutputWriteRegion{binding.index, std::move(*global),
                            store.getSource().getType()};
 }
 
@@ -823,18 +824,17 @@ static bool operationTouchesRoot(mlir::Operation *operation, mlir::Value root) {
   });
 }
 
-static bool isFinalOutputWriter(mlir::ModuleOp module,
-                                mlir::Operation *publisher,
+static bool isFinalOutputWriter(mlir::ModuleOp module, mlir::Operation *writer,
                                 mlir::Value outputRoot) {
-  if (!publisher || !outputRoot)
+  if (!writer || !outputRoot)
     return false;
   bool finalWriter = true;
   module.walk([&](mlir::Operation *operation) {
-    if (!finalWriter || operation == publisher ||
+    if (!finalWriter || operation == writer ||
         !operationWritesRoot(operation, outputRoot))
       return;
-    if (operation->getBlock() != publisher->getBlock() ||
-        publisher->isBeforeInBlock(operation))
+    if (operation->getBlock() != writer->getBlock() ||
+        writer->isBeforeInBlock(operation))
       finalWriter = false;
   });
   return finalWriter;
@@ -843,7 +843,7 @@ static bool isFinalOutputWriter(mlir::ModuleOp module,
 static std::optional<CutProtocolProof>
 proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
                  const frontend::FrontendProgramVerificationResult &program,
-                 ProvenanceArena &arena) {
+                 ReductionExprTable &expressionTable) {
   mlir::Block *block = cut.load->getBlock();
   if (!block)
     return std::nullopt;
@@ -854,9 +854,9 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
     return std::nullopt;
 
   BufferState state;
-  if (!state.assign(
-          *consumer,
-          arena.createLocal(cut.logicalRank, StaticByteRange{0, cut.bytes})))
+  if (!state.assign(*consumer,
+                    expressionTable.createLocal(cut.logicalRank,
+                                                StaticByteRange{0, cut.bytes})))
     return std::nullopt;
 
   struct PendingReceive {
@@ -865,13 +865,13 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
     MessageKey message;
   };
   llvm::DenseMap<mlir::Value, PendingReceive> pendingReceives;
-  std::optional<PublisherIdentity> publisher;
-  unsigned publisherNode = 0;
-  llvm::SmallVector<ProvenanceBinding, 8> publisherPieces;
-  mlir::Operation *publisherOperation = nullptr;
-  mlir::Value publisherDestination;
+  std::optional<OutputWriteRegion> writer;
+  unsigned writerNode = 0;
+  llvm::SmallVector<ReductionExprBinding, 8> writerPieces;
+  mlir::Operation *writerOperation = nullptr;
+  mlir::Value writerDestination;
   std::map<MessageKey, unsigned> sendNodes;
-  std::map<MessageKey, ProvenanceBinding> sendBindings;
+  std::map<MessageKey, ReductionExprBinding> sendBindings;
   std::set<MessageKey> receiveMessages;
   llvm::DenseSet<mlir::Operation *> tracedOperations;
   auto aliasesState = [&](mlir::Value value) {
@@ -889,8 +889,8 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
         auto pending = pendingReceives.find(token);
         if (pending == pendingReceives.end())
           continue;
-        unsigned node = arena.createReceive(pending->second.message,
-                                            pending->second.payload);
+        unsigned node = expressionTable.createReceive(pending->second.message,
+                                                      pending->second.payload);
         if (!state.assign(pending->second.storage, node))
           return std::nullopt;
         pendingReceives.erase(token);
@@ -898,8 +898,8 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
       continue;
     }
 
-    if (publisherOperation) {
-      if (operationWritesRoot(&operation, publisherDestination))
+    if (writerOperation) {
+      if (operationWritesRoot(&operation, writerDestination))
         return std::nullopt;
       if (!mlir::isa<mlir::memref::DeallocOp>(&operation))
         for (const BufferStateEntry &entry : state.getEntries())
@@ -921,7 +921,8 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
           return std::nullopt;
         continue;
       }
-      std::optional<unsigned> sourceState = state.lookup(*source, arena);
+      std::optional<unsigned> sourceState =
+          state.lookup(*source, expressionTable);
       if (!sourceState) {
         if (state.hasRoot(dest->root))
           return std::nullopt;
@@ -946,7 +947,8 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
             return std::nullopt;
           continue;
         }
-        std::optional<unsigned> inputState = state.lookup(*storage, arena);
+        std::optional<unsigned> inputState =
+            state.lookup(*storage, expressionTable);
         if (!inputState) {
           if (state.hasRoot(storage->root))
             return std::nullopt;
@@ -974,8 +976,8 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
           !isSupportedCombiner(elementwise.getKind()) ||
           dest->bytes.length() <= 0)
         return std::nullopt;
-      unsigned node =
-          arena.createMerge(dest->bytes, inputs, elementwise.getKind());
+      unsigned node = expressionTable.createMerge(dest->bytes, inputs,
+                                                  elementwise.getKind());
       if (!state.assign(*dest, node))
         return std::nullopt;
       tracedOperations.insert(&operation);
@@ -994,12 +996,13 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
       MessageKey message = getSendMessageKey(send, cut.logicalRank);
       std::optional<StaticByteRange> payload =
           getMessagePayloadRange(message, cut.bytes);
-      std::optional<unsigned> current = state.lookup(*storage, arena);
+      std::optional<unsigned> current = state.lookup(*storage, expressionTable);
       if (!payload || storage->bytes != *payload || !current ||
           storage->bytes.length() != static_cast<int64_t>(send.getBytes()) ||
           !tokenHasExactWait(send.getToken()) ||
           !sendNodes.emplace(message, *current).second ||
-          !sendBindings.emplace(message, ProvenanceBinding{*payload, *current})
+          !sendBindings
+               .emplace(message, ReductionExprBinding{*payload, *current})
                .second)
         return std::nullopt;
       tracedOperations.insert(&operation);
@@ -1046,19 +1049,19 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
           return std::nullopt;
         continue;
       }
-      llvm::SmallVector<ProvenanceBinding, 8> pieces;
-      if (!state.exactCover(*source, pieces, arena))
+      llvm::SmallVector<ReductionExprBinding, 8> pieces;
+      if (!state.exactCover(*source, pieces, expressionTable))
         continue;
-      std::optional<PublisherIdentity> candidate =
-          resolvePublisher(store, cut.logicalRank, program, cut.bytes);
-      if (!candidate || publisher)
+      std::optional<OutputWriteRegion> candidate =
+          resolveOutputWriter(store, cut.logicalRank, program, cut.bytes);
+      if (!candidate || writer)
         return std::nullopt;
-      publisher = std::move(*candidate);
-      publisherPieces = std::move(pieces);
-      if (publisherPieces.size() == 1)
-        publisherNode = publisherPieces.front().node;
-      publisherOperation = &operation;
-      publisherDestination = getAliasRoot(store.getDest());
+      writer = std::move(*candidate);
+      writerPieces = std::move(pieces);
+      if (writerPieces.size() == 1)
+        writerNode = writerPieces.front().node;
+      writerOperation = &operation;
+      writerDestination = getAliasRoot(store.getDest());
       tracedOperations.insert(&operation);
       continue;
     }
@@ -1068,10 +1071,10 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
         return std::nullopt;
   }
 
-  if (!pendingReceives.empty() || !publisher || publisherPieces.empty() ||
+  if (!pendingReceives.empty() || !writer || writerPieces.empty() ||
       sendNodes.empty() || receiveMessages.empty() ||
       !isFinalOutputWriter(cut.load->getParentOfType<mlir::ModuleOp>(),
-                           publisherOperation, publisherDestination))
+                           writerOperation, writerDestination))
     return std::nullopt;
 
   llvm::SmallVector<mlir::OpOperand *, 8> consumerUses;
@@ -1083,8 +1086,8 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
       continue;
     if (!tracedOperations.contains(owner) ||
         !isAfterInSameBlock(owner, cut.load.getOperation()) ||
-        (owner != publisherOperation &&
-         !owner->isBeforeInBlock(publisherOperation)) ||
+        (owner != writerOperation &&
+         !owner->isBeforeInBlock(writerOperation)) ||
         operationWritesRoot(owner, cut.consumerBuffer))
       return std::nullopt;
     consumerUses.push_back(&use);
@@ -1092,12 +1095,12 @@ proveCutProtocol(PartialSpillCut &cut, const ReductionProtocolKey &protocol,
   CutProtocolProof proof;
   proof.cut = &cut;
   proof.protocol = protocol;
-  proof.publisher = std::move(*publisher);
-  proof.publisherNode = publisherNode;
+  proof.writer = std::move(*writer);
+  proof.writerNode = writerNode;
   proof.sendNodes = std::move(sendNodes);
   proof.receiveMessages = std::move(receiveMessages);
   proof.consumerUses = std::move(consumerUses);
-  proof.publisherPieces = std::move(publisherPieces);
+  proof.writerPieces = std::move(writerPieces);
   proof.sendBindings = std::move(sendBindings);
   return proof;
 }
@@ -1350,18 +1353,18 @@ collectRingProtocolInventory(llvm::ArrayRef<mlir::ModuleOp> modules,
   return inventory;
 }
 
-struct ResolvedProvenance {
+struct ReductionContributions {
   std::map<int64_t, uint64_t> originMultiplicity;
   std::set<MessageKey> receives;
   std::set<InstrElementwiseKind> combiners;
 };
 
-static bool resolveProvenance(
-    unsigned node, llvm::ArrayRef<ProvenanceNode> nodes,
+static bool resolveReductionContributions(
+    unsigned node, llvm::ArrayRef<ReductionExpr> expressions,
     const std::map<MessageKey, unsigned> &sendNodes,
     llvm::MutableArrayRef<unsigned char> marks,
-    llvm::MutableArrayRef<std::optional<ResolvedProvenance>> cache) {
-  if (node == 0 || node >= nodes.size())
+    llvm::MutableArrayRef<std::optional<ReductionContributions>> cache) {
+  if (node == 0 || node >= expressions.size())
     return false;
   if (marks[node] == 2)
     return cache[node].has_value();
@@ -1369,34 +1372,37 @@ static bool resolveProvenance(
     return false;
   marks[node] = 1;
 
-  ResolvedProvenance result;
-  const ProvenanceNode &expression = nodes[node];
+  ReductionContributions result;
+  const ReductionExpr &expression = expressions[node];
   switch (expression.kind) {
-  case ProvenanceNodeKind::LocalPartial:
+  case ReductionExprKind::LocalPartial:
     if (expression.logicalRank < 0 ||
         expression.bytes.end <= expression.bytes.begin)
       return false;
     result.originMultiplicity.emplace(expression.logicalRank, 1);
     break;
-  case ProvenanceNodeKind::Receive: {
+  case ReductionExprKind::Receive: {
     auto send = sendNodes.find(expression.message);
-    if (send == sendNodes.end() || send->second >= nodes.size() ||
-        nodes[send->second].bytes != expression.bytes ||
-        !resolveProvenance(send->second, nodes, sendNodes, marks, cache))
+    if (send == sendNodes.end() || send->second >= expressions.size() ||
+        expressions[send->second].bytes != expression.bytes ||
+        !resolveReductionContributions(send->second, expressions, sendNodes,
+                                       marks, cache))
       return false;
     result = *cache[send->second];
     result.receives.insert(expression.message);
     break;
   }
-  case ProvenanceNodeKind::Merge:
+  case ReductionExprKind::Merge:
     if (!expression.combiner || expression.inputs.empty() ||
         expression.bytes.end <= expression.bytes.begin)
       return false;
     for (unsigned input : expression.inputs) {
-      if (input >= nodes.size() || nodes[input].bytes != expression.bytes ||
-          !resolveProvenance(input, nodes, sendNodes, marks, cache))
+      if (input >= expressions.size() ||
+          expressions[input].bytes != expression.bytes ||
+          !resolveReductionContributions(input, expressions, sendNodes, marks,
+                                         cache))
         return false;
-      const ResolvedProvenance &resolved = *cache[input];
+      const ReductionContributions &resolved = *cache[input];
       for (const auto &[rank, count] : resolved.originMultiplicity) {
         uint64_t &aggregate = result.originMultiplicity[rank];
         if (count > std::numeric_limits<uint64_t>::max() - aggregate)
@@ -1410,13 +1416,13 @@ static bool resolveProvenance(
     }
     result.combiners.insert(*expression.combiner);
     break;
-  case ProvenanceNodeKind::Project: {
+  case ReductionExprKind::Slice: {
     if (expression.inputs.size() != 1 ||
-        expression.inputs.front() >= nodes.size() ||
+        expression.inputs.front() >= expressions.size() ||
         !analysis::staticByteRangeContains(
-            nodes[expression.inputs.front()].bytes, expression.bytes) ||
-        !resolveProvenance(expression.inputs.front(), nodes, sendNodes, marks,
-                           cache))
+            expressions[expression.inputs.front()].bytes, expression.bytes) ||
+        !resolveReductionContributions(expression.inputs.front(), expressions,
+                                       sendNodes, marks, cache))
       return false;
     result = *cache[expression.inputs.front()];
     break;
@@ -1431,40 +1437,39 @@ static bool resolveProvenance(
 static bool verifyCompleteProof(llvm::ArrayRef<mlir::ModuleOp> modules,
                                 llvm::ArrayRef<CutProtocolProof> proofs,
                                 const ReductionProtocolKey &protocol,
-                                const ProvenanceArena &arena) {
+                                const ReductionExprTable &expressionTable) {
   if (proofs.size() != modules.size() || proofs.empty() || !proofs.front().cut)
     return false;
 
   const CutProtocolProof &anchor = proofs.front();
   std::map<MessageKey, unsigned> sendNodes;
-  std::map<MessageKey, ProvenanceBinding> sendBindings;
+  std::map<MessageKey, ReductionExprBinding> sendBindings;
   std::set<MessageKey> receiveMessages;
   for (const CutProtocolProof &proof : proofs) {
     if (!proof.cut || !(proof.protocol == protocol) ||
         proof.cut->bytes != anchor.cut->bytes ||
         proof.cut->producerBuffer.getType() !=
             anchor.cut->producerBuffer.getType() ||
-        proof.publisher.outputIndex != anchor.publisher.outputIndex ||
-        proof.publisher.bufferType != anchor.publisher.bufferType ||
-        compareStaticTiles(proof.publisher.globalTile,
-                           anchor.publisher.globalTile) !=
+        proof.writer.outputIndex != anchor.writer.outputIndex ||
+        proof.writer.bufferType != anchor.writer.bufferType ||
+        compareStaticTiles(proof.writer.globalTile, anchor.writer.globalTile) !=
             StaticTileRelation::Equivalent)
       return false;
-    if (proof.publisherPieces.empty() ||
+    if (proof.writerPieces.empty() ||
         proof.sendNodes.size() != proof.sendBindings.size())
       return false;
-    int64_t publisherCursor = 0;
-    for (const ProvenanceBinding &piece : proof.publisherPieces) {
-      if (piece.node == 0 || piece.bytes.begin != publisherCursor ||
+    int64_t writerCursor = 0;
+    for (const ReductionExprBinding &piece : proof.writerPieces) {
+      if (piece.node == 0 || piece.bytes.begin != writerCursor ||
           piece.bytes.end <= piece.bytes.begin ||
           piece.bytes.end > proof.cut->bytes)
         return false;
-      publisherCursor = piece.bytes.end;
+      writerCursor = piece.bytes.end;
     }
-    if (publisherCursor != proof.cut->bytes ||
-        (proof.publisherNode != 0 &&
-         (proof.publisherPieces.size() != 1 ||
-          proof.publisherPieces.front().node != proof.publisherNode)))
+    if (writerCursor != proof.cut->bytes ||
+        (proof.writerNode != 0 &&
+         (proof.writerPieces.size() != 1 ||
+          proof.writerPieces.front().node != proof.writerNode)))
       return false;
     for (const auto &entry : proof.sendNodes) {
       auto binding = proof.sendBindings.find(entry.first);
@@ -1478,9 +1483,10 @@ static bool verifyCompleteProof(llvm::ArrayRef<mlir::ModuleOp> modules,
                            proof.receiveMessages.end());
   }
 
-  llvm::ArrayRef<ProvenanceNode> nodes = arena.getNodes();
-  llvm::SmallVector<unsigned char, 64> marks(nodes.size(), 0);
-  llvm::SmallVector<std::optional<ResolvedProvenance>, 64> cache(nodes.size());
+  llvm::ArrayRef<ReductionExpr> expressions = expressionTable.getExpressions();
+  llvm::SmallVector<unsigned char, 64> marks(expressions.size(), 0);
+  llvm::SmallVector<std::optional<ReductionContributions>, 64> cache(
+      expressions.size());
   std::map<int64_t, uint64_t> allRanks;
   for (size_t rank = 0; rank < modules.size(); ++rank)
     allRanks.emplace(static_cast<int64_t>(rank), 1);
@@ -1489,9 +1495,10 @@ static bool verifyCompleteProof(llvm::ArrayRef<mlir::ModuleOp> modules,
   std::set<MessageKey> usedReceives;
   auto resolveAndAccumulate =
       [&](unsigned node, const std::map<int64_t, uint64_t> &expected) -> bool {
-    if (!resolveProvenance(node, nodes, sendNodes, marks, cache))
+    if (!resolveReductionContributions(node, expressions, sendNodes, marks,
+                                       cache))
       return false;
-    const ResolvedProvenance &resolved = *cache[node];
+    const ReductionContributions &resolved = *cache[node];
     if (resolved.originMultiplicity != expected)
       return false;
     combiners.insert(resolved.combiners.begin(), resolved.combiners.end());
@@ -1505,7 +1512,8 @@ static bool verifyCompleteProof(llvm::ArrayRef<mlir::ModuleOp> modules,
         getMessagePayloadRange(message, anchor.cut->bytes);
     return binding != sendBindings.end() && payload &&
            binding->second.node == node && binding->second.bytes == *payload &&
-           node < nodes.size() && nodes[node].bytes == binding->second.bytes;
+           node < expressions.size() &&
+           expressions[node].bytes == binding->second.bytes;
   };
 
   if (protocol.kind == ReductionProtocolKind::AllReduceTree) {
@@ -1543,9 +1551,9 @@ static bool verifyCompleteProof(llvm::ArrayRef<mlir::ModuleOp> modules,
         return false;
     }
     for (const CutProtocolProof &proof : proofs)
-      for (const ProvenanceBinding &piece : proof.publisherPieces)
-        if (piece.node >= nodes.size() ||
-            nodes[piece.node].bytes != piece.bytes ||
+      for (const ReductionExprBinding &piece : proof.writerPieces)
+        if (piece.node >= expressions.size() ||
+            expressions[piece.node].bytes != piece.bytes ||
             !resolveAndAccumulate(piece.node, allRanks))
           return false;
     return combiners.size() == 1 && usedReceives == inventory->messages;
@@ -1584,17 +1592,17 @@ static bool verifyCompleteProof(llvm::ArrayRef<mlir::ModuleOp> modules,
   }
 
   for (const CutProtocolProof &proof : proofs) {
-    if (proof.publisherPieces.size() != static_cast<size_t>(rankCount))
+    if (proof.writerPieces.size() != static_cast<size_t>(rankCount))
       return false;
-    for (auto [slice, piece] : llvm::enumerate(proof.publisherPieces)) {
+    for (auto [slice, piece] : llvm::enumerate(proof.writerPieces)) {
       if (slice > static_cast<size_t>(std::numeric_limits<int64_t>::max() /
                                       inventory->chunkBytes))
         return false;
       int64_t begin = static_cast<int64_t>(slice) * inventory->chunkBytes;
       if (piece.bytes !=
               StaticByteRange{begin, begin + inventory->chunkBytes} ||
-          piece.node >= nodes.size() ||
-          nodes[piece.node].bytes != piece.bytes ||
+          piece.node >= expressions.size() ||
+          expressions[piece.node].bytes != piece.bytes ||
           !resolveAndAccumulate(piece.node, allRanks))
         return false;
     }
@@ -1696,14 +1704,14 @@ static unsigned processNoCPartialReductions(
                     : "queryNoCPartialReductionOpportunity",
       "prove-and-verify-protocol");
   for (const ReductionProtocolKey &protocol : commonProtocols) {
-    ProvenanceArena arena;
+    ReductionExprTable expressionTable;
     llvm::SmallVector<CutProtocolProof, 16> proofs;
     bool ambiguous = false;
     for (auto &rankCuts : cutsByRank) {
       std::optional<CutProtocolProof> rankProof;
       for (PartialSpillCut &cut : rankCuts) {
         std::optional<CutProtocolProof> proof =
-            proveCutProtocol(cut, protocol, program, arena);
+            proveCutProtocol(cut, protocol, program, expressionTable);
         if (!proof)
           continue;
         if (rankProof) {
@@ -1718,8 +1726,8 @@ static unsigned processNoCPartialReductions(
       }
       proofs.push_back(std::move(*rankProof));
     }
-    bool complete =
-        !ambiguous && verifyCompleteProof(modules, proofs, protocol, arena);
+    bool complete = !ambiguous && verifyCompleteProof(modules, proofs, protocol,
+                                                      expressionTable);
     if (!complete)
       continue;
 

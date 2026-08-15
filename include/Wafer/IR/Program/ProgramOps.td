@@ -17,7 +17,7 @@ def Wafer_CardProgramOp : Wafer_Op<"card.program", [
     available `wafer.tile.program` operations for that card.
 
     This operation is a module-like container. Card-owned symbols represent
-    shared DDR resources; downstream projection forms standalone per-Tile
+    shared DDR resources; downstream module splitting forms standalone per-Tile
     module boundaries. The operation does not carry search state, a shadow
     schedule, routes, scores, or target launch slots.
   }];

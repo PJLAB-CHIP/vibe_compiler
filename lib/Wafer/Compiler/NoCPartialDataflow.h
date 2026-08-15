@@ -11,8 +11,8 @@
 namespace wafer::compiler::detail {
 
 /// Read-only capability query over current all-rank canonical Instr SSA. It
-/// performs the same complete protocol/provenance proof as materialization and
-/// retains no Operation pointers after returning.
+/// performs the same complete protocol and reduction-value proof as
+/// materialization and retains no Operation pointers after returning.
 bool hasNoCPartialReductionOpportunity(
     llvm::ArrayRef<mlir::ModuleOp> modules,
     const frontend::FrontendProgramVerificationResult &program);
@@ -20,7 +20,7 @@ bool hasNoCPartialReductionOpportunity(
 /// Removes a complete-rank partial-result DDR spill/reload cut only when the
 /// current instruction IR proves that every reloaded value feeds one explicit
 /// typed ordered-tree or ring all-reduce and reaches the verified output
-/// publisher.
+/// writer.
 ///
 /// The proof is derived from DTE message phases, typed elementwise combiners,
 /// SSA/memory effects, and frontend output tile relations.  No logical
@@ -28,10 +28,10 @@ bool hasNoCPartialReductionOpportunity(
 /// module unchanged.  The caller owns tuple cloning and the subsequent
 /// completion, SPM, Direct-DTE, and whole-variant resource gates.
 ///
-/// Ring admission additionally binds every message payload slice to the actual
+/// Ring matching additionally binds every message payload slice to the actual
 /// root-relative send/receive subview, proves reduce-scatter origin
 /// multiplicity, and requires the final slice set to exactly cover the
-/// publisher without gaps or overlap.
+/// writer without gaps or overlap.
 unsigned materializeNoCPartialReductions(
     llvm::MutableArrayRef<mlir::ModuleOp> modules,
     const frontend::FrontendProgramVerificationResult &program);

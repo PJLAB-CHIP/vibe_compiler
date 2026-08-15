@@ -15,13 +15,12 @@ bool doesPackageSlotMatchProgramBinding(const KernelABISlot &slot,
                                         const ProgramResourceBinding &binding);
 bool isValidPackageCompilerManagedSlot(const KernelABISlot &slot);
 
-llvm::Expected<PackageBundle>
-assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
-                          const ExecutableBundle &executableBundle,
-                          const TargetArtifactBundle &targetArtifacts,
-                          llvm::StringRef outputDirectory,
-                          llvm::raw_ostream &diagnostics,
-                          std::optional<int64_t> failAfterLaunchSlot);
+llvm::Expected<VerifiedPackage>
+writePackage(llvm::StringRef tensorProgramDirectory,
+             const PhysicalTileExecutables &physicalTileExecutables,
+             const LinkedTargetModules &targetModules,
+             llvm::StringRef outputDirectory, llvm::raw_ostream &diagnostics,
+             std::optional<int64_t> failAfterLaunchSlot);
 
 } // namespace wafer::compiler::detail
 

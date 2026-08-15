@@ -25,8 +25,7 @@ using namespace wafer::model;
 
 llvm::CallInst *findWaitCall(llvm::Module &module) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait)
-          .symbol;
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait).symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
       for (llvm::Instruction &instruction : block)
@@ -40,13 +39,13 @@ llvm::CallInst *findWaitCall(llvm::Module &module) {
 TEST(SystemCTargetModelEventFailureTest,
      UnknownSourceProducedWaitEventFailsAtomicallyAndWakesPeers) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
 
   llvm::CallInst *wait = nullptr;
-  for (const TargetLLVMModule &targetModule : bundle->getModules()) {
+  for (const TargetLLVMModule &targetModule : targetLLVMModules->getModules()) {
     llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
     wait = findWaitCall(module);
     if (wait)
@@ -59,11 +58,11 @@ TEST(SystemCTargetModelEventFailureTest,
                                              UINT64_C(0xdeadbeef)));
 
   llvm::Expected<test::DirectDTEInvocationData> invocation =
-      test::buildDirectDTEInvocationData(*bundle);
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, invocation->arguments);
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
 

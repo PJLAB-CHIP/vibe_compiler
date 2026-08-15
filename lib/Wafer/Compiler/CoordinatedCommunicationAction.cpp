@@ -3,7 +3,7 @@
 #include "CoordinatedCommunicationAction.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
-#include "Wafer/IR/Common/OpVerifierUtils.h"
+#include "Wafer/IR/Common/WaferIRVerification.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -15,8 +15,8 @@
 namespace wafer::compiler::detail {
 
 CoordinatedCommunicationActionPoint::CoordinatedCommunicationActionPoint(
-    CoordinatedCommunicationActionPointIdentity identity)
-    : identity(std::move(identity)) {}
+    CommunicationActionKey key)
+    : key(std::move(key)) {}
 
 mlir::LogicalResult verifyCoordinatedCommunicationActionDomain(
     llvm::ArrayRef<mlir::ModuleOp> currentCanonicalInstrModules,
@@ -42,20 +42,20 @@ mlir::LogicalResult verifyCoordinatedCommunicationActionDomain(
         mlir::failed(mlir::verify(parent)))
       return fail(
           "communication action requires verified canonical Instr parents");
-    bool hasFinalizationOwnedFacts = false;
+    bool hasPhysicalAssignments = false;
     parent.walk([&](mlir::Operation *operation) {
       if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(operation))
-        hasFinalizationOwnedFacts |=
+        hasPhysicalAssignments |=
             allocation->hasAttr(kWaferSPMOffsetAttrName) ||
             allocation->hasAttr(kWaferDDROffsetAttrName);
       if (auto send = mlir::dyn_cast<InstrDTESendOp>(operation))
-        hasFinalizationOwnedFacts |= send.getBinding().has_value();
+        hasPhysicalAssignments |= send.getBinding().has_value();
       if (auto recv = mlir::dyn_cast<InstrDTERecvOp>(operation))
-        hasFinalizationOwnedFacts |= recv.getBinding().has_value();
+        hasPhysicalAssignments |= recv.getBinding().has_value();
       if (std::optional<NCCWorker> worker = getNCCIssueWorker(operation))
-        hasFinalizationOwnedFacts |= *worker != NCCWorker::Worker0;
+        hasPhysicalAssignments |= *worker != NCCWorker::Worker0;
     });
-    if (hasFinalizationOwnedFacts)
+    if (hasPhysicalAssignments)
       return fail("communication action requires unplaced canonical parents");
   }
   if (failureReason)
@@ -75,17 +75,16 @@ materializeCoordinatedCommunicationAction(
     return mlir::FailureOr<CoordinatedCommunicationAction>(mlir::failure());
   };
 
-  const CoordinatedCommunicationActionPointIdentity &identity =
-      point.getIdentity();
-  if (identity.providerKey.empty())
-    return fail("communication action point has no provider identity");
+  const CommunicationActionKey &key = point.getKey();
+  if (key.providerKey.empty())
+    return fail("communication action point has no provider key");
   std::string domainFailure;
   if (mlir::failed(verifyCoordinatedCommunicationActionDomain(
           currentCanonicalInstrModules, program, &domainFailure)))
     return fail(domainFailure);
 
   CoordinatedCommunicationAction action;
-  action.identity = identity;
+  action.key = key;
   action.rankModules.reserve(currentCanonicalInstrModules.size());
   llvm::SmallVector<mlir::ModuleOp, 16> clones;
   clones.reserve(currentCanonicalInstrModules.size());

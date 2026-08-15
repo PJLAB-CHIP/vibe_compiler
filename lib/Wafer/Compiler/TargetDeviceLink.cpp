@@ -1,6 +1,6 @@
 //===- TargetDeviceLink.cpp - Target LLVM emission and device link -------===//
 
-#include "TargetArtifactInternal.h"
+#include "TargetCodeGenInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -130,8 +130,7 @@ getModelDescriptorIndices(llvm::ArrayRef<KernelABISlot> slots,
         llvm::errc::invalid_argument,
         "model target device entry descriptor layout overflows uint64");
 
-  const uint64_t launchSlot =
-      static_cast<uint64_t>(launchSlotId.getValue());
+  const uint64_t launchSlot = static_cast<uint64_t>(launchSlotId.getValue());
   const uint64_t tileCount = static_cast<uint64_t>(physicalTileCount);
   const uint64_t outputBase = tileCount * inputCount;
   uint64_t nextInput = 0;
@@ -156,21 +155,18 @@ getModelDescriptorIndices(llvm::ArrayRef<KernelABISlot> slots,
   return indices;
 }
 
-llvm::Expected<std::unique_ptr<llvm::Module>>
-materializeDeviceEntryABI(const llvm::Module &module,
-                          llvm::StringRef entrySymbol,
-                          llvm::ArrayRef<KernelABISlot> slots,
-                          const RuntimeLaunchContract &runtimeLaunchContract,
-                          LaunchSlotId launchSlotId,
-                          int64_t physicalTileCount) {
+llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
+    const llvm::Module &module, llvm::StringRef entrySymbol,
+    llvm::ArrayRef<KernelABISlot> slots,
+    const RuntimeLaunchContract &runtimeLaunchContract,
+    LaunchSlotId launchSlotId, int64_t physicalTileCount) {
   std::unique_ptr<llvm::Module> deviceModule = llvm::CloneModule(module);
   llvm::Function *body = deviceModule->getFunction(entrySymbol);
   if (!body || body->isDeclaration())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target device entry body is missing");
   if (llvm::Error error = validateEntryInputs(
-          *body, slots, runtimeLaunchContract, launchSlotId,
-          physicalTileCount))
+          *body, slots, runtimeLaunchContract, launchSlotId, physicalTileCount))
     return std::move(error);
   llvm::LLVMContext &context = deviceModule->getContext();
   llvm::Type *i64 = llvm::Type::getInt64Ty(context);

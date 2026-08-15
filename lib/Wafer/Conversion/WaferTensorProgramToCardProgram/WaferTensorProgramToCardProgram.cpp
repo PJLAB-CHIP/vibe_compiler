@@ -52,9 +52,9 @@ static bool isCardSharedDeclaration(mlir::Operation &operation) {
                       [](mlir::Region &region) { return region.empty(); });
 }
 
-static bool relationsBelongTo(
-    mlir::Operation *root,
-    const StructuredMaterializationRelations &relations) {
+static bool
+relationsBelongTo(mlir::Operation *root,
+                  const StructuredMaterializationRelations &relations) {
   llvm::DenseSet<const void *> liveValues;
   root->walk([&](mlir::Operation *operation) {
     for (mlir::Value result : operation->getResults())
@@ -215,9 +215,9 @@ createNoWorkEntry(mlir::func::FuncOp sourceProgram,
                   std::string *failureReason) {
   // A no-work Tile needs the verified symbol/signature contract, not a copy
   // of the executable body that is immediately discarded. Preserve the op
-  // shell and construct the only region state this artifact can contain.
-  auto entry = mlir::cast<mlir::func::FuncOp>(
-      sourceProgram->cloneWithoutRegions());
+  // shell and construct the only region state this module can contain.
+  auto entry =
+      mlir::cast<mlir::func::FuncOp>(sourceProgram->cloneWithoutRegions());
   mlir::Block *block = entry.addEntryBlock();
   mlir::OpBuilder builder(block, block->end());
   mlir::ValueRange outputs(block->getArguments());
@@ -238,11 +238,9 @@ createNoWorkEntry(mlir::func::FuncOp sourceProgram,
 /// compiler-owned allocation the single output root; target ABI preparation
 /// later replaces that root with the user output pointer through its verified
 /// result path. The source argument boundary is never inferred or changed.
-static mlir::LogicalResult
-removeSchedulingOutputDestinations(mlir::func::FuncOp entry,
-                                   unsigned sourceArgumentCount,
-                                   StructuredMaterializationRelations &relations,
-                                   std::string *failureReason) {
+static mlir::LogicalResult removeSchedulingOutputDestinations(
+    mlir::func::FuncOp entry, unsigned sourceArgumentCount,
+    StructuredMaterializationRelations &relations, std::string *failureReason) {
   const unsigned resultCount = entry.getNumResults();
   if (resultCount == 0 ||
       entry.getNumArguments() != sourceArgumentCount + resultCount)
@@ -353,7 +351,7 @@ static mlir::LogicalResult lowerTensorProgramToCardProgramImpl(
   if (materializeOnlyTileId &&
       !llvm::is_contained(*availableTiles, *materializeOnlyTileId))
     return failCardProgram(failureReason,
-                           "failure probe names an unavailable physical Tile");
+                           "requested physical Tile is unavailable");
   if (mlir::failed(verifyLogicalMesh(sourceModule, failureReason)))
     return mlir::failure();
 
@@ -761,21 +759,20 @@ mlir::LogicalResult lowerTensorProgramToCardProgram(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     StructuredMaterializationRelations *materializationRelations) {
   return lowerTensorProgramToCardProgramImpl(
-      sourceModule, cardId, mapping, cardModule, failureReason,
-      operationNodes, materializationRelations,
+      sourceModule, cardId, mapping, cardModule, failureReason, operationNodes,
+      materializationRelations,
       /*materializeOnlyTileId=*/std::nullopt);
 }
 
-mlir::LogicalResult lowerTensorProgramToCardProgramFailureProbe(
+mlir::LogicalResult lowerTensorProgramToCardProgramForPhysicalTile(
     mlir::ModuleOp sourceModule, PhysicalCardId cardId,
-    PhysicalTileId probeTileId, const CardSpatialMapping &mapping,
-    mlir::OwningOpRef<mlir::ModuleOp> &probeCardModule,
-    std::string *failureReason,
+    PhysicalTileId physicalTileId, const CardSpatialMapping &mapping,
+    mlir::OwningOpRef<mlir::ModuleOp> &cardModule, std::string *failureReason,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     StructuredMaterializationRelations *materializationRelations) {
   return lowerTensorProgramToCardProgramImpl(
-      sourceModule, cardId, mapping, probeCardModule, failureReason,
-      operationNodes, materializationRelations, probeTileId);
+      sourceModule, cardId, mapping, cardModule, failureReason, operationNodes,
+      materializationRelations, physicalTileId);
 }
 
 } // namespace wafer

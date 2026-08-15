@@ -2,8 +2,8 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "InstructionVerifierUtils.h"
-#include "OpVerifierUtils.h"
+#include "InstructionVerification.h"
+#include "WaferIRVerification.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -488,14 +488,12 @@ mlir::LogicalResult InstrTDMADataMoveOp::verify() {
       getLogicalTensorType(getSource().getType());
   std::optional<mlir::RankedTensorType> destTensor =
       getLogicalTensorType(getDest().getType());
-  if (mlir::failed(
-          verifyDataShapeAttrMatchesBuffer(
-              getOperation(), getSource().getType(), getSourceShapeAttr(),
-              "source_shape")) ||
+  if (mlir::failed(verifyDataShapeAttrMatchesBuffer(
+          getOperation(), getSource().getType(), getSourceShapeAttr(),
+          "source_shape")) ||
       mlir::failed(
-          verifyDataShapeAttrMatchesBuffer(
-              getOperation(), getDest().getType(), getDestShapeAttr(),
-              "dest_shape")))
+          verifyDataShapeAttrMatchesBuffer(getOperation(), getDest().getType(),
+                                           getDestShapeAttr(), "dest_shape")))
     return mlir::failure();
   if (getPermutationAttr() &&
       mlir::failed(verifyPermutationI64Array(
@@ -618,7 +616,7 @@ InstrFamily InstrTDMADataMoveOp::getInstructionFamily() {
   return InstrFamily::TDMA;
 }
 
-#define WAFER_DEFINE_NCC_ISSUE_WORKER(OP)                                  \
+#define WAFER_DEFINE_NCC_ISSUE_WORKER(OP)                                      \
   NCCWorker OP::getIssueWorker() { return getWorker(); }
 
 WAFER_DEFINE_NCC_ISSUE_WORKER(InstrRDMAOp)

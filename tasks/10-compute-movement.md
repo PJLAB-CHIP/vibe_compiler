@@ -8,7 +8,7 @@ physical-dataflow placement、fusion或winner。Q49–Q53动态状态只看`task
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   GSPMD与normalization产生的card-local Linalg/Tensor/SCF DAG；source op通过current operation、region、
   indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。Q50.S已在physical mapping前把合格语义形态物化成
   verifier-legal actual TensorProgram roots，Q51为本次candidate选中其中一个root及typed physical assignments。
@@ -17,12 +17,12 @@ Pipeline position:
   event order选择后，从selected actual TensorProgram root的current concrete Linalg/Tensor语义
   确定性创建对应TileProgram/TileRegion中的typed compute、view、movement、temporary和event；再把每个
   physical-Tile program合法化为canonical/unplaced wafer.instr.*。
-- Output artifact / IR:
+- Output IR / files:
   selected complete CardProgram candidate中的typed wafer.tile.*与Wafer-tagged memref，或projected per-physical-Tile wafer.instr.*；
   compute form、numeric、geometry、movement和effect事实全部在actual IR中，不保留候选side channel。
 - Downstream consumer:
   fresh worker/order/completion reconstruction、fixed-capacity SPM/DDR planning、CardExecutable communication/resource
-  admission、target conversion、explicit `(card_id, tile_id, launch_slot)` artifact/package publication。
+  verification、target conversion、explicit `(card_id, tile_id, launch_slot)` output/package writing。
 - User-level driver / named pipeline:
   wafer-compile production pipeline；局部wafer-opt conversion只用于focused replay/test。
 - Explicit non-goals:
@@ -180,18 +180,18 @@ dependency，并生成对应issue op；最终worker/issue order和latest-necessa
 fresh completion owner在worker/order确定后，从actual SSA、effects、ranges、control-flow path和observable obligations重建
 latest-necessary completion。DTE wait、NCC participant join和group barrier是不同resource语义，不能互相替代。
 
-## 7. Exact Admission
+## 7. Exact Verification
 
 每个complete CardProgram candidate统一经过：
 
 ```text
 selected CardProgram
-  -> project all physical Tile modules
+  -> split into all physical Tile modules
   -> Tile-to-Instr conversion
   -> worker/order placement and fresh completion
   -> fixed-capacity SPM planning per Tile
   -> CardProgram DDR planning
-  -> physical peer/message/range/resource admission
+  -> physical peer/message/range/resource verification
   -> final instruction recost and target legality
   -> atomic CardExecutable
 ```

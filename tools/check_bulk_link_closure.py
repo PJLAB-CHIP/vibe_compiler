@@ -12,7 +12,7 @@ import sys
 FORBIDDEN_DYNAMIC_TOKENS = ("libdnnl", "libonednn")
 FORBIDDEN_RAW_PREFIXES = ("dnnl_",)
 FORBIDDEN_ADAPTER_SYMBOLS = (
-    "executeAdmittedBulkTensorNumeric",
+    "executeQualifiedBulkTensorNumeric",
     "createManagedBulkExecutionEnvironment",
     "calibrateBulkBackend",
     "validateBulkBackend",

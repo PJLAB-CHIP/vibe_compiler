@@ -31,11 +31,11 @@
 
 namespace wafer::compiler {
 
-struct PackageBundleBuilder {
-  static PackageBundle make(llvm::StringRef rootDirectory,
-                            ExecutionConfig executionConfig,
-                            runtime::VerifiedPackageManifest manifest) {
-    return PackageBundle(rootDirectory, executionConfig, std::move(manifest));
+struct VerifiedPackageBuilder {
+  static VerifiedPackage
+  makePackage(llvm::StringRef rootDirectory, ExecutionConfig executionConfig,
+              runtime::VerifiedPackageManifest manifest) {
+    return VerifiedPackage(rootDirectory, executionConfig, std::move(manifest));
   }
 };
 
@@ -171,10 +171,9 @@ runtime::PackageAccessMode getAccess(KernelABISlotRole role) {
 
 bool haveSameProgramSlice(const frontend::ProgramPartitionSlice &lhs,
                           const frontend::ProgramPartitionSlice &rhs) {
-  return lhs.partitionId == rhs.partitionId &&
-         lhs.replicaId == rhs.replicaId && lhs.offsets == rhs.offsets &&
-         lhs.sizes == rhs.sizes && lhs.strides == rhs.strides &&
-         lhs.payloadPath == rhs.payloadPath;
+  return lhs.partitionId == rhs.partitionId && lhs.replicaId == rhs.replicaId &&
+         lhs.offsets == rhs.offsets && lhs.sizes == rhs.sizes &&
+         lhs.strides == rhs.strides && lhs.payloadPath == rhs.payloadPath;
 }
 
 bool haveSameProgramBinding(const ProgramResourceBinding &lhs,
@@ -188,8 +187,7 @@ bool haveSameProgramBinding(const ProgramResourceBinding &lhs,
 }
 
 bool doesSlotMatchPackageResource(
-    const KernelABISlot &slot,
-    const runtime::PackageResourceRecord &resource) {
+    const KernelABISlot &slot, const runtime::PackageResourceRecord &resource) {
   return resource.role == getPackageRole(slot.role) &&
          resource.roleIndex == slot.resourceIndex &&
          resource.type.dtype == slot.dtype &&
@@ -217,28 +215,28 @@ llvm::StringRef getMainExport(const VerifiedTargetModule &module) {
 }
 
 llvm::Expected<runtime::PackageManifest>
-buildManifest(const ExecutableBundle &executableBundle,
-              const TargetArtifactBundle &targetArtifacts,
+buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
+              const LinkedTargetModules &targetModules,
               llvm::raw_ostream &diagnostics) {
-  const ExecutionConfig &config = executableBundle.getExecutionConfig();
-  if (executableBundle.getRuntimeLaunchContract() !=
-      targetArtifacts.getRuntimeLaunchContract())
+  const ExecutionConfig &config = physicalTileExecutables.getExecutionConfig();
+  if (physicalTileExecutables.getRuntimeLaunchContract() !=
+      targetModules.getRuntimeLaunchContract())
     return fail(diagnostics,
                 "package runtime launch contract does not match executable "
-                "and target artifact bundles");
-  if (targetArtifacts.getExecutionConfig() != config ||
-      executableBundle.getPhysicalTileExecutables().size() !=
-          targetArtifacts.getTileInterfaces().size() ||
-      executableBundle.getPhysicalTileExecutables().size() !=
+                "and linked target modules");
+  if (targetModules.getExecutionConfig() != config ||
+      physicalTileExecutables.getPhysicalTileExecutables().size() !=
+          targetModules.getTileInterfaces().size() ||
+      physicalTileExecutables.getPhysicalTileExecutables().size() !=
           static_cast<size_t>(config.getPhysicalTileCount()))
     return fail(diagnostics,
                 "package physical Tile domain does not match executable and "
-                "target artifact bundles");
+                "linked target modules");
 
-  if (targetArtifacts.getModules().empty())
+  if (targetModules.getModules().empty())
     return fail(diagnostics, "package target module domain is empty");
   const VerifiedTargetModule &firstTargetModule =
-      targetArtifacts.getModules().front();
+      targetModules.getModules().front();
   if (firstTargetModule.getTargetIdentityId() != config.getTargetIdentityId() ||
       firstTargetModule.getKernelRuntimeABIId() !=
           KernelRuntimeABIId::waferTx81Kernel() ||
@@ -248,32 +246,32 @@ buildManifest(const ExecutableBundle &executableBundle,
                 "and target registry");
   runtime::PackageManifest manifest(firstTargetModule.getTargetIdentityId(),
                                     firstTargetModule.getKernelRuntimeABIId(),
-                                    targetArtifacts.getRuntimeLaunchContract(),
+                                    targetModules.getRuntimeLaunchContract(),
                                     firstTargetModule.getModuleFormat());
   manifest.program = runtime::ProgramId(0);
   manifest.cardCount = 1;
   manifest.tileCount = config.getPhysicalTileCount();
 
   const KernelRuntimeLaunchContract *kernelLaunch =
-      targetArtifacts.getRuntimeLaunchContract().getKernel();
+      targetModules.getRuntimeLaunchContract().getKernel();
   const bool sharedModule = kernelLaunch != nullptr;
   const bool hasPrepare =
-      llvm::is_contained(targetArtifacts.getRuntimeLaunchContract().getPhases(),
+      llvm::is_contained(targetModules.getRuntimeLaunchContract().getPhases(),
                          RuntimeLaunchPhaseRole::Prepare);
-  if (targetArtifacts.getModules().size() !=
+  if (targetModules.getModules().size() !=
       (sharedModule ? 1u : static_cast<size_t>(config.getPhysicalTileCount())))
     return fail(diagnostics, "package target module topology does not match "
                              "runtime launch contract");
 
   const size_t physicalTileCount =
-      executableBundle.getPhysicalTileExecutables().size();
+      physicalTileExecutables.getPhysicalTileExecutables().size();
   std::vector<const PhysicalTileExecutable *> tilesByLaunchSlot(
       physicalTileCount, nullptr);
   std::vector<const VerifiedTargetTileInterface *> interfacesByLaunchSlot(
       physicalTileCount, nullptr);
   std::set<int64_t> physicalTileIds;
   for (const PhysicalTileExecutable &tile :
-       executableBundle.getPhysicalTileExecutables()) {
+       physicalTileExecutables.getPhysicalTileExecutables()) {
     const int64_t launchSlot = tile.getLaunchSlotId().getValue();
     if (tile.getPhysicalCardId() != PhysicalCardId(0) ||
         tile.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
@@ -286,14 +284,14 @@ buildManifest(const ExecutableBundle &executableBundle,
     tilesByLaunchSlot[launchSlot] = &tile;
   }
   for (const VerifiedTargetTileInterface &tileInterface :
-       targetArtifacts.getTileInterfaces()) {
+       targetModules.getTileInterfaces()) {
     const int64_t launchSlot = tileInterface.getLaunchSlotId().getValue();
     if (tileInterface.getPhysicalCardId() != PhysicalCardId(0) ||
         tileInterface.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
         launchSlot >= static_cast<int64_t>(physicalTileCount) ||
         interfacesByLaunchSlot[launchSlot] != nullptr)
       return fail(diagnostics,
-                  "package target artifact has invalid or duplicate physical "
+                  "package target module has invalid or duplicate physical "
                   "Tile interface identity");
     interfacesByLaunchSlot[launchSlot] = &tileInterface;
   }
@@ -316,7 +314,7 @@ buildManifest(const ExecutableBundle &executableBundle,
   }
 
   for (auto [expectedModuleId, target] :
-       llvm::enumerate(targetArtifacts.getModules())) {
+       llvm::enumerate(targetModules.getModules())) {
     if (target.getId().getValue() != expectedModuleId ||
         target.getTargetIdentityId() !=
             firstTargetModule.getTargetIdentityId() ||
@@ -360,11 +358,11 @@ buildManifest(const ExecutableBundle &executableBundle,
     const VerifiedTargetTileInterface &tileInterface =
         *interfacesByLaunchSlot[launchSlot];
     const uint64_t moduleId = tileInterface.getModuleId().getValue();
-    if (moduleId >= targetArtifacts.getModules().size())
+    if (moduleId >= targetModules.getModules().size())
       return fail(diagnostics,
                   "package Tile launch interface references an unknown "
                   "module");
-    const VerifiedTargetModule &target = targetArtifacts.getModules()[moduleId];
+    const VerifiedTargetModule &target = targetModules.getModules()[moduleId];
     if (tile.getPhysicalCardId() != PhysicalCardId(0) ||
         tile.getPhysicalCardId() != tileInterface.getPhysicalCardId() ||
         tile.getPhysicalTileId() != tileInterface.getPhysicalTileId() ||
@@ -437,11 +435,10 @@ buildManifest(const ExecutableBundle &executableBundle,
         runtime::PackageResourceRecord resource;
         resource.id = runtime::ResourceId(nextResourceId++);
         resource.scope =
-            binding
-                ? runtime::PackageResourceScope(
-                      runtime::CardResourceScope{tile.getPhysicalCardId()})
-                : runtime::PackageResourceScope(runtime::TileResourceScope{
-                      tile.getPhysicalCardId(), tile.getPhysicalTileId()});
+            binding ? runtime::PackageResourceScope(
+                          runtime::CardResourceScope{tile.getPhysicalCardId()})
+                    : runtime::PackageResourceScope(runtime::TileResourceScope{
+                          tile.getPhysicalCardId(), tile.getPhysicalTileId()});
         resource.role = getPackageRole(slot.role);
         resource.roleIndex = slot.resourceIndex;
         resource.name = slot.name;
@@ -479,18 +476,18 @@ buildManifest(const ExecutableBundle &executableBundle,
     manifest.entries.push_back(std::move(entry));
   }
   if (!sharedModule &&
-      usedModuleIds.size() != targetArtifacts.getModules().size())
+      usedModuleIds.size() != targetModules.getModules().size())
     return fail(diagnostics,
                 "package per-Tile module domain is not covered exactly once");
   return manifest;
 }
 
-llvm::Error copyTargetModules(const TargetArtifactBundle &targetArtifacts,
+llvm::Error copyTargetModules(const LinkedTargetModules &targetModules,
                               llvm::StringRef stagingRoot,
                               llvm::raw_ostream &diagnostics,
                               std::optional<int64_t> failAfterLaunchSlot) {
-  for (const VerifiedTargetModule &module : targetArtifacts.getModules()) {
-    llvm::SmallString<256> source(targetArtifacts.getRootDirectory());
+  for (const VerifiedTargetModule &module : targetModules.getModules()) {
+    llvm::SmallString<256> source(targetModules.getRootDirectory());
     llvm::sys::path::append(source, module.getRelativePath());
     if (!isRegularFile(source))
       return fail(diagnostics,
@@ -508,7 +505,7 @@ llvm::Error copyTargetModules(const TargetArtifactBundle &targetArtifacts,
   }
   if (failAfterLaunchSlot && *failAfterLaunchSlot >= 0 &&
       *failAfterLaunchSlot <
-          static_cast<int64_t>(targetArtifacts.getTileInterfaces().size()))
+          static_cast<int64_t>(targetModules.getTileInterfaces().size()))
     return fail(diagnostics,
                 "test-only injected package failure after launch slot " +
                     std::to_string(*failAfterLaunchSlot));
@@ -587,24 +584,24 @@ llvm::Error fsyncPackageTree(llvm::StringRef root) {
   return llvm::Error::success();
 }
 
-bool publishDirectoryNoReplace(llvm::StringRef source,
-                               llvm::StringRef destination,
-                               llvm::raw_ostream &diagnostics) {
+bool renameDirectoryNoReplace(llvm::StringRef source,
+                              llvm::StringRef destination,
+                              llvm::raw_ostream &diagnostics) {
 #ifdef __linux__
   std::string sourceStorage = source.str();
   std::string destinationStorage = destination.str();
   if (::syscall(SYS_renameat2, AT_FDCWD, sourceStorage.c_str(), AT_FDCWD,
                 destinationStorage.c_str(), RENAME_NOREPLACE) == 0)
     return false;
-  diagnostics << "wafer-compile: package_publication_failed: "
+  diagnostics << "wafer-compile: package_write_failed: "
               << std::error_code(errno, std::generic_category()).message()
               << "\n";
   return true;
 #else
   (void)source;
   (void)destination;
-  diagnostics << "wafer-compile: package_publication_failed: atomic "
-                 "no-replace publication is unsupported on this host\n";
+  diagnostics << "wafer-compile: package_write_failed: no-replace directory "
+                 "rename is unsupported on this host\n";
   return true;
 #endif
 }
@@ -645,13 +642,13 @@ bool detail::isValidPackageCompilerManagedSlot(const KernelABISlot &slot) {
   return false;
 }
 
-llvm::Expected<PackageBundle>
-detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
-                                  const ExecutableBundle &executableBundle,
-                                  const TargetArtifactBundle &targetArtifacts,
-                                  llvm::StringRef outputDirectory,
-                                  llvm::raw_ostream &diagnostics,
-                                  std::optional<int64_t> failAfterLaunchSlot) {
+llvm::Expected<VerifiedPackage>
+detail::writePackage(llvm::StringRef tensorProgramDirectory,
+                     const PhysicalTileExecutables &physicalTileExecutables,
+                     const LinkedTargetModules &targetModules,
+                     llvm::StringRef outputDirectory,
+                     llvm::raw_ostream &diagnostics,
+                     std::optional<int64_t> failAfterLaunchSlot) {
   if (tensorProgramDirectory.empty() || outputDirectory.empty())
     return fail(diagnostics,
                 "package input/output directory must not be empty");
@@ -688,12 +685,12 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
 
   if (llvm::Error error = copyDirectory(tensorProgramDirectory, stagingRoot))
     return fail(diagnostics, llvm::toString(std::move(error)));
-  if (llvm::Error error = copyTargetModules(targetArtifacts, stagingRoot,
+  if (llvm::Error error = copyTargetModules(targetModules, stagingRoot,
                                             diagnostics, failAfterLaunchSlot))
     return std::move(error);
 
   llvm::Expected<runtime::PackageManifest> manifest =
-      buildManifest(executableBundle, targetArtifacts, diagnostics);
+      buildManifest(physicalTileExecutables, targetModules, diagnostics);
   if (!manifest)
     return manifest.takeError();
   llvm::Expected<runtime::VerifiedPackageManifest> verified =
@@ -711,14 +708,14 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
                                  llvm::toString(readback.takeError()));
   const runtime::PackageManifest &readbackManifest = readback->getManifest();
   const ExecutionConfig &executionConfig =
-      executableBundle.getExecutionConfig();
+      physicalTileExecutables.getExecutionConfig();
   const VerifiedTargetModule &targetReadback =
-      targetArtifacts.getModules().front();
+      targetModules.getModules().front();
   if (readbackManifest.cardCount != 1 ||
       readbackManifest.tileCount != executionConfig.getPhysicalTileCount() ||
       readbackManifest.targetIdentity != targetReadback.getTargetIdentityId() ||
       readbackManifest.runtimeABI != targetReadback.getKernelRuntimeABIId() ||
-      readbackManifest.launch != targetArtifacts.getRuntimeLaunchContract() ||
+      readbackManifest.launch != targetModules.getRuntimeLaunchContract() ||
       readbackManifest.moduleFormat != targetReadback.getModuleFormat() ||
       readbackManifest.targetIdentity != executionConfig.getTargetIdentityId())
     return fail(diagnostics,
@@ -726,13 +723,13 @@ detail::assemblePackageBundleImpl(llvm::StringRef tensorProgramDirectory,
                 "and ExecutionConfig");
   if (llvm::Error error = fsyncPackageTree(stagingRoot))
     return fail(diagnostics, llvm::toString(std::move(error)));
-  if (publishDirectoryNoReplace(stagingRoot, outputDirectory, diagnostics))
+  if (renameDirectoryNoReplace(stagingRoot, outputDirectory, diagnostics))
     return llvm::createStringError(llvm::errc::io_error,
-                                   "package publication failed");
+                                   "package directory rename failed");
   cleanup.release();
-  return PackageBundleBuilder::make(outputDirectory,
-                                    executableBundle.getExecutionConfig(),
-                                    std::move(*readback));
+  return VerifiedPackageBuilder::makePackage(
+      outputDirectory, physicalTileExecutables.getExecutionConfig(),
+      std::move(*readback));
 }
 
 } // namespace wafer::compiler

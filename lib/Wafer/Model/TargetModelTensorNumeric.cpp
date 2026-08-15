@@ -110,7 +110,7 @@ struct ManagedReferenceInput {
 
 llvm::Expected<std::optional<TargetModelCommandEffect>>
 tryExecuteManagedReference(
-    const compiler::TargetTransaction &transaction,
+    const compiler::TargetCommand &command,
     const InvocationMemoryRegistry &memory,
     const ResolvedNumericCommand &resolved,
     llvm::ArrayRef<ManagedReferenceInput> inputDescriptors,
@@ -132,15 +132,15 @@ tryExecuteManagedReference(
   pendingReads.reserve(inputDescriptors.size());
   for (const ManagedReferenceInput &input : inputDescriptors) {
     llvm::Expected<std::vector<uint8_t>> storage = readTensorStorage(
-        memory, transaction.launchSlotId.getValue(), input.address, *input.key);
+        memory, command.launchSlotId.getValue(), input.address, *input.key);
     if (!storage)
       return storage.takeError();
-    pendingReads.push_back(makeTensorRead(transaction.launchSlotId.getValue(),
+    pendingReads.push_back(makeTensorRead(command.launchSlotId.getValue(),
                                           input.address, *input.key));
     inputs.push_back({*input.key, std::move(*storage)});
   }
   llvm::Expected<std::vector<uint8_t>> destinationStorage =
-      readTensorStorage(memory, transaction.launchSlotId.getValue(),
+      readTensorStorage(memory, command.launchSlotId.getValue(),
                         destinationAddress, destinationKey);
   if (!destinationStorage)
     return destinationStorage.takeError();
@@ -183,10 +183,9 @@ tryExecuteManagedReference(
         "managed-reference backend returned incomplete or mismatched evidence");
   return std::optional<TargetModelCommandEffect>(withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
-                                TargetModelAddressSpace::TileSPM,
-                                destinationAddress, 1,
-                                std::move(result->destination.storage)}},
+          {TargetModelByteWrite{
+              command.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
+              destinationAddress, 1, std::move(result->destination.storage)}},
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::ManagedReference,
@@ -198,8 +197,8 @@ tryExecuteManagedReference(
 } // namespace
 
 llvm::Expected<TargetModelCommandEffect>
-executeElementwise(const compiler::TargetTransaction &transaction,
-                   const target::TargetElementwiseTransaction &value,
+executeElementwise(const compiler::TargetCommand &command,
+                   const target::TargetElementwiseCommand &value,
                    const InvocationMemoryRegistry &memory,
                    TargetModelKernelBudget budget,
                    TargetModelExecutionPolicy policy) {
@@ -218,15 +217,14 @@ executeElementwise(const compiler::TargetTransaction &transaction,
   inputKeys.push_back(*inputKey);
   if (value.rhs)
     inputKeys.push_back(*inputKey);
-  llvm::Expected<NumericCommandKey> command =
-      NumericCommandKey::createCTElementwise(value.operation,
-                                             std::move(inputKeys),
-                                             *destinationKey);
-  if (!command)
+  llvm::Expected<NumericCommandKey> numericCommandKey =
+      NumericCommandKey::createCTElementwise(
+          value.operation, std::move(inputKeys), *destinationKey);
+  if (!numericCommandKey)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(command.takeError()));
+                       llvm::toString(numericCommandKey.takeError()));
   llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumeric(std::move(*command));
+      resolveNumeric(std::move(*numericCommandKey));
   if (!resolved)
     return resolved.takeError();
 
@@ -234,7 +232,7 @@ executeElementwise(const compiler::TargetTransaction &transaction,
   if (value.rhs)
     managedInputs.push_back({*value.rhs, &*inputKey});
   llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
-      tryExecuteManagedReference(transaction, memory, *resolved, managedInputs,
+      tryExecuteManagedReference(command, memory, *resolved, managedInputs,
                                  value.destination, *destinationKey, budget,
                                  policy);
   if (!managed)
@@ -243,14 +241,14 @@ executeElementwise(const compiler::TargetTransaction &transaction,
     return std::move(**managed);
 
   std::vector<std::vector<RawLogicalValue>> inputs;
-  llvm::Expected<std::vector<RawLogicalValue>> lhs = readTensor(
-      memory, transaction.launchSlotId.getValue(), value.lhs, *inputKey);
+  llvm::Expected<std::vector<RawLogicalValue>> lhs =
+      readTensor(memory, command.launchSlotId.getValue(), value.lhs, *inputKey);
   if (!lhs)
     return lhs.takeError();
   inputs.push_back(std::move(*lhs));
   if (value.rhs) {
     llvm::Expected<std::vector<RawLogicalValue>> rhs = readTensor(
-        memory, transaction.launchSlotId.getValue(), *value.rhs, *inputKey);
+        memory, command.launchSlotId.getValue(), *value.rhs, *inputKey);
     if (!rhs)
       return rhs.takeError();
     inputs.push_back(std::move(*rhs));
@@ -265,18 +263,18 @@ executeElementwise(const compiler::TargetTransaction &transaction,
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(result.takeError()));
   llvm::Expected<std::vector<uint8_t>> packed =
-      packTensor(memory, transaction.launchSlotId.getValue(), value.destination,
+      packTensor(memory, command.launchSlotId.getValue(), value.destination,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
-  std::vector<TargetModelByteRead> pendingReads{makeTensorRead(
-      transaction.launchSlotId.getValue(), value.lhs, *inputKey)};
+  std::vector<TargetModelByteRead> pendingReads{
+      makeTensorRead(command.launchSlotId.getValue(), value.lhs, *inputKey)};
   if (value.rhs)
-    pendingReads.push_back(makeTensorRead(transaction.launchSlotId.getValue(),
-                                          *value.rhs, *inputKey));
+    pendingReads.push_back(
+        makeTensorRead(command.launchSlotId.getValue(), *value.rhs, *inputKey));
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+          {TargetModelByteWrite{command.launchSlotId.getValue(),
                                 TargetModelAddressSpace::TileSPM,
                                 value.destination, 1, std::move(*packed)}},
           result->flags,
@@ -286,8 +284,8 @@ executeElementwise(const compiler::TargetTransaction &transaction,
 }
 
 llvm::Expected<TargetModelCommandEffect>
-executeConvert(const compiler::TargetTransaction &transaction,
-               const target::TargetConvertTransaction &value,
+executeConvert(const compiler::TargetCommand &command,
+               const target::TargetConvertCommand &value,
                const InvocationMemoryRegistry &memory,
                TargetModelKernelBudget budget,
                TargetModelExecutionPolicy policy) {
@@ -316,19 +314,19 @@ executeConvert(const compiler::TargetTransaction &transaction,
                          llvm::toString(mode.takeError()));
     parameter = NumericConvertParameter::roundingMode(*mode);
   }
-  llvm::Expected<NumericCommandKey> command =
+  llvm::Expected<NumericCommandKey> numericCommandKey =
       NumericCommandKey::createCTConvert(opcode, *sourceKey, *destinationKey,
                                          parameter);
-  if (!command)
+  if (!numericCommandKey)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(command.takeError()));
+                       llvm::toString(numericCommandKey.takeError()));
   llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumeric(std::move(*command));
+      resolveNumeric(std::move(*numericCommandKey));
   if (!resolved)
     return resolved.takeError();
   const ManagedReferenceInput managedInput{value.source, &*sourceKey};
   llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
-      tryExecuteManagedReference(transaction, memory, *resolved, managedInput,
+      tryExecuteManagedReference(command, memory, *resolved, managedInput,
                                  value.destination, *destinationKey, budget,
                                  policy);
   if (!managed)
@@ -336,7 +334,7 @@ executeConvert(const compiler::TargetTransaction &transaction,
   if (*managed)
     return std::move(**managed);
   llvm::Expected<std::vector<RawLogicalValue>> source = readTensor(
-      memory, transaction.launchSlotId.getValue(), value.source, *sourceKey);
+      memory, command.launchSlotId.getValue(), value.source, *sourceKey);
   if (!source)
     return source.takeError();
   std::vector<llvm::ArrayRef<RawLogicalValue>> views{*source};
@@ -347,25 +345,25 @@ executeConvert(const compiler::TargetTransaction &transaction,
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(result.takeError()));
   llvm::Expected<std::vector<uint8_t>> packed =
-      packTensor(memory, transaction.launchSlotId.getValue(), value.destination,
+      packTensor(memory, command.launchSlotId.getValue(), value.destination,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+          {TargetModelByteWrite{command.launchSlotId.getValue(),
                                 TargetModelAddressSpace::TileSPM,
                                 value.destination, 1, std::move(*packed)}},
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::Formal},
-      {makeTensorRead(transaction.launchSlotId.getValue(), value.source,
+      {makeTensorRead(command.launchSlotId.getValue(), value.source,
                       *sourceKey)});
 }
 
 llvm::Expected<TargetModelCommandEffect>
-executeReduce(const compiler::TargetTransaction &transaction,
-              const target::TargetReduceTransaction &value,
+executeReduce(const compiler::TargetCommand &command,
+              const target::TargetReduceCommand &value,
               const InvocationMemoryRegistry &memory,
               TargetModelKernelBudget budget,
               TargetModelExecutionPolicy policy) {
@@ -374,7 +372,7 @@ executeReduce(const compiler::TargetTransaction &transaction,
   const std::vector<size_t> reducedDimensions =
       getNativeCTReduceLogicalDimensions(dimension, inputShape.size());
   if (reducedDimensions.empty())
-    return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+    return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "reduce dimension is invalid for the fixed ABI shape");
   std::vector<uint64_t> destinationShape;
   for (size_t index = 0; index < inputShape.size(); ++index)
@@ -396,19 +394,19 @@ executeReduce(const compiler::TargetTransaction &transaction,
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(std::move(errors)));
   }
-  llvm::Expected<NumericCommandKey> command =
+  llvm::Expected<NumericCommandKey> numericCommandKey =
       NumericCommandKey::createNativeCTReduce(value.operation, *inputKey,
                                               *destinationKey, dimension);
-  if (!command)
+  if (!numericCommandKey)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(command.takeError()));
+                       llvm::toString(numericCommandKey.takeError()));
   llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumeric(std::move(*command));
+      resolveNumeric(std::move(*numericCommandKey));
   if (!resolved)
     return resolved.takeError();
   const ManagedReferenceInput managedInput{value.source, &*inputKey};
   llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
-      tryExecuteManagedReference(transaction, memory, *resolved, managedInput,
+      tryExecuteManagedReference(command, memory, *resolved, managedInput,
                                  value.destination, *destinationKey, budget,
                                  policy);
   if (!managed)
@@ -416,7 +414,7 @@ executeReduce(const compiler::TargetTransaction &transaction,
   if (*managed)
     return std::move(**managed);
   llvm::Expected<std::vector<RawLogicalValue>> input = readTensor(
-      memory, transaction.launchSlotId.getValue(), value.source, *inputKey);
+      memory, command.launchSlotId.getValue(), value.source, *inputKey);
   if (!input)
     return input.takeError();
   std::vector<llvm::ArrayRef<RawLogicalValue>> views{*input};
@@ -427,25 +425,25 @@ executeReduce(const compiler::TargetTransaction &transaction,
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(result.takeError()));
   llvm::Expected<std::vector<uint8_t>> packed =
-      packTensor(memory, transaction.launchSlotId.getValue(), value.destination,
+      packTensor(memory, command.launchSlotId.getValue(), value.destination,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+          {TargetModelByteWrite{command.launchSlotId.getValue(),
                                 TargetModelAddressSpace::TileSPM,
                                 value.destination, 1, std::move(*packed)}},
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::Formal},
-      {makeTensorRead(transaction.launchSlotId.getValue(), value.source,
+      {makeTensorRead(command.launchSlotId.getValue(), value.source,
                       *inputKey)});
 }
 
 llvm::Expected<TargetModelCommandEffect>
-executeGemm(const compiler::TargetTransaction &transaction,
-            const target::TargetGemmTransaction &value,
+executeGemm(const compiler::TargetCommand &command,
+            const target::TargetGemmCommand &value,
             const InvocationMemoryRegistry &memory,
             TargetModelKernelBudget budget, TargetModelExecutionPolicy policy) {
   const bool batched = value.batchCount > 1;
@@ -494,31 +492,32 @@ executeGemm(const compiler::TargetTransaction &transaction,
   if (!axes)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(axes.takeError()));
-  llvm::Expected<NumericCommandKey> command = NumericCommandKey::createNEGemm(
-      *lhsKey, *rhsKey, *destinationKey, value.m, value.k, value.n,
-      value.batchCount, *axes, value.lhsOrientation, value.rhsOrientation);
-  if (!command)
+  llvm::Expected<NumericCommandKey> numericCommandKey =
+      NumericCommandKey::createNEGemm(
+          *lhsKey, *rhsKey, *destinationKey, value.m, value.k, value.n,
+          value.batchCount, *axes, value.lhsOrientation, value.rhsOrientation);
+  if (!numericCommandKey)
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(command.takeError()));
+                       llvm::toString(numericCommandKey.takeError()));
   llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumeric(std::move(*command));
+      resolveNumeric(std::move(*numericCommandKey));
   if (!resolved)
     return resolved.takeError();
 
   if (policy.getGemmDispatchPolicy() ==
-          TargetModelGemmDispatchPolicy::PreferAdmitted &&
+          TargetModelGemmDispatchPolicy::BulkThenFormal &&
       value.lhsOrientation == TargetGemmOrientation::Normal &&
       value.rhsOrientation == TargetGemmOrientation::Normal) {
     const TargetModelBulkBackend *backend = policy.getBulkBackend();
     if (!backend)
       return kernelError(TargetModelKernelErrorCode::BulkBackendUnavailable,
-                         "prefer-admitted policy has no bulk backend");
+                         "bulk-then-formal policy has no bulk backend");
     llvm::Expected<std::vector<uint8_t>> lhsStorage = readTensorStorage(
-        memory, transaction.launchSlotId.getValue(), value.lhs, *lhsKey);
+        memory, command.launchSlotId.getValue(), value.lhs, *lhsKey);
     llvm::Expected<std::vector<uint8_t>> rhsStorage = readTensorStorage(
-        memory, transaction.launchSlotId.getValue(), value.rhs, *rhsKey);
+        memory, command.launchSlotId.getValue(), value.rhs, *rhsKey);
     llvm::Expected<std::vector<uint8_t>> destinationStorage =
-        readTensorStorage(memory, transaction.launchSlotId.getValue(),
+        readTensorStorage(memory, command.launchSlotId.getValue(),
                           value.destination, *destinationKey);
     if (!lhsStorage)
       return lhsStorage.takeError();
@@ -545,16 +544,15 @@ executeGemm(const compiler::TargetTransaction &transaction,
       if (result.evidence.matmulInvocations != 1 ||
           result.evidence.reorderInvocations > 1 ||
           result.evidence.formalFusedMultiplyAdds != 0 ||
-          result.evidence.provenanceKind ==
-              TargetModelBulkProvenanceKind::None ||
-          result.evidence.provenanceDigest.empty() ||
+          result.evidence.evidenceKind == TargetModelBulkEvidenceKind::None ||
+          result.evidence.evidenceDigest.empty() ||
           result.evidence.implementation.empty())
         return kernelError(
             TargetModelKernelErrorCode::BulkBackendFailure,
             "bulk backend returned incomplete dispatch evidence");
       return withReads(
           TargetModelCommandEffect{
-              {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+              {TargetModelByteWrite{command.launchSlotId.getValue(),
                                     TargetModelAddressSpace::TileSPM,
                                     value.destination, 1,
                                     std::move(result.destination.storage)}},
@@ -562,9 +560,8 @@ executeGemm(const compiler::TargetTransaction &transaction,
               TargetModelControlAction::None,
               TargetModelNumericBackend::Bulk,
               std::move(result.evidence)},
-          {makeTensorRead(transaction.launchSlotId.getValue(), value.lhs,
-                          *lhsKey),
-           makeTensorRead(transaction.launchSlotId.getValue(), value.rhs,
+          {makeTensorRead(command.launchSlotId.getValue(), value.lhs, *lhsKey),
+           makeTensorRead(command.launchSlotId.getValue(), value.rhs,
                           *rhsKey)});
     }
 
@@ -575,20 +572,20 @@ executeGemm(const compiler::TargetTransaction &transaction,
         !checkedMultiply(outputCount, value.n, outputCount) ||
         !checkedMultiply(outputCount, value.k, fusedMultiplyAdds) ||
         !checkedAdd(fusedMultiplyAdds, outputCount, scalarEvaluations))
-      return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+      return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                          "GEMM formal work count overflows");
     const FormalNumericWorkBudget formalBudget = budget.getNumericBudget();
     if (scalarEvaluations > formalBudget.getMaximumScalarEvaluations() ||
         fusedMultiplyAdds > formalBudget.getMaximumFusedMultiplyAdds())
       return kernelError(
           TargetModelKernelErrorCode::BulkBackendUnavailable,
-          "GEMM exceeds the formal budget and has no exact bulk admission");
+          "GEMM exceeds the formal budget and has no exact bulk qualification");
   }
 
-  llvm::Expected<std::vector<RawLogicalValue>> lhs = readTensor(
-      memory, transaction.launchSlotId.getValue(), value.lhs, *lhsKey);
-  llvm::Expected<std::vector<RawLogicalValue>> rhs = readTensor(
-      memory, transaction.launchSlotId.getValue(), value.rhs, *rhsKey);
+  llvm::Expected<std::vector<RawLogicalValue>> lhs =
+      readTensor(memory, command.launchSlotId.getValue(), value.lhs, *lhsKey);
+  llvm::Expected<std::vector<RawLogicalValue>> rhs =
+      readTensor(memory, command.launchSlotId.getValue(), value.rhs, *rhsKey);
   if (!lhs)
     return lhs.takeError();
   if (!rhs)
@@ -601,26 +598,25 @@ executeGemm(const compiler::TargetTransaction &transaction,
     return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
                        llvm::toString(result.takeError()));
   llvm::Expected<std::vector<uint8_t>> packed =
-      packTensor(memory, transaction.launchSlotId.getValue(), value.destination,
+      packTensor(memory, command.launchSlotId.getValue(), value.destination,
                  *destinationKey, result->values);
   if (!packed)
     return packed.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+          {TargetModelByteWrite{command.launchSlotId.getValue(),
                                 TargetModelAddressSpace::TileSPM,
                                 value.destination, 1, std::move(*packed)}},
           result->flags,
           TargetModelControlAction::None,
           TargetModelNumericBackend::Formal},
-      {makeTensorRead(transaction.launchSlotId.getValue(), value.lhs, *lhsKey),
-       makeTensorRead(transaction.launchSlotId.getValue(), value.rhs,
-                      *rhsKey)});
+      {makeTensorRead(command.launchSlotId.getValue(), value.lhs, *lhsKey),
+       makeTensorRead(command.launchSlotId.getValue(), value.rhs, *rhsKey)});
 }
 
 llvm::Expected<TargetModelCommandEffect>
-executeMemset(const compiler::TargetTransaction &transaction,
-              const target::TargetMemsetTransaction &value,
+executeMemset(const compiler::TargetCommand &command,
+              const target::TargetMemsetCommand &value,
               const InvocationMemoryRegistry &memory) {
   llvm::Expected<NumericTensorKey> key =
       makeTensor(value.format, {value.elementCount});
@@ -632,16 +628,15 @@ executeMemset(const compiler::TargetTransaction &transaction,
   llvm::Expected<RawLogicalValue> scalar = makeRawLogicalValue(
       value.format, value.value, policy.nonCanonicalEncoding);
   if (!scalar)
-    return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+    return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        llvm::toString(scalar.takeError()));
   std::vector<RawLogicalValue> values(value.elementCount, *scalar);
-  llvm::Expected<std::vector<uint8_t>> packed =
-      packTensor(memory, transaction.launchSlotId.getValue(), value.destination,
-                 *key, values);
+  llvm::Expected<std::vector<uint8_t>> packed = packTensor(
+      memory, command.launchSlotId.getValue(), value.destination, *key, values);
   if (!packed)
     return packed.takeError();
   return TargetModelCommandEffect{
-      {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+      {TargetModelByteWrite{command.launchSlotId.getValue(),
                             TargetModelAddressSpace::TileSPM, value.destination,
                             1, std::move(*packed)}},
       {},

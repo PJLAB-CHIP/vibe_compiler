@@ -8,14 +8,14 @@ StableHLO到target-independent structured tensor IR的normalization合同；curr
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   frontend已验证的static-ranked StableHLO program，以及GSPMD为一个logical card partition产生的local program；
   function boundary、dtype、shape、parameter/constant payload和card-partition execution mesh保持一致。
 - Current stage responsibility:
   先把supported StableHLO collectives规整为typed destination-style tensor ops，再通过pinned官方
   StableHLO-to-Linalg conversion把compute、shape/data movement和constant变成Linalg/Tensor/SCF/Arith/Math；
   仅折叠可由static IR完全证明的SPMD helper residual，并对最终dialect集合做fail-closed legality检查。
-- Output artifact / IR:
+- Output IR / files:
   一个尚未绑定physical Tile的card-local structured tensor DAG。数学语义由op、region、indexing map、
   iterator、DPS ties、type、SSA/control flow和effect表达；card-partition collective仍是typed tensor semantics。
 - Downstream consumer:
@@ -69,7 +69,7 @@ Wafer复用pinned官方StableHLO legalization，而不是维护按op名分发的
 shape模板决定。reduction能否spatial/temporal切分也由iterator、indexing、combiner和numeric contract决定。
 本层不增加attention、decode、mask或`-inf`特判；frontend给出的值与控制流是什么，normal form就保持什么。
 
-## 4. Card-Partition Collective Handoff
+## 4. Card-Partition Collective Boundary
 
 supported StableHLO collective先转换为：
 

@@ -1,14 +1,14 @@
 # Wafer Physical-Tile Communication 与 Direct DTE
 
 状态：2026-08-13按card-level GSPMD、CardProgram和physical-Tile MPMD主线收敛。本文拥有
-selected片内physical peer IR及memory-planned后的CardExecutable Direct DTE admission；不拥有
+selected片内physical peer IR及memory-planned后的CardExecutable Direct DTE verification；不拥有
 placement、communication winner或pipeline side plan。动态状态只看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   GSPMD产生的card-local TensorProgram及card-partition collective semantics；physical-dataflow selection物化的
   wafer.card.program包含all-and-only physical wafer.tile.program、selected per-Tile work和跨Tile data需求；若选择
   communication/computation流水，chunk、movement、physical/rotating buffer、order和completion必须已经进入actual Tile/Instr IR；
@@ -17,7 +17,7 @@ Pipeline position:
   将selected mapping差异显式物化为physical-Tile peer ops、destination staging、local compute和token/wait；
   在SPM/DDR
   offsets和completion确定后，对complete CardProgram中的physical Tile modules原子匹配message、range、resource和transport binding。
-- Output artifact / IR:
+- Output IR / files:
   每个TileProgram中的typed wafer.tile.peer_*及其actual local work，或per-Tile wafer.instr.dte_send /
   dte_recv / dte_wait与accepted DirectDTEBindingAttr；算法proposal和route table不另存。
 - Downstream consumer:
@@ -27,11 +27,11 @@ Pipeline position:
   wafer-compile source-to-package pipeline；communication没有public selector、独立winner或手工pass链。
 - Explicit non-goals:
   不把card-partition ID解释成physical Tile；不实现cross-card transport；不从op顺序、symbol、buffer名或shape匹配message；
-  不在transport admission中改变placement、tile、fusion、layout、spill、buffer、order或completion；不从pipeline flag
+  不在transport verification中改变placement、tile、fusion、layout、spill、buffer、order或completion；不从pipeline flag
   推断overlap，不保存route/schedule/lane side plan，不把raw packet/register写进Tile IR。
 - Completion gate:
   selected cross-Tile edge具有显式physical endpoints、payload cover、staging、local work和completion；all-and-only
-  physical Tile modules经CardExecutable message/range/resource admission原子通过；package以
+  physical Tile modules经CardExecutable message/range/resource verification原子通过；package以
   `(card_id, tile_id, launch_slot)`发布，不依赖任何旧logical-execution-to-Tile映射。
 ```
 
@@ -113,9 +113,9 @@ send/recv token必须由exact wait消费；wait是DTE buffer completion/release�
 root活到send wait，receiver staging在recv completion前不可被consumer读取或复用。loop backedge、TileRegion boundary、
 block order和function return都不能替代未证明的completion。
 
-## 5. CardExecutable Direct DTE Admission
+## 5. CardExecutable Direct DTE Verification
 
-admission只读取memory-planned、completion-complete的all-and-only physical Tile Instr modules，并在一次transaction中：
+verification只读取memory-planned、completion-complete的all-and-only physical Tile Instr modules，并在一次transaction中：
 
 1. 解析每个send/recv/wait及structured occurrence；
 2. 按physical source/destination与message key建立一一匹配；
@@ -128,8 +128,8 @@ binding只保存单个Tile module无法重算但target lowering必须知道的ac
 FSM以及absolute、source-relative或bounded selector-table remote address。physical endpoints、bytes和message仍由op与topology
 拥有；local address仍来自receiver planned buffer。binding不是通信plan或route fallback。
 
-admission不能retile、insert staging、改worker/order、换algorithm或修补missing wait。失败只返回typed reason并丢弃
-当前actual clone；本文不创建frontier、repair recipe或可重放transport plan。
+verification不能retile、insert staging、改worker/order、换algorithm或修补missing wait。失败只返回typed reason并丢弃
+当前actual clone；本文不创建candidate set、repair recipe或可重放transport plan。
 
 ## 6. Target、Package 与 Runtime Boundary
 
@@ -143,7 +143,7 @@ package manifest只发布current physical identity与resource facts：
 - Direct DTE需要typed status resource、launch phase与entry completion；
 - resource sharing只由同一ResourceId表达，不从name、role、shape或slot位置推断。
 
-no-card只做parse/semantic/binding/capability preflight；board provider才执行allocation、launch、wait、status和cleanup。
+no-card只做parse/semantic/binding/capability validation；board provider才执行allocation、launch、wait、status和cleanup。
 package/runtime不重新选择peer、route、algorithm或memory placement。
 
 ## 7. Failure、Atomicity 与 Verification
@@ -153,8 +153,8 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 | Tile IR verifier | invalid physical peer、bytes、shape、token或effect | reject actual candidate |
 | dataflow materialization | communication edge、encoding、cover或local compute非法 | discard complete CardProgram candidate |
 | memory/completion | staging capacity、range、lifetime或wait不闭合 | reject candidate, no repair |
-| CardExecutable admission | missing/duplicate peer、message/range/resource conflict | write no bindings |
-| target/package | typed call、status、identity或resource readback mismatch | publish no partial artifact/package |
+| CardExecutable verification | missing/duplicate peer、message/range/resource conflict | write no bindings |
+| target/package | typed call、status、identity或resource readback mismatch | write no partial output/package |
 
 直接验证至少覆盖：
 
@@ -167,5 +167,5 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 - source-to-CardProgram-to-package真实链，而非只验证手写Instr fixture。
 
 CardExecutable integration gate还必须证明general chain、branch、fanout/fanin和mapping-changing DAG的complete CardProgram candidate确实生成
-这些communication ops，并在最终Instr中具备chunk、buffer、order和completion witness。当前已有lowering/admission能力
+这些communication ops，并在最终Instr中具备chunk、buffer、order和completion witness。当前已有lowering/verification能力
 不得被写成搜索已经完成；cross-card collective也继续是明确非目标，不能恢复partition-to-Tile旧接口绕过。

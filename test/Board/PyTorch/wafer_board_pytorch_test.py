@@ -364,7 +364,7 @@ def prepare_runtime_payloads(
         or any(partition_id != 0 for partition_id, _ in local_outputs)
     ):
         raise RuntimeError(
-            "single-card package publication requires one source partition"
+            "single-card package writing requires one source partition"
         )
     resources, output_ids = _manifest_resources(package)
     expected_keys = {
@@ -521,10 +521,10 @@ def prepare_case_step(
     if args.compile_timing:
         print(compile_result.stderr, end="", file=sys.stderr)
     if (
-        "published verified package with num-partitions=1 physical-tiles=16"
+        "wrote verified package with num-partitions=1 physical-tiles=16"
         not in compile_result.stdout
     ):
-        raise RuntimeError("wafer-compile did not publish the PyTorch package")
+        raise RuntimeError("wafer-compile did not write the PyTorch package")
     if dump_compiler_ir is not None:
         expected_stems = [
             f"tile_{tile_id:05d}" for tile_id in range(PHYSICAL_TILE_COUNT)
@@ -553,13 +553,13 @@ def prepare_case_step(
             if "wafer.instr." in tile_ir:
                 raise RuntimeError(
                     "compiler Tile/dataflow evidence is not a selected "
-                    "pre-Instr artifact"
+                    "pre-Instr IR"
                 )
-            # A selected MPMD candidate still publishes all-and-only the 16
+            # A selected MPMD candidate still contains all-and-only the 16
             # physical Tile interfaces. Tiles outside the winner's active
             # placement intentionally contain the typed function boundary and
             # observable empty results but no TileRegion. Accept that canonical
-            # inactive pre-Instr artifact; requiring every interface to carry
+            # inactive pre-Instr IR; requiring every interface to carry
             # work would invalidate the legal less-than-16-Tile spatial axis.
             if (
                 "wafer.tile.region" not in tile_ir
@@ -571,7 +571,7 @@ def prepare_case_step(
             ):
                 raise RuntimeError(
                     "compiler inactive Tile/dataflow evidence is not a "
-                    "canonical selected pre-Instr artifact"
+                    "canonical selected pre-Instr IR"
                 )
     validate_structured_program(package, case)
 
@@ -682,7 +682,7 @@ def main() -> int:
             # Direct DTE is selected by the common whole-card search, so a
             # board-ready no-card runner must advertise the same transport
             # capabilities regardless of which candidate wins.  This remains
-            # side-effect-free preflight; it does not claim hardware execution.
+            # side-effect-free validation; it does not claim hardware execution.
             command.extend(
                 [
                     "--no-card",

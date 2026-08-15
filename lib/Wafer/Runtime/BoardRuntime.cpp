@@ -100,11 +100,11 @@ qualifyBoardDevice(uint32_t deviceId, uint32_t requiredTileCount,
                    const BoardDeviceQualification &qualification,
                    BoardRuntimeDriver &driver) {
   if (!hasCompleteQualification(qualification))
-    return boardError(BoardRuntimeStage::Preflight, {},
+    return boardError(BoardRuntimeStage::Validation, {},
                       "board execution requires complete explicit device "
                       "qualification facts");
   if (requiredTileCount == 0 || requiredTileCount != qualification.tileCount)
-    return boardError(BoardRuntimeStage::Preflight, {},
+    return boardError(BoardRuntimeStage::Validation, {},
                       "complete package Tile domain does not exactly match "
                       "the explicit device qualification");
   if (driver.getContextState() == BoardRuntimeContextState::Poisoned)
@@ -185,7 +185,7 @@ llvm::Error verifyPlannedTileBindings(const BoardDeviceInfo &device,
     });
     if (inventory == device.tiles.end())
       return boardError(
-          BoardRuntimeStage::Preflight, locationFor(tile),
+          BoardRuntimeStage::Validation, locationFor(tile),
           "package physical-Tile/launch-slot binding is absent from the "
           "qualified device inventory");
   }
@@ -266,8 +266,8 @@ char BoardRuntimeError::ID = 0;
 
 llvm::StringRef stringifyBoardRuntimeStage(BoardRuntimeStage stage) {
   switch (stage) {
-  case BoardRuntimeStage::Preflight:
-    return "preflight";
+  case BoardRuntimeStage::Validation:
+    return "validation";
   case BoardRuntimeStage::DeviceSelection:
     return "device-selection";
   case BoardRuntimeStage::ResourceAllocation:
@@ -330,13 +330,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   const KernelRuntimeLaunchContract *kernelLaunch = manifest.launch.getKernel();
   const bool modelLaunch = manifest.launch.getModel() != nullptr;
   if (!hasCompleteQualification(request.qualification))
-    return boardError(BoardRuntimeStage::Preflight, {},
+    return boardError(BoardRuntimeStage::Validation, {},
                       "board execution requires complete explicit device "
                       "qualification facts");
   if (request.completionTimeoutMilliseconds == 0 ||
       request.completionTimeoutMilliseconds >
           kMaximumBoardCompletionTimeoutMilliseconds)
-    return boardError(BoardRuntimeStage::Preflight, {},
+    return boardError(BoardRuntimeStage::Validation, {},
                       "board completion timeout is outside the supported "
                       "range");
 
@@ -350,15 +350,15 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   for (BoardRuntimeBinding &binding : request.bindings) {
     uint64_t id = binding.resource.getValue();
     if (!binding.resource.isValid() || bindingsByResource.count(id))
-      return boardError(BoardRuntimeStage::Preflight, {},
+      return boardError(BoardRuntimeStage::Validation, {},
                         "invocation has a duplicate or invalid ResourceId");
     const PackageResourceRecord *resource =
         detail::findResource(manifest.resources, binding.resource);
     if (!resource || !resource->hostVisible)
-      return boardError(BoardRuntimeStage::Preflight, {},
+      return boardError(BoardRuntimeStage::Validation, {},
                         "invocation binds an unknown or internal ResourceId");
     if (binding.bytes.size() != resource->bytes)
-      return boardError(BoardRuntimeStage::Preflight, locationFor(*resource),
+      return boardError(BoardRuntimeStage::Validation, locationFor(*resource),
                         "invocation buffer byte count is not exact");
     bindingsByResource[id] = &binding;
   }
@@ -394,21 +394,21 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     if (!binding.resource.isValid() || profilerByResource.count(id) ||
         bindingsByResource.count(id))
       return boardError(
-          BoardRuntimeStage::Preflight, {},
+          BoardRuntimeStage::Validation, {},
           "profiler invocation has a duplicate or invalid ResourceId");
     const PackageResourceRecord *resource =
         detail::findResource(manifest.resources, binding.resource);
     if (!resource || !isBoundAsFinalProfilerWorkspace(*resource))
       return boardError(
-          BoardRuntimeStage::Preflight, {},
+          BoardRuntimeStage::Validation, {},
           "profiler invocation binds a resource outside the exact internal "
           "record contract");
     if (binding.bytes.size() != resource->bytes)
-      return boardError(BoardRuntimeStage::Preflight, locationFor(*resource),
+      return boardError(BoardRuntimeStage::Validation, locationFor(*resource),
                         "profiler invocation buffer byte count is not exact");
     const auto &scope = std::get<TileResourceScope>(resource->scope);
     if (!profilerTiles.insert(scope.tileId.getValue()).second)
-      return boardError(BoardRuntimeStage::Preflight, locationFor(*resource),
+      return boardError(BoardRuntimeStage::Validation, locationFor(*resource),
                         "profiler invocation binds more than one record for "
                         "one physical Tile");
     profilerByResource[id] = &binding;
@@ -420,43 +420,42 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
         request.profilerBindings.size() != WAFER_TX81_PROFILER_TILE_COUNT ||
         profilerTiles.size() != WAFER_TX81_PROFILER_TILE_COUNT)
       return boardError(
-          BoardRuntimeStage::Preflight, {},
+          BoardRuntimeStage::Validation, {},
           "profiler invocation requires all-and-only physical Tiles 0..15");
     for (int64_t tileId = 0; tileId < WAFER_TX81_PROFILER_TILE_COUNT; ++tileId)
       if (!profilerResourceTiles.contains(tileId) ||
           !profilerTiles.contains(tileId))
         return boardError(
-            BoardRuntimeStage::Preflight,
+            BoardRuntimeStage::Validation,
             {PhysicalCardId(0), PhysicalTileId(tileId), LaunchSlotId(), {}},
             "profiler invocation requires all-and-only physical Tiles 0..15");
     for (uint64_t resourceId : profilerResourceIds)
       if (!profilerByResource.count(resourceId))
         return boardError(
-            BoardRuntimeStage::Preflight, {},
+            BoardRuntimeStage::Validation, {},
             "profiler invocation omits an internal profiler ResourceId");
   }
 
-  std::vector<RuntimeInvocationBinding> preflightBindings;
+  std::vector<RuntimeInvocationBinding> invocationBindings;
   for (const PackageResourceRecord &resource : manifest.resources) {
     if (!resource.hostVisible)
       continue;
     if (!bindingsByResource.count(resource.id.getValue()))
-      return boardError(BoardRuntimeStage::Preflight, locationFor(resource),
+      return boardError(BoardRuntimeStage::Validation, locationFor(resource),
                         "invocation omits a host-visible ResourceId");
-    preflightBindings.push_back({resource.id, resource.bytes,
-                                 resource.alignment, resource.access, true});
+    invocationBindings.push_back({resource.id, resource.bytes,
+                                  resource.alignment, resource.access, true});
   }
-  if (preflightBindings.size() != request.bindings.size())
-    return boardError(BoardRuntimeStage::Preflight, {},
+  if (invocationBindings.size() != request.bindings.size())
+    return boardError(BoardRuntimeStage::Validation, {},
                       "invocation bindings are not all-and-only for package");
 
   const RuntimeEnvironment &providerEnvironment =
       driver.getProviderEnvironment();
   llvm::Expected<RuntimeInvocationPlan> semanticPlan =
-      preflightNoCardRuntimeInvocation(package, preflightBindings,
-                                       providerEnvironment);
+      planRuntimeInvocation(package, invocationBindings, providerEnvironment);
   if (!semanticPlan)
-    return wrapDriverError(BoardRuntimeStage::Preflight, {},
+    return wrapDriverError(BoardRuntimeStage::Validation, {},
                            semanticPlan.takeError());
 
   std::vector<VerifiedModuleSnapshot> moduleSnapshots;
@@ -466,7 +465,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       return tile.module == module.id;
     });
     if (firstTile == semanticPlan->tiles.end())
-      return boardError(BoardRuntimeStage::Preflight, {},
+      return boardError(BoardRuntimeStage::Validation, {},
                         "package contains an unreferenced module");
     llvm::Expected<std::vector<uint8_t>> bytes =
         readVerifiedModule(packageRoot, module, locationFor(*firstTile));
@@ -494,7 +493,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                         BoardRuntimeContextState::Poisoned);
     if (manifest.tileCount != static_cast<int64_t>(qualifiedTileCount))
       return boardError(
-          BoardRuntimeStage::Preflight, {},
+          BoardRuntimeStage::Validation, {},
           "package Tile domain does not match the qualified board runtime "
           "session");
     if (driver.getContextState() == BoardRuntimeContextState::Poisoned) {
@@ -516,10 +515,9 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   RuntimeEnvironment capacityEnvironment = providerEnvironment;
   capacityEnvironment.maxResourceBytes = device.freeMemoryBytes;
   llvm::Expected<RuntimeInvocationPlan> capacityPlan =
-      preflightNoCardRuntimeInvocation(package, preflightBindings,
-                                       capacityEnvironment);
+      planRuntimeInvocation(package, invocationBindings, capacityEnvironment);
   if (!capacityPlan)
-    return wrapDriverError(BoardRuntimeStage::Preflight, {},
+    return wrapDriverError(BoardRuntimeStage::Validation, {},
                            capacityPlan.takeError());
   if (llvm::Error error = verifyPlannedTileBindings(device, *capacityPlan))
     return std::move(error);
@@ -536,10 +534,10 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   for (const PackageResourceRecord &resource : manifest.resources) {
     const RuntimeSessionPlan *firstUse = findFirstResourceUse(resource.id);
     if (!firstUse)
-      return boardError(BoardRuntimeStage::Preflight, locationFor(resource),
+      return boardError(BoardRuntimeStage::Validation, locationFor(resource),
                         "package resource has no runtime launch consumer");
     if (resource.bytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
-      return boardError(BoardRuntimeStage::Preflight, locationFor(*firstUse),
+      return boardError(BoardRuntimeStage::Validation, locationFor(*firstUse),
                         "aggregate board allocation byte count overflows");
     allocationBytes += resource.bytes;
   }
@@ -549,7 +547,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       const uint64_t rowBytes =
           static_cast<uint64_t>(tile.launchOrder.size()) * sizeof(uint64_t);
       if (rowBytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
-        return boardError(BoardRuntimeStage::Preflight, locationFor(tile),
+        return boardError(BoardRuntimeStage::Validation, locationFor(tile),
                           "aggregate Tile-row pointer storage overflows");
       allocationBytes += rowBytes;
     }
@@ -557,14 +555,14 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   for (const VerifiedModuleSnapshot &snapshot : moduleSnapshots) {
     uint64_t moduleBytes = snapshot.bytes.size();
     if (moduleBytes > std::numeric_limits<uint64_t>::max() - allocationBytes)
-      return boardError(BoardRuntimeStage::Preflight, {},
+      return boardError(BoardRuntimeStage::Validation, {},
                         "aggregate board module byte count overflows");
     allocationBytes += moduleBytes;
   }
   if (device.freeMemoryBytes <= boardRuntimeFreeMemoryReserve ||
       allocationBytes > device.freeMemoryBytes - boardRuntimeFreeMemoryReserve)
     return boardError(
-        BoardRuntimeStage::Preflight, {},
+        BoardRuntimeStage::Validation, {},
         "aggregate board allocation demand exceeds qualified free memory "
         "after the runtime safety reserve");
 
@@ -573,7 +571,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   for (const RuntimeSessionPlan &tile : capacityPlan->tiles)
     result.tiles.push_back({tile.entry, tile.cardId, tile.tileId,
                             tile.launchSlot, tile.module, tile.completion});
-  result.completedStages.push_back(BoardRuntimeStage::Preflight);
+  result.completedStages.push_back(BoardRuntimeStage::Validation);
   result.completedStages.push_back(BoardRuntimeStage::DeviceSelection);
 
   std::vector<LiveAllocation> allocations;
@@ -753,7 +751,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   llvm::ArrayRef<RuntimeLaunchPhaseRole> launchPhases =
       manifest.launch.getPhases();
   if (capacityPlan->tiles.empty() || launchPhases.empty())
-    return fail(BoardRuntimeStage::Preflight, {},
+    return fail(BoardRuntimeStage::Validation, {},
                 detail::invalid("runtime launch has no planned Tile or phase"));
 
   if (modelLaunch) {
@@ -761,7 +759,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     if (firstTile.phases.size() != launchPhases.size() ||
         firstTile.phases.front().role != launchPhases.front())
       return fail(
-          BoardRuntimeStage::Preflight, locationFor(firstTile),
+          BoardRuntimeStage::Validation, locationFor(firstTile),
           detail::invalid("model launch phase plan does not match manifest"));
     std::vector<BoardGraphModuleSnapshot> graphModules;
     graphModules.reserve(capacityPlan->tiles.size());
@@ -1119,12 +1117,12 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
   if (request.deviceId != session.deviceId ||
       !qualificationMatches(request.qualification, session.qualification))
     return boardError(
-        BoardRuntimeStage::Preflight, {},
+        BoardRuntimeStage::Validation, {},
         "board invocation does not match the qualified session identity");
   if (package.getManifest().tileCount !=
       static_cast<int64_t>(session.qualifiedTileCount))
     return boardError(
-        BoardRuntimeStage::Preflight, {},
+        BoardRuntimeStage::Validation, {},
         "package Tile domain does not match the qualified board runtime "
         "session");
   if (session.driver->getContextState() == BoardRuntimeContextState::Poisoned) {

@@ -25,14 +25,13 @@ using namespace wafer::compiler;
 using namespace wafer::model;
 
 static llvm::Expected<size_t>
-cloneIndependentNCCAfterSendIssue(TargetLLVMModuleBundle &bundle) {
+cloneIndependentNCCAfterSendIssue(TargetLLVMModules &targetLLVMModules) {
   const TargetIdentityId targetIdentity =
-      bundle.getExecutionConfig().getTargetIdentityId();
+      targetLLVMModules.getExecutionConfig().getTargetIdentityId();
   const llvm::StringRef issueSymbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue)
-          .symbol;
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue).symbol;
   size_t inserted = 0;
-  for (const TargetLLVMModule &targetModule : bundle.getModules()) {
+  for (const TargetLLVMModule &targetModule : targetLLVMModules.getModules()) {
     llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
     llvm::SmallVector<llvm::CallInst *, 4> sendIssues;
     llvm::CallInst *nccTemplate = nullptr;
@@ -70,36 +69,36 @@ cloneIndependentNCCAfterSendIssue(TargetLLVMModuleBundle &bundle) {
   }
   if (inserted == 0)
     return llvm::createStringError(
-        "Direct-DTE bundle has no send issue to exercise");
+        "Direct-DTE targetLLVMModules has no send issue to exercise");
   return inserted;
 }
 
 TEST(SystemCTargetModelDTEReadinessTest,
      LateReceiverReadinessPrecedesIndependentNCCAndWait) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(
-          diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
 
   // Clone a legal independent NCC issue immediately after every explicit DTE
-  // send issue. With no receiver-readiness gate, an early sender can publish
+  // send issue. With no receiver-readiness check, an early sender can expose
   // this pending worker before its peer prepares the receive; matching then
   // defers on NCC visibility and the following DTE wait deadlocks. The real
   // issue contract blocks until receive prepare, so matching completes before
   // this cloned NCC issue becomes visible.
-  llvm::Expected<size_t> inserted = cloneIndependentNCCAfterSendIssue(*bundle);
+  llvm::Expected<size_t> inserted =
+      cloneIndependentNCCAfterSendIssue(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(inserted))
       << llvm::toString(inserted.takeError());
   EXPECT_GT(*inserted, 0u);
 
   llvm::Expected<test::DirectDTEInvocationData> invocation =
-      test::buildDirectDTEInvocationData(*bundle);
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, invocation->arguments);
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
 

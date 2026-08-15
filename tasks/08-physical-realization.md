@@ -8,7 +8,7 @@
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   card-local structured TensorProgram，或physical-dataflow selection准备物化的isolated CardProgram candidate；current op、
   indexing maps、Tiling/DPS interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证，
   selected physical Tile work domain尚可处于query-local proposal或actual CardProgram clone中。
@@ -16,12 +16,12 @@ Pipeline position:
   从当前IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
   valid/padding domain与logical-to-physical bit mapping；证明metadata view或selected DDR/SPM/NoC movement是否exact
   可实现，并在actual clone中物化typed view、allocation、movement、temporary、staging、token与wait。
-- Output artifact / IR:
+- Output IR / files:
   query-local且随rewrite失效的analysis proof，或自包含的selected wafer.card.program / wafer.tile.program body；
   accepted事实只存在于typed memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
 - Downstream consumer:
   per-physical-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
-  CardExecutable communication/resource admission、target conversion与package publication。
+  CardExecutable communication/resource verification、target conversion与package writing。
 - User-level driver / named pipeline:
   wafer-compile production pipeline；wafer-opt入口只用于parser/verifier/conversion replay，不能组成第二条production路径。
 - Explicit non-goals:
@@ -133,7 +133,7 @@ wafer.tile.peer_recv %staging_spm {peer = <physical tile_id>, ...}
 
 peer op携带fixed bytes与stable message identity；source/destination storage、encoding、valid domain和effect由operand
 及current IR解释。它不携带logical card-partition ID、runtime launch slot、raw route、FSM或cost。Tile-to-Instr
-conversion产生`wafer.instr.dte_send` / `dte_recv` / `dte_wait`；memory planning后，CardExecutable admission才提交
+conversion产生`wafer.instr.dte_send` / `dte_recv` / `dte_wait`；memory planning后，CardExecutable verification才提交
 sender无法从单Tile module重算的remote accepted-address/resource binding。
 
 相同bytes不证明相同logical region。合法peer transfer必须证明producer domain、consumer demanded domain、两端
@@ -172,7 +172,7 @@ instruction lowering从actual typed IR构造descriptor proof，至少证明：
 - source image正确，无hole、overlap或越界；
 - root-relative offset、byte/bit span、stride、iteration、alignment和field narrowing checked；
 - descriptor不能把padding lane作为defined logical payload；
-- source snapshot、destination publication和async completion满足lifetime。
+- source snapshot、destination writing和async completion满足lifetime。
 
 padding默认是unobservable/undefined physical storage。逐lane compute只有在composed access证明valid lane互不污染时
 才可覆盖physical footprint；GEMM/reduction等会混合lane的实现必须证明invalid lane不进入valid result，或在actual
@@ -180,7 +180,7 @@ IR中显式fill/mask/segmented movement。host-visible output不得把padding发
 
 ## 8. Materialization 与 Cleanup
 
-调用方本次选择按以下transaction物化；本文不拥有shortlist或frontier：
+调用方本次选择按以下transaction物化；本文不拥有shortlist或candidate set：
 
 1. clone未放置的CardProgram parent或构造isolated complete CardProgram candidate；
 2. 从current clone建立relation、bounds、alias、physical-map和effect snapshot；
@@ -207,7 +207,7 @@ compile-time proof resource limit。分类只用于diagnostic与search control�
 - direct/mapped/staged/local movement和one/multi-descriptor cover；
 - invalid-lane fill/mask/segmented path及negative observation；
 - distinct physical Tile peer IDs、message matching、cross-Tile SPM SSA rejection；
-- actual CardProgram projection后每Tile Instr、SPM/DDR和CardExecutable communication gate重放；
+- actual CardProgram拆成per-Tile modules后重放每Tile Instr、SPM/DDR和CardExecutable communication gate；
 - source-to-package integration实际执行，不以单op FileCheck代替。
 
 Q51完成还需要同一search真正生成dependent producer/consumer remap、partial-overlap transfer和NoC-aware placement，

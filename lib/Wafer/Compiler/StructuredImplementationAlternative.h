@@ -54,17 +54,17 @@ struct StructuredAlternativeStructuralEstimates {
   std::optional<uint64_t> estimatedComputeScalarOps;
 };
 
-/// An opaque deterministic identity for one point in a canonical provider
+/// An opaque deterministic key for one point in a canonical provider
 /// query. stableKey is for equality/debugging only and must never be parsed to
 /// recover semantics. stableOrdinal is provider-local and query-local; the
-/// coordinated search remains the sole owner of global semantic ordinals.
-struct StructuredAlternativePointIdentity {
+/// coordinated search assigns global semantic ordinals.
+struct StructuredAlternativeKey {
   std::string stableKey;
   uint64_t stableOrdinal = 0;
 };
 
 /// Transient coverage returned by one successful graph materialization.  The
-/// operation identities are valid only in the supplied isolated module and
+/// operation references are valid only in the supplied isolated module and
 /// only until common lowering mutates it.  They tell the ordinary complete-
 /// rank fallback which top-level operations already belong to the provider's
 /// complete implementation graph; they are never persisted, interpreted as
@@ -98,9 +98,7 @@ class StructuredImplementationAlternativePoint {
 public:
   virtual ~StructuredImplementationAlternativePoint() = default;
 
-  const StructuredAlternativePointIdentity &getIdentity() const {
-    return identity;
-  }
+  const StructuredAlternativeKey &getKey() const { return key; }
   const StructuredAlternativeDomain &getDomain() const { return domain; }
   const StructuredAlternativeParameters &getParameters() const {
     return parameters;
@@ -118,13 +116,12 @@ public:
 
 protected:
   StructuredImplementationAlternativePoint(
-      StructuredAlternativePointIdentity identity,
-      StructuredAlternativeDomain domain,
+      StructuredAlternativeKey key, StructuredAlternativeDomain domain,
       StructuredAlternativeParameters parameters,
       StructuredAlternativeStructuralEstimates estimates);
 
 private:
-  StructuredAlternativePointIdentity identity;
+  StructuredAlternativeKey key;
   StructuredAlternativeDomain domain;
   StructuredAlternativeParameters parameters;
   StructuredAlternativeStructuralEstimates estimates;
@@ -158,10 +155,10 @@ buildStructuredAlternativeStructuralEstimates(
     const StructuredAlternativeParameters &parameters,
     std::string *failureReason = nullptr);
 
-/// Materializes one opaque point only after actual-work admission. The
-/// short-lived pipeline is: prepare an isolated complete-rank structured
-/// artifact, let the point re-prove and rewrite its current SSA, then consume
-/// that artifact through ordinary conservative TensorProgram-to-Tile
+/// Materializes one opaque point only after reserving its actual work. The
+/// short-lived pipeline creates an isolated complete-rank structured module,
+/// lets the point re-prove and rewrite its current SSA, then consumes that
+/// module through ordinary conservative TensorProgram-to-Tile
 /// lowering. No provider-specific semantics enter the common coordinator.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 materializeStructuredImplementationAlternativeToTileRegion(

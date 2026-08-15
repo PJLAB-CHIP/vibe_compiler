@@ -1,6 +1,6 @@
 //===- TargetInstrumentation.cpp - Profiling target cloning --------------===//
 
-#include "TargetArtifactInternal.h"
+#include "TargetCodeGenInternal.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -38,7 +38,7 @@ struct CollectedProfileTargetCallSite {
   ProfileTargetCallSite record;
 };
 
-struct ProfileValueIdentityIndex {
+struct ProfileIRNumbering {
   llvm::DenseMap<const llvm::Function *, uint64_t> functionOrdinals;
   llvm::DenseMap<const llvm::BasicBlock *, uint64_t> blockOrdinals;
   llvm::DenseMap<const llvm::Instruction *, uint64_t> instructionOrdinals;
@@ -54,9 +54,9 @@ bool isProfileInstrumentationCall(const llvm::Instruction &instruction) {
          symbol == kSiteBeginSymbol || symbol == kSiteEndSymbol;
 }
 
-ProfileValueIdentityIndex buildProfileValueIdentityIndex(
-    llvm::ArrayRef<const llvm::Function *> reachable) {
-  ProfileValueIdentityIndex index;
+ProfileIRNumbering
+buildProfileIRNumbering(llvm::ArrayRef<const llvm::Function *> reachable) {
+  ProfileIRNumbering index;
   for (auto [functionOrdinal, function] : llvm::enumerate(reachable)) {
     index.functionOrdinals.try_emplace(function, functionOrdinal);
     for (auto [blockOrdinal, block] : llvm::enumerate(*function)) {
@@ -75,7 +75,7 @@ ProfileValueIdentityIndex buildProfileValueIdentityIndex(
 
 llvm::Expected<std::string> getTargetCallArgumentSignature(
     const llvm::CallBase &call, const TargetCallDescriptor &descriptor,
-    uint64_t targetCallOrdinal, const ProfileValueIdentityIndex &identity) {
+    uint64_t targetCallOrdinal, const ProfileIRNumbering &numbering) {
   std::string storage;
   llvm::raw_string_ostream output(storage);
   output << "target-call=" << targetCallOrdinal;
@@ -94,27 +94,26 @@ llvm::Expected<std::string> getTargetCallArgumentSignature(
       continue;
     }
     if (const auto *argument = llvm::dyn_cast<llvm::Argument>(operand)) {
-      auto function = identity.functionOrdinals.find(argument->getParent());
-      if (function == identity.functionOrdinals.end())
+      auto function = numbering.functionOrdinals.find(argument->getParent());
+      if (function == numbering.functionOrdinals.end())
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "profile target-call argument is outside the reachable function "
-            "identity");
+            "profile target-call argument is outside the reachable functions");
       output << "argument:function:" << function->second
              << ":index:" << argument->getArgNo();
       continue;
     }
     if (const auto *instruction = llvm::dyn_cast<llvm::Instruction>(operand)) {
       auto function =
-          identity.functionOrdinals.find(instruction->getFunction());
-      auto block = identity.blockOrdinals.find(instruction->getParent());
-      auto ordinal = identity.instructionOrdinals.find(instruction);
-      if (function == identity.functionOrdinals.end() ||
-          block == identity.blockOrdinals.end() ||
-          ordinal == identity.instructionOrdinals.end())
+          numbering.functionOrdinals.find(instruction->getFunction());
+      auto block = numbering.blockOrdinals.find(instruction->getParent());
+      auto ordinal = numbering.instructionOrdinals.find(instruction);
+      if (function == numbering.functionOrdinals.end() ||
+          block == numbering.blockOrdinals.end() ||
+          ordinal == numbering.instructionOrdinals.end())
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "profile target-call SSA operand has no stable reachable identity");
+            "profile target-call SSA operand has no assigned IR ordinal");
       output << "instruction:function:" << function->second
              << ":block:" << block->second << ":index:" << ordinal->second
              << ":opcode:" << instruction->getOpcodeName();
@@ -127,7 +126,7 @@ llvm::Expected<std::string> getTargetCallArgumentSignature(
     }
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile target-call argument has an unsupported SSA identity");
+        "profile target-call argument has an unsupported SSA producer");
   }
   output.flush();
   llvm::SHA256 hasher;
@@ -160,8 +159,7 @@ collectProfileTargetCallSitesImpl(const llvm::Module &module,
   }
 
   llvm::ArrayRef<TargetCallDescriptor> descriptors = getTargetCallDescriptors();
-  ProfileValueIdentityIndex valueIdentity =
-      buildProfileValueIdentityIndex(reachable);
+  ProfileIRNumbering irNumbering = buildProfileIRNumbering(reachable);
   llvm::StringMap<uint64_t> occurrences;
   std::vector<CollectedProfileTargetCallSite> sites;
   for (auto [functionOrdinal, function] : llvm::enumerate(reachable)) {
@@ -190,7 +188,7 @@ collectProfileTargetCallSitesImpl(const llvm::Module &module,
         const uint64_t descriptorOrdinal =
             static_cast<uint64_t>(descriptor - descriptors.data());
         llvm::Expected<std::string> signature = getTargetCallArgumentSignature(
-            *call, *descriptor, descriptorOrdinal, valueIdentity);
+            *call, *descriptor, descriptorOrdinal, irNumbering);
         if (!signature)
           return signature.takeError();
         std::string occurrenceKey =
@@ -306,7 +304,7 @@ collectProfileTargetCallSites(const llvm::Module &module,
   return sites;
 }
 
-llvm::Error verifyProfileTargetCallSiteIdentity(
+llvm::Error verifyProfileTargetCallSitesMatch(
     const llvm::Module &productionModule, llvm::StringRef productionEntrySymbol,
     const llvm::Module &traceModule, llvm::StringRef traceEntrySymbol) {
   llvm::Expected<std::vector<ProfileTargetCallSite>> production =
@@ -335,7 +333,7 @@ llvm::Error verifyProfileTargetCallSiteIdentity(
         finalSite.correlationKey != traceSite.correlationKey)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "profile trace target-call site identity differs from final "
+          "profile trace target-call site numbering differs from final "
           "production at physical-Tile-local site %llu",
           static_cast<unsigned long long>(index));
   }
@@ -429,9 +427,10 @@ llvm::Error instrumentProfileTargetModule(llvm::Module &module,
   return llvm::Error::success();
 }
 
-llvm::Error verifyProfileTargetModuleInstrumentation(
-    const llvm::Module &module, llvm::StringRef entrySymbol,
-    ProfileCaptureKind capture) {
+llvm::Error
+verifyProfileTargetModuleInstrumentation(const llvm::Module &module,
+                                         llvm::StringRef entrySymbol,
+                                         ProfileCaptureKind capture) {
   auto hasSymbol = [&](llvm::StringRef symbol) {
     return module.getFunction(symbol) != nullptr;
   };

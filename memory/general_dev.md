@@ -7,8 +7,8 @@
 
 - 开工先看 `git status`，识别共享worktree中的已有改动；不回滚、不覆盖其它工作。
 - 按顺序读 `AGENTS.md`、`tasks/progress.md`、对应编号设计和实施计划，再读相关代码。archive只作历史背景。
-- 非小修先确认完整pipeline contract：上游artifact、当前stage责任、输出、下游consumer、用户入口、non-goals和gate。
-- 每次修改都指出作用在哪个IR/artifact边界；pass名、tool名和任务号不能替代长期语义对象。
+- 非小修先确认完整pipeline contract：上游IR或输入格式、当前stage责任、下游IR或文件、consumer、用户入口、non-goals和完成条件。
+- 每次修改都指出作用在哪个IR、输入格式或输出格式边界；pass名、tool名和任务号不能替代长期语义对象。
 - 收尾同步设计、progress和确有稳定价值的memory，做fresh验证、列出未完成gate并提交相关改动。
 - 当前边界仍有旧producer、consumer、ABI/schema reader、compatibility wrapper或only-for-it test时不能报完成。
 
@@ -30,7 +30,7 @@
 
 - 信息能从current IR稳定推出时做query-local analysis；analysis随mutation失效并重算，不跨pass保存。
 - 不能重算且下游需要的语义进入IR自身，优先使用SSA、region/control flow、op/type/attr/effect和verifier relation。
-- 不建立shadow schedule、opaque payload、side table、名字约定或artifact filename协议。
+- 不建立shadow schedule、opaque payload、side table、名字约定或通过文件名恢复语义的协议。
 - transformation读取current IR和本次局部analysis，直接改写当前IR或构造下一层IR；late stage不修复上游选择。
 - allocator、completion、ABI preparation、target conversion和runtime verifier只做自己边界的legality/materialization，
   失败返回候选owner，不原地retile、spill、reorder或切换算法。
@@ -50,14 +50,14 @@ source program
   -> all-and-only wafer.tile.program
   -> TileRegion
   -> Instr
-  -> Target LLVM / target artifact
+  -> Target LLVM modules
   -> schema-v8 package
   -> no-card / model / board
 ```
 
 - `card_id`、`tile_id`、`launch_slot`是三个独立typed fields。launch slot是dense canonical submission order，不能
   假设等于Tile ID；vector位置、pid、symbol或文件名都不能恢复物理身份。
-- no-work Tile仍需合法entry并进入artifact/runtime domain。module count不拥有Tile domain；Grid/Cluster可以低层聚合module，
+- no-work Tile仍需合法entry并进入target/runtime domain。module count不拥有Tile domain；Grid/Cluster可以低层聚合module，
   但必须保留16个显式Tile interfaces和每Tile不同body。
 
 ## Physical-dataflow时空综合
@@ -94,16 +94,16 @@ source program
 - 只有需要exact legality/cost的状态才按需物化complete CardProgram candidate；任一时刻最多一个live actual clone，避免RSS随
   候选笛卡尔积增长。固定shortlist、beam或candidate cap会丢合法状态，只能在Q52以profile和质量回归证明后作为显式trade-off。
 - global work ledger使用deterministic work units，不用wall-clock timeout决定搜索语义。wall/RSS只做回归诊断。
-- host worker可以并行互不共享可写IR的proposal/Tile-local evaluation；frontier insertion、tie-break和publication保持stable order。
+- host worker可以并行互不共享可写IR的proposal/Tile-local evaluation；candidate result合并、tie-break和最终顺序保持稳定。
 - regular factorized mapping、reuse-guided movement与分层resource cost应作为现有typed domain上的proposal/order机制；不为它们
   clone-per-mapping、不以function name/JSON/opaque sidecar关联状态，也不新增第二套hardware graph或winner owner。
-- 已选择CardProgram只经过一个无策略CardExecutable compile/admission seam：physical-Tile projection、Tile→Instr、fresh
+- 已选择CardProgram只经过一个无策略CardExecutable compilation函数：physical-Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
   caller只能消费结果，不能让lowering枚举、retile、spill、rebuffer或修候选。
 - proven exact failure消耗明确work unit并销毁clone，不建立late repair selector或candidate-local quota；allocator/solver
   resource exhaustion、timeout或internal failure属于indeterminate，不能形成no-good或删除合法state。
 - public optimization policy只使用`search`与`none`：`none`只materialize deterministic conservative baseline；
-  `search`启用compiler-owned搜索，但二者经过相同artifact/exact gates。
+  `search`启用compiler-owned搜索，但二者经过相同lowering和exact verification。
 - `none`的SPM反馈循环从完整per-Tile iterator tile开始；每次只消费fresh allocator返回的causal demand，按有限breakpoint
   缩小对应parallel/reduction坐标并重新跑actual packing。多个tied demand可以提升已存在的exact child顺序，但不得生成
   search-policy speculative sibling或用byte projection签发capacity合法。
@@ -149,12 +149,12 @@ source program
 - target call descriptor registry是symbol/signature/field position/issue domain的唯一事实源。consumer用typed semantic和decoder，
   不解析symbol spelling。
 - host JIT dispatch只是把final target calls转成typed transactions的internal bridge，不是public runtime ABI或serialized field。
-- target publication在private staging root完成link、ELF/export/digest/readback，all-and-only成功后原子rename；失败不发布部分root。
+- target code generation在private staging root完成link、ELF/export/digest/readback，全部成功后原子rename；失败不留下部分final目录。
 
 ## Package schema v8
 
-- ordinary package只接受current schema version 8，profile companion只接受current schema version 9；旧version fail closed，
-  没有兼容reader/translator。profile v9是单一production artifact合同，不含variant shell或重复manifest digest API。
+- ordinary package只接受current schema version 8，profile instrumentation只接受current schema version 10；旧version fail closed，
+  没有兼容reader/translator。profile v10是单一production instrumentation合同，不含variant shell或重复manifest digest API。
 - production manifest固定 `card_count=1`、`tile_count=16`，entries显式保存 `(card_id,tile_id,launch_slot)`。
 - program input/parameter/constant/output使用card scope；workspace与transport status使用Tile scope。
 - sharing只由同一ResourceId被多个entry slots引用表达，不能从role/name/type/shape推断。

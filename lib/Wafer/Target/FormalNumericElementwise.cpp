@@ -27,8 +27,8 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
     return std::move(error);
   const NumericCTElementwiseCommand &elementwise =
       *command.getCommandKey().getCTElementwise();
-  const NumericCTElementwiseSemanticsIdentity &identity =
-      *command.getSemantics()->getCTElementwiseIdentity();
+  const NumericCTElementwiseSemanticsKey &key =
+      *command.getSemantics()->getCTElementwiseKey();
   if (inputs.size() != elementwise.inputs.size())
     return formalError(FormalNumericErrorCode::OperandCountMismatch,
                        llvm::Twine("elementwise operation expects ") +
@@ -40,7 +40,7 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
   canonicalInputs.reserve(inputs.size());
   for (auto [index, input] : llvm::enumerate(inputs)) {
     llvm::Expected<RawLogicalValue> canonical = validateOperand(
-        input, identity.getInputFormat(),
+        input, key.getInputFormat(),
         llvm::Twine("elementwise operand ") + llvm::Twine(index));
     if (!canonical)
       return canonical.takeError();
@@ -87,7 +87,7 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
     classifications.push_back(*classification);
     floatingInputs.push_back(decodeFloat(input));
   }
-  const LogicalFormat resultFormat = identity.getDestinationFormat();
+  const LogicalFormat resultFormat = key.getDestinationFormat();
   const LogicalFormatDescriptor &resultDescriptor =
       *findLogicalFormatDescriptor(resultFormat);
   auto finishNaN = [&]() -> llvm::Expected<FormalNumericResult> {
@@ -148,8 +148,7 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
     result.changeSign();
     break;
   case NumericElementwiseOperation::Recip:
-    result =
-        llvm::APFloat::getOne(*getFloatSemantics(identity.getInputFormat()));
+    result = llvm::APFloat::getOne(*getFloatSemantics(key.getInputFormat()));
     status =
         result.divide(floatingInputs[0], llvm::APFloat::rmNearestTiesToEven);
     break;
@@ -164,8 +163,8 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
           operation == NumericElementwiseOperation::Max
               ? classifications[0].negative && classifications[1].negative
               : classifications[0].negative || classifications[1].negative;
-      result = llvm::APFloat::getZero(
-          *getFloatSemantics(identity.getInputFormat()), negative);
+      result = llvm::APFloat::getZero(*getFloatSemantics(key.getInputFormat()),
+                                      negative);
       break;
     }
     const llvm::APFloat::cmpResult comparison =
@@ -194,8 +193,7 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
     break;
   case NumericElementwiseOperation::Relu:
     if (classifications[0].negative && !floatingInputs[0].isZero())
-      result =
-          llvm::APFloat::getZero(*getFloatSemantics(identity.getInputFormat()));
+      result = llvm::APFloat::getZero(*getFloatSemantics(key.getInputFormat()));
     break;
   case NumericElementwiseOperation::Eq:
   case NumericElementwiseOperation::Ne:

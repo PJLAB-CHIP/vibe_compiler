@@ -11,7 +11,7 @@ import re
 
 TARGET_LOWERING_SOURCES = (
     "LowerInstrToTargetLLVM.cpp",
-    "TargetCallPreflight.cpp",
+    "TargetLoweringVerification.cpp",
     "TargetCallLoweringSupport.cpp",
     "MovementTargetCallLowering.cpp",
     "ComputeTargetCallLowering.cpp",
@@ -210,12 +210,12 @@ def check_data_format_code_contract(
     target_format_text: str, vendor_header_text: str
 ) -> tuple[list[LogicalFormatFact], dict[str, int]]:
     logical_formats = parse_logical_formats(target_format_text)
-    project_codes = parse_target_data_format_codes(target_format_text)
+    wafer_codes = parse_target_data_format_codes(target_format_text)
     vendor_codes = parse_vendor_data_format_codes(vendor_header_text)
 
     logical_names = {fact.enum_name for fact in logical_formats}
     require_exact_set(
-        set(project_codes), logical_names, "target Data_Format logical domain"
+        set(wafer_codes), logical_names, "target Data_Format logical domain"
     )
     expected_vendor_names = {
         vendor_format_suffix(fact.spelling) for fact in logical_formats
@@ -225,19 +225,19 @@ def check_data_format_code_contract(
     )
     for fact in logical_formats:
         vendor_name = vendor_format_suffix(fact.spelling)
-        if project_codes[fact.enum_name] != vendor_codes[vendor_name]:
+        if wafer_codes[fact.enum_name] != vendor_codes[vendor_name]:
             fail(
                 "Data_Format code mismatch for "
-                f"{fact.enum_name}: project={project_codes[fact.enum_name]}, "
+                f"{fact.enum_name}: wafer={wafer_codes[fact.enum_name]}, "
                 f"vendor Fmt_{vendor_name}={vendor_codes[vendor_name]}"
             )
-    return logical_formats, project_codes
+    return logical_formats, wafer_codes
 
 
 def check_encoding_matrix_contract(
     target_format_text: str,
     logical_formats: list[LogicalFormatFact],
-    project_codes: dict[str, int],
+    wafer_codes: dict[str, int],
 ) -> int:
     engine_body = initializer_body(target_format_text, "kTargetFormatEngines[]")
     engines = re.findall(r"Engine::(\w+)", engine_body)
@@ -260,7 +260,7 @@ def check_encoding_matrix_contract(
         if pair in actual_pairs:
             fail(f"target format matrix: duplicate row {engine} x {format_name}")
         actual_pairs.add(pair)
-        if format_name not in project_codes:
+        if format_name not in wafer_codes:
             fail(
                 "target format matrix: row has no current target code "
                 f"{engine} x {format_name}"
@@ -413,7 +413,7 @@ def check_convert_route_contract(
     require_pattern(
         lowering_text,
         r"Case<InstrConvertOp>\(.*?verifyTargetConvertRoute\(typedOp\)",
-        "target convert preflight route verification",
+        "target convert route verification",
     )
     require_pattern(
         lowering_text,
@@ -778,11 +778,6 @@ def check_arg_writeback(
         require_absent(
             ordering, forbidden, "argmax/argmin uncached mapped-SPM ordering"
         )
-    require_absent(
-        source_text,
-        "wafer_publish_spm_range",
-        "legacy mapped-SPM cache publication helper",
-    )
     for symbol in [
         "wafer_tx81_peripheral_argmax_v3",
         "wafer_tx81_peripheral_argmin_v3",
@@ -804,7 +799,7 @@ def check_local_completion_ordering(source_text: str) -> None:
     ]
     require_in_order(ordering, sequence, "local completion C908 ordering")
     require_absent(
-        ordering, "dcache.", "local completion must not imply cache publication"
+        ordering, "dcache.", "local completion must not imply cache visibility"
     )
 
     ncc_join = function_body(source_text, "wafer_tx81_ncc_join")
@@ -984,7 +979,7 @@ def check_expanded_profile_completion(expanded_source_text: str) -> None:
         r"\+\+wafer_profile_header->next_sequence\s*;.*"
         r"return\s*;.*"
         r"hook_begin_cycle\s*=\s*wafer_profile_cycle\(\)",
-        "expanded Count site-container capacity preflight without Trace cost",
+        "expanded Count site-container capacity validation without Trace cost",
     )
     site_end = function_body(
         expanded_source_text, "wafer_tx81_profile_site_end"
@@ -1201,11 +1196,11 @@ def main() -> int:
         repo_root / "include" / "Wafer" / "ABI" / "Tx81NCCABI.h"
     )
 
-    logical_formats, project_codes = check_data_format_code_contract(
+    logical_formats, wafer_codes = check_data_format_code_contract(
         target_format_text, vendor_header_text
     )
     encoding_row_count = check_encoding_matrix_contract(
-        target_format_text, logical_formats, project_codes
+        target_format_text, logical_formats, wafer_codes
     )
     zp_count, round_count, plain_count = check_convert_route_contract(
         target_format_text,

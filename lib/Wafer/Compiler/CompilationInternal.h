@@ -4,7 +4,7 @@
 #define WAFER_COMPILER_COMPILATIONINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Frontend/Program.h"
 
 #include "mlir/IR/DialectRegistry.h"
@@ -45,22 +45,21 @@ bool resolveThroughExistingAncestor(llvm::StringRef path,
                                     llvm::SmallVectorImpl<char> &storage,
                                     llvm::raw_ostream &diagnostics);
 bool pathIsWithin(llvm::StringRef path, llvm::StringRef directory);
-bool publishDirectoryNoReplace(llvm::StringRef source,
-                               llvm::StringRef destination,
-                               llvm::raw_ostream &diagnostics);
+bool renameDirectoryNoReplace(llvm::StringRef source,
+                              llvm::StringRef destination,
+                              llvm::raw_ostream &diagnostics);
 
-using DirectoryPublicationFunction = bool (*)(llvm::StringRef source,
-                                              llvm::StringRef destination,
-                                              llvm::raw_ostream &diagnostics);
+using DirectoryRenameFunction = bool (*)(llvm::StringRef source,
+                                         llvm::StringRef destination,
+                                         llvm::raw_ostream &diagnostics);
 
-/// Publish a package and its independently named companion as one recoverable
-/// transaction. If companion publication fails after the package rename, the
-/// package is moved back to its staging location before failure is returned.
-mlir::LogicalResult publishPackageAndCompanionNoReplace(
+/// Renames a package and profile directory to their final paths. If the second
+/// rename fails, the package is renamed back to its staging path.
+mlir::LogicalResult renamePackageAndProfileNoReplace(
     llvm::StringRef stagedPackage, llvm::StringRef outputPackage,
-    llvm::StringRef stagedCompanion, llvm::StringRef outputCompanion,
-    llvm::raw_ostream &diagnostics,
-    DirectoryPublicationFunction publishDirectory);
+    llvm::StringRef stagedInstrumentation,
+    llvm::StringRef outputInstrumentation, llvm::raw_ostream &diagnostics,
+    DirectoryRenameFunction renameDirectory);
 
 mlir::OwningOpRef<mlir::ModuleOp>
 parseProgramDirectoryModule(llvm::StringRef programDirectory,
@@ -92,7 +91,8 @@ mlir::LogicalResult runSpmdHelper(llvm::StringRef helper,
                                   const ExecutionConfig &config,
                                   llvm::raw_ostream &diagnostics);
 
-llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
+llvm::Expected<PhysicalTileExecutables>
+compileTensorProgramToPhysicalTileExecutables(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot, CompilationIRTrace &irTrace);
@@ -104,8 +104,8 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<ExecutableBundle> &executableBundle,
-    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    std::optional<PhysicalTileExecutables> &physicalTileExecutables,
+    std::optional<TargetLLVMModules> &targetLLVMModules,
     CompilationIRTrace &irTrace);
 
 mlir::LogicalResult stageProfileTargetPackages(
@@ -115,8 +115,8 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<ExecutableBundle> &executableBundle,
-    std::optional<TargetLLVMModuleBundle> &targetLLVMModuleBundle,
+    std::optional<PhysicalTileExecutables> &physicalTileExecutables,
+    std::optional<TargetLLVMModules> &targetLLVMModules,
     CompilationIRTrace &irTrace);
 
 mlir::LogicalResult runCompilationTransaction(
@@ -126,8 +126,8 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<ExecutableBundle> *retainedExecutableBundle,
-    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle,
+    std::optional<PhysicalTileExecutables> *retainedPhysicalTileExecutables,
+    std::optional<TargetLLVMModules> *retainedTargetLLVMModules,
     std::optional<CompilationIRTrace> *retainedIRTrace = nullptr);
 
 } // namespace wafer::compiler::detail

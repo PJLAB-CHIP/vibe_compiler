@@ -384,11 +384,11 @@ def compile_package(
         environment=environment,
     )
     expected = (
-        "wafer-compile: published verified package with "
+        "wafer-compile: wrote verified package with "
         f"execution-ranks={RANK_COUNT}"
     )
     if expected not in result.stdout or not output.is_dir():
-        raise RuntimeError(f"compiler did not publish {case.key}")
+        raise RuntimeError(f"compiler did not write {case.key}")
 
 
 def replicated_boundary_binding(
@@ -442,7 +442,7 @@ def validate_distributed_boundary(
     }
     if metadata.get("distributed_boundary") != expected:
         raise RuntimeError(
-            "post-SPMD carrier did not publish the exact replicated boundary"
+            "post-SPMD carrier did not produce the exact replicated boundary"
         )
 
 

@@ -22,7 +22,7 @@ enum class StaticExecutableOperationCountStatus {
   CountOverflow,
 };
 
-/// Counts every instruction issue and explicit local completion in `root`
+/// Counts every instruction op and explicit NCC join in `root`
 /// without mutating IR.  Program size is a ranking/cost fact rather than a
 /// fixed workload-legality gate; only an unrepresentable count fails closed.
 /// `operationCount` is reset before traversal and contains the exact count
@@ -33,10 +33,10 @@ countStaticExecutableOperations(mlir::Operation *root,
 
 } // namespace detail
 
-/// Recompute NCC pending/completion state from one function's current typed
-/// instruction, SSA and memory-effect IR. Orphan and overbroad typed joins are
+/// Place the required NCC joins from one function's current typed instruction,
+/// SSA, and memory-effect IR. Orphan and overbroad joins are
 /// erased or narrowed; only cross-worker/external-observer conflicts and
-/// terminal publication materialize the minimum participant join.
+/// function-result observation materialize the minimum participant join.
 ///
 /// Candidate rewrites that remove, clone or reorder instruction issues must
 /// rerun this normalizer before lifetime/resource planning. The operation is
@@ -48,12 +48,12 @@ mlir::LogicalResult placeRequiredNCCJoins(mlir::func::FuncOp function);
 /// pipelines should use the function-anchored operation above.
 mlir::LogicalResult placeRequiredNCCJoins(mlir::ModuleOp module);
 
-/// Erase every compiler-derived NCC participant join and rebuild completion
+/// Erase every compiler-derived NCC participant join and rebuild required joins
 /// solely from the module's current worker order, typed issues/effects,
-/// aliases, ranges, event tokens, and observer boundaries. Terminal candidate
-/// finalization uses this after function-boundary bufferization; action
+/// aliases, ranges, event tokens, and observer boundaries. Physical-Tile
+/// memory planning uses this after function-boundary bufferization; action
 /// construction uses the incremental normalizer above while its loop-carried
-/// handoff topology is still being formed.
+/// communication topology is still being formed.
 mlir::LogicalResult rebuildRequiredNCCJoins(mlir::func::FuncOp function);
 
 /// Compatibility adapter for owned module transformations.
@@ -96,7 +96,8 @@ private:
 };
 
 /// Lower exactly one isolated TileRegion body. This operation does not run
-/// function-wide NCC completion, bufferization, or memory planning.
+/// function-wide required NCC join placement, bufferization, or memory
+/// planning.
 mlir::LogicalResult
 convertTileRegionToInstr(TileRegionOp region,
                          TileRegionToInstrLoweringSession &session,
@@ -107,14 +108,15 @@ convertTileRegionToInstr(TileRegionOp region,
 mlir::LogicalResult convertTileRegionToInstr(TileRegionOp region);
 
 /// Compatibility adapter that lowers every TileRegion in an owned module and
-/// then runs function-wide NCC completion. Production pass pipelines should
-/// use the region-anchored conversion and function-anchored completion passes.
+/// then runs function-wide required NCC join placement. Production pass
+/// pipelines should use the region-anchored conversion and function-anchored
+/// join-placement pass.
 mlir::LogicalResult convertTileRegionToInstrModule(mlir::ModuleOp module);
 
 namespace detail {
 
-/// Place joins directly in one function owned by a disposable artifact
-/// transaction. The caller must discard that complete artifact on failure.
+/// Place joins directly in one caller-owned private function. The caller must
+/// discard the complete function on failure.
 /// Production pipelines use the function-anchored pass, which consumes this
 /// same operation-scoped kernel.
 mlir::LogicalResult

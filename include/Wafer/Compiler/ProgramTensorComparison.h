@@ -77,7 +77,7 @@ private:
 /// storage and compared elementwise using
 /// `abs(actual - expected) <= atol + rtol * abs(expected)`. Any non-finite
 /// floating value is rejected. Integer and other non-floating storage is
-/// compared byte-for-byte. Floating formats without a published tolerance
+/// compared byte-for-byte. Floating formats without a supported tolerance
 /// policy fail closed.
 llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
                                                const ProgramTensor &expected,

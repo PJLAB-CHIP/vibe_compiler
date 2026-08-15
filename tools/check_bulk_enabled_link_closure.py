@@ -20,7 +20,7 @@ FORBIDDEN_DYNAMIC_TOKENS = (
 REQUIRED_RAW_SYMBOLS = ("dnnl_version", "dnnl_primitive_execute")
 REQUIRED_ADAPTER_SYMBOLS = (
     "createManagedBulkExecutionEnvironment",
-    "executeAdmittedBulkTensorNumeric",
+    "executeQualifiedBulkTensorNumeric",
     "validateBulkBackend",
 )
 

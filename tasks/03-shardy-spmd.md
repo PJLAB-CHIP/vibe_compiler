@@ -1,7 +1,7 @@
 # Wafer Shardy / Card-Level SPMD 设计
 
 状态：2026-08-13按card-level GSPMD与card-local physical-dataflow分层同步。本文只拥有frontend sharding、
-global-to-card-local partition 和 post-SPMD structured-program handoff；单卡 physical Tile 的 spatial mapping、
+global-to-card-local partition 和 post-SPMD structured-program boundary；单卡 physical Tile 的 spatial mapping、
 temporal tiling、融合、驻留和通信由 `tasks/06-physical-dataflow-synthesis.md` 唯一拥有。实现状态看
 `tasks/progress.md`。
 
@@ -9,19 +9,19 @@ temporal tiling、融合、驻留和通信由 `tasks/06-physical-dataflow-synthe
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   verified、尚未SPMD partition的StableHLO program directory；可选frontend mhlo.sharding；以及validated
   ExecutionConfig中的card-level num_partitions。target identity和physical Tile数量不由frontend提供。
 - Current stage responsibility:
   在transaction-owned source snapshot上建立card-level logical partition mesh，把pre-SPMD StableHLO和frontend
   sharding交给pinned XLA helper，由helper内部完成Shardy propagation与XLA SPMD；重新读取并验证local signature、
   typed distributed boundary、card-partition parameter shards和post-SPMD marker，再进入local normalization。
-- Output artifact / IR:
+- Output IR / files:
   每个logical card partition一个verified card-local structured tensor program，以及对应parameter payload/metadata；
   输出尚未绑定card_id、physical tile_id、launch slot或runtime endpoint。
 - Downstream consumer:
   fixed target-independent structured optimization；随后physical-dataflow synthesis对每个card-local DAG
-  构造CardProgram，并选择physical tile_id。physical-Tile module projection只发生在selected CardProgram之后。
+  构造CardProgram，并选择physical tile_id。physical-Tile module splitting只发生在selected CardProgram之后。
 - User-level driver / named pipeline:
   正式入口为
   `wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=N --launch-kind={kernel|model}`；
@@ -75,7 +75,7 @@ pre-SPMD StableHLO + mhlo.sharding + num_partitions
   -> card-partition parameter shard metadata and NPY payloads
 ```
 
-这是artifact边界，不把helper脚本提升成IR协议。helper路径来自build-time
+这是program-directory/IR边界，不把helper脚本提升成IR协议。helper路径来自build-time
 `WAFER_XLA_SPMD_PARTITIONER_HELPER`，不进入`CompilationRequest`、CLI schema或program metadata。driver只通过
 明确argv调用helper，并在transaction staging内验证输出；no-op copy、partial output或仅返回SDY IR都不算成功。
 启用unit tests的build可以显式注入mock helper，但该机制不能成为部署时的helper选择通道。
@@ -98,7 +98,7 @@ tensor；replicated records各自覆盖完整tensor。不得用mark strategy名�
 测试case名替代这些关系。
 
 旧`logical_rank_count`、`ranks[]`和`rank_*.npy`已从current schema与helper输出删除；production只接受上述
-card-partition records。helper内部使用XLA的partition/replica术语不改变artifact合同，任何下游都不得通过文件名恢复
+card-partition records。helper内部使用XLA的partition/replica术语不改变program-directory合同，任何下游都不得通过文件名恢复
 partition或把它解释成Tile。
 
 frontend program-directory verifier成功时返回C++ typed result：distributed input/output binding、每partition
@@ -108,10 +108,10 @@ slice、parameter binding/payload locator和constant binding。下游只消费�
 driver必须先parse/verify helper输出的MLIR，再校验logical partition mesh、distributed boundary和parameter shard
 metadata；不能用physical topology或Tile availability替代任一card-partition检查。
 
-### 2.3 Post-SPMD handoff
+### 2.3 Post-SPMD boundary
 
 post-SPMD program仍是target-independent tensor program。StableHLO logical collective先进入
-`wafer.linalg_ext.collective.*` tensor handoff，与local Linalg/Tensor/Arith一起组成完整card-local structured
+`wafer.linalg_ext.collective.*` tensor boundary，与local Linalg/Tensor/Arith一起组成完整card-local structured
 tensor DAG。它不携带：
 
 - physical `card_id`、peer、Tile或route；
@@ -145,7 +145,7 @@ snapshot；原source不被原地补topology、改MLIR或写shards。helper和loc
 
 只有下列检查全部成功后，card-local structured-program directory才通过同filesystem rename变为可见：
 
-1. source IR/program admission；
+1. source IR/program verification；
 2. logical partition mesh与`num_partitions` exact-match；
 3. helper exit status；
 4. post-SPMD marker、零SDY op、metadata/payload relation；
@@ -166,7 +166,7 @@ snapshot；原source不被原地补topology、改MLIR或写shards。helper和loc
 - pinned helper build：`tools/build_xla_spmd_partitioner_helper.py`；
 - real program generator：`test/Tools/Inputs/wafer_pytorch_xla_capture.py`。
 
-实现入口不是长期artifact名，测试文件名也不能恢复额外program mode。
+实现入口不是长期IR/file名，测试文件名也不能恢复额外program mode。
 
 ## 6. 验证
 
@@ -178,8 +178,8 @@ Mandatory coverage：
 - data/column/row等helper case按card partition解释，unsupported helper形态fail closed；
 - duplicate/missing partition、metadata/IR不一致、helper late failure和final readback failure保持transaction atomicity；
 - 用户入口拒绝旧`--execution-ranks`以及把16解释为single-card Tile count的请求；
-- downstream handoff测试证明同一个single-card program可形成多个physical Tile programs，但该算法与正确性合同只在
+- downstream boundary测试证明同一个single-card program可形成多个physical Tile programs，但该算法与正确性合同只在
   `tasks/06-physical-dataflow-synthesis.md`定义。
 
-局部Shardy/IR tests只证明parse、propagation或partition relation，不证明program payload、card-local handoff或
+局部Shardy/IR tests只证明parse、propagation或partition relation，不证明program payload、card-local boundary或
 source-to-package主线。完整gate要求相关integration cases实际执行；unsupported/skipped不能计为通过。

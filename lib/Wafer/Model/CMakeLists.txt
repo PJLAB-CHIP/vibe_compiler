@@ -17,7 +17,7 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     TargetModelKernel.cpp
     TargetModelMovement.cpp
     TargetModelTensorNumeric.cpp
-    TargetModelTransactionSchema.cpp
+    TargetModelCommandValidation.cpp
 
     LINK_LIBS PUBLIC
     WaferNumericModel

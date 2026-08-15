@@ -188,7 +188,7 @@ def main() -> int:
             "--launch-kind=kernel",
         ]
     )
-    if "published verified package" not in compile_result.stdout:
+    if "wrote verified package" not in compile_result.stdout:
         raise RuntimeError("wafer-compile did not report a verified package")
 
     resource_arguments = invocation_arguments(package / "manifest.json", raw_paths)
@@ -217,7 +217,7 @@ def main() -> int:
             ]
         )
         required = (
-            "board_stage: preflight",
+            "board_stage: validation",
             "board_stage: device-selection",
             "board_stage: resource-allocation",
             "board_stage: host-to-device",

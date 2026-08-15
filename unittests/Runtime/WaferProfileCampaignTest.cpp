@@ -32,7 +32,7 @@ using wafer::runtime::ResourceId;
 using wafer::runtime::cli::BoardInvocationFilePlan;
 using wafer::runtime::cli::BoardOutputComparisonKind;
 using wafer::runtime::cli::BoardProfileOutputValidationMode;
-using wafer::runtime::cli::BoardProfileOutputValidationState;
+using wafer::runtime::cli::BoardProfileOutputValidator;
 using wafer::runtime::cli::BoardProfileProtocolLaunch;
 using wafer::runtime::cli::BoardProfileProtocolObservation;
 using wafer::runtime::cli::BoardProfileProtocolStep;
@@ -40,7 +40,7 @@ using wafer::runtime::cli::BoardProfileProtocolStep;
 constexpr uint32_t kTraceFlags = WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED |
                                  WAFER_TX81_PROFILER_RECORD_ENTRY_BEGUN |
                                  WAFER_TX81_PROFILER_RECORD_ENTRY_ENDED |
-                                 WAFER_TX81_PROFILER_RECORD_PUBLISHED;
+                                 WAFER_TX81_PROFILER_RECORD_COMPLETE;
 
 BoardProfileProtocolObservation
 validObservation(const BoardProfileProtocolStep &step) {
@@ -55,7 +55,7 @@ validObservation(const BoardProfileProtocolStep &step) {
     observation.countSequences.fill(3);
   if (step.launch == BoardProfileProtocolLaunch::Trace)
     for (auto &tile : observation.trace)
-      tile = {/*preflightCount=*/3,
+      tile = {/*countedEventCount=*/3,
               /*nextSequence=*/3,
               /*storedEventCount=*/3,
               /*droppedEventCount=*/0,
@@ -111,8 +111,7 @@ protected:
   std::vector<uint8_t> bytesFor(const PackageResourceRecord &resource) const {
     return {static_cast<uint8_t>(resource.roleIndex + 1),
             static_cast<uint8_t>(resource.roleIndex),
-            static_cast<uint8_t>(resource.roleIndex * 2),
-            UINT8_C(0x5a)};
+            static_cast<uint8_t>(resource.roleIndex * 2), UINT8_C(0x5a)};
   }
 
   BoardInvocationFilePlan
@@ -166,11 +165,11 @@ llvm::Error writeProfileReportMember(llvm::StringRef directory,
   return llvm::Error::success();
 }
 
-class WaferProfilePublicationTest : public ::testing::Test {
+class WaferProfileReportDirectoryTest : public ::testing::Test {
 protected:
   void SetUp() override {
     ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
-        "wafer-profile-publication-test", root));
+        "wafer-profile-report-directory-test", root));
   }
 
   void TearDown() override { llvm::sys::fs::remove_directories(root); }
@@ -203,17 +202,17 @@ protected:
   llvm::SmallString<256> root;
 };
 
-TEST_F(WaferProfilePublicationTest,
-       ReplacesCurrentWithExactlyThreeWorldAccessibleArtifacts) {
+TEST_F(WaferProfileReportDirectoryTest,
+       ReplacesCurrentWithExactlyThreeWorldAccessibleFiles) {
   auto stage = [&](llvm::StringRef runId, llvm::StringRef stagingDirectory) {
     return stageValidReport(runId, stagingDirectory);
   };
-  auto first = wafer::runtime::cli::testing::publishProfileReportForTesting(
+  auto first = wafer::runtime::cli::testing::writeProfileReportForTesting(
       root, stage, removeManagedRun);
   ASSERT_TRUE(static_cast<bool>(first)) << llvm::toString(first.takeError());
   const std::string firstRunDirectory = first->runDirectory;
 
-  auto second = wafer::runtime::cli::testing::publishProfileReportForTesting(
+  auto second = wafer::runtime::cli::testing::writeProfileReportForTesting(
       root, stage, removeManagedRun);
   ASSERT_TRUE(static_cast<bool>(second)) << llvm::toString(second.takeError());
   EXPECT_FALSE(llvm::sys::fs::exists(firstRunDirectory));
@@ -247,9 +246,9 @@ TEST_F(WaferProfilePublicationTest,
                                             "index.html"}));
 }
 
-TEST_F(WaferProfilePublicationTest,
-       OldRunRemovalFailureIsReturnedAfterNewCurrentActivation) {
-  auto first = wafer::runtime::cli::testing::publishProfileReportForTesting(
+TEST_F(WaferProfileReportDirectoryTest,
+       OldRunRemovalFailureIsReturnedAfterCurrentEntryReplacement) {
+  auto first = wafer::runtime::cli::testing::writeProfileReportForTesting(
       root,
       [&](llvm::StringRef runId, llvm::StringRef stagingDirectory) {
         return stageValidReport(runId, stagingDirectory);
@@ -260,7 +259,7 @@ TEST_F(WaferProfilePublicationTest,
   size_t removalCalls = 0;
   std::string removedDirectory;
   std::string secondRunId;
-  auto second = wafer::runtime::cli::testing::publishProfileReportForTesting(
+  auto second = wafer::runtime::cli::testing::writeProfileReportForTesting(
       root,
       [&](llvm::StringRef runId, llvm::StringRef stagingDirectory) {
         secondRunId = runId.str();
@@ -273,7 +272,7 @@ TEST_F(WaferProfilePublicationTest,
       });
   ASSERT_FALSE(static_cast<bool>(second));
   std::string message = llvm::toString(second.takeError());
-  EXPECT_NE(message.find("previous managed run could not be removed"),
+  EXPECT_NE(message.find("previous run could not be removed"),
             std::string::npos);
   EXPECT_EQ(removalCalls, 1u);
   EXPECT_EQ(removedDirectory, first->runDirectory);
@@ -286,7 +285,7 @@ TEST_F(WaferProfilePublicationTest,
   EXPECT_EQ(llvm::sys::path::filename(resolved), secondRunId);
 }
 
-TEST_F(WaferProfilePublicationTest,
+TEST_F(WaferProfileReportDirectoryTest,
        MismatchedEvidenceIdentityRejectsCurrentBeforeStagingOrDeletion) {
   llvm::SmallString<256> runs(root);
   llvm::sys::path::append(runs, "runs");
@@ -306,7 +305,7 @@ TEST_F(WaferProfilePublicationTest,
 
   bool staged = false;
   bool removed = false;
-  auto result = wafer::runtime::cli::testing::publishProfileReportForTesting(
+  auto result = wafer::runtime::cli::testing::writeProfileReportForTesting(
       root,
       [&](llvm::StringRef, llvm::StringRef) {
         staged = true;
@@ -324,7 +323,7 @@ TEST_F(WaferProfilePublicationTest,
   EXPECT_TRUE(llvm::sys::fs::exists(forged));
 }
 
-TEST_F(WaferProfilePublicationTest,
+TEST_F(WaferProfileReportDirectoryTest,
        UnexpectedCurrentMemberRejectsRecursiveDeletion) {
   llvm::SmallString<256> runs(root);
   llvm::sys::path::append(runs, "runs");
@@ -346,7 +345,7 @@ TEST_F(WaferProfilePublicationTest,
 
   bool staged = false;
   bool removed = false;
-  auto result = wafer::runtime::cli::testing::publishProfileReportForTesting(
+  auto result = wafer::runtime::cli::testing::writeProfileReportForTesting(
       root,
       [&](llvm::StringRef, llvm::StringRef) {
         staged = true;
@@ -357,7 +356,7 @@ TEST_F(WaferProfilePublicationTest,
         return std::error_code();
       });
   ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_NE(llvm::toString(result.takeError()).find("unexpected public"),
+  EXPECT_NE(llvm::toString(result.takeError()).find("unexpected file"),
             std::string::npos);
   EXPECT_FALSE(staged);
   EXPECT_FALSE(removed);
@@ -366,7 +365,7 @@ TEST_F(WaferProfilePublicationTest,
 
 TEST(WaferProfileCampaignTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {
   std::vector<BoardProfileProtocolStep> steps;
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
@@ -376,7 +375,7 @@ TEST(WaferProfileCampaignTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
               samples) -> llvm::Error {
-        finalized = true;
+        measurementsConsumed = true;
         EXPECT_EQ(samples.size(), 1u);
         if (samples.size() != 1)
           return llvm::createStringError(llvm::errc::invalid_argument,
@@ -395,7 +394,7 @@ TEST(WaferProfileCampaignTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {
   EXPECT_EQ(steps[0].launch, BoardProfileProtocolLaunch::Primary);
   EXPECT_EQ(steps[1].launch, BoardProfileProtocolLaunch::Count);
   EXPECT_EQ(steps[2].launch, BoardProfileProtocolLaunch::Trace);
-  EXPECT_TRUE(finalized);
+  EXPECT_TRUE(measurementsConsumed);
   ASSERT_EQ(result->samples.size(), 1u);
   EXPECT_EQ(result->samples[0].id, "primary");
   EXPECT_EQ(result->primarySampleId, "primary");
@@ -403,23 +402,23 @@ TEST(WaferProfileCampaignTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {
 
 TEST_F(WaferProfileOutputValidationTest,
        AllExpectedPreservesComparisonPolicyAndCanonicalSemanticKeys) {
-  PackageManifest production = manifest(101, 102, "production");
-  BoardInvocationFilePlan productionPlan =
-      plan(production, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output",
+  PackageManifest primary = manifest(101, 102, "primary");
+  BoardInvocationFilePlan primaryPlan =
+      plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output",
            {/*relaxedF16RoleIndex=*/7});
-  BoardProfileOutputValidationState validation(root.str().str());
-  ASSERT_FALSE(validation.establishProductionReference(
-      production, productionPlan, outputs(production)));
+  BoardProfileOutputValidator validation(root.str().str());
+  ASSERT_FALSE(
+      validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
   EXPECT_EQ(validation.getMode(),
             BoardProfileOutputValidationMode::ExternalExpected);
   ASSERT_EQ(validation.getResources().size(), 2u);
-  EXPECT_EQ(std::get<CardResourceScope>(validation.getResources()[0].scope)
-                .cardId,
-            wafer::PhysicalCardId(0));
+  EXPECT_EQ(
+      std::get<CardResourceScope>(validation.getResources()[0].scope).cardId,
+      wafer::PhysicalCardId(0));
   EXPECT_EQ(validation.getResources()[0].roleIndex, 3);
-  EXPECT_EQ(std::get<CardResourceScope>(validation.getResources()[1].scope)
-                .cardId,
-            wafer::PhysicalCardId(0));
+  EXPECT_EQ(
+      std::get<CardResourceScope>(validation.getResources()[1].scope).cardId,
+      wafer::PhysicalCardId(0));
   EXPECT_EQ(validation.getResources()[1].roleIndex, 7);
   ASSERT_TRUE(
       validation.getResources()[0].externalExpectedComparison.has_value());
@@ -433,7 +432,7 @@ TEST_F(WaferProfileOutputValidationTest,
     EXPECT_TRUE(
         llvm::StringRef(resource.referenceSha256).starts_with("sha256:"));
     EXPECT_EQ(resource.referenceSha256.size(), 71u);
-    EXPECT_TRUE(resource.productionExecutionValidated);
+    EXPECT_TRUE(resource.primaryOutputValidated);
     EXPECT_FALSE(resource.diagnosticCapturesMatchPrimary);
   }
 
@@ -441,33 +440,32 @@ TEST_F(WaferProfileOutputValidationTest,
   BoardInvocationFilePlan capturePlan =
       plan(capture, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-capture",
            {/*relaxedF16RoleIndex=*/7});
-  ASSERT_FALSE(validation.validateDiagnosticCapture(capture, capturePlan,
+  ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
   for (const auto &resource : validation.getResources())
     EXPECT_FALSE(resource.diagnosticCapturesMatchPrimary);
-  ASSERT_FALSE(validation.validateDiagnosticCapture(capture, capturePlan,
+  ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
-  ASSERT_FALSE(validation.finalizeAndRemoveReferences());
+  ASSERT_FALSE(validation.removeReferenceFiles());
   for (const auto &resource : validation.getResources()) {
-    EXPECT_TRUE(resource.productionExecutionValidated);
+    EXPECT_TRUE(resource.primaryOutputValidated);
     EXPECT_TRUE(resource.diagnosticCapturesMatchPrimary);
   }
 }
 
 TEST_F(WaferProfileOutputValidationTest,
-       FinalizationRequiresBothDiagnosticCaptures) {
-  PackageManifest production = manifest(121, 122, "production");
-  BoardInvocationFilePlan productionPlan =
-      plan(production, {}, "/unused-output");
-  BoardProfileOutputValidationState validation(root.str().str());
-  ASSERT_FALSE(validation.establishProductionReference(
-      production, productionPlan, outputs(production)));
+       ReportWriteRequiresBothDiagnosticCaptures) {
+  PackageManifest primary = manifest(121, 122, "primary");
+  BoardInvocationFilePlan primaryPlan = plan(primary, {}, "/unused-output");
+  BoardProfileOutputValidator validation(root.str().str());
+  ASSERT_FALSE(
+      validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
 
   PackageManifest capture = manifest(221, 222, "capture");
   BoardInvocationFilePlan capturePlan = plan(capture, {}, "/unused-capture");
-  ASSERT_FALSE(validation.validateDiagnosticCapture(capture, capturePlan,
+  ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
-  llvm::Error error = validation.finalizeAndRemoveReferences();
+  llvm::Error error = validation.removeReferenceFiles();
   ASSERT_TRUE(static_cast<bool>(error));
   EXPECT_NE(llvm::toString(std::move(error)).find("count and trace"),
             std::string::npos);
@@ -475,18 +473,18 @@ TEST_F(WaferProfileOutputValidationTest,
 
 TEST_F(WaferProfileOutputValidationTest,
        ComparisonPolicyChangeIsRejectedEvenWhenCoverageIsUnchanged) {
-  PackageManifest production = manifest(111, 112, "production");
-  BoardInvocationFilePlan productionPlan =
-      plan(production, {/*roleIndex=*/3}, "/unused-output");
-  BoardProfileOutputValidationState validation(root.str().str());
-  ASSERT_FALSE(validation.establishProductionReference(
-      production, productionPlan, outputs(production)));
+  PackageManifest primary = manifest(111, 112, "primary");
+  BoardInvocationFilePlan primaryPlan =
+      plan(primary, {/*roleIndex=*/3}, "/unused-output");
+  BoardProfileOutputValidator validation(root.str().str());
+  ASSERT_FALSE(
+      validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
 
   PackageManifest capture = manifest(211, 212, "capture");
   BoardInvocationFilePlan capturePlan =
       plan(capture, {/*roleIndex=*/3}, "/unused-capture",
            {/*relaxedF16RoleIndex=*/3});
-  llvm::Error error = validation.validateDiagnosticCapture(capture, capturePlan,
+  llvm::Error error = validation.validateDiagnosticOutputs(capture, capturePlan,
                                                            outputs(capture));
   ASSERT_TRUE(static_cast<bool>(error));
   EXPECT_NE(llvm::toString(std::move(error)).find("policy changed"),
@@ -495,27 +493,27 @@ TEST_F(WaferProfileOutputValidationTest,
 
 TEST_F(WaferProfileOutputValidationTest,
        OutputOnlyUsesSameSessionReferenceAcrossIdsNamesAndPaths) {
-  PackageManifest production = manifest(11, 12, "production");
-  BoardInvocationFilePlan productionPlan =
-      plan(production, {}, "/path-that-must-not-be-read-or-written");
-  BoardProfileOutputValidationState validation(root.str().str());
-  ASSERT_FALSE(validation.establishProductionReference(
-      production, productionPlan, outputs(production)));
+  PackageManifest primary = manifest(11, 12, "primary");
+  BoardInvocationFilePlan primaryPlan =
+      plan(primary, {}, "/path-that-must-not-be-read-or-written");
+  BoardProfileOutputValidator validation(root.str().str());
+  ASSERT_FALSE(
+      validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
   EXPECT_EQ(validation.getMode(),
-            BoardProfileOutputValidationMode::SameSessionProduction);
+            BoardProfileOutputValidationMode::SameSessionPrimary);
   for (const auto &resource : validation.getResources())
     EXPECT_FALSE(resource.externalExpectedComparison.has_value());
 
   PackageManifest capture = manifest(501, 502, "different-names");
   BoardInvocationFilePlan capturePlan =
       plan(capture, {}, "/completely-different-unused-path");
-  ASSERT_FALSE(validation.validateDiagnosticCapture(capture, capturePlan,
+  ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
-  ASSERT_FALSE(validation.validateDiagnosticCapture(capture, capturePlan,
+  ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
-  ASSERT_FALSE(validation.finalizeAndRemoveReferences());
+  ASSERT_FALSE(validation.removeReferenceFiles());
 
-  for (const auto &entry : productionPlan.outputPaths)
+  for (const auto &entry : primaryPlan.outputPaths)
     EXPECT_FALSE(llvm::sys::fs::exists(entry.second));
   for (const auto &entry : capturePlan.outputPaths)
     EXPECT_FALSE(llvm::sys::fs::exists(entry.second));
@@ -523,12 +521,12 @@ TEST_F(WaferProfileOutputValidationTest,
 
 TEST_F(WaferProfileOutputValidationTest,
        PartialExpectedUsesMixedPerResourceCoverage) {
-  PackageManifest production = manifest(21, 22, "production");
-  BoardInvocationFilePlan productionPlan =
-      plan(production, {/*roleIndex=*/7}, "/unused-output");
-  BoardProfileOutputValidationState validation(root.str().str());
-  ASSERT_FALSE(validation.establishProductionReference(
-      production, productionPlan, outputs(production)));
+  PackageManifest primary = manifest(21, 22, "primary");
+  BoardInvocationFilePlan primaryPlan =
+      plan(primary, {/*roleIndex=*/7}, "/unused-output");
+  BoardProfileOutputValidator validation(root.str().str());
+  ASSERT_FALSE(
+      validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
   EXPECT_EQ(validation.getMode(), BoardProfileOutputValidationMode::Mixed);
   ASSERT_EQ(validation.getResources().size(), 2u);
   EXPECT_FALSE(
@@ -541,23 +539,23 @@ TEST_F(WaferProfileOutputValidationTest,
   PackageManifest capture = manifest(71, 72, "capture");
   BoardInvocationFilePlan capturePlan =
       plan(capture, {/*roleIndex=*/7}, "/unused-capture");
-  ASSERT_FALSE(validation.validateDiagnosticCapture(capture, capturePlan,
+  ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
-  ASSERT_FALSE(validation.validateDiagnosticCapture(capture, capturePlan,
+  ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
-  ASSERT_FALSE(validation.finalizeAndRemoveReferences());
+  ASSERT_FALSE(validation.removeReferenceFiles());
 }
 
 TEST_F(WaferProfileOutputValidationTest,
        ExternalExpectedMismatchPrecedesSameSessionReference) {
-  PackageManifest production = manifest(31, 32, "production");
-  BoardInvocationFilePlan productionPlan =
-      plan(production, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output");
-  std::vector<BoardRuntimeOutput> actual = outputs(production);
+  PackageManifest primary = manifest(31, 32, "primary");
+  BoardInvocationFilePlan primaryPlan =
+      plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output");
+  std::vector<BoardRuntimeOutput> actual = outputs(primary);
   actual.front().bytes[1] ^= UINT8_C(0xff);
-  BoardProfileOutputValidationState validation(root.str().str());
-  llvm::Error error = validation.establishProductionReference(
-      production, productionPlan, actual);
+  BoardProfileOutputValidator validation(root.str().str());
+  llvm::Error error =
+      validation.recordPrimaryOutputs(primary, primaryPlan, actual);
   ASSERT_TRUE(static_cast<bool>(error));
   EXPECT_NE(llvm::toString(std::move(error))
                 .find("complete board output differs for ResourceId"),
@@ -576,26 +574,25 @@ TEST_F(WaferProfileOutputValidationTest,
         std::pair(FailureKind::CountCapture, size_t(2)),
         std::pair(FailureKind::TraceCapture, size_t(3))}) {
     SCOPED_TRACE(static_cast<int>(failure));
-    PackageManifest production = manifest(41, 42, "production");
+    PackageManifest primary = manifest(41, 42, "primary");
     PackageManifest capture = manifest(81, 82, "capture");
-    BoardInvocationFilePlan productionPlan =
-        plan(production, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output");
+    BoardInvocationFilePlan primaryPlan =
+        plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output");
     BoardInvocationFilePlan capturePlan =
         plan(capture, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-capture");
-    BoardProfileOutputValidationState validation(root.str().str());
+    BoardProfileOutputValidator validation(root.str().str());
     size_t calls = 0;
-    bool finalized = false;
+    bool measurementsConsumed = false;
     auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
         /*traceCapacity=*/8,
         [&](const BoardProfileProtocolStep &step)
             -> llvm::Expected<BoardProfileProtocolObservation> {
           ++calls;
-          const bool productionLaunch =
+          const bool primaryLaunch =
               step.launch == BoardProfileProtocolLaunch::Primary;
-          const PackageManifest &package =
-              productionLaunch ? production : capture;
+          const PackageManifest &package = primaryLaunch ? primary : capture;
           const BoardInvocationFilePlan &invocation =
-              productionLaunch ? productionPlan : capturePlan;
+              primaryLaunch ? primaryPlan : capturePlan;
           std::vector<BoardRuntimeOutput> actual = outputs(package);
           const bool corrupt =
               (failure == FailureKind::Primary &&
@@ -609,9 +606,9 @@ TEST_F(WaferProfileOutputValidationTest,
 
           llvm::Error outputError = [&]() -> llvm::Error {
             if (step.launch == BoardProfileProtocolLaunch::Primary)
-              return validation.establishProductionReference(
-                  package, invocation, actual);
-            return validation.validateDiagnosticCapture(package, invocation,
+              return validation.recordPrimaryOutputs(package, invocation,
+                                                     actual);
+            return validation.validateDiagnosticOutputs(package, invocation,
                                                         actual);
           }();
           if (outputError)
@@ -620,12 +617,12 @@ TEST_F(WaferProfileOutputValidationTest,
         },
         [&](llvm::ArrayRef<
             wafer::runtime::cli::BoardProfileMeasurementSample>) {
-          finalized = true;
+          measurementsConsumed = true;
           return llvm::Error::success();
         });
     ASSERT_FALSE(static_cast<bool>(result));
     EXPECT_EQ(calls, expectedCalls);
-    EXPECT_FALSE(finalized);
+    EXPECT_FALSE(measurementsConsumed);
     EXPECT_NE(llvm::toString(result.takeError()).find("differs"),
               std::string::npos);
   }
@@ -634,7 +631,7 @@ TEST_F(WaferProfileOutputValidationTest,
 TEST(WaferProfileCampaignTest, FirstLaunchErrorStopsEveryLaterCall) {
   for (size_t failureIndex : {size_t(0), size_t(1), size_t(2)}) {
     size_t calls = 0;
-    bool finalized = false;
+    bool measurementsConsumed = false;
     auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
         /*traceCapacity=*/8,
         [&](const BoardProfileProtocolStep &step)
@@ -647,12 +644,12 @@ TEST(WaferProfileCampaignTest, FirstLaunchErrorStopsEveryLaterCall) {
         },
         [&](llvm::ArrayRef<
             wafer::runtime::cli::BoardProfileMeasurementSample>) {
-          finalized = true;
+          measurementsConsumed = true;
           return llvm::Error::success();
         });
     ASSERT_FALSE(static_cast<bool>(result));
     EXPECT_EQ(calls, failureIndex + 1);
-    EXPECT_FALSE(finalized);
+    EXPECT_FALSE(measurementsConsumed);
     llvm::consumeError(result.takeError());
   }
 }
@@ -667,7 +664,7 @@ TEST(WaferProfileCampaignTest,
 
   size_t providerLaunches = 0;
   bool sessionDestroyed = false;
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto runCampaign =
       [&]() -> llvm::Expected<wafer::runtime::cli::BoardProfileProtocolResult> {
     std::optional<LocalSession> session;
@@ -685,7 +682,7 @@ TEST(WaferProfileCampaignTest,
         },
         [&](llvm::ArrayRef<
             wafer::runtime::cli::BoardProfileMeasurementSample>) {
-          finalized = true;
+          measurementsConsumed = true;
           return llvm::Error::success();
         });
   };
@@ -694,7 +691,7 @@ TEST(WaferProfileCampaignTest,
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_EQ(providerLaunches, 1u);
   EXPECT_TRUE(sessionDestroyed);
-  EXPECT_FALSE(finalized);
+  EXPECT_FALSE(measurementsConsumed);
   EXPECT_NE(llvm::toString(result.takeError()).find("primary host output"),
             std::string::npos);
 }
@@ -702,7 +699,7 @@ TEST(WaferProfileCampaignTest,
 TEST(WaferProfileCampaignTest,
      QuantizedZeroPrimaryObservationResolutionIsRetained) {
   size_t calls = 0;
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
@@ -715,20 +712,20 @@ TEST(WaferProfileCampaignTest,
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
               samples) {
-        finalized = true;
+        measurementsConsumed = true;
         EXPECT_EQ(samples.front().completionObservationResolutionNanoseconds,
                   0u);
         return llvm::Error::success();
       });
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(calls, 3u);
-  EXPECT_TRUE(finalized);
+  EXPECT_TRUE(measurementsConsumed);
 }
 
 TEST(WaferProfileCampaignTest,
      MissingPrimaryDeviceTimingStopsBeforeLaterLaunches) {
   size_t calls = 0;
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
@@ -740,18 +737,18 @@ TEST(WaferProfileCampaignTest,
         return observation;
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>) {
-        finalized = true;
+        measurementsConsumed = true;
         return llvm::Error::success();
       });
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_EQ(calls, 1u);
-  EXPECT_FALSE(finalized);
+  EXPECT_FALSE(measurementsConsumed);
   EXPECT_NE(llvm::toString(result.takeError()).find("device execution timing"),
             std::string::npos);
 }
 
 TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryDeviceTimeIsAccepted) {
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
@@ -763,18 +760,18 @@ TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryDeviceTimeIsAccepted) {
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
               samples) {
-        finalized = true;
+        measurementsConsumed = true;
         EXPECT_EQ(samples.front().deviceElapsedNanoseconds, 0u);
         return llvm::Error::success();
       });
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
-  EXPECT_TRUE(finalized);
+  EXPECT_TRUE(measurementsConsumed);
 }
 
 TEST(WaferProfileCampaignTest,
      HostSubmitOutsidePrimaryEnvelopeStopsBeforeLaterLaunches) {
   size_t calls = 0;
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
@@ -787,19 +784,19 @@ TEST(WaferProfileCampaignTest,
         return observation;
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>) {
-        finalized = true;
+        measurementsConsumed = true;
         return llvm::Error::success();
       });
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_EQ(calls, 1u);
-  EXPECT_FALSE(finalized);
+  EXPECT_FALSE(measurementsConsumed);
   EXPECT_NE(llvm::toString(result.takeError()).find("exceeds"),
             std::string::npos);
 }
 
 TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryHostEnvelopeIsRetained) {
   size_t calls = 0;
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
@@ -814,20 +811,20 @@ TEST(WaferProfileCampaignTest, QuantizedZeroPrimaryHostEnvelopeIsRetained) {
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>
               samples) {
-        finalized = true;
+        measurementsConsumed = true;
         EXPECT_EQ(samples.front().hostSubmitNanoseconds, 0u);
         EXPECT_EQ(samples.front().hostLaunchToCompletionNanoseconds, 0u);
         return llvm::Error::success();
       });
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(calls, 3u);
-  EXPECT_TRUE(finalized);
+  EXPECT_TRUE(measurementsConsumed);
 }
 
 TEST(WaferProfileCampaignTest, CountCapacityFailurePreventsTraceLaunch) {
   size_t calls = 0;
   size_t traceCalls = 0;
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/2,
       [&](const BoardProfileProtocolStep &step)
@@ -838,21 +835,21 @@ TEST(WaferProfileCampaignTest, CountCapacityFailurePreventsTraceLaunch) {
         return validObservation(step);
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>) {
-        finalized = true;
+        measurementsConsumed = true;
         return llvm::Error::success();
       });
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_EQ(calls, 2u);
   EXPECT_EQ(traceCalls, 0u);
-  EXPECT_FALSE(finalized);
+  EXPECT_FALSE(measurementsConsumed);
   EXPECT_NE(llvm::toString(result.takeError()).find("exceeds"),
             std::string::npos);
 }
 
-TEST(WaferProfileCampaignTest, TraceMismatchStopsBeforeReportPublication) {
+TEST(WaferProfileCampaignTest, TraceMismatchStopsBeforeReportWrite) {
   size_t calls = 0;
   size_t traceCalls = 0;
-  bool finalized = false;
+  bool measurementsConsumed = false;
   auto result = wafer::runtime::cli::runFixedBoardProfileProtocol(
       /*traceCapacity=*/8,
       [&](const BoardProfileProtocolStep &step)
@@ -866,13 +863,13 @@ TEST(WaferProfileCampaignTest, TraceMismatchStopsBeforeReportPublication) {
         return observation;
       },
       [&](llvm::ArrayRef<wafer::runtime::cli::BoardProfileMeasurementSample>) {
-        finalized = true;
+        measurementsConsumed = true;
         return llvm::Error::success();
       });
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_EQ(calls, 3u);
   EXPECT_EQ(traceCalls, 1u);
-  EXPECT_FALSE(finalized);
+  EXPECT_FALSE(measurementsConsumed);
   EXPECT_NE(llvm::toString(result.takeError()).find("audit"),
             std::string::npos);
 }

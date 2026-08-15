@@ -29,7 +29,7 @@ inline constexpr llvm::StringLiteral kConformancePolicy =
 inline constexpr llvm::StringLiteral kRequiredPins[] = {
     "softfloat", "testfloat", "m4", "gmp", "mpfr"};
 
-inline constexpr llvm::StringLiteral kRequiredArtifacts[] = {
+inline constexpr llvm::StringLiteral kRequiredFiles[] = {
     "m4",
     "softfloat",
     "softfloat-header",
@@ -52,13 +52,13 @@ inline constexpr llvm::StringLiteral kRequiredArtifacts[] = {
     "license-mpfr-lesser",
 };
 
-struct ArtifactPathPolicy {
+struct RequiredFilePolicy {
   llvm::StringLiteral name;
   llvm::StringLiteral path;
   bool executable;
 };
 
-inline constexpr ArtifactPathPolicy kArtifactPathPolicies[] = {
+inline constexpr RequiredFilePolicy kRequiredFilePolicies[] = {
     {"m4", "install/m4/bin/m4", true},
     {"softfloat", "install/softfloat/lib/libsoftfloat.a", false},
     {"softfloat-header", "install/softfloat/include/softfloat.h", false},
@@ -205,26 +205,25 @@ digestSourceTree(llvm::StringRef sourceRoot,
                  const NumericDependencyReadLimits &limits,
                  const llvm::Twine &label);
 
-llvm::Expected<NumericDependencyArtifactIdentity>
-parseArtifactIdentity(llvm::StringRef name, const llvm::json::Value &value,
-                      const ManagedRoot &root, llvm::StringRef readelfPath);
+llvm::Expected<NumericDependencyFileRecord>
+parseFileRecord(llvm::StringRef name, const llvm::json::Value &value,
+                const ManagedRoot &root, llvm::StringRef readelfPath);
 
-struct ParsedBuildIdentity {
-  NumericDependencyBuildIdentity build;
-  std::vector<NumericDependencyToolIdentity> tools;
-  std::vector<NumericDependencyEnvironmentIdentity> environments;
+struct ParsedBuildConfig {
+  NumericDependencyBuildConfig build;
+  std::vector<NumericDependencyToolRecord> tools;
+  std::vector<NumericDependencyEnvironmentRecord> environments;
 };
 
-llvm::Expected<ParsedBuildIdentity>
-parseBuildIdentity(const llvm::json::Value &value);
+llvm::Expected<ParsedBuildConfig>
+parseBuildConfig(const llvm::json::Value &value);
 
 llvm::Error
 validateGateContract(const NumericDependencyConformanceRecord &record,
-                     const NumericDependencyConformanceGateIdentity &gate);
-llvm::Error
-validateSharedObjectPair(llvm::StringRef stem,
-                         const NumericDependencyArtifactIdentity &real,
-                         const NumericDependencyArtifactIdentity &loader);
+                     const NumericDependencyConformanceGateRecord &gate);
+llvm::Error validateSharedObjectPair(llvm::StringRef stem,
+                                     const NumericDependencyFileRecord &real,
+                                     const NumericDependencyFileRecord &loader);
 
 } // namespace wafer::numeric_dependency_conformance_internal
 

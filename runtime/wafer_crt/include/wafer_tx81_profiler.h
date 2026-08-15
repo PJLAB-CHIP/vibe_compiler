@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 /*
- * These symbols exist only in a profiling CRT artifact.  A production target
+ * These symbols exist only in a profiling CRT module.  A production target
  * module must neither declare nor call them.
  */
 void wafer_tx81_profile_entry_begin(uint64_t buffer_address,

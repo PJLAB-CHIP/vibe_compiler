@@ -162,7 +162,7 @@ def _verify_finite_workload_array(
     value: Any,
     *,
     case_id: str,
-    artifact_name: str,
+    value_name: str,
 ) -> None:
     array = numpy_module.asarray(value)
     is_bfloat16_storage = array.dtype.kind == "V" and array.dtype.itemsize == 2
@@ -197,7 +197,7 @@ def _verify_finite_workload_array(
         for index in numpy_module.unravel_index(first_flat_index, array.shape)
     )
     raise RuntimeError(
-        f"workload case {case_id!r} {artifact_name} contains "
+        f"workload case {case_id!r} {value_name} contains "
         f"{nonfinite_count} non-finite value(s); first_index={first_index}, "
         f"first_value={first_value!r}"
     )
@@ -216,27 +216,27 @@ def _verify_workload_payload_finite(
         numpy_module,
         input_array,
         case_id=case_id,
-        artifact_name="input 0",
+        value_name="input 0",
     )
     for index, value in sorted(extra_inputs.items()):
         _verify_finite_workload_array(
             numpy_module,
             value,
             case_id=case_id,
-            artifact_name=f"input {index}",
+            value_name=f"input {index}",
         )
     for name, value in sorted(parameters.items()):
         _verify_finite_workload_array(
             numpy_module,
             value,
             case_id=case_id,
-            artifact_name=f"parameter {name!r}",
+            value_name=f"parameter {name!r}",
         )
     _verify_finite_workload_array(
         numpy_module,
         expected,
         case_id=case_id,
-        artifact_name="expected output 0",
+        value_name="expected output 0",
     )
 
 
@@ -1165,7 +1165,7 @@ def _llama_decoder_block_cpu_reference(
         )
         return (normalized * weight).astype(float32)
 
-    def project(value: Any, name: str) -> Any:
+    def apply_linear_layer(value: Any, name: str) -> Any:
         return (value @ parameters[f"{name}.weight"].T).astype(float32)
 
     def shape_projection(value: Any) -> Any:
@@ -1196,9 +1196,9 @@ def _llama_decoder_block_cpu_reference(
     normed_states = rms_norm(
         hidden_states, parameters["input_layernorm.weight"]
     )
-    query = shape_projection(project(normed_states, "q_proj"))
-    key = shape_projection(project(normed_states, "k_proj"))
-    value = shape_projection(project(normed_states, "v_proj"))
+    query = shape_projection(apply_linear_layer(normed_states, "q_proj"))
+    key = shape_projection(apply_linear_layer(normed_states, "k_proj"))
+    value = shape_projection(apply_linear_layer(normed_states, "v_proj"))
     query = (query * cosine + rotate_half(query) * sine).astype(float32)
     key = (key * cosine + rotate_half(key) * sine).astype(float32)
     attention_scores = (
@@ -1229,22 +1229,22 @@ def _llama_decoder_block_cpu_reference(
         batch, sequence_length, hidden_size
     )
     hidden_states = (
-        residual + project(attention_output, "o_proj")
+        residual + apply_linear_layer(attention_output, "o_proj")
     ).astype(float32)
 
     residual = hidden_states
     normed_states = rms_norm(
         hidden_states, parameters["post_attention_layernorm.weight"]
     )
-    gated = project(normed_states, "gate_proj")
-    up = project(normed_states, "up_proj")
+    gated = apply_linear_layer(normed_states, "gate_proj")
+    up = apply_linear_layer(normed_states, "up_proj")
     silu = (
         gated / (float32(1.0) + numpy_module.exp(-gated).astype(float32))
     ).astype(float32)
     mlp_output = (silu * up).astype(float32)
     if mlp_output.shape[-1] != intermediate_size:
         raise RuntimeError("Llama CPU reference intermediate shape mismatch")
-    return (residual + project(mlp_output, "down_proj")).astype(float32)
+    return (residual + apply_linear_layer(mlp_output, "down_proj")).astype(float32)
 
 
 def _build_workload_case_payload(
@@ -1458,7 +1458,7 @@ def _build_workload_case_payload(
         )
 
     # These checks precede both canonical digest construction and every NPY /
-    # StableHLO artifact write. In particular, an all-NaN eager reference must
+    # StableHLO program write. In particular, an all-NaN eager reference must
     # never become a fixed digest that can compare equal to itself later.
     _verify_workload_payload_finite(
         numpy_module,
@@ -1747,7 +1747,7 @@ def exported_program_to_stablehlo(
     through ``Tensor.numpy()``.  Keep the upstream path for ordinary state.  If
     BF16 state is present, let PyTorch/XLA build the same graph and parameter
     locations without serializing weights, then attach canonical little-endian
-    ``|V2`` payload arrays to its returned bundle.  This applies uniformly to
+    ``|V2`` payload arrays to its returned model.  This applies uniformly to
     parameters and persistent buffers; callers do not need model-specific dtype
     handling.
     """
@@ -1770,16 +1770,16 @@ def exported_program_to_stablehlo(
     program = stablehlo_module.exported_program_to_stablehlo(
         exported_program, options=graph_options
     )
-    bundle = getattr(program, "_bundle", None)
-    if bundle is None or not hasattr(bundle, "state_dict"):
+    model_state = getattr(program, "_bundle", None)
+    if model_state is None or not hasattr(model_state, "state_dict"):
         raise RuntimeError(
-            "pinned PyTorch/XLA StableHLO result omitted its model bundle"
+            "pinned PyTorch/XLA StableHLO result omitted its exported state"
         )
-    if bundle.state_dict:
+    if model_state.state_dict:
         raise RuntimeError(
             "PyTorch/XLA exported weights despite export_weights=False"
         )
-    bundle.state_dict = _exported_state_dict_numpy(
+    model_state.state_dict = _exported_state_dict_numpy(
         torch_module, exported_program
     )
     return program
@@ -2221,7 +2221,7 @@ def emit_workload_corpus(
                     "canonical-equivalent"
                 )
 
-        admission = {
+        case_record = {
             "schema_version": WORKLOAD_CORPUS_SCHEMA_VERSION,
             "corpus_id": spec["corpus_id"],
             "case_id": case["id"],
@@ -2248,11 +2248,11 @@ def emit_workload_corpus(
                 else None
             ),
         }
-        (case_dir / "admission.json").write_text(
-            json.dumps(admission, indent=2, sort_keys=True) + "\n",
+        (case_dir / "case.json").write_text(
+            json.dumps(case_record, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        corpus_records.append(admission)
+        corpus_records.append(case_record)
 
     (output_dir / "corpus.json").write_text(
         json.dumps(
@@ -2353,7 +2353,7 @@ def emit_workload_variant(
     program_digest = _canonical_program_digest(program_dir, numpy_module)
     record = {
         "schema_version": WORKLOAD_CORPUS_SCHEMA_VERSION,
-        "admission": False,
+        "included_in_corpus": False,
         "variant_kind": "diagnostic-seed",
         "base_corpus_id": spec["corpus_id"],
         "base_case_id": base_case_id,
@@ -2503,7 +2503,7 @@ def emit_sharded_stablehlo_program(
         str(program_dir), options
     )
     _verify_program_dir_layout(program_dir)
-    report_timing("artifact-save", save_start_ns)
+    report_timing("program-save", save_start_ns)
 
 
 def emit_hf_llama_block_program(

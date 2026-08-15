@@ -505,7 +505,7 @@ DDR_CONFLICT_DISPOSITIONS = (
         pair_kind="wdma-wdma",
         disposition="isolated-deferred",
         reason=(
-            "the rank-one ABI publishes only one device-to-host output "
+            "the rank-one ABI exposes only one device-to-host output "
             "allocation; writing the second WDMA lane into an input resource "
             "would not provide a host exact oracle"
         ),

@@ -4,8 +4,8 @@
 #ifndef WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
 #define WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
 
-#include "PhysicalTileFinalization.h"
-#include "WholeCardExecutableAdmission.h"
+#include "PhysicalTileMemoryPlanning.h"
+#include "WholeCardExecutableLowering.h"
 
 #include "Wafer/Frontend/Program.h"
 #include "Wafer/Target/PhysicalIds.h"
@@ -45,15 +45,15 @@ struct CardExecutableTileFailure {
   PhysicalTileId tileId{0};
   std::string gate;
   std::string detail;
-  PhysicalTileFinalizationFailure finalization;
+  PhysicalTileMemoryPlanningFailure memoryPlanning;
   SelectedBufferMaterializationFailure selectedBuffer;
 };
 
-/// Returns true only when physical-Tile finalization carries an explicit SPM
+/// Returns true only when physical-Tile memory planning carries an explicit SPM
 /// capacity-overflow proof. Verifier, unsupported-lifetime and pipeline
 /// failures remain indeterminate rather than becoming candidate no-goods.
-bool isProvenExactPhysicalTileFinalizationFailure(
-    const PhysicalTileFinalizationFailure &failure);
+bool isProvenExactPhysicalTileMemoryPlanningFailure(
+    const PhysicalTileMemoryPlanningFailure &failure);
 
 /// Move-only result of compiling one already selected CardProgram.  An exact
 /// rejection is backed by explicit capacity evidence in the returned
@@ -63,13 +63,13 @@ bool isProvenExactPhysicalTileFinalizationFailure(
 struct CardExecutableCompilationResult {
   CardExecutableCompilationStatus status =
       CardExecutableCompilationStatus::IndeterminateFailure;
-  std::optional<AcceptedWholeCardExecutable> executable;
+  std::optional<WholeCardExecutable> executable;
   std::string gate;
   std::string detail;
   llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures;
   llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodeRelations;
   /// Same-invocation diagnostic snapshots captured at the Tile dataflow to
-  /// Instr boundary. They are not part of the admitted executable artifact.
+  /// Instr boundary. They are not part of the accepted physical-Tile modules.
   std::vector<std::string> tileDataflowIRTrace;
   uint64_t rotatingSlotAllocationsMaterialized = 0;
 
@@ -80,16 +80,15 @@ struct CardExecutableCompilationResult {
     return status == CardExecutableCompilationStatus::ProvenExactRejection;
   }
 
-  AcceptedWholeCardExecutable takeExecutable() {
-    return std::move(*executable);
-  }
+  WholeCardExecutable takeExecutable() { return std::move(*executable); }
 };
 
 /// Compiles exactly one owned, verifier-legal, already selected CardProgram.
 /// The function performs no candidate enumeration and never changes spatial,
-/// temporal, layout, movement or buffering choices.  It projects every
+/// temporal, layout, movement or buffering choices.  It materializes every
 /// physical Tile, lowers TileRegion to Instr, recomputes required NCC joins,
-/// fixed-capacity SPM/DDR planning and runs transport/resource/ABI admission.
+/// fixed-capacity SPM/DDR planning, Direct-DTE lowering, resource validation,
+/// and target ABI/LLVM verification.
 ///
 /// `selectedBufferRequests`, when nonempty, must have one entry for every
 /// expected Tile in canonical physical-Tile order.  They are typed assignments

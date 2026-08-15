@@ -139,8 +139,7 @@ canonicalSplitCounts(llvm::ArrayRef<int64_t> requested,
   return result;
 }
 
-static std::optional<uint64_t> checkedMultiply(uint64_t left,
-                                               uint64_t right) {
+static std::optional<uint64_t> checkedMultiply(uint64_t left, uint64_t right) {
   if (left != 0 && right > std::numeric_limits<uint64_t>::max() / left)
     return std::nullopt;
   return left * right;
@@ -152,8 +151,7 @@ static std::optional<uint64_t> checkedAdd(uint64_t left, uint64_t right) {
   return left + right;
 }
 
-static std::optional<uint64_t>
-checkedProduct(llvm::ArrayRef<int64_t> values) {
+static std::optional<uint64_t> checkedProduct(llvm::ArrayRef<int64_t> values) {
   uint64_t product = 1;
   for (int64_t value : values) {
     if (value <= 0)
@@ -192,8 +190,8 @@ checkedLoopProduct(llvm::ArrayRef<int64_t> loopRanges,
   for (unsigned dimension : dimensions) {
     if (dimension >= loopRanges.size() || loopRanges[dimension] <= 0)
       return std::nullopt;
-    std::optional<uint64_t> next = checkedMultiply(
-        product, static_cast<uint64_t>(loopRanges[dimension]));
+    std::optional<uint64_t> next =
+        checkedMultiply(product, static_cast<uint64_t>(loopRanges[dimension]));
     if (!next)
       return std::nullopt;
     product = *next;
@@ -230,19 +228,21 @@ static bool isIdentityPointwiseScoreOp(mlir::linalg::LinalgOp linalg,
       rank, mlir::utils::IteratorType::parallel);
   if (!llvm::equal(generic.getIteratorTypesArray(), parallel))
     return false;
-  mlir::AffineMap identity = mlir::AffineMap::getMultiDimIdentityMap(
-      rank, generic.getContext());
+  mlir::AffineMap identityMap =
+      mlir::AffineMap::getMultiDimIdentityMap(rank, generic.getContext());
   llvm::SmallVector<mlir::AffineMap, 6> maps = generic.getIndexingMapsArray();
   if (maps.size() != generic.getNumDpsInputs() + generic.getNumDpsInits() ||
-      llvm::any_of(maps, [&](mlir::AffineMap map) { return map != identity; }))
+      llvm::any_of(maps,
+                   [&](mlir::AffineMap map) { return map != identityMap; }))
     return false;
   return llvm::all_of(generic.getDpsInputs(), [&](mlir::Value input) {
     return hasEquivalentScoreDomain(input, scoreType);
   });
 }
 
-static mlir::Value getEquivalentStaticScoreViewSource(
-    mlir::Operation *operation, mlir::RankedTensorType scoreType) {
+static mlir::Value
+getEquivalentStaticScoreViewSource(mlir::Operation *operation,
+                                   mlir::RankedTensorType scoreType) {
   mlir::Value source;
   if (auto expand = mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(operation))
     source = expand.getSrc();
@@ -261,12 +261,12 @@ static mlir::Value getEquivalentStaticScoreViewSource(
 static std::optional<mlir::linalg::LinalgOp>
 findNearestScoreContraction(mlir::Value scores,
                             mlir::RankedTensorType scoreType) {
-  llvm::SmallVector<mlir::Value, 8> frontier{scores};
+  llvm::SmallVector<mlir::Value, 8> worklist{scores};
   llvm::DenseSet<mlir::Value> visited;
-  while (!frontier.empty()) {
+  while (!worklist.empty()) {
     llvm::SmallVector<mlir::Value, 16> next;
     llvm::DenseSet<mlir::Operation *> contractions;
-    for (mlir::Value value : frontier) {
+    for (mlir::Value value : worklist) {
       if (!value || !visited.insert(value).second)
         continue;
       mlir::Operation *definition = value.getDefiningOp();
@@ -292,7 +292,7 @@ findNearestScoreContraction(mlir::Value scores,
         return std::nullopt;
       return mlir::cast<mlir::linalg::LinalgOp>(*contractions.begin());
     }
-    frontier = std::move(next);
+    worklist = std::move(next);
   }
   return std::nullopt;
 }
@@ -307,26 +307,22 @@ buildAttentionScoreContractionModel(const AttentionSemantics &semantics) {
       mlir::linalg::inferContractionDims(*contraction);
   if (mlir::failed(dimensions))
     return std::nullopt;
-  llvm::SmallVector<int64_t, 6> loopRanges =
-      contraction->getStaticLoopRanges();
+  llvm::SmallVector<int64_t, 6> loopRanges = contraction->getStaticLoopRanges();
   if (llvm::any_of(loopRanges, [](int64_t extent) { return extent <= 0; }))
     return std::nullopt;
 
   std::optional<uint64_t> batch =
       checkedLoopProduct(loopRanges, dimensions->batch);
-  std::optional<uint64_t> query =
-      checkedLoopProduct(loopRanges, dimensions->m);
+  std::optional<uint64_t> query = checkedLoopProduct(loopRanges, dimensions->m);
   std::optional<uint64_t> keyValue =
       checkedLoopProduct(loopRanges, dimensions->n);
-  std::optional<uint64_t> depth =
-      checkedLoopProduct(loopRanges, dimensions->k);
+  std::optional<uint64_t> depth = checkedLoopProduct(loopRanges, dimensions->k);
   std::optional<uint64_t> logicalBatch =
       checkedProduct(semantics.scoreType.getShape().drop_back(2));
   if (!batch || !query || !keyValue || !depth || !logicalBatch ||
       *batch != *logicalBatch ||
-      *query != static_cast<uint64_t>(
-                    semantics.scoreType.getDimSize(
-                        semantics.scoreType.getRank() - 2)) ||
+      *query != static_cast<uint64_t>(semantics.scoreType.getDimSize(
+                    semantics.scoreType.getRank() - 2)) ||
       *keyValue != static_cast<uint64_t>(semantics.reductionExtent))
     return std::nullopt;
 
@@ -339,19 +335,22 @@ buildAttentionScoreContractionModel(const AttentionSemantics &semantics) {
       !leftType.getElementType().isIntOrFloat() ||
       !rightType.getElementType().isIntOrFloat())
     return std::nullopt;
-  return AttentionScoreContractionModel{*batch, *query, *keyValue, *depth,
+  return AttentionScoreContractionModel{*batch,
+                                        *query,
+                                        *keyValue,
+                                        *depth,
                                         leftType.getElementType(),
                                         rightType.getElementType()};
 }
 
-static std::optional<uint64_t> getMaximumPartitionExtent(
-    int64_t reductionExtent, int64_t parallelPartitionCount) {
+static std::optional<uint64_t>
+getMaximumPartitionExtent(int64_t reductionExtent,
+                          int64_t parallelPartitionCount) {
   if (reductionExtent <= 0 || parallelPartitionCount <= 0 ||
       parallelPartitionCount > reductionExtent)
     return std::nullopt;
-  return static_cast<uint64_t>(
-      (reductionExtent + parallelPartitionCount - 1) /
-      parallelPartitionCount);
+  return static_cast<uint64_t>((reductionExtent + parallelPartitionCount - 1) /
+                               parallelPartitionCount);
 }
 
 /// Target-independent peak-live prior for the block recurrence represented by
@@ -371,8 +370,7 @@ static std::optional<uint64_t> estimateAttentionPeakLiveBytes(
       parameters.parallelPartitionCount <= 0)
     return std::nullopt;
 
-  std::optional<uint64_t> outer =
-      checkedProduct(outputTile.drop_back(2));
+  std::optional<uint64_t> outer = checkedProduct(outputTile.drop_back(2));
   if (!outer)
     return std::nullopt;
   const uint64_t queryTile = static_cast<uint64_t>(outputTile.end()[-2]);
@@ -381,9 +379,9 @@ static std::optional<uint64_t> estimateAttentionPeakLiveBytes(
       semantics.reductionExtent, parameters.parallelPartitionCount);
   if (!maximumPartitionExtent)
     return std::nullopt;
-  const uint64_t reductionTile = std::min(
-      static_cast<uint64_t>(parameters.reductionTileSizes.front()),
-      *maximumPartitionExtent);
+  const uint64_t reductionTile =
+      std::min(static_cast<uint64_t>(parameters.reductionTileSizes.front()),
+               *maximumPartitionExtent);
 
   auto product3 = [](uint64_t first, uint64_t second,
                      uint64_t third) -> std::optional<uint64_t> {
@@ -400,10 +398,10 @@ static std::optional<uint64_t> estimateAttentionPeakLiveBytes(
   if (!scoreElements || !valueElements || !outputElements || !rowElements)
     return std::nullopt;
 
-  std::optional<uint64_t> scoreBytes = checkedTensorBytes(
-      *scoreElements, semantics.scoreType.getElementType());
-  std::optional<uint64_t> valueBytes = checkedTensorBytes(
-      *valueElements, semantics.valueType.getElementType());
+  std::optional<uint64_t> scoreBytes =
+      checkedTensorBytes(*scoreElements, semantics.scoreType.getElementType());
+  std::optional<uint64_t> valueBytes =
+      checkedTensorBytes(*valueElements, semantics.valueType.getElementType());
   std::optional<uint64_t> outputBytes = checkedTensorBytes(
       *outputElements, semantics.outputType.getElementType());
   std::optional<uint64_t> rowBytes =
@@ -411,16 +409,14 @@ static std::optional<uint64_t> estimateAttentionPeakLiveBytes(
   if (!scoreBytes || !valueBytes || !outputBytes || !rowBytes)
     return std::nullopt;
 
-  std::optional<uint64_t> scoreAndProbability =
-      checkedMultiply(*scoreBytes, 2);
+  std::optional<uint64_t> scoreAndProbability = checkedMultiply(*scoreBytes, 2);
   std::optional<uint64_t> twoRows = checkedMultiply(*rowBytes, 2);
   std::optional<uint64_t> stateBytes =
       twoRows ? checkedAdd(*outputBytes, *twoRows) : std::nullopt;
   std::optional<uint64_t> partitionStates =
       stateBytes
-          ? checkedMultiply(
-                *stateBytes,
-                static_cast<uint64_t>(parameters.parallelPartitionCount))
+          ? checkedMultiply(*stateBytes, static_cast<uint64_t>(
+                                             parameters.parallelPartitionCount))
           : std::nullopt;
   std::optional<uint64_t> ordinaryBlocks =
       scoreAndProbability ? checkedAdd(*scoreAndProbability, *valueBytes)
@@ -437,9 +433,9 @@ static std::optional<uint64_t> estimateAttentionPeakLiveBytes(
       keyElements
           ? checkedTensorBytes(*keyElements, contraction->rightElementType)
           : std::nullopt;
-  std::optional<uint64_t> operands =
-      queryBytes && keyBytes ? checkedAdd(*queryBytes, *keyBytes)
-                             : std::nullopt;
+  std::optional<uint64_t> operands = queryBytes && keyBytes
+                                         ? checkedAdd(*queryBytes, *keyBytes)
+                                         : std::nullopt;
   std::optional<uint64_t> completeBlocks =
       operands && ordinaryBlocks ? checkedAdd(*operands, *ordinaryBlocks)
                                  : std::nullopt;
@@ -492,12 +488,11 @@ static std::optional<uint64_t> estimateAttentionComputeScalarOps(
     softmaxOps = checkedMultiply(*softmaxOps, valueTileCount);
   std::optional<uint64_t> valueOps = checkedMultiply(*outputElements, 2);
   if (valueOps)
-    valueOps = checkedMultiply(*valueOps,
-                               static_cast<uint64_t>(semantics.reductionExtent));
+    valueOps = checkedMultiply(
+        *valueOps, static_cast<uint64_t>(semantics.reductionExtent));
   if (!contractionOps || !softmaxOps || !valueOps)
     return std::nullopt;
-  std::optional<uint64_t> total =
-      checkedAdd(*contractionOps, *softmaxOps);
+  std::optional<uint64_t> total = checkedAdd(*contractionOps, *softmaxOps);
   if (total)
     total = checkedAdd(*total, *valueOps);
   if (!total)
@@ -511,9 +506,8 @@ static std::optional<uint64_t> estimateAttentionComputeScalarOps(
     std::optional<uint64_t> mergePerPartition =
         mergeRows ? checkedAdd(*outputElements, *mergeRows) : std::nullopt;
     std::optional<uint64_t> merge =
-        mergePerPartition
-            ? checkedMultiply(*mergePerPartition, partitions - 1)
-            : std::nullopt;
+        mergePerPartition ? checkedMultiply(*mergePerPartition, partitions - 1)
+                          : std::nullopt;
     if (!merge)
       return std::nullopt;
     total = checkedAdd(*total, *merge);
@@ -626,18 +620,16 @@ class OnlineAttentionAlternativePoint final
     : public StructuredImplementationAlternativePoint {
 public:
   OnlineAttentionAlternativePoint(
-      StructuredAlternativePointIdentity identity,
-      StructuredAlternativeDomain domain,
+      StructuredAlternativeKey key, StructuredAlternativeDomain domain,
       StructuredAlternativeParameters parameters,
       StructuredAlternativeStructuralEstimates estimates)
       : StructuredImplementationAlternativePoint(
-            std::move(identity), std::move(domain), std::move(parameters),
+            std::move(key), std::move(domain), std::move(parameters),
             std::move(estimates)) {}
 
-  mlir::LogicalResult materialize(mlir::ModuleOp isolatedStructuredModule,
-                                  std::string *failureReason,
-                                  StructuredImplementationAlternativeMaterialization
-                                      *result) const final {
+  mlir::LogicalResult materialize(
+      mlir::ModuleOp isolatedStructuredModule, std::string *failureReason,
+      StructuredImplementationAlternativeMaterialization *result) const final {
     if (result)
       *result = {};
     mlir::FailureOr<TensorProgramScope> scope =
@@ -649,8 +641,8 @@ public:
       return mlir::failure();
     llvm::DenseSet<mlir::Operation *> operationsBefore =
         snapshotTopLevelOperations(*scope);
-    mlir::LogicalResult materialized = wafer::tensor_program_to_tile_region::
-        materializeCompleteFlashTraversal(
+    mlir::LogicalResult materialized =
+        wafer::tensor_program_to_tile_region::materializeCompleteFlashTraversal(
             *scope, getParameters().outputTileSizes,
             getParameters().reductionTileSizes,
             AttentionImplementationKind::Online, failureReason);
@@ -664,18 +656,16 @@ class SplitKVAttentionAlternativePoint final
     : public StructuredImplementationAlternativePoint {
 public:
   SplitKVAttentionAlternativePoint(
-      StructuredAlternativePointIdentity identity,
-      StructuredAlternativeDomain domain,
+      StructuredAlternativeKey key, StructuredAlternativeDomain domain,
       StructuredAlternativeParameters parameters,
       StructuredAlternativeStructuralEstimates estimates)
       : StructuredImplementationAlternativePoint(
-            std::move(identity), std::move(domain), std::move(parameters),
+            std::move(key), std::move(domain), std::move(parameters),
             std::move(estimates)) {}
 
-  mlir::LogicalResult materialize(mlir::ModuleOp isolatedStructuredModule,
-                                  std::string *failureReason,
-                                  StructuredImplementationAlternativeMaterialization
-                                      *result) const final {
+  mlir::LogicalResult materialize(
+      mlir::ModuleOp isolatedStructuredModule, std::string *failureReason,
+      StructuredImplementationAlternativeMaterialization *result) const final {
     if (result)
       *result = {};
     mlir::FailureOr<TensorProgramScope> scope =
@@ -691,8 +681,8 @@ public:
         getParameters().reductionTileSizes.begin(),
         getParameters().reductionTileSizes.end());
     materializerParameters.push_back(getParameters().parallelPartitionCount);
-    mlir::LogicalResult materialized = wafer::tensor_program_to_tile_region::
-        materializeCompleteFlashTraversal(
+    mlir::LogicalResult materialized =
+        wafer::tensor_program_to_tile_region::materializeCompleteFlashTraversal(
             *scope, getParameters().outputTileSizes, materializerParameters,
             AttentionImplementationKind::SplitKV, failureReason);
     if (mlir::succeeded(materialized))
@@ -711,13 +701,12 @@ struct PendingPoint {
   std::string stableKey;
 };
 
-static void appendPendingPoint(PendingPointKind kind,
-                               const AttentionSemantics &semantics,
-                               const std::optional<AttentionScoreContractionModel>
-                                   &contraction,
-                               const StructuredAlternativeDomain &domain,
-                               StructuredAlternativeParameters parameters,
-                               std::vector<PendingPoint> &pending) {
+static void appendPendingPoint(
+    PendingPointKind kind, const AttentionSemantics &semantics,
+    const std::optional<AttentionScoreContractionModel> &contraction,
+    const StructuredAlternativeDomain &domain,
+    StructuredAlternativeParameters parameters,
+    std::vector<PendingPoint> &pending) {
   mlir::FailureOr<StructuredAlternativeStructuralEstimates> estimates =
       buildStructuredAlternativeStructuralEstimates(domain, parameters);
   if (mlir::failed(estimates))
@@ -777,8 +766,7 @@ mlir::LogicalResult AttentionImplementationAlternativeProvider::query(
 
   std::vector<StructuredAlternativeTileShape> outputTiles = canonicalTileShapes(
       query.outputTileShapes, query.outputTileSizeSeeds, domain.outputShape);
-  appendCompleteValueChannelTileShapes(outputTiles,
-                                       query.outputTileSizeSeeds,
+  appendCompleteValueChannelTileShapes(outputTiles, query.outputTileSizeSeeds,
                                        domain.outputShape);
   std::vector<StructuredAlternativeTileShape> reductionTiles =
       canonicalTileShapes(query.reductionTileShapes,
@@ -825,17 +813,17 @@ mlir::LogicalResult AttentionImplementationAlternativeProvider::query(
       pending.end());
 
   for (auto [ordinal, point] : llvm::enumerate(pending)) {
-    StructuredAlternativePointIdentity identity{point.stableKey,
-                                                static_cast<uint64_t>(ordinal)};
+    StructuredAlternativeKey key{point.stableKey,
+                                 static_cast<uint64_t>(ordinal)};
     if (point.kind == PendingPointKind::Online) {
       points.push_back(std::make_unique<OnlineAttentionAlternativePoint>(
-          std::move(identity), std::move(point.domain),
-          std::move(point.parameters), std::move(point.estimates)));
+          std::move(key), std::move(point.domain), std::move(point.parameters),
+          std::move(point.estimates)));
       continue;
     }
     points.push_back(std::make_unique<SplitKVAttentionAlternativePoint>(
-        std::move(identity), std::move(point.domain),
-        std::move(point.parameters), std::move(point.estimates)));
+        std::move(key), std::move(point.domain), std::move(point.parameters),
+        std::move(point.estimates)));
   }
   return mlir::success();
 }

@@ -108,7 +108,7 @@ def valid_manifest() -> dict[str, object]:
 
 def valid_stdout() -> str:
     lines = [
-        "board_stage: preflight",
+        "board_stage: validation",
         "board_stage: launch",
         "board_stage: completion",
         "board_stage: device-to-host",

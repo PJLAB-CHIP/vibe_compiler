@@ -132,7 +132,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
     return flags.takeError();
   if (*calibrationSpecDigest != calibrationSpec->getDigest())
     return invalid("bulk calibration spec digest mismatch");
-  if (*adapterDigest != getBulkAdapterIdentityDigest() ||
+  if (*adapterDigest != getBulkAdapterContractDigest() ||
       *valueDomain != kValueDomain || *targetComparator != kTargetComparator ||
       *backendComparator != kBackendComparator || implementation->empty() ||
       implementation->contains_insensitive("ref") || *matmul != 1 ||
@@ -169,13 +169,13 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
       requireDigest(*object, "backend_digest", "bulk calibration");
   llvm::Expected<std::string> environmentDigest =
       requireDigest(*object, "environment_digest", "bulk calibration");
-  llvm::Expected<std::string> environmentArtifactDigest =
+  llvm::Expected<std::string> environmentRecordJSONDigest =
       requireDigest(*object, "environment_record_digest", "bulk calibration");
   llvm::Expected<std::string> resolutionDigest =
       requireDigest(*object, "resolution_digest", "bulk calibration");
   if (llvm::Error error =
           takeExpectedErrors(backendDigest, environmentDigest,
-                             environmentArtifactDigest, resolutionDigest))
+                             environmentRecordJSONDigest, resolutionDigest))
     return error;
   const llvm::json::Value *environmentValue = object->get("environment");
   const llvm::json::Object *environmentObject =
@@ -185,7 +185,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
   if (llvm::Error error = validateEnvironmentJSON(
           *environmentObject, *environmentDigest, *backendDigest))
     return error;
-  if (sha256(canonicalJSON(*environmentValue)) != *environmentArtifactDigest)
+  if (sha256(canonicalJSON(*environmentValue)) != *environmentRecordJSONDigest)
     return invalid("bulk calibration environment record digest mismatch");
   if (heldOutCase->getCommand().getDigest() != *resolutionDigest ||
       !heldOutCase->getCommand().getSemantics() ||
@@ -208,7 +208,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
        computeBulkTensorStorageDigest(heldOutCase->getDestinationTemplate())},
       {"backend_digest", *backendDigest},
       {"environment_digest", *environmentDigest},
-      {"environment_record_digest", *environmentArtifactDigest},
+      {"environment_record_digest", *environmentRecordJSONDigest},
       {"resolution_digest", *resolutionDigest},
       {"qualification_kind",
        stringifyBulkQualificationKind(BulkQualificationKind::ProfileBounded)},
@@ -216,7 +216,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
       {"maximum_relative_error", tolerance.maximumRelativeError},
       {"disjoint_proof", "same-domain-distinct-seed-spec-and-payload-v2"},
   };
-  return publishNoReplace(outputPath, canonicalJSON(std::move(policy)));
+  return writeFileNoReplace(outputPath, canonicalJSON(std::move(policy)));
 }
 
 } // namespace wafer

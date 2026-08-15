@@ -254,13 +254,13 @@ def main() -> int:
     assert {
         case.disposition
         for case in catalog.CALIBRATION_LEAF_BINDINGS[
-            "runtime-publication-positive"
+            "runtime-visibility-positive"
         ]
     } == {"board-executable"}
     assert {
         case.disposition
         for case in catalog.CALIBRATION_LEAF_BINDINGS[
-            "runtime-publication-negative"
+            "runtime-visibility-negative"
         ]
     } == {"static-negative"}
     assert catalog.CALIBRATION_LEAF_BINDINGS[
@@ -288,26 +288,10 @@ def main() -> int:
             re.M,
         )
     )
-    assert pending_cmake_specs == (
-        (
-            catalog.FOUR_SOURCE_FANIN_MODE,
-            catalog.MODE_NAMES[catalog.FOUR_SOURCE_FANIN_MODE],
-        ),
-        *tuple(
-            (case.mode, case.name)
-            for case in catalog.RAW_REMOTE_MULTICAST_CASES
-        ),
-    )
-    assert "wafer-runtime-${_wafer_pending_dte_case}-no-card" in cmake
-    assert "wafer-board-${_wafer_pending_dte_case}" in cmake
-    assert "--host-contract-only" in cmake
-    assert cmake.count("--mode ${_wafer_pending_dte_mode}") == 2
-    assert 'RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"' in (
-        cmake.split(
-            "foreach(_wafer_pending_dte_case_spec IN LISTS",
-            maxsplit=2,
-        )[2]
-    )
+    assert pending_cmake_specs == ()
+    assert "wafer-runtime-${_wafer_pending_dte_case}-no-card" not in cmake
+    assert "wafer-board-${_wafer_pending_dte_case}" not in cmake
+    assert "--mode ${_wafer_pending_dte_mode}" not in cmake
     pmu_header = (
         repo
         / "third_party"
@@ -351,7 +335,7 @@ def main() -> int:
     assert "direct_sync_wait(" not in send_wait
     assert "direct_dte_attach(" not in send_wait
     assert "direct_dte_send_async(" not in send_wait
-    assert "wafer_direct_dte_issue_sender(event, false)" in send_wait
+    assert "wafer_direct_dte_issue_sender(" not in send_wait
     assert send_wait.index("direct_dte_wait_done(") < send_wait.index(
         "direct_dte_release("
     )
@@ -372,7 +356,7 @@ def main() -> int:
     )[1].split(
         "uint64_t wafer_tx81_direct_dte_recv_prepare", maxsplit=1
     )[0]
-    assert "wafer_direct_dte_issue_sender(event, true)" in send_issue_v3
+    assert "wafer_direct_dte_issue_sender(event)" in send_issue_v3
 
     probe_source = (
         repo
@@ -387,12 +371,6 @@ def main() -> int:
         / "Board"
         / "wafer_board_dte_ncc_execution_probe_test.py"
     ).read_text()
-    for legacy_ordinary_call in (
-        "wafer_tx81_rdma_v3(",
-        "wafer_tx81_wdma_v3(",
-        "wafer_tx81_elementwise_add_v3(",
-    ):
-        assert legacy_ordinary_call not in probe_source
     assert "wafer_tx81_rdma_v3(" in probe_source
     assert "wafer_tx81_wdma_v3(" in probe_source
     assert "wafer_tx81_elementwise_add_v3(" in probe_source
@@ -476,7 +454,7 @@ def main() -> int:
     ) < early_receive_reuse.index("wafer_tx81_direct_dte_wait(receive)")
     invalid_fsm = probe_source.split(
         "static uint32_t wafer_probe_dte_invalid_fsm(", maxsplit=1
-    )[1].split("static void wafer_probe_publish_header", maxsplit=1)[0]
+    )[1].split("static void wafer_probe_write_header", maxsplit=1)[0]
     assert "successor, 4, 0" in invalid_fsm
     assert "predecessor, 4)" in invalid_fsm
     unknown_wait = probe_main.split(

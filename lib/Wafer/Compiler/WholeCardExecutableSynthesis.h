@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_WHOLECARDEXECUTABLESYNTHESIS_H
 #define WAFER_COMPILER_WHOLECARDEXECUTABLESYNTHESIS_H
 
-#include "WholeCardExecutableAdmission.h"
+#include "WholeCardExecutableLowering.h"
 
 #include "Wafer/Analysis/TheoreticalScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Compilation.h"
@@ -29,8 +29,8 @@ class raw_ostream;
 namespace wafer::compiler::detail {
 
 /// Query-local instrumentation for the whole-card candidate search. These
-/// counters describe compiler work only; none is persisted in IR or an output
-/// artifact.
+/// counters describe compiler work only; none is persisted in IR or package
+/// files.
 struct WholeCardExecutableSynthesisStatistics {
   uint64_t structuredNodeCount = 0;
   uint64_t structuredEdgeCount = 0;
@@ -130,17 +130,17 @@ struct WholeCardExecutableSynthesisStatistics {
   WholeCardSynthesisStatistics selectedExecutableRematerializationGates;
 };
 
-/// Query result at the TensorProgram-to-executable boundary. The executable
-/// is the sole semantic artifact. The printed Tile dataflow snapshots are
+/// Query result at the TensorProgram-to-executable boundary. The executable IR
+/// is the sole semantic result. The printed Tile dataflow snapshots are
 /// same-invocation diagnostic trace and are never admitted into the executable
-/// bundle, package or runtime contract.
+/// physical Tile modules, package files, or runtime contract.
 struct WholeCardCompilationResult {
-  WholeCardCompilationResult(AcceptedWholeCardExecutable executable,
+  WholeCardCompilationResult(WholeCardExecutable executable,
                              std::vector<std::string> tileDataflowIRTrace)
       : executable(std::move(executable)),
         tileDataflowIRTrace(std::move(tileDataflowIRTrace)) {}
 
-  AcceptedWholeCardExecutable executable;
+  WholeCardExecutable executable;
   std::vector<std::string> tileDataflowIRTrace;
 };
 
@@ -155,15 +155,16 @@ deriveCapacityTemporalShape(llvm::ArrayRef<int64_t> maximumShardShape,
 
 /// Searches, materializes and admits one whole-card physical executable.
 ///
-/// Both optimization policies cross the same artifact seam:
+/// Both optimization policies follow the same IR sequence:
 ///
 ///   TensorProgram -> CardProgram -> physical Tile modules -> Instr modules
-///   -> fresh completion/SPM planning -> whole-card exact admission.
+///   -> required NCC join placement/SPM planning -> whole-card executable
+///   lowering.
 ///
 /// `none` materializes only the deterministic maximum-participation,
 /// capacity-respecting joint baseline; disabling selection never permits a
 /// hard-resource-illegal executable. `search` derives a query-local joint
-/// spatial/temporal candidate set from the current structured DAG, each static
+/// spatial/temporal candidates from the current structured DAG, each static
 /// output/iteration domain, finite ceilDiv wave breakpoints, known tensor byte
 /// footprint and available physical Tiles. When SSA/effect analysis proves
 /// independent observable components, one joint candidate can bind those
@@ -174,10 +175,10 @@ deriveCapacityTemporalShape(llvm::ArrayRef<int64_t> maximumShardShape,
 /// cloning, then selects the admitted candidate with minimum theoretical
 /// makespan under one cohort-wide enabled-term set.
 ///
-/// The source module is borrowed and remains unchanged. Every projected Tile
-/// module crosses TileRegion -> Instr, physical-Tile finalization and exact
-/// admission through the same implementation. Physical identities come from
-/// verified topology and CardProgram projection, never from vector position
+/// The source module is borrowed and remains unchanged. Every per-Tile module
+/// module crosses TileRegion -> Instr, physical-Tile memory planning, and the
+/// same whole-card verification path. Physical identities come from
+/// verified topology and CardProgram structure, never from vector position
 /// or logical partition identity. Optional inspection output is returned as a
 /// separate same-invocation trace rather than stored in the executable.
 mlir::FailureOr<WholeCardCompilationResult> synthesizeWholeCardExecutable(

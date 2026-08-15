@@ -363,7 +363,7 @@ module {
 }
 
 TEST(LowerInstrToTargetLLVMTest,
-     NumericPreflightKeepsQualifiedComputeAndI8MovementIndependent) {
+     NumericVerificationKeepsQualifiedComputeAndI8MovementIndependent) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -454,7 +454,7 @@ module {
 }
 
 TEST(LowerInstrToTargetLLVMTest,
-     PhysicalPreflightAcceptsCompatibleBlockedConvertTraversal) {
+     PhysicalVerificationAcceptsCompatibleBlockedConvertTraversal) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -478,12 +478,12 @@ module {
 )mlir",
       mlir::ParserConfig(&context));
   ASSERT_TRUE(source);
-  EXPECT_TRUE(mlir::succeeded(wafer::target_llvm_detail::preflightTargetFormats(
-      *source)));
+  EXPECT_TRUE(mlir::succeeded(
+      wafer::target_llvm_detail::verifyTargetInstructionFormats(*source)));
 }
 
 TEST(LowerInstrToTargetLLVMTest,
-     PhysicalPreflightRejectsDtypeSpecificBlockedTraversalMismatch) {
+     PhysicalVerificationRejectsDtypeSpecificBlockedTraversalMismatch) {
   mlir::DialectRegistry registry;
   registerTargetConversionDialects(registry);
   mlir::MLIRContext context(registry);
@@ -514,8 +514,8 @@ module {
         diagnostic.print(stream);
         return mlir::success();
       });
-  EXPECT_TRUE(mlir::failed(wafer::target_llvm_detail::preflightTargetFormats(
-      *source)));
+  EXPECT_TRUE(mlir::failed(
+      wafer::target_llvm_detail::verifyTargetInstructionFormats(*source)));
   EXPECT_NE(diagnostics.find("unsupported_target_physical_traversal: convert"),
             std::string::npos)
       << diagnostics;

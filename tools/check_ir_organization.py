@@ -230,8 +230,8 @@ def check_op_family_files(root: Path, errors: list[str]) -> None:
     if "::verify()" in dialect_cpp:
         fail(errors, "WaferDialect.cpp must not own op verifier definitions")
 
-    check_file(cpp_root / "Common/OpVerifierUtils.h", errors)
-    check_file(cpp_root / "Common/OpVerifierUtils.cpp", errors)
+    check_file(cpp_root / "Common/WaferIRVerification.h", errors)
+    check_file(cpp_root / "Common/WaferIRVerification.cpp", errors)
 
     old_td_root = root / "include/Wafer/IR/Ops"
     old_cpp_root = root / "lib/Wafer/IR/Ops"
@@ -286,7 +286,7 @@ def Wafer_SecondOp
     cmake_sample = """
 add_mlir_library(WaferCompiler
   CompilationStages.cpp
-  Nested/Artifact.cpp
+  Nested/TargetModule.cpp
 
   LINK_LIBS PUBLIC
   MLIRIR
@@ -294,7 +294,7 @@ add_mlir_library(WaferCompiler
 """
     if get_mlir_library_sources(cmake_sample, "WaferCompiler") != {
         "CompilationStages.cpp",
-        "Nested/Artifact.cpp",
+        "Nested/TargetModule.cpp",
     }:
         print("error: CMake library-source parser self-test failed", file=sys.stderr)
         return 1
@@ -437,7 +437,7 @@ def check_conversion_organization(root: Path, errors: list[str]) -> None:
         root / "lib/Wafer/Conversion/WaferGroupToTileRegion",
     ]:
         if old_conversion.exists():
-            fail(errors, f"old artifact-named conversion directory must be removed: {old_conversion}")
+            fail(errors, f"retired conversion directory must be removed: {old_conversion}")
 
 
 def check_analysis_organization(root: Path, errors: list[str]) -> None:

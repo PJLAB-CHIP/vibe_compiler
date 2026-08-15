@@ -1,13 +1,13 @@
 //===- PipelinesTest.cpp - Production pipeline contracts ----------------===//
 
 #include "Wafer/Pipelines/Pipelines.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
+#include "../../lib/Wafer/Compiler/PhysicalTileExecutablesInternal.h"
 
-#include "mlir/IR/MLIRContext.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -181,8 +181,7 @@ TEST(PipelinesTest, ProductionAtomicPassAddersExposeTheirPasses) {
 TEST(PipelinesTest, NCCJoinPassesUseFunctionAnchors) {
   mlir::MLIRContext context;
   mlir::PassManager manager(&context);
-  mlir::OpPassManager &functionManager =
-      manager.nest<mlir::func::FuncOp>();
+  mlir::OpPassManager &functionManager = manager.nest<mlir::func::FuncOp>();
   wafer::addRequiredNCCJoinPlacementPass(functionManager);
   wafer::addRecomputeRequiredNCCJoinPlacementPass(functionManager);
 
@@ -238,8 +237,8 @@ module {
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  llvm::Expected<wafer::compiler::ExecutableBundle> executable =
-      wafer::compiler::detail::buildExecutableBundle(
+  llvm::Expected<wafer::compiler::PhysicalTileExecutables> executable =
+      wafer::compiler::detail::buildPhysicalTileExecutables(
           context, *module, std::move(program), *executionConfig,
           wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
   ASSERT_TRUE(static_cast<bool>(executable))
@@ -251,7 +250,7 @@ module {
   EXPECT_NE(diagnosticsText.find("whole-card-search policy=search"),
             std::string::npos);
   EXPECT_NE(diagnosticsText.find("physical_tile_count=16"), std::string::npos);
-  // The executable bundle becomes the MLIRContext owner on success. Destroy
+  // The physical Tile executables retain the MLIRContext on success. Destroy
   // the source module before that owner so its uniqued state stays live.
   module = nullptr;
   const auto &tiles = executable->getPhysicalTileExecutables();
@@ -271,9 +270,9 @@ module {
     EXPECT_EQ(countOps<wafer::SyncNCCJoinOp>(instrModule), 1u);
   }
 
-  llvm::Expected<wafer::compiler::TargetLLVMModuleBundle> target =
-      wafer::compiler::compileExecutableBundleToTargetLLVMModules(*executable,
-                                                                  diagnostics);
+  llvm::Expected<wafer::compiler::TargetLLVMModules> target =
+      wafer::compiler::compilePhysicalTileExecutablesToTargetLLVMModules(
+          *executable, diagnostics);
   ASSERT_TRUE(static_cast<bool>(target))
       << diagnosticsText << (target ? "" : llvm::toString(target.takeError()));
   EXPECT_EQ(target->getModules().size(), 16u);

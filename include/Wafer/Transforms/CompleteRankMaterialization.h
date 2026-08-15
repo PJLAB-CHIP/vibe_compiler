@@ -29,14 +29,14 @@ bool isCompleteRankTensorProgramRankInvariant(mlir::ModuleOp sourceModule);
 /// compiler-derived physical facts are cleared.
 ///
 /// This utility performs no candidate enumeration, selection, instruction
-/// lowering, buffering or worker placement, and carries no frontier metadata.
+/// lowering, buffering or worker placement, and carries no candidate-set data.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 materializeConservativeCompleteRankBaseline(mlir::ModuleOp sourceModule,
                                             int64_t logicalRank);
 
 /// One bounded physical residency action applied directly to an actual
 /// complete-rank Tile clone. It is invocation-local search policy, not an IR
-/// attribute, artifact kind, or commit input.
+/// attribute, candidate label, or selected-program input.
 enum class CandidateTileResidencyAction : uint8_t {
   KeepSingleRegion,
   SplitAtExplicitDDRBoundary,
@@ -61,7 +61,7 @@ enum class CandidateLoopMovementAction : uint8_t {
 
 /// Prepares compiler-owned constant storage, then materializes one actual
 /// complete-rank structured traversal directly as unplaced Tile IR. This is a
-/// construction mechanism for the coordinated frontier; it performs no
+/// construction mechanism for the complete-rank candidates; it performs no
 /// rank-local selection, instruction lowering, or memory placement.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 materializeCompleteRankCandidateTileProgram(
@@ -110,7 +110,7 @@ materializeCompleteRankConnectionChoicesTileProgram(
 
 /// Clones an already materialized, unplaced complete-rank Tile parent and
 /// applies one bounded residency action directly to that clone. This is the
-/// structured coordinator's executable-admission feedback mechanism: it never
+/// structured search's failed-candidate refinement mechanism: it never
 /// replays source lowering and never consumes failed Instr/placement state.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 materializeCompleteRankTileResidencySibling(

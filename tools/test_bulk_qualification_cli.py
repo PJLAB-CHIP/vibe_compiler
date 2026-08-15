@@ -121,14 +121,14 @@ def main() -> int:
         output = run(validation)
         if "bulk qualification validated" not in output:
             raise RuntimeError("validation did not report read-back success")
-        artifact = json.loads(record.read_text(encoding="utf-8"))
-        if artifact["schema"] != "wafer-bulk-qualification-record-v1":
+        record_data = json.loads(record.read_text(encoding="utf-8"))
+        if record_data["schema"] != "wafer-bulk-qualification-record-v1":
             raise RuntimeError("final record schema mismatch")
-        if artifact["qualification_kind"] != "profile-bounded":
+        if record_data["qualification_kind"] != "profile-bounded":
             raise RuntimeError("finite CLI corpus claimed a non-empirical proof")
-        if artifact["matmul_invocations"] != 1 or artifact["backend_formal_fma"] != 0:
+        if record_data["matmul_invocations"] != 1 or record_data["backend_formal_fma"] != 0:
             raise RuntimeError("final record lost bulk dispatch evidence")
-        if not artifact["raw_exact"]:
+        if not record_data["raw_exact"]:
             raise RuntimeError("controlled BF16 CLI corpus was not raw exact")
         run(validation, expect_success=False)
     except (KeyError, OSError, ValueError, subprocess.SubprocessError, RuntimeError) as error:

@@ -1,14 +1,14 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
 状态：2026-08-13按card-level GSPMD与card-local multi-Tile边界同步。本文只拥有StableHLO program directory、
-metadata/payload和frontend admission合同；`num_partitions`描述card partition，不描述单卡16个physical Tile。
+metadata/payload和frontend verification合同；`num_partitions`描述card partition，不描述单卡16个physical Tile。
 typed model/state/resource graph与Tile级时空综合属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   production只接受framework/exporter生成的StableHLO program directory，其中`functions/forward.mlir`可来自
   pre-exported StableHLO且可包含frontend `mhlo.sharding`。显式module只进入IR-local frontend verifier，
   不是`wafer-compile`的第二种production输入。
@@ -18,16 +18,16 @@ Pipeline position:
   parameter shard metadata、logical card-partition domain和payload coverage；拒绝graph break、eager fallback、无界
   dynamic shape及不安全路径。当前program-directory入口只接受static ranked boundary；bounded dynamic仅由
   IR-only frontend verifier检查，尚未进入directory schema或production lowering。
-- Output artifact / IR:
+- Output IR / files:
   verified StableHLO program directory。它仍由MLIR、`forward.meta`和必要payload共同组成，不是
   `TensorProgram`、`CardProgram`、`CardExecutable`、target module或`ExecutablePackage`。
 - Downstream consumer:
   Q15 typed compiler driver在transaction-owned snapshot上建立card-partition mesh，调用pinned XLA SPMD helper，
   然后做local compute normalization并发布verified card-local structured tensor program；05 structured
-  optimization继续在同一IR上建立verified `TensorProgram` handoff。06随后以target physical topology为独立输入，
+  optimization继续在同一IR上建立verified `TensorProgram` boundary。06随后以target physical topology为独立输入，
   形成`CardProgram`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
 - User-level driver / named pipeline:
-  `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend admission；继续编译只经
+  `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend verification；继续编译只经
   `wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=1 --launch-kind={kernel|model}`；
   source-to-package optimization policy只为`search|none`，current target identity由compiler固定提供，不是用户选择。
   `wafer-opt`及named MLIR pipelines只处理显式IR，不拥有program-directory I/O。
@@ -36,7 +36,7 @@ Pipeline position:
   target ABI、manifest或runtime handle；不从parameter/function/file名恢复后端语义。
 - Completion gate:
   真实PyTorch/XLA exporter产物及封装为program directory的pre-exported fixtures通过同一program verifier；metadata、payload、static
-  boundary和post-SPMD shard负例在进入下游前fail closed；Q15直接消费该verified artifact，而不是重建第二份
+  boundary和post-SPMD shard负例在进入下游前fail closed；Q15直接消费该verified output，而不是重建第二份
   frontend对象模型。
 ```
 
@@ -63,7 +63,7 @@ arg/result数量或role不一致都使整个program非法。bytecode和其它非
 
 `forward.meta`当前消费的字段是：
 
-- `name`，当前单入口artifact必须精确为`forward`；
+- `name`，当前单入口output必须精确为`forward`；
 - `input_signature[]`与`output_signature[]`中的shape/dtype；
 - 与function arguments一一对应的`input_locations[]`；
 - input location的`type_`只接受`parameter`、`constant`或`input_arg`。
@@ -73,11 +73,11 @@ absolute path、`..`或路径分隔符逃逸program root。name/path只负责在
 不能成为candidate/schedule、sharding、rank、resource或lowering分支条件。
 
 post-SPMD时同一份canonical metadata还包含`distributed_boundary`；这是function boundary由global tensor变成
-per-card-partition local tensor的typed artifact合同，不是planner sidecar，也不是physical Tile placement。若未来需要typed mutable state、alias/mutation、
+per-card-partition local tensor的typed output合同，不是planner sidecar，也不是physical Tile placement。若未来需要typed mutable state、alias/mutation、
 多个entry或program graph，必须先设计可由IR/metadata verifier证明且有下游consumer的最小表示；不能恢复历史
 私有model dialect、复合frontend owner或side-table对象图作为前置。
 
-## 3. Frontend Admission
+## 3. Frontend Verification
 
 ### 3.1 IR 与 function boundary
 
@@ -93,7 +93,7 @@ program-directory verifier在此基础上要求恰有一个可验证entry，并�
 tensor；metadata signatures的数量、shape和normalized dtype与function type逐项一致。当前`forward.meta`虽保留
 exporter的`dynamic_dims`字段，但C++ parser尚未建立它与IR bound的双向合同，因此bounded dynamic module只能通过
 `--verify-frontend-program`的IR-local gate，不能进入`wafer-compile`。这项限制必须由后续typed schema与真实
-lowering consumer解除，不能把IR-only admission写成production支持。
+lowering consumer解除，不能把IR-only verification写成production支持。
 
 ### 3.2 Parameter 与 constant payload
 
@@ -141,7 +141,7 @@ logical `wafer.execution.mesh` shape product。没有显式subgroup关系的part
 文件名推测replica group。
 
 parameter shard JSON是post-SPMD payload绑定，不是第二份sharding planner、physical endpoint、memory plan或
-runtime manifest。它的consumer是frontend/program verifier和后续card-partition artifact构造；单卡内部16个
+runtime manifest。它的consumer是frontend/program verifier和后续card-partition output构造；单卡内部16个
 `tile_id`不出现在该schema中。
 
 ### 3.4 Post-SPMD distributed boundary
@@ -172,7 +172,7 @@ module shape；stride当前只能为1。partial replication、single-device、ma
 ## 4. Importer 与真实 Source Corpus
 
 Wafer后端的稳定入口是上述verified program directory，不是某个framework Python API。import adapter可以支持
-PyTorch、JAX或pre-exported StableHLO，但必须收敛到相同artifact和verifier；framework module name、parameter
+PyTorch、JAX或pre-exported StableHLO，但必须收敛到相同output和verifier；framework module name、parameter
 name与版本workaround只留在adapter或诊断中。
 
 当前PyTorch路径使用source-built PyTorch/XLA exporter产生StableHLO program directory。真实capture gate必须：
@@ -186,7 +186,7 @@ Q5.C的source-backed corpus由
 `test/Tools/Inputs/workloads/single-card-vertical-v1.json`和真实capture generator拥有。当前固定case是
 linear-residual MLP与tiny Llama decoder block；spec记录source revision、config、seed、dtype、shape和payload/
 reference digest。独立NumPy oracle、framework CPU交叉检查与重复export canonical-equivalence只证明source
-admission，不证明compiler、runtime或board完成。Q20/Q21必须直接消费这些admitted program，不能换成手写
+verification，不证明compiler、runtime或board完成。Q20/Q21必须直接消费这些admitted program，不能换成手写
 task/instruction fixture。
 
 Q28另以`test/Tools/Inputs/workloads/llama-2-7b-block-v1.json`固定标准Llama-2 7B单block配置：H=4096、
@@ -194,17 +194,17 @@ I=11008、32 heads、head dimension 128、FP16、batch 1、sequence 16。generat
 allocation，避免为90M-element projection额外建立全尺寸临时数组；最终`expected.npy`必须由同一parameter/input的
 PyTorch eager CPU完整block执行产生，手写NumPy路径只作诊断。scale payload使用versioned SplitMix64 counter映射：
 global row-major index、固定seed和彼此独立的parameter stream共同形成长周期、FP16-exact值，避免matrix axis短周期重复及
-跨projection系统性相关；input、全部parameter和expected在digest及artifact publication前逐项检查finite。重复export必须
+跨projection系统性相关；input、全部parameter和expected在digest及output writing前逐项检查finite。重复export必须
 得到canonical-equivalent program和固定digest，既有tiny corpus保持冻结而不随scale算法迁移。该case的shape、seed和
-payload算法是corpus参数，不进入frontend artifact协议。
+payload算法是corpus参数，不进入frontend output协议。
 
-Q31 numeric characterization没有修改上述冻结case的seed、digest或admission。repository test-input generator可以从一个
+Q31 numeric characterization没有修改上述冻结case的seed、digest或verification。repository test-input generator可以从一个
 固定base case显式生成不同seed的diagnostic variant，但必须记录base case、实际seed、动态input/parameter/expected/program
-digest和`admission=false`；variant不能写回workload spec、复用固定digest字段或被`--emit-workload-corpus`当作正式case。
+digest和`verification=false`；variant不能写回workload spec、复用固定digest字段或被`--emit-workload-corpus`当作正式case。
 variant仍由同一PyTorch eager block产生expected、由同一真实exporter产生program，并进入同一production compiler pipeline；
 因此它只扩充有限tested payload domain，不改变frontend program directory、dtype、shape、sharding或参数绑定协议。Q31的两个
 variant seed和原固定seed全部通过后，scale case只把source/model comparator policy收紧为`atol=0.004, rtol=0.002`；该字段
-不进入source/config/payload/program digest，也不把variant提升为corpus admission。
+不进入source/config/payload/program digest，也不把variant提升为corpus verification。
 
 旧Q44的TP16/rank-as-Tile资格只作历史背景，不属于current frontend合同。当前GEMM、HuggingFace attention、
 KV-cache decode与Llama-2 7B block都从真实framework module和原始dtype tensor导出
@@ -212,12 +212,12 @@ KV-cache decode与Llama-2 7B block都从真实framework module和原始dtype ten
 从同一structured DAG决定16个physical Tile上的spatial mapping、temporal tiling、TileRegion/融合与通信。不得用手写
 StableHLO/MLIR、parameter name或测试fixture把这些卡内决定提前编码进frontend。
 同一组tensor先在PyTorch eager CPU执行形成唯一用户级expected；NumPy不得参与expected生成或最终结果比较。
-exporter因NPY artifact格式使用NumPy作payload序列化属于adapter transport，不取得数值参考结果的ownership。
+exporter因NPY output格式使用NumPy作payload序列化属于adapter transport，不取得数值参考结果的ownership。
 普通case以固定seed的PyTorch random API构造输入；周期pattern、one-hot和手写简化公式只用于失败后的定向debug。
 这些case、torch raw tensor读写和capture comparator集中在`test/Board/PyTorch/`，目录布局只是测试实现索引，不进入
 frontend schema、compiler driver或sharding协议。
 
-## 5. Sharding Handoff
+## 5. Sharding Boundary
 
 frontend只保存exporter能解释的`mhlo.sharding`等输入事实。没有用户sharding仍是合法StableHLO program；
 frontend不合成`sdy.*`、`wafer.spmd.*`或策略字符串。
@@ -237,15 +237,15 @@ tensor program。frontend verifier本身不执行helper、不形成调度单元�
 
 当前`CompilationRequest`是move-only C++ value，只拥有source program locator和validated
 `ExecutionConfig`。它不持有MLIR operation/context、helper path、output path、pass callback、candidate policy、
-target context或publication authority。
+target context或writing authority。
 
 source-to-package driver在parse前把source directory完整复制到transaction-owned snapshot；后续frontend verify、helper
 和IR transforms只读/改写staging内成员。source不得被原地补metadata、topology或shards。Q15最终发布的是重新
 parse/verify过的card-partition-local structured tensor program directory；fixed structured optimization完成后，
-physical-dataflow synthesis从单卡partition artifact构造一个`CardProgram`，其中all-and-only available physical Tiles
+physical-dataflow synthesis从单卡partition output构造一个`CardProgram`，其中all-and-only available physical Tiles
 各有独立`wafer.tile.program`。每个Tile可有不同op、loop和temporal tile shape；Q51唯一search owner联合决定
 placement、tiling、TileRegion/融合和显式NoC/DDR movement，exact gates通过后形成`CardExecutable`，再由target与
-package阶段发布`ExecutablePackage`。`TensorProgram`是该综合阶段的唯一输入artifact；已删除的`wafer.group`
+package阶段发布`ExecutablePackage`。`TensorProgram`是该综合阶段的唯一输入output；已删除的`wafer.group`
 formation/selector没有兼容、debug或发布旁路。
 
 这种最小owner边界有意不保留历史讨论中的复合frontend/executable owner和model-interface registry链。若未来
@@ -270,5 +270,5 @@ frontend mandatory coverage包括：
 - pre-exported StableHLO parse/printer及显式IR-local lowering补充测试。
 
 完成记录必须区分真实exporter gate、program verifier和下游Q15 gate。FileCheck、手写MLIR或CPU oracle单独通过
-都不能证明card-local spatial/temporal/fusion/communication scheduling、`CardExecutable`、target artifact、`ExecutablePackage`、runtime
+都不能证明card-local spatial/temporal/fusion/communication scheduling、`CardExecutable`、target modules、`ExecutablePackage`、runtime
 或board正确。

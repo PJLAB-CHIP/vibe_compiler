@@ -17,7 +17,7 @@ namespace wafer::analysis {
 /// The analysis records structure rather than imposing a stage policy:
 /// unresolved calls, non-`func.call` call-like operations, external
 /// declarations, recursion, visibility, ABI, and reachability are exposed for
-/// consumers to classify according to their own artifact contract.
+/// consumers to classify according to their own IR contract.
 class DirectCallGraphAnalysis {
 public:
   explicit DirectCallGraphAnalysis(mlir::Operation *scope);
@@ -26,8 +26,7 @@ public:
   mlir::ModuleOp getModule() const { return module; }
 
   llvm::ArrayRef<mlir::func::FuncOp> getFunctions() const { return functions; }
-  llvm::ArrayRef<mlir::func::CallOp>
-  getCalls(mlir::func::FuncOp caller) const;
+  llvm::ArrayRef<mlir::func::CallOp> getCalls(mlir::func::FuncOp caller) const;
   mlir::func::FuncOp getCallee(mlir::func::CallOp call) const;
   llvm::ArrayRef<mlir::func::FuncOp>
   getCallees(mlir::func::FuncOp caller) const;
@@ -54,11 +53,9 @@ public:
 private:
   mlir::ModuleOp module;
   llvm::SmallVector<mlir::func::FuncOp, 8> functions;
-  llvm::DenseMap<mlir::Operation *,
-                 llvm::SmallVector<mlir::func::CallOp, 4>>
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::func::CallOp, 4>>
       callsByFunction;
-  llvm::DenseMap<mlir::Operation *,
-                 llvm::SmallVector<mlir::func::FuncOp, 4>>
+  llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::func::FuncOp, 4>>
       calleesByFunction;
   llvm::DenseMap<mlir::Operation *, mlir::func::FuncOp> calleesByCall;
   llvm::DenseSet<mlir::Operation *> calledFunctions;

@@ -18,7 +18,7 @@ namespace wafer::model {
 
 /// Managed oneDNN adapter for the feature-independent model dispatch seam.
 /// Construction reads the current managed environment and verified final
-/// records. Runtime execution remains exact-match admission only.
+/// records. Runtime execution remains exact-match qualification only.
 class QualifiedTargetModelBulkBackend final : public TargetModelBulkBackend {
 public:
   QualifiedTargetModelBulkBackend(const QualifiedTargetModelBulkBackend &) =
@@ -46,7 +46,7 @@ private:
 };
 
 /// Scalable deterministic oneDNN path for end-to-end model-reference gates.
-/// Admission is structural (supported GEMM semantics, managed environment,
+/// Qualification is structural (supported GEMM semantics, managed environment,
 /// finite inputs and explicit byte budgets), not exact payload qualification.
 /// It therefore requires a final external-oracle tolerance check and must not
 /// be reported as hardware-correlated or raw-exact target arithmetic.

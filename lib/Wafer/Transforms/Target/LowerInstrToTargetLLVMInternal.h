@@ -4,8 +4,8 @@
 #define WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
 
 #include "Wafer/Analysis/DirectCallGraphAnalysis.h"
-#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/Target/PhysicalTopology.h"
+#include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/PhysicalIds.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Transforms/TargetConversion.h"
@@ -79,13 +79,11 @@ mlir::FailureOr<int64_t> getConstantScalarValue(mlir::Operation *op,
 bool isTargetRelationElementwiseKind(InstrElementwiseKind kind);
 mlir::FailureOr<int64_t>
 getDataFormatCode(mlir::Operation *op, mlir::Value value, llvm::StringRef role);
-mlir::LogicalResult preflightTargetFormats(mlir::ModuleOp moduleOp);
-mlir::LogicalResult preflightTargetAddresses(mlir::ModuleOp moduleOp);
-mlir::FailureOr<DirectDTEEndpointDomain>
-resolveDirectDTEEndpointDomain(const PhysicalTopology &topology,
-                               mlir::ModuleOp diagnosticModule,
-                               PhysicalCardId physicalCardId,
-                               PhysicalTileId physicalTileId);
+mlir::LogicalResult verifyTargetInstructionFormats(mlir::ModuleOp moduleOp);
+mlir::LogicalResult verifyTargetSubviewAddresses(mlir::ModuleOp moduleOp);
+mlir::FailureOr<DirectDTEEndpointDomain> resolveDirectDTEEndpointDomain(
+    const PhysicalTopology &topology, mlir::ModuleOp diagnosticModule,
+    PhysicalCardId physicalCardId, PhysicalTileId physicalTileId);
 
 struct FunctionLowering {
   mlir::OpBuilder &builder;
@@ -154,10 +152,11 @@ struct FunctionLowering {
 using AliasSummary = llvm::SmallVector<unsigned, 4>;
 
 mlir::LogicalResult flattenTileRegions(mlir::ModuleOp moduleOp);
-mlir::LogicalResult validateDirectCallsForTarget(
-    const analysis::DirectCallGraphAnalysis &graph,
-    int64_t defaultDDRArenaArgumentIndex,
-    int64_t transportStatusArgumentIndex, int64_t profileRecordArgumentIndex);
+mlir::LogicalResult
+validateDirectCallsForTarget(const analysis::DirectCallGraphAnalysis &graph,
+                             int64_t defaultDDRArenaArgumentIndex,
+                             int64_t transportStatusArgumentIndex,
+                             int64_t profileRecordArgumentIndex);
 mlir::FailureOr<mlir::func::FuncOp>
 findUniqueRootFunction(const analysis::DirectCallGraphAnalysis &graph);
 mlir::LogicalResult analyzeDDRAliasContracts(

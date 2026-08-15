@@ -287,7 +287,7 @@ def validate_manifest(
         )
         or not (package / modules[0].get("path", "")).is_file()
     ):
-        raise RuntimeError("full-4096 GEMM must publish one cluster shared ELF")
+        raise RuntimeError("full-4096 GEMM must produce one cluster shared ELF")
     module_id = modules[0].get("id")
 
     entries = manifest.get("entries")
@@ -466,7 +466,7 @@ def verify_no_card_evidence(stdout: str) -> None:
 
 def verify_board_evidence(stdout: str, output_ids: set[int]) -> None:
     required = {
-        "board_stage: preflight",
+        "board_stage: validation",
         "board_stage: device-selection",
         "board_stage: resource-allocation",
         "board_stage: host-to-device",
@@ -542,10 +542,10 @@ def main() -> int:
         ]
     )
     if (
-        "published verified package with execution-ranks=16"
+        "wrote verified package with execution-ranks=16"
         not in compile_result.stdout
     ):
-        raise RuntimeError("wafer-compile did not publish a verified rank-16 package")
+        raise RuntimeError("wafer-compile did not write a verified 16-Tile package")
     validate_structured_program(package)
     bindings, output_ids = validate_manifest(package)
 

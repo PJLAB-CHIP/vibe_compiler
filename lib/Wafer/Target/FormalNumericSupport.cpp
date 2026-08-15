@@ -387,7 +387,7 @@ std::error_code FormalNumericError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
-void FormalNumericExecutionContext::recordCommittedFlags(
+void FormalNumericExecutionContext::mergeExceptionFlags(
     FormalNumericExceptionFlags flags) {
   aggregateFlags.invalid |= flags.invalid;
   aggregateFlags.divByZero |= flags.divByZero;

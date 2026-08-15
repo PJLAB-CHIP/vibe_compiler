@@ -14,9 +14,9 @@ namespace {
 
 constexpr uint64_t kRecordBytes = 1024;
 
-WaferTx81ProfilerTSMCallEvent
-makeTargetSiteEvent(uint32_t siteId = 7, uint64_t siteBegin = 110,
-                    uint64_t siteEnd = 150) {
+WaferTx81ProfilerTSMCallEvent makeTargetSiteEvent(uint32_t siteId = 7,
+                                                  uint64_t siteBegin = 110,
+                                                  uint64_t siteEnd = 150) {
   WaferTx81ProfilerTSMCallEvent event{};
   event.site_begin_cycle = siteBegin;
   event.site_end_cycle = siteEnd;
@@ -42,7 +42,7 @@ std::vector<uint8_t> makeRecord(uint32_t tile, bool trace = true) {
   header.tile_id = tile;
   header.flags = WAFER_TX81_PROFILER_RECORD_ENTRY_BEGUN |
                  WAFER_TX81_PROFILER_RECORD_ENTRY_ENDED |
-                 WAFER_TX81_PROFILER_RECORD_PUBLISHED;
+                 WAFER_TX81_PROFILER_RECORD_COMPLETE;
   if (trace)
     header.flags |= WAFER_TX81_PROFILER_RECORD_TRACE_ENABLED;
   else
@@ -104,15 +104,16 @@ std::vector<uint8_t> makeRecord(uint32_t tile, bool trace = true) {
 }
 
 WaferTx81ProfilerTSMCallEvent *eventAt(std::vector<uint8_t> &bytes,
-                                      size_t index) {
+                                       size_t index) {
   return reinterpret_cast<WaferTx81ProfilerTSMCallEvent *>(
              bytes.data() + WAFER_TX81_PROFILER_EVENTS_OFFSET) +
          index;
 }
 
-WaferTx81ProfilerTSMCallEvent
-makeDirectDTEEvent(uint8_t kind, uint32_t role, uint64_t operationBegin,
-                   uint64_t operationEnd, uint16_t subIndex) {
+WaferTx81ProfilerTSMCallEvent makeDirectDTEEvent(uint8_t kind, uint32_t role,
+                                                 uint64_t operationBegin,
+                                                 uint64_t operationEnd,
+                                                 uint16_t subIndex) {
   WaferTx81ProfilerTSMCallEvent event{};
   event.site_begin_cycle = 110;
   event.site_end_cycle = 150;
@@ -138,9 +139,8 @@ makeDirectDTEEvent(uint8_t kind, uint32_t role, uint64_t operationBegin,
   return event;
 }
 
-void setEvents(
-    std::vector<uint8_t> &bytes,
-    std::initializer_list<WaferTx81ProfilerTSMCallEvent> newEvents) {
+void setEvents(std::vector<uint8_t> &bytes,
+               std::initializer_list<WaferTx81ProfilerTSMCallEvent> newEvents) {
   auto *header =
       reinterpret_cast<WaferTx81ProfilerRecordHeader *>(bytes.data());
   ASSERT_LE(newEvents.size(), header->event_capacity);
@@ -206,8 +206,7 @@ TEST(ProfilerRecordTest, CountOnlyCarriesRequiredCapacityWithoutEvents) {
             std::string::npos);
 }
 
-TEST(ProfilerRecordTest,
-     DecodesHardwareObservationAndPreservesUnknownWorker) {
+TEST(ProfilerRecordTest, DecodesHardwareObservationAndPreservesUnknownWorker) {
   auto decoded = wafer::runtime::decodeTx81ProfilerRecord(makeRecord(3));
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
@@ -235,14 +234,12 @@ TEST(ProfilerRecordTest, ValidatesDirectDTERoleAndActivity) {
   auto decoded = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
+  EXPECT_TRUE(wafer::runtime::isTx81ProfilerDirectDTESend(decoded->events[1]));
   EXPECT_TRUE(
-      wafer::runtime::isTx81ProfilerDirectDTESend(decoded->events[1]));
-  EXPECT_TRUE(wafer::runtime::isTx81ProfilerDirectDTECounterValid(
-      decoded->events[1]));
+      wafer::runtime::isTx81ProfilerDirectDTECounterValid(decoded->events[1]));
 
   event->counter_delta = 0;
-  event->metadata &=
-      ~WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE;
+  event->metadata &= ~WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE;
   auto zeroRawCounter = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_TRUE(static_cast<bool>(zeroRawCounter))
       << llvm::toString(zeroRawCounter.takeError());
@@ -280,8 +277,7 @@ TEST(ProfilerRecordTest, ValidatesDirectDTERoleAndActivity) {
   event->observed_begin_cycle = 112;
   event->observed_end_cycle = 135;
   event->observation_count = 2;
-  event->metadata |=
-      WAFER_TX81_PROFILER_EVENT_OBSERVATION_SPAN_VALID;
+  event->metadata |= WAFER_TX81_PROFILER_EVENT_OBSERVATION_SPAN_VALID;
   auto unavailableCounter = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_TRUE(static_cast<bool>(unavailableCounter))
       << llvm::toString(unavailableCounter.takeError());
@@ -292,8 +288,7 @@ TEST(ProfilerRecordTest, ValidatesDirectDTERoleAndActivity) {
   event->metadata |= WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE;
   auto tornCounter = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(tornCounter));
-  EXPECT_NE(llvm::toString(tornCounter.takeError())
-                .find("combination"),
+  EXPECT_NE(llvm::toString(tornCounter.takeError()).find("combination"),
             std::string::npos);
 }
 
@@ -301,19 +296,18 @@ TEST(ProfilerRecordTest, PreservesZeroDeltaNCCObservation) {
   std::vector<uint8_t> bytes = makeRecord(3);
   auto *event = eventAt(bytes, 1);
   event->counter_delta = 0;
-  event->metadata &=
-      ~WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE;
+  event->metadata &= ~WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE;
   event->metadata |= WAFER_TX81_PROFILER_EVENT_SAME_ENGINE_AMBIGUOUS;
   auto decoded = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_TRUE(static_cast<bool>(decoded))
       << llvm::toString(decoded.takeError());
   EXPECT_EQ(decoded->events[1].observation_count, 2u);
-  EXPECT_TRUE(wafer::runtime::isTx81ProfilerObservationSpanValid(
-      decoded->events[1]));
-  EXPECT_FALSE(wafer::runtime::isTx81ProfilerCounterDeltaPositive(
-      decoded->events[1]));
-  EXPECT_TRUE(wafer::runtime::isTx81ProfilerSameEngineAmbiguous(
-      decoded->events[1]));
+  EXPECT_TRUE(
+      wafer::runtime::isTx81ProfilerObservationSpanValid(decoded->events[1]));
+  EXPECT_FALSE(
+      wafer::runtime::isTx81ProfilerCounterDeltaPositive(decoded->events[1]));
+  EXPECT_TRUE(
+      wafer::runtime::isTx81ProfilerSameEngineAmbiguous(decoded->events[1]));
 }
 
 TEST(ProfilerRecordTest, PreservesNCCCommandWhenCounterIsUnavailable) {
@@ -323,17 +317,15 @@ TEST(ProfilerRecordTest, PreservesNCCCommandWhenCounterIsUnavailable) {
   event->observed_end_cycle = 0;
   event->counter_delta = 0;
   event->observation_count = 0;
-  event->metadata &=
-      ~(WAFER_TX81_PROFILER_EVENT_OBSERVATION_SPAN_VALID |
-        WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE |
-        WAFER_TX81_PROFILER_EVENT_NCC_COUNTER_VALID);
+  event->metadata &= ~(WAFER_TX81_PROFILER_EVENT_OBSERVATION_SPAN_VALID |
+                       WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE |
+                       WAFER_TX81_PROFILER_EVENT_NCC_COUNTER_VALID);
   auto unavailable = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_TRUE(static_cast<bool>(unavailable))
       << llvm::toString(unavailable.takeError());
-  EXPECT_TRUE(wafer::runtime::isTx81ProfilerSiteValid(
-      unavailable->events[1]));
-  EXPECT_TRUE(wafer::runtime::isTx81ProfilerOperationSpanValid(
-      unavailable->events[1]));
+  EXPECT_TRUE(wafer::runtime::isTx81ProfilerSiteValid(unavailable->events[1]));
+  EXPECT_TRUE(
+      wafer::runtime::isTx81ProfilerOperationSpanValid(unavailable->events[1]));
   EXPECT_FALSE(wafer::runtime::isTx81ProfilerObservationSpanValid(
       unavailable->events[1]));
 
@@ -365,8 +357,9 @@ TEST(ProfilerRecordTest, PreservesNCCCommandWhenCounterIsUnavailable) {
   event->metadata |= WAFER_TX81_PROFILER_EVENT_COUNTER_DELTA_POSITIVE;
   auto deltaWithoutValidity = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(deltaWithoutValidity));
-  EXPECT_NE(llvm::toString(deltaWithoutValidity.takeError()).find("NCC command"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(deltaWithoutValidity.takeError()).find("NCC command"),
+      std::string::npos);
 }
 
 TEST(ProfilerRecordTest, ValidatesTargetSiteContainer) {
@@ -387,8 +380,8 @@ TEST(ProfilerRecordTest, ValidatesTargetSiteContainer) {
       << llvm::toString(container.takeError());
   EXPECT_TRUE(
       wafer::runtime::isTx81ProfilerSiteValid(container->events.front()));
-  EXPECT_TRUE(wafer::runtime::isTx81ProfilerSiteSpanValid(
-      container->events.front()));
+  EXPECT_TRUE(
+      wafer::runtime::isTx81ProfilerSiteSpanValid(container->events.front()));
   EXPECT_FALSE(wafer::runtime::isTx81ProfilerOperationSpanValid(
       container->events.front()));
 
@@ -480,23 +473,20 @@ TEST(ProfilerRecordTest, ValidatesExplicitCompletionWait) {
   event->observed_end_cycle = 0;
   event->counter_delta = 0;
   event->observation_count = 4;
-  event->metadata =
-      WAFER_TX81_PROFILER_EVENT_SITE_VALID |
-      WAFER_TX81_PROFILER_EVENT_SITE_SPAN_VALID |
-      WAFER_TX81_PROFILER_EVENT_OPERATION_SPAN_VALID |
-      WAFER_TX81_PROFILER_EVENT_WAIT_LOCAL;
+  event->metadata = WAFER_TX81_PROFILER_EVENT_SITE_VALID |
+                    WAFER_TX81_PROFILER_EVENT_SITE_SPAN_VALID |
+                    WAFER_TX81_PROFILER_EVENT_OPERATION_SPAN_VALID |
+                    WAFER_TX81_PROFILER_EVENT_WAIT_LOCAL;
   auto local = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_TRUE(static_cast<bool>(local)) << llvm::toString(local.takeError());
-  EXPECT_TRUE(
-      wafer::runtime::isTx81ProfilerLocalWait(local->events[1]));
+  EXPECT_TRUE(wafer::runtime::isTx81ProfilerLocalWait(local->events[1]));
 
   event->metadata &= ~WAFER_TX81_PROFILER_EVENT_WAIT_LOCAL;
   event->metadata |= WAFER_TX81_PROFILER_EVENT_WAIT_WORKER |
                      WAFER_TX81_PROFILER_EVENT_WORKER_VALID | 2U;
   auto worker = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_TRUE(static_cast<bool>(worker)) << llvm::toString(worker.takeError());
-  EXPECT_TRUE(
-      wafer::runtime::isTx81ProfilerWorkerWait(worker->events[1]));
+  EXPECT_TRUE(wafer::runtime::isTx81ProfilerWorkerWait(worker->events[1]));
   EXPECT_EQ(wafer::runtime::getTx81ProfilerWorker(worker->events[1]), 2u);
 
   event->metadata |= WAFER_TX81_PROFILER_EVENT_WAIT_LOCAL;
@@ -520,9 +510,9 @@ TEST(ProfilerRecordTest, ValidatesExplicitCompletionWait) {
 TEST(ProfilerRecordTest, ValidatesDirectDTEPhaseRoles) {
   std::vector<uint8_t> bytes = makeRecord(3);
   auto container = makeTargetSiteEvent();
-  auto aggregate = makeDirectDTEEvent(
-      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT,
-      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV, 115, 145, 1);
+  auto aggregate = makeDirectDTEEvent(WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT,
+                                      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV,
+                                      115, 145, 1);
   auto cleanup = makeDirectDTEEvent(
       WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_CLEANUP,
       WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_RECV, 130, 140, 2);
@@ -531,8 +521,7 @@ TEST(ProfilerRecordTest, ValidatesDirectDTEPhaseRoles) {
   ASSERT_TRUE(static_cast<bool>(decodedCleanup))
       << llvm::toString(decodedCleanup.takeError());
 
-  eventAt(bytes, 2)->kind =
-      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE;
+  eventAt(bytes, 2)->kind = WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE;
   auto receiverSetup = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(receiverSetup));
   EXPECT_NE(llvm::toString(receiverSetup.takeError()).find("sender-only"),
@@ -542,9 +531,9 @@ TEST(ProfilerRecordTest, ValidatesDirectDTEPhaseRoles) {
 TEST(ProfilerRecordTest, RequiresDirectDTEPhaseInsideMatchingAggregate) {
   std::vector<uint8_t> bytes = makeRecord(3);
   auto container = makeTargetSiteEvent();
-  auto aggregate = makeDirectDTEEvent(
-      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT,
-      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND, 115, 145, 1);
+  auto aggregate = makeDirectDTEEvent(WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT,
+                                      WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND,
+                                      115, 145, 1);
   auto phase = makeDirectDTEEvent(
       WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_COMPLETION_WAIT,
       WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SEND, 125, 135, 2);
@@ -592,8 +581,7 @@ TEST(ProfilerRecordTest, SeparatesDirectDTEIssueFromCompletionPhases) {
 
   aggregate.kind = WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_WAIT;
   setEvents(bytes, {container, aggregate, phase});
-  auto issuePhaseUnderWait =
-      wafer::runtime::decodeTx81ProfilerRecord(bytes);
+  auto issuePhaseUnderWait = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(issuePhaseUnderWait));
   EXPECT_NE(llvm::toString(issuePhaseUnderWait.takeError())
                 .find("matching aggregate"),
@@ -685,9 +673,8 @@ TEST(ProfilerRecordTest, ValidatesExclusiveTraceCostSummary) {
   header->cost_summary.completion_loop_bookkeeping_cycles = 36;
   auto oversizedEntryCost = wafer::runtime::decodeTx81ProfilerRecord(bytes);
   ASSERT_FALSE(static_cast<bool>(oversizedEntryCost));
-  EXPECT_NE(
-      llvm::toString(oversizedEntryCost.takeError()).find("entry span"),
-      std::string::npos);
+  EXPECT_NE(llvm::toString(oversizedEntryCost.takeError()).find("entry span"),
+            std::string::npos);
 
   header->cost_summary.completion_loop_bookkeeping_cycles = 35;
   header->cost_summary.entry_setup_cycles = 80;

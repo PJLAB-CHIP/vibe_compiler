@@ -36,8 +36,10 @@ struct LowerInstrToTargetLLVMPass
 
   void runOnOperation() override {
     mlir::ModuleOp moduleOp = getOperation();
-    if (mlir::failed(target_llvm_detail::preflightTargetAddresses(moduleOp)) ||
-        mlir::failed(target_llvm_detail::preflightTargetFormats(moduleOp))) {
+    if (mlir::failed(
+            target_llvm_detail::verifyTargetSubviewAddresses(moduleOp)) ||
+        mlir::failed(
+            target_llvm_detail::verifyTargetInstructionFormats(moduleOp))) {
       signalPassFailure();
       return;
     }

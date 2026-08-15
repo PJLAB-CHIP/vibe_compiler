@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the model-scale M-sharded GEMM production/profile artifact."""
+"""Validate the model-scale M-sharded GEMM production/profile output."""
 
 from __future__ import annotations
 
@@ -118,10 +118,10 @@ def require_byte_identical_packages(
 def require_profile_no_card(stdout: str, expected: bool) -> None:
     if "board_execution: false" not in stdout:
         raise RuntimeError("no-card invocation omitted execution state")
-    companion_ready = profile_support.PROFILE_COMPANION_READY in stdout
-    if companion_ready != expected:
+    instrumentation_ready = profile_support.PROFILE_INSTRUMENTATION_READY in stdout
+    if instrumentation_ready != expected:
         raise RuntimeError(
-            "no-card invocation did not prove the expected profile companion "
+            "no-card invocation did not prove the expected profile instrumentation "
             "activation boundary"
         )
 
@@ -173,7 +173,7 @@ def main() -> int:
         profile=True,
     )
     require_byte_identical_packages(packages["baseline"], packages["winner"])
-    profile_support.require_profile_companion_permissions(packages["winner"])
+    profile_support.require_profile_instrumentation_permissions(packages["winner"])
 
     (
         bindings_by_variant,
@@ -234,7 +234,7 @@ def main() -> int:
         print(
             "m_sharded_gemm_profile_no_card: "
             "ordinary_profile_identical=true grid_launch=true "
-            "profile_companion=true"
+            "profile_instrumentation=true"
         )
         return 0
 

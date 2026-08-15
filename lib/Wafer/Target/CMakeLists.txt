@@ -9,7 +9,7 @@ add_mlir_library(WaferTarget
   NumericCapability.cpp
   NumericCodec.cpp
   NumericCommand.cpp
-  NumericDependencyBuildIdentity.cpp
+  NumericDependencyBuildConfig.cpp
   NumericDependencyConformance.cpp
   NumericDependencyELF.cpp
   NumericDependencyFilesystem.cpp
@@ -59,7 +59,7 @@ endif()
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_mlir_library(WaferBulkModel
     PARTIAL_SOURCES_INTENDED
-    BulkAdmission.cpp
+    QualifiedBulkExecution.cpp
     BulkExecutionEnvironment.cpp
     BulkQualification.cpp
     BulkQualificationCalibration.cpp

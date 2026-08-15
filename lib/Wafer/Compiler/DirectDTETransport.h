@@ -1,4 +1,4 @@
-//===- DirectDTETransport.h - Physical Direct DTE acceptance -*- C++ -*-===//
+//===- DirectDTETransport.h - Physical Direct DTE binding -----*- C++ -*-===//
 
 #ifndef WAFER_COMPILER_DIRECTDTETRANSPORT_H
 #define WAFER_COMPILER_DIRECTDTETRANSPORT_H
@@ -17,10 +17,9 @@ mlir::LogicalResult verifyDirectDTETransportSchedule(
 
 /// Matches and validates every logical Direct DTE issue across the supplied
 /// physical Tile domain, then writes typed physical bindings into the modules.
-/// No binding is externally observable unless the caller subsequently commits
-/// the whole ExecutableBundle.
+/// Analysis completes for the full domain before any binding is written.
 mlir::FailureOr<TransportContract>
-acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules);
+bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules);
 
 } // namespace wafer::compiler::detail
 

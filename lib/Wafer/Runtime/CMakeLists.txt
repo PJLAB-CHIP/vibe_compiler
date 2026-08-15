@@ -7,9 +7,9 @@ add_mlir_library(WaferRuntime
   PackageManifestReadback.cpp
   PackageManifestSerialization.cpp
   PackageManifestVerification.cpp
-  ProfileCompanion.cpp
+  ProfileInstrumentation.cpp
   ProfilerRecord.cpp
-  RuntimeSessionPreflight.cpp
+  RuntimeInvocationPlanning.cpp
   Tx81ModelABI.cpp
 
   LINK_LIBS PUBLIC

@@ -52,7 +52,7 @@ struct LogicalScalarCodecPolicy {
 
 /// A scalar logical value carried as raw storage bits. This object does not
 /// imply a host native representation and does not carry physical tensor
-/// layout. Use makeRawLogicalValue before publishing an instance.
+/// layout. Use makeRawLogicalValue to construct an instance.
 struct RawLogicalValue {
   LogicalFormat format;
   uint64_t bits;

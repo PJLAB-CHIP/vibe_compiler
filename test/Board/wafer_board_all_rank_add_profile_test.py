@@ -97,7 +97,7 @@ class ProfileReportFixture:
             "schema_version": 7,
             "run_id": self.run_id,
             "validity": {"trace": True, "pmu": True},
-            "final_artifact": {
+            "program": {
                 "duration": {
                     "sample_id": "primary",
                     "sample_index": 0,
@@ -109,7 +109,7 @@ class ProfileReportFixture:
                     "completion_observation_resolution_ns": 8,
                 },
                 "output": {
-                    "production_execution_validated": True,
+                    "primary_output_validated": True,
                     "diagnostic_captures_match_primary": True,
                 },
                 "tiles": [
@@ -141,7 +141,7 @@ class ProfileReportFixture:
             json.dumps(analysis)
         )
         (self.run_directory / "index.html").write_text(
-            "<!doctype html><title>Final artifact profile</title>"
+            "<!doctype html><title>Final program profile</title>"
         )
         for path in (
             pathlib.Path(f"{self.package}.profile"),
@@ -191,7 +191,7 @@ class AllRankAddProfileGateTest(unittest.TestCase):
         html.chmod(0o777)
         analysis_path = fixture.run_directory / "analysis.json"
         analysis = json.loads(analysis_path.read_text())
-        analysis["final_artifact"]["tiles"][0]["engines"][0][
+        analysis["program"]["tiles"][0]["engines"][0][
             "engine_execution_time_ns"
         ] = -1
         analysis_path.write_text(json.dumps(analysis))
@@ -251,7 +251,7 @@ class AllRankAddProfileGateTest(unittest.TestCase):
             )
             stack.enter_context(
                 mock.patch.object(
-                    HARNESS, "require_profile_companion_permissions"
+                    HARNESS, "require_profile_instrumentation_permissions"
                 )
             )
             stack.enter_context(

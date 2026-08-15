@@ -85,8 +85,7 @@ template <typename OpT> static unsigned countOps(mlir::Operation *operation) {
 static unsigned countUnreadDirectPrivateLoads(mlir::Operation *operation) {
   unsigned count = 0;
   operation->walk([&](wafer::StorageLoadOp load) {
-    auto allocation =
-        load.getDest().getDefiningOp<mlir::memref::AllocOp>();
+    auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
     if (allocation && allocation.getResult().hasOneUse())
       ++count;
   });
@@ -408,7 +407,7 @@ module attributes {test.card_baseline = "preserved"} {
 }
 
 TEST(WaferTensorProgramToCardProgramTest,
-     FailureProbeMaterializesOnlySelectedTileBody) {
+     PhysicalTileLoweringMaterializesOnlySelectedTileBody) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
 module {
@@ -435,24 +434,26 @@ module {
       mapping(/*shardDimension=*/1,
               {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, {8, 4}));
 
-  mlir::OwningOpRef<mlir::ModuleOp> probeModule;
+  mlir::OwningOpRef<mlir::ModuleOp> selectedTileModule;
   std::string failureReason;
   ASSERT_TRUE(
-      mlir::succeeded(wafer::lowerTensorProgramToCardProgramFailureProbe(
+      mlir::succeeded(wafer::lowerTensorProgramToCardProgramForPhysicalTile(
           *source, wafer::PhysicalCardId(0), wafer::PhysicalTileId(7), selected,
-          probeModule, &failureReason)))
+          selectedTileModule, &failureReason)))
       << failureReason;
-  ASSERT_TRUE(mlir::succeeded(mlir::verify(*probeModule)));
-  EXPECT_EQ(countOps<wafer::TileProgramOp>(probeModule->getOperation()), 16u);
-  EXPECT_EQ(countOps<wafer::TileRegionOp>(probeModule->getOperation()), 1u);
-  wafer::CardProgramOp probeCard =
-      *probeModule->getOps<wafer::CardProgramOp>().begin();
-  llvm::SmallVector<StoreShard, 16> probeShards =
-      collectSecondDimensionStoreShards(probeCard);
-  ASSERT_EQ(probeShards.size(), 1u);
-  EXPECT_EQ(probeShards.front().tileId, 7);
-  EXPECT_EQ(probeShards.front().offset, 28);
-  EXPECT_EQ(probeShards.front().size, 4);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*selectedTileModule)));
+  EXPECT_EQ(countOps<wafer::TileProgramOp>(selectedTileModule->getOperation()),
+            16u);
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(selectedTileModule->getOperation()),
+            1u);
+  wafer::CardProgramOp selectedTileCardProgram =
+      *selectedTileModule->getOps<wafer::CardProgramOp>().begin();
+  llvm::SmallVector<StoreShard, 16> selectedTileShards =
+      collectSecondDimensionStoreShards(selectedTileCardProgram);
+  ASSERT_EQ(selectedTileShards.size(), 1u);
+  EXPECT_EQ(selectedTileShards.front().tileId, 7);
+  EXPECT_EQ(selectedTileShards.front().offset, 28);
+  EXPECT_EQ(selectedTileShards.front().size, 4);
 
   mlir::OwningOpRef<mlir::ModuleOp> fullModule;
   ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardProgram(
@@ -516,12 +517,13 @@ module {
     EXPECT_LE(type.getNumElements(), 4);
     EXPECT_TRUE(llvm::any_of(cardModule->getOps<wafer::CardProgramOp>(),
                              [&](wafer::CardProgramOp card) {
-      bool producedByLoad = false;
-      card.walk([&](wafer::StorageLoadOp load) {
-        producedByLoad |= load.getDest() == relation.buffer;
-      });
-      return producedByLoad;
-    }));
+                               bool producedByLoad = false;
+                               card.walk([&](wafer::StorageLoadOp load) {
+                                 producedByLoad |=
+                                     load.getDest() == relation.buffer;
+                               });
+                               return producedByLoad;
+                             }));
   }
 }
 
@@ -582,10 +584,10 @@ module {
   // classes {3, 4}. Their mutually exclusive scf.if branches may reuse the
   // same pre-insert destination version, and must remain representable all the
   // way through physical Tile instruction lowering.
-  auto projected = wafer::projectCardProgramToPhysicalTileModules(
+  auto tileModules = wafer::splitCardProgramIntoPhysicalTileModules(
       *cardModule, &failureReason, &relations);
-  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
-  for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
+  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
+  for (wafer::PhysicalTileModule &tile : *tileModules) {
     EXPECT_EQ(tile.materializationRelations.outputBuffers.empty(),
               tile.tileId != wafer::PhysicalTileId(0));
     ASSERT_TRUE(
@@ -1792,20 +1794,20 @@ module {
   EXPECT_EQ(printOperation(first->getOperation()),
             printOperation(second->getOperation()));
 
-  auto firstProjection =
-      wafer::projectCardProgramToPhysicalTileModules(*first, &failureReason);
-  auto secondProjection =
-      wafer::projectCardProgramToPhysicalTileModules(*second, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(firstProjection)) << failureReason;
-  ASSERT_TRUE(mlir::succeeded(secondProjection)) << failureReason;
-  ASSERT_EQ(firstProjection->size(), 3u);
-  ASSERT_EQ(secondProjection->size(), 3u);
-  for (unsigned index = 0; index < firstProjection->size(); ++index) {
-    EXPECT_EQ((*firstProjection)[index].tileId.getValue(),
+  auto firstTileModules =
+      wafer::splitCardProgramIntoPhysicalTileModules(*first, &failureReason);
+  auto secondTileModules =
+      wafer::splitCardProgramIntoPhysicalTileModules(*second, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(firstTileModules)) << failureReason;
+  ASSERT_TRUE(mlir::succeeded(secondTileModules)) << failureReason;
+  ASSERT_EQ(firstTileModules->size(), 3u);
+  ASSERT_EQ(secondTileModules->size(), 3u);
+  for (unsigned index = 0; index < firstTileModules->size(); ++index) {
+    EXPECT_EQ((*firstTileModules)[index].tileId.getValue(),
               static_cast<int64_t>(index));
     EXPECT_EQ(
-        printOperation((*firstProjection)[index].module->getOperation()),
-        printOperation((*secondProjection)[index].module->getOperation()));
+        printOperation((*firstTileModules)[index].module->getOperation()),
+        printOperation((*secondTileModules)[index].module->getOperation()));
   }
 }
 
@@ -1892,14 +1894,14 @@ module {
   EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 2u);
   EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 4u);
 
-  auto projected = wafer::projectCardProgramToPhysicalTileModules(
+  auto tileModules = wafer::splitCardProgramIntoPhysicalTileModules(
       *cardModule, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
-  ASSERT_EQ(projected->size(), 6u);
+  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
+  ASSERT_EQ(tileModules->size(), 6u);
   unsigned sends = 0;
   unsigned receives = 0;
   unsigned waits = 0;
-  for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
+  for (wafer::PhysicalTileModule &tile : *tileModules) {
     ASSERT_TRUE(
         mlir::succeeded(wafer::convertTileRegionToInstrModule(*tile.module)))
         << "Tile " << tile.tileId.getValue();
@@ -2030,13 +2032,13 @@ module {
     }
   }
 
-  auto projected = wafer::projectCardProgramToPhysicalTileModules(
+  auto tileModules = wafer::splitCardProgramIntoPhysicalTileModules(
       *cardModule, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
+  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   unsigned sends = 0;
   unsigned receives = 0;
   unsigned waits = 0;
-  for (wafer::ProjectedPhysicalTileModule &tile : *projected) {
+  for (wafer::PhysicalTileModule &tile : *tileModules) {
     ASSERT_TRUE(
         mlir::succeeded(wafer::convertTileRegionToInstrModule(*tile.module)))
         << "Tile " << tile.tileId.getValue();
@@ -2368,18 +2370,18 @@ module {
 
   std::string failureReason;
   for (mlir::ModuleOp actual : {spilled.get(), cut.get()}) {
-    auto projected =
-        wafer::projectCardProgramToPhysicalTileModules(actual, &failureReason);
-    ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
-    ASSERT_EQ(projected->size(), 1u);
-    ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(
-        *projected->front().module)));
-    EXPECT_GT(
-        countOps<wafer::InstrRDMAOp>(projected->front().module->getOperation()),
-        1u);
-    EXPECT_GT(
-        countOps<wafer::InstrWDMAOp>(projected->front().module->getOperation()),
-        1u);
+    auto tileModules =
+        wafer::splitCardProgramIntoPhysicalTileModules(actual, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
+    ASSERT_EQ(tileModules->size(), 1u);
+    ASSERT_TRUE(mlir::succeeded(
+        wafer::convertTileRegionToInstrModule(*tileModules->front().module)));
+    EXPECT_GT(countOps<wafer::InstrRDMAOp>(
+                  tileModules->front().module->getOperation()),
+              1u);
+    EXPECT_GT(countOps<wafer::InstrWDMAOp>(
+                  tileModules->front().module->getOperation()),
+              1u);
   }
 }
 
@@ -2451,16 +2453,16 @@ module {
   EXPECT_TRUE(sawSharedProducerConsumerBuffer)
       << "coupled producer/consumer work must remain related by current SSA";
 
-  auto projected = wafer::projectCardProgramToPhysicalTileModules(
+  auto tileModules = wafer::splitCardProgramIntoPhysicalTileModules(
       *fused, &failureReason, &relations);
-  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
-  ASSERT_EQ(projected->size(), 1u);
-  ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstrModule(
-      *projected->front().module)));
-  EXPECT_FALSE(projected->front()
+  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
+  ASSERT_EQ(tileModules->size(), 1u);
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstrModule(*tileModules->front().module)));
+  EXPECT_FALSE(tileModules->front()
                    .materializationRelations.operationResultBuffers.empty());
   EXPECT_FALSE(
-      projected->front().materializationRelations.operandBuffers.empty());
+      tileModules->front().materializationRelations.operandBuffers.empty());
 }
 
 TEST(WaferTensorProgramToCardProgramTest,

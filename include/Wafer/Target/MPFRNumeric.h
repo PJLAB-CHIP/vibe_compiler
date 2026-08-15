@@ -67,7 +67,7 @@ private:
   std::string detail;
 };
 
-/// Execute one same-format F16/BF16/F32/TF32 component operation. Published
+/// Execute one same-format F16/BF16/F32/TF32 component operation. Supported
 /// elementwise capability rows use F16/BF16/F32 and nearest-even; TF32 and
 /// directed rounding for direct operations remain component-only coverage.
 /// Direct MPFR operations are correctly rounded in the requested mode.

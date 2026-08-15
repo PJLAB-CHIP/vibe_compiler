@@ -7,10 +7,9 @@
 #define WAFER_BARRIER_RESOURCE_BYTES UINT32_C(256)
 #define WAFER_BARRIER_CACHE_LINE_BYTES UINT32_C(64)
 
-#if !defined(WAFER_BARRIER_SLOTS_PER_RANK) ||                            \
-    !defined(WAFER_BARRIER_INPUT_SLOT) ||                               \
-    !defined(WAFER_BARRIER_OUTPUT_SLOT) ||                              \
-    !defined(WAFER_BARRIER_STATUS_SLOT)
+#if !defined(WAFER_BARRIER_SLOTS_PER_RANK) ||                                  \
+    !defined(WAFER_BARRIER_INPUT_SLOT) ||                                      \
+    !defined(WAFER_BARRIER_OUTPUT_SLOT) || !defined(WAFER_BARRIER_STATUS_SLOT)
 #error "barrier probe slot layout must come from the verified manifest"
 #endif
 
@@ -39,10 +38,10 @@
 #define WAFER_BARRIER_STATUS_ORACLE_FAILED UINT64_C(3)
 
 #define WAFER_BARRIER_STEP_OUTPUT_INITIALIZED (UINT64_C(1) << 0)
-#define WAFER_BARRIER_STEP_EPOCH1_PUBLISHED (UINT64_C(1) << 1)
+#define WAFER_BARRIER_STEP_EPOCH1_WRITTEN (UINT64_C(1) << 1)
 #define WAFER_BARRIER_STEP_EPOCH1_COMPLETED (UINT64_C(1) << 2)
 #define WAFER_BARRIER_STEP_EPOCH1_VISIBLE (UINT64_C(1) << 3)
-#define WAFER_BARRIER_STEP_EPOCH2_PUBLISHED (UINT64_C(1) << 4)
+#define WAFER_BARRIER_STEP_EPOCH2_WRITTEN (UINT64_C(1) << 4)
 #define WAFER_BARRIER_STEP_EPOCH2_COMPLETED (UINT64_C(1) << 5)
 #define WAFER_BARRIER_STEP_EPOCH2_VISIBLE (UINT64_C(1) << 6)
 #define WAFER_BARRIER_STEP_EPOCH1_STABLE (UINT64_C(1) << 7)

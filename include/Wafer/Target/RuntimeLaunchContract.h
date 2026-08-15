@@ -52,7 +52,7 @@ struct ModelRuntimeLaunchContract {
 
 /// Closed tagged runtime launch contract. Values can only be created through
 /// the validating factories, so malformed form/entry-ABI/phase cross-products
-/// cannot enter compiler artifacts or package construction.
+/// cannot enter generated target modules or package construction.
 class RuntimeLaunchContract {
 public:
   RuntimeLaunchContract() = delete;

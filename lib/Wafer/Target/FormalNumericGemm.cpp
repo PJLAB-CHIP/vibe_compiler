@@ -27,7 +27,7 @@ evaluateFormalGemmFusedMultiplyAdd(const ResolvedNumericCommand &command,
   if (llvm::Error error = validateGemmResolvedCommand(command))
     return std::move(error);
   const LogicalFormat operandFormat =
-      command.getSemantics()->getNEGemmIdentity()->getFormat();
+      command.getSemantics()->getNEGemmKey()->getFormat();
   llvm::Expected<RawLogicalValue> canonicalLhs =
       validateOperand(lhs, operandFormat, "GEMM lhs");
   if (!canonicalLhs)
@@ -128,7 +128,7 @@ evaluateFormalGemmFinalize(const ResolvedNumericCommand &command,
     return classification.takeError();
 
   const LogicalFormat destinationFormat =
-      command.getSemantics()->getNEGemmIdentity()->getFormat();
+      command.getSemantics()->getNEGemmKey()->getFormat();
   const LogicalFormatDescriptor &destinationDescriptor =
       *findLogicalFormatDescriptor(destinationFormat);
   FormalNumericExceptionFlags flags;

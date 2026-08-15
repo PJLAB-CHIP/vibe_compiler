@@ -13,8 +13,8 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <cstdint>
 #include <cassert>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -262,9 +262,9 @@ private:
   // entries produced in that body must be recomputed against the completed
   // recurrence union, while entries created afterwards can stop recursive
   // alias walks immediately.
-  uint64_t provenanceRevision = 1;
-  llvm::DenseMap<mlir::Value, uint64_t> valueRefRevisions;
-  llvm::DenseMap<mlir::Value, uint64_t> valueOriginRevisions;
+  uint64_t valueCacheRevision = 1;
+  llvm::DenseMap<mlir::Value, uint64_t> valueRefCacheRevisions;
+  llvm::DenseMap<mlir::Value, uint64_t> valueOriginCacheRevisions;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> asyncRefs;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<AsyncTaskRef, 2>> asyncTaskRefs;
   llvm::SmallVector<AsyncTaskState, 4> asyncTasks;
@@ -272,9 +272,10 @@ private:
 
 /// Extends tracked local-engine accesses through path-covering completion
 /// barriers. An asynchronous issue is tracked only when its centralized local
-/// completion contract is OrderedAsynchronousIssue and it has a value-associated
-/// storage effect on a tracked root. While such an access is pending,
-/// deallocation and operations without a complete effect contract fail closed.
+/// completion contract is OrderedAsynchronousIssue and it has a
+/// value-associated storage effect on a tracked root. While such an access is
+/// pending, deallocation and operations without a complete effect contract fail
+/// closed.
 class LocalCompletionTracker {
 public:
   LocalCompletionTracker() = default;

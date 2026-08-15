@@ -23,7 +23,7 @@ inline constexpr uint64_t kMaximumBoardCompletionTimeoutMilliseconds =
     60ULL * 60 * 1000;
 
 enum class BoardRuntimeStage {
-  Preflight,
+  Validation,
   DeviceSelection,
   ResourceAllocation,
   HostToDevice,
@@ -292,8 +292,8 @@ struct BoardRuntimeInvocationRequest {
   std::vector<BoardRuntimeBinding> bindings;
   /// Compiler-owned profiler records are the only internal workspace that a
   /// board invocation may initialize and read back. They are populated by
-  /// wafer-run after exact companion verification; they are never exposed as
-  /// user ResourceId bindings.
+  /// wafer-run after exact instrumentation verification; they are never exposed
+  /// as user ResourceId bindings.
   std::vector<BoardRuntimeBinding> profilerBindings;
 };
 

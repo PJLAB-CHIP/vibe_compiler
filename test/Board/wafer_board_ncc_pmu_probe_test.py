@@ -172,7 +172,7 @@ def compile_seed_package(args: argparse.Namespace, source: pathlib.Path) -> path
         ],
         timeout_seconds=300,
     )
-    if "published verified package" not in result.stdout:
+    if "wrote verified package" not in result.stdout:
         raise RuntimeError("wafer-compile did not report a verified seed package")
     return package
 

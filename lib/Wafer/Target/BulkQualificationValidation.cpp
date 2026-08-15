@@ -1,4 +1,4 @@
-//===- BulkQualificationValidation.cpp - Validation and admission ----===//
+//===- BulkQualificationValidation.cpp - Record validation -----------===//
 
 #include "BulkQualificationInternal.h"
 
@@ -87,21 +87,21 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
           frozenDestinationDigest, calibrationSpecDigest, valueDomain,
           targetComparator, backendComparator, proofBasis))
     return error;
-  if (*adapterDigest != getBulkAdapterIdentityDigest() ||
+  if (*adapterDigest != getBulkAdapterContractDigest() ||
       *valueDomain != kValueDomain || *targetComparator != kTargetComparator ||
       *backendComparator != kBackendComparator || *proofBasis != kProofBasis)
     return invalid("bulk frozen policy adapter/domain/proof mismatch");
   llvm::Expected<std::string> environmentDigest =
       requireDigest(*object, "environment_digest", "bulk frozen policy");
-  llvm::Expected<std::string> environmentArtifactDigest =
+  llvm::Expected<std::string> environmentRecordJSONDigest =
       requireDigest(*object, "environment_record_digest", "bulk frozen policy");
   llvm::Expected<std::string> backendDigest =
       requireDigest(*object, "backend_digest", "bulk frozen policy");
   if (llvm::Error error = takeExpectedErrors(
-          environmentDigest, environmentArtifactDigest, backendDigest))
+          environmentDigest, environmentRecordJSONDigest, backendDigest))
     return error;
   if (*environmentDigest != environment.getDigest() ||
-      *environmentArtifactDigest != environmentRecordDigest(environment) ||
+      *environmentRecordJSONDigest != environmentRecordDigest(environment) ||
       *backendDigest != environment.getBackend().getDigest())
     return invalid("bulk frozen policy environment/backend mismatch");
   llvm::Expected<llvm::StringRef> proof =
@@ -204,7 +204,7 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
       {"backend_formal_fma",
        static_cast<int64_t>(run->backend.evidence.formalFusedMultiplyAdds)},
   };
-  return publishNoReplace(outputPath, canonicalJSON(std::move(finalRecord)));
+  return writeFileNoReplace(outputPath, canonicalJSON(std::move(finalRecord)));
 }
 
 llvm::Expected<VerifiedBulkQualificationRecord>
@@ -271,7 +271,7 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
       requireDigest(*object, "spec_digest", "bulk qualification record");
   llvm::Expected<std::string> environmentDigest =
       requireDigest(*object, "environment_digest", "bulk qualification record");
-  llvm::Expected<std::string> environmentArtifactDigest = requireDigest(
+  llvm::Expected<std::string> environmentRecordJSONDigest = requireDigest(
       *object, "environment_record_digest", "bulk qualification record");
   llvm::Expected<std::string> resolutionDigest =
       requireDigest(*object, "resolution_digest", "bulk qualification record");
@@ -308,15 +308,14 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
   if (llvm::Error error = takeExpectedErrors(
           policyDigest, adapterDigest, semanticDigest, calibrationDigest,
           backendDigest, formalOutputDigest, specDigest, environmentDigest,
-          environmentArtifactDigest, resolutionDigest, inputPayloadDigest,
+          environmentRecordJSONDigest, resolutionDigest, inputPayloadDigest,
           destinationTemplateDigest, backendOutputDigest, kindText,
           implementation, descriptorDigest, valueDomain, targetComparator,
           backendComparator, proofBasis, maximumAbsolute, maximumRelative,
           observedAbsolute, observedRelative))
     return error;
   if (!rawExact || !flagsObject)
-    return invalid(
-        "bulk qualification record admission identity is incomplete");
+    return invalid("bulk qualification record execution binding is incomplete");
   const llvm::json::Value *environmentValue = object->get("environment");
   const llvm::json::Object *environmentObject =
       environmentValue ? environmentValue->getAsObject() : nullptr;
@@ -325,7 +324,7 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
   if (llvm::Error error = validateEnvironmentJSON(
           *environmentObject, *environmentDigest, *backendDigest))
     return error;
-  if (sha256(canonicalJSON(*environmentValue)) != *environmentArtifactDigest)
+  if (sha256(canonicalJSON(*environmentValue)) != *environmentRecordJSONDigest)
     return invalid("bulk qualification environment record digest mismatch");
   llvm::Expected<BulkQualificationKind> kind =
       parseQualificationKind(*kindText);
@@ -333,7 +332,7 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
   if (llvm::Error error = takeExpectedErrors(kind, flags))
     return error;
   if (*kind != BulkQualificationKind::ProfileBounded ||
-      *adapterDigest != getBulkAdapterIdentityDigest() ||
+      *adapterDigest != getBulkAdapterContractDigest() ||
       *valueDomain != kValueDomain || *targetComparator != kTargetComparator ||
       *backendComparator != kBackendComparator || *proofBasis != kProofBasis ||
       implementation->empty() || *observedAbsolute > *maximumAbsolute ||
@@ -360,13 +359,13 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
       std::move(*descriptorDigest), *kind, *flags);
 }
 
-llvm::Expected<BulkBackendAdmission>
-VerifiedBulkQualificationRecord::createAdmission(
+llvm::Expected<QualifiedBulkExecution>
+VerifiedBulkQualificationRecord::qualifyExecution(
     const BulkExecutionEnvironment &environment,
     const ResolvedNumericCommand &command,
     llvm::ArrayRef<BulkTensorStorage> inputs,
     const BulkTensorStorage &destinationTemplate) const {
-  if (getBulkAdapterIdentityDigest() != adapterDigest ||
+  if (getBulkAdapterContractDigest() != adapterDigest ||
       environment.getDigest() != environmentDigest || !command.getSemantics() ||
       command.getSemantics()->getDigest() != semanticProfileDigest ||
       command.getDigest() != resolutionDigest ||
@@ -375,7 +374,7 @@ VerifiedBulkQualificationRecord::createAdmission(
           destinationTemplateDigest)
     return invalid("bulk qualification record does not exact-match the "
                    "environment, command, payload or destination template");
-  return BulkBackendAdmission(
+  return QualifiedBulkExecution(
       recordDigest, adapterDigest, semanticProfileDigest, resolutionDigest,
       inputPayloadDigest, destinationTemplateDigest, environmentDigest,
       expectedBackendOutputDigest, implementation, resolvedDescriptorDigest,

@@ -26,33 +26,30 @@ namespace wafer::compiler::detail {
 /// without turning a provider point into an actual IR clone.
 inline constexpr size_t kMaximumCoordinatedCommunicationActionPoints = 8;
 
-/// Opaque identity of one provider-local point in a canonical query. The key
+/// Opaque key of one provider-local point in a canonical query. The key
 /// is for deterministic equality and diagnostics only; common coordination
 /// must never parse it to recover provider semantics. A point is query-local
 /// and carries no pointer into the queried IR.
-struct CoordinatedCommunicationActionPointIdentity {
+struct CommunicationActionKey {
   std::string providerKey;
   uint32_t stableOrdinal = 0;
 
-  friend bool
-  operator==(const CoordinatedCommunicationActionPointIdentity &lhs,
-             const CoordinatedCommunicationActionPointIdentity &rhs) {
+  friend bool operator==(const CommunicationActionKey &lhs,
+                         const CommunicationActionKey &rhs) {
     return lhs.providerKey == rhs.providerKey &&
            lhs.stableOrdinal == rhs.stableOrdinal;
   }
 };
 
-/// One immutable recipe for an all-rank canonical Instr parent. The common
-/// owner supplies discardable complete-rank clones. Materialization must
+/// One immutable recipe for an all-rank canonical Instr parent. Common search
+/// supplies discardable complete-rank clones. Materialization must
 /// re-prove its capability from those clones and either mutate every required
 /// rank atomically or fail; it cannot select a winner or run physical gates.
 class CoordinatedCommunicationActionPoint {
 public:
   virtual ~CoordinatedCommunicationActionPoint() = default;
 
-  const CoordinatedCommunicationActionPointIdentity &getIdentity() const {
-    return identity;
-  }
+  const CommunicationActionKey &getKey() const { return key; }
 
   virtual mlir::LogicalResult materialize(
       llvm::MutableArrayRef<mlir::ModuleOp> isolatedCanonicalInstrModules,
@@ -60,11 +57,10 @@ public:
       std::string *failureReason = nullptr) const = 0;
 
 protected:
-  explicit CoordinatedCommunicationActionPoint(
-      CoordinatedCommunicationActionPointIdentity identity);
+  explicit CoordinatedCommunicationActionPoint(CommunicationActionKey key);
 
 private:
-  CoordinatedCommunicationActionPointIdentity identity;
+  CommunicationActionKey key;
 };
 
 using CoordinatedCommunicationActionPoints =
@@ -89,7 +85,7 @@ public:
 };
 
 /// Verify the common provider domain without modifying it: one complete rank
-/// set in one context, no Tile dataflow operation, no finalization-owned
+/// set in one context, no Tile dataflow operation, no evaluation-owned
 /// allocation/Direct-DTE binding or nonzero worker assignment, and valid
 /// canonical Instr IR.
 mlir::LogicalResult verifyCoordinatedCommunicationActionDomain(
@@ -97,16 +93,16 @@ mlir::LogicalResult verifyCoordinatedCommunicationActionDomain(
     const frontend::FrontendProgramVerificationResult &program,
     std::string *failureReason = nullptr);
 
-/// One materialized provider point. The identity is transferred directly from
+/// One materialized provider point. The key is transferred directly from
 /// the point and is never reconstructed from the rewritten modules.
 struct CoordinatedCommunicationAction {
-  CoordinatedCommunicationActionPointIdentity identity;
+  CommunicationActionKey key;
   std::vector<mlir::OwningOpRef<mlir::ModuleOp>> rankModules;
 };
 
-/// Clone and materialize one point after common action admission. Source
+/// Clone and materialize one point after reserving common action work. Source
 /// parents remain immutable. The returned modules are verified canonical
-/// Instr and contain no Tile dataflow operations; physical/resource admission
+/// Instr and contain no Tile dataflow operations; physical/resource validation
 /// remains the caller's responsibility.
 mlir::FailureOr<CoordinatedCommunicationAction>
 materializeCoordinatedCommunicationAction(

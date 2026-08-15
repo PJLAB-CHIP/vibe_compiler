@@ -257,7 +257,7 @@ Top-level ioctl command groups use `_IOWR('T', nr, ...)`:
 | 4 | `TSM_LOG_CMD` | `tsm_log_ioctl_args` | AP/Kcore/Score log descriptors and levels. |
 | 5 | `TSM_DEVICE_INFO_CMD` | `tsm_device_info_ioctl_args` | Memory/PCIe/NPU/DMA/task info. |
 | 6 | `TSM_DRIVER_DEVICES_TOPO_CMD` | `tsm_driver_devices_topo_ioctl_args` | Driver-level mesh/torus topology and discovery status. |
-| 7 | `TSM_DRIVER_INFO_CMD` | `tsm_driver_info_ioctl_args` | Driver/vendor/project strings. |
+| 7 | `TSM_DRIVER_INFO_CMD` | `tsm_driver_info_ioctl_args` | Driver/vendor/build strings. |
 | 8 | `TSM_DRIVER_SET_DTE_CMD` | `tsm_driver_set_dte_trans_ioctl_args` | Driver-level DTE transfer by card and destination XY. |
 
 #### BO and Memory Domains
@@ -846,14 +846,14 @@ logical tile `t` to pid `t`. A missing tile loses the corresponding pid instead
 of remapping it. `txLaunchClusterKernel` separately
 establishes one block per selected tile and broadcasts one
 module/function/argument blob. Neither launch can consume 16 independent
-per-rank argument blocks without an explicit SPMD publication ABI.
+per-rank argument blocks without an explicit SPMD visibility ABI.
 
 `txLaunchModel` is now more than an opaque research hint: the exact V5.6
 type-6/type-7 layouts and device entry call have been recovered. Wafer's
-sole current schema-v8 `kind=model` publication/provider carries nested
+sole current schema-v8 `kind=model` package/provider carries nested
 `entry_abi=tx81-model-bootparam` (the model
-BootParam ABI was first introduced in schema-v4; schema-v6 was a historical publication) and owns the typed
-builder, nested device-address and module-identity validation, artifact
+BootParam ABI was first introduced in schema-v4; schema-v6 was a historical format) and owns the typed
+builder, nested device-address and module-identity validation, module
 export/readback, and fake lifecycle gates. A fresh qualified full-good-board
 replay also completed two exact type-6/type-7 Add iterations over logical tile
 ids `0..15`. This is a logical-execution/result gate, not a physical-coordinate
@@ -1326,7 +1326,7 @@ Confirmed parallel-related facts:
 ### 12.2 What Is Still Not Proven
 
 Not found as a direct string, symbol, or recovered branch in these static
-artifacts:
+recovered files:
 
 - `isParallel` / `is_parallel`;
 - `strategy.isParallel`;
@@ -1406,7 +1406,7 @@ Current static coverage:
 | SPM bank / `serial_mode=0` | Medium for existence of parallel mode, operand range metadata, and likely bank-resource hazard; this SDK remains low confidence for mapping, while the separate authoritative SPM1 design gives an 8×2048-bit LSB-interleaved coarse phase. | Need board sweep or lower RTL/firmware evidence for exact port/stride penalty; 64 KiB remains neither calibrated policy nor hardware ABI. |
 | `txdnn` eager op layer | Not covered by this SDK. | `libtxdnn.so` / `txdnn.h` are still absent here. |
 
-Evidence handoff to the numbered designs:
+Evidence mapping to the numbered designs:
 
 - The snapshot contains distinct HPGR, TSMML/system, validation,
   firmware/driver, CCL/FlagCX, multimedia/CV, and profiler surfaces.

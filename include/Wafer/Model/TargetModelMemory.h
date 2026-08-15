@@ -167,7 +167,7 @@ private:
   friend class InvocationMemoryRegistry;
 };
 
-/// One compact byte payload proposed by a plain transaction kernel. A strided
+/// One compact byte payload produced by a command kernel. A strided
 /// layout maps consecutive payload segments to destination addresses without
 /// expanding the command effect. Address space and alignment remain explicit.
 struct TargetModelStridedByteLayout {
@@ -177,7 +177,7 @@ struct TargetModelStridedByteLayout {
 };
 
 /// Exact bytes observed by one plain target command before its asynchronous
-/// NCC completion is published. A strided layout describes the addressed
+/// NCC completion becomes visible. A strided layout describes the addressed
 /// segments; byteCount is the compact payload size.
 struct TargetModelByteRead {
   int64_t launchSlot = -1;

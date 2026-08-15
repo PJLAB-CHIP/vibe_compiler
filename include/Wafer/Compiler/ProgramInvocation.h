@@ -75,17 +75,19 @@ struct ProgramGlobalInputBinding {
   ProgramTensor tensor;
 };
 
-/// Builds all Tile-local source bindings from typed bundle slices. User
-/// inputs are sliced from complete logical tensors; parameters/constants are
-/// loaded from their already-verified package-relative NPY payload paths.
-/// The function performs no compute and is shared by independent execution
-/// consumers without sharing their numeric kernels or schedulers.
+/// Builds all Tile-local source bindings from typed physicalTileExecutables
+/// slices. User inputs are sliced from complete logical tensors;
+/// parameters/constants are loaded from their already-verified package-relative
+/// NPY payload paths. The function performs no compute and is shared by
+/// independent execution consumers without sharing their numeric kernels or
+/// schedulers.
 llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
-    const ExecutableBundle &bundle, llvm::StringRef packageRoot,
+    const PhysicalTileExecutables &physicalTileExecutables,
+    llvm::StringRef packageRoot,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs);
 
 /// Applies one already-verified program binding slice to a complete logical
-/// tensor. Both user-input and expected-output consumers use this artifact
+/// tensor. Both user-input and expected-output consumers use this slicing
 /// operation; it performs no reference or target compute.
 llvm::Expected<ProgramTensor>
 sliceProgramTensorForBinding(const ProgramTensor &global,

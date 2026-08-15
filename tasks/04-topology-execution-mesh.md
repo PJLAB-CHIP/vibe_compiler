@@ -9,14 +9,14 @@
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   verified pre-SPMD StableHLO program directory，以及validated ExecutionConfig中的card-level num_partitions；
   target identity由compiler内部固定，physical topology不由frontend参数伪造。
 - Current stage responsibility:
   在transaction-owned program snapshot中建立或核对唯一module-top-level target topology和logical card-partition
   mesh；分别验证physical card/Tile domain与num_partitions，禁止用同一rank count或endpoint tuple连接二者；
   helper边界前后重建并验证所需facts。
-- Output artifact / IR:
+- Output IR / files:
   `wafer.target.topology @default`表达physical card/Tile topology；`wafer.execution.mesh @default_mesh`只表达
   logical card-partition domain。两者都不是sharding strategy、selected Tile mapping、per-Tile executable或runtime placement。
 - Downstream consumer:
@@ -60,7 +60,7 @@ wafer.execution.mesh @default_mesh {
 
 这里的`1`和单卡available Tile数量没有关系。未来logical multi-card mesh可以有更大shape，但只有card placement、
 cross-card transport和runtime同时闭合后才进入production。若需要把logical partition放到physical card，必须形成
-独立typed card-placement artifact；不得重新把Tile coordinate塞回execution mesh。
+独立typed card-placement output；不得重新把Tile coordinate塞回execution mesh。
 
 ### 2.2 Physical card/Tile topology
 
@@ -146,14 +146,14 @@ topology/mesh不是helper必须保留的unknown op，也不是opaque sidecar。l
 physical topology可以在helper边界后fresh重建，因为helper不消费physical Tile语义。helper path、output path和pass名不
 进入`ExecutionConfig`或IR。
 
-## 5. CardProgram MPMD 与 late physical-Tile projection
+## 5. CardProgram MPMD 与 late physical-Tile module splitting
 
 对每个card-local structured DAG，下游产生一个`wafer.card.program(card_id=...)`，内部包含selected
 `wafer.tile.program(tile_id=...)`。不同Tile program可以包含不同op、loop和work domain；完整语义覆盖、跨Tile消息、
 SPM ownership和completion由CardProgram verifier证明。具体搜索状态、候选生成、fusion和cost只在
 `tasks/06-physical-dataflow-synthesis.md`定义，本文不复制。
 
-selected card program之后才执行physical-Tile projection：
+selected CardProgram之后才拆成physical-Tile modules：
 
 ```text
 wafer.card.program(card_id)
@@ -178,7 +178,7 @@ launch slot一一对应。launch slot只是最低层ABI编码，不能反向进�
 - source中的duplicate/nested topology或mesh、helper前后/final readback不一致；
 - single-card `num_partitions=1`与16个available Tile同时通过，且没有count-equality或rank-to-Tile mapping；
 - post-SPMD boundary/parameter shard的partition domain与logical mesh不符时fail closed；
-- downstream duplicate/unavailable selected Tile与不完整physical projection fail closed；
+- downstream duplicate/unavailable selected Tile与不完整physical-Tile module set fail closed；
 - 旧whole-rank入口、四元组logical endpoint、identity直绑Tile的fixture和依赖这些事实的旧golden被删除或改写。
 
 任一frontend失败发生在transaction staging内，source和既有final output保持byte-identical。IR-local pass success只证明

@@ -1,5 +1,5 @@
-#include "instr_def.h"
 #include "instr_adapter.h"
+#include "instr_def.h"
 #include "wafer_instruction_family_probe_protocol.h"
 #include "wafer_tx81_crt.h"
 
@@ -23,8 +23,14 @@ static const WaferIFPDescriptor wafer_ifp_catalog[] = {
 #define WAFER_IFP_DESCRIPTOR(SYMBOL, ID, SPELLING, DISPOSITION, FAMILY, DTYPE, \
                              ORACLE, REASON, RESULT_BYTES, OUTPUT_SPAN,        \
                              AUX_SPAN)                                         \
-  {ID, WAFER_IFP_##DISPOSITION, WAFER_IFP_##FAMILY, WAFER_IFP_##DTYPE,        \
-   WAFER_IFP_##ORACLE, RESULT_BYTES, OUTPUT_SPAN, AUX_SPAN},
+  {ID,                                                                         \
+   WAFER_IFP_##DISPOSITION,                                                    \
+   WAFER_IFP_##FAMILY,                                                         \
+   WAFER_IFP_##DTYPE,                                                          \
+   WAFER_IFP_##ORACLE,                                                         \
+   RESULT_BYTES,                                                               \
+   OUTPUT_SPAN,                                                                \
+   AUX_SPAN},
     WAFER_IFP_CASES(WAFER_IFP_DESCRIPTOR)
 #undef WAFER_IFP_DESCRIPTOR
 };
@@ -50,8 +56,7 @@ static void wafer_ifp_cache_range(uint64_t begin, uint32_t bytes,
   __asm__ volatile("sync" ::: "memory");
   __asm__ volatile("csrr %0, mxstatus" : "=r"(mode));
   mode = (mode >> 30) & 3U;
-  for (uintptr_t address = (uintptr_t)begin;
-       address < (uintptr_t)begin + bytes;
+  for (uintptr_t address = (uintptr_t)begin; address < (uintptr_t)begin + bytes;
        address += WAFER_TX81_CACHE_LINE_BYTES) {
     if (mode == WAFER_TX81_MACHINE_MODE) {
       if (invalidate_only != 0)
@@ -74,7 +79,7 @@ static void wafer_ifp_invalidate(uint64_t begin, uint32_t bytes) {
   wafer_ifp_cache_range(begin, bytes, 1);
 }
 
-static void wafer_ifp_publish(volatile uint64_t *record) {
+static void wafer_ifp_write_record(volatile uint64_t *record) {
   wafer_ifp_cache_range((uint64_t)(uintptr_t)record,
                         WAFER_IFP_RECORD_WORDS * sizeof(uint64_t), 0);
 }
@@ -92,15 +97,14 @@ static void wafer_ifp_wait_worker0_drain(void) {
   __asm__ volatile("fence iorw, iorw" ::: "memory");
   __asm__ volatile("sync" ::: "memory");
   __asm__ volatile("sync.is" ::: "memory");
-  while (TsmGetCsrIbcounter() != 0U ||
-         TsmGetCsrTaskstatus() != 1U) {
+  while (TsmGetCsrIbcounter() != 0U || TsmGetCsrTaskstatus() != 1U) {
   }
   __asm__ volatile("fence iorw, iorw" ::: "memory");
   __asm__ volatile("sync" ::: "memory");
 }
 
 static void wafer_ifp_copy_spm_bytes(uint64_t destination, uint64_t source,
-                                    uint32_t bytes) {
+                                     uint32_t bytes) {
   volatile uint8_t *destination_mapping =
       (volatile uint8_t *)(void *)get_spm_memory_mapping(destination);
   const volatile uint8_t *source_mapping =
@@ -112,15 +116,15 @@ static void wafer_ifp_copy_spm_bytes(uint64_t destination, uint64_t source,
   __asm__ volatile("sync.is" ::: "memory");
 }
 
-static void wafer_ifp_copy_spm_bytes_ncc(uint64_t destination,
-                                        uint64_t source, uint32_t bytes) {
+static void wafer_ifp_copy_spm_bytes_ncc(uint64_t destination, uint64_t source,
+                                         uint32_t bytes) {
   /*
    * Keep producer, snapshot, sentinel staging, and consumer in one NCC
    * dependency graph.  A Kcore copy after a single CSR-idle observation would
    * add an ambiguous NCC-to-Kcore completion boundary to the collision case.
    */
-  wafer_tx81_gather_scatter_v3(source, destination, bytes, bytes, 0U, 0U, 0U, 1U,
-                            1U, 1U, 0U, 0U, 0U, 1U, 1U, 1U, 0U);
+  wafer_tx81_gather_scatter_v3(source, destination, bytes, bytes, 0U, 0U, 0U,
+                               1U, 1U, 1U, 0U, 0U, 0U, 1U, 1U, 1U, 0U);
 }
 
 static uint64_t wafer_ifp_pack_first_last(uint32_t first, uint32_t last) {
@@ -132,10 +136,11 @@ static uint32_t wafer_ifp_argmin_f16_is_nan(uint16_t value) {
          (value & UINT16_C(0x03ff)) != 0;
 }
 
-static uint32_t
-wafer_ifp_argmin_pair_is_coherent(uint64_t input, uint32_t elements,
-                                  uint32_t format, uint64_t value_raw,
-                                  uint64_t index_raw) {
+static uint32_t wafer_ifp_argmin_pair_is_coherent(uint64_t input,
+                                                  uint32_t elements,
+                                                  uint32_t format,
+                                                  uint64_t value_raw,
+                                                  uint64_t index_raw) {
   uint32_t index = (uint32_t)index_raw;
   if (index >= elements || format != Fmt_FP16)
     return 0;
@@ -143,16 +148,15 @@ wafer_ifp_argmin_pair_is_coherent(uint64_t input, uint32_t elements,
       (const volatile uint16_t *)(const void *)get_spm_memory_mapping(input);
   uint16_t source = mapping[index];
   uint16_t value = (uint16_t)value_raw;
-  return source == value ||
-         (wafer_ifp_argmin_f16_is_nan(source) &&
-          wafer_ifp_argmin_f16_is_nan(value));
+  return source == value || (wafer_ifp_argmin_f16_is_nan(source) &&
+                             wafer_ifp_argmin_f16_is_nan(value));
 }
 
-static uint32_t
-wafer_ifp_argmin_pair_is_fresh(uint64_t prelaunch_value_raw,
-                              uint64_t prelaunch_index_raw,
-                              uint64_t value_raw, uint64_t index_raw,
-                              uint32_t observed_invalid_pair) {
+static uint32_t wafer_ifp_argmin_pair_is_fresh(uint64_t prelaunch_value_raw,
+                                               uint64_t prelaunch_index_raw,
+                                               uint64_t value_raw,
+                                               uint64_t index_raw,
+                                               uint32_t observed_invalid_pair) {
   if ((value_raw & WAFER_IFP_ARGMIN_DATA_VALID) == 0 ||
       (index_raw & WAFER_IFP_ARGMIN_DATA_VALID) == 0)
     return 0;
@@ -181,10 +185,9 @@ static void wafer_ifp_store_argmin_result(uint64_t output, uint32_t format,
  * CT command still programs both hardware writeback CSRs before issue.  This
  * probe then observes both channels and worker state with fixed budgets.
  */
-static uint32_t
-wafer_ifp_argmin_bounded(uint64_t input, uint64_t output,
-                         uint32_t elements, uint32_t format,
-                         volatile uint64_t *record) {
+static uint32_t wafer_ifp_argmin_bounded(uint64_t input, uint64_t output,
+                                         uint32_t elements, uint32_t format,
+                                         volatile uint64_t *record) {
   TsmPeripheralInstr instruction = {0};
   TsmPeripheral *peripheral = TsmNewPeripheral();
   peripheral->ArgMin(&instruction, input, elements, (Data_Format)format);
@@ -215,12 +218,11 @@ wafer_ifp_argmin_bounded(uint64_t input, uint64_t output,
       observed_invalid_pair = 1;
       continue;
     }
-    if (wafer_ifp_argmin_pair_is_fresh(
-            prelaunch_value_raw, prelaunch_index_raw, value_observation,
-            index_observation, observed_invalid_pair) &&
-        wafer_ifp_argmin_pair_is_coherent(input, elements, format,
-                                          value_observation,
-                                          index_observation)) {
+    if (wafer_ifp_argmin_pair_is_fresh(prelaunch_value_raw, prelaunch_index_raw,
+                                       value_observation, index_observation,
+                                       observed_invalid_pair) &&
+        wafer_ifp_argmin_pair_is_coherent(
+            input, elements, format, value_observation, index_observation)) {
       value_raw = value_observation;
       value_poll = poll;
       index_raw = index_observation;
@@ -235,8 +237,7 @@ wafer_ifp_argmin_bounded(uint64_t input, uint64_t output,
   uint32_t ibcounter_first = 0;
   uint32_t ibcounter_last = 0;
   uint32_t state_polls = 0;
-  for (uint32_t poll = 1; poll <= WAFER_IFP_ARGMIN_STATE_POLL_BUDGET;
-       ++poll) {
+  for (uint32_t poll = 1; poll <= WAFER_IFP_ARGMIN_STATE_POLL_BUDGET; ++poll) {
     uint32_t taskstatus = TsmGetCsrTaskstatus();
     uint32_t ibcounter = TsmGetCsrIbcounter();
     if (poll == 1) {
@@ -256,12 +257,11 @@ wafer_ifp_argmin_bounded(uint64_t input, uint64_t output,
       value_poll != 0 && index_poll != 0) {
     uint64_t final_value_raw = getreg(WAFER_IFP_ARGMIN_VALUE_CSR);
     uint64_t final_index_raw = getreg(WAFER_IFP_ARGMIN_INDEX_CSR);
-    if (wafer_ifp_argmin_pair_is_fresh(
-            prelaunch_value_raw, prelaunch_index_raw, final_value_raw,
-            final_index_raw, observed_invalid_pair) &&
+    if (wafer_ifp_argmin_pair_is_fresh(prelaunch_value_raw, prelaunch_index_raw,
+                                       final_value_raw, final_index_raw,
+                                       observed_invalid_pair) &&
         wafer_ifp_argmin_pair_is_coherent(input, elements, format,
-                                          final_value_raw,
-                                          final_index_raw)) {
+                                          final_value_raw, final_index_raw)) {
       value_raw = final_value_raw;
       index_raw = final_index_raw;
     } else {
@@ -292,8 +292,7 @@ wafer_ifp_argmin_bounded(uint64_t input, uint64_t output,
   record[WAFER_IFP_REC_ARGMIN_IBCOUNTER_FIRST_LAST] =
       wafer_ifp_pack_first_last(ibcounter_first, ibcounter_last);
   record[WAFER_IFP_REC_ARGMIN_STATE_POLLS] = state_polls;
-  record[WAFER_IFP_REC_STEP_FLAGS] |=
-      WAFER_IFP_STEP_ARGMIN_DIAGNOSTIC_RETURNED;
+  record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_ARGMIN_DIAGNOSTIC_RETURNED;
 
   if ((diagnostic_flags &
        (WAFER_IFP_ARGMIN_VALUE_VALID | WAFER_IFP_ARGMIN_INDEX_VALID |
@@ -316,8 +315,8 @@ static void wafer_ifp_seed(uint64_t payload_ddr) {
   };
   for (uint32_t slot = 0; slot < 4; ++slot)
     wafer_tx81_rdma_v3(payload_ddr + slot * WAFER_IFP_SLOT_BYTES,
-                    destinations[slot], WAFER_IFP_SLOT_BYTES,
-                    WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
+                       destinations[slot], WAFER_IFP_SLOT_BYTES,
+                       WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
   /*
    * The four RDMA seeds and the tested instruction use independent engines.
    * Complete this real producer-to-consumer boundary before any instruction
@@ -362,8 +361,7 @@ wafer_ifp_dispatch_reduce_capability(const WaferIFPDescriptor *descriptor,
   uint32_t c;
   if (descriptor->id >= WAFER_IFP_REDUCE_MATRIX_BASE &&
       descriptor->id <= WAFER_IFP_REDUCE_MATRIX_END) {
-    const uint32_t offset =
-        descriptor->id - WAFER_IFP_REDUCE_MATRIX_BASE;
+    const uint32_t offset = descriptor->id - WAFER_IFP_REDUCE_MATRIX_BASE;
     static const uint32_t dimensions[] = {0U, 1U, 2U, 4U};
     operation = offset / 12U;
     dimension = dimensions[offset % 4U];
@@ -485,48 +483,45 @@ wafer_ifp_dispatch_pool_capability(const WaferIFPDescriptor *descriptor,
   }
 
   const uint32_t value_elements = dst_h * dst_w * 64U;
-  const uint32_t value_bytes =
-      value_elements * (format == Fmt_FP32 ? 4U : 2U);
+  const uint32_t value_bytes = value_elements * (format == Fmt_FP32 ? 4U : 2U);
   const uint64_t index_output =
       output + ((value_bytes + 255U) & ~UINT32_C(255));
   switch (operation) {
   case 0:
-    wafer_tx81_pool_avg_v3(
-        input, output, OP_FUNC_CGRATensor_PoolOp_T_T_avg, 1, src_h, src_w, 64,
-        1, dst_h, dst_w, 64, pad_top, pad_bottom, pad_left, pad_right,
-        kernel_x, kernel_y, stride_x, stride_y, format, 0U);
+    wafer_tx81_pool_avg_v3(input, output, OP_FUNC_CGRATensor_PoolOp_T_T_avg, 1,
+                           src_h, src_w, 64, 1, dst_h, dst_w, 64, pad_top,
+                           pad_bottom, pad_left, pad_right, kernel_x, kernel_y,
+                           stride_x, stride_y, format, 0U);
     break;
   case 1:
-    wafer_tx81_pool_sum_v3(
-        input, output, OP_FUNC_CGRATensor_PoolOp_T_T_sum, 1, src_h, src_w, 64,
-        1, dst_h, dst_w, 64, pad_top, pad_bottom, pad_left, pad_right,
-        kernel_x, kernel_y, stride_x, stride_y, format, 0U);
+    wafer_tx81_pool_sum_v3(input, output, OP_FUNC_CGRATensor_PoolOp_T_T_sum, 1,
+                           src_h, src_w, 64, 1, dst_h, dst_w, 64, pad_top,
+                           pad_bottom, pad_left, pad_right, kernel_x, kernel_y,
+                           stride_x, stride_y, format, 0U);
     break;
   case 2:
-    wafer_tx81_pool_max_v3(
-        input, output, OP_FUNC_CGRATensor_PoolOp_T_T_max, 1, src_h, src_w, 64,
-        1, dst_h, dst_w, 64, pad_top, pad_bottom, pad_left, pad_right,
-        kernel_x, kernel_y, stride_x, stride_y, format, 0U);
+    wafer_tx81_pool_max_v3(input, output, OP_FUNC_CGRATensor_PoolOp_T_T_max, 1,
+                           src_h, src_w, 64, 1, dst_h, dst_w, 64, pad_top,
+                           pad_bottom, pad_left, pad_right, kernel_x, kernel_y,
+                           stride_x, stride_y, format, 0U);
     break;
   case 3:
     wafer_tx81_pool_indexedmax_v3(
-        input, output, index_output,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, src_h, src_w, 64, 1,
-        dst_h, dst_w, 64, pad_top, pad_bottom, pad_left, pad_right, kernel_x,
-        kernel_y, stride_x, stride_y, format, 0U);
+        input, output, index_output, OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax,
+        1, src_h, src_w, 64, 1, dst_h, dst_w, 64, pad_top, pad_bottom, pad_left,
+        pad_right, kernel_x, kernel_y, stride_x, stride_y, format, 0U);
     break;
   case 4:
-    wafer_tx81_pool_min_v3(
-        input, output, OP_FUNC_CGRATensor_PoolOp_T_T_min, 1, src_h, src_w, 64,
-        1, dst_h, dst_w, 64, pad_top, pad_bottom, pad_left, pad_right,
-        kernel_x, kernel_y, stride_x, stride_y, format, 0U);
+    wafer_tx81_pool_min_v3(input, output, OP_FUNC_CGRATensor_PoolOp_T_T_min, 1,
+                           src_h, src_w, 64, 1, dst_h, dst_w, 64, pad_top,
+                           pad_bottom, pad_left, pad_right, kernel_x, kernel_y,
+                           stride_x, stride_y, format, 0U);
     break;
   case 5:
     wafer_tx81_pool_indexedmin_v3(
-        input, output, index_output,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmin, 1, src_h, src_w, 64, 1,
-        dst_h, dst_w, 64, pad_top, pad_bottom, pad_left, pad_right, kernel_x,
-        kernel_y, stride_x, stride_y, format, 0U);
+        input, output, index_output, OP_FUNC_CGRATensor_PoolOp_T_T_indexedmin,
+        1, src_h, src_w, 64, 1, dst_h, dst_w, 64, pad_top, pad_bottom, pad_left,
+        pad_right, kernel_x, kernel_y, stride_x, stride_y, format, 0U);
     break;
   default:
     return 0;
@@ -556,7 +551,8 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     break;
   case WAFER_IFP_CASE_CT_ADD_F16:
   case WAFER_IFP_CASE_CT_ADD_BF16:
-    wafer_tx81_elementwise_add_v3(input_a, input_b, output, elements, format, 0U);
+    wafer_tx81_elementwise_add_v3(input_a, input_b, output, elements, format,
+                                  0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_F16_TAIL130:
     wafer_tx81_elementwise_add_v3(input_a, input_b, output, 130, Fmt_FP16, 0U);
@@ -565,29 +561,36 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     wafer_tx81_elementwise_add_v3(input_a, input_b, output, 130, Fmt_BF16, 0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_F32:
-    wafer_tx81_elementwise_add_v3(input_a, input_b, output, elements, Fmt_FP32, 0U);
+    wafer_tx81_elementwise_add_v3(input_a, input_b, output, elements, Fmt_FP32,
+                                  0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_SPECIAL_F16:
-    wafer_tx81_elementwise_add_v3(input_a, input_b, output, elements, Fmt_FP16, 0U);
+    wafer_tx81_elementwise_add_v3(input_a, input_b, output, elements, Fmt_FP16,
+                                  0U);
     break;
   case WAFER_IFP_CASE_CT_ADD_SPECIAL_BF16:
-    wafer_tx81_elementwise_add_v3(input_a, input_b, output, elements, Fmt_BF16, 0U);
+    wafer_tx81_elementwise_add_v3(input_a, input_b, output, elements, Fmt_BF16,
+                                  0U);
     break;
   case WAFER_IFP_CASE_CT_SUB_F16:
   case WAFER_IFP_CASE_CT_SUB_BF16:
-    wafer_tx81_elementwise_sub_v3(input_a, input_b, output, elements, format, 0U);
+    wafer_tx81_elementwise_sub_v3(input_a, input_b, output, elements, format,
+                                  0U);
     break;
   case WAFER_IFP_CASE_CT_MUL_F16:
   case WAFER_IFP_CASE_CT_MUL_BF16:
-    wafer_tx81_elementwise_mul_v3(input_a, input_b, output, elements, format, 0U);
+    wafer_tx81_elementwise_mul_v3(input_a, input_b, output, elements, format,
+                                  0U);
     break;
   case WAFER_IFP_CASE_CT_MAX_F16:
   case WAFER_IFP_CASE_CT_MAX_BF16:
-    wafer_tx81_elementwise_max_v3(input_a, input_b, output, elements, format, 0U);
+    wafer_tx81_elementwise_max_v3(input_a, input_b, output, elements, format,
+                                  0U);
     break;
   case WAFER_IFP_CASE_CT_MIN_F16:
   case WAFER_IFP_CASE_CT_MIN_BF16:
-    wafer_tx81_elementwise_min_v3(input_a, input_b, output, elements, format, 0U);
+    wafer_tx81_elementwise_min_v3(input_a, input_b, output, elements, format,
+                                  0U);
     break;
   case WAFER_IFP_CASE_CT_POW2_F16:
   case WAFER_IFP_CASE_CT_POW2_BF16:
@@ -628,7 +631,7 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   case WAFER_IFP_CASE_SELECT_BF16:
     wafer_tx81_bit2fp_v3(input_b, auxiliary, elements, format, 0U);
     wafer_tx81_mask_move_v3(input_a, (uint32_t)auxiliary, output, elements,
-                         format, 0U);
+                            format, 0U);
     record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_MASK_MOVE_ISSUED;
     break;
   case WAFER_IFP_CASE_GEMM_F16:
@@ -653,28 +656,24 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     wafer_tx81_gemm_v3(input_a, input_b, output, 1, 16, 65, 1, Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_ORIENTED_NT:
-    wafer_tx81_gemm_oriented_v3(
-        input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
-        WAFER_IFP_GEMM_ORIENTATION_NORMAL,
-        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
+    wafer_tx81_gemm_oriented_v3(input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
+                                WAFER_IFP_GEMM_ORIENTATION_NORMAL,
+                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_BF16_ORIENTED_NT:
-    wafer_tx81_gemm_oriented_v3(
-        input_a, input_b, output, 4, 16, 8, 1, Fmt_BF16,
-        WAFER_IFP_GEMM_ORIENTATION_NORMAL,
-        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
+    wafer_tx81_gemm_oriented_v3(input_a, input_b, output, 4, 16, 8, 1, Fmt_BF16,
+                                WAFER_IFP_GEMM_ORIENTATION_NORMAL,
+                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_ORIENTED_TN:
-    wafer_tx81_gemm_oriented_v3(
-        input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
-        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
-        WAFER_IFP_GEMM_ORIENTATION_NORMAL, 0U);
+    wafer_tx81_gemm_oriented_v3(input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
+                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
+                                WAFER_IFP_GEMM_ORIENTATION_NORMAL, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_ORIENTED_TT:
-    wafer_tx81_gemm_oriented_v3(
-        input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
-        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
-        WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
+    wafer_tx81_gemm_oriented_v3(input_a, input_b, output, 4, 16, 8, 1, Fmt_FP16,
+                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE,
+                                WAFER_IFP_GEMM_ORIENTATION_TRANSPOSE, 0U);
     break;
   case WAFER_IFP_CASE_GEMM_F16_PSUM: {
     TsmNeInstr instruction = {0};
@@ -710,58 +709,58 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     break;
   case WAFER_IFP_CASE_TDMA_PAD_F16:
     wafer_tx81_tdma_pad_v3(input_a, output, 1, 2, 2, 64, 1, 4, 4, 64, 1, 1, 1,
-                        1, Fmt_FP16, 0U);
+                           1, Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_TDMA_IMG2COL_F16:
   case WAFER_IFP_CASE_TDMA_IMG2COL_BF16:
-    wafer_tx81_tdma_img2col_v3(input_a, output, 1, 3, 3, 64, 1, 4, 4, 64, 0, 0, 0,
-                            0, 2, 2, 1, 1, format, 0U);
+    wafer_tx81_tdma_img2col_v3(input_a, output, 1, 3, 3, 64, 1, 4, 4, 64, 0, 0,
+                               0, 0, 2, 2, 1, 1, format, 0U);
     break;
   case WAFER_IFP_CASE_CONV_F16:
   case WAFER_IFP_CASE_CONV_BF16:
-    wafer_tx81_conv_v3(input_a, input_b, output, 0, 1, 1, 3, 4, 1, 1, 4, 4, 1, 1,
-                    2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 1, 1, 1, format, 0U);
+    wafer_tx81_conv_v3(input_a, input_b, output, 0, 1, 1, 3, 4, 1, 1, 4, 4, 1,
+                       1, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 1, 1, 1,
+                       format, 0U);
     break;
   case WAFER_IFP_CASE_POOL_F16:
   case WAFER_IFP_CASE_POOL_BF16:
-    wafer_tx81_pool_max_v3(
-        input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_max, 1, 2, 4, 64, 1, 1,
-        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, format, 0U);
+    wafer_tx81_pool_max_v3(input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_max,
+                           1, 2, 4, 64, 1, 1, 2, 64, 0, 0, 0, 0, 2, 2, 2, 2,
+                           format, 0U);
     break;
   case WAFER_IFP_CASE_POOL_AVG_F16:
-    wafer_tx81_pool_avg_v3(
-        input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_avg, 1, 2, 4, 64, 1, 1,
-        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16, 0U);
+    wafer_tx81_pool_avg_v3(input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_avg,
+                           1, 2, 4, 64, 1, 1, 2, 64, 0, 0, 0, 0, 2, 2, 2, 2,
+                           Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_POOL_SUM_F16:
-    wafer_tx81_pool_sum_v3(
-        input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_sum, 1, 2, 4, 64, 1, 1,
-        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16, 0U);
+    wafer_tx81_pool_sum_v3(input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_sum,
+                           1, 2, 4, 64, 1, 1, 2, 64, 0, 0, 0, 0, 2, 2, 2, 2,
+                           Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_POOL_MIN_F16:
-    wafer_tx81_pool_min_v3(
-        input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_min, 1, 2, 4, 64, 1, 1,
-        2, 64, 0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16, 0U);
+    wafer_tx81_pool_min_v3(input_a, output, OP_FUNC_CGRATensor_PoolOp_T_T_min,
+                           1, 2, 4, 64, 1, 1, 2, 64, 0, 0, 0, 0, 2, 2, 2, 2,
+                           Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_POOL_INDEXED_MIN_F16:
-    wafer_tx81_pool_indexedmin_v3(
-        input_a, output, output + 256U,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmin, 1, 2, 4, 64, 1, 1, 2, 64,
-        0, 0, 0, 0, 2, 2, 2, 2, Fmt_FP16, 0U);
+    wafer_tx81_pool_indexedmin_v3(input_a, output, output + 256U,
+                                  OP_FUNC_CGRATensor_PoolOp_T_T_indexedmin, 1,
+                                  2, 4, 64, 1, 1, 2, 64, 0, 0, 0, 0, 2, 2, 2, 2,
+                                  Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_POOL_INDEXED_MAX_F16_ASYMMETRIC:
-    wafer_tx81_pool_indexedmax_v3(
-        input_a, output, output + 512U,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64,
-        0, 0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
+    wafer_tx81_pool_indexedmax_v3(input_a, output, output + 512U,
+                                  OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1,
+                                  3, 5, 64, 1, 2, 2, 64, 0, 0, 0, 0, 3, 2, 2, 1,
+                                  Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_UNPOOL_F16:
   case WAFER_IFP_CASE_UNPOOL_MASK_BF16:
   case WAFER_IFP_CASE_UNPOOL_MASK_F32:
     wafer_tx81_pool_indexedmax_v3(
-        input_a, input_b, auxiliary,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 2, 2, 64, 1, 1, 1, 64, 0,
-        0, 0, 0, 2, 2, 2, 2, format, 0U);
+        input_a, input_b, auxiliary, OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax,
+        1, 2, 2, 64, 1, 1, 1, 64, 0, 0, 0, 0, 2, 2, 2, 2, format, 0U);
     wafer_tx81_unpool_mask_v3(
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
         (uint32_t)auxiliary, 1, 1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, format, 0U);
@@ -770,9 +769,8 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   case WAFER_IFP_CASE_UNPOOL_INDEX_BF16_OBSERVED:
   case WAFER_IFP_CASE_UNPOOL_INDEX_F32_OBSERVED:
     wafer_tx81_pool_indexedmax_v3(
-        input_a, input_b, auxiliary,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 2, 2, 64, 1, 1, 1, 64, 0,
-        0, 0, 0, 2, 2, 2, 2, format, 0U);
+        input_a, input_b, auxiliary, OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax,
+        1, 2, 2, 64, 1, 1, 1, 64, 0, 0, 0, 0, 2, 2, 2, 2, format, 0U);
     wafer_tx81_unpool_unpool_v3(
         input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
         (uint32_t)auxiliary, 1, 1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, format, 0U);
@@ -780,94 +778,93 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
   case WAFER_IFP_CASE_UNPOOL_AVG_F16:
   case WAFER_IFP_CASE_UNPOOL_AVG_BF16:
   case WAFER_IFP_CASE_UNPOOL_AVG_F32:
-    wafer_tx81_unpool_avg_v3(
-        input_a, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool_avg, 0U, 1,
-        1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, format, 0U);
+    wafer_tx81_unpool_avg_v3(input_a, output,
+                             OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool_avg, 0U,
+                             1, 1, 1, 64, 1, 2, 2, 64, 2, 2, 2, 2, format, 0U);
     break;
   case WAFER_IFP_CASE_UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED:
     wafer_tx81_pool_indexedmax_v3(
-        input_a, input_b, auxiliary,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
-        0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
-    wafer_tx81_unpool_unpool_v3(
-        input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
-        (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16, 0U);
+        input_a, input_b, auxiliary, OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax,
+        1, 3, 5, 64, 1, 2, 2, 64, 0, 0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
+    wafer_tx81_unpool_unpool_v3(input_b, output,
+                                OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
+                                (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64,
+                                3, 2, 2, 1, Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED:
     wafer_tx81_pool_indexedmax_v3(
-        input_a, input_b, auxiliary,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
-        0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
-    wafer_ifp_copy_spm_bytes_ncc(
-        auxiliary + WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET, auxiliary,
-        WAFER_IFP_REPEATED_AUX_BYTES);
+        input_a, input_b, auxiliary, OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax,
+        1, 3, 5, 64, 1, 2, 2, 64, 0, 0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
+    wafer_ifp_copy_spm_bytes_ncc(auxiliary +
+                                     WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET,
+                                 auxiliary, WAFER_IFP_REPEATED_AUX_BYTES);
     record[WAFER_IFP_REC_STEP_FLAGS] |=
         WAFER_IFP_STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED;
-    wafer_ifp_copy_spm_bytes_ncc(
-        input_b, input_a + WAFER_IFP_REPEATED_SENTINEL_OFFSET,
-        WAFER_IFP_REPEATED_SENTINEL_BYTES);
+    wafer_ifp_copy_spm_bytes_ncc(input_b,
+                                 input_a + WAFER_IFP_REPEATED_SENTINEL_OFFSET,
+                                 WAFER_IFP_REPEATED_SENTINEL_BYTES);
     record[WAFER_IFP_REC_STEP_FLAGS] |=
         WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED;
-    wafer_tx81_unpool_unpool_v3(
-        input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
-        (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16, 0U);
+    wafer_tx81_unpool_unpool_v3(input_b, output,
+                                OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool,
+                                (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64,
+                                3, 2, 2, 1, Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_UNPOOL_MASK_F16_ASYMMETRIC:
     wafer_tx81_pool_indexedmax_v3(
-        input_a, input_b, auxiliary,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
-        0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
-    wafer_tx81_unpool_mask_v3(
-        input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
-        (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16, 0U);
+        input_a, input_b, auxiliary, OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax,
+        1, 3, 5, 64, 1, 2, 2, 64, 0, 0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
+    wafer_tx81_unpool_mask_v3(input_b, output,
+                              OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
+                              (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3,
+                              2, 2, 1, Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED:
     wafer_tx81_pool_indexedmax_v3(
-        input_a, input_b, auxiliary,
-        OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax, 1, 3, 5, 64, 1, 2, 2, 64, 0,
-        0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
-    wafer_ifp_copy_spm_bytes_ncc(
-        auxiliary + WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET, auxiliary,
-        WAFER_IFP_REPEATED_AUX_BYTES);
+        input_a, input_b, auxiliary, OP_FUNC_CGRATensor_PoolOp_T_T_indexedmax,
+        1, 3, 5, 64, 1, 2, 2, 64, 0, 0, 0, 0, 3, 2, 2, 1, Fmt_FP16, 0U);
+    wafer_ifp_copy_spm_bytes_ncc(auxiliary +
+                                     WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET,
+                                 auxiliary, WAFER_IFP_REPEATED_AUX_BYTES);
     record[WAFER_IFP_REC_STEP_FLAGS] |=
         WAFER_IFP_STEP_REPEATED_OVERLAP_AUX_SNAPSHOTTED;
-    wafer_ifp_copy_spm_bytes_ncc(
-        input_b, input_a + WAFER_IFP_REPEATED_SENTINEL_OFFSET,
-        WAFER_IFP_REPEATED_SENTINEL_BYTES);
+    wafer_ifp_copy_spm_bytes_ncc(input_b,
+                                 input_a + WAFER_IFP_REPEATED_SENTINEL_OFFSET,
+                                 WAFER_IFP_REPEATED_SENTINEL_BYTES);
     record[WAFER_IFP_REC_STEP_FLAGS] |=
         WAFER_IFP_STEP_REPEATED_OVERLAP_VALUES_STAGED;
-    wafer_tx81_unpool_mask_v3(
-        input_b, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
-        (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16, 0U);
+    wafer_tx81_unpool_mask_v3(input_b, output,
+                              OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool,
+                              (uint32_t)auxiliary, 1, 2, 2, 64, 1, 3, 5, 64, 3,
+                              2, 2, 1, Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_UNPOOL_AVG_F16_ASYMMETRIC_OBSERVED:
     wafer_tx81_unpool_avg_v3(
-        input_a, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool_avg, 0U, 1,
-        2, 2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16, 0U);
+        input_a, output, OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool_avg, 0U, 1, 2,
+        2, 64, 1, 3, 5, 64, 3, 2, 2, 1, Fmt_FP16, 0U);
     break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMAX_F16:
-    wafer_tx81_peripheral_argmax_v3(
-        input_a, output, output + 4,
-        OP_FUNC_CGRATensor_PeriOp_V_V_argmax, elements, Fmt_FP16, 0, 0, 0, 0, 0U);
+    wafer_tx81_peripheral_argmax_v3(input_a, output, output + 4,
+                                    OP_FUNC_CGRATensor_PeriOp_V_V_argmax,
+                                    elements, Fmt_FP16, 0, 0, 0, 0, 0U);
     break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_F16:
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_NEGATIVE_F16_OBSERVED:
-    wafer_tx81_peripheral_argmin_v3(
-        input_a, output, output + 4,
-        OP_FUNC_CGRATensor_PeriOp_V_V_argmin, elements, Fmt_FP16, 0, 0, 0, 0, 0U);
+    wafer_tx81_peripheral_argmin_v3(input_a, output, output + 4,
+                                    OP_FUNC_CGRATensor_PeriOp_V_V_argmin,
+                                    elements, Fmt_FP16, 0, 0, 0, 0, 0U);
     break;
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_TIE_F16_OBSERVED:
   case WAFER_IFP_CASE_PERIPHERAL_ARGMIN_NAN_F16_OBSERVED:
     if (!wafer_ifp_argmin_bounded(input_a, output, elements, Fmt_FP16, record))
       return 2;
     wafer_ifp_copy_spm_bytes(auxiliary, input_a, elements * sizeof(uint16_t));
-    record[WAFER_IFP_REC_STEP_FLAGS] |=
-        WAFER_IFP_STEP_ARGMIN_INPUT_SNAPSHOTTED;
+    record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_ARGMIN_INPUT_SNAPSHOTTED;
     break;
   case WAFER_IFP_CASE_PERIPHERAL_LUT16_F16:
-    wafer_tx81_peripheral_lut16_v3(
-        input_a, input_b, output, OP_FUNC_CGRATensor_PeriOp_V_V_lut16,
-        elements, Fmt_FP16, elements, 0, 0, 0, 0U);
+    wafer_tx81_peripheral_lut16_v3(input_a, input_b, output,
+                                   OP_FUNC_CGRATensor_PeriOp_V_V_lut16,
+                                   elements, Fmt_FP16, elements, 0, 0, 0, 0U);
     break;
   case WAFER_IFP_CASE_PERIPHERAL_BILINEAR_F16:
     wafer_tx81_peripheral_bilinear_v3(
@@ -884,15 +881,15 @@ static int wafer_ifp_dispatch(const WaferIFPDescriptor *descriptor,
     break;
   }
   case WAFER_IFP_CASE_PERIPHERAL_LUT32_OBSERVED:
-    wafer_tx81_peripheral_lut32_v3(
-        input_a, input_b, output, OP_FUNC_CGRATensor_PeriOp_V_V_lut32,
-        elements, Fmt_FP32, elements, 0, 0, 0, 0U);
+    wafer_tx81_peripheral_lut32_v3(input_a, input_b, output,
+                                   OP_FUNC_CGRATensor_PeriOp_V_V_lut32,
+                                   elements, Fmt_FP32, elements, 0, 0, 0, 0U);
     break;
   case WAFER_IFP_CASE_PERIPHERAL_RANDGEN_F16_OBSERVED:
-    wafer_tx81_peripheral_rand_gen_v3(
-        input_a, input_b, output, output + 512U, output + 1024U,
-        OP_FUNC_CGRATensor_PeriOp_V_rand_gen, elements, Fmt_FP16, 0, 0, 0,
-        0, 0U);
+    wafer_tx81_peripheral_rand_gen_v3(input_a, input_b, output, output + 512U,
+                                      output + 1024U,
+                                      OP_FUNC_CGRATensor_PeriOp_V_rand_gen,
+                                      elements, Fmt_FP16, 0, 0, 0, 0, 0U);
     break;
   case WAFER_IFP_CASE_PERIPHERAL_ELEMMASK_F16_OBSERVED:
     wafer_tx81_peripheral_elem_mask_v3(
@@ -906,9 +903,8 @@ wafer_ifp_dispatch_complete:
   return 0;
 }
 
-static uint32_t wafer_ifp_decode(
-    const volatile uint64_t *request,
-    const WaferIFPDescriptor **descriptor_out) {
+static uint32_t wafer_ifp_decode(const volatile uint64_t *request,
+                                 const WaferIFPDescriptor **descriptor_out) {
   if (request[WAFER_IFP_REQ_MAGIC] != WAFER_IFP_REQUEST_MAGIC ||
       request[WAFER_IFP_REQ_SCHEMA_AND_WORDS] !=
           (((uint64_t)WAFER_IFP_SCHEMA << 32) | WAFER_IFP_REQUEST_WORDS) ||
@@ -950,8 +946,7 @@ static void wafer_ifp_init_record(volatile uint64_t *record, uint32_t status) {
 }
 
 __attribute__((visibility("hidden"))) void
-wafer_tx81_instruction_family_probe(uint64_t request_ddr,
-                                    uint64_t payload_ddr,
+wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
                                     uint64_t output_ddr) {
   wafer_ifp_invalidate(request_ddr, WAFER_IFP_RESOURCE_BYTES);
   wafer_ifp_invalidate(payload_ddr, WAFER_IFP_RESOURCE_BYTES);
@@ -973,8 +968,7 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     record[WAFER_IFP_REC_OUTPUT_SPAN] = descriptor->output_span;
     record[WAFER_IFP_REC_AUX_SPAN] = descriptor->aux_span;
     record[WAFER_IFP_REC_SAMPLE] = request[WAFER_IFP_REQ_SAMPLE];
-    record[WAFER_IFP_REC_REQUEST_GUARD] =
-        request[WAFER_IFP_REQ_GUARD];
+    record[WAFER_IFP_REC_REQUEST_GUARD] = request[WAFER_IFP_REQ_GUARD];
   }
 
   if (status == WAFER_IFP_STATUS_OK) {
@@ -986,21 +980,19 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
       status = WAFER_IFP_STATUS_DIAGNOSTIC_BOUNDED;
     } else {
       wafer_tx81_wdma_v3(WAFER_IFP_SPM_OUTPUT,
-                      output_ddr + WAFER_IFP_OUTPUT_DDR_OFFSET,
-                      WAFER_IFP_SLOT_BYTES, WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1,
-                      1, 1, Fmt_UINT8, 0U);
+                         output_ddr + WAFER_IFP_OUTPUT_DDR_OFFSET,
+                         WAFER_IFP_SLOT_BYTES, WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1,
+                         1, 1, Fmt_UINT8, 0U);
       wafer_tx81_wdma_v3(WAFER_IFP_SPM_AUX,
-                      output_ddr + WAFER_IFP_AUX_DDR_OFFSET,
-                      WAFER_IFP_SLOT_BYTES, WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1,
-                      1, 1, Fmt_UINT8, 0U);
+                         output_ddr + WAFER_IFP_AUX_DDR_OFFSET,
+                         WAFER_IFP_SLOT_BYTES, WAFER_IFP_SLOT_BYTES, 0, 0, 0, 1,
+                         1, 1, Fmt_UINT8, 0U);
       wafer_tx81_ncc_join(1U);
-      record[WAFER_IFP_REC_STEP_FLAGS] |=
-          WAFER_IFP_STEP_FINAL_FENCE_COMPLETED;
+      record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_FINAL_FENCE_COMPLETED;
       if (descriptor->family == WAFER_IFP_CT_SELECT_COMPOSITE)
-        record[WAFER_IFP_REC_STEP_FLAGS] |=
-            WAFER_IFP_STEP_BIT2FP_COMPLETED;
+        record[WAFER_IFP_REC_STEP_FLAGS] |= WAFER_IFP_STEP_BIT2FP_COMPLETED;
     }
     record[WAFER_IFP_REC_STATUS] = status;
   }
-  wafer_ifp_publish(record);
+  wafer_ifp_write_record(record);
 }

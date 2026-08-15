@@ -3,8 +3,8 @@
 #include "Scheduling/RedundantTransferElimination.h"
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
-#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
 
@@ -150,8 +150,7 @@ static mlir::Value resolveStorageRoot(mlir::Value value,
   if (auto toMemref =
           mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(definition))
     return finish(resolveStorageRoot(toMemref.getTensor(), active));
-  if (mlir::Value exit =
-          analysis::getSingleExecutionRegionExitOperand(result))
+  if (mlir::Value exit = analysis::getSingleExecutionRegionExitOperand(result))
     return finish(resolveStorageRoot(exit, active));
   return finish(value);
 }
@@ -740,17 +739,17 @@ unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
   wafer::support::ScopedCompileTimingSpan timing(
       "optimization", "full-buffer-transfer-elision",
       "elideRedundantFullBufferTransfers");
-  bool hasCommittedPlacement = false;
+  bool hasAssignedPlacement = false;
   {
-    wafer::support::ScopedCompileTimingSpan preflightTiming(
+    wafer::support::ScopedCompileTimingSpan placementCheckTiming(
         "analysis-phase", "elideRedundantFullBufferTransfers",
         "check-placement");
     module.walk([&](mlir::memref::AllocOp allocation) {
-      hasCommittedPlacement |= allocation->hasAttr(kWaferSPMOffsetAttrName) ||
-                               allocation->hasAttr(kWaferDDROffsetAttrName);
+      hasAssignedPlacement |= allocation->hasAttr(kWaferSPMOffsetAttrName) ||
+                              allocation->hasAttr(kWaferDDROffsetAttrName);
     });
   }
-  if (hasCommittedPlacement)
+  if (hasAssignedPlacement)
     return 0;
 
   unsigned eliminated = 0;
@@ -765,7 +764,7 @@ unsigned elideRedundantFullBufferTransfers(mlir::ModuleOp module) {
     }
     // Candidate rejection does not mutate IR.  Reuse the exact structured
     // timeline for every candidate in the same function until a rewrite is
-    // committed; the successful rewrite ends this iteration and therefore
+    // applied; the successful rewrite ends this iteration and therefore
     // invalidates the cache before the next fixed-point step.
     llvm::DenseMap<mlir::Operation *, std::unique_ptr<mp::StructuredTimeline>>
         timelines;

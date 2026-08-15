@@ -46,7 +46,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes);
 
 /// Requires all-and-only tile ids 0..15, a common record contract and
 /// complete, non-overflowing records. Every stored event requires a static
-/// production-artifact site identity; an unbracketed completion wait is an
+/// profiled-package site identity; an unbracketed completion wait is an
 /// instrumentation-contract failure rather than anonymous evidence. Worker
 /// attribution remains optional and is governed solely by validity bits.
 llvm::Error

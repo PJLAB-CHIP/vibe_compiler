@@ -5,8 +5,8 @@
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/MemoryPlanning.h"
+#include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -64,8 +64,7 @@ protected:
     if (!begin || !end || begin->getBlock() != end->getBlock())
       return false;
     for (mlir::Operation *operation = begin->getNextNode();
-         operation && operation != end;
-         operation = operation->getNextNode())
+         operation && operation != end; operation = operation->getNextNode())
       if (mlir::isa<OpTy>(operation))
         return true;
     return false;
@@ -274,9 +273,10 @@ module {
   auto loops = collectLoops(*candidate->module);
   ASSERT_EQ(loops.size(), 1u);
   llvm::SmallVector<mlir::Operation *, 4> steady;
-  for (mlir::Operation &operation : loops.front().getBody()->without_terminator())
-    if (mlir::isa<wafer::WaferInstructionOpInterface,
-                  wafer::SyncNCCJoinOp>(&operation))
+  for (mlir::Operation &operation :
+       loops.front().getBody()->without_terminator())
+    if (mlir::isa<wafer::WaferInstructionOpInterface, wafer::SyncNCCJoinOp>(
+            &operation))
       steady.push_back(&operation);
   ASSERT_EQ(steady.size(), 4u);
   EXPECT_TRUE(mlir::isa<wafer::InstrDTESendOp>(steady[0]));
@@ -1077,8 +1077,7 @@ module {
           : memref<4xf16, #wafer.memory<spm, tensor>>, f16
       wafer.instr.fill %right, %zero
           : memref<4xf16, #wafer.memory<spm, tensor>>, f16
-)mlir" +
-                  join +
+)mlir" + join +
                   R"mlir(
       wafer.instr.elementwise <add> %left, %right into %result
           : memref<4xf16, #wafer.memory<spm, tensor>>,
@@ -1312,8 +1311,9 @@ module {
   unsigned steadyJoins = 0;
   kernel.walk([&](wafer::SyncNCCJoinOp) { ++steadyJoins; });
   // Slot rotation delays the overwrite but does not prove that an
-  // OrderedAsynchronousIssue NCC reader has completed by the time the slot recurs. The
-  // minimum-completion normalizer must therefore rebuild this exact cut.
+  // OrderedAsynchronousIssue NCC reader has completed by the time the slot
+  // recurs. The minimum-completion normalizer must therefore rebuild this exact
+  // cut.
   EXPECT_EQ(steadyJoins, 1u) << print(candidate->module->getOperation());
 }
 
@@ -1412,7 +1412,7 @@ module {
       *source, collectLoops(*source).front(), &failureReason);
   EXPECT_TRUE(mlir::failed(candidate));
   EXPECT_NE(failureReason.find("do not exactly match the loop-tail pending "
-                               "frontier"),
+                               "operations"),
             std::string::npos)
       << failureReason;
   EXPECT_EQ(print(source->getOperation()), before);
@@ -1475,9 +1475,8 @@ module {
   bool overlapsCompute = false;
   for (unsigned index = 0; index < sends.size(); ++index) {
     EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
-    overlapsCompute |=
-        hasOperationBetween<wafer::InstrElementwiseOp>(sends[index],
-                                                       waits[index]);
+    overlapsCompute |= hasOperationBetween<wafer::InstrElementwiseOp>(
+        sends[index], waits[index]);
     ASSERT_EQ(waits[index].getTokens().size(), 1u);
     EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
               sends[index].getOperation());
@@ -1631,9 +1630,8 @@ module {
   bool overlapsProducer = false;
   for (unsigned index = 0; index < sends.size(); ++index) {
     EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
-    overlapsProducer |=
-        hasOperationBetween<wafer::InstrElementwiseOp>(sends[index],
-                                                       waits[index]);
+    overlapsProducer |= hasOperationBetween<wafer::InstrElementwiseOp>(
+        sends[index], waits[index]);
     ASSERT_EQ(waits[index].getTokens().size(), 1u);
     EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
               sends[index].getOperation());
@@ -1644,10 +1642,10 @@ module {
 }
 
 TEST_F(FixedSlotPipelineTest,
-       PipelinesExplicitRDMAHandoffAcrossThreeDTESendWindows) {
+       PipelinesExplicitRDMATransferAcrossThreeDTESendWindows) {
   auto source = parse(R"mlir(
 module {
-  func.func @rdma_handoff_to_three_dte_windows() {
+  func.func @rdma_transfer_to_three_dte_windows() {
     %input = memref.alloc()
         : memref<4xf16, #wafer.memory<ddr, tensor>>
     %output = memref.alloc()
@@ -1708,13 +1706,13 @@ module {
 
   mlir::scf::ForOp kernel = collectLoops(*candidate->module).front();
   wafer::InstrRDMAOp rdma;
-  wafer::SyncNCCJoinOp handoff;
+  wafer::SyncNCCJoinOp join;
   wafer::InstrElementwiseOp compute;
   wafer::InstrWDMAOp wdma;
   llvm::SmallVector<wafer::InstrDTESendOp, 3> sends;
   llvm::SmallVector<wafer::InstrDTEWaitOp, 3> waits;
   kernel.walk([&](wafer::InstrRDMAOp operation) { rdma = operation; });
-  kernel.walk([&](wafer::SyncNCCJoinOp operation) { handoff = operation; });
+  kernel.walk([&](wafer::SyncNCCJoinOp operation) { join = operation; });
   kernel.walk(
       [&](wafer::InstrDTESendOp operation) { sends.push_back(operation); });
   kernel.walk(
@@ -1723,20 +1721,19 @@ module {
       [&](wafer::InstrElementwiseOp operation) { compute = operation; });
   kernel.walk([&](wafer::InstrWDMAOp operation) { wdma = operation; });
   ASSERT_TRUE(rdma);
-  ASSERT_TRUE(handoff);
+  ASSERT_TRUE(join);
   ASSERT_TRUE(compute);
   ASSERT_TRUE(wdma);
   ASSERT_EQ(sends.size(), 3u);
   ASSERT_EQ(waits.size(), 3u);
-  ASSERT_EQ(handoff.getParticipants().size(), 1u);
-  EXPECT_EQ(handoff.getParticipants().front(), 0);
-  EXPECT_TRUE(rdma->isBeforeInBlock(handoff));
+  ASSERT_EQ(join.getParticipants().size(), 1u);
+  EXPECT_EQ(join.getParticipants().front(), 0);
+  EXPECT_TRUE(rdma->isBeforeInBlock(join));
   bool overlapsCompute = false;
   for (unsigned index = 0; index < sends.size(); ++index) {
     EXPECT_TRUE(sends[index]->isBeforeInBlock(waits[index]));
-    overlapsCompute |=
-        hasOperationBetween<wafer::InstrElementwiseOp>(sends[index],
-                                                       waits[index]);
+    overlapsCompute |= hasOperationBetween<wafer::InstrElementwiseOp>(
+        sends[index], waits[index]);
     ASSERT_EQ(waits[index].getTokens().size(), 1u);
     EXPECT_EQ(waits[index].getTokens().front().getDefiningOp(),
               sends[index].getOperation());
@@ -1750,10 +1747,10 @@ module {
 }
 
 TEST_F(FixedSlotPipelineTest,
-       RejectsNCCProducerToDTEWithoutExplicitParticipantHandoff) {
+       RejectsNCCProducerToDTEWithoutExplicitParticipantTransfer) {
   auto source = parse(R"mlir(
 module {
-  func.func @ncc_to_dte_without_handoff() {
+  func.func @ncc_to_dte_without_transfer() {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c3 = arith.constant 3 : index

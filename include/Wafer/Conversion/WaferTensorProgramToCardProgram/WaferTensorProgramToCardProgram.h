@@ -70,8 +70,8 @@ struct CardSpatialMapping {
 /// with no selected output own a defined no-work entry. Every Tile entry has
 /// the same full-card input/result ABI. Source arguments are preserved exactly;
 /// private scheduling destinations are introduced and consumed inside this
-/// conversion, leaving compiler-owned result roots for physical Tile
-/// finalization and exact target output binding.
+/// conversion, leaving compiler-owned result roots for physical-Tile memory
+/// planning and exact target output binding.
 ///
 /// The result is one owning module containing module-scope target topology and
 /// logical mesh, one wafer.card.program, card-shared declarations exactly once,
@@ -86,16 +86,15 @@ mlir::LogicalResult lowerTensorProgramToCardProgram(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr);
 
-/// Materializes the exact selected body of one physical Tile while emitting
-/// verifier-legal no-work scaffolding for the other available Tiles.  This is
-/// a query-local negative preflight only: rejection by the selected Tile is a
-/// sufficient rejection of the whole candidate, while a passing result must
-/// be discarded and followed by `lowerTensorProgramToCardProgram` for the
-/// complete artifact.  No probe result may be selected or packaged.
-mlir::LogicalResult lowerTensorProgramToCardProgramFailureProbe(
+/// Materializes one physical Tile while emitting verifier-legal no-work bodies
+/// for the other available Tiles. The returned CardProgram exists only for
+/// physical-Tile SPM capacity evaluation: a capacity rejection also rejects
+/// the complete mapping, while a passing module is discarded and followed by
+/// `lowerTensorProgramToCardProgram`.
+mlir::LogicalResult lowerTensorProgramToCardProgramForPhysicalTile(
     mlir::ModuleOp sourceModule, PhysicalCardId cardId,
-    PhysicalTileId probeTileId, const CardSpatialMapping &mapping,
-    mlir::OwningOpRef<mlir::ModuleOp> &probeCardModule,
+    PhysicalTileId physicalTileId, const CardSpatialMapping &mapping,
+    mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
     std::string *failureReason = nullptr,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr);

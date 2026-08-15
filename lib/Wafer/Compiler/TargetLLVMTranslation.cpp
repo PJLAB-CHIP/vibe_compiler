@@ -1,7 +1,7 @@
 //===- TargetLLVMTranslation.cpp - Target conversion and translation ----===//
 
-#include "TargetArtifactInternal.h"
 #include "CompilationInternal.h"
+#include "TargetCodeGenInternal.h"
 
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -272,16 +272,14 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
 
 } // namespace
 
-llvm::Error
-verifyTargetLLVMModule(const llvm::Module &module,
-                       PhysicalCardId expectedPhysicalCardId,
-                       PhysicalTileId expectedPhysicalTileId,
-                       LaunchSlotId expectedLaunchSlotId,
-                       llvm::StringRef expectedEntrySymbol,
-                       TargetIdentityId expectedTargetIdentity,
-                       KernelRuntimeABIId expectedKernelRuntimeABI,
-                       llvm::StringRef expectedModuleFormat,
-                       llvm::ArrayRef<KernelABISlot> expectedSlots) {
+llvm::Error verifyTargetLLVMModule(
+    const llvm::Module &module, PhysicalCardId expectedPhysicalCardId,
+    PhysicalTileId expectedPhysicalTileId, LaunchSlotId expectedLaunchSlotId,
+    llvm::StringRef expectedEntrySymbol,
+    TargetIdentityId expectedTargetIdentity,
+    KernelRuntimeABIId expectedKernelRuntimeABI,
+    llvm::StringRef expectedModuleFormat,
+    llvm::ArrayRef<KernelABISlot> expectedSlots) {
   std::string verifierOutput;
   llvm::raw_string_ostream verifierDiagnostics(verifierOutput);
   if (llvm::verifyModule(module, &verifierDiagnostics))
@@ -382,11 +380,11 @@ mlir::LogicalResult lowerToTargetLLVM(PreparedPhysicalTile &prepared) {
   request.transportStatusArgumentIndex = prepared.transportStatusArgumentIndex;
   request.transportPreparedBeforeEntry = prepared.transportPreparedBeforeEntry;
   request.profileRecordArgumentIndex = prepared.profileRecordArgumentIndex;
-  return runPassPipeline(
-      *prepared.module, "instr-to-target-llvm",
-      [&](mlir::OpPassManager &manager) {
-        wafer::addLowerInstrToTargetLLVMPass(manager, request);
-      });
+  return runPassPipeline(*prepared.module, "instr-to-target-llvm",
+                         [&](mlir::OpPassManager &manager) {
+                           wafer::addLowerInstrToTargetLLVMPass(manager,
+                                                                request);
+                         });
 }
 
 mlir::LogicalResult verifyLoweredKernelABI(PreparedPhysicalTile &prepared,
@@ -431,15 +429,13 @@ translatePreparedPhysicalTile(PreparedPhysicalTile prepared,
   attachTargetLLVMMetadata(*llvmModule, prepared, entrySymbol);
   if (llvm::Error error = verifyTargetLLVMModule(
           *llvmModule, prepared.physicalCardId, prepared.physicalTileId,
-          prepared.launchSlotId, entrySymbol,
-          prepared.targetIdentity, prepared.kernelRuntimeABI,
-          prepared.moduleFormat, prepared.slots))
+          prepared.launchSlotId, entrySymbol, prepared.targetIdentity,
+          prepared.kernelRuntimeABI, prepared.moduleFormat, prepared.slots))
     return std::move(error);
-  return TargetLLVMModuleBundleBuilder::makeModule(
+  return TargetLLVMModulesBuilder::makeModule(
       prepared.physicalCardId, prepared.physicalTileId, prepared.launchSlotId,
       entrySymbol, prepared.targetIdentity, prepared.kernelRuntimeABI,
-      prepared.moduleFormat,
-      std::move(prepared.slots), std::move(llvmContext),
+      prepared.moduleFormat, std::move(prepared.slots), std::move(llvmContext),
       std::move(llvmModule));
 }
 

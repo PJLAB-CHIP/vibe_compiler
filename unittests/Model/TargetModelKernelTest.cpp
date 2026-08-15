@@ -7,7 +7,7 @@
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
 
-#include "../../lib/Wafer/Model/TargetModelCompletion.h"
+#include "../../lib/Wafer/Model/TargetModelTileCommandTracker.h"
 
 #include "gtest/gtest.h"
 
@@ -151,25 +151,26 @@ uint64_t supportedF32Code(TargetFormatEngine engine) {
 
 class FakeBulkBackend final : public TargetModelBulkBackend {
 public:
-  explicit FakeBulkBackend(bool admit) : admit(admit) {}
+  explicit FakeBulkBackend(bool hasMatchingExecution)
+      : hasMatchingExecution(hasMatchingExecution) {}
 
   llvm::Expected<std::optional<TargetModelBulkResult>>
   tryExecute(const TargetModelNumericRequest &request) const override {
     ++invocations;
-    if (!admit)
+    if (!hasMatchingExecution)
       return std::optional<TargetModelBulkResult>();
     TargetModelBulkResult result{
         request.destinationTemplate,
         {},
-        {1, 1, 0, TargetModelBulkProvenanceKind::ExactQualificationRecord,
-         "sha256:fake-admission", "fake-bulk"}};
+        {1, 1, 0, TargetModelBulkEvidenceKind::ExactQualificationRecord,
+         "sha256:fake-qualification-record", "fake-bulk"}};
     return std::optional<TargetModelBulkResult>(std::move(result));
   }
 
   mutable uint64_t invocations = 0;
 
 private:
-  bool admit;
+  bool hasMatchingExecution;
 };
 
 std::vector<uint64_t>
@@ -268,9 +269,8 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
   }
   if (const auto *operation =
           std::get_if<TargetPoolingOperation>(&descriptor.semantic)) {
-    const bool indexed =
-        *operation == TargetPoolingOperation::IndexedMaximum ||
-        *operation == TargetPoolingOperation::IndexedMinimum;
+    const bool indexed = *operation == TargetPoolingOperation::IndexedMaximum ||
+                         *operation == TargetPoolingOperation::IndexedMinimum;
     const size_t firstField = indexed ? 3 : 2;
     arguments[firstField] = static_cast<uint32_t>(*operation);
     arguments[firstField + 17] = supportedF32Code(TargetFormatEngine::CT);
@@ -312,14 +312,14 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
 TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
   size_t validated = 0;
   for (const TargetCallDescriptor &descriptor : getTargetCallDescriptors()) {
-    TargetCallDecodeContext context{16};
-    llvm::Expected<TargetTransactionPayload> payload = decodeTargetCallPayload(
-        descriptor, context, makeFieldValidArguments(descriptor));
+    TargetCallDecodeConfig config{16};
+    llvm::Expected<TargetCommandPayload> payload = decodeTargetCallPayload(
+        descriptor, config, makeFieldValidArguments(descriptor));
     ASSERT_TRUE(static_cast<bool>(payload))
         << descriptor.symbol << ": " << llvm::toString(payload.takeError());
-    llvm::Error error = validateTargetModelTransactionFields(
-        TargetTransaction{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
-                          validated, std::move(*payload)});
+    llvm::Error error = validateTargetModelCommandFields(
+        TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
+                      validated, std::move(*payload)});
     ASSERT_FALSE(static_cast<bool>(error))
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
@@ -327,9 +327,9 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
   EXPECT_EQ(validated, 112u);
 }
 
-TEST(TargetModelCompletionTest,
+TEST(TargetModelTileCommandTrackerTest,
      NCCJoinDoesNotCompleteAnEarlierDirectDTEOrdinal) {
-  wafer::model::detail::TargetModelTileCompletionState state;
+  wafer::model::detail::TargetModelTileCommandTracker state;
   ASSERT_TRUE(state.beginIssue(0)); // Direct-DTE send/event.
   ASSERT_TRUE(state.beginIssue(1)); // Worker-0 NCC issue.
   ASSERT_TRUE(state.addNCCPending(TargetNCCWorker::Worker0, 1));
@@ -350,8 +350,9 @@ TEST(TargetModelCompletionTest,
   EXPECT_EQ(state.getNextCompletedOrdinal(), 4u);
 }
 
-TEST(TargetModelCompletionTest, NCCJoinCompletesOnlyParticipantWorkers) {
-  wafer::model::detail::TargetModelTileCompletionState state;
+TEST(TargetModelTileCommandTrackerTest,
+     NCCJoinCompletesOnlyParticipantWorkers) {
+  wafer::model::detail::TargetModelTileCommandTracker state;
   ASSERT_TRUE(state.beginIssue(0));
   ASSERT_TRUE(state.addNCCPending(TargetNCCWorker::Worker0, 0));
   ASSERT_TRUE(state.beginIssue(1));
@@ -378,9 +379,9 @@ TEST(TargetModelCompletionTest, NCCJoinCompletesOnlyParticipantWorkers) {
   EXPECT_EQ(state.getNextCompletedOrdinal(), 4u);
 }
 
-TEST(TargetModelCompletionTest,
+TEST(TargetModelTileCommandTrackerTest,
      SynchronousWritebackCompletesParticipantEpochWithoutParkingItself) {
-  wafer::model::detail::TargetModelTileCompletionState state;
+  wafer::model::detail::TargetModelTileCommandTracker state;
   ASSERT_TRUE(state.beginIssue(0));
   ASSERT_TRUE(state.addNCCPending(TargetNCCWorker::Worker0, 0));
   ASSERT_TRUE(state.hasNCCPending());
@@ -399,9 +400,9 @@ TEST(TargetModelCompletionTest,
 
 TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
   auto validate = [](auto payload) {
-    return validateTargetModelTransactionFields(
-        TargetTransaction{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
-                          0, TargetTransactionPayload{std::move(payload)}});
+    return validateTargetModelCommandFields(
+        TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                      TargetCommandPayload{std::move(payload)}});
   };
   auto expectInvalid = [&](auto payload, llvm::StringRef expected) {
     std::string error = expectError(validate(std::move(payload)));
@@ -413,53 +414,51 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
   };
 
   expectValid(
-      TargetGemmTransaction{0, 0, 0, 1, 16384, 1, 4096, LogicalFormat::F16});
-  expectInvalid(
-      TargetGemmTransaction{0, 0, 0, 1, 16385, 1, 1, LogicalFormat::F16},
-      "GEMM k must be in [1, 16384]");
-  expectInvalid(
-      TargetGemmTransaction{0, 0, 0, 1, 1, 1, 4097, LogicalFormat::F16},
-      "GEMM batch_count must be in [1, 4096]");
+      TargetGemmCommand{0, 0, 0, 1, 16384, 1, 4096, LogicalFormat::F16});
+  expectInvalid(TargetGemmCommand{0, 0, 0, 1, 16385, 1, 1, LogicalFormat::F16},
+                "GEMM k must be in [1, 16384]");
+  expectInvalid(TargetGemmCommand{0, 0, 0, 1, 1, 1, 4097, LogicalFormat::F16},
+                "GEMM batch_count must be in [1, 4096]");
 
-  expectValid(TargetReduceTransaction{
+  expectValid(TargetReduceCommand{
       NumericReduceOperation::Sum,
       0,
       0,
       static_cast<uint32_t>(NativeCTReduceDimension::Trailing0),
       {4096, 4096, 4096, 16384},
       LogicalFormat::F32});
-  expectInvalid(TargetReduceTransaction{NumericReduceOperation::Sum,
-                                        0,
-                                        0,
-                                        static_cast<uint32_t>(
-                                            NativeCTReduceDimension::Trailing0),
-                                        {4097, 1, 1, 1},
-                                        LogicalFormat::F32},
+  expectInvalid(TargetReduceCommand{NumericReduceOperation::Sum,
+                                    0,
+                                    0,
+                                    static_cast<uint32_t>(
+                                        NativeCTReduceDimension::Trailing0),
+                                    {4097, 1, 1, 1},
+                                    LogicalFormat::F32},
                 "reduce shape N dimension must be in [1, 4096]");
-  expectInvalid(TargetReduceTransaction{NumericReduceOperation::Sum,
-                                        0,
-                                        0,
-                                        static_cast<uint32_t>(
-                                            NativeCTReduceDimension::Trailing0),
-                                        {1, 1, 1, 16385},
-                                        LogicalFormat::F32},
+  expectInvalid(TargetReduceCommand{NumericReduceOperation::Sum,
+                                    0,
+                                    0,
+                                    static_cast<uint32_t>(
+                                        NativeCTReduceDimension::Trailing0),
+                                    {1, 1, 1, 16385},
+                                    LogicalFormat::F32},
                 "reduce shape C dimension must be in [1, 16384]");
 
   auto makeConv = [] {
-    return TargetConvTransaction{TargetConvolutionOperation::Convolution,
-                                 0,
-                                 0,
-                                 0,
-                                 {1, 1, 1, 1},
-                                 {1, 1, 1, 1},
-                                 {1, 1, 1, 1},
-                                 {0, 0, 0, 0},
-                                 {0, 0, 0, 0},
-                                 {1, 1, 1, 1},
-                                 {1, 1},
-                                 LogicalFormat::F16};
+    return TargetConvCommand{TargetConvolutionOperation::Convolution,
+                             0,
+                             0,
+                             0,
+                             {1, 1, 1, 1},
+                             {1, 1, 1, 1},
+                             {1, 1, 1, 1},
+                             {0, 0, 0, 0},
+                             {0, 0, 0, 0},
+                             {1, 1, 1, 1},
+                             {1, 1},
+                             LogicalFormat::F16};
   };
-  TargetConvTransaction conv = makeConv();
+  TargetConvCommand conv = makeConv();
   conv.pads[0] = 1024;
   expectInvalid(std::move(conv), "convolution pads must be in [0, 1023]");
   conv = makeConv();
@@ -476,28 +475,28 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
 }
 
 TEST(TargetModelKernelTest, ConvolutionWeightShapeIsNotADataShape) {
-  TargetConvTransaction conv{TargetConvolutionOperation::Convolution,
-                             0,
-                             0,
-                             0,
-                             {1, 1, 1, 4097},
-                             {1, 1, 4097, 1},
-                             {1, 1, 1, 1},
-                             {0, 0, 0, 0},
-                             {0, 0, 0, 0},
-                             {1, 1, 1, 1},
-                             {1, 1},
-                             LogicalFormat::F16};
-  llvm::Error error = validateTargetModelTransactionFields(
-      TargetTransaction{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
-                        0, TargetTransactionPayload{conv}});
+  TargetConvCommand conv{TargetConvolutionOperation::Convolution,
+                         0,
+                         0,
+                         0,
+                         {1, 1, 1, 4097},
+                         {1, 1, 4097, 1},
+                         {1, 1, 1, 1},
+                         {0, 0, 0, 0},
+                         {0, 0, 0, 0},
+                         {1, 1, 1, 1},
+                         {1, 1},
+                         LogicalFormat::F16};
+  llvm::Error error = validateTargetModelCommandFields(
+      TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                    TargetCommandPayload{conv}});
   EXPECT_FALSE(static_cast<bool>(error)) << llvm::toString(std::move(error));
 
   conv.weightShape[2] =
       static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1;
-  std::string failure = expectError(validateTargetModelTransactionFields(
-      TargetTransaction{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
-                        0, TargetTransactionPayload{std::move(conv)}}));
+  std::string failure = expectError(validateTargetModelCommandFields(
+      TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                    TargetCommandPayload{std::move(conv)}}));
   EXPECT_NE(failure.find("convolution weight shape must be in [1, 65535]"),
             std::string::npos)
       << failure;
@@ -506,10 +505,10 @@ TEST(TargetModelKernelTest, ConvolutionWeightShapeIsNotADataShape) {
 TEST(TargetModelKernelTest,
      BoolMemsetFieldValidationRequiresPhysicalFootprintByteGranularity) {
   auto validate = [](uint32_t elementCount) {
-    return validateTargetModelTransactionFields(TargetTransaction{
-        PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-        TargetMemsetTransaction{0, UINT32_C(1), elementCount,
-                                LogicalFormat::Bool}});
+    return validateTargetModelCommandFields(
+        TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                      TargetMemsetCommand{0, UINT32_C(1), elementCount,
+                                          LogicalFormat::Bool}});
   };
 
   llvm::Error valid = validate(16);
@@ -521,20 +520,19 @@ TEST(TargetModelKernelTest,
       << failure;
 }
 
-TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {
+TEST(TargetModelKernelTest, StridedRDMAAndWDMAApplyOnlyCompleteEffects) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  TargetTransaction rdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
-                         0,
-                         TargetStridedDMATransaction{TargetDMADirection::Read,
-                                                     kDDRBase,
-                                                     spm,
-                                                     8,
-                                                     4,
-                                                     {8, 0, 0},
-                                                     {2, 1, 1},
-                                                     LogicalFormat::F32}};
+  TargetCommand rdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                     TargetStridedDMACommand{TargetDMADirection::Read,
+                                             kDDRBase,
+                                             spm,
+                                             8,
+                                             4,
+                                             {8, 0, 0},
+                                             {2, 1, 1},
+                                             LogicalFormat::F32}};
   TargetModelCommandEffect readEffect =
       llvm::cantFail(executeTargetModelCommand(rdma, memory, makeBudget()));
   ASSERT_EQ(readEffect.pendingWrites.size(), 1u);
@@ -543,21 +541,20 @@ TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {
                 0, TargetModelAddressSpace::TileSPM, spm, 8, 1)),
             std::vector<uint8_t>(8, 0));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(readEffect)));
+      applyTargetModelCommandEffect(memory, config, std::move(readEffect)));
   EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
                 0, TargetModelAddressSpace::TileSPM, spm, 8, 1)),
             (std::vector<uint8_t>{0, 1, 2, 3, 8, 9, 10, 11}));
 
-  TargetTransaction wdma{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
-      TargetStridedDMATransaction{TargetDMADirection::Write,
-                                  spm,
-                                  kDDRBase + UINT64_C(0x1000),
-                                  8,
-                                  4,
-                                  {8, 0, 0},
-                                  {2, 1, 1},
-                                  LogicalFormat::F32}};
+  TargetCommand wdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+                     TargetStridedDMACommand{TargetDMADirection::Write,
+                                             spm,
+                                             kDDRBase + UINT64_C(0x1000),
+                                             8,
+                                             4,
+                                             {8, 0, 0},
+                                             {2, 1, 1},
+                                             LogicalFormat::F32}};
   TargetModelCommandEffect writeEffect =
       llvm::cantFail(executeTargetModelCommand(wdma, memory, makeBudget()));
   ASSERT_EQ(writeEffect.pendingWrites.size(), 1u);
@@ -565,7 +562,7 @@ TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {
   EXPECT_EQ(writeEffect.pendingWrites.front().stridedLayout->iterations,
             (std::array<uint32_t, 3>{2, 1, 1}));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(writeEffect)));
+      applyTargetModelCommandEffect(memory, config, std::move(writeEffect)));
   std::vector<uint8_t> output = llvm::cantFail(memory.readSlotSnapshot(0, 1));
   EXPECT_EQ(std::vector<uint8_t>(output.begin(), output.begin() + 4),
             (std::vector<uint8_t>{0, 1, 2, 3}));
@@ -576,7 +573,7 @@ TEST(TargetModelKernelTest, StridedRDMAAndWDMACommitOnlyCompleteEffects) {
 TEST(TargetModelKernelTest,
      GatherScatterSnapshotsOverlappingSourceBeforeCompactWrite) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   llvm::cantFail(memory.applyAtomically(
       {TargetModelByteWrite{0,
@@ -584,9 +581,9 @@ TEST(TargetModelKernelTest,
                             spm,
                             1,
                             {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}}));
-  TargetTransaction gather{
+  TargetCommand gather{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetGatherScatterTransaction{
+      TargetGatherScatterCommand{
           spm, spm + 2, 8, 2, {2, 0, 0}, {4, 1, 1}, {2, 0, 0}, {4, 1, 1}}};
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(gather, memory, makeBudget()));
@@ -598,7 +595,7 @@ TEST(TargetModelKernelTest,
                 0, TargetModelAddressSpace::TileSPM, spm, 10, 1)),
             (std::vector<uint8_t>{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+      applyTargetModelCommandEffect(memory, config, std::move(effect)));
   EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
                 0, TargetModelAddressSpace::TileSPM, spm, 10, 1)),
             (std::vector<uint8_t>{0, 1, 0, 1, 2, 3, 4, 5, 6, 7}));
@@ -606,14 +603,14 @@ TEST(TargetModelKernelTest,
 
 TEST(TargetModelKernelTest, GatherScatterAllowsRepeatedSourceSegments) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   llvm::cantFail(memory.applyAtomically({TargetModelByteWrite{
       0, TargetModelAddressSpace::TileSPM, spm, 1, {7, 9}}}));
   const uint64_t destination = spm + UINT64_C(0x100);
-  TargetTransaction gather{
+  TargetCommand gather{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetGatherScatterTransaction{
+      TargetGatherScatterCommand{
           spm, destination, 4, 2, {0, 0, 0}, {2, 1, 1}, {2, 0, 0}, {2, 1, 1}}};
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(gather, memory, makeBudget()));
@@ -621,74 +618,72 @@ TEST(TargetModelKernelTest, GatherScatterAllowsRepeatedSourceSegments) {
   EXPECT_EQ(effect.pendingWrites.front().bytes,
             (std::vector<uint8_t>{7, 9, 7, 9}));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+      applyTargetModelCommandEffect(memory, config, std::move(effect)));
   EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
                 0, TargetModelAddressSpace::TileSPM, destination, 4, 1)),
             (std::vector<uint8_t>{7, 9, 7, 9}));
 }
 
 TEST(TargetModelKernelTest,
-     OverlappingGatherDestinationFailsWithoutPartialPublication) {
+     OverlappingGatherDestinationFailsWithoutPartialWrites) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   llvm::cantFail(memory.applyAtomically({TargetModelByteWrite{
       0, TargetModelAddressSpace::TileSPM, spm, 1, {1, 2, 3, 4}}}));
   const uint64_t destination = spm + UINT64_C(0x100);
-  TargetTransaction gather{
+  TargetCommand gather{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetGatherScatterTransaction{
+      TargetGatherScatterCommand{
           spm, destination, 4, 2, {2, 0, 0}, {2, 1, 1}, {0, 0, 0}, {2, 1, 1}}};
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(gather, memory, makeBudget()));
   ASSERT_EQ(effect.pendingWrites.size(), 1u);
   std::string error = expectError(
-      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+      applyTargetModelCommandEffect(memory, config, std::move(effect)));
   EXPECT_NE(error.find("pending writes overlap"), std::string::npos);
   EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
                 0, TargetModelAddressSpace::TileSPM, destination, 4, 1)),
             std::vector<uint8_t>(4, 0));
-  EXPECT_FALSE(context.getAggregateFlags().any());
+  EXPECT_FALSE(config.getAggregateFlags().any());
 }
 
 TEST(TargetModelKernelTest,
      NonCanonicalMovementUsesLinearFallbackWithoutChangingDescriptorOrder) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  TargetTransaction rdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
-                         0,
-                         TargetStridedDMATransaction{TargetDMADirection::Read,
-                                                     kDDRBase,
-                                                     spm,
-                                                     12,
-                                                     2,
-                                                     {4, 6, 0},
-                                                     {3, 2, 1},
-                                                     LogicalFormat::F16}};
+  TargetCommand rdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                     TargetStridedDMACommand{TargetDMADirection::Read,
+                                             kDDRBase,
+                                             spm,
+                                             12,
+                                             2,
+                                             {4, 6, 0},
+                                             {3, 2, 1},
+                                             LogicalFormat::F16}};
   TargetModelCommandEffect readEffect =
       llvm::cantFail(executeTargetModelCommand(rdma, memory, makeBudget()));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(readEffect)));
+      applyTargetModelCommandEffect(memory, config, std::move(readEffect)));
   EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
                 0, TargetModelAddressSpace::TileSPM, spm, 12, 1)),
             (std::vector<uint8_t>{0, 1, 4, 5, 8, 9, 6, 7, 10, 11, 14, 15}));
 
-  TargetTransaction wdma{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
-      TargetStridedDMATransaction{TargetDMADirection::Write,
-                                  spm,
-                                  kDDRBase + UINT64_C(0x1000),
-                                  12,
-                                  2,
-                                  {4, 6, 0},
-                                  {3, 2, 1},
-                                  LogicalFormat::F16}};
+  TargetCommand wdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+                     TargetStridedDMACommand{TargetDMADirection::Write,
+                                             spm,
+                                             kDDRBase + UINT64_C(0x1000),
+                                             12,
+                                             2,
+                                             {4, 6, 0},
+                                             {3, 2, 1},
+                                             LogicalFormat::F16}};
   TargetModelCommandEffect writeEffect =
       llvm::cantFail(executeTargetModelCommand(wdma, memory, makeBudget()));
   ASSERT_EQ(writeEffect.pendingWrites.size(), 1u);
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(writeEffect)));
+      applyTargetModelCommandEffect(memory, config, std::move(writeEffect)));
   std::vector<uint8_t> output = llvm::cantFail(memory.readSlotSnapshot(0, 1));
   EXPECT_EQ(std::vector<uint8_t>(output.begin(), output.begin() + 16),
             (std::vector<uint8_t>{0, 1, 0, 0, 4, 5, 6, 7, 8, 9, 10, 11, 0, 0,
@@ -703,7 +698,7 @@ TEST(TargetModelKernelTest,
   constexpr uint32_t kInnerBytes = 2;
   constexpr uint32_t kPayloadBytes = kSegmentCount * kInnerBytes;
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   const uint64_t transposed = spm + UINT64_C(0x100000);
   const uint64_t roundTrip = spm + UINT64_C(0x200000);
@@ -719,16 +714,16 @@ TEST(TargetModelKernelTest,
       FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/1,
                                       /*maximumFusedMultiplyAdds=*/1),
       kPayloadBytes, kSegmentCount);
-  TargetTransaction transpose{
+  TargetCommand transpose{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetGatherScatterTransaction{spm,
-                                     transposed,
-                                     kPayloadBytes,
-                                     kInnerBytes,
-                                     {kInnerBytes, kColumns * kInnerBytes, 0},
-                                     {kColumns, kRows, 1},
-                                     {kRows * kInnerBytes, kInnerBytes, 0},
-                                     {kColumns, kRows, 1}}};
+      TargetGatherScatterCommand{spm,
+                                 transposed,
+                                 kPayloadBytes,
+                                 kInnerBytes,
+                                 {kInnerBytes, kColumns * kInnerBytes, 0},
+                                 {kColumns, kRows, 1},
+                                 {kRows * kInnerBytes, kInnerBytes, 0},
+                                 {kColumns, kRows, 1}}};
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(transpose, memory, largeBudget));
   ASSERT_EQ(effect.pendingWrites.size(), 1u);
@@ -737,7 +732,7 @@ TEST(TargetModelKernelTest,
   EXPECT_EQ(effect.pendingWrites.front().stridedLayout->strides,
             (std::array<uint32_t, 3>{kRows * kInnerBytes, kInnerBytes, 0}));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+      applyTargetModelCommandEffect(memory, config, std::move(effect)));
   std::vector<uint8_t> output = llvm::cantFail(memory.readSnapshot(
       0, TargetModelAddressSpace::TileSPM, transposed, kPayloadBytes, 1));
   auto expectTransposedSegment = [&](uint32_t column, uint32_t row) {
@@ -752,21 +747,21 @@ TEST(TargetModelKernelTest,
   expectTransposedSegment(kColumns / 2, kRows / 2);
   expectTransposedSegment(kColumns - 1, kRows - 1);
 
-  TargetTransaction reverse{
+  TargetCommand reverse{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
-      TargetGatherScatterTransaction{transposed,
-                                     roundTrip,
-                                     kPayloadBytes,
-                                     kInnerBytes,
-                                     {kRows * kInnerBytes, kInnerBytes, 0},
-                                     {kColumns, kRows, 1},
-                                     {kInnerBytes, kColumns * kInnerBytes, 0},
-                                     {kColumns, kRows, 1}}};
+      TargetGatherScatterCommand{transposed,
+                                 roundTrip,
+                                 kPayloadBytes,
+                                 kInnerBytes,
+                                 {kRows * kInnerBytes, kInnerBytes, 0},
+                                 {kColumns, kRows, 1},
+                                 {kInnerBytes, kColumns * kInnerBytes, 0},
+                                 {kColumns, kRows, 1}}};
   TargetModelCommandEffect reverseEffect =
       llvm::cantFail(executeTargetModelCommand(reverse, memory, largeBudget));
   ASSERT_EQ(reverseEffect.pendingWrites.size(), 1u);
-  llvm::cantFail(commitTargetModelCommandEffect(memory, context,
-                                                std::move(reverseEffect)));
+  llvm::cantFail(
+      applyTargetModelCommandEffect(memory, config, std::move(reverseEffect)));
   EXPECT_EQ(
       llvm::cantFail(memory.readSnapshot(0, TargetModelAddressSpace::TileSPM,
                                          roundTrip, kPayloadBytes, 1)),
@@ -775,7 +770,7 @@ TEST(TargetModelKernelTest,
 
 TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey key =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {4});
@@ -789,11 +784,11 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
                {LogicalFormat::F32, UINT64_C(0x40400000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
                {LogicalFormat::F32, UINT64_C(0x3f800000)}});
-  TargetTransaction add{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetElementwiseTransaction{
-          NumericElementwiseOperation::Add, spm, spm + UINT64_C(0x1000),
-          spm + UINT64_C(0x2000), 4, LogicalFormat::F32}};
+  TargetCommand add{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                    TargetElementwiseCommand{NumericElementwiseOperation::Add,
+                                             spm, spm + UINT64_C(0x1000),
+                                             spm + UINT64_C(0x2000), 4,
+                                             LogicalFormat::F32}};
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(add, memory, makeBudget()));
   std::vector<RawLogicalValue> before =
@@ -801,18 +796,18 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   for (const RawLogicalValue &value : before)
     EXPECT_EQ(value.bits, UINT64_C(0));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+      applyTargetModelCommandEffect(memory, config, std::move(effect)));
   std::vector<RawLogicalValue> result =
       readTensor(memory, 0, spm + UINT64_C(0x2000), key);
   ASSERT_EQ(result.size(), 4u);
   for (const RawLogicalValue &value : result)
     EXPECT_EQ(value.bits, UINT64_C(0x40a00000));
-  EXPECT_FALSE(context.getAggregateFlags().any());
+  EXPECT_FALSE(config.getAggregateFlags().any());
 }
 
 TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey input =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 2});
@@ -823,9 +818,9 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
                {LogicalFormat::F32, UINT64_C(0x40000000)},
                {LogicalFormat::F32, UINT64_C(0x40400000)},
                {LogicalFormat::F32, UINT64_C(0x40800000)}});
-  TargetTransaction reduce{
+  TargetCommand reduce{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetReduceTransaction{
+      TargetReduceCommand{
           NumericReduceOperation::Sum,
           spm,
           spm + UINT64_C(0x1000),
@@ -835,18 +830,18 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(reduce, memory, makeBudget()));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+      applyTargetModelCommandEffect(memory, config, std::move(effect)));
   std::vector<RawLogicalValue> result =
       readTensor(memory, 0, spm + UINT64_C(0x1000), destination);
   ASSERT_EQ(result.size(), 2u);
   EXPECT_EQ(result[0].bits, UINT64_C(0x40400000));
   EXPECT_EQ(result[1].bits, UINT64_C(0x40e00000));
-  EXPECT_FALSE(context.getAggregateFlags().any());
+  EXPECT_FALSE(config.getAggregateFlags().any());
 }
 
 TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey f32 =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2});
@@ -857,18 +852,17 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
                {LogicalFormat::F32, UINT64_C(0x40000000)}});
   writeTensor(memory, 0, spm + UINT64_C(0x1000), f16,
               {{LogicalFormat::F16, 0}, {LogicalFormat::F16, 0}});
-  TargetTransaction convert{
+  TargetCommand convert{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetConvertTransaction{llvm::cantFail(TargetConvertOperation::create(
-                                   findTargetConvertRoute(LogicalFormat::F32,
-                                                          LogicalFormat::F16)
-                                       ->opcode)),
-                               spm,
-                               spm + UINT64_C(0x1000), 2, std::nullopt, 0}};
+      TargetConvertCommand{
+          llvm::cantFail(TargetConvertOperation::create(
+              findTargetConvertRoute(LogicalFormat::F32, LogicalFormat::F16)
+                  ->opcode)),
+          spm, spm + UINT64_C(0x1000), 2, std::nullopt, 0}};
   TargetModelCommandEffect convertEffect =
       llvm::cantFail(executeTargetModelCommand(convert, memory, makeBudget()));
-  llvm::cantFail(commitTargetModelCommandEffect(memory, context,
-                                                std::move(convertEffect)));
+  llvm::cantFail(
+      applyTargetModelCommandEffect(memory, config, std::move(convertEffect)));
   std::vector<RawLogicalValue> converted =
       readTensor(memory, 0, spm + UINT64_C(0x1000), f16);
   EXPECT_EQ(converted[0].bits, UINT64_C(0x3c00));
@@ -886,15 +880,15 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
                {LogicalFormat::F16, UINT64_C(0x4200)},
                {LogicalFormat::F16, UINT64_C(0x4400)},
                {LogicalFormat::F16, UINT64_C(0x4500)}});
-  TargetTransaction gemm{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
-      TargetGemmTransaction{spm + UINT64_C(0x3000), spm + UINT64_C(0x4000),
-                            spm + UINT64_C(0x5000), 2, 2, 2, 1,
-                            LogicalFormat::F16}};
+  TargetCommand gemm{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+                     TargetGemmCommand{spm + UINT64_C(0x3000),
+                                       spm + UINT64_C(0x4000),
+                                       spm + UINT64_C(0x5000), 2, 2, 2, 1,
+                                       LogicalFormat::F16}};
   TargetModelCommandEffect gemmEffect =
       llvm::cantFail(executeTargetModelCommand(gemm, memory, makeBudget()));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(gemmEffect)));
+      applyTargetModelCommandEffect(memory, config, std::move(gemmEffect)));
   std::vector<RawLogicalValue> product =
       readTensor(memory, 0, spm + UINT64_C(0x5000), matrix);
   ASSERT_EQ(product.size(), 4u);
@@ -907,7 +901,7 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
 TEST(TargetModelKernelTest,
      PhysicalFootprintMemsetOverwritesAlignedTailAndUnusedBoolBits) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   const uint64_t cxDestination = spm + UINT64_C(0x3000);
   const uint64_t boolDestination = spm + UINT64_C(0x4000);
@@ -918,14 +912,14 @@ TEST(TargetModelKernelTest,
                             boolDestination, 1,
                             std::vector<uint8_t>(2, UINT8_C(0xa5))}}));
 
-  TargetTransaction cxFill{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetMemsetTransaction{cxDestination, UINT32_C(0x3555),
-                              /*elementCount=*/128, LogicalFormat::F16}};
+  TargetCommand cxFill{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                       TargetMemsetCommand{cxDestination, UINT32_C(0x3555),
+                                           /*elementCount=*/128,
+                                           LogicalFormat::F16}};
   TargetModelCommandEffect cxEffect =
       llvm::cantFail(executeTargetModelCommand(cxFill, memory, makeBudget()));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(cxEffect)));
+      applyTargetModelCommandEffect(memory, config, std::move(cxEffect)));
   std::vector<uint8_t> cxBytes = llvm::cantFail(memory.readSnapshot(
       0, TargetModelAddressSpace::TileSPM, cxDestination, 256, 1));
   for (size_t index = 0; index < cxBytes.size(); index += 2) {
@@ -933,14 +927,14 @@ TEST(TargetModelKernelTest,
     EXPECT_EQ(cxBytes[index + 1], UINT8_C(0x35));
   }
 
-  TargetTransaction boolFill{
+  TargetCommand boolFill{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
-      TargetMemsetTransaction{boolDestination, UINT32_C(1),
-                              /*elementCount=*/16, LogicalFormat::Bool}};
+      TargetMemsetCommand{boolDestination, UINT32_C(1),
+                          /*elementCount=*/16, LogicalFormat::Bool}};
   TargetModelCommandEffect boolEffect =
       llvm::cantFail(executeTargetModelCommand(boolFill, memory, makeBudget()));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(boolEffect)));
+      applyTargetModelCommandEffect(memory, config, std::move(boolEffect)));
   EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
                 0, TargetModelAddressSpace::TileSPM, boolDestination, 2, 1)),
             (std::vector<uint8_t>{UINT8_C(0xff), UINT8_C(0xff)}));
@@ -948,7 +942,7 @@ TEST(TargetModelKernelTest,
 
 TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey batchMatrices =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {2, 2, 2});
@@ -970,14 +964,14 @@ TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
                {LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)}});
-  TargetTransaction gemm{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetGemmTransaction{spm, spm + UINT64_C(0x1000), spm + UINT64_C(0x2000),
-                            2, 2, 2, 2, LogicalFormat::F32}};
+  TargetCommand gemm{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                     TargetGemmCommand{spm, spm + UINT64_C(0x1000),
+                                       spm + UINT64_C(0x2000), 2, 2, 2, 2,
+                                       LogicalFormat::F32}};
   TargetModelCommandEffect effect =
       llvm::cantFail(executeTargetModelCommand(gemm, memory, makeBudget()));
   llvm::cantFail(
-      commitTargetModelCommandEffect(memory, context, std::move(effect)));
+      applyTargetModelCommandEffect(memory, config, std::move(effect)));
 
   std::vector<RawLogicalValue> product =
       readTensor(memory, 0, spm + UINT64_C(0x2000), batchMatrices);
@@ -991,7 +985,7 @@ TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
 }
 
 TEST(TargetModelKernelTest,
-     PreferAdmittedGemmUsesExactBackendOrFailsBeyondFormalBudget) {
+     BulkThenFormalUsesMatchingBackendOrFailsBeyondFormalBudget) {
   InvocationMemoryRegistry memory = makeRegistry();
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   NumericTensorKey matrix =
@@ -1000,39 +994,40 @@ TEST(TargetModelKernelTest,
       16, {LogicalFormat::F32, UINT64_C(0x3f800000)});
   writeTensor(memory, 0, spm, matrix, values);
   writeTensor(memory, 0, spm + UINT64_C(0x1000), matrix, values);
-  TargetTransaction gemm{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetGemmTransaction{spm, spm + UINT64_C(0x1000), spm + UINT64_C(0x2000),
-                            4, 4, 4, 1, LogicalFormat::F32}};
+  TargetCommand gemm{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+                     TargetGemmCommand{spm, spm + UINT64_C(0x1000),
+                                       spm + UINT64_C(0x2000), 4, 4, 4, 1,
+                                       LogicalFormat::F32}};
   TargetModelKernelBudget smallBudget = TargetModelKernelBudget::create(
       FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/1,
                                       /*maximumFusedMultiplyAdds=*/1),
       /*maximumMovementBytes=*/4096,
       /*maximumMovementSegments=*/256);
 
-  FakeBulkBackend missing(/*admit=*/false);
+  FakeBulkBackend missing(/*hasMatchingExecution=*/false);
   std::string error = expectError(executeTargetModelCommand(
       gemm, memory, smallBudget,
-      TargetModelExecutionPolicy::preferAdmitted(missing)));
+      TargetModelExecutionPolicy::bulkThenFormal(missing)));
   EXPECT_NE(error.find("bulk-backend-unavailable"), std::string::npos);
   EXPECT_EQ(missing.invocations, 1u);
 
-  FakeBulkBackend admitted(/*admit=*/true);
+  FakeBulkBackend matched(/*hasMatchingExecution=*/true);
   TargetModelCommandEffect effect = llvm::cantFail(executeTargetModelCommand(
       gemm, memory, smallBudget,
-      TargetModelExecutionPolicy::preferAdmitted(admitted)));
+      TargetModelExecutionPolicy::bulkThenFormal(matched)));
   EXPECT_EQ(effect.numericBackend, TargetModelNumericBackend::Bulk);
   EXPECT_EQ(effect.bulkEvidence.matmulInvocations, 1u);
   EXPECT_EQ(effect.bulkEvidence.formalFusedMultiplyAdds, 0u);
-  EXPECT_EQ(effect.bulkEvidence.provenanceKind,
-            TargetModelBulkProvenanceKind::ExactQualificationRecord);
-  EXPECT_EQ(effect.bulkEvidence.provenanceDigest, "sha256:fake-admission");
-  EXPECT_EQ(admitted.invocations, 1u);
+  EXPECT_EQ(effect.bulkEvidence.evidenceKind,
+            TargetModelBulkEvidenceKind::ExactQualificationRecord);
+  EXPECT_EQ(effect.bulkEvidence.evidenceDigest,
+            "sha256:fake-qualification-record");
+  EXPECT_EQ(matched.invocations, 1u);
 }
 
-TEST(TargetModelKernelTest, FailedEffectDoesNotPublishBytesOrNumericFlags) {
+TEST(TargetModelKernelTest, FailedEffectDoesNotModifyBytesOrNumericFlags) {
   InvocationMemoryRegistry memory = makeRegistry();
-  FormalNumericExecutionContext context;
+  FormalNumericExecutionContext config;
   FormalNumericExceptionFlags flags;
   flags.inexact = true;
   TargetModelCommandEffect invalid{
@@ -1041,45 +1036,43 @@ TEST(TargetModelKernelTest, FailedEffectDoesNotPublishBytesOrNumericFlags) {
       flags,
       TargetModelControlAction::None};
   std::string error = expectError(
-      commitTargetModelCommandEffect(memory, context, std::move(invalid)));
+      applyTargetModelCommandEffect(memory, config, std::move(invalid)));
   EXPECT_NE(error.find("access-denied"), std::string::npos);
-  EXPECT_FALSE(context.getAggregateFlags().any());
+  EXPECT_FALSE(config.getAggregateFlags().any());
   EXPECT_EQ(llvm::cantFail(memory.readSnapshot(
                 0, TargetModelAddressSpace::CardDDR, kDDRBase, 1, 1)),
             (std::vector<uint8_t>{0}));
 }
 
-TEST(TargetModelKernelTest, ControlTransactionsPreflightTypedEndpoints) {
+TEST(TargetModelKernelTest, ControlCommandsValidateTypedEndpoints) {
   InvocationMemoryRegistry memory = makeRegistry(2);
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  TargetTransaction begin{
+  TargetCommand begin{
       PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
-      TargetDirectDTEBeginTransaction{kDDRBase + UINT64_C(0x2000), 2}};
+      TargetDirectDTEBeginCommand{kDDRBase + UINT64_C(0x2000), 2}};
   EXPECT_EQ(
       llvm::cantFail(executeTargetModelCommand(begin, memory, makeBudget()))
           .controlAction,
       TargetModelControlAction::DirectDTEBegin);
-  TargetTransaction send{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
-      TargetDirectDTESendTransaction{spm, spm, 16, 0, 1, 0, false}};
+  TargetCommand send{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+                     TargetDirectDTESendCommand{spm, spm, 16, 0, 1, 0, false}};
   EXPECT_EQ(
       llvm::cantFail(executeTargetModelCommand(send, memory, makeBudget()))
           .controlAction,
       TargetModelControlAction::DirectDTESendPrepare);
-  TargetTransaction sendIssue{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 2,
-      TargetDirectDTESendIssueTransaction{UINT64_C(0x100)}};
+  TargetCommand sendIssue{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
+                          2, TargetDirectDTESendIssueCommand{UINT64_C(0x100)}};
   EXPECT_EQ(
       llvm::cantFail(executeTargetModelCommand(sendIssue, memory, makeBudget()))
           .controlAction,
       TargetModelControlAction::DirectDTESendIssue);
-  std::get<TargetDirectDTESendTransaction>(send.payload).localTile = 65536;
+  std::get<TargetDirectDTESendCommand>(send.payload).localTile = 65536;
   std::string error =
       expectError(executeTargetModelCommand(send, memory, makeBudget()));
   EXPECT_NE(error.find("outside the accepted target ABI domain"),
             std::string::npos);
 
-  auto &sendPayload = std::get<TargetDirectDTESendTransaction>(send.payload);
+  auto &sendPayload = std::get<TargetDirectDTESendCommand>(send.payload);
   sendPayload.localTile = 0;
   sendPayload.remoteFSM = 4;
   error = expectError(executeTargetModelCommand(send, memory, makeBudget()));
@@ -1089,19 +1082,18 @@ TEST(TargetModelKernelTest, ControlTransactionsPreflightTypedEndpoints) {
   sendPayload.remoteFSM = 0;
   sendPayload.highPerformance = true;
   error = expectError(executeTargetModelCommand(send, memory, makeBudget()));
-  EXPECT_NE(error.find("unsupported-transaction"), std::string::npos);
+  EXPECT_NE(error.find("unsupported-command"), std::string::npos);
 }
 
 TEST(TargetModelKernelTest, UnsupportedFamilyIsNotSilentlyApproximated) {
   InvocationMemoryRegistry memory = makeRegistry();
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  TargetTransaction bit2fp{PhysicalCardId(0), PhysicalTileId(0),
-                           LaunchSlotId(0), 0,
-                           TargetBit2FPTransaction{spm, spm + UINT64_C(0x1000),
-                                                   4, LogicalFormat::F32}};
+  TargetCommand bit2fp{
+      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      TargetBit2FPCommand{spm, spm + UINT64_C(0x1000), 4, LogicalFormat::F32}};
   std::string error =
       expectError(executeTargetModelCommand(bit2fp, memory, makeBudget()));
-  EXPECT_NE(error.find("unsupported-transaction"), std::string::npos);
+  EXPECT_NE(error.find("unsupported-command"), std::string::npos);
 }
 
 } // namespace

@@ -2,7 +2,7 @@
 
 #include "../../lib/Wafer/Compiler/WholeCardExecutableSynthesis.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
+#include "../../lib/Wafer/Compiler/PhysicalTileExecutablesInternal.h"
 #include "../../lib/Wafer/Compiler/SelectedBufferMaterialization.h"
 #include "../../lib/Wafer/Compiler/WholeDAGSchedulePlan.h"
 
@@ -474,7 +474,7 @@ enum class TestOperationRelationMode {
   Ambiguous,
 };
 
-static mlir::FailureOr<wafer::compiler::detail::AcceptedWholeCardExecutable>
+static mlir::FailureOr<wafer::compiler::detail::WholeCardExecutable>
 makePlanTestExecutable(
     mlir::MLIRContext &context, size_t nodeCount,
     llvm::ArrayRef<wafer::compiler::detail::WholeDAGNodePlacement> placements,
@@ -572,18 +572,19 @@ module {
   std::vector<wafer::compiler::PhysicalTileExecutable> tiles;
   tiles.reserve(modules.size());
   for (size_t tile = 0; tile < modules.size(); ++tile)
-    tiles.push_back(wafer::compiler::ExecutableBundleBuilder::makePhysicalTile(
-        wafer::PhysicalCardId(0),
-        wafer::PhysicalTileId(static_cast<int64_t>(tile)),
-        wafer::LaunchSlotId(static_cast<int64_t>(tile)),
-        std::move(modules[tile]), "entry", {},
-        wafer::compiler::TransportContract::None));
+    tiles.push_back(
+        wafer::compiler::PhysicalTileExecutablesBuilder::makePhysicalTile(
+            wafer::PhysicalCardId(0),
+            wafer::PhysicalTileId(static_cast<int64_t>(tile)),
+            wafer::LaunchSlotId(static_cast<int64_t>(tile)),
+            std::move(modules[tile]), "entry", {},
+            wafer::compiler::TransportContract::None));
   wafer::RuntimeLaunchContract launch =
       llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
           wafer::KernelLaunchForm::Grid,
           wafer::KernelEntryABI::TileMajorPointerTable,
           {wafer::RuntimeLaunchPhaseRole::Main}));
-  return wafer::compiler::detail::AcceptedWholeCardExecutable(
+  return wafer::compiler::detail::WholeCardExecutable(
       std::move(tiles), std::move(launch), std::move(cost));
 }
 
@@ -804,10 +805,11 @@ TEST(WholeCardExecutableSynthesisTest,
   EXPECT_EQ(statistics.selectedOutputMappingCount, 1u);
   EXPECT_EQ(statistics.selectedUniqueActiveTileCount, 16u);
   EXPECT_EQ(statistics.selectedParallelComponentCount, 1u);
-  EXPECT_EQ(statistics.exactGates.preTargetAttempts, 1u);
+  EXPECT_EQ(statistics.exactGates.physicalTileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.exactGates.cardProgramCompilationInvocations, 1u);
-  EXPECT_EQ(statistics.exactGates.targetGateInvocations, 1u);
-  EXPECT_EQ(statistics.exactGates.targetTileGateInvocations, 16u);
+  EXPECT_EQ(statistics.exactGates.targetLoweringVerificationInvocations, 1u);
+  EXPECT_EQ(statistics.exactGates.targetTileLoweringVerificationInvocations,
+            16u);
   EXPECT_EQ(statistics.baselineCardProgramMaterializations, 1u);
   EXPECT_EQ(statistics.baselineScopedCardProgramMaterializations, 0u);
   EXPECT_EQ(statistics.baselineRegionSPMCapacityChecks, 16u);
@@ -816,9 +818,9 @@ TEST(WholeCardExecutableSynthesisTest,
   EXPECT_EQ(statistics.resourceScheduleMemoHits, 0u);
   EXPECT_EQ(statistics.resourceScheduleMemoMisses, 0u);
   EXPECT_EQ(statistics.selectedExecutableRematerializations, 0u);
-  EXPECT_EQ(
-      statistics.selectedExecutableRematerializationGates.preTargetAttempts,
-      0u);
+  EXPECT_EQ(statistics.selectedExecutableRematerializationGates
+                .physicalTileModuleLoweringAttempts,
+            0u);
   EXPECT_EQ(diagnosticsText.find("whole-card-search policy=none"),
             std::string::npos)
       << diagnosticsText;
@@ -957,7 +959,7 @@ module {
           &failureReason)))
       << failureReason;
   EXPECT_EQ(slotAllocations, 2u);
-  EXPECT_EQ(workSession->snapshot().selectedBufferArtifactTransactions, 1u);
+  EXPECT_EQ(workSession->snapshot().selectedBufferModuleClones, 1u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
   unsigned rotatingArguments = 0;
   module->walk([&](mlir::scf::ForOp loop) {
@@ -1014,18 +1016,18 @@ TEST(WholeCardExecutableSynthesisTest,
   EXPECT_EQ(statistics.acceptedCandidates, statistics.materializedCandidates);
   EXPECT_EQ(statistics.plannedCandidates, statistics.acceptedCandidates);
   EXPECT_EQ(statistics.schedulePlanRejections, 0u);
-  EXPECT_EQ(statistics.exactGates.preTargetAttempts,
+  EXPECT_EQ(statistics.exactGates.physicalTileModuleLoweringAttempts,
             statistics.materializedCandidates);
   EXPECT_EQ(statistics.exactGates.cardProgramCompilationInvocations,
             statistics.materializedCandidates);
-  EXPECT_EQ(statistics.exactGates.targetGateInvocations,
+  EXPECT_EQ(statistics.exactGates.targetLoweringVerificationInvocations,
             statistics.acceptedCandidates);
-  EXPECT_EQ(statistics.exactGates.targetTileGateInvocations,
+  EXPECT_EQ(statistics.exactGates.targetTileLoweringVerificationInvocations,
             statistics.acceptedCandidates * 16);
   EXPECT_EQ(statistics.selectedExecutableRematerializations, 1u);
-  EXPECT_EQ(
-      statistics.selectedExecutableRematerializationGates.preTargetAttempts,
-      1u);
+  EXPECT_EQ(statistics.selectedExecutableRematerializationGates
+                .physicalTileModuleLoweringAttempts,
+            1u);
   EXPECT_EQ(statistics.selectedExecutableRematerializationGates
                 .cardProgramCompilationInvocations,
             1u);

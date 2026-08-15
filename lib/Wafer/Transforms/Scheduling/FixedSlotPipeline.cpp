@@ -550,7 +550,8 @@ static mlir::LogicalResult validateLeadingBackedgeJoins(
     }
 
     uint32_t participants =
-        getNCCSynchronizationContract(join).participantMask & kAllNCCWorkersMask;
+        getNCCSynchronizationContract(join).participantMask &
+        kAllNCCWorkersMask;
     if (conflictParticipants != participants)
       return fail(
           "fixed-slot leading NCC join has a participant without an exact "
@@ -603,7 +604,8 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
     plan.operationIndices.try_emplace(&operation, index);
     plan.operations.push_back(&operation);
 
-    NCCSynchronizationContract contract = getNCCSynchronizationContract(&operation);
+    NCCSynchronizationContract contract =
+        getNCCSynchronizationContract(&operation);
     if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
       llvm::SmallVector<mlir::Operation *, 4> producers;
       bool missingParticipantProducer = false;
@@ -667,7 +669,8 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
       sawTypedInstructionOrCompletion = true;
       continue;
     }
-    if (contract.behavior != NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
+    if (contract.behavior !=
+            NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
         !contract.issueWorker)
       return failPlan(
           failureReason,
@@ -691,7 +694,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
       return failPlan(
           failureReason,
           "fixed-slot leading NCC join participants do not exactly match the "
-          "loop-tail pending frontier");
+          "loop-tail pending operations");
     plan.backedgeJoinProducers.try_emplace(deferredLeadingJoin.getOperation(),
                                            std::move(tailProducers));
   }
@@ -732,8 +735,10 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
   std::array<llvm::SmallVector<unsigned, 4>, kNCCWorkerCount>
       pendingWorkerIssues;
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
-    NCCSynchronizationContract contract = getNCCSynchronizationContract(operation);
-    if (contract.behavior == NCCSynchronizationBehavior::OrderedAsynchronousIssue) {
+    NCCSynchronizationContract contract =
+        getNCCSynchronizationContract(operation);
+    if (contract.behavior ==
+        NCCSynchronizationBehavior::OrderedAsynchronousIssue) {
       if (!contract.issueWorker)
         return failPlan(failureReason,
                         "fixed-slot NCC issue has no typed worker");
@@ -889,7 +894,7 @@ buildFixedSlotPipelinePlan(mlir::scf::ForOp loop, std::string *failureReason) {
              prior.completionOperation >= access.issueOperation))
           return failPlan(
               failureReason,
-              "fixed-slot NCC-to-Direct-DTE buffer handoff requires an "
+              "fixed-slot NCC-to-Direct-DTE buffer transfer requires an "
               "explicit preceding participant join");
         if (!priorDirectDTE && !currentDirectDTE &&
             (priorWorker == plan.instructionWorkers.end() ||
@@ -1305,7 +1310,7 @@ canonicalizePipelinedKernelUpperBound(mlir::scf::ForOp loop,
 
   // Only erase the two operation kinds emitted for this bound by the pinned
   // utility. Original loop bounds are direct constants at this transform's
-  // admission boundary and therefore cannot be consumed by this cleanup.
+  // input boundary and therefore cannot be consumed by this cleanup.
   llvm::SmallVector<mlir::Value, 2> worklist{mechanicalUpper};
   while (!worklist.empty()) {
     mlir::Value value = worklist.pop_back_val();
@@ -1702,8 +1707,7 @@ specializePeriodicDTEClones(llvm::ArrayRef<mlir::ModuleOp> modules,
           "periodic Direct-DTE site does not have one exact planned SPM "
           "allocation root");
     uint64_t executableOperations = 0;
-    if (detail::countStaticExecutableOperations(module,
-                                                executableOperations) ==
+    if (detail::countStaticExecutableOperations(module, executableOperations) ==
         detail::StaticExecutableOperationCountStatus::CountOverflow)
       return failSpecialization(
           failureReason,
@@ -1895,8 +1899,8 @@ specializePeriodicDirectDTESites(llvm::ArrayRef<mlir::ModuleOp> rankModules,
   }
 
   {
-    wafer::support::ScopedCompileTimingSpan commitTiming(
-        "transformation-phase", "specializePeriodicDirectDTESites", "commit");
+    wafer::support::ScopedCompileTimingSpan replacementTiming(
+        "transformation-phase", "specializePeriodicDirectDTESites", "apply");
     for (size_t index = 0; index < rankModules.size(); ++index) {
       mlir::ModuleOp destination = rankModules[index];
       mlir::ModuleOp source = cloneViews[index];

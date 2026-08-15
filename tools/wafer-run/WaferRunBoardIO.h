@@ -32,7 +32,7 @@ inline constexpr double kRelaxedF16RelativeTolerance = 0.001;
 inline constexpr uint32_t kRelaxedF16MaximumUlp = 1;
 
 /// Validated file-backed invocation state. The request is ready for the board
-/// executor; the remaining fields validate and publish its typed result.
+/// executor; the remaining fields validate and return its typed result.
 struct BoardInvocationFilePlan {
   BoardRuntimeInvocationRequest request;
   llvm::DenseMap<uint64_t, std::vector<uint8_t>> expectedBytes;
@@ -41,14 +41,12 @@ struct BoardInvocationFilePlan {
   llvm::DenseMap<uint64_t, uint64_t> writableResourceBytes;
 };
 
-llvm::Expected<BoardInvocationFilePlan>
-prepareBoardInvocationFiles(const PackageManifest &manifest,
-                            BoardRuntimeInvocationRequest request,
-                            llvm::ArrayRef<ResourceFile> resourceFiles,
-                            llvm::ArrayRef<ResourceFile> expectedFiles,
-                            llvm::ArrayRef<ResourceFile> outputFiles,
-                            llvm::ArrayRef<ResourceFile> relaxedF16ExpectedFiles =
-                                {});
+llvm::Expected<BoardInvocationFilePlan> prepareBoardInvocationFiles(
+    const PackageManifest &manifest, BoardRuntimeInvocationRequest request,
+    llvm::ArrayRef<ResourceFile> resourceFiles,
+    llvm::ArrayRef<ResourceFile> expectedFiles,
+    llvm::ArrayRef<ResourceFile> outputFiles,
+    llvm::ArrayRef<ResourceFile> relaxedF16ExpectedFiles = {});
 
 /// Rebinds one already prepared user invocation to another verified package
 /// using the stable `(scope, role, role_index)` resource identity.
@@ -60,19 +58,19 @@ remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
                              const PackageManifest &targetManifest);
 
 /// Validates all-and-only writable outputs, exact byte counts, and every
-/// supplied expected tensor without publishing any --output file.
+/// supplied expected tensor without writing any --output file.
 llvm::Error validateBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
                                  const BoardInvocationFilePlan &plan);
 
 /// Validate the complete provider result before staging any captures. Each
-/// capture is written to an adjacent temporary file, and publication begins
-/// only after every capture has been staged successfully. Each target rename
-/// is atomic; publication across multiple independent target paths is not a
-/// group transaction, so a later rename failure can leave earlier targets
-/// published.
+/// capture is written to an adjacent temporary file, and destination
+/// replacement begins only after every capture has been staged successfully.
+/// Each rename is atomic; replacement across independent target paths is not
+/// atomic as a group, so a later rename failure can leave earlier files
+/// replaced.
 llvm::Error
-validateAndPublishBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
-                               const BoardInvocationFilePlan &plan);
+validateAndWriteBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
+                             const BoardInvocationFilePlan &plan);
 
 } // namespace wafer::runtime::cli
 

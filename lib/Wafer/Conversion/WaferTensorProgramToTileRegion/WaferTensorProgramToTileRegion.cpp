@@ -17,11 +17,10 @@ using namespace wafer::tensor_program_to_tile_region;
 
 namespace {
 
-static void
-normalizeMapOps(mlir::func::FuncOp function,
-                llvm::MutableArrayRef<CandidatePeerEndpoint> peerEndpoints,
-                llvm::SmallVectorImpl<StructuredOperationNodeMapping>
-                    &operationNodes) {
+static void normalizeMapOps(
+    mlir::func::FuncOp function,
+    llvm::MutableArrayRef<CandidatePeerEndpoint> peerEndpoints,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes) {
   llvm::SmallVector<mlir::linalg::MapOp, 8> maps;
   function.walk([&](mlir::linalg::MapOp map) { maps.push_back(map); });
 
@@ -97,9 +96,9 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
   mlir::func::ReturnOp oldReturn = scope.getReturn();
   mlir::IRRewriter rewriter(module.getContext());
   rewriter.setInsertionPoint(oldReturn);
-  TileRegionBodyEmitter emitter(
-      failureReason, currentLogicalPartition, peerEndpoints, selectedDDRStages,
-      emissionRelations, normalizedOperationNodes);
+  TileRegionBodyEmitter emitter(failureReason, currentLogicalPartition,
+                                peerEndpoints, selectedDDRStages,
+                                emissionRelations, normalizedOperationNodes);
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "conversion-phase", "rewriteTensorProgramInPlace",
       "TileRegionBodyEmitter::emit");
@@ -171,7 +170,7 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
   // The caller owns the already-private candidate and is the sole rollback
   // boundary.  A failed in-place conversion leaves that disposable candidate
   // mutated; adding another whole-module clone here would duplicate the same
-  // transaction without strengthening atomic publication.
+  // rollback scope without improving failure isolation.
   if (emissionRelations) {
     emissionRelations->selectedDDRStages.clear();
     emissionRelations->materializedBuffers.clear();

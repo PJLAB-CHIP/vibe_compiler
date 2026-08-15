@@ -169,28 +169,28 @@ def compile_variant(
         timeout_seconds=1800.0,
     )
     expected = (
-        "wafer-compile: published verified package with "
+        "wafer-compile: wrote verified package with "
         f"execution-ranks={CASE.rank_count}"
     )
     if expected not in result.stdout:
-        raise RuntimeError(f"compiler did not publish the {selection} package")
+        raise RuntimeError(f"compiler did not write the {selection} package")
 
 
 def digest(path: pathlib.Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def validate_overlap_companion(
+def validate_overlap_qualification(
     package: pathlib.Path,
 ) -> dict[str, object]:
-    companion = pathlib.Path(str(package) + ".qualification")
-    attestation_path = companion / "attestation.json"
-    activation_path = companion / "activation.json"
-    if set(path.name for path in companion.iterdir()) != {
+    instrumentation = pathlib.Path(str(package) + ".qualification")
+    attestation_path = instrumentation / "attestation.json"
+    activation_path = instrumentation / "activation.json"
+    if set(path.name for path in instrumentation.iterdir()) != {
         "attestation.json",
         "activation.json",
     }:
-        raise RuntimeError("overlap qualification companion inventory is invalid")
+        raise RuntimeError("overlap qualification instrumentation inventory is invalid")
     attestation = json.loads(attestation_path.read_text())
     activation = json.loads(activation_path.read_text())
     if (
@@ -305,7 +305,7 @@ def main() -> int:
         packages["winner"],
         OVERLAP_SELECTION,
     )
-    attestation = validate_overlap_companion(packages["winner"])
+    attestation = validate_overlap_qualification(packages["winner"])
     (
         bindings_by_variant,
         output_ids_by_variant,

@@ -3,7 +3,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "OpVerifierUtils.h"
+#include "WaferIRVerification.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -56,13 +56,13 @@ static bool isDDRDataType(mlir::Type type) {
   return memrefType && hasWaferMemorySpace(memrefType, wafer::MemorySpace::DDR);
 }
 
-/// Proves storage provenance for a value crossing a tile-region boundary.
+/// Traces the storage roots of a value crossing a tile-region boundary.
 /// Unknown shaped producers are traversed only to detect an erased SPM
 /// dependency; they are never accepted as an alias producer for an SPM result.
-static StorageTrace traceSPMStorage(mlir::Value value, TileRegionOp owner,
-                                    llvm::DenseSet<mlir::Value> &active,
-                                    llvm::DenseMap<mlir::Value, StorageTrace>
-                                        &memo) {
+static StorageTrace
+traceSPMStorage(mlir::Value value, TileRegionOp owner,
+                llvm::DenseSet<mlir::Value> &active,
+                llvm::DenseMap<mlir::Value, StorageTrace> &memo) {
   StorageTrace trace;
   if (!value)
     return trace;
@@ -180,10 +180,9 @@ static StorageTrace traceSPMStorage(mlir::Value value, TileRegionOp owner,
 
 } // namespace
 
-mlir::OperandRange TileRegionOp::getEntrySuccessorOperands(
-    mlir::RegionBranchPoint point) {
-  assert(point == getBody() &&
-         "wafer.tile.region only enters its body region");
+mlir::OperandRange
+TileRegionOp::getEntrySuccessorOperands(mlir::RegionBranchPoint point) {
+  assert(point == getBody() && "wafer.tile.region only enters its body region");
   return getInputs();
 }
 
@@ -218,12 +217,11 @@ mlir::LogicalResult TileRegionOp::verify() {
       return emitOpError("shaped data input at index ")
              << index << " must be a Wafer DDR memref, got " << input.getType();
     llvm::DenseSet<mlir::Value> active;
-    StorageTrace trace =
-        traceSPMStorage(input, *this, active, inputTraceMemo);
+    StorageTrace trace = traceSPMStorage(input, *this, active, inputTraceMemo);
     if (!trace.valid || trace.hasSPMRoot)
       return emitOpError("shaped data input at index ")
              << index
-             << " carries SPM storage provenance across the region "
+             << " depends on SPM storage across the region "
                 "boundary";
   }
 
@@ -284,12 +282,12 @@ mlir::LogicalResult TileRegionOp::verifyRegions() {
     if (!trace.valid)
       return emitOpError("result at index ")
              << index
-             << " has unsupported SPM storage provenance; SPM results must "
+             << " has an unsupported SPM storage dependency; SPM results must "
                 "alias a matching region input or a region-owned memref.alloc";
     if (trace.hasSPMRoot)
       return emitOpError("result at index ")
              << index
-             << "cannot carry SPM storage provenance across the "
+             << "cannot depend on SPM storage across the "
                 "wafer.tile.region boundary";
   }
 

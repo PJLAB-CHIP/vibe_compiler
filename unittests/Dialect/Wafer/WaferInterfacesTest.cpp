@@ -37,7 +37,7 @@ TEST(WaferInterfacesTest, InterfaceClassesAreGenerated) {
 }
 
 TEST(WaferInterfacesTest,
-     VerifiesLongDDRRegionChainWithoutRepeatedProvenanceTraversal) {
+     VerifiesLongDDRRegionChainWithoutRepeatedStorageTraversal) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
   wafer::registerWaferCoreDialects(registry);
@@ -61,7 +61,7 @@ TEST(WaferInterfacesTest,
 
   // Explicit DDR stage splitting produces this topology: every later region
   // receives the original function boundary plus all prior spill results.
-  // Provenance is a DAG, so verification must reuse each already-derived
+  // Storage dependencies form a DAG, so verification must reuse each derived
   // value instead of recursively rewalking every path through the chain.
   llvm::SmallVector<mlir::Value, 32> priorDDRValues{entry->getArgument(0)};
   for (unsigned index = 0; index < 32; ++index) {
@@ -113,8 +113,8 @@ module {
     tileRegion = op;
   });
   ASSERT_TRUE(tileRegion);
-  auto branch = mlir::dyn_cast<mlir::RegionBranchOpInterface>(
-      tileRegion.getOperation());
+  auto branch =
+      mlir::dyn_cast<mlir::RegionBranchOpInterface>(tileRegion.getOperation());
   ASSERT_TRUE(branch);
 
   llvm::SmallVector<mlir::RegionSuccessor, 1> successors;
@@ -138,11 +138,11 @@ module {
   auto terminator = mlir::dyn_cast<mlir::RegionBranchTerminatorOpInterface>(
       yield.getOperation());
   ASSERT_TRUE(terminator);
-  ASSERT_EQ(terminator.getSuccessorOperands(
-                mlir::RegionBranchPoint::parent()).size(),
-            1u);
-  EXPECT_EQ(terminator.getSuccessorOperands(
-                mlir::RegionBranchPoint::parent()).front(),
+  ASSERT_EQ(
+      terminator.getSuccessorOperands(mlir::RegionBranchPoint::parent()).size(),
+      1u);
+  EXPECT_EQ(terminator.getSuccessorOperands(mlir::RegionBranchPoint::parent())
+                .front(),
             yield.getValues().front());
 }
 
@@ -184,8 +184,8 @@ module {
 
   auto insert = findSingleOp<wafer::MoveInsertSliceOp>(*module);
   ASSERT_TRUE(insert);
-  auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(
-      insert.getOperation());
+  auto dps =
+      mlir::dyn_cast<mlir::DestinationStyleOpInterface>(insert.getOperation());
   ASSERT_TRUE(dps);
   ASSERT_TRUE(dps.hasPureBufferSemantics());
   ASSERT_EQ(dps.getNumDpsInputs(), 1);
@@ -648,7 +648,8 @@ module {
   EXPECT_EQ(wdmaInstruction.getInstructionFamily(), wafer::InstrFamily::WDMA);
 }
 
-TEST(WaferInterfacesTest, TypedNCCSynchronizationContractsSeparateIssueAndJoin) {
+TEST(WaferInterfacesTest,
+     TypedNCCSynchronizationContractsSeparateIssueAndJoin) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);

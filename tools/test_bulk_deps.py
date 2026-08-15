@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fast closed-schema and identity tests for managed oneDNN artifacts."""
+"""Fast closed-schema and identity tests for managed oneDNN files."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from bulk_deps import (
     RECORD_KIND,
     RECORD_SCHEMA_VERSION,
     RECORD_STATUS,
-    REQUIRED_ARTIFACTS,
+    REQUIRED_FILES,
     REQUIRED_GATES,
     SNAPSHOT_KIND,
     canonical_json,
@@ -40,13 +40,13 @@ def make_fixture(root: pathlib.Path) -> tuple[pathlib.Path, dict[str, object]]:
         stream.add(source, arcname=source_top)
     versions = dict(versions)
     versions["WAFER_ONEDNN_SHA256"] = sha256_file(archive)
-    artifacts: dict[str, dict[str, object]] = {}
-    for name in sorted(REQUIRED_ARTIFACTS):
-        path = archive if name == "onednn-archive" else root / "install" / f"{name}.artifact"
+    files: dict[str, dict[str, object]] = {}
+    for name in sorted(REQUIRED_FILES):
+        path = archive if name == "onednn-archive" else root / "install" / f"{name}.file"
         if name != "onednn-archive":
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(f"managed bulk fixture: {name}\n".encode())
-        artifacts[name] = {
+        files[name] = {
             "path": path.relative_to(root).as_posix(),
             "sha256": sha256_file(path),
             "size": path.stat().st_size,
@@ -76,7 +76,7 @@ def make_fixture(root: pathlib.Path) -> tuple[pathlib.Path, dict[str, object]]:
             }
             for name in ("cmake", "c", "cxx")
         },
-        "artifacts": artifacts,
+        "artifacts": files,
         "licenses": {
             "oneDNN": {"artifact": "license", "spdx": "Apache-2.0"},
             "third-party-programs": {
@@ -125,7 +125,7 @@ class BulkDependencyRecordTest(unittest.TestCase):
 
     def test_valid_record_produces_closed_absolute_snapshot(self) -> None:
         resolved = validate_record(self.record_path, self.root, self.versions)
-        self.assertEqual(set(resolved), REQUIRED_ARTIFACTS)
+        self.assertEqual(set(resolved), REQUIRED_FILES)
         snapshot = make_snapshot(self.record_path, self.root, self.versions)
         self.assertEqual(snapshot["kind"], SNAPSHOT_KIND)
         self.assertEqual(snapshot["record_sha256"], sha256_file(self.record_path))
@@ -149,7 +149,7 @@ class BulkDependencyRecordTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "not canonical JSON"):
             validate_record(self.record_path, self.root, self.versions)
 
-    def test_changed_artifact_is_rejected(self) -> None:
+    def test_changed_file_is_rejected(self) -> None:
         entry = self.record["artifacts"]["onednn-library"]
         (self.root / entry["path"]).write_bytes(b"tampered\n")
         with self.assertRaisesRegex(RuntimeError, "identity mismatch"):

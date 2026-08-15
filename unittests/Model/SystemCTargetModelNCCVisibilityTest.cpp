@@ -1,4 +1,4 @@
-//===- SystemCTargetModelNCCVisibilityTest.cpp - NCC publication gate ----===//
+//===- SystemCTargetModelNCCVisibilityTest.cpp - NCC visibility ----------===//
 
 #include "SystemCTargetModelTestSupport.h"
 
@@ -20,18 +20,19 @@ using namespace wafer::model;
 TEST(SystemCTargetModelNCCVisibilityTest,
      RejectsLegacyDTEAutoIssueWhenNCCJoinIsAfterTheWait) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(
           diagnostics, TargetIdentityId::waferTx81SingleCard());
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
 
   // Remove production joins and put each replacement after its DTE wait. A
   // participant join after issue cannot retroactively order the transfer, so
   // the issue-time visibility gate must reject the pending NCC source write
-  // before publishing peer readiness.
+  // before making peer readiness visible.
   llvm::Expected<test::NCCJoinRewriteResult> rewrite =
-      test::rewriteNCCJoinsAfter(*bundle, TargetCallBuiltin::DirectDTEWait);
+      test::rewriteNCCJoinsAfter(*targetLLVMModules,
+                                 TargetCallBuiltin::DirectDTEWait);
   ASSERT_TRUE(static_cast<bool>(rewrite))
       << llvm::toString(rewrite.takeError());
   EXPECT_GT(rewrite->erasedJoinCount, 0u);
@@ -39,11 +40,11 @@ TEST(SystemCTargetModelNCCVisibilityTest,
   EXPECT_GT(rewrite->insertedTerminalJoinCount, 0u);
 
   llvm::Expected<test::DirectDTEInvocationData> invocation =
-      test::buildDirectDTEInvocationData(*bundle);
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, invocation->arguments);
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
 

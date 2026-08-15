@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v10.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v11.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 10 production-artifact evidence with explicit physical card, Tile, and launch-slot identity. Primary same-stream device elapsed, host submit, and host completion remain separate. The compiler publishes exact final-program static work independently from measured timing so the report can form explicitly bounded hardware peak references without guessing workload from names.",
+  "description": "Version 11 profile evidence for one compiled program with explicit physical card, Tile, and launch-slot bindings. Primary same-stream device elapsed, host submit, and host completion remain separate. Exact static work is recorded independently from measured timing so the report can form bounded hardware peak references without guessing workload from names.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema",
     "schema_version",
     "run_id",
-    "identity",
+    "program",
     "topology",
     "measurement",
     "output_validation",
@@ -23,13 +23,13 @@
       "const": "wafer.profile.evidence"
     },
     "schema_version": {
-      "const": 10
+      "const": 11
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
     },
-    "identity": {
-      "$ref": "#/$defs/sharedIdentity"
+    "program": {
+      "$ref": "#/$defs/programMetadata"
     },
     "topology": {
       "type": "array",
@@ -89,14 +89,14 @@
       "additionalProperties": false,
       "required": [
         "environment",
-        "package_companion",
+        "profile_instrumentation",
         "measurement_basis"
       ],
       "properties": {
         "environment": {
           "type": "boolean"
         },
-        "package_companion": {
+        "profile_instrumentation": {
           "type": "boolean"
         },
         "measurement_basis": {
@@ -371,12 +371,12 @@
         }
       ]
     },
-    "sharedIdentity": {
+    "programMetadata": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "production_manifest_sha256",
-        "profile_companion_schema_version",
+        "program_manifest_sha256",
+        "profile_instrumentation_schema_version",
         "target_identity",
         "launch",
         "card_count",
@@ -385,11 +385,11 @@
         "record_abi"
       ],
       "properties": {
-        "production_manifest_sha256": {
+        "program_manifest_sha256": {
           "$ref": "#/$defs/sha256"
         },
-        "profile_companion_schema_version": {
-          "const": 9
+        "profile_instrumentation_schema_version": {
+          "const": 10
         },
         "target_identity": {
           "$ref": "#/$defs/nonEmptyString"
@@ -404,7 +404,7 @@
           "const": 16
         },
         "site_correlation_basis": {
-          "const": "typed-target-call-ordinal-ssa-identity-occurrence-v2"
+          "const": "typed-target-call-ordinal-ssa-numbering-occurrence-v3"
         },
         "record_abi": {
           "const": "wafer-tx81-profiler-record-v4"
@@ -420,7 +420,7 @@
           "enum": [
             "external-expected",
             "mixed",
-            "same-session-production"
+            "same-session-primary"
           ]
         },
         "resources": {
@@ -442,7 +442,7 @@
         "bytes",
         "reference_sha256",
         "external_expected_comparison",
-        "production_execution_validated",
+        "primary_output_validated",
         "diagnostic_captures_match_primary"
       ],
       "properties": {
@@ -488,39 +488,11 @@
           "type": ["string", "null"],
           "enum": ["exact", "relaxed-f16", null]
         },
-        "production_execution_validated": {
+        "primary_output_validated": {
           "type": "boolean"
         },
         "diagnostic_captures_match_primary": {
           "type": "boolean"
-        }
-      }
-    },
-    "artifactIdentity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "digest",
-        "target_identity",
-        "launch",
-        "card_count",
-        "tile_count"
-      ],
-      "properties": {
-        "digest": {
-          "$ref": "#/$defs/sha256"
-        },
-        "target_identity": {
-          "$ref": "#/$defs/nonEmptyString"
-        },
-        "launch": {
-          "$ref": "#/$defs/runtimeLaunch"
-        },
-        "card_count": {
-          "const": 1
-        },
-        "tile_count": {
-          "const": 16
         }
       }
     },
@@ -1069,7 +1041,7 @@
         "entry_end_cycle",
         "capacity",
         "count",
-        "preflight_count",
+        "counted_event_count",
         "next_sequence",
         "dropped_event_count",
         "record_flags",
@@ -1102,7 +1074,7 @@
           "type": "integer",
           "minimum": 0
         },
-        "preflight_count": {
+        "counted_event_count": {
           "$ref": "#/$defs/u64"
         },
         "next_sequence": {
@@ -1282,16 +1254,8 @@
     "experiment": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "artifact",
-        "clock",
-        "trace",
-        "pmu"
-      ],
+      "required": ["clock", "trace", "pmu"],
       "properties": {
-        "artifact": {
-          "$ref": "#/$defs/artifactIdentity"
-        },
         "clock": {
           "type": "array",
           "minItems": 16,

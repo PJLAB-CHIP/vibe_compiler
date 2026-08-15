@@ -7,7 +7,7 @@
 
 namespace {
 
-TEST(TargetIdentityTest, CurrentArtifactIdentitiesRoundTripExactly) {
+TEST(TargetIdentityTest, CurrentTargetAndABIIdentifiersRoundTripExactly) {
   llvm::Expected<wafer::TargetIdentityId> target =
       wafer::parseTargetIdentityId("wafer-tx81-single-card");
   ASSERT_TRUE(static_cast<bool>(target));
@@ -24,7 +24,7 @@ TEST(TargetIdentityTest, CurrentArtifactIdentitiesRoundTripExactly) {
   EXPECT_EQ(wafer::kCurrentTargetModuleFormat, "elf-riscv64");
 }
 
-TEST(TargetIdentityTest, RejectsUnknownArtifactIdentities) {
+TEST(TargetIdentityTest, RejectsUnknownTargetAndABIIdentifiers) {
   llvm::Expected<wafer::TargetIdentityId> target =
       wafer::parseTargetIdentityId("unknown-target");
   ASSERT_FALSE(static_cast<bool>(target));
@@ -34,9 +34,9 @@ TEST(TargetIdentityTest, RejectsUnknownArtifactIdentities) {
   llvm::Expected<wafer::KernelRuntimeABIId> runtimeABI =
       wafer::parseKernelRuntimeABIId("unknown-runtime-abi");
   ASSERT_FALSE(static_cast<bool>(runtimeABI));
-  EXPECT_NE(llvm::toString(runtimeABI.takeError())
-                .find("unknown kernel runtime ABI"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(runtimeABI.takeError()).find("unknown kernel runtime ABI"),
+      std::string::npos);
 }
 
 } // namespace

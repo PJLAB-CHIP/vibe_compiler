@@ -10,9 +10,9 @@
 
 namespace wafer {
 
-/// Artifact-visible identity of the current Wafer target.  Compilation does
-/// not select among profiles; this value exists only so package/runtime joins
-/// remain typed and exact.
+/// Serialized identifier for the current Wafer target. Compilation does not
+/// select among profiles; this value keeps module, package, and runtime checks
+/// typed and exact.
 class TargetIdentityId {
 public:
   TargetIdentityId() = delete;
@@ -35,7 +35,7 @@ private:
   Value value;
 };
 
-/// Artifact-visible identity of the one current worker-aware kernel ABI.
+/// Serialized identifier for the current worker-aware kernel ABI.
 class KernelRuntimeABIId {
 public:
   KernelRuntimeABIId() = delete;
@@ -64,8 +64,7 @@ inline constexpr TargetIdentityId kCurrentTargetIdentity =
     TargetIdentityId::waferTx81SingleCard();
 inline constexpr KernelRuntimeABIId kCurrentKernelRuntimeABI =
     KernelRuntimeABIId::waferTx81Kernel();
-inline constexpr llvm::StringLiteral kCurrentTargetModuleFormat =
-    "elf-riscv64";
+inline constexpr llvm::StringLiteral kCurrentTargetModuleFormat = "elf-riscv64";
 
 llvm::Expected<TargetIdentityId>
 parseTargetIdentityId(llvm::StringRef canonicalSpelling);

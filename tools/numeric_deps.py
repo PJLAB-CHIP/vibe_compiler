@@ -64,7 +64,7 @@ LINKAGE_POLICY = {
     "mpfr": "shared-only",
 }
 
-REQUIRED_ARTIFACTS = {
+REQUIRED_FILES = {
     "m4",
     "softfloat",
     "softfloat-header",
@@ -155,10 +155,10 @@ class ValidatedNumericRecord:
     record_sha256: str
     root: pathlib.Path
     record_path: pathlib.Path
-    artifacts: dict[str, pathlib.Path]
+    files: dict[str, pathlib.Path]
 
     def cmake_snapshot(self) -> dict[str, Any]:
-        artifact_records = self.record["artifacts"]
+        file_records = self.record["artifacts"]
         return {
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "kind": SNAPSHOT_KIND,
@@ -168,9 +168,9 @@ class ValidatedNumericRecord:
             "artifacts": {
                 name: {
                     **identity,
-                    "path": self.artifacts[name].as_posix(),
+                    "path": self.files[name].as_posix(),
                 }
-                for name, identity in sorted(artifact_records.items())
+                for name, identity in sorted(file_records.items())
             },
         }
 
@@ -1019,7 +1019,7 @@ def elf_identity(
     }
 
 
-def artifact_identity(
+def file_identity(
     root: pathlib.Path,
     path: pathlib.Path,
     *,
@@ -1030,7 +1030,7 @@ def artifact_identity(
     elf = elf_identity(path, readelf)
     after = _regular_file_snapshot(path)
     if before != after:
-        raise RuntimeError(f"numeric artifact changed during identity capture: {path}")
+        raise RuntimeError(f"numeric file changed during identity capture: {path}")
     return {
         "path": relative,
         **before,
@@ -1059,19 +1059,19 @@ def atomic_write_json(path: pathlib.Path, value: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def publish_file_noreplace(candidate: pathlib.Path, destination: pathlib.Path) -> None:
+def install_file_noreplace(candidate: pathlib.Path, destination: pathlib.Path) -> None:
     candidate = reject_symlink_ancestors(candidate)
     destination = _absolute_path(destination)
     reject_symlink_ancestors(destination, allow_missing=True)
     if destination.exists():
         raise RuntimeError(
-            f"managed numeric dependency record is already published: {destination}"
+            f"managed numeric dependency record already exists: {destination}"
         )
     try:
         os.link(candidate, destination, follow_symlinks=False)
     except FileExistsError as error:
         raise RuntimeError(
-            f"managed numeric dependency record was concurrently published: {destination}"
+            f"managed numeric dependency record was concurrently installed: {destination}"
         ) from error
     os.chmod(destination, 0o444)
     candidate.unlink()
@@ -1188,7 +1188,7 @@ def _validate_toolchain(value: Any) -> dict[str, Any]:
     return {"policy": TOOLCHAIN_POLICY, "tools": validated}
 
 
-def _validate_artifact(
+def _validate_file(
     root: pathlib.Path,
     value: Any,
     label: str,
@@ -1211,7 +1211,7 @@ def _validate_artifact(
     if value["elf"] is not None and not isinstance(value["elf"], dict):
         raise RuntimeError(f"{label}.elf must be an object or null")
     path = resolve_managed_path(root, value["path"], regular_file=True)
-    actual = artifact_identity(root, path, readelf=readelf)
+    actual = file_identity(root, path, readelf=readelf)
     if value != actual:
         raise RuntimeError(f"{label} identity mismatch: {path}")
     return path
@@ -1351,17 +1351,17 @@ def validate_numeric_record_snapshot(
         raise RuntimeError("numeric dependency effective environment identity mismatch")
     readelf = pathlib.Path(_tool_path(toolchain, "readelf"))
 
-    artifacts = record["artifacts"]
-    if not isinstance(artifacts, dict):
-        raise RuntimeError("numeric dependency artifacts must be an object")
-    _require_exact_keys(artifacts, REQUIRED_ARTIFACTS, "numeric dependency artifacts")
-    artifact_paths = {
-        name: _validate_artifact(
-            root, value, f"numeric artifact {name}", readelf=readelf
+    files = record["artifacts"]
+    if not isinstance(files, dict):
+        raise RuntimeError("numeric dependency files must be an object")
+    _require_exact_keys(files, REQUIRED_FILES, "numeric dependency files")
+    file_paths = {
+        name: _validate_file(
+            root, value, f"numeric file {name}", readelf=readelf
         )
-        for name, value in artifacts.items()
+        for name, value in files.items()
     }
-    expected_artifact_paths = {
+    expected_file_paths = {
         "m4": "install/m4/bin/m4",
         "softfloat": "install/softfloat/lib/libsoftfloat.a",
         "softfloat-header": "install/softfloat/include/softfloat.h",
@@ -1378,22 +1378,22 @@ def validate_numeric_record_snapshot(
             for name in LICENSE_SOURCE_FILES
         },
     }
-    for name, expected_relative in expected_artifact_paths.items():
-        if artifacts[name]["path"] != expected_relative:
-            raise RuntimeError(f"numeric artifact path mismatch for {name}")
+    for name, expected_relative in expected_file_paths.items():
+        if files[name]["path"] != expected_relative:
+            raise RuntimeError(f"numeric file path mismatch for {name}")
     for executable_name in ("m4", "testsoftfloat"):
-        if artifacts[executable_name]["mode"] & 0o111 == 0:
-            raise RuntimeError(f"numeric artifact is not executable: {executable_name}")
-    if artifact_paths["softfloat"].suffix != ".a":
+        if files[executable_name]["mode"] & 0o111 == 0:
+            raise RuntimeError(f"numeric file is not executable: {executable_name}")
+    if file_paths["softfloat"].suffix != ".a":
         raise RuntimeError("SoftFloat must be a managed static archive")
-    if ".so." not in artifact_paths["gmp"].name or ".so." not in artifact_paths["mpfr"].name:
+    if ".so." not in file_paths["gmp"].name or ".so." not in file_paths["mpfr"].name:
         raise RuntimeError("GMP and MPFR must identify real versioned shared objects")
     for name in ("gmp", "mpfr"):
-        soname = artifact_paths[f"{name}-soname"]
-        library = artifact_paths[name]
-        elf = artifacts[name]["elf"]
+        soname = file_paths[f"{name}-soname"]
+        library = file_paths[name]
+        elf = files[name]["elf"]
         if not isinstance(elf, dict) or elf.get("type") != "DYN":
-            raise RuntimeError(f"{name} artifact is not a shared ELF object")
+            raise RuntimeError(f"{name} file is not a shared ELF object")
         expected_elf_keys = {
             "class",
             "byte_order",
@@ -1415,18 +1415,18 @@ def validate_numeric_record_snapshot(
         ):
             raise RuntimeError(f"{name} shared object has an invalid SONAME")
         if soname == library or soname.name != elf["soname"]:
-            raise RuntimeError(f"{name} loader-facing SONAME artifact is invalid")
-        if artifacts[f"{name}-soname"]["sha256"] != artifacts[name]["sha256"]:
-            raise RuntimeError(f"{name} SONAME artifact does not match its real library")
-        if artifacts[f"{name}-soname"]["elf"] != elf:
+            raise RuntimeError(f"{name} loader-facing SONAME file is invalid")
+        if files[f"{name}-soname"]["sha256"] != files[name]["sha256"]:
+            raise RuntimeError(f"{name} SONAME file does not match its real library")
+        if files[f"{name}-soname"]["elf"] != elf:
             raise RuntimeError(f"{name} SONAME ELF identity does not match its real library")
-    gmp_soname = artifacts["gmp"]["elf"]["soname"]
-    if gmp_soname not in artifacts["mpfr"]["elf"]["needed"]:
+    gmp_soname = files["gmp"]["elf"]["soname"]
+    if gmp_soname not in files["mpfr"]["elf"]["needed"]:
         raise RuntimeError("MPFR ELF identity does not name the managed GMP SONAME")
     expected_gmp_runtime_path = (root / "install/gmp/lib").as_posix()
     mpfr_runtime_paths = [
-        *artifacts["mpfr"]["elf"]["rpath"],
-        *artifacts["mpfr"]["elf"]["runpath"],
+        *files["mpfr"]["elf"]["rpath"],
+        *files["mpfr"]["elf"]["runpath"],
     ]
     if mpfr_runtime_paths != [expected_gmp_runtime_path]:
         raise RuntimeError("MPFR ELF runtime path does not exactly name managed GMP")
@@ -1435,29 +1435,29 @@ def validate_numeric_record_snapshot(
     if not isinstance(licenses, dict):
         raise RuntimeError("numeric dependency licenses must be an object")
     _require_exact_keys(licenses, set(LICENSE_SOURCE_FILES), "numeric licenses")
-    for artifact_name, (dependency, source_relative) in LICENSE_SOURCE_FILES.items():
-        value = licenses[artifact_name]
+    for file_name, (dependency, source_relative) in LICENSE_SOURCE_FILES.items():
+        value = licenses[file_name]
         if not isinstance(value, dict):
-            raise RuntimeError(f"numeric license {artifact_name} must be an object")
+            raise RuntimeError(f"numeric license {file_name} must be an object")
         _require_exact_keys(
             value,
             {"dependency", "source", "artifact", "sha256"},
-            f"numeric license {artifact_name}",
+            f"numeric license {file_name}",
         )
         expected_source = (
             f"sources/{pins[dependency].source_directory}/{source_relative}"
         )
         if value["dependency"] != dependency or value["source"] != expected_source:
-            raise RuntimeError(f"numeric license source mismatch for {artifact_name}")
-        if value["artifact"] != artifact_name:
-            raise RuntimeError(f"numeric license artifact mismatch for {artifact_name}")
-        _require_sha256(value["sha256"], f"numeric license {artifact_name}.sha256")
+            raise RuntimeError(f"numeric license source mismatch for {file_name}")
+        if value["artifact"] != file_name:
+            raise RuntimeError(f"numeric license file mismatch for {file_name}")
+        _require_sha256(value["sha256"], f"numeric license {file_name}.sha256")
         source = resolve_managed_path(root, expected_source, regular_file=True)
         source_digest = sha256_file(source)
         if value["sha256"] != source_digest:
-            raise RuntimeError(f"numeric license source digest mismatch for {artifact_name}")
-        if artifacts[artifact_name]["sha256"] != source_digest:
-            raise RuntimeError(f"numeric license copy mismatch for {artifact_name}")
+            raise RuntimeError(f"numeric license source digest mismatch for {file_name}")
+        if files[file_name]["sha256"] != source_digest:
+            raise RuntimeError(f"numeric license copy mismatch for {file_name}")
 
     conformance = record["conformance"]
     if not isinstance(conformance, dict):
@@ -1491,7 +1491,7 @@ def validate_numeric_record_snapshot(
                 )
         if _require_int(gate["exit_code"], f"numeric gate {name}.exit_code") != 0:
             raise RuntimeError(f"numeric conformance gate {name} did not pass")
-        log = _validate_artifact(
+        log = _validate_file(
             root,
             gate["log"],
             f"numeric conformance log {name}",
@@ -1513,7 +1513,7 @@ def validate_numeric_record_snapshot(
         record_sha256=record_file_identity["sha256"],
         root=root,
         record_path=record_path,
-        artifacts=artifact_paths,
+        files=file_paths,
     )
 
 

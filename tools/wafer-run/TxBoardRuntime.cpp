@@ -446,9 +446,9 @@ public:
       return poisonContractViolation(
           "txModuleLoad returned success with a null module");
     uintptr_t handle = reinterpret_cast<uintptr_t>(module);
-    auto iterator = moduleOwnership.find(handle);
-    if (iterator == moduleOwnership.end()) {
-      moduleOwnership.emplace(handle, ModuleOwnership{std::move(digest), 1});
+    auto iterator = loadedModules.find(handle);
+    if (iterator == loadedModules.end()) {
+      loadedModules.emplace(handle, LoadedModuleState{std::move(digest), 1});
     } else {
       if (iterator->second.digest != digest)
         return poisonContractViolation(
@@ -468,8 +468,8 @@ public:
     if (!api.moduleUnload)
       return llvm::createStringError(llvm::errc::invalid_argument,
                                      "TX module unloading is unavailable");
-    auto iterator = moduleOwnership.find(module.value);
-    if (iterator == moduleOwnership.end())
+    auto iterator = loadedModules.find(module.value);
+    if (iterator == loadedModules.end())
       return poisonContractViolation(
           "TX module ownership is missing during unload");
     if (iterator->second.referenceCount > 1) {
@@ -480,7 +480,7 @@ public:
             check("txModuleUnload",
                   api.moduleUnload(reinterpret_cast<txModule_t>(module.value))))
       return error;
-    moduleOwnership.erase(iterator);
+    loadedModules.erase(iterator);
     return llvm::Error::success();
   }
 
@@ -513,7 +513,7 @@ public:
     if (!api.loadGraph)
       return llvm::createStringError(llvm::errc::invalid_argument,
                                      "TX graph loading is unavailable");
-    if (!graphs.empty() || symbol.empty() || symbol.size() >= 128 ||
+    if (!loadedGraphs.empty() || symbol.empty() || symbol.size() >= 128 ||
         symbol.contains('\0'))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
@@ -536,10 +536,10 @@ public:
       return poisonContractViolation("TX graph handle identity overflowed");
     std::string moduleName =
         std::to_string(std::hash<std::string>{}(staged->providerPath));
-    graphs.emplace(handle,
-                   GraphOwnership{std::move(staged->root),
-                                  std::move(staged->providerPath),
-                                  std::move(moduleName), staged->descriptor});
+    loadedGraphs.emplace(
+        handle, LoadedGraphResources{
+                    std::move(staged->root), std::move(staged->providerPath),
+                    std::move(moduleName), staged->descriptor});
     return BoardGraphHandle{handle};
   }
 
@@ -552,8 +552,8 @@ public:
     if (submissionActive)
       return poisonContractViolation(
           "TX graph unload was requested with a live submission");
-    auto iterator = graphs.find(graph.value);
-    if (iterator == graphs.end())
+    auto iterator = loadedGraphs.find(graph.value);
+    if (iterator == loadedGraphs.end())
       return poisonContractViolation("TX graph ownership is missing");
     txError_t status = api.unloadGraph(iterator->second.providerPath.c_str());
     if (status != TX_SUCCESS)
@@ -561,7 +561,7 @@ public:
 
     std::string stagingRoot = std::move(iterator->second.stagingRoot);
     int descriptor = iterator->second.directoryDescriptor;
-    graphs.erase(iterator);
+    loadedGraphs.erase(iterator);
     if (descriptor >= 0 && ::close(descriptor) != 0)
       return llvm::createStringError(
           std::error_code(errno, std::generic_category()),
@@ -731,8 +731,8 @@ public:
         timingStartEvent || timingEndEvent)
       return poisonContractViolation(
           "TX model provider already owns submission state");
-    auto graphIterator = graphs.find(graph.value);
-    if (graphIterator == graphs.end())
+    auto graphIterator = loadedGraphs.find(graph.value);
+    if (graphIterator == loadedGraphs.end())
       return poisonContractViolation("TX model graph ownership is missing");
 
     std::vector<Tx81ModelTensorDescriptor> descriptors;
@@ -1136,11 +1136,11 @@ private:
   }
 
   BoardRuntimeContextState contextState = BoardRuntimeContextState::Usable;
-  struct ModuleOwnership {
+  struct LoadedModuleState {
     std::string digest;
     uint64_t referenceCount = 0;
   };
-  struct GraphOwnership {
+  struct LoadedGraphResources {
     std::string stagingRoot;
     std::string providerPath;
     std::string moduleName;
@@ -1150,8 +1150,8 @@ private:
   TxApi api;
   std::string runtimeLibraryDigest;
   RuntimeEnvironment providerEnvironment;
-  std::unordered_map<uintptr_t, ModuleOwnership> moduleOwnership;
-  std::unordered_map<uintptr_t, GraphOwnership> graphs;
+  std::unordered_map<uintptr_t, LoadedModuleState> loadedModules;
+  std::unordered_map<uintptr_t, LoadedGraphResources> loadedGraphs;
   uintptr_t nextGraphHandle = 1;
   std::vector<txStream_t> activeStreams;
   std::vector<bool> completedStreams;

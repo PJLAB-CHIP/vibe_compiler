@@ -1188,7 +1188,7 @@ spatial mapping或package ABI；current合同使用显式card/Tile/launch-slot�
   未执行depth+1，queue-full blocking/return仍未知。
 - 全零input曾让RDMA oracle假通过。非零payload经RDMA/local drain/WDMA写回host完整exact，而Kcore直接读取同一
   cacheable DDR input会命中旧cache；对读取range执行machine `dcache.ipa`或supervisor `dcache.iva`后恢复exact。
-  这证明cache invalidate、NCC drain和host publication是不同机制。
+  这证明cache invalidate、NCC drain和host visibility是不同机制。
 - 16-rank正向case确认local drain足以发布NCC产生的DTE source，receiver wait足以让后续NCC消费DTE destination；
   两者仍不可互换。Direct DTE没有与NCC PMU共用的cycle timer，故此证据只闭合completion/visibility。
 
@@ -1322,7 +1322,7 @@ x86 `libtx8_runtime.so`还暴露另一条、与上述packet seam不同的高层C
 `libhpgr.so`已完成独立静态审计，但它不补齐CModel seam。现有`libtx8_runtime.so`只证明`dlsym`结果被存入字段且library handle
 会被`dlclose`，没有证明普通launch路径读取/调用这些字段。故CModel线索是vendor
 CModel存在的强线索，不是当前可运行
-provider，也不能证明内部使用SystemC或可消费Q17/Q18 artifact。完整模型设计和vendor索取边界见`tasks/17`。
+provider，也不能证明内部使用SystemC或可消费Q17/Q18 target modules/package。完整模型设计和vendor索取边界见`tasks/17`。
 
 Device bootparam head:
 
@@ -1386,15 +1386,15 @@ entry并把原始BootParam head作为唯一entry参数。V5.6随包module在one-
 
 这些结构是qualified V5.6 binary、随包device module和两个legacy builder交叉得到的exact-build ABI证据，不是公开稳定wire。
 Wafer唯一current schema-v8以顶层`kind=model`和nested `entry_abi=tx81-model-bootparam`
-（该model BootParam ABI最初在schema-v4引入，schema-v6只保留为历史publication evidence）表达此路径；它现已由typed graph artifact、ordinal verifier、checked allocation/lifetime、module identity、
-artifact export/readback和fake provider共同拥有，并已在限定V5.6/full-good设备完成两轮type-6/type-7 Add完整exact gate；该gate只形成
+（该model BootParam ABI最初在schema-v4引入，schema-v6只保留为历史format evidence）表达此路径；它现已由typed graph record、ordinal verifier、checked allocation/lifetime、module identity、
+module export/readback和fake provider共同拥有，并已在限定V5.6/full-good设备完成两轮type-6/type-7 Add完整exact gate；该gate只形成
 logical tile `0..15`执行依据，不声明physical coordinate。该wire不能成为opaque payload sidecar，也不能静默解释kernel launch。
 
 ## 硬件证据成熟度
 
 本表只按wrapper/register/board证据成熟度分类，不声明production lowering surface，也不跟踪实现状态。
 当前instruction family、command ABI、CRT closure和完成gate分别见
-[tasks/11](../tasks/11-instruction-ir.md)、[tasks/14](../tasks/14-target-conversion-module-publication.md)与
+[tasks/11](../tasks/11-instruction-ir.md)、[tasks/14](../tasks/14-target-code-generation.md)与
 [tasks/progress.md](../tasks/progress.md)。
 
 | 证据层 | 静态可见能力 | 不能推出的结论 |
@@ -1419,7 +1419,7 @@ logical tile `0..15`执行依据，不声明physical coordinate。该wire不能�
 | wrapper 调用样例 | `TsmConv` | Tx81 CRT有Conv wrapper组合样例；`__Conv`的psum format和activation默认行为不可靠 | 只作调用反例；production Conv profile见`tasks/11`/`tasks/14` |
 | native wrapper | `TsmPool`、`TsmUnPool` | pool/unpool wrapper header存在 | 只证明wrapper存在；当前closure和gate状态看[tasks/progress.md](../tasks/progress.md) |
 | native wrapper | `TsmDataMove::{Mirror, Transpose, Rotate90/180/270, Nchw2nhwc, Nhwc2nchw, Pad, Img2col, TensorNom}` | public wrapper/header暴露能力，CRT只有少量样例 | 不等于 production 合法；具体 materialization/diagnostic 见 `tasks/08`/`tasks/11`/`tasks/14` |
-| native wrapper | `TsmPeripheral::{Count, ArgMax, ArgMin, Bilinear, Lut16, Lut32, RandGen, Factorize, ElemMask}` | public wrapper/header暴露能力，CRT只有少量样例 | 只列证据面；production instruction/closure状态见[tasks/11](../tasks/11-instruction-ir.md)、[tasks/14](../tasks/14-target-conversion-module-publication.md)与[tasks/progress.md](../tasks/progress.md) |
+| native wrapper | `TsmPeripheral::{Count, ArgMax, ArgMin, Bilinear, Lut16, Lut32, RandGen, Factorize, ElemMask}` | public wrapper/header暴露能力，CRT只有少量样例 | 只列证据面；production instruction/closure状态见[tasks/11](../tasks/11-instruction-ir.md)、[tasks/14](../tasks/14-target-code-generation.md)与[tasks/progress.md](../tasks/progress.md) |
 | transport evidence gap | Direct DTE / raw DTE non-unicast | Tx81 CRT只展示unicast；public `DirectDTESendInfo`没有`dst[32]`、`user_id[32]`、`dest_num` | 不能证明runtime可配置non-unicast新协议；transport binding与command ABI只看`tasks/13`/`tasks/14` |
 | legacy helper evidence | `TsmStream::{OnlineStream, OfflineStream, WaitStream, ReqStream, PushStream, PopStream, wait_finish}` | CRT send路径存在stream对象 | 只证明该snapshot存在stream helper，不决定Wafer production transport或长期采用方式 |
 

@@ -1,8 +1,8 @@
 //===- TargetABIPreparation.cpp - Physical-Tile ABI preparation --------===//
 
-#include "TargetArtifactInternal.h"
+#include "TargetCodeGenInternal.h"
 
-#include "AcceptedCallClosure.h"
+#include "ExecutableCallClosure.h"
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/Analysis/SingleExecutionRegionFlow.h"
@@ -26,8 +26,7 @@
 namespace wafer::compiler::detail {
 
 PreparedPhysicalTile::PreparedPhysicalTile(
-    const ExecutionConfig &executionConfig,
-    bool transportPreparedBeforeEntry)
+    const ExecutionConfig &executionConfig, bool transportPreparedBeforeEntry)
     : targetIdentity(executionConfig.getTargetIdentityId()),
       transportPreparedBeforeEntry(transportPreparedBeforeEntry),
       kernelRuntimeABI(KernelRuntimeABIId::waferTx81Kernel()),
@@ -146,7 +145,7 @@ prepareTargetABI(const PhysicalTileExecutable &tileExecutable,
   const int64_t defaultDDRAlignment =
       getDefaultWaferTargetPolicy().memory.ddrAlignmentBytes;
 
-  llvm::Expected<AcceptedCallClosure> closure = analyzeAcceptedCallClosure(
+  llvm::Expected<ExecutableCallClosure> closure = analyzeExecutableCallClosure(
       *prepared.module, tileExecutable.getEntrySymbol());
   if (!closure) {
     prepared.module->emitError()
@@ -160,7 +159,7 @@ prepareTargetABI(const PhysicalTileExecutable &tileExecutable,
   std::vector<const ProgramResourceBinding *> argumentBindings(
       originalArgumentCount, nullptr);
   std::vector<const ProgramResourceBinding *> outputBindings(resultCount,
-                                                              nullptr);
+                                                             nullptr);
   for (const ProgramResourceBinding &binding :
        tileExecutable.getProgramBindings()) {
     std::vector<const ProgramResourceBinding *> &domain =

@@ -25,18 +25,16 @@ using namespace wafer::model;
 TEST(SystemCTargetModelDTEPreIssueTest,
      SendPrepareAloneCannotEstablishTransportEffect) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(
           diagnostics, TargetIdentityId::waferTx81SingleCard());
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
 
   const llvm::StringRef issueSymbol =
-      getTargetCallDescriptor(
-          TargetCallBuiltin::DirectDTESendIssue)
-          .symbol;
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue).symbol;
   size_t erasedIssueCount = 0;
-  for (const TargetLLVMModule &targetModule : bundle->getModules()) {
+  for (const TargetLLVMModule &targetModule : targetLLVMModules->getModules()) {
     llvm::Module &module = const_cast<llvm::Module &>(targetModule.getModule());
     llvm::SmallVector<llvm::CallInst *, 4> issueCalls;
     for (llvm::Function &function : module)
@@ -53,11 +51,11 @@ TEST(SystemCTargetModelDTEPreIssueTest,
   EXPECT_GT(erasedIssueCount, 0u);
 
   llvm::Expected<test::DirectDTEInvocationData> invocation =
-      test::buildDirectDTEInvocationData(*bundle);
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, invocation->arguments);
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
 

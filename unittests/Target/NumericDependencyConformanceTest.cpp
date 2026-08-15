@@ -28,10 +28,10 @@ namespace {
 
 using wafer::NumericDependencyConformanceErrorCode;
 using wafer::NumericDependencyConformanceRecord;
-using wafer::NumericDependencyExecutionIdentity;
-using wafer::NumericLoadedObjectIdentity;
-using wafer::NumericLoadedObjectIdentityProvider;
+using wafer::NumericDependencyExecutionBinding;
+using wafer::NumericLoadedObject;
 using wafer::NumericLoadedObjectKind;
+using wafer::NumericLoadedObjectProvider;
 
 std::string digestBytes(llvm::StringRef bytes) {
   llvm::SHA256 hasher;
@@ -64,21 +64,19 @@ void expectError(llvm::Expected<T> result,
   EXPECT_TRUE(handled);
 }
 
-class StaticLoadedObjectProvider final
-    : public NumericLoadedObjectIdentityProvider {
+class StaticLoadedObjectProvider final : public NumericLoadedObjectProvider {
 public:
-  StaticLoadedObjectProvider(NumericLoadedObjectIdentity mpfr,
-                             NumericLoadedObjectIdentity gmp)
+  StaticLoadedObjectProvider(NumericLoadedObject mpfr, NumericLoadedObject gmp)
       : mpfr(std::move(mpfr)), gmp(std::move(gmp)) {}
 
-  llvm::Expected<NumericLoadedObjectIdentity>
-  identify(NumericLoadedObjectKind kind) const override {
+  llvm::Expected<NumericLoadedObject>
+  getLoadedObject(NumericLoadedObjectKind kind) const override {
     return kind == NumericLoadedObjectKind::MPFR ? mpfr : gmp;
   }
 
 private:
-  NumericLoadedObjectIdentity mpfr;
-  NumericLoadedObjectIdentity gmp;
+  NumericLoadedObject mpfr;
+  NumericLoadedObject gmp;
 };
 
 class NumericDependencyConformanceTest : public testing::Test {
@@ -160,19 +158,19 @@ protected:
         << (parsed ? std::string() : llvm::toString(parsed.takeError()));
     record = std::move(*parsed);
     recordDigest = digestBytes((*buffer)->getBuffer());
-    artifactPaths.clear();
-    artifactDigests.clear();
-    llvm::json::Object *artifacts = top().getObject("artifacts");
-    ASSERT_NE(artifacts, nullptr);
-    for (auto &entry : *artifacts) {
-      llvm::json::Object *identity = entry.second.getAsObject();
-      ASSERT_NE(identity, nullptr);
-      std::optional<llvm::StringRef> relative = identity->getString("path");
-      std::optional<llvm::StringRef> digest = identity->getString("sha256");
+    filePaths.clear();
+    fileDigests.clear();
+    llvm::json::Object *fileEntries = top().getObject("artifacts");
+    ASSERT_NE(fileEntries, nullptr);
+    for (auto &entry : *fileEntries) {
+      llvm::json::Object *fileRecord = entry.second.getAsObject();
+      ASSERT_NE(fileRecord, nullptr);
+      std::optional<llvm::StringRef> relative = fileRecord->getString("path");
+      std::optional<llvm::StringRef> digest = fileRecord->getString("sha256");
       ASSERT_TRUE(relative.has_value());
       ASSERT_TRUE(digest.has_value());
-      artifactPaths[entry.first.str()] = path(*relative);
-      artifactDigests[entry.first.str()] = digest->str();
+      filePaths[entry.first.str()] = path(*relative);
+      fileDigests[entry.first.str()] = digest->str();
     }
   }
 
@@ -195,18 +193,18 @@ protected:
 
   llvm::json::Object &top() { return *record.getAsObject(); }
 
-  llvm::json::Object &artifact(llvm::StringRef name) {
-    llvm::json::Object *artifacts = top().getObject("artifacts");
-    EXPECT_NE(artifacts, nullptr);
-    llvm::json::Object *identity = artifacts->getObject(name);
-    EXPECT_NE(identity, nullptr);
-    return *identity;
+  llvm::json::Object &fileRecord(llvm::StringRef name) {
+    llvm::json::Object *fileEntries = top().getObject("artifacts");
+    EXPECT_NE(fileEntries, nullptr);
+    llvm::json::Object *record = fileEntries->getObject(name);
+    EXPECT_NE(record, nullptr);
+    return *record;
   }
 
   llvm::json::Object &build() {
-    llvm::json::Object *identity = top().getObject("build");
-    EXPECT_NE(identity, nullptr);
-    return *identity;
+    llvm::json::Object *buildConfig = top().getObject("build");
+    EXPECT_NE(buildConfig, nullptr);
+    return *buildConfig;
   }
 
   llvm::json::Array &gates() {
@@ -243,8 +241,8 @@ protected:
   std::string recordPath;
   llvm::json::Value record = nullptr;
   std::string recordDigest;
-  std::map<std::string, std::string> artifactPaths;
-  std::map<std::string, std::string> artifactDigests;
+  std::map<std::string, std::string> filePaths;
+  std::map<std::string, std::string> fileDigests;
 };
 
 TEST_F(NumericDependencyConformanceTest,
@@ -255,13 +253,13 @@ TEST_F(NumericDependencyConformanceTest,
       << (parsed ? std::string() : llvm::toString(parsed.takeError()));
   EXPECT_EQ(parsed->getSchemaVersion(), 2u);
   EXPECT_EQ(parsed->getSources().size(), 5u);
-  EXPECT_EQ(parsed->getArtifacts().size(), 20u);
+  EXPECT_EQ(parsed->getFiles().size(), 20u);
   EXPECT_EQ(parsed->getTools().size(), 10u);
   EXPECT_EQ(parsed->getEnvironments().size(), 4u);
   EXPECT_EQ(parsed->getLicenses().size(), 9u);
   EXPECT_EQ(parsed->getGates().size(), 23u);
 
-  const wafer::NumericDependencyEnvironmentIdentity *base =
+  const wafer::NumericDependencyEnvironmentRecord *base =
       parsed->findEnvironment("base");
   ASSERT_NE(base, nullptr);
   EXPECT_NE(llvm::find_if(base->variables,
@@ -278,16 +276,15 @@ TEST_F(NumericDependencyConformanceTest,
             base->variables.end());
 
   StaticLoadedObjectProvider provider(
-      {NumericLoadedObjectKind::MPFR, artifactPaths["mpfr-soname"],
-       artifactDigests["mpfr-soname"]},
-      {NumericLoadedObjectKind::GMP, artifactPaths["gmp"],
-       artifactDigests["gmp"]});
-  llvm::Expected<NumericDependencyExecutionIdentity> execution =
-      wafer::verifyNumericDependencyExecutionIdentity(*parsed, provider);
+      {NumericLoadedObjectKind::MPFR, filePaths["mpfr-soname"],
+       fileDigests["mpfr-soname"]},
+      {NumericLoadedObjectKind::GMP, filePaths["gmp"], fileDigests["gmp"]});
+  llvm::Expected<NumericDependencyExecutionBinding> execution =
+      wafer::bindNumericDependenciesToLoadedObjects(*parsed, provider);
   ASSERT_TRUE(static_cast<bool>(execution))
       << (execution ? std::string() : llvm::toString(execution.takeError()));
   EXPECT_EQ(execution->getRecordSHA256(), recordDigest);
-  EXPECT_EQ(execution->getProvenanceSHA256().size(), 64u);
+  EXPECT_EQ(execution->getBindingSHA256().size(), 64u);
 }
 
 TEST_F(NumericDependencyConformanceTest, RejectsRecordDigestMismatch) {
@@ -295,7 +292,7 @@ TEST_F(NumericDependencyConformanceTest, RejectsRecordDigestMismatch) {
               NumericDependencyConformanceErrorCode::RecordDigestMismatch);
 }
 
-TEST_F(NumericDependencyConformanceTest, RejectsTamperedArtifactHash) {
+TEST_F(NumericDependencyConformanceTest, RejectsTamperedFileHash) {
   tamperFileWithoutChangingSize("install/softfloat/lib/libsoftfloat.a");
   expectError(read(recordDigest),
               NumericDependencyConformanceErrorCode::DigestMismatch);
@@ -307,24 +304,24 @@ TEST_F(NumericDependencyConformanceTest, RejectsTamperedSourceTree) {
               NumericDependencyConformanceErrorCode::SourceTreeMismatch);
 }
 
-TEST_F(NumericDependencyConformanceTest, RejectsEscapingArtifactPath) {
-  artifact("m4")["path"] = "../outside";
+TEST_F(NumericDependencyConformanceTest, RejectsEscapingFilePath) {
+  fileRecord("m4")["path"] = "../outside";
   expectError(read(writeRecord()),
               NumericDependencyConformanceErrorCode::UnsafePath);
 }
 
-TEST_F(NumericDependencyConformanceTest, RejectsMisplacedManagedArtifact) {
+TEST_F(NumericDependencyConformanceTest, RejectsMisplacedManagedFile) {
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
       llvm::MemoryBuffer::getFile(path("install/m4/bin/m4"), /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
   ASSERT_TRUE(static_cast<bool>(buffer));
   writeFile("install/m4/bin/m4-copy", (*buffer)->getBuffer(), 0755);
-  artifact("m4")["path"] = "install/m4/bin/m4-copy";
+  fileRecord("m4")["path"] = "install/m4/bin/m4-copy";
   expectError(read(writeRecord()),
               NumericDependencyConformanceErrorCode::PolicyMismatch);
 }
 
-TEST_F(NumericDependencyConformanceTest, RejectsSymlinkArtifact) {
+TEST_F(NumericDependencyConformanceTest, RejectsSymlinkFile) {
   const std::string original = path("install/m4/bin/m4");
   const std::string backing = path("install/m4/bin/m4-backing");
   ASSERT_FALSE(llvm::sys::fs::rename(original, backing));
@@ -379,9 +376,9 @@ TEST_F(NumericDependencyConformanceTest, RejectsBooleanIntegerFields) {
 }
 
 TEST_F(NumericDependencyConformanceTest,
-       RejectsELFIdentityChangeEvenWhenPairsRemainCoherent) {
+       RejectsELFMetadataChangeEvenWhenPairsRemainCoherent) {
   for (llvm::StringRef name : {"mpfr", "mpfr-soname"}) {
-    llvm::json::Object *elf = artifact(name).getObject("elf");
+    llvm::json::Object *elf = fileRecord(name).getObject("elf");
     ASSERT_NE(elf, nullptr);
     (*elf)["machine"] = "tampered-machine";
   }
@@ -389,7 +386,7 @@ TEST_F(NumericDependencyConformanceTest,
               NumericDependencyConformanceErrorCode::PolicyMismatch);
 }
 
-TEST_F(NumericDependencyConformanceTest, RejectsToolVersionIdentityChange) {
+TEST_F(NumericDependencyConformanceTest, RejectsToolVersionChange) {
   llvm::json::Object *toolchain = build().getObject("toolchain");
   ASSERT_NE(toolchain, nullptr);
   llvm::json::Object *tools = toolchain->getObject("tools");
@@ -423,27 +420,27 @@ TEST_F(NumericDependencyConformanceTest, RejectsGateContractChange) {
 }
 
 TEST_F(NumericDependencyConformanceTest, RejectsMisplacedGateLog) {
-  llvm::json::Object &identity = *gate("m4-build").getObject("log");
-  std::optional<llvm::StringRef> oldPath = identity.getString("path");
+  llvm::json::Object &logRecord = *gate("m4-build").getObject("log");
+  std::optional<llvm::StringRef> oldPath = logRecord.getString("path");
   ASSERT_TRUE(oldPath.has_value());
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
       llvm::MemoryBuffer::getFile(path(*oldPath), /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
   ASSERT_TRUE(static_cast<bool>(buffer));
   writeFile("conformance/misplaced.log", (*buffer)->getBuffer());
-  identity["path"] = "conformance/misplaced.log";
+  logRecord["path"] = "conformance/misplaced.log";
   expectError(read(writeRecord()),
               NumericDependencyConformanceErrorCode::PolicyMismatch);
 }
 
 TEST_F(NumericDependencyConformanceTest, RejectsEmptyGateLog) {
-  llvm::json::Object &identity = *gate("m4-build").getObject("log");
-  std::optional<llvm::StringRef> relative = identity.getString("path");
+  llvm::json::Object &logRecord = *gate("m4-build").getObject("log");
+  std::optional<llvm::StringRef> relative = logRecord.getString("path");
   ASSERT_TRUE(relative.has_value());
   writeFile(*relative, "");
-  identity["sha256"] = digestBytes("");
-  identity["size"] = 0;
-  identity["elf"] = nullptr;
+  logRecord["sha256"] = digestBytes("");
+  logRecord["size"] = 0;
+  logRecord["elf"] = nullptr;
   expectError(read(writeRecord()),
               NumericDependencyConformanceErrorCode::PolicyMismatch);
 }
@@ -452,10 +449,10 @@ TEST_F(NumericDependencyConformanceTest, RejectsLicenseCopyRebinding) {
   const std::string relative = "install/licenses/mpfr-lesser.txt";
   const std::string wrong = "wrong-license-content\n";
   writeFile(relative, wrong);
-  llvm::json::Object &identity = artifact("license-mpfr-lesser");
-  identity["sha256"] = digestBytes(wrong);
-  identity["size"] = static_cast<int64_t>(wrong.size());
-  identity["elf"] = nullptr;
+  llvm::json::Object &licenseFile = fileRecord("license-mpfr-lesser");
+  licenseFile["sha256"] = digestBytes(wrong);
+  licenseFile["size"] = static_cast<int64_t>(wrong.size());
+  licenseFile["elf"] = nullptr;
   llvm::json::Object *licenses = top().getObject("licenses");
   ASSERT_NE(licenses, nullptr);
   llvm::json::Object *license = licenses->getObject("license-mpfr-lesser");
@@ -471,13 +468,10 @@ TEST_F(NumericDependencyConformanceTest, RejectsLoadedObjectDigestMismatch) {
   ASSERT_TRUE(static_cast<bool>(parsed))
       << (parsed ? std::string() : llvm::toString(parsed.takeError()));
   StaticLoadedObjectProvider provider(
-      {NumericLoadedObjectKind::MPFR, artifactPaths["mpfr"],
-       std::string(64, '0')},
-      {NumericLoadedObjectKind::GMP, artifactPaths["gmp"],
-       artifactDigests["gmp"]});
-  expectError(
-      wafer::verifyNumericDependencyExecutionIdentity(*parsed, provider),
-      NumericDependencyConformanceErrorCode::LoadedObjectMismatch);
+      {NumericLoadedObjectKind::MPFR, filePaths["mpfr"], std::string(64, '0')},
+      {NumericLoadedObjectKind::GMP, filePaths["gmp"], fileDigests["gmp"]});
+  expectError(wafer::bindNumericDependenciesToLoadedObjects(*parsed, provider),
+              NumericDependencyConformanceErrorCode::LoadedObjectMismatch);
 }
 
 TEST_F(NumericDependencyConformanceTest, RejectsLoadedObjectOutsideClosure) {
@@ -488,11 +482,9 @@ TEST_F(NumericDependencyConformanceTest, RejectsLoadedObjectOutsideClosure) {
   const std::string outside = path("install/mpfr/include/mpfr.h");
   StaticLoadedObjectProvider provider(
       {NumericLoadedObjectKind::MPFR, outside, digestFile(outside)},
-      {NumericLoadedObjectKind::GMP, artifactPaths["gmp"],
-       artifactDigests["gmp"]});
-  expectError(
-      wafer::verifyNumericDependencyExecutionIdentity(*parsed, provider),
-      NumericDependencyConformanceErrorCode::LoadedObjectMismatch);
+      {NumericLoadedObjectKind::GMP, filePaths["gmp"], fileDigests["gmp"]});
+  expectError(wafer::bindNumericDependenciesToLoadedObjects(*parsed, provider),
+              NumericDependencyConformanceErrorCode::LoadedObjectMismatch);
 }
 
 TEST_F(NumericDependencyConformanceTest, RejectsLoadedObjectWrongKind) {
@@ -501,18 +493,15 @@ TEST_F(NumericDependencyConformanceTest, RejectsLoadedObjectWrongKind) {
   ASSERT_TRUE(static_cast<bool>(parsed))
       << (parsed ? std::string() : llvm::toString(parsed.takeError()));
   StaticLoadedObjectProvider provider(
-      {NumericLoadedObjectKind::GMP, artifactPaths["mpfr"],
-       artifactDigests["mpfr"]},
-      {NumericLoadedObjectKind::GMP, artifactPaths["gmp"],
-       artifactDigests["gmp"]});
-  expectError(
-      wafer::verifyNumericDependencyExecutionIdentity(*parsed, provider),
-      NumericDependencyConformanceErrorCode::LoadedObjectMismatch);
+      {NumericLoadedObjectKind::GMP, filePaths["mpfr"], fileDigests["mpfr"]},
+      {NumericLoadedObjectKind::GMP, filePaths["gmp"], fileDigests["gmp"]});
+  expectError(wafer::bindNumericDependenciesToLoadedObjects(*parsed, provider),
+              NumericDependencyConformanceErrorCode::LoadedObjectMismatch);
 }
 
 TEST_F(NumericDependencyConformanceTest, RejectsNullDladdrSymbol) {
-  wafer::DladdrNumericLoadedObjectIdentityProvider provider(nullptr, nullptr);
-  expectError(provider.identify(NumericLoadedObjectKind::MPFR),
+  wafer::DladdrNumericLoadedObjectProvider provider(nullptr, nullptr);
+  expectError(provider.getLoadedObject(NumericLoadedObjectKind::MPFR),
               NumericDependencyConformanceErrorCode::LoadedObjectUnavailable);
 }
 
@@ -521,14 +510,15 @@ TEST_F(NumericDependencyConformanceTest,
 #if defined(__unix__) || defined(__APPLE__)
   const void *symbol =
       reinterpret_cast<const void *>(reinterpret_cast<uintptr_t>(&digestBytes));
-  wafer::DladdrNumericLoadedObjectIdentityProvider provider(symbol, symbol);
-  llvm::Expected<NumericLoadedObjectIdentity> identity =
-      provider.identify(NumericLoadedObjectKind::MPFR);
-  ASSERT_TRUE(static_cast<bool>(identity))
-      << (identity ? std::string() : llvm::toString(identity.takeError()));
-  EXPECT_EQ(identity->kind, NumericLoadedObjectKind::MPFR);
-  EXPECT_TRUE(llvm::sys::path::is_absolute(identity->resolvedPath));
-  EXPECT_EQ(identity->sha256.size(), 64u);
+  wafer::DladdrNumericLoadedObjectProvider provider(symbol, symbol);
+  llvm::Expected<NumericLoadedObject> loadedObject =
+      provider.getLoadedObject(NumericLoadedObjectKind::MPFR);
+  ASSERT_TRUE(static_cast<bool>(loadedObject))
+      << (loadedObject ? std::string()
+                       : llvm::toString(loadedObject.takeError()));
+  EXPECT_EQ(loadedObject->kind, NumericLoadedObjectKind::MPFR);
+  EXPECT_TRUE(llvm::sys::path::is_absolute(loadedObject->resolvedPath));
+  EXPECT_EQ(loadedObject->sha256.size(), 64u);
 #else
   GTEST_SKIP() << "dladdr is unavailable on this host";
 #endif

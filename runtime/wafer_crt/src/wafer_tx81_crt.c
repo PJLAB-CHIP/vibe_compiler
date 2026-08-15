@@ -88,9 +88,10 @@ static void wafer_profile_direct_dte_phase_end(uint32_t event_index);
  * Kernel arguments and txMalloc resources are cacheable device-DDR
  * addresses.  The firmware invalidates the argument table before entering a
  * dynamic module, but it does not clean module writes when the entry returns.
- * Publish the transport status with the same C908 clean-and-invalidate
- * sequence used by the firmware's rt_hw_cpu_dcache_ops(FLUSH) path so a host
- * D2H observes the terminal value rather than the pre-launch poison word.
+ * Make the transport status host-visible with the same C908
+ * clean-and-invalidate sequence used by the firmware's
+ * rt_hw_cpu_dcache_ops(FLUSH) path so a host D2H observes the terminal value
+ * rather than the pre-launch poison word.
  */
 static void wafer_direct_dte_flush_status(volatile uint32_t *status) {
   enum {
@@ -114,7 +115,7 @@ static void wafer_direct_dte_flush_status(volatile uint32_t *status) {
   __asm__ volatile("sync" ::: "memory");
 }
 
-static void wafer_direct_dte_publish_status(uint32_t value) {
+static void wafer_direct_dte_write_status(uint32_t value) {
   wafer_direct_dte_status_value = value;
   if (!wafer_direct_dte_status)
     return;
@@ -123,7 +124,7 @@ static void wafer_direct_dte_publish_status(uint32_t value) {
 }
 
 static void wafer_direct_dte_set_error(void) {
-  wafer_direct_dte_publish_status(WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR);
+  wafer_direct_dte_write_status(WAFER_TX81_DIRECT_DTE_STATUS_TRANSPORT_ERROR);
 }
 
 static void wafer_direct_dte_reset_state(uint64_t status_addr) {
@@ -132,7 +133,7 @@ static void wafer_direct_dte_reset_state(uint64_t status_addr) {
   wafer_direct_dte_sender.issued = false;
   for (uint32_t index = 0; index < WAFER_DIRECT_DTE_MAX_RECEIVERS; ++index)
     wafer_direct_dte_receivers[index].active = false;
-  wafer_direct_dte_publish_status(WAFER_TX81_DIRECT_DTE_STATUS_PENDING);
+  wafer_direct_dte_write_status(WAFER_TX81_DIRECT_DTE_STATUS_PENDING);
 }
 
 void wafer_tx81_direct_dte_begin(uint64_t status_addr,
@@ -364,7 +365,7 @@ void wafer_tx81_direct_dte_finish(void) {
     }
   if (wafer_direct_dte_status &&
       wafer_direct_dte_status_value == WAFER_TX81_DIRECT_DTE_STATUS_PENDING)
-    wafer_direct_dte_publish_status(WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS);
+    wafer_direct_dte_write_status(WAFER_TX81_DIRECT_DTE_STATUS_SUCCESS);
 }
 
 static Data_Format wafer_format(uint32_t format) { return (Data_Format)format; }
@@ -1320,7 +1321,7 @@ void wafer_tx81_peripheral_elem_mask_v3(
 }
 
 /*
- * TsmExecute publishes NCC work through MMIO while TsmWaitfinish only polls
+ * TsmExecute issues NCC work through MMIO while TsmWaitfinish only polls
  * taskstatus.  Order the issue before polling and the observed completion
  * before any following issue or memory access.  This does not widen the
  * default wait's worker scope.

@@ -324,8 +324,8 @@ def compile_package(
         ],
         timeout_seconds=300,
     )
-    if "published verified package" not in result.stdout:
-        raise RuntimeError("wafer-compile did not publish the seed package")
+    if "wrote verified package" not in result.stdout:
+        raise RuntimeError("wafer-compile did not write the seed package")
     bindings = production_baseline.validate_manifest(
         package,
         PROBE_LOCAL_ELEMENTS,

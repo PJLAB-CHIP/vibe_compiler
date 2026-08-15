@@ -3,7 +3,7 @@
 #include "DriverInternal.h"
 
 #include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 #include "Wafer/Model/SystemCTargetModel.h"
 #endif
@@ -153,18 +153,18 @@ int main(int argc, char **argv) {
     if (numericPolicy == "formal") {
       if (hasBulkConfiguration) {
         llvm::errs() << "wafer-compile: bulk model options require "
-                        "--target-model-numeric-policy=prefer-admitted or "
+                        "--target-model-numeric-policy=bulk-then-formal or "
                         "managed-reference\n";
         return 1;
       }
       targetModelExecutionPolicy.emplace(
           wafer::model::TargetModelExecutionPolicy::formalOnly());
-    } else if (numericPolicy == "prefer-admitted" ||
+    } else if (numericPolicy == "bulk-then-formal" ||
                numericPolicy == "managed-reference") {
 #ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-      if (numericPolicy == "prefer-admitted" &&
+      if (numericPolicy == "bulk-then-formal" &&
           options.targetModelBulkRecords.empty()) {
-        llvm::errs() << "wafer-compile: prefer-admitted GEMM requires at "
+        llvm::errs() << "wafer-compile: bulk-then-formal GEMM requires at "
                         "least one --target-model-bulk-record\n";
         return 1;
       }
@@ -189,7 +189,7 @@ int main(int argc, char **argv) {
           wafer::BulkNumericWorkBudget::create(*maximumTotalBytes,
                                                *maximumScratchpadBytes,
                                                *maximumReorderBytes);
-      if (numericPolicy == "prefer-admitted") {
+      if (numericPolicy == "bulk-then-formal") {
         auto qualified = wafer::model::QualifiedTargetModelBulkBackend::create(
             options.targetModelBulkRecords, bulkBudget);
         if (!qualified) {
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
         }
         targetModelBulkBackend = std::move(*qualified);
         targetModelExecutionPolicy.emplace(
-            wafer::model::TargetModelExecutionPolicy::preferAdmitted(
+            wafer::model::TargetModelExecutionPolicy::bulkThenFormal(
                 *targetModelBulkBackend));
       } else {
         auto managed = wafer::model::ManagedReferenceTargetModelBackend::create(
@@ -301,9 +301,9 @@ int main(int argc, char **argv) {
   }
 
   mlir::LogicalResult compilationStatus = mlir::failure();
-  std::optional<wafer::compiler::ExecutableBundle> executableBundle;
-  std::optional<wafer::compiler::TargetCompilationProduct>
-      targetCompilationProduct;
+  std::optional<wafer::compiler::PhysicalTileExecutables>
+      physicalTileExecutables;
+  std::optional<wafer::compiler::CompiledProgram> targetCompilationProduct;
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   const char *executableFailureSlot =
       std::getenv("WAFER_TEST_FAIL_AFTER_EXECUTABLE_LAUNCH_SLOT");
@@ -369,8 +369,8 @@ int main(int argc, char **argv) {
 #endif
   {
     if (options.targetModel || options.compilerIRDumpDirectory) {
-      mlir::FailureOr<wafer::compiler::TargetCompilationProduct>
-          compiledProgram = wafer::compiler::compileProgramWithTargetLLVMBundle(
+      mlir::FailureOr<wafer::compiler::CompiledProgram> compiledProgram =
+          wafer::compiler::compileProgramWithTargetLLVMModules(
               std::move(*request), *options.outputProgramDirectory, helperPath,
               *targetToolchain, compilationOptions, llvm::errs());
       if (mlir::succeeded(compiledProgram)) {
@@ -378,12 +378,12 @@ int main(int argc, char **argv) {
         compilationStatus = mlir::success();
       }
     } else {
-      mlir::FailureOr<wafer::compiler::ExecutableBundle> compiledProgram =
-          wafer::compiler::compileProgram(
+      mlir::FailureOr<wafer::compiler::PhysicalTileExecutables>
+          compiledProgram = wafer::compiler::compileProgram(
               std::move(*request), *options.outputProgramDirectory, helperPath,
               *targetToolchain, compilationOptions, llvm::errs());
       if (mlir::succeeded(compiledProgram)) {
-        executableBundle.emplace(std::move(*compiledProgram));
+        physicalTileExecutables.emplace(std::move(*compiledProgram));
         compilationStatus = mlir::success();
       }
     }
@@ -400,20 +400,20 @@ int main(int argc, char **argv) {
                  << *options.compilerIRDumpDirectory << "\n";
   }
 
-  llvm::outs() << "wafer-compile: published verified package with "
+  llvm::outs() << "wafer-compile: wrote verified package with "
                   "num-partitions="
                << numPartitions << " physical-tiles="
                << wafer::compiler::ExecutionConfig::kSingleCardPhysicalTileCount
                << ": " << *options.outputProgramDirectory << "\n";
   if (options.profile)
-    llvm::outs() << "wafer-compile: published profile companion: "
+    llvm::outs() << "wafer-compile: wrote profile instrumentation: "
                  << *options.outputProgramDirectory << ".profile\n";
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
   if (options.targetModel) {
     llvm::outs().flush();
     if (!targetCompilationProduct || !targetModelBudget ||
         !targetModelExecutionPolicy) {
-      llvm::errs() << "wafer-compile: target model compilation product or "
+      llvm::errs() << "wafer-compile: compiled program or "
                       "budget is missing\n";
       return 1;
     }

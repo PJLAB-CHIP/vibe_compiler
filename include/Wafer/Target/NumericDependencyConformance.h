@@ -1,4 +1,4 @@
-//===- NumericDependencyConformance.h - Numeric dependency identity -*- C++
+//===- NumericDependencyConformance.h - Numeric dependency records -*- C++
 //-*-===//
 
 #ifndef WAFER_TARGET_NUMERICDEPENDENCYCONFORMANCE_H
@@ -19,7 +19,7 @@ namespace wafer {
 
 inline constexpr uint32_t kNumericDependencyConformanceSchemaVersion = 2;
 
-/// Stable failure classes for dependency identity preflight.  Diagnostics use
+/// Stable failure classes for dependency record validation. Diagnostics use
 /// these spellings rather than parser- or operating-system-specific text so a
 /// caller can classify a failure without inspecting mutable external state.
 enum class NumericDependencyConformanceErrorCode {
@@ -69,7 +69,7 @@ private:
   std::string detail;
 };
 
-struct NumericDependencyELFIdentity {
+struct NumericDependencyELFRecord {
   std::string elfClass;
   std::string byteOrder;
   std::string type;
@@ -81,7 +81,7 @@ struct NumericDependencyELFIdentity {
   std::vector<std::string> runpath;
 };
 
-struct NumericDependencyArtifactIdentity {
+struct NumericDependencyFileRecord {
   std::string name;
   std::string relativePath;
   std::string resolvedPath;
@@ -89,10 +89,10 @@ struct NumericDependencyArtifactIdentity {
   uint64_t size = 0;
   std::string fileType;
   uint32_t mode = 0;
-  std::optional<NumericDependencyELFIdentity> elf;
+  std::optional<NumericDependencyELFRecord> elf;
 };
 
-struct NumericDependencySourceIdentity {
+struct NumericDependencySourceRecord {
   std::string name;
   std::string version;
   std::string url;
@@ -104,7 +104,7 @@ struct NumericDependencySourceIdentity {
   std::string sourceTreeSHA256;
 };
 
-struct NumericDependencyBuildIdentity {
+struct NumericDependencyBuildConfig {
   std::string platform;
   std::string softFloatSpecialization;
   std::string softFloatThreadLocal;
@@ -120,10 +120,10 @@ struct NumericDependencyBuildIdentity {
   uint64_t jobs = 0;
   std::string toolchainPolicy;
   std::string mpfrPatches;
-  std::string elfIdentityPolicy;
+  std::string elfValidationPolicy;
 };
 
-struct NumericDependencyToolIdentity {
+struct NumericDependencyToolRecord {
   std::string name;
   std::string resolvedPath;
   std::string sha256;
@@ -134,27 +134,27 @@ struct NumericDependencyToolIdentity {
   std::string versionOutputSHA256;
 };
 
-struct NumericDependencyEnvironmentIdentity {
+struct NumericDependencyEnvironmentRecord {
   std::string name;
   std::vector<std::pair<std::string, std::string>> variables;
 };
 
-struct NumericDependencyLicenseIdentity {
+struct NumericDependencyLicenseRecord {
   std::string name;
   std::string dependency;
   std::string sourceRelativePath;
   std::string sourceResolvedPath;
-  std::string artifactName;
+  std::string fileName;
   std::string sha256;
 };
 
-struct NumericDependencyConformanceGateIdentity {
+struct NumericDependencyConformanceGateRecord {
   std::string name;
   std::vector<std::string> command;
   std::string cwd;
   std::string environment;
   int64_t exitCode = -1;
-  NumericDependencyArtifactIdentity log;
+  NumericDependencyFileRecord log;
 };
 
 struct NumericDependencyReadLimits {
@@ -165,7 +165,7 @@ struct NumericDependencyReadLimits {
 
 /// Immutable, process-local readback of a fully verified managed record.
 /// Construction is atomic: no instance is returned until the record, every
-/// source tree, and every artifact/log/license/header identity has passed.
+/// source tree, and every managed file, log, license, and header has passed.
 class NumericDependencyConformanceRecord {
 public:
   NumericDependencyConformanceRecord(NumericDependencyConformanceRecord &&) =
@@ -184,33 +184,26 @@ public:
   llvm::StringRef getRecordPath() const { return recordPath; }
   llvm::StringRef getRecordSHA256() const { return recordSHA256; }
   llvm::StringRef getConformancePolicy() const { return conformancePolicy; }
-  const NumericDependencyBuildIdentity &getBuildIdentity() const {
-    return build;
-  }
-  llvm::ArrayRef<NumericDependencySourceIdentity> getSources() const {
+  const NumericDependencyBuildConfig &getBuildConfig() const { return build; }
+  llvm::ArrayRef<NumericDependencySourceRecord> getSources() const {
     return sources;
   }
-  llvm::ArrayRef<NumericDependencyArtifactIdentity> getArtifacts() const {
-    return artifacts;
-  }
-  llvm::ArrayRef<NumericDependencyToolIdentity> getTools() const {
-    return tools;
-  }
-  llvm::ArrayRef<NumericDependencyEnvironmentIdentity> getEnvironments() const {
+  llvm::ArrayRef<NumericDependencyFileRecord> getFiles() const { return files; }
+  llvm::ArrayRef<NumericDependencyToolRecord> getTools() const { return tools; }
+  llvm::ArrayRef<NumericDependencyEnvironmentRecord> getEnvironments() const {
     return environments;
   }
-  llvm::ArrayRef<NumericDependencyLicenseIdentity> getLicenses() const {
+  llvm::ArrayRef<NumericDependencyLicenseRecord> getLicenses() const {
     return licenses;
   }
-  llvm::ArrayRef<NumericDependencyConformanceGateIdentity> getGates() const {
+  llvm::ArrayRef<NumericDependencyConformanceGateRecord> getGates() const {
     return gates;
   }
 
-  const NumericDependencySourceIdentity *findSource(llvm::StringRef name) const;
-  const NumericDependencyArtifactIdentity *
-  findArtifact(llvm::StringRef name) const;
-  const NumericDependencyToolIdentity *findTool(llvm::StringRef name) const;
-  const NumericDependencyEnvironmentIdentity *
+  const NumericDependencySourceRecord *findSource(llvm::StringRef name) const;
+  const NumericDependencyFileRecord *findFile(llvm::StringRef name) const;
+  const NumericDependencyToolRecord *findTool(llvm::StringRef name) const;
+  const NumericDependencyEnvironmentRecord *
   findEnvironment(llvm::StringRef name) const;
 
 private:
@@ -227,23 +220,23 @@ private:
   std::string managedRoot;
   std::string recordPath;
   std::string recordSHA256;
-  std::vector<NumericDependencySourceIdentity> sources;
-  NumericDependencyBuildIdentity build;
-  std::vector<NumericDependencyToolIdentity> tools;
-  std::vector<NumericDependencyEnvironmentIdentity> environments;
-  std::vector<NumericDependencyArtifactIdentity> artifacts;
-  std::vector<NumericDependencyLicenseIdentity> licenses;
+  std::vector<NumericDependencySourceRecord> sources;
+  NumericDependencyBuildConfig build;
+  std::vector<NumericDependencyToolRecord> tools;
+  std::vector<NumericDependencyEnvironmentRecord> environments;
+  std::vector<NumericDependencyFileRecord> files;
+  std::vector<NumericDependencyLicenseRecord> licenses;
   std::string conformancePolicy;
-  std::vector<NumericDependencyConformanceGateIdentity> gates;
+  std::vector<NumericDependencyConformanceGateRecord> gates;
 };
 
 /// Read and verify schema version 2 of numeric-model-deps.json.  The expected
-/// digest must be the configure-time trusted identity emitted only after the
-/// Python producer/validator accepts archive provenance (the raw 64-character,
+/// digest must be the configure-time trusted digest emitted only after the
+/// Python producer verifies each source archive (the raw 64-character,
 /// lowercase SHA-256 stored by WaferNumericModelDeps.cmake); computing it from
-/// an otherwise untrusted record is not a trust boundary.  Readback replays the
+/// an otherwise untrusted record is not a trust boundary. Readback replays the
 /// recorded host-tool version commands and the recorded readelf tool under a
-/// closed environment, then verifies current source/artifact evidence.
+/// closed environment, then verifies the current sources and managed files.
 llvm::Expected<NumericDependencyConformanceRecord>
 readNumericDependencyConformanceRecord(
     llvm::StringRef managedRoot, llvm::StringRef recordPath,
@@ -254,7 +247,7 @@ enum class NumericLoadedObjectKind { MPFR, GMP };
 
 llvm::StringRef stringifyNumericLoadedObjectKind(NumericLoadedObjectKind kind);
 
-struct NumericLoadedObjectIdentity {
+struct NumericLoadedObject {
   NumericLoadedObjectKind kind = NumericLoadedObjectKind::MPFR;
   std::string resolvedPath;
   std::string sha256;
@@ -262,27 +255,27 @@ struct NumericLoadedObjectIdentity {
 
 /// Injection boundary for runtime loader readback.  A feature-enabled caller
 /// may use the dladdr provider below or supply a stricter platform provider.
-class NumericLoadedObjectIdentityProvider {
+class NumericLoadedObjectProvider {
 public:
-  virtual ~NumericLoadedObjectIdentityProvider() = default;
+  virtual ~NumericLoadedObjectProvider() = default;
 
-  virtual llvm::Expected<NumericLoadedObjectIdentity>
-  identify(NumericLoadedObjectKind kind) const = 0;
+  virtual llvm::Expected<NumericLoadedObject>
+  getLoadedObject(NumericLoadedObjectKind kind) const = 0;
 };
 
 /// Generic POSIX symbol-origin provider.  The caller supplies representative
 /// symbol addresses from the already loaded MPFR and GMP objects; no MPFR/GMP
 /// header or link dependency is introduced by this interface.
-class DladdrNumericLoadedObjectIdentityProvider final
-    : public NumericLoadedObjectIdentityProvider {
+class DladdrNumericLoadedObjectProvider final
+    : public NumericLoadedObjectProvider {
 public:
-  DladdrNumericLoadedObjectIdentityProvider(const void *mpfrSymbolAddress,
-                                            const void *gmpSymbolAddress)
+  DladdrNumericLoadedObjectProvider(const void *mpfrSymbolAddress,
+                                    const void *gmpSymbolAddress)
       : mpfrSymbolAddress(mpfrSymbolAddress),
         gmpSymbolAddress(gmpSymbolAddress) {}
 
-  llvm::Expected<NumericLoadedObjectIdentity>
-  identify(NumericLoadedObjectKind kind) const override;
+  llvm::Expected<NumericLoadedObject>
+  getLoadedObject(NumericLoadedObjectKind kind) const override;
 
 private:
   const void *mpfrSymbolAddress;
@@ -290,51 +283,51 @@ private:
 };
 
 /// Successful execution-time binding of the verified record to the actual
-/// loaded MPFR/GMP symbol providers.  The provenance digest covers the record
+/// loaded MPFR/GMP symbol providers. The binding digest covers the record
 /// digest plus both resolved paths and content digests.
-class NumericDependencyExecutionIdentity {
+class NumericDependencyExecutionBinding {
 public:
-  NumericDependencyExecutionIdentity(NumericDependencyExecutionIdentity &&) =
+  NumericDependencyExecutionBinding(NumericDependencyExecutionBinding &&) =
       default;
-  NumericDependencyExecutionIdentity &
-  operator=(NumericDependencyExecutionIdentity &&) = delete;
-  NumericDependencyExecutionIdentity(
-      const NumericDependencyExecutionIdentity &) = delete;
-  NumericDependencyExecutionIdentity &
-  operator=(const NumericDependencyExecutionIdentity &) = delete;
+  NumericDependencyExecutionBinding &
+  operator=(NumericDependencyExecutionBinding &&) = delete;
+  NumericDependencyExecutionBinding(const NumericDependencyExecutionBinding &) =
+      delete;
+  NumericDependencyExecutionBinding &
+  operator=(const NumericDependencyExecutionBinding &) = delete;
 
   llvm::StringRef getRecordSHA256() const { return recordSHA256; }
-  llvm::StringRef getProvenanceSHA256() const { return provenanceSHA256; }
-  const NumericLoadedObjectIdentity &getMPFR() const { return mpfr; }
-  const NumericLoadedObjectIdentity &getGMP() const { return gmp; }
+  llvm::StringRef getBindingSHA256() const { return bindingSHA256; }
+  const NumericLoadedObject &getMPFR() const { return mpfr; }
+  const NumericLoadedObject &getGMP() const { return gmp; }
 
 private:
-  friend llvm::Expected<NumericDependencyExecutionIdentity>
-  verifyNumericDependencyExecutionIdentity(
+  friend llvm::Expected<NumericDependencyExecutionBinding>
+  bindNumericDependenciesToLoadedObjects(
       const NumericDependencyConformanceRecord &,
-      const NumericLoadedObjectIdentityProvider &);
+      const NumericLoadedObjectProvider &);
 
-  NumericDependencyExecutionIdentity(std::string recordSHA256,
-                                     std::string provenanceSHA256,
-                                     NumericLoadedObjectIdentity mpfr,
-                                     NumericLoadedObjectIdentity gmp)
+  NumericDependencyExecutionBinding(std::string recordSHA256,
+                                    std::string bindingSHA256,
+                                    NumericLoadedObject mpfr,
+                                    NumericLoadedObject gmp)
       : recordSHA256(std::move(recordSHA256)),
-        provenanceSHA256(std::move(provenanceSHA256)), mpfr(std::move(mpfr)),
+        bindingSHA256(std::move(bindingSHA256)), mpfr(std::move(mpfr)),
         gmp(std::move(gmp)) {}
 
   std::string recordSHA256;
-  std::string provenanceSHA256;
-  NumericLoadedObjectIdentity mpfr;
-  NumericLoadedObjectIdentity gmp;
+  std::string bindingSHA256;
+  NumericLoadedObject mpfr;
+  NumericLoadedObject gmp;
 };
 
 /// Verify that the actual MPFR/GMP symbol providers are exactly one of the
-/// record's real or materialized loader artifacts, with matching file SHA-256.
-/// This function is side-effect free and returns no partial execution identity.
-llvm::Expected<NumericDependencyExecutionIdentity>
-verifyNumericDependencyExecutionIdentity(
+/// record's real or materialized loader files, with matching file SHA-256.
+/// This function is side-effect free and returns no partial binding.
+llvm::Expected<NumericDependencyExecutionBinding>
+bindNumericDependenciesToLoadedObjects(
     const NumericDependencyConformanceRecord &record,
-    const NumericLoadedObjectIdentityProvider &provider);
+    const NumericLoadedObjectProvider &provider);
 
 } // namespace wafer
 

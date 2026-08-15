@@ -100,8 +100,7 @@ struct TileResourceScope {
   PhysicalTileId tileId{0};
 };
 
-using PackageResourceScope =
-    std::variant<CardResourceScope, TileResourceScope>;
+using PackageResourceScope = std::variant<CardResourceScope, TileResourceScope>;
 
 struct PackageResourceRecord {
   /// ResourceId is physical allocation identity. A card-program boundary
@@ -173,9 +172,8 @@ struct PackageManifest {
   PackageManifest(TargetIdentityId targetIdentity,
                   KernelRuntimeABIId runtimeABI, RuntimeLaunchContract launch,
                   llvm::StringRef moduleFormat)
-      : targetIdentity(targetIdentity),
-        runtimeABI(runtimeABI), launch(std::move(launch)),
-        moduleFormat(moduleFormat.str()) {}
+      : targetIdentity(targetIdentity), runtimeABI(runtimeABI),
+        launch(std::move(launch)), moduleFormat(moduleFormat.str()) {}
 
   uint32_t schemaVersion = kPackageManifestSchemaVersion;
   ProgramId program;
@@ -249,12 +247,11 @@ struct RuntimeInvocationBinding {
 
 struct RuntimeEnvironment {
   RuntimeEnvironment(
-      TargetIdentityId targetIdentity,
-      KernelRuntimeABIId runtimeABI, llvm::StringRef moduleFormat,
+      TargetIdentityId targetIdentity, KernelRuntimeABIId runtimeABI,
+      llvm::StringRef moduleFormat,
       uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max())
-      : targetIdentity(targetIdentity),
-        runtimeABI(runtimeABI), moduleFormat(moduleFormat.str()),
-        maxResourceBytes(maxResourceBytes) {}
+      : targetIdentity(targetIdentity), runtimeABI(runtimeABI),
+        moduleFormat(moduleFormat.str()), maxResourceBytes(maxResourceBytes) {}
 
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;
@@ -304,7 +301,7 @@ struct RuntimeInvocationPlan {
   std::vector<RuntimeSessionPlan> tiles;
 };
 
-llvm::Expected<RuntimeInvocationPlan> preflightNoCardRuntimeInvocation(
+llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
     const VerifiedPackageManifest &package,
     llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
     const RuntimeEnvironment &environment);

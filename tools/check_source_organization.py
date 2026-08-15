@@ -30,24 +30,21 @@ TENSOR_PROGRAM_TO_TILE_REGION_DORMANT_SOURCES = (
     "MaterializeFlashAttention.cpp",
     "MaterializeFlashDecoding.cpp",
 )
-LEGACY_TASK_LOCAL_SELECTION_PATHS = (
+RETIRED_TASK_LOCAL_SELECTION_PATHS = (
     "CandidateAnalysis.cpp",
-    "CandidateCommit.cpp",
     "CandidateEvaluation.cpp",
     "CandidateSelection.cpp",
-    "FullBufferHandoff.cpp",
     "ScheduleTensorProgram.cpp",
     "ScheduleTensorProgramInternal.h",
     "StructuredSchedulingScope.cpp",
     "StructuredSchedulingScope.h",
 )
-RETIRED_RANK_FRONTIER_PATHS = (
+RETIRED_RANK_CANDIDATE_PATHS = (
     "lib/Wafer/Compiler/NoCResidentDataflow.cpp",
     "lib/Wafer/Compiler/NoCResidentDataflow.h",
     "lib/Wafer/Compiler/WholeVariantAttemptPlan.cpp",
     "lib/Wafer/Compiler/WholeVariantAttemptPlan.h",
     "lib/Wafer/Compiler/WholeVariantCoordinator.h",
-    "lib/Wafer/Transforms/Scheduling/RankCandidateFrontier.h",
 )
 MEMORY_PLANNING_SOURCES = (
     "LifetimeAnalysis.cpp",
@@ -75,13 +72,13 @@ TARGET_LLVM_SOURCES = (
     "PeripheralTargetCallLowering.cpp",
     "SyncTargetCallLowering.cpp",
     "TargetCallLoweringSupport.cpp",
-    "TargetCallPreflight.cpp",
+    "TargetLoweringVerification.cpp",
     "TargetLLVMConversion.cpp",
     "TargetLLVMConversionPatterns.cpp",
     "TargetLLVMStructure.cpp",
 )
 NUMERIC_DEPENDENCY_SOURCES = (
-    "NumericDependencyBuildIdentity.cpp",
+    "NumericDependencyBuildConfig.cpp",
     "NumericDependencyConformance.cpp",
     "NumericDependencyELF.cpp",
     "NumericDependencyFilesystem.cpp",
@@ -132,7 +129,7 @@ TARGET_MODEL_KERNEL_SOURCES = (
     "TargetModelKernel.cpp",
     "TargetModelMovement.cpp",
     "TargetModelTensorNumeric.cpp",
-    "TargetModelTransactionSchema.cpp",
+    "TargetModelCommandValidation.cpp",
 )
 FORMAL_NUMERIC_SOURCES = (
     "FormalNumericConvert.cpp",
@@ -142,7 +139,7 @@ FORMAL_NUMERIC_SOURCES = (
     "FormalNumericValidation.cpp",
 )
 BULK_TENSOR_NUMERIC_SOURCES = (
-    "BulkAdmission.cpp",
+    "QualifiedBulkExecution.cpp",
     "BulkExecutionEnvironment.cpp",
     "BulkQualificationExecution.cpp",
     "BulkTensorCodec.cpp",
@@ -164,16 +161,16 @@ COMPILATION_SOURCES = (
     "TensorProgramCompilation.cpp",
     "ProgramDirectoryTransaction.cpp",
     "SpmdCompilationBridge.cpp",
-    "TargetPackagePublication.cpp",
+    "WriteExecutablePackage.cpp",
 )
-TARGET_ARTIFACT_SOURCES = (
+TARGET_CODE_GENERATION_SOURCES = (
     "TargetABIPreparation.cpp",
-    "TargetArtifact.cpp",
-    "TargetArtifactPublication.cpp",
+    "TargetLLVMModule.cpp",
+    "TargetModuleLinking.cpp",
     "TargetDeviceLink.cpp",
     "TargetLLVMTranslation.cpp",
     "TargetModuleReadback.cpp",
-    "PhysicalTilePreflight.cpp",
+    "CompilePhysicalTileLLVMModules.cpp",
 )
 PACKAGE_MANIFEST_SOURCES = (
     "PackageManifest.cpp",
@@ -181,11 +178,11 @@ PACKAGE_MANIFEST_SOURCES = (
     "PackageManifestReadback.cpp",
     "PackageManifestSerialization.cpp",
     "PackageManifestVerification.cpp",
-    "RuntimeSessionPreflight.cpp",
+    "RuntimeInvocationPlanning.cpp",
 )
 BOARD_RUNTIME_SOURCES = (
     "BoardRuntime.cpp",
-    "ProfileCompanion.cpp",
+    "ProfileInstrumentation.cpp",
     "ProfilerRecord.cpp",
     "Tx81ModelABI.cpp",
 )
@@ -196,7 +193,7 @@ WAFER_RUN_SOURCES = (
     "wafer-run.cpp",
 )
 RETIRED_PROFILE_SCHEMA_MARKERS = (
-    "kProfileCompanionVariantsFileName",
+    "kProfileInstrumentationVariantsFileName",
     "ProfileVariantPackage",
     "ProfileVariantRole",
     "ProfileVariantSiteMap",
@@ -221,8 +218,8 @@ XLA_SPMD_HELPER_SOURCES = (
     "XlaSpmdProgram.cpp",
 )
 INSTRUCTION_VERIFIER_FILES = (
-    "InstructionVerifierUtils.cpp",
-    "InstructionVerifierUtils.h",
+    "InstructionVerification.cpp",
+    "InstructionVerification.h",
 )
 LIB_WAFER_SUBDIRECTORY_ORDER = (
     "IR",
@@ -276,7 +273,7 @@ LEGACY_GROUP_API_PATTERNS = (
         "retired group-to-tile-region API",
     ),
     (
-        re.compile(r"\bcompileGroupedProgramToExecutableBundle(?:Impl)?\b"),
+        re.compile(r"\bcompileGroupedProgramToPhysicalTileExecutables(?:Impl)?\b"),
         "retired grouped-program compiler API",
     ),
     (
@@ -550,7 +547,7 @@ def check_cmake_source_ownership(
             )
 
 
-def check_project_cmake_source_ownership(
+def check_repository_cmake_source_ownership(
     *,
     root: Path,
     source: str,
@@ -558,7 +555,7 @@ def check_project_cmake_source_ownership(
     label: str,
     errors: list[str],
 ) -> None:
-    """Require a source basename to occur in exactly one project CMake manifest."""
+    """Require a source basename to occur in exactly one repository CMake manifest."""
 
     manifests = [root / "CMakeLists.txt"]
     for directory_name in ("cmake", "lib", "test", "tools", "unittests"):
@@ -580,7 +577,7 @@ def check_project_cmake_source_ownership(
         owners = ", ".join(str(path) for path in occurrences) or "none"
         fail(
             errors,
-            f"{label} {source} must have exactly one project CMake owner "
+            f"{label} {source} must have exactly one repository CMake entry "
             f"({expected_cmake_path}); found {owners}",
         )
 
@@ -742,7 +739,7 @@ def check_instruction_owners(root: Path, errors: list[str]) -> None:
         read_required(source_root / filename, errors)
 
     public_internal_header = (
-        root / "include/Wafer/IR/Instr/InstructionVerifierUtils.h"
+        root / "include/Wafer/IR/Instr/InstructionVerification.h"
     )
     if public_internal_header.exists():
         fail(
@@ -760,7 +757,7 @@ def check_instruction_owners(root: Path, errors: list[str]) -> None:
     )
     check_cmake_sources(
         body=target_body,
-        required=(*INSTRUCTION_FAMILY_SOURCES, "InstructionVerifierUtils.cpp"),
+        required=(*INSTRUCTION_FAMILY_SOURCES, "InstructionVerification.cpp"),
         forbidden=("InstructionOps.cpp",),
         prefix="Instr/",
         cmake_path=cmake_path,
@@ -817,9 +814,9 @@ def check_retired_profile_surfaces_removed(root: Path, errors: list[str]) -> Non
     retired_markers = ("DTEProtocolPhase", *RETIRED_PROFILE_SCHEMA_MARKERS)
     production_paths = (
         root / "include/Wafer/IR/WaferAttrs.td",
-        root / "include/Wafer/Runtime/ProfileCompanion.h",
-        root / "lib/Wafer/Runtime/ProfileCompanion.cpp",
-        root / "lib/Wafer/Compiler/TargetPackagePublication.cpp",
+        root / "include/Wafer/Runtime/ProfileInstrumentation.h",
+        root / "lib/Wafer/Runtime/ProfileInstrumentation.cpp",
+        root / "lib/Wafer/Compiler/WriteExecutablePackage.cpp",
         root / "tools/wafer-run/WaferProfileCampaign.cpp",
         root / "tools/wafer-run/wafer-run.cpp",
     )
@@ -923,14 +920,14 @@ def check_legacy_task_local_selection_removed(
     cmake_path = root / "lib/Wafer/Transforms/CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
 
-    for filename in LEGACY_TASK_LOCAL_SELECTION_PATHS:
+    for filename in RETIRED_TASK_LOCAL_SELECTION_PATHS:
         path = source_root / filename
         if path.exists():
             fail(errors, f"legacy task-local selection path must be removed: {path}")
     target_body = cmake_target_body(
         cmake_text, "add_mlir_library", "WaferTransforms", cmake_path, errors
     )
-    for filename in LEGACY_TASK_LOCAL_SELECTION_PATHS:
+    for filename in RETIRED_TASK_LOCAL_SELECTION_PATHS:
         if not filename.endswith(".cpp"):
             continue
         source = f"Scheduling/{filename}"
@@ -945,11 +942,13 @@ def check_legacy_task_local_selection_removed(
         fail(errors, f"legacy group transform directory must be removed: {legacy_root}")
 
 
-def check_retired_rank_frontier_removed(root: Path, errors: list[str]) -> None:
-    for relative in RETIRED_RANK_FRONTIER_PATHS:
+def check_retired_rank_candidate_sources_removed(
+    root: Path, errors: list[str]
+) -> None:
+    for relative in RETIRED_RANK_CANDIDATE_PATHS:
         path = root / relative
         if path.exists():
-            fail(errors, f"retired rank-frontier path must be removed: {path}")
+            fail(errors, f"retired rank-candidate path must be removed: {path}")
 
     cmake_path = root / "lib/Wafer/Compiler/CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
@@ -960,7 +959,7 @@ def check_retired_rank_frontier_removed(root: Path, errors: list[str]) -> None:
         if filename in target_body:
             fail(
                 errors,
-                f"WaferCompiler still lists retired rank-frontier source: {filename}",
+                f"WaferCompiler still lists retired rank-candidate source: {filename}",
             )
 
 
@@ -1014,7 +1013,7 @@ def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
         errors=errors,
     )
     for source in MEMORY_PLANNING_SOURCES:
-        check_project_cmake_source_ownership(
+        check_repository_cmake_source_ownership(
             root=root,
             source=source,
             expected_cmake_path=cmake_path,
@@ -1073,7 +1072,7 @@ def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
     }
     unit_test_paths = []
     for source in MEMORY_PLANNING_TEST_SOURCES:
-        check_project_cmake_source_ownership(
+        check_repository_cmake_source_ownership(
             root=root,
             source=source,
             expected_cmake_path=unit_cmake_path,
@@ -1648,15 +1647,17 @@ def check_numeric_bulk_owners(root: Path, errors: list[str]) -> None:
     )
 
 
-def check_compiler_artifact_package_owners(root: Path, errors: list[str]) -> None:
+def check_compiler_target_module_and_package_sources(
+    root: Path, errors: list[str]
+) -> None:
     compiler_root = root / "lib/Wafer/Compiler"
     compiler_cmake = compiler_root / "CMakeLists.txt"
     compiler_text = read_required(compiler_cmake, errors)
-    compiler_sources = (*COMPILATION_SOURCES, *TARGET_ARTIFACT_SOURCES)
+    compiler_sources = (*COMPILATION_SOURCES, *TARGET_CODE_GENERATION_SOURCES)
     check_required_sources(
-        compiler_root, compiler_sources, "compiler artifact", errors
+        compiler_root, compiler_sources, "compiler target module", errors
     )
-    for private_name in ("CompilationInternal.h", "TargetArtifactInternal.h"):
+    for private_name in ("CompilationInternal.h", "TargetCodeGenInternal.h"):
         check_private_header(
             compiler_root / private_name,
             root / "include/Wafer/Compiler" / private_name,
@@ -1687,11 +1688,13 @@ def check_compiler_artifact_package_owners(root: Path, errors: list[str]) -> Non
         or "filesystem" in compilation_includes
     ):
         fail(errors, "compilation facade still owns stage or filesystem implementation")
-    artifact_facade = read_required(compiler_root / "TargetArtifact.cpp", errors)
-    artifact_includes = source_includes(artifact_facade)
+    target_module_facade = read_required(
+        compiler_root / "TargetLLVMModule.cpp", errors
+    )
+    target_module_includes = source_includes(target_module_facade)
     for implementation in ("llvm/Object/", "llvm/Linker/", "mlir/Target/"):
-        if any(path.startswith(implementation) for path in artifact_includes):
-            fail(errors, f"target-artifact facade still owns {implementation}")
+        if any(path.startswith(implementation) for path in target_module_includes):
+            fail(errors, f"target-module facade still owns {implementation}")
 
     runtime_root = root / "lib/Wafer/Runtime"
     runtime_cmake = runtime_root / "CMakeLists.txt"
@@ -1736,12 +1739,12 @@ def check_compiler_artifact_package_owners(root: Path, errors: list[str]) -> Non
         [compiler_root / name for name in compiler_sources]
         + [
             compiler_root / "CompilationInternal.h",
-            compiler_root / "TargetArtifactInternal.h",
+            compiler_root / "TargetCodeGenInternal.h",
         ]
         + [runtime_root / name for name in PACKAGE_MANIFEST_SOURCES]
         + [runtime_root / name for name in BOARD_RUNTIME_SOURCES]
         + [runtime_root / "PackageManifestInternal.h"],
-        "compiler/artifact/package",
+        "compiler/target-module/package",
         errors,
     )
 
@@ -1930,7 +1933,7 @@ def main() -> int:
     check_numeric_semantics_owners(root, errors)
     check_tensor_program_to_tile_region_owners(root, errors)
     check_legacy_task_local_selection_removed(root, errors)
-    check_retired_rank_frontier_removed(root, errors)
+    check_retired_rank_candidate_sources_removed(root, errors)
     check_memory_planning_owners(root, errors)
     check_target_llvm_owners(root, errors)
     check_numeric_dependency_owners(root, errors)
@@ -1939,7 +1942,7 @@ def main() -> int:
     check_reference_executor_retired(root, errors)
     check_target_model_owners(root, errors)
     check_numeric_bulk_owners(root, errors)
-    check_compiler_artifact_package_owners(root, errors)
+    check_compiler_target_module_and_package_sources(root, errors)
     check_frontend_bridge_owners(root, errors)
     check_lib_wafer_dependency_order(root, errors)
 

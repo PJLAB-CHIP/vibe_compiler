@@ -3,14 +3,14 @@
 This note records static reverse-engineering results for an external,
 non-vendored `torch_txda` wheel snapshot. The audit checkout and extraction
 locations are provenance, not stable repository paths. The analysis used Python
-sources, bundled headers, ELF dynamic dependencies, symbol
+sources, included headers, ELF dynamic dependencies, symbol
 tables, strings, and targeted disassembly of runtime/copy/stream/event paths.
 
 This file is an eager/runtime evidence ledger, not a Wafer package, provider,
 completion, or compiler-lowering contract. Those owners are the numbered design
 documents linked from this directory's README.
 
-The artifact metadata says:
+The wheel metadata says:
 
 - package: `torch-txda`
 - version: `0.1.0+20251230.71a1e5a6`
@@ -71,9 +71,9 @@ Important files:
 | `torch_txda/autocast_utils.py` | AMP dtype policy for TXDA. |
 | `torch_txda/_C.cpython-310-x86_64-linux-gnu.so` | Python extension binding layer. |
 | `torch_txda/libtorch_txda.so` | Main native PyTorch backend implementation. |
-| `torch_txda/include/*.h` | Bundled C++ headers for device, stream, event, guard, exception, dtype, and txdnn descriptor helpers. |
+| `torch_txda/include/*.h` | Included C++ headers for device, stream, event, guard, exception, dtype, and txdnn descriptor helpers. |
 
-`txops` is imported but not bundled in this wheel. `libtorch_txda.so` also has a
+`txops` is imported but not included in this wheel. `libtorch_txda.so` also has a
 RUNPATH pointing at `txops/lib`, so real operator coverage depends on an external
 `txops` installation in addition to this wheel.
 
@@ -226,7 +226,7 @@ Native stream API:
 | `getStreamFromPool(priority, device)` | returns lazily created streams from per-device pools. |
 | `getStreamFromExternal(ext_stream, device)` | wraps an externally allocated `txStream_t`. |
 
-The bundled `TXDAStream.h` describes three stream pools per device:
+The included `TXDAStream.h` describes three stream pools per device:
 
 - default stream pool: only stream 0
 - low/default-priority pool: 32 streams per device, round-robin
@@ -369,7 +369,7 @@ Do not conflate these layers:
 | --- | --- | --- |
 | PyTorch TXDA backend | this wheel | PyTorch `PrivateUse1` device, eager ops, CUDA compatibility patching, host queue streams/events. |
 | `tx_runtime` / HPGR | `firmware_kuiper` SDK | CUDA-like device/memory/stream/event API plus model/module/kernel/graph launch and HPGR command completion. |
-| `txdnn` | linked by this wheel but not bundled or found locally | Eager tensor kernels and tensor descriptor API. |
+| `txdnn` | linked by this wheel but not included or found locally | Eager tensor kernels and tensor descriptor API. |
 | Host TX8 runtime | `tx8_deps` `libtx8_runtime.so` | device memory, bootparam, dyn TLV, `TsmRun`, D2D/P2P via Kcore programs, profiling. |
 | Kcore/NCC/DTE layer | `tx8_deps` static libs and headers | instruction wrappers, Direct DTE, stream FSM/mailbox, PMU, reserved SPM. |
 | KMD/driver | `firmware_kuiper` decrypted driver payload | BO/job/NPU/DTE/C2C/log/info/topology UAPI, BAR/ATU windows, PG maps, and firmware loading. |
@@ -419,7 +419,7 @@ Static analysis of this wheel does not close these items:
 - `txdnn.h` and `libtxdnn.so` are still absent locally, so exact txdnn enum
   values and full public eager-op signatures still need the missing package.
 - The external `txops` package is required by import and RUNPATH, but was not
-  bundled in the wheel.
+  included in the wheel.
 - No low-level model launch API equivalent to HPGR `txLaunchModel*` or old
   `TsmRun` was found in the exposed Python/native symbols of this wheel.
 - `TXDA_FALLBACK_CPU_OPS` and `TXDA_SKIP_OPS` policy is recovered at the

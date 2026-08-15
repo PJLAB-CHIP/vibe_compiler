@@ -93,7 +93,7 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
     // destination. RegionCut creates it for a local edge; the
     // IndependentDDRStages materializer creates it for a cross-Tile fragment
     // assembly. JointDataflow PeerFragments never creates this allocation, so
-    // recognizing the artifact here cannot infer or select a baseline mode.
+    // recognizing this allocation here cannot infer or select a baseline mode.
     if (selected != selectedDDRStages.end()) {
       selectedDDRStageExternalBuffers.insert(cloned->getResult(0));
       if (emissionRelations)
@@ -130,8 +130,8 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
     mlir::FailureOr<mlir::Value> source =
         getOrMaterialize(materialize.getSource(), MemLayout::Tensor, builder);
     if (mlir::failed(source)) {
-      if (failureReason && llvm::StringRef(*failureReason).starts_with(
-                               "missing buffer for value")) {
+      if (failureReason && llvm::StringRef(*failureReason)
+                               .starts_with("missing buffer for value")) {
         llvm::raw_string_ostream diagnostic(*failureReason);
         diagnostic << "; materialize-in-destination source has no lowered "
                       "buffer; source=";
@@ -146,8 +146,8 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
     mlir::FailureOr<mlir::Value> dest =
         getOrMaterialize(materialize.getDest(), MemLayout::Tensor, builder);
     if (mlir::failed(dest)) {
-      if (failureReason && llvm::StringRef(*failureReason).starts_with(
-                               "missing buffer for value"))
+      if (failureReason && llvm::StringRef(*failureReason)
+                               .starts_with("missing buffer for value"))
         failureReason->append(
             "; materialize-in-destination destination has no lowered buffer");
       return mlir::failure();
@@ -629,8 +629,7 @@ TileRegionBodyEmitter::convertTensorPad(mlir::tensor::PadOp pad,
                                 /*fill_domain=*/FillDomainAttr{});
   llvm::SmallVector<int64_t, 4> strides(sourceType.getRank(), 1);
   builder.create<MoveInsertSliceOp>(
-      pad.getLoc(), *source, destination,
-      builder.getDenseI64ArrayAttr(low),
+      pad.getLoc(), *source, destination, builder.getDenseI64ArrayAttr(low),
       builder.getDenseI64ArrayAttr(sourceType.getShape()),
       builder.getDenseI64ArrayAttr(strides));
   record(pad.getResult(), MemLayout::Tensor, destination);
@@ -1244,12 +1243,12 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
   if (mlir::failed(source) || mlir::failed(dest))
     return mlir::failure();
   if (!hasNoObservableDestUseExceptInsert(insertSlice))
-    *dest = builder
-                .create<MoveCopyOp>(
-                    insertSlice.getLoc(),
-                    makeSPMMemRefType(resultTensorType, MemLayout::Tensor),
-                    *dest)
-                .getResult();
+    *dest =
+        builder
+            .create<MoveCopyOp>(
+                insertSlice.getLoc(),
+                makeSPMMemRefType(resultTensorType, MemLayout::Tensor), *dest)
+            .getResult();
 
   mlir::MLIRContext *context = insertSlice.getContext();
   auto offsets =
@@ -1258,9 +1257,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       mlir::DenseI64ArrayAttr::get(context, insertSlice.getStaticSizes());
   auto strides =
       mlir::DenseI64ArrayAttr::get(context, insertSlice.getStaticStrides());
-  builder.create<MoveInsertSliceOp>(
-      insertSlice.getLoc(), *source, *dest,
-      offsets, sizes, strides);
+  builder.create<MoveInsertSliceOp>(insertSlice.getLoc(), *source, *dest,
+                                    offsets, sizes, strides);
   releasePrivateSPMValueAfterLastUse(insertSlice.getSource(), *source,
                                      insertSlice.getLoc(), builder);
   record(insertSlice.getResult(), MemLayout::Tensor, *dest);
@@ -1355,12 +1353,10 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorReshape(
   if (mlir::succeeded(
           analysis::TransferRealizability::proveStaticReshapeMetadataView(
               sourceType, resultType, /*destinationMayWrite=*/true)))
-    result = builder
-                 .create<ViewReshapeOp>(op->getLoc(), resultType, source)
+    result = builder.create<ViewReshapeOp>(op->getLoc(), resultType, source)
                  .getResult();
   else
-    result = builder
-                 .create<MoveReshapeOp>(op->getLoc(), resultType, source)
+    result = builder.create<MoveReshapeOp>(op->getLoc(), resultType, source)
                  .getResult();
   record(resultValue, sourceLayout, result);
   return mlir::success();

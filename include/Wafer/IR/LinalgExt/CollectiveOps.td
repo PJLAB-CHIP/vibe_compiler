@@ -57,7 +57,7 @@ class Wafer_LinalgExtCollectivePartitionGroupOp<string mnemonic,
 
 def Wafer_LinalgExtCollectiveAllGatherOp
     : Wafer_LinalgExtCollectivePartitionGroupOp<"linalg_ext.collective.all_gather"> {
-  let summary = "linalg-extension post-SPMD all-gather handoff";
+  let summary = "post-SPMD all-gather with linalg semantics";
   let description = [{
     Carries StableHLO all_gather semantics after SPMD partitioning as a
     destination-style tensor op. It preserves logical partition group and gather
@@ -77,7 +77,7 @@ def Wafer_LinalgExtCollectiveAllGatherOp
 def Wafer_LinalgExtCollectiveReduceScatterOp
     : Wafer_LinalgExtCollectivePartitionGroupOp<"linalg_ext.collective.reduce_scatter",
         [SingleBlockImplicitTerminator<"LinalgExtCollectiveYieldOp">]> {
-  let summary = "linalg-extension post-SPMD reduce-scatter handoff";
+  let summary = "post-SPMD reduce-scatter with linalg semantics";
   let description = [{
     Carries linalg-extension reduce-scatter semantics after SPMD partitioning.
     `partition_group` entries are logical card partition IDs in the current
@@ -96,7 +96,7 @@ def Wafer_LinalgExtCollectiveReduceScatterOp
 def Wafer_LinalgExtCollectiveAllReduceOp
     : Wafer_LinalgExtCollectiveOp<"linalg_ext.collective.all_reduce",
         [SingleBlockImplicitTerminator<"LinalgExtCollectiveYieldOp">]> {
-  let summary = "linalg-extension post-SPMD all-reduce handoff";
+  let summary = "post-SPMD all-reduce with linalg semantics";
   let description = [{
     Carries linalg-extension all-reduce semantics after SPMD partitioning.
     `partition_group` entries are logical card partition IDs in the current
@@ -123,7 +123,7 @@ def Wafer_LinalgExtCollectiveAllReduceOp
 
 def Wafer_LinalgExtCollectiveAllToAllOp
     : Wafer_LinalgExtCollectiveOp<"linalg_ext.collective.all_to_all"> {
-  let summary = "linalg-extension post-SPMD all-to-all handoff";
+  let summary = "post-SPMD all-to-all with linalg semantics";
   let description = [{
     Carries linalg-extension all-to-all semantics after SPMD partitioning.
     `partition_group` entries are logical card partition IDs in the current
@@ -150,7 +150,7 @@ def Wafer_LinalgExtCollectiveAllToAllOp
 
 def Wafer_LinalgExtCollectiveCollectivePermuteOp
     : Wafer_LinalgExtCollectiveOp<"linalg_ext.collective.collective_permute"> {
-  let summary = "linalg-extension post-SPMD collective-permute handoff";
+  let summary = "post-SPMD collective-permute with linalg semantics";
   let description = [{
     Carries linalg-extension collective-permute semantics after SPMD partitioning.
     `source_target_pairs` contains source/target logical card partition pairs,

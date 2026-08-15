@@ -2,11 +2,11 @@
 """Typed inventory for collective traffic and Direct-DTE behavior probes.
 
 Pipeline position:
-- Upstream artifact / IR: explicit post-SPMD StableHLO AllToAll or
+- Upstream IR / input: explicit post-SPMD StableHLO AllToAll or
   CollectivePermute with a verified sixteen-rank distributed boundary.
 - Current stage responsibility: define exact traffic-semantics workloads and
   fail closed when a requested route/contention claim is not observable.
-- Output artifact / IR: a verified Direct-DTE package plus, after an armed
+- Output IR / files: a verified Direct-DTE package plus, after an armed
   board run, full-output exact correctness and transport lifecycle evidence.
 - Downstream consumer: hardware-calibration review and future compiler cost or
   legality work after its separately named activation gates are satisfied.

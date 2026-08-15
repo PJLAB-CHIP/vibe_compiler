@@ -2,7 +2,7 @@
 
 #include "Wafer/Runtime/BoardRuntime.h"
 #include "Wafer/Runtime/PackageManifest.h"
-#include "Wafer/Runtime/ProfileCompanion.h"
+#include "Wafer/Runtime/ProfileInstrumentation.h"
 #include "WaferProfileCampaign.h"
 #include "WaferRunBoardIO.h"
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
@@ -245,7 +245,7 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
        options.directDTEStatusABI || options.supportsHostWatchdog))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "no-card admission options are not valid with --board");
+        "no-card verification options are not valid with --board");
   if (options.board &&
       (options.expectedRuntimeVersion == 0 || options.expectedTileCount == 0 ||
        options.expectedDeviceName.empty() || options.expectedPCIBusId.empty() ||
@@ -307,10 +307,11 @@ void printNoCardTilePlan(const wafer::runtime::RuntimeSessionPlan &plan) {
                << "\n";
 }
 
-int runNoCard(const Options &options,
-              const wafer::runtime::VerifiedPackageManifest &package,
-              const std::optional<wafer::runtime::VerifiedProfileCompanion>
-                  &profileCompanion) {
+int runNoCard(
+    const Options &options,
+    const wafer::runtime::VerifiedPackageManifest &package,
+    const std::optional<wafer::runtime::VerifiedProfileInstrumentation>
+        &profileInstrumentation) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
   std::vector<wafer::runtime::RuntimeInvocationBinding> bindings;
   for (const wafer::runtime::PackageResourceRecord &resource :
@@ -336,8 +337,7 @@ int runNoCard(const Options &options,
   }
   environment.supportsHostWatchdog = options.supportsHostWatchdog;
   llvm::Expected<wafer::runtime::RuntimeInvocationPlan> invocationPlan =
-      wafer::runtime::preflightNoCardRuntimeInvocation(package, bindings,
-                                                       environment);
+      wafer::runtime::planRuntimeInvocation(package, bindings, environment);
   if (!invocationPlan)
     return fail(invocationPlan.takeError());
 
@@ -357,14 +357,14 @@ int runNoCard(const Options &options,
   for (const wafer::runtime::RuntimeSessionPlan &tile : invocationPlan->tiles)
     printNoCardTilePlan(tile);
   llvm::outs() << "invocation_tiles: " << invocationPlan->tileCount << "\n";
-  if (profileCompanion)
-    llvm::outs() << "profile_companion: ready schema="
-                 << profileCompanion->getSchemaVersion()
-                 << " cards=" << profileCompanion->getCardCount()
-                 << " tiles=" << profileCompanion->getTileCount()
-                 << " captures=" << profileCompanion->getCaptures().size()
-                 << " target_call_sites=" << profileCompanion->getSiteCount()
-                 << "\n";
+  if (profileInstrumentation)
+    llvm::outs() << "profile_instrumentation: ready schema="
+                 << profileInstrumentation->getSchemaVersion()
+                 << " cards=" << profileInstrumentation->getCardCount()
+                 << " tiles=" << profileInstrumentation->getTileCount()
+                 << " captures=" << profileInstrumentation->getCaptures().size()
+                 << " target_call_sites="
+                 << profileInstrumentation->getSiteCount() << "\n";
   llvm::outs() << "board_execution: false\n";
   return 0;
 }
@@ -372,8 +372,8 @@ int runNoCard(const Options &options,
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
 int runBoard(const Options &options,
              const wafer::runtime::VerifiedPackageManifest &package,
-             const std::optional<wafer::runtime::VerifiedProfileCompanion>
-                 &profileCompanion) {
+             const std::optional<wafer::runtime::VerifiedProfileInstrumentation>
+                 &profileInstrumentation) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
   wafer::runtime::BoardRuntimeInvocationRequest request;
   request.deviceId = options.deviceId;
@@ -419,10 +419,10 @@ int runBoard(const Options &options,
   std::string profileRunDirectory;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       [&]() -> llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> {
-    if (profileCompanion) {
+    if (profileInstrumentation) {
       llvm::Expected<wafer::runtime::cli::BoardProfileCampaignResult> campaign =
           wafer::runtime::cli::runBoardProfileCampaign(
-              *profileCompanion, manifest, *filePlan, **driver);
+              *profileInstrumentation, manifest, *filePlan, **driver);
       if (!campaign)
         return campaign.takeError();
       completedPlan = std::move(campaign->finalPlan);
@@ -440,7 +440,7 @@ int runBoard(const Options &options,
                     wafer::runtime::BoardRuntimeContextState::Poisoned;
     return terminateBoardProcess(std::move(error), poisoned);
   }
-  if (llvm::Error error = wafer::runtime::cli::validateAndPublishBoardOutputs(
+  if (llvm::Error error = wafer::runtime::cli::validateAndWriteBoardOutputs(
           result->outputs, completedPlan))
     return terminateBoardProcess(std::move(error), /*poisoned=*/false);
 
@@ -537,19 +537,20 @@ int main(int argc, char **argv) {
       wafer::runtime::loadVerifiedPackageManifest(options->packageDirectory);
   if (!package)
     return fail(package.takeError());
-  llvm::Expected<std::optional<wafer::runtime::VerifiedProfileCompanion>>
-      loaded = wafer::runtime::loadSiblingProfileCompanionIfPresent(
+  llvm::Expected<std::optional<wafer::runtime::VerifiedProfileInstrumentation>>
+      loaded = wafer::runtime::loadSiblingProfileInstrumentationIfPresent(
           options->packageDirectory);
   if (!loaded)
     return fail(loaded.takeError());
-  std::optional<wafer::runtime::VerifiedProfileCompanion> profileCompanion;
+  std::optional<wafer::runtime::VerifiedProfileInstrumentation>
+      profileInstrumentation;
   if (*loaded)
-    profileCompanion.emplace(std::move(**loaded));
+    profileInstrumentation.emplace(std::move(**loaded));
   if (options->noCard) {
-    return runNoCard(*options, *package, profileCompanion);
+    return runNoCard(*options, *package, profileInstrumentation);
   }
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
-  return runBoard(*options, *package, profileCompanion);
+  return runBoard(*options, *package, profileInstrumentation);
 #else
   return fail(llvm::createStringError(
       llvm::errc::not_supported,

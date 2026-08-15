@@ -2,7 +2,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "OpVerifierUtils.h"
+#include "WaferIRVerification.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -29,14 +29,12 @@ mlir::LogicalResult InstrDTESendOp::verify() {
                                 getBytesAttr(), getToken().getType())))
     return mlir::failure();
   if (getBindingSelector()) {
-    if (!getBinding() ||
-        getBinding()->getRemoteAddressMode() !=
-            DTERemoteAddressMode::SelectorTable)
+    if (!getBinding() || getBinding()->getRemoteAddressMode() !=
+                             DTERemoteAddressMode::SelectorTable)
       return emitOpError(
           "Direct DTE send route selector requires selector-table binding");
-  } else if (getBinding() &&
-             getBinding()->getRemoteAddressMode() ==
-                 DTERemoteAddressMode::SelectorTable) {
+  } else if (getBinding() && getBinding()->getRemoteAddressMode() ==
+                                 DTERemoteAddressMode::SelectorTable) {
     return emitOpError(
         "Direct DTE selector-table binding requires route selector operand");
   }

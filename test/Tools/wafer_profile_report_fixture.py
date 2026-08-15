@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic v10 production-artifact evidence for the offline analyzer."""
+"""Deterministic v10 primary-program evidence for the offline analyzer."""
 
 from __future__ import annotations
 
@@ -379,7 +379,7 @@ def _trace_tile(tile: int) -> dict[str, Any]:
         "entry_end_cycle": entry_end,
         "capacity": len(events) + 2,
         "count": len(events),
-        "preflight_count": len(events),
+        "counted_event_count": len(events),
         "next_sequence": len(events),
         "dropped_event_count": 0,
         "record_flags": 71,
@@ -458,17 +458,10 @@ def _sites() -> list[dict[str, Any]]:
 
 
 def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
-    """Build one complete, production-artifact profile evidence object."""
+    """Build one complete, primary-program profile evidence object."""
 
     target_identity = "wafer-tx81-single-card"
     experiment = {
-        "artifact": {
-            "digest": FINAL_DIGEST,
-            "target_identity": target_identity,
-            "launch": _kernel_launch(),
-            "card_count": 1,
-            "tile_count": 16,
-        },
         "clock": [
             {
                 "card_id": 0,
@@ -491,18 +484,18 @@ def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
     }
     evidence = {
         "schema": "wafer.profile.evidence",
-        "schema_version": 10,
-        "run_id": "fixture-production-artifact",
-        "identity": {
-            "production_manifest_sha256": FINAL_DIGEST,
-            "profile_companion_schema_version": 9,
+        "schema_version": 11,
+        "run_id": "fixture-primary-program",
+        "program": {
+            "program_manifest_sha256": FINAL_DIGEST,
+            "profile_instrumentation_schema_version": 10,
             "record_abi": RECORD_ABI,
             "target_identity": target_identity,
             "launch": _kernel_launch(),
             "card_count": 1,
             "tile_count": 16,
             "site_correlation_basis": (
-                "typed-target-call-ordinal-ssa-identity-occurrence-v2"
+                "typed-target-call-ordinal-ssa-numbering-occurrence-v3"
             ),
         },
         "topology": [
@@ -538,7 +531,7 @@ def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
                     "bytes": 4096,
                     "reference_sha256": "sha256:" + f"{tile + 1:064x}",
                     "external_expected_comparison": "exact",
-                    "production_execution_validated": True,
+                    "primary_output_validated": True,
                     "diagnostic_captures_match_primary": True,
                 }
                 for tile in range(16)
@@ -547,7 +540,7 @@ def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
         "sites": _sites(),
         "validity": {
             "environment": True,
-            "package_companion": True,
+            "profile_instrumentation": True,
             "measurement_basis": True,
         },
         "static_cost_model": _static_cost_model(),

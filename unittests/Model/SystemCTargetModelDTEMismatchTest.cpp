@@ -26,8 +26,7 @@ using namespace wafer::model;
 llvm::CallInst *findSendPrepareCall(llvm::Module &module,
                                     TargetIdentityId targetIdentity) {
   const llvm::StringRef symbol =
-      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare)
-          .symbol;
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare).symbol;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
       for (llvm::Instruction &instruction : block)
@@ -41,15 +40,16 @@ llvm::CallInst *findSendPrepareCall(llvm::Module &module,
 TEST(SystemCTargetModelDTEMismatchTest,
      MatchedEndpointMetadataFailsAtomicallyAndWakesPeers) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
 
-  llvm::Module &rankZeroModule =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  llvm::Module &rankZeroModule = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   llvm::CallInst *send = findSendPrepareCall(
-      rankZeroModule, bundle->getExecutionConfig().getTargetIdentityId());
+      rankZeroModule,
+      targetLLVMModules->getExecutionConfig().getTargetIdentityId());
   ASSERT_NE(send, nullptr);
   ASSERT_EQ(send->arg_size(), 7u);
   auto *destination = llvm::dyn_cast<llvm::ConstantInt>(send->getArgOperand(1));
@@ -59,11 +59,11 @@ TEST(SystemCTargetModelDTEMismatchTest,
                                 destination->getZExtValue() + 256));
 
   llvm::Expected<test::DirectDTEInvocationData> invocation =
-      test::buildDirectDTEInvocationData(*bundle);
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, invocation->arguments);
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
 

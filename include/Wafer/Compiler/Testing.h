@@ -5,23 +5,22 @@
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 
 #include "llvm/ADT/ArrayRef.h"
 
 namespace wafer::compiler::testing {
 
-/// Test-only entry to the production whole-card Direct DTE acceptance gate.
-/// Successful calls attach typed bindings; failed calls leave every candidate
-/// issue unbound.
+/// Test-only entry to whole-card Direct DTE binding. Successful calls attach
+/// typed bindings; failed calls leave every issue unbound.
 mlir::FailureOr<TransportContract>
-acceptDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules);
+bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules);
 
-/// Test-only entry to the production whole-card resource gate. The summary is
-/// recomputed from the supplied accepted physical Tile IR and is not persisted
-/// as a second scheduling representation.
+/// Test-only entry to whole-card resource verification. The summary is
+/// recomputed from the supplied physical-Tile IR and is not persisted as a
+/// second scheduling representation.
 mlir::FailureOr<analysis::WholeCardInstructionProgramCost>
-acceptWholeCardResources(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
+verifyWholeCardResources(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
                          llvm::ArrayRef<PhysicalTileId> physicalTileIds,
                          const ExecutionConfig &executionConfig);
 

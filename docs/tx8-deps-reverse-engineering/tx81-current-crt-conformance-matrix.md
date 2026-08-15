@@ -2,7 +2,7 @@
 
 本文把旧DLCompiler TX81 CRT source、当前public headers/installed binary反汇编与repo-local Wafer CRT实现做静态对照。它只记录
 source/disassembly-backed evidence，不拥有production membership、prototype/signature、IR、ABI、lowering或
-runtime policy。当前IR / ABI和production closure合同查看`tasks/14-target-conversion-module-publication.md`，
+runtime policy。当前IR / ABI和production closure合同查看`tasks/14-target-code-generation.md`，
 prototype与repo-local实现分别查看`runtime/wafer_crt/include/wafer_tx81_crt.h`和
 `runtime/wafer_crt/src/wafer_tx81_crt.c`；闭合状态查看`tools/check_target_crt_symbols.py`与
 `tasks/progress.md`。
@@ -52,9 +52,9 @@ compiler-managed DDR allocation仍会判为`unsupported_target_address`，不能
   public header/source、checker与任务队列为准。
 
 Pipeline position:
-- Upstream artifact / IR: none; this file consumes source and binary snapshots as evidence.
+- Upstream IR / input: none; this file consumes source and binary snapshots as evidence.
 - Current stage responsibility: preserve an auditable static evidence comparison.
-- Output artifact / IR: none.
+- Output IR / files: none.
 - Downstream consumer: human/static evidence audit；conformance tools derive expected facts from code and do not parse this document.
 - User-level driver / named pipeline: none.
 - Explicit non-goals: owning production membership, IR, ABI, lowering, package or runtime policy.

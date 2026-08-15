@@ -117,7 +117,8 @@ llvm::Expected<QualificationRun> runQualification(
   // values on the backend's final storage so that the two storage digests
   // differ exactly when an observable logical element differs, rather than
   // when only unobservable padding differs.  The backend storage digest is
-  // still frozen independently for repeatability by BulkAdmission.
+  // still recorded independently so qualified execution can reject backend
+  // implementation drift.
   llvm::Expected<std::vector<uint8_t>> formalPhysical =
       packPhysicalTensorLogicalValues(destinationTemplate.getKey(),
                                       formal->values,

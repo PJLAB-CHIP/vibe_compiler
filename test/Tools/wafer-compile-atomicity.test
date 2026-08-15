@@ -15,11 +15,11 @@
 # RUN: chmod +x %t.symlink-helper
 # RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\nprintf called > "${HELPER_CALLED:?}"\nexit 99\n' > %t.unexpected-helper
 # RUN: chmod +x %t.unexpected-helper
-# RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nnum_partitions=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --num-partitions) num_partitions="$2"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nmkdir -p "$output"\ncp -R "$input/." "$output/"\nmetadata_partitions="$num_partitions"\nif [[ "${HELPER_MODE:-}" = "bad-partitions" ]]; then metadata_partitions=2; fi\nprintf "{\\"parameter_shards_version\\":4,\\"function\\":\\"forward\\",\\"num_partitions\\":%%s,\\"parameters\\":[]}\\n" "$metadata_partitions" > "$output/functions/forward.parameter_shards.json"\nif [[ "${HELPER_MODE:-}" != "no-boundary" ]]; then\npython3 - "$output/functions/forward.meta" "$num_partitions" <<PY\nimport json\nimport sys\npath = sys.argv[1]\nnum_partitions = int(sys.argv[2])\nwith open(path) as stream:\n    meta = json.load(stream)\npartitions = [{"partition_id": partition_id, "replica_id": partition_id, "offsets": [0], "sizes": [16], "strides": [1]} for partition_id in range(num_partitions)]\ndef binding(index_field, index):\n    return {index_field: index, "distribution": "replicated", "global_shape": [16], "local_shape": [16], "dtype": "float32", "partitions": partitions}\nmeta["distributed_boundary"] = {"version": 2, "num_partitions": num_partitions, "inputs": [binding("argument_index", 0)], "outputs": [binding("result_index", 0)]}\nwith open(path, "w") as stream:\n    json.dump(meta, stream)\nPY\nfi\nif [[ "${HELPER_MODE:-}" = "sdy" ]]; then sed -i s/stablehlo.constant/sdy.constant/g "$output/functions/forward.mlir"; fi\nif [[ "${HELPER_MODE:-}" = "sdy-attribute" ]]; then sed -i "0,/^module {/s//module attributes {sdy.leftover = #sdy.mesh<[\\"card_partition\\"=1]>} {/" "$output/functions/forward.mlir"; fi\nif [[ "${HELPER_MODE:-}" = "sdy-string" ]]; then sed -i "0,/^module {/s//module attributes {sdy.leftover = \\"opaque\\"} {/" "$output/functions/forward.mlir"; fi\nif [[ "${HELPER_MODE:-}" = "publication-race" ]]; then mkdir -p "${FINAL_OUTPUT:?}"; printf competitor > "${FINAL_OUTPUT}/sentinel"; fi\n' > %t.mock-helper
+# RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nnum_partitions=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    --num-partitions) num_partitions="$2"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nmkdir -p "$output"\ncp -R "$input/." "$output/"\nmetadata_partitions="$num_partitions"\nif [[ "${HELPER_MODE:-}" = "bad-partitions" ]]; then metadata_partitions=2; fi\nprintf "{\\"parameter_shards_version\\":4,\\"function\\":\\"forward\\",\\"num_partitions\\":%%s,\\"parameters\\":[]}\\n" "$metadata_partitions" > "$output/functions/forward.parameter_shards.json"\nif [[ "${HELPER_MODE:-}" != "no-boundary" ]]; then\npython3 - "$output/functions/forward.meta" "$num_partitions" <<PY\nimport json\nimport sys\npath = sys.argv[1]\nnum_partitions = int(sys.argv[2])\nwith open(path) as stream:\n    meta = json.load(stream)\npartitions = [{"partition_id": partition_id, "replica_id": partition_id, "offsets": [0], "sizes": [16], "strides": [1]} for partition_id in range(num_partitions)]\ndef binding(index_field, index):\n    return {index_field: index, "distribution": "replicated", "global_shape": [16], "local_shape": [16], "dtype": "float32", "partitions": partitions}\nmeta["distributed_boundary"] = {"version": 2, "num_partitions": num_partitions, "inputs": [binding("argument_index", 0)], "outputs": [binding("result_index", 0)]}\nwith open(path, "w") as stream:\n    json.dump(meta, stream)\nPY\nfi\nif [[ "${HELPER_MODE:-}" = "sdy" ]]; then sed -i s/stablehlo.constant/sdy.constant/g "$output/functions/forward.mlir"; fi\nif [[ "${HELPER_MODE:-}" = "sdy-attribute" ]]; then sed -i "0,/^module {/s//module attributes {sdy.leftover = #sdy.mesh<[\\"card_partition\\"=1]>} {/" "$output/functions/forward.mlir"; fi\nif [[ "${HELPER_MODE:-}" = "sdy-string" ]]; then sed -i "0,/^module {/s//module attributes {sdy.leftover = \\"opaque\\"} {/" "$output/functions/forward.mlir"; fi\nif [[ "${HELPER_MODE:-}" = "output-race" ]]; then mkdir -p "${FINAL_OUTPUT:?}"; printf competitor > "${FINAL_OUTPUT}/sentinel"; fi\n' > %t.mock-helper
 # RUN: chmod +x %t.mock-helper
 
 # A helper that has already written a partial staging program and then fails
-# must not mutate the source or publish the requested output.
+# must not mutate the source or write the requested output.
 # RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/failed --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=LATE
 # RUN: diff -ru %t.input.before %t.input
 # RUN: test ! -e %t.outputs/failed
@@ -41,12 +41,12 @@
 # RUN: not env HELPER_MODE=sdy-string WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/residual-sdy-string --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-STRING
 # RUN: test ! -e %t.outputs/residual-sdy-string
 
-# Post-helper metadata is checked inside the same publication transaction.
+# Post-helper metadata is checked inside the same compilation transaction.
 # RUN: not env HELPER_MODE=bad-partitions WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/bad-metadata --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=BAD-METADATA
 # RUN: test ! -e %t.outputs/bad-metadata
 
 # A marker alone cannot establish the typed user-input/result distribution
-# contract that the tensor program hands to card-partition artifact construction.
+# contract that the tensor program hands to CardProgram construction.
 # RUN: not env HELPER_MODE=no-boundary WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/missing-boundary --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=NO-BOUNDARY
 # RUN: test ! -e %t.outputs/missing-boundary
 
@@ -67,16 +67,16 @@
 # RUN: test ! -e %t.outputs/helper-root-symlink
 # RUN: test ! -L %t.outputs/helper-root-symlink
 
-# An existing final directory is never replaced by package publication.
+# An existing final directory is never replaced by the package directory rename.
 # RUN: mkdir -p %t.outputs/final/nested && printf old > %t.outputs/final/nested/sentinel
 # RUN: cp -R %t.outputs/final %t.final.before
 # RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/final --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=EXISTING
 # RUN: diff -ru %t.input.before %t.input
 # RUN: diff -ru %t.final.before %t.outputs/final
 
-# Publication remains no-replace when a competing writer creates the requested
+# The directory rename remains no-replace when a competing writer creates the requested
 # final directory after the initial existence check but before renameat2.
-# RUN: not env HELPER_MODE=publication-race FINAL_OUTPUT=%t.outputs/raced-final WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/raced-final --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=PUBLICATION-RACE
+# RUN: not env HELPER_MODE=output-race FINAL_OUTPUT=%t.outputs/raced-final WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/raced-final --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=OUTPUT-RACE
 # RUN: FileCheck %s --input-file=%t.outputs/raced-final/sentinel --check-prefix=COMPETITOR
 # RUN: test ! -e %t.outputs/raced-final/functions
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
@@ -174,7 +174,7 @@
 # BAD-METADATA: parameter shard num_partitions does not match execution mesh partition count
 # NO-BOUNDARY: post-SPMD program directory is missing distributed_boundary
 # EXISTING: wafer-compile: refusing to replace existing output program directory
-# PUBLICATION-RACE: wafer-compile: output program directory appeared before publication; refusing to replace it
+# OUTPUT-RACE: wafer-compile: output program directory appeared before rename; refusing to replace it
 # COMPETITOR: competitor
 # ALIASED-OUTPUT: wafer-compile: output program directory must not equal or be nested under the source program directory
 # DEEP-SOURCE-OUTPUT: wafer-compile: output program directory must not equal or be nested under the source program directory
@@ -182,7 +182,7 @@
 # STAGE-INSTR: 'wafer.instr.ncc_join [0]' op is not legal in an exporter or post-SPMD StableHLO program
 # SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume
 # NESTED-FACTS: target topology and execution mesh must be direct module members
-# SINGLE-CARD: wafer-compile: published verified package with num-partitions=1 physical-tiles=16:
+# SINGLE-CARD: wafer-compile: wrote verified package with num-partitions=1 physical-tiles=16:
 # NO-CARD: package: id=0 schema=8 cards=1 tiles=16
 # NO-CARD: entry: 0 card_id=0 tile_id=0 launch_slot=0
 # NO-CARD: launch_phase: role=main symbol=main

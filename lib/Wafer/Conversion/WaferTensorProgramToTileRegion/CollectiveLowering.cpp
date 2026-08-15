@@ -1,4 +1,4 @@
-//===- CollectiveLowering.cpp - Card collective handoff -------------===//
+//===- CollectiveLowering.cpp - Card collective lowering ------------===//
 
 #include "Internal.h"
 

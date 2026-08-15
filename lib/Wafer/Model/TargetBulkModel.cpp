@@ -55,16 +55,17 @@ QualifiedTargetModelBulkBackend::tryExecute(
     return destinationTemplate.takeError();
 
   for (const VerifiedBulkQualificationRecord &record : records) {
-    llvm::Expected<BulkBackendAdmission> admission = record.createAdmission(
-        environment, request.command, inputs, *destinationTemplate);
-    if (!admission) {
-      llvm::consumeError(admission.takeError());
+    llvm::Expected<QualifiedBulkExecution> qualifiedExecution =
+        record.qualifyExecution(environment, request.command, inputs,
+                                *destinationTemplate);
+    if (!qualifiedExecution) {
+      llvm::consumeError(qualifiedExecution.takeError());
       continue;
     }
     llvm::Expected<BulkTensorNumericResult> result =
-        executeAdmittedBulkTensorNumeric(environment, *admission,
-                                         request.command, inputs,
-                                         *destinationTemplate, budget);
+        executeQualifiedBulkTensorNumeric(environment, *qualifiedExecution,
+                                          request.command, inputs,
+                                          *destinationTemplate, budget);
     if (!result)
       return result.takeError();
     TargetModelBulkResult modelResult{
@@ -75,8 +76,9 @@ QualifiedTargetModelBulkBackend::tryExecute(
         {result->evidence.matmulInvocations,
          result->evidence.reorderInvocations,
          result->evidence.formalFusedMultiplyAdds,
-         TargetModelBulkProvenanceKind::ExactQualificationRecord,
-         admission->getRecordDigest().str(), result->evidence.implementation}};
+         TargetModelBulkEvidenceKind::ExactQualificationRecord,
+         qualifiedExecution->getRecordDigest().str(),
+         result->evidence.implementation}};
     return std::optional<TargetModelBulkResult>(std::move(modelResult));
   }
   return std::optional<TargetModelBulkResult>();
@@ -121,7 +123,7 @@ ManagedReferenceTargetModelBackend::tryExecute(
       result->flags,
       {result->evidence.matmulInvocations, result->evidence.reorderInvocations,
        result->evidence.formalFusedMultiplyAdds,
-       TargetModelBulkProvenanceKind::ManagedReferenceEnvironment,
+       TargetModelBulkEvidenceKind::ManagedReferenceEnvironment,
        environment.getDigest().str(), result->evidence.implementation}};
   return std::optional<TargetModelBulkResult>(std::move(modelResult));
 }

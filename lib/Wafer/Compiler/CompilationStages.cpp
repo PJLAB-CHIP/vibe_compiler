@@ -1,7 +1,7 @@
 //===- CompilationStages.cpp - Stage verification and registry ----------===//
 
 #include "CompilationInternal.h"
-#include "ExecutableBundleInternal.h"
+#include "PhysicalTileExecutablesInternal.h"
 
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -262,7 +262,7 @@ mlir::LogicalResult verifyTensorProgramStageOperations(mlir::ModuleOp module) {
   if (!illegal)
     return mlir::success();
   return illegal->emitOpError(
-      "is not legal in a verified structured tensor-program artifact");
+      "is not legal in a verified structured tensor program");
 }
 
 namespace {
@@ -413,10 +413,9 @@ void registerCompilationDialects(mlir::DialectRegistry &registry) {
   mlir::LLVM::registerInlinerInterface(registry);
 }
 
-mlir::LogicalResult runPassPipeline(mlir::ModuleOp module,
-                                    llvm::StringRef pipelineLabel,
-                                    llvm::function_ref<void(
-                                        mlir::OpPassManager &)> builder) {
+mlir::LogicalResult
+runPassPipeline(mlir::ModuleOp module, llvm::StringRef pipelineLabel,
+                llvm::function_ref<void(mlir::OpPassManager &)> builder) {
   mlir::PassManager manager(module.getContext());
   manager.enableVerifier(true);
   wafer::support::attachCompileTiming(manager, pipelineLabel);

@@ -474,15 +474,15 @@ CONTRACT_CASES = (
     ),
     TransportContractCase(
         "host-readback-before-terminal",
-        "runtime-publication",
+        "runtime-visibility",
         "static-negative",
         "host-runtime-lifecycle",
-        "runtime waits for terminal publication before D2H",
+        "runtime waits for terminal visibility before D2H",
         "management-plane idle is not an execution completion oracle",
     ),
     TransportContractCase(
         "terminal-completion-d2h-cleanup",
-        "runtime-publication",
+        "runtime-visibility",
         "board-executable",
         "board-runtime-lifecycle",
         "runner requires all-rank output capture and normal cleanup",
@@ -490,11 +490,11 @@ CONTRACT_CASES = (
     ),
     TransportContractCase(
         "outer-timeout-stops-batch",
-        "runtime-publication",
+        "runtime-visibility",
         "static-negative",
         "host-runtime-lifecycle",
         "one-shot outer timeout without retry/reset/power",
-        "a failed or missing terminal publication stops the active batch",
+        "a failed or missing terminal visibility stops the active batch",
     ),
 )
 
@@ -611,16 +611,16 @@ CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = {
         if case.disposition == "isolated-deferred"
         and case.domain.startswith("direct-dte")
     ),
-    "runtime-publication-positive": tuple(
+    "runtime-visibility-positive": tuple(
         case
         for case in CONTRACT_CASES
-        if case.domain == "runtime-publication"
+        if case.domain == "runtime-visibility"
         and case.disposition == "board-executable"
     ),
-    "runtime-publication-negative": tuple(
+    "runtime-visibility-negative": tuple(
         case
         for case in CONTRACT_CASES
-        if case.domain == "runtime-publication"
+        if case.domain == "runtime-visibility"
         and case.disposition == "static-negative"
     ),
     "dte-spm-counter-payload-sweep": TRANSPORT_PMU_OBSERVATIONS,

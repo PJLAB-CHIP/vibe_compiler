@@ -1123,20 +1123,20 @@ def compile_package(
         command.append("--profile")
     result = run(command, environment=environment)
     expected = (
-        "wafer-compile: published verified package with "
+        "wafer-compile: wrote verified package with "
         f"execution-ranks={case.rank_count}"
     )
     if expected not in result.stdout:
-        raise RuntimeError(f"compiler did not publish the {case.key} package")
-    published_companion = "wafer-compile: published profile companion:"
-    if profile and published_companion not in result.stdout:
+        raise RuntimeError(f"compiler did not write the {case.key} package")
+    written_instrumentation = "wafer-compile: wrote profile instrumentation:"
+    if profile and written_instrumentation not in result.stdout:
         raise RuntimeError(
-            f"compiler did not publish the {case.key} profile companion"
+            f"compiler did not write the {case.key} profile instrumentation"
         )
-    if not profile and published_companion in result.stdout:
+    if not profile and written_instrumentation in result.stdout:
         raise RuntimeError(
-            f"ordinary {case.key} compilation unexpectedly published a "
-            "profile companion"
+            f"ordinary {case.key} compilation unexpectedly wrote a "
+            "profile instrumentation"
         )
 
 

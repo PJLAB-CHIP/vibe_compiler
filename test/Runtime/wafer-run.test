@@ -34,7 +34,7 @@
 
 # NO-MODE: wafer-run requires explicit --no-card
 # BOARD-QUALIFICATION: --board requires complete explicit TX qualification options
-# BOARD-OPTIONS: no-card admission options are not valid with --board
+# BOARD-OPTIONS: no-card validation options are not valid with --board
 # CAPACITY: runtime environment resource capacity is insufficient
 # NO-CARD-BOARD-OPTION: board binding and qualification options require --board
 # EXTRA: package modules contain an unreferenced payload

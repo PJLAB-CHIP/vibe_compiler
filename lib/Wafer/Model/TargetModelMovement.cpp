@@ -1,4 +1,4 @@
-//===- TargetModelMovement.cpp - Movement transaction kernels --------===//
+//===- TargetModelMovement.cpp - Movement command kernels --------===//
 
 #include "TargetModelKernelInternal.h"
 
@@ -49,8 +49,8 @@ readSnapshot(const InvocationMemoryRegistry &memory, int64_t launchSlot,
 }
 
 llvm::Expected<TargetModelCommandEffect>
-executeMovement(const compiler::TargetTransaction &transaction,
-                const target::TargetStridedDMATransaction &value,
+executeMovement(const compiler::TargetCommand &command,
+                const target::TargetStridedDMACommand &value,
                 const InvocationMemoryRegistry &memory,
                 TargetModelKernelBudget budget) {
   if (value.byteCount > budget.getMaximumMovementBytes())
@@ -63,44 +63,43 @@ executeMovement(const compiler::TargetTransaction &transaction,
 
   if (value.direction == target::TargetDMADirection::Read) {
     llvm::Expected<std::vector<uint8_t>> payload = memory.readStridedSnapshot(
-        transaction.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
+        command.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
         value.source, layout, 1);
     if (!payload)
       return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                          llvm::toString(payload.takeError()));
     return withReads(
         TargetModelCommandEffect{
-            {TargetModelByteWrite{transaction.launchSlotId.getValue(),
+            {TargetModelByteWrite{command.launchSlotId.getValue(),
                                   TargetModelAddressSpace::TileSPM,
                                   value.destination, 1, std::move(*payload)}},
             {},
             TargetModelControlAction::None},
-        {TargetModelByteRead{transaction.launchSlotId.getValue(),
+        {TargetModelByteRead{command.launchSlotId.getValue(),
                              TargetModelAddressSpace::CardDDR, value.source,
                              value.byteCount, layout}});
   }
 
   llvm::Expected<std::vector<uint8_t>> payload = readSnapshot(
-      memory, transaction.launchSlotId.getValue(),
-      TargetModelAddressSpace::TileSPM, value.source, value.byteCount);
+      memory, command.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
+      value.source, value.byteCount);
   if (!payload)
     return payload.takeError();
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
-                                TargetModelAddressSpace::CardDDR,
-                                value.destination, 1, std::move(*payload),
-                                layout}},
+          {TargetModelByteWrite{
+              command.launchSlotId.getValue(), TargetModelAddressSpace::CardDDR,
+              value.destination, 1, std::move(*payload), layout}},
           {},
           TargetModelControlAction::None},
-      {TargetModelByteRead{transaction.launchSlotId.getValue(),
+      {TargetModelByteRead{command.launchSlotId.getValue(),
                            TargetModelAddressSpace::TileSPM, value.source,
                            value.byteCount, std::nullopt}});
 }
 
 llvm::Expected<TargetModelCommandEffect>
-executeGatherScatter(const compiler::TargetTransaction &transaction,
-                     const target::TargetGatherScatterTransaction &value,
+executeGatherScatter(const compiler::TargetCommand &command,
+                     const target::TargetGatherScatterCommand &value,
                      const InvocationMemoryRegistry &memory,
                      TargetModelKernelBudget budget) {
   if (value.byteCount > budget.getMaximumMovementBytes())
@@ -121,7 +120,7 @@ executeGatherScatter(const compiler::TargetTransaction &transaction,
   if (!destinationSegments)
     return destinationSegments.takeError();
   if (*sourceSegments != *destinationSegments)
-    return kernelError(TargetModelKernelErrorCode::InvalidTransactionField,
+    return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "gather/scatter source and destination segment counts "
                        "differ");
   TargetModelStridedByteLayout sourceLayout =
@@ -129,20 +128,19 @@ executeGatherScatter(const compiler::TargetTransaction &transaction,
   TargetModelStridedByteLayout destinationLayout = makeLayout(
       value.innerBytes, value.destinationStrides, value.destinationIterations);
   llvm::Expected<std::vector<uint8_t>> snapshot = memory.readStridedSnapshot(
-      transaction.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
+      command.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
       value.source, sourceLayout, 1);
   if (!snapshot)
     return kernelError(TargetModelKernelErrorCode::MemoryReadFailure,
                        llvm::toString(snapshot.takeError()));
   return withReads(
       TargetModelCommandEffect{
-          {TargetModelByteWrite{transaction.launchSlotId.getValue(),
-                                TargetModelAddressSpace::TileSPM,
-                                value.destination, 1, std::move(*snapshot),
-                                destinationLayout}},
+          {TargetModelByteWrite{
+              command.launchSlotId.getValue(), TargetModelAddressSpace::TileSPM,
+              value.destination, 1, std::move(*snapshot), destinationLayout}},
           {},
           TargetModelControlAction::None},
-      {TargetModelByteRead{transaction.launchSlotId.getValue(),
+      {TargetModelByteRead{command.launchSlotId.getValue(),
                            TargetModelAddressSpace::TileSPM, value.source,
                            value.byteCount, sourceLayout}});
 }

@@ -2,8 +2,8 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "InstructionVerifierUtils.h"
-#include "OpVerifierUtils.h"
+#include "InstructionVerification.h"
+#include "WaferIRVerification.h"
 
 #include <initializer_list>
 #include <optional>

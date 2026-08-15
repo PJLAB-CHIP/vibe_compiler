@@ -2,7 +2,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "OpVerifierUtils.h"
+#include "WaferIRVerification.h"
 
 using namespace wafer;
 using namespace wafer::detail;

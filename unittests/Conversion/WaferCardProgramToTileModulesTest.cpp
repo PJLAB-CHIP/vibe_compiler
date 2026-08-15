@@ -1,4 +1,5 @@
-//===- WaferCardProgramToTileModulesTest.cpp - Projection tests ----------===//
+//===- WaferCardProgramToTileModulesTest.cpp - Module splitting tests
+//----------===//
 
 #include "Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h"
 
@@ -62,10 +63,10 @@ collectIntegerConstants(mlir::ModuleOp module) {
 }
 
 TEST(WaferCardProgramToTileModulesTest,
-     ProjectsStableTypedTileModulesWithoutMutatingSource) {
+     SplitsStableTypedTileModulesWithoutMutatingSource) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module attributes {test.projection_marker = "preserved"} {
+module attributes {test.module_attribute = "preserved"} {
   wafer.target.topology @target
       {card_grid = array<i64: 1, 1>,
        card_interconnect = "mesh",
@@ -91,23 +92,23 @@ module attributes {test.projection_marker = "preserved"} {
   const std::string sourceBefore = printModule(*source);
 
   std::string failureReason;
-  auto projected =
-      wafer::projectCardProgramToPhysicalTileModules(*source, &failureReason);
+  auto tileModules =
+      wafer::splitCardProgramIntoPhysicalTileModules(*source, &failureReason);
 
-  ASSERT_TRUE(mlir::succeeded(projected)) << failureReason;
-  ASSERT_EQ(projected->size(), 2u);
-  EXPECT_EQ((*projected)[0].cardId.getValue(), 0);
-  EXPECT_EQ((*projected)[0].tileId.getValue(), 0);
-  EXPECT_EQ((*projected)[1].cardId.getValue(), 0);
-  EXPECT_EQ((*projected)[1].tileId.getValue(), 1);
-  EXPECT_TRUE((*projected)[0].cardId == wafer::PhysicalCardId(0));
-  EXPECT_TRUE((*projected)[0].tileId != wafer::PhysicalTileId(1));
+  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
+  ASSERT_EQ(tileModules->size(), 2u);
+  EXPECT_EQ((*tileModules)[0].cardId.getValue(), 0);
+  EXPECT_EQ((*tileModules)[0].tileId.getValue(), 0);
+  EXPECT_EQ((*tileModules)[1].cardId.getValue(), 0);
+  EXPECT_EQ((*tileModules)[1].tileId.getValue(), 1);
+  EXPECT_TRUE((*tileModules)[0].cardId == wafer::PhysicalCardId(0));
+  EXPECT_TRUE((*tileModules)[0].tileId != wafer::PhysicalTileId(1));
   EXPECT_EQ(printModule(*source), sourceBefore);
 
-  for (auto &tile : *projected) {
+  for (auto &tile : *tileModules) {
     ASSERT_TRUE(tile.module);
     EXPECT_TRUE(mlir::succeeded(mlir::verify(*tile.module)));
-    EXPECT_TRUE(tile.module->getOperation()->hasAttr("test.projection_marker"));
+    EXPECT_TRUE(tile.module->getOperation()->hasAttr("test.module_attribute"));
     EXPECT_EQ(countOps<wafer::TargetTopologyOp>(*tile.module), 1u);
     EXPECT_EQ(countOps<wafer::ExecutionMeshOp>(*tile.module), 1u);
     EXPECT_EQ(countOps<mlir::memref::GlobalOp>(*tile.module), 1u);
@@ -116,9 +117,9 @@ module attributes {test.projection_marker = "preserved"} {
   }
 
   llvm::SmallVector<int64_t, 4> tileZeroConstants =
-      collectIntegerConstants(*(*projected)[0].module);
+      collectIntegerConstants(*(*tileModules)[0].module);
   llvm::SmallVector<int64_t, 4> tileOneConstants =
-      collectIntegerConstants(*(*projected)[1].module);
+      collectIntegerConstants(*(*tileModules)[1].module);
   ASSERT_EQ(tileZeroConstants.size(), 1u);
   ASSERT_EQ(tileOneConstants.size(), 1u);
   EXPECT_EQ(tileZeroConstants.front(), 10);
@@ -147,10 +148,10 @@ module {
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
 
   std::string failureReason;
-  auto projected =
-      wafer::projectCardProgramToPhysicalTileModules(*source, &failureReason);
+  auto tileModules =
+      wafer::splitCardProgramIntoPhysicalTileModules(*source, &failureReason);
 
-  EXPECT_TRUE(mlir::failed(projected));
+  EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason,
             "expected exactly one direct wafer.card.program in source module");
 }
@@ -187,10 +188,10 @@ module {
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   std::string failureReason;
-  auto projected =
-      wafer::projectCardProgramToPhysicalTileModules(*source, &failureReason);
+  auto tileModules =
+      wafer::splitCardProgramIntoPhysicalTileModules(*source, &failureReason);
 
-  EXPECT_TRUE(mlir::failed(projected));
+  EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason, "source module is not verifier-legal");
 }
 
@@ -218,10 +219,10 @@ module {
   ASSERT_TRUE(mlir::failed(mlir::verify(*source)));
 
   std::string failureReason;
-  auto projected =
-      wafer::projectCardProgramToPhysicalTileModules(*source, &failureReason);
+  auto tileModules =
+      wafer::splitCardProgramIntoPhysicalTileModules(*source, &failureReason);
 
-  EXPECT_TRUE(mlir::failed(projected));
+  EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason, "source module is not verifier-legal");
 }
 
@@ -253,10 +254,10 @@ module {
   EXPECT_TRUE(mlir::failed(mlir::verify(*source)));
 
   std::string failureReason;
-  auto projected =
-      wafer::projectCardProgramToPhysicalTileModules(*source, &failureReason);
+  auto tileModules =
+      wafer::splitCardProgramIntoPhysicalTileModules(*source, &failureReason);
 
-  EXPECT_TRUE(mlir::failed(projected));
+  EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason, "source module is not verifier-legal");
 }
 

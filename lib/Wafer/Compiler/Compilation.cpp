@@ -1,7 +1,7 @@
 //===- Compilation.cpp - Typed Wafer compiler facade --------------------===//
 
 #include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Compiler/Testing.h"
 #include "Wafer/IR/WaferDialect.h"
 
@@ -60,54 +60,55 @@ CompilationOptions::profile(const ExecutionConfig &executionConfig,
         llvm::errc::invalid_argument,
         "profile compilation requires a complete-card physical Tile kernel "
         "launch");
-  return CompilationOptions(/*profileCompanion=*/true, optimizations, timing);
+  return CompilationOptions(/*profileInstrumentation=*/true, optimizations,
+                            timing);
 }
 
-mlir::FailureOr<ExecutableBundle>
+mlir::FailureOr<PhysicalTileExecutables>
 compileProgram(CompilationRequest request,
                llvm::StringRef outputProgramDirectory,
                llvm::StringRef xlaSpmdPartitionerHelper,
                const TargetToolchain &targetToolchain,
                CompilationOptions options, llvm::raw_ostream &diagnostics) {
-  std::optional<ExecutableBundle> retainedExecutableBundle;
+  std::optional<PhysicalTileExecutables> retainedPhysicalTileExecutables;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
-          std::nullopt, &retainedExecutableBundle, nullptr)))
+          std::nullopt, &retainedPhysicalTileExecutables, nullptr)))
     return mlir::failure();
-  if (!retainedExecutableBundle) {
+  if (!retainedPhysicalTileExecutables) {
     detail::reject(
         diagnostics,
-        "successful compilation did not retain its executable bundle");
+        "successful compilation did not retain physical Tile executables");
     return mlir::failure();
   }
-  return std::move(*retainedExecutableBundle);
+  return std::move(*retainedPhysicalTileExecutables);
 }
 
-mlir::FailureOr<TargetCompilationProduct> compileProgramWithTargetLLVMBundle(
+mlir::FailureOr<CompiledProgram> compileProgramWithTargetLLVMModules(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics) {
-  std::optional<ExecutableBundle> retainedExecutableBundle;
-  std::optional<TargetLLVMModuleBundle> retainedTargetLLVMModuleBundle;
+  std::optional<PhysicalTileExecutables> retainedPhysicalTileExecutables;
+  std::optional<TargetLLVMModules> retainedTargetLLVMModules;
   std::optional<CompilationIRTrace> retainedIRTrace;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
-          std::nullopt, &retainedExecutableBundle,
-          &retainedTargetLLVMModuleBundle, &retainedIRTrace)))
+          std::nullopt, &retainedPhysicalTileExecutables,
+          &retainedTargetLLVMModules, &retainedIRTrace)))
     return mlir::failure();
-  if (!retainedExecutableBundle || !retainedTargetLLVMModuleBundle ||
+  if (!retainedPhysicalTileExecutables || !retainedTargetLLVMModules ||
       !retainedIRTrace) {
     detail::reject(diagnostics,
-                   "successful compilation did not retain its complete target "
-                   "compilation product");
+                   "successful compilation did not retain the complete "
+                   "compiled program");
     return mlir::failure();
   }
-  return TargetCompilationProduct(std::move(*retainedExecutableBundle),
-                                  std::move(*retainedTargetLLVMModuleBundle),
-                                  std::move(*retainedIRTrace));
+  return CompiledProgram(std::move(*retainedPhysicalTileExecutables),
+                         std::move(*retainedTargetLLVMModules),
+                         std::move(*retainedIRTrace));
 }
 
 mlir::LogicalResult testing::compileProgramWithExecutableLaunchSlotFailure(

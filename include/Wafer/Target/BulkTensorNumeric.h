@@ -67,10 +67,11 @@ private:
   std::vector<uint8_t> storage;
 };
 
-/// Closed identity of the managed backend actually linked into this process.
-class BulkBackendIdentity {
+/// Version and dependency records for the managed backend linked into this
+/// process.
+class BulkBackendDescriptor {
 public:
-  BulkBackendIdentity() = delete;
+  BulkBackendDescriptor() = delete;
 
   llvm::StringRef getName() const { return name; }
   llvm::StringRef getVersion() const { return version; }
@@ -85,9 +86,9 @@ private:
   friend llvm::Expected<class BulkExecutionEnvironment>
   createManagedBulkExecutionEnvironment();
 
-  BulkBackendIdentity(std::string name, std::string version, std::string commit,
-                      std::string dependencyRecordDigest,
-                      std::string libraryDigest, std::string digest)
+  BulkBackendDescriptor(std::string name, std::string version,
+                        std::string commit, std::string dependencyRecordDigest,
+                        std::string libraryDigest, std::string digest)
       : name(std::move(name)), version(std::move(version)),
         commit(std::move(commit)),
         dependencyRecordDigest(std::move(dependencyRecordDigest)),
@@ -108,7 +109,7 @@ class BulkExecutionEnvironment {
 public:
   BulkExecutionEnvironment() = delete;
 
-  const BulkBackendIdentity &getBackend() const { return backend; }
+  const BulkBackendDescriptor &getBackend() const { return backend; }
   llvm::StringRef getHostCPUName() const { return hostCPUName; }
   llvm::StringRef getHostFeaturesDigest() const { return hostFeaturesDigest; }
   llvm::StringRef getHostPlatformDigest() const { return hostPlatformDigest; }
@@ -122,7 +123,8 @@ private:
   friend llvm::Expected<BulkExecutionEnvironment>
   createManagedBulkExecutionEnvironment();
 
-  BulkExecutionEnvironment(BulkBackendIdentity backend, std::string hostCPUName,
+  BulkExecutionEnvironment(BulkBackendDescriptor backend,
+                           std::string hostCPUName,
                            std::string hostFeaturesDigest,
                            std::string hostPlatformDigest,
                            std::string effectiveISA, int floatingRoundingMode,
@@ -135,7 +137,7 @@ private:
         floatingRoundingMode(floatingRoundingMode), mxcsr(mxcsr),
         threadRuntime(std::move(threadRuntime)), digest(std::move(digest)) {}
 
-  BulkBackendIdentity backend;
+  BulkBackendDescriptor backend;
   std::string hostCPUName;
   std::string hostFeaturesDigest;
   std::string hostPlatformDigest;
@@ -150,15 +152,15 @@ enum class BulkQualificationKind : uint8_t { BitExact, ProfileBounded };
 
 llvm::StringRef stringifyBulkQualificationKind(BulkQualificationKind kind);
 
-/// Stable identity of the target-owned raw-layout -> f32 MatMul -> formal
-/// destination-finalize adapter contract.
-llvm::StringRef getBulkAdapterIdentityDigest();
+/// Digest of the target-owned raw-layout -> f32 MatMul -> formal destination
+/// conversion contract.
+llvm::StringRef getBulkAdapterContractDigest();
 
 /// Immutable exact-match capability issued only by a read-back validated final
 /// qualification record. Callers cannot manufacture this token directly.
-class BulkBackendAdmission {
+class QualifiedBulkExecution {
 public:
-  BulkBackendAdmission() = delete;
+  QualifiedBulkExecution() = delete;
 
   llvm::StringRef getRecordDigest() const { return recordDigest; }
   llvm::StringRef getAdapterDigest() const { return adapterDigest; }
@@ -186,7 +188,7 @@ public:
 private:
   friend class VerifiedBulkQualificationRecord;
 
-  BulkBackendAdmission(
+  QualifiedBulkExecution(
       std::string recordDigest, std::string adapterDigest,
       std::string semanticProfileDigest, std::string resolutionDigest,
       std::string inputPayloadDigest, std::string destinationTemplateDigest,
@@ -244,7 +246,7 @@ enum class BulkTensorNumericErrorCode : uint8_t {
   InvalidPhysicalStorage,
   InvalidInputEncoding,
   InputArityMismatch,
-  AdmissionMismatch,
+  QualificationMismatch,
   EnvironmentMismatch,
   WorkCountOverflow,
   TotalByteBudgetExceeded,
@@ -278,7 +280,7 @@ private:
 };
 
 /// Configures process-global oneDNN policy before creating an engine and
-/// returns a read-back environment identity. A conflicting pre-initialized
+/// returns the read-back execution environment. A conflicting pre-initialized
 /// oneDNN process fails rather than inheriting ambient state.
 llvm::Expected<BulkExecutionEnvironment>
 createManagedBulkExecutionEnvironment();
@@ -296,28 +298,29 @@ packBulkTensorLogicalValues(const NumericTensorKey &key,
                             llvm::ArrayRef<RawLogicalValue> values,
                             uint8_t paddingFill);
 
-/// Stable payload identity covers ordered physical input bytes and their typed
-/// keys. Destination templates are digested separately by the caller.
+/// The payload digest covers ordered physical input bytes and their typed keys.
+/// Destination templates are digested separately by the caller.
 std::string
 computeBulkTensorPayloadDigest(llvm::ArrayRef<BulkTensorStorage> tensors);
 std::string computeBulkTensorStorageDigest(const BulkTensorStorage &tensor);
 
-/// Executes exactly one admitted MatMul. All command/admission/environment,
-/// physical layout, encoding and byte budgets are checked before backend
-/// execution. The caller's snapshots remain immutable; the destination is
-/// published only after its expected backend digest matches the frozen record.
+/// Executes exactly one qualified MatMul. The command, qualification record,
+/// environment, physical layout, encoding and byte budgets are checked before
+/// backend
+/// execution. The caller's inputs remain immutable; the destination is returned
+/// only after its digest matches the validated record.
 llvm::Expected<BulkTensorNumericResult>
-executeAdmittedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
-                                 const BulkBackendAdmission &admission,
-                                 const ResolvedNumericCommand &command,
-                                 llvm::ArrayRef<BulkTensorStorage> inputs,
-                                 const BulkTensorStorage &destinationTemplate,
-                                 BulkNumericWorkBudget budget);
+executeQualifiedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
+                                  const QualifiedBulkExecution &execution,
+                                  const ResolvedNumericCommand &command,
+                                  llvm::ArrayRef<BulkTensorStorage> inputs,
+                                  const BulkTensorStorage &destinationTemplate,
+                                  BulkNumericWorkBudget budget);
 
 /// Executes one deterministic managed-reference MatMul for a structurally
 /// supported f16/bf16/f32 command whose physical inputs contain only finite
-/// values. Unlike exact qualification-record admission, this scalable path is
-/// a model-reference acceleration policy: it is not a claim of raw-exact
+/// values. Unlike record-qualified execution, this scalable path is a
+/// model-reference acceleration policy: it is not a claim of raw-exact
 /// target arithmetic or hardware correlation. The caller must validate the
 /// final model output against its external oracle with an explicit tolerance.
 llvm::Expected<BulkTensorNumericResult>

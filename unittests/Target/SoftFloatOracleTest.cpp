@@ -158,7 +158,7 @@ TEST(SoftFloatOracleTest, ExplicitNaNSignedZeroAndArithmeticFlags) {
 TEST(SoftFloatOracleTest, AfterRoundingTininessUsesUnboundedExponentPrecision) {
   // This inexact source is in SoftFloat's threshold interval: its raw
   // after-rounding decision remains tiny at destination precision with an
-  // unbounded exponent even though finite-range encoding commits the minimum
+  // unbounded exponent even though finite-range encoding returns the minimum
   // normal result.
   const RawLogicalValue roundsToMinimumNormal{LogicalFormat::F32,
                                               UINT64_C(0xb87fec98)};
@@ -278,7 +278,7 @@ TEST(SoftFloatOracleTest, NestedCallerEnvironmentsRestoreInLIFOOrder) {
   EXPECT_EQ(softfloat_exceptionFlags, softfloat_flag_underflow);
 }
 
-TEST(SoftFloatOracleTest, InvalidPreflightDoesNotModifyCallerEnvironment) {
+TEST(SoftFloatOracleTest, InvalidRequestDoesNotModifyCallerEnvironment) {
   const uint_fast8_t savedRounding = softfloat_roundingMode;
   const uint_fast8_t savedTininess = softfloat_detectTininess;
   const uint_fast8_t savedPrecision = extF80_roundingPrecision;

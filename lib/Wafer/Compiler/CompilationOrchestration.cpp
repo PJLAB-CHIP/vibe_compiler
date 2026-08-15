@@ -26,30 +26,32 @@
 
 namespace wafer::compiler::detail {
 
-mlir::LogicalResult publishPackageAndCompanionNoReplace(
+mlir::LogicalResult renamePackageAndProfileNoReplace(
     llvm::StringRef stagedPackage, llvm::StringRef outputPackage,
-    llvm::StringRef stagedCompanion, llvm::StringRef outputCompanion,
-    llvm::raw_ostream &diagnostics,
-    DirectoryPublicationFunction publishDirectory) {
-  if (!publishDirectory || stagedPackage.empty() || outputPackage.empty() ||
-      stagedCompanion.empty() || outputCompanion.empty()) {
-    reject(diagnostics, "package companion publication contract is invalid");
+    llvm::StringRef stagedInstrumentation,
+    llvm::StringRef outputInstrumentation, llvm::raw_ostream &diagnostics,
+    DirectoryRenameFunction renameDirectory) {
+  if (!renameDirectory || stagedPackage.empty() || outputPackage.empty() ||
+      stagedInstrumentation.empty() || outputInstrumentation.empty()) {
+    reject(diagnostics, "package and profile output paths are invalid");
     return mlir::failure();
   }
-  if (publishDirectory(stagedPackage, outputPackage, diagnostics))
+  if (renameDirectory(stagedPackage, outputPackage, diagnostics))
     return mlir::failure();
-  if (!publishDirectory(stagedCompanion, outputCompanion, diagnostics))
+  if (!renameDirectory(stagedInstrumentation, outputInstrumentation,
+                       diagnostics))
     return mlir::success();
 
   if (std::error_code rollbackError =
           llvm::sys::fs::rename(outputPackage, stagedPackage)) {
     reject(diagnostics,
-           "failed to roll back package after companion publication failure: " +
+           "failed to restore staged package after profile directory rename "
+           "failed: " +
                rollbackError.message());
     return mlir::failure();
   }
   reject(diagnostics,
-         "companion publication failed; package publication was rolled back");
+         "profile directory rename failed; package was restored to staging");
   return mlir::failure();
 }
 
@@ -66,8 +68,8 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<ExecutableBundle> *retainedExecutableBundle,
-    std::optional<TargetLLVMModuleBundle> *retainedTargetLLVMModuleBundle,
+    std::optional<PhysicalTileExecutables> *retainedPhysicalTileExecutables,
+    std::optional<TargetLLVMModules> *retainedTargetLLVMModules,
     std::optional<CompilationIRTrace> *retainedIRTrace) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
@@ -78,8 +80,8 @@ mlir::LogicalResult runCompilationTransaction(
   (void)failAfterLaunchSlot;
   (void)failAfterTargetLaunchSlot;
   (void)failAfterPackageLaunchSlot;
-  (void)retainedExecutableBundle;
-  (void)retainedTargetLLVMModuleBundle;
+  (void)retainedPhysicalTileExecutables;
+  (void)retainedTargetLLVMModules;
   (void)retainedIRTrace;
   reject(diagnostics,
          "StableHLO and SPMD partitioner dependencies are required");
@@ -102,11 +104,12 @@ mlir::LogicalResult runCompilationTransaction(
   auto compileWorkReport = llvm::make_scope_exit([&] {
     wafer::support::CompileWorkStatistics work = compileWorkSession->snapshot();
     diagnostics << "wafer-compile: compile-work"
-                << " physical_tile_finalizations="
-                << work.physicalTileFinalizations << " tile_to_instr_lowerings="
+                << " physical_tile_memory_planning_invocations="
+                << work.physicalTileMemoryPlanningInvocations
+                << " tile_to_instr_lowerings="
                 << work.tileToInstructionLowerings
-                << " selected_buffer_artifact_transactions="
-                << work.selectedBufferArtifactTransactions
+                << " selected_buffer_module_clones="
+                << work.selectedBufferModuleClones
                 << " spm_planning_invocations=" << work.spmPlanningInvocations
                 << " ddr_planning_invocations=" << work.ddrPlanningInvocations
                 << "\n";
@@ -123,7 +126,7 @@ mlir::LogicalResult runCompilationTransaction(
     reject(diagnostics, "XLA SPMD partitioner helper path must not be empty");
     return mlir::failure();
   }
-  if (options.shouldProduceProfileCompanion() &&
+  if (options.shouldProduceProfileInstrumentation() &&
       request.getExecutionConfig().getPhysicalTileCount() !=
           ExecutionConfig::kSingleCardPhysicalTileCount) {
     reject(diagnostics,
@@ -207,10 +210,10 @@ mlir::LogicalResult runCompilationTransaction(
   }
   llvm::SmallString<256> canonicalProfileOutput(canonicalOutput);
   canonicalProfileOutput += ".profile";
-  if (options.shouldProduceProfileCompanion() &&
+  if (options.shouldProduceProfileInstrumentation() &&
       pathEntryExists(canonicalProfileOutput)) {
     reject(diagnostics,
-           "refusing to replace existing profile companion directory: '" +
+           "refusing to replace existing profile instrumentation directory: '" +
                canonicalProfileOutput.str().str() + "'");
     return mlir::failure();
   }
@@ -373,61 +376,63 @@ mlir::LogicalResult runCompilationTransaction(
               << " wall_ms=" << elapsedCompileMilliseconds(transactionStart)
               << " peak_rss_kib=" << getCompilePeakRSSKiB() << "\n";
 
-  const CompileClock::time_point targetProductStart = CompileClock::now();
-  auto targetProductTiming =
+  const CompileClock::time_point targetCodeGenStart = CompileClock::now();
+  auto targetCodeGenTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-          "stage", "source-to-package", "target-product");
-  std::optional<ExecutableBundle> executableBundle;
-  std::optional<TargetLLVMModuleBundle> targetLLVMModules;
+          "stage", "source-to-package", "target-codegen");
+  std::optional<PhysicalTileExecutables> physicalTileExecutables;
+  std::optional<TargetLLVMModules> targetLLVMModules;
   CompilationIRTrace irTrace;
-  if (options.shouldProduceProfileCompanion()) {
+  if (options.shouldProduceProfileInstrumentation()) {
     if (mlir::failed(stageProfileTargetPackages(
             tensorProgram, transactionRoot, request.getExecutionConfig(),
             options.getOptimizationConfig(), targetToolchain, diagnostics,
             failAfterLaunchSlot, failAfterTargetLaunchSlot,
-            failAfterPackageLaunchSlot, executableBundle, targetLLVMModules,
-            irTrace)))
+            failAfterPackageLaunchSlot, physicalTileExecutables,
+            targetLLVMModules, irTrace)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
                  options.getOptimizationConfig(), targetToolchain, diagnostics,
                  failAfterLaunchSlot, failAfterTargetLaunchSlot,
-                 failAfterPackageLaunchSlot, executableBundle,
+                 failAfterPackageLaunchSlot, physicalTileExecutables,
                  targetLLVMModules, irTrace))) {
     return mlir::failure();
   }
-  targetProductTiming.reset();
-  diagnostics << "wafer-compile: compile-stats stage=target-product"
-              << " wall_ms=" << elapsedCompileMilliseconds(targetProductStart)
+  targetCodeGenTiming.reset();
+  diagnostics << "wafer-compile: compile-stats stage=target-codegen"
+              << " wall_ms=" << elapsedCompileMilliseconds(targetCodeGenStart)
               << " peak_rss_kib=" << getCompilePeakRSSKiB() << " profile="
-              << (options.shouldProduceProfileCompanion() ? "true" : "false")
+              << (options.shouldProduceProfileInstrumentation() ? "true"
+                                                                : "false")
               << "\n";
 
-  const CompileClock::time_point publicationStart = CompileClock::now();
-  auto publicationTiming =
+  const CompileClock::time_point outputRenameStart = CompileClock::now();
+  auto outputRenameTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
-          "stage", "source-to-package", "publication");
+          "stage", "source-to-package", "output-rename");
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
-  if (options.shouldProduceProfileCompanion()) {
-    llvm::SmallString<256> stagedCompanion(transactionRoot);
-    llvm::sys::path::append(stagedCompanion, "profile-companion");
-    if (mlir::failed(publishPackageAndCompanionNoReplace(
-            stagedPackage, canonicalOutput, stagedCompanion,
-            canonicalProfileOutput, diagnostics, publishDirectoryNoReplace)))
+  if (options.shouldProduceProfileInstrumentation()) {
+    llvm::SmallString<256> stagedInstrumentation(transactionRoot);
+    llvm::sys::path::append(stagedInstrumentation, "profile-instrumentation");
+    if (mlir::failed(renamePackageAndProfileNoReplace(
+            stagedPackage, canonicalOutput, stagedInstrumentation,
+            canonicalProfileOutput, diagnostics, renameDirectoryNoReplace)))
       return mlir::failure();
-  } else if (publishDirectoryNoReplace(stagedPackage, canonicalOutput,
-                                       diagnostics))
+  } else if (renameDirectoryNoReplace(stagedPackage, canonicalOutput,
+                                      diagnostics))
     return mlir::failure();
-  if (retainedExecutableBundle)
-    retainedExecutableBundle->emplace(std::move(*executableBundle));
-  if (retainedTargetLLVMModuleBundle)
-    retainedTargetLLVMModuleBundle->emplace(std::move(*targetLLVMModules));
+  if (retainedPhysicalTileExecutables)
+    retainedPhysicalTileExecutables->emplace(
+        std::move(*physicalTileExecutables));
+  if (retainedTargetLLVMModules)
+    retainedTargetLLVMModules->emplace(std::move(*targetLLVMModules));
   if (retainedIRTrace)
     retainedIRTrace->emplace(std::move(irTrace));
-  publicationTiming.reset();
-  diagnostics << "wafer-compile: compile-stats stage=publication"
-              << " wall_ms=" << elapsedCompileMilliseconds(publicationStart)
+  outputRenameTiming.reset();
+  diagnostics << "wafer-compile: compile-stats stage=output-rename"
+              << " wall_ms=" << elapsedCompileMilliseconds(outputRenameStart)
               << " peak_rss_kib=" << getCompilePeakRSSKiB() << "\n";
   diagnostics << "wafer-compile: compile-stats stage=compile-transaction"
               << " wall_ms=" << elapsedCompileMilliseconds(transactionStart)

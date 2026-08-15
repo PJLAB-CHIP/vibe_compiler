@@ -5,7 +5,7 @@
 #include "Wafer/Target/TargetCall.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/ExecutableBundleInternal.h"
+#include "../../lib/Wafer/Compiler/PhysicalTileExecutablesInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -79,8 +79,8 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
   return context;
 }
 
-llvm::Expected<wafer::compiler::TargetLLVMModuleBundle>
-buildElementwiseTargetBundle(std::string &diagnosticText) {
+llvm::Expected<wafer::compiler::TargetLLVMModules>
+compileElementwiseTargetModules(std::string &diagnosticText) {
   auto context = createCompilerContext();
 
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
@@ -115,22 +115,22 @@ module {
   program.programUserInputCount = 2;
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
+  auto executionConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::RuntimeLaunchKind::Kernel);
-  if (!config)
-    return config.takeError();
+  if (!executionConfig)
+    return executionConfig.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  auto executable = wafer::compiler::detail::buildExecutableBundle(
-      context, *tensorProgram, std::move(program), *config,
+  auto executable = wafer::compiler::detail::buildPhysicalTileExecutables(
+      context, *tensorProgram, std::move(program), *executionConfig,
       wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  return wafer::compiler::compileExecutableBundleToTargetLLVMModules(
+  return wafer::compiler::compilePhysicalTileExecutablesToTargetLLVMModules(
       *executable, diagnostics);
 }
 
-class RecordingSink final : public wafer::compiler::TargetTransactionSink {
+class RecordingSink final : public wafer::compiler::TargetCommandSink {
 public:
   llvm::Error begin(const wafer::compiler::TargetCallInvocationDescriptor
                         &descriptor) override {
@@ -141,21 +141,20 @@ public:
   }
 
   llvm::Expected<uint64_t>
-  issue(const wafer::compiler::TargetTransaction &transaction) override {
+  issue(const wafer::compiler::TargetCommand &command) override {
     if (reenterExecutable && !attemptedReentry) {
       attemptedReentry = true;
-      llvm::Error error =
-          reenterExecutable->executeTile(transaction.launchSlotId);
+      llvm::Error error = reenterExecutable->executeTile(command.launchSlotId);
       if (error)
         reentryDiagnostic = llvm::toString(std::move(error));
     }
-    if ((failAtIssue && transactions.size() == *failAtIssue) ||
+    if ((failAtIssue && commands.size() == *failAtIssue) ||
         (failAtLaunchSlot &&
-         transaction.launchSlotId.getValue() == *failAtLaunchSlot)) {
-      failedLaunchSlot = transaction.launchSlotId.getValue();
-      return llvm::createStringError("injected transaction sink failure");
+         command.launchSlotId.getValue() == *failAtLaunchSlot)) {
+      failedLaunchSlot = command.launchSlotId.getValue();
+      return llvm::createStringError("injected command sink failure");
     }
-    transactions.push_back(transaction);
+    commands.push_back(command);
     return nextEvent++;
   }
 
@@ -168,38 +167,37 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error prepareCommit() override {
-    if (failPrepareCommit)
-      return llvm::createStringError("injected prepare-commit failure");
+  llvm::Error completeInvocation() override {
+    if (failCompleteInvocation)
+      return llvm::createStringError("injected invocation completion failure");
+    invocationCompleted = true;
     return llvm::Error::success();
   }
-
-  void commit() override { committed = true; }
 
   void abort(llvm::StringRef diagnostic) override {
     aborted = true;
     abortDiagnostic = diagnostic.str();
-    transactions.clear();
+    commands.clear();
     completedCardIds.clear();
     completedTileIds.clear();
     completedLaunchSlots.clear();
   }
 
   bool began = false;
-  bool committed = false;
+  bool invocationCompleted = false;
   bool aborted = false;
   size_t invocationTileCount = 0;
   uint64_t nextEvent = 0x2000;
   std::optional<size_t> failAtIssue;
   std::optional<int64_t> failAtLaunchSlot;
-  bool failPrepareCommit = false;
+  bool failCompleteInvocation = false;
   wafer::compiler::TargetCallExecutable *reenterExecutable = nullptr;
   bool attemptedReentry = false;
   std::optional<int64_t> failedLaunchSlot;
   std::string reentryDiagnostic;
   std::string abortDiagnostic;
   std::vector<wafer::compiler::TargetCallTileDescriptor> tileDescriptors;
-  std::vector<wafer::compiler::TargetTransaction> transactions;
+  std::vector<wafer::compiler::TargetCommand> commands;
   std::vector<int64_t> completedCardIds;
   std::vector<int64_t> completedTileIds;
   std::vector<int64_t> completedLaunchSlots;
@@ -212,12 +210,13 @@ makeTileArguments(const wafer::compiler::TargetLLVMModule &module,
           module.getLaunchSlotId(), std::move(slots)};
 }
 
-std::vector<wafer::compiler::TargetCallTileArguments>
-makeInvocationArguments(const wafer::compiler::TargetLLVMModuleBundle &bundle,
-                        uint64_t baseAddress = UINT64_C(0x100000)) {
+std::vector<wafer::compiler::TargetCallTileArguments> makeInvocationArguments(
+    const wafer::compiler::TargetLLVMModules &targetLLVMModules,
+    uint64_t baseAddress = UINT64_C(0x100000)) {
   std::vector<wafer::compiler::TargetCallTileArguments> arguments;
-  arguments.reserve(bundle.getModules().size());
-  for (const wafer::compiler::TargetLLVMModule &module : bundle.getModules()) {
+  arguments.reserve(targetLLVMModules.getModules().size());
+  for (const wafer::compiler::TargetLLVMModule &module :
+       targetLLVMModules.getModules()) {
     std::vector<uint64_t> slots;
     slots.reserve(module.getKernelABISlots().size());
     for (const wafer::compiler::KernelABISlot &slot :
@@ -312,12 +311,13 @@ makeDecodableArguments(const wafer::TargetCallDescriptor &descriptor) {
         supportedF32Code(wafer::TargetFormatEngine::CT);
     return arguments;
   }
-  if (std::holds_alternative<wafer::NumericReduceOperation>(descriptor.semantic)) {
+  if (std::holds_alternative<wafer::NumericReduceOperation>(
+          descriptor.semantic)) {
     arguments[7] = supportedF32Code(wafer::TargetFormatEngine::CT);
     return arguments;
   }
-  if (const auto *kind =
-          std::get_if<wafer::TargetConvolutionOperation>(&descriptor.semantic)) {
+  if (const auto *kind = std::get_if<wafer::TargetConvolutionOperation>(
+          &descriptor.semantic)) {
     arguments[3] = static_cast<uint32_t>(*kind);
     arguments[30] = supportedF32Code(wafer::TargetFormatEngine::NE);
     return arguments;
@@ -375,10 +375,9 @@ std::array<uint32_t, N> expectedArray(llvm::ArrayRef<uint64_t> arguments,
   return result;
 }
 
-void expectPayloadFields(
-    const wafer::TargetCallDescriptor &descriptor,
-    llvm::ArrayRef<uint64_t> arguments,
-    const wafer::target::TargetTransactionPayload &payload) {
+void expectPayloadFields(const wafer::TargetCallDescriptor &descriptor,
+                         llvm::ArrayRef<uint64_t> arguments,
+                         const wafer::target::TargetCommandPayload &payload) {
   const wafer::TargetCallSemantic &semantic = descriptor.semantic;
   SCOPED_TRACE(descriptor.symbol);
   auto u32 = [&](size_t index) {
@@ -393,10 +392,10 @@ void expectPayloadFields(
     case wafer::TargetCallBuiltin::RDMA:
     case wafer::TargetCallBuiltin::WDMA: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::target::TargetStridedDMATransaction>(
+          std::holds_alternative<wafer::target::TargetStridedDMACommand>(
               payload));
       const auto &value =
-          std::get<wafer::target::TargetStridedDMATransaction>(payload);
+          std::get<wafer::target::TargetStridedDMACommand>(payload);
       EXPECT_EQ(value.direction,
                 *builtin == wafer::TargetCallBuiltin::RDMA
                     ? wafer::target::TargetDMADirection::Read
@@ -411,10 +410,11 @@ void expectPayloadFields(
       return;
     }
     case wafer::TargetCallBuiltin::GatherScatter: {
-      ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetGatherScatterTransaction>(payload));
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetGatherScatterCommand>(
+              payload));
       const auto &value =
-          std::get<wafer::target::TargetGatherScatterTransaction>(payload);
+          std::get<wafer::target::TargetGatherScatterCommand>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
       EXPECT_EQ(value.byteCount, u32(2));
@@ -427,10 +427,8 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::Memset: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::target::TargetMemsetTransaction>(
-              payload));
-      const auto &value =
-          std::get<wafer::target::TargetMemsetTransaction>(payload);
+          std::holds_alternative<wafer::target::TargetMemsetCommand>(payload));
+      const auto &value = std::get<wafer::target::TargetMemsetCommand>(payload);
       EXPECT_EQ(value.destination, arguments[0]);
       EXPECT_EQ(value.value, u32(1));
       EXPECT_EQ(value.elementCount, u32(2));
@@ -439,10 +437,8 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::Bit2FP: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::target::TargetBit2FPTransaction>(
-              payload));
-      const auto &value =
-          std::get<wafer::target::TargetBit2FPTransaction>(payload);
+          std::holds_alternative<wafer::target::TargetBit2FPCommand>(payload));
+      const auto &value = std::get<wafer::target::TargetBit2FPCommand>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
       EXPECT_EQ(value.elementCount, u32(2));
@@ -450,11 +446,10 @@ void expectPayloadFields(
       return;
     }
     case wafer::TargetCallBuiltin::MaskMove: {
-      ASSERT_TRUE(
-          std::holds_alternative<wafer::target::TargetMaskMoveTransaction>(
-              payload));
+      ASSERT_TRUE(std::holds_alternative<wafer::target::TargetMaskMoveCommand>(
+          payload));
       const auto &value =
-          std::get<wafer::target::TargetMaskMoveTransaction>(payload);
+          std::get<wafer::target::TargetMaskMoveCommand>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.mask, u32(1));
       EXPECT_EQ(value.destination, arguments[2]);
@@ -465,10 +460,8 @@ void expectPayloadFields(
     case wafer::TargetCallBuiltin::Gemm:
     case wafer::TargetCallBuiltin::GemmOriented: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::target::TargetGemmTransaction>(
-              payload));
-      const auto &value =
-          std::get<wafer::target::TargetGemmTransaction>(payload);
+          std::holds_alternative<wafer::target::TargetGemmCommand>(payload));
+      const auto &value = std::get<wafer::target::TargetGemmCommand>(payload);
       EXPECT_EQ(value.lhs, arguments[0]);
       EXPECT_EQ(value.rhs, arguments[1]);
       EXPECT_EQ(value.destination, arguments[2]);
@@ -486,10 +479,11 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::TDMAPad:
     case wafer::TargetCallBuiltin::TDMAImg2Col: {
-      ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetTDMATransformTransaction>(payload));
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetTDMATransformCommand>(
+              payload));
       const auto &value =
-          std::get<wafer::target::TargetTDMATransformTransaction>(payload);
+          std::get<wafer::target::TargetTDMATransformCommand>(payload);
       const bool imageToColumn =
           *builtin == wafer::TargetCallBuiltin::TDMAImg2Col;
       EXPECT_EQ(value.kind,
@@ -512,28 +506,28 @@ void expectPayloadFields(
     }
     case wafer::TargetCallBuiltin::NCCJoin: {
       ASSERT_TRUE(
-          std::holds_alternative<wafer::target::TargetNCCJoinTransaction>(
-              payload));
-      const auto &join =
-          std::get<wafer::target::TargetNCCJoinTransaction>(payload);
+          std::holds_alternative<wafer::target::TargetNCCJoinCommand>(payload));
+      const auto &join = std::get<wafer::target::TargetNCCJoinCommand>(payload);
       EXPECT_EQ(join.participantMask, u32(0));
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTEBegin:
     case wafer::TargetCallBuiltin::DirectDTEBeginAfterPrepare: {
-      ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetDirectDTEBeginTransaction>(payload));
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetDirectDTEBeginCommand>(
+              payload));
       const auto &value =
-          std::get<wafer::target::TargetDirectDTEBeginTransaction>(payload);
+          std::get<wafer::target::TargetDirectDTEBeginCommand>(payload);
       EXPECT_EQ(value.statusAddress, arguments[0]);
       EXPECT_EQ(value.participantCount, u32(1));
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTESendPrepare: {
-      ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetDirectDTESendTransaction>(payload));
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetDirectDTESendCommand>(
+              payload));
       const auto &value =
-          std::get<wafer::target::TargetDirectDTESendTransaction>(payload);
+          std::get<wafer::target::TargetDirectDTESendCommand>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.remoteDestination, arguments[1]);
       EXPECT_EQ(value.byteCount, u32(2));
@@ -544,20 +538,20 @@ void expectPayloadFields(
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTESendIssue: {
-      ASSERT_TRUE(
-          std::holds_alternative<
-              wafer::target::TargetDirectDTESendIssueTransaction>(payload));
-      EXPECT_EQ(std::get<wafer::target::TargetDirectDTESendIssueTransaction>(
-                    payload)
-                    .event,
-                arguments[0]);
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::target::TargetDirectDTESendIssueCommand>(payload));
+      EXPECT_EQ(
+          std::get<wafer::target::TargetDirectDTESendIssueCommand>(payload)
+              .event,
+          arguments[0]);
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTERecvPrepare: {
-      ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetDirectDTEReceiveTransaction>(payload));
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetDirectDTEReceiveCommand>(
+              payload));
       const auto &value =
-          std::get<wafer::target::TargetDirectDTEReceiveTransaction>(payload);
+          std::get<wafer::target::TargetDirectDTEReceiveCommand>(payload);
       EXPECT_EQ(value.destination, arguments[0]);
       EXPECT_EQ(value.byteCount, u32(1));
       EXPECT_EQ(value.localTile, u32(2));
@@ -566,27 +560,28 @@ void expectPayloadFields(
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTEWait: {
-      ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetDirectDTEWaitTransaction>(payload));
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetDirectDTEWaitCommand>(
+              payload));
       EXPECT_EQ(
-          std::get<wafer::target::TargetDirectDTEWaitTransaction>(payload)
-              .event,
+          std::get<wafer::target::TargetDirectDTEWaitCommand>(payload).event,
           arguments[0]);
       return;
     }
     case wafer::TargetCallBuiltin::DirectDTEFinish:
-      EXPECT_TRUE(std::holds_alternative<
-                  wafer::target::TargetDirectDTEFinishTransaction>(payload));
+      EXPECT_TRUE(
+          std::holds_alternative<wafer::target::TargetDirectDTEFinishCommand>(
+              payload));
       return;
     }
   }
 
-  if (const auto *kind = std::get_if<wafer::NumericElementwiseOperation>(&semantic)) {
-    ASSERT_TRUE(
-        std::holds_alternative<wafer::target::TargetElementwiseTransaction>(
-            payload));
+  if (const auto *kind =
+          std::get_if<wafer::NumericElementwiseOperation>(&semantic)) {
+    ASSERT_TRUE(std::holds_alternative<wafer::target::TargetElementwiseCommand>(
+        payload));
     const auto &value =
-        std::get<wafer::target::TargetElementwiseTransaction>(payload);
+        std::get<wafer::target::TargetElementwiseCommand>(payload);
     const size_t payloadSize =
         arguments.size() -
         (descriptor.issueDomain &&
@@ -607,12 +602,11 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::NumericReduceOperation>(&semantic)) {
+  if (const auto *kind =
+          std::get_if<wafer::NumericReduceOperation>(&semantic)) {
     ASSERT_TRUE(
-        std::holds_alternative<wafer::target::TargetReduceTransaction>(
-            payload));
-    const auto &value =
-        std::get<wafer::target::TargetReduceTransaction>(payload);
+        std::holds_alternative<wafer::target::TargetReduceCommand>(payload));
+    const auto &value = std::get<wafer::target::TargetReduceCommand>(payload);
     EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.source, arguments[0]);
     EXPECT_EQ(value.destination, arguments[1]);
@@ -621,12 +615,11 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::TargetConvertOperation>(&semantic)) {
+  if (const auto *kind =
+          std::get_if<wafer::TargetConvertOperation>(&semantic)) {
     ASSERT_TRUE(
-        std::holds_alternative<wafer::target::TargetConvertTransaction>(
-            payload));
-    const auto &value =
-        std::get<wafer::target::TargetConvertTransaction>(payload);
+        std::holds_alternative<wafer::target::TargetConvertCommand>(payload));
+    const auto &value = std::get<wafer::target::TargetConvertCommand>(payload);
     EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.source, arguments[0]);
     EXPECT_EQ(value.destination, arguments[1]);
@@ -652,11 +645,11 @@ void expectPayloadFields(
     }
     return;
   }
-  if (const auto *kind = std::get_if<wafer::TargetConvolutionOperation>(&semantic)) {
-    ASSERT_TRUE(std::holds_alternative<wafer::target::TargetConvTransaction>(
-        payload));
-    const auto &value =
-        std::get<wafer::target::TargetConvTransaction>(payload);
+  if (const auto *kind =
+          std::get_if<wafer::TargetConvolutionOperation>(&semantic)) {
+    ASSERT_TRUE(
+        std::holds_alternative<wafer::target::TargetConvCommand>(payload));
+    const auto &value = std::get<wafer::target::TargetConvCommand>(payload);
     EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.input, arguments[0]);
     EXPECT_EQ(value.weight, arguments[1]);
@@ -671,13 +664,14 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::TargetPoolingOperation>(&semantic)) {
-    ASSERT_TRUE(std::holds_alternative<wafer::target::TargetPoolTransaction>(
-        payload));
-    const auto &value =
-        std::get<wafer::target::TargetPoolTransaction>(payload);
-    const bool indexed = *kind == wafer::TargetPoolingOperation::IndexedMaximum ||
-                         *kind == wafer::TargetPoolingOperation::IndexedMinimum;
+  if (const auto *kind =
+          std::get_if<wafer::TargetPoolingOperation>(&semantic)) {
+    ASSERT_TRUE(
+        std::holds_alternative<wafer::target::TargetPoolCommand>(payload));
+    const auto &value = std::get<wafer::target::TargetPoolCommand>(payload);
+    const bool indexed =
+        *kind == wafer::TargetPoolingOperation::IndexedMaximum ||
+        *kind == wafer::TargetPoolingOperation::IndexedMinimum;
     const size_t first = indexed ? 3 : 2;
     EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.input, arguments[0]);
@@ -695,12 +689,11 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::TargetUnpoolingOperation>(&semantic)) {
+  if (const auto *kind =
+          std::get_if<wafer::TargetUnpoolingOperation>(&semantic)) {
     ASSERT_TRUE(
-        std::holds_alternative<wafer::target::TargetUnpoolTransaction>(
-            payload));
-    const auto &value =
-        std::get<wafer::target::TargetUnpoolTransaction>(payload);
+        std::holds_alternative<wafer::target::TargetUnpoolCommand>(payload));
+    const auto &value = std::get<wafer::target::TargetUnpoolCommand>(payload);
     EXPECT_EQ(value.operation, *kind);
     EXPECT_EQ(value.input, arguments[0]);
     EXPECT_EQ(value.destination, arguments[1]);
@@ -716,16 +709,15 @@ void expectPayloadFields(
     expectFormat(value.format);
     return;
   }
-  if (const auto *kind = std::get_if<wafer::TargetPeripheralOperation>(&semantic)) {
+  if (const auto *kind =
+          std::get_if<wafer::TargetPeripheralOperation>(&semantic)) {
     switch (*kind) {
     case wafer::TargetPeripheralOperation::ArgMaximum:
     case wafer::TargetPeripheralOperation::ArgMinimum: {
-      ASSERT_TRUE(
-          std::holds_alternative<
-              wafer::target::TargetPeripheralArgExtremaTransaction>(payload));
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::target::TargetPeripheralArgExtremaCommand>(payload));
       const auto &value =
-          std::get<wafer::target::TargetPeripheralArgExtremaTransaction>(
-              payload);
+          std::get<wafer::target::TargetPeripheralArgExtremaCommand>(payload);
       EXPECT_EQ(value.operation, *kind);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.valueDestination, arguments[1]);
@@ -735,12 +727,10 @@ void expectPayloadFields(
       return;
     }
     case wafer::TargetPeripheralOperation::Bilinear: {
-      ASSERT_TRUE(
-          std::holds_alternative<
-              wafer::target::TargetPeripheralBilinearTransaction>(payload));
+      ASSERT_TRUE(std::holds_alternative<
+                  wafer::target::TargetPeripheralBilinearCommand>(payload));
       const auto &value =
-          std::get<wafer::target::TargetPeripheralBilinearTransaction>(
-              payload);
+          std::get<wafer::target::TargetPeripheralBilinearCommand>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
       EXPECT_EQ(value.elementCount, u32(3));
@@ -751,10 +741,11 @@ void expectPayloadFields(
     }
     case wafer::TargetPeripheralOperation::LookupTable16:
     case wafer::TargetPeripheralOperation::LookupTable32: {
-      ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetPeripheralLUTTransaction>(payload));
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetPeripheralLUTCommand>(
+              payload));
       const auto &value =
-          std::get<wafer::target::TargetPeripheralLUTTransaction>(payload);
+          std::get<wafer::target::TargetPeripheralLUTCommand>(payload);
       EXPECT_EQ(value.operation, *kind);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.table, arguments[1]);
@@ -765,10 +756,11 @@ void expectPayloadFields(
       return;
     }
     case wafer::TargetPeripheralOperation::Random: {
-      ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetPeripheralRandomTransaction>(payload));
+      ASSERT_TRUE(
+          std::holds_alternative<wafer::target::TargetPeripheralRandomCommand>(
+              payload));
       const auto &value =
-          std::get<wafer::target::TargetPeripheralRandomTransaction>(payload);
+          std::get<wafer::target::TargetPeripheralRandomCommand>(payload);
       EXPECT_EQ(value.sources,
                 (std::array<uint64_t, 2>{arguments[0], arguments[1]}));
       EXPECT_EQ(
@@ -780,11 +772,9 @@ void expectPayloadFields(
     }
     case wafer::TargetPeripheralOperation::ElementMask: {
       ASSERT_TRUE(std::holds_alternative<
-                  wafer::target::TargetPeripheralElementMaskTransaction>(
-          payload));
+                  wafer::target::TargetPeripheralElementMaskCommand>(payload));
       const auto &value =
-          std::get<wafer::target::TargetPeripheralElementMaskTransaction>(
-              payload);
+          std::get<wafer::target::TargetPeripheralElementMaskCommand>(payload);
       EXPECT_EQ(value.source, arguments[0]);
       EXPECT_EQ(value.destination, arguments[1]);
       EXPECT_EQ(value.elementCount, u32(3));
@@ -842,12 +832,14 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
       const auto *peripheral =
           std::get_if<wafer::TargetPeripheralOperation>(&descriptor.semantic);
       const bool synchronous =
-          peripheral && (*peripheral == wafer::TargetPeripheralOperation::ArgMaximum ||
-                         *peripheral == wafer::TargetPeripheralOperation::ArgMinimum);
-      EXPECT_EQ(descriptor.issueDomain->completionBehavior,
-                synchronous
-                    ? wafer::TargetNCCCompletionBehavior::SynchronousWriteback
-                    : wafer::TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
+          peripheral &&
+          (*peripheral == wafer::TargetPeripheralOperation::ArgMaximum ||
+           *peripheral == wafer::TargetPeripheralOperation::ArgMinimum);
+      EXPECT_EQ(
+          descriptor.issueDomain->completionBehavior,
+          synchronous
+              ? wafer::TargetNCCCompletionBehavior::SynchronousWriteback
+              : wafer::TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
       synchronousWritebackCount += synchronous;
     }
   }
@@ -870,20 +862,25 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(send.arguments.size(), 7u);
   EXPECT_EQ(send.arguments[0], wafer::TargetCallScalarType::I64);
   EXPECT_EQ(send.arguments[2], wafer::TargetCallScalarType::I32);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Abs)
-                .arguments.size(),
-            5u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Add)
-                .arguments.size(),
-            6u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::TargetConvolutionOperation::Convolution)
+  EXPECT_EQ(
+      wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Abs)
+          .arguments.size(),
+      5u);
+  EXPECT_EQ(
+      wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Add)
+          .arguments.size(),
+      6u);
+  EXPECT_EQ(wafer::getTargetCallDescriptor(
+                wafer::TargetConvolutionOperation::Convolution)
                 .arguments.size(),
             32u);
-  EXPECT_EQ(wafer::getTargetCallDescriptor(wafer::TargetPeripheralOperation::Bilinear)
-                .arguments.size(),
-            18u);
   EXPECT_EQ(
-      wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Add).symbol,
+      wafer::getTargetCallDescriptor(wafer::TargetPeripheralOperation::Bilinear)
+          .arguments.size(),
+      18u);
+  EXPECT_EQ(
+      wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Add)
+          .symbol,
       "wafer_tx81_elementwise_add_v3");
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::GemmOriented)
@@ -916,9 +913,9 @@ TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
   for (const wafer::TargetCallDescriptor &descriptor :
        wafer::getTargetCallDescriptors()) {
     std::vector<uint64_t> arguments = makeDecodableArguments(descriptor);
-    wafer::TargetCallDecodeContext context{16};
+    wafer::TargetCallDecodeConfig config{16};
     auto payload =
-        wafer::decodeTargetCallPayload(descriptor, context, arguments);
+        wafer::decodeTargetCallPayload(descriptor, config, arguments);
     ASSERT_TRUE(static_cast<bool>(payload))
         << descriptor.symbol << ": " << llvm::toString(payload.takeError());
     expectPayloadFields(descriptor, arguments, *payload);
@@ -965,15 +962,15 @@ TEST(TargetCallRegistryTest, RejectsOutOfRangeExplicitWorker) {
 TEST(TargetCallRegistryTest, NCCJoinDecoderRejectsInvalidParticipantMasks) {
   const wafer::TargetCallDescriptor &descriptor =
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::NCCJoin);
-  wafer::TargetCallDecodeContext context{1};
-  auto empty = wafer::decodeTargetCallPayload(descriptor, context, {0});
+  wafer::TargetCallDecodeConfig config{1};
+  auto empty = wafer::decodeTargetCallPayload(descriptor, config, {0});
   ASSERT_FALSE(static_cast<bool>(empty));
   EXPECT_NE(llvm::toString(empty.takeError()).find("participant mask"),
             std::string::npos);
-  const uint64_t outside = uint64_t{1}
-                           << static_cast<uint32_t>(wafer::kTargetNCCWorkerCount);
+  const uint64_t outside =
+      uint64_t{1} << static_cast<uint32_t>(wafer::kTargetNCCWorkerCount);
   auto outOfRange =
-      wafer::decodeTargetCallPayload(descriptor, context, {outside});
+      wafer::decodeTargetCallPayload(descriptor, config, {outside});
   ASSERT_FALSE(static_cast<bool>(outOfRange));
   EXPECT_NE(llvm::toString(outOfRange.takeError()).find("worker domain"),
             std::string::npos);
@@ -981,18 +978,18 @@ TEST(TargetCallRegistryTest, NCCJoinDecoderRejectsInvalidParticipantMasks) {
 
 TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  ASSERT_EQ(bundle->getModules().size(), 16u);
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  ASSERT_EQ(targetLLVMModules->getModules().size(), 16u);
   std::string originalTriple =
-      bundle->getModules().front().getTargetTriple().str();
+      targetLLVMModules->getModules().front().getTargetTriple().str();
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
 
   RecordingSink sink;
-  auto executable =
-      wafer::compiler::prepareTargetCallFrontend(*bundle, arguments);
+  auto executable = wafer::compiler::createTargetCallExecutable(
+      *targetLLVMModules, arguments);
   ASSERT_TRUE(static_cast<bool>(executable))
       << llvm::toString(executable.takeError());
   if (llvm::Error error = executable->begin(sink))
@@ -1001,10 +998,10 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
        executable->getInvocationDescriptor().tiles)
     if (llvm::Error error = executable->executeTile(tile.launchSlotId))
       FAIL() << llvm::toString(std::move(error));
-  auto result = executable->commit();
+  auto result = executable->finish();
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_TRUE(sink.began);
-  EXPECT_TRUE(sink.committed);
+  EXPECT_TRUE(sink.invocationCompleted);
   EXPECT_FALSE(sink.aborted);
   EXPECT_EQ(sink.invocationTileCount, 16u);
   ASSERT_EQ(sink.tileDescriptors.size(), 16u);
@@ -1012,11 +1009,15 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   EXPECT_EQ(sink.tileDescriptors[0].physicalTileId.getValue(), 0);
   EXPECT_EQ(sink.tileDescriptors[0].launchSlotId.getValue(), 0);
   ASSERT_EQ(sink.tileDescriptors[0].kernelABISlots.size(),
-            bundle->getModules().front().getKernelABISlots().size());
+            targetLLVMModules->getModules().front().getKernelABISlots().size());
   ASSERT_FALSE(sink.tileDescriptors[0].kernelABISlots.empty());
   EXPECT_EQ(sink.tileDescriptors[0].slotValues, arguments[0].slots);
   EXPECT_EQ(sink.tileDescriptors[0].kernelABISlots.front().dtype,
-            bundle->getModules().front().getKernelABISlots().front().dtype);
+            targetLLVMModules->getModules()
+                .front()
+                .getKernelABISlots()
+                .front()
+                .dtype);
   ASSERT_EQ(sink.completedCardIds.size(), 16u);
   ASSERT_EQ(sink.completedTileIds.size(), 16u);
   ASSERT_EQ(sink.completedLaunchSlots.size(), 16u);
@@ -1026,36 +1027,35 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
     EXPECT_EQ(sink.completedLaunchSlots[static_cast<size_t>(index)], index);
   }
   EXPECT_EQ(result->completedTileCount, 16);
-  EXPECT_EQ(result->issuedTransactionCount, sink.transactions.size());
-  ASSERT_FALSE(sink.transactions.empty());
+  EXPECT_EQ(result->issuedCommandCount, sink.commands.size());
+  ASSERT_FALSE(sink.commands.empty());
   bool sawAdd = false;
   uint64_t totalAddElements = 0;
   std::vector<uint64_t> nextIssueOrdinal(16, 0);
-  for (size_t index = 0; index < sink.transactions.size(); ++index) {
-    const wafer::compiler::TargetTransaction &transaction =
-        sink.transactions[index];
-    EXPECT_EQ(transaction.physicalCardId.getValue(), 0);
-    EXPECT_EQ(transaction.physicalTileId.getValue(),
-              transaction.launchSlotId.getValue());
-    const int64_t launchSlot = transaction.launchSlotId.getValue();
+  for (size_t index = 0; index < sink.commands.size(); ++index) {
+    const wafer::compiler::TargetCommand &command = sink.commands[index];
+    EXPECT_EQ(command.physicalCardId.getValue(), 0);
+    EXPECT_EQ(command.physicalTileId.getValue(),
+              command.launchSlotId.getValue());
+    const int64_t launchSlot = command.launchSlotId.getValue();
     ASSERT_GE(launchSlot, 0);
     ASSERT_LT(launchSlot, 16);
-    EXPECT_EQ(transaction.issueOrdinal,
+    EXPECT_EQ(command.issueOrdinal,
               nextIssueOrdinal[static_cast<size_t>(launchSlot)]++);
-    if (transaction.nccIssueDomain) {
-      EXPECT_NE(transaction.nccIssueDomain->engine,
+    if (command.nccIssueDomain) {
+      EXPECT_NE(command.nccIssueDomain->engine,
                 wafer::TargetCallTSMEngine::DirectDTE);
-      EXPECT_EQ(transaction.nccIssueDomain->worker, wafer::TargetNCCWorker::Worker0);
-      EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
+      EXPECT_EQ(command.nccIssueDomain->worker,
+                wafer::TargetNCCWorker::Worker0);
+      EXPECT_EQ(command.nccIssueDomain->completionBehavior,
                 wafer::TargetNCCCompletionBehavior::OrderedAsynchronousIssue);
     }
     if (const auto *elementwise =
-            std::get_if<wafer::target::TargetElementwiseTransaction>(
-                &transaction.payload)) {
+            std::get_if<wafer::target::TargetElementwiseCommand>(
+                &command.payload)) {
       sawAdd = true;
-      ASSERT_TRUE(transaction.nccIssueDomain.has_value());
-      EXPECT_EQ(transaction.nccIssueDomain->engine,
-                wafer::TargetCallTSMEngine::CT);
+      ASSERT_TRUE(command.nccIssueDomain.has_value());
+      EXPECT_EQ(command.nccIssueDomain->engine, wafer::TargetCallTSMEngine::CT);
       EXPECT_EQ(elementwise->operation,
                 wafer::NumericElementwiseOperation::Add);
       EXPECT_TRUE(elementwise->rhs.has_value());
@@ -1065,16 +1065,17 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   }
   EXPECT_TRUE(sawAdd);
   EXPECT_EQ(totalAddElements, 8u);
-  EXPECT_EQ(bundle->getModules().front().getTargetTriple(), originalTriple);
+  EXPECT_EQ(targetLLVMModules->getModules().front().getTargetTriple(),
+            originalTriple);
 }
 
-TEST(TargetCallFrontendTest, CarriesExplicitWorkerOneAndTwoIntoTransactions) {
+TEST(TargetCallFrontendTest, CarriesExplicitWorkerOneAndTwoIntoCommands) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   size_t rewritten = 0;
   for (llvm::Function &function : module)
     for (llvm::BasicBlock &block : function)
@@ -1100,42 +1101,42 @@ TEST(TargetCallFrontendTest, CarriesExplicitWorkerOneAndTwoIntoTransactions) {
   ASSERT_GT(rewritten, 0u);
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   bool sawWorker1 = false;
   bool sawWorker2 = false;
-  for (const wafer::compiler::TargetTransaction &transaction :
-       sink.transactions) {
-    if (!transaction.nccIssueDomain)
+  for (const wafer::compiler::TargetCommand &command : sink.commands) {
+    if (!command.nccIssueDomain)
       continue;
     sawWorker1 |=
-        transaction.nccIssueDomain->worker == wafer::TargetNCCWorker::Worker1;
+        command.nccIssueDomain->worker == wafer::TargetNCCWorker::Worker1;
     sawWorker2 |=
-        transaction.nccIssueDomain->worker == wafer::TargetNCCWorker::Worker2;
+        command.nccIssueDomain->worker == wafer::TargetNCCWorker::Worker2;
   }
   EXPECT_TRUE(sawWorker1);
   EXPECT_TRUE(sawWorker2);
 }
 
 TEST(TargetCallFrontendTest,
-     CarriesSynchronousWritebackBehaviorIntoDynamicTransaction) {
+     CarriesSynchronousWritebackBehaviorIntoDynamicCommand) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  ASSERT_EQ(bundle->getModules().size(), 16u);
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  ASSERT_EQ(targetLLVMModules->getModules().size(), 16u);
 
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
-  llvm::Function *entry =
-      module.getFunction(bundle->getModules().front().getEntrySymbol());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
+  llvm::Function *entry = module.getFunction(
+      targetLLVMModules->getModules().front().getEntrySymbol());
   ASSERT_NE(entry, nullptr);
   llvm::IRBuilder<> builder(entry->getEntryBlock().getTerminator());
-  for (wafer::TargetPeripheralOperation kind : {wafer::TargetPeripheralOperation::ArgMaximum,
-                                          wafer::TargetPeripheralOperation::ArgMinimum}) {
+  for (wafer::TargetPeripheralOperation kind :
+       {wafer::TargetPeripheralOperation::ArgMaximum,
+        wafer::TargetPeripheralOperation::ArgMinimum}) {
     const wafer::TargetCallDescriptor &descriptor =
         wafer::getTargetCallDescriptor(kind);
     llvm::SmallVector<llvm::Type *, 10> argumentTypes;
@@ -1159,31 +1160,29 @@ TEST(TargetCallFrontendTest,
   }
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   bool sawArgMax = false;
   bool sawArgMin = false;
   size_t synchronousArgExtremaCount = 0;
-  for (const wafer::compiler::TargetTransaction &transaction :
-       sink.transactions) {
+  for (const wafer::compiler::TargetCommand &command : sink.commands) {
     const auto *payload =
-        std::get_if<wafer::target::TargetPeripheralArgExtremaTransaction>(
-            &transaction.payload);
+        std::get_if<wafer::target::TargetPeripheralArgExtremaCommand>(
+            &command.payload);
     if (!payload)
       continue;
-    sawArgMax |= payload->operation ==
-                 wafer::TargetPeripheralOperation::ArgMaximum;
-    sawArgMin |= payload->operation ==
-                 wafer::TargetPeripheralOperation::ArgMinimum;
-    ASSERT_TRUE(transaction.nccIssueDomain.has_value());
-    EXPECT_EQ(transaction.nccIssueDomain->engine,
-              wafer::TargetCallTSMEngine::CT);
-    EXPECT_EQ(transaction.nccIssueDomain->worker, wafer::TargetNCCWorker::Worker0);
-    EXPECT_EQ(transaction.nccIssueDomain->completionBehavior,
+    sawArgMax |=
+        payload->operation == wafer::TargetPeripheralOperation::ArgMaximum;
+    sawArgMin |=
+        payload->operation == wafer::TargetPeripheralOperation::ArgMinimum;
+    ASSERT_TRUE(command.nccIssueDomain.has_value());
+    EXPECT_EQ(command.nccIssueDomain->engine, wafer::TargetCallTSMEngine::CT);
+    EXPECT_EQ(command.nccIssueDomain->worker, wafer::TargetNCCWorker::Worker0);
+    EXPECT_EQ(command.nccIssueDomain->completionBehavior,
               wafer::TargetNCCCompletionBehavior::SynchronousWriteback);
     ++synchronousArgExtremaCount;
   }
@@ -1194,56 +1193,56 @@ TEST(TargetCallFrontendTest,
 
 TEST(TargetCallFrontendTest, SinkFailureAbortsWithoutPartialResult) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
   sink.failAtIssue = 0;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_NE(llvm::toString(result.takeError())
-                .find("injected transaction sink failure"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(result.takeError()).find("injected command sink failure"),
+      std::string::npos);
   EXPECT_TRUE(sink.began);
   EXPECT_TRUE(sink.aborted);
-  EXPECT_FALSE(sink.committed);
-  EXPECT_TRUE(sink.transactions.empty());
+  EXPECT_FALSE(sink.invocationCompleted);
+  EXPECT_TRUE(sink.commands.empty());
   EXPECT_TRUE(sink.completedLaunchSlots.empty());
 }
 
 TEST(TargetCallFrontendTest, LateTileFailureAbortsTheWholeInvocation) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
   sink.failAtLaunchSlot = 1;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_NE(llvm::toString(result.takeError())
-                .find("injected transaction sink failure"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(result.takeError()).find("injected command sink failure"),
+      std::string::npos);
   ASSERT_TRUE(sink.failedLaunchSlot.has_value());
   EXPECT_GT(*sink.failedLaunchSlot, 0);
   EXPECT_TRUE(sink.aborted);
-  EXPECT_FALSE(sink.committed);
-  EXPECT_TRUE(sink.transactions.empty());
+  EXPECT_FALSE(sink.invocationCompleted);
+  EXPECT_TRUE(sink.commands.empty());
   EXPECT_TRUE(sink.completedLaunchSlots.empty());
 }
 
 TEST(TargetCallFrontendTest, NativeIllegalInlineAssemblyFailsBeforeSinkBegin) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   llvm::Function *entry = module.getFunction("main");
   ASSERT_NE(entry, nullptr);
   llvm::IRBuilder<> builder(&entry->getEntryBlock().front());
@@ -1255,10 +1254,10 @@ TEST(TargetCallFrontendTest, NativeIllegalInlineAssemblyFailsBeforeSinkBegin) {
   auto restore = llvm::make_scope_exit([&] { call->eraseFromParent(); });
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("inline assembly"),
             std::string::npos);
@@ -1267,11 +1266,11 @@ TEST(TargetCallFrontendTest, NativeIllegalInlineAssemblyFailsBeforeSinkBegin) {
 
 TEST(TargetCallFrontendTest, NativeTrapFailsBeforeSinkBegin) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   llvm::Function *entry = module.getFunction("main");
   ASSERT_NE(entry, nullptr);
   llvm::IRBuilder<> builder(&entry->getEntryBlock().front());
@@ -1280,10 +1279,10 @@ TEST(TargetCallFrontendTest, NativeTrapFailsBeforeSinkBegin) {
   builder.CreateCall(trap);
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("unsupported intrinsic"),
             std::string::npos);
@@ -1292,11 +1291,11 @@ TEST(TargetCallFrontendTest, NativeTrapFailsBeforeSinkBegin) {
 
 TEST(TargetCallFrontendTest, NativeAddressDereferenceFailsBeforeSinkBegin) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   llvm::Function *entry = module.getFunction("main");
   ASSERT_NE(entry, nullptr);
   llvm::IRBuilder<> builder(&entry->getEntryBlock().front());
@@ -1307,10 +1306,10 @@ TEST(TargetCallFrontendTest, NativeAddressDereferenceFailsBeforeSinkBegin) {
   (void)builder.CreateLoad(i64, pointer);
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   std::string error = llvm::toString(result.takeError());
   EXPECT_TRUE(error.find("inttoptr") != std::string::npos ||
@@ -1321,11 +1320,11 @@ TEST(TargetCallFrontendTest, NativeAddressDereferenceFailsBeforeSinkBegin) {
 
 TEST(TargetCallFrontendTest, NativePointerSelectFailsBeforeSinkBegin) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   llvm::Function *entry = module.getFunction("main");
   ASSERT_NE(entry, nullptr);
   llvm::Type *pointer = llvm::PointerType::get(module.getContext(), 0);
@@ -1336,10 +1335,10 @@ TEST(TargetCallFrontendTest, NativePointerSelectFailsBeforeSinkBegin) {
       "pointer-control", &entry->getEntryBlock().front());
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("select"),
             std::string::npos);
@@ -1348,11 +1347,11 @@ TEST(TargetCallFrontendTest, NativePointerSelectFailsBeforeSinkBegin) {
 
 TEST(TargetCallFrontendTest, NativePointerCompareFailsBeforeSinkBegin) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   llvm::Function *entry = module.getFunction("main");
   ASSERT_NE(entry, nullptr);
   auto *pointer = llvm::PointerType::get(module.getContext(), 0);
@@ -1362,10 +1361,10 @@ TEST(TargetCallFrontendTest, NativePointerCompareFailsBeforeSinkBegin) {
                            "pointer-control");
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("icmp"), std::string::npos);
   EXPECT_FALSE(sink.began);
@@ -1373,11 +1372,11 @@ TEST(TargetCallFrontendTest, NativePointerCompareFailsBeforeSinkBegin) {
 
 TEST(TargetCallFrontendTest, NativePointerPhiFailsBeforeSinkBegin) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   llvm::Function *entry = module.getFunction("main");
   ASSERT_NE(entry, nullptr);
   llvm::BasicBlock *loop =
@@ -1389,10 +1388,10 @@ TEST(TargetCallFrontendTest, NativePointerPhiFailsBeforeSinkBegin) {
   phi->addIncoming(llvm::ConstantPointerNull::get(pointer), loop);
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("phi"), std::string::npos);
   EXPECT_FALSE(sink.began);
@@ -1400,11 +1399,11 @@ TEST(TargetCallFrontendTest, NativePointerPhiFailsBeforeSinkBegin) {
 
 TEST(TargetCallFrontendTest, WrongTargetCallSignatureFailsBeforeSinkBegin) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
-  llvm::Module &module =
-      const_cast<llvm::Module &>(bundle->getModules().front().getModule());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+  llvm::Module &module = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
   llvm::Function *original =
       module.getFunction("wafer_tx81_elementwise_add_v3");
   ASSERT_NE(original, nullptr);
@@ -1423,10 +1422,10 @@ TEST(TargetCallFrontendTest, WrongTargetCallSignatureFailsBeforeSinkBegin) {
   (void)wrong;
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   std::string error = llvm::toString(result.takeError());
   EXPECT_NE(error.find("argument count"), std::string::npos) << error;
@@ -1435,15 +1434,15 @@ TEST(TargetCallFrontendTest, WrongTargetCallSignatureFailsBeforeSinkBegin) {
 
 TEST(TargetCallFrontendTest, SlotMismatchFailsBeforeSinkBegin) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   arguments.front().slots.clear();
   RecordingSink sink;
-  auto result =
-      wafer::compiler::executeTargetCallFrontend(*bundle, arguments, sink);
+  auto result = wafer::compiler::executeTargetCallFrontend(*targetLLVMModules,
+                                                           arguments, sink);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("slot count"),
             std::string::npos);
@@ -1453,14 +1452,14 @@ TEST(TargetCallFrontendTest, SlotMismatchFailsBeforeSinkBegin) {
 
 TEST(TargetCallFrontendTest, RejectsTileReentryAndAbortsInvocation) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  auto executable =
-      wafer::compiler::prepareTargetCallFrontend(*bundle, arguments);
+  auto executable = wafer::compiler::createTargetCallExecutable(
+      *targetLLVMModules, arguments);
   ASSERT_TRUE(static_cast<bool>(executable))
       << llvm::toString(executable.takeError());
   sink.reenterExecutable = &*executable;
@@ -1472,52 +1471,53 @@ TEST(TargetCallFrontendTest, RejectsTileReentryAndAbortsInvocation) {
   EXPECT_TRUE(sink.attemptedReentry);
   EXPECT_NE(sink.reentryDiagnostic.find("already running"), std::string::npos);
   EXPECT_TRUE(sink.aborted);
-  EXPECT_FALSE(sink.committed);
+  EXPECT_FALSE(sink.invocationCompleted);
 }
 
-TEST(TargetCallFrontendTest, PrepareCommitFailureCannotPublishResult) {
+TEST(TargetCallFrontendTest, InvocationCompletionFailureReturnsNoResult) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
-  sink.failPrepareCommit = true;
-  auto executable =
-      wafer::compiler::prepareTargetCallFrontend(*bundle, arguments);
+  sink.failCompleteInvocation = true;
+  auto executable = wafer::compiler::createTargetCallExecutable(
+      *targetLLVMModules, arguments);
   ASSERT_TRUE(static_cast<bool>(executable))
       << llvm::toString(executable.takeError());
   ASSERT_FALSE(static_cast<bool>(executable->begin(sink)));
   for (const wafer::compiler::TargetCallTileDescriptor &tile :
        executable->getInvocationDescriptor().tiles)
     ASSERT_FALSE(static_cast<bool>(executable->executeTile(tile.launchSlotId)));
-  auto result = executable->commit();
+  auto result = executable->finish();
   ASSERT_FALSE(static_cast<bool>(result));
-  EXPECT_NE(llvm::toString(result.takeError()).find("prepare-commit failure"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(result.takeError()).find("invocation completion failure"),
+      std::string::npos);
   EXPECT_TRUE(sink.aborted);
-  EXPECT_FALSE(sink.committed);
+  EXPECT_FALSE(sink.invocationCompleted);
 }
 
 TEST(TargetCallFrontendTest, RunningDestructionAbortsPrivateSinkState) {
   std::string diagnostics;
-  auto bundle = buildElementwiseTargetBundle(diagnostics);
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  auto targetLLVMModules = compileElementwiseTargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =
-      makeInvocationArguments(*bundle);
+      makeInvocationArguments(*targetLLVMModules);
   RecordingSink sink;
   {
-    auto executable =
-        wafer::compiler::prepareTargetCallFrontend(*bundle, arguments);
+    auto executable = wafer::compiler::createTargetCallExecutable(
+        *targetLLVMModules, arguments);
     ASSERT_TRUE(static_cast<bool>(executable))
         << llvm::toString(executable.takeError());
     ASSERT_FALSE(static_cast<bool>(executable->begin(sink)));
   }
   EXPECT_TRUE(sink.aborted);
-  EXPECT_FALSE(sink.committed);
-  EXPECT_NE(sink.abortDiagnostic.find("destroyed before commit"),
+  EXPECT_FALSE(sink.invocationCompleted);
+  EXPECT_NE(sink.abortDiagnostic.find("destroyed before finish"),
             std::string::npos);
 }
 

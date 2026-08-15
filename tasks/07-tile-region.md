@@ -11,7 +11,7 @@ query-local选择只作为即将发生的rewrite参数，在isolated complete Ca
 `PatternRewriter`和`DialectConversion`立即物化为Q50.S已物化、由Q51选中的TensorProgram semantic root所对应的typed compute、
 temporal traversal、physical encoding、movement和执行结构。numeric reassociation、reduction tree、share/recompute、hoist
 及其它数学等价variant必须已经存在于该TensorProgram root；本层不再生成另一份semantic alternative。物化后的决定只存在actual IR中，
-transient参数随即销毁；本文不建立frontier、局部winner、可重放action列表或跨pass side plan。
+transient参数随即销毁；本文不建立candidate set、局部winner、可重放action列表或跨pass side plan。
 
 `wafer.tile.region`物化一个显式的、严格属于 **单个physical Tile** 的 **SPM residency domain**：region body中的一个或多个structured traversal共享
 同一组可同时驻留、可由SSA直接连接并由同一liveness关系解释的tile、temporary、accumulator和staging。它不要求
@@ -107,7 +107,7 @@ completion都必须最终出现在actual Tile/Instr IR中并通过09–13的late
 ## 2. Pipeline Contract
 
     Pipeline position:
-    - Upstream artifact / IR:
+    - Upstream IR / input:
       verifier-legal card-local structured tensor IR，以及同一次transformation内通过便宜预筛、将立即物化的
       physical-dataflow wave placement、每个traversal的temporal tile domain/loop order、physical operand/result
       encoding、region partition、retain/recompute/spill/cut/release boundary、movement、buffer/slot和event order，
@@ -126,25 +126,25 @@ completion都必须最终出现在actual Tile/Instr IR中并通过09–13的late
       跨界或没有真实materialization/residency含义的结构边界都拒绝；每次mutation后丢弃旧
       IndexRelation、alias、effect、liveness和resource observations并从current clone重算；
       最后运行conversion legality和tile/dataflow verifier。
-    - Output artifact / IR:
+    - Output IR / files:
       transaction-local、verifier-legal、覆盖完整card DAG demanded domain的selected tile/dataflow IR；每个physical Tile program
       包含一个或多个non-nested `wafer.tile.region`作为单physical-Tile SPM residency domains。region之间的所有
       shaped data I/O均为DDR value/view，
       SPM value/root/alias不能跨界；每个boundary前只需完成仍访问被释放SPM roots的work，entry terminal继续负责全部
-      observable pending work。若物化失败，在无任何published mutation的情况下返回failure。
+      observable pending work。若物化失败，在无任何IR mutation的情况下返回failure。
       成功IR只含typed operation/region/type/
       attribute、memref/view、compute、movement、event和SSA；不依赖任何外部解释对象。
     - Downstream consumer:
       target-abstract legality，并对selected CardProgram执行per-Tile instruction lowering；
       materialized canonical/unplaced Instr只接受physical-dataflow selection已经选择并物化的worker/slot/order事实，随后进入fresh completion
       reconstruction、liveness-derived per-Tile SPM allocation、CardProgram DDR、post-memory communication/transport/resource、ABI gates以及
-      CardExecutable admission。completion按真实root reuse、observer、region boundary和tile-program terminal分别验证；任一内部
+      CardExecutable verification。completion按真实root reuse、observer、region boundary和tile-program terminal分别验证；任一内部
       traversal/component不得脱离complete candidate单独提交这些不可逆stage。
     - User-level driver / named pipeline:
       wafer-compile source-to-package `search|none` pipeline。wafer-opt只可对同一op/interface/
       conversion做局部parser、verifier和rewrite测试，不形成第二条compile pipeline。
     - Explicit non-goals:
-      不在本层重新搜索或重排，不创建独立执行计划，不发布tile/dataflow中间artifact，
+      不在本层重新搜索或重排，不创建独立执行计划，不发布tile/dataflow中间output，
       不让runtime选择physical realization，不声明板端性能或timing。
     - Completion gate:
       contraction、ordinary 2-D affine-window convolution、显式静态padding、pointwise、ordered reduction、view、
@@ -168,7 +168,7 @@ completion都必须最终出现在actual Tile/Instr IR中并通过09–13的late
       -> erase and fresh-rebuild dependency-driven completion
       -> derive per-Tile fixed SPM allocation problems from all tile.program roots / lifetimes / coexistence
       -> validate all-and-only root coverage and fixed-capacity placement
-      -> CardProgram DDR then CardExecutable communication/transport/resource/ABI admission
+      -> CardProgram DDR then CardExecutable communication/transport/resource/ABI verification
       -> atomic CardExecutable formation from all physical Tile programs
 
 物化后的长期事实只有：
@@ -342,7 +342,7 @@ slice、permutation、reshape或concat先成为可验证view，不能化为同sh
 staged movement。op不携带relation副本、descriptor list或lowering-time选择字段。
 
 peer movement不是logical collective wrapper，也不隐含allocation或completion。send/recv两端的SPM root/view必须显式；
-tile-to-instruction conversion创建matching Direct-DTE issue token和exact wait，CardExecutable admission再验证反向peer、
+tile-to-instruction conversion创建matching Direct-DTE issue token和exact wait，CardExecutable verification再验证反向peer、
 message、bytes、range与binding。第一版fanout使用多个explicit send或receive-then-forward，reduction使用explicit recv、
 local compute和forward；没有typed target capability时不假设router multicast或in-network reduction。
 
@@ -424,7 +424,7 @@ DPS、Tiling、ViewLike和effect interfaces进入这些family；只有新数学�
 
 每个positive必须从真实source进入production materializer并发生非零IR mutation。negative至少覆盖wrong
 type/rank/index relation、dynamic unsupported case、rewrite guard failure、conversion illegal op、missing completion、
-all-clones-fail和late CardExecutable admission failure。手写`wafer.tile.*` fixture只补parser/verifier覆盖。
+all-clones-fail和late CardExecutable verification failure。手写`wafer.tile.*` fixture只补parser/verifier覆盖。
 
 ## 9. Control Flow 与 Complete Traversal
 
@@ -472,14 +472,14 @@ tile/dataflow verifier至少检查：
 - 每个physical Tile的SPM roots/lifetime/coexistence、fixed-capacity placement与all-root coverage；
 - CardProgram DDR lifetime/capacity/offset；
 - cross-Tile communication、completion、transport和ABI；
-- target emission、readback和atomic CardExecutable/ExecutablePackage publication。
+- target emission、readback和atomic CardExecutable/ExecutablePackage writing。
 
 失败规则：
 
 - pattern返回failure前不得修改IR；若后续步骤失败，整个isolated clone直接丢弃。
 - unsupported source semantics、无法表示的relation或illegal conversion不产生partial tile IR。
 - 单个clone失败只淘汰该clone；所有clone失败才使physical-dataflow selection失败。
-- 任一physical Tile program失败或complete candidate的later gate失败，不发布partial Tile/module/artifact/package。
+- 任一physical Tile program失败或complete candidate的later gate失败，不发布partial Tile/module/output/package。
 - 失败不得触发本层临时改写source语义、encoding、residency、movement或execution order。
 
 ## 11. Q32.V Typed Target Extensions 与其它 Later 能力
@@ -498,13 +498,13 @@ side attr。
 
 下列能力仍有独立前置，不能被当前机制存在误报为已支持：
 
-- immutable prepacked resource publication；
+- immutable prepacked resource writing；
 - dynamic shape、复杂mask和target-specific composite。通用producer-consumer tile composition属于06当前合同；只有
   需要新增target-specific composite instruction、复杂dynamic mask或尚无typed numeric semantics的实现才是later；
 - 需要新runtime/ABI/SystemC consumer的movement或completion形态。
 - Q39已经闭合NoC-resident result/operand/partial traversal、peer movement和Direct-DTE mechanics；Q50迁移其机制，Q51把
-  decision owner并入06的physical-dataflow frontier，本文只物化selected peer/resident Tile IR，13继续拥有typed lowering与
-  CardExecutable admission。pre-current-cutover late
+  decision owner并入06的physical-dataflow candidate set，本文只物化selected peer/resident Tile IR，13继续拥有typed lowering与
+  CardExecutable verification。pre-current-cutover late
   NoC tuple path只作历史资格证据，不再是终态独立pipeline。
 - online/streamed reduction只有在typed running state、combine公式、numeric policy、tail与lowering闭合后才进入同一
   reduction candidate domain；未闭合时保留native/partial baseline。没有typed fused semantics的non-GEMM FMA contraction及
@@ -574,7 +574,7 @@ region内只spill某个root、让其它root继续驻留。也要保留“独立l
 6. every compute/movement通过op verifier、适用的standard interfaces和MemoryEffect/custom resource effects；
    every async issue都有SSA或typed fence completion。
 7. selected Tile IR经per-Tile tile-to-instruction conversion、SPM/DDR、cross-Tile communication、transport和ABI gate直接消费。
-8. 任一clone、physical Tile program或later exact gate失败都不产生partial accepted IR、CardExecutable、module、artifact或package。
+8. 任一clone、physical Tile program或later exact gate失败都不产生partial accepted IR、CardExecutable、module、output或package。
 9. generic DAG、HF prefill/decode与Llama block以card-level `num_partitions=1`完成source-to-package-to-no-card fresh纵向；
    package必须含all-and-only topology-available physical Tile launch entries，且允许per-Tile op/loop/shape不同。局部fixture不算完成。
 10. Q32.V mapped DMA、physical fill和oriented GEMM通过typed Tile/Instr/TargetCall/ABI/SystemC纵向后由同一
@@ -586,7 +586,7 @@ region内只spill某个root、让其它root继续驻留。也要保留“独立l
     均复用Q32.N的numeric validation；online reduction、non-GEMM FMA及超出current integer-domain子集的
     distribution/factorization只有完整typed semantic/numeric/lowering纵向闭合后才能准入，不能靠伪装attr。
 
-## 14. Structured Alternative Handoff
+## 14. Structured Alternative Boundary
 
 `semantic-superoptimization`不改变本文selected TileRegion IR的语义。Q50.S先让所有语义alternative在physical mapping前形成
 真实、verifier-clean actual TensorProgram roots，Q51只选择一个root并展开同一physical-dataflow search；不得把instruction sketch、rewrite rule、
@@ -598,4 +598,4 @@ solver AST、proof certificate或implementation descriptor物化为TileRegion op
   deterministic lowering owner负责，不改变Q51 winner；
 - 本文不接收额外selector、selected/forced字段、side table或新的候选IR。
 
-示例的reassociation、GEMM/layout fusion或DMA序列只用于证明同一handoff可工作，不形成case-specific materializer。
+示例的reassociation、GEMM/layout fusion或DMA序列只用于证明同一boundary可工作，不形成case-specific materializer。

@@ -1234,7 +1234,7 @@ mlir::LogicalResult materializeSpill(
     preserved.insert(sealedSlice.getDefiningOp());
 
     // One independently executed producer may fan out to several later op
-    // stages or peer sends. They must all read the committed DDR version;
+    // stages or peer sends. They must all read the stored DDR value;
     // retaining a cached SPM traversal for a later fanout would keep that SPM
     // value live across this cut. Preserve only the current store's backward
     // slice, and redirect every already-materialized external fanout plus the
@@ -1685,7 +1685,7 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
     // operation reads that buffer, the initializing load belongs to the same
     // side of the cut. This is the memory-effect counterpart of collectPrefix:
     // without it the allocation can be cloned into the prefix while its load
-    // remains as an unread suffix artifact.
+    // remains as an unread operation in the suffix.
     llvm::DenseSet<mlir::Value> prefixReadBuffers;
     auto recordSPMRead = [&](mlir::Value value) {
       mlir::Value root = getViewRoot(value);
@@ -1841,7 +1841,7 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
     return argument && argument.getOwner() == &body;
   };
 
-  // A temporal loop or another prefix operation may publish additional DDR
+  // A temporal loop or another prefix operation may produce additional DDR
   // state that a later independent op stage consumes. Such values are legal
   // TileRegion boundaries and must be explicit region results/inputs. Tensor
   // and SPM values remain forbidden: admitting only typed DDR memrefs keeps
@@ -2098,8 +2098,7 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
     auto retargetValue = [&](mlir::Value value) -> mlir::Value {
       if (value == spillAllocation.getResult())
         return externalSpill.getResult();
-      for (auto [index, allocation] :
-           llvm::enumerate(sharedDDRAllocations))
+      for (auto [index, allocation] : llvm::enumerate(sharedDDRAllocations))
         if (value == allocation.getResult())
           return externalSharedDDR[index];
       if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
@@ -2431,32 +2430,30 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
       if (independentDDRStages)
         break;
       bool ignoredCreatedRegionCut = false;
-      if (mlir::failed(materializeSpill(
-              scope, mapped, materialized, preserved,
-              materializedRegionCutSpills, selectedDDRStages,
-              ignoredCreatedRegionCut, mappedTemporalTiles, failureReason,
-              &mappedOperationNodes)))
+      if (mlir::failed(
+              materializeSpill(scope, mapped, materialized, preserved,
+                               materializedRegionCutSpills, selectedDDRStages,
+                               ignoredCreatedRegionCut, mappedTemporalTiles,
+                               failureReason, &mappedOperationNodes)))
         return mlir::failure();
     } break;
     case SpatialEdgeAction::RegionCut: {
       if (independentDDRStages)
         break;
       bool createdRegionCut = false;
-      if (mlir::failed(materializeSpill(scope, mapped, materialized, preserved,
-                                        materializedRegionCutSpills,
-                                        selectedDDRStages, createdRegionCut,
-                                        mappedTemporalTiles, failureReason,
-                                        &mappedOperationNodes)))
+      if (mlir::failed(materializeSpill(
+              scope, mapped, materialized, preserved,
+              materializedRegionCutSpills, selectedDDRStages, createdRegionCut,
+              mappedTemporalTiles, failureReason, &mappedOperationNodes)))
         return mlir::failure();
       if (createdRegionCut)
         regionCuts.push_back(&mapped.strategy);
       break;
     }
     case SpatialEdgeAction::Recompute:
-      if (mlir::failed(materializeRecompute(scope, mapped, materialized,
-                                           preserved, mappedTemporalTiles,
-                                           mappedOperationNodes,
-                                           failureReason)))
+      if (mlir::failed(materializeRecompute(
+              scope, mapped, materialized, preserved, mappedTemporalTiles,
+              mappedOperationNodes, failureReason)))
         return mlir::failure();
       break;
     case SpatialEdgeAction::PeerFragments:
@@ -2801,8 +2798,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
               mlir::FailureOr<mlir::Value> local = getOrMaterializeSource(
                   scope, mapped.producer, strategy.producerResult,
                   fragment->offsets, fragment->sizes, materialized, preserved,
-                  mappedTemporalTiles, failureReason,
-                  &mappedOperationNodes);
+                  mappedTemporalTiles, failureReason, &mappedOperationNodes);
               if (mlir::failed(local))
                 return mlir::failure();
               value = *local;
@@ -3152,11 +3148,11 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
             llvm::is_contained(deferredRegionCuts, &incoming))
           continue;
         bool createdRegionCut = false;
-        if (mlir::failed(materializeSpill(
-                scope, incoming, materialized, preserved,
-                materializedRegionCutSpills, selectedDDRStages,
-                createdRegionCut, mappedTemporalTiles, failureReason,
-                &mappedOperationNodes)))
+        if (mlir::failed(
+                materializeSpill(scope, incoming, materialized, preserved,
+                                 materializedRegionCutSpills, selectedDDRStages,
+                                 createdRegionCut, mappedTemporalTiles,
+                                 failureReason, &mappedOperationNodes)))
           return mlir::failure();
         deferredRegionCuts.push_back(&incoming);
         if (createdRegionCut)
@@ -3165,8 +3161,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
       mlir::FailureOr<mlir::Value> consumer = getOrMaterializeSource(
           scope, mapped.consumer, /*producerResult=*/0,
           strategy.consumerOffsets, strategy.consumerSizes, materialized,
-          preserved, mappedTemporalTiles, failureReason,
-          &mappedOperationNodes);
+          preserved, mappedTemporalTiles, failureReason, &mappedOperationNodes);
       if (mlir::failed(consumer))
         return mlir::failure();
       auto selectedType =
@@ -3598,11 +3593,10 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
          emissionRelations.selectedDDRStages)
       materializedStageBuffers.push_back(stage.allocation->getResult(0));
     for (const MaterializedRegionCut &regionCut : orderedRegionCuts)
-      if (mlir::failed(
-              splitAtRegionCut(regionCut.spillAllocation, regionCut.marker,
-                               materializedStageBuffers,
-                               &emissionRelations.materializedBuffers,
-                               failureReason)))
+      if (mlir::failed(splitAtRegionCut(
+              regionCut.spillAllocation, regionCut.marker,
+              materializedStageBuffers, &emissionRelations.materializedBuffers,
+              failureReason)))
         return mlir::failure();
   }
   // Query-local exact carrier caches have to survive until endpoint emission
@@ -3610,7 +3604,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
   // can leave an eagerly converted load in another region after a different
   // containing cache supplies the eventual endpoint. Once every split is
   // final, a load into a direct private allocation with no other use is
-  // unobservable; remove that peer-materialization artifact and its allocation
+  // unobservable; remove that unused peer load and its allocation
   // without changing any load feeding a send, compute, store, view, or region
   // result. The split effect closure above keeps each such reader with its
   // initializing load.

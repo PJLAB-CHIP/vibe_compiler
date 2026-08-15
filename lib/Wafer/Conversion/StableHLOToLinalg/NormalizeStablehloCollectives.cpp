@@ -1,4 +1,4 @@
-//===- NormalizeStablehloCollectives.cpp - StableHLO collective handoff ---===//
+//===- NormalizeStablehloCollectives.cpp - StableHLO collective rewrite ---===//
 
 #include "Wafer/Transforms/Passes.h"
 
@@ -468,8 +468,7 @@ static bool isSelectedOperation(mlir::Operation *op,
                                 StablehloNormalizationAction action) {
   switch (action) {
   case StablehloNormalizationAction::Collective:
-    return mlir::isa<mlir::stablehlo::AllGatherOp,
-                     mlir::stablehlo::AllReduceOp,
+    return mlir::isa<mlir::stablehlo::AllGatherOp, mlir::stablehlo::AllReduceOp,
                      mlir::stablehlo::ReduceScatterOp,
                      mlir::stablehlo::AllToAllOp,
                      mlir::stablehlo::CollectivePermuteOp>(op);
@@ -482,8 +481,9 @@ static bool isSelectedOperation(mlir::Operation *op,
   llvm_unreachable("unknown StableHLO normalization action");
 }
 
-static bool requiresStablehloNormalizationTransaction(
-    mlir::ModuleOp module, StablehloNormalizationAction action) {
+static bool
+requiresStablehloNormalizationTransaction(mlir::ModuleOp module,
+                                          StablehloNormalizationAction action) {
   bool found = false;
   module.walk([&](mlir::Operation *op) {
     if (isSelectedOperation(op, action)) {
@@ -537,8 +537,9 @@ normalizeStablehloModuleInPlace(mlir::ModuleOp module,
   return mlir::success();
 }
 
-static mlir::LogicalResult runAtomicStablehloNormalization(
-    mlir::ModuleOp module, StablehloNormalizationAction action) {
+static mlir::LogicalResult
+runAtomicStablehloNormalization(mlir::ModuleOp module,
+                                StablehloNormalizationAction action) {
   if (!requiresStablehloNormalizationTransaction(module, action))
     return mlir::success();
   mlir::OwningOpRef<mlir::ModuleOp> transaction =
@@ -593,8 +594,7 @@ struct FoldDefaultStablehloExecutionIdsPass
   void runOnOperation() final {
 #ifdef WAFER_ENABLE_STABLEHLO
     if (mlir::failed(runAtomicStablehloNormalization(
-            getOperation(),
-            StablehloNormalizationAction::DefaultExecutionId)))
+            getOperation(), StablehloNormalizationAction::DefaultExecutionId)))
       signalPassFailure();
 #endif
   }

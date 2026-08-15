@@ -2016,7 +2016,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
                 "receiver-first test-only raw sender controls repeat serial "
                 "and send_async-to-wait_done issue windows without changing "
                 "the production CRT; exact guards, return codes, receiver "
-                "completion and terminal publication gate PMU comparison"
+                "completion and terminal visibility gate PMU comparison"
             ),
         ),
         _observation_leaf(
@@ -2130,7 +2130,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "held-out",
             "rank-one-and-full-card",
             TRANSPORT_PMU_CATALOG,
-            "runtime-publication-positive",
+            "runtime-visibility-positive",
             resource_budget="runtime-owned-rank-resources",
         ),
         _non_board_leaf(
@@ -2138,7 +2138,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "held-out",
             "static-negative",
             TRANSPORT_PMU_CATALOG,
-            "runtime-publication-negative",
+            "runtime-visibility-negative",
             reason=(
                 "outer deadline and cleanup are validated without issuing an "
                 "unsafe hardware protocol violation"

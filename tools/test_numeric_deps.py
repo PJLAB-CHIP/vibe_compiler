@@ -24,14 +24,14 @@ from numeric_deps import (
     RECORD_KIND,
     RECORD_SCHEMA_VERSION,
     RECORD_STATUS,
-    REQUIRED_ARTIFACTS,
+    REQUIRED_FILES,
     REQUIRED_CONFORMANCE_GATES,
     SOFTFLOAT_PLATFORM,
     SOFTFLOAT_RAISE_FLAGS,
     SOFTFLOAT_SPECIALIZATION,
     SOFTFLOAT_THREAD_LOCAL,
     TOOLCHAIN_POLICY,
-    artifact_identity,
+    file_identity,
     atomic_write_json,
     capture_host_toolchain,
     load_record,
@@ -193,7 +193,7 @@ def make_record(
     gmp, gmp_soname, mpfr, mpfr_soname = _build_fixture_shared_objects(
         root, toolchain
     )
-    artifact_paths = {
+    file_paths = {
         "m4": root / "install/m4/bin/m4",
         "softfloat": root / "install/softfloat/lib/libsoftfloat.a",
         "softfloat-header": root / "install/softfloat/include/softfloat.h",
@@ -206,8 +206,8 @@ def make_record(
         "mpfr-soname": mpfr_soname,
         "mpfr-header": root / "install/mpfr/include/mpfr.h",
     }
-    _write_executable(artifact_paths["m4"], "managed m4 fixture")
-    _write_executable(artifact_paths["testsoftfloat"], "TestFloat fixture")
+    _write_executable(file_paths["m4"], "managed m4 fixture")
+    _write_executable(file_paths["testsoftfloat"], "TestFloat fixture")
     for name in (
         "softfloat",
         "softfloat-header",
@@ -215,28 +215,28 @@ def make_record(
         "gmp-header",
         "mpfr-header",
     ):
-        path = artifact_paths[name]
+        path = file_paths[name]
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(f"artifact-{name}\n".encode())
+        path.write_bytes(f"file-{name}\n".encode())
 
     license_records: dict[str, dict[str, str]] = {}
-    for artifact_name, (dependency, source_relative) in LICENSE_SOURCE_FILES.items():
+    for file_name, (dependency, source_relative) in LICENSE_SOURCE_FILES.items():
         source = sources / pins[dependency].source_directory / source_relative
         destination = (
             root
             / "install/licenses"
-            / f"{artifact_name.removeprefix('license-')}.txt"
+            / f"{file_name.removeprefix('license-')}.txt"
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
-        artifact_paths[artifact_name] = destination
-        license_records[artifact_name] = {
+        file_paths[file_name] = destination
+        license_records[file_name] = {
             "dependency": dependency,
             "source": relative_managed_path(root, source),
-            "artifact": artifact_name,
+            "artifact": file_name,
             "sha256": sha256_file(source),
         }
-    self.assertEqual(set(artifact_paths), REQUIRED_ARTIFACTS)
+    self.assertEqual(set(file_paths), REQUIRED_FILES)
 
     contracts = numeric_gate_contracts(jobs=jobs, toolchain=toolchain)
     self.assertEqual(set(contracts), REQUIRED_CONFORMANCE_GATES)
@@ -250,7 +250,7 @@ def make_record(
                 "name": name,
                 **contract,
                 "exit_code": 0,
-                "log": artifact_identity(root, log, readelf=readelf),
+                "log": file_identity(root, log, readelf=readelf),
             }
         )
 
@@ -275,8 +275,8 @@ def make_record(
             "elf_identity_policy": "sha256-build-id-soname-needed-rpath-v1",
         },
         "artifacts": {
-            name: artifact_identity(root, path, readelf=readelf)
-            for name, path in artifact_paths.items()
+            name: file_identity(root, path, readelf=readelf)
+            for name, path in file_paths.items()
         },
         "licenses": license_records,
         "conformance": {"policy": CONFORMANCE_POLICY, "gates": gates},
@@ -293,16 +293,16 @@ def record_readelf(value: dict[str, object]) -> pathlib.Path:
 
 
 class NumericDependencyTest(unittest.TestCase):
-    def test_invalid_rebuild_preserves_published_record(self) -> None:
+    def test_invalid_rebuild_preserves_installed_record(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             record = root / "numeric-model-deps.json"
-            record.write_text("published record\n", encoding="utf-8")
+            record.write_text("installed record\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "job count"):
                 build_numeric_model_dependencies({}, root, 0)
-            self.assertEqual(record.read_text(encoding="utf-8"), "published record\n")
+            self.assertEqual(record.read_text(encoding="utf-8"), "installed record\n")
 
-    def test_valid_published_record_is_reused_without_overwrite(self) -> None:
+    def test_valid_installed_record_is_reused_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             versions, archives = make_versions(root)
@@ -429,7 +429,7 @@ class NumericDependencyTest(unittest.TestCase):
                 root / value["artifacts"]["license-mpfr-lesser"]["path"]
             )
             license_path.write_text("wrong license\n", encoding="utf-8")
-            value["artifacts"]["license-mpfr-lesser"] = artifact_identity(
+            value["artifacts"]["license-mpfr-lesser"] = file_identity(
                 root, license_path, readelf=record_readelf(value)
             )
             atomic_write_json(record, value)
@@ -507,8 +507,8 @@ class NumericDependencyTest(unittest.TestCase):
             self.assertEqual(snapshot["record_sha256"], sha256_file(record))
             self.assertTrue(pathlib.Path(snapshot["root"]).is_absolute())
             self.assertTrue(pathlib.Path(snapshot["record"]).is_absolute())
-            for artifact in snapshot["artifacts"].values():
-                self.assertTrue(pathlib.Path(artifact["path"]).is_absolute())
+            for file_record in snapshot["artifacts"].values():
+                self.assertTrue(pathlib.Path(file_record["path"]).is_absolute())
             json.dumps(snapshot, sort_keys=True)
 
     def test_zip_path_traversal_is_rejected_without_escape(self) -> None:

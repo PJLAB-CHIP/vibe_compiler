@@ -20,9 +20,9 @@
 namespace wafer::compiler::detail {
 namespace {
 
-static TileRegionSPMCapacityEvaluation classify(
-    TileRegionSPMCapacityStatus status, TileRegionSPMCapacityPhase phase,
-    llvm::StringRef detail, SPMMemoryPlanningFailure failure = {}) {
+static TileRegionSPMCapacityEvaluation
+classify(TileRegionSPMCapacityStatus status, TileRegionSPMCapacityPhase phase,
+         llvm::StringRef detail, SPMMemoryPlanningFailure failure = {}) {
   TileRegionSPMCapacityEvaluation outcome;
   outcome.status = status;
   outcome.phase = phase;
@@ -86,20 +86,20 @@ TileRegionSPMCapacityEvaluation::getPhaseDiagnosticLabel() const {
   llvm_unreachable("unknown TileRegion SPM capacity evaluation phase");
 }
 
-TileRegionSPMCapacityEvaluation evaluateTileRegionSPMCapacity(
-    TileRegionOp region, TileRegionToInstrLoweringSession &loweringSession,
-    llvm::raw_ostream &diagnostics) {
+TileRegionSPMCapacityEvaluation
+evaluateTileRegionSPMCapacity(TileRegionOp region,
+                              TileRegionToInstrLoweringSession &loweringSession,
+                              llvm::raw_ostream &diagnostics) {
   wafer::support::ScopedCompileTimingSpan timing(
       "analysis", "tile-region-spm-capacity-evaluation",
       "tile-region-spm-capacity-evaluation");
   auto reportNonCapacityResult = [&](TileRegionSPMCapacityEvaluation outcome) {
     timing.markFailed();
     diagnostics << "wafer-compile: tile-region-spm-capacity outcome="
-                << (outcome.capacityExceeded()
-                        ? "capacity-exceeded"
-                        : outcome.requiresFunctionScope()
-                              ? "requires-function-scope"
-                              : "analysis-failure")
+                << (outcome.capacityExceeded() ? "capacity-exceeded"
+                    : outcome.requiresFunctionScope()
+                        ? "requires-function-scope"
+                        : "analysis-failure")
                 << " phase=" << outcome.getPhaseDiagnosticLabel()
                 << " detail=" << outcome.detail << '\n';
     return outcome;
@@ -114,26 +114,27 @@ TileRegionSPMCapacityEvaluation evaluateTileRegionSPMCapacity(
   bool hasCall = false;
   region.walk([&](mlir::CallOpInterface) { hasCall = true; });
   if (hasCall)
-    return reportNonCapacityResult(classify(
-        TileRegionSPMCapacityStatus::RequiresFunctionScope,
-        TileRegionSPMCapacityPhase::InputValidation,
-        "TileRegion contains a call and requires function-scoped SPM planning"));
+    return reportNonCapacityResult(
+        classify(TileRegionSPMCapacityStatus::RequiresFunctionScope,
+                 TileRegionSPMCapacityPhase::InputValidation,
+                 "TileRegion contains a call and requires function-scoped SPM "
+                 "planning"));
 
   auto evaluation = TileRegionEvaluationScope::create(region, detail);
   if (mlir::failed(evaluation))
-    return reportNonCapacityResult(classify(
-        TileRegionSPMCapacityStatus::AnalysisFailure,
-        TileRegionSPMCapacityPhase::InputValidation, detail));
+    return reportNonCapacityResult(
+        classify(TileRegionSPMCapacityStatus::AnalysisFailure,
+                 TileRegionSPMCapacityPhase::InputValidation, detail));
   TileRegionOp isolatedRegion = (*evaluation)->getRegion();
   if (mlir::failed(convertTileRegionToInstr(isolatedRegion, loweringSession)) ||
       containsTileDataflowOperations(isolatedRegion.getOperation()) ||
-      mlir::failed(rebuildRequiredNCCJoinsForIsolatedTileRegion(
-          isolatedRegion)) ||
+      mlir::failed(
+          rebuildRequiredNCCJoinsForIsolatedTileRegion(isolatedRegion)) ||
       mlir::failed(mlir::verify(isolatedRegion)))
     return reportNonCapacityResult(classify(
         TileRegionSPMCapacityStatus::AnalysisFailure,
         TileRegionSPMCapacityPhase::InstructionLowering,
-        "TileRegion-to-Instr conversion or isolated completion analysis "
+        "TileRegion-to-Instr conversion or isolated required-join analysis "
         "failed"));
 
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
@@ -147,14 +148,14 @@ TileRegionSPMCapacityEvaluation evaluateTileRegionSPMCapacity(
         spmFailure.kind == SPMMemoryPlanningFailureKind::UnsupportedLifetime;
     return reportNonCapacityResult(classify(
         exact ? TileRegionSPMCapacityStatus::CapacityExceeded
-              : requiresFunctionScope
-                    ? TileRegionSPMCapacityStatus::RequiresFunctionScope
-                    : TileRegionSPMCapacityStatus::AnalysisFailure,
+        : requiresFunctionScope
+            ? TileRegionSPMCapacityStatus::RequiresFunctionScope
+            : TileRegionSPMCapacityStatus::AnalysisFailure,
         TileRegionSPMCapacityPhase::StaticPacking,
         exact ? "static SPM packing proved a TileRegion capacity overflow"
-              : requiresFunctionScope
-                    ? "TileRegion lifetime requires function-scoped SPM planning"
-                    : "TileRegion Instr SPM capacity analysis did not produce a proof",
+        : requiresFunctionScope
+            ? "TileRegion lifetime requires function-scoped SPM planning"
+            : "TileRegion Instr SPM capacity analysis did not produce a proof",
         std::move(spmFailure)));
   }
 

@@ -66,7 +66,7 @@ struct SelectedBufferMaterializationFailure {
 /// Materializes the buffer multiplicity already selected by the whole-DAG
 /// candidate into ordinary allocation, SSA recurrence and scf.for IR.  This
 /// is an exact actualization gate, not a second candidate owner: it either
-/// commits one (possibly nested) loop whose derived rotating-slot family has
+/// rewrites one (possibly nested) loop whose derived rotating-slot family has
 /// exactly `requestedBufferCount`, or leaves `module` unchanged and fails.
 /// This overload is the low-level mechanism test seam; search policy must use
 /// the exact logical-edge overload below.

@@ -1,4 +1,5 @@
-//===- BulkQualification.h - Auditable bulk backend admission -*- C++ -*-===//
+//===- BulkQualification.h - Auditable bulk backend qualification -*- C++
+//-*-===//
 
 #ifndef WAFER_TARGET_BULKQUALIFICATION_H
 #define WAFER_TARGET_BULKQUALIFICATION_H
@@ -17,7 +18,7 @@ namespace wafer {
 
 /// Exact deterministic GEMM corpus identity used by the offline three-stage
 /// qualification producer. Shapes and layouts remain example/domain fields;
-/// runtime admission still binds the resolved command and payload digests.
+/// runtime qualification still binds the resolved command and payload digests.
 class BulkQualificationSpec {
 public:
   BulkQualificationSpec() = delete;
@@ -133,9 +134,9 @@ struct BulkQualificationTolerance {
   double maximumRelativeError = 0.0;
 };
 
-/// Fully parsed and canonical final record. It can issue an admission only for
-/// the exact current environment, resolved command, payload and destination
-/// template carried by the record.
+/// Fully parsed and canonical validation record. It produces a qualified
+/// execution only for the exact environment, resolved command, payload and
+/// destination template recorded by the validation run.
 class VerifiedBulkQualificationRecord {
 public:
   VerifiedBulkQualificationRecord() = delete;
@@ -155,11 +156,11 @@ public:
   }
   BulkQualificationKind getKind() const { return kind; }
 
-  llvm::Expected<BulkBackendAdmission>
-  createAdmission(const BulkExecutionEnvironment &environment,
-                  const ResolvedNumericCommand &command,
-                  llvm::ArrayRef<BulkTensorStorage> inputs,
-                  const BulkTensorStorage &destinationTemplate) const;
+  llvm::Expected<QualifiedBulkExecution>
+  qualifyExecution(const BulkExecutionEnvironment &environment,
+                   const ResolvedNumericCommand &command,
+                   llvm::ArrayRef<BulkTensorStorage> inputs,
+                   const BulkTensorStorage &destinationTemplate) const;
 
 private:
   friend llvm::Expected<VerifiedBulkQualificationRecord>
@@ -211,7 +212,8 @@ llvm::Error writeBulkQualificationSpec(const BulkQualificationSpec &spec,
 llvm::Expected<BulkQualificationSpec>
 loadBulkQualificationSpec(llvm::StringRef path);
 
-/// Offline producer stages. Every output uses atomic no-replace publication.
+/// Offline producer stages. Every output file is created atomically and is
+/// never replaced.
 /// Freeze reads calibration and pre-registers a disjoint held-out spec without
 /// executing it; validate is the first stage allowed to execute held-out data.
 llvm::Error calibrateBulkBackend(const BulkExecutionEnvironment &environment,

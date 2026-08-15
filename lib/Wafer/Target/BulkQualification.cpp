@@ -1,4 +1,4 @@
-//===- BulkQualification.cpp - Canonical qualification artifacts ----===//
+//===- BulkQualification.cpp - Canonical qualification files --------===//
 
 #include "BulkQualificationInternal.h"
 
@@ -94,20 +94,20 @@ std::string canonicalJSON(llvm::json::Object &&object) {
   return canonicalJSON(llvm::json::Value(std::move(object)));
 }
 
-static llvm::Error validateCanonicalArtifactPath(llvm::StringRef path,
+static llvm::Error validateQualificationFilePath(llvm::StringRef path,
                                                  bool mustExist) {
   if (!llvm::sys::path::is_absolute(path) || path.empty())
-    return invalid("qualification artifact paths must be absolute");
+    return invalid("qualification file paths must be absolute");
   llvm::SmallString<512> normalized(path);
   llvm::sys::path::remove_dots(normalized, /*remove_dot_dot=*/true);
   if (normalized != path)
-    return invalid("qualification artifact path contains an alias component");
+    return invalid("qualification file path contains an alias component");
   llvm::SmallString<512> resolved;
   if (mustExist) {
     if (std::error_code error = llvm::sys::fs::real_path(path, resolved))
       return llvm::errorCodeToError(error);
     if (resolved != path)
-      return invalid("qualification artifact path resolves through an alias");
+      return invalid("qualification file path resolves through an alias");
     return llvm::Error::success();
   }
   llvm::StringRef parent = llvm::sys::path::parent_path(path);
@@ -122,7 +122,7 @@ static llvm::Error validateCanonicalArtifactPath(llvm::StringRef path,
 
 llvm::Expected<ParsedJSON> loadCanonicalJSON(llvm::StringRef path) {
   if (llvm::Error error =
-          validateCanonicalArtifactPath(path, /*mustExist=*/true))
+          validateQualificationFilePath(path, /*mustExist=*/true))
     return std::move(error);
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
       llvm::MemoryBuffer::getFile(path, /*IsText=*/true,
@@ -136,7 +136,7 @@ llvm::Expected<ParsedJSON> loadCanonicalJSON(llvm::StringRef path) {
                    llvm::toString(parsed.takeError()));
   std::string canonical = canonicalJSON(*parsed);
   if ((*buffer)->getBuffer() != canonical)
-    return invalid("JSON artifact is not in canonical form: " + path);
+    return invalid("JSON file is not in canonical form: " + path);
   return ParsedJSON{std::move(*parsed), canonical, sha256(canonical)};
 }
 
@@ -253,7 +253,7 @@ llvm::json::Object specJSON(const BulkQualificationSpec &spec) {
 
 llvm::json::Object
 environmentJSON(const BulkExecutionEnvironment &environment) {
-  const BulkBackendIdentity &backend = environment.getBackend();
+  const BulkBackendDescriptor &backend = environment.getBackend();
   return llvm::json::Object{
       {"schema", "wafer-bulk-execution-environment-v1"},
       {"backend_name", backend.getName()},
@@ -465,21 +465,20 @@ parseFlags(const llvm::json::Object &object) {
                                      *underflow, *inexact};
 }
 
-llvm::Error publishNoReplace(llvm::StringRef path, llvm::StringRef content) {
+llvm::Error writeFileNoReplace(llvm::StringRef path, llvm::StringRef content) {
   if (llvm::Error error =
-          validateCanonicalArtifactPath(path, /*mustExist=*/false))
+          validateQualificationFilePath(path, /*mustExist=*/false))
     return error;
-  std::string candidate =
-      (path + ".candidate." + llvm::Twine(static_cast<uint64_t>(::getpid())))
-          .str();
-  int descriptor =
-      ::open(candidate.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+  std::string temporaryPath =
+      (path + ".tmp." + llvm::Twine(static_cast<uint64_t>(::getpid()))).str();
+  int descriptor = ::open(temporaryPath.c_str(),
+                          O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
   if (descriptor < 0)
     return llvm::errorCodeToError(
         std::error_code(errno, std::generic_category()));
   auto cleanup = llvm::make_scope_exit([&] {
     ::close(descriptor);
-    ::unlink(candidate.c_str());
+    ::unlink(temporaryPath.c_str());
   });
   const char *data = content.data();
   size_t remaining = content.size();
@@ -494,7 +493,7 @@ llvm::Error publishNoReplace(llvm::StringRef path, llvm::StringRef content) {
   if (::fsync(descriptor) != 0)
     return llvm::errorCodeToError(
         std::error_code(errno, std::generic_category()));
-  if (::link(candidate.c_str(), path.str().c_str()) != 0)
+  if (::link(temporaryPath.c_str(), path.str().c_str()) != 0)
     return llvm::errorCodeToError(
         std::error_code(errno, std::generic_category()));
   return llvm::Error::success();
@@ -609,7 +608,7 @@ loadBulkQualificationSpec(llvm::StringRef path) {
 
 llvm::Error writeBulkQualificationSpec(const BulkQualificationSpec &spec,
                                        llvm::StringRef path) {
-  return publishNoReplace(path, canonicalJSON(specJSON(spec)));
+  return writeFileNoReplace(path, canonicalJSON(specJSON(spec)));
 }
 
 } // namespace wafer

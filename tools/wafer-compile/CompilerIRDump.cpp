@@ -57,7 +57,7 @@ bool writeIRFile(llvm::StringRef path, Print print,
 } // namespace
 
 bool dumpCompilerIR(llvm::StringRef destination,
-                    const wafer::compiler::TargetCompilationProduct &product,
+                    const wafer::compiler::CompiledProgram &compiledProgram,
                     llvm::raw_ostream &diagnostics) {
   if (destination.empty()) {
     diagnostics << "wafer-compile: --dump-compiler-ir must not be empty\n";
@@ -82,9 +82,10 @@ bool dumpCompilerIR(llvm::StringRef destination,
     return false;
 
   const auto &tiles =
-      product.getExecutableBundle().getPhysicalTileExecutables();
-  const auto &targetModules = product.getTargetLLVMModuleBundle().getModules();
-  const auto &irTrace = product.getIRTrace().physicalTiles;
+      compiledProgram.getPhysicalTileExecutables().getPhysicalTileExecutables();
+  const auto &targetModules =
+      compiledProgram.getTargetLLVMModules().getModules();
+  const auto &irTrace = compiledProgram.getIRTrace().physicalTiles;
   if (tiles.size() != targetModules.size() || tiles.size() != irTrace.size()) {
     diagnostics
         << "wafer-compile: compiler IR dump physical Tile domains differ\n";

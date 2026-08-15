@@ -10,71 +10,69 @@
 namespace wafer::model {
 
 llvm::Expected<TargetModelCommandEffect>
-executeTargetModelCommand(const compiler::TargetTransaction &transaction,
+executeTargetModelCommand(const compiler::TargetCommand &command,
                           const InvocationMemoryRegistry &memory,
                           TargetModelKernelBudget budget,
                           TargetModelExecutionPolicy policy) {
-  if (llvm::Error error = validateTargetModelTransactionFields(transaction))
+  if (llvm::Error error = validateTargetModelCommandFields(command))
     return std::move(error);
   if (!llvm::is_contained(memory.getAddressPlan().getLaunchSlots(),
-                          transaction.launchSlotId.getValue()))
+                          command.launchSlotId.getValue()))
     return kernel_detail::kernelError(
-        TargetModelKernelErrorCode::InvalidTransactionField,
-        "transaction launch slot is outside invocation");
+        TargetModelKernelErrorCode::InvalidCommandField,
+        "command launch slot is outside invocation");
 
-  if (const auto *value = std::get_if<target::TargetStridedDMATransaction>(
-          &transaction.payload))
-    return kernel_detail::executeMovement(transaction, *value, memory, budget);
-  if (const auto *value = std::get_if<target::TargetGatherScatterTransaction>(
-          &transaction.payload))
-    return kernel_detail::executeGatherScatter(transaction, *value, memory,
-                                               budget);
   if (const auto *value =
-          std::get_if<target::TargetMemsetTransaction>(&transaction.payload))
-    return kernel_detail::executeMemset(transaction, *value, memory);
-  if (const auto *value = std::get_if<target::TargetElementwiseTransaction>(
-          &transaction.payload))
-    return kernel_detail::executeElementwise(transaction, *value, memory,
-                                             budget, policy);
+          std::get_if<target::TargetStridedDMACommand>(&command.payload))
+    return kernel_detail::executeMovement(command, *value, memory, budget);
   if (const auto *value =
-          std::get_if<target::TargetConvertTransaction>(&transaction.payload))
-    return kernel_detail::executeConvert(transaction, *value, memory, budget,
+          std::get_if<target::TargetGatherScatterCommand>(&command.payload))
+    return kernel_detail::executeGatherScatter(command, *value, memory, budget);
+  if (const auto *value =
+          std::get_if<target::TargetMemsetCommand>(&command.payload))
+    return kernel_detail::executeMemset(command, *value, memory);
+  if (const auto *value =
+          std::get_if<target::TargetElementwiseCommand>(&command.payload))
+    return kernel_detail::executeElementwise(command, *value, memory, budget,
+                                             policy);
+  if (const auto *value =
+          std::get_if<target::TargetConvertCommand>(&command.payload))
+    return kernel_detail::executeConvert(command, *value, memory, budget,
                                          policy);
   if (const auto *value =
-          std::get_if<target::TargetReduceTransaction>(&transaction.payload))
-    return kernel_detail::executeReduce(transaction, *value, memory, budget,
+          std::get_if<target::TargetReduceCommand>(&command.payload))
+    return kernel_detail::executeReduce(command, *value, memory, budget,
                                         policy);
   if (const auto *value =
-          std::get_if<target::TargetGemmTransaction>(&transaction.payload))
-    return kernel_detail::executeGemm(transaction, *value, memory, budget,
-                                      policy);
+          std::get_if<target::TargetGemmCommand>(&command.payload))
+    return kernel_detail::executeGemm(command, *value, memory, budget, policy);
 
   TargetModelControlAction control =
-      kernel_detail::getControlAction(transaction.payload);
+      kernel_detail::getControlAction(command.payload);
   if (control != TargetModelControlAction::None) {
     if (llvm::Error error = kernel_detail::validateControlAddresses(
-            transaction, memory.getAddressPlan()))
+            command, memory.getAddressPlan()))
       return std::move(error);
     return TargetModelCommandEffect{{}, {}, control};
   }
   return kernel_detail::kernelError(
-      TargetModelKernelErrorCode::UnsupportedTransaction,
-      "typed transaction is field-valid but has no evidence-backed plain "
+      TargetModelKernelErrorCode::UnsupportedCommand,
+      "typed command is field-valid but has no evidence-backed plain "
       "functional kernel");
 }
 
 llvm::Error
-commitTargetModelCommandEffect(InvocationMemoryRegistry &memory,
-                               FormalNumericExecutionContext &context,
-                               TargetModelCommandEffect effect) {
+applyTargetModelCommandEffect(InvocationMemoryRegistry &memory,
+                              FormalNumericExecutionContext &context,
+                              TargetModelCommandEffect effect) {
   if (effect.controlAction != TargetModelControlAction::None &&
       (!effect.pendingWrites.empty() || !effect.pendingReads.empty()))
     return kernel_detail::kernelError(
-        TargetModelKernelErrorCode::InvalidTransactionField,
+        TargetModelKernelErrorCode::InvalidCommandField,
         "control effect cannot carry plain-command memory accesses");
   if (llvm::Error error = memory.applyAtomically(effect.pendingWrites))
     return error;
-  context.recordCommittedFlags(effect.numericFlags);
+  context.mergeExceptionFlags(effect.numericFlags);
   return llvm::Error::success();
 }
 

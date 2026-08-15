@@ -19,7 +19,7 @@ TensorProgram alternatives
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   GSPMD与target-independent normalization产生的verifier-legal card-local TensorProgram；其structured iterator、
   indexing relation、SSA、type、shape、dtype、effect和observable boundary均可验证，尚未绑定physical Tile、
   TileRegion、SPM/DDR、NoC、worker或launch slot。
@@ -27,13 +27,13 @@ Pipeline position:
   从current typed IR识别可证明的pure/effect-safe replacement window；按通用typed grammar生成语义alternative；
   用query-local solver证明外部可观察value、memory与effect等价；把每个通过证明的alternative立即物化、
   canonicalize并verify为完整actual TensorProgram。
-- Output artifact / IR:
+- Output IR / files:
   baseline TensorProgram与零个或多个actual TensorProgram alternatives。输出不携带proof、score、搜索历史、
   physical mapping或solver residue。
 - Downstream consumer:
   Q51唯一physical-dataflow search owner。它对每个TensorProgram alternative联合决定spatial mapping、TileRegion、
   temporal tiling、fusion、physical representation、movement、buffering、order、worker和completion，并只提交通过
-  complete CardExecutable compilation/admission的winner。
+  complete CardExecutable compilation/verification的winner。
 - User-level driver / named pipeline:
   wafer-compile source-to-package pipeline；public optimization policy只有`search|none`。`search`可启用本生成器，
   `none`只保留同一pipeline中的deterministic baseline。
@@ -136,7 +136,7 @@ preconditions AND observable_difference
 ```
 
 只有UNSAT接受。SAT、unknown、timeout和resource exhaustion都拒绝当前optimized proposal。solver context、AST、
-counterexample和proof状态在查询返回后销毁，不写入diagnostic schema、IR、artifact、package或cache key。
+counterexample和proof状态在查询返回后销毁，不写入diagnostic schema、IR、output、package或cache key。
 
 ### 4.3 Dependency policy
 
@@ -153,7 +153,7 @@ baseline TensorProgram
   + query-local proven actual TensorProgram alternatives
   -> Q51.Core single search state / incumbent / global work ledger
   -> CardProgram / TileRegion / Instr candidate compilation
-  -> fresh completion / SPM / DDR / communication / resource / ABI admission
+  -> fresh completion / SPM / DDR / communication / resource / ABI verification
   -> best accepted CardExecutable
   -> target conversion / ExecutablePackage / no-card / runtime
 ```
@@ -162,7 +162,7 @@ Q48不拥有winner、shortlist或physical cost。proposal generation、proof、a
 candidate compilation都计入Q51/Q52同一global work ledger。SMT结果只回答semantic eligibility，不提供cost、placement、
 tile shape或排序分数。
 
-任一late stage只返回accepted result或typed failure。failure回到Q51 frontier并只约束其可证明的causal choices；下游
+任一late stage只返回accepted result或typed failure。failure回到Q51 candidate set并只约束其可证明的causal choices；下游
 不得在原clone上retile、spill、改placement、解除fusion、切换TensorProgram alternative或插入fallback。`none` baseline
 能被同一CardExecutable compilation seam exact-admit时才形成incumbent；若baseline本身失败，必须返回明确失败而不是伪造fallback。
 
@@ -178,7 +178,7 @@ tile shape或排序分数。
    materialization和baseline preservation；预算只由Q51 ledger消费，不在生成器内设置固定候选cap。
 5. **Algorithm alternatives**：把已证明的online/reduction类算法族及会改变其DAG的window/split参数逐点物化为actual
    TensorProgram；不改变DAG的temporal块大小与physical资源选择留给Q51。
-6. **Pipeline integration**：所有alternative进入同一CardExecutable compilation/admission；删除旧独立selector、shortlist、
+6. **Pipeline integration**：所有alternative进入同一CardExecutable compilation/verification；删除旧独立selector、shortlist、
    fallback repair和不能被下游消费的proof residue。
 7. **Vertical verification**：重放host/full-feature、source→package/fresh no-card，准备FP16/BF16 source/oracle/runner；
    达到`board-ready`后才串行执行同源`none`/`search`真实板端A/B。
@@ -204,7 +204,7 @@ tile shape或排序分数。
 - 没有post-Instr candidate owner、独立shortlist、固定candidate cap或per-Tile winner；
 - 每个materialized physical candidate重放fresh worker/order/completion、SPM/DDR、communication/resource、target与final
   cost gates；SAT/unknown/timeout/budget exhaustion和任一late failure稳定保留baseline；
-- `ExecutablePackage`只包含current explicit identities、resources、completion和artifacts，不含proof/search residue。
+- `ExecutablePackage`只包含current explicit target/module IDs、resources、completion和module files，不含proof/search residue。
 
 ### End to end
 

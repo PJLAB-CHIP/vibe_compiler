@@ -9,13 +9,13 @@ A/B改善时也不能标`done`。
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   当前source program、card-level GSPMD输出、normalized TensorProgram、selected CardProgram/TileProgram/TileRegion、
-  final Instr、CardExecutable、target modules/artifacts、ExecutablePackage及其独立oracle。
+  final Instr、CardExecutable、target LLVM modules、linked ELF、ExecutablePackage及其独立oracle。
 - Current stage responsibility:
-  在每个IR/artifact边界验证语义、coverage、physical identity、resource、completion、ABI、publication与execution；
+  在每个IR/output边界验证语义、coverage、physical identity、resource、completion、ABI、writing与execution；
   建立host、no-card、model和真实板端证据之间不可越级的完成层级。
-- Output artifact / IR:
+- Output IR / files:
   verifier diagnostics、fresh test/build结果、verified package/runtime plan、model result或真实board result；
   evidence不是IR sidecar，也不参与候选选择。
 - Downstream consumer:
@@ -35,8 +35,8 @@ Pipeline position:
 证据严格分层，低层不能代签高层：
 
 1. **Static/compile evidence**：编译、ODS/verifier、unit、lit、source organization和文本一致性检查。
-2. **Artifact evidence**：同一compile transaction生成并readback CardProgram/Instr、CardExecutable、target module和ExecutablePackage。
-3. **No-card evidence**：真实package经strict loader与runtime preflight形成完整16-Tile invocation plan，且无provider effect。
+2. **Output evidence**：同一compile transaction生成并readback CardProgram/Instr、CardExecutable、target module和ExecutablePackage。
+3. **No-card evidence**：真实package经strict loader与runtime validation形成完整16-Tile invocation plan，且无provider effect。
 4. **Functional model evidence**：同次owner-backed target module set经TargetCall frontend/SystemC执行，完整output与独立CPU expected比较。
 5. **Board correctness evidence**：当前构建、当前package、当前payload在真实设备完成output/guard和lifecycle检查。
 6. **Board performance evidence**：同一source/config/payload/ABI的baseline/winner做matched、重复、可解释的A/B。
@@ -72,7 +72,7 @@ ctest --test-dir <configured-build> -j$(nproc) --output-on-failure
 - `num_partitions`只描述card-level GSPMD domain；single-card current path固定 `num_partitions=1`；
 - `wafer.card.program`拥有all-and-only 16个available `wafer.tile.program`；
 - distinct Tile programs可含不同op、loop、temporal tile、region和执行长度；
-- no-work Tile仍有合法entry并进入artifact/runtime domain；
+- no-work Tile仍有合法entry并进入output/runtime domain；
 - `(card_id, tile_id)`唯一，Tile-local SPM root不跨Tile SSA alias。
 
 负例至少覆盖duplicate/unavailable/missing Tile、coverage hole/overlap、非法reduction overlap、cross-Tile SPM alias、
@@ -102,7 +102,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   wave-loop order；regular
   mapping、relation-derived reuse和coarse resource estimate只改变proposal顺序，开关后tiny accepted domain与winner不变；
 - independent tiny reference domain enumerator不调用production domain builder，证明complete finite小图合法域完整；
-- production-mechanism flat exhaustive runner使用真实materializer、cost与exact gates全展开，再证明frontier、剪枝和winner；
+- production-mechanism flat exhaustive runner使用真实materializer、cost与exact gates全展开，再证明candidate set、剪枝和winner；
 - cheap legality、exact coverage、topology symmetry、canonical dedup、已证明SPM lower bound和raw-work dominance只有在不删除合法最优解时才能在clone前剪枝；
 - symbolic footprint只有proven must-coexist lower bound超过capacity才能早拒绝；ranking estimate、未经boundary-faithful proof
   的solver/model结果和nominal bandwidth projection不能签发packing、overlap或legality；exact局部solver的proof/proposal也须
@@ -118,7 +118,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - top-k还必须报告`best-found@k`、winner recall@k、regret@k和estimate-vs-final recost误差；永久丢弃合法completion时结果只可
   标`budgeted-feasible`，外部系统的固定`k`不得成为本项目默认值。
 
-`search`和`none`跨越同一artifact seam。`none`只materialize deterministic conservative baseline；`search`从完整合法域
+`search`和`none`跨越同一output seam。`none`只materialize deterministic conservative baseline；`search`从完整合法域
 惰性生成candidate。测试不得把两者相同结果写成长期合同，也不得为某个case硬编码winner。
 
 搜索结果分级必须与实际coverage一致：finite域与global bound闭合才是`optimal-certified`；未展开completion仍由完整
@@ -168,28 +168,28 @@ completion从final actual Instr的effects、worker issue domains、async tokens�
 
 ## 6. Target、package 与 runtime gates
 
-### 6.1 Target LLVM/artifact
+### 6.1 Target LLVM/output
 
 - exactly 16个Tile interfaces携带独立 `(card_id, tile_id, launch_slot)`；
 - non-identity tile/slot mapping通过所有translation/readback；
 - current target LLVM schema、target identity、runtime ABI、format、entry和typed ABI slots逐项相等；
 - Grid/Cluster aggregate materialization保持每Tile body与显式interface，dispatch不假设pid、slot和Tile ID相等；
-- unsupported target call/dtype/layout/geometry、overflow、undefined symbol、bad digest均在publication前失败；
+- unsupported target call/dtype/layout/geometry、overflow、undefined symbol、bad digest均在writing前失败；
 - 任一Tile失败时无部分target root可见。
 
 ### 6.2 ExecutablePackage
 
-- ordinary package strict `schema_version=8`、profile companion strict `schema_version=9`，旧version和额外/缺失field拒绝；
+- ordinary package strict `schema_version=8`、profile instrumentation strict `schema_version=10`，旧version和额外/缺失field拒绝；
 - `card_count=1`、`tile_count=16`，entries覆盖all-and-only physical Tiles与dense launch slots；
 - program-boundary resources为card scope并被16个entries引用；workspace/status为Tile scope且只被对应entry引用；
 - resources、modules、entries和slots all-and-only covered，无悬空或重复ID；
 - entry completion只接受 `return_after_local_drain`；Direct-DTE status ABI/size/alignment/access/watchdog exact；
-- canonical serialization、parse、semantic verification、module digest和atomic publication roundtrip。
+- canonical serialization、parse、semantic verification、module digest和atomic writing roundtrip。
 
 ### 6.3 No-card/board runtime
 
 no-card必须在任何provider side effect前闭合target/runtime capability、binding、resource、module/export/phase、transport
-和16-Tile invocation plan。runtime与`wafer-run`均不提供按EntryId选择单个Tile的preflight或执行入口；逐Tile记录只由
+和16-Tile invocation plan。runtime与`wafer-run`均不提供按EntryId选择单个Tile的validation或执行入口；逐Tile记录只由
 完整invocation内部构造，也不提供可传任意Tile count的独立空session资格化入口。board正负例验证：
 
 - provider inventory中的显式tile/launch relation；
@@ -197,17 +197,17 @@ no-card必须在任何provider side effect前闭合target/runtime capability、b
 - card-scoped resource单次分配/共享地址与Tile-scoped隔离；
 - card-scoped phase submission、absolute deadline、completion observation、D2H和cleanup；
 - partial/unknown accepted subset、timeout或不可信状态使session poisoned，且无后续provider call；
-- profile companion不存在可普通执行，存在但旧/stale/malformed必须pre-effect失败。
+- profile instrumentation不存在可普通执行，存在但旧/stale/malformed必须pre-effect失败。
 
 ## 7. Target model gates
 
-model必须消费与target publication相同的owner-backed target module set，不能重新lower或使用accepted-IR第二解释器。
+model必须消费与target writing相同的owner-backed target module set，不能重新lower或使用accepted-IR第二解释器。
 
 验证包括：
 
 - TargetCall descriptor registry与decoder对每种typed payload、worker和completion behavior闭合；
 - frontend为每个transaction显式绑定physical card/tile/launch slot和Tile-local issue ordinal；
-- begin/execute 16 Tiles/prepareCommit/commit原子生命周期，任一失败abort且不发布partial effects；
+- `begin`、16个Tile的`executeTile`与单次`finish`构成原子调用生命周期，任一失败`abort`且不返回partial result；
 - SystemC一Tile一SC_THREAD，跨Tiledata-ready/completion关系由event表达，无OS thread或symbol恢复身份；
 - private address spaces、range/alias/hazard、formal numeric与qualified bulk lane；
 - complete output physical bytes解码为source dtype/shape，与独立CPU expected比较并检查NaN/Inf/tolerance policy。
@@ -240,7 +240,7 @@ special pass option、shape shortcut或手写替代graph。
    普通多op、spatially sharded compute和cross-Tile baseline package/no-card通过。Q49.P用fresh prefill/decode/Llama证明
    CardProgram、CardExecutable与package digest稳定、oracle/no-card通过，并以fresh阶段计时证明`none`不构造search对象、
    不重复全图materialization，且只对accepted baseline完整编译一次。
-2. Q50.0：baseline与search共用无策略CardExecutable compile/admission boundary，任何lowering失败均不隐式repair；Q50.A：
+2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair；Q50.A：
    placement给定后从IndexRelation形成layout-independent exact logical demand，carrier/layout/route失败不反写spatial legality；
    Q50.S：typed proof和online/partitioned-KV等算法参数点均物化成真实TensorProgram alternatives。
 3. Q50.B–Q50.K依次闭合spatial placement、single-op TileRegion、coupled traversal/region fusion、complete temporal tile与
@@ -251,7 +251,7 @@ special pass option、shape shortcut或手写替代graph。
    每项都需current接入点、actual-IR witness和实际执行的正负测试；旧owner删除不能代替能力迁移。
 4. Q51.Core：independent reference enumerator与production flat exhaustive runner、baseline incumbent、global ledger、budget与
    actual-probe seam闭合；Q51中两层oracle与`search` winner一致，全部联合维度实际参与选择，late exact failure回到同一
-   frontier。selected IR必须有共享TileRegion，并以coupled traversal或明确retained SSA、tile-sized intermediate及无中间
+   candidate set。selected IR必须有共享TileRegion，并以coupled traversal或明确retained SSA、tile-sized intermediate及无中间
    DDR round-trip证明有效融合；group字段不能代签。
 5. Q52：generic/HF/Llama representative load的work、wall、RSS和热点fresh记录；基于实测引入的优化在小图oracle上
    不改变最优结果，代表负载不劣于同源`none`，没有固定shape/tile/fusion/buffer shortcut。

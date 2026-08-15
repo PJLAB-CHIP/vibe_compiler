@@ -163,7 +163,7 @@ execute(FormalNumericExecutionContext &context,
   return {};
 }
 
-TEST(FormalTensorNumericTest, ConvertCommitsOnlyCompleteTensorAndFlags) {
+TEST(FormalTensorNumericTest, ConvertReturnsOnlyCompleteTensorAndFlags) {
   ResolvedNumericCommand command =
       makeConvert(LogicalFormat::F32, LogicalFormat::F16, {3});
   std::vector<std::vector<RawLogicalValue>> inputs{{
@@ -361,7 +361,7 @@ TEST(FormalTensorNumericTest,
 }
 
 TEST(FormalTensorNumericTest,
-     BudgetAndInputPreflightPrecedeEvaluationAndLeaveContextUnchanged) {
+     BudgetAndInputValidationPrecedeEvaluationAndLeaveContextUnchanged) {
   ResolvedNumericCommand command =
       makeGemm(LogicalFormat::F32, /*batch=*/1, /*m=*/2, /*k=*/3, /*n=*/2);
   std::vector<std::vector<RawLogicalValue>> wrongSizedInputs{
@@ -393,7 +393,7 @@ TEST(FormalTensorNumericTest,
 }
 
 TEST(FormalTensorNumericTest,
-     InvalidTF32FailsAndNativeF32SumPublishesOnlyCompleteResult) {
+     InvalidTF32FailsAndNativeF32SumReturnsOnlyCompleteResult) {
   FormalNumericExecutionContext context;
   ResolvedNumericCommand convert =
       makePlainConvert(LogicalFormat::TF32, LogicalFormat::F32, {1});

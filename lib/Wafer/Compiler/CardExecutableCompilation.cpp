@@ -27,11 +27,11 @@ struct PhysicalTileLoweringResult {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   StructuredMaterializationRelations materializationRelations;
   std::string detail;
-  PhysicalTileFinalizationFailure finalization;
+  PhysicalTileMemoryPlanningFailure memoryPlanning;
   SelectedBufferMaterializationFailure selectedBuffer;
   unsigned rotatingSlotAllocationCount = 0;
   bool conversionFailed = false;
-  bool finalizationFailed = false;
+  bool memoryPlanningFailed = false;
 };
 
 static std::string captureTileIR(mlir::ModuleOp module) {
@@ -48,7 +48,7 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
                                 std::string &detail) {
   if (mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations))) {
-    detail = "physical Tile projection produced buffer relations outside its "
+    detail = "CardProgram splitting produced buffer relations outside the "
              "current IR";
     return mlir::failure();
   }
@@ -72,12 +72,11 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
     return mlir::failure();
   }
 
-  if (mlir::failed(runPassPipeline(
-          module, "required-ncc-join-placement",
-          [](mlir::OpPassManager &manager) {
-            wafer::addRequiredNCCJoinPlacementPass(
-                manager.nest<mlir::func::FuncOp>());
-          }))) {
+  if (mlir::failed(runPassPipeline(module, "required-ncc-join-placement",
+                                   [](mlir::OpPassManager &manager) {
+                                     wafer::addRequiredNCCJoinPlacementPass(
+                                         manager.nest<mlir::func::FuncOp>());
+                                   }))) {
     detail = "function-level required NCC join placement failed";
     return mlir::failure();
   }
@@ -92,9 +91,9 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
 
 } // namespace
 
-bool isProvenExactPhysicalTileFinalizationFailure(
-    const PhysicalTileFinalizationFailure &failure) {
-  return failure.kind == PhysicalTileFinalizationFailureKind::SPMAllocation &&
+bool isProvenExactPhysicalTileMemoryPlanningFailure(
+    const PhysicalTileMemoryPlanningFailure &failure) {
+  return failure.kind == PhysicalTileMemoryPlanningFailureKind::SPMAllocation &&
          failure.spmPlanningFailureKind ==
              SPMMemoryPlanningFailureKind::CapacityOverflow;
 }
@@ -154,37 +153,38 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
         "is incomplete"));
 
   std::string detail;
-  mlir::FailureOr<llvm::SmallVector<ProjectedPhysicalTileModule, 16>> projected;
+  mlir::FailureOr<llvm::SmallVector<PhysicalTileModule, 16>> tileModules;
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "conversion", "card-program-to-executable",
         "card-program-to-physical-tiles");
-    projected = projectCardProgramToPhysicalTileModules(
+    tileModules = splitCardProgramIntoPhysicalTileModules(
         *cardProgram, &detail, &materializationRelations);
   }
-  if (mlir::failed(projected))
+  if (mlir::failed(tileModules))
     return reportFailure(
         fail(CardExecutableCompilationStatus::IndeterminateFailure,
-             "physical-tile-projection", detail));
-  if (projected->size() != expectedTileIds.size())
-    return reportFailure(fail(
-        CardExecutableCompilationStatus::IndeterminateFailure,
-        "physical-tile-projection", "physical Tile projection is incomplete"));
+             "card-program-to-tile-modules", detail));
+  if (tileModules->size() != expectedTileIds.size())
+    return reportFailure(
+        fail(CardExecutableCompilationStatus::IndeterminateFailure,
+             "card-program-to-tile-modules",
+             "CardProgram does not contain the expected physical Tile domain"));
 
   std::vector<std::string> tileDataflowIRTrace;
-  tileDataflowIRTrace.reserve(projected->size());
-  for (auto [index, tile] : llvm::enumerate(*projected)) {
+  tileDataflowIRTrace.reserve(tileModules->size());
+  for (auto [index, tile] : llvm::enumerate(*tileModules)) {
     if (tile.cardId != expectedCardId || tile.tileId != expectedTileIds[index])
-      return reportFailure(fail(
-          CardExecutableCompilationStatus::IndeterminateFailure,
-          "physical-tile-projection",
-          "CardProgram projection changed the selected physical Tile domain"));
+      return reportFailure(
+          fail(CardExecutableCompilationStatus::IndeterminateFailure,
+               "card-program-to-tile-modules",
+               "per-Tile modules changed the selected physical Tile domain"));
     tileDataflowIRTrace.push_back(captureTileIR(*tile.module));
   }
 
-  std::vector<PhysicalTileLoweringResult> loweringResults(projected->size());
+  std::vector<PhysicalTileLoweringResult> loweringResults(tileModules->size());
   auto lowerTile = [&](size_t tileIndex) {
-    ProjectedPhysicalTileModule &tile = (*projected)[tileIndex];
+    PhysicalTileModule &tile = (*tileModules)[tileIndex];
     PhysicalTileLoweringResult &result = loweringResults[tileIndex];
     result.module = std::move(tile.module);
     result.materializationRelations = std::move(tile.materializationRelations);
@@ -203,26 +203,26 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
     llvm::ArrayRef<SelectedBufferRequest> requests;
     if (!selectedBufferRequests.empty())
       requests = selectedBufferRequests[tileIndex];
-    mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> finalized =
-        finalizePhysicalTileModule(
-            std::move(result.module), &result.finalization, requests,
-            &result.materializationRelations,
-            &result.rotatingSlotAllocationCount, &result.selectedBuffer);
-    if (mlir::failed(finalized)) {
-      result.finalizationFailed = true;
+    mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> memoryPlanned =
+        planPhysicalTileMemory(std::move(result.module), &result.memoryPlanning,
+                               requests, &result.materializationRelations,
+                               &result.rotatingSlotAllocationCount,
+                               &result.selectedBuffer);
+    if (mlir::failed(memoryPlanned)) {
+      result.memoryPlanningFailed = true;
       result.detail = result.selectedBuffer.detail;
       if (result.detail.empty())
-        result.detail = "physical Tile finalization failed";
+        result.detail = "physical Tile memory planning failed";
       return;
     }
-    result.module = std::move(*finalized);
+    result.module = std::move(*memoryPlanned);
   };
 
   const unsigned requestedWorkers = tilePipelineParallelism == 0
                                         ? kMaximumBoundedTilePipelineWorkers
                                         : tilePipelineParallelism;
   const unsigned workers =
-      runBoundedTilePipelines(cardProgram->getContext(), projected->size(),
+      runBoundedTilePipelines(cardProgram->getContext(), tileModules->size(),
                               lowerTile, requestedWorkers);
   if (statistics)
     statistics->maximumTilePipelineWorkers =
@@ -237,25 +237,26 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
   bool allFailuresAreExact = true;
   for (auto [tileIndex, result] : llvm::enumerate(loweringResults)) {
     rotatingSlotAllocationsMaterialized += result.rotatingSlotAllocationCount;
-    if (result.conversionFailed || result.finalizationFailed ||
+    if (result.conversionFailed || result.memoryPlanningFailed ||
         !result.module) {
       CardExecutableTileFailure failure;
       failure.tileId = expectedTileIds[tileIndex];
-      failure.gate = result.conversionFailed ? "tile-region-to-instr"
-                     : result.finalization.kind ==
-                             PhysicalTileFinalizationFailureKind::SPMAllocation
-                         ? "spm-allocation"
-                     : result.finalization.kind ==
-                             PhysicalTileFinalizationFailureKind::
-                                 SelectedBufferMaterialization
-                         ? "selected-buffer-materialization"
-                         : "physical-tile-finalization";
+      failure.gate =
+          result.conversionFailed ? "tile-region-to-instr"
+          : result.memoryPlanning.kind ==
+                  PhysicalTileMemoryPlanningFailureKind::SPMAllocation
+              ? "spm-allocation"
+          : result.memoryPlanning.kind ==
+                  PhysicalTileMemoryPlanningFailureKind::
+                      SelectedBufferMaterialization
+              ? "selected-buffer-materialization"
+              : "physical-tile-memory-planning";
       failure.detail = std::move(result.detail);
-      failure.finalization = std::move(result.finalization);
+      failure.memoryPlanning = std::move(result.memoryPlanning);
       failure.selectedBuffer = std::move(result.selectedBuffer);
-      allFailuresAreExact &=
-          !result.conversionFailed &&
-          isProvenExactPhysicalTileFinalizationFailure(failure.finalization);
+      allFailuresAreExact &= !result.conversionFailed &&
+                             isProvenExactPhysicalTileMemoryPlanningFailure(
+                                 failure.memoryPlanning);
       tileFailures.push_back(std::move(failure));
       continue;
     }
@@ -273,40 +274,39 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
              rotatingSlotAllocationsMaterialized));
   }
 
-  WholeCardAdmissionFailure admissionFailure;
-  mlir::FailureOr<AcceptedWholeCardExecutable> accepted =
-      admitWholeCardExecutable(std::move(physicalTileModules), program,
-                               executionConfig, diagnostics, admissionFailure,
-                               statistics, tilePipelineParallelism);
-  if (mlir::failed(accepted))
-    return reportFailure(
-        fail(admissionFailure.isProvenExactRejection()
-                 ? CardExecutableCompilationStatus::ProvenExactRejection
-                 : CardExecutableCompilationStatus::IndeterminateFailure,
-             admissionFailure.getDiagnosticLabel(),
-             admissionFailure.detail.empty()
-                 ? "CardExecutable admission rejected the selected CardProgram"
-                 : admissionFailure.detail,
-             {}, rotatingSlotAllocationsMaterialized));
+  WholeCardExecutableLoweringFailure loweringFailure;
+  mlir::FailureOr<WholeCardExecutable> executable =
+      lowerPhysicalTileModulesToExecutable(
+          std::move(physicalTileModules), program, executionConfig, diagnostics,
+          loweringFailure, statistics, tilePipelineParallelism);
+  if (mlir::failed(executable))
+    return reportFailure(fail(
+        loweringFailure.isProvenExactRejection()
+            ? CardExecutableCompilationStatus::ProvenExactRejection
+            : CardExecutableCompilationStatus::IndeterminateFailure,
+        loweringFailure.getDiagnosticLabel(),
+        loweringFailure.detail.empty() ? "physical-Tile module lowering failed"
+                                       : loweringFailure.detail,
+        {}, rotatingSlotAllocationsMaterialized));
 
-  if (accepted->tiles.size() != expectedTileIds.size())
+  if (executable->tiles.size() != expectedTileIds.size())
     return reportFailure(
         fail(CardExecutableCompilationStatus::IndeterminateFailure,
-             "exact-executable-admission",
-             "accepted physical Tile domain is incomplete", {},
+             "whole-card-executable-domain",
+             "physical Tile executable domain is incomplete", {},
              rotatingSlotAllocationsMaterialized));
-  for (auto [index, tile] : llvm::enumerate(accepted->tiles))
+  for (auto [index, tile] : llvm::enumerate(executable->tiles))
     if (tile.getPhysicalCardId() != expectedCardId ||
         tile.getPhysicalTileId() != expectedTileIds[index])
       return reportFailure(
           fail(CardExecutableCompilationStatus::IndeterminateFailure,
-               "exact-executable-admission",
-               "exact admission changed the physical Tile identity", {},
+               "whole-card-executable-domain",
+               "executable lowering changed the physical Tile identity", {},
                rotatingSlotAllocationsMaterialized));
 
   CardExecutableCompilationResult result;
   result.status = CardExecutableCompilationStatus::Accepted;
-  result.executable.emplace(std::move(*accepted));
+  result.executable.emplace(std::move(*executable));
   result.tileDataflowIRTrace = std::move(tileDataflowIRTrace);
   for (auto [tileIndex, tile] : llvm::enumerate(result.executable->tiles)) {
     const StructuredMaterializationRelations &relations =

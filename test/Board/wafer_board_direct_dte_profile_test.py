@@ -112,7 +112,7 @@ class ProfileReportFixture:
             "run_id": self.run_id,
             "valid": True,
             "validity": {"trace": True, "cost_accounting": True},
-            "final_artifact": {
+            "program": {
                 "duration": {
                     **sample,
                     "host_non_submit_envelope_ns": 15400,
@@ -122,7 +122,7 @@ class ProfileReportFixture:
                     "qualified": True,
                 },
                 "output": {
-                    "production_execution_validated": True,
+                    "primary_output_validated": True,
                     "diagnostic_captures_match_primary": True,
                 },
                 "tiles": analysis_tiles,
@@ -182,7 +182,7 @@ class DirectDTEProfileGateTest(unittest.TestCase):
         sample["host_submit_ns"] = 0
         sample["host_launch_to_completion_ns"] = 0
         sample["completion_observation_resolution_ns"] = 0
-        duration = analysis["final_artifact"]["duration"]
+        duration = analysis["program"]["duration"]
         duration.update(sample)
         duration["host_non_submit_envelope_ns"] = 0
         duration["host_envelope_available"] = False
@@ -200,9 +200,9 @@ class DirectDTEProfileGateTest(unittest.TestCase):
         fixture = ProfileReportFixture(self.root)
         analysis_path = fixture.run_directory / "analysis.json"
         analysis = json.loads(analysis_path.read_text())
-        analysis["final_artifact"]["timeline_events"] = [
+        analysis["program"]["timeline_events"] = [
             event
-            for event in analysis["final_artifact"]["timeline_events"]
+            for event in analysis["program"]["timeline_events"]
             if event["tile"] != HARNESS.RANK_COUNT - 1
         ]
         analysis_path.write_text(json.dumps(analysis))
@@ -262,7 +262,7 @@ class DirectDTEProfileGateTest(unittest.TestCase):
             )
             permissions = stack.enter_context(
                 mock.patch.object(
-                    HARNESS, "require_profile_companion_permissions"
+                    HARNESS, "require_profile_instrumentation_permissions"
                 )
             )
             stack.enter_context(

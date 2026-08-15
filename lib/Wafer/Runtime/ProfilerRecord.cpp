@@ -38,8 +38,7 @@ constexpr uint32_t kKnownRecordFlags =
     WAFER_TX81_PROFILER_RECORD_OVERFLOW |
     WAFER_TX81_PROFILER_RECORD_SITE_PROTOCOL_ERROR |
     WAFER_TX81_PROFILER_RECORD_SUB_INDEX_OVERFLOW |
-    WAFER_TX81_PROFILER_RECORD_PUBLISHED |
-    WAFER_TX81_PROFILER_RECORD_COUNT_ONLY;
+    WAFER_TX81_PROFILER_RECORD_COMPLETE | WAFER_TX81_PROFILER_RECORD_COUNT_ONLY;
 
 constexpr uint32_t kKnownSummaryValidity =
     WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES |
@@ -72,11 +71,9 @@ bool costSummaryIsZero(const WaferTx81ProfilerCostSummary &summary) {
   return summary.ncc_pmu_sample_cycles == 0 &&
          summary.dte_pmu_sample_cycles == 0 &&
          summary.event_bookkeeping_cycles == 0 &&
-         summary.status_poll_cycles == 0 &&
-         summary.site_hook_cycles == 0 &&
+         summary.status_poll_cycles == 0 && summary.site_hook_cycles == 0 &&
          summary.completion_loop_bookkeeping_cycles == 0 &&
-         summary.entry_setup_cycles == 0 &&
-         summary.entry_teardown_cycles == 0;
+         summary.entry_setup_cycles == 0 && summary.entry_teardown_cycles == 0;
 }
 
 bool costSummaryIsFinite(const WaferTx81ProfilerCostSummary &summary) {
@@ -259,8 +256,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
   const bool countOnly =
       (header.flags & WAFER_TX81_PROFILER_RECORD_COUNT_ONLY) != 0;
   if (traceEnabled == countOnly)
-    return invalid(
-        "TX81 profiler record must enable exactly one capture mode");
+    return invalid("TX81 profiler record must enable exactly one capture mode");
   if (traceEnabled &&
       header.next_sequence != static_cast<uint64_t>(header.event_count) +
                                   header.dropped_event_count)
@@ -273,7 +269,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
 
   constexpr uint32_t terminalFlags = WAFER_TX81_PROFILER_RECORD_ENTRY_BEGUN |
                                      WAFER_TX81_PROFILER_RECORD_ENTRY_ENDED |
-                                     WAFER_TX81_PROFILER_RECORD_PUBLISHED;
+                                     WAFER_TX81_PROFILER_RECORD_COMPLETE;
   if ((header.flags & terminalFlags) != terminalFlags ||
       (header.summary_validity &
        (WAFER_TX81_PROFILER_SUMMARY_ENTRY_CYCLES |
@@ -286,9 +282,9 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
            WAFER_TX81_PROFILER_SUMMARY_PMU_RECOVERY_CAPTURED) ||
       header.entry_end_cycle < header.entry_begin_cycle)
     return invalid("TX81 profiler record terminal lifecycle is incomplete");
-  if (!entryCostSummaryFitsSpan(
-          header.cost_summary,
-          header.entry_end_cycle - header.entry_begin_cycle))
+  if (!entryCostSummaryFitsSpan(header.cost_summary,
+                                header.entry_end_cycle -
+                                    header.entry_begin_cycle))
     return invalid(
         "TX81 profiler entry-internal cost summary exceeds the entry span");
   if (!snapshotStableMaskIsValid(header.pmu_before) ||
@@ -341,8 +337,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
     if (!hasOnlyBits(event.metadata, kKnownEventMetadata))
       return invalid("TX81 profiler event metadata contains unknown bits");
 
-    const bool observationValid =
-        isTx81ProfilerObservationSpanValid(event);
+    const bool observationValid = isTx81ProfilerObservationSpanValid(event);
     const bool siteSpanValid = isTx81ProfilerSiteSpanValid(event);
     const bool operationValid = isTx81ProfilerOperationSpanValid(event);
     const bool positiveDelta = isTx81ProfilerCounterDeltaPositive(event);
@@ -351,8 +346,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
     const bool workerWait = isTx81ProfilerWorkerWait(event);
     const bool directSend = isTx81ProfilerDirectDTESend(event);
     const bool directReceive = isTx81ProfilerDirectDTEReceive(event);
-    const bool directCounterValid =
-        isTx81ProfilerDirectDTECounterValid(event);
+    const bool directCounterValid = isTx81ProfilerDirectDTECounterValid(event);
     const bool nccCounterValid =
         (event.metadata & WAFER_TX81_PROFILER_EVENT_NCC_COUNTER_VALID) != 0;
 
@@ -364,9 +358,8 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
                event.observed_end_cycle != 0) {
       return invalid(
           "TX81 profiler event has fields for an unavailable observation");
-    } else if (
-        event.observation_count != 0 &&
-        event.kind != WAFER_TX81_PROFILER_EVENT_NCC_COMPLETION_WAIT) {
+    } else if (event.observation_count != 0 &&
+               event.kind != WAFER_TX81_PROFILER_EVENT_NCC_COMPLETION_WAIT) {
       return invalid("TX81 profiler event has an unexpected observation count");
     }
     if (operationValid) {
@@ -389,8 +382,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
       if (event.site_id == WAFER_TX81_PROFILER_INVALID_SITE_ID ||
           event.sub_index == WAFER_TX81_PROFILER_INVALID_SUB_INDEX)
         return invalid("TX81 profiler valid site uses a sentinel identity");
-      if (!siteSpanValid ||
-          event.site_end_cycle < event.site_begin_cycle ||
+      if (!siteSpanValid || event.site_end_cycle < event.site_begin_cycle ||
           (operationValid &&
            (event.operation_begin_cycle < event.site_begin_cycle ||
             event.operation_end_cycle > event.site_end_cycle)))
@@ -408,15 +400,14 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
           !isTx81ProfilerSiteValid(event) || localWait || workerWait ||
           directSend || directReceive || directCounterValid ||
           nccCounterValid != observationValid ||
-          (!nccCounterValid &&
-           (event.observation_count != 0 || event.counter_delta != 0 ||
-            positiveDelta)))
-        return invalid("TX81 profiler NCC command field combination is invalid");
+          (!nccCounterValid && (event.observation_count != 0 ||
+                                event.counter_delta != 0 || positiveDelta)))
+        return invalid(
+            "TX81 profiler NCC command field combination is invalid");
       break;
     case WAFER_TX81_PROFILER_EVENT_NCC_COMPLETION_WAIT:
-      if (event.engine != WAFER_TX81_PROFILER_ENGINE_NONE ||
-          observationValid || !operationValid ||
-          !isTx81ProfilerSiteValid(event) || ambiguous ||
+      if (event.engine != WAFER_TX81_PROFILER_ENGINE_NONE || observationValid ||
+          !operationValid || !isTx81ProfilerSiteValid(event) || ambiguous ||
           localWait == workerWait || directSend || directReceive ||
           directCounterValid || event.counter_delta != 0 ||
           event.observation_count == 0 ||
@@ -450,10 +441,8 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
           event.counter_delta != 0 || event.observation_count != 0)
         return invalid(
             "TX81 profiler Direct-DTE phase field combination is invalid");
-      if ((event.kind ==
-               WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT ||
-           event.kind ==
-               WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE) &&
+      if ((event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_PEER_READY_WAIT ||
+           event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE) &&
           !directSend)
         return invalid(
             "TX81 profiler receiver contains a sender-only Direct-DTE phase");
@@ -461,9 +450,8 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
     case WAFER_TX81_PROFILER_EVENT_TARGET_SITE:
       if (event.engine != WAFER_TX81_PROFILER_ENGINE_NONE ||
           event.sub_index != 0 ||
-          event.metadata !=
-              (WAFER_TX81_PROFILER_EVENT_SITE_VALID |
-               WAFER_TX81_PROFILER_EVENT_SITE_SPAN_VALID) ||
+          event.metadata != (WAFER_TX81_PROFILER_EVENT_SITE_VALID |
+                             WAFER_TX81_PROFILER_EVENT_SITE_SPAN_VALID) ||
           observationValid || operationValid || event.counter_delta != 0 ||
           event.observation_count != 0)
         return invalid(
@@ -474,9 +462,9 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
     }
     if (!isDirectDTEKind(event.kind) &&
         (directSend || directReceive || directCounterValid))
-      return invalid("TX81 profiler non-DTE event contains Direct-DTE metadata");
-    if (event.kind != WAFER_TX81_PROFILER_EVENT_NCC_COMMAND &&
-        nccCounterValid)
+      return invalid(
+          "TX81 profiler non-DTE event contains Direct-DTE metadata");
+    if (event.kind != WAFER_TX81_PROFILER_EVENT_NCC_COMMAND && nccCounterValid)
       return invalid(
           "TX81 profiler non-NCC event contains NCC counter validity");
   }
@@ -518,8 +506,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
         event.kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_SETUP_ISSUE;
     const bool issueAggregate =
         directAggregate != nullptr &&
-        directAggregate->kind ==
-            WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE;
+        directAggregate->kind == WAFER_TX81_PROFILER_EVENT_DIRECT_DTE_ISSUE;
     if (directAggregate == nullptr || issuePhase != issueAggregate ||
         directAggregate->site_id != event.site_id ||
         directAggregate->site_begin_cycle != event.site_begin_cycle ||
@@ -528,8 +515,7 @@ decodeTx81ProfilerRecord(llvm::ArrayRef<uint8_t> bytes) {
             isTx81ProfilerDirectDTESend(event) ||
         isTx81ProfilerDirectDTEReceive(*directAggregate) !=
             isTx81ProfilerDirectDTEReceive(event) ||
-        directAggregate->operation_begin_cycle >
-            event.operation_begin_cycle ||
+        directAggregate->operation_begin_cycle > event.operation_begin_cycle ||
         event.operation_end_cycle > directAggregate->operation_end_cycle)
       return invalid(
           "TX81 profiler Direct-DTE phase is not contained by a matching "

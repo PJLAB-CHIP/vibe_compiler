@@ -40,7 +40,7 @@ BUILD_OPTIONS = {
     "INSTALL_TO_LIB_TARGET_ARCH_DIR": "OFF",
     "SYSTEMC_UNITY_BUILD": "OFF",
 }
-REQUIRED_ARTIFACTS = {
+REQUIRED_FILES = {
     "systemc-archive",
     "systemc-library",
     "systemc-header",
@@ -97,7 +97,7 @@ def reject_symlink_path(path: pathlib.Path, *, allow_missing: bool = False) -> p
 def _regular_file(path: pathlib.Path) -> pathlib.Path:
     path = reject_symlink_path(path)
     if not stat.S_ISREG(path.stat().st_mode):
-        raise RuntimeError(f"managed SystemC artifact is not a regular file: {path}")
+        raise RuntimeError(f"managed SystemC file is not a regular file: {path}")
     return path
 
 
@@ -113,9 +113,9 @@ def _closed_object(value: Any, keys: set[str], context: str) -> dict[str, Any]:
     return value
 
 
-def _relative_artifact(root: pathlib.Path, record: dict[str, Any], name: str) -> pathlib.Path:
+def _relative_file(root: pathlib.Path, record: dict[str, Any], name: str) -> pathlib.Path:
     entry = _closed_object(
-        record["artifacts"][name], {"path", "sha256", "size"}, f"artifact {name}"
+        record["artifacts"][name], {"path", "sha256", "size"}, f"file {name}"
     )
     relative = entry["path"]
     if (
@@ -123,14 +123,14 @@ def _relative_artifact(root: pathlib.Path, record: dict[str, Any], name: str) ->
         or not relative
         or pathlib.PurePosixPath(relative).is_absolute()
     ):
-        raise RuntimeError(f"artifact {name} path must be a nonempty relative path")
+        raise RuntimeError(f"file {name} path must be a nonempty relative path")
     path = _regular_file(root / pathlib.PurePosixPath(relative))
     try:
         path.relative_to(root)
     except ValueError as error:
-        raise RuntimeError(f"artifact {name} escapes the managed root") from error
+        raise RuntimeError(f"file {name} escapes the managed root") from error
     if entry["sha256"] != sha256_file(path) or entry["size"] != path.stat().st_size:
-        raise RuntimeError(f"artifact {name} identity mismatch")
+        raise RuntimeError(f"file {name} identity mismatch")
     return path
 
 
@@ -192,7 +192,7 @@ def validate_record(
     ):
         raise RuntimeError("SystemC dependency source tree digest is invalid")
 
-    archive = _relative_artifact(root, record, "systemc-archive")
+    archive = _relative_file(root, record, "systemc-archive")
     expected_archive_name = f"systemc-{versions['WAFER_SYSTEMC_VERSION']}.tar.gz"
     if archive.name != expected_archive_name or sha256_file(archive) != versions["WAFER_SYSTEMC_SHA256"]:
         raise RuntimeError("SystemC dependency source archive mismatch")
@@ -228,10 +228,10 @@ def validate_record(
         if not all(isinstance(identity[key], str) and identity[key] for key in identity):
             raise RuntimeError(f"toolchain {name} identity is incomplete")
 
-    artifacts = record["artifacts"]
-    if not isinstance(artifacts, dict) or set(artifacts) != REQUIRED_ARTIFACTS:
-        raise RuntimeError("SystemC dependency artifact closure mismatch")
-    resolved = {name: _relative_artifact(root, record, name) for name in sorted(artifacts)}
+    files = record["artifacts"]
+    if not isinstance(files, dict) or set(files) != REQUIRED_FILES:
+        raise RuntimeError("SystemC dependency file closure mismatch")
+    resolved = {name: _relative_file(root, record, name) for name in sorted(files)}
 
     licenses = _closed_object(record["licenses"], {"license", "notice"}, "licenses")
     if licenses != {
@@ -272,7 +272,7 @@ def validate_record(
         except ValueError as error:
             raise RuntimeError(f"SystemC dependency gate log escapes the managed root: {gate['name']}") from error
         if log in seen_logs:
-            raise RuntimeError("SystemC dependency gates reuse one log artifact")
+            raise RuntimeError("SystemC dependency gates reuse one log file")
         seen_logs.add(log)
         if (
             not isinstance(gate["log_sha256"], str)
@@ -293,7 +293,7 @@ def make_snapshot(
 ) -> dict[str, Any]:
     root = reject_symlink_path(root)
     versions = load_versions() if versions is None else versions
-    artifacts = validate_record(record_path, root, versions)
+    files = validate_record(record_path, root, versions)
     record_path = _regular_file(record_path)
     return {
         "schema_version": 1,
@@ -305,7 +305,7 @@ def make_snapshot(
         "commit": versions["WAFER_SYSTEMC_COMMIT"],
         "artifacts": {
             name: {"path": path.as_posix(), "sha256": sha256_file(path)}
-            for name, path in sorted(artifacts.items())
+            for name, path in sorted(files.items())
         },
     }
 

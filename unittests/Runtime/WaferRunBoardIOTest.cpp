@@ -73,8 +73,15 @@ protected:
   PackageResourceRecord resource(uint64_t id, PackageResourceRole role,
                                  PackageAccessMode access) const {
     return {ResourceId(id),
-            wafer::runtime::CardResourceScope{wafer::PhysicalCardId(0)}, role,
-            0,              "resource", {"u8", {4}}, 4, 1, access, true};
+            wafer::runtime::CardResourceScope{wafer::PhysicalCardId(0)},
+            role,
+            0,
+            "resource",
+            {"u8", {4}},
+            4,
+            1,
+            access,
+            true};
   }
 
   PackageManifest manifest(std::vector<PackageResourceRecord> resources) const {
@@ -98,8 +105,8 @@ protected:
           llvm::ArrayRef<ResourceFile> outputs,
           llvm::ArrayRef<ResourceFile> relaxedF16Expected = {}) const {
     return wafer::runtime::cli::prepareBoardInvocationFiles(
-        manifest, BoardRuntimeInvocationRequest{}, resources, expected,
-        outputs, relaxedF16Expected);
+        manifest, BoardRuntimeInvocationRequest{}, resources, expected, outputs,
+        relaxedF16Expected);
   }
 
   const BoardRuntimeBinding &binding(const BoardInvocationFilePlan &plan,
@@ -115,7 +122,7 @@ protected:
   llvm::SmallString<256> root;
 };
 
-TEST_F(WaferRunBoardIOTest, CaptureOnlyPublishesExactRawBytes) {
+TEST_F(WaferRunBoardIOTest, CaptureOnlyWritesExactRawBytes) {
   PackageManifest package = manifest(
       {resource(0, PackageResourceRole::UserInput, PackageAccessMode::ReadOnly),
        resource(1, PackageResourceRole::Output, PackageAccessMode::WriteOnly)});
@@ -132,7 +139,7 @@ TEST_F(WaferRunBoardIOTest, CaptureOnlyPublishesExactRawBytes) {
   EXPECT_EQ(binding(*plan, 1).bytes,
             (std::vector<uint8_t>{0xa5, 0xa5, 0xa5, 0xa5}));
 
-  ASSERT_FALSE(wafer::runtime::cli::validateAndPublishBoardOutputs(
+  ASSERT_FALSE(wafer::runtime::cli::validateAndWriteBoardOutputs(
       {{ResourceId(1), actual}}, *plan));
   EXPECT_EQ(readBytes(outputPath), actual);
 }
@@ -191,7 +198,7 @@ TEST_F(WaferRunBoardIOTest,
   ASSERT_FALSE(wafer::runtime::cli::validateBoardOutputs(
       {{ResourceId(22), expected}}, *targetPlan));
   EXPECT_FALSE(llvm::sys::fs::exists(outputPath));
-  ASSERT_FALSE(wafer::runtime::cli::validateAndPublishBoardOutputs(
+  ASSERT_FALSE(wafer::runtime::cli::validateAndWriteBoardOutputs(
       {{ResourceId(22), expected}}, *targetPlan));
   EXPECT_EQ(readBytes(outputPath), expected);
 }
@@ -379,14 +386,14 @@ TEST_F(WaferRunBoardIOTest, ExpectedAndOutputCompareBeforeCapture) {
                 static_cast<uint8_t>(~2), static_cast<uint8_t>(~4),
                 static_cast<uint8_t>(~6), static_cast<uint8_t>(~8)}));
 
-  llvm::Error mismatch = wafer::runtime::cli::validateAndPublishBoardOutputs(
+  llvm::Error mismatch = wafer::runtime::cli::validateAndWriteBoardOutputs(
       {{ResourceId(1), {2, 4, 0, 8}}}, *plan);
   ASSERT_TRUE(static_cast<bool>(mismatch));
   EXPECT_NE(llvm::toString(std::move(mismatch)).find("at byte 2"),
             std::string::npos);
   EXPECT_EQ(readBytes(outputPath), (std::vector<uint8_t>{7, 7, 7, 7}));
 
-  ASSERT_FALSE(wafer::runtime::cli::validateAndPublishBoardOutputs(
+  ASSERT_FALSE(wafer::runtime::cli::validateAndWriteBoardOutputs(
       {{ResourceId(1), expected}}, *plan));
   EXPECT_EQ(readBytes(outputPath), expected);
 
@@ -394,7 +401,7 @@ TEST_F(WaferRunBoardIOTest, ExpectedAndOutputCompareBeforeCapture) {
       prepare(package, {}, {{1, expectedPath}}, {});
   ASSERT_TRUE(static_cast<bool>(compareOnly))
       << llvm::toString(compareOnly.takeError());
-  ASSERT_FALSE(wafer::runtime::cli::validateAndPublishBoardOutputs(
+  ASSERT_FALSE(wafer::runtime::cli::validateAndWriteBoardOutputs(
       {{ResourceId(1), expected}}, *compareOnly));
 }
 
@@ -453,9 +460,9 @@ TEST_F(WaferRunBoardIOTest,
   llvm::Error nonfinite = wafer::runtime::cli::validateBoardOutputs(
       {{ResourceId(1), {0x00, 0x7c, 0x00, 0x40}}}, *plan);
   ASSERT_TRUE(static_cast<bool>(nonfinite));
-  EXPECT_NE(llvm::toString(std::move(nonfinite))
-                .find("contains NaN or infinity"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(std::move(nonfinite)).find("contains NaN or infinity"),
+      std::string::npos);
 
   PackageManifest untyped = manifest(
       {resource(1, PackageResourceRole::Output, PackageAccessMode::WriteOnly)});
@@ -496,7 +503,7 @@ TEST_F(WaferRunBoardIOTest, DuplicateAndUnexpectedProviderOutputsAreRejected) {
                                         {ResourceId(1), {1, 2, 3, 4}}},
         std::vector<BoardRuntimeOutput>{{ResourceId(99), {1, 2, 3, 4}}}}) {
     llvm::Error error =
-        wafer::runtime::cli::validateAndPublishBoardOutputs(outputs, *plan);
+        wafer::runtime::cli::validateAndWriteBoardOutputs(outputs, *plan);
     ASSERT_TRUE(static_cast<bool>(error));
     EXPECT_NE(llvm::toString(std::move(error))
                   .find("unexpected or duplicate writable ResourceId"),
@@ -514,13 +521,13 @@ TEST_F(WaferRunBoardIOTest, MissingAndWrongSizedProviderOutputsAreRejected) {
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
 
   llvm::Error missing =
-      wafer::runtime::cli::validateAndPublishBoardOutputs({}, *plan);
+      wafer::runtime::cli::validateAndWriteBoardOutputs({}, *plan);
   ASSERT_TRUE(static_cast<bool>(missing));
   EXPECT_NE(llvm::toString(std::move(missing))
                 .find("did not return all-and-only writable resources"),
             std::string::npos);
 
-  llvm::Error wrongSize = wafer::runtime::cli::validateAndPublishBoardOutputs(
+  llvm::Error wrongSize = wafer::runtime::cli::validateAndWriteBoardOutputs(
       {{ResourceId(1), {1, 2, 3}}}, *plan);
   ASSERT_TRUE(static_cast<bool>(wrongSize));
   EXPECT_NE(llvm::toString(std::move(wrongSize))
@@ -541,7 +548,7 @@ TEST_F(WaferRunBoardIOTest, StagingFailurePreservesEveryDestination) {
   llvm::Expected<BoardInvocationFilePlan> plan =
       prepare(package, {}, {}, {{1, firstPath}, {2, invalidPath}});
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
-  llvm::Error error = wafer::runtime::cli::validateAndPublishBoardOutputs(
+  llvm::Error error = wafer::runtime::cli::validateAndWriteBoardOutputs(
       {{ResourceId(1), {1, 1, 1, 1}}, {ResourceId(2), {2, 2, 2, 2}}}, *plan);
   ASSERT_TRUE(static_cast<bool>(error));
   EXPECT_NE(

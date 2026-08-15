@@ -262,7 +262,7 @@ def _save_exported_program(
     program.save(str(program_dir))
     # Some StableHLO serializer versions omit non-parameter ExportedProgram
     # state (for example BF16 rotary and causal-mask buffers) while still
-    # emitting parameter metadata for it.  The source artifact must be
+    # emitting parameter metadata for it.  The source program must be
     # self-contained, so materialize any missing state payload from the same
     # exported snapshot before validating the directory.  Existing serializer
     # output remains authoritative and is not rewritten.

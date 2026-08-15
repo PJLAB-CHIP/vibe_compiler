@@ -336,7 +336,7 @@ llvm::Expected<uint64_t> encodeResult(const BinaryFormatParameters &parameters,
 FormalNumericExceptionFlags mapFlags(mpfr_flags_t flags, bool invalid) {
   const bool inexact = (flags & MPFR_FLAGS_INEXACT) != 0;
   // MPFR may mark an exact subnormal range transition as underflow. The model
-  // follows IEEE tininess-after: underflow is raised only when the committed
+  // follows IEEE tininess-after: underflow is raised only when the rounded
   // result is both tiny after rounding and inexact.
   return {
       invalid,
@@ -433,11 +433,11 @@ llvm::Expected<FormalNumericResult> evaluateAdaptiveComposite(
     RawLogicalValue input, mpfr_srcptr source,
     MPFREnvironmentScope &environment, mpfr_rnd_t roundingMode) {
   assert(roundingMode == MPFR_RNDN &&
-         "published adaptive composite policy is final nearest-even");
+         "adaptive composite evaluation requires final nearest-even");
 
   // The supported formats have precision <= 24. For x >= 32, both
   // 1-sigmoid(x) and softplus(x)-x are less than exp(-x) < 2^-32, safely below
-  // half an ulp of their committed result. For x <= -1024, both positive
+  // half an ulp of their rounded result. For x <= -1024, both positive
   // results are below exp(x) < 2^-1024, safely below half the F32 minimum
   // subnormal (and therefore below every supported format's threshold). These
   // proofs also avoid relying on MPFR's finite exponent ceiling for enormous

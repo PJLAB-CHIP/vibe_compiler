@@ -73,7 +73,7 @@ struct SelectedBufferPlan {
   llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
   llvm::DenseMap<mlir::Operation *, InstrFamily> instructionFamilies;
   llvm::DenseMap<mlir::Operation *, NCCWorker> instructionWorkers;
-  llvm::DenseMap<mlir::Operation *, mlir::Operation *> nccIssueCompletions;
+  llvm::DenseMap<mlir::Operation *, mlir::Operation *> nccIssueJoins;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::Operation *, 4>>
       explicitJoinProducers;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<mlir::Operation *, 4>>
@@ -485,9 +485,8 @@ static mlir::LogicalResult validateSelectedBufferRequests(
   return mlir::success();
 }
 
-static mlir::LogicalResult
-collectDirectDTECompletions(SelectedBufferPlan &plan,
-                            std::string *failureReason) {
+static mlir::LogicalResult collectDirectDTEWaits(SelectedBufferPlan &plan,
+                                                 std::string *failureReason) {
   for (mlir::Operation *operation : plan.operations) {
     auto wait = mlir::dyn_cast<InstrDTEWaitOp>(operation);
     if (!wait)
@@ -506,7 +505,7 @@ collectDirectDTECompletions(SelectedBufferPlan &plan,
     }
     if (senderIssues > 1) {
       if (failureReason)
-        *failureReason = "selected-buffer Direct DTE completion window cannot "
+        *failureReason = "selected-buffer Direct DTE issue/wait window cannot "
                          "contain multiple "
                          "sender issues";
       return mlir::failure();
@@ -564,7 +563,7 @@ collectDirectDTECompletions(SelectedBufferPlan &plan,
     if (prior.waitIndex >= next.firstIssue) {
       if (failureReason)
         *failureReason =
-            "selected-buffer Direct DTE completion windows must not overlap";
+            "selected-buffer Direct DTE issue/wait windows must not overlap";
       return mlir::failure();
     }
   }
@@ -573,7 +572,7 @@ collectDirectDTECompletions(SelectedBufferPlan &plan,
 
 static mlir::LogicalResult
 collectInstructionAccesses(mlir::Operation *operation, unsigned operationIndex,
-                           unsigned completionIndex, mlir::scf::ForOp loop,
+                           unsigned accessEndIndex, mlir::scf::ForOp loop,
                            llvm::SmallVectorImpl<BufferAccess> &accesses,
                            std::string *failureReason) {
   auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
@@ -598,7 +597,7 @@ collectInstructionAccesses(mlir::Operation *operation, unsigned operationIndex,
     if (resource == WaferComputeResource::get() ||
         resource == WaferMovementResource::get())
       continue;
-    // Direct DTE transport identity and completion are carried by the async
+    // Direct DTE transport identity and readiness are carried by the async
     // token and its exact wait. Its rootless communication resource is not a
     // second buffer alias domain.
     if (resource == WaferCommunicationResource::get() &&
@@ -676,7 +675,7 @@ collectInstructionAccesses(mlir::Operation *operation, unsigned operationIndex,
       return access.issueOperation == operationIndex && access.root == *root;
     });
     if (found == accesses.end())
-      accesses.push_back({*root, write, operationIndex, completionIndex});
+      accesses.push_back({*root, write, operationIndex, accessEndIndex});
     else
       found->write |= write;
   }
@@ -785,7 +784,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
       pendingNCCIssues(kNCCWorkerCount);
   SyncNCCJoinOp deferredLeadingJoin;
   uint32_t deferredLeadingParticipants = 0;
-  bool sawTypedInstructionOrCompletion = false;
+  bool sawInstructionOrJoin = false;
   for (mlir::Operation &operation : loop.getBody()->without_terminator()) {
     if (operation.getNumRegions() != 0)
       return failPlan(failureReason, failureKind,
@@ -826,22 +825,21 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
         producers.append(pendingNCCIssues[worker]);
       }
       if (missingParticipantProducer) {
-        if (!producers.empty() || sawTypedInstructionOrCompletion ||
-            deferredLeadingJoin)
+        if (!producers.empty() || sawInstructionOrJoin || deferredLeadingJoin)
           return failPlan(
               failureReason,
               "selected-buffer NCC join participant has no preceding pending "
               "producer");
         deferredLeadingJoin = join;
         deferredLeadingParticipants = contract.participantMask;
-        sawTypedInstructionOrCompletion = true;
+        sawInstructionOrJoin = true;
         continue;
       }
       for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
         if ((contract.participantMask & (uint32_t{1} << worker)) == 0)
           continue;
         for (mlir::Operation *producer : pendingNCCIssues[worker]) {
-          plan.nccIssueCompletions.try_emplace(producer, join.getOperation());
+          plan.nccIssueJoins.try_emplace(producer, join.getOperation());
         }
         pendingNCCIssues[worker].clear();
       }
@@ -852,7 +850,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
             "participants");
       plan.explicitJoinProducers.try_emplace(join.getOperation(),
                                              std::move(producers));
-      sawTypedInstructionOrCompletion = true;
+      sawInstructionOrJoin = true;
       continue;
     }
 
@@ -875,7 +873,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
             "selected buffering encountered an unsupported Direct DTE "
             "instruction");
       plan.instructionFamilies.try_emplace(&operation, family);
-      sawTypedInstructionOrCompletion = true;
+      sawInstructionOrJoin = true;
       continue;
     }
     if (contract.behavior !=
@@ -883,12 +881,12 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
         !contract.issueWorker)
       return failPlan(
           failureReason,
-          "selected buffering rejects completion and synchronous islands");
+          "selected buffering rejects join/wait and synchronous islands");
     plan.instructionFamilies.try_emplace(&operation, family);
     plan.instructionWorkers.try_emplace(&operation, *contract.issueWorker);
     pendingNCCIssues[static_cast<uint32_t>(*contract.issueWorker)].push_back(
         &operation);
-    sawTypedInstructionOrCompletion = true;
+    sawInstructionOrJoin = true;
   }
   if (deferredLeadingJoin) {
     uint32_t tailParticipants = 0;
@@ -902,7 +900,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
     if (tailParticipants != deferredLeadingParticipants)
       return failPlan(failureReason, "selected-buffer leading NCC join "
                                      "participants do not exactly match the "
-                                     "loop-tail pending frontier");
+                                     "loop-tail pending issue set");
     plan.backedgeJoinProducers.try_emplace(deferredLeadingJoin.getOperation(),
                                            std::move(tailProducers));
   }
@@ -922,7 +920,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
           failureReason,
           "selected buffering requires loop-local deallocation ownership");
   }
-  if (mlir::failed(collectDirectDTECompletions(plan, failureReason)))
+  if (mlir::failed(collectDirectDTEWaits(plan, failureReason)))
     return mlir::failure();
   plan.predecessors.resize(plan.operations.size());
   for (const auto &[join, producers] : plan.explicitJoinProducers) {
@@ -948,7 +946,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
     }
   }
 
-  // Preserve typed NCC issue/completion order explicitly. A participant join
+  // Preserve typed NCC issue/join order explicitly. A participant join
   // stays in the producer stage; a later cross-family DTE buffer dependency
   // advances the transport to the next stage. This lets the steady kernel
   // issue the prior tile's DTE, launch independent work for the next tile,
@@ -993,15 +991,15 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
   // pipelining may overlap one send with NCC work but never overlaps two
   // sender events that the ABI cannot represent.
   std::optional<unsigned> pendingSenderIssue;
-  std::optional<unsigned> lastSenderCompletion;
+  std::optional<unsigned> lastSenderWait;
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
     if (mlir::isa<InstrDTESendOp>(operation)) {
       if (pendingSenderIssue)
         return failPlan(
             failureReason,
             "selected buffering has overlapping Direct DTE senders");
-      if (lastSenderCompletion)
-        addDependency(plan, *lastSenderCompletion, static_cast<unsigned>(index),
+      if (lastSenderWait)
+        addDependency(plan, *lastSenderWait, static_cast<unsigned>(index),
                       /*advancesStage=*/false);
       pendingSenderIssue = static_cast<unsigned>(index);
       continue;
@@ -1018,24 +1016,22 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
     addDependency(plan, *pendingSenderIssue, static_cast<unsigned>(index),
                   /*advancesStage=*/false);
     pendingSenderIssue.reset();
-    lastSenderCompletion = static_cast<unsigned>(index);
+    lastSenderWait = static_cast<unsigned>(index);
   }
   if (pendingSenderIssue)
-    return failPlan(
-        failureReason,
-        "selected-buffer Direct DTE sender has no matching completion");
+    return failPlan(failureReason,
+                    "selected-buffer Direct DTE sender has no matching wait");
 
   // Receiver FSM ids are also finite target resources. Keep each source
   // batch intact and require its exact wait before the next batch can enter
   // the software pipeline; a batch larger than the four-FSM normal profile is
   // not a legal candidate.
   llvm::SmallVector<unsigned, 4> pendingReceiverIssues;
-  std::optional<unsigned> lastReceiverCompletion;
+  std::optional<unsigned> lastReceiverWait;
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
     if (mlir::isa<InstrDTERecvOp>(operation)) {
-      if (pendingReceiverIssues.empty() && lastReceiverCompletion)
-        addDependency(plan, *lastReceiverCompletion,
-                      static_cast<unsigned>(index),
+      if (pendingReceiverIssues.empty() && lastReceiverWait)
+        addDependency(plan, *lastReceiverWait, static_cast<unsigned>(index),
                       /*advancesStage=*/false);
       pendingReceiverIssues.push_back(static_cast<unsigned>(index));
       if (pendingReceiverIssues.size() > 4)
@@ -1060,27 +1056,26 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
       pendingReceiverIssues.erase(found);
     }
     if (pendingReceiverIssues.empty())
-      lastReceiverCompletion = static_cast<unsigned>(index);
+      lastReceiverWait = static_cast<unsigned>(index);
   }
   if (!pendingReceiverIssues.empty())
-    return failPlan(
-        failureReason,
-        "selected-buffer Direct DTE receiver has no matching completion");
+    return failPlan(failureReason,
+                    "selected-buffer Direct DTE receiver has no matching wait");
 
   llvm::SmallVector<BufferAccess, 16> accesses;
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
     if (!plan.instructionFamilies.contains(operation))
       continue;
-    unsigned completionIndex = static_cast<unsigned>(index);
-    auto completion = plan.directDTEWaits.find(operation);
-    if (completion != plan.directDTEWaits.end())
-      completionIndex = plan.operationIndices.lookup(completion->second);
-    auto nccCompletion = plan.nccIssueCompletions.find(operation);
-    if (nccCompletion != plan.nccIssueCompletions.end())
-      completionIndex = plan.operationIndices.lookup(nccCompletion->second);
+    unsigned accessEndIndex = static_cast<unsigned>(index);
+    auto dteWait = plan.directDTEWaits.find(operation);
+    if (dteWait != plan.directDTEWaits.end())
+      accessEndIndex = plan.operationIndices.lookup(dteWait->second);
+    auto nccJoin = plan.nccIssueJoins.find(operation);
+    if (nccJoin != plan.nccIssueJoins.end())
+      accessEndIndex = plan.operationIndices.lookup(nccJoin->second);
     llvm::SmallVector<BufferAccess, 8> current;
     if (mlir::failed(collectInstructionAccesses(
-            operation, static_cast<unsigned>(index), completionIndex, loop,
+            operation, static_cast<unsigned>(index), accessEndIndex, loop,
             current, failureReason)))
       return mlir::failure();
     for (const BufferAccess &access : current) {
@@ -1116,7 +1111,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
              prior.completionOperation >= access.issueOperation))
           return failPlan(
               failureReason,
-              "selected-buffer NCC-to-Direct-DTE buffer handoff requires an "
+              "selected-buffer NCC-to-Direct-DTE access requires an "
               "explicit preceding participant join");
         if (!priorDirectDTE && !currentDirectDTE &&
             (priorWorker == plan.instructionWorkers.end() ||
@@ -1574,7 +1569,7 @@ static void eraseSynthesizedPointerPermutations(mlir::ModuleOp module) {
   }
 }
 
-static void splitDirectDTECompletionGroups(mlir::scf::ForOp loop) {
+static void splitDirectDTEWaitGroups(mlir::scf::ForOp loop) {
   llvm::SmallVector<InstrDTEWaitOp, 4> groupedWaits;
   for (mlir::Operation &operation : loop.getBody()->without_terminator())
     if (auto wait = mlir::dyn_cast<InstrDTEWaitOp>(&operation);
@@ -1610,8 +1605,8 @@ canonicalizePipelinedKernelUpperBound(mlir::scf::ForOp loop,
   loop.setUpperBound(canonicalUpper);
 
   // Only erase the two operation kinds emitted for this bound by the pinned
-  // utility. Original loop bounds are direct constants at this transform's
-  // admission boundary and therefore cannot be consumed by this cleanup.
+  // utility. Original loop bounds are direct constants in this transform's
+  // input contract and therefore cannot be consumed by this cleanup.
   llvm::SmallVector<mlir::Value, 2> worklist{mechanicalUpper};
   while (!worklist.empty()) {
     mlir::Value value = worklist.pop_back_val();
@@ -1672,7 +1667,7 @@ static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
           failureReason,
           "selected buffering identity requires a single-block scf.for");
     wafer::support::recordCompileWork(
-        wafer::support::CompileWorkKind::SelectedBufferArtifactTransaction);
+        wafer::support::CompileWorkKind::SelectedBufferModuleClone);
     mlir::IRMapping identityMapping;
     mlir::OwningOpRef<mlir::ModuleOp> identity(
         mlir::cast<mlir::ModuleOp>(sourceModule->clone(identityMapping)));
@@ -1714,7 +1709,7 @@ static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
     wafer::support::ScopedCompileTimingSpan cloneTiming(
         "transformation-phase", "deriveSelectedBufferCandidate", "clone");
     wafer::support::recordCompileWork(
-        wafer::support::CompileWorkKind::SelectedBufferArtifactTransaction);
+        wafer::support::CompileWorkKind::SelectedBufferModuleClone);
     mlir::Operation *clonedOperation = sourceModule->clone(cloneMapping);
     candidate = mlir::cast<mlir::ModuleOp>(clonedOperation);
   }
@@ -1733,7 +1728,7 @@ static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
   // pipeline stages. Split it inside the private candidate so each exact
   // event stays with its own issue stage; this preserves the normal
   // single-sender ABI and keeps transport acceptance on direct SSA edges.
-  splitDirectDTECompletionGroups(clonedLoop);
+  splitDirectDTEWaitGroups(clonedLoop);
   mlir::FailureOr<SelectedBufferPlan> clonedPlan;
   {
     wafer::support::ScopedCompileTimingSpan planTiming(
@@ -1794,11 +1789,9 @@ static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
           failureReason,
           "selected buffering produced relations outside its private "
           "candidate IR");
-    for (mlir::func::FuncOp function :
-         candidate->getOps<mlir::func::FuncOp>())
+    for (mlir::func::FuncOp function : candidate->getOps<mlir::func::FuncOp>())
       if (mlir::failed(
-              wafer::detail::placeRequiredNCCJoinsInPrivateFunction(
-                  function)))
+              wafer::detail::placeRequiredNCCJoinsInPrivateFunction(function)))
         return failCandidate(
             failureReason,
             "selected buffering failed required NCC join placement");
@@ -1997,9 +1990,9 @@ mlir::LogicalResult materializeSelectedBuffering(
     SelectedBufferMaterializationFailureKind attemptKind =
         SelectedBufferMaterializationFailureKind::UnsupportedStructure;
     size_t failedRequest = std::numeric_limits<size_t>::max();
-    mlir::FailureOr<SelectedBufferPlan> plan = buildSelectedBufferPlan(
-        loop, &attemptFailure, &attemptKind, requests,
-        materializationRelations, &failedRequest);
+    mlir::FailureOr<SelectedBufferPlan> plan =
+        buildSelectedBufferPlan(loop, &attemptFailure, &attemptKind, requests,
+                                materializationRelations, &failedRequest);
     if (mlir::succeeded(plan) &&
         mlir::failed(validateSelectedBufferRequests(
             *plan, requests, *materializationRelations, &failedRequest))) {

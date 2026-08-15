@@ -121,7 +121,7 @@ llvm::Error expectStringArray(llvm::ArrayRef<std::string> actual,
 }
 
 /// LLVM's JSON object intentionally keeps the last value for a repeated key.
-/// The managed identity format is fail-closed, so scan the already
+/// The managed record format is fail-closed, so scan the already
 /// syntax-validated document and reject duplicate decoded keys at every depth.
 class DuplicateKeyScanner {
 public:

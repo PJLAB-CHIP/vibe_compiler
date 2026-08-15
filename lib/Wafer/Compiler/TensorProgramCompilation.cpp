@@ -1,7 +1,7 @@
 //===- TensorProgramCompilation.cpp - Tensor-program compilation --------===//
 
 #include "CompilationInternal.h"
-#include "ExecutableBundleInternal.h"
+#include "PhysicalTileExecutablesInternal.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -56,7 +56,7 @@ static llvm::Expected<ProductT> compileTensorProgram(
   if (containsDialectSemantics(*tensorModule, "stablehlo") ||
       containsDialectSemantics(*tensorModule, "sdy") ||
       mlir::failed(verifyTensorProgramStageOperations(*tensorModule)))
-    return fail("input is not a verified structured tensor-program artifact");
+    return fail("input is not a verified structured tensor program");
 
   frontend::FrontendProgramVerificationResult program;
   if (mlir::failed(verifyProgramDirectoryMetadata(
@@ -74,11 +74,12 @@ static llvm::Expected<ProductT> compileTensorProgram(
                  diagnostics, failAfterLaunchSlot);
 }
 
-llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
+llvm::Expected<PhysicalTileExecutables>
+compileTensorProgramToPhysicalTileExecutables(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot, CompilationIRTrace &irTrace) {
-  return compileTensorProgram<ExecutableBundle>(
+  return compileTensorProgram<PhysicalTileExecutables>(
       tensorProgramDirectory, executionConfig, diagnostics, failAfterLaunchSlot,
       [optimizations,
        &irTrace](std::shared_ptr<mlir::MLIRContext> &context,
@@ -86,7 +87,7 @@ llvm::Expected<ExecutableBundle> compileTensorProgramToExecutableBundleImpl(
                  frontend::FrontendProgramVerificationResult program,
                  ExecutionConfig config, llvm::raw_ostream &output,
                  std::optional<int64_t> failAfterLaunchSlot) {
-        return buildExecutableBundleWithIRTrace(
+        return buildPhysicalTileExecutablesWithIRTrace(
             context, tensorModule, std::move(program), config, optimizations,
             output, failAfterLaunchSlot, irTrace);
       });

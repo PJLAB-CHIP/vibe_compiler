@@ -302,9 +302,9 @@ bool pathIsWithin(llvm::StringRef path, llvm::StringRef directory) {
   return llvm::sys::path::is_separator(path[directory.size()]);
 }
 
-bool publishDirectoryNoReplace(llvm::StringRef source,
-                               llvm::StringRef destination,
-                               llvm::raw_ostream &diagnostics) {
+bool renameDirectoryNoReplace(llvm::StringRef source,
+                              llvm::StringRef destination,
+                              llvm::raw_ostream &diagnostics) {
 #ifdef __linux__
   std::string sourceStorage = source.str();
   std::string destinationStorage = destination.str();
@@ -315,19 +315,18 @@ bool publishDirectoryNoReplace(llvm::StringRef source,
   int errorNumber = errno;
   if (errorNumber == EEXIST)
     return reject(diagnostics,
-                  "output program directory appeared before publication; "
+                  "output program directory appeared before rename; "
                   "refusing to replace it");
   return reject(
       diagnostics,
-      "failed to atomically publish output program directory "
+      "failed to rename output program directory "
       "without replacement: " +
           std::error_code(errorNumber, std::generic_category()).message());
 #else
   (void)source;
   (void)destination;
-  return reject(
-      diagnostics,
-      "atomic no-replace directory publication is unsupported on this host");
+  return reject(diagnostics,
+                "no-replace directory rename is unsupported on this host");
 #endif
 }
 

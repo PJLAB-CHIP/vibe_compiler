@@ -2,7 +2,7 @@
 
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/Package.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/Support/Error.h"
@@ -69,34 +69,35 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
       !std::is_copy_constructible_v<wafer::compiler::PhysicalTileExecutable>);
   static_assert(
       std::is_move_constructible_v<wafer::compiler::PhysicalTileExecutable>);
+  static_assert(!std::is_default_constructible_v<
+                wafer::compiler::PhysicalTileExecutables>);
   static_assert(
-      !std::is_default_constructible_v<wafer::compiler::ExecutableBundle>);
+      !std::is_copy_constructible_v<wafer::compiler::PhysicalTileExecutables>);
   static_assert(
-      !std::is_copy_constructible_v<wafer::compiler::ExecutableBundle>);
-  static_assert(
-      std::is_move_constructible_v<wafer::compiler::ExecutableBundle>);
+      std::is_move_constructible_v<wafer::compiler::PhysicalTileExecutables>);
   static_assert(
       !std::is_default_constructible_v<wafer::compiler::TargetLLVMModule>);
   static_assert(
       !std::is_copy_constructible_v<wafer::compiler::TargetLLVMModule>);
   static_assert(
       std::is_move_constructible_v<wafer::compiler::TargetLLVMModule>);
-  static_assert(!std::is_default_constructible_v<
-                wafer::compiler::TargetLLVMModuleBundle>);
   static_assert(
-      !std::is_copy_constructible_v<wafer::compiler::TargetLLVMModuleBundle>);
+      !std::is_default_constructible_v<wafer::compiler::TargetLLVMModules>);
   static_assert(
-      std::is_move_constructible_v<wafer::compiler::TargetLLVMModuleBundle>);
+      !std::is_copy_constructible_v<wafer::compiler::TargetLLVMModules>);
   static_assert(
-      !std::is_default_constructible_v<wafer::compiler::TargetArtifactBundle>);
+      std::is_move_constructible_v<wafer::compiler::TargetLLVMModules>);
   static_assert(
-      !std::is_copy_constructible_v<wafer::compiler::TargetArtifactBundle>);
+      !std::is_default_constructible_v<wafer::compiler::LinkedTargetModules>);
   static_assert(
-      std::is_move_constructible_v<wafer::compiler::TargetArtifactBundle>);
+      !std::is_copy_constructible_v<wafer::compiler::LinkedTargetModules>);
   static_assert(
-      !std::is_default_constructible_v<wafer::compiler::PackageBundle>);
-  static_assert(!std::is_copy_constructible_v<wafer::compiler::PackageBundle>);
-  static_assert(std::is_move_constructible_v<wafer::compiler::PackageBundle>);
+      std::is_move_constructible_v<wafer::compiler::LinkedTargetModules>);
+  static_assert(
+      !std::is_default_constructible_v<wafer::compiler::VerifiedPackage>);
+  static_assert(
+      !std::is_copy_constructible_v<wafer::compiler::VerifiedPackage>);
+  static_assert(std::is_move_constructible_v<wafer::compiler::VerifiedPackage>);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::RuntimeLaunchKind::Kernel);
@@ -130,7 +131,7 @@ TEST(CompilationTest, ProfileOptionsRequireCompletePhysicalTileKernelDomain) {
   ASSERT_TRUE(static_cast<bool>(fullCard));
   auto accepted = wafer::compiler::CompilationOptions::profile(*fullCard);
   ASSERT_TRUE(static_cast<bool>(accepted));
-  EXPECT_TRUE(accepted->shouldProduceProfileCompanion());
+  EXPECT_TRUE(accepted->shouldProduceProfileInstrumentation());
   EXPECT_FALSE(accepted->shouldReportDetailedTiming());
   wafer::OptimizationConfig none = wafer::OptimizationConfig::none();
   auto acceptedNone =
@@ -151,7 +152,7 @@ TEST(CompilationTest, ProfileOptionsRequireCompletePhysicalTileKernelDomain) {
                 .find("complete-card physical Tile kernel launch"),
             std::string::npos);
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
-                   .shouldProduceProfileCompanion());
+                   .shouldProduceProfileInstrumentation());
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
                    .shouldReportDetailedTiming());
   EXPECT_TRUE(wafer::compiler::CompilationOptions::standard(

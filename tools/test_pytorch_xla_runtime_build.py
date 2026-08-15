@@ -125,7 +125,7 @@ class ImporterPythonPathTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "select a newer GCC"):
                 build_pytorch_xla_runtime.verify_cxx_move_support(compiler)
 
-    def test_extensions_are_published_from_persistent_bazel_output(self) -> None:
+    def test_extensions_are_installed_from_persistent_bazel_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = pathlib.Path(temporary_directory)
             source = root / "source"
@@ -150,7 +150,7 @@ class ImporterPythonPathTest(unittest.TestCase):
                 b"persistent _XLAC_cuda_functions\n",
             )
 
-    def test_importer_bazel_is_checksum_pinned_and_published(self) -> None:
+    def test_importer_bazel_is_checksum_pinned_and_installed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = pathlib.Path(temporary_directory)
             payload = root / "bazel-download"

@@ -2,7 +2,7 @@
 
 #include "WholeDAGSchedulePlan.h"
 
-#include "AcceptedCallClosure.h"
+#include "ExecutableCallClosure.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -327,8 +327,8 @@ llvm::BitVector getObservableDAGNodes(const CardDAGAnalysis &dag) {
 /// work is eliminated or absorbed by a surviving downstream operation. Such a
 /// node remains schedule-covered only when every observable successor path is
 /// already covered. Observable terminal nodes therefore still require actual
-/// accepted-IR buffer use, while source-only dead nodes do not become artificial
-/// schedule obligations.
+/// accepted-IR buffer use, while source-only dead nodes do not become
+/// artificial schedule obligations.
 bool hasCompleteObservableNodeCoverage(const CardDAGAnalysis &dag,
                                        const llvm::BitVector &observed) {
   llvm::BitVector observable = getObservableDAGNodes(dag);
@@ -387,7 +387,7 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
     const CardDAGAnalysis &dag,
     llvm::ArrayRef<WholeDAGNodePlacement> nodePlacements,
     llvm::ArrayRef<AcceptedOperationNodeRelation> operationNodeRelations,
-    AcceptedWholeCardExecutable &executable,
+    WholeCardExecutable &executable,
     llvm::SmallVectorImpl<WholeCardInstructionProgramCost> &phaseCosts,
     std::string *failureReason) {
   if (failureReason)
@@ -401,7 +401,8 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
 
   llvm::DenseMap<mlir::Operation *, llvm::BitVector> operationNodes;
   for (const AcceptedOperationNodeRelation &relation : operationNodeRelations) {
-    if (!relation.operation || relation.structuredNodeId >= dag.getNodes().size()) {
+    if (!relation.operation ||
+        relation.structuredNodeId >= dag.getNodes().size()) {
       setFailure(failureReason,
                  "accepted operation-node relation is null or out of range");
       return mlir::failure();
@@ -439,8 +440,8 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
   llvm::BitVector observedNodes(dag.getNodes().size());
   const std::vector<llvm::BitVector> reachable = computeDAGReachability(dag);
   for (auto [tileIndex, tile] : llvm::enumerate(executable.tiles)) {
-    llvm::Expected<AcceptedCallClosure> closure =
-        analyzeAcceptedCallClosure(tile.getModule(), tile.getEntrySymbol());
+    llvm::Expected<ExecutableCallClosure> closure =
+        analyzeExecutableCallClosure(tile.getModule(), tile.getEntrySymbol());
     if (!closure) {
       llvm::consumeError(closure.takeError());
       setFailure(failureReason,
@@ -509,8 +510,7 @@ mlir::FailureOr<StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
           message << "accepted operation is outside its DAG node placement"
                   << " tile_id=" << tile.getPhysicalTileId().getValue()
                   << " op=" << operation->getName().getStringRef()
-                  << " structured_node=" << *node
-                  << " source_op="
+                  << " structured_node=" << *node << " source_op="
                   << dag.getNodes()[*node].operation->getName().getStringRef()
                   << " placement_tiles=[";
           for (auto [index, physicalTile] :

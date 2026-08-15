@@ -36,8 +36,8 @@ inline unsigned getBoundedTilePipelineWorkerCount(
 }
 
 /// Runs only mutually independent physical Tile transformations. Callers own
-/// all result slots and perform whole-card transport, resource, ABI-domain, or
-/// admission decisions only after this function returns. Contiguous shards
+/// all result slots and perform whole-card transport, resource, or ABI checks
+/// only after this function returns. Contiguous shards
 /// preserve deterministic diagnostic ordering.
 template <typename FunctionT>
 unsigned runBoundedTilePipelines(

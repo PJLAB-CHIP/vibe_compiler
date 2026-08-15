@@ -125,12 +125,12 @@ TEST_F(CardExecutableCompilationTest,
   EXPECT_EQ(repeated.status, result.status);
   EXPECT_EQ(repeated.gate, result.gate);
   ASSERT_FALSE(repeated.tileFailures.empty());
-  EXPECT_EQ(repeated.tileFailures.front().finalization.spmPlanningFailureKind,
-            result.tileFailures.front().finalization.spmPlanningFailureKind);
+  EXPECT_EQ(repeated.tileFailures.front().memoryPlanning.spmPlanningFailureKind,
+            result.tileFailures.front().memoryPlanning.spmPlanningFailureKind);
   EXPECT_EQ(statistics.cardProgramCompilationInvocations, 2u);
-  EXPECT_EQ(statistics.preTargetAttempts, 0u);
+  EXPECT_EQ(statistics.physicalTileModuleLoweringAttempts, 0u);
   ASSERT_FALSE(result.tileFailures.empty());
-  EXPECT_TRUE(result.tileFailures.front().finalization.spmCapacityOverflow);
+  EXPECT_TRUE(result.tileFailures.front().memoryPlanning.spmCapacityOverflow);
   EXPECT_NE(diagnosticText.find("outcome=exact-rejection"), std::string::npos)
       << diagnosticText;
 }

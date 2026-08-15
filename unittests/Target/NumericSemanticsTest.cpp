@@ -490,11 +490,10 @@ TEST(NumericSemanticsTest,
     EXPECT_EQ(profile.getModelProfile(), kModelProfile);
     EXPECT_TRUE(isDigest(profile.getDigest()));
     EXPECT_TRUE(digests.insert(profile.getDigest().str()).second);
-    const wafer::NumericCTConvertSemanticsIdentity &identity =
-        *profile.getCTConvertIdentity();
-    const wafer::TargetConvertRoute &route = identity.getCTConvertRoute();
-    EXPECT_EQ(identity.getFamily(), NumericCommandFamily::CTConvert);
-    EXPECT_EQ(identity.getCTConvertOpcode(), route.opcode);
+    const wafer::NumericCTConvertSemanticsKey &key = *profile.getCTConvertKey();
+    const wafer::TargetConvertRoute &route = key.getCTConvertRoute();
+    EXPECT_EQ(key.getFamily(), NumericCommandFamily::CTConvert);
+    EXPECT_EQ(key.getCTConvertOpcode(), route.opcode);
     EXPECT_NE(route.parameterKind, TargetConvertParameterKind::ZeroPoint);
     EXPECT_NE(profile.getRoundingMode(), NumericRoundingMode::Stochastic);
     EXPECT_TRUE(identities
@@ -521,21 +520,20 @@ TEST(NumericSemanticsTest,
     EXPECT_TRUE(digests.insert(profile.getDigest().str()).second);
     EXPECT_EQ(profile.getModelProfile(), kModelProfile);
     EXPECT_EQ(profile.getFamily(), NumericCommandFamily::CTElementwise);
-    EXPECT_EQ(profile.getCTConvertIdentity(), nullptr);
-    EXPECT_EQ(profile.getNEGemmIdentity(), nullptr);
-    const wafer::NumericCTElementwiseSemanticsIdentity *identity =
-        profile.getCTElementwiseIdentity();
-    ASSERT_NE(identity, nullptr);
-    EXPECT_NE(identity->getInputFormat(), wafer::LogicalFormat::I8);
-    const NumericElementwiseOperation operation = identity->getOperation();
+    EXPECT_EQ(profile.getCTConvertKey(), nullptr);
+    EXPECT_EQ(profile.getNEGemmKey(), nullptr);
+    const wafer::NumericCTElementwiseSemanticsKey *key =
+        profile.getCTElementwiseKey();
+    ASSERT_NE(key, nullptr);
+    EXPECT_NE(key->getInputFormat(), wafer::LogicalFormat::I8);
+    const NumericElementwiseOperation operation = key->getOperation();
     const bool logic = wafer::isNumericElementwiseLogic(operation);
     const bool relation = wafer::isNumericElementwiseRelation(operation);
     logicCount += logic;
     relationCount += relation;
     transcendentalCount += usesMPFR(operation);
-    EXPECT_EQ(identity->getDestinationFormat(),
-              relation ? wafer::LogicalFormat::Bool
-                       : identity->getInputFormat());
+    EXPECT_EQ(key->getDestinationFormat(),
+              relation ? wafer::LogicalFormat::Bool : key->getInputFormat());
     EXPECT_EQ(profile.getRoundingModePolicy(),
               logic || relation ? std::nullopt
                                 : std::optional<NumericRoundingMode>(
@@ -609,12 +607,11 @@ TEST(NumericSemanticsTest,
     EXPECT_TRUE(isDigest(profile.getDigest()));
     EXPECT_TRUE(digests.insert(profile.getDigest().str()).second);
     EXPECT_EQ(profile.getFamily(), NumericCommandFamily::NEGemm);
-    EXPECT_EQ(profile.getCTConvertIdentity(), nullptr);
-    EXPECT_EQ(profile.getCTElementwiseIdentity(), nullptr);
-    const wafer::NumericNEGemmSemanticsIdentity *identity =
-        profile.getNEGemmIdentity();
-    ASSERT_NE(identity, nullptr);
-    EXPECT_TRUE(gemmFormats.insert(identity->getFormat()).second);
+    EXPECT_EQ(profile.getCTConvertKey(), nullptr);
+    EXPECT_EQ(profile.getCTElementwiseKey(), nullptr);
+    const wafer::NumericNEGemmSemanticsKey *key = profile.getNEGemmKey();
+    ASSERT_NE(key, nullptr);
+    EXPECT_TRUE(gemmFormats.insert(key->getFormat()).second);
     EXPECT_EQ(profile.getRoundingModePolicy(),
               NumericRoundingMode::NearestEven);
     EXPECT_EQ(profile.getRoundingPointPolicy(),
@@ -793,11 +790,10 @@ TEST(NumericSemanticsTest, PatternRegistryClosesExactly276TypedSelectors) {
       EXPECT_EQ(pattern.getComparatorKind(), NumericComparatorKind::RawExact);
       EXPECT_EQ(pattern.getFormalBackendKind(),
                 FormalNumericBackendKind::LLVMAPFloatAPInt);
-      const auto *identity =
-          pattern.getSemantics()->getNativeCTReduceIdentity();
-      ASSERT_NE(identity, nullptr);
-      EXPECT_EQ(identity->getOperation(), NumericReduceOperation::Sum);
-      EXPECT_EQ(identity->getFormat(), wafer::LogicalFormat::F32);
+      const auto *key = pattern.getSemantics()->getNativeCTReduceKey();
+      ASSERT_NE(key, nullptr);
+      EXPECT_EQ(key->getOperation(), NumericReduceOperation::Sum);
+      EXPECT_EQ(key->getFormat(), wafer::LogicalFormat::F32);
     } else {
       EXPECT_FALSE(pattern.isSupported());
       EXPECT_EQ(pattern.getModelCapability().status,
@@ -1030,14 +1026,14 @@ TEST(NumericSemanticsTest, ElementwiseClosesAll35ArityAndFormatSelectors) {
             resolution->getSemantics();
         ASSERT_NE(semantics, nullptr);
         EXPECT_EQ(semantics->getFamily(), NumericCommandFamily::CTElementwise);
-        const wafer::NumericCTElementwiseSemanticsIdentity *identity =
-            semantics->getCTElementwiseIdentity();
-        ASSERT_NE(identity, nullptr);
-        EXPECT_EQ(semantics->getCTConvertIdentity(), nullptr);
-        EXPECT_EQ(semantics->getNEGemmIdentity(), nullptr);
-        EXPECT_EQ(identity->getOperation(), operation);
-        EXPECT_EQ(identity->getInputFormat(), format);
-        EXPECT_EQ(identity->getDestinationFormat(), destinationFormat);
+        const wafer::NumericCTElementwiseSemanticsKey *key =
+            semantics->getCTElementwiseKey();
+        ASSERT_NE(key, nullptr);
+        EXPECT_EQ(semantics->getCTConvertKey(), nullptr);
+        EXPECT_EQ(semantics->getNEGemmKey(), nullptr);
+        EXPECT_EQ(key->getOperation(), operation);
+        EXPECT_EQ(key->getInputFormat(), format);
+        EXPECT_EQ(key->getDestinationFormat(), destinationFormat);
         EXPECT_EQ(resolution->getFormalKernelKind(),
                   FormalKernelKind::Elementwise);
         EXPECT_EQ(resolution->getComparatorKind(),
@@ -1166,12 +1162,11 @@ TEST(NumericSemanticsTest, GemmValidatesFormatsLayoutsShapesBatchAndAxes) {
           resolution->getSemantics();
       ASSERT_NE(semantics, nullptr);
       EXPECT_EQ(semantics->getFamily(), NumericCommandFamily::NEGemm);
-      const wafer::NumericNEGemmSemanticsIdentity *identity =
-          semantics->getNEGemmIdentity();
-      ASSERT_NE(identity, nullptr);
-      EXPECT_EQ(semantics->getCTConvertIdentity(), nullptr);
-      EXPECT_EQ(semantics->getCTElementwiseIdentity(), nullptr);
-      EXPECT_EQ(identity->getFormat(), format);
+      const wafer::NumericNEGemmSemanticsKey *key = semantics->getNEGemmKey();
+      ASSERT_NE(key, nullptr);
+      EXPECT_EQ(semantics->getCTConvertKey(), nullptr);
+      EXPECT_EQ(semantics->getCTElementwiseKey(), nullptr);
+      EXPECT_EQ(key->getFormat(), format);
       EXPECT_EQ(resolution->getFormalKernelKind(), FormalKernelKind::Gemm);
       EXPECT_EQ(resolution->getComparatorKind(),
                 NumericComparatorKind::RawExact);

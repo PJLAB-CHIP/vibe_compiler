@@ -299,7 +299,7 @@ def verify_no_card_evidence(stdout: str) -> None:
 
 def verify_board_evidence(stdout: str, output_id: int) -> None:
     required = {
-        "board_stage: preflight",
+        "board_stage: validation",
         "board_stage: device-selection",
         "board_stage: resource-allocation",
         "board_stage: host-to-device",
@@ -357,8 +357,8 @@ def main() -> int:
             f"--launch-kind={LAUNCH_KIND}",
         ]
     )
-    if "published verified package with execution-ranks=1" not in compile_result.stdout:
-        raise RuntimeError("wafer-compile did not publish a verified rank-one package")
+    if "wrote verified package with execution-ranks=1" not in compile_result.stdout:
+        raise RuntimeError("wafer-compile did not write a verified single-Tile package")
     validate_structured_program(package)
     bindings, output_id = validate_manifest(package)
 

@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-Modified by the Wafer project: checked arithmetic and typed validation.
+Modified for Wafer: checked arithmetic and typed validation.
 */
 
 #ifndef WAFER_THIRD_PARTY_MINIMALLOC_INTERNAL_H

@@ -81,7 +81,7 @@ IndependentRoundResult roundF32ToReduced(uint32_t source,
   const uint32_t largestFiniteDestination = destination == LogicalFormat::BF16
                                                 ? UINT32_C(0x7f7f0000)
                                                 : UINT32_C(0x7f7fe000);
-  // Directed overflow may commit max-finite rather than infinity, so compare
+  // Directed overflow may return max-finite rather than infinity, so compare
   // the exact source magnitude with the destination's largest finite value.
   flags.overflow = flags.inexact && exponent != UINT32_C(0xff) &&
                    magnitude > largestFiniteDestination;

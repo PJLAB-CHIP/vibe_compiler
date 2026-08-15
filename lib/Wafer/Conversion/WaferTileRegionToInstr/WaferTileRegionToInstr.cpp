@@ -86,7 +86,7 @@ populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns) {
 /// after the tile body has already materialized its splat.  Keeping that
 /// write would turn a dead i1 value into a real target TDMA command, where the
 /// hardware profile correctly rejects the unproven BOOL encoding.
-static void eraseDeadPrivateFillArtifacts(mlir::Operation *root) {
+static void eraseDeadPrivateFills(mlir::Operation *root) {
   llvm::SmallVector<InstrFillOp, 4> deadFills;
   root->walk([&](InstrFillOp fill) {
     mlir::Value dest = fill.getDest();
@@ -106,9 +106,9 @@ static void eraseDeadPrivateFillArtifacts(mlir::Operation *root) {
   }
 
   // Constant-predicate select conversion can retire the source fill only when
-  // the dialect-conversion transaction commits. Its scalar therefore becomes
+  // dialect conversion succeeds. Its scalar therefore becomes
   // dead after the select pattern has returned. Remove that exact local
-  // artifact explicitly instead of relying on a later generic canonicalizer.
+  // fill explicitly instead of relying on a later generic canonicalizer.
   llvm::SmallVector<mlir::arith::ConstantOp, 4> deadConstants;
   root->walk([&](mlir::arith::ConstantOp constant) {
     if (constant->use_empty())
@@ -163,7 +163,7 @@ mergeOutstandingAccessSummaries(NCCOutstandingAccessSummary &destination,
     bool destinationHasWorker = (destinationWorkers & mask) != 0;
     bool sourceHasWorker = (source.workers & mask) != 0;
     if (destinationHasWorker != sourceHasWorker) {
-      // This is an alternative-path frontier: one path can reach the merge
+      // This is an alternative-path merge: one path can reach the merge
       // without the issue.  Retaining the other path's operation pointer
       // would falsely make that issue an unconditional same-worker successor
       // on a surrounding loop backedge.
@@ -397,7 +397,7 @@ static bool isLocalManagedMaterializationReload(
   // into a fresh DDR allocation and a later reload into a fresh SPM root in
   // the same block. Ordinary producer/consumer DDR edges across traversal
   // loops are not lifetime cuts; same-worker busytable ordering is sufficient
-  // for those edges and fresh completion must not invent loop-local joins.
+  // for those edges and join placement must not invent loop-local joins.
   return areManagedRoots(sourceRoots, isWaferDDRMemRefType) &&
          areManagedRoots(destinationRoots, isWaferSPMMemRefType) &&
          llvm::all_of(sourceRoots, [&](mlir::Value root) {
@@ -437,9 +437,9 @@ static bool isManagedMaterializationStore(
 }
 
 static mlir::Operation *
-getManagedReloadCompletionAnchor(mlir::Operation *operation,
-                                 const NCCOutstandingAccessSummary &state,
-                                 uint32_t workerMask) {
+getManagedReloadJoinAnchor(mlir::Operation *operation,
+                           const NCCOutstandingAccessSummary &state,
+                           uint32_t workerMask) {
   auto rdma = mlir::dyn_cast<InstrRDMAOp>(operation);
   if (!rdma || llvm::popcount(workerMask) != 1)
     return operation;
@@ -545,7 +545,7 @@ getExternalConflictMask(mlir::Operation *operation,
       // effect is the NCC visibility boundary, while its rootless
       // communication resource describes transport occupancy. The exact DTE
       // wait carries no NCC buffer observation and must not become an implicit
-      // NCC completion. Unknown and other synchronous observers retain the
+      // NCC join. Unknown and other synchronous observers retain the
       // conservative all-pending conflict.
       if (ignoreTypedResources &&
           instance.getResource() != mlir::SideEffects::DefaultResource::get())
@@ -567,7 +567,7 @@ getExternalConflictMask(mlir::Operation *operation,
 /// Resolve a scalar carried into a tile residency region back to the enclosing
 /// SSA value. Region partitioning may turn a previously local loop bound into
 /// a region input; that transport does not make a static bound dynamic and
-/// must not change completion legality.
+/// must not change required-join legality.
 static mlir::Value resolveTileRegionScalarForwarding(mlir::Value value) {
   llvm::DenseSet<mlir::Value> seen;
   while (value && seen.insert(value).second) {
@@ -740,7 +740,7 @@ private:
         return mlir::success();
       }
 
-      // A later iteration observes the prior iteration's pending frontier.
+      // A later iteration observes the prior iteration's pending access state.
       // Reprocess to a finite typed-worker fixed point so a cross-worker
       // loop-carried RAW/WAR/WAW cut is explicit in the loop body, while a
       // same-worker chain remains a join-free ordered issue stream.
@@ -766,7 +766,7 @@ private:
       if (!converged)
         return forOp.emitError()
                << "required_ncc_join_failure: NCC loop backedge "
-                  "frontier did not reach a finite fixed point";
+                  "access state did not reach a finite fixed point";
       // A pending worker with no unique latest issue came from alternative
       // paths where an NCC issue is optional or differs by branch.  The next
       // iteration therefore cannot prove a same-worker successor on every
@@ -806,7 +806,7 @@ private:
       // conflicting workers before issuing the new access; disjoint workers
       // and ordinary same-worker chains remain in one nonblocking issue
       // window. An explicit compiler-managed spill/reload additionally owns
-      // a real residency cut. Its store completion is emitted immediately
+      // a real residency cut. Its store join is emitted immediately
       // below; before its reload, complete any intervening work on the same
       // worker so the fresh SPM root can reuse that worker's prior ranges.
       uint32_t crossWorkerConflicts =
@@ -816,7 +816,7 @@ private:
       insertNCCJoinBefore(operation, crossWorkerConflicts, state);
       if (isManagedMaterializationReload(operation, materializationRoots)) {
         mlir::Operation *anchor =
-            getManagedReloadCompletionAnchor(operation, state, workerMask);
+            getManagedReloadJoinAnchor(operation, state, workerMask);
         insertNCCJoinBefore(anchor, workerMask, state);
       }
       recordNCCIssue(operation, workerMask, state);
@@ -848,8 +848,8 @@ private:
         NCCSynchronizationBehavior::OrderedAsynchronousIssue)
       return mlir::success();
 
-    // Direct DTE completion observes only its own typed event. It neither
-    // consumes nor completes an NCC worker frontier, so independent NCC work
+    // A Direct DTE wait observes only its own typed event. It neither consumes
+    // nor joins pending NCC worker issues, so independent NCC work
     // may remain in flight while the transport is awaited.
     if (mlir::isa<InstrDTEWaitOp>(operation))
       return mlir::success();
@@ -911,8 +911,8 @@ normalizeRequiredNCCJoinsInPlace(mlir::ModuleOp module,
   return mlir::success();
 }
 
-/// Prove that the complete function rewrite can commit before touching the
-/// pass root. Required-join placement is a multi-operation rewrite whose
+/// Validate the complete function rewrite before touching the pass root.
+/// Required-join placement is a multi-operation rewrite whose
 /// structured-loop fixed point may discover an unsupported control-flow case
 /// after earlier joins have already been inserted or narrowed. MLIR's pass
 /// manager does not roll back an arbitrary failed pass, so validate on the
@@ -933,9 +933,8 @@ struct ConvertTileRegionToInstrPass
 
   void runOnOperation() final {
     unsigned sourceOperationCount = 0;
-    getOperation().walk([&](WaferTileDataflowOpInterface) {
-      ++sourceOperationCount;
-    });
+    getOperation().walk(
+        [&](WaferTileDataflowOpInterface) { ++sourceOperationCount; });
     if (mlir::succeeded(wafer::convertTileRegionToInstr(getOperation()))) {
       numDataflowOperationsLowered += sourceOperationCount;
       return;
@@ -1114,9 +1113,10 @@ wafer::detail::countStaticExecutableOperations(mlir::Operation *root,
   return StaticExecutableOperationCountStatus::Counted;
 }
 
-mlir::LogicalResult wafer::convertTileRegionToInstr(
-    TileRegionOp region, TileRegionToInstrLoweringSession &session,
-    mlir::RewriterBase::Listener *listener) {
+mlir::LogicalResult
+wafer::convertTileRegionToInstr(TileRegionOp region,
+                                TileRegionToInstrLoweringSession &session,
+                                mlir::RewriterBase::Listener *listener) {
   if (!region)
     return mlir::failure();
   wafer::support::recordCompileWork(
@@ -1146,7 +1146,7 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");
-    eraseDeadPrivateFillArtifacts(region.getOperation());
+    eraseDeadPrivateFills(region.getOperation());
   }
   return mlir::success();
 }
@@ -1159,8 +1159,8 @@ mlir::LogicalResult wafer::convertTileRegionToInstr(TileRegionOp region) {
                                          /*listener=*/nullptr);
 }
 
-mlir::LogicalResult wafer::convertTileRegionToInstrModule(
-    mlir::ModuleOp module) {
+mlir::LogicalResult
+wafer::convertTileRegionToInstrModule(mlir::ModuleOp module) {
   if (!module)
     return mlir::failure();
   llvm::SmallVector<TileRegionOp, 4> regions;

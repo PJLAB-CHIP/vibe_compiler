@@ -37,13 +37,14 @@ constexpr test::PendingComputeDTEAccessMode getAccessMode() {
 TEST(SystemCTargetModelDTEComputeAccessTest,
      EnforcesTypedElementwiseAndGemmPendingRanges) {
   std::string diagnostics;
-  llvm::Expected<TargetLLVMModuleBundle> bundle =
-      test::buildDirectDTETargetBundle(
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(
           diagnostics, TargetIdentityId::waferTx81SingleCard());
-  ASSERT_TRUE(static_cast<bool>(bundle))
-      << diagnostics << llvm::toString(bundle.takeError());
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
   llvm::Expected<test::PendingComputeDTERewriteResult> rewrite =
-      test::insertPendingComputeBeforeDTEReceive(*bundle, getAccessMode());
+      test::insertPendingComputeBeforeDTEReceive(*targetLLVMModules,
+                                                 getAccessMode());
   ASSERT_TRUE(static_cast<bool>(rewrite))
       << llvm::toString(rewrite.takeError());
   EXPECT_EQ(rewrite->elementwiseCount, 8u);
@@ -61,11 +62,11 @@ TEST(SystemCTargetModelDTEComputeAccessTest,
                 : 16u);
 
   llvm::Expected<test::DirectDTEInvocationData> invocation =
-      test::buildDirectDTEInvocationData(*bundle);
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
   ASSERT_TRUE(static_cast<bool>(invocation))
       << llvm::toString(invocation.takeError());
   llvm::Expected<TargetCallExecutable> frontend =
-      prepareTargetCallFrontend(*bundle, invocation->arguments);
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
   ASSERT_TRUE(static_cast<bool>(frontend))
       << llvm::toString(frontend.takeError());
 

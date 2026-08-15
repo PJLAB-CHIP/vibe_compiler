@@ -2,7 +2,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "OpVerifierUtils.h"
+#include "WaferIRVerification.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"

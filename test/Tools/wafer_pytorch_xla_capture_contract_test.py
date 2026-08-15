@@ -461,7 +461,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 },
             )
 
-    def test_diagnostic_variant_is_disjoint_from_fixed_corpus_admission(self):
+    def test_diagnostic_variant_is_disjoint_from_fixed_corpus(self):
         spec_path = (
             REPO_ROOT
             / "test"
@@ -577,7 +577,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 chunk_elements=0,
             )
 
-    def test_nonfinite_payload_is_rejected_with_artifact_name(self):
+    def test_nonfinite_payload_is_rejected_with_value_name(self):
         finite = numpy.zeros((2,), dtype=numpy.float16)
         cases = (
             (
@@ -599,7 +599,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 {"expected": numpy.array([0.0, -numpy.inf], dtype=numpy.float16)},
             ),
         )
-        for artifact_name, override in cases:
+        for value_name, override in cases:
             arguments = {
                 "case_id": "scale-case",
                 "input_array": finite,
@@ -608,10 +608,10 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 "expected": finite,
                 **override,
             }
-            with self.subTest(artifact_name=artifact_name):
+            with self.subTest(value_name=value_name):
                 with self.assertRaisesRegex(
                     RuntimeError,
-                    rf"workload case 'scale-case' {artifact_name} contains 1 "
+                    rf"workload case 'scale-case' {value_name} contains 1 "
                     r"non-finite value",
                 ):
                     self.tool._verify_workload_payload_finite(
@@ -628,7 +628,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 numpy,
                 across_chunks,
                 case_id="chunk-case",
-                artifact_name="parameter 'large.weight'",
+                value_name="parameter 'large.weight'",
             )
         self.assertIn("contains 2 non-finite value(s)", str(failure.exception))
         self.assertIn(
@@ -645,7 +645,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 numpy,
                 bfloat16_nonfinite,
                 case_id="bf16-case",
-                artifact_name="expected output 0",
+                value_name="expected output 0",
             )
 
         for empty in (
@@ -658,7 +658,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
                 numpy,
                 empty,
                 case_id="empty-case",
-                artifact_name="input 0",
+                value_name="input 0",
             )
 
     def test_bfloat16_storage_is_canonical_little_endian(self):
@@ -722,7 +722,7 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         )
         reference_module = types.SimpleNamespace(named_parameters=lambda: [])
 
-        bundle = self.tool._build_lazy_stablehlo_program(
+        exported_model = self.tool._build_lazy_stablehlo_program(
             torch_module=self.fake_torch,
             stablehlo_module=stablehlo,
             xla_model_module=xla_model,
@@ -733,11 +733,11 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             state_dict={},
         )
 
-        self.assertEqual(len(bundle.additional_constants), 1)
-        saved = bundle.additional_constants[0]
+        self.assertEqual(len(exported_model.additional_constants), 1)
+        saved = exported_model.additional_constants[0]
         self.assertEqual(saved.dtype, numpy.dtype("|V2"))
         self.assertEqual(saved.tobytes(), b"\x80\x3f\x00\xc0")
-        metadata = bundle.stablehlo_funcs[0].meta
+        metadata = exported_model.stablehlo_funcs[0].meta
         self.assertEqual(metadata.input_locations, [("constant", 0)])
         self.assertEqual(metadata.input_signature[0].dtype, "bfloat16")
 

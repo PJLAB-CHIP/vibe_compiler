@@ -1,6 +1,6 @@
 #include "../../lib/Wafer/Compiler/NoCCommunicationAction.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/CoordinatedExecutableFinalization.h"
+#include "../../lib/Wafer/Compiler/WholeCardCandidateEvaluation.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -291,16 +291,16 @@ TEST_F(NoCCommunicationActionTest,
 
   bool sawNoCWorkerComposition = false;
   for (const auto &action : *actions) {
-    if (!action.communicationPointIdentity ||
+    if (!action.communicationActionKey ||
         action.workerPlacementKind !=
             wafer::compiler::detail::CoordinatedWorkerPlacementKind::
                 DisjointComponents)
       continue;
     sawNoCWorkerComposition = true;
-    EXPECT_EQ(action.communicationPointIdentity->providerKey,
+    EXPECT_EQ(action.communicationActionKey->providerKey,
               provider.getStableKey());
-    EXPECT_TRUE(action.communicationPointIdentity->stableOrdinal == 1u ||
-                action.communicationPointIdentity->stableOrdinal == 2u);
+    EXPECT_TRUE(action.communicationActionKey->stableOrdinal == 1u ||
+                action.communicationActionKey->stableOrdinal == 2u);
     ASSERT_EQ(action.rankModules.size(), parents.size());
 
     TransportCounts aggregate;

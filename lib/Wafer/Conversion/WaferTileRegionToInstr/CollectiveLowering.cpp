@@ -1200,7 +1200,7 @@ public:
 
       // Direct DTE requires both issue roots to remain isolated until the
       // joint wait. Receive into the dedicated communication buffer, then
-      // publish the completed chunk into its final accumulator slot.
+      // store the completed chunk in its final accumulator slot.
       if (mlir::failed(createContiguousSPMCopy(
               rewriter, op.getLoc(), op, *recvChunk, *accumulatorChunk,
               failureReason, "tile.all_reduce ring all-gather receive copy")))

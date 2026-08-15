@@ -1,4 +1,4 @@
-//===- TargetModelKernel.h - Plain target transaction kernels -*- C++ -*-===//
+//===- TargetModelKernel.h - Plain target command kernels -*- C++ -*-===//
 
 #ifndef WAFER_MODEL_TARGETMODELKERNEL_H
 #define WAFER_MODEL_TARGETMODELKERNEL_H
@@ -19,9 +19,9 @@
 namespace wafer::model {
 
 enum class TargetModelKernelErrorCode : uint8_t {
-  InvalidTransactionField,
+  InvalidCommandField,
   WorkBudgetExceeded,
-  UnsupportedTransaction,
+  UnsupportedCommand,
   MemoryReadFailure,
   NumericResolutionFailure,
   PhysicalCodecFailure,
@@ -112,7 +112,7 @@ struct TargetModelNumericRequest {
   TargetModelNumericTensor destinationTemplate;
 };
 
-enum class TargetModelBulkProvenanceKind : uint8_t {
+enum class TargetModelBulkEvidenceKind : uint8_t {
   None,
   ExactQualificationRecord,
   ManagedReferenceEnvironment,
@@ -122,9 +122,8 @@ struct TargetModelBulkDispatchEvidence {
   uint64_t matmulInvocations = 0;
   uint64_t reorderInvocations = 0;
   uint64_t formalFusedMultiplyAdds = 0;
-  TargetModelBulkProvenanceKind provenanceKind =
-      TargetModelBulkProvenanceKind::None;
-  std::string provenanceDigest;
+  TargetModelBulkEvidenceKind evidenceKind = TargetModelBulkEvidenceKind::None;
+  std::string evidenceDigest;
   std::string implementation;
 };
 
@@ -134,10 +133,10 @@ struct TargetModelBulkResult {
   TargetModelBulkDispatchEvidence evidence;
 };
 
-/// Feature-independent dispatch seam. Implementations return a result only
-/// when their explicit admission policy accepts the command, payload and
-/// environment. Policies may be exact-record or a named managed-reference
-/// domain; a successful null optional means no configured admission matched.
+/// Feature-independent bulk backend interface. Implementations return a result
+/// only when the command, payload and environment match either an exact
+/// qualification record or the managed-reference execution domain. A
+/// successful null optional means neither execution mode matched.
 class TargetModelBulkBackend {
 public:
   virtual ~TargetModelBulkBackend() = default;
@@ -172,7 +171,7 @@ public:
 
 enum class TargetModelGemmDispatchPolicy : uint8_t {
   FormalOnly,
-  PreferAdmitted,
+  BulkThenFormal,
 };
 
 enum class TargetModelTensorDispatchPolicy : uint8_t {
@@ -189,9 +188,9 @@ public:
   }
 
   static TargetModelExecutionPolicy
-  preferAdmitted(const TargetModelBulkBackend &backend) {
+  bulkThenFormal(const TargetModelBulkBackend &backend) {
     return TargetModelExecutionPolicy(
-        TargetModelGemmDispatchPolicy::PreferAdmitted,
+        TargetModelGemmDispatchPolicy::BulkThenFormal,
         TargetModelTensorDispatchPolicy::FormalOnly, &backend, nullptr);
   }
 
@@ -199,7 +198,7 @@ public:
   managedReference(const TargetModelBulkBackend &bulkBackend,
                    const TargetModelManagedReferenceBackend &tensorBackend) {
     return TargetModelExecutionPolicy(
-        TargetModelGemmDispatchPolicy::PreferAdmitted,
+        TargetModelGemmDispatchPolicy::BulkThenFormal,
         TargetModelTensorDispatchPolicy::ManagedReference, &bulkBackend,
         &tensorBackend);
   }
@@ -231,8 +230,8 @@ private:
   const TargetModelManagedReferenceBackend *managedReferenceBackend;
 };
 
-/// Complete effect of one plain command. Numeric flags are still local here;
-/// commitTargetModelCommandEffect publishes bytes first, then records flags.
+/// Complete effect of one plain command. Numeric flags remain local until the
+/// pending writes can be applied atomically.
 struct TargetModelCommandEffect {
   std::vector<TargetModelByteWrite> pendingWrites;
   FormalNumericExceptionFlags numericFlags;
@@ -245,23 +244,24 @@ struct TargetModelCommandEffect {
 
 /// Exhaustive field/optional-field validation for every typed target payload.
 /// A valid but not yet modeled family is distinguished later as unsupported.
-llvm::Error validateTargetModelTransactionFields(
-    const compiler::TargetTransaction &transaction);
+llvm::Error
+validateTargetModelCommandFields(const compiler::TargetCommand &command);
 
 /// Effect-free with respect to invocation state: reads private snapshots and
 /// returns a complete pending effect. It never writes memory or records flags.
 llvm::Expected<TargetModelCommandEffect>
-executeTargetModelCommand(const compiler::TargetTransaction &transaction,
+executeTargetModelCommand(const compiler::TargetCommand &command,
                           const InvocationMemoryRegistry &memory,
                           TargetModelKernelBudget budget,
                           TargetModelExecutionPolicy policy =
                               TargetModelExecutionPolicy::formalOnly());
 
-/// Atomic publication point for one completed command effect.
+/// Applies one complete command effect atomically and then records its numeric
+/// exception flags.
 llvm::Error
-commitTargetModelCommandEffect(InvocationMemoryRegistry &memory,
-                               FormalNumericExecutionContext &context,
-                               TargetModelCommandEffect effect);
+applyTargetModelCommandEffect(InvocationMemoryRegistry &memory,
+                              FormalNumericExecutionContext &context,
+                              TargetModelCommandEffect effect);
 
 } // namespace wafer::model
 

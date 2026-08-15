@@ -2,13 +2,13 @@
 """Typed, device-PMU-backed NE non-divisible tail characterization.
 
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   The already-qualified FP16 ``M=65, K=129, N=129`` GEMM tail request and
   physical Cx payload from the NE calibration catalog.
 - Current stage responsibility:
   Reuse that exact numeric/layout case while requiring a three-sample NE PMU
   observation that can fill the held-out point of the single-engine slope.
-- Output artifact / IR:
+- Output IR / files:
   Exact result/span/guard/lifecycle evidence plus raw NE instruction,
   blocking, and execution-counter deltas.  No latency constant is written.
 - Downstream consumer:
@@ -43,9 +43,9 @@ MINIMUM_REPEATS = 3
 
 @dataclasses.dataclass(frozen=True)
 class PipelineContract:
-    upstream_artifact: str
+    upstream_input: str
     current_stage_responsibility: str
-    output_artifact: str
+    output_files: str
     downstream_consumer: str
     user_level_driver: str
     explicit_non_goals: tuple[str, ...]
@@ -53,20 +53,20 @@ class PipelineContract:
 
 
 PIPELINE_CONTRACT = PipelineContract(
-    upstream_artifact=(
+    upstream_input=(
         "qualified FP16 non-divisible GEMM-tail request and Cx payload"
     ),
     current_stage_responsibility=(
         "exact tail execution with a compatible device-PMU measurement window"
     ),
-    output_artifact=(
+    output_files=(
         "exact result/guard/lifecycle evidence and raw NE PMU deltas"
     ),
     downstream_consumer="single/ne/tail profile-scoped activation gate",
     user_level_driver="wafer_board_ne_tail_throughput_test.py",
     explicit_non_goals=(
         "host elapsed as a device metric",
-        "fixed latency publication",
+        "fixed latency visibility",
         "cross-dtype extrapolation",
     ),
     completion_gate=(

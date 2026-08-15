@@ -6,23 +6,23 @@ add_executable(WaferUnitTests
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/ScheduleCostAnalysisTest.cpp
   Analysis/StaticBufferRangeTest.cpp
-  Compiler/CompilationPublicationTest.cpp
+  Compiler/CompilationOutputTest.cpp
   Compiler/CompilationTest.cpp
   Compiler/CardExecutableCompilationTest.cpp
-  Compiler/WholeCardExecutableAdmissionTest.cpp
+  Compiler/WholeCardExecutableLoweringTest.cpp
   Compiler/DirectDTETransportTest.cpp
   Compiler/ProgramTensorComparisonTest.cpp
-  Compiler/PhysicalTileFinalizationTest.cpp
+  Compiler/PhysicalTileMemoryPlanningTest.cpp
   Compiler/StructuredBufferRelationsTest.cpp
   Compiler/TargetABIPreparationTest.cpp
-  Compiler/TargetArtifactTest.cpp
+  Compiler/TargetCodeGenTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetIdentityTest.cpp
   Compiler/TileRegionSPMCapacityEvaluationTest.cpp
   Compiler/WholeDAGScheduleTest.cpp
   Compiler/WholeDAGEdgeStrategyPlanTest.cpp
   Compiler/WholeDAGPlacementEnumerationTest.cpp
-  Compiler/WholeCardResourceAcceptanceTest.cpp
+  Compiler/WholeCardResourceVerificationTest.cpp
   Compiler/WholeCardExecutableSynthesisTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
@@ -36,7 +36,7 @@ add_executable(WaferUnitTests
   Pipelines/PipelinesTest.cpp
   Runtime/BoardRuntimeTest.cpp
   Runtime/PackageManifestTest.cpp
-  Runtime/ProfileCompanionTest.cpp
+  Runtime/ProfileInstrumentationTest.cpp
   Runtime/ProfilerRecordTest.cpp
   Runtime/Tx81ModelABITest.cpp
   Target/FormalNumericTest.cpp

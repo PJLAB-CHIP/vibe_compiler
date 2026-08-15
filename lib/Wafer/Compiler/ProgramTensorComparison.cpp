@@ -90,7 +90,7 @@ DecodedFloat decodeFloatAt(llvm::StringRef dtype, llvm::ArrayRef<uint8_t> bytes,
   if (dtype == "f32")
     return decodeBinaryFloat(readLittleEndian32(bytes.data() + offset), 8, 23,
                              127);
-  llvm_unreachable("unpublished floating dtype reached tolerant comparator");
+  llvm_unreachable("unsupported floating dtype reached tolerant comparator");
 }
 
 size_t getElementByteWidth(llvm::StringRef dtype) {
@@ -98,10 +98,10 @@ size_t getElementByteWidth(llvm::StringRef dtype) {
     return 2;
   if (dtype == "f32")
     return 4;
-  llvm_unreachable("unpublished floating dtype reached tolerant comparator");
+  llvm_unreachable("unsupported floating dtype reached tolerant comparator");
 }
 
-bool isPublishedToleranceDType(llvm::StringRef dtype) {
+bool isSupportedToleranceDType(llvm::StringRef dtype) {
   return dtype == "f16" || dtype == "bf16" || dtype == "f32";
 }
 
@@ -111,7 +111,7 @@ uint32_t readFloatBitsAt(llvm::StringRef dtype, llvm::ArrayRef<uint8_t> bytes,
     return readLittleEndian16(bytes.data() + offset);
   if (dtype == "f32")
     return readLittleEndian32(bytes.data() + offset);
-  llvm_unreachable("unpublished floating dtype reached raw bit decoder");
+  llvm_unreachable("unsupported floating dtype reached raw bit decoder");
 }
 
 uint64_t getUlpOrderKey(uint32_t bits, unsigned width) {
@@ -250,12 +250,12 @@ llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
   }
 
   const llvm::StringRef dtype = actual.getDType();
-  if (isFloatingProgramTensorDType(dtype) && !isPublishedToleranceDType(dtype))
+  if (isFloatingProgramTensorDType(dtype) && !isSupportedToleranceDType(dtype))
     return comparisonError(
         ProgramTensorComparisonErrorCode::UnsupportedFloatingDType,
-        "dtype=" + dtype.str() + " has no published expected-output policy");
+        "dtype=" + dtype.str() + " has no expected-output policy");
 
-  if (!isPublishedToleranceDType(dtype)) {
+  if (!isSupportedToleranceDType(dtype)) {
     const llvm::ArrayRef<uint8_t> actualBytes = actual.getBytes();
     const llvm::ArrayRef<uint8_t> expectedBytes = expected.getBytes();
     for (size_t offset = 0; offset < actualBytes.size(); ++offset) {
@@ -357,11 +357,11 @@ computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
   }
 
   const llvm::StringRef dtype = actual.getDType();
-  if (!isPublishedToleranceDType(dtype))
+  if (!isSupportedToleranceDType(dtype))
     return comparisonError(
         ProgramTensorComparisonErrorCode::UnsupportedStatisticsDType,
         "dtype=" + dtype.str() +
-            " has no published source/model numeric statistics policy");
+            " has no source/model numeric statistics policy");
 
   const size_t elementBytes = getElementByteWidth(dtype);
   const llvm::ArrayRef<uint8_t> actualBytes = actual.getBytes();

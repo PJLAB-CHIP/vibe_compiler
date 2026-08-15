@@ -168,16 +168,16 @@ dnnl::memory::dims getDenseStrides(const dnnl::memory::dims &dims) {
   return strides;
 }
 
-struct GemmPreflight {
+struct ValidatedGemm {
   const NumericNEGemmCommand *gemm = nullptr;
   LogicalFormat format = LogicalFormat::F32;
   uint64_t fusedMultiplyAdds = 0;
 };
 
-llvm::Expected<GemmPreflight>
-preflightGemm(const ResolvedNumericCommand &command,
-              llvm::ArrayRef<BulkTensorStorage> inputs,
-              const BulkTensorStorage &destinationTemplate) {
+llvm::Expected<ValidatedGemm>
+validateGemm(const ResolvedNumericCommand &command,
+             llvm::ArrayRef<BulkTensorStorage> inputs,
+             const BulkTensorStorage &destinationTemplate) {
   if (!command.isSupported() ||
       command.getFamily() != NumericCommandFamily::NEGemm ||
       command.getFormalKernelKind() != FormalKernelKind::Gemm ||
@@ -215,14 +215,13 @@ preflightGemm(const ResolvedNumericCommand &command,
       !checkedMultiply(outputCount, gemm->k, fusedMultiplyAdds))
     return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
                      "NE GEMM work count is inconsistent or overflows");
-  return GemmPreflight{gemm, gemm->lhs.getFormat(), fusedMultiplyAdds};
+  return ValidatedGemm{gemm, gemm->lhs.getFormat(), fusedMultiplyAdds};
 }
 
 llvm::Expected<uint64_t>
-preflightBaseBytes(llvm::ArrayRef<BulkTensorStorage> inputs,
-                   const BulkTensorStorage &destination,
-                   const GemmPreflight &preflight,
-                   BulkNumericWorkBudget budget) {
+computeTensorBufferBytes(llvm::ArrayRef<BulkTensorStorage> inputs,
+                         const BulkTensorStorage &destination,
+                         BulkNumericWorkBudget budget) {
   uint64_t total = 0;
   auto add = [&](uint64_t bytes) -> bool {
     return checkedAdd(total, bytes, total);
@@ -268,7 +267,7 @@ std::string descriptorDigest(dnnl::memory::desc descriptor,
   llvm::raw_svector_ostream stream(identity);
   appendField(stream, "schema", "wafer-bulk-descriptor-v1");
   appendField(stream, "environment", environment.getDigest());
-  appendField(stream, "adapter", getBulkAdapterIdentityDigest());
+  appendField(stream, "adapter", getBulkAdapterContractDigest());
   appendField(stream, "resolution", command.getDigest());
   appendField(stream, "backend_dense_format", "f32");
   appendField(stream, "target_format", stringifyLogicalFormat(targetFormat));
@@ -287,14 +286,14 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
               llvm::ArrayRef<BulkTensorStorage> inputs,
               const BulkTensorStorage &destinationTemplate,
               BulkNumericWorkBudget budget) {
-  llvm::Expected<GemmPreflight> preflight =
-      preflightGemm(command, inputs, destinationTemplate);
-  if (!preflight)
-    return preflight.takeError();
-  llvm::Expected<uint64_t> baseBytes =
-      preflightBaseBytes(inputs, destinationTemplate, *preflight, budget);
-  if (!baseBytes)
-    return baseBytes.takeError();
+  llvm::Expected<ValidatedGemm> validatedGemm =
+      validateGemm(command, inputs, destinationTemplate);
+  if (!validatedGemm)
+    return validatedGemm.takeError();
+  llvm::Expected<uint64_t> tensorBufferBytes =
+      computeTensorBufferBytes(inputs, destinationTemplate, budget);
+  if (!tensorBufferBytes)
+    return tensorBufferBytes.takeError();
 
   std::fenv_t savedFloatingEnvironment;
   if (std::fegetenv(&savedFloatingEnvironment) != 0)
@@ -317,17 +316,17 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
   if (!rhsValues)
     return rhsValues.takeError();
   llvm::Expected<std::vector<uint8_t>> lhsDense =
-      makeF32DenseBytes(*lhsValues, preflight->format);
+      makeF32DenseBytes(*lhsValues, validatedGemm->format);
   if (!lhsDense)
     return lhsDense.takeError();
   llvm::Expected<std::vector<uint8_t>> rhsDense =
-      makeF32DenseBytes(*rhsValues, preflight->format);
+      makeF32DenseBytes(*rhsValues, validatedGemm->format);
   if (!rhsDense)
     return rhsDense.takeError();
 
   constexpr uint64_t elementBytes = sizeof(uint32_t);
   uint64_t destinationBytes = 0;
-  if (!checkedMultiply(preflight->gemm->destination.getElementCount(),
+  if (!checkedMultiply(validatedGemm->gemm->destination.getElementCount(),
                        elementBytes, destinationBytes) ||
       destinationBytes > std::numeric_limits<size_t>::max())
     return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
@@ -339,11 +338,13 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
     dnnl::engine engine(dnnl::engine::kind::cpu, 0);
     dnnl::stream executionStream(engine);
     std::optional<dnnl::memory::data_type> dataType =
-        getDNNLAdapterDataType(preflight->format);
-    dnnl::memory::dims lhsDims = toDNNLDims(preflight->gemm->lhs.getShape());
-    dnnl::memory::dims rhsDims = toDNNLDims(preflight->gemm->rhs.getShape());
+        getDNNLAdapterDataType(validatedGemm->format);
+    dnnl::memory::dims lhsDims =
+        toDNNLDims(validatedGemm->gemm->lhs.getShape());
+    dnnl::memory::dims rhsDims =
+        toDNNLDims(validatedGemm->gemm->rhs.getShape());
     dnnl::memory::dims destinationDims =
-        toDNNLDims(preflight->gemm->destination.getShape());
+        toDNNLDims(validatedGemm->gemm->destination.getShape());
     dnnl::memory::desc lhsDescriptor(lhsDims, *dataType,
                                      getDenseStrides(lhsDims));
     dnnl::memory::desc rhsPlainDescriptor(rhsDims, *dataType,
@@ -374,7 +375,7 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
       return bulkError(BulkTensorNumericErrorCode::ReorderBudgetExceeded,
                        llvm::Twine("oneDNN weights reorder requires ") +
                            llvm::Twine(reorderBudget) + " bytes");
-    uint64_t totalBytes = *baseBytes;
+    uint64_t totalBytes = *tensorBufferBytes;
     if (!checkedAdd(totalBytes, scratchpadBytes, totalBytes) ||
         !checkedAdd(totalBytes, reorderBudget, totalBytes))
       return bulkError(BulkTensorNumericErrorCode::WorkCountOverflow,
@@ -417,7 +418,7 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
 
     llvm::Expected<std::vector<RawLogicalValue>> accumulators =
         makeRawValues(destinationDense, LogicalFormat::F32,
-                      preflight->gemm->destination.getElementCount());
+                      validatedGemm->gemm->destination.getElementCount());
     if (!accumulators)
       return accumulators.takeError();
     std::vector<RawLogicalValue> destinationValues;
@@ -431,7 +432,7 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
       destinationValues.push_back(finalized->value);
     }
     llvm::Expected<BulkTensorStorage> packed =
-        packIntoTemplate(preflight->gemm->destination, destinationValues,
+        packIntoTemplate(validatedGemm->gemm->destination, destinationValues,
                          destinationTemplate.getStorage().vec());
     if (!packed)
       return packed.takeError();
@@ -449,7 +450,7 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
         scratchpadBytes,
         implementation,
         descriptorDigest(resolvedWeights, implementation, scratchpadBytes,
-                         environment, command, preflight->format)};
+                         environment, command, validatedGemm->format)};
     return detail::UnqualifiedBulkExecutionResult{std::move(*packed),
                                                   std::move(evidence)};
   } catch (const dnnl::error &error) {

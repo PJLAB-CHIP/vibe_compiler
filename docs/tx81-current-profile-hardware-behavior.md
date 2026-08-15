@@ -139,18 +139,18 @@ Direct DTE token 的 terminal wait/finish。
 因此首个 timeout 后停止当前批次，不在同一 context 自动 retry、reset 或 power。管理面显示 idle、无残留
 进程或后续 heartbeat，只能重新资格化新的 execution path，不能恢复 timeout 前未完成的证据。
 
-## 8. Case F：Cache publication 取决于 producer/consumer crossing
+## 8. Case F：Cache visibility 取决于 producer/consumer crossing
 
 当前 profile 的 58/58 case 覆盖四个方向：
 
-| Crossing | publication 动作 |
+| Crossing | visibility 动作 |
 |---|---|
 | host H2D → Kcore read | Kcore 读取前 invalidate |
 | Kcore store → NCC RDMA | RDMA 前 clean + fence |
 | NCC WDMA → Kcore read | matching completion 后 invalidate |
-| NCC WDMA → host | runtime D2H publication/readback |
+| NCC WDMA → host | runtime D2H readback |
 
-编译器结论：cache 不是 memory space 上的一个全局 `coherent=true/false` 属性。是否需要 publication
+编译器结论：cache 不是 memory space 上的一个全局 `coherent=true/false` 属性。是否需要visibility操作
 取决于实际 producer、consumer 和 crossing；pure NCC 链不应机械插入 Kcore cache 操作。当前结论针对
 一次性 runtime lifecycle，不自动覆盖 persistent allocation 的跨 launch 复用。
 

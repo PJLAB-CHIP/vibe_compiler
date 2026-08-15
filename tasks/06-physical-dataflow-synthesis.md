@@ -25,7 +25,7 @@ logical rank 或所有 op 共用的 tile shape。一个候选必须共同决定�
 9. observable output/effect 全部完成时的整卡 cost。
 
 统一搜索只统一上述决策的 owner、回溯和最终选择，不把各机制实现集中到一个文件或一层目录。analysis 靠近其可解释的
-IR，transformation 靠近被修改的 IR，conversion、memory planning 和 admission 保持独立。候选一旦物化，以当前 IR
+IR，transformation 靠近被修改的 IR，conversion、memory planning 和 verification 保持独立。候选一旦物化，以当前 IR
 为事实；搜索状态不能成为下游 shadow plan。
 
 首选构造是：
@@ -45,15 +45,15 @@ layout/buffer、回退 spatial，或构造带 multi-buffer 的 stage pipeline。
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   GSPMD完成card级分区、target-independent normalization完成后的card-local TensorProgram；若存在算法级等价
   alternative，每个alternative已经在isolated clone中物化为真实structured DAG。SSA、structured iterator、
   indexing relation、effect、type、shape和dtype均可验证，尚未绑定physical Tile。
 - Current stage responsibility:
   在同一可回溯选择过程中决定iteration partition、physical Tile placement、reduction distribution、TileRegion、
   traversal connection、temporal tile、physical representation、movement、buffering、stage pipeline、order、worker和
-  completion；完整候选进入正常Card/TileRegion/Instr lowering和exact resource admission。
-- Output artifact / IR:
+  completion；完整候选进入正常Card/TileRegion/Instr lowering和exact resource verification。
+- Output IR / files:
   被选中的CardProgram及其all-and-only physical Tile programs；其中TileRegion、loop、movement、Instr、SPM/DDR
   allocation、completion和physical endpoint均是实际IR或accepted resource事实。通过全部gate后形成CardExecutable。
 - Downstream consumer:
@@ -65,22 +65,22 @@ Pipeline position:
   cycle-exact simulator；不让lowering、allocator、communication或completion私自repair候选；不发布search sidecar。
 - Completion gate:
   small DAG由独立reference domain enumerator证明合法域完整，再由production-mechanism flat exhaustive runner证明
-  frontier、剪枝和winner一致；真实workload在约定预算内返回通过完整编译与admission的
+  candidate set、剪枝和winner一致；真实workload在约定预算内返回通过完整编译与verification的
   best-known CardExecutable；selected IR证明spatial all-and-only coverage与有效region fusion。至少一个代表case还要证明
   coupled traversal、tile-sized intermediate和无无意义DDR往返；selected multi-buffer/stage-pipeline仅在对应候选获选时证明。
 ```
 
 `optimization=none`由确定性 baseline construction产生一个选择，不进入性能搜索；`optimization=search`由本文唯一
 candidate-selection owner管理多个选择。两者从 CardProgram materialization 起进入同一 lowering、memory planning、
-admission 和 package emission 路径。
+verification 和 package emission 路径。
 
-## 3. 稳定 IR 与 artifact 边界
+## 3. 稳定 IR 与 output 边界
 
 ### 3.1 `wafer.card.program`
 
 `wafer.card.program` 是一个 `card_id` 的完整 MPMD verifier 范围，拥有 card-local observable inputs/outputs、
 shared DDR boundary、all-and-only physical Tile programs，以及跨 Tile message coverage/completion 验证范围。它不保存
-frontier、score、候选列表、route side table 或 target calibration。
+candidate set、score、候选列表、route side table 或 target calibration。
 
 ### 3.2 `wafer.tile.program`
 
@@ -106,8 +106,8 @@ store/completion/load；不同 physical Tile 间则由 source SPM、NoC/DTE send
 ### 3.4 `CardExecutable` 与 `ExecutablePackage`
 
 `CardExecutable` 是内存中已经通过 all-and-only Tile coverage、Instr、SPM/DDR、transport、resource、completion 和 ABI
-admission 的执行对象。`ExecutablePackage` 是 target lowering、link 和 emission 后交给 runtime 的磁盘发布物。旧 C++
-实现中的 `*Bundle` 名称只可作为迁移索引；它不再定义主线 artifact 层次，新设计不继续扩散该词。
+verification 的执行对象。`ExecutablePackage` 是 target lowering、link 和 emission 后交给 runtime 的磁盘发布物。旧 C++
+当前实现以 `PhysicalTileExecutables` 表示完整的 physical-Tile executable 集合，不再维护另一套容器层次。
 
 ## 4. Query-local problem 与 search state
 
@@ -387,7 +387,7 @@ Decode batch=1可能没有足够token waves，通常优先head/channel、K/V par
 “支持pipeline”强制产生大量无意义stage cuts。Stage pipeline的proposal优化在主spatial/region/temporal路径和multi-buffer
 机制闭合后，由实际workload profile驱动。
 
-## 9. SPM、DDR 与 resource admission
+## 9. SPM、DDR 与 resource verification
 
 Search-time working set可以形成lower bound和排序信息：
 
@@ -397,7 +397,7 @@ live inputs + tile-sized intermediates or retained local shards + outputs
 ```
 
 只有已证明必然同时live的集合超过capacity时才能安全早拒绝。Region-local probe使用实际TileRegion lowering和SPM packing，
-可快速拒绝固定causal choices；它成功不能替代整卡admission，相关spatial/region/temporal/layout/buffer/order变化后必须失效。
+可快速拒绝固定causal choices；它成功不能替代整卡verification，相关spatial/region/temporal/layout/buffer/order变化后必须失效。
 Symbolic footprint必须区分proven must-coexist lower bound、non-binding ranking estimate和缺少坐标时的
 `deferred(required coordinates)`：只有第一种超过capacity才能exact reject；估算可放下不能证明packing可行，未证明
 coexistence的估算超限也不能拒绝候选。近似或未经typed boundary-faithful proof的外部solver/序列化constraint结果只能排序；
@@ -408,7 +408,7 @@ lifetime和coexistence求validated offsets。Planner区分`Feasible`、`ProvenIn
 区分internal failure；只有`ProvenInfeasible`或确定unsupported才能拒绝对应causal assignment并形成no-good，资源耗尽或
 内部失败是indeterminate，不得删除合法状态。Planner不改变tile、region、traversal、spill、buffer、order、worker或completion。
 
-完整CardExecutable admission还必须原子验证message matching、transport range、per-link/card-shared resource、ABI和observable
+完整CardExecutable verification还必须原子验证message matching、transport range、per-link/card-shared resource、ABI和observable
 completion。任一失败丢弃clone，不允许提交部分Tile或复用失败clone中的offset。
 
 ## 10. Cost 与分层候选编译
@@ -432,7 +432,7 @@ legality或admissible bound。
 
 ### 10.2 分层编译成本
 
-搜索按成本层次推进，但不把这些层次建成新的长期artifact：
+搜索按成本层次推进，但不把这些层次建成新的长期output：
 
 | 层次 | 责任 | 能否成为winner |
 | --- | --- | --- |
@@ -448,13 +448,13 @@ legality或admissible bound。
 
 ### 11.1 唯一 owner与两种策略
 
-只有`PhysicalDataflowSearch`语义层可以管理frontier、回溯、budget、incumbent和最终choice。它通过所属IR层的普通analysis
+只有`PhysicalDataflowSearch`语义层可以管理candidate set、回溯、budget、incumbent和最终choice。它通过所属IR层的普通analysis
 取得合法choices，通过transformation/conversion物化selected choices；不存在统一`Providers`框架或局部selector。
 
 同一choice domain支持：
 
 - small-DAG exact strategy：独立tiny reference domain enumerator不调用production domain builder，证明合法typed域完整；
-  production-mechanism flat exhaustive runner再用真实materializer/cost/exact gates完整展开，作为frontier与剪枝oracle；
+  production-mechanism flat exhaustive runner再用真实materializer/cost/exact gates完整展开，作为candidate set与剪枝oracle；
 - real-workload anytime strategy：先建立actual baseline incumbent，在预算内持续产生和编译更好候选。
 
 ### 11.2 Anytime构造
@@ -482,13 +482,13 @@ family closure或最终winner。
 可以预先使用而不损失合法解的优化包括exact legality、canonical memo、真实topology symmetry、typed causal no-good、
 已证明safe dominance和完全等价的partial-compilation cache。
 
-时间上限、bounded diverse frontier、beam、LNS或只完整编译部分高分候选可能漏掉全局最优。它们只能作为Q52实测后的显式
+时间上限、bounded diverse candidate set、beam、LNS或只完整编译部分高分候选可能漏掉全局最优。它们只能作为Q52实测后的显式
 trade-off；完整合法domain仍需lazy可生成，但一次production invocation不承诺访问全部状态。结果分为：finite域完整覆盖且
 全局bound闭合的`optimal-certified`；未展开completion仍由完整exact continuation与admissible bound表示的
 `feasible-with-bound`；已经永久丢弃或未表示合法completion的`budgeted-feasible`。单纯预算中止不自动降级，只有最后一类
 不能声称global bound或最优。DP或局部solver只处理边界和语义完整的typed子问题，不能复制第二套全局relation/lifetime/resource模型。
 
-Q52代表负载以10分钟作为热点与首轮质量检查点，允许继续到30分钟；这两个数是当前验证计划，不进入IR、pass或artifact
+Q52代表负载以10分钟作为热点与首轮质量检查点，允许继续到30分钟；这两个数是当前验证计划，不进入IR、pass或output
 协议。确定性work credits、actual compilation数、wall、RSS和incumbent曲线同时记录。
 
 ### 11.4 Deterministic baseline
@@ -507,7 +507,7 @@ tiling后只进行一次complete CardExecutable compilation。这个优化建立
 ### 12.1 处置分类
 
 1. **直接复用**：`CardDAGAnalysis`、`IndexRelation` exact demand、physical access/transfer proof、Card/Tile/Instr
-   lowering、SPM/DDR planning、transport/resource/ABI admission。
+   lowering、SPM/DDR planning、transport/resource/ABI verification。
 2. **改造接口后复用**：placement domain、event/resource mechanics、selected-buffer materialization、physical movement
    materialization、当前完整候选正常编译链。
 3. **提取机制后替换owner**：旧layout PBQP的合法域/materialization、ready-order、software pipeline、worker/completion、
@@ -528,14 +528,14 @@ tiling后只进行一次complete CardExecutable compilation。这个优化建立
 - Instr analysis/transforms：buffer lifetime、ready order、worker、completion；
 - Conversion：TensorProgram到CardProgram、TileRegion到Instr；
 - Compiler search：轻量state、dependency invalidation、exhaustive/anytime/LNS strategy和cost ordering；
-- CardExecutable compilation/admission：串接既有lowering和exact gates，不实现choice generation。
+- CardExecutable compilation/verification：串接既有lowering和exact gates，不实现choice generation。
 
 顶层编译入口只编排`none`或`search`并发布结果；不能继续容纳具体spatial/fusion/layout/buffer算法。每迁移一个choice轴，
 同批删除旧owner中的对应字段、hash分支和repair逻辑，不能长期保留两套事实源。
 
 ## 13. 当前差距与任务闭环
 
-当前代码已经有baseline正确性证据、exact logical demand analysis和完整Card/Tile/Instr/SPM/DDR/admission机制，但尚未满足本
+当前代码已经有baseline正确性证据、exact logical demand analysis和完整Card/Tile/Instr/SPM/DDR/verification机制，但尚未满足本
 设计：
 
 - baseline仍因重复完整materialization与late SPM failure在Llama上耗时过长；
@@ -546,9 +546,9 @@ tiling后只进行一次complete CardExecutable compilation。这个优化建立
 - 多个旧机制文件未进入current production build；
 - stage pipeline只有历史机制，未接入current common search。
 
-任务按以下artifact闭环推进，具体状态以`tasks/progress.md`为准：
+任务按以下output闭环推进，具体状态以`tasks/progress.md`为准：
 
-1. 提取无repair的CardExecutable compilation/admission边界；
+1. 提取无repair的CardExecutable compilation/verification边界；
 2. 保留Q49 correctness证据并以Q49.P单列baseline控制流/性能解耦；
 3. 修复placement与layout-independent exact demand边界；
 4. 建立可提前运行的search core与两层small exhaustive oracle；
@@ -570,10 +570,10 @@ tiling后只进行一次complete CardExecutable compilation。这个优化建立
 ### Search correctness
 
 - tiny chain、diamond、fanout、reduction、mixed compute/movement和stage+buffer case先由独立reference enumerator证明domain
-  coverage，再由production flat exhaustive runner证明frontier/剪枝/winner；
+  coverage，再由production flat exhaustive runner证明candidate set/剪枝/winner；
 - 构造必须联合改变spatial/region/temporal等多个choice才改善的陷阱，anytime策略能找到actual accepted改进；
 - estimate、memo、no-good或dominance逐项开启不改变small-oracle winner；
-- `none`和`search`共用完整candidate compilation/admission；
+- `none`和`search`共用完整candidate compilation/verification；
 - 结果明确区分`optimal-certified`、`feasible-with-bound`与`budgeted-feasible`，并报告work、wall、RSS和incumbent，
   不伪造bound或最优性。
 

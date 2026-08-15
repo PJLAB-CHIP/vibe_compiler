@@ -51,7 +51,7 @@ module {
 };
 
 TEST_F(StructuredBufferRelationsTest,
-       ConversionListenerRetargetsCurrentArtifactBuffer) {
+       ConversionListenerRetargetsCurrentIRBuffer) {
   mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
   ASSERT_TRUE(module);
   wafer::MoveCopyOp copy;
@@ -70,8 +70,8 @@ TEST_F(StructuredBufferRelationsTest,
   wafer::TileRegionToInstrLoweringSession loweringSession(*context);
   mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
   wafer::TileRegionOp region = *function.getOps<wafer::TileRegionOp>().begin();
-  ASSERT_TRUE(mlir::succeeded(wafer::convertTileRegionToInstr(
-      region, loweringSession, &listener)));
+  ASSERT_TRUE(mlir::succeeded(
+      wafer::convertTileRegionToInstr(region, loweringSession, &listener)));
   EXPECT_TRUE(listener.preservedAllRelations());
   ASSERT_TRUE(mlir::succeeded(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
@@ -91,7 +91,7 @@ TEST_F(StructuredBufferRelationsTest,
 }
 
 TEST_F(StructuredBufferRelationsTest,
-       CurrentArtifactCheckRejectsUntrackedReplacementWithoutDereference) {
+       CurrentIRCheckRejectsUntrackedReplacementWithoutDereference) {
   mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
   ASSERT_TRUE(module);
   wafer::MoveCopyOp copy;

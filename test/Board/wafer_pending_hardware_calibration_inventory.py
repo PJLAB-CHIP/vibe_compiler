@@ -452,7 +452,7 @@ FAMILIES = (
         no_card_ctests=("wafer-runtime-ncc-queue-saturation-no-card",),
         runner_batch="pending-execution-boundaries",
         oracle=(
-            "per-issue-admission-cycle-and-return",
+            "per-issue-acceptance-cycle-and-return",
             "pre-wait-control-snapshot",
             "instruction-count-full-result-and-guards",
             "matching-wait-terminal-and-cleanup",

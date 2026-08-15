@@ -67,11 +67,10 @@ checkedTileCount(llvm::ArrayRef<int64_t> shape,
 
 StructuredImplementationAlternativePoint::
     StructuredImplementationAlternativePoint(
-        StructuredAlternativePointIdentity identity,
-        StructuredAlternativeDomain domain,
+        StructuredAlternativeKey key, StructuredAlternativeDomain domain,
         StructuredAlternativeParameters parameters,
         StructuredAlternativeStructuralEstimates estimates)
-    : identity(std::move(identity)), domain(std::move(domain)),
+    : key(std::move(key)), domain(std::move(domain)),
       parameters(std::move(parameters)), estimates(std::move(estimates)) {}
 
 mlir::FailureOr<StructuredAlternativeStructuralEstimates>
@@ -148,8 +147,8 @@ materializeStructuredImplementationAlternativeToTileRegion(
                                                         failureReason)))
     return mlir::failure();
   StructuredImplementationAlternativeMaterialization materialization;
-  if (mlir::failed(point.materialize(*prepared.module, failureReason,
-                                     &materialization)))
+  if (mlir::failed(
+          point.materialize(*prepared.module, failureReason, &materialization)))
     return mlir::failure();
   mlir::OwningOpRef<mlir::ModuleOp> lowered;
   if (mlir::failed(

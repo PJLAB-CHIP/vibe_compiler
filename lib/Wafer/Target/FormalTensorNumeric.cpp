@@ -45,23 +45,23 @@ bool checkedMultiply(uint64_t lhs, uint64_t rhs, uint64_t &result) {
   return true;
 }
 
-struct CommandPreflight {
+struct ValidatedFormalCommand {
   llvm::SmallVector<const NumericTensorKey *, 2> inputKeys;
   const NumericTensorKey *destinationKey = nullptr;
   uint64_t scalarEvaluations = 0;
   uint64_t fusedMultiplyAdds = 0;
 };
 
-llvm::Expected<CommandPreflight>
-preflightCommand(const ResolvedNumericCommand &command,
-                 FormalNumericWorkBudget budget) {
+llvm::Expected<ValidatedFormalCommand>
+validateFormalCommand(const ResolvedNumericCommand &command,
+                      FormalNumericWorkBudget budget) {
   if (!command.isSupported() || !command.getSemantics() ||
       command.getComparatorKind() != NumericComparatorKind::RawExact)
     return tensorError(
         FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
         "the resolved command has no complete formal execution identity");
 
-  CommandPreflight result;
+  ValidatedFormalCommand result;
   switch (command.getFamily()) {
   case NumericCommandFamily::CTConvert: {
     const NumericCTConvertCommand *convert =
@@ -135,7 +135,7 @@ preflightCommand(const ResolvedNumericCommand &command,
 
   if (!result.destinationKey)
     return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
-                       "formal command preflight found no destination tensor");
+                       "formal command validation found no destination tensor");
   if (result.scalarEvaluations > budget.getMaximumScalarEvaluations())
     return tensorError(
         FormalTensorNumericErrorCode::ScalarWorkBudgetExceeded,
@@ -154,16 +154,16 @@ preflightCommand(const ResolvedNumericCommand &command,
 }
 
 llvm::Error
-validateInputs(const CommandPreflight &preflight,
+validateInputs(const ValidatedFormalCommand &validatedCommand,
                llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs) {
-  if (inputs.size() != preflight.inputKeys.size())
+  if (inputs.size() != validatedCommand.inputKeys.size())
     return tensorError(FormalTensorNumericErrorCode::InputArityMismatch,
                        llvm::Twine("expected ") +
-                           llvm::Twine(preflight.inputKeys.size()) +
+                           llvm::Twine(validatedCommand.inputKeys.size()) +
                            " input tensors, got " + llvm::Twine(inputs.size()));
 
   for (size_t inputIndex = 0; inputIndex < inputs.size(); ++inputIndex) {
-    const NumericTensorKey &key = *preflight.inputKeys[inputIndex];
+    const NumericTensorKey &key = *validatedCommand.inputKeys[inputIndex];
     llvm::ArrayRef<RawLogicalValue> values = inputs[inputIndex];
     if (values.size() != key.getElementCount())
       return tensorError(
@@ -311,13 +311,15 @@ executeGemm(const ResolvedNumericCommand &command,
         RawLogicalValue accumulator{LogicalFormat::F32, UINT64_C(0)};
         for (uint64_t k = 0; k < gemm.k; ++k) {
           const uint64_t lhsIndex =
-              lhsBatchBase + (gemm.lhsOrientation == TargetGemmOrientation::Normal
-                                  ? m * gemm.k + k
-                                  : k * gemm.m + m);
+              lhsBatchBase +
+              (gemm.lhsOrientation == TargetGemmOrientation::Normal
+                   ? m * gemm.k + k
+                   : k * gemm.m + m);
           const uint64_t rhsIndex =
-              rhsBatchBase + (gemm.rhsOrientation == TargetGemmOrientation::Normal
-                                  ? k * gemm.n + n
-                                  : n * gemm.k + k);
+              rhsBatchBase +
+              (gemm.rhsOrientation == TargetGemmOrientation::Normal
+                   ? k * gemm.n + n
+                   : n * gemm.k + k);
           llvm::Expected<FormalNumericResult> step =
               evaluateFormalGemmFusedMultiplyAdd(
                   command, lhs[static_cast<size_t>(lhsIndex)],
@@ -432,14 +434,15 @@ llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
     const ResolvedNumericCommand &command,
     llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
     FormalNumericWorkBudget budget) {
-  llvm::Expected<CommandPreflight> preflight =
-      preflightCommand(command, budget);
-  if (!preflight)
-    return preflight.takeError();
-  if (llvm::Error error = validateInputs(*preflight, inputs))
+  llvm::Expected<ValidatedFormalCommand> validatedCommand =
+      validateFormalCommand(command, budget);
+  if (!validatedCommand)
+    return validatedCommand.takeError();
+  if (llvm::Error error = validateInputs(*validatedCommand, inputs))
     return std::move(error);
 
-  const uint64_t outputCount = preflight->destinationKey->getElementCount();
+  const uint64_t outputCount =
+      validatedCommand->destinationKey->getElementCount();
   if (outputCount > std::numeric_limits<size_t>::max())
     return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
                        "destination element count does not fit host size_t");
@@ -464,7 +467,7 @@ llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
   if (result->values.size() != outputCount)
     return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
                        "formal kernel produced the wrong output element count");
-  context.recordCommittedFlags(result->flags);
+  context.mergeExceptionFlags(result->flags);
   return result;
 }
 

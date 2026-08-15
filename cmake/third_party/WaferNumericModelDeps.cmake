@@ -2,14 +2,14 @@
 #
 # This module is intentionally offline.  The only producer is
 # tools/bootstrap_deps.py --numeric-model-deps; configure merely validates the
-# complete record and imports the exact recorded artifacts.
+# complete record and imports the exact recorded files.
 
-function(_wafer_numeric_artifact_path output_variable artifact_name)
+function(_wafer_numeric_file_path output_variable file_name)
   string(JSON _wafer_numeric_canonical_path GET
-    "${_WAFER_NUMERIC_SNAPSHOT_JSON}" artifacts "${artifact_name}" path)
+    "${_WAFER_NUMERIC_SNAPSHOT_JSON}" artifacts "${file_name}" path)
   if(NOT IS_ABSOLUTE "${_wafer_numeric_canonical_path}")
     message(FATAL_ERROR
-      "Validated numeric artifact path is not canonical: ${artifact_name}")
+      "Validated numeric file path is not canonical: ${file_name}")
   endif()
   set(${output_variable} "${_wafer_numeric_canonical_path}" PARENT_SCOPE)
 endfunction()
@@ -86,13 +86,13 @@ function(wafer_enable_numeric_model_deps)
     "${_wafer_numeric_snapshot_path}" CACHE INTERNAL
     "Validated canonical numeric-model dependency snapshot")
 
-  _wafer_numeric_artifact_path(_wafer_softfloat_library softfloat)
-  _wafer_numeric_artifact_path(_wafer_softfloat_header softfloat-header)
-  _wafer_numeric_artifact_path(_wafer_gmp_library gmp)
-  _wafer_numeric_artifact_path(_wafer_gmp_header gmp-header)
-  _wafer_numeric_artifact_path(_wafer_mpfr_library mpfr)
-  _wafer_numeric_artifact_path(_wafer_mpfr_header mpfr-header)
-  _wafer_numeric_artifact_path(_wafer_testsoftfloat testsoftfloat)
+  _wafer_numeric_file_path(_wafer_softfloat_library softfloat)
+  _wafer_numeric_file_path(_wafer_softfloat_header softfloat-header)
+  _wafer_numeric_file_path(_wafer_gmp_library gmp)
+  _wafer_numeric_file_path(_wafer_gmp_header gmp-header)
+  _wafer_numeric_file_path(_wafer_mpfr_library mpfr)
+  _wafer_numeric_file_path(_wafer_mpfr_header mpfr-header)
+  _wafer_numeric_file_path(_wafer_testsoftfloat testsoftfloat)
 
   get_filename_component(_wafer_softfloat_include
     "${_wafer_softfloat_header}" DIRECTORY)

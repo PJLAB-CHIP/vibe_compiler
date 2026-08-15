@@ -3,7 +3,7 @@
 This directory contains the reverse-engineering outputs for the TX8/Wafer
 hardware stack. The original base is `third_party/tx8_deps`; later evidence
 passes also used a firmware Kuiper SDK snapshot and a copied `torch_txda`
-wheel where those artifacts clarify host runtime, driver, and PyTorch eager
+wheel where those files clarify host runtime, driver, and PyTorch eager
 integration behavior. Those external snapshots are provenance, not stable
 repository paths.
 
@@ -31,7 +31,7 @@ Current compiler/runtime contracts and cross-cutting engineering boundaries are
 owned by the numbered `tasks/01-18`
 design documents; use `tasks/README.md` for the complete pipeline-boundary to
 owner map. Common consumers of this directory include `tasks/11` for instruction
-legality, `tasks/13` for physical transport, `tasks/14` for target artifacts and
+legality, `tasks/13` for physical transport, `tasks/14` for target code generation and
 `tasks/15` for package/runtime behavior, but that list is not exhaustive. Files
 in this directory and the two root evidence summaries retain source-backed
 facts; when a fact becomes policy, update its numbered owner and leave the proof

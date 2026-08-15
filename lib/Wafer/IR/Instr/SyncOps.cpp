@@ -2,7 +2,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "OpVerifierUtils.h"
+#include "WaferIRVerification.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -18,9 +18,9 @@ mlir::LogicalResult SyncNCCJoinOp::verify() {
   int64_t previous = -1;
   for (int64_t worker : participants) {
     if (worker < 0 || worker >= static_cast<int64_t>(kNCCWorkerCount))
-      return emitOpError()
-             << "completion_participant_out_of_range: worker " << worker
-             << " is outside [0, " << kNCCWorkerCount << ")";
+      return emitOpError() << "completion_participant_out_of_range: worker "
+                           << worker << " is outside [0, " << kNCCWorkerCount
+                           << ")";
     if (worker <= previous)
       return emitOpError(
           "completion_participants_not_canonical: workers must be strictly "

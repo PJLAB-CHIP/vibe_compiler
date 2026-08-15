@@ -4,7 +4,7 @@
 外部 checkout 位置不是仓库合同。本文只记录旧 source 能直接支持的静态事实，不维护 Wafer compiler
 ABI、production membership 或任务状态。
 
-查询当前边界时，IR / ABI 合同读取 `tasks/14-target-conversion-module-publication.md`，prototype读取
+查询当前边界时，IR / ABI 合同读取 `tasks/14-target-code-generation.md`，prototype读取
 `runtime/wafer_crt/include/wafer_tx81_crt.h`，repo-local实现读取
 `runtime/wafer_crt/src/wafer_tx81_crt.c`，静态闭包检查读取
 `tools/check_target_crt_symbols.py`的结果，任务状态读取`tasks/progress.md`。
@@ -179,7 +179,7 @@ ABI、production membership 或任务状态。
 
 本审计不维护 covered / excluded list。查询当前事实时：
 
-- IR / ABI 和production closure合同读取`tasks/14-target-conversion-module-publication.md`；
+- IR / ABI 和production closure合同读取`tasks/14-target-code-generation.md`；
 - prototype读取`runtime/wafer_crt/include/wafer_tx81_crt.h`，实现读取
   `runtime/wafer_crt/src/wafer_tx81_crt.c`；
 - symbol、signature 和 object-level 静态闭包读取 `tools/check_target_crt_symbols.py` 的检查结果；

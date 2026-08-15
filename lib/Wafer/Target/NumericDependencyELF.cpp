@@ -1,4 +1,5 @@
-//===- NumericDependencyELF.cpp - Artifact and ELF identity -*- C++ -*-===//
+//===- NumericDependencyELF.cpp - Managed files and ELF metadata -*- C++
+//-*-===//
 
 #include "NumericDependencyConformanceInternal.h"
 
@@ -112,9 +113,9 @@ std::vector<std::string> findELFDynamicValues(llvm::StringRef output,
   return values;
 }
 
-llvm::Expected<NumericDependencyELFIdentity>
-inspectELFIdentity(llvm::StringRef path, llvm::StringRef readelfPath,
-                   const llvm::Twine &label) {
+llvm::Expected<NumericDependencyELFRecord>
+readELFRecord(llvm::StringRef path, llvm::StringRef readelfPath,
+              const llvm::Twine &label) {
   const std::vector<std::string> arguments = {readelfPath.str(), "--wide",
                                               "--file-header",   "--notes",
                                               "--dynamic",       path.str()};
@@ -124,7 +125,7 @@ inspectELFIdentity(llvm::StringRef path, llvm::StringRef readelfPath,
   if (!output)
     return output.takeError();
 
-  NumericDependencyELFIdentity result;
+  NumericDependencyELFRecord result;
   llvm::Expected<std::string> elfClass = findELFHeader(*output, "Class", label);
   if (!elfClass)
     return elfClass.takeError();
@@ -176,8 +177,8 @@ inspectELFIdentity(llvm::StringRef path, llvm::StringRef readelfPath,
   return result;
 }
 
-bool equalELFIdentity(const NumericDependencyELFIdentity &lhs,
-                      const NumericDependencyELFIdentity &rhs) {
+bool sameELFRecord(const NumericDependencyELFRecord &lhs,
+                   const NumericDependencyELFRecord &rhs) {
   return lhs.elfClass == rhs.elfClass && lhs.byteOrder == rhs.byteOrder &&
          lhs.type == rhs.type && lhs.machine == rhs.machine &&
          lhs.buildId == rhs.buildId && lhs.soname == rhs.soname &&
@@ -185,66 +186,66 @@ bool equalELFIdentity(const NumericDependencyELFIdentity &lhs,
          lhs.runpath == rhs.runpath;
 }
 
-llvm::Expected<NumericDependencyArtifactIdentity>
-parseArtifactIdentity(llvm::StringRef name, const llvm::json::Value &value,
-                      const ManagedRoot &root, llvm::StringRef readelfPath) {
+llvm::Expected<NumericDependencyFileRecord>
+parseFileRecord(llvm::StringRef name, const llvm::json::Value &value,
+                const ManagedRoot &root, llvm::StringRef readelfPath) {
   llvm::Expected<const llvm::json::Object *> object =
-      requireObject(value, "numeric artifact " + name);
+      requireObject(value, "numeric dependency file " + name);
   if (!object)
     return object.takeError();
   if (llvm::Error error = requireExactKeys(
           **object, {"path", "sha256", "size", "file_type", "mode", "elf"},
-          "numeric artifact " + name))
+          "numeric dependency file " + name))
     return error;
 
   llvm::Expected<std::string> relative =
-      requireString(*(*object)->get("path"), "numeric artifact path");
+      requireString(*(*object)->get("path"), "numeric dependency file path");
   if (!relative)
     return relative.takeError();
-  llvm::Expected<std::string> digest =
-      requireString(*(*object)->get("sha256"), "numeric artifact SHA256");
+  llvm::Expected<std::string> digest = requireString(
+      *(*object)->get("sha256"), "numeric dependency file SHA256");
   if (!digest)
     return digest.takeError();
   if (!isLowerSHA256(*digest))
     return invalid(ErrorCode::TypeMismatch,
-                   "numeric artifact SHA256 is not lowercase SHA-256");
+                   "numeric dependency file SHA256 is not lowercase SHA-256");
   llvm::Expected<uint64_t> size =
-      requireUnsigned(*(*object)->get("size"), "numeric artifact size");
+      requireUnsigned(*(*object)->get("size"), "numeric dependency file size");
   if (!size)
     return size.takeError();
-  llvm::Expected<std::string> fileType =
-      requireString(*(*object)->get("file_type"), "numeric artifact file_type");
+  llvm::Expected<std::string> fileType = requireString(
+      *(*object)->get("file_type"), "numeric dependency file file_type");
   if (!fileType)
     return fileType.takeError();
   if (*fileType != "regular")
     return invalid(ErrorCode::FileType,
-                   "numeric artifact file_type is not regular");
+                   "numeric dependency file file_type is not regular");
   llvm::Expected<uint64_t> mode =
-      requireUnsigned(*(*object)->get("mode"), "numeric artifact mode");
+      requireUnsigned(*(*object)->get("mode"), "numeric dependency file mode");
   if (!mode)
     return mode.takeError();
   if (*mode > 07777)
     return invalid(ErrorCode::TypeMismatch,
-                   "numeric artifact mode is out of range");
+                   "numeric dependency file mode is out of range");
 
-  std::optional<NumericDependencyELFIdentity> elf;
+  std::optional<NumericDependencyELFRecord> elf;
   const llvm::json::Value &elfValue = *(*object)->get("elf");
   if (!elfValue.getAsNull()) {
     llvm::Expected<const llvm::json::Object *> elfObject =
-        requireObject(elfValue, "numeric artifact ELF identity");
+        requireObject(elfValue, "numeric dependency file ELF metadata");
     if (!elfObject)
       return elfObject.takeError();
-    if (llvm::Error error = requireExactKeys(**elfObject,
-                                             {"class", "byte_order", "type",
-                                              "machine", "build_id", "soname",
-                                              "needed", "rpath", "runpath"},
-                                             "numeric artifact ELF identity"))
+    if (llvm::Error error = requireExactKeys(
+            **elfObject,
+            {"class", "byte_order", "type", "machine", "build_id", "soname",
+             "needed", "rpath", "runpath"},
+            "numeric dependency file ELF metadata"))
       return error;
-    NumericDependencyELFIdentity parsedELF;
+    NumericDependencyELFRecord parsedELF;
 #define READ_ELF_STRING(Field, Key)                                            \
   do {                                                                         \
-    llvm::Expected<std::string> parsed =                                       \
-        requireString(*(*elfObject)->get(Key), "numeric artifact ELF " Key);   \
+    llvm::Expected<std::string> parsed = requireString(                        \
+        *(*elfObject)->get(Key), "numeric dependency file ELF " Key);          \
     if (!parsed)                                                               \
       return parsed.takeError();                                               \
     parsedELF.Field = std::move(*parsed);                                      \
@@ -255,11 +256,11 @@ parseArtifactIdentity(llvm::StringRef name, const llvm::json::Value &value,
     READ_ELF_STRING(machine, "machine");
 #undef READ_ELF_STRING
     llvm::Expected<std::optional<std::string>> buildId = requireNullableString(
-        *(*elfObject)->get("build_id"), "numeric artifact ELF build_id");
+        *(*elfObject)->get("build_id"), "numeric dependency file ELF build_id");
     if (!buildId)
       return buildId.takeError();
     llvm::Expected<std::optional<std::string>> soname = requireNullableString(
-        *(*elfObject)->get("soname"), "numeric artifact ELF soname");
+        *(*elfObject)->get("soname"), "numeric dependency file ELF soname");
     if (!soname)
       return soname.takeError();
     parsedELF.buildId = std::move(*buildId);
@@ -268,17 +269,17 @@ parseArtifactIdentity(llvm::StringRef name, const llvm::json::Value &value,
         (parsedELF.buildId->empty() ||
          !llvm::all_of(*parsedELF.buildId, llvm::isHexDigit)))
       return invalid(ErrorCode::TypeMismatch,
-                     "numeric artifact ELF build_id is malformed");
+                     "numeric dependency file ELF build_id is malformed");
     llvm::Expected<std::vector<std::string>> needed = requireStringArray(
-        *(*elfObject)->get("needed"), "numeric artifact ELF needed");
+        *(*elfObject)->get("needed"), "numeric dependency file ELF needed");
     if (!needed)
       return needed.takeError();
     llvm::Expected<std::vector<std::string>> rpath = requireStringArray(
-        *(*elfObject)->get("rpath"), "numeric artifact ELF rpath");
+        *(*elfObject)->get("rpath"), "numeric dependency file ELF rpath");
     if (!rpath)
       return rpath.takeError();
     llvm::Expected<std::vector<std::string>> runpath = requireStringArray(
-        *(*elfObject)->get("runpath"), "numeric artifact ELF runpath");
+        *(*elfObject)->get("runpath"), "numeric dependency file ELF runpath");
     if (!runpath)
       return runpath.takeError();
     parsedELF.needed = std::move(*needed);
@@ -287,93 +288,94 @@ parseArtifactIdentity(llvm::StringRef name, const llvm::json::Value &value,
     if (parsedELF.elfClass.empty() || parsedELF.byteOrder.empty() ||
         parsedELF.type.empty() || parsedELF.machine.empty())
       return invalid(ErrorCode::TypeMismatch,
-                     "numeric artifact ELF identity is incomplete");
+                     "numeric dependency file ELF metadata is incomplete");
     elf = std::move(parsedELF);
   }
 
-  llvm::Expected<ManagedPath> path =
-      resolveManagedPath(root, *relative, RequiredFileType::RegularFile,
-                         "numeric artifact " + name, /*requireRelative=*/true);
+  llvm::Expected<ManagedPath> path = resolveManagedPath(
+      root, *relative, RequiredFileType::RegularFile,
+      "numeric dependency file " + name, /*requireRelative=*/true);
   if (!path)
     return path.takeError();
   llvm::Expected<FileReadback> readback =
       readRegularFile(path->resolved, std::numeric_limits<uint64_t>::max(),
-                      "numeric artifact " + name);
+                      "numeric dependency file " + name);
   if (!readback)
     return readback.takeError();
   if (readback->size != *size)
     return invalid(ErrorCode::SizeMismatch,
-                   "numeric artifact " + name + " size mismatch");
+                   "numeric dependency file " + name + " size mismatch");
   if (readback->digest != *digest)
     return invalid(ErrorCode::DigestMismatch,
-                   "numeric artifact " + name + " SHA256 mismatch");
+                   "numeric dependency file " + name + " SHA256 mismatch");
   if (readback->mode != *mode)
     return invalid(ErrorCode::PolicyMismatch,
-                   "numeric artifact " + name + " mode mismatch");
+                   "numeric dependency file " + name + " mode mismatch");
 
   llvm::Expected<bool> isELF =
-      hasELFMagic(path->resolved, "numeric artifact " + name);
+      hasELFMagic(path->resolved, "numeric dependency file " + name);
   if (!isELF)
     return isELF.takeError();
   if (*isELF) {
     if (!elf)
       return invalid(ErrorCode::PolicyMismatch,
-                     "numeric artifact " + name +
-                         " omits its actual ELF identity");
-    llvm::Expected<NumericDependencyELFIdentity> actualELF = inspectELFIdentity(
-        path->resolved, readelfPath, "numeric artifact " + name);
+                     "numeric dependency file " + name +
+                         " omits its actual ELF metadata");
+    llvm::Expected<NumericDependencyELFRecord> actualELF = readELFRecord(
+        path->resolved, readelfPath, "numeric dependency file " + name);
     if (!actualELF)
       return actualELF.takeError();
-    if (!equalELFIdentity(*elf, *actualELF))
-      return invalid(ErrorCode::PolicyMismatch,
-                     "numeric artifact " + name + " ELF identity mismatch");
+    if (!sameELFRecord(*elf, *actualELF))
+      return invalid(ErrorCode::PolicyMismatch, "numeric dependency file " +
+                                                    name +
+                                                    " ELF metadata mismatch");
   } else if (elf) {
     return invalid(ErrorCode::PolicyMismatch,
-                   "numeric artifact " + name +
-                       " records ELF identity for a non-ELF file");
+                   "numeric dependency file " + name +
+                       " records ELF metadata for a non-ELF file");
   }
 
   llvm::Expected<FileReadback> finalReadback =
       readRegularFile(path->resolved, std::numeric_limits<uint64_t>::max(),
-                      "numeric artifact " + name);
+                      "numeric dependency file " + name);
   if (!finalReadback)
     return finalReadback.takeError();
   if (finalReadback->digest != readback->digest ||
       finalReadback->size != readback->size ||
       finalReadback->mode != readback->mode)
     return invalid(ErrorCode::IO,
-                   "numeric artifact " + name +
-                       " changed during ELF identity inspection");
-  return NumericDependencyArtifactIdentity{name.str(),
-                                           path->relative,
-                                           path->resolved,
-                                           std::move(*digest),
-                                           *size,
-                                           std::move(*fileType),
-                                           static_cast<uint32_t>(*mode),
-                                           std::move(elf)};
+                   "numeric dependency file " + name +
+                       " changed during ELF metadata inspection");
+  return NumericDependencyFileRecord{name.str(),
+                                     path->relative,
+                                     path->resolved,
+                                     std::move(*digest),
+                                     *size,
+                                     std::move(*fileType),
+                                     static_cast<uint32_t>(*mode),
+                                     std::move(elf)};
 }
 
 llvm::Error
 validateSharedObjectPair(llvm::StringRef stem,
-                         const NumericDependencyArtifactIdentity &real,
-                         const NumericDependencyArtifactIdentity &loader) {
+                         const NumericDependencyFileRecord &real,
+                         const NumericDependencyFileRecord &loader) {
   llvm::StringRef realName = llvm::sys::path::filename(real.resolvedPath);
   llvm::StringRef loaderName = llvm::sys::path::filename(loader.resolvedPath);
   const std::string prefix = ("lib" + stem + ".so.").str();
   if (!realName.starts_with(prefix) || !loaderName.starts_with(prefix) ||
       real.resolvedPath == loader.resolvedPath)
     return invalid(ErrorCode::PolicyMismatch,
-                   stem + " real/loader shared-object identity is invalid");
+                   stem + " real/loader shared-object metadata is invalid");
   if (real.sha256 != loader.sha256 || real.size != loader.size)
     return invalid(ErrorCode::DigestMismatch,
                    stem + " real/loader shared-object content differs");
   if (real.mode != loader.mode || real.fileType != loader.fileType ||
       !real.elf || !loader.elf)
     return invalid(ErrorCode::PolicyMismatch,
-                   stem + " real/loader ELF identity is incomplete");
-  const NumericDependencyELFIdentity &lhs = *real.elf;
-  const NumericDependencyELFIdentity &rhs = *loader.elf;
+                   stem + " real/loader ELF metadata is incomplete");
+  const NumericDependencyELFRecord &lhs = *real.elf;
+  const NumericDependencyELFRecord &rhs = *loader.elf;
   if (lhs.elfClass != rhs.elfClass || lhs.byteOrder != rhs.byteOrder ||
       lhs.type != rhs.type || lhs.machine != rhs.machine ||
       lhs.buildId != rhs.buildId || lhs.soname != rhs.soname ||
@@ -383,7 +385,7 @@ validateSharedObjectPair(llvm::StringRef stem,
       !lhs.buildId || !isLowerHex(*lhs.buildId) ||
       !llvm::StringRef(*lhs.soname).starts_with(prefix))
     return invalid(ErrorCode::PolicyMismatch,
-                   stem + " real/loader ELF identity mismatch");
+                   stem + " real/loader ELF metadata mismatch");
   return llvm::Error::success();
 }
 

@@ -23,7 +23,7 @@ remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
                                const mlir::IRMapping &mapping);
 
 /// Tracks result replacements performed by one successful rewrite driver and
-/// retargets the current-artifact buffer relations in place. It owns no IR and
+/// retargets the current-IR buffer relations in place. It owns no IR and
 /// must not outlive either the relations or the rewrite invocation.
 class StructuredBufferReplacementListener final
     : public mlir::RewriterBase::Listener {

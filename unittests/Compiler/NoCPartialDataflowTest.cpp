@@ -2,14 +2,14 @@
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/DirectDTETransport.h"
 #include "../../lib/Wafer/Compiler/NoCCommunicationAction.h"
-#include "../../lib/Wafer/Compiler/WholeVariantResourceAcceptance.h"
+#include "../../lib/Wafer/Compiler/WholeCardResourceCostValidation.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
-#include "Wafer/IR/Common/OpVerifierUtils.h"
+#include "Wafer/IR/Common/WaferIRVerification.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
-#include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/MemoryPlanning.h"
+#include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
@@ -278,7 +278,7 @@ module {
     return result;
   }
 
-  wafer::InstrWDMAOp findPublisher(mlir::ModuleOp module) {
+  wafer::InstrWDMAOp findOutputWriter(mlir::ModuleOp module) {
     wafer::InstrWDMAOp result;
     module.walk([&](wafer::InstrWDMAOp store) {
       if (mlir::isa<mlir::BlockArgument>(store.getDest()))
@@ -463,7 +463,7 @@ module {
     ASSERT_TRUE(static_cast<bool>(config))
         << llvm::toString(config.takeError());
     ASSERT_TRUE(
-        mlir::succeeded(wafer::compiler::detail::acceptWholeVariantResources(
+        mlir::succeeded(wafer::compiler::detail::validateWholeCardResourceCost(
             modules, *config)));
   }
 
@@ -575,7 +575,7 @@ TEST_F(NoCPartialDataflowTest, RejectsDeadProtocolReceive) {
   expectRejectedAtomically(owners, makeProgram());
 }
 
-TEST_F(NoCPartialDataflowTest, RejectsAllocationRootOnlySubviewProvenance) {
+TEST_F(NoCPartialDataflowTest, RejectsSubviewWhenOnlyTheAllocationRootMatches) {
   OwnedModules owners = makePair();
   ASSERT_EQ(owners.size(), 2u);
   wafer::InstrDTESendOp reductionSend;
@@ -688,9 +688,9 @@ TEST_F(NoCPartialDataflowTest, RejectsDuplicateOriginMultiplicity) {
     if (llvm::is_contained(operation.getInputs(), reductionRecv.getBuffer()))
       merge = operation;
   });
-  wafer::InstrWDMAOp publisher = findPublisher(*owners[0]);
+  wafer::InstrWDMAOp writer = findOutputWriter(*owners[0]);
   ASSERT_TRUE(merge);
-  ASSERT_TRUE(publisher);
+  ASSERT_TRUE(writer);
 
   mlir::OpBuilder builder(merge);
   builder.setInsertionPointAfter(merge);
@@ -702,49 +702,49 @@ TEST_F(NoCPartialDataflowTest, RejectsDuplicateOriginMultiplicity) {
       merge.getLoc(), wafer::InstrElementwiseKind::Add, duplicateInputs,
       duplicate.getResult(), wafer::NCCWorker::Worker0);
   broadcastSend->setOperand(0, duplicate.getResult());
-  publisher->setOperand(0, duplicate.getResult());
+  writer->setOperand(0, duplicate.getResult());
 
   // The first merge already contains every rank exactly once. Adding that
   // accumulator to itself keeps the same origin keys but doubles every count.
   expectRejectedAtomically(owners, makeProgram());
 }
 
-TEST_F(NoCPartialDataflowTest, RejectsRankPublishingOnlyItsLocalPartial) {
+TEST_F(NoCPartialDataflowTest, RejectsRankWritingOnlyItsLocalPartial) {
   OwnedModules owners = makePair();
   ASSERT_EQ(owners.size(), 2u);
   wafer::InstrRDMAOp load = findSpillLoad(*owners[1]);
-  wafer::InstrWDMAOp publisher = findPublisher(*owners[1]);
+  wafer::InstrWDMAOp writer = findOutputWriter(*owners[1]);
   ASSERT_TRUE(load);
-  ASSERT_TRUE(publisher);
-  publisher->setOperand(0, load.getDest());
+  ASSERT_TRUE(writer);
+  writer->setOperand(0, load.getDest());
   expectRejectedAtomically(owners, makeProgram());
 }
 
-TEST_F(NoCPartialDataflowTest, RejectsNonCompactOutputPublisher) {
+TEST_F(NoCPartialDataflowTest, RejectsNonCompactOutputWriter) {
   OwnedModules owners = makePair();
   ASSERT_EQ(owners.size(), 2u);
-  wafer::InstrWDMAOp publisher = findPublisher(*owners[1]);
-  ASSERT_TRUE(publisher);
-  publisher->setAttr(
+  wafer::InstrWDMAOp writer = findOutputWriter(*owners[1]);
+  ASSERT_TRUE(writer);
+  writer->setAttr(
       "inner_bytes",
       mlir::IntegerAttr::get(mlir::IntegerType::get(context.get(), 64), 8));
-  publisher->setAttr("dst_strides",
-                     mlir::DenseI64ArrayAttr::get(context.get(), {8, 0, 0}));
-  publisher->setAttr("dst_iterations",
-                     mlir::DenseI64ArrayAttr::get(context.get(), {2, 1, 1}));
+  writer->setAttr("dst_strides",
+                  mlir::DenseI64ArrayAttr::get(context.get(), {8, 0, 0}));
+  writer->setAttr("dst_iterations",
+                  mlir::DenseI64ArrayAttr::get(context.get(), {2, 1, 1}));
   expectRejectedAtomically(owners, makeProgram());
 }
 
-TEST_F(NoCPartialDataflowTest, RejectsOutputOverwriteAfterPublisher) {
+TEST_F(NoCPartialDataflowTest, RejectsOutputOverwriteAfterOutputWriter) {
   OwnedModules owners = makePair();
   ASSERT_EQ(owners.size(), 2u);
-  wafer::InstrWDMAOp publisher = findPublisher(*owners[1]);
+  wafer::InstrWDMAOp writer = findOutputWriter(*owners[1]);
   wafer::InstrWDMAOp spill = findSpillStore(*owners[1]);
-  ASSERT_TRUE(publisher);
+  ASSERT_TRUE(writer);
   ASSERT_TRUE(spill);
-  mlir::OpBuilder builder(publisher);
-  builder.setInsertionPointAfter(publisher);
-  mlir::Operation *overwrite = builder.clone(*publisher.getOperation());
+  mlir::OpBuilder builder(writer);
+  builder.setInsertionPointAfter(writer);
+  mlir::Operation *overwrite = builder.clone(*writer.getOperation());
   overwrite->setOperand(0, spill.getSource());
   expectRejectedAtomically(owners, makeProgram());
 }
@@ -820,22 +820,21 @@ TEST_F(NoCPartialDataflowTest, RejectsConsumerUseInNestedBlock) {
   expectRejectedAtomically(owners, makeProgram());
 }
 
-TEST_F(NoCPartialDataflowTest, RejectsLatePublisherProofFailureAtomically) {
+TEST_F(NoCPartialDataflowTest, RejectsLateOutputWriterProofFailureAtomically) {
   OwnedModules owners = makePair();
   ASSERT_EQ(owners.size(), 2u);
-  wafer::InstrWDMAOp publisher = findPublisher(*owners[1]);
-  ASSERT_TRUE(publisher);
-  mlir::OpBuilder builder(publisher);
-  builder.setInsertionPoint(publisher);
+  wafer::InstrWDMAOp writer = findOutputWriter(*owners[1]);
+  ASSERT_TRUE(writer);
+  mlir::OpBuilder builder(writer);
+  builder.setInsertionPoint(writer);
   auto scratch = builder.create<mlir::memref::AllocOp>(
-      publisher.getLoc(),
-      mlir::cast<mlir::MemRefType>(publisher.getDest().getType()));
-  publisher->setOperand(1, scratch.getResult());
+      writer.getLoc(),
+      mlir::cast<mlir::MemRefType>(writer.getDest().getType()));
+  writer->setOperand(1, scratch.getResult());
   expectRejectedAtomically(owners, makeProgram());
 }
 
-TEST_F(NoCPartialDataflowTest,
-       ElidesRingPartialSpillWithSlicePreciseProvenance) {
+TEST_F(NoCPartialDataflowTest, ElidesRingPartialSpillWithExactPayloadSlices) {
   OwnedModules owners =
       makePair(4, 4, wafer::tile_region_to_instr::AllReduceSchedule::Ring);
   ASSERT_EQ(owners.size(), 2u);
@@ -867,7 +866,7 @@ TEST_F(NoCPartialDataflowTest, RejectsRingTailWithoutMutation) {
       makePair(4, 4, wafer::tile_region_to_instr::AllReduceSchedule::Ring);
   ASSERT_EQ(owners.size(), 2u);
   // Rewrite every protocol/dataflow slice from two f32 elements to one while
-  // retaining the four-element publisher. Message attrs and actual subviews
+  // retaining the four-element writer. Message attrs and actual subviews
   // remain mutually consistent, but the two slices cover only the first half
   // of the complete buffer.
   shrinkRingProtocolToTail(owners, /*oldChunkElements=*/2,
@@ -1009,8 +1008,8 @@ TEST_F(NoCPartialDataflowTest,
   unrelatedInput.globalShape = {4};
   unrelatedInput.localShape = {4};
   unrelatedInput.dtype = "f32";
-  // Deliberately incomplete: this unrelated input role is not an admission
-  // prerequisite for an already explicit partial collective.
+  // Deliberately incomplete: this unrelated input role is not required to
+  // validate an already explicit partial collective.
   wafer::frontend::ProgramRankSlice onlyRank;
   onlyRank.logicalRank = 0;
   onlyRank.replicaId = 0;

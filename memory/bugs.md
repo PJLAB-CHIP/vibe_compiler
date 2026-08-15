@@ -17,7 +17,7 @@
 - 现象：identity mapping时所有测试通过，改变Tile枚举顺序后module body、resource或diagnostic绑定到错误Tile。
 - 根因：producer或consumer使用vector ordinal、pid、entry index代替typed physical relation。
 - 修复模式：从topology到package/runtime/model始终转发 `(card_id,tile_id,launch_slot)`；launch slot只负责dense canonical order。
-- 防复发：所有artifact、aggregate、JIT、no-card和provider gate都包含非恒等mapping正例及duplicate/missing负例。
+- 防复发：target modules、linked ELF、JIT、no-card和provider验证都包含非恒等mapping正例及duplicate/missing负例。
 
 ## Optimization policy被接收但没有进入search owner
 
@@ -41,7 +41,7 @@
 
 - 现象：SPM packing或ABI failure后，late pass自行缩tile、spill、改worker或切communication，selected IR与search cost不一致。
 - 根因：allocator/finalizer被赋予了搜索职责，产生第二winner owner。
-- 修复模式：late stage只返回validated result或candidate failure；failure回到同一physical-dataflow frontier选择其它已表示候选。
+- 修复模式：late stage只返回validated result或candidate failure；failure回到同一physical-dataflow search选择其它已表示候选。
 - 防复发：negative test锁定packing/ABI failure不改写candidate；repo scan禁止late retile/spill/replan selector。
 
 ## 性能未知项不能阻塞或污染比较
@@ -97,7 +97,7 @@
 
 - 现象：rewrite改变worker/order/communication后沿用旧join/wait，过早reuse或entry返回；也可能保留多余等待损害性能。
 - 根因：completion被当成持久plan而不是current effects/tokens/control flow的派生语义。
-- 修复模式：finalization先清除旧completion，再从current actual Instr fresh构造loop backedge、branch merge、entry return、
+- 修复模式：Instr verification先清除旧required joins，再从current actual Instr fresh构造loop backedge、branch merge、entry return、
   engine join和Direct-DTE exact wait。
 - 防复发：每个actual candidate都执行fresh completion；missing/wrong worker/event/participant/reuse分别有负例。
 
@@ -118,11 +118,11 @@
 ## 资源耗尽不能伪装成exact infeasible
 
 - 现象：allocator或局部solver达到work budget、timeout或内部错误后，search把该结果缓存成capacity failure/no-good，合法的
-  spatial、temporal、layout或buffer siblings从frontier永久消失。
+  spatial、temporal、layout或buffer siblings从candidate domain永久消失。
 - 根因：调用边界只有success/failure布尔值，没有区分`ProvenInfeasible`与`ResourceExhausted`/internal failure。
 - 修复模式：mechanism统一返回accepted、deferred、proven exact rejection或indeterminate；只有证明无解或确定unsupported
   才能形成causal no-good，资源耗尽、timeout和内部失败只消耗work并保留parent与siblings。
-- 防复发：定向测试让同一assignment分别触发证明无解、预算耗尽和内部错误，断言只有第一类缩域；结果等级按exact frontier
+- 防复发：定向测试让同一assignment分别触发证明无解、预算耗尽和内部错误，断言只有第一类缩域；结果等级按exact candidate set
   是否仍完整报告，不能仅因budget中止一律声称有界或一律降级。
 
 ## Logical elements与physical bytes不可混用
@@ -150,27 +150,27 @@
 
 - 现象：serializer写current fields，parser仍接受旧version/alias并填默认值，导致runtime得到无法验证的physical identity或completion。
 - 根因：把wire升级当成渐进迁移，而当前项目没有必须兼容的外部consumer。
-- 修复模式：每类artifact只有一个current schema version；删旧reader、translator、wrapper、fixture和CLI，旧值pre-effect失败。
+- 修复模式：每类serialized file只有一个current schema version；删旧reader、translator、wrapper、fixture和CLI，旧值pre-effect失败。
 - 防复发：current canonical roundtrip与旧version/field拒绝成对测试；跨模块enum/key/version只有一个owner。
 
 ## Aggregate module不能吞掉Tile interfaces
 
 - 现象：Grid/Cluster低层合成一个module后，只保留一个entry/interface，或dispatcher用pid直接当launch slot选择body。
 - 根因：把module topology等同execution domain，并默认 `pid == launch_slot == tile_id`。
-- 修复模式：aggregate只合并code payload；artifact/package仍保存16个explicit Tile interfaces与typed mapping，dispatch读取verified
+- 修复模式：aggregate只合并code payload；target modules/package仍保存16个explicit Tile interfaces与typed mapping，dispatch读取verified
   launch-slot relation。
 - 防复发：不同Tile body、共享module、non-identity tile/slot mapping与高ordinal ABI slot的集成测试。
 
 ## Internal JIT bridge不是runtime ABI
 
 - 现象：host target-call dispatcher symbol被写入package contract、public enum或外部tool，后续JIT实现无法演进。
-- 根因：把实现桥接点误当成artifact semantic boundary。
+- 根因：把实现桥接点误当成稳定IR或文件格式边界。
 - 修复模式：public合同只到owner-backed target module set、typed descriptors和transaction sink；dispatcher保持internal且不序列化。
 - 防复发：package/export allowlist不要求internal host symbol；文档和public header不暴露其调用约定。
 
 ## Target LLVM不能被不同consumer重复lower
 
-- 现象：target publication、model和host frontend各自从accepted IR重新lower，metadata、ABI slot或call ordinals漂移。
+- 现象：target code generation、model和host frontend各自从accepted IR重新lower，target annotations、ABI slot或call ordinals漂移。
 - 根因：没有owner-backed same-invocation target LLVM boundary。
 - 修复模式：accepted Tile只翻译一次，target module连同LLVMContext move-own；下游共享不可变owner set。
 - 防复发：测试统计单次translation，并让package/TargetCall/SystemC消费同一owner；metadata逐field readback。
@@ -182,11 +182,11 @@
 - 修复模式：closed `TargetCallDescriptor` registry统一symbol、signature、semantic、issue domain和decoder。
 - 防复发：每个descriptor用位置互异sentinel roundtrip；unknown/width/enum/format错误拒绝；source conformance消费完整受控source set。
 
-## Runtime必须在首个side effect前完成preflight
+## Runtime必须在首个side effect前完成validation
 
 - 现象：发现binding、module export或transport capability错误时已经分配内存/加载module，cleanup与错误归因复杂。
 - 根因：semantic verification分散在provider调用过程中。
-- 修复模式：no-card/runtime preflight先闭合manifest、capability、resources、phases、entries和16-Tile plan，再允许allocation。
+- 修复模式：no-card/runtime validation先闭合manifest、capability、resources、phases、entries和16-Tile invocation plan，再允许allocation。
 - 防复发：每类invalid input断言provider call count为零；no-card与board共享同一plan builder。
 
 ## Partial submission必须poison session
@@ -196,10 +196,10 @@
 - 修复模式：unknown或non-empty accepted subset、timeout和不可信completion使context sticky poisoned；poison后不再调用provider。
 - 防复发：failure injection覆盖每个stage、accepted subset与cleanup；无自动retry/reset/power，session move/invalid状态严格验证。
 
-## Card-shared output必须在card-scoped invocation完成后一次发布
+## Card-shared output必须在card-scoped invocation完成后一次读取
 
 - 现象：某个Tile完成就D2H shared output，读到其它Tile尚未写完的区域；或同一ResourceId被多次copyback覆盖。
-- 根因：把Tile-local completion和card-scoped resource publication混淆。
+- 根因：把Tile-local completion和card-scoped output readback混淆。
 - 修复模式：所有phases、16个entries和transport status验证后，按unique card-scoped ResourceId一次D2H；随后原子构造result。
 - 防复发：不同Tile写disjoint slices的共享output测试，提前D2H和duplicate copyback失败。
 
@@ -261,14 +261,14 @@
   `1 <= next < current`，乘法和footprint同时使用saturating arithmetic。
 - 防复发：覆盖extent能让多个相邻wave count落入同一tile的形状；测试不仅检查最终值，还检查有限步数和严格下降。
 
-## Accepted-IR lineage不能要求每个source node留下独立指令
+## Source node与selected Instr不是一对一关系
 
 - 现象：合法的dead init消除或producer/consumer融合后，final Instr没有某个source node的独立operation，cost plan把整个
-  exact-admitted candidate误判为lineage丢失。
+  exact-verified candidate误判为source relation丢失。
 - 根因：把query-local source identity当成一源节点一最终指令的持久映射，忽略合法elimination和fusion。
-- 修复模式：observable terminal lineage保持强制；内部pure node只有在全部observable successor路径已被下游覆盖时才允许空
-  phase；多lineage融合operation必须由DAG证明唯一downstream owner并只计一次，foreign/incomparable lineage仍拒绝。
-- 防复发：内部节点消除、dependent fusion、terminal丢失和ambiguous fusion正负例成对覆盖，且phase raw work与whole accepted
+- 修复模式：observable terminal source relation保持强制；内部pure node只有在全部observable successor路径已被下游覆盖时才允许空
+  phase；融合多个source node的operation必须由DAG证明唯一downstream consumer并只计一次，foreign/incomparable relation仍拒绝。
+- 防复发：内部节点消除、dependent fusion、terminal relation丢失和ambiguous fusion正负例成对覆盖，且phase raw work与whole accepted
   IR保持精确守恒。
 
 ## Logical raw-exact不能用不同padding模板的整块digest代签
@@ -279,7 +279,7 @@
 - 修复模式：logical raw-exact逐元素比较；需要对比formal/backend storage digest时，把formal logical values覆盖到backend最终
   storage同一padding模板。backend完整storage digest仍独立冻结，用于同一backend执行的repeatability。
 - 防复发：选择带physical padding的形状，分别验证logical bit差异必须失败、仅padding差异不改变tensor数值结论、backend
-  storage漂移仍由admission repeatability gate捕获。
+  storage漂移仍由repeatability validation捕获。
 
 ## Temporal search必须覆盖内部reduction iterator
 
@@ -386,13 +386,13 @@
 
 ## 单状态baseline不得套用多候选winner重物化
 
-- 现象：唯一exact-admitted Llama baseline在selection后又完整执行一次CardProgram、16-Tile Instr、SPM、DDR和admission，额外消耗
+- 现象：唯一exact-verified Llama baseline在selection后又完整执行一次CardProgram、16-Tile Instr、SPM、DDR和resource verification，额外消耗
   数分钟，但产物语义没有变化。
 - 根因：为search cohort控制峰值内存而清空每个accepted candidate Tile module的策略，无条件复用到了只有一个semantic state的
   `none` controller。
-- 修复模式：search继续只保留comparison summary并重物化winner；`none`保留已经通过全部exact gates且已清除query-local lineage
-  的唯一executable，selection直接move发布。统计必须明确baseline rematerialization为零。
-- 防复发：none与search unit分别断言0次和1次selected executable rematerialization；模型规模timing检查publication前不再出现
+- 修复模式：search继续只保留comparison summary并重物化winner；`none`保留已经通过全部exact verification且已清除query-local source relation
+  的唯一executable，selection直接move返回。统计必须明确baseline rematerialization为零。
+- 防复发：none与search unit分别断言0次和1次selected executable rematerialization；模型规模timing检查结果返回前不再出现
   第二轮16-Tile exact pipeline。
 
 ## 分配器carrier失败不得反向删除logical placement
@@ -403,7 +403,7 @@
   production合同已闭合；memory/edge planner又同时承担候选生成和准入。
 - 修复模式：placement transition只消费logical demand与ownership coverage；layout、fragment、route和transport只在对应
   physical坐标关闭后物化。任何carrier失败只拒绝包含这些坐标的candidate，并把typed rejection交回唯一search owner；
-  lowering、SPM/DDR planner和communication admission都不能修候选或直接操作frontier。
+  lowering、SPM/DDR planner和communication verification都不能修候选或直接操作candidate search。
 - 防复发：用同一logical placement构造至少两个representation/movement alternatives，其中一个carrier失败、另一个actual
   accepted；断言spatial state仍可回溯并找到accepted winner。任务状态必须核对production调用链，不能只凭analysis单测标done。
 
@@ -411,8 +411,8 @@
 
 - 现象：CardProgram编译入口只看到“SPM allocation failed”，会把unsupported lifetime误归为内部失败，或反过来把未分类的
   allocator failure误当作candidate非法并从搜索域删除。
-- 根因：physical-Tile finalization跨边界时丢失了`SPMMemoryPlanningFailureKind`，上层只能从诊断文本或capacity布尔量猜taxonomy。
-- 修复模式：finalization failure保留typed SPM failure kind；capacity overflow与unsupported lifetime作为可验证exact rejection，
+- 根因：physical-Tile memory planning跨边界时丢失了`SPMMemoryPlanningFailureKind`，上层只能从诊断文本或capacity布尔量猜taxonomy。
+- 修复模式：memory-planning failure保留typed SPM failure kind；capacity overflow与unsupported lifetime作为可验证exact rejection，
   resource exhaustion、未分类allocator/internal failure保持indeterminate。组装结果时先复制primary gate/detail，再move failure
   容器；不能依赖函数实参求值顺序同时引用元素和转移其owner。
 - 防复发：无策略CardExecutable seam直接测试同一CardProgram的可重复exact rejection，并单测不完整/内部调用保持indeterminate；
@@ -433,7 +433,7 @@
 
 - 现象：bufferization/canonicalization合法删除无user的temporary buffer，但capacity gate在cleanup后仍要求其旧relation存在，
   将可接受candidate标成indeterminate。
-- 根因：query evidence的lifetime跨越了会删除IR的cleanup，却没有在stage postcondition处按current IR收缩。
+- 根因：query evidence的lifetime跨越了会删除IR的cleanup，却没有在cleanup结束时按current IR收缩。
 - 修复模式：cleanup完成后先以live `Value`集合retain current relations，再执行required-witness assertion；只删除dead evidence，
   不把dead entry重定向到同类型buffer。
 - 防复发：构造dead relation负例，断言retain后current检查通过；真实required relation被删时仍必须失败。

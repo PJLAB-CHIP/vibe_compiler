@@ -1,4 +1,4 @@
-//===- WaferCardProgramToTileModules.cpp - Whole-card projection ---------===//
+//===- WaferCardProgramToTileModules.cpp - Per-Tile modules -------------===//
 
 #include "Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h"
 
@@ -15,10 +15,10 @@
 namespace wafer {
 namespace {
 
-using ProjectionList = llvm::SmallVector<ProjectedPhysicalTileModule, 16>;
+using PhysicalTileModuleList = llvm::SmallVector<PhysicalTileModule, 16>;
 
-static mlir::FailureOr<ProjectionList>
-failProjection(std::string *failureReason, llvm::StringRef message) {
+static mlir::FailureOr<PhysicalTileModuleList>
+failSplit(std::string *failureReason, llvm::StringRef message) {
   if (failureReason)
     *failureReason = message.str();
   return mlir::failure();
@@ -32,16 +32,17 @@ static bool isCardSharedDeclaration(mlir::Operation &operation) {
 }
 
 static mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-projectOneTileModule(mlir::ModuleOp sourceModule, CardProgramOp cardProgram,
-                     TileProgramOp tileProgram,
-                     const StructuredMaterializationRelations *sourceRelations,
-                     StructuredMaterializationRelations &projectedRelations,
-                     std::string *failureReason) {
-  mlir::OwningOpRef<mlir::ModuleOp> projected =
+createPhysicalTileModule(
+    mlir::ModuleOp sourceModule, CardProgramOp cardProgram,
+    TileProgramOp tileProgram,
+    const StructuredMaterializationRelations *sourceRelations,
+    StructuredMaterializationRelations &tileRelations,
+    std::string *failureReason) {
+  mlir::OwningOpRef<mlir::ModuleOp> tileModule =
       mlir::ModuleOp::create(sourceModule.getLoc());
-  projected->getOperation()->setAttrs(sourceModule->getAttrDictionary());
+  tileModule->getOperation()->setAttrs(sourceModule->getAttrDictionary());
 
-  mlir::OpBuilder builder(projected->getBodyRegion());
+  mlir::OpBuilder builder(tileModule->getBodyRegion());
   mlir::IRMapping mapping;
 
   for (TargetTopologyOp topology : sourceModule.getOps<TargetTopologyOp>())
@@ -82,44 +83,43 @@ projectOneTileModule(mlir::ModuleOp sourceModule, CardProgramOp cardProgram,
         }
         if (belongsToTile && failureReason)
           *failureReason =
-              "physical Tile projection failed to remap a current-IR buffer "
+              "physical Tile module failed to remap a current-IR buffer "
               "relation";
       }
     };
     remap(sourceRelations->operationResultBuffers,
-          projectedRelations.operationResultBuffers);
-    remap(sourceRelations->operandBuffers, projectedRelations.operandBuffers);
-    remap(sourceRelations->outputBuffers, projectedRelations.outputBuffers);
+          tileRelations.operationResultBuffers);
+    remap(sourceRelations->operandBuffers, tileRelations.operandBuffers);
+    remap(sourceRelations->outputBuffers, tileRelations.outputBuffers);
     if (failureReason && !failureReason->empty())
       return mlir::failure();
   }
 
-  if (mlir::failed(mlir::verify(*projected))) {
+  if (mlir::failed(mlir::verify(*tileModule))) {
     if (failureReason)
-      *failureReason = "projected physical Tile module is not verifier-legal";
+      *failureReason = "physical Tile module is not verifier-legal";
     return mlir::failure();
   }
-  return std::move(projected);
+  return std::move(tileModule);
 }
 
 } // namespace
 
-mlir::FailureOr<llvm::SmallVector<ProjectedPhysicalTileModule, 16>>
-projectCardProgramToPhysicalTileModules(mlir::ModuleOp sourceModule,
-                                        std::string *failureReason,
-                                        const StructuredMaterializationRelations
-                                            *materializationRelations) {
+mlir::FailureOr<llvm::SmallVector<PhysicalTileModule, 16>>
+splitCardProgramIntoPhysicalTileModules(
+    mlir::ModuleOp sourceModule, std::string *failureReason,
+    const StructuredMaterializationRelations *materializationRelations) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModule)
-    return failProjection(failureReason, "source module is null");
+    return failSplit(failureReason, "source module is null");
   if (mlir::failed(mlir::verify(sourceModule)))
-    return failProjection(failureReason, "source module is not verifier-legal");
+    return failSplit(failureReason, "source module is not verifier-legal");
 
   llvm::SmallVector<CardProgramOp, 2> cardPrograms(
       sourceModule.getOps<CardProgramOp>());
   if (cardPrograms.size() != 1)
-    return failProjection(
+    return failSplit(
         failureReason,
         "expected exactly one direct wafer.card.program in source module");
   CardProgramOp cardProgram = cardPrograms.front();
@@ -130,22 +130,22 @@ projectCardProgramToPhysicalTileModules(mlir::ModuleOp sourceModule,
     return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
   });
 
-  ProjectionList projectedModules;
-  projectedModules.reserve(tilePrograms.size());
+  PhysicalTileModuleList tileModules;
+  tileModules.reserve(tilePrograms.size());
   for (TileProgramOp tileProgram : tilePrograms) {
-    StructuredMaterializationRelations projectedRelations;
-    mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> projected =
-        projectOneTileModule(sourceModule, cardProgram, tileProgram,
-                             materializationRelations, projectedRelations,
-                             failureReason);
-    if (mlir::failed(projected))
+    StructuredMaterializationRelations tileRelations;
+    mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> tileModule =
+        createPhysicalTileModule(sourceModule, cardProgram, tileProgram,
+                                 materializationRelations, tileRelations,
+                                 failureReason);
+    if (mlir::failed(tileModule))
       return mlir::failure();
-    projectedModules.push_back(ProjectedPhysicalTileModule{
-        PhysicalCardId(cardProgram.getCardIdAttr().getInt()),
-        PhysicalTileId(tileProgram.getTileIdAttr().getInt()),
-        std::move(*projected), std::move(projectedRelations)});
+    tileModules.push_back(
+        PhysicalTileModule{PhysicalCardId(cardProgram.getCardIdAttr().getInt()),
+                           PhysicalTileId(tileProgram.getTileIdAttr().getInt()),
+                           std::move(*tileModule), std::move(tileRelations)});
   }
-  return std::move(projectedModules);
+  return std::move(tileModules);
 }
 
 } // namespace wafer

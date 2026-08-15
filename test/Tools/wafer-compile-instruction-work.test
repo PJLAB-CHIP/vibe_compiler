@@ -24,4 +24,4 @@
 # CHECK-SAME: rdma_sites=known:1 rdma_exact=known:{{[1-9][0-9]*}}
 # CHECK-SAME: gather_scatter_sites=known:1 gather_scatter_exact=known:{{[1-9][0-9]*}}
 # CHECK-SAME: ncc_join_sites=known:1 ncc_join_exact=known:1 ncc_join_lower=known:1 ncc_join_upper=known:1
-# CHECK: wafer-compile: compile-work physical_tile_finalizations=16 tile_to_instr_lowerings=16 spm_planning_invocations=16 ddr_planning_invocations=16
+# CHECK: wafer-compile: compile-work physical_tile_memory_planning_invocations=16 tile_to_instr_lowerings=16 spm_planning_invocations=16 ddr_planning_invocations=16

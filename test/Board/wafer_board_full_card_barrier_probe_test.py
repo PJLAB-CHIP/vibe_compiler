@@ -224,8 +224,8 @@ def compile_package(
         ],
         timeout_seconds=300,
     )
-    if "published verified package" not in result.stdout:
-        raise RuntimeError("wafer-compile did not publish the cluster seed")
+    if "wrote verified package" not in result.stdout:
+        raise RuntimeError("wafer-compile did not write the cluster seed")
     bindings = cluster_seed.validate_manifest(package)
     slot_layout = validate_terminal_slots(package, bindings)
     manifest = json.loads((package / "manifest.json").read_text())
@@ -246,7 +246,7 @@ def validate_terminal_slots(
         or not isinstance(resources, list)
         or not isinstance(completions, list)
     ):
-        raise RuntimeError("cluster terminal publication domains are missing")
+        raise RuntimeError("cluster terminal visibility domains are missing")
     resources_by_id = {
         resource.get("id"): resource
         for resource in resources
@@ -263,7 +263,7 @@ def validate_terminal_slots(
         or len(completions_by_id) != len(completions)
         or len(entries) != RANK_COUNT
     ):
-        raise RuntimeError("cluster terminal publication ids are not unique")
+        raise RuntimeError("cluster terminal visibility ids are not unique")
     common_layout: ProbeSlotLayout | None = None
     for entry in entries:
         rank = entry.get("rank")

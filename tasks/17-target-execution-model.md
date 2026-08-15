@@ -8,14 +8,14 @@ Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或
 
 ```text
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   同一次compiler transaction产生的`CardExecutable`、与其绑定的owner-backed target LLVM module set、typed program
   invocation与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 physical Tiles并保留
   (card_id, tile_id, launch_slot)。
 - Current stage responsibility:
   将program tensors编码到exact Kernel ABI slots；通过host JIT执行final target LLVM entries并解码closed TargetCall
   registry；在SystemC中按physical Tile、worker、engine、event和private memory执行functional语义；原子发布完整结果。
-- Output artifact / IR:
+- Output IR / files:
   TargetModelResult：target/model identity、card-scoped completion统计、numeric flags、typed outputs及诊断；
   不产生可被compiler或runtime消费的schedule sidecar。
 - Downstream consumer:
@@ -41,7 +41,7 @@ model只接受compiler保留的same-invocation owners：
 - program invocation提供source tensor值，不复制target schema或猜测slot；
 - independent CPU expected只用于最终差分，不进入compiler IR/package。
 
-当前实现类`ExecutableBundle`与`TargetLLVMModuleBundle`只作为上述两个owner边界的迁移索引，不定义额外稳定artifact层。
+当前实现类`PhysicalTileExecutables`与`TargetLLVMModules`只作为上述两个owner边界的迁移索引，不定义额外稳定output层。
 
 `prepareTargetModelInvocation`必须在JIT materialization前all-and-only消费每个非output program resource和每个ABI slot。
 它按显式resource owner、Kernel ABI role和resource index建立allocation identity：program-boundary resource由card拥有，
@@ -66,13 +66,13 @@ ordinal、entry name或thread ID取代显式binding。
 
 TargetCall frontend是final target LLVM到typed transaction的唯一host桥：
 
-1. preflight完整16-Tile module/slot domain；
+1. 验证完整16-Tile module/slot domain；
 2. `begin`把immutable invocation descriptor交给sink；
 3. 每个Tile entry调用closed descriptor registry中的target calls；
 4. decoder从exact argument positions生成typed payload并校验range/enum/format/worker；
 5. Tile return调用 `completeTile(card_id, tile_id, launch_slot)`；
-6. 所有Tile成功后 `prepareCommit`，随后一次infallible `commit`；
-7. 任一失败 `abort`，不发布partial transactions或outputs。
+6. 所有Tile成功后调用一次`finish`，sink通过`completeInvocation`验证完整调用并返回结果；
+7. 任一失败调用`abort`，不返回partial commands或outputs。
 
 内部 `wafer_target_call_dispatch`只完成JIT call interception。它不是package export、runtime ABI、serialized schema或
 用户入口，也不拥有physical-dataflow scheduling语义。
@@ -109,7 +109,7 @@ TargetCall registry拥有issue engine、optional NCC worker argument及local ins
 - Direct-DTE prepare/issue返回opaque event，wait只完成exact event；
 - `NCCJoin`只等待participant mask指定的local NCC domains；
 - Tile entry返回只有在其local drain contract满足时才计为completed；
-- card-scoped commit要求16个Tiles与所有transport obligations闭合。
+- card-scoped apply要求16个Tiles与所有transport obligations闭合。
 
 缺失wait、wrong worker/participant、range hazard、event reuse或cross-Tile message mismatch都必须确定失败。
 
@@ -153,7 +153,7 @@ NaN/Inf分类、shape、bytes与guard。
 
 ## 6. Aggregate target module 与Tile执行
 
-Grid/Cluster target publication可以把16个不同Tile body合成一个低层module；model对此不增加第二协议：
+Grid/Cluster target lowering可以把16个不同Tile body合成一个低层module；model对此不增加第二协议：
 
 - `CardExecutable`的Tile interfaces与其target LLVM owner set仍显式列出16个三元组和每Tile ABI；
 - internal dispatch通过verified launch-slot relation选择body；
@@ -173,7 +173,7 @@ Grid/Cluster target publication可以把16个不同Tile body合成一个低层mo
 - numeric/expected mismatch只在完整execution结果形成后报告；
 - 任何execution failure调用sink abort并销毁private state，不返回partial output。
 
-模型不修改source artifact、target LLVM module或package，也不把失败结果回写compiler candidate search。
+模型不修改source program、target LLVM module或package，也不把失败结果回写compiler candidate search。
 
 ## 8. Verification
 

@@ -2,8 +2,8 @@
 
 #pragma once
 
-#include "WholeCardExecutableAdmission.h"
 #include "CardExecutableCompilation.h"
+#include "WholeCardExecutableLowering.h"
 #include "WholeDAGCandidateSchedule.h"
 
 #include "Wafer/Analysis/TheoreticalScheduleCostAnalysis.h"
@@ -21,15 +21,15 @@ namespace wafer::compiler::detail {
 /// Builds one finite selector plan from the accepted final Instr programs.
 /// Every final operation is assigned by current-IR buffer use to one source
 /// DAG phase or to the explicit residual phase. Fused operations are counted
-/// once in their unique retained downstream node; eliminated pure source nodes have
-/// empty phases only when their observable paths are covered downstream. The
-/// returned plan points into `phaseCosts` and `executable.resourceCost`; both
-/// owners must outlive it.
+/// once in their unique retained downstream node; eliminated pure source nodes
+/// have empty phases only when their observable paths are covered downstream.
+/// The returned plan points into `phaseCosts` and `executable.resourceCost`;
+/// both owners must outlive it.
 mlir::FailureOr<analysis::StaticSchedulePlan> buildAcceptedWholeDAGSchedulePlan(
     const CardDAGAnalysis &dag,
     llvm::ArrayRef<WholeDAGNodePlacement> nodePlacements,
     llvm::ArrayRef<AcceptedOperationNodeRelation> operationNodeRelations,
-    AcceptedWholeCardExecutable &executable,
+    WholeCardExecutable &executable,
     llvm::SmallVectorImpl<analysis::WholeCardInstructionProgramCost>
         &phaseCosts,
     std::string *failureReason = nullptr);

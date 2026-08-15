@@ -2,7 +2,7 @@
 """Typed full-card DDR-contention characterization matrix.
 
 Pipeline position:
-- Upstream artifact / IR:
+- Upstream IR / input:
   Verified rank-one NCC plans, the 16-rank cluster lifecycle contract, owned
   SPM/DDR ranges, and the already-qualified PMU/status readback surfaces.
 - Current stage responsibility:
@@ -10,7 +10,7 @@ Pipeline position:
   and retain non-duplicating references or typed boundaries for neighboring
   behavior.  Executable worker-placement and sustained-SPM matrices are owned
   by their dedicated board adapters and are not duplicated here.
-- Output artifact / IR:
+- Output IR / files:
   A test-only full-card active-rank DDR matrix, a real request contract, and
   bindings to already-existing board evidence or genuine typed boundaries.
   They are not compiler IR, scheduler hints, or a bank/color side channel.

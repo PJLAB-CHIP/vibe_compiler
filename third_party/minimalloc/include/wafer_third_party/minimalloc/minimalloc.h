@@ -13,7 +13,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
-Modified by the Wafer project: C++17/std-library port, typed result API,
+Modified for Wafer: C++17/std-library port, typed result API,
 fixed-capacity-only boundary, strict validation, and deterministic global fuel.
 */
 

@@ -1,10 +1,10 @@
-//===- Package.h - Typed Wafer compiler package bundle ---------*- C++ -*-===//
+//===- Package.h - Verified Wafer compiler package ------------*- C++ -*-===//
 
 #ifndef WAFER_COMPILER_PACKAGE_H
 #define WAFER_COMPILER_PACKAGE_H
 
 #include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Runtime/PackageManifest.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -19,12 +19,12 @@ class raw_ostream;
 
 namespace wafer::compiler {
 
-class PackageBundle {
+class VerifiedPackage {
 public:
-  PackageBundle(PackageBundle &&) = default;
-  PackageBundle &operator=(PackageBundle &&) = default;
-  PackageBundle(const PackageBundle &) = delete;
-  PackageBundle &operator=(const PackageBundle &) = delete;
+  VerifiedPackage(VerifiedPackage &&) = default;
+  VerifiedPackage &operator=(VerifiedPackage &&) = default;
+  VerifiedPackage(const VerifiedPackage &) = delete;
+  VerifiedPackage &operator=(const VerifiedPackage &) = delete;
 
   llvm::StringRef getRootDirectory() const { return rootDirectory; }
   const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
@@ -33,10 +33,11 @@ public:
   }
 
 private:
-  friend struct PackageBundleBuilder;
+  friend struct VerifiedPackageBuilder;
 
-  PackageBundle(llvm::StringRef rootDirectory, ExecutionConfig executionConfig,
-                runtime::VerifiedPackageManifest manifest)
+  VerifiedPackage(llvm::StringRef rootDirectory,
+                  ExecutionConfig executionConfig,
+                  runtime::VerifiedPackageManifest manifest)
       : rootDirectory(rootDirectory.str()), executionConfig(executionConfig),
         manifest(std::move(manifest)) {}
 

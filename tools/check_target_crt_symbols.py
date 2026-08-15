@@ -17,7 +17,7 @@ import sys
 
 TARGET_LOWERING_SOURCES = (
     "LowerInstrToTargetLLVM.cpp",
-    "TargetCallPreflight.cpp",
+    "TargetLoweringVerification.cpp",
     "TargetCallLoweringSupport.cpp",
     "MovementTargetCallLowering.cpp",
     "ComputeTargetCallLowering.cpp",

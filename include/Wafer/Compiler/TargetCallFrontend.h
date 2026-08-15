@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_TARGETCALLFRONTEND_H
 #define WAFER_COMPILER_TARGETCALLFRONTEND_H
 
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -28,12 +28,12 @@ struct TargetNCCIssueDomain {
 /// bound by the JIT bridge. The ordinal is assigned monotonically inside that
 /// Tile context; none of these fields is recovered from a symbol spelling or
 /// OS thread.
-struct TargetTransaction {
+struct TargetCommand {
   PhysicalCardId physicalCardId;
   PhysicalTileId physicalTileId;
   LaunchSlotId launchSlotId;
   uint64_t issueOrdinal;
-  target::TargetTransactionPayload payload;
+  target::TargetCommandPayload payload;
   std::optional<TargetNCCIssueDomain> nccIssueDomain = std::nullopt;
 };
 
@@ -61,35 +61,33 @@ struct TargetCallTileArguments {
 
 /// Synchronous invocation-local consumer. A successful issue result is used
 /// only by target calls whose exact ABI returns an opaque Direct-DTE event.
-/// All effects remain private until prepareCommit succeeds; commit is the
-/// infallible publication point. The sink must outlive a running executable.
-class TargetTransactionSink {
+/// `completeInvocation` validates the full invocation and makes its result
+/// available atomically. The sink must outlive a running executable.
+class TargetCommandSink {
 public:
-  virtual ~TargetTransactionSink() = default;
+  virtual ~TargetCommandSink() = default;
   virtual llvm::Error
   begin(const TargetCallInvocationDescriptor &invocation) = 0;
-  virtual llvm::Expected<uint64_t>
-  issue(const TargetTransaction &transaction) = 0;
+  virtual llvm::Expected<uint64_t> issue(const TargetCommand &command) = 0;
   virtual llvm::Error completeTile(PhysicalCardId physicalCardId,
                                    PhysicalTileId physicalTileId,
                                    LaunchSlotId launchSlotId) = 0;
-  virtual llvm::Error prepareCommit() = 0;
-  virtual void commit() = 0;
+  virtual llvm::Error completeInvocation() = 0;
   virtual void abort(llvm::StringRef diagnostic) = 0;
 };
 
 struct TargetCallExecutionResult {
   int64_t completedTileCount;
-  uint64_t issuedTransactionCount;
+  uint64_t issuedCommandCount;
 };
 
 /// Owner of one whole-card host materialization. All slots and JIT entries are
 /// closed before construction succeeds. A downstream scheduler calls begin,
-/// runs each Tile entry from its own process, and commits only after every
+/// runs each Tile entry from its own process, and finishes only after every
 /// Tile completes. executeTile may suspend inside a synchronous sink issue;
 /// this is how a SystemC SC_THREAD preserves the JIT stack across wait().
 /// Destroying or move-assigning a running executable aborts its sink, so the
-/// sink must remain alive until commit or an explicit abort.
+/// sink must remain alive until finish or an explicit abort.
 class TargetCallExecutable {
 public:
   ~TargetCallExecutable();
@@ -99,9 +97,9 @@ public:
   TargetCallExecutable &operator=(const TargetCallExecutable &) = delete;
 
   const TargetCallInvocationDescriptor &getInvocationDescriptor() const;
-  llvm::Error begin(TargetTransactionSink &sink);
+  llvm::Error begin(TargetCommandSink &sink);
   llvm::Error executeTile(LaunchSlotId launchSlotId);
-  llvm::Expected<TargetCallExecutionResult> commit();
+  llvm::Expected<TargetCallExecutionResult> finish();
   void abort(llvm::StringRef diagnostic);
 
 private:
@@ -110,25 +108,25 @@ private:
   std::unique_ptr<Impl> impl;
 
   friend llvm::Expected<TargetCallExecutable>
-  prepareTargetCallFrontend(const TargetLLVMModuleBundle &,
-                            llvm::ArrayRef<TargetCallTileArguments>);
+  createTargetCallExecutable(const TargetLLVMModules &,
+                             llvm::ArrayRef<TargetCallTileArguments>);
 };
 
-/// Atomically preflights/materializes the complete physical Tile domain and
-/// owns a copy of every
-/// fixed ABI slot before returning. No sink effect occurs during preparation.
+/// Verifies and materializes the complete physical Tile domain and owns a copy
+/// of every fixed ABI slot before returning. No sink effect occurs during
+/// preparation.
 /// This path does not compile the repository CRT or construct vendor packets.
 llvm::Expected<TargetCallExecutable>
-prepareTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
-                          llvm::ArrayRef<TargetCallTileArguments> arguments);
+createTargetCallExecutable(const TargetLLVMModules &targetLLVMModules,
+                           llvm::ArrayRef<TargetCallTileArguments> arguments);
 
-/// Convenience orchestration for transaction sinks that never suspend on a
-/// cross-Tile dependency. SystemC consumers use prepareTargetCallFrontend and
+/// Convenience orchestration for command sinks that never suspend on a
+/// cross-Tile dependency. SystemC consumers use createTargetCallExecutable and
 /// invoke executeTile from one SC_THREAD per Tile instead.
 llvm::Expected<TargetCallExecutionResult>
-executeTargetCallFrontend(const TargetLLVMModuleBundle &bundle,
+executeTargetCallFrontend(const TargetLLVMModules &targetLLVMModules,
                           llvm::ArrayRef<TargetCallTileArguments> arguments,
-                          TargetTransactionSink &sink);
+                          TargetCommandSink &sink);
 
 } // namespace wafer::compiler
 

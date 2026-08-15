@@ -427,7 +427,7 @@ def run_required_symbol_scan(command: list[str], loader_abi: str) -> None:
         )
 
 
-def publish_intermediate(source: pathlib.Path, destination: pathlib.Path) -> None:
+def install_intermediate(source: pathlib.Path, destination: pathlib.Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{destination.name}.staging-", dir=destination.parent
@@ -480,8 +480,8 @@ def execute_staged_link(args: argparse.Namespace) -> None:
         run_command(link_cmd)
         run_required_symbol_scan(required_symbol_scan_cmd, args.loader_abi)
 
-        publish_intermediate(pathlib.Path(staged_args.object_output), object_output)
-        publish_intermediate(
+        install_intermediate(pathlib.Path(staged_args.object_output), object_output)
+        install_intermediate(
             pathlib.Path(staged_args.crt_object_output), crt_object_output
         )
         os.replace(pathlib.Path(staged_args.output), output)

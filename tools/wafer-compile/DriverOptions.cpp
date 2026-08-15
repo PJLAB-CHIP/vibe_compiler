@@ -33,7 +33,7 @@ void printHelp() {
                   "--target-model-max-movement-bytes <bytes> "
                   "--target-model-max-movement-segments <count> "
                   "[--target-model-numeric-policy "
-                  "<formal|prefer-admitted|managed-reference> "
+                  "<formal|bulk-then-formal|managed-reference> "
                   "[--target-model-bulk-record <record>] "
                   "--target-model-max-bulk-total-bytes <bytes> "
                   "--target-model-max-bulk-scratchpad-bytes <bytes> "

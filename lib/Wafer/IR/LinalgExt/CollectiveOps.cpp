@@ -3,7 +3,7 @@
 
 #include "Wafer/IR/WaferDialect.h"
 
-#include "OpVerifierUtils.h"
+#include "WaferIRVerification.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -44,9 +44,9 @@ verifyAllowedAttrs(mlir::Operation *op,
   return mlir::success();
 }
 
-mlir::LogicalResult verifyPartitionGroup(mlir::Operation *op,
-                                         mlir::DenseI64ArrayAttr
-                                             partitionGroupAttr) {
+mlir::LogicalResult
+verifyPartitionGroup(mlir::Operation *op,
+                     mlir::DenseI64ArrayAttr partitionGroupAttr) {
   auto partitionGroup = partitionGroupAttr.asArrayRef();
   if (partitionGroup.empty())
     return op->emitOpError("partition_group must not be empty");
@@ -91,10 +91,9 @@ verifyPartitionGroups(mlir::Operation *op,
       op, partitionIds, "linalg-ext collective partition_groups");
 }
 
-mlir::LogicalResult
-verifyCollectivePartitionGroups(mlir::Operation *op,
-                                mlir::DenseI64ArrayAttr partitionGroupAttr,
-                                mlir::DenseIntElementsAttr partitionGroupsAttr) {
+mlir::LogicalResult verifyCollectivePartitionGroups(
+    mlir::Operation *op, mlir::DenseI64ArrayAttr partitionGroupAttr,
+    mlir::DenseIntElementsAttr partitionGroupsAttr) {
   if (partitionGroupAttr && partitionGroupsAttr)
     return op->emitOpError(
         "must specify only one of partition_group or partition_groups");
@@ -141,8 +140,8 @@ bool isSupportedCollectiveInputPromotion(mlir::Type inputElementType,
   if (!inputFloat || !resultFloat)
     return false;
   auto isSupportedStorageType = [](mlir::Type type) {
-    return mlir::isa<mlir::Float16Type, mlir::BFloat16Type,
-                     mlir::Float32Type>(type);
+    return mlir::isa<mlir::Float16Type, mlir::BFloat16Type, mlir::Float32Type>(
+        type);
   };
   return isSupportedStorageType(inputElementType) &&
          isSupportedStorageType(resultElementType) &&
@@ -287,8 +286,7 @@ mlir::LogicalResult verifyAllReduceLikeShape(mlir::Operation *op,
     auto inputType = mlir::cast<mlir::RankedTensorType>(input.getType());
     auto resultType = mlir::cast<mlir::RankedTensorType>(result.getType());
     if (inputType.getShape() != resultType.getShape())
-      return op->emitOpError(
-          "all_reduce input and result shapes must match");
+      return op->emitOpError("all_reduce input and result shapes must match");
   }
   return mlir::success();
 }
@@ -683,9 +681,9 @@ mlir::LogicalResult verifyCombinerRegion(mlir::Operation *op,
 } // namespace
 
 mlir::LogicalResult LinalgExtCollectiveAllGatherOp::verify() {
-  if (mlir::failed(verifyAllowedAttrs(getOperation(),
-                                      {"axis", "partition_group", "partition_groups",
-                                       "channel_id", "use_global_device_ids"})))
+  if (mlir::failed(verifyAllowedAttrs(
+          getOperation(), {"axis", "partition_group", "partition_groups",
+                           "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults())))
@@ -698,7 +696,8 @@ mlir::LogicalResult LinalgExtCollectiveAllGatherOp::verify() {
     return mlir::failure();
   return verifyAllGatherLikeShape(
       getOperation(), getInputs(), getResults(), getAxisAttr(),
-      getCollectivePartitionGroupSize(getPartitionGroupAttr(), getPartitionGroupsAttr()));
+      getCollectivePartitionGroupSize(getPartitionGroupAttr(),
+                                      getPartitionGroupsAttr()));
 }
 
 WaferLinalgExtCollectiveKind
@@ -740,9 +739,9 @@ mlir::LogicalResult LinalgExtCollectiveAllGatherOp::getResultTilePosition(
 }
 
 mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verify() {
-  if (mlir::failed(verifyAllowedAttrs(getOperation(),
-                                      {"axis", "partition_group", "partition_groups",
-                                       "channel_id", "use_global_device_ids"})))
+  if (mlir::failed(verifyAllowedAttrs(
+          getOperation(), {"axis", "partition_group", "partition_groups",
+                           "channel_id", "use_global_device_ids"})))
     return mlir::failure();
   if (mlir::failed(verifySingleDestinationStyleShape(
           getOperation(), getInputs(), getOuts(), getResults(),
@@ -756,7 +755,8 @@ mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verify() {
     return mlir::failure();
   return verifyReduceScatterLikeShape(
       getOperation(), getInputs(), getResults(), getAxisAttr(),
-      getCollectivePartitionGroupSize(getPartitionGroupAttr(), getPartitionGroupsAttr()));
+      getCollectivePartitionGroupSize(getPartitionGroupAttr(),
+                                      getPartitionGroupsAttr()));
 }
 
 mlir::LogicalResult LinalgExtCollectiveReduceScatterOp::verifyRegions() {

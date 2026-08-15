@@ -4,7 +4,7 @@
 形态及其缺失证据。它只回答“旧 source 中观察到了什么”和“这些观察尚不能证明什么”，不维护
 production membership、promotion 顺序、IR / ABI 设计或 runtime ownership。
 
-当前IR / ABI和production closure合同以`tasks/14-target-conversion-module-publication.md`为准，prototype以
+当前IR / ABI和production closure合同以`tasks/14-target-code-generation.md`为准，prototype以
 `runtime/wafer_crt/include/wafer_tx81_crt.h`为准，repo-local实现以
 `runtime/wafer_crt/src/wafer_tx81_crt.c`为准；静态闭包检查入口是
 `tools/check_target_crt_symbols.py`，任务状态以`tasks/progress.md`为准。
@@ -70,7 +70,7 @@ layout、shape、memory-space 或 descriptor 语义。
 
 本清单不维护 covered / excluded 状态，也不授权新增 symbol、IR、ABI 或 runtime path。查询当前闭包时：
 
-- IR / ABI和production closure合同读取`tasks/14-target-conversion-module-publication.md`；
+- IR / ABI和production closure合同读取`tasks/14-target-code-generation.md`；
 - prototype读取`runtime/wafer_crt/include/wafer_tx81_crt.h`，实现读取
   `runtime/wafer_crt/src/wafer_tx81_crt.c`；
 - 静态 symbol、signature 和 object closure 读取 `tools/check_target_crt_symbols.py` 的检查结果；

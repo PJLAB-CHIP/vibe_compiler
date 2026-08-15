@@ -27,8 +27,8 @@ STATUS_ABI = "wafer-direct-dte-status-v2"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
 DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
-PROFILE_COMPANION_READY = (
-    "profile_companion: ready schema=7 ranks=16 variants=1 captures=2"
+PROFILE_INSTRUMENTATION_READY = (
+    "profile_instrumentation: ready schema=7 ranks=16 variants=1 captures=2"
 )
 PROFILE_CAMPAIGN_LAUNCH_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
@@ -113,20 +113,20 @@ def compile_package(
         command.append("--profile")
     result = run(command)
     if (
-        f"published verified package with execution-ranks={RANK_COUNT}"
+        f"wrote verified package with execution-ranks={RANK_COUNT}"
         not in result.stdout
     ):
         raise RuntimeError(
             "wafer-compile did not report a verified rank-16 package"
         )
-    published_companion = "wafer-compile: published profile companion:"
-    if profile and published_companion not in result.stdout:
+    written_instrumentation = "wafer-compile: wrote profile instrumentation:"
+    if profile and written_instrumentation not in result.stdout:
         raise RuntimeError(
-            "wafer-compile did not publish the requested profile companion"
+            "wafer-compile did not write the requested profile instrumentation"
         )
-    if not profile and published_companion in result.stdout:
+    if not profile and written_instrumentation in result.stdout:
         raise RuntimeError(
-            "ordinary wafer-compile unexpectedly published a profile companion"
+            "ordinary wafer-compile unexpectedly wrote profile instrumentation"
         )
 
 
@@ -149,20 +149,20 @@ def require_byte_identical_packages(
         )
 
 
-def require_profile_companion_permissions(package: pathlib.Path) -> None:
-    companion = pathlib.Path(f"{package}.profile")
-    if not companion.is_dir() or companion.is_symlink():
-        raise RuntimeError("profile companion is not a real directory")
-    for path in (companion, *companion.rglob("*")):
+def require_profile_instrumentation_permissions(package: pathlib.Path) -> None:
+    instrumentation = pathlib.Path(f"{package}.profile")
+    if not instrumentation.is_dir() or instrumentation.is_symlink():
+        raise RuntimeError("profile instrumentation is not a real directory")
+    for path in (instrumentation, *instrumentation.rglob("*")):
         if path.is_symlink():
             continue
         if not path.is_dir() and not path.is_file():
             raise RuntimeError(
-                f"profile companion contains a non-regular member: {path}"
+                f"profile instrumentation contains a non-regular member: {path}"
             )
         if stat.S_IMODE(path.stat().st_mode) != 0o777:
             raise RuntimeError(
-                f"profile companion permission is not 0777: {path}"
+                f"profile instrumentation permission is not 0777: {path}"
             )
 
 
@@ -243,13 +243,13 @@ def validate_manifest(
     metadata = json.loads((package / "functions" / "forward.meta").read_text())
     boundary = metadata.get("distributed_boundary")
     if not isinstance(boundary, dict) or boundary.get("logical_rank_count") != RANK_COUNT:
-        raise RuntimeError("SPMD helper did not publish the 16-rank boundary")
+        raise RuntimeError("SPMD helper did not write the 16-rank boundary")
     inputs = boundary.get("inputs")
     outputs = boundary.get("outputs")
     if not isinstance(inputs, list) or len(inputs) != 1:
-        raise RuntimeError("SPMD helper did not publish the input boundary")
+        raise RuntimeError("SPMD helper did not write the input boundary")
     if not isinstance(outputs, list) or len(outputs) != 1:
-        raise RuntimeError("SPMD helper did not publish the output boundary")
+        raise RuntimeError("SPMD helper did not write the output boundary")
     input_binding = inputs[0]
     output_binding = outputs[0]
     expected_input_ranks = [
@@ -305,7 +305,7 @@ def validate_manifest(
         )
     modules = manifest.get("modules")
     if not isinstance(modules, list) or len(modules) != 1:
-        raise RuntimeError("Direct-DTE case must publish one shared module")
+        raise RuntimeError("Direct-DTE case must produce one shared module")
     module = modules[0]
     if module.get("exports") != runtime_launch.expected_kernel_module_exports(
         runtime_launch.CLUSTER_KERNEL_LAUNCH
@@ -436,7 +436,7 @@ def write_raw_files(
     return arguments
 
 
-def verify_no_card_evidence(stdout: str, *, companion_expected: bool) -> None:
+def verify_no_card_evidence(stdout: str, *, instrumentation_expected: bool) -> None:
     required = {
         "package: id=0 schema=7 ranks=16",
         f"invocation_ranks: {RANK_COUNT}",
@@ -445,10 +445,10 @@ def verify_no_card_evidence(stdout: str, *, companion_expected: bool) -> None:
     output_lines = set(stdout.splitlines())
     if not required.issubset(output_lines):
         raise RuntimeError("no-card output omitted Direct-DTE validation")
-    companion_ready = PROFILE_COMPANION_READY in stdout
-    if companion_ready != companion_expected:
+    instrumentation_ready = PROFILE_INSTRUMENTATION_READY in stdout
+    if instrumentation_ready != instrumentation_expected:
         raise RuntimeError(
-            "no-card launch did not prove the exact profile companion "
+            "no-card launch did not prove the exact profile instrumentation "
             "activation boundary"
         )
 
@@ -485,7 +485,7 @@ def verify_board_evidence(
     } != expected_output_ids:
         raise RuntimeError("board output omitted exact rank output evidence")
     # BoardRuntime checks every typed Direct-DTE status resource for Success
-    # before it publishes DeviceToHost/Cleanup. Reaching both stages therefore
+    # before it runs DeviceToHost/Cleanup. Reaching both stages therefore
     # retains the existing exact 16-rank status gate without inventing a second
     # host-visible status protocol in this harness.
 
@@ -493,9 +493,9 @@ def verify_board_evidence(
 def verify_profile_report(
     package: pathlib.Path, stdout: str
 ) -> tuple[int, pathlib.Path]:
-    require_profile_companion_permissions(package)
-    companion = pathlib.Path(f"{package}.profile")
-    runs = companion / "runs"
+    require_profile_instrumentation_permissions(package)
+    instrumentation = pathlib.Path(f"{package}.profile")
+    runs = instrumentation / "runs"
     current = runs / "current"
     if not current.is_symlink():
         raise RuntimeError("profile report current entry is not a symlink")
@@ -510,7 +510,7 @@ def verify_profile_report(
     members = {path.name: path for path in entries}
     if set(members) != {"evidence.json", "analysis.json", "index.html"}:
         raise RuntimeError(
-            "profile report does not contain exactly the three public artifacts"
+            "profile report does not contain exactly the three public output files"
         )
 
     evidence = json.loads(members["evidence.json"].read_text())
@@ -574,7 +574,7 @@ def verify_profile_report(
             "for one or more tiles"
         )
 
-    final = analysis.get("final_artifact")
+    final = analysis.get("program")
     validity = analysis.get("validity")
     if (
         analysis.get("schema") != "wafer.profile.analysis"
@@ -642,7 +642,7 @@ def verify_profile_report(
         )
         or not duration.get("qualified")
         or not isinstance(output, dict)
-        or not output.get("production_execution_validated")
+        or not output.get("primary_output_validated")
         or not output.get("diagnostic_captures_match_primary")
         or not isinstance(tiles, list)
         or len(tiles) != RANK_COUNT
@@ -758,7 +758,7 @@ def verify_profile_report(
 
     expected_report = current / "index.html"
     if f"profile_report: {expected_report}" not in stdout:
-        raise RuntimeError("wafer-run did not publish the stable profile report path")
+        raise RuntimeError("wafer-run did not return the stable profile report path")
     return samples[0]["device_elapsed_ns"], expected_report
 
 
@@ -782,7 +782,7 @@ def main() -> int:
         )
         compile_package(args, source, package, profile=True)
         require_byte_identical_packages(ordinary_package, package)
-        require_profile_companion_permissions(package)
+        require_profile_instrumentation_permissions(package)
     else:
         compile_package(args, source, package, profile=False)
 
@@ -806,7 +806,7 @@ def main() -> int:
             ])
             verify_no_card_evidence(
                 result.stdout,
-                companion_expected=(
+                instrumentation_expected=(
                     args.profile and no_card_package == package
                 ),
             )

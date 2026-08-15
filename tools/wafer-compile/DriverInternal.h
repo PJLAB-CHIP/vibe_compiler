@@ -4,7 +4,7 @@
 #define WAFER_TOOLS_WAFER_COMPILE_DRIVERINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Compiler/TargetArtifact.h"
+#include "Wafer/Compiler/TargetCodeGen.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 #include "Wafer/Model/SystemCTargetModel.h"
 #endif
@@ -69,13 +69,13 @@ parsePositiveCount(const std::optional<std::string> &value,
 /// Writes the accepted instruction modules and their exact Target LLVM
 /// translations for compiler inspection. The destination must not exist.
 bool dumpCompilerIR(llvm::StringRef destination,
-                    const wafer::compiler::TargetCompilationProduct &product,
+                    const wafer::compiler::CompiledProgram &compiledProgram,
                     llvm::raw_ostream &diagnostics);
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 bool runTargetModelGate(
     const CommandLineOptions &options,
-    const wafer::compiler::TargetCompilationProduct &product,
+    const wafer::compiler::CompiledProgram &compiledProgram,
     llvm::ArrayRef<IndexedPath> inputPaths,
     llvm::ArrayRef<IndexedPath> expectedPaths, double atol, double rtol,
     wafer::model::TargetModelKernelBudget budget,

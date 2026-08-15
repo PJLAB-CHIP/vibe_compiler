@@ -338,8 +338,8 @@ InstructionProgramCost
 analyzeInstructionProgramCost(mlir::Operation *root,
                               const TargetScheduleCostPolicy &policy);
 
-/// One explicitly identified physical-Tile instruction program.  Identity is
-/// supplied by the artifact owner and is never recovered from vector order,
+/// One explicitly identified physical-Tile instruction program. The Tile ID
+/// is supplied by the caller and is never recovered from vector order,
 /// module/function names, or logical partition metadata.
 struct PhysicalTileInstructionProgram {
   PhysicalTileId tileId{0};
@@ -351,7 +351,7 @@ struct PhysicalTileInstructionProgram {
 /// the analyzer still walks the complete structured control flow so selected
 /// instructions retain their real loop/path multiplicity. Slices are an
 /// analysis input only and are never serialized into compiler IR or a target
-/// artifact.
+/// module.
 struct PhysicalTileInstructionProgramSlice {
   PhysicalTileId tileId{0};
   mlir::Operation *root = nullptr;

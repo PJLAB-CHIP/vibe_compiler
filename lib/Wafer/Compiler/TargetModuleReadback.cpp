@@ -1,6 +1,6 @@
 //===- TargetModuleReadback.cpp - Linked target module verification -----===//
 
-#include "TargetArtifactInternal.h"
+#include "TargetCodeGenInternal.h"
 
 #include "Wafer/Support/TargetPolicy.h"
 
@@ -299,14 +299,14 @@ llvm::Expected<VerifiedTargetModule> verifyLinkedTargetModuleForTesting(
     TargetIdentityId targetIdentity,
     const RuntimeLaunchContract &runtimeLaunchContract) {
   std::vector<VerifiedTargetExport> exports;
-  exports.push_back(TargetArtifactBundleBuilder::makeExport(
+  exports.push_back(LinkedTargetModulesBuilder::makeExport(
       TargetExportRole::Main, entrySymbol));
   llvm::Expected<TargetModuleReadback> readback =
       verifyTargetModule(path, exports, targetIdentity, runtimeLaunchContract);
   if (!readback)
     return readback.takeError();
-  return TargetArtifactBundleBuilder::makeModule(
-      TargetArtifactModuleId(0), llvm::sys::path::filename(path),
+  return LinkedTargetModulesBuilder::makeModule(
+      TargetModuleId(0), llvm::sys::path::filename(path),
       readback->contentDigest, targetIdentity,
       KernelRuntimeABIId::waferTx81Kernel(), readback->moduleFormat,
       std::move(exports));

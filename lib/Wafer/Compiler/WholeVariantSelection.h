@@ -6,9 +6,9 @@
 namespace wafer::compiler::detail {
 
 /// Controls which already-generated, fully accepted whole-rank variant is
-/// committed by the compiler. Production evaluates the accepted frontier;
-/// ReservedBaseline commits the unique conservative candidate carried by each
-/// rank frontier. Qualification modes select only an actual fixed-slot or
+/// selected by the compiler. Production evaluates the accepted candidates;
+/// ReservedBaseline selects the unique conservative candidate carried by each
+/// rank candidates. Qualification modes select only an actual fixed-slot or
 /// disjoint-component worker realization that passes the same late gates; they
 /// do not alter production cost or preference. The characterization modes
 /// select a fully accepted variant only when its final instruction IR contains
@@ -16,7 +16,7 @@ namespace wafer::compiler::detail {
 /// family. The NoC-resident ring qualification additionally rejects reserved
 /// candidates and proves from every accepted rank's current IR that DDR
 /// movement is limited to entry-boundary reads and returned-output writes;
-/// artifact-generation labels are not semantic residency. These are internal
+/// output-generation labels are not semantic residency. These are internal
 /// test seams, not user options or alternate IR contracts.
 enum class WholeVariantSelectionMode {
   Production,
@@ -86,12 +86,12 @@ getCollectiveCharacterizationAlternative(WholeVariantSelectionMode mode) {
   return "";
 }
 
-/// Static fixed-slot qualification publishes an attestation companion as part
-/// of the same no-replace transaction as its canonical package. The compound
-/// qualification reuses that exact companion schema while adding independent
+/// Static fixed-slot qualification writes an attestation record in the same
+/// no-replace directory transaction as its canonical package. The compound
+/// qualification reuses that record schema while adding independent
 /// NoC-residency and worker-placement selection predicates.
 constexpr bool
-producesStaticFixedSlotQualificationCompanion(WholeVariantSelectionMode mode) {
+writesStaticFixedSlotQualificationRecord(WholeVariantSelectionMode mode) {
   return mode == WholeVariantSelectionMode::QualifyStaticFixedSlot ||
          mode == WholeVariantSelectionMode::QualifyDirectDTEComputeOverlap ||
          mode == WholeVariantSelectionMode::QualifyNoCResidentFixedSlotWorker;

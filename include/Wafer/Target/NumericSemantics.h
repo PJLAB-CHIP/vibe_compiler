@@ -19,7 +19,7 @@
 
 namespace wafer {
 
-/// Closed identity for one explicitly selected model-only semantics profile.
+/// Closed identifier for one explicitly selected model-only semantics profile.
 /// It deliberately has no default or unknown value and does not affect
 /// compiler target legality.
 class ModelProfileId {
@@ -63,7 +63,7 @@ parseModelProfileId(llvm::StringRef canonicalSpelling);
 const ModelProfileRecord &getModelProfileRecord(ModelProfileId id);
 llvm::StringRef stringifyModelProfileId(ModelProfileId id);
 
-/// Validated logical tensor identity: format, the shared Wafer physical layout
+/// Validated logical tensor key: format, the shared Wafer physical layout
 /// family, complete static shape, checked element count and a digest covering
 /// all four facts. The key carries only the pure target layout enum; physical
 /// geometry remains derived from dtype and shape by the shared calculator.
@@ -266,7 +266,7 @@ struct NumericCTElementwiseCommand {
 };
 
 /// Exact GEMM dimension mapping. Factories accept the mapping explicitly and
-/// reject every non-canonical permutation; this keeps the command identity
+/// reject every non-canonical permutation; this keeps the command key
 /// faithful to the terminal instruction fields without admitting alternate
 /// predicate paths in capability matching.
 struct NumericGemmAxes {
@@ -336,7 +336,7 @@ using NumericCommandPayload =
     std::variant<NumericCTConvertCommand, NumericCTElementwiseCommand,
                  NumericNEGemmCommand, NumericNativeCTReduceCommand>;
 
-/// Validated exact command identity. Shapes, layouts, parameters and all
+/// Validated exact command key. Shapes, layouts, parameters and all
 /// family-specific fields remain exact here; capability wildcarding belongs to
 /// the separate finite pattern registry.
 class NumericCommandKey {
@@ -351,12 +351,12 @@ public:
   createCTElementwise(NumericElementwiseOperation operation,
                       std::vector<NumericTensorKey> inputs,
                       NumericTensorKey destination);
-  static llvm::Expected<NumericCommandKey>
-  createNEGemm(NumericTensorKey lhs, NumericTensorKey rhs,
-               NumericTensorKey destination, uint32_t m, uint32_t k, uint32_t n,
-               uint32_t batchCount, NumericGemmAxes axes,
-               TargetGemmOrientation lhsOrientation = TargetGemmOrientation::Normal,
-               TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal);
+  static llvm::Expected<NumericCommandKey> createNEGemm(
+      NumericTensorKey lhs, NumericTensorKey rhs, NumericTensorKey destination,
+      uint32_t m, uint32_t k, uint32_t n, uint32_t batchCount,
+      NumericGemmAxes axes,
+      TargetGemmOrientation lhsOrientation = TargetGemmOrientation::Normal,
+      TargetGemmOrientation rhsOrientation = TargetGemmOrientation::Normal);
   static llvm::Expected<NumericCommandKey>
   createNativeCTReduce(NumericReduceOperation operation, NumericTensorKey input,
                        NumericTensorKey destination,
@@ -465,13 +465,13 @@ enum class NumericReductionOrderPolicy : uint8_t {
   IncreasingLogicalRowMajorInputIndex,
 };
 
-/// Finite reusable identity for one CT convert route and effective policy. It
+/// Finite reusable key for one CT convert route and effective policy. It
 /// intentionally contains no tensor or exact command parameter.
-class NumericCTConvertSemanticsIdentity {
+class NumericCTConvertSemanticsKey {
 public:
-  NumericCTConvertSemanticsIdentity() = delete;
-  NumericCTConvertSemanticsIdentity(uint16_t opcode,
-                                    NumericRoundingMode effectiveRounding)
+  NumericCTConvertSemanticsKey() = delete;
+  NumericCTConvertSemanticsKey(uint16_t opcode,
+                               NumericRoundingMode effectiveRounding)
       : opcode(opcode), effectiveRounding(effectiveRounding) {}
 
   NumericCommandFamily getFamily() const {
@@ -483,8 +483,8 @@ public:
     return effectiveRounding;
   }
 
-  friend bool operator==(const NumericCTConvertSemanticsIdentity &lhs,
-                         const NumericCTConvertSemanticsIdentity &rhs) {
+  friend bool operator==(const NumericCTConvertSemanticsKey &lhs,
+                         const NumericCTConvertSemanticsKey &rhs) {
     return lhs.opcode == rhs.opcode &&
            lhs.effectiveRounding == rhs.effectiveRounding;
   }
@@ -494,12 +494,12 @@ private:
   NumericRoundingMode effectiveRounding;
 };
 
-class NumericCTElementwiseSemanticsIdentity {
+class NumericCTElementwiseSemanticsKey {
 public:
-  NumericCTElementwiseSemanticsIdentity() = delete;
-  NumericCTElementwiseSemanticsIdentity(NumericElementwiseOperation operation,
-                                        LogicalFormat inputFormat,
-                                        LogicalFormat destinationFormat)
+  NumericCTElementwiseSemanticsKey() = delete;
+  NumericCTElementwiseSemanticsKey(NumericElementwiseOperation operation,
+                                   LogicalFormat inputFormat,
+                                   LogicalFormat destinationFormat)
       : operation(operation), inputFormat(inputFormat),
         destinationFormat(destinationFormat) {}
 
@@ -510,8 +510,8 @@ public:
   LogicalFormat getInputFormat() const { return inputFormat; }
   LogicalFormat getDestinationFormat() const { return destinationFormat; }
 
-  friend bool operator==(const NumericCTElementwiseSemanticsIdentity &lhs,
-                         const NumericCTElementwiseSemanticsIdentity &rhs) {
+  friend bool operator==(const NumericCTElementwiseSemanticsKey &lhs,
+                         const NumericCTElementwiseSemanticsKey &rhs) {
     return lhs.operation == rhs.operation &&
            lhs.inputFormat == rhs.inputFormat &&
            lhs.destinationFormat == rhs.destinationFormat;
@@ -523,19 +523,18 @@ private:
   LogicalFormat destinationFormat;
 };
 
-class NumericNEGemmSemanticsIdentity {
+class NumericNEGemmSemanticsKey {
 public:
-  NumericNEGemmSemanticsIdentity() = delete;
-  explicit NumericNEGemmSemanticsIdentity(LogicalFormat format)
-      : format(format) {}
+  NumericNEGemmSemanticsKey() = delete;
+  explicit NumericNEGemmSemanticsKey(LogicalFormat format) : format(format) {}
 
   NumericCommandFamily getFamily() const {
     return NumericCommandFamily::NEGemm;
   }
   LogicalFormat getFormat() const { return format; }
 
-  friend bool operator==(const NumericNEGemmSemanticsIdentity &lhs,
-                         const NumericNEGemmSemanticsIdentity &rhs) {
+  friend bool operator==(const NumericNEGemmSemanticsKey &lhs,
+                         const NumericNEGemmSemanticsKey &rhs) {
     return lhs.format == rhs.format;
   }
 
@@ -543,11 +542,11 @@ private:
   LogicalFormat format;
 };
 
-class NumericNativeCTReduceSemanticsIdentity {
+class NumericNativeCTReduceSemanticsKey {
 public:
-  NumericNativeCTReduceSemanticsIdentity() = delete;
-  NumericNativeCTReduceSemanticsIdentity(NumericReduceOperation operation,
-                                         LogicalFormat format)
+  NumericNativeCTReduceSemanticsKey() = delete;
+  NumericNativeCTReduceSemanticsKey(NumericReduceOperation operation,
+                                    LogicalFormat format)
       : operation(operation), format(format) {}
 
   NumericCommandFamily getFamily() const {
@@ -556,8 +555,8 @@ public:
   NumericReduceOperation getOperation() const { return operation; }
   LogicalFormat getFormat() const { return format; }
 
-  friend bool operator==(const NumericNativeCTReduceSemanticsIdentity &lhs,
-                         const NumericNativeCTReduceSemanticsIdentity &rhs) {
+  friend bool operator==(const NumericNativeCTReduceSemanticsKey &lhs,
+                         const NumericNativeCTReduceSemanticsKey &rhs) {
     return lhs.operation == rhs.operation && lhs.format == rhs.format;
   }
 
@@ -566,9 +565,9 @@ private:
   LogicalFormat format;
 };
 
-using NumericSemanticsIdentity = std::variant<
-    NumericCTConvertSemanticsIdentity, NumericCTElementwiseSemanticsIdentity,
-    NumericNEGemmSemanticsIdentity, NumericNativeCTReduceSemanticsIdentity>;
+using NumericSemanticsKey =
+    std::variant<NumericCTConvertSemanticsKey, NumericCTElementwiseSemanticsKey,
+                 NumericNEGemmSemanticsKey, NumericNativeCTReduceSemanticsKey>;
 
 /// Immutable reusable family-typed numeric semantics. Tensor shape/layout and
 /// exact command parameters remain in NumericCommandKey.
@@ -578,12 +577,11 @@ public:
 
   ModelProfileId getModelProfile() const { return modelProfile; }
   NumericCommandFamily getFamily() const;
-  const NumericSemanticsIdentity &getIdentity() const { return identity; }
-  const NumericCTConvertSemanticsIdentity *getCTConvertIdentity() const;
-  const NumericCTElementwiseSemanticsIdentity *getCTElementwiseIdentity() const;
-  const NumericNEGemmSemanticsIdentity *getNEGemmIdentity() const;
-  const NumericNativeCTReduceSemanticsIdentity *
-  getNativeCTReduceIdentity() const;
+  const NumericSemanticsKey &getSemanticsKey() const { return key; }
+  const NumericCTConvertSemanticsKey *getCTConvertKey() const;
+  const NumericCTElementwiseSemanticsKey *getCTElementwiseKey() const;
+  const NumericNEGemmSemanticsKey *getNEGemmKey() const;
+  const NumericNativeCTReduceSemanticsKey *getNativeCTReduceKey() const;
   NumericRoundingMode getRoundingMode() const;
   std::optional<NumericRoundingMode> getRoundingModePolicy() const {
     return roundingMode;
@@ -644,7 +642,7 @@ public:
 
 private:
   NumericSemanticsProfile(
-      ModelProfileId modelProfile, NumericSemanticsIdentity identity,
+      ModelProfileId modelProfile, NumericSemanticsKey key,
       std::optional<NumericRoundingMode> roundingMode,
       NumericRoundingPointPolicy roundingPointPolicy,
       FloatToIntegerPolicy floatToIntegerPolicy,
@@ -666,7 +664,7 @@ private:
           reductionAccumulatorInitializationPolicy,
       NumericReductionOrderPolicy reductionOrderPolicy,
       std::string semanticDigest)
-      : modelProfile(modelProfile), identity(std::move(identity)),
+      : modelProfile(modelProfile), key(std::move(key)),
         roundingMode(roundingMode), roundingPointPolicy(roundingPointPolicy),
         floatToIntegerPolicy(floatToIntegerPolicy),
         floatingNaNPolicy(floatingNaNPolicy),
@@ -689,7 +687,7 @@ private:
         semanticDigest(std::move(semanticDigest)) {}
 
   ModelProfileId modelProfile;
-  NumericSemanticsIdentity identity;
+  NumericSemanticsKey key;
   std::optional<NumericRoundingMode> roundingMode;
   NumericRoundingPointPolicy roundingPointPolicy;
   FloatToIntegerPolicy floatToIntegerPolicy;

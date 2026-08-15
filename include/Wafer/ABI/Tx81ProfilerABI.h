@@ -8,16 +8,16 @@
 
 /*
  * Pipeline position:
- * - Upstream artifact / IR: a profiling-only target module, its accepted
+ * - Upstream IR / input: a profiling-only target module, its accepted
  *   instruction sites, and one owned per-tile DDR output allocation.
  * - Current stage responsibility: preserve raw Kcore cycle samples, NCC PMU
  *   snapshots, five NCC engine activity observations, and distinct Direct-DTE
  *   issue and completion observations.
- * - Output artifact / IR: a versioned per-tile byte record.  It is evidence,
+ * - Output record: a versioned per-tile byte record. It is evidence,
  *   not compiler IR, a scheduler hint, or a target package side channel.
  * - Downstream consumer: the host decoder and profile-scoped calibration.
  * - User-level driver / named pipeline: an explicitly selected profiling
- *   target-artifact build followed by the normal board runtime lifecycle.
+ *   target-module build followed by the normal board runtime lifecycle.
  * - Explicit non-goals: no completion meaning for an NCC submit return,
  *   no vendor-profiler dependency, no cross-tile clock alignment, and no
  *   production-CRT instrumentation.
@@ -96,7 +96,7 @@ enum WaferTx81ProfilerRecordFlag {
   WAFER_TX81_PROFILER_RECORD_OVERFLOW = UINT32_C(1) << 3,
   WAFER_TX81_PROFILER_RECORD_SITE_PROTOCOL_ERROR = UINT32_C(1) << 4,
   WAFER_TX81_PROFILER_RECORD_SUB_INDEX_OVERFLOW = UINT32_C(1) << 5,
-  WAFER_TX81_PROFILER_RECORD_PUBLISHED = UINT32_C(1) << 6,
+  WAFER_TX81_PROFILER_RECORD_COMPLETE = UINT32_C(1) << 6,
   WAFER_TX81_PROFILER_RECORD_COUNT_ONLY = UINT32_C(1) << 7,
 };
 
@@ -172,7 +172,7 @@ typedef struct WaferTx81ProfilerPMUSnapshot {
  * completion-wait semantic is represented separately by its operation span.
  * All inside-entry categories here are therefore instrumentation-only.  Entry
  * setup is measured before entry_begin_cycle; entry teardown begins at
- * entry_end_cycle and ends before the final record publication.  They
+ * entry_end_cycle and ends before the final record writeback. They
  * therefore lie outside the entry axis.
  */
 typedef struct WaferTx81ProfilerCostSummary {

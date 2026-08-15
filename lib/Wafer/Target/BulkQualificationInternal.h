@@ -86,7 +86,7 @@ parseSpecObject(const llvm::json::Object &object);
 llvm::json::Object flagsJSON(FormalNumericExceptionFlags flags);
 llvm::Expected<FormalNumericExceptionFlags>
 parseFlags(const llvm::json::Object &object);
-llvm::Error publishNoReplace(llvm::StringRef path, llvm::StringRef content);
+llvm::Error writeFileNoReplace(llvm::StringRef path, llvm::StringRef content);
 
 struct Comparison {
   bool rawExact = true;

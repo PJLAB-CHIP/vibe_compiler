@@ -22,8 +22,8 @@ namespace wafer::compiler::detail {
 /// logical demand remains owned by `WholeDAGEdgeDemandPlan`.
 struct WholeDAGEdgeStrategyPlan {
   // A strategy contains several inline domains/fragments and is intentionally
-  // heap-backed here. Placement frontiers embed many plans; an inline array
-  // would turn an exact frontier into a multi-megabyte C++ stack frame.
+  // heap-backed here. Placement search keeps many plans alive; an inline array
+  // would turn the search queue into a multi-megabyte C++ stack frame.
   llvm::SmallVector<SpatialEdgeStrategy, 0> strategies;
   uint64_t totalPeerBytes = 0;
 };
