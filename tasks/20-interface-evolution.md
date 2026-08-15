@@ -45,7 +45,8 @@ Pipeline position:
 上述边界只有一个current identity和一个集中检查入口。类型、常量、函数、wire identity和header都不携带当前数值；
 旧输入因schema、field、magic、size、layout、digest或ABI identity不匹配而直接拒绝，不保留translation path。
 
-设备报告的runtime版本、第三方依赖版本、外部文件格式版本、许可证版本和vendor规范版本是外部事实，继续精确记录，
+设备报告的runtime版本、第三方依赖版本、StableHLO portable compatibility target、NPY等外部文件格式版本、许可证版本和
+vendor规范版本是外部事实，继续精确记录，
 不改写成Wafer名称。
 
 ## 3. 不拥有版本的表示
@@ -69,6 +70,8 @@ Pipeline position:
 3. hash domain separator可以保留稳定语义字符串，但不得用`vN`代替字段定义或算法合同；改变语义时修改typed输入与测试。
 4. 真正ABI常量采用无数值后缀的current名称；C/C++ identifier和wire identity都不携带Wafer自定义版本号。
 5. 同批更新代码、canonical fixtures、negative tests和current设计文档；archive和historical raw evidence不重写。
+6. CLI flag、tool action和library result同样只有一种current合同；语义修正时原位替换producer/tests/docs，不保留旧flag alias
+   或让build-tree/install-tree走不同入口。
 
 ## 5. 当前实现
 

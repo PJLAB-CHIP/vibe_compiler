@@ -1,6 +1,6 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
-状态：2026-08-13按card-level GSPMD与card-local multi-Tile边界同步。本文只拥有StableHLO program directory、
+状态：2026-08-15按card-level GSPMD、产品frontend入口与大payload backing边界同步。本文只拥有StableHLO program directory、
 metadata/payload和frontend verification合同；`num_partitions`描述card partition，不描述单卡16个Tile。
 typed model/state/resource graph与Tile级时空综合属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
@@ -14,7 +14,7 @@ Pipeline position:
   不是`wafer-compile`的第二种production输入。
 - Current stage responsibility:
   parse并verify StableHLO module；校验单entry function与`forward.meta`的shape/dtype/arg-role关系；校验
-  parameter/constant NPY payload；对post-SPMD program校验canonical `forward.meta.distributed_boundary`、
+  parameter/external captured-constant NPY payload；对post-SPMD program校验canonical `forward.meta.distributed_boundary`、
   parameter shard metadata、logical card-partition domain和payload coverage；拒绝graph break、eager fallback、无界
   dynamic shape及不安全路径。当前program-directory入口只接受static ranked boundary；bounded dynamic仅由
   IR-only frontend verifier检查，尚未进入directory schema或production lowering。
@@ -28,16 +28,19 @@ Pipeline position:
   形成`CardModule`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend verification；继续编译只经
-  `wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=1 --launch-kind={kernel|model}`；
+  当前`wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=1 --launch-kind={kernel|model}`；
+  Q59会按真实package destination原位改名并同步全部consumer，不保留旧alias；
   source-to-package optimization policy只为`search|none`，current target identity由compiler固定提供，不是用户选择。
   `wafer-opt`及named MLIR pipelines只处理显式IR，不拥有program-directory I/O。
 - Explicit non-goals:
   不定义typed model/state ABI、MPMD member graph、physical endpoint、layout、SPM/DDR allocation、DTE、
   target ABI、manifest或runtime handle；不从parameter/function/file名恢复后端语义。
 - Completion gate:
-  真实PyTorch/XLA exporter产物及封装为program directory的pre-exported fixtures通过同一program verifier；metadata、payload、static
-  boundary和post-SPMD shard负例在进入下游前fail closed；Q15直接消费该verified output，而不是重建第二份
-  frontend对象模型。
+  当前实现门禁是测试owner生成的真实PyTorch/XLA exporter产物及pre-exported text fixtures通过同一program verifier，metadata、
+  payload、static boundary和post-SPMD shard负例在进入下游前fail closed；Q15直接消费该verified output，而不是重建第二份
+  frontend对象模型。Q60完成门禁另要求产品`wafer.frontend.export_pytorch_program`产出的program与pre-exported portable
+  StableHLO进入同一ingestion；installed `wafer-verify-program`只复用该ingestion做advisory validation，compiler transaction仍独立
+  snapshot、重新验证并构造`CompilationRequest`。在Q60完成前不得把测试generator写成产品frontend。
 ```
 
 ## 2. 当前 Program Directory 合同
@@ -77,6 +80,49 @@ per-card-partition local tensor的typed output合同，不是planner sidecar，�
 多个entry或program graph，必须先设计可由IR/metadata verifier证明且有下游consumer的最小表示；不能恢复历史
 私有model dialect、复合frontend owner或side-table对象图作为前置。
 
+### 2.1 Payload root、view 与 transaction lifetime
+
+parameter/external captured-constant的逻辑身份、数据内容和target物理表示是三个不同边界。frontend verified output对每个payload只建立：
+
+- 显式logical parameter/external captured-constant identity及其function argument关系；
+- transaction拥有的immutable storage root；root必须由private snapshot/pinned content或其它能证明整次读取内容稳定的owner支撑，
+  仅持有一个regular-file descriptor、mtime或path不构成immutable证明；
+- root内checked half-open byte range与当前source logical tensor view，包括dtype和shape；post-SPMD card slice由SPMD handoff另行形成；
+- 内容digest与source provenance，用于证明读取的bytes未变；digest相等不创建alias。current source schema中每个external
+  parameter/captured-constant binding拥有自己的backing identity，只有该binding的replication/slice可以共享backing。
+
+path和name仍只用于当前container定位与诊断。verifier必须检查header、element count、payload extent与整数运算，拒绝truncated、
+trailing、overflow及source在transaction期间变化；不得先验证路径再在后续stage无owner地重新打开。NPY是当前source adapter，
+不是target layout、package data image或runtime binding。
+
+source snapshot只需要隔离IR、metadata和目录结构事实。大payload通过owner-backed checked view传递，不能为了snapshot、
+propagated program、post-SPMD merge或每个Tile binding复制整棵data tree。SPMD只为实际产生的新card shard建立新的backing/view；
+replicated view可以显式引用同一immutable backing，不能同时保留original data和byte-identical shard来暗示sharing。
+
+SPMD helper是外部进程边界，不是一个可继续传裸C++引用的pass。Q58必须让helper消费transaction-owned、content-stable的
+all-and-only IR/metadata/backing ranges，并把输出shard作为新backing readback接管；helper不能重新打开原source path、整树复制
+或整NPY读入host vector。current product compiler只接受`num_partitions=1`，多partition shard只在frontend/helper isolated gate中
+证明，不冒充source→CardExecutable完整产品路径。
+
+该边界由Q58原位替换current复制实现。它不定义checkpoint registry、framework adapter、target packing、package schema、
+device residency或compute-time weight streaming。
+
+### 2.2 产品 frontend 与外部 StableHLO 边界
+
+唯一backend输入仍是本节定义的一种program directory。framework adapter是directory的producer，而不是把Python/framework
+object直连C++ compiler的第二入口。产品adapter只负责capture/export、拒绝graph break/eager fallback/unsupported side
+effect、写入metadata与外部数据引用并调用共享verifier；workload corpus、seed、CPU oracle、模型名分支、target topology和
+optimization policy都留在adapter之外。
+
+当前真实PyTorch/XLA路径仍由测试generator承载，forward.mlir仍是current IR事实源。Q60会做一次current-only cutover：
+program IR authority原位替换为`functions/forward.stablehlo.bc`承载的StableHLO portable serialization，text MLIR只作可选诊断
+且不进入program directory；pre-exported input与framework adapter output进入
+同一compiler-owned snapshot、deserialize/parser和verifier。不保留text/portable双reader、raw StableHLO旁路或可跨source
+mutation复用的“verified path”。
+
+产品adapter和source verifier必须复用同一ingestion实现；advisory verifier只报告当前路径是否通过检查，compiler仍在自己的
+transaction中重新打开、拥有并验证全部输入。参数内容的source backing/view生命周期由Q58负责，不在Q60重建参数管理层或plugin registry。
+
 ## 3. Frontend Verification
 
 ### 3.1 IR 与 function boundary
@@ -102,8 +148,8 @@ pre-SPMD parameter来自`data/<parameter>`，captured constant来自`constants/<
 - locator指向regular file；
 - NPY header可解析且不是Fortran order；
 - NPY shape和dtype与对应ranked tensor精确一致；
-- payload至少包含由checked element-count和element width推导的完整raw bytes；
-- unsupported dtype、overflow或truncated payload fail closed。
+- payload extent精确等于由checked element-count和element width推导的raw bytes，不接受trailing data；
+- unsupported dtype、overflow、truncated或trailing payload fail closed。
 
 `ProgramTensor`边界的多字节element统一使用canonical little-endian storage。NPY `<f2`可直接进入F16 payload，`=f2`
 只在little-endian host上与该合同等价，`>f2`必须拒绝；BF16使用NumPy `|V2`承载已经canonicalize的little-endian raw
@@ -238,8 +284,10 @@ tensor program。frontend verifier本身不执行helper、不形成调度单元�
 `ExecutionConfig`。它不持有MLIR operation/context、helper path、output path、pass callback、candidate policy、
 target context或writing authority。
 
-source-to-package driver在parse前把source directory完整复制到transaction-owned snapshot；后续frontend verify、helper
-和IR transforms只读/改写staging内成员。source不得被原地补metadata、topology或shards。Q15最终发布的是重新
+source-to-package driver在parse前建立transaction ownership：IR、metadata和目录结构进入私有snapshot，大payload由
+content-stable且完成extent/digest校验的owner-backed source/view持有；后续frontend verify、helper和IR transforms只消费该transaction
+拥有的事实。当前整目录复制以及propagated/original/shard多份payload是Q58必须删除的实现差距，不能成为长期隔离机制。
+source不得被原地补metadata、topology或shards。Q15最终发布的是重新
 parse/verify过的card-partition-local structured tensor program directory；fixed structured optimization完成后，
 physical-dataflow synthesis从单卡partition output构造一个`CardModule`，其中all-and-only available Tiles
 各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；Q51唯一search owner联合决定
@@ -254,14 +302,16 @@ formation/selector没有兼容、debug或发布旁路。
 
 frontend mandatory coverage包括：
 
-- 真实PyTorch/XLA capture → program directory → verifier；
+- 产品PyTorch/XLA adapter与pre-exported portable StableHLO分别产生同一种program directory并进入同一verifier；
+- graph break、fallback、unsupported side effect、portable/text事实源混用与重复export canonical equivalence；
 - generic GEMM、mixed DAG、official HuggingFace prefill、functional KV-cache decode及card-local Llama-2 7B block
   由真实exporter进入production pipeline；同一
   PyTorch eager tensor形成expected，runtime按同shape/dtype完整capture回读为`torch.Tensor`且不做精度转换，
   再经`torch.testing`比较；
 - graph break/eager fallback、metadata length/shape/dtype mismatch；
 - program-directory static boundary；IR-only bounded dynamic及unbounded/invalid bound负例；
-- parameter/constant NPY shape/dtype/order/truncation与unsafe path负例；F16 `<f2`、host-compatible `=f2`、BF16 `|V2`
+- parameter/external captured-constant backing/view owner、range、digest、source mutation、shape/dtype/order/truncation/trailing与unsafe path负例；
+  F16 `<f2`、host-compatible `=f2`、BF16 `|V2`
   canonical bytes正例及`>f2`拒绝；
 - `input_arg` position唯一连续；
 - `forward.parameter_shards.json` replicated/partitioned card-partition coverage、gap/overlap、payload一致性和mesh mismatch；

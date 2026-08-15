@@ -11,10 +11,10 @@ A/B改善时也不能标`done`。
 Pipeline position:
 - Upstream IR / input:
   当前source program、card-level GSPMD输出、normalized TensorProgram、selected CardModule/TileModule/TileRegion、
-  final Instr、CardExecutable、target LLVM modules、linked ELF、ExecutablePackage及其独立oracle。
+  final Instr、CardExecutable、target LLVM modules、linked ELF、target-ready immutable data、ExecutablePackage及其独立oracle。
 - Current stage responsibility:
   在每个IR/output边界验证语义、coverage、physical identity、resource、completion、ABI、writing与execution；
-  建立host、no-card、model和真实板端证据之间不可越级的完成层级。
+  建立host、data-scale、no-card、model和真实板端证据之间不可越级的完成层级。
 - Output IR / files:
   verifier diagnostics、fresh test/build结果、verified package/runtime plan、model result或真实board result；
   evidence不是IR sidecar，也不参与候选选择。
@@ -35,7 +35,9 @@ Pipeline position:
 证据严格分层，低层不能代签高层：
 
 1. **Static/compile evidence**：编译、ODS/verifier、unit、lit、source organization和文本一致性检查。
-2. **Output evidence**：同一compile transaction生成并readback CardModule/Instr、CardExecutable、target module和ExecutablePackage。
+2. **Output evidence**：同一compile transaction生成并readback CardModule/Instr、CardExecutable、target module、
+   selected target physical versions、target-ready data ranges和ExecutablePackage；记录source backing reads、physical-version
+   materialization与package byte closure。
 3. **No-card evidence**：真实package经strict loader与runtime validation形成完整16-Tile invocation plan，且无provider effect。
 4. **Functional model evidence**：同次owner-backed target module set经TargetCall frontend/SystemC执行，完整output与独立CPU expected比较。
 5. **Board correctness evidence**：当前构建、当前package、当前payload在真实设备完成output/guard和lifecycle检查。
@@ -181,10 +183,17 @@ completion从final actual Instr的effects、worker issue domains、async tokens�
 
 - ordinary package manifest与profile activation分别严格检查自己的top-level version；profile plan/site map不携带version，所有文件均拒绝额外/缺失field；
 - `card_count=1`、`tile_count=16`，entries覆盖all-and-only Tiles与dense launch slots；
-- program-boundary resources为card scope并被16个entries引用；workspace/status为Tile scope且只被对应entry引用；
-- resources、modules、entries和slots all-and-only covered，无悬空或重复ID；
+- data images/segments、allocations/views、program tensors、physical tensors、internal buffers、modules、entries和slots all-and-only covered，
+  无悬空、重复ID、未引用文件或source NPY/tree；
+- program tensor logical descriptor、physical tensor target descriptor和view span逐项一致；同一logical tensor的多个physical
+  versions显式分离，current external port只有一个physical version且没有initializer/segment；
+- 每个parameter/constant physical version与digest-bound segment、initializer、独立allocation及full-span view一一对应且没有caller
+  binding；initialized physical tensors之间不packing、overlap或共享allocation；external input/output ports与internal storage分离；
+- card allocation被16个entries显式共享且只分配/初始化一次；workspace/status为Tile scope且只被对应entry引用；
+- truncated/trailing data、非canonical alignment padding、range overlap/hole/overflow、bad digest、wrong layout/alignment、initializer
+  mismatch和自动alias均拒绝；
 - entry completion只接受 `return_after_local_drain`；Direct-DTE status ABI/size/alignment/access/watchdog exact；
-- canonical serialization、parse、semantic verification、module digest和atomic writing roundtrip。
+- canonical serialization、parse、semantic verification、module/data digest、whole-root tree closure和atomic writing roundtrip。
 
 ### 6.3 No-card/board runtime
 
@@ -194,7 +203,7 @@ no-card必须在任何provider side effect前闭合target/runtime capability、b
 
 - provider inventory中的显式tile/launch relation；
 - package、显式device qualification与live inventory的Tile domain exact match，不接受更大domain中的16-Tile子集；
-- card-scoped resource单次分配/共享地址与Tile-scoped隔离；
+- card-scoped allocation单次分配、immutable initializer单次H2D、共享地址与Tile-scoped隔离；
 - card-scoped phase submission、absolute deadline、completion observation、D2H和cleanup；
 - partial/unknown accepted subset、timeout或不可信状态使session poisoned，且无后续provider call；
 - profile instrumentation不存在可普通执行，存在但旧/stale/malformed必须pre-effect失败。
@@ -232,7 +241,44 @@ Q53无卡matrix至少包含：
 所有workload走同一public source→package path。case-specific harness只提供source、payload和oracle，不生成compiler marker、
 special pass option、shape shortcut或手写替代graph。
 
-## 9. Q49/P、Q50、Q51–Q53 completion gate
+## 9. Program data 与 whole-program scale
+
+数据链和整图规模是两类证据，不能用单block互相代签：
+
+1. tiny multi-binding golden验证source backing→logical view→selected target physical version→package initializer/allocation/view、
+   padding和digest；内容相同但identity不同的bindings不得自动合并，同一binding的不同physical version保持独立；
+2. 最大单tensor验证checked大范围算术、bounded source/target window与无全tensor element-object materialization；
+3. 完整大型parameter/external captured-constant inventory验证每个source backing的bounded read/hash次数可解释、每次compile的
+   package-initialized immutable selected target physical version只transform一次且每package product只有一个segment projection；
+   external input/output的compile-time transform和segment计数为零，但不声明完整graph已编译；
+   Q56 fake-provider/board另验证每个initialized
+   allocation只H2D一次；
+4. 完整小模型graph验证embedding/多层或等价完整结构、final transform、output head及其all-and-only data bindings都进入同一public path；
+5. Q61在Q53之后再以至少一个完整大图验证frontend、IR、search、target和package的共同规模行为。
+
+每次compiler scale run至少记录source logical bytes、target physical bytes、package data bytes、source backing/logical view/selected
+physical version/image/segment/allocation/view计数，transform/write/read次数、bytes read/written、peak RSS、peak disk、最大live window、
+alignment overhead，以及IR op、candidate/work ledger、stage wall time和typed failure分类。Q56 fake-provider/board runtime另记录H2D；
+H2D不是Q58/Q61完成前置。完成不变量为：
+
+```text
+transform_count(package_initialized_immutable_physical_version) == 1
+serialized_segment_count(package_product, package_initialized_immutable_physical_version) == 1
+transform_count(external_input_or_output_physical_version) == 0
+serialized_segment_count(package_product, external_input_or_output_physical_version) == 0
+package_immutable_bytes == sum(initialized_physical_spans) + bounded_alignment
+additional_heap = O(max_live_window), not O(total_parameter_bytes * tile_count)
+```
+
+Q56 fake-provider/board的独立runtime不变量是
+`one_shot_h2d_count(initialized_allocation) == 1`；Q57另证明resident lifetime内不重复上传。
+
+Llama-2 7B完整inventory或完整graph可以作为可选named scale witness，但层数、模型名、attention/KV语义和serving policy不进入
+通用合同，也不替代Q61 mandatory feasible large-graph case。Q61不默认要求full-model board execution；该named witness若因
+current target容量、target-model能力或host预算不足，必须按stage报告typed unsupported/capacity，不得用缩成单block冒充，
+但也不阻塞已经满足的通用Q61完成门禁。
+
+## 10. Q49/P、Q50、Q51–Q53 completion gate
 
 各队列项分别形成fresh证据，不能用后项的局部通过倒签前项：
 
@@ -255,8 +301,9 @@ special pass option、shape shortcut或手写替代graph。
    DDR round-trip证明有效融合；group字段不能代签。
 5. Q52：generic/HF/Llama representative load的work、wall、RSS和热点fresh记录；基于实测引入的优化在小图oracle上
    不改变最优结果，代表负载不劣于同源`none`，没有固定shape/tile/fusion/buffer shortcut。
-6. Q53：generic DAG与HF/Llama matrix全部由current source fresh生成完整ExecutablePackage并fresh no-card；每个package
-   包含all-and-only 16 Tile entries、current ABI/resources/completion，runner与oracle完整；融合有效性证据闭合后
+6. Q60先把framework adapter与pre-exported portable StableHLO接入同一product source contract；Q53的generic DAG与
+   HF/Llama matrix全部由该产品入口fresh生成完整ExecutablePackage并fresh no-card；每个package包含all-and-only 16 Tile
+   entries、current ABI、allocation/view/data/completion闭包，runner与oracle完整；融合有效性证据闭合后
    才标`board-ready`。
 7. 真实设备上Llama及一个prefill/decode代表分别做同源`none`/`search` matched A/B，exact output/guard通过，
    多次样本显示可重复实际改善，Q53才标`done`。

@@ -170,19 +170,17 @@ transaction bridge，不能进入package/runtime ABI文档或public header。
 
 ### 4.2 Package/runtime
 
-`Runtime`按职责拆成：
+当前package实现物理上位于`Runtime`目录；Q56完成时必须按依赖方向收敛，而不是让compiler依赖BoardRuntime：
 
-- PackageManifest typed model与canonical spelling；
-- JSON parser；
-- serializer；
-- semantic verifier与module readback；
-- no-card session/invocation validation；
-- BoardRuntime generic lifecycle；
-- TX provider adapter；
-- ProfileInstrumentation strict loader/verifier。
+- 中立的package support library拥有`ExecutablePackage`、PackageManifest typed model与canonical spelling、JSON parser/serializer、
+  semantic verifier以及module/data readback；
+- compiler package writer依赖该library完成assembly和atomic commit，不拥有第二套schema/parser；
+- Runtime loader依赖该library取得verified `ExecutablePackage`；Runtime自身继续拥有`RuntimeEnvironment`匹配、caller binding、
+  device inventory/capability和no-card invocation planning，再进入BoardRuntime generic lifecycle和TX provider adapter；
+- ProfileInstrumentation strict loader/verifier保持独立的runtime consumer，不反向成为package schema owner。
 
-ExecutablePackage manifest version与profile activation format version只在typed runtime owner定义；profile plan/site map不拥有版本；各文件的fields和verification仍由该owner定义。package的
-resource scopes与entry completion同样由该owner持有。Python runner只能消费canonical manifest/evidence或调用public tool；
+ExecutablePackage manifest identity与profile activation format identity分别只在其typed owner定义；profile plan/site map不拥有版本；
+package各文件的fields、resource scopes、entry completion和verification由package owner统一定义。Python runner只能消费canonical manifest/evidence或调用public tool；
 不得内置另一份schema validator。旧schema reader和兼容translation不存在。profile instrumentation只暴露单一primary executable output、
 count/trace captures和一个16-Tile site map，不保留output集合shell或重复digest API。
 
@@ -211,9 +209,14 @@ model不依赖package parser来重建compiler owners，也不共享vendor runtim
 IR / Support / Target typed facts
   -> Analysis
   -> Conversion / Transforms
-  -> Compiler orchestration and CardExecutable/target writing
-  -> ExecutablePackage / Runtime validation
-  -> Board provider or Model consumer
+  -> Compiler orchestration and CardExecutable
+
+Support / Target typed facts
+  -> ExecutablePackage contract / parse / serialize / readback
+      -> Compiler package writing
+      -> Runtime validation -> Board provider or Model consumer
+
+Compiler package writing / Runtime / Model
   -> Tools
 ```
 
@@ -222,6 +225,29 @@ IR / Support / Target typed facts
 
 独立host build/test按 `nproc`并行。若一个聚合library使无关功能被可选依赖拖住，应拆分target或用明确feature boundary，
 但不能复制接口实现。
+
+### 5.1 Compiler library、产品工具与安装
+
+request/result/commit语义由01和15拥有，failure taxonomy由19拥有，frontend输入由02拥有；本节只规定它们如何落到library、
+tool与CMake依赖边界。Q59/Q60完成后应形成：
+
+- 一个repo-current C++ compiler library target实现唯一source-to-package entry；`wafer-compile`只链接该target并负责参数解析、
+  resolved SPMD helper与`TargetToolchain`构造、调用和diagnostic rendering，不复制driver流程；
+- target-model、IR dump和board qualification分别链接其所需的internal inspection API，不进入production CLI的post-commit控制流；
+- source verifier和产品Python adapter复用Frontend ingestion实现，tool层不复制parser/verifier；
+- `wafer-opt`保持IR development component，不进入production source-to-package调用链；
+- external tool discovery只有一个resolver：输入是明确的SPMD helper与`TargetToolchain`配置，输出是validated executable facts，
+  不形成可随意塞字段的environment bag，也不由多个CLI各自实现fallback搜索。
+
+Q59安装闭包只承诺可运行的production `wafer-compile`及其必需helper/configuration；Q60再安装产品Python adapter和
+`wafer-verify-program`。C++ library/header目前是repo-current build component，不在这两项中承诺SDK、CMake package export或
+外部consumer link compatibility。installed tools不得把source/build tree绝对路径编进binary，并必须在脱离source/build cwd后
+完成代表性source→package readback smoke。缺少真实frontend/importer依赖时不得把运行即失败的adapter/verifier stub放入install tree；
+feature-off configuration只安装其依赖闭合且可运行的工具。
+
+当前实现仍返回中间`CardExecutable`并在package commit后运行附加gate；这些差距由Q59跟踪，不能把本节目标当成已实现事实。
+这一边界不承诺稳定C ABI、plugin SDK、通用compiler session或用户可拼pass pipeline。Wafer-owned CLI/current API原位替换，
+不保留旧flag alias、build-tree compatibility wrapper或第二production driver。
 
 ## 6. Test organization
 
@@ -255,15 +281,20 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 `rank`。当前source合同不得再出现旧execution-domain API、旧manifest version/reader、late selector、按模型/shape/name
 恢复语义的matcher、拥有独立selection/public控制面的algorithm pass或已删除board tooling入口。
 
-## 8. Q49/P、Q50与Q51–Q53 completion boundary
+## 8. Q49/P、Q50、Q51–Q53 与产品入口 completion boundary
 
 源码组织收口横跨Q49/P、Q50.0/Q50.S/Q50.A–Q50.K及Q51–Q53；当前状态只看`tasks/progress.md`。相关源码删除必须满足：
 
 - physical-dataflow selection成为唯一decision owner，public optimization policy只为`search|none`，`none`只提供同pipeline baseline；
 - old/new双interface、compatibility wrapper、unused public pass和only-for-them tests全部删除；
+- Q58使large payload通过owner-backed source/view跨frontend、SPMD helper与CardExecutable同事务data handoff，
+  不以整树复制维持lifetime；
+- Q59使compiler library primary result、package commit、CLI exit与install tree属于同一owner；Q60产品adapter和portable
+  StableHLO ingestion复用唯一Frontend verifier与CompilationRequest；
 - Q50.0、Q50.S和Q50.A–Q50.K各自能为其负责的旧能力指向current实现、actual witness和替代测试，并独立提交；
 - current TensorProgram→CardModule/TileRegion/Instr→CardExecutable→ExecutablePackage→no-card/model纵向由Q49/Q51 fresh通过；
 - generic DAG、HF prefill/decode和Llama workload由Q53完整达到board-ready；
+- Q61在主search闭合后用完整程序验证IR/search/data/package规模，不把单block证据当成完整模型；
 - 真实板端matched A/B完成后Q53才满足最终done gate。
 
 组织检查或编译成功不能代签后两项。

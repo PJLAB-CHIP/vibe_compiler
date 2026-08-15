@@ -2,7 +2,8 @@
 
 状态：当前模型是 owner-backed target LLVM/TargetCall 上的 untimed functional-event model。它验证target语义、physical
 Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或cycle model。动态任务状态只看
-`tasks/progress.md`；现有model能力必须由current `CardExecutable` source vertical重新证明，不能沿用旧执行域结论。
+`tasks/progress.md`；Q56的selected physical data复用合同尚未实现，现有model能力必须由current `CardExecutable` source vertical
+重新证明，不能沿用旧执行域结论。
 
 ## 1. Pipeline Contract
 
@@ -10,7 +11,7 @@ Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或
 Pipeline position:
 - Upstream IR / input:
   同一次compiler transaction产生的`CardExecutable`、与其绑定的owner-backed target LLVM module set、typed program
-  invocation与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 Tiles并保留
+  invocation、accepted logical data views/selected target physical versions与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 Tiles并保留
   (card_id, tile_id, launch_slot)。
 - Current stage responsibility:
   将program tensors编码到exact Kernel ABI slots；通过host JIT执行final target LLVM entries并解码closed TargetCall
@@ -47,6 +48,11 @@ model只接受compiler保留的same-invocation owners：
 它按显式resource owner、Kernel ABI role和resource index建立allocation identity：program-boundary resource由card拥有，
 workspace/status由Tile拥有。一个card input只编码和初始化一次，16个Tile slot绑定同一base；input physical bytes与
 slot values由prepared invocation拥有，不alias source NPY storage。
+
+Q56完成后，parameter/external captured-constant不得经per-Tile invocation重新打开或读取。model直接消费与package writer相同的
+logical views和package-initialized selected target physical versions，对每个实际immutable physical version执行一次bounded codec并让引用该version的Tile slots
+共享同一private backing。profile、package和model可以复用同一transaction内已经验证的materialization owner，但不能各自从
+logical payload重新转换；相同digest不合并不同logical binding或不同physical version。
 
 ### 2.2 Explicit physical identity
 
@@ -133,6 +139,10 @@ source tensors先按exact Kernel ABI slot的dtype、shape、layout和physical fo
 source-visible dtype/shape，并按unique card resource一次发布；多个Tile output slot只是同一allocation的typed view，不形成
 多个结果。byte size相等不能推断layout；padding、blocked layout、bitpacked format和narrow integer都由共享physical codec处理。
 
+codec必须提供bounded window接口：source range、target range、padding和incremental digest都以checked 64-bit arithmetic推进；
+禁止为完整tensor建立每element对象数组、完整logical副本加完整physical副本，或按Tile重复编码。formal小tensor路径可以保留
+便于验证的局部value表示，但large-data consumer必须进入同一codec语义的bounded lane并与formal golden逐段对照。
+
 ### 5.2 Formal lane
 
 formal lane拥有确定的dtype arithmetic、rounding、NaN/Inf/signed-zero、conversion和exception flags。它用于边界语义和
@@ -181,6 +191,8 @@ Unit/integration gate至少覆盖：
 
 - 16-Tile all-and-only准备、duplicate/missing/foreign Tile和non-identity tile/slot mapping；
 - dense ABI slot、card-shared allocation、Tile-local workspace/status与physical codec roundtrip；
+- 每selected parameter/constant physical version只编码一次、引用同一version的Tile共享backing、bounded codec peak window与
+  package materialization逐字节一致；
 - descriptor registry的每个payload family、bad width/enum/range/format负例；
 - 一Tile一SC_THREAD、independent progress、event wait/wakeup、NoProgress和atomic abort；
 - local SPM isolation、card DDR sharing、cross-Tile Direct-DTE、worker/join与reuse hazard；
@@ -190,6 +202,10 @@ Unit/integration gate至少覆盖：
 Q53 source/model gate必须重新执行generic mixed DAG、HF prefill、functional two-step decode和Llama block的current
 FP16/BF16输入。通过只证明current target functional semantics与CPU expected一致；current package exact-provider、真实board
 correctness和performance仍是独立gate。
+
+Q61 whole-program scale默认只要求compiler/package/no-card闭合；只有model capability与host budget明确覆盖完整大图时，
+才运行完整target-model differential。因budget或unsupported target call拒绝必须作为typed model limitation记录，不能把
+单block model通过写成完整模型证据。
 
 ## 9. 不可越过的结论边界
 

@@ -1,8 +1,9 @@
 # Physical Dataflow Synthesis 实施计划
 
 状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其控制流隔离和编译耗时不属于已签发的
-正确性证据。Q50.0无策略CardExecutable编译/准入边界已闭合；当前优先按Q54收口MLIR infrastructure，再以该基础隔离
-Q49.P baseline控制流，并修复Q50.A production demand boundary、建立Q51.Core共同状态、transition和actual-probe seam；随后让
+正确性证据。Q50.0无策略CardExecutable编译/准入边界与Q54 MLIR infrastructure已闭合；当前先由Q56/Q58/Q59收口
+package data、program data backing和compiler entry transaction，再以该current source-to-package路径隔离Q49.P baseline控制流，
+并修复Q50.A production demand boundary、建立Q51.Core共同状态、transition和actual-probe seam；随后让
 Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
 `tasks/06-physical-dataflow-synthesis.md` 拥有；本文件只规定施工依赖、现有代码处置和独立 checkpoint。
@@ -37,10 +38,11 @@ Pipeline position:
   不把 query-local candidate set、solver state、estimated allocation 或 board 结果写入 IR；不由本计划拥有 Q48 semantic
   superoptimization。
 - Completion gate:
-  Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q49.P基于该基础隔离
+  Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q56/Q58/Q59先闭合
+  package data、large payload backing与compile commit；Q49.P基于该current入口隔离
   baseline控制流；Q50.A修复production exact-demand boundary；Q51.Core建立共同search kernel；Q50.S与Q50.B–Q50.K逐轴交付
   mechanism 且移除对应旧 owner；Q51 通过two-layer small exhaustive oracle、complete CardExecutable gates 和有效 fusion 闭合；
-  Q52 在真实 workload 上形成可复现的 10/30 分钟 anytime 质量与吞吐结论；Q53 生成 fresh package、oracle、runner
+  Q52 在真实 workload 上形成可复现的 10/30 分钟 anytime 质量与吞吐结论；Q60建立产品frontend后，Q53从该入口生成 fresh package、oracle、runner
   并通过 no-card 达到 board-ready，真实 matched 板端 A/B 后才 done。
 ```
 
@@ -226,8 +228,9 @@ summary边界遵循19号合同；需要全局事实却无法形成exact summary�
 TileRegion + op边界DDR + 无fusion”；该合同改变后必须返回完整CardExecutable gate，不得复用局部成功。
 
 Q49与`search`只共享actual Card/Tile/Instr、completion、SPM/DDR、verification和package seam；baseline默认值不限制
-Q51 域。official HF prefill、functional decode、Llama block 的 source、oracle、package 和 no-card runner 已达到无卡
-`board-ready`，未执行真实板端，故不得标`done`。Q49.P的gate必须用fresh prefill/decode/Llama输入证明
+Q51 域。历史official HF prefill、functional decode、Llama block 的 source、oracle、package 和 no-card runner只证明
+旧入口mechanics，未执行真实板端，故不得标`done`。Q49.P的gate必须经Q59 current compile transaction用fresh
+prefill/decode/Llama输入证明
 CardModule、accepted CardExecutable与package digest稳定，fresh no-card与oracle通过，并以fresh阶段计时确认不再为
 同一baseline反复materialize/compile whole graph。它不把历史耗时写成长期阈值，也不得借“统一入口”让
 `none`再进入search feedback。
@@ -796,6 +799,7 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 
 ### Source / package / no-card
 
+- 全部case由Q60产品adapter或pre-exported portable StableHLO入口产生，并进入同一Q59 compile transaction；
 - official HF prefill FP16/BF16；
 - functional two-step KV-cache decode FP16/BF16；
 - Llama-2 7B representative block FP16/BF16；
@@ -824,7 +828,8 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 
 ## 提交与收尾
 
-1. Q50.0、Q54、Q49.P、Q50.A、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、Q52、Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
+1. Q56、Q58、Q59由各自计划先行闭合；Q50.0、Q54、Q49.P、Q50.A、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、
+   Q52、Q60与Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
 2. 每个 checkpoint 开始前记录将替换的旧 owner 调用链；提交前证明新调用链唯一，并只删除当前轴满足三项门禁的旧入口。
 3. 状态转换以 `tasks/progress.md` 为准；本计划不单独维护第二份动态状态表。
 4. 每项提交前运行 fresh 定向 build/test；端到端或主线 gate 还需确认 relevant lit/CTest 实际执行而非 skip/unsupported。
