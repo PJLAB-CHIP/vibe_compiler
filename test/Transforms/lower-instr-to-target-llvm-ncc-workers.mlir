@@ -35,11 +35,11 @@ func.func @nonzero_issue_worker(
   return
 }
 
-// WORKERS: llvm.func @wafer_tx81_memset_v3(i64, i32, i32, i32, i32)
-// WORKERS: llvm.func @wafer_tx81_rdma_v3(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// WORKERS: llvm.func @wafer_tx81_memset(i64, i32, i32, i32, i32)
+// WORKERS: llvm.func @wafer_tx81_rdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
 // WORKERS-LABEL: llvm.func @nonzero_issue_worker
 // WORKERS: %[[WORKER1:.+]] = llvm.mlir.constant(1 : i32) : i32
-// WORKERS-NEXT: llvm.call @wafer_tx81_memset_v3({{.*}}%[[WORKER1]])
+// WORKERS-NEXT: llvm.call @wafer_tx81_memset({{.*}}%[[WORKER1]])
 // WORKERS: %[[FORMAT:.+]] = llvm.mlir.constant(2 : i32) : i32
 // WORKERS-NEXT: %[[WORKER2:.+]] = llvm.mlir.constant(2 : i32) : i32
-// WORKERS-NEXT: llvm.call @wafer_tx81_rdma_v3({{.*}}%[[FORMAT]], %[[WORKER2]])
+// WORKERS-NEXT: llvm.call @wafer_tx81_rdma({{.*}}%[[FORMAT]], %[[WORKER2]])

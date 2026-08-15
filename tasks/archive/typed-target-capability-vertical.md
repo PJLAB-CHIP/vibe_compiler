@@ -13,7 +13,7 @@
 Pipeline position:
 - Upstream artifact / IR: Q32.B提交的selected structured/tile/instruction actual clone；source侧使用MLIR Linalg named contraction或精确indexing maps，movement侧使用destination-style DDR/SPM typed views和shared physical encoding。
 - Current stage responsibility: 从current IR重算mapped logical-to-physical transfer cover并物化显式双端root-relative offsets；为fill物化logical-valid/physical-footprint typed domain和raw scalar；把source/Tile GEMM orientation无损送到Instr、v2 TargetCall、CRT和formal/SystemC consumer，同时保持v1 compact/implicit-normal合同不变。
-- Output artifact / IR: verifier-legal mapped wafer.instr.rdma/wdma descriptors、typed wafer.tile/instr.fill、typed wafer.tile/instr.gemm；closed wafer-tx81-single-card-kernel-v2 / wafer-tx81-kernel-v2 profile row及wafer_tx81_gemm_oriented_v2 exact call；最终TargetTransaction只包含下游执行所需的address/count/format/orientation。
+- Output artifact / IR: verifier-legal mapped wafer.instr.rdma/wdma descriptors、typed wafer.tile/instr.fill、typed wafer.tile/instr.gemm；closed wafer-tx81-single-card / wafer-tx81-kernel profile row及wafer_tx81_gemm_oriented exact call；最终TargetTransaction只包含下游执行所需的address/count/format/orientation。
 - Downstream consumer: Q32.M/S共同candidate owner、target LLVM/module publication、shared TargetCall decoder、repo-owned formal numeric kernel、plain/SystemC functional model；external board/provider admission仍属于later gate。
 - User-level driver / named pipeline: 默认wafer-compile在selected winner选择相应registered profile后消费这些typed rows；wafer-opt只提供source→Instr和Instr→target LLVM focused replay，不形成第二条用户pipeline。
 - Explicit non-goals: 不引入planner capability query、route sidecar、RequiredCapabilitySet或package schema升级；不把external model/board admission反馈给compile-time choice；不实现Count、quantized GEMM、packet provenance或timing。
@@ -45,7 +45,7 @@ Pipeline position:
 - structured source支持`linalg.matmul_transpose_a/b`、batched named variants和精确rank-2 GEMM indexing maps；
   orientation从当前Linalg maps重算并进入typed Tile/Instr attrs，不从op名、shape猜测或保存shadow plan。normal/normal仍省略attrs。
 - v1 profile和`wafer_tx81_gemm`保持implicit normal/normal。新增closed v2 profile/Kernel ABI和
-  `wafer_tx81_gemm_oriented_v2`十字段exact signature；v2显式引用v1 format/numeric compatibility profile，但两个ABI identity不合并。
+  `wafer_tx81_gemm_oriented`十字段exact signature；v2显式引用v1 format/numeric compatibility profile，但两个ABI identity不合并。
 - Tile/Instr verifier、numeric key和functional transaction按orientation验证stored shapes与M/K/N/batch；CRT把两个closed enum
   直接传给`SetTransflag`。wrong v1 ABI、单侧attr、stored-shape mismatch和unknown enum均在target effect前拒绝。
 - formal非方阵非对称payload逐一执行NN/NT/TN/TT；SystemC从compiler-generated v2 module经shared decoder执行四个typed

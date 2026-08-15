@@ -157,9 +157,6 @@ protected:
     llvm::json::OStream json(output, 2);
     json.object([&] {
       json.attribute("schema", "wafer-profile-activation");
-      json.attribute(
-          "schema_version",
-          int64_t(wafer::runtime::kProfileInstrumentationFormatVersion));
       json.attribute("primary_manifest_sha256", productionDigestOverride.empty()
                                                     ? manifestDigest(primary)
                                                     : productionDigestOverride);
@@ -579,29 +576,6 @@ TEST_F(ProfileInstrumentationTest,
       instrumentation, primary);
   ASSERT_FALSE(static_cast<bool>(loaded));
   EXPECT_NE(llvm::toString(loaded.takeError()).find("record_abi"),
-            std::string::npos);
-}
-
-TEST_F(ProfileInstrumentationTest, RejectsUnsupportedActivationVersion) {
-  llvm::SmallString<256> activationPath(instrumentation);
-  llvm::sys::path::append(
-      activationPath,
-      wafer::runtime::kProfileInstrumentationActivationFileName);
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> existing =
-      llvm::MemoryBuffer::getFile(activationPath);
-  ASSERT_TRUE(static_cast<bool>(existing));
-  std::string corrupted = (*existing)->getBuffer().str();
-  const std::string current = "\"schema_version\": 10";
-  size_t version = corrupted.find(current);
-  ASSERT_NE(version, std::string::npos);
-  corrupted.replace(version, current.size(), "\"schema_version\": 999");
-  ASSERT_NO_FATAL_FAILURE(writeText(activationPath, corrupted));
-
-  auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
-      instrumentation, primary);
-  ASSERT_FALSE(static_cast<bool>(loaded));
-  EXPECT_NE(llvm::toString(loaded.takeError())
-                .find("schema_version is not supported"),
             std::string::npos);
 }
 

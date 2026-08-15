@@ -34,7 +34,6 @@ def main() -> int:
     constants = {
         "REQUEST_MAGIC": f"UINT64_C(0x{catalog.REQUEST_MAGIC:016x})",
         "RECORD_MAGIC": f"UINT64_C(0x{catalog.RECORD_MAGIC:016x})",
-        "SCHEMA": f"{catalog.SCHEMA}U",
         "REQUEST_WORDS": f"{catalog.REQUEST_WORDS}U",
         "RECORD_WORDS": f"{catalog.RECORD_WORDS}U",
         "CASE_BASE": f"{catalog.CASE_BASE}U",
@@ -64,8 +63,8 @@ def main() -> int:
     assert "host-only verifier negatives" in protocol
     assert "get_spm_memory_mapping" not in probe
     assert "TsmWaitfinish" not in probe
-    assert probe.count("wafer_tx81_rdma_v3(") == 3
-    assert probe.count("wafer_tx81_wdma_v3(") == 1
+    assert probe.count("wafer_tx81_rdma(") == 3
+    assert probe.count("wafer_tx81_wdma(") == 1
     assert probe.count("wafer_tx81_ncc_join(1U);") == 1
     assert "selected->unit_elem_count != 64U" in probe
     assert (

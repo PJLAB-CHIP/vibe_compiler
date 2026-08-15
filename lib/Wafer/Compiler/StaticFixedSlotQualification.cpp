@@ -49,7 +49,6 @@ constexpr llvm::StringLiteral kAttestationSchema =
     "wafer-static-fixed-slot-qualification";
 constexpr llvm::StringLiteral kActivationSchema =
     "wafer-static-fixed-slot-qualification-activation";
-constexpr int64_t kQualificationFormatVersion = 1;
 
 static bool satisfiesSPMAlignment(mlir::memref::AllocOp allocation,
                                   int64_t offset,
@@ -1030,7 +1029,7 @@ deriveRankSummary(const RankExecutable &rank) {
 static void writeRankSummary(llvm::json::OStream &json,
                              const RankSummary &rank) {
   json.object([&] {
-    json.attribute("logical_rank", rank.logicalRank);
+    json.attribute("tile_id", rank.logicalRank);
     json.attribute("accepted_instr_sha256", rank.acceptedInstrDigest);
     json.attribute("direct_dte_compute_overlap_window_count",
                    rank.directDTEComputeOverlapWindowCount);
@@ -1142,14 +1141,14 @@ static std::string serializeAttestation(llvm::StringRef manifestDigest,
             "identity",
             stringifyTargetIdentityId(
                 cardExecutable.getExecutionConfig().getTargetIdentityId()));
-        json.attribute("rank_count",
+        json.attribute("tile_count",
                        cardExecutable.getExecutionConfig().getRankCount());
-        json.attributeArray("logical_ranks", [&] {
+        json.attributeArray("tile_ids", [&] {
           for (const RankSummary &rank : ranks)
             json.value(rank.logicalRank);
         });
       });
-      json.attributeArray("ranks", [&] {
+      json.attributeArray("tiles", [&] {
         for (const RankSummary &rank : ranks)
           writeRankSummary(json, rank);
       });
@@ -1168,7 +1167,6 @@ static std::string serializeActivation(llvm::StringRef manifestDigest,
     llvm::json::OStream json(stream, /*IndentSize=*/2);
     json.object([&] {
       json.attribute("schema", kActivationSchema);
-      json.attribute("schema_version", kQualificationFormatVersion);
       json.attribute("manifest_sha256", manifestDigest);
       json.attribute("attestation_sha256", attestationDigest);
     });

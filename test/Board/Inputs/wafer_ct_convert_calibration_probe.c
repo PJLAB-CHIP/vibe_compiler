@@ -159,8 +159,8 @@ static WaferCTCPMU wafer_ctc_read_pmu(void) {
 static uint32_t wafer_ctc_decode(const volatile uint64_t *request,
                                  WaferCTCCase *selected) {
   if (request[WAFER_CTC_REQ_MAGIC] != WAFER_CTC_REQUEST_MAGIC ||
-      request[WAFER_CTC_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_CTC_SCHEMA << 32) | WAFER_CTC_REQUEST_WORDS) ||
+      request[WAFER_CTC_REQ_WORD_COUNT] !=
+          (WAFER_CTC_REQUEST_WORDS) ||
       request[WAFER_CTC_REQ_RESOURCE_BYTES] != WAFER_CTC_RESOURCE_BYTES ||
       request[WAFER_CTC_REQ_SLOT_BYTES] != WAFER_CTC_SLOT_BYTES ||
       request[WAFER_CTC_REQ_BODY_OFFSET] != WAFER_CTC_BODY_OFFSET ||
@@ -260,42 +260,42 @@ static uint32_t wafer_ctc_issue(const WaferCTCCase *selected) {
   uint64_t source = WAFER_CTC_SPM_INPUT + WAFER_CTC_BODY_OFFSET;
   uint64_t destination = WAFER_CTC_SPM_OUTPUT + WAFER_CTC_BODY_OFFSET;
   switch (selected->opcode) {
-    WAFER_CTC_DISPATCH(139U, wafer_tx81_convert_int8_fp16_v3);
-    WAFER_CTC_DISPATCH(140U, wafer_tx81_convert_int8_bf16_v3);
-    WAFER_CTC_DISPATCH(141U, wafer_tx81_convert_int8_fp32_v3);
-    WAFER_CTC_DISPATCH(142U, wafer_tx81_convert_int8_tf32_v3);
-    WAFER_CTC_DISPATCH(143U, wafer_tx81_convert_int16_fp16_v3);
-    WAFER_CTC_DISPATCH(144U, wafer_tx81_convert_int16_bf16_v3);
-    WAFER_CTC_DISPATCH(145U, wafer_tx81_convert_int16_fp32_v3);
-    WAFER_CTC_DISPATCH(146U, wafer_tx81_convert_int16_tf32_v3);
-    WAFER_CTC_DISPATCH(147U, wafer_tx81_convert_int32_fp16_v3);
-    WAFER_CTC_DISPATCH(148U, wafer_tx81_convert_int32_bf16_v3);
-    WAFER_CTC_DISPATCH(149U, wafer_tx81_convert_int32_fp32_v3);
-    WAFER_CTC_DISPATCH(150U, wafer_tx81_convert_int32_tf32_v3);
-    WAFER_CTC_DISPATCH(151U, wafer_tx81_convert_bf16_int8_v3);
-    WAFER_CTC_DISPATCH(152U, wafer_tx81_convert_bf16_int16_v3);
-    WAFER_CTC_DISPATCH(153U, wafer_tx81_convert_bf16_int32_v3);
-    WAFER_CTC_DISPATCH(154U, wafer_tx81_convert_bf16_fp16_v3);
-    WAFER_CTC_DISPATCH(155U, wafer_tx81_convert_bf16_fp32_v3);
-    WAFER_CTC_DISPATCH(156U, wafer_tx81_convert_bf16_tf32_v3);
-    WAFER_CTC_DISPATCH(157U, wafer_tx81_convert_fp16_int8_v3);
-    WAFER_CTC_DISPATCH(158U, wafer_tx81_convert_fp16_int16_v3);
-    WAFER_CTC_DISPATCH(159U, wafer_tx81_convert_fp16_int32_v3);
-    WAFER_CTC_DISPATCH(160U, wafer_tx81_convert_fp16_bf16_v3);
-    WAFER_CTC_DISPATCH(161U, wafer_tx81_convert_fp16_fp32_v3);
-    WAFER_CTC_DISPATCH(162U, wafer_tx81_convert_fp16_tf32_v3);
-    WAFER_CTC_DISPATCH(163U, wafer_tx81_convert_fp32_int8_v3);
-    WAFER_CTC_DISPATCH(164U, wafer_tx81_convert_fp32_int16_v3);
-    WAFER_CTC_DISPATCH(165U, wafer_tx81_convert_fp32_int32_v3);
-    WAFER_CTC_DISPATCH(166U, wafer_tx81_convert_fp32_fp16_v3);
-    WAFER_CTC_DISPATCH(167U, wafer_tx81_convert_fp32_bf16_v3);
-    WAFER_CTC_DISPATCH(168U, wafer_tx81_convert_fp32_tf32_v3);
-    WAFER_CTC_DISPATCH(169U, wafer_tx81_convert_tf32_int8_v3);
-    WAFER_CTC_DISPATCH(170U, wafer_tx81_convert_tf32_int16_v3);
-    WAFER_CTC_DISPATCH(171U, wafer_tx81_convert_tf32_int32_v3);
-    WAFER_CTC_DISPATCH(172U, wafer_tx81_convert_tf32_fp16_v3);
-    WAFER_CTC_DISPATCH(173U, wafer_tx81_convert_tf32_bf16_v3);
-    WAFER_CTC_DISPATCH(174U, wafer_tx81_convert_tf32_fp32_v3);
+    WAFER_CTC_DISPATCH(139U, wafer_tx81_convert_int8_fp16);
+    WAFER_CTC_DISPATCH(140U, wafer_tx81_convert_int8_bf16);
+    WAFER_CTC_DISPATCH(141U, wafer_tx81_convert_int8_fp32);
+    WAFER_CTC_DISPATCH(142U, wafer_tx81_convert_int8_tf32);
+    WAFER_CTC_DISPATCH(143U, wafer_tx81_convert_int16_fp16);
+    WAFER_CTC_DISPATCH(144U, wafer_tx81_convert_int16_bf16);
+    WAFER_CTC_DISPATCH(145U, wafer_tx81_convert_int16_fp32);
+    WAFER_CTC_DISPATCH(146U, wafer_tx81_convert_int16_tf32);
+    WAFER_CTC_DISPATCH(147U, wafer_tx81_convert_int32_fp16);
+    WAFER_CTC_DISPATCH(148U, wafer_tx81_convert_int32_bf16);
+    WAFER_CTC_DISPATCH(149U, wafer_tx81_convert_int32_fp32);
+    WAFER_CTC_DISPATCH(150U, wafer_tx81_convert_int32_tf32);
+    WAFER_CTC_DISPATCH(151U, wafer_tx81_convert_bf16_int8);
+    WAFER_CTC_DISPATCH(152U, wafer_tx81_convert_bf16_int16);
+    WAFER_CTC_DISPATCH(153U, wafer_tx81_convert_bf16_int32);
+    WAFER_CTC_DISPATCH(154U, wafer_tx81_convert_bf16_fp16);
+    WAFER_CTC_DISPATCH(155U, wafer_tx81_convert_bf16_fp32);
+    WAFER_CTC_DISPATCH(156U, wafer_tx81_convert_bf16_tf32);
+    WAFER_CTC_DISPATCH(157U, wafer_tx81_convert_fp16_int8);
+    WAFER_CTC_DISPATCH(158U, wafer_tx81_convert_fp16_int16);
+    WAFER_CTC_DISPATCH(159U, wafer_tx81_convert_fp16_int32);
+    WAFER_CTC_DISPATCH(160U, wafer_tx81_convert_fp16_bf16);
+    WAFER_CTC_DISPATCH(161U, wafer_tx81_convert_fp16_fp32);
+    WAFER_CTC_DISPATCH(162U, wafer_tx81_convert_fp16_tf32);
+    WAFER_CTC_DISPATCH(163U, wafer_tx81_convert_fp32_int8);
+    WAFER_CTC_DISPATCH(164U, wafer_tx81_convert_fp32_int16);
+    WAFER_CTC_DISPATCH(165U, wafer_tx81_convert_fp32_int32);
+    WAFER_CTC_DISPATCH(166U, wafer_tx81_convert_fp32_fp16);
+    WAFER_CTC_DISPATCH(167U, wafer_tx81_convert_fp32_bf16);
+    WAFER_CTC_DISPATCH(168U, wafer_tx81_convert_fp32_tf32);
+    WAFER_CTC_DISPATCH(169U, wafer_tx81_convert_tf32_int8);
+    WAFER_CTC_DISPATCH(170U, wafer_tx81_convert_tf32_int16);
+    WAFER_CTC_DISPATCH(171U, wafer_tx81_convert_tf32_int32);
+    WAFER_CTC_DISPATCH(172U, wafer_tx81_convert_tf32_fp16);
+    WAFER_CTC_DISPATCH(173U, wafer_tx81_convert_tf32_bf16);
+    WAFER_CTC_DISPATCH(174U, wafer_tx81_convert_tf32_fp32);
   default:
     return 0U;
   }
@@ -308,8 +308,8 @@ static void wafer_ctc_init_record(volatile uint64_t *record, uint32_t status) {
   for (uint32_t index = 0; index < WAFER_CTC_RECORD_WORDS; ++index)
     record[index] = 0;
   record[WAFER_CTC_REC_MAGIC] = WAFER_CTC_RECORD_MAGIC;
-  record[WAFER_CTC_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_CTC_SCHEMA << 32) | WAFER_CTC_RECORD_WORDS;
+  record[WAFER_CTC_REC_WORD_COUNT] =
+      WAFER_CTC_RECORD_WORDS;
   record[WAFER_CTC_REC_STATUS] = status;
   record[WAFER_CTC_REC_OUTPUT_DDR_OFFSET] = WAFER_CTC_OUTPUT_DDR_OFFSET;
   record[WAFER_CTC_REC_SLOT_BYTES] = WAFER_CTC_SLOT_BYTES;
@@ -345,20 +345,20 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_CTC_REC_REQUEST_GUARD] = request[WAFER_CTC_REQ_GUARD];
 
     WaferCTCPMU before = wafer_ctc_read_pmu();
-    wafer_tx81_rdma_v3(payload_ddr, WAFER_CTC_SPM_INPUT, WAFER_CTC_SLOT_BYTES,
+    wafer_tx81_rdma(payload_ddr, WAFER_CTC_SPM_INPUT, WAFER_CTC_SLOT_BYTES,
                     WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     /*
      * The request resource's second slot is host-initialized canary data.
      * Seed the whole output through NCC so setup, convert, and readback remain
      * one dependency-ordered issue window.
      */
-    wafer_tx81_rdma_v3(request_ddr + WAFER_CTC_SLOT_BYTES,
+    wafer_tx81_rdma(request_ddr + WAFER_CTC_SLOT_BYTES,
                     WAFER_CTC_SPM_OUTPUT, WAFER_CTC_SLOT_BYTES,
                     WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     if (wafer_ctc_issue(&selected) == 0U) {
       status = WAFER_CTC_STATUS_EXECUTE_FAILED;
     } else {
-      wafer_tx81_wdma_v3(WAFER_CTC_SPM_OUTPUT,
+      wafer_tx81_wdma(WAFER_CTC_SPM_OUTPUT,
                       output_ddr + WAFER_CTC_OUTPUT_DDR_OFFSET,
                       WAFER_CTC_SLOT_BYTES, WAFER_CTC_SLOT_BYTES, 0, 0, 0, 1, 1,
                       1, Fmt_UINT8, 0U);

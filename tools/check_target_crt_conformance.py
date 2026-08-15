@@ -352,7 +352,7 @@ def check_convert_route_contract(
                 f"target convert registry: unknown parameter group {route.parameter}"
             )
         group = parameter_to_group[route.parameter]
-        symbol = f"wafer_tx81_convert_{route.spelling}_v3"
+        symbol = f"wafer_tx81_convert_{route.spelling}"
         if symbol in expected_symbols:
             fail(f"target convert registry: duplicate symbol {symbol}")
         expected_symbols[symbol] = (group, route.spelling.upper())
@@ -363,7 +363,7 @@ def check_convert_route_contract(
 
     invocations = re.findall(
         r"^\s*WAFER_DEFINE_CONVERT_(ZP|ROUND|PLAIN)\(\s*"
-        r"(wafer_tx81_convert_[a-z0-9_]+_v3)\s*,\s*([A-Z0-9_]+)\s*\)\s*$",
+        r"(wafer_tx81_convert_[a-z0-9_]+)\s*,\s*([A-Z0-9_]+)\s*\)\s*$",
         source_text,
         re.MULTILINE,
     )
@@ -426,9 +426,9 @@ def check_convert_route_contract(
     )
     require_pattern(
         registry_text,
-        r'\("convert_"\s*\+\s*stringifyEnum\(\*kind\)\s*\+\s*suffix\)'
+        r'\("convert_"\s*\+\s*route\.canonicalSpelling\)'
         r"\.str\(\),\s*"
-        r"signature\(2,\s*3\),\s*\*kind",
+        r"signature\(2,\s*3\),\s*operation",
         "target convert shared registry ABI",
     )
     return group_counts["ZP"], group_counts["ROUND"], group_counts["PLAIN"]
@@ -530,7 +530,7 @@ def check_direct_dte_lifecycle(source_text: str) -> None:
     )
 
     send_issue = function_body(
-        source_text, "wafer_tx81_direct_dte_send_issue_v3"
+        source_text, "wafer_tx81_direct_dte_send_issue"
     )
     require_contains(
         send_issue,
@@ -551,13 +551,8 @@ def check_direct_dte_lifecycle(source_text: str) -> None:
 
     require_pattern(
         source_text,
-        r"\bwafer_tx81_direct_dte_send_issue_v3\s*\(",
+        r"\bwafer_tx81_direct_dte_send_issue\s*\(",
         "Direct DTE current explicit issue symbol",
-    )
-    require_absent(
-        source_text,
-        "wafer_tx81_direct_dte_send_issue(",
-        "unversioned Direct DTE explicit issue symbol",
     )
 
     wait = function_body(source_text, "wafer_tx81_direct_dte_wait")
@@ -614,7 +609,7 @@ def check_dma(source_text: str) -> None:
     ]:
         require_contains(conversion, needle, "DMA checked byte to element conversion")
 
-    rdma = function_body(source_text, "wafer_tx81_rdma_v3")
+    rdma = function_body(source_text, "wafer_tx81_rdma")
     require_contains(rdma, "(void)byte_count;", "RDMA")
     require_in_order(rdma, ["rdma->AddSrcDst", "rdma->ConfigStrideIteration"], "RDMA")
     require_contains(
@@ -635,7 +630,7 @@ def check_dma(source_text: str) -> None:
         "RDMA checked element geometry",
     )
 
-    wdma = function_body(source_text, "wafer_tx81_wdma_v3")
+    wdma = function_body(source_text, "wafer_tx81_wdma")
     require_contains(wdma, "(void)byte_count;", "WDMA")
     require_in_order(wdma, ["wdma->AddSrcDst", "wdma->ConfigStrideIteration"], "WDMA")
     require_contains(
@@ -660,14 +655,14 @@ def check_dma(source_text: str) -> None:
 def check_gather_scatter_and_mask(
     source_text: str, header_text: str, lowering_text: str
 ) -> None:
-    gather = function_body(source_text, "wafer_tx81_gather_scatter_v3")
+    gather = function_body(source_text, "wafer_tx81_gather_scatter")
     for needle in ["wafer_stride_iteration", "move->GatherScatter", "inner_bytes", "&src_si", "&dst_si"]:
         require_contains(gather, needle, "GatherScatter")
 
-    mask_move = function_body(source_text, "wafer_tx81_mask_move_v3")
+    mask_move = function_body(source_text, "wafer_tx81_mask_move")
     require_contains(mask_move, "move->MaskMove", "MaskMove")
     signature = (
-        r"void\s+wafer_tx81_mask_move_v3\s*\(\s*uint64_t\s+src\s*,\s*"
+        r"void\s+wafer_tx81_mask_move\s*\(\s*uint64_t\s+src\s*,\s*"
         r"uint32_t\s+mask\s*,\s*uint64_t\s+dst\s*,\s*"
         r"uint32_t\s+elem_count\s*,\s*uint32_t\s+format\s*,\s*"
         r"uint32_t\s+worker\s*\)"
@@ -779,8 +774,8 @@ def check_arg_writeback(
             ordering, forbidden, "argmax/argmin uncached mapped-SPM ordering"
         )
     for symbol in [
-        "wafer_tx81_peripheral_argmax_v3",
-        "wafer_tx81_peripheral_argmin_v3",
+        "wafer_tx81_peripheral_argmax",
+        "wafer_tx81_peripheral_argmin",
     ]:
         require_contains(
             function_body(source_text, symbol),
@@ -841,6 +836,7 @@ def check_ncc_worker_command_abi(
         "wafer_tx81_direct_dte_recv_prepare":
             "uint64_t dst, uint32_t byte_count, uint32_t local_tile, "
             "uint32_t remote_tile, uint32_t local_fsm_id",
+        "wafer_tx81_direct_dte_send_issue": "uint64_t event",
         "wafer_tx81_direct_dte_wait": "uint64_t event",
         "wafer_tx81_direct_dte_finish": "void",
     }
@@ -868,17 +864,7 @@ def check_ncc_worker_command_abi(
                 f"runtime CRT shared ABI changed for {symbol}: "
                 f"expected `{signature}`, found `{signatures.get(symbol)}`"
             )
-    if signatures.get("wafer_tx81_direct_dte_send_issue_v3") != "uint64_t event":
-        fail("runtime CRT Direct DTE issue has the wrong ABI")
-    if "wafer_tx81_direct_dte_send_issue" in signatures:
-        fail("runtime CRT exposes a second Direct DTE issue spelling")
-
-    ordinary_symbols = {
-        symbol
-        for symbol in signatures
-        if symbol.endswith("_v3")
-        and symbol != "wafer_tx81_direct_dte_send_issue_v3"
-    }
+    ordinary_symbols = set(signatures) - set(shared_signatures)
     if len(ordinary_symbols) != 104:
         fail(
             "runtime CRT worker ABI: expected 104 current ordinary "
@@ -931,8 +917,8 @@ def check_ncc_worker_command_abi(
     )
     require_pattern(
         registry_text,
-        r"addEnumSelectedCalls\(\"_v3\"\);.*?"
-        r'addVoid\("direct_dte_send_issue_v3".*?'
+        r"addEnumSelectedCalls\(\);.*?"
+        r'addVoid\("direct_dte_send_issue".*?'
         r"assert\(result\.size\(\)\s*==\s*112",
         "target-call registry current-only closure",
     )
@@ -1101,7 +1087,7 @@ def check_relation_logic_convert(source_text: str) -> None:
 
 
 def check_gemm_conv(source_text: str) -> None:
-    gemm = function_body(source_text, "wafer_tx81_gemm_v3")
+    gemm = function_body(source_text, "wafer_tx81_gemm")
     gemm_sequence = [
             "gemm->AddInput",
             "gemm->ConfigMKN",
@@ -1127,7 +1113,7 @@ def check_gemm_conv(source_text: str) -> None:
         "GEMM semantic NN to hardware orientation",
     )
 
-    oriented_gemm = function_body(source_text, "wafer_tx81_gemm_oriented_v3")
+    oriented_gemm = function_body(source_text, "wafer_tx81_gemm_oriented")
     require_in_order(
         oriented_gemm,
         gemm_sequence,

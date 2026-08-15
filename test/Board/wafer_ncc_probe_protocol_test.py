@@ -27,7 +27,6 @@ def lane(engine: protocol.Engine, worker: int = 0) -> protocol.Lane:
 
 class ProtocolTest(unittest.TestCase):
     def test_header_is_the_numeric_source(self) -> None:
-        self.assertEqual(protocol.SCHEMA, 8)
         self.assertEqual(protocol.MAX_LANES, 3)
         self.assertEqual(protocol.MAX_ROUNDS, 8)
         self.assertEqual(protocol.MAX_THREE_LANE_ROUNDS, 4)
@@ -85,9 +84,7 @@ class ProtocolTest(unittest.TestCase):
         )
         words = [0] * protocol.RECORD_WORDS
         words[protocol.REC["MAGIC"]] = protocol.RECORD_MAGIC
-        words[protocol.REC["SCHEMA_AND_WORDS"]] = (
-            protocol.SCHEMA << 32
-        ) | protocol.RECORD_WORDS
+        words[protocol.REC["WORD_COUNT"]] = protocol.RECORD_WORDS
         words[protocol.REC["STATUS"]] = protocol.Status.PREPARE_FAILED
         words[
             protocol.ISSUE_BASE + protocol.ISSUE["FLAGS"]
@@ -116,11 +113,11 @@ class ProtocolTest(unittest.TestCase):
             / "wafer_ncc_execution_probe.c"
         ).read_text()
         function = source.split(
-            "static void wafer_ncc_v2_copy_results", maxsplit=1
+            "static void wafer_ncc_copy_results", maxsplit=1
         )[1].split(
             '__attribute__((visibility("hidden")))', maxsplit=1
         )[0]
-        issue = function.index("wafer_tx81_wdma_v3(")
+        issue = function.index("wafer_tx81_wdma(")
         drain = function.index("wafer_tx81_ncc_join(1U);", issue)
         loop_end = function.index("\n    }", issue)
         self.assertLess(issue, drain)
@@ -180,10 +177,10 @@ class ProtocolTest(unittest.TestCase):
             ((0, 8, 20, 28, 52, 60, 72, 80), 84, 52),
         )
         self.assertEqual(
-            len(execution_probe.V2_DMA_STRIDE_MATRIX_CASES), len(expected)
+            len(execution_probe.DMA_STRIDE_MATRIX_CASES), len(expected)
         )
         for case, (offsets, envelope, hole_bytes) in zip(
-            execution_probe.V2_DMA_STRIDE_MATRIX_CASES,
+            execution_probe.DMA_STRIDE_MATRIX_CASES,
             expected,
             strict=True,
         ):
@@ -214,23 +211,23 @@ class ProtocolTest(unittest.TestCase):
             }
             self.assertEqual(envelope - len(selected), hole_bytes)
             rdma_identity, wdma_identity = plan.issue_identities()
-            shared_spm = execution_probe.v2_spm_address(
-                0, execution_probe.V2_SPM_WRITE_OFFSET
+            shared_spm = execution_probe.spm_address(
+                0, execution_probe.SPM_WRITE_OFFSET
             )
             self.assertEqual(
-                execution_probe.v2_operand_spm_address(
+                execution_probe.operand_spm_address(
                     plan, rdma_identity, protocol.Operand.WRITE
                 ),
                 shared_spm,
             )
             self.assertEqual(
-                execution_probe.v2_operand_spm_address(
+                execution_probe.operand_spm_address(
                     plan, wdma_identity, protocol.Operand.READ0
                 ),
                 shared_spm,
             )
             self.assertEqual(
-                execution_probe.v2_dma_local_compact_index(
+                execution_probe.dma_local_compact_index(
                     plan.lanes[0],
                     shared_spm,
                     shared_spm + plan.lanes[0].transfer_bytes - 1,
@@ -238,7 +235,7 @@ class ProtocolTest(unittest.TestCase):
                 plan.lanes[0].transfer_bytes - 1,
             )
             self.assertIsNone(
-                execution_probe.v2_dma_local_compact_index(
+                execution_probe.dma_local_compact_index(
                     plan.lanes[0],
                     shared_spm,
                     shared_spm + plan.lanes[0].transfer_bytes,
@@ -255,8 +252,8 @@ class ProtocolTest(unittest.TestCase):
                     payload_path = directory / "payload.raw"
                     execution_probe.write_payload(payload_path, case)
                     payload = payload_path.read_bytes()
-                    begin = execution_probe.V2_OUTPUT_GUARD_BYTES
-                    compact = execution_probe.v2_expected_result(
+                    begin = execution_probe.OUTPUT_GUARD_BYTES
+                    compact = execution_probe.expected_result(
                         plan.issue_identities()[0], lane, plan
                     )
                     rebuilt = b"".join(
@@ -279,24 +276,24 @@ class ProtocolTest(unittest.TestCase):
                         [0xA5] * execution_probe.RESOURCE_BYTES
                     )
                     rdma_begin = (
-                        execution_probe.V2_OUTPUT_SLOT_BASE
+                        execution_probe.OUTPUT_SLOT_BASE
                         + rdma_identity.slot
-                        * execution_probe.V2_OUTPUT_SLOT_STRIDE
-                        + execution_probe.V2_OUTPUT_GUARD_BYTES
+                        * execution_probe.OUTPUT_SLOT_STRIDE
+                        + execution_probe.OUTPUT_GUARD_BYTES
                     )
-                    execution_probe.v2_scatter_compact(
+                    execution_probe.scatter_compact(
                         output, rdma_begin, plan.lanes[0], compact
                     )
                     wdma_begin = (
-                        execution_probe.V2_OUTPUT_SLOT_BASE
+                        execution_probe.OUTPUT_SLOT_BASE
                         + wdma_identity.slot
-                        * execution_probe.V2_OUTPUT_SLOT_STRIDE
-                        + execution_probe.V2_OUTPUT_GUARD_BYTES
+                        * execution_probe.OUTPUT_SLOT_STRIDE
+                        + execution_probe.OUTPUT_GUARD_BYTES
                     )
-                    execution_probe.v2_scatter_compact(
+                    execution_probe.scatter_compact(
                         output, wdma_begin, plan.lanes[1], compact
                     )
-                    execution_probe.validate_output_payload_v2(
+                    execution_probe.validate_output_payload(
                         bytes(output), case, plan
                     )
             with self.assertRaisesRegex(ValueError, "bounded"):
@@ -342,13 +339,13 @@ class ProtocolTest(unittest.TestCase):
 
             output = bytearray([0xA5] * execution_probe.RESOURCE_BYTES)
             identity = plan.issue_identities()[0]
-            expected = execution_probe.v2_expected_result(identity, lane, plan)
+            expected = execution_probe.expected_result(identity, lane, plan)
             begin = (
-                execution_probe.V2_OUTPUT_SLOT_BASE
-                + execution_probe.V2_OUTPUT_GUARD_BYTES
+                execution_probe.OUTPUT_SLOT_BASE
+                + execution_probe.OUTPUT_GUARD_BYTES
             )
             output[begin : begin + len(expected)] = expected
-            execution_probe.validate_output_payload_v2(
+            execution_probe.validate_output_payload(
                 bytes(output), case, plan
             )
 
@@ -373,12 +370,12 @@ class ProtocolTest(unittest.TestCase):
                 self.assertGreater(item.transfer_bytes // 2, 0)
 
         with self.assertRaisesRegex(ValueError, "whole 2-byte elements"):
-            execution_probe.v2_lane(
+            execution_probe.lane(
                 protocol.Engine.RDMA, transfer_bytes=17
             )
         with self.assertRaisesRegex(ValueError, "require FP16"):
             dataclasses.replace(
-                execution_probe.v2_lane(protocol.Engine.WDMA),
+                execution_probe.lane(protocol.Engine.WDMA),
                 element_format=execution_probe.FMT_INT8,
             ).validate()
 
@@ -454,16 +451,16 @@ class ProtocolTest(unittest.TestCase):
             ),
         }
         self.assertEqual(
-            {case.name for case in execution_probe.V2_WORKER_CASES},
+            {case.name for case in execution_probe.WORKER_CASES},
             set(expected),
         )
         self.assertTrue(
             all(
                 case in execution_probe.CALIBRATION_CASES
-                for case in execution_probe.V2_WORKER_CASES
+                for case in execution_probe.WORKER_CASES
             )
         )
-        for case in execution_probe.V2_WORKER_CASES:
+        for case in execution_probe.WORKER_CASES:
             workers, schedule, wait_mask, issue_order = expected[case.name]
             plan = case.plan
             words = plan.request_words()
@@ -511,7 +508,7 @@ class ProtocolTest(unittest.TestCase):
             ),
         }
         cases = execution_probe.SUITES["completion-scope-manual"]
-        self.assertIs(cases, execution_probe.V2_COMPLETION_SCOPE_CASES)
+        self.assertIs(cases, execution_probe.COMPLETION_SCOPE_CASES)
         self.assertEqual({case.name for case in cases}, set(expected))
         for case in cases:
             wait_kind, seed, wait_mask = expected[case.name]
@@ -535,7 +532,7 @@ class ProtocolTest(unittest.TestCase):
             self.assertTrue(
                 all(
                     lane.transfer_bytes
-                    == execution_probe.V2_NE_LARGE_RESULT_BYTES
+                    == execution_probe.NE_LARGE_RESULT_BYTES
                     and lane.element_format == execution_probe.FMT_FP16
                     for lane in plan.lanes[1:]
                 )
@@ -553,13 +550,13 @@ class ProtocolTest(unittest.TestCase):
                 words[protocol.REQ["WAIT_WORKER_MASK"]], wait_mask
             )
             self.assertEqual(
-                execution_probe.v2_completion_marker(plan),
+                execution_probe.completion_marker(plan),
                 (
                     0x49,
-                    execution_probe.V2_SPM_SLOT_BASE
-                    + 10 * execution_probe.V2_SPM_SLOT_STRIDE
-                    + execution_probe.V2_NE_LARGE_WRITE_OFFSET
-                    + execution_probe.V2_NE_LARGE_RESULT_BYTES
+                    execution_probe.SPM_SLOT_BASE
+                    + 10 * execution_probe.SPM_SLOT_STRIDE
+                    + execution_probe.NE_LARGE_WRITE_OFFSET
+                    + execution_probe.NE_LARGE_RESULT_BYTES
                     - 1,
                 ),
             )
@@ -603,7 +600,7 @@ class ProtocolTest(unittest.TestCase):
             / "wafer_ncc_execution_probe.c"
         ).read_text()
         seed_visibility = device_source.split(
-            "static int wafer_ncc_v2_seed_complete(", maxsplit=1
+            "static int wafer_ncc_seed_complete(", maxsplit=1
         )[1].split("\n}", maxsplit=1)[0]
         self.assertIn('volatile("fence iorw, iorw"', seed_visibility)
         self.assertIn('volatile("sync"', seed_visibility)
@@ -611,16 +608,16 @@ class ProtocolTest(unittest.TestCase):
 
     def test_wait_overhead_cases_cover_every_engine(self) -> None:
         cases = execution_probe.SUITES["wait-overhead-manual"]
-        self.assertIs(cases, execution_probe.V2_WAIT_OVERHEAD_CASES)
+        self.assertIs(cases, execution_probe.WAIT_OVERHEAD_CASES)
         self.assertEqual(
             {case.name for case in cases},
             {
                 f"{engine.name.lower()}-worker0-r2-{spelling}"
-                for engine in execution_probe.V2_ENGINES
+                for engine in execution_probe.ENGINES
                 for spelling in ("wait-each", "wait-once")
             },
         )
-        for engine in execution_probe.V2_ENGINES:
+        for engine in execution_probe.ENGINES:
             engine_cases = tuple(
                 case
                 for case in cases
@@ -653,14 +650,14 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_typed_hazard_catalog_and_composition_golden(self) -> None:
-        self.assertEqual(len(execution_probe.V2_HAZARD_CASES), 24)
+        self.assertEqual(len(execution_probe.HAZARD_CASES), 24)
         execution_probe.validate_hazard_selection(
-            execution_probe.V2_HAZARD_MANUAL_CASES
+            execution_probe.HAZARD_MANUAL_CASES
         )
         groups: dict[
             tuple[object, ...], set[protocol.Schedule]
         ] = {}
-        for case in execution_probe.V2_HAZARD_CASES:
+        for case in execution_probe.HAZARD_CASES:
             plan = case.plan
             words = plan.request_words()
             self.assertEqual(
@@ -680,7 +677,7 @@ class ProtocolTest(unittest.TestCase):
             )
             groups.setdefault(key, set()).add(plan.schedule)
             for identity in plan.issue_identities():
-                expected = execution_probe.v2_expected_result(
+                expected = execution_probe.expected_result(
                     identity, plan.lanes[identity.lane], plan
                 )
                 self.assertEqual(
@@ -698,7 +695,7 @@ class ProtocolTest(unittest.TestCase):
 
         raw_partial = next(
             case
-            for case in execution_probe.V2_HAZARD_CASES
+            for case in execution_probe.HAZARD_CASES
             if case.name == "raw-rdma-ct-partial-r2-window"
         )
         ct_identity = next(
@@ -706,7 +703,7 @@ class ProtocolTest(unittest.TestCase):
             for identity in raw_partial.plan.issue_identities()
             if identity.lane == 1 and identity.round == 0
         )
-        actual = execution_probe.v2_expected_result(
+        actual = execution_probe.expected_result(
             ct_identity,
             raw_partial.plan.lanes[ct_identity.lane],
             raw_partial.plan,
@@ -714,20 +711,20 @@ class ProtocolTest(unittest.TestCase):
         values = struct.unpack(f"<{len(actual) // 2}H", actual)
         self.assertEqual(
             set(values[: len(values) // 2]),
-            {execution_probe.v2_half(5)},
+            {execution_probe.half(5)},
         )
         self.assertEqual(
             set(values[len(values) // 2 :]),
-            {execution_probe.v2_half(3)},
+            {execution_probe.half(3)},
         )
 
         war_exact = next(
             case
-            for case in execution_probe.V2_HAZARD_CASES
+            for case in execution_probe.HAZARD_CASES
             if case.name == "war-ct-tdma-exact-r2-serial"
         )
         war_results = tuple(
-            execution_probe.v2_expected_result(
+            execution_probe.expected_result(
                 identity,
                 war_exact.plan.lanes[identity.lane],
                 war_exact.plan,
@@ -740,18 +737,18 @@ class ProtocolTest(unittest.TestCase):
                 for result in war_results
             ),
             tuple(
-                execution_probe.v2_half(value)
+                execution_probe.half(value)
                 for value in (3, 4, 8, 9)
             ),
         )
 
     def test_hazard_requires_controls_but_not_positive_overlap(self) -> None:
         execution_probe.validate_hazard_selection(
-            execution_probe.V2_DMA_STRIDE_MATRIX_CASES
+            execution_probe.DMA_STRIDE_MATRIX_CASES
         )
         hazards = tuple(
             case
-            for case in execution_probe.V2_HAZARD_CASES
+            for case in execution_probe.HAZARD_CASES
             if case.name
             in (
                 "raw-rdma-ct-exact-r2-serial",
@@ -765,7 +762,7 @@ class ProtocolTest(unittest.TestCase):
             execution_probe.validate_hazard_selection((hazard,))
         controls = {
             (case.plan.rounds, case.plan.schedule): case
-            for case in execution_probe.V2_HAZARD_DISJOINT_CONTROLS
+            for case in execution_probe.HAZARD_DISJOINT_CONTROLS
             if execution_probe.hazard_pair_key(case.plan)
             == execution_probe.hazard_pair_key(hazard.plan)
         }
@@ -877,7 +874,7 @@ class ProtocolTest(unittest.TestCase):
             tuple[frozenset[protocol.Engine], int],
             set[protocol.Schedule],
         ] = {}
-        for case in execution_probe.V2_HAZARD_DISJOINT_CONTROLS:
+        for case in execution_probe.HAZARD_DISJOINT_CONTROLS:
             plan = case.plan
             pair = frozenset(lane.engine for lane in plan.lanes)
             rounds_by_pair.setdefault(pair, set()).add(plan.rounds)
@@ -887,7 +884,7 @@ class ProtocolTest(unittest.TestCase):
             self.assertTrue(
                 all(
                     plan.rounds
-                    < execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS[
+                    < execution_probe.DOCUMENTED_QUEUE_DEPTHS[
                         lane.engine
                     ]
                     for lane in plan.lanes
@@ -930,9 +927,7 @@ class ProtocolTest(unittest.TestCase):
         )
         words = [0] * protocol.RECORD_WORDS
         words[protocol.REC["MAGIC"]] = protocol.RECORD_MAGIC
-        words[protocol.REC["SCHEMA_AND_WORDS"]] = (
-            protocol.SCHEMA << 32
-        ) | protocol.RECORD_WORDS
+        words[protocol.REC["WORD_COUNT"]] = protocol.RECORD_WORDS
         words[protocol.REC["STATUS"]] = protocol.Status.OK
         words[protocol.REC["FLAGS"]] = protocol.ALL_PHASE_FLAGS
         words[protocol.REC["COMMAND"]] = plan.command
@@ -975,14 +970,14 @@ class ProtocolTest(unittest.TestCase):
         )
         case = execution_probe.GenericProbeCase("ct-range", plan)
         identity = plan.issue_identities()[0]
-        read0 = execution_probe.v2_spm_address(
-            identity.slot, execution_probe.V2_SPM_READ0_OFFSET
+        read0 = execution_probe.spm_address(
+            identity.slot, execution_probe.SPM_READ0_OFFSET
         )
-        read1 = execution_probe.v2_spm_address(
-            identity.slot, execution_probe.V2_SPM_READ1_OFFSET
+        read1 = execution_probe.spm_address(
+            identity.slot, execution_probe.SPM_READ1_OFFSET
         )
-        write = execution_probe.v2_spm_address(
-            identity.slot, execution_probe.V2_SPM_WRITE_OFFSET
+        write = execution_probe.spm_address(
+            identity.slot, execution_probe.SPM_WRITE_OFFSET
         )
         observation = protocol.IssueObservation(
             identity=identity,
@@ -1006,11 +1001,11 @@ class ProtocolTest(unittest.TestCase):
             control_after_issue=0,
             execute_cycles=1,
         )
-        execution_probe.validate_observed_ranges_v2(
+        execution_probe.validate_observed_ranges(
             case, plan, (observation,)
         )
         with self.assertRaisesRegex(RuntimeError, "issue flags"):
-            execution_probe.validate_observed_ranges_v2(
+            execution_probe.validate_observed_ranges(
                 case,
                 plan,
                 (
@@ -1022,7 +1017,7 @@ class ProtocolTest(unittest.TestCase):
                 ),
             )
         with self.assertRaisesRegex(RuntimeError, "range is"):
-            execution_probe.validate_observed_ranges_v2(
+            execution_probe.validate_observed_ranges(
                 case,
                 plan,
                 (
@@ -1064,14 +1059,14 @@ class ProtocolTest(unittest.TestCase):
     def test_require_overlap_needs_paired_controls(self) -> None:
         window = next(
             case
-            for case in execution_probe.V2_PAIR_CASES
+            for case in execution_probe.PAIR_CASES
             if case.name == "ct-rdma-disjoint-r2-window"
         )
         with self.assertRaisesRegex(RuntimeError, "paired serial/window"):
             execution_probe.validate_overlap_selection((window,))
         serial = next(
             case
-            for case in execution_probe.V2_PAIR_CASES
+            for case in execution_probe.PAIR_CASES
             if case.name == "ct-rdma-disjoint-r2-serial"
         )
         execution_probe.validate_overlap_selection((serial, window))
@@ -1107,7 +1102,7 @@ class ProtocolTest(unittest.TestCase):
     def test_depth_plus_one_is_typed_and_requires_a_wait(self) -> None:
         case = next(
             item
-            for item in execution_probe.V2_DEPTH_PLUS_ONE_CASES
+            for item in execution_probe.DEPTH_PLUS_ONE_CASES
             if item.plan.lanes[0].engine == protocol.Engine.CT
         )
         plan = case.plan
@@ -1129,11 +1124,11 @@ class ProtocolTest(unittest.TestCase):
 
     def test_multi_issue_catalog_stays_below_documented_depth(self) -> None:
         for engine, depth in (
-            execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
+            execution_probe.DOCUMENTED_QUEUE_DEPTHS.items()
         ):
             cases = [
                 case
-                for case in execution_probe.V2_MULTI_ISSUE_CASES
+                for case in execution_probe.MULTI_ISSUE_CASES
                 if case.plan.lanes[0].engine == engine
             ]
             issue_counts = {
@@ -1148,11 +1143,11 @@ class ProtocolTest(unittest.TestCase):
             self.assertTrue(all(count < depth for count in issue_counts))
 
     def test_issue_paths_and_leaf_bindings_are_concrete(self) -> None:
-        self.assertEqual(len(execution_probe.V2_ISSUE_PATH_CASES), 10)
-        for engine in execution_probe.V2_ENGINES:
+        self.assertEqual(len(execution_probe.ISSUE_PATH_CASES), 10)
+        for engine in execution_probe.ENGINES:
             cases = tuple(
                 case
-                for case in execution_probe.V2_ISSUE_PATH_CASES
+                for case in execution_probe.ISSUE_PATH_CASES
                 if case.plan.lanes[0].engine == engine
             )
             self.assertEqual(
@@ -1171,7 +1166,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(
             all(execution_probe.CALIBRATION_LEAF_BINDINGS.values())
         )
-        self.assertFalse(execution_probe.V2_DEFERRED_CASES)
+        self.assertFalse(execution_probe.DEFERRED_CASES)
         self.assertTrue(
             all(
                 case.plan.is_strided_dependency_observation()
@@ -1205,37 +1200,37 @@ class ProtocolTest(unittest.TestCase):
             self.assertIn("before serialization", bound[0].completion_oracle)
         with self.assertRaisesRegex(ValueError, "Engine.NONE"):
             dataclasses.replace(
-                execution_probe.V2_SINGLE_CASES[0].plan,
+                execution_probe.SINGLE_CASES[0].plan,
                 lanes=(
                     dataclasses.replace(
-                        execution_probe.V2_SINGLE_CASES[0].plan.lanes[0],
+                        execution_probe.SINGLE_CASES[0].plan.lanes[0],
                         engine=protocol.Engine.NONE,
                     ),
                 ),
             ).request_words()
         with self.assertRaisesRegex(ValueError, "worker"):
             dataclasses.replace(
-                execution_probe.V2_SINGLE_CASES[0].plan,
+                execution_probe.SINGLE_CASES[0].plan,
                 lanes=(
                     dataclasses.replace(
-                        execution_probe.V2_SINGLE_CASES[0].plan.lanes[0],
+                        execution_probe.SINGLE_CASES[0].plan.lanes[0],
                         worker=3,
                     ),
                 ),
             ).request_words()
         with self.assertRaisesRegex(ValueError, "non-participant"):
             dataclasses.replace(
-                execution_probe.V2_SINGLE_CASES[0].plan,
+                execution_probe.SINGLE_CASES[0].plan,
                 wait_worker_mask=0b010,
             ).request_words()
 
     def test_documented_depth_catalog_is_exact_and_one_shot(self) -> None:
         for engine, depth in (
-            execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
+            execution_probe.DOCUMENTED_QUEUE_DEPTHS.items()
         ):
             cases = [
                 case
-                for case in execution_probe.V2_DOCUMENTED_DEPTH_CASES
+                for case in execution_probe.DOCUMENTED_DEPTH_CASES
                 if case.plan.lanes[0].engine == engine
             ]
             self.assertEqual(len(cases), 1)
@@ -1247,11 +1242,11 @@ class ProtocolTest(unittest.TestCase):
 
     def test_depth_plus_one_catalog_is_exact(self) -> None:
         for engine, depth in (
-            execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
+            execution_probe.DOCUMENTED_QUEUE_DEPTHS.items()
         ):
             cases = [
                 case
-                for case in execution_probe.V2_DEPTH_PLUS_ONE_CASES
+                for case in execution_probe.DEPTH_PLUS_ONE_CASES
                 if case.plan.lanes[0].engine == engine
             ]
             self.assertEqual(len(cases), 1)
@@ -1266,14 +1261,14 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             {
                 case.plan.lanes[0].engine
-                for case in execution_probe.V2_ACTIVE_OCCUPANCY_CASES
+                for case in execution_probe.ACTIVE_OCCUPANCY_CASES
             },
-            set(execution_probe.V2_ENGINES),
+            set(execution_probe.ENGINES),
         )
-        for case in execution_probe.V2_ACTIVE_OCCUPANCY_CASES:
+        for case in execution_probe.ACTIVE_OCCUPANCY_CASES:
             plan = case.plan
             engine = plan.lanes[0].engine
-            depth = execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS[engine]
+            depth = execution_probe.DOCUMENTED_QUEUE_DEPTHS[engine]
             self.assertEqual(
                 tuple(lane.engine for lane in plan.lanes),
                 (engine, engine),
@@ -1282,7 +1277,7 @@ class ProtocolTest(unittest.TestCase):
                 all(
                     lane.issue_mode == protocol.IssueMode.RAW
                     and lane.transfer_bytes
-                    == execution_probe.V2_ACTIVE_OCCUPANCY_BYTES[engine]
+                    == execution_probe.ACTIVE_OCCUPANCY_BYTES[engine]
                     for lane in plan.lanes
                 )
             )
@@ -1310,14 +1305,14 @@ class ProtocolTest(unittest.TestCase):
         self,
     ) -> None:
         self.assertEqual(
-            len(execution_probe.V2_QUEUE_SATURATION_CASES), 30
+            len(execution_probe.QUEUE_SATURATION_CASES), 30
         )
         for engine, depth in (
-            execution_probe.V2_DOCUMENTED_QUEUE_DEPTHS.items()
+            execution_probe.DOCUMENTED_QUEUE_DEPTHS.items()
         ):
             rows = [
                 case
-                for case in execution_probe.V2_QUEUE_SATURATION_CASES
+                for case in execution_probe.QUEUE_SATURATION_CASES
                 if case.plan.lanes[0].engine == engine
             ]
             self.assertEqual(len(rows), 6)
@@ -1338,7 +1333,7 @@ class ProtocolTest(unittest.TestCase):
                             if engine == protocol.Engine.NE
                             else 4096
                         ),
-                        execution_probe.V2_ACTIVE_OCCUPANCY_BYTES[engine],
+                        execution_probe.ACTIVE_OCCUPANCY_BYTES[engine],
                     )
                 },
             )
@@ -1351,12 +1346,12 @@ class ProtocolTest(unittest.TestCase):
             )
 
         self.assertEqual(
-            len(execution_probe.V2_WORKER_WAIT_SCOPE_CASES), 18
+            len(execution_probe.WORKER_WAIT_SCOPE_CASES), 18
         )
         self.assertEqual(
             {
                 case.plan.wait_kind
-                for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+                for case in execution_probe.WORKER_WAIT_SCOPE_CASES
             },
             {
                 protocol.WaitKind.DEFAULT,
@@ -1367,43 +1362,43 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(
             all(
                 case.plan.is_tight_worker_scope()
-                for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+                for case in execution_probe.WORKER_WAIT_SCOPE_CASES
             )
         )
         self.assertTrue(
             all(
                 case.plan.lanes[-1].transfer_bytes
                 == (
-                    execution_probe.V2_NE_SCOPE_RESULT_BYTES
+                    execution_probe.NE_SCOPE_RESULT_BYTES
                     if case.plan.lanes[-1].engine == protocol.Engine.NE
-                    else execution_probe.V2_REPEATED_SLOT_BYTES
+                    else execution_probe.REPEATED_SLOT_BYTES
                 )
-                for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+                for case in execution_probe.WORKER_WAIT_SCOPE_CASES
             )
         )
         self.assertEqual(
-            execution_probe.V2_NE_SCOPE_LHS_BYTES,
+            execution_probe.NE_SCOPE_LHS_BYTES,
             2
-            * execution_probe.V2_NE_SCOPE_M
-            * execution_probe.V2_NE_SCOPE_K,
+            * execution_probe.NE_SCOPE_M
+            * execution_probe.NE_SCOPE_K,
         )
         self.assertEqual(
-            execution_probe.V2_NE_SCOPE_RHS_BYTES,
+            execution_probe.NE_SCOPE_RHS_BYTES,
             2
-            * execution_probe.V2_NE_SCOPE_K
-            * execution_probe.V2_NE_SCOPE_N,
+            * execution_probe.NE_SCOPE_K
+            * execution_probe.NE_SCOPE_N,
         )
         self.assertEqual(
-            execution_probe.V2_NE_SCOPE_RESULT_BYTES,
+            execution_probe.NE_SCOPE_RESULT_BYTES,
             2
-            * execution_probe.V2_NE_SCOPE_M
-            * execution_probe.V2_NE_SCOPE_N,
+            * execution_probe.NE_SCOPE_M
+            * execution_probe.NE_SCOPE_N,
         )
         self.assertLessEqual(
-            execution_probe.V2_NE_SCOPE_WRITE_OFFSET
-            + execution_probe.V2_NE_SCOPE_RESULT_BYTES
-            + execution_probe.V2_OUTPUT_GUARD_BYTES,
-            execution_probe.V2_SPM_SLOT_STRIDE,
+            execution_probe.NE_SCOPE_WRITE_OFFSET
+            + execution_probe.NE_SCOPE_RESULT_BYTES
+            + execution_probe.OUTPUT_GUARD_BYTES,
+            execution_probe.SPM_SLOT_STRIDE,
         )
         self.assertTrue(
             all(
@@ -1414,7 +1409,7 @@ class ProtocolTest(unittest.TestCase):
                             wait_kind=protocol.WaitKind.DEFAULT,
                             wait_worker_mask=0,
                         )
-                        for case in execution_probe.V2_WORKER_WAIT_SCOPE_CASES
+                        for case in execution_probe.WORKER_WAIT_SCOPE_CASES
                         if (
                             case.plan.lanes[-1].worker == target
                             and case.plan.lanes[-1].engine == engine
@@ -1430,14 +1425,14 @@ class ProtocolTest(unittest.TestCase):
             )
         )
         self.assertEqual(
-            len(execution_probe.V2_WORKER_SUBSET_SCOPE_CASES), 12
+            len(execution_probe.WORKER_SUBSET_SCOPE_CASES), 12
         )
         for target in range(3):
             for engine in (protocol.Engine.NE, protocol.Engine.RDMA):
                 exclude, include = [
                     case
                     for case
-                    in execution_probe.V2_WORKER_SUBSET_SCOPE_CASES
+                    in execution_probe.WORKER_SUBSET_SCOPE_CASES
                     if (
                         case.plan.lanes[-1].worker == target
                         and case.plan.lanes[-1].engine == engine
@@ -1458,9 +1453,9 @@ class ProtocolTest(unittest.TestCase):
                 )
 
         pending = (
-            execution_probe.V2_QUEUE_SATURATION_CASES
-            + execution_probe.V2_WORKER_WAIT_SCOPE_CASES
-            + execution_probe.V2_WORKER_SUBSET_SCOPE_CASES
+            execution_probe.QUEUE_SATURATION_CASES
+            + execution_probe.WORKER_WAIT_SCOPE_CASES
+            + execution_probe.WORKER_SUBSET_SCOPE_CASES
         )
         self.assertTrue(
             all(
@@ -1476,7 +1471,7 @@ class ProtocolTest(unittest.TestCase):
     def test_worker_wait_scope_aggregates_distinguishing_samples(
         self,
     ) -> None:
-        case = execution_probe.V2_WORKER_WAIT_SCOPE_CASES[0]
+        case = execution_probe.WORKER_WAIT_SCOPE_CASES[0]
         observations = [
             {
                 "case": case.as_dict(),
@@ -1511,7 +1506,7 @@ class ProtocolTest(unittest.TestCase):
     def test_worker_wait_scope_all_natural_drains_is_inconclusive(
         self,
     ) -> None:
-        case = execution_probe.V2_WORKER_WAIT_SCOPE_CASES[0]
+        case = execution_probe.WORKER_WAIT_SCOPE_CASES[0]
         observations = [
             {
                 "case": case.as_dict(),
@@ -1540,7 +1535,7 @@ class ProtocolTest(unittest.TestCase):
     def test_depth_plus_one_report_uses_tight_issue_order(self) -> None:
         case = next(
             item
-            for item in execution_probe.V2_DEPTH_PLUS_ONE_CASES
+            for item in execution_probe.DEPTH_PLUS_ONE_CASES
             if item.plan.lanes[0].engine == protocol.Engine.CT
         )
         issues = [
@@ -1572,7 +1567,7 @@ class ProtocolTest(unittest.TestCase):
     def test_active_occupancy_report_separates_activity_and_backpressure(
         self,
     ) -> None:
-        for case in execution_probe.V2_ACTIVE_OCCUPANCY_CASES:
+        for case in execution_probe.ACTIVE_OCCUPANCY_CASES:
             engine_name = case.plan.lanes[0].engine.name.lower()
             issues = [
                 {
@@ -1619,7 +1614,7 @@ class ProtocolTest(unittest.TestCase):
             )
 
     def test_constructor_observation_is_nonnull_and_releases_builder(self) -> None:
-        (case,) = execution_probe.V2_CONSTRUCTOR_CASES
+        (case,) = execution_probe.CONSTRUCTOR_CASES
         self.assertTrue(case.plan.is_constructor_observation())
         self.assertEqual(
             case.plan.flags, protocol.CONSTRUCTOR_OBSERVATION
@@ -1628,7 +1623,7 @@ class ProtocolTest(unittest.TestCase):
             execution_probe.CALIBRATION_LEAF_BINDINGS[
                 "constructor-return-address-nonnull"
             ],
-            execution_probe.V2_CONSTRUCTOR_CASES,
+            execution_probe.CONSTRUCTOR_CASES,
         )
         self.assertNotIn(
             "constructor-zero-address",
@@ -1643,9 +1638,9 @@ class ProtocolTest(unittest.TestCase):
             "instruction->has_owner = instruction->owner != NULL;", source
         )
         prepare = source.split(
-            "static int wafer_ncc_v2_prepare(", maxsplit=1
+            "static int wafer_ncc_prepare(", maxsplit=1
         )[1].split(
-            "static int wafer_ncc_v2_issue(", maxsplit=1
+            "static int wafer_ncc_issue(", maxsplit=1
         )[0]
         failed_materialization = prepare.index("if (!built) {")
         failed_release = prepare.index(
@@ -1676,11 +1671,11 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             {
                 case.plan.wait_worker_mask
-                for case in execution_probe.V2_SUBSET_JOIN_CASES
+                for case in execution_probe.SUBSET_JOIN_CASES
             },
             {1, 2, 3, 4, 5, 6},
         )
-        for case in execution_probe.V2_SUBSET_JOIN_CASES:
+        for case in execution_probe.SUBSET_JOIN_CASES:
             self.assertEqual(case.plan.schedule, protocol.Schedule.WINDOW)
             self.assertEqual(
                 tuple(lane.worker for lane in case.plan.lanes), (0, 1, 2)
@@ -1692,7 +1687,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             {
                 tuple(lane.engine for lane in case.plan.lanes)
-                for case in execution_probe.V2_PRODUCER_CONSUMER_CASES
+                for case in execution_probe.PRODUCER_CONSUMER_CASES
             },
             {
                 (protocol.Engine.RDMA, protocol.Engine.CT),
@@ -1705,11 +1700,11 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(
             all(
                 case.plan.is_ordered_producer_consumer()
-                for case in execution_probe.V2_PRODUCER_CONSUMER_CASES
+                for case in execution_probe.PRODUCER_CONSUMER_CASES
             )
         )
         self.assertEqual(
-            {case.name for case in execution_probe.V2_KCORE_BOUNDARY_CASES},
+            {case.name for case in execution_probe.KCORE_BOUNDARY_CASES},
             {
                 "ct-to-kcore-read-boundary",
                 "ne-to-kcore-read-boundary",
@@ -1719,21 +1714,21 @@ class ProtocolTest(unittest.TestCase):
     def test_mapped_spm_boundary_pairs_change_one_request_word(self) -> None:
         expected = (
             (
-                execution_probe.V2_MAPPED_SPM_PURE_NCC_CASES,
+                execution_probe.MAPPED_SPM_PURE_NCC_CASES,
                 protocol.REQ["SCHEDULE"],
             ),
             (
-                execution_probe.V2_MAPPED_SPM_NCC_TO_KCORE_CASES,
+                execution_probe.MAPPED_SPM_NCC_TO_KCORE_CASES,
                 protocol.REQ["WAIT_KIND"],
             ),
             (
-                execution_probe.V2_MAPPED_SPM_KCORE_TO_NCC_CASES,
+                execution_probe.MAPPED_SPM_KCORE_TO_NCC_CASES,
                 protocol.REQ["FLAGS"],
             ),
         )
         self.assertEqual(
             execution_probe.SUITES["mapped-spm-boundary-observation"],
-            execution_probe.V2_MAPPED_SPM_BOUNDARY_CASES,
+            execution_probe.MAPPED_SPM_BOUNDARY_CASES,
         )
         for pair, changed_word in expected:
             first = pair[0].plan.request_words()
@@ -1749,16 +1744,16 @@ class ProtocolTest(unittest.TestCase):
                 {changed_word},
             )
         self.assertEqual(
-            execution_probe.V2_MAPPED_SPM_PURE_NCC_CASES[0]
+            execution_probe.MAPPED_SPM_PURE_NCC_CASES[0]
             .plan.issue_order(),
             (0, 4, 8),
         )
         self.assertEqual(
-            execution_probe.V2_MAPPED_SPM_NCC_TO_KCORE_CASES[0]
+            execution_probe.MAPPED_SPM_NCC_TO_KCORE_CASES[0]
             .plan.issue_order(),
             (0, 1, 2, 3),
         )
-        for case in execution_probe.V2_MAPPED_SPM_NCC_TO_KCORE_CASES:
+        for case in execution_probe.MAPPED_SPM_NCC_TO_KCORE_CASES:
             self.assertTrue(
                 case.plan.is_tight_kcore_boundary_observation()
             )
@@ -1767,7 +1762,7 @@ class ProtocolTest(unittest.TestCase):
             )
             self.assertEqual(case.plan.issue_limit, 0)
             self.assertEqual(case.plan.rounds, 4)
-        for case in execution_probe.V2_MAPPED_SPM_KCORE_TO_NCC_CASES:
+        for case in execution_probe.MAPPED_SPM_KCORE_TO_NCC_CASES:
             self.assertTrue(
                 case.plan.is_mapped_spm_kcore_write_observation()
             )
@@ -1786,7 +1781,7 @@ class ProtocolTest(unittest.TestCase):
             "wafer_tx81_ncc_join(1U);", sync
         )
         issued = source.index(
-            "static int wafer_ncc_v2_issue(", preissue_wait
+            "static int wafer_ncc_issue(", preissue_wait
         )
         self.assertLess(ordered, sync)
         self.assertLess(sync, preissue_wait)
@@ -1858,7 +1853,7 @@ class ProtocolTest(unittest.TestCase):
             tuple[str, protocol.EffectRelation, protocol.RangeRelation],
             set[protocol.Schedule],
         ] = {}
-        for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES:
+        for case in execution_probe.STRIDED_DEPENDENCY_CASES:
             self.assertTrue(
                 case.plan.is_strided_dependency_observation()
             )
@@ -1893,7 +1888,7 @@ class ProtocolTest(unittest.TestCase):
             {
                 effect: sum(
                     case.plan.effect_relation == effect
-                    for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES
+                    for case in execution_probe.STRIDED_DEPENDENCY_CASES
                 )
                 for effect in (
                     protocol.EffectRelation.RAW,
@@ -1912,7 +1907,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(
             all(
                 execution_probe.case_sample_count(case, 3) == 3
-                for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES
+                for case in execution_probe.STRIDED_DEPENDENCY_CASES
             )
         )
 
@@ -1923,7 +1918,7 @@ class ProtocolTest(unittest.TestCase):
         ) -> execution_probe.GenericProbeCase:
             return next(
                 case
-                for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES
+                for case in execution_probe.STRIDED_DEPENDENCY_CASES
                 if "strided-1d-" in case.name
                 and case.plan.schedule == protocol.Schedule.SERIAL
                 and case.plan.effect_relation == effect
@@ -1935,17 +1930,17 @@ class ProtocolTest(unittest.TestCase):
             protocol.RangeRelation.STRIDED_ENVELOPE,
         )
         war_identities = war.plan.issue_identities()
-        war_pre = execution_probe.v2_expected_result(
+        war_pre = execution_probe.expected_result(
             war_identities[0], war.plan.lanes[0], war.plan
         )
-        war_final = execution_probe.v2_expected_result(
+        war_final = execution_probe.expected_result(
             war_identities[1], war.plan.lanes[1], war.plan
         )
         self.assertEqual(
             war_pre,
             bytes(
-                execution_probe.v2_pattern_byte(
-                    execution_probe.V2_STRIDED_INITIAL_SOURCE_SLOT,
+                execution_probe.pattern_byte(
+                    execution_probe.STRIDED_INITIAL_SOURCE_SLOT,
                     index,
                 )
                 for index in range(len(war_pre))
@@ -1954,7 +1949,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             war_final,
             bytes(
-                execution_probe.v2_pattern_byte(
+                execution_probe.pattern_byte(
                     protocol.MAX_ROUNDS, index
                 )
                 for index in range(len(war_final))
@@ -1968,7 +1963,7 @@ class ProtocolTest(unittest.TestCase):
         )
         self.assertEqual(
             *(
-                execution_probe.v2_expected_result(
+                execution_probe.expected_result(
                     identity,
                     rar.plan.lanes[identity.lane],
                     rar.plan,
@@ -1982,28 +1977,28 @@ class ProtocolTest(unittest.TestCase):
             protocol.RangeRelation.PARTIAL,
         )
         first_identity, second_identity = partial.plan.issue_identities()
-        first_result = execution_probe.v2_expected_result(
+        first_result = execution_probe.expected_result(
             first_identity, partial.plan.lanes[0], partial.plan
         )
-        second_result = execution_probe.v2_expected_result(
+        second_result = execution_probe.expected_result(
             second_identity, partial.plan.lanes[1], partial.plan
         )
         first_base, second_base = (
-            execution_probe.v2_strided_dependency_bases(partial.plan)
+            execution_probe.strided_dependency_bases(partial.plan)
         )
         saw_first_only = False
         saw_second_wins = False
         for cursor in range(partial.plan.lanes[0].transfer_bytes):
             address = first_base + cursor
-            second_index = execution_probe.v2_dma_local_compact_index(
+            second_index = execution_probe.dma_local_compact_index(
                 partial.plan.lanes[0], second_base, address
             )
             if second_index is None:
                 saw_first_only = True
-                expected = execution_probe.v2_pattern_byte(0, cursor)
+                expected = execution_probe.pattern_byte(0, cursor)
             else:
                 saw_second_wins = True
-                expected = execution_probe.v2_pattern_byte(
+                expected = execution_probe.pattern_byte(
                     protocol.MAX_ROUNDS, second_index
                 )
             self.assertEqual(first_result[cursor], expected)
@@ -2012,7 +2007,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             second_result,
             bytes(
-                execution_probe.v2_pattern_byte(
+                execution_probe.pattern_byte(
                     protocol.MAX_ROUNDS, index
                 )
                 for index in range(len(second_result))
@@ -2023,7 +2018,7 @@ class ProtocolTest(unittest.TestCase):
             protocol.EffectRelation.WAW,
             protocol.RangeRelation.EXACT,
         )
-        exact_evidence = execution_probe.v2_strided_dependency_evidence(
+        exact_evidence = execution_probe.strided_dependency_evidence(
             exact.plan
         )
         self.assertTrue(exact_evidence["command_semantics_sufficient"])
@@ -2039,7 +2034,7 @@ class ProtocolTest(unittest.TestCase):
             exact.plan.lanes[0].transfer_bytes,
         )
         partial_evidence = (
-            execution_probe.v2_strided_dependency_evidence(partial.plan)
+            execution_probe.strided_dependency_evidence(partial.plan)
         )
         self.assertGreater(
             partial_evidence["packet_envelope_overlap_bytes"],
@@ -2047,11 +2042,11 @@ class ProtocolTest(unittest.TestCase):
         )
         generic_exact_waw = next(
             case.plan
-            for case in execution_probe.V2_HAZARD_CASES
+            for case in execution_probe.HAZARD_CASES
             if case.plan.effect_relation == protocol.EffectRelation.WAW
             and case.plan.range_relation == protocol.RangeRelation.EXACT
         )
-        generic_evidence = execution_probe.v2_waw_evidence(
+        generic_evidence = execution_probe.waw_evidence(
             generic_exact_waw
         )
         self.assertTrue(
@@ -2060,27 +2055,27 @@ class ProtocolTest(unittest.TestCase):
         self.assertFalse(
             generic_evidence["first_payload_independently_proven"]
         )
-        for case in execution_probe.V2_STRIDED_DEPENDENCY_CASES:
+        for case in execution_probe.STRIDED_DEPENDENCY_CASES:
             if case.plan.effect_relation == protocol.EffectRelation.RAW:
                 continue
             output = bytearray([0xA5] * execution_probe.RESOURCE_BYTES)
             for identity in case.plan.issue_identities():
                 lane = case.plan.lanes[identity.lane]
                 begin = (
-                    execution_probe.V2_OUTPUT_SLOT_BASE
+                    execution_probe.OUTPUT_SLOT_BASE
                     + identity.slot
-                    * execution_probe.V2_OUTPUT_SLOT_STRIDE
-                    + execution_probe.V2_OUTPUT_GUARD_BYTES
+                    * execution_probe.OUTPUT_SLOT_STRIDE
+                    + execution_probe.OUTPUT_GUARD_BYTES
                 )
-                execution_probe.v2_scatter_compact(
+                execution_probe.scatter_compact(
                     output,
                     begin,
                     lane,
-                    execution_probe.v2_expected_result(
+                    execution_probe.expected_result(
                         identity, lane, case.plan
                     ),
                 )
-            execution_probe.validate_output_payload_v2(
+            execution_probe.validate_output_payload(
                 bytes(output), case, case.plan
             )
             lane = case.plan.lanes[0]
@@ -2095,14 +2090,14 @@ class ProtocolTest(unittest.TestCase):
                 if byte not in touched
             )
             first_slot_begin = (
-                execution_probe.V2_OUTPUT_SLOT_BASE
-                + execution_probe.V2_OUTPUT_GUARD_BYTES
+                execution_probe.OUTPUT_SLOT_BASE
+                + execution_probe.OUTPUT_GUARD_BYTES
             )
             output[first_slot_begin + hole] = 0xEE
             with self.assertRaisesRegex(
                 RuntimeError, "outside record/result"
             ):
-                execution_probe.validate_output_payload_v2(
+                execution_probe.validate_output_payload(
                     bytes(output), case, case.plan
                 )
 
@@ -2116,39 +2111,39 @@ class ProtocolTest(unittest.TestCase):
             468,
         )
         for case in (
-            execution_probe.V2_DOCUMENTED_DEPTH_CASES
-            + execution_probe.V2_DEPTH_PLUS_ONE_CASES
+            execution_probe.DOCUMENTED_DEPTH_CASES
+            + execution_probe.DEPTH_PLUS_ONE_CASES
         ):
             self.assertNotIn(case, execution_probe.BOARD_ALL_SAFE_CASES)
             self.assertIn(case, execution_probe.BOARD_ALL_VALIDATION_CASES)
-        self.assertEqual(len(execution_probe.V2_LARGE_BACKLOG_CASES), 12)
+        self.assertEqual(len(execution_probe.LARGE_BACKLOG_CASES), 12)
         self.assertEqual(
-            len(execution_probe.V2_LARGE_BACKLOG_SINGLE_CASES), 8
+            len(execution_probe.LARGE_BACKLOG_SINGLE_CASES), 8
         )
-        self.assertEqual(len(execution_probe.V2_LARGE_OVERLAP_CASES), 4)
+        self.assertEqual(len(execution_probe.LARGE_OVERLAP_CASES), 4)
         self.assertTrue(
             all(
                 execution_probe.case_sample_count(case, 3) == 1
-                for case in execution_probe.V2_LARGE_BACKLOG_SINGLE_CASES
+                for case in execution_probe.LARGE_BACKLOG_SINGLE_CASES
             )
         )
         self.assertTrue(
             all(
                 execution_probe.case_sample_count(case, 3) == 3
-                for case in execution_probe.V2_LARGE_OVERLAP_CASES
+                for case in execution_probe.LARGE_OVERLAP_CASES
             )
         )
         self.assertTrue(
             any(
                 lane.transfer_bytes == 65536
-                for case in execution_probe.V2_LARGE_BACKLOG_CASES
+                for case in execution_probe.LARGE_BACKLOG_CASES
                 for lane in case.plan.lanes
             )
         )
         self.assertTrue(
             any(
-                execution_probe.v2_is_large_ne_lane(lane)
-                for case in execution_probe.V2_LARGE_BACKLOG_CASES
+                execution_probe.is_large_ne_lane(lane)
+                for case in execution_probe.LARGE_BACKLOG_CASES
                 for lane in case.plan.lanes
             )
         )
@@ -2156,20 +2151,20 @@ class ProtocolTest(unittest.TestCase):
             execution_probe.BOARD_ALL_VALIDATION_CASES
         )
         maximum_ddr_end = max(
-            execution_probe.V2_OUTPUT_SLOT_BASE
-            + identity.slot * execution_probe.V2_OUTPUT_SLOT_STRIDE
-            + 2 * execution_probe.V2_OUTPUT_GUARD_BYTES
+            execution_probe.OUTPUT_SLOT_BASE
+            + identity.slot * execution_probe.OUTPUT_SLOT_STRIDE
+            + 2 * execution_probe.OUTPUT_GUARD_BYTES
             + case.plan.lanes[identity.lane].dma_envelope_bytes()
             for case in execution_probe.BOARD_ALL_VALIDATION_CASES
             for identity in case.plan.issue_identities()
         )
         self.assertLess(maximum_ddr_end, execution_probe.RESOURCE_BYTES)
         self.assertLessEqual(
-            execution_probe.V2_OUTPUT_SLOT_BASE
-            + execution_probe.V2_STRIDED_INITIAL_SOURCE_SLOT
-            * execution_probe.V2_OUTPUT_SLOT_STRIDE
-            + execution_probe.V2_OUTPUT_GUARD_BYTES
-            + execution_probe.V2_REPEATED_SLOT_BYTES,
+            execution_probe.OUTPUT_SLOT_BASE
+            + execution_probe.STRIDED_INITIAL_SOURCE_SLOT
+            * execution_probe.OUTPUT_SLOT_STRIDE
+            + execution_probe.OUTPUT_GUARD_BYTES
+            + execution_probe.REPEATED_SLOT_BYTES,
             execution_probe.RESOURCE_BYTES,
         )
         self.assertEqual(
@@ -2191,15 +2186,15 @@ class ProtocolTest(unittest.TestCase):
             {(execution_probe.RESOURCE_ELEMENTS,)},
         )
         self.assertLessEqual(
-            execution_probe.V2_NE_LARGE_WRITE_OFFSET
-            + execution_probe.V2_NE_LARGE_RESULT_BYTES
-            + execution_probe.V2_OUTPUT_GUARD_BYTES,
-            execution_probe.V2_SPM_SLOT_STRIDE,
+            execution_probe.NE_LARGE_WRITE_OFFSET
+            + execution_probe.NE_LARGE_RESULT_BYTES
+            + execution_probe.OUTPUT_GUARD_BYTES,
+            execution_probe.SPM_SLOT_STRIDE,
         )
 
     def test_large_overlap_summary_requires_three_paired_samples(self) -> None:
         observations: list[dict[str, object]] = []
-        for case in execution_probe.V2_LARGE_OVERLAP_CASES:
+        for case in execution_probe.LARGE_OVERLAP_CASES:
             engines = tuple(
                 lane.engine.name.lower() for lane in case.plan.lanes
             )
@@ -2239,9 +2234,9 @@ class ProtocolTest(unittest.TestCase):
             4: (0, 1, 4, 2, 5, 8, 3, 6, 9, 7, 10, 11),
         }
         self.assertEqual(
-            len(execution_probe.V2_DOUBLE_SLOT_OBSERVATION_CASES), 8
+            len(execution_probe.DOUBLE_SLOT_OBSERVATION_CASES), 8
         )
-        for case in execution_probe.V2_DOUBLE_SLOT_OBSERVATION_CASES:
+        for case in execution_probe.DOUBLE_SLOT_OBSERVATION_CASES:
             self.assertTrue(case.plan.is_double_slot_observation())
             self.assertEqual(
                 case.plan.issue_order(), expected_orders[case.plan.rounds]

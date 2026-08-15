@@ -342,7 +342,6 @@ int runNoCard(
     return fail(invocationPlan.takeError());
 
   llvm::outs() << "package: id=" << manifest.program.getValue()
-               << " schema=" << manifest.schemaVersion
                << " cards=" << manifest.cardCount
                << " tiles=" << manifest.tileCount << "\n";
   llvm::outs() << "target_identity: "

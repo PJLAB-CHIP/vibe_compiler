@@ -611,7 +611,6 @@ def _validate_device_contract() -> None:
     assert row_fields == catalog.ROW_REC
 
     for fragment in (
-        "#define WAFER_SSC_SCHEMA 3U",
         "#define WAFER_SSC_REQUEST_WORDS 36U",
         "#define WAFER_SSC_ROW_RECORD_WORDS 86U",
         "#define WAFER_SSC_ROW_COUNT 4U",
@@ -789,7 +788,7 @@ def _validate_device_contract() -> None:
 
 def _validate_cli() -> None:
     driver_source = SCRIPT.read_text()
-    assert "rank_one_terminal_completion" in driver_source
+    assert "package_completion_kind" in driver_source
     assert "validate_board_lifecycle" in driver_source
     emitted = subprocess.run(
         [sys.executable, str(SCRIPT), "--emit-board-case-keys"],

@@ -3,7 +3,7 @@
 
 Pipeline position:
 - Upstream IR / input:
-  Qualified rank-one package ABI, explicit NCC engine/worker routing, owned
+  Qualified program-local package ABI, explicit NCC engine/worker routing, owned
   DDR/SPM ranges, matching-worker completion, and stable PMU readback.
 - Current stage responsibility:
   Characterize fixed-total-work placement, low/high outstanding response, and
@@ -19,13 +19,13 @@ Pipeline position:
   cost selection after independent held-out qualification.
 - User-level driver / named pipeline:
   The normal wafer-compile package path, a test-only linked device adapter,
-  and wafer-run's rank-one board lifecycle.
+  and wafer-run's program-local board lifecycle.
 - Explicit non-goals:
   Do not infer an exact per-worker completion timestamp, priority direction, a
   physical arbiter algorithm, cross-worker address ordering, or a fixed cycle
   constant.
 - Completion gate:
-  All 44 cases serialize to the versioned device protocol; each activation
+  All 44 cases serialize to the current device protocol; each activation
   group contains its matched controls; board execution checks request echo,
   exact full results, both guards, routing/counts, stable device counters,
   participant completion through rotating polling and matching joins,
@@ -200,7 +200,7 @@ class WorkerCase:
                     "test/Board/"
                     "wafer_board_worker_placement_characterization_test.py"
                 ),
-                "lifecycle": "rank-one/package/wafer-run/status/cleanup",
+                "lifecycle": "program-local/package/wafer-run/status/cleanup",
             },
             "oracle": [
                 "full exact output",
@@ -398,7 +398,7 @@ BOUNDARIES = (
         key="worker-absolute-per-worker-completion-cycle",
         reason=(
             "the current PMU has a common global/engine cycle window and "
-            "per-worker instruction/blocking counters, but no versioned "
+            "per-worker instruction/blocking counters, but no current "
             "per-worker completion timestamp on that same start basis"
         ),
         typed_gate=(

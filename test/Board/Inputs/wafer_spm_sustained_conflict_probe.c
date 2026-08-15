@@ -2,7 +2,7 @@
  * Reuse the already-qualified TX81 packet builders, PMU sampler, cache
  * visibility, and bounded worker drain from the memory-descriptor probe.
  * The legacy entry points are renamed and garbage-collected; this file exports
- * only the rank-one sustained-conflict entry consumed by the standard loader.
+ * only the program-local sustained-conflict entry consumed by the standard loader.
  */
 #define wafer_tx81_instruction_family_probe                                    \
   wafer_tx81_mdc_legacy_probe_not_exported
@@ -63,8 +63,8 @@ static void wafer_ssc_init_record(volatile uint64_t *record, uint32_t status) {
   for (uint32_t word = 0; word < WAFER_SSC_RECORD_WORDS; ++word)
     record[word] = 0U;
   record[WAFER_SSC_REC_MAGIC] = WAFER_SSC_RECORD_MAGIC;
-  record[WAFER_SSC_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_SSC_SCHEMA << 32) | WAFER_SSC_RECORD_WORDS;
+  record[WAFER_SSC_REC_WORD_COUNT] =
+      WAFER_SSC_RECORD_WORDS;
   record[WAFER_SSC_REC_STATUS] = status;
   record[WAFER_SSC_REC_ROWS] = WAFER_SSC_ROW_COUNT;
   record[WAFER_SSC_REC_TRANSFER_BYTES] = WAFER_SSC_TRANSFER_BYTES;
@@ -83,8 +83,8 @@ static void wafer_ssc_init_row(volatile uint64_t *row_record, uint32_t status) {
   for (uint32_t word = 0; word < WAFER_SSC_ROW_RECORD_WORDS; ++word)
     row_record[word] = 0U;
   row_record[WAFER_SSC_ROW_MAGIC_WORD] = WAFER_SSC_ROW_MAGIC;
-  row_record[WAFER_SSC_ROW_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_SSC_SCHEMA << 32) | WAFER_SSC_ROW_RECORD_WORDS;
+  row_record[WAFER_SSC_ROW_WORD_COUNT] =
+      WAFER_SSC_ROW_RECORD_WORDS;
   row_record[WAFER_SSC_ROW_STATUS] = status;
   row_record[WAFER_SSC_ROW_REQUEST_GUARD] = WAFER_SSC_REQUEST_GUARD;
   row_record[WAFER_SSC_ROW_GUARD_WORD] = WAFER_SSC_ROW_RECORD_GUARD;
@@ -96,8 +96,8 @@ static void wafer_ssc_init_row(volatile uint64_t *row_record, uint32_t status) {
 static uint32_t wafer_ssc_decode(const volatile uint64_t *wire,
                                  WaferSSCRequest *request) {
   if (wire[WAFER_SSC_REQ_MAGIC] != WAFER_SSC_REQUEST_MAGIC ||
-      wire[WAFER_SSC_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_SSC_SCHEMA << 32) | WAFER_SSC_REQUEST_WORDS) ||
+      wire[WAFER_SSC_REQ_WORD_COUNT] !=
+          (WAFER_SSC_REQUEST_WORDS) ||
       wire[WAFER_SSC_REQ_REPEATS] != WAFER_SSC_REPEATS ||
       wire[WAFER_SSC_REQ_ROWS] != WAFER_SSC_ROW_COUNT ||
       wire[WAFER_SSC_REQ_TRANSFER_BYTES] != WAFER_SSC_TRANSFER_BYTES ||

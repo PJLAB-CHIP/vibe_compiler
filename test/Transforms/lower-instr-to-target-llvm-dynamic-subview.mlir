@@ -58,8 +58,8 @@ func.func @bounded_dynamic_ddr_subview(
 // POS: %[[OUTPUT_STRIDE:.+]] = llvm.mlir.constant(16 : i64) : i64
 // POS: %[[OUTPUT_DYNAMIC:.+]] = llvm.mul %[[ROW]], %[[OUTPUT_STRIDE]] : i64
 // POS: %[[OUTPUT_ADDR:.+]] = llvm.add %[[OUTPUT_BASE]], %[[OUTPUT_DYNAMIC]] : i64
-// POS: llvm.call @wafer_tx81_rdma_v3(%[[INPUT_ADDR]],
-// POS: llvm.call @wafer_tx81_wdma_v3({{.*}}%[[OUTPUT_ADDR]],
+// POS: llvm.call @wafer_tx81_rdma(%[[INPUT_ADDR]],
+// POS: llvm.call @wafer_tx81_wdma({{.*}}%[[OUTPUT_ADDR]],
 // POS-NOT: memref.subview
 // POS-NOT: scf.for
 
@@ -68,8 +68,8 @@ func.func @bounded_dynamic_ddr_subview(
 // LLVMIR: %[[INPUT_ADDR:.+]] = add i64 %{{.+}}, %[[INPUT_DYNAMIC]]
 // LLVMIR: %[[OUTPUT_DYNAMIC:.+]] = mul i64 %{{.+}}, 16
 // LLVMIR: %[[OUTPUT_ADDR:.+]] = add i64 %{{.+}}, %[[OUTPUT_DYNAMIC]]
-// LLVMIR: call void @wafer_tx81_rdma_v3(i64 %[[INPUT_ADDR]],
-// LLVMIR: call void @wafer_tx81_wdma_v3({{.*}}i64 %[[OUTPUT_ADDR]],
+// LLVMIR: call void @wafer_tx81_rdma(i64 %[[INPUT_ADDR]],
+// LLVMIR: call void @wafer_tx81_wdma({{.*}}i64 %[[OUTPUT_ADDR]],
 
 func.func @branch_refined_dynamic_ddr_subview(
     %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
@@ -115,7 +115,7 @@ func.func @branch_refined_dynamic_ddr_subview(
 
 // POS-LABEL: llvm.func @branch_refined_dynamic_ddr_subview(
 // POS: llvm.cond_br
-// POS-COUNT-2: llvm.call @wafer_tx81_rdma_v3
+// POS-COUNT-2: llvm.call @wafer_tx81_rdma
 // POS-NOT: memref.subview
 
 //--- derived-offset.mlir
@@ -146,7 +146,7 @@ func.func @lower_stage_shifted_dynamic_offset(
 // DERIVED-LABEL: llvm.func @lower_stage_shifted_dynamic_offset(
 // DERIVED: llvm.add
 // DERIVED: llvm.mul
-// DERIVED: llvm.call @wafer_tx81_rdma_v3
+// DERIVED: llvm.call @wafer_tx81_rdma
 // DERIVED-NOT: memref.subview
 
 //--- unsupported-offset.mlir

@@ -57,7 +57,6 @@ def _enumerator(name: str) -> int:
 
 REQUEST_MAGIC = _macro("WAFER_NCC_PROTOCOL_REQUEST_MAGIC")
 RECORD_MAGIC = _macro("WAFER_NCC_PROTOCOL_RECORD_MAGIC")
-SCHEMA = _macro("WAFER_NCC_PROTOCOL_SCHEMA")
 REQUEST_WORDS = _macro("WAFER_NCC_PROTOCOL_REQUEST_WORDS")
 RECORD_WORDS = _macro("WAFER_NCC_PROTOCOL_RECORD_WORDS")
 MAX_LANES = _macro("WAFER_NCC_PROTOCOL_MAX_LANES")
@@ -202,7 +201,7 @@ REQ = {
     name: _word("WAFER_NCC_REQ_", name)
     for name in (
         "MAGIC",
-        "SCHEMA_AND_WORDS",
+        "WORD_COUNT",
         "COMMAND",
         "LANE_COUNT",
         "ROUNDS",
@@ -242,7 +241,7 @@ REC = {
     name: _word("WAFER_NCC_REC_", name)
     for name in (
         "MAGIC",
-        "SCHEMA_AND_WORDS",
+        "WORD_COUNT",
         "STATUS",
         "FLAGS",
         "COMMAND",
@@ -1164,7 +1163,7 @@ class Plan:
         self.validate()
         words = [0] * REQUEST_WORDS
         words[REQ["MAGIC"]] = REQUEST_MAGIC
-        words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+        words[REQ["WORD_COUNT"]] = REQUEST_WORDS
         words[REQ["COMMAND"]] = self.command
         words[REQ["LANE_COUNT"]] = len(self.lanes)
         words[REQ["ROUNDS"]] = self.rounds
@@ -1309,7 +1308,7 @@ def validate_record(
         raise ValueError("record is truncated")
     if words[REC["MAGIC"]] != RECORD_MAGIC:
         raise ValueError("record magic is invalid")
-    if words[REC["SCHEMA_AND_WORDS"]] != (SCHEMA << 32) | RECORD_WORDS:
+    if words[REC["WORD_COUNT"]] != RECORD_WORDS:
         raise ValueError("record schema/length is invalid")
     status = Status(words[REC["STATUS"]])
     if status != Status.OK:

@@ -590,9 +590,6 @@ writeProfileInstrumentation(llvm::StringRef instrumentationRoot,
       [&](llvm::json::OStream &json) {
         json.object([&] {
           json.attribute("schema", "wafer-profile-activation");
-          json.attribute(
-              "schema_version",
-              int64_t(runtime::kProfileInstrumentationFormatVersion));
           json.attribute("primary_manifest_sha256", *productionDigest);
           json.attributeObject("metadata_sha256", [&] {
             json.attribute("plan.json", *planDigest);

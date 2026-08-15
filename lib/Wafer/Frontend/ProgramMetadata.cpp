@@ -13,6 +13,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <string>
 #include <utility>
 #include <vector>
@@ -241,11 +242,16 @@ parseDistributedBoundaryBindings(const llvm::json::Object &object,
 FailureOr<DistributedBoundary>
 parseDistributedBoundary(const llvm::json::Object &object,
                          llvm::raw_ostream &diagnostics) {
-  if (object.get("version")) {
-    rejectProgramDirectory(
-        "distributed_boundary must not contain a nested version field",
-        diagnostics);
-    return failure();
+  constexpr std::array<llvm::StringLiteral, 3> expectedFields = {
+      "num_partitions", "inputs", "outputs"};
+  for (const auto &field : object) {
+    llvm::StringRef fieldName = field.first;
+    if (!llvm::is_contained(expectedFields, fieldName)) {
+      rejectProgramDirectory(
+          "unexpected distributed_boundary field '" + fieldName.str() + "'",
+          diagnostics);
+      return failure();
+    }
   }
   DistributedBoundary boundary;
   if (readIntegerField(object, "num_partitions", boundary.numPartitions,

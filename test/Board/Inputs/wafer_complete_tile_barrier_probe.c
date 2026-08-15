@@ -1,4 +1,4 @@
-#include "wafer_full_card_barrier_probe_protocol.h"
+#include "wafer_complete_tile_barrier_probe_protocol.h"
 #include "wafer_tx81_crt.h"
 
 #include <stdint.h>
@@ -6,7 +6,7 @@
 extern void hrt_barrier(void);
 
 __attribute__((visibility("hidden")))
-const uint64_t wafer_barrier_slots_per_rank = WAFER_BARRIER_SLOTS_PER_RANK;
+const uint64_t wafer_barrier_slots_per_tile = WAFER_BARRIER_SLOTS_PER_TILE;
 __attribute__((visibility("hidden"))) const uint64_t wafer_barrier_input_slot =
     WAFER_BARRIER_INPUT_SLOT;
 __attribute__((visibility("hidden"))) const uint64_t wafer_barrier_output_slot =
@@ -55,27 +55,28 @@ static void wafer_barrier_delay(uint64_t iterations) {
     __asm__ volatile("" ::: "memory");
 }
 
-static uint64_t wafer_barrier_epoch1_marker(uint32_t rank) {
-  return WAFER_BARRIER_EPOCH1_BASE | rank;
+static uint64_t wafer_barrier_epoch1_marker(uint32_t tile_id) {
+  return WAFER_BARRIER_EPOCH1_BASE | tile_id;
 }
 
-static uint64_t wafer_barrier_epoch2_marker(uint32_t rank) {
-  return WAFER_BARRIER_EPOCH2_BASE | rank;
+static uint64_t wafer_barrier_epoch2_marker(uint32_t tile_id) {
+  return WAFER_BARRIER_EPOCH2_BASE | tile_id;
 }
 
-static uint64_t wafer_barrier_metadata(uint32_t rank, uint64_t status) {
-  return WAFER_BARRIER_RECORD_SCHEMA | ((uint64_t)rank << 16) | (status << 24) |
-         ((uint64_t)WAFER_BARRIER_RANKS << 32);
+static uint64_t wafer_barrier_metadata(uint32_t tile_id, uint64_t status) {
+  return WAFER_BARRIER_RECORD_WORDS | ((uint64_t)tile_id << 16) | (status << 24) |
+         ((uint64_t)WAFER_BARRIER_TILE_COUNT << 32);
 }
 
 static uint64_t
-wafer_barrier_verify_epoch(const volatile uint64_t *rank_major_slots,
+wafer_barrier_verify_epoch(const volatile uint64_t *tile_major_slots,
                            uint32_t slot_offset, uint64_t marker_base) {
   uint64_t mismatches = 0;
-  for (uint32_t peer = 0; peer < WAFER_BARRIER_RANKS; ++peer) {
+  for (uint32_t peer = 0; peer < WAFER_BARRIER_TILE_COUNT; ++peer) {
     uint64_t peer_output =
-        rank_major_slots[peer * wafer_barrier_slots_per_rank +
-                         wafer_barrier_output_slot];
+        tile_major_slots[peer * wafer_barrier_slots_per_tile +
+                         wafer_barrier_output_slot] +
+        (uint64_t)peer * WAFER_BARRIER_RESOURCE_BYTES;
     wafer_barrier_cache_range(peer_output + slot_offset,
                               WAFER_BARRIER_CACHE_LINE_BYTES, 1);
     const volatile uint64_t *marker =
@@ -86,33 +87,35 @@ wafer_barrier_verify_epoch(const volatile uint64_t *rank_major_slots,
 }
 
 __attribute__((visibility("hidden"))) void
-wafer_tx81_full_card_barrier_probe(uint32_t rank, uint64_t input_ddr,
+wafer_tx81_complete_tile_barrier_probe(uint32_t tile_id, uint64_t input_ddr,
                                    uint64_t output_ddr, uint64_t status_ddr,
-                                   uint64_t rank_major_slots_address) {
-  const volatile uint64_t *rank_major_slots =
-      (const volatile uint64_t *)(uintptr_t)rank_major_slots_address;
+                                   uint64_t tile_major_slots_address) {
+  const volatile uint64_t *tile_major_slots =
+      (const volatile uint64_t *)(uintptr_t)tile_major_slots_address;
+  input_ddr += (uint64_t)tile_id * WAFER_BARRIER_RESOURCE_BYTES;
+  output_ddr += (uint64_t)tile_id * WAFER_BARRIER_RESOURCE_BYTES;
   const volatile uint64_t *request =
       (const volatile uint64_t *)(uintptr_t)input_ddr;
   volatile uint8_t *output = (volatile uint8_t *)(uintptr_t)output_ddr;
 
-  wafer_tx81_direct_dte_begin_after_prepare(status_ddr, WAFER_BARRIER_RANKS);
+  wafer_tx81_direct_dte_begin_after_prepare(status_ddr, WAFER_BARRIER_TILE_COUNT);
   wafer_barrier_cache_range(input_ddr, WAFER_BARRIER_CACHE_LINE_BYTES, 1);
   uint32_t request_valid =
       request[WAFER_BARRIER_REQ_MAGIC] == WAFER_BARRIER_REQUEST_MAGIC &&
-      request[WAFER_BARRIER_REQ_SCHEMA] == WAFER_BARRIER_REQUEST_SCHEMA &&
-      request[WAFER_BARRIER_REQ_RANK] == rank &&
+      request[WAFER_BARRIER_REQ_WORD_COUNT] == WAFER_BARRIER_REQUEST_WORDS &&
+      request[WAFER_BARRIER_REQ_TILE_ID] == tile_id &&
       request[WAFER_BARRIER_REQ_GUARD] == WAFER_BARRIER_REQUEST_GUARD;
 
   for (uint32_t index = 0; index < WAFER_BARRIER_RESOURCE_BYTES; ++index)
     output[index] = WAFER_BARRIER_OUTPUT_CANARY;
   uint64_t step_flags = WAFER_BARRIER_STEP_OUTPUT_INITIALIZED;
 
-  uint64_t delay1 = ((uint64_t)rank + 1) * WAFER_BARRIER_DELAY1_SCALE;
+  uint64_t delay1 = ((uint64_t)tile_id + 1) * WAFER_BARRIER_DELAY1_SCALE;
   wafer_barrier_delay(delay1);
   volatile uint64_t *epoch1 =
       (volatile uint64_t *)(uintptr_t)(output_ddr +
                                        WAFER_BARRIER_EPOCH1_OFFSET);
-  *epoch1 = wafer_barrier_epoch1_marker(rank);
+  *epoch1 = wafer_barrier_epoch1_marker(tile_id);
   wafer_barrier_cache_range(output_ddr + WAFER_BARRIER_EPOCH1_OFFSET,
                             WAFER_BARRIER_CACHE_LINE_BYTES, 0);
   step_flags |= WAFER_BARRIER_STEP_EPOCH1_WRITTEN;
@@ -122,17 +125,17 @@ wafer_tx81_full_card_barrier_probe(uint32_t rank, uint64_t input_ddr,
   step_flags |= WAFER_BARRIER_STEP_EPOCH1_COMPLETED;
 
   uint64_t epoch1_mismatches = wafer_barrier_verify_epoch(
-      rank_major_slots, WAFER_BARRIER_EPOCH1_OFFSET, WAFER_BARRIER_EPOCH1_BASE);
+      tile_major_slots, WAFER_BARRIER_EPOCH1_OFFSET, WAFER_BARRIER_EPOCH1_BASE);
   if (epoch1_mismatches == 0)
     step_flags |= WAFER_BARRIER_STEP_EPOCH1_VISIBLE;
 
   uint64_t delay2 =
-      ((uint64_t)WAFER_BARRIER_RANKS - rank) * WAFER_BARRIER_DELAY2_SCALE;
+      ((uint64_t)WAFER_BARRIER_TILE_COUNT - tile_id) * WAFER_BARRIER_DELAY2_SCALE;
   wafer_barrier_delay(delay2);
   volatile uint64_t *epoch2 =
       (volatile uint64_t *)(uintptr_t)(output_ddr +
                                        WAFER_BARRIER_EPOCH2_OFFSET);
-  *epoch2 = wafer_barrier_epoch2_marker(rank);
+  *epoch2 = wafer_barrier_epoch2_marker(tile_id);
   wafer_barrier_cache_range(output_ddr + WAFER_BARRIER_EPOCH2_OFFSET,
                             WAFER_BARRIER_CACHE_LINE_BYTES, 0);
   step_flags |= WAFER_BARRIER_STEP_EPOCH2_WRITTEN;
@@ -142,11 +145,11 @@ wafer_tx81_full_card_barrier_probe(uint32_t rank, uint64_t input_ddr,
   step_flags |= WAFER_BARRIER_STEP_EPOCH2_COMPLETED;
 
   uint64_t epoch2_mismatches = wafer_barrier_verify_epoch(
-      rank_major_slots, WAFER_BARRIER_EPOCH2_OFFSET, WAFER_BARRIER_EPOCH2_BASE);
+      tile_major_slots, WAFER_BARRIER_EPOCH2_OFFSET, WAFER_BARRIER_EPOCH2_BASE);
   if (epoch2_mismatches == 0)
     step_flags |= WAFER_BARRIER_STEP_EPOCH2_VISIBLE;
   uint64_t epoch1_crosstalk = wafer_barrier_verify_epoch(
-      rank_major_slots, WAFER_BARRIER_EPOCH1_OFFSET, WAFER_BARRIER_EPOCH1_BASE);
+      tile_major_slots, WAFER_BARRIER_EPOCH1_OFFSET, WAFER_BARRIER_EPOCH1_BASE);
   if (epoch1_crosstalk == 0)
     step_flags |= WAFER_BARRIER_STEP_EPOCH1_STABLE;
 
@@ -159,12 +162,12 @@ wafer_tx81_full_card_barrier_probe(uint32_t rank, uint64_t input_ddr,
       (volatile uint64_t *)(uintptr_t)(output_ddr +
                                        WAFER_BARRIER_RECORD_OFFSET);
   record[WAFER_BARRIER_REC_MAGIC] = WAFER_BARRIER_RECORD_MAGIC;
-  record[WAFER_BARRIER_REC_METADATA] = wafer_barrier_metadata(rank, status);
+  record[WAFER_BARRIER_REC_METADATA] = wafer_barrier_metadata(tile_id, status);
   record[WAFER_BARRIER_REC_EPOCH1_MISMATCHES] = epoch1_mismatches;
   record[WAFER_BARRIER_REC_EPOCH2_MISMATCHES] = epoch2_mismatches;
   record[WAFER_BARRIER_REC_EPOCH1_CROSSTALK] = epoch1_crosstalk;
-  record[WAFER_BARRIER_REC_EPOCH1_MARKER] = wafer_barrier_epoch1_marker(rank);
-  record[WAFER_BARRIER_REC_EPOCH2_MARKER] = wafer_barrier_epoch2_marker(rank);
+  record[WAFER_BARRIER_REC_EPOCH1_MARKER] = wafer_barrier_epoch1_marker(tile_id);
+  record[WAFER_BARRIER_REC_EPOCH2_MARKER] = wafer_barrier_epoch2_marker(tile_id);
   record[WAFER_BARRIER_REC_DELAY1] = delay1;
   record[WAFER_BARRIER_REC_DELAY2] = delay2;
   record[WAFER_BARRIER_REC_DURATION1] = duration1;
@@ -172,7 +175,7 @@ wafer_tx81_full_card_barrier_probe(uint32_t rank, uint64_t input_ddr,
   record[WAFER_BARRIER_REC_CALLS] = 2;
   record[WAFER_BARRIER_REC_STEP_FLAGS] = step_flags;
   record[WAFER_BARRIER_REC_REQUEST_GUARD] = request[WAFER_BARRIER_REQ_GUARD];
-  record[WAFER_BARRIER_REC_PARTICIPANTS] = WAFER_BARRIER_RANKS;
+  record[WAFER_BARRIER_REC_PARTICIPANTS] = WAFER_BARRIER_TILE_COUNT;
   record[WAFER_BARRIER_REC_GUARD] = WAFER_BARRIER_RECORD_GUARD;
   wafer_barrier_cache_range(output_ddr, WAFER_BARRIER_RESOURCE_BYTES, 0);
   wafer_tx81_direct_dte_finish();

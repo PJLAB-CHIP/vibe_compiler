@@ -52,7 +52,6 @@ ROW_MAGIC = 0x57445348524F5721
 REQUEST_GUARD = 0x9B52D6407CE183AF
 RECORD_GUARD = 0xC8642F9A15BD703E
 ROW_GUARD = 0x73E10AB49D5268CF
-SCHEMA = 1
 REQUEST_WORDS = 16
 HEADER_WORDS = 16
 ROW_WORDS = 8
@@ -288,7 +287,7 @@ def compile_seed_package(
             str(source),
             "--output-program-dir",
             str(package),
-            "--execution-ranks=1",
+            "--num-partitions=1",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
@@ -310,7 +309,7 @@ def _resource_by_role(
 
 def prepare_workspace_manifest(
     package: pathlib.Path, workspace_size: int,
-) -> tuple[pathlib.Path, tuple[int, int, int]]:
+) -> tuple[pathlib.Path, tuple[int, int, int], int]:
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     entries = manifest.get("entries")
@@ -319,27 +318,28 @@ def prepare_workspace_manifest(
     target = manifest.get("target")
     runtime_launch.require_manifest_launch(
         manifest,
-        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        runtime_launch.GRID_KERNEL_LAUNCH,
         context="sparse high-offset seed",
     )
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="sparse high-offset seed"
+    )
     if (
-        manifest.get("rank_count") != 1
-        or not isinstance(target, dict)
+        not isinstance(target, dict)
         or target.get("identity") != TARGET_IDENTITY
-        or not isinstance(entries, list)
-        or len(entries) != 1
         or not isinstance(modules, list)
         or len(modules) != 1
         or not isinstance(resources, list)
     ):
-        raise RuntimeError("sparse high-offset seed manifest is not rank-one")
+        raise RuntimeError("sparse high-offset seed manifest is invalid")
 
     entry = entries[0]
     module = modules[0]
     slots = entry.get("slots")
     if (
         not isinstance(entry, dict)
-        or entry.get("rank") != 0
+        or entry.get("card_id") != 0
+        or entry.get("tile_id") != 0
         or entry.get("module") != module.get("id")
         or module.get("exports") != [{"role": "main", "symbol": "main"}]
         or not isinstance(slots, list)
@@ -353,7 +353,7 @@ def prepare_workspace_manifest(
     if (
         len(inputs) != 1
         or len(outputs) != 1
-        or len(workspaces) > 1
+        or len(workspaces) not in (0, runtime_launch.TARGET_TILE_COUNT)
         or any(
             not isinstance(resource, dict)
             or resource.get("role") not in allowed
@@ -370,7 +370,7 @@ def prepare_workspace_manifest(
     )
     for resource, access in expected_host:
         if (
-            resource.get("rank") != 0
+            resource.get("scope") != {"kind": "card", "card_id": 0}
             or resource.get("role_index") != 0
             or resource.get("type")
             != {"dtype": "f16", "shape": [LOCAL_ELEMENTS]}
@@ -386,44 +386,51 @@ def prepare_workspace_manifest(
 
     input_id = int(inputs[0]["id"])
     output_id = int(outputs[0]["id"])
-    if workspaces:
-        workspace = workspaces[0]
-        if not isinstance(workspace.get("id"), int):
-            raise RuntimeError("seed workspace id is invalid")
-        workspace_id = int(workspace["id"])
-    else:
-        ids = [
-            int(resource["id"])
-            for resource in resources
-            if isinstance(resource, dict)
-            and isinstance(resource.get("id"), int)
+    if not workspaces:
+        next_id = max(int(resource["id"]) for resource in resources) + 1
+        for tile_id in range(runtime_launch.TARGET_TILE_COUNT):
+            workspace = {
+                "id": next_id + tile_id,
+                "scope": {"kind": "tile", "card_id": 0, "tile_id": tile_id},
+                "role": "workspace",
+                "role_index": 0,
+            }
+            resources.append(workspace)
+            workspaces.append(workspace)
+    workspace_by_tile: dict[int, dict[str, object]] = {}
+    for workspace in workspaces:
+        scope = workspace.get("scope")
+        if (
+            not isinstance(workspace.get("id"), int)
+            or not isinstance(scope, dict)
+            or scope.get("kind") != "tile"
+            or scope.get("card_id") != 0
+            or not isinstance(scope.get("tile_id"), int)
+        ):
+            raise RuntimeError("seed workspace scope is invalid")
+        tile_id = int(scope["tile_id"])
+        workspace_by_tile[tile_id] = workspace
+        workspace.update(
+            {
+                "name": f"ddr_sparse_workspace_tile_{tile_id}",
+                "type": {"dtype": "u8", "shape": [workspace_size]},
+                "bytes": workspace_size,
+                "alignment": 256,
+                "access": "read_write",
+                "host_visible": False,
+            }
+        )
+    if set(workspace_by_tile) != set(range(runtime_launch.TARGET_TILE_COUNT)):
+        raise RuntimeError("seed workspaces do not cover the Tile domain")
+    for tile_entry in entries:
+        tile_id = int(tile_entry["tile_id"])
+        workspace_id = int(workspace_by_tile[tile_id]["id"])
+        tile_entry["slots"] = [
+            {"ordinal": 0, "resource": input_id, "access": "read_only"},
+            {"ordinal": 1, "resource": output_id, "access": "write_only"},
+            {"ordinal": 2, "resource": workspace_id, "access": "read_write"},
         ]
-        if len(ids) != len(resources) or len(set(ids)) != len(ids):
-            raise RuntimeError("seed resource ids are invalid")
-        workspace_id = max(ids, default=-1) + 1
-        workspace = {}
-        resources.append(workspace)
-
-    workspace.clear()
-    workspace.update(
-        {
-            "id": workspace_id,
-            "rank": 0,
-            "role": "workspace",
-            "role_index": 0,
-            "name": "default_ddr_arena",
-            "type": {"dtype": "u8", "shape": [workspace_size]},
-            "bytes": workspace_size,
-            "alignment": 256,
-            "access": "read_write",
-            "host_visible": False,
-        }
-    )
-    entry["slots"] = [
-        {"ordinal": 0, "resource": input_id, "access": "read_only"},
-        {"ordinal": 1, "resource": output_id, "access": "write_only"},
-        {"ordinal": 2, "resource": workspace_id, "access": "read_write"},
-    ]
+    workspace_id = int(workspace_by_tile[0]["id"])
 
     module_path_value = module.get("path")
     if not isinstance(module_path_value, str):
@@ -438,7 +445,7 @@ def prepare_workspace_manifest(
     validate_manifest(
         package, (input_id, output_id, workspace_id), workspace_size
     )
-    return module_path, (input_id, output_id, workspace_id)
+    return module_path, (input_id, output_id, workspace_id), len(entry["slots"])
 
 
 def validate_manifest(
@@ -451,9 +458,7 @@ def validate_manifest(
     entries = manifest.get("entries")
     if (
         not isinstance(resources, list)
-        or len(resources) != 3
-        or not isinstance(entries, list)
-        or len(entries) != 1
+        or len(resources) != 2 + runtime_launch.TARGET_TILE_COUNT
     ):
         raise RuntimeError("sparse high-offset final resource domains are wrong")
     resources_by_id = {
@@ -461,8 +466,6 @@ def validate_manifest(
         for resource in resources
         if isinstance(resource, dict) and isinstance(resource.get("id"), int)
     }
-    if set(resources_by_id) != set(resource_ids):
-        raise RuntimeError("sparse high-offset final resource ids are wrong")
     input_id, output_id, workspace_id = resource_ids
     expected = {
         input_id: ("user_input", "read_only", True, RESOURCE_BYTES),
@@ -484,7 +487,6 @@ def validate_manifest(
                 resource.get("bytes"),
             )
             != contract
-            or resource.get("rank") != 0
             or resource.get("role_index") != 0
             or resource.get("alignment") != 256
         ):
@@ -496,7 +498,10 @@ def validate_manifest(
         "shape": [workspace_size],
     }:
         raise RuntimeError("sparse high-offset workspace type is invalid")
-    slots = entries[0].get("slots")
+    tile_entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="sparse high-offset package"
+    )
+    slots = tile_entries[0].get("slots")
     expected_slots = [
         (0, input_id, "read_only"),
         (1, output_id, "write_only"),
@@ -512,7 +517,10 @@ def validate_manifest(
 
 
 def build_probe(
-    args: argparse.Namespace, package: pathlib.Path, module_path: pathlib.Path
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    module_path: pathlib.Path,
+    slots_per_tile: int,
 ) -> None:
     deps = args.repo_root / "third_party" / "tx8_deps"
     tool_bin = deps / TOOLCHAIN_DIR / "bin"
@@ -552,6 +560,7 @@ def build_probe(
             "-Wall",
             "-Wextra",
             "-Werror",
+            f"-DWAFER_DDR_SPARSE_SLOTS_PER_TILE={slots_per_tile}",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
             f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
@@ -577,7 +586,7 @@ def build_probe(
             "--output",
             str(linked),
             "--loader-abi",
-            "tx8-kcore-loader",
+            "tx8-kcore-loader-grid",
             "--extra-object",
             str(helper),
         ],
@@ -618,8 +627,6 @@ def verify_no_card(
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--entry-id",
-            "0",
             "--no-card",
         ]
     )
@@ -666,7 +673,7 @@ def make_input(
     raw = bytearray(RESOURCE_BYTES)
     words = [0] * REQUEST_WORDS
     words[0] = REQUEST_MAGIC
-    words[1] = SCHEMA
+    words[1] = REQUEST_WORDS
     words[2] = sample
     words[3] = workspace_size
     words[4] = RESOURCE_BYTES
@@ -701,8 +708,6 @@ def board_command(
         str(args.wafer_run),
         "--package-dir",
         str(package),
-        "--entry-id",
-        "0",
         "--board",
         "--device-id",
         str(args.device_id),
@@ -740,7 +745,7 @@ def validate_output(
     header = struct.unpack_from(f"<{HEADER_WORDS}Q", raw)
     expected_header = {
         0: RECORD_MAGIC,
-        1: (SCHEMA << 32) | HEADER_WORDS,
+        1: HEADER_WORDS,
         2: 0,
         3: sample,
         4: len(OFFSET_NAMES),
@@ -901,10 +906,10 @@ def main() -> int:
     require_build_args(args)
     source = write_source_program(args)
     package = compile_seed_package(args, source)
-    module_path, resource_ids = prepare_workspace_manifest(
+    module_path, resource_ids, slots_per_tile = prepare_workspace_manifest(
         package, workspace_size
     )
-    build_probe(args, package, module_path)
+    build_probe(args, package, module_path, slots_per_tile)
     validate_manifest(package, resource_ids, workspace_size)
     if args.no_card:
         verify_no_card(args, package, resource_ids, workspace_size)

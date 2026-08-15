@@ -18,9 +18,9 @@
 # RUN: not wafer-run --package-dir %t.bad-package --no-card 2>&1 | FileCheck %s --check-prefix=DIGEST
 # RUN: not wafer-run --package-dir %S/../Tools --no-card 2>&1 | FileCheck %s --check-prefix=MISSING-MANIFEST
 
-# PLAN: package: id=0 schema=8 cards=1 tiles=16
+# PLAN: package: id=0 cards=1 tiles=16
 # PLAN: target_identity: wafer-tx81-single-card
-# PLAN: target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel-v3 module_format=elf-riscv64
+# PLAN: target: wafer-tx81-single-card runtime_abi=wafer-tx81-kernel module_format=elf-riscv64
 # PLAN: launch: kind=kernel form=grid entry_abi=tile-major-pointer-table phases=main
 # PLAN: entry: 0 card_id=0 tile_id=1 launch_slot=0
 # PLAN: module: 0 path=modules/tile_00000.so
@@ -34,7 +34,7 @@
 
 # NO-MODE: wafer-run requires explicit --no-card
 # BOARD-QUALIFICATION: --board requires complete explicit TX qualification options
-# BOARD-OPTIONS: no-card validation options are not valid with --board
+# BOARD-OPTIONS: no-card verification options are not valid with --board
 # CAPACITY: runtime environment resource capacity is insufficient
 # NO-CARD-BOARD-OPTION: board binding and qualification options require --board
 # EXTRA: package modules contain an unreferenced payload

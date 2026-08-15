@@ -11,11 +11,17 @@
 #define WAFER_TX81_PMU_STABLE_RETRIES 8
 #define WAFER_TX81_PROBE_WORD_COUNT 32
 #define WAFER_TX81_PROBE_MAGIC UINT64_C(0x3130554d50464157)
-#define WAFER_TX81_PROBE_SCHEMA 1
+
+#ifndef WAFER_PMU_SLOTS_PER_TILE
+#error "WAFER_PMU_SLOTS_PER_TILE must match the package entry layout"
+#endif
+
+__attribute__((visibility("hidden")))
+const uint64_t wafer_pmu_slots_per_tile = WAFER_PMU_SLOTS_PER_TILE;
 
 enum WaferTx81ProbeWord {
   WAFER_PROBE_MAGIC = 0,
-  WAFER_PROBE_SCHEMA_AND_WORDS = 1,
+  WAFER_PROBE_WORD_COUNT = 1,
   WAFER_PROBE_STABLE_COUNTER_MASK = 2,
   WAFER_PROBE_PMU_ENABLE = 3,
   WAFER_PROBE_SERIAL_MODE_WORKER0 = 4,
@@ -121,8 +127,7 @@ wafer_tx81_board_probe(uint64_t output_ddr) {
   __asm__ volatile("fence iorw, iorw" ::: "memory");
 
   record[WAFER_PROBE_MAGIC] = WAFER_TX81_PROBE_MAGIC;
-  record[WAFER_PROBE_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_TX81_PROBE_SCHEMA << 32) | WAFER_TX81_PROBE_WORD_COUNT;
+  record[WAFER_PROBE_WORD_COUNT] = WAFER_TX81_PROBE_WORD_COUNT;
   record[WAFER_PROBE_STABLE_COUNTER_MASK] = 0;
   record[WAFER_PROBE_PMU_ENABLE] = wafer_tx81_probe_read_pmu32(GR_PMU_EN);
 

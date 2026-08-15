@@ -541,9 +541,8 @@ static uint32_t wafer_mdc_validate_kind(const WaferMDCRequest *request) {
 static uint32_t wafer_mdc_decode(const volatile uint64_t *wire,
                                  WaferMDCRequest *request) {
   if (wire[WAFER_MDC_REQ_MAGIC] != WAFER_MDC_REQUEST_MAGIC ||
-      wire[WAFER_MDC_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_MDC_SCHEMA << 32) |
-           WAFER_MDC_REQUEST_WORDS) ||
+      wire[WAFER_MDC_REQ_WORD_COUNT] !=
+          (WAFER_MDC_REQUEST_WORDS) ||
       wire[WAFER_MDC_REQ_RESOURCE_BYTES] != WAFER_MDC_RESOURCE_BYTES ||
       wire[WAFER_MDC_REQ_PAYLOAD_DATA_OFFSET] !=
           WAFER_MDC_PAYLOAD_DATA_OFFSET ||
@@ -593,7 +592,7 @@ static uint32_t wafer_mdc_decode(const volatile uint64_t *wire,
 static void wafer_mdc_seed_slot(uint64_t payload_ddr, uint64_t begin,
                                 uint32_t bytes) {
   uint32_t span = bytes + 2U * WAFER_MDC_SPM_GUARD_BYTES;
-  wafer_tx81_rdma_v3(
+  wafer_tx81_rdma(
       payload_ddr + WAFER_MDC_PAYLOAD_SPM_SEED_OFFSET,
       begin - WAFER_MDC_SPM_GUARD_BYTES, span, span, 0U, 0U, 0U, 1U, 1U, 1U,
       Fmt_UINT8, 0U);
@@ -603,7 +602,7 @@ static uint64_t wafer_mdc_dump_slot(uint64_t output_ddr,
                                     uint64_t output_offset, uint64_t begin,
                                     uint32_t bytes) {
   uint32_t span = bytes + 2U * WAFER_MDC_SPM_GUARD_BYTES;
-  wafer_tx81_wdma_v3(begin - WAFER_MDC_SPM_GUARD_BYTES,
+  wafer_tx81_wdma(begin - WAFER_MDC_SPM_GUARD_BYTES,
                   output_ddr + output_offset, span, span, 0U, 0U, 0U, 1U, 1U,
                   1U, Fmt_UINT8, 0U);
   return wafer_mdc_align_output_offset(output_offset + span);
@@ -611,7 +610,7 @@ static uint64_t wafer_mdc_dump_slot(uint64_t output_ddr,
 
 static void wafer_mdc_rdma_descriptor(uint64_t source, uint64_t destination,
                                       const WaferMDCRequest *request) {
-  wafer_tx81_rdma_v3(
+  wafer_tx81_rdma(
       source, destination, request->compact_bytes, request->inner_bytes,
       request->stride0, request->stride1, request->stride2,
       request->iteration0, request->iteration1, request->iteration2,
@@ -620,7 +619,7 @@ static void wafer_mdc_rdma_descriptor(uint64_t source, uint64_t destination,
 
 static void wafer_mdc_wdma_descriptor(uint64_t source, uint64_t destination,
                                       const WaferMDCRequest *request) {
-  wafer_tx81_wdma_v3(
+  wafer_tx81_wdma(
       source, destination, request->compact_bytes, request->inner_bytes,
       request->stride0, request->stride1, request->stride2,
       request->iteration0, request->iteration1, request->iteration2,
@@ -671,20 +670,20 @@ static uint32_t wafer_mdc_prepare_engine(
   wafer_mdc_seed_slot(payload_ddr, base, addresses.slot_span);
   uint64_t payload = wafer_mdc_lane_payload(payload_ddr, lane);
   if (engine == WAFER_MDC_ENGINE_CT) {
-    wafer_tx81_rdma_v3(payload, addresses.read0, addresses.transfer_bytes,
+    wafer_tx81_rdma(payload, addresses.read0, addresses.transfer_bytes,
                     addresses.transfer_bytes, 0U, 0U, 0U, 1U, 1U, 1U,
                     Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload + 4096U, addresses.read1,
+    wafer_tx81_rdma(payload + 4096U, addresses.read1,
                     addresses.transfer_bytes, addresses.transfer_bytes, 0U,
                     0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
   } else if (engine == WAFER_MDC_ENGINE_NE) {
-    wafer_tx81_rdma_v3(payload, addresses.read0, 256U, 256U, 0U, 0U, 0U, 1U, 1U,
+    wafer_tx81_rdma(payload, addresses.read0, 256U, 256U, 0U, 0U, 0U, 1U, 1U,
                     1U, Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload + 4096U, addresses.read1, 512U, 512U, 0U, 0U, 0U,
+    wafer_tx81_rdma(payload + 4096U, addresses.read1, 512U, 512U, 0U, 0U, 0U,
                     1U, 1U, 1U, Fmt_UINT8, 0U);
   } else if (engine == WAFER_MDC_ENGINE_WDMA ||
              engine == WAFER_MDC_ENGINE_TDMA) {
-    wafer_tx81_rdma_v3(payload, addresses.read0, addresses.transfer_bytes,
+    wafer_tx81_rdma(payload, addresses.read0, addresses.transfer_bytes,
                     addresses.transfer_bytes, 0U, 0U, 0U, 1U, 1U, 1U,
                     Fmt_UINT8, 0U);
   }
@@ -700,26 +699,26 @@ static void wafer_mdc_issue_engine(const WaferMDCRequest *request,
   uint64_t payload = wafer_mdc_lane_payload(payload_ddr, lane);
   switch (engine) {
   case WAFER_MDC_ENGINE_CT:
-    wafer_tx81_elementwise_add_v3(addresses.read0, addresses.read1,
+    wafer_tx81_elementwise_add(addresses.read0, addresses.read1,
                                addresses.write,
                                addresses.transfer_bytes / 2U, Fmt_FP16, 0U);
     break;
   case WAFER_MDC_ENGINE_NE:
-    wafer_tx81_gemm_v3(addresses.read0, addresses.read1, addresses.write, 1U, 16U,
+    wafer_tx81_gemm(addresses.read0, addresses.read1, addresses.write, 1U, 16U,
                     16U, 1U, Fmt_FP16, 0U);
     break;
   case WAFER_MDC_ENGINE_RDMA:
-    wafer_tx81_rdma_v3(payload + 8192U, addresses.write,
+    wafer_tx81_rdma(payload + 8192U, addresses.write,
                     addresses.transfer_bytes, addresses.transfer_bytes, 0U,
                     0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
     break;
   case WAFER_MDC_ENGINE_WDMA:
-    wafer_tx81_wdma_v3(addresses.read0, wafer_mdc_lane_sink(output_ddr, lane),
+    wafer_tx81_wdma(addresses.read0, wafer_mdc_lane_sink(output_ddr, lane),
                     addresses.transfer_bytes, addresses.transfer_bytes, 0U,
                     0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
     break;
   case WAFER_MDC_ENGINE_TDMA:
-    wafer_tx81_gather_scatter_v3(
+    wafer_tx81_gather_scatter(
         addresses.read0, addresses.write, addresses.transfer_bytes,
         addresses.transfer_bytes, 0U, 0U, 0U, 1U, 1U, 1U, 0U, 0U, 0U, 1U,
         1U, 1U, 0U);
@@ -888,7 +887,7 @@ static uint32_t wafer_mdc_seed_parallel_range(
   while (cursor < limit) {
     uint32_t chunk =
         limit - cursor > 65536U ? 65536U : (uint32_t)(limit - cursor);
-    wafer_tx81_rdma_v3(
+    wafer_tx81_rdma(
         payload_ddr + WAFER_MDC_PERF_PAYLOAD_GUARD_SEED_OFFSET,
         cursor, chunk, chunk, 0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
     cursor += chunk;
@@ -914,7 +913,7 @@ static void wafer_mdc_load_parallel_inputs(
       engine != WAFER_MDC_ENGINE_WDMA)
     return;
   for (uint32_t buffer = 0; buffer < request->buffer_count; ++buffer) {
-    wafer_tx81_rdma_v3(
+    wafer_tx81_rdma(
         wafer_mdc_perf_payload_address(
             payload_ddr, lane, WAFER_MDC_PERF_PAYLOAD_READ0_OFFSET,
             buffer, transfer),
@@ -927,7 +926,7 @@ static void wafer_mdc_load_parallel_inputs(
         continue;
       uint32_t read1_bytes =
           engine == WAFER_MDC_ENGINE_NE ? 32768U : transfer;
-      wafer_tx81_rdma_v3(
+      wafer_tx81_rdma(
           wafer_mdc_perf_payload_address(
               payload_ddr, lane, WAFER_MDC_PERF_PAYLOAD_READ1_OFFSET,
               buffer, transfer),
@@ -964,10 +963,10 @@ static void wafer_mdc_seed_relation(const WaferMDCRequest *request,
   if (request->relation == WAFER_MDC_RELATION_STRIDED) {
     uint64_t source = request->spm_a + 0x20000U;
     uint64_t destination = request->spm_a + 0x24000U;
-    wafer_tx81_rdma_v3(payload_ddr + WAFER_MDC_PAYLOAD_SPM_SCRATCH0_OFFSET,
+    wafer_tx81_rdma(payload_ddr + WAFER_MDC_PAYLOAD_SPM_SCRATCH0_OFFSET,
                     source, 8192U, 8192U, 0U, 0U, 0U, 1U, 1U, 1U,
                     Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload_ddr + WAFER_MDC_PAYLOAD_SPM_SCRATCH1_OFFSET,
+    wafer_tx81_rdma(payload_ddr + WAFER_MDC_PAYLOAD_SPM_SCRATCH1_OFFSET,
                     destination, 8192U, 8192U, 0U, 0U, 0U, 1U, 1U, 1U,
                     Fmt_UINT8, 0U);
   }
@@ -976,13 +975,13 @@ static void wafer_mdc_seed_relation(const WaferMDCRequest *request,
 
 static void wafer_mdc_relation_tdma_write(uint64_t source,
                                           uint64_t destination) {
-  wafer_tx81_gather_scatter_v3(source, destination, 2048U, 128U, 128U, 0U, 0U,
+  wafer_tx81_gather_scatter(source, destination, 2048U, 128U, 128U, 0U, 0U,
                             16U, 1U, 1U, 256U, 0U, 0U, 16U, 1U, 1U, 0U);
 }
 
 static void wafer_mdc_relation_tdma_read(uint64_t source,
                                          uint64_t destination) {
-  wafer_tx81_gather_scatter_v3(source, destination, 2048U, 128U, 256U, 0U, 0U,
+  wafer_tx81_gather_scatter(source, destination, 2048U, 128U, 256U, 0U, 0U,
                             16U, 1U, 1U, 128U, 0U, 0U, 16U, 1U, 1U, 0U);
 }
 
@@ -1023,27 +1022,27 @@ static void wafer_mdc_issue_relation(const WaferMDCRequest *request,
   uint64_t sink_b = output_ddr + WAFER_MDC_OUTPUT_SINK1_OFFSET;
   switch (request->effect) {
   case WAFER_MDC_EFFECT_RAW:
-    wafer_tx81_rdma_v3(payload_a, request->spm_a, 2048U, 2048U, 0U, 0U, 0U, 1U,
+    wafer_tx81_rdma(payload_a, request->spm_a, 2048U, 2048U, 0U, 0U, 0U, 1U,
                     1U, 1U, Fmt_UINT8, 0U);
-    wafer_tx81_wdma_v3(request->spm_b, sink_b, 2048U, 2048U, 0U, 0U, 0U, 1U, 1U,
+    wafer_tx81_wdma(request->spm_b, sink_b, 2048U, 2048U, 0U, 0U, 0U, 1U, 1U,
                     1U, Fmt_UINT8, 0U);
     break;
   case WAFER_MDC_EFFECT_WAR:
-    wafer_tx81_wdma_v3(request->spm_a, sink_a, 2048U, 2048U, 0U, 0U, 0U, 1U, 1U,
+    wafer_tx81_wdma(request->spm_a, sink_a, 2048U, 2048U, 0U, 0U, 0U, 1U, 1U,
                     1U, Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload_b, request->spm_b, 2048U, 2048U, 0U, 0U, 0U, 1U,
+    wafer_tx81_rdma(payload_b, request->spm_b, 2048U, 2048U, 0U, 0U, 0U, 1U,
                     1U, 1U, Fmt_UINT8, 0U);
     break;
   case WAFER_MDC_EFFECT_WAW:
-    wafer_tx81_rdma_v3(payload_a, request->spm_a, 2048U, 2048U, 0U, 0U, 0U, 1U,
+    wafer_tx81_rdma(payload_a, request->spm_a, 2048U, 2048U, 0U, 0U, 0U, 1U,
                     1U, 1U, Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload_b, request->spm_b, 2048U, 2048U, 0U, 0U, 0U, 1U,
+    wafer_tx81_rdma(payload_b, request->spm_b, 2048U, 2048U, 0U, 0U, 0U, 1U,
                     1U, 1U, Fmt_UINT8, 0U);
     break;
   case WAFER_MDC_EFFECT_RAR:
-    wafer_tx81_wdma_v3(request->spm_a, sink_a, 2048U, 2048U, 0U, 0U, 0U, 1U, 1U,
+    wafer_tx81_wdma(request->spm_a, sink_a, 2048U, 2048U, 0U, 0U, 0U, 1U, 1U,
                     1U, Fmt_UINT8, 0U);
-    wafer_tx81_wdma_v3(request->spm_b, sink_b, 2048U, 2048U, 0U, 0U, 0U, 1U, 1U,
+    wafer_tx81_wdma(request->spm_b, sink_b, 2048U, 2048U, 0U, 0U, 0U, 1U, 1U,
                     1U, Fmt_UINT8, 0U);
     break;
   default:
@@ -1114,8 +1113,8 @@ static void wafer_mdc_init_record(volatile uint64_t *record,
   for (uint32_t index = 0; index < WAFER_MDC_RECORD_WORDS; ++index)
     record[index] = 0;
   record[WAFER_MDC_REC_MAGIC] = WAFER_MDC_RECORD_MAGIC;
-  record[WAFER_MDC_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_MDC_SCHEMA << 32) | WAFER_MDC_RECORD_WORDS;
+  record[WAFER_MDC_REC_WORD_COUNT] =
+      WAFER_MDC_RECORD_WORDS;
   record[WAFER_MDC_REC_STATUS] = status;
   record[WAFER_MDC_REC_OUTPUT_DATA_OFFSET] = WAFER_MDC_OUTPUT_DATA_OFFSET;
   record[WAFER_MDC_REC_RECORD_GUARD] = WAFER_MDC_RECORD_GUARD;
@@ -1195,7 +1194,7 @@ static uint32_t wafer_mdc_execute_engines(const WaferMDCRequest *request,
         (request->kind == WAFER_MDC_KIND_ENGINE_PAIR
              ? lane * request->compact_bytes
              : 0U);
-    wafer_tx81_wdma_v3(wafer_mdc_engine_result(request, engines[lane],
+    wafer_tx81_wdma(wafer_mdc_engine_result(request, engines[lane],
                                             bases[lane]),
                     output_ddr + output_offset, transfer, transfer, 0U, 0U, 0U,
                     1U, 1U, 1U, Fmt_UINT8, 0U);
@@ -1334,7 +1333,7 @@ static uint32_t wafer_mdc_execute_parallel(
                     (uint64_t)buffer * request->compact_bytes
               : bases[lane] + WAFER_MDC_PERF_WRITE_OFFSET +
                     (uint64_t)round * request->compact_bytes;
-      wafer_tx81_wdma_v3(
+      wafer_tx81_wdma(
           source,
           wafer_mdc_perf_output_address(
               output_ddr, WAFER_MDC_PERF_OUTPUT_RESULT_BASE, lane,
@@ -1364,7 +1363,7 @@ static uint32_t wafer_mdc_execute_parallel(
     uint64_t guard_output =
         output_ddr + WAFER_MDC_PERF_OUTPUT_GUARD_BASE +
         lane * WAFER_MDC_PERF_OUTPUT_GUARD_LANE_STRIDE;
-    wafer_tx81_wdma_v3(
+    wafer_tx81_wdma(
         guard_begin[lane] - WAFER_MDC_SPM_GUARD_BYTES,
         guard_output, WAFER_MDC_SPM_GUARD_BYTES,
         WAFER_MDC_SPM_GUARD_BYTES, 0U, 0U, 0U, 1U, 1U, 1U,
@@ -1374,7 +1373,7 @@ static uint32_t wafer_mdc_execute_parallel(
         return 0U;
       pending_readbacks = 0U;
     }
-    wafer_tx81_wdma_v3(
+    wafer_tx81_wdma(
         guard_end[lane], guard_output + WAFER_MDC_SPM_GUARD_BYTES,
         WAFER_MDC_SPM_GUARD_BYTES, WAFER_MDC_SPM_GUARD_BYTES, 0U, 0U,
         0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
@@ -1406,7 +1405,7 @@ static uint32_t wafer_mdc_execute_relation(const WaferMDCRequest *request,
   uint64_t plan_end = wafer_mdc_cycle();
   WaferMDCPMU after = wafer_mdc_read_pmu();
   wafer_mdc_record_pmu(record, &before, &after, plan_end - plan_begin);
-  wafer_tx81_wdma_v3(request->spm_a,
+  wafer_tx81_wdma(request->spm_a,
                   output_ddr + WAFER_MDC_OUTPUT_DATA_OFFSET,
                   request->output_bytes, request->output_bytes, 0U, 0U, 0U, 1U,
                   1U, 1U, Fmt_UINT8, 0U);
@@ -1514,9 +1513,8 @@ static uint32_t wafer_mdc_ce_decode(
       wire + WAFER_MDC_CE_REQUEST_META_WORD;
   if (meta[WAFER_MDC_CE_REQ_MAGIC] !=
           WAFER_MDC_CE_REQUEST_MAGIC ||
-      meta[WAFER_MDC_CE_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_MDC_CE_SCHEMA << 32) |
-           WAFER_MDC_CE_REQUEST_META_WORDS) ||
+      meta[WAFER_MDC_CE_REQ_WORD_COUNT] !=
+          (WAFER_MDC_CE_REQUEST_META_WORDS) ||
       meta[WAFER_MDC_CE_REQ_SERIAL_REQUEST_WORD] !=
           WAFER_MDC_CE_SERIAL_REQUEST_WORD ||
       meta[WAFER_MDC_CE_REQ_WINDOW_REQUEST_WORD] !=
@@ -1570,8 +1568,7 @@ static void wafer_mdc_ce_write_meta(
       payload_ddr + WAFER_MDC_PAYLOAD_DATA_OFFSET;
   uint64_t lane_b_payload = lane_a_payload + 16384U;
   record[WAFER_MDC_CE_REC_MAGIC] = WAFER_MDC_CE_RECORD_MAGIC;
-  record[WAFER_MDC_CE_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_MDC_CE_SCHEMA << 32) |
+  record[WAFER_MDC_CE_REC_WORD_COUNT] =
       WAFER_MDC_CE_RECORD_META_WORDS;
   record[WAFER_MDC_CE_REC_STATUS] = status;
   record[WAFER_MDC_CE_REC_COORDINATE] =
@@ -1732,16 +1729,15 @@ static uint32_t wafer_spm_ct_same_pair(
 }
 
 static uint32_t wafer_spm_ct_decode(
-    uint32_t rank, const volatile uint64_t *wire, WaferMDCRequest *serial,
+    uint32_t tile_id, const volatile uint64_t *wire, WaferMDCRequest *serial,
     WaferMDCRequest *window) {
   const volatile uint64_t *meta =
       wire + WAFER_SPM_CT_REQUEST_META_WORD;
   if (meta[WAFER_SPM_CT_REQ_MAGIC] != WAFER_SPM_CT_REQUEST_MAGIC ||
-      meta[WAFER_SPM_CT_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_SPM_CT_SCHEMA << 32) |
-           WAFER_SPM_CT_REQUEST_META_WORDS) ||
-      meta[WAFER_SPM_CT_REQ_RANK] != rank ||
-      meta[WAFER_SPM_CT_REQ_RANK_COUNT] != WAFER_SPM_CT_RANKS ||
+      meta[WAFER_SPM_CT_REQ_WORD_COUNT] !=
+          (WAFER_SPM_CT_REQUEST_META_WORDS) ||
+      meta[WAFER_SPM_CT_REQ_TILE_ID] != tile_id ||
+      meta[WAFER_SPM_CT_REQ_TILE_COUNT] != WAFER_SPM_CT_TILES ||
       meta[WAFER_SPM_CT_REQ_SERIAL_REQUEST_WORD] !=
           WAFER_SPM_CT_SERIAL_REQUEST_WORD ||
       meta[WAFER_SPM_CT_REQ_WINDOW_REQUEST_WORD] !=
@@ -1751,15 +1747,15 @@ static uint32_t wafer_spm_ct_decode(
       meta[WAFER_SPM_CT_REQ_GUARD] != WAFER_SPM_CT_REQUEST_GUARD ||
       meta[WAFER_SPM_CT_REQ_EXECUTION_ROUND] >=
           WAFER_SPM_CT_COUNTERBALANCED_ROUNDS ||
-      meta[WAFER_SPM_CT_REQ_RANK_ORDER] !=
+      meta[WAFER_SPM_CT_REQ_TILE_ORDER] !=
           (meta[WAFER_SPM_CT_REQ_EXECUTION_ROUND] & 1U) ||
-      meta[WAFER_SPM_CT_REQ_RANK_PHASE] !=
-          (meta[WAFER_SPM_CT_REQ_RANK_ORDER] ==
-                   WAFER_SPM_CT_RANK_ORDER_FORWARD
-               ? rank
-               : WAFER_SPM_CT_RANKS - 1U - rank) ||
+      meta[WAFER_SPM_CT_REQ_TILE_PHASE] !=
+          (meta[WAFER_SPM_CT_REQ_TILE_ORDER] ==
+                   WAFER_SPM_CT_TILE_ORDER_FORWARD
+               ? tile_id
+               : WAFER_SPM_CT_TILES - 1U - tile_id) ||
       meta[WAFER_SPM_CT_REQ_FIRST_SCHEDULE] !=
-          ((rank + meta[WAFER_SPM_CT_REQ_EXECUTION_ROUND]) & 1U))
+          ((tile_id + meta[WAFER_SPM_CT_REQ_EXECUTION_ROUND]) & 1U))
     return WAFER_SPM_CT_STATUS_BAD_ENVELOPE;
   if (wafer_mdc_decode(
           wire + WAFER_SPM_CT_SERIAL_REQUEST_WORD, serial) !=
@@ -1773,7 +1769,7 @@ static uint32_t wafer_spm_ct_decode(
 }
 
 static void wafer_spm_ct_write_meta(
-    uint64_t output_ddr, uint32_t status, uint32_t rank,
+    uint64_t output_ddr, uint32_t status, uint32_t tile_id,
     uint32_t coordinate, const WaferMDCRequest *request,
     uint32_t schedule, uint64_t request_ddr, uint64_t payload_ddr,
     const volatile uint64_t *request_meta,
@@ -1784,12 +1780,11 @@ static void wafer_spm_ct_write_meta(
   for (uint32_t word = 0; word < WAFER_SPM_CT_RECORD_META_WORDS; ++word)
     meta[word] = 0U;
   meta[WAFER_SPM_CT_REC_MAGIC] = WAFER_SPM_CT_RECORD_MAGIC;
-  meta[WAFER_SPM_CT_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_SPM_CT_SCHEMA << 32) |
+  meta[WAFER_SPM_CT_REC_WORD_COUNT] =
       WAFER_SPM_CT_RECORD_META_WORDS;
   meta[WAFER_SPM_CT_REC_STATUS] = status;
-  meta[WAFER_SPM_CT_REC_RANK] = rank;
-  meta[WAFER_SPM_CT_REC_RANK_COUNT] = WAFER_SPM_CT_RANKS;
+  meta[WAFER_SPM_CT_REC_TILE_ID] = tile_id;
+  meta[WAFER_SPM_CT_REC_TILE_COUNT] = WAFER_SPM_CT_TILES;
   meta[WAFER_SPM_CT_REC_COORDINATE] = coordinate;
   meta[WAFER_SPM_CT_REC_INNER_CASE] = request->case_id;
   meta[WAFER_SPM_CT_REC_SCHEDULE] = schedule;
@@ -1804,10 +1799,10 @@ static void wafer_spm_ct_write_meta(
   meta[WAFER_SPM_CT_REC_RECORD_GUARD] = WAFER_SPM_CT_RECORD_GUARD;
   meta[WAFER_SPM_CT_REC_EXECUTION_ROUND] =
       request_meta[WAFER_SPM_CT_REQ_EXECUTION_ROUND];
-  meta[WAFER_SPM_CT_REC_RANK_ORDER] =
-      request_meta[WAFER_SPM_CT_REQ_RANK_ORDER];
-  meta[WAFER_SPM_CT_REC_RANK_PHASE] =
-      request_meta[WAFER_SPM_CT_REQ_RANK_PHASE];
+  meta[WAFER_SPM_CT_REC_TILE_ORDER] =
+      request_meta[WAFER_SPM_CT_REQ_TILE_ORDER];
+  meta[WAFER_SPM_CT_REC_TILE_PHASE] =
+      request_meta[WAFER_SPM_CT_REQ_TILE_PHASE];
   meta[WAFER_SPM_CT_REC_FIRST_SCHEDULE] =
       request_meta[WAFER_SPM_CT_REQ_FIRST_SCHEDULE];
   meta[WAFER_SPM_CT_REC_EXECUTION_ORDINAL] =
@@ -1816,11 +1811,11 @@ static void wafer_spm_ct_write_meta(
 
 __attribute__((visibility("hidden"))) void
 wafer_tx81_spm_cross_tile_conflict_probe(
-    uint32_t rank, uint64_t request_ddr, uint64_t payload_ddr,
+    uint32_t tile_id, uint64_t request_ddr, uint64_t payload_ddr,
     uint64_t serial_output_ddr, uint64_t window_output_ddr,
     uint64_t status_ddr) {
   wafer_tx81_direct_dte_begin_after_prepare(
-      status_ddr, WAFER_SPM_CT_RANKS);
+      status_ddr, WAFER_SPM_CT_TILES);
   wafer_mdc_cache_range(request_ddr, WAFER_MDC_RESOURCE_BYTES, 1U);
   wafer_mdc_cache_range(payload_ddr, WAFER_MDC_RESOURCE_BYTES, 1U);
   const volatile uint64_t *wire =
@@ -1830,25 +1825,25 @@ wafer_tx81_spm_cross_tile_conflict_probe(
   WaferMDCRequest serial = {0};
   WaferMDCRequest window = {0};
   uint32_t status =
-      wafer_spm_ct_decode(rank, wire, &serial, &window);
-  uint32_t rank_order =
-      request_meta[WAFER_SPM_CT_REQ_RANK_ORDER] ==
-              WAFER_SPM_CT_RANK_ORDER_REVERSE
-          ? WAFER_SPM_CT_RANK_ORDER_REVERSE
-          : WAFER_SPM_CT_RANK_ORDER_FORWARD;
+      wafer_spm_ct_decode(tile_id, wire, &serial, &window);
+  uint32_t tile_order =
+      request_meta[WAFER_SPM_CT_REQ_TILE_ORDER] ==
+              WAFER_SPM_CT_TILE_ORDER_REVERSE
+          ? WAFER_SPM_CT_TILE_ORDER_REVERSE
+          : WAFER_SPM_CT_TILE_ORDER_FORWARD;
   uint32_t first_schedule =
       request_meta[WAFER_SPM_CT_REQ_FIRST_SCHEDULE] ==
               WAFER_MDC_SCHEDULE_WINDOW
           ? WAFER_MDC_SCHEDULE_WINDOW
           : WAFER_MDC_SCHEDULE_SERIAL;
 
-  for (uint32_t phase = 0; phase < WAFER_SPM_CT_RANKS; ++phase) {
-    uint32_t active_rank =
-        rank_order == WAFER_SPM_CT_RANK_ORDER_FORWARD
+  for (uint32_t phase = 0; phase < WAFER_SPM_CT_TILES; ++phase) {
+    uint32_t active_tile =
+        tile_order == WAFER_SPM_CT_TILE_ORDER_FORWARD
             ? phase
-            : WAFER_SPM_CT_RANKS - 1U - phase;
+            : WAFER_SPM_CT_TILES - 1U - phase;
     hrt_barrier();
-    if (rank == active_rank) {
+    if (tile_id == active_tile) {
       if (status == WAFER_SPM_CT_STATUS_OK) {
         if (first_schedule == WAFER_MDC_SCHEDULE_SERIAL) {
           wafer_mdc_execute_wire(
@@ -1876,12 +1871,12 @@ wafer_tx81_spm_cross_tile_conflict_probe(
       uint32_t coordinate =
           (uint32_t)request_meta[WAFER_SPM_CT_REQ_COORDINATE];
       wafer_spm_ct_write_meta(
-          serial_output_ddr, status, rank, coordinate, &serial,
+          serial_output_ddr, status, tile_id, coordinate, &serial,
           WAFER_MDC_SCHEDULE_SERIAL, request_ddr, payload_ddr,
           request_meta,
           first_schedule == WAFER_MDC_SCHEDULE_SERIAL ? 0U : 1U);
       wafer_spm_ct_write_meta(
-          window_output_ddr, status, rank, coordinate, &window,
+          window_output_ddr, status, tile_id, coordinate, &window,
           WAFER_MDC_SCHEDULE_WINDOW, request_ddr, payload_ddr,
           request_meta,
           first_schedule == WAFER_MDC_SCHEDULE_WINDOW ? 0U : 1U);

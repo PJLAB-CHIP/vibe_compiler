@@ -37,7 +37,7 @@ Pipeline position:
 ### 1. Closed target profile 与 format registry
 
 - 在tasks/14唯一owner下定义typed `TargetProfileId`、registered CLI spelling及到typed target identity/runtime ABI的闭映射。
-- 首个opaque canonical spelling固定为`wafer-tx81-single-card-kernel-v1`；它只组合已有identity/ABI事实，不表示未知
+- 首个opaque canonical spelling固定为`wafer-tx81-single-card`；它只组合已有identity/ABI事实，不表示未知
   silicon revision或Q22 numeric profile，也不得被拆分恢复字段。
 - 定义shared logical-format descriptor和profile×instruction-family×logical-format encoding/legality查询；layout只引用
   tasks/08事实，不复制Cx/NCx/BOOL footprint规则。准入集合唯一引用

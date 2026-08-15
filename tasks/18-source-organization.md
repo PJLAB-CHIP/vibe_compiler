@@ -231,7 +231,7 @@ tests按所证明的边界组织：
 - Conversion/Transforms：局部IR边界、legality与failure atomicity；
 - Unit：typed API、analysis、serializer、runtime plan、model kernel；
 - Pipelines/Tools：named pipeline和public driver纵向；
-- Runtime：schema-v8/no-card/provider lifecycle；
+- Runtime：current manifest/no-card/provider lifecycle；
 - Model：same-target-LLVM functional differential；
 - Board：仅current board-ready case、payload/oracle和串行runner。
 

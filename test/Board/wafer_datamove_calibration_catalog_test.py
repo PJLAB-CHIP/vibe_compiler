@@ -36,12 +36,12 @@ def validate_pure_ncc_probe() -> None:
     assert issue.count("wafer_tx81_ncc_join(1U);") == 4
 
     before = entry.index("WaferDMCPMU before")
-    input_rdma = entry.index("wafer_tx81_rdma_v3(payload_ddr,", before)
+    input_rdma = entry.index("wafer_tx81_rdma(payload_ddr,", before)
     canary_rdma = entry.index(
-        "wafer_tx81_rdma_v3(request_ddr + WAFER_DMC_SLOT_BYTES,"
+        "wafer_tx81_rdma(request_ddr + WAFER_DMC_SLOT_BYTES,"
     )
     execute = entry.index("wafer_dmc_issue(&selected)", before)
-    wdma = entry.index("wafer_tx81_wdma_v3(", execute)
+    wdma = entry.index("wafer_tx81_wdma(", execute)
     terminal_fence = entry.index("wafer_tx81_ncc_join(1U);", wdma)
     after = entry.index("WaferDMCPMU after", terminal_fence)
     assert before < input_rdma < canary_rdma < execute
@@ -72,7 +72,7 @@ def validate_resource_canaries() -> None:
     words = [0] * catalog.RECORD_WORDS
     expected = {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (catalog.SCHEMA << 32) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": case.case_id,
         "INPUT_BYTES": case.input_bytes,

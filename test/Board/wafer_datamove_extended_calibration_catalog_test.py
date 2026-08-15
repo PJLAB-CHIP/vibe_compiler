@@ -264,7 +264,7 @@ def validate_resource_canaries() -> None:
     words = [0] * catalog.RECORD_WORDS
     expected = {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (catalog.SCHEMA << 32) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": case.case_id,
         "INPUT_BYTES": case.input_bytes,
@@ -453,10 +453,10 @@ def main() -> int:
     assert "move->TensorNom" in probe
     assert "move->MaskGather" in probe
     assert "if (dimension > 2U)" in probe
-    assert "wafer_tx81_tdma_pad_v3" in probe
-    assert "wafer_tx81_tdma_img2col_v3" in probe
-    assert "wafer_tx81_elementwise_add_v3" in probe
-    assert "wafer_tx81_gemm_v3" in probe
+    assert "wafer_tx81_tdma_pad" in probe
+    assert "wafer_tx81_tdma_img2col" in probe
+    assert "wafer_tx81_elementwise_add" in probe
+    assert "wafer_tx81_gemm" in probe
     entry = probe[
         probe.index("wafer_tx81_instruction_family_probe(uint64_t request_ddr")
         :
@@ -464,12 +464,12 @@ def main() -> int:
     assert "get_spm_memory_mapping" not in probe
     assert "wafer_dmx_fill" not in probe
     assert "wafer_dmx_guard_mismatches" not in probe
-    input_rdma = entry.index("wafer_tx81_rdma_v3(payload_ddr,")
+    input_rdma = entry.index("wafer_tx81_rdma(payload_ddr,")
     canary_rdma = entry.index(
-        "wafer_tx81_rdma_v3(request_ddr + WAFER_DMX_SLOT_BYTES,"
+        "wafer_tx81_rdma(request_ddr + WAFER_DMX_SLOT_BYTES,"
     )
     issue = entry.index("wafer_dmx_issue(&selected, &raw_execute_rc)")
-    wdma = entry.index("wafer_tx81_wdma_v3(", issue)
+    wdma = entry.index("wafer_tx81_wdma(", issue)
     terminal = entry.index("wafer_tx81_ncc_join(1U);", wdma)
     assert input_rdma < canary_rdma < issue < wdma < terminal
     assert entry.count("wafer_tx81_ncc_join(1U);") == 1

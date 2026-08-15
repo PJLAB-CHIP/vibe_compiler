@@ -17,7 +17,7 @@ Pipeline position:
 - Current stage responsibility: 以profile分解source-to-package、tile-region到instruction movement descriptor构造、target program codec和SystemC managed-reference执行成本；删除同一静态IR/layout事实的逐元素重复推导、临时offset side table和重复host adapter validation，同时保持原有legality与fail-closed路径。
 - Output artifact / IR: 与基线逐rank相同的instruction-level program和verified package，以及语义、计数和完整PyTorch differential不变但host执行更快的TargetModelResult。
 - Downstream consumer: whole-entry SPM/DDR planning、target LLVM/verified package、ProgramTensor PyTorch expected comparator、Q22.C板端numeric correlation和后续完整模型functional-reference执行。
-- User-level driver / named pipeline: wafer-compile --input-program-dir ... --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1 --target-model --target-model-numeric-policy=managed-reference。
+- User-level driver / named pipeline: wafer-compile --input-program-dir ... --execution-ranks=16 --target-profile=wafer-tx81-single-card --target-model --target-model-numeric-policy=managed-reference。
 - Explicit non-goals: 不改变task/group/tile/layout/schedule选择、movement descriptor或command顺序；不放宽dtype/op/rounding/value-domain/budget；不引入cycle/timing或硬件性能声明；不以fast path绕过verifier或structured failure；不修改受管oneDNN线程runtime和依赖身份。
 - Completion gate: 同一机器、Release构建和冻结7B corpus下，优化前后package、transactions/SystemC delta、numeric/effect计数、environment evidence及65,536-element PyTorch differential一致；独立慢oracle、movement正负例、双配置全量回归和源码组织检查通过；完整wall time相对fresh baseline稳定下降。
 ```

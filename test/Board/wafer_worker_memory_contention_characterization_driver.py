@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run full-card DDR active-rank cases and gate typed boundaries.
+"""Run complete-Tile-domain DDR active-Tile cases and gate typed boundaries.
 
-The DDR path reuses the qualified 16-rank cluster package, direct-DTE
-status-v2 lifecycle, and wafer-run launch contract from the physical-tile DDR
-probe.  Every launch has all 16 ranks present; an explicit request mask
-selects 1/2/4/8/16 target ranks.  Executable worker/SPM families are owned by
+The DDR path reuses the qualified 16-Tile cluster package, direct-DTE
+status lifecycle, and wafer-run launch contract from the complete-Tile DDR
+probe.  Every launch has all 16 Tiles present; an explicit request mask
+selects 1/2/4/8/16 target Tiles.  Executable worker/SPM families are owned by
 their dedicated adapters; genuine worker/SPM and DDR-bank boundaries retained
 here remain non-serializable typed host blockers.
 """
@@ -27,9 +27,9 @@ import wafer_worker_memory_contention_characterization_catalog as catalog
 
 
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
-PROBE_C = INPUT_DIR / "wafer_ddr_active_rank_contention_probe.c"
+PROBE_C = INPUT_DIR / "wafer_ddr_active_tile_contention_probe.c"
 PROTOCOL_H = (
-    INPUT_DIR / "wafer_ddr_active_rank_contention_probe_protocol.h"
+    INPUT_DIR / "wafer_ddr_active_tile_contention_probe_protocol.h"
 )
 _PROTOCOL_TEXT = PROTOCOL_H.read_text(encoding="utf-8")
 CANARY = 0xA5
@@ -78,10 +78,9 @@ REQUEST_MAGIC = _macro("WAFER_DAR_REQUEST_MAGIC")
 RECORD_MAGIC = _macro("WAFER_DAR_RECORD_MAGIC")
 REQUEST_GUARD = _macro("WAFER_DAR_REQUEST_GUARD")
 RECORD_GUARD = _macro("WAFER_DAR_RECORD_GUARD")
-SCHEMA = _macro("WAFER_DAR_SCHEMA")
 REQUEST_WORDS = _macro("WAFER_DAR_REQUEST_WORDS")
 RECORD_WORDS = _macro("WAFER_DAR_RECORD_WORDS")
-RANK_COUNT = _macro("WAFER_DAR_RANKS")
+TILE_COUNT = _macro("WAFER_DAR_TILES")
 GUARD_BYTES = _macro("WAFER_DAR_GUARD_BYTES")
 INACTIVE_CANARY_BYTES = _macro("WAFER_DAR_INACTIVE_CANARY_BYTES")
 RESOURCE_BYTES = _macro("WAFER_DAR_RESOURCE_BYTES")
@@ -104,8 +103,8 @@ REQ = {
     name: _enumerator(f"WAFER_DAR_REQ_{name}")
     for name in (
         "MAGIC",
-        "SCHEMA_AND_WORDS",
-        "RANK",
+        "WORD_COUNT",
+        "TILE_ID",
         "SAMPLE",
         "ACTIVE_MASK",
         "DIRECTION",
@@ -125,9 +124,9 @@ REC = {
     name: _enumerator(f"WAFER_DAR_REC_{name}")
     for name in (
         "MAGIC",
-        "SCHEMA_AND_WORDS",
+        "WORD_COUNT",
         "STATUS",
-        "RANK",
+        "TILE_ID",
         "SAMPLE",
         "ACTIVE_MASK",
         "ACTIVE",
@@ -197,45 +196,45 @@ def _blocked_record(value: object) -> Mapping[str, object]:
 def _shape(
     case: catalog.CharacterizationCase,
 ) -> tuple[int, int, int, int]:
-    if case.domain != catalog.Domain.DDR_ACTIVE_RANK:
-        raise ValueError(f"{case.key}: not an active-rank DDR case")
+    if case.domain != catalog.Domain.DDR_ACTIVE_TILE:
+        raise ValueError(f"{case.key}: not an active-Tile DDR case")
     stream = case.streams[0]
     if stream.stride_bytes:
         return (stream.payload_bytes, 4096, stream.stride_bytes, 16)
     return (stream.payload_bytes, stream.payload_bytes, 0, 1)
 
 
-def active_ranks_for_sample(
+def active_tiles_for_sample(
     case: catalog.CharacterizationCase, sample: int
 ) -> tuple[int, ...]:
     if sample < 0:
         raise ValueError("sample is outside the request domain")
-    count = len(case.active_ranks)
+    count = len(case.active_tiles)
     if count not in {1, 2, 4, 8}:
-        return case.active_ranks
-    phase_count = RANK_COUNT // count
+        return case.active_tiles
+    phase_count = TILE_COUNT // count
     phase = sample % phase_count
     return tuple(
-        sorted((rank + phase) % RANK_COUNT for rank in case.active_ranks)
+        sorted((tile_id + phase) % TILE_COUNT for tile_id in case.active_tiles)
     )
 
 
-def inactive_ranks_for_sample(
+def inactive_tiles_for_sample(
     case: catalog.CharacterizationCase, sample: int
 ) -> tuple[int, ...]:
-    active = set(active_ranks_for_sample(case, sample))
-    return tuple(rank for rank in range(RANK_COUNT) if rank not in active)
+    active = set(active_tiles_for_sample(case, sample))
+    return tuple(tile_id for tile_id in range(TILE_COUNT) if tile_id not in active)
 
 
 def active_mask(case: catalog.CharacterizationCase, sample: int = 0) -> int:
-    return sum(1 << rank for rank in active_ranks_for_sample(case, sample))
+    return sum(1 << tile_id for tile_id in active_tiles_for_sample(case, sample))
 
 
 def ordered_group_cases(
     cases: Sequence[catalog.CharacterizationCase], sample: int
 ) -> tuple[catalog.CharacterizationCase, ...]:
     if not cases:
-        raise ValueError("active-rank group is empty")
+        raise ValueError("active-Tile group is empty")
     values = tuple(cases)
     phase = sample % 4
     if phase == 0:
@@ -261,7 +260,7 @@ def group_execution_plan(
 
 def request_words(
     case_or_key: catalog.CharacterizationCase | str,
-    rank: int,
+    tile_id: int,
     sample: int,
 ) -> tuple[int, ...]:
     case = (
@@ -270,19 +269,19 @@ def request_words(
         else case_or_key
     )
     if (
-        case not in catalog.DDR_ACTIVE_RANK_CASES
+        case not in catalog.DDR_ACTIVE_TILE_CASES
         or case.disposition != catalog.Disposition.BOARD_EXECUTABLE
     ):
         raise PreparationBlocked(f"{case.key}: no executable DDR adapter")
-    if rank not in range(RANK_COUNT) or sample < 0:
-        raise ValueError("rank/sample is outside the request domain")
+    if tile_id not in range(TILE_COUNT) or sample < 0:
+        raise ValueError("tile_id/sample is outside the request domain")
     assert case.ddr_direction is not None
     direction = DIRECTION[case.ddr_direction]
     payload_bytes, inner_bytes, stride0, iteration0 = _shape(case)
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
-    words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
-    words[REQ["RANK"]] = rank
+    words[REQ["WORD_COUNT"]] = REQUEST_WORDS
+    words[REQ["TILE_ID"]] = tile_id
     words[REQ["SAMPLE"]] = sample
     words[REQ["ACTIVE_MASK"]] = active_mask(case, sample)
     words[REQ["DIRECTION"]] = direction
@@ -309,17 +308,17 @@ def request_words(
 
 def request_bytes(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
 ) -> bytes:
     return struct.pack(
-        f"<{REQUEST_WORDS}Q", *request_words(case, rank, sample)
+        f"<{REQUEST_WORDS}Q", *request_words(case, tile_id, sample)
     )
 
 
 def _compact_payload_pattern(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
     purpose: str,
 ) -> bytes:
@@ -328,7 +327,7 @@ def _compact_payload_pattern(
     return bytes(
         (
             case.payload_seed
-            + rank * 37
+            + tile_id * 37
             + sample * 29
             + compact_index * 17
             + (compact_index >> 8) * 11
@@ -341,14 +340,14 @@ def _compact_payload_pattern(
 
 def _ddr_span_pattern(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
     purpose: str,
 ) -> bytes:
     payload_bytes, inner_bytes, stride0, iteration0 = _shape(case)
     envelope = inner_bytes + stride0 * (iteration0 - 1)
     result = bytearray([CANARY] * (envelope + 2 * GUARD_BYTES))
-    payload = _compact_payload_pattern(case, rank, sample, purpose)
+    payload = _compact_payload_pattern(case, tile_id, sample, purpose)
     compact_begin = 0
     for iteration in range(iteration0):
         begin = GUARD_BYTES + (
@@ -366,30 +365,30 @@ def _ddr_span_pattern(
 
 def _spm_span_pattern(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
     purpose: str,
 ) -> bytes:
     payload_bytes, inner_bytes, stride0, iteration0 = _shape(case)
     envelope = inner_bytes + stride0 * (iteration0 - 1)
     result = bytearray([CANARY] * (envelope + 2 * GUARD_BYTES))
-    payload = _compact_payload_pattern(case, rank, sample, purpose)
+    payload = _compact_payload_pattern(case, tile_id, sample, purpose)
     result[GUARD_BYTES : GUARD_BYTES + payload_bytes] = payload
     return bytes(result)
 
 
-def rank_inputs(
+def tile_inputs(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
 ) -> tuple[bytes, bytes]:
     input0 = bytearray(RESOURCE_BYTES)
     input1 = bytearray(RESOURCE_BYTES)
-    request = request_bytes(case, rank, sample)
+    request = request_bytes(case, tile_id, sample)
     input0[: len(request)] = request
-    rdma_ddr_span = _ddr_span_pattern(case, rank, sample, "rdma")
-    rdma_spm_span = _spm_span_pattern(case, rank, sample, "rdma")
-    wdma_spm_span = _spm_span_pattern(case, rank, sample, "wdma")
+    rdma_ddr_span = _ddr_span_pattern(case, tile_id, sample, "rdma")
+    rdma_spm_span = _spm_span_pattern(case, tile_id, sample, "rdma")
+    wdma_spm_span = _spm_span_pattern(case, tile_id, sample, "wdma")
     input0[
         SOURCE_OFFSET : SOURCE_OFFSET + len(rdma_ddr_span)
     ] = rdma_ddr_span
@@ -402,11 +401,11 @@ def rank_inputs(
     return bytes(input0), bytes(input1)
 
 
-def _inactive_canary(rank: int, sample: int) -> bytes:
+def _inactive_canary(tile_id: int, sample: int) -> bytes:
     words = [
         (
             0xC39A57E10D2468BF
-            ^ (rank << 48)
+            ^ (tile_id << 48)
             ^ (sample << 24)
             ^ (word * 0x9E3779B97F4A7C15)
         )
@@ -426,17 +425,17 @@ def prepare_board_selection(key: str) -> dict[str, object]:
                 "driver": str(pathlib.Path(__file__).resolve()),
                 "carrier": str(PROBE_C),
                 "protocol": str(PROTOCOL_H),
-                "launch": "wafer-run --all-ranks cluster status-v2",
-                "rank_count": RANK_COUNT,
+                "launch": "wafer-run --board cluster status",
+                "tile_count": TILE_COUNT,
                 "active_mask": active_mask(value),
                 "sample_active_masks": [
                     active_mask(value, sample) for sample in range(4)
                 ],
-                "request_words_rank0_sample0": list(
+                "request_words_tile0_sample0": list(
                     request_words(value, 0, 0)
                 ),
                 "measurement": (
-                    "per-rank target-only device rdcycle/PMU; no host time"
+                    "per-Tile target-only device rdcycle/PMU; no host time"
                 ),
             }
         blocker = _blocked_record(value)
@@ -469,8 +468,8 @@ def inventory() -> dict[str, object]:
         )
     return {
         "executable_new_cases": len(catalog.EXECUTABLE_CASES),
-        "executable_ddr_active_rank_matrix": len(
-            catalog.DDR_ACTIVE_RANK_CASES
+        "executable_ddr_active_tile_matrix": len(
+            catalog.DDR_ACTIVE_TILE_CASES
         ),
         "delegated_assets": len(catalog.DELEGATED_ASSETS),
         "typed_boundaries": len(catalog.TYPED_BOUNDARIES),
@@ -482,8 +481,8 @@ def inventory() -> dict[str, object]:
 
 
 def validate_static_contract() -> None:
-    if RANK_COUNT != catalog.RANK_COUNT:
-        raise RuntimeError("catalog/device rank domains differ")
+    if TILE_COUNT != catalog.TILE_COUNT:
+        raise RuntimeError("catalog/device tile_id domains differ")
     if RESOURCE_BYTES != cluster_driver.RESOURCE_BYTES:
         raise RuntimeError("carrier and cluster package resource sizes differ")
     if set(REQ.values()) != {
@@ -503,7 +502,7 @@ def validate_static_contract() -> None:
         '#include "wafer_ddr_tile_offset_probe.c"',
         "wafer_tx81_direct_dte_begin_after_prepare",
         "wafer_tx81_direct_dte_finish",
-        "request[WAFER_DAR_REQ_ACTIVE_MASK] >> rank",
+        "request[WAFER_DAR_REQ_ACTIVE_MASK] >> tile_id",
         "hrt_barrier();",
         "WaferDDRTilePMU before",
         "WaferDDRTilePMU after",
@@ -516,7 +515,7 @@ def validate_static_contract() -> None:
     )
     missing = [fragment for fragment in required if fragment not in source]
     if missing:
-        raise RuntimeError(f"active-rank carrier contract is missing {missing}")
+        raise RuntimeError(f"active-Tile carrier contract is missing {missing}")
     stable_reader = source[
         source.index("static uint64_t wafer_dar_read64_stable") :
         source.index("static WaferDDRTilePMU wafer_dar_read_pmu")
@@ -535,36 +534,36 @@ def validate_static_contract() -> None:
 
 def _expected_output0(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
     record_bytes: bytes,
 ) -> bytes:
     expected = bytearray([CANARY]) * RESOURCE_BYTES
     expected[: len(record_bytes)] = record_bytes
-    if rank in active_ranks_for_sample(case, sample):
+    if tile_id in active_tiles_for_sample(case, sample):
         assert case.ddr_direction is not None
         if case.ddr_direction != catalog.DDRDirection.WDMA:
-            span = _spm_span_pattern(case, rank, sample, "rdma")
+            span = _spm_span_pattern(case, tile_id, sample, "rdma")
             expected[
                 RDMA_ARCHIVE_OFFSET : RDMA_ARCHIVE_OFFSET + len(span)
             ] = span
         if case.ddr_direction != catalog.DDRDirection.RDMA:
-            span = _ddr_span_pattern(case, rank, sample, "wdma")
+            span = _ddr_span_pattern(case, tile_id, sample, "wdma")
             expected[
                 WDMA_TARGET_OFFSET : WDMA_TARGET_OFFSET + len(span)
             ] = span
     return bytes(expected)
 
 
-def _expected_output1(rank: int, sample: int) -> bytes:
+def _expected_output1(tile_id: int, sample: int) -> bytes:
     expected = bytearray([CANARY]) * RESOURCE_BYTES
-    expected[:INACTIVE_CANARY_BYTES] = _inactive_canary(rank, sample)
+    expected[:INACTIVE_CANARY_BYTES] = _inactive_canary(tile_id, sample)
     return bytes(expected)
 
 
-def validate_rank_outputs(
+def validate_tile_outputs(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
     output0_path: pathlib.Path,
     output1_path: pathlib.Path,
@@ -573,15 +572,15 @@ def validate_rank_outputs(
     output0 = output0_path.read_bytes()
     output1 = output1_path.read_bytes()
     if len(output0) != RESOURCE_BYTES or len(output1) != RESOURCE_BYTES:
-        raise RuntimeError(f"{case.key}: rank {rank} output size is wrong")
+        raise RuntimeError(f"{case.key}: tile_id {tile_id} output size is wrong")
     record_bytes = output0[: RECORD_WORDS * 8]
     record = struct.unpack(f"<{RECORD_WORDS}Q", record_bytes)
     payload_bytes, inner_bytes, stride0, iteration0 = _shape(case)
     envelope = inner_bytes + stride0 * (iteration0 - 1)
     assert case.ddr_direction is not None
     direction = DIRECTION[case.ddr_direction]
-    sample_active_ranks = active_ranks_for_sample(case, sample)
-    active = int(rank in sample_active_ranks)
+    sample_active_tiles = active_tiles_for_sample(case, sample)
+    active = int(tile_id in sample_active_tiles)
     expected_rdma = int(
         active and case.ddr_direction != catalog.DDRDirection.WDMA
     )
@@ -590,9 +589,9 @@ def validate_rank_outputs(
     )
     expected_fields = {
         REC["MAGIC"]: RECORD_MAGIC,
-        REC["SCHEMA_AND_WORDS"]: (SCHEMA << 32) | RECORD_WORDS,
+        REC["WORD_COUNT"]: RECORD_WORDS,
         REC["STATUS"]: STATUS_OK,
-        REC["RANK"]: rank,
+        REC["TILE_ID"]: tile_id,
         REC["SAMPLE"]: sample,
         REC["ACTIVE_MASK"]: active_mask(case, sample),
         REC["ACTIVE"]: active,
@@ -625,7 +624,7 @@ def validate_rank_outputs(
     }
     if failures:
         raise RuntimeError(
-            f"{case.key}: rank {rank} record oracle failed: {failures}"
+            f"{case.key}: tile_id {tile_id} record oracle failed: {failures}"
         )
     bases = tuple(
         record[REC[name]]
@@ -641,21 +640,21 @@ def validate_rank_outputs(
         or len(set(bases)) != 4
     ):
         raise RuntimeError(
-            f"{case.key}: rank {rank} resource bases alias or misalign"
+            f"{case.key}: tile_id {tile_id} resource bases alias or misalign"
         )
     completion_cycles = record[REC["COMPLETION_CYCLES"]]
     if active and completion_cycles == 0:
         raise RuntimeError(
-            f"{case.key}: rank {rank} has no device completion cycle"
+            f"{case.key}: tile_id {tile_id} has no device completion cycle"
         )
     if active:
         if expected_rdma and record[REC["RDMA_EXEC_DELTA"]] == 0:
             raise RuntimeError(
-                f"{case.key}: rank {rank} RDMA PMU delta is zero"
+                f"{case.key}: tile_id {tile_id} RDMA PMU delta is zero"
             )
         if expected_wdma and record[REC["WDMA_EXEC_DELTA"]] == 0:
             raise RuntimeError(
-                f"{case.key}: rank {rank} WDMA PMU delta is zero"
+                f"{case.key}: tile_id {tile_id} WDMA PMU delta is zero"
             )
     else:
         inactive_metrics = (
@@ -668,10 +667,10 @@ def validate_rank_outputs(
         )
         if any(record[REC[name]] != 0 for name in inactive_metrics):
             raise RuntimeError(
-                f"{case.key}: inactive rank {rank} changed target PMU"
+                f"{case.key}: inactive tile_id {tile_id} changed target PMU"
             )
     expected0 = _expected_output0(
-        case, rank, sample, record_bytes
+        case, tile_id, sample, record_bytes
     )
     if output0 != expected0:
         mismatch = next(
@@ -682,9 +681,9 @@ def validate_rank_outputs(
             if actual != wanted
         )
         raise RuntimeError(
-            f"{case.key}: rank {rank} output0 mismatch at {mismatch}"
+            f"{case.key}: tile_id {tile_id} output0 mismatch at {mismatch}"
         )
-    expected1 = _expected_output1(rank, sample)
+    expected1 = _expected_output1(tile_id, sample)
     if output1 != expected1:
         mismatch = next(
             index
@@ -694,11 +693,11 @@ def validate_rank_outputs(
             if actual != wanted
         )
         raise RuntimeError(
-            f"{case.key}: rank {rank} inactive canary mismatch at {mismatch}"
+            f"{case.key}: tile_id {tile_id} inactive canary mismatch at {mismatch}"
         )
     return {
         "case_key": case.key,
-        "rank": rank,
+        "tile_id": tile_id,
         "physical_x": physical[0],
         "physical_y": physical[1],
         "active": bool(active),
@@ -749,29 +748,29 @@ def _write_resources(
     outputs: dict[tuple[int, int], pathlib.Path] = {}
     resource_paths: list[pathlib.Path] = []
     input_hashes: dict[tuple[int, int], str] = {}
-    for rank in range(RANK_COUNT):
-        input0, input1 = rank_inputs(case, rank, sample)
+    for tile_id in range(TILE_COUNT):
+        input0, input1 = tile_inputs(case, tile_id, sample)
         for ordinal, payload in enumerate((input0, input1)):
-            path = raw_dir / f"rank-{rank:02d}.input-{ordinal}.raw"
+            path = raw_dir / f"tile-{tile_id:02d}.input-{ordinal}.raw"
             path.write_bytes(payload)
             resource_paths.append(path)
-            input_hashes[(rank, ordinal)] = hashlib.sha256(
+            input_hashes[(tile_id, ordinal)] = hashlib.sha256(
                 payload
             ).hexdigest()
             arguments.extend(
                 [
                     "--resource",
-                    f"{bindings[(rank, 'user_input', ordinal)]}={path}",
+                    f"{bindings[(tile_id, 'user_input', ordinal)]}={path}",
                 ]
             )
         for ordinal in range(2):
-            path = raw_dir / f"rank-{rank:02d}.output-{ordinal}.raw"
-            outputs[(rank, ordinal)] = path
+            path = raw_dir / f"tile-{tile_id:02d}.output-{ordinal}.raw"
+            outputs[(tile_id, ordinal)] = path
             resource_paths.append(path)
             arguments.extend(
                 [
                     "--output",
-                    f"{bindings[(rank, 'output', ordinal)]}={path}",
+                    f"{bindings[(tile_id, 'output', ordinal)]}={path}",
                 ]
             )
     return (
@@ -800,7 +799,7 @@ def _discard_validated_resources(
     actual = tuple(resolved_raw.iterdir())
     if (
         {path.name for path in actual} != expected_names
-        or len(expected_names) != RANK_COUNT * 4
+        or len(expected_names) != TILE_COUNT * 4
         or any(path.is_symlink() or not path.is_file() for path in actual)
     ):
         raise RuntimeError(
@@ -820,7 +819,6 @@ def _runtime_args(
         str(args.wafer_run),
         "--package-dir",
         str(package),
-        "--all-ranks",
         "--board",
         "--device-id",
         str(args.device_id),
@@ -852,19 +850,19 @@ def validate_board_lifecycle(
     )
     lines = stdout.splitlines()
     exact_basis = (
-        "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices"
+        "physical_tile_execution_basis: cluster-pid-and-exact-tile-slices"
     )
     if lines.count(exact_basis) != 1:
         raise RuntimeError(
-            "DDR active-rank board output omitted its exact rank-slice basis"
+            "DDR active-Tile board output omitted its exact Tile-slice basis"
         )
     return {
-        "terminal_completion_by_rank": [
-            {"rank": rank, "completion": completion}
-            for rank, completion in evidence.terminal_completion_by_rank
+        "completion_by_tile": [
+            {"tile_id": tile_id, "completion": completion}
+            for tile_id, completion in evidence.completion_by_tile
         ],
-        "runtime_all_rank_success_enforced": (
-            evidence.runtime_all_rank_success_enforced
+        "runtime_all_tile_success_enforced": (
+            evidence.runtime_all_tile_success_enforced
         ),
         "completion_timeout_ms": evidence.completion_timeout_ms,
     }
@@ -876,7 +874,7 @@ def _validate_work_dir(
     resolved_repo = repo_root.resolve()
     resolved = work_dir.resolve()
     if resolved == resolved_repo or resolved in resolved_repo.parents:
-        raise RuntimeError("active-rank work directory is too broad")
+        raise RuntimeError("active-Tile work directory is too broad")
     return resolved
 
 
@@ -945,35 +943,35 @@ def _execute_launch(
             reference_coordinates, coordinates
         )
     rows = []
-    for rank in range(RANK_COUNT):
-        row = validate_rank_outputs(
+    for tile_id in range(TILE_COUNT):
+        row = validate_tile_outputs(
             case,
-            rank,
+            tile_id,
             sample,
-            outputs[(rank, 0)],
-            outputs[(rank, 1)],
-            coordinates[rank],
+            outputs[(tile_id, 0)],
+            outputs[(tile_id, 1)],
+            coordinates[tile_id],
         )
-        row["request_words"] = list(request_words(case, rank, sample))
-        row["input0_sha256"] = input_hashes[(rank, 0)]
-        row["input1_sha256"] = input_hashes[(rank, 1)]
+        row["request_words"] = list(request_words(case, tile_id, sample))
+        row["input0_sha256"] = input_hashes[(tile_id, 0)]
+        row["input1_sha256"] = input_hashes[(tile_id, 1)]
         rows.append(row)
-    sample_active_ranks = active_ranks_for_sample(case, sample)
+    sample_active_tiles = active_tiles_for_sample(case, sample)
     active_rows = [row for row in rows if row["active"]]
-    if len(active_rows) != len(sample_active_ranks):
+    if len(active_rows) != len(sample_active_tiles):
         raise RuntimeError(f"{case.key}: active row count differs")
     launch = {
         "sample": sample,
         "execution_ordinal": execution_ordinal,
         "case_key": case.key,
-        "active_ranks": list(sample_active_ranks),
-        "inactive_ranks": list(inactive_ranks_for_sample(case, sample)),
+        "active_tiles": list(sample_active_tiles),
+        "inactive_tiles": list(inactive_tiles_for_sample(case, sample)),
         "active_mask": active_mask(case, sample),
-        "full_card_max_cycles": max(
+        "complete_tile_max_cycles": max(
             int(row["completion_cycles"]) for row in active_rows
         ),
-        "per_rank": rows,
-        "all_rank_status": "terminal-success",
+        "per_tile": rows,
+        "all_tile_status": "terminal-success",
         **lifecycle_evidence,
         "lifecycle": (
             "cluster-prepare/completion/d2h/cleanup with bounded timeout"
@@ -983,7 +981,7 @@ def _execute_launch(
         "full_resources_validated": True,
         "full_resource_hashes_retained": True,
     }
-    print("ddr_active_rank_launch: " + json.dumps(launch, sort_keys=True))
+    print("ddr_active_tile_launch: " + json.dumps(launch, sort_keys=True))
     print(result.stdout, end="")
     return launch, coordinates, raw_dir, resource_paths
 
@@ -1003,16 +1001,16 @@ def _validate_completed_launches(
         != {0, 1}
     ):
         raise RuntimeError(f"{case.key}: issue order was not counterbalanced")
-    if len(case.active_ranks) in {1, 2, 4, 8}:
+    if len(case.active_tiles) in {1, 2, 4, 8}:
         observed_masks = {
             int(launch["active_mask"]) for launch in launches
         }
         required_phases = min(
-            repeat, RANK_COUNT // len(case.active_ranks)
+            repeat, TILE_COUNT // len(case.active_tiles)
         )
         if len(observed_masks) != required_phases:
             raise RuntimeError(
-                f"{case.key}: physical active-rank phases are incomplete"
+                f"{case.key}: physical active-Tile phases are incomplete"
             )
 
 
@@ -1022,7 +1020,6 @@ def _write_case_archive(
     launches: Sequence[dict[str, object]],
 ) -> dict[str, object]:
     archive = {
-        "schema_version": 1,
         "case": case.as_dict(),
         "repeat": args.repeat,
         "completed_launches": len(launches),
@@ -1032,7 +1029,7 @@ def _write_case_archive(
             "durable request/record/full-resource SHA-256 evidence is written"
         ),
         "interpretation": (
-            "hash-backed correctness-closed full-card contention "
+            "hash-backed correctness-closed complete-Tile-domain contention "
             "observation; no DDR bank/controller identity and no host timing"
         ),
     }
@@ -1084,7 +1081,7 @@ def execute_board(
     _validate_completed_launches(case, launches, args.repeat)
     archive = _write_case_archive(args, case, launches)
     archive_path = args.work_dir / f"{case.key}.observations.json"
-    print(f"ddr_active_rank_archive: {archive_path}")
+    print(f"ddr_active_tile_archive: {archive_path}")
     return archive
 
 
@@ -1121,7 +1118,7 @@ def execute_group(
                 "execution_ordinal": execution_ordinal,
                 "sample": sample,
                 "case_key": case.key,
-                "active_rank_count": len(case.active_ranks),
+                "active_tile_count": len(case.active_tiles),
                 "active_mask": active_mask(case, sample),
             }
         )
@@ -1135,7 +1132,7 @@ def execute_group(
         _validate_completed_launches(case, launches, args.repeat)
         archives.append(_write_case_archive(args, case, launches))
         print(
-            "ddr_active_rank_archive: "
+            "ddr_active_tile_archive: "
             + str(args.work_dir / f"{case.key}.observations.json")
         )
     return archives, execution_order
@@ -1171,8 +1168,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--case", help="select one exact stable key")
     parser.add_argument(
         "--group",
-        choices=tuple(catalog.DDR_ACTIVE_RANK_GROUP_KEYS),
-        help="select one complete five-point active-rank sweep",
+        choices=tuple(catalog.DDR_ACTIVE_TILE_GROUP_KEYS),
+        help="select one complete five-point active-Tile sweep",
     )
     parser.add_argument(
         "--emit-board-group-keys",
@@ -1205,7 +1202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         catalog.validate_catalog()
         validate_static_contract()
         if args.emit_board_group_keys:
-            print("\n".join(catalog.DDR_ACTIVE_RANK_GROUP_KEYS))
+            print("\n".join(catalog.DDR_ACTIVE_TILE_GROUP_KEYS))
             return 0
         if args.list:
             print(json.dumps(inventory(), indent=2, sort_keys=True))
@@ -1217,7 +1214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         values = (
             (resolve_object(args.case),)
             if args.case is not None
-            else catalog.DDR_ACTIVE_RANK_GROUPS[args.group]
+            else catalog.DDR_ACTIVE_TILE_GROUPS[args.group]
         )
         if args.mode == "audit":
             print(
@@ -1261,13 +1258,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
         if args.group is not None and args.repeat % 4 != 0:
             raise RuntimeError(
-                "active-rank group repeat must be a multiple of four for "
+                "active-Tile group repeat must be a multiple of four for "
                 "position counterbalance"
             )
         if args.mode == "board":
             if os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
                 print(
-                    "DDR active-rank hardware execution is not armed; set "
+                    "DDR active-Tile hardware execution is not armed; set "
                     "WAFER_EXECUTE_HARDWARE_TESTS=1",
                     file=sys.stderr,
                 )
@@ -1276,18 +1273,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         package, bindings, completion_manifest = _prepare_package(args)
         if args.mode == "no-card":
             serialized_requests = b"".join(
-                request_bytes(value, rank, sample)
+                request_bytes(value, tile_id, sample)
                 for sample in range(args.repeat)
                 for value in values
-                for rank in range(RANK_COUNT)
+                for tile_id in range(TILE_COUNT)
             )
             print(
-                "ddr_active_rank_no_card: "
+                "ddr_active_tile_no_card: "
                 + json.dumps(
                     {
                         "case_keys": [value.key for value in values],
-                        "serialized_rank_requests": (
-                            RANK_COUNT * len(values) * args.repeat
+                        "serialized_tile_requests": (
+                            TILE_COUNT * len(values) * args.repeat
                         ),
                         "request_sha256": hashlib.sha256(
                             serialized_requests
@@ -1331,21 +1328,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if args.group is not None:
             group_archive = {
-                "schema_version": 1,
                 "group": args.group,
                 "case_keys": [value.key for value in values],
-                "active_rank_counts": [
-                    len(value.active_ranks) for value in values
+                "active_tile_counts": [
+                    len(value.active_tiles) for value in values
                 ],
                 "archives": [
                     str(args.work_dir / f"{value.key}.observations.json")
                     for value in values
                 ],
                 "execution_order": execution_order,
-                "terminal_completion_by_rank": [
-                    {"rank": rank, "completion": completion}
-                    for rank, completion in (
-                        completion_manifest.terminal_completion_by_rank
+                "completion_by_tile": [
+                    {"tile_id": tile_id, "completion": completion}
+                    for tile_id, completion in (
+                        completion_manifest.completion_by_tile
                     )
                 ],
                 "execution_order_basis": (
@@ -1353,13 +1349,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "with equal mean position; not a complete five-position "
                     "Latin rotation"
                 ),
-                "physical_rank_phase_basis": (
+                "physical_tile_phase_basis": (
                     "1/2/4/8-active masks shift by sample modulo uniform "
-                    "rank spacing"
+                    "Tile spacing"
                 ),
                 "measurement_basis": (
-                    "per-rank device rdcycle and target-only PMU; "
-                    "full-card max at the same launch boundary"
+                    "per-Tile device rdcycle and target-only PMU; "
+                    "complete-Tile-domain max at the same launch boundary"
                 ),
                 "activation": (
                     "observation-only; cost promotion requires calibration and "
@@ -1370,9 +1366,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.work_dir / f"{args.group}.group-observations.json"
             )
             _write_json_atomic(group_path, group_archive)
-            print(f"ddr_active_rank_group_archive: {group_path}")
+            print(f"ddr_active_tile_group_archive: {group_path}")
         if len(archives) != len(values):
-            raise AssertionError("active-rank archive count differs")
+            raise AssertionError("active-Tile archive count differs")
         return 0
     except (
         KeyError,

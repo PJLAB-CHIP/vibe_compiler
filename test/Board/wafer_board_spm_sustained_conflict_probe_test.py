@@ -125,9 +125,7 @@ def _expected_global_record(
     group = invocation.group
     return {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            catalog.SCHEMA << 32
-        ) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "GROUP": group.group_id,
         "WORK_BYTES": group.work_bytes,
@@ -153,9 +151,7 @@ def _expected_row_record(
     row = cell.row_index
     return {
         "MAGIC": catalog.ROW_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            catalog.SCHEMA << 32
-        ) | catalog.ROW_RECORD_WORDS,
+        "WORD_COUNT": catalog.ROW_RECORD_WORDS,
         "STATUS": 0,
         "CELL": cell.cell_id,
         "ADDRESS_CLASS": cell.address_class.row_index,
@@ -804,7 +800,7 @@ def execute_groups(
     args: argparse.Namespace,
     package: pathlib.Path,
     resource_ids: tuple[int, int, int],
-    terminal_completion: int,
+    completion_kind: str,
     groups: tuple[catalog.SustainedConflictGroup, ...],
 ) -> None:
     raw_dir = args.work_dir / "raw" / "spm-sustained-conflict"
@@ -835,7 +831,7 @@ def execute_groups(
             )
             try:
                 package_support.validate_board_lifecycle(
-                    result.stdout, terminal_completion
+                    result.stdout, completion_kind
                 )
             except RuntimeError as error:
                 raise RuntimeError(
@@ -897,17 +893,17 @@ def main() -> int:
 
     source = package_support.write_source_program(args)
     package = package_support.compile_seed_package(args, source)
-    module_path, resource_ids = package_support.locate_bindings(package)
-    terminal_completion = package_support.rank_one_terminal_completion(
+    module_path, resource_ids, slots_per_tile = package_support.locate_bindings(
         package
     )
-    package_support.build_probe(args, package, module_path)
+    completion_kind = package_support.package_completion_kind(package)
+    package_support.build_probe(args, package, module_path, slots_per_tile)
     package_support.verify_no_card(args, package)
     if args.no_card:
         print("spm_sustained_conflict_probe_no_card: passed")
         return 0
     execute_groups(
-        args, package, resource_ids, terminal_completion, groups
+        args, package, resource_ids, completion_kind, groups
     )
     return 0
 

@@ -19,16 +19,8 @@ def main() -> int:
     }
     assert catalog.ERROR_PATH_MODES == (7, 8, 9, 12)
     assert catalog.ASYNC_SENDER_MODES == (10, 11)
-    assert catalog.RAW_REMOTE_MODE_IDS == tuple(range(15, 39))
-    assert (
-        catalog.RAW_REMOTE_MULTICAST_CASES
-        is catalog.RAW_MULTIDEST_CASES
-    )
-    assert (
-        catalog.RAW_REMOTE_MULTICAST_CASE_BY_MODE
-        is catalog.RAW_MULTIDEST_CASE_BY_MODE
-    )
-    raw_cases = catalog.RAW_REMOTE_MULTICAST_CASES
+    assert catalog.RAW_MULTIDEST_MODES == tuple(range(15, 39))
+    raw_cases = catalog.RAW_MULTIDEST_CASES
     assert len(raw_cases) == 24
     assert len({case.key for case in raw_cases}) == 24
     assert len({case.mode for case in raw_cases}) == 24
@@ -52,7 +44,7 @@ def main() -> int:
                 for layout in ("adjacent", "interleaved")
             }
             assert {
-                case.target_ranks for case in semantic_cases
+                case.target_tiles for case in semantic_cases
             } == {(1,), (8,)}
             assert {
                 case.dest_num_register_value for case in semantic_cases
@@ -79,9 +71,9 @@ def main() -> int:
         case.semantic: case.mode_register_value for case in raw_cases
     } == {"broadcast": 2, "scatter": 0x101, "shuffle": 3}
     assert all(
-        len(case.target_ranks) == case.fanout
-        and len(set(case.target_ranks)) == case.fanout
-        and 0 not in case.target_ranks
+        len(case.target_tiles) == case.fanout
+        and len(set(case.target_tiles)) == case.fanout
+        and 0 not in case.target_tiles
         and case.source_span_bytes <= catalog.RAW_MULTIDEST_PAYLOAD_BYTES
         and case.element_bytes > 0
         and case.dest_num_register_value == case.fanout - 1
@@ -89,8 +81,8 @@ def main() -> int:
         and case.as_dict()["key"] == case.name
         for case in raw_cases
     )
-    assert catalog.raw_multidest_target_ranks(4, "adjacent") == (1, 2, 3, 4)
-    assert catalog.raw_multidest_target_ranks(4, "interleaved") == (1, 8, 15, 7)
+    assert catalog.raw_multidest_target_tiles(4, "adjacent") == (1, 2, 3, 4)
+    assert catalog.raw_multidest_target_tiles(4, "interleaved") == (1, 8, 15, 7)
     assert {
         (case.mode, case.payload_bytes)
         for case in catalog.CONTRACT_CASES
@@ -193,7 +185,7 @@ def main() -> int:
             + catalog.TRANSPORT_PMU_OBSERVATIONS
             + catalog.CONTRACT_CASES
             + catalog.COUNTER_DISPOSITIONS
-            + catalog.RAW_REMOTE_MULTICAST_CASES
+            + catalog.RAW_MULTIDEST_CASES
         )
     }
     assert all(
@@ -342,7 +334,7 @@ def main() -> int:
     issue_helper = crt_source.split(
         "static bool wafer_direct_dte_issue_sender(", maxsplit=1
     )[1].split(
-        "void wafer_tx81_direct_dte_send_issue_v3(uint64_t event)", maxsplit=1
+        "void wafer_tx81_direct_dte_send_issue(uint64_t event)", maxsplit=1
     )[0]
     assert issue_helper.index("direct_sync_wait(") < issue_helper.index(
         "direct_dte_attach("
@@ -351,12 +343,12 @@ def main() -> int:
         "direct_dte_send_async("
     )
     assert "direct_dte_wait_done(" not in issue_helper
-    send_issue_v3 = crt_source.split(
-        "void wafer_tx81_direct_dte_send_issue_v3(uint64_t event)", maxsplit=1
+    send_issue = crt_source.split(
+        "void wafer_tx81_direct_dte_send_issue(uint64_t event)", maxsplit=1
     )[1].split(
         "uint64_t wafer_tx81_direct_dte_recv_prepare", maxsplit=1
     )[0]
-    assert "wafer_direct_dte_issue_sender(event)" in send_issue_v3
+    assert "wafer_direct_dte_issue_sender(event)" in send_issue
 
     probe_source = (
         repo
@@ -371,9 +363,9 @@ def main() -> int:
         / "Board"
         / "wafer_board_dte_ncc_execution_probe_test.py"
     ).read_text()
-    assert "wafer_tx81_rdma_v3(" in probe_source
-    assert "wafer_tx81_wdma_v3(" in probe_source
-    assert "wafer_tx81_elementwise_add_v3(" in probe_source
+    assert "wafer_tx81_rdma(" in probe_source
+    assert "wafer_tx81_wdma(" in probe_source
+    assert "wafer_tx81_elementwise_add(" in probe_source
     assert 'parser.add_argument("--host-contract-only"' in host_driver_source
     assert 'TARGET_IDENTITY = "wafer-tx81-single-card"' in (
         host_driver_source
@@ -394,7 +386,10 @@ def main() -> int:
     )[1]
     assert "get_spm_memory_mapping" not in probe_source
     assert "wafer_probe_seed_guarded_region(" in probe_source
-    assert "wafer_probe_capture_results(output_ddr, mode, rank);" in probe_main
+    assert (
+        "wafer_probe_capture_results(output_ddr, mode, tile_id);"
+        in probe_main
+    )
     reuse = probe_main.split(
         "case WAFER_PROBE_DTE_REUSE_AFTER_EVENTS:", maxsplit=1
     )[1].split(
@@ -484,8 +479,8 @@ def main() -> int:
     assert raw_async.index("direct_dte_attach(") < raw_async.index(
         "direct_dte_send_async("
     )
-    first_ct = raw_async.index("wafer_tx81_elementwise_add_v3(")
-    assert raw_async.count("wafer_tx81_elementwise_add_v3(") == 2
+    first_ct = raw_async.index("wafer_tx81_elementwise_add(")
+    assert raw_async.count("wafer_tx81_elementwise_add(") == 2
     assert raw_async.index("direct_dte_send_async(") < first_ct
     assert first_ct < raw_async.index("direct_dte_wait_done(")
     assert raw_async.index("direct_dte_wait_done(") < raw_async.index(
@@ -499,7 +494,7 @@ def main() -> int:
     ) < raw_async.rindex("wafer_tx81_ncc_join(1U)")
     assert raw_async.index(
         "wafer_tx81_direct_dte_wait(receive)"
-    ) < raw_async.rindex("wafer_tx81_elementwise_add_v3(")
+    ) < raw_async.rindex("wafer_tx81_elementwise_add(")
     assert "result.send_result = direct_dte_send_async(&info)" in raw_async
     assert "result.wait_result = direct_dte_wait_done(&info)" in raw_async
     assert "result.release_result = direct_dte_release(info.dte_node)" in (
@@ -688,7 +683,7 @@ def main() -> int:
         "wafer_transport_pmu_calibration_catalog_test: "
         "cases=30 contracts=13 direct_host_negative=2 "
         "direct_error_observation=4 sender_async_controls=2 "
-        "fanin=1 raw_remote_multicast=24 unsafe_isolation=1 "
+        "fanin=1 raw_multidestination=24 unsafe_isolation=1 "
         "board_counters=6 wrap_boundaries=5 "
         "tmnoc_static_negative=1 passed"
     )

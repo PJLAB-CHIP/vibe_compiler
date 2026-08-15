@@ -579,17 +579,10 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
     return invalid("package manifest must be a JSON object");
   if (llvm::Error error = requireExactFields(
           *root,
-          {"schema_version", "program", "target", "card_count", "tile_count",
-           "resources", "modules", "entries"},
+          {"program", "target", "card_count", "tile_count", "resources",
+           "modules", "entries"},
           "manifest"))
     return std::move(error);
-
-  llvm::Expected<uint64_t> schemaVersion =
-      requireUnsigned(*root, "schema_version", "manifest");
-  if (!schemaVersion)
-    return schemaVersion.takeError();
-  if (*schemaVersion != kPackageManifestSchemaVersion)
-    return invalid("unsupported package manifest schema_version");
   llvm::Expected<const llvm::json::Object *> program =
       requireObject(*root, "program", "manifest");
   if (!program)
@@ -666,7 +659,6 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
   PackageManifest manifest(*parsedTargetIdentity, *parsedRuntimeABI,
                            std::move(*parsedLaunch), *moduleFormat);
 
-  manifest.schemaVersion = static_cast<uint32_t>(*schemaVersion);
   manifest.program = ProgramId(*programId);
   manifest.cardCount = *cardCount;
   manifest.tileCount = *tileCount;

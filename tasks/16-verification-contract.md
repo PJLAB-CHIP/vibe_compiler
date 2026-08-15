@@ -212,7 +212,7 @@ model必须消费与target writing相同的owner-backed target module set，不�
 - private address spaces、range/alias/hazard、formal numeric与qualified bulk lane；
 - complete output physical bytes解码为source dtype/shape，与独立CPU expected比较并检查NaN/Inf/tolerance policy。
 
-SystemC是functional-event model，不声明cycle accuracy、板端吞吐或真实NoC arbitration。model pass不替代schema-v8 exact
+SystemC是functional-event model，不声明cycle accuracy、板端吞吐或真实NoC arbitration。model pass不替代current manifest exact
 package provider或真实board gate。
 
 ## 8. Source fidelity 与 workload matrix

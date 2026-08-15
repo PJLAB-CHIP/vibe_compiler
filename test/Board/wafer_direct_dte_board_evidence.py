@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Strict reusable evidence checks for one 16-rank Direct-DTE board run.
+"""Strict reusable evidence checks for one 16-tile Direct-DTE board run.
 
 The package manifest and the board process expose different evidence:
 
 * the manifest exposes the typed status resource, status ABI, watchdog
   requirement, and terminal-completion domain;
 * a successful ``wafer-run --board`` process currently exposes lifecycle and
-  terminal-completion rows, but not the raw per-rank status readbacks.
+  completion rows, but not the raw per-tile status readbacks.
 
 Keep those facts separate.  Callers may provide ``DirectDTEStatusObservation``
 records only when an output surface actually exposes the raw status values.
@@ -21,10 +21,9 @@ from collections.abc import Iterable, Mapping, Sequence
 import wafer_runtime_launch_contract as runtime_launch
 
 
-SCHEMA_VERSION = runtime_launch.PACKAGE_SCHEMA_VERSION
-RANK_COUNT = 16
+TILE_COUNT = 16
 CLUSTER_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
-DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
+DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status"
 DIRECT_DTE_STATUS_BYTES = 64
 DIRECT_DTE_STATUS_ALIGNMENT = 64
 DIRECT_DTE_STATUS_SUCCESS = 1
@@ -32,25 +31,25 @@ MAXIMUM_COMPLETION_TIMEOUT_MS = 60 * 60 * 1000
 
 STATUS_OBSERVATION_GAP = (
     "wafer-run board stdout and BoardRuntimeInvocationResult do not expose "
-    "the 16 per-rank Direct-DTE status resource IDs and raw u32 values; the "
-    "successful runtime path enforces all-rank status-v2 Success internally, "
+    "the 16 per-tile Direct-DTE status resource IDs and raw u32 values; the "
+    "successful runtime path enforces all-tile status Success internally, "
     "but this output cannot independently reconstruct those readbacks"
 )
 
 
 @dataclasses.dataclass(frozen=True)
 class DirectDTEManifestEvidence:
-    """Typed Direct-DTE package facts indexed by logical rank."""
+    """Typed Direct-DTE package facts indexed by logical tile."""
 
-    status_resource_by_rank: tuple[tuple[int, int], ...]
-    terminal_completion_by_rank: tuple[tuple[int, int], ...]
+    status_resource_by_tile: tuple[tuple[int, int], ...]
+    completion_by_tile: tuple[tuple[int, str], ...]
     status_abi: str = DIRECT_DTE_STATUS_ABI
-    host_watchdog_ranks: tuple[int, ...] = tuple(range(RANK_COUNT))
+    host_watchdog_tiles: tuple[int, ...] = tuple(range(TILE_COUNT))
 
     @property
     def status_resources(self) -> frozenset[int]:
         return frozenset(
-            resource for _, resource in self.status_resource_by_rank
+            resource for _, resource in self.status_resource_by_tile
         )
 
 
@@ -58,7 +57,7 @@ class DirectDTEManifestEvidence:
 class DirectDTEStatusObservation:
     """One raw status row from an output surface that actually exposes it."""
 
-    rank: int
+    tile: int
     resource: int
     status_abi: str
     value: int
@@ -69,16 +68,16 @@ class DirectDTEBoardEvidence:
     """Evidence available after validating one successful board invocation."""
 
     completion_timeout_ms: int
-    terminal_completion_by_rank: tuple[tuple[int, int], ...]
-    runtime_all_rank_success_enforced: bool
-    observed_status_by_rank: (
+    completion_by_tile: tuple[tuple[int, str], ...]
+    runtime_all_tile_success_enforced: bool
+    observed_status_by_tile: (
         tuple[DirectDTEStatusObservation, ...] | None
     )
     status_observation_gap: str | None
 
     @property
-    def has_observed_all_rank_success(self) -> bool:
-        return self.observed_status_by_rank is not None
+    def has_observed_all_tile_success(self) -> bool:
+        return self.observed_status_by_tile is not None
 
 
 def _is_integer(value: object) -> bool:
@@ -96,22 +95,47 @@ def _require_record_list(
     return raw
 
 
-def _records_by_dense_rank(
+def _entries_by_dense_tile(
     records: Iterable[Mapping[str, object]],
     *,
     context: str,
 ) -> dict[int, Mapping[str, object]]:
-    by_rank: dict[int, Mapping[str, object]] = {}
+    by_tile: dict[int, Mapping[str, object]] = {}
     for record in records:
-        rank = record.get("rank")
-        if not _is_integer(rank) or not 0 <= rank < RANK_COUNT:
-            raise RuntimeError(f"{context} has an invalid logical rank")
-        if rank in by_rank:
-            raise RuntimeError(f"{context} duplicates logical rank {rank}")
-        by_rank[rank] = record
-    if set(by_rank) != set(range(RANK_COUNT)):
-        raise RuntimeError(f"{context} is not the exact 16-rank domain")
-    return by_rank
+        tile = record.get("tile_id")
+        if not _is_integer(tile) or not 0 <= tile < TILE_COUNT:
+            raise RuntimeError(f"{context} has an invalid logical tile")
+        if tile in by_tile:
+            raise RuntimeError(f"{context} duplicates logical tile {tile}")
+        by_tile[tile] = record
+    if set(by_tile) != set(range(TILE_COUNT)):
+        raise RuntimeError(f"{context} is not the exact 16-tile domain")
+    return by_tile
+
+
+def _resources_by_dense_tile(
+    records: Iterable[Mapping[str, object]],
+    *,
+    context: str,
+) -> dict[int, Mapping[str, object]]:
+    by_tile: dict[int, Mapping[str, object]] = {}
+    for record in records:
+        scope = record.get("scope")
+        tile = scope.get("tile_id") if isinstance(scope, Mapping) else None
+        if (
+            not isinstance(scope, Mapping)
+            or scope.get("kind") != "tile"
+            or scope.get("card_id") != 0
+            or not _is_integer(tile)
+            or not 0 <= tile < TILE_COUNT
+        ):
+            raise RuntimeError(f"{context} has an invalid tile scope")
+        if tile in by_tile:
+            raise RuntimeError(f"{context} duplicates logical tile {tile}")
+        by_tile[tile] = record
+    if set(by_tile) != set(range(TILE_COUNT)):
+        raise RuntimeError(f"{context} is not the exact 16-tile domain")
+    return by_tile
 
 
 def validate_direct_dte_manifest(
@@ -126,12 +150,12 @@ def validate_direct_dte_manifest(
         context="Direct-DTE",
     )
     if (
-        manifest.get("rank_count") != RANK_COUNT
+        manifest.get("tile_count") != TILE_COUNT
         or not isinstance(target, Mapping)
     ):
         raise RuntimeError(
-            "Direct-DTE package does not use the current schema-v7 "
-            "16-rank cluster launch contract"
+            "Direct-DTE package does not use the current 16-tile cluster "
+            "launch contract"
         )
 
     resources = _require_record_list(manifest, "resources")
@@ -149,11 +173,11 @@ def validate_direct_dte_manifest(
         for resource in resources
         if resource.get("role") == "transport_status"
     ]
-    status_by_rank = _records_by_dense_rank(
+    status_by_tile = _resources_by_dense_tile(
         status_records, context="Direct-DTE status resource domain"
     )
-    status_resource_by_rank: dict[int, int] = {}
-    for rank, status in status_by_rank.items():
+    status_resource_by_tile: dict[int, int] = {}
+    for tile, status in status_by_tile.items():
         resource_id = status.get("id")
         if (
             not _is_integer(resource_id)
@@ -165,46 +189,48 @@ def validate_direct_dte_manifest(
             or status.get("host_visible") is not False
         ):
             raise RuntimeError(
-                f"rank {rank} Direct-DTE status resource is not the "
-                "internal u32[1] status-v2 64/64 read-write slot"
+                f"tile {tile} Direct-DTE status resource is not the "
+                "internal u32[1] status 64/64 read-write slot"
             )
-        status_resource_by_rank[rank] = resource_id
+        status_resource_by_tile[tile] = resource_id
 
     entries = _require_record_list(manifest, "entries")
-    if len(entries) != RANK_COUNT:
+    if len(entries) != TILE_COUNT:
         raise RuntimeError("Direct-DTE entry domain is not exactly 16 records")
-    entry_by_rank = _records_by_dense_rank(
+    entry_by_tile = _entries_by_dense_tile(
         entries, context="Direct-DTE entry domain"
     )
     entry_ids = {entry.get("id") for entry in entries}
     if (
-        entry_ids != set(range(RANK_COUNT))
+        entry_ids != set(range(TILE_COUNT))
         or not all(_is_integer(entry_id) for entry_id in entry_ids)
     ):
         raise RuntimeError(
             "Direct-DTE EntryId domain is not dense zero-based"
         )
 
-    terminal_by_rank: dict[int, int] = {}
-    for rank, entry in entry_by_rank.items():
+    completion_by_tile: dict[int, str] = {}
+    for tile, entry in entry_by_tile.items():
         transport = entry.get("transport")
-        status_resource = status_resource_by_rank[rank]
+        status_resource = status_resource_by_tile[tile]
         if (
-            not isinstance(transport, Mapping)
+            entry.get("card_id") != 0
+            or entry.get("launch_slot") != tile
+            or not isinstance(transport, Mapping)
             or transport.get("kind") != "direct_dte"
             or transport.get("status_resource") != status_resource
             or transport.get("status_abi") != DIRECT_DTE_STATUS_ABI
             or transport.get("host_watchdog_required") is not True
         ):
             raise RuntimeError(
-                f"rank {rank} Direct-DTE status ABI/watchdog contract is invalid"
+                f"tile {tile} Direct-DTE entry/status contract is invalid"
             )
 
         slots = entry.get("slots")
         if not isinstance(slots, list) or not all(
             isinstance(slot, Mapping) for slot in slots
         ):
-            raise RuntimeError(f"rank {rank} Direct-DTE slots are invalid")
+            raise RuntimeError(f"tile {tile} Direct-DTE slots are invalid")
         status_slots = [
             slot for slot in slots if slot.get("resource") == status_resource
         ]
@@ -214,60 +240,33 @@ def validate_direct_dte_manifest(
             or not _is_integer(status_slots[0].get("ordinal"))
         ):
             raise RuntimeError(
-                f"rank {rank} Direct-DTE status resource is not bound by "
+                f"tile {tile} Direct-DTE status resource is not bound by "
                 "exactly one read-write ABI slot"
             )
 
-        completion = entry.get("terminal_completion")
-        if not _is_integer(completion):
+        completion = entry.get("completion")
+        if completion != "return_after_local_drain":
             raise RuntimeError(
-                f"rank {rank} terminal completion reference is invalid"
+                f"tile {tile} completion contract is invalid"
             )
-        terminal_by_rank[rank] = completion
-
-    completions = _require_record_list(manifest, "completions")
-    if len(completions) != RANK_COUNT:
-        raise RuntimeError(
-            "Direct-DTE terminal completion domain is not exactly 16 records"
-        )
-    completion_by_rank = _records_by_dense_rank(
-        completions, context="Direct-DTE terminal completion domain"
-    )
-    completion_ids = {completion.get("id") for completion in completions}
-    if (
-        completion_ids != set(range(RANK_COUNT))
-        or not all(
-            _is_integer(completion_id) for completion_id in completion_ids
-        )
-    ):
-        raise RuntimeError(
-            "Direct-DTE CompletionId domain is not dense zero-based"
-        )
-    for rank, completion in completion_by_rank.items():
-        if (
-            completion.get("kind") != "entry_return"
-            or terminal_by_rank[rank] != completion.get("id")
-        ):
-            raise RuntimeError(
-                f"rank {rank} entry/terminal-completion relation is invalid"
-            )
+        completion_by_tile[tile] = completion
 
     return DirectDTEManifestEvidence(
-        status_resource_by_rank=tuple(sorted(status_resource_by_rank.items())),
-        terminal_completion_by_rank=tuple(sorted(terminal_by_rank.items())),
+        status_resource_by_tile=tuple(sorted(status_resource_by_tile.items())),
+        completion_by_tile=tuple(sorted(completion_by_tile.items())),
     )
 
 
 def validate_direct_dte_board_command(command: Sequence[str]) -> int:
-    """Validate that a board command carries one bounded all-rank deadline."""
+    """Validate that a board command carries one bounded completion deadline."""
 
     if (
         command.count("--board") != 1
-        or command.count("--all-ranks") != 1
         or "--no-card" in command
+        or "--all-Tiles" in command
     ):
         raise RuntimeError(
-            "Direct-DTE board command must select one all-rank board invocation"
+            "Direct-DTE board command must select one board invocation"
         )
     if command.count("--completion-timeout-ms") != 1:
         raise RuntimeError(
@@ -293,27 +292,27 @@ def _validate_status_observations(
     observations: Iterable[DirectDTEStatusObservation],
     manifest: DirectDTEManifestEvidence,
 ) -> tuple[DirectDTEStatusObservation, ...]:
-    expected_resource_by_rank = dict(manifest.status_resource_by_rank)
-    by_rank: dict[int, DirectDTEStatusObservation] = {}
+    expected_resource_by_tile = dict(manifest.status_resource_by_tile)
+    by_tile: dict[int, DirectDTEStatusObservation] = {}
     for observation in observations:
         if (
-            not _is_integer(observation.rank)
+            not _is_integer(observation.tile)
             or not _is_integer(observation.resource)
             or not _is_integer(observation.value)
         ):
             raise RuntimeError(
                 "Direct-DTE status observation has a non-integer "
-                "rank/resource/value"
+                "tile/resource/value"
             )
-        if observation.rank in by_rank:
+        if observation.tile in by_tile:
             raise RuntimeError(
-                f"Direct-DTE status observations duplicate rank "
-                f"{observation.rank}"
+                f"Direct-DTE status observations duplicate tile "
+                f"{observation.tile}"
             )
         if (
-            observation.rank not in expected_resource_by_rank
+            observation.tile not in expected_resource_by_tile
             or observation.resource
-            != expected_resource_by_rank[observation.rank]
+            != expected_resource_by_tile[observation.tile]
             or observation.status_abi != DIRECT_DTE_STATUS_ABI
         ):
             raise RuntimeError(
@@ -322,14 +321,14 @@ def _validate_status_observations(
             )
         if observation.value != DIRECT_DTE_STATUS_SUCCESS:
             raise RuntimeError(
-                f"rank {observation.rank} Direct-DTE status is not Success"
+                f"tile {observation.tile} Direct-DTE status is not Success"
             )
-        by_rank[observation.rank] = observation
-    if set(by_rank) != set(range(RANK_COUNT)):
+        by_tile[observation.tile] = observation
+    if set(by_tile) != set(range(TILE_COUNT)):
         raise RuntimeError(
-            "Direct-DTE status observations are not the exact 16-rank domain"
+            "Direct-DTE status observations are not the exact 16-tile domain"
         )
-    return tuple(by_rank[rank] for rank in range(RANK_COUNT))
+    return tuple(by_tile[tile] for tile in range(TILE_COUNT))
 
 
 def validate_direct_dte_board_output(
@@ -358,8 +357,8 @@ def validate_direct_dte_board_output(
         "board_stage: device-to-host",
         "board_stage: cleanup",
         "launch_pattern: cluster-x16",
-        "logical_tile_domain: 0..15",
-        f"invocation_ranks: {RANK_COUNT}",
+        "physical_tile_domain: 0..15",
+        f"invocation_tiles: {TILE_COUNT}",
         "board_execution: true",
     )
     for required in required_once:
@@ -376,53 +375,54 @@ def validate_direct_dte_board_output(
     ):
         raise RuntimeError("Direct-DTE board lifecycle evidence is out of order")
 
-    terminal_lines = [
-        line for line in lines if line.startswith("terminal_completion:")
+    completion_lines = [
+        line for line in lines if line.startswith("completion:")
     ]
-    terminal_matches = [
+    completion_matches = [
         re.fullmatch(
-            r"terminal_completion: (\d+) kind=entry_return rank=(\d+)",
+            r"completion: (return_after_local_drain) tile_id=(\d+)",
             line,
         )
-        for line in terminal_lines
+        for line in completion_lines
     ]
     if (
-        len(terminal_lines) != RANK_COUNT
-        or any(match is None for match in terminal_matches)
+        len(completion_lines) != TILE_COUNT
+        or any(match is None for match in completion_matches)
     ):
         raise RuntimeError(
             "Direct-DTE board output does not expose exactly 16 typed "
-            "terminal-completion rows"
+            "completion rows"
         )
-    observed_terminal_by_rank: dict[int, int] = {}
-    for match in terminal_matches:
+    observed_completion_by_tile: dict[int, str] = {}
+    for match in completion_matches:
         assert match is not None
-        completion, rank = (int(value) for value in match.groups())
-        if rank in observed_terminal_by_rank:
+        completion, tile_text = match.groups()
+        tile = int(tile_text)
+        if tile in observed_completion_by_tile:
             raise RuntimeError(
-                f"Direct-DTE board output duplicates terminal rank {rank}"
+                f"Direct-DTE board output duplicates completion tile {tile}"
             )
-        observed_terminal_by_rank[rank] = completion
-    if tuple(sorted(observed_terminal_by_rank.items())) != (
-        manifest.terminal_completion_by_rank
+        observed_completion_by_tile[tile] = completion
+    if tuple(sorted(observed_completion_by_tile.items())) != (
+        manifest.completion_by_tile
     ):
         raise RuntimeError(
-            "Direct-DTE board terminal completions differ from the manifest"
+            "Direct-DTE board completions differ from the manifest"
         )
 
-    observed_status_by_rank = (
+    observed_status_by_tile = (
         None
         if status_observations is None
         else _validate_status_observations(status_observations, manifest)
     )
     return DirectDTEBoardEvidence(
         completion_timeout_ms=completion_timeout_ms,
-        terminal_completion_by_rank=manifest.terminal_completion_by_rank,
-        runtime_all_rank_success_enforced=True,
-        observed_status_by_rank=observed_status_by_rank,
+        completion_by_tile=manifest.completion_by_tile,
+        runtime_all_tile_success_enforced=True,
+        observed_status_by_tile=observed_status_by_tile,
         status_observation_gap=(
             STATUS_OBSERVATION_GAP
-            if observed_status_by_rank is None
+            if observed_status_by_tile is None
             else None
         ),
     )

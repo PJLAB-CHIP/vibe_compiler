@@ -17,7 +17,6 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
   llvm::raw_string_ostream output(storage);
   llvm::json::OStream json(output, /*IndentSize=*/2);
   json.object([&] {
-    json.attribute("schema_version", int64_t(manifest.schemaVersion));
     json.attributeObject("program", [&] {
       json.attribute("id", int64_t(manifest.program.getValue()));
     });

@@ -25,7 +25,7 @@ LAUNCH_KIND = "kernel"
 PHYSICAL_TILE_COUNT = 16
 PROCESS_TIMEOUT_MARGIN_SECONDS = 60
 COMPILE_TIMEOUT_SECONDS = 1800
-DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status-v2"
+DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status"
 
 
 def parse_args() -> argparse.Namespace:
@@ -280,8 +280,7 @@ def _manifest_resources(package: pathlib.Path) -> tuple[
 ]:
     manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
     if (
-        manifest.get("schema_version") != 8
-        or manifest.get("card_count") != 1
+        manifest.get("card_count") != 1
         or manifest.get("tile_count") != PHYSICAL_TILE_COUNT
         or manifest.get("target", {}).get("identity") != TARGET_IDENTITY
     ):
@@ -433,7 +432,7 @@ def read_single_card_continuation_outputs(
 
 def verify_no_card(stdout: str) -> None:
     required = {
-        "package: id=0 schema=8 cards=1 tiles=16",
+        "package: id=0 cards=1 tiles=16",
         "board_execution: false",
     }
     if not required.issubset(set(stdout.splitlines())):

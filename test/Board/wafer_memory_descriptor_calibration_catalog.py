@@ -11,7 +11,6 @@ REQUEST_MAGIC = 0x315145444D454D57
 RECORD_MAGIC = 0x314345444D454D57
 REQUEST_GUARD = 0xB5A4938271605F4E
 RECORD_GUARD = 0x32435465768798A9
-SCHEMA = 3
 REQUEST_WORDS = 40
 RECORD_WORDS = 64
 RESOURCE_BYTES = 2097152
@@ -124,7 +123,6 @@ CONFLICT_REQUEST_MAGIC = 0x314551434D4D5357
 CONFLICT_RECORD_MAGIC = 0x315245434D4D5357
 CONFLICT_REQUEST_GUARD = 0xE7B3D98264A15C0F
 CONFLICT_RECORD_GUARD = 0x19F04CB267D38AE5
-CONFLICT_SCHEMA = 1
 CONFLICT_ROWS = 2
 CONFLICT_SAMPLES = 4
 CONFLICT_SERIAL_REQUEST_WORD = 0
@@ -141,7 +139,7 @@ CONFLICT_WINDOW_FLAGS = 0x7
 
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "KIND": 3,
     "ENGINE_A": 4,
@@ -183,7 +181,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "KIND": 4,
@@ -249,7 +247,7 @@ REC = {
 }
 CONFLICT_REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "COORDINATE": 2,
     "SERIAL_CASE": 3,
     "WINDOW_CASE": 4,
@@ -271,7 +269,7 @@ CONFLICT_REQ = {
 }
 CONFLICT_REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "COORDINATE": 3,
     "INNER_CASE": 4,
@@ -1755,7 +1753,7 @@ def build_case_payload(case: MemoryCase, sample: int = 0) -> CasePayload:
     counts = case.expected_counts
     values = {
         "MAGIC": REQUEST_MAGIC,
-        "SCHEMA_AND_WORDS": (SCHEMA << 32) | REQUEST_WORDS,
+        "WORD_COUNT": REQUEST_WORDS,
         "CASE": case.case_id,
         "KIND": case.kind,
         "ENGINE_A": case.engine_a,
@@ -1869,9 +1867,7 @@ def build_conflict_equivalence_invocation(
     meta = [0] * CONFLICT_REQUEST_META_WORDS
     values = {
         "MAGIC": CONFLICT_REQUEST_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            CONFLICT_SCHEMA << 32
-        ) | CONFLICT_REQUEST_META_WORDS,
+        "WORD_COUNT": CONFLICT_REQUEST_META_WORDS,
         "COORDINATE": pair.coordinate_id,
         "SERIAL_CASE": pair.serial.case_id,
         "WINDOW_CASE": pair.window.case_id,

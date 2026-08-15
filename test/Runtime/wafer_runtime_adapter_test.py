@@ -37,7 +37,7 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
     def make_package(self, root: pathlib.Path) -> pathlib.Path:
         package = root / "package"
         (package / "modules").mkdir(parents=True)
-        (package / "modules" / "rank_00000.so").touch()
+        (package / "modules" / "tile_00000.so").touch()
         shutil.copyfile(self.manifest, package / "manifest.json")
         return package
 
@@ -52,8 +52,6 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
                 str(self.wafer_run),
                 "--package-dir",
                 str(package),
-                "--entry-id",
-                "0",
                 *extra_args,
             ],
             cwd=self.repo_root,
@@ -68,7 +66,7 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
             package = self.make_package(pathlib.Path(temporary))
             result = self.run_adapter(package, "--no-card")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("package: id=0 schema=7 ranks=1", result.stdout)
+        self.assertIn("package: id=0 cards=1 tiles=16", result.stdout)
         self.assertIn(
             "target_identity: wafer-tx81-single-card", result.stdout
         )
@@ -86,7 +84,7 @@ class WaferRuntimeAdapterTest(unittest.TestCase):
             result.stderr,
         )
 
-    def test_adapter_does_not_offer_legacy_backends(self) -> None:
+    def test_adapter_does_not_offer_alternate_backends(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             package = self.make_package(pathlib.Path(temporary))
             result = self.run_adapter(package, "--backend", "fake-tx")

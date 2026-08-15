@@ -344,17 +344,6 @@ class NumericDependencyTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "duplicate JSON key"):
                 load_record(path)
 
-    def test_record_rejects_obsolete_schema_version(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = pathlib.Path(temporary)
-            versions, archives = make_versions(root)
-            record = make_record(root, versions, archives)
-            value = load_record(record)
-            value["schema_version"] = 2
-            atomic_write_json(record, value)
-            with self.assertRaisesRegex(RuntimeError, "unexpected=.*schema_version"):
-                validate_numeric_record(record, root, versions)
-
     def test_record_rejects_missing_thread_safe_build_policy(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

@@ -4,6 +4,14 @@
 
 #include <stdint.h>
 
+#ifndef WAFER_DDR_SPARSE_SLOTS_PER_TILE
+#error "WAFER_DDR_SPARSE_SLOTS_PER_TILE must match the package entry layout"
+#endif
+
+__attribute__((visibility("hidden")))
+const uint64_t wafer_ddr_sparse_slots_per_tile =
+    WAFER_DDR_SPARSE_SLOTS_PER_TILE;
+
 #define WAFER_DDR_SPARSE_CACHE_LINE_BYTES 64U
 #define WAFER_DDR_SPARSE_ADDRESS_ALIGNMENT UINT64_C(256)
 
@@ -54,13 +62,13 @@ static void wafer_ddr_sparse_cache_range(uint64_t begin, uint32_t bytes,
 }
 
 static void wafer_ddr_sparse_rdma(uint64_t source, uint64_t destination) {
-  wafer_tx81_rdma_v3(source, destination, WAFER_DDR_SPARSE_SLOT_BYTES,
+  wafer_tx81_rdma(source, destination, WAFER_DDR_SPARSE_SLOT_BYTES,
                   WAFER_DDR_SPARSE_SLOT_BYTES, 0U, 0U, 0U, 1U, 1U, 1U,
                   Fmt_UINT8, 0U);
 }
 
 static void wafer_ddr_sparse_wdma(uint64_t source, uint64_t destination) {
-  wafer_tx81_wdma_v3(source, destination, WAFER_DDR_SPARSE_SLOT_BYTES,
+  wafer_tx81_wdma(source, destination, WAFER_DDR_SPARSE_SLOT_BYTES,
                   WAFER_DDR_SPARSE_SLOT_BYTES, 0U, 0U, 0U, 1U, 1U, 1U,
                   Fmt_UINT8, 0U);
 }
@@ -72,7 +80,8 @@ static uint32_t wafer_ddr_sparse_request_status(
       request[WAFER_DDR_SPARSE_REQ_WORKSPACE_BYTES];
   if (request[WAFER_DDR_SPARSE_REQ_MAGIC] !=
           WAFER_DDR_SPARSE_REQUEST_MAGIC ||
-      request[WAFER_DDR_SPARSE_REQ_SCHEMA] != WAFER_DDR_SPARSE_SCHEMA ||
+      request[WAFER_DDR_SPARSE_REQ_WORD_COUNT] !=
+          WAFER_DDR_SPARSE_REQUEST_WORDS ||
       workspace_bytes < WAFER_DDR_SPARSE_MIN_WORKSPACE_BYTES ||
       workspace_bytes > WAFER_DDR_SPARSE_MAX_WORKSPACE_BYTES ||
       workspace_bytes % WAFER_DDR_SPARSE_ADDRESS_ALIGNMENT != 0U ||
@@ -106,8 +115,7 @@ static void wafer_ddr_sparse_write_header(
   for (uint32_t word = 0; word < WAFER_DDR_SPARSE_HEADER_WORDS; ++word)
     header[word] = 0U;
   header[WAFER_DDR_SPARSE_HDR_MAGIC] = WAFER_DDR_SPARSE_RECORD_MAGIC;
-  header[WAFER_DDR_SPARSE_HDR_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_DDR_SPARSE_SCHEMA << 32) |
+  header[WAFER_DDR_SPARSE_HDR_WORD_COUNT] =
       WAFER_DDR_SPARSE_HEADER_WORDS;
   header[WAFER_DDR_SPARSE_HDR_STATUS] = status;
   header[WAFER_DDR_SPARSE_HDR_SAMPLE] =

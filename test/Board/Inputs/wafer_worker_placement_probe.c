@@ -8,6 +8,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#ifndef WAFER_WORKER_SLOTS_PER_TILE
+#error "WAFER_WORKER_SLOTS_PER_TILE must match the package entry layout"
+#endif
+
+__attribute__((visibility("hidden")))
+const uint64_t wafer_worker_slots_per_tile = WAFER_WORKER_SLOTS_PER_TILE;
+
 #define WAFER_WP_PMU_BASE UINT64_C(0x590000)
 #define WAFER_WP_PMU_WORKER_STRIDE UINT32_C(0x30)
 #define WAFER_WP_STABLE_RETRIES 8U
@@ -433,8 +440,8 @@ static int wafer_wp_placement_counts_are_valid(const WaferWPRequest *request) {
 static uint32_t wafer_wp_decode_request(const volatile uint64_t *words,
                                         WaferWPRequest *request) {
   if (words[WAFER_WP_REQ_MAGIC] != WAFER_WP_REQUEST_MAGIC ||
-      words[WAFER_WP_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_WP_SCHEMA << 32) | WAFER_WP_REQUEST_WORDS) ||
+      words[WAFER_WP_REQ_WORD_COUNT] !=
+          (WAFER_WP_REQUEST_WORDS) ||
       words[WAFER_WP_REQ_GUARD] != WAFER_WP_REQUEST_GUARD)
     return WAFER_WP_STATUS_BAD_REQUEST;
   for (uint32_t index = WAFER_WP_REQ_RESERVED_BASE;
@@ -792,8 +799,8 @@ static uint64_t wafer_wp_guard_mismatch(const WaferWPInstruction *instruction) {
 static void wafer_wp_echo_record(volatile uint64_t *record,
                                  const WaferWPRequest *request) {
   record[WAFER_WP_REC_MAGIC] = WAFER_WP_RECORD_MAGIC;
-  record[WAFER_WP_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_WP_SCHEMA << 32) | WAFER_WP_RECORD_WORDS;
+  record[WAFER_WP_REC_WORD_COUNT] =
+      WAFER_WP_RECORD_WORDS;
   record[WAFER_WP_REC_KIND] = request->kind;
   record[WAFER_WP_REC_ENGINE] = request->engine;
   record[WAFER_WP_REC_WORKER_MASK] = request->worker_mask;
@@ -826,7 +833,7 @@ static void wafer_wp_archive_outputs(WaferWPContext *context,
       uint32_t chunk = remaining > WAFER_WP_OUTPUT_SLOT_DATA_BYTES
                            ? WAFER_WP_OUTPUT_SLOT_DATA_BYTES
                            : remaining;
-      wafer_tx81_wdma_v3(wafer_wp_write(instruction->spm_slot) -
+      wafer_tx81_wdma(wafer_wp_write(instruction->spm_slot) -
                              WAFER_WP_GUARD_BYTES + cursor,
                          wafer_wp_archive(context, ordinal) + cursor, chunk,
                          chunk, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);

@@ -174,21 +174,18 @@ Pipeline position:
   op 语义、effect、type 或明确 op 表达，不滥用 attr。
 - 不维护影子调度计划，不把 body 已表达的执行结构复制成全局计划 attr。
 
-### 接口和版本边界
+### 接口演进
 
-- **先区分内部接口与兼容边界。** 仓库内同步演进的 C++ API、pass / analysis API、非持久化 IR、临时诊断和
-  算法实现不承诺跨版本兼容；修改时同批更新所有调用方，不增加版本后缀、兼容 wrapper、双 reader 或新旧实现分支。
-- **只有可独立部署或持久保存的边界才能拥有版本。** 例如磁盘格式、compiler / runtime / device 之间必须独立
-  兼容的二进制 ABI，以及设备产生且需要被旧 host 读取的记录格式。每个外围格式只有一个集中维护的版本；其中的
-  field、enum、ID 构造方式、编号规则和算法步骤不得各自建立 `v1` / `v2` 版本线，也不得把版本写进语义字符串。
-- **设计收敛期默认原位修改当前格式。** 没有已经部署且必须继续读取的旧产物时，字段增删或表示调整直接修改
-  current schema 并删除旧路径，不能用递增版本代替设计收敛。需要兼容时必须写明具体 producer、consumer、支持周期
-  和兼容测试；“以后可能需要”不构成保留旧版本的理由。
-- **兼容逻辑集中在边界。** 必须支持旧格式时，只在对应 parser / loader / ABI adapter 中完成一次升级或明确拒绝，
-  compiler pipeline、IR、pass 和 runtime 主路径只消费一种 current representation；不得让版本判断扩散到各层实现。
-- **破坏性变更按完整边界协调。** compiler、runtime、firmware 或工具必须同步升级时，集中更新版本和兼容检查；
-  对支持周期之外的旧产物明确报错，不无限保留历史分支。release / toolchain 版本、文件格式版本和 ABI 版本分别管理，
-  不因一次代码发布机械增加格式或 ABI 版本。
+- **Wafer-owned接口永远只有一套current合同。** C++ API、pass / analysis API、IR、磁盘格式、compiler / runtime / CRT
+  ABI、device record、tool metadata和测试fixture都原位演进；修改时同批更新所有producer、consumer和验证，不增加
+  编号名称、编号schema、兼容wrapper、双reader、旧symbol或新旧实现分支。
+- **稳定identity不携带版本号。** schema、ABI、record和symbol使用说明语义的无编号名称；current parser依靠exact field、
+  magic、size、layout、digest和identity检查输入。旧产物不升级、不翻译、不回退，直接因不符合current合同而拒绝。
+- **破坏性变化必须协调替换完整边界。** compiler、runtime、CRT、firmware、tools、fixtures和文档在同一变更中切换到
+  新current合同；后续更新仍替换这一套接口，不创建第二套并行合同。无法同步升级的外部consumer是发布协调问题，
+  不能据此在主仓长期保留版本分叉。
+- **外部版本只作为输入事实记录。** NPY等第三方文件格式、license、vendor规范、设备runtime和外部toolchain版本保持
+  其原始拼写与检查；不得把它们改名，也不得借外部版本为Wafer内部接口建立版本线。
 
 ### MLIR 工程规则
 

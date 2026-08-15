@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Validate full-card positive and subgroup static-negative barrier gates."""
+"""Validate complete-Tile-domain positive and subgroup static-negative barrier gates."""
 
 from __future__ import annotations
 
-import wafer_board_full_card_barrier_probe_test as barrier
+import wafer_board_complete_tile_barrier_probe_test as barrier
 
 
 def main() -> int:
@@ -31,7 +31,7 @@ def main() -> int:
         case.disposition == "static-negative"
         for case in barrier.BARRIER_NEGATIVE_CASES
     )
-    barrier.validate_participant_count(barrier.RANK_COUNT)
+    barrier.validate_participant_count(barrier.TILE_COUNT)
     for participants in barrier.UNSUPPORTED_PARTICIPANT_COUNTS:
         try:
             barrier.validate_participant_count(participants)
@@ -43,7 +43,7 @@ def main() -> int:
             )
     barrier.validate_host_contract()
     print(
-        "wafer_full_card_barrier_contract_test: "
+        "wafer_complete_tile_barrier_contract_test: "
         f"positive_leaves={len(barrier.BARRIER_POSITIVE_CASES)} "
         f"negative_leaves={len(barrier.BARRIER_NEGATIVE_CASES)} passed"
     )

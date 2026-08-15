@@ -370,7 +370,7 @@ static void test_dual_lane_boundary_order(void) {
   assert(context.prepared_mask == 0);
 }
 
-static void test_seed_publication_boundary_is_mandatory(void) {
+static void test_seed_visibility_boundary_is_mandatory(void) {
   WaferNccProbeRequest plan = request(1, 1, WAFER_NCC_SCHEDULE_SERIAL);
   plan.lanes[0] = lane(WAFER_NCC_ENGINE_CT, 0);
   WaferNccProbeExecutionHooks missing_boundary = hooks;
@@ -550,9 +550,7 @@ static void test_validation_bounds(void) {
 static void test_wire_decode(void) {
   uint64_t words[WAFER_NCC_PROTOCOL_REQUEST_WORDS] = {0};
   words[WAFER_NCC_REQ_MAGIC] = WAFER_NCC_PROTOCOL_REQUEST_MAGIC;
-  words[WAFER_NCC_REQ_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_NCC_PROTOCOL_SCHEMA << 32) |
-      WAFER_NCC_PROTOCOL_REQUEST_WORDS;
+  words[WAFER_NCC_REQ_WORD_COUNT] = WAFER_NCC_PROTOCOL_REQUEST_WORDS;
   words[WAFER_NCC_REQ_COMMAND] = WAFER_NCC_COMMAND_EXECUTE;
   words[WAFER_NCC_REQ_LANE_COUNT] = 1;
   words[WAFER_NCC_REQ_ROUNDS] = 2;
@@ -1076,7 +1074,7 @@ static void test_pending_calibration_controls_capture_pre_wait_state(void) {
 
 int main(void) {
   test_dual_lane_boundary_order();
-  test_seed_publication_boundary_is_mandatory();
+  test_seed_visibility_boundary_is_mandatory();
   test_three_lane_disjoint_window_and_serial();
   test_bounded_pair_window_has_one_intermediate_drain();
   test_validation_bounds();

@@ -187,14 +187,14 @@ func.func @mask_uint32_boundary() {
 // POS-LABEL: llvm.func @direct_call(
 // POS-SAME: %[[CALL_ARG:.+]]: i64)
 // POS: %[[CALL_RESULT:.+]] = llvm.call @forward_alias(%[[CALL_ARG]]) : (i64) -> i64
-// POS: llvm.call @wafer_tx81_rdma_v3(%[[CALL_RESULT]],
+// POS: llvm.call @wafer_tx81_rdma(%[[CALL_RESULT]],
 // POS-LABEL: llvm.func @nested_subview(
 // POS-SAME: %[[NESTED_BASE:.+]]: i64)
 // POS: %[[FIRST_DELTA:.+]] = llvm.mlir.constant(4 : i64) : i64
 // POS: %[[FIRST_ADDR:.+]] = llvm.add %[[NESTED_BASE]], %[[FIRST_DELTA]] : i64
 // POS: %[[SECOND_DELTA:.+]] = llvm.mlir.constant(2 : i64) : i64
 // POS: %[[SECOND_ADDR:.+]] = llvm.add %[[FIRST_ADDR]], %[[SECOND_DELTA]] : i64
-// POS: llvm.call @wafer_tx81_rdma_v3(%[[SECOND_ADDR]],
+// POS: llvm.call @wafer_tx81_rdma(%[[SECOND_ADDR]],
 // POS-LABEL: llvm.func @tile_boundary_yield
 // POS-NOT: wafer.tile
 // POS: llvm.call @wafer_tx81_ncc_join
@@ -204,7 +204,7 @@ func.func @mask_uint32_boundary() {
 // POS: llvm.br
 // POS: llvm.return
 // POS-LABEL: llvm.func @mask_uint32_boundary
-// POS: llvm.call @wafer_tx81_mask_move_v3({{.*}}) : (i64, i32, i64, i32, i32, i32) -> ()
+// POS: llvm.call @wafer_tx81_mask_move({{.*}}) : (i64, i32, i64, i32, i32, i32) -> ()
 
 // LLVMIR-LABEL: define void @false_branch()
 // LLVMIR: br i1
@@ -218,18 +218,18 @@ func.func @mask_uint32_boundary() {
 // LLVMIR-LABEL: define void @direct_call(
 // LLVMIR-SAME: i64 %[[CALL_ARG:.+]])
 // LLVMIR: %[[CALL:.+]] = call i64 @forward_alias(i64 %[[CALL_ARG]])
-// LLVMIR: call void @wafer_tx81_rdma_v3(i64 %[[CALL]],
+// LLVMIR: call void @wafer_tx81_rdma(i64 %[[CALL]],
 // LLVMIR-LABEL: define void @nested_subview(
 // LLVMIR: %[[FIRST:.+]] = add i64 %{{.+}}, 4
 // LLVMIR: %[[SECOND:.+]] = add i64 %[[FIRST]], 2
-// LLVMIR: call void @wafer_tx81_rdma_v3(i64 %[[SECOND]],
+// LLVMIR: call void @wafer_tx81_rdma(i64 %[[SECOND]],
 // LLVMIR-LABEL: define void @tile_boundary_yield
 // LLVMIR: ret void
 // LLVMIR-LABEL: define void @loop_carried_alias
 // LLVMIR: phi i64
 // LLVMIR: ret void
 // LLVMIR-LABEL: define void @mask_uint32_boundary()
-// LLVMIR: call void @wafer_tx81_mask_move_v3(i64 65536, i32 -8, i64 65792,
+// LLVMIR: call void @wafer_tx81_mask_move(i64 65536, i32 -8, i64 65792,
 
 //--- indirect.mlir
 

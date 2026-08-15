@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and explicitly run rank-one worker placement/progress probes."""
+"""Build and explicitly run Tile-0 worker placement/progress probes."""
 
 from __future__ import annotations
 
@@ -19,10 +19,11 @@ from collections.abc import Iterable
 
 import wafer_worker_placement_characterization_catalog as catalog
 import wafer_worker_placement_probe_protocol as protocol
+import wafer_runtime_launch_contract as runtime_launch
 
 
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = "kernel"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_worker_placement_probe.c"
@@ -173,7 +174,7 @@ def validate_board_args(args: argparse.Namespace) -> None:
         )
     if args.expected_tile_count != 16:
         raise RuntimeError(
-            "worker placement test requires the qualified 16-rank card"
+            "worker placement test requires the qualified 16-Tile card"
         )
     if args.completion_timeout_ms <= 0 or args.repeat < catalog.REPEATS:
         raise RuntimeError(
@@ -249,7 +250,7 @@ def compile_seed_package(
             str(source),
             "--output-program-dir",
             str(package),
-            "--execution-ranks=1",
+            "--num-partitions=1",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
@@ -265,37 +266,40 @@ def locate_probe_bindings(
     manifest = json.loads(
         (package / "manifest.json").read_text(encoding="utf-8")
     )
-    entries = manifest.get("entries")
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.GRID_KERNEL_LAUNCH,
+        context="worker probe seed",
+    )
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="worker probe seed"
+    )
     modules = manifest.get("modules")
     resources = manifest.get("resources")
     if (
-        manifest.get("rank_count") != 1
-        or not isinstance(entries, list)
-        or len(entries) != 1
-        or not isinstance(modules, list)
+        not isinstance(modules, list)
         or len(modules) != 1
         or not isinstance(resources, list)
     ):
-        raise RuntimeError("worker probe requires one rank and one module")
+        raise RuntimeError("worker probe requires one shared Tile module")
     entry = entries[0]
     module = modules[0]
     slots = entry.get("slots")
     if (
-        entry.get("rank") != 0
+        entry.get("card_id") != 0
+        or entry.get("tile_id") != 0
         or entry.get("module") != module.get("id")
         or not isinstance(slots, list)
         or [slot.get("ordinal") for slot in slots] != [0, 1, 2]
+        or any(other.get("module") != module.get("id") for other in entries)
     ):
-        raise RuntimeError("worker probe pointer slots are not canonical")
+        raise RuntimeError("worker probe Tile entries are not canonical")
     resources_by_id = {
         item.get("id"): item
         for item in resources
         if isinstance(item, dict) and isinstance(item.get("id"), int)
     }
     resource_ids = tuple(slot.get("resource") for slot in slots)
-    terminal_completion = entry.get("terminal_completion")
-    if not isinstance(terminal_completion, int):
-        raise RuntimeError("worker probe terminal completion is missing")
     expected = (
         ("user_input", "read_only"),
         ("user_input", "read_only"),
@@ -306,6 +310,7 @@ def locate_probe_bindings(
         if (
             resource is None
             or (resource.get("role"), resource.get("access")) != contract
+            or resource.get("scope") != {"kind": "card", "card_id": 0}
             or resource.get("bytes") != protocol.RESOURCE_BYTES
             or resource.get("host_visible") is not True
         ):
@@ -318,11 +323,14 @@ def locate_probe_bindings(
     module_path = package / module_path_value
     if not module_path.is_file():
         raise RuntimeError("worker probe seed module is absent")
-    return module_path, resource_ids, terminal_completion
+    return module_path, resource_ids, len(slots)
 
 
 def build_probe(
-    args: argparse.Namespace, package: pathlib.Path, module_path: pathlib.Path
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    module_path: pathlib.Path,
+    slots_per_tile: int,
 ) -> None:
     deps = args.repo_root / "third_party" / "tx8_deps"
     tool_bin = deps / TOOLCHAIN_DIR / "bin"
@@ -364,6 +372,7 @@ def build_probe(
             "-Wextra",
             "-Werror",
             "-Wframe-larger-than=2048",
+            f"-DWAFER_WORKER_SLOTS_PER_TILE={slots_per_tile}",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
             f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
@@ -389,7 +398,7 @@ def build_probe(
             "--output",
             str(linked),
             "--loader-abi",
-            "tx8-kcore-loader",
+            "tx8-kcore-loader-grid",
             "--extra-object",
             str(helper),
         ],
@@ -444,8 +453,6 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--entry-id",
-            "0",
             "--no-card",
         ]
     )
@@ -466,8 +473,6 @@ def board_command(
         str(args.wafer_run),
         "--package-dir",
         str(package),
-        "--entry-id",
-        "0",
         "--board",
         "--device-id",
         str(args.device_id),
@@ -492,21 +497,13 @@ def board_command(
     ]
 
 
-def validate_board_lifecycle(
-    stdout: str, terminal_completion: int, context: str
-) -> None:
+def validate_board_lifecycle(stdout: str, context: str) -> None:
     lines = stdout.splitlines()
-    terminal_line = (
-        f"terminal_completion: {terminal_completion} kind=entry_return"
-    )
-    if (
-        not LIFECYCLE_LINES.issubset(set(lines))
-        or lines.count(terminal_line) != 1
-    ):
+    if not LIFECYCLE_LINES.issubset(set(lines)):
         raise RuntimeError(
-            f"{context}: wafer-run omitted lifecycle or matching "
-            "terminal-completion evidence"
+            f"{context}: wafer-run omitted lifecycle evidence"
         )
+    runtime_launch.require_board_completion(stdout, context=context)
 
 
 def pattern(
@@ -664,7 +661,6 @@ def execute_cases(
     args: argparse.Namespace,
     package: pathlib.Path,
     resource_ids: tuple[int, int, int],
-    terminal_completion: int,
     cases: Iterable[catalog.WorkerCase],
 ) -> list[dict[str, object]]:
     raw = args.work_dir / "raw"
@@ -684,9 +680,7 @@ def execute_cases(
             ),
             timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
         )
-        validate_board_lifecycle(
-            result.stdout, terminal_completion, case.key
-        )
+        validate_board_lifecycle(result.stdout, case.key)
         observation = parse_output(output, case, sample)
         observation["execution_ordinal"] = execution_ordinal
         observations.append(observation)
@@ -1044,16 +1038,16 @@ def main() -> int:
 
     source = write_source_program(args.work_dir)
     package = compile_seed_package(args, source)
-    module_path, resource_ids, terminal_completion = locate_probe_bindings(
+    module_path, resource_ids, slots_per_tile = locate_probe_bindings(
         package
     )
-    build_probe(args, package, module_path)
+    build_probe(args, package, module_path, slots_per_tile)
     if args.no_card:
         verify_no_card(args, package)
         return 0
 
     observations = execute_cases(
-        args, package, resource_ids, terminal_completion, cases
+        args, package, resource_ids, cases
     )
     report_group(cases, observations, args.repeat)
     return 0

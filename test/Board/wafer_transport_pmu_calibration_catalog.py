@@ -75,7 +75,7 @@ MODE_NAMES = {
 FOUR_SOURCE_FANIN_TARGET = 0
 FOUR_SOURCE_FANIN_SOURCES = (1, 2, 3, 4)
 FOUR_SOURCE_FANIN_PAYLOAD_BYTES = 4096
-RAW_MULTIDEST_SOURCE_RANK = 0
+RAW_MULTIDEST_SOURCE_TILE = 0
 RAW_MULTIDEST_PAYLOAD_BYTES = 4096
 RAW_MULTIDEST_BROADCAST_SCATTER_BYTES = 256
 RAW_MULTIDEST_SHUFFLE_BYTES = 128
@@ -119,9 +119,9 @@ class TransportPmuCase:
             "name": MODE_NAMES[self.mode],
             "payload_bytes": self.payload_bytes,
             "split": self.split,
-            "ranks": 16,
+            "tile_count": 16,
             "oracle": (
-                "full-card exact payload+inactive suffix poison+SPM/DDR "
+                "complete-Tile exact payload+inactive suffix poison+SPM/DDR "
                 "guards+terminal+NCC instruction counts"
             ),
             "pmu_gate": (
@@ -182,7 +182,7 @@ TRANSPORT_PMU_OBSERVATIONS = tuple(
 )
 
 
-def raw_multidest_target_ranks(
+def raw_multidest_target_tiles(
     fanout: int, layout: str
 ) -> tuple[int, ...]:
     """Return the exact destination-slot order serialized by the raw probe."""
@@ -208,7 +208,7 @@ class RawMultidestCase:
     mode_register_value: int
     fanout: int
     target_layout: str
-    target_ranks: tuple[int, ...]
+    target_tiles: tuple[int, ...]
     element_bytes: int
     per_destination_bytes: int
     source_span_bytes: int
@@ -239,13 +239,13 @@ def _raw_multidest_case(
     )
     if semantic == "broadcast":
         destination_count = fanout
-        target_ranks = raw_multidest_target_ranks(fanout, layout)
+        target_tiles = raw_multidest_target_tiles(fanout, layout)
         shuffle_sections = 1
         per_destination_bytes = element_bytes
         source_span_bytes = element_bytes
     elif semantic == "scatter":
         destination_count = fanout
-        target_ranks = raw_multidest_target_ranks(fanout, layout)
+        target_tiles = raw_multidest_target_tiles(fanout, layout)
         shuffle_sections = 1
         per_destination_bytes = element_bytes
         source_span_bytes = fanout * element_bytes
@@ -253,7 +253,7 @@ def _raw_multidest_case(
         # Raw mode 3 is a single-destination 3D gather.  Exercise one source
         # dimension with a real gap; the old fanout value is the section count.
         destination_count = 1
-        target_ranks = (1 if layout == "adjacent" else 8,)
+        target_tiles = (1 if layout == "adjacent" else 8,)
         shuffle_sections = fanout
         per_destination_bytes = shuffle_sections * element_bytes
         source_span_bytes = (
@@ -276,7 +276,7 @@ def _raw_multidest_case(
         ),
         destination_count,
         layout,
-        target_ranks,
+        target_tiles,
         element_bytes,
         per_destination_bytes,
         source_span_bytes,
@@ -292,11 +292,6 @@ RAW_MULTIDEST_CASES = tuple(
 RAW_MULTIDEST_CASE_BY_MODE = {
     case.mode: case for case in RAW_MULTIDEST_CASES
 }
-# Stable public names consumed by the pending-board inventory/runner.  Keep the
-# older multidest names as implementation-local compatibility aliases.
-RAW_REMOTE_MODE_IDS = RAW_MULTIDEST_MODES
-RAW_REMOTE_MULTICAST_CASES = RAW_MULTIDEST_CASES
-RAW_REMOTE_MULTICAST_CASE_BY_MODE = RAW_MULTIDEST_CASE_BY_MODE
 
 
 @dataclasses.dataclass(frozen=True)
@@ -443,10 +438,10 @@ CONTRACT_CASES = (
         "pending-board-observation",
         "board-device-four-receiver-fsm-fanin",
         (
-            "rank 0 posts FSM0..3 to four disjoint guarded slots before any "
-            "receiver wait; ranks 1..4 each issue one sender with a "
+            "Tile 0 posts FSM0..3 to four disjoint guarded slots before any "
+            "receiver wait; Tiles 1..4 each issue one sender with a "
             "source/lane/checksum-distinguishable payload; require exact "
-            "source-slot order, all guards, all-rank success terminal, and "
+            "source-slot order, all guards, all-Tile success terminal, and "
             "normal cleanup"
         ),
         (
@@ -485,7 +480,7 @@ CONTRACT_CASES = (
         "runtime-visibility",
         "board-executable",
         "board-runtime-lifecycle",
-        "runner requires all-rank output capture and normal cleanup",
+        "runner requires all-Tile output capture and normal cleanup",
         "terminal schema, exact output, and cleanup are one lifecycle leaf",
     ),
     TransportContractCase(
@@ -514,50 +509,50 @@ COUNTER_DISPOSITIONS = (
         "DTE",
         "board-observation",
         "payload-correlation; unit remains observed, not assumed",
-        "version-matched header exposes a decoded low/high split counter",
+        "current installed header exposes a decoded low/high split counter",
     ),
     CounterDisposition(
         "dte_channel1_transfer",
         "DTE",
         "board-observation",
         "payload-correlation; unit remains observed, not assumed",
-        "version-matched header exposes a decoded low/high split counter",
+        "current installed header exposes a decoded low/high split counter",
     ),
     CounterDisposition(
         "dte_channel0_execution",
         "DTE",
         "board-observation",
         "activity/cycle trend; no byte-unit inference",
-        "version-matched header exposes a decoded low/high split counter",
+        "current installed header exposes a decoded low/high split counter",
     ),
     CounterDisposition(
         "dte_channel1_execution",
         "DTE",
         "board-observation",
         "activity/cycle trend; no byte-unit inference",
-        "version-matched header exposes a decoded low/high split counter",
+        "current installed header exposes a decoded low/high split counter",
     ),
     CounterDisposition(
         "spm_dte_t2_port8",
         "SPM",
         "board-observation",
         "payload-correlation; event meaning remains profile-bound",
-        "version-matched header exposes a decoded low/high split counter",
+        "current installed header exposes a decoded low/high split counter",
     ),
     CounterDisposition(
         "spm_dte_t3_port8",
         "SPM",
         "board-observation",
         "payload-correlation; event meaning remains profile-bound",
-        "version-matched header exposes a decoded low/high split counter",
+        "current installed header exposes a decoded low/high split counter",
     ),
     CounterDisposition(
         "tmnoc",
         "TMNOC",
         "static-negative",
-        "unsupported until a version-matched read-only register contract exists",
+        "unsupported until a current read-only register contract exists",
         (
-            "current version-matched header exposes only TMNOC base addresses; "
+            "current installed header exposes only TMNOC base addresses; "
             "inventing offsets could read a destructive or unrelated register"
         ),
     ),

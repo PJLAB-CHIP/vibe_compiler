@@ -168,9 +168,8 @@ static uint32_t wafer_nec_option_aux_span(uint32_t option,
 static uint32_t wafer_nec_decode(const volatile uint64_t *request,
                                  WaferNECCase *selected) {
   if (request[WAFER_NEC_REQ_MAGIC] != WAFER_NEC_REQUEST_MAGIC ||
-      request[WAFER_NEC_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_NEC_SCHEMA << 32) |
-           WAFER_NEC_REQUEST_WORDS) ||
+      request[WAFER_NEC_REQ_WORD_COUNT] !=
+          (WAFER_NEC_REQUEST_WORDS) ||
       request[WAFER_NEC_REQ_GUARD] != WAFER_NEC_REQUEST_GUARD ||
       request[WAFER_NEC_REQ_RESOURCE_BYTES] != WAFER_NEC_RESOURCE_BYTES ||
       request[WAFER_NEC_REQ_SLOT_BYTES] != WAFER_NEC_SLOT_BYTES ||
@@ -634,8 +633,8 @@ static void wafer_nec_init_record(volatile uint64_t *record,
   for (uint32_t index = 0; index < WAFER_NEC_RECORD_WORDS; ++index)
     record[index] = 0;
   record[WAFER_NEC_REC_MAGIC] = WAFER_NEC_RECORD_MAGIC;
-  record[WAFER_NEC_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_NEC_SCHEMA << 32) | WAFER_NEC_RECORD_WORDS;
+  record[WAFER_NEC_REC_WORD_COUNT] =
+      WAFER_NEC_RECORD_WORDS;
   record[WAFER_NEC_REC_STATUS] = status;
   record[WAFER_NEC_REC_OUTPUT_DDR_OFFSET] =
       WAFER_NEC_OUTPUT_DDR_OFFSET;
@@ -681,18 +680,18 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     record[WAFER_NEC_REC_LHS_BATCH] = selected.lhs_batch;
     record[WAFER_NEC_REC_RHS_BATCH] = selected.rhs_batch;
 
-    wafer_tx81_rdma_v3(payload_ddr, WAFER_NEC_SPM_A,
+    wafer_tx81_rdma(payload_ddr, WAFER_NEC_SPM_A,
                     WAFER_NEC_SLOT_BYTES, WAFER_NEC_SLOT_BYTES,
                     0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload_ddr + WAFER_NEC_SLOT_BYTES,
+    wafer_tx81_rdma(payload_ddr + WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SPM_B, WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
                     Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,
+    wafer_tx81_rdma(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SPM_OUTPUT, WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
                     Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,
+    wafer_tx81_rdma(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SPM_AUX, WAFER_NEC_SLOT_BYTES,
                     WAFER_NEC_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
                     Fmt_UINT8, 0U);
@@ -710,7 +709,7 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     if (execute_result == 0U) {
       status = WAFER_NEC_STATUS_EXECUTE_FAILED;
     } else {
-      wafer_tx81_wdma_v3(WAFER_NEC_SPM_OUTPUT,
+      wafer_tx81_wdma(WAFER_NEC_SPM_OUTPUT,
                       output_ddr + WAFER_NEC_OUTPUT_DDR_OFFSET,
                       WAFER_NEC_SLOT_BYTES, WAFER_NEC_SLOT_BYTES,
                       0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);

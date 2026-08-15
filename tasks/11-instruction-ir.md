@@ -69,7 +69,7 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   unplaced current Instr，post-Instr worker mechanics再从SSA、effects和ranges原子派生
   `DisjointComponents` sibling并写actual worker attrs；统一completion owner随后删除全部`wafer.instr.ncc_join`并fresh重建fixed-candidate set
   latest-necessary completion。已有nonzero assignment不原地
-  重写。current worker-aware ABI接受`worker0/worker1/worker2`，并lower到统一`_v3` ordinary symbols，
+  重写。current worker-aware ABI接受`worker0/worker1/worker2`，并lower到统一ordinary symbols，
   exact ABI在末尾携带`i32 worker`；没有worker0 fallback或旧symbol。
 - Direct DTE instruction ops 已替代旧 tile-level p2p prototype，并在 SPM memory planning 前暴露
   buffer lifetime、peer、byte count 和 async token。all-gather 的 strided gather slot 通过
@@ -580,7 +580,7 @@ materialization都必须保留完整DDR store/completion/load。SPM planner从�
 nested tile-region拒绝，sibling regions按actual liveness验证。
 
 R3.2d建模closed `worker0/worker1/worker2` issue identity，但不暴露raw `inter_type`、register window或
-packet field；这些字段只在target lowering按current ABI编码。ordinary operator ABI使用`_v3` symbol并携带typed
+packet field；这些字段只在target lowering按current ABI编码。ordinary operator ABI使用无编号symbol并携带typed
 worker scalar，不能静默降回默认worker。
 
 ## 7. ODS-Level Op Contracts
@@ -1396,7 +1396,7 @@ R3.2d.4 已完成：
   conversion分支均已删除，lowering没有名字alias或隐式fallback。
 - ordinary worker、oriented GEMM、NCCJoin及Direct-DTE lifecycle继续由各自typed op、enum、operand/type、effect和
   verifier定义语义；TargetCall symbol或registry ordinal不是instruction grammar，也不得反向恢复typed语义。
-- `GemmOriented`之类由历史ABI命名污染的internal builtin改用稳定语义名；真实current CRT symbol是否带`_v3`
+- `GemmOriented`之类由历史ABI命名污染的internal builtin改用稳定语义名；真实current CRT symbol
   由14的ABI registry决定，不把symbol版本写回Instr op kind。
 - fresh板端门禁仍需验证worker0 completion和至少一个隔离的nonzero-worker或Direct-DTE路径；只过host model不算闭合。
 

@@ -13,7 +13,6 @@ REQUEST_MAGIC = 0x325145584D444357
 RECORD_MAGIC = 0x324345584D444357
 REQUEST_GUARD = 0xC6B5A4938271605F
 RECORD_GUARD = 0x2132435465768798
-SCHEMA = 1
 REQUEST_WORDS = 24
 RECORD_WORDS = 48
 RESOURCE_BYTES = 262144
@@ -25,7 +24,7 @@ FP16_BYTES = 2
 
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "INPUT_BYTES": 3,
     "RESULT_BYTES": 4,
@@ -42,7 +41,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "INPUT_BYTES": 4,
@@ -151,7 +150,7 @@ RAW_CONCAT_SPECS = {
         1,
     ),
 }
-# The legacy op_concat production wrapper asserts axis == rank - 1 and maps
+# The production op_concat wrapper asserts axis == rank - 1 and maps
 # that logical last dimension to native dims=0 (C).  This is a conservative
 # production contract, not proof that hardware rejects every other encoding:
 # W/H have bounded completion+guard observations.  Native dims=HW is an invalid
@@ -677,7 +676,7 @@ def build_case_payload(
         raise RuntimeError(f"{case.name}: generated result size mismatch")
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
-    words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+    words[REQ["WORD_COUNT"]] = REQUEST_WORDS
     words[REQ["CASE"]] = case.case_id
     words[REQ["INPUT_BYTES"]] = case.input_bytes
     words[REQ["RESULT_BYTES"]] = case.result_bytes

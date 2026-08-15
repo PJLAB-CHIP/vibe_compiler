@@ -136,7 +136,7 @@
 # RUN: test -f %t.outputs/single-card/parameter_shards/weight/partition_00000.npy
 # RUN: test -s %t.outputs/single-card/modules/module_00000.so
 # RUN: %python -c 'from pathlib import Path; modules=list(Path("%t.outputs/single-card/modules").glob("module_*.so")); assert modules and all(p.read_bytes().startswith(b"\x7fELF") for p in modules)'
-# RUN: %python -c 'import json, pathlib; m=json.loads(pathlib.Path("%t.outputs/single-card/manifest.json").read_text()); assert m["schema_version"]==8 and m["target"]["identity"]=="wafer-tx81-single-card" and m["target"]["launch"]=={"kind":"kernel","form":"grid","entry_abi":"tile-major-pointer-table","phases":["main"]} and m["card_count"]==1 and m["tile_count"]==16; assert len(m["entries"])==16 and {e["card_id"] for e in m["entries"]}=={0} and {e["tile_id"] for e in m["entries"]}==set(range(16)) and {e["launch_slot"] for e in m["entries"]}==set(range(16)) and {e["completion"] for e in m["entries"]}=={"return_after_local_drain"}; assert all([s["ordinal"] for s in e["slots"]]==list(range(len(e["slots"]))) for e in m["entries"]); assert "completions" not in m'
+# RUN: %python -c 'import json, pathlib; m=json.loads(pathlib.Path("%t.outputs/single-card/manifest.json").read_text()); assert m["target"]["identity"]=="wafer-tx81-single-card" and m["target"]["launch"]=={"kind":"kernel","form":"grid","entry_abi":"tile-major-pointer-table","phases":["main"]} and m["card_count"]==1 and m["tile_count"]==16; assert len(m["entries"])==16 and {e["card_id"] for e in m["entries"]}=={0} and {e["tile_id"] for e in m["entries"]}==set(range(16)) and {e["launch_slot"] for e in m["entries"]}==set(range(16)) and {e["completion"] for e in m["entries"]}=={"return_after_local_drain"}; assert all([s["ordinal"] for s in e["slots"]]==list(range(len(e["slots"]))) for e in m["entries"]); assert "completions" not in m'
 # RUN: wafer-run --package-dir %t.outputs/single-card --no-card | FileCheck %s --check-prefix=NO-CARD
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
@@ -183,7 +183,7 @@
 # SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume
 # NESTED-FACTS: target topology and execution mesh must be direct module members
 # SINGLE-CARD: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
-# NO-CARD: package: id=0 schema=8 cards=1 tiles=16
+# NO-CARD: package: id=0 cards=1 tiles=16
 # NO-CARD: entry: 0 card_id=0 tile_id=0 launch_slot=0
 # NO-CARD: launch_phase: role=main symbol=main
 # NO-CARD: board_execution: false

@@ -78,7 +78,7 @@
       "src/sweeper.cc",
       "src/sweeper.h"
     ],
-    "algorithm_digest": "sha256:9381709197da1d7fd90c8fa068b10ae585f9c5579b742ff613d9972935600de2",
+    "algorithm_digest": "sha256:851e3b78cb22c1d282e0628e742b08506caeb6a8fd7fabbef859490a2441c7de",
     "distribution_files": [
       "CMakeLists.txt",
       "LICENSE",
@@ -91,7 +91,7 @@
       "src/sweeper.h",
       "tests/minimalloc_test.cc"
     ],
-    "distribution_digest": "sha256:e3002ee10c13e1ea2a53af85daabd02d202dd6fc545cf79167f2a1102ed4299b"
+    "distribution_digest": "sha256:6433e2c2336295e2f8e41d28fabef3d82d82854bdbc74f8fcaaf87bfe5afbfaa"
   },
   "semantic_deltas": [
     {

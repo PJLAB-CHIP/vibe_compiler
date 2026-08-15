@@ -102,22 +102,26 @@ def parse_enum_spellings(attrs_text: str, enum_name: str) -> set[str]:
     return spellings
 
 
-def enum_value_spellings(attrs_text: str) -> dict[str, str]:
-    values = dict(
-        re.findall(
-            r'\bI32EnumAttrCase<\s*"([A-Za-z0-9_]+)"\s*,\s*'
-            r'-?[0-9]+\s*,\s*"([a-z0-9_]+)"\s*>',
-            attrs_text,
-            re.DOTALL,
-        )
+def parse_target_operation_spellings(
+    target_operation_text: str, operation_type: str
+) -> dict[str, str]:
+    matches = re.findall(
+        rf"case\s+{re.escape(operation_type)}::([A-Za-z0-9_]+):\s*"
+        r'return\s+"([a-z0-9_]+)";',
+        target_operation_text,
+        re.DOTALL,
     )
-    if not values:
-        fail("cannot parse Wafer TableGen enum value spellings")
-    return values
+    result = dict(matches)
+    if not result:
+        fail(f"cannot find {operation_type} canonical spellings")
+    return result
 
 
 def production_symbols_from_registry(
-    registry_text: str, lowering_text: str, attrs_text: str
+    registry_text: str,
+    lowering_text: str,
+    attrs_text: str,
+    target_operation_text: str,
 ) -> set[str]:
     if '"Wafer/Target/TargetCall.h"' not in lowering_text:
         fail("target lowering does not include the shared target-call registry")
@@ -131,54 +135,29 @@ def production_symbols_from_registry(
             f"{len(static_bases)}"
         )
     symbols = {f"wafer_tx81_{base}" for base in static_bases}
-    suffixes = set(
-        re.findall(
-            r'\baddEnumSelectedCalls\(\s*"([^"]*)"\s*\)',
-            registry_text,
+    if len(re.findall(r"\baddEnumSelectedCalls\(\s*\)\s*;", registry_text)) != 1:
+        fail("target-call registry must instantiate each dynamic family once")
+    for base, enum_name in DYNAMIC_SYMBOL_ENUMS.items():
+        symbols.update(
+            f"wafer_tx81_{base}_{spelling}"
+            for spelling in parse_enum_spellings(attrs_text, enum_name)
         )
-    )
-    if suffixes != {"_v3"}:
-        fail(
-            "target-call registry must instantiate exactly the current "
-            f"dynamic families, found {sorted(suffixes)}"
-        )
-    for suffix in suffixes:
-        for base, enum_name in DYNAMIC_SYMBOL_ENUMS.items():
-            require = re.search(
-                rf'"{re.escape(base)}_"\s*\+\s*stringifyEnum\(\*kind\)'
-                r"\s*\+\s*suffix",
-                registry_text,
-            )
-            if not require:
-                fail(
-                    f"target-call registry has no typed {base} family "
-                    "construction"
-                )
-            symbols.update(
-                f"wafer_tx81_{base}_{spelling}{suffix}"
-                for spelling in parse_enum_spellings(attrs_text, enum_name)
-            )
 
-    conv_match = re.search(
-        r"static\s+llvm::StringRef\s+convStem\s*\(.*?\n\}",
-        registry_text,
-        re.DOTALL,
+    conv_stems = set(
+        parse_target_operation_spellings(
+            target_operation_text, "TargetConvolutionOperation"
+        ).values()
     )
-    if not conv_match:
-        fail("cannot find typed convolution stem registry")
-    conv_stems = set(re.findall(r'return\s+"([a-z0-9_]+)"', conv_match.group(0)))
     if len(conv_stems) != 3:
         fail(f"expected 3 convolution stems, found {sorted(conv_stems)}")
-    symbols.update(
-        f"wafer_tx81_{stem}{suffix}"
-        for suffix in suffixes
-        for stem in conv_stems
-    )
+    symbols.update(f"wafer_tx81_{stem}" for stem in conv_stems)
 
-    enum_spellings = enum_value_spellings(attrs_text)
+    peripheral_spellings = parse_target_operation_spellings(
+        target_operation_text, "TargetPeripheralOperation"
+    )
     peripheral_kinds = set(
         re.findall(
-            r"addPeripheral\(InstrPeripheralKind::([A-Za-z0-9_]+)",
+            r"addPeripheral\(TargetPeripheralOperation::([A-Za-z0-9_]+)",
             registry_text,
         )
     )
@@ -187,15 +166,16 @@ def production_symbols_from_registry(
             "target-call registry must contain 7 admitted peripheral kinds, "
             f"found {sorted(peripheral_kinds)}"
         )
-    missing_peripheral_spellings = sorted(peripheral_kinds - set(enum_spellings))
+    missing_peripheral_spellings = sorted(
+        peripheral_kinds - set(peripheral_spellings)
+    )
     if missing_peripheral_spellings:
         fail(
             "peripheral registry kinds have no TableGen spelling: "
             + ", ".join(missing_peripheral_spellings)
         )
     symbols.update(
-        f"wafer_tx81_peripheral_{enum_spellings[kind]}{suffix}"
-        for suffix in suffixes
+        f"wafer_tx81_peripheral_{peripheral_spellings[kind]}"
         for kind in peripheral_kinds
     )
     if len(symbols) != 112:
@@ -209,23 +189,19 @@ def production_symbols_from_registry(
         "wafer_tx81_direct_dte_recv_prepare",
         "wafer_tx81_direct_dte_wait",
         "wafer_tx81_direct_dte_finish",
-        "wafer_tx81_direct_dte_send_issue_v3",
+        "wafer_tx81_direct_dte_send_issue",
     }
     ordinary_symbols = {
         symbol
         for symbol in symbols
         if symbol not in shared_symbols
     }
-    if len(ordinary_symbols) != 104 or any(
-        not symbol.endswith("_v3") for symbol in ordinary_symbols
-    ):
+    if len(ordinary_symbols) != 104:
         fail(
-            "target-call registry must close 104 current ordinary _v3 "
+            "target-call registry must close 104 current ordinary "
             f"symbols, found {len(ordinary_symbols)}"
         )
-    if "wafer_tx81_direct_dte_send_issue" in symbols:
-        fail("target-call registry exposes a second Direct DTE issue spelling")
-    if "wafer_tx81_direct_dte_send_issue_v3" not in symbols:
+    if "wafer_tx81_direct_dte_send_issue" not in symbols:
         fail("current ABI must expose the explicit Direct DTE issue call")
     return symbols
 
@@ -235,9 +211,10 @@ def production_symbols_from_code(
     lowering_text: str,
     attrs_text: str,
     instruction_ops_text: str,
+    target_operation_text: str,
 ) -> set[str]:
     production_symbols = production_symbols_from_registry(
-        registry_text, lowering_text, attrs_text
+        registry_text, lowering_text, attrs_text, target_operation_text
     )
     non_production_symbols = set(TARGET_ILLEGAL_SYMBOLS) | set(
         VERIFIER_REJECTED_SYMBOLS
@@ -305,6 +282,9 @@ def main() -> int:
     registry_path = (
         repo_root / "lib" / "Wafer" / "Target" / "TargetCall.cpp"
     )
+    target_operation_path = (
+        repo_root / "lib" / "Wafer" / "Target" / "TargetOperation.cpp"
+    )
 
     header_text = read_text(header_path)
     source_text = read_text(source_path)
@@ -317,9 +297,14 @@ def main() -> int:
         read_text(target_lowering_dir / source) for source in TARGET_LOWERING_SOURCES
     )
     registry_text = read_text(registry_path)
+    target_operation_text = read_text(target_operation_path)
 
     production_symbols = production_symbols_from_code(
-        registry_text, lowering_text, attrs_text, instruction_ops_text
+        registry_text,
+        lowering_text,
+        attrs_text,
+        instruction_ops_text,
+        target_operation_text,
     )
     prototypes = parse_prototypes(header_text)
     # Macro-generated CRT definitions keep their concrete public symbol as a

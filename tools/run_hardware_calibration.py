@@ -34,98 +34,9 @@ BOARD_TEST_DIRECTORY = (
 if str(BOARD_TEST_DIRECTORY) not in sys.path:
     sys.path.insert(0, str(BOARD_TEST_DIRECTORY))
 
-import wafer_collective_traffic_behavior_catalog as collective_traffic_catalog
-import wafer_engine_pipeline_characterization_catalog as engine_pipeline_catalog
-import wafer_pending_hardware_calibration_inventory as pending_inventory
-import wafer_spm_sustained_conflict_catalog as spm_sustained_catalog
-import wafer_transport_pmu_calibration_catalog as transport_catalog
-import wafer_worker_memory_contention_characterization_catalog as contention_catalog
-import wafer_worker_placement_characterization_catalog as worker_placement_catalog
-
-
 ARM_ENVIRONMENT_VARIABLE = "WAFER_EXECUTE_HARDWARE_TESTS"
 SESSION_ENVIRONMENT_VARIABLE = "WAFER_CALIBRATION_SESSION_ID"
-HEARTBEAT_CTEST = "wafer-board-single-op-add"
-SUMMARY_SCHEMA_VERSION = 1
-COMPILER_OPTIMIZATION_PAIRED_CASES = (
-    "reciprocal-implementation",
-    "f16-common-factor",
-    "resident-fanout-share",
-    "consumer-local-recompute",
-    "long-steady-elementwise-add",
-    "ready-order-movement-first",
-    "gemm-aligned-physical-route",
-    "gemm-tail-physical-route",
-    "tree-all-reduce",
-)
-COLLECTIVE_CHARACTERIZATION_CASES = (
-    "all-gather-direct-vs-ring-256b",
-    "all-gather-direct-vs-ring-4096b",
-    "all-gather-direct-vs-ring-65536b",
-    "reduce-scatter-direct-vs-ring-256b",
-    "reduce-scatter-direct-vs-ring-4096b",
-    "reduce-scatter-direct-vs-ring-65536b",
-    "all-reduce-ring-vs-tree-256b",
-    "all-reduce-ring-vs-tree-4096b",
-    "all-reduce-ring-vs-tree-65536b",
-)
-COLLECTIVE_TRAFFIC_BEHAVIOR_CASES = tuple(
-    collective_traffic_catalog.CASE_KEYS
-)
-DTE_PENDING_CASE_SPECS = (
-    (
-        transport_catalog.FOUR_SOURCE_FANIN_MODE,
-        transport_catalog.MODE_NAMES[
-            transport_catalog.FOUR_SOURCE_FANIN_MODE
-        ],
-    ),
-    *tuple(
-        (case.mode, case.key)
-        for case in transport_catalog.RAW_REMOTE_MULTICAST_CASES
-    ),
-)
-DTE_PENDING_CASE_NAMES = tuple(
-    case_name for _, case_name in DTE_PENDING_CASE_SPECS
-)
-DTE_SHUFFLE_CASE_NAMES = tuple(
-    case_name
-    for case_name in DTE_PENDING_CASE_NAMES
-    if "dte-raw-shuffle-" in case_name
-)
-DTE_NON_SHUFFLE_CASE_NAMES = tuple(
-    case_name
-    for case_name in DTE_PENDING_CASE_NAMES
-    if case_name not in DTE_SHUFFLE_CASE_NAMES
-)
-UNPOOL_PENDING_COLLISION_CASE_NAMES = (
-    "unpool-index-f16-repeated-overlap-observed",
-    "unpool-mask-f16-repeated-overlap-observed",
-)
-ENGINE_PIPELINE_BOARD_CELL_KEYS = tuple(
-    cell.key
-    for cell in engine_pipeline_catalog.ALL_CELLS
-    if cell.disposition
-    in {
-        engine_pipeline_catalog.Disposition.BOARD_EXECUTABLE,
-        engine_pipeline_catalog.Disposition.BOARD_EXECUTABLE_EXTERNAL,
-    }
-)
-ENGINE_PIPELINE_BOARD_GROUP_KEYS = tuple(
-    group.key
-    for group in engine_pipeline_catalog.BOARD_ACTIVATION_GROUPS
-)
-ENGINE_PIPELINE_EXTERNAL_GROUP_KEYS = tuple(
-    engine_pipeline_catalog.EXTERNAL_BOARD_GROUP_KEYS
-)
-SPM_SUSTAINED_BOARD_GROUP_KEYS = tuple(
-    group.key for group in spm_sustained_catalog.GROUPS
-)
-DDR_ACTIVE_RANK_CASE_KEYS = tuple(
-    case.key for case in contention_catalog.DDR_ACTIVE_RANK_CASES
-)
-DDR_ACTIVE_RANK_BOARD_GROUP_KEYS = tuple(
-    contention_catalog.DDR_ACTIVE_RANK_GROUP_KEYS
-)
+INITIAL_VALIDATION_CTEST = "wafer-board-dte-ncc-execution-probe"
 
 
 class CalibrationRunnerError(RuntimeError):
@@ -152,643 +63,95 @@ class RegisteredTest:
 
 CALIBRATION_STEPS = (
     CalibrationStep(
-        "initial-profile-heartbeat",
-        "validation-profile-heartbeat",
-        HEARTBEAT_CTEST,
-        "qualify the configured rank-one runtime path and establish card health",
-    ),
-    CalibrationStep(
-        "pmu-readonly",
-        "validation-profile-heartbeat",
-        "wafer-board-ncc-pmu-readonly-probe",
-        "qualify read-only PMU enable, scope, split-counter, and delta basis",
-    ),
-    CalibrationStep(
-        "instruction-family-ct-capability",
-        "rank-one-instruction",
-        "wafer-board-instruction-family-ct-capability",
-        "new CT Reduce/Pool/Unpool typed exact and bounded observations",
-    ),
-    CalibrationStep(
-        "instruction-family-regression",
-        "rank-one-instruction",
-        "wafer-board-instruction-family-qualification-regression",
-        "ArgMin, legacy Unpool-index, and Bilinear qualification regressions",
-    ),
-    CalibrationStep(
-        "ct-vector",
-        "rank-one-instruction",
-        "wafer-board-ct-vector-calibration",
-        "CT form, dtype, relation, logic, reduction, and layout matrix",
-    ),
-    CalibrationStep(
-        "ct-convert",
-        "rank-one-instruction",
-        "wafer-board-ct-convert-calibration",
-        "CT conversion routes including repeated stochastic observations",
-    ),
-    CalibrationStep(
-        "datamove-core",
-        "rank-one-datamove",
-        "wafer-board-datamove-calibration",
-        "core DataMove packet, layout, and physical-span cases",
-    ),
-    CalibrationStep(
-        "datamove-extended",
-        "rank-one-datamove",
-        "wafer-board-datamove-extended-calibration",
-        "concat, broadcast-like materialization, gather, and large-shape cases",
-    ),
-    CalibrationStep(
-        "memory-engine-pair-new-offsets",
-        "rank-one-memory",
-        "wafer-board-memory-engine-pair-new-offsets",
-        "new 4352/65536-byte SPM engine-pair serial/window controls",
-    ),
-    CalibrationStep(
-        "cache-coherence",
-        "rank-one-memory",
-        "wafer-board-cache-coherence-calibration",
-        "single-invocation DDR/cache visibility cases",
-    ),
-    CalibrationStep(
-        "ne-calibration",
-        "rank-one-ne",
-        "wafer-board-ne-calibration",
-        "NE dtype, numeric, broadcast, convolution, and layout cases",
-    ),
-    CalibrationStep(
-        "ne-single-gemm",
-        "rank-one-ne",
-        "wafer-board-single-gemm",
-        "rank-one production GEMM runtime path",
-    ),
-    CalibrationStep(
-        "ne-mn-tiled-gemm",
-        "rank-one-ne",
-        "wafer-board-mn-tiled-gemm",
-        "rank-one tiled GEMM runtime path",
-    ),
-    CalibrationStep(
-        "spm-non-preferred-geometry",
-        "rank-one-spm",
-        "wafer-board-spm-non-preferred-geometry",
-        "bounded non-preferred SPM base and length observations",
-    ),
-    CalibrationStep(
-        "ncc-all-safe",
-        "rank-one-ncc",
-        "wafer-board-ncc-all-safe-observations",
-        "safe queue, worker, engine, dependency, backlog, and overlap observations",
-    ),
-    CalibrationStep(
-        "ncc-constructor-return",
-        "rank-one-ncc",
-        "wafer-board-ncc-constructor-return-address",
-        "typed constructor non-null return-address observation",
-    ),
-    CalibrationStep(
-        "ncc-default-wait-worker1",
-        "rank-one-ncc",
-        "wafer-board-ncc-default-wait-worker1-boundary",
-        "default-wait boundary with worker-one work and final safety drain",
-    ),
-    CalibrationStep(
-        "ncc-byworker-wait-worker1",
-        "rank-one-ncc",
-        "wafer-board-ncc-byworker1-completion-control",
-        "matching by-worker completion control",
-    ),
-    CalibrationStep(
-        "ncc-local-fence-worker1",
-        "rank-one-ncc",
-        "wafer-board-ncc-local-fence-worker1-boundary",
-        "local-fence boundary with worker-one work and final safety drain",
-    ),
-    CalibrationStep(
-        "ncc-ct-active-occupancy",
-        "rank-one-ncc",
-        "wafer-board-ncc-ct-active-occupancy",
-        "tight long CT depth-plus-one activity and backpressure observation",
-    ),
-    CalibrationStep(
-        "ncc-ne-active-occupancy",
-        "rank-one-ncc",
-        "wafer-board-ncc-ne-active-occupancy",
-        "tight large NE depth-plus-one activity and backpressure observation",
-    ),
-    CalibrationStep(
-        "ncc-rdma-active-occupancy",
-        "rank-one-ncc",
-        "wafer-board-ncc-rdma-active-occupancy",
-        "tight long RDMA depth-plus-one activity and backpressure observation",
-    ),
-    CalibrationStep(
-        "ncc-wdma-active-occupancy",
-        "rank-one-ncc",
-        "wafer-board-ncc-wdma-active-occupancy",
-        "tight long WDMA depth-plus-one activity and backpressure observation",
-    ),
-    CalibrationStep(
-        "ncc-tdma-active-occupancy",
-        "rank-one-ncc",
-        "wafer-board-ncc-tdma-active-occupancy",
-        "tight long TDMA depth-plus-one activity and backpressure observation",
-    ),
-    *tuple(
-        CalibrationStep(
-            f"ncc-join-{mask}",
-            "rank-one-ncc",
-            f"wafer-board-ncc-join{mask}-unjoined-boundary",
-            f"worker subset join mask {mask} with bounded unjoined observation",
-        )
-        for mask in ("001", "010", "100", "011", "101", "110")
-    ),
-    CalibrationStep(
-        "runtime-kernel-grid-profile",
-        "full-card-runtime",
-        "wafer-board-kernel-grid-add-profile",
-        (
-            "16-rank Add correctness and final-output profiler collection "
-            "over the same production package"
-        ),
-    ),
-    CalibrationStep(
-        "full-card-barrier",
-        "full-card-barrier",
-        "wafer-board-full-card-barrier-probe",
-        "cluster arrival and barrier completion",
-    ),
-    CalibrationStep(
-        "direct-dte-collective",
-        "full-card-dte",
-        "wafer-board-cluster-direct-dte",
-        "16-rank Direct DTE collective",
-    ),
-    CalibrationStep(
-        "direct-dte-ncc",
-        "full-card-dte",
+        "direct-dte-ncc-execution",
+        "transport",
         "wafer-board-dte-ncc-execution-probe",
-        "ordered NCC producer/consumer and Direct DTE interactions",
+        "current Direct-DTE and NCC execution with exact output and status",
     ),
     CalibrationStep(
-        "full-card-sharded-gemm",
-        "full-card-runtime",
-        "wafer-board-k-sharded-gemm",
-        "16-rank sharded GEMM production workload",
-    ),
-)
-
-STRIDED_DEPENDENCY_CASE_NAMES = (
-    *tuple(
-        f"dependency-strided-{dimension}-{schedule}-observation"
-        for dimension in ("1d", "2d", "3d")
-        for schedule in ("serial", "window")
-    ),
-    *tuple(
-        f"dependency-strided-{dimension}-{effect}-{schedule}-observation"
-        for effect in ("war", "rar")
-        for dimension in ("1d", "2d", "3d")
-        for schedule in ("serial", "window")
-    ),
-    *tuple(
-        "dependency-strided-"
-        f"{dimension}-waw-{relation}-{schedule}-observation"
-        for dimension in ("1d", "2d", "3d")
-        for relation in ("exact", "partial", "adjacent")
-        for schedule in ("serial", "window")
-    ),
-)
-
-QUEUE_SATURATION_CASE_NAMES = (
-    *tuple(
-        f"queue-saturation-{engine}-{load}-depth{issue_limit}-tight-window"
-        for engine in ("ct", "ne", "rdma", "wdma")
-        for load in ("short", "sustained")
-        for issue_limit in (5, 6, 7)
-    ),
-    *tuple(
-        f"queue-saturation-tdma-{load}-depth{issue_limit}-tight-window"
-        for load in ("short", "sustained")
-        for issue_limit in (3, 4, 5)
-    ),
-)
-WORKER_WAIT_SCOPE_CASE_NAMES = tuple(
-    f"worker-wait-scope-{engine}-worker{worker}-{wait_kind}-tight-window"
-    for worker in range(3)
-    for engine in ("ne", "rdma")
-    for wait_kind in ("default", "byworker", "local-fence")
-)
-WORKER_SUBSET_SCOPE_CASE_NAMES = tuple(
-    f"worker-subset-{engine}-target{worker}-{membership}-tight-window"
-    for worker in range(3)
-    for engine in ("ne", "rdma")
-    for membership in ("exclude", "include")
-)
-WORKER_PLACEMENT_CASE_KEYS = tuple(
-    case.key for case in worker_placement_catalog.CASES
-)
-WORKER_PLACEMENT_BOARD_GROUP_KEYS = tuple(worker_placement_catalog.GROUPS)
-ARGMIN_PENDING_DOMAIN_CASE_NAMES = (
-    "peripheral-argmin-tie-f16-observed",
-    "peripheral-argmin-nan-f16-observed",
-)
-
-
-EXPLICIT_ONLY_STEPS = (
-    CalibrationStep(
-        "m-sharded-replicated-gemm-profile",
-        "full-card-compiler-search",
-        "wafer-board-m-sharded-replicated-gemm-profile",
-        (
-            "16-rank FP16 M-sharded replicated-operand GEMM exact "
-            "correctness and final-output profiler collection"
-        ),
+        "complete-tile-barrier",
+        "synchronization",
+        "wafer-board-complete-tile-barrier-probe",
+        "complete 16-Tile barrier completion and visibility",
     ),
     CalibrationStep(
-        "direct-dte-compute-overlap",
-        "full-card-compiler-scheduling",
-        "wafer-board-direct-dte-compute-overlap",
-        (
-            "16-rank FP16 matched serialized-baseline versus qualified "
-            "Direct-DTE issue/compute/exact-wait correctness and A/B"
-        ),
+        "complete-tile-add",
+        "runtime-execution",
+        "wafer-board-complete-tile-add",
+        "complete 16-Tile add with full output and repeated completion",
     ),
     CalibrationStep(
-        "runtime-kernel-grid",
-        "full-card-runtime-smoke",
-        "wafer-board-kernel-grid-add",
-        (
-            "standalone legacy 16-rank kernel-grid Add smoke; superseded by "
-            "the default final-output profiler gate"
-        ),
-    ),
-    CalibrationStep(
-        "ct-vuvloop-semantics",
-        "rank-one-instruction-focused",
-        "wafer-board-ct-vuvloop-semantics",
-        "contract-legal unit-64 VuVLoop semantics and post-case integrity",
-    ),
-    CalibrationStep(
-        "memory-parallel-expanded",
-        "rank-one-memory-focused",
-        "wafer-board-memory-descriptor-parallel-expanded",
-        "expanded sustained, cross-worker, and dependency pair observations",
-    ),
-    CalibrationStep(
-        "memory-strided-dma-focused",
-        "rank-one-memory-focused",
-        "wafer-board-memory-descriptor-strided-dma-focused",
-        "corrected compact-SPM 1D/2D/3D DMA descriptor observations",
-    ),
-    CalibrationStep(
-        "ncc-mapped-spm-ne-depth4-local-wait",
-        "rank-one-ncc-focused",
-        "wafer-board-ncc-mapped-spm-ne-depth4-local-wait",
-        "depth-four NCC-to-Kcore boundary with matching local completion",
-    ),
-    CalibrationStep(
-        "ncc-mapped-spm-ne-depth4-no-local-wait",
-        "rank-one-ncc-focused",
-        "wafer-board-ncc-mapped-spm-ne-depth4-no-local-wait",
-        "depth-four NCC-to-Kcore boundary without local completion",
-    ),
-    *tuple(
-        CalibrationStep(
-            f"ncc-{case_name}",
-            "rank-one-ncc-strided-focused",
-            f"wafer-board-ncc-{case_name}",
-            f"corrected compact-SPM oracle for {case_name}",
-        )
-        for case_name in STRIDED_DEPENDENCY_CASE_NAMES
+        "complete-tile-add-profile",
+        "runtime-execution",
+        "wafer-board-complete-tile-add-profile",
+        "one bounded Primary, Count, and Trace profile collection",
     ),
     CalibrationStep(
         "ddr-tile-offset",
-        "full-card-memory-focused",
+        "memory",
         "wafer-board-ddr-tile-offset-probe",
-        "16-rank actual-allocation-base and relative-offset correctness",
+        "Tile-relative DDR addressing with exact output and guards",
     ),
     CalibrationStep(
-        "ddr-sparse-high-offset",
-        "rank-one-memory-focused",
-        "wafer-board-ddr-sparse-high-offset-probe",
-        "40-GiB compiler-managed workspace sparse relative-offset correctness",
-    ),
-    *tuple(
-        CalibrationStep(
-            f"compiler-optimization-{case_name}",
-            "rank-one-compiler-optimization",
-            f"wafer-board-compiler-optimization-{case_name}",
-            (
-                "same-source reserved-baseline versus production-winner "
-                f"correctness and target-structure pair for {case_name}"
-            ),
-        )
-        for case_name in COMPILER_OPTIMIZATION_PAIRED_CASES[:-1]
+        "worker-placement",
+        "worker-execution",
+        "wafer-board-worker-placement-probe",
+        "worker placement and bounded completion on the current runtime ABI",
     ),
     CalibrationStep(
-        f"compiler-optimization-{COMPILER_OPTIMIZATION_PAIRED_CASES[-1]}",
-        "full-card-compiler-optimization",
-        (
-            "wafer-board-compiler-optimization-"
-            f"{COMPILER_OPTIMIZATION_PAIRED_CASES[-1]}"
-        ),
-        (
-            "same-source reserved-baseline versus production tree all-reduce "
-            "correctness and final-target communication-work pair"
-        ),
-    ),
-    *tuple(
-        CalibrationStep(
-            f"collective-characterization-{case_name}",
-            "full-card-collective-characterization",
-            f"wafer-board-collective-characterization-{case_name}",
-            (
-                "same-source forced collective alternatives with exact "
-                f"all-rank output and pending board observations for {case_name}"
-            ),
-        )
-        for case_name in COLLECTIVE_CHARACTERIZATION_CASES
-    ),
-    *tuple(
-        CalibrationStep(
-            f"collective-traffic-behavior-{case_name}",
-            "full-card-pending-collective-traffic",
-            f"wafer-board-collective-traffic-behavior-{case_name}",
-            (
-                "structured AllToAll/CollectivePermute traffic semantics "
-                f"with exact all-rank output for {case_name}"
-            ),
-        )
-        for case_name in COLLECTIVE_TRAFFIC_BEHAVIOR_CASES
-    ),
-    *tuple(
-        CalibrationStep(
-            f"direct-dte-pending-{case_name}",
-            "full-card-pending-direct-dte-raw",
-            f"wafer-board-{case_name}",
-            (
-                "isolated owner-backed raw DTE correctness observation for "
-                f"{case_name}"
-            ),
-        )
-        for case_name in DTE_NON_SHUFFLE_CASE_NAMES
-    ),
-    *tuple(
-        CalibrationStep(
-            f"engine-pipeline-{group_key}",
-            "rank-one-pending-engine-pipeline",
-            f"wafer-board-engine-pipeline-{group_key}",
-            (
-                "complete single-engine slope or engine-pair stage-balance "
-                f"activation group {group_key}"
-            ),
-        )
-        for group_key in ENGINE_PIPELINE_BOARD_GROUP_KEYS
+        "spm-cross-tile-conflict",
+        "memory",
+        "wafer-board-spm-cross-tile-conflict-probe",
+        "cross-Tile SPM conflict controls with exact output and guards",
     ),
     CalibrationStep(
-        "engine-pipeline-single-ne-tail",
-        "rank-one-pending-engine-pipeline",
-        "wafer-board-ne-tail-throughput-single-ne-tail",
-        (
-            "fresh same-session NE small/steady controls followed by exact "
-            "non-divisible NE GEMM tail and merged device-PMU activation"
-        ),
-    ),
-    *tuple(
-        CalibrationStep(
-            f"instruction-family-{case_name}",
-            "rank-one-pending-numeric-domain",
-            f"wafer-board-instruction-family-{case_name}",
-            (
-                "bounded ArgMin value/index classification with three "
-                f"domain-discriminating samples for {case_name}"
-            ),
-        )
-        for case_name in ARGMIN_PENDING_DOMAIN_CASE_NAMES
-    ),
-    *tuple(
-        CalibrationStep(
-            f"instruction-family-{case_name}",
-            "rank-one-pending-unpool-collision",
-            f"wafer-board-instruction-family-{case_name}",
-            (
-                "bounded repeated-overlap Unpool collision observation for "
-                f"{case_name}"
-            ),
-        )
-        for case_name in UNPOOL_PENDING_COLLISION_CASE_NAMES
+        "ne-tail-throughput",
+        "engine-execution",
+        "wafer-board-ne-tail-throughput-probe",
+        "NE tail throughput with device counters and exact output",
     ),
     CalibrationStep(
-        "spm-conflict-equivalence-rank-one",
-        "rank-one-pending-spm-conflict",
-        "wafer-board-spm-conflict-equivalence-rank-one",
-        "same-invocation SPM base/workload/order matched conflict controls",
+        "engine-pipeline-characterization",
+        "engine-execution",
+        "wafer-board-engine-pipeline-characterization-probe",
+        "typed engine issue and completion behavior for one current probe",
     ),
     CalibrationStep(
-        "spm-conflict-equivalence-cross-tile",
-        "full-card-pending-spm-conflict",
-        "wafer-board-spm-conflict-equivalence-cross-tile",
-        "held-out physical-tile SPM conflict-equivalence control",
-    ),
-    *tuple(
-        CalibrationStep(
-            f"ddr-active-rank-{group_key}",
-            "full-card-pending-ddr-active-rank",
-            f"wafer-board-ddr-active-rank-{group_key}",
-            (
-                "one/two/four/eight/sixteen active-rank matched device-cycle "
-                f"sweep for {group_key}"
-            ),
-        )
-        for group_key in DDR_ACTIVE_RANK_BOARD_GROUP_KEYS
-    ),
-    CalibrationStep(
-        "ddr-conflict-equivalence-rank-one",
-        "rank-one-pending-ddr-conflict",
-        "wafer-board-ddr-conflict-equivalence-rank-one",
-        "same-invocation DDR address/order/schedule equivalence controls",
-    ),
-    CalibrationStep(
-        "ddr-conflict-equivalence-cross-tile",
-        "full-card-pending-ddr-conflict",
-        "wafer-board-ddr-conflict-equivalence-cross-tile",
-        "actual-allocation and physical-tile DDR equivalence held-out",
-    ),
-    # Session-risk tail.  These cases can intentionally fill queues, observe
-    # pending work, require bounded partial-accept cleanup, or exercise raw
-    # instruction programming.  Keep them after ordinary board observations.
-    *tuple(
-        CalibrationStep(
-            f"spm-sustained-{group_key}",
-            "rank-one-pending-spm-sustained",
-            f"wafer-board-spm-sustained-{group_key}",
-            (
-                "matched candidate/control and serial/window sustained SPM "
-                f"conflict observation for {group_key}"
-            ),
-        )
-        for group_key in SPM_SUSTAINED_BOARD_GROUP_KEYS
-    ),
-    *tuple(
-        CalibrationStep(
-            f"ncc-{case_name}",
-            "rank-one-pending-queue-saturation",
-            f"wafer-board-ncc-{case_name}",
-            (
-                "tight documented-boundary queue acceptance/backpressure "
-                f"observation for {case_name}"
-            ),
-        )
-        for case_name in QUEUE_SATURATION_CASE_NAMES
-    ),
-    *tuple(
-        CalibrationStep(
-            f"ncc-{case_name}",
-            "rank-one-pending-worker-wait-scope",
-            f"wafer-board-ncc-{case_name}",
-            (
-                "pending-at-snapshot worker wait-scope exclusion "
-                f"observation for {case_name}"
-            ),
-        )
-        for case_name in WORKER_WAIT_SCOPE_CASE_NAMES
-    ),
-    *tuple(
-        CalibrationStep(
-            f"ncc-{case_name}",
-            "rank-one-pending-worker-subset-scope",
-            f"wafer-board-ncc-{case_name}",
-            (
-                "pending-at-snapshot worker subset include/exclude "
-                f"observation for {case_name}"
-            ),
-        )
-        for case_name in WORKER_SUBSET_SCOPE_CASE_NAMES
-    ),
-    *tuple(
-        CalibrationStep(
-            f"worker-placement-{group_key}",
-            "rank-one-pending-worker-placement",
-            f"wafer-board-worker-placement-{group_key}",
-            (
-                "fixed-total worker placement or matched bounded-progress "
-                f"activation group {group_key}"
-            ),
-        )
-        for group_key in WORKER_PLACEMENT_BOARD_GROUP_KEYS
-    ),
-    *tuple(
-        CalibrationStep(
-            f"direct-dte-pending-{case_name}",
-            "full-card-pending-direct-dte-raw",
-            f"wafer-board-{case_name}",
-            (
-                "isolated owner-backed raw DTE correctness observation for "
-                f"{case_name}"
-            ),
-        )
-        for case_name in DTE_SHUFFLE_CASE_NAMES
+        "ddr-active-tile-contention",
+        "memory",
+        "wafer-board-ddr-active-tile-contention-probe",
+        "active-Tile DDR contention with exact inactive-Tile guards",
     ),
 )
 
-SESSION_RISK_STEP_KEYS = tuple(
-    step.key
-    for step in EXPLICIT_ONLY_STEPS
-    if (
-        step.batch
-        in {
-            "rank-one-pending-spm-sustained",
-            "rank-one-pending-queue-saturation",
-            "rank-one-pending-worker-wait-scope",
-            "rank-one-pending-worker-subset-scope",
-            "rank-one-pending-worker-placement",
-        }
-        or any(
-            case_name in step.key for case_name in DTE_SHUFFLE_CASE_NAMES
-        )
-    )
-)
-
-ALL_CALIBRATION_STEPS = (
-    *CALIBRATION_STEPS,
-    *EXPLICIT_ONLY_STEPS,
-)
+EXPLICIT_ONLY_STEPS: tuple[CalibrationStep, ...] = ()
+SESSION_RISK_STEP_KEYS: tuple[str, ...] = ()
+ALL_CALIBRATION_STEPS = CALIBRATION_STEPS
 
 SELECTABLE_BATCHES = {
-    "compiler-search-scalability": (
-        "m-sharded-replicated-gemm-profile",
+    "current-interface-smoke": tuple(
+        step.key for step in CALIBRATION_STEPS[1:]
     ),
-    "direct-dte-compute-overlap": (
-        "direct-dte-compute-overlap",
+    "transport": (),
+    "synchronization": ("complete-tile-barrier",),
+    "runtime-execution": (
+        "complete-tile-add",
+        "complete-tile-add-profile",
     ),
-    "compiler-optimization-paired": tuple(
-        step.key
-        for step in EXPLICIT_ONLY_STEPS
-        if step.key.startswith("compiler-optimization-")
+    "memory": (
+        "ddr-tile-offset",
+        "spm-cross-tile-conflict",
+        "ddr-active-tile-contention",
     ),
-    "collective-characterization": tuple(
-        step.key
-        for step in EXPLICIT_ONLY_STEPS
-        if step.key.startswith("collective-characterization-")
+    "worker-execution": ("worker-placement",),
+    "engine-execution": (
+        "ne-tail-throughput",
+        "engine-pipeline-characterization",
     ),
-    "collective-traffic-behavior": tuple(
-        step.key
-        for step in EXPLICIT_ONLY_STEPS
-        if step.key.startswith("collective-traffic-behavior-")
-    ),
-    "direct-dte-raw-behavior": tuple(
-        step.key
-        for step in EXPLICIT_ONLY_STEPS
-        if step.key.startswith("direct-dte-pending-")
-    ),
-    "engine-pipeline-characterization": tuple(
-        step.key
-        for step in EXPLICIT_ONLY_STEPS
-        if step.key.startswith("engine-pipeline-")
-    ),
-    "pending-execution-boundaries": tuple(
-        step.key
-        for step in EXPLICIT_ONLY_STEPS
-        if step.batch.startswith("rank-one-pending-")
-        or step.batch.startswith("full-card-pending-")
+    "pending-hardware-calibration": tuple(
+        step.key for step in CALIBRATION_STEPS[1:]
     ),
 }
-SELECTABLE_BATCHES["compiler-optimization-tests"] = (
-    "direct-dte-collective",
-    *SELECTABLE_BATCHES["compiler-optimization-paired"],
-)
-_pending_board_ctests = {
-    ctest
-    for family in pending_inventory.FAMILIES
-    if family.disposition == pending_inventory.PENDING_BOARD
-    for ctest in family.board_ctests
-}
-_pending_steps_by_ctest = {
-    step.ctest_name: step for step in EXPLICIT_ONLY_STEPS
-}
-_missing_pending_ctests = _pending_board_ctests - set(_pending_steps_by_ctest)
-if _missing_pending_ctests:
-    raise RuntimeError(
-        "pending hardware calibration CTests lack runner steps: "
-        + repr(sorted(_missing_pending_ctests))
-    )
-SELECTABLE_BATCHES["pending-hardware-calibration"] = tuple(
-    step.key
-    for step in EXPLICIT_ONLY_STEPS
-    if step.ctest_name in _pending_board_ctests
-)
-if SELECTABLE_BATCHES["pending-hardware-calibration"][
-    -len(SESSION_RISK_STEP_KEYS) :
-] != SESSION_RISK_STEP_KEYS:
-    raise RuntimeError(
-        "potentially session-poisoning board cases must remain at the end "
-        "of pending-hardware-calibration"
-    )
-del _missing_pending_ctests
-del _pending_steps_by_ctest
-del _pending_board_ctests
-
 
 def utc_now() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
@@ -832,7 +195,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="KEY",
         help=(
             "execute/list only this named calibration step; repeatable. "
-            "The initial known-good heartbeat is added once automatically, "
+            "The initial Direct-DTE/NCC validation is added once automatically, "
             "and execution retains canonical order."
         ),
     )
@@ -843,8 +206,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         metavar="NAME",
         help=(
             "execute/list every step in this named explicit batch; repeatable. "
-            "Named batches retain canonical order after the one automatic "
-            "initial heartbeat."
+            "Named batches retain canonical order after the automatic initial "
+            "Direct-DTE/NCC validation."
         ),
     )
     parser.add_argument("--ctest", default="ctest", help="CTest executable")
@@ -994,15 +357,15 @@ def validate_default_plan() -> None:
     validate_step_definition(CALIBRATION_STEPS)
     validate_step_definition(ALL_CALIBRATION_STEPS)
     if (
-        CALIBRATION_STEPS[0].key != "initial-profile-heartbeat"
-        or CALIBRATION_STEPS[0].ctest_name != HEARTBEAT_CTEST
+        CALIBRATION_STEPS[0].key != "direct-dte-ncc-execution"
+        or CALIBRATION_STEPS[0].ctest_name != INITIAL_VALIDATION_CTEST
     ):
         raise CalibrationRunnerError(
-            "default plan must begin with the known-good heartbeat"
+            "default plan must begin with Direct-DTE/NCC validation"
         )
     if ALL_CALIBRATION_STEPS[0] != CALIBRATION_STEPS[0]:
         raise CalibrationRunnerError(
-            "selectable plan must retain the initial heartbeat"
+            "selectable plan must retain the initial Direct-DTE/NCC validation"
         )
     default_keys = {step.key for step in CALIBRATION_STEPS}
     explicit_keys = {step.key for step in EXPLICIT_ONLY_STEPS}
@@ -1050,7 +413,8 @@ def select_calibration_steps(
     explicitly_automatic = sorted(set(expanded_keys) & automatic_keys)
     if explicitly_automatic:
         raise CalibrationRunnerError(
-            "heartbeat steps are automatic and cannot be selected explicitly: "
+            "the initial validation is automatic and cannot be selected "
+            "explicitly: "
             f"{explicitly_automatic}"
         )
     selectable = {
@@ -1328,17 +692,11 @@ def collect_step_evidence(
         )
     durable_suffixes = {".raw", ".json", ".jsonl"}
     preserves_compiler_ir = (
-        "pending" in test.labels
-        or "compiler-optimization" in test.labels
-        or "collective-characterization" in test.labels
-        or "collective-traffic" in test.labels
-        or "engine" in test.labels
-        or "pipeline" in test.labels
-        or test.name == "wafer-board-cluster-direct-dte"
+        "pending" in test.labels or "current-interface" in test.labels
     )
     if preserves_compiler_ir:
-        # Preserve the exact source snapshots and final linked ELFs as
-        # read-only audit evidence for pending calibration and paired results.
+        # Preserve exact source snapshots and final linked ELFs as read-only
+        # evidence for the current calibration execution.
         durable_suffixes.update({".mlir", ".meta", ".so"})
     required_profile_report = profile_report_members(test, work_dir)
     evidence_files = tuple(
@@ -1398,7 +756,6 @@ def collect_step_evidence(
             }
         )
     manifest = {
-        "schema_version": 2,
         "ctest": test.name,
         "ctest_command": list(test.command),
         "source_work_dir": str(work_dir),
@@ -1447,7 +804,6 @@ def execute_calibration(
     summary_path = log_dir / "session.json"
     calibration_session_id = secrets.token_hex(16)
     summary: dict[str, object] = {
-        "schema_version": SUMMARY_SCHEMA_VERSION,
         "status": "running",
         "started_at": utc_now(),
         "build_dir": str(build_dir),
@@ -1468,17 +824,6 @@ def execute_calibration(
 
     build_log = log_dir / "000-incremental-build.log"
     build_targets = ["wafer-compile", "wafer-run"]
-    if any(
-        step.key.startswith(
-            (
-                "compiler-optimization-",
-                "collective-characterization-",
-                "collective-traffic-behavior-",
-            )
-        )
-        for step in steps
-    ):
-        build_targets.append("wafer-compile-test")
     build_command = [
         cmake,
         "--build",
@@ -1486,7 +831,7 @@ def execute_calibration(
         "--target",
         *build_targets,
         "--parallel",
-        "128",
+        str(max(1, os.cpu_count() or 1)),
     ]
     print(f"[build] {shlex.join(build_command)}")
     build_started = time.monotonic()

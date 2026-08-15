@@ -103,11 +103,11 @@ rewriteGemmAsOrientationChain(TargetLLVMModules &targetLLVMModules) {
       if (!call || !call->getCalledFunction())
         continue;
       llvm::StringRef name = call->getCalledFunction()->getName();
-      if (name == "wafer_tx81_gemm_v3") {
+      if (name == "wafer_tx81_gemm") {
         if (gemm)
           return llvm::createStringError("expected one GEMM call per Tile");
         gemm = call;
-      } else if (name == "wafer_tx81_wdma_v3") {
+      } else if (name == "wafer_tx81_wdma") {
         hasWdma = true;
       }
     }
@@ -125,7 +125,7 @@ rewriteGemmAsOrientationChain(TargetLLVMModules &targetLLVMModules) {
         builder.getVoidTy(),
         {i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32}, false);
     llvm::FunctionCallee oriented =
-        module.getOrInsertFunction("wafer_tx81_gemm_oriented_v3", functionType);
+        module.getOrInsertFunction("wafer_tx81_gemm_oriented", functionType);
     auto emit = [&](llvm::Value *callLhs, llvm::Value *callRhs,
                     llvm::Value *callDestination,
                     TargetGemmOrientation lhsOrientation,

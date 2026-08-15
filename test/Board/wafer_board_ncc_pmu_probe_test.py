@@ -52,7 +52,6 @@ LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 PROBE_BYTES = 256
 PROBE_WORDS = 32
 PROBE_MAGIC = 0x3130554D50464157
-PROBE_SCHEMA = 1
 PMU_STABLE_MASK = (1 << 8) - 1
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
@@ -72,17 +71,17 @@ class ReadOnlyPmuCalibrationCase:
 READ_ONLY_PMU_CALIBRATION_CASES = (
     ReadOnlyPmuCalibrationCase(
         "profile-identity-readonly",
-        "rank-one-read-only",
+        "Tile-0 read-only",
         (
             "runtime version+device name+PCI bus+tile count+runtime library "
-            "SHA-256 and schema-v1 record"
+            "SHA-256 and exact magic/word-count record"
         ),
         "bounded process deadline+normal runtime cleanup",
         "read-only NCC/PMU register snapshot",
     ),
     ReadOnlyPmuCalibrationCase(
         "stable-read-enable-scope",
-        "rank-one-read-only",
+        "Tile-0 read-only",
         (
             "high-low-high split stability+stable PMU enable/scope mask+"
             "record guard"
@@ -167,7 +166,7 @@ def compile_seed_package(args: argparse.Namespace, source: pathlib.Path) -> path
             str(source),
             "--output-program-dir",
             str(package),
-            "--execution-ranks=1",
+            "--num-partitions=1",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
@@ -179,7 +178,7 @@ def compile_seed_package(args: argparse.Namespace, source: pathlib.Path) -> path
 
 def validate_manifest(
     package: pathlib.Path,
-) -> tuple[dict[str, object], pathlib.Path, list[int], int]:
+) -> tuple[dict[str, object], pathlib.Path, list[int], int, int]:
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     target = manifest.get("target")
@@ -188,21 +187,20 @@ def validate_manifest(
     resources = manifest.get("resources")
     runtime_launch.require_manifest_launch(
         manifest,
-        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        runtime_launch.GRID_KERNEL_LAUNCH,
         context="PMU probe seed",
     )
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="PMU probe seed"
+    )
     if (
-        manifest.get("rank_count") != 1
-        or not isinstance(target, dict)
+        not isinstance(target, dict)
         or target.get("identity") != TARGET_IDENTITY
         or not isinstance(modules, list)
         or len(modules) != 1
-        or not isinstance(entries, list)
-        or len(entries) != 1
         or not isinstance(resources, list)
-        or len(resources) != 3
     ):
-        raise RuntimeError("PMU probe seed package contract is not rank-one exact")
+        raise RuntimeError("PMU probe seed package contract is invalid")
 
     module = modules[0]
     entry = entries[0]
@@ -213,7 +211,8 @@ def validate_manifest(
         or module.get("exports") != [{"role": "main", "symbol": "main"}]
         or not isinstance(module.get("path"), str)
         or entry.get("id") != 0
-        or entry.get("rank") != 0
+        or entry.get("card_id") != 0
+        or entry.get("tile_id") != 0
         or entry.get("module") != 0
     ):
         raise RuntimeError("PMU probe seed module/entry contract is invalid")
@@ -229,7 +228,7 @@ def validate_manifest(
     for resource in resources:
         if (
             not isinstance(resource, dict)
-            or resource.get("rank") != 0
+            or resource.get("scope") != {"kind": "card", "card_id": 0}
             or resource.get("bytes") != PROBE_BYTES
             or resource.get("alignment") != 256
             or resource.get("host_visible") is not True
@@ -255,11 +254,16 @@ def validate_manifest(
         != [input_ids[0], input_ids[1], output_id]
     ):
         raise RuntimeError("PMU probe entry must keep output at pointer-table slot 2")
-    return manifest, module_path, input_ids, output_id
+    if any(other.get("module") != module.get("id") for other in entries):
+        raise RuntimeError("PMU probe entries do not share one module")
+    return manifest, module_path, input_ids, output_id, len(slots)
 
 
 def build_probe(
-    args: argparse.Namespace, package: pathlib.Path, module_path: pathlib.Path
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    module_path: pathlib.Path,
+    slots_per_tile: int,
 ) -> None:
     deps = args.repo_root / "third_party" / "tx8_deps"
     tool_bin = deps / TOOLCHAIN_DIR / "bin"
@@ -298,6 +302,7 @@ def build_probe(
             "-Wall",
             "-Wextra",
             "-Werror",
+            f"-DWAFER_PMU_SLOTS_PER_TILE={slots_per_tile}",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
             f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
@@ -322,7 +327,7 @@ def build_probe(
             "--output",
             str(linked),
             "--loader-abi",
-            "tx8-kcore-loader",
+            "tx8-kcore-loader-grid",
             "--extra-object",
             str(helper),
         ],
@@ -368,11 +373,9 @@ def parse_snapshot(path: pathlib.Path) -> dict[str, object]:
             f"PMU probe output has {len(payload)} bytes, expected {PROBE_BYTES}"
         )
     words = struct.unpack("<32Q", payload)
-    schema = words[1] >> 32
-    word_count = words[1] & 0xFFFFFFFF
+    word_count = words[1]
     if (
         words[0] != PROBE_MAGIC
-        or schema != PROBE_SCHEMA
         or word_count != PROBE_WORDS
     ):
         raise RuntimeError("PMU probe output header is invalid")
@@ -384,7 +387,6 @@ def parse_snapshot(path: pathlib.Path) -> dict[str, object]:
     controls = words[7:10]
     engines = ("ct", "ne", "rdma", "wdma", "tdma", "scalar")
     return {
-        "schema": schema,
         "stable_counter_mask": f"0x{words[2]:02x}",
         "pmu_enable_raw": words[3],
         "serial_mode_raw": list(words[4:7]),
@@ -421,8 +423,6 @@ def execute_board(
         str(args.wafer_run),
         "--package-dir",
         str(package),
-        "--entry-id",
-        "0",
         "--board",
         "--device-id",
         str(args.device_id),
@@ -455,6 +455,7 @@ def execute_board(
     missing = [text for text in required if text not in result.stdout]
     if missing:
         raise RuntimeError(f"board PMU probe omitted runtime evidence: {missing}")
+    runtime_launch.require_board_completion(stdout=result.stdout, context="PMU probe")
     print("probe_snapshot: " + json.dumps(parse_snapshot(output), sort_keys=True))
     print(result.stdout, end="")
 
@@ -472,16 +473,14 @@ def main() -> int:
 
     source = write_source_program(args.work_dir)
     package = compile_seed_package(args, source)
-    _, module_path, input_ids, output_id = validate_manifest(package)
-    build_probe(args, package, module_path)
+    _, module_path, input_ids, output_id, slots_per_tile = validate_manifest(package)
+    build_probe(args, package, module_path, slots_per_tile)
 
     no_card = run(
         [
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--entry-id",
-            "0",
             "--no-card",
         ]
     )

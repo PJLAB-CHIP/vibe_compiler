@@ -51,7 +51,7 @@ source program
   -> TileRegion
   -> Instr
   -> Target LLVM modules
-  -> schema-v8 package
+  -> ExecutablePackage
   -> no-card / model / board
 ```
 
@@ -151,24 +151,24 @@ source program
 - host JIT dispatch只是把final target calls转成typed transactions的internal bridge，不是public runtime ABI或serialized field。
 - target code generation在private staging root完成link、ELF/export/digest/readback，全部成功后原子rename；失败不留下部分final目录。
 
-## Package schema v8
+## ExecutablePackage
 
-- ordinary package只接受一个current manifest schema version；profile instrumentation只在`activation.json`保留一个current
-  format version，digest-bound plan/site map和profile evidence不复制该版本。旧外围格式fail closed，没有兼容reader/translator。
+- ordinary package只接受一个current manifest schema identity和exact fields；profile instrumentation、plan/site map与profile
+  evidence各自由自己的current schema identity和exact fields验证。旧外围格式fail closed，没有兼容reader/translator。
 - production manifest固定 `card_count=1`、`tile_count=16`，entries显式保存 `(card_id,tile_id,launch_slot)`。
 - program input/parameter/constant/output使用card scope；workspace与transport status使用Tile scope。
 - sharing只由同一ResourceId被多个entry slots引用表达，不能从role/name/type/shape推断。
 - card-scoped resource由16个entries各引用一次、runtime分配一次；Tile-scoped resource只由对应entry引用。
 - slots dense zero-based，resources/modules/entries all-and-only covered；module/export/phase/digest关系必须readback。
 - entry completion只接受 `return_after_local_drain`；Direct-DTE status resource/ABI/size/alignment/access/watchdog exact。
-- canonical JSON parser要求exact fields、bounded size/nesting/records；serializer后重新parse/verify再发布。
+- canonical JSON parser要求exact fields、bounded size/nesting/records；serializer后重新parse/verify再写入最终目录。
 
 ## 接口版本归属
 
-- 只有能脱离当前进程独立保存或部署的文件格式、compiler/runtime/device ABI与原始证据格式拥有版本；普通C++ API、
-  pass、analysis、非持久化IR和repo内同步生成/读取的helper metadata直接原位演进。
-- 每个真实边界只有一个顶层current版本和一个parser/loader/ABI检查入口。内部field、算法、hash domain和model名称不再
-  各自建立版本线，nested record不复制已经验证的外围版本。
+- 能脱离当前进程独立保存或部署的文件格式、compiler/runtime/device ABI与原始证据格式拥有稳定identity和集中检查入口；
+  普通C++ API、pass、analysis、非持久化IR和repo内同步生成/读取的helper metadata直接原位演进。
+- 每个真实边界只有一个current表示和一个parser/loader/ABI检查入口。内部field、算法、hash domain和model名称不建立
+  版本线，nested record不复制已经验证的外围identity。
 - 没有明确旧producer、旧consumer和支持周期时，删除旧reader、fallback与兼容wrapper；negative test只证明旧输入被
   明确拒绝，不保留第二种current representation。
 - 第三方版本、外部文件格式、license、vendor规格和设备runtime版本是输入事实，继续记录，不与Wafer内部格式版本合并。
@@ -199,6 +199,12 @@ source program
 - matched A/B固定source snapshot、config、payload、target identity、runtime ABI、bindings和target-call inventory，只改变被测scheduler选择。
 - correctness先于performance：两包均需完整output/guard和lifecycle通过；多次样本报告分布与观测分辨率。
 - 历史raw/log/report不作当前test input，不读取后重新签发结论；代码或gate改变后只接受本轮新构建、新启动和新输出。
+- 接口收敛时保留Board calibration的device source、输入构造、oracle、guard和lifecycle校验；raw probe迁到current package后
+  必须注册一个代表性`current-interface` no-card CTest。依赖尚未闭合compiler lowering的source vertical保留current global source
+  与host oracle，并明确阻塞，不恢复旧manifest、CLI或carrier。
+- 旧Board runner不能按文件整存整删。先逐项迁移source/shape/dtype、deterministic payload、完整output、guard、status、timeout、
+  cleanup和profile要求；current global lowering能生成package时注册no-card与待板测CTest，不能生成时把这些要求挂到受测catalog/
+  inventory并记录具体lowering gate，不能继续注册不可执行入口。
 
 ## Source organization
 
@@ -219,8 +225,8 @@ source program
   实现状态或范围前缀。
 - 真实对照应保留：logical rank与target Tile、logical layout与target encoding/storage、Card级与Tile级
   resource/cost都会影响legality或API overload；删掉限定反而会丢失语义。
-- 已持久化的schema field、evidence key和外部ABI名不随内部改名机械变动；需修正时按协议版本
-  独立迁移。
+- 已持久化的schema field、evidence key和外部ABI名不随内部改名机械变动；需修正时按外围接口演进合同
+  同步producer、consumer和拒绝测试。
 
 ## Current-IR relation维护
 

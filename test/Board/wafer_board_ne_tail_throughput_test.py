@@ -80,7 +80,7 @@ def board_qualification(args: argparse.Namespace) -> dict[str, object]:
     digest = str(args.expected_runtime_library_sha256).lower()
     qualification = {
         "target_identity": ne_driver.package_support.TARGET_IDENTITY,
-        "launch": runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        "launch": runtime_launch.GRID_KERNEL_LAUNCH,
         "device_id": args.device_id,
         "expected_runtime_version": args.expected_runtime_version,
         "expected_device_name": args.expected_device_name,
@@ -106,7 +106,7 @@ def normalize_observation(
     case: catalog.NETailThroughputCase,
     sample: int,
     validated: Mapping[str, object],
-    terminal_completion: int,
+    completion_kind: str,
 ) -> dict[str, object]:
     pmu = validated.get("pmu")
     if not isinstance(pmu, Mapping):
@@ -134,48 +134,21 @@ def normalize_observation(
         "logical_sha256": validated["logical_sha256"],
         "physical_sha256": validated["physical_sha256"],
         "runtime_lifecycle": engine_catalog.RUNTIME_LIFECYCLE,
-        "runtime_terminal_completion": terminal_completion,
+        "runtime_completion_kind": completion_kind,
     }
 
 
-def rank_one_terminal_completion(package: pathlib.Path) -> int:
+def package_completion_kind(package: pathlib.Path) -> str:
     manifest = json.loads((package / "manifest.json").read_text())
-    entries = manifest.get("entries")
-    completions = manifest.get("completions")
-    if (
-        manifest.get("schema_version") != 7
-        or manifest.get("rank_count") != 1
-        or not isinstance(entries, list)
-        or len(entries) != 1
-        or not isinstance(completions, list)
-        or len(completions) != 1
-    ):
-        raise RuntimeError(
-            "NE tail package terminal completion domain is not rank-one exact"
-        )
-    entry = entries[0]
-    completion = completions[0]
-    if not isinstance(entry, Mapping) or not isinstance(completion, Mapping):
-        raise RuntimeError("NE tail entry/completion records are not objects")
-    completion_id = completion.get("id")
-    if (
-        entry.get("id") != 0
-        or entry.get("rank") != 0
-        or type(completion_id) is not int
-        or completion_id < 0
-        or entry.get("terminal_completion") != completion_id
-        or completion.get("rank") != 0
-        or completion.get("kind") != "entry_return"
-    ):
-        raise RuntimeError(
-            "NE tail entry does not bind its exact terminal completion"
-        )
-    return completion_id
+    runtime_launch.require_complete_tile_domain(manifest, context="NE tail")
+    return runtime_launch.LOCAL_DRAIN_COMPLETION
 
 
 def require_exact_board_completion(
-    stdout: str, terminal_completion: int, context: str
+    stdout: str, completion_kind: str, context: str
 ) -> None:
+    if completion_kind != runtime_launch.LOCAL_DRAIN_COMPLETION:
+        raise RuntimeError(f"{context}: package completion kind is invalid")
     lines = stdout.splitlines()
     stage_lines = [
         f"board_stage: {stage}" for stage in engine_catalog.RUNTIME_LIFECYCLE
@@ -192,28 +165,17 @@ def require_exact_board_completion(
         raise RuntimeError(
             f"{context}: wafer-run lifecycle stages are out of order"
         )
-    expected_terminal = (
-        f"terminal_completion: {terminal_completion} kind=entry_return"
+    runtime_launch.require_board_completion(stdout, context=context)
+    first_completion = lines.index(
+        f"completion: {completion_kind} tile_id=0"
     )
-    terminal_lines = [
-        line for line in lines if line.startswith("terminal_completion:")
-    ]
-    if terminal_lines != [expected_terminal]:
-        raise RuntimeError(
-            f"{context}: wafer-run terminal completion differs from the "
-            "package manifest"
-        )
-    if lines.count("board_execution: true") != 1:
-        raise RuntimeError(
-            f"{context}: wafer-run omitted or repeated board execution state"
-        )
     if not (
         stage_positions[-1]
-        < lines.index(expected_terminal)
+        < first_completion
         < lines.index("board_execution: true")
     ):
         raise RuntimeError(
-            f"{context}: terminal completion is outside the completed "
+            f"{context}: Tile completion is outside the completed "
             "runtime lifecycle"
         )
 
@@ -295,26 +257,28 @@ def prepare_fresh_ne_prerequisites(
     prerequisite_args.mode = "no-card" if args.no_card else "board"
     engine_driver._require_execution_args(prerequisite_args)
     probes = fresh_ne_prerequisite_probes()
-    raw_args, package, resource_ids, terminal_completion = (
+    raw_args, package, resource_ids, completion_kind = (
         engine_driver.prepare_probe_package(prerequisite_args, probes)
     )
-    return raw_args, package, resource_ids, terminal_completion, probes
+    return raw_args, package, resource_ids, completion_kind, probes
 
 
 def prepare_package(
     args: argparse.Namespace,
-) -> tuple[pathlib.Path, tuple[int, int, int], int]:
+) -> tuple[pathlib.Path, tuple[int, int, int], str]:
     ne_driver.configure_package_support()
     ne_driver.package_support.require_build_args(args)
     source = ne_driver.package_support.write_source_program(args)
     package = ne_driver.package_support.compile_seed_package(args, source)
-    module_path, resource_ids = ne_driver.package_support.locate_bindings(
-        package
+    module_path, resource_ids, slots_per_tile = (
+        ne_driver.package_support.locate_bindings(package)
     )
-    ne_driver.package_support.build_probe(args, package, module_path)
+    ne_driver.package_support.build_probe(
+        args, package, module_path, slots_per_tile
+    )
     ne_driver.package_support.verify_no_card(args, package)
-    terminal_completion = rank_one_terminal_completion(package)
-    return package, resource_ids, terminal_completion
+    completion_kind = package_completion_kind(package)
+    return package, resource_ids, completion_kind
 
 
 def execute_cases(
@@ -322,7 +286,7 @@ def execute_cases(
     package: pathlib.Path,
     resource_ids: tuple[int, int, int],
     cases: Iterable[catalog.NETailThroughputCase],
-    terminal_completion: int,
+    completion_kind: str,
 ) -> list[dict[str, object]]:
     raw_dir = args.work_dir / "raw"
     raw_dir.mkdir()
@@ -349,13 +313,13 @@ def execute_cases(
                 timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
             )
             require_exact_board_completion(
-                result.stdout, terminal_completion, case.key
+                result.stdout, completion_kind, case.key
             )
             validated = ne_driver.validate_output(
                 output, source_case, built, sample
             )
             observation = normalize_observation(
-                case, sample, validated, terminal_completion
+                case, sample, validated, completion_kind
             )
             observations.append(observation)
             print(
@@ -403,7 +367,7 @@ def main() -> int:
         prerequisite_args,
         prerequisite_package,
         prerequisite_resource_ids,
-        prerequisite_terminal_completion,
+        prerequisite_completion_kind,
         prerequisite_probes,
     ) = prepare_fresh_ne_prerequisites(args)
     prerequisite_observations: tuple[Mapping[str, object], ...]
@@ -417,12 +381,12 @@ def main() -> int:
                 prerequisite_package,
                 prerequisite_resource_ids,
                 prerequisite_probes,
-                prerequisite_terminal_completion,
+                prerequisite_completion_kind,
             )
         )
         require_complete_ne_prerequisites(prerequisite_observations)
     tail_args = _with_work_dir(args, args.work_dir / "tail")
-    package, resource_ids, terminal_completion = prepare_package(tail_args)
+    package, resource_ids, completion_kind = prepare_package(tail_args)
     if args.no_card:
         print(
             "ne_tail_throughput_no_card: "
@@ -434,14 +398,14 @@ def main() -> int:
                     "prerequisite_case_count": len(prerequisite_probes),
                     "prerequisite_package": str(prerequisite_package),
                     "package": str(package),
-                    "terminal_completion": terminal_completion,
+                    "completion_kind": completion_kind,
                 },
                 sort_keys=True,
             )
         )
         return 0
     observations = execute_cases(
-        tail_args, package, resource_ids, cases, terminal_completion
+        tail_args, package, resource_ids, cases, completion_kind
     )
     activation = engine_catalog.evaluate_single_engine_activation(
         engine_catalog.Engine.NE,
@@ -450,12 +414,11 @@ def main() -> int:
     assert calibration_session_id is not None
     assert qualification is not None
     archive = {
-        "schema_version": 1,
         "calibration_session_id": calibration_session_id,
         "board_qualification": qualification,
         "activation_group": catalog.GROUP_KEY,
         "repeat": args.repeat,
-        "terminal_completion": terminal_completion,
+        "completion_kind": completion_kind,
         "prerequisite_generation": "fresh-invocation",
         "prerequisite_observations": prerequisite_observations,
         "observations": observations,

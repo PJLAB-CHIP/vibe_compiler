@@ -110,6 +110,6 @@ type、function、pass option、pipeline timing和diagnostic均使用`Card`、`T
 StructuredDAG placement enumeration和CardExecutable candidate synthesis属于Q49/Q52搜索行为，本批没有用
 长搜索代替命名合同验证；没有执行真实板端测试。
 
-`test/Board/wafer_compiler_optimization_comparison_cases.py`仍包含Q50.S未来迁移的旧source reference；它在Q54前后均未注册到
-CMake/CTest，当前自检会因缺少已退役`CandidateRewrites.cpp`而失败。本轮没有伪造新的production实现来满足该字符串检查；
-该catalog必须在Q50.S建立actual structured alternatives时按新实现重写或删除，不能作为当前compiler能力证明。
+未注册到CMake/CTest且依赖已退役实现的旧Board calibration、catalog和probe已经删除，不再作为后续任务的隐式入口。
+Q50.S若需要性能比较，必须从current compiler pipeline建立有生产实现、有CTest注册且可重放的测试入口，不能恢复旧catalog
+或用字符串匹配伪造compiler能力。

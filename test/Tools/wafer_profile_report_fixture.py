@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic v10 primary-program evidence for the offline analyzer."""
+"""Deterministic primary-program evidence for the offline analyzer."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 NCC_ENGINES = ("CT", "NE", "RDMA", "WDMA", "TDMA")
 FINAL_DIGEST = "sha256:" + "f" * 64
-RECORD_ABI = "wafer-tx81-profiler-record-v4"
+RECORD_ABI = "wafer-tx81-profiler-record"
 
 
 def _cost_metric(
@@ -422,7 +422,7 @@ def _sites() -> list[dict[str, Any]]:
             "direct-dte-issue",
             "DIRECT_DTE",
             "communication.direct-dte.issue",
-            "wafer_tx81_direct_dte_send_issue_v3",
+            "wafer_tx81_direct_dte_send_issue",
         ),
         (
             "direct-dte-wait",
@@ -484,7 +484,6 @@ def make_evidence(*, permute_bindings: bool = False) -> dict[str, Any]:
     }
     evidence = {
         "schema": "wafer.profile.evidence",
-        "schema_version": 11,
         "run_id": "fixture-primary-program",
         "program": {
             "program_manifest_sha256": FINAL_DIGEST,

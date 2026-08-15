@@ -353,8 +353,6 @@ llvm::Error verifyModuleFiles(const PackageManifest &manifest,
 llvm::Expected<VerifiedPackageManifest>
 verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
                       const PackageParseLimits &limits) {
-  if (manifest.schemaVersion != kPackageManifestSchemaVersion)
-    return invalid("unsupported package manifest schema_version");
   if (!manifest.program.isValid() || manifest.program.getValue() != 0)
     return invalid("package program identity is invalid");
   if (manifest.targetIdentity != TargetIdentityId::waferTx81SingleCard() ||

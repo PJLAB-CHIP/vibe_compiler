@@ -525,8 +525,12 @@ def _increasing_k_gemm_reference(
 def load_workload_corpus_spec(spec_path: pathlib.Path) -> dict[str, Any]:
     with spec_path.open("r", encoding="utf-8") as file:
         spec = json.load(file)
-    if "schema_version" in spec:
-        raise RuntimeError("workload corpus must not contain a version field")
+    root_fields = {"corpus_id", "source", "cases"}
+    if set(spec) != root_fields:
+        raise RuntimeError(
+            "workload corpus root fields must be exactly "
+            f"{sorted(root_fields)}"
+        )
     cases = spec.get("cases")
     if not isinstance(cases, list) or not cases:
         raise RuntimeError("workload corpus must contain a non-empty cases list")

@@ -26,7 +26,7 @@ Pipeline position:
   large-shape tile/dataflow与Direct DTE持续回归，以及Q22.C可选的workload-level board evidence；本case本身
   不完成Q22.C，也不升级per-op numeric profile。
 - User-level driver / named pipeline:
-  `wafer-compile --execution-ranks=16 --target-profile=wafer-tx81-single-card-kernel-v1
+  `wafer-compile --execution-ranks=16 --target-profile=wafer-tx81-single-card
   --launch-abi=tx81-cluster-direct-dte-prepare-main-v1`；no-card和board均由`wafer-run --all-ranks`
   消费同一typed package。局部`wafer-opt`/FileCheck只补结构覆盖。
 - Explicit non-goals:

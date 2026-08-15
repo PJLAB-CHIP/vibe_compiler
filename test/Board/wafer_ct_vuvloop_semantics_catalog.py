@@ -10,7 +10,6 @@ from collections.abc import Callable
 
 REQUEST_MAGIC = 0x31514552564C5657
 RECORD_MAGIC = 0x31434552564C5657
-SCHEMA = 1
 REQUEST_WORDS = 16
 RECORD_WORDS = 24
 CASE_BASE = 20000
@@ -51,7 +50,7 @@ SPM_OUTPUT = 0x50000
 
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "DISPOSITION": 3,
     "OPCODE": 4,
@@ -70,7 +69,7 @@ REQ = {
 
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "DISPOSITION": 4,
@@ -194,7 +193,7 @@ class VuVLoopSemanticCase:
         words = [0] * REQUEST_WORDS
         values = {
             "MAGIC": REQUEST_MAGIC,
-            "SCHEMA_AND_WORDS": (SCHEMA << 32) | REQUEST_WORDS,
+            "WORD_COUNT": REQUEST_WORDS,
             "CASE": self.case_id,
             "DISPOSITION": DISPOSITIONS[self.disposition],
             "OPCODE": OPCODE,

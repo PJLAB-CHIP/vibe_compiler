@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import dataclasses
 
+import wafer_board_complete_tile_add_test as complete_tile_add
+import wafer_board_complete_tile_barrier_probe_test as complete_tile_barrier
 import wafer_collective_traffic_behavior_catalog as collective_traffic
 import wafer_engine_pipeline_characterization_catalog as engine_pipeline
 import wafer_spm_sustained_conflict_catalog as spm_sustained
@@ -38,6 +40,7 @@ class PendingCalibrationFamily:
     runner_batch: str | None
     oracle: tuple[str, ...]
     activation_gate: tuple[str, ...]
+    host_ctests: tuple[str, ...] = ()
     blocker: str | None = None
 
 
@@ -55,10 +58,13 @@ COMPILER_OPTIMIZATION_CASES = (
     "f16-common-factor",
     "resident-fanout-share",
     "consumer-local-recompute",
+    "long-steady-elementwise-add",
     "ready-order-movement-first",
     "gemm-aligned-physical-route",
     "gemm-tail-physical-route",
     "tree-all-reduce",
+    "noc-resident-large-gemm",
+    "noc-resident-m-tiled-gemm",
 )
 COLLECTIVE_CHARACTERIZATION_CASES = (
     "all-gather-direct-vs-ring-256b",
@@ -109,22 +115,28 @@ UNPOOL_COLLISION_CASES = (
     "unpool-index-f16-repeated-overlap-observed",
     "unpool-mask-f16-repeated-overlap-observed",
 )
+COMPLETE_TILE_BARRIER_CASES = tuple(
+    case.name for case in complete_tile_barrier.BARRIER_POSITIVE_CASES
+)
+COMPLETE_TILE_ADD_CASES = tuple(
+    case.key for case in complete_tile_add.RUNTIME_LAUNCH_CALIBRATION_CASES
+)
 COLLECTIVE_TRAFFIC_CASES = tuple(collective_traffic.CASE_KEYS)
 DTE_FOUR_SOURCE_FANIN_CASE_KEYS = (
     transport.MODE_NAMES[transport.FOUR_SOURCE_FANIN_MODE],
 )
-DTE_RAW_REMOTE_CASE_KEYS = tuple(
-    case.key for case in transport.RAW_REMOTE_MULTICAST_CASES
+DTE_RAW_MULTIDEST_CASE_KEYS = tuple(
+    case.key for case in transport.RAW_MULTIDEST_CASES
 )
 PENDING_DTE_CASE_KEYS = (
     *DTE_FOUR_SOURCE_FANIN_CASE_KEYS,
-    *DTE_RAW_REMOTE_CASE_KEYS,
+    *DTE_RAW_MULTIDEST_CASE_KEYS,
 )
 PENDING_DTE_CASE_SPECS = (
     (transport.FOUR_SOURCE_FANIN_MODE, DTE_FOUR_SOURCE_FANIN_CASE_KEYS[0]),
     *tuple(
         (case.mode, case.key)
-        for case in transport.RAW_REMOTE_MULTICAST_CASES
+        for case in transport.RAW_MULTIDEST_CASES
     ),
 )
 COLLECTIVE_TRAFFIC_BLOCKED_COVERAGE_KEYS = tuple(
@@ -169,10 +181,10 @@ ENGINE_PIPELINE_PENDING_PRODUCTION_CELL_KEYS = tuple(
 )
 SPM_SUSTAINED_CELL_KEYS = tuple(cell.key for cell in spm_sustained.CELLS)
 SPM_SUSTAINED_GROUP_KEYS = tuple(group.key for group in spm_sustained.GROUPS)
-DDR_ACTIVE_RANK_CASE_KEYS = tuple(
-    case.key for case in contention.DDR_ACTIVE_RANK_CASES
+DDR_ACTIVE_TILE_CASE_KEYS = tuple(
+    case.key for case in contention.DDR_ACTIVE_TILE_CASES
 )
-DDR_ACTIVE_RANK_GROUP_KEYS = tuple(contention.DDR_ACTIVE_RANK_GROUP_KEYS)
+DDR_ACTIVE_TILE_GROUP_KEYS = tuple(contention.DDR_ACTIVE_TILE_GROUP_KEYS)
 MEMORY_UNREPRESENTABLE_BOUNDARY_KEYS = tuple(
     boundary.key for boundary in contention.TYPED_BOUNDARIES
 )
@@ -181,27 +193,11 @@ UNREPRESENTABLE_BEHAVIOR_KEYS = tuple(
 )
 
 
-def _engine_pipeline_ctest(group_key: str) -> str:
-    return "wafer-board-engine-pipeline-" + group_key
-
-
-def _spm_sustained_ctest(group_key: str) -> str:
-    return "wafer-board-spm-sustained-" + group_key
-
-
-def _ddr_active_rank_ctest(group_key: str) -> str:
-    return "wafer-board-ddr-active-rank-" + group_key
-
-
-def _worker_placement_ctest(group_key: str) -> str:
-    return "wafer-board-worker-placement-" + group_key
-
-
 FAMILIES = (
     PendingCalibrationFamily(
         key="production-optimizer-paired-qualification",
-        disposition=PENDING_BOARD,
-        execution_scope="rank-one-and-full-card",
+        disposition=BLOCKED_EXTERNAL,
+        execution_scope="current-global-source-contract",
         bindings=(
             _binding(
                 "test/Board/wafer_compiler_optimization_comparison_cases.py",
@@ -210,27 +206,25 @@ FAMILIES = (
                 "key",
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-compiler-optimization-{case}"
-            for case in COMPILER_OPTIMIZATION_CASES
-        ),
-        no_card_ctests=tuple(
-            f"wafer-runtime-compiler-optimization-{case}-no-card"
-            for case in COMPILER_OPTIMIZATION_CASES
-        ),
-        runner_batch="compiler-optimization-paired",
+        board_ctests=(),
+        no_card_ctests=(),
+        runner_batch=None,
         oracle=(
-            "same-source-baseline-versus-winner",
-            "full-cpu-expected",
-            "normalized-manifest-and-final-elf-structure",
-            "terminal-status-and-cleanup",
+            "same-current-global-source",
+            "deterministic-host-oracle",
+            "none-and-search-policy-intent",
         ),
-        activation_gate=("explicit-batch", "board-profile-qualified"),
+        activation_gate=("current-global-lowering",),
+        host_ctests=("wafer-compiler-optimization-source-contract",),
+        blocker=(
+            "current global search must compile both none and search "
+            "policies before package or board comparison is valid"
+        ),
     ),
     PendingCalibrationFamily(
         key="collective-algorithm-characterization",
-        disposition=PENDING_BOARD,
-        execution_scope="full-card-16-rank",
+        disposition=BLOCKED_EXTERNAL,
+        execution_scope="current-global-source-contract",
         bindings=(
             _binding(
                 "test/Board/"
@@ -240,28 +234,25 @@ FAMILIES = (
                 "key",
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-collective-characterization-{case}"
-            for case in COLLECTIVE_CHARACTERIZATION_CASES
-        ),
-        no_card_ctests=tuple(
-            f"wafer-runtime-collective-characterization-{case}-no-card"
-            for case in COLLECTIVE_CHARACTERIZATION_CASES
-        ),
-        runner_batch="collective-characterization",
+        board_ctests=(),
+        no_card_ctests=(),
+        runner_batch=None,
         oracle=(
-            "full-rank-output-exact",
-            "accepted-instr-message-tuples",
-            "cross-rank-message-matching",
+            "current-global-source-and-exact-output",
+            "cross-Tile-message-matching",
             "algorithm-specific-graph",
-            "transport-status-and-cleanup",
         ),
-        activation_gate=("explicit-batch", "board-profile-qualified"),
+        activation_gate=("current-collective-algorithm-selection",),
+        host_ctests=("wafer-collective-algorithm-source-contract",),
+        blocker=(
+            "normal global lowering has no current direct/ring/tree "
+            "algorithm comparison interface"
+        ),
     ),
     PendingCalibrationFamily(
         key="collective-traffic-semantics",
-        disposition=PENDING_BOARD,
-        execution_scope="full-card-16-rank",
+        disposition=BLOCKED_EXTERNAL,
+        execution_scope="current-global-source-contract",
         bindings=(
             _binding(
                 "test/Board/wafer_collective_traffic_behavior_catalog.py",
@@ -270,31 +261,89 @@ FAMILIES = (
                 "key",
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-collective-traffic-behavior-{case}"
-            for case in COLLECTIVE_TRAFFIC_CASES
-        ),
-        no_card_ctests=tuple(
-            f"wafer-runtime-collective-traffic-behavior-{case}-no-card"
-            for case in COLLECTIVE_TRAFFIC_CASES
-        ),
-        runner_batch="collective-traffic-behavior",
+        board_ctests=(),
+        no_card_ctests=(),
+        runner_batch=None,
         oracle=(
-            "structured-source-to-status-v2-package",
-            "full-rank-output-exact",
+            "current-global-source",
+            "full-output-exact",
             "source-graph-and-min-hop-demand-record",
-            "transport-status-final-elf-terminal-and-cleanup",
         ),
         activation_gate=(
-            "explicit-batch",
-            "correctness-and-logical-traffic-only",
-            "no-device-cost-without-phase-basis",
+            "current-global-collective-lowering",
         ),
+        host_ctests=("wafer-collective-traffic-source-contract",),
+        blocker=(
+            "current global lowering must produce the typed Direct-DTE "
+            "graph before no-card or board execution is valid"
+        ),
+    ),
+    PendingCalibrationFamily(
+        key="complete-tile-barrier",
+        disposition=PENDING_BOARD,
+        execution_scope="complete-Tile-domain",
+        bindings=(
+            _binding(
+                "test/Board/wafer_board_complete_tile_barrier_probe_test.py",
+                "BARRIER_POSITIVE_CASES",
+                COMPLETE_TILE_BARRIER_CASES,
+                "name",
+            ),
+        ),
+        board_ctests=("wafer-board-complete-tile-barrier-probe",),
+        no_card_ctests=(
+            "wafer-runtime-complete-tile-barrier-probe-no-card",
+        ),
+        runner_batch="synchronization",
+        oracle=(
+            "two-epoch-Tile-specific-markers",
+            "zero-mismatch-and-zero-crosstalk",
+            "terminal-status-and-cleanup",
+        ),
+        activation_gate=(
+            "exact-sixteen-Tile-domain",
+            "subgroups-rejected-before-device-submission",
+        ),
+        host_ctests=("wafer-complete-tile-barrier-contract",),
+    ),
+    PendingCalibrationFamily(
+        key="complete-tile-add",
+        disposition=PENDING_BOARD,
+        execution_scope="complete-Tile-domain",
+        bindings=(
+            _binding(
+                "test/Board/wafer_board_complete_tile_add_test.py",
+                "RUNTIME_LAUNCH_CALIBRATION_CASES",
+                COMPLETE_TILE_ADD_CASES,
+                "key",
+            ),
+        ),
+        board_ctests=(
+            "wafer-board-complete-tile-add",
+            "wafer-board-complete-tile-add-profile",
+        ),
+        no_card_ctests=(
+            "wafer-runtime-complete-tile-add-no-card",
+            "wafer-runtime-complete-tile-add-profile-no-card",
+        ),
+        runner_batch="runtime-execution",
+        oracle=(
+            "complete-f16-output",
+            "exact-complete-Tile-runtime-domain",
+            "ordinary-and-profile-package-byte-equality",
+            "Primary-Count-Trace-profile-report",
+        ),
+        activation_gate=(
+            "sixteen-Tile-grid-launch",
+            "two-ordinary-runs-or-one-bounded-profile-collection",
+            "terminal-local-drain-and-normal-cleanup",
+        ),
+        host_ctests=("wafer-complete-tile-add-profile-contract",),
     ),
     PendingCalibrationFamily(
         key="direct-dte-raw-multidestination-and-fanin",
         disposition=PENDING_BOARD,
-        execution_scope="full-card-isolated-per-case",
+        execution_scope="complete-Tile-domain-isolated-per-case",
         bindings=(
             _binding(
                 "test/Board/wafer_transport_pmu_calibration_catalog.py",
@@ -303,25 +352,17 @@ FAMILIES = (
             ),
             _binding(
                 "test/Board/wafer_transport_pmu_calibration_catalog.py",
-                "RAW_REMOTE_MULTICAST_CASES",
-                DTE_RAW_REMOTE_CASE_KEYS,
+                "RAW_MULTIDEST_CASES",
+                DTE_RAW_MULTIDEST_CASE_KEYS,
                 "key",
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-{case}" for case in PENDING_DTE_CASE_KEYS
-        ),
-        no_card_ctests=(
-            "wafer-runtime-dte-ncc-execution-probe-no-card",
-            *tuple(
-                f"wafer-runtime-{case}-no-card"
-                for case in PENDING_DTE_CASE_KEYS
-            ),
-        ),
-        runner_batch="pending-execution-boundaries",
+        board_ctests=("wafer-board-dte-ncc-execution-probe",),
+        no_card_ctests=("wafer-runtime-dte-ncc-execution-probe-no-card",),
+        runner_batch="transport",
         oracle=(
             "owner-backed-raw-dte-register-programming",
-            "full-rank-exact-or-semantics-classified-output-and-guards",
+            "complete-Tile-exact-or-semantics-classified-output-and-guards",
             "accepted-send-receive-counts-terminal-and-cleanup",
             "final-elf-register-store-and-launch-contract",
         ),
@@ -344,9 +385,7 @@ FAMILIES = (
             ),
         ),
         board_ctests=(),
-        no_card_ctests=(
-            "wafer-collective-traffic-behavior-catalog-python",
-        ),
+        no_card_ctests=(),
         runner_batch=None,
         oracle=(
             "typed-surface-or-abi-rejection",
@@ -360,11 +399,12 @@ FAMILIES = (
             "same-buffer collective surfaces, and multi-card transport "
             "remain absent"
         ),
+        host_ctests=("wafer-collective-traffic-source-contract",),
     ),
     PendingCalibrationFamily(
         key="single-engine-and-engine-pair-characterization",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-complete-activation-group-per-ctest",
+        execution_scope="program-local-complete-activation-group-per-ctest",
         bindings=(
             _binding(
                 "test/Board/"
@@ -374,17 +414,19 @@ FAMILIES = (
                 "key",
             ),
         ),
-        board_ctests=tuple(
-            _engine_pipeline_ctest(group)
-            for group in ENGINE_PIPELINE_BOARD_GROUP_KEYS
-        )
-        + ("wafer-board-ne-tail-throughput-single-ne-tail",),
+        board_ctests=(
+            "wafer-board-engine-pipeline-characterization-probe",
+            "wafer-board-ne-tail-throughput-probe",
+        ),
         no_card_ctests=(
             "wafer-runtime-engine-pipeline-characterization-no-card",
             "wafer-runtime-ne-tail-throughput-no-card",
-            "wafer-ne-tail-throughput-catalog-python",
         ),
-        runner_batch="engine-pipeline-characterization",
+        runner_batch="engine-execution",
+        host_ctests=(
+            "wafer-engine-pipeline-catalog",
+            "wafer-ne-tail-throughput-catalog",
+        ),
         oracle=(
             "full-result-and-prefix-suffix-guards",
             "exact-instruction-count-matching-completion-and-cleanup",
@@ -413,10 +455,7 @@ FAMILIES = (
             ),
         ),
         board_ctests=(),
-        no_card_ctests=(
-            "wafer-engine-pipeline-characterization-catalog-python",
-            "wafer-engine-pipeline-production-gate-python",
-        ),
+        no_card_ctests=(),
         runner_batch=None,
         oracle=(
             "manifest-bound-accepted-instr-fixed-slot-qualification",
@@ -434,23 +473,22 @@ FAMILIES = (
             "qualification remains, and no repo-owned board test collection asset "
             "currently supplies that evidence"
         ),
+        host_ctests=("wafer-engine-pipeline-catalog",),
     ),
     PendingCalibrationFamily(
         key="queue-saturation-response",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-isolated-per-case",
+        execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
                 "test/Board/wafer_board_ncc_execution_probe_test.py",
-                "V2_QUEUE_SATURATION_CASES",
+                "QUEUE_SATURATION_CASES",
                 QUEUE_SATURATION_CASES,
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-ncc-{case}" for case in QUEUE_SATURATION_CASES
-        ),
-        no_card_ctests=("wafer-runtime-ncc-queue-saturation-no-card",),
-        runner_batch="pending-execution-boundaries",
+        board_ctests=(),
+        no_card_ctests=("wafer-runtime-ncc-execution-probe-no-card",),
+        runner_batch=None,
         oracle=(
             "per-issue-acceptance-cycle-and-return",
             "pre-wait-control-snapshot",
@@ -462,23 +500,25 @@ FAMILIES = (
             "documented-depth-minus-one-depth-depth-plus-one-only",
             "no-retry-reset-or-power",
         ),
+        host_ctests=(
+            "wafer-ncc-protocol-contract",
+            "wafer-ncc-probe-plan-contract",
+        ),
     ),
     PendingCalibrationFamily(
         key="worker-wait-scope-exclusion",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-isolated-per-case",
+        execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
                 "test/Board/wafer_board_ncc_execution_probe_test.py",
-                "V2_WORKER_WAIT_SCOPE_CASES",
+                "WORKER_WAIT_SCOPE_CASES",
                 WORKER_WAIT_SCOPE_CASES,
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-ncc-{case}" for case in WORKER_WAIT_SCOPE_CASES
-        ),
-        no_card_ctests=("wafer-runtime-ncc-worker-wait-scope-no-card",),
-        runner_batch="pending-execution-boundaries",
+        board_ctests=(),
+        no_card_ctests=("wafer-runtime-ncc-execution-probe-no-card",),
+        runner_batch=None,
         oracle=(
             "target-pending-before-wait",
             "boundary-worker-control-and-result",
@@ -486,23 +526,25 @@ FAMILIES = (
             "full-result-guards-count-and-cleanup",
         ),
         activation_gate=("one-case-per-process", "pending-snapshot-required"),
+        host_ctests=(
+            "wafer-ncc-protocol-contract",
+            "wafer-ncc-probe-plan-contract",
+        ),
     ),
     PendingCalibrationFamily(
         key="worker-subset-join-exclusion",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-isolated-per-case",
+        execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
                 "test/Board/wafer_board_ncc_execution_probe_test.py",
-                "V2_WORKER_SUBSET_SCOPE_CASES",
+                "WORKER_SUBSET_SCOPE_CASES",
                 WORKER_SUBSET_SCOPE_CASES,
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-ncc-{case}" for case in WORKER_SUBSET_SCOPE_CASES
-        ),
-        no_card_ctests=("wafer-runtime-ncc-worker-subset-scope-no-card",),
-        runner_batch="pending-execution-boundaries",
+        board_ctests=(),
+        no_card_ctests=("wafer-runtime-ncc-execution-probe-no-card",),
+        runner_batch=None,
         oracle=(
             "target-pending-before-join",
             "include-exclude-mask-pair",
@@ -510,11 +552,15 @@ FAMILIES = (
             "final-all-worker-drain-guards-count-and-cleanup",
         ),
         activation_gate=("one-case-per-process", "pending-snapshot-required"),
+        host_ctests=(
+            "wafer-ncc-protocol-contract",
+            "wafer-ncc-probe-plan-contract",
+        ),
     ),
     PendingCalibrationFamily(
         key="worker-placement-and-bounded-progress",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-matched-group-per-ctest",
+        execution_scope="program-local-matched-group-per-ctest",
         bindings=(
             _binding(
                 "test/Board/"
@@ -524,15 +570,11 @@ FAMILIES = (
                 "key",
             ),
         ),
-        board_ctests=tuple(
-            _worker_placement_ctest(group)
-            for group in WORKER_PLACEMENT_GROUP_KEYS
-        ),
+        board_ctests=("wafer-board-worker-placement-probe",),
         no_card_ctests=(
-            "wafer-worker-placement-characterization-python",
-            "wafer-runtime-worker-placement-characterization-no-card",
+            "wafer-runtime-worker-placement-probe-no-card",
         ),
-        runner_batch="pending-execution-boundaries",
+        runner_batch="worker-execution",
         oracle=(
             "fixed-total-work-placement-and-matched-progress-controls",
             "full-output-prefix-suffix-guards-and-routing-counts",
@@ -546,6 +588,7 @@ FAMILIES = (
             "no-absolute-worker-timestamp-or-arbiter-name",
             "no-retry-after-cleanup-deadline",
         ),
+        host_ctests=("wafer-worker-placement-contract",),
     ),
     PendingCalibrationFamily(
         key="worker-placement-unrepresentable-surfaces",
@@ -561,9 +604,7 @@ FAMILIES = (
             ),
         ),
         board_ctests=(),
-        no_card_ctests=(
-            "wafer-worker-placement-characterization-python",
-        ),
+        no_card_ctests=(),
         runner_batch=None,
         oracle=(
             "typed-preparation-rejection",
@@ -579,11 +620,12 @@ FAMILIES = (
             "timestamp, and no owner-backed ABI identifies the physical "
             "worker arbiter policy"
         ),
+        host_ctests=("wafer-worker-placement-contract",),
     ),
     PendingCalibrationFamily(
         key="spm-conflict-equivalence",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-plus-full-card-held-out",
+        execution_scope="program-local-plus-complete-Tile-domain-held-out",
         bindings=(
             _binding(
                 "test/Board/"
@@ -600,19 +642,17 @@ FAMILIES = (
             ),
         ),
         board_ctests=(
-            "wafer-board-spm-conflict-equivalence-rank-one",
-            "wafer-board-spm-conflict-equivalence-cross-tile",
+            "wafer-board-spm-cross-tile-conflict-probe",
         ),
         no_card_ctests=(
-            "wafer-runtime-spm-conflict-equivalence-probe-no-card",
             "wafer-runtime-spm-cross-tile-conflict-probe-no-card",
         ),
-        runner_batch="pending-execution-boundaries",
+        runner_batch="memory",
         oracle=(
             "same-invocation-serial-window-pair",
             "reciprocal-order-base-workload-controls",
             "full-result-guards-count-and-completion",
-            "physical-tile-held-out",
+            "cross-Tile-held-out",
         ),
         activation_gate=(
             "nonzero-stable-proxy-required-for-promotion",
@@ -622,7 +662,7 @@ FAMILIES = (
     PendingCalibrationFamily(
         key="spm-sustained-conflict-pilot",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-matched-group-per-ctest",
+        execution_scope="program-local-matched-group-per-ctest",
         bindings=(
             _binding(
                 "test/Board/wafer_spm_sustained_conflict_catalog.py",
@@ -631,15 +671,12 @@ FAMILIES = (
                 "key",
             ),
         ),
-        board_ctests=tuple(
-            _spm_sustained_ctest(group)
-            for group in SPM_SUSTAINED_GROUP_KEYS
-        ),
+        board_ctests=(),
         no_card_ctests=(
-            "wafer-runtime-spm-sustained-conflict-probe-no-card",
-            "wafer-spm-sustained-conflict-contract-python",
+            "wafer-runtime-spm-sustained-probe-no-card",
         ),
-        runner_batch="pending-execution-boundaries",
+        runner_batch=None,
+        host_ctests=("wafer-spm-sustained-contract",),
         oracle=(
             "same-invocation-candidate-control-serial-window",
             "four-way-execution-order-rotation",
@@ -657,7 +694,7 @@ FAMILIES = (
     PendingCalibrationFamily(
         key="ddr-conflict-equivalence",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-plus-full-card-held-out",
+        execution_scope="program-local-plus-complete-Tile-domain-held-out",
         bindings=(
             _binding(
                 "test/Board/"
@@ -673,19 +710,17 @@ FAMILIES = (
             ),
         ),
         board_ctests=(
-            "wafer-board-ddr-conflict-equivalence-rank-one",
-            "wafer-board-ddr-conflict-equivalence-cross-tile",
+            "wafer-board-ddr-tile-offset-probe",
         ),
         no_card_ctests=(
-            "wafer-runtime-ddr-conflict-equivalence-probe-no-card",
-            "wafer-runtime-ddr-cross-tile-conflict-probe-no-card",
+            "wafer-runtime-ddr-tile-offset-probe-no-card",
         ),
-        runner_batch="pending-execution-boundaries",
+        runner_batch="memory",
         oracle=(
             "same-invocation-address-schedule-order-controls",
             "actual-allocation-base",
             "full-payload-holes-guards-count-and-completion",
-            "physical-tile-held-out",
+            "cross-Tile-held-out",
         ),
         activation_gate=(
             "explicit-batch-only",
@@ -693,32 +728,29 @@ FAMILIES = (
         ),
     ),
     PendingCalibrationFamily(
-        key="ddr-active-rank-contention",
+        key="ddr-active-tile-contention",
         disposition=PENDING_BOARD,
-        execution_scope="full-card-five-point-matched-group-per-ctest",
+        execution_scope="complete-Tile-domain-five-point-matched-group-per-ctest",
         bindings=(
             _binding(
                 "test/Board/"
                 "wafer_worker_memory_contention_characterization_catalog.py",
-                "DDR_ACTIVE_RANK_CASES",
-                DDR_ACTIVE_RANK_CASE_KEYS,
+                "DDR_ACTIVE_TILE_CASES",
+                DDR_ACTIVE_TILE_CASE_KEYS,
                 "key",
             ),
         ),
-        board_ctests=tuple(
-            _ddr_active_rank_ctest(group)
-            for group in DDR_ACTIVE_RANK_GROUP_KEYS
-        ),
+        board_ctests=("wafer-board-ddr-active-tile-contention-probe",),
         no_card_ctests=(
-            "wafer-runtime-ddr-active-rank-contention-no-card",
-            "wafer-ddr-active-rank-contention-contract-python",
+            "wafer-runtime-ddr-active-tile-contention-no-card",
         ),
-        runner_batch="pending-execution-boundaries",
+        runner_batch="memory",
+        host_ctests=("wafer-worker-memory-contention-contract",),
         oracle=(
-            "all-sixteen-ranks-one-lifecycle-and-explicit-active-mask",
+            "all-sixteen-Tiles-one-lifecycle-and-explicit-active-mask",
             "active-exact-output-guards-count-and-device-cycles",
-            "inactive-rank-output-and-pmu-canary",
-            "one-two-four-eight-sixteen-rank-matched-sweep",
+            "inactive-Tile-output-and-pmu-canary",
+            "one-two-four-eight-sixteen-Tile-matched-sweep",
         ),
         activation_gate=(
             "one-complete-five-point-group-per-ctest",
@@ -740,9 +772,7 @@ FAMILIES = (
             ),
         ),
         board_ctests=(),
-        no_card_ctests=(
-            "wafer-ddr-active-rank-contention-contract-python",
-        ),
+        no_card_ctests=(),
         runner_batch=None,
         oracle=(
             "typed-preparation-rejection",
@@ -760,6 +790,7 @@ FAMILIES = (
             "cross-allocation held-out are not representable by the current "
             "owned ABI"
         ),
+        host_ctests=("wafer-worker-memory-contention-contract",),
     ),
     PendingCalibrationFamily(
         key="unrepresentable-hardware-surfaces",
@@ -775,9 +806,7 @@ FAMILIES = (
             ),
         ),
         board_ctests=(),
-        no_card_ctests=(
-            "wafer-unrepresentable-hardware-behavior-python",
-        ),
+        no_card_ctests=(),
         runner_batch=None,
         oracle=(
             "record-field-absence-audit",
@@ -796,11 +825,12 @@ FAMILIES = (
             "outside the four explicit F16 rows have no typed case or "
             "coherent value/index oracle"
         ),
+        host_ctests=("wafer-unrepresentable-hardware-catalog",),
     ),
     PendingCalibrationFamily(
         key="argmin-tie-and-nan-domain",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-isolated-per-case",
+        execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
                 "test/Board/wafer_instruction_family_catalog.py",
@@ -808,15 +838,12 @@ FAMILIES = (
                 ARGMIN_DOMAIN_CASES,
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-instruction-family-{case}"
-            for case in ARGMIN_DOMAIN_CASES
-        ),
+        board_ctests=(),
         no_card_ctests=(
-            "wafer-instruction-family-catalog-python",
             "wafer-runtime-instruction-family-probe-no-card",
         ),
-        runner_batch="pending-execution-boundaries",
+        runner_batch=None,
+        host_ctests=("wafer-instruction-family-catalog",),
         oracle=(
             "three-distinguishing-inputs-per-domain",
             "coherent-value-index-pair",
@@ -828,7 +855,7 @@ FAMILIES = (
     PendingCalibrationFamily(
         key="unpool-repeated-overlap-collision",
         disposition=PENDING_BOARD,
-        execution_scope="rank-one-isolated-per-case",
+        execution_scope="program-local-isolated-per-case",
         bindings=(
             _binding(
                 "test/Board/wafer_instruction_family_catalog.py",
@@ -836,15 +863,12 @@ FAMILIES = (
                 UNPOOL_COLLISION_CASES,
             ),
         ),
-        board_ctests=tuple(
-            f"wafer-board-instruction-family-{case}"
-            for case in UNPOOL_COLLISION_CASES
-        ),
+        board_ctests=(),
         no_card_ctests=(
-            "wafer-instruction-family-catalog-python",
             "wafer-runtime-instruction-family-probe-no-card",
         ),
-        runner_batch="pending-execution-boundaries",
+        runner_batch=None,
+        host_ctests=("wafer-instruction-family-catalog",),
         oracle=(
             "sample-rotated-four-source-sentinels",
             "exact-5-3-2-0-indexed-pool-auxiliary",
@@ -877,13 +901,13 @@ def validate_inventory() -> None:
         if not family.oracle or not family.activation_gate:
             raise RuntimeError(f"{family.key}: oracle or activation gate is empty")
         if family.disposition == PENDING_BOARD:
-            if (
-                not family.bindings
-                or not family.board_ctests
-                or not family.no_card_ctests
-            ):
+            if not family.bindings or not family.no_card_ctests:
                 raise RuntimeError(
-                    f"{family.key}: executable family lacks concrete assets"
+                    f"{family.key}: pending family lacks current no-card assets"
+                )
+            if family.runner_batch is not None and not family.board_ctests:
+                raise RuntimeError(
+                    f"{family.key}: runner batch has no registered Board CTest"
                 )
             if family.blocker is not None:
                 raise RuntimeError(
@@ -896,7 +920,7 @@ def validate_inventory() -> None:
                 )
             if (
                 not family.bindings
-                or not family.no_card_ctests
+                or not (family.host_ctests or family.no_card_ctests)
                 or not family.blocker
             ):
                 raise RuntimeError(

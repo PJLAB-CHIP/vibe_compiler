@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Typed full-card DDR-contention characterization matrix.
+"""Typed complete-Tile-domain DDR-contention characterization matrix.
 
 Pipeline position:
 - Upstream IR / input:
-  Verified rank-one NCC plans, the 16-rank cluster lifecycle contract, owned
+  Verified program-local NCC plans, the 16-Tile cluster lifecycle contract, owned
   SPM/DDR ranges, and the already-qualified PMU/status readback surfaces.
 - Current stage responsibility:
-  Bind active-rank DDR-contention claims to concrete matched positive cases
+  Bind active-Tile DDR-contention claims to concrete matched positive cases
   and retain non-duplicating references or typed boundaries for neighboring
   behavior.  Executable worker-placement and sustained-SPM matrices are owned
   by their dedicated board adapters and are not duplicated here.
 - Output IR / files:
-  A test-only full-card active-rank DDR matrix, a real request contract, and
+  A test-only complete-Tile-domain active-Tile DDR matrix, a real request contract, and
   bindings to already-existing board evidence or genuine typed boundaries.
   They are not compiler IR, scheduler hints, or a bank/color side channel.
 - Downstream consumer:
@@ -19,16 +19,16 @@ Pipeline position:
   gate passes, bounded candidate-cost calibration.
 - User-level driver / named pipeline:
   ``wafer_worker_memory_contention_characterization_driver.py`` launches the
-  active-rank DDR family through the normal 16-rank wafer-run lifecycle and is
+  active-Tile DDR family through the normal 16-Tile wafer-run lifecycle and is
   a fail-closed host gate for genuine unrepresentable boundaries.
 - Explicit non-goals:
   Do not infer fairness from final completion, infer DDR/SPM banks from
   offsets, use host elapsed time as device cost, duplicate existing wait/
   subset/conflict-equivalence probes, or emit unsafe cross-worker hazards.
 - Completion gate:
-  Every active-rank DDR claim resolves to an executable case and every
+  Every active-Tile DDR claim resolves to an executable case and every
   neighboring claim retained here resolves to delegated board evidence or a
-  genuine typed boundary.  Executable DDR cases require all-rank status,
+  genuine typed boundary.  Executable DDR cases require all-Tile status,
   exact result/guard/count/canary checks, and device-cycle observations.
 """
 
@@ -40,7 +40,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable
 
 
-RANK_COUNT = 16
+TILE_COUNT = 16
 WORKER_COUNT = 3
 MINIMUM_REPEATS = 3
 SPM_CANDIDATE_OFFSET = 8192
@@ -50,7 +50,7 @@ SPM_SAFE_TRANSLATION = 0x20000
 
 class Domain(str, enum.Enum):
     WORKER_PLACEMENT = "worker-placement-arbitration"
-    DDR_ACTIVE_RANK = "ddr-active-rank-contention"
+    DDR_ACTIVE_TILE = "ddr-active-tile-contention"
     SPM_CONFLICT = "spm-conflict-pilot"
     DDR_BANK_COLORING = "ddr-bank-coloring"
 
@@ -86,7 +86,7 @@ class DDRDirection(str, enum.Enum):
 
 class MeasurementScope(str, enum.Enum):
     PER_WORKER = "per-worker-device-cycles"
-    PER_RANK = "per-rank-device-cycles-and-full-card-max"
+    PER_TILE = "per-tile-device-cycles-and-complete-Tile-domain-max"
     PAIRED_SPM = "paired-target-window-device-cycles"
 
 
@@ -98,7 +98,7 @@ class CorrectnessGate:
     instruction_count: bool
     request_echo: bool
     status_scope: str
-    terminal_completion: bool
+    local_drain_completion: bool
     cleanup: bool
     inactive_participant_canary: bool = False
 
@@ -110,14 +110,14 @@ class CorrectnessGate:
                 self.suffix_guard,
                 self.instruction_count,
                 self.request_echo,
-                self.terminal_completion,
+                self.local_drain_completion,
                 self.cleanup,
             )
         ):
             raise RuntimeError("positive case has a weak correctness gate")
         if self.status_scope not in {
-            "rank-one-record",
-            "all-rank-status-v2",
+            "tile-zero-record",
+            "all-tile-status",
         }:
             raise RuntimeError("positive case has an unknown status scope")
 
@@ -147,7 +147,7 @@ class MeasurementGate:
 @dataclasses.dataclass(frozen=True)
 class Stream:
     stream_id: str
-    rank: int
+    tile_id: int
     worker: int
     engine: Engine
     payload_bytes: int
@@ -158,7 +158,7 @@ class Stream:
     def validate(self, participants: tuple[int, ...]) -> None:
         if (
             not self.stream_id
-            or self.rank not in participants
+            or self.tile_id not in participants
             or self.worker not in range(WORKER_COUNT)
             or self.payload_bytes <= 0
             or self.expected_instructions <= 0
@@ -178,8 +178,8 @@ class CharacterizationCase:
     layer: Layer
     matched_group: str
     variant: str
-    participant_ranks: tuple[int, ...]
-    active_ranks: tuple[int, ...]
+    participant_tiles: tuple[int, ...]
+    active_tiles: tuple[int, ...]
     streams: tuple[Stream, ...]
     payload_seed: int
     correctness: CorrectnessGate
@@ -193,9 +193,9 @@ class CharacterizationCase:
     spm_schedule: str | None = None
 
     @property
-    def inactive_ranks(self) -> tuple[int, ...]:
-        active = set(self.active_ranks)
-        return tuple(rank for rank in self.participant_ranks if rank not in active)
+    def inactive_tiles(self) -> tuple[int, ...]:
+        active = set(self.active_tiles)
+        return tuple(tile_id for tile_id in self.participant_tiles if tile_id not in active)
 
     @property
     def workers(self) -> tuple[int, ...]:
@@ -212,27 +212,27 @@ class CharacterizationCase:
                 ),
                 "typed_gate": (
                     "performance request serialization is rejected until a "
-                    "versioned per-worker completion-cycle surface exists"
+                    "a current per-worker completion-cycle surface exists"
                 ),
                 "safe_alternative": (
                     "retain existing low-depth routing, wait-scope, subset, "
                     "and far-disjoint correctness evidence"
                 ),
             }
-        if self.domain == Domain.DDR_ACTIVE_RANK:
+        if self.domain == Domain.DDR_ACTIVE_TILE:
             return {
                 "reason": (
-                    "the current 16-rank DDR carrier intentionally executes "
-                    "one active rank per barrier phase and has no active-mask "
-                    "contention mode or same-basis per-rank duration record"
+                    "the current 16-Tile DDR carrier intentionally executes "
+                    "one active tile_id per barrier phase and has no active-mask "
+                    "contention mode or same-basis per-Tile duration record"
                 ),
                 "typed_gate": (
-                    "active-rank request serialization is rejected until an "
-                    "all-rank active-mask carrier and per-rank device-cycle "
-                    "record are versioned together"
+                    "active-Tile request serialization is rejected until an "
+                    "all-Tile active-mask carrier and per-Tile device-cycle "
+                    "record share one current protocol"
                 ),
                 "safe_alternative": (
-                    "retain the existing single-active-rank tile/offset "
+                    "retain the existing single-active-Tile tile/offset "
                     "legality evidence"
                 ),
             }
@@ -241,12 +241,12 @@ class CharacterizationCase:
     def expected_counts(self) -> dict[str, int]:
         counts: Counter[tuple[int, int, Engine]] = Counter()
         for stream in self.streams:
-            counts[(stream.rank, stream.worker, stream.engine)] += (
+            counts[(stream.tile_id, stream.worker, stream.engine)] += (
                 stream.expected_instructions
             )
         return {
-            f"rank{rank}.worker{worker}.{engine.value}": value
-            for (rank, worker, engine), value in sorted(
+            f"tile_id{tile_id}.worker{worker}.{engine.value}": value
+            for (tile_id, worker, engine), value in sorted(
                 counts.items(),
                 key=lambda item: (
                     item[0][0],
@@ -263,11 +263,11 @@ class CharacterizationCase:
             or not self.variant
             or self.disposition
             not in {Disposition.BLOCKED, Disposition.BOARD_EXECUTABLE}
-            or not self.participant_ranks
-            or tuple(sorted(set(self.participant_ranks)))
-            != self.participant_ranks
-            or tuple(sorted(set(self.active_ranks))) != self.active_ranks
-            or not set(self.active_ranks).issubset(self.participant_ranks)
+            or not self.participant_tiles
+            or tuple(sorted(set(self.participant_tiles)))
+            != self.participant_tiles
+            or tuple(sorted(set(self.active_tiles))) != self.active_tiles
+            or not set(self.active_tiles).issubset(self.participant_tiles)
             or not self.streams
             or self.payload_seed <= 0
             or not self.activation_requirements
@@ -276,31 +276,31 @@ class CharacterizationCase:
         self.correctness.validate()
         self.measurement.validate()
         for stream in self.streams:
-            stream.validate(self.participant_ranks)
+            stream.validate(self.participant_tiles)
         if len({stream.stream_id for stream in self.streams}) != len(
             self.streams
         ):
             raise RuntimeError(f"{self.key}: duplicate stream identity")
-        stream_ranks = {stream.rank for stream in self.streams}
-        if stream_ranks != set(self.active_ranks):
-            raise RuntimeError(f"{self.key}: stream/active-rank domain differs")
-        if self.domain == Domain.DDR_ACTIVE_RANK:
+        stream_tiles = {stream.tile_id for stream in self.streams}
+        if stream_tiles != set(self.active_tiles):
+            raise RuntimeError(f"{self.key}: stream/active-Tile domain differs")
+        if self.domain == Domain.DDR_ACTIVE_TILE:
             if (
                 self.disposition != Disposition.BOARD_EXECUTABLE
                 or
-                self.participant_ranks != tuple(range(RANK_COUNT))
+                self.participant_tiles != tuple(range(TILE_COUNT))
                 or self.ddr_direction is None
                 or not self.correctness.inactive_participant_canary
-                or self.measurement.scope != MeasurementScope.PER_RANK
+                or self.measurement.scope != MeasurementScope.PER_TILE
             ):
                 raise RuntimeError(
-                    f"{self.key}: invalid active-rank DDR contract"
+                    f"{self.key}: invalid active-Tile DDR contract"
                 )
         elif self.domain == Domain.WORKER_PLACEMENT:
             if (
                 self.disposition != Disposition.BLOCKED
-                or self.participant_ranks != (0,)
-                or self.active_ranks != (0,)
+                or self.participant_tiles != (0,)
+                or self.active_tiles != (0,)
                 or self.measurement.scope != MeasurementScope.PER_WORKER
             ):
                 raise RuntimeError(
@@ -308,8 +308,8 @@ class CharacterizationCase:
                 )
         elif self.domain == Domain.SPM_CONFLICT:
             if (
-                self.participant_ranks != (0,)
-                or self.active_ranks != (0,)
+                self.participant_tiles != (0,)
+                or self.active_tiles != (0,)
                 or self.measurement.scope != MeasurementScope.PAIRED_SPM
                 or self.spm_relative_offset
                 not in {SPM_CANDIDATE_OFFSET, SPM_CONTROL_OFFSET}
@@ -331,9 +331,9 @@ class CharacterizationCase:
             "layer": self.layer.value,
             "matched_group": self.matched_group,
             "variant": self.variant,
-            "participant_ranks": list(self.participant_ranks),
-            "active_ranks": list(self.active_ranks),
-            "inactive_ranks": list(self.inactive_ranks),
+            "participant_tiles": list(self.participant_tiles),
+            "active_tiles": list(self.active_tiles),
+            "inactive_tiles": list(self.inactive_tiles),
             "payload_seed": self.payload_seed,
             "streams": [
                 {
@@ -375,9 +375,9 @@ class CharacterizationCase:
                     ),
                     "carrier": (
                         "test/Board/Inputs/"
-                        "wafer_ddr_active_rank_contention_probe.c"
+                        "wafer_ddr_active_tile_contention_probe.c"
                     ),
-                    "lifecycle": "cluster-x16/status-v2",
+                    "lifecycle": "cluster-x16/status",
                 }
                 if self.disposition == Disposition.BOARD_EXECUTABLE
                 else None
@@ -494,42 +494,42 @@ class TypedBoundary:
         }
 
 
-RANK_ONE_CORRECTNESS = CorrectnessGate(
+PROGRAM_LOCAL_CORRECTNESS = CorrectnessGate(
     exact_full_output=True,
     prefix_guard=True,
     suffix_guard=True,
     instruction_count=True,
     request_echo=True,
-    status_scope="rank-one-record",
-    terminal_completion=True,
+    status_scope="tile-zero-record",
+    local_drain_completion=True,
     cleanup=True,
 )
-ALL_RANK_CORRECTNESS = dataclasses.replace(
-    RANK_ONE_CORRECTNESS,
-    status_scope="all-rank-status-v2",
+ALL_TILE_CORRECTNESS = dataclasses.replace(
+    PROGRAM_LOCAL_CORRECTNESS,
+    status_scope="all-tile-status",
     inactive_participant_canary=True,
 )
 
 DDR_MEASUREMENT = MeasurementGate(
-    scope=MeasurementScope.PER_RANK,
+    scope=MeasurementScope.PER_TILE,
     minimum_repeats=MINIMUM_REPEATS,
     required_metrics=(
-        "per_rank_duration_cycles",
-        "full_card_max_cycles",
-        "per_rank_instruction_delta",
+        "per_tile_duration_cycles",
+        "complete_tile_max_cycles",
+        "per_tile_instruction_delta",
         "target_only_pmu_window",
     ),
     counterbalanced_order=True,
     calibration_and_held_out=True,
     promotion_rule=(
-        "payload slope and strided held-out agree across active-rank counts; "
-        "all-rank max and every active-rank duration use one device basis"
+        "payload slope and strided held-out agree across active-Tile counts; "
+        "all-Tile max and every active-Tile duration use one device basis"
     ),
 )
 def _stream(
     prefix: str,
     *,
-    rank: int,
+    tile_id: int,
     worker: int,
     engine: Engine,
     payload_bytes: int,
@@ -538,8 +538,8 @@ def _stream(
     role: str = "work",
 ) -> Stream:
     return Stream(
-        stream_id=f"{prefix}-r{rank}-w{worker}-{engine.value}",
-        rank=rank,
+        stream_id=f"{prefix}-r{tile_id}-w{worker}-{engine.value}",
+        tile_id=tile_id,
         worker=worker,
         engine=engine,
         payload_bytes=payload_bytes,
@@ -549,16 +549,16 @@ def _stream(
     )
 
 
-ACTIVE_RANK_SETS = {
+ACTIVE_TILE_SETS = {
     1: (0,),
     2: (0, 8),
     4: (0, 4, 8, 12),
-    8: tuple(range(0, RANK_COUNT, 2)),
-    16: tuple(range(RANK_COUNT)),
+    8: tuple(range(0, TILE_COUNT, 2)),
+    16: tuple(range(TILE_COUNT)),
 }
 
 
-def _ddr_active_rank_cases() -> tuple[CharacterizationCase, ...]:
+def _ddr_active_tile_cases() -> tuple[CharacterizationCase, ...]:
     workloads = (
         ("4k-contiguous", Layer.CALIBRATION, 4096, 0),
         ("64k-contiguous", Layer.CALIBRATION, 65536, 0),
@@ -582,41 +582,41 @@ def _ddr_active_rank_cases() -> tuple[CharacterizationCase, ...]:
             stride_bytes,
         ) in enumerate(workloads):
             group = f"ddr-contention-{direction.value}-{workload}"
-            for active_count, ranks in ACTIVE_RANK_SETS.items():
+            for active_count, Tiles in ACTIVE_TILE_SETS.items():
                 streams = tuple(
                     _stream(
                         group,
-                        rank=rank,
+                        tile_id=tile_id,
                         worker=0,
                         engine=engine,
                         payload_bytes=payload_bytes,
                         instructions=1,
                         stride_bytes=stride_bytes,
                     )
-                    for rank in ranks
+                    for tile_id in Tiles
                     for engine in engines
                 )
                 cases.append(
                     CharacterizationCase(
                         key=f"{group}-active-{active_count}",
-                        domain=Domain.DDR_ACTIVE_RANK,
+                        domain=Domain.DDR_ACTIVE_TILE,
                         layer=layer,
                         matched_group=group,
                         variant=f"active-{active_count}",
-                        participant_ranks=tuple(range(RANK_COUNT)),
-                        active_ranks=ranks,
+                        participant_tiles=tuple(range(TILE_COUNT)),
+                        active_tiles=Tiles,
                         streams=streams,
                         payload_seed=(
                             0x9000
                             + direction_index * 0x400
                             + workload_index * 0x80
                         ),
-                        correctness=ALL_RANK_CORRECTNESS,
+                        correctness=ALL_TILE_CORRECTNESS,
                         measurement=DDR_MEASUREMENT,
                         activation_requirements=(
-                            "all 16 ranks enter one start and terminal lifecycle",
-                            "inactive ranks issue zero NCC instructions",
-                            "per-rank device duration and full-card max share basis",
+                            "all 16 Tiles enter one start and terminal lifecycle",
+                            "inactive Tiles issue zero NCC instructions",
+                            "per-Tile device duration and complete-Tile-domain max share basis",
                             "strided holes remain canary",
                         ),
                         ddr_direction=direction,
@@ -626,25 +626,25 @@ def _ddr_active_rank_cases() -> tuple[CharacterizationCase, ...]:
     return tuple(cases)
 
 
-DDR_ACTIVE_RANK_CASES = _ddr_active_rank_cases()
+DDR_ACTIVE_TILE_CASES = _ddr_active_tile_cases()
 # Worker placement and sustained SPM conflict are real executable families
 # owned by wafer_worker_placement_characterization_catalog.py and
 # wafer_spm_sustained_conflict_catalog.py respectively.  Do not re-materialize
 # their superseded synthetic blockers in this DDR-owned catalog.
-CASES = DDR_ACTIVE_RANK_CASES
+CASES = DDR_ACTIVE_TILE_CASES
 CASES_BY_KEY = {case.key: case for case in CASES}
-EXECUTABLE_CASES = DDR_ACTIVE_RANK_CASES
-DDR_ACTIVE_RANK_GROUPS = {
+EXECUTABLE_CASES = DDR_ACTIVE_TILE_CASES
+DDR_ACTIVE_TILE_GROUPS = {
     group_key: tuple(
         case
-        for case in DDR_ACTIVE_RANK_CASES
+        for case in DDR_ACTIVE_TILE_CASES
         if case.matched_group == group_key
     )
     for group_key in sorted(
-        {case.matched_group for case in DDR_ACTIVE_RANK_CASES}
+        {case.matched_group for case in DDR_ACTIVE_TILE_CASES}
     )
 }
-DDR_ACTIVE_RANK_GROUP_KEYS = tuple(DDR_ACTIVE_RANK_GROUPS)
+DDR_ACTIVE_TILE_GROUP_KEYS = tuple(DDR_ACTIVE_TILE_GROUPS)
 
 
 DELEGATED_ASSETS = (
@@ -653,7 +653,7 @@ DELEGATED_ASSETS = (
         domain=Domain.WORKER_PLACEMENT,
         disposition=Disposition.DELEGATED_BOARD_OBSERVED,
         source_file="test/Board/wafer_board_ncc_execution_probe_test.py",
-        selector="V2_WORKER_CASES",
+        selector="WORKER_CASES",
         object_count=7,
         evidence_scope=(
             "CT w0/w1/w2 routing, all dual placements, and triple matching join"
@@ -675,7 +675,7 @@ DELEGATED_ASSETS = (
         domain=Domain.WORKER_PLACEMENT,
         disposition=Disposition.DELEGATED_PENDING,
         source_file="test/Board/wafer_board_ncc_execution_probe_test.py",
-        selector="V2_WORKER_WAIT_SCOPE_CASES",
+        selector="WORKER_WAIT_SCOPE_CASES",
         object_count=18,
         evidence_scope=(
             "NE/RDMA target worker 0/1/2 × default/byworker/local fence"
@@ -687,20 +687,20 @@ DELEGATED_ASSETS = (
         domain=Domain.WORKER_PLACEMENT,
         disposition=Disposition.DELEGATED_PENDING,
         source_file="test/Board/wafer_board_ncc_execution_probe_test.py",
-        selector="V2_WORKER_SUBSET_SCOPE_CASES",
+        selector="WORKER_SUBSET_SCOPE_CASES",
         object_count=12,
         evidence_scope="NE/RDMA target 0/1/2 × include/exclude target",
         claims=("worker-subset-mask-exclusion",),
     ),
     DelegatedAsset(
-        key="ddr-single-active-rank-tile-offset",
-        domain=Domain.DDR_ACTIVE_RANK,
+        key="ddr-single-active-tile-offset",
+        domain=Domain.DDR_ACTIVE_TILE,
         disposition=Disposition.DELEGATED_BOARD_OBSERVED,
         source_file="test/Board/wafer_board_ddr_tile_offset_probe_test.py",
         selector="matrix_cases",
         object_count=896,
         evidence_scope=(
-            "one active rank per barrier phase across 16 tiles, two "
+            "one active tile_id per barrier phase across 16 tiles, two "
             "allocations, 14 offsets, RDMA/WDMA"
         ),
         claims=("ddr-single-active-address-legality",),
@@ -719,7 +719,7 @@ DELEGATED_ASSETS = (
         claims=("spm-sustained-far-disjoint-control",),
     ),
     DelegatedAsset(
-        key="spm-conflict-equivalence-rank-one",
+        key="spm-conflict-equivalence-program-local",
         domain=Domain.SPM_CONFLICT,
         disposition=Disposition.DELEGATED_PENDING,
         source_file="test/Board/wafer_memory_descriptor_calibration_catalog.py",
@@ -731,7 +731,7 @@ DELEGATED_ASSETS = (
         claims=("spm-conflict-equivalence",),
     ),
     DelegatedAsset(
-        key="spm-conflict-equivalence-physical-tile",
+        key="spm-conflict-equivalence-cross-tile",
         domain=Domain.SPM_CONFLICT,
         disposition=Disposition.DELEGATED_PENDING,
         source_file=(
@@ -739,32 +739,32 @@ DELEGATED_ASSETS = (
         ),
         selector="conflict_pairs",
         object_count=48,
-        evidence_scope="counterbalanced single-active-rank physical-tile execution",
-        claims=("spm-conflict-equivalence-physical-tile",),
+        evidence_scope="counterbalanced single-active-Tile mapped execution",
+        claims=("spm-conflict-equivalence-cross-tile",),
     ),
     DelegatedAsset(
-        key="ddr-conflict-equivalence-rank-one",
+        key="ddr-conflict-equivalence-program-local",
         domain=Domain.DDR_BANK_COLORING,
         disposition=Disposition.DELEGATED_PENDING,
         source_file="test/Board/wafer_cache_coherence_calibration_catalog.py",
         selector="PENDING_DDR_CONFLICT_CASES",
         object_count=108,
         evidence_scope=(
-            "rank-one same-lifetime serial/window/order/workload controls"
+            "program-local same-lifetime serial/window/order/workload controls"
         ),
         claims=("ddr-conflict-equivalence",),
     ),
     DelegatedAsset(
-        key="ddr-conflict-equivalence-physical-tile",
+        key="ddr-conflict-equivalence-cross-tile",
         domain=Domain.DDR_BANK_COLORING,
         disposition=Disposition.DELEGATED_PENDING,
         source_file="test/Board/wafer_board_ddr_tile_offset_probe_test.py",
         selector="conflict_equivalence_cases",
         object_count=384,
         evidence_scope=(
-            "RDMA/RDMA same-allocation physical-tile held-out coordinates"
+            "RDMA/RDMA same-allocation cross-Tile held-out coordinates"
         ),
-        claims=("ddr-conflict-equivalence-physical-tile",),
+        claims=("ddr-conflict-equivalence-cross-tile",),
     ),
 )
 DELEGATED_BY_KEY = {asset.key: asset for asset in DELEGATED_ASSETS}
@@ -804,7 +804,7 @@ TYPED_BOUNDARIES = (
             "remote contention counter"
         ),
         typed_gate="no remote-SPM request object is serializable",
-        safe_alternative="run local-SPM physical-tile held-out sequentially",
+        safe_alternative="run local-SPM cross-Tile held-out sequentially",
         claims=("spm-remote-concurrent-conflict",),
     ),
     TypedBoundary(
@@ -828,7 +828,7 @@ TYPED_BOUNDARIES = (
         ),
         typed_gate=(
             "DDR bank/color request construction is non-executable without "
-            "a version-matched mapping provider"
+            "a current mapping provider"
         ),
         safe_alternative="retain ordinary allocator placement",
         claims=("ddr-bank-coloring", "ddr-controller-channel-hop"),
@@ -855,7 +855,7 @@ TYPED_BOUNDARIES = (
         domain=Domain.DDR_BANK_COLORING,
         disposition=Disposition.BLOCKED,
         reason=(
-            "rank-one ABI owns one host-visible output allocation and cannot "
+            "program-local ABI owns one host-visible output allocation and cannot "
             "form the required WDMA cross-allocation exact oracle"
         ),
         typed_gate=(
@@ -885,25 +885,25 @@ CLAIM_COVERAGE: dict[str, tuple[str, ...]] = {
         "cross-worker-unordered-same-address",
     ),
     "ddr-single-active-address-legality": (
-        "ddr-single-active-rank-tile-offset",
+        "ddr-single-active-tile-offset",
     ),
-    "ddr-active-rank-contention": tuple(
-        case.key for case in DDR_ACTIVE_RANK_CASES
+    "ddr-active-tile-contention": tuple(
+        case.key for case in DDR_ACTIVE_TILE_CASES
     ),
     "spm-sustained-far-disjoint-control": (
         "spm-sustained-ct-rdma-far-disjoint-control",
     ),
-    "spm-conflict-equivalence": ("spm-conflict-equivalence-rank-one",),
-    "spm-conflict-equivalence-physical-tile": (
-        "spm-conflict-equivalence-physical-tile",
+    "spm-conflict-equivalence": ("spm-conflict-equivalence-program-local",),
+    "spm-conflict-equivalence-cross-tile": (
+        "spm-conflict-equivalence-cross-tile",
     ),
     "spm-remote-concurrent-conflict": ("remote-spm-conflict",),
     "spm-owned-range-safety": (
         "spm-unowned-or-overlapping-guarded-range",
     ),
-    "ddr-conflict-equivalence": ("ddr-conflict-equivalence-rank-one",),
-    "ddr-conflict-equivalence-physical-tile": (
-        "ddr-conflict-equivalence-physical-tile",
+    "ddr-conflict-equivalence": ("ddr-conflict-equivalence-program-local",),
+    "ddr-conflict-equivalence-cross-tile": (
+        "ddr-conflict-equivalence-cross-tile",
     ),
     "ddr-bank-coloring": ("ddr-bank-owner-mapping-absent",),
     "ddr-controller-channel-hop": ("ddr-bank-owner-mapping-absent",),
@@ -957,44 +957,44 @@ def validate_catalog() -> None:
         seeds = {case.payload_seed for case in group}
         if len(domain) != 1 or len(seeds) != 1:
             raise RuntimeError(f"{group_name}: malformed matched group")
-        if next(iter(domain)) == Domain.DDR_ACTIVE_RANK:
-            if {len(case.active_ranks) for case in group} != {
+        if next(iter(domain)) == Domain.DDR_ACTIVE_TILE:
+            if {len(case.active_tiles) for case in group} != {
                 1,
                 2,
                 4,
                 8,
                 16,
             }:
-                raise RuntimeError(f"{group_name}: active-rank sweep incomplete")
+                raise RuntimeError(f"{group_name}: active-Tile sweep incomplete")
     if (
-        len(DDR_ACTIVE_RANK_CASES) != 45
+        len(DDR_ACTIVE_TILE_CASES) != 45
     ):
         raise RuntimeError("matrix cardinality changed")
     if any(case.domain == Domain.DDR_BANK_COLORING for case in CASES):
         raise RuntimeError("DDR bank/coloring must have no executable case")
     if {
-        len(case.active_ranks) for case in DDR_ACTIVE_RANK_CASES
+        len(case.active_tiles) for case in DDR_ACTIVE_TILE_CASES
     } != {1, 2, 4, 8, 16}:
-        raise RuntimeError("DDR active-rank axis is incomplete")
+        raise RuntimeError("DDR active-Tile axis is incomplete")
     if {
-        case.ddr_direction for case in DDR_ACTIVE_RANK_CASES
+        case.ddr_direction for case in DDR_ACTIVE_TILE_CASES
     } != set(DDRDirection):
         raise RuntimeError("DDR direction axis is incomplete")
     if {
         (case.streams[0].payload_bytes, case.streams[0].stride_bytes)
-        for case in DDR_ACTIVE_RANK_CASES
+        for case in DDR_ACTIVE_TILE_CASES
     } != {(4096, 0), (65536, 0), (65536, 8192)}:
         raise RuntimeError("DDR workload/held-out axis is incomplete")
     if (
-        len(DDR_ACTIVE_RANK_GROUPS) != 9
+        len(DDR_ACTIVE_TILE_GROUPS) != 9
         or any(
-            len(group) != len(ACTIVE_RANK_SETS)
-            or {len(case.active_ranks) for case in group}
-            != set(ACTIVE_RANK_SETS)
-            for group in DDR_ACTIVE_RANK_GROUPS.values()
+            len(group) != len(ACTIVE_TILE_SETS)
+            or {len(case.active_tiles) for case in group}
+            != set(ACTIVE_TILE_SETS)
+            for group in DDR_ACTIVE_TILE_GROUPS.values()
         )
     ):
-        raise RuntimeError("DDR active-rank matched groups are incomplete")
+        raise RuntimeError("DDR active-Tile matched groups are incomplete")
 
     objects = {
         **CASES_BY_KEY,

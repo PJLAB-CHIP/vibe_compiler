@@ -264,12 +264,12 @@ materializeParameterShards(const Options &options, const ProgramMetadata &meta,
     if (sharding && sharding->HasPartialReplication())
       return absl::InvalidArgumentError(absl::StrCat(
           "parameter '", binding.name,
-          "' uses partial replication, which parameter shard schema v4 does "
+          "' uses partial replication, which current parameter shard metadata does "
           "not encode"));
     if (sharding && sharding->IsTileMaximal() && !sharding->IsReplicated())
       return absl::InvalidArgumentError(absl::StrCat(
           "parameter '", binding.name,
-          "' uses single-device sharding, which parameter shard schema v4 "
+          "' uses single-device sharding, which current parameter shard metadata "
           "does not encode"));
     binding.distribution =
         (!sharding || sharding->IsReplicated()) ? "replicated" : "partitioned";

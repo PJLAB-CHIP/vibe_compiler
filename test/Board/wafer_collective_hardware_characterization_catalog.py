@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Typed contract for pending collective hardware characterization pairs.
+"""Typed contract for collective algorithm source comparisons.
 
-These cases characterize board-observable behavior of accepted collective
-implementations.  They are deliberately not compiler winner or promotion
-tests: an implementation is forced through a test-only selection seam, the
-pair is checked for identical public semantics, and host elapsed time is
-archived only as an observation until board evidence is reviewed.
+The source and host oracle are current.  Algorithm alternatives remain pending
+until normal global lowering can select and execute both forms; no test-only
+compiler selector or historical board result is part of this contract.
 """
 
 from __future__ import annotations
@@ -37,7 +35,9 @@ class CollectiveAlternative(str, enum.Enum):
 
 
 class CharacterizationDisposition(str, enum.Enum):
-    PENDING_BOARD_CHARACTERIZATION = "pending-board-characterization"
+    SOURCE_COMPARISON_PENDING_LOWERING = (
+        "source-comparison-pending-lowering"
+    )
 
 
 class NumericOracleKind(str, enum.Enum):
@@ -45,9 +45,7 @@ class NumericOracleKind(str, enum.Enum):
 
 
 class PerformanceEvidenceKind(str, enum.Enum):
-    BALANCED_HOST_PROCESS_OBSERVATION = (
-        "balanced-host-process-observation-only"
-    )
+    NOT_COLLECTED = "not-collected"
 
 
 ALTERNATIVE_PHASES: dict[CollectiveAlternative, frozenset[str]] = {
@@ -75,15 +73,15 @@ class CollectiveCharacterizationCase:
     payload_bytes: int
     left_alternative: CollectiveAlternative
     right_alternative: CollectiveAlternative
-    board_order: int
-    rank_count: int = 16
+    case_order: int
+    participant_count: int = 16
     element_type: str = "f16"
     disposition: CharacterizationDisposition = (
-        CharacterizationDisposition.PENDING_BOARD_CHARACTERIZATION
+        CharacterizationDisposition.SOURCE_COMPARISON_PENDING_LOWERING
     )
     numeric_oracle: NumericOracleKind = NumericOracleKind.FULL_OUTPUT_EXACT
     performance_evidence: PerformanceEvidenceKind = (
-        PerformanceEvidenceKind.BALANCED_HOST_PROCESS_OBSERVATION
+        PerformanceEvidenceKind.NOT_COLLECTED
     )
     same_source_required: bool = True
     performance_is_promotion_evidence: bool = False
@@ -134,7 +132,7 @@ CASES = tuple(
         payload_bytes=payload_bytes,
         left_alternative=left_alternative,
         right_alternative=right_alternative,
-        board_order=pair_index * len(PAYLOAD_BYTES) + payload_index,
+        case_order=pair_index * len(PAYLOAD_BYTES) + payload_index,
         element_type="f16",
     )
     for pair_index, (
@@ -159,8 +157,8 @@ def validate_catalog() -> None:
             if count != 1
         )
         raise ValueError(f"duplicate characterization case keys: {duplicates}")
-    if len({case.board_order for case in CASES}) != len(CASES):
-        raise ValueError("collective characterization board order is not unique")
+    if len({case.case_order for case in CASES}) != len(CASES):
+        raise ValueError("collective characterization case order is not unique")
     if set(ALTERNATIVE_PHASES) != {
         alternative
         for _, left, right in _PAIR_SPECS
@@ -187,7 +185,7 @@ def validate_catalog() -> None:
         if any(
             not case.same_source_required
             or case.performance_is_promotion_evidence
-            or case.rank_count != 16
+            or case.participant_count != 16
             or case.element_type != "f16"
             for case in matching
         ):

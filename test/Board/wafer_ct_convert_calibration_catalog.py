@@ -14,7 +14,6 @@ REQUEST_MAGIC = 0x3151455256434357
 RECORD_MAGIC = 0x3143455256434357
 REQUEST_GUARD = 0xE7D6C5B4A3928170
 RECORD_GUARD = 0x0F1E2D3C4B5A6978
-SCHEMA = 2
 REQUEST_WORDS = 24
 RECORD_WORDS = 32
 RESOURCE_BYTES = 131072
@@ -73,7 +72,7 @@ TYPE_BYTES = {
 }
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "OPCODE": 3,
     "SRC_TYPE": 4,
@@ -94,7 +93,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "OPCODE": 4,
@@ -110,7 +109,7 @@ REC = {
     "OUTPUT_DDR_OFFSET": 14,
     "SLOT_BYTES": 15,
     "BODY_OFFSET": 16,
-    # Wire-compatibility slot; host validation uses the complete output slot.
+    # Reserved device slot; host validation uses the complete output slot.
     "OUTPUT_GUARD_MISMATCHES": 17,
     "CT_INST_DELTA": 18,
     "CT_EXEC_DELTA": 19,
@@ -707,7 +706,7 @@ def build_case_payload(case: CTConvertCase, sample: int = 0) -> CasePayload:
 
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
-    words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+    words[REQ["WORD_COUNT"]] = REQUEST_WORDS
     words[REQ["CASE"]] = case.case_id
     words[REQ["OPCODE"]] = case.opcode
     words[REQ["SRC_TYPE"]] = TYPE_CODES[case.source_type]

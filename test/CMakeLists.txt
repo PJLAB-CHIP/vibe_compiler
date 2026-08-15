@@ -638,6 +638,8 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   unset(_wafer_tx_runtime_library_sha256)
 endif()
 
+add_subdirectory(Board)
+
 add_test(NAME wafer-numeric-dependency-record-python
   COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_SOURCE_DIR}/tools/test_numeric_deps.py

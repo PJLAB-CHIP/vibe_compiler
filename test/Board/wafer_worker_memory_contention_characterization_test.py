@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the full-card DDR adapter and genuine neighboring boundaries."""
+"""Validate the complete-Tile-domain DDR adapter and genuine neighboring boundaries."""
 
 from __future__ import annotations
 
@@ -20,30 +20,30 @@ import wafer_worker_memory_contention_characterization_driver as driver
 
 def _validate_existing_bindings() -> None:
     actual = {
-        "worker-routing-and-low-depth-disjoint": len(ncc.V2_WORKER_CASES),
+        "worker-routing-and-low-depth-disjoint": len(ncc.WORKER_CASES),
         "cross-worker-ct-rdma-sustained-control": len(
             memory_catalog.CROSS_WORKER_PARALLEL_PAIR_CASES
         ),
         "worker-wait-scope-exclusion": len(
-            ncc.V2_WORKER_WAIT_SCOPE_CASES
+            ncc.WORKER_WAIT_SCOPE_CASES
         ),
         "worker-subset-join-exclusion": len(
-            ncc.V2_WORKER_SUBSET_SCOPE_CASES
+            ncc.WORKER_SUBSET_SCOPE_CASES
         ),
-        "ddr-single-active-rank-tile-offset": len(ddr_tile.matrix_cases()),
+        "ddr-single-active-tile-offset": len(ddr_tile.matrix_cases()),
         "spm-sustained-ct-rdma-far-disjoint-control": len(
             memory_catalog.SUSTAINED_PARALLEL_PAIR_CASES
         ),
-        "spm-conflict-equivalence-rank-one": len(
+        "spm-conflict-equivalence-program-local": len(
             memory_catalog.CONFLICT_EQUIVALENCE_PAIRS
         ),
-        "spm-conflict-equivalence-physical-tile": len(
+        "spm-conflict-equivalence-cross-tile": len(
             spm_tile.conflict_pairs()
         ),
-        "ddr-conflict-equivalence-rank-one": len(
+        "ddr-conflict-equivalence-program-local": len(
             cache_catalog.PENDING_DDR_CONFLICT_CASES
         ),
-        "ddr-conflict-equivalence-physical-tile": len(
+        "ddr-conflict-equivalence-cross-tile": len(
             ddr_tile.conflict_equivalence_cases()
         ),
     }
@@ -74,49 +74,48 @@ def _validate_existing_bindings() -> None:
 def _validate_catalog_and_requests() -> None:
     catalog.validate_catalog()
     driver.validate_static_contract()
-    assert driver.SCHEMA == 2
     assert driver.STATUS_PMU_UNSTABLE == 3
     assert len(catalog.EXECUTABLE_CASES) == 45
-    assert tuple(catalog.EXECUTABLE_CASES) == catalog.DDR_ACTIVE_RANK_CASES
-    assert tuple(catalog.CASES) == catalog.DDR_ACTIVE_RANK_CASES
+    assert tuple(catalog.EXECUTABLE_CASES) == catalog.DDR_ACTIVE_TILE_CASES
+    assert tuple(catalog.CASES) == catalog.DDR_ACTIVE_TILE_CASES
     assert all(
         case.disposition == catalog.Disposition.BOARD_EXECUTABLE
         and case.as_dict()["board_request_serializable"] is True
-        for case in catalog.DDR_ACTIVE_RANK_CASES
+        for case in catalog.DDR_ACTIVE_TILE_CASES
     )
     assert {
-        len(case.active_ranks) for case in catalog.DDR_ACTIVE_RANK_CASES
+        len(case.active_tiles) for case in catalog.DDR_ACTIVE_TILE_CASES
     } == {1, 2, 4, 8, 16}
     assert {
-        case.ddr_direction for case in catalog.DDR_ACTIVE_RANK_CASES
+        case.ddr_direction for case in catalog.DDR_ACTIVE_TILE_CASES
     } == set(catalog.DDRDirection)
     assert {
         (
             case.streams[0].payload_bytes,
             case.streams[0].stride_bytes,
         )
-        for case in catalog.DDR_ACTIVE_RANK_CASES
+        for case in catalog.DDR_ACTIVE_TILE_CASES
     } == {(4096, 0), (65536, 0), (65536, 8192)}
-    assert len(catalog.DDR_ACTIVE_RANK_GROUPS) == 9
+    assert len(catalog.DDR_ACTIVE_TILE_GROUPS) == 9
     assert all(
-        [len(case.active_ranks) for case in group] == [1, 2, 4, 8, 16]
-        for group in catalog.DDR_ACTIVE_RANK_GROUPS.values()
+        [len(case.active_tiles) for case in group] == [1, 2, 4, 8, 16]
+        for group in catalog.DDR_ACTIVE_TILE_GROUPS.values()
     )
 
-    rank0_requests = {
+    tile0_requests = {
         driver.request_words(case, 0, 0)
-        for case in catalog.DDR_ACTIVE_RANK_CASES
+        for case in catalog.DDR_ACTIVE_TILE_CASES
     }
-    assert len(rank0_requests) == len(catalog.DDR_ACTIVE_RANK_CASES)
-    for case in catalog.DDR_ACTIVE_RANK_CASES:
+    assert len(tile0_requests) == len(catalog.DDR_ACTIVE_TILE_CASES)
+    for case in catalog.DDR_ACTIVE_TILE_CASES:
         requests = [
-            driver.request_words(case, rank, 0)
-            for rank in range(catalog.RANK_COUNT)
+            driver.request_words(case, tile_id, 0)
+            for tile_id in range(catalog.TILE_COUNT)
         ]
-        assert len(set(requests)) == catalog.RANK_COUNT
+        assert len(set(requests)) == catalog.TILE_COUNT
         assert {
-            words[driver.REQ["RANK"]] for words in requests
-        } == set(range(catalog.RANK_COUNT))
+            words[driver.REQ["TILE_ID"]] for words in requests
+        } == set(range(catalog.TILE_COUNT))
         assert all(
             words[driver.REQ["ACTIVE_MASK"]] == driver.active_mask(case)
             and words[driver.REQ["PAYLOAD_SEED"]] == case.payload_seed
@@ -125,7 +124,7 @@ def _validate_catalog_and_requests() -> None:
             for words in requests
         )
         routed = driver.prepare_board_selection(case.key)
-        assert routed["rank_count"] == catalog.RANK_COUNT
+        assert routed["tile_count"] == catalog.TILE_COUNT
         assert routed["active_mask"] == driver.active_mask(case)
         assert routed["sample_active_masks"] == [
             driver.active_mask(case, sample) for sample in range(4)
@@ -136,15 +135,15 @@ def _validate_catalog_and_requests() -> None:
     for active_count, expected_phase_count in phase_counts.items():
         case = next(
             case
-            for case in catalog.DDR_ACTIVE_RANK_CASES
-            if len(case.active_ranks) == active_count
+            for case in catalog.DDR_ACTIVE_TILE_CASES
+            if len(case.active_tiles) == active_count
         )
-        phased_ranks = [
-            driver.active_ranks_for_sample(case, sample)
+        phased_tiles = [
+            driver.active_tiles_for_sample(case, sample)
             for sample in range(4)
         ]
-        assert all(len(ranks) == active_count for ranks in phased_ranks)
-        assert len(set(phased_ranks)) == expected_phase_count
+        assert all(len(Tiles) == active_count for Tiles in phased_tiles)
+        assert len(set(phased_tiles)) == expected_phase_count
         assert all(
             driver.request_words(case, 0, sample)[
                 driver.REQ["ACTIVE_MASK"]
@@ -153,10 +152,10 @@ def _validate_catalog_and_requests() -> None:
             for sample in range(4)
         )
 
-    group = next(iter(catalog.DDR_ACTIVE_RANK_GROUPS.values()))
+    group = next(iter(catalog.DDR_ACTIVE_TILE_GROUPS.values()))
     plan = driver.group_execution_plan(group, 4)
     assert len(plan) == 20
-    base_counts = [len(case.active_ranks) for case in group]
+    base_counts = [len(case.active_tiles) for case in group]
     rotated_counts = (
         base_counts[len(base_counts) // 2 :]
         + base_counts[: len(base_counts) // 2]
@@ -171,7 +170,7 @@ def _validate_catalog_and_requests() -> None:
         sample for sample in range(4) for _ in group
     ]
     assert [
-        [len(case.active_ranks) for plan_sample, case in plan
+        [len(case.active_tiles) for plan_sample, case in plan
          if plan_sample == sample]
         for sample in range(4)
     ] == expected_orders
@@ -180,15 +179,15 @@ def _validate_catalog_and_requests() -> None:
         for active_count in base_counts
     )
     by_count = {
-        len(case.active_ranks): case for case in group
+        len(case.active_tiles): case for case in group
     }
     for sample in range(4):
         baseline = set(
-            driver.active_ranks_for_sample(by_count[1], sample)
+            driver.active_tiles_for_sample(by_count[1], sample)
         )
         assert all(
             baseline.issubset(
-                driver.active_ranks_for_sample(
+                driver.active_tiles_for_sample(
                     by_count[active_count], sample
                 )
             )
@@ -197,11 +196,11 @@ def _validate_catalog_and_requests() -> None:
 
     stride = next(
         case
-        for case in catalog.DDR_ACTIVE_RANK_CASES
+        for case in catalog.DDR_ACTIVE_TILE_CASES
         if case.streams[0].stride_bytes
         and case.ddr_direction == catalog.DDRDirection.BIDIRECTIONAL
     )
-    input0, input1 = driver.rank_inputs(stride, 0, 0)
+    input0, input1 = driver.tile_inputs(stride, 0, 0)
     assert len(input0) == len(input1) == driver.RESOURCE_BYTES
     payload, inner, stride0, iteration = driver._shape(stride)
     assert (payload, inner, stride0, iteration) == (
@@ -245,14 +244,14 @@ def _validate_catalog_and_requests() -> None:
 
 def _record(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
 ) -> bytes:
     words = [0] * driver.RECORD_WORDS
     payload, inner, stride0, iteration = driver._shape(case)
     envelope = inner + stride0 * (iteration - 1)
     assert case.ddr_direction is not None
-    active = int(rank in driver.active_ranks_for_sample(case, sample))
+    active = int(tile_id in driver.active_tiles_for_sample(case, sample))
     rdma = int(
         active and case.ddr_direction != catalog.DDRDirection.WDMA
     )
@@ -261,11 +260,9 @@ def _record(
     )
     values = {
         "MAGIC": driver.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            driver.SCHEMA << 32
-        ) | driver.RECORD_WORDS,
+        "WORD_COUNT": driver.RECORD_WORDS,
         "STATUS": 0,
-        "RANK": rank,
+        "TILE_ID": tile_id,
         "SAMPLE": sample,
         "ACTIVE_MASK": driver.active_mask(case, sample),
         "ACTIVE": active,
@@ -283,11 +280,11 @@ def _record(
         "WDMA_EXEC_DELTA": active * wdma * 103,
         "FU_EXEC_DELTA": active * 107,
         "WINDOW_DELTA": active * 109,
-        "COMPLETION_CYCLES": 1000 + rank if active else 10,
-        "INPUT0_BASE": 0x10000000 + rank * 0x1000000,
-        "INPUT1_BASE": 0x10200000 + rank * 0x1000000,
-        "OUTPUT0_BASE": 0x10400000 + rank * 0x1000000,
-        "OUTPUT1_BASE": 0x10600000 + rank * 0x1000000,
+        "COMPLETION_CYCLES": 1000 + tile_id if active else 10,
+        "INPUT0_BASE": 0x10000000 + tile_id * 0x1000000,
+        "INPUT1_BASE": 0x10200000 + tile_id * 0x1000000,
+        "OUTPUT0_BASE": 0x10400000 + tile_id * 0x1000000,
+        "OUTPUT1_BASE": 0x10600000 + tile_id * 0x1000000,
         "SPM_RDMA": driver.SPM_RDMA,
         "SPM_WDMA": driver.SPM_WDMA,
         "ISSUE_ORDER": (
@@ -311,17 +308,17 @@ def _record(
 def _synthetic_outputs(
     root: pathlib.Path,
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     sample: int,
 ) -> tuple[pathlib.Path, pathlib.Path]:
-    record = _record(case, rank, sample)
+    record = _record(case, tile_id, sample)
     output0 = bytearray([driver.CANARY]) * driver.RESOURCE_BYTES
     output0[: len(record)] = record
-    if rank in driver.active_ranks_for_sample(case, sample):
+    if tile_id in driver.active_tiles_for_sample(case, sample):
         assert case.ddr_direction is not None
         if case.ddr_direction != catalog.DDRDirection.WDMA:
             span = driver._spm_span_pattern(
-                case, rank, sample, "rdma"
+                case, tile_id, sample, "rdma"
             )
             output0[
                 driver.RDMA_ARCHIVE_OFFSET :
@@ -329,7 +326,7 @@ def _synthetic_outputs(
             ] = span
         if case.ddr_direction != catalog.DDRDirection.RDMA:
             span = driver._ddr_span_pattern(
-                case, rank, sample, "wdma"
+                case, tile_id, sample, "wdma"
             )
             output0[
                 driver.WDMA_TARGET_OFFSET :
@@ -337,10 +334,10 @@ def _synthetic_outputs(
             ] = span
     output1 = bytearray([driver.CANARY]) * driver.RESOURCE_BYTES
     output1[: driver.INACTIVE_CANARY_BYTES] = driver._inactive_canary(
-        rank, sample
+        tile_id, sample
     )
-    output0_path = root / f"{case.key}.{rank}.{sample}.output0"
-    output1_path = root / f"{case.key}.{rank}.{sample}.output1"
+    output0_path = root / f"{case.key}.{tile_id}.{sample}.output0"
+    output1_path = root / f"{case.key}.{tile_id}.{sample}.output1"
     output0_path.write_bytes(bytes(output0))
     output1_path.write_bytes(bytes(output1))
     return output0_path, output1_path
@@ -348,14 +345,14 @@ def _synthetic_outputs(
 
 def _expect_output_failure(
     case: catalog.CharacterizationCase,
-    rank: int,
+    tile_id: int,
     output0: pathlib.Path,
     output1: pathlib.Path,
     needle: str,
 ) -> None:
     try:
-        driver.validate_rank_outputs(
-            case, rank, 0, output0, output1, (rank // 4, rank % 4)
+        driver.validate_tile_outputs(
+            case, tile_id, 0, output0, output1, (tile_id // 4, tile_id % 4)
         )
     except RuntimeError as error:
         assert needle in str(error), (needle, str(error))
@@ -367,65 +364,65 @@ def _validate_output_oracle() -> None:
     cases = (
         next(
             case
-            for case in catalog.DDR_ACTIVE_RANK_CASES
+            for case in catalog.DDR_ACTIVE_TILE_CASES
             if case.ddr_direction == catalog.DDRDirection.RDMA
             and case.streams[0].payload_bytes == 4096
-            and len(case.active_ranks) == 1
+            and len(case.active_tiles) == 1
         ),
         next(
             case
-            for case in catalog.DDR_ACTIVE_RANK_CASES
+            for case in catalog.DDR_ACTIVE_TILE_CASES
             if case.ddr_direction == catalog.DDRDirection.WDMA
             and case.streams[0].payload_bytes == 65536
             and not case.streams[0].stride_bytes
-            and len(case.active_ranks) == 8
+            and len(case.active_tiles) == 8
         ),
         next(
             case
-            for case in catalog.DDR_ACTIVE_RANK_CASES
+            for case in catalog.DDR_ACTIVE_TILE_CASES
             if case.ddr_direction == catalog.DDRDirection.BIDIRECTIONAL
             and case.streams[0].stride_bytes
-            and len(case.active_ranks) == 16
+            and len(case.active_tiles) == 16
         ),
     )
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
         for case in cases:
-            selected_ranks = [case.active_ranks[0]]
-            if case.inactive_ranks:
-                selected_ranks.append(case.inactive_ranks[0])
-            for selected_rank in selected_ranks:
+            selected_tiles = [case.active_tiles[0]]
+            if case.inactive_tiles:
+                selected_tiles.append(case.inactive_tiles[0])
+            for selected_tile in selected_tiles:
                 output0, output1 = _synthetic_outputs(
-                    root, case, selected_rank, 0
+                    root, case, selected_tile, 0
                 )
-                row = driver.validate_rank_outputs(
+                row = driver.validate_tile_outputs(
                     case,
-                    selected_rank,
+                    selected_tile,
                     0,
                     output0,
                     output1,
-                    (selected_rank // 4, selected_rank % 4),
+                    (selected_tile // 4, selected_tile % 4),
                 )
                 assert row["exact_full_output"] is True
                 assert row["inactive_canary"] is True
                 assert row["host_elapsed_used"] is False
 
         phased_case = cases[1]
-        shifted_rank = next(
-            rank
-            for rank in driver.active_ranks_for_sample(phased_case, 1)
-            if rank not in phased_case.active_ranks
+        shifted_tile = next(
+            tile_id
+            for tile_id in driver.active_tiles_for_sample(phased_case, 1)
+            if tile_id not in phased_case.active_tiles
         )
         output0, output1 = _synthetic_outputs(
-            root, phased_case, shifted_rank, 1
+            root, phased_case, shifted_tile, 1
         )
-        shifted_row = driver.validate_rank_outputs(
+        shifted_row = driver.validate_tile_outputs(
             phased_case,
-            shifted_rank,
+            shifted_tile,
             1,
             output0,
             output1,
-            (shifted_rank // 4, shifted_rank % 4),
+            (shifted_tile // 4, shifted_tile % 4),
         )
         assert shifted_row["active"] is True
         assert shifted_row["active_mask"] == driver.active_mask(
@@ -433,22 +430,22 @@ def _validate_output_oracle() -> None:
         )
 
         case = cases[-1]
-        rank = case.active_ranks[0]
-        output0, output1 = _synthetic_outputs(root, case, rank, 0)
+        tile_id = case.active_tiles[0]
+        output0, output1 = _synthetic_outputs(root, case, tile_id, 0)
         raw = bytearray(output0.read_bytes())
         raw[driver.RDMA_ARCHIVE_OFFSET] ^= 1
         output0.write_bytes(raw)
-        _expect_output_failure(case, rank, output0, output1, "output0 mismatch")
+        _expect_output_failure(case, tile_id, output0, output1, "output0 mismatch")
 
-        output0, output1 = _synthetic_outputs(root, case, rank, 0)
+        output0, output1 = _synthetic_outputs(root, case, tile_id, 0)
         raw = bytearray(output1.read_bytes())
         raw[0] ^= 1
         output1.write_bytes(raw)
         _expect_output_failure(
-            case, rank, output0, output1, "inactive canary mismatch"
+            case, tile_id, output0, output1, "inactive canary mismatch"
         )
 
-        output0, output1 = _synthetic_outputs(root, case, rank, 0)
+        output0, output1 = _synthetic_outputs(root, case, tile_id, 0)
         raw = bytearray(output0.read_bytes())
         words = list(
             struct.unpack(
@@ -461,18 +458,18 @@ def _validate_output_oracle() -> None:
             f"<{driver.RECORD_WORDS}Q", *words
         )
         output0.write_bytes(raw)
-        _expect_output_failure(case, rank, output0, output1, "record oracle")
+        _expect_output_failure(case, tile_id, output0, output1, "record oracle")
 
-        output0, output1 = _synthetic_outputs(root, case, rank, 0)
+        output0, output1 = _synthetic_outputs(root, case, tile_id, 0)
         raw = bytearray(output0.read_bytes())
         # wafer-run initializes every write-only byte to 0xa5.  A zero-filled
         # unwritten tail was the previous false oracle and must be rejected.
         raw[-1] = 0
         output0.write_bytes(raw)
-        _expect_output_failure(case, rank, output0, output1, "output0 mismatch")
+        _expect_output_failure(case, tile_id, output0, output1, "output0 mismatch")
 
         for stable_field in ("PMU_BEFORE_STABLE", "PMU_AFTER_STABLE"):
-            output0, output1 = _synthetic_outputs(root, case, rank, 0)
+            output0, output1 = _synthetic_outputs(root, case, tile_id, 0)
             raw = bytearray(output0.read_bytes())
             words = list(
                 struct.unpack(
@@ -486,7 +483,7 @@ def _validate_output_oracle() -> None:
             )
             output0.write_bytes(raw)
             _expect_output_failure(
-                case, rank, output0, output1, "record oracle"
+                case, tile_id, output0, output1, "record oracle"
             )
 
 
@@ -496,11 +493,11 @@ def _validate_raw_resource_cleanup() -> None:
         raw_dir = work_dir / "raw" / "case" / "sample-0"
         raw_dir.mkdir(parents=True)
         resources = []
-        for rank in range(driver.RANK_COUNT):
+        for tile_id in range(driver.TILE_COUNT):
             for role in ("input", "output"):
                 for ordinal in range(2):
                     path = raw_dir / (
-                        f"rank-{rank:02d}.{role}-{ordinal}.raw"
+                        f"tile-{tile_id:02d}.{role}-{ordinal}.raw"
                     )
                     path.write_bytes(b"validated")
                     resources.append(path)
@@ -545,11 +542,13 @@ def _validate_raw_resource_cleanup() -> None:
 
 def _validate_board_lifecycle_oracle() -> None:
     manifest = driver.direct_dte_evidence.DirectDTEManifestEvidence(
-        status_resource_by_rank=tuple(
-            (rank, 100 + rank) for rank in range(driver.RANK_COUNT)
+        status_resource_by_tile=tuple(
+            (tile_id, 100 + tile_id)
+            for tile_id in range(driver.TILE_COUNT)
         ),
-        terminal_completion_by_rank=tuple(
-            (rank, rank) for rank in range(driver.RANK_COUNT)
+        completion_by_tile=tuple(
+            (tile_id, "return_after_local_drain")
+            for tile_id in range(driver.TILE_COUNT)
         ),
     )
     lines = [
@@ -558,34 +557,33 @@ def _validate_board_lifecycle_oracle() -> None:
         "board_stage: device-to-host",
         "board_stage: cleanup",
         *[
-            f"terminal_completion: {rank} "
-            f"kind=entry_return rank={rank}"
-            for rank in range(driver.RANK_COUNT)
+            "completion: return_after_local_drain tile_id=" + str(tile_id)
+            for tile_id in range(driver.TILE_COUNT)
         ],
-        f"invocation_ranks: {driver.RANK_COUNT}",
+        f"invocation_tiles: {driver.TILE_COUNT}",
         "launch_pattern: cluster-x16",
-        "logical_tile_execution_basis: "
-        "cluster-pid-and-exact-rank-slices",
-        "logical_tile_domain: 0..15",
+        "physical_tile_execution_basis: "
+        "cluster-pid-and-exact-tile-slices",
+        "physical_tile_domain: 0..15",
         "board_execution: true",
     ]
     stdout = "\n".join(lines) + "\n"
     evidence = driver.validate_board_lifecycle(stdout, manifest, 180000)
-    assert evidence["terminal_completion_by_rank"] == [
-        {"rank": rank, "completion": rank}
-        for rank in range(driver.RANK_COUNT)
+    assert evidence["completion_by_tile"] == [
+        {"tile_id": tile_id, "completion": "return_after_local_drain"}
+        for tile_id in range(driver.TILE_COUNT)
     ]
 
     missing = stdout.replace(
-        "terminal_completion: 15 kind=entry_return rank=15\n", ""
+        "completion: return_after_local_drain tile_id=15\n", ""
     )
     wrong = stdout.replace(
-        "terminal_completion: 7 kind=entry_return rank=7",
-        "terminal_completion: 9 kind=entry_return rank=7",
+        "completion: return_after_local_drain tile_id=7",
+        "completion: return_after_local_drain tile_id=9",
     )
     duplicate = stdout.replace(
-        "terminal_completion: 15 kind=entry_return rank=15",
-        "terminal_completion: 15 kind=entry_return rank=14",
+        "completion: return_after_local_drain tile_id=15",
+        "completion: return_after_local_drain tile_id=14",
     )
     for invalid in (missing, wrong, duplicate):
         try:
@@ -594,7 +592,7 @@ def _validate_board_lifecycle_oracle() -> None:
             pass
         else:
             raise AssertionError(
-                "invalid terminal-completion stdout was accepted"
+                "invalid Tile completion stdout was accepted"
             )
 
 
@@ -613,14 +611,14 @@ def _validate_blocked_neighbors() -> None:
 def _validate_cli(repo: pathlib.Path) -> None:
     inventory = driver.inventory()
     assert inventory["executable_new_cases"] == 45
-    assert inventory["executable_ddr_active_rank_matrix"] == 45
+    assert inventory["executable_ddr_active_tile_matrix"] == 45
     assert "blocked_worker_matrix" not in inventory
     assert "blocked_spm_matrix" not in inventory
     script = (
         repo
         / "test/Board/wafer_worker_memory_contention_characterization_driver.py"
     )
-    executable = catalog.DDR_ACTIVE_RANK_CASES[-1]
+    executable = catalog.DDR_ACTIVE_TILE_CASES[-1]
     result = subprocess.run(
         [
             sys.executable,
@@ -636,8 +634,8 @@ def _validate_cli(repo: pathlib.Path) -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert '"rank_count": 16' in result.stdout
-    assert "wafer_ddr_active_rank_contention_probe.c" in result.stdout
+    assert '"tile_count": 16' in result.stdout
+    assert "wafer_ddr_active_tile_contention_probe.c" in result.stdout
     emitted = subprocess.run(
         [
             sys.executable,
@@ -649,7 +647,7 @@ def _validate_cli(repo: pathlib.Path) -> None:
         capture_output=True,
         text=True,
     ).stdout.splitlines()
-    assert emitted == list(catalog.DDR_ACTIVE_RANK_GROUP_KEYS)
+    assert emitted == list(catalog.DDR_ACTIVE_TILE_GROUP_KEYS)
     grouped = subprocess.run(
         [
             sys.executable,
@@ -657,7 +655,7 @@ def _validate_cli(repo: pathlib.Path) -> None:
             "--mode",
             "audit",
             "--group",
-            catalog.DDR_ACTIVE_RANK_GROUP_KEYS[0],
+            catalog.DDR_ACTIVE_TILE_GROUP_KEYS[0],
         ],
         cwd=repo,
         check=False,
@@ -665,7 +663,7 @@ def _validate_cli(repo: pathlib.Path) -> None:
         text=True,
     )
     assert grouped.returncode == 0, grouped.stderr
-    assert grouped.stdout.count('"rank_count": 16') == 5
+    assert grouped.stdout.count('"tile_count": 16') == 5
     blocked = subprocess.run(
         [
             sys.executable,
@@ -694,7 +692,7 @@ def main() -> None:
     _validate_blocked_neighbors()
     _validate_cli(repo)
     print(
-        "worker-memory contention: 45 executable full-card DDR cases; "
+        "worker-memory contention: 45 executable complete-Tile-domain DDR cases; "
         "no superseded synthetic worker/SPM blockers; "
         "11 delegated real assets and 7 genuine typed boundaries"
     )

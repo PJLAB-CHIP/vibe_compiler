@@ -74,51 +74,48 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addVoid("direct_dte_wait", {Scalar::I64}, TargetCallBuiltin::DirectDTEWait);
   addVoid("direct_dte_finish", {}, TargetCallBuiltin::DirectDTEFinish);
 
-  auto addEnumSelectedCalls = [&](llvm::StringRef suffix) {
+  auto addEnumSelectedCalls = [&] {
     for (NumericElementwiseOperation operation :
          getNumericElementwiseOperations())
       addVoid(("elementwise_" +
-               stringifyNumericElementwiseOperation(operation) + suffix)
+               stringifyNumericElementwiseOperation(operation))
                   .str(),
               signature(getNumericElementwiseArity(operation) == 1 ? 2 : 3, 2),
               operation);
 
     for (NumericReduceOperation operation : getNumericReduceOperations())
-      addVoid(("reduce_" + stringifyNumericReduceOperation(operation) + suffix)
-                  .str(),
+      addVoid(("reduce_" + stringifyNumericReduceOperation(operation)).str(),
               signature(2, 6), operation);
 
     for (const TargetConvertRoute &route : getTargetConvertRoutes()) {
       TargetConvertOperation operation =
           llvm::cantFail(TargetConvertOperation::create(route.opcode));
-      addVoid(("convert_" + route.canonicalSpelling + suffix).str(),
+      addVoid(("convert_" + route.canonicalSpelling).str(),
               signature(2, 3), operation);
     }
 
     for (TargetConvolutionOperation operation :
          getTargetConvolutionOperations())
-      addVoid((stringifyTargetConvolutionOperation(operation) + suffix).str(),
+      addVoid(stringifyTargetConvolutionOperation(operation).str(),
               signature(3, 28), operation);
 
     for (TargetPoolingOperation operation : getTargetPoolingOperations()) {
       bool indexed = operation == TargetPoolingOperation::IndexedMaximum ||
                      operation == TargetPoolingOperation::IndexedMinimum;
       addVoid(
-          ("pool_" + stringifyTargetPoolingOperation(operation) + suffix).str(),
+          ("pool_" + stringifyTargetPoolingOperation(operation)).str(),
           signature(indexed ? 3 : 2, 18), operation);
     }
 
     for (TargetUnpoolingOperation operation : getTargetUnpoolingOperations())
       addVoid(
-          ("unpool_" + stringifyTargetUnpoolingOperation(operation) + suffix)
-              .str(),
+          ("unpool_" + stringifyTargetUnpoolingOperation(operation)).str(),
           signature(2, 15), operation);
 
     auto addPeripheral = [&](TargetPeripheralOperation kind, unsigned i64Count,
                              unsigned i32Count) {
       addVoid(
-          ("peripheral_" + stringifyTargetPeripheralOperation(kind) + suffix)
-              .str(),
+          ("peripheral_" + stringifyTargetPeripheralOperation(kind)).str(),
           signature(i64Count, i32Count), kind);
     };
     addPeripheral(TargetPeripheralOperation::ArgMaximum, 3, 7);
@@ -130,22 +127,22 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
     addPeripheral(TargetPeripheralOperation::ElementMask, 2, 7);
   };
   // The current ordinary instruction ABI carries an explicit trailing worker.
-  addVoid("rdma_v3", signature(2, 9), TargetCallBuiltin::RDMA);
-  addVoid("wdma_v3", signature(2, 9), TargetCallBuiltin::WDMA);
-  addVoid("gather_scatter_v3", signature(2, 14),
+  addVoid("rdma", signature(2, 9), TargetCallBuiltin::RDMA);
+  addVoid("wdma", signature(2, 9), TargetCallBuiltin::WDMA);
+  addVoid("gather_scatter", signature(2, 14),
           TargetCallBuiltin::GatherScatter);
-  addVoid("memset_v3", signature(1, 3), TargetCallBuiltin::Memset);
-  addVoid("bit2fp_v3", signature(2, 2), TargetCallBuiltin::Bit2FP);
-  addVoid("mask_move_v3",
+  addVoid("memset", signature(1, 3), TargetCallBuiltin::Memset);
+  addVoid("bit2fp", signature(2, 2), TargetCallBuiltin::Bit2FP);
+  addVoid("mask_move",
           {Scalar::I64, Scalar::I32, Scalar::I64, Scalar::I32, Scalar::I32},
           TargetCallBuiltin::MaskMove);
-  addVoid("gemm_v3", signature(3, 5), TargetCallBuiltin::Gemm);
-  addVoid("gemm_oriented_v3", signature(3, 7), TargetCallBuiltin::GemmOriented);
-  addVoid("tdma_pad_v3", signature(2, 13), TargetCallBuiltin::TDMAPad);
-  addVoid("tdma_img2col_v3", signature(2, 17), TargetCallBuiltin::TDMAImg2Col);
+  addVoid("gemm", signature(3, 5), TargetCallBuiltin::Gemm);
+  addVoid("gemm_oriented", signature(3, 7), TargetCallBuiltin::GemmOriented);
+  addVoid("tdma_pad", signature(2, 13), TargetCallBuiltin::TDMAPad);
+  addVoid("tdma_img2col", signature(2, 17), TargetCallBuiltin::TDMAImg2Col);
 
-  addEnumSelectedCalls("_v3");
-  addVoid("direct_dte_send_issue_v3", {Scalar::I64},
+  addEnumSelectedCalls();
+  addVoid("direct_dte_send_issue", {Scalar::I64},
           TargetCallBuiltin::DirectDTESendIssue);
 
   assert(result.size() == 112 && "target-call registry must stay closed");

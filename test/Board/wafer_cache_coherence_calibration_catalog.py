@@ -13,7 +13,6 @@ REQUEST_MAGIC = 0x3151455248434357
 RECORD_MAGIC = 0x3143455248434357
 REQUEST_GUARD = 0xABCDEF0123456789
 RECORD_GUARD = 0x9876543210FEDCBA
-SCHEMA = 4
 REQUEST_WORDS = 24
 RECORD_WORDS = 32
 RESOURCE_BYTES = 65536
@@ -58,7 +57,7 @@ CONFLICT_RECORD_BYTES = (
 ) * 8
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "SAMPLE": 3,
     "PAYLOAD_BYTES": 4,
@@ -83,7 +82,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "SAMPLE": 4,
@@ -505,7 +504,7 @@ DDR_CONFLICT_DISPOSITIONS = (
         pair_kind="wdma-wdma",
         disposition="isolated-deferred",
         reason=(
-            "the rank-one ABI exposes only one device-to-host output "
+            "the program-local ABI exposes only one device-to-host output "
             "allocation; writing the second WDMA lane into an input resource "
             "would not provide a host exact oracle"
         ),
@@ -591,7 +590,7 @@ def build_case_payload(
         )
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
-    words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+    words[REQ["WORD_COUNT"]] = REQUEST_WORDS
     words[REQ["CASE"]] = case.case_id
     words[REQ["SAMPLE"]] = sample
     words[REQ["PAYLOAD_BYTES"]] = case.payload_bytes

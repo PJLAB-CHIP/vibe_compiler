@@ -29,7 +29,6 @@ REQUEST_MAGIC = 0x315145524D505357
 RECORD_MAGIC = 0x314345524D505357
 REQUEST_GUARD = 0xD7C6B5A493827160
 RECORD_GUARD = 0x1021324354657687
-SCHEMA = 2
 REQUEST_WORDS = 16
 RECORD_WORDS = 32
 RESOURCE_BYTES = 131072
@@ -38,7 +37,7 @@ OUTPUT_DDR_OFFSET = SLOT_BYTES
 OUTPUT_CANARY = 0xA5
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "ADDRESS": 3,
     "TRANSFER_BYTES": 4,
@@ -49,7 +48,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "ADDRESS": 4,
@@ -562,7 +561,7 @@ def build_case_payload(case: SPMCase, sample: int = 0) -> CasePayload:
     data = case.payload(sample + 1)
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
-    words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+    words[REQ["WORD_COUNT"]] = REQUEST_WORDS
     words[REQ["CASE"]] = CASE_IDS[case.name]
     words[REQ["ADDRESS"]] = case.address
     words[REQ["TRANSFER_BYTES"]] = case.transfer_bytes

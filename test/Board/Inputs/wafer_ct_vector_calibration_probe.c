@@ -195,8 +195,8 @@ static uint32_t wafer_ctv_scalar_bits(uint32_t dtype) {
 static uint32_t wafer_ctv_decode(const volatile uint64_t *request,
                                  WaferCTVCase *decoded) {
   if (request[WAFER_CTV_REQ_MAGIC] != WAFER_CTV_REQUEST_MAGIC ||
-      request[WAFER_CTV_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_CTV_SCHEMA << 32) | WAFER_CTV_REQUEST_WORDS) ||
+      request[WAFER_CTV_REQ_WORD_COUNT] !=
+          (WAFER_CTV_REQUEST_WORDS) ||
       request[WAFER_CTV_REQ_GUARD] != WAFER_CTV_REQUEST_GUARD ||
       request[WAFER_CTV_REQ_RESOURCE_BYTES] != WAFER_CTV_RESOURCE_BYTES ||
       request[WAFER_CTV_REQ_SLOT_BYTES] != WAFER_CTV_SLOT_BYTES ||
@@ -340,8 +340,8 @@ static void wafer_ctv_init_record(volatile uint64_t *record, uint32_t status) {
   for (uint32_t index = 0; index < WAFER_CTV_RECORD_WORDS; ++index)
     record[index] = 0;
   record[WAFER_CTV_REC_MAGIC] = WAFER_CTV_RECORD_MAGIC;
-  record[WAFER_CTV_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_CTV_SCHEMA << 32) | WAFER_CTV_RECORD_WORDS;
+  record[WAFER_CTV_REC_WORD_COUNT] =
+      WAFER_CTV_RECORD_WORDS;
   record[WAFER_CTV_REC_STATUS] = status;
   record[WAFER_CTV_REC_OUTPUT_DDR_OFFSET] = WAFER_CTV_OUTPUT_DDR_OFFSET;
   record[WAFER_CTV_REC_SLOT_BYTES] = WAFER_CTV_SLOT_BYTES;
@@ -381,9 +381,9 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_CTV_REC_FULL_ELEMENTS] = selected.full_elements;
     record[WAFER_CTV_REC_FULL_UNIT_ELEMENTS] = selected.full_unit_elements;
 
-    wafer_tx81_rdma_v3(payload_ddr, WAFER_CTV_SPM_A, WAFER_CTV_SLOT_BYTES,
+    wafer_tx81_rdma(payload_ddr, WAFER_CTV_SPM_A, WAFER_CTV_SLOT_BYTES,
                        WAFER_CTV_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(payload_ddr + WAFER_CTV_SLOT_BYTES, WAFER_CTV_SPM_B,
+    wafer_tx81_rdma(payload_ddr + WAFER_CTV_SLOT_BYTES, WAFER_CTV_SPM_B,
                        WAFER_CTV_SLOT_BYTES, WAFER_CTV_SLOT_BYTES, 0, 0, 0, 1,
                        1, 1, Fmt_UINT8, 0U);
     /*
@@ -391,7 +391,7 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
      * the output through RDMA so the entire probe remains one NCC issue window;
      * the host validates the full result and guard after terminal WDMA.
      */
-    wafer_tx81_rdma_v3(request_ddr + WAFER_CTV_SLOT_BYTES, WAFER_CTV_SPM_OUTPUT,
+    wafer_tx81_rdma(request_ddr + WAFER_CTV_SLOT_BYTES, WAFER_CTV_SPM_OUTPUT,
                        WAFER_CTV_SLOT_BYTES, WAFER_CTV_SLOT_BYTES, 0, 0, 0, 1,
                        1, 1, Fmt_UINT8, 0U);
     uint64_t execute_result = wafer_ctv_issue(&selected);
@@ -399,7 +399,7 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     if (execute_result == 0) {
       status = WAFER_CTV_STATUS_EXECUTE_FAILED;
     } else {
-      wafer_tx81_wdma_v3(WAFER_CTV_SPM_OUTPUT,
+      wafer_tx81_wdma(WAFER_CTV_SPM_OUTPUT,
                          output_ddr + WAFER_CTV_OUTPUT_DDR_OFFSET,
                          WAFER_CTV_SLOT_BYTES, WAFER_CTV_SLOT_BYTES, 0, 0, 0, 1,
                          1, 1, Fmt_UINT8, 0U);

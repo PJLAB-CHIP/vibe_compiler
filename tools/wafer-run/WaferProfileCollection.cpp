@@ -772,8 +772,6 @@ serializeEvidence(const VerifiedProfileInstrumentation &instrumentation,
   llvm::json::OStream json(output, 2);
   json.object([&] {
     json.attribute("schema", "wafer.profile.evidence");
-    json.attribute("schema_version",
-                   int64_t(kBoardProfileEvidenceFormatVersion));
     json.attribute("run_id", runId);
     json.attributeObject("program", [&] {
       json.attribute("program_manifest_sha256",

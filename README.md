@@ -7,7 +7,7 @@ verified package。仓库同时提供 no-card validation 和 repo-owned TargetCa
 用于在真实板卡接入前验证 compiler、ABI、memory、transport 和数值语义。
 
 logical card partition 和 Tile 是两个不同的 domain：`num_partitions` 只属于 GSPMD/global tensor
-boundary，card-local MPMD 由 `wafer.card.module` 和 16 个 `wafer.tile.module` 显式表示。package schema v8
+boundary，card-local MPMD 由 `wafer.card.module` 和 16 个 `wafer.tile.module` 显式表示。current package schema
 只包含 all-and-only Tile executable 和 card resource/launch 合同；不再存在 logical rank 直接绑定
 Tile、single-Tile entry ABI 或兼容 reader。
 

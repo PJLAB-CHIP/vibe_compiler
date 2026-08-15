@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Calibrate ordered Direct-DTE/NCC execution and completion on 16 TX81 ranks."""
+"""Calibrate ordered Direct-DTE/NCC execution on the 16-Tile TX81 domain."""
 
 from __future__ import annotations
 
@@ -17,11 +17,11 @@ import subprocess
 import sys
 import time
 
-import wafer_board_direct_dte_collective_test as production_baseline
+import wafer_runtime_launch_contract as runtime_launch
 import wafer_transport_pmu_calibration_catalog as transport_catalog
 
 
-RANK_COUNT = 16
+TILE_COUNT = 16
 RESOURCE_BYTES = 264448
 HEADER_BYTES = 128
 INPUT_BYTES = 8192
@@ -30,12 +30,10 @@ ASYNC_TRANSPORT_BYTES = 65536
 SPM_GUARD_BYTES = 256
 HOST_SLOT_BYTES = ASYNC_TRANSPORT_BYTES + 2 * SPM_GUARD_BYTES
 HOST_SLOT_COUNT = 4
-PROBE_LOCAL_ELEMENTS = RESOURCE_BYTES // 4
 PAYLOAD_SWEEP = transport_catalog.PAYLOAD_SWEEP
 INITIAL_CANARY = 0xA5
 MAGIC = 0x3143434E45544457
 CANARY = 0xD7E0CA11D7E0CA11
-SCHEMA = 7
 STATUS_SUCCESS = 1
 STATUS_TRANSPORT_ERROR = 2
 DTE_ENABLE_MASK = 0x3
@@ -45,8 +43,11 @@ TRANSPORT_STABLE_MASK = (1 << len(TRANSPORT_COUNTER_NAMES)) - 1
 CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = (
     transport_catalog.CALIBRATION_LEAF_BINDINGS
 )
-LAUNCH_KIND = "kernel"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TARGET_IDENTITY = "wafer-tx81-single-card"
+STATUS_ABI = "wafer-direct-dte-status"
+STATUS_STORAGE_BYTES = 64
+STATUS_STORAGE_ALIGNMENT = 64
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_dte_ncc_execution_probe.c"
@@ -129,27 +130,60 @@ EXPECTED_CONTRACT_EVIDENCE = {
     },
 }
 
+MODULE = f"""\
+module {{
+  func.func @main(%input: tensor<{RESOURCE_BYTES // 2}xf16>)
+      -> tensor<{RESOURCE_BYTES // 2}xf16> {{
+    %output = stablehlo.add %input, %input
+        : tensor<{RESOURCE_BYTES // 2}xf16>
+    return %output : tensor<{RESOURCE_BYTES // 2}xf16>
+  }}
+}}
+"""
+METADATA = {
+    "name": "forward",
+    "stablehlo_version": "0.0.0",
+    "input_signature": [
+        {
+            "shape": [RESOURCE_BYTES // 2],
+            "dtype": "float16",
+            "dynamic_dims": [],
+        }
+    ],
+    "output_signature": [
+        {
+            "shape": [RESOURCE_BYTES // 2],
+            "dtype": "float16",
+            "dynamic_dims": [],
+        }
+    ],
+    "input_locations": [
+        {"type_": "input_arg", "position": 0, "name": "probe_input"}
+    ],
+    "unused_inputs": [],
+}
 
-def expected_contract_evidence(mode: int, rank: int) -> int:
+
+def expected_contract_evidence(mode: int, tile_id: int) -> int:
     if mode == FOUR_SOURCE_FANIN_MODE:
-        if rank == transport_catalog.FOUR_SOURCE_FANIN_TARGET:
+        if tile_id == transport_catalog.FOUR_SOURCE_FANIN_TARGET:
             return (
                 CONTRACT_VALID_RECV_EVENT
                 | CONTRACT_RAW_ASYNC_ISSUED
                 | CONTRACT_RAW_ASYNC_COMPLETED
             )
-        if rank in transport_catalog.FOUR_SOURCE_FANIN_SOURCES:
+        if tile_id in transport_catalog.FOUR_SOURCE_FANIN_SOURCES:
             return CONTRACT_VALID_SEND_EVENT | CONTRACT_RAW_ASYNC_COMPLETED
         return 0
     if mode in RAW_MULTIDEST_MODES:
         case = RAW_MULTIDEST_CASE_BY_MODE[mode]
-        if rank == transport_catalog.RAW_MULTIDEST_SOURCE_RANK:
+        if tile_id == transport_catalog.RAW_MULTIDEST_SOURCE_TILE:
             return (
                 CONTRACT_VALID_SEND_EVENT
                 | CONTRACT_RAW_ASYNC_ISSUED
                 | CONTRACT_RAW_ASYNC_COMPLETED
             )
-        if rank in case.target_ranks:
+        if tile_id in case.target_tiles:
             return CONTRACT_VALID_RECV_EVENT | CONTRACT_RAW_ASYNC_COMPLETED
         return 0
     return EXPECTED_CONTRACT_EVIDENCE[mode]
@@ -306,12 +340,18 @@ def run(
 def compile_package(
     args: argparse.Namespace,
 ) -> tuple[pathlib.Path, pathlib.Path, dict[tuple[int, str, int], int]]:
-    source = production_baseline.write_fixture(
-        args.work_dir,
-        PROBE_LOCAL_ELEMENTS,
-        element_type="f32",
+    source = args.work_dir / "source-program"
+    if source.exists():
+        shutil.rmtree(source)
+    (source / "functions").mkdir(parents=True)
+    (source / "data").mkdir()
+    (source / "functions" / "forward.mlir").write_text(MODULE)
+    (source / "functions" / "forward.meta").write_text(
+        json.dumps(METADATA, separators=(",", ":")) + "\n"
     )
     package = args.work_dir / "package"
+    if package.exists():
+        shutil.rmtree(package)
     result = run(
         [
             str(args.wafer_compile),
@@ -319,19 +359,45 @@ def compile_package(
             str(source),
             "--output-program-dir",
             str(package),
-            f"--execution-ranks={RANK_COUNT}",
+            "--num-partitions=1",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
     if "wrote verified package" not in result.stdout:
         raise RuntimeError("wafer-compile did not write the seed package")
-    bindings = production_baseline.validate_manifest(
-        package,
-        PROBE_LOCAL_ELEMENTS,
-        element_type="f32",
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    bindings = runtime_launch.configure_direct_dte_tile_package(
+        manifest,
+        resources=(
+            runtime_launch.SharedBoundaryResourceSpec(
+                role="user_input",
+                role_index=0,
+                name="dte_ncc_probe_input",
+                type={"dtype": "i8", "shape": [TILE_COUNT * RESOURCE_BYTES]},
+                bytes=TILE_COUNT * RESOURCE_BYTES,
+                alignment=256,
+                access="read_only",
+                host_visible=True,
+            ),
+            runtime_launch.SharedBoundaryResourceSpec(
+                role="output",
+                role_index=0,
+                name="dte_ncc_probe_output",
+                type={"dtype": "i8", "shape": [TILE_COUNT * RESOURCE_BYTES]},
+                bytes=TILE_COUNT * RESOURCE_BYTES,
+                alignment=256,
+                access="write_only",
+                host_visible=True,
+            ),
+        ),
+        status_abi=STATUS_ABI,
+        status_bytes=STATUS_STORAGE_BYTES,
+        status_alignment=STATUS_STORAGE_ALIGNMENT,
+        context="ordered DTE/NCC probe",
     )
-    manifest = json.loads((package / "manifest.json").read_text())
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     if manifest.get("target", {}).get("identity") != TARGET_IDENTITY:
         raise RuntimeError("ordered DTE/NCC package target identity is invalid")
     host_resources = (
@@ -340,7 +406,7 @@ def compile_package(
         if resource.get("host_visible")
     )
     if any(
-        resource.get("bytes") != RESOURCE_BYTES
+        resource.get("bytes") != TILE_COUNT * RESOURCE_BYTES
         for resource in host_resources
     ):
         raise RuntimeError(
@@ -357,10 +423,9 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--all-ranks",
             "--no-card",
             "--direct-dte-status-abi",
-            production_baseline.STATUS_ABI,
+            STATUS_ABI,
             "--supports-host-watchdog",
         ]
     )
@@ -375,7 +440,6 @@ def board_base_command(
         str(args.wafer_run),
         "--package-dir",
         str(package),
-        "--all-ranks",
         "--board",
         "--device-id",
         str(args.device_id),
@@ -392,44 +456,6 @@ def board_base_command(
         "--completion-timeout-ms",
         str(args.completion_timeout_ms),
     ]
-
-
-def execute_production_baseline(
-    args: argparse.Namespace,
-) -> None:
-    baseline_work_dir = args.work_dir / "production-baseline"
-    source = production_baseline.write_fixture(baseline_work_dir)
-    package = baseline_work_dir / "package"
-    run(
-        [
-            str(args.wafer_compile),
-            "--input-program-dir",
-            str(source),
-            "--output-program-dir",
-            str(package),
-            f"--execution-ranks={RANK_COUNT}",
-            f"--launch-kind={LAUNCH_KIND}",
-        ],
-        timeout_seconds=300,
-    )
-    bindings = production_baseline.validate_manifest(package)
-    manifest = json.loads((package / "manifest.json").read_text())
-    if manifest.get("target", {}).get("identity") != TARGET_IDENTITY:
-        raise RuntimeError("ordered DTE/NCC baseline target identity is invalid")
-    resource_args = production_baseline.write_raw_files(
-        baseline_work_dir, bindings
-    )
-    result = run(
-        [*board_base_command(args, package), *resource_args],
-        timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
-    )
-    exact = re.findall(r"^output_compare: resource=(\d+).* exact=true$", result.stdout, re.M)
-    expected_ids = {
-        bindings[(rank, "output", 0)] for rank in range(RANK_COUNT)
-    }
-    if len(exact) != RANK_COUNT or {int(value) for value in exact} != expected_ids:
-        raise RuntimeError("production Direct-DTE baseline was not 16-rank exact")
-    print("production_direct_dte_baseline: ranks=16 exact=true")
 
 
 def build_probe(
@@ -598,14 +624,14 @@ def build_probe(
     print("probe_build: cluster_prepare_main_dte_ncc_execution")
 
 
-def f16_payload(rank: int) -> list[float]:
-    return [float(rank * 4 + lane + 1) for lane in range(INPUT_BYTES // 2)]
+def f16_payload(tile_id: int) -> list[float]:
+    return [float(tile_id * 4 + lane + 1) for lane in range(INPUT_BYTES // 2)]
 
 
-def async_sender_pattern(rank: int, count: int) -> bytes:
+def async_sender_pattern(tile_id: int, count: int) -> bytes:
     return bytes(
         (
-            rank * 53
+            tile_id * 53
             + index * 17
             + (index >> 8) * 29
             + 7
@@ -615,7 +641,7 @@ def async_sender_pattern(rank: int, count: int) -> bytes:
     )
 
 
-def raw_multidest_pattern(rank: int, count: int) -> bytes:
+def raw_multidest_pattern(tile_id: int, count: int) -> bytes:
     """Byte-exact records that make every aligned source slice identifiable."""
 
     if count % 4:
@@ -624,10 +650,10 @@ def raw_multidest_pattern(rank: int, count: int) -> bytes:
     for record in range(count // 4):
         records.extend(
             (
-                rank & 0xFF,
+                tile_id & 0xFF,
                 record & 0xFF,
                 (record >> 8) & 0xFF,
-                (rank * 37 + record * 29 + 0x5B) & 0xFF,
+                (tile_id * 37 + record * 29 + 0x5B) & 0xFF,
             )
         )
     return bytes(records)
@@ -650,7 +676,7 @@ def write_probe_inputs(
     mode: int,
     payload_bytes: int,
     sample: int = 0,
-) -> tuple[list[str], dict[int, pathlib.Path]]:
+) -> tuple[list[str], pathlib.Path]:
     if payload_bytes not in PAYLOAD_SWEEP:
         raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
     raw = (
@@ -659,20 +685,19 @@ def write_probe_inputs(
         / f"mode-{mode}-bytes-{payload_bytes}-sample-{sample}"
     )
     raw.mkdir(parents=True)
-    arguments: list[str] = []
-    outputs: dict[int, pathlib.Path] = {}
-    values = [f16_payload(rank) for rank in range(RANK_COUNT)]
-    for rank in range(RANK_COUNT):
+    input_blob = bytearray(TILE_COUNT * RESOURCE_BYTES)
+    values = [f16_payload(tile_id) for tile_id in range(TILE_COUNT)]
+    for tile_id in range(TILE_COUNT):
         header = struct.pack("<II", mode, payload_bytes) + bytes(
             HEADER_BYTES - 8
         )
         normal_payload = struct.pack(
-            f"<{len(values[rank])}e", *values[rank]
+            f"<{len(values[tile_id])}e", *values[tile_id]
         )
         if mode in ASYNC_SENDER_MODES:
             slots = (
                 guarded_host_slot(
-                    async_sender_pattern(rank, ASYNC_TRANSPORT_BYTES)
+                    async_sender_pattern(tile_id, ASYNC_TRANSPORT_BYTES)
                 ),
                 guarded_host_slot(
                     struct.pack(
@@ -684,7 +709,7 @@ def write_probe_inputs(
         elif mode in RAW_MULTIDEST_MODES:
             slots = (
                 guarded_host_slot(
-                    raw_multidest_pattern(rank, MAX_PAYLOAD_BYTES)
+                    raw_multidest_pattern(tile_id, MAX_PAYLOAD_BYTES)
                 ),
                 guarded_host_slot(b""),
             )
@@ -693,31 +718,43 @@ def write_probe_inputs(
                 guarded_host_slot(normal_payload),
                 guarded_host_slot(b""),
             )
-        input_path = raw / f"input-{rank:02d}.raw"
-        output_path = raw / f"output-{rank:02d}.raw"
         input_bytes = header + b"".join(slots)
-        input_path.write_bytes(
+        tile_input = (
             input_bytes
             + bytes([INITIAL_CANARY]) * (RESOURCE_BYTES - len(input_bytes))
         )
-        outputs[rank] = output_path
-        arguments.extend(
-            ["--resource", f"{bindings[(rank, 'user_input', 0)]}={input_path}"]
-        )
-        arguments.extend(
-            ["--output", f"{bindings[(rank, 'output', 0)]}={output_path}"]
-        )
-    return arguments, outputs
+        begin = tile_id * RESOURCE_BYTES
+        input_blob[begin : begin + RESOURCE_BYTES] = tile_input
+    input_ids = {
+        bindings[(tile_id, "user_input", 0)] for tile_id in range(TILE_COUNT)
+    }
+    output_ids = {
+        bindings[(tile_id, "output", 0)] for tile_id in range(TILE_COUNT)
+    }
+    if len(input_ids) != 1 or len(output_ids) != 1:
+        raise RuntimeError("DTE/NCC probe boundary resources are not shared")
+    input_path = raw / "input.raw"
+    output_path = raw / "output.raw"
+    input_path.write_bytes(input_blob)
+    return (
+        [
+            "--resource",
+            f"{next(iter(input_ids))}={input_path}",
+            "--output",
+            f"{next(iter(output_ids))}={output_path}",
+        ],
+        output_path,
+    )
 
 
 def packed_f16_slice(
-    rank: int,
+    tile_id: int,
     first_lane: int,
     payload_bytes: int,
     *,
     doubled: bool = False,
 ) -> bytes:
-    values = f16_payload(rank)[
+    values = f16_payload(tile_id)[
         first_lane : first_lane + payload_bytes // 2
     ]
     if doubled:
@@ -740,29 +777,29 @@ def guarded_capture_slot(active: bytes, region_bytes: int) -> bytes:
 
 
 def expected_capture_slots(
-    mode: int, rank: int, payload_bytes: int
+    mode: int, tile_id: int, payload_bytes: int
 ) -> tuple[bytes, bytes, bytes, bytes]:
     if payload_bytes not in PAYLOAD_SWEEP:
         raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
-    predecessor = (rank - 1) % RANK_COUNT
-    second_predecessor = (rank - 2) % RANK_COUNT
+    predecessor = (tile_id - 1) % TILE_COUNT
+    second_predecessor = (tile_id - 2) % TILE_COUNT
     second_lane = MAX_PAYLOAD_BYTES // 2
     empty = guarded_capture_slot(b"", MAX_PAYLOAD_BYTES)
-    local_first = packed_f16_slice(rank, 0, payload_bytes)
-    local_second = packed_f16_slice(rank, second_lane, payload_bytes)
+    local_first = packed_f16_slice(tile_id, 0, payload_bytes)
+    local_second = packed_f16_slice(tile_id, second_lane, payload_bytes)
     remote_first = packed_f16_slice(predecessor, 0, payload_bytes)
     remote_second = packed_f16_slice(
         predecessor, second_lane, payload_bytes
     )
 
     if mode == FOUR_SOURCE_FANIN_MODE:
-        if rank == transport_catalog.FOUR_SOURCE_FANIN_TARGET:
+        if tile_id == transport_catalog.FOUR_SOURCE_FANIN_TARGET:
             return tuple(
                 guarded_capture_slot(
-                    packed_f16_slice(source_rank, 0, payload_bytes),
+                    packed_f16_slice(source_tile, 0, payload_bytes),
                     MAX_PAYLOAD_BYTES,
                 )
-                for source_rank in transport_catalog.FOUR_SOURCE_FANIN_SOURCES
+                for source_tile in transport_catalog.FOUR_SOURCE_FANIN_SOURCES
             )
         return (
             guarded_capture_slot(local_first, MAX_PAYLOAD_BYTES),
@@ -773,9 +810,9 @@ def expected_capture_slots(
     if mode in RAW_MULTIDEST_MODES:
         case = RAW_MULTIDEST_CASE_BY_MODE[mode]
         receive = b""
-        if rank in case.target_ranks:
+        if tile_id in case.target_tiles:
             source = raw_multidest_pattern(
-                transport_catalog.RAW_MULTIDEST_SOURCE_RANK,
+                transport_catalog.RAW_MULTIDEST_SOURCE_TILE,
                 MAX_PAYLOAD_BYTES,
             )
             if case.semantic == "shuffle":
@@ -784,7 +821,7 @@ def expected_capture_slots(
                     for offset in raw_shuffle_source_offsets(mode)
                 )
             else:
-                destination_index = case.target_ranks.index(rank)
+                destination_index = case.target_tiles.index(tile_id)
                 source_offset = (
                     0
                     if case.semantic == "broadcast"
@@ -798,7 +835,7 @@ def expected_capture_slots(
                 ]
         return (
             guarded_capture_slot(
-                raw_multidest_pattern(rank, MAX_PAYLOAD_BYTES),
+                raw_multidest_pattern(tile_id, MAX_PAYLOAD_BYTES),
                 MAX_PAYLOAD_BYTES,
             ),
             guarded_capture_slot(receive, MAX_PAYLOAD_BYTES),
@@ -807,7 +844,7 @@ def expected_capture_slots(
         )
     if mode == 1:
         local_doubled = packed_f16_slice(
-            rank, 0, payload_bytes, doubled=True
+            tile_id, 0, payload_bytes, doubled=True
         )
         remote_doubled = packed_f16_slice(
             predecessor, 0, payload_bytes, doubled=True
@@ -830,10 +867,10 @@ def expected_capture_slots(
         )
     if mode in (3, 4):
         disjoint_input = packed_f16_slice(
-            rank, second_lane, 32
+            tile_id, second_lane, 32
         )
         disjoint_output = packed_f16_slice(
-            rank, second_lane, 32, doubled=True
+            tile_id, second_lane, 32, doubled=True
         )
         return (
             guarded_capture_slot(local_first, MAX_PAYLOAD_BYTES),
@@ -878,7 +915,7 @@ def expected_capture_slots(
         )
         return (
             guarded_capture_slot(
-                async_sender_pattern(rank, ASYNC_TRANSPORT_BYTES),
+                async_sender_pattern(tile_id, ASYNC_TRANSPORT_BYTES),
                 ASYNC_TRANSPORT_BYTES,
             ),
             guarded_capture_slot(
@@ -894,9 +931,9 @@ def expected_capture_slots(
 
 
 def expected_capture_blob(
-    mode: int, rank: int, payload_bytes: int
+    mode: int, tile_id: int, payload_bytes: int
 ) -> bytes:
-    slots = b"".join(expected_capture_slots(mode, rank, payload_bytes))
+    slots = b"".join(expected_capture_slots(mode, tile_id, payload_bytes))
     return slots + bytes([INITIAL_CANARY]) * (
         RESOURCE_BYTES - HEADER_BYTES - len(slots)
     )
@@ -927,7 +964,7 @@ def raw_shuffle_source_offsets(mode: int) -> tuple[int, ...]:
 
 
 def validate_raw_multidest_capture(
-    payload: bytes, mode: int, rank: int
+    payload: bytes, mode: int, tile_id: int
 ) -> dict[str, object]:
     case = RAW_MULTIDEST_CASE_BY_MODE[mode]
     capture = payload[HEADER_BYTES:]
@@ -937,38 +974,38 @@ def validate_raw_multidest_capture(
     )
     trailing = capture[HOST_SLOT_COUNT * HOST_SLOT_BYTES :]
     expected_local = guarded_capture_slot(
-        raw_multidest_pattern(rank, MAX_PAYLOAD_BYTES),
+        raw_multidest_pattern(tile_id, MAX_PAYLOAD_BYTES),
         MAX_PAYLOAD_BYTES,
     )
     empty = guarded_capture_slot(b"", MAX_PAYLOAD_BYTES)
     if slots[0] != expected_local:
         raise RuntimeError(
-            f"rank {rank} mode {mode} raw source/local guarded slot is not exact"
+            f"tile_id {tile_id} mode {mode} raw source/local guarded slot is not exact"
         )
     if slots[2] != empty or slots[3] != empty or trailing != bytes(
         [INITIAL_CANARY]
     ) * len(trailing):
         raise RuntimeError(
-            f"rank {rank} mode {mode} raw inactive guarded slots changed"
+            f"tile_id {tile_id} mode {mode} raw inactive guarded slots changed"
         )
 
-    is_target = rank in case.target_ranks
+    is_target = tile_id in case.target_tiles
     if not is_target:
         if slots[1] != empty:
             raise RuntimeError(
-                f"rank {rank} mode {mode} received outside selective fanout"
+                f"tile_id {tile_id} mode {mode} received outside selective fanout"
             )
         return {
             "role": (
                 "source"
-                if rank == transport_catalog.RAW_MULTIDEST_SOURCE_RANK
+                if tile_id == transport_catalog.RAW_MULTIDEST_SOURCE_TILE
                 else "nonparticipant"
             ),
             "source_offset_bytes": None,
         }
 
     source = raw_multidest_pattern(
-        transport_catalog.RAW_MULTIDEST_SOURCE_RANK, MAX_PAYLOAD_BYTES
+        transport_catalog.RAW_MULTIDEST_SOURCE_TILE, MAX_PAYLOAD_BYTES
     )
     if case.semantic == "shuffle":
         source_offsets = raw_shuffle_source_offsets(mode)
@@ -980,7 +1017,7 @@ def validate_raw_multidest_capture(
             expected_receive, MAX_PAYLOAD_BYTES
         ):
             raise RuntimeError(
-                f"rank {rank} mode {mode} raw source shuffle is not exact"
+                f"tile_id {tile_id} mode {mode} raw source shuffle is not exact"
             )
         return {
             "role": "target",
@@ -1008,12 +1045,12 @@ def validate_raw_multidest_capture(
         matches = ((0, 0),)
     if len(matches) != 1:
         raise RuntimeError(
-            f"rank {rank} mode {mode} raw receive is not one exact guarded "
+            f"tile_id {tile_id} mode {mode} raw receive is not one exact guarded "
             f"source slice; matching offset/length pairs={matches}"
         )
     return {
         "role": "target",
-        "destination_slot": case.target_ranks.index(rank),
+        "destination_slot": case.target_tiles.index(tile_id),
         "source_offset_bytes": matches[0][0],
         "received_bytes": matches[0][1],
     }
@@ -1024,17 +1061,17 @@ def summarize_raw_multidest_observations(
 ) -> dict[str, object]:
     case = RAW_MULTIDEST_CASE_BY_MODE[mode]
     target_rows = {
-        int(row["rank"]): row["raw_multidest"]
+        int(row["tile_id"]): row["raw_multidest"]
         for row in observations
         if row["raw_multidest"]["role"] == "target"
     }
-    if set(target_rows) != set(case.target_ranks):
+    if set(target_rows) != set(case.target_tiles):
         raise RuntimeError(
-            f"{case.name} did not observe exactly its configured target ranks"
+            f"{case.name} did not observe exactly its configured target tile_ids"
         )
     if case.semantic == "shuffle":
-        target_rank = case.target_ranks[0]
-        target = target_rows[target_rank]
+        target_tile = case.target_tiles[0]
+        target = target_rows[target_tile]
         source_offsets = tuple(
             int(offset) for offset in target["source_offsets_bytes"]
         )
@@ -1044,7 +1081,7 @@ def summarize_raw_multidest_observations(
             "raw_mode": case.raw_mode,
             "fanout": 1,
             "target_layout": case.target_layout,
-            "target_rank": target_rank,
+            "target_tile": target_tile,
             "shuffle_sections": case.shuffle_sections,
             "element_bytes": case.element_bytes,
             "source_stride_bytes": 2 * case.element_bytes,
@@ -1065,15 +1102,15 @@ def summarize_raw_multidest_observations(
         }
 
     mapping = {
-        rank: (
-            int(target_rows[rank]["source_offset_bytes"]),
-            int(target_rows[rank]["received_bytes"]),
+        tile_id: (
+            int(target_rows[tile_id]["source_offset_bytes"]),
+            int(target_rows[tile_id]["received_bytes"]),
         )
-        for rank in case.target_ranks
+        for tile_id in case.target_tiles
     }
-    offsets = tuple(mapping[rank][0] for rank in case.target_ranks)
+    offsets = tuple(mapping[tile_id][0] for tile_id in case.target_tiles)
     received_lengths = tuple(
-        mapping[rank][1] for rank in case.target_ranks
+        mapping[tile_id][1] for tile_id in case.target_tiles
     )
     reference_offsets = raw_multidest_reference_offsets(mode)
     reference_mapping = (
@@ -1096,11 +1133,11 @@ def summarize_raw_multidest_observations(
         "dest_num_register_value": case.dest_num_register_value,
         "dest_num_encoding": case.dest_num_encoding,
         "target_to_source_offset_bytes": {
-            str(rank): {
-                "source_offset_bytes": mapping[rank][0],
-                "received_bytes": mapping[rank][1],
+            str(tile_id): {
+                "source_offset_bytes": mapping[tile_id][0],
+                "received_bytes": mapping[tile_id][1],
             }
-            for rank in case.target_ranks
+            for tile_id in case.target_tiles
         },
         "observed_mapping_class": observed_mapping_class,
         "distinct_source_slice_count": unique_offsets,
@@ -1127,17 +1164,17 @@ def summarize_raw_multidest_observations(
 
 
 def parse_probe_payload(
-    payload: bytes, mode: int, rank: int, payload_bytes: int
+    payload: bytes, mode: int, tile_id: int, payload_bytes: int
 ) -> dict[str, object]:
     if payload_bytes not in PAYLOAD_SWEEP:
         raise RuntimeError(f"unsupported transport payload size {payload_bytes}")
     if len(payload) != RESOURCE_BYTES:
-        raise RuntimeError(f"rank {rank} mode {mode} output has invalid size")
+        raise RuntimeError(f"tile_id {tile_id} mode {mode} output has invalid size")
     words = struct.unpack("<16Q", payload[:HEADER_BYTES])
     stable_mask = (words[1] >> 48) & 0xFF
-    schema = (words[1] >> 32) & 0xFFFF
+    reserved = (words[1] >> 32) & 0xFFFF
     recorded_mode = (words[1] >> 24) & 0xFF
-    recorded_rank = (words[1] >> 16) & 0xFF
+    recorded_tile = (words[1] >> 16) & 0xFF
     recorded_bytes = words[1] & 0xFFFF
     contract_status = (words[1] >> 56) & 0xFF
     status = words[3] & 0xFF
@@ -1155,18 +1192,18 @@ def parse_probe_payload(
     if (
         words[0] != MAGIC
         or words[2] != CANARY
-        or schema != SCHEMA
+        or reserved != 0
         or recorded_mode != mode
-        or recorded_rank != rank
+        or recorded_tile != tile_id
         or recorded_bytes != payload_bytes
         or status != STATUS_SUCCESS
     ):
         raise RuntimeError(
-            f"rank {rank} mode {mode} has invalid status/canary header"
+            f"tile_id {tile_id} mode {mode} has invalid status/canary header"
         )
     if stable_mask != 0xF:
         raise RuntimeError(
-            f"rank {rank} mode {mode} has unstable NCC PMU counters: "
+            f"tile_id {tile_id} mode {mode} has unstable NCC PMU counters: "
             f"mask=0x{stable_mask:x}"
         )
     transport_stable_mask = words[8] & 0xFFFF
@@ -1181,20 +1218,20 @@ def parse_probe_payload(
         or scope_change & ~0x3
     ):
         raise RuntimeError(
-            f"rank {rank} mode {mode} has invalid transport PMU sampling "
+            f"tile_id {tile_id} mode {mode} has invalid transport PMU sampling "
             f"metadata: stable=0x{transport_stable_mask:x} "
             f"expected=0x{recorded_transport_mask:x} read_only={read_only}"
         )
     expected_contract_status = (
         STATUS_TRANSPORT_ERROR if mode in ERROR_PATH_MODES else STATUS_SUCCESS
     )
-    expected_contract_evidence_value = expected_contract_evidence(mode, rank)
+    expected_contract_evidence_value = expected_contract_evidence(mode, tile_id)
     if (
         contract_status != expected_contract_status
         or contract_evidence != expected_contract_evidence_value
     ):
         raise RuntimeError(
-            f"rank {rank} mode {mode} has invalid Direct-DTE error-path "
+            f"tile_id {tile_id} mode {mode} has invalid Direct-DTE error-path "
             f"evidence: status={contract_status} "
             f"evidence=0x{contract_evidence:02x} expected_status="
             f"{expected_contract_status} expected_evidence="
@@ -1203,12 +1240,12 @@ def parse_probe_payload(
     expected_counts = EXPECTED_INSTRUCTION_COUNTS.get(mode)
     if expected_counts is None or instruction_counts != expected_counts:
         raise RuntimeError(
-            f"rank {rank} mode {mode} has NCC instruction deltas "
+            f"tile_id {tile_id} mode {mode} has NCC instruction deltas "
             f"{instruction_counts}, expected {expected_counts}"
         )
     if any(device_oracle_mismatches):
         raise RuntimeError(
-            f"rank {rank} mode {mode} device guard/result mismatches "
+            f"tile_id {tile_id} mode {mode} device guard/result mismatches "
             f"{device_oracle_mismatches}"
         )
     raw_async_return_codes: dict[str, int] | None = None
@@ -1230,7 +1267,7 @@ def parse_probe_payload(
         )
         if marker != expected_marker or any(return_codes.values()):
             raise RuntimeError(
-                f"rank {rank} mode {mode} has invalid raw DTE return "
+                f"tile_id {tile_id} mode {mode} has invalid raw DTE return "
                 f"codes/marker: {return_codes} marker=0x{marker:x}"
             )
         if mode in RAW_MULTIDEST_MODES:
@@ -1239,12 +1276,12 @@ def parse_probe_payload(
             raw_async_return_codes = return_codes
     raw_multidest: dict[str, object] | None = None
     if mode in RAW_MULTIDEST_MODES:
-        raw_multidest = validate_raw_multidest_capture(payload, mode, rank)
+        raw_multidest = validate_raw_multidest_capture(payload, mode, tile_id)
     else:
-        expected_readback = expected_capture_blob(mode, rank, payload_bytes)
+        expected_readback = expected_capture_blob(mode, tile_id, payload_bytes)
         if payload[HEADER_BYTES:] != expected_readback:
             raise RuntimeError(
-                f"rank {rank} mode {mode} guarded SPM readback is not exact"
+                f"tile_id {tile_id} mode {mode} guarded SPM readback is not exact"
             )
 
     dte_enable = words[9] & 0xFFFFFFFF
@@ -1265,7 +1302,7 @@ def parse_probe_payload(
         "inconclusive" if inconclusive_reasons else "raw_observation"
     )
     return {
-        "rank": rank,
+        "tile_id": tile_id,
         "payload_bytes": payload_bytes,
         "transport_bytes": transport_bytes_for_mode(mode, payload_bytes),
         "stable_mask": stable_mask,
@@ -1327,7 +1364,7 @@ def parse_probe_payload(
                 "sampled": False,
                 "scope": "unknown",
                 "reason": (
-                    "version-matched headers expose only TMNOC PMU bases; "
+                    "current installed headers expose only TMNOC PMU bases; "
                     "no decoded read-only counter offsets or measurement basis"
                 ),
             },
@@ -1335,15 +1372,9 @@ def parse_probe_payload(
     }
 
 
-def parse_probe_output(
-    path: pathlib.Path, mode: int, rank: int, payload_bytes: int
-) -> dict[str, object]:
-    return parse_probe_payload(path.read_bytes(), mode, rank, payload_bytes)
-
-
 def synthetic_probe_payload(
     mode: int,
-    rank: int,
+    tile_id: int,
     payload_bytes: int,
     *,
     dte_enable: int = DTE_ENABLE_MASK,
@@ -1371,9 +1402,8 @@ def synthetic_probe_payload(
             )
             << 56
         )
-        | (SCHEMA << 32)
         | (mode << 24)
-        | (rank << 16)
+        | (tile_id << 16)
         | payload_bytes
     )
     words[2] = CANARY
@@ -1412,13 +1442,13 @@ def synthetic_probe_payload(
         | (TRANSPORT_STABLE_MASK << 16)
         | (scope_change << 32)
         | ((1 if read_only else 0) << 40)
-        | (expected_contract_evidence(mode, rank) << 48)
+        | (expected_contract_evidence(mode, tile_id) << 48)
     )
     words[9] = dte_enable | (spm_enable << 32)
     words[10:16] = list(transport_deltas)
     return (
         struct.pack("<16Q", *words)
-        + expected_capture_blob(mode, rank, payload_bytes)
+        + expected_capture_blob(mode, tile_id, payload_bytes)
     )
 
 
@@ -1443,24 +1473,24 @@ def run_host_oracle_self_tests() -> None:
 
     for mode in (*DEFAULT_SAFE_MODES, *PENDING_DTE_MODES):
         for payload_bytes in MODE_PAYLOADS[mode]:
-            ranks = (
-                range(RANK_COUNT)
+            tile_ids = (
+                range(TILE_COUNT)
                 if mode in PENDING_DTE_MODES
-                else (0, RANK_COUNT - 1)
+                else (0, TILE_COUNT - 1)
             )
             parsed_rows: list[dict[str, object]] = []
-            for rank in ranks:
+            for tile_id in tile_ids:
                 parsed = parse_probe_payload(
-                    synthetic_probe_payload(mode, rank, payload_bytes),
+                    synthetic_probe_payload(mode, tile_id, payload_bytes),
                     mode,
-                    rank,
+                    tile_id,
                     payload_bytes,
                 )
                 parsed_rows.append(parsed)
                 require(
                     parsed["transport_pmu"]["sample_state"]
                     == "raw_observation",
-                    f"valid mode {mode} rank {rank} bytes "
+                    f"valid mode {mode} tile_id {tile_id} bytes "
                     f"{payload_bytes} was not a raw observation",
                 )
                 if mode in ASYNC_SENDER_MODES:
@@ -1608,12 +1638,12 @@ def run_host_oracle_self_tests() -> None:
     )
     raw_mode = RAW_MULTIDEST_MODES[0]
     raw_nonparticipant = next(
-        rank
-        for rank in range(RANK_COUNT)
-        if rank
+        tile_id
+        for tile_id in range(TILE_COUNT)
+        if tile_id
         not in (
-            transport_catalog.RAW_MULTIDEST_SOURCE_RANK,
-            *RAW_MULTIDEST_CASE_BY_MODE[raw_mode].target_ranks,
+            transport_catalog.RAW_MULTIDEST_SOURCE_TILE,
+            *RAW_MULTIDEST_CASE_BY_MODE[raw_mode].target_tiles,
         )
     )
     corrupted_raw_nonparticipant = bytearray(
@@ -1638,7 +1668,7 @@ def run_host_oracle_self_tests() -> None:
     else:
         raise RuntimeError(
             "DTE/NCC host oracle self-test accepted a write to an "
-            "unselected raw multicast rank"
+            "unselected raw multicast Tile"
         )
 
     divergent_mode = next(
@@ -1648,20 +1678,20 @@ def run_host_oracle_self_tests() -> None:
         and RAW_MULTIDEST_CASE_BY_MODE[mode].fanout == 2
     )
     divergent_case = RAW_MULTIDEST_CASE_BY_MODE[divergent_mode]
-    divergent_target = divergent_case.target_ranks[0]
+    divergent_target = divergent_case.target_tiles[0]
     divergent_rows: list[dict[str, object]] = []
-    for rank in range(RANK_COUNT):
+    for tile_id in range(TILE_COUNT):
         row_payload = bytearray(
             synthetic_probe_payload(
                 divergent_mode,
-                rank,
+                tile_id,
                 transport_catalog.RAW_MULTIDEST_PAYLOAD_BYTES,
             )
         )
-        if rank == divergent_target:
+        if tile_id == divergent_target:
             alternate_offset = 512
             source = raw_multidest_pattern(
-                transport_catalog.RAW_MULTIDEST_SOURCE_RANK,
+                transport_catalog.RAW_MULTIDEST_SOURCE_TILE,
                 MAX_PAYLOAD_BYTES,
             )
             alternate_slot = guarded_capture_slot(
@@ -1679,7 +1709,7 @@ def run_host_oracle_self_tests() -> None:
             parse_probe_payload(
                 bytes(row_payload),
                 divergent_mode,
-                rank,
+                tile_id,
                 transport_catalog.RAW_MULTIDEST_PAYLOAD_BYTES,
             )
         )
@@ -1707,19 +1737,19 @@ def run_pending_host_contract(
         )
     observations = [
         parse_probe_payload(
-            synthetic_probe_payload(mode, rank, payload_bytes),
+            synthetic_probe_payload(mode, tile_id, payload_bytes),
             mode,
-            rank,
+            tile_id,
             payload_bytes,
         )
-        for rank in range(RANK_COUNT)
+        for tile_id in range(TILE_COUNT)
     ]
     return {
         "case": MODES[mode],
         "mode": mode,
         "payload_bytes": payload_bytes,
         "single_mode_isolation": True,
-        "all_rank_exact_oracle": True,
+        "all_tile_exact_oracle": True,
         "raw_multidest": (
             summarize_raw_multidest_observations(mode, observations)
             if mode in RAW_MULTIDEST_MODES
@@ -1727,8 +1757,8 @@ def run_pending_host_contract(
         ),
         "four_source_fanin": (
             {
-                "target_rank": transport_catalog.FOUR_SOURCE_FANIN_TARGET,
-                "source_ranks": transport_catalog.FOUR_SOURCE_FANIN_SOURCES,
+                "target_tile": transport_catalog.FOUR_SOURCE_FANIN_TARGET,
+                "source_tiles": transport_catalog.FOUR_SOURCE_FANIN_SOURCES,
                 "four_disjoint_guarded_slots_exact": True,
             }
             if mode == FOUR_SOURCE_FANIN_MODE
@@ -1758,23 +1788,31 @@ def execute_probe_modes(
                 else 1
             )
             for sample in range(repetitions):
-                resource_args, outputs = write_probe_inputs(
+                resource_args, output = write_probe_inputs(
                     args.work_dir, bindings, mode, payload_bytes, sample
                 )
                 result = run(
                     [*board_base_command(args, package), *resource_args],
                     timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
                 )
-                if result.stdout.count("output_capture:") != RANK_COUNT:
+                if result.stdout.count("output_capture:") != 1:
                     raise RuntimeError(
                         f"{name} bytes {payload_bytes} sample {sample} omitted "
-                        "one or more rank output captures"
+                        "the shared Tile output capture"
                     )
+                output_blob = output.read_bytes()
+                if len(output_blob) != TILE_COUNT * RESOURCE_BYTES:
+                    raise RuntimeError("DTE/NCC shared output size is invalid")
                 observations = [
-                    parse_probe_output(
-                        outputs[rank], mode, rank, payload_bytes
+                    parse_probe_payload(
+                        output_blob[
+                            tile_id * RESOURCE_BYTES : (tile_id + 1) * RESOURCE_BYTES
+                        ],
+                        mode,
+                        tile_id,
+                        payload_bytes,
                     )
-                    for rank in range(RANK_COUNT)
+                    for tile_id in range(TILE_COUNT)
                 ]
                 for observation in observations:
                     observation["sample"] = sample
@@ -1786,8 +1824,8 @@ def execute_probe_modes(
                 sweep_observations[mode].setdefault(
                     payload_bytes, []
                 ).extend(observations)
-                inconclusive_ranks = [
-                    observation["rank"]
+                inconclusive_tiles = [
+                    observation["tile_id"]
                     for observation in observations
                     if observation["transport_pmu"]["sample_state"]
                     == "inconclusive"
@@ -1802,7 +1840,7 @@ def execute_probe_modes(
                             "transport_bytes": transport_bytes_for_mode(
                                 mode, payload_bytes
                             ),
-                            "ranks": RANK_COUNT,
+                            "tile_ids": TILE_COUNT,
                             "exact": True,
                             "canary": True,
                             "guards": {
@@ -1818,11 +1856,11 @@ def execute_probe_modes(
                             "ncc_pmu": observations,
                             "transport_pmu_sample_state": (
                                 "inconclusive"
-                                if inconclusive_ranks
+                                if inconclusive_tiles
                                 else "raw_observation"
                             ),
-                            "transport_pmu_inconclusive_ranks": (
-                                inconclusive_ranks
+                            "transport_pmu_inconclusive_tiles": (
+                                inconclusive_tiles
                             ),
                             "dte_common_timer": None,
                             "dte_ncc_overlap": (
@@ -1831,10 +1869,10 @@ def execute_probe_modes(
                             "raw_multidest": raw_multidest_summary,
                             "four_source_fanin": (
                                 {
-                                    "target_rank": (
+                                    "target_tile": (
                                         transport_catalog.FOUR_SOURCE_FANIN_TARGET
                                     ),
-                                    "source_ranks": (
+                                    "source_tiles": (
                                         transport_catalog.FOUR_SOURCE_FANIN_SOURCES
                                     ),
                                     "four_disjoint_guarded_slots_exact": True,
@@ -1904,25 +1942,25 @@ def execute_probe_modes(
                 observation["transport_pmu"]["raw_counter_deltas"][name]
             )
 
-        per_mode_rank_medians: dict[
+        per_mode_tile_medians: dict[
             int, dict[int, dict[str, int | float]]
         ] = {}
         for mode in ASYNC_SENDER_MODES:
             rows = sweep_observations[mode][ASYNC_SENDER_PAYLOAD_BYTES]
-            per_mode_rank_medians[mode] = {}
-            for rank in range(RANK_COUNT):
-                rank_rows = [
-                    row for row in rows if int(row["rank"]) == rank
+            per_mode_tile_medians[mode] = {}
+            for tile_id in range(TILE_COUNT):
+                tile_rows = [
+                    row for row in rows if int(row["tile_id"]) == tile_id
                 ]
-                if len(rank_rows) != ASYNC_SENDER_REPETITIONS:
+                if len(tile_rows) != ASYNC_SENDER_REPETITIONS:
                     raise RuntimeError(
-                        f"{MODES[mode]} rank {rank} has "
-                        f"{len(rank_rows)} repeated samples, expected "
+                        f"{MODES[mode]} Tile {tile_id} has "
+                        f"{len(tile_rows)} repeated samples, expected "
                         f"{ASYNC_SENDER_REPETITIONS}"
                     )
-                per_mode_rank_medians[mode][rank] = {
+                per_mode_tile_medians[mode][tile_id] = {
                     name: statistics.median(
-                        metric(row, name) for row in rank_rows
+                        metric(row, name) for row in tile_rows
                     )
                     for name in metric_names
                 }
@@ -1932,8 +1970,8 @@ def execute_probe_modes(
             + json.dumps(
                 {
                     "transport_bytes": ASYNC_SENDER_TRANSPORT_BYTES,
-                    "samples_per_rank": ASYNC_SENDER_REPETITIONS,
-                    "ranks": RANK_COUNT,
+                    "samples_per_tile": ASYNC_SENDER_REPETITIONS,
+                    "tile_ids": TILE_COUNT,
                     "correctness": "all-exact",
                     "receiver_first": True,
                     "return_codes": "all-zero",
@@ -1941,11 +1979,11 @@ def execute_probe_modes(
                         "wait_done+release+receive-event+local-fence+"
                         "runtime-terminal"
                     ),
-                    "raw_rank_median_of_medians": {
+                    "raw_tile_median_of_medians": {
                         label: {
                             name: statistics.median(
-                                per_mode_rank_medians[mode][rank][name]
-                                for rank in range(RANK_COUNT)
+                                per_mode_tile_medians[mode][tile_id][name]
+                                for tile_id in range(TILE_COUNT)
                             )
                             for name in metric_names
                         }
@@ -1954,11 +1992,11 @@ def execute_probe_modes(
                             ("async_window", window_mode),
                         )
                     },
-                    "async_window_minus_serial_paired_rank_median": {
+                    "async_window_minus_serial_paired_tile_median": {
                         name: statistics.median(
-                            per_mode_rank_medians[window_mode][rank][name]
-                            - per_mode_rank_medians[serial_mode][rank][name]
-                            for rank in range(RANK_COUNT)
+                            per_mode_tile_medians[window_mode][tile_id][name]
+                            - per_mode_tile_medians[serial_mode][tile_id][name]
+                            for tile_id in range(TILE_COUNT)
                         )
                         for name in metric_names
                     },
@@ -1967,7 +2005,7 @@ def execute_probe_modes(
                         "not_claimed_without_a_calibrated_common_timer"
                     ),
                     "interpretation": (
-                        "raw repeated same-rank control; DTE counters and NCC "
+                        "raw repeated same-Tile control; DTE counters and NCC "
                         "FU counters have no calibrated common timer"
                     ),
                 },
@@ -2029,7 +2067,7 @@ def validate_board_args(args: argparse.Namespace) -> None:
     )
     if any(value in (None, "") for value in required):
         raise RuntimeError("board execution requires complete qualification values")
-    if args.expected_tile_count != RANK_COUNT:
+    if args.expected_tile_count != TILE_COUNT:
         raise RuntimeError("DTE/NCC probe requires the exact 16-tile domain")
     if (
         re.fullmatch(
@@ -2057,7 +2095,7 @@ def main() -> int:
                     ],
                     "raw_remote_multicast_cases": [
                         case.as_dict()
-                        for case in transport_catalog.RAW_REMOTE_MULTICAST_CASES
+                        for case in transport_catalog.RAW_MULTIDEST_CASES
                     ],
                     "calibration_leaf_bindings": {
                         key: [
@@ -2119,12 +2157,6 @@ def main() -> int:
 
     package, module_path, bindings = compile_package(args)
     verify_no_card(args, package)
-    if not args.no_card and not any(
-        mode in (*ISOLATED_DTE_MODES, *PENDING_DTE_MODES)
-        for mode in selected_modes
-    ):
-        execute_production_baseline(args)
-
     build_probe(args, package, module_path)
     verify_no_card(args, package)
     print("probe_package_verification: passed")

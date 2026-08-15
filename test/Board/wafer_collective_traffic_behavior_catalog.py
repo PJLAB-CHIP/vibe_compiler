@@ -2,23 +2,19 @@
 """Typed inventory for collective traffic and Direct-DTE behavior probes.
 
 Pipeline position:
-- Upstream IR / input: explicit post-SPMD StableHLO AllToAll or
-  CollectivePermute with a verified sixteen-rank distributed boundary.
-- Current stage responsibility: define exact traffic-semantics workloads and
-  fail closed when a requested route/contention claim is not observable.
-- Output IR / files: a verified Direct-DTE package plus, after an armed
-  board run, full-output exact correctness and transport lifecycle evidence.
-- Downstream consumer: hardware-calibration review and future compiler cost or
-  legality work after its separately named activation gates are satisfied.
-- User-level driver / named pipeline: the collective traffic behavior driver
-  invokes the full structured compilation pipeline with explicit test-only
-  post-SPMD carrier injection.
+- Upstream IR / input: one current global StableHLO program and exact host oracle.
+- Current stage responsibility: define traffic-semantics source graphs and fail
+  closed when current global lowering cannot execute the requested graph.
+- Output IR / files: current global source contracts; raw Direct-DTE rows that
+  already have current package support remain separate executable probes.
+- Downstream consumer: global lowering and hardware-calibration review.
+- User-level driver / named pipeline: source-contract tests until normal
+  global lowering can produce the corresponding Direct-DTE program.
 - Explicit non-goals: inventing an AllToAll/Permute algorithm A/B, inferring a
   physical N/E/S/W route from endpoints, treating host time as device cost, or
   representing unsupported concurrent fanout/fanin with sequential operations.
-- Completion gate: every executable case has a strong exact oracle and a
-  qualified-board activation gate; every unobservable calibration request has
-  an explicit typed blocked row rather than an unsafe executable surrogate.
+- Completion gate: every source case has a global source and exact oracle; only
+  current raw probes may enter no-card or qualified-board execution.
 """
 
 from __future__ import annotations
@@ -30,7 +26,7 @@ from collections import Counter
 import wafer_transport_pmu_calibration_catalog as raw_dte
 
 
-RANK_COUNT = 16
+TILE_COUNT = 16
 PAYLOAD_POINTS = (256, 4096, 65536)
 
 
@@ -50,7 +46,7 @@ class TrafficGraphKind(str, enum.Enum):
 
 
 class CaseDisposition(str, enum.Enum):
-    PENDING_BOARD_CORRECTNESS = "pending-board-correctness"
+    SOURCE_CONTRACT_PENDING_LOWERING = "source-contract-pending-lowering"
 
 
 class NumericOracleKind(str, enum.Enum):
@@ -58,7 +54,7 @@ class NumericOracleKind(str, enum.Enum):
 
 
 class StructuralEvidenceKind(str, enum.Enum):
-    GENERIC_DIRECT_DTE_CALLS_ONLY = "generic-direct-dte-calls-only"
+    SOURCE_GRAPH_ONLY = "source-graph-only"
 
 
 class DeviceMeasurementState(str, enum.Enum):
@@ -68,16 +64,16 @@ class DeviceMeasurementState(str, enum.Enum):
 
 
 class CoverageDisposition(str, enum.Enum):
-    EXISTING_BOARD_EVIDENCE = "existing-board-evidence"
+    CURRENT_RAW_PROBE = "current-raw-probe"
+    SOURCE_CONTRACT_PENDING_LOWERING = "source-contract-pending-lowering"
     PENDING_BOARD_EXECUTION = "pending-board-execution"
     BLOCKED_FAIL_CLOSED = "blocked-fail-closed"
     EXISTING_STATIC_NEGATIVE = "existing-static-negative"
 
 
 class ExecutionGate(str, enum.Enum):
-    QUALIFIED_BOARD_CORRECTNESS = "qualified-board-correctness"
+    CURRENT_GLOBAL_LOWERING = "current-global-lowering"
     QUALIFIED_RAW_DTE_CORRECTNESS = "qualified-raw-dte-correctness"
-    ALREADY_EXECUTED_REFERENCE = "already-executed-reference"
     BLOCKED_MISSING_TYPED_SURFACE = "blocked-missing-typed-surface"
     BLOCKED_UNSUPPORTED_ABI = "blocked-unsupported-abi"
     STATIC_ONLY = "static-only"
@@ -103,18 +99,21 @@ Epoch = tuple[Pair, ...]
 
 
 def cycle_pairs(delta: int) -> Epoch:
-    return tuple((rank, (rank + delta) % RANK_COUNT) for rank in range(RANK_COUNT))
+    return tuple(
+        (tile_id, (tile_id + delta) % TILE_COUNT)
+        for tile_id in range(TILE_COUNT)
+    )
 
 
 def all_to_all_shapes(
     payload_bytes: int,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    if payload_bytes % (RANK_COUNT * 4) != 0:
+    if payload_bytes % (TILE_COUNT * 4) != 0:
         raise ValueError("AllToAll sentinel payload is not record-aligned")
-    lanes_per_peer = payload_bytes // (RANK_COUNT * 4)
+    lanes_per_peer = payload_bytes // (TILE_COUNT * 4)
     return (
-        (RANK_COUNT, lanes_per_peer, 2),
-        (1, lanes_per_peer * RANK_COUNT, 2),
+        (TILE_COUNT, lanes_per_peer, 2),
+        (1, lanes_per_peer * TILE_COUNT, 2),
     )
 
 
@@ -125,8 +124,8 @@ def permute_shape(payload_bytes: int) -> tuple[int, ...]:
 
 
 def cycle_from_order(order: tuple[int, ...]) -> Epoch:
-    if len(order) != RANK_COUNT or set(order) != set(range(RANK_COUNT)):
-        raise ValueError("Permute cycle order is not the exact rank domain")
+    if len(order) != TILE_COUNT or set(order) != set(range(TILE_COUNT)):
+        raise ValueError("Permute cycle order is not the exact Tile domain")
     return tuple(
         (source, order[(index + 1) % len(order)])
         for index, source in enumerate(order)
@@ -165,13 +164,13 @@ FULL_CYCLE_FORWARD = cycle_from_order(NEAREST_CYCLE_ORDER)
 FULL_CYCLE_REVERSE = reverse_epoch(FULL_CYCLE_FORWARD)
 OPPOSITE_PAIRS = tuple(
     (
-        rank,
-        ((rank // 4 + 2) % 4) * 4 + ((rank % 4 + 2) % 4),
+        tile_id,
+        ((tile_id // 4 + 2) % 4) * 4 + ((tile_id % 4 + 2) % 4),
     )
-    for rank in range(RANK_COUNT)
+    for tile_id in range(TILE_COUNT)
 )
 DISJOINT_ADJACENT_PAIRS = tuple(
-    (rank, rank ^ 1) for rank in range(RANK_COUNT)
+    (tile_id, tile_id ^ 1) for tile_id in range(TILE_COUNT)
 )
 SPARSE_ROLE_PAIRS: Epoch = (
     (0, 1),
@@ -195,14 +194,14 @@ class TrafficBehaviorCase:
     input_shape: tuple[int, ...]
     output_shape: tuple[int, ...]
     payload_bytes: int
-    board_order: int
+    case_order: int
     objectives: tuple[str, ...]
-    rank_count: int = RANK_COUNT
+    participant_count: int = TILE_COUNT
     element_type: str = "f16"
-    disposition: CaseDisposition = CaseDisposition.PENDING_BOARD_CORRECTNESS
+    disposition: CaseDisposition = CaseDisposition.SOURCE_CONTRACT_PENDING_LOWERING
     numeric_oracle: NumericOracleKind = NumericOracleKind.FULL_OUTPUT_EXACT
     structural_evidence: StructuralEvidenceKind = (
-        StructuralEvidenceKind.GENERIC_DIRECT_DTE_CALLS_ONLY
+        StructuralEvidenceKind.SOURCE_GRAPH_ONLY
     )
     device_measurement: DeviceMeasurementState = (
         DeviceMeasurementState.BLOCKED_MISSING_DEVICE_PHASE_BASIS
@@ -222,15 +221,15 @@ _ALL_TO_ALL_CASES = tuple(
         input_shape=all_to_all_shapes(payload_bytes)[0],
         output_shape=all_to_all_shapes(payload_bytes)[1],
         payload_bytes=payload_bytes,
-        board_order=payload_index,
+        case_order=payload_index,
         objectives=(
             "all sixteen source-to-destination slots",
             "source concat order",
             "lane order",
             "self-slot and fifteen remote slots",
             (
-                f"{payload_bytes // RANK_COUNT}-byte payload per peer at "
-                f"{payload_bytes} bytes per rank"
+                f"{payload_bytes // TILE_COUNT}-byte payload per peer at "
+                f"{payload_bytes} bytes per Tile"
             ),
         ),
     )
@@ -246,12 +245,12 @@ _PERMUTE_FORWARD_CASES = tuple(
         input_shape=permute_shape(payload_bytes),
         output_shape=permute_shape(payload_bytes),
         payload_bytes=payload_bytes,
-        board_order=len(_ALL_TO_ALL_CASES) + payload_index,
+        case_order=len(_ALL_TO_ALL_CASES) + payload_index,
         objectives=(
             "one-in/one-out full cycle",
             "forward endpoint direction",
             "nearest intended peer graph",
-            f"{payload_bytes}-byte per-rank message",
+            f"{payload_bytes}-byte per-Tile message",
         ),
     )
     for payload_index, payload_bytes in enumerate(PAYLOAD_POINTS)
@@ -268,7 +267,7 @@ CASES = (
         input_shape=permute_shape(4096),
         output_shape=permute_shape(4096),
         payload_bytes=4096,
-        board_order=6,
+        case_order=6,
         objectives=(
             "one-in/one-out full cycle",
             "reverse endpoint direction",
@@ -283,7 +282,7 @@ CASES = (
         input_shape=permute_shape(4096),
         output_shape=permute_shape(4096),
         payload_bytes=4096,
-        board_order=7,
+        case_order=7,
         objectives=(
             "same bytes as the cycle cases",
             "long-distance intended endpoints",
@@ -298,7 +297,7 @@ CASES = (
         input_shape=permute_shape(4096),
         output_shape=permute_shape(4096),
         payload_bytes=4096,
-        board_order=8,
+        case_order=8,
         objectives=(
             "same bytes as the cycle cases",
             "nearest intended endpoints",
@@ -313,12 +312,12 @@ CASES = (
         input_shape=permute_shape(4096),
         output_shape=permute_shape(4096),
         payload_bytes=4096,
-        board_order=9,
+        case_order=9,
         objectives=(
-            "send-only and receive-only ranks",
+            "send-only and receive-only Tiles",
             "self copy",
             "unmapped zero fill",
-            "two-cycle and three-cycle ranks with both roles",
+            "two-cycle and three-cycle Tiles with both roles",
         ),
     ),
     TrafficBehaviorCase(
@@ -329,7 +328,7 @@ CASES = (
         input_shape=permute_shape(4096),
         output_shape=permute_shape(4096),
         payload_bytes=4096,
-        board_order=10,
+        case_order=10,
         objectives=(
             "two sequential communication epochs",
             "second epoch consumes the first epoch result",
@@ -362,8 +361,8 @@ RAW_DTE_PROBE = "test/Board/Inputs/wafer_dte_ncc_execution_probe.c"
 COVERAGE_ITEMS = (
     CoverageItem(
         key="all-to-all-equal-split-traffic-semantics",
-        disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
-        execution_gate=ExecutionGate.QUALIFIED_BOARD_CORRECTNESS,
+        disposition=CoverageDisposition.SOURCE_CONTRACT_PENDING_LOWERING,
+        execution_gate=ExecutionGate.CURRENT_GLOBAL_LOWERING,
         case_keys=tuple(case.key for case in _ALL_TO_ALL_CASES),
         evidence_refs=(),
         promotion_gates=(
@@ -372,7 +371,7 @@ COVERAGE_ITEMS = (
         ),
         evidence_boundary=(
             "Exact output can prove equal-split traffic semantics. Generic ELF "
-            "DTE calls cannot prove the final per-rank peer tuples or a cost."
+            "DTE calls cannot prove the final per-Tile peer tuples or a cost."
         ),
     ),
     CoverageItem(
@@ -384,13 +383,13 @@ COVERAGE_ITEMS = (
         promotion_gates=(PromotionGate.SEGMENTED_ALL_TO_ALL_SEMANTICS,),
         evidence_boundary=(
             "Current structured AllToAll requires an equal split count matching "
-            "the rank group; it cannot stand in for segmented or ragged traffic."
+            "the Tile group; it cannot stand in for segmented or ragged traffic."
         ),
     ),
     CoverageItem(
         key="collective-permute-cycle-directions",
-        disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
-        execution_gate=ExecutionGate.QUALIFIED_BOARD_CORRECTNESS,
+        disposition=CoverageDisposition.SOURCE_CONTRACT_PENDING_LOWERING,
+        execution_gate=ExecutionGate.CURRENT_GLOBAL_LOWERING,
         case_keys=(
             "collective-permute-cycle-forward-256b",
             "collective-permute-cycle-forward-4096b",
@@ -409,8 +408,8 @@ COVERAGE_ITEMS = (
     ),
     CoverageItem(
         key="collective-permute-sparse-role-semantics",
-        disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
-        execution_gate=ExecutionGate.QUALIFIED_BOARD_CORRECTNESS,
+        disposition=CoverageDisposition.SOURCE_CONTRACT_PENDING_LOWERING,
+        execution_gate=ExecutionGate.CURRENT_GLOBAL_LOWERING,
         case_keys=("collective-permute-sparse-roles-4096b",),
         evidence_refs=(),
         promotion_gates=(PromotionGate.ACCEPTED_MESSAGE_TUPLE_REPORT,),
@@ -421,8 +420,8 @@ COVERAGE_ITEMS = (
     ),
     CoverageItem(
         key="collective-permute-double-epoch-semantics",
-        disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
-        execution_gate=ExecutionGate.QUALIFIED_BOARD_CORRECTNESS,
+        disposition=CoverageDisposition.SOURCE_CONTRACT_PENDING_LOWERING,
+        execution_gate=ExecutionGate.CURRENT_GLOBAL_LOWERING,
         case_keys=("collective-permute-two-epoch-chain-4096b",),
         evidence_refs=(),
         promotion_gates=(
@@ -448,8 +447,8 @@ COVERAGE_ITEMS = (
     ),
     CoverageItem(
         key="dte-nearest-endpoint-direction-pair",
-        disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
-        execution_gate=ExecutionGate.QUALIFIED_BOARD_CORRECTNESS,
+        disposition=CoverageDisposition.SOURCE_CONTRACT_PENDING_LOWERING,
+        execution_gate=ExecutionGate.CURRENT_GLOBAL_LOWERING,
         case_keys=(
             "collective-permute-cycle-forward-4096b",
             "collective-permute-cycle-reverse-4096b",
@@ -466,8 +465,8 @@ COVERAGE_ITEMS = (
     ),
     CoverageItem(
         key="dte-long-distance-endpoint-graph",
-        disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
-        execution_gate=ExecutionGate.QUALIFIED_BOARD_CORRECTNESS,
+        disposition=CoverageDisposition.SOURCE_CONTRACT_PENDING_LOWERING,
+        execution_gate=ExecutionGate.CURRENT_GLOBAL_LOWERING,
         case_keys=("collective-permute-opposite-pairs-4096b",),
         evidence_refs=(),
         promotion_gates=(
@@ -481,8 +480,8 @@ COVERAGE_ITEMS = (
     ),
     CoverageItem(
         key="dte-disjoint-endpoint-graph",
-        disposition=CoverageDisposition.PENDING_BOARD_EXECUTION,
-        execution_gate=ExecutionGate.QUALIFIED_BOARD_CORRECTNESS,
+        disposition=CoverageDisposition.SOURCE_CONTRACT_PENDING_LOWERING,
+        execution_gate=ExecutionGate.CURRENT_GLOBAL_LOWERING,
         case_keys=("collective-permute-disjoint-adjacent-pairs-4096b",),
         evidence_refs=(),
         promotion_gates=(
@@ -496,8 +495,8 @@ COVERAGE_ITEMS = (
     ),
     CoverageItem(
         key="dte-fanout-fanin-one-payload-sweep",
-        disposition=CoverageDisposition.EXISTING_BOARD_EVIDENCE,
-        execution_gate=ExecutionGate.ALREADY_EXECUTED_REFERENCE,
+        disposition=CoverageDisposition.CURRENT_RAW_PROBE,
+        execution_gate=ExecutionGate.QUALIFIED_RAW_DTE_CORRECTNESS,
         case_keys=(),
         evidence_refs=(RAW_DTE_DRIVER, RAW_DTE_CATALOG),
         promotion_gates=(PromotionGate.DEVICE_PHASE_BASIS,),
@@ -508,8 +507,8 @@ COVERAGE_ITEMS = (
     ),
     CoverageItem(
         key="dte-fanout-fanin-two-payload-sweep",
-        disposition=CoverageDisposition.EXISTING_BOARD_EVIDENCE,
-        execution_gate=ExecutionGate.ALREADY_EXECUTED_REFERENCE,
+        disposition=CoverageDisposition.CURRENT_RAW_PROBE,
+        execution_gate=ExecutionGate.QUALIFIED_RAW_DTE_CORRECTNESS,
         case_keys=(),
         evidence_refs=(RAW_DTE_DRIVER, RAW_DTE_CATALOG),
         promotion_gates=(PromotionGate.DEVICE_PHASE_BASIS,),
@@ -536,7 +535,7 @@ COVERAGE_ITEMS = (
             evidence_boundary=(
                 f"The owner-backed raw DTE {semantic} rows separately cover "
                 "fanout 2/4/8/15 and adjacent/interleaved destination order. "
-                "Exact destination payloads, inactive ranks, guards, raw mode/"
+                "Exact destination payloads, inactive Tiles, guards, raw mode/"
                 "dest_num/user-id echo, completion and cleanup are required; "
                 "the result does not establish device cost or physical route."
             ),
@@ -559,7 +558,7 @@ COVERAGE_ITEMS = (
             PromotionGate.RECEIVER_FSM_CAPACITY,
         ),
         evidence_boundary=(
-            "Four source ranks issue to four receiver FSMs and disjoint guarded "
+            "Four source Tiles issue to four receiver FSMs and disjoint guarded "
             "slots on one target. Exact source-slot identity and lifecycle can "
             "establish four-source fan-in correctness, but not timing overlap "
             "or a contention cost."
@@ -664,11 +663,11 @@ def _validate_epoch(epoch: Epoch, case_key: str) -> None:
     sources = [source for source, _ in epoch]
     targets = [target for _, target in epoch]
     if any(
-        type(rank) is not int or not 0 <= rank < RANK_COUNT
+        type(tile_id) is not int or not 0 <= tile_id < TILE_COUNT
         for pair in epoch
-        for rank in pair
+        for tile_id in pair
     ):
-        raise ValueError(f"{case_key}: source/target rank is out of range")
+        raise ValueError(f"{case_key}: source/target Tile is out of range")
     if len(sources) != len(set(sources)):
         raise ValueError(f"{case_key}: one epoch has duplicate sources")
     if len(targets) != len(set(targets)):
@@ -685,20 +684,20 @@ def validate_catalog() -> None:
             if count != 1
         )
         raise ValueError(f"duplicate traffic case keys: {duplicates}")
-    if tuple(case.board_order for case in CASES) != tuple(range(len(CASES))):
+    if tuple(case.case_order for case in CASES) != tuple(range(len(CASES))):
         raise ValueError("traffic case board order is not contiguous")
     if len(COVERAGE_BY_KEY) != len(COVERAGE_ITEMS):
         raise ValueError("duplicate traffic coverage keys")
 
     for case in CASES:
         if (
-            case.rank_count != RANK_COUNT
+            case.participant_count != TILE_COUNT
             or case.payload_bytes not in PAYLOAD_POINTS
             or case.element_type != "f16"
-            or case.disposition != CaseDisposition.PENDING_BOARD_CORRECTNESS
+            or case.disposition != CaseDisposition.SOURCE_CONTRACT_PENDING_LOWERING
             or case.numeric_oracle != NumericOracleKind.FULL_OUTPUT_EXACT
             or case.structural_evidence
-            != StructuralEvidenceKind.GENERIC_DIRECT_DTE_CALLS_ONLY
+            != StructuralEvidenceKind.SOURCE_GRAPH_ONLY
             or case.device_measurement
             != DeviceMeasurementState.BLOCKED_MISSING_DEVICE_PHASE_BASIS
             or case.proves_target_peer_graph
@@ -776,20 +775,28 @@ def validate_catalog() -> None:
     for item in COVERAGE_ITEMS:
         if any(case_key not in CASES_BY_KEY for case_key in item.case_keys):
             raise ValueError(f"{item.key}: coverage refers to an unknown case")
-        if item.disposition == CoverageDisposition.EXISTING_BOARD_EVIDENCE:
+        if item.disposition == CoverageDisposition.CURRENT_RAW_PROBE:
             if (
-                item.execution_gate != ExecutionGate.ALREADY_EXECUTED_REFERENCE
+                item.execution_gate
+                != ExecutionGate.QUALIFIED_RAW_DTE_CORRECTNESS
                 or item.case_keys
                 or not item.evidence_refs
             ):
-                raise ValueError(f"{item.key}: existing evidence is incomplete")
-        elif item.disposition == CoverageDisposition.PENDING_BOARD_EXECUTION:
-            structured_pending = (
+                raise ValueError(f"{item.key}: current raw probe is incomplete")
+        elif (
+            item.disposition
+            == CoverageDisposition.SOURCE_CONTRACT_PENDING_LOWERING
+        ):
+            if (
                 item.execution_gate
-                == ExecutionGate.QUALIFIED_BOARD_CORRECTNESS
-                and bool(item.case_keys)
-                and not item.raw_case_names
-            )
+                != ExecutionGate.CURRENT_GLOBAL_LOWERING
+                or not item.case_keys
+                or item.raw_case_names
+            ):
+                raise ValueError(
+                    f"{item.key}: source contract has an invalid execution gate"
+                )
+        elif item.disposition == CoverageDisposition.PENDING_BOARD_EXECUTION:
             raw_pending = (
                 item.execution_gate
                 == ExecutionGate.QUALIFIED_RAW_DTE_CORRECTNESS
@@ -797,7 +804,7 @@ def validate_catalog() -> None:
                 and not item.case_keys
                 and bool(item.evidence_refs)
             )
-            if not structured_pending and not raw_pending:
+            if not raw_pending:
                 raise ValueError(f"{item.key}: pending execution has no case")
         elif item.disposition == CoverageDisposition.EXISTING_STATIC_NEGATIVE:
             if (
@@ -818,7 +825,7 @@ def validate_catalog() -> None:
         if middle_source == middle
     }
     if (
-        len(composed) != RANK_COUNT
+        len(composed) != TILE_COUNT
         or any(source == target for source, target in composed.items())
         or set(composed.items()) == set(double_epoch.epochs[0])
         or set(composed.items()) == set(double_epoch.epochs[1])

@@ -6,9 +6,9 @@ import subprocess
 
 
 CALL_WORKER_LOCATIONS = {
-    "wafer_tx81_rdma_v3": ("stack", 24),
-    "wafer_tx81_wdma_v3": ("stack", 24),
-    "wafer_tx81_elementwise_add_v3": ("register", "a5"),
+    "wafer_tx81_rdma": ("stack", 24),
+    "wafer_tx81_wdma": ("stack", 24),
+    "wafer_tx81_elementwise_add": ("register", "a5"),
 }
 
 CALLER_SAVED_REGISTERS = {

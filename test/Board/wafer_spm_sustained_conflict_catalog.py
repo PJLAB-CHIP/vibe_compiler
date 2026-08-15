@@ -3,7 +3,7 @@
 
 Pipeline position:
 - Upstream IR / input:
-  A rank-one package with three 2 MiB host-visible resources and a typed
+  A program-local package with three 2 MiB host-visible resources and a typed
   characterization group selected by work size and reciprocal issue order.
 - Current stage responsibility:
   Materialize four same-invocation matched rows (8192/control-4352 times
@@ -11,7 +11,7 @@ Pipeline position:
   each row, read back the RDMA-written range with the same number of WDMA
   packets and bytes while sampling the owner-backed SPM port-0/port-6 PMU.
 - Output IR / files:
-  Exact full-SPM snapshots plus versioned device records containing actual
+  Exact full-SPM snapshots plus current device records containing actual
   resource addresses, instruction counts, completion state, pair-only NCC
   PMU, and stable raw SPM port-counter snapshots with restored enable scope.
 - Downstream consumer:
@@ -48,7 +48,6 @@ RECORD_GUARD = 0x91D8B42E63CA705F
 ROW_GUARD = 0x38C5E719A46DB20F
 PORT_RESPONSE_GUARD = 0x5A1CE07D93B2468F
 CLEANUP_RECORD_GUARD = 0xC47A029D6E18B35F
-SCHEMA = 3
 REQUEST_WORDS = 36
 RECORD_WORDS = 32
 ROW_RECORD_WORDS = 86
@@ -382,7 +381,7 @@ GROUPS_BY_ID = {group.group_id: group for group in GROUPS}
 
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "GROUP": 2,
     "WORK_BYTES": 3,
     "ROUNDS": 4,
@@ -421,7 +420,7 @@ REQ = {
 
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "GROUP": 3,
     "WORK_BYTES": 4,
@@ -444,7 +443,7 @@ REC = {
 
 ROW_REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CELL": 3,
     "ADDRESS_CLASS": 4,
@@ -606,7 +605,7 @@ def build_invocation(
     words = [0] * REQUEST_WORDS
     values = {
         "MAGIC": REQUEST_MAGIC,
-        "SCHEMA_AND_WORDS": (SCHEMA << 32) | REQUEST_WORDS,
+        "WORD_COUNT": REQUEST_WORDS,
         "GROUP": group.group_id,
         "WORK_BYTES": group.work_bytes,
         "ROUNDS": group.rounds,

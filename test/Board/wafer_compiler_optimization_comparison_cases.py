@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Typed coverage contract for the production-compiler board test collection.
+"""Typed coverage contract for current optimizer-comparison calibration.
 
-The catalog groups choices by board-observable behavior, not by pass name.  A
-single paired package case may therefore account for several implementation
-mechanisms, while exact legality and rejection proofs stay on the host.
+The catalog separates current global-source/oracle contracts from board cases
+that the current lowering and runtime can already execute.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from collections import defaultdict
 
 
 class AxisDisposition(str, enum.Enum):
-    NEW_PAIRED_PACKAGE_BOARD_FAMILY = "new-paired-package-board-family"
+    SOURCE_COMPARISON_PENDING_LOWERING = "source-comparison-pending-lowering"
     EXISTING_BOARD_FAMILY = "existing-board-family"
     HOST_ONLY_EXACT_NEGATIVE = "host-only-exact-negative"
     PENDING_CONFIGURED_BOARD = "pending-configured-board"
@@ -25,9 +24,9 @@ class SourceKind(str, enum.Enum):
     VERIFIED_STRUCTURED_SOURCE_PROGRAM = "verified-structured-source-program"
 
 
-class BoardBatch(str, enum.Enum):
-    RANK_ONE_LOCAL = "rank-one-local"
-    RANK_SIXTEEN_COMMUNICATION = "rank-sixteen-communication"
+class ExecutionScope(str, enum.Enum):
+    PROGRAM_LOCAL = "program-local"
+    TILE_COLLECTIVE = "tile-collective"
 
 
 class PackagePairRequirement(str, enum.Enum):
@@ -64,7 +63,7 @@ class ExecutableEvidenceCapability(str, enum.Enum):
     FULL_OUTPUT_EXACT = "full-output-exact"
     FULL_OUTPUT_FLOATING_TOLERANCE = "full-output-floating-tolerance"
     COMPLEMENT_PREFILL_CANARY = "complement-prefill-canary"
-    ALL_RANK_STATUS = "all-rank-status"
+    ALL_TILE_STATUS = "all-tile-status"
     BOUNDED_LIFECYCLE = "bounded-lifecycle"
     BALANCED_PAIR_ORDER = "balanced-pair-order"
     REPEATED_LIFECYCLE = "repeated-lifecycle"
@@ -138,8 +137,8 @@ class OptimizationComparisonCase:
     priority: str
     disposition: AxisDisposition
     source_kind: SourceKind
-    rank_count: int
-    board_batch: BoardBatch
+    participant_count: int
+    execution_scope: ExecutionScope
     board_order: int
     pair_requirement: PackagePairRequirement
     package_roles: tuple[str, ...]
@@ -148,6 +147,7 @@ class OptimizationComparisonCase:
     completion_contract: tuple[str, ...]
     execution_asset: str
     existing_assets: tuple[str, ...] = ()
+    retained_calibration_contract: tuple[str, ...] = ()
     driver_binding: DriverOracleBinding | None = None
 
     @property
@@ -166,7 +166,7 @@ class OptimizationAxis:
     evidence_key: str
     board_observables: tuple[str, ...]
     reason: str
-    production_owner: "SourceAnchor"
+    implementation_reference: "ImplementationReference"
     host_assets: tuple[str, ...] = ()
 
     @property
@@ -176,7 +176,6 @@ class OptimizationAxis:
 
 BOARD_DISPOSITIONS = frozenset(
     {
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
         AxisDisposition.EXISTING_BOARD_FAMILY,
     }
 )
@@ -186,26 +185,30 @@ PAIRED_COMPARISON_TEST = (
 
 
 @dataclasses.dataclass(frozen=True)
-class SourceAnchor:
+class ImplementationReference:
     asset: str
     markers: tuple[str, ...]
 
 
-def _anchor(asset: str, *markers: str) -> SourceAnchor:
-    return SourceAnchor(asset=asset, markers=markers)
+def _reference(asset: str, *markers: str) -> ImplementationReference:
+    return ImplementationReference(asset=asset, markers=markers)
 
 
-PRODUCTION_PIPELINE_ANCHORS = (
-    _anchor(
+def _anchor(asset: str, *markers: str) -> ImplementationReference:
+    return _reference(asset, *markers)
+
+
+PIPELINE_IMPLEMENTATION_REFERENCES = (
+    _reference(
         "lib/Wafer/Compiler/CompilationOrchestration.cpp",
         "buildStablehloToLinalgPipeline",
         "stageTargetPackage",
     ),
-    _anchor(
+    _reference(
         "lib/Wafer/Compiler/RankCandidateSearch.cpp",
         "RankCandidateSearchSession::create",
     ),
-    _anchor(
+    _reference(
         "lib/Wafer/Compiler/RankCandidateEvaluation.cpp",
         "beginRankCandidateEvaluation",
         "advanceRankCandidateEvaluation",
@@ -370,37 +373,24 @@ PAIRED_COMMON_CAPABILITIES = frozenset(
 )
 
 EXECUTION_CAPABILITY_ANCHORS = {
-    ExecutableEvidenceCapability.PACKAGE_PUBLIC_SEMANTICS_EQUAL: _anchor(
-        PAIRED_COMPARISON_TEST,
-        "normalized_manifest(manifests[\"baseline\"])",
+    ExecutableEvidenceCapability.MANIFEST_TRANSPORT_CONTRACT: _anchor(
+        "test/Board/wafer_board_direct_dte_collective_test.py",
+        "runtime_launch.require_manifest_launch",
+        "runtime_launch.require_complete_tile_domain",
     ),
     ExecutableEvidenceCapability.FULL_OUTPUT_EXACT: _anchor(
-        PAIRED_COMPARISON_TEST,
-        "else torch_reference.EXACT",
-        "assert_raw_capture_matches",
+        "test/Board/wafer_board_direct_dte_collective_test.py",
+        "def write_raw_files",
+        '"--expected"',
     ),
-    ExecutableEvidenceCapability.FULL_OUTPUT_FLOATING_TOLERANCE: _anchor(
-        PAIRED_COMPARISON_TEST,
-        "torch_reference.ComparisonPolicy(",
-        "assert_raw_capture_matches",
-    ),
-    ExecutableEvidenceCapability.COMPLEMENT_PREFILL_CANARY: _anchor(
-        "tools/wafer-run/WaferRunBoardIO.cpp",
-        "std::fill(bytes.begin(), bytes.end(), UINT8_C(0xa5))",
-    ),
-    ExecutableEvidenceCapability.ALL_RANK_STATUS: _anchor(
-        PAIRED_COMPARISON_TEST,
-        "\"--direct-dte-status-abi\"",
-        "actual_completions",
+    ExecutableEvidenceCapability.ALL_TILE_STATUS: _anchor(
+        "test/Board/wafer_board_direct_dte_collective_test.py",
+        "runtime_launch.require_board_completion",
     ),
     ExecutableEvidenceCapability.BOUNDED_LIFECYCLE: _anchor(
-        PAIRED_COMPARISON_TEST,
-        "timeout_seconds=(",
-        "not retry or invoke reset/power operations",
-    ),
-    ExecutableEvidenceCapability.BALANCED_PAIR_ORDER: _anchor(
-        PAIRED_COMPARISON_TEST,
-        "def balanced_order",
+        "test/Board/wafer_board_direct_dte_collective_test.py",
+        "completion_timeout_ms",
+        "will not retry or invoke reset/power",
     ),
     ExecutableEvidenceCapability.REPEATED_LIFECYCLE: _anchor(
         "test/Board/wafer_board_direct_dte_collective_test.py",
@@ -434,38 +424,41 @@ def _paired_case(
     key: str,
     family: str,
     source_kind: SourceKind,
-    rank_count: int,
-    board_batch: BoardBatch,
+    participant_count: int,
+    execution_scope: ExecutionScope,
     board_order: int,
     oracle: OracleContract,
 ) -> OptimizationComparisonCase:
+    source_oracle = dataclasses.replace(
+        oracle, executable_capabilities=frozenset()
+    )
     return OptimizationComparisonCase(
         key=key,
         family=family,
         priority="P0",
-        disposition=AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        disposition=AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         source_kind=source_kind,
-        rank_count=rank_count,
-        board_batch=board_batch,
+        participant_count=participant_count,
+        execution_scope=execution_scope,
         board_order=board_order,
         pair_requirement=PackagePairRequirement.REQUIRED_SAME_SEMANTICS,
-        package_roles=("control", "optimized"),
+        package_roles=("none", "search"),
         pair_contract=(
-            "same public input/output signature, shape, dtype, and rank domain",
+            "same public input/output signature, shape, dtype, and participant domain",
             "same deterministic nonzero payload and independent host oracle",
-            "control blocks only the target choice; optimized uses production default",
-            "compile both packages before the board batch and archive both digests",
+            "both policies consume the same current global source and host oracle",
+            "execution remains disabled until current global lowering closes",
         ),
-        oracle=oracle,
+        oracle=source_oracle,
         completion_contract=(
             "bounded timeout",
-            "all expected rank completions",
+            "all expected Tile completions",
             "full output, complement-prefill canary, and status validation",
             "normal runtime cleanup",
             "no retry, reset, or power action",
         ),
         execution_asset=PAIRED_COMPARISON_TEST,
-        driver_binding=PAIRED_DRIVER_BINDINGS[key],
+        driver_binding=None,
     )
 
 
@@ -475,7 +468,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "tile-layout-route",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
-        BoardBatch.RANK_ONE_LOCAL,
+        ExecutionScope.PROGRAM_LOCAL,
         70,
         _oracle(
             StructuralOracleKind.PHYSICAL_ROUTE_RELATION,
@@ -507,7 +500,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "tile-layout-route",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
-        BoardBatch.RANK_ONE_LOCAL,
+        ExecutionScope.PROGRAM_LOCAL,
         80,
         _oracle(
             StructuralOracleKind.PHYSICAL_ROUTE_RELATION,
@@ -539,7 +532,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "resident-dataflow",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
-        BoardBatch.RANK_ONE_LOCAL,
+        ExecutionScope.PROGRAM_LOCAL,
         30,
         _oracle(
             StructuralOracleKind.PHYSICAL_ROUTE_RELATION,
@@ -569,7 +562,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "resident-dataflow",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
-        BoardBatch.RANK_ONE_LOCAL,
+        ExecutionScope.PROGRAM_LOCAL,
         40,
         _oracle(
             StructuralOracleKind.TARGET_CALL_RELATION,
@@ -599,7 +592,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "static-fixed-slot-overlap",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
-        BoardBatch.RANK_ONE_LOCAL,
+        ExecutionScope.PROGRAM_LOCAL,
         45,
         _oracle(
             StructuralOracleKind.TARGET_CALL_RELATION,
@@ -632,7 +625,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "numeric-dag-and-implementation",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
-        BoardBatch.RANK_ONE_LOCAL,
+        ExecutionScope.PROGRAM_LOCAL,
         20,
         _oracle(
             StructuralOracleKind.TARGET_CALL_RELATION,
@@ -666,7 +659,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "numeric-dag-and-implementation",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
-        BoardBatch.RANK_ONE_LOCAL,
+        ExecutionScope.PROGRAM_LOCAL,
         10,
         _oracle(
             StructuralOracleKind.TARGET_CALL_RELATION,
@@ -694,7 +687,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "resource-aware-order",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         1,
-        BoardBatch.RANK_ONE_LOCAL,
+        ExecutionScope.PROGRAM_LOCAL,
         50,
         _oracle(
             StructuralOracleKind.TARGET_CALL_RELATION,
@@ -721,36 +714,117 @@ OPTIMIZATION_COMPARISON_CASES = (
             },
         ),
     ),
+    dataclasses.replace(
+        _paired_case(
+            "noc-resident-large-gemm",
+            "k-tiled-gemm",
+            SourceKind.STABLEHLO_SOURCE_PROGRAM,
+            16,
+            ExecutionScope.TILE_COLLECTIVE,
+            100,
+            _oracle(
+                StructuralOracleKind.TARGET_CALL_RELATION,
+                (
+                    "both selected scheduler bodies call GEMM",
+                    "DDR call count and workspace bytes distinguish the selections",
+                    "the current full-4096 runner consumes only a verified Tile package",
+                ),
+                NumericOracleKind.FULL_FLOATING_TOLERANCE,
+                (
+                    "deterministic f16 inputs produce an independent full Torch output",
+                    "the complete output is checked with an explicit floating policy",
+                ),
+                PerformanceOracleKind.REPEATED_LIFECYCLE_OBSERVATION,
+                (
+                    "two bounded executions are required after lowering succeeds",
+                    "host elapsed time is not used as device performance evidence",
+                ),
+                PAIRED_COMMON_CAPABILITIES
+                | {
+                    ExecutableEvidenceCapability.TARGET_CALL_PRESENCE,
+                    ExecutableEvidenceCapability.TARGET_CALL_COUNT_RELATION,
+                    ExecutableEvidenceCapability.TARGET_WORKSPACE_RELATION,
+                    ExecutableEvidenceCapability.FULL_OUTPUT_FLOATING_TOLERANCE,
+                    ExecutableEvidenceCapability.REPEATED_LIFECYCLE,
+                },
+            ),
+        ),
+        existing_assets=("test/Board/wafer_board_k_tiled_gemm_test.py",),
+        retained_calibration_contract=(
+            "full-4096 K-tiled source and deterministic f16 full-output oracle",
+            "complete-Tile Direct-DTE status and repeated bounded completion",
+            "current global lowering must produce the package before board execution",
+        ),
+    ),
+    dataclasses.replace(
+        _paired_case(
+            "noc-resident-m-tiled-gemm",
+            "m-tiled-gemm",
+            SourceKind.STABLEHLO_SOURCE_PROGRAM,
+            16,
+            ExecutionScope.TILE_COLLECTIVE,
+            105,
+            _oracle(
+                StructuralOracleKind.TARGET_CALL_RELATION,
+                (
+                    "ordinary and instrumented scheduler bodies retain GEMM",
+                    "public package semantics remain equal with profiling enabled",
+                    "workspace and target-call relations remain observable",
+                ),
+                NumericOracleKind.FULL_FLOATING_TOLERANCE,
+                (
+                    "deterministic f16 inputs produce an independent full Torch output",
+                    "the complete M-tiled output is checked with an explicit policy",
+                ),
+                PerformanceOracleKind.REPEATED_LIFECYCLE_OBSERVATION,
+                (
+                    "one bounded Primary, Count, and Trace collection is retained",
+                    "profile measurements are not optimizer promotion evidence",
+                ),
+                PAIRED_COMMON_CAPABILITIES
+                | {
+                    ExecutableEvidenceCapability.TARGET_CALL_PRESENCE,
+                    ExecutableEvidenceCapability.TARGET_WORKSPACE_RELATION,
+                    ExecutableEvidenceCapability.FULL_OUTPUT_FLOATING_TOLERANCE,
+                    ExecutableEvidenceCapability.REPEATED_LIFECYCLE,
+                },
+            ),
+        ),
+        retained_calibration_contract=(
+            "ordinary and instrumented packages must be byte-identical",
+            "one Primary, Count, and Trace collection covers all Tiles",
+            "current global lowering must produce the package before profiling",
+        ),
+        existing_assets=(
+            "test/Board/wafer_board_m_tiled_gemm_profile_test.py",
+        ),
+    ),
     OptimizationComparisonCase(
-        # Compatibility key retained for existing CTest/runner selections.  This
-        # asset proves the shared Direct-DTE transport vertical; it does not
-        # identify a Direct all-reduce compiler algorithm.
-        key="direct-all-reduce",
+        key="direct-dte-reduction",
         family="direct-dte-transport-evidence",
         priority="P0",
         disposition=AxisDisposition.EXISTING_BOARD_FAMILY,
         source_kind=SourceKind.STABLEHLO_SOURCE_PROGRAM,
-        rank_count=16,
-        board_batch=BoardBatch.RANK_SIXTEEN_COMMUNICATION,
+        participant_count=16,
+        execution_scope=ExecutionScope.TILE_COLLECTIVE,
         board_order=90,
         pair_requirement=PackagePairRequirement.EXISTING_SINGLE_PACKAGE_BASELINE,
         package_roles=("selected",),
         pair_contract=(
-            "legacy direct-all-reduce key names transport evidence only",
-            "existing production source-to-package Direct-DTE vertical",
-            "serves as correctness and transport baseline, not a speedup claim",
+            "current source-to-package Direct-DTE reduction path",
+            "serves as correctness and transport reference, not a speedup claim",
         ),
         oracle=_oracle(
             StructuralOracleKind.TRANSPORT_CONTRACT_RELATION,
             (
-                "schema-v7 manifest has all-and-only 16 ranked Direct-DTE entries",
-                "each rank manifest entry carries the Direct-DTE status contract",
-                "the executable fixture owns one rank-sharded reduction source",
+                "current manifest has all-and-only 16 Direct-DTE Tile entries",
+                "each Tile manifest entry carries the Direct-DTE status contract",
+                "the executable fixture owns one global reduction source",
             ),
             NumericOracleKind.FULL_EXACT,
             (
-                "rank-distinct finite f16 input yields an independently exact full output",
-                "all rank outputs and transport status resources are validated",
+                "Tile-distinct finite f16 input yields an independently exact full output",
+                "the global output and all transport status resources are validated",
             ),
             PerformanceOracleKind.REPEATED_LIFECYCLE_OBSERVATION,
             (
@@ -761,7 +835,7 @@ OPTIMIZATION_COMPARISON_CASES = (
                 {
                     ExecutableEvidenceCapability.MANIFEST_TRANSPORT_CONTRACT,
                     ExecutableEvidenceCapability.FULL_OUTPUT_EXACT,
-                    ExecutableEvidenceCapability.ALL_RANK_STATUS,
+                    ExecutableEvidenceCapability.ALL_TILE_STATUS,
                     ExecutableEvidenceCapability.BOUNDED_LIFECYCLE,
                     ExecutableEvidenceCapability.REPEATED_LIFECYCLE,
                 }
@@ -769,7 +843,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         ),
         completion_contract=(
             "bounded Direct-DTE watchdog",
-            "all 16 terminal completions and status records",
+            "all 16 Tile completions and status records",
             "full output validation",
             "normal runtime cleanup",
             "no retry, reset, or power action",
@@ -796,7 +870,7 @@ OPTIMIZATION_COMPARISON_CASES = (
         "collective-algorithms",
         SourceKind.STABLEHLO_SOURCE_PROGRAM,
         16,
-        BoardBatch.RANK_SIXTEEN_COMMUNICATION,
+        ExecutionScope.TILE_COLLECTIVE,
         110,
         _oracle(
             StructuralOracleKind.TRANSPORT_CONTRACT_RELATION,
@@ -807,8 +881,8 @@ OPTIMIZATION_COMPARISON_CASES = (
             ),
             NumericOracleKind.FULL_EXACT,
             (
-                "rank-distinct f16 values use an exact full-output reference",
-                "all 16 outputs compare against the same exact full result",
+                "Tile-distinct f16 values use an exact global-output reference",
+                "the global output compares against the exact reduction result",
             ),
             PerformanceOracleKind.BALANCED_HOST_PROCESS_OBSERVATION,
             (
@@ -821,7 +895,7 @@ OPTIMIZATION_COMPARISON_CASES = (
                 ExecutableEvidenceCapability.TARGET_CALL_COUNT_RELATION,
                 ExecutableEvidenceCapability.TARGET_WORKSPACE_RELATION,
                 ExecutableEvidenceCapability.SCHEDULER_BODY_DIFFERENCE,
-                ExecutableEvidenceCapability.ALL_RANK_STATUS,
+                ExecutableEvidenceCapability.ALL_TILE_STATUS,
             },
         ),
     ),
@@ -863,8 +937,8 @@ SOFTWARE_PIPELINE_PLAN = (
 )
 
 
-PRODUCTION_OWNER_BY_AXIS = {
-    "target-implementation-selection": _anchor(
+IMPLEMENTATION_REFERENCE_BY_AXIS = {
+    "target-implementation-selection": _reference(
         "lib/Wafer/Transforms/PhysicalDataflow/StructuredOpInterfaceModels.cpp",
         "TargetImplementationKind::GenericReciprocal",
     ),
@@ -888,7 +962,7 @@ PRODUCTION_OWNER_BY_AXIS = {
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/NamedComputeLowering.cpp",
         "getOrMaterializeStructuredInput(",
     ),
-    "physical-version-reuse": _anchor(
+    "physical-candidate-reuse": _anchor(
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/BodyEmitter.cpp",
         "TileRegionBodyEmitter::record",
     ),
@@ -901,32 +975,32 @@ PRODUCTION_OWNER_BY_AXIS = {
         "CandidateTileResidencyAction::SelectiveSpill",
     ),
     "consumer-local-recompute-winner": _anchor(
-        "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
-        "materializeConsumerLocalTensorRecomputation",
+        "tasks/plans/semantic-superoptimization.md",
+        "reassociation、distribution、factorization",
     ),
     "relaxed-f16-bf16-algebra": _anchor(
-        "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
-        "NumericDomain::Floating",
+        "tasks/plans/semantic-superoptimization.md",
+        "reassociation、distribution、factorization",
     ),
     "integer-modular-reassociation": _anchor(
-        "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
-        "reassociateElementwiseExpressions",
+        "tasks/plans/semantic-superoptimization.md",
+        "reassociation、distribution、factorization",
     ),
     "integer-modular-reduction-tree": _anchor(
-        "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
-        "balanceElementwiseReductionTrees",
+        "tasks/plans/semantic-superoptimization.md",
+        "reduction-tree变化",
     ),
     "integer-modular-distribution": _anchor(
-        "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
-        "contractDistributiveExpressions",
+        "tasks/plans/semantic-superoptimization.md",
+        "reassociation、distribution、factorization",
     ),
     "integer-modular-common-factor": _anchor(
-        "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
-        "factorElementwiseExpressions",
+        "tasks/plans/semantic-superoptimization.md",
+        "reassociation、distribution、factorization",
     ),
     "static-loop-invariant-hoist": _anchor(
-        "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
-        "hoistStaticLoopInvariantOperations",
+        "tasks/plans/semantic-superoptimization.md",
+        "grammar可能生成",
     ),
     "static-buffering-ready-order": _anchor(
         "lib/Wafer/Transforms/PhysicalDataflow/ReadyOrder.cpp",
@@ -935,6 +1009,14 @@ PRODUCTION_OWNER_BY_AXIS = {
     "static-fixed-slot-overlap-selection": _anchor(
         "lib/Wafer/Compiler/RankCandidateEvaluation.cpp",
         "deriveFixedSlotAction",
+    ),
+    "large-gemm-resource-refinement": _anchor(
+        "lib/Wafer/Compiler/CardExecutableSynthesis.cpp",
+        "refined_extent=",
+    ),
+    "m-tiled-gemm-profile-instrumentation": _anchor(
+        "lib/Wafer/Compiler/WriteExecutablePackage.cpp",
+        "writeProfileInstrumentation",
     ),
     "collective-direct": _anchor(
         "lib/Wafer/Conversion/WaferTensorProgramToTileRegion/CollectiveLowering.cpp",
@@ -961,8 +1043,8 @@ PRODUCTION_OWNER_BY_AXIS = {
         "IndexRelation::compose",
     ),
     "candidate-rewrite-effect-and-numeric-negatives": _anchor(
-        "lib/Wafer/Transforms/PhysicalDataflow/CandidateRewrites.cpp",
-        "isPureTensorProducer",
+        "lib/Wafer/Compiler/CardExecutableSynthesis.cpp",
+        "mlir::isMemoryEffectFree",
     ),
     "ready-order-hazard-negatives": _anchor(
         "lib/Wafer/Transforms/PhysicalDataflow/ReadyOrder.cpp",
@@ -976,7 +1058,7 @@ PRODUCTION_OWNER_BY_AXIS = {
         "lib/Wafer/Compiler/RankCandidateSearch.cpp",
         "deriveStructuredCandidates",
     ),
-    "rank-candidate-pareto-and-atomic-selection": _anchor(
+    "tile-candidate-pareto-and-atomic-selection": _anchor(
         "lib/Wafer/Compiler/RankCandidateSelection.cpp",
         "selectEvaluatedRankCandidate",
     ),
@@ -1028,7 +1110,7 @@ def _axis(
         evidence_key=evidence_key,
         board_observables=observables,
         reason=reason,
-        production_owner=PRODUCTION_OWNER_BY_AXIS[key],
+        implementation_reference=IMPLEMENTATION_REFERENCE_BY_AXIS[key],
         host_assets=host_assets,
     )
 
@@ -1037,7 +1119,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "target-implementation-selection",
         "candidate-selection",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "reciprocal-implementation",
         "Different legal target implementations change issued CT work.",
         observables=("target calls", "full output", "balanced host observation"),
@@ -1045,7 +1127,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "dependent-tiling-and-tail-coverage",
         "structured-to-selected-physical",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "gemm-tail-physical-route",
         "The odd-shape pair checks a distinct target-call relation and exact output.",
         observables=("target call count relation", "exact odd-shape output"),
@@ -1053,7 +1135,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "producer-fusion-and-relation-propagation",
         "structured-to-selected-physical",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "resident-fanout-share",
         "The fanout pair distinguishes reduced movement from unchanged compute kinds.",
         observables=("RDMA/WDMA call count relation", "full fanout output"),
@@ -1061,7 +1143,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "physical-encoding-view-materialization",
         "selected-physical-dataflow",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "gemm-aligned-physical-route",
         "Encoding/view materialization is visible as a gather/scatter count relation.",
         observables=("gather/scatter call count relation", "full output"),
@@ -1069,7 +1151,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "transfer-route-storage-realization",
         "selected-physical-dataflow",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "gemm-aligned-physical-route",
         "The pair distinguishes the emitted gather/scatter path from fewer such calls.",
         observables=("gather/scatter call count relation", "full output"),
@@ -1077,15 +1159,15 @@ OPTIMIZATION_AXES = (
     _axis(
         "fixed-cx-ncx-gemm-absorption",
         "selected-physical-dataflow",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "gemm-aligned-physical-route",
         "Absorption is valuable only if target layout movement really disappears.",
         observables=("GEMM call presence", "gather/scatter call count relation"),
     ),
     _axis(
-        "physical-version-reuse",
+        "physical-candidate-reuse",
         "selected-physical-dataflow",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "resident-fanout-share",
         "Reuse is mapped only to the observed reduction in RDMA/WDMA work.",
         observables=("RDMA/WDMA call count relation", "consumer output"),
@@ -1093,7 +1175,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "movement-resident-cut-elimination",
         "selected-physical-dataflow",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "resident-fanout-share",
         "The useful result is removal of a real spill/reload cut.",
         observables=("removed target calls", "full output", "host observation"),
@@ -1101,7 +1183,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "whole-tensor-share-winner",
         "structured-to-selected-physical",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "resident-fanout-share",
         "The shared winner is distinguished by reduced movement and exact fanout output.",
         observables=("RDMA/WDMA call count relation", "fanout output"),
@@ -1109,7 +1191,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "consumer-local-recompute-winner",
         "structured-to-selected-physical",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "consumer-local-recompute",
         "Recompute trades visible compute for a shorter lifetime and less movement.",
         observables=("multiply call count", "workspace bytes", "full output"),
@@ -1117,7 +1199,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "relaxed-f16-bf16-algebra",
         "numeric-candidate-rewrite",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "f16-common-factor",
         "The relaxed-policy f16 pair changes target multiply count.",
         observables=(
@@ -1139,7 +1221,7 @@ OPTIMIZATION_AXES = (
         "numeric-candidate-rewrite",
         AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
         "rewrite-exact-negative-gates",
-        "No paired board fixture currently isolates the balanced rank-local tree.",
+        "No current source comparison isolates the balanced local reduction tree.",
         host_assets=REWRITE_HOST_GATES,
     ),
     _axis(
@@ -1173,7 +1255,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "static-buffering-ready-order",
         "instruction-order",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "ready-order-movement-first",
         "A non-source order is useful only if it changes board blocking or overlap.",
         observables=("target call order", "full output", "host observation"),
@@ -1181,7 +1263,7 @@ OPTIMIZATION_AXES = (
     _axis(
         "static-fixed-slot-overlap-selection",
         "candidate-selection",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "long-steady-elementwise-add",
         (
             "A legal rotating fixed-slot candidate is useful only when normal "
@@ -1194,19 +1276,38 @@ OPTIMIZATION_AXES = (
         ),
     ),
     _axis(
-        "collective-direct",
-        "all-rank-communication",
-        AxisDisposition.EXISTING_BOARD_FAMILY,
-        "direct-all-reduce",
+        "large-gemm-resource-refinement",
+        "global-tensor-to-tile-selection",
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
+        "noc-resident-large-gemm",
         (
-            "The legacy evidence key covers the production Direct-DTE transport "
-            "vertical, not a Direct collective-algorithm choice."
+            "The full-4096 source remains blocked until resource refinement "
+            "produces a Tile package accepted by exact SPM planning."
         ),
-        observables=("manifest transport contract", "all-rank status", "full output"),
+        observables=("GEMM call", "workspace bytes", "full output"),
+    ),
+    _axis(
+        "m-tiled-gemm-profile-instrumentation",
+        "profile-instrumentation",
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
+        "noc-resident-m-tiled-gemm",
+        (
+            "The M-tiled source retains its profile contract, but profile "
+            "execution requires current global lowering to produce a package."
+        ),
+        observables=("GEMM call", "profile report", "full output"),
+    ),
+    _axis(
+        "collective-direct",
+        "tile-collective-communication",
+        AxisDisposition.EXISTING_BOARD_FAMILY,
+        "direct-dte-reduction",
+        "This case covers the Direct-DTE reduction path, not algorithm selection.",
+        observables=("manifest transport contract", "all-Tile status", "full output"),
     ),
     _axis(
         "collective-ring-all-gather",
-        "all-rank-communication",
+        "tile-collective-communication",
         AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
         "ring-all-gather-host-gates",
         (
@@ -1221,8 +1322,8 @@ OPTIMIZATION_AXES = (
     ),
     _axis(
         "collective-ordered-tree-all-reduce",
-        "all-rank-communication",
-        AxisDisposition.NEW_PAIRED_PACKAGE_BOARD_FAMILY,
+        "tile-collective-communication",
+        AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING,
         "tree-all-reduce",
         "The pair distinguishes target prepare/workspace work with exact f16 output.",
         observables=("prepare call count", "workspace bytes", "full exact output"),
@@ -1299,8 +1400,8 @@ OPTIMIZATION_AXES = (
         host_assets=SELECTION_HOST_GATES,
     ),
     _axis(
-        "rank-candidate-pareto-and-atomic-selection",
-        "all-rank-coordination",
+        "tile-candidate-pareto-and-atomic-selection",
+        "tile-collective-coordination",
         AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
         "selection-resource-exact-gates",
         "Atomicity and exact Pareto accounting require rejected-tuples host coverage.",
@@ -1386,7 +1487,7 @@ AXES_BY_KEY = {axis.key: axis for axis in OPTIMIZATION_AXES}
 
 _axes_by_case: dict[str, list[OptimizationAxis]] = defaultdict(list)
 for _axis_entry in OPTIMIZATION_AXES:
-    if _axis_entry.is_board_mapped:
+    if _axis_entry.evidence_key in CASES_BY_KEY:
         _axes_by_case[_axis_entry.evidence_key].append(_axis_entry)
 AXES_BY_CASE = {
     case_key: tuple(axis_entries)
@@ -1394,6 +1495,12 @@ AXES_BY_CASE = {
 }
 
 BOARD_AXES = tuple(axis for axis in OPTIMIZATION_AXES if axis.is_board_mapped)
+SOURCE_COMPARISON_AXES = tuple(
+    axis
+    for axis in OPTIMIZATION_AXES
+    if axis.disposition
+    == AxisDisposition.SOURCE_COMPARISON_PENDING_LOWERING
+)
 HOST_ONLY_AXES = tuple(
     axis
     for axis in OPTIMIZATION_AXES

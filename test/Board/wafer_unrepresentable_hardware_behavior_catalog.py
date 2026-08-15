@@ -3,7 +3,7 @@
 
 Pipeline position:
 - Upstream IR / input:
-  Version-matched NCC request/record fields and the sustained SPM pilot
+  Current NCC request/record fields and the sustained SPM pilot
   request/record contract, plus the explicitly qualified ArgMin catalog rows.
 - Current stage responsibility:
   Prove that queue resident occupancy and physical SPM bank identity cannot
@@ -22,7 +22,7 @@ Pipeline position:
   numbers, sampling undocumented MMIO, or extrapolating one numeric domain
   from another.
 - Completion gate:
-  Every key is rejected, the versioned records contain no surrogate field,
+  Every key is rejected, the current records contain no surrogate field,
   and the nearest safe executable characterization remains named.
 """
 
@@ -63,7 +63,7 @@ BEHAVIORS = (
     UnrepresentableBehavior(
         key="queue-active-resident-count-unobservable",
         missing_surface=(
-            "versioned read-only queue head/tail/occupancy or resident-count "
+            "current read-only queue head/tail/occupancy or resident-count "
             "record on the same issue boundary"
         ),
         rejected_surrogates=(
@@ -92,7 +92,7 @@ BEHAVIORS = (
         ),
         safe_executable_family="spm-sustained-conflict-pilot",
         unblock_condition=(
-            "a version-matched bank/port mapping or bank-specific counter "
+            "a current bank/port mapping or bank-specific counter "
             "whose identity and sampling scope are owned by the target ABI"
         ),
     ),

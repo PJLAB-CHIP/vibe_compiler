@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and execute a rank-one f16 add on a configured TX board."""
+"""Compile and execute one f16 add over the current TX Tile domain."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import wafer_runtime_launch_contract as runtime_launch
 @dataclasses.dataclass(frozen=True)
 class RuntimeLaunchCalibrationCase:
     key: str
-    rank_count: int
+    tile_count: int
     launch_kind: str
     oracle: str
     completion: str
@@ -28,15 +28,15 @@ class RuntimeLaunchCalibrationCase:
 
 RUNTIME_LAUNCH_CALIBRATION_CASES = (
     RuntimeLaunchCalibrationCase(
-        "rank-one-per-rank-add",
-        1,
+        "grid-add",
+        runtime_launch.TARGET_TILE_COUNT,
         runtime_launch.KERNEL_LAUNCH_KIND,
-        "full f16 expected output+schema-v7 unique entry/resource binding",
-        "runtime terminal+D2H+normal cleanup",
+        "full f16 expected output and exact current resource binding",
+        "local drain, device-to-host copy, and normal cleanup",
     ),
 )
 CALIBRATION_LEAF_BINDINGS = {
-    "rank-one-per-rank-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
+    "grid-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
 }
 
 
@@ -132,20 +132,21 @@ def invocation_arguments(
     manifest = json.loads(manifest_path.read_text())
     runtime_launch.require_manifest_launch(
         manifest,
-        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        runtime_launch.GRID_KERNEL_LAUNCH,
         context="single-op board gate",
     )
-    if manifest.get("rank_count") != 1:
-        raise RuntimeError("single-op board gate requires a schema-v7 rank-one package")
-    entries = manifest.get("entries", [])
-    if len(entries) != 1 or entries[0].get("id") != 0:
-        raise RuntimeError("single-op board gate requires the unique entry ID 0")
+    runtime_launch.require_complete_tile_domain(
+        manifest, context="single-op board gate"
+    )
 
     arguments: list[str] = []
     seen: set[tuple[str, int]] = set()
     for resource in manifest.get("resources", []):
-        if resource.get("rank") != 0 or not resource.get("host_visible"):
+        scope = resource.get("scope")
+        if not resource.get("host_visible"):
             continue
+        if scope != {"kind": "card", "card_id": 0}:
+            raise RuntimeError("host-visible resource is not card-scoped")
         role = resource.get("role")
         role_index = resource.get("role_index")
         key = (role, role_index)
@@ -184,7 +185,7 @@ def main() -> int:
             str(source),
             "--output-program-dir",
             str(package),
-            "--execution-ranks=1",
+            "--num-partitions=1",
             "--launch-kind=kernel",
         ]
     )
@@ -198,8 +199,6 @@ def main() -> int:
                 str(args.wafer_run),
                 "--package-dir",
                 str(package),
-                "--entry-id",
-                "0",
                 "--board",
                 "--device-id",
                 str(args.device_id),
@@ -234,6 +233,9 @@ def main() -> int:
         missing = [text for text in required if text not in result.stdout]
         if missing:
             raise RuntimeError(f"board invocation omitted evidence: {missing}")
+        runtime_launch.require_board_completion(
+            result.stdout, context="single-op board gate"
+        )
         print(f"board_add_iteration: {iteration + 1}/{args.repeat}")
         print(result.stdout, end="")
     return 0

@@ -129,8 +129,8 @@ static WaferDMCPMU wafer_dmc_read_pmu(void) {
 static uint32_t wafer_dmc_decode(const volatile uint64_t *request,
                                  WaferDMCCase *selected) {
   if (request[WAFER_DMC_REQ_MAGIC] != WAFER_DMC_REQUEST_MAGIC ||
-      request[WAFER_DMC_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_DMC_SCHEMA << 32) | WAFER_DMC_REQUEST_WORDS) ||
+      request[WAFER_DMC_REQ_WORD_COUNT] !=
+          (WAFER_DMC_REQUEST_WORDS) ||
       request[WAFER_DMC_REQ_RESOURCE_BYTES] != WAFER_DMC_RESOURCE_BYTES ||
       request[WAFER_DMC_REQ_SLOT_BYTES] != WAFER_DMC_SLOT_BYTES ||
       request[WAFER_DMC_REQ_BODY_OFFSET] != WAFER_DMC_BODY_OFFSET ||
@@ -161,7 +161,7 @@ static void wafer_dmc_gather(uint32_t source_offset, uint32_t dest_offset,
                              uint32_t dest_stride1, uint32_t dest_stride2,
                              uint32_t dest_iteration0, uint32_t dest_iteration1,
                              uint32_t dest_iteration2) {
-  wafer_tx81_gather_scatter_v3(
+  wafer_tx81_gather_scatter(
       WAFER_DMC_SPM_INPUT + WAFER_DMC_BODY_OFFSET + source_offset,
       WAFER_DMC_SPM_OUTPUT + WAFER_DMC_BODY_OFFSET + dest_offset, byte_count,
       inner_bytes, source_stride0, source_stride1, source_stride2,
@@ -457,8 +457,8 @@ static void wafer_dmc_init_record(volatile uint64_t *record, uint32_t status) {
   for (uint32_t index = 0; index < WAFER_DMC_RECORD_WORDS; ++index)
     record[index] = 0;
   record[WAFER_DMC_REC_MAGIC] = WAFER_DMC_RECORD_MAGIC;
-  record[WAFER_DMC_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_DMC_SCHEMA << 32) | WAFER_DMC_RECORD_WORDS;
+  record[WAFER_DMC_REC_WORD_COUNT] =
+      WAFER_DMC_RECORD_WORDS;
   record[WAFER_DMC_REC_STATUS] = status;
   record[WAFER_DMC_REC_OUTPUT_DDR_OFFSET] = WAFER_DMC_OUTPUT_DDR_OFFSET;
   record[WAFER_DMC_REC_SLOT_BYTES] = WAFER_DMC_SLOT_BYTES;
@@ -488,19 +488,19 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_DMC_REC_REQUEST_GUARD] = request[WAFER_DMC_REQ_GUARD];
 
     WaferDMCPMU before = wafer_dmc_read_pmu();
-    wafer_tx81_rdma_v3(payload_ddr, WAFER_DMC_SPM_INPUT, WAFER_DMC_SLOT_BYTES,
+    wafer_tx81_rdma(payload_ddr, WAFER_DMC_SPM_INPUT, WAFER_DMC_SLOT_BYTES,
                     WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     /*
      * Keep setup in NCC: the request resource's second slot is all canary and
      * seeds the complete output before the tested TDMA sequence.
      */
-    wafer_tx81_rdma_v3(request_ddr + WAFER_DMC_SLOT_BYTES,
+    wafer_tx81_rdma(request_ddr + WAFER_DMC_SLOT_BYTES,
                     WAFER_DMC_SPM_OUTPUT, WAFER_DMC_SLOT_BYTES,
                     WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     if (wafer_dmc_issue(&selected) == 0U) {
       status = WAFER_DMC_STATUS_EXECUTE_FAILED;
     } else {
-      wafer_tx81_wdma_v3(WAFER_DMC_SPM_OUTPUT,
+      wafer_tx81_wdma(WAFER_DMC_SPM_OUTPUT,
                       output_ddr + WAFER_DMC_OUTPUT_DDR_OFFSET,
                       WAFER_DMC_SLOT_BYTES, WAFER_DMC_SLOT_BYTES, 0, 0, 0, 1, 1,
                       1, Fmt_UINT8, 0U);

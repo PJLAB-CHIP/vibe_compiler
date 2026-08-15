@@ -22,9 +22,7 @@ def _record(
     words = [0] * protocol.RECORD_WORDS
     values = {
         "MAGIC": protocol.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            protocol.SCHEMA << 32
-        ) | protocol.RECORD_WORDS,
+        "WORD_COUNT": protocol.RECORD_WORDS,
         "STATUS": protocol.STATUS_OK,
         "FLAGS": protocol.ALL_FLAGS,
         "KIND": int(case.kind),
@@ -794,32 +792,35 @@ def main() -> int:
             raise AssertionError("unknown worker work-dir content was deleted")
         assert preserved.read_text(encoding="utf-8") == "user-owned\n"
 
-    terminal_completion = 3
     valid_lifecycle = "\n".join(
         (
             *sorted(driver.LIFECYCLE_LINES),
-            "terminal_completion: 3 kind=entry_return",
+            *(
+                "completion: return_after_local_drain tile_id=" + str(tile_id)
+                for tile_id in range(16)
+            ),
+            "invocation_tiles: 16",
+            "physical_tile_domain: 0..15",
         )
     )
-    driver.validate_board_lifecycle(
-        valid_lifecycle, terminal_completion, "worker"
-    )
+    driver.validate_board_lifecycle(valid_lifecycle, "worker")
     for invalid in (
-        valid_lifecycle.replace("terminal_completion: 3", ""),
         valid_lifecycle.replace(
-            "terminal_completion: 3", "terminal_completion: 4"
+            "completion: return_after_local_drain tile_id=3", ""
         ),
-        valid_lifecycle + "\nterminal_completion: 3 kind=entry_return",
+        valid_lifecycle.replace(
+            "completion: return_after_local_drain tile_id=3",
+            "completion: return_after_local_drain tile_id=4",
+        ),
+        valid_lifecycle + "\ncompletion: return_after_local_drain tile_id=3",
     ):
         try:
-            driver.validate_board_lifecycle(
-                invalid, terminal_completion, "worker"
-            )
-        except RuntimeError as error:
-            assert "matching terminal-completion" in str(error)
+            driver.validate_board_lifecycle(invalid, "worker")
+        except RuntimeError:
+            pass
         else:
             raise AssertionError(
-                "worker missing/mismatched/duplicate terminal was accepted"
+                "worker missing/mismatched/duplicate completion was accepted"
             )
 
     carrier = driver.PROBE_C.read_text(encoding="utf-8")

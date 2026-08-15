@@ -72,7 +72,7 @@ statistics，16个rank结果一致：34,598/65,536 numeric exact，mean absolute
 error均为`0.0009765625`，max absolute error为`0.001953125`，通过预冻结阈值。
 
 Q22.E/Q22.C后续gate使用admitted seed本次生成的package identity，而不是任一历史package或held-out输出。该identity由
-compiler提交`51ef77f`、schema v3、profile `wafer-tx81-single-card-kernel-v1`、16-rank domain和canonical manifest
+compiler提交`51ef77f`、schema v3、profile `wafer-tx81-single-card`、16-rank domain和canonical manifest
 SHA-256 `9407b3cb976834e2fa28b12f9f79e57b2b33e27c0df99fd28747cbf0c8ffa20a`冻结。manifest中的all-and-only
 RISC-V ELF digests为：
 

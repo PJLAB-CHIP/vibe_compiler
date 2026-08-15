@@ -115,27 +115,27 @@ static uint64_t wafer_ddr_tile_cycle(void) {
 
 static void wafer_ddr_tile_rdma(uint64_t source, uint64_t destination,
                                 uint32_t bytes) {
-  wafer_tx81_rdma_v3(source, destination, bytes, bytes, 0U, 0U, 0U, 1U, 1U, 1U,
+  wafer_tx81_rdma(source, destination, bytes, bytes, 0U, 0U, 0U, 1U, 1U, 1U,
                   Fmt_UINT8, 0U);
 }
 
 static void wafer_ddr_tile_wdma(uint64_t source, uint64_t destination,
                                 uint32_t bytes) {
-  wafer_tx81_wdma_v3(source, destination, bytes, bytes, 0U, 0U, 0U, 1U, 1U, 1U,
+  wafer_tx81_wdma(source, destination, bytes, bytes, 0U, 0U, 0U, 1U, 1U, 1U,
                   Fmt_UINT8, 0U);
 }
 
-static uint64_t wafer_ddr_tile_identity(uint32_t rank, uint32_t allocation,
+static uint64_t wafer_ddr_tile_identity(uint32_t tile_id, uint32_t allocation,
                                         uint32_t direction,
                                         uint32_t offset_index,
                                         uint32_t cell_sample) {
-  return (uint64_t)rank | ((uint64_t)allocation << 8) |
+  return (uint64_t)tile_id | ((uint64_t)allocation << 8) |
          ((uint64_t)direction << 16) | ((uint64_t)offset_index << 24) |
          ((uint64_t)cell_sample << 32);
 }
 
 static void wafer_ddr_tile_write_row(
-    volatile uint64_t *row, uint32_t rank, uint32_t allocation,
+    volatile uint64_t *row, uint32_t tile_id, uint32_t allocation,
     uint32_t direction, uint32_t offset_index, uint32_t cell_sample,
     uint64_t input_base, uint64_t output_base, uint64_t ddr_address,
     uint64_t spm_address, uint64_t completion_cycles,
@@ -143,7 +143,7 @@ static void wafer_ddr_tile_write_row(
     uint32_t archive_offset) {
   row[WAFER_DDR_TILE_ROW_MAGIC_WORD] = WAFER_DDR_TILE_ROW_MAGIC;
   row[WAFER_DDR_TILE_ROW_IDENTITY] = wafer_ddr_tile_identity(
-      rank, allocation, direction, offset_index, cell_sample);
+      tile_id, allocation, direction, offset_index, cell_sample);
   row[WAFER_DDR_TILE_ROW_OFFSET] = wafer_ddr_tile_offsets[offset_index];
   row[WAFER_DDR_TILE_ROW_INPUT_BASE] = input_base;
   row[WAFER_DDR_TILE_ROW_OUTPUT_BASE] = output_base;
@@ -171,7 +171,7 @@ static void wafer_ddr_tile_write_row(
   row[WAFER_DDR_TILE_ROW_GUARD_WORD] = WAFER_DDR_TILE_ROW_GUARD;
 }
 
-static void wafer_ddr_tile_measure_rdma(uint32_t rank, uint32_t allocation,
+static void wafer_ddr_tile_measure_rdma(uint32_t tile_id, uint32_t allocation,
                                         uint32_t offset_index,
                                         uint32_t cell_sample,
                                         uint64_t input_base,
@@ -201,13 +201,13 @@ static void wafer_ddr_tile_measure_rdma(uint32_t rank, uint32_t allocation,
                       WAFER_DDR_TILE_SLOT_BYTES);
   wafer_tx81_ncc_join(1U);
   wafer_ddr_tile_write_row(
-      row, rank, allocation, WAFER_DDR_TILE_DIRECTION_RDMA, offset_index,
+      row, tile_id, allocation, WAFER_DDR_TILE_DIRECTION_RDMA, offset_index,
       cell_sample, input_base, output_base, source,
       WAFER_DDR_TILE_SPM_GUARDED + WAFER_DDR_TILE_GUARD_BYTES,
       completion_cycles, &before, &after, archive_offset);
 }
 
-static void wafer_ddr_tile_measure_wdma(uint32_t rank, uint32_t allocation,
+static void wafer_ddr_tile_measure_wdma(uint32_t tile_id, uint32_t allocation,
                                         uint32_t offset_index,
                                         uint32_t cell_sample,
                                         uint64_t input_base,
@@ -249,7 +249,7 @@ static void wafer_ddr_tile_measure_wdma(uint32_t rank, uint32_t allocation,
   wafer_ddr_tile_wdma(WAFER_DDR_TILE_SPM_READBACK, output_base + archive_offset,
                       WAFER_DDR_TILE_SLOT_BYTES);
   wafer_tx81_ncc_join(1U);
-  wafer_ddr_tile_write_row(row, rank, allocation, WAFER_DDR_TILE_DIRECTION_WDMA,
+  wafer_ddr_tile_write_row(row, tile_id, allocation, WAFER_DDR_TILE_DIRECTION_WDMA,
                            offset_index, cell_sample, input_base, output_base,
                            destination, WAFER_DDR_TILE_SPM_PAYLOAD,
                            completion_cycles, &before, &after, archive_offset);
@@ -286,10 +286,10 @@ wafer_ddr_tile_conflict_ordinal(uint32_t allocation, uint32_t base_index,
 }
 
 static uint64_t wafer_ddr_tile_conflict_identity(
-    uint32_t rank, uint32_t allocation, uint32_t base_index,
+    uint32_t tile_id, uint32_t allocation, uint32_t base_index,
     uint32_t offset_index, uint32_t transfer_index, uint32_t issue_order_index,
     uint32_t schedule_index, uint32_t cell_sample) {
-  return (uint64_t)rank | ((uint64_t)allocation << 8) |
+  return (uint64_t)tile_id | ((uint64_t)allocation << 8) |
          ((uint64_t)base_index << 16) | ((uint64_t)offset_index << 24) |
          ((uint64_t)transfer_index << 32) |
          ((uint64_t)issue_order_index << 40) |
@@ -308,7 +308,7 @@ static uint32_t wafer_ddr_tile_conflict_archive_offset(uint32_t transfer_index,
 }
 
 static void wafer_ddr_tile_write_conflict_row(
-    volatile uint64_t *row, uint32_t rank, uint32_t allocation,
+    volatile uint64_t *row, uint32_t tile_id, uint32_t allocation,
     uint32_t base_index, uint32_t offset_index, uint32_t transfer_index,
     uint32_t issue_order_index, uint32_t schedule_index, uint32_t cell_sample,
     uint32_t schedule_position,
@@ -319,7 +319,7 @@ static void wafer_ddr_tile_write_conflict_row(
   row[WAFER_DDR_TILE_CONFLICT_ROW_MAGIC_WORD] =
       WAFER_DDR_TILE_CONFLICT_ROW_MAGIC;
   row[WAFER_DDR_TILE_CONFLICT_ROW_IDENTITY] = wafer_ddr_tile_conflict_identity(
-      rank, allocation, base_index, offset_index, transfer_index,
+      tile_id, allocation, base_index, offset_index, transfer_index,
       issue_order_index, schedule_index, cell_sample);
   row[WAFER_DDR_TILE_CONFLICT_ROW_OFFSET] =
       wafer_ddr_tile_conflict_offsets[offset_index];
@@ -357,7 +357,7 @@ static void wafer_ddr_tile_write_conflict_row(
 }
 
 static void wafer_ddr_tile_measure_conflict_pair(
-    uint32_t rank, uint32_t allocation, uint32_t base_index,
+    uint32_t tile_id, uint32_t allocation, uint32_t base_index,
     uint32_t offset_index, uint32_t transfer_index, uint32_t issue_order_index,
     uint32_t schedule_index, uint32_t cell_sample, uint32_t schedule_position,
     uint64_t input_base, uint64_t output_base, volatile uint64_t *row) {
@@ -411,7 +411,7 @@ static void wafer_ddr_tile_measure_conflict_pair(
                       guarded_slot_bytes);
   wafer_tx81_ncc_join(1U);
   wafer_ddr_tile_write_conflict_row(
-      row, rank, allocation, base_index, offset_index, transfer_index,
+      row, tile_id, allocation, base_index, offset_index, transfer_index,
       issue_order_index, schedule_index, cell_sample, schedule_position,
       input_base, output_base, address_a, address_b, transfer_bytes, archive_a,
       archive_b,
@@ -419,10 +419,10 @@ static void wafer_ddr_tile_measure_conflict_pair(
 }
 
 static uint32_t
-wafer_ddr_tile_request_status(uint32_t rank, const volatile uint64_t *request) {
+wafer_ddr_tile_request_status(uint32_t tile_id, const volatile uint64_t *request) {
   if (request[WAFER_DDR_TILE_REQ_MAGIC] != WAFER_DDR_TILE_REQUEST_MAGIC ||
-      request[WAFER_DDR_TILE_REQ_SCHEMA] != WAFER_DDR_TILE_SCHEMA ||
-      request[WAFER_DDR_TILE_REQ_RANK] != rank ||
+      request[WAFER_DDR_TILE_REQ_WORD_COUNT] != WAFER_DDR_TILE_REQUEST_WORDS ||
+      request[WAFER_DDR_TILE_REQ_TILE_ID] != tile_id ||
       request[WAFER_DDR_TILE_REQ_RESOURCE_BYTES] !=
           WAFER_DDR_TILE_RESOURCE_BYTES ||
       request[WAFER_DDR_TILE_REQ_PAYLOAD_BYTES] !=
@@ -461,7 +461,7 @@ wafer_ddr_tile_request_status(uint32_t rank, const volatile uint64_t *request) {
 }
 
 static void wafer_ddr_tile_write_header(volatile uint64_t *header,
-                                        uint32_t rank, uint32_t sample,
+                                        uint32_t tile_id, uint32_t sample,
                                         uint32_t status, uint32_t mode,
                                         const uint64_t *inputs,
                                         const uint64_t *outputs,
@@ -469,10 +469,9 @@ static void wafer_ddr_tile_write_header(volatile uint64_t *header,
   for (uint32_t word = 0; word < WAFER_DDR_TILE_HEADER_WORDS; ++word)
     header[word] = 0;
   header[WAFER_DDR_TILE_HDR_MAGIC] = WAFER_DDR_TILE_RECORD_MAGIC;
-  header[WAFER_DDR_TILE_HDR_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_DDR_TILE_SCHEMA << 32) | WAFER_DDR_TILE_HEADER_WORDS;
+  header[WAFER_DDR_TILE_HDR_WORD_COUNT] = WAFER_DDR_TILE_HEADER_WORDS;
   header[WAFER_DDR_TILE_HDR_STATUS] = status;
-  header[WAFER_DDR_TILE_HDR_RANK] = rank;
+  header[WAFER_DDR_TILE_HDR_TILE_ID] = tile_id;
   header[WAFER_DDR_TILE_HDR_SAMPLE] = sample;
   header[WAFER_DDR_TILE_HDR_ROW_COUNT] =
       mode == WAFER_DDR_TILE_MODE_OFFSET ? WAFER_DDR_TILE_ROWS : 0U;
@@ -504,41 +503,46 @@ static void wafer_ddr_tile_write_header(volatile uint64_t *header,
       mode == WAFER_DDR_TILE_MODE_CONFLICT_EQUIVALENCE
           ? WAFER_DDR_TILE_CONFLICT_TRANSFER_COUNT
           : 0U;
-  header[WAFER_DDR_TILE_HDR_CONFLICT_RANK_ORDER] =
+  header[WAFER_DDR_TILE_HDR_CONFLICT_TILE_ORDER] =
       mode == WAFER_DDR_TILE_MODE_CONFLICT_EQUIVALENCE
           ? ((sample & 1U) != 0U
-                 ? WAFER_DDR_TILE_CONFLICT_RANK_ORDER_REVERSE
-                 : WAFER_DDR_TILE_CONFLICT_RANK_ORDER_FORWARD)
+                 ? WAFER_DDR_TILE_CONFLICT_TILE_ORDER_REVERSE
+                 : WAFER_DDR_TILE_CONFLICT_TILE_ORDER_FORWARD)
           : 0U;
   header[WAFER_DDR_TILE_HDR_RECORD_GUARD] = WAFER_DDR_TILE_RECORD_GUARD;
 }
 
 __attribute__((visibility("hidden"))) void
-wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
+wafer_tx81_ddr_tile_offset_probe(uint32_t tile_id, uint64_t input0,
                                  uint64_t input1, uint64_t output0,
                                  uint64_t output1, uint64_t status_ddr) {
+  uint64_t tile_offset = (uint64_t)tile_id * WAFER_DDR_TILE_RESOURCE_BYTES;
+  input0 += tile_offset;
+  input1 += tile_offset;
+  output0 += tile_offset;
+  output1 += tile_offset;
   const uint64_t inputs[WAFER_DDR_TILE_ALLOCATIONS] = {input0, input1};
   const uint64_t outputs[WAFER_DDR_TILE_ALLOCATIONS] = {output0, output1};
-  wafer_tx81_direct_dte_begin_after_prepare(status_ddr, WAFER_DDR_TILE_RANKS);
+  wafer_tx81_direct_dte_begin_after_prepare(status_ddr, WAFER_DDR_TILE_COUNT);
   wafer_ddr_tile_cache_range(input0, WAFER_DDR_TILE_REQUEST_WORDS * 8U, 1U);
   const volatile uint64_t *request =
       (const volatile uint64_t *)(uintptr_t)input0;
-  uint32_t status = wafer_ddr_tile_request_status(rank, request);
+  uint32_t status = wafer_ddr_tile_request_status(tile_id, request);
   uint32_t sample = (uint32_t)request[WAFER_DDR_TILE_REQ_SAMPLE];
   uint32_t mode = (uint32_t)request[WAFER_DDR_TILE_REQ_MODE];
   volatile uint64_t *header = (volatile uint64_t *)(uintptr_t)output0;
   volatile uint64_t *rows = header + WAFER_DDR_TILE_HEADER_WORDS;
   volatile uint64_t *conflict_rows = header + WAFER_DDR_TILE_HEADER_WORDS;
 
-  for (uint32_t rank_position = 0; rank_position < WAFER_DDR_TILE_RANKS;
-       ++rank_position) {
-    uint32_t active_rank =
+  for (uint32_t tile_position = 0; tile_position < WAFER_DDR_TILE_COUNT;
+       ++tile_position) {
+    uint32_t active_tile =
         mode == WAFER_DDR_TILE_MODE_CONFLICT_EQUIVALENCE &&
                 (sample & 1U) != 0U
-            ? WAFER_DDR_TILE_RANKS - 1U - rank_position
-            : rank_position;
+            ? WAFER_DDR_TILE_COUNT - 1U - tile_position
+            : tile_position;
     hrt_barrier();
-    if (rank == active_rank && status == WAFER_DDR_TILE_STATUS_OK) {
+    if (tile_id == active_tile && status == WAFER_DDR_TILE_STATUS_OK) {
       if (mode == WAFER_DDR_TILE_MODE_OFFSET) {
         for (uint32_t allocation = 0; allocation < WAFER_DDR_TILE_ALLOCATIONS;
              ++allocation) {
@@ -557,11 +561,11 @@ wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
                   WAFER_DDR_TILE_OFFSET_COUNT * WAFER_DDR_TILE_SAMPLES +
                   offset_index * WAFER_DDR_TILE_SAMPLES + cell_sample;
               wafer_ddr_tile_measure_rdma(
-                  rank, allocation, offset_index, cell_sample,
+                  tile_id, allocation, offset_index, cell_sample,
                   inputs[allocation], outputs[allocation],
                   rows + rdma_row * WAFER_DDR_TILE_ROW_WORDS);
               wafer_ddr_tile_measure_wdma(
-                  rank, allocation, offset_index, cell_sample,
+                  tile_id, allocation, offset_index, cell_sample,
                   inputs[allocation], outputs[allocation],
                   rows + wdma_row * WAFER_DDR_TILE_ROW_WORDS);
             }
@@ -599,7 +603,7 @@ wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
                           allocation, base_index, offset_index, transfer_index,
                           issue_order_index, schedule_index, cell_sample);
                       wafer_ddr_tile_measure_conflict_pair(
-                          rank, allocation, base_index, offset_index,
+                          tile_id, allocation, base_index, offset_index,
                           transfer_index, issue_order_index, schedule_index,
                           cell_sample, schedule_position, inputs[allocation],
                           outputs[allocation],
@@ -617,7 +621,7 @@ wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
     hrt_barrier();
   }
 
-  wafer_ddr_tile_write_header(header, rank, sample, status, mode, inputs,
+  wafer_ddr_tile_write_header(header, tile_id, sample, status, mode, inputs,
                               outputs, request[WAFER_DDR_TILE_REQ_GUARD]);
   uint32_t record_bytes = mode == WAFER_DDR_TILE_MODE_CONFLICT_EQUIVALENCE
                               ? WAFER_DDR_TILE_CONFLICT_RECORD_BYTES

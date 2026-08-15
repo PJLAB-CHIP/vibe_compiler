@@ -19,9 +19,7 @@ def _valid_conflict_raw(
     words = [0] * catalog.RECORD_WORDS
     expected_record = {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            catalog.SCHEMA << 32
-        ) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": case.case_id,
         "SAMPLE": 0,
@@ -160,7 +158,6 @@ def main() -> int:
         / "wafer_cache_coherence_calibration_probe.c"
     ).read_text()
     for name, value in (
-        ("SCHEMA", catalog.SCHEMA),
         ("REQUEST_WORDS", catalog.REQUEST_WORDS),
         ("RECORD_WORDS", catalog.RECORD_WORDS),
         (

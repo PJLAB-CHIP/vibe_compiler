@@ -430,11 +430,8 @@ uint32_t wafer_ncc_probe_decode_request(const volatile uint64_t *request_words,
                                         WaferNccProbeRequest *request) {
   if (request_words == NULL || request == NULL)
     return WAFER_NCC_STATUS_BAD_REQUEST;
-  uint32_t schema =
-      (uint32_t)(request_words[WAFER_NCC_REQ_SCHEMA_AND_WORDS] >> 32);
-  uint32_t words = (uint32_t)request_words[WAFER_NCC_REQ_SCHEMA_AND_WORDS];
+  uint64_t words = request_words[WAFER_NCC_REQ_WORD_COUNT];
   if (request_words[WAFER_NCC_REQ_MAGIC] != WAFER_NCC_PROTOCOL_REQUEST_MAGIC ||
-      schema != WAFER_NCC_PROTOCOL_SCHEMA ||
       words != WAFER_NCC_PROTOCOL_REQUEST_WORDS)
     return WAFER_NCC_STATUS_BAD_REQUEST;
 
@@ -832,8 +829,7 @@ wafer_ncc_probe_execute_plan(const WaferNccProbeRequest *request,
   wafer_ncc_probe_zero((void *)record,
                        WAFER_NCC_PROTOCOL_RECORD_WORDS * sizeof(uint64_t));
   record[WAFER_NCC_REC_MAGIC] = WAFER_NCC_PROTOCOL_RECORD_MAGIC;
-  record[WAFER_NCC_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_NCC_PROTOCOL_SCHEMA << 32) |
+  record[WAFER_NCC_REC_WORD_COUNT] =
       WAFER_NCC_PROTOCOL_RECORD_WORDS;
   record[WAFER_NCC_REC_STATUS] = WAFER_NCC_STATUS_BAD_REQUEST;
 

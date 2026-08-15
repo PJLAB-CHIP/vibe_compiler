@@ -294,9 +294,9 @@ TRANSPORT_PMU_CALIBRATION = (
     "test/Board/wafer_transport_pmu_calibration_catalog.py",
     "test/Board/wafer_transport_pmu_calibration_catalog_test.py",
 )
-FULL_CARD_BARRIER = (
-    "test/Board/wafer_board_full_card_barrier_probe_test.py",
-    "test/Board/Inputs/wafer_full_card_barrier_probe.c",
+COMPLETE_TILE_BARRIER = (
+    "test/Board/wafer_board_complete_tile_barrier_probe_test.py",
+    "test/Board/Inputs/wafer_complete_tile_barrier_probe.c",
 )
 NCC_PMU = (
     "test/Board/wafer_board_ncc_pmu_probe_test.py",
@@ -323,13 +323,13 @@ NCC_CATALOG = "test/Board/wafer_board_ncc_execution_probe_test.py"
 DTE_NCC_CATALOG = (
     "test/Board/wafer_transport_pmu_calibration_catalog.py"
 )
-BARRIER_CATALOG = "test/Board/wafer_board_full_card_barrier_probe_test.py"
+BARRIER_CATALOG = "test/Board/wafer_board_complete_tile_barrier_probe_test.py"
 TRANSPORT_PMU_CATALOG = (
     "test/Board/wafer_transport_pmu_calibration_catalog.py"
 )
 NCC_PMU_CATALOG = "test/Board/wafer_board_ncc_pmu_probe_test.py"
-RUNTIME_CATALOG = "test/Board/wafer_board_all_rank_add_test.py"
-RUNTIME_RANK_ONE_CATALOG = (
+RUNTIME_CATALOG = "test/Board/wafer_board_complete_tile_add_test.py"
+RUNTIME_TILE_ADD_CATALOG = (
     "test/Board/wafer_board_single_op_add_test.py"
 )
 
@@ -338,14 +338,14 @@ CALIBRATION_DOMAINS = (
     _domain(
         "profile-qualification",
         "profile qualification",
-        "rank-one-read-only-and-heartbeat",
-        positive=NCC_PMU + (RUNTIME_RANK_ONE_CATALOG,),
+        "program-local-read-only-and-heartbeat",
+        positive=NCC_PMU + (RUNTIME_TILE_ADD_CATALOG,),
         tests=("wafer-runtime-ncc-pmu-readonly-probe-no-card",),
     ),
     _domain(
         "constructor-ownership",
         "constructor ownership",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=NCC_EXECUTION,
         tests=(
             "wafer-ncc-probe-protocol-python",
@@ -355,14 +355,14 @@ CALIBRATION_DOMAINS = (
     _domain(
         "execute-result",
         "execute result",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=NCC_EXECUTION,
         tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "packet-routing-range",
         "packet routing/range",
-        "rank-one-workers012",
+        "program-local-workers012",
         positive=NCC_EXECUTION,
         tests=(
             "wafer-ncc-probe-plan",
@@ -373,7 +373,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "ct-numeric-form",
         "CT numeric/form",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=(
             INSTRUCTION_FAMILY
             + CT_VECTOR_CALIBRATION
@@ -393,7 +393,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "instruction-physical-layout",
         "instruction × physical layout",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=(
             INSTRUCTION_FAMILY
             + CT_VECTOR_CALIBRATION
@@ -419,7 +419,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "datamove-layout",
         "DataMove/layout",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=(
             INSTRUCTION_FAMILY
             + DATAMOVE_CALIBRATION
@@ -439,7 +439,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "ne-numeric-layout",
         "NE numeric/layout",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=INSTRUCTION_FAMILY + PHYSICAL_TENSOR_CODEC + NE_CALIBRATION,
         tests=(
             "wafer-instruction-family-catalog-python",
@@ -451,7 +451,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "rdma-wdma-descriptor",
         "RDMA/WDMA descriptor",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=NCC_EXECUTION + MEMORY_DESCRIPTOR_CALIBRATION,
         tests=(
             "wafer-ncc-probe-protocol-python",
@@ -463,7 +463,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "tdma-memset",
         "TDMA Memset",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=NCC_EXECUTION + DATAMOVE_EXTENDED_CALIBRATION,
         tests=(
             "wafer-runtime-ncc-safe-observations-no-card",
@@ -474,7 +474,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "tdma-bool-fill",
         "TDMA BOOL fill",
-        "rank-one-worker0-manual",
+        "program-local-worker0-manual",
         positive=NCC_EXECUTION,
         negative=("test/Board/wafer_ncc_probe_protocol_test.py",),
         tests=(
@@ -485,7 +485,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "tdma-movement-variants",
         "TDMA movement variants",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=(
             INSTRUCTION_FAMILY
             + NCC_EXECUTION
@@ -506,7 +506,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "spm-capacity-reservation",
         "SPM capacity/reservation",
-        "rank-one-static-and-worker0",
+        "program-local-static-and-worker0",
         positive=SPM_CALIBRATION,
         negative=(
             "test/Board/wafer_spm_calibration_catalog.py",
@@ -520,7 +520,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "spm-alignment-bank",
         "SPM alignment/bank",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=(
             NCC_EXECUTION
             + SPM_CALIBRATION
@@ -536,7 +536,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "ddr-cache-coherence",
         "DDR/cache/coherence",
-        "rank-one-and-full-card",
+        "program-local-and-complete-Tile-domain",
         positive=(
             DTE_NCC
             + NCC_EXECUTION
@@ -553,7 +553,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "queue-shape-submission",
         "queue shape与连续提交边界",
-        "rank-one-worker0-manual",
+        "program-local-worker0-manual",
         positive=NCC_EXECUTION,
         tests=(
             "wafer-ncc-probe-plan",
@@ -564,21 +564,21 @@ CALIBRATION_DOMAINS = (
     _domain(
         "worker-scope",
         "worker scope",
-        "rank-one-workers012-manual",
+        "program-local-workers012-manual",
         positive=NCC_EXECUTION,
         tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "cross-engine-overlap",
         "cross-engine overlap",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=NCC_EXECUTION,
         tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "address-dependency",
         "address dependency",
-        "rank-one-worker0-manual",
+        "program-local-worker0-manual",
         positive=NCC_EXECUTION,
         negative=(
             "test/Board/wafer_ncc_hazard_relation_test.c",
@@ -594,28 +594,28 @@ CALIBRATION_DOMAINS = (
     _domain(
         "issue-overhead",
         "issue overhead",
-        "rank-one-worker0-manual",
+        "program-local-worker0-manual",
         positive=NCC_EXECUTION,
         tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "local-completion",
         "local completion",
-        "rank-one-workers012-manual",
+        "program-local-workers012-manual",
         positive=NCC_EXECUTION,
         tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "cross-worker-join",
         "cross-worker join",
-        "rank-one-workers012",
+        "program-local-workers012",
         positive=NCC_EXECUTION,
         tests=("wafer-runtime-ncc-safe-observations-no-card",),
     ),
     _domain(
         "direct-dte",
         "Direct DTE",
-        "full-card-16-rank",
+        "complete-Tile-domain-16-Tile",
         positive=DTE_NCC,
         negative=("test/Board/wafer_board_direct_dte_timeout_test.py",),
         tests=(
@@ -626,23 +626,23 @@ CALIBRATION_DOMAINS = (
     _domain(
         "multi-tile-arrival",
         "multi-tile arrival",
-        "full-card-and-subgroup",
-        positive=FULL_CARD_BARRIER,
+        "complete-Tile-domain-and-subgroup",
+        positive=COMPLETE_TILE_BARRIER,
         negative=(
-            "test/Board/wafer_full_card_barrier_contract_test.py",
-            "test/Board/wafer_board_full_card_barrier_probe_test.py",
+            "test/Board/wafer_complete_tile_barrier_contract_test.py",
+            "test/Board/wafer_board_complete_tile_barrier_probe_test.py",
         ),
         tests=(
-            "wafer-full-card-barrier-contract-python",
-            "wafer-runtime-full-card-barrier-probe-no-card",
+            "wafer-complete-tile-barrier-contract-python",
+            "wafer-runtime-complete-tile-barrier-probe-no-card",
         ),
     ),
     _domain(
         "host-launch-runtime",
         "host launch/runtime",
-        "rank-one-and-full-card",
+        "program-local-and-complete-Tile-domain",
         positive=(
-            "test/Board/wafer_board_all_rank_add_test.py",
+            "test/Board/wafer_board_complete_tile_add_test.py",
             "test/Board/wafer_board_single_op_add_test.py",
             "test/Board/wafer_board_direct_dte_collective_test.py",
         ),
@@ -656,7 +656,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "ncc-pmu-basis",
         "NCC PMU basis",
-        "rank-one-worker0",
+        "program-local-worker0",
         positive=NCC_PMU + NCC_EXECUTION,
         tests=(
             "wafer-runtime-ncc-pmu-readonly-probe-no-card",
@@ -666,7 +666,7 @@ CALIBRATION_DOMAINS = (
     _domain(
         "transport-pmu-basis",
         "DTE/SPM/TMNOC PMU",
-        "full-card-and-rank-one",
+        "complete-Tile-domain-and-program-local",
         positive=DTE_NCC + TRANSPORT_PMU_CALIBRATION,
         negative=TRANSPORT_PMU_CALIBRATION,
         tests=(
@@ -695,7 +695,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "profile-identity-readonly",
             "calibration",
-            "rank-one-read-only",
+            "program-local-read-only",
             NCC_PMU_CATALOG,
             "profile-identity-readonly",
             resource_budget="read-only-registers",
@@ -703,12 +703,12 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "known-good-heartbeat",
             "held-out",
-            "rank-one-runtime-session",
-            RUNTIME_RANK_ONE_CATALOG,
-            "rank-one-per-rank-add",
-            resource_budget="runtime-owned-rank-one-resources",
+            "program-local-runtime-session",
+            RUNTIME_TILE_ADD_CATALOG,
+            "grid-add",
+            resource_budget="runtime-owned-program-local-resources",
             oracle=("independent-f16-expected", "full-result"),
-            guards=("schema-v7-resource-binding", "rank-one-domain"),
+            guards=("current-resource-binding", "complete-tile-domain"),
             completion=("terminal-status", "D2H", "cleanup"),
         ),
     ),
@@ -716,7 +716,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "constructor-return-address-nonnull",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "constructor-return-address-nonnull",
             resource_budget="one-owned-packet-builder",
@@ -725,7 +725,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "constructor-builder-release",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "constructor-builder-release",
             resource_budget="bounded-packet-builders",
@@ -735,7 +735,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "execute-success-requires-side-effects",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "execute-success-requires-side-effects",
             resource_budget="one-known-good-packet",
@@ -767,7 +767,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "routing-five-engines-worker0",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "routing-five-engines-worker0",
             resource_budget="one-packet-per-engine",
@@ -775,7 +775,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "routing-ct-workers012",
             "held-out",
-            "rank-one-workers012",
+            "program-local-workers012",
             NCC_CATALOG,
             "routing-ct-workers012",
             resource_budget="one-ct-packet-per-worker",
@@ -783,7 +783,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "range-materialization-ct-ne",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "range-materialization-ct-ne",
             resource_budget="ct-ne-register-range",
@@ -791,7 +791,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "range-materialization-rdma-wdma-tdma",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "range-materialization-rdma-wdma-tdma",
             resource_budget="dma-descriptor-range",
@@ -812,7 +812,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-vector-forms-main-tail",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             CT_VECTOR_CATALOG,
             "ct-vector-forms-main-tail",
             resource_budget="two-64k-ddr-slots",
@@ -820,7 +820,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-fp16-bf16-fp32-finite-boundaries",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_VECTOR_CATALOG,
             "ct-finite-boundaries-all-float-dtypes",
             resource_budget="two-64k-ddr-slots",
@@ -828,7 +828,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-zero-domain-positive",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_VECTOR_CATALOG,
             "ct-zero-domain-positive",
             resource_budget="two-64k-ddr-slots",
@@ -836,7 +836,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ct-zero-domain-observation",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_VECTOR_CATALOG,
             "ct-zero-domain-observed",
             resource_budget="two-64k-ddr-slots",
@@ -848,7 +848,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-special-values-positive",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_VECTOR_CATALOG,
             "ct-special-values-positive",
             resource_budget="two-64k-ddr-slots",
@@ -856,7 +856,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ct-special-values-observation",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_VECTOR_CATALOG,
             "ct-special-values-observed",
             resource_budget="two-64k-ddr-slots",
@@ -868,7 +868,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-relation-logic-value-bool",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             CT_VECTOR_CATALOG,
             "ct-relation-logic-value-bool",
             resource_budget="two-64k-ddr-slots",
@@ -876,7 +876,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-transcendental-activation",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             CT_VECTOR_CATALOG,
             "ct-transcendental-activation",
             resource_budget="two-64k-ddr-slots",
@@ -884,7 +884,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ct-observed-activation-semantics",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_VECTOR_CATALOG,
             "ct-observed-activation-semantics",
             resource_budget="two-64k-ddr-slots",
@@ -897,7 +897,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-convert-all-routes-main-tail",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             CT_CONVERT_CATALOG,
             "ct-convert-all-routes-main-tail-nearest-even",
             resource_budget="two-64k-ddr-slots",
@@ -905,7 +905,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-convert-halfway-extrema-positive",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_CONVERT_CATALOG,
             "ct-convert-halfway-extrema-positive",
             resource_budget="two-64k-ddr-slots",
@@ -913,7 +913,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ct-convert-halfway-extrema-observation",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_CONVERT_CATALOG,
             "ct-convert-halfway-extrema-observed",
             resource_budget="two-64k-ddr-slots",
@@ -925,7 +925,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-convert-directed-rounding",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_CONVERT_CATALOG,
             "ct-convert-directed-rounding-positive",
             resource_budget="two-64k-ddr-slots",
@@ -933,7 +933,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ct-convert-zero-point-observation",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_CONVERT_CATALOG,
             "ct-convert-zero-point-observed",
             resource_budget="two-64k-ddr-slots",
@@ -945,7 +945,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ct-convert-stochastic",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CT_CONVERT_CATALOG,
             "ct-convert-stochastic-observed",
             resource_budget="two-64k-ddr-slots",
@@ -958,7 +958,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ct-reduce-pool-unpool-peripheral-positive",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             CT_DISPOSITION_CATALOG,
             "ct-reduce-pool-unpool-peripheral-positive",
             resource_budget="shared-instruction-family-package",
@@ -966,7 +966,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ct-reduce-pool-unpool-peripheral-observation",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             CT_DISPOSITION_CATALOG,
             "ct-reduce-pool-unpool-peripheral-observed",
             resource_budget="shared-instruction-family-package",
@@ -997,7 +997,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "ct-reduce-raw-axis-isolated-deferred",
             reason=(
                 "historical raw N/HWC dimensions are absent from the "
-                "version-matched public enum; an isolated dimension-3 "
+                "current public enum; an isolated dimension-3 "
                 "launch exceeded its completion deadline and may "
                 "permanently wait, so all eight variants are fail-closed"
             ),
@@ -1008,7 +1008,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "instruction-layout-native-positive",
             "calibration",
             "board-positive",
-            "rank-one-worker0",
+            "program-local-worker0",
             bindings=(
                 _catalog_groups(
                     DATAMOVE_CATALOG,
@@ -1045,7 +1045,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "instruction-layout-composite-positive",
             "held-out",
             "board-positive",
-            "rank-one-worker0",
+            "program-local-worker0",
             bindings=(
                 _catalog_groups(
                     DATAMOVE_CATALOG,
@@ -1079,7 +1079,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "cx-ncx-c63-c64-c65-c127-c129",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "cx-ncx-channel-boundaries",
             resource_budget="two-64k-ddr-slots",
@@ -1087,7 +1087,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "cx-ncx-padding-poison-n-slice",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "cx-ncx-padding-poison-n-slice",
             resource_budget="two-64k-ddr-slots",
@@ -1097,7 +1097,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "datamove-transpose-mirror-rotate",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "transpose-mirror-rotate-large",
             resource_budget="two-64k-ddr-slots",
@@ -1105,7 +1105,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "datamove-nchw-nhwc",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "nchw-nhwc-large",
             resource_budget="two-64k-ddr-slots",
@@ -1113,7 +1113,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "datamove-concat-c-w-h-hw",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "concat-c-w-h-hw",
             resource_budget="two-64k-ddr-slots",
@@ -1122,7 +1122,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "datamove-raw-concat-disposition",
             "held-out",
             "board-observation",
-            "rank-one-worker0",
+            "program-local-worker0",
             bindings=(
                 _catalog_groups(
                     DATAMOVE_CATALOG,
@@ -1162,7 +1162,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "datamove-compiler-concat-materialization",
             "production-vertical",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "compiler-concat-materialization",
             resource_budget="shared-datamove-package",
@@ -1170,7 +1170,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "datamove-broadcast-scalar-channel-row",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "broadcast-scalar-channel-row",
             resource_budget="two-64k-ddr-slots",
@@ -1179,7 +1179,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "datamove-pad-img2col-large",
             "held-out",
             "board-positive",
-            "rank-one-worker0",
+            "program-local-worker0",
             bindings=(
                 _catalog_groups(
                     DATAMOVE_CATALOG,
@@ -1202,7 +1202,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "datamove-gather-contiguous-strided-tail",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "gather-contiguous-strided-tail",
             resource_budget="two-64k-ddr-slots",
@@ -1211,7 +1211,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "datamove-mask-gather",
             "held-out",
             "board-observation",
-            "rank-one-worker0",
+            "program-local-worker0",
             bindings=(
                 _catalog_groups(
                     DATAMOVE_CATALOG,
@@ -1239,7 +1239,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "datamove-tensor-normalization",
             "held-out",
             "board-observation",
-            "rank-one-worker0",
+            "program-local-worker0",
             bindings=(
                 _catalog_groups(
                     DATAMOVE_CATALOG,
@@ -1268,7 +1268,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ne-gemm-dtype-orientation-main-tail-batch",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NE_CATALOG,
             "ne-gemm-dtype-orientation-main-tail-batch",
             resource_budget="bounded-ne-shared-package",
@@ -1276,7 +1276,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ne-long-accumulation-cancellation",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NE_CATALOG,
             "ne-long-accumulation-cancellation",
             resource_budget="bounded-ne-shared-package",
@@ -1284,7 +1284,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ne-bf16-special-values",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             NE_CATALOG,
             "ne-bf16-special-values",
             resource_budget="bounded-ne-shared-package",
@@ -1296,7 +1296,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ne-one-factor-options-positive",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NE_CATALOG,
             "ne-one-factor-options-positive",
             resource_budget="bounded-ne-shared-package",
@@ -1304,7 +1304,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ne-one-factor-options-observation",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             NE_CATALOG,
             "ne-one-factor-options-observed",
             resource_budget="bounded-ne-shared-package",
@@ -1316,7 +1316,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ne-quant",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NE_CATALOG,
             "ne-quant-observed",
             resource_budget="bounded-ne-shared-package",
@@ -1350,7 +1350,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ne-conv-large-held-out",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NE_CATALOG,
             "ne-conv-large-heldout",
             resource_budget="bounded-ne-shared-package",
@@ -1364,7 +1364,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ne-depthwise-backward-conv",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NE_CATALOG,
             "ne-depthwise-backward-conv-observed",
             resource_budget="bounded-ne-shared-package",
@@ -1376,7 +1376,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ne-batch-broadcast",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NE_CATALOG,
             "ne-batch-broadcast-positive",
             resource_budget="bounded-ne-shared-package",
@@ -1386,7 +1386,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "dma-contiguous-64k",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "dma-contiguous-64k",
             resource_budget="256k-ncc-resource-with-64k-payload",
@@ -1394,7 +1394,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "dma-1d-2d-3d-stride-holes",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "dma-1d-2d-3d-stride-holes",
             resource_budget="64k-payload-plus-guards",
@@ -1402,7 +1402,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "dma-offset-alignment-tail",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             MEMORY_DESCRIPTOR_CATALOG,
             "dma-offset-alignment-tail",
             resource_budget="256k-memory-descriptor-resource",
@@ -1412,7 +1412,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "tdma-i8-whole",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "tdma-i8-whole-positive",
             resource_budget="4k-payload-plus-guards",
@@ -1420,7 +1420,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "tdma-fp16-bf16-strided",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_EXTENDED_CATALOG,
             "tdma-fp16-bf16-strided",
             resource_budget="two-128k-ddr-slots",
@@ -1428,7 +1428,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "tdma-fp16-bf16-raw-crt",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_EXTENDED_CATALOG,
             "tdma-fp16-bf16-raw-crt",
             resource_budget="two-128k-ddr-slots",
@@ -1449,7 +1449,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "tdma-bool-to-i8-physical-fill",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             NCC_CATALOG,
             "tdma-bool-to-i8-physical-fill",
             resource_budget="one-physical-block-plus-guards",
@@ -1459,7 +1459,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "tdma-layout-materialization",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             DATAMOVE_CATALOG,
             "tdma-layout-materialization",
             resource_budget="two-64k-ddr-slots",
@@ -1469,7 +1469,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "spm-lower-upper-capacity-boundaries",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             SPM_CATALOG,
             "lower-upper-capacity-boundaries",
             resource_budget="profile-allocatable-spm",
@@ -1490,7 +1490,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "spm-relative-offset-sweep",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             SPM_CATALOG,
             "relative-offset-sweep",
             resource_budget="profile-allocatable-spm",
@@ -1499,7 +1499,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             "spm-non-preferred-geometry-observation",
             "held-out",
             "board-observation",
-            "rank-one-worker0",
+            "program-local-worker0",
             bindings=_catalog_groups(
                 SPM_CATALOG,
                 "non-preferred-geometry-roundtrip",
@@ -1565,7 +1565,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "spm-five-engine-access-concrete",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             MEMORY_DESCRIPTOR_CATALOG,
             "spm-five-engine-access",
             resource_budget="256k-memory-descriptor-resource",
@@ -1595,7 +1595,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "spm-address-relations-observation",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             MEMORY_DESCRIPTOR_CATALOG,
             "spm-exact-partial-adjacent-disjoint-strided",
             resource_budget="256k-memory-descriptor-resource",
@@ -1629,7 +1629,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "spm-slot-lifetime-reuse",
             "production-vertical",
-            "rank-one-worker0",
+            "program-local-worker0",
             SPM_CATALOG,
             "slot-lifetime-reuse",
             resource_budget="two-independent-spm-slots",
@@ -1671,7 +1671,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "spm-bank-engine-pair-controls-concrete",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             MEMORY_DESCRIPTOR_CATALOG,
             "spm-bank-engine-pair-controls",
             resource_budget="256k-memory-descriptor-resource",
@@ -1681,7 +1681,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "cache-four-visibility-directions",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             CACHE_CATALOG,
             "four-visibility-directions",
             resource_budget="16k-payload-plus-guards",
@@ -1702,7 +1702,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ddr-same-allocation-offset-sweep",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             CACHE_CATALOG,
             "ddr-same-allocation-offset-sweep",
             resource_budget="two-64k-ddr-windows",
@@ -1710,7 +1710,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ddr-rdma-wdma-pair-controls",
             "calibration",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             CACHE_CATALOG,
             "ddr-rdma-wdma-pair-controls",
             resource_budget="two-64k-ddr-windows",
@@ -1740,7 +1740,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ddr-large-stride-default-burst-tail",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             MEMORY_DESCRIPTOR_CATALOG,
             "ddr-large-stride-default-burst-tail",
             resource_budget="256k-memory-descriptor-resource",
@@ -1761,7 +1761,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "five-engine-n1-n2-n4",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "five-engine-n1-n2-n4",
             resource_budget="documented-safe-ordinary-depth",
@@ -1769,7 +1769,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "documented-depth-manual",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             NCC_CATALOG,
             "documented-depth-manual",
             resource_budget="exact-documented-depth",
@@ -1777,7 +1777,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "depth-plus-one-manual",
             "held-out",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             NCC_CATALOG,
             "depth-plus-one-manual",
             resource_budget="exact-documented-depth-plus-one",
@@ -1787,7 +1787,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "workers012-disjoint-routing",
             "calibration",
-            "rank-one-workers012",
+            "program-local-workers012",
             NCC_CATALOG,
             "workers012-disjoint-routing",
             resource_budget="one-disjoint-output-per-worker",
@@ -1795,7 +1795,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "default-byworker-wait-controls",
             "calibration",
-            "rank-one-workers012",
+            "program-local-workers012",
             NCC_CATALOG,
             "default-byworker-wait-controls",
             resource_budget="one-disjoint-output-per-worker",
@@ -1803,7 +1803,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "default-wait-nondefault-scope",
             "held-out",
-            "rank-one-workers012",
+            "program-local-workers012",
             NCC_CATALOG,
             "default-wait-nondefault-scope",
             resource_budget="large-ne-backlog-plus-disjoint-control",
@@ -1817,7 +1817,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ten-engine-pairs-two-orders-controls",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "ten-engine-pairs-two-orders-controls",
             resource_budget="r2-all-pairs-r4-non-tdma",
@@ -1825,7 +1825,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "large-backlog-compute-movement",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "large-backlog-compute-movement",
             resource_budget="256k-resource-with-64k-and-large-ne-ct-backlogs",
@@ -1833,7 +1833,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "multi-engine-sustained-parallel-controls",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             MEMORY_DESCRIPTOR_CATALOG,
             "multi-engine-sustained-parallel-controls",
             resource_budget="2m-memory-descriptor-resource",
@@ -1841,7 +1841,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "double-slot-hardware-observation",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "double-slot-hardware-observation",
             resource_budget="two-16k-slots-plus-guards",
@@ -1856,7 +1856,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "dependency-raw-war-waw-rar",
             "calibration",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             NCC_CATALOG,
             "dependency-raw-war-waw-rar",
             resource_budget="qualified-overlap-pairs-only",
@@ -1864,7 +1864,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "dependency-exact-partial-adjacent",
             "calibration",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             NCC_CATALOG,
             "dependency-exact-partial-adjacent",
             resource_budget="qualified-overlap-pairs-only",
@@ -1872,7 +1872,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "dependency-strided-envelope",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "dependency-strided-envelope",
             resource_budget="bounded-1d-2d-3d-envelopes-plus-hole-guards",
@@ -1886,7 +1886,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "wrapper-prebuilt-same-sequence",
             "calibration",
-            "rank-one-worker0-manual",
+            "program-local-worker0-manual",
             NCC_CATALOG,
             "wrapper-prebuilt-same-sequence",
             resource_budget="same-prebuilt-packet-sequence",
@@ -1896,7 +1896,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "five-engine-wait-each-window",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "five-engine-wait-each-window",
             resource_budget="ordinary-safe-depth",
@@ -1904,7 +1904,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ncc-producer-consumer-representative",
             "calibration",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "ncc-producer-consumer-representative-positive",
             resource_budget="one-producer-consumer-chain",
@@ -1912,7 +1912,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "ncc-producer-consumer-boundaries",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "ncc-producer-consumer-all-directions",
             resource_budget="bounded-all-direction-producer-consumer-chains",
@@ -1927,7 +1927,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "cross-worker-single-pair-triple-masks",
             "calibration",
-            "rank-one-workers012",
+            "program-local-workers012",
             NCC_CATALOG,
             "cross-worker-single-pair-triple-masks",
             resource_budget="three-disjoint-worker-outputs",
@@ -1935,7 +1935,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "cross-worker-unjoined-boundary",
             "held-out",
-            "rank-one-workers012",
+            "program-local-workers012",
             NCC_CATALOG,
             "cross-worker-unjoined-boundary",
             resource_budget="three-worker-backlogs-plus-six-proper-subset-masks",
@@ -1960,15 +1960,15 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "dte-four-ordered-ncc-modes",
             "calibration",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-ordered-interaction",
-            resource_budget="one-logical-slot-per-rank",
+            resource_budget="one-logical-slot-per-Tile",
         ),
         _board_leaf(
             "dte-event-safe-reuse",
             "held-out",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-reuse-after-event",
             resource_budget="two-epoch-slot-reuse",
@@ -1976,10 +1976,10 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "dte-broadcast-multi-destination",
             "held-out",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-broadcast",
-            resource_budget="two-destination-slots-per-source-rank",
+            resource_budget="two-destination-slots-per-source-Tile",
         ),
         _non_board_leaf(
             "dte-invalid-coordinate-host-negative",
@@ -1995,10 +1995,10 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "dte-device-error-observation",
             "held-out",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-device-error-observation",
-            resource_budget="one-16b-logical-slot-per-rank",
+            resource_budget="one-16b-logical-slot-per-Tile",
             reason=(
                 "early source reuse, invalid FSM and unknown event are "
                 "synchronous bounded error observations; shadow status "
@@ -2008,10 +2008,10 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "dte-sender-raw-async-controls",
             "held-out",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-sender-async-controls",
-            resource_budget="four-guarded-64k-spm-regions-per-rank",
+            resource_budget="four-guarded-64k-spm-regions-per-Tile",
             reason=(
                 "receiver-first test-only raw sender controls repeat serial "
                 "and send_async-to-wait_done issue windows without changing "
@@ -2022,7 +2022,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "dte-raw-four-source-fanin",
             "held-out",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-four-source-fanin",
             resource_budget="four-receiver-fsms-and-four-guarded-source-slots",
@@ -2035,7 +2035,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "dte-raw-broadcast-fanout-layout",
             "held-out",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-raw-broadcast",
             resource_budget="one-guarded-source-and-up-to-fifteen-destinations",
@@ -2048,7 +2048,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "dte-raw-scatter-fanout-layout",
             "held-out",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-raw-scatter",
             resource_budget="one-guarded-source-and-up-to-fifteen-destinations",
@@ -2061,7 +2061,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "dte-raw-shuffle-source-stride",
             "held-out",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             DTE_NCC_CATALOG,
             "direct-dte-raw-shuffle",
             resource_budget="one-guarded-source-and-one-destination",
@@ -2085,12 +2085,12 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
     ),
     "multi-tile-arrival": (
         _board_leaf(
-            "full-card-two-epoch-arrival",
+            "complete-Tile-domain-two-epoch-arrival",
             "calibration",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             BARRIER_CATALOG,
             "multi-tile-arrival",
-            resource_budget="sixteen-version-matched-slots",
+            resource_budget="sixteen-current-slots",
         ),
         _non_board_leaf(
             "unsupported-subgroup-arrival",
@@ -2099,39 +2099,39 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             BARRIER_CATALOG,
             "barrier-participant-negative",
             reason=(
-                "the version-matched barrier observes sixteen fixed slots; "
+                "the current barrier observes sixteen fixed slots; "
                 "unsafe subgroup participant counts are rejected by host"
             ),
         ),
     ),
     "host-launch-runtime": (
         _leaf(
-            "kernel-rank1-rank16-launch",
+            "kernel-complete-tile-domain-launch",
             "calibration",
             "board-positive",
-            "rank-one-and-full-card",
+            "program-local-and-complete-Tile-domain",
             bindings=(
                 _catalog_groups(
-                    RUNTIME_RANK_ONE_CATALOG,
-                    "rank-one-per-rank-add",
+                    RUNTIME_TILE_ADD_CATALOG,
+                    "grid-add",
                 )
                 + _catalog_groups(
                     RUNTIME_CATALOG,
-                    "rank16-kernel-add",
+                    "tile16-kernel-add",
                 )
             ),
-            oracle=("independent-expected", "all-rank-full-result"),
-            guards=("typed-resource-bindings", "rank-slice-domain"),
+            oracle=("independent-expected", "all-Tile-full-result"),
+            guards=("typed-resource-bindings", "Tile-slice-domain"),
             completion=("terminal-status", "D2H", "cleanup"),
-            resource_budget="runtime-owned-rank-resources",
+            resource_budget="runtime-owned-Tile-resources",
         ),
         _board_leaf(
             "terminal-d2h-cleanup-heartbeat",
             "held-out",
-            "rank-one-and-full-card",
+            "program-local-and-complete-Tile-domain",
             TRANSPORT_PMU_CATALOG,
             "runtime-visibility-positive",
-            resource_budget="runtime-owned-rank-resources",
+            resource_budget="runtime-owned-Tile-resources",
         ),
         _non_board_leaf(
             "runtime-timeout-cleanup-contract",
@@ -2149,7 +2149,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ncc-pmu-stable-read-enable-scope",
             "calibration",
-            "rank-one-read-only",
+            "program-local-read-only",
             NCC_PMU_CATALOG,
             "stable-read-enable-scope",
             resource_budget="read-only-registers",
@@ -2157,7 +2157,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _board_leaf(
             "ncc-pmu-workload-delta-basis",
             "held-out",
-            "rank-one-worker0",
+            "program-local-worker0",
             NCC_CATALOG,
             "pmu-workload-delta-basis",
             resource_budget="one-known-good-engine-window",
@@ -2167,10 +2167,10 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
         _observation_leaf(
             "dte-spm-counter-payload-sweep",
             "calibration",
-            "full-card-16-rank",
+            "complete-Tile-domain-16-Tile",
             TRANSPORT_PMU_CATALOG,
             "dte-spm-counter-payload-sweep",
-            resource_budget="one-64b-slot-per-rank",
+            resource_budget="one-64b-slot-per-Tile",
             reason=(
                 "the payload sweep retains raw modulo-2^64 deltas, but the "
                 "counter measurement basis and event units remain "
@@ -2184,7 +2184,7 @@ CALIBRATION_LEAVES_BY_DOMAIN = {
             TRANSPORT_PMU_CATALOG,
             "tmnoc-counter-offset-unavailable",
             reason=(
-                "the version-matched header exposes only a base address and "
+                "the current installed header exposes only a base address and "
                 "no decoded read-only counter offsets"
             ),
         ),

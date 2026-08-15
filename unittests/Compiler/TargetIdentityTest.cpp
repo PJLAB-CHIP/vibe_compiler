@@ -16,11 +16,11 @@ TEST(TargetIdentityTest, CurrentTargetAndABIIdentifiersRoundTripExactly) {
             "wafer-tx81-single-card");
 
   llvm::Expected<wafer::KernelRuntimeABIId> runtimeABI =
-      wafer::parseKernelRuntimeABIId("wafer-tx81-kernel-v3");
+      wafer::parseKernelRuntimeABIId("wafer-tx81-kernel");
   ASSERT_TRUE(static_cast<bool>(runtimeABI));
   EXPECT_EQ(*runtimeABI, wafer::KernelRuntimeABIId::waferTx81Kernel());
   EXPECT_EQ(wafer::stringifyKernelRuntimeABIId(*runtimeABI),
-            "wafer-tx81-kernel-v3");
+            "wafer-tx81-kernel");
   EXPECT_EQ(wafer::kCurrentTargetModuleFormat, "elf-riscv64");
 }
 

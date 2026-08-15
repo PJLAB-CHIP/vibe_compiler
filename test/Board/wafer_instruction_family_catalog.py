@@ -14,7 +14,6 @@ import wafer_physical_tensor_codec as physical
 
 REQUEST_MAGIC = 0x3151455246494657
 RECORD_MAGIC = 0x3143455246494657
-SCHEMA = 2
 REQUEST_WORDS = 16
 RECORD_WORDS = 32
 RESOURCE_BYTES = 16384
@@ -63,7 +62,7 @@ REASONS = {
 
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "DISPOSITION": 3,
     "FAMILY": 4,
@@ -80,7 +79,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "DISPOSITION": 4,
@@ -1992,7 +1991,7 @@ def build_case_payload(case: InstructionCase, sample: int = 0) -> CasePayload:
 
     request_words = [0] * REQUEST_WORDS
     request_words[REQ["MAGIC"]] = REQUEST_MAGIC
-    request_words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+    request_words[REQ["WORD_COUNT"]] = REQUEST_WORDS
     request_words[REQ["CASE"]] = case.case_id
     request_words[REQ["DISPOSITION"]] = case.disposition
     request_words[REQ["FAMILY"]] = case.family

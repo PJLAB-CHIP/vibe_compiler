@@ -188,14 +188,14 @@ Unit/integration gate至少覆盖：
 - aggregate/nonaggregate module topology具有相同typed Tile interfaces和functional outputs。
 
 Q53 source/model gate必须重新执行generic mixed DAG、HF prefill、functional two-step decode和Llama block的current
-FP16/BF16输入。通过只证明current target functional semantics与CPU expected一致；schema-v8 package exact-provider、真实board
+FP16/BF16输入。通过只证明current target functional semantics与CPU expected一致；current package exact-provider、真实board
 correctness和performance仍是独立gate。
 
 ## 9. 不可越过的结论边界
 
 - `TargetModelResult`不证明cycle、bandwidth、NoC contention或board wall time。
 - SystemC event ordering不证明vendor queue实现相同，只证明typed dependency合同自洽。
-- target-call成功不证明schema-v8 loader/provider可执行同一module；exact package execution另行验证。
+- target-call成功不证明current loader/provider可执行同一module；exact package execution另行验证。
 - model与board相关性必须使用current source/config/payload/ABI和held-out cases，不能读取历史raw重新签发。
 - Q53在fresh package/no-card前保持`doing`；达到无卡完整矩阵后才可`board-ready`；真实matched A/B改善前不得
   标`done`。

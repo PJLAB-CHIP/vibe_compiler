@@ -208,8 +208,8 @@ uint64_t expectedRecordBytes(ProfileCaptureKind capture) {
 }
 
 llvm::Error verifyHeader(const llvm::json::Object &root,
-                         llvm::StringRef expectedSchema, bool hasVersion,
-                         bool hasTopology, const PackageParseLimits &limits,
+                         llvm::StringRef expectedSchema, bool hasTopology,
+                         const PackageParseLimits &limits,
                          llvm::StringRef context);
 bool isLowercaseSHA256(llvm::StringRef digest);
 
@@ -217,14 +217,13 @@ llvm::Expected<RawActivation>
 parseActivation(const llvm::json::Object &root,
                 const PackageParseLimits &limits) {
   if (llvm::Error error =
-          requireFields(root,
-                        {"schema", "schema_version", "primary_manifest_sha256",
-                         "metadata_sha256"},
+          requireFields(root, {"schema", "primary_manifest_sha256",
+                               "metadata_sha256"},
                         {}, "profile activation"))
     return std::move(error);
   if (llvm::Error error =
-          verifyHeader(root, kActivationSchema, /*hasVersion=*/true,
-                       /*hasTopology=*/false, limits, "profile activation"))
+          verifyHeader(root, kActivationSchema, /*hasTopology=*/false, limits,
+                       "profile activation"))
     return std::move(error);
   llvm::Expected<std::string> primaryDigest = requireString(
       root, "primary_manifest_sha256", "profile activation", limits);
@@ -257,8 +256,8 @@ parseActivation(const llvm::json::Object &root,
 }
 
 llvm::Error verifyHeader(const llvm::json::Object &root,
-                         llvm::StringRef expectedSchema, bool hasVersion,
-                         bool hasTopology, const PackageParseLimits &limits,
+                         llvm::StringRef expectedSchema, bool hasTopology,
+                         const PackageParseLimits &limits,
                          llvm::StringRef context) {
   llvm::Expected<std::string> schema =
       requireString(root, "schema", context, limits);
@@ -266,14 +265,6 @@ llvm::Error verifyHeader(const llvm::json::Object &root,
     return schema.takeError();
   if (*schema != expectedSchema)
     return invalid(context + ".schema is not supported");
-  if (hasVersion) {
-    llvm::Expected<uint64_t> version =
-        requireUnsigned(root, "schema_version", context);
-    if (!version)
-      return version.takeError();
-    if (*version != kProfileInstrumentationFormatVersion)
-      return invalid(context + ".schema_version is not supported");
-  }
   if (hasTopology) {
     llvm::Expected<uint64_t> cardCount =
         requireUnsigned(root, "card_count", context);
@@ -305,9 +296,8 @@ llvm::Expected<RawPlan> parsePlan(const llvm::json::Object &root,
           {}, "profile plan"))
     return std::move(error);
   if (llvm::Error error =
-          verifyHeader(root, kPlanSchema,
-                       /*hasVersion=*/false,
-                       /*hasTopology=*/true, limits, "profile plan"))
+          verifyHeader(root, kPlanSchema, /*hasTopology=*/true, limits,
+                       "profile plan"))
     return std::move(error);
 
   llvm::Expected<std::string> siteMap =
@@ -1080,8 +1070,8 @@ parseSiteMap(const llvm::json::Object &root, const PackageParseLimits &limits,
                                         {}, "profile site map"))
     return std::move(error);
   if (llvm::Error error =
-          verifyHeader(root, kSiteMapSchema, /*hasVersion=*/false,
-                       /*hasTopology=*/true, limits, "profile site map"))
+          verifyHeader(root, kSiteMapSchema, /*hasTopology=*/true, limits,
+                       "profile site map"))
     return std::move(error);
   llvm::Expected<std::string> basis =
       requireString(root, "site_basis", "profile site map", limits);

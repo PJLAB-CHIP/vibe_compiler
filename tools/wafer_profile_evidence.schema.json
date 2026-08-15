@@ -1,13 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence-v11.json",
+  "$id": "https://wafer.invalid/schemas/wafer-profile-evidence.json",
   "title": "Wafer 16-tile profile evidence",
-  "description": "Version 11 profile evidence for one compiled program with explicit physical card, Tile, and launch-slot bindings. Primary same-stream device elapsed, host submit, and host completion remain separate. Exact static work is recorded independently from measured timing so the report can form bounded hardware peak references without guessing workload from names.",
+  "description": "Profile evidence for one compiled program with explicit physical card, Tile, and launch-slot bindings. Primary same-stream device elapsed, host submit, and host completion remain separate. Exact static work is recorded independently from measured timing so the report can form bounded hardware peak references without guessing workload from names.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema",
-    "schema_version",
     "run_id",
     "program",
     "topology",
@@ -21,9 +20,6 @@
   "properties": {
     "schema": {
       "const": "wafer.profile.evidence"
-    },
-    "schema_version": {
-      "const": 11
     },
     "run_id": {
       "$ref": "#/$defs/nonEmptyString"
@@ -403,7 +399,7 @@
           "const": "target-call-ordinal-ssa-position"
         },
         "record_abi": {
-          "const": "wafer-tx81-profiler-record-v4"
+          "const": "wafer-tx81-profiler-record"
         }
       }
     },

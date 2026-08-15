@@ -57,8 +57,8 @@ static void wafer_ctvl_write_record(volatile uint64_t *record) {
 static uint32_t wafer_ctvl_decode(const volatile uint64_t *request,
                                   WaferCTVLSelection *selected) {
   if (request[WAFER_CTVL_REQ_MAGIC] != WAFER_CTVL_REQUEST_MAGIC ||
-      request[WAFER_CTVL_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_CTVL_SCHEMA << 32) | WAFER_CTVL_REQUEST_WORDS) ||
+      request[WAFER_CTVL_REQ_WORD_COUNT] !=
+          (WAFER_CTVL_REQUEST_WORDS) ||
       request[WAFER_CTVL_REQ_OPCODE] != WAFER_CTVL_OPCODE ||
       request[WAFER_CTVL_REQ_DTYPE] != WAFER_CTVL_DTYPE ||
       request[WAFER_CTVL_REQ_LHS_OWNED_BYTES] != WAFER_CTVL_LHS_OWNED_BYTES ||
@@ -138,8 +138,8 @@ static void wafer_ctvl_init_record(volatile uint64_t *record, uint32_t status) {
   for (uint32_t index = 0; index < WAFER_CTVL_RECORD_WORDS; ++index)
     record[index] = 0;
   record[WAFER_CTVL_REC_MAGIC] = WAFER_CTVL_RECORD_MAGIC;
-  record[WAFER_CTVL_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_CTVL_SCHEMA << 32) | WAFER_CTVL_RECORD_WORDS;
+  record[WAFER_CTVL_REC_WORD_COUNT] =
+      WAFER_CTVL_RECORD_WORDS;
   record[WAFER_CTVL_REC_STATUS] = status;
   record[WAFER_CTVL_REC_OUTPUT_DDR_OFFSET] = WAFER_CTVL_OUTPUT_DDR_OFFSET;
   record[WAFER_CTVL_REC_OUTPUT_SLOT_BYTES] = WAFER_CTVL_OUTPUT_SLOT_BYTES;
@@ -175,21 +175,21 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr, uint64_t payload_ddr,
     record[WAFER_CTVL_REC_OUTPUT_PHYSICAL_SPAN] =
         wafer_ctvl_output_physical_span(&selected);
 
-    wafer_tx81_rdma_v3(payload_ddr + WAFER_CTVL_PAYLOAD_LHS_OFFSET,
+    wafer_tx81_rdma(payload_ddr + WAFER_CTVL_PAYLOAD_LHS_OFFSET,
                        WAFER_CTVL_SPM_LHS, WAFER_CTVL_LHS_SLOT_BYTES,
                        WAFER_CTVL_LHS_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8,
                        0U);
-    wafer_tx81_rdma_v3(payload_ddr + WAFER_CTVL_PAYLOAD_RHS_OFFSET,
+    wafer_tx81_rdma(payload_ddr + WAFER_CTVL_PAYLOAD_RHS_OFFSET,
                        WAFER_CTVL_SPM_RHS, WAFER_CTVL_RHS_SLOT_BYTES,
                        WAFER_CTVL_RHS_SLOT_BYTES, 0, 0, 0, 1, 1, 1, Fmt_UINT8,
                        0U);
-    wafer_tx81_rdma_v3(payload_ddr + WAFER_CTVL_PAYLOAD_OUTPUT_SEED_OFFSET,
+    wafer_tx81_rdma(payload_ddr + WAFER_CTVL_PAYLOAD_OUTPUT_SEED_OFFSET,
                        WAFER_CTVL_SPM_OUTPUT, WAFER_CTVL_OUTPUT_SLOT_BYTES,
                        WAFER_CTVL_OUTPUT_SLOT_BYTES, 0, 0, 0, 1, 1, 1,
                        Fmt_UINT8, 0U);
     uint64_t execute_result = wafer_ctvl_issue(&selected);
     record[WAFER_CTVL_REC_EXECUTE_RESULT] = execute_result;
-    wafer_tx81_wdma_v3(
+    wafer_tx81_wdma(
         WAFER_CTVL_SPM_OUTPUT, output_ddr + WAFER_CTVL_OUTPUT_DDR_OFFSET,
         WAFER_CTVL_OUTPUT_SLOT_BYTES, WAFER_CTVL_OUTPUT_SLOT_BYTES, 0, 0, 0, 1,
         1, 1, Fmt_UINT8, 0U);

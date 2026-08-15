@@ -1,7 +1,7 @@
 # Wafer ExecutablePackage、Runtime Invocation Planning 与 Board Launch
 
 状态：本文是当前`ExecutablePackage`/runtime launch的唯一现行合同。source-to-package compiler只写入single-card、all-and-only
-16 Tiles 的 schema-v8 package。Q49–Q52分别闭合baseline、能力迁移、统一搜索和scalability；host/no-card
+16 Tiles 的current package。Q49–Q52分别闭合baseline、能力迁移、统一搜索和scalability；host/no-card
 局部合同闭合不等于Q53 `board-ready`，真实板端matched A/B gate也尚未完成。
 
 ## 1. Pipeline Contract
@@ -13,13 +13,13 @@ Pipeline position:
   identity/runtime ABI/module format、RuntimeLaunchContract、verified modules，以及exactly 16个带显式
   (card_id, tile_id, launch_slot)的Tile interfaces。
 - Current stage responsibility:
-  从 typed target modules组装唯一 schema-v8 manifest与module payload；验证resource scope、ABI slot、entry、
+  从 typed target modules组装唯一current manifest与module payload；验证resource scope、ABI slot、entry、
   transport、module/export和物理Tile domain；no-card构造完整runtime plan；board runtime按同一plan分配、装载、
   提交、等待、readback和cleanup。
 - Output IR / files:
   `ExecutablePackage`：canonical manifest.json与all-and-only referenced modules；其loader形成
   VerifiedPackageManifest与RuntimeInvocationPlan，board执行形成invocation result；profile请求额外产生digest-bound
-  profile instrumentation；只有activation文件拥有独立format version。
+  profile instrumentation；所有Wafer-owned文件都使用无编号current schema identity与exact field set。
 - Downstream consumer:
   wafer-run no-card、board runtime provider、profile collection/report和外部package审计。
 - User-level driver / named pipeline:
@@ -29,7 +29,7 @@ Pipeline position:
   不暴露按EntryId选择单个Tile的runtime入口；不保留旧manifest reader、旧launch ABI或兼容alias；
   不把profile sidecar当普通执行合同。
 - Completion gate:
-  schema-v8 strict parse/serialize/readback；card/tile scoped resources与16个entries的ABI双射；显式物理三元组
+  current manifest strict parse/serialize/readback；card/tile scoped resources与16个entries的ABI双射；显式物理三元组
   非恒等映射通过；no-card无任何provider effect且生成完整plan；真实板端逐case新鲜执行后才能形成board证据。
 ```
 
@@ -49,14 +49,13 @@ entry transport requirement，会要求status resource和prepare/main lifecycle�
 单卡source即使`num_partitions=1`，Q49 `none` baseline与Q51 `search`仍生成16个Tile entries；无工作Tile使用合法no-work body，而不是从
 package domain中消失。
 
-## 3. Manifest schema v8
+## 3. Current manifest schema
 
 ### 3.1 Top-level
 
-schema-v8 canonical JSON只有以下top-level fields：
+canonical JSON只有以下top-level fields：
 
 ```text
-schema_version
 program
 target
 card_count
@@ -66,9 +65,9 @@ modules
 entries
 ```
 
-当前production要求 `schema_version=8`、`card_count=1`、`tile_count=16`。`target`精确包含 current target identity、
+当前production要求 `card_count=1`、`tile_count=16`。`target`精确包含 current target identity、
 Kernel Runtime ABI、typed launch contract和module format。parser要求exact field set、bounded JSON size/nesting/record
-count和canonical typed values；旧version或额外/缺失field直接失败，没有upgrade reader。
+count和canonical typed values；额外或缺失field直接失败，没有upgrade reader。
 
 ### 3.2 Physical identity
 
@@ -110,7 +109,7 @@ host-visible只由role合同决定。workspace和transport status由compiler/run
 
 ### 3.4 Entry completion 与 transport
 
-schema-v8只接受 `return_after_local_drain`。它要求每个Tile entry返回前完成本地发起且影响结果、reuse或status的
+current manifest只接受 `return_after_local_drain`。它要求每个Tile entry返回前完成本地发起且影响结果、reuse或status的
 work；card-scoped成功仍要求16个entry和全部transport obligations共同完成。
 
 transport是closed union：
@@ -131,7 +130,7 @@ compiler只从同一`CardExecutable`绑定的target writing view组装`Executabl
 2. 依据typed program bindings建立card-scoped resources；
 3. 依据每Tile ABI建立Tile-scoped workspace/status及dense slots；
 4. 复制all-and-only referenced modules并计算digest；
-5. 构造schema-v8 typed manifest并运行semantic verifier；
+5. 构造current typed manifest并运行semantic verifier；
 6. serialize canonical JSON，重新parse、verify、digest/readback；
 7. 仅在全部成功后原子发布package root。
 
@@ -192,7 +191,7 @@ completion使context poisoned；本invocation停止，禁止自动retry/reset/po
 
 ## 7. Profile instrumentation
 
-profile instrumentation是普通schema-v8 production package的digest-bound sibling；activation文件使用唯一format version并固定
+profile instrumentation是普通current production package的digest-bound sibling；activation文件使用稳定schema identity并固定
 `card_count=1`、`tile_count=16`，`plan.json`与site map只使用strict current fields，不再各自拥有版本。它只描述：
 
 - 一个selected production output；
@@ -224,6 +223,6 @@ host gate至少覆盖：
 - no-card在首个provider effect前拒绝无效输入；
 - board failure stage、poison、cleanup和同一session资格复用。
 
-Q53的无卡完成证明必须由current generic DAG、HF prefill/decode和Llama source新鲜生成schema-v8 package并实际通过
+Q53的无卡完成证明必须由current generic DAG、HF prefill/decode和Llama source新鲜生成current package并实际通过
 no-card。达到该边界只能标 `board-ready`；Llama与一个prefill/decode代表在真实设备完成同源 matched A/B、exact
 output/guard且获得可重复改善后，Q53才可标 `done`。已删除board harness和历史输出不再是入口或证据。

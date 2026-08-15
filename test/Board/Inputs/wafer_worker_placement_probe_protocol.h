@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /*
- * Wire contract for rank-one worker placement/progress characterization.
+ * Wire contract for program-local worker placement/progress characterization.
  *
  * The contract intentionally exposes only observations available from the
  * current target: one common device-cycle window, per-worker instruction and
@@ -18,7 +18,6 @@
 #define WAFER_WP_RECORD_MAGIC UINT64_C(0x3143455250574657)
 #define WAFER_WP_REQUEST_GUARD UINT64_C(0x8a6d51c307be24f9)
 #define WAFER_WP_RECORD_GUARD UINT64_C(0xe41b97c2605da83f)
-#define WAFER_WP_SCHEMA 3U
 #define WAFER_WP_REQUEST_WORDS 24U
 #define WAFER_WP_RECORD_WORDS 288U
 #define WAFER_WP_WORKERS 3U
@@ -113,7 +112,7 @@ enum WaferWPCleanupFlag {
 
 enum WaferWPRequestWord {
   WAFER_WP_REQ_MAGIC = 0,
-  WAFER_WP_REQ_SCHEMA_AND_WORDS = 1,
+  WAFER_WP_REQ_WORD_COUNT = 1,
   WAFER_WP_REQ_KIND = 2,
   WAFER_WP_REQ_ENGINE = 3,
   WAFER_WP_REQ_WORKER_MASK = 4,
@@ -134,7 +133,7 @@ enum WaferWPRequestWord {
 
 enum WaferWPRecordWord {
   WAFER_WP_REC_MAGIC = 0,
-  WAFER_WP_REC_SCHEMA_AND_WORDS = 1,
+  WAFER_WP_REC_WORD_COUNT = 1,
   WAFER_WP_REC_STATUS = 2,
   WAFER_WP_REC_FLAGS = 3,
   WAFER_WP_REC_KIND = 4,

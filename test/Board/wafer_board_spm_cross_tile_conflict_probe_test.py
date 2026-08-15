@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and run paired CT/RDMA SPM controls on every physical tile."""
+"""Build and run paired CT/RDMA SPM controls on every Tile."""
 
 from __future__ import annotations
 
@@ -19,15 +19,14 @@ import wafer_board_memory_descriptor_calibration_probe_test as mdc_probe
 import wafer_memory_descriptor_calibration_catalog as catalog
 
 
-RANK_COUNT = 16
+TILE_COUNT = 16
 REQUEST_MAGIC = 0x31515443504D5357
 RECORD_MAGIC = 0x31524343504D5357
 REQUEST_GUARD = 0x7BE143A592D06FC8
 RECORD_GUARD = 0x49C5E270A6138BDF
-SCHEMA = 2
 COUNTERBALANCED_ROUNDS = 4
-RANK_ORDER_FORWARD = 0
-RANK_ORDER_REVERSE = 1
+TILE_ORDER_FORWARD = 0
+TILE_ORDER_REVERSE = 1
 SERIAL_REQUEST_WORD = 0
 WINDOW_REQUEST_WORD = catalog.REQUEST_WORDS
 REQUEST_META_WORD = 2 * catalog.REQUEST_WORDS
@@ -38,7 +37,7 @@ REQUEST_META_BEGIN = REQUEST_META_WORD * 8
 RECORD_META_BEGIN = RECORD_META_WORD * 8
 RECORD_META_END = (RECORD_META_WORD + RECORD_META_WORDS) * 8
 LAUNCH_KIND = "kernel"
-STATUS_ABI = "wafer-direct-dte-status-v2"
+STATUS_ABI = "wafer-direct-dte-status"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_memory_descriptor_calibration_probe.c"
@@ -46,9 +45,9 @@ PROBE_LL = INPUT_DIR / "wafer_spm_cross_tile_conflict_probe.ll"
 
 REQ_META = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
-    "RANK": 2,
-    "RANK_COUNT": 3,
+    "WORD_COUNT": 1,
+    "TILE_ID": 2,
+    "TILE_COUNT": 3,
     "COORDINATE": 4,
     "SERIAL_CASE": 5,
     "WINDOW_CASE": 6,
@@ -62,16 +61,16 @@ REQ_META = {
     "RESOURCE_BYTES": 14,
     "GUARD": 15,
     "EXECUTION_ROUND": 16,
-    "RANK_ORDER": 17,
-    "RANK_PHASE": 18,
+    "TILE_ORDER": 17,
+    "TILE_PHASE": 18,
     "FIRST_SCHEDULE": 19,
 }
 REC_META = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
-    "RANK": 3,
-    "RANK_COUNT": 4,
+    "TILE_ID": 3,
+    "TILE_COUNT": 4,
     "COORDINATE": 5,
     "INNER_CASE": 6,
     "SCHEDULE": 7,
@@ -84,8 +83,8 @@ REC_META = {
     "REQUEST_GUARD": 14,
     "RECORD_GUARD": 15,
     "EXECUTION_ROUND": 16,
-    "RANK_ORDER": 17,
-    "RANK_PHASE": 18,
+    "TILE_ORDER": 17,
+    "TILE_PHASE": 18,
     "FIRST_SCHEDULE": 19,
     "EXECUTION_ORDINAL": 20,
 }
@@ -94,15 +93,15 @@ REC_META = {
 @dataclasses.dataclass(frozen=True)
 class ExecutionPlan:
     execution_round: int
-    rank_order: int
-    rank_phase: int
+    tile_order: int
+    tile_phase: int
     first_schedule: int
 
     @property
-    def rank_order_name(self) -> str:
+    def tile_order_name(self) -> str:
         return (
             "forward"
-            if self.rank_order == RANK_ORDER_FORWARD
+            if self.tile_order == TILE_ORDER_FORWARD
             else "reverse"
         )
 
@@ -115,26 +114,26 @@ class ExecutionPlan:
         )
 
 
-def execution_plan(rank: int, execution_round: int) -> ExecutionPlan:
-    if rank not in range(RANK_COUNT):
-        raise RuntimeError("cross-tile execution rank is invalid")
+def execution_plan(tile_id: int, execution_round: int) -> ExecutionPlan:
+    if tile_id not in range(TILE_COUNT):
+        raise RuntimeError("cross-tile execution tile_id is invalid")
     if execution_round not in range(COUNTERBALANCED_ROUNDS):
         raise RuntimeError("cross-tile execution round is invalid")
-    rank_order = (
-        RANK_ORDER_FORWARD
+    tile_order = (
+        TILE_ORDER_FORWARD
         if execution_round % 2 == 0
-        else RANK_ORDER_REVERSE
+        else TILE_ORDER_REVERSE
     )
     return ExecutionPlan(
         execution_round=execution_round,
-        rank_order=rank_order,
-        rank_phase=(
-            rank if rank_order == RANK_ORDER_FORWARD
-            else RANK_COUNT - 1 - rank
+        tile_order=tile_order,
+        tile_phase=(
+            tile_id if tile_order == TILE_ORDER_FORWARD
+            else TILE_COUNT - 1 - tile_id
         ),
         first_schedule=(
             catalog.SCHEDULE_SERIAL
-            if (rank + execution_round) % 2 == 0
+            if (tile_id + execution_round) % 2 == 0
             else catalog.SCHEDULE_WINDOW
         ),
     )
@@ -165,11 +164,11 @@ class ConflictPair:
                 "serial": self.serial.name,
                 "window": self.window.name,
             },
-            "ranks": RANK_COUNT,
+            "tile_count": TILE_COUNT,
             "samples": COUNTERBALANCED_ROUNDS,
             "execution": (
-                "single-active-rank-per-barrier-phase with alternating "
-                "forward/reverse rank traversal and rank/round schedule order"
+                "single-active-tile_id-per-barrier-phase with alternating "
+                "forward/reverse tile_id traversal and tile_id/round schedule order"
             ),
             "oracle": (
                 "paired-same-launch exact result+SPM guards+instruction "
@@ -179,8 +178,8 @@ class ConflictPair:
 
 
 @dataclasses.dataclass(frozen=True)
-class RankInputs:
-    rank: int
+class TileInputs:
+    tile_id: int
     wire_sample: int
     execution: ExecutionPlan
     serial_built: catalog.CasePayload
@@ -242,7 +241,7 @@ def conflict_pairs() -> tuple[ConflictPair, ...]:
             ConflictPair(
                 coordinate_id=coordinate_id,
                 name=(
-                    "spm-physical-tile-ct-rdma-"
+                    "spm-cross-tile-ct-rdma-"
                     f"translation-{translation}-phase-{phase}-"
                     f"bytes-{transfer}-"
                     f"{'a-b' if issue_order == 0 else 'b-a'}"
@@ -265,11 +264,11 @@ def _inner_request_words(payload: bytes) -> tuple[int, ...]:
     return struct.unpack_from(f"<{catalog.REQUEST_WORDS}Q", payload)
 
 
-def build_rank_request(
-    pair: ConflictPair, rank: int, launch_sample: int
+def build_tile_request(
+    pair: ConflictPair, tile_id: int, launch_sample: int
 ) -> tuple[bytes, catalog.CasePayload, catalog.CasePayload, int]:
-    plan = execution_plan(rank, launch_sample)
-    wire_sample = launch_sample * RANK_COUNT + rank
+    plan = execution_plan(tile_id, launch_sample)
+    wire_sample = launch_sample * TILE_COUNT + tile_id
     serial_built = catalog.build_case_payload(pair.serial, wire_sample)
     window_built = catalog.build_case_payload(pair.window, wire_sample)
     serial_words = _inner_request_words(serial_built.request)
@@ -306,9 +305,9 @@ def build_rank_request(
     meta = [0] * REQUEST_META_WORDS
     values = {
         "MAGIC": REQUEST_MAGIC,
-        "SCHEMA_AND_WORDS": (SCHEMA << 32) | REQUEST_META_WORDS,
-        "RANK": rank,
-        "RANK_COUNT": RANK_COUNT,
+        "WORD_COUNT": REQUEST_META_WORDS,
+        "TILE_ID": tile_id,
+        "TILE_COUNT": TILE_COUNT,
         "COORDINATE": pair.coordinate_id,
         "SERIAL_CASE": pair.serial.case_id,
         "WINDOW_CASE": pair.window.case_id,
@@ -322,8 +321,8 @@ def build_rank_request(
         "RESOURCE_BYTES": catalog.RESOURCE_BYTES,
         "GUARD": REQUEST_GUARD,
         "EXECUTION_ROUND": plan.execution_round,
-        "RANK_ORDER": plan.rank_order,
-        "RANK_PHASE": plan.rank_phase,
+        "TILE_ORDER": plan.tile_order,
+        "TILE_PHASE": plan.tile_phase,
         "FIRST_SCHEDULE": plan.first_schedule,
     }
     for key, value in values.items():
@@ -350,12 +349,12 @@ def validate_static_contract(
         raise RuntimeError("cross-tile pair inventory is not canonical")
     for execution_round in range(COUNTERBALANCED_ROUNDS):
         plans = tuple(
-            execution_plan(rank, execution_round)
-            for rank in range(RANK_COUNT)
+            execution_plan(tile_id, execution_round)
+            for tile_id in range(TILE_COUNT)
         )
         if (
-            {plan.rank_phase for plan in plans}
-            != set(range(RANK_COUNT))
+            {plan.tile_phase for plan in plans}
+            != set(range(TILE_COUNT))
             or {
                 plan.first_schedule for plan in plans
             }
@@ -370,32 +369,32 @@ def validate_static_contract(
                     if plan.first_schedule == catalog.SCHEDULE_SERIAL
                 ]
             )
-            != RANK_COUNT // 2
+            != TILE_COUNT // 2
         ):
             raise RuntimeError(
                 "cross-tile counterbalance plan is incomplete"
             )
     for pair in pairs:
-        request, serial, window, wire_sample = build_rank_request(
-            pair, RANK_COUNT - 1, 0
+        request, serial, window, wire_sample = build_tile_request(
+            pair, TILE_COUNT - 1, 0
         )
         if (
             len(request) != catalog.RESOURCE_BYTES
             or len(serial.payload) != catalog.RESOURCE_BYTES
             or len(window.payload) != catalog.RESOURCE_BYTES
-            or wire_sample != RANK_COUNT - 1
+            or wire_sample != TILE_COUNT - 1
         ):
             raise RuntimeError(
                 f"{pair.name}: bounded resource contract is invalid"
             )
     # The shared cluster qualification helper must accept other typed
-    # all-rank clients that do not expose the DDR-only selector field.
+    # all-tile_id clients that do not expose the DDR-only selector field.
     cluster_support.validate_board_args(
         argparse.Namespace(
             expected_runtime_version=1,
             expected_device_name="contract-device",
             expected_pci_bus_id="0000:00:00.0",
-            expected_tile_count=RANK_COUNT,
+            expected_tile_count=TILE_COUNT,
             expected_runtime_library_sha256="0" * 64,
             completion_timeout_ms=1,
             repeat=COUNTERBALANCED_ROUNDS,
@@ -407,11 +406,11 @@ def validate_physical_coordinates(
     coordinates: dict[int, tuple[int, int]],
 ) -> None:
     if (
-        set(coordinates) != set(range(RANK_COUNT))
-        or len(set(coordinates.values())) != RANK_COUNT
+        set(coordinates) != set(range(TILE_COUNT))
+        or len(set(coordinates.values())) != TILE_COUNT
     ):
         raise RuntimeError(
-            "logical ranks do not map to 16 unique Tiles"
+            "Tile identifiers do not map to 16 unique Tiles"
         )
 
 
@@ -592,7 +591,6 @@ def verify_no_card(
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--all-ranks",
             "--no-card",
             "--direct-dte-status-abi",
             STATUS_ABI,
@@ -606,12 +604,12 @@ def verify_no_card(
     print("spm_cross_tile_conflict_probe_no_card: passed")
 
 
-def write_rank_resources(
+def write_tile_resources(
     args: argparse.Namespace,
     bindings: dict[tuple[int, str, int], int],
     pair: ConflictPair,
     launch_sample: int,
-) -> tuple[list[str], tuple[RankInputs, ...]]:
+) -> tuple[list[str], tuple[TileInputs, ...]]:
     raw_dir = (
         args.work_dir
         / "raw"
@@ -620,34 +618,34 @@ def write_rank_resources(
     )
     raw_dir.mkdir(parents=True)
     resource_args: list[str] = []
-    expectations: list[RankInputs] = []
-    for rank in range(RANK_COUNT):
+    expectations: list[TileInputs] = []
+    for tile_id in range(TILE_COUNT):
         request, serial_built, window_built, wire_sample = (
-            build_rank_request(pair, rank, launch_sample)
+            build_tile_request(pair, tile_id, launch_sample)
         )
-        request_path = raw_dir / f"rank-{rank:02d}.request.raw"
-        payload_path = raw_dir / f"rank-{rank:02d}.payload.raw"
-        serial_output = raw_dir / f"rank-{rank:02d}.serial.raw"
-        window_output = raw_dir / f"rank-{rank:02d}.window.raw"
+        request_path = raw_dir / f"tile_id-{tile_id:02d}.request.raw"
+        payload_path = raw_dir / f"tile_id-{tile_id:02d}.payload.raw"
+        serial_output = raw_dir / f"tile_id-{tile_id:02d}.serial.raw"
+        window_output = raw_dir / f"tile_id-{tile_id:02d}.window.raw"
         request_path.write_bytes(request)
         payload_path.write_bytes(serial_built.payload)
         resource_args.extend(
             [
                 "--resource",
-                f"{bindings[(rank, 'user_input', 0)]}={request_path}",
+                f"{bindings[(tile_id, 'user_input', 0)]}={request_path}",
                 "--resource",
-                f"{bindings[(rank, 'user_input', 1)]}={payload_path}",
+                f"{bindings[(tile_id, 'user_input', 1)]}={payload_path}",
                 "--output",
-                f"{bindings[(rank, 'output', 0)]}={serial_output}",
+                f"{bindings[(tile_id, 'output', 0)]}={serial_output}",
                 "--output",
-                f"{bindings[(rank, 'output', 1)]}={window_output}",
+                f"{bindings[(tile_id, 'output', 1)]}={window_output}",
             ]
         )
         expectations.append(
-            RankInputs(
-                rank=rank,
+            TileInputs(
+                tile_id=tile_id,
                 wire_sample=wire_sample,
-                execution=execution_plan(rank, launch_sample),
+                execution=execution_plan(tile_id, launch_sample),
                 serial_built=serial_built,
                 window_built=window_built,
                 serial_output=serial_output,
@@ -668,17 +666,17 @@ def _parse_meta(raw: bytes) -> tuple[int, ...]:
 def expected_record_meta(
     pair: ConflictPair,
     case: catalog.MemoryCase,
-    rank: int,
+    tile_id: int,
     wire_sample: int,
     execution: ExecutionPlan,
     schedule: int,
 ) -> dict[str, int]:
     return {
         "MAGIC": RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (SCHEMA << 32) | RECORD_META_WORDS,
+        "WORD_COUNT": RECORD_META_WORDS,
         "STATUS": 0,
-        "RANK": rank,
-        "RANK_COUNT": RANK_COUNT,
+        "TILE_ID": tile_id,
+        "TILE_COUNT": TILE_COUNT,
         "COORDINATE": pair.coordinate_id,
         "INNER_CASE": case.case_id,
         "SCHEDULE": schedule,
@@ -688,8 +686,8 @@ def expected_record_meta(
         "REQUEST_GUARD": REQUEST_GUARD,
         "RECORD_GUARD": RECORD_GUARD,
         "EXECUTION_ROUND": execution.execution_round,
-        "RANK_ORDER": execution.rank_order,
-        "RANK_PHASE": execution.rank_phase,
+        "TILE_ORDER": execution.tile_order,
+        "TILE_PHASE": execution.tile_phase,
         "FIRST_SCHEDULE": execution.first_schedule,
         "EXECUTION_ORDINAL": (
             0 if schedule == execution.first_schedule else 1
@@ -702,7 +700,7 @@ def _validate_output(
     pair: ConflictPair,
     case: catalog.MemoryCase,
     built: catalog.CasePayload,
-    rank: int,
+    tile_id: int,
     wire_sample: int,
     execution: ExecutionPlan,
     schedule: int,
@@ -711,7 +709,7 @@ def _validate_output(
     raw = path.read_bytes()
     meta = _parse_meta(raw)
     expected = expected_record_meta(
-        pair, case, rank, wire_sample, execution, schedule
+        pair, case, tile_id, wire_sample, execution, schedule
     )
     failures = {
         key: (meta[REC_META[key]], value)
@@ -729,7 +727,7 @@ def _validate_output(
         or len(set(bases.values())) != len(bases)
     ):
         raise RuntimeError(
-            f"{pair.name} rank {rank}: cross-tile meta oracle failed: "
+            f"{pair.name} tile_id {tile_id}: cross-tile meta oracle failed: "
             f"{failures}, bases={bases}"
         )
 
@@ -755,7 +753,7 @@ def _validate_output(
             temp_path.unlink()
     observation.update(
         {
-            "rank": rank,
+            "tile_id": tile_id,
             "physical_x": physical[0],
             "physical_y": physical[1],
             "resource_bases": bases,
@@ -765,8 +763,8 @@ def _validate_output(
                 else "window"
             ),
             "execution_round": execution.execution_round,
-            "rank_order": execution.rank_order_name,
-            "rank_phase": execution.rank_phase,
+            "tile_order": execution.tile_order_name,
+            "tile_phase": execution.tile_phase,
             "first_schedule": execution.first_schedule_name,
             "execution_ordinal": (
                 0 if schedule == execution.first_schedule else 1
@@ -794,18 +792,18 @@ def summarize_launch(
     rows: list[dict[str, object]] = []
     signs: dict[str, list[int]] = {metric: [] for metric in metrics}
     all_addresses: set[int] = set()
-    launch_rank_orders: set[str] = set()
-    launch_rank_phases: set[int] = set()
+    launch_tile_orders: set[str] = set()
+    launch_tile_phases: set[int] = set()
     launch_first_schedules: list[str] = []
     launch_physical_tiles: set[tuple[int, int]] = set()
-    for rank in range(RANK_COUNT):
-        schedules = observations[rank]
+    for tile_id in range(TILE_COUNT):
+        schedules = observations[tile_id]
         serial = schedules[catalog.SCHEDULE_SERIAL]
         window = schedules[catalog.SCHEDULE_WINDOW]
         execution_keys = (
             "execution_round",
-            "rank_order",
-            "rank_phase",
+            "tile_order",
+            "tile_phase",
             "first_schedule",
         )
         if any(
@@ -815,11 +813,11 @@ def summarize_launch(
             int(window["execution_ordinal"]),
         } != {0, 1}:
             raise RuntimeError(
-                f"{pair.name} rank {rank}: paired controls do not share "
+                f"{pair.name} tile_id {tile_id}: paired controls do not share "
                 "one counterbalanced execution phase"
             )
-        launch_rank_orders.add(str(serial["rank_order"]))
-        launch_rank_phases.add(int(serial["rank_phase"]))
+        launch_tile_orders.add(str(serial["tile_order"]))
+        launch_tile_phases.add(int(serial["tile_phase"]))
         launch_first_schedules.append(str(serial["first_schedule"]))
         launch_physical_tiles.add(
             (int(serial["physical_x"]), int(serial["physical_y"]))
@@ -833,20 +831,20 @@ def summarize_launch(
             or serial_bases["payload"] != window_bases["payload"]
         ):
             raise RuntimeError(
-                f"{pair.name} rank {rank}: paired controls used different "
+                f"{pair.name} tile_id {tile_id}: paired controls used different "
                 "input allocations"
             )
-        rank_addresses = {
+        tile_addresses = {
             int(serial_bases["request"]),
             int(serial_bases["payload"]),
             int(serial_bases["output"]),
             int(window_bases["output"]),
         }
-        if len(rank_addresses) != 4 or rank_addresses & all_addresses:
+        if len(tile_addresses) != 4 or tile_addresses & all_addresses:
             raise RuntimeError(
-                f"{pair.name} rank {rank}: runtime resources alias"
+                f"{pair.name} tile_id {tile_id}: runtime resources alias"
             )
-        all_addresses.update(rank_addresses)
+        all_addresses.update(tile_addresses)
         deltas: dict[str, int] = {}
         for metric in metrics:
             if metric == "plan_cycles":
@@ -863,7 +861,7 @@ def summarize_launch(
             signs[metric].append(_sign(deltas[metric]))
         rows.append(
             {
-                "rank": rank,
+                "tile_id": tile_id,
                 "physical_x": serial["physical_x"],
                 "physical_y": serial["physical_y"],
                 "request_ddr": serial_bases["request"],
@@ -871,18 +869,18 @@ def summarize_launch(
                 "serial_output_ddr": serial_bases["output"],
                 "window_output_ddr": window_bases["output"],
                 "execution_round": serial["execution_round"],
-                "rank_order": serial["rank_order"],
-                "rank_phase": serial["rank_phase"],
+                "tile_order": serial["tile_order"],
+                "tile_phase": serial["tile_phase"],
                 "first_schedule": serial["first_schedule"],
                 "window_minus_serial": deltas,
             }
         )
     if (
-        len(launch_rank_orders) != 1
-        or launch_rank_phases != set(range(RANK_COUNT))
-        or len(launch_physical_tiles) != RANK_COUNT
-        or launch_first_schedules.count("serial") != RANK_COUNT // 2
-        or launch_first_schedules.count("window") != RANK_COUNT // 2
+        len(launch_tile_orders) != 1
+        or launch_tile_phases != set(range(TILE_COUNT))
+        or len(launch_physical_tiles) != TILE_COUNT
+        or launch_first_schedules.count("serial") != TILE_COUNT // 2
+        or launch_first_schedules.count("window") != TILE_COUNT // 2
     ):
         raise RuntimeError(
             f"{pair.name}: launch counterbalance inventory is incomplete"
@@ -902,7 +900,7 @@ def summarize_launch(
         "launch_sample": launch_sample,
         "rows": rows,
         "metric_directions": signs,
-        "rank_order": next(iter(launch_rank_orders)),
+        "tile_order": next(iter(launch_tile_orders)),
         "first_schedule_counts": {
             "serial": launch_first_schedules.count("serial"),
             "window": launch_first_schedules.count("window"),
@@ -910,12 +908,12 @@ def summarize_launch(
         "physical_tile_direction_consistent": direction_consistent,
         "nonzero_cost_signal": informative_signal,
         "state": (
-            "physical-tile-proxy-direction-consistent"
+            "cross-Tile-proxy-direction-consistent"
             if all(direction_consistent.values()) and informative_signal
             else (
-                "physical-tile-consistent-but-zero-signal"
+                "cross-Tile-consistent-but-zero-signal"
                 if all(direction_consistent.values())
-                else "inconclusive-physical-tile-direction-flip"
+                else "inconclusive-cross-Tile-direction-flip"
             )
         ),
         "compiler_use": "no-bank-coloring",
@@ -936,11 +934,11 @@ def summarize_repeats(
     reference_bases: dict[int, tuple[int, int]] = {}
     reference_coordinates: dict[int, tuple[int, int]] = {}
     stable_coordinates = True
-    rank_orders: dict[int, list[str]] = {
-        rank: [] for rank in range(RANK_COUNT)
+    tile_orders: dict[int, list[str]] = {
+        tile_id: [] for tile_id in range(TILE_COUNT)
     }
     first_schedules: dict[int, list[str]] = {
-        rank: [] for rank in range(RANK_COUNT)
+        tile_id: [] for tile_id in range(TILE_COUNT)
     }
     execution_rounds: set[int] = set()
     for launch in launches:
@@ -948,30 +946,30 @@ def summarize_repeats(
         assert isinstance(rows, list)
         for row in rows:
             assert isinstance(row, dict)
-            rank = int(row["rank"])
+            tile_id = int(row["tile_id"])
             execution_rounds.add(int(row["execution_round"]))
-            rank_orders[rank].append(str(row["rank_order"]))
-            first_schedules[rank].append(str(row["first_schedule"]))
+            tile_orders[tile_id].append(str(row["tile_order"]))
+            first_schedules[tile_id].append(str(row["first_schedule"]))
             coordinate = (
                 int(row["physical_x"]),
                 int(row["physical_y"]),
             )
             if (
-                rank in reference_coordinates
-                and reference_coordinates[rank] != coordinate
+                tile_id in reference_coordinates
+                and reference_coordinates[tile_id] != coordinate
             ):
                 stable_coordinates = False
-            reference_coordinates.setdefault(rank, coordinate)
+            reference_coordinates.setdefault(tile_id, coordinate)
             bases = (int(row["request_ddr"]), int(row["payload_ddr"]))
-            if rank in reference_bases and reference_bases[rank] != bases:
+            if tile_id in reference_bases and reference_bases[tile_id] != bases:
                 stable_bases = False
-            reference_bases.setdefault(rank, bases)
+            reference_bases.setdefault(tile_id, bases)
             deltas = row["window_minus_serial"]
             assert isinstance(deltas, dict)
             for metric in metrics:
                 per_metric[metric].append(_sign(int(deltas[metric])))
     direction_consistent = {
-        metric: len(values) == len(launches) * RANK_COUNT
+        metric: len(values) == len(launches) * TILE_COUNT
         and len(set(values)) == 1
         for metric, values in per_metric.items()
     }
@@ -986,7 +984,7 @@ def summarize_repeats(
         and all(
             values.count("forward") == COUNTERBALANCED_ROUNDS // 2
             and values.count("reverse") == COUNTERBALANCED_ROUNDS // 2
-            for values in rank_orders.values()
+            for values in tile_orders.values()
         )
         and all(
             values.count("serial") == COUNTERBALANCED_ROUNDS // 2
@@ -1008,17 +1006,17 @@ def summarize_repeats(
         "expected_launches": COUNTERBALANCED_ROUNDS,
         "counterbalanced_execution_complete": counterbalanced,
         "execution_rounds": sorted(execution_rounds),
-        "rank_physical_coordinates_stable_across_launches": (
+        "tile_physical_coordinates_stable_across_launches": (
             stable_coordinates
         ),
-        "rank_input_bases_stable_across_launches": stable_bases,
+        "tile_input_bases_stable_across_launches": stable_bases,
         "all_sample_tile_directions_consistent": direction_consistent,
         "nonzero_cost_signal": informative_signal,
         "state": (
-            "physical-tile-heldout-proxy-consistent"
+            "cross-Tile-heldout-proxy-consistent"
             if complete
             else (
-                "physical-tile-heldout-consistent-but-zero-signal"
+                "cross-Tile-heldout-consistent-but-zero-signal"
                 if (
                     len(launches) == COUNTERBALANCED_ROUNDS
                     and counterbalanced
@@ -1031,7 +1029,7 @@ def summarize_repeats(
         ),
         "compiler_use": "no-bank-coloring",
         "interpretation": (
-            "local SPM offsets were executed on each physical tile; this "
+            "local SPM offsets were executed on each Tile; this "
             "does not test remote SPM or concurrent cross-tile contention"
         ),
     }
@@ -1045,7 +1043,7 @@ def execute_board(
 ) -> None:
     launches: list[dict[str, object]] = []
     for launch_sample in range(args.repeat):
-        resource_args, expectations = write_rank_resources(
+        resource_args, expectations = write_tile_resources(
             args, bindings, pair, launch_sample
         )
         result = cluster_support.run(
@@ -1053,7 +1051,6 @@ def execute_board(
                 str(args.wafer_run),
                 "--package-dir",
                 str(package),
-                "--all-ranks",
                 "--board",
                 "--device-id",
                 str(args.device_id),
@@ -1075,8 +1072,8 @@ def execute_board(
         )
         required = {
             "launch_pattern: cluster-x16",
-            "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
-            "logical_tile_domain: 0..15",
+            "physical_tile_execution_basis: cluster-pid-and-exact-tile-slices",
+            "physical_tile_domain: 0..15",
             "board_execution: true",
             "board_stage: completion",
             "board_stage: device-to-host",
@@ -1086,32 +1083,35 @@ def execute_board(
             raise RuntimeError(
                 f"{pair.name}: board lifecycle evidence is incomplete"
             )
+        cluster_support.runtime_launch.require_board_completion(
+            result.stdout, context=pair.name
+        )
         coordinates = cluster_support.parse_tile_coordinates(result.stdout)
         validate_physical_coordinates(coordinates)
         observations: dict[int, dict[int, dict[str, object]]] = {}
         for expected in expectations:
-            observations[expected.rank] = {
+            observations[expected.tile_id] = {
                 catalog.SCHEDULE_SERIAL: _validate_output(
                     expected.serial_output,
                     pair,
                     pair.serial,
                     expected.serial_built,
-                    expected.rank,
+                    expected.tile_id,
                     expected.wire_sample,
                     expected.execution,
                     catalog.SCHEDULE_SERIAL,
-                    coordinates[expected.rank],
+                    coordinates[expected.tile_id],
                 ),
                 catalog.SCHEDULE_WINDOW: _validate_output(
                     expected.window_output,
                     pair,
                     pair.window,
                     expected.window_built,
-                    expected.rank,
+                    expected.tile_id,
                     expected.wire_sample,
                     expected.execution,
                     catalog.SCHEDULE_WINDOW,
-                    coordinates[expected.rank],
+                    coordinates[expected.tile_id],
                 ),
             }
         summary = summarize_launch(
@@ -1139,10 +1139,10 @@ def main() -> int:
                 {
                     "cases": [pair.as_dict() for pair in pairs],
                     "physical_execution": (
-                        "rank-16 cluster launch with exact physical "
-                        "coordinates, alternating forward/reverse rank "
+                        "tile_id-16 cluster launch with exact physical "
+                        "coordinates, alternating forward/reverse tile_id "
                         "traversal, alternating schedule-first order, and "
-                        "one active rank per barrier phase"
+                        "one active tile_id per barrier phase"
                     ),
                     "non_goals": [
                         "remote SPM access",

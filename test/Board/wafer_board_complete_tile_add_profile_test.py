@@ -19,10 +19,10 @@ from unittest import mock
 
 
 BOARD_DIR = pathlib.Path(__file__).resolve().parent
-HARNESS_PATH = BOARD_DIR / "wafer_board_all_rank_add_test.py"
+HARNESS_PATH = BOARD_DIR / "wafer_board_complete_tile_add_test.py"
 sys.path.insert(0, str(BOARD_DIR))
 SPEC = importlib.util.spec_from_file_location(
-    "wafer_board_all_rank_add_harness", HARNESS_PATH
+    "wafer_board_complete_tile_add_harness", HARNESS_PATH
 )
 if SPEC is None or SPEC.loader is None:
     raise RuntimeError(f"cannot load Add profiler harness: {HARNESS_PATH}")
@@ -67,7 +67,6 @@ class ProfileReportFixture:
         (self.runs / "current").symlink_to(self.run_directory)
         evidence = {
             "schema": "wafer.profile.evidence",
-            "schema_version": 8,
             "run_id": self.run_id,
             "measurement": {
                 "samples": [
@@ -87,14 +86,13 @@ class ProfileReportFixture:
                     "complete": True,
                     "tiles": [
                         {"tile": tile}
-                        for tile in range(HARNESS.RANK_COUNT)
+                        for tile in range(HARNESS.TILE_COUNT)
                     ],
                 }
             },
         }
         analysis = {
             "schema": "wafer.profile.analysis",
-            "schema_version": 7,
             "run_id": self.run_id,
             "validity": {"trace": True, "pmu": True},
             "program": {
@@ -118,7 +116,7 @@ class ProfileReportFixture:
                         "trace_entry_cpu_cycles": 12,
                         "engines": engine_rows(),
                     }
-                    for tile in range(HARNESS.RANK_COUNT)
+                    for tile in range(HARNESS.TILE_COUNT)
                 ],
                 "timeline_events": [
                     {
@@ -130,7 +128,7 @@ class ProfileReportFixture:
                         "trace_entry_offset_begin_cpu_cycles": 1,
                         "trace_entry_offset_end_cpu_cycles": 9,
                     }
-                    for tile in range(HARNESS.RANK_COUNT)
+                    for tile in range(HARNESS.TILE_COUNT)
                 ],
             },
         }
@@ -156,7 +154,7 @@ class ProfileReportFixture:
         return f"profile_report: {self.runs / 'current' / 'index.html'}\n"
 
 
-class AllRankAddProfileGateTest(unittest.TestCase):
+class CompleteTileAddProfileGateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temporary.name)
@@ -214,7 +212,7 @@ class AllRankAddProfileGateTest(unittest.TestCase):
             expected_runtime_version=1300,
             expected_device_name="/dev/accel/dev-0",
             expected_pci_bus_id="0000:3b:00.0",
-            expected_tile_count=HARNESS.RANK_COUNT,
+            expected_tile_count=HARNESS.TILE_COUNT,
             expected_runtime_library_sha256="0" * 64,
             completion_timeout_ms=60000,
             repeat=1,
@@ -256,23 +254,17 @@ class AllRankAddProfileGateTest(unittest.TestCase):
             )
             stack.enter_context(
                 mock.patch.object(
-                    HARNESS, "load_boundary_slices", return_value={}
-                )
-            )
-            stack.enter_context(
-                mock.patch.object(
                     HARNESS, "validate_manifest", return_value={}
                 )
             )
             stack.enter_context(
                 mock.patch.object(
                     HARNESS,
-                    "write_rank_payloads",
+                    "write_tile_payloads",
                     return_value=(
                         [],
                         {2},
                         {(0, 0, 0)},
-                        {(0, 0)},
                     ),
                 )
             )

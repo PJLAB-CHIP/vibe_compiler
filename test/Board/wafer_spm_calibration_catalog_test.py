@@ -199,7 +199,7 @@ def main() -> int:
     assert "wafer_spm_seed_guards" in probe
     assert "wafer_spm_readback_guards" in probe
     first_rdma = entry.index("wafer_spm_seed_guards(")
-    first_wdma = entry.index("wafer_tx81_wdma_v3(", first_rdma)
+    first_wdma = entry.index("wafer_tx81_wdma(", first_rdma)
     readback = entry.index("wafer_spm_readback_guards(", first_wdma)
     terminal = entry.index("wafer_tx81_ncc_join(1U);", readback)
     assert first_rdma < first_wdma < readback < terminal

@@ -69,7 +69,6 @@ REQUEST_MAGIC = _simple_macro("WAFER_WP_REQUEST_MAGIC")
 RECORD_MAGIC = _simple_macro("WAFER_WP_RECORD_MAGIC")
 REQUEST_GUARD = _simple_macro("WAFER_WP_REQUEST_GUARD")
 RECORD_GUARD = _simple_macro("WAFER_WP_RECORD_GUARD")
-SCHEMA = _simple_macro("WAFER_WP_SCHEMA")
 REQUEST_WORDS = _simple_macro("WAFER_WP_REQUEST_WORDS")
 RECORD_WORDS = _simple_macro("WAFER_WP_RECORD_WORDS")
 WORKERS = _simple_macro("WAFER_WP_WORKERS")
@@ -115,7 +114,7 @@ SPM_WRITE_OFFSET = _simple_macro("WAFER_WP_SPM_WRITE_OFFSET")
 
 REQ_NAMES = (
     "MAGIC",
-    "SCHEMA_AND_WORDS",
+    "WORD_COUNT",
     "KIND",
     "ENGINE",
     "WORKER_MASK",
@@ -139,7 +138,7 @@ REQ = {
 
 REC_NAMES = (
     "MAGIC",
-    "SCHEMA_AND_WORDS",
+    "WORD_COUNT",
     "STATUS",
     "FLAGS",
     "KIND",
@@ -334,7 +333,7 @@ def request_words(
     words = [0] * REQUEST_WORDS
     values = {
         "MAGIC": REQUEST_MAGIC,
-        "SCHEMA_AND_WORDS": (SCHEMA << 32) | REQUEST_WORDS,
+        "WORD_COUNT": REQUEST_WORDS,
         "KIND": int(case.kind),
         "ENGINE": int(case.engine),
         "WORKER_MASK": case.worker_mask,
@@ -607,7 +606,7 @@ def validate_record(
     issues = issues_for_case(case, sample)
     expected_echo = {
         "MAGIC": RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (SCHEMA << 32) | RECORD_WORDS,
+        "WORD_COUNT": RECORD_WORDS,
         "KIND": int(case.kind),
         "ENGINE": int(case.engine),
         "WORKER_MASK": case.worker_mask,

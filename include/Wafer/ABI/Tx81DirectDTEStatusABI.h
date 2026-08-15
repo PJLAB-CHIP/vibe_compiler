@@ -7,7 +7,7 @@
 
 /* The value remains at offset zero and owns one complete TX81 cache line so
  * Kcore cache writeback and invalidation cannot touch another resource. */
-#define WAFER_TX81_DIRECT_DTE_STATUS_ABI "wafer-direct-dte-status-v2"
+#define WAFER_TX81_DIRECT_DTE_STATUS_ABI "wafer-direct-dte-status"
 
 enum {
   WAFER_TX81_DIRECT_DTE_STATUS_PENDING = 0,

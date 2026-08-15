@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and execute a 16-rank sharded f16 add on a configured TX board."""
+"""Compile and execute a 16-tile sharded f16 add on a configured TX board."""
 
 from __future__ import annotations
 
@@ -23,27 +23,25 @@ import wafer_runtime_launch_contract as runtime_launch
 @dataclasses.dataclass(frozen=True)
 class RuntimeLaunchCalibrationCase:
     key: str
-    rank_count: int
+    tile_count: int
     launch_kind: str
     oracle: str
     completion: str
 
 
-RANK_COUNT = 16
+TILE_COUNT = 16
 LOCAL_ELEMENTS = 458752
-GLOBAL_ELEMENTS = RANK_COUNT * LOCAL_ELEMENTS
+GLOBAL_ELEMENTS = TILE_COUNT * LOCAL_ELEMENTS
 ELEMENT_DTYPE = np.dtype("<f2")
 TARGET_IDENTITY = "wafer-tx81-single-card"
-PROFILE_INSTRUMENTATION_READY = (
-    "profile_instrumentation: ready schema=7 ranks=16 variants=1 captures=2"
-)
+PROFILE_INSTRUMENTATION_READY = "profile_instrumentation: ready cards=1 tiles=16"
 PROFILE_MEASUREMENT_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
 BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS = 120.0
 LAUNCH_EVIDENCE = {
     runtime_launch.KERNEL_LAUNCH_KIND: (
         "kernel-grid-x16",
-        "scheduler-pid-x-and-exact-rank-slices",
+        "scheduler-pid-x-and-exact-tile-slices",
     ),
 }
 LAUNCH_CONTRACTS = {
@@ -51,25 +49,22 @@ LAUNCH_CONTRACTS = {
 }
 RUNTIME_LAUNCH_CALIBRATION_CASES = tuple(
     RuntimeLaunchCalibrationCase(
-        f"rank16-{launch_kind}-add",
-        RANK_COUNT,
+        f"tile16-{launch_kind}-add",
+        TILE_COUNT,
         launch_kind,
-        "all-rank exact slices+full f16 output+schema-v7 rank domain",
-        "all-rank terminal+D2H+normal cleanup",
+        "full f16 output and exact complete-Tile runtime domain",
+        "all-Tile local drain, device-to-host copy, and normal cleanup",
     )
     for launch_kind in LAUNCH_EVIDENCE
 )
 CALIBRATION_LEAF_BINDINGS = {
-    "rank16-kernel-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
+    "tile16-kernel-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
 }
-SHARDING = "{devices=[16]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"
-
 MODULE = f"""\
 module {{
   func.func @main(
-      %lhs: tensor<{GLOBAL_ELEMENTS}xf16> {{mhlo.sharding = "{SHARDING}"}},
-      %rhs: tensor<{GLOBAL_ELEMENTS}xf16> {{mhlo.sharding = "{SHARDING}"}})
-      -> (tensor<{GLOBAL_ELEMENTS}xf16> {{mhlo.sharding = "{SHARDING}"}}) {{
+      %lhs: tensor<{GLOBAL_ELEMENTS}xf16>,
+      %rhs: tensor<{GLOBAL_ELEMENTS}xf16>) -> tensor<{GLOBAL_ELEMENTS}xf16> {{
     %sum = stablehlo.add %lhs, %rhs : tensor<{GLOBAL_ELEMENTS}xf16>
     return %sum : tensor<{GLOBAL_ELEMENTS}xf16>
   }}
@@ -145,7 +140,7 @@ def run(
                     partial = partial.decode(errors="replace")
                 print(partial, end="", file=sys.stderr)
         raise RuntimeError(
-            "one-shot all-rank process exceeded its outer deadline; it was "
+            "one-shot complete-Tile process exceeded its outer deadline; it was "
             "killed and this test will not retry or invoke reset/power "
             "operations; board state requires external read-only qualification"
         ) from error
@@ -184,18 +179,18 @@ def compile_package(
         str(source),
         "--output-program-dir",
         str(package),
-        f"--execution-ranks={RANK_COUNT}",
+        "--num-partitions=1",
         f"--launch-kind={args.launch_kind}",
     ]
     if profile:
         command.append("--profile")
     result = run(command)
     if (
-        "wrote verified package with execution-ranks=16"
+        "wrote verified package with num-partitions=1 tiles=16"
         not in result.stdout
     ):
         raise RuntimeError(
-            "wafer-compile did not report a verified rank-16 package"
+            "wafer-compile did not report a verified complete-Tile package"
         )
     written_instrumentation = "wafer-compile: wrote profile instrumentation:"
     if profile and written_instrumentation not in result.stdout:
@@ -244,169 +239,60 @@ def require_profile_instrumentation_permissions(package: pathlib.Path) -> None:
             )
 
 
-def require_rank_domain(records: object, name: str) -> list[dict[str, object]]:
-    if not isinstance(records, list) or len(records) != RANK_COUNT:
-        raise RuntimeError(f"package must contain exactly {RANK_COUNT} {name}")
-    if any(not isinstance(record, dict) for record in records):
-        raise RuntimeError(f"package {name} must be objects")
-    typed_records = records
-    ranks = [record.get("rank") for record in typed_records]
-    if any(not isinstance(rank, int) for rank in ranks):
-        raise RuntimeError(f"package {name} ranks must be integers")
-    if sorted(ranks) != list(range(RANK_COUNT)):
-        raise RuntimeError(f"package {name} do not exactly cover all logical ranks")
-    if len({record.get("id") for record in typed_records}) != RANK_COUNT:
-        raise RuntimeError(f"package {name} IDs are not unique")
-    return typed_records
-
-
-def require_partitioned_axis0_binding(
-    binding: dict[str, object], index_field: str, index: int, name: str
-) -> dict[int, slice]:
-    if (
-        binding.get(index_field) != index
-        or binding.get("distribution") != "partitioned"
-        or binding.get("global_shape") != [GLOBAL_ELEMENTS]
-        or binding.get("local_shape") != [LOCAL_ELEMENTS]
-        or binding.get("dtype") != "float16"
-    ):
-        raise RuntimeError(f"{name} is not the required axis-0 f16 partition")
-    ranks = binding.get("ranks")
-    if not isinstance(ranks, list) or len(ranks) != RANK_COUNT:
-        raise RuntimeError(f"{name} does not describe every logical rank")
-
-    slices: dict[int, slice] = {}
-    covered = np.zeros(GLOBAL_ELEMENTS, dtype=np.bool_)
-    for rank_record in ranks:
-        if not isinstance(rank_record, dict):
-            raise RuntimeError(f"{name} rank geometry must be objects")
-        rank = rank_record.get("rank")
-        offsets = rank_record.get("offsets")
-        sizes = rank_record.get("sizes")
-        strides = rank_record.get("strides")
-        if (
-            not isinstance(rank, int)
-            or rank < 0
-            or rank >= RANK_COUNT
-            or rank in slices
-            or rank_record.get("replica_id") != 0
-            or not isinstance(offsets, list)
-            or not isinstance(sizes, list)
-            or not isinstance(strides, list)
-            or len(offsets) != 1
-            or sizes != [LOCAL_ELEMENTS]
-            or strides != [1]
-            or not isinstance(offsets[0], int)
-        ):
-            raise RuntimeError(f"{name} has invalid rank slice geometry")
-        begin = offsets[0]
-        end = begin + LOCAL_ELEMENTS
-        if begin != rank * LOCAL_ELEMENTS or np.any(covered[begin:end]):
-            raise RuntimeError(f"{name} rank slices overlap or leave the global domain")
-        covered[begin:end] = True
-        slices[rank] = slice(begin, end)
-    if set(slices) != set(range(RANK_COUNT)) or not np.all(covered):
-        raise RuntimeError(f"{name} rank slices do not exactly cover the global domain")
-    return slices
-
-
-def load_boundary_slices(package: pathlib.Path) -> dict[int, slice]:
-    metadata = json.loads((package / "functions" / "forward.meta").read_text())
-    boundary = metadata.get("distributed_boundary")
-    if (
-        not isinstance(boundary, dict)
-        or boundary.get("version") != 1
-        or boundary.get("logical_rank_count") != RANK_COUNT
-    ):
-        raise RuntimeError("production SPMD output omitted the rank-16 boundary")
-    inputs = boundary.get("inputs")
-    outputs = boundary.get("outputs")
-    if not isinstance(inputs, list) or len(inputs) != 2:
-        raise RuntimeError("rank-16 Add must have two distributed inputs")
-    if not isinstance(outputs, list) or len(outputs) != 1:
-        raise RuntimeError("rank-16 Add must have one distributed output")
-    if any(not isinstance(binding, dict) for binding in inputs + outputs):
-        raise RuntimeError("distributed boundary bindings must be objects")
-    input_by_index = {binding.get("argument_index"): binding for binding in inputs}
-    if set(input_by_index) != {0, 1}:
-        raise RuntimeError("rank-16 Add input boundary indices are not exact")
-    lhs_slices = require_partitioned_axis0_binding(
-        input_by_index[0], "argument_index", 0, "lhs"
-    )
-    rhs_slices = require_partitioned_axis0_binding(
-        input_by_index[1], "argument_index", 1, "rhs"
-    )
-    output_slices = require_partitioned_axis0_binding(
-        outputs[0], "result_index", 0, "output"
-    )
-    if lhs_slices != rhs_slices or lhs_slices != output_slices:
-        raise RuntimeError("rank-16 Add boundaries disagree on rank slice geometry")
-    return output_slices
-
-
 def validate_manifest(
     package: pathlib.Path, launch_kind: str
-) -> dict[tuple[int, str, int], int]:
+) -> dict[tuple[str, int], int]:
     manifest = json.loads((package / "manifest.json").read_text())
     target = manifest.get("target")
     runtime_launch.require_manifest_launch(
         manifest,
         LAUNCH_CONTRACTS[launch_kind],
-        context="all-rank board gate",
+        context="all-tile board gate",
     )
-    if (
-        manifest.get("rank_count") != RANK_COUNT
-        or not isinstance(target, dict)
-        or target.get("identity") != TARGET_IDENTITY
-    ):
-        raise RuntimeError(
-            "all-rank board gate requires a schema-v7 rank-16 TX package"
-        )
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="all-Tile board gate"
+    )
+    if not isinstance(target, dict) or target.get("identity") != TARGET_IDENTITY:
+        raise RuntimeError("all-Tile board gate has an invalid target")
 
     modules = manifest.get("modules")
     if not isinstance(modules, list):
         raise RuntimeError("modules must be a list")
     if len(modules) != 1:
         raise RuntimeError("runtime launch has an invalid unique module count")
-    module_by_id: dict[int, dict[str, object]] = {}
-    for module in modules:
-        if not isinstance(module, dict) or not isinstance(module.get("id"), int):
-            raise RuntimeError("package module identity is invalid")
-        module_id = module["id"]
-        if module_id in module_by_id or module.get("exports") != [
+    module = modules[0]
+    if (
+        not isinstance(module, dict)
+        or not isinstance(module.get("id"), int)
+        or module.get("exports") != [
             {"role": "main", "symbol": "main"}
-        ]:
-            raise RuntimeError("package module export contract is invalid")
-        module_by_id[module_id] = module
-    entries = require_rank_domain(manifest.get("entries"), "entries")
-    completions = require_rank_domain(manifest.get("completions"), "completions")
-    completion_by_rank = {record["rank"]: record for record in completions}
+        ]
+    ):
+        raise RuntimeError("package module export contract is invalid")
 
     resources = manifest.get("resources")
-    if not isinstance(resources, list) or len(resources) != 3 * RANK_COUNT:
-        raise RuntimeError("rank-16 Add must contain exactly three resources per rank")
+    if not isinstance(resources, list):
+        raise RuntimeError("package resources must be a list")
     resource_ids: set[int] = set()
-    bindings: dict[tuple[int, str, int], int] = {}
+    bindings: dict[tuple[str, int], int] = {}
     for resource in resources:
         if not isinstance(resource, dict):
             raise RuntimeError("package resources must be objects")
+        if not resource.get("host_visible"):
+            continue
         resource_id = resource.get("id")
-        rank = resource.get("rank")
         role = resource.get("role")
         role_index = resource.get("role_index")
-        key = (rank, role, role_index)
+        key = (role, role_index)
         if (
             not isinstance(resource_id, int)
             or resource_id in resource_ids
-            or not isinstance(rank, int)
-            or rank < 0
-            or rank >= RANK_COUNT
             or key in bindings
-            or not resource.get("host_visible")
-            or resource.get("type") != {"dtype": "f16", "shape": [LOCAL_ELEMENTS]}
-            or resource.get("bytes") != LOCAL_ELEMENTS * ELEMENT_DTYPE.itemsize
+            or resource.get("scope") != {"kind": "card", "card_id": 0}
+            or resource.get("type") != {"dtype": "f16", "shape": [GLOBAL_ELEMENTS]}
+            or resource.get("bytes") != GLOBAL_ELEMENTS * ELEMENT_DTYPE.itemsize
         ):
-            raise RuntimeError(f"unexpected rank-16 Add resource: {resource}")
+            raise RuntimeError(f"unexpected tile-16 Add resource: {resource}")
         if role == "user_input" and role_index in (0, 1):
             expected_access = "read_only"
         elif role == "output" and role_index == 0:
@@ -418,64 +304,45 @@ def validate_manifest(
         resource_ids.add(resource_id)
         bindings[key] = resource_id
 
-    expected_keys = {
-        (rank, role, role_index)
-        for rank in range(RANK_COUNT)
-        for role, role_index in (("user_input", 0), ("user_input", 1), ("output", 0))
-    }
+    expected_keys = {("user_input", 0), ("user_input", 1), ("output", 0)}
     if set(bindings) != expected_keys:
         raise RuntimeError(
-            "package resources do not exactly cover all rank Add bindings"
+            "package resources do not exactly cover the Add bindings"
         )
 
-    entry_evidence: set[tuple[int, int, int]] = set()
     for entry in entries:
-        rank = entry["rank"]
-        module = module_by_id.get(entry.get("module"))
-        completion = completion_by_rank[rank]
         if (
-            module is None
-            or entry.get("terminal_completion") != completion.get("id")
-            or completion.get("kind") != "entry_return"
+            entry.get("module") != module["id"]
             or entry.get("transport") != {"kind": "none"}
         ):
-            raise RuntimeError(f"rank {rank} entry/completion contract is invalid")
+            raise RuntimeError("Tile entry contract is invalid")
         expected_slots = [
-            (0, bindings[(rank, "user_input", 0)], "read_only"),
-            (1, bindings[(rank, "user_input", 1)], "read_only"),
-            (2, bindings[(rank, "output", 0)], "write_only"),
+            (0, bindings[("user_input", 0)], "read_only"),
+            (1, bindings[("user_input", 1)], "read_only"),
+            (2, bindings[("output", 0)], "write_only"),
         ]
         actual_slots = [
             (slot.get("ordinal"), slot.get("resource"), slot.get("access"))
-            for slot in entry.get("slots", [])
+            for slot in entry.get("slots", [])[:3]
             if isinstance(slot, dict)
         ]
         if actual_slots != expected_slots:
-            raise RuntimeError(f"rank {rank} launch slots do not match typed resources")
-        entry_evidence.add((entry["id"], rank, entry["module"]))
-    if len(entry_evidence) != RANK_COUNT:
-        raise RuntimeError("rank-16 entry evidence is not unique")
-    referenced_modules = {entry["module"] for entry in entries}
-    if referenced_modules != set(module_by_id):
-        raise RuntimeError("entry-to-module coverage is not all-and-only")
-    if len(referenced_modules) != 1:
-        raise RuntimeError("kernel entries do not share one aggregate module")
+            raise RuntimeError("Tile launch slots do not match typed resources")
     return bindings
 
 
-def write_rank_payloads(
+def write_tile_payloads(
     work_dir: pathlib.Path,
     package: pathlib.Path,
-    slices: dict[int, slice],
-    bindings: dict[tuple[int, str, int], int],
-) -> tuple[list[str], set[int], set[tuple[int, int, int]], set[tuple[int, int]]]:
+    bindings: dict[tuple[str, int], int],
+) -> tuple[list[str], set[int], set[tuple[int, int, int]]]:
     raw = work_dir / "raw"
     raw.mkdir()
     indices = np.arange(GLOBAL_ELEMENTS, dtype=np.int32)
-    ranks = indices // LOCAL_ELEMENTS
+    tiles = indices // LOCAL_ELEMENTS
     lanes = indices % LOCAL_ELEMENTS
-    lhs_i32 = ranks * 32 + lanes % 32
-    rhs_i32 = 512 + ranks * 16 + lanes % 16
+    lhs_i32 = tiles * 32 + lanes % 32
+    rhs_i32 = 512 + tiles * 16 + lanes % 16
     expected_i32 = lhs_i32 + rhs_i32
     lhs = lhs_i32.astype(ELEMENT_DTYPE)
     rhs = rhs_i32.astype(ELEMENT_DTYPE)
@@ -486,51 +353,26 @@ def write_rank_payloads(
         or not np.array_equal(expected.astype(np.int32), expected_i32)
         or not np.array_equal((lhs + rhs).astype(np.int32), expected_i32)
     ):
-        raise RuntimeError("rank-16 f16 Add sentinels are not exactly representable")
+        raise RuntimeError("tile-16 f16 Add sentinels are not exactly representable")
 
+    payloads = {
+        ("user_input", 0): lhs,
+        ("user_input", 1): rhs,
+        ("output", 0): expected,
+    }
     arguments: list[str] = []
-    output_ids: set[int] = set()
-    lhs_payloads: set[bytes] = set()
-    rhs_payloads: set[bytes] = set()
-    reconstructed = np.empty(GLOBAL_ELEMENTS, dtype=ELEMENT_DTYPE)
-    covered = np.zeros(GLOBAL_ELEMENTS, dtype=np.bool_)
-    for rank in range(RANK_COUNT):
-        rank_slice = slices[rank]
-        rank_payloads = {
-            ("user_input", 0): lhs[rank_slice],
-            ("user_input", 1): rhs[rank_slice],
-            ("output", 0): expected[rank_slice],
-        }
-        lhs_payloads.add(rank_payloads[("user_input", 0)].tobytes())
-        rhs_payloads.add(rank_payloads[("user_input", 1)].tobytes())
-        if np.any(covered[rank_slice]):
-            raise RuntimeError("output reconstruction encountered overlapping slices")
-        covered[rank_slice] = True
-        reconstructed[rank_slice] = rank_payloads[("output", 0)]
-        for (role, role_index), payload in rank_payloads.items():
-            path = raw / f"rank_{rank:05d}.{role}_{role_index}.f16.raw"
-            payload.tofile(path)
-            resource_id = bindings[(rank, role, role_index)]
-            option = "--resource" if role == "user_input" else "--expected"
-            arguments.extend([option, f"{resource_id}={path}"])
-            if role == "output":
-                output_ids.add(resource_id)
-
-    if len(lhs_payloads) != RANK_COUNT or len(rhs_payloads) != RANK_COUNT:
-        raise RuntimeError("rank inputs are not distinct across all logical ranks")
-    if not np.all(covered) or not np.array_equal(reconstructed, expected):
-        raise RuntimeError(
-            "rank output slices do not reconstruct the global CPU result"
-        )
+    for (role, role_index), payload in payloads.items():
+        path = raw / f"{role}_{role_index}.f16.raw"
+        payload.tofile(path)
+        option = "--resource" if role == "user_input" else "--expected"
+        arguments.extend([option, f"{bindings[(role, role_index)]}={path}"])
 
     manifest = json.loads((package / "manifest.json").read_text())
     entry_evidence = {
-        (entry["id"], entry["rank"], entry["module"]) for entry in manifest["entries"]
+        (entry["id"], entry["tile_id"], entry["module"])
+        for entry in manifest["entries"]
     }
-    completion_evidence = {
-        (completion["id"], completion["rank"]) for completion in manifest["completions"]
-    }
-    return arguments, output_ids, entry_evidence, completion_evidence
+    return arguments, {bindings[("output", 0)]}, entry_evidence
 
 
 def verify_board_evidence(
@@ -538,9 +380,8 @@ def verify_board_evidence(
     launch_kind: str,
     output_ids: set[int],
     entry_evidence: set[tuple[int, int, int]],
-    completion_evidence: set[tuple[int, int]],
 ) -> None:
-    launch_pattern, logical_tile_basis = LAUNCH_EVIDENCE[launch_kind]
+    launch_pattern, tile_execution_basis = LAUNCH_EVIDENCE[launch_kind]
     required = (
         "board_stage: validation",
         "board_stage: device-selection",
@@ -552,43 +393,36 @@ def verify_board_evidence(
         "board_stage: completion",
         "board_stage: device-to-host",
         "board_stage: cleanup",
-        f"invocation_ranks: {RANK_COUNT}",
+        f"invocation_tiles: {TILE_COUNT}",
         f"launch_pattern: {launch_pattern}",
-        f"logical_tile_execution_basis: {logical_tile_basis}",
-        "logical_tile_domain: 0..15",
+        f"physical_tile_execution_basis: {tile_execution_basis}",
+        "physical_tile_domain: 0..15",
         "physical_execution_claim: none",
         "board_execution: true",
     )
     output_lines = set(stdout.splitlines())
     missing = [text for text in required if text not in output_lines]
     if missing:
-        raise RuntimeError(f"all-rank board invocation omitted evidence: {missing}")
+        raise RuntimeError(f"all-tile board invocation omitted evidence: {missing}")
 
     entry_matches = re.findall(
-        r"^entry: (\d+) rank=(\d+) module=(\d+)$", stdout, re.MULTILINE
-    )
-    completion_matches = re.findall(
-        r"^terminal_completion: (\d+) kind=entry_return rank=(\d+)$",
-        stdout,
-        re.MULTILINE,
+        r"^entry: (\d+) card_id=0 tile_id=(\d+) launch_slot=\d+ module=(\d+)$",
+        stdout, re.MULTILINE,
     )
     output_matches = re.findall(
         rf"^output_compare: resource=(\d+) "
-        rf"bytes={LOCAL_ELEMENTS * ELEMENT_DTYPE.itemsize} exact=true$",
+        rf"bytes={GLOBAL_ELEMENTS * ELEMENT_DTYPE.itemsize} exact=true$",
         stdout,
         re.MULTILINE,
     )
     tile_matches = re.findall(
-        r"^board_tile: logical=(\d+) available=(true|false) "
+        r"^board_tile: tile_id=(\d+) launch_slot=\d+ available=(true|false) "
         r"physical_x=(\d+) physical_y=(\d+)$",
         stdout,
         re.MULTILINE,
     )
     actual_entries = {
-        (int(entry), int(rank), int(module)) for entry, rank, module in entry_matches
-    }
-    actual_completions = {
-        (int(completion), int(rank)) for completion, rank in completion_matches
+        (int(entry), int(tile), int(module)) for entry, tile, module in entry_matches
     }
     actual_outputs = {int(resource) for resource in output_matches}
     available_tiles = [
@@ -597,37 +431,32 @@ def verify_board_evidence(
         if available == "true"
     ]
     if (
-        len(available_tiles) != RANK_COUNT
-        or len(set(available_tiles)) != RANK_COUNT
-        or sorted(available_tiles) != list(range(RANK_COUNT))
+        len(available_tiles) != TILE_COUNT
+        or len(set(available_tiles)) != TILE_COUNT
+        or sorted(available_tiles) != list(range(TILE_COUNT))
     ):
         raise RuntimeError(
-            "board inventory did not prove available logical tiles 0..15"
+            "board inventory did not prove available Tiles 0..15"
         )
     if (
-        len(entry_matches) != RANK_COUNT
+        len(entry_matches) != TILE_COUNT
         or actual_entries != entry_evidence
-        or len(actual_entries) != RANK_COUNT
+        or len(actual_entries) != TILE_COUNT
     ):
-        raise RuntimeError("board result did not prove all 16 rank entries")
+        raise RuntimeError("board result did not prove all 16 tile entries")
+    runtime_launch.require_board_completion(stdout, context="all-Tile Add")
     if (
-        len(completion_matches) != RANK_COUNT
-        or actual_completions != completion_evidence
-        or len(actual_completions) != RANK_COUNT
-    ):
-        raise RuntimeError("board result did not prove all 16 terminal completions")
-    if (
-        len(output_matches) != RANK_COUNT
+        len(output_matches) != 1
         or actual_outputs != output_ids
-        or len(actual_outputs) != RANK_COUNT
+        or len(actual_outputs) != 1
     ):
-        raise RuntimeError("board result did not prove all 16 exact output comparisons")
+        raise RuntimeError("board result did not prove the exact output comparison")
 
 
 def verify_no_card_evidence(stdout: str) -> None:
     required = (
-        "package: id=0 schema=7 ranks=16",
-        f"invocation_ranks: {RANK_COUNT}",
+        "package: id=0 cards=1 tiles=16",
+        f"invocation_tiles: {TILE_COUNT}",
         "board_execution: false",
     )
     output_lines = set(stdout.splitlines())
@@ -635,24 +464,22 @@ def verify_no_card_evidence(stdout: str) -> None:
     if missing:
         raise RuntimeError(f"no-card launch invocation omitted evidence: {missing}")
 
-    entry_ranks = sorted(
-        int(rank)
-        for rank in re.findall(
-            r"^entry: \d+ rank=(\d+)$", stdout, re.MULTILINE
+    entry_tiles = sorted(
+        int(tile)
+        for tile in re.findall(
+            r"^entry: \d+ card_id=0 tile_id=(\d+) launch_slot=\d+$",
+            stdout, re.MULTILINE
         )
     )
-    completion_ids = sorted(
-        int(completion)
-        for completion in re.findall(
-            r"^terminal_completion: (\d+) kind=entry_return$",
-            stdout,
-            re.MULTILINE,
+    completion_count = len(
+        re.findall(
+            r"^completion: return_after_local_drain$", stdout, re.MULTILINE
         )
     )
-    if entry_ranks != list(range(RANK_COUNT)):
-        raise RuntimeError("no-card launch invocation omitted a rank entry")
-    if completion_ids != list(range(RANK_COUNT)):
-        raise RuntimeError("no-card launch invocation omitted a terminal completion")
+    if entry_tiles != list(range(TILE_COUNT)):
+        raise RuntimeError("no-card launch invocation omitted a tile entry")
+    if completion_count != TILE_COUNT:
+        raise RuntimeError("no-card launch invocation omitted a Tile completion")
 
 
 def verify_profile_report(
@@ -685,7 +512,6 @@ def verify_profile_report(
     html = members["index.html"].read_text()
     if (
         evidence.get("schema") != "wafer.profile.evidence"
-        or evidence.get("schema_version") != 8
         or evidence.get("run_id") != run_directory.name
     ):
         raise RuntimeError("profile evidence identity is invalid")
@@ -714,7 +540,7 @@ def verify_profile_report(
         or samples[0]["completion_observation_resolution_ns"] < 0
         or trace.get("complete") is not True
         or not isinstance(trace_tiles, list)
-        or len(trace_tiles) != RANK_COUNT
+        or len(trace_tiles) != TILE_COUNT
     ):
         raise RuntimeError(
             "profile evidence does not contain one Primary and 16 trace tiles"
@@ -765,7 +591,7 @@ def verify_profile_report(
         or not validity.get("trace")
         or not validity.get("pmu")
         or not isinstance(tiles, list)
-        or len(tiles) != RANK_COUNT
+        or len(tiles) != TILE_COUNT
     ):
         raise RuntimeError(
             "profile analysis failed latency, output, or tile qualification"
@@ -836,9 +662,11 @@ def verify_profile_report(
                 raise RuntimeError(
                     f"profile timeline contains an invalid {key}"
                 )
-    for legacy in ("Measurement invalid", "ABBA", "BAAB", "speedup"):
-        if legacy in html:
-            raise RuntimeError(f"profile HTML retains legacy content: {legacy}")
+    for retired_text in ("Measurement invalid", "ABBA", "BAAB", "speedup"):
+        if retired_text in html:
+            raise RuntimeError(
+                f"profile HTML retains retired content: {retired_text}"
+            )
 
     expected_report = current / "index.html"
     if f"profile_report: {expected_report}" not in stdout:
@@ -850,7 +678,7 @@ def main() -> int:
     args = parse_args()
     if not args.no_card and os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
         print(
-            "wafer_board_all_rank_add_test: hardware execution is not armed; "
+            "wafer_board_complete_tile_add_test: hardware execution is not armed; "
             "set WAFER_EXECUTE_HARDWARE_TESTS=1",
             file=sys.stderr,
         )
@@ -878,8 +706,8 @@ def main() -> int:
             raise RuntimeError("--repeat must be at least 2")
         if args.completion_timeout_ms <= 0:
             raise RuntimeError("--completion-timeout-ms must be positive")
-        if args.expected_tile_count != RANK_COUNT:
-            raise RuntimeError(f"--expected-tile-count must be {RANK_COUNT}")
+        if args.expected_tile_count != TILE_COUNT:
+            raise RuntimeError(f"--expected-tile-count must be {TILE_COUNT}")
 
     source = write_source_program(args.work_dir)
     package = args.work_dir / "package"
@@ -895,7 +723,6 @@ def main() -> int:
     else:
         compile_package(args, source, package, profile=False)
 
-    slices = load_boundary_slices(package)
     bindings = validate_manifest(package, args.launch_kind)
     if args.no_card:
         no_card_packages = (
@@ -908,11 +735,12 @@ def main() -> int:
                 str(args.wafer_run),
                 "--package-dir",
                 str(no_card_package),
-                "--all-ranks",
                 "--no-card",
             ])
             verify_no_card_evidence(result.stdout)
-            instrumentation_ready = PROFILE_INSTRUMENTATION_READY in result.stdout
+            instrumentation_ready = (
+                PROFILE_INSTRUMENTATION_READY in result.stdout
+            )
             if instrumentation_ready != (
                 args.profile and no_card_package == package
             ):
@@ -928,10 +756,8 @@ def main() -> int:
         resource_arguments,
         output_ids,
         entry_evidence,
-        completion_evidence,
-    ) = write_rank_payloads(args.work_dir, package, slices, bindings)
+    ) = write_tile_payloads(args.work_dir, package, bindings)
     command_tail = [
-        "--all-ranks",
         "--board",
         "--device-id",
         str(args.device_id),
@@ -972,7 +798,6 @@ def main() -> int:
             args.launch_kind,
             output_ids,
             entry_evidence,
-            completion_evidence,
         )
         device_duration, report = verify_profile_report(
             package, profile_result.stdout
@@ -1000,10 +825,9 @@ def main() -> int:
             args.launch_kind,
             output_ids,
             entry_evidence,
-            completion_evidence,
         )
         print(
-            "board_all_rank_add_iteration: "
+            "board_complete_tile_add_iteration: "
             f"{iteration + 1}/{args.repeat} launch_kind={args.launch_kind}"
         )
         print(result.stdout, end="")
@@ -1022,5 +846,5 @@ if __name__ == "__main__":
         ValueError,
         json.JSONDecodeError,
     ) as error:
-        print(f"wafer_board_all_rank_add_test: {error}", file=sys.stderr)
+        print(f"wafer_board_complete_tile_add_test: {error}", file=sys.stderr)
         raise SystemExit(1)

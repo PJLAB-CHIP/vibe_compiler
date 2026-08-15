@@ -17,6 +17,7 @@ import wafer_board_ncc_execution_probe_test as ncc_driver
 import wafer_engine_pipeline_characterization_catalog as catalog
 import wafer_memory_descriptor_calibration_catalog as memory_catalog
 import wafer_ncc_probe_protocol as ncc_protocol
+import wafer_runtime_launch_contract as runtime_launch
 
 
 def observation(
@@ -42,7 +43,7 @@ def observation(
         "instruction_delta": counts,
         "execution_delta": values,
         "runtime_lifecycle": catalog.RUNTIME_LIFECYCLE,
-        "runtime_terminal_completion": 7,
+        "runtime_completion_kind": runtime_launch.LOCAL_DRAIN_COMPLETION,
     }
 
 
@@ -61,7 +62,7 @@ def tail_observation(sample: int, cycles: int) -> dict[str, object]:
         "logical_sha256": "1" * 64,
         "physical_sha256": "2" * 64,
         "runtime_lifecycle": catalog.RUNTIME_LIFECYCLE,
-        "runtime_terminal_completion": 9,
+        "runtime_completion_kind": runtime_launch.LOCAL_DRAIN_COMPLETION,
     }
 
 
@@ -138,11 +139,11 @@ class CatalogShapeTest(unittest.TestCase):
         for probe in probes:
             for identity in probe.plan.issue_identities():
                 lane = probe.plan.lanes[identity.lane]
-                expected = ncc_driver.v2_expected_result(
+                expected = ncc_driver.expected_result(
                     identity, lane, probe.plan
                 )
                 expected_bytes = (
-                    ncc_driver.v2_ne_result_bytes(lane)
+                    ncc_driver.ne_result_bytes(lane)
                     if lane.engine == ncc_protocol.Engine.NE
                     else lane.transfer_bytes
                 )
@@ -344,7 +345,7 @@ class CatalogShapeTest(unittest.TestCase):
         for reference in delegated:
             self.assertTrue(set(reference.case_names).issubset(names))
         raw_names = {
-            case.name for case in ncc_driver.V2_DOUBLE_SLOT_OBSERVATION_CASES
+            case.name for case in ncc_driver.DOUBLE_SLOT_OBSERVATION_CASES
         }
         self.assertEqual(
             set(catalog.DELEGATED_EVIDENCE[0].case_names), raw_names
@@ -527,8 +528,7 @@ class ProductionGateTest(unittest.TestCase):
         cls._write_json(
             manifest_path,
             {
-                "schema_version": 7,
-                "rank_count": 1,
+                "tile_count": 1,
                 "target": {
                     "identity": "wafer-tx81-single-card"
                 },
@@ -545,20 +545,19 @@ class ProductionGateTest(unittest.TestCase):
             attestation_path,
             {
                 "schema": "wafer-static-fixed-slot-qualification",
-                "schema_version": 1,
                 "selection_kind": "static-fixed-slot",
                 "manifest_sha256": manifest_digest,
                 "accepted_instr_digest_basis": (
-                    "final-accepted-instr-module-text-v1"
+                    "final-accepted-instr-module-text"
                 ),
                 "target": {
                     "identity": "wafer-tx81-single-card",
-                    "rank_count": 1,
-                    "logical_ranks": [0],
+                    "tile_count": 1,
+                    "tile_ids": [0],
                 },
-                "ranks": [
+                "tiles": [
                     {
-                        "logical_rank": 0,
+                        "tile_id": 0,
                         "accepted_instr_sha256": "sha256:" + "1" * 64,
                         "spm_alloc_roots": [
                             {
@@ -642,7 +641,6 @@ class ProductionGateTest(unittest.TestCase):
                 "schema": (
                     "wafer-static-fixed-slot-qualification-activation"
                 ),
-                "schema_version": 1,
                 "manifest_sha256": manifest_digest,
                 "attestation_sha256": attestation_digest,
             },
@@ -701,7 +699,7 @@ class ProductionGateTest(unittest.TestCase):
         missing = catalog.validate_production_pipeline_inputs(None)
         self.assertFalse(missing.ready)
         self.assertIn(
-            "V2_DOUBLE_SLOT_OBSERVATION_CASES",
+            "DOUBLE_SLOT_OBSERVATION_CASES",
             missing.rejected_delegated_asset,
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -710,8 +708,7 @@ class ProductionGateTest(unittest.TestCase):
             (package / "manifest.json").write_text(
                 json.dumps(
                     {
-                        "schema_version": 7,
-                        "rank_count": 1,
+                        "tile_count": 1,
                         "target": {
                             "identity": "wafer-tx81-single-card"
                         },
@@ -789,7 +786,7 @@ class ProductionGateTest(unittest.TestCase):
                 pathlib.Path(temporary)
             )
             value = json.loads(attestation.read_text(encoding="utf-8"))
-            root = value["ranks"][0]["spm_alloc_roots"][0]
+            root = value["tiles"][0]["spm_alloc_roots"][0]
             root["offset"] = root["range_begin"] = 0
             root["range_end"] = root["bytes"]
             self._write_json(attestation, value)
@@ -807,7 +804,7 @@ class ProductionGateTest(unittest.TestCase):
                 pathlib.Path(temporary)
             )
             value = json.loads(attestation.read_text(encoding="utf-8"))
-            root = value["ranks"][0]["spm_alloc_roots"][0]
+            root = value["tiles"][0]["spm_alloc_roots"][0]
             root["offset"] += 1
             root["range_begin"] += 1
             root["range_end"] += 1
@@ -826,7 +823,7 @@ class ProductionGateTest(unittest.TestCase):
                 pathlib.Path(temporary)
             )
             value = json.loads(attestation.read_text(encoding="utf-8"))
-            roots = value["ranks"][0]["spm_alloc_roots"]
+            roots = value["tiles"][0]["spm_alloc_roots"]
             roots[1]["offset"] = roots[1]["range_begin"] = roots[0]["offset"]
             roots[1]["range_end"] = roots[1]["offset"] + roots[1]["bytes"]
             self._write_json(attestation, value)
@@ -910,53 +907,64 @@ class DriverEvidenceTest(unittest.TestCase):
                 Counter(probe.key for probe in probes),
             )
 
-    def test_manifest_and_board_terminal_completion_must_match(self) -> None:
+    def test_manifest_and_board_completion_kind_must_match(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             package = pathlib.Path(temporary)
             manifest = {
-                "schema_version": 7,
-                "rank_count": 1,
+                "card_count": 1,
+                "tile_count": runtime_launch.TARGET_TILE_COUNT,
                 "entries": [
                     {
-                        "id": 0,
-                        "rank": 0,
-                        "terminal_completion": 17,
+                        "id": tile,
+                        "card_id": 0,
+                        "tile_id": tile,
+                        "launch_slot": tile,
+                        "completion": runtime_launch.LOCAL_DRAIN_COMPLETION,
                     }
-                ],
-                "completions": [
-                    {"id": 17, "rank": 0, "kind": "entry_return"}
+                    for tile in range(runtime_launch.TARGET_TILE_COUNT)
                 ],
             }
             (package / "manifest.json").write_text(json.dumps(manifest))
-            self.assertEqual(driver.rank_one_terminal_completion(package), 17)
+            self.assertEqual(
+                driver.package_completion_kind(package),
+                runtime_launch.LOCAL_DRAIN_COMPLETION,
+            )
             stdout = "\n".join(
                 [
                     *(
                         f"board_stage: {stage}"
                         for stage in catalog.RUNTIME_LIFECYCLE
                     ),
-                    "terminal_completion: 17 kind=entry_return",
+                    *(
+                        "completion: return_after_local_drain "
+                        f"tile_id={tile}"
+                        for tile in range(runtime_launch.TARGET_TILE_COUNT)
+                    ),
+                    "invocation_tiles: 16",
+                    "physical_tile_domain: 0..15",
                     "board_execution: true",
                 ]
             )
-            driver.require_exact_board_completion(stdout, 17, "probe")
+            driver.require_exact_board_completion(
+                stdout, runtime_launch.LOCAL_DRAIN_COMPLETION, "probe"
+            )
             with self.assertRaisesRegex(
-                RuntimeError, "differs from the package manifest"
+                RuntimeError, "does not match the complete Tile domain"
             ):
                 driver.require_exact_board_completion(
                     stdout.replace(
-                        "terminal_completion: 17",
-                        "terminal_completion: 18",
+                        "completion: return_after_local_drain tile_id=0",
+                        "completion: return_after_local_drain tile_id=1",
                     ),
-                    17,
+                    runtime_launch.LOCAL_DRAIN_COMPLETION,
                     "probe",
                 )
-            manifest["entries"][0]["terminal_completion"] = 18
+            manifest["entries"][0]["completion"] = "return_before_local_drain"
             (package / "manifest.json").write_text(json.dumps(manifest))
             with self.assertRaisesRegex(
-                RuntimeError, "does not bind its exact terminal completion"
+                RuntimeError, "completion contract is invalid"
             ):
-                driver.rank_one_terminal_completion(package)
+                driver.package_completion_kind(package)
 
     def test_session_and_board_qualification_are_typed(self) -> None:
         session_id = driver.require_calibration_session(
@@ -983,8 +991,8 @@ class DriverEvidenceTest(unittest.TestCase):
                 "target_identity": ncc_driver.TARGET_IDENTITY,
                 "launch": {
                     "kind": "kernel",
-                    "form": "per-rank",
-                    "entry_abi": "rank-local-pointer-block",
+                    "form": "grid",
+                    "entry_abi": "tile-major-pointer-table",
                     "phases": ["main"],
                 },
                 "device_id": 0,

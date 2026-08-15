@@ -231,7 +231,7 @@ def board_qualification(args: argparse.Namespace) -> dict[str, object]:
     digest = str(args.expected_runtime_library_sha256).lower()
     qualification = {
         "target_identity": ncc_driver.TARGET_IDENTITY,
-        "launch": runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        "launch": runtime_launch.GRID_KERNEL_LAUNCH,
         "device_id": args.device_id,
         "expected_runtime_version": args.expected_runtime_version,
         "expected_device_name": args.expected_device_name,
@@ -253,47 +253,19 @@ def board_qualification(args: argparse.Namespace) -> dict[str, object]:
     return qualification
 
 
-def rank_one_terminal_completion(package: pathlib.Path) -> int:
+def package_completion_kind(package: pathlib.Path) -> str:
     manifest = json.loads((package / "manifest.json").read_text())
-    entries = manifest.get("entries")
-    completions = manifest.get("completions")
-    if (
-        manifest.get("schema_version") != 7
-        or manifest.get("rank_count") != 1
-        or not isinstance(entries, list)
-        or len(entries) != 1
-        or not isinstance(completions, list)
-        or len(completions) != 1
-    ):
-        raise RuntimeError(
-            "engine probe package terminal completion domain is not "
-            "rank-one exact"
-        )
-    entry = entries[0]
-    completion = completions[0]
-    if not isinstance(entry, Mapping) or not isinstance(completion, Mapping):
-        raise RuntimeError(
-            "engine probe entry/completion records are not objects"
-        )
-    completion_id = completion.get("id")
-    if (
-        entry.get("id") != 0
-        or entry.get("rank") != 0
-        or type(completion_id) is not int
-        or completion_id < 0
-        or entry.get("terminal_completion") != completion_id
-        or completion.get("rank") != 0
-        or completion.get("kind") != "entry_return"
-    ):
-        raise RuntimeError(
-            "engine probe entry does not bind its exact terminal completion"
-        )
-    return completion_id
+    runtime_launch.require_complete_tile_domain(
+        manifest, context="engine probe"
+    )
+    return runtime_launch.LOCAL_DRAIN_COMPLETION
 
 
 def require_exact_board_completion(
-    stdout: str, terminal_completion: int, context: str
+    stdout: str, completion_kind: str, context: str
 ) -> None:
+    if completion_kind != runtime_launch.LOCAL_DRAIN_COMPLETION:
+        raise RuntimeError(f"{context}: package completion kind is invalid")
     lines = stdout.splitlines()
     stage_lines = [
         f"board_stage: {stage}" for stage in catalog.RUNTIME_LIFECYCLE
@@ -310,28 +282,17 @@ def require_exact_board_completion(
         raise RuntimeError(
             f"{context}: wafer-run lifecycle stages are out of order"
         )
-    expected_terminal = (
-        f"terminal_completion: {terminal_completion} kind=entry_return"
+    runtime_launch.require_board_completion(stdout, context=context)
+    first_completion = lines.index(
+        f"completion: {completion_kind} tile_id=0"
     )
-    terminal_lines = [
-        line for line in lines if line.startswith("terminal_completion:")
-    ]
-    if terminal_lines != [expected_terminal]:
-        raise RuntimeError(
-            f"{context}: wafer-run terminal completion differs from the "
-            "package manifest"
-        )
-    if lines.count("board_execution: true") != 1:
-        raise RuntimeError(
-            f"{context}: wafer-run omitted or repeated board execution state"
-        )
     if not (
         stage_positions[-1]
-        < lines.index(expected_terminal)
+        < first_completion
         < lines.index("board_execution: true")
     ):
         raise RuntimeError(
-            f"{context}: terminal completion is outside the completed "
+            f"{context}: Tile completion is outside the completed "
             "runtime lifecycle"
         )
 
@@ -357,17 +318,21 @@ def counterbalanced_probe_schedule(
 def prepare_probe_package(
     args: argparse.Namespace,
     probes: tuple[catalog.ProbeCase, ...],
-) -> tuple[argparse.Namespace, pathlib.Path, tuple[int, int, int], int]:
+) -> tuple[argparse.Namespace, pathlib.Path, tuple[int, int, int], str]:
     raw_args = _raw_args(args)
     ncc_driver.validate_no_card_protocol_cases()
     ncc_driver.validate_catalog_resource_layout(probes)
     source = ncc_driver.write_source_program(raw_args.work_dir)
     package = ncc_driver.compile_seed_package(raw_args, source)
-    module_path, resource_ids = ncc_driver.locate_probe_bindings(package)
-    ncc_driver.build_probe(raw_args, package, module_path)
+    module_path, resource_ids, slots_per_tile = (
+        ncc_driver.locate_probe_bindings(package)
+    )
+    ncc_driver.build_probe(
+        raw_args, package, module_path, slots_per_tile
+    )
     ncc_driver.verify_no_card(raw_args, package)
-    terminal_completion = rank_one_terminal_completion(package)
-    return raw_args, package, resource_ids, terminal_completion
+    completion_kind = package_completion_kind(package)
+    return raw_args, package, resource_ids, completion_kind
 
 
 def execute_probes(
@@ -376,7 +341,7 @@ def execute_probes(
     package: pathlib.Path,
     resource_ids: tuple[int, int, int],
     probes: Iterable[catalog.ProbeCase],
-    terminal_completion: int,
+    completion_kind: str,
 ) -> list[dict[str, object]]:
     raw_dir = raw_args.work_dir / "raw"
     raw_dir.mkdir()
@@ -401,12 +366,12 @@ def execute_probes(
             timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
         )
         require_exact_board_completion(
-            result.stdout, terminal_completion, probe.key
+            result.stdout, completion_kind, probe.key
         )
         observation = ncc_driver.parse_record(output, probe, sample)
         observation["launch_ordinal"] = launch_ordinal
         observation["runtime_lifecycle"] = catalog.RUNTIME_LIFECYCLE
-        observation["runtime_terminal_completion"] = terminal_completion
+        observation["runtime_completion_kind"] = completion_kind
         observations.append(observation)
         print(
             "engine_pipeline_sample: "
@@ -540,7 +505,7 @@ def main() -> int:
         calibration_session_id = require_calibration_session(os.environ)
         qualification = board_qualification(raw_probe_args)
 
-    raw_args, package, resource_ids, terminal_completion = (
+    raw_args, package, resource_ids, completion_kind = (
         prepare_probe_package(args, probes)
     )
     if args.mode == "no-card":
@@ -551,7 +516,7 @@ def main() -> int:
                     "selected_cells": len(selected),
                     "serialized_probes": len(probes),
                     "package": str(package),
-                    "terminal_completion": terminal_completion,
+                    "completion_kind": completion_kind,
                     "board_execution": False,
                 },
                 sort_keys=True,
@@ -565,18 +530,17 @@ def main() -> int:
         package,
         resource_ids,
         probes,
-        terminal_completion,
+        completion_kind,
     )
     decisions = activation_decisions(keys, observations)
     assert calibration_session_id is not None
     assert qualification is not None
     archive = {
-        "schema_version": 1,
         "calibration_session_id": calibration_session_id,
         "board_qualification": qualification,
         "catalog": record,
         "repeat": args.repeat,
-        "terminal_completion": terminal_completion,
+        "completion_kind": completion_kind,
         "execution_order": (
             "sample-major alternating forward/reverse sweeps with paired "
             "half-rotation"

@@ -850,15 +850,14 @@ per-rank argument blocks without an explicit SPMD visibility ABI.
 
 `txLaunchModel` is now more than an opaque research hint: the exact V5.6
 type-6/type-7 layouts and device entry call have been recovered. Wafer's
-sole current schema-v8 `kind=model` package/provider carries nested
-`entry_abi=tx81-model-bootparam` (the model
-BootParam ABI was first introduced in schema-v4; schema-v6 was a historical format) and owns the typed
+sole current `kind=model` package/provider carries nested
+`entry_abi=tx81-model-bootparam` and owns the typed
 builder, nested device-address and module-identity validation, module
 export/readback, and fake lifecycle gates. A fresh qualified full-good-board
 replay also completed two exact type-6/type-7 Add iterations over logical tile
 ids `0..15`. This is a logical-execution/result gate, not a physical-coordinate
 claim, because the public header exposes neither a supported BPM builder nor a
-layout-version guarantee.
+stable layout guarantee.
 
 Important model strings in HPGR include `bpm_table`, `bpmTableAddr`,
 `ModuleLoadPayload`, `tritonLaunchPayload`, `graphTLV`, `DYNLIB_LOAD`,

@@ -15,6 +15,7 @@ import wafer_board_ne_tail_throughput_test as tail_driver
 import wafer_engine_pipeline_characterization_catalog as engine_catalog
 import wafer_ne_calibration_catalog as ne_catalog
 import wafer_ne_tail_throughput_catalog as catalog
+import wafer_runtime_launch_contract as runtime_launch
 
 
 def synthetic_output(
@@ -35,9 +36,7 @@ def synthetic_output(
     record = [0] * ne_catalog.RECORD_WORDS
     values = {
         "MAGIC": ne_catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            ne_catalog.SCHEMA << 32
-        ) | ne_catalog.RECORD_WORDS,
+        "WORD_COUNT": ne_catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": source.case_id,
         "DTYPE": source.dtype,
@@ -127,7 +126,6 @@ def validate_protocol_and_real_execution_chain() -> None:
     ).read_text()
     board_driver = pathlib.Path(tail_driver.__file__).read_text()
     cmake = (root / "test/CMakeLists.txt").read_text()
-    assert "#define WAFER_NEC_SCHEMA 5U" in header
     assert "#define WAFER_NEC_RECORD_WORDS 36U" in header
     assert "WAFER_NEC_REC_NE_INST_DELTA = 29" in header
     assert "WAFER_NEC_REC_NE_EXEC_DELTA = 31" in header
@@ -136,15 +134,15 @@ def validate_protocol_and_real_execution_chain() -> None:
     assert "GR_PMU_NE_BLOCKING_TIME" in probe
     assert "GR_PMU_NE_EXE_TIME" in probe
     assert "TsmExecute(&instruction)" in probe
-    assert "wafer_tx81_wdma_v3(" in probe
+    assert "wafer_tx81_wdma(" in probe
     assert "wafer_tx81_ncc_join(1U);" in probe
     assert "compile_seed_package" in board_driver
     assert "build_probe" in board_driver
     assert "verify_no_card" in board_driver
     assert "board_command" in board_driver
-    assert "rank_one_terminal_completion" in board_driver
+    assert "package_completion_kind" in board_driver
     assert "require_exact_board_completion" in board_driver
-    assert "runtime_terminal_completion" in board_driver
+    assert "runtime_completion_kind" in board_driver
     assert "prepare_fresh_ne_prerequisites" in board_driver
     assert "fresh_ne_prerequisite_probes" in board_driver
     assert "reset_work_dir" in board_driver
@@ -162,7 +160,10 @@ def validate_strong_host_oracle() -> None:
             output, case.source_case, built, sample=2
         )
         observation = tail_driver.normalize_observation(
-            case, 2, validated, terminal_completion=23
+            case,
+            2,
+            validated,
+            completion_kind=runtime_launch.LOCAL_DRAIN_COMPLETION,
         )
         assert observation["instruction_delta"] == {"worker0.ne": 1}
         assert observation["execution_delta"] == {"ne": 123}
@@ -171,7 +172,10 @@ def validate_strong_host_oracle() -> None:
             observation["runtime_lifecycle"]
             == engine_catalog.RUNTIME_LIFECYCLE
         )
-        assert observation["runtime_terminal_completion"] == 23
+        assert (
+            observation["runtime_completion_kind"]
+            == runtime_launch.LOCAL_DRAIN_COMPLETION
+        )
         for mutation in (
             {"pmu_enable": 0},
             {"ne_instructions": 2},
@@ -223,56 +227,73 @@ def validate_repeat_and_selection_gates() -> None:
         assert not stale.exists()
 
 
-def rank_one_stdout(terminal_completion: int) -> str:
+def board_stdout() -> str:
     return "\n".join(
         [
             *(
                 f"board_stage: {stage}"
                 for stage in engine_catalog.RUNTIME_LIFECYCLE
             ),
-            (
-                f"terminal_completion: {terminal_completion} "
-                "kind=entry_return"
+            *(
+                "completion: return_after_local_drain "
+                f"tile_id={tile}"
+                for tile in range(runtime_launch.TARGET_TILE_COUNT)
             ),
+            "invocation_tiles: 16",
+            "physical_tile_domain: 0..15",
             "board_execution: true",
         ]
     )
 
 
-def validate_exact_terminal_completion_gate() -> None:
+def validate_exact_completion_kind_gate() -> None:
     with tempfile.TemporaryDirectory() as directory:
         package = pathlib.Path(directory)
         manifest = {
-            "schema_version": 7,
-            "rank_count": 1,
+            "card_count": 1,
+            "tile_count": runtime_launch.TARGET_TILE_COUNT,
             "entries": [
-                {"id": 0, "rank": 0, "terminal_completion": 31}
-            ],
-            "completions": [
-                {"id": 31, "rank": 0, "kind": "entry_return"}
+                {
+                    "id": tile,
+                    "card_id": 0,
+                    "tile_id": tile,
+                    "launch_slot": tile,
+                    "completion": runtime_launch.LOCAL_DRAIN_COMPLETION,
+                }
+                for tile in range(runtime_launch.TARGET_TILE_COUNT)
             ],
         }
         (package / "manifest.json").write_text(json.dumps(manifest))
-        assert tail_driver.rank_one_terminal_completion(package) == 31
+        assert (
+            tail_driver.package_completion_kind(package)
+            == runtime_launch.LOCAL_DRAIN_COMPLETION
+        )
         tail_driver.require_exact_board_completion(
-            rank_one_stdout(31), 31, catalog.CASES[0].key
+            board_stdout(),
+            runtime_launch.LOCAL_DRAIN_COMPLETION,
+            catalog.CASES[0].key,
         )
         try:
             tail_driver.require_exact_board_completion(
-                rank_one_stdout(32), 31, catalog.CASES[0].key
+                board_stdout().replace(
+                    "completion: return_after_local_drain tile_id=0",
+                    "completion: return_after_local_drain tile_id=1",
+                ),
+                runtime_launch.LOCAL_DRAIN_COMPLETION,
+                catalog.CASES[0].key,
             )
         except RuntimeError as error:
-            assert "differs from the package manifest" in str(error)
+            assert "does not match the complete Tile domain" in str(error)
         else:
-            raise AssertionError("wrong NE tail terminal completion was accepted")
-        manifest["completions"][0]["rank"] = 1
+            raise AssertionError("wrong NE tail Tile completion was accepted")
+        manifest["entries"][0]["completion"] = "return_before_local_drain"
         (package / "manifest.json").write_text(json.dumps(manifest))
         try:
-            tail_driver.rank_one_terminal_completion(package)
+            tail_driver.package_completion_kind(package)
         except RuntimeError as error:
-            assert "does not bind its exact terminal completion" in str(error)
+            assert "completion contract is invalid" in str(error)
         else:
-            raise AssertionError("wrong-rank NE tail completion was accepted")
+            raise AssertionError("wrong NE tail completion kind was accepted")
 
 
 def raw_ne_observation(
@@ -284,7 +305,7 @@ def raw_ne_observation(
         "instruction_delta": {"worker0.ne": 1},
         "execution_delta": {"ne": cycles, "full": cycles},
         "runtime_lifecycle": engine_catalog.RUNTIME_LIFECYCLE,
-        "runtime_terminal_completion": 11,
+        "runtime_completion_kind": runtime_launch.LOCAL_DRAIN_COMPLETION,
     }
 
 
@@ -354,7 +375,7 @@ def validate_small_steady_tail_merge_gate() -> None:
                     case,
                     sample,
                     validated,
-                    terminal_completion=31,
+                    completion_kind=runtime_launch.LOCAL_DRAIN_COMPLETION,
                 )
             )
         activated = engine_catalog.evaluate_single_engine_activation(
@@ -375,7 +396,7 @@ def main() -> int:
     validate_protocol_and_real_execution_chain()
     validate_strong_host_oracle()
     validate_repeat_and_selection_gates()
-    validate_exact_terminal_completion_gate()
+    validate_exact_completion_kind_gate()
     validate_small_steady_tail_merge_gate()
     print("wafer_ne_tail_throughput_catalog_test: passed")
     return 0

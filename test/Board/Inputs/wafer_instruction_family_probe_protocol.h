@@ -14,7 +14,6 @@
 
 #define WAFER_IFP_REQUEST_MAGIC UINT64_C(0x3151455246494657)
 #define WAFER_IFP_RECORD_MAGIC UINT64_C(0x3143455246494657)
-#define WAFER_IFP_SCHEMA 2U
 #define WAFER_IFP_REQUEST_WORDS 16U
 #define WAFER_IFP_RECORD_WORDS 32U
 #define WAFER_IFP_RESOURCE_BYTES 16384U
@@ -451,7 +450,7 @@ enum WaferIFPDeferredReason {
     CT_REDUCE, F16, EXACT_BITS, REASON_NONE, 8, 256, 0)                       \
   X(REDUCE_MIN_F16_C_CX, 195, "reduce-min-f16-c-cx-w4c8", SAFE,             \
     CT_REDUCE, F16, EXACT_BITS, REASON_NONE, 8, 256, 0)                       \
-  /* Historical raw dimensions 3/5 are absent from the version-matched       \
+  /* Historical raw dimensions 3/5 are absent from the current               \
    * public enum.  An isolated dimension-3 launch exceeded its outer         \
    * deadline, so the entire N/HWC raw class remains discoverable but cannot \
    * reach dispatch without a future, separately authorized protocol. */     \
@@ -581,7 +580,7 @@ enum WaferIFPStatus {
 
 enum WaferIFPRequestWord {
   WAFER_IFP_REQ_MAGIC = 0,
-  WAFER_IFP_REQ_SCHEMA_AND_WORDS = 1,
+  WAFER_IFP_REQ_WORD_COUNT = 1,
   WAFER_IFP_REQ_CASE = 2,
   WAFER_IFP_REQ_DISPOSITION = 3,
   WAFER_IFP_REQ_FAMILY = 4,
@@ -599,7 +598,7 @@ enum WaferIFPRequestWord {
 
 enum WaferIFPRecordWord {
   WAFER_IFP_REC_MAGIC = 0,
-  WAFER_IFP_REC_SCHEMA_AND_WORDS = 1,
+  WAFER_IFP_REC_WORD_COUNT = 1,
   WAFER_IFP_REC_STATUS = 2,
   WAFER_IFP_REC_CASE = 3,
   WAFER_IFP_REC_DISPOSITION = 4,

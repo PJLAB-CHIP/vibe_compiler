@@ -282,47 +282,19 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             ],
         )
 
-    def test_hf_megatron_marks_explicit_llama_parameter_specs(self):
+    def test_hf_card_partition_marks_replicate_source_boundary(self):
         fake_spmd = FakeSpmd()
-        mesh = fake_spmd.Mesh(list(range(16)), (16,), ("tensor",))
-        input_norm = object()
-        post_attention_norm = object()
-        q_projection = object()
-        k_projection = object()
-        v_projection = object()
-        o_projection = object()
-        gate_projection = object()
-        up_projection = object()
-        down_projection = object()
-        parameters = (
-            input_norm,
-            post_attention_norm,
-            q_projection,
-            k_projection,
-            v_projection,
-            o_projection,
-            gate_projection,
-            up_projection,
-            down_projection,
-        )
-        parameter_specs = (
-            (input_norm, (None,)),
-            (post_attention_norm, (None,)),
-            (q_projection, ("tensor", None)),
-            (k_projection, ("tensor", None)),
-            (v_projection, ("tensor", None)),
-            (o_projection, (None, "tensor")),
-            (gate_projection, ("tensor", None)),
-            (up_projection, ("tensor", None)),
-            (down_projection, (None, "tensor")),
-        )
+        mesh = self.tool.create_hf_card_partition_mesh(fake_spmd)
+        input_norm = FakeTensor((32,))
+        q_projection = FakeTensor((32, 32))
+        down_projection = FakeTensor((64, 32))
+        parameters = (input_norm, q_projection, down_projection)
         module = types.SimpleNamespace(
             parameters=lambda: iter(parameters),
-            wafer_parameter_sharding_specs=lambda: parameter_specs,
         )
-        input_tensor = object()
+        input_tensor = FakeTensor((1, 8, 32))
 
-        self.tool.apply_hf_megatron_sharding_marks(
+        self.tool.apply_hf_card_partition_marks(
             spmd_module=fake_spmd,
             mesh=mesh,
             input_tensor=input_tensor,
@@ -330,18 +302,16 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
         )
 
         self.assertEqual(
+            (mesh.mesh_shape, mesh.axis_names),
+            ((1,), ("card_partition",)),
+        )
+        self.assertEqual(
             fake_spmd.mark_calls,
             [
                 (input_tensor, mesh, (None, None, None)),
                 (input_norm, mesh, (None,)),
-                (post_attention_norm, mesh, (None,)),
-                (q_projection, mesh, ("tensor", None)),
-                (k_projection, mesh, ("tensor", None)),
-                (v_projection, mesh, ("tensor", None)),
-                (o_projection, mesh, (None, "tensor")),
-                (gate_projection, mesh, ("tensor", None)),
-                (up_projection, mesh, ("tensor", None)),
-                (down_projection, mesh, (None, "tensor")),
+                (q_projection, mesh, (None, None)),
+                (down_projection, mesh, (None, None)),
             ],
         )
 

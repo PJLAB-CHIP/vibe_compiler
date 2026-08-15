@@ -409,14 +409,13 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
       << llvm::toString(verified.takeError());
   std::string canonical =
       wafer::runtime::serializeCanonicalPackageJson(*verified);
-  EXPECT_NE(canonical.find("\"schema_version\": 8"), std::string::npos);
   EXPECT_NE(canonical.find("\"card_count\": 1"), std::string::npos);
   EXPECT_NE(canonical.find("\"tile_count\": 16"), std::string::npos);
   EXPECT_NE(canonical.find("\"completion\": \"return_after_local_drain\""),
             std::string::npos);
   EXPECT_NE(canonical.find("\"identity\": \"wafer-tx81-single-card\""),
             std::string::npos);
-  EXPECT_NE(canonical.find("\"runtime_abi\": \"wafer-tx81-kernel-v3\""),
+  EXPECT_NE(canonical.find("\"runtime_abi\": \"wafer-tx81-kernel\""),
             std::string::npos);
   EXPECT_NE(canonical.find("\"launch\": {"), std::string::npos);
   EXPECT_NE(canonical.find("\"kind\": \"kernel\""), std::string::npos);
@@ -437,23 +436,12 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
             wafer::runtime::serializeCanonicalPackageJson(*verified));
 }
 
-TEST_F(PackageManifestTest, RejectsUnsupportedSchemaAndMissingTargetFacts) {
+TEST_F(PackageManifestTest, RejectsMissingTargetFacts) {
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> verified = verify();
   ASSERT_TRUE(static_cast<bool>(verified))
       << llvm::toString(verified.takeError());
   std::string canonical =
       wafer::runtime::serializeCanonicalPackageJson(*verified);
-
-  std::string unsupported = canonical;
-  size_t schema = unsupported.find("\"schema_version\": 8");
-  ASSERT_NE(schema, std::string::npos);
-  unsupported.replace(schema, std::string("\"schema_version\": 8").size(),
-                      "\"schema_version\": 999");
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> rejected =
-      wafer::runtime::parseCanonicalPackageJson(unsupported, root);
-  ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("schema_version"),
-            std::string::npos);
 
   std::string missingIdentity = canonical;
   size_t identity =
@@ -462,7 +450,8 @@ TEST_F(PackageManifestTest, RejectsUnsupportedSchemaAndMissingTargetFacts) {
   missingIdentity.erase(identity, std::string("    \"identity\": "
                                               "\"wafer-tx81-single-card\",\n")
                                       .size());
-  rejected = wafer::runtime::parseCanonicalPackageJson(missingIdentity, root);
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> rejected =
+      wafer::runtime::parseCanonicalPackageJson(missingIdentity, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(
       llvm::toString(rejected.takeError()).find("missing field 'identity'"),
@@ -580,7 +569,8 @@ TEST_F(PackageManifestTest, RejectsUnknownFieldsAndNonCanonicalJSON) {
             std::string::npos);
 
   std::string duplicate = canonical;
-  duplicate.insert(duplicate.find("\n"), "\n  \"schema_version\": 8,");
+  duplicate.insert(duplicate.find("\"card_count\""),
+                   "\"card_count\": 1,\n  ");
   rejected = wafer::runtime::parseCanonicalPackageJson(duplicate, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_FALSE(llvm::toString(rejected.takeError()).empty());

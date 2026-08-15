@@ -164,7 +164,7 @@ def validate_output(
     rec = catalog.REC
     expected_record = {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (catalog.SCHEMA << 32) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": case.case_id,
         "INPUT_BYTES": case.input_bytes,
@@ -333,8 +333,10 @@ def main() -> int:
         package_support.require_board_args(args)
     source = package_support.write_source_program(args)
     package = package_support.compile_seed_package(args, source)
-    module_path, resource_ids = package_support.locate_bindings(package)
-    package_support.build_probe(args, package, module_path)
+    module_path, resource_ids, slots_per_tile = package_support.locate_bindings(
+        package
+    )
+    package_support.build_probe(args, package, module_path, slots_per_tile)
     package_support.verify_no_card(args, package)
     if args.no_card:
         return 0

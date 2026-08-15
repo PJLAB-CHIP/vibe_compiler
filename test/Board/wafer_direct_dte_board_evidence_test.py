@@ -8,102 +8,84 @@ import dataclasses
 import unittest
 
 import wafer_direct_dte_board_evidence as evidence
+import wafer_runtime_launch_contract as runtime_launch
 
 
 def valid_manifest() -> dict[str, object]:
-    resources: list[dict[str, object]] = []
-    entries: list[dict[str, object]] = []
-    completions: list[dict[str, object]] = []
-    for rank in range(evidence.RANK_COUNT):
-        input_id = rank * 3
-        output_id = input_id + 1
-        status_id = input_id + 2
-        resources.extend(
-            [
-                {
-                    "id": input_id,
-                    "rank": rank,
-                    "role": "user_input",
-                    "role_index": 0,
-                    "type": {"dtype": "i8", "shape": [256]},
-                    "bytes": 256,
-                    "alignment": 256,
-                    "access": "read_only",
-                    "host_visible": True,
-                },
-                {
-                    "id": output_id,
-                    "rank": rank,
-                    "role": "output",
-                    "role_index": 0,
-                    "type": {"dtype": "i8", "shape": [256]},
-                    "bytes": 256,
-                    "alignment": 256,
-                    "access": "write_only",
-                    "host_visible": True,
-                },
-                {
-                    "id": status_id,
-                    "rank": rank,
-                    "role": "transport_status",
-                    "role_index": 0,
-                    "type": {"dtype": "u32", "shape": [1]},
-                    "bytes": evidence.DIRECT_DTE_STATUS_BYTES,
-                    "alignment": evidence.DIRECT_DTE_STATUS_ALIGNMENT,
-                    "access": "read_write",
-                    "host_visible": False,
-                },
-            ]
-        )
-        entries.append(
-            {
-                "id": rank,
-                "rank": rank,
-                "module": 0,
-                "slots": [
-                    {
-                        "ordinal": 0,
-                        "resource": input_id,
-                        "access": "read_only",
-                    },
-                    {
-                        "ordinal": 1,
-                        "resource": output_id,
-                        "access": "write_only",
-                    },
-                    {
-                        "ordinal": 2,
-                        "resource": status_id,
-                        "access": "read_write",
-                    },
-                ],
-                "terminal_completion": rank,
-                "transport": {
-                    "kind": "direct_dte",
-                    "status_resource": status_id,
-                    "status_abi": evidence.DIRECT_DTE_STATUS_ABI,
-                    "host_watchdog_required": True,
-                },
-            }
-        )
-        completions.append(
-            {"id": rank, "rank": rank, "kind": "entry_return"}
-        )
-    return {
-        "schema_version": evidence.SCHEMA_VERSION,
+    manifest: dict[str, object] = {
+        "program": {"id": 0},
         "target": {
+            "identity": "wafer-tx81-single-card",
+            "runtime_abi": "wafer-tx81-kernel",
             "launch": {
                 "kind": "kernel",
-                "form": "cluster",
-                "entry_abi": "rank-major-pointer-table",
-                "phases": ["prepare", "main"],
-            }
+                "form": "grid",
+                "entry_abi": "tile-major-pointer-table",
+                "phases": ["main"],
+            },
+            "module_format": "elf-riscv64",
         },
-        "rank_count": evidence.RANK_COUNT,
-        "resources": resources,
-        "entries": entries,
-        "completions": completions,
+        "card_count": 1,
+        "tile_count": evidence.TILE_COUNT,
+        "resources": [],
+        "modules": [
+            {
+                "id": 0,
+                "path": "modules/tile.so",
+                "digest": (
+                    "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649"
+                    "349ca495991b7852b855"
+                ),
+                "format": "elf-riscv64",
+                "exports": [
+                    {"role": "main", "symbol": "main"},
+                ],
+            }
+        ],
+        "entries": [
+            {
+                "id": tile,
+                "card_id": 0,
+                "tile_id": tile,
+                "launch_slot": tile,
+                "module": 0,
+                "slots": [],
+                "completion": "return_after_local_drain",
+                "transport": {"kind": "none"},
+            }
+            for tile in range(evidence.TILE_COUNT)
+        ],
     }
+    runtime_launch.configure_direct_dte_tile_package(
+        manifest,
+        resources=(
+            runtime_launch.SharedBoundaryResourceSpec(
+                role="user_input",
+                role_index=0,
+                name="input",
+                type={"dtype": "i8", "shape": [256]},
+                bytes=256,
+                alignment=256,
+                access="read_only",
+                host_visible=True,
+            ),
+            runtime_launch.SharedBoundaryResourceSpec(
+                role="output",
+                role_index=0,
+                name="output",
+                type={"dtype": "i8", "shape": [256]},
+                bytes=256,
+                alignment=256,
+                access="write_only",
+                host_visible=True,
+            ),
+        ),
+        status_abi=evidence.DIRECT_DTE_STATUS_ABI,
+        status_bytes=evidence.DIRECT_DTE_STATUS_BYTES,
+        status_alignment=evidence.DIRECT_DTE_STATUS_ALIGNMENT,
+        context="Direct-DTE evidence test",
+    )
+    return manifest
 
 
 def valid_stdout() -> str:
@@ -115,14 +97,14 @@ def valid_stdout() -> str:
         "board_stage: cleanup",
     ]
     lines.extend(
-        f"terminal_completion: {rank} kind=entry_return rank={rank}"
-        for rank in range(evidence.RANK_COUNT)
+        "completion: return_after_local_drain tile_id=" + str(tile)
+        for tile in range(evidence.TILE_COUNT)
     )
     lines.extend(
         [
-            f"invocation_ranks: {evidence.RANK_COUNT}",
+            f"invocation_tiles: {evidence.TILE_COUNT}",
             "launch_pattern: cluster-x16",
-            "logical_tile_domain: 0..15",
+            "physical_tile_domain: 0..15",
             "board_execution: true",
         ]
     )
@@ -130,18 +112,21 @@ def valid_stdout() -> str:
 
 
 class DirectDTEManifestEvidenceTest(unittest.TestCase):
-    def test_accepts_exact_status_v2_watchdog_completion_domain(self) -> None:
+    def test_accepts_exact_status_watchdog_completion_domain(self) -> None:
         result = evidence.validate_direct_dte_manifest(valid_manifest())
         self.assertEqual(
-            dict(result.status_resource_by_rank),
-            {rank: rank * 3 + 2 for rank in range(evidence.RANK_COUNT)},
+            dict(result.status_resource_by_tile),
+            {tile: tile + 2 for tile in range(evidence.TILE_COUNT)},
         )
         self.assertEqual(
-            result.terminal_completion_by_rank,
-            tuple((rank, rank) for rank in range(evidence.RANK_COUNT)),
+            result.completion_by_tile,
+            tuple(
+                (tile, "return_after_local_drain")
+                for tile in range(evidence.TILE_COUNT)
+            ),
         )
         self.assertEqual(
-            result.host_watchdog_ranks, tuple(range(evidence.RANK_COUNT))
+            result.host_watchdog_tiles, tuple(range(evidence.TILE_COUNT))
         )
 
     def test_rejects_incomplete_or_malformed_status_domain(self) -> None:
@@ -186,17 +171,17 @@ class DirectDTEManifestEvidenceTest(unittest.TestCase):
         ] = 2
 
         wrong_completion = valid_manifest()
-        wrong_completion["entries"][15]["terminal_completion"] = 14
+        wrong_completion["entries"][15]["completion"] = "unsupported"
 
-        missing_completion = valid_manifest()
-        missing_completion["completions"].pop()
+        duplicate_tile = valid_manifest()
+        duplicate_tile["entries"][15]["tile_id"] = 14
 
         for manifest in (
             wrong_abi,
             no_watchdog,
             wrong_status_resource,
             wrong_completion,
-            missing_completion,
+            duplicate_tile,
         ):
             with self.subTest(manifest=manifest), self.assertRaises(
                 RuntimeError
@@ -208,12 +193,11 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest = evidence.validate_direct_dte_manifest(valid_manifest())
 
-    def test_command_requires_one_bounded_all_rank_board_deadline(self) -> None:
+    def test_command_requires_one_bounded_board_deadline(self) -> None:
         command = [
             "wafer-run",
             "--package-dir",
             "package",
-            "--all-ranks",
             "--board",
             "--completion-timeout-ms",
             "60000",
@@ -222,7 +206,7 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
             evidence.validate_direct_dte_board_command(command), 60000
         )
         for mutation in (
-            [item for item in command if item != "--all-ranks"],
+            command + ["--all-Tiles"],
             command + ["--no-card"],
             command[:-2],
             command[:-1] + ["0"],
@@ -237,25 +221,25 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
         result = evidence.validate_direct_dte_board_output(
             valid_stdout(), self.manifest, completion_timeout_ms=60000
         )
-        self.assertTrue(result.runtime_all_rank_success_enforced)
-        self.assertFalse(result.has_observed_all_rank_success)
-        self.assertIsNone(result.observed_status_by_rank)
+        self.assertTrue(result.runtime_all_tile_success_enforced)
+        self.assertFalse(result.has_observed_all_tile_success)
+        self.assertIsNone(result.observed_status_by_tile)
         self.assertEqual(
             result.status_observation_gap, evidence.STATUS_OBSERVATION_GAP
         )
         self.assertIn(
-            "do not expose the 16 per-rank", result.status_observation_gap
+            "do not expose the 16 per-tile", result.status_observation_gap
         )
 
-    def test_accepts_only_explicit_exact_all_rank_success_records(self) -> None:
+    def test_accepts_only_explicit_exact_all_tile_success_records(self) -> None:
         observations = [
             evidence.DirectDTEStatusObservation(
-                rank=rank,
-                resource=dict(self.manifest.status_resource_by_rank)[rank],
+                tile=tile_id,
+                resource=dict(self.manifest.status_resource_by_tile)[tile_id],
                 status_abi=evidence.DIRECT_DTE_STATUS_ABI,
                 value=evidence.DIRECT_DTE_STATUS_SUCCESS,
             )
-            for rank in range(evidence.RANK_COUNT)
+            for tile_id in range(evidence.TILE_COUNT)
         ]
         result = evidence.validate_direct_dte_board_output(
             valid_stdout(),
@@ -263,11 +247,11 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
             completion_timeout_ms=60000,
             status_observations=observations,
         )
-        self.assertTrue(result.has_observed_all_rank_success)
+        self.assertTrue(result.has_observed_all_tile_success)
         self.assertIsNone(result.status_observation_gap)
         self.assertEqual(
-            [row.rank for row in result.observed_status_by_rank],  # type: ignore[union-attr]
-            list(range(evidence.RANK_COUNT)),
+            [row.tile for row in result.observed_status_by_tile],  # type: ignore[union-attr]
+            list(range(evidence.TILE_COUNT)),
         )
 
         partial = observations[:-1]
@@ -299,24 +283,24 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
                     status_observations=rows,
                 )
 
-    def test_rejects_partial_or_wrong_terminal_completion_output(self) -> None:
-        missing_terminal = valid_stdout().replace(
-            "terminal_completion: 15 kind=entry_return rank=15\n", ""
+    def test_rejects_partial_or_wrong_completion_output(self) -> None:
+        missing_completion = valid_stdout().replace(
+            "completion: return_after_local_drain tile_id=15\n", ""
         )
-        duplicate_rank = valid_stdout().replace(
-            "terminal_completion: 15 kind=entry_return rank=15",
-            "terminal_completion: 15 kind=entry_return rank=14",
+        duplicate_tile = valid_stdout().replace(
+            "completion: return_after_local_drain tile_id=15",
+            "completion: return_after_local_drain tile_id=14",
         )
         wrong_completion = valid_stdout().replace(
-            "terminal_completion: 7 kind=entry_return rank=7",
-            "terminal_completion: 9 kind=entry_return rank=7",
+            "completion: return_after_local_drain tile_id=7",
+            "completion: unsupported tile_id=7",
         )
         missing_stage = valid_stdout().replace(
             "board_stage: completion\n", ""
         )
         for stdout in (
-            missing_terminal,
-            duplicate_rank,
+            missing_completion,
+            duplicate_tile,
             wrong_completion,
             missing_stage,
         ):

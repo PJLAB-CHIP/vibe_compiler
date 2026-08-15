@@ -1,7 +1,7 @@
 # RUN: test ! -e %wafer_src_root/tools/wafer_package_metadata.py
 # RUN: rm -rf %t.legacy
 # RUN: mkdir -p %t.legacy/modules
-# RUN: %python -c 'import pathlib; pathlib.Path("%t.legacy/manifest.json").write_text("{\\\"legacy_model\\\":{}}\\n")'
+# RUN: %python -c 'import pathlib; pathlib.Path("%t.legacy/manifest.json").write_text("{\"legacy_model\":{}}\n")'
 # RUN: not wafer-run --package-dir %t.legacy --no-card 2>&1 | FileCheck %s
 
 # CHECK: wafer-run: manifest contains unknown field

@@ -17,7 +17,6 @@ import wafer_memory_descriptor_calibration_catalog as catalog
 
 
 def main() -> int:
-    assert catalog.SCHEMA == 3
     assert catalog.REQUEST_WORDS == 40
     assert catalog.RECORD_WORDS == 64
     assert catalog.RESOURCE_BYTES == 2 * 1024 * 1024
@@ -416,9 +415,7 @@ def main() -> int:
             f"<{catalog.REQUEST_WORDS}Q", built.request
         )
         assert request_words[catalog.REQ["MAGIC"]] == catalog.REQUEST_MAGIC
-        assert request_words[catalog.REQ["SCHEMA_AND_WORDS"]] == (
-            catalog.SCHEMA << 32
-        ) | catalog.REQUEST_WORDS
+        assert request_words[catalog.REQ["WORD_COUNT"]] == catalog.REQUEST_WORDS
         assert request_words[catalog.REQ["WORKER_A"]] == case.worker_a
         assert request_words[catalog.REQ["WORKER_B"]] == case.worker_b
         assert request_words[catalog.REQ["ROUNDS"]] == case.rounds
@@ -711,10 +708,7 @@ def main() -> int:
             meta = [0] * catalog.CONFLICT_RECORD_META_WORDS
             meta_values = {
                 "MAGIC": catalog.CONFLICT_RECORD_MAGIC,
-                "SCHEMA_AND_WORDS": (
-                    catalog.CONFLICT_SCHEMA << 32
-                )
-                | catalog.CONFLICT_RECORD_META_WORDS,
+                "WORD_COUNT": catalog.CONFLICT_RECORD_META_WORDS,
                 "STATUS": 0,
                 "COORDINATE": invocation.pair.coordinate_id,
                 "INNER_CASE": case.case_id,

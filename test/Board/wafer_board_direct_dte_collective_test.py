@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile and run a 16-rank sharded Add/reduction Direct-DTE case."""
+"""Compile and run a 16-Tile sharded Add/reduction Direct-DTE case."""
 
 from __future__ import annotations
 
@@ -19,21 +19,20 @@ import numpy as np
 import wafer_runtime_launch_contract as runtime_launch
 
 
-RANK_COUNT = 16
+TILE_COUNT = 16
 LOCAL_ELEMENTS = 458752
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TARGET_IDENTITY = "wafer-tx81-single-card"
-STATUS_ABI = "wafer-direct-dte-status-v2"
+STATUS_ABI = "wafer-direct-dte-status"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
 DIRECT_DTE_PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 PROFILE_INSTRUMENTATION_READY = (
-    "profile_instrumentation: ready schema=7 ranks=16 variants=1 captures=2"
+    "profile_instrumentation: ready cards=1 tiles=16 captures=2 "
+    "target_call_sites=1"
 )
 PROFILE_MEASUREMENT_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
-PROFILE_EVIDENCE_SCHEMA_VERSION = 8
-PROFILE_ANALYSIS_SCHEMA_VERSION = 7
 ELEMENT_TYPES = {
     "f16": ("float16", np.dtype("<f2")),
     "f32": ("float32", np.dtype("<f4")),
@@ -106,18 +105,18 @@ def compile_package(
         str(source),
         "--output-program-dir",
         str(package),
-        f"--execution-ranks={RANK_COUNT}",
+        "--num-partitions=1",
         f"--launch-kind={LAUNCH_KIND}",
     ]
     if profile:
         command.append("--profile")
     result = run(command)
     if (
-        f"wrote verified package with execution-ranks={RANK_COUNT}"
+        "wrote verified package with num-partitions=1 tiles=16"
         not in result.stdout
     ):
         raise RuntimeError(
-            "wafer-compile did not report a verified rank-16 package"
+            "wafer-compile did not report the current 16-Tile package"
         )
     written_instrumentation = "wafer-compile: wrote profile instrumentation:"
     if profile and written_instrumentation not in result.stdout:
@@ -179,27 +178,20 @@ def write_fixture(
     source = work_dir / "source-program"
     (source / "functions").mkdir(parents=True)
     (source / "data").mkdir()
-    devices = ",".join(str(rank) for rank in range(RANK_COUNT))
     module = f'''module {{
-  wafer.target.topology @default {{card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}}
-  wafer.execution.mesh @default_mesh {{topology = @default, axes = ["rank"], shape = array<i64: 16>, policy = "all_available", endpoints = array<i64>}}
-  func.func @main(%arg0: tensor<{RANK_COUNT}x{local_elements}x{element_type}>) -> tensor<{RANK_COUNT}x{local_elements}x{element_type}> {{
-    %sharded = stablehlo.custom_call @Sharding(%arg0) {{
-      backend_config = "",
-      mhlo.sharding = "{{devices=[{RANK_COUNT},1]{devices}}}"
-    }} : (tensor<{RANK_COUNT}x{local_elements}x{element_type}>) -> tensor<{RANK_COUNT}x{local_elements}x{element_type}>
-    %sum = stablehlo.add %sharded, %sharded : tensor<{RANK_COUNT}x{local_elements}x{element_type}>
+  func.func @main(%arg0: tensor<{TILE_COUNT}x{local_elements}x{element_type}>) -> tensor<{TILE_COUNT}x{local_elements}x{element_type}> {{
+    %sum = stablehlo.add %arg0, %arg0 : tensor<{TILE_COUNT}x{local_elements}x{element_type}>
     %zero = stablehlo.constant dense<0.0> : tensor<{element_type}>
     %result = "stablehlo.reduce"(%sum, %zero) ({{
     ^bb0(%lhs: tensor<{element_type}>, %rhs: tensor<{element_type}>):
       %value = stablehlo.add %lhs, %rhs : tensor<{element_type}>
       stablehlo.return %value : tensor<{element_type}>
-    }}) {{dimensions = array<i64: 0>}} : (tensor<{RANK_COUNT}x{local_elements}x{element_type}>, tensor<{element_type}>) -> tensor<{local_elements}x{element_type}>
+    }}) {{dimensions = array<i64: 0>}} : (tensor<{TILE_COUNT}x{local_elements}x{element_type}>, tensor<{element_type}>) -> tensor<{local_elements}x{element_type}>
     %broadcast = "stablehlo.broadcast_in_dim"(%result) {{
       broadcast_dimensions = array<i64: 1>
-    }} : (tensor<{local_elements}x{element_type}>) -> tensor<{RANK_COUNT}x{local_elements}x{element_type}>
-    %tagged = stablehlo.add %broadcast, %sharded : tensor<{RANK_COUNT}x{local_elements}x{element_type}>
-    return %tagged : tensor<{RANK_COUNT}x{local_elements}x{element_type}>
+    }} : (tensor<{local_elements}x{element_type}>) -> tensor<{TILE_COUNT}x{local_elements}x{element_type}>
+    %tagged = stablehlo.add %broadcast, %arg0 : tensor<{TILE_COUNT}x{local_elements}x{element_type}>
+    return %tagged : tensor<{TILE_COUNT}x{local_elements}x{element_type}>
   }}
 }}
 '''
@@ -208,14 +200,14 @@ def write_fixture(
         "stablehlo_version": "0.0.0",
         "input_signature": [
             {
-                "shape": [RANK_COUNT, local_elements],
+                "shape": [TILE_COUNT, local_elements],
                 "dtype": metadata_dtype,
                 "dynamic_dims": [],
             }
         ],
         "output_signature": [
             {
-                "shape": [RANK_COUNT, local_elements],
+                "shape": [TILE_COUNT, local_elements],
                 "dtype": metadata_dtype,
                 "dynamic_dims": [],
             }
@@ -236,60 +228,13 @@ def validate_manifest(
     package: pathlib.Path,
     local_elements: int = LOCAL_ELEMENTS,
     element_type: str = "f16",
-) -> dict[tuple[int, str, int], int]:
+) -> dict[tuple[str, int], int]:
     if element_type not in ELEMENT_TYPES:
         raise RuntimeError(f"unsupported fixture element type {element_type}")
     metadata_dtype, element_dtype = ELEMENT_TYPES[element_type]
     metadata = json.loads((package / "functions" / "forward.meta").read_text())
-    boundary = metadata.get("distributed_boundary")
-    if not isinstance(boundary, dict) or boundary.get("logical_rank_count") != RANK_COUNT:
-        raise RuntimeError("SPMD helper did not write the 16-rank boundary")
-    inputs = boundary.get("inputs")
-    outputs = boundary.get("outputs")
-    if not isinstance(inputs, list) or len(inputs) != 1:
-        raise RuntimeError("SPMD helper did not write the input boundary")
-    if not isinstance(outputs, list) or len(outputs) != 1:
-        raise RuntimeError("SPMD helper did not write the output boundary")
-    input_binding = inputs[0]
-    output_binding = outputs[0]
-    expected_input_ranks = [
-        {
-            "rank": rank,
-            "replica_id": 0,
-            "offsets": [rank, 0],
-            "sizes": [1, local_elements],
-            "strides": [1, 1],
-        }
-        for rank in range(RANK_COUNT)
-    ]
-    expected_output_ranks = [
-        {
-            "rank": rank,
-            "replica_id": 0,
-            "offsets": [rank, 0],
-            "sizes": [1, local_elements],
-            "strides": [1, 1],
-        }
-        for rank in range(RANK_COUNT)
-    ]
-    if input_binding != {
-        "argument_index": 0,
-        "distribution": "partitioned",
-        "global_shape": [RANK_COUNT, local_elements],
-        "local_shape": [1, local_elements],
-        "dtype": metadata_dtype,
-        "ranks": expected_input_ranks,
-    }:
-        raise RuntimeError("SPMD helper produced an unexpected input partition")
-    if output_binding != {
-        "result_index": 0,
-        "distribution": "partitioned",
-        "global_shape": [RANK_COUNT, local_elements],
-        "local_shape": [1, local_elements],
-        "dtype": metadata_dtype,
-        "ranks": expected_output_ranks,
-    }:
-        raise RuntimeError("SPMD helper produced an unexpected output partition")
+    if "distributed_boundary" in metadata:
+        raise RuntimeError("current source metadata contains a retired boundary")
 
     manifest = json.loads((package / "manifest.json").read_text())
     runtime_launch.require_manifest_launch(
@@ -297,11 +242,9 @@ def validate_manifest(
         runtime_launch.CLUSTER_KERNEL_LAUNCH,
         context="Direct-DTE case",
     )
-    if (
-        manifest.get("rank_count") != RANK_COUNT
-    ):
+    if manifest.get("tile_count") != TILE_COUNT:
         raise RuntimeError(
-            "Direct-DTE case did not produce the closed schema-v7 kernel launch"
+            "Direct-DTE case did not produce the current kernel launch"
         )
     modules = manifest.get("modules")
     if not isinstance(modules, list) or len(modules) != 1:
@@ -312,106 +255,76 @@ def validate_manifest(
     ) or not (package / module["path"]).is_file():
         raise RuntimeError("Direct-DTE shared module exports are invalid")
 
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="Direct-DTE case"
+    )
+    if any(
+        entry.get("module") != module.get("id")
+        or entry.get("transport", {}).get("kind") != "direct_dte"
+        or entry["transport"].get("status_abi") != STATUS_ABI
+        or entry["transport"].get("host_watchdog_required") is not True
+        for entry in entries
+    ):
+        raise RuntimeError("Direct-DTE Tile transport contract is invalid")
     resources = manifest.get("resources")
-    entries = manifest.get("entries")
-    if not isinstance(resources, list) or not isinstance(entries, list):
-        raise RuntimeError("Direct-DTE manifest domains are not lists")
-    resources_by_rank: dict[int, list[dict[str, object]]] = {
-        rank: [] for rank in range(RANK_COUNT)
+    if not isinstance(resources, list):
+        raise RuntimeError("Direct-DTE resources are not a list")
+    host_resources = [
+        resource
+        for resource in resources
+        if isinstance(resource, dict) and resource.get("host_visible") is True
+    ]
+    host_bindings: dict[tuple[str, int], int] = {}
+    expected_type = {
+        "dtype": element_type,
+        "shape": [TILE_COUNT, local_elements],
     }
-    for resource in resources:
-        if not isinstance(resource, dict) or resource.get("rank") not in resources_by_rank:
-            raise RuntimeError("Direct-DTE resource rank is invalid")
-        resources_by_rank[resource["rank"]].append(resource)
-
-    host_bindings: dict[tuple[int, str, int], int] = {}
-    if sorted(entry.get("rank") for entry in entries) != list(range(RANK_COUNT)):
-        raise RuntimeError("Direct-DTE entry rank domain is incomplete")
-    for entry in entries:
-        rank = entry["rank"]
+    expected_bytes = TILE_COUNT * local_elements * element_dtype.itemsize
+    for resource in host_resources:
+        scope = resource.get("scope")
+        key = (resource.get("role"), resource.get("role_index"))
         if (
-            entry.get("module") != module.get("id")
-            or entry.get("transport", {}).get("kind") != "direct_dte"
-            or entry["transport"].get("status_abi") != STATUS_ABI
-            or entry["transport"].get("host_watchdog_required") is not True
+            key not in {("user_input", 0), ("output", 0)}
+            or key in host_bindings
+            or scope != {"kind": "card", "card_id": 0}
+            or resource.get("type") != expected_type
+            or resource.get("bytes") != expected_bytes
+            or not isinstance(resource.get("id"), int)
         ):
-            raise RuntimeError(f"rank {rank} has an invalid Direct-DTE contract")
-        rank_resources = resources_by_rank[rank]
-        status = [r for r in rank_resources if r.get("role") == "transport_status"]
-        if (
-            len(status) != 1
-            or status[0].get("type") != {"dtype": "u32", "shape": [1]}
-            or status[0].get("bytes") != STATUS_STORAGE_BYTES
-            or status[0].get("alignment") != STATUS_STORAGE_ALIGNMENT
-        ):
-            raise RuntimeError(f"rank {rank} has an invalid transport status resource")
-        typed_host_resources = {
-            (resource.get("role"), resource.get("role_index")): resource.get("type")
-            for resource in rank_resources
-            if resource.get("host_visible")
-        }
-        if typed_host_resources != {
-            ("user_input", 0): {
-                "dtype": element_type,
-                "shape": [1, local_elements],
-            },
-            ("output", 0): {
-                "dtype": element_type,
-                "shape": [1, local_elements],
-            },
-        }:
-            raise RuntimeError(f"rank {rank} has invalid typed host resources")
-        for resource in rank_resources:
-            if not resource.get("host_visible"):
-                continue
-            if resource.get("bytes") != local_elements * element_dtype.itemsize:
-                raise RuntimeError(
-                    f"rank {rank} host resource byte size is invalid"
-                )
-            key = (rank, resource.get("role"), resource.get("role_index"))
-            if key in host_bindings or key[1:] not in {
-                ("user_input", 0),
-                ("output", 0),
-            }:
-                raise RuntimeError(f"rank {rank} has an unexpected host resource")
-            host_bindings[key] = resource["id"]
-    expected = {
-        (rank, role, 0)
-        for rank in range(RANK_COUNT)
-        for role in ("user_input", "output")
-    }
-    if set(host_bindings) != expected:
-        raise RuntimeError("Direct-DTE host resources are not all-and-only")
+            raise RuntimeError("Direct-DTE program-boundary resource is invalid")
+        host_bindings[key] = resource["id"]
+    if set(host_bindings) != {("user_input", 0), ("output", 0)}:
+        raise RuntimeError("Direct-DTE host resources are not exact")
     return host_bindings
 
 
 def write_raw_files(
     work_dir: pathlib.Path,
-    bindings: dict[tuple[int, str, int], int],
+    bindings: dict[tuple[str, int], int],
     local_elements: int = LOCAL_ELEMENTS,
 ) -> list[str]:
     raw = work_dir / "raw"
     raw.mkdir()
-    arguments: list[str] = []
     lanes = np.arange(local_elements, dtype=np.int32)
     values_i32 = [
         (lanes % 16) * 16
-        if rank == 0
-        else np.full(local_elements, rank * 4, dtype=np.int32)
-        for rank in range(RANK_COUNT)
+        if tile_id == 0
+        else np.full(local_elements, tile_id * 4, dtype=np.int32)
+        for tile_id in range(TILE_COUNT)
     ]
     reduced_i32 = np.sum(
         np.stack(values_i32, axis=0) * 2,
         axis=0,
         dtype=np.int32,
     )
-    expected_payloads: set[bytes] = set()
-    for rank in range(RANK_COUNT):
-        input_ = values_i32[rank].astype("<f2")
-        expected_i32 = reduced_i32 + values_i32[rank]
+    inputs: list[np.ndarray] = []
+    outputs: list[np.ndarray] = []
+    for tile_id in range(TILE_COUNT):
+        input_ = values_i32[tile_id].astype("<f2")
+        expected_i32 = reduced_i32 + values_i32[tile_id]
         expected = expected_i32.astype("<f2")
         if (
-            not np.array_equal(input_.astype(np.int32), values_i32[rank])
+            not np.array_equal(input_.astype(np.int32), values_i32[tile_id])
             or not np.array_equal(expected.astype(np.int32), expected_i32)
             or not np.all(np.isfinite(input_))
             or not np.all(np.isfinite(expected))
@@ -419,27 +332,26 @@ def write_raw_files(
             raise RuntimeError(
                 "Direct-DTE f16 sentinels are not finite and exact"
             )
-        expected_bytes = expected.tobytes()
-        expected_payloads.add(expected_bytes)
-        input_path = raw / f"input_{rank:02d}.f16.raw"
-        expected_path = raw / f"expected_{rank:02d}.f16.raw"
-        input_path.write_bytes(input_.tobytes())
-        expected_path.write_bytes(expected_bytes)
-        arguments.extend(
-            ["--resource", f"{bindings[(rank, 'user_input', 0)]}={input_path}"]
-        )
-        arguments.extend(
-            ["--expected", f"{bindings[(rank, 'output', 0)]}={expected_path}"]
-        )
-    if len(expected_payloads) != RANK_COUNT:
-        raise RuntimeError("Direct-DTE outputs are not rank-distinct sentinels")
-    return arguments
+        inputs.append(input_)
+        outputs.append(expected)
+    if len({output.tobytes() for output in outputs}) != TILE_COUNT:
+        raise RuntimeError("Direct-DTE outputs are not Tile-distinct sentinels")
+    input_path = raw / "input.f16.raw"
+    expected_path = raw / "expected.f16.raw"
+    input_path.write_bytes(np.stack(inputs).astype("<f2").tobytes())
+    expected_path.write_bytes(np.stack(outputs).astype("<f2").tobytes())
+    return [
+        "--resource",
+        f"{bindings[('user_input', 0)]}={input_path}",
+        "--expected",
+        f"{bindings[('output', 0)]}={expected_path}",
+    ]
 
 
 def verify_no_card_evidence(stdout: str, *, instrumentation_expected: bool) -> None:
     required = {
-        "package: id=0 schema=7 ranks=16",
-        f"invocation_ranks: {RANK_COUNT}",
+        "package: id=0 cards=1 tiles=16",
+        f"invocation_tiles: {TILE_COUNT}",
         "board_execution: false",
     }
     output_lines = set(stdout.splitlines())
@@ -455,38 +367,33 @@ def verify_no_card_evidence(stdout: str, *, instrumentation_expected: bool) -> N
 
 def verify_board_evidence(
     stdout: str,
-    bindings: dict[tuple[int, str, int], int],
+    bindings: dict[tuple[str, int], int],
 ) -> None:
     required_evidence = {
         "board_stage: launch",
         "board_stage: completion",
         "board_stage: device-to-host",
         "board_stage: cleanup",
-        f"invocation_ranks: {RANK_COUNT}",
+        f"invocation_tiles: {TILE_COUNT}",
         "launch_pattern: cluster-x16",
-        "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
-        "logical_tile_domain: 0..15",
-        "physical_execution_claim: none",
+        "physical_tile_domain: 0..15",
         "board_execution: true",
     }
     if not required_evidence.issubset(set(stdout.splitlines())):
         raise RuntimeError("board output omitted complete Direct-DTE evidence")
     output_matches = re.findall(
-        rf"^output_compare: resource=(\d+) bytes={LOCAL_ELEMENTS * 2} "
+        rf"^output_compare: resource=(\d+) "
+        rf"bytes={TILE_COUNT * LOCAL_ELEMENTS * 2} "
         r"exact=true$",
         stdout,
         re.MULTILINE,
     )
-    expected_output_ids = {
-        bindings[(rank, "output", 0)] for rank in range(RANK_COUNT)
-    }
-    if len(output_matches) != RANK_COUNT or {
-        int(resource) for resource in output_matches
-    } != expected_output_ids:
-        raise RuntimeError("board output omitted exact rank output evidence")
+    if output_matches != [str(bindings[("output", 0)])]:
+        raise RuntimeError("board output omitted exact global output evidence")
+    runtime_launch.require_board_completion(stdout, context="Direct-DTE case")
     # BoardRuntime checks every typed Direct-DTE status resource for Success
     # before it runs DeviceToHost/Cleanup. Reaching both stages therefore
-    # retains the existing exact 16-rank status gate without inventing a second
+    # retains the existing exact 16-Tile status gate without inventing a second
     # host-visible status protocol in this harness.
 
 
@@ -517,7 +424,6 @@ def verify_profile_report(
     analysis = json.loads(members["analysis.json"].read_text())
     if (
         evidence.get("schema") != "wafer.profile.evidence"
-        or evidence.get("schema_version") != PROFILE_EVIDENCE_SCHEMA_VERSION
         or evidence.get("run_id") != run_directory.name
     ):
         raise RuntimeError("profile evidence identity is invalid")
@@ -547,9 +453,9 @@ def verify_profile_report(
         or not isinstance(trace, dict)
         or trace.get("complete") is not True
         or not isinstance(trace_tiles, list)
-        or len(trace_tiles) != RANK_COUNT
+        or len(trace_tiles) != TILE_COUNT
         or sorted(tile.get("tile") for tile in trace_tiles) != list(
-            range(RANK_COUNT)
+            range(TILE_COUNT)
         )
     ):
         raise RuntimeError(
@@ -568,7 +474,7 @@ def verify_profile_report(
         and isinstance(event.get("operation_end_cycle"), int)
         and event["operation_end_cycle"] > event["operation_begin_cycle"]
     }
-    if direct_dte_source_tiles != set(range(RANK_COUNT)):
+    if direct_dte_source_tiles != set(range(TILE_COUNT)):
         raise RuntimeError(
             "profile trace omitted a real positive Direct-DTE phase event "
             "for one or more tiles"
@@ -578,7 +484,6 @@ def verify_profile_report(
     validity = analysis.get("validity")
     if (
         analysis.get("schema") != "wafer.profile.analysis"
-        or analysis.get("schema_version") != PROFILE_ANALYSIS_SCHEMA_VERSION
         or analysis.get("run_id") != run_directory.name
         or not analysis.get("valid")
         or not isinstance(validity, dict)
@@ -645,8 +550,8 @@ def verify_profile_report(
         or not output.get("primary_output_validated")
         or not output.get("diagnostic_captures_match_primary")
         or not isinstance(tiles, list)
-        or len(tiles) != RANK_COUNT
-        or sorted(tile.get("tile") for tile in tiles) != list(range(RANK_COUNT))
+        or len(tiles) != TILE_COUNT
+        or sorted(tile.get("tile") for tile in tiles) != list(range(TILE_COUNT))
     ):
         raise RuntimeError(
             "profile analysis failed latency, output, or tile qualification"
@@ -750,7 +655,7 @@ def verify_profile_report(
         and event["operation_window_cpu_cycles"] > 0
         and event.get("duration_status") == "Measured"
     } if isinstance(timeline_events, list) else set()
-    if positive_direct_dte_phase_tiles != set(range(RANK_COUNT)):
+    if positive_direct_dte_phase_tiles != set(range(TILE_COUNT)):
         raise RuntimeError(
             "profile analysis omitted a real measured Direct-DTE phase "
             "for one or more tiles"
@@ -798,7 +703,6 @@ def main() -> int:
                 str(args.wafer_run),
                 "--package-dir",
                 str(no_card_package),
-                "--all-ranks",
                 "--no-card",
                 "--direct-dte-status-abi",
                 STATUS_ABI,
@@ -823,15 +727,14 @@ def main() -> int:
     ]
     if any(value is None for value in required):
         raise RuntimeError("board execution requires complete qualification arguments")
-    if args.expected_tile_count != RANK_COUNT:
-        raise RuntimeError(f"--expected-tile-count must be {RANK_COUNT}")
+    if args.expected_tile_count != TILE_COUNT:
+        raise RuntimeError(f"--expected-tile-count must be {TILE_COUNT}")
 
     resource_args = write_raw_files(args.work_dir, bindings)
     command = [
         str(args.wafer_run),
         "--package-dir",
         str(package),
-        "--all-ranks",
         "--board",
         "--device-id",
         str(args.device_id),

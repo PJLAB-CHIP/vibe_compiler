@@ -174,38 +174,38 @@ module {
 // CHECK: %[[IN_ADDR:.+]] = llvm.add %[[DDR_IN]], %[[IN_OFF]] : i64
 // CHECK: %[[OUT_OFF:.+]] = llvm.mlir.constant(20 : i64) : i64
 // CHECK: %[[OUT_ADDR:.+]] = llvm.add %[[DDR_OUT]], %[[OUT_OFF]] : i64
-// CHECK: llvm.call @wafer_tx81_rdma_v3(%[[IN_ADDR]]
-// CHECK: llvm.call @wafer_tx81_gather_scatter_v3
-// CHECK: llvm.call @wafer_tx81_memset_v3
-// CHECK: llvm.call @wafer_tx81_elementwise_add_v3
-// CHECK: llvm.call @wafer_tx81_bit2fp_v3
-// CHECK: llvm.call @wafer_tx81_mask_move_v3
-// CHECK: llvm.call @wafer_tx81_reduce_sum_v3
-// CHECK: llvm.call @wafer_tx81_convert_fp16_fp32_v3
-// CHECK: llvm.call @wafer_tx81_gemm_v3
-// CHECK: llvm.call @wafer_tx81_conv_v3
-// CHECK: llvm.call @wafer_tx81_pool_indexedmax_v3
-// CHECK: llvm.call @wafer_tx81_unpool_mask_v3
-// CHECK: llvm.call @wafer_tx81_tdma_pad_v3
-// CHECK: llvm.call @wafer_tx81_tdma_img2col_v3
-// CHECK: llvm.call @wafer_tx81_peripheral_argmax_v3
-// CHECK: llvm.call @wafer_tx81_wdma_v3({{.*}}%[[OUT_ADDR]]
+// CHECK: llvm.call @wafer_tx81_rdma(%[[IN_ADDR]]
+// CHECK: llvm.call @wafer_tx81_gather_scatter
+// CHECK: llvm.call @wafer_tx81_memset
+// CHECK: llvm.call @wafer_tx81_elementwise_add
+// CHECK: llvm.call @wafer_tx81_bit2fp
+// CHECK: llvm.call @wafer_tx81_mask_move
+// CHECK: llvm.call @wafer_tx81_reduce_sum
+// CHECK: llvm.call @wafer_tx81_convert_fp16_fp32
+// CHECK: llvm.call @wafer_tx81_gemm
+// CHECK: llvm.call @wafer_tx81_conv
+// CHECK: llvm.call @wafer_tx81_pool_indexedmax
+// CHECK: llvm.call @wafer_tx81_unpool_mask
+// CHECK: llvm.call @wafer_tx81_tdma_pad
+// CHECK: llvm.call @wafer_tx81_tdma_img2col
+// CHECK: llvm.call @wafer_tx81_peripheral_argmax
+// CHECK: llvm.call @wafer_tx81_wdma({{.*}}%[[OUT_ADDR]]
 // CHECK: llvm.call @wafer_tx81_ncc_join
 // CHECK: llvm.return
 
-// LLVMIR-DAG: declare void @wafer_tx81_rdma_v3(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
-// LLVMIR-DAG: declare void @wafer_tx81_gather_scatter_v3(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
-// LLVMIR-DAG: declare void @wafer_tx81_gemm_v3(i64, i64, i64, i32, i32, i32, i32, i32, i32)
-// LLVMIR-DAG: declare void @wafer_tx81_mask_move_v3(i64, i32, i64, i32, i32, i32)
-// LLVMIR-DAG: declare void @wafer_tx81_conv_v3(i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
-// LLVMIR-DAG: declare void @wafer_tx81_tdma_img2col_v3(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
-// LLVMIR-DAG: declare void @wafer_tx81_wdma_v3(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_rdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_gather_scatter(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_gemm(i64, i64, i64, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_mask_move(i64, i32, i64, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_conv(i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_tdma_img2col(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
+// LLVMIR-DAG: declare void @wafer_tx81_wdma(i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32)
 // LLVMIR-LABEL: define void @target_instr_kernel(i64 %{{.*}}, i64 %{{.*}})
 // LLVMIR-NOT: call void (...)
-// LLVMIR: call void @wafer_tx81_rdma_v3(i64 %{{.*}}, i64 65536, i32 12, i32 6, i32 16, i32 0, i32 0, i32 2, i32 1, i32 1, i32 2, i32 0)
-// LLVMIR: call void @wafer_tx81_gather_scatter_v3(i64 65538, i64 65796, i32 8, i32 4, i32 4, i32 0, i32 0, i32 2, i32 1, i32 1, i32 4, i32 0, i32 0, i32 2, i32 1, i32 1, i32 0)
-// LLVMIR: call void @wafer_tx81_gemm_v3(i64 65792, i64 66048, i64 66304, i32 2, i32 3, i32 4, i32 1, i32 2, i32 0)
-// LLVMIR: call void @wafer_tx81_conv_v3(i64 98304, i64 131072, i64 262144,
+// LLVMIR: call void @wafer_tx81_rdma(i64 %{{.*}}, i64 65536, i32 12, i32 6, i32 16, i32 0, i32 0, i32 2, i32 1, i32 1, i32 2, i32 0)
+// LLVMIR: call void @wafer_tx81_gather_scatter(i64 65538, i64 65796, i32 8, i32 4, i32 4, i32 0, i32 0, i32 2, i32 1, i32 1, i32 4, i32 0, i32 0, i32 2, i32 1, i32 1, i32 0)
+// LLVMIR: call void @wafer_tx81_gemm(i64 65792, i64 66048, i64 66304, i32 2, i32 3, i32 4, i32 1, i32 2, i32 0)
+// LLVMIR: call void @wafer_tx81_conv(i64 98304, i64 131072, i64 262144,
 // LLVMIR-SAME: i32 0, i32 1, i32 7, i32 11, i32 5,
 // LLVMIR-SAME: i32 3, i32 2, i32 7, i32 5,
 // LLVMIR-SAME: i32 1, i32 3, i32 5, i32 7,
@@ -213,25 +213,25 @@ module {
 // LLVMIR-SAME: i32 0, i32 0, i32 0, i32 0,
 // LLVMIR-SAME: i32 3, i32 2, i32 2, i32 3,
 // LLVMIR-SAME: i32 2, i32 1, i32 2, i32 0)
-// LLVMIR: call void @wafer_tx81_pool_indexedmax_v3(i64 68608, i64 327680,
+// LLVMIR: call void @wafer_tx81_pool_indexedmax(i64 68608, i64 327680,
 // LLVMIR-SAME: i64 344064, i32 118,
 // LLVMIR-SAME: i32 1, i32 8, i32 8, i32 64,
 // LLVMIR-SAME: i32 1, i32 4, i32 4, i32 64,
 // LLVMIR-SAME: i32 0, i32 0, i32 0, i32 0,
 // LLVMIR-SAME: i32 2, i32 2, i32 2, i32 2, i32 2, i32 0)
-// LLVMIR: call void @wafer_tx81_unpool_mask_v3(i64 327680, i64 68608,
+// LLVMIR: call void @wafer_tx81_unpool_mask(i64 327680, i64 68608,
 // LLVMIR-SAME: i32 123, i32 344064,
 // LLVMIR-SAME: i32 1, i32 4, i32 4, i32 64,
 // LLVMIR-SAME: i32 1, i32 8, i32 8, i32 64,
 // LLVMIR-SAME: i32 2, i32 2, i32 2, i32 2, i32 2, i32 0)
-// LLVMIR: call void @wafer_tx81_unpool_avg_v3(i64 327680, i64 68608,
+// LLVMIR: call void @wafer_tx81_unpool_avg(i64 327680, i64 68608,
 // LLVMIR-SAME: i32 122, i32 0,
 // LLVMIR-SAME: i32 1, i32 4, i32 4, i32 64,
 // LLVMIR-SAME: i32 1, i32 8, i32 8, i32 64,
 // LLVMIR-SAME: i32 2, i32 2, i32 2, i32 2, i32 2, i32 0)
-// LLVMIR: call void @wafer_tx81_tdma_img2col_v3(i64 352256, i64 360448,
+// LLVMIR: call void @wafer_tx81_tdma_img2col(i64 352256, i64 360448,
 // LLVMIR-SAME: i32 1, i32 4, i32 5, i32 3,
 // LLVMIR-SAME: i32 1, i32 6, i32 12, i32 3,
 // LLVMIR-SAME: i32 1, i32 0, i32 2, i32 1,
 // LLVMIR-SAME: i32 2, i32 3, i32 2, i32 1, i32 2, i32 0)
-// LLVMIR: call void @wafer_tx81_wdma_v3(i64 65536, i64 %{{.*}}, i32 12, i32 6, i32 16, i32 0, i32 0, i32 2, i32 1, i32 1, i32 2, i32 0)
+// LLVMIR: call void @wafer_tx81_wdma(i64 65536, i64 %{{.*}}, i32 12, i32 6, i32 16, i32 0, i32 0, i32 2, i32 1, i32 1, i32 2, i32 0)

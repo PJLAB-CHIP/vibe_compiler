@@ -48,6 +48,7 @@ from collections.abc import Iterable, Mapping
 
 import wafer_ncc_probe_protocol as ncc_protocol
 import wafer_memory_descriptor_calibration_catalog as memory_catalog
+import wafer_runtime_launch_contract as runtime_launch
 
 
 FMT_FP16 = ncc_protocol.DMA_FORMAT_FP16
@@ -83,7 +84,7 @@ NE_TAIL_THROUGHPUT_ASSET = (
 )
 MEMORY_PAIR_SYMBOL = "SUSTAINED_PARALLEL_PAIR_CASES"
 MEMORY_CROSS_WORKER_SYMBOL = "CROSS_WORKER_PARALLEL_PAIR_CASES"
-HANDWRITTEN_PIPELINE_SYMBOL = "V2_DOUBLE_SLOT_OBSERVATION_CASES"
+HANDWRITTEN_PIPELINE_SYMBOL = "DOUBLE_SLOT_OBSERVATION_CASES"
 
 
 class Family(str, enum.Enum):
@@ -1226,14 +1227,14 @@ def _validate_runtime_evidence(
     observation: Mapping[str, object],
 ) -> tuple[bool, str | None]:
     lifecycle = observation.get("runtime_lifecycle")
-    terminal_completion = observation.get("runtime_terminal_completion")
+    completion_kind = observation.get("runtime_completion_kind")
     if (
         not isinstance(lifecycle, (list, tuple))
         or tuple(lifecycle) != RUNTIME_LIFECYCLE
     ):
-        return False, "runtime lifecycle is not the exact ordered rank-one path"
-    if type(terminal_completion) is not int or terminal_completion < 0:
-        return False, "runtime terminal completion is absent"
+        return False, "runtime lifecycle is not the exact ordered board path"
+    if completion_kind != runtime_launch.LOCAL_DRAIN_COMPLETION:
+        return False, "runtime completion kind is absent or invalid"
     return True, None
 
 
@@ -1693,11 +1694,9 @@ def validate_production_pipeline_inputs(
             manifest = load_closed_json(
                 manifest_path, "production package manifest"
             )
-            if manifest.get("schema_version") != 7:
-                fail("production package schema is not the accepted schema-v7")
-            manifest_rank_count = exact_int(
-                manifest.get("rank_count"),
-                "production manifest rank_count",
+            manifest_tile_count = exact_int(
+                manifest.get("tile_count"),
+                "production manifest tile_count",
                 1,
             )
             manifest_target = manifest.get("target")
@@ -1734,7 +1733,6 @@ def validate_production_pipeline_inputs(
                 ),
                 {
                     "schema",
-                    "schema_version",
                     "manifest_sha256",
                     "attestation_sha256",
                 },
@@ -1743,12 +1741,6 @@ def validate_production_pipeline_inputs(
             if (
                 activation["schema"]
                 != "wafer-static-fixed-slot-qualification-activation"
-                or exact_int(
-                    activation["schema_version"],
-                    "qualification activation schema_version",
-                    1,
-                )
-                != 1
             ):
                 fail("qualification activation schema is unknown")
             if (
@@ -1774,31 +1766,24 @@ def validate_production_pipeline_inputs(
                 ),
                 {
                     "schema",
-                    "schema_version",
                     "selection_kind",
                     "manifest_sha256",
                     "accepted_instr_digest_basis",
                     "target",
-                    "ranks",
+                    "tiles",
                 },
                 "qualification attestation",
             )
             if (
                 attestation["schema"]
                 != "wafer-static-fixed-slot-qualification"
-                or exact_int(
-                    attestation["schema_version"],
-                    "qualification attestation schema_version",
-                    1,
-                )
-                != 1
             ):
                 fail("qualification attestation schema is unknown")
             if attestation["selection_kind"] != "static-fixed-slot":
                 fail("qualification selection kind is not static-fixed-slot")
             if (
                 attestation["accepted_instr_digest_basis"]
-                != "final-accepted-instr-module-text-v1"
+                != "final-accepted-instr-module-text"
             ):
                 fail("qualification accepted-Instr digest basis is unknown")
             if (
@@ -1812,7 +1797,7 @@ def validate_production_pipeline_inputs(
 
             target = require_fields(
                 attestation["target"],
-                {"identity", "rank_count", "logical_ranks"},
+                {"identity", "tile_count", "tile_ids"},
                 "qualification target",
             )
             if target["identity"] != manifest_identity:
@@ -1821,26 +1806,26 @@ def validate_production_pipeline_inputs(
                 fail("qualification target identity is not closed")
             if (
                 exact_int(
-                    target["rank_count"],
-                    "qualification target rank_count",
+                    target["tile_count"],
+                    "qualification target tile_count",
                     1,
                 )
-                != manifest_rank_count
+                != manifest_tile_count
             ):
-                fail("qualification rank_count differs from manifest")
-            logical_ranks = require_list(
-                target["logical_ranks"],
-                "qualification target logical_ranks",
+                fail("qualification tile_count differs from manifest")
+            tile_ids = require_list(
+                target["tile_ids"],
+                "qualification target tile_ids",
             )
             if (
-                any(type(rank) is not int for rank in logical_ranks)
-                or logical_ranks != list(range(manifest_rank_count))
+                any(type(tile_id) is not int for tile_id in tile_ids)
+                or tile_ids != list(range(manifest_tile_count))
             ):
-                fail("qualification logical rank domain is not canonical")
+                fail("qualification Tile domain is not canonical")
 
-            ranks = require_list(attestation["ranks"], "qualification ranks")
-            if len(ranks) != manifest_rank_count:
-                fail("qualification ranks do not cover the manifest domain")
+            tiles = require_list(attestation["tiles"], "qualification Tiles")
+            if len(tiles) != manifest_tile_count:
+                fail("qualification Tiles do not cover the manifest domain")
             engine_order = {
                 "ct": 0,
                 "ne": 1,
@@ -1848,11 +1833,11 @@ def validate_production_pipeline_inputs(
                 "wdma": 3,
                 "tdma": 4,
             }
-            for logical_rank, raw_rank in enumerate(ranks):
-                rank = require_fields(
-                    raw_rank,
+            for tile_id, raw_tile in enumerate(tiles):
+                tile_record = require_fields(
+                    raw_tile,
                     {
-                        "logical_rank",
+                        "tile_id",
                         "accepted_instr_sha256",
                         "spm_alloc_roots",
                         "static_loops",
@@ -1860,31 +1845,31 @@ def validate_production_pipeline_inputs(
                         "dte",
                         "completion",
                     },
-                    f"qualification rank {logical_rank}",
+                    f"qualification Tile {tile_id}",
                 )
                 if (
                     exact_int(
-                        rank["logical_rank"],
-                        f"qualification rank {logical_rank} identity",
+                        tile_record["tile_id"],
+                        f"qualification Tile {tile_id} ID",
                     )
-                    != logical_rank
+                    != tile_id
                 ):
                     fail(
-                        f"qualification rank {logical_rank} identity is not "
+                        f"qualification Tile {tile_id} ID is not "
                         "canonical"
                     )
                 require_digest(
-                    rank["accepted_instr_sha256"],
-                    f"qualification rank {logical_rank} accepted-Instr digest",
+                    tile_record["accepted_instr_sha256"],
+                    f"qualification Tile {tile_id} accepted-Instr digest",
                 )
 
                 roots = require_list(
-                    rank["spm_alloc_roots"],
-                    f"qualification rank {logical_rank} SPM roots",
+                    tile_record["spm_alloc_roots"],
+                    f"qualification Tile {tile_id} SPM roots",
                 )
                 if len(roots) < 2:
                     fail(
-                        f"qualification rank {logical_rank} has fewer than "
+                        f"qualification Tile {tile_id} has fewer than "
                         "two SPM roots"
                     )
                 root_intervals: list[tuple[int, int, int]] = []
@@ -1898,40 +1883,40 @@ def validate_production_pipeline_inputs(
                             "range_begin",
                             "range_end",
                         },
-                        f"qualification rank {logical_rank} SPM root {ordinal}",
+                        f"qualification Tile {tile_id} SPM root {ordinal}",
                     )
                     if (
                         exact_int(
                             root["ordinal"],
-                            f"qualification rank {logical_rank} root ordinal",
+                            f"qualification Tile {tile_id} root ordinal",
                         )
                         != ordinal
                     ):
                         fail(
-                            f"qualification rank {logical_rank} SPM root "
+                            f"qualification Tile {tile_id} SPM root "
                             "ordinals are not dense"
                         )
                     offset = exact_int(
                         root["offset"],
-                        f"qualification rank {logical_rank} root offset",
+                        f"qualification Tile {tile_id} root offset",
                     )
                     byte_count = exact_int(
                         root["bytes"],
-                        f"qualification rank {logical_rank} root bytes",
+                        f"qualification Tile {tile_id} root bytes",
                         1,
                     )
                     range_begin = exact_int(
                         root["range_begin"],
-                        f"qualification rank {logical_rank} range_begin",
+                        f"qualification Tile {tile_id} range_begin",
                     )
                     range_end = exact_int(
                         root["range_end"],
-                        f"qualification rank {logical_rank} range_end",
+                        f"qualification Tile {tile_id} range_end",
                         1,
                     )
                     if range_begin != offset or range_end != offset + byte_count:
                         fail(
-                            f"qualification rank {logical_rank} SPM root "
+                            f"qualification Tile {tile_id} SPM root "
                             "range is inconsistent"
                         )
                     if (
@@ -1940,12 +1925,12 @@ def validate_production_pipeline_inputs(
                         or range_end > memory_catalog.SPM_ALLOCATABLE_END
                     ):
                         fail(
-                            f"qualification rank {logical_rank} SPM root "
+                            f"qualification Tile {tile_id} SPM root "
                             "is outside the allocatable target arena"
                         )
                     if range_begin % QUALIFICATION_SPM_ALIGNMENT != 0:
                         fail(
-                            f"qualification rank {logical_rank} SPM root "
+                            f"qualification Tile {tile_id} SPM root "
                             "is not placement-aligned"
                         )
                     root_intervals.append((range_begin, range_end, ordinal))
@@ -1955,17 +1940,17 @@ def validate_production_pipeline_inputs(
                 ):
                     if previous[1] > current[0]:
                         fail(
-                            f"qualification rank {logical_rank} SPM root "
+                            f"qualification Tile {tile_id} SPM root "
                             "intervals overlap"
                         )
 
                 loops = require_list(
-                    rank["static_loops"],
-                    f"qualification rank {logical_rank} static loops",
+                    tile_record["static_loops"],
+                    f"qualification Tile {tile_id} static loops",
                 )
                 if not loops:
                     fail(
-                        f"qualification rank {logical_rank} has no static loop"
+                        f"qualification Tile {tile_id} has no static loop"
                     )
                 saw_root_cycle = False
                 for ordinal, raw_loop in enumerate(loops):
@@ -1980,35 +1965,35 @@ def validate_production_pipeline_inputs(
                             "iter_arg_count",
                             "spm_iter_arg_rotations",
                         },
-                        f"qualification rank {logical_rank} loop {ordinal}",
+                        f"qualification Tile {tile_id} loop {ordinal}",
                     )
                     if (
                         exact_int(
                             loop["ordinal"],
-                            f"qualification rank {logical_rank} loop ordinal",
+                            f"qualification Tile {tile_id} loop ordinal",
                         )
                         != ordinal
                     ):
                         fail(
-                            f"qualification rank {logical_rank} loop "
+                            f"qualification Tile {tile_id} loop "
                             "ordinals are not dense"
                         )
                     lower = signed_int(
                         loop["lower"],
-                        f"qualification rank {logical_rank} loop lower",
+                        f"qualification Tile {tile_id} loop lower",
                     )
                     upper = signed_int(
                         loop["upper"],
-                        f"qualification rank {logical_rank} loop upper",
+                        f"qualification Tile {tile_id} loop upper",
                     )
                     step = exact_int(
                         loop["step"],
-                        f"qualification rank {logical_rank} loop step",
+                        f"qualification Tile {tile_id} loop step",
                         1,
                     )
                     trip_count = exact_int(
                         loop["trip_count"],
-                        f"qualification rank {logical_rank} loop trip_count",
+                        f"qualification Tile {tile_id} loop trip_count",
                         1,
                     )
                     expected_trips = (
@@ -2016,16 +2001,16 @@ def validate_production_pipeline_inputs(
                     )
                     if trip_count != expected_trips:
                         fail(
-                            f"qualification rank {logical_rank} loop trip "
+                            f"qualification Tile {tile_id} loop trip "
                             "count is inconsistent"
                         )
                     iter_arg_count = exact_int(
                         loop["iter_arg_count"],
-                        f"qualification rank {logical_rank} iter_arg_count",
+                        f"qualification Tile {tile_id} iter_arg_count",
                     )
                     rotations = require_list(
                         loop["spm_iter_arg_rotations"],
-                        f"qualification rank {logical_rank} SPM rotations",
+                        f"qualification Tile {tile_id} SPM rotations",
                     )
                     spm_args: set[int] = set()
                     initial_roots: set[int] = set()
@@ -2040,7 +2025,7 @@ def validate_production_pipeline_inputs(
                                 "next_root",
                             },
                             (
-                                f"qualification rank {logical_rank} loop "
+                                f"qualification Tile {tile_id} loop "
                                 f"{ordinal} rotation {rotation_ordinal}"
                             ),
                         )
@@ -2071,7 +2056,7 @@ def validate_production_pipeline_inputs(
                             or initial_root == next_root
                         ):
                             fail(
-                                f"qualification rank {logical_rank} SPM "
+                                f"qualification Tile {tile_id} SPM "
                                 "root cycle is not a bounded permutation"
                             )
                         spm_args.add(iter_arg)
@@ -2079,19 +2064,19 @@ def validate_production_pipeline_inputs(
                         next_roots.add(next_root)
                     if initial_roots != next_roots:
                         fail(
-                            f"qualification rank {logical_rank} SPM root "
+                            f"qualification Tile {tile_id} SPM root "
                             "cycle is not closed"
                         )
                     saw_root_cycle |= len(initial_roots) >= 2
                 if not saw_root_cycle:
                     fail(
-                        f"qualification rank {logical_rank} has no proven "
+                        f"qualification Tile {tile_id} has no proven "
                         "multi-root nonidentity SPM cycle"
                     )
 
                 issue_rows = require_list(
-                    rank["engine_worker_issues"],
-                    f"qualification rank {logical_rank} engine issues",
+                    tile_record["engine_worker_issues"],
+                    f"qualification Tile {tile_id} engine issues",
                 )
                 issue_keys: list[tuple[int, int]] = []
                 issue_engines: set[str] = set()
@@ -2101,7 +2086,7 @@ def validate_production_pipeline_inputs(
                         raw_issue,
                         {"engine", "worker", "count"},
                         (
-                            f"qualification rank {logical_rank} engine issue "
+                            f"qualification Tile {tile_id} engine issue "
                             f"{issue_ordinal}"
                         ),
                     )
@@ -2123,7 +2108,7 @@ def validate_production_pipeline_inputs(
                     issue_total += count
                 if issue_keys != sorted(set(issue_keys)):
                     fail(
-                        f"qualification rank {logical_rank} engine issue "
+                        f"qualification Tile {tile_id} engine issue "
                         "inventory is not canonical"
                     )
                 if not (
@@ -2131,14 +2116,14 @@ def validate_production_pipeline_inputs(
                     and issue_engines & {"ct", "ne"}
                 ):
                     fail(
-                        f"qualification rank {logical_rank} lacks a typed "
+                        f"qualification Tile {tile_id} lacks a typed "
                         "load/compute/store pipeline"
                     )
 
                 dte = require_fields(
-                    rank["dte"],
+                    tile_record["dte"],
                     {"token_count", "issues", "waits"},
-                    f"qualification rank {logical_rank} DTE inventory",
+                    f"qualification Tile {tile_id} DTE inventory",
                 )
                 token_count = exact_int(
                     dte["token_count"], "qualification DTE token_count"
@@ -2171,10 +2156,10 @@ def validate_production_pipeline_inputs(
                         fail("qualification DTE issue kind is unknown")
                     peer = exact_int(issue["peer"], "qualification DTE peer")
                     if (
-                        peer >= manifest_rank_count
-                        or peer == logical_rank
+                        peer >= manifest_tile_count
+                        or peer == tile_id
                     ):
-                        fail("qualification DTE peer is outside rank domain")
+                        fail("qualification DTE peer is outside Tile domain")
                     exact_int(
                         issue["bytes"], "qualification DTE issue bytes", 1
                     )
@@ -2212,9 +2197,9 @@ def validate_production_pipeline_inputs(
                     )
 
                 completion = require_fields(
-                    rank["completion"],
+                    tile_record["completion"],
                     {"participant_joins", "behaviors"},
-                    f"qualification rank {logical_rank} completion inventory",
+                    f"qualification Tile {tile_id} completion inventory",
                 )
                 joins = require_list(
                     completion["participant_joins"],

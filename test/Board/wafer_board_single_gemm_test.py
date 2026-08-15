@@ -164,46 +164,41 @@ def validate_manifest(package: pathlib.Path) -> tuple[dict[tuple[str, int], int]
     target = manifest.get("target")
     runtime_launch.require_manifest_launch(
         manifest,
-        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        runtime_launch.GRID_KERNEL_LAUNCH,
         context="standalone GEMM",
     )
     if (
-        manifest.get("rank_count") != 1
-        or not isinstance(target, dict)
+        not isinstance(target, dict)
         or target.get("identity") != TARGET_IDENTITY
     ):
         raise RuntimeError("standalone GEMM package target fields are invalid")
 
     modules = manifest.get("modules")
     entries = manifest.get("entries")
-    completions = manifest.get("completions")
     resources = manifest.get("resources")
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="standalone GEMM"
+    )
     if (
         not isinstance(modules, list)
         or len(modules) != 1
-        or not isinstance(entries, list)
-        or len(entries) != 1
-        or not isinstance(completions, list)
-        or len(completions) != 1
         or not isinstance(resources, list)
-        or len(resources) != 3
     ):
-        raise RuntimeError("standalone GEMM package domains are not rank-one exact")
+        raise RuntimeError("standalone GEMM package domains are invalid")
     module = modules[0]
     entry = entries[0]
-    completion = completions[0]
     if (
         module.get("exports") != [{"role": "main", "symbol": "main"}]
         or not (package / module.get("path", "")).is_file()
         or entry.get("id") != 0
-        or entry.get("rank") != 0
+        or entry.get("card_id") != 0
+        or entry.get("tile_id") != 0
         or entry.get("module") != module.get("id")
-        or entry.get("terminal_completion") != completion.get("id")
         or entry.get("transport") != {"kind": "none"}
-        or completion.get("rank") != 0
-        or completion.get("kind") != "entry_return"
     ):
-        raise RuntimeError("standalone GEMM entry/module/completion contract is invalid")
+        raise RuntimeError("standalone GEMM entry/module contract is invalid")
+    if any(item.get("module") != module.get("id") for item in entries):
+        raise RuntimeError("standalone GEMM entries do not share one module")
 
     expected = {
         ("user_input", 0): (
@@ -226,12 +221,14 @@ def validate_manifest(package: pathlib.Path) -> tuple[dict[tuple[str, int], int]
     for resource in resources:
         if not isinstance(resource, dict):
             raise RuntimeError("standalone GEMM resources must be objects")
+        if not resource.get("host_visible"):
+            continue
         key = (resource.get("role"), resource.get("role_index"))
         if key not in expected or key in bindings:
             raise RuntimeError(f"unexpected standalone GEMM resource: {key}")
         type_, bytes_, access = expected[key]
         if (
-            resource.get("rank") != 0
+            resource.get("scope") != {"kind": "card", "card_id": 0}
             or resource.get("type") != type_
             or resource.get("bytes") != bytes_
             or resource.get("alignment") != 256
@@ -251,7 +248,7 @@ def validate_manifest(package: pathlib.Path) -> tuple[dict[tuple[str, int], int]
     ]
     actual_slots = [
         (slot.get("ordinal"), slot.get("resource"), slot.get("access"))
-        for slot in entry.get("slots", [])
+        for slot in entry.get("slots", [])[:3]
         if isinstance(slot, dict)
     ]
     if actual_slots != expected_slots:
@@ -288,8 +285,8 @@ def write_payloads(
 
 def verify_no_card_evidence(stdout: str) -> None:
     required = {
-        "package: id=0 schema=7 ranks=1",
-        "entry: 0 rank=0",
+        "package: id=0 cards=1 tiles=16",
+        "entry: 0 card_id=0 tile_id=0 launch_slot=0",
         "launch_phase: role=main symbol=main",
         "board_execution: false",
     }
@@ -322,6 +319,7 @@ def verify_board_evidence(stdout: str, output_id: int) -> None:
         re.MULTILINE,
     ):
         raise RuntimeError("board output omitted standalone GEMM capture")
+    runtime_launch.require_board_completion(stdout, context="standalone GEMM")
 
 
 def main() -> int:
@@ -353,12 +351,12 @@ def main() -> int:
             str(source),
             "--output-program-dir",
             str(package),
-            "--execution-ranks=1",
+            "--num-partitions=1",
             f"--launch-kind={LAUNCH_KIND}",
         ]
     )
-    if "wrote verified package with execution-ranks=1" not in compile_result.stdout:
-        raise RuntimeError("wafer-compile did not write a verified single-Tile package")
+    if "wrote verified package with num-partitions=1 tiles=16" not in compile_result.stdout:
+        raise RuntimeError("wafer-compile did not write a verified Tile package")
     validate_structured_program(package)
     bindings, output_id = validate_manifest(package)
 
@@ -368,8 +366,6 @@ def main() -> int:
                 str(args.wafer_run),
                 "--package-dir",
                 str(package),
-                "--entry-id",
-                "0",
                 "--no-card",
             ]
         )
@@ -385,8 +381,6 @@ def main() -> int:
         str(args.wafer_run),
         "--package-dir",
         str(package),
-        "--entry-id",
-        "0",
         "--board",
         "--device-id",
         str(args.device_id),

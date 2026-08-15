@@ -881,31 +881,30 @@ TEST(TargetCallRegistryTest, ExactlyCoversTypedTargetCallSurface) {
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::NumericElementwiseOperation::Add)
           .symbol,
-      "wafer_tx81_elementwise_add_v3");
+      "wafer_tx81_elementwise_add");
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::GemmOriented)
           .symbol,
-      "wafer_tx81_gemm_oriented_v3");
+      "wafer_tx81_gemm_oriented");
 }
 
-TEST(TargetCallRegistryTest, ContainsOnlyCurrentWorkerAwareABI) {
+TEST(TargetCallRegistryTest, UsesCurrentWorkerAwareABI) {
   const auto &rdma =
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::RDMA);
-  EXPECT_EQ(rdma.symbol, "wafer_tx81_rdma_v3");
+  EXPECT_EQ(rdma.symbol, "wafer_tx81_rdma");
   EXPECT_EQ(rdma.arguments.size(), 12u);
   ASSERT_TRUE(rdma.issueDomain);
   ASSERT_TRUE(rdma.issueDomain->nccWorkerArgument);
   EXPECT_EQ(*rdma.issueDomain->nccWorkerArgument, 11u);
   EXPECT_EQ(wafer::findTargetCallDescriptor(rdma.symbol), &rdma);
-  EXPECT_EQ(wafer::findTargetCallDescriptor("wafer_tx81_rdma"), nullptr);
   EXPECT_EQ(
       wafer::getTargetCallDescriptor(wafer::TargetCallBuiltin::GemmOriented)
           .symbol,
-      "wafer_tx81_gemm_oriented_v3");
+      "wafer_tx81_gemm_oriented");
   EXPECT_EQ(wafer::getTargetCallDescriptor(
                 wafer::TargetCallBuiltin::DirectDTESendIssue)
                 .symbol,
-            "wafer_tx81_direct_dte_send_issue_v3");
+            "wafer_tx81_direct_dte_send_issue");
 }
 
 TEST(TargetCallRegistryTest, EveryDescriptorDecodesEveryABIField) {
@@ -1405,7 +1404,7 @@ TEST(TargetCallFrontendTest, WrongTargetCallSignatureFailsBeforeSinkBegin) {
   llvm::Module &module = const_cast<llvm::Module &>(
       targetLLVMModules->getModules().front().getModule());
   llvm::Function *original =
-      module.getFunction("wafer_tx81_elementwise_add_v3");
+      module.getFunction("wafer_tx81_elementwise_add");
   ASSERT_NE(original, nullptr);
   llvm::SmallVector<llvm::Instruction *, 2> calls;
   for (llvm::User *user : original->users())
@@ -1418,7 +1417,7 @@ TEST(TargetCallFrontendTest, WrongTargetCallSignatureFailsBeforeSinkBegin) {
       {llvm::Type::getInt64Ty(module.getContext())}, /*isVarArg=*/false);
   llvm::Function *wrong =
       llvm::Function::Create(wrongType, llvm::GlobalValue::ExternalLinkage,
-                             "wafer_tx81_elementwise_add_v3", module);
+                             "wafer_tx81_elementwise_add", module);
   (void)wrong;
 
   std::vector<wafer::compiler::TargetCallTileArguments> arguments =

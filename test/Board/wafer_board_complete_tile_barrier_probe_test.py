@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and run a two-epoch 16-rank production hrt_barrier probe."""
+"""Build and run a two-epoch 16-Tile production hrt_barrier probe."""
 
 from __future__ import annotations
 
@@ -16,23 +16,26 @@ import struct
 import subprocess
 import sys
 
-import wafer_board_direct_dte_collective_test as cluster_seed
+import wafer_runtime_launch_contract as runtime_launch
 
 
-RANK_COUNT = 16
+TILE_COUNT = 16
 UNSUPPORTED_PARTICIPANT_COUNTS = (1, 2, 4, 8, 15)
 RESOURCE_BYTES = 256
-LAUNCH_KIND = "kernel"
+LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
+STATUS_ABI = "wafer-direct-dte-status"
+STATUS_STORAGE_BYTES = 64
+STATUS_STORAGE_ALIGNMENT = 64
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
-PROBE_C = INPUT_DIR / "wafer_full_card_barrier_probe.c"
-PROBE_LL = INPUT_DIR / "wafer_full_card_barrier_probe.ll"
+PROBE_C = INPUT_DIR / "wafer_complete_tile_barrier_probe.c"
+PROBE_LL = INPUT_DIR / "wafer_complete_tile_barrier_probe.ll"
 
 REQUEST_MAGIC = 0x5742464352455154
-REQUEST_SCHEMA = 1
+REQUEST_WORDS = 4
 REQUEST_GUARD = 0x86DB3E71A5942FC0
 RECORD_MAGIC = 0x5742464352455354
-RECORD_SCHEMA = 1
+RECORD_WORDS = 16
 RECORD_GUARD = 0xC34A6F9128ED750B
 INPUT_CANARY = 0xC3
 OUTPUT_CANARY = 0xA5
@@ -45,6 +48,31 @@ DELAY1_SCALE = 8192
 DELAY2_SCALE = 6144
 STATUS_OK = 1
 ALL_STEPS = 0xFF
+
+MODULE = f"""\
+module {{
+  func.func @main(%input: tensor<{RESOURCE_BYTES // 2}xf16>)
+      -> tensor<{RESOURCE_BYTES // 2}xf16> {{
+    %output = stablehlo.add %input, %input
+        : tensor<{RESOURCE_BYTES // 2}xf16>
+    return %output : tensor<{RESOURCE_BYTES // 2}xf16>
+  }}
+}}
+"""
+METADATA = {
+    "name": "forward",
+    "stablehlo_version": "0.0.0",
+    "input_signature": [
+        {"shape": [RESOURCE_BYTES // 2], "dtype": "float16", "dynamic_dims": []}
+    ],
+    "output_signature": [
+        {"shape": [RESOURCE_BYTES // 2], "dtype": "float16", "dynamic_dims": []}
+    ],
+    "input_locations": [
+        {"type_": "input_arg", "position": 0, "name": "request"}
+    ],
+    "unused_inputs": [],
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -62,7 +90,7 @@ class BarrierCalibrationCase:
 
 @dataclasses.dataclass(frozen=True)
 class ProbeSlotLayout:
-    slots_per_rank: int
+    slots_per_tile: int
     input_ordinal: int
     output_ordinal: int
     status_ordinal: int
@@ -70,24 +98,24 @@ class ProbeSlotLayout:
 
 BARRIER_POSITIVE_CASES = (
     BarrierCalibrationCase(
-        "full-card-epoch1-rank-increasing-delay",
-        RANK_COUNT,
+        "complete-Tile-domain-epoch1-tile-increasing-delay",
+        TILE_COUNT,
         "board-executable",
         1,
-        "16 rank-specific markers, zero mismatch and zero crosstalk",
+        "16 Tile-specific markers, zero mismatch and zero crosstalk",
         "current hrt_barrier contract owns exactly sixteen participant slots",
     ),
     BarrierCalibrationCase(
-        "full-card-epoch2-rank-reverse-delay",
-        RANK_COUNT,
+        "complete-Tile-domain-epoch2-tile-reverse-delay",
+        TILE_COUNT,
         "board-executable",
         2,
-        "16 rank-specific markers, zero mismatch and zero crosstalk",
+        "16 Tile-specific markers, zero mismatch and zero crosstalk",
         "the second epoch reverses delay order and reuses the same barrier",
     ),
     BarrierCalibrationCase(
-        "full-card-two-epoch-reuse",
-        RANK_COUNT,
+        "complete-Tile-domain-two-epoch-reuse",
+        TILE_COUNT,
         "board-executable",
         None,
         "both ordered epochs complete in one launch with disjoint markers",
@@ -101,7 +129,7 @@ BARRIER_NEGATIVE_CASES = tuple(
         "static-negative",
         None,
         "host rejection before compile or device submission",
-        "version-matched hrt_barrier exposes sixteen fixed participant slots",
+        "hrt_barrier exposes sixteen fixed participant slots",
     )
     for participants in UNSUPPORTED_PARTICIPANT_COUNTS
 )
@@ -119,7 +147,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--llvm-clangxx", type=pathlib.Path, required=True)
     parser.add_argument("--work-dir", type=pathlib.Path, required=True)
     parser.add_argument("--no-card", action="store_true")
-    parser.add_argument("--participants", type=int, default=RANK_COUNT)
+    parser.add_argument("--participants", type=int, default=TILE_COUNT)
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
     parser.add_argument("--expected-device-name")
@@ -131,7 +159,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def validate_participant_count(participants: int) -> None:
-    if participants != RANK_COUNT:
+    if participants != TILE_COUNT:
         raise RuntimeError(
             "current hrt_barrier is fixed to exactly 16 participant slots; "
             f"refusing unsafe subgroup size {participants} before compile "
@@ -156,7 +184,7 @@ def run(
                     partial = partial.decode(errors="replace")
                 print(partial, end="", file=sys.stderr)
         raise RuntimeError(
-            "full-card barrier probe timed out; no retry, reset, or power "
+            "complete-Tile-domain barrier probe timed out; no retry, reset, or power "
             "operation was attempted"
         ) from error
     if result.returncode != 0:
@@ -180,26 +208,39 @@ def validate_work_dir(
 
 
 def validate_host_contract() -> None:
-    epoch1 = {EPOCH1_BASE | rank for rank in range(RANK_COUNT)}
-    epoch2 = {EPOCH2_BASE | rank for rank in range(RANK_COUNT)}
+    epoch1 = {EPOCH1_BASE | tile_id for tile_id in range(TILE_COUNT)}
+    epoch2 = {EPOCH2_BASE | tile_id for tile_id in range(TILE_COUNT)}
     if (
-        len(epoch1) != RANK_COUNT
-        or len(epoch2) != RANK_COUNT
+        len(epoch1) != TILE_COUNT
+        or len(epoch2) != TILE_COUNT
         or epoch1 & epoch2
         or RECORD_OFFSET + 16 * 8 != RESOURCE_BYTES
     ):
         raise RuntimeError("barrier probe host contract is malformed")
-    for rank in range(RANK_COUNT):
-        request = make_request(rank)
+    for tile_id in range(TILE_COUNT):
+        request = make_request(tile_id)
         words = struct.unpack("<32Q", request)
         if (
             words[0] != REQUEST_MAGIC
-            or words[1] != REQUEST_SCHEMA
-            or words[2] != rank
+            or words[1] != REQUEST_WORDS
+            or words[2] != tile_id
             or words[3] != REQUEST_GUARD
             or request[32:] != bytes([INPUT_CANARY]) * (RESOURCE_BYTES - 32)
         ):
-            raise RuntimeError(f"rank {rank} request oracle is not exact")
+            raise RuntimeError(f"Tile {tile_id} request oracle is not exact")
+
+
+def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    source = work_dir / "source-program"
+    (source / "functions").mkdir(parents=True)
+    (source / "data").mkdir()
+    (source / "functions" / "forward.mlir").write_text(MODULE)
+    (source / "functions" / "forward.meta").write_text(
+        json.dumps(METADATA, separators=(",", ":")) + "\n"
+    )
+    return source
 
 
 def compile_package(
@@ -210,7 +251,7 @@ def compile_package(
     dict[tuple[int, str, int], int],
     ProbeSlotLayout,
 ]:
-    source = cluster_seed.write_fixture(args.work_dir)
+    source = write_source_program(args.work_dir)
     package = args.work_dir / "package"
     result = run(
         [
@@ -219,16 +260,46 @@ def compile_package(
             str(source),
             "--output-program-dir",
             str(package),
-            f"--execution-ranks={RANK_COUNT}",
+            "--num-partitions=1",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
     if "wrote verified package" not in result.stdout:
-        raise RuntimeError("wafer-compile did not write the cluster seed")
-    bindings = cluster_seed.validate_manifest(package)
+        raise RuntimeError("wafer-compile did not write the barrier seed")
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    bindings = runtime_launch.configure_direct_dte_tile_package(
+        manifest,
+        resources=(
+            runtime_launch.SharedBoundaryResourceSpec(
+                role="user_input",
+                role_index=0,
+                name="barrier_request",
+                type={"dtype": "i8", "shape": [TILE_COUNT * RESOURCE_BYTES]},
+                bytes=TILE_COUNT * RESOURCE_BYTES,
+                alignment=256,
+                access="read_only",
+                host_visible=True,
+            ),
+            runtime_launch.SharedBoundaryResourceSpec(
+                role="output",
+                role_index=0,
+                name="barrier_result",
+                type={"dtype": "i8", "shape": [TILE_COUNT * RESOURCE_BYTES]},
+                bytes=TILE_COUNT * RESOURCE_BYTES,
+                alignment=256,
+                access="write_only",
+                host_visible=True,
+            ),
+        ),
+        status_abi=STATUS_ABI,
+        status_bytes=STATUS_STORAGE_BYTES,
+        status_alignment=STATUS_STORAGE_ALIGNMENT,
+        context="barrier probe",
+    )
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     slot_layout = validate_terminal_slots(package, bindings)
-    manifest = json.loads((package / "manifest.json").read_text())
     module_path = package / manifest["modules"][0]["path"]
     return package, module_path, bindings, slot_layout
 
@@ -238,41 +309,32 @@ def validate_terminal_slots(
     bindings: dict[tuple[int, str, int], int],
 ) -> ProbeSlotLayout:
     manifest = json.loads((package / "manifest.json").read_text())
-    entries = manifest.get("entries")
+    runtime_launch.require_manifest_launch(
+        manifest,
+        runtime_launch.CLUSTER_KERNEL_LAUNCH,
+        context="barrier probe",
+    )
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="barrier probe"
+    )
     resources = manifest.get("resources")
-    completions = manifest.get("completions")
-    if (
-        not isinstance(entries, list)
-        or not isinstance(resources, list)
-        or not isinstance(completions, list)
-    ):
-        raise RuntimeError("cluster terminal visibility domains are missing")
+    if not isinstance(resources, list):
+        raise RuntimeError("barrier probe resources are missing")
     resources_by_id = {
         resource.get("id"): resource
         for resource in resources
         if isinstance(resource, dict) and isinstance(resource.get("id"), int)
     }
-    completions_by_id = {
-        completion.get("id"): completion
-        for completion in completions
-        if isinstance(completion, dict)
-        and isinstance(completion.get("id"), int)
-    }
-    if (
-        len(resources_by_id) != len(resources)
-        or len(completions_by_id) != len(completions)
-        or len(entries) != RANK_COUNT
-    ):
-        raise RuntimeError("cluster terminal visibility ids are not unique")
+    if len(resources_by_id) != len(resources):
+        raise RuntimeError("barrier resource IDs are not unique")
     common_layout: ProbeSlotLayout | None = None
     for entry in entries:
-        rank = entry.get("rank")
+        tile_id = entry.get("tile_id")
         slots = entry.get("slots")
         transport = entry.get("transport")
-        completion = completions_by_id.get(entry.get("terminal_completion"))
         if (
-            not isinstance(rank, int)
-            or not 0 <= rank < RANK_COUNT
+            not isinstance(tile_id, int)
+            or not 0 <= tile_id < TILE_COUNT
             or not isinstance(slots, list)
             or not slots
             or not all(isinstance(slot, dict) for slot in slots)
@@ -281,12 +343,12 @@ def validate_terminal_slots(
             or not isinstance(transport, dict)
         ):
             raise RuntimeError(
-                "cluster rank does not expose canonical ordered slots"
+                "barrier Tile does not expose canonical ordered slots"
             )
         status_id = transport.get("status_resource")
         status = resources_by_id.get(status_id)
-        input_id = bindings[(rank, "user_input", 0)]
-        output_id = bindings[(rank, "output", 0)]
+        input_id = bindings[(tile_id, "user_input", 0)]
+        output_id = bindings[(tile_id, "output", 0)]
         input_slots = [
             slot for slot in slots if slot.get("resource") == input_id
         ]
@@ -304,33 +366,27 @@ def validate_terminal_slots(
             or len(status_slots) != 1
             or status_slots[0].get("access") != "read_write"
             or transport.get("kind") != "direct_dte"
-            or transport.get("status_abi") != cluster_seed.STATUS_ABI
+            or transport.get("status_abi") != STATUS_ABI
             or transport.get("host_watchdog_required") is not True
-            or completion
-            != {
-                "id": entry.get("terminal_completion"),
-                "rank": rank,
-                "kind": "entry_return",
-            }
             or status
             != {
                 "id": status_id,
-                "rank": rank,
+                "scope": {"kind": "tile", "card_id": 0, "tile_id": tile_id},
                 "role": "transport_status",
                 "role_index": 0,
-                "name": "direct_dte_status",
+                "name": f"transport_status_tile_{tile_id}",
                 "type": {"dtype": "u32", "shape": [1]},
-                "bytes": cluster_seed.STATUS_STORAGE_BYTES,
-                "alignment": cluster_seed.STATUS_STORAGE_ALIGNMENT,
+                "bytes": STATUS_STORAGE_BYTES,
+                "alignment": STATUS_STORAGE_ALIGNMENT,
                 "access": "read_write",
                 "host_visible": False,
             }
         ):
             raise RuntimeError(
-                f"rank {rank} terminal resources are not canonically bound"
+                f"Tile {tile_id} transport resources are not canonically bound"
             )
         layout = ProbeSlotLayout(
-            slots_per_rank=len(slots),
+            slots_per_tile=len(slots),
             input_ordinal=input_slots[0]["ordinal"],
             output_ordinal=output_slots[0]["ordinal"],
             status_ordinal=status_slots[0]["ordinal"],
@@ -339,10 +395,10 @@ def validate_terminal_slots(
             common_layout = layout
         elif layout != common_layout:
             raise RuntimeError(
-                "cluster rank-major slot layout differs across ranks"
+                "barrier tile-major slot layout differs across Tiles"
             )
     if common_layout is None:
-        raise RuntimeError("cluster rank-major slot layout is missing")
+        raise RuntimeError("barrier tile-major slot layout is missing")
     return common_layout
 
 
@@ -373,8 +429,8 @@ def build_probe(
 
     build = args.work_dir / "probe-build"
     build.mkdir()
-    helper = build / "wafer_full_card_barrier_probe.o"
-    linked = build / "wafer_full_card_barrier_probe.so"
+    helper = build / "wafer_complete_tile_barrier_probe.o"
+    linked = build / "wafer_complete_tile_barrier_probe.so"
     run(
         [
             str(gcc),
@@ -392,8 +448,8 @@ def build_probe(
             "-Wextra",
             "-Werror",
             (
-                "-DWAFER_BARRIER_SLOTS_PER_RANK="
-                f"{slot_layout.slots_per_rank}"
+                "-DWAFER_BARRIER_SLOTS_PER_TILE="
+                f"{slot_layout.slots_per_tile}"
             ),
             f"-DWAFER_BARRIER_INPUT_SLOT={slot_layout.input_ordinal}",
             f"-DWAFER_BARRIER_OUTPUT_SLOT={slot_layout.output_ordinal}",
@@ -430,7 +486,7 @@ def build_probe(
         timeout_seconds=120,
     )
 
-    staged = module_path.with_name(f".{module_path.name}.full-card-barrier")
+    staged = module_path.with_name(f".{module_path.name}.complete-tile-barrier")
     shutil.copy2(linked, staged)
     os.replace(staged, module_path)
     manifest_path = package / "manifest.json"
@@ -439,7 +495,7 @@ def build_probe(
         "sha256:" + hashlib.sha256(module_path.read_bytes()).hexdigest()
     )
     staged_manifest = manifest_path.with_name(
-        ".manifest.json.full-card-barrier"
+        ".manifest.json.complete-tile-barrier"
     )
     staged_manifest.write_text(json.dumps(manifest, indent=2) + "\n")
     os.replace(staged_manifest, manifest_path)
@@ -451,22 +507,21 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--all-ranks",
             "--no-card",
             "--direct-dte-status-abi",
-            cluster_seed.STATUS_ABI,
+            STATUS_ABI,
             "--supports-host-watchdog",
         ]
     )
     if "board_execution: false" not in result.stdout:
         raise RuntimeError("no-card output omitted the kernel invocation")
-    print("full_card_barrier_probe_no_card: passed")
+    print("complete_tile_barrier_probe_no_card: passed")
 
 
-def make_request(rank: int) -> bytes:
+def make_request(tile_id: int) -> bytes:
     payload = bytearray([INPUT_CANARY] * RESOURCE_BYTES)
     payload[:32] = struct.pack(
-        "<4Q", REQUEST_MAGIC, REQUEST_SCHEMA, rank, REQUEST_GUARD
+        "<4Q", REQUEST_MAGIC, REQUEST_WORDS, tile_id, REQUEST_GUARD
     )
     return bytes(payload)
 
@@ -474,49 +529,48 @@ def make_request(rank: int) -> bytes:
 def write_board_resources(
     work_dir: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
-) -> tuple[list[str], dict[int, pathlib.Path]]:
+) -> tuple[list[str], pathlib.Path]:
     raw = work_dir / "raw"
     raw.mkdir()
-    arguments: list[str] = []
-    outputs: dict[int, pathlib.Path] = {}
-    for rank in range(RANK_COUNT):
-        request = raw / f"request-{rank:02d}.raw"
-        output = raw / f"output-{rank:02d}.raw"
-        request.write_bytes(make_request(rank))
-        outputs[rank] = output
-        arguments.extend(
-            [
-                "--resource",
-                f"{bindings[(rank, 'user_input', 0)]}={request}",
-                "--output",
-                f"{bindings[(rank, 'output', 0)]}={output}",
-            ]
-        )
-    return arguments, outputs
+    input_ids = {bindings[(tile_id, "user_input", 0)] for tile_id in range(TILE_COUNT)}
+    output_ids = {bindings[(tile_id, "output", 0)] for tile_id in range(TILE_COUNT)}
+    if len(input_ids) != 1 or len(output_ids) != 1:
+        raise RuntimeError("barrier resources are not shared across all Tiles")
+    request = raw / "requests.raw"
+    output = raw / "results.raw"
+    request.write_bytes(b"".join(make_request(tile_id) for tile_id in range(TILE_COUNT)))
+    return [
+        "--resource",
+        f"{next(iter(input_ids))}={request}",
+        "--output",
+        f"{next(iter(output_ids))}={output}",
+    ], output
 
 
-def parse_output(path: pathlib.Path, rank: int) -> dict[str, int]:
-    payload = path.read_bytes()
-    if len(payload) != RESOURCE_BYTES:
-        raise RuntimeError(f"rank {rank} output size is not 256 bytes")
+def parse_output(path: pathlib.Path, tile_id: int) -> dict[str, int]:
+    combined = path.read_bytes()
+    if len(combined) != TILE_COUNT * RESOURCE_BYTES:
+        raise RuntimeError("barrier result size does not cover all Tiles")
+    begin = tile_id * RESOURCE_BYTES
+    payload = combined[begin : begin + RESOURCE_BYTES]
     epoch1 = struct.unpack_from("<Q", payload, EPOCH1_OFFSET)[0]
     epoch2 = struct.unpack_from("<Q", payload, EPOCH2_OFFSET)[0]
-    if epoch1 != EPOCH1_BASE | rank or epoch2 != EPOCH2_BASE | rank:
-        raise RuntimeError(f"rank {rank} has an incorrect epoch marker")
+    if epoch1 != EPOCH1_BASE | tile_id or epoch2 != EPOCH2_BASE | tile_id:
+        raise RuntimeError(f"Tile {tile_id} has an incorrect epoch marker")
     if (
         payload[8:EPOCH2_OFFSET]
         != bytes([OUTPUT_CANARY]) * (EPOCH2_OFFSET - 8)
         or payload[EPOCH2_OFFSET + 8 : RECORD_OFFSET]
         != bytes([OUTPUT_CANARY]) * (RECORD_OFFSET - EPOCH2_OFFSET - 8)
     ):
-        raise RuntimeError(f"rank {rank} marker guard was modified")
+        raise RuntimeError(f"Tile {tile_id} marker guard was modified")
 
     words = struct.unpack_from("<16Q", payload, RECORD_OFFSET)
     metadata = (
-        RECORD_SCHEMA
-        | (rank << 16)
+        RECORD_WORDS
+        | (tile_id << 16)
         | (STATUS_OK << 24)
-        | (RANK_COUNT << 32)
+        | (TILE_COUNT << 32)
     )
     expected = {
         0: RECORD_MAGIC,
@@ -524,26 +578,26 @@ def parse_output(path: pathlib.Path, rank: int) -> dict[str, int]:
         2: 0,
         3: 0,
         4: 0,
-        5: EPOCH1_BASE | rank,
-        6: EPOCH2_BASE | rank,
-        7: (rank + 1) * DELAY1_SCALE,
-        8: (RANK_COUNT - rank) * DELAY2_SCALE,
+        5: EPOCH1_BASE | tile_id,
+        6: EPOCH2_BASE | tile_id,
+        7: (tile_id + 1) * DELAY1_SCALE,
+        8: (TILE_COUNT - tile_id) * DELAY2_SCALE,
         11: 2,
         12: ALL_STEPS,
         13: REQUEST_GUARD,
-        14: RANK_COUNT,
+        14: TILE_COUNT,
         15: RECORD_GUARD,
     }
     for index, value in expected.items():
         if words[index] != value:
             raise RuntimeError(
-                f"rank {rank} record[{index}]={words[index]:#x}, "
+                f"Tile {tile_id} record[{index}]={words[index]:#x}, "
                 f"expected {value:#x}"
             )
     if words[9] == 0 or words[10] == 0:
-        raise RuntimeError(f"rank {rank} reported a zero barrier duration")
+        raise RuntimeError(f"Tile {tile_id} reported a zero barrier duration")
     return {
-        "rank": rank,
+        "tile_id": tile_id,
         "epoch1_cycles": words[9],
         "epoch2_cycles": words[10],
         "epoch1_mismatches": words[2],
@@ -565,8 +619,8 @@ def validate_board_args(args: argparse.Namespace) -> None:
     missing = [name for name, value in required.items() if value in (None, "")]
     if missing:
         raise RuntimeError(f"board execution requires qualification: {missing}")
-    if args.expected_tile_count != RANK_COUNT:
-        raise RuntimeError("full-card hrt_barrier probe requires exactly 16 tiles")
+    if args.expected_tile_count != TILE_COUNT:
+        raise RuntimeError("complete-Tile-domain hrt_barrier probe requires exactly 16 tiles")
     if args.completion_timeout_ms <= 0:
         raise RuntimeError("completion timeout must be positive")
     if re.fullmatch(
@@ -580,13 +634,12 @@ def execute_board(
     package: pathlib.Path,
     bindings: dict[tuple[int, str, int], int],
 ) -> None:
-    resource_args, outputs = write_board_resources(args.work_dir, bindings)
+    resource_args, output = write_board_resources(args.work_dir, bindings)
     result = run(
         [
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--all-ranks",
             "--board",
             "--device-id",
             str(args.device_id),
@@ -606,17 +659,13 @@ def execute_board(
         ],
         timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
     )
-    required = {
-        "launch_pattern: cluster-x16",
-        "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
-        "logical_tile_domain: 0..15",
-        "board_execution: true",
-    }
+    required = {"launch_pattern: cluster-x16", "board_execution: true"}
     if not required.issubset(set(result.stdout.splitlines())):
-        raise RuntimeError("board output omitted 16-rank launch evidence")
-    observations = [parse_output(outputs[rank], rank) for rank in range(RANK_COUNT)]
+        raise RuntimeError("board output omitted 16-Tile launch evidence")
+    runtime_launch.require_board_completion(stdout=result.stdout, context="barrier")
+    observations = [parse_output(output, tile_id) for tile_id in range(TILE_COUNT)]
     print(
-        "full_card_barrier_observations: "
+        "complete_tile_barrier_observations: "
         + json.dumps(observations, sort_keys=True)
     )
     print(result.stdout, end="")
@@ -631,7 +680,7 @@ def main() -> int:
     if not args.no_card:
         if os.environ.get("WAFER_EXECUTE_HARDWARE_TESTS") != "1":
             print(
-                "full-card barrier hardware execution is not armed",
+                "complete-Tile-domain barrier hardware execution is not armed",
                 file=sys.stderr,
             )
             return 77
@@ -650,5 +699,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
-        print(f"wafer_board_full_card_barrier_probe_test: {error}", file=sys.stderr)
+        print(f"wafer_board_complete_tile_barrier_probe_test: {error}", file=sys.stderr)
         raise SystemExit(1)

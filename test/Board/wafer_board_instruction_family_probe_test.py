@@ -286,7 +286,7 @@ def compile_seed_package(
             str(source),
             "--output-program-dir",
             str(package),
-            "--execution-ranks=1",
+            "--num-partitions=1",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
@@ -298,7 +298,7 @@ def compile_seed_package(
 
 def locate_bindings(
     package: pathlib.Path,
-) -> tuple[pathlib.Path, tuple[int, int, int]]:
+) -> tuple[pathlib.Path, tuple[int, int, int], int]:
     manifest = json.loads((package / "manifest.json").read_text())
     entries = manifest.get("entries")
     modules = manifest.get("modules")
@@ -306,30 +306,28 @@ def locate_bindings(
     target = manifest.get("target")
     runtime_launch.require_manifest_launch(
         manifest,
-        runtime_launch.RANK_ONE_KERNEL_LAUNCH,
+        runtime_launch.GRID_KERNEL_LAUNCH,
         context="instruction probe seed",
     )
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="instruction probe seed"
+    )
     if (
-        manifest.get("rank_count") != 1
-        or not isinstance(target, dict)
+        not isinstance(target, dict)
         or target.get("identity") != TARGET_IDENTITY
-        or not isinstance(entries, list)
-        or len(entries) != 1
         or not isinstance(modules, list)
         or len(modules) != 1
         or not isinstance(resources, list)
-        or len(resources) != 3
     ):
-        raise RuntimeError("instruction probe seed manifest is not rank-one exact")
+        raise RuntimeError("instruction probe seed manifest is invalid")
     entry = entries[0]
     module = modules[0]
     slots = entry.get("slots")
     if (
-        entry.get("rank") != 0
-        or entry.get("module") != module.get("id")
+        entry.get("module") != module.get("id")
         or module.get("exports") != [{"role": "main", "symbol": "main"}]
         or not isinstance(slots, list)
-        or [slot.get("ordinal") for slot in slots] != [0, 1, 2]
+        or [slot.get("ordinal") for slot in slots[:3]] != [0, 1, 2]
     ):
         raise RuntimeError("instruction probe ABI slots are not canonical")
     resources_by_id = {
@@ -337,10 +335,7 @@ def locate_bindings(
         for resource in resources
         if isinstance(resource, dict) and isinstance(resource.get("id"), int)
     }
-    resource_ids = tuple(slot.get("resource") for slot in slots)
-    terminal_completion = entry.get("terminal_completion")
-    if not isinstance(terminal_completion, int):
-        raise RuntimeError("instruction probe terminal completion is missing")
+    resource_ids = tuple(slot.get("resource") for slot in slots[:3])
     expected = (
         ("user_input", "read_only"),
         ("user_input", "read_only"),
@@ -351,6 +346,7 @@ def locate_bindings(
         if (
             resource is None
             or (resource.get("role"), resource.get("access")) != role_access
+            or resource.get("scope") != {"kind": "card", "card_id": 0}
             or resource.get("bytes") != catalog.RESOURCE_BYTES
             or resource.get("alignment") != 256
             or resource.get("host_visible") is not True
@@ -364,24 +360,24 @@ def locate_bindings(
     module_path = package / module_path_value
     if not module_path.is_file():
         raise RuntimeError("instruction probe seed module is missing")
-    return module_path, resource_ids
+    if any(other.get("module") != module.get("id") for other in entries):
+        raise RuntimeError("instruction probe entries do not share one module")
+    return module_path, resource_ids, len(slots)
 
 
-def rank_one_terminal_completion(package: pathlib.Path) -> int:
+def package_completion_kind(package: pathlib.Path) -> str:
     manifest = json.loads((package / "manifest.json").read_text())
-    entries = manifest.get("entries")
-    if not isinstance(entries, list) or len(entries) != 1:
-        raise RuntimeError(
-            "instruction probe package does not have one rank-one entry"
-        )
-    terminal_completion = entries[0].get("terminal_completion")
-    if not isinstance(terminal_completion, int):
-        raise RuntimeError("instruction probe terminal completion is missing")
-    return terminal_completion
+    runtime_launch.require_complete_tile_domain(
+        manifest, context="instruction probe"
+    )
+    return runtime_launch.LOCAL_DRAIN_COMPLETION
 
 
 def build_probe(
-    args: argparse.Namespace, package: pathlib.Path, module_path: pathlib.Path
+    args: argparse.Namespace,
+    package: pathlib.Path,
+    module_path: pathlib.Path,
+    slots_per_tile: int,
 ) -> None:
     deps = args.repo_root / "third_party" / "tx8_deps"
     tool_bin = deps / TOOLCHAIN_DIR / "bin"
@@ -421,6 +417,7 @@ def build_probe(
             "-Wall",
             "-Wextra",
             "-Werror",
+            f"-DWAFER_IFP_SLOTS_PER_TILE={slots_per_tile}",
             "-DCONFIG_NO_PLATFORM_HOOK_H",
             "-DUSING_RISCV",
             f"-I{args.repo_root / 'runtime' / 'wafer_crt' / 'include'}",
@@ -446,7 +443,7 @@ def build_probe(
             "--output",
             str(linked),
             "--loader-abi",
-            "tx8-kcore-loader",
+            "tx8-kcore-loader-grid",
             "--extra-object",
             str(helper),
         ],
@@ -478,8 +475,6 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--entry-id",
-            "0",
             "--no-card",
         ]
     )
@@ -500,8 +495,6 @@ def board_command(
         str(args.wafer_run),
         "--package-dir",
         str(package),
-        "--entry-id",
-        "0",
         "--board",
         "--device-id",
         str(args.device_id),
@@ -650,8 +643,8 @@ def validate_output(
     )
     if (
         words[rec["MAGIC"]] != catalog.RECORD_MAGIC
-        or words[rec["SCHEMA_AND_WORDS"]]
-        != (catalog.SCHEMA << 32) | catalog.RECORD_WORDS
+        or words[rec["WORD_COUNT"]]
+        != catalog.RECORD_WORDS
         or not valid_status
         or actual_mirror != expected_mirror
         or words[rec["REQUEST_GUARD"]] != catalog.REQUEST_GUARD
@@ -970,7 +963,7 @@ def validate_output(
     return observation
 
 
-def validate_board_lifecycle(stdout: str, terminal_completion: int) -> None:
+def validate_board_lifecycle(stdout: str, completion_kind: str) -> None:
     lines = stdout.splitlines()
     required = {
         "board_stage: completion",
@@ -980,20 +973,18 @@ def validate_board_lifecycle(stdout: str, terminal_completion: int) -> None:
     }
     if not required.issubset(set(lines)):
         raise RuntimeError("wafer-run omitted complete lifecycle evidence")
-    terminal = (
-        f"terminal_completion: {terminal_completion} kind=entry_return"
+    if completion_kind != runtime_launch.LOCAL_DRAIN_COMPLETION:
+        raise RuntimeError("instruction probe completion kind is invalid")
+    runtime_launch.require_board_completion(
+        stdout, context="instruction probe"
     )
-    if lines.count(terminal) != 1:
-        raise RuntimeError(
-            "wafer-run omitted the unique matching terminal completion"
-        )
 
 
 def execute_cases(
     args: argparse.Namespace,
     package: pathlib.Path,
     resource_ids: tuple[int, int, int],
-    terminal_completion: int,
+    completion_kind: str,
     cases: Iterable[catalog.InstructionCase],
 ) -> None:
     raw_dir = args.work_dir / "raw"
@@ -1017,7 +1008,7 @@ def execute_cases(
                 timeout_seconds=args.completion_timeout_ms / 1000.0 + 30.0,
             )
             try:
-                validate_board_lifecycle(result.stdout, terminal_completion)
+                validate_board_lifecycle(result.stdout, completion_kind)
             except RuntimeError as error:
                 raise RuntimeError(f"{case.name}: {error}") from error
             observation = validate_output(
@@ -1060,14 +1051,14 @@ def main() -> int:
 
     source = write_source_program(args)
     package = compile_seed_package(args, source)
-    module_path, resource_ids = locate_bindings(package)
-    terminal_completion = rank_one_terminal_completion(package)
-    build_probe(args, package, module_path)
+    module_path, resource_ids, slots_per_tile = locate_bindings(package)
+    completion_kind = package_completion_kind(package)
+    build_probe(args, package, module_path, slots_per_tile)
     verify_no_card(args, package)
     if args.no_card:
         return 0
     execute_cases(
-        args, package, resource_ids, terminal_completion, selected
+        args, package, resource_ids, completion_kind, selected
     )
     return 0
 

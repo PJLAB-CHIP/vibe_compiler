@@ -17,7 +17,7 @@ parseTargetIdentityId(llvm::StringRef canonicalSpelling) {
 
 llvm::Expected<KernelRuntimeABIId>
 parseKernelRuntimeABIId(llvm::StringRef canonicalSpelling) {
-  if (canonicalSpelling == "wafer-tx81-kernel-v3")
+  if (canonicalSpelling == "wafer-tx81-kernel")
     return KernelRuntimeABIId::waferTx81Kernel();
   return llvm::createStringError(llvm::errc::invalid_argument,
                                  "unknown kernel runtime ABI '%s'",
@@ -32,7 +32,7 @@ llvm::StringRef stringifyTargetIdentityId(TargetIdentityId id) {
 
 llvm::StringRef stringifyKernelRuntimeABIId(KernelRuntimeABIId id) {
   if (id == KernelRuntimeABIId::waferTx81Kernel())
-    return "wafer-tx81-kernel-v3";
+    return "wafer-tx81-kernel";
   llvm_unreachable("unknown kernel runtime ABI");
 }
 

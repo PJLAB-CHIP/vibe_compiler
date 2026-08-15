@@ -87,12 +87,10 @@ def _test_program(module: object) -> None:
     first = module.analyze_evidence(evidence)
     second = module.analyze_evidence(copy.deepcopy(evidence))
     assert first == second
-    assert "schema_version" not in first
-    assert first["record_abi"] == "wafer-tx81-profiler-record-v4"
+    assert first["record_abi"] == "wafer-tx81-profiler-record"
 
     permuted = make_evidence(permute_bindings=True)
     module.validate_evidence(permuted)
-    assert "schema_version" not in module.analyze_evidence(permuted)
 
     final = first["program"]
     duration = final["duration"]
@@ -1250,10 +1248,6 @@ def _test_validity(module: object) -> None:
 
 
 def _test_rejections(module: object) -> None:
-    old = make_evidence()
-    old["schema_version"] = 5
-    _must_reject(module, old, "schema_version")
-
     inconsistent_binding = make_evidence(permute_bindings=True)
     inconsistent_binding["experiment"]["clock"][0]["launch_slot"] = 0
     inconsistent_binding["experiment"]["clock"][1]["launch_slot"] = 1
@@ -1489,7 +1483,6 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
         analysis = json.loads(
             analysis_path.read_text(encoding="utf-8")
         )
-        assert "schema_version" not in analysis
         assert analysis["program"]["duration"]["qualified"]
 
         command = [
@@ -1508,10 +1501,6 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
             encoding="utf-8"
         )
     )
-    assert schema["properties"]["schema_version"]["const"] == 11
-    assert "profile_instrumentation_schema_version" not in schema["$defs"][
-        "programMetadata"
-    ]["properties"]
     assert "experiment" in schema["required"]
     assert "static_cost_model" in schema["required"]
     assert "experiments" not in schema["required"]
@@ -1557,7 +1546,7 @@ def _test_report_files(repo: pathlib.Path, module: object) -> None:
     }
     assert (
         schema["$defs"]["programMetadata"]["properties"]["record_abi"]["const"]
-        == "wafer-tx81-profiler-record-v4"
+        == "wafer-tx81-profiler-record"
     )
     assert (
         schema["$defs"]["programMetadata"]["properties"][

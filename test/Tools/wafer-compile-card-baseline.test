@@ -25,7 +25,7 @@
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.cross/functions/forward.meta
 # RUN: wafer-compile --input-program-dir %t.cross --output-program-dir %t.cross-package --num-partitions=1 --launch-kind=kernel --optimization-policy=none --dump-compiler-ir %t.cross-ir 2>&1 | FileCheck %s --check-prefix=CROSS
 # RUN: FileCheck %s --input-file=%t.cross-ir/instruction/tile_00000.mlir --check-prefix=CROSS-INSTR
-# RUN: wafer-run --package-dir %t.cross-package --no-card --direct-dte-status-abi wafer-direct-dte-status-v2 --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
+# RUN: wafer-run --package-dir %t.cross-package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
 
 # CHAIN-NOT: card-executable-search policy=none
 # CHAIN: wafer-compile: card-executable-baseline-controller search_states=0 placement_enumeration=0 candidate_family=0
@@ -56,5 +56,5 @@
 # CROSS-INSTR: wafer.instr.dte_send
 # CROSS-INSTR: wafer.instr.dte_wait
 
-# NO-CARD: package: id=0 schema=8 cards=1 tiles=16
+# NO-CARD: package: id=0 cards=1 tiles=16
 # NO-CARD: board_execution: false

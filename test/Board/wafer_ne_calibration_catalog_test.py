@@ -30,18 +30,18 @@ def validate_pure_ncc_probe() -> None:
     assert "wafer_nec_output_guard_mismatches" not in probe
     assert "TsmWaitfinish" not in probe
 
-    first_rdma = entry.index("wafer_tx81_rdma_v3(payload_ddr,")
+    first_rdma = entry.index("wafer_tx81_rdma(payload_ddr,")
     output_seed = entry.index(
-        "wafer_tx81_rdma_v3(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,"
+        "wafer_tx81_rdma(payload_ddr + 2U * WAFER_NEC_SLOT_BYTES,"
     )
     aux_rdma = entry.index(
-        "wafer_tx81_rdma_v3(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,"
+        "wafer_tx81_rdma(payload_ddr + 3U * WAFER_NEC_SLOT_BYTES,"
     )
     pmu_before = entry.index(
         "WaferNECPMU before = wafer_nec_read_pmu();", aux_rdma
     )
     execute = entry.index("uint64_t execute_result = 0U;", pmu_before)
-    wdma = entry.index("wafer_tx81_wdma_v3(", execute)
+    wdma = entry.index("wafer_tx81_wdma(", execute)
     terminal_fence = entry.index("wafer_tx81_ncc_join(1U);", wdma)
     pmu_after = entry.index(
         "WaferNECPMU after = wafer_nec_read_pmu();", terminal_fence
@@ -72,9 +72,7 @@ def _observation_raw(
     record = [0] * catalog.RECORD_WORDS
     values = {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            catalog.SCHEMA << 32
-        ) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": case.case_id,
         "DTYPE": case.dtype,
@@ -561,9 +559,7 @@ def main() -> int:
     record = [0] * catalog.RECORD_WORDS
     record_values = {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            catalog.SCHEMA << 32
-        ) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": quant.case_id,
         "DTYPE": quant.dtype,
@@ -695,9 +691,7 @@ def main() -> int:
     backward_record = [0] * catalog.RECORD_WORDS
     backward_record_values = {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            catalog.SCHEMA << 32
-        ) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": backward_case.case_id,
         "DTYPE": backward_case.dtype,

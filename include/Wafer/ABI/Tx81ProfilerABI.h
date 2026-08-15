@@ -13,7 +13,7 @@
  * - Current stage responsibility: preserve raw Kcore cycle samples, NCC PMU
  *   snapshots, five NCC engine activity observations, and distinct Direct-DTE
  *   issue and completion observations.
- * - Output record: a versioned per-tile byte record. It is evidence,
+ * - Output record: an exact per-tile byte record. It is evidence,
  *   not compiler IR, a scheduler hint, or a target package side channel.
  * - Downstream consumer: the host decoder and profile-scoped calibration.
  * - User-level driver / named pipeline: an explicitly selected profiling
@@ -25,13 +25,12 @@
  *   separately qualified counter semantics must all succeed before analysis.
  */
 
-#define WAFER_TX81_PROFILER_RECORD_ABI "wafer-tx81-profiler-record-v4"
+#define WAFER_TX81_PROFILER_RECORD_ABI "wafer-tx81-profiler-record"
 
 #define WAFER_TX81_PROFILER_RECORD_MAGIC UINT64_C(0x3152464f52505757)
 #define WAFER_TX81_PROFILER_HEADER_GUARD UINT64_C(0xa3d95f672cb184e0)
 #define WAFER_TX81_PROFILER_BUFFER_GUARD UINT64_C(0x6e2ac4d13975bf08)
 
-#define WAFER_TX81_PROFILER_RECORD_VERSION 4U
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_MAGIC UINT64_C(0x3147464352505757)
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_GUARD UINT64_C(0xd28c4f6173a950be)
 #define WAFER_TX81_PROFILER_LAUNCH_CONFIG_BYTES 64U
@@ -139,7 +138,7 @@ enum WaferTx81ProfilerEventMetadata {
  */
 typedef struct WaferTx81ProfilerLaunchConfig {
   uint64_t magic;
-  uint32_t record_version;
+  uint32_t reserved0;
   uint32_t config_bytes;
   uint64_t record_bytes;
   uint32_t tile_id;
@@ -223,7 +222,7 @@ typedef struct WaferTx81ProfilerTSMCallEvent {
 
 typedef struct WaferTx81ProfilerRecordHeader {
   uint64_t magic;
-  uint32_t record_version;
+  uint32_t reserved0;
   uint32_t header_bytes;
   uint32_t event_bytes;
   uint32_t events_offset;
@@ -242,7 +241,7 @@ typedef struct WaferTx81ProfilerRecordHeader {
   uint16_t next_sub_index;
   uint16_t active_site_depth;
   uint32_t summary_validity;
-  uint32_t reserved0;
+  uint32_t reserved1;
   uint64_t header_guard;
   uint64_t buffer_guard_offset;
   WaferTx81ProfilerPMUSnapshot pmu_before;

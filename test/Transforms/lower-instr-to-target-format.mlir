@@ -39,8 +39,8 @@ module {
 }
 
 // SUPPORTED-LABEL: llvm.func @supported
-// SUPPORTED: llvm.call @wafer_tx81_rdma_v3
-// SUPPORTED: llvm.call @wafer_tx81_elementwise_logic_and_v3
+// SUPPORTED: llvm.call @wafer_tx81_rdma
+// SUPPORTED: llvm.call @wafer_tx81_elementwise_logic_and
 
 //--- i64.mlir
 module {
@@ -59,7 +59,7 @@ module {
 }
 
 // I64-LABEL: llvm.func @i64_rdma
-// I64: llvm.call @wafer_tx81_rdma_v3
+// I64: llvm.call @wafer_tx81_rdma
 
 //--- uint.mlir
 module {
@@ -78,7 +78,7 @@ module {
 }
 
 // UINT-LABEL: llvm.func @u8_rdma
-// UINT: llvm.call @wafer_tx81_rdma_v3
+// UINT: llvm.call @wafer_tx81_rdma
 
 //--- f64.mlir
 module {
@@ -113,7 +113,7 @@ module {
 }
 
 // CT-I16-LABEL: llvm.func @ct_i16_add
-// CT-I16: llvm.call @wafer_tx81_elementwise_add_v3
+// CT-I16: llvm.call @wafer_tx81_elementwise_add
 
 //--- ct-bool-add.mlir
 module {
@@ -131,7 +131,7 @@ module {
 }
 
 // CT-BOOL-LABEL: llvm.func @ct_bool_add
-// CT-BOOL: llvm.call @wafer_tx81_elementwise_add_v3
+// CT-BOOL: llvm.call @wafer_tx81_elementwise_add
 
 //--- ct-pool-i8.mlir
 module {
@@ -152,7 +152,7 @@ module {
 }
 
 // CT-POOL-I8-LABEL: llvm.func @ct_pool_i8
-// CT-POOL-I8: llvm.call @wafer_tx81_pool_max_v3
+// CT-POOL-I8: llvm.call @wafer_tx81_pool_max
 
 //--- ct-pool-f32.mlir
 module {
@@ -173,7 +173,7 @@ module {
 }
 
 // CT-POOL-F32-LABEL: llvm.func @ct_pool_f32
-// CT-POOL-F32: llvm.call @wafer_tx81_pool_max_v3
+// CT-POOL-F32: llvm.call @wafer_tx81_pool_max
 
 //--- ct-unpool-bf16.mlir
 module {
@@ -193,7 +193,7 @@ module {
 }
 
 // CT-UNPOOL-BF16-LABEL: llvm.func @ct_unpool_bf16
-// CT-UNPOOL-BF16: llvm.call @wafer_tx81_unpool_avg_v3
+// CT-UNPOOL-BF16: llvm.call @wafer_tx81_unpool_avg
 
 //--- ct-reduce-f32.mlir
 module {
@@ -211,7 +211,7 @@ module {
 }
 
 // CT-REDUCE-F32-LABEL: llvm.func @ct_reduce_f32
-// CT-REDUCE-F32: llvm.call @wafer_tx81_reduce_sum_v3
+// CT-REDUCE-F32: llvm.call @wafer_tx81_reduce_sum
 
 //--- gemm-f32.mlir
 module {

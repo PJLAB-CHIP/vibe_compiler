@@ -16,7 +16,6 @@ RECORD_MAGIC = 0x31434552454E4357
 REQUEST_GUARD = 0xB7A6958473625140
 RECORD_GUARD = 0x0F1E2D3C4B5A6978
 PMU_BASE = 0x590000
-SCHEMA = 5
 REQUEST_WORDS = 24
 RECORD_WORDS = 36
 RESOURCE_BYTES = 1048576
@@ -103,7 +102,7 @@ GEOMETRIES = {
 }
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "DTYPE": 3,
     "LHS_ORIENTATION": 4,
@@ -129,7 +128,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "DTYPE": 4,
@@ -148,7 +147,7 @@ REC = {
     "OUTPUT_DDR_OFFSET": 17,
     "SLOT_BYTES": 18,
     "BODY_OFFSET": 19,
-    # Wire-compatibility slot; host validation uses the complete output slot.
+    # Reserved device slot; host validation uses the complete output slot.
     "OUTPUT_GUARD_MISMATCHES": 20,
     "KIND": 21,
     "PROFILE": 22,
@@ -1698,7 +1697,7 @@ def build_case_payload(case: NECase, sample: int = 0) -> CasePayload:
 
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
-    words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+    words[REQ["WORD_COUNT"]] = REQUEST_WORDS
     words[REQ["CASE"]] = case.case_id
     words[REQ["DTYPE"]] = case.dtype
     words[REQ["LHS_ORIENTATION"]] = case.lhs_orientation

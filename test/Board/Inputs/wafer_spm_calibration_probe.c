@@ -116,9 +116,8 @@ static WaferSPMPMU wafer_spm_read_pmu(void) {
 static uint32_t wafer_spm_decode(const volatile uint64_t *request,
                                  WaferSPMCase *selected) {
   if (request[WAFER_SPM_REQ_MAGIC] != WAFER_SPM_REQUEST_MAGIC ||
-      request[WAFER_SPM_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_SPM_SCHEMA << 32) |
-           WAFER_SPM_REQUEST_WORDS) ||
+      request[WAFER_SPM_REQ_WORD_COUNT] !=
+          (WAFER_SPM_REQUEST_WORDS) ||
       request[WAFER_SPM_REQ_RESOURCE_BYTES] != WAFER_SPM_RESOURCE_BYTES ||
       request[WAFER_SPM_REQ_SLOT_BYTES] != WAFER_SPM_SLOT_BYTES ||
       request[WAFER_SPM_REQ_GUARD] != WAFER_SPM_REQUEST_GUARD)
@@ -149,12 +148,12 @@ static void wafer_spm_seed_guards(const WaferSPMCase *selected,
   for (uint32_t slot = 0; slot < slots; ++slot) {
     uint64_t address = selected->address + slot * selected->slot_stride;
     if (address >= WAFER_SPM_ALLOCATABLE_BEGIN + WAFER_SPM_GUARD_BYTES)
-      wafer_tx81_rdma_v3(canary_ddr, address - WAFER_SPM_GUARD_BYTES,
+      wafer_tx81_rdma(canary_ddr, address - WAFER_SPM_GUARD_BYTES,
                       WAFER_SPM_GUARD_BYTES, WAFER_SPM_GUARD_BYTES, 0, 0, 0, 1,
                       1, 1, Fmt_UINT8, 0U);
     if (address + selected->transfer_bytes + WAFER_SPM_GUARD_BYTES <=
         WAFER_SPM_ALLOCATABLE_END)
-      wafer_tx81_rdma_v3(canary_ddr, address + selected->transfer_bytes,
+      wafer_tx81_rdma(canary_ddr, address + selected->transfer_bytes,
                       WAFER_SPM_GUARD_BYTES, WAFER_SPM_GUARD_BYTES, 0, 0, 0, 1,
                       1, 1, Fmt_UINT8, 0U);
   }
@@ -168,14 +167,14 @@ static void wafer_spm_readback_guards(const WaferSPMCase *selected,
   for (uint32_t slot = 0; slot < slots; ++slot) {
     uint64_t address = selected->address + slot * selected->slot_stride;
     if (address >= WAFER_SPM_ALLOCATABLE_BEGIN + WAFER_SPM_GUARD_BYTES) {
-      wafer_tx81_wdma_v3(address - WAFER_SPM_GUARD_BYTES, readback,
+      wafer_tx81_wdma(address - WAFER_SPM_GUARD_BYTES, readback,
                       WAFER_SPM_GUARD_BYTES, WAFER_SPM_GUARD_BYTES, 0, 0, 0, 1,
                       1, 1, Fmt_UINT8, 0U);
       readback += WAFER_SPM_GUARD_BYTES;
     }
     if (address + selected->transfer_bytes + WAFER_SPM_GUARD_BYTES <=
         WAFER_SPM_ALLOCATABLE_END) {
-      wafer_tx81_wdma_v3(address + selected->transfer_bytes, readback,
+      wafer_tx81_wdma(address + selected->transfer_bytes, readback,
                       WAFER_SPM_GUARD_BYTES, WAFER_SPM_GUARD_BYTES, 0, 0, 0, 1,
                       1, 1, Fmt_UINT8, 0U);
       readback += WAFER_SPM_GUARD_BYTES;
@@ -188,8 +187,8 @@ static void wafer_spm_init_record(volatile uint64_t *record,
   for (uint32_t index = 0; index < WAFER_SPM_RECORD_WORDS; ++index)
     record[index] = 0;
   record[WAFER_SPM_REC_MAGIC] = WAFER_SPM_RECORD_MAGIC;
-  record[WAFER_SPM_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_SPM_SCHEMA << 32) | WAFER_SPM_RECORD_WORDS;
+  record[WAFER_SPM_REC_WORD_COUNT] =
+      WAFER_SPM_RECORD_WORDS;
   record[WAFER_SPM_REC_STATUS] = status;
   record[WAFER_SPM_REC_OUTPUT_DDR_OFFSET] =
       WAFER_SPM_OUTPUT_DDR_OFFSET;
@@ -231,9 +230,9 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
       uint64_t output =
           output_ddr + WAFER_SPM_OUTPUT_DDR_OFFSET +
           (uint64_t)iteration * selected.transfer_bytes;
-      wafer_tx81_rdma_v3(payload, slot, selected.transfer_bytes,
+      wafer_tx81_rdma(payload, slot, selected.transfer_bytes,
                       selected.transfer_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
-      wafer_tx81_wdma_v3(slot, output, selected.transfer_bytes,
+      wafer_tx81_wdma(slot, output, selected.transfer_bytes,
                       selected.transfer_bytes, 0, 0, 0, 1, 1, 1, Fmt_UINT8, 0U);
     }
     wafer_spm_readback_guards(&selected, output_ddr);

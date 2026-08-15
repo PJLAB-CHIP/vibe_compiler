@@ -15,7 +15,6 @@ REQUEST_MAGIC = 0x315145524D444357
 RECORD_MAGIC = 0x314345524D444357
 REQUEST_GUARD = 0xF6E5D4C3B2A1908F
 RECORD_GUARD = 0x1029384756AABBCC
-SCHEMA = 1
 REQUEST_WORDS = 16
 RECORD_WORDS = 32
 RESOURCE_BYTES = 131072
@@ -26,7 +25,7 @@ SLOT_CANARY = 0xA7
 ELEMENT_BYTES = 2
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "INPUT_BYTES": 3,
     "RESULT_BYTES": 4,
@@ -40,7 +39,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "INPUT_BYTES": 4,
@@ -52,7 +51,7 @@ REC = {
     "OUTPUT_DDR_OFFSET": 10,
     "SLOT_BYTES": 11,
     "BODY_OFFSET": 12,
-    # Wire-compatibility slot; host validation uses the complete output slot.
+    # Reserved device slot; host validation uses the complete output slot.
     "OUTPUT_GUARD_MISMATCHES": 13,
     "TDMA_INST_DELTA": 14,
     "TDMA_EXEC_DELTA": 15,
@@ -979,7 +978,7 @@ def _build_input_expected(case: DataMoveCase, seed: int) -> tuple[bytes, bytes]:
     if operation == "concat":
         if case.source1_shape is None or case.semantic_axis is None:
             raise RuntimeError(f"{case.name}: concat metadata is incomplete")
-        # HW concatenates each rank's flattened H*W plane.  It deliberately
+        # HW concatenates each Tile's flattened H*W plane.  It deliberately
         # uses unequal H/W source shapes so an implementation that treats HW
         # as ordinary W concatenation produces a different ordering.
         axis_by_name = {"N": 0, "H": 1, "W": 2, "HW": 1, "C": 3}
@@ -1121,7 +1120,7 @@ def build_case_payload(case: DataMoveCase, sample: int = 0) -> CasePayload:
         raise RuntimeError(f"{case.name}: generated movement size mismatch")
     words = [0] * REQUEST_WORDS
     words[REQ["MAGIC"]] = REQUEST_MAGIC
-    words[REQ["SCHEMA_AND_WORDS"]] = (SCHEMA << 32) | REQUEST_WORDS
+    words[REQ["WORD_COUNT"]] = REQUEST_WORDS
     words[REQ["CASE"]] = case.case_id
     words[REQ["INPUT_BYTES"]] = case.input_bytes
     words[REQ["RESULT_BYTES"]] = case.result_bytes

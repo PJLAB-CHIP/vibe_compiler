@@ -21,7 +21,6 @@
 
 namespace wafer::runtime {
 
-inline constexpr uint32_t kPackageManifestSchemaVersion = 8;
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
 inline constexpr llvm::StringLiteral kDirectDTEStatusABI =
     WAFER_TX81_DIRECT_DTE_STATUS_ABI;
@@ -175,7 +174,6 @@ struct PackageManifest {
       : targetIdentity(targetIdentity), runtimeABI(runtimeABI),
         launch(std::move(launch)), moduleFormat(moduleFormat.str()) {}
 
-  uint32_t schemaVersion = kPackageManifestSchemaVersion;
   ProgramId program;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId runtimeABI;

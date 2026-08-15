@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the 16-rank DDR probe and run one explicitly selected observation mode."""
+"""Build the 16-Tile DDR probe and run one selected observation mode."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import sys
 import wafer_runtime_launch_contract as runtime_launch
 
 
-RANK_COUNT = 16
+TILE_COUNT = 16
 ALLOCATION_COUNT = 2
 OFFSET_CLASSES = (
     0,
@@ -71,7 +71,6 @@ REQUEST_GUARD = 0x8C21A549F0E36DB7
 RECORD_GUARD = 0xB41EF09C7263D85A
 ROW_GUARD = 0x6D9703F1CA4285BE
 CONFLICT_ROW_GUARD = 0x71A5CE29B406DF83
-SCHEMA = 3
 REQUEST_WORDS = 16
 HEADER_WORDS = 32
 ROW_WORDS = 16
@@ -109,7 +108,7 @@ MAX_RECORD_BYTES = max(
 MODE_OFFSET = 0
 MODE_CONFLICT_EQUIVALENCE = 1
 LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
-STATUS_ABI = "wafer-direct-dte-status-v2"
+STATUS_ABI = "wafer-direct-dte-status"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
@@ -118,42 +117,16 @@ PROBE_C = INPUT_DIR / "wafer_ddr_tile_offset_probe.c"
 PROBE_LL = INPUT_DIR / "wafer_ddr_tile_offset_probe.ll"
 PROTOCOL_H = INPUT_DIR / "wafer_ddr_tile_offset_probe_protocol.h"
 
-SHARDING = "{devices=[16,1]0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}"
 MODULE = f"""\
 module {{
-  wafer.target.topology @default {{card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}}
-  wafer.execution.mesh @default_mesh {{topology = @default, axes = ["rank"], shape = array<i64: 16>, policy = "all_available", endpoints = array<i64>}}
   func.func @main(
-      %arg0: tensor<16x{LOCAL_ELEMENTS}xf16>,
-      %arg1: tensor<16x{LOCAL_ELEMENTS}xf16>)
-      -> (tensor<16x{LOCAL_ELEMENTS}xf16>,
-          tensor<16x{LOCAL_ELEMENTS}xf16>) {{
-    %sharded0 = stablehlo.custom_call @Sharding(%arg0) {{
-      backend_config = "",
-      mhlo.sharding = "{SHARDING}"
-    }} : (tensor<16x{LOCAL_ELEMENTS}xf16>) -> tensor<16x{LOCAL_ELEMENTS}xf16>
-    %sharded1 = stablehlo.custom_call @Sharding(%arg1) {{
-      backend_config = "",
-      mhlo.sharding = "{SHARDING}"
-    }} : (tensor<16x{LOCAL_ELEMENTS}xf16>) -> tensor<16x{LOCAL_ELEMENTS}xf16>
-    %slice = "stablehlo.slice"(%sharded0) {{
-      start_indices = array<i64: 0, {SWEEP_BASE // ELEMENT_BYTES}>,
-      limit_indices = array<i64: 16, {SWEEP_BASE // ELEMENT_BYTES + 1}>,
-      strides = array<i64: 1, 1>
-    }} : (tensor<16x{LOCAL_ELEMENTS}xf16>) -> tensor<16x1xf16>
-    %zero = stablehlo.constant dense<0.0> : tensor<f16>
-    %sum = "stablehlo.reduce"(%slice, %zero) ({{
-    ^bb0(%lhs: tensor<f16>, %rhs: tensor<f16>):
-      %value = stablehlo.add %lhs, %rhs : tensor<f16>
-      stablehlo.return %value : tensor<f16>
-    }}) {{dimensions = array<i64: 0>}} : (tensor<16x1xf16>, tensor<f16>) -> tensor<1xf16>
-    %broadcast = "stablehlo.broadcast_in_dim"(%sum) {{
-      broadcast_dimensions = array<i64: 1>
-    }} : (tensor<1xf16>) -> tensor<16x{LOCAL_ELEMENTS}xf16>
-    %result0 = stablehlo.add %sharded0, %broadcast : tensor<16x{LOCAL_ELEMENTS}xf16>
-    %result1 = stablehlo.add %sharded1, %broadcast : tensor<16x{LOCAL_ELEMENTS}xf16>
-    return %result0, %result1 : tensor<16x{LOCAL_ELEMENTS}xf16>,
-        tensor<16x{LOCAL_ELEMENTS}xf16>
+      %arg0: tensor<{LOCAL_ELEMENTS}xf16>,
+      %arg1: tensor<{LOCAL_ELEMENTS}xf16>)
+      -> (tensor<{LOCAL_ELEMENTS}xf16>, tensor<{LOCAL_ELEMENTS}xf16>) {{
+    %result0 = stablehlo.add %arg0, %arg1 : tensor<{LOCAL_ELEMENTS}xf16>
+    %result1 = stablehlo.add %arg1, %arg0 : tensor<{LOCAL_ELEMENTS}xf16>
+    return %result0, %result1 : tensor<{LOCAL_ELEMENTS}xf16>,
+        tensor<{LOCAL_ELEMENTS}xf16>
   }}
 }}
 """
@@ -162,24 +135,24 @@ METADATA = {
     "stablehlo_version": "0.0.0",
     "input_signature": [
         {
-            "shape": [RANK_COUNT, LOCAL_ELEMENTS],
+            "shape": [LOCAL_ELEMENTS],
             "dtype": "float16",
             "dynamic_dims": [],
         },
         {
-            "shape": [RANK_COUNT, LOCAL_ELEMENTS],
+            "shape": [LOCAL_ELEMENTS],
             "dtype": "float16",
             "dynamic_dims": [],
         },
     ],
     "output_signature": [
         {
-            "shape": [RANK_COUNT, LOCAL_ELEMENTS],
+            "shape": [LOCAL_ELEMENTS],
             "dtype": "float16",
             "dynamic_dims": [],
         },
         {
-            "shape": [RANK_COUNT, LOCAL_ELEMENTS],
+            "shape": [LOCAL_ELEMENTS],
             "dtype": "float16",
             "dynamic_dims": [],
         },
@@ -205,7 +178,7 @@ def parse_args() -> argparse.Namespace:
         "--conflict-equivalence",
         action="store_true",
         help=(
-            "select only the pending all-rank DDR conflict-equivalence "
+            "select only the pending all-Tile DDR conflict-equivalence "
             "suite; the default request remains the established offset probe"
         ),
     )
@@ -223,7 +196,7 @@ def parse_args() -> argparse.Namespace:
 def matrix_cases() -> list[dict[str, object]]:
     return [
         {
-            "rank": rank,
+            "tile_id": tile_id,
             "allocation_ordinal": allocation,
             "offset_class": offset,
             "direction": direction,
@@ -232,7 +205,7 @@ def matrix_cases() -> list[dict[str, object]]:
             "disposition": "manual-board-observation",
             "oracle": "full-payload+prefix/suffix-guard+terminal",
         }
-        for rank in range(RANK_COUNT)
+        for tile_id in range(TILE_COUNT)
         for allocation in range(ALLOCATION_COUNT)
         for offset in OFFSET_CLASSES
         for direction in DIRECTIONS
@@ -242,7 +215,7 @@ def matrix_cases() -> list[dict[str, object]]:
 def conflict_equivalence_cases() -> list[dict[str, object]]:
     return [
         {
-            "rank": rank,
+            "tile_id": tile_id,
             "allocation_ordinal": allocation,
             "base_offset": base_offset,
             "relative_offset_candidate": offset,
@@ -255,12 +228,12 @@ def conflict_equivalence_cases() -> list[dict[str, object]]:
             "disposition": "pending-manual-board-observation",
             "oracle": (
                 "same-invocation serial/window+a-b/b-a+pair-only-pmu+"
-                "counterbalanced-schedule/rank-order+two-exact-payloads+"
+                "counterbalanced-schedule/Tile-order+two-exact-payloads+"
                 "prefix/suffix-guards+instruction-count"
             ),
             "compiler_use": "no-ddr-bank-coloring-until-board-evidence",
         }
-        for rank in range(RANK_COUNT)
+        for tile_id in range(TILE_COUNT)
         for allocation in range(ALLOCATION_COUNT)
         for base_offset in CONFLICT_BASE_OFFSETS
         for offset in CONFLICT_OFFSET_CLASSES
@@ -272,21 +245,21 @@ def validate_static_contract() -> None:
     cases = matrix_cases()
     conflict_cases = conflict_equivalence_cases()
     expected_cells = (
-        RANK_COUNT
+        TILE_COUNT
         * ALLOCATION_COUNT
         * len(OFFSET_CLASSES)
         * len(DIRECTIONS)
     )
     expected_conflict_cells = (
-        RANK_COUNT
+        TILE_COUNT
         * ALLOCATION_COUNT
         * len(CONFLICT_BASE_OFFSETS)
         * len(CONFLICT_OFFSET_CLASSES)
         * len(CONFLICT_TRANSFER_BYTES)
     )
-    expected_conflict_rows_per_rank = (
+    expected_conflict_rows_per_tile = (
         expected_conflict_cells
-        // RANK_COUNT
+        // TILE_COUNT
         * len(CONFLICT_ISSUE_ORDERS)
         * len(CONFLICT_SCHEDULES)
         * CONFLICT_CELL_SAMPLES
@@ -302,7 +275,7 @@ def validate_static_contract() -> None:
         or len(
             {
                 (
-                    row["rank"],
+                    row["tile_id"],
                     row["allocation_ordinal"],
                     row["offset_class"],
                     row["direction"],
@@ -324,11 +297,11 @@ def validate_static_contract() -> None:
         or LOCAL_ELEMENTS * ELEMENT_BYTES != RESOURCE_BYTES
         or len(conflict_cases) != expected_conflict_cells
         or CONFLICT_ROW_COUNT
-        != expected_conflict_rows_per_rank
+        != expected_conflict_rows_per_tile
         or len(
             {
                 (
-                    row["rank"],
+                    row["tile_id"],
                     row["allocation_ordinal"],
                     row["base_offset"],
                     row["relative_offset_candidate"],
@@ -390,7 +363,6 @@ def validate_mode_dispatch_contract() -> None:
     source = PROBE_C.read_text()
     protocol = PROTOCOL_H.read_text()
     protocol_fragments = (
-        f"#define WAFER_DDR_TILE_SCHEMA {SCHEMA}U",
         (
             "#define WAFER_DDR_TILE_CONFLICT_ROW_WORDS "
             f"{CONFLICT_ROW_WORDS}U"
@@ -400,7 +372,7 @@ def validate_mode_dispatch_contract() -> None:
         "WAFER_DDR_TILE_REQ_MODE = 8",
         "WAFER_DDR_TILE_HDR_MODE = 13",
         "WAFER_DDR_TILE_HDR_CONFLICT_ROW_COUNT = 14",
-        "WAFER_DDR_TILE_HDR_CONFLICT_RANK_ORDER = 19",
+        "WAFER_DDR_TILE_HDR_CONFLICT_TILE_ORDER = 19",
         "WAFER_DDR_TILE_CONFLICT_ROW_GUARD_WORD = 23",
         "WAFER_DDR_TILE_CONFLICT_ROW_SCHEDULE_POSITION = 24",
     )
@@ -439,7 +411,7 @@ def validate_mode_dispatch_contract() -> None:
         "wafer_ddr_tile_measure_conflict_pair(" not in conflict_branch
         or "wafer_ddr_tile_measure_rdma(" in conflict_branch
         or "wafer_ddr_tile_measure_wdma(" in conflict_branch
-        or "WAFER_DDR_TILE_RANKS - 1U - rank_position" not in source
+        or "WAFER_DDR_TILE_COUNT - 1U - tile_position" not in source
         or "reverse_schedule" not in conflict_branch
     ):
         branch_failures.append("conflict-mode-is-not-conflict-only")
@@ -494,173 +466,51 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
     return source
 
 
-def expected_rank_slices() -> list[dict[str, object]]:
-    return [
-        {
-            "rank": rank,
-            "replica_id": 0,
-            "offsets": [rank, 0],
-            "sizes": [1, LOCAL_ELEMENTS],
-            "strides": [1, 1],
-        }
-        for rank in range(RANK_COUNT)
-    ]
-
-
-def validate_boundary_binding(
-    binding: object, index_name: str, index: int
-) -> None:
-    if not isinstance(binding, dict) or binding != {
-        index_name: index,
-        "distribution": "partitioned",
-        "global_shape": [RANK_COUNT, LOCAL_ELEMENTS],
-        "local_shape": [1, LOCAL_ELEMENTS],
-        "dtype": "float16",
-        "ranks": expected_rank_slices(),
-    }:
-        raise RuntimeError(
-            f"DDR tile/offset {index_name} {index} is not the exact "
-            "rank-partitioned resource"
-        )
-
-
-def validate_manifest(
+def configure_manifest(
     package: pathlib.Path,
 ) -> tuple[pathlib.Path, dict[tuple[int, str, int], int]]:
-    metadata = json.loads((package / "functions" / "forward.meta").read_text())
-    boundary = metadata.get("distributed_boundary")
-    if (
-        not isinstance(boundary, dict)
-        or boundary.get("logical_rank_count") != RANK_COUNT
-    ):
-        raise RuntimeError("DDR tile/offset package omitted rank-16 boundary")
-    inputs = boundary.get("inputs")
-    outputs = boundary.get("outputs")
-    if (
-        not isinstance(inputs, list)
-        or len(inputs) != ALLOCATION_COUNT
-        or not isinstance(outputs, list)
-        or len(outputs) != ALLOCATION_COUNT
-    ):
-        raise RuntimeError("DDR tile/offset boundary allocation count is wrong")
-    for index, binding in enumerate(inputs):
-        validate_boundary_binding(binding, "argument_index", index)
-    for index, binding in enumerate(outputs):
-        validate_boundary_binding(binding, "result_index", index)
-
-    manifest = json.loads((package / "manifest.json").read_text())
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    shared_bytes = TILE_COUNT * RESOURCE_BYTES
+    specs = tuple(
+        runtime_launch.SharedBoundaryResourceSpec(
+            role=role,
+            role_index=allocation,
+            name=f"ddr_{role}_{allocation}",
+            type={"dtype": "f16", "shape": [TILE_COUNT, LOCAL_ELEMENTS]},
+            bytes=shared_bytes,
+            alignment=256,
+            access="read_only" if role == "user_input" else "write_only",
+            host_visible=True,
+        )
+        for role in ("user_input", "output")
+        for allocation in range(ALLOCATION_COUNT)
+    )
+    bindings = runtime_launch.configure_direct_dte_tile_package(
+        manifest,
+        resources=specs,
+        status_abi=STATUS_ABI,
+        status_bytes=STATUS_STORAGE_BYTES,
+        status_alignment=STATUS_STORAGE_ALIGNMENT,
+        context="DDR tile/offset probe",
+    )
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     runtime_launch.require_manifest_launch(
         manifest,
         runtime_launch.CLUSTER_KERNEL_LAUNCH,
-        context="DDR tile/offset",
+        context="DDR tile/offset probe",
     )
-    if (
-        manifest.get("rank_count") != RANK_COUNT
-    ):
-        raise RuntimeError("DDR tile/offset package launch contract is wrong")
+    entries = runtime_launch.require_complete_tile_domain(
+        manifest, context="DDR tile/offset probe"
+    )
+    if any(len(entry.get("slots", [])) != 5 for entry in entries):
+        raise RuntimeError("DDR tile/offset slot layout is invalid")
     modules = manifest.get("modules")
-    entries = manifest.get("entries")
-    resources = manifest.get("resources")
-    if (
-        not isinstance(modules, list)
-        or len(modules) != 1
-        or not isinstance(entries, list)
-        or len(entries) != RANK_COUNT
-        or not isinstance(resources, list)
-        or len(resources) != RANK_COUNT * 5
-    ):
-        raise RuntimeError("DDR tile/offset package domains are incomplete")
-    module = modules[0]
-    if module.get("exports") != runtime_launch.expected_kernel_module_exports(
-        runtime_launch.CLUSTER_KERNEL_LAUNCH
-    ):
-        raise RuntimeError("DDR tile/offset shared module exports are wrong")
-    module_path = package / module["path"]
+    if not isinstance(modules, list) or len(modules) != 1:
+        raise RuntimeError("DDR tile/offset shared module is missing")
+    module_path = package / modules[0]["path"]
     if not module_path.is_file():
         raise RuntimeError("DDR tile/offset shared module is missing")
-
-    resources_by_id = {
-        resource.get("id"): resource
-        for resource in resources
-        if isinstance(resource, dict)
-        and isinstance(resource.get("id"), int)
-    }
-    if len(resources_by_id) != len(resources):
-        raise RuntimeError("DDR tile/offset resource ids are not unique")
-    bindings: dict[tuple[int, str, int], int] = {}
-    for resource in resources:
-        rank = resource.get("rank")
-        role = resource.get("role")
-        role_index = resource.get("role_index")
-        if role == "transport_status":
-            if (
-                resource.get("type") != {"dtype": "u32", "shape": [1]}
-                or resource.get("bytes") != STATUS_STORAGE_BYTES
-                or resource.get("alignment") != STATUS_STORAGE_ALIGNMENT
-                or resource.get("host_visible") is not False
-            ):
-                raise RuntimeError("DDR tile/offset status resource is wrong")
-            continue
-        key = (rank, role, role_index)
-        expected_access = (
-            "read_only" if role == "user_input" else "write_only"
-        )
-        if (
-            not isinstance(rank, int)
-            or not 0 <= rank < RANK_COUNT
-            or key in bindings
-            or role not in {"user_input", "output"}
-            or role_index not in range(ALLOCATION_COUNT)
-            or resource.get("type")
-            != {"dtype": "f16", "shape": [1, LOCAL_ELEMENTS]}
-            or resource.get("bytes") != RESOURCE_BYTES
-            or resource.get("access") != expected_access
-            or resource.get("host_visible") is not True
-        ):
-            raise RuntimeError(
-                f"DDR tile/offset host resource is invalid: {resource}"
-            )
-        bindings[key] = resource["id"]
-    expected_bindings = {
-        (rank, role, ordinal)
-        for rank in range(RANK_COUNT)
-        for role in ("user_input", "output")
-        for ordinal in range(ALLOCATION_COUNT)
-    }
-    if set(bindings) != expected_bindings:
-        raise RuntimeError("DDR tile/offset host resources are not all-and-only")
-
-    for entry in entries:
-        rank = entry.get("rank")
-        transport = entry.get("transport")
-        slots = entry.get("slots")
-        if (
-            not isinstance(rank, int)
-            or not 0 <= rank < RANK_COUNT
-            or entry.get("module") != module.get("id")
-            or not isinstance(transport, dict)
-            or transport.get("kind") != "direct_dte"
-            or transport.get("status_abi") != STATUS_ABI
-            or transport.get("host_watchdog_required") is not True
-            or not isinstance(slots, list)
-            or len(slots) != 5
-        ):
-            raise RuntimeError(f"rank {rank} cluster entry is invalid")
-        status_id = transport.get("status_resource")
-        expected_slots = [
-            (0, bindings[(rank, "user_input", 0)], "read_only"),
-            (1, bindings[(rank, "user_input", 1)], "read_only"),
-            (2, bindings[(rank, "output", 0)], "write_only"),
-            (3, bindings[(rank, "output", 1)], "write_only"),
-            (4, status_id, "read_write"),
-        ]
-        actual_slots = [
-            (slot.get("ordinal"), slot.get("resource"), slot.get("access"))
-            for slot in slots
-            if isinstance(slot, dict)
-        ]
-        if actual_slots != expected_slots:
-            raise RuntimeError(f"rank {rank} slot order is not canonical")
     return module_path, bindings
 
 
@@ -676,14 +526,14 @@ def compile_package(
             str(source),
             "--output-program-dir",
             str(package),
-            f"--execution-ranks={RANK_COUNT}",
+            "--num-partitions=1",
             f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=600,
     )
     if "wrote verified package" not in result.stdout:
         raise RuntimeError("wafer-compile did not write the DDR probe seed")
-    module_path, bindings = validate_manifest(package)
+    module_path, bindings = configure_manifest(package)
     return package, module_path, bindings
 
 
@@ -780,7 +630,6 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
             str(args.wafer_run),
             "--package-dir",
             str(package),
-            "--all-ranks",
             "--no-card",
             "--direct-dte-status-abi",
             STATUS_ABI,
@@ -798,13 +647,13 @@ def verify_no_card(args: argparse.Namespace, package: pathlib.Path) -> None:
     )
 
 
-def pattern_period(rank: int, allocation: int, launch_sample: int) -> bytes:
+def pattern_period(tile_id: int, allocation: int, launch_sample: int) -> bytes:
     return b"".join(
         struct.pack(
             "<e",
             float(
                 (
-                    rank * 37
+                    tile_id * 37
                     + allocation * 83
                     + launch_sample * 29
                     + lane * 17
@@ -820,7 +669,7 @@ def pattern_period(rank: int, allocation: int, launch_sample: int) -> bytes:
 
 
 def conflict_pattern(
-    rank: int,
+    tile_id: int,
     allocation: int,
     launch_sample: int,
     address_offset: int,
@@ -833,7 +682,7 @@ def conflict_pattern(
             "<e",
             float(
                 (
-                    rank * 37
+                    tile_id * 37
                     + allocation * 83
                     + launch_sample * 29
                     + element * 17
@@ -853,7 +702,7 @@ def conflict_pattern(
 
 
 def make_input(
-    rank: int,
+    tile_id: int,
     allocation: int,
     launch_sample: int,
     conflict_equivalence: bool,
@@ -879,13 +728,13 @@ def make_input(
                         address_offset :
                         address_offset + CONFLICT_TRANSFER_BYTES[-1]
                     ] = conflict_pattern(
-                        rank,
+                        tile_id,
                         allocation,
                         launch_sample,
                         address_offset,
                         CONFLICT_TRANSFER_BYTES[-1],
                     )
-    period = pattern_period(rank, allocation, launch_sample)
+    period = pattern_period(tile_id, allocation, launch_sample)
     sweep_bytes = RESOURCE_BYTES - SWEEP_BASE
     payload[SWEEP_BASE:] = (period * ((sweep_bytes + 255) // 256))[
         :sweep_bytes
@@ -893,8 +742,8 @@ def make_input(
     if allocation == 0:
         words = [0] * REQUEST_WORDS
         words[0] = REQUEST_MAGIC
-        words[1] = SCHEMA
-        words[2] = rank
+        words[1] = REQUEST_WORDS
+        words[2] = tile_id
         words[3] = launch_sample
         words[4] = RESOURCE_BYTES
         words[5] = PAYLOAD_BYTES
@@ -925,59 +774,68 @@ def write_resources(
     bindings: dict[tuple[int, str, int], int],
     launch_sample: int,
     conflict_equivalence: bool,
-) -> tuple[list[str], dict[tuple[int, int], pathlib.Path], dict[tuple[int, int], bytes]]:
+) -> tuple[list[str], dict[int, pathlib.Path], dict[tuple[int, int], bytes]]:
     raw_dir = work_dir / f"raw-{launch_sample}"
     raw_dir.mkdir()
     arguments: list[str] = []
-    outputs: dict[tuple[int, int], pathlib.Path] = {}
+    outputs: dict[int, pathlib.Path] = {}
     expected_payloads: dict[tuple[int, int], bytes] = {}
-    for rank in range(RANK_COUNT):
-        for allocation in range(ALLOCATION_COUNT):
-            input_path = raw_dir / (
-                f"rank-{rank:02d}.allocation-{allocation}.input.raw"
-            )
-            output_path = raw_dir / (
-                f"rank-{rank:02d}.allocation-{allocation}.output.raw"
-            )
+    for allocation in range(ALLOCATION_COUNT):
+        input_payload = bytearray()
+        for tile_id in range(TILE_COUNT):
             payload, expected = make_input(
-                rank,
+                tile_id,
                 allocation,
                 launch_sample,
                 conflict_equivalence,
             )
-            input_path.write_bytes(payload)
-            outputs[(rank, allocation)] = output_path
-            expected_payloads[(rank, allocation)] = expected
-            arguments.extend(
-                [
-                    "--resource",
-                    f"{bindings[(rank, 'user_input', allocation)]}={input_path}",
-                    "--output",
-                    f"{bindings[(rank, 'output', allocation)]}={output_path}",
-                ]
-            )
+            input_payload.extend(payload)
+            expected_payloads[(tile_id, allocation)] = expected
+        input_ids = {
+            bindings[(tile_id, "user_input", allocation)]
+            for tile_id in range(TILE_COUNT)
+        }
+        output_ids = {
+            bindings[(tile_id, "output", allocation)]
+            for tile_id in range(TILE_COUNT)
+        }
+        if len(input_ids) != 1 or len(output_ids) != 1:
+            raise RuntimeError("DDR host resources are not shared across Tiles")
+        input_path = raw_dir / f"allocation-{allocation}.input.raw"
+        output_path = raw_dir / f"allocation-{allocation}.output.raw"
+        input_path.write_bytes(input_payload)
+        outputs[allocation] = output_path
+        arguments.extend(
+            [
+                "--resource",
+                f"{next(iter(input_ids))}={input_path}",
+                "--output",
+                f"{next(iter(output_ids))}={output_path}",
+            ]
+        )
     return arguments, outputs, expected_payloads
 
 
 def parse_tile_coordinates(stdout: str) -> dict[int, tuple[int, int]]:
     matches = re.findall(
-        r"^board_tile: logical=(\d+) available=true "
+        r"^board_tile: tile_id=(\d+) launch_slot=(\d+) available=true "
         r"physical_x=(\d+) physical_y=(\d+)$",
         stdout,
         re.MULTILINE,
     )
     result = {
-        int(rank): (int(physical_x), int(physical_y))
-        for rank, physical_x, physical_y in matches
+        int(tile_id): (int(physical_x), int(physical_y))
+        for tile_id, launch_slot, physical_x, physical_y in matches
+        if tile_id == launch_slot
     }
     if (
-        len(matches) != RANK_COUNT
-        or set(result) != set(range(RANK_COUNT))
-        or len(set(result.values())) != RANK_COUNT
+        len(matches) != TILE_COUNT
+        or set(result) != set(range(TILE_COUNT))
+        or len(set(result.values())) != TILE_COUNT
     ):
         raise RuntimeError(
             "board output did not provide a one-to-one mapping from all 16 "
-            "logical ranks to 16 unique Tiles"
+            "Tile IDs to 16 unique Tiles"
         )
     return result
 
@@ -988,32 +846,32 @@ def require_stable_tile_coordinates(
 ) -> None:
     if observed != reference:
         raise RuntimeError(
-            "logical-to-physical tile mapping changed across paired "
+            "Tile-to-coordinate mapping changed across paired "
             "forward/reverse launches"
         )
 
 
 def validate_coordinate_parser_contract() -> None:
     valid = "\n".join(
-        f"board_tile: logical={rank} available=true "
-        f"physical_x={rank // 4} physical_y={rank % 4}"
-        for rank in range(RANK_COUNT)
+        f"board_tile: tile_id={tile_id} launch_slot={tile_id} available=true "
+        f"physical_x={tile_id // 4} physical_y={tile_id % 4}"
+        for tile_id in range(TILE_COUNT)
     )
     expected = {
-        rank: (rank // 4, rank % 4) for rank in range(RANK_COUNT)
+        tile_id: (tile_id // 4, tile_id % 4) for tile_id in range(TILE_COUNT)
     }
     if parse_tile_coordinates(valid) != expected:
         raise RuntimeError("valid tile-coordinate fixture was not preserved")
     duplicate_physical = valid.replace(
-        "board_tile: logical=15 available=true physical_x=3 physical_y=3",
-        "board_tile: logical=15 available=true physical_x=0 physical_y=0",
+        "board_tile: tile_id=15 launch_slot=15 available=true physical_x=3 physical_y=3",
+        "board_tile: tile_id=15 launch_slot=15 available=true physical_x=0 physical_y=0",
     )
     try:
         parse_tile_coordinates(duplicate_physical)
     except RuntimeError:
         pass
     else:
-        raise RuntimeError("duplicate physical tile was not rejected")
+        raise RuntimeError("duplicate Tile was not rejected")
     changed = dict(expected)
     changed[15] = (4, 0)
     try:
@@ -1128,26 +986,27 @@ def conflict_archive_offset(
     return archive_a, archive_a + guarded_slot_bytes
 
 
-def validate_rank_outputs(
-    rank: int,
+def validate_tile_outputs(
+    tile_id: int,
     launch_sample: int,
-    paths: dict[tuple[int, int], pathlib.Path],
+    paths: dict[int, pathlib.Path],
     expected_payloads: dict[tuple[int, int], bytes],
     physical: tuple[int, int],
     conflict_equivalence: bool,
 ) -> list[dict[str, object]]:
-    raw_outputs = {
-        allocation: paths[(rank, allocation)].read_bytes()
-        for allocation in range(ALLOCATION_COUNT)
-    }
-    if any(len(raw) != RESOURCE_BYTES for raw in raw_outputs.values()):
-        raise RuntimeError(f"rank {rank}: output resource size is wrong")
+    raw_outputs = {}
+    for allocation in range(ALLOCATION_COUNT):
+        combined = paths[allocation].read_bytes()
+        if len(combined) != TILE_COUNT * RESOURCE_BYTES:
+            raise RuntimeError("DDR output resource does not cover all Tiles")
+        begin = tile_id * RESOURCE_BYTES
+        raw_outputs[allocation] = combined[begin : begin + RESOURCE_BYTES]
     header = struct.unpack_from(f"<{HEADER_WORDS}Q", raw_outputs[0])
     expected_header = {
         0: RECORD_MAGIC,
-        1: (SCHEMA << 32) | HEADER_WORDS,
+        1: HEADER_WORDS,
         2: 0,
-        3: rank,
+        3: tile_id,
         4: launch_sample,
         5: 0 if conflict_equivalence else ROW_COUNT,
         6: PAYLOAD_BYTES,
@@ -1178,18 +1037,18 @@ def validate_rank_outputs(
         if header[index] != expected
     }
     if failures:
-        raise RuntimeError(f"rank {rank}: header oracle failed: {failures}")
-    rank_execution_order = (
+        raise RuntimeError(f"tile_id {tile_id}: header oracle failed: {failures}")
+    tile_execution_order = (
         "reverse"
         if header[19] == 2
         else "forward"
         if header[19] == 1
         else "not-applicable"
     )
-    rank_execution_position = (
-        RANK_COUNT - 1 - rank
-        if rank_execution_order == "reverse"
-        else rank
+    tile_execution_position = (
+        TILE_COUNT - 1 - tile_id
+        if tile_execution_order == "reverse"
+        else tile_id
     )
     input_bases = header[8:10]
     output_bases = header[10:12]
@@ -1198,7 +1057,7 @@ def validate_rank_outputs(
         or len(set(input_bases + output_bases)) != 4
     ):
         raise RuntimeError(
-            f"rank {rank}: runtime allocation bases are null, aliased, or "
+            f"tile_id {tile_id}: runtime allocation bases are null, aliased, or "
             "not 256-byte aligned"
         )
 
@@ -1206,7 +1065,7 @@ def validate_rank_outputs(
     for allocation in (
         () if conflict_equivalence else range(ALLOCATION_COUNT)
     ):
-        payload = expected_payloads[(rank, allocation)]
+        payload = expected_payloads[(tile_id, allocation)]
         expected_slot = (
             bytes([CANARY]) * GUARD_BYTES
             + payload
@@ -1223,7 +1082,7 @@ def validate_rank_outputs(
                         f"<{ROW_WORDS}Q", raw_outputs[0], row_offset
                     )
                     identity = (
-                        rank
+                        tile_id
                         | allocation << 8
                         | (1 if direction == "rdma" else 2) << 16
                         | offset_index << 24
@@ -1262,7 +1121,7 @@ def validate_rank_outputs(
                     }
                     if row_failures or row[7] == 0 or row[10] == 0:
                         raise RuntimeError(
-                            f"rank {rank} allocation {allocation} "
+                            f"tile_id {tile_id} allocation {allocation} "
                             f"{direction} offset {offset} sample "
                             f"{cell_sample}: row oracle failed "
                             f"{row_failures}, completion={row[7]}, "
@@ -1280,14 +1139,14 @@ def validate_rank_outputs(
                             if actual != expected
                         )
                         raise RuntimeError(
-                            f"rank {rank} allocation {allocation} "
+                            f"tile_id {tile_id} allocation {allocation} "
                             f"{direction} offset {offset} sample "
                             f"{cell_sample}: archive mismatch at {mismatch}"
                         )
                     observations.append(
                         {
                             "kind": "offset-latency",
-                            "rank": rank,
+                            "tile_id": tile_id,
                             "physical_x": physical[0],
                             "physical_y": physical[1],
                             "launch_sample": launch_sample,
@@ -1329,14 +1188,14 @@ def validate_rank_outputs(
                     CONFLICT_TRANSFER_BYTES
                 ):
                     expected_a = conflict_pattern(
-                        rank,
+                        tile_id,
                         allocation,
                         launch_sample,
                         base_offset,
                         transfer_bytes,
                     )
                     expected_b = conflict_pattern(
-                        rank,
+                        tile_id,
                         allocation,
                         launch_sample,
                         base_offset
@@ -1385,7 +1244,7 @@ def validate_rank_outputs(
                                     )
                                 )
                                 identity = (
-                                    rank
+                                    tile_id
                                     | allocation << 8
                                     | base_index << 16
                                     | offset_index << 24
@@ -1433,7 +1292,7 @@ def validate_rank_outputs(
                                     or row[15] == 0
                                 ):
                                     raise RuntimeError(
-                                        f"rank {rank} allocation "
+                                        f"tile_id {tile_id} allocation "
                                         f"{allocation} conflict base "
                                         f"{base_offset} offset "
                                         f"{relative_offset} bytes "
@@ -1457,7 +1316,7 @@ def validate_rank_outputs(
                                     or actual_slot_b != expected_slot_b
                                 ):
                                     raise RuntimeError(
-                                        f"rank {rank} allocation "
+                                        f"tile_id {tile_id} allocation "
                                         f"{allocation} conflict base "
                                         f"{base_offset} offset "
                                         f"{relative_offset} bytes "
@@ -1469,7 +1328,7 @@ def validate_rank_outputs(
                                 observations.append(
                                     {
                                         "kind": "conflict-equivalence",
-                                        "rank": rank,
+                                        "tile_id": tile_id,
                                         "physical_x": physical[0],
                                         "physical_y": physical[1],
                                         "launch_sample": launch_sample,
@@ -1491,11 +1350,11 @@ def validate_rank_outputs(
                                         "schedule": schedule,
                                         "cell_sample": cell_sample,
                                         "schedule_position": row[24],
-                                        "rank_execution_order": (
-                                            rank_execution_order
+                                        "tile_execution_order": (
+                                            tile_execution_order
                                         ),
-                                        "rank_execution_position": (
-                                            rank_execution_position
+                                        "tile_execution_position": (
+                                            tile_execution_position
                                         ),
                                         "instruction_delta": row[13],
                                         "blocking_delta": row[14],
@@ -1521,7 +1380,7 @@ def validate_rank_outputs(
         # 0xa5 sentinel before launch.  Preserve that exact host-side
         # visibility contract outside the declared device write ranges.
         expected = bytearray([OUTPUT_INITIAL]) * RESOURCE_BYTES
-        payload = expected_payloads[(rank, allocation)]
+        payload = expected_payloads[(tile_id, allocation)]
         expected_slot = (
             bytes([CANARY]) * GUARD_BYTES
             + payload
@@ -1552,14 +1411,14 @@ def validate_rank_outputs(
                 ):
                     guard = bytes([CANARY]) * GUARD_BYTES
                     expected_a = guard + conflict_pattern(
-                        rank,
+                        tile_id,
                         allocation,
                         launch_sample,
                         base_offset,
                         transfer_bytes,
                     ) + guard
                     expected_b = guard + conflict_pattern(
-                        rank,
+                        tile_id,
                         allocation,
                         launch_sample,
                         base_offset
@@ -1608,7 +1467,7 @@ def validate_rank_outputs(
                 if actual != wanted
             )
             raise RuntimeError(
-                f"rank {rank} allocation {allocation}: output changed "
+                f"tile_id {tile_id} allocation {allocation}: output changed "
                 f"outside declared records/results at {mismatch}"
             )
     return observations
@@ -1616,7 +1475,7 @@ def validate_rank_outputs(
 
 def summarize(observations: list[dict[str, object]]) -> list[dict[str, object]]:
     summaries: list[dict[str, object]] = []
-    for rank in range(RANK_COUNT):
+    for tile_id in range(TILE_COUNT):
         for allocation in range(ALLOCATION_COUNT):
             for direction in DIRECTIONS:
                 for offset in OFFSET_CLASSES:
@@ -1624,7 +1483,7 @@ def summarize(observations: list[dict[str, object]]) -> list[dict[str, object]]:
                         row
                         for row in observations
                         if row["kind"] == "offset-latency"
-                        and row["rank"] == rank
+                        and row["tile_id"] == tile_id
                         and row["allocation_ordinal"] == allocation
                         and row["direction"] == direction
                         and row["offset_class"] == offset
@@ -1633,7 +1492,7 @@ def summarize(observations: list[dict[str, object]]) -> list[dict[str, object]]:
                         raise RuntimeError("DDR tile/offset cell is incomplete")
                     summaries.append(
                         {
-                            "rank": rank,
+                            "tile_id": tile_id,
                             "physical_x": rows[0]["physical_x"],
                             "physical_y": rows[0]["physical_y"],
                             "allocation_ordinal": allocation,
@@ -1671,7 +1530,7 @@ def summarize(observations: list[dict[str, object]]) -> list[dict[str, object]]:
                                 "terminal wait"
                             ),
                             "interpretation": (
-                                "same-rank independent allocation and "
+                                "same-Tile independent allocation and "
                                 "relative-offset observation; no physical "
                                 "DDR bank or hop formula inferred"
                             ),
@@ -1691,7 +1550,7 @@ def summarize_conflicts(
         "fu_execution_delta",
         "statistics_window_delta",
     )
-    for rank in range(RANK_COUNT):
+    for tile_id in range(TILE_COUNT):
         for allocation in range(ALLOCATION_COUNT):
             for base_offset in CONFLICT_BASE_OFFSETS:
                 for relative_offset in CONFLICT_OFFSET_CLASSES:
@@ -1700,7 +1559,7 @@ def summarize_conflicts(
                             row
                             for row in observations
                             if row["kind"] == "conflict-equivalence"
-                            and row["rank"] == rank
+                            and row["tile_id"] == tile_id
                             and row["allocation_ordinal"] == allocation
                             and row["base_offset"] == base_offset
                             and row["relative_offset_candidate"]
@@ -1751,7 +1610,7 @@ def summarize_conflicts(
                             }
                         summaries.append(
                             {
-                                "rank": rank,
+                                "tile_id": tile_id,
                                 "physical_x": rows[0]["physical_x"],
                                 "physical_y": rows[0]["physical_y"],
                                 "allocation_ordinal": allocation,
@@ -1787,7 +1646,7 @@ def summarize_conflicts(
                                 "interpretation": (
                                     "same-invocation paired schedule/order "
                                     "observation across actual allocation base "
-                                    "and physical tile; no DDR bank identity "
+                                    "and Tile; no DDR bank identity "
                                     "is inferred"
                                 ),
                             }
@@ -1808,7 +1667,7 @@ def validate_board_args(args: argparse.Namespace) -> None:
     missing = [name for name, value in required.items() if value in (None, "")]
     if missing:
         raise RuntimeError(f"board execution requires qualification: {missing}")
-    if args.expected_tile_count != RANK_COUNT:
+    if args.expected_tile_count != TILE_COUNT:
         raise RuntimeError("DDR tile/offset probe requires exactly 16 tiles")
     if args.completion_timeout_ms <= 0 or args.repeat <= 0:
         raise RuntimeError("timeout and repeat must be positive")
@@ -1817,7 +1676,7 @@ def validate_board_args(args: argparse.Namespace) -> None:
     ):
         raise RuntimeError(
             "DDR conflict-equivalence requires an even --repeat of at least "
-            "2 so every tile is observed under forward and reverse rank order"
+            "2 so every Tile is observed under forward and reverse Tile order"
         )
     if re.fullmatch(
         r"[0-9a-fA-F]{64}", str(args.expected_runtime_library_sha256)
@@ -1844,7 +1703,6 @@ def execute_board(
                 str(args.wafer_run),
                 "--package-dir",
                 str(package),
-                "--all-ranks",
                 "--board",
                 "--device-id",
                 str(args.device_id),
@@ -1866,8 +1724,8 @@ def execute_board(
         )
         required = {
             "launch_pattern: cluster-x16",
-            "logical_tile_execution_basis: cluster-pid-and-exact-rank-slices",
-            "logical_tile_domain: 0..15",
+            "physical_tile_execution_basis: cluster-pid-and-exact-tile-slices",
+            "physical_tile_domain: 0..15",
             "board_execution: true",
             "board_stage: completion",
             "board_stage: device-to-host",
@@ -1875,6 +1733,9 @@ def execute_board(
         }
         if not required.issubset(set(result.stdout.splitlines())):
             raise RuntimeError("DDR tile/offset board evidence is incomplete")
+        runtime_launch.require_board_completion(
+            result.stdout, context="DDR tile/offset"
+        )
         coordinates = parse_tile_coordinates(result.stdout)
         if reference_coordinates is None:
             reference_coordinates = coordinates
@@ -1883,14 +1744,14 @@ def execute_board(
                 reference_coordinates, coordinates
             )
         launch_observations: list[dict[str, object]] = []
-        for rank in range(RANK_COUNT):
+        for tile_id in range(TILE_COUNT):
             launch_observations.extend(
-                validate_rank_outputs(
-                    rank,
+                validate_tile_outputs(
+                    tile_id,
                     launch_sample,
                     paths,
                     expected_payloads,
-                    coordinates[rank],
+                    coordinates[tile_id],
                     args.conflict_equivalence,
                 )
             )
@@ -1922,11 +1783,11 @@ def execute_board(
             * len(CONFLICT_SCHEDULES)
             * CONFLICT_CELL_SAMPLES
         )
-        expected_per_rank_order = (
+        expected_per_tile_order = (
             args.repeat // 2 * rows_per_coordinate_per_launch
         )
         counterbalanced_coordinates = 0
-        for rank in range(RANK_COUNT):
+        for tile_id in range(TILE_COUNT):
             for allocation in range(ALLOCATION_COUNT):
                 for base_offset in CONFLICT_BASE_OFFSETS:
                     for relative_offset in CONFLICT_OFFSET_CLASSES:
@@ -1934,7 +1795,7 @@ def execute_board(
                             rows = [
                                 row
                                 for row in all_observations
-                                if row["rank"] == rank
+                                if row["tile_id"] == tile_id
                                 and row["allocation_ordinal"] == allocation
                                 and row["base_offset"] == base_offset
                                 and row["relative_offset_candidate"]
@@ -1943,18 +1804,18 @@ def execute_board(
                             ]
                             counts = {
                                 order: sum(
-                                    row["rank_execution_order"] == order
+                                    row["tile_execution_order"] == order
                                     for row in rows
                                 )
                                 for order in ("forward", "reverse")
                             }
                             if counts != {
-                                "forward": expected_per_rank_order,
-                                "reverse": expected_per_rank_order,
+                                "forward": expected_per_tile_order,
+                                "reverse": expected_per_tile_order,
                             }:
                                 raise RuntimeError(
-                                    "DDR conflict rank-order controls are "
-                                    f"incomplete for rank {rank}, allocation "
+                                    "DDR conflict Tile-order controls are "
+                                    f"incomplete for Tile {tile_id}, allocation "
                                     f"{allocation}, base {base_offset}, "
                                     f"offset {relative_offset}, transfer "
                                     f"{transfer_bytes}: {counts}"
@@ -1966,7 +1827,7 @@ def execute_board(
                 {
                     "coordinates": counterbalanced_coordinates,
                     "launches": args.repeat,
-                    "rank_orders": ["forward", "reverse"],
+                    "tile_orders": ["forward", "reverse"],
                     "physical_tile_mapping": (
                         "unique-and-stable-across-launches"
                     ),
@@ -1996,13 +1857,13 @@ def main() -> int:
                         conflict_equivalence_cases()
                     ),
                     "allocation_contract": (
-                        "each rank owns two independent input and two "
-                        "independent output resources; cross-rank resources "
+                        "each Tile owns two independent input and two "
+                        "independent output resources; cross-Tile resources "
                         "are distinct allocations"
                     ),
                     "bank_contract": (
                         "offset classes, paired actual 64-bit addresses, "
-                        "allocation ordinal and physical tile are observed; "
+                        "allocation ordinal and Tile are observed; "
                         "serial/window and A-B/B-A controls share one device "
                         "invocation, but no physical bank/controller/hop "
                         "mapping is assumed"

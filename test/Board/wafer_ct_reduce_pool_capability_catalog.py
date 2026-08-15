@@ -274,7 +274,7 @@ def _reduce_rows() -> list[CTCapabilityRow]:
                     "f16",
                     f"{axis}/NCx",
                     "public-enum-absent",
-                    "the version-matched Reduce_Dim enum exposes only "
+                    "the current Reduce_Dim enum exposes only "
                     "C/W/H/HW; isolated case 196 using historical raw "
                     "dimension 3 exceeded its outer completion deadline and "
                     "may permanently wait.  Raw N/HWC variants are "

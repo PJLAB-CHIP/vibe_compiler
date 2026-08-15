@@ -41,7 +41,7 @@ class ProfileReportFixture:
 
         trace_tiles = []
         analysis_tiles = []
-        for tile in range(HARNESS.RANK_COUNT):
+        for tile in range(HARNESS.TILE_COUNT):
             event = {
                 "engine": "DIRECT_DTE",
                 "kind": "direct-dte-wait",
@@ -99,7 +99,6 @@ class ProfileReportFixture:
         }
         evidence = {
             "schema": "wafer.profile.evidence",
-            "schema_version": 8,
             "run_id": self.run_id,
             "measurement": {"samples": [sample]},
             "experiment": {
@@ -108,7 +107,6 @@ class ProfileReportFixture:
         }
         analysis = {
             "schema": "wafer.profile.analysis",
-            "schema_version": 7,
             "run_id": self.run_id,
             "valid": True,
             "validity": {"trace": True, "cost_accounting": True},
@@ -134,7 +132,7 @@ class ProfileReportFixture:
                         "operation_window_cpu_cycles": 8,
                         "duration_status": "Measured",
                     }
-                    for tile in range(HARNESS.RANK_COUNT)
+                    for tile in range(HARNESS.TILE_COUNT)
                 ],
             },
         }
@@ -203,7 +201,7 @@ class DirectDTEProfileGateTest(unittest.TestCase):
         analysis["program"]["timeline_events"] = [
             event
             for event in analysis["program"]["timeline_events"]
-            if event["tile"] != HARNESS.RANK_COUNT - 1
+            if event["tile"] != HARNESS.TILE_COUNT - 1
         ]
         analysis_path.write_text(json.dumps(analysis))
 
@@ -225,7 +223,7 @@ class DirectDTEProfileGateTest(unittest.TestCase):
             expected_runtime_version=1300,
             expected_device_name="/dev/accel/dev-0",
             expected_pci_bus_id="0000:3b:00.0",
-            expected_tile_count=HARNESS.RANK_COUNT,
+            expected_tile_count=HARNESS.TILE_COUNT,
             expected_runtime_library_sha256="0" * 64,
             completion_timeout_ms=60000,
             repeat=1,

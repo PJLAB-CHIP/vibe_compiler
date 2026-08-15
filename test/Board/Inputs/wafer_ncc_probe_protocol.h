@@ -13,13 +13,12 @@
  * four rounds so their slot ranges stay inside the qualified SPM arena.  Two
  * lanes cover pair/hazard calibration; a three-lane disjoint window can
  * represent movement + compute + writeback without baking that workload into
- * the schema.  Engine-specific packet construction stays behind
+ * the protocol.  Engine-specific packet construction stays behind
  * WaferNccProbeEngineAdapter.
  */
 
 #define WAFER_NCC_PROTOCOL_REQUEST_MAGIC UINT64_C(0x3251455243434e57)
 #define WAFER_NCC_PROTOCOL_RECORD_MAGIC UINT64_C(0x3243455843434e57)
-#define WAFER_NCC_PROTOCOL_SCHEMA 8U
 #define WAFER_NCC_PROTOCOL_REQUEST_WORDS 58U
 #define WAFER_NCC_PROTOCOL_RECORD_WORDS 496U
 #define WAFER_NCC_PROTOCOL_MAX_LANES 3U
@@ -197,7 +196,7 @@ enum WaferNccProtocolIssueFlag {
 
 enum WaferNccProtocolRequestWord {
   WAFER_NCC_REQ_MAGIC = 0,
-  WAFER_NCC_REQ_SCHEMA_AND_WORDS = 1,
+  WAFER_NCC_REQ_WORD_COUNT = 1,
   WAFER_NCC_REQ_COMMAND = 2,
   WAFER_NCC_REQ_LANE_COUNT = 3,
   WAFER_NCC_REQ_ROUNDS = 4,
@@ -233,7 +232,7 @@ enum WaferNccProtocolLaneWord {
 
 enum WaferNccProtocolRecordWord {
   WAFER_NCC_REC_MAGIC = 0,
-  WAFER_NCC_REC_SCHEMA_AND_WORDS = 1,
+  WAFER_NCC_REC_WORD_COUNT = 1,
   WAFER_NCC_REC_STATUS = 2,
   WAFER_NCC_REC_FLAGS = 3,
   WAFER_NCC_REC_COMMAND = 4,

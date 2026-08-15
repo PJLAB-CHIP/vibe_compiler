@@ -39,7 +39,7 @@ module {
 // CURRENT: llvm.select
 // CURRENT: %[[SEND:.*]] = llvm.call @wafer_tx81_direct_dte_send_prepare
 // CURRENT-SAME: : (i64, i64, i32, i32, i32, i32, i32) -> i64
-// CURRENT-NEXT: llvm.call @wafer_tx81_direct_dte_send_issue_v3(%[[SEND]])
+// CURRENT-NEXT: llvm.call @wafer_tx81_direct_dte_send_issue(%[[SEND]])
 // CURRENT: llvm.call @wafer_tx81_direct_dte_wait(%[[SEND]])
 // CURRENT: llvm.call @wafer_tx81_direct_dte_wait(%[[RECV]])
 // CURRENT: llvm.call @wafer_tx81_direct_dte_finish
@@ -48,6 +48,6 @@ module {
 // LLVMIR: call void @wafer_tx81_direct_dte_begin
 // LLVMIR: call i64 @wafer_tx81_direct_dte_recv_prepare
 // LLVMIR: call i64 @wafer_tx81_direct_dte_send_prepare
-// LLVMIR-NEXT: call void @wafer_tx81_direct_dte_send_issue_v3
+// LLVMIR-NEXT: call void @wafer_tx81_direct_dte_send_issue
 // LLVMIR: call void @wafer_tx81_direct_dte_wait
 // LLVMIR: call void @wafer_tx81_direct_dte_finish

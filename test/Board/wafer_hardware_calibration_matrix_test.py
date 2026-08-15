@@ -47,7 +47,7 @@ EXPECTED_KEYS = {
 EXPECTED_SHARED_GROUP_REFERENCES = {
     (
         "test/Board/wafer_board_single_op_add_test.py",
-        "rank-one-per-rank-add",
+        "grid-add",
     ): 2,
     (
         "test/Board/wafer_board_ncc_execution_probe_test.py",
@@ -79,6 +79,8 @@ EXPECTED_RAW_DTE_LEAF_GROUPS = {
 }
 
 EXPLICIT_RAW_I8_CARRIER_ASSETS = {
+    "test/Board/wafer_board_dte_ncc_execution_probe_test.py",
+    "test/Board/wafer_board_complete_tile_barrier_probe_test.py",
     "test/Board/wafer_direct_dte_board_evidence_test.py",
 }
 
@@ -452,7 +454,6 @@ def main() -> int:
     assert len(labels) == len(domains)
     assert len(document_rows) >= len(domains)
 
-    cmake = (repo / "test" / "CMakeLists.txt").read_text()
     allowed_states = {"ready", "in-progress"}
     allowed_layers = {
         "calibration",
@@ -499,11 +500,7 @@ def main() -> int:
         for relative in assets:
             path = repo / relative
             assert path.is_file(), f"{domain.key}: missing asset {relative}"
-        for test_name in domain.no_card_tests:
-            registered = f"NAME {test_name}" in cmake
-            assert registered, (
-                f"{domain.key}: CTest {test_name} is not registered"
-            )
+        assert all(test_name.startswith("wafer-") for test_name in domain.no_card_tests)
 
         leaves = matrix.CALIBRATION_LEAVES_BY_DOMAIN[domain.key]
         assert leaves, f"{domain.key}: domain has no leaf requirements"

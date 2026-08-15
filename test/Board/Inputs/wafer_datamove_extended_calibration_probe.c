@@ -112,8 +112,8 @@ static WaferDMXPMU wafer_dmx_read_pmu(void) {
 static uint32_t wafer_dmx_decode(const volatile uint64_t *request,
                                  WaferDMXCase *selected) {
   if (request[WAFER_DMX_REQ_MAGIC] != WAFER_DMX_REQUEST_MAGIC ||
-      request[WAFER_DMX_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_DMX_SCHEMA << 32) | WAFER_DMX_REQUEST_WORDS) ||
+      request[WAFER_DMX_REQ_WORD_COUNT] !=
+          (WAFER_DMX_REQUEST_WORDS) ||
       request[WAFER_DMX_REQ_RESOURCE_BYTES] != WAFER_DMX_RESOURCE_BYTES ||
       request[WAFER_DMX_REQ_SLOT_BYTES] != WAFER_DMX_SLOT_BYTES ||
       request[WAFER_DMX_REQ_BODY_OFFSET] != WAFER_DMX_BODY_OFFSET ||
@@ -158,7 +158,7 @@ static void wafer_dmx_gather(uint64_t source, uint64_t destination,
                              uint32_t source_iteration0,
                              uint32_t destination_stride0,
                              uint32_t destination_iteration0) {
-  wafer_tx81_gather_scatter_v3(source, destination, bytes, inner_bytes,
+  wafer_tx81_gather_scatter(source, destination, bytes, inner_bytes,
                             source_stride0, 0U, 0U, source_iteration0, 1U, 1U,
                             destination_stride0, 0U, 0U,
                             destination_iteration0, 1U, 1U, 0U);
@@ -247,11 +247,11 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
         wafer_dmx_shape(2U, 7U, 9U, 65U), 2U);
     break;
   case 4U:
-    wafer_tx81_tdma_pad_v3(input, output, 2U, 5U, 7U, 65U, 2U, 7U, 10U, 65U,
+    wafer_tx81_tdma_pad(input, output, 2U, 5U, 7U, 65U, 2U, 7U, 10U, 65U,
                         1U, 1U, 2U, 1U, Fmt_FP16, 0U);
     break;
   case 5U:
-    wafer_tx81_tdma_img2col_v3(input, output, 2U, 9U, 11U, 65U, 2U, 6U, 54U,
+    wafer_tx81_tdma_img2col(input, output, 2U, 9U, 11U, 65U, 2U, 6U, 54U,
                             65U, 1U, 0U, 2U, 1U, 3U, 2U, 2U, 1U, Fmt_FP16, 0U);
     break;
   case 6U:
@@ -269,7 +269,7 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
     wafer_dmx_gather(input, auxiliary0, 256U, 128U, 128U, 2U, 130U, 2U);
     wafer_dmx_gather(input + 256U, auxiliary0 + 128U, 4U, 2U, 8U, 2U, 130U,
                      2U);
-    wafer_tx81_elementwise_add_v3(auxiliary0, auxiliary0, output, 130U,
+    wafer_tx81_elementwise_add(auxiliary0, auxiliary0, output, 130U,
                                Fmt_FP16, 0U);
     break;
   case 10U:
@@ -280,13 +280,13 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
                        auxiliary0 + batch * 130U + 128U, 2U, 2U, 0U, 1U, 0U,
                        1U);
     }
-    wafer_tx81_elementwise_add_v3(auxiliary0, auxiliary0, output, 130U,
+    wafer_tx81_elementwise_add(auxiliary0, auxiliary0, output, 130U,
                                Fmt_FP16, 0U);
     break;
   case 11U:
     wafer_dmx_gather(input, auxiliary0, 256U, 256U, 0U, 1U, 0U, 1U);
     wafer_dmx_gather(input + 4096U, auxiliary1, 512U, 512U, 0U, 1U, 0U, 1U);
-    wafer_tx81_gemm_v3(auxiliary0, auxiliary1, output, 1U, 16U, 16U, 1U,
+    wafer_tx81_gemm(auxiliary0, auxiliary1, output, 1U, 16U, 16U, 1U,
                     Fmt_FP16, 0U);
     break;
   case 12U:
@@ -305,7 +305,7 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
                              Fmt_FP16);
     break;
   case 15U:
-    wafer_tx81_memset_v3(output, UINT32_C(0x3c00), 2048U, Fmt_FP16, 0U);
+    wafer_tx81_memset(output, UINT32_C(0x3c00), 2048U, Fmt_FP16, 0U);
     break;
   case 16U:
     *raw_execute_rc =
@@ -313,7 +313,7 @@ static uint32_t wafer_dmx_issue(const WaferDMXCase *selected,
                              Fmt_BF16);
     break;
   case 17U:
-    wafer_tx81_memset_v3(output, UINT32_C(0x3f80), 2048U, Fmt_BF16, 0U);
+    wafer_tx81_memset(output, UINT32_C(0x3f80), 2048U, Fmt_BF16, 0U);
     break;
   default:
     return 0U;
@@ -326,8 +326,8 @@ static void wafer_dmx_init_record(volatile uint64_t *record,
   for (uint32_t index = 0; index < WAFER_DMX_RECORD_WORDS; ++index)
     record[index] = 0;
   record[WAFER_DMX_REC_MAGIC] = WAFER_DMX_RECORD_MAGIC;
-  record[WAFER_DMX_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_DMX_SCHEMA << 32) | WAFER_DMX_RECORD_WORDS;
+  record[WAFER_DMX_REC_WORD_COUNT] =
+      WAFER_DMX_RECORD_WORDS;
   record[WAFER_DMX_REC_STATUS] = status;
   record[WAFER_DMX_REC_OUTPUT_DDR_OFFSET] = WAFER_DMX_OUTPUT_DDR_OFFSET;
   record[WAFER_DMX_REC_SLOT_BYTES] = WAFER_DMX_SLOT_BYTES;
@@ -361,19 +361,19 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     record[WAFER_DMX_REC_REQUEST_GUARD] = request[WAFER_DMX_REQ_GUARD];
 
     uint32_t staged_bytes = WAFER_DMX_BODY_OFFSET + selected.input_bytes;
-    wafer_tx81_rdma_v3(payload_ddr, WAFER_DMX_SPM_INPUT, staged_bytes,
+    wafer_tx81_rdma(payload_ddr, WAFER_DMX_SPM_INPUT, staged_bytes,
                     staged_bytes, 0U, 0U, 0U, 1U, 1U, 1U, Fmt_UINT8, 0U);
-    wafer_tx81_rdma_v3(request_ddr + WAFER_DMX_SLOT_BYTES,
+    wafer_tx81_rdma(request_ddr + WAFER_DMX_SLOT_BYTES,
                     WAFER_DMX_SPM_OUTPUT, WAFER_DMX_SLOT_BYTES,
                     WAFER_DMX_SLOT_BYTES, 0U, 0U, 0U, 1U, 1U, 1U,
                     Fmt_UINT8, 0U);
     if (selected.case_id == 11U) {
-      wafer_tx81_rdma_v3(request_ddr + WAFER_DMX_SLOT_BYTES,
+      wafer_tx81_rdma(request_ddr + WAFER_DMX_SLOT_BYTES,
                       WAFER_DMX_SPM_AUX0,
                       WAFER_DMX_BODY_OFFSET + 256U,
                       WAFER_DMX_BODY_OFFSET + 256U, 0U, 0U, 0U, 1U, 1U, 1U,
                       Fmt_UINT8, 0U);
-      wafer_tx81_rdma_v3(request_ddr + WAFER_DMX_SLOT_BYTES,
+      wafer_tx81_rdma(request_ddr + WAFER_DMX_SLOT_BYTES,
                       WAFER_DMX_SPM_AUX1,
                       WAFER_DMX_BODY_OFFSET + 512U,
                       WAFER_DMX_BODY_OFFSET + 512U, 0U, 0U, 0U, 1U, 1U, 1U,
@@ -384,7 +384,7 @@ wafer_tx81_instruction_family_probe(uint64_t request_ddr,
     if (wafer_dmx_issue(&selected, &raw_execute_rc) == 0U) {
       status = WAFER_DMX_STATUS_EXECUTE_FAILED;
     } else {
-      wafer_tx81_wdma_v3(WAFER_DMX_SPM_OUTPUT,
+      wafer_tx81_wdma(WAFER_DMX_SPM_OUTPUT,
                       output_ddr + WAFER_DMX_OUTPUT_DDR_OFFSET,
                       WAFER_DMX_SLOT_BYTES, WAFER_DMX_SLOT_BYTES, 0U, 0U, 0U,
                       1U, 1U, 1U, Fmt_UINT8, 0U);

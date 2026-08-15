@@ -16,8 +16,7 @@ from typing import Any
 
 
 SCHEMA_NAME = "wafer.profile.evidence"
-EVIDENCE_FORMAT_VERSION = 11
-RECORD_ABI = "wafer-tx81-profiler-record-v4"
+RECORD_ABI = "wafer-tx81-profiler-record"
 ANALYSIS_SCHEMA_NAME = "wafer.profile.analysis"
 STATIC_COST_MODEL = "tx81-static-throughput-lower-bound"
 STATIC_COST_SCOPE = "complete-final-instruction-program-per-physical-tile"
@@ -1194,7 +1193,6 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
         evidence,
         {
             "schema",
-            "schema_version",
             "run_id",
             "program",
             "topology",
@@ -1209,8 +1207,6 @@ def validate_evidence(value: object) -> Mapping[str, Any]:
     )
     if evidence["schema"] != SCHEMA_NAME:
         _fail("schema", f"must be {SCHEMA_NAME!r}")
-    if evidence["schema_version"] != EVIDENCE_FORMAT_VERSION:
-        _fail("schema_version", f"must be {EVIDENCE_FORMAT_VERSION}")
     _string(evidence["run_id"], "run_id")
     _validate_program(evidence)
     topology = _validate_topology(evidence)

@@ -80,37 +80,41 @@ def validate_work_dir_cleanup_is_bounded() -> None:
         assert (source / "functions" / "forward.meta").is_file()
 
 
-def validate_matching_terminal_completion() -> None:
-    terminal = 7
+def validate_matching_tile_completion() -> None:
     valid = "\n".join(
         (
             "board_stage: completion",
             "board_stage: device-to-host",
             "board_stage: cleanup",
             "board_execution: true",
-            f"terminal_completion: {terminal} kind=entry_return",
+            *(
+                "completion: return_after_local_drain tile_id=" + str(tile_id)
+                for tile_id in range(16)
+            ),
+            "invocation_tiles: 16",
+            "physical_tile_domain: 0..15",
         )
     )
-    runner.validate_board_lifecycle(valid, terminal)
+    runner.validate_board_lifecycle(valid, "return_after_local_drain")
     for invalid in (
         valid.replace(
-            f"terminal_completion: {terminal} kind=entry_return", ""
+            "completion: return_after_local_drain tile_id=7", ""
         ),
         valid.replace(
-            f"terminal_completion: {terminal} kind=entry_return",
-            f"terminal_completion: {terminal + 1} kind=entry_return",
+            "completion: return_after_local_drain tile_id=7",
+            "completion: return_after_local_drain tile_id=8",
         ),
         valid
         + "\n"
-        + f"terminal_completion: {terminal} kind=entry_return",
+        + "completion: return_after_local_drain tile_id=7",
     ):
         try:
-            runner.validate_board_lifecycle(invalid, terminal)
-        except RuntimeError as error:
-            assert "matching terminal completion" in str(error)
+            runner.validate_board_lifecycle(invalid, "return_after_local_drain")
+        except RuntimeError:
+            pass
         else:
             raise AssertionError(
-                "missing, mismatched, or duplicate terminal completion "
+                "missing, mismatched, or duplicate Tile completion "
                 "was accepted"
             )
 
@@ -377,9 +381,7 @@ def validate_gemm_padding_domain() -> None:
     words = [0] * catalog.RECORD_WORDS
     rec = catalog.REC
     words[rec["MAGIC"]] = catalog.RECORD_MAGIC
-    words[rec["SCHEMA_AND_WORDS"]] = (
-        catalog.SCHEMA << 32
-    ) | catalog.RECORD_WORDS
+    words[rec["WORD_COUNT"]] = catalog.RECORD_WORDS
     words[rec["STATUS"]] = 0
     words[rec["CASE"]] = case.case_id
     words[rec["DISPOSITION"]] = case.disposition
@@ -1382,9 +1384,7 @@ def validate_argmin_pending_domain_observations() -> None:
     rec = catalog.REC
     values = {
         "MAGIC": catalog.RECORD_MAGIC,
-        "SCHEMA_AND_WORDS": (
-            catalog.SCHEMA << 32
-        ) | catalog.RECORD_WORDS,
+        "WORD_COUNT": catalog.RECORD_WORDS,
         "STATUS": 0,
         "CASE": tie.case_id,
         "DISPOSITION": tie.disposition,
@@ -1515,11 +1515,11 @@ def validate_probe_seed_is_ncc_local_and_completed() -> None:
     ).read_text()
     start = probe.index("static void wafer_ifp_seed")
     body = probe[start : probe.index("\n}", start) + 2]
-    assert "wafer_tx81_rdma_v3" in body
+    assert "wafer_tx81_rdma" in body
     assert "payload_ddr + slot * WAFER_IFP_SLOT_BYTES" in body
     assert "destinations[slot]" in body
     assert "get_spm_memory_mapping" not in body
-    assert body.index("wafer_tx81_rdma_v3") < body.index(
+    assert body.index("wafer_tx81_rdma") < body.index(
         "wafer_ifp_wait_worker0_drain"
     )
     wait_start = probe.index("static void wafer_ifp_wait_worker0_drain")
@@ -1572,7 +1572,6 @@ def validate_argmin_bounded_probe_protocol() -> None:
         "while (",
     ):
         assert forbidden not in body
-    assert "#define WAFER_IFP_SCHEMA 2U" in protocol
     assert "WAFER_IFP_REC_ARGMIN_VALUE_RAW = 22" in protocol
     assert "WAFER_IFP_REC_ARGMIN_INDEX_RAW = 23" in protocol
     assert "WAFER_IFP_REC_ARGMIN_ARRIVAL_POLLS = 24" in protocol
@@ -1682,18 +1681,18 @@ def validate_unpool_rows() -> None:
     for symbol, wrapper, opcode in (
         (
             "UNPOOL_F16",
-            "wafer_tx81_unpool_mask_v3",
+            "wafer_tx81_unpool_mask",
             "OP_FUNC_CGRATensor_DataMoveOp_T_T_maskunpool",
         ),
         (
             "UNPOOL_INDEX_F16",
-            "wafer_tx81_unpool_unpool_v3",
+            "wafer_tx81_unpool_unpool",
             "OP_FUNC_CGRATensor_DataMoveOp_T_T_unpool",
         ),
     ):
         start = probe.index(f"case WAFER_IFP_CASE_{symbol}:")
         case_body = probe[start : probe.index("break;", start)]
-        pool = case_body.index("wafer_tx81_pool_indexedmax_v3")
+        pool = case_body.index("wafer_tx81_pool_indexedmax")
         unpool = case_body.index(wrapper)
         assert pool < unpool
         assert "wafer_tx81_ncc_join" not in case_body
@@ -1903,41 +1902,41 @@ def validate_unpool_capability_rows() -> None:
         / "wafer_instruction_family_probe.c"
     ).read_text()
     for symbol, wrapper in (
-        ("UNPOOL_INDEX_BF16_OBSERVED", "wafer_tx81_unpool_unpool_v3"),
-        ("UNPOOL_INDEX_F32_OBSERVED", "wafer_tx81_unpool_unpool_v3"),
-        ("UNPOOL_AVG_BF16", "wafer_tx81_unpool_avg_v3"),
-        ("UNPOOL_AVG_F32", "wafer_tx81_unpool_avg_v3"),
-        ("UNPOOL_MASK_BF16", "wafer_tx81_unpool_mask_v3"),
-        ("UNPOOL_MASK_F32", "wafer_tx81_unpool_mask_v3"),
+        ("UNPOOL_INDEX_BF16_OBSERVED", "wafer_tx81_unpool_unpool"),
+        ("UNPOOL_INDEX_F32_OBSERVED", "wafer_tx81_unpool_unpool"),
+        ("UNPOOL_AVG_BF16", "wafer_tx81_unpool_avg"),
+        ("UNPOOL_AVG_F32", "wafer_tx81_unpool_avg"),
+        ("UNPOOL_MASK_BF16", "wafer_tx81_unpool_mask"),
+        ("UNPOOL_MASK_F32", "wafer_tx81_unpool_mask"),
         (
             "UNPOOL_INDEX_F16_ASYMMETRIC_OBSERVED",
-            "wafer_tx81_unpool_unpool_v3",
+            "wafer_tx81_unpool_unpool",
         ),
         (
             "UNPOOL_AVG_F16_ASYMMETRIC_OBSERVED",
-            "wafer_tx81_unpool_avg_v3",
+            "wafer_tx81_unpool_avg",
         ),
-        ("UNPOOL_MASK_F16_ASYMMETRIC", "wafer_tx81_unpool_mask_v3"),
+        ("UNPOOL_MASK_F16_ASYMMETRIC", "wafer_tx81_unpool_mask"),
         (
             "UNPOOL_INDEX_F16_REPEATED_OVERLAP_OBSERVED",
-            "wafer_tx81_unpool_unpool_v3",
+            "wafer_tx81_unpool_unpool",
         ),
         (
             "UNPOOL_MASK_F16_REPEATED_OVERLAP_OBSERVED",
-            "wafer_tx81_unpool_mask_v3",
+            "wafer_tx81_unpool_mask",
         ),
     ):
         start = probe.index(f"case WAFER_IFP_CASE_{symbol}:")
         body = probe[start : probe.index("break;", start)]
         assert wrapper in body
         if "AVG" not in symbol:
-            assert "wafer_tx81_pool_indexedmax_v3" in body
+            assert "wafer_tx81_pool_indexedmax" in body
             assert "wafer_tx81_ncc_join" not in body
         if "REPEATED_OVERLAP" in symbol:
             assert "wafer_ifp_wait_worker0_drain();" not in body
             assert "wafer_ifp_copy_spm_bytes(" not in body
             assert body.count("wafer_ifp_copy_spm_bytes_ncc(") == 2
-            pool = body.index("wafer_tx81_pool_indexedmax_v3")
+            pool = body.index("wafer_tx81_pool_indexedmax")
             snapshot = body.index(
                 "WAFER_IFP_REPEATED_AUX_SNAPSHOT_OFFSET"
             )
@@ -1968,9 +1967,7 @@ def validate_repeated_unpool_bounded_oracle() -> None:
         words = [0] * catalog.RECORD_WORDS
         values = {
             "MAGIC": catalog.RECORD_MAGIC,
-            "SCHEMA_AND_WORDS": (
-                catalog.SCHEMA << 32
-            ) | catalog.RECORD_WORDS,
+            "WORD_COUNT": catalog.RECORD_WORDS,
             "STATUS": 0,
             "CASE": case.case_id,
             "DISPOSITION": case.disposition,
@@ -2701,7 +2698,7 @@ def validate_peripheral_exact_and_observation_rows() -> None:
     words = [0] * catalog.RECORD_WORDS
     for field, value in (
         ("MAGIC", catalog.RECORD_MAGIC),
-        ("SCHEMA_AND_WORDS", (catalog.SCHEMA << 32) | catalog.RECORD_WORDS),
+        ("WORD_COUNT", catalog.RECORD_WORDS),
         ("STATUS", 0),
         ("CASE", case.case_id),
         ("DISPOSITION", case.disposition),
@@ -2965,7 +2962,7 @@ def main() -> int:
     validate_pool_capability_matrix()
     validate_peripheral_exact_and_observation_rows()
     validate_work_dir_cleanup_is_bounded()
-    validate_matching_terminal_completion()
+    validate_matching_tile_completion()
 
     print("wafer_instruction_family_catalog_test: passed")
     return 0

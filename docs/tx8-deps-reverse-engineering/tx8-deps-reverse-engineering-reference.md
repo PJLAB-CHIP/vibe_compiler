@@ -501,7 +501,7 @@ direct DTE helper：
   `rt_hw_cpu_dcache_ops(FLUSH)`反汇编使用64-byte cache line，并执行`fence; sync; mxstatus`后按当前mode选择
   `dcache.cipa`或`dcache.civa`，再执行`sync.is; fence; sync`。repo-local TX81 CRT以`-mcpu=c908`编译并在每次
   pending/error/success status写入后复用该clean/invalidate序列；通用target LLVM module仍使用既有RV64 ISA配置。
-  因为cache operation的作用域是整条64-byte line，current Wafer status-v2以64-byte storage/alignment独占该line，
+  因为cache operation的作用域是整条64-byte line，current Wafer status以64-byte storage/alignment独占该line，
   其offset 0为唯一有语义的`u32`字段。
 - `init_tile_id(logic_id, row_length)`把逻辑tile id写入`0x2f0454`、当前物理tile寄存器值写入`0x2f0450`、
   row length写入`0x2f0458`。vendor生成的Kcore entry在通信前显式调用它。

@@ -74,7 +74,7 @@ def main() -> int:
     assert probe.count("instruction.param.full_unit_elem_count =") == 1
     assert (
         "is_loop != 0 ? WAFER_CTV_TAIL_LOOP_FULL_ELEMENTS\n"
-        "                   : WAFER_CTV_TAIL_ELEMENTS"
+        "                                        : WAFER_CTV_TAIL_ELEMENTS"
         in probe
     )
     assert "uint32_t shape = elements != WAFER_CTV_MAIN_ELEMENTS;" in probe
@@ -94,8 +94,8 @@ def main() -> int:
         in issue
     )
     assert (
-        "uint32_t output = (uint32_t)(WAFER_CTV_SPM_OUTPUT +\n"
-        "                               WAFER_CTV_BODY_OFFSET);"
+        "uint32_t output = (uint32_t)(WAFER_CTV_SPM_OUTPUT + "
+        "WAFER_CTV_BODY_OFFSET);"
         in issue
     )
     assert "return TsmExecute(&instruction);" in issue
@@ -104,7 +104,7 @@ def main() -> int:
     entry_parse = entry.index(
         "wafer_ctv_invalidate(request_ddr, WAFER_CTV_RESOURCE_BYTES);"
     )
-    first_rdma = entry.index("wafer_tx81_rdma_v3(")
+    first_rdma = entry.index("wafer_tx81_rdma(")
     assert entry_parse < first_rdma
     assert "WAFER_CTV_SPM_SCRATCH" not in entry
     observed = entry.index(
@@ -114,14 +114,14 @@ def main() -> int:
     assert probe.count("wafer_ctv_issue(") == 2
     assert first_rdma < observed
     second_rdma = entry.index(
-        "wafer_tx81_rdma_v3(payload_ddr + WAFER_CTV_SLOT_BYTES,"
+        "wafer_tx81_rdma(payload_ddr + WAFER_CTV_SLOT_BYTES,"
     )
     canary_rdma = entry.index(
-        "wafer_tx81_rdma_v3(request_ddr + WAFER_CTV_SLOT_BYTES,"
+        "wafer_tx81_rdma(request_ddr + WAFER_CTV_SLOT_BYTES,"
     )
     assert second_rdma < canary_rdma < observed
     assert "wafer_tx81_ncc_join(1U);" not in entry[first_rdma:observed]
-    wdma = entry.index("wafer_tx81_wdma_v3(", observed)
+    wdma = entry.index("wafer_tx81_wdma(", observed)
     output_drain = entry.index("wafer_tx81_ncc_join(1U);", wdma)
     assert wdma < output_drain
     assert "wafer_tx81_ncc_join(1U);" not in entry[observed:wdma]
@@ -449,8 +449,8 @@ def main() -> int:
     for field, value in (
         ("MAGIC", catalog.RECORD_MAGIC),
         (
-            "SCHEMA_AND_WORDS",
-            (catalog.SCHEMA << 32) | catalog.RECORD_WORDS,
+            "WORD_COUNT",
+            catalog.RECORD_WORDS,
         ),
         ("STATUS", 0),
         ("CASE", loop.case_id),

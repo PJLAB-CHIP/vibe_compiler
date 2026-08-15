@@ -1,11 +1,10 @@
 {
-  "schema_version": 8,
   "program": {
     "id": 0
   },
   "target": {
     "identity": "wafer-tx81-single-card",
-    "runtime_abi": "wafer-tx81-kernel-v3",
+    "runtime_abi": "wafer-tx81-kernel",
     "launch": {
       "kind": "kernel",
       "form": "grid",

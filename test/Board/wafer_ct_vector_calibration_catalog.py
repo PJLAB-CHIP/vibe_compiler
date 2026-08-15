@@ -13,7 +13,6 @@ from collections.abc import Callable, Iterable
 
 REQUEST_MAGIC = 0x3151455256544357
 RECORD_MAGIC = 0x3143455256544357
-SCHEMA = 3
 REQUEST_WORDS = 16
 RECORD_WORDS = 32
 CASE_BASE = 10000
@@ -71,7 +70,7 @@ OUTPUT_ZERO_SIGN_POLICIES = {
 }
 REQ = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "CASE": 2,
     "DISPOSITION": 3,
     "FAMILY": 4,
@@ -89,7 +88,7 @@ REQ = {
 }
 REC = {
     "MAGIC": 0,
-    "SCHEMA_AND_WORDS": 1,
+    "WORD_COUNT": 1,
     "STATUS": 2,
     "CASE": 3,
     "DISPOSITION": 4,
@@ -1132,9 +1131,7 @@ def build_case_payload(case: CTVectorCase, sample: int = 0) -> CasePayload:
 
     request_words = [0] * REQUEST_WORDS
     request_words[REQ["MAGIC"]] = REQUEST_MAGIC
-    request_words[REQ["SCHEMA_AND_WORDS"]] = (
-        SCHEMA << 32
-    ) | REQUEST_WORDS
+    request_words[REQ["WORD_COUNT"]] = REQUEST_WORDS
     request_words[REQ["CASE"]] = case.case_id
     request_words[REQ["DISPOSITION"]] = case.disposition
     request_words[REQ["FAMILY"]] = case.family

@@ -7,7 +7,6 @@
 #define WAFER_MDC_RECORD_MAGIC UINT64_C(0x314345444d454d57)
 #define WAFER_MDC_REQUEST_GUARD UINT64_C(0xb5a4938271605f4e)
 #define WAFER_MDC_RECORD_GUARD UINT64_C(0x32435465768798a9)
-#define WAFER_MDC_SCHEMA 3U
 #define WAFER_MDC_REQUEST_WORDS 40U
 #define WAFER_MDC_RECORD_WORDS 64U
 #define WAFER_MDC_RESOURCE_BYTES 2097152U
@@ -40,7 +39,7 @@
 #define WAFER_MDC_PERF_OUTPUT_GUARD_LANE_STRIDE UINT64_C(0x100)
 
 /*
- * The pending rank-one conflict-equivalence envelope carries one ordinary
+ * The pending program-local conflict-equivalence envelope carries one ordinary
  * serial request and one ordinary window request.  Both rows execute in one
  * invocation against the same request/payload/output allocations.  The
  * ordinary MDC records remain unchanged; the typed row metadata below echoes
@@ -50,7 +49,6 @@
 #define WAFER_MDC_CE_RECORD_MAGIC UINT64_C(0x315245434d4d5357)
 #define WAFER_MDC_CE_REQUEST_GUARD UINT64_C(0xe7b3d98264a15c0f)
 #define WAFER_MDC_CE_RECORD_GUARD UINT64_C(0x19f04cb267d38ae5)
-#define WAFER_MDC_CE_SCHEMA 1U
 #define WAFER_MDC_CE_ROWS 2U
 #define WAFER_MDC_CE_SAMPLES 4U
 #define WAFER_MDC_CE_SERIAL_REQUEST_WORD 0U
@@ -130,7 +128,7 @@ enum WaferMDCRecordFlag {
 
 enum WaferMDCRequestWord {
   WAFER_MDC_REQ_MAGIC = 0,
-  WAFER_MDC_REQ_SCHEMA_AND_WORDS = 1,
+  WAFER_MDC_REQ_WORD_COUNT = 1,
   WAFER_MDC_REQ_CASE = 2,
   WAFER_MDC_REQ_KIND = 3,
   WAFER_MDC_REQ_ENGINE_A = 4,
@@ -173,7 +171,7 @@ enum WaferMDCRequestWord {
 
 enum WaferMDCRecordWord {
   WAFER_MDC_REC_MAGIC = 0,
-  WAFER_MDC_REC_SCHEMA_AND_WORDS = 1,
+  WAFER_MDC_REC_WORD_COUNT = 1,
   WAFER_MDC_REC_STATUS = 2,
   WAFER_MDC_REC_CASE = 3,
   WAFER_MDC_REC_KIND = 4,
@@ -247,7 +245,7 @@ enum WaferMDCCEStatus {
 
 enum WaferMDCCERequestMetaWord {
   WAFER_MDC_CE_REQ_MAGIC = 0,
-  WAFER_MDC_CE_REQ_SCHEMA_AND_WORDS = 1,
+  WAFER_MDC_CE_REQ_WORD_COUNT = 1,
   WAFER_MDC_CE_REQ_COORDINATE = 2,
   WAFER_MDC_CE_REQ_SERIAL_CASE = 3,
   WAFER_MDC_CE_REQ_WINDOW_CASE = 4,
@@ -270,7 +268,7 @@ enum WaferMDCCERequestMetaWord {
 
 enum WaferMDCCERecordMetaWord {
   WAFER_MDC_CE_REC_MAGIC = 0,
-  WAFER_MDC_CE_REC_SCHEMA_AND_WORDS = 1,
+  WAFER_MDC_CE_REC_WORD_COUNT = 1,
   WAFER_MDC_CE_REC_STATUS = 2,
   WAFER_MDC_CE_REC_COORDINATE = 3,
   WAFER_MDC_CE_REC_INNER_CASE = 4,

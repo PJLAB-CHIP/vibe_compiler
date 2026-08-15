@@ -33,8 +33,8 @@ func.func @compact_collapse(
 // COMPACT-LABEL: llvm.func @compact_collapse(
 // COMPACT-SAME: %[[INPUT:.+]]: i64, %[[OUTPUT:.+]]: i64
 // COMPACT-NOT: memref.collapse_shape
-// COMPACT: llvm.call @wafer_tx81_rdma_v3(%[[INPUT]],
-// COMPACT: llvm.call @wafer_tx81_wdma_v3({{.*}}%[[OUTPUT]]
+// COMPACT: llvm.call @wafer_tx81_rdma(%[[INPUT]],
+// COMPACT: llvm.call @wafer_tx81_wdma({{.*}}%[[OUTPUT]]
 // COMPACT: llvm.return
 
 //--- dynamic-offset.mlir
@@ -76,7 +76,7 @@ func.func @dynamic_subview_collapse(
 // DYNAMIC: %[[STRIDE:.+]] = llvm.mlir.constant(128 : i64) : i64
 // DYNAMIC: %[[DYNAMIC:.+]] = llvm.mul %[[ROW]], %[[STRIDE]] : i64
 // DYNAMIC: %[[ADDRESS:.+]] = llvm.add %{{.+}}, %[[DYNAMIC]] : i64
-// DYNAMIC: llvm.call @wafer_tx81_rdma_v3(%[[ADDRESS]],
+// DYNAMIC: llvm.call @wafer_tx81_rdma(%[[ADDRESS]],
 // DYNAMIC-NOT: memref.collapse_shape
 
 func.func @dynamic_subview_expand(
@@ -114,7 +114,7 @@ func.func @dynamic_subview_expand(
 // DYNAMIC: %[[ELEMENT_BYTES:.+]] = llvm.mlir.constant(2 : i64) : i64
 // DYNAMIC: %[[DYNAMIC_EXPAND:.+]] = llvm.mul %[[START]], %[[ELEMENT_BYTES]] : i64
 // DYNAMIC: %[[EXPANDED_ADDRESS:.+]] = llvm.add %{{.+}}, %[[DYNAMIC_EXPAND]] : i64
-// DYNAMIC: llvm.call @wafer_tx81_rdma_v3(%[[EXPANDED_ADDRESS]],
+// DYNAMIC: llvm.call @wafer_tx81_rdma(%[[EXPANDED_ADDRESS]],
 // DYNAMIC-NOT: memref.expand_shape
 
 //--- mixed-offset.mlir

@@ -1385,8 +1385,8 @@ entry并把原始BootParam head作为唯一entry参数。V5.6随包module在one-
 `12 group data dump`、`13 max marker`。
 
 这些结构是qualified V5.6 binary、随包device module和两个legacy builder交叉得到的exact-build ABI证据，不是公开稳定wire。
-Wafer唯一current schema-v8以顶层`kind=model`和nested `entry_abi=tx81-model-bootparam`
-（该model BootParam ABI最初在schema-v4引入，schema-v6只保留为历史format evidence）表达此路径；它现已由typed graph record、ordinal verifier、checked allocation/lifetime、module identity、
+Wafer唯一current package以顶层`kind=model`和nested `entry_abi=tx81-model-bootparam`
+表达此路径；它现已由typed graph record、ordinal verifier、checked allocation/lifetime、module identity、
 module export/readback和fake provider共同拥有，并已在限定V5.6/full-good设备完成两轮type-6/type-7 Add完整exact gate；该gate只形成
 logical tile `0..15`执行依据，不声明physical coordinate。该wire不能成为opaque payload sidecar，也不能静默解释kernel launch。
 

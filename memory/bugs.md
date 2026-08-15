@@ -143,15 +143,16 @@
 
 - 现象：每个Tile重复分配program input/output，或多个Tile错误共享workspace/status，只因resource name/role看起来相同。
 - 根因：package缺少typed physical scope，consumer从名称、shape或重复slot猜alias。
-- 修复模式：schema-v8用`CardResourceScope`和`TileResourceScope`；sharing只由同一个ResourceId被多个entry引用表达。
+- 修复模式：current package用`CardResourceScope`和`TileResourceScope`；sharing只由同一个ResourceId被多个entry引用表达。
 - 防复发：card resource exactly 16 references且只分配一次；Tile resource exactly one matching entry；cross-scope duplicate role/index失败。
 
-## Schema升级不能保留兼容reader
+## 持久化接口更新不能保留兼容reader
 
-- 现象：serializer写current fields，parser仍接受旧version/alias并填默认值，导致runtime得到无法验证的physical identity或completion。
+- 现象：serializer写current fields，parser仍接受退役field/alias并填默认值，导致runtime得到无法验证的physical identity或completion。
 - 根因：把wire升级当成渐进迁移，而当前项目没有必须兼容的外部consumer。
-- 修复模式：每类serialized file只有一个current schema version；删旧reader、translator、wrapper、fixture和CLI，旧值pre-effect失败。
-- 防复发：current canonical roundtrip与旧version/field拒绝成对测试；跨模块enum/key/version只有一个owner。
+- 修复模式：每类serialized file只有一个current schema identity和exact field contract；删旧reader、translator、wrapper、fixture
+  和CLI，旧值在产生外部effect前失败。
+- 防复发：current canonical roundtrip与退役field/identity拒绝成对测试；跨模块enum/key/identity只有一个owner。
 
 ## Aggregate module不能吞掉Tile interfaces
 
@@ -451,7 +452,27 @@
 - 现象：frontend nested metadata、profile plan/site、dependency record、workload和内部算法名称分别携带版本，修改同一语义时
   需要跨多层同步数值并保留旧分支。
 - 根因：把源码revision内同步演进的内部表示误当成独立兼容边界，用版本号代替exact field contract和集中parser检查。
-- 修复模式：先列出真实producer、consumer、存储和部署生命周期；只有独立文件或ABI保留一个顶层current版本，其余表示
-  原位修改并同批更新所有调用方，旧输入在唯一边界入口fail closed。
+- 修复模式：先列出真实producer、consumer、存储和部署生命周期；独立文件或ABI保留一个current identity与集中检查入口，
+  其余表示原位修改并同批更新所有调用方，旧输入在唯一边界入口fail closed。
 - 防复发：新增版本前必须写明独立producer/consumer、支持周期和兼容测试；内部field、算法、hash domain、model和helper
   metadata不得使用`vN`名称或双reader。
+
+## Board probe helper签名变化必须覆盖所有runner
+
+- 现象：共享package helper改为返回`module_path, resource_ids, slots_per_tile`后，常用raw probe已迁移，但NE tail和engine pipeline
+  等未注册runner仍按两个返回值解包，直到重新接入no-card才失败。
+- 根因：Board source/catalog存在，但未作为current CTest执行；helper调用方清单与CMake执行入口没有一起更新。
+- 修复模式：接口变化先用`rg`枚举全部调用方并同批迁移；每个可直接生成current package的raw probe至少注册一个代表性
+  `current-interface` no-card CTest，catalog只拥有case语义，CMake只拥有执行入口。
+- 防复发：fresh CTest精确运行`-L current-interface`，并验证inventory列出的host/no-card/Board CTest都在CMake中真实注册；
+  不用未注册的CTest形状字符串代替执行证据。
+
+## 旧Board executor删除前必须迁移观测合同
+
+- 现象：旧executor因manifest、CLI或SPMD carrier退役而不能运行，直接删文件会同时丢掉model-scale source、full-output oracle、
+  status/guard、重复完成或profile采集要求。
+- 根因：把“执行接口已退役”误当成“校准问题已无价值”，没有按source、lowering、package、runtime和board边界拆解。
+- 修复模式：能经current global lowering生成package的case迁入current no-card/Board CTest；不能生成的case保留current source、
+  deterministic oracle和完整待执行要求，并在catalog/inventory绑定具体blocker。只有这些内容已有current owner后才删除旧executor。
+- 防复发：逐个核对删除文件的source、shape/dtype、payload、numeric oracle、structural checks、status、timeout、cleanup和profile要求；
+  inventory测试必须能从每个保留case解析到真实source/catalog与CMake入口或明确blocker。

@@ -41,9 +41,9 @@ module {
 
 // CHECK-LABEL: llvm.func @tensor_layout_spm_alias_chain
 // CHECK: %[[SOURCE:.+]] = llvm.mlir.constant(65536 : i64) : i64
-// CHECK: llvm.call @wafer_tx81_memset_v3(%[[SOURCE]],
+// CHECK: llvm.call @wafer_tx81_memset(%[[SOURCE]],
 // CHECK: %[[DESTINATION:.+]] = llvm.mlir.constant(65792 : i64) : i64
-// CHECK: llvm.call @wafer_tx81_gather_scatter_v3
+// CHECK: llvm.call @wafer_tx81_gather_scatter
 // CHECK-SAME: (%[[SOURCE]], %[[DESTINATION]],
 // CHECK: llvm.call @wafer_tx81_ncc_join
 // CHECK: llvm.return

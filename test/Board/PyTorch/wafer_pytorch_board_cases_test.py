@@ -180,7 +180,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                     "wafer-run",
                     "--no-card",
                     "--direct-dte-status-abi",
-                    "wafer-direct-dte-status-v2",
+                    "wafer-direct-dte-status",
                     "--supports-host-watchdog",
                 ],
             )
@@ -304,7 +304,6 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             for launch_slot in range(board_runner.PHYSICAL_TILE_COUNT)
         ]
         manifest = {
-            "schema_version": 8,
             "target": {"identity": board_runner.TARGET_IDENTITY},
             "card_count": 1,
             "tile_count": board_runner.PHYSICAL_TILE_COUNT,

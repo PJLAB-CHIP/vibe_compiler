@@ -1,7 +1,7 @@
 /*
- * Reuse the qualified 16-rank direct-DTE entry ABI, PMU reader, cache
- * maintenance, DMA wrappers, barriers, and status-v2 lifecycle from the
- * physical-tile DDR probe.  Rename its entry and provide the active-mask
+ * Reuse the qualified 16-Tile direct-DTE entry ABI, PMU reader, cache
+ * maintenance, DMA wrappers, barriers, and status lifecycle from the
+ * complete-Tile DDR probe.  Rename its entry and provide the active-mask
  * experiment below; both functions stay in one device translation unit.
  */
 #define wafer_tx81_ddr_tile_offset_probe                                       \
@@ -9,7 +9,7 @@
 #include "wafer_ddr_tile_offset_probe.c"
 #undef wafer_tx81_ddr_tile_offset_probe
 
-#include "wafer_ddr_active_rank_contention_probe_protocol.h"
+#include "wafer_ddr_active_tile_contention_probe_protocol.h"
 
 static uint64_t wafer_dar_read64_stable(uint32_t low_offset,
                                         uint32_t *stable) {
@@ -52,18 +52,18 @@ static WaferDDRTilePMU wafer_dar_read_pmu(uint32_t *stable) {
   return result;
 }
 
-static uint32_t wafer_dar_decode(uint32_t rank,
+static uint32_t wafer_dar_decode(uint32_t tile_id,
                                  const volatile uint64_t *request) {
   if (request[WAFER_DAR_REQ_MAGIC] != WAFER_DAR_REQUEST_MAGIC ||
-      request[WAFER_DAR_REQ_SCHEMA_AND_WORDS] !=
-          (((uint64_t)WAFER_DAR_SCHEMA << 32) | WAFER_DAR_REQUEST_WORDS) ||
-      request[WAFER_DAR_REQ_RANK] != rank ||
+      request[WAFER_DAR_REQ_WORD_COUNT] !=
+          (WAFER_DAR_REQUEST_WORDS) ||
+      request[WAFER_DAR_REQ_TILE_ID] != tile_id ||
       request[WAFER_DAR_REQ_GUARD] != WAFER_DAR_REQUEST_GUARD ||
       request[WAFER_DAR_REQ_RESOURCE_BYTES] != WAFER_DAR_RESOURCE_BYTES ||
       request[WAFER_DAR_REQ_PAYLOAD_SEED] == 0U ||
       request[WAFER_DAR_REQ_ACTIVE_MASK] == 0U ||
       (request[WAFER_DAR_REQ_ACTIVE_MASK] &
-       ~((UINT64_C(1) << WAFER_DAR_RANKS) - 1U)) != 0U ||
+       ~((UINT64_C(1) << WAFER_DAR_TILES) - 1U)) != 0U ||
       request[WAFER_DAR_REQ_DIRECTION] < WAFER_DAR_DIRECTION_RDMA ||
       request[WAFER_DAR_REQ_DIRECTION] > WAFER_DAR_DIRECTION_BIDIRECTIONAL ||
       (request[WAFER_DAR_REQ_PAYLOAD_BYTES] != 4096U &&
@@ -100,10 +100,10 @@ static void wafer_dar_target_dma(uint32_t direction, uint64_t source,
                                  uint32_t inner_bytes, uint32_t stride0,
                                  uint32_t iteration0) {
   if (direction == WAFER_DAR_DIRECTION_RDMA)
-    wafer_tx81_rdma_v3(source, destination, payload_bytes, inner_bytes, stride0,
+    wafer_tx81_rdma(source, destination, payload_bytes, inner_bytes, stride0,
                     0U, 0U, iteration0, 1U, 1U, Fmt_UINT8, 0U);
   else
-    wafer_tx81_wdma_v3(source, destination, payload_bytes, inner_bytes, stride0,
+    wafer_tx81_wdma(source, destination, payload_bytes, inner_bytes, stride0,
                     0U, 0U, iteration0, 1U, 1U, Fmt_UINT8, 0U);
 }
 
@@ -123,24 +123,24 @@ static void wafer_dar_copy_chunks(uint32_t direction, uint64_t source,
   }
 }
 
-static uint64_t wafer_dar_canary_word(uint32_t rank, uint32_t sample,
+static uint64_t wafer_dar_canary_word(uint32_t tile_id, uint32_t sample,
                                       uint32_t word) {
-  return UINT64_C(0xC39A57E10D2468BF) ^ ((uint64_t)rank << 48) ^
+  return UINT64_C(0xC39A57E10D2468BF) ^ ((uint64_t)tile_id << 48) ^
          ((uint64_t)sample << 24) ^
          ((uint64_t)word * UINT64_C(0x9E3779B97F4A7C15));
 }
 
-static void wafer_dar_write_inactive_canary(uint64_t output, uint32_t rank,
+static void wafer_dar_write_inactive_canary(uint64_t output, uint32_t tile_id,
                                             uint32_t sample) {
   volatile uint64_t *words = (volatile uint64_t *)(uintptr_t)output;
   for (uint32_t word = 0;
        word < WAFER_DAR_INACTIVE_CANARY_BYTES / sizeof(uint64_t); ++word)
-    words[word] = wafer_dar_canary_word(rank, sample, word);
+    words[word] = wafer_dar_canary_word(tile_id, sample, word);
   wafer_ddr_tile_cache_range(output, WAFER_DAR_INACTIVE_CANARY_BYTES, 0U);
 }
 
 static void wafer_dar_write_record(
-    volatile uint64_t *record, uint32_t status, uint32_t rank,
+    volatile uint64_t *record, uint32_t status, uint32_t tile_id,
     const volatile uint64_t *request, uint32_t active, uint32_t envelope_bytes,
     const WaferDDRTilePMU *before, const WaferDDRTilePMU *after,
     uint32_t before_stable, uint32_t after_stable, uint64_t completion_cycles,
@@ -148,10 +148,10 @@ static void wafer_dar_write_record(
   for (uint32_t index = 0; index < WAFER_DAR_RECORD_WORDS; ++index)
     record[index] = 0U;
   record[WAFER_DAR_REC_MAGIC] = WAFER_DAR_RECORD_MAGIC;
-  record[WAFER_DAR_REC_SCHEMA_AND_WORDS] =
-      ((uint64_t)WAFER_DAR_SCHEMA << 32) | WAFER_DAR_RECORD_WORDS;
+  record[WAFER_DAR_REC_WORD_COUNT] =
+      WAFER_DAR_RECORD_WORDS;
   record[WAFER_DAR_REC_STATUS] = status;
-  record[WAFER_DAR_REC_RANK] = rank;
+  record[WAFER_DAR_REC_TILE_ID] = tile_id;
   record[WAFER_DAR_REC_SAMPLE] = request[WAFER_DAR_REQ_SAMPLE];
   record[WAFER_DAR_REC_ACTIVE_MASK] = request[WAFER_DAR_REQ_ACTIVE_MASK];
   record[WAFER_DAR_REC_ACTIVE] = active;
@@ -194,16 +194,16 @@ static void wafer_dar_write_record(
 }
 
 __attribute__((visibility("hidden"))) void
-wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
+wafer_tx81_ddr_tile_offset_probe(uint32_t tile_id, uint64_t input0,
                                  uint64_t input1, uint64_t output0,
                                  uint64_t output1, uint64_t status_ddr) {
-  wafer_tx81_direct_dte_begin_after_prepare(status_ddr, WAFER_DAR_RANKS);
+  wafer_tx81_direct_dte_begin_after_prepare(status_ddr, WAFER_DAR_TILES);
   wafer_ddr_tile_cache_range(input0, WAFER_DAR_REQUEST_WORDS * 8U, 1U);
   const volatile uint64_t *request =
       (const volatile uint64_t *)(uintptr_t)input0;
-  uint32_t status = wafer_dar_decode(rank, request);
+  uint32_t status = wafer_dar_decode(tile_id, request);
   uint32_t active =
-      (uint32_t)((request[WAFER_DAR_REQ_ACTIVE_MASK] >> rank) & 1U);
+      (uint32_t)((request[WAFER_DAR_REQ_ACTIVE_MASK] >> tile_id) & 1U);
   uint32_t sample = (uint32_t)request[WAFER_DAR_REQ_SAMPLE];
   uint32_t payload_bytes = (uint32_t)request[WAFER_DAR_REQ_PAYLOAD_BYTES];
   uint32_t inner_bytes = (uint32_t)request[WAFER_DAR_REQ_INNER_BYTES];
@@ -213,7 +213,7 @@ wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
   uint32_t direction = (uint32_t)request[WAFER_DAR_REQ_DIRECTION];
   uint32_t span = envelope_bytes + 2U * WAFER_DAR_GUARD_BYTES;
 
-  wafer_dar_write_inactive_canary(output1, rank, sample);
+  wafer_dar_write_inactive_canary(output1, tile_id, sample);
   if (status == WAFER_DAR_STATUS_OK && active != 0U) {
     wafer_dar_copy_chunks(WAFER_DAR_DIRECTION_RDMA,
                           input1 + WAFER_DAR_SEED_RDMA_OFFSET,
@@ -277,7 +277,7 @@ wafer_tx81_ddr_tile_offset_probe(uint32_t rank, uint64_t input0,
   }
   hrt_barrier();
 
-  wafer_dar_write_record((volatile uint64_t *)(uintptr_t)output0, status, rank,
+  wafer_dar_write_record((volatile uint64_t *)(uintptr_t)output0, status, tile_id,
                          request, active, envelope_bytes, &before, &after,
                          before_stable, after_stable, completion_cycles, input0,
                          input1, output0, output1);
