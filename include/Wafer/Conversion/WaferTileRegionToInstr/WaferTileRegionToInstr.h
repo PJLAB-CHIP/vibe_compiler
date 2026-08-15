@@ -50,7 +50,7 @@ mlir::LogicalResult placeRequiredNCCJoins(mlir::ModuleOp module);
 
 /// Erase every compiler-derived NCC participant join and rebuild required joins
 /// solely from the module's current worker order, typed issues/effects,
-/// aliases, ranges, event tokens, and observer boundaries. Physical-Tile
+/// aliases, ranges, event tokens, and observer boundaries. Tile
 /// memory planning uses this after function-boundary bufferization; action
 /// construction uses the incremental normalizer above while its loop-carried
 /// communication topology is still being formed.

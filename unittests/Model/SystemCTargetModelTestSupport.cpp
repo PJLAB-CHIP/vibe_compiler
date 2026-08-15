@@ -6,7 +6,7 @@
 #include "Wafer/Target/PhysicalTensorCodec.h"
 #include "Wafer/Target/TargetFormat.h"
 
-#include "Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "Wafer/Compiler/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -141,14 +141,14 @@ module {
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<compiler::PhysicalTileExecutables> executable =
-      compiler::detail::buildPhysicalTileExecutables(
+  llvm::Expected<compiler::CardExecutable> executable =
+      compiler::detail::buildCardExecutable(
           context, *tensorProgram, std::move(program), *config, diagnostics,
           std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  return compiler::compilePhysicalTileExecutablesToTargetLLVMModules(
+  return compiler::compileCardExecutableToTargetLLVMModules(
       *executable, diagnostics);
 }
 

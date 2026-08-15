@@ -31,8 +31,8 @@ tensor(wafer::runtime::Tx81ModelTensorClass tensorClass, int64_t tile,
   if (launchSlot < 0)
     launchSlot = tile;
   return {tensorClass,
-          wafer::PhysicalCardId(0),
-          wafer::PhysicalTileId(tile),
+          wafer::CardId(0),
+          wafer::TileId(tile),
           wafer::LaunchSlotId(launchSlot),
           slot,
           address,
@@ -41,7 +41,7 @@ tensor(wafer::runtime::Tx81ModelTensorClass tensorClass, int64_t tile,
           {16}};
 }
 
-TEST(Tx81ModelABITest, AcceptsExplicitNonIdentityPhysicalTileBinding) {
+TEST(Tx81ModelABITest, AcceptsExplicitNonIdentityTileBinding) {
   using namespace wafer::runtime;
   llvm::Expected<Tx81ModelBootParamImage> image = buildTx81ModelBootParam(
       {tensor(Tx81ModelTensorClass::Input, /*tile=*/1, /*slot=*/0,

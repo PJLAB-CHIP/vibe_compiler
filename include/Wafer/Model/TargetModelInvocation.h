@@ -19,7 +19,7 @@
 namespace wafer::model {
 
 enum class TargetModelInvocationErrorCode : uint8_t {
-  InvalidPhysicalTileDomain,
+  InvalidTileDomain,
   InvalidProgramInvocation,
   InvalidKernelABISlot,
   UnsupportedProgramTensor,
@@ -70,7 +70,7 @@ public:
 
 private:
   friend llvm::Expected<PreparedTargetModelInvocation>
-  prepareTargetModelInvocation(const compiler::PhysicalTileExecutables &,
+  prepareTargetModelInvocation(const compiler::CardExecutable &,
                                const compiler::TargetLLVMModules &,
                                llvm::ArrayRef<compiler::ProgramTileInvocation>);
 
@@ -94,11 +94,11 @@ llvm::Expected<compiler::ProgramTensor>
 decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
                                llvm::ArrayRef<uint8_t> physicalBytes);
 
-/// Exact whole-card binding from the accepted source invocation to the target
+/// Exact card binding from the accepted source invocation to the target
 /// LLVM fixed ABI. Every non-output program resource and every Kernel ABI slot
 /// is consumed exactly once before host JIT materialization is returned.
 llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
-    const compiler::PhysicalTileExecutables &physicalTileExecutables,
+    const compiler::CardExecutable &cardExecutable,
     const compiler::TargetLLVMModules &targetLLVMModules,
     llvm::ArrayRef<compiler::ProgramTileInvocation> programInvocations);
 

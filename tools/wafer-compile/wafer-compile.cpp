@@ -301,8 +301,8 @@ int main(int argc, char **argv) {
   }
 
   mlir::LogicalResult compilationStatus = mlir::failure();
-  std::optional<wafer::compiler::PhysicalTileExecutables>
-      physicalTileExecutables;
+  std::optional<wafer::compiler::CardExecutable>
+      cardExecutable;
   std::optional<wafer::compiler::CompiledProgram> targetCompilationProduct;
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   const char *executableFailureSlot =
@@ -378,12 +378,12 @@ int main(int argc, char **argv) {
         compilationStatus = mlir::success();
       }
     } else {
-      mlir::FailureOr<wafer::compiler::PhysicalTileExecutables>
+      mlir::FailureOr<wafer::compiler::CardExecutable>
           compiledProgram = wafer::compiler::compileProgram(
               std::move(*request), *options.outputProgramDirectory, helperPath,
               *targetToolchain, compilationOptions, llvm::errs());
       if (mlir::succeeded(compiledProgram)) {
-        physicalTileExecutables.emplace(std::move(*compiledProgram));
+        cardExecutable.emplace(std::move(*compiledProgram));
         compilationStatus = mlir::success();
       }
     }
@@ -402,8 +402,8 @@ int main(int argc, char **argv) {
 
   llvm::outs() << "wafer-compile: wrote verified package with "
                   "num-partitions="
-               << numPartitions << " physical-tiles="
-               << wafer::compiler::ExecutionConfig::kSingleCardPhysicalTileCount
+               << numPartitions << " tiles="
+               << wafer::compiler::ExecutionConfig::kSingleCardTileCount
                << ": " << *options.outputProgramDirectory << "\n";
   if (options.profile)
     llvm::outs() << "wafer-compile: wrote profile instrumentation: "

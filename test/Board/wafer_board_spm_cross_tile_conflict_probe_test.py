@@ -411,7 +411,7 @@ def validate_physical_coordinates(
         or len(set(coordinates.values())) != RANK_COUNT
     ):
         raise RuntimeError(
-            "logical ranks do not map to 16 unique physical tiles"
+            "logical ranks do not map to 16 unique Tiles"
         )
 
 

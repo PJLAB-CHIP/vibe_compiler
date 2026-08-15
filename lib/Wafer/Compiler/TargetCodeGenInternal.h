@@ -23,14 +23,14 @@ namespace wafer::compiler {
 
 struct TargetLLVMModulesBuilder {
   static TargetLLVMModule
-  makeModule(PhysicalCardId physicalCardId, PhysicalTileId physicalTileId,
+  makeModule(CardId cardId, TileId tileId,
              LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
              TargetIdentityId targetIdentity,
              KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
              std::vector<KernelABISlot> kernelABISlots,
              std::unique_ptr<llvm::LLVMContext> context,
              std::unique_ptr<llvm::Module> module) {
-    return TargetLLVMModule(physicalCardId, physicalTileId, launchSlotId,
+    return TargetLLVMModule(cardId, tileId, launchSlotId,
                             entrySymbol, targetIdentity, kernelRuntimeABI,
                             moduleFormat, std::move(kernelABISlots),
                             std::move(context), std::move(module));
@@ -62,11 +62,11 @@ struct LinkedTargetModulesBuilder {
   }
 
   static VerifiedTargetTileInterface
-  makeTileInterface(PhysicalCardId physicalCardId,
-                    PhysicalTileId physicalTileId, LaunchSlotId launchSlotId,
+  makeTileInterface(CardId cardId,
+                    TileId tileId, LaunchSlotId launchSlotId,
                     TargetModuleId moduleId,
                     std::vector<KernelABISlot> kernelABISlots) {
-    return VerifiedTargetTileInterface(physicalCardId, physicalTileId,
+    return VerifiedTargetTileInterface(cardId, tileId,
                                        launchSlotId, moduleId,
                                        std::move(kernelABISlots));
   }
@@ -118,7 +118,7 @@ collectProfileTargetCallSites(const llvm::Module &module,
                               llvm::StringRef entrySymbol);
 
 /// Verifies that a trace clone preserves the final production module's
-/// physical-Tile-local site order and exact typed target-call descriptor.
+/// Tile-local site order and exact typed target-call descriptor.
 /// Instrumentation
 /// may shift LLVM instruction ordinals, so only the production module owns the
 /// canonical source position written to the instrumentation.
@@ -144,8 +144,8 @@ struct OwnedTargetLLVMModule {
   std::unique_ptr<llvm::Module> module;
 };
 
-struct PreparedPhysicalTile {
-  PreparedPhysicalTile(const ExecutionConfig &executionConfig,
+struct PreparedTile {
+  PreparedTile(const ExecutionConfig &executionConfig,
                        bool transportPreparedBeforeEntry);
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
@@ -154,8 +154,8 @@ struct PreparedPhysicalTile {
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
   std::string moduleFormat;
-  PhysicalCardId physicalCardId = PhysicalCardId(-1);
-  PhysicalTileId physicalTileId = PhysicalTileId(-1);
+  CardId cardId = CardId(-1);
+  TileId tileId = TileId(-1);
   LaunchSlotId launchSlotId = LaunchSlotId(-1);
   int64_t defaultDDRArenaArgumentIndex = -1;
   int64_t transportStatusArgumentIndex = -1;
@@ -171,20 +171,20 @@ struct TargetModuleReadback {
 llvm::Error fail(llvm::raw_ostream &diagnostics, llvm::StringRef message);
 bool isRegularTargetFile(llvm::StringRef path);
 
-mlir::FailureOr<PreparedPhysicalTile>
-prepareTargetABI(const PhysicalTileExecutable &tileExecutable,
+mlir::FailureOr<PreparedTile>
+prepareTargetABI(const TileExecutable &tileExecutable,
                  const ExecutionConfig &executionConfig,
                  bool transportPreparedBeforeEntry,
                  ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
-mlir::LogicalResult lowerToTargetLLVM(PreparedPhysicalTile &prepared);
-mlir::LogicalResult verifyLoweredKernelABI(PreparedPhysicalTile &prepared,
+mlir::LogicalResult lowerToTargetLLVM(PreparedTile &prepared);
+mlir::LogicalResult verifyLoweredKernelABI(PreparedTile &prepared,
                                            llvm::StringRef entrySymbol);
 llvm::Expected<TargetLLVMModule>
-translatePreparedPhysicalTile(PreparedPhysicalTile prepared,
+translatePreparedTile(PreparedTile prepared,
                               llvm::StringRef entrySymbol);
 llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
-                                   PhysicalCardId expectedPhysicalCardId,
-                                   PhysicalTileId expectedPhysicalTileId,
+                                   CardId expectedCardId,
+                                   TileId expectedTileId,
                                    LaunchSlotId expectedLaunchSlotId,
                                    llvm::StringRef expectedEntrySymbol,
                                    TargetIdentityId expectedTargetIdentity,
@@ -196,12 +196,12 @@ llvm::Error
 writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
             llvm::ArrayRef<KernelABISlot> slots,
             const RuntimeLaunchContract &runtimeLaunchContract,
-            LaunchSlotId launchSlotId, int64_t physicalTileCount,
+            LaunchSlotId launchSlotId, int64_t tileCount,
             llvm::StringRef path,
             ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 llvm::Error writeTargetLLVMIR(const llvm::Module &module, llvm::StringRef path);
 
-/// Imports the complete physical-Tile domain into one context, scopes every
+/// Imports the complete Tile domain into one context, scopes every
 /// supported definition by launch slot, links it, and creates ordered exports.
 llvm::Expected<OwnedTargetLLVMModule>
 buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules);
@@ -234,8 +234,8 @@ llvm::Error validateRuntimeLaunchContractDomainForTesting(
     const TargetLLVMModules &targetLLVMModules);
 
 llvm::Expected<TargetLLVMModules>
-compilePhysicalTileExecutablesToTargetLLVMModulesImpl(
-    const PhysicalTileExecutables &physicalTileExecutables,
+compileCardExecutableToTargetLLVMModulesImpl(
+    const CardExecutable &cardExecutable,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 

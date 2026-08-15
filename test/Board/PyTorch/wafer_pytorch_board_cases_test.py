@@ -36,14 +36,14 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             minimum_search_actual_fused_edges=1,
         )
         board_runner.validate_compiler_search_evidence(
-            "wafer-compile: whole-card-selection admitted=1 "
+            "wafer-compile: card-executable-selection admitted=1 "
             "actual_fused_edges=3 makespan_ps=7\n",
             case,
             "search",
         )
         with self.assertRaisesRegex(RuntimeError, "required operator fusion"):
             board_runner.validate_compiler_search_evidence(
-                "wafer-compile: whole-card-selection admitted=1 "
+                "wafer-compile: card-executable-selection admitted=1 "
                 "actual_fused_edges=0 makespan_ps=7\n",
                 case,
                 "search",
@@ -242,7 +242,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 return_value=types.SimpleNamespace(
                     stdout=(
                         "wafer-compile: wrote verified package with "
-                        "num-partitions=1 physical-tiles=16"
+                        "num-partitions=1 tiles=16"
                     ),
                     stderr="",
                 ),

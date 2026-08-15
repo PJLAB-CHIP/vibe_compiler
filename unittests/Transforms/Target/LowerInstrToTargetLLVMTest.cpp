@@ -266,8 +266,8 @@ module {
 
   mlir::PassManager manager(&context);
   wafer::TargetConversionRequest request{};
-  request.physicalCardId = 0;
-  request.physicalTileId = 15;
+  request.cardId = 0;
+  request.tileId = 15;
   request.transportStatusArgumentIndex = 0;
   request.transportPreparedBeforeEntry = true;
   manager.addPass(wafer::createLowerInstrToTargetLLVMPass(request));
@@ -284,12 +284,12 @@ module {
   EXPECT_TRUE(source->lookupSymbol<mlir::LLVM::LLVMFuncOp>(
       "wafer_tx81_direct_dte_finish"));
 
-  int64_t physicalTileCount = -1;
+  int64_t tileCount = -1;
   source->walk([&](mlir::LLVM::ConstantOp constant) {
     if (auto value = mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue()))
-      physicalTileCount = value.getInt();
+      tileCount = value.getInt();
   });
-  EXPECT_EQ(physicalTileCount, 16);
+  EXPECT_EQ(tileCount, 16);
 }
 
 TEST(LowerInstrToTargetLLVMTest,

@@ -4,9 +4,9 @@
 #define WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
 
 #include "Wafer/Analysis/DirectCallGraphAnalysis.h"
-#include "Wafer/IR/Target/PhysicalTopology.h"
+#include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Target/TopologyIds.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
@@ -38,9 +38,9 @@ struct CalleeSignature {
 };
 
 struct DirectDTEEndpointDomain {
-  PhysicalCardId physicalCardId = PhysicalCardId(-1);
-  PhysicalTileId physicalTileId = PhysicalTileId(-1);
-  llvm::SmallVector<PhysicalTileId, 16> availableTileIds;
+  CardId cardId = CardId(-1);
+  TileId tileId = TileId(-1);
+  llvm::SmallVector<TileId, 16> availableTileIds;
 };
 
 struct DynamicSubviewAddressPlan {
@@ -82,8 +82,8 @@ getDataFormatCode(mlir::Operation *op, mlir::Value value, llvm::StringRef role);
 mlir::LogicalResult verifyTargetInstructionFormats(mlir::ModuleOp moduleOp);
 mlir::LogicalResult verifyTargetSubviewAddresses(mlir::ModuleOp moduleOp);
 mlir::FailureOr<DirectDTEEndpointDomain> resolveDirectDTEEndpointDomain(
-    const PhysicalTopology &topology, mlir::ModuleOp diagnosticModule,
-    PhysicalCardId physicalCardId, PhysicalTileId physicalTileId);
+    const TargetTopology &topology, mlir::ModuleOp diagnosticModule,
+    CardId cardId, TileId tileId);
 
 struct FunctionLowering {
   mlir::OpBuilder &builder;
@@ -182,8 +182,8 @@ mlir::LogicalResult injectDirectDTEStatusLifecycle(
 
 mlir::LogicalResult
 lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
-                   int64_t defaultDDRArenaArgumentIndex, int64_t physicalCardId,
-                   int64_t physicalTileId, int64_t transportStatusArgumentIndex,
+                   int64_t defaultDDRArenaArgumentIndex, int64_t cardId,
+                   int64_t tileId, int64_t transportStatusArgumentIndex,
                    int64_t profileRecordArgumentIndex);
 
 } // namespace wafer::target_llvm_detail

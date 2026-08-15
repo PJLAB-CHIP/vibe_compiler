@@ -2,7 +2,7 @@
 
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
-#include "Wafer/IR/Target/PhysicalTopology.h"
+#include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetCall.h"
@@ -121,11 +121,11 @@ collectDirectCalleeSignatures(mlir::ModuleOp moduleOp,
 }
 
 static mlir::FailureOr<int64_t>
-resolveDirectDTEContractParticipantCount(const PhysicalTopology &topology,
+resolveDirectDTEContractParticipantCount(const TargetTopology &topology,
                                          mlir::ModuleOp diagnosticModule,
-                                         PhysicalCardId physicalCardId) {
-  std::optional<llvm::ArrayRef<PhysicalTileId>> available =
-      topology.getAvailableTileIds(physicalCardId);
+                                         CardId cardId) {
+  std::optional<llvm::ArrayRef<TileId>> available =
+      topology.getAvailableTileIds(cardId);
   if (!available || available->empty() ||
       available->size() > std::numeric_limits<uint32_t>::max())
     return diagnosticModule.emitError()
@@ -137,8 +137,8 @@ resolveDirectDTEContractParticipantCount(const PhysicalTopology &topology,
 
 mlir::LogicalResult
 lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
-                   int64_t defaultDDRArenaArgumentIndex, int64_t physicalCardId,
-                   int64_t physicalTileId, int64_t transportStatusArgumentIndex,
+                   int64_t defaultDDRArenaArgumentIndex, int64_t cardId,
+                   int64_t tileId, int64_t transportStatusArgumentIndex,
                    int64_t profileRecordArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
     return mlir::failure();
@@ -154,24 +154,24 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
            << "unsupported_target_transport: Direct DTE requires a "
               "launch-observable status argument";
 
-  std::optional<PhysicalTopology> physicalTopology;
+  std::optional<TargetTopology> targetTopology;
   if (hasDirectDTEContract || hasDirectDTEOps) {
     std::string reason;
-    mlir::FailureOr<PhysicalTopology> resolved =
-        PhysicalTopology::create(moduleOp, &reason);
+    mlir::FailureOr<TargetTopology> resolved =
+        TargetTopology::create(moduleOp, &reason);
     if (mlir::failed(resolved))
       return moduleOp.emitError()
              << "unsupported_target_transport: Direct DTE requires a valid "
                 "physical topology: "
              << reason;
-    physicalTopology.emplace(std::move(*resolved));
+    targetTopology.emplace(std::move(*resolved));
   }
 
   std::optional<int64_t> dteParticipantCount;
   if (hasDirectDTEContract) {
     mlir::FailureOr<int64_t> resolved =
         resolveDirectDTEContractParticipantCount(
-            *physicalTopology, moduleOp, PhysicalCardId(physicalCardId));
+            *targetTopology, moduleOp, CardId(cardId));
     if (mlir::failed(resolved))
       return mlir::failure();
     dteParticipantCount = *resolved;
@@ -180,9 +180,9 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
   std::optional<DirectDTEEndpointDomain> dteDomain;
   if (hasDirectDTEOps) {
     mlir::FailureOr<DirectDTEEndpointDomain> resolved =
-        resolveDirectDTEEndpointDomain(*physicalTopology, moduleOp,
-                                       PhysicalCardId(physicalCardId),
-                                       PhysicalTileId(physicalTileId));
+        resolveDirectDTEEndpointDomain(*targetTopology, moduleOp,
+                                       CardId(cardId),
+                                       TileId(tileId));
     if (mlir::failed(resolved))
       return mlir::failure();
     dteDomain = std::move(*resolved);
@@ -190,7 +190,7 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
         *dteParticipantCount)
       return moduleOp.emitError()
              << "unsupported_target_transport: Direct DTE endpoint domain "
-                "does not match the physical Tile participant count";
+                "does not match the Tile participant count";
   }
 
   analysis::DirectCallGraphAnalysis callGraph(moduleOp.getOperation());

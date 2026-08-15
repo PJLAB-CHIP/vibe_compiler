@@ -1,5 +1,5 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{physical-card-id=0 physical-tile-id=0 transport-status-argument-index=0})' %s | FileCheck --check-prefix=CURRENT %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{physical-card-id=0 physical-tile-id=0 transport-status-argument-index=0})' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{card-id=0 tile-id=0 transport-status-argument-index=0})' %s | FileCheck --check-prefix=CURRENT %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{card-id=0 tile-id=0 transport-status-argument-index=0})' %s | mlir-translate --mlir-to-llvmir | FileCheck --check-prefix=LLVMIR %s
 
 module {
   wafer.target.topology @default

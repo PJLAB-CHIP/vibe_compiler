@@ -148,7 +148,7 @@ public:
         return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                             "sink launch-slot order is not canonical");
       tileBindings.push_back(
-          {tile.physicalCardId, tile.physicalTileId, tile.launchSlotId});
+          {tile.cardId, tile.tileId, tile.launchSlotId});
     }
     begun = true;
     return llvm::Error::success();
@@ -164,10 +164,10 @@ public:
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "command launch slot is outside the invocation");
     const TileBinding &binding = tileBindings[static_cast<size_t>(launchSlot)];
-    if (command.physicalCardId != binding.physicalCardId ||
-        command.physicalTileId != binding.physicalTileId)
+    if (command.cardId != binding.cardId ||
+        command.tileId != binding.tileId)
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
-                          "command physical Tile binding disagrees with "
+                          "command Tile binding disagrees with "
                           "its launch slot");
     TileState &tile = tileStates[static_cast<size_t>(launchSlot)];
     if (!tile.completion.beginIssue(command.issueOrdinal)) {
@@ -293,8 +293,8 @@ public:
     llvm_unreachable("unknown target model control action");
   }
 
-  llvm::Error completeTile(PhysicalCardId physicalCardId,
-                           PhysicalTileId physicalTileId,
+  llvm::Error completeTile(CardId cardId,
+                           TileId tileId,
                            LaunchSlotId launchSlotId) override {
     if (failure)
       return systemCError(failure->code, failure->str());
@@ -304,8 +304,8 @@ public:
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "completed Tile is outside the invocation");
     const TileBinding &binding = tileBindings[static_cast<size_t>(launchSlot)];
-    if (physicalCardId != binding.physicalCardId ||
-        physicalTileId != binding.physicalTileId ||
+    if (cardId != binding.cardId ||
+        tileId != binding.tileId ||
         launchSlotId != binding.launchSlotId)
       return systemCError(SystemCTargetModelErrorCode::InvalidLifecycle,
                           "completed Tile binding disagrees with its launch "
@@ -358,8 +358,8 @@ public:
       const TileBinding &binding =
           tileBindings[static_cast<size_t>(slot.launchSlot)];
       outputResources.push_back(slot.resource);
-      outputs.push_back({slot.resource, binding.physicalCardId,
-                         binding.physicalTileId, binding.launchSlotId,
+      outputs.push_back({slot.resource, binding.cardId,
+                         binding.tileId, binding.launchSlotId,
                          slot.slotOrdinal, slot.resourceIndex,
                          std::move(*bytes)});
     }
@@ -396,8 +396,8 @@ public:
 
 private:
   struct TileBinding {
-    PhysicalCardId physicalCardId;
-    PhysicalTileId physicalTileId;
+    CardId cardId;
+    TileId tileId;
     LaunchSlotId launchSlotId;
   };
 
@@ -817,13 +817,13 @@ private:
   }
 
   bool validateCommandTile(const compiler::TargetCommand &command,
-                           uint32_t payloadPhysicalTile,
+                           uint32_t payloadTileId,
                            llvm::StringRef stage) {
-    const int64_t physicalTile = command.physicalTileId.getValue();
-    if (physicalTile < 0 ||
-        static_cast<uint64_t>(physicalTile) >
+    const int64_t tileId = command.tileId.getValue();
+    if (tileId < 0 ||
+        static_cast<uint64_t>(tileId) >
             std::numeric_limits<uint32_t>::max() ||
-        payloadPhysicalTile != static_cast<uint32_t>(physicalTile)) {
+        payloadTileId != static_cast<uint32_t>(tileId)) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, stage,
                    command.launchSlotId.getValue(), command.issueOrdinal,
                    "Direct DTE payload disagrees with the explicit physical "

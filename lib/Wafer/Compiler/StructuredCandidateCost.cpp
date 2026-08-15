@@ -1,6 +1,6 @@
 //===- StructuredCandidateCost.cpp - Structured candidate costs --------===//
 
-#include "WholeCardCandidateSearch.h"
+#include "RankCandidateSearch.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -604,7 +604,7 @@ struct RankFacts {
   std::string collectiveAndPeerInterface;
 };
 
-static RankFacts deriveRankFacts(const CoordinatedRankTileProgram &rank) {
+static RankFacts deriveRankFacts(const CoordinatedRankTileModule &rank) {
   std::array<MetricAccumulator, kStructuredCandidateCostDimensionCount>
       accumulators;
   std::string futureText;

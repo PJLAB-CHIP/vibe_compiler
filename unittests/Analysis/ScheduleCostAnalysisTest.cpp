@@ -58,16 +58,16 @@ protected:
         module, wafer::analysis::getTargetScheduleCostPolicy());
   }
 
-  wafer::analysis::WholeCardInstructionProgramCost
-  analyzeWholeCard(llvm::ArrayRef<mlir::Operation *> roots,
+  wafer::analysis::CardInstructionProgramCost
+  analyzeCardCost(llvm::ArrayRef<mlir::Operation *> roots,
                    const wafer::analysis::TargetScheduleCostPolicy &policy) {
-    llvm::SmallVector<wafer::analysis::PhysicalTileInstructionProgram, 16>
+    llvm::SmallVector<wafer::analysis::TileInstructionProgram, 16>
         programs;
     programs.reserve(roots.size());
     for (auto [tile, root] : llvm::enumerate(roots))
       programs.push_back(
-          {wafer::PhysicalTileId(static_cast<int64_t>(tile)), root});
-    return wafer::analysis::analyzeWholeCardInstructionProgramCost(programs,
+          {wafer::TileId(static_cast<int64_t>(tile)), root});
+    return wafer::analysis::analyzeCardInstructionProgramCost(programs,
                                                                    policy);
   }
 
@@ -165,25 +165,25 @@ module {
   ASSERT_EQ(movementOperations.size(), 2u);
   ASSERT_EQ(computeOperations.size(), 2u);
 
-  llvm::SmallVector<wafer::analysis::PhysicalTileInstructionProgram, 16>
+  llvm::SmallVector<wafer::analysis::TileInstructionProgram, 16>
       programs;
-  llvm::SmallVector<wafer::analysis::PhysicalTileInstructionProgramSlice, 16>
+  llvm::SmallVector<wafer::analysis::TileInstructionProgramSlice, 16>
       movementSlices;
-  llvm::SmallVector<wafer::analysis::PhysicalTileInstructionProgramSlice, 16>
+  llvm::SmallVector<wafer::analysis::TileInstructionProgramSlice, 16>
       computeSlices;
   for (int64_t tile = 0; tile < 16; ++tile) {
-    programs.push_back({wafer::PhysicalTileId(tile), module->getOperation()});
-    movementSlices.push_back({wafer::PhysicalTileId(tile),
+    programs.push_back({wafer::TileId(tile), module->getOperation()});
+    movementSlices.push_back({wafer::TileId(tile),
                               module->getOperation(), movementOperations});
-    computeSlices.push_back({wafer::PhysicalTileId(tile),
+    computeSlices.push_back({wafer::TileId(tile),
                              module->getOperation(), computeOperations});
   }
   const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
   auto whole =
-      wafer::analysis::analyzeWholeCardInstructionProgramCost(programs, policy);
-  auto movement = wafer::analysis::analyzeWholeCardInstructionProgramCostSlice(
+      wafer::analysis::analyzeCardInstructionProgramCost(programs, policy);
+  auto movement = wafer::analysis::analyzeCardInstructionProgramCostSlice(
       movementSlices, policy);
-  auto compute = wafer::analysis::analyzeWholeCardInstructionProgramCostSlice(
+  auto compute = wafer::analysis::analyzeCardInstructionProgramCostSlice(
       computeSlices, policy);
 
   ASSERT_TRUE(movement.aggregateDDRReadBytes.isKnown());
@@ -1210,7 +1210,7 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       AggregatesWholeCardExecutionAndKeepsPrivateSPMDimensions) {
+       AggregatesCardExecutionAndKeepsPrivateSPMDimensions) {
   auto first = parse(R"mlir(
 module {
   func.func @main(%input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
@@ -1252,7 +1252,7 @@ module {
   llvm::SmallVector<mlir::Operation *, 2> roots{first->getOperation(),
                                                 second->getOperation()};
   auto cost =
-      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+      analyzeCardCost(roots, wafer::analysis::getTargetScheduleCostPolicy());
   ASSERT_EQ(cost.tileCosts.size(), 2u);
   ASSERT_TRUE(cost.aggregateDDRReadBytes.isKnown());
   EXPECT_EQ(cost.aggregateDDRReadBytes.value, 16u);
@@ -1283,7 +1283,7 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardAggregationPreservesUnavailableCostReason) {
+       CardAggregationPreservesUnavailableCostReason) {
   auto dynamic = parse(R"mlir(
 module {
   func.func @main(
@@ -1308,7 +1308,7 @@ module {
   ASSERT_TRUE(dynamic);
   llvm::SmallVector<mlir::Operation *, 1> roots{dynamic->getOperation()};
   auto cost =
-      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+      analyzeCardCost(roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.aggregateDDRReadBytes.knowledge,
             ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.aggregateDDRReadBytes.reason,
@@ -1317,7 +1317,7 @@ module {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardPhysicalTileDistanceChangesMinimumHopDemand) {
+       CardTileDistanceChangesMinimumHopDemand) {
   constexpr llvm::StringLiteral nearSend = R"mlir(
     %sent = wafer.instr.dte_send %buffer
         {peer = 1 : i64, bytes = 16 : i64,
@@ -1345,8 +1345,8 @@ TEST_F(ScheduleCostAnalysisTest,
   }
 
   const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
-  auto nearCost = analyzeWholeCard(nearRoots, policy);
-  auto farCost = analyzeWholeCard(farRoots, policy);
+  auto nearCost = analyzeCardCost(nearRoots, policy);
+  auto farCost = analyzeCardCost(farRoots, policy);
   ASSERT_TRUE(nearCost.aggregateNoC.aggregateTransmitBytes.isKnown());
   ASSERT_TRUE(farCost.aggregateNoC.aggregateTransmitBytes.isKnown());
   EXPECT_EQ(nearCost.aggregateNoC.aggregateTransmitBytes.value, 16u);
@@ -1377,7 +1377,7 @@ TEST_F(ScheduleCostAnalysisTest,
   EXPECT_EQ(farCost.maximumNoCHopCount.value, 3u);
 }
 
-TEST_F(ScheduleCostAnalysisTest, WholeCardNoCFreeProgramHasExactZeroWork) {
+TEST_F(ScheduleCostAnalysisTest, CardNoCFreeProgramHasExactZeroWork) {
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
   llvm::SmallVector<mlir::Operation *, 16> roots;
   for (int64_t tile = 0; tile < 16; ++tile) {
@@ -1386,7 +1386,7 @@ TEST_F(ScheduleCostAnalysisTest, WholeCardNoCFreeProgramHasExactZeroWork) {
     roots.push_back(owners.back()->getOperation());
   }
   const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
-  auto cost = analyzeWholeCard(roots, policy);
+  auto cost = analyzeCardCost(roots, policy);
   ASSERT_TRUE(cost.aggregateNoC.aggregateTransmitBytes.isKnown());
   ASSERT_TRUE(cost.aggregateNoC.aggregateReceiveBytes.isKnown());
   ASSERT_TRUE(cost.aggregateNoC.transmitMessageCount.isKnown());
@@ -1404,7 +1404,7 @@ TEST_F(ScheduleCostAnalysisTest, WholeCardNoCFreeProgramHasExactZeroWork) {
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardExactNoCWorkUsesStaticLoopMultiplicity) {
+       CardExactNoCWorkUsesStaticLoopMultiplicity) {
   constexpr llvm::StringLiteral repeatedSend = R"mlir(
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1424,7 +1424,7 @@ TEST_F(ScheduleCostAnalysisTest,
     roots.push_back(owners.back()->getOperation());
   }
   auto cost =
-      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+      analyzeCardCost(roots, wafer::analysis::getTargetScheduleCostPolicy());
   ASSERT_TRUE(cost.aggregateNoC.aggregateTransmitBytes.isKnown());
   ASSERT_TRUE(cost.aggregateNoC.transmitMessageCount.isKnown());
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 12u);
@@ -1481,8 +1481,8 @@ TEST_F(ScheduleCostAnalysisTest,
   }
 
   const auto policy = wafer::analysis::getTargetScheduleCostPolicy();
-  auto balanced = analyzeWholeCard(balancedRoots, policy);
-  auto hotspot = analyzeWholeCard(hotspotRoots, policy);
+  auto balanced = analyzeCardCost(balancedRoots, policy);
+  auto hotspot = analyzeCardCost(hotspotRoots, policy);
   ASSERT_TRUE(balanced.aggregateNoC.aggregateTransmitBytes.isKnown());
   ASSERT_TRUE(hotspot.aggregateNoC.aggregateTransmitBytes.isKnown());
   EXPECT_EQ(balanced.aggregateNoC.aggregateTransmitBytes.value, 32u);
@@ -1535,7 +1535,7 @@ TEST_F(ScheduleCostAnalysisTest,
   }
 
   auto cost =
-      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+      analyzeCardCost(roots, wafer::analysis::getTargetScheduleCostPolicy());
   ASSERT_TRUE(cost.aggregateNoC.aggregateTransmitBytes.isKnown());
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.value, 8u);
   ASSERT_TRUE(cost.aggregateNoC.aggregateReceiveBytes.isKnown());
@@ -1562,7 +1562,7 @@ TEST_F(ScheduleCostAnalysisTest,
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardExactNoCWorkPropagatesArithmeticOverflow) {
+       CardExactNoCWorkPropagatesArithmeticOverflow) {
   constexpr llvm::StringLiteral overflowingSend = R"mlir(
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1582,7 +1582,7 @@ TEST_F(ScheduleCostAnalysisTest,
     roots.push_back(owners.back()->getOperation());
   }
   auto cost =
-      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+      analyzeCardCost(roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.knowledge,
             ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.reason,
@@ -1605,7 +1605,7 @@ TEST_F(ScheduleCostAnalysisTest,
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardExactNoCAggregationPropagatesOverflow) {
+       CardExactNoCAggregationPropagatesOverflow) {
   constexpr llvm::StringLiteral overflowingSharedLink = R"mlir(
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1630,7 +1630,7 @@ TEST_F(ScheduleCostAnalysisTest,
     roots.push_back(owners.back()->getOperation());
   }
   auto cost =
-      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+      analyzeCardCost(roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.knowledge,
             ScheduleCostKnowledge::Overflow);
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.reason,
@@ -1651,7 +1651,7 @@ TEST_F(ScheduleCostAnalysisTest,
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       DTEPeerLeafVerifierDoesNotRebuildPhysicalTopology) {
+       DTEPeerLeafVerifierDoesNotRebuildTargetTopology) {
   constexpr llvm::StringLiteral send = R"mlir(
     %sent = wafer.instr.dte_send %buffer
         {peer = 1 : i64, bytes = 4 : i64,
@@ -1664,7 +1664,7 @@ TEST_F(ScheduleCostAnalysisTest,
   ASSERT_TRUE(tile1);
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
-  // Cross-operation topology is checked once by the CardProgram container and
+  // Cross-operation topology is checked once by the CardModule container and
   // again by whole-executable verification. A leaf DTE verifier checks only
   // local fields.
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*tile0)));
@@ -1672,7 +1672,7 @@ TEST_F(ScheduleCostAnalysisTest,
 }
 
 TEST_F(ScheduleCostAnalysisTest,
-       WholeCardExactNoCWorkPreservesUnavailableDynamicMultiplicity) {
+       CardExactNoCWorkPreservesUnavailableDynamicMultiplicity) {
   constexpr llvm::StringLiteral dynamicSend = R"mlir(
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -1692,7 +1692,7 @@ TEST_F(ScheduleCostAnalysisTest,
     roots.push_back(owners.back()->getOperation());
   }
   auto cost =
-      analyzeWholeCard(roots, wafer::analysis::getTargetScheduleCostPolicy());
+      analyzeCardCost(roots, wafer::analysis::getTargetScheduleCostPolicy());
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.knowledge,
             ScheduleCostKnowledge::Unavailable);
   EXPECT_EQ(cost.aggregateNoC.aggregateTransmitBytes.reason,

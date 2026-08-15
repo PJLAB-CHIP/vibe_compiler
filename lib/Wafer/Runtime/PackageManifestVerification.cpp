@@ -138,7 +138,7 @@ bool isEntryLocalResource(PackageResourceRole role) {
          role == PackageResourceRole::TransportStatus;
 }
 
-bool isSamePhysicalTile(const TileResourceScope &scope,
+bool isSameTile(const TileResourceScope &scope,
                         const PackageEntrypointRecord &entry) {
   return scope.cardId == entry.cardId && scope.tileId == entry.tileId;
 }
@@ -168,7 +168,7 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
   if (model) {
     if (manifest.modules.size() != static_cast<size_t>(manifest.tileCount))
       return invalid(
-          "model launch requires one module per physical Tile");
+          "model launch requires one module per Tile");
     if (llvm::any_of(manifest.modules, [&](const auto &module) {
           return moduleReferenceCount.lookup(module.id.getValue()) != 1;
         }))
@@ -381,7 +381,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
   }
   if (manifest.modules.empty() ||
       manifest.entries.size() != static_cast<uint64_t>(manifest.tileCount))
-    return invalid("package module/entry physical Tile domain is incomplete");
+    return invalid("package module/entry Tile domain is incomplete");
   if (!hasDenseIds(manifest.resources,
                    [](const auto &record) { return record.id; }) ||
       !hasDenseIds(manifest.modules,
@@ -421,10 +421,10 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     const auto *cardScope = std::get_if<CardResourceScope>(&resource.scope);
     const auto *tileScope = std::get_if<TileResourceScope>(&resource.scope);
     if ((cardScope && (!isProgramBoundaryResource(resource.role) ||
-                       cardScope->cardId != PhysicalCardId(0))) ||
+                       cardScope->cardId != CardId(0))) ||
         (tileScope &&
          (!isEntryLocalResource(resource.role) ||
-          tileScope->cardId != PhysicalCardId(0) ||
+          tileScope->cardId != CardId(0) ||
           tileScope->tileId.getValue() < 0 ||
           tileScope->tileId.getValue() >= 16)))
       return invalid("package resource role and typed physical scope disagree");
@@ -484,18 +484,18 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     }
 
   std::vector<bool> seenLaunchSlots(manifest.tileCount, false);
-  llvm::DenseSet<int64_t> seenPhysicalTiles;
+  llvm::DenseSet<int64_t> seenTileIds;
   llvm::DenseMap<uint64_t, uint64_t> referencedModules;
   for (PackageEntrypointRecord &entry : manifest.entries) {
-    if (entry.cardId != PhysicalCardId(0) || entry.tileId.getValue() < 0 ||
+    if (entry.cardId != CardId(0) || entry.tileId.getValue() < 0 ||
         entry.tileId.getValue() >= 16 || !entry.launchSlot.isValid() ||
         entry.launchSlot.getValue() >=
             static_cast<uint64_t>(manifest.tileCount) ||
         seenLaunchSlots[entry.launchSlot.getValue()] ||
-        !seenPhysicalTiles.insert(entry.tileId.getValue()).second ||
+        !seenTileIds.insert(entry.tileId.getValue()).second ||
         entry.completion !=
             PackageEntryCompletionKind::ReturnAfterLocalDrain)
-      return invalid("package entry physical Tile domain is invalid");
+      return invalid("package entry Tile domain is invalid");
     seenLaunchSlots[entry.launchSlot.getValue()] = true;
     const PackageModuleRecord *module =
         findModule(manifest.modules, entry.module);
@@ -522,7 +522,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
            (cardScope->cardId != entry.cardId ||
             referenceCount != static_cast<uint64_t>(manifest.tileCount))) ||
           (tileScope &&
-           (!isSamePhysicalTile(*tileScope, entry) || referenceCount != 1)))
+           (!isSameTile(*tileScope, entry) || referenceCount != 1)))
         return invalid(
             "package resource references disagree with typed physical scope");
     }
@@ -530,7 +530,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     llvm::SmallVector<const PackageResourceRecord *, 1> statusResources;
     for (const PackageResourceRecord &resource : manifest.resources)
       if (const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
-          scope && isSamePhysicalTile(*scope, entry) &&
+          scope && isSameTile(*scope, entry) &&
           resource.role == PackageResourceRole::TransportStatus)
         statusResources.push_back(&resource);
     if (std::holds_alternative<NoTransportRequirements>(entry.transport)) {

@@ -109,8 +109,8 @@ struct ProfileStaticTileWork {
 };
 
 struct ProfileStaticTileCost {
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   ProfileStaticTileWork work;
 };
@@ -141,8 +141,8 @@ struct ProfileTargetCallSite {
 };
 
 struct ProfileTileSiteMap {
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   std::vector<ProfileTargetCallSite> sites;
 };

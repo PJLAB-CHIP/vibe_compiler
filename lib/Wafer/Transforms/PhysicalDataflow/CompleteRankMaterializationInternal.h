@@ -27,7 +27,7 @@ namespace wafer::tensor_program_scheduling {
 /// Temporary internal entry retained for legacy mechanism tests. Current
 /// coordinated consumers use materializeConservativeCompleteRankBaseline.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-materializeCompleteRankTileProgram(mlir::ModuleOp sourceModule,
+materializeCompleteRankTileModule(mlir::ModuleOp sourceModule,
                                    int64_t logicalRank,
                                    unsigned *materializedRegionCount = nullptr);
 

@@ -2,7 +2,7 @@
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/DirectDTETransport.h"
 #include "../../lib/Wafer/Compiler/NoCCommunicationAction.h"
-#include "../../lib/Wafer/Compiler/WholeCardResourceCostValidation.h"
+#include "../../lib/Wafer/Compiler/RankResourceCostValidation.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/Internal.h"
 #include "Wafer/IR/Common/WaferIRVerification.h"
@@ -463,7 +463,7 @@ module {
     ASSERT_TRUE(static_cast<bool>(config))
         << llvm::toString(config.takeError());
     ASSERT_TRUE(
-        mlir::succeeded(wafer::compiler::detail::validateWholeCardResourceCost(
+        mlir::succeeded(wafer::compiler::detail::validateRankResourceCost(
             modules, *config)));
   }
 

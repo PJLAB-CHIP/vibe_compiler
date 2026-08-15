@@ -2,7 +2,7 @@
 
 #include "Wafer/Model/SystemCTargetModel.h"
 
-#include "Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "Wafer/Compiler/CardExecutableInternal.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
@@ -100,7 +100,7 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
   return context;
 }
 
-llvm::Expected<PhysicalTileExecutables>
+llvm::Expected<CardExecutable>
 buildFixedSlotExecutableForModelTest(std::string &diagnosticText) {
   auto context = createCompilerContext();
   auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
@@ -148,10 +148,10 @@ module {
     return config.takeError();
 
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  return wafer::compiler::detail::buildPhysicalTileExecutables(
+  return wafer::compiler::detail::buildCardExecutable(
       context, *tensorProgram, std::move(program), *config, diagnostics,
       std::nullopt,
-      wafer::compiler::detail::WholeVariantSelectionMode::
+      wafer::compiler::detail::RankCandidateSelectionMode::
           QualifyStaticFixedSlot);
 }
 
@@ -222,7 +222,7 @@ const ABIRange *findContainingRange(llvm::ArrayRef<ABIRange> ranges,
 TEST(SystemCTargetModelFixedSlotIntegrationTest,
      ExecutesRotatingSlotsWithOnlyTerminalWorkerJoin) {
   std::string diagnosticText;
-  llvm::Expected<PhysicalTileExecutables> executable =
+  llvm::Expected<CardExecutable> executable =
       buildFixedSlotExecutableForModelTest(diagnosticText);
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticText << llvm::toString(executable.takeError());
@@ -300,7 +300,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
 
   llvm::raw_string_ostream diagnostics(diagnosticText);
   llvm::Expected<TargetLLVMModules> targetModules =
-      compilePhysicalTileExecutablesToTargetLLVMModules(*executable,
+      compileCardExecutableToTargetLLVMModules(*executable,
                                                         diagnostics);
   ASSERT_TRUE(static_cast<bool>(targetModules))
       << diagnosticText << llvm::toString(targetModules.takeError());

@@ -40,8 +40,8 @@ TargetCallInvocationDescriptor makeInvocation(size_t tileCount = 2) {
     const uint64_t workspace =
         UINT64_C(0x102000) + launchSlot * UINT64_C(0x10000);
     tiles.push_back(TargetCallTileDescriptor{
-        PhysicalCardId(0),
-        PhysicalTileId(static_cast<int64_t>(launchSlot)),
+        CardId(0),
+        TileId(static_cast<int64_t>(launchSlot)),
         LaunchSlotId(static_cast<int64_t>(launchSlot)),
         {{0,
           KernelABISlotRole::UserInput,
@@ -79,7 +79,7 @@ TargetCallInvocationDescriptor makeInvocation(size_t tileCount = 2) {
 
 std::vector<TargetModelInputBinding> makeBindings(size_t tileCount = 2) {
   (void)tileCount;
-  return {{getTargetModelResourceId(PhysicalCardId(0), PhysicalTileId(0),
+  return {{getTargetModelResourceId(CardId(0), TileId(0),
                                     KernelABISlotRole::UserInput,
                                     /*resourceIndex=*/0),
            std::vector<uint8_t>(16, 1)}};
@@ -99,7 +99,7 @@ TEST(TargetModelMemoryTest, RequiresExactInputsAndOwnsPrivateSlotBytes) {
 
   std::vector<TargetModelInputBinding> mutableBinding = makeBindings(1);
   mutableBinding.push_back(
-      {getTargetModelResourceId(PhysicalCardId(0), PhysicalTileId(0),
+      {getTargetModelResourceId(CardId(0), TileId(0),
                                 KernelABISlotRole::Output,
                                 /*resourceIndex=*/0),
        std::vector<uint8_t>(16, 9)});

@@ -31,12 +31,12 @@ namespace {
 
 constexpr uint64_t boardRuntimeFreeMemoryReserve = 64ULL * 1024 * 1024;
 
-constexpr PhysicalCardId noCard{-1};
-constexpr PhysicalTileId noTile{-1};
+constexpr CardId noCard{-1};
+constexpr TileId noTile{-1};
 
 struct DiagnosticLocation {
-  PhysicalCardId cardId = noCard;
-  PhysicalTileId tileId = noTile;
+  CardId cardId = noCard;
+  TileId tileId = noTile;
   LaunchSlotId launchSlot;
   EntryId entry;
 };
@@ -139,16 +139,16 @@ qualifyBoardDevice(uint32_t deviceId, uint32_t requiredTileCount,
                       "memory");
 
   uint32_t availableTiles = 0;
-  llvm::DenseSet<int64_t> physicalTileIds;
+  llvm::DenseSet<int64_t> tileIds;
   llvm::DenseSet<uint64_t> launchSlots;
   llvm::DenseSet<uint64_t> availableLaunchSlots;
-  std::set<std::pair<uint32_t, uint32_t>> physicalTiles;
+  std::set<std::pair<uint32_t, uint32_t>> tileCoordinates;
   for (const BoardDeviceInfo::Tile &tile : device->tiles) {
     if (tile.tileId.getValue() < 0 ||
-        !physicalTileIds.insert(tile.tileId.getValue()).second)
+        !tileIds.insert(tile.tileId.getValue()).second)
       return boardError(BoardRuntimeStage::DeviceSelection, {},
                         "TX inventory contains an invalid or duplicate "
-                        "physical Tile ID");
+                        "Tile ID");
     if (!tile.launchSlot.isValid() ||
         !launchSlots.insert(tile.launchSlot.getValue()).second)
       return boardError(BoardRuntimeStage::DeviceSelection, {},
@@ -158,7 +158,7 @@ qualifyBoardDevice(uint32_t deviceId, uint32_t requiredTileCount,
       continue;
     ++availableTiles;
     availableLaunchSlots.insert(tile.launchSlot.getValue());
-    if (!physicalTiles.emplace(tile.physicalX, tile.physicalY).second)
+    if (!tileCoordinates.emplace(tile.physicalX, tile.physicalY).second)
       return boardError(BoardRuntimeStage::DeviceSelection, {},
                         "TX inventory maps available tiles to duplicate "
                         "physical coordinates");
@@ -186,7 +186,7 @@ llvm::Error verifyPlannedTileBindings(const BoardDeviceInfo &device,
     if (inventory == device.tiles.end())
       return boardError(
           BoardRuntimeStage::Validation, locationFor(tile),
-          "package physical-Tile/launch-slot binding is absent from the "
+          "package Tile/launch-slot binding is absent from the "
           "qualified device inventory");
   }
   return llvm::Error::success();
@@ -410,7 +410,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     if (!profilerTiles.insert(scope.tileId.getValue()).second)
       return boardError(BoardRuntimeStage::Validation, locationFor(*resource),
                         "profiler invocation binds more than one record for "
-                        "one physical Tile");
+                        "one Tile");
     profilerByResource[id] = &binding;
   }
   if (!profilerResourceIds.empty() || !request.profilerBindings.empty()) {
@@ -421,14 +421,14 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
         profilerTiles.size() != WAFER_TX81_PROFILER_TILE_COUNT)
       return boardError(
           BoardRuntimeStage::Validation, {},
-          "profiler invocation requires all-and-only physical Tiles 0..15");
+          "profiler invocation requires all-and-only Tiles 0..15");
     for (int64_t tileId = 0; tileId < WAFER_TX81_PROFILER_TILE_COUNT; ++tileId)
       if (!profilerResourceTiles.contains(tileId) ||
           !profilerTiles.contains(tileId))
         return boardError(
             BoardRuntimeStage::Validation,
-            {PhysicalCardId(0), PhysicalTileId(tileId), LaunchSlotId(), {}},
-            "profiler invocation requires all-and-only physical Tiles 0..15");
+            {CardId(0), TileId(tileId), LaunchSlotId(), {}},
+            "profiler invocation requires all-and-only Tiles 0..15");
     for (uint64_t resourceId : profilerResourceIds)
       if (!profilerByResource.count(resourceId))
         return boardError(

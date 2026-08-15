@@ -11,9 +11,9 @@ from pathlib import Path
 
 
 OP_FAMILY_LAYOUT = {
-    "Program/ProgramOps.td": {
-        "cpp": ("Program/ProgramOps.cpp",),
-        "tests": "Program/Program",
+    "Program/ModuleOps.td": {
+        "cpp": ("Program/ModuleOps.cpp",),
+        "tests": "Program/Module",
     },
     "Target/TopologyOps.td": {
         "cpp": ("Target/TopologyOps.cpp",),
@@ -84,9 +84,9 @@ IR_LAYERS = {
     "Common",
 }
 CONVERSION_LIBRARIES = {
-    "WaferCardProgramToTileModules": {
-        "include": "include/Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h",
-        "lib": "lib/Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.cpp",
+    "WaferCardModuleToTileModules": {
+        "include": "include/Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h",
+        "lib": "lib/Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.cpp",
     },
     "WaferTensorProgramToTileRegion": {
         "include": "include/Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h",

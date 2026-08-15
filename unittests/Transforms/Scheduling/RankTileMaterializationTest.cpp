@@ -86,7 +86,7 @@ module {
 
   unsigned materializedRegionCount = 0;
   auto materialized =
-      wafer::tensor_program_scheduling::materializeCompleteRankTileProgram(
+      wafer::tensor_program_scheduling::materializeCompleteRankTileModule(
           *source, /*logicalRank=*/0, &materializedRegionCount);
 
   ASSERT_TRUE(mlir::succeeded(materialized));
@@ -195,7 +195,7 @@ module {
   ASSERT_TRUE(source);
 
   auto materialized =
-      wafer::tensor_program_scheduling::materializeCompleteRankTileProgram(
+      wafer::tensor_program_scheduling::materializeCompleteRankTileModule(
           *source, /*logicalRank=*/0);
   ASSERT_TRUE(mlir::succeeded(materialized));
   ASSERT_TRUE(*materialized);
@@ -280,7 +280,7 @@ module {
 
   unsigned materializedRegionCount = 0;
   auto materialized =
-      wafer::tensor_program_scheduling::materializeCompleteRankTileProgram(
+      wafer::tensor_program_scheduling::materializeCompleteRankTileModule(
           *source, /*logicalRank=*/0, &materializedRegionCount);
 
   ASSERT_TRUE(mlir::succeeded(materialized));
@@ -370,7 +370,7 @@ module {
                                                         &context);
   ASSERT_TRUE(source);
   auto materialized =
-      wafer::tensor_program_scheduling::materializeCompleteRankTileProgram(
+      wafer::tensor_program_scheduling::materializeCompleteRankTileModule(
           *source, /*logicalRank=*/0);
   ASSERT_TRUE(mlir::succeeded(materialized));
 
@@ -444,7 +444,7 @@ module {
                                                         &context);
   ASSERT_TRUE(source);
   auto materialized =
-      wafer::tensor_program_scheduling::materializeCompleteRankTileProgram(
+      wafer::tensor_program_scheduling::materializeCompleteRankTileModule(
           *source, /*logicalRank=*/0);
   ASSERT_TRUE(mlir::succeeded(materialized));
   EXPECT_GT(countOperations<mlir::scf::IfOp>((*materialized)->getOperation()),

@@ -670,7 +670,7 @@ parseStaticCostModel(const llvm::json::Value &value,
     return tiles.takeError();
   if ((*tiles)->size() != static_cast<size_t>(kProfileInstrumentationTileCount))
     return invalid(context +
-                   ".tiles must contain all and only 16 physical Tiles");
+                   ".tiles must contain all and only 16 Tiles");
   if (llvm::Error error =
           accountRecords((*tiles)->size() * 20, totalRecords, limits))
     return std::move(error);
@@ -711,7 +711,7 @@ parseStaticCostModel(const llvm::json::Value &value,
             static_cast<uint64_t>(kProfileInstrumentationTileCount) ||
         seenTileIds[*tileId] || seenLaunchSlots[*launchSlot])
       return invalid(context +
-                     ".tiles must contain unique physical Tiles and a "
+                     ".tiles must contain unique Tiles and a "
                      "unique dense launch-slot domain");
     seenTileIds[*tileId] = true;
     seenLaunchSlots[*launchSlot] = true;
@@ -722,8 +722,8 @@ parseStaticCostModel(const llvm::json::Value &value,
         parseStaticTileWork(*workValue, limits, tileContext + ".work");
     if (!work)
       return work.takeError();
-    result.tiles.push_back({PhysicalCardId(static_cast<int64_t>(*cardId)),
-                            PhysicalTileId(static_cast<int64_t>(*tileId)),
+    result.tiles.push_back({CardId(static_cast<int64_t>(*cardId)),
+                            TileId(static_cast<int64_t>(*tileId)),
                             LaunchSlotId(static_cast<int64_t>(*launchSlot)),
                             std::move(*work)});
   }
@@ -1035,7 +1035,7 @@ parseTileSiteMap(const llvm::json::Value &value, uint64_t index,
       *tileId >= static_cast<uint64_t>(kProfileInstrumentationTileCount) ||
       *launchSlot >= static_cast<uint64_t>(kProfileInstrumentationTileCount))
     return invalid(context +
-                   " physical Tile/launch-slot binding is outside card0 "
+                   " Tile/launch-slot binding is outside card0 "
                    "Tile0..15");
   llvm::Expected<const llvm::json::Array *> sites =
       requireArray(**object, "sites", context);
@@ -1046,8 +1046,8 @@ parseTileSiteMap(const llvm::json::Value &value, uint64_t index,
     return std::move(error);
 
   ProfileTileSiteMap result;
-  result.cardId = PhysicalCardId(static_cast<int64_t>(*cardId));
-  result.tileId = PhysicalTileId(static_cast<int64_t>(*tileId));
+  result.cardId = CardId(static_cast<int64_t>(*cardId));
+  result.tileId = TileId(static_cast<int64_t>(*tileId));
   result.launchSlot = LaunchSlotId(static_cast<int64_t>(*launchSlot));
   result.sites.reserve((*sites)->size());
   for (auto [siteIndex, siteValue] : llvm::enumerate(**sites)) {
@@ -1066,7 +1066,7 @@ parseTileSiteMap(const llvm::json::Value &value, uint64_t index,
       return invalid(context + " site IDs must be unique and dense from zero");
     else if (!correlationKeys.insert(site.correlationKey).second)
       return invalid(context +
-                     " correlation keys must be unique per physical Tile");
+                     " correlation keys must be unique per Tile");
   return result;
 }
 
@@ -1107,7 +1107,7 @@ parseSiteMap(const llvm::json::Object &root, const PackageParseLimits &limits,
     return tiles.takeError();
   if ((*tiles)->size() != static_cast<size_t>(kProfileInstrumentationTileCount))
     return invalid(
-        "profile site map must contain all and only 16 physical Tiles");
+        "profile site map must contain all and only 16 Tiles");
   if (llvm::Error error =
           accountRecords((*tiles)->size(), totalRecords, limits))
     return std::move(error);
@@ -1127,10 +1127,10 @@ parseSiteMap(const llvm::json::Object &root, const PackageParseLimits &limits,
   std::array<bool, kProfileInstrumentationTileCount> seenTileIds{};
   for (auto [launchSlot, tile] : llvm::enumerate(result)) {
     const int64_t tileId = tile.tileId.getValue();
-    if (tile.cardId != PhysicalCardId(0) || tileId < 0 ||
+    if (tile.cardId != CardId(0) || tileId < 0 ||
         tileId >= kProfileInstrumentationTileCount || seenTileIds[tileId] ||
         tile.launchSlot != LaunchSlotId(static_cast<int64_t>(launchSlot)))
-      return invalid("profile site map must contain each physical Tile and "
+      return invalid("profile site map must contain each Tile and "
                      "launch slot exactly once");
     seenTileIds[tileId] = true;
   }
@@ -1219,7 +1219,7 @@ llvm::Error verifyProfileGraph(const RawPlan &plan,
   }
 
   if (siteMap.size() != static_cast<size_t>(kProfileInstrumentationTileCount))
-    return invalid("profile site map must contain all 16 physical Tiles");
+    return invalid("profile site map must contain all 16 Tiles");
   return llvm::Error::success();
 }
 
@@ -1253,8 +1253,8 @@ const PackageResourceRecord *findResource(const PackageManifest &manifest,
 const PackageEntrypointRecord *findEntryForTile(const PackageManifest &manifest,
                                                 int64_t tileId) {
   auto iterator = llvm::find_if(manifest.entries, [&](const auto &entry) {
-    return entry.cardId == PhysicalCardId(0) &&
-           entry.tileId == PhysicalTileId(tileId);
+    return entry.cardId == CardId(0) &&
+           entry.tileId == TileId(tileId);
   });
   return iterator == manifest.entries.end() ? nullptr : &*iterator;
 }
@@ -1283,7 +1283,7 @@ verifyProfilePhysicalBindings(const ProfiledPackage &profiledPackage,
       profiledPackage.getStaticCostModel();
   if (staticCost.tiles.size() != static_cast<size_t>(manifest.tileCount) ||
       siteMap.size() != static_cast<size_t>(manifest.tileCount))
-    return invalid("profile physical-Tile bindings are incomplete");
+    return invalid("profile Tile bindings are incomplete");
   for (int64_t slot = 0; slot < manifest.tileCount; ++slot) {
     const LaunchSlotId launchSlot(static_cast<uint64_t>(slot));
     const PackageEntrypointRecord *entry =
@@ -1295,7 +1295,7 @@ verifyProfilePhysicalBindings(const ProfiledPackage &profiledPackage,
         !hasSamePhysicalBinding(*entry, staticTile) ||
         !hasSamePhysicalBinding(*entry, siteTile))
       return invalid(
-          "profile physical-Tile/launch-slot binding differs from the "
+          "profile Tile/launch-slot binding differs from the "
           "profiled package");
   }
   return llvm::Error::success();
@@ -1347,7 +1347,7 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
       execution.tileCount != kProfileInstrumentationTileCount ||
       capture.tileCount != kProfileInstrumentationTileCount)
     return invalid("profile capture packages must each contain one card and "
-                   "16 physical Tiles");
+                   "16 Tiles");
 
   std::vector<const PackageResourceRecord *> executionResources;
   std::vector<const PackageResourceRecord *> captureResources;
@@ -1366,7 +1366,7 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
       if (!isProfilerRecordResource(resource, recordBytes))
         return invalid("profile capture has an invalid profiler workspace");
       const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
-      if (!scope || scope->cardId != PhysicalCardId(0) ||
+      if (!scope || scope->cardId != CardId(0) ||
           scope->tileId.getValue() < 0 ||
           scope->tileId.getValue() >= kProfileInstrumentationTileCount ||
           profilerResources[scope->tileId.getValue()])
@@ -1380,7 +1380,7 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
   if (llvm::any_of(profilerResources,
                    [](const auto *resource) { return resource == nullptr; }))
     return invalid("profile capture must contain one profiler workspace for "
-                   "each of 16 physical Tiles");
+                   "each of 16 Tiles");
   auto byResourceKey = [](const auto *lhs, const auto *rhs) {
     auto key = [](const PackageResourceRecord &resource) {
       if (const auto *card = std::get_if<CardResourceScope>(&resource.scope))

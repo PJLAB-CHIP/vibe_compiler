@@ -215,22 +215,22 @@ llvm::StringRef getMainExport(const VerifiedTargetModule &module) {
 }
 
 llvm::Expected<runtime::PackageManifest>
-buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
+buildManifest(const CardExecutable &cardExecutable,
               const LinkedTargetModules &targetModules,
               llvm::raw_ostream &diagnostics) {
-  const ExecutionConfig &config = physicalTileExecutables.getExecutionConfig();
-  if (physicalTileExecutables.getRuntimeLaunchContract() !=
+  const ExecutionConfig &config = cardExecutable.getExecutionConfig();
+  if (cardExecutable.getRuntimeLaunchContract() !=
       targetModules.getRuntimeLaunchContract())
     return fail(diagnostics,
                 "package runtime launch contract does not match executable "
                 "and linked target modules");
   if (targetModules.getExecutionConfig() != config ||
-      physicalTileExecutables.getPhysicalTileExecutables().size() !=
+      cardExecutable.getTileExecutables().size() !=
           targetModules.getTileInterfaces().size() ||
-      physicalTileExecutables.getPhysicalTileExecutables().size() !=
-          static_cast<size_t>(config.getPhysicalTileCount()))
+      cardExecutable.getTileExecutables().size() !=
+          static_cast<size_t>(config.getTileCount()))
     return fail(diagnostics,
-                "package physical Tile domain does not match executable and "
+                "package Tile domain does not match executable and "
                 "linked target modules");
 
   if (targetModules.getModules().empty())
@@ -250,7 +250,7 @@ buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
                                     firstTargetModule.getModuleFormat());
   manifest.program = runtime::ProgramId(0);
   manifest.cardCount = 1;
-  manifest.tileCount = config.getPhysicalTileCount();
+  manifest.tileCount = config.getTileCount();
 
   const KernelRuntimeLaunchContract *kernelLaunch =
       targetModules.getRuntimeLaunchContract().getKernel();
@@ -259,24 +259,20 @@ buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
       llvm::is_contained(targetModules.getRuntimeLaunchContract().getPhases(),
                          RuntimeLaunchPhaseRole::Prepare);
   if (targetModules.getModules().size() !=
-      (sharedModule ? 1u : static_cast<size_t>(config.getPhysicalTileCount())))
+      (sharedModule ? 1u : static_cast<size_t>(config.getTileCount())))
     return fail(diagnostics, "package target module topology does not match "
                              "runtime launch contract");
 
-  const size_t physicalTileCount =
-      physicalTileExecutables.getPhysicalTileExecutables().size();
-  std::vector<const PhysicalTileExecutable *> tilesByLaunchSlot(
-      physicalTileCount, nullptr);
+  const size_t tileCount = cardExecutable.getTileExecutables().size();
+  std::vector<const TileExecutable *> tilesByLaunchSlot(tileCount, nullptr);
   std::vector<const VerifiedTargetTileInterface *> interfacesByLaunchSlot(
-      physicalTileCount, nullptr);
-  std::set<int64_t> physicalTileIds;
-  for (const PhysicalTileExecutable &tile :
-       physicalTileExecutables.getPhysicalTileExecutables()) {
+      tileCount, nullptr);
+  std::set<int64_t> tileIds;
+  for (const TileExecutable &tile : cardExecutable.getTileExecutables()) {
     const int64_t launchSlot = tile.getLaunchSlotId().getValue();
-    if (tile.getPhysicalCardId() != PhysicalCardId(0) ||
-        tile.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
-        launchSlot >= static_cast<int64_t>(physicalTileCount) ||
-        !physicalTileIds.insert(tile.getPhysicalTileId().getValue()).second ||
+    if (tile.getCardId() != CardId(0) || tile.getTileId().getValue() < 0 ||
+        launchSlot < 0 || launchSlot >= static_cast<int64_t>(tileCount) ||
+        !tileIds.insert(tile.getTileId().getValue()).second ||
         tilesByLaunchSlot[launchSlot] != nullptr)
       return fail(diagnostics,
                   "package executable has invalid or duplicate physical "
@@ -286,9 +282,9 @@ buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
   for (const VerifiedTargetTileInterface &tileInterface :
        targetModules.getTileInterfaces()) {
     const int64_t launchSlot = tileInterface.getLaunchSlotId().getValue();
-    if (tileInterface.getPhysicalCardId() != PhysicalCardId(0) ||
-        tileInterface.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
-        launchSlot >= static_cast<int64_t>(physicalTileCount) ||
+    if (tileInterface.getCardId() != CardId(0) ||
+        tileInterface.getTileId().getValue() < 0 || launchSlot < 0 ||
+        launchSlot >= static_cast<int64_t>(tileCount) ||
         interfacesByLaunchSlot[launchSlot] != nullptr)
       return fail(diagnostics,
                   "package target module has invalid or duplicate physical "
@@ -302,15 +298,14 @@ buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
 
   const std::vector<ProgramResourceBinding> &sharedProgramBindings =
       tilesByLaunchSlot.front()->getProgramBindings();
-  for (const PhysicalTileExecutable *tile : tilesByLaunchSlot) {
+  for (const TileExecutable *tile : tilesByLaunchSlot) {
     const std::vector<ProgramResourceBinding> &bindings =
         tile->getProgramBindings();
     if (bindings.size() != sharedProgramBindings.size() ||
         !std::equal(bindings.begin(), bindings.end(),
                     sharedProgramBindings.begin(), haveSameProgramBinding))
-      return fail(diagnostics,
-                  "physical Tile program boundaries do not agree on the "
-                  "typed card-shared resource domain");
+      return fail(diagnostics, "Tile module boundaries do not agree on the "
+                               "typed card-shared resource domain");
   }
 
   for (auto [expectedModuleId, target] :
@@ -352,9 +347,9 @@ buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
   std::vector<std::optional<runtime::ResourceId>> sharedProgramResources(
       sharedProgramBindings.size());
   std::set<uint64_t> usedModuleIds;
-  for (int64_t launchSlot = 0;
-       launchSlot < static_cast<int64_t>(physicalTileCount); ++launchSlot) {
-    const PhysicalTileExecutable &tile = *tilesByLaunchSlot[launchSlot];
+  for (int64_t launchSlot = 0; launchSlot < static_cast<int64_t>(tileCount);
+       ++launchSlot) {
+    const TileExecutable &tile = *tilesByLaunchSlot[launchSlot];
     const VerifiedTargetTileInterface &tileInterface =
         *interfacesByLaunchSlot[launchSlot];
     const uint64_t moduleId = tileInterface.getModuleId().getValue();
@@ -363,9 +358,9 @@ buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
                   "package Tile launch interface references an unknown "
                   "module");
     const VerifiedTargetModule &target = targetModules.getModules()[moduleId];
-    if (tile.getPhysicalCardId() != PhysicalCardId(0) ||
-        tile.getPhysicalCardId() != tileInterface.getPhysicalCardId() ||
-        tile.getPhysicalTileId() != tileInterface.getPhysicalTileId() ||
+    if (tile.getCardId() != CardId(0) ||
+        tile.getCardId() != tileInterface.getCardId() ||
+        tile.getTileId() != tileInterface.getTileId() ||
         tile.getLaunchSlotId() != tileInterface.getLaunchSlotId() ||
         target.getId() != tileInterface.getModuleId() ||
         (sharedModule && moduleId != 0) ||
@@ -378,8 +373,8 @@ buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
                                           false);
     runtime::PackageEntrypointRecord entry;
     entry.id = runtime::EntryId(static_cast<uint64_t>(launchSlot));
-    entry.cardId = tile.getPhysicalCardId();
-    entry.tileId = tile.getPhysicalTileId();
+    entry.cardId = tile.getCardId();
+    entry.tileId = tile.getTileId();
     entry.launchSlot = runtime::LaunchSlotId(
         static_cast<uint64_t>(tile.getLaunchSlotId().getValue()));
     entry.module = runtime::ModuleId(moduleId);
@@ -428,17 +423,16 @@ buildManifest(const PhysicalTileExecutables &physicalTileExecutables,
         const runtime::PackageResourceRecord &resource =
             manifest.resources[resourceId->getValue()];
         if (!doesSlotMatchPackageResource(slot, resource))
-          return fail(diagnostics,
-                      "physical Tile ABI slots disagree on a typed "
-                      "card-shared program resource");
+          return fail(diagnostics, "Tile ABI slots disagree on a typed "
+                                   "card-shared program resource");
       } else {
         runtime::PackageResourceRecord resource;
         resource.id = runtime::ResourceId(nextResourceId++);
         resource.scope =
             binding ? runtime::PackageResourceScope(
-                          runtime::CardResourceScope{tile.getPhysicalCardId()})
+                          runtime::CardResourceScope{tile.getCardId()})
                     : runtime::PackageResourceScope(runtime::TileResourceScope{
-                          tile.getPhysicalCardId(), tile.getPhysicalTileId()});
+                          tile.getCardId(), tile.getTileId()});
         resource.role = getPackageRole(slot.role);
         resource.roleIndex = slot.resourceIndex;
         resource.name = slot.name;
@@ -644,7 +638,7 @@ bool detail::isValidPackageCompilerManagedSlot(const KernelABISlot &slot) {
 
 llvm::Expected<VerifiedPackage>
 detail::writePackage(llvm::StringRef tensorProgramDirectory,
-                     const PhysicalTileExecutables &physicalTileExecutables,
+                     const CardExecutable &cardExecutable,
                      const LinkedTargetModules &targetModules,
                      llvm::StringRef outputDirectory,
                      llvm::raw_ostream &diagnostics,
@@ -690,7 +684,7 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
     return std::move(error);
 
   llvm::Expected<runtime::PackageManifest> manifest =
-      buildManifest(physicalTileExecutables, targetModules, diagnostics);
+      buildManifest(cardExecutable, targetModules, diagnostics);
   if (!manifest)
     return manifest.takeError();
   llvm::Expected<runtime::VerifiedPackageManifest> verified =
@@ -707,12 +701,11 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
     return fail(diagnostics, "package manifest readback failed: " +
                                  llvm::toString(readback.takeError()));
   const runtime::PackageManifest &readbackManifest = readback->getManifest();
-  const ExecutionConfig &executionConfig =
-      physicalTileExecutables.getExecutionConfig();
+  const ExecutionConfig &executionConfig = cardExecutable.getExecutionConfig();
   const VerifiedTargetModule &targetReadback =
       targetModules.getModules().front();
   if (readbackManifest.cardCount != 1 ||
-      readbackManifest.tileCount != executionConfig.getPhysicalTileCount() ||
+      readbackManifest.tileCount != executionConfig.getTileCount() ||
       readbackManifest.targetIdentity != targetReadback.getTargetIdentityId() ||
       readbackManifest.runtimeABI != targetReadback.getKernelRuntimeABIId() ||
       readbackManifest.launch != targetModules.getRuntimeLaunchContract() ||
@@ -728,7 +721,7 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
                                    "package directory rename failed");
   cleanup.release();
   return VerifiedPackageBuilder::makePackage(
-      outputDirectory, physicalTileExecutables.getExecutionConfig(),
+      outputDirectory, cardExecutable.getExecutionConfig(),
       std::move(*readback));
 }
 

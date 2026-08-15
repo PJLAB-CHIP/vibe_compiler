@@ -4,7 +4,7 @@
 #include "Wafer/Compiler/TargetCodeGen.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -194,7 +194,7 @@ TEST(PipelinesTest, NCCJoinPassesUseFunctionAnchors) {
       << pipeline;
 }
 
-TEST(PipelinesTest, StructuredProgramLowersWholePhysicalTileDomainToTarget) {
+TEST(PipelinesTest, StructuredProgramLowersWholeTileDomainToTarget) {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
@@ -237,29 +237,29 @@ module {
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  llvm::Expected<wafer::compiler::PhysicalTileExecutables> executable =
-      wafer::compiler::detail::buildPhysicalTileExecutables(
+  llvm::Expected<wafer::compiler::CardExecutable> executable =
+      wafer::compiler::detail::buildCardExecutable(
           context, *module, std::move(program), *executionConfig,
           wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticsText
       << (executable ? "" : llvm::toString(executable.takeError()));
   EXPECT_NE(diagnosticsText.find(
-                "compile-stats stage=whole-card-executable-synthesis"),
+                "compile-stats stage=card-executable-synthesis"),
             std::string::npos);
-  EXPECT_NE(diagnosticsText.find("whole-card-search policy=search"),
+  EXPECT_NE(diagnosticsText.find("card-executable-search policy=search"),
             std::string::npos);
-  EXPECT_NE(diagnosticsText.find("physical_tile_count=16"), std::string::npos);
-  // The physical Tile executables retain the MLIRContext on success. Destroy
+  EXPECT_NE(diagnosticsText.find("tile_count=16"), std::string::npos);
+  // The Tile executables retain the MLIRContext on success. Destroy
   // the source module before that owner so its uniqued state stays live.
   module = nullptr;
-  const auto &tiles = executable->getPhysicalTileExecutables();
+  const auto &tiles = executable->getTileExecutables();
   ASSERT_EQ(tiles.size(), 16u);
   for (size_t index = 0; index < tiles.size(); ++index) {
-    const wafer::compiler::PhysicalTileExecutable &tile = tiles[index];
-    EXPECT_EQ(tile.getPhysicalCardId(), wafer::PhysicalCardId(0));
-    EXPECT_EQ(tile.getPhysicalTileId(),
-              wafer::PhysicalTileId(static_cast<int64_t>(index)));
+    const wafer::compiler::TileExecutable &tile = tiles[index];
+    EXPECT_EQ(tile.getCardId(), wafer::CardId(0));
+    EXPECT_EQ(tile.getTileId(),
+              wafer::TileId(static_cast<int64_t>(index)));
     mlir::ModuleOp instrModule = tile.getModule();
     // TileRegion remains the explicit Tile-local execution container; all
     // dataflow operations inside it have crossed to Instr IR.
@@ -271,7 +271,7 @@ module {
   }
 
   llvm::Expected<wafer::compiler::TargetLLVMModules> target =
-      wafer::compiler::compilePhysicalTileExecutablesToTargetLLVMModules(
+      wafer::compiler::compileCardExecutableToTargetLLVMModules(
           *executable, diagnostics);
   ASSERT_TRUE(static_cast<bool>(target))
       << diagnosticsText << (target ? "" : llvm::toString(target.takeError()));

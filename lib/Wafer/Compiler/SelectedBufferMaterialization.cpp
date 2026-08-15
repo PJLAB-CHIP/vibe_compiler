@@ -1862,7 +1862,7 @@ mlir::LogicalResult materializeSelectedBuffering(
       sawPositiveMultiplicityMismatch |= plan->maximumSlotCount != 0;
       lastFailure = "actual rotating-slot multiplicity " +
                     std::to_string(plan->maximumSlotCount) +
-                    " differs from whole-DAG selection " +
+                    " differs from structured-DAG selection " +
                     std::to_string(requestedBufferCount);
       recordFailure(lastFailure);
       continue;
@@ -2023,7 +2023,7 @@ mlir::LogicalResult materializeSelectedBuffering(
       lastFailure.bufferCount = requestedBufferCount;
       lastFailure.detail = "actual rotating-slot multiplicity " +
                            std::to_string(plan->maximumSlotCount) +
-                           " differs from whole-DAG edge selection " +
+                           " differs from structured-DAG edge selection " +
                            std::to_string(requestedBufferCount);
       continue;
     }

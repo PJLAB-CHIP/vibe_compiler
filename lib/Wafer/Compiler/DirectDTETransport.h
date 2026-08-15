@@ -10,16 +10,16 @@
 namespace wafer::compiler::detail {
 
 /// Recomputes logical message matching, structured dynamic occurrences and the
-/// whole-card Direct-DTE wait graph from the supplied physical Tile modules.
+/// card Direct-DTE wait graph from the supplied Tile modules.
 /// This validation does not attach physical bindings or retain analysis state.
 mlir::LogicalResult verifyDirectDTETransportSchedule(
-    llvm::ArrayRef<mlir::ModuleOp> physicalTileModules);
+    llvm::ArrayRef<mlir::ModuleOp> tileModules);
 
 /// Matches and validates every logical Direct DTE issue across the supplied
-/// physical Tile domain, then writes typed physical bindings into the modules.
+/// Tile domain, then writes typed physical bindings into the modules.
 /// Analysis completes for the full domain before any binding is written.
 mlir::FailureOr<TransportContract>
-bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules);
+bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules);
 
 } // namespace wafer::compiler::detail
 

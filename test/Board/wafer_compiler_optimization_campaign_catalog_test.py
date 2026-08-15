@@ -58,7 +58,7 @@ EXPECTED_AXIS_KEYS = {
     "ready-order-hazard-negatives",
     "resource-aware-neighbor-generation",
     "bounded-joint-search-and-baseline-fallback",
-    "whole-variant-pareto-and-atomic-selection",
+    "rank-candidate-pareto-and-atomic-selection",
     "spm-lifetime-placement-and-packing",
     "ddr-lifetime-placement-and-packing",
     "typed-instruction-lowering-legality",

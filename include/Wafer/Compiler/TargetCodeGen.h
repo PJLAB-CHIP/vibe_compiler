@@ -47,7 +47,7 @@ struct KernelABISlot {
 /// One fully translated target LLVM module and the context that owns all of
 /// its uniqued IR state. The module is immutable after construction: target
 /// linking and host-side consumers must share this verified translation
-/// instead of independently lowering the accepted physical Tile again.
+/// instead of independently lowering the accepted Tile again.
 class TargetLLVMModule {
 public:
   ~TargetLLVMModule();
@@ -56,8 +56,8 @@ public:
   TargetLLVMModule(const TargetLLVMModule &) = delete;
   TargetLLVMModule &operator=(const TargetLLVMModule &) = delete;
 
-  PhysicalCardId getPhysicalCardId() const { return physicalCardId; }
-  PhysicalTileId getPhysicalTileId() const { return physicalTileId; }
+  CardId getCardId() const { return cardId; }
+  TileId getTileId() const { return tileId; }
   LaunchSlotId getLaunchSlotId() const { return launchSlotId; }
   llvm::StringRef getEntrySymbol() const { return entrySymbol; }
   TargetIdentityId getTargetIdentityId() const { return targetIdentity; }
@@ -73,7 +73,7 @@ public:
 private:
   friend struct TargetLLVMModulesBuilder;
 
-  TargetLLVMModule(PhysicalCardId physicalCardId, PhysicalTileId physicalTileId,
+  TargetLLVMModule(CardId cardId, TileId tileId,
                    LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
                    TargetIdentityId targetIdentity,
                    KernelRuntimeABIId kernelRuntimeABI,
@@ -82,8 +82,8 @@ private:
                    std::unique_ptr<llvm::LLVMContext> context,
                    std::unique_ptr<llvm::Module> module);
 
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
   std::string entrySymbol;
   TargetIdentityId targetIdentity;
@@ -96,7 +96,7 @@ private:
   std::unique_ptr<llvm::Module> module;
 };
 
-/// Atomic owner of the complete target LLVM physical-Tile domain. This is an
+/// Atomic owner of the complete target LLVM Tile domain. This is an
 /// invocation-local boundary and deliberately has no serialization form.
 class TargetLLVMModules {
 public:
@@ -153,7 +153,7 @@ private:
 class CompiledProgram;
 
 /// Owner-backed result retained by downstream consumers that need the same
-/// accepted physical-Tile domain and the exact target LLVM modules consumed by
+/// accepted Tile domain and the exact target LLVM modules consumed by
 /// target module linking. Neither member is reconstructed from the package or
 /// serialized as a side channel.
 class CompiledProgram {
@@ -163,8 +163,8 @@ public:
   CompiledProgram(const CompiledProgram &) = delete;
   CompiledProgram &operator=(const CompiledProgram &) = delete;
 
-  const PhysicalTileExecutables &getPhysicalTileExecutables() const {
-    return physicalTileExecutables;
+  const CardExecutable &getCardExecutable() const {
+    return cardExecutable;
   }
   const TargetLLVMModules &getTargetLLVMModules() const {
     return targetLLVMModules;
@@ -178,14 +178,14 @@ private:
       const TargetToolchain &targetToolchain, CompilationOptions options,
       llvm::raw_ostream &diagnostics);
 
-  CompiledProgram(PhysicalTileExecutables physicalTileExecutables,
+  CompiledProgram(CardExecutable cardExecutable,
                   TargetLLVMModules targetLLVMModules,
                   CompilationIRTrace irTrace)
-      : physicalTileExecutables(std::move(physicalTileExecutables)),
+      : cardExecutable(std::move(cardExecutable)),
         targetLLVMModules(std::move(targetLLVMModules)),
         irTrace(std::move(irTrace)) {}
 
-  PhysicalTileExecutables physicalTileExecutables;
+  CardExecutable cardExecutable;
   TargetLLVMModules targetLLVMModules;
   CompilationIRTrace irTrace;
 };
@@ -201,12 +201,12 @@ mlir::FailureOr<CompiledProgram> compileProgramWithTargetLLVMModules(
     llvm::raw_ostream &diagnostics);
 
 /// Prepares the fixed Kernel Runtime ABI, lowers, translates, and verifies
-/// every accepted physical Tile before atomically returning an owner-backed
+/// every accepted Tile before atomically returning an owner-backed
 /// LLVM modules. This function does not write target modules or a
 /// package.
 llvm::Expected<TargetLLVMModules>
-compilePhysicalTileExecutablesToTargetLLVMModules(
-    const PhysicalTileExecutables &physicalTileExecutables,
+compileCardExecutableToTargetLLVMModules(
+    const CardExecutable &cardExecutable,
     llvm::raw_ostream &diagnostics);
 
 /// Identifier for one linked target module. Physical
@@ -290,8 +290,8 @@ private:
 
 class VerifiedTargetTileInterface {
 public:
-  PhysicalCardId getPhysicalCardId() const { return physicalCardId; }
-  PhysicalTileId getPhysicalTileId() const { return physicalTileId; }
+  CardId getCardId() const { return cardId; }
+  TileId getTileId() const { return tileId; }
   LaunchSlotId getLaunchSlotId() const { return launchSlotId; }
   TargetModuleId getModuleId() const { return moduleId; }
   const std::vector<KernelABISlot> &getKernelABISlots() const {
@@ -301,17 +301,17 @@ public:
 private:
   friend struct LinkedTargetModulesBuilder;
 
-  VerifiedTargetTileInterface(PhysicalCardId physicalCardId,
-                              PhysicalTileId physicalTileId,
+  VerifiedTargetTileInterface(CardId cardId,
+                              TileId tileId,
                               LaunchSlotId launchSlotId,
                               TargetModuleId moduleId,
                               std::vector<KernelABISlot> kernelABISlots)
-      : physicalCardId(physicalCardId), physicalTileId(physicalTileId),
+      : cardId(cardId), tileId(tileId),
         launchSlotId(launchSlotId), moduleId(moduleId),
         kernelABISlots(std::move(kernelABISlots)) {}
 
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
   TargetModuleId moduleId;
   std::vector<KernelABISlot> kernelABISlots;

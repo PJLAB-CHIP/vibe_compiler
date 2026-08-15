@@ -36,18 +36,18 @@
   失败返回候选owner，不原地retile、spill、reorder或切换算法。
 - 创建dialect op/type/attr的pass声明dependent dialect；协议错误尽量在ODS、C++ type、verifier、conversion legality暴露。
 
-## Card与physical Tile双域
+## Card与Tile双域
 
 - `num_partitions`只表示GSPMD card-level partition domain；single-card current path使用一个card partition。
-- current target execution domain固定为single card的all-and-only 16 available physical Tiles。
+- current target execution domain固定为single card的all-and-only 16 available Tiles。
 - structured pipeline顺序是：
 
 ```text
 source program
   -> card-level GSPMD
   -> card-local structured DAG
-  -> selected wafer.card.program
-  -> all-and-only wafer.tile.program
+  -> selected wafer.card.module
+  -> all-and-only wafer.tile.module
   -> TileRegion
   -> Instr
   -> Target LLVM modules
@@ -91,13 +91,13 @@ source program
 - analytic footprint只有证明must-coexist的lower bound超过capacity时才是exact rejection；普通footprint/resource estimate与
   approximate/unverified solver结果只可排序。Boundary-faithful exact局部solver可以返回proof/proposal，但selected choice/offset
   仍须物化并由typed IR复验；timeout/resource exhaustion保持indeterminate。
-- 只有需要exact legality/cost的状态才按需物化complete CardProgram candidate；任一时刻最多一个live actual clone，避免RSS随
+- 只有需要exact legality/cost的状态才按需物化complete CardModule candidate；任一时刻最多一个live actual clone，避免RSS随
   候选笛卡尔积增长。固定shortlist、beam或candidate cap会丢合法状态，只能在Q52以profile和质量回归证明后作为显式trade-off。
 - global work ledger使用deterministic work units，不用wall-clock timeout决定搜索语义。wall/RSS只做回归诊断。
 - host worker可以并行互不共享可写IR的proposal/Tile-local evaluation；candidate result合并、tie-break和最终顺序保持稳定。
 - regular factorized mapping、reuse-guided movement与分层resource cost应作为现有typed domain上的proposal/order机制；不为它们
   clone-per-mapping、不以function name/JSON/opaque sidecar关联状态，也不新增第二套hardware graph或winner owner。
-- 已选择CardProgram只经过一个无策略CardExecutable compilation函数：physical-Tile module splitting、Tile→Instr、fresh
+- 已选择CardModule只经过一个无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
   caller只能消费结果，不能让lowering枚举、retile、spill、rebuffer或修候选。
 - proven exact failure消耗明确work unit并销毁clone，不建立late repair selector或candidate-local quota；allocator/solver
@@ -113,7 +113,7 @@ source program
 - 同一TileRegion、相同domain优先local SPM reuse；不同TileRegion即使位于同一Tile也必须显式DDR materialize；
   部分重叠mapping只传缺失domain；mapping改变时显式形成
   scatter/gather/broadcast/reduction/redistribution。
-- 同一 `tile.region`可包含不同temporal tile和独立traversal；region表示单个physical Tile内的SPM lifetime/ownership domain，
+- 同一 `tile.region`可包含不同temporal tile和独立traversal；region表示单个Tile内的SPM lifetime/ownership domain，
   不表示hardware Tile本身。
 - maximal feasible residency与cross-Tile operator pipeline必须作为对立候选比较，fusion长度本身不是收益。
 - search-time LiveSPM包含input/intermediate/output、implementation temporary、layout buffer、NoC staging和rotating buffers。
@@ -143,7 +143,7 @@ source program
 
 ## Target conversion与TargetCall
 
-- accepted physical Tile只做一次target LLVM translation；ExecutablePackage、TargetCall frontend和model共享owner-backed target module set。
+- accepted Tile只做一次target LLVM translation；ExecutablePackage、TargetCall frontend和model共享owner-backed target module set。
 - current target LLVM metadata显式包含card/tile/launch slot、entry、target identity、runtime ABI、format与dense Kernel ABI slots。
 - ABI slot记录role、resource index、dtype、layout、shape、physical bytes和alignment；output是caller-owned slot。
 - target call descriptor registry是symbol/signature/field position/issue domain的唯一事实源。consumer用typed semantic和decoder，
@@ -176,7 +176,7 @@ source program
 ## Target model
 
 - model消费same-invocation owner-backed target module set，通过TargetCall frontend解码closed typed payload，不解释accepted IR。
-- 每个physical Tile有独立SystemC process和private SPM/address domain；card DDR可由typed resource共享。
+- 每个Tile有独立SystemC process和private SPM/address domain；card DDR可由typed resource共享。
 - transaction携带显式card/tile/launch slot和Tile-local issue ordinal；OS thread、symbol和容器位置不拥有身份。
 - descriptor/decoder负责ABI，plain C++ kernel负责functional semantics，SystemC wrapper负责event/resource ordering。
 - complete output按exact Kernel ABI codec解码后与独立CPU expected比较；整数/bit pattern exact，浮点使用case-owned policy。
@@ -199,6 +199,18 @@ source program
 - tests按Dialect、Analysis、Conversion、Pipeline/Tool、Runtime、Model、Board边界组织；fixture不能成为第二schema/ABI实现。
 - internal low-level aggregate module或JIT bridge可保留，但长期合同仍由explicit Tile interfaces、typed resources和current ABI定义。
 - 文档先写边界和通用方法，再用case示例；case shape、模型名、参数顺序和某次winner不成为协议。
+
+## Compiler 名称限定
+
+- 先用一句话说清对象表示什么，再命名；同步核对definition、constructor、consumer、verifier/lowering和
+  pinned LLVM/MLIR同类概念，不从旧名做近义词替换。
+- 范围限定必须对应同一语义域内的真实对照；namespace、强类型、parent op、pass anchor或container已消除
+  歧义时不再重复。例如`TileExecutable`已由`TileId`和`CardExecutable`的ownership定位，无需再加
+  实现状态或范围前缀。
+- 真实对照应保留：logical rank与target Tile、logical layout与target encoding/storage、Card级与Tile级
+  resource/cost都会影响legality或API overload；删掉限定反而会丢失语义。
+- 已持久化的schema field、evidence key和外部ABI名不随内部改名机械变动；需修正时按协议版本
+  独立迁移。
 
 ## Current-IR relation维护
 

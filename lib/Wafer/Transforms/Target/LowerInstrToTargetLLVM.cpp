@@ -27,8 +27,8 @@ struct LowerInstrToTargetLLVMPass
 
   explicit LowerInstrToTargetLLVMPass(const TargetConversionRequest &request) {
     defaultDDRArenaArgumentIndex = request.defaultDDRArenaArgumentIndex;
-    physicalCardId = request.physicalCardId;
-    physicalTileId = request.physicalTileId;
+    cardId = request.cardId;
+    tileId = request.tileId;
     transportStatusArgumentIndex = request.transportStatusArgumentIndex;
     transportPreparedBeforeEntry = request.transportPreparedBeforeEntry;
     profileRecordArgumentIndex = request.profileRecordArgumentIndex;
@@ -59,7 +59,7 @@ struct LowerInstrToTargetLLVMPass
     }
     if (mlir::failed(target_llvm_detail::lowerModuleInPlace(
             *loweredModule, transportPreparedBeforeEntry,
-            defaultDDRArenaArgumentIndex, physicalCardId, physicalTileId,
+            defaultDDRArenaArgumentIndex, cardId, tileId,
             transportStatusArgumentIndex, profileRecordArgumentIndex))) {
       signalPassFailure();
       return;

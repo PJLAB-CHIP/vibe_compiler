@@ -62,7 +62,7 @@ llvm::Error validateRuntimeLaunchContractDomain(
         "runtime launch contract does not match the execution configuration");
 
   const KernelRuntimeLaunchContract *kernel = launch.getKernel();
-  if (config.getPhysicalTileCount() != 16 ||
+  if (config.getTileCount() != 16 ||
       targetLLVMModules.getModules().size() != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -81,13 +81,13 @@ llvm::Error validateRuntimeLaunchContractDomain(
     if (kernel->entryABI == KernelEntryABI::TileMajorPointerTable) {
       if (first.getKernelABISlots().size() >
           packetBytes / sizeof(uint64_t) /
-              static_cast<uint64_t>(config.getPhysicalTileCount()))
+              static_cast<uint64_t>(config.getTileCount()))
         return llvm::createStringError(
             llvm::errc::invalid_argument,
             "multi-Tile Tile-major argument table exceeds the qualified V5.6 "
             "packet limit");
     } else if (kernel->entryABI == KernelEntryABI::TileRowPointerTable) {
-      if (static_cast<uint64_t>(config.getPhysicalTileCount()) >
+      if (static_cast<uint64_t>(config.getTileCount()) >
           packetBytes / sizeof(uint64_t))
         return llvm::createStringError(
             llvm::errc::invalid_argument,
@@ -192,9 +192,9 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
     detail::ProfileCaptureKind profileCapture) {
   if (targetLLVMModules.getModules().size() !=
       static_cast<size_t>(
-          targetLLVMModules.getExecutionConfig().getPhysicalTileCount()))
+          targetLLVMModules.getExecutionConfig().getTileCount()))
     return detail::fail(diagnostics,
-                        "target LLVM module physical Tile domain is "
+                        "target LLVM module Tile domain is "
                         "incomplete");
   if (llvm::Error error =
           detail::validateRuntimeLaunchContractDomain(targetLLVMModules))
@@ -250,18 +250,18 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
                         "failed to create target work directory: " +
                             error.message());
 
-  std::set<int64_t> physicalTileIds;
+  std::set<int64_t> tileIds;
   std::set<int64_t> launchSlotIds;
-  std::optional<PhysicalCardId> physicalCardId;
+  std::optional<CardId> cardId;
   for (const TargetLLVMModule &targetLLVMModule :
        targetLLVMModules.getModules()) {
-    if (!physicalCardId)
-      physicalCardId = targetLLVMModule.getPhysicalCardId();
-    if (targetLLVMModule.getPhysicalCardId() != *physicalCardId ||
-        targetLLVMModule.getPhysicalCardId().getValue() < 0 ||
-        targetLLVMModule.getPhysicalTileId().getValue() < 0 ||
+    if (!cardId)
+      cardId = targetLLVMModule.getCardId();
+    if (targetLLVMModule.getCardId() != *cardId ||
+        targetLLVMModule.getCardId().getValue() < 0 ||
+        targetLLVMModule.getTileId().getValue() < 0 ||
         targetLLVMModule.getLaunchSlotId().getValue() < 0 ||
-        !physicalTileIds.insert(targetLLVMModule.getPhysicalTileId().getValue())
+        !tileIds.insert(targetLLVMModule.getTileId().getValue())
              .second ||
         !launchSlotIds.insert(targetLLVMModule.getLaunchSlotId().getValue())
              .second)
@@ -327,7 +327,7 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
             ? detail::writeTargetLLVMIR(source, llvmIRPath)
             : detail::writeLLVMIR(source, entrySymbol, slots,
                                   runtimeLaunchContract, launchSlotId,
-                                  config.getPhysicalTileCount(), llvmIRPath,
+                                  config.getTileCount(), llvmIRPath,
                                   profileCapture);
     if (writeError)
       return std::move(writeError);
@@ -383,7 +383,7 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
         readback->moduleFormat, std::move(exports)));
     for (const TargetLLVMModule &tile : targetLLVMModules.getModules())
       tileInterfaces.push_back(LinkedTargetModulesBuilder::makeTileInterface(
-          tile.getPhysicalCardId(), tile.getPhysicalTileId(),
+          tile.getCardId(), tile.getTileId(),
           tile.getLaunchSlotId(), moduleId, tile.getKernelABISlots()));
   } else {
     for (auto [moduleOrdinal, targetLLVMModule] :
@@ -414,8 +414,8 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
           targetLLVMModule.getKernelRuntimeABIId(), readback->moduleFormat,
           std::move(exports)));
       tileInterfaces.push_back(LinkedTargetModulesBuilder::makeTileInterface(
-          targetLLVMModule.getPhysicalCardId(),
-          targetLLVMModule.getPhysicalTileId(),
+          targetLLVMModule.getCardId(),
+          targetLLVMModule.getTileId(),
           targetLLVMModule.getLaunchSlotId(), moduleId,
           targetLLVMModule.getKernelABISlots()));
     }

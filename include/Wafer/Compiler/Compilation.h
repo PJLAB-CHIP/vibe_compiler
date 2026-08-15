@@ -5,9 +5,9 @@
 
 #include "Wafer/Frontend/Program.h"
 #include "Wafer/Support/OptimizationConfig.h"
-#include "Wafer/Target/PhysicalIds.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetIdentity.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -33,19 +33,19 @@ class TargetToolchain;
 enum class CompilationTimingMode { Disabled, Detailed };
 
 /// Validated execution facts for the current single-card compiler boundary.
-/// Card partitioning belongs to the source/SPMD domain. Physical Tiles belong
+/// Card partitioning belongs to the source/SPMD domain. Tiles belong
 /// to the target execution domain; the current target always exposes all 16.
 /// There is deliberately no default configuration.
 class ExecutionConfig {
 public:
-  static constexpr int64_t kSingleCardPhysicalTileCount = 16;
+  static constexpr int64_t kSingleCardTileCount = 16;
 
   static llvm::Expected<ExecutionConfig>
   createForSingleCard(int64_t numPartitions,
                       RuntimeLaunchKind runtimeLaunchKind);
 
   int64_t getNumPartitions() const { return numPartitions; }
-  int64_t getPhysicalTileCount() const { return physicalTileCount; }
+  int64_t getTileCount() const { return tileCount; }
   TargetIdentityId getTargetIdentityId() const {
     return TargetIdentityId::waferTx81SingleCard();
   }
@@ -54,7 +54,7 @@ public:
   friend bool operator==(const ExecutionConfig &lhs,
                          const ExecutionConfig &rhs) {
     return lhs.numPartitions == rhs.numPartitions &&
-           lhs.physicalTileCount == rhs.physicalTileCount &&
+           lhs.tileCount == rhs.tileCount &&
            lhs.runtimeLaunchKind == rhs.runtimeLaunchKind;
   }
   friend bool operator!=(const ExecutionConfig &lhs,
@@ -63,13 +63,13 @@ public:
   }
 
 private:
-  ExecutionConfig(int64_t numPartitions, int64_t physicalTileCount,
+  ExecutionConfig(int64_t numPartitions, int64_t tileCount,
                   RuntimeLaunchKind runtimeLaunchKind)
-      : numPartitions(numPartitions), physicalTileCount(physicalTileCount),
+      : numPartitions(numPartitions), tileCount(tileCount),
         runtimeLaunchKind(runtimeLaunchKind) {}
 
   int64_t numPartitions;
-  int64_t physicalTileCount;
+  int64_t tileCount;
   RuntimeLaunchKind runtimeLaunchKind;
 };
 
@@ -116,7 +116,7 @@ public:
 
   /// Requests a profile instrumentation for the production package. The
   /// ordinary package is compiled exactly once; the instrumentation contains
-  /// profile-only captures for that same accepted physical-Tile executable set.
+  /// profile-only captures for that same accepted Tile executable set.
   static llvm::Expected<CompilationOptions>
   profile(const ExecutionConfig &executionConfig,
           OptimizationConfig optimizations = OptimizationConfig::search(),
@@ -167,31 +167,31 @@ struct ProgramResourceBinding {
 /// Optional same-invocation compiler inspection output. It is deliberately
 /// separate from executable IR, package files, and runtime state and must never
 /// be used to recover compilation semantics.
-struct PhysicalTileIRTrace {
-  PhysicalCardId physicalCardId{0};
-  PhysicalTileId physicalTileId{0};
+struct TileIRTrace {
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlotId{0};
   std::string tileDataflowIR;
 };
 
 struct CompilationIRTrace {
-  std::vector<PhysicalTileIRTrace> physicalTiles;
+  std::vector<TileIRTrace> tiles;
 };
 
-/// One independently lowered and accepted physical Tile program. Its producer
-/// assigns identity from the verified physical topology; downstream consumers
+/// One independently lowered and accepted Tile executable. Its producer assigns
+/// identity from the verified target topology; downstream consumers
 /// never recover it from a symbol or module name. This type is move-only so an
 /// accepted module cannot be accidentally duplicated without rerunning its
 /// Tile-specific compiler gates.
-class PhysicalTileExecutable {
+class TileExecutable {
 public:
-  PhysicalTileExecutable(PhysicalTileExecutable &&) = default;
-  PhysicalTileExecutable &operator=(PhysicalTileExecutable &&) = default;
-  PhysicalTileExecutable(const PhysicalTileExecutable &) = delete;
-  PhysicalTileExecutable &operator=(const PhysicalTileExecutable &) = delete;
+  TileExecutable(TileExecutable &&) = default;
+  TileExecutable &operator=(TileExecutable &&) = default;
+  TileExecutable(const TileExecutable &) = delete;
+  TileExecutable &operator=(const TileExecutable &) = delete;
 
-  PhysicalCardId getPhysicalCardId() const { return physicalCardId; }
-  PhysicalTileId getPhysicalTileId() const { return physicalTileId; }
+  CardId getCardId() const { return cardId; }
+  TileId getTileId() const { return tileId; }
   LaunchSlotId getLaunchSlotId() const { return launchSlotId; }
   llvm::StringRef getEntrySymbol() const { return entrySymbol; }
   mlir::ModuleOp getModule() const { return *module; }
@@ -207,18 +207,15 @@ public:
   }
 
 private:
-  friend struct PhysicalTileExecutablesBuilder;
+  friend struct CardExecutableBuilder;
 
-  PhysicalTileExecutable(PhysicalCardId physicalCardId,
-                         PhysicalTileId physicalTileId,
-                         LaunchSlotId launchSlotId,
-                         mlir::OwningOpRef<mlir::ModuleOp> module,
-                         llvm::StringRef entrySymbol,
-                         std::vector<ProgramResourceBinding> programBindings,
-                         TransportContract transportContract)
-      : physicalCardId(physicalCardId), physicalTileId(physicalTileId),
-        launchSlotId(launchSlotId), module(std::move(module)),
-        entrySymbol(entrySymbol.str()),
+  TileExecutable(CardId cardId, TileId tileId, LaunchSlotId launchSlotId,
+                 mlir::OwningOpRef<mlir::ModuleOp> module,
+                 llvm::StringRef entrySymbol,
+                 std::vector<ProgramResourceBinding> programBindings,
+                 TransportContract transportContract)
+      : cardId(cardId), tileId(tileId), launchSlotId(launchSlotId),
+        module(std::move(module)), entrySymbol(entrySymbol.str()),
         programBindings(std::move(programBindings)),
         entryLocalCompletionKind(
             EntryLocalCompletionKind::ReturnAfterLocalDrain),
@@ -226,8 +223,8 @@ private:
         ddrAllocationContract(
             DDRAllocationContract::DefaultArenaRelativeOffsets) {}
 
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::string entrySymbol;
@@ -237,54 +234,51 @@ private:
   DDRAllocationContract ddrAllocationContract;
 };
 
-/// Owns the complete physical Tile executable domain. The context is owned
-/// alongside all modules and is destroyed only after the Tile programs.
-class PhysicalTileExecutables {
+/// Owns the complete executable for one target card. The context is owned
+/// alongside all Tile modules and is destroyed only after them.
+class CardExecutable {
 public:
-  PhysicalTileExecutables(PhysicalTileExecutables &&) = default;
-  PhysicalTileExecutables &operator=(PhysicalTileExecutables &&) = default;
-  PhysicalTileExecutables(const PhysicalTileExecutables &) = delete;
-  PhysicalTileExecutables &operator=(const PhysicalTileExecutables &) = delete;
+  CardExecutable(CardExecutable &&) = default;
+  CardExecutable &operator=(CardExecutable &&) = default;
+  CardExecutable(const CardExecutable &) = delete;
+  CardExecutable &operator=(const CardExecutable &) = delete;
 
   const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
-  const std::vector<PhysicalTileExecutable> &
-  getPhysicalTileExecutables() const {
-    return physicalTileExecutables;
+  const std::vector<TileExecutable> &getTileExecutables() const {
+    return tiles;
   }
   const RuntimeLaunchContract &getRuntimeLaunchContract() const {
     return runtimeLaunchContract;
   }
 
 private:
-  friend struct PhysicalTileExecutablesBuilder;
+  friend struct CardExecutableBuilder;
 
-  PhysicalTileExecutables(
-      ExecutionConfig executionConfig,
-      RuntimeLaunchContract runtimeLaunchContract,
-      std::shared_ptr<mlir::MLIRContext> context,
-      std::vector<PhysicalTileExecutable> physicalTileExecutables)
+  CardExecutable(ExecutionConfig executionConfig,
+                 RuntimeLaunchContract runtimeLaunchContract,
+                 std::shared_ptr<mlir::MLIRContext> context,
+                 std::vector<TileExecutable> tiles)
       : executionConfig(executionConfig),
         runtimeLaunchContract(std::move(runtimeLaunchContract)),
-        context(std::move(context)),
-        physicalTileExecutables(std::move(physicalTileExecutables)) {}
+        context(std::move(context)), tiles(std::move(tiles)) {}
 
   ExecutionConfig executionConfig;
   RuntimeLaunchContract runtimeLaunchContract;
   std::shared_ptr<mlir::MLIRContext> context;
-  std::vector<PhysicalTileExecutable> physicalTileExecutables;
+  std::vector<TileExecutable> tiles;
 };
 
 /// Compiles the source program and writes the requested package directory.
 /// It traverses executable, target-module and typed package boundaries; the
 /// final root becomes visible only after canonical manifest readback verifies
 /// every source tensor-program and target module member. The returned value is
-/// the same physical-Tile executable domain consumed by target code generation
+/// the same card executable consumed by target code generation
 /// and package writing; downstream consumers must not rebuild it from files.
 /// When profiling is requested, the ordinary output remains the production
 /// package, and a verified sibling `<output>.profile` instrumentation is
 /// written only after the ordinary package and its profile-only captures have
 /// passed their respective validation steps.
-mlir::FailureOr<PhysicalTileExecutables>
+mlir::FailureOr<CardExecutable>
 compileProgram(CompilationRequest request,
                llvm::StringRef outputProgramDirectory,
                llvm::StringRef xlaSpmdPartitionerHelper,

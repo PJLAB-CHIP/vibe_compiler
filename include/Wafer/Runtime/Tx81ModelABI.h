@@ -3,7 +3,7 @@
 #ifndef WAFER_RUNTIME_TX81MODELABI_H
 #define WAFER_RUNTIME_TX81MODELABI_H
 
-#include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -30,8 +30,8 @@ enum class Tx81ModelTensorClass { Input, Output, Parameter };
 /// the fixed TX81 BootParam wire-table position.
 struct Tx81ModelTensorDescriptor {
   Tx81ModelTensorClass tensorClass = Tx81ModelTensorClass::Input;
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   uint64_t slotOrdinal = 0;
   uint64_t deviceAddress = 0;

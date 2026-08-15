@@ -1264,7 +1264,7 @@ def _test_rejections(module: object) -> None:
     _must_reject(
         module,
         inconsistent_binding,
-        "explicit topology physical-Tile binding",
+        "explicit topology Tile binding",
     )
 
     wrong_static_scope = make_evidence()

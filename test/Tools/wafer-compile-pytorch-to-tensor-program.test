@@ -9,7 +9,7 @@
 # RUN:   --num-partitions=1 --launch-kind=kernel | FileCheck %s --check-prefix=PIPELINE
 # RUN: FileCheck %s --input-file=%t.package/functions/forward.mlir --check-prefix=STRUCTURED
 
-# PIPELINE: wafer-compile: wrote verified package with num-partitions=1 physical-tiles=16:
+# PIPELINE: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 
 # STRUCTURED: mhlo.spmd_parameters_shardings
 # STRUCTURED: func.func @main

@@ -10,7 +10,7 @@
 ```text
 TensorProgram alternatives
   -> Q51 physical-dataflow search
-  -> CardProgram / TileRegion / Instr
+  -> CardModule / TileRegion / Instr
   -> CardExecutable
   -> ExecutablePackage
 ```
@@ -21,7 +21,7 @@ TensorProgram alternatives
 Pipeline position:
 - Upstream IR / input:
   GSPMD与target-independent normalization产生的verifier-legal card-local TensorProgram；其structured iterator、
-  indexing relation、SSA、type、shape、dtype、effect和observable boundary均可验证，尚未绑定physical Tile、
+  indexing relation、SSA、type、shape、dtype、effect和observable boundary均可验证，尚未绑定Tile、
   TileRegion、SPM/DDR、NoC、worker或launch slot。
 - Current stage responsibility:
   从current typed IR识别可证明的pure/effect-safe replacement window；按通用typed grammar生成语义alternative；
@@ -38,7 +38,7 @@ Pipeline position:
   wafer-compile source-to-package pipeline；public optimization policy只有`search|none`。`search`可启用本生成器，
   `none`只保留同一pipeline中的deterministic baseline。
 - Explicit non-goals:
-  不决定physical Tile、layout、memory、route、buffer、worker、completion或ABI；不在Instr形成后启动第二个候选
+  不决定Tile、layout、memory、route、buffer、worker、completion或ABI；不在Instr形成后启动第二个候选
   selector；不按workload、shape、symbol、operand位置、attention/decode名称或文件名选择rewrite；不发布proof sidecar。
 - Completion gate:
   每个accepted alternative都是可独立parser/printer/verifier roundtrip的actual TensorProgram；baseline与所有通过证明
@@ -49,7 +49,7 @@ Pipeline position:
 ## 2. 单一候选边界
 
 Q48只有一个architecture-visible接入点：`TensorProgram -> TensorProgram alternatives`。生成器不返回recipe、enum列表、
-opaque payload或临时side table，也不直接返回`CardProgram`/`Instr`候选。
+opaque payload或临时side table，也不直接返回`CardModule`/`Instr`候选。
 
 ### 2.1 普通structured alternative
 
@@ -73,12 +73,12 @@ root alternative，但builder不比较physical cost，也不在图外返回algor
 
 输入KV长度是source事实，不是选择。online/partition-merge算法族、split count，以及任何会改变recurrence、partition或
 merge拓扑的K/V window都属于semantic-root参数；每个参数点先物化为完整actual TensorProgram。只有不改变算法DAG的
-query/head/KV temporal block、physical Tile集合、layout、buffer数和pipeline depth才属于随后Q51的physical choices。
+query/head/KV temporal block、Tile集合、layout、buffer数和pipeline depth才属于随后Q51的physical choices。
 示例中的128或二分序列只能排序其所在合法域，不能成为固定参数、候选cap或legality条件。
 
 ### 2.3 Instr级变换边界
 
-Q48不在`CardProgram`或Instr形成后运行独立superoptimizer。能由structured semantics表达的等价变换必须先成为
+Q48不在`CardModule`或Instr形成后运行独立superoptimizer。能由structured semantics表达的等价变换必须先成为
 TensorProgram alternative；只与target Instr encoding有关的canonicalization由对应Instr/lowering owner处理，不能产生
 另一个winner或绕过Q51重新选择physical plan。若未来存在无法上提且确有独立收益的Instr等价变换，必须另行收敛
 pipeline contract，并证明它如何回到同一Q51 candidate compilation，而不是在本计划中预留隐藏入口。
@@ -152,7 +152,7 @@ source前fail closed。Q48不增加public solver mode。
 baseline TensorProgram
   + query-local proven actual TensorProgram alternatives
   -> Q51.Core single search state / incumbent / global work ledger
-  -> CardProgram / TileRegion / Instr candidate compilation
+  -> CardModule / TileRegion / Instr candidate compilation
   -> fresh completion / SPM / DDR / communication / resource / ABI verification
   -> best accepted CardExecutable
   -> target conversion / ExecutablePackage / no-card / runtime
@@ -199,7 +199,7 @@ tile shape或排序分数。
 
 ### Integration
 
-- source alternatives只在card-local TensorProgram上生成一次，不按physical Tile重复运行solver；
+- source alternatives只在card-local TensorProgram上生成一次，不按Tile重复运行solver；
 - 不同TensorProgram alternatives全部进入同一Q51 spatial/temporal/fusion/representation/communication search；
 - 没有post-Instr candidate owner、独立shortlist、固定candidate cap或per-Tile winner；
 - 每个materialized physical candidate重放fresh worker/order/completion、SPM/DDR、communication/resource、target与final

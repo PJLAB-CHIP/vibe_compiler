@@ -91,8 +91,8 @@ mlir::LogicalResult runSpmdHelper(llvm::StringRef helper,
                                   const ExecutionConfig &config,
                                   llvm::raw_ostream &diagnostics);
 
-llvm::Expected<PhysicalTileExecutables>
-compileTensorProgramToPhysicalTileExecutables(
+llvm::Expected<CardExecutable>
+compileTensorProgramToCardExecutable(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot, CompilationIRTrace &irTrace);
@@ -104,7 +104,7 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<PhysicalTileExecutables> &physicalTileExecutables,
+    std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
     CompilationIRTrace &irTrace);
 
@@ -115,7 +115,7 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<PhysicalTileExecutables> &physicalTileExecutables,
+    std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
     CompilationIRTrace &irTrace);
 
@@ -126,7 +126,7 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<PhysicalTileExecutables> *retainedPhysicalTileExecutables,
+    std::optional<CardExecutable> *retainedCardExecutable,
     std::optional<TargetLLVMModules> *retainedTargetLLVMModules,
     std::optional<CompilationIRTrace> *retainedIRTrace = nullptr);
 

@@ -61,8 +61,8 @@ TargetCallInvocationDescriptor makeInvocation(size_t tileCount = 1) {
     const uint64_t status =
         kDDRBase + UINT64_C(0x2000) + launchSlot * UINT64_C(0x1000);
     tiles.push_back(TargetCallTileDescriptor{
-        PhysicalCardId(0),
-        PhysicalTileId(static_cast<int64_t>(launchSlot)),
+        CardId(0),
+        TileId(static_cast<int64_t>(launchSlot)),
         LaunchSlotId(static_cast<int64_t>(launchSlot)),
         {{0,
           KernelABISlotRole::UserInput,
@@ -104,7 +104,7 @@ InvocationMemoryRegistry makeRegistry(size_t tileCount = 1) {
   for (size_t index = 0; index < bytes.size(); ++index)
     bytes[index] = static_cast<uint8_t>(index);
   inputs.push_back(
-      {getTargetModelResourceId(PhysicalCardId(0), PhysicalTileId(0),
+      {getTargetModelResourceId(CardId(0), TileId(0),
                                 KernelABISlotRole::UserInput,
                                 /*resourceIndex=*/0),
        std::move(bytes)});
@@ -318,7 +318,7 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
     ASSERT_TRUE(static_cast<bool>(payload))
         << descriptor.symbol << ": " << llvm::toString(payload.takeError());
     llvm::Error error = validateTargetModelCommandFields(
-        TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
+        TargetCommand{CardId(0), TileId(0), LaunchSlotId(0),
                       validated, std::move(*payload)});
     ASSERT_FALSE(static_cast<bool>(error))
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
@@ -401,7 +401,7 @@ TEST(TargetModelTileCommandTrackerTest,
 TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
   auto validate = [](auto payload) {
     return validateTargetModelCommandFields(
-        TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+        TargetCommand{CardId(0), TileId(0), LaunchSlotId(0), 0,
                       TargetCommandPayload{std::move(payload)}});
   };
   auto expectInvalid = [&](auto payload, llvm::StringRef expected) {
@@ -488,14 +488,14 @@ TEST(TargetModelKernelTest, ConvolutionWeightShapeIsNotADataShape) {
                          {1, 1},
                          LogicalFormat::F16};
   llvm::Error error = validateTargetModelCommandFields(
-      TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      TargetCommand{CardId(0), TileId(0), LaunchSlotId(0), 0,
                     TargetCommandPayload{conv}});
   EXPECT_FALSE(static_cast<bool>(error)) << llvm::toString(std::move(error));
 
   conv.weightShape[2] =
       static_cast<uint32_t>(std::numeric_limits<uint16_t>::max()) + 1;
   std::string failure = expectError(validateTargetModelCommandFields(
-      TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      TargetCommand{CardId(0), TileId(0), LaunchSlotId(0), 0,
                     TargetCommandPayload{std::move(conv)}}));
   EXPECT_NE(failure.find("convolution weight shape must be in [1, 65535]"),
             std::string::npos)
@@ -506,7 +506,7 @@ TEST(TargetModelKernelTest,
      BoolMemsetFieldValidationRequiresPhysicalFootprintByteGranularity) {
   auto validate = [](uint32_t elementCount) {
     return validateTargetModelCommandFields(
-        TargetCommand{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+        TargetCommand{CardId(0), TileId(0), LaunchSlotId(0), 0,
                       TargetMemsetCommand{0, UINT32_C(1), elementCount,
                                           LogicalFormat::Bool}});
   };
@@ -524,7 +524,7 @@ TEST(TargetModelKernelTest, StridedRDMAAndWDMAApplyOnlyCompleteEffects) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  TargetCommand rdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+  TargetCommand rdma{CardId(0), TileId(0), LaunchSlotId(0), 0,
                      TargetStridedDMACommand{TargetDMADirection::Read,
                                              kDDRBase,
                                              spm,
@@ -546,7 +546,7 @@ TEST(TargetModelKernelTest, StridedRDMAAndWDMAApplyOnlyCompleteEffects) {
                 0, TargetModelAddressSpace::TileSPM, spm, 8, 1)),
             (std::vector<uint8_t>{0, 1, 2, 3, 8, 9, 10, 11}));
 
-  TargetCommand wdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+  TargetCommand wdma{CardId(0), TileId(0), LaunchSlotId(0), 1,
                      TargetStridedDMACommand{TargetDMADirection::Write,
                                              spm,
                                              kDDRBase + UINT64_C(0x1000),
@@ -582,7 +582,7 @@ TEST(TargetModelKernelTest,
                             1,
                             {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}}}));
   TargetCommand gather{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetGatherScatterCommand{
           spm, spm + 2, 8, 2, {2, 0, 0}, {4, 1, 1}, {2, 0, 0}, {4, 1, 1}}};
   TargetModelCommandEffect effect =
@@ -609,7 +609,7 @@ TEST(TargetModelKernelTest, GatherScatterAllowsRepeatedSourceSegments) {
       0, TargetModelAddressSpace::TileSPM, spm, 1, {7, 9}}}));
   const uint64_t destination = spm + UINT64_C(0x100);
   TargetCommand gather{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetGatherScatterCommand{
           spm, destination, 4, 2, {0, 0, 0}, {2, 1, 1}, {2, 0, 0}, {2, 1, 1}}};
   TargetModelCommandEffect effect =
@@ -633,7 +633,7 @@ TEST(TargetModelKernelTest,
       0, TargetModelAddressSpace::TileSPM, spm, 1, {1, 2, 3, 4}}}));
   const uint64_t destination = spm + UINT64_C(0x100);
   TargetCommand gather{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetGatherScatterCommand{
           spm, destination, 4, 2, {2, 0, 0}, {2, 1, 1}, {0, 0, 0}, {2, 1, 1}}};
   TargetModelCommandEffect effect =
@@ -653,7 +653,7 @@ TEST(TargetModelKernelTest,
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  TargetCommand rdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+  TargetCommand rdma{CardId(0), TileId(0), LaunchSlotId(0), 0,
                      TargetStridedDMACommand{TargetDMADirection::Read,
                                              kDDRBase,
                                              spm,
@@ -670,7 +670,7 @@ TEST(TargetModelKernelTest,
                 0, TargetModelAddressSpace::TileSPM, spm, 12, 1)),
             (std::vector<uint8_t>{0, 1, 4, 5, 8, 9, 6, 7, 10, 11, 14, 15}));
 
-  TargetCommand wdma{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+  TargetCommand wdma{CardId(0), TileId(0), LaunchSlotId(0), 1,
                      TargetStridedDMACommand{TargetDMADirection::Write,
                                              spm,
                                              kDDRBase + UINT64_C(0x1000),
@@ -715,7 +715,7 @@ TEST(TargetModelKernelTest,
                                       /*maximumFusedMultiplyAdds=*/1),
       kPayloadBytes, kSegmentCount);
   TargetCommand transpose{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetGatherScatterCommand{spm,
                                  transposed,
                                  kPayloadBytes,
@@ -748,7 +748,7 @@ TEST(TargetModelKernelTest,
   expectTransposedSegment(kColumns - 1, kRows - 1);
 
   TargetCommand reverse{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+      CardId(0), TileId(0), LaunchSlotId(0), 1,
       TargetGatherScatterCommand{transposed,
                                  roundTrip,
                                  kPayloadBytes,
@@ -784,7 +784,7 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
                {LogicalFormat::F32, UINT64_C(0x40400000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)},
                {LogicalFormat::F32, UINT64_C(0x3f800000)}});
-  TargetCommand add{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+  TargetCommand add{CardId(0), TileId(0), LaunchSlotId(0), 0,
                     TargetElementwiseCommand{NumericElementwiseOperation::Add,
                                              spm, spm + UINT64_C(0x1000),
                                              spm + UINT64_C(0x2000), 4,
@@ -819,7 +819,7 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
                {LogicalFormat::F32, UINT64_C(0x40400000)},
                {LogicalFormat::F32, UINT64_C(0x40800000)}});
   TargetCommand reduce{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetReduceCommand{
           NumericReduceOperation::Sum,
           spm,
@@ -853,7 +853,7 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   writeTensor(memory, 0, spm + UINT64_C(0x1000), f16,
               {{LogicalFormat::F16, 0}, {LogicalFormat::F16, 0}});
   TargetCommand convert{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetConvertCommand{
           llvm::cantFail(TargetConvertOperation::create(
               findTargetConvertRoute(LogicalFormat::F32, LogicalFormat::F16)
@@ -880,7 +880,7 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
                {LogicalFormat::F16, UINT64_C(0x4200)},
                {LogicalFormat::F16, UINT64_C(0x4400)},
                {LogicalFormat::F16, UINT64_C(0x4500)}});
-  TargetCommand gemm{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+  TargetCommand gemm{CardId(0), TileId(0), LaunchSlotId(0), 1,
                      TargetGemmCommand{spm + UINT64_C(0x3000),
                                        spm + UINT64_C(0x4000),
                                        spm + UINT64_C(0x5000), 2, 2, 2, 1,
@@ -912,7 +912,7 @@ TEST(TargetModelKernelTest,
                             boolDestination, 1,
                             std::vector<uint8_t>(2, UINT8_C(0xa5))}}));
 
-  TargetCommand cxFill{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+  TargetCommand cxFill{CardId(0), TileId(0), LaunchSlotId(0), 0,
                        TargetMemsetCommand{cxDestination, UINT32_C(0x3555),
                                            /*elementCount=*/128,
                                            LogicalFormat::F16}};
@@ -928,7 +928,7 @@ TEST(TargetModelKernelTest,
   }
 
   TargetCommand boolFill{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+      CardId(0), TileId(0), LaunchSlotId(0), 1,
       TargetMemsetCommand{boolDestination, UINT32_C(1),
                           /*elementCount=*/16, LogicalFormat::Bool}};
   TargetModelCommandEffect boolEffect =
@@ -964,7 +964,7 @@ TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
                {LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x3f800000)},
                {LogicalFormat::F32, UINT64_C(0x40000000)}});
-  TargetCommand gemm{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+  TargetCommand gemm{CardId(0), TileId(0), LaunchSlotId(0), 0,
                      TargetGemmCommand{spm, spm + UINT64_C(0x1000),
                                        spm + UINT64_C(0x2000), 2, 2, 2, 2,
                                        LogicalFormat::F32}};
@@ -994,7 +994,7 @@ TEST(TargetModelKernelTest,
       16, {LogicalFormat::F32, UINT64_C(0x3f800000)});
   writeTensor(memory, 0, spm, matrix, values);
   writeTensor(memory, 0, spm + UINT64_C(0x1000), matrix, values);
-  TargetCommand gemm{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+  TargetCommand gemm{CardId(0), TileId(0), LaunchSlotId(0), 0,
                      TargetGemmCommand{spm, spm + UINT64_C(0x1000),
                                        spm + UINT64_C(0x2000), 4, 4, 4, 1,
                                        LogicalFormat::F32}};
@@ -1048,19 +1048,19 @@ TEST(TargetModelKernelTest, ControlCommandsValidateTypedEndpoints) {
   InvocationMemoryRegistry memory = makeRegistry(2);
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   TargetCommand begin{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetDirectDTEBeginCommand{kDDRBase + UINT64_C(0x2000), 2}};
   EXPECT_EQ(
       llvm::cantFail(executeTargetModelCommand(begin, memory, makeBudget()))
           .controlAction,
       TargetModelControlAction::DirectDTEBegin);
-  TargetCommand send{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 1,
+  TargetCommand send{CardId(0), TileId(0), LaunchSlotId(0), 1,
                      TargetDirectDTESendCommand{spm, spm, 16, 0, 1, 0, false}};
   EXPECT_EQ(
       llvm::cantFail(executeTargetModelCommand(send, memory, makeBudget()))
           .controlAction,
       TargetModelControlAction::DirectDTESendPrepare);
-  TargetCommand sendIssue{PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0),
+  TargetCommand sendIssue{CardId(0), TileId(0), LaunchSlotId(0),
                           2, TargetDirectDTESendIssueCommand{UINT64_C(0x100)}};
   EXPECT_EQ(
       llvm::cantFail(executeTargetModelCommand(sendIssue, memory, makeBudget()))
@@ -1089,7 +1089,7 @@ TEST(TargetModelKernelTest, UnsupportedFamilyIsNotSilentlyApproximated) {
   InvocationMemoryRegistry memory = makeRegistry();
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
   TargetCommand bit2fp{
-      PhysicalCardId(0), PhysicalTileId(0), LaunchSlotId(0), 0,
+      CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetBit2FPCommand{spm, spm + UINT64_C(0x1000), 4, LogicalFormat::F32}};
   std::string error =
       expectError(executeTargetModelCommand(bit2fp, memory, makeBudget()));

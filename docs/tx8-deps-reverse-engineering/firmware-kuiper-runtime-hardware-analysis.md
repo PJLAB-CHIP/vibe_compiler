@@ -559,7 +559,7 @@ Header-confirmed limits:
 | `TSMML_PG_MAX_DEVICE_NUM` | 16 |
 
 `tx_runtime.h` models PG devices explicitly: `txSetDeviceSelectedTileInfo`
-selects exactly 8 functional physical tiles.  `libhpgr.so` disassembly confirms
+selects exactly 8 functional Tiles.  `libhpgr.so` disassembly confirms
 the implementation copies eight tile records and derives `logicIdStart` from
 the first selected tile as `(x << 8) + y`.
 
@@ -723,7 +723,7 @@ Header and disassembly agree on these semantics:
 | `txGetDeviceByPCIBusId`, `txGetDevicePCIBusId` | Supports full and shortened PCI BDF formats. |
 | `txGetDeviceProperty` | Returns name, mesh id, PCI identity, memory regions, tile properties. |
 | `txGetDeviceAllTileInfo` | Returns 16 tile records including availability and physical coordinates. |
-| `txSetDeviceSelectedTileInfo` | PG mapping; exactly 8 selected physical tiles. |
+| `txSetDeviceSelectedTileInfo` | PG mapping; exactly 8 selected Tiles. |
 | rank APIs | System physical rank size/id are runtime-visible and used by tests. |
 
 `txDeviceSynchronize()` is implemented in HPGR as all-stream synchronization for

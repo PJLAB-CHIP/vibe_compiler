@@ -94,7 +94,7 @@ using namespace tensor_program_scheduling;
 namespace {
 
 static mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-splitCompleteRankTileProgramAtDDRBoundary(
+splitCompleteRankTileModuleAtDDRBoundary(
     mlir::OwningOpRef<mlir::ModuleOp> candidate, std::string *failureReason) {
   llvm::SmallVector<TileRegionOp, 8> regions;
   candidate->walk([&](TileRegionOp region) {
@@ -508,7 +508,7 @@ materializeConservativeCompleteRankBaseline(mlir::ModuleOp sourceModule,
   if (hasStructuredRoot) {
     unsigned regionCount = 0;
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> materialized =
-        materializeCompleteRankTileProgram(*stagedModule, logicalRank,
+        materializeCompleteRankTileModule(*stagedModule, logicalRank,
                                            &regionCount);
     if (mlir::failed(materialized) || regionCount != 1)
       return mlir::failure();
@@ -527,7 +527,7 @@ materializeConservativeCompleteRankBaseline(mlir::ModuleOp sourceModule,
 }
 
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-materializeCompleteRankCandidateTileProgram(
+materializeCompleteRankCandidateTileModule(
     mlir::ModuleOp sourceModule, int64_t logicalRank,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
@@ -565,7 +565,7 @@ materializeCompleteRankCandidateTileProgram(
   case CandidateTileResidencyAction::KeepSingleRegion:
     break;
   case CandidateTileResidencyAction::SplitAtExplicitDDRBoundary:
-    realized = splitCompleteRankTileProgramAtDDRBoundary(std::move(*realized),
+    realized = splitCompleteRankTileModuleAtDDRBoundary(std::move(*realized),
                                                          failureReason);
     break;
   case CandidateTileResidencyAction::SelectiveSpill:
@@ -584,7 +584,7 @@ materializeCompleteRankCandidateTileProgram(
 }
 
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-materializeCompleteRankConnectionTileProgram(
+materializeCompleteRankConnectionTileModule(
     mlir::ModuleOp sourceModule, int64_t logicalRank,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<CandidateTraversalConnectionAction> connectionActions,
@@ -626,7 +626,7 @@ materializeCompleteRankConnectionTileProgram(
     candidate = std::move(*spilled);
   }
   for (unsigned index = 0; index < crossRegionCount; ++index) {
-    auto split = splitCompleteRankTileProgramAtDDRBoundary(std::move(candidate),
+    auto split = splitCompleteRankTileModuleAtDDRBoundary(std::move(candidate),
                                                            failureReason);
     if (mlir::failed(split))
       return mlir::failure();
@@ -647,7 +647,7 @@ materializeCompleteRankConnectionTileProgram(
 }
 
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-materializeCompleteRankConnectionChoicesTileProgram(
+materializeCompleteRankConnectionChoicesTileModule(
     mlir::ModuleOp sourceModule, int64_t logicalRank,
     llvm::ArrayRef<CandidateTraversalConnectionChoice> connectionChoices,
     CandidateBoundaryMovementAction boundaryMovementAction,
@@ -694,7 +694,7 @@ materializeCompleteRankConnectionChoicesTileProgram(
     candidate = std::move(*spilled);
   }
   for (unsigned index = 0; index < crossRegionCount; ++index) {
-    auto split = splitCompleteRankTileProgramAtDDRBoundary(std::move(candidate),
+    auto split = splitCompleteRankTileModuleAtDDRBoundary(std::move(candidate),
                                                            failureReason);
     if (mlir::failed(split))
       return mlir::failure();
@@ -745,7 +745,7 @@ materializeCompleteRankTileResidencySibling(
   case CandidateTileResidencyAction::KeepSingleRegion:
     llvm_unreachable("identity residency action rejected above");
   case CandidateTileResidencyAction::SplitAtExplicitDDRBoundary:
-    return splitCompleteRankTileProgramAtDDRBoundary(std::move(sibling),
+    return splitCompleteRankTileModuleAtDDRBoundary(std::move(sibling),
                                                      failureReason);
   case CandidateTileResidencyAction::SelectiveSpill:
     return materializeCompleteRankSelectiveSpill(std::move(sibling),

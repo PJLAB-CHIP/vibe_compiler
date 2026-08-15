@@ -57,7 +57,7 @@ allKnown(llvm::ArrayRef<const ScheduleCostMetric *> requiredMetrics) {
 }
 
 template <typename MetricAccessor>
-static bool allTileMetricsKnown(const WholeCardInstructionProgramCost &cost,
+static bool allTileMetricsKnown(const CardInstructionProgramCost &cost,
                                 MetricAccessor accessor,
                                 const ScheduleCostMetric &aggregateFallback) {
   if (cost.tileCosts.empty())
@@ -67,7 +67,7 @@ static bool allTileMetricsKnown(const WholeCardInstructionProgramCost &cost,
   });
 }
 
-static bool isKnownNoCFree(const WholeCardInstructionProgramCost &cost) {
+static bool isKnownNoCFree(const CardInstructionProgramCost &cost) {
   return cost.aggregateNoC.staticIssueSiteCount.isKnown() &&
          cost.aggregateNoC.staticIssueSiteCount.value == 0;
 }
@@ -113,7 +113,7 @@ static bool hasScheduleResource(StaticScheduleResourceMask resources,
 
 static void
 disableUnavailableResourceTerms(StaticDurationTermMask &terms,
-                                const WholeCardInstructionProgramCost &cost,
+                                const CardInstructionProgramCost &cost,
                                 StaticScheduleResourceMask resources) {
   if (hasScheduleResource(resources, StaticScheduleResource::DDR) &&
       !allKnown({&cost.aggregateDDRReadBytes, &cost.aggregateDDRWriteBytes}))
@@ -172,7 +172,7 @@ disableUnavailableResourceTerms(StaticDurationTermMask &terms,
 
 static void
 disableUnavailableControlTerms(StaticDurationTermMask &terms,
-                               const WholeCardInstructionProgramCost &cost) {
+                               const CardInstructionProgramCost &cost) {
   if (!allTileMetricsKnown(
           cost,
           [](const InstructionProgramCost &tile) -> const ScheduleCostMetric & {
@@ -196,7 +196,7 @@ disableUnavailableControlTerms(StaticDurationTermMask &terms,
     disable(terms, StaticDurationTerm::NCCWaitControl);
 }
 
-static uint64_t estimateCompute(const WholeCardInstructionProgramCost &cost,
+static uint64_t estimateCompute(const CardInstructionProgramCost &cost,
                                 const TargetScheduleCostPolicy &policy,
                                 StaticDurationTermMask terms) {
   auto estimateTile = [&](const ScheduleComputeCost &compute) {
@@ -225,7 +225,7 @@ static uint64_t estimateCompute(const WholeCardInstructionProgramCost &cost,
   return maximum;
 }
 
-static uint64_t estimateControl(const WholeCardInstructionProgramCost &cost,
+static uint64_t estimateControl(const CardInstructionProgramCost &cost,
                                 const TargetScheduleCostPolicy &policy,
                                 StaticDurationTermMask terms) {
   auto estimateTile = [&](const ScheduleCostMetric &instructions,
@@ -263,7 +263,7 @@ static uint64_t estimateControl(const WholeCardInstructionProgramCost &cost,
 }
 
 static const StaticDurationEstimate &
-getResourceEstimate(const WholeCardResourceDurationEstimate &estimate,
+getResourceEstimate(const ProgramDurationEstimate &estimate,
                     StaticScheduleResource resource) {
   switch (resource) {
   case StaticScheduleResource::DDR:
@@ -279,10 +279,10 @@ getResourceEstimate(const WholeCardResourceDurationEstimate &estimate,
 }
 
 static StaticDurationEstimate &
-getResourceEstimate(WholeCardResourceDurationEstimate &estimate,
+getResourceEstimate(ProgramDurationEstimate &estimate,
                     StaticScheduleResource resource) {
   return const_cast<StaticDurationEstimate &>(getResourceEstimate(
-      static_cast<const WholeCardResourceDurationEstimate &>(estimate),
+      static_cast<const ProgramDurationEstimate &>(estimate),
       resource));
 }
 
@@ -291,8 +291,8 @@ static constexpr std::array<StaticScheduleResource, 4> kScheduleResources = {
     StaticScheduleResource::NoC, StaticScheduleResource::SPMMovement};
 
 using ResourceEstimateMap =
-    llvm::DenseMap<const WholeCardInstructionProgramCost *,
-                   WholeCardResourceDurationEstimate>;
+    llvm::DenseMap<const CardInstructionProgramCost *,
+                   ProgramDurationEstimate>;
 
 static uint64_t estimateSequentialWork(const StaticScheduleWork &work,
                                        const ResourceEstimateMap &estimates) {
@@ -367,11 +367,11 @@ static bool hasBufferedPipeline(const StaticSchedulePlan &plan) {
   });
 }
 
-static WholeCardResourceDurationEstimate
-estimateResourceDurations(const WholeCardInstructionProgramCost &cost,
+static ProgramDurationEstimate
+estimateResourceDurations(const CardInstructionProgramCost &cost,
                           const TargetScheduleCostPolicy &policy,
                           StaticDurationTermMask terms) {
-  WholeCardResourceDurationEstimate result;
+  ProgramDurationEstimate result;
   result.enabledTerms = terms;
 
   if (enabled(terms, StaticDurationTerm::DDR)) {
@@ -460,7 +460,7 @@ estimateResourceDurations(const WholeCardInstructionProgramCost &cost,
 }
 
 static void accumulateWorkResourceDurations(
-    WholeCardResourceDurationEstimate &result, const StaticScheduleWork &work,
+    ProgramDurationEstimate &result, const StaticScheduleWork &work,
     const ResourceEstimateMap &estimates, uint64_t repetition = 1) {
   const auto estimateIt = estimates.find(work.cost);
   assert(estimateIt != estimates.end() && "validated work must be estimated");
@@ -477,17 +477,17 @@ static void accumulateWorkResourceDurations(
 }
 
 static void accumulateStageResourceDurations(
-    WholeCardResourceDurationEstimate &result, const StaticScheduleStage &stage,
+    ProgramDurationEstimate &result, const StaticScheduleStage &stage,
     const ResourceEstimateMap &estimates, uint64_t repetition = 1) {
   for (const StaticScheduleBranch &branch : stage.independentBranches)
     for (const StaticScheduleWork &work : branch.dependentWork)
       accumulateWorkResourceDurations(result, work, estimates, repetition);
 }
 
-static WholeCardResourceDurationEstimate
+static ProgramDurationEstimate
 estimatePlan(const StaticSchedulePlan &plan, StaticDurationTermMask terms,
              const ResourceEstimateMap &estimates) {
-  WholeCardResourceDurationEstimate result;
+  ProgramDurationEstimate result;
   result.enabledTerms = terms;
   for (const StaticScheduleStep &step : plan.getSteps()) {
     switch (step.kind) {
@@ -598,7 +598,7 @@ StaticScheduleStep::forBufferedPipeline(StaticBufferedPipeline pipeline) {
 }
 
 std::optional<StaticSchedulePlan>
-StaticSchedulePlan::create(const WholeCardInstructionProgramCost &controlCost,
+StaticSchedulePlan::create(const CardInstructionProgramCost &controlCost,
                            llvm::ArrayRef<StaticScheduleStep> steps) {
   if (steps.empty())
     return std::nullopt;
@@ -628,7 +628,7 @@ StaticSchedulePlan::create(const WholeCardInstructionProgramCost &controlCost,
 }
 
 StaticSchedulePlan StaticSchedulePlan::getConservative(
-    const WholeCardInstructionProgramCost &cost) {
+    const CardInstructionProgramCost &cost) {
   llvm::SmallVector<StaticScheduleStep, 8> steps;
   for (StaticScheduleResource resource : kScheduleResources) {
     StaticScheduleBranch branch;
@@ -641,7 +641,7 @@ StaticSchedulePlan StaticSchedulePlan::getConservative(
   return StaticSchedulePlan(cost, std::move(steps));
 }
 
-llvm::SmallVector<WholeCardResourceDurationEstimate, 16>
+llvm::SmallVector<ProgramDurationEstimate, 16>
 estimateStaticSchedulePlanDurations(
     llvm::ArrayRef<const StaticSchedulePlan *> plans,
     const TargetScheduleCostPolicy &policy) {
@@ -656,7 +656,7 @@ estimateStaticSchedulePlanDurations(
   }
 
   ResourceEstimateMap resourceEstimates;
-  auto addEstimate = [&](const WholeCardInstructionProgramCost &cost) {
+  auto addEstimate = [&](const CardInstructionProgramCost &cost) {
     if (resourceEstimates.count(&cost) == 0)
       resourceEstimates.try_emplace(
           &cost, estimateResourceDurations(cost, policy, terms));
@@ -668,7 +668,7 @@ estimateStaticSchedulePlanDurations(
     });
   }
 
-  llvm::SmallVector<WholeCardResourceDurationEstimate, 16> results;
+  llvm::SmallVector<ProgramDurationEstimate, 16> results;
   results.reserve(plans.size());
   for (const StaticSchedulePlan *plan : plans)
     results.push_back(estimatePlan(*plan, terms, resourceEstimates));

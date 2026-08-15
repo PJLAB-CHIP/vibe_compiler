@@ -3,7 +3,7 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -49,7 +49,7 @@ StructuredRootCapability classifyStructuredRoot(mlir::Operation *operation);
 /// A verified private tensor-program scheduling scope. Its entry arguments are
 /// the unchanged source inputs followed by compiler-created scheduling
 /// destinations; func.return yields one root per destination. The appended
-/// destinations never cross the CardProgram conversion boundary.
+/// destinations never cross the CardModule conversion boundary.
 class TensorProgramScope {
 public:
   TensorProgramScope(mlir::func::FuncOp function,
@@ -150,13 +150,13 @@ struct CandidatePeerEndpoint {
   /// relation used to find the surviving ToTensor view.
   mlir::Value carrierBuffer;
   CandidatePeerEndpointKind kind = CandidatePeerEndpointKind::Send;
-  PhysicalTileId peer{0};
+  TileId peer{0};
   uint64_t bytes = 0;
   int64_t communicationId = 0;
   int64_t payloadSlice = 0;
   /// Position of the selected edge's consumer in the pristine tensor-program
   /// body, plus its operand number.  These fields impose one query-local
-  /// receiver-safe order across every physical Tile; they are deliberately
+  /// receiver-safe order across every Tile; they are deliberately
   /// separate from the logical Direct-DTE message identity.
   uint64_t consumerScheduleOrdinal = 0;
   unsigned consumerOperand = 0;

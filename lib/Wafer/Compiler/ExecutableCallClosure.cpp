@@ -33,7 +33,7 @@ analyzeExecutableCallClosure(mlir::ModuleOp module,
   closure.functions.append(callGraph.getFunctions().begin(),
                            callGraph.getFunctions().end());
   if (closure.functions.empty())
-    return invalid("physical-Tile executable has no entry function");
+    return invalid("Tile executable has no entry function");
 
   llvm::SmallVector<mlir::func::FuncOp> externallyVisible;
   for (mlir::func::FuncOp function : closure.functions) {
@@ -47,7 +47,7 @@ analyzeExecutableCallClosure(mlir::ModuleOp module,
   if (externallyVisible.size() == 1) {
     closure.entry = externallyVisible.front();
   } else {
-    return invalid("physical-Tile executable must have one externally visible "
+    return invalid("Tile executable must have one externally visible "
                    "entry function");
   }
   if (expectedEntry && closure.entry.getSymName() != *expectedEntry)

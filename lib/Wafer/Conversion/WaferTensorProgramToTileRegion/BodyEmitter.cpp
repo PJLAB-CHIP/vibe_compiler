@@ -168,7 +168,7 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
   if (mlir::failed(initializeBoundary(scope, tileRegion, rewriter)))
     return mlir::failure();
 
-  // Every physical Tile observes the same consumer-first message order after
+  // Every Tile observes the same consumer-first message order after
   // omitting messages on which it is not an endpoint.  Message identity is
   // intentionally not an execution order: its stable numbering is independent
   // of operation ordinals and may place a later consumer first.  Emitting one

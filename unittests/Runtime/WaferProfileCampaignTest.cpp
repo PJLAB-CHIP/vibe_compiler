@@ -76,7 +76,7 @@ protected:
   PackageResourceRecord outputResource(uint64_t id, int64_t roleIndex,
                                        llvm::StringRef name) const {
     return {ResourceId(id),
-            CardResourceScope{wafer::PhysicalCardId(0)},
+            CardResourceScope{wafer::CardId(0)},
             PackageResourceRole::Output,
             roleIndex,
             name.str(),
@@ -414,11 +414,11 @@ TEST_F(WaferProfileOutputValidationTest,
   ASSERT_EQ(validation.getResources().size(), 2u);
   EXPECT_EQ(
       std::get<CardResourceScope>(validation.getResources()[0].scope).cardId,
-      wafer::PhysicalCardId(0));
+      wafer::CardId(0));
   EXPECT_EQ(validation.getResources()[0].roleIndex, 3);
   EXPECT_EQ(
       std::get<CardResourceScope>(validation.getResources()[1].scope).cardId,
-      wafer::PhysicalCardId(0));
+      wafer::CardId(0));
   EXPECT_EQ(validation.getResources()[1].roleIndex, 7);
   ASSERT_TRUE(
       validation.getResources()[0].externalExpectedComparison.has_value());

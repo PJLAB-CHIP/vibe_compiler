@@ -210,7 +210,7 @@ current compiler 合同：
 
 这组历史结果只覆盖当时的 FP16、16-rank fixture、已生成 candidate 和对应 profile。它不把一个
 microbench 的队列、overlap 或地址观察提升为其它 shape、dtype、route 的通用性能结论；也不代签
-current physical-dataflow spatial/temporal/fusion selection。current 路径必须重新产生actual CardProgram、schema-v8 package
+current physical-dataflow spatial/temporal/fusion selection。current 路径必须重新产生actual CardModule、schema-v8 package
 和fresh no-card/board证据。
 
 ## 13. 编译器实现检查表

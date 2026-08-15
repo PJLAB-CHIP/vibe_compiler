@@ -1,6 +1,6 @@
 # Wafer Compute、Movement 与 Target-Abstract IR
 
-状态：2026-08-09按CardProgram / physical-Tile MPMD主线重写。本文拥有source structured op的
+状态：2026-08-09按CardModule / Tile MPMD主线重写。本文拥有source structured op的
 确定性typed lowering、selected `wafer.tile.*` compute/movement及其Instr lowering legality；不拥有
 physical-dataflow placement、fusion或winner。Q49–Q53动态状态只看`tasks/progress.md`。
 
@@ -15,10 +15,10 @@ Pipeline position:
 - Current stage responsibility:
   调用方给出本次placement、temporal tile、encoding、TileRegion、retain/recompute/spill/cut/release boundary、buffer/slot与
   event order选择后，从selected actual TensorProgram root的current concrete Linalg/Tensor语义
-  确定性创建对应TileProgram/TileRegion中的typed compute、view、movement、temporary和event；再把每个
-  physical-Tile program合法化为canonical/unplaced wafer.instr.*。
+  确定性创建对应TileModule/TileRegion中的typed compute、view、movement、temporary和event；再把每个
+  Tile module合法化为canonical/unplaced wafer.instr.*。
 - Output IR / files:
-  selected complete CardProgram candidate中的typed wafer.tile.*与Wafer-tagged memref，或projected per-physical-Tile wafer.instr.*；
+  selected complete CardModule candidate中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
   compute form、numeric、geometry、movement和effect事实全部在actual IR中，不保留候选side channel。
 - Downstream consumer:
   fresh worker/order/completion reconstruction、fixed-capacity SPM/DDR planning、CardExecutable communication/resource
@@ -33,7 +33,7 @@ Pipeline position:
   fill、named GEMM/batched GEMM、ordinary static 2-D convolution和generic由current op class、region、indexing maps与
   DPS/Tiling semantics确定性物化；exact generic GEMM与convolution只由标准Linalg maps、iterator和multiply-accumulate
   payload识别，其余generic走同一baseline lowering；显式`tensor.pad`严格消费其current low/high/value，不猜测padding；
-  all-and-only physical Tile modules经相同Instr、memory、communication与target exact gates原子提交。
+  all-and-only Tile modules经相同Instr、memory、communication与target exact gates原子提交。
 ```
 
 ## 2. Source Semantics 与确定性 Typed Lowering
@@ -63,7 +63,7 @@ symbol-free affine window maps和scalar region共同证明ordinary static 2-D co
 target-implementation OpInterface、external-model registry、candidate kind、
 capability menu、selected/forced参数或hidden fallback。rewrite改变source region/type/SSA/effect后，lowering只重新读取current IR。
 
-physical-dataflow selection仍是唯一组合owner：它联合选择physical Tile set、per-Tile work domain、temporal tile、encoding、
+physical-dataflow selection仍是唯一组合owner：它联合选择Tile set、per-Tile work domain、temporal tile、encoding、
 TileRegion partition、retain/recompute/spill/cut/release boundary、movement、buffer/slot和event order；lifetime、live set与cost
 从这些typed assignments及物化后的current IR重算。direct lowering不能为某个op自行决定全局mapping，也不能因为当前route失败而
 改写source数学语义。Q48未来只能扩展Q50.S同一semantic-alternative builder seam，生成的每个alternative仍必须是完整
@@ -71,11 +71,11 @@ actual TensorProgram root，再由Q51选择并分别走本合同；不能恢复l
 
 ## 3. Selected Tile IR
 
-selected physical dataflow存在于`wafer.card.program`内all-and-only `wafer.tile.program`。不同physical Tile可以有
+selected physical dataflow存在于`wafer.card.module`内all-and-only `wafer.tile.module`。不同Tile可以有
 不同compute ops、loop nests、tile shapes和执行长度。Tile-local SPM residency由一个或多个non-nested
 `wafer.tile.region`表达；region内允许多个traversal，不要求统一tile size。
 
-每个`wafer.tile.region`严格属于一个physical Tile。任何跨region shaped value必须显式store到DDR并由下一region
+每个`wafer.tile.region`严格属于一个Tile。任何跨region shaped value必须显式store到DDR并由下一region
 load；SPM memref/root/alias不能作为region argument/result。把producer和consumer放入同一region只表示共享SPM
 residency domain，不等于op fusion或coupled traversal；只有producer work实际嵌入consumer traversal、其中间tile由direct
 SSA use连接且没有独立producer traversal/DDR materialization时，才是coupled traversal。实际residency也不能由action名
@@ -92,7 +92,7 @@ selected `wafer.tile.*` op必须满足：
 - parser/printer round trip不改变verifier或lowering结论；
 - 不携带search score、rejected alternatives、raw packet、launch slot、runtime handle或name-derived role。
 
-SPM value/alias不能跨TileProgram，也不能跨TileRegion boundary。跨region数据显式store/load；跨physical Tile数据由
+SPM value/alias不能跨TileModule，也不能跨TileRegion boundary。跨region数据显式store/load；跨Tile数据由
 peer/collective communication与destination staging表达。TileRegion boundary不是completion或barrier。
 
 多stage流水不是一个target-abstract mode。Tile IR必须显式包含每个chunk/temporal iteration、相应load/store/local/peer
@@ -133,7 +133,7 @@ typed field或独立op；不能由target call名字恢复。不同dtype block ge
 ### Reduce 与 fill
 
 `wafer.tile.reduce`只表示Tile-local reduction，保留kind、dimensions、init、input/result relation和evaluation-order
-约束。跨Tile reduction由13的physical Tile collective/peer protocol表达，不由local reduce op暗中访问其它Tile。
+约束。跨Tile reduction由13的Tile collective/peer protocol表达，不由local reduce op暗中访问其它Tile。
 `wafer.tile.fill`初始化既有destination，并以typed fill domain区分logical-valid或physical-footprint范围。
 
 ### 扩展门
@@ -150,7 +150,7 @@ movement不是type cast。是否能成为metadata view由08的IndexRelation与co
 - `wafer.tile.extract_slice` / `insert_slice` / `copy` / `transpose` / `broadcast`；
 - `wafer.tile.materialize_layout`；
 - destination-style DDR↔SPM load/store；
-- explicit physical-Tile peer/collective communication。
+- explicit Tile peer/collective communication。
 
 source、destination、logical relation、direction、range和effect从operands、types、view chain和typed fields重建。
 两条路线若产生不同commands、temporary或completion，就必须是不同actual candidates，而不是一个movement op在late
@@ -169,7 +169,7 @@ conversion按concrete typed op class使用DialectConversion/RewritePattern，生
 - Direct DTE send/recv/wait；
 - explicit temporaries、descriptors、tokens和effect-bearing control flow。
 
-per-physical-Tile conversion输出canonical/unplaced Instr：Wafer-tagged memref尚未带runtime address，但instruction kind、
+per-Tile conversion输出canonical/unplaced Instr：Wafer-tagged memref尚未带runtime address，但instruction kind、
 geometry、descriptor relation、worker-independent effects/ranges和async obligations完整。conversion不选择Tile placement、
 SPM/DDR offset、worker/order或transport resource，也不插入基于region/loop boundary猜出的completion。
 
@@ -182,15 +182,15 @@ latest-necessary completion。DTE wait、NCC participant join和group barrier是
 
 ## 7. Exact Verification
 
-每个complete CardProgram candidate统一经过：
+每个complete CardModule candidate统一经过：
 
 ```text
-selected CardProgram
-  -> split into all physical Tile modules
+selected CardModule
+  -> split into all Tile modules
   -> Tile-to-Instr conversion
   -> worker/order placement and fresh completion
   -> fixed-capacity SPM planning per Tile
-  -> CardProgram DDR planning
+  -> CardModule DDR planning
   -> physical peer/message/range/resource verification
   -> final instruction recost and target legality
   -> atomic CardExecutable
@@ -201,7 +201,7 @@ stride/dilation/pad/unpad、reduce/init、elementwise relation、
 memory space/encoding、valid lanes、temporary和movement effects。Instr verifier至少检查engine domains、descriptor
 bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roots及token/wait closure。
 
-任何physical Tile失败都拒绝整个complete CardProgram candidate；不能发布partial Tile set，也不能在exact gate中retile、spill、换layout或
+任何Tile失败都拒绝整个complete CardModule candidate；不能发布partial Tile set，也不能在exact gate中retile、spill、换layout或
 换transport。`none`与`search`走相同的materialization和late gates，区别只在上游候选生成/选择策略。
 
 ## 8. Verification 与当前Q49–Q53边界
@@ -212,7 +212,7 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 - GEMM/batched GEMM、ordinary 2-D convolution、explicit static padding、elementwise/relation/select/convert、reduce/fill正负contracts；
 - Tensor/NTensor/Cx/NCx及tail/invalid-lane的direct与explicit-movement路径；
 - chain、branch、fanout/fanin、view/permutation和structured control flow；
-- distinct physical Tile programs、no-work Tile、cross-Tile SPM SSA rejection；
+- distinct Tile modules、no-work Tile、cross-Tile SPM SSA rejection；
 - Tile-to-Instr、fresh completion、SPM/DDR、communication、target与package全链实际执行。
 
 Q49–Q53当前实现状态由06与`tasks/progress.md`统一记录。本文不得用local lowering或movement特判代替physical-dataflow能力，

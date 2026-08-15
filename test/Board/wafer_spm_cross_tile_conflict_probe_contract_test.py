@@ -62,7 +62,7 @@ def main() -> int:
     except RuntimeError:
         pass
     else:
-        raise AssertionError("duplicate physical tiles were accepted")
+        raise AssertionError("duplicate Tiles were accepted")
     for execution_round in range(probe.COUNTERBALANCED_ROUNDS):
         plans = [
             probe.execution_plan(rank, execution_round)

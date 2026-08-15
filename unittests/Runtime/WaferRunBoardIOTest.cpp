@@ -73,7 +73,7 @@ protected:
   PackageResourceRecord resource(uint64_t id, PackageResourceRole role,
                                  PackageAccessMode access) const {
     return {ResourceId(id),
-            wafer::runtime::CardResourceScope{wafer::PhysicalCardId(0)},
+            wafer::runtime::CardResourceScope{wafer::CardId(0)},
             role,
             0,
             "resource",

@@ -2,13 +2,13 @@
 
 Wafer AI Compiler 是面向 Wafer/TX81 单卡目标的 MLIR 编译器与 runtime。当前主线接收
 PyTorch/XLA 导出的 StableHLO program directory，在 card-level GSPMD 边界之后对整张 structured DAG 联合选择
-physical-Tile spatial mapping、temporal tiling、fusion/SPM residency 和 NoC 数据流，生成一个完整的 whole-card
+Tile spatial mapping、temporal tiling、fusion/SPM residency 和 NoC 数据流，生成一个完整的 card
 verified package。仓库同时提供 no-card validation 和 repo-owned TargetCall/SystemC untimed functional model，
 用于在真实板卡接入前验证 compiler、ABI、memory、transport 和数值语义。
 
-logical card partition 和 physical Tile 是两个不同的 domain：`num_partitions` 只属于 GSPMD/global tensor
-boundary，card-local MPMD 由 `wafer.card.program` 和 16 个 `wafer.tile.program` 显式表示。package schema v8
-只包含 all-and-only physical-Tile executable 和 whole-card resource/launch 合同；不再存在 logical rank 直接绑定
+logical card partition 和 Tile 是两个不同的 domain：`num_partitions` 只属于 GSPMD/global tensor
+boundary，card-local MPMD 由 `wafer.card.module` 和 16 个 `wafer.tile.module` 显式表示。package schema v8
+只包含 all-and-only Tile executable 和 card resource/launch 合同；不再存在 logical rank 直接绑定
 Tile、single-Tile entry ABI 或兼容 reader。
 
 ## 编译流水线
@@ -18,11 +18,11 @@ PyTorch/XLA StableHLO program directory
   -> frontend verification
   -> Shardy/XLA SPMD partitioning (logical card partitions)
   -> card-local Linalg/Tensor/SCF structured DAG
-  -> bounded whole-DAG spatial/temporal/dataflow search
-  -> wafer.card.program -> all physical wafer.tile.program bodies
+  -> bounded structured-DAG spatial/temporal/dataflow search
+  -> wafer.card.module -> all physical wafer.tile.module bodies
   -> Tile IR -> Instr IR + completion + SPM/DDR + Direct-DTE gates
-  -> whole-card verification and candidate selection
-  -> PhysicalTileExecutables
+  -> card verification and candidate selection
+  -> CardExecutable
        ├─ same-lowering Target LLVM -> TargetCall/SystemC
        └─ device link -> typed manifest -> verified package
                             ├─ no-card RuntimeSession
@@ -36,17 +36,17 @@ analysis 和 rejected state 都是 query-local compiler state，不进入 IR 或
 
 - **Frontend/SPMD**：验证 StableHLO program directory、typed inputs/parameters 和 card-level Shardy/XLA SPMD；单卡当前
   `num_partitions=1`。
-- **Whole-DAG 选择**：通过 TilingInterface、SSA use-def、Affine/Presburger relation 和 physical topology 联合选择
+- **Structured-DAG 选择**：通过 TilingInterface、SSA use-def、Affine/Presburger relation 和 physical topology 联合选择
   per-op Tile placement、finite temporal tile、local residency 与显式 peer movement；只对有界 shortlist 物化 actual clones。
 - **物理实现**：支持 Tensor/Cx/NCx physical encoding、metadata view、compact/mapped DMA、SPM gather/scatter、
   relation-backed resident transfer 和 fixed-capacity SPM/DDR packing。
 - **Topology-aware 通信**：cross-Tile edge 从 current SSA/indexing relation 推导 exact demanded domain，只传输 placement
-  中缺失的部分；selected CardProgram 内使用显式 peer send/receive/wait。collective lowering 同样由 current
+  中缺失的部分；selected CardModule 内使用显式 peer send/receive/wait。collective lowering 同样由 current
   topology 和实际 Tile group 验证。
 - **Typed target capability**：覆盖 mapped RDMA/WDMA offset、physical-footprint fill、GEMM/batched GEMM 和 versioned
   oriented GEMM ABI。
-- **原子输出**：完整 physical-Tile set 通过 DDR、NoC、instruction、event、ABI、device-link、manifest 和 readback gate 后，
-  才写入 `PhysicalTileExecutables`、Target LLVM modules 和 verified package。
+- **原子输出**：完整 Tile set 通过 DDR、NoC、instruction、event、ABI、device-link、manifest 和 readback gate 后，
+  才写入 `CardExecutable`、Target LLVM modules 和 verified package。
 - **功能数值验证**：同一 target lowering 可由 TargetCall/SystemC model 消费，并与独立 CPU expected 比较完整输出。
 - **板端 runtime**：`wafer-run`对整个 verified package 建立 typed kernel/model session，执行
   allocation/H2D/load/submit/completion/status/D2H/cleanup；不提供选单个 Tile entry 的入口。
@@ -58,7 +58,7 @@ analysis 和 rejected state 都是 query-local compiler state，不进入 IR 或
 
 ## 当前演进
 
-当前 owner 是 Q49 whole-DAG multi-Tile synthesis。它将 spatial mapping、temporal tiling、fusion/SPM residency、
+当前 owner 是 Q49 structured-DAG multi-Tile synthesis。它将 spatial mapping、temporal tiling、fusion/SPM residency、
 NoC 和 compute/communication overlap 放入同一个有界搜索，并删除旧 rank==Tile、late selector、single-entry ABI
 和专用 workload shortcut。动态状态、前置和完成门禁只看 [`tasks/progress.md`](tasks/progress.md)；README
 不复制实施日志或历史性能结论。
@@ -135,7 +135,7 @@ build/wafer-dev/bin/wafer-compile \
   --launch-kind kernel
 ```
 
-`search` 和 `none` 都经过同一 CardProgram、physical-Tile selection 和 exact verification pipeline；`search`启用
+`search` 和 `none` 都经过同一 CardModule、Tile selection 和 exact verification pipeline；`search`启用
 compiler-owned候选搜索，`none`只生成保守baseline。完整 TargetCall/SystemC 参数通过
 `build/wafer-dev/bin/wafer-compile --help` 查看；target-model
 模式必须提供显式 input、CPU expected、数值 policy 和 resource budget。package可先做无板卡 validation：
@@ -152,14 +152,14 @@ production package。
 ## 当前边界
 
 - 当前 production domain 是单卡、一个 logical card partition 和 card-local 16-Tile MPMD；cross-card、dynamic
-  shape/state、MoE 和持久化权重缓存尚未进入主线。whole-card 可以为不同 op/分支生成不同 Tile program，
+  shape/state、MoE 和持久化权重缓存尚未进入主线。card 可以为不同 op/分支生成不同 Tile module，
   这不等于 GSPMD partition。
 - 数学变换只能从 current structured semantics 和显式 proof 合法产生；不授权任意 fast-math、未证明的
   FMA contraction，也不放宽 special value、index、layout、guard 或 physical-span 检查。
 - SystemC 是 untimed functional-event model，不证明 vendor packet、RISC-V ELF exact execution、板端性能或 cycle accuracy。
 - 历史板端证据只证明当时 profile、shape、dtype、payload、ABI 和 runtime identity 下的能力；Q49 的
   current package 和性能结论必须用新 pipeline fresh 产生，不回放旧输出代签。
-- whole-card 理论 cost 只使用 cohort 内全部候选共有的已知 term；不知的硬件参数不进入比较，不产生
+- card 理论 cost 只使用 cohort 内全部候选共有的已知 term；不知的硬件参数不进入比较，不产生
   候选局部缺项或候选局部零值；raw collector的`unavailable`只作诊断，不进入最终数值makespan。
 
 ## 文档与协作

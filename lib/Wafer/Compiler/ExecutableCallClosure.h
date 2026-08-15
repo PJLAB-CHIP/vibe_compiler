@@ -15,7 +15,7 @@
 namespace wafer::compiler::detail {
 
 /// The all-and-only statically resolvable function closure of one
-/// physical-Tile executable. Functions retain deterministic module order;
+/// Tile executable. Functions retain deterministic module order;
 /// `entry` is the unique externally visible function.
 struct ExecutableCallClosure {
   mlir::func::FuncOp entry;

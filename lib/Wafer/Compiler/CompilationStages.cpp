@@ -1,7 +1,7 @@
 //===- CompilationStages.cpp - Stage verification and registry ----------===//
 
 #include "CompilationInternal.h"
-#include "PhysicalTileExecutablesInternal.h"
+#include "CardExecutableInternal.h"
 
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"

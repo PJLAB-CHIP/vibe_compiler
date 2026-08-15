@@ -77,7 +77,7 @@ void walkInstructionProgramWork(
     llvm::function_ref<void()> onUnsupportedControlFlow);
 
 /// Visits the same statically executable instruction stream used by the
-/// physical-Tile-local cost collector. The callback receives the current static
+/// Tile-local cost collector. The callback receives the current static
 /// multiplicity. Unsupported recursive/call control flow invokes
 /// `onUnsupportedControlFlow` because it may hide instructions.
 void walkInstructionProgram(

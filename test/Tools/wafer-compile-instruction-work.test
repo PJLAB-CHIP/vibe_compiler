@@ -16,7 +16,7 @@
 # CHECK: wafer-compile: instruction-work scope=tile card_id=0 tile_id=7 instructions_sites=known:4 instructions_exact=known:{{[1-9][0-9]*}}
 # CHECK: wafer-compile: instruction-work scope=tile card_id=0 tile_id=8 instructions_sites=known:0 instructions_exact=known:0
 # CHECK: wafer-compile: instruction-work scope=tile card_id=0 tile_id=15 instructions_sites=known:0 instructions_exact=known:0
-# CHECK: wafer-compile: instruction-work scope=whole-card instructions_sites=known:32 instructions_exact=known:{{[1-9][0-9]*}}
+# CHECK: wafer-compile: instruction-work scope=card instructions_sites=known:32 instructions_exact=known:{{[1-9][0-9]*}}
 # CHECK-SAME: rdma_sites=known:8 rdma_exact=known:{{[1-9][0-9]*}}
 # CHECK-SAME: gather_scatter_sites=known:8 gather_scatter_exact=known:{{[1-9][0-9]*}}
 # CHECK-SAME: ncc_join_sites=known:8 ncc_join_exact=known:8
@@ -24,4 +24,4 @@
 # CHECK-SAME: rdma_sites=known:1 rdma_exact=known:{{[1-9][0-9]*}}
 # CHECK-SAME: gather_scatter_sites=known:1 gather_scatter_exact=known:{{[1-9][0-9]*}}
 # CHECK-SAME: ncc_join_sites=known:1 ncc_join_exact=known:1 ncc_join_lower=known:1 ncc_join_upper=known:1
-# CHECK: wafer-compile: compile-work physical_tile_memory_planning_invocations=16 tile_to_instr_lowerings=16 spm_planning_invocations=16 ddr_planning_invocations=16
+# CHECK: wafer-compile: compile-work tile_memory_planning_invocations=16 tile_to_instr_lowerings=16 spm_planning_invocations=16 ddr_planning_invocations=16

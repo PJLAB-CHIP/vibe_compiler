@@ -41,10 +41,10 @@ struct InvocationContext {
 };
 
 struct TileInvocationContext {
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
-  int64_t physicalTileCount;
+  int64_t tileCount;
   TargetIdentityId targetIdentity;
   InvocationContext *invocation;
   uint64_t nextIssueOrdinal = 0;
@@ -92,7 +92,7 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
   }
   llvm::ArrayRef<uint64_t> argumentValues(arguments, argumentCount);
   llvm::Expected<target::TargetCommandPayload> payload =
-      decodeTargetCallPayload(descriptor, {context->physicalTileCount},
+      decodeTargetCallPayload(descriptor, {context->tileCount},
                               argumentValues);
   if (!payload) {
     context->invocation->failure = llvm::toString(payload.takeError());
@@ -104,7 +104,7 @@ extern "C" uint64_t waferTargetCallDispatch(uint64_t contextAddress,
     context->invocation->failure = llvm::toString(worker.takeError());
     return 0;
   }
-  TargetCommand command{context->physicalCardId, context->physicalTileId,
+  TargetCommand command{context->cardId, context->tileId,
                         context->launchSlotId, context->nextIssueOrdinal++,
                         std::move(*payload)};
   if (descriptor.issueDomain && *worker)
@@ -449,32 +449,32 @@ validateInvocation(const TargetLLVMModules &targetLLVMModules,
   if (modules.empty() || modules.size() != arguments.size() ||
       modules.size() !=
           static_cast<size_t>(
-              targetLLVMModules.getExecutionConfig().getPhysicalTileCount()))
+              targetLLVMModules.getExecutionConfig().getTileCount()))
     return llvm::createStringError(
-        "target-call invocation does not cover the complete physical Tile "
+        "target-call invocation does not cover the complete Tile "
         "domain");
   TargetCallInvocationDescriptor descriptor{
       targetLLVMModules.getExecutionConfig().getTargetIdentityId(), {}};
   descriptor.tiles.reserve(modules.size());
-  std::set<std::pair<int64_t, int64_t>> physicalTiles;
+  std::set<std::pair<int64_t, int64_t>> tileEndpoints;
   for (size_t index = 0; index < modules.size(); ++index) {
     const TargetLLVMModule &module = modules[index];
     const TargetCallTileArguments &tileArguments = arguments[index];
     const LaunchSlotId expectedLaunchSlot(static_cast<int64_t>(index));
-    const std::pair<int64_t, int64_t> physicalTile = {
-        module.getPhysicalCardId().getValue(),
-        module.getPhysicalTileId().getValue()};
-    if (physicalTile.first < 0 || physicalTile.second < 0 ||
-        !physicalTiles.insert(physicalTile).second)
+    const std::pair<int64_t, int64_t> tileEndpoint = {
+        module.getCardId().getValue(),
+        module.getTileId().getValue()};
+    if (tileEndpoint.first < 0 || tileEndpoint.second < 0 ||
+        !tileEndpoints.insert(tileEndpoint).second)
       return llvm::createStringError(
           "target-call invocation contains an invalid or duplicate physical "
           "Tile identity");
     if (module.getLaunchSlotId() != expectedLaunchSlot ||
         tileArguments.launchSlotId != module.getLaunchSlotId() ||
-        tileArguments.physicalCardId != module.getPhysicalCardId() ||
-        tileArguments.physicalTileId != module.getPhysicalTileId())
+        tileArguments.cardId != module.getCardId() ||
+        tileArguments.tileId != module.getTileId())
       return llvm::createStringError(
-          "target-call invocation physical Tile identity or launch-slot order "
+          "target-call invocation Tile identity or launch-slot order "
           "is not canonical");
     if (tileArguments.slots.size() != module.getKernelABISlots().size())
       return llvm::createStringError(
@@ -483,7 +483,7 @@ validateInvocation(const TargetLLVMModules &targetLLVMModules,
       return llvm::createStringError(
           "target-call invocation contains inconsistent target identities");
     descriptor.tiles.push_back(
-        {module.getPhysicalCardId(), module.getPhysicalTileId(),
+        {module.getCardId(), module.getTileId(),
          module.getLaunchSlotId(), module.getKernelABISlots(),
          tileArguments.slots, module.getTargetIdentityId(),
          module.getKernelRuntimeABIId()});
@@ -588,7 +588,7 @@ llvm::Error TargetCallExecutable::executeTile(LaunchSlotId launchSlotId) {
   }
   const TargetCallTileDescriptor &tile = impl->descriptor.tiles[index];
   if (llvm::Error error = impl->invocation.sink->completeTile(
-          tile.physicalCardId, tile.physicalTileId, tile.launchSlotId)) {
+          tile.cardId, tile.tileId, tile.launchSlotId)) {
     std::string diagnostic = llvm::toString(std::move(error));
     abort(diagnostic);
     return llvm::createStringError("%s", diagnostic.c_str());
@@ -637,9 +637,9 @@ createTargetCallExecutable(const TargetLLVMModules &targetLLVMModules,
   executable->contexts.reserve(targetLLVMModules.getModules().size());
   for (const TargetLLVMModule &module : targetLLVMModules.getModules())
     executable->contexts.push_back(
-        {module.getPhysicalCardId(), module.getPhysicalTileId(),
+        {module.getCardId(), module.getTileId(),
          module.getLaunchSlotId(),
-         targetLLVMModules.getExecutionConfig().getPhysicalTileCount(),
+         targetLLVMModules.getExecutionConfig().getTileCount(),
          module.getTargetIdentityId(), &executable->invocation});
 
   executable->materialized.reserve(targetLLVMModules.getModules().size());

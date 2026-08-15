@@ -29,8 +29,8 @@ struct TargetNCCIssueDomain {
 /// Tile context; none of these fields is recovered from a symbol spelling or
 /// OS thread.
 struct TargetCommand {
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
   uint64_t issueOrdinal;
   target::TargetCommandPayload payload;
@@ -38,8 +38,8 @@ struct TargetCommand {
 };
 
 struct TargetCallTileDescriptor {
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
   std::vector<KernelABISlot> kernelABISlots;
   std::vector<uint64_t> slotValues;
@@ -53,8 +53,8 @@ struct TargetCallInvocationDescriptor {
 };
 
 struct TargetCallTileArguments {
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
   std::vector<uint64_t> slots;
 };
@@ -69,8 +69,8 @@ public:
   virtual llvm::Error
   begin(const TargetCallInvocationDescriptor &invocation) = 0;
   virtual llvm::Expected<uint64_t> issue(const TargetCommand &command) = 0;
-  virtual llvm::Error completeTile(PhysicalCardId physicalCardId,
-                                   PhysicalTileId physicalTileId,
+  virtual llvm::Error completeTile(CardId cardId,
+                                   TileId tileId,
                                    LaunchSlotId launchSlotId) = 0;
   virtual llvm::Error completeInvocation() = 0;
   virtual void abort(llvm::StringRef diagnostic) = 0;
@@ -81,7 +81,7 @@ struct TargetCallExecutionResult {
   uint64_t issuedCommandCount;
 };
 
-/// Owner of one whole-card host materialization. All slots and JIT entries are
+/// Owner of one card host materialization. All slots and JIT entries are
 /// closed before construction succeeds. A downstream scheduler calls begin,
 /// runs each Tile entry from its own process, and finishes only after every
 /// Tile completes. executeTile may suspend inside a synchronous sink issue;
@@ -112,7 +112,7 @@ private:
                              llvm::ArrayRef<TargetCallTileArguments>);
 };
 
-/// Verifies and materializes the complete physical Tile domain and owns a copy
+/// Verifies and materializes the complete Tile domain and owns a copy
 /// of every fixed ABI slot before returning. No sink effect occurs during
 /// preparation.
 /// This path does not compile the repository CRT or construct vendor packets.

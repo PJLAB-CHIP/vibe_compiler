@@ -2286,7 +2286,7 @@ getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
 /// Give every pure ranked-tensor function result a structured output anchor.
 /// Source programs routinely return a shape view or an insert/extract update
 /// rather than the last compute op itself.  Those values are still ordinary
-/// SSA dataflow and must not narrow whole-DAG search to workloads whose return
+/// SSA dataflow and must not narrow structured-DAG search to workloads whose return
 /// happens to be a DPS op.  A generic identity anchor exposes the result
 /// domain through TilingInterface; producer fusion must then prove the exact
 /// tile relation through the original view/update chain.  Failure to fuse

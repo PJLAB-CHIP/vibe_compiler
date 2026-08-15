@@ -334,7 +334,7 @@ llvm::Error verifyProfileTargetCallSitesMatch(
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "profile trace target-call site numbering differs from final "
-          "production at physical-Tile-local site %llu",
+          "production at Tile-local site %llu",
           static_cast<unsigned long long>(index));
   }
   return llvm::Error::success();

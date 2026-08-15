@@ -1,4 +1,4 @@
-//===- TargetABIPreparation.cpp - Physical-Tile ABI preparation --------===//
+//===- TargetABIPreparation.cpp - Tile ABI preparation --------===//
 
 #include "TargetCodeGenInternal.h"
 
@@ -25,7 +25,7 @@
 
 namespace wafer::compiler::detail {
 
-PreparedPhysicalTile::PreparedPhysicalTile(
+PreparedTile::PreparedTile(
     const ExecutionConfig &executionConfig, bool transportPreparedBeforeEntry)
     : targetIdentity(executionConfig.getTargetIdentityId()),
       transportPreparedBeforeEntry(transportPreparedBeforeEntry),
@@ -119,27 +119,27 @@ mlir::Value resolveOutputAllocation(mlir::Value value) {
 
 } // namespace
 
-mlir::FailureOr<PreparedPhysicalTile>
-prepareTargetABI(const PhysicalTileExecutable &tileExecutable,
+mlir::FailureOr<PreparedTile>
+prepareTargetABI(const TileExecutable &tileExecutable,
                  const ExecutionConfig &executionConfig,
                  bool transportPreparedBeforeEntry,
                  ProfileCaptureKind profileCapture) {
-  PreparedPhysicalTile prepared(executionConfig, transportPreparedBeforeEntry);
+  PreparedTile prepared(executionConfig, transportPreparedBeforeEntry);
   prepared.module = tileExecutable.getModule().clone();
-  if (tileExecutable.getPhysicalCardId() != PhysicalCardId(0) ||
-      tileExecutable.getPhysicalTileId().getValue() < 0 ||
-      tileExecutable.getPhysicalTileId().getValue() >=
-          executionConfig.getPhysicalTileCount() ||
+  if (tileExecutable.getCardId() != CardId(0) ||
+      tileExecutable.getTileId().getValue() < 0 ||
+      tileExecutable.getTileId().getValue() >=
+          executionConfig.getTileCount() ||
       tileExecutable.getLaunchSlotId().getValue() < 0 ||
       tileExecutable.getLaunchSlotId().getValue() >=
-          executionConfig.getPhysicalTileCount()) {
+          executionConfig.getTileCount()) {
     prepared.module->emitError(
-        "target_abi_mismatch: physical Tile identity is outside the "
+        "target_abi_mismatch: Tile identity is outside the "
         "single-card execution domain");
     return mlir::failure();
   }
-  prepared.physicalCardId = tileExecutable.getPhysicalCardId();
-  prepared.physicalTileId = tileExecutable.getPhysicalTileId();
+  prepared.cardId = tileExecutable.getCardId();
+  prepared.tileId = tileExecutable.getTileId();
   prepared.launchSlotId = tileExecutable.getLaunchSlotId();
   prepared.profileCapture = profileCapture;
   const int64_t defaultDDRAlignment =
@@ -318,7 +318,7 @@ prepareTargetABI(const PhysicalTileExecutable &tileExecutable,
   }
 
   if (profileCapture != ProfileCaptureKind::None) {
-    if (executionConfig.getPhysicalTileCount() !=
+    if (executionConfig.getTileCount() !=
             WAFER_TX81_PROFILER_TILE_COUNT ||
         executionConfig.getRuntimeLaunchKind() == RuntimeLaunchKind::Model) {
       function.emitError()

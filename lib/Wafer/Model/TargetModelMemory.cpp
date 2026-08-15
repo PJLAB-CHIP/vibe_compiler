@@ -91,15 +91,15 @@ bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
 
 } // namespace
 
-TargetModelResourceId getTargetModelResourceId(PhysicalCardId physicalCardId,
-                                               PhysicalTileId physicalTileId,
+TargetModelResourceId getTargetModelResourceId(CardId cardId,
+                                               TileId tileId,
                                                compiler::KernelABISlotRole role,
                                                int64_t resourceIndex) {
-  std::optional<PhysicalTileId> ownerTile;
+  std::optional<TileId> ownerTile;
   if (role == compiler::KernelABISlotRole::Workspace ||
       role == compiler::KernelABISlotRole::TransportStatus)
-    ownerTile = physicalTileId;
-  return {physicalCardId, ownerTile, role, resourceIndex};
+    ownerTile = tileId;
+  return {cardId, ownerTile, role, resourceIndex};
 }
 
 llvm::StringRef
@@ -145,7 +145,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
     llvm::ArrayRef<TargetModelInputBinding> inputBindings) {
   if (invocation.tiles.empty())
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
-                       "invocation has no physical Tiles");
+                       "invocation has no Tiles");
 
   if (invocation.targetIdentity != TargetIdentityId::waferTx81SingleCard())
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
@@ -153,7 +153,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
   const size_t tileCount = invocation.tiles.size();
   std::vector<const compiler::TargetCallTileDescriptor *> tiles(tileCount,
                                                                 nullptr);
-  std::set<std::pair<int64_t, int64_t>> physicalTiles;
+  std::set<std::pair<int64_t, int64_t>> tileEndpoints;
   for (const compiler::TargetCallTileDescriptor &tile : invocation.tiles) {
     const int64_t launchSlot = tile.launchSlotId.getValue();
     if (launchSlot < 0 || static_cast<uint64_t>(launchSlot) >= tileCount)
@@ -165,14 +165,14 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
       return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
                          llvm::Twine("duplicate launch slot ") +
                              llvm::Twine(launchSlot));
-    if (tile.physicalCardId != PhysicalCardId(0) ||
-        tile.physicalTileId.getValue() < 0 ||
-        !physicalTiles
-             .emplace(tile.physicalCardId.getValue(),
-                      tile.physicalTileId.getValue())
+    if (tile.cardId != CardId(0) ||
+        tile.tileId.getValue() < 0 ||
+        !tileEndpoints
+             .emplace(tile.cardId.getValue(),
+                      tile.tileId.getValue())
              .second)
       return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
-                         "physical Tile identity is invalid or duplicate");
+                         "Tile identity is invalid or duplicate");
     if (tile.targetIdentity != invocation.targetIdentity ||
         tile.kernelRuntimeABI != KernelRuntimeABIId::waferTx81Kernel())
       return memoryError(
@@ -248,7 +248,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
                                " base does not satisfy ABI alignment");
 
       const TargetModelResourceId resource =
-          getTargetModelResourceId(tile.physicalCardId, tile.physicalTileId,
+          getTargetModelResourceId(tile.cardId, tile.tileId,
                                    slot.role, slot.resourceIndex);
       ResourceFacts *facts = nullptr;
       for (ResourceFacts &candidate : resources)
@@ -315,12 +315,12 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
                          "model-owned resource cannot be prebound");
   }
   for (const ResourceFacts &resource : resources) {
-    const bool cardOwned = !resource.id.physicalTileId.has_value();
+    const bool cardOwned = !resource.id.tileId.has_value();
     if ((cardOwned && resource.launchSlots.size() != tileCount) ||
         (!cardOwned && resource.launchSlots.size() != 1))
       return memoryError(
           TargetModelMemoryErrorCode::InvalidSlot,
-          "resource owner does not match its physical Tile reference domain");
+          "resource owner does not match its Tile reference domain");
   }
 
   std::vector<const ResourceFacts *> byBase;

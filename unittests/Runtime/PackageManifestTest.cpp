@@ -95,7 +95,7 @@ protected:
     manifest.tileCount = 16;
     manifest.resources = {
         {ResourceId(0),
-         CardResourceScope{wafer::PhysicalCardId(0)},
+         CardResourceScope{wafer::CardId(0)},
          PackageResourceRole::UserInput,
          0,
          "input",
@@ -105,7 +105,7 @@ protected:
          PackageAccessMode::ReadOnly,
          true},
         {ResourceId(1),
-         CardResourceScope{wafer::PhysicalCardId(0)},
+         CardResourceScope{wafer::CardId(0)},
          PackageResourceRole::Output,
          0,
          "output",
@@ -121,12 +121,12 @@ protected:
                          wafer::kCurrentTargetModuleFormat.str(),
                          {{PackageModuleExportRole::Main, "main"}}}};
     for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
-      const int64_t physicalTile = launchSlot < 2 ? 1 - launchSlot : launchSlot;
+      const int64_t tileId = launchSlot < 2 ? 1 - launchSlot : launchSlot;
       ResourceId workspace(static_cast<uint64_t>(launchSlot) + 2);
       manifest.resources.push_back(
           {workspace,
-           TileResourceScope{wafer::PhysicalCardId(0),
-                             wafer::PhysicalTileId(physicalTile)},
+           TileResourceScope{wafer::CardId(0),
+                             wafer::TileId(tileId)},
            PackageResourceRole::Workspace,
            0,
            "default_ddr_arena",
@@ -137,8 +137,8 @@ protected:
            false});
       manifest.entries.push_back(
           {EntryId(launchSlot),
-           wafer::PhysicalCardId(0),
-           wafer::PhysicalTileId(physicalTile),
+           wafer::CardId(0),
+           wafer::TileId(tileId),
            LaunchSlotId(launchSlot),
            ModuleId(0),
            {{0, ResourceId(0), PackageAccessMode::ReadOnly},
@@ -175,7 +175,7 @@ protected:
     };
 
     manifest.resources = {{ResourceId(0),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::UserInput,
                            0,
                            "input",
@@ -185,7 +185,7 @@ protected:
                            PackageAccessMode::ReadOnly,
                            true},
                           {ResourceId(1),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::Output,
                            0,
                            "output",
@@ -224,8 +224,8 @@ protected:
             ResourceId resource(nextResource++);
             manifest.resources.push_back(
                 {resource,
-                 TileResourceScope{wafer::PhysicalCardId(0),
-                                   wafer::PhysicalTileId(tile)},
+                 TileResourceScope{wafer::CardId(0),
+                                   wafer::TileId(tile)},
                  role,
                  roleIndex,
                  name.str(),
@@ -252,7 +252,7 @@ protected:
             status, kDirectDTEStatusABI.str(), true};
       }
       manifest.entries.push_back(
-          {entry, wafer::PhysicalCardId(0), wafer::PhysicalTileId(tile),
+          {entry, wafer::CardId(0), wafer::TileId(tile),
            LaunchSlotId(tile), module, std::move(slots),
            PackageEntryCompletionKind::ReturnAfterLocalDrain,
            std::move(transport)});
@@ -275,7 +275,7 @@ protected:
     manifest.cardCount = 1;
     manifest.tileCount = 16;
     manifest.resources = {{ResourceId(0),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::UserInput,
                            0,
                            "input",
@@ -285,7 +285,7 @@ protected:
                            PackageAccessMode::ReadOnly,
                            true},
                           {ResourceId(1),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::Output,
                            0,
                            "output",
@@ -305,8 +305,8 @@ protected:
                                   {{PackageModuleExportRole::Main, "main"}}});
       manifest.entries.push_back(
           {EntryId(tile),
-           wafer::PhysicalCardId(0),
-           wafer::PhysicalTileId(tile),
+           wafer::CardId(0),
+           wafer::TileId(tile),
            LaunchSlotId(tile),
            ModuleId(tile),
            {{0, ResourceId(0), PackageAccessMode::ReadOnly},
@@ -326,7 +326,7 @@ protected:
     manifest.cardCount = 1;
     manifest.tileCount = 16;
     manifest.resources = {{ResourceId(0),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::UserInput,
                            0,
                            "input",
@@ -336,7 +336,7 @@ protected:
                            PackageAccessMode::ReadOnly,
                            true},
                           {ResourceId(1),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::Output,
                            0,
                            "output",
@@ -354,8 +354,8 @@ protected:
       ResourceId workspace(static_cast<uint64_t>(tile) + 2);
       manifest.resources.push_back(
           {workspace,
-           TileResourceScope{wafer::PhysicalCardId(0),
-                             wafer::PhysicalTileId(tile)},
+           TileResourceScope{wafer::CardId(0),
+                             wafer::TileId(tile)},
            PackageResourceRole::Workspace,
            0,
            "default_ddr_arena",
@@ -366,8 +366,8 @@ protected:
            false});
       manifest.entries.push_back(
           {EntryId(tile),
-           wafer::PhysicalCardId(0),
-           wafer::PhysicalTileId(tile),
+           wafer::CardId(0),
+           wafer::TileId(tile),
            LaunchSlotId(tile),
            ModuleId(0),
            {{0, ResourceId(0), PackageAccessMode::ReadOnly},
@@ -752,8 +752,8 @@ TEST_F(PackageManifestTest, RuntimeInvocationPlanningIsExactAndSideEffectFree) {
   EXPECT_EQ(invocation->tileCount, 16);
   ASSERT_EQ(invocation->tiles.size(), 16u);
   ASSERT_EQ(repeated->tiles.size(), 16u);
-  EXPECT_EQ(invocation->tiles.front().cardId, wafer::PhysicalCardId(0));
-  EXPECT_EQ(invocation->tiles.front().tileId, wafer::PhysicalTileId(1));
+  EXPECT_EQ(invocation->tiles.front().cardId, wafer::CardId(0));
+  EXPECT_EQ(invocation->tiles.front().tileId, wafer::TileId(1));
   EXPECT_EQ(invocation->tiles.front().launchSlot, LaunchSlotId(0));
   EXPECT_EQ(invocation->tiles.front().launchOrder,
             repeated->tiles.front().launchOrder);
@@ -888,8 +888,8 @@ TEST_F(PackageManifestTest,
   EXPECT_EQ(plan->tiles.front().module, ModuleId(0));
   for (int64_t tile = 0; tile < 16; ++tile) {
     const RuntimeSessionPlan &session = plan->tiles[tile];
-    EXPECT_EQ(session.cardId, wafer::PhysicalCardId(0));
-    EXPECT_EQ(session.tileId, wafer::PhysicalTileId(tile));
+    EXPECT_EQ(session.cardId, wafer::CardId(0));
+    EXPECT_EQ(session.tileId, wafer::TileId(tile));
     EXPECT_EQ(session.launchSlot, LaunchSlotId(tile));
     ASSERT_EQ(session.resources.size(), 3u);
     ASSERT_EQ(session.launchOrder.size(), 3u);
@@ -909,7 +909,7 @@ TEST_F(PackageManifestTest,
   auto workspace = llvm::find_if(
       verified->getManifest().resources, [&](const auto &resource) {
         const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
-        return scope && scope->tileId == wafer::PhysicalTileId(15) &&
+        return scope && scope->tileId == wafer::TileId(15) &&
                resource.role == PackageResourceRole::Workspace;
       });
   ASSERT_NE(workspace, verified->getManifest().resources.end());
@@ -944,14 +944,14 @@ TEST_F(PackageManifestTest,
 }
 
 TEST_F(PackageManifestTest,
-       PlanningPreservesNonIdentityPhysicalTileLaunchBinding) {
+       PlanningPreservesNonIdentityTileLaunchBinding) {
   using namespace wafer::runtime;
   PackageManifest manifest = makeTileManifest(16, /*permuteIdentities=*/false);
-  auto swapTile = [](wafer::PhysicalTileId tileId) {
-    if (tileId == wafer::PhysicalTileId(0))
-      return wafer::PhysicalTileId(1);
-    if (tileId == wafer::PhysicalTileId(1))
-      return wafer::PhysicalTileId(0);
+  auto swapTile = [](wafer::TileId tileId) {
+    if (tileId == wafer::TileId(0))
+      return wafer::TileId(1);
+    if (tileId == wafer::TileId(1))
+      return wafer::TileId(0);
     return tileId;
   };
   for (PackageEntrypointRecord &entry : manifest.entries)
@@ -975,9 +975,9 @@ TEST_F(PackageManifestTest,
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   ASSERT_EQ(plan->tiles.size(), 16u);
   EXPECT_EQ(plan->tiles[0].launchSlot, LaunchSlotId(0));
-  EXPECT_EQ(plan->tiles[0].tileId, wafer::PhysicalTileId(1));
+  EXPECT_EQ(plan->tiles[0].tileId, wafer::TileId(1));
   EXPECT_EQ(plan->tiles[1].launchSlot, LaunchSlotId(1));
-  EXPECT_EQ(plan->tiles[1].tileId, wafer::PhysicalTileId(0));
+  EXPECT_EQ(plan->tiles[1].tileId, wafer::TileId(0));
 }
 
 TEST_F(PackageManifestTest,

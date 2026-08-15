@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "Wafer/Conversion/WaferTensorProgramToCardProgram/WaferTensorProgramToCardProgram.h"
+#include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -21,7 +21,7 @@ namespace wafer::compiler::detail {
 enum class SelectedBufferMessageDirection : uint8_t { Send, Receive };
 
 /// One exact Direct-DTE endpoint belonging to a selected logical edge on one
-/// physical Tile. Message identity is already part of typed Instr IR; this
+/// Tile. Message identity is already part of typed Instr IR; this
 /// query-local record only binds that IR fact back to the joint-search edge.
 struct SelectedBufferMessage {
   SelectedBufferMessageDirection direction =
@@ -31,7 +31,7 @@ struct SelectedBufferMessage {
 };
 
 /// Query-local exact-buffer request for one selected logical SSA edge on one
-/// physical Tile. DAG node ids are interpreted only against the current
+/// Tile. DAG node ids are interpreted only against the current
 /// invocation's materialized-buffer relations; they are not written into IR.
 struct SelectedBufferRequest {
   std::optional<uint32_t> producerNode;
@@ -63,7 +63,7 @@ struct SelectedBufferMaterializationFailure {
   std::string detail;
 };
 
-/// Materializes the buffer multiplicity already selected by the whole-DAG
+/// Materializes the buffer multiplicity already selected by the structured-DAG
 /// candidate into ordinary allocation, SSA recurrence and scf.for IR.  This
 /// is an exact actualization gate, not a second candidate owner: it either
 /// rewrites one (possibly nested) loop whose derived rotating-slot family has

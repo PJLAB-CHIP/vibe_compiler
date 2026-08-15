@@ -60,7 +60,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   };
 
   // Synchronization and Direct-DTE lifecycle calls are shared by every
-  // physical Tile program.
+  // Tile execution.
   addVoid("ncc_join", {Scalar::I32}, TargetCallBuiltin::NCCJoin);
 
   addVoid("direct_dte_begin", {Scalar::I64, Scalar::I32},
@@ -77,11 +77,10 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   auto addEnumSelectedCalls = [&](llvm::StringRef suffix) {
     for (NumericElementwiseOperation operation :
          getNumericElementwiseOperations())
-      addVoid(("elementwise_" + stringifyNumericElementwiseOperation(operation) +
-               suffix)
+      addVoid(("elementwise_" +
+               stringifyNumericElementwiseOperation(operation) + suffix)
                   .str(),
-              signature(getNumericElementwiseArity(operation) == 1 ? 2 : 3,
-                        2),
+              signature(getNumericElementwiseArity(operation) == 1 ? 2 : 3, 2),
               operation);
 
     for (NumericReduceOperation operation : getNumericReduceOperations())
@@ -104,22 +103,23 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
     for (TargetPoolingOperation operation : getTargetPoolingOperations()) {
       bool indexed = operation == TargetPoolingOperation::IndexedMaximum ||
                      operation == TargetPoolingOperation::IndexedMinimum;
-      addVoid(("pool_" + stringifyTargetPoolingOperation(operation) + suffix)
-                  .str(),
-              signature(indexed ? 3 : 2, 18), operation);
+      addVoid(
+          ("pool_" + stringifyTargetPoolingOperation(operation) + suffix).str(),
+          signature(indexed ? 3 : 2, 18), operation);
     }
 
     for (TargetUnpoolingOperation operation : getTargetUnpoolingOperations())
-      addVoid(("unpool_" + stringifyTargetUnpoolingOperation(operation) + suffix)
-                  .str(),
-              signature(2, 15), operation);
+      addVoid(
+          ("unpool_" + stringifyTargetUnpoolingOperation(operation) + suffix)
+              .str(),
+          signature(2, 15), operation);
 
     auto addPeripheral = [&](TargetPeripheralOperation kind, unsigned i64Count,
                              unsigned i32Count) {
-      addVoid(("peripheral_" + stringifyTargetPeripheralOperation(kind) +
-               suffix)
-                  .str(),
-              signature(i64Count, i32Count), kind);
+      addVoid(
+          ("peripheral_" + stringifyTargetPeripheralOperation(kind) + suffix)
+              .str(),
+          signature(i64Count, i32Count), kind);
     };
     addPeripheral(TargetPeripheralOperation::ArgMaximum, 3, 7);
     addPeripheral(TargetPeripheralOperation::ArgMinimum, 3, 7);
@@ -140,11 +140,9 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
           {Scalar::I64, Scalar::I32, Scalar::I64, Scalar::I32, Scalar::I32},
           TargetCallBuiltin::MaskMove);
   addVoid("gemm_v3", signature(3, 5), TargetCallBuiltin::Gemm);
-  addVoid("gemm_oriented_v3", signature(3, 7),
-          TargetCallBuiltin::GemmOriented);
+  addVoid("gemm_oriented_v3", signature(3, 7), TargetCallBuiltin::GemmOriented);
   addVoid("tdma_pad_v3", signature(2, 13), TargetCallBuiltin::TDMAPad);
-  addVoid("tdma_img2col_v3", signature(2, 17),
-          TargetCallBuiltin::TDMAImg2Col);
+  addVoid("tdma_img2col_v3", signature(2, 17), TargetCallBuiltin::TDMAImg2Col);
 
   addEnumSelectedCalls("_v3");
   addVoid("direct_dte_send_issue_v3", {Scalar::I64},

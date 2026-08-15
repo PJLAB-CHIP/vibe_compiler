@@ -1,6 +1,6 @@
 #include "../../lib/Wafer/Compiler/NoCCommunicationAction.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/WholeCardCandidateEvaluation.h"
+#include "../../lib/Wafer/Compiler/RankCandidateEvaluation.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"

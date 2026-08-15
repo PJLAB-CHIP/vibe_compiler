@@ -87,13 +87,13 @@ void addSignedMetadata(llvm::Module &module, llvm::StringRef name,
 }
 
 void attachTargetLLVMMetadata(llvm::Module &module,
-                              const PreparedPhysicalTile &prepared,
+                              const PreparedTile &prepared,
                               llvm::StringRef entrySymbol) {
   addStringMetadata(module, kTargetLLVMSchemaMetadata, kTargetLLVMSchema);
   addSignedMetadata(module, kTargetLLVMCardIdMetadata,
-                    prepared.physicalCardId.getValue());
+                    prepared.cardId.getValue());
   addSignedMetadata(module, kTargetLLVMTileIdMetadata,
-                    prepared.physicalTileId.getValue());
+                    prepared.tileId.getValue());
   addSignedMetadata(module, kTargetLLVMLaunchSlotMetadata,
                     prepared.launchSlotId.getValue());
   addStringMetadata(module, kTargetLLVMEntryMetadata, entrySymbol);
@@ -273,8 +273,8 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
 } // namespace
 
 llvm::Error verifyTargetLLVMModule(
-    const llvm::Module &module, PhysicalCardId expectedPhysicalCardId,
-    PhysicalTileId expectedPhysicalTileId, LaunchSlotId expectedLaunchSlotId,
+    const llvm::Module &module, CardId expectedCardId,
+    TileId expectedTileId, LaunchSlotId expectedLaunchSlotId,
     llvm::StringRef expectedEntrySymbol,
     TargetIdentityId expectedTargetIdentity,
     KernelRuntimeABIId expectedKernelRuntimeABI,
@@ -288,14 +288,14 @@ llvm::Error verifyTargetLLVMModule(
                                    verifierOutput.c_str());
   std::string expectedIdentifier =
       llvm::formatv("wafer.target.card.{0}.tile.{1:D5}.launch.{2:D5}",
-                    expectedPhysicalCardId.getValue(),
-                    expectedPhysicalTileId.getValue(),
+                    expectedCardId.getValue(),
+                    expectedTileId.getValue(),
                     expectedLaunchSlotId.getValue())
           .str();
   if (module.getModuleIdentifier() != expectedIdentifier)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "target LLVM module identifier does not match its physical Tile and "
+        "target LLVM module identifier does not match its Tile and "
         "launch slot");
   if (module.getTargetTriple() != kTargetLLVMTriple)
     return llvm::createStringError(
@@ -306,14 +306,14 @@ llvm::Error verifyTargetLLVMModule(
       readSingleStringMetadata(module, kTargetLLVMSchemaMetadata);
   if (!schema)
     return schema.takeError();
-  llvm::Expected<int64_t> physicalCardId =
+  llvm::Expected<int64_t> cardId =
       readSingleSignedMetadata(module, kTargetLLVMCardIdMetadata);
-  if (!physicalCardId)
-    return physicalCardId.takeError();
-  llvm::Expected<int64_t> physicalTileId =
+  if (!cardId)
+    return cardId.takeError();
+  llvm::Expected<int64_t> tileId =
       readSingleSignedMetadata(module, kTargetLLVMTileIdMetadata);
-  if (!physicalTileId)
-    return physicalTileId.takeError();
+  if (!tileId)
+    return tileId.takeError();
   llvm::Expected<int64_t> launchSlot =
       readSingleSignedMetadata(module, kTargetLLVMLaunchSlotMetadata);
   if (!launchSlot)
@@ -343,15 +343,15 @@ llvm::Error verifyTargetLLVMModule(
   if (!abi)
     return abi.takeError();
   if (*schema != kTargetLLVMSchema ||
-      *physicalCardId != expectedPhysicalCardId.getValue() ||
-      *physicalTileId != expectedPhysicalTileId.getValue() ||
+      *cardId != expectedCardId.getValue() ||
+      *tileId != expectedTileId.getValue() ||
       *launchSlot != expectedLaunchSlotId.getValue() ||
       *entrySymbol != expectedEntrySymbol ||
       *identity != expectedTargetIdentity || *abi != expectedKernelRuntimeABI ||
       *moduleFormat != expectedModuleFormat)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "target LLVM module metadata does not match the typed physical Tile "
+        "target LLVM module metadata does not match the typed Tile "
         "identity");
 
   const llvm::Function *entry = module.getFunction(expectedEntrySymbol);
@@ -372,11 +372,11 @@ llvm::Error verifyTargetLLVMModule(
   return verifyTargetLLVMSlotMetadata(module, expectedSlots);
 }
 
-mlir::LogicalResult lowerToTargetLLVM(PreparedPhysicalTile &prepared) {
+mlir::LogicalResult lowerToTargetLLVM(PreparedTile &prepared) {
   TargetConversionRequest request{};
   request.defaultDDRArenaArgumentIndex = prepared.defaultDDRArenaArgumentIndex;
-  request.physicalCardId = prepared.physicalCardId.getValue();
-  request.physicalTileId = prepared.physicalTileId.getValue();
+  request.cardId = prepared.cardId.getValue();
+  request.tileId = prepared.tileId.getValue();
   request.transportStatusArgumentIndex = prepared.transportStatusArgumentIndex;
   request.transportPreparedBeforeEntry = prepared.transportPreparedBeforeEntry;
   request.profileRecordArgumentIndex = prepared.profileRecordArgumentIndex;
@@ -387,7 +387,7 @@ mlir::LogicalResult lowerToTargetLLVM(PreparedPhysicalTile &prepared) {
                          });
 }
 
-mlir::LogicalResult verifyLoweredKernelABI(PreparedPhysicalTile &prepared,
+mlir::LogicalResult verifyLoweredKernelABI(PreparedTile &prepared,
                                            llvm::StringRef entrySymbol) {
   auto entry =
       prepared.module->lookupSymbol<mlir::LLVM::LLVMFuncOp>(entrySymbol);
@@ -408,7 +408,7 @@ mlir::LogicalResult verifyLoweredKernelABI(PreparedPhysicalTile &prepared,
 }
 
 llvm::Expected<TargetLLVMModule>
-translatePreparedPhysicalTile(PreparedPhysicalTile prepared,
+translatePreparedTile(PreparedTile prepared,
                               llvm::StringRef entrySymbol) {
   auto llvmContext = std::make_unique<llvm::LLVMContext>();
   std::unique_ptr<llvm::Module> llvmModule = mlir::translateModuleToLLVMIR(
@@ -418,8 +418,8 @@ translatePreparedPhysicalTile(PreparedPhysicalTile prepared,
                                    "target LLVM IR translation failed");
   llvmModule->setModuleIdentifier(
       llvm::formatv("wafer.target.card.{0}.tile.{1:D5}.launch.{2:D5}",
-                    prepared.physicalCardId.getValue(),
-                    prepared.physicalTileId.getValue(),
+                    prepared.cardId.getValue(),
+                    prepared.tileId.getValue(),
                     prepared.launchSlotId.getValue())
           .str());
   llvmModule->setTargetTriple(kTargetLLVMTriple);
@@ -428,12 +428,12 @@ translatePreparedPhysicalTile(PreparedPhysicalTile prepared,
     return std::move(error);
   attachTargetLLVMMetadata(*llvmModule, prepared, entrySymbol);
   if (llvm::Error error = verifyTargetLLVMModule(
-          *llvmModule, prepared.physicalCardId, prepared.physicalTileId,
+          *llvmModule, prepared.cardId, prepared.tileId,
           prepared.launchSlotId, entrySymbol, prepared.targetIdentity,
           prepared.kernelRuntimeABI, prepared.moduleFormat, prepared.slots))
     return std::move(error);
   return TargetLLVMModulesBuilder::makeModule(
-      prepared.physicalCardId, prepared.physicalTileId, prepared.launchSlotId,
+      prepared.cardId, prepared.tileId, prepared.launchSlotId,
       entrySymbol, prepared.targetIdentity, prepared.kernelRuntimeABI,
       prepared.moduleFormat, std::move(prepared.slots), std::move(llvmContext),
       std::move(llvmModule));

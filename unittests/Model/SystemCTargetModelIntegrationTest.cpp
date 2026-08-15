@@ -6,7 +6,7 @@
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "Wafer/Compiler/CompilationInternal.h"
-#include "Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "Wafer/Compiler/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -79,7 +79,7 @@ std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
 }
 
 struct CompiledElementwiseProgram {
-  PhysicalTileExecutables executable;
+  CardExecutable executable;
   TargetLLVMModules target;
 };
 
@@ -123,15 +123,15 @@ module {
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<PhysicalTileExecutables> executable =
-      wafer::compiler::detail::buildPhysicalTileExecutables(
+  llvm::Expected<CardExecutable> executable =
+      wafer::compiler::detail::buildCardExecutable(
           context, *tensorProgram, std::move(program), *config,
           OptimizationConfig::none(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
   llvm::Expected<TargetLLVMModules> target =
-      compilePhysicalTileExecutablesToTargetLLVMModules(*executable,
+      compileCardExecutableToTargetLLVMModules(*executable,
                                                         diagnostics);
   if (!target)
     return target.takeError();
@@ -158,7 +158,7 @@ std::vector<RawLogicalValue> makeSequentialF32Values(int64_t globalOffset,
 }
 
 const ProgramResourceBinding *
-findProgramBinding(const PhysicalTileExecutable &tile,
+findProgramBinding(const TileExecutable &tile,
                    const KernelABISlot &slot) {
   ProgramResourceRole role;
   switch (slot.role) {
@@ -192,7 +192,7 @@ TEST(SystemCTargetModelIntegrationTest,
       compileElementwiseTargetModules(diagnostics);
   ASSERT_TRUE(static_cast<bool>(compiled))
       << diagnostics << llvm::toString(compiled.takeError());
-  const auto &tiles = compiled->executable.getPhysicalTileExecutables();
+  const auto &tiles = compiled->executable.getTileExecutables();
   const auto &modules = compiled->target.getModules();
   ASSERT_EQ(tiles.size(), 16u);
   ASSERT_EQ(modules.size(), 16u);
@@ -207,13 +207,13 @@ TEST(SystemCTargetModelIntegrationTest,
                                    {LogicalFormat::F32, UINT64_C(0x3f800000)});
   rhs.front().bits = UINT64_C(0x33800000); // 2^-24, RNE tie.
   for (auto [tileIndex, module] : llvm::enumerate(modules)) {
-    const PhysicalTileExecutable &tile = tiles[tileIndex];
-    ASSERT_EQ(module.getPhysicalCardId(), tile.getPhysicalCardId());
-    ASSERT_EQ(module.getPhysicalTileId(), tile.getPhysicalTileId());
+    const TileExecutable &tile = tiles[tileIndex];
+    ASSERT_EQ(module.getCardId(), tile.getCardId());
+    ASSERT_EQ(module.getTileId(), tile.getTileId());
     ASSERT_EQ(module.getLaunchSlotId(), tile.getLaunchSlotId());
     const int64_t launchSlot = module.getLaunchSlotId().getValue();
-    arguments.push_back({module.getPhysicalCardId(),
-                         module.getPhysicalTileId(),
+    arguments.push_back({module.getCardId(),
+                         module.getTileId(),
                          module.getLaunchSlotId(),
                          {}});
     size_t userInputCount = 0;
@@ -250,8 +250,8 @@ TEST(SystemCTargetModelIntegrationTest,
         ASSERT_EQ(bytes.size(), static_cast<uint64_t>(slot.byteSize));
         if (launchSlot == 0)
           inputs.push_back(
-              {getTargetModelResourceId(module.getPhysicalCardId(),
-                                        module.getPhysicalTileId(), slot.role,
+              {getTargetModelResourceId(module.getCardId(),
+                                        module.getTileId(), slot.role,
                                         slot.resourceIndex),
                std::move(bytes)});
         ++userInputCount;
@@ -301,8 +301,8 @@ TEST(SystemCTargetModelIntegrationTest,
   for (const TargetModelOutput &modelOutput : result->outputs) {
     auto module =
         llvm::find_if(modules, [&](const TargetLLVMModule &candidate) {
-          return candidate.getPhysicalCardId() == modelOutput.physicalCardId &&
-                 candidate.getPhysicalTileId() == modelOutput.physicalTileId &&
+          return candidate.getCardId() == modelOutput.cardId &&
+                 candidate.getTileId() == modelOutput.tileId &&
                  candidate.getLaunchSlotId() == modelOutput.launchSlotId;
         });
     ASSERT_NE(module, modules.end());

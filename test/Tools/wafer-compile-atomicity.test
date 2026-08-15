@@ -46,7 +46,7 @@
 # RUN: test ! -e %t.outputs/bad-metadata
 
 # A marker alone cannot establish the typed user-input/result distribution
-# contract that the tensor program hands to CardProgram construction.
+# contract that the tensor program hands to CardModule construction.
 # RUN: not env HELPER_MODE=no-boundary WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/missing-boundary --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=NO-BOUNDARY
 # RUN: test ! -e %t.outputs/missing-boundary
 
@@ -182,7 +182,7 @@
 # STAGE-INSTR: 'wafer.instr.ncc_join [0]' op is not legal in an exporter or post-SPMD StableHLO program
 # SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume
 # NESTED-FACTS: target topology and execution mesh must be direct module members
-# SINGLE-CARD: wafer-compile: wrote verified package with num-partitions=1 physical-tiles=16:
+# SINGLE-CARD: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 # NO-CARD: package: id=0 schema=8 cards=1 tiles=16
 # NO-CARD: entry: 0 card_id=0 tile_id=0 launch_slot=0
 # NO-CARD: launch_phase: role=main symbol=main

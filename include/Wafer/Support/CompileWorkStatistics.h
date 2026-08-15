@@ -15,7 +15,7 @@ namespace wafer::support {
 /// Stable units of compiler work. They count actual compiler actions, not
 /// elapsed time, estimated target cycles, or persisted planning state.
 enum class CompileWorkKind : size_t {
-  PhysicalTileMemoryPlanning,
+  TileMemoryPlanning,
   TileToInstructionLowering,
   SelectedBufferModuleClone,
   SPMPlanning,
@@ -24,7 +24,7 @@ enum class CompileWorkKind : size_t {
 };
 
 struct CompileWorkStatistics {
-  uint64_t physicalTileMemoryPlanningInvocations = 0;
+  uint64_t tileMemoryPlanningInvocations = 0;
   uint64_t tileToInstructionLowerings = 0;
   uint64_t selectedBufferModuleClones = 0;
   uint64_t spmPlanningInvocations = 0;
@@ -47,7 +47,7 @@ public:
           std::memory_order_relaxed);
     };
     return {
-        read(CompileWorkKind::PhysicalTileMemoryPlanning),
+        read(CompileWorkKind::TileMemoryPlanning),
         read(CompileWorkKind::TileToInstructionLowering),
         read(CompileWorkKind::SelectedBufferModuleClone),
         read(CompileWorkKind::SPMPlanning),

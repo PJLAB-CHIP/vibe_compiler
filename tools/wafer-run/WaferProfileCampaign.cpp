@@ -259,7 +259,7 @@ makeCapturePlan(const BoardInvocationFilePlan &primaryPlan,
       continue;
     const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
     if (!isProfilerResource(resource, capture.getRecordBytes()) || !scope ||
-        scope->cardId != PhysicalCardId(0) || scope->tileId.getValue() < 0 ||
+        scope->cardId != CardId(0) || scope->tileId.getValue() < 0 ||
         scope->tileId.getValue() >= WAFER_TX81_PROFILER_TILE_COUNT ||
         profilerResources[scope->tileId.getValue()])
       return invalid("profile capture has an invalid typed profiler resource "
@@ -422,15 +422,15 @@ validateTraceSites(const VerifiedProfileInstrumentation &instrumentation,
        ++launchSlot) {
     const ProfileTileSiteMap &tileMap = siteMap[launchSlot];
     const int64_t tileId = tileMap.tileId.getValue();
-    if (tileMap.cardId != PhysicalCardId(0) || tileId < 0 ||
+    if (tileMap.cardId != CardId(0) || tileId < 0 ||
         tileId >= WAFER_TX81_PROFILER_TILE_COUNT ||
         tileMap.launchSlot != LaunchSlotId(launchSlot))
       return invalid(
-          "profile typed trace/site-map physical-Tile domain is not canonical");
+          "profile typed trace/site-map Tile domain is not canonical");
     const Tx81ProfilerRecord &trace = campaign.trace[tileId];
     if (trace.header.tile_id != static_cast<uint32_t>(tileId))
       return invalid(
-          "profile trace record disagrees with its physical-Tile site map");
+          "profile trace record disagrees with its Tile site map");
     for (const WaferTx81ProfilerTSMCallEvent &event : trace.events) {
       if (!isTx81ProfilerSiteValid(event))
         return invalid("profile trace event has no typed primary site");
@@ -478,7 +478,7 @@ llvm::Error validateTopology(const BoardDeviceInfo &device) {
     seenLaunchSlots[tile.launchSlot.getValue()] = true;
     if (llvm::is_contained(coordinates,
                            std::pair(tile.physicalX, tile.physicalY)))
-      return invalid("qualified profile device has duplicate physical tile "
+      return invalid("qualified profile device has duplicate Tile identity "
                      "coordinates");
     coordinates.emplace_back(tile.physicalX, tile.physicalY);
   }
@@ -765,7 +765,7 @@ serializeEvidence(const VerifiedProfileInstrumentation &instrumentation,
       campaign.profiledPackage->getPackage().getManifest();
   llvm::ArrayRef<ProfileTileSiteMap> siteMap = instrumentation.getSiteMap();
   if (siteMap.size() != WAFER_TX81_PROFILER_TILE_COUNT)
-    return invalid("profile evidence has no complete physical-Tile site map");
+    return invalid("profile evidence has no complete Tile site map");
   const std::string targetIdentity =
       stringifyTargetIdentityId(primaryManifest.targetIdentity).str();
   std::string storage;

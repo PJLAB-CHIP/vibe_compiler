@@ -1,7 +1,7 @@
 //===- TensorProgramCompilation.cpp - Tensor-program compilation --------===//
 
 #include "CompilationInternal.h"
-#include "PhysicalTileExecutablesInternal.h"
+#include "CardExecutableInternal.h"
 
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -74,12 +74,12 @@ static llvm::Expected<ProductT> compileTensorProgram(
                  diagnostics, failAfterLaunchSlot);
 }
 
-llvm::Expected<PhysicalTileExecutables>
-compileTensorProgramToPhysicalTileExecutables(
+llvm::Expected<CardExecutable>
+compileTensorProgramToCardExecutable(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot, CompilationIRTrace &irTrace) {
-  return compileTensorProgram<PhysicalTileExecutables>(
+  return compileTensorProgram<CardExecutable>(
       tensorProgramDirectory, executionConfig, diagnostics, failAfterLaunchSlot,
       [optimizations,
        &irTrace](std::shared_ptr<mlir::MLIRContext> &context,
@@ -87,7 +87,7 @@ compileTensorProgramToPhysicalTileExecutables(
                  frontend::FrontendProgramVerificationResult program,
                  ExecutionConfig config, llvm::raw_ostream &output,
                  std::optional<int64_t> failAfterLaunchSlot) {
-        return buildPhysicalTileExecutablesWithIRTrace(
+        return buildCardExecutableWithIRTrace(
             context, tensorModule, std::move(program), config, optimizations,
             output, failAfterLaunchSlot, irTrace);
       });

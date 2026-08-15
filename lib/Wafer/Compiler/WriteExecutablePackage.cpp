@@ -4,7 +4,7 @@
 #include "CompilationStatistics.h"
 #include "ExecutableCallClosure.h"
 #include "PackageInternal.h"
-#include "PhysicalTileExecutablesInternal.h"
+#include "CardExecutableInternal.h"
 #include "TargetCodeGenInternal.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
@@ -99,7 +99,7 @@ getPackageManifestDigest(llvm::StringRef packageDirectory) {
 
 static mlir::LogicalResult stageExecutablePackage(
     llvm::StringRef tensorProgramDirectory,
-    const PhysicalTileExecutables &physicalTileExecutables,
+    const CardExecutable &cardExecutable,
     llvm::StringRef stagedTargetModules, llvm::StringRef stagedPackage,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterTargetLaunchSlot,
@@ -114,8 +114,8 @@ static mlir::LogicalResult stageExecutablePackage(
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "executable-to-package", "target-ir-lowering");
   llvm::Expected<TargetLLVMModules> translatedModules =
-      compilePhysicalTileExecutablesToTargetLLVMModulesImpl(
-          physicalTileExecutables, diagnostics, failAfterTargetLaunchSlot,
+      compileCardExecutableToTargetLLVMModulesImpl(
+          cardExecutable, diagnostics, failAfterTargetLaunchSlot,
           profileCapture);
   if (!translatedModules) {
     llvm::consumeError(translatedModules.takeError());
@@ -142,7 +142,7 @@ static mlir::LogicalResult stageExecutablePackage(
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "executable-to-package", "package-assembly");
   llvm::Expected<VerifiedPackage> package = writePackage(
-      tensorProgramDirectory, physicalTileExecutables, *targetModules,
+      tensorProgramDirectory, cardExecutable, *targetModules,
       stagedPackage, diagnostics, failAfterPackageLaunchSlot);
   if (!package) {
     llvm::consumeError(package.takeError());
@@ -167,7 +167,7 @@ static mlir::LogicalResult stageExecutablePackage(
       << " peak_rss_kib=" << getCompilePeakRSSKiB()
       << " capture=" << stringifyProfileCaptureKind(profileCapture)
       << " tile_count="
-      << physicalTileExecutables.getExecutionConfig().getPhysicalTileCount()
+      << cardExecutable.getExecutionConfig().getTileCount()
       << "\n";
   diagnostics << "wafer-compile: compile-stats stage=target-package"
               << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
@@ -191,29 +191,29 @@ makeProfileStaticCostMetric(const analysis::ScheduleCostMetric &metric) {
 
 static llvm::Expected<runtime::ProfileStaticCostModel>
 collectProfileStaticCostModel(
-    const PhysicalTileExecutables &physicalTileExecutables) {
-  const auto &tiles = physicalTileExecutables.getPhysicalTileExecutables();
+    const CardExecutable &cardExecutable) {
+  const auto &tiles = cardExecutable.getTileExecutables();
   if (tiles.size() !=
       static_cast<size_t>(
-          physicalTileExecutables.getExecutionConfig().getPhysicalTileCount()))
+          cardExecutable.getExecutionConfig().getTileCount()))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile static cost physical Tile domain differs from execution "
+        "profile static cost Tile domain differs from execution "
         "config");
 
   std::set<int64_t> tileIds;
-  std::vector<const PhysicalTileExecutable *> tilesByLaunchSlot(tiles.size(),
+  std::vector<const TileExecutable *> tilesByLaunchSlot(tiles.size(),
                                                                 nullptr);
-  for (const PhysicalTileExecutable &tile : tiles) {
+  for (const TileExecutable &tile : tiles) {
     const int64_t launchSlot = tile.getLaunchSlotId().getValue();
-    if (tile.getPhysicalCardId() != PhysicalCardId(0) ||
-        tile.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
+    if (tile.getCardId() != CardId(0) ||
+        tile.getTileId().getValue() < 0 || launchSlot < 0 ||
         launchSlot >= static_cast<int64_t>(tiles.size()) ||
-        !tileIds.insert(tile.getPhysicalTileId().getValue()).second ||
+        !tileIds.insert(tile.getTileId().getValue()).second ||
         tilesByLaunchSlot[launchSlot] != nullptr)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "profile static cost physical Tile binding is invalid or "
+          "profile static cost Tile binding is invalid or "
           "duplicated");
     tilesByLaunchSlot[launchSlot] = &tile;
   }
@@ -222,9 +222,9 @@ collectProfileStaticCostModel(
         llvm::errc::invalid_argument,
         "profile static cost launch-slot domain is not dense and complete");
 
-  llvm::SmallVector<analysis::PhysicalTileInstructionProgram, 16> tilePrograms;
-  tilePrograms.reserve(tilesByLaunchSlot.size());
-  for (const PhysicalTileExecutable *tile : tilesByLaunchSlot) {
+  llvm::SmallVector<analysis::TileInstructionProgram, 16> tileModules;
+  tileModules.reserve(tilesByLaunchSlot.size());
+  for (const TileExecutable *tile : tilesByLaunchSlot) {
     llvm::Expected<ExecutableCallClosure> closure =
         analyzeExecutableCallClosure(tile->getModule(), tile->getEntrySymbol());
     if (!closure)
@@ -233,18 +233,18 @@ collectProfileStaticCostModel(
               llvm::errc::invalid_argument,
               "profile static cost accepted call closure is invalid"),
           closure.takeError());
-    tilePrograms.push_back(
-        {tile->getPhysicalTileId(), closure->entry.getOperation()});
+    tileModules.push_back(
+        {tile->getTileId(), closure->entry.getOperation()});
   }
 
   const analysis::TargetScheduleCostPolicy policy =
       analysis::getTargetScheduleCostPolicy();
-  analysis::WholeCardInstructionProgramCost cost =
-      analysis::analyzeWholeCardInstructionProgramCost(tilePrograms, policy);
+  analysis::CardInstructionProgramCost cost =
+      analysis::analyzeCardInstructionProgramCost(tileModules, policy);
   if (cost.tileCosts.size() != tiles.size())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile static cost analysis omitted an accepted physical Tile");
+        "profile static cost analysis omitted an accepted Tile");
 
   runtime::ProfileStaticCostModel model;
   model.model = runtime::kProfileStaticCostModelName.str();
@@ -261,7 +261,7 @@ collectProfileStaticCostModel(
   model.rates.spmMovementBytesPerSecond = std::nullopt;
   model.tiles.reserve(cost.tileCosts.size());
   for (auto [launchSlot, tileCost] : llvm::enumerate(cost.tileCosts)) {
-    const PhysicalTileExecutable &tile = *tilesByLaunchSlot[launchSlot];
+    const TileExecutable &tile = *tilesByLaunchSlot[launchSlot];
     runtime::ProfileStaticTileWork work;
     work.npuF16Bf16LogicalOps =
         makeProfileStaticCostMetric(tileCost.compute.npuF16Bf16LogicalOps);
@@ -290,8 +290,8 @@ collectProfileStaticCostModel(
     work.directionalNoCTransmitBytes.west = makeProfileStaticCostMetric(
         tileCost.noc.directional(analysis::NoCDirection::West));
     runtime::ProfileStaticTileCost profiledTile;
-    profiledTile.cardId = tile.getPhysicalCardId();
-    profiledTile.tileId = tile.getPhysicalTileId();
+    profiledTile.cardId = tile.getCardId();
+    profiledTile.tileId = tile.getTileId();
     profiledTile.launchSlot = runtime::LaunchSlotId(
         static_cast<uint64_t>(tile.getLaunchSlotId().getValue()));
     profiledTile.work = std::move(work);
@@ -301,8 +301,8 @@ collectProfileStaticCostModel(
 }
 
 struct ProfileTileTargetCallSites {
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlotId{0};
   std::vector<ProfileTargetCallSite> sites;
 };
@@ -319,11 +319,11 @@ collectTargetCallSites(const TargetLLVMModules &targetLLVMModules) {
       targetLLVMModules.getModules().size(), nullptr);
   for (const TargetLLVMModule &module : targetLLVMModules.getModules()) {
     const int64_t launchSlot = module.getLaunchSlotId().getValue();
-    if (module.getPhysicalCardId() != PhysicalCardId(0) ||
-        module.getPhysicalTileId().getValue() < 0 || launchSlot < 0 ||
+    if (module.getCardId() != CardId(0) ||
+        module.getTileId().getValue() < 0 || launchSlot < 0 ||
         launchSlot >=
             static_cast<int64_t>(targetLLVMModules.getModules().size()) ||
-        !tileIds.insert(module.getPhysicalTileId().getValue()).second ||
+        !tileIds.insert(module.getTileId().getValue()).second ||
         modulesByLaunchSlot[launchSlot] != nullptr)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
@@ -346,9 +346,9 @@ collectTargetCallSites(const TargetLLVMModules &targetLLVMModules) {
       if (site.siteId != expectedSite)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "profile site-map IDs are not physical-Tile-local dense");
-    maps.tiles.push_back({module->getPhysicalCardId(),
-                          module->getPhysicalTileId(),
+            "profile site-map IDs are not Tile-local dense");
+    maps.tiles.push_back({module->getCardId(),
+                          module->getTileId(),
                           module->getLaunchSlotId(), std::move(*sites)});
   }
   return maps;
@@ -398,7 +398,7 @@ static constexpr std::array<ProfileCaptureKind, 2> kProfileCaptures = {
 static mlir::LogicalResult stageCapturePackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
     llvm::StringRef instrumentationRoot,
-    const PhysicalTileExecutables &physicalTileExecutables,
+    const CardExecutable &cardExecutable,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     ProfileCapturePackages &metadata,
     std::optional<TargetLLVMModules> &traceTargetLLVM) {
@@ -412,7 +412,7 @@ static mlir::LogicalResult stageCapturePackages(
                             stringifyProfileCaptureKind(capture));
     std::optional<TargetLLVMModules> targetLLVM;
     if (mlir::failed(stageExecutablePackage(
-            tensorProgramDirectory, physicalTileExecutables,
+            tensorProgramDirectory, cardExecutable,
             targetModulesDirectory, package, targetToolchain, diagnostics,
             std::nullopt, std::nullopt, targetLLVM, capture)))
       return mlir::failure();
@@ -437,7 +437,7 @@ static mlir::LogicalResult stageCapturePackages(
 
 static mlir::LogicalResult writeProfileInstrumentation(
     llvm::StringRef instrumentationRoot, llvm::StringRef productionPackage,
-    const PhysicalTileExecutables &productionExecutables,
+    const CardExecutable &productionExecutables,
     const TargetLLVMModules &productionTargetLLVM,
     const TargetLLVMModules &productionTraceTargetLLVM,
     const ProfileCapturePackages &productionCaptures,
@@ -456,7 +456,7 @@ static mlir::LogicalResult writeProfileInstrumentation(
       productionTraceTargetLLVM.getModules().size()) {
     reject(
         diagnostics,
-        "profile trace physical Tile domain differs from the primary program");
+        "profile trace Tile domain differs from the primary program");
     return mlir::failure();
   }
   std::vector<const TargetLLVMModule *> traceByLaunchSlot(
@@ -488,12 +488,12 @@ static mlir::LogicalResult writeProfileInstrumentation(
       return mlir::failure();
     }
     const TargetLLVMModule &traceTile = *traceByLaunchSlot[launchSlot];
-    if (finalTile.getPhysicalCardId() != traceTile.getPhysicalCardId() ||
-        finalTile.getPhysicalTileId() != traceTile.getPhysicalTileId() ||
+    if (finalTile.getCardId() != traceTile.getCardId() ||
+        finalTile.getTileId() != traceTile.getTileId() ||
         finalTile.getLaunchSlotId() != traceTile.getLaunchSlotId() ||
         finalTile.getEntrySymbol() != traceTile.getEntrySymbol()) {
       reject(diagnostics,
-             "profile trace physical Tile binding or entry differs from the "
+             "profile trace Tile binding or entry differs from the "
              "primary program");
       return mlir::failure();
     }
@@ -673,18 +673,18 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<PhysicalTileExecutables> &physicalTileExecutables,
+    std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
     CompilationIRTrace &irTrace) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "executable-package");
-  llvm::Expected<PhysicalTileExecutables> compiledPhysicalTileExecutables =
-      compileTensorProgramToPhysicalTileExecutables(
+  llvm::Expected<CardExecutable> compiledCardExecutable =
+      compileTensorProgramToCardExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
           failAfterLaunchSlot, irTrace);
-  if (!compiledPhysicalTileExecutables) {
-    llvm::consumeError(compiledPhysicalTileExecutables.takeError());
+  if (!compiledCardExecutable) {
+    llvm::consumeError(compiledCardExecutable.takeError());
     return mlir::failure();
   }
 
@@ -693,13 +693,13 @@ mlir::LogicalResult stageTargetPackage(
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
   if (mlir::failed(stageExecutablePackage(
-          tensorProgramDirectory, *compiledPhysicalTileExecutables,
+          tensorProgramDirectory, *compiledCardExecutable,
           stagedTargetModules, stagedPackage, targetToolchain, diagnostics,
           failAfterTargetLaunchSlot, failAfterPackageLaunchSlot,
           targetLLVMModules)))
     return mlir::failure();
 
-  physicalTileExecutables.emplace(std::move(*compiledPhysicalTileExecutables));
+  cardExecutable.emplace(std::move(*compiledCardExecutable));
   diagnostics << "wafer-compile: compile-stats stage=executable-package"
               << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
               << " peak_rss_kib=" << getCompilePeakRSSKiB()
@@ -714,14 +714,14 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<PhysicalTileExecutables> &physicalTileExecutables,
+    std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
     CompilationIRTrace &irTrace) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "profile-package");
-  llvm::Expected<PhysicalTileExecutables> compiled =
-      compileTensorProgramToPhysicalTileExecutables(
+  llvm::Expected<CardExecutable> compiled =
+      compileTensorProgramToCardExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
           failAfterLaunchSlot, irTrace);
   if (!compiled) {
@@ -762,7 +762,7 @@ mlir::LogicalResult stageProfileTargetPackages(
           instrumentationRoot, diagnostics)))
     return mlir::failure();
 
-  physicalTileExecutables.emplace(std::move(*compiled));
+  cardExecutable.emplace(std::move(*compiled));
   targetLLVMModules.emplace(std::move(*productionTargetLLVM));
   diagnostics << "wafer-compile: compile-stats stage=profile-package"
               << " wall_ms=" << elapsedCompileMilliseconds(totalStart)
@@ -770,7 +770,7 @@ mlir::LogicalResult stageProfileTargetPackages(
               << " capture_packages=" << kProfileCaptures.size()
               << " target_module_set_count=" << 1 + kProfileCaptures.size()
               << " target_tile_lowerings="
-              << executionConfig.getPhysicalTileCount() *
+              << executionConfig.getTileCount() *
                      static_cast<int64_t>(1 + kProfileCaptures.size())
               << "\n";
   return mlir::success();

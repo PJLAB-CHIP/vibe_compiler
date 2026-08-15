@@ -56,19 +56,19 @@ private:
 };
 
 /// Invocation-local physical allocation identity. Program-boundary resources
-/// are owned by the card and therefore omit physicalTileId. Compiler-managed
-/// workspace and transport status are owned by one physical Tile. Role and
+/// are owned by the card and therefore omit tileId. Compiler-managed
+/// workspace and transport status are owned by one Tile. Role and
 /// resourceIndex are the typed ABI identity; names never participate.
 struct TargetModelResourceId {
-  PhysicalCardId physicalCardId{0};
-  std::optional<PhysicalTileId> physicalTileId;
+  CardId cardId{0};
+  std::optional<TileId> tileId;
   compiler::KernelABISlotRole role = compiler::KernelABISlotRole::UserInput;
   int64_t resourceIndex = -1;
 
   friend bool operator==(const TargetModelResourceId &lhs,
                          const TargetModelResourceId &rhs) {
-    return lhs.physicalCardId == rhs.physicalCardId &&
-           lhs.physicalTileId == rhs.physicalTileId && lhs.role == rhs.role &&
+    return lhs.cardId == rhs.cardId &&
+           lhs.tileId == rhs.tileId && lhs.role == rhs.role &&
            lhs.resourceIndex == rhs.resourceIndex;
   }
   friend bool operator!=(const TargetModelResourceId &lhs,
@@ -80,8 +80,8 @@ struct TargetModelResourceId {
 /// Derives allocation identity from typed physical ownership and Kernel ABI
 /// facts. User input, parameter, constant and output slots are card-owned;
 /// workspace and transport status slots are Tile-owned.
-TargetModelResourceId getTargetModelResourceId(PhysicalCardId physicalCardId,
-                                               PhysicalTileId physicalTileId,
+TargetModelResourceId getTargetModelResourceId(CardId cardId,
+                                               TileId tileId,
                                                compiler::KernelABISlotRole role,
                                                int64_t resourceIndex);
 

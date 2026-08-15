@@ -136,10 +136,10 @@ buildTx81ModelBootParam(llvm::ArrayRef<Tx81ModelTensorDescriptor> tensors,
   launchSlotByTile.fill(-1);
   std::set<std::tuple<uint8_t, int64_t, int64_t, int64_t, uint64_t>> identities;
   for (const Tx81ModelTensorDescriptor &tensor : image.canonicalTensors) {
-    if (tensor.cardId != PhysicalCardId(0) || tensor.tileId.getValue() < 0 ||
+    if (tensor.cardId != CardId(0) || tensor.tileId.getValue() < 0 ||
         tensor.tileId.getValue() >= 16 || tensor.launchSlot.getValue() < 0 ||
         tensor.launchSlot.getValue() >= 16)
-      return invalid("TX81 model tensor physical Tile/launch-slot identity is "
+      return invalid("TX81 model tensor Tile/launch-slot identity is "
                      "outside the qualified card0 Tile0..15 domain");
     const int64_t tileId = tensor.tileId.getValue();
     const int64_t launchSlot = tensor.launchSlot.getValue();
@@ -147,7 +147,7 @@ buildTx81ModelBootParam(llvm::ArrayRef<Tx81ModelTensorDescriptor> tensors,
          tileByLaunchSlot[launchSlot] != tileId) ||
         (launchSlotByTile[tileId] != -1 &&
          launchSlotByTile[tileId] != launchSlot))
-      return invalid("TX81 model tensor physical Tile/launch-slot mapping is "
+      return invalid("TX81 model tensor Tile/launch-slot mapping is "
                      "not one-to-one");
     tileByLaunchSlot[launchSlot] = tileId;
     launchSlotByTile[tileId] = launchSlot;

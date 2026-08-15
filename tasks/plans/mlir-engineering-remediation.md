@@ -9,7 +9,7 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  current verified TensorProgram、selected CardProgram/TileProgram/TileRegion、Instr 与 immutable target facts。
+  current verified TensorProgram、selected CardModule/TileModule/TileRegion、Instr 与 immutable target facts。
 - Current stage responsibility:
   在不改变算法合法域、搜索策略和 target/runtime 合同的前提下，收敛 typed IR schema、标准 interface、operation-scoped
   pass/analysis、named nested pipeline 和 transactional rewrite；删除 semantic side channel、whole-module local wrapper、
@@ -56,18 +56,18 @@ Pipeline position:
 | M01 / P0 | 三类`OpaqueLoc` payload通过裸指针传递source operation、spatial output和operand demand，实际参与endpoint重绑、buffer选择、allocator失败归因和temporal transition；accepted-output cleanup只walk operation location，不能证明TileRegion block argument location无残留 | B：以SSA、typed relation和transformation-local `IRMapping`替代全部semantic Location consumer；覆盖FusedLoc、block argument和result location的迁移期absence test；终态删除pointer payload、strip helper和pointer解码 |
 | M02 / P0 | `convertTileRegionToInstr`先执行会修改IR的constant-select greedy rewrite，再运行可能失败的full conversion；conversion rollback不能撤销前一driver的修改。required-NCC-join rebuild也会先erase旧join再进入可能失败的分析/重建 | D/F：把validation/plan与apply分开，或在最近真实isolated scope的私有clone上完成全部改写，成功后替换原IR；failure atomicity测试比较失败前后的generic IR与use-def，而不只检查diagnostic |
 | M03 / P0 | Direct-DTE acceptance按dynamic occurrence path找到了receive，却只记录“已匹配”位，随后仍以send/receive原始vector顺序`zip_equal`建立binding；合法路径的枚举顺序不同时可能绑定错误endpoint | F/G：保存并消费实际`send occurrence -> receive occurrence`映射，使用typed endpoint relation；增加loop/tail、call occurrence重排和serial/parallel确定性测试，禁止ordinal或walk顺序回退 |
-| M04 / P0 | physical-Tile conversion failure会直接计入`ProvenExactRejection`；whole-card verification又把verifier、call closure、runtime launch contract、ABI preparation等不同失败合并为exact rejection，可能错误剪枝 | G：建立`Feasible / ProvenInfeasible / UnsupportedIR / AnalysisFailure / InternalFailure`等typed taxonomy；只有确定resource/legality proof进入candidate no-good，测试覆盖每个gate到分类的映射 |
-| M05 / P1 | current region capacity evaluator只clone一个TileRegion并用`IRMapping`补scratch SSA，已消除synthetic Module/Func；整改前的结果还嵌入physical-Tile全函数memory-planning failure，使region-local判断依赖下游阶段 | B0/D/E：收敛为`TileRegionSPMCapacityEvaluation`这类描述“作用域+属性”的合同，结果只表达fits、capacity exceeded、requires function scope、analysis failure；删除下游failure字段和stage-name耦合 |
+| M04 / P0 | Tile conversion failure会直接计入`ProvenExactRejection`；card verification又把verifier、call closure、runtime launch contract、ABI preparation等不同失败合并为exact rejection，可能错误剪枝 | G：建立`Feasible / ProvenInfeasible / UnsupportedIR / AnalysisFailure / InternalFailure`等typed taxonomy；只有确定resource/legality proof进入candidate no-good，测试覆盖每个gate到分类的映射 |
+| M05 / P1 | current region capacity evaluator只clone一个TileRegion并用`IRMapping`补scratch SSA，已消除synthetic Module/Func；整改前的结果还嵌入Tile全函数memory-planning failure，使region-local判断依赖下游阶段 | B0/D/E：收敛为`TileRegionSPMCapacityEvaluation`这类描述“作用域+属性”的合同，结果只表达fits、capacity exceeded、requires function scope、analysis failure；删除下游failure字段和stage-name耦合 |
 | M06 / P1 | pipeline曾以粗粒度module入口和多处短PM为主，缺少稳定semantic subpipeline与真实nested anchor | D：收口为16个自研atomic pass、7个常驻named semantic pipeline和1个Shardy条件pipeline；以textual parse/print、nested anchor、`verify-each`、pass statistics、production integration和源码零平行PM检查证明atomic pass、semantic subpipeline、compiler driver三层边界；Target LLVM及memory query/apply保持真实Module原子事务 |
 | M07 / P1 | SPM与DDR production均已进入pass/AnalysisManager seam，使用child `StructuredTimelineAnalysis`并在只提交offset attr后显式preserve；pass statistics报告managed timeline scope和assigned allocation。其它topology/symbol/call summary仍存在重复构造 | E：继续将满足复用条件的其它事实纳入operation analysis，补container-scoped topology/call summary和构造次数门禁；SPM/DDR timeline seam作为回归基线 |
-| M08 / P1 | accepted call closure、SPM/DDR call/clobber、target structure各自构造函数表、call graph或alias summary，失败假设不一致；CardProgram、每个TileProgram和多个leaf verifier又重复构造whole-module physical topology | C/E：以SymbolTableCollection、CallOpInterface和container-scoped analysis形成共享事实；leaf verifier只判local invariant，container一次验证跨op关系；测试统计topology/call-summary构造次数 |
+| M08 / P1 | accepted call closure、SPM/DDR call/clobber、target structure各自构造函数表、call graph或alias summary，失败假设不一致；CardModule、每个TileModule和多个leaf verifier又重复构造whole-module physical topology | C/E：以SymbolTableCollection、CallOpInterface和container-scoped analysis形成共享事实；leaf verifier只判local invariant，container一次验证跨op关系；测试统计topology/call-summary构造次数 |
 | M09 / P1 | TileRegion已有RegionBranch interface，但lifetime、required-NCC-join、storage containment等consumer仍多处手写`scf.if`/`scf.for`/TileRegion forwarding；target command完成语义还在IR free `TypeSwitch`中混入特殊op与硬件ABI常量 | C/H：通用flow切换到RegionBranch/Branch/ViewLike/MemoryEffect/Call interface；Wafer async/path-sensitive部分保留窄lattice；pure target completion协议与MLIR op adapter拆层 |
 | M10 / P1 | Program/TileRegion/LinalgExt verifier使用“拒绝全部未知attr”或手写allowed-name表，阻断合法discardable instrumentation attr；SPM/DDR/binding等部分typed value仍通过raw key访问 | B：区分inherent semantic attr与namespaced discardable attr，stable field进入ODS/generated accessor或统一typed wrapper；新增unknown semantic attr负例和instrumentation attr正例 |
 | M11 / P1 | Tile conversion pattern仍携带可写`failureReason`指针；failed match能改变conversion rollback之外的C++状态，最终原因依赖pattern尝试顺序，同时driver diagnostic被统一压掉 | F：pattern只使用`notifyMatchFailure`/conversion diagnostic callback或typed validation outcome；删除pattern object外部可变状态，验证诊断稳定性与pattern-set重复调用 |
 | M12 / P1 | StableHLO normalization同时承担collective lowering、partition/replica ID folding、cast cleanup和constant folding，pipeline中又重复运行normalize三次、canonicalizer两次，stage result condition不清楚 | F/G：按legality/result condition拆stage，收窄affected roots；canonicalizer只优化，测试在去掉generic canonicalizer后仍满足correctness |
-| M13 / P1 | TensorProgram→CardProgram和selected-buffer路径仍有嵌套或per-candidate whole-module clone；no-work Tile会clone完整函数后清空body；selected buffer按loop trial clone整个module | D/G/I：先在current IR推导全部plan并只materialize winner；clone最近必要isolated ancestor；no-work declaration用无region clone/typed construction；work-count gate证明不再是candidate数乘module大小 |
-| M14 / P1 | `WholeCardCandidate`混合assignment、派生cost/resource、controller flags、failure history、`Operation *`和`const void *`；`selectedTileIR`把实际IR打印字符串保存在核心output并被测试消费 | B0/E/G：拆immutable assignment、current-IR analysis和controller transition；地址不作跨epoch identity；打印IR只作可选diagnostic trace，测试读取实际typed IR |
-| M15 / P1 | physical-Tile lowering先拒绝premature DDR/DTE facts，随后又无条件清除SPM/DDR/DTE，形成“从较低stage删除事实回退到较高stage”的含糊入口合同 | D/I：memory planning入口只接受canonical unplaced parent，dirty input fail closed；每个候选从immutable pre-placement IR单向派生，不靠scrub恢复stage |
+| M13 / P1 | TensorProgram→CardModule和selected-buffer路径仍有嵌套或per-candidate whole-module clone；no-work Tile会clone完整函数后清空body；selected buffer按loop trial clone整个module | D/G/I：先在current IR推导全部plan并只materialize winner；clone最近必要isolated ancestor；no-work declaration用无region clone/typed construction；work-count gate证明不再是candidate数乘module大小 |
+| M14 / P1 | `TileExecutionCandidate`混合assignment、派生cost/resource、controller flags、failure history、`Operation *`和`const void *`；`selectedTileIR`把实际IR打印字符串保存在核心output并被测试消费 | B0/E/G：拆immutable assignment、current-IR analysis和controller transition；地址不作跨epoch identity；打印IR只作可选diagnostic trace，测试读取实际typed IR |
+| M15 / P1 | Tile lowering先拒绝premature DDR/DTE facts，随后又无条件清除SPM/DDR/DTE，形成“从较低stage删除事实回退到较高stage”的含糊入口合同 | D/I：memory planning入口只接受canonical unplaced parent，dirty input fail closed；每个候选从immutable pre-placement IR单向派生，不靠scrub恢复stage |
 | M16 / P1 | `WaferTarget`公开protocol/codec依赖WaferIR，`WaferRuntime`经Target传递获得IR依赖，`WaferTargetModelCore`又公开依赖整个Compiler；Target public type仍落在`wafer::compiler` namespace | H（具体source/CMake cutover依18）：拆pure target protocol/layout/numeric、MLIR adapter、host JIT/output和model consumer，建立单向library link closure |
 | M17 / P1 | `PhysicalTensorCodec`为复用IR布局计算会在每次调用创建`MLIRContext`、加载Wafer dialect并构造MemRef/MemoryAttr；pure target codec因此反向依赖MLIR且有重复context成本 | H：抽取pure checked physical-layout calculator作为target事实源，MLIR MemoryAttr/MemRef adapter与codec共同调用；禁止复制布局公式 |
 | M18 / P1 | public compiler/host边界混用`FailureOr + raw_ostream`、`Expected/ErrorInfo`、`LogicalResult + nullable output`和反向`bool`错误约定，调用者难以稳定分类 | G/H：IR pass/verifier使用LogicalResult/FailureOr，host/filesystem/public compiler使用Expected/ErrorInfo或named result；不解析diagnostic字符串控制流程 |
@@ -91,7 +91,7 @@ Pipeline position:
   feature-on/off配置、active/dormant CMake truth与IR/source organization checker闭合。
 - M24：当前合同只由18–19、任务队列和active CMake拥有；旧实现材料明确归档或列入optional source，不再冒充production。
 
-Q49.P仍负责`none`控制流的重复whole-card materialization和耗时；Q50.I仍负责先物化真实共同wave/stage loop再生成
+Q49.P仍负责`none`控制流的重复card materialization和耗时；Q50.I仍负责先物化真实共同wave/stage loop再生成
 rotating slots；Q45继续全仓一般术语治理。这三项不恢复Q54已经删除的wrapper、Location关系或旧命名，也不构成Q54
 基础设施未闭合。
 
@@ -206,7 +206,7 @@ analysis、output/result/error类型、public API、源文件和用户可见diag
 
 首批已确认迁移：原`TileRegionSPMFeasibility*`已经收窄为“对私有TileRegion执行Instr lowering后的固定容量SPM判断”，
 但当前WIP的`TileRegionInstrSPMCapacityCheck*`仍是把多个stage名拼成对象名的过渡实现，且result不应包含
-`PhysicalTileMemoryPlanningFailure`。终态使用`TileRegionSPMCapacityEvaluation`一类“作用域+可验证属性”的名称和窄结果；
+`TileMemoryPlanningFailure`。终态使用`TileRegionSPMCapacityEvaluation`一类“作用域+可验证属性”的名称和窄结果；
 在真正成为只读、operation-anchored MLIR analysis前不滥用`Analysis`命名。NCC一组按实际outstanding access与required join语义命名，
 不再使用泛化的`completion`、`candidate set`或未经证明的`minimum`；原有三类pointer-carrying Location payload必须随
 semantic Location删除而消失，不能只改名。后续清单以本节为唯一任务记录，发现项直接并入相应B–H施工项。
@@ -221,15 +221,15 @@ semantic Location删除而消失，不能只改名。后续清单以本节为唯
 | `SPMMemoryPlanningFailure::{location,userLocations}` 的语义 consumer | allocator 已有实际 demand/allocation/use，但上游销毁 IR 前只保留 Location再反解搜索坐标 | 拆分 | B/E：Location仅留诊断；在 owning IR 仍存活时把 actual demand解析为窄 typed rejection fact，生命周期止于本次 candidate transition |
 | `SelectedBufferRequest` 的 producer/consumer source指针 | 用旧 source pointer在已 materialized Instr 中寻找 loop/edge witness | 删除字段 | B/D/F：request绑定 current selected edge的 typed message/SSA relation；clone对应只用同一 transformation 的 `IRMapping` |
 | accepted schedule 的 source-node phase attribution | 把最终 Instr反向归到旧 Tensor DAG node，决定 phase cost和选择 | 删除 | B/E/G：从 accepted Instr 的 SSA、effect、call closure与resource dependency直接构造 schedule/cost，不维护逆向source映射 |
-| `WholeCardCandidate` | 同时装 assignment、派生 cost/resource、allocator feedback history、controller flags与裸指针 | 拆分 | B0/E/G：immutable selected assignment、current-IR analysis结果和controller transition history分开；派生事实不进入candidate identity |
-| `TileRegionInstrSPMCapacityCheck*` 与isolated-region required-join rebuild | 私有clone上执行Instr lowering，只为TileRegion verifier保证不跨边界的region-owned SPM roots放置required join并检查固定容量；query不签发function/card全局可行性 | 过渡名和过宽结果，继续收敛 | D/E：迁为`TileRegionSPMCapacityEvaluation`或经术语复核的等价窄名；call或lifetime超出region表达能力时返回需要function scope；删除`PhysicalTileMemoryPlanningFailure`依赖；function级outstanding access仍由Func pass处理；成功只表示region-owned SPM roots在固定arena容量内可打包 |
+| `TileExecutionCandidate` | 同时装 assignment、派生 cost/resource、allocator feedback history、controller flags与裸指针 | 拆分 | B0/E/G：immutable selected assignment、current-IR analysis结果和controller transition history分开；派生事实不进入candidate identity |
+| `TileRegionInstrSPMCapacityCheck*` 与isolated-region required-join rebuild | 私有clone上执行Instr lowering，只为TileRegion verifier保证不跨边界的region-owned SPM roots放置required join并检查固定容量；query不签发function/card全局可行性 | 过渡名和过宽结果，继续收敛 | D/E：迁为`TileRegionSPMCapacityEvaluation`或经术语复核的等价窄名；call或lifetime超出region表达能力时返回需要function scope；删除`TileMemoryPlanningFailure`依赖；function级outstanding access仍由Func pass处理；成功只表示region-owned SPM roots在固定arena容量内可打包 |
 | placement candidate枚举器 | 实际枚举/评估完整placement candidate set，并不维护通用live candidate set抽象 | rename并拆文件职责 | G：domain、evaluator、enumeration分别命名；public动作使用`derive...Domain`、`evaluate...Assignment`、`enumerate...Candidates` |
 | `NCCSynchronizationContract` free TypeSwitch | 同时混合MLIR op分类、target command完成行为和runtime/model enum，特殊case仍写在free switch | 拆层 | C/G/H：target transaction语义下沉到不依赖MLIR的typed target协议；MLIR op通过窄interface映射；runtime/model不include IR interface header |
 | frontend/compiler `bool`-means-failure helpers与nullable多输出 | 文件/JSON/编译事务把错误方向、诊断和多个产物分散在调用约定中 | typed result/error | G：IR validation保留`LogicalResult`；host/filesystem/API边界使用`Error`/`Expected`和named result，predicate才返回bool |
 | `WaferTarget`/`WaferTargetModel*` 对IR/Compiler的宽依赖 | pure target protocol、MLIR target analysis、JIT frontend和model invocation混在库依赖中 | 分层 | H，具体source/CMake cutover依18：拆pure target protocol、MLIR adapter、host execution；runtime/model不因一个transaction enum链接整个compiler/IR |
 | `TileRegionEmissionRelations` wrapper | 同一次 conversion 内 `SpatialEdgeStrategy` 到新 DDR allocation 的显式返回关系 | 简化后保留关系 | B：收窄为直接返回的 materialized-stage列表；不得跨 mutation/pass，也不得写回 IR |
-| `CardSpatialMapping` | 一次 CardProgram materialization原子消费的 spatial/temporal/edge assignment，无缓存或反馈 | 保留 | contract test：消费后由实际 CardProgram/TileRegion IR接管语义；对象生命周期止于该 materialization调用 |
-| `WholeDAGEdgeDemandPlan` / relation cache | 从同一 `CardDAGAnalysis` 与 placement派生的 exact logical set；planner lifetime内复用 | 保留并迁移 lifecycle | E：绑定 current IR epoch，进入 AnalysisManager 或明确限定在单次query生命周期；mutation后不得复用 |
+| `TileMapping` | 一次 CardModule materialization原子消费的 spatial/temporal/edge assignment，无缓存或反馈 | 保留 | contract test：消费后由实际 CardModule/TileRegion IR接管语义；对象生命周期止于该 materialization调用 |
+| `StructuredDAGEdgeDemandPlan` / relation cache | 从同一 `StructuredDAGAnalysis` 与 placement派生的 exact logical set；planner lifetime内复用 | 保留并迁移 lifecycle | E：绑定 current IR epoch，进入 AnalysisManager 或明确限定在单次query生命周期；mutation后不得复用 |
 | `SelectedBufferPlan`、`NCCOutstandingAccessSummary`、SPM/DDR pending placement | 单次 validation/traversal后原子 apply 的局部typed状态，不跨 output writing | 保留 | D/F：保持 private、单职责、失败不提交；不得演化成跨 pass shadow IR |
 | `ProfileValueIdentityIndex` | frozen LLVM output内部为 profile fingerprint编号 reachable function/block/instruction | 保留并收窄命名 | G：仅对当前不可变 target module有效，IR mutation立即重建；不能用于 MLIR legality或跨 output语义恢复 |
 | `GlobalTileRelation` 的 op/region/block ordinal path与 legacy print digest | 用结构位置或打印文本模拟跨 rank/candidate语义等价 | 删除 | B/G：同源 clone用 `IRMapping`；独立 output关系由共同上游 typed SSA/ID/interface建立；旧实现完成能力迁移后删除 |
@@ -302,7 +302,7 @@ function-boundary bufferization、SPM/DDR、accepted affine/index lowering和Ins
    rich candidate分类由消费同一query/apply kernel的typed adapter提供。
 2. **Semantic subpipeline**：只跨一个稳定、verifier-legal的IR边界组合atomic pass，能够注册、打印、独立重放和插桩；
    production与`wafer-opt`消费同一builder。
-3. **Output driver**：拥有source snapshot、candidate/output lifetime、module fan-out、search、whole-card verification和atomic
+3. **Output driver**：拥有source snapshot、candidate/output lifetime、module fan-out、search、card verification和atomic
    writing；调用semantic subpipeline，但不复制其中的IR transformation。
 
 API名称也表达层级：纯粹把一个既有atomic pass加入manager的入口使用`add...Pass`；只有拥有稳定IR边界、注册/重放与组合
@@ -323,7 +323,7 @@ result condition的入口使用`build...Pipeline`。一个semantic boundary当�
 | accepted affine/index lowering | production通过`addLowerAffineControlAndIndexingPass`进入central runner；upstream atomic pass本身可文本focused replay | 该动作尚不是新的长期IR层，因此不注册同义named pipeline |
 | Instr→target LLVM | production与focused replay共用`addLowerInstrToTargetLLVMPass`及完整typed options；文本pipeline保留profile argument等非默认配置 | 当前structure/validation/SCF→CF/closed conversion之间没有独立verifier-legal output，故保留一个atomic Module transaction，不任意切开 |
 | execution topology/mesh | 两个atomic pass由同一execution-config builder callback加入central runner，typed options可打印；registry profile已集中 | 保持topology与mesh两个独立result condition，不合成包含业务验证的super-pass |
-| SPMD external helper、physical-Tile fan-out、whole-card transport/resource/ABI verification与directory writing | 这些边界包含外部进程、多个output modules、跨module资源或filesystem transaction，不能仅因“pipeline统一”塞进MLIR PM | 显式保留typed compiler driver；driver调用前后语义subpipeline并验证modules/files，不伪装成operation-local pass |
+| SPMD external helper、Tile fan-out、card transport/resource/ABI verification与directory writing | 这些边界包含外部进程、多个output modules、跨module资源或filesystem transaction，不能仅因“pipeline统一”塞进MLIR PM | 显式保留typed compiler driver；driver调用前后语义subpipeline并验证modules/files，不伪装成operation-local pass |
 
 施工顺序：
 
@@ -333,9 +333,9 @@ result condition的入口使用`build...Pipeline`。一个semantic boundary当�
 3. 将跨TileRegion的NCC outstanding-access与required-join放置保持为`FuncOp` phase；call/async shared-arena legality保留Module/Func
    analysis。isolated-region capacity query从空外部状态开始，只处理region-owned SPM roots；这由TileRegion禁止SPM跨边界的
    verifier合同保证。call或unsupported lifetime返回需要function scope，region query不得据此签发function/card全局可行性。
-4. 将 SPM拆为 region-local lifetime/conflict/packing query、Func/TileProgram arena组合与 Module call/shared-arena gate；DDR、
+4. 将 SPM拆为 region-local lifetime/conflict/packing query、Func/TileModule arena组合与 Module call/shared-arena gate；DDR、
    transport、ABI保持 card/module scope。
-5. 保留 One-Shot function-boundary bufferization在合法 SymbolTable anchor；region capacity query不运行不相关的whole-card
+5. 保留 One-Shot function-boundary bufferization在合法 SymbolTable anchor；region capacity query不运行不相关的card
    lowering和resource verification。
 6. 在 `Passes.td` 建立准确 anchor的 pass，声明 dependent dialect/options/statistics；按上表建立leaf builder和必要的
    nested `OpPassManager`，再由composite builder组装跨anchor的稳定语义pipeline；最终名字以contract map为准，不以当前
@@ -344,7 +344,7 @@ result condition的入口使用`build...Pipeline`。一个semantic boundary当�
    和成功后的原IR替换。
 8. synthetic Module/Func wrapper已由本Q54工作树移除；本项验证最小真实isolated scope clone只在query必须消费破坏性lowering时存在，
    并删除重复短PassManager、region边界同步捷径和已被pipeline拥有的direct mutation。
-9. physical-Tile memory planning入口只接受canonical unplaced parent；删除“先检查premature whole-card facts、随后又scrub placement/
+9. Tile memory planning入口只接受canonical unplaced parent；删除“先检查premature card facts、随后又scrub placement/
    binding恢复上层stage”的回退路径。candidate从immutable pre-placement output单向派生。
 10. 为Wafer core、importer、compiler external-interface models和target translation建立明确dialect/extension registry profile，
     替换名为`registerAllDialects`但只注册局部dialect的入口和各driver复制的registry组合。
@@ -431,9 +431,9 @@ Card/Tile后半程。
    role和execution configuration，不靠spelling恢复语义。
 7. 统一candidate和verification failure taxonomy；conversion/verifier/unsupported/contract/internal错误不能伪装为capacity或
    exact legality proof。只有typed `ProvenInfeasible`进入search pruning，且每个producer必须有分类单测。
-8. 拆分`WholeCardCandidate`中的immutable assignment、IR-derived analysis和controller transition；删除跨IR epoch的
+8. 拆分`TileExecutionCandidate`中的immutable assignment、IR-derived analysis和controller transition；删除跨IR epoch的
    `Operation *`/`const void *` identity。`selectedTileIR`退出核心output合同，只保留可选diagnostic trace。
-9. TensorProgram→CardProgram、no-work Tile和selected-buffer路径先在current IR形成plan，只对winner或最近必要isolated scope
+9. TensorProgram→CardModule、no-work Tile和selected-buffer路径先在current IR形成plan，只对winner或最近必要isolated scope
    clone/materialize；禁止per-loop/per-region whole-module trial。
 
 测试：collective/SPMD中途失败IR不变、unknown source op fail-closed、named/production parity、canonicalizer-off correctness、
@@ -494,20 +494,20 @@ fresh 验证：
    与organization tests，审计unsupported/skip；
 4. named pipeline parse/print、verify-each、production builder parity；
 5. FP16/BF16普通多 op、sharded compute、prefill/decode/Llama代表 source-to-package，比较 semantic oracle、
-   CardProgram/CardExecutable/package digest和 no-card plan；
+   CardModule/CardExecutable/package digest和 no-card plan；
 6. 记录 pass/analysis/clone/materialization count与wall time，证明TileRegion query、nested pass和analysis scope真实生效；
-   Q54不得保留synthetic local wrapper或每region完整physical-Tile pipeline。`none`控制流其余whole-card重复工作由Q49.P负责，
+   Q54不得保留synthetic local wrapper或每region完整Tile pipeline。`none`控制流其余card重复工作由Q49.P负责，
    不能反向要求Q54重建search或用并行clone遮蔽。
 
 Q54 的 A–I 已完成，active source中不再存在semantic `OpaqueLoc` pointer payload、synthetic local wrapper、旧的通用candidate容器、
 平行production PassManager或旧single-pass pipeline别名。fresh core/model build通过；Q54定向单测168/168、其余非搜索
-单测629/629、受影响whole-card关系用例1/1、lit 1/1、feature-on依赖/模型/链接17/17、IR/source organization与
+单测629/629、受影响card关系用例1/1、lit 1/1、feature-on依赖/模型/链接17/17、IR/source organization与
 `git diff --check`均通过。Q49/Q52长时间placement/search枚举不冒充Q54完成门禁，也未宣称在本批全量执行。
 
 ## 与后续任务的关系
 
 - Q54优先闭合；Q49.P随后作为本合同的首个consumer，其scoped probe不得把TileRegion包装成synthetic module后重跑
-  完整physical-Tile pipeline。
+  完整Tile pipeline。
 - Q54 完成后才继续Q49.P、Q50.A/Q51.Core及后续 mechanism/search，避免把 Location side channel、shadow identity和全 module
   pipeline继续固化进新 candidate state。
 - Q50.F复用 Q54形成的 region-local conversion/lifetime/packing seam，不另建 probe pipeline。

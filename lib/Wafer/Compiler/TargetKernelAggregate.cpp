@@ -197,7 +197,7 @@ getOrInsertExactDeclaration(llvm::Module &module, llvm::StringRef symbol,
 
 llvm::Error createKernelAggregateExports(
     llvm::Module &module, llvm::ArrayRef<std::string> bodyNames,
-    llvm::ArrayRef<int64_t> physicalTileIdsByLaunchSlot,
+    llvm::ArrayRef<int64_t> tileIdsByLaunchSlot,
     llvm::StringRef mainSymbol, uint64_t slotsPerTile, KernelEntryABI entryABI,
     bool includePrepare) {
   llvm::LLVMContext &context = module.getContext();
@@ -290,14 +290,14 @@ llvm::Error createKernelAggregateExports(
           body != nullptr, body ? body->isDeclaration() : 0,
           body ? body->isVarArg() : 0,
           static_cast<unsigned long long>(body ? body->arg_size() : 0));
-    const int64_t physicalTileId = physicalTileIdsByLaunchSlot[launchSlot];
+    const int64_t tileId = tileIdsByLaunchSlot[launchSlot];
     llvm::BasicBlock *slotBlock = llvm::BasicBlock::Create(
         context,
-        llvm::formatv("physical_tile.{0}.launch_slot.{1}", physicalTileId,
+        llvm::formatv("tile.{0}.launch_slot.{1}", tileId,
                       launchSlot)
             .str(),
         main);
-    dispatch->addCase(llvm::ConstantInt::get(i32, physicalTileId), slotBlock);
+    dispatch->addCase(llvm::ConstantInt::get(i32, tileId), slotBlock);
     builder.SetInsertPoint(slotBlock);
     llvm::SmallVector<llvm::Value *, 16> arguments;
     arguments.reserve(slotsPerTile);
@@ -355,7 +355,7 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
   if (!kernel ||
       (kernel->entryABI != KernelEntryABI::TileMajorPointerTable &&
        kernel->entryABI != KernelEntryABI::TileRowPointerTable) ||
-      config.getPhysicalTileCount() != kKernelAggregateTileCount ||
+      config.getTileCount() != kKernelAggregateTileCount ||
       targetLLVMModules.getModules().size() != kKernelAggregateTileCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -385,22 +385,22 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
         llvm::errc::invalid_argument,
         "kernel aggregate has more than one typed transport status slot");
 
-  std::optional<PhysicalCardId> physicalCardId;
-  std::set<int64_t> physicalTileIds;
+  std::optional<CardId> cardId;
+  std::set<int64_t> tileIds;
   std::vector<const TargetLLVMModule *> modulesByLaunchSlot(
       kKernelAggregateTileCount, nullptr);
-  std::vector<int64_t> physicalTileIdsByLaunchSlot(kKernelAggregateTileCount,
+  std::vector<int64_t> tileIdsByLaunchSlot(kKernelAggregateTileCount,
                                                    -1);
   for (const TargetLLVMModule &source : targetLLVMModules.getModules()) {
-    if (!physicalCardId)
-      physicalCardId = source.getPhysicalCardId();
+    if (!cardId)
+      cardId = source.getCardId();
     const int64_t launchSlot = source.getLaunchSlotId().getValue();
-    if (source.getPhysicalCardId() != *physicalCardId ||
-        source.getPhysicalCardId().getValue() < 0 ||
-        source.getPhysicalTileId().getValue() < 0 ||
-        source.getPhysicalTileId().getValue() >= kKernelAggregateTileCount ||
+    if (source.getCardId() != *cardId ||
+        source.getCardId().getValue() < 0 ||
+        source.getTileId().getValue() < 0 ||
+        source.getTileId().getValue() >= kKernelAggregateTileCount ||
         launchSlot < 0 || launchSlot >= kKernelAggregateTileCount ||
-        !physicalTileIds.insert(source.getPhysicalTileId().getValue()).second ||
+        !tileIds.insert(source.getTileId().getValue()).second ||
         modulesByLaunchSlot[launchSlot] != nullptr)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
@@ -418,11 +418,11 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
                                  first.getKernelABISlots()))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "kernel target physical Tile domain has inconsistent typed module "
+          "kernel target Tile domain has inconsistent typed module "
           "facts");
     modulesByLaunchSlot[launchSlot] = &source;
-    physicalTileIdsByLaunchSlot[launchSlot] =
-        source.getPhysicalTileId().getValue();
+    tileIdsByLaunchSlot[launchSlot] =
+        source.getTileId().getValue();
   }
   if (llvm::is_contained(modulesByLaunchSlot, nullptr))
     return llvm::createStringError(
@@ -467,7 +467,7 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
       targetLLVMModules.getRuntimeLaunchContract().getPhases(),
       RuntimeLaunchPhaseRole::Prepare);
   if (llvm::Error error = createKernelAggregateExports(
-          *aggregate, bodyNames, physicalTileIdsByLaunchSlot,
+          *aggregate, bodyNames, tileIdsByLaunchSlot,
           first.getEntrySymbol(), first.getKernelABISlots().size(),
           kernel->entryABI, hasPrepare))
     return std::move(error);

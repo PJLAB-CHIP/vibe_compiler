@@ -219,11 +219,11 @@ stageGraphModules(llvm::ArrayRef<BoardGraphModuleSnapshot> modules) {
     return std::move(error);
   };
   uint64_t aggregateModuleBytes = 0;
-  std::array<bool, 16> seenPhysicalTiles{};
+  std::array<bool, 16> seenTileIds{};
   for (auto [launchSlot, module] : llvm::enumerate(modules)) {
     const int64_t tileId = module.tileId.getValue();
-    if (module.cardId != PhysicalCardId(0) || tileId < 0 || tileId >= 16 ||
-        seenPhysicalTiles[tileId] ||
+    if (module.cardId != CardId(0) || tileId < 0 || tileId >= 16 ||
+        seenTileIds[tileId] ||
         module.launchSlot != LaunchSlotId(launchSlot) ||
         !module.module.isValid() || module.bytes.empty() ||
         module.bytes.size() > std::numeric_limits<uint32_t>::max() ||
@@ -233,7 +233,7 @@ stageGraphModules(llvm::ArrayRef<BoardGraphModuleSnapshot> modules) {
       return fail(llvm::createStringError(
           llvm::errc::invalid_argument,
           "TX graph module snapshots have an invalid tile domain or size"));
-    seenPhysicalTiles[tileId] = true;
+    seenTileIds[tileId] = true;
     aggregateModuleBytes += module.bytes.size();
     llvm::SHA256 hasher;
     hasher.update(
@@ -364,10 +364,10 @@ public:
       if (tile.phyTilex >= 4 || tile.phyTiley >= 4)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "TX inventory contains an out-of-range physical Tile coordinate");
-      const int64_t physicalTileId =
+            "TX inventory contains an out-of-range Tile coordinate");
+      const int64_t tileId =
           static_cast<int64_t>(tile.phyTiley) * 4 + tile.phyTilex;
-      info.tiles.push_back({PhysicalTileId(physicalTileId),
+      info.tiles.push_back({TileId(tileId),
                             LaunchSlotId(tile.index), tile.isAvailable == 1,
                             tile.phyTilex, tile.phyTiley});
     }
@@ -589,7 +589,7 @@ public:
         launches.size() > std::numeric_limits<uint32_t>::max())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "TX kernel phase requires a nonempty uint32_t physical-Tile domain");
+          "TX kernel phase requires a nonempty uint32_t Tile domain");
 
     const bool firstPhase = !submissionActive;
     if (firstPhase) {
@@ -617,18 +617,18 @@ public:
     const size_t sharedSlotCount = launches.front().arguments.size();
     std::vector<std::vector<uint64_t>> argumentBlocks(1);
 
-    std::array<bool, 16> seenPhysicalTiles{};
+    std::array<bool, 16> seenTileIds{};
     for (auto [launchIndex, launch] : llvm::enumerate(launches)) {
       const int64_t tileId = launch.tileId.getValue();
-      if (launch.cardId != PhysicalCardId(0) || tileId < 0 || tileId >= 16 ||
-          seenPhysicalTiles[tileId] ||
+      if (launch.cardId != CardId(0) || tileId < 0 || tileId >= 16 ||
+          seenTileIds[tileId] ||
           launch.launchSlot != LaunchSlotId(launchIndex) ||
           !launch.entry.isValid() || launch.function.value == 0)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "TX kernel phase is not a canonical physical-Tile/function "
+            "TX kernel phase is not a canonical Tile/function "
             "domain");
-      seenPhysicalTiles[tileId] = true;
+      seenTileIds[tileId] = true;
       if (launch.function.value != sharedFunction ||
           launch.arguments.size() != sharedSlotCount)
         return llvm::createStringError(

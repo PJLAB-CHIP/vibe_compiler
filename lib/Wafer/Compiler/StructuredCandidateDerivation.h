@@ -4,7 +4,7 @@
 #define WAFER_COMPILER_STRUCTUREDCANDIDATEDERIVATION_H
 
 #include "StructuredImplementationAlternative.h"
-#include "WholeCardCandidateSearch.h"
+#include "RankCandidateSearch.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/Support/OptimizationConfig.h"

@@ -584,8 +584,8 @@ std::error_code TargetModelKernelError::convertToErrorCode() const {
 
 llvm::Error
 validateTargetModelCommandFields(const compiler::TargetCommand &command) {
-  if (command.physicalCardId.getValue() < 0 ||
-      command.physicalTileId.getValue() < 0 ||
+  if (command.cardId.getValue() < 0 ||
+      command.tileId.getValue() < 0 ||
       command.launchSlotId.getValue() < 0)
     return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "command physical identity and launch slot must be "

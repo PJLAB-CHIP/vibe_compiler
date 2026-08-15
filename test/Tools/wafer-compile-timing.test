@@ -12,7 +12,7 @@
 # RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.default --num-partitions=1 --launch-kind=kernel --optimization-policy=none 2>&1 | tee %t.default.log
 # RUN: not grep -q 'compile-timing-' %t.default.log
 
-# One source-to-package invocation exposes the card-program/physical-Tile seam,
+# One source-to-package invocation exposes the card-module/Tile seam,
 # exact memory/target gates, MLIR passes/analyses, conversions/patterns, and
 # internal algorithm phases. Numeric timings are deliberately not golden
 # values. The retired rank-candidate search pipeline must not reappear.
@@ -24,20 +24,20 @@
 # TIMING: wafer-compile: compile-timing-summary-begin
 # TIMING: wafer-compile: | kind | pipeline | item | calls | cumulative wall ms | cumulative CPU ms | average wall ms | max wall ms | failures |
 # TIMING-DAG: wafer-compile: | stage | source-to-package | source-to-tensor-program | 1 |
-# TIMING-DAG: wafer-compile: | stage | tensor-program-to-executable | whole-card-executable-synthesis | 1 |
-# TIMING-DAG: wafer-compile: | conversion | whole-card-executable-synthesis | tensor-program-to-card-program | {{[1-9][0-9]*}} |
-# TIMING-DAG: wafer-compile: | conversion | card-program-to-executable | card-program-to-physical-tiles | {{[1-9][0-9]*}} |
+# TIMING-DAG: wafer-compile: | stage | tensor-program-to-executable | card-executable-synthesis | 1 |
+# TIMING-DAG: wafer-compile: | conversion | card-executable-synthesis | tensor-program-to-card-module | {{[1-9][0-9]*}} |
+# TIMING-DAG: wafer-compile: | conversion | card-module-to-executable | card-module-to-tile-modules | {{[1-9][0-9]*}} |
 # TIMING-DAG: wafer-compile: | lowering-phase | tile-region-to-instr | full-conversion |
 # TIMING-DAG: wafer-compile: | lowering-pattern | tile-region-to-instr | wafer.tile.load |
 # TIMING-DAG: wafer-compile: | conversion | convertTensorProgramToTileRegionModuleInPlace | total |
 # TIMING-DAG: wafer-compile: | conversion | tile-region-to-instr | region-conversion |
 # TIMING-DAG: wafer-compile: | transformation | planSPMMemoryModule | total |
 # TIMING-DAG: wafer-compile: | transformation | planDDRMemoryModule | total |
-# TIMING-DAG: wafer-compile: | analysis | physical-tile-spm-planning | wafer::memory_planning::detail::StructuredTimelineAnalysis |
+# TIMING-DAG: wafer-compile: | analysis | tile-spm-planning | wafer::memory_planning::detail::StructuredTimelineAnalysis |
 # TIMING-DAG: wafer-compile: | analysis | accepted-tile-ddr-planning | wafer::analysis::DirectCallGraphAnalysis |
 # TIMING-DAG: wafer-compile: | conversion-phase | rewriteTensorProgramInPlace | TileRegionBodyEmitter::emit |
 # TIMING-DAG: wafer-compile: | external-pipeline | source-to-tensor-program | xla-spmd-partitioning |
 # TIMING-DAG: wafer-compile: | pass | stablehlo-to-linalg |
 # TIMING-DAG: wafer-compile: | pass | instr-to-target-llvm |
 # TIMING: wafer-compile: compile-timing-summary-end transaction_wall_ms={{[0-9]+\.[0-9][0-9][0-9]}}
-# TIMING: wafer-compile: wrote verified package with num-partitions=1 physical-tiles=16:
+# TIMING: wafer-compile: wrote verified package with num-partitions=1 tiles=16:

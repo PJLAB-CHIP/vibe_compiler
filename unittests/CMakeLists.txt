@@ -9,28 +9,28 @@ add_executable(WaferUnitTests
   Compiler/CompilationOutputTest.cpp
   Compiler/CompilationTest.cpp
   Compiler/CardExecutableCompilationTest.cpp
-  Compiler/WholeCardExecutableLoweringTest.cpp
+  Compiler/CardExecutableLoweringTest.cpp
   Compiler/DirectDTETransportTest.cpp
   Compiler/ProgramTensorComparisonTest.cpp
-  Compiler/PhysicalTileMemoryPlanningTest.cpp
+  Compiler/TileMemoryPlanningTest.cpp
   Compiler/StructuredBufferRelationsTest.cpp
   Compiler/TargetABIPreparationTest.cpp
   Compiler/TargetCodeGenTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetIdentityTest.cpp
   Compiler/TileRegionSPMCapacityEvaluationTest.cpp
-  Compiler/WholeDAGScheduleTest.cpp
-  Compiler/WholeDAGEdgeStrategyPlanTest.cpp
-  Compiler/WholeDAGPlacementEnumerationTest.cpp
-  Compiler/WholeCardResourceVerificationTest.cpp
-  Compiler/WholeCardExecutableSynthesisTest.cpp
+  Compiler/StructuredDAGScheduleTest.cpp
+  Compiler/StructuredDAGEdgeStrategyPlanTest.cpp
+  Compiler/StructuredDAGPlacementEnumerationTest.cpp
+  Compiler/ProgramResourceVerificationTest.cpp
+  Compiler/CardExecutableSynthesisTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
-  Conversion/WaferCardProgramToTileModulesTest.cpp
-  Conversion/WaferTensorProgramToCardProgramTest.cpp
+  Conversion/WaferCardModuleToTileModulesTest.cpp
+  Conversion/WaferTensorProgramToCardModuleTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
-  Dialect/Wafer/PhysicalTopologyTest.cpp
+  Dialect/Wafer/TargetTopologyTest.cpp
   Frontend/NpyPayloadTest.cpp
   Model/TargetModelMemoryTest.cpp
   Pipelines/PipelinesTest.cpp
@@ -75,8 +75,8 @@ target_link_libraries(WaferUnitTests
   WaferRuntime
   WaferPipelines
   WaferTensorProgramToTileRegion
-  WaferCardProgramToTileModules
-  WaferTensorProgramToCardProgram
+  WaferCardModuleToTileModules
+  WaferTensorProgramToCardModule
   WaferTransforms
   MLIRAsyncDialect
   MLIRArithDialect

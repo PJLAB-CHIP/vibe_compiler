@@ -4,7 +4,7 @@
 #define WAFER_ANALYSIS_SCHEDULECOSTANALYSIS_H
 
 #include "Wafer/Support/TargetPolicy.h"
-#include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -63,17 +63,17 @@ enum class NoCDirection : uint8_t { North, South, East, West };
 /// nominal, and conservative-bound fields are deliberately distinct:
 /// reporting references must not silently become production bounds.
 struct TargetScheduleCostPolicy {
-  /// Whole-card peak/reference bandwidth. This remains the profiler's
+  /// Card peak/reference bandwidth. This remains the profiler's
   /// theoretical traffic-floor rate.
   uint64_t cardDDRBytesPerSecond = 200'000'000'000ULL;
-  /// Whole-card observed operating point shared by all 16 tiles. It is a
+  /// Card observed operating point shared by all 16 tiles. It is a
   /// nominal estimate, not 16 independent per-tile rates and not a guaranteed
   /// throughput lower bound.
   uint64_t cardDDRNominalBytesPerSecond = 150'000'000'000ULL;
   /// Single-direction payload serialization reference. It is not a fabric
   /// aggregate, endpoint sustained rate, route estimate, or latency.
   uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
-  /// Point estimates used by the numeric whole-card schedule model. These are
+  /// Point estimates used by the numeric card schedule model. These are
   /// compiler policy priors, not measured lower/upper bounds.
   ///
   /// The endpoint prior starts from one documented directional link. The
@@ -251,13 +251,13 @@ struct ModeledNoCRouteCost {
   ScheduleCostMetric peakDirectedLinkByteDemand;
 };
 
-/// Exact whole-card aggregation of independently lowered physical-Tile
+/// Exact card aggregation of independently lowered Tile
 /// instruction programs.
 /// Work and traffic dimensions are summed over the complete variant. SPM
 /// remains private to a Tile, so both the maximum per-Tile high-water and the
 /// sum of Tile-local high-waters are retained. No bandwidth-to-time conversion
 /// is performed here.
-struct WholeCardInstructionProgramCost {
+struct CardInstructionProgramCost {
   llvm::SmallVector<InstructionProgramCost, 16> tileCosts;
 
   /// Sum and per-dimension Tile maximum of the same Tile-local work facts.
@@ -338,42 +338,42 @@ InstructionProgramCost
 analyzeInstructionProgramCost(mlir::Operation *root,
                               const TargetScheduleCostPolicy &policy);
 
-/// One explicitly identified physical-Tile instruction program. The Tile ID
+/// One explicitly identified Tile instruction program. The Tile ID
 /// is supplied by the caller and is never recovered from vector order,
 /// module/function names, or logical partition metadata.
-struct PhysicalTileInstructionProgram {
-  PhysicalTileId tileId{0};
+struct TileInstructionProgram {
+  TileId tileId{0};
   mlir::Operation *root = nullptr;
 };
 
-/// One query-local partition of an accepted physical-Tile instruction
+/// One query-local partition of an accepted Tile instruction
 /// program. `includedOperations` identifies actual operations under `root`;
 /// the analyzer still walks the complete structured control flow so selected
 /// instructions retain their real loop/path multiplicity. Slices are an
 /// analysis input only and are never serialized into compiler IR or a target
 /// module.
-struct PhysicalTileInstructionProgramSlice {
-  PhysicalTileId tileId{0};
+struct TileInstructionProgramSlice {
+  TileId tileId{0};
   mlir::Operation *root = nullptr;
   llvm::ArrayRef<mlir::Operation *> includedOperations;
 };
 
-/// Recompute every explicitly identified physical-Tile cost and aggregate the
+/// Recompute every explicitly identified Tile cost and aggregate the
 /// complete card variant. Unavailable, unsupported and overflow states
 /// propagate independently for each raw metric instead of being replaced with
 /// estimates.
-WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
-    llvm::ArrayRef<PhysicalTileInstructionProgram> tilePrograms,
+CardInstructionProgramCost analyzeCardInstructionProgramCost(
+    llvm::ArrayRef<TileInstructionProgram> tileModules,
     const TargetScheduleCostPolicy &policy);
 
-/// Recompute one exact operation partition of the complete physical-Tile
+/// Recompute one exact operation partition of the complete Tile
 /// domain. Operations not listed in a Tile slice contribute no work, but the
 /// enclosing accepted control flow and explicit physical identity remain the
 /// source of multiplicity and NoC topology. Callers must prove that a cohort
 /// of slices is disjoint and conserves the unsliced raw costs before using it
 /// to claim schedule overlap.
-WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCostSlice(
-    llvm::ArrayRef<PhysicalTileInstructionProgramSlice> tilePrograms,
+CardInstructionProgramCost analyzeCardInstructionProgramCostSlice(
+    llvm::ArrayRef<TileInstructionProgramSlice> tileModules,
     const TargetScheduleCostPolicy &policy);
 
 llvm::StringRef stringifyScheduleCostKnowledge(ScheduleCostKnowledge knowledge);

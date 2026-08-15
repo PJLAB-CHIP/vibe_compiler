@@ -65,11 +65,11 @@ def LowerInstrToTargetLLVMPass
            "default-ddr-arena-argument-index", "int64_t", /*default=*/"-1",
            "Entry argument carrying the default DDR arena base; -1 rejects "
            "compiler-managed DDR allocations">,
-    Option<"physicalCardId", "physical-card-id", "int64_t", /*default=*/"-1",
-           "Physical card containing the accepted Tile program; required "
+    Option<"cardId", "card-id", "int64_t", /*default=*/"-1",
+           "Card containing the accepted Tile module; required "
            "when Direct DTE instructions are present">,
-    Option<"physicalTileId", "physical-tile-id", "int64_t", /*default=*/"-1",
-           "Physical Tile whose accepted Direct DTE endpoints are lowered; "
+    Option<"tileId", "tile-id", "int64_t", /*default=*/"-1",
+           "Tile whose accepted Direct DTE endpoints are lowered; "
            "required when Direct DTE instructions are present">,
     Option<"transportStatusArgumentIndex",
            "transport-status-argument-index", "int64_t", /*default=*/"-1",

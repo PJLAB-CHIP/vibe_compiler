@@ -95,7 +95,7 @@ bool canMaterializeSelectiveTileSpill(TileRegionOp region, mlir::Value root,
 }
 
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-materializeCompleteRankTileProgram(
+materializeCompleteRankTileModule(
     mlir::ModuleOp sourceModule, int64_t logicalRank,
     unsigned *materializedRegionCount) {
   if (materializedRegionCount)

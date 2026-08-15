@@ -1,7 +1,7 @@
 # Wafer Shardy / Card-Level SPMD 设计
 
 状态：2026-08-13按card-level GSPMD与card-local physical-dataflow分层同步。本文只拥有frontend sharding、
-global-to-card-local partition 和 post-SPMD structured-program boundary；单卡 physical Tile 的 spatial mapping、
+global-to-card-local partition 和 post-SPMD structured-program boundary；单卡 Tile 的 spatial mapping、
 temporal tiling、融合、驻留和通信由 `tasks/06-physical-dataflow-synthesis.md` 唯一拥有。实现状态看
 `tasks/progress.md`。
 
@@ -11,28 +11,28 @@ temporal tiling、融合、驻留和通信由 `tasks/06-physical-dataflow-synthe
 Pipeline position:
 - Upstream IR / input:
   verified、尚未SPMD partition的StableHLO program directory；可选frontend mhlo.sharding；以及validated
-  ExecutionConfig中的card-level num_partitions。target identity和physical Tile数量不由frontend提供。
+  ExecutionConfig中的card-level num_partitions。target identity和Tile数量不由frontend提供。
 - Current stage responsibility:
   在transaction-owned source snapshot上建立card-level logical partition mesh，把pre-SPMD StableHLO和frontend
   sharding交给pinned XLA helper，由helper内部完成Shardy propagation与XLA SPMD；重新读取并验证local signature、
   typed distributed boundary、card-partition parameter shards和post-SPMD marker，再进入local normalization。
 - Output IR / files:
   每个logical card partition一个verified card-local structured tensor program，以及对应parameter payload/metadata；
-  输出尚未绑定card_id、physical tile_id、launch slot或runtime endpoint。
+  输出尚未绑定card_id、target tile_id、launch slot或runtime endpoint。
 - Downstream consumer:
   fixed target-independent structured optimization；随后physical-dataflow synthesis对每个card-local DAG
-  构造CardProgram，并选择physical tile_id。physical-Tile module splitting只发生在selected CardProgram之后。
+  构造CardModule，并选择target tile_id。Tile module splitting只发生在selected CardModule之后。
 - User-level driver / named pipeline:
   正式入口为
   `wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=N --launch-kind={kernel|model}`；
   `num_partitions`是card-level logical partition数，不是单卡Tile数。wafer-opt和IR-local sharding pipeline只用于
   debug/test，不能形成第二条production入口。
 - Explicit non-goals:
-  不决定physical card placement、单卡Tile work assignment、CardProgram、SPM/DDR、NoC/DTE、target ABI或
+  不决定target card placement、单卡Tile work assignment、CardModule、SPM/DDR、NoC/DTE、target ABI或
   runtime launch；不从strategy名、parameter名、文件名或side JSON恢复语义。
 - Completion gate:
   helper输出的partition domain、distributed boundary和parameter shards与num_partitions all-and-only一致；
-  num_partitions=1的single-card输入只形成一个完整card-local DAG，不按16个physical Tile预先clone；最终structured
+  num_partitions=1的single-card输入只形成一个完整card-local DAG，不按16个Tile预先clone；最终structured
   program重新parse后仍通过同一typed frontend gate。
 ```
 
@@ -45,8 +45,8 @@ Pipeline position:
 | Domain | 语义 owner | 本层如何使用 |
 | --- | --- | --- |
 | `partition_id in [0, num_partitions)` | Shardy/XLA SPMD | global tensor到card-local tensor的逻辑partition、boundary和parameter shard |
-| `card_id` | physical topology / deployment | 本层不选择；下游把一个card-local program放到某个physical card时才出现 |
-| `tile_id` | physical-dataflow synthesis | 本层不产生；标识card内physical Tile及其MPMD program |
+| `card_id` | target topology / deployment | 本层不选择；下游把一个card-local module放到某个target card时才出现 |
+| `tile_id` | physical-dataflow synthesis | 本层不产生；标识card内Tile及其MPMD program |
 
 `num_partitions`因此只能表示logical card partition数量。single-card production当前使用
 `num_partitions=1`；单卡有16个available Tile并不把该值改成16。未来`num_partitions>1`表示多卡global-to-local
@@ -54,10 +54,10 @@ partition，只有multi-card placement、transport和runtime consumer同时闭�
 
 旧whole-rank入口、partition数量与available Tile数量相等、logical execution identity直接绑定Tile endpoint，以及
 用一个rank field同时驱动helper和package launch的合同全部废止。内部依赖仍可能使用XLA的partition/replica术语，但必须在
-frontend verifier边界归一化为本节的card-partition typed result，不能泄漏成physical Tile身份。
+frontend verifier边界归一化为本节的card-partition typed result，不能泄漏成Tile身份。
 
 Frontend只保存exporter能解释的sharding事实。当前import source是function boundary或StableHLO op上的
-`mhlo.sharding`；它不能提前变成physical tile、DTE route、SPM offset或Wafer私有策略字符串。用户没有
+`mhlo.sharding`；它不能提前变成target Tile、DTE route、SPM offset或Wafer私有策略字符串。用户没有
 `mark_sharding`不是frontend错误：helper可以形成replicated card partition；这只保证语义正确，不承诺后续
 card-local physical-dataflow性能。
 
@@ -121,8 +121,8 @@ tensor DAG。它不携带：
 
 本stage按`partition_id=0..N-1`发布card-local structured programs。每个program在进入physical-dataflow synthesis
 时仍是一张完整DAG；不能先按单卡Tile数clone、不能只取partition 0作为代表、也不能去重字节相同的logical card
-partitions。`tasks/06-physical-dataflow-synthesis.md`随后为每个card-local DAG选择CardProgram；其
-`wafer.tile.program`数量由selected physical mapping与available Tile domain决定，与`num_partitions`无等式关系。
+partitions。`tasks/06-physical-dataflow-synthesis.md`随后为每个card-local DAG选择CardModule；其
+`wafer.tile.module`数量由selected physical mapping与available Tile domain决定，与`num_partitions`无等式关系。
 
 ## 3. Workload 与 sharding 验证边界
 
@@ -136,7 +136,7 @@ production路径；如果保留，只能作为多卡logical partition或历史�
 参数，frontend保持PyTorch/HF原始语义，不按模型名、shape、weight名或`-inf`写特殊处理。
 
 当前production是single-program、single-card-partition边界。未来多卡`num_partitions>1`必须同时具备card placement、
-cross-card transport、package和runtime consumer；本层不通过扩展physical Tile映射来假装多卡支持。
+cross-card transport、package和runtime consumer；本层不通过扩展Tile映射来假装多卡支持。
 
 ## 4. 原子性与失败语义
 
@@ -172,13 +172,13 @@ snapshot；原source不被原地补topology、改MLIR或写shards。helper和loc
 
 Mandatory coverage：
 
-- `num_partitions=1`从真实source到一个完整card-local structured tensor DAG，且不按16个physical Tile预先clone；
+- `num_partitions=1`从真实source到一个完整card-local structured tensor DAG，且不按16个Tile预先clone；
 - logical partition count、boundary、parameter metadata和payload all-and-only一致；
 - logical partition count与target available Tile count不同仍按各自合同验证，不要求相等；
 - data/column/row等helper case按card partition解释，unsupported helper形态fail closed；
 - duplicate/missing partition、metadata/IR不一致、helper late failure和final readback failure保持transaction atomicity；
 - 用户入口拒绝旧`--execution-ranks`以及把16解释为single-card Tile count的请求；
-- downstream boundary测试证明同一个single-card program可形成多个physical Tile programs，但该算法与正确性合同只在
+- downstream boundary测试证明同一个single-CardModule可形成多个Tile modules，但该算法与正确性合同只在
   `tasks/06-physical-dataflow-synthesis.md`定义。
 
 局部Shardy/IR tests只证明parse、propagation或partition relation，不证明program payload、card-local boundary或

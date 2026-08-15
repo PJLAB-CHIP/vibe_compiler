@@ -26,15 +26,15 @@ using wafer::analysis::StaticScheduleStage;
 using wafer::analysis::StaticScheduleStep;
 using wafer::analysis::StaticScheduleWork;
 using wafer::analysis::TargetScheduleCostPolicy;
-using wafer::analysis::WholeCardInstructionProgramCost;
-using wafer::analysis::WholeCardResourceDurationEstimate;
+using wafer::analysis::CardInstructionProgramCost;
+using wafer::analysis::ProgramDurationEstimate;
 
-static WholeCardInstructionProgramCost
+static CardInstructionProgramCost
 makeCost(uint64_t ddrReadBytes, uint64_t ddrWriteBytes,
          uint64_t nocTransmitBytes = 0, uint64_t nocReceiveBytes = 0,
          uint64_t transmitMessages = 0, uint64_t receiveMessages = 0,
          uint64_t peakLinkBytes = 0) {
-  WholeCardInstructionProgramCost cost;
+  CardInstructionProgramCost cost;
   cost.tileCosts.push_back(InstructionProgramCost{});
   cost.aggregateDDRReadBytes.value = ddrReadBytes;
   cost.aggregateDDRWriteBytes.value = ddrWriteBytes;
@@ -58,8 +58,8 @@ static TargetScheduleCostPolicy defaultPolicy() {
   return TargetScheduleCostPolicy{};
 }
 
-static WholeCardResourceDurationEstimate
-estimateCost(const WholeCardInstructionProgramCost &cost,
+static ProgramDurationEstimate
+estimateCost(const CardInstructionProgramCost &cost,
              const TargetScheduleCostPolicy &policy) {
   StaticSchedulePlan plan = StaticSchedulePlan::getConservative(cost);
   const StaticSchedulePlan *plans[] = {&plan};
@@ -71,7 +71,7 @@ estimateCost(const WholeCardInstructionProgramCost &cost,
   return estimates.front();
 }
 
-static WholeCardResourceDurationEstimate
+static ProgramDurationEstimate
 estimatePlan(const StaticSchedulePlan &plan,
              const TargetScheduleCostPolicy &policy) {
   const StaticSchedulePlan *plans[] = {&plan};
@@ -98,7 +98,7 @@ branch(std::initializer_list<StaticScheduleWork> dependentWork) {
   return result;
 }
 
-static StaticScheduleWork work(const WholeCardInstructionProgramCost &cost,
+static StaticScheduleWork work(const CardInstructionProgramCost &cost,
                                StaticScheduleResourceMask resourceMask) {
   return {&cost, resourceMask};
 }
@@ -116,13 +116,13 @@ stageStep(std::initializer_list<StaticScheduleBranch> branches) {
 }
 
 static StaticScheduleStep
-singleWorkStageStep(const WholeCardInstructionProgramCost &cost,
+singleWorkStageStep(const CardInstructionProgramCost &cost,
                     StaticScheduleResourceMask resourceMask) {
   return stageStep({branch({work(cost, resourceMask)})});
 }
 
 static StaticSchedulePlan
-plan(const WholeCardInstructionProgramCost &controlCost,
+plan(const CardInstructionProgramCost &controlCost,
      std::initializer_list<StaticScheduleStep> steps) {
   auto result = StaticSchedulePlan::create(controlCost, steps);
   EXPECT_TRUE(result.has_value());
@@ -130,8 +130,8 @@ plan(const WholeCardInstructionProgramCost &controlCost,
                 : StaticSchedulePlan::getConservative(controlCost);
 }
 
-TEST(TheoreticalScheduleCostAnalysisTest, UsesOneSharedWholeCardDDRRate) {
-  WholeCardInstructionProgramCost cost =
+TEST(TheoreticalScheduleCostAnalysisTest, UsesOneSharedCardDDRRate) {
+  CardInstructionProgramCost cost =
       makeCost(/*ddrReadBytes=*/16 * 4096, /*ddrWriteBytes=*/0);
   auto estimate = estimateCost(cost, defaultPolicy());
 
@@ -149,8 +149,8 @@ TEST(TheoreticalScheduleCostAnalysisTest, UsesOneSharedWholeCardDDRRate) {
 
 TEST(TheoreticalScheduleCostAnalysisTest,
      CohortDisablesUnavailableWorkTermForEveryCandidate) {
-  WholeCardInstructionProgramCost baseline = makeCost(1'000'000, 0);
-  WholeCardInstructionProgramCost candidate = makeCost(100'000, 0);
+  CardInstructionProgramCost baseline = makeCost(1'000'000, 0);
+  CardInstructionProgramCost candidate = makeCost(100'000, 0);
   candidate.aggregateDDRReadBytes = {0, ScheduleCostKnowledge::Unavailable,
                                      ScheduleCostReason::DynamicLoopTripCount};
   baseline.tileCosts.front().compute.vectorF16Bf16LogicalOps.value = 64'000;
@@ -176,7 +176,7 @@ TEST(TheoreticalScheduleCostAnalysisTest,
 
 TEST(TheoreticalScheduleCostAnalysisTest,
      MissingOptionalPointParameterDisablesOneTermWithoutGuessing) {
-  WholeCardInstructionProgramCost cost =
+  CardInstructionProgramCost cost =
       makeCost(/*ddrReadBytes=*/0, /*ddrWriteBytes=*/0,
                /*nocTransmitBytes=*/128'000,
                /*nocReceiveBytes=*/128'000,
@@ -197,7 +197,7 @@ TEST(TheoreticalScheduleCostAnalysisTest,
 }
 
 TEST(TheoreticalScheduleCostAnalysisTest, DependentChainSumsResourceStages) {
-  WholeCardInstructionProgramCost cost =
+  CardInstructionProgramCost cost =
       makeCost(/*ddrReadBytes=*/150'000, /*ddrWriteBytes=*/0);
   cost.tileCosts.front().compute.npuF16Bf16LogicalOps.value = 8'000'000;
   cost.aggregateSPMMovementBytes.value = 256'000;
@@ -214,9 +214,9 @@ TEST(TheoreticalScheduleCostAnalysisTest, DependentChainSumsResourceStages) {
 
 TEST(TheoreticalScheduleCostAnalysisTest,
      IndependentBranchesInOneStageUseTheLongestBranch) {
-  WholeCardInstructionProgramCost shortBranch = makeCost(0, 0);
-  WholeCardInstructionProgramCost longBranch = makeCost(0, 0);
-  WholeCardInstructionProgramCost zeroWork = makeCost(0, 0);
+  CardInstructionProgramCost shortBranch = makeCost(0, 0);
+  CardInstructionProgramCost longBranch = makeCost(0, 0);
+  CardInstructionProgramCost zeroWork = makeCost(0, 0);
   shortBranch.tileCosts.front().compute.npuF16Bf16LogicalOps.value = 8'000'000;
   longBranch.tileCosts.front().compute.npuF16Bf16LogicalOps.value = 24'000'000;
 
@@ -239,7 +239,7 @@ TEST(TheoreticalScheduleCostAnalysisTest,
 
 TEST(TheoreticalScheduleCostAnalysisTest,
      BufferedMovementUsesExplicitPrologueSteadyAndEpilogue) {
-  WholeCardInstructionProgramCost cost = makeCost(150'000, 0);
+  CardInstructionProgramCost cost = makeCost(150'000, 0);
   cost.tileCosts.front().compute.npuF16Bf16LogicalOps.value = 16'000'000;
 
   llvm::SmallVector<StaticScheduleStep, 16> unbufferedSteps;
@@ -285,7 +285,7 @@ TEST(TheoreticalScheduleCostAnalysisTest,
 
 TEST(TheoreticalScheduleCostAnalysisTest,
      InvalidPlanCannotSilentlyDropAResourceOrUseAnEmptySteadyState) {
-  WholeCardInstructionProgramCost cost = makeCost(0, 0);
+  CardInstructionProgramCost cost = makeCost(0, 0);
   auto missingResource = StaticSchedulePlan::create(
       cost,
       {singleWorkStageStep(cost, resources({StaticScheduleResource::DDR,
@@ -303,7 +303,7 @@ TEST(TheoreticalScheduleCostAnalysisTest,
 
 TEST(TheoreticalScheduleCostAnalysisTest,
      DurationAndPipelineArithmeticRemainNumericOnOverflow) {
-  WholeCardInstructionProgramCost cost = makeCost(0, 0);
+  CardInstructionProgramCost cost = makeCost(0, 0);
   cost.tileCosts.front().compute.npuF16Bf16LogicalOps.value =
       std::numeric_limits<uint64_t>::max();
   TargetScheduleCostPolicy policy = defaultPolicy();

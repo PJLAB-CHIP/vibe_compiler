@@ -768,7 +768,7 @@ def apply_hf_card_partition_marks(
 ) -> None:
     # The source boundary has one logical card partition. Replicated marks
     # keep parameters explicit for the program-directory ABI without encoding
-    # any physical-Tile placement or operator-specific partitioning.
+    # any Tile placement or operator-specific partitioning.
     spmd_module.mark_sharding(
         input_tensor, mesh, tuple(None for _ in input_tensor.shape)
     )
@@ -2160,7 +2160,7 @@ def emit_workload_corpus(
     runtime_modules: dict[str, Any] = {}
     # Initialize the exporter in one-partition SPMD mode before any XLA value
     # exists. This keeps every corpus case on the same card-local frontend
-    # boundary without introducing a physical-Tile mesh in source IR.
+    # boundary without introducing a Tile mesh in source IR.
     spmd_modules = _import_spmd_runtime_modules()
     spmd_modules[2].use_spmd()
     torch_xla_module = sys.modules.get("torch_xla")

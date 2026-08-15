@@ -3,7 +3,7 @@
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 
 #include "ScheduleCost/Internal.h"
-#include "Wafer/IR/Target/PhysicalTopology.h"
+#include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -249,14 +249,14 @@ static void maximizeWork(InstructionProgramWork &maximum,
 }
 
 struct PendingTileTransmit {
-  PhysicalTileId sourceTile = PhysicalTileId(-1);
+  TileId sourceTile = TileId(-1);
   int64_t peer = -1;
   detail::Quantity payloadBytes;
   detail::Quantity messageCount;
 };
 
 struct ModeledDirectedLinkLoad {
-  PhysicalTileDirectedLink link;
+  TileLink link;
   uint64_t bytes = 0;
 };
 
@@ -269,20 +269,20 @@ static mlir::ModuleOp getContainingModule(mlir::Operation *root) {
 }
 
 static bool
-hasEquivalentOnCardTopology(const PhysicalTopology &lhs,
-                            const PhysicalTopology &rhs,
-                            llvm::ArrayRef<PhysicalTileId> expectedTileIds) {
+hasEquivalentOnCardTopology(const TargetTopology &lhs,
+                            const TargetTopology &rhs,
+                            llvm::ArrayRef<TileId> expectedTileIds) {
   if (lhs.getCardCount() != 1 || rhs.getCardCount() != 1 ||
       lhs.getTilesPerCard() != rhs.getTilesPerCard() ||
       lhs.getCardGrid() != rhs.getCardGrid() ||
       lhs.getTileGrid() != rhs.getTileGrid())
     return false;
-  std::optional<llvm::ArrayRef<PhysicalTileId>> available =
-      rhs.getAvailableTileIds(PhysicalCardId(0));
+  std::optional<llvm::ArrayRef<TileId>> available =
+      rhs.getAvailableTileIds(CardId(0));
   return available && *available == expectedTileIds;
 }
 
-static void degradeInvalidPhysicalTopology(
+static void degradeInvalidTargetTopology(
     bool hasTransmit, ScheduleCostMetric &minimumHopLinkByteDemand,
     ScheduleCostMetric &minimumHopMessageDemand,
     ScheduleCostMetric &directedNoCLinkCount,
@@ -308,7 +308,7 @@ static void degradeInvalidPhysicalTopology(
 }
 
 static void collectMinimumHopLinkByteDemand(
-    llvm::ArrayRef<PhysicalTileInstructionProgram> tilePrograms,
+    llvm::ArrayRef<TileInstructionProgram> tileModules,
     llvm::ArrayRef<llvm::DenseSet<mlir::Operation *>> includedOperations,
     ScheduleCostMetric &minimumHopLinkByteDemand,
     ScheduleCostMetric &minimumHopMessageDemand,
@@ -316,22 +316,22 @@ static void collectMinimumHopLinkByteDemand(
     ScheduleCostMetric &idealizedMinimumPeakLinkByteDemand,
     ModeledNoCRouteCost &modeledNoCRoute,
     ScheduleCostMetric &maximumNoCHopCount) {
-  // The caller supplies the complete single-card Tile programs with explicit
+  // The caller supplies the complete single-card Tile instruction modules with
+  // explicit
   // physical identity.  The direct topology validates that domain; neither
   // vector position nor logical partition identity is interpreted as tile_id.
-  std::optional<PhysicalTopology> topology;
-  bool validTopology = !tilePrograms.empty();
-  for (const PhysicalTileInstructionProgram &program : tilePrograms) {
+  std::optional<TargetTopology> topology;
+  bool validTopology = !tileModules.empty();
+  for (const TileInstructionProgram &program : tileModules) {
     mlir::ModuleOp module = getContainingModule(program.root);
-    mlir::FailureOr<PhysicalTopology> current =
-        PhysicalTopology::create(module);
+    mlir::FailureOr<TargetTopology> current = TargetTopology::create(module);
     if (mlir::failed(current) || current->getCardCount() != 1) {
       validTopology = false;
       continue;
     }
-    std::optional<llvm::ArrayRef<PhysicalTileId>> available =
-        current->getAvailableTileIds(PhysicalCardId(0));
-    if (!available || available->size() != tilePrograms.size()) {
+    std::optional<llvm::ArrayRef<TileId>> available =
+        current->getAvailableTileIds(CardId(0));
+    if (!available || available->size() != tileModules.size()) {
       validTopology = false;
       continue;
     }
@@ -339,8 +339,8 @@ static void collectMinimumHopLinkByteDemand(
       topology.emplace(std::move(*current));
       continue;
     }
-    std::optional<llvm::ArrayRef<PhysicalTileId>> expected =
-        topology->getAvailableTileIds(PhysicalCardId(0));
+    std::optional<llvm::ArrayRef<TileId>> expected =
+        topology->getAvailableTileIds(CardId(0));
     if (!expected ||
         !hasEquivalentOnCardTopology(*topology, *current, *expected))
       validTopology = false;
@@ -348,24 +348,23 @@ static void collectMinimumHopLinkByteDemand(
 
   if (!topology)
     validTopology = false;
-  llvm::SmallVector<PhysicalTileId, 16> providedTileIds;
-  providedTileIds.reserve(tilePrograms.size());
-  for (const PhysicalTileInstructionProgram &program : tilePrograms)
+  llvm::SmallVector<TileId, 16> providedTileIds;
+  providedTileIds.reserve(tileModules.size());
+  for (const TileInstructionProgram &program : tileModules)
     providedTileIds.push_back(program.tileId);
-  llvm::sort(providedTileIds, [](PhysicalTileId lhs, PhysicalTileId rhs) {
+  llvm::sort(providedTileIds, [](TileId lhs, TileId rhs) {
     return lhs.getValue() < rhs.getValue();
   });
-  std::optional<llvm::ArrayRef<PhysicalTileId>> availableTileIds =
-      topology ? topology->getAvailableTileIds(PhysicalCardId(0))
-               : std::nullopt;
+  std::optional<llvm::ArrayRef<TileId>> availableTileIds =
+      topology ? topology->getAvailableTileIds(CardId(0)) : std::nullopt;
   if (!availableTileIds || !llvm::equal(providedTileIds, *availableTileIds) ||
       std::adjacent_find(providedTileIds.begin(), providedTileIds.end()) !=
           providedTileIds.end())
     validTopology = false;
   if (validTopology) {
-    for (PhysicalTileId tile : *availableTileIds) {
-      mlir::FailureOr<llvm::SmallVector<PhysicalTileId, 4>> neighbors =
-          topology->getOnCardNeighbors(PhysicalCardId(0), tile);
+    for (TileId tile : *availableTileIds) {
+      mlir::FailureOr<llvm::SmallVector<TileId, 4>> neighbors =
+          topology->getOnCardNeighbors(CardId(0), tile);
       if (mlir::failed(neighbors)) {
         validTopology = false;
         break;
@@ -383,7 +382,7 @@ static void collectMinimumHopLinkByteDemand(
   }
 
   llvm::SmallVector<PendingTileTransmit, 32> transmits;
-  for (auto [tileIndex, program] : llvm::enumerate(tilePrograms)) {
+  for (auto [tileIndex, program] : llvm::enumerate(tileModules)) {
     mlir::Operation *root = program.root;
     if (!root)
       continue;
@@ -432,10 +431,10 @@ static void collectMinimumHopLinkByteDemand(
   }
 
   if (!validTopology) {
-    degradeInvalidPhysicalTopology(
-        !transmits.empty(), minimumHopLinkByteDemand, minimumHopMessageDemand,
-        directedNoCLinkCount, idealizedMinimumPeakLinkByteDemand,
-        modeledNoCRoute, maximumNoCHopCount);
+    degradeInvalidTargetTopology(!transmits.empty(), minimumHopLinkByteDemand,
+                                 minimumHopMessageDemand, directedNoCLinkCount,
+                                 idealizedMinimumPeakLinkByteDemand,
+                                 modeledNoCRoute, maximumNoCHopCount);
     return;
   }
   if (transmits.empty())
@@ -443,12 +442,11 @@ static void collectMinimumHopLinkByteDemand(
 
   llvm::SmallVector<ModeledDirectedLinkLoad, 32> modeledLinkLoads;
   for (const PendingTileTransmit &transmit : transmits) {
-    PhysicalTileId peer(transmit.peer);
+    TileId peer(transmit.peer);
     std::optional<uint64_t> hops = topology->getOnCardShortestHopDistance(
-        PhysicalCardId(0), transmit.sourceTile, peer);
-    mlir::FailureOr<llvm::SmallVector<PhysicalTileDirectedLink, 8>> route =
-        topology->getCanonicalOnCardPath(PhysicalCardId(0), transmit.sourceTile,
-                                         peer);
+        CardId(0), transmit.sourceTile, peer);
+    mlir::FailureOr<llvm::SmallVector<TileLink, 8>> route =
+        topology->getCanonicalOnCardPath(CardId(0), transmit.sourceTile, peer);
     if (!hops || mlir::failed(route) || route->size() != *hops) {
       detail::degrade(minimumHopLinkByteDemand,
                       ScheduleCostKnowledge::Unavailable,
@@ -474,7 +472,7 @@ static void collectMinimumHopLinkByteDemand(
                 detail::multiply(transmit.messageCount, *hops));
     if (transmit.payloadBytes.knowledge != ScheduleCostKnowledge::Known)
       continue;
-    for (const PhysicalTileDirectedLink &link : *route) {
+    for (const TileLink &link : *route) {
       auto existing =
           std::find_if(modeledLinkLoads.begin(), modeledLinkLoads.end(),
                        [&](const ModeledDirectedLinkLoad &load) {
@@ -520,23 +518,21 @@ static void collectMinimumHopLinkByteDemand(
 
 } // namespace
 
-static WholeCardInstructionProgramCost
-analyzeWholeCardInstructionProgramCostImpl(
-    llvm::ArrayRef<PhysicalTileInstructionProgram> tilePrograms,
+static CardInstructionProgramCost analyzeCardInstructionProgramCostImpl(
+    llvm::ArrayRef<TileInstructionProgram> tileModules,
     const TargetScheduleCostPolicy &policy,
     llvm::ArrayRef<llvm::DenseSet<mlir::Operation *>> includedOperations) {
-  WholeCardInstructionProgramCost result;
-  std::vector<InstructionProgramCost> tileCosts(tilePrograms.size());
-  llvm::parallelFor(0, tilePrograms.size(), [&](size_t tileIndex) {
+  CardInstructionProgramCost result;
+  std::vector<InstructionProgramCost> tileCosts(tileModules.size());
+  llvm::parallelFor(0, tileModules.size(), [&](size_t tileIndex) {
     tileCosts[tileIndex] =
         includedOperations.empty()
-            ? analyzeInstructionProgramCost(tilePrograms[tileIndex].root,
-                                            policy)
-            : analyzeInstructionProgramCostSlice(tilePrograms[tileIndex].root,
+            ? analyzeInstructionProgramCost(tileModules[tileIndex].root, policy)
+            : analyzeInstructionProgramCostSlice(tileModules[tileIndex].root,
                                                  policy,
                                                  includedOperations[tileIndex]);
   });
-  result.tileCosts.reserve(tilePrograms.size());
+  result.tileCosts.reserve(tileModules.size());
   for (InstructionProgramCost &tileCost : tileCosts) {
     addWork(result.aggregateWork, tileCost.work);
     maximizeWork(result.maximumTileWork, tileCost.work);
@@ -593,33 +589,33 @@ analyzeWholeCardInstructionProgramCostImpl(
   result.aggregateIntrinsicNCCDrainCount =
       result.aggregateWork.intrinsicNCCDrains.exactExecutions;
   collectMinimumHopLinkByteDemand(
-      tilePrograms, includedOperations, result.minimumHopLinkByteDemand,
+      tileModules, includedOperations, result.minimumHopLinkByteDemand,
       result.minimumHopMessageDemand, result.directedNoCLinkCount,
       result.idealizedMinimumPeakLinkByteDemand, result.modeledNoCRoute,
       result.maximumNoCHopCount);
   return result;
 }
 
-WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCost(
-    llvm::ArrayRef<PhysicalTileInstructionProgram> tilePrograms,
+CardInstructionProgramCost analyzeCardInstructionProgramCost(
+    llvm::ArrayRef<TileInstructionProgram> tileModules,
     const TargetScheduleCostPolicy &policy) {
-  return analyzeWholeCardInstructionProgramCostImpl(tilePrograms, policy, {});
+  return analyzeCardInstructionProgramCostImpl(tileModules, policy, {});
 }
 
-WholeCardInstructionProgramCost analyzeWholeCardInstructionProgramCostSlice(
-    llvm::ArrayRef<PhysicalTileInstructionProgramSlice> tilePrograms,
+CardInstructionProgramCost analyzeCardInstructionProgramCostSlice(
+    llvm::ArrayRef<TileInstructionProgramSlice> tileModules,
     const TargetScheduleCostPolicy &policy) {
-  llvm::SmallVector<PhysicalTileInstructionProgram, 16> programs;
+  llvm::SmallVector<TileInstructionProgram, 16> programs;
   std::vector<llvm::DenseSet<mlir::Operation *>> includedOperations;
-  programs.reserve(tilePrograms.size());
-  includedOperations.reserve(tilePrograms.size());
-  for (const PhysicalTileInstructionProgramSlice &slice : tilePrograms) {
+  programs.reserve(tileModules.size());
+  includedOperations.reserve(tileModules.size());
+  for (const TileInstructionProgramSlice &slice : tileModules) {
     programs.push_back({slice.tileId, slice.root});
     includedOperations.emplace_back(slice.includedOperations.begin(),
                                     slice.includedOperations.end());
   }
-  return analyzeWholeCardInstructionProgramCostImpl(programs, policy,
-                                                    includedOperations);
+  return analyzeCardInstructionProgramCostImpl(programs, policy,
+                                               includedOperations);
 }
 
 llvm::StringRef

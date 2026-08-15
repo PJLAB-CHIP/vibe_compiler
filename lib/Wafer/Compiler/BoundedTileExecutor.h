@@ -1,4 +1,4 @@
-//===- BoundedTileExecutor.h - Independent physical Tile work -*- C++ -*-===//
+//===- BoundedTileExecutor.h - Independent Tile work -*- C++ -*-===//
 
 #ifndef WAFER_COMPILER_BOUNDEDTILEEXECUTOR_H
 #define WAFER_COMPILER_BOUNDEDTILEEXECUTOR_H
@@ -35,8 +35,8 @@ inline unsigned getBoundedTilePipelineWorkerCount(
                              context->getThreadPool().getMaxConcurrency()}));
 }
 
-/// Runs only mutually independent physical Tile transformations. Callers own
-/// all result slots and perform whole-card transport, resource, or ABI checks
+/// Runs only mutually independent Tile transformations. Callers own
+/// all result slots and perform card transport, resource, or ABI checks
 /// only after this function returns. Contiguous shards
 /// preserve deterministic diagnostic ordering.
 template <typename FunctionT>
@@ -74,7 +74,7 @@ unsigned runBoundedTilePipelines(
   return workerCount;
 }
 
-/// Uses bounded shared-context parallelism when every physical Tile module
+/// Uses bounded shared-context parallelism when every Tile module
 /// belongs to one owner context. Inputs from isolated contexts retain a
 /// deterministic serial path.
 template <typename FunctionT>

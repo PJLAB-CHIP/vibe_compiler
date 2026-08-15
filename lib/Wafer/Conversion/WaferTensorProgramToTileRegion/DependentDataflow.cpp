@@ -1331,7 +1331,7 @@ mlir::LogicalResult materializeRecompute(
                       "recompute requires a pure current-SSA producer");
   // The producer op-wave remains an actual scheduled obligation. Materialize
   // its selected domain first, then wire an independent cloned producer into
-  // the consumer traversal. Across a CardProgram this is the concrete
+  // the consumer traversal. Across a CardModule this is the concrete
   // distinction between retention and recomputation, even when a focused
   // single-Tile test places both obligations on one endpoint.
   mlir::FailureOr<mlir::Value> original = getOrMaterializeSource(
@@ -1613,7 +1613,7 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
   // not represented by SSA edges from a later StorageStore. Find the last
   // endpoint owned by this exact stage, then preserve the complete preceding
   // transport order. Moving only the owned receives ahead of intervening
-  // sends changes the per-Tile wait order and can manufacture a whole-card
+  // sends changes the per-Tile wait order and can manufacture a card
   // DTE cycle even though every receive buffer is otherwise initialized.
   mlir::Operation *lastOwnedPeerActionRoot = nullptr;
   auto ownsPeerEndpoint = [&](mlir::Operation *endpoint, mlir::Value buffer) {
@@ -2154,7 +2154,7 @@ mlir::LogicalResult wafer::deriveSpatialEdgeConsumerResultDomain(
 }
 
 bool wafer::isSpatialEdgeStrategyIncidentOnTile(
-    const SpatialEdgeStrategy &strategy, PhysicalTileId tile) {
+    const SpatialEdgeStrategy &strategy, TileId tile) {
   if (strategy.destinationTile == tile)
     return true;
   if (strategy.action != SpatialEdgeAction::PeerFragments)
@@ -2167,7 +2167,7 @@ bool wafer::isSpatialEdgeStrategyIncidentOnTile(
 
 mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,
-    llvm::ArrayRef<SpatialOutputShard> outputShards, PhysicalTileId currentTile,
+    llvm::ArrayRef<SpatialOutputShard> outputShards, TileId currentTile,
     SpatialDataflowMaterializationMode materializationMode,
     llvm::ArrayRef<SpatialEdgeStrategy> edgeStrategies,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,
@@ -2342,7 +2342,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         strategy.sourceTile != strategy.destinationTile)
       return failResult(
           failureReason,
-          "local edge strategy requires one physical Tile placement");
+          "local edge strategy requires one Tile placement");
     mappedStrategies.push_back(std::move(mapped));
   }
   if (mappedStrategies.empty())

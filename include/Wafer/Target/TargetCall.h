@@ -320,7 +320,7 @@ struct TargetCallDescriptor {
 };
 
 struct TargetCallDecodeConfig {
-  int64_t physicalTileCount;
+  int64_t tileCount;
 };
 
 /// Returns the one closed target-call ABI surface consumed by compiler,

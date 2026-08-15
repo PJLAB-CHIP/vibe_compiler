@@ -4,11 +4,11 @@
 #ifndef WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
 #define WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
 
-#include "PhysicalTileMemoryPlanning.h"
-#include "WholeCardExecutableLowering.h"
+#include "TileMemoryPlanning.h"
+#include "CardExecutableLowering.h"
 
 #include "Wafer/Frontend/Program.h"
-#include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -42,20 +42,20 @@ enum class CardExecutableCompilationStatus : uint8_t {
 };
 
 struct CardExecutableTileFailure {
-  PhysicalTileId tileId{0};
+  TileId tileId{0};
   std::string gate;
   std::string detail;
-  PhysicalTileMemoryPlanningFailure memoryPlanning;
+  TileMemoryPlanningFailure memoryPlanning;
   SelectedBufferMaterializationFailure selectedBuffer;
 };
 
-/// Returns true only when physical-Tile memory planning carries an explicit SPM
+/// Returns true only when Tile memory planning carries an explicit SPM
 /// capacity-overflow proof. Verifier, unsupported-lifetime and pipeline
 /// failures remain indeterminate rather than becoming candidate no-goods.
-bool isProvenExactPhysicalTileMemoryPlanningFailure(
-    const PhysicalTileMemoryPlanningFailure &failure);
+bool isProvenExactTileMemoryPlanningFailure(
+    const TileMemoryPlanningFailure &failure);
 
-/// Move-only result of compiling one already selected CardProgram.  An exact
+/// Move-only result of compiling one already selected CardModule.  An exact
 /// rejection is backed by explicit capacity evidence in the returned
 /// per-Tile failures. Unsupported IR, resource exhaustion, unclassified
 /// allocator failure and internal pipeline failure remain indeterminate and
@@ -63,13 +63,13 @@ bool isProvenExactPhysicalTileMemoryPlanningFailure(
 struct CardExecutableCompilationResult {
   CardExecutableCompilationStatus status =
       CardExecutableCompilationStatus::IndeterminateFailure;
-  std::optional<WholeCardExecutable> executable;
+  std::optional<CardExecutableLoweringResult> executable;
   std::string gate;
   std::string detail;
   llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures;
   llvm::SmallVector<AcceptedOperationNodeRelation, 64> operationNodeRelations;
   /// Same-invocation diagnostic snapshots captured at the Tile dataflow to
-  /// Instr boundary. They are not part of the accepted physical-Tile modules.
+  /// Instr boundary. They are not part of the accepted Tile modules.
   std::vector<std::string> tileDataflowIRTrace;
   uint64_t rotatingSlotAllocationsMaterialized = 0;
 
@@ -80,29 +80,29 @@ struct CardExecutableCompilationResult {
     return status == CardExecutableCompilationStatus::ProvenExactRejection;
   }
 
-  WholeCardExecutable takeExecutable() { return std::move(*executable); }
+  CardExecutableLoweringResult takeExecutable() { return std::move(*executable); }
 };
 
-/// Compiles exactly one owned, verifier-legal, already selected CardProgram.
+/// Compiles exactly one owned, verifier-legal, already selected CardModule.
 /// The function performs no candidate enumeration and never changes spatial,
 /// temporal, layout, movement or buffering choices.  It materializes every
-/// physical Tile, lowers TileRegion to Instr, recomputes required NCC joins,
+/// Tile, lowers TileRegion to Instr, recomputes required NCC joins,
 /// fixed-capacity SPM/DDR planning, Direct-DTE lowering, resource validation,
 /// and target ABI/LLVM verification.
 ///
 /// `selectedBufferRequests`, when nonempty, must have one entry for every
-/// expected Tile in canonical physical-Tile order.  They are typed assignments
+/// expected Tile in canonical Tile order.  They are typed assignments
 /// owned by the caller; this boundary only materializes and verifies them.
-CardExecutableCompilationResult compileCardProgramToExecutable(
-    mlir::OwningOpRef<mlir::ModuleOp> cardProgram,
-    PhysicalCardId expectedCardId,
-    llvm::ArrayRef<PhysicalTileId> expectedTileIds,
+CardExecutableCompilationResult compileCardModuleToExecutable(
+    mlir::OwningOpRef<mlir::ModuleOp> cardModule,
+    CardId expectedCardId,
+    llvm::ArrayRef<TileId> expectedTileIds,
     llvm::ArrayRef<llvm::SmallVector<SelectedBufferRequest, 4>>
         selectedBufferRequests,
     const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    WholeCardSynthesisStatistics *statistics = nullptr,
+    CardExecutableLoweringStatistics *statistics = nullptr,
     unsigned tilePipelineParallelism = 0);
 
 } // namespace wafer::compiler::detail

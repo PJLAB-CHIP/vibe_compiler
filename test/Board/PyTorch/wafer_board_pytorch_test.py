@@ -93,7 +93,7 @@ def validate_compiler_search_evidence(
     if optimization_policy != "search" or minimum == 0:
         return
     selected = re.findall(
-        r"^wafer-compile: whole-card-selection .*?"
+        r"^wafer-compile: card-executable-selection .*?"
         r"\bactual_fused_edges=(\d+)(?:\s|$)",
         stderr,
         re.MULTILINE,
@@ -101,12 +101,12 @@ def validate_compiler_search_evidence(
     if len(selected) != 1:
         raise RuntimeError(
             "search-policy compiler output omitted the unique selected "
-            "whole-card fusion evidence"
+            "card fusion evidence"
         )
     actual = int(selected[0])
     if actual < minimum:
         raise RuntimeError(
-            "search-policy whole-card winner did not materialize the required "
+            "search-policy card winner did not materialize the required "
             f"operator fusion: expected at least {minimum}, got {actual}"
         )
 
@@ -294,7 +294,7 @@ def _manifest_resources(package: pathlib.Path) -> tuple[
     physical_tiles: set[int] = set()
     launch_slots: set[int] = set()
     if len(entries) != PHYSICAL_TILE_COUNT:
-        raise RuntimeError("PyTorch package must contain one entry per physical Tile")
+        raise RuntimeError("PyTorch package must contain one entry per Tile")
     for entry in entries:
         if not isinstance(entry, dict):
             raise RuntimeError("manifest entry must be an object")
@@ -317,7 +317,7 @@ def _manifest_resources(package: pathlib.Path) -> tuple[
         launch_slots.add(launch_slot)
     expected_domain = set(range(PHYSICAL_TILE_COUNT))
     if physical_tiles != expected_domain or launch_slots != expected_domain:
-        raise RuntimeError("manifest entries do not cover the physical Tile domains")
+        raise RuntimeError("manifest entries do not cover the Tile domains")
 
     host_resources: dict[tuple[str, int], dict[str, object]] = {}
     output_ids: set[int] = set()
@@ -521,7 +521,7 @@ def prepare_case_step(
     if args.compile_timing:
         print(compile_result.stderr, end="", file=sys.stderr)
     if (
-        "wrote verified package with num-partitions=1 physical-tiles=16"
+        "wrote verified package with num-partitions=1 tiles=16"
         not in compile_result.stdout
     ):
         raise RuntimeError("wafer-compile did not write the PyTorch package")
@@ -556,7 +556,7 @@ def prepare_case_step(
                     "pre-Instr IR"
                 )
             # A selected MPMD candidate still contains all-and-only the 16
-            # physical Tile interfaces. Tiles outside the winner's active
+            # Tile interfaces. Tiles outside the winner's active
             # placement intentionally contain the typed function boundary and
             # observable empty results but no TileRegion. Accept that canonical
             # inactive pre-Instr IR; requiring every interface to carry
@@ -679,7 +679,7 @@ def main() -> int:
 
         command = base_runtime_command(args.wafer_run, package)
         if args.no_card:
-            # Direct DTE is selected by the common whole-card search, so a
+            # Direct DTE is selected by the common card search, so a
             # board-ready no-card runner must advertise the same transport
             # capabilities regardless of which candidate wins.  This remains
             # side-effect-free validation; it does not claim hardware execution.

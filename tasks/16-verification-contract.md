@@ -1,7 +1,7 @@
 # Wafer Compiler Verification Contract
 
 状态：本文只定义当前架构的验证层级和完成证明，不保存任务动态状态或历史case台账。稳定验证链为
-`TensorProgram -> physical-dataflow selection -> CardProgram/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
+`TensorProgram -> physical-dataflow selection -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
 host局部gate、package roundtrip或一次source compile都不能把production任务提升为`board-ready`；没有真实设备matched
 A/B改善时也不能标`done`。
 
@@ -10,7 +10,7 @@ A/B改善时也不能标`done`。
 ```text
 Pipeline position:
 - Upstream IR / input:
-  当前source program、card-level GSPMD输出、normalized TensorProgram、selected CardProgram/TileProgram/TileRegion、
+  当前source program、card-level GSPMD输出、normalized TensorProgram、selected CardModule/TileModule/TileRegion、
   final Instr、CardExecutable、target LLVM modules、linked ELF、ExecutablePackage及其独立oracle。
 - Current stage responsibility:
   在每个IR/output边界验证语义、coverage、physical identity、resource、completion、ABI、writing与execution；
@@ -35,7 +35,7 @@ Pipeline position:
 证据严格分层，低层不能代签高层：
 
 1. **Static/compile evidence**：编译、ODS/verifier、unit、lit、source organization和文本一致性检查。
-2. **Output evidence**：同一compile transaction生成并readback CardProgram/Instr、CardExecutable、target module和ExecutablePackage。
+2. **Output evidence**：同一compile transaction生成并readback CardModule/Instr、CardExecutable、target module和ExecutablePackage。
 3. **No-card evidence**：真实package经strict loader与runtime validation形成完整16-Tile invocation plan，且无provider effect。
 4. **Functional model evidence**：同次owner-backed target module set经TargetCall frontend/SystemC执行，完整output与独立CPU expected比较。
 5. **Board correctness evidence**：当前构建、当前package、当前payload在真实设备完成output/guard和lifecycle检查。
@@ -65,13 +65,13 @@ ctest --test-dir <configured-build> -j$(nproc) --output-on-failure
 
 ## 4. IR 与 physical-dataflow gates
 
-### 4.1 CardProgram / TileRegion / Instr
+### 4.1 CardModule / TileRegion / Instr
 
 正例必须证明：
 
 - `num_partitions`只描述card-level GSPMD domain；single-card current path固定 `num_partitions=1`；
-- `wafer.card.program`拥有all-and-only 16个available `wafer.tile.program`；
-- distinct Tile programs可含不同op、loop、temporal tile、region和执行长度；
+- `wafer.card.module`拥有all-and-only 16个available `wafer.tile.module`；
+- distinct Tile modules可含不同op、loop、temporal tile、region和执行长度；
 - no-work Tile仍有合法entry并进入output/runtime domain；
 - `(card_id, tile_id)`唯一，Tile-local SPM root不跨Tile SSA alias。
 
@@ -107,7 +107,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - symbolic footprint只有proven must-coexist lower bound超过capacity才能早拒绝；ranking estimate、未经boundary-faithful proof
   的solver/model结果和nominal bandwidth projection不能签发packing、overlap或legality；exact局部solver的proof/proposal也须
   由selected typed materialization与正常gate复验；
-- 需要exact evaluation的choice才物化CardProgram actual candidate，任一时刻最多一个live actual clone；
+- 需要exact evaluation的choice才物化CardModule actual candidate，任一时刻最多一个live actual clone；
 - 所有materialized candidate执行同一Tile→Instr、fresh completion、SPM/DDR、transport/resource/ABI和final recost；
 - proven exact failure只拒绝对应causal assignment并消耗确定work unit，不触发late repair、retile、spill或另一selector；
   `ResourceExhausted`、solver timeout或internal failure属于indeterminate，必须保留合法state，不能形成no-good；
@@ -180,7 +180,7 @@ completion从final actual Instr的effects、worker issue domains、async tokens�
 ### 6.2 ExecutablePackage
 
 - ordinary package strict `schema_version=8`、profile instrumentation strict `schema_version=10`，旧version和额外/缺失field拒绝；
-- `card_count=1`、`tile_count=16`，entries覆盖all-and-only physical Tiles与dense launch slots；
+- `card_count=1`、`tile_count=16`，entries覆盖all-and-only Tiles与dense launch slots；
 - program-boundary resources为card scope并被16个entries引用；workspace/status为Tile scope且只被对应entry引用；
 - resources、modules、entries和slots all-and-only covered，无悬空或重复ID；
 - entry completion只接受 `return_after_local_drain`；Direct-DTE status ABI/size/alignment/access/watchdog exact；
@@ -206,7 +206,7 @@ model必须消费与target writing相同的owner-backed target module set，不�
 验证包括：
 
 - TargetCall descriptor registry与decoder对每种typed payload、worker和completion behavior闭合；
-- frontend为每个transaction显式绑定physical card/tile/launch slot和Tile-local issue ordinal；
+- frontend为每个transaction显式绑定target card/tile/launch slot和Tile-local issue ordinal；
 - `begin`、16个Tile的`executeTile`与单次`finish`构成原子调用生命周期，任一失败`abort`且不返回partial result；
 - SystemC一Tile一SC_THREAD，跨Tiledata-ready/completion关系由event表达，无OS thread或symbol恢复身份；
 - private address spaces、range/alias/hazard、formal numeric与qualified bulk lane；
@@ -236,9 +236,9 @@ special pass option、shape shortcut或手写替代graph。
 
 各队列项分别形成fresh证据，不能用后项的局部通过倒签前项：
 
-1. Q49：`none`通过current TensorProgram→CardProgram→TileRegion/Instr→fresh SPM/DDR→CardExecutable→ExecutablePackage链路；
+1. Q49：`none`通过current TensorProgram→CardModule→TileRegion/Instr→fresh SPM/DDR→CardExecutable→ExecutablePackage链路；
    普通多op、spatially sharded compute和cross-Tile baseline package/no-card通过。Q49.P用fresh prefill/decode/Llama证明
-   CardProgram、CardExecutable与package digest稳定、oracle/no-card通过，并以fresh阶段计时证明`none`不构造search对象、
+   CardModule、CardExecutable与package digest稳定、oracle/no-card通过，并以fresh阶段计时证明`none`不构造search对象、
    不重复全图materialization，且只对accepted baseline完整编译一次。
 2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair；Q50.A：
    placement给定后从IndexRelation形成layout-independent exact logical demand，carrier/layout/route失败不反写spatial legality；
@@ -256,7 +256,7 @@ special pass option、shape shortcut或手写替代graph。
 5. Q52：generic/HF/Llama representative load的work、wall、RSS和热点fresh记录；基于实测引入的优化在小图oracle上
    不改变最优结果，代表负载不劣于同源`none`，没有固定shape/tile/fusion/buffer shortcut。
 6. Q53：generic DAG与HF/Llama matrix全部由current source fresh生成完整ExecutablePackage并fresh no-card；每个package
-   包含all-and-only 16 physical Tile entries、current ABI/resources/completion，runner与oracle完整；融合有效性证据闭合后
+   包含all-and-only 16 Tile entries、current ABI/resources/completion，runner与oracle完整；融合有效性证据闭合后
    才标`board-ready`。
 7. 真实设备上Llama及一个prefill/decode代表分别做同源`none`/`search` matched A/B，exact output/guard通过，
    多次样本显示可重复实际改善，Q53才标`done`。

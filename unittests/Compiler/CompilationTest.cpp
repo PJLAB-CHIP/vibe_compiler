@@ -19,12 +19,12 @@
 
 namespace {
 
-TEST(CompilationTest, ExecutionConfigSeparatesPartitionsFromPhysicalTiles) {
+TEST(CompilationTest, ExecutionConfigSeparatesPartitionsFromTiles) {
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(config));
   EXPECT_EQ(config->getNumPartitions(), 1);
-  EXPECT_EQ(config->getPhysicalTileCount(), 16);
+  EXPECT_EQ(config->getTileCount(), 16);
 
   for (int64_t rejected :
        {std::numeric_limits<int64_t>::min(), int64_t{-1}, int64_t{0},
@@ -51,7 +51,7 @@ TEST(CompilationTest, ExecutionConfigEqualityCoversTypedDomainsAndLaunchKind) {
   EXPECT_EQ(*first, *same);
   EXPECT_NE(*first, *differentLaunchKind);
   EXPECT_EQ(differentLaunchKind->getNumPartitions(), 1);
-  EXPECT_EQ(differentLaunchKind->getPhysicalTileCount(), 16);
+  EXPECT_EQ(differentLaunchKind->getTileCount(), 16);
 }
 
 TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
@@ -64,17 +64,17 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   static_assert(
       std::is_move_constructible_v<wafer::compiler::CompilationRequest>);
   static_assert(!std::is_default_constructible_v<
-                wafer::compiler::PhysicalTileExecutable>);
+                wafer::compiler::TileExecutable>);
   static_assert(
-      !std::is_copy_constructible_v<wafer::compiler::PhysicalTileExecutable>);
+      !std::is_copy_constructible_v<wafer::compiler::TileExecutable>);
   static_assert(
-      std::is_move_constructible_v<wafer::compiler::PhysicalTileExecutable>);
+      std::is_move_constructible_v<wafer::compiler::TileExecutable>);
   static_assert(!std::is_default_constructible_v<
-                wafer::compiler::PhysicalTileExecutables>);
+                wafer::compiler::CardExecutable>);
   static_assert(
-      !std::is_copy_constructible_v<wafer::compiler::PhysicalTileExecutables>);
+      !std::is_copy_constructible_v<wafer::compiler::CardExecutable>);
   static_assert(
-      std::is_move_constructible_v<wafer::compiler::PhysicalTileExecutables>);
+      std::is_move_constructible_v<wafer::compiler::CardExecutable>);
   static_assert(
       !std::is_default_constructible_v<wafer::compiler::TargetLLVMModule>);
   static_assert(
@@ -109,7 +109,7 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   source.assign("/tmp/changed-after-request-construction.program");
   EXPECT_EQ(request->getSourceProgramDirectory(), "/tmp/source.program");
   EXPECT_EQ(request->getExecutionConfig().getNumPartitions(), 1);
-  EXPECT_EQ(request->getExecutionConfig().getPhysicalTileCount(), 16);
+  EXPECT_EQ(request->getExecutionConfig().getTileCount(), 16);
   EXPECT_EQ(request->getExecutionConfig().getTargetIdentityId(),
             wafer::TargetIdentityId::waferTx81SingleCard());
   EXPECT_EQ(request->getExecutionConfig().getRuntimeLaunchKind(),
@@ -125,7 +125,7 @@ TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
   EXPECT_FALSE(llvm::toString(request.takeError()).empty());
 }
 
-TEST(CompilationTest, ProfileOptionsRequireCompletePhysicalTileKernelDomain) {
+TEST(CompilationTest, ProfileOptionsRequireCompleteTileKernelDomain) {
   auto fullCard = wafer::compiler::ExecutionConfig::createForSingleCard(
       1, wafer::RuntimeLaunchKind::Kernel);
   ASSERT_TRUE(static_cast<bool>(fullCard));
@@ -149,7 +149,7 @@ TEST(CompilationTest, ProfileOptionsRequireCompletePhysicalTileKernelDomain) {
   auto rejectedModel = wafer::compiler::CompilationOptions::profile(*model);
   ASSERT_FALSE(static_cast<bool>(rejectedModel));
   EXPECT_NE(llvm::toString(rejectedModel.takeError())
-                .find("complete-card physical Tile kernel launch"),
+                .find("complete-card Tile kernel launch"),
             std::string::npos);
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
                    .shouldProduceProfileInstrumentation());

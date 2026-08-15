@@ -117,10 +117,10 @@ public:
     info.pciBusId = "0000:00:00.0";
     info.runtimeLibraryDigest = runtimeLibraryDigest;
     for (uint16_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
-      const int64_t tileId = physicalTileForLaunchSlot(launchSlot);
-      info.tiles.push_back({wafer::PhysicalTileId(tileId),
+      const int64_t tileId = tileForLaunchSlot(launchSlot);
+      info.tiles.push_back({wafer::TileId(tileId),
                             wafer::runtime::LaunchSlotId(launchSlot),
-                            tileId != unavailablePhysicalTile,
+                            tileId != unavailableTileId,
                             static_cast<uint32_t>(tileId % 4),
                             static_cast<uint32_t>(tileId / 4)});
     }
@@ -230,9 +230,9 @@ public:
     if (graphLive || modules.size() != 16 || symbol != "main")
       return injected("invalid-graph-load");
     for (auto [launchSlot, module] : llvm::enumerate(modules))
-      if (module.cardId != wafer::PhysicalCardId(0) ||
+      if (module.cardId != wafer::CardId(0) ||
           module.tileId !=
-              wafer::PhysicalTileId(physicalTileForLaunchSlot(launchSlot)) ||
+              wafer::TileId(tileForLaunchSlot(launchSlot)) ||
           module.launchSlot != wafer::runtime::LaunchSlotId(launchSlot) ||
           module.bytes.empty() || module.digest.empty())
         return injected("invalid-graph-module-domain");
@@ -293,9 +293,9 @@ public:
                     row->bytes.size());
         arguments = decodedArguments;
       }
-      if (launch.cardId != wafer::PhysicalCardId(0) ||
+      if (launch.cardId != wafer::CardId(0) ||
           launch.tileId !=
-              wafer::PhysicalTileId(physicalTileForLaunchSlot(launchSlot)) ||
+              wafer::TileId(tileForLaunchSlot(launchSlot)) ||
           launch.launchSlot != wafer::runtime::LaunchSlotId(launchSlot) ||
           launch.function.value == 0 || arguments.size() < 2 ||
           launch.function.value != sharedFunction)
@@ -340,16 +340,16 @@ public:
       return injected("invalid-model-submit-state");
     submittedModelTensors.assign(tensors.begin(), tensors.end());
     for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
-      const int64_t tile = physicalTileForLaunchSlot(launchSlot);
+      const int64_t tile = tileForLaunchSlot(launchSlot);
       auto input = llvm::find_if(tensors, [&](const auto &tensor) {
-        return tensor.cardId == wafer::PhysicalCardId(0) &&
-               tensor.tileId == wafer::PhysicalTileId(tile) &&
+        return tensor.cardId == wafer::CardId(0) &&
+               tensor.tileId == wafer::TileId(tile) &&
                tensor.launchSlot == wafer::runtime::LaunchSlotId(launchSlot) &&
                tensor.role == wafer::runtime::PackageResourceRole::UserInput;
       });
       auto output = llvm::find_if(tensors, [&](const auto &tensor) {
-        return tensor.cardId == wafer::PhysicalCardId(0) &&
-               tensor.tileId == wafer::PhysicalTileId(tile) &&
+        return tensor.cardId == wafer::CardId(0) &&
+               tensor.tileId == wafer::TileId(tile) &&
                tensor.launchSlot == wafer::runtime::LaunchSlotId(launchSlot) &&
                tensor.role == wafer::runtime::PackageResourceRole::Output;
       });
@@ -440,7 +440,7 @@ public:
       observedCompletionObservationPolicy =
           wafer::runtime::BoardCompletionObservationPolicy::Normal;
   uint32_t selectedDevice = std::numeric_limits<uint32_t>::max();
-  int64_t unavailablePhysicalTile = -1;
+  int64_t unavailableTileId = -1;
   uint64_t freeMemoryBytes = 128ULL * 1024 * 1024;
   uint64_t totalMemoryBytes = 256ULL * 1024 * 1024;
   std::chrono::milliseconds submitDelay{0};
@@ -451,11 +451,11 @@ public:
       "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   std::optional<uint32_t> transportStatusOverride;
   bool decodeTileRowArguments = false;
-  bool permutePhysicalTileBindings = false;
+  bool permuteTileBindings = false;
 
 private:
-  int64_t physicalTileForLaunchSlot(int64_t launchSlot) const {
-    if (!permutePhysicalTileBindings || launchSlot > 1)
+  int64_t tileForLaunchSlot(int64_t launchSlot) const {
+    if (!permuteTileBindings || launchSlot > 1)
       return launchSlot;
     return 1 - launchSlot;
   }
@@ -575,7 +575,7 @@ protected:
     const bool directDTE = directDTEOverride.value_or(cluster);
 
     manifest.resources = {{ResourceId(0),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::UserInput,
                            0,
                            "input",
@@ -585,7 +585,7 @@ protected:
                            PackageAccessMode::ReadOnly,
                            true},
                           {ResourceId(1),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::Output,
                            0,
                            "output",
@@ -626,8 +626,8 @@ protected:
         ResourceId resource(nextResource++);
         manifest.resources.push_back(
             {resource,
-             TileResourceScope{wafer::PhysicalCardId(0),
-                               wafer::PhysicalTileId(tile)},
+             TileResourceScope{wafer::CardId(0),
+                               wafer::TileId(tile)},
              role,
              roleIndex,
              (llvm::Twine(name) + "_tile_" + llvm::Twine(tile)).str(),
@@ -652,8 +652,8 @@ protected:
         ResourceId status(nextResource++);
         manifest.resources.push_back(
             {status,
-             TileResourceScope{wafer::PhysicalCardId(0),
-                               wafer::PhysicalTileId(tile)},
+             TileResourceScope{wafer::CardId(0),
+                               wafer::TileId(tile)},
              PackageResourceRole::TransportStatus,
              0,
              (llvm::Twine("direct_dte_status_tile_") + llvm::Twine(tile)).str(),
@@ -667,7 +667,7 @@ protected:
             status, kDirectDTEStatusABI.str(), true};
       }
       manifest.entries.push_back(
-          {entry, wafer::PhysicalCardId(0), wafer::PhysicalTileId(tile),
+          {entry, wafer::CardId(0), wafer::TileId(tile),
            LaunchSlotId(tile), module, std::move(slots),
            PackageEntryCompletionKind::ReturnAfterLocalDrain,
            std::move(transport)});
@@ -692,7 +692,7 @@ protected:
     manifest.cardCount = 1;
     manifest.tileCount = 16;
     manifest.resources = {{ResourceId(0),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::UserInput,
                            0,
                            "input",
@@ -702,7 +702,7 @@ protected:
                            PackageAccessMode::ReadOnly,
                            true},
                           {ResourceId(1),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::Output,
                            0,
                            "output",
@@ -720,8 +720,8 @@ protected:
       ResourceId workspace(static_cast<uint64_t>(tile) + 2);
       manifest.resources.push_back(
           {workspace,
-           TileResourceScope{wafer::PhysicalCardId(0),
-                             wafer::PhysicalTileId(tile)},
+           TileResourceScope{wafer::CardId(0),
+                             wafer::TileId(tile)},
            PackageResourceRole::Workspace,
            0,
            "default_ddr_arena",
@@ -732,8 +732,8 @@ protected:
            false});
       manifest.entries.push_back(
           {EntryId(tile),
-           wafer::PhysicalCardId(0),
-           wafer::PhysicalTileId(tile),
+           wafer::CardId(0),
+           wafer::TileId(tile),
            LaunchSlotId(tile),
            ModuleId(0),
            {{0, ResourceId(0), PackageAccessMode::ReadOnly},
@@ -746,12 +746,12 @@ protected:
   }
 
   static void
-  permutePhysicalTileBindings(wafer::runtime::PackageManifest &manifest) {
-    auto swapTile = [](wafer::PhysicalTileId tileId) {
-      if (tileId == wafer::PhysicalTileId(0))
-        return wafer::PhysicalTileId(1);
-      if (tileId == wafer::PhysicalTileId(1))
-        return wafer::PhysicalTileId(0);
+  permuteTileBindings(wafer::runtime::PackageManifest &manifest) {
+    auto swapTile = [](wafer::TileId tileId) {
+      if (tileId == wafer::TileId(0))
+        return wafer::TileId(1);
+      if (tileId == wafer::TileId(1))
+        return wafer::TileId(0);
       return tileId;
     };
     for (wafer::runtime::PackageEntrypointRecord &entry : manifest.entries)
@@ -819,10 +819,10 @@ protected:
 
   static const wafer::runtime::PackageEntrypointRecord &
   findTileEntry(const wafer::runtime::PackageManifest &manifest,
-                int64_t physicalTile) {
+                int64_t tileId) {
     auto iterator = llvm::find_if(manifest.entries, [&](const auto &entry) {
-      return entry.cardId == wafer::PhysicalCardId(0) &&
-             entry.tileId == wafer::PhysicalTileId(physicalTile);
+      return entry.cardId == wafer::CardId(0) &&
+             entry.tileId == wafer::TileId(tileId);
     });
     EXPECT_NE(iterator, manifest.entries.end());
     return *iterator;
@@ -853,13 +853,13 @@ TEST_F(BoardRuntimeTest,
   for (int64_t tile = 0; tile < 16; ++tile) {
     const wafer::runtime::PackageEntrypointRecord &entry =
         findTileEntry(manifest, tile);
-    EXPECT_EQ(result->tiles[tile].cardId, wafer::PhysicalCardId(0));
-    EXPECT_EQ(result->tiles[tile].tileId, wafer::PhysicalTileId(tile));
+    EXPECT_EQ(result->tiles[tile].cardId, wafer::CardId(0));
+    EXPECT_EQ(result->tiles[tile].tileId, wafer::TileId(tile));
     EXPECT_EQ(result->tiles[tile].launchSlot,
               wafer::runtime::LaunchSlotId(tile));
     EXPECT_EQ(result->tiles[tile].entry, entry.id);
     EXPECT_EQ(driver.submittedLaunches[tile].tileId,
-              wafer::PhysicalTileId(tile));
+              wafer::TileId(tile));
     EXPECT_EQ(driver.submittedLaunches[tile].launchSlot,
               wafer::runtime::LaunchSlotId(tile));
     EXPECT_EQ(driver.submittedLaunches[tile].entry, entry.id);
@@ -926,16 +926,16 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(driver.freedAddresses, expectedAllocations);
 }
 
-TEST_F(BoardRuntimeTest, ExecutesExplicitNonIdentityPhysicalTileLaunchBinding) {
+TEST_F(BoardRuntimeTest, ExecutesExplicitNonIdentityTileLaunchBinding) {
   wafer::runtime::PackageManifest manifest = makeTile16Manifest();
-  permutePhysicalTileBindings(manifest);
+  permuteTileBindings(manifest);
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
       wafer::runtime::verifyPackageManifest(std::move(manifest), root);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
   FakeBoardDriver driver;
-  driver.permutePhysicalTileBindings = true;
+  driver.permuteTileBindings = true;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
           *package, root, makeTile16Request(package->getManifest()), driver);
@@ -943,16 +943,16 @@ TEST_F(BoardRuntimeTest, ExecutesExplicitNonIdentityPhysicalTileLaunchBinding) {
   ASSERT_EQ(result->tiles.size(), 16u);
   ASSERT_EQ(driver.submittedLaunches.size(), 16u);
   EXPECT_EQ(result->tiles[0].launchSlot, wafer::runtime::LaunchSlotId(0));
-  EXPECT_EQ(result->tiles[0].tileId, wafer::PhysicalTileId(1));
+  EXPECT_EQ(result->tiles[0].tileId, wafer::TileId(1));
   EXPECT_EQ(result->tiles[1].launchSlot, wafer::runtime::LaunchSlotId(1));
-  EXPECT_EQ(result->tiles[1].tileId, wafer::PhysicalTileId(0));
-  EXPECT_EQ(driver.submittedLaunches[0].tileId, wafer::PhysicalTileId(1));
-  EXPECT_EQ(driver.submittedLaunches[1].tileId, wafer::PhysicalTileId(0));
+  EXPECT_EQ(result->tiles[1].tileId, wafer::TileId(0));
+  EXPECT_EQ(driver.submittedLaunches[0].tileId, wafer::TileId(1));
+  EXPECT_EQ(driver.submittedLaunches[1].tileId, wafer::TileId(0));
 }
 
 TEST_F(BoardRuntimeTest, RejectsPackageBindingAbsentFromDeviceInventory) {
   wafer::runtime::PackageManifest manifest = makeTile16Manifest();
-  permutePhysicalTileBindings(manifest);
+  permuteTileBindings(manifest);
   llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
       wafer::runtime::verifyPackageManifest(std::move(manifest), root);
   ASSERT_TRUE(static_cast<bool>(package))
@@ -1019,7 +1019,7 @@ TEST_F(BoardRuntimeTest,
             0);
   ASSERT_EQ(driver.submittedLaunches.size(), 16u);
   for (auto [tile, launch] : llvm::enumerate(driver.submittedLaunches)) {
-    EXPECT_EQ(launch.tileId, wafer::PhysicalTileId(tile));
+    EXPECT_EQ(launch.tileId, wafer::TileId(tile));
     EXPECT_EQ(launch.launchSlot, wafer::runtime::LaunchSlotId(tile));
     EXPECT_EQ(launch.function.value, 0x9000u);
   }
@@ -1300,7 +1300,7 @@ TEST_F(BoardRuntimeTest,
 }
 
 TEST_F(BoardRuntimeTest,
-       CompleteFirstInvocationStartsReusableWholeCardSession) {
+       CompleteFirstInvocationStartsReusableCardSession) {
   using namespace wafer::runtime;
   llvm::Expected<VerifiedPackageManifest> package =
       verifyTile16(TestLaunchContractCase::Grid);
@@ -1726,7 +1726,7 @@ TEST_F(BoardRuntimeTest,
   EXPECT_EQ(driver.calls.size(), callsAfterPoison);
 }
 
-TEST_F(BoardRuntimeTest, QualifiedSessionRequiresCompletePhysicalTileDomain) {
+TEST_F(BoardRuntimeTest, QualifiedSessionRequiresCompleteTileDomain) {
   using namespace wafer::runtime;
   llvm::Expected<VerifiedPackageManifest> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
@@ -1734,7 +1734,7 @@ TEST_F(BoardRuntimeTest, QualifiedSessionRequiresCompletePhysicalTileDomain) {
   BoardRuntimeInvocationRequest request =
       makeTile16Request(package->getManifest());
   FakeBoardDriver driver;
-  driver.unavailablePhysicalTile = 15;
+  driver.unavailableTileId = 15;
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
@@ -2024,7 +2024,7 @@ TEST_F(BoardRuntimeTest, ModelLoadsCompleteGraphAndSubmitsTypedTensorDomain) {
     EXPECT_EQ(llvm::count_if(driver.submittedModelTensors,
                              [&](const auto &tensor) {
                                return tensor.tileId ==
-                                      wafer::PhysicalTileId(tile);
+                                      wafer::TileId(tile);
                              }),
               2);
 
@@ -2148,7 +2148,7 @@ TEST_F(BoardRuntimeTest, Tile16RequiresCompleteUniqueTileInventory) {
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
-  driver.unavailablePhysicalTile = 15;
+  driver.unavailableTileId = 15;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
           *package, root, makeTile16Request(package->getManifest()), driver);
@@ -2197,8 +2197,8 @@ TEST_F(BoardRuntimeTest,
         [&](const wafer::runtime::BoardRuntimeError &error) {
           sawTile15Failure = true;
           EXPECT_EQ(error.getStage(), scenario.stage);
-          EXPECT_EQ(error.getPhysicalCardId(), wafer::PhysicalCardId(0));
-          EXPECT_EQ(error.getPhysicalTileId(), wafer::PhysicalTileId(15));
+          EXPECT_EQ(error.getCardId(), wafer::CardId(0));
+          EXPECT_EQ(error.getTileId(), wafer::TileId(15));
           EXPECT_EQ(error.getLaunchSlot(), wafer::runtime::LaunchSlotId(15));
           EXPECT_EQ(error.getEntry(), tile15Entry);
           EXPECT_EQ(error.getContextState(),
@@ -2252,8 +2252,8 @@ TEST_F(BoardRuntimeTest,
         [&](const wafer::runtime::BoardRuntimeError &error) {
           sawTile15Failure = true;
           EXPECT_EQ(error.getStage(), scenario.stage);
-          EXPECT_EQ(error.getPhysicalCardId(), wafer::PhysicalCardId(0));
-          EXPECT_EQ(error.getPhysicalTileId(), wafer::PhysicalTileId(15));
+          EXPECT_EQ(error.getCardId(), wafer::CardId(0));
+          EXPECT_EQ(error.getTileId(), wafer::TileId(15));
           EXPECT_EQ(error.getLaunchSlot(), wafer::runtime::LaunchSlotId(15));
           EXPECT_EQ(error.getEntry(), tile15Entry);
           EXPECT_EQ(error.getContextState(),
@@ -2309,8 +2309,8 @@ TEST_F(BoardRuntimeTest,
                           [&](const wafer::runtime::BoardRuntimeError &error) {
                             sawWholeDomainFailure = true;
                             EXPECT_EQ(error.getStage(), scenario.stage);
-                            EXPECT_EQ(error.getPhysicalCardId().getValue(), -1);
-                            EXPECT_EQ(error.getPhysicalTileId().getValue(), -1);
+                            EXPECT_EQ(error.getCardId().getValue(), -1);
+                            EXPECT_EQ(error.getTileId().getValue(), -1);
                             EXPECT_FALSE(error.getLaunchSlot().isValid());
                             EXPECT_FALSE(error.getEntry().isValid());
                           });

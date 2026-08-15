@@ -79,7 +79,7 @@ void addAssignSPMOffsetsPass(mlir::OpPassManager &pm,
 void addAssignDDROffsetsPass(mlir::OpPassManager &pm,
                              const PlanDDRMemoryPassOptions &options);
 
-/// Lower affine control and indexing after a physical Tile has passed memory
+/// Lower affine control and indexing after a Tile has passed memory
 /// planning. The upstream affine pass remains the atomic implementation.
 void addLowerAffineControlAndIndexingPass(mlir::OpPassManager &pm);
 

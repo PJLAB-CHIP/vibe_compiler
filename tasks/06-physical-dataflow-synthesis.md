@@ -1,6 +1,6 @@
 # Card 内 Physical Dataflow 综合
 
-状态：2026-08-13 按 current `TensorProgram -> CardProgram -> TileRegion -> Instr -> CardExecutable`
+状态：2026-08-13 按 current `TensorProgram -> CardModule -> TileRegion -> Instr -> CardExecutable`
 主线重写。本文是 card 内 spatial mapping、TileRegion formation、temporal tiling、融合、physical
 representation、movement、buffering、instruction scheduling 与候选选择的唯一设计 owner。动态状态和施工顺序只看
 `tasks/progress.md` 与 `tasks/plans/physical-dataflow-synthesis.md`。
@@ -15,8 +15,8 @@ representation、movement、buffering、instruction scheduling 与候选选择�
 logical rank 或所有 op 共用的 tile shape。一个候选必须共同决定：
 
 1. structured iterator 如何切成 logical shards；
-2. logical shards 如何放到 physical Tiles，reduction partial/merge 如何分布；
-3. 每个 physical Tile 上哪些计算共享一个 `wafer.tile.region`；
+2. logical shards 如何放到 Tiles，reduction partial/merge 如何分布；
+3. 每个 Tile 上哪些计算共享一个 `wafer.tile.region`；
 4. region 内哪些 producer/consumer 形成 coupled traversal，哪些采用独立 traversal；
 5. 每个 traversal 的完整 temporal tile vector、loop order 与 tail；
 6. physical layout、local/peer/collective/DDR movement；
@@ -48,13 +48,13 @@ Pipeline position:
 - Upstream IR / input:
   GSPMD完成card级分区、target-independent normalization完成后的card-local TensorProgram；若存在算法级等价
   alternative，每个alternative已经在isolated clone中物化为真实structured DAG。SSA、structured iterator、
-  indexing relation、effect、type、shape和dtype均可验证，尚未绑定physical Tile。
+  indexing relation、effect、type、shape和dtype均可验证，尚未绑定Tile。
 - Current stage responsibility:
-  在同一可回溯选择过程中决定iteration partition、physical Tile placement、reduction distribution、TileRegion、
+  在同一可回溯选择过程中决定iteration partition、Tile placement、reduction distribution、TileRegion、
   traversal connection、temporal tile、physical representation、movement、buffering、stage pipeline、order、worker和
   completion；完整候选进入正常Card/TileRegion/Instr lowering和exact resource verification。
 - Output IR / files:
-  被选中的CardProgram及其all-and-only physical Tile programs；其中TileRegion、loop、movement、Instr、SPM/DDR
+  被选中的CardModule及其all-and-only Tile modules；其中TileRegion、loop、movement、Instr、SPM/DDR
   allocation、completion和physical endpoint均是实际IR或accepted resource事实。通过全部gate后形成CardExecutable。
 - Downstream consumer:
   target conversion、device link、ExecutablePackage emission与runtime launch。
@@ -71,26 +71,26 @@ Pipeline position:
 ```
 
 `optimization=none`由确定性 baseline construction产生一个选择，不进入性能搜索；`optimization=search`由本文唯一
-candidate-selection owner管理多个选择。两者从 CardProgram materialization 起进入同一 lowering、memory planning、
+candidate-selection owner管理多个选择。两者从 CardModule materialization 起进入同一 lowering、memory planning、
 verification 和 package emission 路径。
 
 ## 3. 稳定 IR 与 output 边界
 
-### 3.1 `wafer.card.program`
+### 3.1 `wafer.card.module`
 
-`wafer.card.program` 是一个 `card_id` 的完整 MPMD verifier 范围，拥有 card-local observable inputs/outputs、
-shared DDR boundary、all-and-only physical Tile programs，以及跨 Tile message coverage/completion 验证范围。它不保存
+`wafer.card.module` 是一个 `card_id` 的完整 MPMD verifier 范围，拥有 card-local observable inputs/outputs、
+shared DDR boundary、all-and-only Tile modules，以及跨 Tile message coverage/completion 验证范围。它不保存
 candidate set、score、候选列表、route side table 或 target calibration。
 
-### 3.2 `wafer.tile.program`
+### 3.2 `wafer.tile.module`
 
-`wafer.tile.program` 绑定唯一 physical `tile_id`。不同 Tile 可以拥有不同 op、loop、temporal shape、worker 和执行长度。
+`wafer.tile.module` 绑定唯一 physical `tile_id`。不同 Tile 可以拥有不同 op、loop、temporal shape、worker 和执行长度。
 实际顺序、并发和依赖由 body 中 loop、SSA、send/recv/wait 与 event 表达；不另存全局 schedule attr。SPM root 或
-alias 不能跨 `tile.program` SSA 传递。
+alias 不能跨 `tile.module` SSA 传递。
 
 ### 3.3 `wafer.tile.region`
 
-`wafer.tile.region` 是一个 physical Tile 上的 SPM ownership/lifetime domain，不是硬件 Tile，也不是单个 loop 或
+`wafer.tile.region` 是一个 Tile 上的 SPM ownership/lifetime domain，不是硬件 Tile，也不是单个 loop 或
 “fusion group”标签。一个 region 可以包含：
 
 - consumer-driven coupled traversal；
@@ -100,14 +100,14 @@ alias 不能跨 `tile.program` SSA 传递。
 - region 内 movement、communication、sync/effect ordering。
 
 SPM root 和 shaped alias 不能跨 TileRegion。不同 TileRegion 间 shaped data 必须显式 materialize 为 DDR
-store/completion/load；不同 physical Tile 间则由 source SPM、NoC/DTE send、destination SPM staging、recv/wait 表达，
+store/completion/load；不同 Tile 间则由 source SPM、NoC/DTE send、destination SPM staging、recv/wait 表达，
 不能共享同一个 SPM root。
 
 ### 3.4 `CardExecutable` 与 `ExecutablePackage`
 
 `CardExecutable` 是内存中已经通过 all-and-only Tile coverage、Instr、SPM/DDR、transport、resource、completion 和 ABI
 verification 的执行对象。`ExecutablePackage` 是 target lowering、link 和 emission 后交给 runtime 的磁盘发布物。旧 C++
-当前实现以 `PhysicalTileExecutables` 表示完整的 physical-Tile executable 集合，不再维护另一套容器层次。
+当前实现以 `CardExecutable` 表示完整的 Tile executable 集合，不再维护另一套容器层次。
 
 ## 4. Query-local problem 与 search state
 
@@ -129,7 +129,7 @@ verification 的执行对象。`ExecutablePackage` 是 target lowering、link �
 
 ```text
 TensorProgram alternative
-StageId  -> members / physical Tile group
+StageId  -> members / Tile group
 NodeId   -> iteration partition / physical placement / reduction role
 RegionId -> members / traversal roots
 EdgeId   -> coupled / independent / recompute / local-or-remote movement
@@ -188,7 +188,7 @@ relation表达tail，不能要求整除、丢元素或产生非法重叠。必�
 初期可先完整支持multi-axis block partition；未来若支持cyclic/block-cyclic，应扩展typed relation和lowering，不增加
 shape/name matcher。
 
-### 5.2 Physical Tile placement
+### 5.2 Tile placement
 
 logical shard coordinate 与 physical `tile_id` 是不同对象。Placement决定 logical mesh 到available topology的embedding、
 participant subset、partial/merge owner和独立branch的Tile groups。它考虑producer/consumer同Tile对齐、拓扑距离、负载平衡
@@ -225,7 +225,7 @@ transport暂时表达不了，只能拒绝对应的physical representation/movem
 ### 5.4 Spatial与融合机会
 
 Spatial前可以由typed SSA、structured semantics、indexing relation、effect与numeric policy证明哪些依赖边理论上支持
-coupled traversal，但真正的TileRegion只能在placement后形成：只有同一physical Tile上重叠的producer/consumer shard
+coupled traversal，但真正的TileRegion只能在placement后形成：只有同一Tile上重叠的producer/consumer shard
 才能共享SPM domain。部分Tile集合重叠时只对local intersection形成region/coupled候选，其余需求必须显式movement。
 
 更多Tiles不一定更快。Search cost应比较parallelism、local extent、redistribution、reduction merge和fusion机会。
@@ -259,7 +259,7 @@ TileRegion、Instr order、buffer slots、lifetime和accepted allocation共同�
 
 ### 6.2 TileRegion formation
 
-Placement后，对每个physical Tile构造local DAG。从该Tile的observable/local outputs反向遍历producer，沿语义可融合且
+Placement后，对每个Tile构造local DAG。从该Tile的observable/local outputs反向遍历producer，沿语义可融合且
 local demand非空的关系形成最大连通region envelope。Region formation必须处理：
 
 - boundary inputs/outputs和effect顺序；
@@ -348,7 +348,7 @@ Single buffer可以表达合法但串行的执行；稳定compute/movement或sta
 
 ### 7.3 Ready order、worker 与 completion
 
-Ready order、worker和completion只在selected physical Tile/Instr结构上物化。Query-local event/calendar可以用于排序、局部
+Ready order、worker和completion只在selected Tile/Instr结构上物化。Query-local event/calendar可以用于排序、局部
 feasibility和cost，但不能成为持久shadow schedule。Fresh completion必须从最终Instr control/effect关系重建；任何旧analysis
 结果在IR变化后失效。
 
@@ -367,7 +367,7 @@ t2: stage A(chunk2) | stage B(chunk1) | stage C(chunk0)
 
 ```text
 stage partition
-+ each stage physical Tile group
++ each stage Tile group
 + intra-stage spatial mapping and maximal fusion
 + exact stream chunk relation
 + source/destination staging
@@ -439,7 +439,7 @@ legality或admissible bound。
 | relation/semantic gate | exact coverage、effect、numeric、topology symmetry | 否 |
 | analytic ranking | resource lower bound与performance estimate | 否 |
 | affected TileRegion probe | 实际local lowering/lifetime/SPM packing | 否，仅形成scoped failure或cache |
-| complete candidate compilation | CardProgram→TileRegion→Instr→SPM/DDR→transport/resource/ABI | 是 |
+| complete candidate compilation | CardModule→TileRegion→Instr→SPM/DDR→transport/resource/ABI | 是 |
 
 完整candidate compilation只能成功形成accepted CardExecutable、proven exact rejection或indeterminate failure；它不能修候选、补默认layout、自动换DDR、
 解除fusion或生成新的搜索选择。
@@ -506,7 +506,7 @@ tiling后只进行一次complete CardExecutable compilation。这个优化建立
 
 ### 12.1 处置分类
 
-1. **直接复用**：`CardDAGAnalysis`、`IndexRelation` exact demand、physical access/transfer proof、Card/Tile/Instr
+1. **直接复用**：`StructuredDAGAnalysis`、`IndexRelation` exact demand、physical access/transfer proof、Card/Tile/Instr
    lowering、SPM/DDR planning、transport/resource/ABI verification。
 2. **改造接口后复用**：placement domain、event/resource mechanics、selected-buffer materialization、physical movement
    materialization、当前完整候选正常编译链。
@@ -521,12 +521,12 @@ tiling后只进行一次complete CardExecutable compilation。这个优化建立
 
 ### 12.2 源码层次
 
-不新增横向`WholeCard/`、`Providers/`、`Evaluation/`、`Facade`、`Projection`或`ActualEvaluator`层。稳定职责分布为：
+不按硬件范围或抽象角色新增横向目录层；目录必须对应稳定的 IR、analysis、lowering 或验证职责。稳定职责分布为：
 
 - TensorProgram analysis：fusibility、iteration partition、streamability；
 - PhysicalDataflow analysis/transforms：exact demand、TileRegion formation、coupled traversal、representation、movement；
 - Instr analysis/transforms：buffer lifetime、ready order、worker、completion；
-- Conversion：TensorProgram到CardProgram、TileRegion到Instr；
+- Conversion：TensorProgram到CardModule、TileRegion到Instr；
 - Compiler search：轻量state、dependency invalidation、exhaustive/anytime/LNS strategy和cost ordering；
 - CardExecutable compilation/verification：串接既有lowering和exact gates，不实现choice generation。
 
@@ -562,7 +562,7 @@ tiling后只进行一次complete CardExecutable compilation。这个优化建立
 
 ### IR / verifier
 
-- distinct Tile programs可以包含不同op、loop、shape和长度；
+- distinct Tile modules可以包含不同op、loop、shape和长度；
 - duplicate/unavailable Tile、coverage hole/overlap、illegal reduction merge、cross-Tile/region SPM alias失败；
 - same-region independent traversal、coupled traversal、region cut、selective spill、recompute和communication staging可验证；
 - selected spatial mapping的iteration coverage、result ownership和edge demand all-and-only闭合。

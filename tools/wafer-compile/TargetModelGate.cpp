@@ -53,7 +53,7 @@ bool runTargetModelGate(
   }
 
   auto programInvocations = wafer::compiler::prepareProgramInvocations(
-      compiledProgram.getPhysicalTileExecutables(),
+      compiledProgram.getCardExecutable(),
       *options.outputProgramDirectory, globalInputs);
   if (!programInvocations) {
     llvm::errs() << "wafer-compile: "
@@ -61,7 +61,7 @@ bool runTargetModelGate(
     return true;
   }
   auto invocation = wafer::model::prepareTargetModelInvocation(
-      compiledProgram.getPhysicalTileExecutables(),
+      compiledProgram.getCardExecutable(),
       compiledProgram.getTargetLLVMModules(), *programInvocations);
   if (!invocation) {
     llvm::errs() << "wafer-compile: " << llvm::toString(invocation.takeError())
@@ -96,8 +96,8 @@ bool runTargetModelGate(
     return true;
   }
 
-  const auto &physicalTileExecutables =
-      compiledProgram.getPhysicalTileExecutables().getPhysicalTileExecutables();
+  const auto &cardExecutable =
+      compiledProgram.getCardExecutable().getTileExecutables();
   const auto &targetModules =
       compiledProgram.getTargetLLVMModules().getModules();
   const size_t expectedOutputCount = llvm::count_if(
@@ -105,7 +105,7 @@ bool runTargetModelGate(
         return slot.role == wafer::compiler::KernelABISlotRole::Output;
       });
   if (result->completedTileCount !=
-          static_cast<int64_t>(physicalTileExecutables.size()) ||
+          static_cast<int64_t>(cardExecutable.size()) ||
       result->outputs.size() != expectedOutputCount) {
     llvm::errs() << "wafer-compile: target model output Tile domain is "
                     "incomplete\n";
@@ -126,10 +126,10 @@ bool runTargetModelGate(
       return true;
     }
     const auto &module = targetModules[static_cast<size_t>(launchSlot)];
-    if (module.getPhysicalCardId() != output.physicalCardId ||
-        module.getPhysicalTileId() != output.physicalTileId ||
+    if (module.getCardId() != output.cardId ||
+        module.getTileId() != output.tileId ||
         module.getLaunchSlotId() != output.launchSlotId) {
-      llvm::errs() << "wafer-compile: target model output physical Tile "
+      llvm::errs() << "wafer-compile: target model output Tile "
                       "identity is invalid\n";
       return true;
     }
@@ -140,14 +140,14 @@ bool runTargetModelGate(
     if (!slot || slot->role != wafer::compiler::KernelABISlotRole::Output ||
         slot->resourceIndex != output.resourceIndex ||
         output.resource != wafer::model::getTargetModelResourceId(
-                               module.getPhysicalCardId(),
-                               module.getPhysicalTileId(), slot->role,
+                               module.getCardId(),
+                               module.getTileId(), slot->role,
                                slot->resourceIndex)) {
       llvm::errs() << "wafer-compile: target model output disagrees with the "
                       "Kernel ABI\n";
       return true;
     }
-    const auto &tile = physicalTileExecutables[static_cast<size_t>(launchSlot)];
+    const auto &tile = cardExecutable[static_cast<size_t>(launchSlot)];
     const wafer::compiler::ProgramResourceBinding *binding = nullptr;
     for (const auto &candidate : tile.getProgramBindings())
       if (candidate.role == wafer::compiler::ProgramResourceRole::Output &&

@@ -96,7 +96,7 @@ protected:
     return {"known", value, "none"};
   }
 
-  static int64_t physicalTileForLaunchSlot(int64_t launchSlot,
+  static int64_t tileForLaunchSlot(int64_t launchSlot,
                                            bool permuteTiles) {
     if (!permuteTiles || launchSlot > 1)
       return launchSlot;
@@ -115,7 +115,7 @@ protected:
     model.rates.f16Bf16VectorLogicalOpsPerSecondPerTile = UINT64_C(64000000000);
     model.rates.f32VectorLogicalOpsPerSecondPerTile = UINT64_C(32000000000);
     for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
-      const int64_t tile = physicalTileForLaunchSlot(launchSlot, permuteTiles);
+      const int64_t tile = tileForLaunchSlot(launchSlot, permuteTiles);
       ProfileStaticTileWork work;
       work.npuF16Bf16LogicalOps = knownStaticCost(0);
       work.npuOtherLogicalOps = {"unsupported", std::nullopt,
@@ -135,7 +135,7 @@ protected:
       work.directionalNoCTransmitBytes.south = knownStaticCost(0);
       work.directionalNoCTransmitBytes.west = knownStaticCost(0);
       model.tiles.push_back(
-          {wafer::PhysicalCardId(0), wafer::PhysicalTileId(tile),
+          {wafer::CardId(0), wafer::TileId(tile),
            wafer::runtime::LaunchSlotId(launchSlot), std::move(work)});
     }
     return model;
@@ -196,7 +196,7 @@ protected:
     manifest.cardCount = 1;
     manifest.tileCount = 16;
     manifest.resources = {{ResourceId(0),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::UserInput,
                            0,
                            (resourceNamePrefix + "input").str(),
@@ -206,7 +206,7 @@ protected:
                            PackageAccessMode::ReadOnly,
                            true},
                           {ResourceId(1),
-                           CardResourceScope{wafer::PhysicalCardId(0)},
+                           CardResourceScope{wafer::CardId(0)},
                            PackageResourceRole::Output,
                            0,
                            (resourceNamePrefix + "output").str(),
@@ -231,7 +231,7 @@ protected:
              : std::vector<PackageModuleExportRecord>{
                    {PackageModuleExportRole::Main, "main"}}});
     for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
-      const int64_t tile = physicalTileForLaunchSlot(launchSlot, permuteTiles);
+      const int64_t tile = tileForLaunchSlot(launchSlot, permuteTiles);
       std::vector<PackageABISlotBinding> slots = {
           {0, ResourceId(0), PackageAccessMode::ReadOnly},
           {1, ResourceId(1), PackageAccessMode::WriteOnly}};
@@ -239,8 +239,8 @@ protected:
         ResourceId profiler(static_cast<uint64_t>(launchSlot) + 2);
         manifest.resources.push_back(
             {profiler,
-             TileResourceScope{wafer::PhysicalCardId(0),
-                               wafer::PhysicalTileId(tile)},
+             TileResourceScope{wafer::CardId(0),
+                               wafer::TileId(tile)},
              PackageResourceRole::Workspace,
              1,
              profilerName.str(),
@@ -252,8 +252,8 @@ protected:
         slots.push_back({2, profiler, PackageAccessMode::ReadWrite});
       }
       manifest.entries.push_back(
-          {EntryId(launchSlot), wafer::PhysicalCardId(0),
-           wafer::PhysicalTileId(tile), LaunchSlotId(launchSlot), ModuleId(0),
+          {EntryId(launchSlot), wafer::CardId(0),
+           wafer::TileId(tile), LaunchSlotId(launchSlot), ModuleId(0),
            std::move(slots), PackageEntryCompletionKind::ReturnAfterLocalDrain,
            NoTransportRequirements{}});
     }
@@ -319,7 +319,7 @@ protected:
         json.attributeArray("tiles", [&] {
           for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
             const int64_t tile =
-                physicalTileForLaunchSlot(launchSlot, permuteTiles);
+                tileForLaunchSlot(launchSlot, permuteTiles);
             json.object([&] {
               json.attribute("card_id", int64_t(0));
               json.attribute("tile_id", tile);
@@ -490,7 +490,7 @@ TEST_F(ProfileInstrumentationTest,
 }
 
 TEST_F(ProfileInstrumentationTest,
-       PreservesExplicitPhysicalTileAndLaunchSlotBinding) {
+       PreservesExplicitTileAndLaunchSlotBinding) {
   ASSERT_NO_FATAL_FAILURE(writePackage(
       primary, /*outputBytes=*/4, /*recordBytes=*/0,
       /*profilerName=*/"tx81_profiler_record", /*resourceNamePrefix=*/"",
@@ -511,10 +511,10 @@ TEST_F(ProfileInstrumentationTest,
   ASSERT_EQ(profiledPackage.getStaticCostModel().tiles.size(), 16u);
   ASSERT_EQ(siteMap.size(), 16u);
   EXPECT_EQ(profiledPackage.getStaticCostModel().tiles[0].tileId,
-            wafer::PhysicalTileId(1));
+            wafer::TileId(1));
   EXPECT_EQ(profiledPackage.getStaticCostModel().tiles[0].launchSlot,
             wafer::runtime::LaunchSlotId(0));
-  EXPECT_EQ(siteMap[1].tileId, wafer::PhysicalTileId(0));
+  EXPECT_EQ(siteMap[1].tileId, wafer::TileId(0));
   EXPECT_EQ(siteMap[1].launchSlot, wafer::runtime::LaunchSlotId(1));
 }
 

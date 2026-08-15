@@ -1,7 +1,7 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
 状态：2026-08-13按card-level GSPMD与card-local multi-Tile边界同步。本文只拥有StableHLO program directory、
-metadata/payload和frontend verification合同；`num_partitions`描述card partition，不描述单卡16个physical Tile。
+metadata/payload和frontend verification合同；`num_partitions`描述card partition，不描述单卡16个Tile。
 typed model/state/resource graph与Tile级时空综合属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -20,12 +20,12 @@ Pipeline position:
   IR-only frontend verifier检查，尚未进入directory schema或production lowering。
 - Output IR / files:
   verified StableHLO program directory。它仍由MLIR、`forward.meta`和必要payload共同组成，不是
-  `TensorProgram`、`CardProgram`、`CardExecutable`、target module或`ExecutablePackage`。
+  `TensorProgram`、`CardModule`、`CardExecutable`、target module或`ExecutablePackage`。
 - Downstream consumer:
   Q15 typed compiler driver在transaction-owned snapshot上建立card-partition mesh，调用pinned XLA SPMD helper，
   然后做local compute normalization并发布verified card-local structured tensor program；05 structured
   optimization继续在同一IR上建立verified `TensorProgram` boundary。06随后以target physical topology为独立输入，
-  形成`CardProgram`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
+  形成`CardModule`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend verification；继续编译只经
   `wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=1 --launch-kind={kernel|model}`；
@@ -73,7 +73,7 @@ absolute path、`..`或路径分隔符逃逸program root。name/path只负责在
 不能成为candidate/schedule、sharding、rank、resource或lowering分支条件。
 
 post-SPMD时同一份canonical metadata还包含`distributed_boundary`；这是function boundary由global tensor变成
-per-card-partition local tensor的typed output合同，不是planner sidecar，也不是physical Tile placement。若未来需要typed mutable state、alias/mutation、
+per-card-partition local tensor的typed output合同，不是planner sidecar，也不是Tile placement。若未来需要typed mutable state、alias/mutation、
 多个entry或program graph，必须先设计可由IR/metadata verifier证明且有下游consumer的最小表示；不能恢复历史
 私有model dialect、复合frontend owner或side-table对象图作为前置。
 
@@ -125,7 +125,7 @@ num_partitions
 parameters[]
 ```
 
-`num_partitions`只表示logical card-partition count，不表示physical Tile数量。旧schema-v3及其
+`num_partitions`只表示logical card-partition count，不表示Tile数量。旧schema-v3及其
 `logical_rank_count`/`rank`字段已删除，frontend不提供双reader或兼容翻译。
 
 每个parameter record通过`argument_index`绑定function argument，并声明`name`、dtype、global/local shape、
@@ -180,7 +180,7 @@ name与版本workaround只留在adapter或诊断中。
 - 不以手写StableHLO emitter替代framework/exporter；
 - 对graph break、eager/host fallback和无法导出的side effect fail closed；
 - 从exporter metadata/payload取得parameter与constant，不在后端按名字重新配对；
-- 保存exporter产生的`mhlo.sharding`，不提前转成physical tile或Wafer私有strategy。
+- 保存exporter产生的`mhlo.sharding`，不提前转成target Tile或Wafer私有strategy。
 
 Q5.C的source-backed corpus由
 `test/Tools/Inputs/workloads/single-card-vertical-v1.json`和真实capture generator拥有。当前固定case是
@@ -209,7 +209,7 @@ variant seed和原固定seed全部通过后，scale case只把source/model compa
 旧Q44的TP16/rank-as-Tile资格只作历史背景，不属于current frontend合同。当前GEMM、HuggingFace attention、
 KV-cache decode与Llama-2 7B block都从真实framework module和原始dtype tensor导出
 `num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q49 `none` baseline与Q51 `search`随后
-从同一structured DAG决定16个physical Tile上的spatial mapping、temporal tiling、TileRegion/融合与通信。不得用手写
+从同一structured DAG决定16个Tile上的spatial mapping、temporal tiling、TileRegion/融合与通信。不得用手写
 StableHLO/MLIR、parameter name或测试fixture把这些卡内决定提前编码进frontend。
 同一组tensor先在PyTorch eager CPU执行形成唯一用户级expected；NumPy不得参与expected生成或最终结果比较。
 exporter因NPY output格式使用NumPy作payload序列化属于adapter transport，不取得数值参考结果的ownership。
@@ -228,7 +228,7 @@ helper不能消费的`sdy.constant`/`sdy.reshard`等语义，因此在完整SDY�
 driver。
 
 helper输出必须重新走本文件的metadata/payload verifier，包含上述distributed boundary，并与
-`ExecutionConfig::numPartitions`建立的logical execution mesh逐项一致；physical Tile数量只来自target topology，
+`ExecutionConfig::numPartitions`建立的logical execution mesh逐项一致；Tile数量只来自target topology，
 不得在此处用partition数推导。
 Q15随后做StableHLO-to-Linalg/collective normalization，再发布verified card-partition-local structured
 tensor program。frontend verifier本身不执行helper、不形成调度单元，也不公开SPMD stop-stage。
@@ -242,8 +242,8 @@ target context或writing authority。
 source-to-package driver在parse前把source directory完整复制到transaction-owned snapshot；后续frontend verify、helper
 和IR transforms只读/改写staging内成员。source不得被原地补metadata、topology或shards。Q15最终发布的是重新
 parse/verify过的card-partition-local structured tensor program directory；fixed structured optimization完成后，
-physical-dataflow synthesis从单卡partition output构造一个`CardProgram`，其中all-and-only available physical Tiles
-各有独立`wafer.tile.program`。每个Tile可有不同op、loop和temporal tile shape；Q51唯一search owner联合决定
+physical-dataflow synthesis从单卡partition output构造一个`CardModule`，其中all-and-only available Tiles
+各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；Q51唯一search owner联合决定
 placement、tiling、TileRegion/融合和显式NoC/DDR movement，exact gates通过后形成`CardExecutable`，再由target与
 package阶段发布`ExecutablePackage`。`TensorProgram`是该综合阶段的唯一输入output；已删除的`wafer.group`
 formation/selector没有兼容、debug或发布旁路。

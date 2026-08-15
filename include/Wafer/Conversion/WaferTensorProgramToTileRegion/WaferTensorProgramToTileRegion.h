@@ -103,7 +103,7 @@ struct PartialReductionTileMaterialization {
   llvm::SmallVector<mlir::Value, 2> mergedValues;
 };
 
-/// One output-domain shard selected for a physical Tile.  Output indices are
+/// One output-domain shard selected for a Tile.  Output indices are
 /// function-result indices.  A result omitted from a Tile's shard list is an
 /// explicit no-work result on that Tile; its destination is yielded without a
 /// store.  This query-local value is consumed atomically and never persisted.
@@ -153,17 +153,17 @@ materializePartialReductionTile(
 /// selected nonempty per-output shards and temporal traversal through
 /// TilingInterface, and lowers their actual producer closures to TileRegion
 /// IR. Outputs omitted from
-/// `outputShards` perform no store on this physical Tile.  Direct target facts,
+/// `outputShards` perform no store on this Tile.  Direct target facts,
 /// the card-partition execution mesh, and shared symbol declarations remain in
 /// the private result module.  The source module and `module` output are
 /// unchanged on failure.
 ///
 /// `functionalArgumentCount` is the exact argument count before the owning
-/// CardProgram conversion appended one private destination per result. This
+/// CardModule conversion appended one private destination per result. This
 /// helper verifies that relation instead of recovering it from argument
 /// positions or types.
 ///
-/// `currentLogicalPartition` identifies a card partition. A physical Tile ID
+/// `currentLogicalPartition` identifies a card partition. A Tile ID
 /// must never be passed through this parameter.
 mlir::LogicalResult lowerSpatialOutputShardsToTileRegionModule(
     mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,

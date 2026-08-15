@@ -33,14 +33,53 @@ Pipeline position:
 命名采用仓库pinned LLVM/MLIR的常见形式：type使用语义名词，function使用说明实际动作的动词短语，conversion说明
 源表示和目标表示，optimization说明实际算法。同一概念在ODS、C++、pass、文件和diagnostic中使用同一名称。
 
-## 整改结果
+## 最终批次：IR 层级与限定词
+
+本批继续处理第一轮后仍存在的范围型名称：
+
+1. 核对`wafer.card.module`与`wafer.tile.module`的SymbolTable、`IsolatedFromAbove`、SSA ownership、split和lowering
+   consumer，按真实module层级统一ODS、C++和文本IR名称。
+2. 核对设备级candidate search/evaluation/selection、lowering、resource verification对象的输入输出；删除只说明遍历范围、
+   不说明compiler职责的前缀，混合职责不以改名掩盖。
+3. 限定词仅在同一API确有logical/target、virtual/register allocation或其它真实对照且强类型无法消歧时保留；已经由namespace、
+   ID type、parent op、anchor或容器确定的限定不进入type、function、文件和diagnostic。
+4. 沿parser/printer、verifier、conversion、named pipeline、public API、CMake、测试和current docs逐批迁移，不提供内部双名兼容层。
+
+本批不改变placement、tiling、movement、memory planning、ABI或runtime语义，不改只读archive和外部API拼写，也不把所有
+`physical`、`whole`、`device`或`target`做机械替换。每个名称先通过定义与consumer审计，再决定保留、重命名或拆分。
+
+### 语义核对结果
+
+| 当前对象 | 收敛方向 | 依据 |
+| --- | --- | --- |
+| `CardModuleOp` / `TileModuleOp` | `CardModuleOp` / `TileModuleOp` | 两者都是`SymbolTable`、`IsolatedFromAbove`的module-like container；`card_id`和`tile_id`仍是target topology中的真实层级 |
+| `CardId` / `TileId`及coordinate/link | `CardId` / `TileId`及对应coordinate/link | 强类型已经与logical partition、launch slot分离，不需重复限定 |
+| `TargetTopology` | `TargetTopology` | analysis直接且只从`wafer.target.topology`派生 |
+| standalone Tile module/executable/trace | `TileModule` / `TileExecutable` / `TileIRTrace` | module、entry和typed `TileId`已经确定硬件绑定 |
+| Tile memory planning | Tile memory planning | anchor和输入已经是独立Tile module |
+| `CardDAG*` / `WholeDAG*` | `StructuredDAG*` | DAG从一个structured function的SSA派生；完整图由对象本身表示，不需要card/whole范围前缀 |
+| `TileMapping` | `TileMapping` | 对象实际描述structured work到Tile的placement、temporal tile和edge action输入 |
+| `WholeCardInstructionProgramCost` / `WholeCardResourceDurationEstimate` | `CardInstructionProgramCost` / `ProgramDurationEstimate` | instruction cost存在Card/Tile两个真实强类型层级；duration只有一个program范围，不重复限定 |
+| `PhysicalTileExecutables` / internal `WholeCardExecutable` | public `CardExecutable` / internal `CardExecutableLoweringResult` | public owner原子持有一个card的all-and-only `TileExecutable`；internal result只表示lowering结果，不再造第二个executable概念 |
+| `WholeCardExecutableLowering*` | `CardExecutableLowering*` | lowering边界产生一个`CardExecutable`；`whole`只重复容器已表达的范围 |
+| optional card rank sources | `RankCandidate*`、`RankInstrLowering*`、`RankResourceCostValidation*` | 这些未构建source实际消费完整logical-rank tuple，不能伪装成current Card/Tile module实现 |
+
+`CardResourceScope`、`TileResourceScope`、card/Tile topology字段、logical-to-Tile placement边界以及logical range与target byte
+range的真实对照继续保留必要限定；它们不是本批要消除的重复范围词。
+
+profile schema v10的correlation basis/static-cost scope和硬件校准catalog的claim key已是持久化协议或
+历史证据标识，不是active C++抽象名。本批不在不升级schema/证据合同的情况下改写它们；新的
+type、function、pass option、pipeline timing和diagnostic均使用`Card`、`Tile`、`CardExecutable`等已由IR和强类型
+定义的名称。
+
+## 已完成批次
 
 本轮按定义和直接consumer逐项核对，不以关键词替换代替语义判断：
 
 | 范围 | 收敛结果 |
 | --- | --- |
-| compiler public API | target侧收敛为`PhysicalTileExecutables`、`TargetLLVMModules`、`LinkedTargetModules`和`CompiledProgram`；函数名直接说明compile、link、readback或write package |
-| physical-Tile lowering | 原来混合转换、bufferization和memory planning的入口拆成明确的Instr lowering、SPM/DDR assignment与resource verification；文件和测试使用同一职责名 |
+| compiler public API | target侧收敛为`CardExecutable`、`TargetLLVMModules`、`LinkedTargetModules`和`CompiledProgram`；函数名直接说明compile、link、readback或write package |
+| Tile lowering | 原来混合转换、bufferization和memory planning的入口拆成明确的Instr lowering、SPM/DDR assignment与resource verification；文件和测试使用同一职责名 |
 | whole-device selection | search、candidate evaluation、resource verification和selection分别命名；不再用含糊的协调、前沿或阶段结束术语代替实际动作 |
 | target/runtime | profile数据写入、运行参数构造、target command验证和模型执行分别命名；C/C++符号与diagnostic同步 |
 | MLIR source | verifier、target execution facts、instruction verification和StableHLO collective lowering按实际IR层命名；声明、实现、CMake和lit文件同步 |
@@ -50,7 +89,7 @@ Pipeline position:
 属于外部API，历史archive文件名属于只读导航；本轮没有通过改写这些字符串制造兼容性变化。所有一手C++/Python抽象、文件名、
 diagnostic和current文档已经退出旧术语。
 
-## 验证结果
+## 已完成批次验证
 
 - `build/q45-fresh`独立配置并完成419个构建步骤；没有复用`build/wafer-dev`生成物。
 - fresh `WaferUnitTests`排除Q49/Q52已知长搜索后为629/629通过；长搜索不属于命名整改门禁。
@@ -58,6 +97,17 @@ diagnostic和current文档已经退出旧术语。
 - fresh CTest 13–20为8/8通过，包含runtime IO、public-header/link smoke和feature-off link closure。
 - source/IR organization、Python compileall、profile report、dependency helpers及受影响Board协议的host-only测试通过。
 - `git diff --check`通过；未执行真实板端测试。
+
+限定词与IR层级最终批次使用`build/q45-qualifier-fresh`独立验证：
+
+- fresh configure后419/419构建通过，包含新ODS/TableGen、renamed source和public link targets；
+- topology、CardModule/TileModule conversion、StructuredDAG、program resources、CardExecutable lowering、Tile memory
+  planning、target ABI/codegen、named pipelines和Instr-to-target conversion定向单测138/138通过；
+- CTest 1–11为11/11通过，CTest 13–20为8/8通过；Wafer lit 216/216由CTest实际执行；
+- IR/source organization、Python compileall和`git diff --check`通过。
+
+StructuredDAG placement enumeration和CardExecutable candidate synthesis属于Q49/Q52搜索行为，本批没有用
+长搜索代替命名合同验证；没有执行真实板端测试。
 
 `test/Board/wafer_compiler_optimization_campaign_catalog.py`仍包含Q50.S未来迁移的旧source reference；它在Q54前后均未注册到
 CMake/CTest，当前自检会因缺少已退役`CandidateRewrites.cpp`而失败。本轮没有伪造新的production实现来满足该字符串检查；

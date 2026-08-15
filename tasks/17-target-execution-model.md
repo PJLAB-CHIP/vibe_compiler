@@ -10,11 +10,11 @@ Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或
 Pipeline position:
 - Upstream IR / input:
   同一次compiler transaction产生的`CardExecutable`、与其绑定的owner-backed target LLVM module set、typed program
-  invocation与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 physical Tiles并保留
+  invocation与独立CPU expected；`CardExecutable`覆盖single card的all-and-only 16 Tiles并保留
   (card_id, tile_id, launch_slot)。
 - Current stage responsibility:
   将program tensors编码到exact Kernel ABI slots；通过host JIT执行final target LLVM entries并解码closed TargetCall
-  registry；在SystemC中按physical Tile、worker、engine、event和private memory执行functional语义；原子发布完整结果。
+  registry；在SystemC中按Tile、worker、engine、event和private memory执行functional语义；原子发布完整结果。
 - Output IR / files:
   TargetModelResult：target/model identity、card-scoped completion统计、numeric flags、typed outputs及诊断；
   不产生可被compiler或runtime消费的schedule sidecar。
@@ -36,16 +36,16 @@ Pipeline position:
 
 model只接受compiler保留的same-invocation owners：
 
-- `CardExecutable`提供program boundary bindings、physical Tile executable domain和completion/transport contract；
+- `CardExecutable`提供program boundary bindings、Tile executable domain和completion/transport contract；
 - 与该`CardExecutable`绑定的target LLVM owner set提供target conversion真正发布所用的LLVM modules与typed Kernel ABI slots；
 - program invocation提供source tensor值，不复制target schema或猜测slot；
 - independent CPU expected只用于最终差分，不进入compiler IR/package。
 
-当前实现类`PhysicalTileExecutables`与`TargetLLVMModules`只作为上述两个owner边界的迁移索引，不定义额外稳定output层。
+当前实现类`CardExecutable`与`TargetLLVMModules`只作为上述两个owner边界的迁移索引，不定义额外稳定output层。
 
 `prepareTargetModelInvocation`必须在JIT materialization前all-and-only消费每个非output program resource和每个ABI slot。
 它按显式resource owner、Kernel ABI role和resource index建立allocation identity：program-boundary resource由card拥有，
-workspace/status由physical Tile拥有。一个card input只编码和初始化一次，16个Tile slot绑定同一base；input physical bytes与
+workspace/status由Tile拥有。一个card input只编码和初始化一次，16个Tile slot绑定同一base；input physical bytes与
 slot values由prepared invocation拥有，不alias source NPY storage。
 
 ### 2.2 Explicit physical identity
@@ -53,8 +53,8 @@ slot values由prepared invocation拥有，不alias source NPY storage。
 model全链保留三个独立typed fields：
 
 ```text
-PhysicalCardId
-PhysicalTileId
+CardId
+TileId
 LaunchSlotId
 ```
 
@@ -81,7 +81,7 @@ TargetCall frontend是final target LLVM到typed transaction的唯一host桥：
 
 ### 3.1 Process model
 
-SystemC elaboration为每个physical Tile建立一个SC_THREAD，在线程中调用该Tile的JIT entry。同步target call可以让当前
+SystemC elaboration为每个Tile建立一个SC_THREAD，在线程中调用该Tile的JIT entry。同步target call可以让当前
 线程等待model event，同时保留JIT stack；独立Tile线程可继续推进。
 
 model使用event-driven fixed point：只有ready transaction执行，执行后发出data-ready/engine-completion/transport event，

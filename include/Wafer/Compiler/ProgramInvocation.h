@@ -54,17 +54,17 @@ private:
   std::vector<uint8_t> bytes;
 };
 
-/// Exact non-output source resource supplied to one accepted physical Tile.
+/// Exact non-output source resource supplied to one accepted Tile.
 struct ProgramInputBinding {
   ProgramResourceRole role;
   int64_t index;
   ProgramTensor tensor;
 };
 
-/// Complete source invocation inputs for one physical Tile launch entry.
+/// Complete source invocation inputs for one Tile launch entry.
 struct ProgramTileInvocation {
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
   std::vector<ProgramInputBinding> inputs;
 };
@@ -75,14 +75,14 @@ struct ProgramGlobalInputBinding {
   ProgramTensor tensor;
 };
 
-/// Builds all Tile-local source bindings from typed physicalTileExecutables
+/// Builds all Tile-local source bindings from typed cardExecutable
 /// slices. User inputs are sliced from complete logical tensors;
 /// parameters/constants are loaded from their already-verified package-relative
 /// NPY payload paths. The function performs no compute and is shared by
 /// independent execution consumers without sharing their numeric kernels or
 /// schedulers.
 llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
-    const PhysicalTileExecutables &physicalTileExecutables,
+    const CardExecutable &cardExecutable,
     llvm::StringRef packageRoot,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs);
 

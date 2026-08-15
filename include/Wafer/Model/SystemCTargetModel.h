@@ -45,13 +45,13 @@ private:
 };
 
 /// One card-owned output allocation returned after successful execution.
-/// Physical Tile and
+/// Tile and
 /// slot fields identify the canonical ABI view used for decoding; aliased
 /// views from other Tiles do not create duplicate result objects.
 struct TargetModelOutput {
   TargetModelResourceId resource;
-  PhysicalCardId physicalCardId;
-  PhysicalTileId physicalTileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlotId;
   int64_t slotOrdinal = -1;
   int64_t resourceIndex = -1;

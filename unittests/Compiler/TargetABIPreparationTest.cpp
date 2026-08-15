@@ -5,7 +5,7 @@
 #include "Wafer/InitWaferDialects.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 #include "../../lib/Wafer/Compiler/TargetCodeGenInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -120,24 +120,24 @@ module {
   ASSERT_TRUE(static_cast<bool>(config));
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  auto physicalTileExecutables =
-      wafer::compiler::detail::buildPhysicalTileExecutables(
+  auto cardExecutable =
+      wafer::compiler::detail::buildCardExecutable(
           context, *tensorProgram, std::move(program), *config,
           wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
-  if (!physicalTileExecutables)
+  if (!cardExecutable)
     FAIL() << diagnosticsText
-           << llvm::toString(physicalTileExecutables.takeError());
+           << llvm::toString(cardExecutable.takeError());
   tensorProgram = nullptr;
-  ASSERT_EQ(physicalTileExecutables->getPhysicalTileExecutables().size(), 16u);
+  ASSERT_EQ(cardExecutable->getTileExecutables().size(), 16u);
   for (size_t tileIndex = 0;
-       tileIndex < physicalTileExecutables->getPhysicalTileExecutables().size();
+       tileIndex < cardExecutable->getTileExecutables().size();
        ++tileIndex)
-    EXPECT_EQ(physicalTileExecutables->getPhysicalTileExecutables()[tileIndex]
-                  .getPhysicalTileId(),
-              wafer::PhysicalTileId(static_cast<int64_t>(tileIndex)));
+    EXPECT_EQ(cardExecutable->getTileExecutables()[tileIndex]
+                  .getTileId(),
+              wafer::TileId(static_cast<int64_t>(tileIndex)));
 
-  const wafer::compiler::PhysicalTileExecutable &tile =
-      physicalTileExecutables->getPhysicalTileExecutables().front();
+  const wafer::compiler::TileExecutable &tile =
+      cardExecutable->getTileExecutables().front();
   mlir::func::FuncOp entry =
       tile.getModule().lookupSymbol<mlir::func::FuncOp>(tile.getEntrySymbol());
   ASSERT_TRUE(entry);
@@ -161,7 +161,7 @@ module {
       opBuilder.clone(*plannedDDRAllocations.front()));
   plannedDDRAllocations.push_back(workspace);
 
-  mlir::FailureOr<wafer::compiler::detail::PreparedPhysicalTile> prepared =
+  mlir::FailureOr<wafer::compiler::detail::PreparedTile> prepared =
       wafer::compiler::detail::prepareTargetABI(
           tile, *config, /*transportPreparedBeforeEntry=*/false);
   ASSERT_TRUE(mlir::succeeded(prepared));
@@ -184,7 +184,7 @@ module {
         diagnostic.print(stream);
         return mlir::success();
       });
-  mlir::FailureOr<wafer::compiler::detail::PreparedPhysicalTile> overflow =
+  mlir::FailureOr<wafer::compiler::detail::PreparedTile> overflow =
       wafer::compiler::detail::prepareTargetABI(
           tile, *config, /*transportPreparedBeforeEntry=*/false);
   EXPECT_TRUE(mlir::failed(overflow));

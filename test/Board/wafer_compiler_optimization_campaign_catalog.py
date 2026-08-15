@@ -202,17 +202,17 @@ PRODUCTION_PIPELINE_ANCHORS = (
         "stageTargetPackage",
     ),
     _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
-        "WholeCardCandidateSearchSession::create",
+        "lib/Wafer/Compiler/RankCandidateSearch.cpp",
+        "RankCandidateSearchSession::create",
     ),
     _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateEvaluation.cpp",
-        "beginWholeCardCandidateEvaluation",
-        "advanceWholeCardCandidateEvaluation",
+        "lib/Wafer/Compiler/RankCandidateEvaluation.cpp",
+        "beginRankCandidateEvaluation",
+        "advanceRankCandidateEvaluation",
     ),
     _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateSelection.cpp",
-        "selectEvaluatedWholeCardCandidate",
+        "lib/Wafer/Compiler/RankCandidateSelection.cpp",
+        "selectEvaluatedRankCandidate",
     ),
     _anchor(
         "lib/Wafer/Pipelines/Pipelines.cpp",
@@ -844,10 +844,10 @@ ORDER_HOST_GATES = (
     "unittests/Transforms/PhysicalDataflow/ReadyOrderTest.cpp",
 )
 SELECTION_HOST_GATES = (
-    "unittests/Compiler/WholeCardCandidateSearchTest.cpp",
-    "unittests/Compiler/LowerWholeCardInstrModulesTest.cpp",
-    "unittests/Compiler/WholeCardCandidateSelectionTest.cpp",
-    "unittests/Compiler/WholeCardResourceCostValidationTest.cpp",
+    "unittests/Compiler/RankCandidateSearchTest.cpp",
+    "unittests/Compiler/LowerRankInstrModulesTest.cpp",
+    "unittests/Compiler/RankCandidateSelectionTest.cpp",
+    "unittests/Compiler/RankResourceCostValidationTest.cpp",
 )
 MEMORY_HOST_GATES = (
     "unittests/Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp",
@@ -869,7 +869,7 @@ PRODUCTION_OWNER_BY_AXIS = {
         "TargetImplementationKind::GenericReciprocal",
     ),
     "dependent-tiling-and-tail-coverage": _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
+        "lib/Wafer/Compiler/RankCandidateSearch.cpp",
         "buildStructuredTraversalProposals",
     ),
     "producer-fusion-and-relation-propagation": _anchor(
@@ -893,11 +893,11 @@ PRODUCTION_OWNER_BY_AXIS = {
         "TileRegionBodyEmitter::record",
     ),
     "movement-resident-cut-elimination": _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
+        "lib/Wafer/Compiler/RankCandidateSearch.cpp",
         "materializeCompleteRankTileResidencySibling",
     ),
     "whole-tensor-share-winner": _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
+        "lib/Wafer/Compiler/RankCandidateSearch.cpp",
         "CandidateTileResidencyAction::SelectiveSpill",
     ),
     "consumer-local-recompute-winner": _anchor(
@@ -933,7 +933,7 @@ PRODUCTION_OWNER_BY_AXIS = {
         "scheduleIndependentInstructionsByReadyOrder",
     ),
     "static-fixed-slot-overlap-selection": _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateEvaluation.cpp",
+        "lib/Wafer/Compiler/RankCandidateEvaluation.cpp",
         "deriveFixedSlotAction",
     ),
     "collective-direct": _anchor(
@@ -969,16 +969,16 @@ PRODUCTION_OWNER_BY_AXIS = {
         "scheduleIndependentInstructionsByReadyOrder",
     ),
     "resource-aware-neighbor-generation": _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
+        "lib/Wafer/Compiler/RankCandidateSearch.cpp",
         "buildLocalConnectionChoicePool",
     ),
     "bounded-joint-search-and-baseline-fallback": _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateSearch.cpp",
+        "lib/Wafer/Compiler/RankCandidateSearch.cpp",
         "deriveStructuredCandidates",
     ),
-    "whole-variant-pareto-and-atomic-selection": _anchor(
-        "lib/Wafer/Compiler/WholeCardCandidateSelection.cpp",
-        "selectEvaluatedWholeCardCandidate",
+    "rank-candidate-pareto-and-atomic-selection": _anchor(
+        "lib/Wafer/Compiler/RankCandidateSelection.cpp",
+        "selectEvaluatedRankCandidate",
     ),
     "spm-lifetime-placement-and-packing": _anchor(
         "lib/Wafer/Transforms/SPM/PlanSPMMemory.cpp",
@@ -1216,7 +1216,7 @@ OPTIMIZATION_AXES = (
         ),
         host_assets=(
             "unittests/Conversion/CommunicationAlternativesTest.cpp",
-            "unittests/Compiler/WholeCardCandidateEvaluationTest.cpp",
+            "unittests/Compiler/RankCandidateEvaluationTest.cpp",
         ),
     ),
     _axis(
@@ -1299,7 +1299,7 @@ OPTIMIZATION_AXES = (
         host_assets=SELECTION_HOST_GATES,
     ),
     _axis(
-        "whole-variant-pareto-and-atomic-selection",
+        "rank-candidate-pareto-and-atomic-selection",
         "all-rank-coordination",
         AxisDisposition.HOST_ONLY_EXACT_NEGATIVE,
         "selection-resource-exact-gates",

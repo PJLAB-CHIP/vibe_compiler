@@ -199,8 +199,8 @@ bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
 llvm::StringRef
 stringifyTargetModelInvocationErrorCode(TargetModelInvocationErrorCode code) {
   switch (code) {
-  case TargetModelInvocationErrorCode::InvalidPhysicalTileDomain:
-    return "invalid-physical-tile-domain";
+  case TargetModelInvocationErrorCode::InvalidTileDomain:
+    return "invalid-tile-domain";
   case TargetModelInvocationErrorCode::InvalidProgramInvocation:
     return "invalid-program-invocation";
   case TargetModelInvocationErrorCode::InvalidKernelABISlot:
@@ -283,22 +283,20 @@ decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
 }
 
 llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
-    const compiler::PhysicalTileExecutables &physicalTileExecutables,
+    const compiler::CardExecutable &cardExecutable,
     const compiler::TargetLLVMModules &targetLLVMModules,
     llvm::ArrayRef<compiler::ProgramTileInvocation> programInvocations) {
-  const auto &tiles = physicalTileExecutables.getPhysicalTileExecutables();
+  const auto &tiles = cardExecutable.getTileExecutables();
   const auto &modules = targetLLVMModules.getModules();
-  if (physicalTileExecutables.getExecutionConfig() !=
+  if (cardExecutable.getExecutionConfig() !=
           targetLLVMModules.getExecutionConfig() ||
       tiles.size() != modules.size() ||
       tiles.size() != programInvocations.size() ||
-      tiles.size() !=
-          static_cast<size_t>(physicalTileExecutables.getExecutionConfig()
-                                  .getPhysicalTileCount()))
-    return invocationError(
-        TargetModelInvocationErrorCode::InvalidPhysicalTileDomain,
-        "source, physical Tile executable, and target LLVM "
-        "launch domains are not identical");
+      tiles.size() != static_cast<size_t>(
+                          cardExecutable.getExecutionConfig().getTileCount()))
+    return invocationError(TargetModelInvocationErrorCode::InvalidTileDomain,
+                           "source, Tile executable, and target LLVM "
+                           "launch domains are not identical");
 
   std::vector<compiler::TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputBindings;
@@ -312,7 +310,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
   arguments.reserve(tiles.size());
   uint64_t nextAddress = UINT64_C(0x100000000);
   for (size_t tileIndex = 0; tileIndex < tiles.size(); ++tileIndex) {
-    const compiler::PhysicalTileExecutable &tile = tiles[tileIndex];
+    const compiler::TileExecutable &tile = tiles[tileIndex];
     const compiler::TargetLLVMModule &module = modules[tileIndex];
     const compiler::ProgramTileInvocation &invocation =
         programInvocations[tileIndex];
@@ -320,19 +318,17 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
     if (tile.getLaunchSlotId() != expectedLaunchSlot ||
         module.getLaunchSlotId() != expectedLaunchSlot ||
         invocation.launchSlotId != expectedLaunchSlot ||
-        module.getPhysicalCardId() != tile.getPhysicalCardId() ||
-        module.getPhysicalTileId() != tile.getPhysicalTileId() ||
-        invocation.physicalCardId != tile.getPhysicalCardId() ||
-        invocation.physicalTileId != tile.getPhysicalTileId())
+        module.getCardId() != tile.getCardId() ||
+        module.getTileId() != tile.getTileId() ||
+        invocation.cardId != tile.getCardId() ||
+        invocation.tileId != tile.getTileId())
       return invocationError(
-          TargetModelInvocationErrorCode::InvalidPhysicalTileDomain,
-          "physical Tile executable or target LLVM launch order is not "
+          TargetModelInvocationErrorCode::InvalidTileDomain,
+          "Tile executable or target LLVM launch order is not "
           "canonical");
 
-    compiler::TargetCallTileArguments tileArguments{tile.getPhysicalCardId(),
-                                                    tile.getPhysicalTileId(),
-                                                    tile.getLaunchSlotId(),
-                                                    {}};
+    compiler::TargetCallTileArguments tileArguments{
+        tile.getCardId(), tile.getTileId(), tile.getLaunchSlotId(), {}};
     const auto &slots = module.getKernelABISlots();
     tileArguments.slots.reserve(slots.size());
     std::vector<bool> consumedInputs(invocation.inputs.size(), false);
@@ -343,8 +339,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
             TargetModelInvocationErrorCode::InvalidKernelABISlot,
             "Kernel ABI slot identity, byte size, or alignment is invalid");
       const TargetModelResourceId resource = getTargetModelResourceId(
-          tile.getPhysicalCardId(), tile.getPhysicalTileId(), slot.role,
-          slot.resourceIndex);
+          tile.getCardId(), tile.getTileId(), slot.role, slot.resourceIndex);
       Allocation *allocation = nullptr;
       for (Allocation &candidate : allocations)
         if (candidate.resource == resource) {
@@ -430,7 +425,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
   }
 
   for (const Allocation &allocation : allocations) {
-    const bool cardOwned = !allocation.resource.physicalTileId.has_value();
+    const bool cardOwned = !allocation.resource.tileId.has_value();
     if ((cardOwned && allocation.launchSlots.size() != tiles.size()) ||
         (!cardOwned && allocation.launchSlots.size() != 1))
       return invocationError(

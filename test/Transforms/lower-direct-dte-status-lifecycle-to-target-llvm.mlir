@@ -1,5 +1,5 @@
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{transport-prepared-before-entry=true physical-card-id=0 physical-tile-id=15 transport-status-argument-index=0})' %s | FileCheck --check-prefix=CLUSTER %s
-// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{physical-card-id=0 physical-tile-id=15 transport-status-argument-index=0})' %s | FileCheck --check-prefix=STANDALONE %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{transport-prepared-before-entry=true card-id=0 tile-id=15 transport-status-argument-index=0})' %s | FileCheck --check-prefix=CLUSTER %s
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-lower-instr-to-target-llvm{card-id=0 tile-id=15 transport-status-argument-index=0})' %s | FileCheck --check-prefix=STANDALONE %s
 
 module {
   wafer.target.topology @default
@@ -8,7 +8,7 @@ module {
   wafer.execution.mesh @default_mesh
       {axes = ["card_partition"], shape = array<i64: 1>}
 
-  // This physical Tile has the transport status slot but no local Direct DTE
+  // This Tile has the transport status slot but no local Direct DTE
   // op.
   func.func @main(%status: i64) {
     return

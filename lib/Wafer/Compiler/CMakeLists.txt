@@ -13,19 +13,19 @@ endforeach()
 set(LLVM_OPTIONAL_SOURCES
   AttentionImplementationAlternative.cpp
   CoordinatedCommunicationAction.cpp
-  WholeCardCandidateSearch.cpp
-  LowerWholeCardInstrModules.cpp
-  WholeCardCandidateEvaluation.cpp
+  RankCandidateSearch.cpp
+  LowerRankInstrModules.cpp
+  RankCandidateEvaluation.cpp
   StructuredCandidateDerivation.cpp
   StructuredCandidateCost.cpp
-  WholeCardCandidateSelection.cpp
+  RankCandidateSelection.cpp
   GlobalTileRelation.cpp
   NoCCommunicationAction.cpp
   NoCIntermediateRouting.cpp
   NoCPartialDataflow.cpp
   StaticFixedSlotQualification.cpp
   StructuredImplementationAlternative.cpp
-  WholeCardResourceCostValidation.cpp
+  RankResourceCostValidation.cpp
 )
 
 add_mlir_library(WaferCompiler
@@ -34,15 +34,15 @@ add_mlir_library(WaferCompiler
   CompilationOrchestration.cpp
   CompilationStages.cpp
   CardExecutableCompilation.cpp
-  WholeCardExecutableLowering.cpp
+  CardExecutableLowering.cpp
   DirectDTETransport.cpp
-  PhysicalTileExecutables.cpp
+  CardExecutable.cpp
   TensorProgramCompilation.cpp
   Package.cpp
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
   ProgramTensorComparison.cpp
-  PhysicalTileMemoryPlanning.cpp
+  TileMemoryPlanning.cpp
   SpmdCompilationBridge.cpp
   StructuredBufferRelations.cpp
   TargetABIPreparation.cpp
@@ -55,17 +55,17 @@ add_mlir_library(WaferCompiler
   WriteExecutablePackage.cpp
   TargetInstrumentation.cpp
   TileRegionSPMCapacityEvaluation.cpp
-  CompilePhysicalTileLLVMModules.cpp
+  CompileCardExecutableLLVMModules.cpp
   SelectedBufferMaterialization.cpp
   TargetCallFrontend.cpp
-  WholeDAGCandidateSchedule.cpp
-  WholeDAGPlacementEnumeration.cpp
-  WholeDAGEdgeDemandPlan.cpp
-  WholeDAGEdgeStrategyPlan.cpp
-  WholeDAGSchedule.cpp
-  WholeDAGSchedulePlan.cpp
-  WholeCardExecutableSynthesis.cpp
-  WholeCardResourceVerification.cpp
+  StructuredDAGCandidateSchedule.cpp
+  StructuredDAGPlacementEnumeration.cpp
+  StructuredDAGEdgeDemandPlan.cpp
+  StructuredDAGEdgeStrategyPlan.cpp
+  StructuredDAGSchedule.cpp
+  StructuredDAGSchedulePlan.cpp
+  CardExecutableSynthesis.cpp
+  ProgramResourceVerification.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport
@@ -84,8 +84,8 @@ add_mlir_library(WaferCompiler
   WaferPipelines
   WaferRuntime
   WaferTarget
-  WaferCardProgramToTileModules
-  WaferTensorProgramToCardProgram
+  WaferCardModuleToTileModules
+  WaferTensorProgramToCardModule
   WaferTensorProgramToTileRegion
   WaferTileRegionToInstr
   WaferTransforms

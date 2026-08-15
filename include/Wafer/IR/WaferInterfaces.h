@@ -78,7 +78,7 @@ classifyNCCSynchronizationBehavior(mlir::Operation *operation);
 std::optional<NCCWorker> getNCCIssueWorker(mlir::Operation *operation);
 
 /// Update the explicit worker domain of one typed NCC issue. This is the
-/// shared mutation boundary for a whole-DAG candidate that explicitly selects
+/// shared mutation boundary for a structured-DAG candidate that explicitly selects
 /// a worker; it rejects non-issue operations and out-of-domain values.
 mlir::LogicalResult setNCCIssueWorker(mlir::Operation *operation,
                                       NCCWorker worker);

@@ -16,15 +16,15 @@ Pipeline position:
   StableHLO-to-Linalg conversion把compute、shape/data movement和constant变成Linalg/Tensor/SCF/Arith/Math；
   仅折叠可由static IR完全证明的SPMD helper residual，并对最终dialect集合做fail-closed legality检查。
 - Output IR / files:
-  一个尚未绑定physical Tile的card-local structured tensor DAG。数学语义由op、region、indexing map、
+  一个尚未绑定Tile的card-local structured tensor DAG。数学语义由op、region、indexing map、
   iterator、DPS ties、type、SSA/control flow和effect表达；card-partition collective仍是typed tensor semantics。
 - Downstream consumer:
-  physical-dataflow synthesis读取该DAG和target topology，选择physical Tile placement、temporal tile、
-  TileRegion/融合与显式communication，并物化wafer.card.program / wafer.tile.program。
+  physical-dataflow synthesis读取该DAG和target topology，选择Tile placement、temporal tile、
+  TileRegion/融合与显式communication，并物化wafer.card.module / wafer.tile.module。
 - User-level driver / named pipeline:
   wafer-compile是唯一source-to-package production入口；wafer-lower-stablehlo-to-linalg只用于IR replay和focused test。
 - Explicit non-goals:
-  不运行GSPMD，不决定card partition；不选择physical Tile、implementation、tile shape、layout、SPM/DDR、
+  不运行GSPMD，不决定card partition；不选择Tile、implementation、tile shape、layout、SPM/DDR、
   NoC/DTE、launch slot或runtime binding；不从symbol、operand位置、shape或workload名称恢复语义。
 - Completion gate:
   真实GSPMD输出经同一pipeline后不残留StableHLO/SDY；supported compute与collective成为verifier-legal
@@ -50,7 +50,7 @@ func + tensor + linalg + scf + arith + math
 
 这一层没有physical `tile_id`、SPM/DDR encoding、transport route、instruction、target call或package字段。
 `num_partitions`是GSPMD的card-partition domain，不能解释为单卡Tile数量。单卡当前路径的mesh product为1；
-未来多卡也必须由跨卡transport owner消费card-partition collective，不能把partition ID转写成physical Tile ID。
+未来多卡也必须由跨卡transport owner消费card-partition collective，不能把partition ID转写成Tile ID。
 
 ## 3. Compute Normalization
 
@@ -82,11 +82,11 @@ supported StableHLO collective先转换为：
 这些op实现DestinationStyleOpInterface、TilingInterface和MemoryEffectOpInterface，并保留input/init/result、
 axis或split/concat dimension、channel、source-target pairs以及reduction combiner。StableHLO的
 `replica_groups`在本层规范化为`partition_group` / `partition_groups`；其中的ID只属于logical card-partition mesh，不保留旧字段别名，也不是
-physical Tile、DTE endpoint、route、SPM buffer或launch slot。
+Tile、DTE endpoint、route、SPM buffer或launch slot。
 
 normalization不得把collective直接lower成Direct DTE，也不得把algorithm、Tile group或physical peer写入
 LinalgExt attrs。single-card mesh上的singleton collective可在后续materialization中证明为identity；非singleton
-card-partition collective需要独立的跨卡transport合同。当前Q49–Q53 CardProgram主线只接受single-card partition，
+card-partition collective需要独立的跨卡transport合同。当前Q49–Q53 CardModule主线只接受single-card partition，
 因此非singleton跨卡执行仍未闭合，而不是借用片内16 Tile通信凑出一个结果。
 
 all-reduce/reduce-scatter可保留operand、combiner accumulator和result之间经verifier允许的element-type关系。
@@ -113,7 +113,7 @@ symbol或常见mask shape猜结果。最终输出不得残留SDY或raw StableHLO
 - f16/bf16/f32 dtype、SCF loop-carried SSA和effect/speculation保持；
 - 五类collective的DPS、shape、axis、group/channel、source-target pairs和combiner verifier；
 - card-partition ID越mesh范围、invalid group、shape mismatch和unsupported collective fail closed；
-- 输出中不存在physical Tile、layout/memory、DTE、packet、launch slot或runtime事实；
+- 输出中不存在Tile、layout/memory、DTE、packet、launch slot或runtime事实；
 - wafer-compile真实frontend/GSPMD输出能继续进入physical-dataflow synthesis，而非只通过手写FileCheck。
 
 Q51负责实现dependent-op remap、mapping差异产生的NoC communication和完整physical-dataflow event search。
@@ -132,4 +132,4 @@ collective normalization
 
 实现可以拆成多个patterns/passes，但长期合同是上述输入、输出和legality。创建Wafer op的pass必须声明
 dependent dialects。新增source family时优先扩官方/标准structured表示；只有标准IR无法无损表达且已有明确
-downstream consumer时才增加Wafer typed op。局部fixture不能代替真实program经wafer-compile进入CardProgram的主线gate。
+downstream consumer时才增加Wafer typed op。局部fixture不能代替真实program经wafer-compile进入CardModule的主线gate。

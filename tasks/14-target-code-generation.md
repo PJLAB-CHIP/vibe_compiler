@@ -1,7 +1,7 @@
 # Wafer Target Code Generation 与 TargetCall
 
 状态：本文是当前 target conversion、LLVM module、device link、readback 与 TargetCall 的唯一现行合同。单卡编译边界固定覆盖16个
-available physical Tiles；Q49先收口`none` baseline，Q51再把selected `CardExecutable`接入这条边界。现有host/model
+available Tiles；Q49先收口`none` baseline，Q51再把selected `CardExecutable`接入这条边界。现有host/model
 验证不能代替Q53的fresh package/no-card和真实板端matched A/B gate。
 
 ## 1. Pipeline Contract
@@ -9,10 +9,10 @@ available physical Tiles；Q49先收口`none` baseline，Q51再把selected `Card
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q49 `none` baseline或Q51 `search`选中的`CardExecutable`；其中all-and-only `wafer.tile.program`已投影为16个
-  physical-Tile ModuleOp，并完成TileRegion→Instr、fresh completion、SPM/DDR placement、transport与executable verification。
+  Q49 `none` baseline或Q51 `search`选中的`CardExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
+  Tile ModuleOp，并完成TileRegion→Instr、fresh completion、SPM/DDR placement、transport与executable verification。
 - Current stage responsibility:
-  对每个 physical Tile 做 current target ABI preparation、Instr→Target LLVM conversion、LLVM translation、
+  对每个 Tile 做 current target ABI preparation、Instr→Target LLVM conversion、LLVM translation、
   target-call legality、device link、ELF/readback 验证，并原子写入保留显式物理身份的 target modules。
 - Output IR / files:
   与同一`CardExecutable`绑定的invocation-local target LLVM owner set及原子发布target-module view；每个Tile
@@ -28,20 +28,20 @@ Pipeline position:
   不重新做physical-dataflow mapping；不从symbol、文件名、vector ordinal、pid或launch position恢复物理身份；
   不把低层module dispatch提升为公开ABI；不兼容读取旧 target metadata、旧 entry ABI 或旧 target-module schema。
 - Completion gate:
-  16 个 physical Tile interfaces all-and-only、物理三元组唯一且关系一致；每个 target module 的 current
+  16 个 Tile interfaces all-and-only、物理三元组唯一且关系一致；每个 target module 的 current
   metadata/ABI/exports/digest fresh readback；任一 Tile 失败时无部分 output 可见；Q53 source→package/no-card
   重放通过，并在真实板端gate完成前保持`board-ready`而非`done`。
 ```
 
 ## 2. 稳定对象与身份
 
-### 2.1 CardExecutable 的 Physical Tile entry
+### 2.1 CardExecutable 的 Tile entry
 
-`CardExecutable`原子拥有当前卡all-and-only 16个physical Tile entries；当前实现中的
-`PhysicalTileExecutable`只是单个entry的C++类型索引。每个entry包含：
+`CardExecutable`原子拥有当前卡all-and-only 16个Tile entries；当前实现中的
+`TileExecutable`只是单个entry的C++类型索引。每个entry包含：
 
-- `PhysicalCardId`：当前单卡为 `card_id=0`；
-- `PhysicalTileId`：来自 verified physical topology；
+- `CardId`：当前单卡为 `card_id=0`；
+- `TileId`：来自 verified physical topology；
 - `LaunchSlotId`：runtime 的 canonical submission order；
 - accepted entry symbol 与 typed program bindings；
 - `ReturnAfterLocalDrain` entry-local completion；
@@ -51,8 +51,8 @@ Pipeline position:
 三个 ID 不互相推导。`launch_slot` 必须唯一、dense、可排序，但不要求等于 `tile_id`。任何 producer、aggregate
 materializer、JIT bridge、runtime 或 diagnostic 都必须转发 typed fields，而不是使用容器位置重建它们。
 
-没有单Tile production output，也没有把`num_partitions`当作physical Tile count的入口；`num_partitions`仍属于
-GSPMD的card-level domain。当前实现类`PhysicalTileExecutables`必须收敛为`CardExecutable`的实现或迁移索引，不能继续定义
+没有单Tile production output，也没有把`num_partitions`当作Tile count的入口；`num_partitions`仍属于
+GSPMD的card-level domain。当前实现类`CardExecutable`必须收敛为`CardExecutable`的实现或迁移索引，不能继续定义
 一层长期output。
 
 ### 2.2 Target LLVM module
@@ -83,7 +83,7 @@ ABI preparation只消费 final accepted Instr IR 和 program boundary bindings�
 稳定规则：
 
 - program input、parameter、constant、output 对应 card-scoped package resources；
-- accepted Tile entry在ABI preparation前精确保留frontend的全部真实arguments和results；CardProgram内部使用过的
+- accepted Tile entry在ABI preparation前精确保留frontend的全部真实arguments和results；CardModule内部使用过的
   scheduling destination已被消费，不能作为额外argument到达本层；
 - compiler workspace 与 Direct-DTE status 对应 Tile-scoped resources；
 - output 是 caller-owned append-only ABI slot，不通过隐藏返回 buffer 或 symbol 约定发布；

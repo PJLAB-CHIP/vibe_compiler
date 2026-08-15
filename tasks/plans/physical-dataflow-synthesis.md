@@ -18,7 +18,7 @@ Pipeline position:
 - Upstream IR / input:
   GSPMD 已完成 card-level partition 且 target-independent canonicalization 完成后的 card-local structured
   TensorProgram；current SSA、structured semantics、IndexRelation、effect、type、shape 和 dtype 均可验证，尚未绑定
-  physical Tile、temporal schedule 或 storage action。
+  Tile、temporal schedule 或 storage action。
 - Current stage responsibility:
   Q50.S semantic-alternative builder先从typed SSA物化actual TensorProgram roots；唯一query-local physical-dataflow search
   owner只在这些roots中选择一个，并联合展开spatial partition/placement、
@@ -26,7 +26,7 @@ Pipeline position:
   temporal tiling、layout/representation、explicit movement、buffer、ready/order/worker、NoC/DDR/compute resource
   timeline 和条件式 stage pipeline；只有 actual IR 可以跨越 candidate-materialization seam。
 - Output IR / files:
-  selected wafer.card.program 及其中按 physical tile_id 区分的 wafer.tile.program；随后投影为各 Tile actual module。
+  selected wafer.card.module 及其中按 target tile_id 区分的 wafer.tile.module；随后投影为各 Tile actual module。
 - Downstream consumer:
   TileRegion-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
   communication/resource/ABI verification、target conversion、package writing 和 runtime launch。
@@ -87,7 +87,7 @@ current immutable structured IR
 - 任意时刻最多一个 live actual clone；host 可并行计算 immutable analysis，但 candidate set insertion 和 tie-break 使用稳定 key；
 - regular mapping、reuse signature和coarse resource estimate只能给普通typed transitions排序；不能clone-per-mapping，不能把
   reuse/cost annotation写进候选IR，也不能用function name、JSON或opaque solver payload跨越compile seam；
-- 最终 winner 仍重新通过完整 CardProgram splitting、TileRegion-to-Instr、fresh completion、SPM/DDR、resource、ABI、
+- 最终 winner 仍重新通过完整 CardModule splitting、TileRegion-to-Instr、fresh completion、SPM/DDR、resource、ABI、
   verification 和 final recost，局部 probe 不替代complete CardExecutable gate。
 
 ### Search result 等级
@@ -148,12 +148,12 @@ CardExecutable cost与全轴actual winner都是Q51 closure gate，不得用尚�
 
 | 类别 | 当前代表实现 | 处置 |
 | --- | --- | --- |
-| 稳定 downstream trunk | CardProgram/TileProgram IR、CardProgram-to-physical-Tile conversion、TileRegion-to-Instr、physical-Tile memory planning、whole-card resource/target verification、package/runtime | 保留；所有 policy 复用同一路径；现有`PhysicalTileMemoryPlanning`/`WholeCardExecutableLowering`仅作实现定位，后者仍需按实际职责收敛名称 |
-| 可复用 core | `CardDAGAnalysis`、现有schedule-state/candidate类、edge-demand plan与placement domain/cost mechanics | 行为测试保护后纳入Q51.Core；旧类名只是实现定位，不升级成长期架构对象，也不让其自行选择winner |
+| 稳定 downstream trunk | CardModule/TileModule IR、CardModule-to-Tile conversion、TileRegion-to-Instr、Tile memory planning、card resource/target verification、package/runtime | 保留；所有 policy 复用同一路径；现有`TileMemoryPlanning`/`CardExecutableLowering`仅作实现定位，后者仍需按实际职责收敛名称 |
+| 可复用 core | `StructuredDAGAnalysis`、现有schedule-state/candidate类、edge-demand plan与placement domain/cost mechanics | 行为测试保护后纳入Q51.Core；旧类名只是实现定位，不升级成长期架构对象，也不让其自行选择winner |
 | 可复用 mechanism | `BidirectionalTiling`、`CompleteTraversal`、`TileMaterialization`、`CandidateMaterialization`、movement/collective lowering、selected-buffer materialization、ready-order/worker/completion verifier | 按Q50.S与Q50.B–Q50.K接到transition/materializer seam；保留符合新合同的算法与verifier |
 | 过渡 monolith | 当前executable-synthesis实现中的coordinate sweep、candidate family、allocation/buffer feedback、shortlist和mixed materialization | public entry暂保留，先抽出Q50.0编译边界，再按轴抽出；最终只保留Q49 baseline controller、Q51 driver和共同materialization seam |
-| 旧 bounded/rank search | `WholeCardCandidateSearch`、旧structured candidate generation/evaluation/selection、WholeVariant selection 及 rank-era candidate set | 只作为 transformation、typed proof、diagnostic 和测试来源；不得恢复固定 beam/cap 或 rank-local winner |
-| compatibility lowering | `WholeDAGEdgeStrategyPlan`、dense rectangle fragment、现有 local/peer lowering | 在新 representation/movement IR 可完整消费 exact demand 前保留；Q50.G/H 逐项替换，不提前删除 |
+| 旧 bounded/rank search | `RankCandidateSearch`、旧structured candidate generation/evaluation/selection及rank-era candidate set | 只作为 transformation、typed proof、diagnostic 和测试来源；不得恢复固定 beam/cap 或 rank-local winner |
+| compatibility lowering | `StructuredDAGEdgeStrategyPlan`、dense rectangle fragment、现有 local/peer lowering | 在新 representation/movement IR 可完整消费 exact demand 前保留；Q50.G/H 逐项替换，不提前删除 |
 | late selector/fixup | layout/movement optimization、ready-order、worker placement、buffer/allocation feedback 中会重新做选择的部分 | 先改成 verifier/materializer 或 typed transition mechanism，再按轴删除选择责任 |
 
 tracked 删除必须同时给出：current replacement、actual-IR witness、fresh replacement test。缺任一项都不删除。不得按目录
@@ -169,7 +169,7 @@ tracked 删除必须同时给出：current replacement、actual-IR witness、fre
 | layout / movement | layout selector、edge strategy local winner、late route/spill repair | Q50.G/H 产出 actual representation/movement IR 并由 Q51 选择 |
 | buffer | buffer feedback family、固定默认 buffer winner | Q50.I 的 slot/rotation/release/hazard typed choices 接入共同 state，lifetime保持为可重算analysis |
 | order / worker / overlap | ready-order、worker、completion 或 overlap 的独立 selector | Q50.J/K 的可重入event/resource transition与actual verifier局部闭合；pipeline winner留Q51 closure |
-| 全局旧 owner | bounded coordinated candidate set、WholeVariant selector、shadow schedule | Q51 small oracle、full actual gate、public `search|none` cutover 全部通过 |
+| 全局旧 owner | bounded rank candidate set、rank candidate selector、shadow schedule | Q51 small oracle、full actual gate、public `search|none` cutover 全部通过 |
 
 任何轴在 replacement 完成前都允许旧代码继续存在，但只能由当前旧路径消费；不得同时让新旧 owner 对同一 candidate
 各选一次。迁移当批需要用定向测试证明新路径仅消费显式typed assignment，再删除本轴旧选择入口；跨轴
@@ -177,18 +177,18 @@ tracked 删除必须同时给出：current replacement、actual-IR witness、fre
 
 ## Q50.0：CardExecutable Compilation Boundary
 
-先从当前综合大流程抽出唯一、无策略的CardExecutable编译/准入函数：输入已经选择且物化的CardProgram，依次执行
-physical-Tile module splitting、TileRegion-to-Instr、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
+先从当前综合大流程抽出唯一、无策略的CardExecutable编译/准入函数：输入已经选择且物化的CardModule，依次执行
+Tile module splitting、TileRegion-to-Instr、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
 communication/resource/ABI verification，输出accepted CardExecutable、proven exact rejection或indeterminate failure。
 
 返回taxonomy必须完整区分`accepted CardExecutable`、`proven exact rejection`与`indeterminate failure`；allocator
 `ResourceExhausted`、timeout或内部错误属于最后一类，不能伪装成candidate非法。
 
 这个边界不得枚举候选、修改选择、在lowering中retile/spill/rebuffer，也不得把失败降级成performance Unknown。Q49与Q51
-必须共用它；定向测试要证明同一CardProgram得到相同accepted digest或相同rejection，且没有第二条兼容编译路径。
+必须共用它；定向测试要证明同一CardModule得到相同accepted digest或相同rejection，且没有第二条兼容编译路径。
 
-实现结论：actual compile/verification seam只接收owned、已选择的CardProgram和typed buffering assignment，返回
-accepted、proven exact rejection或indeterminate三态结果；baseline与search materialization都调用该入口。physical-Tile
+实现结论：actual compile/verification seam只接收owned、已选择的CardModule和typed buffering assignment，返回
+accepted、proven exact rejection或indeterminate三态结果；baseline与search materialization都调用该入口。Tile
 memory planning保留SPM failure kind，只有capacity overflow与unsupported lifetime等可验证失败进入exact rejection，未分类
 allocator/internal failure保持indeterminate，调用方不得据此裁剪候选或启动repair。
 
@@ -201,11 +201,11 @@ breakpoint，全部op接受后只通过Q50.0完整编译一次。
 
 ```text
 TensorProgram
--> deterministic CardProgram construction
--> physical-Tile module splitting
+-> deterministic CardModule construction
+-> Tile module splitting
 -> TileRegion-to-Instr conversion
--> physical-Tile memory planning
--> whole-card resource and target verification
+-> Tile memory planning
+-> card resource and target verification
 -> ExecutablePackage writing
 ```
 
@@ -220,7 +220,7 @@ region所需的lowering、fresh lifetime和fixed-capacity SPM packing，返回fi
 或indeterminate。只有第二类的proven failure才允许baseline controller前进到下一确定性breakpoint；indeterminate必须
 终止并报告，不能冒充“当前tile放不下”。
 `local-fit`直接以真实TileRegion或能提供必要call/symbol closure的最近`IsolatedFromAbove` ancestor为scope；不得为每个region
-构造synthetic Module/Func并运行完整physical-Tile memory planning。region-local lowering/lifetime/packing与必要的Func/Module
+构造synthetic Module/Func并运行完整Tile memory planning。region-local lowering/lifetime/packing与必要的Func/Module
 summary边界遵循19号合同；需要全局事实却无法形成exact summary时返回indeterminate，不扩大局部结论。
 `local-fit`不生成下一tile，baseline controller才按唯一确定性breakpoint顺序前进。它的安全性仅来自“每op独立
 TileRegion + op边界DDR + 无fusion”；该合同改变后必须返回完整CardExecutable gate，不得复用局部成功。
@@ -228,7 +228,7 @@ TileRegion + op边界DDR + 无fusion”；该合同改变后必须返回完整Ca
 Q49与`search`只共享actual Card/Tile/Instr、completion、SPM/DDR、verification和package seam；baseline默认值不限制
 Q51 域。official HF prefill、functional decode、Llama block 的 source、oracle、package 和 no-card runner 已达到无卡
 `board-ready`，未执行真实板端，故不得标`done`。Q49.P的gate必须用fresh prefill/decode/Llama输入证明
-CardProgram、accepted CardExecutable与package digest稳定，fresh no-card与oracle通过，并以fresh阶段计时确认不再为
+CardModule、accepted CardExecutable与package digest稳定，fresh no-card与oracle通过，并以fresh阶段计时确认不再为
 同一baseline反复materialize/compile whole graph。它不把历史耗时写成长期阈值，也不得借“统一入口”让
 `none`再进入search feedback。
 
@@ -236,10 +236,10 @@ CardProgram、accepted CardExecutable与package digest稳定，fresh no-card与o
 
 输入是 current structured producer/consumer SSA edge 和一组给定 placement。query-local placement-demand analysis从
 structured indexing semantics导出`IndexRelation`，以relation image求每个consumer shard需要的all-and-only producer
-logical set，并验证producer shard ownership coverage。当前`WholeDAGEdgeDemandPlanner`只是待改造的实现索引。
+logical set，并验证producer shard ownership coverage。当前`StructuredDAGEdgeDemandPlanner`只是待改造的实现索引。
 
 该query-local analysis result只包含consumer logical domain、producer logical demand和producer ownership；不包含
-layout、encoding、bytes、local/remote action、route、buffer、send/recv或fusion。当前`WholeDAGEdgeDemandPlan`与dense fragment carrier由显式
+layout、encoding、bytes、local/remote action、route、buffer、send/recv或fusion。当前`StructuredDAGEdgeDemandPlan`与dense fragment carrier由显式
 compatibility lowering 消费该 output；它不是长期 search owner。
 
 Q50.A的analysis和reduction、broadcast/window、stride、multi-piece与ownership coverage正负测试已经闭合，但production
@@ -263,7 +263,7 @@ immutable structured IR + IR epoch
   + incumbent / global work ledger
 
 derived query-local analysis caches:
-  CardDAGAnalysis, exact demand, ready/live set, lifetime,
+  StructuredDAGAnalysis, exact demand, ready/live set, lifetime,
   resource calendar, SPM high-water, lower bound and makespan
 ```
 
@@ -349,8 +349,8 @@ Tile count或KV length都不能提前替代该选择。Q50.S不暴露public Flas
 ### Actual witness 与 gate
 
 independent tiny reference enumerator与mechanism生成域在single op、chain、independent branch、diamond/fanin、
-multi-axis remainder、reduction merge和partial redistribution上的stable key集合完全一致；selected CardProgram/TileProgram
-直接表达physical Tile ownership。局部gate通过后删除spatial coordinate-descent owner和rank==Tile假设，但保留
+multi-axis remainder、reduction merge和partial redistribution上的stable key集合完全一致；selected CardModule/TileModule
+直接表达Tile ownership。局部gate通过后删除spatial coordinate-descent owner和rank==Tile假设，但保留
 可复用topology/domain/cost mechanics。“非最大参与、非相同Tile group或暂时更贵的placement成为global actual
 winner”是Q51 closure的跨轴gate。
 
@@ -362,7 +362,7 @@ asymmetric、disconnected合法补集均可达；关闭或改变proposal排序�
 
 ### 机制
 
-对给定 op、spatial shard 和尚未细分的 local iterator domain，每个 physical Tile 物化一个覆盖该 op 所有必需 producer/support
+对给定 op、spatial shard 和尚未细分的 local iterator domain，每个 Tile 物化一个覆盖该 op 所有必需 producer/support
 closure 的 maximal single-op TileRegion。这里 maximal 表示“对已选 region boundary 不漏 work、不把同一 local work 任意拆成
 多个相互不知情 region”，不是强迫使用最大 tile、最大 fusion group 或单一结果驱动入口。
 
@@ -524,7 +524,7 @@ route，也不能向Q51返回局部route winner。
 local、partial overlap、disjoint、multicast/collective、spill/recompute和fanout共享均有actual witness；至少一个case中
 maximal broadcast因NoC contention败给partial broadcast或unicast；coverage、payload、
 participant、route、join、premature completion、非finite route和跨region隐式retention有负例。通过后逐项替换
-`WholeDAGEdgeStrategyPlan`的选择责任和late movement repair；compatibility carrier仅在仍被actual lowering消费时
+`StructuredDAGEdgeStrategyPlan`的选择责任和late movement repair；compatibility carrier仅在仍被actual lowering消费时
 保留。carrier尚未可构造时返回`deferred(required coordinates)`；在已赋值representation/movement下表达失败只能
 拒绝该physical action assignment，不能拒绝Q50.A logical demand或Q50.B spatial placement。“局部movement较贵但允许
 后续fusion/overlap而成为global winner”是Q51 closure gate。
@@ -616,7 +616,7 @@ Q51 closure时一个partial state只携带已选typed assignments：
 
 ```text
 semantic DAG root
-per-op spatial partition relation and physical Tile placement
+per-op spatial partition relation and Tile placement
 single-op/coupled TileRegion boundaries and traversal choices
 all-iterator temporal tile vectors and finite wave-loop nesting/order within selected traversals
 value layout/encoding/physical-version choices
@@ -625,7 +625,7 @@ buffer recipes and rotating-slot choices
 stage/event/resource order, worker and completion choices
 ```
 
-`CardDAGAnalysis`、exact demand、ready/running/completed classes、live physical versions、retained-value lifetime、live SPM roots、
+`StructuredDAGAnalysis`、exact demand、ready/running/completed classes、live physical versions、retained-value lifetime、live SPM roots、
 pending data/completion events、resource calendars、lower bound和current makespan都不是state字段。它们是从current IR epoch、
 target facts与上述assignments重算的query-local analysis cache；任一依赖assignment变化都必须精确失效。
 
@@ -692,7 +692,7 @@ split、placement group 或候选数。
 - canonical key 重复率、separator width、dominance/no-good 命中和失败作用域；
 - time-to-baseline、time-to-first-better-actual，以及 1/3/10/30 分钟 incumbent actual cost/digest；
 - lower bound、incumbent、gap 随时间变化；一旦启发式丢状态则停止宣称全局 gap；
-- clone、region probe、complete CardProgram materialization、TileRegion-to-Instr、SPM/DDR packing、schedule、cost、verification 的调用数与
+- clone、region probe、complete CardModule materialization、TileRegion-to-Instr、SPM/DDR packing、schedule、cost、verification 的调用数与
   wall/CPU；
 - RSS、global work units、fusion groups、resident bytes、DDR/NoC movement、buffer 和 resource overlap；
 - 每类 actual rejection，以及 candidate 是否因同一失败被重复完整 materialize。
@@ -792,7 +792,7 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 - 每个 semantic root 的资格与 actual DAG materialization；
 - spatial、TileRegion、coupled traversal、temporal、layout、movement、buffer、schedule 和 stage pipeline 的对立候选；
 - ready-set concurrency、branch/fanin/fanout、resource hazard、actual rejection cleanup、determinism 和 small oracle；
-- generic GEMM、elementwise、reduction、conv/mixed DAG 的 distinct MPMD Tile programs 与 package readback。
+- generic GEMM、elementwise、reduction、conv/mixed DAG 的 distinct MPMD Tile modules 与 package readback。
 
 ### Source / package / no-card
 

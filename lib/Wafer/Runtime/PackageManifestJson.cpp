@@ -354,9 +354,9 @@ parseResource(const llvm::json::Value &value, uint64_t index,
   record.id = ResourceId(*id);
   record.scope = cardScope
                      ? PackageResourceScope(
-                           CardResourceScope{PhysicalCardId(*cardId)})
+                           CardResourceScope{CardId(*cardId)})
                      : PackageResourceScope(TileResourceScope{
-                           PhysicalCardId(*cardId), PhysicalTileId(tileId)});
+                           CardId(*cardId), TileId(tileId)});
   record.role = *role;
   record.roleIndex = *roleIndex;
   record.name = std::move(*name);
@@ -528,8 +528,8 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
 
   PackageEntrypointRecord record;
   record.id = EntryId(*id);
-  record.cardId = PhysicalCardId(*cardId);
-  record.tileId = PhysicalTileId(*tileId);
+  record.cardId = CardId(*cardId);
+  record.tileId = TileId(*tileId);
   record.launchSlot = LaunchSlotId(*launchSlot);
   record.module = ModuleId(*module);
   record.completion = *completionKind;

@@ -4,7 +4,7 @@
 #define WAFER_RUNTIME_PACKAGEMANIFEST_H
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
-#include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Target/TopologyIds.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetIdentity.h"
 
@@ -92,18 +92,18 @@ struct PackageTensorType {
 };
 
 struct CardResourceScope {
-  PhysicalCardId cardId{0};
+  CardId cardId{0};
 };
 
 struct TileResourceScope {
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
 };
 
 using PackageResourceScope = std::variant<CardResourceScope, TileResourceScope>;
 
 struct PackageResourceRecord {
-  /// ResourceId is physical allocation identity. A card-program boundary
+  /// ResourceId is physical allocation identity. A card-module boundary
   /// resource may be referenced by every Tile entry; such repeated slot
   /// references intentionally carry the same device address. Compiler-managed
   /// workspace and transport resources remain owned by exactly one entry.
@@ -158,8 +158,8 @@ enum class PackageEntryCompletionKind { ReturnAfterLocalDrain };
 
 struct PackageEntrypointRecord {
   EntryId id;
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   ModuleId module;
   std::vector<PackageABISlotBinding> slots;
@@ -281,8 +281,8 @@ struct PlannedRuntimeLaunchPhase {
 
 struct RuntimeSessionPlan {
   EntryId entry;
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   ModuleId module;
   std::string modulePath;

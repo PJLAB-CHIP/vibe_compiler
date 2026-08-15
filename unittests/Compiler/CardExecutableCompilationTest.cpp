@@ -23,10 +23,10 @@ protected:
     context->loadAllAvailableDialects();
   }
 
-  llvm::SmallVector<wafer::PhysicalTileId, 16> tileIds() const {
-    llvm::SmallVector<wafer::PhysicalTileId, 16> result;
+  llvm::SmallVector<wafer::TileId, 16> tileIds() const {
+    llvm::SmallVector<wafer::TileId, 16> result;
     for (int64_t tile = 0; tile < 16; ++tile)
-      result.push_back(wafer::PhysicalTileId(tile));
+      result.push_back(wafer::TileId(tile));
     return result;
   }
 
@@ -37,7 +37,7 @@ protected:
     return *config;
   }
 
-  mlir::OwningOpRef<mlir::ModuleOp> oversizedCardProgram() {
+  mlir::OwningOpRef<mlir::ModuleOp> oversizedCardModule() {
     std::string source;
     llvm::raw_string_ostream os(source);
     os << R"mlir(module {
@@ -46,10 +46,10 @@ protected:
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  wafer.card.program card_id = 0 {
+  wafer.card.module card_id = 0 {
 )mlir";
     for (int64_t tile = 0; tile < 16; ++tile) {
-      os << "    wafer.tile.program tile_id = " << tile;
+      os << "    wafer.tile.module tile_id = " << tile;
       if (tile != 0) {
         os << R"mlir( {
       func.func @main() {
@@ -95,25 +95,25 @@ protected:
 };
 
 TEST_F(CardExecutableCompilationTest,
-       ClassifiesExactCapacityRejectionWithoutRepairingCardProgram) {
-  auto cardProgram = oversizedCardProgram();
-  ASSERT_TRUE(cardProgram);
-  auto repeatedCardProgram = oversizedCardProgram();
-  ASSERT_TRUE(repeatedCardProgram);
+       ClassifiesExactCapacityRejectionWithoutRepairingCardModule) {
+  auto cardModule = oversizedCardModule();
+  ASSERT_TRUE(cardModule);
+  auto repeatedCardModule = oversizedCardModule();
+  ASSERT_TRUE(repeatedCardModule);
   auto expectedTileIds = tileIds();
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  wafer::compiler::detail::WholeCardSynthesisStatistics statistics;
+  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
 
-  auto result = wafer::compiler::detail::compileCardProgramToExecutable(
-      std::move(cardProgram), wafer::PhysicalCardId(0), expectedTileIds,
+  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
+      std::move(cardModule), wafer::CardId(0), expectedTileIds,
       /*selectedBufferRequests=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
       &statistics);
-  auto repeated = wafer::compiler::detail::compileCardProgramToExecutable(
-      std::move(repeatedCardProgram), wafer::PhysicalCardId(0), expectedTileIds,
+  auto repeated = wafer::compiler::detail::compileCardModuleToExecutable(
+      std::move(repeatedCardModule), wafer::CardId(0), expectedTileIds,
       /*selectedBufferRequests=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
       &statistics);
@@ -127,8 +127,8 @@ TEST_F(CardExecutableCompilationTest,
   ASSERT_FALSE(repeated.tileFailures.empty());
   EXPECT_EQ(repeated.tileFailures.front().memoryPlanning.spmPlanningFailureKind,
             result.tileFailures.front().memoryPlanning.spmPlanningFailureKind);
-  EXPECT_EQ(statistics.cardProgramCompilationInvocations, 2u);
-  EXPECT_EQ(statistics.physicalTileModuleLoweringAttempts, 0u);
+  EXPECT_EQ(statistics.cardModuleCompilationInvocations, 2u);
+  EXPECT_EQ(statistics.tileModuleLoweringAttempts, 0u);
   ASSERT_FALSE(result.tileFailures.empty());
   EXPECT_TRUE(result.tileFailures.front().memoryPlanning.spmCapacityOverflow);
   EXPECT_NE(diagnosticText.find("outcome=exact-rejection"), std::string::npos)
@@ -142,10 +142,10 @@ TEST_F(CardExecutableCompilationTest,
   program.numPartitions = 1;
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  wafer::compiler::detail::WholeCardSynthesisStatistics statistics;
+  wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
 
-  auto result = wafer::compiler::detail::compileCardProgramToExecutable(
-      {}, wafer::PhysicalCardId(0), expectedTileIds,
+  auto result = wafer::compiler::detail::compileCardModuleToExecutable(
+      {}, wafer::CardId(0), expectedTileIds,
       /*selectedBufferRequests=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
       &statistics);
@@ -157,7 +157,7 @@ TEST_F(CardExecutableCompilationTest,
             wafer::compiler::detail::CardExecutableCompilationStatus::
                 IndeterminateFailure);
   EXPECT_EQ(result.gate, "compilation-contract");
-  EXPECT_EQ(statistics.cardProgramCompilationInvocations, 1u);
+  EXPECT_EQ(statistics.cardModuleCompilationInvocations, 1u);
   EXPECT_NE(diagnosticText.find("outcome=indeterminate"), std::string::npos)
       << diagnosticText;
 }

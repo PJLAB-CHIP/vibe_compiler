@@ -64,7 +64,7 @@ enum class CandidateLoopMovementAction : uint8_t {
 /// construction mechanism for the complete-rank candidates; it performs no
 /// rank-local selection, instruction lowering, or memory placement.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-materializeCompleteRankCandidateTileProgram(
+materializeCompleteRankCandidateTileModule(
     mlir::ModuleOp sourceModule, int64_t logicalRank,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<int64_t> candidateReductionTileSizes,
@@ -78,13 +78,13 @@ materializeCompleteRankCandidateTileProgram(
         std::nullopt,
     std::optional<unsigned> physicalLayoutProposalOrdinal = std::nullopt);
 
-/// Materializes one complete-rank Tile program from a full vector of
+/// Materializes one complete-rank Tile module from a full vector of
 /// current-SSA connection actions. The vector has exactly the count returned
 /// by getCompleteRankCandidateConnectionCount. No connection plan is retained
 /// after the actual clone is built. Empty tile sizes select each traversal's
 /// full static result shape independently.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-materializeCompleteRankConnectionTileProgram(
+materializeCompleteRankConnectionTileModule(
     mlir::ModuleOp sourceModule, int64_t logicalRank,
     llvm::ArrayRef<int64_t> candidateTileSizes,
     llvm::ArrayRef<CandidateTraversalConnectionAction> connectionActions,
@@ -98,7 +98,7 @@ materializeCompleteRankConnectionTileProgram(
 /// As above, with explicit producer- and consumer-side tile vectors for each
 /// connection. The choice vector is destroyed after the actual clone is built.
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
-materializeCompleteRankConnectionChoicesTileProgram(
+materializeCompleteRankConnectionChoicesTileModule(
     mlir::ModuleOp sourceModule, int64_t logicalRank,
     llvm::ArrayRef<CandidateTraversalConnectionChoice> connectionChoices,
     CandidateBoundaryMovementAction boundaryMovementAction,

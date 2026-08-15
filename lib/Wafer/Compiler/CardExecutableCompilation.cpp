@@ -6,7 +6,7 @@
 
 #include "BoundedTileExecutor.h"
 
-#include "Wafer/Conversion/WaferCardProgramToTileModules/WaferCardProgramToTileModules.h"
+#include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -23,11 +23,11 @@
 namespace wafer::compiler::detail {
 namespace {
 
-struct PhysicalTileLoweringResult {
+struct TileLoweringResult {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   StructuredMaterializationRelations materializationRelations;
   std::string detail;
-  PhysicalTileMemoryPlanningFailure memoryPlanning;
+  TileMemoryPlanningFailure memoryPlanning;
   SelectedBufferMaterializationFailure selectedBuffer;
   unsigned rotatingSlotAllocationCount = 0;
   bool conversionFailed = false;
@@ -48,7 +48,7 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
                                 std::string &detail) {
   if (mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations))) {
-    detail = "CardProgram splitting produced buffer relations outside the "
+    detail = "CardModule splitting produced buffer relations outside the "
              "current IR";
     return mlir::failure();
   }
@@ -68,7 +68,7 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
       mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations))) {
     detail = "TileRegion-to-Instr lowering did not preserve every structured "
-             "buffer relation in the current physical Tile IR";
+             "buffer relation in the current Tile IR";
     return mlir::failure();
   }
 
@@ -82,7 +82,7 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
   }
   if (mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations))) {
-    detail = "required NCC join placement changed the physical Tile buffer "
+    detail = "required NCC join placement changed the Tile buffer "
              "relation domain";
     return mlir::failure();
   }
@@ -91,9 +91,9 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
 
 } // namespace
 
-bool isProvenExactPhysicalTileMemoryPlanningFailure(
-    const PhysicalTileMemoryPlanningFailure &failure) {
-  return failure.kind == PhysicalTileMemoryPlanningFailureKind::SPMAllocation &&
+bool isProvenExactTileMemoryPlanningFailure(
+    const TileMemoryPlanningFailure &failure) {
+  return failure.kind == TileMemoryPlanningFailureKind::SPMAllocation &&
          failure.spmPlanningFailureKind ==
              SPMMemoryPlanningFailureKind::CapacityOverflow;
 }
@@ -117,21 +117,20 @@ fail(CardExecutableCompilationStatus status, llvm::StringRef gate,
 
 } // namespace
 
-CardExecutableCompilationResult compileCardProgramToExecutable(
-    mlir::OwningOpRef<mlir::ModuleOp> cardProgram,
-    PhysicalCardId expectedCardId,
-    llvm::ArrayRef<PhysicalTileId> expectedTileIds,
+CardExecutableCompilationResult compileCardModuleToExecutable(
+    mlir::OwningOpRef<mlir::ModuleOp> cardModule, CardId expectedCardId,
+    llvm::ArrayRef<TileId> expectedTileIds,
     llvm::ArrayRef<llvm::SmallVector<SelectedBufferRequest, 4>>
         selectedBufferRequests,
     const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    WholeCardSynthesisStatistics *statistics,
+    CardExecutableLoweringStatistics *statistics,
     unsigned tilePipelineParallelism) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
-      "stage", "card-program-to-executable", "card-executable-compilation");
+      "stage", "card-module-to-executable", "card-executable-compilation");
   if (statistics)
-    ++statistics->cardProgramCompilationInvocations;
+    ++statistics->cardModuleCompilationInvocations;
 
   auto reportFailure = [&](CardExecutableCompilationResult result) {
     totalTiming.markFailed();
@@ -143,49 +142,49 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
     return result;
   };
 
-  if (!cardProgram || expectedTileIds.empty() ||
+  if (!cardModule || expectedTileIds.empty() ||
       (!selectedBufferRequests.empty() &&
        selectedBufferRequests.size() != expectedTileIds.size()))
-    return reportFailure(fail(
-        CardExecutableCompilationStatus::IndeterminateFailure,
-        "compilation-contract",
-        "CardProgram, physical Tile domain or selected-buffer request domain "
-        "is incomplete"));
+    return reportFailure(
+        fail(CardExecutableCompilationStatus::IndeterminateFailure,
+             "compilation-contract",
+             "CardModule, Tile domain or selected-buffer request domain "
+             "is incomplete"));
 
   std::string detail;
-  mlir::FailureOr<llvm::SmallVector<PhysicalTileModule, 16>> tileModules;
+  mlir::FailureOr<llvm::SmallVector<TileModule, 16>> projectedModules;
   {
     wafer::support::ScopedCompileTimingSpan timing(
-        "conversion", "card-program-to-executable",
-        "card-program-to-physical-tiles");
-    tileModules = splitCardProgramIntoPhysicalTileModules(
-        *cardProgram, &detail, &materializationRelations);
+        "conversion", "card-module-to-executable",
+        "card-module-to-tile-modules");
+    projectedModules = splitCardModuleIntoTileModules(
+        *cardModule, &detail, &materializationRelations);
   }
-  if (mlir::failed(tileModules))
+  if (mlir::failed(projectedModules))
     return reportFailure(
         fail(CardExecutableCompilationStatus::IndeterminateFailure,
-             "card-program-to-tile-modules", detail));
-  if (tileModules->size() != expectedTileIds.size())
+             "card-module-to-tile-modules", detail));
+  if (projectedModules->size() != expectedTileIds.size())
     return reportFailure(
         fail(CardExecutableCompilationStatus::IndeterminateFailure,
-             "card-program-to-tile-modules",
-             "CardProgram does not contain the expected physical Tile domain"));
+             "card-module-to-tile-modules",
+             "CardModule does not contain the expected Tile domain"));
 
   std::vector<std::string> tileDataflowIRTrace;
-  tileDataflowIRTrace.reserve(tileModules->size());
-  for (auto [index, tile] : llvm::enumerate(*tileModules)) {
+  tileDataflowIRTrace.reserve(projectedModules->size());
+  for (auto [index, tile] : llvm::enumerate(*projectedModules)) {
     if (tile.cardId != expectedCardId || tile.tileId != expectedTileIds[index])
       return reportFailure(
           fail(CardExecutableCompilationStatus::IndeterminateFailure,
-               "card-program-to-tile-modules",
-               "per-Tile modules changed the selected physical Tile domain"));
+               "card-module-to-tile-modules",
+               "per-Tile modules changed the selected Tile domain"));
     tileDataflowIRTrace.push_back(captureTileIR(*tile.module));
   }
 
-  std::vector<PhysicalTileLoweringResult> loweringResults(tileModules->size());
+  std::vector<TileLoweringResult> loweringResults(projectedModules->size());
   auto lowerTile = [&](size_t tileIndex) {
-    PhysicalTileModule &tile = (*tileModules)[tileIndex];
-    PhysicalTileLoweringResult &result = loweringResults[tileIndex];
+    TileModule &tile = (*projectedModules)[tileIndex];
+    TileLoweringResult &result = loweringResults[tileIndex];
     result.module = std::move(tile.module);
     result.materializationRelations = std::move(tile.materializationRelations);
     if (mlir::failed(lowerTileRegionsToInstructionIR(
@@ -204,15 +203,15 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
     if (!selectedBufferRequests.empty())
       requests = selectedBufferRequests[tileIndex];
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> memoryPlanned =
-        planPhysicalTileMemory(std::move(result.module), &result.memoryPlanning,
-                               requests, &result.materializationRelations,
-                               &result.rotatingSlotAllocationCount,
-                               &result.selectedBuffer);
+        planTileMemory(std::move(result.module), &result.memoryPlanning,
+                       requests, &result.materializationRelations,
+                       &result.rotatingSlotAllocationCount,
+                       &result.selectedBuffer);
     if (mlir::failed(memoryPlanned)) {
       result.memoryPlanningFailed = true;
       result.detail = result.selectedBuffer.detail;
       if (result.detail.empty())
-        result.detail = "physical Tile memory planning failed";
+        result.detail = "Tile memory planning failed";
       return;
     }
     result.module = std::move(*memoryPlanned);
@@ -221,18 +220,18 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
   const unsigned requestedWorkers = tilePipelineParallelism == 0
                                         ? kMaximumBoundedTilePipelineWorkers
                                         : tilePipelineParallelism;
-  const unsigned workers =
-      runBoundedTilePipelines(cardProgram->getContext(), tileModules->size(),
-                              lowerTile, requestedWorkers);
+  const unsigned workers = runBoundedTilePipelines(cardModule->getContext(),
+                                                   projectedModules->size(),
+                                                   lowerTile, requestedWorkers);
   if (statistics)
     statistics->maximumTilePipelineWorkers =
         std::max<uint64_t>(statistics->maximumTilePipelineWorkers, workers);
 
   llvm::SmallVector<CardExecutableTileFailure, 4> tileFailures;
-  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> physicalTileModules;
-  std::vector<StructuredMaterializationRelations> physicalTileRelations;
-  physicalTileModules.reserve(loweringResults.size());
-  physicalTileRelations.reserve(loweringResults.size());
+  std::vector<mlir::OwningOpRef<mlir::ModuleOp>> instructionModules;
+  std::vector<StructuredMaterializationRelations> tileRelations;
+  instructionModules.reserve(loweringResults.size());
+  tileRelations.reserve(loweringResults.size());
   uint64_t rotatingSlotAllocationsMaterialized = 0;
   bool allFailuresAreExact = true;
   for (auto [tileIndex, result] : llvm::enumerate(loweringResults)) {
@@ -244,24 +243,23 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
       failure.gate =
           result.conversionFailed ? "tile-region-to-instr"
           : result.memoryPlanning.kind ==
-                  PhysicalTileMemoryPlanningFailureKind::SPMAllocation
+                  TileMemoryPlanningFailureKind::SPMAllocation
               ? "spm-allocation"
           : result.memoryPlanning.kind ==
-                  PhysicalTileMemoryPlanningFailureKind::
-                      SelectedBufferMaterialization
+                  TileMemoryPlanningFailureKind::SelectedBufferMaterialization
               ? "selected-buffer-materialization"
-              : "physical-tile-memory-planning";
+              : "tile-memory-planning";
       failure.detail = std::move(result.detail);
       failure.memoryPlanning = std::move(result.memoryPlanning);
       failure.selectedBuffer = std::move(result.selectedBuffer);
-      allFailuresAreExact &= !result.conversionFailed &&
-                             isProvenExactPhysicalTileMemoryPlanningFailure(
-                                 failure.memoryPlanning);
+      allFailuresAreExact &=
+          !result.conversionFailed &&
+          isProvenExactTileMemoryPlanningFailure(failure.memoryPlanning);
       tileFailures.push_back(std::move(failure));
       continue;
     }
-    physicalTileModules.push_back(std::move(result.module));
-    physicalTileRelations.push_back(std::move(result.materializationRelations));
+    instructionModules.push_back(std::move(result.module));
+    tileRelations.push_back(std::move(result.materializationRelations));
   }
   if (!tileFailures.empty()) {
     const std::string primaryGate = tileFailures.front().gate;
@@ -274,34 +272,33 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
              rotatingSlotAllocationsMaterialized));
   }
 
-  WholeCardExecutableLoweringFailure loweringFailure;
-  mlir::FailureOr<WholeCardExecutable> executable =
-      lowerPhysicalTileModulesToExecutable(
-          std::move(physicalTileModules), program, executionConfig, diagnostics,
+  CardExecutableLoweringFailure loweringFailure;
+  mlir::FailureOr<CardExecutableLoweringResult> executable =
+      lowerTileModulesToCardExecutable(
+          std::move(instructionModules), program, executionConfig, diagnostics,
           loweringFailure, statistics, tilePipelineParallelism);
   if (mlir::failed(executable))
-    return reportFailure(fail(
-        loweringFailure.isProvenExactRejection()
-            ? CardExecutableCompilationStatus::ProvenExactRejection
-            : CardExecutableCompilationStatus::IndeterminateFailure,
-        loweringFailure.getDiagnosticLabel(),
-        loweringFailure.detail.empty() ? "physical-Tile module lowering failed"
-                                       : loweringFailure.detail,
-        {}, rotatingSlotAllocationsMaterialized));
+    return reportFailure(
+        fail(loweringFailure.isProvenExactRejection()
+                 ? CardExecutableCompilationStatus::ProvenExactRejection
+                 : CardExecutableCompilationStatus::IndeterminateFailure,
+             loweringFailure.getDiagnosticLabel(),
+             loweringFailure.detail.empty() ? "Tile module lowering failed"
+                                            : loweringFailure.detail,
+             {}, rotatingSlotAllocationsMaterialized));
 
   if (executable->tiles.size() != expectedTileIds.size())
     return reportFailure(
         fail(CardExecutableCompilationStatus::IndeterminateFailure,
-             "whole-card-executable-domain",
-             "physical Tile executable domain is incomplete", {},
-             rotatingSlotAllocationsMaterialized));
+             "card-executable-domain", "Tile executable domain is incomplete",
+             {}, rotatingSlotAllocationsMaterialized));
   for (auto [index, tile] : llvm::enumerate(executable->tiles))
-    if (tile.getPhysicalCardId() != expectedCardId ||
-        tile.getPhysicalTileId() != expectedTileIds[index])
+    if (tile.getCardId() != expectedCardId ||
+        tile.getTileId() != expectedTileIds[index])
       return reportFailure(
           fail(CardExecutableCompilationStatus::IndeterminateFailure,
-               "whole-card-executable-domain",
-               "executable lowering changed the physical Tile identity", {},
+               "card-executable-domain",
+               "executable lowering changed the Tile identity", {},
                rotatingSlotAllocationsMaterialized));
 
   CardExecutableCompilationResult result;
@@ -310,7 +307,7 @@ CardExecutableCompilationResult compileCardProgramToExecutable(
   result.tileDataflowIRTrace = std::move(tileDataflowIRTrace);
   for (auto [tileIndex, tile] : llvm::enumerate(result.executable->tiles)) {
     const StructuredMaterializationRelations &relations =
-        physicalTileRelations[tileIndex];
+        tileRelations[tileIndex];
     tile.getModule().walk([&](mlir::Operation *operation) {
       for (uint32_t node :
            collectStructuredNodesUsedByOperation(operation, relations))

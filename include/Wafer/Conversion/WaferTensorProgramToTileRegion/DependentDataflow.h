@@ -5,7 +5,7 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 
@@ -30,7 +30,7 @@ enum class SpatialDataflowMaterializationMode : uint8_t {
 /// One query-local physical treatment of a structured SSA dependency. A
 /// dependency may be direct or may cross a statically provable unary pure
 /// support chain such as expand/collapse shape. This is the only carrier
-/// between whole-DAG selection and actual CardProgram materialization: it is
+/// between structured-DAG selection and actual CardModule materialization: it is
 /// never persisted, serialized, or recovered from an operation name/ordinal.
 enum class SpatialEdgeAction : uint8_t {
   /// Consumer-driven traversal recursively materializes the producer in the
@@ -71,7 +71,7 @@ struct SpatialEdgeFragment {
   SpatialEdgeFragmentKind kind = SpatialEdgeFragmentKind::Resident;
   llvm::SmallVector<int64_t, 4> offsets;
   llvm::SmallVector<int64_t, 4> sizes;
-  PhysicalTileId sourceTile{0};
+  TileId sourceTile{0};
   uint64_t bytes = 0;
   int64_t communicationId = 0;
   int64_t payloadSlice = 0;
@@ -95,11 +95,11 @@ struct SpatialEdgeStrategy {
   llvm::SmallVector<int64_t, 4> consumerSizes;
   llvm::SmallVector<int64_t, 4> producerOffsets;
   llvm::SmallVector<int64_t, 4> producerSizes;
-  PhysicalTileId sourceTile{0};
-  PhysicalTileId destinationTile{0};
+  TileId sourceTile{0};
+  TileId destinationTile{0};
   SpatialEdgeAction action = SpatialEdgeAction::LocalShardResidency;
   /// Explicit physical-representation assignment selected by the common
-  /// whole-DAG transition.  A false `hasLayoutAssignment` means that current
+  /// structured-DAG transition.  A false `hasLayoutAssignment` means that current
   /// interfaces expose no provable choice and the incomplete term is omitted;
   /// it never means that Tensor layout was guessed.
   bool hasLayoutAssignment = false;
@@ -137,9 +137,9 @@ mlir::LogicalResult deriveSpatialEdgeConsumerResultDomain(
 /// actions are incident on their destination; remote PeerFragments are also
 /// incident on the fragment source that emits the send.
 bool isSpatialEdgeStrategyIncidentOnTile(const SpatialEdgeStrategy &strategy,
-                                         PhysicalTileId tile);
+                                         TileId tile);
 
-/// Lowers one physical Tile's selected output shards and every selected edge
+/// Lowers one Tile's selected output shards and every selected edge
 /// action incident on that Tile.  Each action is reflected by actual IR:
 /// fused SSA, explicit local staging, peer fragment assembly, compiler-owned
 /// DDR store/reload, cloned pure compute, or a real TileRegion boundary.
@@ -147,7 +147,7 @@ bool isSpatialEdgeStrategyIncidentOnTile(const SpatialEdgeStrategy &strategy,
 /// never repairs placement or substitutes a different action.
 mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,
-    llvm::ArrayRef<SpatialOutputShard> outputShards, PhysicalTileId currentTile,
+    llvm::ArrayRef<SpatialOutputShard> outputShards, TileId currentTile,
     SpatialDataflowMaterializationMode materializationMode,
     llvm::ArrayRef<SpatialEdgeStrategy> edgeStrategies,
     mlir::OwningOpRef<mlir::ModuleOp> &module, std::string *failureReason,

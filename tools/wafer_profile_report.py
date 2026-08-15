@@ -247,7 +247,7 @@ def _tile_rows(value: object, path: str) -> tuple[Mapping[str, Any], ...]:
     ):
         _fail(
             path,
-            "must contain unique physical Tiles 0..15 and unique dense "
+            "must contain unique Tiles 0..15 and unique dense "
             "launch slots 0..15 "
             f"(duplicate_tiles={duplicate_tiles}, "
             f"missing_tiles={missing_tiles}, "
@@ -265,7 +265,7 @@ def _validate_tile_binding(
     if topology.get(tile_id) != launch_slot:
         _fail(
             f"{path}.launch_slot",
-            "must match the explicit topology physical-Tile binding",
+            "must match the explicit topology Tile binding",
         )
 
 
@@ -1670,7 +1670,7 @@ def _hardware_cost_analysis(
         values, unavailable = _static_tile_metric_values(tile_rows, metric_name)
         work = _static_work_summary(values, "bytes")
         limitations = [
-            "200 GB/s is a shared whole-card DDR peak, not a per-tile RDMA "
+            "200 GB/s is a shared card DDR peak, not a per-tile RDMA "
             "or WDMA rate.",
             "Read and write traffic share DDR resources; the RDMA and WDMA "
             "references must not be added unless an independent overlap model "
@@ -1682,7 +1682,7 @@ def _hardware_cost_analysis(
             return unavailable_row(
                 engine,
                 work,
-                "200 GB/s whole-card DDR peak",
+                "200 GB/s card DDR peak",
                 limitations
                 + ["Static work is not fully known: " + "; ".join(unavailable)],
             )
@@ -1705,8 +1705,8 @@ def _hardware_cost_analysis(
         )
         if not symmetric:
             limitations.append(
-                "Physical-Tile workloads differ, so no equal-share per-tile time "
-                "comparison is formed; only the whole-card traffic floor is "
+                "Tile workloads differ, so no equal-share per-tile time "
+                "comparison is formed; only the card traffic floor is "
                 "reported."
             )
         return {
@@ -1715,9 +1715,9 @@ def _hardware_cost_analysis(
             "model_status": (
                 "heuristic" if symmetric else "theoretical-lower-bound"
             ),
-            "model_basis": "200 GB/s whole-card DDR peak",
+            "model_basis": "200 GB/s card DDR peak",
             "estimated_scope": (
-                "symmetric-all-tile-whole-card-bandwidth-reference"
+                "symmetric-all-tile-card-bandwidth-reference"
                 if symmetric
                 else None
             ),
@@ -1802,7 +1802,7 @@ def _hardware_cost_analysis(
     )
     dte_limitations = [
         "128 GB/s is a single directional NoC link peak. The reference only "
-        "serializes the average injected payload for one physical Tile on one ideal "
+        "serializes the average injected payload for one Tile on one ideal "
         "link.",
         "It is not a collective lower bound or expected Direct-DTE latency: "
         "route, hops, phase dependencies, peer-ready, FSM, setup, completion "
@@ -3151,7 +3151,7 @@ def analyze_evidence(value: object) -> dict[str, Any]:
             "primary_inclusion_labels": "yes means the primary semantic phase is inside the Primary device event; mixed means the trace interval combines primary-common control with nested trace-only work that is measured only in the separate overhead overlay; unknown means current evidence cannot establish the primary correspondence; no is trace-only",
             "trace_overhead_overlay": "eight mutually exclusive Trace-run rdcycle instrumentation components; status-poll and completion-loop bookkeeping belong to the sampled replacement for primary TsmWaitfinish, while the primary-common wait semantic is represented separately by its proxy operation row; all eight are trace-only, aggregate-positioned, and never added to the semantic partition",
             "engine_active_time": "separate Trace diagnostic-run vendor PMU execution time in nanoseconds for each tile and NCC engine; min/average/max are per-tile distributions and cross-tile sums are work volume only; asynchronous engines/tiles may overlap, so no card-wide engine elapsed is inferred or subtracted from the Primary envelope",
-            "hardware_cost_model": "non-additive static reference derived from exact final instruction-program work and target peak rates; CT/NE are per-tile arithmetic floors, symmetric DDR is an explicitly labeled whole-card bandwidth heuristic, TDMA time is unavailable, and Direct-DTE exposes only an ideal single-link payload serialization reference rather than collective latency",
+            "hardware_cost_model": "non-additive static reference derived from exact final instruction-program work and target peak rates; CT/NE are per-tile arithmetic floors, symmetric DDR is an explicitly labeled card bandwidth heuristic, TDMA time is unavailable, and Direct-DTE exposes only an ideal single-link payload serialization reference rather than collective latency",
             "statistics_window": "aggregate statistics_window is a raw PMU tick delta, not the rdcycle timeline axis and not converted to elapsed time",
             "ncc_activity_window": "positive per-event deltas carry only bounded observation windows; zero deltas remain markers and ambiguous deltas are not assigned as exact site work",
             "direct_dte_time": "measured operation windows in tile-local Kcore rdcycle, separate from raw PMU activity",
@@ -3687,7 +3687,7 @@ function renderOverview(){
     const work=row.work;
     const perTile=work.minimum_per_tile===work.maximum_per_tile?`${exactInteger(work.minimum_per_tile)} / tile`:`${exactInteger(work.minimum_per_tile)}–${exactInteger(work.maximum_per_tile)} / tile`;
     const workText=work.aggregate==null?"—":`${perTile} ${escapeHtml(work.unit)}<br><span class="metric-note">Σ ${exactInteger(work.aggregate)} ${escapeHtml(work.unit)}</span>`;
-    const floorNote=(row.engine==="RDMA"||row.engine==="WDMA")?"whole-card DDR traffic floor":"theoretical throughput floor";
+    const floorNote=(row.engine==="RDMA"||row.engine==="WDMA")?"card DDR traffic floor":"theoretical throughput floor";
     const modelReference=row.estimated_ns!=null?`${durationText(row.estimated_ns)}<br><span class="metric-note">${escapeHtml(row.estimated_scope)}</span>`:row.floor_ns!=null?`${durationText(row.floor_ns)}<br><span class="metric-note">${floorNote}</span>`:"—";
     const measured=row.measured_active_ns.average_per_tile_ns==null?`—<br><span class="metric-note">${escapeHtml(row.measured_active_ns.status)}</span>`:`${durationText(row.measured_active_ns.average_per_tile_ns)}<br><span class="metric-note">Trace PMU avg / tile</span>`;
     const ratio=row.measured_to_model_ratio==null?"—":`${row.measured_to_model_ratio.toFixed(3)}×`;

@@ -35,7 +35,7 @@ ExecutionConfig::createForSingleCard(int64_t numPartitions,
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "num-partitions must be exactly 1 for the single-card compiler");
-  return ExecutionConfig(numPartitions, kSingleCardPhysicalTileCount,
+  return ExecutionConfig(numPartitions, kSingleCardTileCount,
                          runtimeLaunchKind);
 }
 
@@ -53,36 +53,36 @@ llvm::Expected<CompilationOptions>
 CompilationOptions::profile(const ExecutionConfig &executionConfig,
                             OptimizationConfig optimizations,
                             CompilationTimingMode timing) {
-  if (executionConfig.getPhysicalTileCount() !=
-          ExecutionConfig::kSingleCardPhysicalTileCount ||
+  if (executionConfig.getTileCount() !=
+          ExecutionConfig::kSingleCardTileCount ||
       executionConfig.getRuntimeLaunchKind() != RuntimeLaunchKind::Kernel)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "profile compilation requires a complete-card physical Tile kernel "
+        "profile compilation requires a complete-card Tile kernel "
         "launch");
   return CompilationOptions(/*profileInstrumentation=*/true, optimizations,
                             timing);
 }
 
-mlir::FailureOr<PhysicalTileExecutables>
+mlir::FailureOr<CardExecutable>
 compileProgram(CompilationRequest request,
                llvm::StringRef outputProgramDirectory,
                llvm::StringRef xlaSpmdPartitionerHelper,
                const TargetToolchain &targetToolchain,
                CompilationOptions options, llvm::raw_ostream &diagnostics) {
-  std::optional<PhysicalTileExecutables> retainedPhysicalTileExecutables;
+  std::optional<CardExecutable> retainedCardExecutable;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
-          std::nullopt, &retainedPhysicalTileExecutables, nullptr)))
+          std::nullopt, &retainedCardExecutable, nullptr)))
     return mlir::failure();
-  if (!retainedPhysicalTileExecutables) {
+  if (!retainedCardExecutable) {
     detail::reject(
         diagnostics,
-        "successful compilation did not retain physical Tile executables");
+        "successful compilation did not retain Tile executables");
     return mlir::failure();
   }
-  return std::move(*retainedPhysicalTileExecutables);
+  return std::move(*retainedCardExecutable);
 }
 
 mlir::FailureOr<CompiledProgram> compileProgramWithTargetLLVMModules(
@@ -90,23 +90,23 @@ mlir::FailureOr<CompiledProgram> compileProgramWithTargetLLVMModules(
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics) {
-  std::optional<PhysicalTileExecutables> retainedPhysicalTileExecutables;
+  std::optional<CardExecutable> retainedCardExecutable;
   std::optional<TargetLLVMModules> retainedTargetLLVMModules;
   std::optional<CompilationIRTrace> retainedIRTrace;
   if (mlir::failed(detail::runCompilationTransaction(
           std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
-          std::nullopt, &retainedPhysicalTileExecutables,
+          std::nullopt, &retainedCardExecutable,
           &retainedTargetLLVMModules, &retainedIRTrace)))
     return mlir::failure();
-  if (!retainedPhysicalTileExecutables || !retainedTargetLLVMModules ||
+  if (!retainedCardExecutable || !retainedTargetLLVMModules ||
       !retainedIRTrace) {
     detail::reject(diagnostics,
                    "successful compilation did not retain the complete "
                    "compiled program");
     return mlir::failure();
   }
-  return CompiledProgram(std::move(*retainedPhysicalTileExecutables),
+  return CompiledProgram(std::move(*retainedCardExecutable),
                          std::move(*retainedTargetLLVMModules),
                          std::move(*retainedIRTrace));
 }
@@ -118,7 +118,7 @@ mlir::LogicalResult testing::compileProgramWithExecutableLaunchSlotFailure(
     llvm::raw_ostream &diagnostics) {
   if (failAfterLaunchSlot < 0 ||
       failAfterLaunchSlot >=
-          request.getExecutionConfig().getPhysicalTileCount()) {
+          request.getExecutionConfig().getTileCount()) {
     detail::reject(diagnostics, "test-only executable launch slot is outside "
                                 "ExecutionConfig");
     return mlir::failure();
@@ -136,7 +136,7 @@ mlir::LogicalResult testing::compileProgramWithTargetLaunchSlotFailure(
     llvm::raw_ostream &diagnostics) {
   if (failAfterLaunchSlot < 0 ||
       failAfterLaunchSlot >=
-          request.getExecutionConfig().getPhysicalTileCount()) {
+          request.getExecutionConfig().getTileCount()) {
     detail::reject(diagnostics,
                    "test-only target launch slot is outside ExecutionConfig");
     return mlir::failure();
@@ -154,7 +154,7 @@ mlir::LogicalResult testing::compileProgramWithPackageLaunchSlotFailure(
     llvm::raw_ostream &diagnostics) {
   if (failAfterLaunchSlot < 0 ||
       failAfterLaunchSlot >=
-          request.getExecutionConfig().getPhysicalTileCount()) {
+          request.getExecutionConfig().getTileCount()) {
     detail::reject(diagnostics,
                    "test-only package launch slot is outside ExecutionConfig");
     return mlir::failure();

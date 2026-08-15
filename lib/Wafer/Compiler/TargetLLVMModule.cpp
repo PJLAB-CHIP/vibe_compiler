@@ -10,13 +10,13 @@
 namespace wafer::compiler {
 
 TargetLLVMModule::TargetLLVMModule(
-    PhysicalCardId physicalCardId, PhysicalTileId physicalTileId,
+    CardId cardId, TileId tileId,
     LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
     TargetIdentityId targetIdentity, KernelRuntimeABIId kernelRuntimeABI,
     llvm::StringRef moduleFormat, std::vector<KernelABISlot> kernelABISlots,
     std::unique_ptr<llvm::LLVMContext> context,
     std::unique_ptr<llvm::Module> module)
-    : physicalCardId(physicalCardId), physicalTileId(physicalTileId),
+    : cardId(cardId), tileId(tileId),
       launchSlotId(launchSlotId), entrySymbol(entrySymbol.str()),
       targetIdentity(targetIdentity), kernelRuntimeABI(kernelRuntimeABI),
       moduleFormat(moduleFormat.str()),
@@ -58,11 +58,11 @@ TargetToolchain::create(llvm::StringRef pythonExecutable,
 }
 
 llvm::Expected<TargetLLVMModules>
-compilePhysicalTileExecutablesToTargetLLVMModules(
-    const PhysicalTileExecutables &physicalTileExecutables,
+compileCardExecutableToTargetLLVMModules(
+    const CardExecutable &cardExecutable,
     llvm::raw_ostream &diagnostics) {
-  return detail::compilePhysicalTileExecutablesToTargetLLVMModulesImpl(
-      physicalTileExecutables, diagnostics, std::nullopt);
+  return detail::compileCardExecutableToTargetLLVMModulesImpl(
+      cardExecutable, diagnostics, std::nullopt);
 }
 
 } // namespace wafer::compiler

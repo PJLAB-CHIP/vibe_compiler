@@ -1,7 +1,7 @@
 # Wafer 源码与构建模块化
 
 状态：本文定义当前source ownership和依赖方向，不复制IR/ABI/schema语义。稳定编译边界为
-`TensorProgram -> physical-dataflow selection -> CardProgram/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
+`TensorProgram -> physical-dataflow selection -> CardModule/TileRegion/Instr -> CardExecutable -> ExecutablePackage`。
 与新owner冲突的source、public header、CMake entry、test和兼容wrapper只有在负责该能力的Q50.0/Q50.S/Q50.A–Q50.K子项及替代测试闭合后才删除；
 不保留空stub或旧接口alias，也不把旧owner连同仍需能力直接清空。
 
@@ -10,7 +10,7 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  当前frontend program、TensorProgram、CardProgram/TileRegion、Instr、CardExecutable、target LLVM modules/linked ELF、
+  当前frontend program、TensorProgram、CardModule/TileRegion、Instr、CardExecutable、target LLVM modules/linked ELF、
   ExecutablePackage、runtime/model invocation及其CMake libraries。
 - Current stage responsibility:
   按稳定IR/output边界组织public API、internal helper、translation unit和build依赖；保证physical-dataflow selection、
@@ -72,7 +72,7 @@ recipe、staging builder、failure bookkeeping和单library协作helper放在 `l
 ### 3.1 Frontend与card-level GSPMD
 
 `Frontend`拥有source program metadata、DPS/program boundary、distribution和parameter shards。`Transforms/SPMD`只负责
-global tensor到card partition；`num_partitions`属于card domain，不能创建或编号physical Tiles。
+global tensor到card partition；`num_partitions`属于card domain，不能创建或编号Tiles。
 
 single-card current path向physical-dataflow stage交付一个完整card-local TensorProgram。frontend不识别Attention/decode、
 不注入mask或模型数学，也不写physical placement attrs。
@@ -85,13 +85,13 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
   TensorProgram alternative；proof、算法名和参数向量不越过actual IR边界；
 - physical-dataflow selection：从actual TensorProgram alternatives构造query-local DAG、component/event facts和typed
   partial choices，惰性生成spatial/temporal/TileRegion/fusion/layout/movement/communication/buffering候选；
-- CardProgram/TileRegion materialization：只把当前choice写入isolated actual IR并运行对应verifier；
+- CardModule/TileRegion materialization：只把当前choice写入isolated actual IR并运行对应verifier；
 - Tile-local evaluation executor：只并行互不共享可写IR的evaluation work，并维持deterministic output order；
-- Instr construction and physical verification：对selected Tile program物化worker/slot/order，fresh重建required joins并执行memory、transport和ABI验证；
+- Instr construction and physical verification：对selected Tile module物化worker/slot/order，fresh重建required joins并执行memory、transport和ABI验证；
 - CardExecutable verification：只验证card-scoped actual结果，不生成repair。
 
-现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → selected CardProgram/TileRegion → all-and-only
-physical Tile Instr → CardExecutable。实现索引不得升级为output名或要求其它library读取search对象。
+现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → selected CardModule/TileRegion → all-and-only
+Tile Instr → CardExecutable。实现索引不得升级为output名或要求其它library读取search对象。
 
 禁止恢复：
 
@@ -109,16 +109,16 @@ conversion libraries按IR边界组织。稳定output流为：
 ```text
 TensorProgram
   -> physical-dataflow selection
-  -> CardProgram / TileRegion
+  -> CardModule / TileRegion
   -> Instr
   -> CardExecutable
   -> target conversion
   -> ExecutablePackage
 ```
 
-- TensorProgram→CardProgram materializes selected physical spatial mapping及coverage；
-- CardProgram→Tile projection只从explicit Tile programs拆出ModuleOps并保留physical identity；
-- CardProgram/TileProgram内的TileRegion materialization使用structured tiling/reduction interfaces、DPS和IndexRelation，
+- TensorProgram→CardModule materializes selected physical spatial mapping及coverage；
+- CardModule→Tile projection只从explicit Tile modules拆出ModuleOps并保留physical identity；
+- CardModule/TileModule内的TileRegion materialization使用structured tiling/reduction interfaces、DPS和IndexRelation，
   负责Tile-local dataflow；
 - TileRegion→Instr lower actual compute/movement/communication，不做全局选择；
 - CardExecutable verification只消费all-and-only finalized Instr并原子验证；
@@ -262,7 +262,7 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 - physical-dataflow selection成为唯一decision owner，public optimization policy只为`search|none`，`none`只提供同pipeline baseline；
 - old/new双interface、compatibility wrapper、unused public pass和only-for-them tests全部删除；
 - Q50.0、Q50.S和Q50.A–Q50.K各自能为其负责的旧能力指向current实现、actual witness和替代测试，并独立提交；
-- current TensorProgram→CardProgram/TileRegion/Instr→CardExecutable→ExecutablePackage→no-card/model纵向由Q49/Q51 fresh通过；
+- current TensorProgram→CardModule/TileRegion/Instr→CardExecutable→ExecutablePackage→no-card/model纵向由Q49/Q51 fresh通过；
 - generic DAG、HF prefill/decode和Llama workload由Q53完整达到board-ready；
 - 真实板端matched A/B完成后Q53才满足最终done gate。
 

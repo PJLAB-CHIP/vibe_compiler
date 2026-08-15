@@ -1,7 +1,7 @@
 //===- TargetCodeGenTest.cpp - Target code generation tests -------------===//
 
 #include "../../lib/Wafer/Compiler/PackageInternal.h"
-#include "../../lib/Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 #include "../../lib/Wafer/Compiler/TargetCodeGenInternal.h"
 
 #include "Wafer/Target/RuntimeLaunchContract.h"
@@ -166,16 +166,16 @@ makeRuntimeLaunchModules(
     bool unsupportedModelRole = false, size_t slotCount = 2,
     bool withCollidingClosure = false, bool withUnsupportedInlineAsm = false,
     std::optional<int64_t> renamedSlotTile = std::nullopt,
-    bool permutePhysicalTiles = false) {
-  const int64_t physicalTileCount = 16;
+    bool permuteTiles = false) {
+  const int64_t tileCount = 16;
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
       wafer::compiler::ExecutionConfig::createForSingleCard(1,
                                                             launch.getKind());
   if (!config)
     return config.takeError();
   std::vector<wafer::compiler::TargetLLVMModule> modules;
-  modules.reserve(physicalTileCount);
-  for (int64_t tile = 0; tile < physicalTileCount; ++tile) {
+  modules.reserve(tileCount);
+  for (int64_t tile = 0; tile < tileCount; ++tile) {
     std::vector<wafer::compiler::KernelABISlot> slots;
     slots.reserve(slotCount);
     for (size_t slot = 0; slot < slotCount; ++slot) {
@@ -238,8 +238,8 @@ makeRuntimeLaunchModules(
     }
     builder.CreateRetVoid();
     modules.push_back(wafer::compiler::TargetLLVMModulesBuilder::makeModule(
-        wafer::PhysicalCardId(0),
-        wafer::PhysicalTileId(permutePhysicalTiles && tile < 2 ? 1 - tile
+        wafer::CardId(0),
+        wafer::TileId(permuteTiles && tile < 2 ? 1 - tile
                                                                : tile),
         wafer::LaunchSlotId(tile), "main", wafer::kCurrentTargetIdentity,
         wafer::kCurrentKernelRuntimeABI, wafer::kCurrentTargetModuleFormat,
@@ -308,7 +308,7 @@ makeProfileRuntimeLaunchModules(
                 *module, "main", capture))
       return std::move(error);
     modules.push_back(wafer::compiler::TargetLLVMModulesBuilder::makeModule(
-        wafer::PhysicalCardId(0), wafer::PhysicalTileId(tile),
+        wafer::CardId(0), wafer::TileId(tile),
         wafer::LaunchSlotId(tile), "main", wafer::kCurrentTargetIdentity,
         wafer::kCurrentKernelRuntimeABI, wafer::kCurrentTargetModuleFormat,
         std::move(slots), std::move(context), std::move(module)));
@@ -317,8 +317,8 @@ makeProfileRuntimeLaunchModules(
       *config, std::move(launch), std::move(modules));
 }
 
-static llvm::Expected<wafer::compiler::PhysicalTileExecutables>
-makeProfilePhysicalTileExecutables(
+static llvm::Expected<wafer::compiler::CardExecutable>
+makeProfileCardExecutable(
     const wafer::RuntimeLaunchContract &launch,
     wafer::compiler::TransportContract transport) {
   if (!launch.getKernel())
@@ -331,7 +331,7 @@ makeProfilePhysicalTileExecutables(
   if (!config)
     return config.takeError();
   auto context = std::make_shared<mlir::MLIRContext>();
-  std::vector<wafer::compiler::PhysicalTileExecutable> tiles;
+  std::vector<wafer::compiler::TileExecutable> tiles;
   tiles.reserve(16);
   for (int64_t tileId = 0; tileId < 16; ++tileId) {
     mlir::OpBuilder builder(context.get());
@@ -352,12 +352,12 @@ makeProfilePhysicalTileExecutables(
     binding.slice.sizes = {4};
     binding.slice.strides = {1};
     tiles.push_back(
-        wafer::compiler::PhysicalTileExecutablesBuilder::makePhysicalTile(
-            wafer::PhysicalCardId(0), wafer::PhysicalTileId(tileId),
+        wafer::compiler::CardExecutableBuilder::makeTileExecutable(
+            wafer::CardId(0), wafer::TileId(tileId),
             wafer::LaunchSlotId(tileId), std::move(module), "main",
             {std::move(binding)}, transport));
   }
-  return wafer::compiler::PhysicalTileExecutablesBuilder::makeExecutables(
+  return wafer::compiler::CardExecutableBuilder::makeCardExecutable(
       *config, launch, std::move(context), std::move(tiles));
 }
 
@@ -781,7 +781,7 @@ TEST(TargetCodeGenTest, TileMajorKernelEntryRequiresAggregateDomain) {
       makeSlot(1, wafer::compiler::KernelABISlotRole::Output, "output")};
   llvm::Error error = wafer::compiler::detail::writeLLVMIR(
       module, "main", slots, makeKernelLaunch(wafer::KernelLaunchForm::Grid),
-      wafer::LaunchSlotId(0), /*physicalTileCount=*/16, outputPath);
+      wafer::LaunchSlotId(0), /*tileCount=*/16, outputPath);
   ASSERT_TRUE(static_cast<bool>(error));
   EXPECT_NE(llvm::toString(std::move(error))
                 .find("must use complete-Tile aggregation"),
@@ -817,7 +817,7 @@ TEST(TargetCodeGenTest,
       makeSlot(2, wafer::compiler::KernelABISlotRole::UserInput, "rhs")};
   if (llvm::Error error = wafer::compiler::detail::writeLLVMIR(
           module, "main", slots, makeModelLaunch(), wafer::LaunchSlotId(3),
-          /*physicalTileCount=*/16, llvmIRPath))
+          /*tileCount=*/16, llvmIRPath))
     FAIL() << llvm::toString(std::move(error));
 
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> output =
@@ -846,7 +846,7 @@ TEST(TargetCodeGenTest,
       makeSlot(1, wafer::compiler::KernelABISlotRole::Parameter, "parameter");
   llvm::Error unsupported = wafer::compiler::detail::writeLLVMIR(
       module, "main", unsupportedSlots, makeModelLaunch(),
-      wafer::LaunchSlotId(3), /*physicalTileCount=*/16, llvmIRPath);
+      wafer::LaunchSlotId(3), /*tileCount=*/16, llvmIRPath);
   ASSERT_TRUE(static_cast<bool>(unsupported));
   EXPECT_NE(llvm::toString(std::move(unsupported))
                 .find("only supports rank-1..6 f32 user-input and output"),
@@ -1010,7 +1010,7 @@ TEST(TargetCodeGenTest,
 }
 
 TEST(TargetCodeGenTest,
-     KernelAggregationDispatchesPhysicalTileToExplicitLaunchSlot) {
+     KernelAggregationDispatchesTileToExplicitLaunchSlot) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Grid,
@@ -1019,7 +1019,7 @@ TEST(TargetCodeGenTest,
           /*unsupportedModelRole=*/false, /*slotCount=*/2,
           /*withCollidingClosure=*/false,
           /*withUnsupportedInlineAsm=*/false, /*renamedSlotTile=*/std::nullopt,
-          /*permutePhysicalTiles=*/true);
+          /*permuteTiles=*/true);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
       << llvm::toString(targetLLVMModules.takeError());
 
@@ -1033,9 +1033,9 @@ TEST(TargetCodeGenTest,
   aggregate->module->print(output, nullptr);
   output.flush();
 
-  EXPECT_NE(ir.find("i32 1, label %physical_tile.1.launch_slot.0"),
+  EXPECT_NE(ir.find("i32 1, label %tile.1.launch_slot.0"),
             std::string::npos);
-  EXPECT_NE(ir.find("i32 0, label %physical_tile.0.launch_slot.1"),
+  EXPECT_NE(ir.find("i32 0, label %tile.0.launch_slot.1"),
             std::string::npos);
   EXPECT_NE(ir.find("%launch_slot.0.row.address = getelementptr inbounds i64, "
                     "ptr %tile_row_pointers, i64 0"),
@@ -1143,7 +1143,7 @@ TEST(TargetCodeGenTest,
                                     function.getName().ends_with("_main_body");
                            }),
             16u);
-  EXPECT_TRUE(firstIR.find("i32 15, label %physical_tile.15.launch_slot.15") !=
+  EXPECT_TRUE(firstIR.find("i32 15, label %tile.15.launch_slot.15") !=
               std::string::npos);
   EXPECT_TRUE(firstIR.find("getelementptr inbounds i64, ptr %tile_major_slots, "
                            "i64 31") != std::string::npos);
@@ -1220,7 +1220,7 @@ TEST(TargetCodeGenTest, KernelGridLinkingAcceptsTileSpecializedModules) {
 }
 
 TEST(TargetCodeGenTest,
-     SharedKernelFormsLinkOneModuleAndCompletePhysicalTileInterfaces) {
+     SharedKernelFormsLinkOneModuleAndCompleteTileInterfaces) {
   llvm::Expected<wafer::compiler::TargetToolchain> toolchain =
       makeTestToolchain();
   ASSERT_TRUE(static_cast<bool>(toolchain))
@@ -1279,9 +1279,9 @@ TEST(TargetCodeGenTest,
     }
     for (auto [launchSlot, tileInterface] :
          llvm::enumerate(targetModules->getTileInterfaces())) {
-      EXPECT_EQ(tileInterface.getPhysicalCardId(), wafer::PhysicalCardId(0));
-      EXPECT_EQ(tileInterface.getPhysicalTileId(),
-                wafer::PhysicalTileId(static_cast<int64_t>(launchSlot)));
+      EXPECT_EQ(tileInterface.getCardId(), wafer::CardId(0));
+      EXPECT_EQ(tileInterface.getTileId(),
+                wafer::TileId(static_cast<int64_t>(launchSlot)));
       EXPECT_EQ(tileInterface.getLaunchSlotId(),
                 wafer::LaunchSlotId(static_cast<int64_t>(launchSlot)));
       EXPECT_EQ(tileInterface.getModuleId().getValue(), 0u);
@@ -1353,8 +1353,8 @@ TEST(TargetCodeGenTest,
               tileInterface.getKernelABISlots(), capture)));
     }
 
-    llvm::Expected<wafer::compiler::PhysicalTileExecutables> executable =
-        makeProfilePhysicalTileExecutables(launch, scenario.transport);
+    llvm::Expected<wafer::compiler::CardExecutable> executable =
+        makeProfileCardExecutable(launch, scenario.transport);
     ASSERT_TRUE(static_cast<bool>(executable))
         << llvm::toString(executable.takeError());
     llvm::SmallString<256> packageDirectory = pathInDirectory(
@@ -1392,7 +1392,7 @@ TEST(TargetCodeGenTest,
         sharedInput->scope));
     EXPECT_EQ(
         std::get<wafer::runtime::CardResourceScope>(sharedInput->scope).cardId,
-        wafer::PhysicalCardId(0));
+        wafer::CardId(0));
     wafer::runtime::RuntimeEnvironment noCardEnvironment{
         manifest.targetIdentity, manifest.runtimeABI, manifest.moduleFormat};
     const wafer::KernelRuntimeLaunchContract *kernel =

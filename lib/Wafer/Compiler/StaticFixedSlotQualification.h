@@ -38,11 +38,11 @@ bool hasStaticFixedSlotQualificationEvidence(const RankExecutable &rank);
 llvm::Error verifyStaticFixedSlotProgram(const RankExecutable &rank);
 
 /// Derive and write the closed test-only static fixed-slot attestation from
-/// the final physical-Tile executables. The package manifest bytes contribute
+/// the final Tile executables. The package manifest bytes contribute
 /// to the record digest.
 mlir::LogicalResult writeStaticFixedSlotQualificationRecord(
     llvm::StringRef instrumentationRoot, llvm::StringRef packageRoot,
-    const PhysicalTileExecutables &physicalTileExecutables,
+    const CardExecutable &cardExecutable,
     bool requireDirectDTEComputeOverlap, llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::detail

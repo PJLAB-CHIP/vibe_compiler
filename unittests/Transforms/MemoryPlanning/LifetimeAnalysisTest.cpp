@@ -26,7 +26,7 @@ namespace {
 
 using namespace wafer::memory_planning::detail;
 
-static std::string withDTEPhysicalTopology(llvm::StringRef source) {
+static std::string withDTETargetTopology(llvm::StringRef source) {
   std::string text = source.str();
   if (!source.contains("wafer.instr.dte_") ||
       source.contains("wafer.target.topology"))
@@ -57,14 +57,14 @@ protected:
   }
 
   mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef source) {
-    std::string sourceWithTopology = withDTEPhysicalTopology(source);
+    std::string sourceWithTopology = withDTETargetTopology(source);
     return mlir::parseSourceString<mlir::ModuleOp>(
         sourceWithTopology, mlir::ParserConfig(&context));
   }
 
   mlir::OwningOpRef<mlir::ModuleOp>
   parseWithoutVerification(llvm::StringRef source) {
-    std::string sourceWithTopology = withDTEPhysicalTopology(source);
+    std::string sourceWithTopology = withDTETargetTopology(source);
     return mlir::parseSourceString<mlir::ModuleOp>(
         sourceWithTopology,
         mlir::ParserConfig(&context, /*verifyAfterParse=*/false));

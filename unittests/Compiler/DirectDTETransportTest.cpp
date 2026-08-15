@@ -1,9 +1,9 @@
-//===- DirectDTETransportTest.cpp - Physical Tile DTE tests -------------===//
+//===- DirectDTETransportTest.cpp - Tile DTE tests -------------===//
 
 #include "Wafer/Compiler/Testing.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/Target/PhysicalIds.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -34,26 +34,26 @@ protected:
   }
 
   mlir::OwningOpRef<mlir::ModuleOp> parse(llvm::StringRef source) {
-    std::string physicalTileSource = source.str();
+    std::string tileSource = source.str();
     constexpr llvm::StringLiteral kModuleHeader = "module {";
-    size_t module = physicalTileSource.find(kModuleHeader.str());
+    size_t module = tileSource.find(kModuleHeader.str());
     if (module == std::string::npos)
       return {};
-    physicalTileSource.insert(module + kModuleHeader.size(),
+    tileSource.insert(module + kModuleHeader.size(),
                               R"mlir(
   wafer.target.topology @target
       {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
 )mlir");
     return mlir::parseSourceString<mlir::ModuleOp>(
-        physicalTileSource, mlir::ParserConfig(context.get()));
+        tileSource, mlir::ParserConfig(context.get()));
   }
 
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
-constexpr llvm::StringLiteral kSendTileProgram = R"mlir(
+constexpr llvm::StringLiteral kSendTileModule = R"mlir(
 module {
   func.func @main() {
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
@@ -67,7 +67,7 @@ module {
   }
 })mlir";
 
-constexpr llvm::StringLiteral kRecvTileProgram = R"mlir(
+constexpr llvm::StringLiteral kRecvTileModule = R"mlir(
 module {
   func.func @main() {
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
@@ -81,7 +81,7 @@ module {
   }
 })mlir";
 
-constexpr llvm::StringLiteral kRecvAcrossDisjointLoopTileProgram = R"mlir(
+constexpr llvm::StringLiteral kRecvAcrossDisjointLoopTileModule = R"mlir(
 module {
   func.func @main() {
     %c0 = arith.constant 0 : index
@@ -107,7 +107,7 @@ module {
   }
 })mlir";
 
-static std::string makeControlledTileProgram(bool isSend, int64_t peer,
+static std::string makeControlledTileModule(bool isSend, int64_t peer,
                                              int64_t spmOffset,
                                              llvm::StringRef functionArguments,
                                              llvm::StringRef controlPrefix,
@@ -159,7 +159,7 @@ struct LinearTransportSite {
 };
 
 static std::string
-makeLinearTransportTileProgram(llvm::ArrayRef<LinearTransportSite> sites,
+makeLinearTransportTileModule(llvm::ArrayRef<LinearTransportSite> sites,
                                bool waitImmediately) {
   std::string source;
   llvm::raw_string_ostream os(source);
@@ -202,7 +202,7 @@ makeLinearTransportTileProgram(llvm::ArrayRef<LinearTransportSite> sites,
   return source;
 }
 
-static std::string makeTwoHelperTileProgram(bool isSend, int64_t peer,
+static std::string makeTwoHelperTileModule(bool isSend, int64_t peer,
                                             int64_t baseOffset,
                                             bool reverseDefinitions,
                                             bool reverseCalls,
@@ -248,7 +248,7 @@ static std::string makeTwoHelperTileProgram(bool isSend, int64_t peer,
   return source;
 }
 
-static std::string makeStructuredPhaseTileProgram(bool prologueIsSend,
+static std::string makeStructuredPhaseTileModule(bool prologueIsSend,
                                                   bool steadyIsSend,
                                                   bool epilogueIsSend,
                                                   int64_t peer,
@@ -292,7 +292,7 @@ static std::string makeStructuredPhaseTileProgram(bool prologueIsSend,
   return source;
 }
 
-static std::string makeSiblingLoopTileProgram(bool firstIsSend,
+static std::string makeSiblingLoopTileModule(bool firstIsSend,
                                               bool secondIsSend, int64_t peer,
                                               int64_t baseOffset) {
   auto emitLoop = [&](llvm::raw_ostream &os, llvm::StringRef induction,
@@ -333,7 +333,7 @@ static std::string makeSiblingLoopTileProgram(bool firstIsSend,
 }
 
 static std::string
-makeTileRegionSiblingTileProgram(wafer::PhysicalTileId tileId) {
+makeTileRegionSiblingTileModule(wafer::TileId tileId) {
   auto emitRegion = [&](llvm::raw_ostream &os, unsigned region,
                         llvm::StringRef input, bool hasTransport, bool isSend,
                         int64_t peer, int64_t offset, int64_t communication) {
@@ -366,20 +366,20 @@ makeTileRegionSiblingTileProgram(wafer::PhysicalTileId tileId) {
   os << "module {\n"
         "  func.func @main("
         "%input: memref<4xf32, #wafer.memory<ddr, tensor>>) {\n";
-  if (tileId == wafer::PhysicalTileId(0))
+  if (tileId == wafer::TileId(0))
     emitRegion(os, 0, "%input", /*hasTransport=*/true, /*isSend=*/true,
                /*peer=*/1, /*offset=*/65536, /*communication=*/90);
-  else if (tileId == wafer::PhysicalTileId(1))
+  else if (tileId == wafer::TileId(1))
     emitRegion(os, 0, "%input", /*hasTransport=*/true, /*isSend=*/false,
                /*peer=*/0, /*offset=*/66048, /*communication=*/90);
   else
     emitRegion(os, 0, "%input", /*hasTransport=*/false, /*isSend=*/false,
                /*peer=*/-1, /*offset=*/-1, /*communication=*/-1);
 
-  if (tileId == wafer::PhysicalTileId(0))
+  if (tileId == wafer::TileId(0))
     emitRegion(os, 1, "%tile0", /*hasTransport=*/true, /*isSend=*/true,
                /*peer=*/2, /*offset=*/65792, /*communication=*/91);
-  else if (tileId == wafer::PhysicalTileId(2))
+  else if (tileId == wafer::TileId(2))
     emitRegion(os, 1, "%tile0", /*hasTransport=*/true, /*isSend=*/false,
                /*peer=*/0, /*offset=*/66304, /*communication=*/91);
   else
@@ -430,7 +430,7 @@ static std::string makeShiftedTileRegionTransportProgram(bool isSend,
   return source;
 }
 
-static std::string makeCrossBlockCycleTileProgram(bool firstTile,
+static std::string makeCrossBlockCycleTileModule(bool firstTile,
                                                   int64_t baseOffset) {
   std::string source;
   llvm::raw_string_ostream os(source);
@@ -483,7 +483,7 @@ static std::string makeCrossBlockCycleTileProgram(bool firstTile,
   return source;
 }
 
-constexpr llvm::StringLiteral kOverlappingSendTileProgram = R"mlir(
+constexpr llvm::StringLiteral kOverlappingSendTileModule = R"mlir(
 module {
   func.func @main() {
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
@@ -501,7 +501,7 @@ module {
   }
 })mlir";
 
-constexpr llvm::StringLiteral kFiveLiveReceiversTileProgram = R"mlir(
+constexpr llvm::StringLiteral kFiveLiveReceiversTileModule = R"mlir(
 module {
   func.func @main() {
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
@@ -516,7 +516,7 @@ module {
   }
 })mlir";
 
-constexpr llvm::StringLiteral kLoopEscapingTokenSendTileProgram = R"mlir(
+constexpr llvm::StringLiteral kLoopEscapingTokenSendTileModule = R"mlir(
 module {
   func.func @main(%initial: !async.token) {
     %c0 = arith.constant 0 : index
@@ -537,7 +537,7 @@ module {
   }
 })mlir";
 
-constexpr llvm::StringLiteral kInterveningBufferAccessSendTileProgram = R"mlir(
+constexpr llvm::StringLiteral kInterveningBufferAccessSendTileModule = R"mlir(
 module {
   func.func @main() {
     %index = arith.constant 0 : index
@@ -555,7 +555,7 @@ module {
   }
 })mlir";
 
-constexpr llvm::StringLiteral kInterveningBufferReadSendTileProgram = R"mlir(
+constexpr llvm::StringLiteral kInterveningBufferReadSendTileModule = R"mlir(
 module {
   func.func @main() {
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
@@ -574,7 +574,7 @@ module {
   }
 })mlir";
 
-constexpr llvm::StringLiteral kInterveningBufferReadRecvTileProgram = R"mlir(
+constexpr llvm::StringLiteral kInterveningBufferReadRecvTileModule = R"mlir(
 module {
   func.func @main() {
     %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65792>}
@@ -594,15 +594,15 @@ module {
 })mlir";
 
 TEST_F(DirectDTETransportTest, MatchesCompleteDomainAndAttachesTypedBinding) {
-  auto sendModule = parse(kSendTileProgram);
-  auto recvModule = parse(kRecvTileProgram);
+  auto sendModule = parse(kSendTileModule);
+  auto recvModule = parse(kRecvTileModule);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 
@@ -635,21 +635,21 @@ TEST_F(DirectDTETransportTest,
       }
     }
 )mlir";
-  auto sendModule = parse(makeControlledTileProgram(
+  auto sendModule = parse(makeControlledTileModule(
       /*isSend=*/true, /*peer=*/1, /*spmOffset=*/65536,
       /*functionArguments=*/"()", kNestedPrefix, kNestedSuffix,
       /*addStaticTail=*/true));
-  auto recvModule = parse(makeControlledTileProgram(
+  auto recvModule = parse(makeControlledTileModule(
       /*isSend=*/false, /*peer=*/0, /*spmOffset=*/65792,
       /*functionArguments=*/"()", kNestedPrefix, kNestedSuffix,
       /*addStaticTail=*/true));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 
@@ -669,7 +669,7 @@ TEST_F(DirectDTETransportTest,
 
 TEST_F(DirectDTETransportTest,
        ResolvesStaticLoopBoundsThroughNestedTileRegions) {
-  auto makeTileProgram = [](bool isSend, int64_t peer, int64_t spmOffset) {
+  auto makeTileModule = [](bool isSend, int64_t peer, int64_t spmOffset) {
     std::string source;
     llvm::raw_string_ostream os(source);
     os << "module {\n"
@@ -707,17 +707,17 @@ TEST_F(DirectDTETransportTest,
           "}\n";
     return source;
   };
-  auto sendModule = parse(makeTileProgram(/*isSend=*/true, /*peer=*/1,
+  auto sendModule = parse(makeTileModule(/*isSend=*/true, /*peer=*/1,
                                           /*spmOffset=*/65536));
-  auto recvModule = parse(makeTileProgram(/*isSend=*/false, /*peer=*/0,
+  auto recvModule = parse(makeTileModule(/*isSend=*/false, /*peer=*/0,
                                           /*spmOffset=*/65792));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
   sendModule->walk([](wafer::InstrDTESendOp operation) {
@@ -737,21 +737,21 @@ TEST_F(DirectDTETransportTest,
   constexpr llvm::StringLiteral kLoopSuffix = R"mlir(
     }
 )mlir";
-  auto sendModule = parse(makeControlledTileProgram(
+  auto sendModule = parse(makeControlledTileModule(
       /*isSend=*/true, /*peer=*/1, /*spmOffset=*/65536,
       /*functionArguments=*/"()", kLargeLoopPrefix, kLoopSuffix,
       /*addStaticTail=*/false));
-  auto recvModule = parse(makeControlledTileProgram(
+  auto recvModule = parse(makeControlledTileModule(
       /*isSend=*/false, /*peer=*/0, /*spmOffset=*/65792,
       /*functionArguments=*/"()", kLargeLoopPrefix, kLoopSuffix,
       /*addStaticTail=*/false));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
   sendModule->walk([](wafer::InstrDTESendOp operation) {
@@ -763,52 +763,52 @@ TEST_F(DirectDTETransportTest,
 }
 
 TEST_F(DirectDTETransportTest, ReceivePreparationBreaksCrossTileSendWaitCycle) {
-  std::string tile0Source = makeLinearTransportTileProgram(
+  std::string tile0Source = makeLinearTransportTileModule(
       {{false, 1, 65536, 31}, {true, 1, 65792, 30}},
       /*waitImmediately=*/false);
-  std::string tile1Source = makeLinearTransportTileProgram(
+  std::string tile1Source = makeLinearTransportTileModule(
       {{false, 0, 66048, 30}, {true, 0, 66304, 31}},
       /*waitImmediately=*/false);
   auto tile0Module = parse(tile0Source);
   auto tile1Module = parse(tile1Source);
   ASSERT_TRUE(tile0Module);
   ASSERT_TRUE(tile1Module);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*tile0Module,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*tile0Module,
                                                            *tile1Module};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest,
        ReceivePreparationMayOverlapDisjointEffectfulLoop) {
-  auto sendModule = parse(kSendTileProgram);
-  auto recvModule = parse(kRecvAcrossDisjointLoopTileProgram);
+  auto sendModule = parse(kSendTileModule);
+  auto recvModule = parse(kRecvAcrossDisjointLoopTileModule);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, MutualSendBeforeReceiveWaitCycleFailsClosed) {
-  std::string tile0Source = makeLinearTransportTileProgram(
+  std::string tile0Source = makeLinearTransportTileModule(
       {{true, 1, 65536, 30}, {false, 1, 65792, 31}},
       /*waitImmediately=*/true);
-  std::string tile1Source = makeLinearTransportTileProgram(
+  std::string tile1Source = makeLinearTransportTileModule(
       {{true, 0, 66048, 31}, {false, 0, 66304, 30}},
       /*waitImmediately=*/true);
   auto tile0Module = parse(tile0Source);
   auto tile1Module = parse(tile1Source);
   ASSERT_TRUE(tile0Module);
   ASSERT_TRUE(tile1Module);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*tile0Module,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*tile0Module,
                                                            *tile1Module};
   std::string diagnosticText;
   mlir::ScopedDiagnosticHandler handler(
@@ -819,11 +819,11 @@ TEST_F(DirectDTETransportTest, MutualSendBeforeReceiveWaitCycleFailsClosed) {
       });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   EXPECT_NE(diagnosticText.find("wait graph contains a cyclic dependency"),
             std::string::npos);
-  for (mlir::ModuleOp module : physicalTileModules) {
+  for (mlir::ModuleOp module : tileModules) {
     module.walk([](wafer::InstrDTESendOp operation) {
       EXPECT_FALSE(operation.getBinding());
     });
@@ -836,42 +836,42 @@ TEST_F(DirectDTETransportTest, MutualSendBeforeReceiveWaitCycleFailsClosed) {
 TEST_F(DirectDTETransportTest,
        AcceptsNestedSteadyStateWithPrologueAndEpilogueBlocks) {
   auto tile0Module =
-      parse(makeStructuredPhaseTileProgram(/*prologueIsSend=*/false,
+      parse(makeStructuredPhaseTileModule(/*prologueIsSend=*/false,
                                            /*steadyIsSend=*/false,
                                            /*epilogueIsSend=*/true, /*peer=*/1,
                                            /*baseOffset=*/65536));
   auto tile1Module =
-      parse(makeStructuredPhaseTileProgram(/*prologueIsSend=*/true,
+      parse(makeStructuredPhaseTileModule(/*prologueIsSend=*/true,
                                            /*steadyIsSend=*/true,
                                            /*epilogueIsSend=*/false, /*peer=*/0,
                                            /*baseOffset=*/66560));
   ASSERT_TRUE(tile0Module);
   ASSERT_TRUE(tile1Module);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*tile0Module,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*tile0Module,
                                                            *tile1Module};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, AcceptsOrderedSiblingLoopOccurrences) {
   auto tile0Module =
-      parse(makeSiblingLoopTileProgram(/*firstIsSend=*/false,
+      parse(makeSiblingLoopTileModule(/*firstIsSend=*/false,
                                        /*secondIsSend=*/true, /*peer=*/1,
                                        /*baseOffset=*/65536));
   auto tile1Module =
-      parse(makeSiblingLoopTileProgram(/*firstIsSend=*/true,
+      parse(makeSiblingLoopTileModule(/*firstIsSend=*/true,
                                        /*secondIsSend=*/false, /*peer=*/0,
                                        /*baseOffset=*/66560));
   ASSERT_TRUE(tile0Module);
   ASSERT_TRUE(tile1Module);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*tile0Module,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*tile0Module,
                                                            *tile1Module};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
@@ -879,19 +879,19 @@ TEST_F(DirectDTETransportTest, AcceptsOrderedSiblingLoopOccurrences) {
 TEST_F(DirectDTETransportTest,
        CountsTileRegionSiblingsIndependentOfTransportContent) {
   auto tile0Module =
-      parse(makeTileRegionSiblingTileProgram(wafer::PhysicalTileId(0)));
+      parse(makeTileRegionSiblingTileModule(wafer::TileId(0)));
   auto tile1Module =
-      parse(makeTileRegionSiblingTileProgram(wafer::PhysicalTileId(1)));
+      parse(makeTileRegionSiblingTileModule(wafer::TileId(1)));
   auto tile2Module =
-      parse(makeTileRegionSiblingTileProgram(wafer::PhysicalTileId(2)));
+      parse(makeTileRegionSiblingTileModule(wafer::TileId(2)));
   ASSERT_TRUE(tile0Module);
   ASSERT_TRUE(tile1Module);
   ASSERT_TRUE(tile2Module);
-  llvm::SmallVector<mlir::ModuleOp, 3> physicalTileModules{
+  llvm::SmallVector<mlir::ModuleOp, 3> tileModules{
       *tile0Module, *tile1Module, *tile2Module};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
@@ -904,23 +904,23 @@ TEST_F(DirectDTETransportTest,
       /*isSend=*/false, /*region=*/1));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, CrossBlockWaitCycleFailsClosed) {
   auto tile0Module = parse(
-      makeCrossBlockCycleTileProgram(/*firstTile=*/true, /*baseOffset=*/65536));
-  auto tile1Module = parse(makeCrossBlockCycleTileProgram(
+      makeCrossBlockCycleTileModule(/*firstTile=*/true, /*baseOffset=*/65536));
+  auto tile1Module = parse(makeCrossBlockCycleTileModule(
       /*firstTile=*/false, /*baseOffset=*/66560));
   ASSERT_TRUE(tile0Module);
   ASSERT_TRUE(tile1Module);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*tile0Module,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*tile0Module,
                                                            *tile1Module};
   std::string diagnosticText;
   mlir::ScopedDiagnosticHandler handler(
@@ -931,7 +931,7 @@ TEST_F(DirectDTETransportTest, CrossBlockWaitCycleFailsClosed) {
       });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   EXPECT_NE(diagnosticText.find("wait graph contains a cyclic dependency"),
             std::string::npos);
@@ -940,40 +940,40 @@ TEST_F(DirectDTETransportTest, CrossBlockWaitCycleFailsClosed) {
 TEST_F(DirectDTETransportTest,
        HelperDefinitionOrderDoesNotDefineMessageOccurrence) {
   auto sendModule =
-      parse(makeTwoHelperTileProgram(/*isSend=*/true, /*peer=*/1,
+      parse(makeTwoHelperTileModule(/*isSend=*/true, /*peer=*/1,
                                      /*baseOffset=*/65536,
                                      /*reverseDefinitions=*/false,
                                      /*reverseCalls=*/false,
                                      /*reuseMessageIdentity=*/true));
   auto recvModule =
-      parse(makeTwoHelperTileProgram(/*isSend=*/false, /*peer=*/0,
+      parse(makeTwoHelperTileModule(/*isSend=*/false, /*peer=*/0,
                                      /*baseOffset=*/66560,
                                      /*reverseDefinitions=*/true,
                                      /*reverseCalls=*/false,
                                      /*reuseMessageIdentity=*/true));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, MismatchedHelperCallOccurrenceFailsClosed) {
-  auto sendModule = parse(makeTwoHelperTileProgram(/*isSend=*/true, /*peer=*/1,
+  auto sendModule = parse(makeTwoHelperTileModule(/*isSend=*/true, /*peer=*/1,
                                                    /*baseOffset=*/65536,
                                                    /*reverseDefinitions=*/false,
                                                    /*reverseCalls=*/false));
-  auto recvModule = parse(makeTwoHelperTileProgram(/*isSend=*/false, /*peer=*/0,
+  auto recvModule = parse(makeTwoHelperTileModule(/*isSend=*/false, /*peer=*/0,
                                                    /*baseOffset=*/66560,
                                                    /*reverseDefinitions=*/true,
                                                    /*reverseCalls=*/true));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   std::string diagnosticText;
   mlir::ScopedDiagnosticHandler handler(
@@ -984,10 +984,10 @@ TEST_F(DirectDTETransportTest, MismatchedHelperCallOccurrenceFailsClosed) {
       });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   EXPECT_NE(diagnosticText.find("occurrence paths are not structurally "
-                                "identical across physical Tiles"),
+                                "identical across Tiles"),
             std::string::npos);
 }
 
@@ -1043,7 +1043,7 @@ module {
   auto recvModule = parse(kDistinctReceiveSites);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   std::string diagnosticText;
   mlir::ScopedDiagnosticHandler handler(
@@ -1054,7 +1054,7 @@ module {
       });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   EXPECT_NE(diagnosticText.find("different physical bindings across call "
                                 "occurrences"),
@@ -1099,7 +1099,7 @@ module {
   auto recvModule = parse(kUsedRecv);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   std::string diagnosticText;
   mlir::ScopedDiagnosticHandler handler(
@@ -1110,7 +1110,7 @@ module {
       });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   EXPECT_NE(diagnosticText.find("outside the entry call closure"),
             std::string::npos);
@@ -1126,11 +1126,11 @@ TEST_F(DirectDTETransportTest,
       }
     }
 )mlir";
-  auto sendModule = parse(makeControlledTileProgram(
+  auto sendModule = parse(makeControlledTileModule(
       /*isSend=*/true, /*peer=*/1, /*spmOffset=*/65536,
       /*functionArguments=*/"()", kNestedPrefix, kNestedSuffix,
       /*addStaticTail=*/true));
-  auto recvModule = parse(makeControlledTileProgram(
+  auto recvModule = parse(makeControlledTileModule(
       /*isSend=*/false, /*peer=*/0, /*spmOffset=*/65792,
       /*functionArguments=*/"()", kNestedPrefix, kNestedSuffix,
       /*addStaticTail=*/true));
@@ -1164,10 +1164,10 @@ TEST_F(DirectDTETransportTest,
   staticTail->setOperand(0, tailBuffer);
   staticTail->moveBefore(outerLoop);
 
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
   sendModule->walk([](wafer::InstrDTESendOp operation) {
@@ -1191,23 +1191,23 @@ TEST_F(DirectDTETransportTest, MismatchedStaticLoopBoundsFailClosed) {
       }
     }
 )mlir";
-  auto sendModule = parse(makeControlledTileProgram(
+  auto sendModule = parse(makeControlledTileModule(
       /*isSend=*/true, /*peer=*/1, /*spmOffset=*/65536,
       /*functionArguments=*/"()", kSendPrefix, kSuffix,
       /*addStaticTail=*/false));
-  auto recvModule = parse(makeControlledTileProgram(
+  auto recvModule = parse(makeControlledTileModule(
       /*isSend=*/false, /*peer=*/0, /*spmOffset=*/65792,
       /*functionArguments=*/"()", kRecvPrefix, kSuffix,
       /*addStaticTail=*/false));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   sendModule->walk([](wafer::InstrDTESendOp operation) {
     EXPECT_FALSE(operation.getBinding());
@@ -1224,23 +1224,23 @@ TEST_F(DirectDTETransportTest, DynamicLoopControlFailsClosed) {
   constexpr llvm::StringLiteral kLoopSuffix = R"mlir(
     }
 )mlir";
-  auto sendModule = parse(makeControlledTileProgram(
+  auto sendModule = parse(makeControlledTileModule(
       /*isSend=*/true, /*peer=*/1, /*spmOffset=*/65536,
       /*functionArguments=*/"(%bound: index)", kDynamicPrefix, kLoopSuffix,
       /*addStaticTail=*/false));
-  auto recvModule = parse(makeControlledTileProgram(
+  auto recvModule = parse(makeControlledTileModule(
       /*isSend=*/false, /*peer=*/0, /*spmOffset=*/65792,
       /*functionArguments=*/"(%bound: index)", kDynamicPrefix, kLoopSuffix,
       /*addStaticTail=*/false));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
 }
 
@@ -1251,23 +1251,23 @@ TEST_F(DirectDTETransportTest, ConditionalControlInstanceFailsClosed) {
   constexpr llvm::StringLiteral kConditionalSuffix = R"mlir(
     }
 )mlir";
-  auto sendModule = parse(makeControlledTileProgram(
+  auto sendModule = parse(makeControlledTileModule(
       /*isSend=*/true, /*peer=*/1, /*spmOffset=*/65536,
       /*functionArguments=*/"(%condition: i1)", kConditionalPrefix,
       kConditionalSuffix, /*addStaticTail=*/false));
-  auto recvModule = parse(makeControlledTileProgram(
+  auto recvModule = parse(makeControlledTileModule(
       /*isSend=*/false, /*peer=*/0, /*spmOffset=*/65792,
       /*functionArguments=*/"(%condition: i1)", kConditionalPrefix,
       kConditionalSuffix, /*addStaticTail=*/false));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
 }
 
@@ -1284,36 +1284,36 @@ TEST_F(DirectDTETransportTest,
   constexpr llvm::StringLiteral kLoopSuffix = R"mlir(
     }
 )mlir";
-  auto sendModule = parse(makeControlledTileProgram(
+  auto sendModule = parse(makeControlledTileModule(
       /*isSend=*/true, /*peer=*/1, /*spmOffset=*/65536,
       /*functionArguments=*/"()", kSendPrefix, kLoopSuffix,
       /*addStaticTail=*/false));
-  auto recvModule = parse(makeControlledTileProgram(
+  auto recvModule = parse(makeControlledTileModule(
       /*isSend=*/false, /*peer=*/0, /*spmOffset=*/65792,
       /*functionArguments=*/"()", kRecvPrefix, kLoopSuffix,
       /*addStaticTail=*/false));
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, LoopEscapingIssueTokenFailsClosed) {
-  auto sendModule = parse(kLoopEscapingTokenSendTileProgram);
-  auto recvModule = parse(kRecvTileProgram);
+  auto sendModule = parse(kLoopEscapingTokenSendTileModule);
+  auto recvModule = parse(kRecvTileModule);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   sendModule->walk([](wafer::InstrDTESendOp operation) {
     EXPECT_FALSE(operation.getBinding());
@@ -1321,17 +1321,17 @@ TEST_F(DirectDTETransportTest, LoopEscapingIssueTokenFailsClosed) {
 }
 
 TEST_F(DirectDTETransportTest, InterveningIssueBufferAccessFailsClosed) {
-  auto sendModule = parse(kInterveningBufferAccessSendTileProgram);
-  auto recvModule = parse(kRecvTileProgram);
+  auto sendModule = parse(kInterveningBufferAccessSendTileModule);
+  auto recvModule = parse(kRecvTileModule);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   sendModule->walk([](wafer::InstrDTESendOp operation) {
     EXPECT_FALSE(operation.getBinding());
@@ -1339,31 +1339,31 @@ TEST_F(DirectDTETransportTest, InterveningIssueBufferAccessFailsClosed) {
 }
 
 TEST_F(DirectDTETransportTest, InterveningSendSourceReadIsAccepted) {
-  auto sendModule = parse(kInterveningBufferReadSendTileProgram);
-  auto recvModule = parse(kRecvTileProgram);
+  auto sendModule = parse(kInterveningBufferReadSendTileModule);
+  auto recvModule = parse(kRecvTileModule);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   ASSERT_TRUE(mlir::succeeded(contract));
   EXPECT_EQ(*contract, wafer::compiler::TransportContract::DirectDTE);
 }
 
 TEST_F(DirectDTETransportTest, InterveningReceiveDestinationReadFailsClosed) {
-  auto sendModule = parse(kSendTileProgram);
-  auto recvModule = parse(kInterveningBufferReadRecvTileProgram);
+  auto sendModule = parse(kSendTileModule);
+  auto recvModule = parse(kInterveningBufferReadRecvTileModule);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   recvModule->walk([](wafer::InstrDTERecvOp operation) {
     EXPECT_FALSE(operation.getBinding());
@@ -1371,14 +1371,14 @@ TEST_F(DirectDTETransportTest, InterveningReceiveDestinationReadFailsClosed) {
 }
 
 TEST_F(DirectDTETransportTest, MissingPeerLeavesBindingsUnset) {
-  auto sendModule = parse(kSendTileProgram);
+  auto sendModule = parse(kSendTileModule);
   ASSERT_TRUE(sendModule);
-  llvm::SmallVector<mlir::ModuleOp, 1> physicalTileModules{*sendModule};
+  llvm::SmallVector<mlir::ModuleOp, 1> tileModules{*sendModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   sendModule->walk([&](wafer::InstrDTESendOp operation) {
     EXPECT_FALSE(operation.getBinding());
@@ -1386,21 +1386,21 @@ TEST_F(DirectDTETransportTest, MissingPeerLeavesBindingsUnset) {
 }
 
 TEST_F(DirectDTETransportTest, ByteMismatchLeavesBindingsUnset) {
-  auto sendModule = parse(kSendTileProgram);
-  auto recvModule = parse(kRecvTileProgram);
+  auto sendModule = parse(kSendTileModule);
+  auto recvModule = parse(kRecvTileModule);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
   recvModule->walk([](wafer::InstrDTERecvOp operation) {
     operation.setBytesAttr(mlir::IntegerAttr::get(
         mlir::IntegerType::get(operation.getContext(), 64), 8));
   });
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   sendModule->walk([&](wafer::InstrDTESendOp operation) {
     EXPECT_FALSE(operation.getBinding());
@@ -1411,20 +1411,20 @@ TEST_F(DirectDTETransportTest, ByteMismatchLeavesBindingsUnset) {
 }
 
 TEST_F(DirectDTETransportTest, UnplannedSPMRangeFailsClosed) {
-  auto sendModule = parse(kSendTileProgram);
-  auto recvModule = parse(kRecvTileProgram);
+  auto sendModule = parse(kSendTileModule);
+  auto recvModule = parse(kRecvTileModule);
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
   sendModule->walk([](mlir::memref::AllocOp operation) {
     operation->removeAttr(wafer::kWaferSPMOffsetAttrName);
   });
-  llvm::SmallVector<mlir::ModuleOp, 2> physicalTileModules{*sendModule,
+  llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,
                                                            *recvModule};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   recvModule->walk([&](wafer::InstrDTERecvOp operation) {
     EXPECT_FALSE(operation.getBinding());
@@ -1432,14 +1432,14 @@ TEST_F(DirectDTETransportTest, UnplannedSPMRangeFailsClosed) {
 }
 
 TEST_F(DirectDTETransportTest, OverlappingNormalSendersFailClosed) {
-  auto module = parse(kOverlappingSendTileProgram);
+  auto module = parse(kOverlappingSendTileModule);
   ASSERT_TRUE(module);
-  llvm::SmallVector<mlir::ModuleOp, 1> physicalTileModules{*module};
+  llvm::SmallVector<mlir::ModuleOp, 1> tileModules{*module};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   module->walk([](wafer::InstrDTESendOp operation) {
     EXPECT_FALSE(operation.getBinding());
@@ -1447,14 +1447,14 @@ TEST_F(DirectDTETransportTest, OverlappingNormalSendersFailClosed) {
 }
 
 TEST_F(DirectDTETransportTest, FifthOverlappingReceiverFailsClosed) {
-  auto module = parse(kFiveLiveReceiversTileProgram);
+  auto module = parse(kFiveLiveReceiversTileModule);
   ASSERT_TRUE(module);
-  llvm::SmallVector<mlir::ModuleOp, 1> physicalTileModules{*module};
+  llvm::SmallVector<mlir::ModuleOp, 1> tileModules{*module};
   mlir::ScopedDiagnosticHandler suppress(
       context.get(), [](mlir::Diagnostic &) { return mlir::success(); });
 
   auto contract =
-      wafer::compiler::testing::bindDirectDTETransport(physicalTileModules);
+      wafer::compiler::testing::bindDirectDTETransport(tileModules);
   EXPECT_TRUE(mlir::failed(contract));
   module->walk([](wafer::InstrDTERecvOp operation) {
     EXPECT_FALSE(operation.getBinding());

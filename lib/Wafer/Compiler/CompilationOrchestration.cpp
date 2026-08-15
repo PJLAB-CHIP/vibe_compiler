@@ -68,7 +68,7 @@ mlir::LogicalResult runCompilationTransaction(
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
-    std::optional<PhysicalTileExecutables> *retainedPhysicalTileExecutables,
+    std::optional<CardExecutable> *retainedCardExecutable,
     std::optional<TargetLLVMModules> *retainedTargetLLVMModules,
     std::optional<CompilationIRTrace> *retainedIRTrace) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
@@ -80,7 +80,7 @@ mlir::LogicalResult runCompilationTransaction(
   (void)failAfterLaunchSlot;
   (void)failAfterTargetLaunchSlot;
   (void)failAfterPackageLaunchSlot;
-  (void)retainedPhysicalTileExecutables;
+  (void)retainedCardExecutable;
   (void)retainedTargetLLVMModules;
   (void)retainedIRTrace;
   reject(diagnostics,
@@ -104,8 +104,8 @@ mlir::LogicalResult runCompilationTransaction(
   auto compileWorkReport = llvm::make_scope_exit([&] {
     wafer::support::CompileWorkStatistics work = compileWorkSession->snapshot();
     diagnostics << "wafer-compile: compile-work"
-                << " physical_tile_memory_planning_invocations="
-                << work.physicalTileMemoryPlanningInvocations
+                << " tile_memory_planning_invocations="
+                << work.tileMemoryPlanningInvocations
                 << " tile_to_instr_lowerings="
                 << work.tileToInstructionLowerings
                 << " selected_buffer_module_clones="
@@ -127,10 +127,10 @@ mlir::LogicalResult runCompilationTransaction(
     return mlir::failure();
   }
   if (options.shouldProduceProfileInstrumentation() &&
-      request.getExecutionConfig().getPhysicalTileCount() !=
-          ExecutionConfig::kSingleCardPhysicalTileCount) {
+      request.getExecutionConfig().getTileCount() !=
+          ExecutionConfig::kSingleCardTileCount) {
     reject(diagnostics,
-           "profile compilation requires all physical Tiles on the card");
+           "profile compilation requires all Tiles on the card");
     return mlir::failure();
   }
   printOptimizationConfig(options.getOptimizationConfig(), diagnostics);
@@ -380,7 +380,7 @@ mlir::LogicalResult runCompilationTransaction(
   auto targetCodeGenTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "source-to-package", "target-codegen");
-  std::optional<PhysicalTileExecutables> physicalTileExecutables;
+  std::optional<CardExecutable> cardExecutable;
   std::optional<TargetLLVMModules> targetLLVMModules;
   CompilationIRTrace irTrace;
   if (options.shouldProduceProfileInstrumentation()) {
@@ -388,14 +388,14 @@ mlir::LogicalResult runCompilationTransaction(
             tensorProgram, transactionRoot, request.getExecutionConfig(),
             options.getOptimizationConfig(), targetToolchain, diagnostics,
             failAfterLaunchSlot, failAfterTargetLaunchSlot,
-            failAfterPackageLaunchSlot, physicalTileExecutables,
+            failAfterPackageLaunchSlot, cardExecutable,
             targetLLVMModules, irTrace)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
                  options.getOptimizationConfig(), targetToolchain, diagnostics,
                  failAfterLaunchSlot, failAfterTargetLaunchSlot,
-                 failAfterPackageLaunchSlot, physicalTileExecutables,
+                 failAfterPackageLaunchSlot, cardExecutable,
                  targetLLVMModules, irTrace))) {
     return mlir::failure();
   }
@@ -423,9 +423,9 @@ mlir::LogicalResult runCompilationTransaction(
   } else if (renameDirectoryNoReplace(stagedPackage, canonicalOutput,
                                       diagnostics))
     return mlir::failure();
-  if (retainedPhysicalTileExecutables)
-    retainedPhysicalTileExecutables->emplace(
-        std::move(*physicalTileExecutables));
+  if (retainedCardExecutable)
+    retainedCardExecutable->emplace(
+        std::move(*cardExecutable));
   if (retainedTargetLLVMModules)
     retainedTargetLLVMModules->emplace(std::move(*targetLLVMModules));
   if (retainedIRTrace)

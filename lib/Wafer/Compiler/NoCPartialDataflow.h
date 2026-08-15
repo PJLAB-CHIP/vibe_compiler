@@ -26,7 +26,7 @@ bool hasNoCPartialReductionOpportunity(
 /// SSA/memory effects, and frontend output tile relations.  No logical
 /// collective is invented.  A rejected or incomplete proposal leaves every
 /// module unchanged.  The caller owns tuple cloning and the subsequent
-/// completion, SPM, Direct-DTE, and whole-variant resource gates.
+/// completion, SPM, Direct-DTE, and rank-candidate resource gates.
 ///
 /// Ring matching additionally binds every message payload slice to the actual
 /// root-relative send/receive subview, proves reduce-scatter origin

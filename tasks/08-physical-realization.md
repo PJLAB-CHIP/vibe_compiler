@@ -1,6 +1,6 @@
 # Wafer Physical Realization：Relation、Encoding 与 Transfer
 
-状态：2026-08-13按CardProgram / physical-Tile MPMD主线收敛。本文拥有current-IR-derived
+状态：2026-08-13按CardModule / Tile MPMD主线收敛。本文拥有current-IR-derived
 `IndexRelation`、physical encoding和transfer realizability合同；不拥有spatial/temporal/fusion winner，也不记录
 动态任务状态。实现状态只看`tasks/progress.md`。
 
@@ -9,18 +9,18 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  card-local structured TensorProgram，或physical-dataflow selection准备物化的isolated CardProgram candidate；current op、
+  card-local structured TensorProgram，或physical-dataflow selection准备物化的isolated CardModule candidate；current op、
   indexing maps、Tiling/DPS interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证，
-  selected physical Tile work domain尚可处于query-local proposal或actual CardProgram clone中。
+  selected Tile work domain尚可处于query-local proposal或actual CardModule clone中。
 - Current stage responsibility:
   从当前IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
   valid/padding domain与logical-to-physical bit mapping；证明metadata view或selected DDR/SPM/NoC movement是否exact
   可实现，并在actual clone中物化typed view、allocation、movement、temporary、staging、token与wait。
 - Output IR / files:
-  query-local且随rewrite失效的analysis proof，或自包含的selected wafer.card.program / wafer.tile.program body；
+  query-local且随rewrite失效的analysis proof，或自包含的selected wafer.card.module / wafer.tile.module body；
   accepted事实只存在于typed memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
 - Downstream consumer:
-  per-physical-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
+  per-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
   CardExecutable communication/resource verification、target conversion与package writing。
 - User-level driver / named pipeline:
   wafer-compile production pipeline；wafer-opt入口只用于parser/verifier/conversion replay，不能组成第二条production路径。
@@ -29,7 +29,7 @@ Pipeline position:
   不分配runtime handle或launch slot；不从op/value/symbol/workload名字恢复语义；lowering失败不隐式换路线。
 - Completion gate:
   每个accepted view/movement只凭current IR可重建exact logical/physical cover、range、effect、lifetime和completion；
-  cross-Tile movement显式指向physical Tile并经CardExecutable matching；rewrite后旧analysis不再使用，late exact gate
+  cross-Tile movement显式指向Tile并经CardExecutable matching；rewrite后旧analysis不再使用，late exact gate
   不需要search proposal即可验证和lower。
 ```
 
@@ -49,10 +49,10 @@ Pipeline position:
 | logical index relation与shape bounds | `IndexRelation`、Affine/Presburger/ValueBounds | current IR epoch |
 | physical footprint、valid/padding和bit mapping | Wafer physical encoding attr/type interface | typed IR |
 | metadata view / transfer feasibility | source+destination+relation+encoding helper | 单次proof |
-| selected route、temporary与event | actual typed view/movement/SSA IR | CardProgram candidate |
-| actual SPM residency | 单physical-Tile actual roots、SSA/view、effect、order与completion | finalized CardProgram IR epoch |
+| selected route、temporary与event | actual typed view/movement/SSA IR | CardModule candidate |
+| actual SPM residency | 单Tile actual roots、SSA/view、effect、order与completion | finalized CardModule IR epoch |
 | SPM/DDR accepted offset | memory planning attr及fresh validator | accepted Instr IR |
-| cross-Tile sender/receiver和message | physical Tile communication ops | selected CardProgram IR |
+| cross-Tile sender/receiver和message | Tile communication ops | selected CardModule IR |
 
 ## 3. `IndexRelation`
 
@@ -110,7 +110,7 @@ metadata view只有在以下条件全部成立时合法：
 - relation-mapped DMA/WDMA；
 - local GatherScatter或layout materialization；
 - staged movement及显式temporary/fill/mask；
-- physical-Tile peer send/recv及destination staging。
+- Tile peer send/recv及destination staging。
 
 一个movement op的operands、types、view chain和typed fields必须唯一决定direction、logical relation、physical
 span和effect。descriptor可以从current IR重建，不作为attr列表保存。direct route不可实现时只拒绝该candidate；
@@ -122,13 +122,13 @@ host-visible input/output的card DDR root保持current compact boundary合同。
 destination，不创建隐藏storage。local layout change使用显式`wafer.tile.materialize_layout`或其它typed movement；
 只有composed physical mapping完全相同时才可canonicalize为metadata view。
 
-### Physical-Tile peer movement
+### Tile peer movement
 
 片内数据交换使用显式physical peer：
 
 ```text
-wafer.tile.peer_send %source_spm  {peer = <physical tile_id>, ...}
-wafer.tile.peer_recv %staging_spm {peer = <physical tile_id>, ...}
+wafer.tile.peer_send %source_spm  {peer = <target tile_id>, ...}
+wafer.tile.peer_recv %staging_spm {peer = <target tile_id>, ...}
 ```
 
 peer op携带fixed bytes与stable message identity；source/destination storage、encoding、valid domain和effect由operand
@@ -140,13 +140,13 @@ sender无法从单Tile module重算的remote accepted-address/resource binding�
 physical segment cover、sender readiness、receiver visibility和async lifetime。fanout需要多个显式messages或已闭合
 typed multicast capability；fanin/reduction必须显式包含receive、local compute和等待，不能藏在一个copy label里。
 
-## 6. CardProgram、TileProgram 与 TileRegion 集成
+## 6. CardModule、TileModule 与 TileRegion 集成
 
-`wafer.card.program`是CardProgram verification scope，拥有all-and-only available `wafer.tile.program`。每个
-TileProgram绑定一个physical `tile_id`，可以包含不同op、loop、temporal tile shape和执行长度。SPM value不能跨
-TileProgram SSA传递；跨Tile依赖只能通过card DDR或explicit communication表达。
+`wafer.card.module`是CardModule verification scope，拥有all-and-only available `wafer.tile.module`。每个
+TileModule绑定一个physical `tile_id`，可以包含不同op、loop、temporal tile shape和执行长度。SPM value不能跨
+TileModule SSA传递；跨Tile依赖只能通过card DDR或explicit communication表达。
 
-`wafer.tile.region`只表示一个physical Tile内的SPM residency domain。region内允许多个traversal和不同tile shape；
+`wafer.tile.region`只表示一个Tile内的SPM residency domain。region内允许多个traversal和不同tile shape；
 root可以分别retain、spill、reload或release。任何跨region shaped value都必须由显式DDR store/completion/load
 materialize；SPM root/value/alias跨界非法。region boundary不是自动completion，仍访问root的
 compute/movement/communication必须完成后才能释放。
@@ -182,7 +182,7 @@ IR中显式fill/mask/segmented movement。host-visible output不得把padding发
 
 调用方本次选择按以下transaction物化；本文不拥有shortlist或candidate set：
 
-1. clone未放置的CardProgram parent或构造isolated complete CardProgram candidate；
+1. clone未放置的CardModule parent或构造isolated complete CardModule candidate；
 2. 从current clone建立relation、bounds、alias、physical-map和effect snapshot；
 3. 用PatternRewriter/IRMapping/DialectConversion创建typed views、roots、movement、temporary和events；
 4. rewrite后销毁旧analysis；
@@ -206,8 +206,8 @@ compile-time proof resource limit。分类只用于diagnostic与search control�
 - metadata view正负例、alias/range/lifetime与physical-map equality；
 - direct/mapped/staged/local movement和one/multi-descriptor cover；
 - invalid-lane fill/mask/segmented path及negative observation；
-- distinct physical Tile peer IDs、message matching、cross-Tile SPM SSA rejection；
-- actual CardProgram拆成per-Tile modules后重放每Tile Instr、SPM/DDR和CardExecutable communication gate；
+- distinct Tile peer IDs、message matching、cross-Tile SPM SSA rejection；
+- actual CardModule拆成per-Tile modules后重放每Tile Instr、SPM/DDR和CardExecutable communication gate；
 - source-to-package integration实际执行，不以单op FileCheck代替。
 
 Q51完成还需要同一search真正生成dependent producer/consumer remap、partial-overlap transfer和NoC-aware placement，

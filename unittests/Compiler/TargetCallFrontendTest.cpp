@@ -5,7 +5,7 @@
 #include "Wafer/Target/TargetCall.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
-#include "../../lib/Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -120,13 +120,13 @@ module {
   if (!executionConfig)
     return executionConfig.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  auto executable = wafer::compiler::detail::buildPhysicalTileExecutables(
+  auto executable = wafer::compiler::detail::buildCardExecutable(
       context, *tensorProgram, std::move(program), *executionConfig,
       wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  return wafer::compiler::compilePhysicalTileExecutablesToTargetLLVMModules(
+  return wafer::compiler::compileCardExecutableToTargetLLVMModules(
       *executable, diagnostics);
 }
 
@@ -158,11 +158,11 @@ public:
     return nextEvent++;
   }
 
-  llvm::Error completeTile(wafer::PhysicalCardId physicalCardId,
-                           wafer::PhysicalTileId physicalTileId,
+  llvm::Error completeTile(wafer::CardId cardId,
+                           wafer::TileId tileId,
                            wafer::LaunchSlotId launchSlotId) override {
-    completedCardIds.push_back(physicalCardId.getValue());
-    completedTileIds.push_back(physicalTileId.getValue());
+    completedCardIds.push_back(cardId.getValue());
+    completedTileIds.push_back(tileId.getValue());
     completedLaunchSlots.push_back(launchSlotId.getValue());
     return llvm::Error::success();
   }
@@ -206,7 +206,7 @@ public:
 wafer::compiler::TargetCallTileArguments
 makeTileArguments(const wafer::compiler::TargetLLVMModule &module,
                   std::vector<uint64_t> slots) {
-  return {module.getPhysicalCardId(), module.getPhysicalTileId(),
+  return {module.getCardId(), module.getTileId(),
           module.getLaunchSlotId(), std::move(slots)};
 }
 
@@ -1005,8 +1005,8 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   EXPECT_FALSE(sink.aborted);
   EXPECT_EQ(sink.invocationTileCount, 16u);
   ASSERT_EQ(sink.tileDescriptors.size(), 16u);
-  EXPECT_EQ(sink.tileDescriptors[0].physicalCardId.getValue(), 0);
-  EXPECT_EQ(sink.tileDescriptors[0].physicalTileId.getValue(), 0);
+  EXPECT_EQ(sink.tileDescriptors[0].cardId.getValue(), 0);
+  EXPECT_EQ(sink.tileDescriptors[0].tileId.getValue(), 0);
   EXPECT_EQ(sink.tileDescriptors[0].launchSlotId.getValue(), 0);
   ASSERT_EQ(sink.tileDescriptors[0].kernelABISlots.size(),
             targetLLVMModules->getModules().front().getKernelABISlots().size());
@@ -1034,8 +1034,8 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   std::vector<uint64_t> nextIssueOrdinal(16, 0);
   for (size_t index = 0; index < sink.commands.size(); ++index) {
     const wafer::compiler::TargetCommand &command = sink.commands[index];
-    EXPECT_EQ(command.physicalCardId.getValue(), 0);
-    EXPECT_EQ(command.physicalTileId.getValue(),
+    EXPECT_EQ(command.cardId.getValue(), 0);
+    EXPECT_EQ(command.tileId.getValue(),
               command.launchSlotId.getValue());
     const int64_t launchSlot = command.launchSlotId.getValue();
     ASSERT_GE(launchSlot, 0);

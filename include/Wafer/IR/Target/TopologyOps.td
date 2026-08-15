@@ -32,7 +32,7 @@ def Wafer_ExecutionMeshOp : Wafer_Op<"execution.mesh", [Symbol]> {
   let description = [{
     `wafer.execution.mesh` records only the logical card-partition domain
     selected for a program. Its axis-shape product is `num_partitions`.
-    Physical Tile participation and placement are selected downstream and
+    Tile participation and placement are selected downstream and
     are not part of this IR object.
   }];
 

@@ -7,7 +7,7 @@
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "Wafer/Compiler/CompilationInternal.h"
-#include "Wafer/Compiler/PhysicalTileExecutablesInternal.h"
+#include "Wafer/Compiler/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -115,14 +115,14 @@ module {
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<PhysicalTileExecutables> executable =
-      compiler::detail::buildPhysicalTileExecutables(
+  llvm::Expected<CardExecutable> executable =
+      compiler::detail::buildCardExecutable(
           context, *tensorProgram, std::move(program), *config,
           OptimizationConfig::none(), diagnostics, std::nullopt);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  return compilePhysicalTileExecutablesToTargetLLVMModules(*executable,
+  return compileCardExecutableToTargetLLVMModules(*executable,
                                                            diagnostics);
 }
 
@@ -138,7 +138,7 @@ public:
     return nextEvent++;
   }
 
-  llvm::Error completeTile(PhysicalCardId, PhysicalTileId,
+  llvm::Error completeTile(CardId, TileId,
                            LaunchSlotId) override {
     return llvm::Error::success();
   }
@@ -184,8 +184,8 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
   const std::array<llvm::ArrayRef<RawLogicalValue>, 2> logicalInputs{lhs, rhs};
   for (const TargetLLVMModule &module : targetLLVMModules->getModules()) {
     const int64_t launchSlot = module.getLaunchSlotId().getValue();
-    arguments.push_back({module.getPhysicalCardId(),
-                         module.getPhysicalTileId(),
+    arguments.push_back({module.getCardId(),
+                         module.getTileId(),
                          module.getLaunchSlotId(),
                          {}});
     size_t inputCount = 0;
@@ -222,8 +222,8 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
       ASSERT_EQ(bytes.size(), static_cast<uint64_t>(slot.byteSize));
       if (launchSlot == 0)
         inputs.push_back(
-            {getTargetModelResourceId(module.getPhysicalCardId(),
-                                      module.getPhysicalTileId(), slot.role,
+            {getTargetModelResourceId(module.getCardId(),
+                                      module.getTileId(), slot.role,
                                       slot.resourceIndex),
              std::move(bytes)});
       ++inputCount;
@@ -232,7 +232,7 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
     EXPECT_EQ(outputCount, 1u);
   }
 
-  // Spatial synthesis shards N across physical Tiles while preserving each
+  // Spatial synthesis shards N across Tiles while preserving each
   // batch-2 operation. The numeric execution below uses a separately prepared
   // frontend from the same complete target targetLLVMModules and explicit Tile
   // triples.

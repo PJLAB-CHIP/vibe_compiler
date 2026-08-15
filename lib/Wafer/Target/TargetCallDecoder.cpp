@@ -154,7 +154,7 @@ buildBuiltinCommand(const TargetCallDecodeConfig &config,
   }
   case TargetCallBuiltin::DirectDTEBegin:
   case TargetCallBuiltin::DirectDTEBeginAfterPrepare:
-    if (argument32(arguments, 1) != config.physicalTileCount)
+    if (argument32(arguments, 1) != config.tileCount)
       return llvm::createStringError(
           "Direct-DTE begin participant count does not match the physical "
           "Tile invocation domain");

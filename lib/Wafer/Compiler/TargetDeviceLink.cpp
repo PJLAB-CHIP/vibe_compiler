@@ -34,7 +34,7 @@ llvm::Error validateEntryInputs(llvm::Function &body,
                                 llvm::ArrayRef<KernelABISlot> slots,
                                 const RuntimeLaunchContract &launch,
                                 LaunchSlotId launchSlotId,
-                                int64_t physicalTileCount) {
+                                int64_t tileCount) {
   if (body.isVarArg() || !body.getReturnType()->isVoidTy() ||
       body.arg_size() != slots.size() ||
       !llvm::all_of(body.args(), [](const llvm::Argument &argument) {
@@ -49,8 +49,8 @@ llvm::Error validateEntryInputs(llvm::Function &body,
           llvm::errc::invalid_argument,
           "target device entry slots are not in canonical ordinal order");
 
-  if (physicalTileCount != kTx81TileCount || launchSlotId.getValue() < 0 ||
-      launchSlotId.getValue() >= physicalTileCount)
+  if (tileCount != kTx81TileCount || launchSlotId.getValue() < 0 ||
+      launchSlotId.getValue() >= tileCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "multi-Tile target device entry requires the complete 16-Tile "
@@ -104,7 +104,7 @@ void retainModelDynamicExport(llvm::Module &module, llvm::Function &entry,
 llvm::Expected<llvm::SmallVector<uint64_t, 16>>
 getModelDescriptorIndices(llvm::ArrayRef<KernelABISlot> slots,
                           LaunchSlotId launchSlotId,
-                          int64_t physicalTileCount) {
+                          int64_t tileCountValue) {
   uint64_t inputCount = 0;
   uint64_t outputCount = 0;
   for (const KernelABISlot &slot : slots) {
@@ -125,13 +125,13 @@ getModelDescriptorIndices(llvm::ArrayRef<KernelABISlot> slots,
   uint64_t perTileCount = inputCount + outputCount;
   if (perTileCount >
       (std::numeric_limits<uint64_t>::max() - kModelBootParamHeadBytes) /
-          kModelDynInfoBytes / static_cast<uint64_t>(physicalTileCount))
+          kModelDynInfoBytes / static_cast<uint64_t>(tileCountValue))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "model target device entry descriptor layout overflows uint64");
 
   const uint64_t launchSlot = static_cast<uint64_t>(launchSlotId.getValue());
-  const uint64_t tileCount = static_cast<uint64_t>(physicalTileCount);
+  const uint64_t tileCount = static_cast<uint64_t>(tileCountValue);
   const uint64_t outputBase = tileCount * inputCount;
   uint64_t nextInput = 0;
   uint64_t nextOutput = 0;
@@ -159,14 +159,14 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
     const llvm::Module &module, llvm::StringRef entrySymbol,
     llvm::ArrayRef<KernelABISlot> slots,
     const RuntimeLaunchContract &runtimeLaunchContract,
-    LaunchSlotId launchSlotId, int64_t physicalTileCount) {
+    LaunchSlotId launchSlotId, int64_t tileCount) {
   std::unique_ptr<llvm::Module> deviceModule = llvm::CloneModule(module);
   llvm::Function *body = deviceModule->getFunction(entrySymbol);
   if (!body || body->isDeclaration())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "target device entry body is missing");
   if (llvm::Error error = validateEntryInputs(
-          *body, slots, runtimeLaunchContract, launchSlotId, physicalTileCount))
+          *body, slots, runtimeLaunchContract, launchSlotId, tileCount))
     return std::move(error);
   llvm::LLVMContext &context = deviceModule->getContext();
   llvm::Type *i64 = llvm::Type::getInt64Ty(context);
@@ -188,7 +188,7 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
   arguments.reserve(slots.size());
   if (modelLaunch) {
     llvm::Expected<llvm::SmallVector<uint64_t, 16>> descriptorIndices =
-        getModelDescriptorIndices(slots, launchSlotId, physicalTileCount);
+        getModelDescriptorIndices(slots, launchSlotId, tileCount);
     if (!descriptorIndices)
       return descriptorIndices.takeError();
     llvm::Type *i8 = llvm::Type::getInt8Ty(context);
@@ -223,7 +223,7 @@ llvm::Expected<std::unique_ptr<llvm::Module>> materializeDeviceEntryABI(
 llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
                         llvm::ArrayRef<KernelABISlot> slots,
                         const RuntimeLaunchContract &runtimeLaunchContract,
-                        LaunchSlotId launchSlotId, int64_t physicalTileCount,
+                        LaunchSlotId launchSlotId, int64_t tileCount,
                         llvm::StringRef path,
                         ProfileCaptureKind profileCapture) {
   if (runtimeLaunchContract.getKernel())
@@ -236,7 +236,7 @@ llvm::Error writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
   llvm::Expected<std::unique_ptr<llvm::Module>> deviceModule =
       materializeDeviceEntryABI(module, entrySymbol, slots,
                                 runtimeLaunchContract, launchSlotId,
-                                physicalTileCount);
+                                tileCount);
   if (!deviceModule)
     return deviceModule.takeError();
   return writeTargetLLVMIR(**deviceModule, path);

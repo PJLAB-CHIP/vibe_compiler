@@ -170,7 +170,7 @@ TARGET_CODE_GENERATION_SOURCES = (
     "TargetDeviceLink.cpp",
     "TargetLLVMTranslation.cpp",
     "TargetModuleReadback.cpp",
-    "CompilePhysicalTileLLVMModules.cpp",
+    "CompileCardExecutableLLVMModules.cpp",
 )
 PACKAGE_MANIFEST_SOURCES = (
     "PackageManifest.cpp",
@@ -273,7 +273,7 @@ LEGACY_GROUP_API_PATTERNS = (
         "retired group-to-tile-region API",
     ),
     (
-        re.compile(r"\bcompileGroupedProgramToPhysicalTileExecutables(?:Impl)?\b"),
+        re.compile(r"\bcompileGroupedProgramToCardExecutable(?:Impl)?\b"),
         "retired grouped-program compiler API",
     ),
     (

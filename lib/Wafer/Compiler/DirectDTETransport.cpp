@@ -67,7 +67,7 @@ struct IssueRecord {
   mlir::Operation *operation = nullptr;
   mlir::Operation *wait = nullptr;
   mlir::Block *block = nullptr;
-  int64_t physicalTileIndex = -1;
+  int64_t tileIndex = -1;
   MessageBaseKey message;
   SPMRangePattern rangePattern;
   int64_t bytes = -1;
@@ -114,7 +114,7 @@ struct StructuredExecutionFrame {
 
 struct TransportAction {
   mlir::Operation *operation = nullptr;
-  int64_t physicalTileIndex = -1;
+  int64_t tileIndex = -1;
   TransportActionKind kind = TransportActionKind::Wait;
   IssueRecord *issue = nullptr;
   llvm::SmallVector<unsigned, 4> waitedIssueActions;
@@ -590,21 +590,21 @@ getStructuredLoopSite(mlir::Operation *issue) {
   return reversedLoops;
 }
 
-static MessageBaseKey makeMessageBaseKey(int64_t physicalTileIndex,
+static MessageBaseKey makeMessageBaseKey(int64_t tileIndex,
                                          int64_t peer, DTEMessageAttr message,
                                          bool isSend) {
-  return std::make_tuple(isSend ? physicalTileIndex : peer,
-                         isSend ? peer : physicalTileIndex,
+  return std::make_tuple(isSend ? tileIndex : peer,
+                         isSend ? peer : tileIndex,
                          message.getCommunicationId(), message.getRound(),
                          message.getPayloadSlice());
 }
 
 static mlir::LogicalResult
-collectIssues(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
+collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
               llvm::SmallVectorImpl<IssueRecord> &issues) {
-  for (size_t physicalTileIndex = 0;
-       physicalTileIndex < physicalTileModules.size(); ++physicalTileIndex) {
-    mlir::ModuleOp module = physicalTileModules[physicalTileIndex];
+  for (size_t tileIndex = 0;
+       tileIndex < tileModules.size(); ++tileIndex) {
+    mlir::ModuleOp module = tileModules[tileIndex];
     llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
     module.walk([&](mlir::Block *block) {
       for (auto [index, operation] : llvm::enumerate(*block))
@@ -641,7 +641,7 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
       int64_t peer =
           send ? send.getPeerAttr().getInt() : recv.getPeerAttr().getInt();
       if (peer < 0 ||
-          peer >= static_cast<int64_t>(physicalTileModules.size())) {
+          peer >= static_cast<int64_t>(tileModules.size())) {
         operation->emitError(
             "direct_dte_binding: peer is outside the supplied physical "
             "Tile domain");
@@ -653,7 +653,7 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
       DTEMessageAttr message =
           send ? send.getMessageAttr() : recv.getMessageAttr();
       MessageBaseKey messageBase =
-          makeMessageBaseKey(static_cast<int64_t>(physicalTileIndex), peer,
+          makeMessageBaseKey(static_cast<int64_t>(tileIndex), peer,
                              message, static_cast<bool>(send));
       mlir::FailureOr<llvm::SmallVector<StructuredLoopSite, 4>> loopSite =
           getStructuredLoopSite(operation);
@@ -672,7 +672,7 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
       }
       issues.push_back(IssueRecord{
           operation, *wait, operation->getBlock(),
-          static_cast<int64_t>(physicalTileIndex), messageBase,
+          static_cast<int64_t>(tileIndex), messageBase,
           std::move(*rangePattern), bytes, operationIndices.lookup(operation),
           operationIndices.lookup(*wait), -1, static_cast<bool>(send)});
       return mlir::WalkResult::advance();
@@ -758,7 +758,7 @@ static mlir::LogicalResult appendDynamicIssues(
 }
 
 static mlir::LogicalResult buildDynamicMessageStreams(
-    llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
+    llvm::ArrayRef<mlir::ModuleOp> tileModules,
     llvm::ArrayRef<IssueRecord> issues,
     std::map<MessageBaseKey, DynamicMessageStream> &streams) {
   llvm::DenseMap<mlir::Operation *, unsigned> issueIndices;
@@ -772,7 +772,7 @@ static mlir::LogicalResult buildDynamicMessageStreams(
 
   llvm::DenseMap<mlir::Operation *, uint64_t> loopIterations;
   llvm::SmallVector<uint64_t, 32> occurrenceCounts(issues.size(), 0);
-  for (mlir::ModuleOp module : physicalTileModules)
+  for (mlir::ModuleOp module : tileModules)
     if (mlir::failed(appendDynamicIssues(
             module.getOperation(), issues, issueIndices, issueAncestors,
             loopIterations, occurrenceCounts, streams)))
@@ -820,7 +820,7 @@ verifySenderResources(llvm::ArrayRef<IssueRecord> issues) {
       if (overlaps)
         return right.operation->emitError(
             "direct_dte_binding: normal allocation profile permits at "
-            "most one live sender per physical Tile block");
+            "most one live sender per Tile block");
     }
   }
   return mlir::success();
@@ -888,12 +888,12 @@ findTransportFunctions(const ExecutableCallClosure &closure,
 class StructuredTraceBuilder {
 public:
   StructuredTraceBuilder(
-      int64_t physicalTileIndex, mlir::ModuleOp module,
+      int64_t tileIndex, mlir::ModuleOp module,
       const ExecutableCallClosure &closure,
       const llvm::DenseSet<mlir::Operation *> &transportFunctions,
       const llvm::DenseMap<mlir::Operation *, IssueRecord *> &issueByOperation,
       StructuredTransportTrace &trace)
-      : physicalTileIndex(physicalTileIndex), module(module), closure(closure),
+      : tileIndex(tileIndex), module(module), closure(closure),
         transportFunctions(transportFunctions),
         issueByOperation(issueByOperation), trace(trace) {}
 
@@ -959,7 +959,7 @@ private:
         if (liveRecord->isSend)
           return operation->emitError(
               "direct_dte_binding: normal allocation profile permits at "
-              "most one live sender per physical Tile structured occurrence");
+              "most one live sender per Tile structured occurrence");
       }
     } else {
       for (const auto &[liveRecord, action] : pending) {
@@ -971,7 +971,7 @@ private:
 
     unsigned action = appendAction(
         TransportAction{operation,
-                        physicalTileIndex,
+                        tileIndex,
                         record->isSend ? TransportActionKind::SendIssue
                                        : TransportActionKind::ReceivePrepare,
                         record,
@@ -998,7 +998,7 @@ private:
       waitedActions.push_back(pendingIt->second);
       pending.erase(pendingIt);
     }
-    appendAction(TransportAction{wait.getOperation(), physicalTileIndex,
+    appendAction(TransportAction{wait.getOperation(), tileIndex,
                                  TransportActionKind::Wait, nullptr,
                                  std::move(waitedActions)});
     return mlir::success();
@@ -1099,7 +1099,7 @@ private:
     llvm_unreachable("structured operation must be in its parent block");
   }
 
-  int64_t physicalTileIndex;
+  int64_t tileIndex;
   mlir::ModuleOp module;
   const ExecutableCallClosure &closure;
   const llvm::DenseSet<mlir::Operation *> &transportFunctions;
@@ -1374,7 +1374,7 @@ verifyAcyclicWaitGraph(StructuredTransportTrace &trace) {
         const unsigned actionIndex = cycle[index];
         const TransportAction &member = trace.actions[actionIndex];
         diagnostic << (index == 0 ? "; cycle=[" : ", ") << actionIndex
-                   << ":tile" << member.physicalTileIndex << ':'
+                   << ":tile" << member.tileIndex << ':'
                    << getActionName(member.kind);
         if (member.issue) {
           const auto &[source, destination, communication, round, payload] =
@@ -1384,7 +1384,7 @@ verifyAcyclicWaitGraph(StructuredTransportTrace &trace) {
                      << ",slice=" << payload << ')';
         }
         diagnostic.attachNote(member.operation->getLoc())
-            << "physical Tile index " << member.physicalTileIndex << " "
+            << "Tile index " << member.tileIndex << " "
             << getActionName(member.kind) << " participates in the wait cycle";
       }
       diagnostic << ']';
@@ -1394,7 +1394,7 @@ verifyAcyclicWaitGraph(StructuredTransportTrace &trace) {
 }
 
 static mlir::LogicalResult verifyStructuredTransportWaitGraph(
-    llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
+    llvm::ArrayRef<mlir::ModuleOp> tileModules,
     llvm::SmallVectorImpl<IssueRecord> &issues,
     llvm::SmallVectorImpl<MatchedMessage> &messages,
     StructuredTransportTrace &trace) {
@@ -1402,9 +1402,9 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
   for (IssueRecord &issue : issues)
     issueByOperation[issue.operation] = &issue;
 
-  for (size_t physicalTileIndex = 0;
-       physicalTileIndex < physicalTileModules.size(); ++physicalTileIndex) {
-    mlir::ModuleOp module = physicalTileModules[physicalTileIndex];
+  for (size_t tileIndex = 0;
+       tileIndex < tileModules.size(); ++tileIndex) {
+    mlir::ModuleOp module = tileModules[tileIndex];
     llvm::Expected<ExecutableCallClosure> closure =
         analyzeExecutableCallClosure(module);
     if (!closure) {
@@ -1417,7 +1417,7 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
     }
     llvm::DenseSet<mlir::Operation *> transportFunctions =
         findTransportFunctions(*closure, module);
-    StructuredTraceBuilder builder(static_cast<int64_t>(physicalTileIndex),
+    StructuredTraceBuilder builder(static_cast<int64_t>(tileIndex),
                                    module, *closure, transportFunctions,
                                    issueByOperation, trace);
     if (mlir::failed(builder.build()))
@@ -1603,17 +1603,17 @@ static mlir::LogicalResult allocateReceiverFSMs(
 }
 
 static mlir::LogicalResult
-analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
+analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules,
                           llvm::SmallVectorImpl<IssueRecord> &issues,
                           llvm::SmallVectorImpl<MatchedMessage> &messages,
                           StructuredTransportTrace &trace) {
-  if (mlir::failed(collectIssues(physicalTileModules, issues)))
+  if (mlir::failed(collectIssues(tileModules, issues)))
     return mlir::failure();
   if (issues.empty())
     return mlir::success();
   if (mlir::failed(verifySenderResources(issues)) ||
       mlir::failed(verifyStructuredTransportWaitGraph(
-          physicalTileModules, issues, messages, trace)) ||
+          tileModules, issues, messages, trace)) ||
       mlir::failed(allocateReceiverFSMs(issues, trace.receiverConflicts)))
     return mlir::failure();
   return mlir::success();
@@ -1622,20 +1622,20 @@ analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules,
 } // namespace
 
 mlir::LogicalResult verifyDirectDTETransportSchedule(
-    llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
+    llvm::ArrayRef<mlir::ModuleOp> tileModules) {
   llvm::SmallVector<IssueRecord, 32> issues;
   llvm::SmallVector<MatchedMessage, 32> messages;
   StructuredTransportTrace trace;
-  return analyzeDirectDTETransport(physicalTileModules, issues, messages,
+  return analyzeDirectDTETransport(tileModules, issues, messages,
                                    trace);
 }
 
 mlir::FailureOr<TransportContract>
-bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
+bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
   llvm::SmallVector<IssueRecord, 32> issues;
   llvm::SmallVector<MatchedMessage, 32> messages;
   StructuredTransportTrace trace;
-  if (mlir::failed(analyzeDirectDTETransport(physicalTileModules, issues,
+  if (mlir::failed(analyzeDirectDTETransport(tileModules, issues,
                                              messages, trace)))
     return mlir::failure();
   if (issues.empty())
@@ -1644,7 +1644,7 @@ bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
   std::map<MessageBaseKey, DynamicMessageStream> streams;
   if (!buildInvariantMessageRepresentatives(issues, streams) &&
       mlir::failed(
-          buildDynamicMessageStreams(physicalTileModules, issues, streams)))
+          buildDynamicMessageStreams(tileModules, issues, streams)))
     return mlir::failure();
 
   llvm::SmallVector<std::pair<mlir::Operation *, DirectDTEBindingAttr>, 32>
@@ -1666,8 +1666,8 @@ bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
 namespace wafer::compiler::testing {
 
 mlir::FailureOr<TransportContract>
-bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> physicalTileModules) {
-  return detail::bindDirectDTETransport(physicalTileModules);
+bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
+  return detail::bindDirectDTETransport(tileModules);
 }
 
 } // namespace wafer::compiler::testing

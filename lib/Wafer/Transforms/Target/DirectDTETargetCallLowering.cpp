@@ -3,7 +3,7 @@
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/IR/Target/PhysicalTopology.h"
+#include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetCall.h"
 #include "Wafer/Target/TargetFormat.h"
@@ -44,19 +44,19 @@
 namespace wafer::target_llvm_detail {
 
 mlir::FailureOr<DirectDTEEndpointDomain>
-resolveDirectDTEEndpointDomain(const PhysicalTopology &topology,
+resolveDirectDTEEndpointDomain(const TargetTopology &topology,
                                mlir::ModuleOp diagnosticModule,
-                               PhysicalCardId physicalCardId,
-                               PhysicalTileId physicalTileId) {
-  std::optional<llvm::ArrayRef<PhysicalTileId>> available =
-      topology.getAvailableTileIds(physicalCardId);
-  if (!available || !llvm::is_contained(*available, physicalTileId))
+                               CardId cardId,
+                               TileId tileId) {
+  std::optional<llvm::ArrayRef<TileId>> available =
+      topology.getAvailableTileIds(cardId);
+  if (!available || !llvm::is_contained(*available, tileId))
     return diagnosticModule.emitError()
-           << "unsupported_target_transport: current physical Tile is not "
+           << "unsupported_target_transport: current Tile is not "
               "available in the selected card topology";
   DirectDTEEndpointDomain domain;
-  domain.physicalCardId = physicalCardId;
-  domain.physicalTileId = physicalTileId;
+  domain.cardId = cardId;
+  domain.tileId = tileId;
   domain.availableTileIds.assign(available->begin(), available->end());
   return domain;
 }
@@ -81,13 +81,13 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
            << "target_abi_narrowing: Direct DTE byte count must fit a "
               "positive int32_t packet size";
   int64_t peer = op.getPeerAttr().getInt();
-  const PhysicalTileId peerTileId(peer);
+  const TileId peerTileId(peer);
   if (peer < 0 ||
       !llvm::is_contained(domain.availableTileIds, peerTileId) ||
-      peerTileId == domain.physicalTileId)
+      peerTileId == domain.tileId)
     return op.emitError()
            << "unsupported_target_transport: Direct DTE peer is outside "
-              "the accepted physical Tile domain";
+              "the accepted Tile domain";
   mlir::FailureOr<mlir::Value> source =
       materializeAddress(op, op.getBuffer(), "direct DTE send source");
   if (mlir::failed(source))
@@ -184,7 +184,7 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   args.push_back(*source);
   args.push_back(remoteDestination);
   appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
-  appendI32(op.getLoc(), args, domain.physicalTileId.getValue());
+  appendI32(op.getLoc(), args, domain.tileId.getValue());
   appendI32(op.getLoc(), args, peerTileId.getValue());
   args.push_back(remoteReceiverFsm);
   appendI32(op.getLoc(), args, /*isHighPerformance=*/0);
@@ -220,13 +220,13 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
            << "target_abi_narrowing: Direct DTE byte count must fit a "
               "positive int32_t packet size";
   int64_t peer = op.getPeerAttr().getInt();
-  const PhysicalTileId peerTileId(peer);
+  const TileId peerTileId(peer);
   if (peer < 0 ||
       !llvm::is_contained(domain.availableTileIds, peerTileId) ||
-      peerTileId == domain.physicalTileId)
+      peerTileId == domain.tileId)
     return op.emitError()
            << "unsupported_target_transport: Direct DTE peer is outside "
-              "the accepted physical Tile domain";
+              "the accepted Tile domain";
   mlir::FailureOr<mlir::Value> destination =
       materializeAddress(op, op.getBuffer(), "direct DTE receive destination");
   if (mlir::failed(destination))
@@ -235,7 +235,7 @@ FunctionLowering::lowerDTERecv(InstrDTERecvOp op,
   llvm::SmallVector<mlir::Value, 8> args;
   args.push_back(*destination);
   appendI32(op.getLoc(), args, op.getBytesAttr().getInt());
-  appendI32(op.getLoc(), args, domain.physicalTileId.getValue());
+  appendI32(op.getLoc(), args, domain.tileId.getValue());
   appendI32(op.getLoc(), args, peerTileId.getValue());
   appendI32(op.getLoc(), args, binding.getReceiverFsmId());
   return emitI64Call(

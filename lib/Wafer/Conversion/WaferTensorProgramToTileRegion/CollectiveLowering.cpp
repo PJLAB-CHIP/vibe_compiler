@@ -104,7 +104,7 @@ TileRegionBodyEmitter::convertAllGather(LinalgExtCollectiveAllGatherOp op,
     return mlir::failure();
   if (!isSingleton(group))
     return fail("non-singleton card-level all_gather lowering is unsupported; "
-                "physical Tile communication must be selected by whole-card "
+                "Tile communication must be selected by card "
                 "dataflow synthesis");
   mlir::FailureOr<mlir::Value> input = getOrMaterializeStructuredInput(
       op.getInputs().front(), MemLayout::Tensor, builder);
@@ -128,7 +128,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertReduceScatter(
   if (!isSingleton(group))
     return fail(
         "non-singleton card-level reduce_scatter lowering is unsupported; "
-        "physical Tile communication must be selected by whole-card dataflow "
+        "Tile communication must be selected by card dataflow "
         "synthesis");
   mlir::FailureOr<mlir::Value> input = getOrMaterializeStructuredInput(
       op.getInputs().front(), MemLayout::Tensor, builder);
@@ -158,7 +158,7 @@ TileRegionBodyEmitter::convertAllReduce(LinalgExtCollectiveAllReduceOp op,
     return mlir::failure();
   if (!isSingleton(group))
     return fail("non-singleton card-level all_reduce lowering is unsupported; "
-                "physical Tile communication must be selected by whole-card "
+                "Tile communication must be selected by card "
                 "dataflow synthesis");
   mlir::FailureOr<mlir::Value> input = getOrMaterializeStructuredInput(
       op.getInputs().front(), MemLayout::Tensor, builder);
@@ -188,7 +188,7 @@ TileRegionBodyEmitter::convertAllToAll(LinalgExtCollectiveAllToAllOp op,
     return mlir::failure();
   if (!isSingleton(group))
     return fail("non-singleton card-level all_to_all lowering is unsupported; "
-                "physical Tile communication must be selected by whole-card "
+                "Tile communication must be selected by card "
                 "dataflow synthesis");
   if (op.getSplitCount() != 1)
     return fail("singleton all_to_all requires split_count = 1");
@@ -211,7 +211,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertCollectivePermute(
       pairs[1] != currentLogicalPartition)
     return fail(
         "non-singleton card-level collective_permute lowering is unsupported; "
-        "physical Tile communication must be selected by whole-card dataflow "
+        "Tile communication must be selected by card dataflow "
         "synthesis");
   mlir::FailureOr<mlir::Value> input = getOrMaterializeStructuredInput(
       op.getInputs().front(), MemLayout::Tensor, builder);

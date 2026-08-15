@@ -54,15 +54,15 @@ public:
   static char ID;
 
   BoardRuntimeError(
-      BoardRuntimeStage stage, PhysicalCardId cardId, PhysicalTileId tileId,
+      BoardRuntimeStage stage, CardId cardId, TileId tileId,
       LaunchSlotId launchSlot, EntryId entry, std::string detail,
       BoardRuntimeContextState contextState = BoardRuntimeContextState::Usable)
       : stage(stage), cardId(cardId), tileId(tileId), launchSlot(launchSlot),
         entry(entry), detail(std::move(detail)), contextState(contextState) {}
 
   BoardRuntimeStage getStage() const { return stage; }
-  PhysicalCardId getPhysicalCardId() const { return cardId; }
-  PhysicalTileId getPhysicalTileId() const { return tileId; }
+  CardId getCardId() const { return cardId; }
+  TileId getTileId() const { return tileId; }
   LaunchSlotId getLaunchSlot() const { return launchSlot; }
   EntryId getEntry() const { return entry; }
   llvm::StringRef getDetail() const { return detail; }
@@ -73,8 +73,8 @@ public:
 
 private:
   BoardRuntimeStage stage;
-  PhysicalCardId cardId;
-  PhysicalTileId tileId;
+  CardId cardId;
+  TileId tileId;
   LaunchSlotId launchSlot;
   EntryId entry;
   std::string detail;
@@ -91,7 +91,7 @@ struct BoardDeviceInfo {
   std::string pciBusId;
   std::string runtimeLibraryDigest;
   struct Tile {
-    PhysicalTileId tileId{0};
+    TileId tileId{0};
     LaunchSlotId launchSlot;
     bool available = false;
     uint32_t physicalX = 0;
@@ -161,8 +161,8 @@ using BoardCompletionDeadline = std::chrono::steady_clock::time_point;
 /// One immutable, already-digest-verified tile module snapshot. Graph loading
 /// must synchronously consume the bytes; it may not retain the ArrayRef.
 struct BoardGraphModuleSnapshot {
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   ModuleId module;
   llvm::StringRef digest;
@@ -173,8 +173,8 @@ struct BoardGraphModuleSnapshot {
 /// receives typed semantics and a device allocation, never a caller-built raw
 /// BootParam buffer.
 struct BoardModelTensorLaunch {
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   uint64_t slotOrdinal = 0;
   PackageResourceRole role = PackageResourceRole::UserInput;
@@ -184,13 +184,13 @@ struct BoardModelTensorLaunch {
   std::vector<int64_t> shape;
 };
 
-/// One canonical physical-Tile launch owned by a whole-card provider
+/// One canonical Tile launch owned by a card provider
 /// submission. The provider may implement the common submission using
 /// multiple command queues, but callers cannot observe or assemble those
 /// queues themselves.
 struct BoardTileLaunch {
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   EntryId entry;
   BoardFunctionHandle function;
@@ -243,7 +243,7 @@ public:
             llvm::StringRef symbol) = 0;
   virtual llvm::Error unloadGraph(BoardGraphHandle graph) = 0;
 
-  /// Submits exactly one typed kernel phase for the complete physical-Tile
+  /// Submits exactly one typed kernel phase for the complete Tile
   /// domain. The first phase establishes provider-owned stream and argument
   /// storage; a later phase may only reuse that state after the previous phase
   /// reached terminal. A failure after an unknown or non-empty accepted subset
@@ -304,8 +304,8 @@ struct BoardRuntimeOutput {
 
 struct BoardRuntimeTileResult {
   EntryId entry;
-  PhysicalCardId cardId{0};
-  PhysicalTileId tileId{0};
+  CardId cardId{0};
+  TileId tileId{0};
   LaunchSlotId launchSlot;
   ModuleId module;
   PackageEntryCompletionKind completion =
@@ -317,7 +317,7 @@ struct BoardRuntimeInvocationResult {
   std::vector<BoardRuntimeTileResult> tiles;
   std::vector<BoardRuntimeStage> completedStages;
   /// Host steady-clock interval from immediately before provider submission
-  /// through successful whole-card completion. This is a campaign-level latency
+  /// through successful card completion. This is a campaign-level latency
   /// observation, not a tile clock and not per-instruction hardware time.
   uint64_t launchToCompletionNanoseconds = 0;
   /// Host steady-clock time spent strictly inside provider submission calls,
@@ -389,7 +389,7 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
                                 BoardRuntimeInvocationRequest request,
                                 QualifiedBoardRuntimeSession &session);
 
-/// Executes the first complete whole-card invocation through the ordinary
+/// Executes the first complete card invocation through the ordinary
 /// one-shot path using the request's completion-observation policy, then
 /// returns a capability for later complete invocations on that already-
 /// qualified device. There is no public empty-session or arbitrary Tile-count
@@ -401,7 +401,7 @@ executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
                                       BoardRuntimeInvocationRequest request,
                                       BoardRuntimeDriver &driver);
 
-/// Executes the complete verified physical-Tile domain as one owner-backed
+/// Executes the complete verified Tile domain as one owner-backed
 /// provider session. The manifest selects exactly one kernel or model
 /// submission path. Entry transport requirements, including Direct DTE, are
 /// verified independently and never select another runtime entry point.

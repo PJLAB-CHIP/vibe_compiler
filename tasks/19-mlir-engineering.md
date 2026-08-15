@@ -9,7 +9,7 @@ IR 语义、memory、target、verification 和源码组织；本文不复制这�
 ```text
 Pipeline position:
 - Upstream IR / input:
-  verified StableHLO/Linalg/TensorProgram，以及已经选择并物化的 CardProgram、TileProgram、TileRegion、Instr；
+  verified StableHLO/Linalg/TensorProgram，以及已经选择并物化的 CardModule、TileModule、TileRegion、Instr；
   target topology、mesh、symbol/call relation 均由对应上游 output contract显式提供。
 - Current stage responsibility:
   让operation hierarchy成为真实的pass、analysis和rewrite作用域；用ODS、SSA、标准interface、
@@ -17,7 +17,7 @@ Pipeline position:
   PatternRewriter 实现可验证、可插桩、可复用的 lowering，不以 whole-module wrapper、Location 指针、结构序号或
   pass 外 mutable side state 代替 MLIR 合同。
 - Output IR / files:
-  与 01–18 定义相同的 TensorProgram、CardProgram/TileRegion、Instr、CardExecutable 和 target modules；每层 IR
+  与 01–18 定义相同的 TensorProgram、CardModule/TileRegion、Instr、CardExecutable 和 target modules；每层 IR
   自包含、可 roundtrip、可由 verifier 判定，pass pipeline 可打印并在相同输入上确定性重放。
 - Downstream consumer:
   frontend/StableHLO/SPMD、physical-dataflow mechanism/search、SPM/DDR、NCC required-join placement、
@@ -51,7 +51,7 @@ Q54 已把首轮全仓审计发现的 MLIR 基础设施问题收敛到下列稳�
 | --- | --- |
 | IR 自包含性与 ODS | active source 不再用 `OpaqueLoc`、裸指针、结构序号或打印文本恢复编译语义；GEMM batch、elementwise maps、reduce init 等稳定字段进入 ODS/generated accessor，discardable instrumentation attr 可组合 |
 | alias/effect/dataflow | alias-only view 与 materializing reshape 分离；TileRegion 提供 RegionBranch/terminator 合同，通用 flow 使用 RegionBranch、Call、ViewLike、MemoryEffect 与指令语义 interface，目标特有异步约束保留窄分析 |
-| pass hierarchy | TileRegion lowering 运行在真实 `TileRegionOp` anchor，required NCC join 运行在 `func.func`，call/shared arena、DDR、whole-card verification 与 closed target conversion 保持真实全局边界；不再构造 synthetic Module/Func local wrapper |
+| pass hierarchy | TileRegion lowering 运行在真实 `TileRegionOp` anchor，required NCC join 运行在 `func.func`，call/shared arena、DDR、card verification 与 closed target conversion 保持真实全局边界；不再构造 synthetic Module/Func local wrapper |
 | analysis | timeline、direct call graph 与 target scheduling facts进入 operation-anchored AnalysisManager seam，并按 mutation 明确 preserve/invalidate；一次性 candidate/cost value 仍是 query-local typed value，不机械 analysis 化 |
 | pipeline | active compiler 只由统一 runner 构造 production PassManager；16 个 atomic pass 组成 7 条常驻 named semantic pipeline，另有 1 条 Shardy 条件 pipeline；textual pipeline、production builder、nested anchor 与 statistics 共享事实源 |
 | rewrite/conversion | active pattern 不持有 rollback 外 mutable failure state；validation 先于 mutation，greedy rewrite 限定 affected roots，Tile dataflow marker 使新增 source op fail closed，简单 Fill rewrite 使用 DRR，复杂 layout/index/resource lowering保留 C++ |
@@ -60,13 +60,13 @@ Q54 已把首轮全仓审计发现的 MLIR 基础设施问题收敛到下列稳�
 | target/runtime/model layering | pure physical layout、target operation/transaction 与 numeric protocol不依赖 MLIR；MLIR adapter、host frontend和model consumer按 output 单向分层，public-header/link-closure在 feature on/off 均受测 |
 | source/build/test truth | active/dormant source由18号CMake政策和organization checker唯一判定；fresh generated/build、public link smoke、unit/lit、IR/source checker和受影响模型测试共同防止 stale build 假通过 |
 
-Q54 不把性能搜索本身改写成 PassManager。`none` 控制流中剩余的 whole-card 重物化由 Q49.P 消费这些
+Q54 不把性能搜索本身改写成 PassManager。`none` 控制流中剩余的 card 重物化由 Q49.P 消费这些
 scope/pipeline seam 后删除；rotating buffer 必须先有真实共同 wave/stage loop 的要求由 Q50.I 实现；全仓更广的术语润色由
 Q45 继续，但 Q54 引入或迁移的 active API 已无semantic Location pointer payload、synthetic local wrapper和旧的通用candidate容器。
 
 ### 2.1 全工程覆盖矩阵
 
-Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆盖PhysicalTile。下表区分“本任务必须整改”与“确认边界正确、
+Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆盖Tile。下表区分“本任务必须整改”与“确认边界正确、
 禁止为了统一而改坏”；具体source/CMake增删仍由18号合同执行。
 
 | 子系统 | Q54 落地结果 | 保留边界 / 后续 owner |
@@ -75,7 +75,7 @@ Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆�
 | Frontend | parse schema、metadata、typed compile result和IR验证边界分离 | 外部字符串只允许停在解析边界 |
 | StableHLO/Linalg | normalization、legalization、bounded simplification拆成语义stage；scoped pattern/fold带预算且失败原子 | canonicalizer只优化，不承担 correctness |
 | SPMD/Sharding | TableGen声明、全量validation、module级mesh/signature边界和feature-off gate闭合 | 外部 XLA helper保持其原生 pass/status 边界 |
-| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次clone以`IRMapping`维护关系 | Q49.P继续删除 baseline 控制流的重复 whole-card materialization |
+| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次clone以`IRMapping`维护关系 | Q49.P继续删除 baseline 控制流的重复 card materialization |
 | TileRegion→Instr | region-anchored conversion、frozen patterns、marker fail-closed legality、DRR和function NCC join pipeline闭合 | function outstanding access保持 Func scope |
 | Memory planning | SPM/DDR plan-then-apply、timeline/call analysis与preservation闭合 | shared arena与DDR仍是 function/module 合同 |
 | Search/scheduling | assignment/evaluation/transition拆分，current-IR relation替代pointer/print identity，enumeration名称说明真实动作 | Q50/Q51拥有候选域和选择语义，不由Q54另建selector |
@@ -139,7 +139,7 @@ region内容只在nested op完成验证后由region verifier检查，不能为�
 terminator interface。Wafer verifier 继续拥有 Tile-local SPM boundary、single-block 和 target-specific relation；
 通用 dataflow/inlining/forwarding 不再复制 op-name whitelist。
 
-CardProgram/TileProgram 的 symbol table、call target、topology 和 mesh 通过 `SymbolRefAttr`、`SymbolTableCollection` 与
+CardModule/TileModule 的 symbol table、call target、topology 和 mesh 通过 `SymbolRefAttr`、`SymbolTableCollection` 与
 call interface 解析。CLI 可以提供默认 symbol 名，IR 合同不能依赖 `@default`、同类 sibling ordinal 或打印字符串 digest。
 
 ## 4. Operation scope 与 PassManager
@@ -148,12 +148,12 @@ call interface 解析。CLI 可以提供默认 symbol 名，IR 合同不能依�
 
 | Anchor | 应负责 | 不应负责 |
 | --- | --- | --- |
-| `ModuleOp` / card root | topology/mesh 与 symbol/call closure、function-boundary bufferization、whole-card DDR/transport/resource/ABI verification、module fan-out、closed target conversion | 为每个 TileRegion 重跑 local conversion、local lifetime 或 local canonicalization |
-| `CardProgramOp` / `TileProgramOp` | card/tile all-and-only coverage、tile-level symbol boundary、独立physical-Tile output preparation | 以全module walk恢复局部region对应 |
+| `ModuleOp` / card root | topology/mesh 与 symbol/call closure、function-boundary bufferization、card DDR/transport/resource/ABI verification、module fan-out、closed target conversion | 为每个 TileRegion 重跑 local conversion、local lifetime 或 local canonicalization |
+| `CardModuleOp` / `TileModuleOp` | card/tile all-and-only coverage、tile-level symbol boundary、独立Tile output preparation | 以全module walk恢复局部region对应 |
 | `func::FuncOp` | 跨TileRegion/loop的outstanding NCC access与required join、call-site boundary、function-local control/dataflow summary | 每个region建synthetic function再执行同一func pipeline |
 | `TileRegionOp` | Tile→Instr conversion、region canonicalization、local lifetime与SPM root conflicts/packing query | call graph、跨region pending state、function-boundary bufferization、card verification |
 
-Module scope 本身不是问题。One-Shot function-boundary bufferization、whole-card DDR 与 transport verification、跨函数 shared-arena
+Module scope 本身不是问题。One-Shot function-boundary bufferization、card DDR 与 transport verification、跨函数 shared-arena
 legality、output writing 和 Target LLVM full conversion确实需要全局视图，必须保留。问题是把局部工作揉进这些
 pass，或为获得 ModuleOp anchor 人工包装已经 `IsolatedFromAbove` 的 TileRegion。
 
@@ -283,7 +283,7 @@ verifier，不能把unknown全legal的`applyFullConversion`当作闭合证明。
 - 失败即丢弃的private candidate只有一个最外层rollback边界；callee提供in-place-on-private-IR API，不再嵌套
   clone whole module后 `takeBody`。
 - local query克隆最近的 `IsolatedFromAbove` ancestor；若所需 symbol/call closure确实越界，再提升 anchor并在 API 中写明。
-- 每physical Tile投影成独立output module、accepted output→ABI prepared output、跨module atomic tuple等真实所有权变化
+- 每Tile投影成独立output module、accepted output→ABI prepared output、跨module atomic tuple等真实所有权变化
   可以 clone whole output；这些不能因“减少 clone”被错误删除。
 - 跨独立 materialization 的 global correspondence通过共同上游 SSA/typed stable relation表达，不用 op print digest、
   sibling ordinal、pointer location 或默认 symbol 名。
@@ -308,7 +308,7 @@ transaction enum或invocation descriptor依赖整个`WaferCompiler`，`WaferRunt
 - Analysis：preservation/invalidation、RegionBranch/call/loop flow、unknown interface fail-closed；
 - Rewrite/Conversion：failure atomicity、unknown source op legality、scoped worklist、serial/parallel determinism；
 - Pipeline：named pipeline parse/print、`verify-each`、production builder parity、pass instrumentation；
-- Integration：代表 TensorProgram→CardProgram/TileRegion→Instr→CardExecutable→package digest/oracle/no-card；
+- Integration：代表 TensorProgram→CardModule/TileRegion→Instr→CardExecutable→package digest/oracle/no-card；
 - Performance：统计 clone/materialization/pass invocation 数和各 stage wall time，证明 local probe work随受影响 scope增长，
   不再是 region 数乘完整 module pipeline。
 

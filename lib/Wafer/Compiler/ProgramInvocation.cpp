@@ -173,23 +173,23 @@ llvm::Expected<ProgramTensor> ProgramTensor::loadNpy(llvm::StringRef path) {
 }
 
 llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
-    const PhysicalTileExecutables &physicalTileExecutables,
+    const CardExecutable &cardExecutable,
     llvm::StringRef packageRoot,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs) {
   if (packageRoot.empty())
     return invalid("program invocation package root must not be empty");
-  if (physicalTileExecutables.getPhysicalTileExecutables().empty())
+  if (cardExecutable.getTileExecutables().empty())
     return invalid("program invocation executable domain must not be empty");
   std::vector<ProgramTileInvocation> invocations;
   invocations.reserve(
-      physicalTileExecutables.getPhysicalTileExecutables().size());
-  for (const PhysicalTileExecutable &tile :
-       physicalTileExecutables.getPhysicalTileExecutables()) {
-    if (tile.getPhysicalCardId() != PhysicalCardId(0))
+      cardExecutable.getTileExecutables().size());
+  for (const TileExecutable &tile :
+       cardExecutable.getTileExecutables()) {
+    if (tile.getCardId() != CardId(0))
       return invalid(
           "program invocation supports only the current single-card domain");
-    ProgramTileInvocation invocation{tile.getPhysicalCardId(),
-                                     tile.getPhysicalTileId(),
+    ProgramTileInvocation invocation{tile.getCardId(),
+                                     tile.getTileId(),
                                      tile.getLaunchSlotId(),
                                      {}};
     for (const ProgramResourceBinding &binding : tile.getProgramBindings()) {
@@ -229,7 +229,7 @@ llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
     invocations.push_back(std::move(invocation));
   }
   const auto &firstBindings =
-      physicalTileExecutables.getPhysicalTileExecutables()
+      cardExecutable.getTileExecutables()
           .front()
           .getProgramBindings();
   if (globalInputs.size() !=

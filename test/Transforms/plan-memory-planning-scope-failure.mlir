@@ -20,7 +20,7 @@
 // Whole-function/rank DDR and SPM placement is sound only when the accepted
 // execution scope cannot dynamically overlap another independently planned
 // rank arena. Interprocedural/concurrent arena summaries are not yet an IR
-// complete physical-Tile IR, so these cases fail closed.
+// complete Tile IR, so these cases fail closed.
 
 //--- ddr-call.mlir
 func.func @ddr_callee() {

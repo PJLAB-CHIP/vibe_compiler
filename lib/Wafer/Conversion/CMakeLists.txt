@@ -1,8 +1,8 @@
-add_mlir_conversion_library(WaferCardProgramToTileModules
-  WaferCardProgramToTileModules/WaferCardProgramToTileModules.cpp
+add_mlir_conversion_library(WaferCardModuleToTileModules
+  WaferCardModuleToTileModules/WaferCardModuleToTileModules.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferCardProgramToTileModules
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferCardModuleToTileModules
 
   LINK_LIBS PUBLIC
   WaferIR
@@ -10,11 +10,11 @@ add_mlir_conversion_library(WaferCardProgramToTileModules
   MLIRSupport
 )
 
-add_mlir_conversion_library(WaferTensorProgramToCardProgram
-  WaferTensorProgramToCardProgram/WaferTensorProgramToCardProgram.cpp
+add_mlir_conversion_library(WaferTensorProgramToCardModule
+  WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTensorProgramToCardProgram
+  ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTensorProgramToCardModule
 
   LINK_LIBS PUBLIC
   WaferIR

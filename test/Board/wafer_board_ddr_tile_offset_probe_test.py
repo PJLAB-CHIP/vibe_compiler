@@ -977,7 +977,7 @@ def parse_tile_coordinates(stdout: str) -> dict[int, tuple[int, int]]:
     ):
         raise RuntimeError(
             "board output did not provide a one-to-one mapping from all 16 "
-            "logical ranks to 16 unique physical tiles"
+            "logical ranks to 16 unique Tiles"
         )
     return result
 

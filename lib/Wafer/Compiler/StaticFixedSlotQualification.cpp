@@ -1123,7 +1123,7 @@ static void writeRankSummary(llvm::json::OStream &json,
 
 static std::string
 serializeAttestation(llvm::StringRef manifestDigest,
-                     const PhysicalTileExecutables &physicalTileExecutables,
+                     const CardExecutable &cardExecutable,
                      llvm::ArrayRef<RankSummary> ranks,
                      bool directDTEComputeOverlap) {
   std::string storage;
@@ -1142,11 +1142,11 @@ serializeAttestation(llvm::StringRef manifestDigest,
       json.attributeObject("target", [&] {
         json.attribute("identity",
                        stringifyTargetIdentityId(
-                           physicalTileExecutables.getExecutionConfig()
+                           cardExecutable.getExecutionConfig()
                                .getTargetIdentityId()));
         json.attribute(
             "rank_count",
-            physicalTileExecutables.getExecutionConfig().getRankCount());
+            cardExecutable.getExecutionConfig().getRankCount());
         json.attributeArray("logical_ranks", [&] {
           for (const RankSummary &rank : ranks)
             json.value(rank.logicalRank);
@@ -1211,14 +1211,14 @@ llvm::Error verifyStaticFixedSlotProgram(const RankExecutable &rank) {
 
 mlir::LogicalResult writeStaticFixedSlotQualificationRecord(
     llvm::StringRef instrumentationRoot, llvm::StringRef packageRoot,
-    const PhysicalTileExecutables &physicalTileExecutables,
+    const CardExecutable &cardExecutable,
     bool requireDirectDTEComputeOverlap, llvm::raw_ostream &diagnostics) {
-  const auto &rankExecutables = physicalTileExecutables.getRankExecutables();
+  const auto &rankExecutables = cardExecutable.getRankExecutables();
   if (rankExecutables.size() !=
       static_cast<size_t>(
-          physicalTileExecutables.getExecutionConfig().getRankCount())) {
+          cardExecutable.getExecutionConfig().getRankCount())) {
     reject(diagnostics, "fixed-slot qualification rank domain differs from "
-                        "final physicalTileExecutables");
+                        "final cardExecutable");
     return mlir::failure();
   }
 
@@ -1255,7 +1255,7 @@ mlir::LogicalResult writeStaticFixedSlotQualificationRecord(
     return mlir::failure();
 
   const std::string attestation =
-      serializeAttestation(*manifestDigest, physicalTileExecutables, ranks,
+      serializeAttestation(*manifestDigest, cardExecutable, ranks,
                            requireDirectDTEComputeOverlap);
   llvm::SmallString<256> attestationPath(instrumentationRoot);
   llvm::sys::path::append(attestationPath, "attestation.json");

@@ -3,12 +3,12 @@
 本文件记录可复用的现象、根因、修复和防复发模式。一次性case状态、历史输出、临时workaround和已经退役接口不在
 这里保存；具体任务证据归编号设计、progress或原始测试记录。
 
-## Card partition与physical Tile被混成一个domain
+## Card partition与Tile被混成一个domain
 
 - 现象：GSPMD的partition count直接决定单卡Tile程序数量，spatial mapping、不同op并行和cross-Tile communication搜索消失。
 - 根因：把card-level global tensor partition误当成card内执行映射，并复用同一个整数/ordinal贯穿frontend到runtime。
 - 修复模式：`num_partitions`只属于card domain；card-local structured DAG进入physical-dataflow selection，后者显式生成
-  all-and-only 16个physical Tile programs。
+  all-and-only 16个Tile modules。
 - 防复发：single-card `num_partitions=1`的source必须产生16个Tile interfaces；测试同时检查card count、Tile count和
   nontrivial spatial mapping，不能只检查module数量。
 
@@ -83,14 +83,14 @@
 
 - 现象：先固定Tile分配再选temporal tile/fusion，或先尽量融合再事后安排NoC，导致SPM放不下、Tile空闲或通信爆炸。
 - 根因：将互相决定resource和critical path的变量交给独立selector。
-- 修复模式：同一complete CardProgram candidate共同表达Tile集合/work domain、temporal tile、TileRegion/融合、communication、buffering和overlap。
+- 修复模式：同一complete CardModule candidate共同表达Tile集合/work domain、temporal tile、TileRegion/融合、communication、buffering和overlap。
 - 防复发：测试同时保留maximal local residency与cross-Tile operator pipeline、large-tile cut与small-tile overlap等对立候选。
 
 ## Tile region不要求所有op使用相同tile shape
 
 - 现象：producer/consumer tile size不同时被迫切region并写DDR，或者错误要求一个region共享统一tile vector。
 - 根因：把SPM residency domain误当成hardware Tile或统一iteration domain。
-- 修复模式：`tile.region`只拥有一个physical Tile内的SPM lifetime boundary；body可以包含不同tile shape的coupled或独立traversal。
+- 修复模式：`tile.region`只拥有一个Tile内的SPM lifetime boundary；body可以包含不同tile shape的coupled或独立traversal。
 - 防复发：same-region different temporal tiles与selective spill正例；cross-Tile SPM SSA alias负例。
 
 ## Completion必须从final actual IR重建
@@ -209,7 +209,7 @@
   input/output backing；跨Tile写入彼此不可见，model可能错误通过board上会失败的程序。
 - 根因：model把ABI引用位置当成allocation identity，并把所有slot address强制为互不重叠。
 - 修复模式：从显式physical owner、Kernel ABI role和resource index建立model resource identity；program boundary由card拥有并
-  共享一个base/backing，workspace/status由physical Tile拥有；unique output resource只发布一次。
+  共享一个base/backing，workspace/status由Tile拥有；unique output resource只发布一次。
 - 防复发：两Tile通过不同slot读写同一card output必须互相可见；Tile workspace必须隔离；同一card resource使用不同base、
   不同resource复用重叠base和按name猜alias都必须fail closed。
 
@@ -243,7 +243,7 @@
 
 ## 不得从函数参数位置或同型关系猜测output boundary
 
-- 现象：functional tensor program的最后一个真实input与result同型时，被CardProgram lowering当作trailing output参数删除；
+- 现象：functional tensor program的最后一个真实input与result同型时，被CardModule lowering当作trailing output参数删除；
   final Tile entry参数减少，但frontend resource binding仍完整，16个Tile统一在TargetABI exact-boundary gate失败。
 - 根因：把structured op内部的destination-style语义错误提升成source function ABI，并用
   `numArguments - numResults`恢复角色。
@@ -386,7 +386,7 @@
 
 ## 单状态baseline不得套用多候选winner重物化
 
-- 现象：唯一exact-verified Llama baseline在selection后又完整执行一次CardProgram、16-Tile Instr、SPM、DDR和resource verification，额外消耗
+- 现象：唯一exact-verified Llama baseline在selection后又完整执行一次CardModule、16-Tile Instr、SPM、DDR和resource verification，额外消耗
   数分钟，但产物语义没有变化。
 - 根因：为search cohort控制峰值内存而清空每个accepted candidate Tile module的策略，无条件复用到了只有一个semantic state的
   `none` controller。
@@ -409,13 +409,13 @@
 
 ## 编译边界不能把typed allocator failure压成一个布尔值
 
-- 现象：CardProgram编译入口只看到“SPM allocation failed”，会把unsupported lifetime误归为内部失败，或反过来把未分类的
+- 现象：CardModule编译入口只看到“SPM allocation failed”，会把unsupported lifetime误归为内部失败，或反过来把未分类的
   allocator failure误当作candidate非法并从搜索域删除。
-- 根因：physical-Tile memory planning跨边界时丢失了`SPMMemoryPlanningFailureKind`，上层只能从诊断文本或capacity布尔量猜taxonomy。
+- 根因：Tile memory planning跨边界时丢失了`SPMMemoryPlanningFailureKind`，上层只能从诊断文本或capacity布尔量猜taxonomy。
 - 修复模式：memory-planning failure保留typed SPM failure kind；capacity overflow与unsupported lifetime作为可验证exact rejection，
   resource exhaustion、未分类allocator/internal failure保持indeterminate。组装结果时先复制primary gate/detail，再move failure
   容器；不能依赖函数实参求值顺序同时引用元素和转移其owner。
-- 防复发：无策略CardExecutable seam直接测试同一CardProgram的可重复exact rejection，并单测不完整/内部调用保持indeterminate；
+- 防复发：无策略CardExecutable seam直接测试同一CardModule的可重复exact rejection，并单测不完整/内部调用保持indeterminate；
   caller遇到indeterminate必须终止当前编译，不能生成no-good或repair candidate。
 
 ## 跨region替换后保留旧Value relation会造成悬空引用

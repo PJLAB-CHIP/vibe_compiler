@@ -69,10 +69,10 @@ struct StaticDurationEstimate {
   StaticDurationAssumptionMask assumptions = 0;
 };
 
-/// Numeric theoretical resource cost for one whole-card executable. All
+/// Numeric theoretical resource cost for one card executable. All
 /// fields are always numeric. `enabledTerms` is cohort-wide and therefore
 /// identical for every estimate produced by one plural estimation call.
-struct WholeCardResourceDurationEstimate {
+struct ProgramDurationEstimate {
   StaticDurationEstimate ddr;
   StaticDurationEstimate compute;
   StaticDurationEstimate noc;
@@ -112,13 +112,13 @@ constexpr StaticScheduleResourceMask allStaticScheduleResources() {
 /// phase/wave cost slice. The pointee must outlive the plan and its estimation
 /// call.
 struct StaticScheduleWork {
-  const WholeCardInstructionProgramCost *cost = nullptr;
+  const CardInstructionProgramCost *cost = nullptr;
   StaticScheduleResourceMask resources = 0;
 };
 
 /// Work in one branch has data/effect order and therefore sums. Different
 /// branches in one stage are independent and therefore the stage duration is
-/// their maximum. Distinct work pointers let a whole-DAG scheduler represent
+/// their maximum. Distinct work pointers let a structured-DAG scheduler represent
 /// concurrent branches with different service demands.
 struct StaticScheduleBranch {
   llvm::SmallVector<StaticScheduleWork, 4> dependentWork;
@@ -167,34 +167,34 @@ public:
   StaticSchedulePlan &operator=(StaticSchedulePlan &&) = default;
 
   static std::optional<StaticSchedulePlan>
-  create(const WholeCardInstructionProgramCost &controlCost,
+  create(const CardInstructionProgramCost &controlCost,
          llvm::ArrayRef<StaticScheduleStep> steps);
 
   /// Conservative baseline plan: DDR, compute, NoC, and explicit SPM movement
   /// are four dependent stages. It is a concrete plan construction, not a
   /// binary global scheduling policy.
   static StaticSchedulePlan
-  getConservative(const WholeCardInstructionProgramCost &cost);
+  getConservative(const CardInstructionProgramCost &cost);
 
   llvm::ArrayRef<StaticScheduleStep> getSteps() const { return steps; }
-  const WholeCardInstructionProgramCost &getControlCost() const {
+  const CardInstructionProgramCost &getControlCost() const {
     return *controlCost;
   }
 
 private:
   explicit StaticSchedulePlan(
-      const WholeCardInstructionProgramCost &controlCost,
+      const CardInstructionProgramCost &controlCost,
       llvm::SmallVector<StaticScheduleStep, 8> steps)
       : controlCost(&controlCost), steps(std::move(steps)) {}
 
-  const WholeCardInstructionProgramCost *controlCost;
+  const CardInstructionProgramCost *controlCost;
   llvm::SmallVector<StaticScheduleStep, 8> steps;
 };
 
 /// Estimate explicit plans under one uniform enabled-term set. Pointer form
-/// lets independently-owned whole-DAG candidates retain their finite plans and
+/// lets independently-owned structured-DAG candidates retain their finite plans and
 /// phase costs without copies. A null plan returns an empty result.
-llvm::SmallVector<WholeCardResourceDurationEstimate, 16>
+llvm::SmallVector<ProgramDurationEstimate, 16>
 estimateStaticSchedulePlanDurations(
     llvm::ArrayRef<const StaticSchedulePlan *> plans,
     const TargetScheduleCostPolicy &policy);

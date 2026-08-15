@@ -1,7 +1,7 @@
 # Wafer ExecutablePackage、Runtime Invocation Planning 与 Board Launch
 
 状态：本文是当前`ExecutablePackage`/runtime launch的唯一现行合同。source-to-package compiler只写入single-card、all-and-only
-16 physical Tiles 的 schema-v8 package。Q49–Q52分别闭合baseline、能力迁移、统一搜索和scalability；host/no-card
+16 Tiles 的 schema-v8 package。Q49–Q52分别闭合baseline、能力迁移、统一搜索和scalability；host/no-card
 局部合同闭合不等于Q53 `board-ready`，真实板端matched A/B gate也尚未完成。
 
 ## 1. Pipeline Contract
@@ -46,7 +46,7 @@ kernel form、entry ABI与phase list是 nested typed facts，不是更多launch 
 current kernel entry ABI保留card-scoped pointer-table形式，phase只允许typed `prepare`/`main`序列。Direct-DTE是
 entry transport requirement，会要求status resource和prepare/main lifecycle；它不是第三种launch kind或用户可选ABI。
 
-单卡source即使`num_partitions=1`，Q49 `none` baseline与Q51 `search`仍生成16个physical Tile entries；无工作Tile使用合法no-work body，而不是从
+单卡source即使`num_partitions=1`，Q49 `none` baseline与Q51 `search`仍生成16个Tile entries；无工作Tile使用合法no-work body，而不是从
 package domain中消失。
 
 ## 3. Manifest schema v8
