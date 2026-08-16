@@ -1,6 +1,8 @@
 //===- RuntimeInvocationPlanning.cpp - Runtime invocation planning --------===//
 
-#include "PackageManifestInternal.h"
+#include "Wafer/Package/PackageManifest.h"
+
+#include "llvm/Support/Errc.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -12,11 +14,13 @@
 
 namespace wafer::runtime {
 
-using detail::findModule;
-using detail::findModuleExport;
-using detail::invalid;
 
 namespace {
+
+llvm::Error invalid(llvm::Twine message) {
+  return llvm::createStringError(llvm::errc::invalid_argument, message);
+}
+
 
 bool checkedAdd(uint64_t lhs, uint64_t rhs, uint64_t &result) {
   if (rhs > std::numeric_limits<uint64_t>::max() - lhs)

@@ -1,7 +1,7 @@
 //===- wafer-run.cpp - Verified Wafer package execution -----------------===//
 
 #include "Wafer/Runtime/BoardRuntime.h"
-#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Package/PackageManifest.h"
 #include "Wafer/Runtime/ProfileInstrumentation.h"
 #include "WaferProfileCollection.h"
 #include "WaferRunBoardIO.h"

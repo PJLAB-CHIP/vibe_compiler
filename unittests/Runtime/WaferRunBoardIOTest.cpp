@@ -4,7 +4,7 @@
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Runtime/BoardRuntime.h"
-#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Package/PackageManifest.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"

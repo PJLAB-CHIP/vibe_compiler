@@ -8,7 +8,7 @@
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"
-#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Package/PackageManifest.h"
 #include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/TargetIdentity.h"
 

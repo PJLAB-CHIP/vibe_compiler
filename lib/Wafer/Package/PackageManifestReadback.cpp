@@ -27,6 +27,10 @@ parseCanonicalPackageJson(llvm::StringRef json, llvm::StringRef packageRoot,
 llvm::Expected<VerifiedPackageManifest>
 loadVerifiedPackageManifest(llvm::StringRef packageRoot,
                             const PackageParseLimits &limits) {
+  // The strict loader closes the whole package root: exactly the canonical
+  // manifest, the modules directory and data/program-data.bin.
+  if (packageRoot.empty())
+    return detail::invalid("package root must not be empty");
   llvm::SmallString<256> path(packageRoot);
   llvm::sys::path::append(path, kPackageManifestFileName);
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
@@ -34,7 +38,14 @@ loadVerifiedPackageManifest(llvm::StringRef packageRoot,
   if (!buffer)
     return llvm::createStringError(buffer.getError(),
                                    "failed to read package manifest: " + path);
-  return parseCanonicalPackageJson((*buffer)->getBuffer(), packageRoot, limits);
+  llvm::Expected<VerifiedPackageManifest> parsed =
+      parseCanonicalPackageJson((*buffer)->getBuffer(), packageRoot, limits);
+  if (!parsed)
+    return parsed.takeError();
+  if (llvm::Error error =
+          detail::verifyPackageRoot(parsed->getManifest(), packageRoot))
+    return std::move(error);
+  return std::move(*parsed);
 }
 
 } // namespace wafer::runtime

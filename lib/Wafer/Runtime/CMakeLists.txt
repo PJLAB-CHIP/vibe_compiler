@@ -2,11 +2,6 @@ add_mlir_library(WaferRuntime
   PARTIAL_SOURCES_INTENDED
 
   BoardRuntime.cpp
-  PackageManifest.cpp
-  PackageManifestJson.cpp
-  PackageManifestReadback.cpp
-  PackageManifestSerialization.cpp
-  PackageManifestVerification.cpp
   ProfileInstrumentation.cpp
   ProfilerRecord.cpp
   RuntimeInvocationPlanning.cpp
@@ -14,4 +9,5 @@ add_mlir_library(WaferRuntime
   LINK_LIBS PUBLIC
   LLVMSupport
   WaferTarget
+  WaferPackageSupport
 )

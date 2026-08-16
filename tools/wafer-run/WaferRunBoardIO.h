@@ -4,7 +4,7 @@
 #define WAFER_TOOLS_WAFER_RUN_BOARD_IO_H
 
 #include "Wafer/Runtime/BoardRuntime.h"
-#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Package/PackageManifest.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"

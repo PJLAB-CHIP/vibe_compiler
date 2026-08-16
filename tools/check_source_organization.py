@@ -172,18 +172,19 @@ TARGET_CODE_GENERATION_SOURCES = (
     "TargetModuleReadback.cpp",
     "CompileCardExecutableLLVMModules.cpp",
 )
-PACKAGE_MANIFEST_SOURCES = (
+PACKAGE_SUPPORT_SOURCES = (
     "PackageManifest.cpp",
     "PackageManifestJson.cpp",
     "PackageManifestReadback.cpp",
     "PackageManifestSerialization.cpp",
     "PackageManifestVerification.cpp",
-    "RuntimeInvocationPlanning.cpp",
+    "ProfileInstrumentationModel.cpp",
 )
-BOARD_RUNTIME_SOURCES = (
+RUNTIME_SOURCES = (
     "BoardRuntime.cpp",
     "ProfileInstrumentation.cpp",
     "ProfilerRecord.cpp",
+    "RuntimeInvocationPlanning.cpp",
 )
 WAFER_RUN_SOURCES = (
     "TxBoardRuntime.cpp",
@@ -468,7 +469,44 @@ def check_cmake_sources(
             fail(errors, f"{cmake_path}: {target} still lists legacy source {entry}")
 
 
+
+def check_cmake_links(
+    *,
+    body: str,
+    required: tuple[str, ...],
+    forbidden: tuple[str, ...],
+    cmake_path: Path,
+    target: str,
+    errors: list[str],
+) -> None:
+    """Check one CMake target's LINK_LIBS boundary: required libraries must be
+    present and forbidden ones absent, so dependency direction is enforced."""
+    tokens = cmake_tokens(body)
+    if "LINK_LIBS" not in tokens:
+        fail(errors, f"{cmake_path}: {target} has no LINK_LIBS block")
+        return
+    link_index = tokens.index("LINK_LIBS")
+    links = [
+        token
+        for token in tokens[link_index + 1 :]
+        if token not in ("PUBLIC", "PRIVATE", "INTERFACE")
+    ]
+    for library in required:
+        if library not in links:
+            fail(
+                errors,
+                f"{cmake_path}: {target} must link {library}",
+            )
+    for library in forbidden:
+        if library in links:
+            fail(
+                errors,
+                f"{cmake_path}: {target} must not link {library}",
+            )
+
+
 def cmake_tokens(text: str) -> list[str]:
+
     return [
         token.strip('"')
         for token in re.findall(r'"(?:\\.|[^"\\])*"|[^\s()]+', cmake_code(text))
@@ -1695,54 +1733,97 @@ def check_compiler_target_module_and_package_sources(
         if any(path.startswith(implementation) for path in target_module_includes):
             fail(errors, f"target-module facade still owns {implementation}")
 
-    runtime_root = root / "lib/Wafer/Runtime"
-    runtime_cmake = runtime_root / "CMakeLists.txt"
-    runtime_text = read_required(runtime_cmake, errors)
-    check_exact_sources(
-        runtime_root,
-        PACKAGE_MANIFEST_SOURCES + BOARD_RUNTIME_SOURCES,
-        "runtime",
-        errors,
-    )
+    package_root = root / "lib/Wafer/Package"
+    package_cmake = package_root / "CMakeLists.txt"
+    package_text = read_required(package_cmake, errors)
+    check_exact_sources(package_root, PACKAGE_SUPPORT_SOURCES, "package", errors)
     check_private_header(
-        runtime_root / "PackageManifestInternal.h",
-        root / "include/Wafer/Runtime/PackageManifestInternal.h",
+        package_root / "PackageManifestInternal.h",
+        root / "include/Wafer/Package/PackageManifestInternal.h",
         "package manifest internal",
         errors,
     )
-    runtime_body = cmake_target_body(
-        runtime_text, "add_mlir_library", "WaferRuntime", runtime_cmake, errors
+    package_body = cmake_target_body(
+        package_text, "add_mlir_library", "WaferPackageSupport", package_cmake,
+        errors
     )
     check_cmake_sources(
-        body=runtime_body,
-        required=PACKAGE_MANIFEST_SOURCES + ("BoardRuntime.cpp",),
-        cmake_path=runtime_cmake,
-        target="WaferRuntime",
+        body=package_body,
+        required=PACKAGE_SUPPORT_SOURCES,
+        cmake_path=package_cmake,
+        target="WaferPackageSupport",
         errors=errors,
     )
     check_cmake_source_ownership(
-        text=runtime_text,
-        required=PACKAGE_MANIFEST_SOURCES + BOARD_RUNTIME_SOURCES,
-        cmake_path=runtime_cmake,
-        target="WaferRuntime",
+        text=package_text,
+        required=PACKAGE_SUPPORT_SOURCES,
+        cmake_path=package_cmake,
+        target="WaferPackageSupport",
         errors=errors,
     )
-    manifest_facade = read_required(runtime_root / "PackageManifest.cpp", errors)
+    manifest_facade = read_required(package_root / "PackageManifest.cpp", errors)
     manifest_includes = set(source_includes(manifest_facade))
     if (
         "llvm/Support/JSON.h" in manifest_includes
         or "filesystem" in manifest_includes
     ):
         fail(errors, "package-manifest facade still owns JSON or filesystem I/O")
+
+    runtime_root = root / "lib/Wafer/Runtime"
+    runtime_cmake = runtime_root / "CMakeLists.txt"
+    runtime_text = read_required(runtime_cmake, errors)
+    check_exact_sources(runtime_root, RUNTIME_SOURCES, "runtime", errors)
+    runtime_body = cmake_target_body(
+        runtime_text, "add_mlir_library", "WaferRuntime", runtime_cmake, errors
+    )
+    check_cmake_sources(
+        body=runtime_body,
+        required=RUNTIME_SOURCES,
+        cmake_path=runtime_cmake,
+        target="WaferRuntime",
+        errors=errors,
+    )
+    check_cmake_source_ownership(
+        text=runtime_text,
+        required=RUNTIME_SOURCES,
+        cmake_path=runtime_cmake,
+        target="WaferRuntime",
+        errors=errors,
+    )
+    check_cmake_links(
+        body=runtime_body,
+        required=["WaferPackageSupport"],
+        forbidden=["WaferCompiler"],
+        cmake_path=runtime_cmake,
+        target="WaferRuntime",
+        errors=errors,
+    )
+    # Boundary gate: the compiler package writer consumes the neutral
+    # package support library and must not link the board runtime
+    # implementation to write packages.
+    compiler_cmake = compiler_root / "CMakeLists.txt"
+    compiler_text = read_required(compiler_cmake, errors)
+    compiler_body = cmake_target_body(
+        compiler_text, "add_mlir_library", "WaferCompiler", compiler_cmake,
+        errors
+    )
+    check_cmake_links(
+        body=compiler_body,
+        required=["WaferPackageSupport"],
+        forbidden=["WaferRuntime"],
+        cmake_path=compiler_cmake,
+        target="WaferCompiler",
+        errors=errors,
+    )
     check_no_textual_source_includes(
         [compiler_root / name for name in compiler_sources]
         + [
             compiler_root / "CompilationInternal.h",
             compiler_root / "TargetCodeGenInternal.h",
         ]
-        + [runtime_root / name for name in PACKAGE_MANIFEST_SOURCES]
-        + [runtime_root / name for name in BOARD_RUNTIME_SOURCES]
-        + [runtime_root / "PackageManifestInternal.h"],
+        + [package_root / name for name in PACKAGE_SUPPORT_SOURCES]
+        + [package_root / "PackageManifestInternal.h"]
+        + [runtime_root / name for name in RUNTIME_SOURCES],
         "compiler/target-module/package",
         errors,
     )

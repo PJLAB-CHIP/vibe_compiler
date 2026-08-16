@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -234,6 +235,14 @@ public:
   llvm::Error materialize(const ProgramDataSource &source,
                           llvm::MutableArrayRef<uint8_t> out) const;
 
+  /// Materializes one element-aligned byte window of the local tensor.
+  /// `regionByteOffset + out.size()` must not exceed getRegionLength(); for
+  /// strided regions both the offset and the window size must be multiples of
+  /// the element byte count.
+  llvm::Error materializeWindow(const ProgramDataSource &source,
+                                uint64_t regionByteOffset,
+                                llvm::MutableArrayRef<uint8_t> out) const;
+
 private:
   ProgramDataRange(ProgramTensorId tensorId, std::string dtype,
                    std::vector<int64_t> globalShape,
@@ -371,6 +380,14 @@ public:
   llvm::Error materializeRange(const ProgramDataRange &range,
                                llvm::MutableArrayRef<uint8_t> out) const;
 
+  /// Materializes one element-aligned byte window of `range` for target
+  /// output. Windows account reads; the first window of a range also
+  /// accounts the range materialization event so a windowed target writer
+  /// still reports one materialization per TargetTensor.
+  llvm::Error materializeRangeWindow(const ProgramDataRange &range,
+                                     uint64_t regionByteOffset,
+                                     llvm::MutableArrayRef<uint8_t> out) const;
+
   /// Streams one owned source into a transaction path with bounded windows
   /// and verifies the written file digest against the owned content. This is
   /// the only payload-materialization path for the external SPMD helper
@@ -413,6 +430,7 @@ private:
   std::vector<std::unique_ptr<ProgramDataSource>> sources;
   std::vector<std::unique_ptr<ProgramDataSource>> candidates;
   std::vector<ProgramDataRange> ranges;
+  mutable std::set<ProgramTensorId> windowMaterializedRanges;
 };
 
 } // namespace wafer::compiler

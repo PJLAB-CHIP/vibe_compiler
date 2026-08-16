@@ -83,7 +83,7 @@ add_mlir_library(WaferCompiler
   WaferAnalysis
   WaferIR
   WaferPipelines
-  WaferRuntime
+  WaferPackageSupport
   WaferTarget
   WaferCardModuleToTileModules
   WaferTensorProgramToCardModule

@@ -3,7 +3,7 @@
 #ifndef WAFER_RUNTIME_BOARDRUNTIME_H
 #define WAFER_RUNTIME_BOARDRUNTIME_H
 
-#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Package/PackageManifest.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"

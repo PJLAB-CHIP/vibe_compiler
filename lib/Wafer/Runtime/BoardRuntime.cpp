@@ -2,7 +2,7 @@
 
 #include "Wafer/Runtime/BoardRuntime.h"
 
-#include "PackageManifestInternal.h"
+#include "Wafer/Package/PackageManifest.h"
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -42,6 +42,10 @@ struct DiagnosticLocation {
   LaunchSlotId launchSlot;
   EntryId entry;
 };
+
+llvm::Error invalid(llvm::Twine message) {
+  return llvm::createStringError(llvm::errc::invalid_argument, message);
+}
 
 llvm::Error boardError(
     BoardRuntimeStage stage, DiagnosticLocation location, llvm::Twine detail,
@@ -327,11 +331,6 @@ struct BoardLiveAllocation {
   BoardDeviceMemory memory;
 };
 
-struct LiveTileArgumentRow {
-  DiagnosticLocation location;
-  BoardDeviceMemory memory;
-};
-
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
     BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver,
@@ -534,7 +533,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   result.completedStages.push_back(BoardRuntimeStage::DeviceSelection);
 
   std::vector<BoardLiveAllocation> allocations;
-  std::vector<LiveTileArgumentRow> tileArgumentRows;
+  std::vector<uint64_t> tileRowAddresses;
   std::vector<LiveModule> liveModules;
   bool submissionLive = false;
   auto observeProviderState = [&]() {
@@ -569,18 +568,6 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       }
     }
     liveModules.clear();
-    for (LiveTileArgumentRow &row : llvm::reverse(tileArgumentRows)) {
-      if (llvm::Error error = driver.free(row.memory)) {
-        BoardRuntimeContextState state = observeProviderState();
-        llvm::Error wrapped = wrapDriverError(
-            BoardRuntimeStage::Cleanup, row.location, std::move(error), state);
-        if (state == BoardRuntimeContextState::Poisoned)
-          return llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
-        cleanupError =
-            llvm::joinErrors(std::move(cleanupError), std::move(wrapped));
-      }
-    }
-    tileArgumentRows.clear();
     for (BoardLiveAllocation &allocation : llvm::reverse(allocations)) {
       if (llvm::Error error = driver.free(allocation.memory)) {
         BoardRuntimeContextState state = observeProviderState();
@@ -663,7 +650,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                    *request.profilerRecordBytes)) {
       if (!ranges.profileRecord)
         return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
-                    detail::invalid("profiler record range is missing"));
+                    invalid("profiler record range is missing"));
       if (llvm::Error error = driver.copyHostToDevice(
               BoardDeviceMemory{checkedInvocationAddress(*ranges.profileRecord)},
               image))
@@ -677,7 +664,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
          llvm::zip(capacityPlan->tiles, capacityPlan->tileRanges)) {
       if (!ranges.transportStatus)
         return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
-                    detail::invalid("transport status range is missing"));
+                    invalid("transport status range is missing"));
       if (llvm::Error error = driver.copyHostToDevice(
               BoardDeviceMemory{checkedInvocationAddress(
                   *ranges.transportStatus)},
@@ -699,24 +686,24 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   if (kernelLaunch.entryABI == KernelEntryABI::TileRowPointerTable) {
     if (capacityPlan->pointerRows.size() != capacityPlan->tiles.size())
       return fail(BoardRuntimeStage::HostToDevice, {},
-                  detail::invalid("Tile-row allocation domain is incomplete"));
+                  invalid("Tile-row allocation domain is incomplete"));
+    tileRowAddresses.reserve(capacityPlan->tiles.size());
     for (auto [tileIndex, tile] : llvm::enumerate(capacityPlan->tiles)) {
       std::vector<uint64_t> row;
       row.reserve(tile.argumentAddresses.size());
       for (const RuntimeArgumentAddress &argument : tile.argumentAddresses)
         row.push_back(resolveAddress(argument));
       const RuntimePlannedRange &range = capacityPlan->pointerRows[tileIndex];
-      llvm::Expected<BoardDeviceMemory> rowMemory = driver.allocate(
-          range.bytes, /*alignment=*/alignof(uint64_t));
-      if (!rowMemory)
-        return fail(BoardRuntimeStage::ResourceAllocation, locationFor(tile),
-                    rowMemory.takeError());
-      tileArgumentRows.push_back({locationFor(tile), *rowMemory});
+      if (range.bytes != row.size() * sizeof(uint64_t))
+        return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
+                    invalid("Tile-row plan does not match the "
+                                    "resolved argument count"));
+      tileRowAddresses.push_back(checkedInvocationAddress(range));
       llvm::ArrayRef<uint8_t> rowBytes(
           reinterpret_cast<const uint8_t *>(row.data()),
           row.size() * sizeof(uint64_t));
-      if (llvm::Error error =
-              driver.copyHostToDevice(*rowMemory, rowBytes))
+      if (llvm::Error error = driver.copyHostToDevice(
+              BoardDeviceMemory{tileRowAddresses.back()}, rowBytes))
         return fail(BoardRuntimeStage::HostToDevice, locationFor(tile),
                     std::move(error));
     }
@@ -727,7 +714,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       manifest.launch.getPhases();
   if (capacityPlan->tiles.empty() || launchPhases.empty())
     return fail(BoardRuntimeStage::Validation, {},
-                detail::invalid("runtime launch has no planned Tile or phase"));
+                invalid("runtime launch has no planned Tile or phase"));
 
   for (const VerifiedModuleSnapshot &snapshot : moduleSnapshots) {
     llvm::Expected<BoardModuleHandle> loaded =
@@ -748,11 +735,10 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     launch.launchSlot = tile.launchSlot;
     launch.entry = tile.entry;
     if (kernelLaunch.entryABI == KernelEntryABI::TileRowPointerTable) {
-      if (tileIndex >= tileArgumentRows.size())
+      if (tileIndex >= tileRowAddresses.size())
         return fail(BoardRuntimeStage::Launch, locationFor(tile),
-                    detail::invalid("Tile-row launch storage is missing"));
-      launch.arguments.push_back(
-          static_cast<uint64_t>(tileArgumentRows[tileIndex].memory.value));
+                    invalid("Tile-row launch storage is missing"));
+      launch.arguments.push_back(tileRowAddresses[tileIndex]);
       baseLaunches.push_back(std::move(launch));
       continue;
     }
@@ -783,12 +769,12 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
                              submitEnd - submitBegin)
                              .count();
     if (elapsed < 0)
-      return detail::invalid(
+      return invalid(
           "host steady clock moved backwards during provider submission");
     const uint64_t elapsedNanoseconds = static_cast<uint64_t>(elapsed);
     if (elapsedNanoseconds >
         std::numeric_limits<uint64_t>::max() - hostSubmitNanoseconds)
-      return detail::invalid("aggregate provider submission time overflows");
+      return invalid("aggregate provider submission time overflows");
     hostSubmitNanoseconds += elapsedNanoseconds;
     return llvm::Error::success();
   };
@@ -797,7 +783,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
     const bool requested =
         request.deviceTimingPolicy == BoardDeviceTimingPolicy::StreamEvents;
     if (requested != observation.deviceExecutionNanoseconds.has_value())
-      return detail::invalid(
+      return invalid(
           requested
               ? "provider omitted requested same-stream device timing"
               : "provider returned same-stream device timing when disabled");
@@ -805,7 +791,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       return llvm::Error::success();
     if (*observation.deviceExecutionNanoseconds >
         std::numeric_limits<uint64_t>::max() - *deviceExecutionNanoseconds)
-      return detail::invalid("aggregate device execution time overflows");
+      return invalid("aggregate device execution time overflows");
     *deviceExecutionNanoseconds += *observation.deviceExecutionNanoseconds;
     return llvm::Error::success();
   };
@@ -822,11 +808,11 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
         if (firstTile == capacityPlan->tiles.end())
           return fail(
               BoardRuntimeStage::EntryResolve, {},
-              detail::invalid("loaded module has no typed Tile interface"));
+              invalid("loaded module has no typed Tile interface"));
         if (firstTile->phases.size() != launchPhases.size() ||
             firstTile->phases[phaseIndex].role != phaseRole)
           return fail(BoardRuntimeStage::EntryResolve, locationFor(*firstTile),
-                      detail::invalid(
+                      invalid(
                           "Tile launch phase plan does not match manifest"));
         llvm::Expected<BoardFunctionHandle> function = driver.resolveEntry(
             liveModule.module, firstTile->phases[phaseIndex].symbol);
@@ -846,13 +832,13 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
         if (tile.phases.size() != launchPhases.size() ||
             tile.phases[phaseIndex].role != phaseRole)
           return fail(BoardRuntimeStage::EntryResolve, locationFor(tile),
-                      detail::invalid(
+                      invalid(
                           "Tile launch phase plan does not match manifest"));
         auto function =
             functionsByPhase[phaseIndex].find(tile.module.getValue());
         if (function == functionsByPhase[phaseIndex].end())
           return fail(BoardRuntimeStage::EntryResolve, locationFor(tile),
-                      detail::invalid("Tile phase export was not resolved"));
+                      invalid("Tile phase export was not resolved"));
         phaseLaunches[tileIndex].function = function->second;
       }
       launchesByPhase.push_back(std::move(phaseLaunches));
@@ -886,14 +872,14 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
 
   if (!submissionBegin)
     return fail(BoardRuntimeStage::Launch, {},
-                detail::invalid("runtime launch did not submit any phase"));
+                invalid("runtime launch did not submit any phase"));
   const auto completionEnd = std::chrono::steady_clock::now();
   const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
                            completionEnd - *submissionBegin)
                            .count();
   if (elapsed < 0)
     return fail(BoardRuntimeStage::Completion, {},
-                detail::invalid("host steady clock moved backwards"));
+                invalid("host steady clock moved backwards"));
   result.launchToCompletionNanoseconds = static_cast<uint64_t>(elapsed);
   result.hostSubmitNanoseconds = hostSubmitNanoseconds;
   result.deviceExecutionNanoseconds = deviceExecutionNanoseconds;
@@ -927,7 +913,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
         driver.quarantine();
         return fail(
             BoardRuntimeStage::Completion, locationFor(tile),
-            detail::invalid("Direct DTE terminal status is not success: " +
+            invalid("Direct DTE terminal status is not success: " +
                             llvm::Twine(status)));
       }
     }
@@ -935,7 +921,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
       driver.quarantine();
       return fail(
           BoardRuntimeStage::Completion, {},
-          detail::invalid("Direct DTE terminal status domain is incomplete"));
+          invalid("Direct DTE terminal status domain is incomplete"));
     }
   }
 
@@ -958,7 +944,7 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
          llvm::zip(capacityPlan->tiles, capacityPlan->tileRanges)) {
       if (!ranges.profileRecord)
         return fail(BoardRuntimeStage::DeviceToHost, locationFor(tile),
-                    detail::invalid("profiler record range is missing"));
+                    invalid("profiler record range is missing"));
       BoardRuntimeProfilerOutput output{
           tile.launchSlot, std::vector<uint8_t>(ranges.profileRecord->bytes)};
       if (llvm::Error error = driver.copyDeviceToHost(

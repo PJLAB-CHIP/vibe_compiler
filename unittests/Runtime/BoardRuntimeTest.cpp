@@ -45,11 +45,12 @@ llvm::Error injected(llvm::StringRef operation) {
 constexpr llvm::StringLiteral kEmptyProgramDataDigest =
     "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-/// The package-owned TargetTensor fixture: one 256-byte tensor at file offset
-/// 256 inside a 512-byte program-data file.
+/// The package-owned TargetTensor fixture: one 256-byte tensor at canonical
+/// file offset 0 (the only aligned placement from a zero cursor) inside a
+/// 256-byte program-data file.
 constexpr uint64_t kOwnedTensorBytes = 256;
-constexpr uint64_t kOwnedTensorFileOffset = 256;
-constexpr uint64_t kOwnedTensorProgramDataBytes = 512;
+constexpr uint64_t kOwnedTensorFileOffset = 0;
+constexpr uint64_t kOwnedTensorProgramDataBytes = 256;
 constexpr uint64_t kOwnedTensorAlignment = 256;
 
 enum class TestLaunchContractCase { Grid, GridTileRows, Cluster };
@@ -569,8 +570,8 @@ protected:
   }
 
   /// Exact bytes of the package-owned TargetTensor fixture program-data file:
-  /// a 256-byte prefix followed by the 256-byte parameter tensor at offset
-  /// 256, so launch addressing can assert program-data base + file offset.
+  /// the 256-byte parameter tensor at canonical offset 0, so launch
+  /// addressing can assert program-data base + file offset.
   static std::vector<uint8_t> ownedTensorProgramDataBytes() {
     std::vector<uint8_t> bytes(kOwnedTensorProgramDataBytes);
     for (size_t byte = 0; byte < bytes.size(); ++byte)
@@ -1028,22 +1029,34 @@ TEST_F(BoardRuntimeTest,
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
   driver.decodeTileRowArguments = true;
+  const wafer::runtime::PackageManifest &manifest = package->getManifest();
+  std::vector<wafer::runtime::RuntimeInvocationBinding> planBindings;
+  for (const wafer::runtime::ExternalPortRecord &port : manifest.inputs)
+    planBindings.push_back({port.id, port.bytes, port.alignment});
+  llvm::Expected<wafer::runtime::RuntimeInvocationPlan> plan =
+      wafer::runtime::planRuntimeInvocation(
+          *package, planBindings, driver.getProviderEnvironment());
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, root, makeTile16Request(manifest), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
-  // One invocation allocation plus 16 per-Tile device pointer rows.
+  // Exactly one invocation allocation: the 16 pointer rows are H2D'd into
+  // their planned invocation child ranges and launched by base + offset.
   ASSERT_EQ(driver.submittedLaunches.size(), 16u);
-  ASSERT_EQ(driver.allocatedAddresses.size(), 17u);
-  ASSERT_GE(driver.h2dPayloads.size(), 16u);
+  ASSERT_EQ(driver.allocatedAddresses.size(), 1u);
+  ASSERT_EQ(plan->pointerRows.size(), 16u);
+  ASSERT_EQ(driver.h2dPayloads.size(), 17u);
   const uint64_t invocationBase = driver.allocatedAddresses.front();
   const size_t firstRowPayload = driver.h2dPayloads.size() - 16;
   for (size_t tile = 0; tile < 16; ++tile) {
     const auto &launch = driver.submittedLaunches[tile];
     ASSERT_EQ(launch.arguments.size(), 1u);
-    EXPECT_EQ(launch.arguments.front(),
-              driver.allocatedAddresses[1 + tile]);
+    const uint64_t rowAddress =
+        invocationBase + plan->pointerRows[tile].offset;
+    EXPECT_EQ(launch.arguments.front(), rowAddress);
+    EXPECT_EQ(driver.h2dDestinations[1 + tile], rowAddress);
 
     const std::vector<uint8_t> &payload =
         driver.h2dPayloads[firstRowPayload + tile];
@@ -1071,22 +1084,34 @@ TEST_F(BoardRuntimeTest,
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
   driver.decodeTileRowArguments = true;
+  const PackageManifest &manifest = package->getManifest();
+  std::vector<RuntimeInvocationBinding> planBindings;
+  for (const ExternalPortRecord &port : manifest.inputs)
+    planBindings.push_back({port.id, port.bytes, port.alignment});
+  llvm::Expected<RuntimeInvocationPlan> plan =
+      planRuntimeInvocation(*package, planBindings,
+                            driver.getProviderEnvironment());
+  ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root,
-                             makeTile16Request(package->getManifest()), driver);
+      executeBoardInvocation(*package, root, makeTile16Request(manifest),
+                             driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
-  // One invocation allocation plus 16 per-Tile device pointer rows.
+  // One invocation allocation: the 16 pointer rows are H2D'd into their
+  // planned invocation child ranges, and every row shares the same
+  // card-shared target descriptor.
   ASSERT_EQ(driver.submittedLaunches.size(), 16u);
-  ASSERT_EQ(driver.allocatedAddresses.size(), 17u);
+  ASSERT_EQ(driver.allocatedAddresses.size(), 1u);
   ASSERT_GE(driver.h2dPayloads.size(), 16u);
   const uint64_t invocationBase = driver.allocatedAddresses.front();
   const size_t firstRowPayload = driver.h2dPayloads.size() - 16;
   for (size_t tile = 0; tile < 16; ++tile) {
     const auto &launch = driver.submittedLaunches[tile];
     ASSERT_EQ(launch.arguments.size(), 1u);
-    EXPECT_EQ(launch.arguments.front(),
-              driver.allocatedAddresses[1 + tile]);
+    const uint64_t rowAddress =
+        invocationBase + plan->pointerRows[tile].offset;
+    EXPECT_EQ(launch.arguments.front(), rowAddress);
+    EXPECT_EQ(driver.h2dDestinations[1 + tile], rowAddress);
 
     const std::vector<uint8_t> &payload =
         driver.h2dPayloads[firstRowPayload + tile];
@@ -1948,10 +1973,11 @@ TEST_F(BoardRuntimeTest,
     size_t failIndex;
     wafer::runtime::BoardRuntimeStage stage;
   };
-  // The invocation allocation is the first; Tile 15's pointer row is the
-  // seventeenth allocate (zero-based index 16).
+  // Tile 15's pointer row is the seventeenth H2D (zero-based index 16):
+  // one input payload followed by 16 rows written into the planned
+  // invocation child ranges.
   const Scenario scenarios[] = {
-      {"allocate", 16, wafer::runtime::BoardRuntimeStage::ResourceAllocation},
+      {"h2d", 16, wafer::runtime::BoardRuntimeStage::HostToDevice},
   };
   for (const Scenario &scenario : scenarios) {
     SCOPED_TRACE(scenario.operation.str());
@@ -2007,7 +2033,7 @@ TEST_F(BoardRuntimeTest,
   // The invocation allocation is the first; Tile 15's pointer row is the
   // seventeenth allocate (zero-based index 16).
   const Scenario scenarios[] = {
-      {"allocate", 16, wafer::runtime::BoardRuntimeStage::ResourceAllocation},
+      {"h2d", 16, wafer::runtime::BoardRuntimeStage::HostToDevice},
   };
   for (const Scenario &scenario : scenarios) {
     SCOPED_TRACE(scenario.operation.str());

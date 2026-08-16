@@ -14,6 +14,8 @@ llvm::Error invalid(llvm::Twine message) {
                                  message.str().c_str());
 }
 
+} // namespace detail
+
 const PackageModuleRecord *
 findModule(llvm::ArrayRef<PackageModuleRecord> modules, ModuleId id) {
   auto iterator = llvm::find_if(
@@ -50,8 +52,6 @@ const ExternalPortRecord *findPort(llvm::ArrayRef<ExternalPortRecord> ports,
       llvm::find_if(ports, [&](const auto &port) { return port.id == id; });
   return iterator == ports.end() ? nullptr : &*iterator;
 }
-
-} // namespace detail
 
 llvm::StringRef stringifyProgramTensorRole(ProgramTensorRole role) {
   switch (role) {

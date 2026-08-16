@@ -3,9 +3,10 @@
 设计合同由`tasks/14-target-code-generation.md`、`tasks/15-launch-runtime-package.md`和
 `tasks/16-verification-contract.md`拥有，状态只看`tasks/progress.md`。本计划只拆施工顺序，不建立第二套总体架构。
 
-状态：Q58已闭合编译事务中的parameter/constant所有权和target data handoff；Q56首轮实现已落下
-`CardExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支，但代码review发现
-target identity、physical encoding、runtime allocation、strict verification和library boundary尚未闭合，当前重新进入修复；
+状态：Q58已闭合编译事务中的parameter/constant所有权和target data handoff；Q56已落下
+`CardExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支；首轮review的六个闭环项
+（TargetTensor canonical identity、selected representation materialization、TileRow单一invocation allocation、program-data
+canonical layout verification、package root all-and-only closure、中立package support library）均已修复并配回归测试；
 Q57保持later，只在主compiler和新package都达到`board-ready`后启动。
 
 ## 1. 拆分依据
@@ -157,9 +158,10 @@ invocation memory另成一块，是因为它承载每次更新/回读并可在�
 若真实provider证明单次allocation/copy存在上限，必须先形成typed capability和新的compiler/package block plan；runtime不得静默
 逐tensor回退。
 
-### 3.4 当前review闭环项
+### 3.4 Review闭环项
 
-Q56重新达到`board-ready`前必须一次性修复以下问题，并补齐能够直接触发原缺口的回归测试：
+首轮review列出的六个缺口已修复，每个缺口都有直接触发原问题的回归测试：
+
 
 1. **TargetTensor identity在确定性排序后失配。** 当前entry argument在TargetTensor首次发现时保存临时ID，placement按完整descriptor
    排序后又重写record ID，却没有重写已经保存的entry引用。必须先形成canonical TargetTensor顺序再签发稳定ID，或在排序后根据
@@ -185,9 +187,16 @@ Q56重新达到`board-ready`前必须一次性修复以下问题，并补齐能�
    必须按`tasks/18-source-organization.md`拆到中立package support library；compiler writer和Runtime loader都依赖该owner，Compiler
    不得为了写package链接包含`BoardRuntime`执行实现的整个Runtime library。CMake依赖检查和public link smoke必须覆盖该边界。
 
-现有Q56定向host/no-card测试通过只说明已有用例自洽：其中TileRow测试把额外16次allocation写成了预期，多representation、canonical
-range closure和whole-root negative cases也缺失，因此不能继续作为`board-ready`证明。修复后必须重新执行受影响unit、source-to-package、
-strict readback/no-card、fake provider、public link/source organization检查并生成新的完整package；真实板测仍按本文件原门禁串行执行。
+修复落点与回归：
+
+1. canonical TargetTensor id：`buildManifest`在确定性placement后重签发排序id并回填全部entry引用（`TwoSelectedRepresentationsRemapCanonicalIdsAndPadPhysically`覆盖三种重映射类）；
+2. selected representation：`writeProgramData`消费`PhysicalTensorCodec`新增的bounded-window packer按窗口materialize，identity路径直接流式source range不再分配整tensor host vector，Cx块padding为canonical零（同一回归覆盖RSS/read-window路径；8MiB identity流式由program-data scale lit覆盖）；
+3. TileRow单一invocation allocation：executor把16个pointer row H2D到`invocation base + planned offset`，不再逐Tile allocate；fake provider测试断言allocation次数、row地址、每Tile失败注入与reverse cleanup与同一plan一致；
+4. program-data canonical layout：verifier按writer同一tie-break重建non-overlap placement并证明id顺序、offset、全零padding、total bytes与base alignment精确；`PackageManifestTest`新增5个拒绝路径正/负例；
+5. package root closure：strict loader（`loadVerifiedPackageManifest`）验证package root恰好`manifest.json`+`modules/`+`data/program-data.bin`，拒绝额外member/symlink/非regular payload（3个负例）；
+6. 中立package support library：`lib/Wafer/Package`/`include/Wafer/Package`拥有typed model、canonical spelling、parser/serializer、verifier、readback与profile instrumentation model；`WaferCompiler`链接`WaferPackageSupport`且不链接`WaferRuntime`，`tools/check_source_organization.py`新增CMake依赖边界检查。
+
+修复后验证：三棵树fresh build；Q56定向单测161/161；WaferRunBoardIOUnitTests 42/42；Runtime/Compiler public link smoke exit 0；默认lit gate 216/216；source organization与board python检查通过；fresh参数add source→package→no-card通过。真实板测仍按本文件原门禁串行执行。
 
 ## 4. Q57：设备常驻执行
 

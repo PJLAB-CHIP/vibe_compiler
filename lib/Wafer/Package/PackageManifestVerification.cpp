@@ -12,6 +12,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SHA256.h"
@@ -28,11 +29,6 @@
 namespace wafer::runtime {
 namespace {
 
-using detail::findModule;
-using detail::findModuleExport;
-using detail::findPort;
-using detail::findProgramTensor;
-using detail::findTargetTensor;
 using detail::invalid;
 
 bool isRegularFile(llvm::StringRef path) {
@@ -122,18 +118,29 @@ llvm::Error verifyProgramData(const PackageManifest &manifest,
     return invalid("package program_data relative path is not canonical");
   llvm::SmallString<256> path(packageRoot);
   llvm::sys::path::append(path, programData.relativePath);
-  llvm::Expected<std::string> digest = digestFile(path);
-  if (!digest)
-    return digest.takeError();
-  if (*digest != programData.digest)
+  if (!isRegularFile(path))
+    return invalid("package program data is not a regular file: " + path);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
+                                  /*RequiresNullTerminator=*/false);
+  if (!buffer)
+    return llvm::createStringError(buffer.getError(),
+                                   "failed to read package program data: " +
+                                       path);
+  llvm::SHA256 hasher;
+  hasher.update((*buffer)->getBuffer());
+  const std::string digest =
+      "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
+  if (digest != programData.digest)
     return invalid("package program data digest mismatch");
+  llvm::StringRef content = (*buffer)->getBuffer();
   if (emptyTable) {
     if (programData.totalBytes != 0 || programData.baseAlignment != 1)
       return invalid(
           "empty package program data must record zero bytes and unit "
           "alignment");
-    if (*digest != "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4"
-                   "95991b7852b855")
+    if (digest != "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4"
+                 "95991b7852b855")
       return invalid("empty package program data must be the canonical empty "
                      "file");
     return llvm::Error::success();
@@ -143,12 +150,70 @@ llvm::Error verifyProgramData(const PackageManifest &manifest,
     return invalid(
         "non-empty package program data needs positive bytes and a power-of-"
         "two base alignment");
-  uint64_t fileSize = 0;
-  if (std::error_code error = llvm::sys::fs::file_size(path, fileSize))
-    return invalid("failed to stat package program data: " +
-                   error.message());
-  if (programData.totalBytes != fileSize)
+  if (programData.totalBytes != content.size())
     return invalid("package program data byte count does not match the file");
+
+  // Rebuild the canonical non-overlap placement with the same stable
+  // tie-break the package writer uses, and prove the recorded ids, offsets,
+  // padding and byte accounting follow it exactly.
+  llvm::SmallVector<TargetTensorRecord, 4> canonical(
+      manifest.targetTensors.begin(), manifest.targetTensors.end());
+  llvm::sort(canonical, [](const TargetTensorRecord &lhs,
+                           const TargetTensorRecord &rhs) {
+    return std::tie(lhs.programTensor, lhs.dtype, lhs.layout, lhs.shape,
+                    lhs.bytes, lhs.alignment) <
+           std::tie(rhs.programTensor, rhs.dtype, rhs.layout, rhs.shape,
+                    rhs.bytes, rhs.alignment);
+  });
+  uint64_t cursor = 0;
+  uint64_t baseAlignment = 1;
+  auto verifyZeroPadding = [&](uint64_t offset, uint64_t bytes) -> llvm::Error {
+    constexpr uint64_t kWindowBytes = 1 << 20;
+    uint64_t checked = 0;
+    while (checked < bytes) {
+      const uint64_t chunk =
+          std::min<uint64_t>(kWindowBytes, bytes - checked);
+      if (llvm::StringRef(content)
+              .slice(offset + checked, offset + checked + chunk)
+              .find_first_not_of('\0') != llvm::StringRef::npos)
+        return invalid("package program data padding is not zero");
+      checked += chunk;
+    }
+    return llvm::Error::success();
+  };
+  for (auto [index, tensor] : llvm::enumerate(canonical)) {
+    if (tensor.id.getValue() != static_cast<uint64_t>(index))
+      return invalid(
+          "package target tensor ids do not follow the canonical order");
+    if (cursor > std::numeric_limits<uint64_t>::max() -
+                     (tensor.alignment - 1))
+      return invalid("package program data offset overflows");
+    const uint64_t alignedCursor =
+        llvm::alignTo(cursor, tensor.alignment);
+    if (alignedCursor < cursor)
+      return invalid("package target tensor ranges overlap");
+    if (tensor.fileOffset != alignedCursor)
+      return invalid("package target tensor offset is not canonical");
+    if (alignedCursor > cursor) {
+      if (llvm::Error error =
+              verifyZeroPadding(cursor, alignedCursor - cursor))
+        return error;
+    }
+    if (tensor.bytes > std::numeric_limits<uint64_t>::max() - alignedCursor)
+      return invalid("package target tensor range overflows");
+    cursor = alignedCursor + tensor.bytes;
+    baseAlignment = std::max(baseAlignment, tensor.alignment);
+  }
+  if (programData.totalBytes < cursor)
+    return invalid("package program data is shorter than the canonical "
+                   "placement");
+  if (programData.totalBytes > cursor) {
+    if (llvm::Error error =
+            verifyZeroPadding(cursor, programData.totalBytes - cursor))
+      return error;
+  }
+  if (programData.baseAlignment != baseAlignment)
+    return invalid("package program data base alignment is not canonical");
   return llvm::Error::success();
 }
 
@@ -224,7 +289,7 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
         findModule(manifest.modules, entry.module);
     const PackageModuleExportRecord *main =
         module
-            ? detail::findModuleExport(*module, PackageModuleExportRole::Main)
+            ? findModuleExport(*module, PackageModuleExportRole::Main)
             : nullptr;
     if (!module || !main)
       return invalid("runtime launch entry has no typed main export");
@@ -294,6 +359,88 @@ llvm::Error verifyModuleFiles(const PackageManifest &manifest,
 }
 
 } // namespace
+
+namespace detail {
+
+llvm::Error verifyPackageRoot(const PackageManifest &manifest,
+                              llvm::StringRef packageRoot) {
+  // The package root is an all-and-only closure: exactly the canonical
+  // manifest, the modules directory and the data directory with exactly
+  // program-data.bin. Extra regular files, directories, symlinks and any
+  // unreferenced payload are rejected.
+  constexpr llvm::StringLiteral kManifestName = "manifest.json";
+  constexpr llvm::StringLiteral kModulesDirectory = "modules";
+  constexpr llvm::StringLiteral kDataDirectory = "data";
+  constexpr llvm::StringLiteral kProgramDataName = "program-data.bin";
+  std::set<std::string> allowedRootMembers = {
+      (packageRoot + llvm::sys::path::get_separator() + kManifestName)
+          .str()};
+  allowedRootMembers.insert(
+      (packageRoot + llvm::sys::path::get_separator() + kModulesDirectory)
+          .str());
+  allowedRootMembers.insert(
+      (packageRoot + llvm::sys::path::get_separator() + kDataDirectory)
+          .str());
+
+  llvm::SmallString<256> manifestPath(packageRoot);
+  llvm::sys::path::append(manifestPath, kManifestName);
+  if (llvm::sys::fs::get_file_type(manifestPath, /*Follow=*/false) !=
+      llvm::sys::fs::file_type::regular_file)
+    return invalid("package root is missing its canonical manifest file");
+  llvm::SmallString<256> modulesPath(packageRoot);
+  llvm::sys::path::append(modulesPath, kModulesDirectory);
+  if (llvm::sys::fs::get_file_type(modulesPath, /*Follow=*/false) !=
+      llvm::sys::fs::file_type::directory_file)
+    return invalid("package root is missing its modules directory");
+  llvm::SmallString<256> dataPath(packageRoot);
+  llvm::sys::path::append(dataPath, kDataDirectory);
+  if (llvm::sys::fs::get_file_type(dataPath, /*Follow=*/false) !=
+      llvm::sys::fs::file_type::directory_file)
+    return invalid("package root is missing its data directory");
+
+  std::error_code error;
+  for (llvm::sys::fs::directory_iterator iterator(packageRoot, error), end;
+       iterator != end; iterator.increment(error)) {
+    if (error)
+      return invalid("failed to walk package root: " + error.message());
+    if (iterator->type() != llvm::sys::fs::file_type::regular_file &&
+        iterator->type() != llvm::sys::fs::file_type::directory_file)
+      return invalid("package root contains an unsupported member: " +
+                     iterator->path());
+    if (allowedRootMembers.count(iterator->path()) == 0)
+      return invalid("package root contains an undeclared member: " +
+                     iterator->path());
+  }
+  if (error)
+    return invalid("failed to walk package root: " + error.message());
+
+  // data/ holds exactly the canonical program-data member.
+  llvm::SmallString<256> programDataPath(dataPath);
+  llvm::sys::path::append(programDataPath, kProgramDataName);
+  if (llvm::sys::fs::get_file_type(programDataPath, /*Follow=*/false) !=
+      llvm::sys::fs::file_type::regular_file)
+    return invalid("package data directory is missing program-data.bin");
+  for (llvm::sys::fs::directory_iterator iterator(dataPath, error), end;
+       iterator != end; iterator.increment(error)) {
+    if (error)
+      return invalid("failed to walk package data directory: " +
+                     error.message());
+    if (iterator->type() != llvm::sys::fs::file_type::regular_file)
+      return invalid("package data directory contains an unsupported "
+                     "member: " +
+                     iterator->path());
+    if (iterator->path() != programDataPath.str())
+      return invalid("package data directory contains an undeclared "
+                     "member: " +
+                     iterator->path());
+  }
+  if (error)
+    return invalid("failed to walk package data directory: " + error.message());
+  return llvm::Error::success();
+}
+
+
+} // namespace detail
 
 llvm::Expected<VerifiedPackageManifest>
 verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,

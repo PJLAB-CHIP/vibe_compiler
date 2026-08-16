@@ -581,3 +581,13 @@
 - 修复模式：改公共API形参后，所有仍被任务引用的configured tree都要fresh build；调用点按现有模式补齐
   default-constructed handoff。
 - 防复发：公共API变更的验证清单里显式列出所有active build tree；提交证据注明哪些tree实际重编过。
+
+## StringRef::slice第二个参数是exclusive end不是length
+
+- 现象：Q56 program-data canonical verification的零padding检查在负例上静默通过——96字节文件中[80,96)非零，
+  检查却返回"全零"；该检查写成`content.slice(offset + checked, chunk)`。
+- 根因：本仓库pinned LLVM的`llvm::StringRef::slice(Start, End)`第二参数是exclusive end并在内部clamp；
+  按length传入时`End < Start`被clamp成空区间，`find_first_not_of`对空串恒为npos，检查退化为恒真。
+- 修复模式：slice调用写成`slice(start, start + length)`；涉及区间的验证一律配能直接触发原缺口的负例测试，
+  不能只靠正例通过。
+- 防复发：新写StringRef区间逻辑时对照pinned header确认slice/substr参数语义；review零值/空区间退化路径。

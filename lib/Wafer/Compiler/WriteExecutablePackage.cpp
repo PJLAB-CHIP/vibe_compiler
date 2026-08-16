@@ -10,7 +10,7 @@
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Package.h"
-#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Package/PackageManifest.h"
 #include "Wafer/Runtime/ProfileInstrumentation.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/TargetCall.h"

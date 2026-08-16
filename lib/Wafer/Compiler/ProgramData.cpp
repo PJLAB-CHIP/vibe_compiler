@@ -725,6 +725,115 @@ ProgramDataRange::materialize(const ProgramDataSource &source,
   return result;
 }
 
+llvm::Error
+ProgramDataRange::materializeWindow(const ProgramDataSource &source,
+                                    uint64_t regionByteOffset,
+                                    llvm::MutableArrayRef<uint8_t> out) const {
+  if (out.empty() && regionByteOffset <= regionLength)
+    return llvm::Error::success();
+  if (regionByteOffset > regionLength ||
+      out.size() > regionLength - regionByteOffset)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "program tensor window exceeds the checked "
+                                   "region byte count");
+  if (contiguous) {
+    uint64_t fileOffset = 0;
+    if (!checkedAddU64(source.getPayloadOffset(), regionOffset, fileOffset) ||
+        !checkedAddU64(fileOffset, regionByteOffset, fileOffset))
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "program tensor file offset overflows");
+    return source.readRange(fileOffset, out);
+  }
+
+  std::optional<int64_t> elementBytes = getProgramDTypeElementBytes(dtype);
+  if (!elementBytes)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "program tensor dtype is unsupported");
+  if (regionByteOffset % static_cast<uint64_t>(*elementBytes) != 0 ||
+      out.size() % static_cast<uint64_t>(*elementBytes) != 0)
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "strided program tensor windows must be "
+                                   "element-aligned");
+  const uint64_t firstElement =
+      regionByteOffset / static_cast<uint64_t>(*elementBytes);
+  const uint64_t elementCountInWindow =
+      out.size() / static_cast<uint64_t>(*elementBytes);
+  if (elementCountInWindow == 0)
+    return llvm::Error::success();
+
+  const size_t rank = payloadShape.size();
+  std::vector<uint64_t> payloadStrides(rank, 1);
+  for (size_t reverse = rank; reverse > 1; --reverse) {
+    size_t dim = reverse - 1;
+    uint64_t stride = 0;
+    if (payloadShape[dim] < 0 ||
+        !checkedMulU64(payloadStrides[dim],
+                       static_cast<uint64_t>(payloadShape[dim]), stride))
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "payload row stride overflows");
+    payloadStrides[dim - 1] = stride;
+  }
+  llvm::Error result = llvm::Error::success();
+  std::vector<uint64_t> coordinate(rank, 0);
+  uint64_t written = 0;
+  for (uint64_t linear = firstElement;
+       linear < firstElement + elementCountInWindow && !result; ++linear) {
+    uint64_t remaining = linear;
+    uint64_t payloadLinear = 0;
+    for (size_t reverse = rank; reverse > 0; --reverse) {
+      size_t dim = reverse - 1;
+      coordinate[dim] = remaining % static_cast<uint64_t>(localShape[dim]);
+      remaining /= static_cast<uint64_t>(localShape[dim]);
+      uint64_t payloadCoordinate = 0;
+      uint64_t contribution = 0;
+      if (!checkedAddU64(static_cast<uint64_t>(sliceOffsets[dim]),
+                         coordinate[dim], payloadCoordinate) ||
+          !checkedMulU64(payloadCoordinate, payloadStrides[dim],
+                         contribution) ||
+          !checkedAddU64(payloadLinear, contribution, payloadLinear)) {
+        result = llvm::createStringError(llvm::errc::invalid_argument,
+                                         "strided program tensor addressing "
+                                         "overflows");
+        break;
+      }
+    }
+    if (result)
+      break;
+    uint64_t payloadByte = 0;
+    if (!checkedMulU64(payloadLinear, static_cast<uint64_t>(*elementBytes),
+                       payloadByte)) {
+      result = llvm::createStringError(llvm::errc::invalid_argument,
+                                       "strided program tensor addressing "
+                                       "overflows");
+      break;
+    }
+    uint64_t fileOffset = 0;
+    if (!checkedAddU64(source.getPayloadOffset(), payloadByte, fileOffset)) {
+      result = llvm::createStringError(llvm::errc::invalid_argument,
+                                       "strided program tensor file offset "
+                                       "overflows");
+      break;
+    }
+    result = source.readRange(
+        fileOffset, out.slice(written, static_cast<size_t>(*elementBytes)));
+    written += static_cast<uint64_t>(*elementBytes);
+  }
+  return result;
+}
+
+llvm::Error
+ProgramDataHandoff::materializeRangeWindow(const ProgramDataRange &range,
+                                           uint64_t regionByteOffset,
+                                           llvm::MutableArrayRef<uint8_t> out) const {
+  if (llvm::Error error =
+          range.materializeWindow(getSource(range.getSourceId()),
+                                  regionByteOffset, out))
+    return error;
+  if (windowMaterializedRanges.insert(range.getTensorId()).second)
+    ++ioStatistics->rangeMaterializations;
+  return llvm::Error::success();
+}
+
 ProgramDataHandoff::ProgramDataHandoff(std::string storageParent)
     : storageParent(std::move(storageParent)),
       ioStatistics(std::make_shared<ProgramDataIOStatistics>()) {}

@@ -856,6 +856,9 @@ TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramTensorDrift) {
 }
 
 TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramDataAlignmentDrift) {
+  // A capture package whose program data carries a non-canonical base
+  // alignment is rejected by the strict canonical-layout verification before
+  // any capture comparison can observe it.
   ASSERT_NO_FATAL_FAILURE(writePackage(
       primary, /*outputBytes=*/4, /*recordBytes=*/0,
       wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
@@ -864,13 +867,24 @@ TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramDataAlignmentDrift) {
   ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
       /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
       /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
-      /*captureOutputBytesOverride=*/0, /*captureIncludeProgramData=*/true,
-      /*captureProgramDataAlignmentOverride=*/32));
-  auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
-      instrumentation, primary);
+      /*captureOutputBytesOverride=*/0, /*captureIncludeProgramData=*/true));
+  llvm::SmallString<256> captureManifest(instrumentation);
+  llvm::sys::path::append(captureManifest, "captures/count/manifest.json");
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(captureManifest);
+  ASSERT_TRUE(static_cast<bool>(buffer));
+  std::string json = (*buffer)->getBuffer().str();
+  const std::string canonical = "\"base_alignment\": 16";
+  ASSERT_NE(json.find(canonical), std::string::npos);
+  json.replace(json.find(canonical), canonical.size(), "\"base_alignment\": 32");
+  writeText(captureManifest, json);
+  llvm::SmallString<256> captureRoot(instrumentation);
+  llvm::sys::path::append(captureRoot, "captures/count");
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> loaded =
+      wafer::runtime::loadVerifiedPackageManifest(captureRoot);
   ASSERT_FALSE(static_cast<bool>(loaded));
   EXPECT_NE(llvm::toString(loaded.takeError())
-                .find("program data contract differs"),
+                .find("program data base alignment is not canonical"),
             std::string::npos);
 }
 

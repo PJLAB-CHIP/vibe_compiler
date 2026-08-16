@@ -1,7 +1,7 @@
 //===- PackageManifest.h - Typed Wafer package format ----------*- C++ -*-===//
 
-#ifndef WAFER_RUNTIME_PACKAGEMANIFEST_H
-#define WAFER_RUNTIME_PACKAGEMANIFEST_H
+#ifndef WAFER_PACKAGE_PACKAGEMANIFEST_H
+#define WAFER_PACKAGE_PACKAGEMANIFEST_H
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/Target/TopologyIds.h"
@@ -505,6 +505,26 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
     llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
     const RuntimeEnvironment &environment);
 
+
+/// Typed lookup helpers over the canonical manifest tables. They are stable
+/// package-model accessors shared by the writer, verifier, planner and
+/// profile consumers; identity always comes from typed ids, never names.
+const PackageModuleRecord *
+findModule(llvm::ArrayRef<PackageModuleRecord> modules, ModuleId id);
+
+const PackageModuleExportRecord *
+findModuleExport(const PackageModuleRecord &module,
+                 PackageModuleExportRole role);
+
+const ProgramTensorRecord *
+findProgramTensor(llvm::ArrayRef<ProgramTensorRecord> tensors,
+                  ProgramTensorId id);
+
+const TargetTensorRecord *
+findTargetTensor(llvm::ArrayRef<TargetTensorRecord> tensors, TargetTensorId id);
+
+const ExternalPortRecord *findPort(llvm::ArrayRef<ExternalPortRecord> ports,
+                                   PortId id);
 } // namespace wafer::runtime
 
-#endif // WAFER_RUNTIME_PACKAGEMANIFEST_H
+#endif // WAFER_PACKAGE_PACKAGEMANIFEST_H

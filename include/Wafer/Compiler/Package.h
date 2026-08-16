@@ -5,7 +5,7 @@
 
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
-#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Package/PackageManifest.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"

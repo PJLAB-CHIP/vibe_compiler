@@ -1,6 +1,6 @@
 //===- PackageManifestTest.cpp - Typed package format tests --------------===//
 
-#include "Wafer/Runtime/PackageManifest.h"
+#include "Wafer/Package/PackageManifest.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 
@@ -9,6 +9,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
@@ -1306,3 +1307,155 @@ TEST_F(PackageManifestTest,
 }
 
 } // namespace
+
+// The strict program-data verification rebuilds the canonical non-overlap
+// placement with the writer's stable tie-break. Each rejection path below
+// mutates exactly one canonical fact and asserts the typed rejection.
+
+TEST_F(PackageManifestTest, RejectsNonCanonicalTargetTensorIdOrder) {
+  PackageManifest manifest = makeManifest();
+  std::swap(manifest.targetTensors[0].id, manifest.targetTensors[1].id);
+  writeFullProgramData();
+  expectRejected(verifyPackageManifest(std::move(manifest), root),
+                 "ids do not follow the canonical order");
+}
+
+TEST_F(PackageManifestTest, RejectsNonCanonicalTargetTensorOffset) {
+  PackageManifest manifest = makeManifest();
+  manifest.programTensors = {
+      {ProgramTensorId(0), ProgramTensorRole::Parameter, 0, "f32", {4}, {4},
+       {0}, {4}},
+      {ProgramTensorId(1), ProgramTensorRole::Constant, 0, "f32", {4}, {4},
+       {0}, {4}},
+  };
+  manifest.targetTensors = {
+      {TargetTensorId(0), ProgramTensorId(0), "f32", PackageMemLayout::Tensor,
+       {4}, 16, 16, 0},
+      // 48 is aligned but the canonical aligned placement from cursor 16 is
+      // 16; the unexplained gap is rejected.
+      {TargetTensorId(1), ProgramTensorId(1), "f32", PackageMemLayout::Tensor,
+       {4}, 16, 16, 48},
+  };
+  manifest.programData = {"data/program-data.bin", 80, 16,
+                          programDataDigest()};
+  writeFullProgramData();
+  expectRejected(verifyPackageManifest(std::move(manifest), root),
+                 "offset is not canonical");
+}
+
+TEST_F(PackageManifestTest, RejectsNonCanonicalProgramDataBaseAlignment) {
+  PackageManifest manifest = makeManifest();
+  manifest.programData.baseAlignment = 32;
+  writeFullProgramData();
+  expectRejected(verifyPackageManifest(std::move(manifest), root),
+                 "base alignment is not canonical");
+}
+
+TEST_F(PackageManifestTest, RejectsNonZeroPaddingBetweenCanonicalTensors) {
+  PackageManifest manifest = makeManifest();
+  manifest.programTensors = {
+      {ProgramTensorId(0), ProgramTensorRole::Parameter, 0, "f32", {4}, {4},
+       {0}, {4}},
+      {ProgramTensorId(1), ProgramTensorRole::Constant, 0, "f32", {4}, {4},
+       {0}, {4}},
+  };
+  manifest.targetTensors = {
+      {TargetTensorId(0), ProgramTensorId(0), "f32", PackageMemLayout::Tensor,
+       {4}, 16, 16, 0},
+      {TargetTensorId(1), ProgramTensorId(1), "f32", PackageMemLayout::Tensor,
+       {4}, 16, 32, 32},
+  };
+  std::vector<uint8_t> bytes(48, UINT8_C(0xAB));
+  llvm::SHA256 hasher;
+  hasher.update(bytes);
+  manifest.programData = {"data/program-data.bin", 48, 32,
+                          "sha256:" + llvm::toHex(hasher.final(),
+                                                  /*LowerCase=*/true)};
+  writeProgramData(bytes);
+  expectRejected(verifyPackageManifest(std::move(manifest), root),
+                 "padding is not zero");
+}
+
+TEST_F(PackageManifestTest, RejectsNonZeroTrailingProgramDataBytes) {
+  PackageManifest manifest = makeManifest();
+  std::vector<uint8_t> bytes(96, 0);
+  for (size_t index = 80; index < bytes.size(); ++index)
+    bytes[index] = UINT8_C(0xAB);
+  llvm::SHA256 hasher;
+  hasher.update(bytes);
+  manifest.programData = {"data/program-data.bin", 96, 64,
+                          "sha256:" + llvm::toHex(hasher.final(),
+                                                  /*LowerCase=*/true)};
+  writeProgramData(bytes);
+  expectRejected(verifyPackageManifest(std::move(manifest), root),
+                 "padding is not zero");
+}
+
+// The strict loader closes the whole package root: exactly manifest.json,
+// modules/ and data/program-data.bin, all regular files.
+
+TEST_F(PackageManifestTest, StrictLoaderRejectsUndeclaredRootMember) {
+  writeFullProgramData();
+  llvm::Expected<VerifiedPackageManifest> verified =
+      verifyPackageManifest(makeManifest(), root);
+  ASSERT_TRUE(static_cast<bool>(verified));
+  llvm::SmallString<256> manifestPath(root);
+  llvm::sys::path::append(manifestPath, kPackageManifestFileName);
+  std::error_code error;
+  llvm::raw_fd_ostream output(manifestPath, error, llvm::sys::fs::OF_Text);
+  ASSERT_FALSE(error);
+  output << serializeCanonicalPackageJson(*verified);
+  output.close();
+  llvm::SmallString<256> extra(root);
+  llvm::sys::path::append(extra, "undeclared.txt");
+  llvm::raw_fd_ostream extraOutput(extra, error, llvm::sys::fs::OF_Text);
+  ASSERT_FALSE(error);
+  extraOutput << "extra";
+  extraOutput.close();
+  llvm::Expected<VerifiedPackageManifest> loaded =
+      loadVerifiedPackageManifest(root);
+  expectRejected(std::move(loaded), "undeclared member");
+}
+
+TEST_F(PackageManifestTest, StrictLoaderRejectsUndeclaredDataMember) {
+  writeFullProgramData();
+  llvm::Expected<VerifiedPackageManifest> verified =
+      verifyPackageManifest(makeManifest(), root);
+  ASSERT_TRUE(static_cast<bool>(verified));
+  llvm::SmallString<256> manifestPath(root);
+  llvm::sys::path::append(manifestPath, kPackageManifestFileName);
+  std::error_code error;
+  llvm::raw_fd_ostream output(manifestPath, error, llvm::sys::fs::OF_Text);
+  ASSERT_FALSE(error);
+  output << serializeCanonicalPackageJson(*verified);
+  output.close();
+  llvm::SmallString<256> extra(root);
+  llvm::sys::path::append(extra, "data", "aux.payload");
+  llvm::raw_fd_ostream extraOutput(extra, error, llvm::sys::fs::OF_Text);
+  ASSERT_FALSE(error);
+  extraOutput << "aux";
+  extraOutput.close();
+  llvm::Expected<VerifiedPackageManifest> loaded =
+      loadVerifiedPackageManifest(root);
+  expectRejected(std::move(loaded), "undeclared member");
+}
+
+TEST_F(PackageManifestTest, StrictLoaderRejectsSymlinkMember) {
+  writeFullProgramData();
+  llvm::Expected<VerifiedPackageManifest> verified =
+      verifyPackageManifest(makeManifest(), root);
+  ASSERT_TRUE(static_cast<bool>(verified));
+  llvm::SmallString<256> manifestPath(root);
+  llvm::sys::path::append(manifestPath, kPackageManifestFileName);
+  std::error_code error;
+  llvm::raw_fd_ostream output(manifestPath, error, llvm::sys::fs::OF_Text);
+  ASSERT_FALSE(error);
+  output << serializeCanonicalPackageJson(*verified);
+  output.close();
+  llvm::SmallString<256> link(root);
+  llvm::sys::path::append(link, "linked-manifest");
+  ASSERT_FALSE(llvm::sys::fs::create_link(manifestPath, link));
+  llvm::Expected<VerifiedPackageManifest> loaded =
+      loadVerifiedPackageManifest(root);
+  expectRejected(std::move(loaded), "unsupported member");
+}
