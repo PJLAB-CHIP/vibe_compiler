@@ -1386,6 +1386,13 @@ R3.2d.4 已完成：
     未完成target CRT/golden/device-link前保持production target-illegal。
 17. 实现`wafer.instr.mxfp_decode`及packed/scale/scratch/completion合同，lower到显式software decode + scale
     composite；不得把legacy helper或普通convert当完成证明。
+18. 远期实际workload需要数据相关访问时，再建立Kcore mapped software execution边界；不并入Q50.A近期的
+    static exact-demand工作，也不把vendor mapping helper直接提升为Wafer Instr或ABI。该边界应从仍显式携带
+    runtime index/value SSA的上游语义出发，在target lowering中按memory space选择Kcore可访问的SPM/DDR映射，
+    以chunk为单位完成一次mapping、显式NCC completion/cache ordering、索引扫描、分桶和规则descriptor合并，
+    再调用已有movement instruction或执行有界scalar fallback；不得在逐元素循环中重复DDR mapping或默认逐元素
+    发NCC命令。TopK、动态gather/scatter只是未来consumer示例，不构成当前支持声明；真正启用前必须补齐typed
+    memory effects、workspace/range、scatter冲突、target-model和板端验证。
 
 ## 13. Instruction ABI 收口
 
