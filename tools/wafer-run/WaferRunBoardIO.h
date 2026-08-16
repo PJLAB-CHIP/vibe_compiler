@@ -17,8 +17,8 @@
 
 namespace wafer::runtime::cli {
 
-struct ResourceFile {
-  uint64_t resourceId = std::numeric_limits<uint64_t>::max();
+struct PortFile {
+  uint64_t portId = std::numeric_limits<uint64_t>::max();
   std::string path;
 };
 
@@ -38,27 +38,26 @@ struct BoardInvocationFilePlan {
   llvm::DenseMap<uint64_t, std::vector<uint8_t>> expectedBytes;
   llvm::DenseMap<uint64_t, BoardOutputComparisonKind> expectedComparisons;
   llvm::DenseMap<uint64_t, std::string> outputPaths;
-  llvm::DenseMap<uint64_t, uint64_t> writableResourceBytes;
+  llvm::DenseMap<uint64_t, uint64_t> outputBytes;
 };
 
 llvm::Expected<BoardInvocationFilePlan> prepareBoardInvocationFiles(
     const PackageManifest &manifest, BoardRuntimeInvocationRequest request,
-    llvm::ArrayRef<ResourceFile> resourceFiles,
-    llvm::ArrayRef<ResourceFile> expectedFiles,
-    llvm::ArrayRef<ResourceFile> outputFiles,
-    llvm::ArrayRef<ResourceFile> relaxedF16ExpectedFiles = {});
+    llvm::ArrayRef<PortFile> inputFiles, llvm::ArrayRef<PortFile> expectedFiles,
+    llvm::ArrayRef<PortFile> outputFiles,
+    llvm::ArrayRef<PortFile> relaxedF16ExpectedFiles = {});
 
 /// Rebinds one already prepared user invocation to another verified package
-/// using the stable `(scope, role, role_index)` resource identity.
-/// Every host-visible resource contract must match exactly; internal
-/// workspaces are intentionally outside this user-I/O projection.
+/// using the stable external port identity (input/output role index).
+/// Every external port contract must match exactly; entry-local requirements
+/// are intentionally outside this user-I/O projection.
 llvm::Expected<BoardInvocationFilePlan>
 remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
                              const PackageManifest &sourceManifest,
                              const PackageManifest &targetManifest);
 
-/// Validates all-and-only writable outputs, exact byte counts, and every
-/// supplied expected tensor without writing any --output file.
+/// Validates all-and-only outputs, exact byte counts, and every supplied
+/// expected tensor without writing any --output file.
 llvm::Error validateBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
                                  const BoardInvocationFilePlan &plan);
 

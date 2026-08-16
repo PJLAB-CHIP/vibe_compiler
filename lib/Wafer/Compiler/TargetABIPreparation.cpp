@@ -53,18 +53,32 @@ mlir::FailureOr<int64_t> getRequiredPhysicalAlignment(
   return *combined;
 }
 
-KernelABISlotRole getKernelRole(ProgramResourceRole role) {
+TileEntryArgumentKind getTileEntryArgumentKind(ProgramResourceRole role) {
   switch (role) {
   case ProgramResourceRole::UserInput:
-    return KernelABISlotRole::UserInput;
+    return TileEntryArgumentKind::ExternalInput;
   case ProgramResourceRole::Parameter:
-    return KernelABISlotRole::Parameter;
   case ProgramResourceRole::Constant:
-    return KernelABISlotRole::Constant;
+    return TileEntryArgumentKind::TargetTensor;
   case ProgramResourceRole::Output:
-    return KernelABISlotRole::Output;
+    return TileEntryArgumentKind::ExternalOutput;
   }
   llvm_unreachable("unknown program resource role");
+}
+
+TileEntryArgumentAccess getTileEntryArgumentAccess(TileEntryArgumentKind kind) {
+  switch (kind) {
+  case TileEntryArgumentKind::ExternalInput:
+  case TileEntryArgumentKind::TargetTensor:
+    return TileEntryArgumentAccess::ReadOnly;
+  case TileEntryArgumentKind::ExternalOutput:
+    return TileEntryArgumentAccess::WriteOnly;
+  case TileEntryArgumentKind::Workspace:
+  case TileEntryArgumentKind::ProfileRecord:
+  case TileEntryArgumentKind::TransportStatus:
+    return TileEntryArgumentAccess::ReadWrite;
+  }
+  llvm_unreachable("unknown tile entry argument kind");
 }
 
 mlir::FailureOr<WaferPhysicalTensorInfo>
@@ -185,7 +199,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
 
   prepared.slots.reserve(originalArgumentCount + resultCount + 1);
   auto appendSlot = [&](const ProgramResourceBinding &binding, mlir::Type type,
-                        KernelABISlotRole role) -> mlir::LogicalResult {
+                        TileEntryArgumentKind kind) -> mlir::LogicalResult {
     mlir::FailureOr<WaferPhysicalTensorInfo> physical =
         getPhysicalInfo(type, function);
     auto memrefType = mlir::dyn_cast<mlir::MemRefType>(type);
@@ -197,17 +211,18 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                    : mlir::FailureOr<int64_t>(mlir::failure());
     if (mlir::failed(physical) || mlir::failed(alignment))
       return mlir::failure();
-    prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()), role,
+    prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()), kind,
                               binding.index, binding.name, binding.dtype,
                               physical->layout, binding.localShape,
-                              physical->physicalBytes, *alignment});
+                              physical->physicalBytes, *alignment,
+                              getTileEntryArgumentAccess(kind)});
     return mlir::success();
   };
 
   for (unsigned index = 0; index < originalArgumentCount; ++index)
-    if (mlir::failed(appendSlot(*argumentBindings[index],
-                                function.getArgument(index).getType(),
-                                getKernelRole(argumentBindings[index]->role))))
+    if (mlir::failed(appendSlot(
+            *argumentBindings[index], function.getArgument(index).getType(),
+            getTileEntryArgumentKind(argumentBindings[index]->role))))
       return mlir::failure();
 
   llvm::SmallVector<mlir::func::ReturnOp, 2> returns;
@@ -247,7 +262,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     allocation.getResult().replaceAllUsesWith(outputArgument);
     allocation.erase();
     if (mlir::failed(appendSlot(*outputBindings[index], resultType,
-                                KernelABISlotRole::Output)))
+                                TileEntryArgumentKind::ExternalOutput)))
       return mlir::failure();
   }
 
@@ -291,14 +306,16 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                             mlir::IntegerType::get(function.getContext(), 64),
                             mlir::DictionaryAttr{}, function.getLoc());
     prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
-                              KernelABISlotRole::Workspace,
+                              TileEntryArgumentKind::Workspace,
                               0,
                               "default_ddr_arena",
                               "u8",
                               MemLayout::Tensor,
                               {arenaBytes},
                               arenaBytes,
-                              arenaAlignment});
+                              arenaAlignment,
+                              getTileEntryArgumentAccess(
+                                  TileEntryArgumentKind::Workspace)});
   }
 
   if (tileExecutable.getTransportContract() == TransportContract::DirectDTE) {
@@ -307,20 +324,21 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                             mlir::IntegerType::get(function.getContext(), 64),
                             mlir::DictionaryAttr{}, function.getLoc());
     prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
-                              KernelABISlotRole::TransportStatus,
+                              TileEntryArgumentKind::TransportStatus,
                               0,
                               "direct_dte_status",
                               "u32",
                               MemLayout::Tensor,
                               {1},
                               WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
-                              WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT});
+                              WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT,
+                              getTileEntryArgumentAccess(
+                                  TileEntryArgumentKind::TransportStatus)});
   }
 
   if (profileCapture != ProfileCaptureKind::None) {
     if (executionConfig.getTileCount() !=
-            WAFER_TX81_PROFILER_TILE_COUNT ||
-        executionConfig.getRuntimeLaunchKind() == RuntimeLaunchKind::Model) {
+        WAFER_TX81_PROFILER_TILE_COUNT) {
       function.emitError()
           << "target_abi_mismatch: profiler capture requires the complete "
              "16-Tile pointer-table launch domain";
@@ -338,14 +356,16 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                             mlir::IntegerType::get(function.getContext(), 64),
                             mlir::DictionaryAttr{}, function.getLoc());
     prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
-                              KernelABISlotRole::Workspace,
-                              1,
+                              TileEntryArgumentKind::ProfileRecord,
+                              0,
                               "tx81_profiler_record",
                               "u8",
                               MemLayout::Tensor,
                               {static_cast<int64_t>(recordBytes)},
                               static_cast<int64_t>(recordBytes),
-                              WAFER_TX81_PROFILER_BUFFER_ALIGNMENT});
+                              WAFER_TX81_PROFILER_BUFFER_ALIGNMENT,
+                              getTileEntryArgumentAccess(
+                                  TileEntryArgumentKind::ProfileRecord)});
   }
 
   if (mlir::failed(mlir::verify(*prepared.module)))

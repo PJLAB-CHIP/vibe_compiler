@@ -100,9 +100,7 @@ type 或 entry argument mismatch 均在 writing 前失败。
 ### 3.1 ABI preparation
 
 ABI preparation只消费final accepted Instr IR和program boundary bindings，生成dense、zero-based
-`TileEntryArgument[]`。当前C++类型`KernelABISlot`实际描述Tile target entry的有序参数，并不拥有current kernel
-pointer-row storage，因此名称误导；Q56实施时原位重命名全部producer/consumer，不保留旧symbol，并将
-`txLoadGraph`/`txLaunchModel`退出current产品consumer。`TileEntryArgument`只描述某个Tile target entry
+`TileEntryArgument[]`。`TileEntryArgument`只描述某个Tile target entry
 的一个有序参数：ordinal、closed kind、恰一个typed reference（ProgramTensor/TargetTensor、external port或entry-local
 requirement）、dtype、`MemLayout`、shape、physical bytes、alignment与access；它不拥有bytes、file range或device address。
 

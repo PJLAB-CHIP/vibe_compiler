@@ -100,8 +100,8 @@ bool runTargetModelGate(
   const auto &targetModules =
       compiledProgram.getTargetLLVMModules().getModules();
   const size_t expectedOutputCount = llvm::count_if(
-      targetModules.front().getKernelABISlots(), [](const auto &slot) {
-        return slot.role == wafer::compiler::KernelABISlotRole::Output;
+      targetModules.front().getTileEntryArguments(), [](const auto &slot) {
+        return slot.kind == wafer::compiler::TileEntryArgumentKind::ExternalOutput;
       });
   if (result->completedTileCount !=
           static_cast<int64_t>(cardExecutable.size()) ||
@@ -132,15 +132,16 @@ bool runTargetModelGate(
                       "identity is invalid\n";
       return true;
     }
-    const wafer::compiler::KernelABISlot *slot = nullptr;
-    for (const auto &candidate : module.getKernelABISlots())
+    const wafer::compiler::TileEntryArgument *slot = nullptr;
+    for (const auto &candidate : module.getTileEntryArguments())
       if (candidate.ordinal == output.slotOrdinal)
         slot = &candidate;
-    if (!slot || slot->role != wafer::compiler::KernelABISlotRole::Output ||
+    if (!slot ||
+        slot->kind != wafer::compiler::TileEntryArgumentKind::ExternalOutput ||
         slot->resourceIndex != output.resourceIndex ||
         output.resource != wafer::model::getTargetModelResourceId(
                                module.getCardId(),
-                               module.getTileId(), slot->role,
+                               module.getTileId(), slot->kind,
                                slot->resourceIndex)) {
       llvm::errs() << "wafer-compile: target model output disagrees with the "
                       "Kernel ABI\n";

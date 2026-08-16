@@ -9,7 +9,6 @@
 
 #include <cstdint>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace wafer {
@@ -23,19 +22,12 @@ inline constexpr uint64_t kTx81KernelArgumentBytesMax = 0x7dc;
 /// ordinary kernel command limit above.
 inline constexpr uint64_t kTx81ClusterKernelArgumentBytesMax = 0x7d0;
 
-/// The only product-visible runtime launch kinds. Kernel command geometry,
-/// entry parameter encoding and phase structure are nested typed facts rather
-/// than additional launch kinds.
-enum class RuntimeLaunchKind : uint8_t { Kernel, Model };
-
 enum class KernelLaunchForm : uint8_t { Grid, Cluster };
 
 enum class KernelEntryABI : uint8_t {
   TileMajorPointerTable,
   TileRowPointerTable,
 };
-
-enum class ModelEntryABI : uint8_t { Tx81ModelBootParam };
 
 enum class RuntimeLaunchPhaseRole : uint8_t { Prepare, Main };
 
@@ -45,14 +37,11 @@ struct KernelRuntimeLaunchContract {
   std::vector<RuntimeLaunchPhaseRole> phases;
 };
 
-struct ModelRuntimeLaunchContract {
-  ModelEntryABI entryABI;
-  std::vector<RuntimeLaunchPhaseRole> phases;
-};
-
-/// Closed tagged runtime launch contract. Values can only be created through
-/// the validating factories, so malformed form/entry-ABI/phase cross-products
-/// cannot enter generated target modules or package construction.
+/// Closed kernel runtime launch contract. Values can only be created through
+/// the validating factory, so malformed form/entry-ABI/phase cross-products
+/// cannot enter generated target modules or package construction. The current
+/// product provider only implements the `txLaunchKernel` family; model launch
+/// kinds are retired.
 class RuntimeLaunchContract {
 public:
   RuntimeLaunchContract() = delete;
@@ -61,14 +50,10 @@ public:
   createKernel(KernelLaunchForm form, KernelEntryABI entryABI,
                llvm::ArrayRef<RuntimeLaunchPhaseRole> phases);
 
-  static llvm::Expected<RuntimeLaunchContract>
-  createModel(ModelEntryABI entryABI,
-              llvm::ArrayRef<RuntimeLaunchPhaseRole> phases);
-
-  RuntimeLaunchKind getKind() const;
-  const KernelRuntimeLaunchContract *getKernel() const;
-  const ModelRuntimeLaunchContract *getModel() const;
-  llvm::ArrayRef<RuntimeLaunchPhaseRole> getPhases() const;
+  const KernelRuntimeLaunchContract &getKernel() const { return contract; }
+  llvm::ArrayRef<RuntimeLaunchPhaseRole> getPhases() const {
+    return contract.phases;
+  }
 
   friend bool operator==(const RuntimeLaunchContract &lhs,
                          const RuntimeLaunchContract &rhs);
@@ -80,16 +65,9 @@ public:
 private:
   explicit RuntimeLaunchContract(KernelRuntimeLaunchContract kernel)
       : contract(std::move(kernel)) {}
-  explicit RuntimeLaunchContract(ModelRuntimeLaunchContract model)
-      : contract(std::move(model)) {}
 
-  std::variant<KernelRuntimeLaunchContract, ModelRuntimeLaunchContract>
-      contract;
+  KernelRuntimeLaunchContract contract;
 };
-
-llvm::StringRef stringifyRuntimeLaunchKind(RuntimeLaunchKind kind);
-llvm::Expected<RuntimeLaunchKind>
-parseRuntimeLaunchKind(llvm::StringRef canonicalSpelling);
 
 llvm::StringRef stringifyKernelLaunchForm(KernelLaunchForm form);
 llvm::Expected<KernelLaunchForm>
@@ -98,10 +76,6 @@ parseKernelLaunchForm(llvm::StringRef canonicalSpelling);
 llvm::StringRef stringifyKernelEntryABI(KernelEntryABI entryABI);
 llvm::Expected<KernelEntryABI>
 parseKernelEntryABI(llvm::StringRef canonicalSpelling);
-
-llvm::StringRef stringifyModelEntryABI(ModelEntryABI entryABI);
-llvm::Expected<ModelEntryABI>
-parseModelEntryABI(llvm::StringRef canonicalSpelling);
 
 llvm::StringRef stringifyRuntimeLaunchPhaseRole(RuntimeLaunchPhaseRole phase);
 llvm::Expected<RuntimeLaunchPhaseRole>

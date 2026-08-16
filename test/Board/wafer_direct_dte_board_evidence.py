@@ -3,8 +3,8 @@
 
 The package manifest and the board process expose different evidence:
 
-* the manifest exposes the typed status resource, status ABI, watchdog
-  requirement, and terminal-completion domain;
+* the manifest exposes the typed transport-status argument, status ABI,
+  watchdog requirement, and terminal-completion domain;
 * a successful ``wafer-run --board`` process currently exposes lifecycle and
   completion rows, but not the raw per-tile status readbacks.
 
@@ -22,7 +22,6 @@ import wafer_runtime_launch_contract as runtime_launch
 
 
 TILE_COUNT = 16
-CLUSTER_LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 DIRECT_DTE_STATUS_ABI = "wafer-direct-dte-status"
 DIRECT_DTE_STATUS_BYTES = 64
 DIRECT_DTE_STATUS_ALIGNMENT = 64
@@ -31,7 +30,7 @@ MAXIMUM_COMPLETION_TIMEOUT_MS = 60 * 60 * 1000
 
 STATUS_OBSERVATION_GAP = (
     "wafer-run board stdout and BoardRuntimeInvocationResult do not expose "
-    "the 16 per-tile Direct-DTE status resource IDs and raw u32 values; the "
+    "the 16 per-tile Direct-DTE status values; the "
     "successful runtime path enforces all-tile status Success internally, "
     "but this output cannot independently reconstruct those readbacks"
 )
@@ -41,16 +40,9 @@ STATUS_OBSERVATION_GAP = (
 class DirectDTEManifestEvidence:
     """Typed Direct-DTE package facts indexed by logical tile."""
 
-    status_resource_by_tile: tuple[tuple[int, int], ...]
+    status_abi_by_tile: tuple[tuple[int, str], ...]
     completion_by_tile: tuple[tuple[int, str], ...]
-    status_abi: str = DIRECT_DTE_STATUS_ABI
     host_watchdog_tiles: tuple[int, ...] = tuple(range(TILE_COUNT))
-
-    @property
-    def status_resources(self) -> frozenset[int]:
-        return frozenset(
-            resource for _, resource in self.status_resource_by_tile
-        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,7 +50,6 @@ class DirectDTEStatusObservation:
     """One raw status row from an output surface that actually exposes it."""
 
     tile: int
-    resource: int
     status_abi: str
     value: int
 
@@ -113,29 +104,21 @@ def _entries_by_dense_tile(
     return by_tile
 
 
-def _resources_by_dense_tile(
-    records: Iterable[Mapping[str, object]],
+def _status_arguments(
+    entry: Mapping[str, object],
     *,
     context: str,
-) -> dict[int, Mapping[str, object]]:
-    by_tile: dict[int, Mapping[str, object]] = {}
-    for record in records:
-        scope = record.get("scope")
-        tile = scope.get("tile_id") if isinstance(scope, Mapping) else None
-        if (
-            not isinstance(scope, Mapping)
-            or scope.get("kind") != "tile"
-            or scope.get("card_id") != 0
-            or not _is_integer(tile)
-            or not 0 <= tile < TILE_COUNT
-        ):
-            raise RuntimeError(f"{context} has an invalid tile scope")
-        if tile in by_tile:
-            raise RuntimeError(f"{context} duplicates logical tile {tile}")
-        by_tile[tile] = record
-    if set(by_tile) != set(range(TILE_COUNT)):
-        raise RuntimeError(f"{context} is not the exact 16-tile domain")
-    return by_tile
+) -> list[Mapping[str, object]]:
+    arguments = entry.get("arguments")
+    if not isinstance(arguments, list) or not all(
+        isinstance(argument, Mapping) for argument in arguments
+    ):
+        raise RuntimeError(f"{context} has an invalid argument list")
+    return [
+        argument
+        for argument in arguments
+        if argument.get("kind") == "transport_status"
+    ]
 
 
 def validate_direct_dte_manifest(
@@ -158,42 +141,6 @@ def validate_direct_dte_manifest(
             "launch contract"
         )
 
-    resources = _require_record_list(manifest, "resources")
-    resource_ids: set[int] = set()
-    for resource in resources:
-        resource_id = resource.get("id")
-        if not _is_integer(resource_id) or resource_id in resource_ids:
-            raise RuntimeError(
-                "Direct-DTE manifest resource IDs are invalid or duplicated"
-            )
-        resource_ids.add(resource_id)
-
-    status_records = [
-        resource
-        for resource in resources
-        if resource.get("role") == "transport_status"
-    ]
-    status_by_tile = _resources_by_dense_tile(
-        status_records, context="Direct-DTE status resource domain"
-    )
-    status_resource_by_tile: dict[int, int] = {}
-    for tile, status in status_by_tile.items():
-        resource_id = status.get("id")
-        if (
-            not _is_integer(resource_id)
-            or status.get("role_index") != 0
-            or status.get("type") != {"dtype": "u32", "shape": [1]}
-            or status.get("bytes") != DIRECT_DTE_STATUS_BYTES
-            or status.get("alignment") != DIRECT_DTE_STATUS_ALIGNMENT
-            or status.get("access") != "read_write"
-            or status.get("host_visible") is not False
-        ):
-            raise RuntimeError(
-                f"tile {tile} Direct-DTE status resource is not the "
-                "internal u32[1] status 64/64 read-write slot"
-            )
-        status_resource_by_tile[tile] = resource_id
-
     entries = _require_record_list(manifest, "entries")
     if len(entries) != TILE_COUNT:
         raise RuntimeError("Direct-DTE entry domain is not exactly 16 records")
@@ -210,38 +157,40 @@ def validate_direct_dte_manifest(
         )
 
     completion_by_tile: dict[int, str] = {}
+    status_abi_by_tile: dict[int, str] = {}
     for tile, entry in entry_by_tile.items():
         transport = entry.get("transport")
-        status_resource = status_resource_by_tile[tile]
+        status_arguments = _status_arguments(
+            entry, context=f"tile {tile} Direct-DTE"
+        )
+        if len(status_arguments) != 1:
+            raise RuntimeError(
+                f"tile {tile} Direct-DTE status is not bound by exactly "
+                "one transport_status argument"
+            )
+        status = status_arguments[0]
+        status_abi = status.get("status_abi")
+        if (
+            not _is_integer(status.get("ordinal"))
+            or status_abi != DIRECT_DTE_STATUS_ABI
+            or status.get("bytes") != DIRECT_DTE_STATUS_BYTES
+            or status.get("alignment") != DIRECT_DTE_STATUS_ALIGNMENT
+            or status.get("access") != "read_write"
+        ):
+            raise RuntimeError(
+                f"tile {tile} Direct-DTE transport_status argument is not "
+                "the internal 64/64 read-write status slot"
+            )
         if (
             entry.get("card_id") != 0
             or entry.get("launch_slot") != tile
             or not isinstance(transport, Mapping)
             or transport.get("kind") != "direct_dte"
-            or transport.get("status_resource") != status_resource
-            or transport.get("status_abi") != DIRECT_DTE_STATUS_ABI
+            or transport.get("status_abi") != status_abi
             or transport.get("host_watchdog_required") is not True
         ):
             raise RuntimeError(
                 f"tile {tile} Direct-DTE entry/status contract is invalid"
-            )
-
-        slots = entry.get("slots")
-        if not isinstance(slots, list) or not all(
-            isinstance(slot, Mapping) for slot in slots
-        ):
-            raise RuntimeError(f"tile {tile} Direct-DTE slots are invalid")
-        status_slots = [
-            slot for slot in slots if slot.get("resource") == status_resource
-        ]
-        if (
-            len(status_slots) != 1
-            or status_slots[0].get("access") != "read_write"
-            or not _is_integer(status_slots[0].get("ordinal"))
-        ):
-            raise RuntimeError(
-                f"tile {tile} Direct-DTE status resource is not bound by "
-                "exactly one read-write ABI slot"
             )
 
         completion = entry.get("completion")
@@ -250,9 +199,10 @@ def validate_direct_dte_manifest(
                 f"tile {tile} completion contract is invalid"
             )
         completion_by_tile[tile] = completion
+        status_abi_by_tile[tile] = str(status_abi)
 
     return DirectDTEManifestEvidence(
-        status_resource_by_tile=tuple(sorted(status_resource_by_tile.items())),
+        status_abi_by_tile=tuple(sorted(status_abi_by_tile.items())),
         completion_by_tile=tuple(sorted(completion_by_tile.items())),
     )
 
@@ -292,17 +242,16 @@ def _validate_status_observations(
     observations: Iterable[DirectDTEStatusObservation],
     manifest: DirectDTEManifestEvidence,
 ) -> tuple[DirectDTEStatusObservation, ...]:
-    expected_resource_by_tile = dict(manifest.status_resource_by_tile)
+    expected_abi_by_tile = dict(manifest.status_abi_by_tile)
     by_tile: dict[int, DirectDTEStatusObservation] = {}
     for observation in observations:
         if (
             not _is_integer(observation.tile)
-            or not _is_integer(observation.resource)
             or not _is_integer(observation.value)
         ):
             raise RuntimeError(
                 "Direct-DTE status observation has a non-integer "
-                "tile/resource/value"
+                "tile/value"
             )
         if observation.tile in by_tile:
             raise RuntimeError(
@@ -310,14 +259,13 @@ def _validate_status_observations(
                 f"{observation.tile}"
             )
         if (
-            observation.tile not in expected_resource_by_tile
-            or observation.resource
-            != expected_resource_by_tile[observation.tile]
-            or observation.status_abi != DIRECT_DTE_STATUS_ABI
+            observation.tile not in expected_abi_by_tile
+            or observation.status_abi
+            != expected_abi_by_tile[observation.tile]
         ):
             raise RuntimeError(
                 "Direct-DTE status observation does not match its typed "
-                "manifest resource/ABI"
+                "manifest status ABI"
             )
         if observation.value != DIRECT_DTE_STATUS_SUCCESS:
             raise RuntimeError(

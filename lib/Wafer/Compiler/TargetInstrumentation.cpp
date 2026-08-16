@@ -259,10 +259,10 @@ uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture) {
 }
 
 llvm::Error
-verifyProfileCaptureKernelABISlots(llvm::ArrayRef<KernelABISlot> slots,
+verifyProfileCaptureTileEntryArguments(llvm::ArrayRef<TileEntryArgument> slots,
                                    ProfileCaptureKind capture) {
-  auto isProfilerSlot = [](const KernelABISlot &slot) {
-    return slot.role == KernelABISlotRole::Workspace && slot.resourceIndex == 1;
+  auto isProfilerSlot = [](const TileEntryArgument &slot) {
+    return slot.kind == TileEntryArgumentKind::ProfileRecord;
   };
   const size_t count = llvm::count_if(slots, isProfilerSlot);
   if (capture == ProfileCaptureKind::None) {
@@ -276,7 +276,7 @@ verifyProfileCaptureKernelABISlots(llvm::ArrayRef<KernelABISlot> slots,
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "profile target ABI must end with exactly one profiler workspace slot");
-  const KernelABISlot &slot = slots.back();
+  const TileEntryArgument &slot = slots.back();
   const uint64_t recordBytes = getProfileCaptureRecordBytes(capture);
   if (slot.ordinal != static_cast<int64_t>(slots.size() - 1) ||
       slot.dtype != "u8" || slot.layout != MemLayout::Tensor ||

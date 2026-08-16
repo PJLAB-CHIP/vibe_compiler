@@ -25,58 +25,94 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
                      stringifyTargetIdentityId(manifest.targetIdentity));
       json.attribute("runtime_abi",
                      stringifyKernelRuntimeABIId(manifest.runtimeABI));
-      json.attributeObject("launch", [&] {
-        json.attribute("kind",
-                       stringifyRuntimeLaunchKind(manifest.launch.getKind()));
-        if (const auto *kernel = manifest.launch.getKernel()) {
-          json.attribute("form", stringifyKernelLaunchForm(kernel->form));
-          json.attribute("entry_abi",
-                         stringifyKernelEntryABI(kernel->entryABI));
-        } else {
-          const auto *model = manifest.launch.getModel();
-          json.attribute("entry_abi", stringifyModelEntryABI(model->entryABI));
-        }
-        json.attributeArray("phases", [&] {
-          for (RuntimeLaunchPhaseRole phase : manifest.launch.getPhases())
-            json.value(stringifyRuntimeLaunchPhaseRole(phase));
-        });
-      });
       json.attribute("module_format", manifest.moduleFormat);
+    });
+    json.attributeObject("launch", [&] {
+      json.attribute("kind", "kernel");
+      const KernelRuntimeLaunchContract &kernel = manifest.launch.getKernel();
+      json.attribute("form", stringifyKernelLaunchForm(kernel.form));
+      json.attribute("entry_abi", stringifyKernelEntryABI(kernel.entryABI));
+      json.attributeArray("phases", [&] {
+        for (RuntimeLaunchPhaseRole phase : manifest.launch.getPhases())
+          json.value(stringifyRuntimeLaunchPhaseRole(phase));
+      });
     });
     json.attribute("card_count", manifest.cardCount);
     json.attribute("tile_count", manifest.tileCount);
-    json.attributeArray("resources", [&] {
-      for (const PackageResourceRecord &resource : manifest.resources)
+    json.attributeObject("program_data", [&] {
+      json.attribute("relative_path", manifest.programData.relativePath);
+      json.attribute("total_bytes", int64_t(manifest.programData.totalBytes));
+      json.attribute("base_alignment",
+                     int64_t(manifest.programData.baseAlignment));
+      json.attribute("digest", manifest.programData.digest);
+    });
+    json.attributeArray("program_tensors", [&] {
+      for (const ProgramTensorRecord &record : manifest.programTensors)
         json.object([&] {
-          json.attribute("id", int64_t(resource.id.getValue()));
-          json.attributeObject("scope", [&] {
-            if (const auto *card =
-                    std::get_if<CardResourceScope>(&resource.scope)) {
-              json.attribute("kind", "card");
-              json.attribute("card_id", card->cardId.getValue());
-              return;
-            }
-            const auto &tile = std::get<TileResourceScope>(resource.scope);
-            json.attribute("kind", "tile");
-            json.attribute("card_id", tile.cardId.getValue());
-            json.attribute("tile_id", tile.tileId.getValue());
+          json.attribute("id", int64_t(record.id.getValue()));
+          json.attribute("role", stringifyProgramTensorRole(record.role));
+          json.attribute("role_index", record.roleIndex);
+          json.attribute("dtype", record.dtype);
+          json.attributeArray("global_shape", [&] {
+            for (int64_t dimension : record.globalShape)
+              json.value(dimension);
           });
-          json.attribute("role", stringifyPackageResourceRole(resource.role));
-          json.attribute("role_index", resource.roleIndex);
-          json.attribute("name", resource.name);
-          json.attributeObject("type", [&] {
-            json.attribute("dtype", resource.type.dtype);
-            json.attributeArray("shape", [&] {
-              for (int64_t dimension : resource.type.shape)
-                json.value(dimension);
-            });
+          json.attributeArray("local_shape", [&] {
+            for (int64_t dimension : record.localShape)
+              json.value(dimension);
           });
-          json.attribute("bytes", int64_t(resource.bytes));
-          json.attribute("alignment", int64_t(resource.alignment));
-          json.attribute("access", stringifyPackageAccessMode(resource.access));
-          json.attribute("host_visible", resource.hostVisible);
+          json.attributeArray("slice_offsets", [&] {
+            for (int64_t dimension : record.sliceOffsets)
+              json.value(dimension);
+          });
+          json.attributeArray("slice_sizes", [&] {
+            for (int64_t dimension : record.sliceSizes)
+              json.value(dimension);
+          });
         });
     });
+    json.attributeArray("target_tensors", [&] {
+      for (const TargetTensorRecord &record : manifest.targetTensors)
+        json.object([&] {
+          json.attribute("id", int64_t(record.id.getValue()));
+          json.attribute("program_tensor",
+                         int64_t(record.programTensor.getValue()));
+          json.attribute("dtype", record.dtype);
+          json.attribute("layout", stringifyPackageMemLayout(record.layout));
+          json.attributeArray("shape", [&] {
+            for (int64_t dimension : record.shape)
+              json.value(dimension);
+          });
+          json.attribute("bytes", int64_t(record.bytes));
+          json.attribute("alignment", int64_t(record.alignment));
+          json.attribute("file_offset", int64_t(record.fileOffset));
+        });
+    });
+    auto writePorts = [&](llvm::StringRef table,
+                          llvm::ArrayRef<ExternalPortRecord> ports) {
+      json.attributeArray(table, [&] {
+        for (const ExternalPortRecord &port : ports)
+          json.object([&] {
+            json.attribute("id", int64_t(port.id.getValue()));
+            json.attribute("role_index", port.roleIndex);
+            json.attribute("logical_dtype", port.logicalDtype);
+            json.attributeArray("logical_shape", [&] {
+              for (int64_t dimension : port.logicalShape)
+                json.value(dimension);
+            });
+            json.attribute("dtype", port.dtype);
+            json.attribute("layout", stringifyPackageMemLayout(port.layout));
+            json.attributeArray("shape", [&] {
+              for (int64_t dimension : port.shape)
+                json.value(dimension);
+            });
+            json.attribute("bytes", int64_t(port.bytes));
+            json.attribute("alignment", int64_t(port.alignment));
+          });
+      });
+    };
+    writePorts("inputs", manifest.inputs);
+    writePorts("outputs", manifest.outputs);
     json.attributeArray("modules", [&] {
       for (const PackageModuleRecord &module : manifest.modules)
         json.object([&] {
@@ -103,13 +139,48 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
           json.attribute("launch_slot",
                          int64_t(entry.launchSlot.getValue()));
           json.attribute("module", int64_t(entry.module.getValue()));
-          json.attributeArray("slots", [&] {
-            for (const PackageABISlotBinding &slot : entry.slots)
+          json.attributeArray("arguments", [&] {
+            for (const TileEntryArgumentRecord &argument : entry.arguments)
               json.object([&] {
-                json.attribute("ordinal", int64_t(slot.ordinal));
-                json.attribute("resource", int64_t(slot.resource.getValue()));
+                json.attribute("ordinal", int64_t(argument.ordinal));
+                if (const auto *reference =
+                        std::get_if<ExternalInputArgument>(&argument.reference)) {
+                  json.attribute("kind", "external_input");
+                  json.attribute("port", int64_t(reference->port.getValue()));
+                } else if (const auto *reference =
+                               std::get_if<TargetTensorArgument>(
+                                   &argument.reference)) {
+                  json.attribute("kind", "target_tensor");
+                  json.attribute("tensor",
+                                 int64_t(reference->tensor.getValue()));
+                } else if (const auto *reference =
+                               std::get_if<ExternalOutputArgument>(
+                                   &argument.reference)) {
+                  json.attribute("kind", "external_output");
+                  json.attribute("port", int64_t(reference->port.getValue()));
+                } else if (const auto *reference =
+                               std::get_if<WorkspaceArgument>(
+                                   &argument.reference)) {
+                  json.attribute("kind", "workspace");
+                  json.attribute("bytes", int64_t(reference->bytes));
+                  json.attribute("alignment", int64_t(reference->alignment));
+                } else if (const auto *reference =
+                               std::get_if<ProfileRecordArgument>(
+                                   &argument.reference)) {
+                  json.attribute("kind", "profile_record");
+                  json.attribute("record_abi", reference->recordABI);
+                  json.attribute("bytes", int64_t(reference->bytes));
+                  json.attribute("alignment", int64_t(reference->alignment));
+                } else {
+                  const auto &statusReference =
+                      std::get<TransportStatusArgument>(argument.reference);
+                  json.attribute("kind", "transport_status");
+                  json.attribute("status_abi", statusReference.statusABI);
+                  json.attribute("bytes", int64_t(statusReference.bytes));
+                  json.attribute("alignment", int64_t(statusReference.alignment));
+                }
                 json.attribute("access",
-                               stringifyPackageAccessMode(slot.access));
+                               stringifyPackageAccessMode(argument.access));
               });
           });
           json.attribute("completion",
@@ -124,8 +195,6 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
             const auto &requirements =
                 std::get<DirectDTETransportRequirements>(entry.transport);
             json.attribute("kind", "direct_dte");
-            json.attribute("status_resource",
-                           int64_t(requirements.statusResource.getValue()));
             json.attribute("status_abi", requirements.statusABI);
             json.attribute("host_watchdog_required",
                            requirements.hostWatchdogRequired);

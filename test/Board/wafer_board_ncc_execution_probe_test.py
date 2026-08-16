@@ -24,7 +24,6 @@ import wafer_runtime_launch_contract as runtime_launch
 
 
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_ncc_execution_probe.c"
@@ -119,7 +118,6 @@ def compile_seed_package(
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -141,50 +139,65 @@ def locate_probe_bindings(
         manifest, context="NCC probe seed"
     )
     modules = manifest.get("modules")
-    resources = manifest.get("resources")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
     if (
         not isinstance(modules, list)
         or len(modules) != 1
-        or not isinstance(resources, list)
+        or not isinstance(inputs, list)
+        or not isinstance(outputs, list)
+        or len(inputs) != 2
+        or len(outputs) != 1
     ):
         raise RuntimeError("NCC probe requires one shared Tile module")
     entry = entries[0]
     module = modules[0]
-    slots = entry.get("slots")
+    arguments = entry.get("arguments")
     if (
         entry.get("card_id") != 0
         or entry.get("tile_id") != 0
         or entry.get("module") != module.get("id")
-        or not isinstance(slots, list)
-        or [slot.get("ordinal") for slot in slots] != [0, 1, 2]
+        or not isinstance(arguments, list)
+        or [argument.get("ordinal") for argument in arguments] != [0, 1, 2]
         or any(other.get("module") != module.get("id") for other in entries)
     ):
-        raise RuntimeError("NCC probe pointer-table slots are not canonical")
-    resources_by_id = {
-        resource.get("id"): resource
-        for resource in resources
-        if isinstance(resource, dict) and isinstance(resource.get("id"), int)
-    }
-    resource_ids = tuple(slot.get("resource") for slot in slots)
-    if any(
-        resource_id not in resources_by_id for resource_id in resource_ids
-    ):
-        raise RuntimeError("NCC probe resources are not uniquely indexed")
-    expected = (
-        ("user_input", "read_only"),
-        ("user_input", "read_only"),
-        ("output", "write_only"),
+        raise RuntimeError("NCC probe pointer-table arguments are not canonical")
+    input_records = sorted(
+        inputs, key=lambda record: record.get("role_index")
     )
-    for resource_id, contract in zip(resource_ids, expected):
-        resource = resources_by_id[resource_id]
+    output_records = sorted(
+        outputs, key=lambda record: record.get("role_index")
+    )
+    expected = (
+        ("inputs", "external_input", "read_only"),
+        ("inputs", "external_input", "read_only"),
+        ("outputs", "external_output", "write_only"),
+    )
+    port_ids: list[int] = []
+    for record, (table, kind, access) in zip(
+        (input_records[0], input_records[1], output_records[0]),
+        expected,
+        strict=True,
+    ):
         if (
-            (resource.get("role"), resource.get("access")) != contract
-            or resource.get("scope") != {"kind": "card", "card_id": 0}
-            or resource.get("bytes") != RESOURCE_BYTES
-            or resource.get("host_visible") is not True
+            not isinstance(record, dict)
+            or record.get("bytes") != RESOURCE_BYTES
+            or not isinstance(record.get("id"), int)
+        ):
+            raise RuntimeError(f"NCC probe port record is invalid: {record}")
+        port_ids.append(record["id"])
+    for argument, port_id, (table, kind, access) in zip(
+        arguments, port_ids, expected, strict=True
+    ):
+        if (
+            not isinstance(argument, dict)
+            or argument.get("kind") != kind
+            or argument.get("port") != port_id
+            or argument.get("access") != access
         ):
             raise RuntimeError(
-                f"NCC probe resource {resource_id} does not match {contract}"
+                "NCC probe pointer-table argument for "
+                f"{table} port {port_id} is invalid"
             )
     module_path_value = module.get("path")
     if not isinstance(module_path_value, str):
@@ -192,7 +205,7 @@ def locate_probe_bindings(
     module_path = package / module_path_value
     if not module_path.is_file():
         raise RuntimeError("NCC probe seed module is missing")
-    return module_path, resource_ids, len(slots)
+    return module_path, tuple(port_ids), len(arguments)
 
 
 def build_probe(

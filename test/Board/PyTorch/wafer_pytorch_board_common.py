@@ -152,23 +152,20 @@ def assert_raw_capture_matches(
     assert_tensor_matches(actual, expected, policy=policy, context=context)
 
 
-def manifest_tensor_spec(resource: dict[str, object]) -> tuple[torch.dtype, tuple[int, ...]]:
-    type_ = resource.get("type")
-    if not isinstance(type_, dict):
-        raise RuntimeError("manifest resource type must be an object")
-    dtype = type_.get("dtype")
-    shape = type_.get("shape")
+def manifest_tensor_spec(record: dict[str, object]) -> tuple[torch.dtype, tuple[int, ...]]:
+    dtype = record.get("dtype")
+    shape = record.get("shape")
     if not isinstance(dtype, str) or not isinstance(shape, list):
-        raise RuntimeError("manifest resource requires dtype and shape")
+        raise RuntimeError("manifest port record requires dtype and shape")
     if not all(isinstance(dim, int) and dim >= 0 for dim in shape):
-        raise RuntimeError("manifest resource shape must be static non-negative ints")
+        raise RuntimeError("manifest port shape must be static non-negative ints")
     return dtype_from_manifest(dtype), tuple(shape)
 
 
 def require_manifest_tensor(
-    resource: dict[str, object], tensor: torch.Tensor, *, context: str
+    record: dict[str, object], tensor: torch.Tensor, *, context: str
 ) -> None:
-    dtype, shape = manifest_tensor_spec(resource)
+    dtype, shape = manifest_tensor_spec(record)
     tensor = require_cpu_contiguous(tensor, context=context)
     if tensor.dtype != dtype or tuple(tensor.shape) != shape:
         raise RuntimeError(
@@ -176,8 +173,8 @@ def require_manifest_tensor(
             f"{tuple(tensor.shape)}/{tensor.dtype} manifest={shape}/{dtype}"
         )
     expected_bytes = tensor_nbytes(tensor)
-    if resource.get("bytes") != expected_bytes:
+    if record.get("bytes") != expected_bytes:
         raise RuntimeError(
             f"{context} manifest byte count mismatch: "
-            f"expected={expected_bytes} actual={resource.get('bytes')}"
+            f"expected={expected_bytes} actual={record.get('bytes')}"
         )

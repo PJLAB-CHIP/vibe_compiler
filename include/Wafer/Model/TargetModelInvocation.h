@@ -21,7 +21,7 @@ namespace wafer::model {
 enum class TargetModelInvocationErrorCode : uint8_t {
   InvalidTileDomain,
   InvalidProgramInvocation,
-  InvalidKernelABISlot,
+  InvalidTileEntryArgument,
   UnsupportedProgramTensor,
   AddressOverflow,
   FrontendPreparationFailure,
@@ -85,17 +85,17 @@ private:
 };
 
 /// Converts one compact typed program tensor to or from the physical layout
-/// carried by an exact Kernel ABI slot. These helpers consume the shared
+/// carried by an exact tile entry argument. These helpers consume the shared
 /// physical tensor codec and do not infer layout from byte size or a name.
 llvm::Expected<std::vector<uint8_t>>
 encodeTargetModelProgramTensor(const compiler::ProgramTensor &tensor,
-                               const compiler::KernelABISlot &slot);
+                               const compiler::TileEntryArgument &slot);
 llvm::Expected<compiler::ProgramTensor>
-decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
+decodeTargetModelProgramTensor(const compiler::TileEntryArgument &slot,
                                llvm::ArrayRef<uint8_t> physicalBytes);
 
 /// Exact card binding from the accepted source invocation to the target
-/// LLVM fixed ABI. Every non-output program resource and every Kernel ABI slot
+/// LLVM fixed ABI. Every non-output program resource and every tile entry argument
 /// is consumed exactly once before host JIT materialization is returned.
 llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
     const compiler::CardExecutable &cardExecutable,

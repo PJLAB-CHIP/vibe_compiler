@@ -307,20 +307,30 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             "target": {"identity": board_runner.TARGET_IDENTITY},
             "card_count": 1,
             "tile_count": board_runner.PHYSICAL_TILE_COUNT,
-            "resources": [
+            "inputs": [
                 {
                     "id": 7,
-                    "scope": {"kind": "card", "card_id": 0},
-                    "role": "user_input",
                     "role_index": 0,
-                    "host_visible": True,
+                    "logical_dtype": "f16",
+                    "logical_shape": [16],
+                    "dtype": "f16",
+                    "layout": "tensor",
+                    "shape": [16],
+                    "bytes": 32,
+                    "alignment": 256,
                 },
+            ],
+            "outputs": [
                 {
                     "id": 8,
-                    "scope": {"kind": "card", "card_id": 0},
-                    "role": "output",
                     "role_index": 0,
-                    "host_visible": True,
+                    "logical_dtype": "f16",
+                    "logical_shape": [16],
+                    "dtype": "f16",
+                    "layout": "tensor",
+                    "shape": [16],
+                    "bytes": 32,
+                    "alignment": 256,
                 },
             ],
             "entries": entries,
@@ -329,16 +339,16 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             package = pathlib.Path(directory)
             manifest_path = package / "manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-            resources, output_ids = board_runner._manifest_resources(package)
+            ports, output_ids = board_runner._manifest_ports(package)
             self.assertEqual(
-                set(resources), {("user_input", 0), ("output", 0)}
+                set(ports), {("user_input", 0), ("output", 0)}
             )
             self.assertEqual(output_ids, {8})
 
             entries[1]["tile_id"] = entries[0]["tile_id"]
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "duplicated"):
-                board_runner._manifest_resources(package)
+                board_runner._manifest_ports(package)
 
         self.assertEqual(
             board_runner.base_runtime_command(

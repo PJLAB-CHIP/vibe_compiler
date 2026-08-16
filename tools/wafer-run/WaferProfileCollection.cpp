@@ -61,52 +61,27 @@ struct ProfileCollectionData {
   std::vector<Tx81ProfilerRecord> trace;
 };
 
-using SemanticOutputKey =
-    std::tuple<int, int64_t, int64_t, PackageResourceRole, int64_t>;
+/// The stable profile output identity is the external output port.
+using SemanticOutputKey = PortId;
 
-SemanticOutputKey semanticOutputKey(const PackageResourceRecord &resource) {
-  if (const auto *card = std::get_if<CardResourceScope>(&resource.scope))
-    return {0, card->cardId.getValue(), -1, resource.role, resource.roleIndex};
-  const auto &tile = std::get<TileResourceScope>(resource.scope);
-  return {1, tile.cardId.getValue(), tile.tileId.getValue(), resource.role,
-          resource.roleIndex};
+SemanticOutputKey semanticOutputKey(const ExternalPortRecord &port) {
+  return port.id;
 }
 
-struct ExactOutputContract {
-  PackageResourceScope scope;
-  PackageResourceRole role = PackageResourceRole::Output;
-  int64_t roleIndex = -1;
-  std::string dtype;
-  std::vector<int64_t> shape;
-  uint64_t bytes = 0;
-  uint64_t alignment = 0;
-  PackageAccessMode access = PackageAccessMode::WriteOnly;
-  bool hostVisible = false;
-};
+/// The exact typed output contract is the package's own port record.
+using ExactOutputContract = ExternalPortRecord;
 
-ExactOutputContract exactOutputContract(const PackageResourceRecord &resource) {
-  return {resource.scope,      resource.role,       resource.roleIndex,
-          resource.type.dtype, resource.type.shape, resource.bytes,
-          resource.alignment,  resource.access,     resource.hostVisible};
+const ExactOutputContract &exactOutputContract(const ExternalPortRecord &port) {
+  return port;
 }
 
 bool sameExactOutputContract(const ExactOutputContract &lhs,
                              const ExactOutputContract &rhs) {
-  auto scopeKey = [](const PackageResourceScope &scope) {
-    if (const auto *card = std::get_if<CardResourceScope>(&scope))
-      return std::tuple(0, card->cardId.getValue(), int64_t{-1});
-    const auto &tile = std::get<TileResourceScope>(scope);
-    return std::tuple(1, tile.cardId.getValue(), tile.tileId.getValue());
-  };
-  return scopeKey(lhs.scope) == scopeKey(rhs.scope) && lhs.role == rhs.role &&
-         lhs.roleIndex == rhs.roleIndex && lhs.dtype == rhs.dtype &&
-         lhs.shape == rhs.shape && lhs.bytes == rhs.bytes &&
-         lhs.alignment == rhs.alignment && lhs.access == rhs.access &&
-         lhs.hostVisible == rhs.hostVisible;
+  return lhs == rhs;
 }
 
 struct IndexedOutput {
-  const PackageResourceRecord *resource = nullptr;
+  const ExternalPortRecord *port = nullptr;
   const BoardRuntimeOutput *output = nullptr;
   std::optional<BoardOutputComparisonKind> externalExpectedComparison;
 };
@@ -120,31 +95,28 @@ indexValidatedOutputs(const PackageManifest &manifest,
 
   std::map<SemanticOutputKey, IndexedOutput> indexed;
   for (const BoardRuntimeOutput &output : outputs) {
-    auto resource =
-        llvm::find_if(manifest.resources, [&](const auto &collection) {
-          return collection.id == output.resource;
-        });
-    if (resource == manifest.resources.end() || !resource->hostVisible ||
-        resource->access == PackageAccessMode::ReadOnly)
-      return invalid("profile output is not a host-visible writable resource");
-    const uint64_t resourceId = output.resource.getValue();
+    const ExternalPortRecord *port = nullptr;
+    for (const ExternalPortRecord &candidate : manifest.outputs)
+      if (candidate.id == output.port) {
+        port = &candidate;
+        break;
+      }
+    if (!port)
+      return invalid("profile output is not an external output port");
+    const uint64_t portId = output.port.getValue();
     std::optional<BoardOutputComparisonKind> expectedComparison;
-    if (plan.expectedBytes.contains(resourceId)) {
-      auto comparison = plan.expectedComparisons.find(resourceId);
+    if (plan.expectedBytes.contains(portId)) {
+      auto comparison = plan.expectedComparisons.find(portId);
       if (comparison == plan.expectedComparisons.end())
         return invalid(
             "profile output external expected comparison is missing");
       expectedComparison = comparison->second;
     }
     if (!indexed
-             .try_emplace(semanticOutputKey(*resource),
-                          IndexedOutput{
-                              &*resource,
-                              &output,
-                              expectedComparison,
-                          })
+             .try_emplace(semanticOutputKey(*port),
+                          IndexedOutput{port, &output, expectedComparison})
              .second)
-      return invalid("profile output has a duplicate semantic resource key");
+      return invalid("profile output has a duplicate output port");
   }
   return indexed;
 }
@@ -156,15 +128,7 @@ std::string hashOutputBytes(llvm::ArrayRef<uint8_t> bytes) {
 }
 
 std::string formatSemanticOutputKey(const SemanticOutputKey &key) {
-  auto [scopeKind, cardId, tileId, role, roleIndex] = key;
-  std::string scope =
-      scopeKind == 0 ? (llvm::Twine("card_id=") + llvm::Twine(cardId)).str()
-                     : (llvm::Twine("card_id=") + llvm::Twine(cardId) +
-                        ",tile_id=" + llvm::Twine(tileId))
-                           .str();
-  return (llvm::Twine(scope) + ",role=" + stringifyPackageResourceRole(role) +
-          ",role_index=" + llvm::Twine(roleIndex))
-      .str();
+  return (llvm::Twine("output_port=") + llvm::Twine(key.getValue())).str();
 }
 
 llvm::Error compareReferenceFile(llvm::StringRef path,
@@ -219,18 +183,6 @@ llvm::Error compareReferenceFile(llvm::StringRef path,
   return llvm::Error::success();
 }
 
-bool isProfilerResource(const PackageResourceRecord &resource,
-                        uint64_t recordBytes) {
-  return resource.role == PackageResourceRole::Workspace &&
-         resource.roleIndex == 1 && resource.type.dtype == "u8" &&
-         resource.type.shape ==
-             std::vector<int64_t>{static_cast<int64_t>(recordBytes)} &&
-         resource.bytes == recordBytes &&
-         resource.alignment == WAFER_TX81_PROFILER_BUFFER_ALIGNMENT &&
-         resource.access == PackageAccessMode::ReadWrite &&
-         !resource.hostVisible;
-}
-
 Tx81ProfilerCaptureKind toRuntimeCaptureKind(ProfileCaptureKind capture) {
   switch (capture) {
   case ProfileCaptureKind::Count:
@@ -250,32 +202,15 @@ makeCapturePlan(const BoardInvocationFilePlan &primaryPlan,
   if (!plan)
     return plan.takeError();
 
-  std::array<const PackageResourceRecord *, WAFER_TX81_PROFILER_TILE_COUNT>
-      profilerResources{};
-  for (const PackageResourceRecord &resource :
-       capture.getPackage().getManifest().resources) {
-    if (resource.role != PackageResourceRole::Workspace ||
-        resource.roleIndex != 1)
-      continue;
-    const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
-    if (!isProfilerResource(resource, capture.getRecordBytes()) || !scope ||
-        scope->cardId != CardId(0) || scope->tileId.getValue() < 0 ||
-        scope->tileId.getValue() >= WAFER_TX81_PROFILER_TILE_COUNT ||
-        profilerResources[scope->tileId.getValue()])
-      return invalid("profile capture has an invalid typed profiler resource "
-                     "domain");
-    profilerResources[scope->tileId.getValue()] = &resource;
-  }
+  plan->request.profilerRecordBytes.emplace();
+  plan->request.profilerRecordBytes->reserve(WAFER_TX81_PROFILER_TILE_COUNT);
   for (uint32_t tile = 0; tile < WAFER_TX81_PROFILER_TILE_COUNT; ++tile) {
-    const PackageResourceRecord *resource = profilerResources[tile];
-    if (!resource)
-      return invalid("profile capture omits a typed profiler resource");
     llvm::Expected<std::vector<uint8_t>> image = buildTx81ProfilerLaunchImage(
         capture.getRecordBytes(), tile,
         toRuntimeCaptureKind(capture.getCaptureKind()));
     if (!image)
       return image.takeError();
-    plan->request.profilerBindings.push_back({resource->id, std::move(*image)});
+    plan->request.profilerRecordBytes->push_back(std::move(*image));
   }
   return plan;
 }
@@ -283,35 +218,21 @@ makeCapturePlan(const BoardInvocationFilePlan &primaryPlan,
 llvm::Expected<std::vector<Tx81ProfilerRecord>>
 decodeProfilerOutputs(const ProfileCapturePackage &capture,
                       const BoardRuntimeInvocationResult &result) {
-  const PackageManifest &manifest = capture.getPackage().getManifest();
-  llvm::DenseMap<uint64_t, int64_t> resourceTiles;
-  for (const PackageResourceRecord &resource : manifest.resources)
-    if (isProfilerResource(resource, capture.getRecordBytes())) {
-      const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
-      if (!scope)
-        return invalid("board profiler resource is not Tile-scoped");
-      resourceTiles[resource.id.getValue()] = scope->tileId.getValue();
-    }
-  if (resourceTiles.size() != WAFER_TX81_PROFILER_TILE_COUNT ||
-      result.profilerOutputs.size() != WAFER_TX81_PROFILER_TILE_COUNT)
+  if (result.profilerOutputs.size() != WAFER_TX81_PROFILER_TILE_COUNT)
     return invalid("board profiler readback is not all-and-only 16 tiles");
 
-  llvm::DenseSet<uint64_t> returned;
   std::vector<Tx81ProfilerRecord> records;
   records.reserve(WAFER_TX81_PROFILER_TILE_COUNT);
-  for (const BoardRuntimeOutput &output : result.profilerOutputs) {
-    auto tile = resourceTiles.find(output.resource.getValue());
-    if (tile == resourceTiles.end() ||
-        !returned.insert(output.resource.getValue()).second ||
-        output.bytes.size() != capture.getRecordBytes())
-      return invalid("board profiler readback has an unexpected resource or "
-                     "byte count");
+  for (const BoardRuntimeProfilerOutput &output : result.profilerOutputs) {
+    if (output.bytes.size() != capture.getRecordBytes())
+      return invalid("board profiler readback has an unexpected byte count");
     llvm::Expected<Tx81ProfilerRecord> decoded =
         decodeTx81ProfilerRecord(output.bytes);
     if (!decoded)
       return decoded.takeError();
-    if (decoded->header.tile_id != static_cast<uint32_t>(tile->second))
-      return invalid("board profiler resource and record tile disagree");
+    if (decoded->header.tile_id !=
+        static_cast<uint32_t>(output.launchSlot.getValue()))
+      return invalid("board profiler record and launch slot disagree");
     records.push_back(std::move(*decoded));
   }
   if (llvm::Error error = verifyTx81ProfilerTileDomain(records))
@@ -535,14 +456,10 @@ void emitCounter(llvm::json::OStream &json, T start, T end, T recovery,
 
 void emitRuntimeLaunch(llvm::json::OStream &json,
                        const RuntimeLaunchContract &launch) {
-  json.attribute("kind", stringifyRuntimeLaunchKind(launch.getKind()));
-  if (const KernelRuntimeLaunchContract *kernel = launch.getKernel()) {
-    json.attribute("form", stringifyKernelLaunchForm(kernel->form));
-    json.attribute("entry_abi", stringifyKernelEntryABI(kernel->entryABI));
-  } else {
-    json.attribute("entry_abi",
-                   stringifyModelEntryABI(launch.getModel()->entryABI));
-  }
+  json.attribute("kind", "kernel");
+  const KernelRuntimeLaunchContract &kernel = launch.getKernel();
+  json.attribute("form", stringifyKernelLaunchForm(kernel.form));
+  json.attribute("entry_abi", stringifyKernelEntryABI(kernel.entryABI));
   json.attributeArray("phases", [&] {
     for (RuntimeLaunchPhaseRole phase : launch.getPhases())
       json.value(stringifyRuntimeLaunchPhaseRole(phase));
@@ -795,19 +712,7 @@ serializeEvidence(const VerifiedProfileInstrumentation &instrumentation,
         for (const BoardProfileOutputValidationResource &resource :
              outputValidation.getResources())
           json.object([&] {
-            json.attributeObject("scope", [&] {
-              if (const auto *card =
-                      std::get_if<CardResourceScope>(&resource.scope)) {
-                json.attribute("kind", "card");
-                json.attribute("card_id", card->cardId.getValue());
-              } else {
-                const auto &tile = std::get<TileResourceScope>(resource.scope);
-                json.attribute("kind", "tile");
-                json.attribute("card_id", tile.cardId.getValue());
-                json.attribute("tile_id", tile.tileId.getValue());
-              }
-            });
-            json.attribute("role", stringifyPackageResourceRole(resource.role));
+            json.attribute("port", int64_t(resource.port.getValue()));
             json.attribute("role_index", resource.roleIndex);
             json.attribute("bytes", int64_t(resource.bytes));
             json.attribute("reference_sha256", resource.referenceSha256);
@@ -1400,10 +1305,10 @@ llvm::Error BoardProfileOutputValidator::recordPrimaryOutputs(
 
     const size_t index = resources.size();
     outputIndices.emplace(key, index);
-    expectedOutputs.push_back({key, exactOutputContract(*output.resource),
+    expectedOutputs.push_back({key, exactOutputContract(*output.port),
                                referencePath.str().str()});
-    resources.push_back({output.resource->scope, output.resource->role,
-                         output.resource->roleIndex, output.resource->bytes,
+    resources.push_back({output.port->id, output.port->roleIndex,
+                         output.port->bytes,
                          hashOutputBytes(output.output->bytes),
                          output.externalExpectedComparison, true, false});
     if (output.externalExpectedComparison)
@@ -1451,8 +1356,8 @@ llvm::Error BoardProfileOutputValidator::compareWithPrimaryOutputs(
     const size_t index = outputIndex->second;
     const Impl::ExpectedOutput &reference = impl->expectedOutputs[index];
     if (!sameExactOutputContract(reference.contract,
-                                 exactOutputContract(*output.resource)))
-      return invalid("profile output typed resource contract changed for " +
+                                 exactOutputContract(*output.port)))
+      return invalid("profile output typed port contract changed for " +
                      formatSemanticOutputKey(key));
     if (impl->resources[index].externalExpectedComparison !=
         output.externalExpectedComparison)

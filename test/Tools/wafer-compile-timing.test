@@ -7,16 +7,16 @@
 
 # Detailed timing is opt-in. The ordinary production transaction remains free
 # of detailed events and tables.
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.removed-preset --num-partitions=1 --launch-kind=kernel --optimization-preset=none 2>&1 | FileCheck %s --check-prefix=REMOVED-PRESET
+# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.removed-preset --num-partitions=1 --optimization-preset=none 2>&1 | FileCheck %s --check-prefix=REMOVED-PRESET
 # RUN: test ! -e %t.removed-preset
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.default --num-partitions=1 --launch-kind=kernel --optimization-policy=none 2>&1 | tee %t.default.log
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.default --num-partitions=1 --optimization-policy=none 2>&1 | tee %t.default.log
 # RUN: not grep -q 'compile-timing-' %t.default.log
 
 # One source-to-package invocation exposes the card-module/Tile seam,
 # exact memory/target gates, MLIR passes/analyses, conversions/patterns, and
 # internal algorithm phases. Numeric timings are deliberately not golden
 # values. The retired rank-candidate search pipeline must not reappear.
-# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.timed --num-partitions=1 --launch-kind=kernel --optimization-policy=search --compile-timing 2>&1 | tee %t.timed.log | FileCheck %s --check-prefix=TIMING
+# RUN: wafer-compile --input-program-dir %t.input --output-program-dir %t.timed --num-partitions=1 --optimization-policy=search --compile-timing 2>&1 | tee %t.timed.log | FileCheck %s --check-prefix=TIMING
 # RUN: test -s %t.timed/modules/module_00000.so
 
 # REMOVED-PRESET: wafer-compile: unknown argument: --optimization-preset=none
@@ -34,7 +34,7 @@
 # TIMING-DAG: wafer-compile: | transformation | planSPMMemoryModule | total |
 # TIMING-DAG: wafer-compile: | transformation | planDDRMemoryModule | total |
 # TIMING-DAG: wafer-compile: | analysis | tile-spm-planning | wafer::memory_planning::detail::StructuredTimelineAnalysis |
-# TIMING-DAG: wafer-compile: | analysis | accepted-tile-ddr-planning | wafer::analysis::DirectCallGraphAnalysis |
+# TIMING-DAG: wafer-compile: | analysis | tile-ddr-planning | wafer::analysis::DirectCallGraphAnalysis |
 # TIMING-DAG: wafer-compile: | conversion-phase | rewriteTensorProgramInPlace | TileRegionBodyEmitter::emit |
 # TIMING-DAG: wafer-compile: | external-pipeline | source-to-tensor-program | xla-spmd-partitioning |
 # TIMING-DAG: wafer-compile: | pass | stablehlo-to-linalg |

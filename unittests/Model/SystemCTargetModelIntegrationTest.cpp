@@ -119,14 +119,15 @@ module {
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
   llvm::Expected<ExecutionConfig> config =
-      ExecutionConfig::createForSingleCard(1, RuntimeLaunchKind::Kernel);
+      ExecutionConfig::createForSingleCard(1);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::ProgramDataHandoff programData;
   llvm::Expected<CardExecutable> executable =
       wafer::compiler::detail::buildCardExecutable(
           context, *tensorProgram, std::move(program), *config,
-          OptimizationConfig::none(), diagnostics, std::nullopt);
+          OptimizationConfig::none(), diagnostics, std::nullopt, programData);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
@@ -157,28 +158,26 @@ std::vector<RawLogicalValue> makeSequentialF32Values(int64_t globalOffset,
 }
 
 const ProgramResourceBinding *findProgramBinding(const TileExecutable &tile,
-                                                 const KernelABISlot &slot) {
-  ProgramResourceRole role;
-  switch (slot.role) {
-  case KernelABISlotRole::UserInput:
-    role = ProgramResourceRole::UserInput;
-    break;
-  case KernelABISlotRole::Parameter:
-    role = ProgramResourceRole::Parameter;
-    break;
-  case KernelABISlotRole::Constant:
-    role = ProgramResourceRole::Constant;
-    break;
-  case KernelABISlotRole::Output:
-    role = ProgramResourceRole::Output;
-    break;
-  case KernelABISlotRole::Workspace:
-  case KernelABISlotRole::TransportStatus:
-    return nullptr;
-  }
+                                                 const TileEntryArgument &slot) {
+  const auto matchesRole = [&](const ProgramResourceBinding &binding) {
+    switch (slot.kind) {
+    case TileEntryArgumentKind::ExternalInput:
+      return binding.role == ProgramResourceRole::UserInput;
+    case TileEntryArgumentKind::ExternalOutput:
+      return binding.role == ProgramResourceRole::Output;
+    case TileEntryArgumentKind::TargetTensor:
+      return binding.role == ProgramResourceRole::Parameter ||
+             binding.role == ProgramResourceRole::Constant;
+    case TileEntryArgumentKind::Workspace:
+    case TileEntryArgumentKind::ProfileRecord:
+    case TileEntryArgumentKind::TransportStatus:
+      return false;
+    }
+    llvm_unreachable("unknown tile entry argument kind");
+  };
   auto match = llvm::find_if(
       tile.getProgramBindings(), [&](const ProgramResourceBinding &binding) {
-        return binding.role == role && binding.index == slot.resourceIndex;
+        return matchesRole(binding) && binding.index == slot.resourceIndex;
       });
   return match == tile.getProgramBindings().end() ? nullptr : &*match;
 }
@@ -214,15 +213,15 @@ TEST(SystemCTargetModelIntegrationTest,
         {module.getCardId(), module.getTileId(), module.getLaunchSlotId(), {}});
     size_t userInputCount = 0;
     size_t outputCount = 0;
-    for (const KernelABISlot &slot : module.getKernelABISlots()) {
-      const bool tileOwned = slot.role == KernelABISlotRole::Workspace ||
-                             slot.role == KernelABISlotRole::TransportStatus;
+    for (const TileEntryArgument &slot : module.getTileEntryArguments()) {
+      const bool tileOwned = slot.kind == TileEntryArgumentKind::Workspace ||
+                             slot.kind == TileEntryArgumentKind::TransportStatus;
       const uint64_t base =
           tileOwned
               ? UINT64_C(0x10000000) +
                     static_cast<uint64_t>(launchSlot) * UINT64_C(0x100000) +
                     static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x10000)
-              : (slot.role == KernelABISlotRole::Output
+              : (slot.kind == TileEntryArgumentKind::ExternalOutput
                      ? UINT64_C(0x400000)
                      : UINT64_C(0x100000) +
                            static_cast<uint64_t>(slot.resourceIndex) *
@@ -236,7 +235,7 @@ TEST(SystemCTargetModelIntegrationTest,
       ASSERT_EQ(binding->slice.offsets.size(), 1u);
       EXPECT_EQ(binding->slice.offsets.front(), 0);
       EXPECT_EQ(slot.shape, (std::vector<int64_t>{8}));
-      if (slot.role == KernelABISlotRole::UserInput) {
+      if (slot.kind == TileEntryArgumentKind::ExternalInput) {
         ASSERT_LT(slot.resourceIndex, 2);
         const llvm::ArrayRef<RawLogicalValue> values =
             slot.resourceIndex == 0 ? llvm::ArrayRef<RawLogicalValue>(lhs)
@@ -247,10 +246,10 @@ TEST(SystemCTargetModelIntegrationTest,
         if (launchSlot == 0)
           inputs.push_back(
               {getTargetModelResourceId(module.getCardId(), module.getTileId(),
-                                        slot.role, slot.resourceIndex),
+                                        slot.kind, slot.resourceIndex),
                std::move(bytes)});
         ++userInputCount;
-      } else if (slot.role == KernelABISlotRole::Output) {
+      } else if (slot.kind == TileEntryArgumentKind::ExternalOutput) {
         ++outputCount;
       }
     }
@@ -302,11 +301,11 @@ TEST(SystemCTargetModelIntegrationTest,
         });
     ASSERT_NE(module, modules.end());
     auto outputSlot = llvm::find_if(
-        module->getKernelABISlots(), [&](const KernelABISlot &slot) {
+        module->getTileEntryArguments(), [&](const TileEntryArgument &slot) {
           return slot.ordinal == modelOutput.slotOrdinal &&
-                 slot.role == KernelABISlotRole::Output;
+                 slot.kind == TileEntryArgumentKind::ExternalOutput;
         });
-    ASSERT_NE(outputSlot, module->getKernelABISlots().end());
+    ASSERT_NE(outputSlot, module->getTileEntryArguments().end());
     llvm::Expected<std::vector<RawLogicalValue>> output =
         unpackPhysicalTensorLogicalValues(tensorKey, modelOutput.bytes);
     ASSERT_TRUE(static_cast<bool>(output))

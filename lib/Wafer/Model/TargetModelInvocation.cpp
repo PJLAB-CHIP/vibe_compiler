@@ -43,41 +43,39 @@ std::optional<LogicalFormat> getLogicalFormat(llvm::StringRef dtype) {
   return *parsed;
 }
 
-std::optional<compiler::KernelABISlotRole>
+std::optional<compiler::TileEntryArgumentKind>
 getKernelRole(compiler::ProgramResourceRole role) {
   switch (role) {
   case compiler::ProgramResourceRole::UserInput:
-    return compiler::KernelABISlotRole::UserInput;
+    return compiler::TileEntryArgumentKind::ExternalInput;
   case compiler::ProgramResourceRole::Parameter:
-    return compiler::KernelABISlotRole::Parameter;
   case compiler::ProgramResourceRole::Constant:
-    return compiler::KernelABISlotRole::Constant;
+    return compiler::TileEntryArgumentKind::TargetTensor;
   case compiler::ProgramResourceRole::Output:
-    return compiler::KernelABISlotRole::Output;
+    return compiler::TileEntryArgumentKind::ExternalOutput;
   }
   llvm_unreachable("unknown program resource role");
 }
 
-bool isReadOnly(compiler::KernelABISlotRole role) {
-  return role == compiler::KernelABISlotRole::UserInput ||
-         role == compiler::KernelABISlotRole::Parameter ||
-         role == compiler::KernelABISlotRole::Constant;
+bool isReadOnly(compiler::TileEntryArgumentKind kind) {
+  return kind == compiler::TileEntryArgumentKind::ExternalInput ||
+         kind == compiler::TileEntryArgumentKind::TargetTensor;
 }
 
 llvm::Expected<NumericTensorKey>
-makeTensorKey(const compiler::KernelABISlot &slot) {
+makeTensorKey(const compiler::TileEntryArgument &slot) {
   std::optional<LogicalFormat> format = getLogicalFormat(slot.dtype);
   if (!format)
     return invocationError(
         TargetModelInvocationErrorCode::UnsupportedProgramTensor,
-        "Kernel ABI slot has no logical format: " + slot.dtype);
+        "tile entry argument has no logical format: " + slot.dtype);
   std::vector<uint64_t> shape;
   shape.reserve(slot.shape.size());
   for (int64_t dimension : slot.shape) {
     if (dimension < 0)
       return invocationError(
-          TargetModelInvocationErrorCode::InvalidKernelABISlot,
-          "Kernel ABI slot has a dynamic or negative dimension");
+          TargetModelInvocationErrorCode::InvalidTileEntryArgument,
+          "tile entry argument has a dynamic or negative dimension");
     shape.push_back(static_cast<uint64_t>(dimension));
   }
   PhysicalTensorLayout layout;
@@ -98,7 +96,7 @@ makeTensorKey(const compiler::KernelABISlot &slot) {
   llvm::Expected<NumericTensorKey> key =
       NumericTensorKey::create(*format, layout, std::move(shape));
   if (!key)
-    return invocationError(TargetModelInvocationErrorCode::InvalidKernelABISlot,
+    return invocationError(TargetModelInvocationErrorCode::InvalidTileEntryArgument,
                            llvm::toString(key.takeError()));
   return key;
 }
@@ -162,13 +160,13 @@ encodeCompactProgramTensor(llvm::ArrayRef<RawLogicalValue> values,
   for (auto [index, value] : llvm::enumerate(values)) {
     if (value.format != format)
       return invocationError(
-          TargetModelInvocationErrorCode::InvalidKernelABISlot,
+          TargetModelInvocationErrorCode::InvalidTileEntryArgument,
           "target output contains a mixed logical format");
     if (llvm::Error error = writeRawLogicalValue(
             value, bytes, static_cast<uint64_t>(index) * elementBytes * 8,
             policy))
       return invocationError(
-          TargetModelInvocationErrorCode::InvalidKernelABISlot,
+          TargetModelInvocationErrorCode::InvalidTileEntryArgument,
           llvm::toString(std::move(error)));
   }
   (void)dtype;
@@ -186,12 +184,12 @@ bool checkedAlign(uint64_t value, uint64_t alignment, uint64_t &result) {
   return true;
 }
 
-bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
-                              const compiler::KernelABISlot &rhs) {
-  return lhs.role == rhs.role && lhs.resourceIndex == rhs.resourceIndex &&
+bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
+                              const compiler::TileEntryArgument &rhs) {
+  return lhs.kind == rhs.kind && lhs.resourceIndex == rhs.resourceIndex &&
          lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
          lhs.shape == rhs.shape && lhs.byteSize == rhs.byteSize &&
-         lhs.alignment == rhs.alignment;
+         lhs.alignment == rhs.alignment && lhs.access == rhs.access;
 }
 
 bool haveSameBytesView(llvm::ArrayRef<uint8_t> lhs,
@@ -218,7 +216,7 @@ stringifyTargetModelInvocationErrorCode(TargetModelInvocationErrorCode code) {
     return "invalid-tile-domain";
   case TargetModelInvocationErrorCode::InvalidProgramInvocation:
     return "invalid-program-invocation";
-  case TargetModelInvocationErrorCode::InvalidKernelABISlot:
+  case TargetModelInvocationErrorCode::InvalidTileEntryArgument:
     return "invalid-kernel-abi-slot";
   case TargetModelInvocationErrorCode::UnsupportedProgramTensor:
     return "unsupported-program-tensor";
@@ -243,12 +241,12 @@ std::error_code TargetModelInvocationError::convertToErrorCode() const {
 
 llvm::Expected<std::vector<uint8_t>>
 encodeTargetModelProgramTensor(const compiler::ProgramTensor &tensor,
-                               const compiler::KernelABISlot &slot) {
+                               const compiler::TileEntryArgument &slot) {
   if (tensor.getDType() != slot.dtype ||
       tensor.getShape() != llvm::ArrayRef<int64_t>(slot.shape))
     return invocationError(
         TargetModelInvocationErrorCode::InvalidProgramInvocation,
-        "program tensor dtype/shape disagrees with Kernel ABI slot");
+        "program tensor dtype/shape disagrees with tile entry argument");
   llvm::Expected<NumericTensorKey> key = makeTensorKey(slot);
   if (!key)
     return key.takeError();
@@ -264,18 +262,18 @@ encodeTargetModelProgramTensor(const compiler::ProgramTensor &tensor,
         llvm::toString(physical.takeError()));
   if (slot.byteSize < 0 ||
       physical->size() != static_cast<uint64_t>(slot.byteSize))
-    return invocationError(TargetModelInvocationErrorCode::InvalidKernelABISlot,
+    return invocationError(TargetModelInvocationErrorCode::InvalidTileEntryArgument,
                            "physical tensor bytes disagree with Kernel ABI");
   return physical;
 }
 
 llvm::Expected<compiler::ProgramTensor>
-decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
+decodeTargetModelProgramTensor(const compiler::TileEntryArgument &slot,
                                llvm::ArrayRef<uint8_t> physicalBytes) {
   if (slot.byteSize < 0 ||
       physicalBytes.size() != static_cast<uint64_t>(slot.byteSize))
     return invocationError(
-        TargetModelInvocationErrorCode::InvalidKernelABISlot,
+        TargetModelInvocationErrorCode::InvalidTileEntryArgument,
         "target output byte count disagrees with Kernel ABI");
   llvm::Expected<NumericTensorKey> key = makeTensorKey(slot);
   if (!key)
@@ -283,7 +281,7 @@ decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
   llvm::Expected<std::vector<RawLogicalValue>> values =
       unpackPhysicalTensorLogicalValues(*key, physicalBytes);
   if (!values)
-    return invocationError(TargetModelInvocationErrorCode::InvalidKernelABISlot,
+    return invocationError(TargetModelInvocationErrorCode::InvalidTileEntryArgument,
                            llvm::toString(values.takeError()));
   llvm::Expected<std::vector<uint8_t>> compact =
       encodeCompactProgramTensor(*values, slot.dtype, key->getFormat());
@@ -292,7 +290,7 @@ decodeTargetModelProgramTensor(const compiler::KernelABISlot &slot,
   llvm::Expected<compiler::ProgramTensor> tensor =
       compiler::ProgramTensor::create(slot.dtype, slot.shape, *compact);
   if (!tensor)
-    return invocationError(TargetModelInvocationErrorCode::InvalidKernelABISlot,
+    return invocationError(TargetModelInvocationErrorCode::InvalidTileEntryArgument,
                            llvm::toString(tensor.takeError()));
   return tensor;
 }
@@ -318,7 +316,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
   std::vector<MaterializedInput> materializedInputs;
   struct Allocation {
     TargetModelResourceId resource;
-    compiler::KernelABISlot slot;
+    compiler::TileEntryArgument slot;
     uint64_t base = 0;
     std::vector<int64_t> launchSlots;
   };
@@ -345,17 +343,17 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
 
     compiler::TargetCallTileArguments tileArguments{
         tile.getCardId(), tile.getTileId(), tile.getLaunchSlotId(), {}};
-    const auto &slots = module.getKernelABISlots();
+    const auto &slots = module.getTileEntryArguments();
     tileArguments.slots.reserve(slots.size());
     std::vector<bool> consumedInputs(invocation.inputs.size(), false);
     for (auto [slotIndex, slot] : llvm::enumerate(slots)) {
       if (slot.ordinal != static_cast<int64_t>(slotIndex) ||
           slot.resourceIndex < 0 || slot.byteSize <= 0 || slot.alignment <= 0)
         return invocationError(
-            TargetModelInvocationErrorCode::InvalidKernelABISlot,
-            "Kernel ABI slot identity, byte size, or alignment is invalid");
+            TargetModelInvocationErrorCode::InvalidTileEntryArgument,
+            "tile entry argument identity, byte size, or alignment is invalid");
       const TargetModelResourceId resource = getTargetModelResourceId(
-          tile.getCardId(), tile.getTileId(), slot.role, slot.resourceIndex);
+          tile.getCardId(), tile.getTileId(), slot.kind, slot.resourceIndex);
       Allocation *allocation = nullptr;
       for (Allocation &candidate : allocations)
         if (candidate.resource == resource) {
@@ -366,12 +364,12 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
         if (llvm::is_contained(allocation->launchSlots,
                                tile.getLaunchSlotId().getValue()))
           return invocationError(
-              TargetModelInvocationErrorCode::InvalidKernelABISlot,
+              TargetModelInvocationErrorCode::InvalidTileEntryArgument,
               "one Tile ABI references a physical resource more than once");
         if (!haveSameResourceGeometry(allocation->slot, slot))
           return invocationError(
-              TargetModelInvocationErrorCode::InvalidKernelABISlot,
-              "Kernel ABI slots disagree on one physical resource");
+              TargetModelInvocationErrorCode::InvalidTileEntryArgument,
+              "tile entry arguments disagree on one physical resource");
         allocation->launchSlots.push_back(tile.getLaunchSlotId().getValue());
       } else {
         uint64_t base = 0;
@@ -381,7 +379,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
                 std::numeric_limits<uint64_t>::max() - base)
           return invocationError(
               TargetModelInvocationErrorCode::AddressOverflow,
-              "Kernel ABI address domain overflows");
+              "tile entry argument address domain overflows");
         allocations.push_back(
             {resource, slot, base, {tile.getLaunchSlotId().getValue()}});
         allocation = &allocations.back();
@@ -389,18 +387,18 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
       }
       tileArguments.slots.push_back(allocation->base);
 
-      if (!isReadOnly(slot.role))
+      if (!isReadOnly(slot.kind))
         continue;
       const compiler::ProgramInputBinding *input = nullptr;
       size_t inputIndex = 0;
       for (auto [candidateIndex, candidate] :
            llvm::enumerate(invocation.inputs)) {
-        if (getKernelRole(candidate.role) == slot.role &&
+        if (getKernelRole(candidate.role) == slot.kind &&
             candidate.index == slot.resourceIndex) {
           if (input)
             return invocationError(
                 TargetModelInvocationErrorCode::InvalidProgramInvocation,
-                "duplicate program input for one Kernel ABI slot");
+                "duplicate program input for one tile entry argument");
           input = &candidate;
           inputIndex = candidateIndex;
         }
@@ -408,11 +406,11 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
       if (!input)
         return invocationError(
             TargetModelInvocationErrorCode::InvalidProgramInvocation,
-            "missing program input for one Kernel ABI slot");
+            "missing program input for one tile entry argument");
       if (consumedInputs[inputIndex])
         return invocationError(
             TargetModelInvocationErrorCode::InvalidProgramInvocation,
-            "program input is referenced by multiple Kernel ABI slots");
+            "program input is referenced by multiple tile entry arguments");
       consumedInputs[inputIndex] = true;
       MaterializedInput *existing = nullptr;
       for (MaterializedInput &candidate : materializedInputs)
@@ -452,7 +450,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
     if ((cardOwned && allocation.launchSlots.size() != tiles.size()) ||
         (!cardOwned && allocation.launchSlots.size() != 1))
       return invocationError(
-          TargetModelInvocationErrorCode::InvalidKernelABISlot,
+          TargetModelInvocationErrorCode::InvalidTileEntryArgument,
           "physical resource owner disagrees with its Tile ABI domain");
   }
 

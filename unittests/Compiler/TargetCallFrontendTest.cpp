@@ -116,8 +116,7 @@ module {
   program.programUserInputCount = 2;
   program.distributedInputs = {boundary(0), boundary(1)};
   program.distributedOutputs = {boundary(0)};
-  auto executionConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto executionConfig = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!executionConfig)
     return executionConfig.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -220,9 +219,9 @@ std::vector<wafer::compiler::TargetCallTileArguments> makeInvocationArguments(
   for (const wafer::compiler::TargetLLVMModule &module :
        targetLLVMModules.getModules()) {
     std::vector<uint64_t> slots;
-    slots.reserve(module.getKernelABISlots().size());
-    for (const wafer::compiler::KernelABISlot &slot :
-         module.getKernelABISlots())
+    slots.reserve(module.getTileEntryArguments().size());
+    for (const wafer::compiler::TileEntryArgument &slot :
+         module.getTileEntryArguments())
       slots.push_back(
           baseAddress +
           static_cast<uint64_t>(module.getLaunchSlotId().getValue()) *
@@ -1009,14 +1008,14 @@ TEST(TargetCallFrontendTest, ExecutesProductionTargetLLVMThroughTypedSink) {
   EXPECT_EQ(sink.tileDescriptors[0].cardId.getValue(), 0);
   EXPECT_EQ(sink.tileDescriptors[0].tileId.getValue(), 0);
   EXPECT_EQ(sink.tileDescriptors[0].launchSlotId.getValue(), 0);
-  ASSERT_EQ(sink.tileDescriptors[0].kernelABISlots.size(),
-            targetLLVMModules->getModules().front().getKernelABISlots().size());
-  ASSERT_FALSE(sink.tileDescriptors[0].kernelABISlots.empty());
+  ASSERT_EQ(sink.tileDescriptors[0].tileEntryArguments.size(),
+            targetLLVMModules->getModules().front().getTileEntryArguments().size());
+  ASSERT_FALSE(sink.tileDescriptors[0].tileEntryArguments.empty());
   EXPECT_EQ(sink.tileDescriptors[0].slotValues, arguments[0].slots);
-  EXPECT_EQ(sink.tileDescriptors[0].kernelABISlots.front().dtype,
+  EXPECT_EQ(sink.tileDescriptors[0].tileEntryArguments.front().dtype,
             targetLLVMModules->getModules()
                 .front()
-                .getKernelABISlots()
+                .getTileEntryArguments()
                 .front()
                 .dtype);
   ASSERT_EQ(sink.completedCardIds.size(), 16u);

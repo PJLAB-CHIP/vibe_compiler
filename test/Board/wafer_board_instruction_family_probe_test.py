@@ -21,7 +21,6 @@ import wafer_runtime_launch_contract as runtime_launch
 
 
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_instruction_family_probe.c"
@@ -287,7 +286,6 @@ def compile_seed_package(
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -302,7 +300,8 @@ def locate_bindings(
     manifest = json.loads((package / "manifest.json").read_text())
     entries = manifest.get("entries")
     modules = manifest.get("modules")
-    resources = manifest.get("resources")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
     target = manifest.get("target")
     runtime_launch.require_manifest_launch(
         manifest,
@@ -317,42 +316,61 @@ def locate_bindings(
         or target.get("identity") != TARGET_IDENTITY
         or not isinstance(modules, list)
         or len(modules) != 1
-        or not isinstance(resources, list)
+        or not isinstance(inputs, list)
+        or not isinstance(outputs, list)
+        or len(inputs) != 2
+        or len(outputs) != 1
     ):
         raise RuntimeError("instruction probe seed manifest is invalid")
     entry = entries[0]
     module = modules[0]
-    slots = entry.get("slots")
+    arguments = entry.get("arguments")
     if (
         entry.get("module") != module.get("id")
         or module.get("exports") != [{"role": "main", "symbol": "main"}]
-        or not isinstance(slots, list)
-        or [slot.get("ordinal") for slot in slots[:3]] != [0, 1, 2]
+        or not isinstance(arguments, list)
+        or [argument.get("ordinal") for argument in arguments[:3]] != [0, 1, 2]
     ):
-        raise RuntimeError("instruction probe ABI slots are not canonical")
-    resources_by_id = {
-        resource.get("id"): resource
-        for resource in resources
-        if isinstance(resource, dict) and isinstance(resource.get("id"), int)
-    }
-    resource_ids = tuple(slot.get("resource") for slot in slots[:3])
-    expected = (
-        ("user_input", "read_only"),
-        ("user_input", "read_only"),
-        ("output", "write_only"),
+        raise RuntimeError("instruction probe ABI arguments are not canonical")
+    input_records = sorted(
+        inputs, key=lambda record: record.get("role_index")
     )
-    for resource_id, role_access in zip(resource_ids, expected, strict=True):
-        resource = resources_by_id.get(resource_id)
+    output_records = sorted(
+        outputs, key=lambda record: record.get("role_index")
+    )
+    expected = (
+        ("inputs", "external_input", "read_only"),
+        ("inputs", "external_input", "read_only"),
+        ("outputs", "external_output", "write_only"),
+    )
+    port_ids: list[int] = []
+    for record, (table, _kind, _access) in zip(
+        (input_records[0], input_records[1], output_records[0]),
+        expected,
+        strict=True,
+    ):
         if (
-            resource is None
-            or (resource.get("role"), resource.get("access")) != role_access
-            or resource.get("scope") != {"kind": "card", "card_id": 0}
-            or resource.get("bytes") != catalog.RESOURCE_BYTES
-            or resource.get("alignment") != 256
-            or resource.get("host_visible") is not True
+            not isinstance(record, dict)
+            or record.get("bytes") != catalog.RESOURCE_BYTES
+            or record.get("alignment") != 256
+            or not isinstance(record.get("id"), int)
         ):
             raise RuntimeError(
-                f"instruction probe resource {resource_id} is invalid"
+                f"instruction probe port record is invalid: {record}"
+            )
+        port_ids.append(record["id"])
+    for argument, port_id, (table, kind, access) in zip(
+        arguments[:3], port_ids, expected, strict=True
+    ):
+        if (
+            not isinstance(argument, dict)
+            or argument.get("kind") != kind
+            or argument.get("port") != port_id
+            or argument.get("access") != access
+        ):
+            raise RuntimeError(
+                "instruction probe ABI argument for "
+                f"{table} port {port_id} is invalid"
             )
     module_path_value = module.get("path")
     if not isinstance(module_path_value, str):
@@ -362,7 +380,7 @@ def locate_bindings(
         raise RuntimeError("instruction probe seed module is missing")
     if any(other.get("module") != module.get("id") for other in entries):
         raise RuntimeError("instruction probe entries do not share one module")
-    return module_path, resource_ids, len(slots)
+    return module_path, tuple(port_ids), len(arguments)
 
 
 def package_completion_kind(package: pathlib.Path) -> str:

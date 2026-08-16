@@ -11,15 +11,22 @@ namespace wafer::runtime::detail {
 
 llvm::Error invalid(llvm::Twine message);
 
-const PackageResourceRecord *
-findResource(llvm::ArrayRef<PackageResourceRecord> resources, ResourceId id);
-
 const PackageModuleRecord *
 findModule(llvm::ArrayRef<PackageModuleRecord> modules, ModuleId id);
 
 const PackageModuleExportRecord *
 findModuleExport(const PackageModuleRecord &module,
                  PackageModuleExportRole role);
+
+const ProgramTensorRecord *
+findProgramTensor(llvm::ArrayRef<ProgramTensorRecord> tensors,
+                  ProgramTensorId id);
+
+const TargetTensorRecord *
+findTargetTensor(llvm::ArrayRef<TargetTensorRecord> tensors, TargetTensorId id);
+
+const ExternalPortRecord *findPort(llvm::ArrayRef<ExternalPortRecord> ports,
+                                   PortId id);
 
 llvm::Expected<PackageManifest> parseManifest(llvm::StringRef json,
                                               const PackageParseLimits &limits);

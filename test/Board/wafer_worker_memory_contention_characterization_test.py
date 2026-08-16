@@ -542,8 +542,11 @@ def _validate_raw_resource_cleanup() -> None:
 
 def _validate_board_lifecycle_oracle() -> None:
     manifest = driver.direct_dte_evidence.DirectDTEManifestEvidence(
-        status_resource_by_tile=tuple(
-            (tile_id, 100 + tile_id)
+        status_abi_by_tile=tuple(
+            (
+                tile_id,
+                driver.direct_dte_evidence.DIRECT_DTE_STATUS_ABI,
+            )
             for tile_id in range(driver.TILE_COUNT)
         ),
         completion_by_tile=tuple(

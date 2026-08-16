@@ -36,7 +36,6 @@ RECORD_META_WORDS = 21
 REQUEST_META_BEGIN = REQUEST_META_WORD * 8
 RECORD_META_BEGIN = RECORD_META_WORD * 8
 RECORD_META_END = (RECORD_META_WORD + RECORD_META_WORDS) * 8
-LAUNCH_KIND = "kernel"
 STATUS_ABI = "wafer-direct-dte-status"
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"

@@ -43,7 +43,6 @@ TRANSPORT_STABLE_MASK = (1 << len(TRANSPORT_COUNTER_NAMES)) - 1
 CALIBRATION_LEAF_BINDINGS: dict[str, tuple[object, ...]] = (
     transport_catalog.CALIBRATION_LEAF_BINDINGS
 )
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TARGET_IDENTITY = "wafer-tx81-single-card"
 STATUS_ABI = "wafer-direct-dte-status"
 STATUS_STORAGE_BYTES = 64
@@ -360,7 +359,6 @@ def compile_package(
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -368,28 +366,32 @@ def compile_package(
         raise RuntimeError("wafer-compile did not write the seed package")
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    bindings = runtime_launch.configure_direct_dte_tile_package(
+    shared_bindings = runtime_launch.configure_direct_dte_tile_package(
         manifest,
-        resources=(
-            runtime_launch.SharedBoundaryResourceSpec(
-                role="user_input",
+        ports=(
+            runtime_launch.SharedBoundaryPortSpec(
+                table="inputs",
                 role_index=0,
-                name="dte_ncc_probe_input",
-                type={"dtype": "i8", "shape": [TILE_COUNT * RESOURCE_BYTES]},
+                logical_dtype="i8",
+                logical_shape=[TILE_COUNT * RESOURCE_BYTES],
+                dtype="i8",
+                layout="tensor",
+                shape=[TILE_COUNT * RESOURCE_BYTES],
                 bytes=TILE_COUNT * RESOURCE_BYTES,
                 alignment=256,
                 access="read_only",
-                host_visible=True,
             ),
-            runtime_launch.SharedBoundaryResourceSpec(
-                role="output",
+            runtime_launch.SharedBoundaryPortSpec(
+                table="outputs",
                 role_index=0,
-                name="dte_ncc_probe_output",
-                type={"dtype": "i8", "shape": [TILE_COUNT * RESOURCE_BYTES]},
+                logical_dtype="i8",
+                logical_shape=[TILE_COUNT * RESOURCE_BYTES],
+                dtype="i8",
+                layout="tensor",
+                shape=[TILE_COUNT * RESOURCE_BYTES],
                 bytes=TILE_COUNT * RESOURCE_BYTES,
                 alignment=256,
                 access="write_only",
-                host_visible=True,
             ),
         ),
         status_abi=STATUS_ABI,
@@ -397,22 +399,27 @@ def compile_package(
         status_alignment=STATUS_STORAGE_ALIGNMENT,
         context="ordered DTE/NCC probe",
     )
+    bindings: dict[tuple[int, str, int], int] = {}
+    for (table, role_index), port_id in shared_bindings.items():
+        role = "user_input" if table == "inputs" else "output"
+        for tile_id in range(TILE_COUNT):
+            bindings[(tile_id, role, role_index)] = port_id
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     if manifest.get("target", {}).get("identity") != TARGET_IDENTITY:
         raise RuntimeError("ordered DTE/NCC package target identity is invalid")
-    host_resources = (
-        resource
-        for resource in manifest["resources"]
-        if resource.get("host_visible")
-    )
-    if any(
-        resource.get("bytes") != TILE_COUNT * RESOURCE_BYTES
-        for resource in host_resources
-    ):
-        raise RuntimeError(
-            "DTE/NCC probe host resources do not match the bounded "
-            f"{RESOURCE_BYTES}-byte record"
-        )
+    for table in ("inputs", "outputs"):
+        records = manifest.get(table)
+        if not isinstance(records, list) or len(records) != 1:
+            raise RuntimeError("DTE/NCC probe port table is not exact")
+        for record in records:
+            if (
+                not isinstance(record, dict)
+                or record.get("bytes") != TILE_COUNT * RESOURCE_BYTES
+            ):
+                raise RuntimeError(
+                    "DTE/NCC probe host ports do not match the bounded "
+                    f"{RESOURCE_BYTES}-byte record"
+                )
     module_path = package / manifest["modules"][0]["path"]
     return package, module_path, bindings
 

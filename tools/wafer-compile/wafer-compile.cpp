@@ -51,8 +51,7 @@ int main(int argc, char **argv) {
     return 1;
   if (!requireOption(options.inputProgramDirectory, "--input-program-dir") ||
       !requireOption(options.outputProgramDirectory, "--output-program-dir") ||
-      !requireOption(options.numPartitions, "--num-partitions") ||
-      !requireOption(options.runtimeLaunchKind, "--launch-kind"))
+      !requireOption(options.numPartitions, "--num-partitions"))
     return 1;
   if (options.profile && options.targetModel) {
     llvm::errs()
@@ -237,17 +236,8 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  llvm::Expected<wafer::RuntimeLaunchKind> runtimeLaunchKind =
-      wafer::parseRuntimeLaunchKind(*options.runtimeLaunchKind);
-  if (!runtimeLaunchKind) {
-    llvm::errs() << "wafer-compile: "
-                 << llvm::toString(runtimeLaunchKind.takeError()) << "\n";
-    return 1;
-  }
-
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
-      wafer::compiler::ExecutionConfig::createForSingleCard(numPartitions,
-                                                            *runtimeLaunchKind);
+      wafer::compiler::ExecutionConfig::createForSingleCard(numPartitions);
   if (!executionConfig) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(executionConfig.takeError()) << "\n";

@@ -50,8 +50,7 @@ protected:
   }
 
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig() const {
-    return wafer::compiler::ExecutionConfig::createForSingleCard(
-        1, wafer::RuntimeLaunchKind::Kernel);
+    return wafer::compiler::ExecutionConfig::createForSingleCard(1);
   }
 
   mlir::DialectRegistry registry;

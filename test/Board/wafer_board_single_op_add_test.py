@@ -21,7 +21,6 @@ import wafer_runtime_launch_contract as runtime_launch
 class RuntimeLaunchCalibrationCase:
     key: str
     tile_count: int
-    launch_kind: str
     oracle: str
     completion: str
 
@@ -30,7 +29,6 @@ RUNTIME_LAUNCH_CALIBRATION_CASES = (
     RuntimeLaunchCalibrationCase(
         "grid-add",
         runtime_launch.TARGET_TILE_COUNT,
-        runtime_launch.KERNEL_LAUNCH_KIND,
         "full f16 expected output and exact current resource binding",
         "local drain, device-to-host copy, and normal cleanup",
     ),
@@ -117,11 +115,9 @@ def write_fixture(
     raw.mkdir()
     paths = {
         ("user_input", 0): raw / "input.f16.raw",
-        ("parameter", 1): raw / "weight.f16.raw",
         ("output", 0): raw / "expected.f16.raw",
     }
     input_tensor.tofile(paths[("user_input", 0)])
-    weight.tofile(paths[("parameter", 1)])
     expected.tofile(paths[("output", 0)])
     return source, paths
 
@@ -141,25 +137,26 @@ def invocation_arguments(
 
     arguments: list[str] = []
     seen: set[tuple[str, int]] = set()
-    for resource in manifest.get("resources", []):
-        scope = resource.get("scope")
-        if not resource.get("host_visible"):
-            continue
-        if scope != {"kind": "card", "card_id": 0}:
-            raise RuntimeError("host-visible resource is not card-scoped")
-        role = resource.get("role")
-        role_index = resource.get("role_index")
-        key = (role, role_index)
-        if key in seen or key not in raw_paths:
-            raise RuntimeError(f"unexpected host-visible resource binding: {key}")
-        seen.add(key)
-        resource_id = resource["id"]
-        if resource.get("access") == "read_only":
-            arguments.extend(["--resource", f"{resource_id}={raw_paths[key]}"])
-        elif resource.get("access") == "write_only" and role == "output":
-            arguments.extend(["--expected", f"{resource_id}={raw_paths[key]}"])
-        else:
-            raise RuntimeError(f"unexpected host-visible resource access for {key}")
+    for table, role in (("inputs", "user_input"), ("outputs", "output")):
+        for record in manifest.get(table, []):
+            if not isinstance(record, dict):
+                raise RuntimeError("manifest port record must be an object")
+            role_index = record.get("role_index")
+            if not isinstance(role_index, int):
+                raise RuntimeError("manifest port record requires role_index")
+            key = (role, role_index)
+            if key in seen or key not in raw_paths:
+                raise RuntimeError(f"unexpected manifest port binding: {key}")
+            seen.add(key)
+            port_id = record.get("id")
+            if not isinstance(port_id, int):
+                raise RuntimeError("manifest port record requires an integer id")
+            if role == "user_input":
+                arguments.extend(["--resource", f"{port_id}={raw_paths[key]}"])
+            elif role == "output":
+                arguments.extend(["--expected", f"{port_id}={raw_paths[key]}"])
+            else:
+                raise RuntimeError(f"unexpected manifest port role for {key}")
     if seen != set(raw_paths):
         raise RuntimeError(f"package does not expose the expected add bindings: {seen}")
     return arguments
@@ -186,7 +183,6 @@ def main() -> int:
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            "--launch-kind=kernel",
         ]
     )
     if "wrote verified package" not in compile_result.stdout:

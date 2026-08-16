@@ -69,8 +69,7 @@ enum class BoardProfileOutputValidationMode {
 };
 
 struct BoardProfileOutputValidationResource {
-  PackageResourceScope scope;
-  PackageResourceRole role = PackageResourceRole::Output;
+  PortId port;
   int64_t roleIndex = -1;
   uint64_t bytes = 0;
   std::string referenceSha256;

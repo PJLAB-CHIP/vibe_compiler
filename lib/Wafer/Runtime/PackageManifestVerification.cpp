@@ -1,7 +1,9 @@
 //===- PackageManifestVerification.cpp - Manifest semantic verification --===//
 
 #include "PackageManifestInternal.h"
-#include "Wafer/Runtime/Tx81ModelABI.h"
+
+#include "Wafer/ABI/Tx81ProfilerABI.h"
+#include "Wafer/Runtime/ProfileInstrumentation.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -20,13 +22,17 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <variant>
 #include <vector>
 
 namespace wafer::runtime {
 namespace {
 
 using detail::findModule;
-using detail::findResource;
+using detail::findModuleExport;
+using detail::findPort;
+using detail::findProgramTensor;
+using detail::findTargetTensor;
 using detail::invalid;
 
 bool isRegularFile(llvm::StringRef path) {
@@ -36,19 +42,6 @@ bool isRegularFile(llvm::StringRef path) {
 
 bool isPowerOfTwo(uint64_t value) {
   return value != 0 && (value & (value - 1)) == 0;
-}
-
-bool isValidRole(PackageResourceRole role) {
-  switch (role) {
-  case PackageResourceRole::UserInput:
-  case PackageResourceRole::Parameter:
-  case PackageResourceRole::Constant:
-  case PackageResourceRole::Output:
-  case PackageResourceRole::Workspace:
-  case PackageResourceRole::TransportStatus:
-    return true;
-  }
-  return false;
 }
 
 bool isValidAccess(PackageAccessMode access) {
@@ -80,15 +73,20 @@ bool isValidRelativePath(llvm::StringRef path) {
   });
 }
 
+bool isValidShape(llvm::ArrayRef<int64_t> shape, const PackageParseLimits &limits) {
+  return shape.size() <= limits.maxShapeRank &&
+         llvm::all_of(shape, [](int64_t dimension) { return dimension >= 0; });
+}
+
 llvm::Expected<std::string> digestFile(llvm::StringRef path) {
   if (!isRegularFile(path))
-    return invalid("package module is not a regular file: " + path);
+    return invalid("package member is not a regular file: " + path);
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
       llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
   if (!buffer)
     return llvm::createStringError(buffer.getError(),
-                                   "failed to read package module: " + path);
+                                   "failed to read package member: " + path);
   llvm::SHA256 hasher;
   hasher.update((*buffer)->getBuffer());
   return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
@@ -106,51 +104,60 @@ bool hasDenseIds(const Range &records, Projection projection) {
   return llvm::all_of(seen, [](bool value) { return value; });
 }
 
-PackageAccessMode expectedAccess(PackageResourceRole role) {
-  switch (role) {
-  case PackageResourceRole::UserInput:
-  case PackageResourceRole::Parameter:
-  case PackageResourceRole::Constant:
+PackageAccessMode expectedArgumentAccess(
+    const TileEntryArgumentReference &reference) {
+  if (std::holds_alternative<ExternalInputArgument>(reference) ||
+      std::holds_alternative<TargetTensorArgument>(reference))
     return PackageAccessMode::ReadOnly;
-  case PackageResourceRole::Output:
+  if (std::holds_alternative<ExternalOutputArgument>(reference))
     return PackageAccessMode::WriteOnly;
-  case PackageResourceRole::Workspace:
-  case PackageResourceRole::TransportStatus:
-    return PackageAccessMode::ReadWrite;
+  return PackageAccessMode::ReadWrite;
+}
+
+llvm::Error verifyProgramData(const PackageManifest &manifest,
+                              llvm::StringRef packageRoot) {
+  const ProgramDataRecord &programData = manifest.programData;
+  const bool emptyTable = manifest.targetTensors.empty();
+  if (programData.relativePath != kPackageProgramDataRelativePath)
+    return invalid("package program_data relative path is not canonical");
+  llvm::SmallString<256> path(packageRoot);
+  llvm::sys::path::append(path, programData.relativePath);
+  llvm::Expected<std::string> digest = digestFile(path);
+  if (!digest)
+    return digest.takeError();
+  if (*digest != programData.digest)
+    return invalid("package program data digest mismatch");
+  if (emptyTable) {
+    if (programData.totalBytes != 0 || programData.baseAlignment != 1)
+      return invalid(
+          "empty package program data must record zero bytes and unit "
+          "alignment");
+    if (*digest != "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4"
+                   "95991b7852b855")
+      return invalid("empty package program data must be the canonical empty "
+                     "file");
+    return llvm::Error::success();
   }
-  llvm_unreachable("unknown package resource role");
-}
-
-bool expectedHostVisible(PackageResourceRole role) {
-  return role != PackageResourceRole::Workspace &&
-         role != PackageResourceRole::TransportStatus;
-}
-
-bool isProgramBoundaryResource(PackageResourceRole role) {
-  return role == PackageResourceRole::UserInput ||
-         role == PackageResourceRole::Parameter ||
-         role == PackageResourceRole::Constant ||
-         role == PackageResourceRole::Output;
-}
-
-bool isEntryLocalResource(PackageResourceRole role) {
-  return role == PackageResourceRole::Workspace ||
-         role == PackageResourceRole::TransportStatus;
-}
-
-bool isSameTile(const TileResourceScope &scope,
-                        const PackageEntrypointRecord &entry) {
-  return scope.cardId == entry.cardId && scope.tileId == entry.tileId;
+  if (programData.totalBytes == 0 || programData.baseAlignment == 0 ||
+      !isPowerOfTwo(programData.baseAlignment))
+    return invalid(
+        "non-empty package program data needs positive bytes and a power-of-"
+        "two base alignment");
+  uint64_t fileSize = 0;
+  if (std::error_code error = llvm::sys::fs::file_size(path, fileSize))
+    return invalid("failed to stat package program data: " +
+                   error.message());
+  if (programData.totalBytes != fileSize)
+    return invalid("package program data byte count does not match the file");
+  return llvm::Error::success();
 }
 
 llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
-  const KernelRuntimeLaunchContract *kernel = manifest.launch.getKernel();
-  const ModelRuntimeLaunchContract *model = manifest.launch.getModel();
-  const bool kernelGrid = kernel && kernel->form == KernelLaunchForm::Grid;
-  const bool cluster = kernel && kernel->form == KernelLaunchForm::Cluster;
+  const KernelRuntimeLaunchContract &kernel = manifest.launch.getKernel();
+  const bool kernelGrid = kernel.form == KernelLaunchForm::Grid;
+  const bool cluster = kernel.form == KernelLaunchForm::Cluster;
   if (manifest.tileCount != 16 || manifest.entries.size() != 16)
-    return invalid(
-        "grid, cluster and model launches require a complete 16-Tile domain");
+    return invalid("kernel launches require a complete 16-Tile domain");
 
   std::vector<const PackageEntrypointRecord *> entriesByLaunchSlot(
       manifest.tileCount, nullptr);
@@ -165,23 +172,12 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
   llvm::DenseMap<uint64_t, uint64_t> moduleReferenceCount;
   for (const PackageEntrypointRecord &entry : manifest.entries)
     ++moduleReferenceCount[entry.module.getValue()];
-  if (model) {
-    if (manifest.modules.size() != static_cast<size_t>(manifest.tileCount))
-      return invalid(
-          "model launch requires one module per Tile");
-    if (llvm::any_of(manifest.modules, [&](const auto &module) {
-          return moduleReferenceCount.lookup(module.id.getValue()) != 1;
-        }))
-      return invalid(
-          "model entry-to-module mapping is not one-to-one");
-  } else {
-    if (manifest.modules.size() != 1 ||
-        llvm::any_of(manifest.entries, [&](const auto &entry) {
-          return entry.module != first.module;
-        }))
-      return invalid(
-          "grid/cluster launch requires one module referenced by all Tiles");
-  }
+  if (manifest.modules.size() != 1 ||
+      llvm::any_of(manifest.entries, [&](const auto &entry) {
+        return entry.module != first.module;
+      }))
+    return invalid(
+        "grid/cluster launch requires one module referenced by all Tiles");
 
   auto exportRoleForPhase = [](RuntimeLaunchPhaseRole phase) {
     return phase == RuntimeLaunchPhaseRole::Prepare
@@ -200,17 +196,17 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
   }
 
   if (kernelGrid || cluster) {
-    if (first.slots.empty())
-      return invalid("shared launch requires at least one typed ABI slot");
+    if (first.arguments.empty())
+      return invalid("shared launch requires at least one typed argument");
     const uint64_t argumentBytesMax = cluster
                                           ? kTx81ClusterKernelArgumentBytesMax
                                           : kTx81KernelArgumentBytesMax;
-    if (kernel->entryABI == KernelEntryABI::TileMajorPointerTable) {
-      if (first.slots.size() > argumentBytesMax / sizeof(uint64_t) / 16)
+    if (kernel.entryABI == KernelEntryABI::TileMajorPointerTable) {
+      if (first.arguments.size() > argumentBytesMax / sizeof(uint64_t) / 16)
         return invalid(
             "shared Tile-major argument table exceeds the qualified V5.6 "
             "packet limit");
-    } else if (kernel->entryABI == KernelEntryABI::TileRowPointerTable) {
+    } else if (kernel.entryABI == KernelEntryABI::TileRowPointerTable) {
       if (16 > argumentBytesMax / sizeof(uint64_t))
         return invalid(
             "shared Tile-row pointer table exceeds the qualified V5.6 "
@@ -219,13 +215,7 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
       return invalid("shared kernel launch has an incompatible entry ABI");
     }
   }
-  const PackageModuleExportRecord *firstMain =
-      detail::findModuleExport(*firstModule, PackageModuleExportRole::Main);
-  if (model && (!firstMain || firstMain->symbol.size() >= 128))
-    return invalid(
-        "model launch entry symbol must fit the 128-byte loader field");
 
-  std::vector<Tx81ModelTensorDescriptor> modelTensors;
   const size_t firstTransportKind = first.transport.index();
   for (int64_t launchSlot = 0; launchSlot < manifest.tileCount; ++launchSlot) {
     const PackageEntrypointRecord &entry =
@@ -240,11 +230,13 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
       return invalid("runtime launch entry has no typed main export");
     if (entry.transport.index() != firstTransportKind)
       return invalid("runtime launch Tiles have mixed transport contracts");
-    if ((kernelGrid || cluster || model) &&
-        entry.slots.size() != first.slots.size())
-      return invalid("multi-tile launch entries have different slot counts");
-    if (model && (!firstMain || main->symbol != firstMain->symbol))
-      return invalid("model launch modules have different main symbols");
+    if (entry.arguments.size() != first.arguments.size())
+      return invalid("multi-tile launch entries have different argument "
+                     "counts");
+    for (size_t index = 0; index < entry.arguments.size(); ++index)
+      if (entry.arguments[index].reference.index() !=
+          first.arguments[index].reference.index())
+        return invalid("multi-Tile launch argument kinds are inconsistent");
     if (const auto *requirements =
             std::get_if<DirectDTETransportRequirements>(&entry.transport)) {
       const auto *firstRequirements =
@@ -256,53 +248,6 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
         return invalid(
             "Direct DTE Tiles have inconsistent transport contracts");
     }
-    for (size_t slotIndex = 0; slotIndex < entry.slots.size(); ++slotIndex) {
-      const PackageResourceRecord *resource =
-          findResource(manifest.resources, entry.slots[slotIndex].resource);
-      const PackageResourceRecord *reference =
-          findResource(manifest.resources, first.slots[slotIndex].resource);
-      if (!resource || !reference)
-        return invalid("runtime launch slot references a missing resource");
-      if ((kernelGrid || cluster || model) &&
-          (resource->role != reference->role ||
-           resource->roleIndex != reference->roleIndex ||
-           resource->type.dtype != reference->type.dtype ||
-           resource->type.shape != reference->type.shape ||
-           resource->bytes != reference->bytes ||
-           resource->alignment != reference->alignment ||
-           resource->access != reference->access))
-        return invalid("multi-Tile launch slot schemas are inconsistent");
-      if (model && (resource->role != PackageResourceRole::UserInput &&
-                    resource->role != PackageResourceRole::Output))
-        return invalid(
-            "model launch contract accepts only user-input and output "
-            "resources");
-      if (model &&
-          (resource->type.dtype != "f32" || resource->type.shape.empty() ||
-           resource->type.shape.size() > 6 ||
-           resource->alignment < alignof(float)))
-        return invalid(
-            "model launch contract accepts only aligned rank-1..6 f32 "
-            "tensors");
-      if (model) {
-        Tx81ModelTensorClass tensorClass =
-            resource->role == PackageResourceRole::UserInput
-                ? Tx81ModelTensorClass::Input
-                : Tx81ModelTensorClass::Output;
-        modelTensors.push_back({tensorClass, entry.cardId, entry.tileId,
-                                entry.launchSlot, slotIndex,
-                                /*deviceAddress=*/8, resource->bytes,
-                                resource->type.dtype, resource->type.shape});
-      }
-    }
-  }
-  if (model) {
-    llvm::Expected<Tx81ModelBootParamImage> bootParam =
-        buildTx81ModelBootParam(modelTensors,
-                                /*dynamicTLVDeviceAddress=*/8);
-    if (!bootParam)
-      return invalid("model launch BootParam contract is invalid: " +
-                     llvm::toString(bootParam.takeError()));
   }
   return llvm::Error::success();
 }
@@ -363,14 +308,16 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     return invalid("package card_count must be exactly 1");
   if (manifest.tileCount != 16)
     return invalid("package tile_count must be exactly 16");
-  uint64_t totalRecords = manifest.resources.size() + manifest.modules.size() +
-                          manifest.entries.size();
+  uint64_t totalRecords = manifest.programTensors.size() +
+                          manifest.targetTensors.size() +
+                          manifest.inputs.size() + manifest.outputs.size() +
+                          manifest.modules.size() + manifest.entries.size();
   if (totalRecords > limits.maxRecords)
     return invalid("package manifest exceeds record limit");
   for (const PackageEntrypointRecord &entry : manifest.entries) {
-    if (entry.slots.size() > limits.maxRecords - totalRecords)
+    if (entry.arguments.size() > limits.maxRecords - totalRecords)
       return invalid("package manifest exceeds record limit");
-    totalRecords += entry.slots.size();
+    totalRecords += entry.arguments.size();
   }
   for (const PackageModuleRecord &module : manifest.modules) {
     if (module.exports.size() > limits.maxRecords - totalRecords)
@@ -380,7 +327,13 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
   if (manifest.modules.empty() ||
       manifest.entries.size() != static_cast<uint64_t>(manifest.tileCount))
     return invalid("package module/entry Tile domain is incomplete");
-  if (!hasDenseIds(manifest.resources,
+  if (!hasDenseIds(manifest.programTensors,
+                   [](const auto &record) { return record.id; }) ||
+      !hasDenseIds(manifest.targetTensors,
+                   [](const auto &record) { return record.id; }) ||
+      !hasDenseIds(manifest.inputs,
+                   [](const auto &record) { return record.id; }) ||
+      !hasDenseIds(manifest.outputs,
                    [](const auto &record) { return record.id; }) ||
       !hasDenseIds(manifest.modules,
                    [](const auto &record) { return record.id; }) ||
@@ -388,53 +341,92 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
                    [](const auto &record) { return record.id; }))
     return invalid("package IDs must be unique dense zero-based domains");
 
-  llvm::sort(manifest.resources,
+  llvm::sort(manifest.programTensors,
+             [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
+  llvm::sort(manifest.targetTensors,
+             [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
+  llvm::sort(manifest.inputs,
+             [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
+  llvm::sort(manifest.outputs,
              [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
   llvm::sort(manifest.modules,
              [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
   llvm::sort(manifest.entries,
              [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
 
-  std::set<std::tuple<bool, int64_t, int64_t, int64_t>> roleIndices;
-  for (const PackageResourceRecord &resource : manifest.resources) {
-    if (!isValidRole(resource.role) || !isValidAccess(resource.access) ||
-        resource.roleIndex < 0 ||
-        resource.roleIndex > std::numeric_limits<uint32_t>::max() ||
-        resource.name.size() > limits.maxStringBytes ||
-        resource.type.dtype.empty() ||
-        resource.type.dtype.size() > limits.maxStringBytes ||
-        resource.type.shape.size() > limits.maxShapeRank ||
-        llvm::any_of(resource.type.shape,
-                     [](int64_t dimension) { return dimension < 0; }) ||
-        resource.bytes == 0 ||
-        resource.bytes >
-            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
-        resource.alignment >
-            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
-        !isPowerOfTwo(resource.alignment))
-      return invalid("package resource has invalid scope/type/size/alignment");
-    if (resource.access != expectedAccess(resource.role) ||
-        resource.hostVisible != expectedHostVisible(resource.role))
-      return invalid("package resource role/access/visibility mismatch");
-    const auto *cardScope = std::get_if<CardResourceScope>(&resource.scope);
-    const auto *tileScope = std::get_if<TileResourceScope>(&resource.scope);
-    if ((cardScope && (!isProgramBoundaryResource(resource.role) ||
-                       cardScope->cardId != CardId(0))) ||
-        (tileScope &&
-         (!isEntryLocalResource(resource.role) ||
-          tileScope->cardId != CardId(0) ||
-          tileScope->tileId.getValue() < 0 ||
-          tileScope->tileId.getValue() >= 16)))
-      return invalid("package resource role and typed physical scope disagree");
-    int64_t roleKey = static_cast<int64_t>(resource.role) << 32 |
-                      static_cast<uint32_t>(resource.roleIndex);
-    const bool isTile = tileScope != nullptr;
-    const int64_t cardId =
-        isTile ? tileScope->cardId.getValue() : cardScope->cardId.getValue();
-    const int64_t tileId = isTile ? tileScope->tileId.getValue() : -1;
-    if (!roleIndices.insert({isTile, cardId, tileId, roleKey}).second)
+  std::set<std::pair<ProgramTensorRole, int64_t>> programTensorRoles;
+  for (const ProgramTensorRecord &tensor : manifest.programTensors) {
+    if (tensor.roleIndex < 0 ||
+        tensor.roleIndex > std::numeric_limits<uint32_t>::max() ||
+        tensor.dtype.empty() || tensor.dtype.size() > limits.maxStringBytes ||
+        !isValidShape(tensor.globalShape, limits) ||
+        !isValidShape(tensor.localShape, limits) ||
+        !isValidShape(tensor.sliceOffsets, limits) ||
+        !isValidShape(tensor.sliceSizes, limits) ||
+        tensor.sliceOffsets.size() != tensor.globalShape.size() ||
+        tensor.sliceSizes.size() != tensor.globalShape.size() ||
+        tensor.localShape != tensor.sliceSizes)
+      return invalid("package program tensor has invalid identity or shape");
+    if (!programTensorRoles.insert({tensor.role, tensor.roleIndex}).second)
       return invalid(
-          "package resource role/index is duplicated within physical scope");
+          "package program tensor role/index is duplicated");
+  }
+
+  std::set<std::tuple<ProgramTensorId, std::string, PackageMemLayout,
+                      std::vector<int64_t>, uint64_t, uint64_t>>
+      targetTensorDescriptors;
+  for (const TargetTensorRecord &tensor : manifest.targetTensors) {
+    if (!findProgramTensor(manifest.programTensors, tensor.programTensor))
+      return invalid("package target tensor references a missing program "
+                     "tensor");
+    if (tensor.dtype.empty() || tensor.dtype.size() > limits.maxStringBytes ||
+        !isValidShape(tensor.shape, limits) || tensor.bytes == 0 ||
+        tensor.bytes > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        tensor.alignment == 0 || !isPowerOfTwo(tensor.alignment) ||
+        tensor.fileOffset % tensor.alignment != 0)
+      return invalid("package target tensor has invalid descriptor or offset");
+    if (!targetTensorDescriptors
+             .insert({tensor.programTensor, tensor.dtype, tensor.layout,
+                      tensor.shape, tensor.bytes, tensor.alignment})
+             .second)
+      return invalid("package target tensor descriptors are duplicated");
+    if (tensor.fileOffset >
+            std::numeric_limits<uint64_t>::max() - tensor.bytes ||
+        tensor.fileOffset + tensor.bytes > manifest.programData.totalBytes)
+      return invalid("package target tensor range is outside program data");
+  }
+
+  llvm::DenseSet<int64_t> inputRoleIndices;
+  for (const ExternalPortRecord &port : manifest.inputs) {
+    if (port.roleIndex < 0 ||
+        port.roleIndex > std::numeric_limits<uint32_t>::max() ||
+        port.logicalDtype.empty() ||
+        port.logicalDtype.size() > limits.maxStringBytes ||
+        !isValidShape(port.logicalShape, limits) || port.dtype.empty() ||
+        port.dtype.size() > limits.maxStringBytes ||
+        !isValidShape(port.shape, limits) || port.bytes == 0 ||
+        port.bytes >
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        port.alignment == 0 || !isPowerOfTwo(port.alignment))
+      return invalid("package input port has invalid descriptor");
+    if (!inputRoleIndices.insert(port.roleIndex).second)
+      return invalid("package input port role index is duplicated");
+  }
+  llvm::DenseSet<int64_t> outputRoleIndices;
+  for (const ExternalPortRecord &port : manifest.outputs) {
+    if (port.roleIndex < 0 ||
+        port.roleIndex > std::numeric_limits<uint32_t>::max() ||
+        port.logicalDtype.empty() ||
+        port.logicalDtype.size() > limits.maxStringBytes ||
+        !isValidShape(port.logicalShape, limits) || port.dtype.empty() ||
+        port.dtype.size() > limits.maxStringBytes ||
+        !isValidShape(port.shape, limits) || port.bytes == 0 ||
+        port.bytes >
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        port.alignment == 0 || !isPowerOfTwo(port.alignment))
+      return invalid("package output port has invalid descriptor");
+    if (!outputRoleIndices.insert(port.roleIndex).second)
+      return invalid("package output port role index is duplicated");
   }
 
   llvm::StringSet<> modulePaths;
@@ -472,14 +464,10 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     }
   }
 
-  std::vector<uint64_t> resourceReferenceCounts(manifest.resources.size(), 0);
-  for (const PackageEntrypointRecord &entry : manifest.entries)
-    for (const PackageABISlotBinding &slot : entry.slots) {
-      if (!slot.resource.isValid() ||
-          slot.resource.getValue() >= resourceReferenceCounts.size())
-        return invalid("package ABI slot references a missing resource");
-      ++resourceReferenceCounts[slot.resource.getValue()];
-    }
+  std::vector<uint64_t> targetTensorReferenceCounts(
+      manifest.targetTensors.size(), 0);
+  std::vector<uint64_t> inputReferenceCounts(manifest.inputs.size(), 0);
+  std::vector<uint64_t> outputReferenceCounts(manifest.outputs.size(), 0);
 
   std::vector<bool> seenLaunchSlots(manifest.tileCount, false);
   llvm::DenseSet<int64_t> seenTileIds;
@@ -500,73 +488,104 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     if (!module)
       return invalid("package entry module relation is invalid");
     ++referencedModules[entry.module.getValue()];
-    llvm::sort(entry.slots, [](const auto &lhs, const auto &rhs) {
+    llvm::sort(entry.arguments, [](const auto &lhs, const auto &rhs) {
       return lhs.ordinal < rhs.ordinal;
     });
-    llvm::DenseSet<uint64_t> entryResources;
-    for (auto [ordinal, slot] : llvm::enumerate(entry.slots)) {
-      if (!isValidAccess(slot.access) || slot.ordinal != ordinal)
-        return invalid("package ABI slots must be dense and zero-based");
-      const PackageResourceRecord *resource =
-          findResource(manifest.resources, slot.resource);
-      if (!resource || slot.access != resource->access ||
-          !entryResources.insert(resource->id.getValue()).second)
-        return invalid("package ABI slot/resource relation is invalid");
-      const auto *cardScope = std::get_if<CardResourceScope>(&resource->scope);
-      const auto *tileScope = std::get_if<TileResourceScope>(&resource->scope);
-      const uint64_t referenceCount =
-          resourceReferenceCounts[resource->id.getValue()];
-      if ((cardScope &&
-           (cardScope->cardId != entry.cardId ||
-            referenceCount != static_cast<uint64_t>(manifest.tileCount))) ||
-          (tileScope &&
-           (!isSameTile(*tileScope, entry) || referenceCount != 1)))
-        return invalid(
-            "package resource references disagree with typed physical scope");
+    for (auto [ordinal, argument] : llvm::enumerate(entry.arguments)) {
+      if (!isValidAccess(argument.access) || argument.ordinal != ordinal ||
+          argument.access != expectedArgumentAccess(argument.reference))
+        return invalid("package entry arguments must be dense, zero-based "
+                       "and access-consistent");
+      if (const auto *reference =
+              std::get_if<ExternalInputArgument>(&argument.reference)) {
+        if (!reference->port.isValid() ||
+            reference->port.getValue() >= inputReferenceCounts.size())
+          return invalid("package entry references a missing input port");
+        ++inputReferenceCounts[reference->port.getValue()];
+      } else if (const auto *reference =
+                     std::get_if<TargetTensorArgument>(&argument.reference)) {
+        if (!reference->tensor.isValid() ||
+            reference->tensor.getValue() >= targetTensorReferenceCounts.size())
+          return invalid(
+              "package entry references a missing TargetTensor");
+        ++targetTensorReferenceCounts[reference->tensor.getValue()];
+      } else if (const auto *reference =
+                     std::get_if<ExternalOutputArgument>(&argument.reference)) {
+        if (!reference->port.isValid() ||
+            reference->port.getValue() >= outputReferenceCounts.size())
+          return invalid("package entry references a missing output port");
+        ++outputReferenceCounts[reference->port.getValue()];
+      } else if (std::holds_alternative<WorkspaceArgument>(
+                     argument.reference)) {
+        const auto &workspace = std::get<WorkspaceArgument>(argument.reference);
+        if (workspace.bytes == 0 || workspace.alignment == 0 ||
+            !isPowerOfTwo(workspace.alignment))
+          return invalid("package entry workspace requirement is invalid");
+      } else if (std::holds_alternative<ProfileRecordArgument>(
+                     argument.reference)) {
+        const auto &profile =
+            std::get<ProfileRecordArgument>(argument.reference);
+        if (profile.recordABI != kProfileRecordABI ||
+            profile.bytes == 0 || profile.alignment == 0 ||
+            !isPowerOfTwo(profile.alignment) ||
+            profile.alignment != WAFER_TX81_PROFILER_BUFFER_ALIGNMENT ||
+            (profile.bytes != WAFER_TX81_PROFILER_MIN_BUFFER_BYTES &&
+             profile.bytes != WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES))
+          return invalid("package entry profile record requirement is "
+                         "invalid");
+      } else {
+        const auto &status =
+            std::get<TransportStatusArgument>(argument.reference);
+        if (status.statusABI != kDirectDTEStatusABI ||
+            status.bytes != kDirectDTEStatusStorageBytes ||
+            status.alignment != kDirectDTEStatusStorageAlignment)
+          return invalid("package entry Direct DTE status requirement is "
+                         "invalid");
+      }
     }
-
-    llvm::SmallVector<const PackageResourceRecord *, 1> statusResources;
-    for (const PackageResourceRecord &resource : manifest.resources)
-      if (const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
-          scope && isSameTile(*scope, entry) &&
-          resource.role == PackageResourceRole::TransportStatus)
-        statusResources.push_back(&resource);
     if (std::holds_alternative<NoTransportRequirements>(entry.transport)) {
-      if (!statusResources.empty())
+      if (llvm::any_of(entry.arguments, [](const auto &argument) {
+            return std::holds_alternative<TransportStatusArgument>(
+                argument.reference);
+          }))
         return invalid(
             "package transport status exists without Direct DTE requirement");
     } else {
       const auto &requirements =
           std::get<DirectDTETransportRequirements>(entry.transport);
-      const PackageResourceRecord *status =
-          findResource(manifest.resources, requirements.statusResource);
-      if (statusResources.size() != 1 || !status ||
-          status != statusResources.front() ||
-          status->roleIndex != 0 || status->type.dtype != "u32" ||
-          status->type.shape != std::vector<int64_t>{1} ||
-          status->bytes != kDirectDTEStatusStorageBytes ||
-          status->alignment != kDirectDTEStatusStorageAlignment ||
-          status->access != PackageAccessMode::ReadWrite ||
-          status->hostVisible ||
-          requirements.statusABI != kDirectDTEStatusABI ||
+      const auto statusCount = llvm::count_if(
+          entry.arguments, [](const auto &argument) {
+            return std::holds_alternative<TransportStatusArgument>(
+                argument.reference);
+          });
+      if (statusCount != 1 || requirements.statusABI != kDirectDTEStatusABI ||
           !requirements.hostWatchdogRequired)
         return invalid("package Direct DTE transport requirement is invalid");
     }
   }
-  if (llvm::any_of(resourceReferenceCounts,
+  if (llvm::any_of(targetTensorReferenceCounts,
                    [](uint64_t count) { return count == 0; }))
     return invalid(
-        "package resources are not covered all-and-only by ABI slots");
+        "package TargetTensors are not covered all-and-only by arguments");
+  for (auto [port, count] : llvm::zip(manifest.inputs, inputReferenceCounts))
+    if (count != static_cast<uint64_t>(manifest.tileCount))
+      return invalid("package input port is not referenced by every Tile");
+  for (auto [port, count] : llvm::zip(manifest.outputs, outputReferenceCounts))
+    if (count != static_cast<uint64_t>(manifest.tileCount))
+      return invalid("package output port is not referenced by every Tile");
   if (llvm::any_of(manifest.modules, [&](const auto &module) {
         return referencedModules.lookup(module.id.getValue()) == 0;
       }))
     return invalid("package contains an unreferenced module");
+
   if (llvm::Error error = verifyRuntimeLaunchContract(manifest))
     return std::move(error);
 
   if (packageRoot.empty())
     return invalid("package root must not be empty");
   if (llvm::Error error = verifyModuleFiles(manifest, packageRoot))
+    return std::move(error);
+  if (llvm::Error error = verifyProgramData(manifest, packageRoot))
     return std::move(error);
   return VerifiedPackageManifest(std::move(manifest));
 }

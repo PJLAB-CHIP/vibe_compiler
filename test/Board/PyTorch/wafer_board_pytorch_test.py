@@ -21,7 +21,6 @@ import wafer_pytorch_board_cases as board_cases
 
 
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = "kernel"
 PHYSICAL_TILE_COUNT = 16
 PROCESS_TIMEOUT_MARGIN_SECONDS = 60
 COMPILE_TIMEOUT_SECONDS = 1800
@@ -274,7 +273,7 @@ def _boundary_maps(
     return local_inputs, local_outputs
 
 
-def _manifest_resources(package: pathlib.Path) -> tuple[
+def _manifest_ports(package: pathlib.Path) -> tuple[
     dict[tuple[str, int], dict[str, object]],
     set[int],
 ]:
@@ -285,9 +284,14 @@ def _manifest_resources(package: pathlib.Path) -> tuple[
         or manifest.get("target", {}).get("identity") != TARGET_IDENTITY
     ):
         raise RuntimeError("PyTorch package physical target contract is invalid")
-    resources = manifest.get("resources")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
     entries = manifest.get("entries")
-    if not isinstance(resources, list) or not isinstance(entries, list):
+    if (
+        not isinstance(inputs, list)
+        or not isinstance(outputs, list)
+        or not isinstance(entries, list)
+    ):
         raise RuntimeError("PyTorch package domains must be lists")
 
     physical_tiles: set[int] = set()
@@ -318,31 +322,28 @@ def _manifest_resources(package: pathlib.Path) -> tuple[
     if physical_tiles != expected_domain or launch_slots != expected_domain:
         raise RuntimeError("manifest entries do not cover the Tile domains")
 
-    host_resources: dict[tuple[str, int], dict[str, object]] = {}
+    host_ports: dict[tuple[str, int], dict[str, object]] = {}
     output_ids: set[int] = set()
-    for resource in resources:
-        if not isinstance(resource, dict):
-            raise RuntimeError("manifest resource must be an object")
-        role = resource.get("role")
-        if role not in ("user_input", "output"):
-            continue
-        role_index = resource.get("role_index")
-        resource_id = resource.get("id")
-        if (
-            type(role_index) is not int
-            or type(resource_id) is not int
-            or role_index < 0
-            or resource_id < 0
-            or resource.get("scope") != {"kind": "card", "card_id": 0}
-        ):
-            raise RuntimeError("host tensor resource identity is invalid")
-        key = (role, role_index)
-        if key in host_resources or resource.get("host_visible") is not True:
-            raise RuntimeError(f"invalid duplicate/non-visible host resource: {key}")
-        host_resources[key] = resource
-        if role == "output":
-            output_ids.add(resource_id)
-    return host_resources, output_ids
+    for table, role in ((inputs, "user_input"), (outputs, "output")):
+        for record in table:
+            if not isinstance(record, dict):
+                raise RuntimeError("manifest port record must be an object")
+            role_index = record.get("role_index")
+            port_id = record.get("id")
+            if (
+                type(role_index) is not int
+                or type(port_id) is not int
+                or role_index < 0
+                or port_id < 0
+            ):
+                raise RuntimeError("host tensor port identity is invalid")
+            key = (role, role_index)
+            if key in host_ports:
+                raise RuntimeError(f"invalid duplicate host port: {key}")
+            host_ports[key] = record
+            if role == "output":
+                output_ids.add(port_id)
+    return host_ports, output_ids
 
 
 def prepare_runtime_payloads(
@@ -365,7 +366,7 @@ def prepare_runtime_payloads(
         raise RuntimeError(
             "single-card package writing requires one source partition"
         )
-    resources, output_ids = _manifest_resources(package)
+    ports, output_ids = _manifest_ports(package)
     expected_keys = {
         *(("user_input", index) for _, index in local_inputs),
         *(("output", index) for _, index in local_outputs),
@@ -382,27 +383,27 @@ def prepare_runtime_payloads(
     arguments: list[str] = []
     captures: dict[pathlib.Path, torch.Tensor] = {}
     result_capture_paths: dict[int, pathlib.Path] = {}
-    for key, resource in sorted(resources.items()):
+    for key, record in sorted(ports.items()):
         role, index = key
         tensor = (
             local_inputs[(0, index)]
             if role == "user_input"
             else local_outputs[(0, index)]
         )
-        common.require_manifest_tensor(resource, tensor, context=str(key))
-        resource_id = resource["id"]
-        manifest_dtype = resource["type"]["dtype"]
+        common.require_manifest_tensor(record, tensor, context=str(key))
+        port_id = record["id"]
+        manifest_dtype = record["dtype"]
         if role == "user_input":
             input_path = raw / (
                 f"card_00_{role}_{index}.{manifest_dtype}.raw"
             )
             common.write_tensor_raw(input_path, tensor)
-            arguments.extend(["--resource", f"{resource_id}={input_path}"])
+            arguments.extend(["--resource", f"{port_id}={input_path}"])
             continue
         capture_path = raw / (
             f"card_00_output_{index}.capture.{manifest_dtype}.raw"
         )
-        arguments.extend(["--output", f"{resource_id}={capture_path}"])
+        arguments.extend(["--output", f"{port_id}={capture_path}"])
         captures[capture_path] = tensor
         result_capture_paths[index] = capture_path
     if len(captures) != len(output_ids):
@@ -455,7 +456,7 @@ def verify_board(
     if not required.issubset(set(stdout.splitlines())):
         raise RuntimeError("board output omitted PyTorch lifecycle evidence")
     matches = re.findall(
-        r"^output_capture: resource=(\d+) bytes=\d+ path=.+$",
+        r"^output_capture: port=(\d+) bytes=\d+ path=.+$",
         stdout,
         re.MULTILINE,
     )
@@ -501,7 +502,6 @@ def prepare_case_step(
         "--output-program-dir",
         str(package),
         f"--num-partitions={case.num_partitions}",
-        f"--launch-kind={LAUNCH_KIND}",
         f"--optimization-policy={args.optimization_policy}",
     ]
     if args.compile_timing:

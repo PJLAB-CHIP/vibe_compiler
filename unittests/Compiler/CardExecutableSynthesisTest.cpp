@@ -461,8 +461,7 @@ static size_t countOccurrences(llvm::StringRef text, llvm::StringRef needle) {
 }
 
 static wafer::compiler::ExecutionConfig executionConfig() {
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   EXPECT_TRUE(static_cast<bool>(config));
   return *config;
 }

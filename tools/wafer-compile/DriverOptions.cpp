@@ -18,7 +18,6 @@ namespace wafer::compile_driver {
 void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
                   "--output-program-dir <dir> --num-partitions <1> "
-                  "--launch-kind <kernel|model> "
                   "[--dump-compiler-ir <dir>] "
                   "[--optimization-policy <search|none>] "
                   "[--compile-timing] "
@@ -114,12 +113,6 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
     if (arg == "--num-partitions" || arg.starts_with("--num-partitions=")) {
       if (parseValueOption(argc, argv, index, arg, "--num-partitions",
                            options.numPartitions))
-        return false;
-      continue;
-    }
-    if (arg == "--launch-kind" || arg.starts_with("--launch-kind=")) {
-      if (parseValueOption(argc, argv, index, arg, "--launch-kind",
-                           options.runtimeLaunchKind))
         return false;
       continue;
     }

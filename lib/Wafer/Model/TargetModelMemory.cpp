@@ -33,57 +33,57 @@ bool isPowerOfTwo(uint64_t value) {
   return value != 0 && (value & (value - 1)) == 0;
 }
 
-bool isInputRole(compiler::KernelABISlotRole role) {
-  switch (role) {
-  case compiler::KernelABISlotRole::UserInput:
-  case compiler::KernelABISlotRole::Parameter:
-  case compiler::KernelABISlotRole::Constant:
+bool isInputRole(compiler::TileEntryArgumentKind kind) {
+  switch (kind) {
+  case compiler::TileEntryArgumentKind::ExternalInput:
+  case compiler::TileEntryArgumentKind::TargetTensor:
     return true;
-  case compiler::KernelABISlotRole::Output:
-  case compiler::KernelABISlotRole::Workspace:
-  case compiler::KernelABISlotRole::TransportStatus:
+  case compiler::TileEntryArgumentKind::ExternalOutput:
+  case compiler::TileEntryArgumentKind::Workspace:
+  case compiler::TileEntryArgumentKind::ProfileRecord:
+  case compiler::TileEntryArgumentKind::TransportStatus:
     return false;
   }
-  llvm_unreachable("unknown kernel ABI slot role");
+  llvm_unreachable("unknown tile entry argument kind");
 }
 
-bool permitsRead(compiler::KernelABISlotRole) { return true; }
+bool permitsRead(compiler::TileEntryArgumentKind) { return true; }
 
-bool permitsWrite(compiler::KernelABISlotRole role) {
-  switch (role) {
-  case compiler::KernelABISlotRole::UserInput:
-  case compiler::KernelABISlotRole::Parameter:
-  case compiler::KernelABISlotRole::Constant:
+bool permitsWrite(compiler::TileEntryArgumentKind kind) {
+  switch (kind) {
+  case compiler::TileEntryArgumentKind::ExternalInput:
+  case compiler::TileEntryArgumentKind::TargetTensor:
     return false;
-  case compiler::KernelABISlotRole::Output:
-  case compiler::KernelABISlotRole::Workspace:
-  case compiler::KernelABISlotRole::TransportStatus:
+  case compiler::TileEntryArgumentKind::ExternalOutput:
+  case compiler::TileEntryArgumentKind::Workspace:
+  case compiler::TileEntryArgumentKind::ProfileRecord:
+  case compiler::TileEntryArgumentKind::TransportStatus:
     return true;
   }
-  llvm_unreachable("unknown kernel ABI slot role");
+  llvm_unreachable("unknown tile entry argument kind");
 }
 
-bool permitsAccess(compiler::KernelABISlotRole role, TargetModelAccess access) {
+bool permitsAccess(compiler::TileEntryArgumentKind kind, TargetModelAccess access) {
   switch (access) {
   case TargetModelAccess::Read:
-    return permitsRead(role);
+    return permitsRead(kind);
   case TargetModelAccess::Write:
-    return permitsWrite(role);
+    return permitsWrite(kind);
   case TargetModelAccess::ReadWrite:
-    return permitsRead(role) && permitsWrite(role);
+    return permitsRead(kind) && permitsWrite(kind);
   }
   llvm_unreachable("unknown target model access");
 }
 
 std::string tileSlot(int64_t launchSlot, int64_t slotOrdinal) {
-  return (llvm::Twine("launch slot ") + llvm::Twine(launchSlot) + " ABI slot " +
-          llvm::Twine(slotOrdinal))
+  return (llvm::Twine("launch slot ") + llvm::Twine(launchSlot) +
+          " entry argument " + llvm::Twine(slotOrdinal))
       .str();
 }
 
-bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
-                              const compiler::KernelABISlot &rhs) {
-  return lhs.role == rhs.role && lhs.resourceIndex == rhs.resourceIndex &&
+bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
+                              const compiler::TileEntryArgument &rhs) {
+  return lhs.kind == rhs.kind && lhs.resourceIndex == rhs.resourceIndex &&
          lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
          lhs.shape == rhs.shape && lhs.byteSize == rhs.byteSize &&
          lhs.alignment == rhs.alignment;
@@ -93,13 +93,14 @@ bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
 
 TargetModelResourceId getTargetModelResourceId(CardId cardId,
                                                TileId tileId,
-                                               compiler::KernelABISlotRole role,
+                                               compiler::TileEntryArgumentKind kind,
                                                int64_t resourceIndex) {
   std::optional<TileId> ownerTile;
-  if (role == compiler::KernelABISlotRole::Workspace ||
-      role == compiler::KernelABISlotRole::TransportStatus)
+  if (kind == compiler::TileEntryArgumentKind::Workspace ||
+      kind == compiler::TileEntryArgumentKind::ProfileRecord ||
+      kind == compiler::TileEntryArgumentKind::TransportStatus)
     ownerTile = tileId;
-  return {cardId, ownerTile, role, resourceIndex};
+  return {cardId, ownerTile, kind, resourceIndex};
 }
 
 llvm::StringRef
@@ -203,7 +204,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
   std::vector<InitialResourceStorage> initialStorage;
   struct ResourceFacts {
     TargetModelResourceId id;
-    compiler::KernelABISlot slot;
+    compiler::TileEntryArgument slot;
     uint64_t base = 0;
     uint64_t byteSize = 0;
     uint64_t alignment = 0;
@@ -216,14 +217,14 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
     const compiler::TargetCallTileDescriptor &tile = *tiles[launchSlotIndex];
     const int64_t launchSlot = tile.launchSlotId.getValue();
     launchSlots.push_back(launchSlot);
-    if (tile.kernelABISlots.size() != tile.slotValues.size())
+    if (tile.tileEntryArguments.size() != tile.slotValues.size())
       return memoryError(
           TargetModelMemoryErrorCode::InvalidInvocation,
           llvm::Twine("launch slot ") + llvm::Twine(launchSlot) +
               " ABI slot metadata and values have different lengths");
-    for (size_t slotIndex = 0; slotIndex < tile.kernelABISlots.size();
+    for (size_t slotIndex = 0; slotIndex < tile.tileEntryArguments.size();
          ++slotIndex) {
-      const compiler::KernelABISlot &slot = tile.kernelABISlots[slotIndex];
+      const compiler::TileEntryArgument &slot = tile.tileEntryArguments[slotIndex];
       if (slot.ordinal != static_cast<int64_t>(slotIndex) ||
           slot.resourceIndex < 0)
         return memoryError(TargetModelMemoryErrorCode::InvalidSlot,
@@ -249,7 +250,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
 
       const TargetModelResourceId resource =
           getTargetModelResourceId(tile.cardId, tile.tileId,
-                                   slot.role, slot.resourceIndex);
+                                   slot.kind, slot.resourceIndex);
       ResourceFacts *facts = nullptr;
       for (ResourceFacts &candidate : resources)
         if (candidate.id == resource) {
@@ -276,7 +277,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
             input = &candidate;
             break;
           }
-        if (isInputRole(slot.role)) {
+        if (isInputRole(slot.kind)) {
           if (!input)
             return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
                                tileSlot(launchSlot, slot.ordinal) +
@@ -298,7 +299,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
         resources.push_back(
             {resource, slot, base, byteSize, alignment, {launchSlot}});
       }
-      slots.push_back({launchSlot, slot.ordinal, slot.role, slot.resourceIndex,
+      slots.push_back({launchSlot, slot.ordinal, slot.kind, slot.resourceIndex,
                        resource, base, byteSize, alignment});
     }
   }
@@ -310,7 +311,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
     if (resource == resources.end())
       return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
                          "input binding names an unknown resource");
-    if (!isInputRole(resource->slot.role))
+    if (!isInputRole(resource->slot.kind))
       return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
                          "model-owned resource cannot be prebound");
   }
@@ -328,8 +329,8 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
   for (const ResourceFacts &resource : resources)
     byBase.push_back(&resource);
   llvm::sort(byBase, [](const ResourceFacts *lhs, const ResourceFacts *rhs) {
-    return std::tie(lhs->base, lhs->slot.role, lhs->slot.resourceIndex) <
-           std::tie(rhs->base, rhs->slot.role, rhs->slot.resourceIndex);
+    return std::tie(lhs->base, lhs->slot.kind, lhs->slot.resourceIndex) <
+           std::tie(rhs->base, rhs->slot.kind, rhs->slot.resourceIndex);
   });
   for (size_t index = 1; index < byBase.size(); ++index) {
     uint64_t previousEnd = 0;
@@ -403,7 +404,7 @@ llvm::Expected<TargetModelResolvedRange> InvocationAddressPlan::resolve(
   if (end > slotEnd)
     return memoryError(TargetModelMemoryErrorCode::CrossResource,
                        "DDR range crosses its ABI slot resource boundary");
-  if (!permitsAccess(containingStart->role, access))
+  if (!permitsAccess(containingStart->kind, access))
     return memoryError(
         TargetModelMemoryErrorCode::AccessDenied,
         tileSlot(containingStart->launchSlot, containingStart->slotOrdinal) +

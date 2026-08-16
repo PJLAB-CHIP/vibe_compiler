@@ -1,7 +1,6 @@
 //===- TxBoardRuntime.cpp - TX public-runtime board provider ------------===//
 
 #include "Wafer/Runtime/TxBoardRuntime.h"
-#include "Wafer/Runtime/Tx81ModelABI.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -56,9 +55,6 @@ struct TxApi {
   decltype(&txModuleGetFunction) moduleGetFunction = nullptr;
   decltype(&txLaunchKernel) launchKernel = nullptr;
   decltype(&txLaunchClusterKernel) launchClusterKernel = nullptr;
-  decltype(&txLoadGraph) loadGraph = nullptr;
-  decltype(&txUnloadGraph) unloadGraph = nullptr;
-  decltype(&txLaunchModel) launchModel = nullptr;
   decltype(&txStreamCreate) streamCreate = nullptr;
   decltype(&txStreamDestroy) streamDestroy = nullptr;
   decltype(&txStreamQuery) streamQuery = nullptr;
@@ -81,20 +77,13 @@ RuntimeEnvironment makeTxProviderEnvironment() {
       KernelEntryABI::TileMajorPointerTable,
       KernelEntryABI::TileRowPointerTable,
   };
-  environment.supportedModelEntryABIs = {
-      ModelEntryABI::Tx81ModelBootParam,
-  };
   environment.supportsDirectDTE = true;
   environment.directDTEStatusABI = kDirectDTEStatusABI.str();
   environment.supportsHostWatchdog = true;
   return environment;
 }
 
-enum class SubmissionKind {
-  None,
-  Kernel,
-  Model,
-};
+enum class SubmissionKind { None, Kernel };
 
 class ScopedFD {
 public:
@@ -163,124 +152,6 @@ llvm::Expected<std::string> hashOpenRuntimeLibrary(int descriptor) {
     hasher.update(llvm::StringRef(buffer.data(), static_cast<size_t>(count)));
   }
   return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
-}
-
-llvm::Error writeGraphModuleFile(llvm::StringRef path,
-                                 llvm::ArrayRef<uint8_t> bytes) {
-  std::string storage = path.str();
-  int descriptor =
-      open(storage.c_str(),
-           O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
-  if (descriptor < 0)
-    return llvm::createStringError(
-        std::error_code(errno, std::generic_category()),
-        "failed to create invocation-private TX graph module");
-  ScopedFD ownedDescriptor(descriptor);
-  size_t written = 0;
-  while (written < bytes.size()) {
-    ssize_t count =
-        ::write(descriptor, bytes.data() + written, bytes.size() - written);
-    if (count < 0 && errno == EINTR)
-      continue;
-    if (count <= 0)
-      return llvm::createStringError(
-          count < 0 ? std::error_code(errno, std::generic_category())
-                    : llvm::make_error_code(llvm::errc::io_error),
-          "failed to write invocation-private TX graph module");
-    written += static_cast<size_t>(count);
-  }
-  if (::fsync(descriptor) != 0)
-    return llvm::createStringError(
-        std::error_code(errno, std::generic_category()),
-        "failed to fsync invocation-private TX graph module");
-  return llvm::Error::success();
-}
-
-struct StagedGraphDirectory {
-  std::string root;
-  std::string providerPath;
-  int descriptor = -1;
-};
-
-llvm::Expected<StagedGraphDirectory>
-stageGraphModules(llvm::ArrayRef<BoardGraphModuleSnapshot> modules) {
-  if (modules.size() != 16)
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "TX model graph requires exactly 16 tile module snapshots");
-  std::string pattern = "/tmp/wafer-tx-graph-XXXXXX";
-  if (!::mkdtemp(pattern.data()))
-    return llvm::createStringError(
-        std::error_code(errno, std::generic_category()),
-        "failed to create invocation-private TX graph directory");
-
-  auto fail = [&](llvm::Error error) -> llvm::Expected<StagedGraphDirectory> {
-    llvm::sys::fs::remove_directories(pattern);
-    return std::move(error);
-  };
-  uint64_t aggregateModuleBytes = 0;
-  std::array<bool, 16> seenTileIds{};
-  for (auto [launchSlot, module] : llvm::enumerate(modules)) {
-    const int64_t tileId = module.tileId.getValue();
-    if (module.cardId != CardId(0) || tileId < 0 || tileId >= 16 ||
-        seenTileIds[tileId] ||
-        module.launchSlot != LaunchSlotId(launchSlot) ||
-        !module.module.isValid() || module.bytes.empty() ||
-        module.bytes.size() > std::numeric_limits<uint32_t>::max() ||
-        module.digest.empty() ||
-        module.bytes.size() >
-            std::numeric_limits<uint64_t>::max() - aggregateModuleBytes)
-      return fail(llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX graph module snapshots have an invalid tile domain or size"));
-    seenTileIds[tileId] = true;
-    aggregateModuleBytes += module.bytes.size();
-    llvm::SHA256 hasher;
-    hasher.update(
-        llvm::StringRef(reinterpret_cast<const char *>(module.bytes.data()),
-                        module.bytes.size()));
-    std::string digest =
-        "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
-    if (digest != module.digest)
-      return fail(llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX graph module snapshot digest does not match its bytes"));
-    llvm::SmallString<256> tileDirectory(pattern);
-    llvm::sys::path::append(tileDirectory, "tile" + std::to_string(launchSlot));
-    std::string tileStorage = tileDirectory.str().str();
-    if (::mkdir(tileStorage.c_str(), 0700) != 0)
-      return fail(llvm::createStringError(
-          std::error_code(errno, std::generic_category()),
-          "failed to create invocation-private TX tile directory"));
-    llvm::SmallString<256> modulePath(tileDirectory);
-    llvm::sys::path::append(modulePath, "kcore_fw.so");
-    if (llvm::Error error = writeGraphModuleFile(modulePath, module.bytes))
-      return fail(std::move(error));
-  }
-
-  // The vendor hashes the graph path string verbatim as the model-module
-  // identity. A bare /proc/self/fd/N repeats across one-shot processes, so add
-  // a private, invocation-unique no-op path component while retaining the
-  // directory-fd pin and the same tileN lookup root.
-  std::string identity = llvm::sys::path::filename(pattern).str();
-  llvm::SmallString<256> identityDirectory(pattern);
-  llvm::sys::path::append(identityDirectory, identity);
-  std::string identityStorage = identityDirectory.str().str();
-  if (::mkdir(identityStorage.c_str(), 0700) != 0)
-    return fail(llvm::createStringError(
-        std::error_code(errno, std::generic_category()),
-        "failed to create invocation-private TX graph identity directory"));
-
-  int descriptor =
-      open(pattern.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-  if (descriptor < 0)
-    return fail(llvm::createStringError(
-        std::error_code(errno, std::generic_category()),
-        "failed to pin invocation-private TX graph directory"));
-  return StagedGraphDirectory{pattern,
-                              "/proc/self/fd/" + std::to_string(descriptor) +
-                                  "/" + identity + "/..",
-                              descriptor};
 }
 
 class TxBoardRuntimeDriver final : public BoardRuntimeDriver {
@@ -505,73 +376,6 @@ public:
     return BoardFunctionHandle{reinterpret_cast<uintptr_t>(function)};
   }
 
-  llvm::Expected<BoardGraphHandle>
-  loadGraph(llvm::ArrayRef<BoardGraphModuleSnapshot> modules,
-            llvm::StringRef symbol) override {
-    if (llvm::Error error = requireUsable("txLoadGraph"))
-      return std::move(error);
-    if (!api.loadGraph)
-      return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "TX graph loading is unavailable");
-    if (!loadedGraphs.empty() || symbol.empty() || symbol.size() >= 128 ||
-        symbol.contains('\0'))
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "TX provider already owns a graph or the graph symbol does not fit "
-          "the qualified 128-byte loader field");
-    llvm::Expected<StagedGraphDirectory> staged = stageGraphModules(modules);
-    if (!staged)
-      return staged.takeError();
-
-    std::string ownedSymbol = symbol.str();
-    txError_t status =
-        api.loadGraph(staged->providerPath.c_str(), ownedSymbol.c_str());
-    if (status != TX_SUCCESS) {
-      // A type-6 failure has an unknown accepted subset. Preserve the pinned
-      // directory and issue no unload/reset/power operation in quarantine.
-      return txError("txLoadGraph(type-6)", status);
-    }
-    uintptr_t handle = nextGraphHandle++;
-    if (handle == 0)
-      return poisonContractViolation("TX graph handle identity overflowed");
-    std::string moduleName =
-        std::to_string(std::hash<std::string>{}(staged->providerPath));
-    loadedGraphs.emplace(
-        handle, LoadedGraphResources{
-                    std::move(staged->root), std::move(staged->providerPath),
-                    std::move(moduleName), staged->descriptor});
-    return BoardGraphHandle{handle};
-  }
-
-  llvm::Error unloadGraph(BoardGraphHandle graph) override {
-    if (llvm::Error error = requireUsable("txUnloadGraph"))
-      return error;
-    if (!api.unloadGraph)
-      return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "TX graph unloading is unavailable");
-    if (submissionActive)
-      return poisonContractViolation(
-          "TX graph unload was requested with a live submission");
-    auto iterator = loadedGraphs.find(graph.value);
-    if (iterator == loadedGraphs.end())
-      return poisonContractViolation("TX graph ownership is missing");
-    txError_t status = api.unloadGraph(iterator->second.providerPath.c_str());
-    if (status != TX_SUCCESS)
-      return txError("txUnloadGraph(type-8)", status);
-
-    std::string stagingRoot = std::move(iterator->second.stagingRoot);
-    int descriptor = iterator->second.directoryDescriptor;
-    loadedGraphs.erase(iterator);
-    if (descriptor >= 0 && ::close(descriptor) != 0)
-      return llvm::createStringError(
-          std::error_code(errno, std::generic_category()),
-          "failed to close invocation-private TX graph directory");
-    if (std::error_code error = llvm::sys::fs::remove_directories(stagingRoot))
-      return llvm::createStringError(
-          error, "failed to remove invocation-private TX graph directory");
-    return llvm::Error::success();
-  }
-
   llvm::Error submitKernelPhase(KernelLaunchForm form,
                                 RuntimeLaunchPhaseRole phaseRole,
                                 llvm::ArrayRef<BoardTileLaunch> launches,
@@ -596,8 +400,8 @@ public:
       if (submissionKind != SubmissionKind::None || phaseSubmitted ||
           activeKernelForm || activeKernelPhase || !activeStreams.empty() ||
           !completedStreams.empty() || !submissionArgumentBlocks.empty() ||
-          !submissionEntries.empty() || !submissionMetadata.empty() ||
-          activeDeviceTimingPolicy || timingStartEvent || timingEndEvent)
+          !submissionEntries.empty() || activeDeviceTimingPolicy ||
+          timingStartEvent || timingEndEvent)
         return poisonContractViolation(
             "TX provider has stale state before a kernel submission");
     } else if (submissionKind != SubmissionKind::Kernel || !activeKernelForm ||
@@ -715,124 +519,6 @@ public:
     return llvm::Error::success();
   }
 
-  llvm::Error submitModel(BoardGraphHandle graph,
-                          llvm::ArrayRef<BoardModelTensorLaunch> tensors,
-                          BoardDeviceTimingPolicy timingPolicy) override {
-    if (llvm::Error error = requireUsable("model submission"))
-      return error;
-    if (!api.launchModel)
-      return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "TX model submission is unavailable");
-    if (submissionActive || submissionKind != SubmissionKind::None ||
-        phaseSubmitted || activeKernelForm || activeKernelPhase ||
-        !activeStreams.empty() || !completedStreams.empty() ||
-        !submissionArgumentBlocks.empty() || !submissionEntries.empty() ||
-        !submissionMetadata.empty() || activeDeviceTimingPolicy ||
-        timingStartEvent || timingEndEvent)
-      return poisonContractViolation(
-          "TX model provider already owns submission state");
-    auto graphIterator = loadedGraphs.find(graph.value);
-    if (graphIterator == loadedGraphs.end())
-      return poisonContractViolation("TX model graph ownership is missing");
-
-    std::vector<Tx81ModelTensorDescriptor> descriptors;
-    descriptors.reserve(tensors.size());
-    for (const BoardModelTensorLaunch &tensor : tensors) {
-      Tx81ModelTensorClass tensorClass;
-      switch (tensor.role) {
-      case PackageResourceRole::UserInput:
-        tensorClass = Tx81ModelTensorClass::Input;
-        break;
-      case PackageResourceRole::Output:
-        tensorClass = Tx81ModelTensorClass::Output;
-        break;
-      case PackageResourceRole::Parameter:
-      case PackageResourceRole::Constant:
-        tensorClass = Tx81ModelTensorClass::Parameter;
-        break;
-      case PackageResourceRole::Workspace:
-      case PackageResourceRole::TransportStatus:
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "TX model launch contains an unsupported resource role");
-      }
-      descriptors.push_back({tensorClass, tensor.cardId, tensor.tileId,
-                             tensor.launchSlot, tensor.slotOrdinal,
-                             static_cast<uint64_t>(tensor.memory.value),
-                             tensor.bytes, tensor.dtype, tensor.shape});
-    }
-
-    llvm::Expected<std::vector<uint8_t>> dynMods =
-        buildTx81DynlibRunModules(graphIterator->second.moduleName);
-    if (!dynMods)
-      return dynMods.takeError();
-    llvm::Expected<Tx81ModelBootParamImage> validation =
-        buildTx81ModelBootParam(descriptors, /*dynamicTLVDeviceAddress=*/8);
-    if (!validation)
-      return validation.takeError();
-
-    auto upload = [&](llvm::ArrayRef<uint8_t> bytes,
-                      llvm::StringRef operation) -> llvm::Expected<uint64_t> {
-      void *pointer = nullptr;
-      txError_t status = api.malloc(&pointer, bytes.size());
-      if (status != TX_SUCCESS)
-        return txError((operation + " txMalloc").str(), status);
-      if (!pointer ||
-          reinterpret_cast<uintptr_t>(pointer) % alignof(uint64_t) != 0)
-        return poisonContractViolation(
-            (operation + " txMalloc returned null or misaligned").str());
-      status =
-          api.memcpy(pointer, bytes.data(), bytes.size(), txMemcpyHostToDevice);
-      if (status != TX_SUCCESS)
-        return txError((operation + " txMemcpy(H2D)").str(), status);
-      submissionMetadata.push_back(pointer);
-      return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pointer));
-    };
-
-    llvm::Expected<uint64_t> dynModsAddress =
-        upload(*dynMods, "type-7 DynMods");
-    if (!dynModsAddress)
-      return dynModsAddress.takeError();
-    llvm::Expected<std::vector<uint8_t>> tlv =
-        buildTx81DynlibRunTLV(*dynModsAddress);
-    if (!tlv)
-      return tlv.takeError();
-    llvm::Expected<uint64_t> tlvAddress = upload(*tlv, "type-7 TLV");
-    if (!tlvAddress)
-      return tlvAddress.takeError();
-    llvm::Expected<Tx81ModelBootParamImage> bootParam =
-        buildTx81ModelBootParam(descriptors, *tlvAddress);
-    if (!bootParam)
-      return bootParam.takeError();
-    llvm::Expected<uint64_t> bootParamAddress =
-        upload(bootParam->bytes, "model BootParam");
-    if (!bootParamAddress)
-      return bootParamAddress.takeError();
-
-    txStream_t stream = nullptr;
-    txError_t status = api.streamCreate(&stream);
-    if (status != TX_SUCCESS)
-      return txError("txStreamCreate(model)", status);
-    if (!stream)
-      return poisonContractViolation(
-          "txStreamCreate(model) returned a null stream");
-    activeStreams.push_back(stream);
-    if (llvm::Error error = initializeDeviceTiming(timingPolicy, "model"))
-      return error;
-    completedStreams.assign(1, false);
-    submissionKind = SubmissionKind::Model;
-    phaseSubmitted = true;
-    submissionActive = true;
-    if (llvm::Error error = recordDeviceTimingStart(stream, "model"))
-      return error;
-    status = api.launchModel(*bootParamAddress, stream);
-    if (status != TX_SUCCESS)
-      return txError("txLaunchModel(type-7)", status);
-    if (llvm::Error error = recordDeviceTimingEnd(stream, "model"))
-      return error;
-    return llvm::Error::success();
-  }
-
   llvm::Expected<BoardCompletionObservation> waitCurrentSubmission(
       BoardCompletionDeadline deadline,
       BoardCompletionObservationPolicy observationPolicy) override {
@@ -872,7 +558,7 @@ public:
         };
     auto deadlineExceeded = [&]() -> llvm::Error {
       contextState = BoardRuntimeContextState::Poisoned;
-      std::string submissionPhase = "model";
+      std::string submissionPhase = "kernel";
       if (submissionKind == SubmissionKind::Kernel && activeKernelForm &&
           activeKernelPhase)
         submissionPhase = (stringifyKernelLaunchForm(*activeKernelForm) + ":" +
@@ -966,12 +652,6 @@ public:
               check("txStreamDestroy", api.streamDestroy(activeStreams.back())))
         return error;
       activeStreams.pop_back();
-    }
-    while (!submissionMetadata.empty()) {
-      if (llvm::Error error = check("txFree(model-metadata)",
-                                    api.free(submissionMetadata.back())))
-        return error;
-      submissionMetadata.pop_back();
     }
     submissionArgumentBlocks.clear();
     submissionEntries.clear();
@@ -1140,24 +820,15 @@ private:
     std::string digest;
     uint64_t referenceCount = 0;
   };
-  struct LoadedGraphResources {
-    std::string stagingRoot;
-    std::string providerPath;
-    std::string moduleName;
-    int directoryDescriptor = -1;
-  };
   void *library = nullptr;
   TxApi api;
   std::string runtimeLibraryDigest;
   RuntimeEnvironment providerEnvironment;
   std::unordered_map<uintptr_t, LoadedModuleState> loadedModules;
-  std::unordered_map<uintptr_t, LoadedGraphResources> loadedGraphs;
-  uintptr_t nextGraphHandle = 1;
   std::vector<txStream_t> activeStreams;
   std::vector<bool> completedStreams;
   std::vector<std::vector<uint64_t>> submissionArgumentBlocks;
   std::vector<EntryId> submissionEntries;
-  std::vector<void *> submissionMetadata;
   SubmissionKind submissionKind = SubmissionKind::None;
   std::optional<KernelLaunchForm> activeKernelForm;
   std::optional<RuntimeLaunchPhaseRole> activeKernelPhase;
@@ -1247,9 +918,6 @@ createTxBoardRuntimeDriver(llvm::StringRef expectedRuntimeLibraryDigest) {
   WAFER_RESOLVE_TX_API(moduleGetFunction, txModuleGetFunction);
   WAFER_RESOLVE_TX_API(launchKernel, txLaunchKernel);
   WAFER_RESOLVE_TX_API(launchClusterKernel, txLaunchClusterKernel);
-  WAFER_RESOLVE_TX_API(loadGraph, txLoadGraph);
-  WAFER_RESOLVE_TX_API(unloadGraph, txUnloadGraph);
-  WAFER_RESOLVE_TX_API(launchModel, txLaunchModel);
   WAFER_RESOLVE_TX_API(streamCreate, txStreamCreate);
   WAFER_RESOLVE_TX_API(streamDestroy, txStreamDestroy);
   WAFER_RESOLVE_TX_API(streamQuery, txStreamQuery);

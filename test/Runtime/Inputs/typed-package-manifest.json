@@ -5,394 +5,58 @@
   "target": {
     "identity": "wafer-tx81-single-card",
     "runtime_abi": "wafer-tx81-kernel",
-    "launch": {
-      "kind": "kernel",
-      "form": "grid",
-      "entry_abi": "tile-major-pointer-table",
-      "phases": [
-        "main"
-      ]
-    },
     "module_format": "elf-riscv64"
+  },
+  "launch": {
+    "kind": "kernel",
+    "form": "grid",
+    "entry_abi": "tile-major-pointer-table",
+    "phases": [
+      "main"
+    ]
   },
   "card_count": 1,
   "tile_count": 16,
-  "resources": [
+  "program_data": {
+    "relative_path": "data/program-data.bin",
+    "total_bytes": 0,
+    "base_alignment": 1,
+    "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "program_tensors": [],
+  "target_tensors": [],
+  "inputs": [
     {
       "id": 0,
-      "scope": {
-        "kind": "card",
-        "card_id": 0
-      },
-      "role": "user_input",
       "role_index": 0,
-      "name": "input",
-      "type": {
-        "dtype": "f32",
-        "shape": [
-          16
-        ]
-      },
+      "logical_dtype": "f32",
+      "logical_shape": [
+        16
+      ],
+      "dtype": "f32",
+      "layout": "tensor",
+      "shape": [
+        16
+      ],
       "bytes": 64,
-      "alignment": 256,
-      "access": "read_only",
-      "host_visible": true
-    },
+      "alignment": 256
+    }
+  ],
+  "outputs": [
     {
-      "id": 1,
-      "scope": {
-        "kind": "card",
-        "card_id": 0
-      },
-      "role": "output",
+      "id": 0,
       "role_index": 0,
-      "name": "output",
-      "type": {
-        "dtype": "f32",
-        "shape": [
-          16
-        ]
-      },
+      "logical_dtype": "f32",
+      "logical_shape": [
+        16
+      ],
+      "dtype": "f32",
+      "layout": "tensor",
+      "shape": [
+        16
+      ],
       "bytes": 64,
-      "alignment": 256,
-      "access": "write_only",
-      "host_visible": true
-    },
-    {
-      "id": 2,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 1
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_1",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 3,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 0
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_0",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 4,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 2
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_2",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 5,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 3
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_3",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 6,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 4
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_4",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 7,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 5
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_5",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 8,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 6
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_6",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 9,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 7
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_7",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 10,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 8
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_8",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 11,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 9
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_9",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 12,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 10
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_10",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 13,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 11
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_11",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 14,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 12
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_12",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 15,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 13
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_13",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 16,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 14
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_14",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
-    },
-    {
-      "id": 17,
-      "scope": {
-        "kind": "tile",
-        "card_id": 0,
-        "tile_id": 15
-      },
-      "role": "workspace",
-      "role_index": 0,
-      "name": "default_ddr_arena_tile_15",
-      "type": {
-        "dtype": "u8",
-        "shape": [
-          512
-        ]
-      },
-      "bytes": 512,
-      "alignment": 256,
-      "access": "read_write",
-      "host_visible": false
+      "alignment": 256
     }
   ],
   "modules": [
@@ -416,20 +80,24 @@
       "tile_id": 1,
       "launch_slot": 0,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 2,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -444,20 +112,24 @@
       "tile_id": 0,
       "launch_slot": 1,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 3,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -472,20 +144,24 @@
       "tile_id": 2,
       "launch_slot": 2,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 4,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -500,20 +176,24 @@
       "tile_id": 3,
       "launch_slot": 3,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 5,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -528,20 +208,24 @@
       "tile_id": 4,
       "launch_slot": 4,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 6,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -556,20 +240,24 @@
       "tile_id": 5,
       "launch_slot": 5,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 7,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -584,20 +272,24 @@
       "tile_id": 6,
       "launch_slot": 6,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 8,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -612,20 +304,24 @@
       "tile_id": 7,
       "launch_slot": 7,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 9,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -640,20 +336,24 @@
       "tile_id": 8,
       "launch_slot": 8,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 10,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -668,20 +368,24 @@
       "tile_id": 9,
       "launch_slot": 9,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 11,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -696,20 +400,24 @@
       "tile_id": 10,
       "launch_slot": 10,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 12,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -724,20 +432,24 @@
       "tile_id": 11,
       "launch_slot": 11,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 13,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -752,20 +464,24 @@
       "tile_id": 12,
       "launch_slot": 12,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 14,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -780,20 +496,24 @@
       "tile_id": 13,
       "launch_slot": 13,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 15,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -808,20 +528,24 @@
       "tile_id": 14,
       "launch_slot": 14,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 16,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],
@@ -836,20 +560,24 @@
       "tile_id": 15,
       "launch_slot": 15,
       "module": 0,
-      "slots": [
+      "arguments": [
         {
           "ordinal": 0,
-          "resource": 0,
+          "kind": "external_input",
+          "port": 0,
           "access": "read_only"
         },
         {
           "ordinal": 1,
-          "resource": 1,
+          "kind": "external_output",
+          "port": 0,
           "access": "write_only"
         },
         {
           "ordinal": 2,
-          "resource": 17,
+          "kind": "workspace",
+          "bytes": 512,
+          "alignment": 256,
           "access": "read_write"
         }
       ],

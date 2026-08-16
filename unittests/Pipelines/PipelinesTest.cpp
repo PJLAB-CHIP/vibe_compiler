@@ -233,7 +233,7 @@ module {
       replicatedBoundary(/*index=*/0, {16, 4}, "f32")};
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
       wafer::compiler::ExecutionConfig::createForSingleCard(
-          /*numPartitions=*/1, wafer::RuntimeLaunchKind::Kernel);
+          /*numPartitions=*/1);
   ASSERT_TRUE(static_cast<bool>(executionConfig));
 
   std::string diagnosticsText;

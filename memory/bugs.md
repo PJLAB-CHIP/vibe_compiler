@@ -523,3 +523,61 @@
   最低层强制read window并记录actual open/window/bytes/max；最后一次verification后adopt真实source并销毁全部剩余candidate。
 - 防复发：直接测试move后删除staging仍能读取且析构清理文件；Card边界断言candidate归零；原地改写fixture明确超过pinned mmap
   threshold；大range断言window数量/bytes、最大window与零新增open；source-to-package规模账本分开验证identity计数和实际I/O work。
+
+## C++17 std::variant比较要求所有alternative同时定义==和!=
+
+- 现象：为6个`TileEntryArgument` payload struct定义friend `operator==`后，`std::variant`比较、`TileEntryArgument`
+  aggregate和manifest序列化仍编译失败，报"no match for operator!=（no known conversion）"。
+- 根因：C++17的`std::variant operator==/!=`在libstdc++实现中要求每个alternative类型同时有`==`和`!=`；只写`==`并依赖
+  C++20的rewritten candidate在C++17不存在。
+- 修复模式：closed union的每个payload struct成对定义friend `operator==`和`operator!=`；同类新字段加入时同步两个运算符。
+- 防复发：新增进入`std::variant`的payload类型时，先写编译级小测试确认比较完整；不能假设`==`隐含`!=`。
+
+## llvm::ArrayRef模板推导不接受隐式转换
+
+- 现象：`llvm::ArrayRef<int64_t>`与`std::vector<int64_t>`直接`==`比较编译失败，报template argument deduction
+  substitution失败。
+- 根因：模板实参推导发生在重载决议前，`std::vector`→`ArrayRef`的隐式构造函数不参与推导。
+- 修复模式：任一侧显式构造`llvm::ArrayRef<int64_t>(vector)`后再比较；长期语义边界改用typed容器或循环比较。
+- 防复发：ArrayRef与STL容器混用时，接口签名优先显式ArrayRef参数，调用侧避免依赖推导转换。
+
+## 结构体持有悬空视图：unique_ptr容器移入owner而不是引用字段
+
+- 现象：`PackageAssembly`先以局部`std::vector<std::unique_ptr<TargetTensorJoin>>`构建`placement`裸指针视图，
+  函数返回后manifest打印出垃圾值（diagnostic显示的bytes/offset随机）。
+- 根因：视图指针绑定在栈上容器，容器析构后指针悬空；aggregate没有成员所有权。
+- 修复模式：把`unique_ptr`容器本身移入`PackageAssembly`作为成员，视图字段只指向成员容器元素；destructor顺序由成员
+  声明顺序保证。
+- 防复发：任何返回结构体只要含"视图指针"字段，先确认被视图对象本身由同一结构体拥有；禁止栈容器+outlived view模式。
+
+## 非默认gate的lit期望静默过时
+
+- 现象：Tools lit（不在默认CTest路径）一次出现8个失败，现象各异：`spm_planning_invocations`16→24、
+  timing表stage改名、`emitOpError`输出丢失`[0]`、wafer-opt pipeline要求explicit mesh shape、XLA helper
+  INVALID_ARGUMENT、`buildCardExecutable`多出`ProgramDataHandoff&`形参后SystemC树编译失败、以及
+  `StructuredDAGPlacementEnumerationTest.MultiOutputFanout...`单测100% CPU死循环。
+- 根因：这些测试不属于默认lit/ctest路径，Q49-Q55多次refactor后无人刷新期望；真实行为变化与测试更新在不同commit，
+  且部分期望（如`emitOpError`带operand、旧package source copy）对应的是已经退役的表示。
+- 修复模式：逐项确认行为变化commit与测试最后touch的先后（`git merge-base --is-ancestor`），结合pinned LLVM/MLIR源码
+  判断哪个是current合同；Q56只修自己造成的失败和本批已触及文件的陈旧期望，其余登记为独立后续任务。
+- 防复发：改production行为时搜索所有test目录（含非默认gate），同步更新期望；"该目录不在CI"不能作为让测试红的理由；
+  单测跑全量前先单跑疑似膨胀的枚举case确认无死循环。
+
+## 全量单测二进制中的单个case可能100% CPU死循环
+
+- 现象：`WaferUnitTests`全量跑在`StructuredDAGPlacementEnumerationTest.MultiOutputFanoutCanPlaceBranchesOnDifferentDestinationGroups`
+  卡死（两个遗留进程各烧CPU 1.5-2小时）；gtest stdout块缓冲下无输出，看起来像整批挂起。
+- 根因：placement枚举在该case上状态空间爆炸，100% CPU自旋；测试文件与枚举实现均在Q56改动范围外（最后一次touch是
+  前置refactor commit）。
+- 修复模式：先用`--gtest_filter`单跑可疑suite定位具体case；全量验证用filter排除该case并单独登记后续任务；
+  杀掉遗留的孤儿gtest进程避免抢占CPU造成新的"疑似挂起"。
+- 防复发：全量gtest运行前先对已知慢/爆炸suite做budget检查；新增枚举测试必须自带状态规模上界或明确标注预期case数。
+
+## 跨tree调用点没有随signature变更同步编译
+
+- 现象：Q58给`buildCardExecutable`加`ProgramDataHandoff&`形参后，q55主树编译通过，但SystemC树
+  （`build/q54-fresh-model`）的三个integration test调用点仍传7参，该树在此前从未重编过这些TU。
+- 根因：多个configured build tree共享同一source；增量验证只跑主树时其它树的编译错误不可见。
+- 修复模式：改公共API形参后，所有仍被任务引用的configured tree都要fresh build；调用点按现有模式补齐
+  default-constructed handoff。
+- 防复发：公共API变更的验证清单里显式列出所有active build tree；提交证据注明哪些tree实际重编过。

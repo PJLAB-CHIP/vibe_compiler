@@ -41,10 +41,10 @@ struct Options {
   std::string expectedPCIBusId;
   std::string expectedRuntimeLibraryDigest;
   std::optional<std::string> directDTEStatusABI;
-  std::vector<wafer::runtime::cli::ResourceFile> resourceFiles;
-  std::vector<wafer::runtime::cli::ResourceFile> expectedFiles;
-  std::vector<wafer::runtime::cli::ResourceFile> relaxedF16ExpectedFiles;
-  std::vector<wafer::runtime::cli::ResourceFile> outputFiles;
+  std::vector<wafer::runtime::cli::PortFile> resourceFiles;
+  std::vector<wafer::runtime::cli::PortFile> expectedFiles;
+  std::vector<wafer::runtime::cli::PortFile> relaxedF16ExpectedFiles;
+  std::vector<wafer::runtime::cli::PortFile> outputFiles;
   bool supportsHostWatchdog = false;
   bool noCard = false;
   bool board = false;
@@ -67,15 +67,15 @@ void printUsage(llvm::raw_ostream &output) {
             "[--output <ResourceId=raw-file>]...\n";
 }
 
-llvm::Expected<wafer::runtime::cli::ResourceFile>
+llvm::Expected<wafer::runtime::cli::PortFile>
 parseResourceFile(llvm::StringRef value, llvm::StringRef option) {
   auto split = value.split('=');
-  wafer::runtime::cli::ResourceFile result;
+  wafer::runtime::cli::PortFile result;
   if (split.first.empty() || split.second.empty() ||
-      split.first.getAsInteger(10, result.resourceId))
+      split.first.getAsInteger(10, result.portId))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        (option + " must use ResourceId=raw-file").str());
+        (option + " must use PortId=raw-file").str());
   result.path = split.second.str();
   return result;
 }
@@ -177,7 +177,7 @@ llvm::Expected<Options> parseOptions(int argc, char **argv) {
       llvm::Expected<llvm::StringRef> value = requireValue();
       if (!value)
         return value.takeError();
-      llvm::Expected<wafer::runtime::cli::ResourceFile> parsed =
+      llvm::Expected<wafer::runtime::cli::PortFile> parsed =
           parseResourceFile(*value, argument);
       if (!parsed)
         return parsed.takeError();
@@ -262,15 +262,11 @@ int fail(llvm::Error error) {
 }
 
 void printRuntimeLaunchContract(const wafer::RuntimeLaunchContract &launch) {
-  llvm::outs() << "launch: kind="
-               << wafer::stringifyRuntimeLaunchKind(launch.getKind());
-  if (const auto *kernel = launch.getKernel())
-    llvm::outs() << " form=" << wafer::stringifyKernelLaunchForm(kernel->form)
-                 << " entry_abi="
-                 << wafer::stringifyKernelEntryABI(kernel->entryABI);
-  else
-    llvm::outs() << " entry_abi="
-                 << wafer::stringifyModelEntryABI(launch.getModel()->entryABI);
+  llvm::outs() << "launch: kind=kernel";
+  const wafer::KernelRuntimeLaunchContract &kernel = launch.getKernel();
+  llvm::outs() << " form=" << wafer::stringifyKernelLaunchForm(kernel.form)
+               << " entry_abi="
+               << wafer::stringifyKernelEntryABI(kernel.entryABI);
   llvm::outs() << " phases=";
   for (auto [index, phase] : llvm::enumerate(launch.getPhases())) {
     if (index != 0)
@@ -291,15 +287,13 @@ void printNoCardTilePlan(const wafer::runtime::RuntimeSessionPlan &plan) {
     llvm::outs() << "launch_phase: role="
                  << wafer::stringifyRuntimeLaunchPhaseRole(phase.role)
                  << " symbol=" << phase.symbol << "\n";
-  for (auto [ordinal, resource] : llvm::enumerate(plan.resources)) {
-    llvm::outs() << "launch_slot: " << ordinal
-                 << " resource=" << resource.resource.getValue() << " role="
-                 << wafer::runtime::stringifyPackageResourceRole(resource.role)
-                 << " bytes=" << resource.bytes
-                 << " alignment=" << resource.alignment << " access="
-                 << wafer::runtime::stringifyPackageAccessMode(resource.access)
-                 << " externally_bound="
-                 << (resource.externallyBound ? "true" : "false") << "\n";
+  for (auto [ordinal, address] : llvm::enumerate(plan.argumentAddresses)) {
+    llvm::outs() << "launch_argument: " << ordinal << " base="
+                 << (address.base ==
+                             wafer::runtime::RuntimeArgumentAddressBase::ProgramData
+                         ? "program_data"
+                         : "invocation")
+                 << " offset=" << address.offset << "\n";
   }
   llvm::outs() << "completion: "
                << wafer::runtime::stringifyPackageEntryCompletionKind(
@@ -314,23 +308,14 @@ int runNoCard(
         &profileInstrumentation) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
   std::vector<wafer::runtime::RuntimeInvocationBinding> bindings;
-  for (const wafer::runtime::PackageResourceRecord &resource :
-       manifest.resources) {
-    if (!resource.hostVisible)
-      continue;
-    bindings.push_back({resource.id, resource.bytes, resource.alignment,
-                        resource.access, true});
-  }
+  for (const wafer::runtime::ExternalPortRecord &port : manifest.inputs)
+    bindings.push_back({port.id, port.bytes, port.alignment});
   wafer::runtime::RuntimeEnvironment environment{
       manifest.targetIdentity, manifest.runtimeABI, manifest.moduleFormat,
       options.maxResourceBytes};
-  if (const auto *kernel = manifest.launch.getKernel()) {
-    environment.supportedKernelLaunchForms.push_back(kernel->form);
-    environment.supportedKernelEntryABIs.push_back(kernel->entryABI);
-  } else {
-    environment.supportedModelEntryABIs.push_back(
-        manifest.launch.getModel()->entryABI);
-  }
+  const wafer::KernelRuntimeLaunchContract &kernel = manifest.launch.getKernel();
+  environment.supportedKernelLaunchForms.push_back(kernel.form);
+  environment.supportedKernelEntryABIs.push_back(kernel.entryABI);
   if (options.directDTEStatusABI) {
     environment.supportsDirectDTE = true;
     environment.directDTEStatusABI = *options.directDTEStatusABI;
@@ -470,9 +455,9 @@ int runBoard(const Options &options,
                  << wafer::runtime::stringifyBoardRuntimeStage(stage) << "\n";
   for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
     auto comparison =
-        completedPlan.expectedComparisons.find(output.resource.getValue());
+        completedPlan.expectedComparisons.find(output.port.getValue());
     if (comparison != completedPlan.expectedComparisons.end()) {
-      llvm::outs() << "output_compare: resource=" << output.resource.getValue()
+      llvm::outs() << "output_compare: port=" << output.port.getValue()
                    << " bytes=" << output.bytes.size();
       if (comparison->second ==
           wafer::runtime::cli::BoardOutputComparisonKind::Exact) {
@@ -484,9 +469,9 @@ int runBoard(const Options &options,
             << " signed_zero_equal=true\n";
       }
     }
-    auto capture = completedPlan.outputPaths.find(output.resource.getValue());
+    auto capture = completedPlan.outputPaths.find(output.port.getValue());
     if (capture != completedPlan.outputPaths.end())
-      llvm::outs() << "output_capture: resource=" << output.resource.getValue()
+      llvm::outs() << "output_capture: port=" << output.port.getValue()
                    << " bytes=" << output.bytes.size()
                    << " path=" << capture->second << "\n";
   }
@@ -496,16 +481,12 @@ int runBoard(const Options &options,
                         tile.completion)
                  << " tile_id=" << tile.tileId.getValue() << "\n";
   llvm::outs() << "invocation_tiles: " << result->tiles.size() << "\n";
-  const auto *kernel = manifest.launch.getKernel();
-  if (kernel && kernel->form == wafer::KernelLaunchForm::Grid) {
+  const wafer::KernelRuntimeLaunchContract &kernel = manifest.launch.getKernel();
+  if (kernel.form == wafer::KernelLaunchForm::Grid) {
     llvm::outs() << "launch_pattern: kernel-grid-x" << manifest.tileCount
                  << "\n";
     llvm::outs() << "physical_tile_execution_basis: "
                     "scheduler-pid-x-and-exact-tile-slices\n";
-  } else if (manifest.launch.getModel()) {
-    llvm::outs() << "launch_pattern: model-type6-type7\n";
-    llvm::outs() << "physical_tile_execution_basis: "
-                    "graph-tile-module-map-and-exact-tile-slices\n";
   } else {
     llvm::outs() << "launch_pattern: cluster-x" << manifest.tileCount << "\n";
     llvm::outs() << "physical_tile_execution_basis: "

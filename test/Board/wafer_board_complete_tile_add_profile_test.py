@@ -207,7 +207,6 @@ class CompleteTileAddProfileGateTest(unittest.TestCase):
             work_dir=work_dir,
             no_card=False,
             profile=True,
-            launch_kind="kernel",
             device_id=0,
             expected_runtime_version=1300,
             expected_device_name="/dev/accel/dev-0",

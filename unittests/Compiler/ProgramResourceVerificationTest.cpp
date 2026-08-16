@@ -29,8 +29,7 @@ protected:
     wafer::registerWaferCoreDialects(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
-    auto created = wafer::compiler::ExecutionConfig::createForSingleCard(
-        1, wafer::RuntimeLaunchKind::Kernel);
+    auto created = wafer::compiler::ExecutionConfig::createForSingleCard(1);
     EXPECT_TRUE(static_cast<bool>(created));
     if (created)
       config = std::make_unique<wafer::compiler::ExecutionConfig>(*created);
@@ -302,8 +301,7 @@ module {
   }
 }
 )mlir";
-  auto cardConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto cardConfig = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(cardConfig));
 
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;
@@ -365,8 +363,7 @@ module {
   }
 }
 )mlir";
-  auto cardConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto cardConfig = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(cardConfig));
 
   llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 16> owners;

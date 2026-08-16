@@ -23,18 +23,42 @@ class raw_ostream;
 
 namespace wafer::compiler {
 
-enum class KernelABISlotRole {
-  UserInput,
-  Parameter,
-  Constant,
-  Output,
+/// Closed union of what one ordered tile entry argument references. The kind
+/// plus `resourceIndex` form the exact typed reference: an external program
+/// port, a package-owned TargetTensor, or an entry-local requirement. This
+/// enum describes entry arguments only; it does not own bytes, file ranges,
+/// device addresses, or pointer-row storage.
+enum class TileEntryArgumentKind {
+  /// Caller-bound program input port (`resourceIndex` is the program-boundary
+  /// input index).
+  ExternalInput,
+  /// Package-owned parameter/constant TargetTensor (`resourceIndex` is the
+  /// accepted entry argument index; the parameter/constant distinction lives
+  /// in the referenced program tensor's role).
+  TargetTensor,
+  /// Caller-visible output port (`resourceIndex` is the program-boundary
+  /// output index).
+  ExternalOutput,
+  /// Entry-local compiler-managed default DDR arena.
   Workspace,
+  /// Entry-local profiler capture record.
+  ProfileRecord,
+  /// Entry-local Direct-DTE status.
   TransportStatus,
 };
 
-struct KernelABISlot {
+/// Host access pattern of one tile entry argument. The producer sets it from
+/// the closed kind; consumers verify consistency instead of re-deriving it.
+enum class TileEntryArgumentAccess { ReadOnly, WriteOnly, ReadWrite };
+
+/// One ordered argument of one Tile target entry: ordinal, closed kind,
+/// exactly one typed reference, target descriptor facts, and access. It never
+/// owns bytes, a file range, a device address, or pointer-row storage; the
+/// current kernel pointer row is only the runtime representation that reads
+/// this schema.
+struct TileEntryArgument {
   int64_t ordinal = -1;
-  KernelABISlotRole role = KernelABISlotRole::UserInput;
+  TileEntryArgumentKind kind = TileEntryArgumentKind::ExternalInput;
   int64_t resourceIndex = -1;
   std::string name;
   std::string dtype;
@@ -42,6 +66,7 @@ struct KernelABISlot {
   std::vector<int64_t> shape;
   int64_t byteSize = -1;
   int64_t alignment = -1;
+  TileEntryArgumentAccess access = TileEntryArgumentAccess::ReadOnly;
 };
 
 /// One fully translated target LLVM module and the context that owns all of
@@ -65,8 +90,8 @@ public:
   llvm::StringRef getModuleFormat() const { return moduleFormat; }
   llvm::StringRef getModuleIdentifier() const;
   llvm::StringRef getTargetTriple() const;
-  const std::vector<KernelABISlot> &getKernelABISlots() const {
-    return kernelABISlots;
+  const std::vector<TileEntryArgument> &getTileEntryArguments() const {
+    return tileEntryArguments;
   }
   const llvm::Module &getModule() const;
 
@@ -78,7 +103,7 @@ private:
                    TargetIdentityId targetIdentity,
                    KernelRuntimeABIId kernelRuntimeABI,
                    llvm::StringRef moduleFormat,
-                   std::vector<KernelABISlot> kernelABISlots,
+                   std::vector<TileEntryArgument> tileEntryArguments,
                    std::unique_ptr<llvm::LLVMContext> context,
                    std::unique_ptr<llvm::Module> module);
 
@@ -89,7 +114,7 @@ private:
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
   std::string moduleFormat;
-  std::vector<KernelABISlot> kernelABISlots;
+  std::vector<TileEntryArgument> tileEntryArguments;
   // Declaration order is intentional: reverse destruction destroys the
   // module before the context that owns its uniqued state.
   std::unique_ptr<llvm::LLVMContext> context;
@@ -294,8 +319,8 @@ public:
   TileId getTileId() const { return tileId; }
   LaunchSlotId getLaunchSlotId() const { return launchSlotId; }
   TargetModuleId getModuleId() const { return moduleId; }
-  const std::vector<KernelABISlot> &getKernelABISlots() const {
-    return kernelABISlots;
+  const std::vector<TileEntryArgument> &getTileEntryArguments() const {
+    return tileEntryArguments;
   }
 
 private:
@@ -305,16 +330,16 @@ private:
                               TileId tileId,
                               LaunchSlotId launchSlotId,
                               TargetModuleId moduleId,
-                              std::vector<KernelABISlot> kernelABISlots)
+                              std::vector<TileEntryArgument> tileEntryArguments)
       : cardId(cardId), tileId(tileId),
         launchSlotId(launchSlotId), moduleId(moduleId),
-        kernelABISlots(std::move(kernelABISlots)) {}
+        tileEntryArguments(std::move(tileEntryArguments)) {}
 
   CardId cardId;
   TileId tileId;
   LaunchSlotId launchSlotId;
   TargetModuleId moduleId;
-  std::vector<KernelABISlot> kernelABISlots;
+  std::vector<TileEntryArgument> tileEntryArguments;
 };
 
 class LinkedTargetModules {

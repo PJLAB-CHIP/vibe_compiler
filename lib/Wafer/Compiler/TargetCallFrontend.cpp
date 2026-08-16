@@ -216,7 +216,7 @@ verifyTargetModuleForHostExecution(const TargetLLVMModule &targetModule) {
     return llvm::createStringError("target entry is missing or undefined");
   llvm::FunctionType *entryType = entry->getFunctionType();
   if (entryType->isVarArg() || !entryType->getReturnType()->isVoidTy() ||
-      entryType->getNumParams() != targetModule.getKernelABISlots().size())
+      entryType->getNumParams() != targetModule.getTileEntryArguments().size())
     return llvm::createStringError(
         "target entry does not match its fixed Kernel Runtime ABI slots");
   for (llvm::Type *parameter : entryType->params())
@@ -412,7 +412,7 @@ materializeTile(const TargetLLVMModule &targetModule,
     return std::move(error);
   if (llvm::Error error =
           defineEntryThunk(*owned->second, targetModule.getEntrySymbol(),
-                           targetModule.getKernelABISlots().size()))
+                           targetModule.getTileEntryArguments().size()))
     return std::move(error);
   std::string verificationDiagnostic;
   llvm::raw_string_ostream verificationStream(verificationDiagnostic);
@@ -476,7 +476,7 @@ validateInvocation(const TargetLLVMModules &targetLLVMModules,
       return llvm::createStringError(
           "target-call invocation Tile identity or launch-slot order "
           "is not canonical");
-    if (tileArguments.slots.size() != module.getKernelABISlots().size())
+    if (tileArguments.slots.size() != module.getTileEntryArguments().size())
       return llvm::createStringError(
           "target-call invocation slot count does not match the typed ABI");
     if (module.getTargetIdentityId() != descriptor.targetIdentity)
@@ -484,7 +484,7 @@ validateInvocation(const TargetLLVMModules &targetLLVMModules,
           "target-call invocation contains inconsistent target identities");
     descriptor.tiles.push_back(
         {module.getCardId(), module.getTileId(),
-         module.getLaunchSlotId(), module.getKernelABISlots(),
+         module.getLaunchSlotId(), module.getTileEntryArguments(),
          tileArguments.slots, module.getTargetIdentityId(),
          module.getKernelRuntimeABIId()});
   }

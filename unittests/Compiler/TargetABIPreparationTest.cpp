@@ -116,8 +116,7 @@ module {
   program.distributedInputs = {shapedBoundary(0, {4}), shapedBoundary(1, {4}),
                                shapedBoundary(2, {4})};
   program.distributedOutputs = {shapedBoundary(0, {4})};
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
@@ -168,8 +167,8 @@ module {
           tile, *config, /*transportPreparedBeforeEntry=*/false);
   ASSERT_TRUE(mlir::succeeded(prepared));
   unsigned workspaceSlots = 0;
-  for (const wafer::compiler::KernelABISlot &slot : prepared->slots) {
-    if (slot.role != wafer::compiler::KernelABISlotRole::Workspace)
+  for (const wafer::compiler::TileEntryArgument &slot : prepared->slots) {
+    if (slot.kind != wafer::compiler::TileEntryArgumentKind::Workspace)
       continue;
     ++workspaceSlots;
     EXPECT_EQ(slot.alignment, 768);

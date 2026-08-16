@@ -124,10 +124,6 @@ struct BoardFunctionHandle {
   uintptr_t value = 0;
 };
 
-struct BoardGraphHandle {
-  uintptr_t value = 0;
-};
-
 /// Controls how a provider observes terminal submission state. Ordinary
 /// invocations retain the provider's low-overhead polling cadence. Profiler
 /// profile collection requests a higher-resolution cadence so host
@@ -158,32 +154,6 @@ struct BoardCompletionObservation {
 };
 
 using BoardCompletionDeadline = std::chrono::steady_clock::time_point;
-
-/// One immutable, already-digest-verified tile module snapshot. Graph loading
-/// must synchronously consume the bytes; it may not retain the ArrayRef.
-struct BoardGraphModuleSnapshot {
-  CardId cardId{0};
-  TileId tileId{0};
-  LaunchSlotId launchSlot;
-  ModuleId module;
-  llvm::StringRef digest;
-  llvm::ArrayRef<uint8_t> bytes;
-};
-
-/// One model launch tensor projected from a verified entry slot. The provider
-/// receives typed semantics and a device allocation, never a caller-built raw
-/// BootParam buffer.
-struct BoardModelTensorLaunch {
-  CardId cardId{0};
-  TileId tileId{0};
-  LaunchSlotId launchSlot;
-  uint64_t slotOrdinal = 0;
-  PackageResourceRole role = PackageResourceRole::UserInput;
-  BoardDeviceMemory memory;
-  uint64_t bytes = 0;
-  std::string dtype;
-  std::vector<int64_t> shape;
-};
 
 /// One canonical Tile launch owned by a card provider
 /// submission. The provider may implement the common submission using
@@ -236,14 +206,6 @@ public:
   virtual llvm::Expected<BoardFunctionHandle>
   resolveEntry(BoardModuleHandle module, llvm::StringRef symbol) = 0;
 
-  /// Stages and synchronously loads the complete tile0..tile15 graph module
-  /// set. Success owns one graph until unloadGraph; failure must state its
-  /// sticky context state through getContextState().
-  virtual llvm::Expected<BoardGraphHandle>
-  loadGraph(llvm::ArrayRef<BoardGraphModuleSnapshot> modules,
-            llvm::StringRef symbol) = 0;
-  virtual llvm::Error unloadGraph(BoardGraphHandle graph) = 0;
-
   /// Submits exactly one typed kernel phase for the complete Tile
   /// domain. The first phase establishes provider-owned stream and argument
   /// storage; a later phase may only reuse that state after the previous phase
@@ -253,13 +215,6 @@ public:
   submitKernelPhase(KernelLaunchForm form, RuntimeLaunchPhaseRole phaseRole,
                     llvm::ArrayRef<BoardTileLaunch> launches,
                     BoardDeviceTimingPolicy timingPolicy) = 0;
-
-  /// One txLaunchModel submission owned by a previously loaded graph. The TX
-  /// provider alone materializes the qualified BootParam/type-7 wire bytes.
-  virtual llvm::Error
-  submitModel(BoardGraphHandle graph,
-              llvm::ArrayRef<BoardModelTensorLaunch> tensors,
-              BoardDeviceTimingPolicy timingPolicy) = 0;
 
   /// Waits for the current submitted phase to become terminal. Every phase of
   /// one invocation receives the same absolute host deadline. Timeout or an
@@ -273,11 +228,11 @@ public:
   virtual llvm::Error releaseSubmission() = 0;
 };
 
-/// One move-owned host buffer bound by typed ResourceId. Read-only and
-/// read-write resources carry their initial bytes; write-only resources carry
-/// an exact-size destination buffer initialized by the caller.
+/// One move-owned host buffer bound to an external input port. The byte count
+/// must equal the port's selected target descriptor exactly. Output ports are
+/// prepared and read back by the runtime and never caller-bound.
 struct BoardRuntimeBinding {
-  ResourceId resource;
+  PortId port;
   std::vector<uint8_t> bytes;
 };
 
@@ -293,13 +248,22 @@ struct BoardRuntimeInvocationRequest {
   std::vector<BoardRuntimeBinding> bindings;
   /// Compiler-owned profiler records are the only internal workspace that a
   /// board invocation may initialize and read back. They are populated by
-  /// wafer-run after exact instrumentation verification; they are never exposed
-  /// as user ResourceId bindings.
-  std::vector<BoardRuntimeBinding> profilerBindings;
+  /// wafer-run after exact instrumentation verification; one exact record
+  /// image per launch slot, and every Tile entry must carry a profile-record
+  /// argument whose bytes match its image exactly. They are never exposed as
+  /// user input bindings.
+  std::optional<std::vector<std::vector<uint8_t>>> profilerRecordBytes;
 };
 
 struct BoardRuntimeOutput {
-  ResourceId resource;
+  PortId port;
+  std::vector<uint8_t> bytes;
+};
+
+/// One per-Tile profiler record readback. Records are entry-local compiler
+/// workspace, never external ports.
+struct BoardRuntimeProfilerOutput {
+  LaunchSlotId launchSlot;
   std::vector<uint8_t> bytes;
 };
 
@@ -332,7 +296,7 @@ struct BoardRuntimeInvocationResult {
   /// cadence is too coarse for the claimed comparison.
   uint64_t completionObservationResolutionNanoseconds = 0;
   std::vector<BoardRuntimeOutput> outputs;
-  std::vector<BoardRuntimeOutput> profilerOutputs;
+  std::vector<BoardRuntimeProfilerOutput> profilerOutputs;
 };
 
 /// A capability proving that one concrete driver instance selected and
@@ -403,9 +367,9 @@ executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
                                       BoardRuntimeDriver &driver);
 
 /// Executes the complete verified Tile domain as one owner-backed
-/// provider session. The manifest selects exactly one kernel or model
-/// submission path. Entry transport requirements, including Direct DTE, are
-/// verified independently and never select another runtime entry point.
+/// provider session using the kernel submission path. Entry transport
+/// requirements, including Direct DTE, are verified independently and never
+/// select another runtime entry point.
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
     const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
     BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver);

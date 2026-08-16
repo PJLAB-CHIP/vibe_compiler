@@ -23,7 +23,6 @@ struct CommandLineOptions {
   std::optional<std::string> inputProgramDirectory;
   std::optional<std::string> outputProgramDirectory;
   std::optional<std::string> numPartitions;
-  std::optional<std::string> runtimeLaunchKind;
   std::optional<std::string> compilerIRDumpDirectory;
   std::optional<std::string> optimizationPolicy;
   bool compileTiming = false;

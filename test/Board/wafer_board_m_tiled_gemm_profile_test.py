@@ -31,7 +31,6 @@ CASE_KEY = "noc-resident-m-tiled-gemm"
 CASE = source_contract.CASES[CASE_KEY]
 TILE_COUNT = source_contract.TILE_COUNT
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status"
 PROCESS_TIMEOUT_MARGIN_SECONDS = 60
 
@@ -123,8 +122,7 @@ def compile_package(
         "--output-program-dir",
         str(package),
         "--num-partitions=1",
-        f"--launch-kind={LAUNCH_KIND}",
-    ]
+            ]
     if profile:
         command.append("--profile")
     result = run(command)
@@ -178,14 +176,14 @@ def validate_manifest(
     ):
         raise RuntimeError("M-tiled GEMM Direct-DTE contract is invalid")
 
-    resources = manifest.get("resources")
-    if not isinstance(resources, list):
-        raise RuntimeError("M-tiled GEMM resources are not a list")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
+    if not isinstance(inputs, list) or not isinstance(outputs, list):
+        raise RuntimeError("M-tiled GEMM port tables are not lists")
     expected_resources = {
         ("user_input", index): (
             {"dtype": spec.mlir_dtype, "shape": list(spec.shape)},
             math.prod(spec.shape) * spec.element_bytes,
-            "read_only",
         )
         for index, spec in enumerate(CASE.inputs)
     }
@@ -194,30 +192,53 @@ def validate_manifest(
             ("output", index): (
                 {"dtype": spec.mlir_dtype, "shape": list(spec.shape)},
                 math.prod(spec.shape) * spec.element_bytes,
-                "write_only",
             )
             for index, spec in enumerate(CASE.outputs)
         }
     )
     bindings: dict[tuple[str, int], int] = {}
-    for resource in resources:
-        if not isinstance(resource, dict) or resource.get("host_visible") is not True:
-            continue
-        key = (resource.get("role"), resource.get("role_index"))
-        if key not in expected_resources or key in bindings:
-            raise RuntimeError("M-tiled GEMM has an unexpected host resource")
-        type_, bytes_, access = expected_resources[key]
-        if (
-            resource.get("scope") != {"kind": "card", "card_id": 0}
-            or resource.get("type") != type_
-            or resource.get("bytes") != bytes_
-            or resource.get("access") != access
-            or not isinstance(resource.get("id"), int)
-        ):
-            raise RuntimeError(f"M-tiled GEMM resource {key} is invalid")
-        bindings[key] = resource["id"]
+    for table, role in (("inputs", "user_input"), ("outputs", "output")):
+        for record in manifest.get(table, []):
+            if not isinstance(record, dict):
+                raise RuntimeError("M-tiled GEMM port records must be objects")
+            role_index = record.get("role_index")
+            key = (role, role_index)
+            if key not in expected_resources or key in bindings:
+                raise RuntimeError("M-tiled GEMM has an unexpected host port")
+            type_, bytes_ = expected_resources[key]
+            if (
+                record.get("dtype") != type_["dtype"]
+                or record.get("shape") != type_["shape"]
+                or record.get("bytes") != bytes_
+                or not isinstance(record.get("id"), int)
+            ):
+                raise RuntimeError(f"M-tiled GEMM port {key} is invalid")
+            bindings[key] = record["id"]
     if set(bindings) != set(expected_resources):
         raise RuntimeError("M-tiled GEMM host bindings are incomplete")
+    for entry in entries:
+        argument_ports: dict[int, tuple[str, str]] = {}
+        for argument in entry.get("arguments", []):
+            if not isinstance(argument, dict):
+                raise RuntimeError("M-tiled GEMM entry arguments must be objects")
+            kind = argument.get("kind")
+            port = argument.get("port")
+            access = argument.get("access")
+            if kind not in ("external_input", "external_output"):
+                continue
+            if not isinstance(port, int) or not isinstance(access, str):
+                raise RuntimeError("M-tiled GEMM port argument is invalid")
+            argument_ports[port] = (kind, access)
+        for (role, role_index), port in bindings.items():
+            expected_argument = (
+                ("external_input", "read_only")
+                if role == "user_input"
+                else ("external_output", "write_only")
+            )
+            if argument_ports.get(port) != expected_argument:
+                raise RuntimeError(
+                    f"M-tiled GEMM entry argument for {role} {role_index} is invalid"
+                )
     return bindings, bindings[("output", 0)]
 
 
@@ -284,7 +305,7 @@ def verify_board(stdout: str, output_id: int) -> None:
     if not required.issubset(set(stdout.splitlines())):
         raise RuntimeError("M-tiled GEMM board output is incomplete")
     captures = re.findall(
-        r"^output_capture: resource=(\d+) bytes=\d+ path=.+$",
+        r"^output_capture: port=(\d+) bytes=\d+ path=.+$",
         stdout,
         re.MULTILINE,
     )

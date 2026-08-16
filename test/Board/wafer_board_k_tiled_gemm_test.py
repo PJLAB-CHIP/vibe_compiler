@@ -37,7 +37,6 @@ LHS_BYTES = M * K * F16_BYTES
 RHS_BYTES = K * N * F16_BYTES
 OUTPUT_BYTES = M * N * F16_BYTES
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
@@ -191,30 +190,33 @@ def validate_manifest(
         for entry in entries
     ):
         raise RuntimeError("full-4096 GEMM Direct-DTE contract is invalid")
-    resources = manifest.get("resources")
-    if not isinstance(resources, list):
-        raise RuntimeError("full-4096 GEMM resources are not a list")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
+    if not isinstance(inputs, list) or not isinstance(outputs, list):
+        raise RuntimeError("full-4096 GEMM port tables are not lists")
     expected_resources = {
         ("user_input", 0): ({"dtype": "f16", "shape": [M, K]}, LHS_BYTES),
         ("user_input", 1): ({"dtype": "f16", "shape": [K, N]}, RHS_BYTES),
         ("output", 0): ({"dtype": "f16", "shape": OUTPUT_SHAPE}, OUTPUT_BYTES),
     }
     bindings: dict[tuple[str, int], int] = {}
-    for resource in resources:
-        if not isinstance(resource, dict) or resource.get("host_visible") is not True:
-            continue
-        key = (resource.get("role"), resource.get("role_index"))
-        if key not in expected_resources or key in bindings:
-            raise RuntimeError("full-4096 GEMM has an unexpected host resource")
-        type_, bytes_ = expected_resources[key]
-        if (
-            resource.get("scope") != {"kind": "card", "card_id": 0}
-            or resource.get("type") != type_
-            or resource.get("bytes") != bytes_
-            or not isinstance(resource.get("id"), int)
-        ):
-            raise RuntimeError(f"full-4096 GEMM resource {key} is invalid")
-        bindings[key] = resource["id"]
+    for table, role in (("inputs", "user_input"), ("outputs", "output")):
+        for record in manifest.get(table, []):
+            if not isinstance(record, dict):
+                raise RuntimeError("full-4096 GEMM port records must be objects")
+            role_index = record.get("role_index")
+            key = (role, role_index)
+            if key not in expected_resources or key in bindings:
+                raise RuntimeError("full-4096 GEMM has an unexpected host port")
+            type_, bytes_ = expected_resources[key]
+            if (
+                record.get("dtype") != type_["dtype"]
+                or record.get("shape") != type_["shape"]
+                or record.get("bytes") != bytes_
+                or not isinstance(record.get("id"), int)
+            ):
+                raise RuntimeError(f"full-4096 GEMM port {key} is invalid")
+            bindings[key] = record["id"]
     if set(bindings) != set(expected_resources):
         raise RuntimeError("full-4096 GEMM host bindings are not exact")
     return bindings, bindings[("output", 0)]
@@ -289,7 +291,7 @@ def verify_board_evidence(stdout: str, output_id: int) -> None:
     if not required.issubset(set(stdout.splitlines())):
         raise RuntimeError("board output omitted full-4096 lifecycle evidence")
     output_matches = re.findall(
-        rf"^output_capture: resource=(\d+) bytes={OUTPUT_BYTES} path=.+$",
+        rf"^output_capture: port=(\d+) bytes={OUTPUT_BYTES} path=.+$",
         stdout,
         re.MULTILINE,
     )
@@ -344,7 +346,6 @@ def main() -> int:
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ]
     )
     if (

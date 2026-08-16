@@ -41,7 +41,7 @@ struct TargetCallTileDescriptor {
   CardId cardId;
   TileId tileId;
   LaunchSlotId launchSlotId;
-  std::vector<KernelABISlot> kernelABISlots;
+  std::vector<TileEntryArgument> tileEntryArguments;
   std::vector<uint64_t> slotValues;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;

@@ -1,3 +1,5 @@
+//===- ProfileInstrumentationTest.cpp - Verified profiler instrumentation -===//
+
 #include "Wafer/Runtime/ProfileInstrumentation.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
@@ -41,6 +43,8 @@ wafer::RuntimeLaunchContract makeClusterLaunch() {
 
 class ProfileInstrumentationTest : public ::testing::Test {
 protected:
+  enum class FinalArgumentKind { ProfileRecord, Workspace, Missing };
+
   void SetUp() override {
     ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
         "wafer-profile-instrumentation-test", root));
@@ -62,6 +66,11 @@ protected:
     hasher.update(llvm::StringRef("\x7f"
                                   "ELFprofile-instrumentation-test"));
     return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
+  }
+
+  static std::string emptyProgramDataDigest() {
+    return "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b78"
+           "52b855";
   }
 
   static void writeText(llvm::StringRef path, llvm::StringRef contents) {
@@ -170,14 +179,25 @@ protected:
     ASSERT_FALSE(output.has_error());
   }
 
+  /// Writes one verifiable package. `recordBytes` selects the entry-local
+  /// profiler record extension of every Tile entry (only the canonical
+  /// 832/1048576 byte images verify); `finalArgument` controls what the final
+  /// ordered entry argument is. `includeProgramData` adds a single 16-byte
+  /// TargetTensor backed by program-data.bin; its alignment is 16 unless
+  /// overridden. `doubleProfileRecord` appends a second identical profile
+  /// record; `includeExecutionProfilerRecord` adds one profile record even
+  /// when `recordBytes` is zero (the reserved execution-side position).
   static void writePackage(
       llvm::StringRef package, uint64_t outputBytes, uint64_t recordBytes,
-      llvm::StringRef profilerName = "tx81_profiler_record",
-      llvm::StringRef resourceNamePrefix = "",
       wafer::KernelLaunchForm launchForm = wafer::KernelLaunchForm::Grid,
       wafer::TargetIdentityId targetIdentity =
           wafer::TargetIdentityId::waferTx81SingleCard(),
-      bool permuteTiles = false) {
+      bool permuteTiles = false,
+      FinalArgumentKind finalArgument = FinalArgumentKind::ProfileRecord,
+      bool includeProgramData = false,
+      uint64_t programDataAlignmentOverride = 0,
+      bool doubleProfileRecord = false,
+      bool includeExecutionProfilerRecord = false) {
     using namespace wafer::runtime;
     llvm::SmallString<256> modules(package);
     llvm::sys::path::append(modules, "modules");
@@ -191,26 +211,48 @@ protected:
     manifest.program = ProgramId(0);
     manifest.cardCount = 1;
     manifest.tileCount = 16;
-    manifest.resources = {{ResourceId(0),
-                           CardResourceScope{wafer::CardId(0)},
-                           PackageResourceRole::UserInput,
-                           0,
-                           (resourceNamePrefix + "input").str(),
-                           {"f32", {1}},
-                           4,
-                           4,
-                           PackageAccessMode::ReadOnly,
-                           true},
-                          {ResourceId(1),
-                           CardResourceScope{wafer::CardId(0)},
-                           PackageResourceRole::Output,
-                           0,
-                           (resourceNamePrefix + "output").str(),
-                           {"f32", {1}},
-                           outputBytes,
-                           4,
-                           PackageAccessMode::WriteOnly,
-                           true}};
+    manifest.inputs = {
+        {PortId(0), 0, "f32", {1}, "f32", PackageMemLayout::Tensor, {1}, 4, 4},
+    };
+    manifest.outputs = {
+        {PortId(0), 0, "f32", {1}, "f32", PackageMemLayout::Tensor, {1},
+         outputBytes, 4},
+    };
+    const uint64_t programDataAlignment =
+        includeProgramData
+            ? (programDataAlignmentOverride != 0 ? programDataAlignmentOverride
+                                                 : 16)
+            : 0;
+    llvm::SmallString<256> data(package);
+    llvm::sys::path::append(data, "data");
+    ASSERT_FALSE(llvm::sys::fs::create_directories(data));
+    if (includeProgramData) {
+      manifest.programTensors = {
+          {ProgramTensorId(0), ProgramTensorRole::Parameter, 0, "f32", {4},
+           {4}, {0}, {4}},
+      };
+      manifest.targetTensors = {
+          {TargetTensorId(0), ProgramTensorId(0), "f32",
+           PackageMemLayout::Tensor, {4}, 16, 16, 0},
+      };
+      manifest.programData = {"data/program-data.bin", 16,
+                              programDataAlignment, programDataDigest()};
+      std::vector<uint8_t> programData(16);
+      for (size_t index = 0; index < programData.size(); ++index)
+        programData[index] = static_cast<uint8_t>(index);
+      llvm::SmallString<256> programDataPath(data);
+      llvm::sys::path::append(programDataPath, "program-data.bin");
+      writeText(programDataPath,
+                llvm::StringRef(reinterpret_cast<const char *>(programData.data()),
+                                programData.size()));
+    } else {
+      manifest.programData = {"data/program-data.bin", 0, 1,
+                              emptyProgramDataDigest()};
+      llvm::SmallString<256> programDataPath(data);
+      llvm::sys::path::append(programDataPath, "program-data.bin");
+      writeText(programDataPath, "");
+    }
+
     llvm::SmallString<256> modulePath(modules);
     llvm::sys::path::append(modulePath, "kernel.so");
     writeText(modulePath, llvm::StringRef("\x7f"
@@ -228,27 +270,44 @@ protected:
                    {PackageModuleExportRole::Main, "main"}}});
     for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
       const int64_t tile = tileForLaunchSlot(launchSlot, permuteTiles);
-      std::vector<PackageABISlotBinding> slots = {
-          {0, ResourceId(0), PackageAccessMode::ReadOnly},
-          {1, ResourceId(1), PackageAccessMode::WriteOnly}};
-      if (recordBytes != 0) {
-        ResourceId profiler(static_cast<uint64_t>(launchSlot) + 2);
-        manifest.resources.push_back(
-            {profiler,
-             TileResourceScope{wafer::CardId(0), wafer::TileId(tile)},
-             PackageResourceRole::Workspace,
-             1,
-             profilerName.str(),
-             {"u8", {static_cast<int64_t>(recordBytes)}},
-             recordBytes,
-             WAFER_TX81_PROFILER_BUFFER_ALIGNMENT,
-             PackageAccessMode::ReadWrite,
-             false});
-        slots.push_back({2, profiler, PackageAccessMode::ReadWrite});
+      std::vector<TileEntryArgumentRecord> arguments = {
+          {0, ExternalInputArgument{PortId(0)}, PackageAccessMode::ReadOnly},
+          {1, ExternalOutputArgument{PortId(0)},
+           PackageAccessMode::WriteOnly}};
+      if (includeProgramData)
+        arguments.push_back({static_cast<uint64_t>(arguments.size()),
+                             TargetTensorArgument{TargetTensorId(0)},
+                             PackageAccessMode::ReadOnly});
+      if (includeExecutionProfilerRecord)
+        arguments.push_back(
+            {static_cast<uint64_t>(arguments.size()),
+             ProfileRecordArgument{WAFER_TX81_PROFILER_RECORD_ABI,
+                                   WAFER_TX81_PROFILER_MIN_BUFFER_BYTES,
+                                   WAFER_TX81_PROFILER_BUFFER_ALIGNMENT},
+             PackageAccessMode::ReadWrite});
+      if (recordBytes != 0 &&
+          finalArgument == FinalArgumentKind::ProfileRecord) {
+        arguments.push_back(
+            {static_cast<uint64_t>(arguments.size()),
+             ProfileRecordArgument{WAFER_TX81_PROFILER_RECORD_ABI, recordBytes,
+                                   WAFER_TX81_PROFILER_BUFFER_ALIGNMENT},
+             PackageAccessMode::ReadWrite});
+        if (doubleProfileRecord)
+          arguments.push_back(
+              {static_cast<uint64_t>(arguments.size()),
+               ProfileRecordArgument{WAFER_TX81_PROFILER_RECORD_ABI,
+                                     recordBytes,
+                                     WAFER_TX81_PROFILER_BUFFER_ALIGNMENT},
+               PackageAccessMode::ReadWrite});
+      } else if (recordBytes != 0 &&
+                 finalArgument == FinalArgumentKind::Workspace) {
+        arguments.push_back({static_cast<uint64_t>(arguments.size()),
+                             WorkspaceArgument{64, 64},
+                             PackageAccessMode::ReadWrite});
       }
       manifest.entries.push_back(
           {EntryId(launchSlot), wafer::CardId(0), wafer::TileId(tile),
-           LaunchSlotId(launchSlot), ModuleId(0), std::move(slots),
+           LaunchSlotId(launchSlot), ModuleId(0), std::move(arguments),
            PackageEntryCompletionKind::ReturnAfterLocalDrain,
            NoTransportRequirements{}});
     }
@@ -261,10 +320,23 @@ protected:
     writeText(manifestPath, serializeCanonicalPackageJson(*verified));
   }
 
+  static std::string programDataDigest() {
+    std::vector<uint8_t> programData(16);
+    for (size_t index = 0; index < programData.size(); ++index)
+      programData[index] = static_cast<uint8_t>(index);
+    llvm::SHA256 hasher;
+    hasher.update(programData);
+    return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
+  }
+
   void writeInstrumentation(
       bool badSiteSymbol = false, llvm::StringRef finalDigestOverride = {},
-      llvm::StringRef profilerName = "tx81_profiler_record",
-      llvm::StringRef resourceNamePrefix = "", bool permuteTiles = false) {
+      bool permuteTiles = false,
+      FinalArgumentKind captureFinalArgument = FinalArgumentKind::ProfileRecord,
+      uint64_t captureOutputBytesOverride = 0,
+      bool captureIncludeProgramData = false,
+      uint64_t captureProgramDataAlignmentOverride = 0,
+      bool captureDoubleProfileRecord = false) {
     struct CaptureFixture {
       llvm::StringRef name;
       uint64_t recordBytes;
@@ -275,15 +347,18 @@ protected:
     for (auto [name, recordBytes] :
          std::array<std::pair<llvm::StringRef, uint64_t>, 2>{
              {{"count", WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
-              {"trace", 1024 * 1024}}}) {
+              {"trace", WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES}}}) {
       std::string reference = ("captures/" + name).str();
       llvm::SmallString<256> capturePath(instrumentation);
       llvm::sys::path::append(capturePath, reference);
       ASSERT_FALSE(llvm::sys::fs::create_directories(capturePath));
       ASSERT_NO_FATAL_FAILURE(writePackage(
-          capturePath, /*outputBytes=*/4, recordBytes, profilerName,
-          resourceNamePrefix, wafer::KernelLaunchForm::Grid,
-          wafer::kCurrentTargetIdentity, permuteTiles));
+          capturePath,
+          captureOutputBytesOverride != 0 ? captureOutputBytesOverride : 4,
+          recordBytes, wafer::KernelLaunchForm::Grid,
+          wafer::kCurrentTargetIdentity, permuteTiles, captureFinalArgument,
+          captureIncludeProgramData, captureProgramDataAlignmentOverride,
+          captureDoubleProfileRecord));
       captures.push_back(
           {name, recordBytes, reference, manifestDigest(capturePath)});
     }
@@ -478,12 +553,10 @@ TEST_F(ProfileInstrumentationTest,
 TEST_F(ProfileInstrumentationTest, PreservesExplicitTileAndLaunchSlotBinding) {
   ASSERT_NO_FATAL_FAILURE(writePackage(
       primary, /*outputBytes=*/4, /*recordBytes=*/0,
-      /*profilerName=*/"tx81_profiler_record", /*resourceNamePrefix=*/"",
       wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
       /*permuteTiles=*/true));
   ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
       /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
-      /*profilerName=*/"tx81_profiler_record", /*resourceNamePrefix=*/"",
       /*permuteTiles=*/true));
 
   llvm::Expected<wafer::runtime::VerifiedProfileInstrumentation> loaded =
@@ -525,8 +598,7 @@ TEST_F(ProfileInstrumentationTest, RejectsStaleManifestDigest) {
 TEST_F(ProfileInstrumentationTest, RejectsDifferentRuntimeLaunchContract) {
   ASSERT_NO_FATAL_FAILURE(writePackage(
       primary, /*outputBytes=*/4, /*recordBytes=*/0,
-      /*profilerName=*/"tx81_profiler_record",
-      /*resourceNamePrefix=*/"", wafer::KernelLaunchForm::Cluster));
+      wafer::KernelLaunchForm::Cluster));
   ASSERT_NO_FATAL_FAILURE(writeInstrumentation());
   auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
       instrumentation, primary);
@@ -733,16 +805,95 @@ TEST_F(ProfileInstrumentationTest, RejectsTargetCallOrdinalSymbolDisagreement) {
             std::string::npos);
 }
 
-TEST_F(ProfileInstrumentationTest,
-       AcceptsRenamedTypedProfilerWorkspaceAndResources) {
+TEST_F(ProfileInstrumentationTest, RejectsCaptureFinalArgumentNotProfileRecord) {
   ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
       /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
-      /*profilerName=*/"diagnostic_name_only",
-      /*resourceNamePrefix=*/"renamed_"));
+      /*permuteTiles=*/false, FinalArgumentKind::Workspace));
   auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
       instrumentation, primary);
-  ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
-  EXPECT_EQ(loaded->getCaptures().size(), 2u);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("not the exact final entry argument"),
+            std::string::npos);
+}
+
+TEST_F(ProfileInstrumentationTest, RejectsCaptureMissingProfileRecordArgument) {
+  ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
+      /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
+      /*permuteTiles=*/false, FinalArgumentKind::Missing));
+  auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("entry ABI extension is invalid"),
+            std::string::npos);
+}
+
+TEST_F(ProfileInstrumentationTest, RejectsCapturePortContractDrift) {
+  ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
+      /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
+      /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
+      /*captureOutputBytesOverride=*/8));
+  auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("tensor or port contract differs"),
+            std::string::npos);
+}
+
+TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramTensorDrift) {
+  ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
+      /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
+      /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
+      /*captureOutputBytesOverride=*/0, /*captureIncludeProgramData=*/true));
+  auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("tensor or port contract differs"),
+            std::string::npos);
+}
+
+TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramDataAlignmentDrift) {
+  ASSERT_NO_FATAL_FAILURE(writePackage(
+      primary, /*outputBytes=*/4, /*recordBytes=*/0,
+      wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
+      /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
+      /*includeProgramData=*/true));
+  ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
+      /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
+      /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
+      /*captureOutputBytesOverride=*/0, /*captureIncludeProgramData=*/true,
+      /*captureProgramDataAlignmentOverride=*/32));
+  auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("program data contract differs"),
+            std::string::npos);
+}
+
+TEST_F(ProfileInstrumentationTest,
+       RejectsExecutionPackageWithReservedProfilerArgument) {
+  ASSERT_NO_FATAL_FAILURE(writePackage(
+      primary, /*outputBytes=*/4, /*recordBytes=*/0,
+      wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
+      /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
+      /*includeProgramData=*/false, /*programDataAlignmentOverride=*/0,
+      /*doubleProfileRecord=*/false, /*includeExecutionProfilerRecord=*/true));
+  ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
+      /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
+      /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
+      /*captureOutputBytesOverride=*/0, /*captureIncludeProgramData=*/false,
+      /*captureProgramDataAlignmentOverride=*/0,
+      /*captureDoubleProfileRecord=*/true));
+  auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
+      instrumentation, primary);
+  ASSERT_FALSE(static_cast<bool>(loaded));
+  EXPECT_NE(llvm::toString(loaded.takeError())
+                .find("occupies the reserved profiler record argument"),
+            std::string::npos);
 }
 
 } // namespace

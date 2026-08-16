@@ -855,8 +855,7 @@ module {
   parameter.partitionSlices.push_back(singleCardPartitionSlice({4}));
   program.parameters.push_back(std::move(parameter));
 
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
 
   ProgramDataHandoff handoff(temporaryDirectory.str().str());

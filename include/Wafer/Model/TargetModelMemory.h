@@ -57,18 +57,20 @@ private:
 
 /// Invocation-local physical allocation identity. Program-boundary resources
 /// are owned by the card and therefore omit tileId. Compiler-managed
-/// workspace and transport status are owned by one Tile. Role and
-/// resourceIndex are the typed ABI identity; names never participate.
+/// workspace, profile records and transport status are owned by one Tile.
+/// Kind and resourceIndex are the typed entry-argument identity; names never
+/// participate.
 struct TargetModelResourceId {
   CardId cardId{0};
   std::optional<TileId> tileId;
-  compiler::KernelABISlotRole role = compiler::KernelABISlotRole::UserInput;
+  compiler::TileEntryArgumentKind kind =
+      compiler::TileEntryArgumentKind::ExternalInput;
   int64_t resourceIndex = -1;
 
   friend bool operator==(const TargetModelResourceId &lhs,
                          const TargetModelResourceId &rhs) {
     return lhs.cardId == rhs.cardId &&
-           lhs.tileId == rhs.tileId && lhs.role == rhs.role &&
+           lhs.tileId == rhs.tileId && lhs.kind == rhs.kind &&
            lhs.resourceIndex == rhs.resourceIndex;
   }
   friend bool operator!=(const TargetModelResourceId &lhs,
@@ -77,12 +79,13 @@ struct TargetModelResourceId {
   }
 };
 
-/// Derives allocation identity from typed physical ownership and Kernel ABI
-/// facts. User input, parameter, constant and output slots are card-owned;
-/// workspace and transport status slots are Tile-owned.
+/// Derives allocation identity from typed physical ownership and tile entry
+/// argument facts. External input, TargetTensor and external output arguments
+/// are card-owned; workspace, profile record and transport status arguments
+/// are Tile-owned.
 TargetModelResourceId getTargetModelResourceId(CardId cardId,
                                                TileId tileId,
-                                               compiler::KernelABISlotRole role,
+                                               compiler::TileEntryArgumentKind kind,
                                                int64_t resourceIndex);
 
 /// Initial contents for one read-only model allocation. There is exactly one
@@ -96,7 +99,8 @@ struct TargetModelInputBinding {
 struct TargetModelPlannedSlot {
   int64_t launchSlot = -1;
   int64_t slotOrdinal = -1;
-  compiler::KernelABISlotRole role = compiler::KernelABISlotRole::UserInput;
+  compiler::TileEntryArgumentKind kind =
+      compiler::TileEntryArgumentKind::ExternalInput;
   int64_t resourceIndex = -1;
   TargetModelResourceId resource;
   uint64_t base = 0;

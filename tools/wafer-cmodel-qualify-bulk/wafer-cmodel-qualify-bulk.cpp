@@ -394,16 +394,17 @@ llvm::Error writeSourceSpec(const Options &options) {
   if (!destination)
     return destination.takeError();
   auto makeSlot = [&](llvm::ArrayRef<int64_t> shape, uint64_t physicalBytes) {
-    return wafer::compiler::KernelABISlot{
+    return wafer::compiler::TileEntryArgument{
         0,
-        wafer::compiler::KernelABISlotRole::UserInput,
+        wafer::compiler::TileEntryArgumentKind::ExternalInput,
         0,
         "tensor",
         wafer::stringifyLogicalFormat(*format).str(),
         abiLayout,
         std::vector<int64_t>(shape.begin(), shape.end()),
         static_cast<int64_t>(physicalBytes),
-        64};
+        64,
+        wafer::compiler::TileEntryArgumentAccess::ReadOnly};
   };
   auto lhsSlot = makeSlot(lhsShape, *lhsBytes);
   auto rhsSlot = makeSlot(rhsShape, *rhsBytes);

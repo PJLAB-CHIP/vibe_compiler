@@ -143,7 +143,7 @@ module {
   program.distributedInputs = {replicatedBoundary(0), replicatedBoundary(1)};
   program.distributedOutputs = {replicatedBoundary(0)};
   llvm::Expected<ExecutionConfig> config =
-      ExecutionConfig::createForSingleCard(1, RuntimeLaunchKind::Kernel);
+      ExecutionConfig::createForSingleCard(1);
   if (!config)
     return config.takeError();
 
@@ -202,7 +202,7 @@ public:
 };
 
 struct ABIRange {
-  KernelABISlotRole role;
+  TileEntryArgumentKind role;
   int64_t resourceIndex;
   uint64_t begin;
   uint64_t end;
@@ -330,15 +330,15 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
   std::vector<ABIRange> abiRanges;
   std::vector<TargetModelInputBinding> inputBindings;
   const std::array<uint64_t, 2> inputBits{UINT64_C(0x3c00), UINT64_C(0x4000)};
-  for (const KernelABISlot &slot : targetModule.getKernelABISlots()) {
+  for (const TileEntryArgument &slot : targetModule.getTileEntryArguments()) {
     ASSERT_GE(slot.ordinal, 0);
     ASSERT_EQ(slot.byteSize, static_cast<int64_t>(kTensorBytes));
     const uint64_t base =
         kABISlotBase + static_cast<uint64_t>(slot.ordinal) * kABISlotStride;
     rankArguments.slots.push_back(base);
-    abiRanges.push_back({slot.role, slot.resourceIndex, base,
+    abiRanges.push_back({slot.kind, slot.resourceIndex, base,
                          base + static_cast<uint64_t>(slot.byteSize)});
-    if (slot.role != KernelABISlotRole::UserInput)
+    if (slot.kind != TileEntryArgumentKind::ExternalInput)
       continue;
     ASSERT_GE(slot.resourceIndex, 0);
     ASSERT_LT(static_cast<size_t>(slot.resourceIndex), inputBits.size());
@@ -395,7 +395,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
         const ABIRange *source =
             findContainingRange(abiRanges, dma->source, dma->byteCount);
         ASSERT_NE(source, nullptr);
-        ASSERT_EQ(source->role, KernelABISlotRole::UserInput);
+        ASSERT_EQ(source->kind, TileEntryArgumentKind::ExternalInput);
         ASSERT_GE(source->resourceIndex, 0);
         ASSERT_LT(static_cast<size_t>(source->resourceIndex),
                   inputSPMSlots.size());
@@ -408,7 +408,7 @@ TEST(SystemCTargetModelFixedSlotIntegrationTest,
         const ABIRange *destination =
             findContainingRange(abiRanges, dma->destination, dma->byteCount);
         ASSERT_NE(destination, nullptr);
-        ASSERT_EQ(destination->role, KernelABISlotRole::Output);
+        ASSERT_EQ(destination->kind, TileEntryArgumentKind::ExternalOutput);
         outputSPMSlots.insert(dma->source);
       }
       continue;

@@ -10,7 +10,6 @@ add_mlir_library(WaferRuntime
   ProfileInstrumentation.cpp
   ProfilerRecord.cpp
   RuntimeInvocationPlanning.cpp
-  Tx81ModelABI.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

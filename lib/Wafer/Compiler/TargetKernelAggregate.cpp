@@ -36,16 +36,16 @@ namespace {
 constexpr int64_t kKernelAggregateTileCount = 16;
 constexpr int64_t kKernelAggregateRowLength = 4;
 
-bool haveSameKernelABISchema(llvm::ArrayRef<KernelABISlot> lhs,
-                             llvm::ArrayRef<KernelABISlot> rhs) {
+bool haveSameKernelABISchema(llvm::ArrayRef<TileEntryArgument> lhs,
+                             llvm::ArrayRef<TileEntryArgument> rhs) {
   if (lhs.size() != rhs.size())
     return false;
   for (auto [left, right] : llvm::zip(lhs, rhs))
-    if (left.ordinal != right.ordinal || left.role != right.role ||
+    if (left.ordinal != right.ordinal || left.kind != right.kind ||
         left.resourceIndex != right.resourceIndex ||
         left.dtype != right.dtype || left.layout != right.layout ||
         left.shape != right.shape || left.byteSize != right.byteSize ||
-        left.alignment != right.alignment)
+        left.alignment != right.alignment || left.access != right.access)
       return false;
   return true;
 }
@@ -350,11 +350,10 @@ llvm::Error createKernelAggregateExports(
 llvm::Expected<OwnedTargetLLVMModule>
 buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
   const ExecutionConfig &config = targetLLVMModules.getExecutionConfig();
-  const KernelRuntimeLaunchContract *kernel =
+  const KernelRuntimeLaunchContract &kernel =
       targetLLVMModules.getRuntimeLaunchContract().getKernel();
-  if (!kernel ||
-      (kernel->entryABI != KernelEntryABI::TileMajorPointerTable &&
-       kernel->entryABI != KernelEntryABI::TileRowPointerTable) ||
+  if ((kernel.entryABI != KernelEntryABI::TileMajorPointerTable &&
+       kernel.entryABI != KernelEntryABI::TileRowPointerTable) ||
       config.getTileCount() != kKernelAggregateTileCount ||
       targetLLVMModules.getModules().size() != kKernelAggregateTileCount)
     return llvm::createStringError(
@@ -363,22 +362,22 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
         "launch domain");
 
   const TargetLLVMModule &first = targetLLVMModules.getModules().front();
-  const uint64_t packetBytes = kernel->form == KernelLaunchForm::Cluster
+  const uint64_t packetBytes = kernel.form == KernelLaunchForm::Cluster
                                    ? kTx81ClusterKernelArgumentBytesMax
                                    : kTx81KernelArgumentBytesMax;
-  if (first.getKernelABISlots().empty() ||
-      (kernel->entryABI == KernelEntryABI::TileMajorPointerTable &&
-       first.getKernelABISlots().size() >
+  if (first.getTileEntryArguments().empty() ||
+      (kernel.entryABI == KernelEntryABI::TileMajorPointerTable &&
+       first.getTileEntryArguments().size() >
            packetBytes / sizeof(uint64_t) / kKernelAggregateTileCount) ||
-      (kernel->entryABI == KernelEntryABI::TileRowPointerTable &&
+      (kernel.entryABI == KernelEntryABI::TileRowPointerTable &&
        kKernelAggregateTileCount > packetBytes / sizeof(uint64_t)))
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "kernel aggregate argument packet exceeds the qualified V5.6 packet "
         "limit");
   const size_t transportStatusSlots =
-      llvm::count_if(first.getKernelABISlots(), [](const KernelABISlot &slot) {
-        return slot.role == KernelABISlotRole::TransportStatus;
+      llvm::count_if(first.getTileEntryArguments(), [](const TileEntryArgument &slot) {
+        return slot.kind == TileEntryArgumentKind::TransportStatus;
       });
   if (transportStatusSlots > 1)
     return llvm::createStringError(
@@ -414,8 +413,8 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
             first.getModule().getTargetTriple() ||
         source.getModule().getDataLayoutStr() !=
             first.getModule().getDataLayoutStr() ||
-        !haveSameKernelABISchema(source.getKernelABISlots(),
-                                 first.getKernelABISlots()))
+        !haveSameKernelABISchema(source.getTileEntryArguments(),
+                                 first.getTileEntryArguments()))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "kernel target Tile domain has inconsistent typed module "
@@ -468,8 +467,8 @@ buildKernelAggregateTargetModule(const TargetLLVMModules &targetLLVMModules) {
       RuntimeLaunchPhaseRole::Prepare);
   if (llvm::Error error = createKernelAggregateExports(
           *aggregate, bodyNames, tileIdsByLaunchSlot,
-          first.getEntrySymbol(), first.getKernelABISlots().size(),
-          kernel->entryABI, hasPrepare))
+          first.getEntrySymbol(), first.getTileEntryArguments().size(),
+          kernel.entryABI, hasPrepare))
     return std::move(error);
   return OwnedTargetLLVMModule{std::move(context), std::move(aggregate)};
 }

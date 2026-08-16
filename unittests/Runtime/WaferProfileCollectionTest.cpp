@@ -1,7 +1,9 @@
+//===- WaferProfileCollectionTest.cpp - Profile output validation --------===//
+
 #include "WaferProfileCollection.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Runtime/PackageManifest.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Errc.h"
@@ -23,12 +25,10 @@
 namespace {
 
 using wafer::runtime::BoardRuntimeOutput;
-using wafer::runtime::CardResourceScope;
+using wafer::runtime::ExternalPortRecord;
 using wafer::runtime::PackageAccessMode;
 using wafer::runtime::PackageManifest;
-using wafer::runtime::PackageResourceRecord;
-using wafer::runtime::PackageResourceRole;
-using wafer::runtime::ResourceId;
+using wafer::runtime::PortId;
 using wafer::runtime::cli::BoardInvocationFilePlan;
 using wafer::runtime::cli::BoardOutputComparisonKind;
 using wafer::runtime::cli::BoardProfileOutputValidationMode;
@@ -73,22 +73,12 @@ protected:
 
   void TearDown() override { llvm::sys::fs::remove_directories(root); }
 
-  PackageResourceRecord outputResource(uint64_t id, int64_t roleIndex,
-                                       llvm::StringRef name) const {
-    return {ResourceId(id),
-            CardResourceScope{wafer::CardId(0)},
-            PackageResourceRole::Output,
-            roleIndex,
-            name.str(),
-            {"f16", {2}},
-            4,
-            4,
-            PackageAccessMode::WriteOnly,
-            true};
+  ExternalPortRecord outputResource(uint64_t id, int64_t roleIndex) const {
+    return {PortId(id), roleIndex, "f16", {2}, "f16",
+            wafer::runtime::PackageMemLayout::Tensor, {2}, 4, 4};
   }
 
-  PackageManifest manifest(uint64_t firstId, uint64_t secondId,
-                           llvm::StringRef namePrefix) const {
+  PackageManifest manifest(uint64_t firstId, uint64_t secondId) const {
     PackageManifest package(
         wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
         llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
@@ -96,52 +86,66 @@ protected:
             wafer::KernelEntryABI::TileMajorPointerTable,
             {wafer::RuntimeLaunchPhaseRole::Main})),
         wafer::kCurrentTargetModuleFormat);
+    package.program = wafer::runtime::ProgramId(0);
     package.cardCount = 1;
     package.tileCount = 16;
-    // Deliberately non-canonical manifest order.
-    package.resources = {
-        outputResource(firstId, /*roleIndex=*/7,
-                       (namePrefix + "-output7").str()),
-        outputResource(secondId, /*roleIndex=*/3,
-                       (namePrefix + "-output3").str()),
+    package.programData = {"data/program-data.bin", 0, 1,
+                           "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649"
+                           "b934ca495991b7852b855"};
+    // Deliberately non-canonical role-index order: the validator keys
+    // resources by PortId, so the first resource is the role-index-7 port.
+    package.outputs = {
+        outputResource(firstId, /*roleIndex=*/7),
+        outputResource(secondId, /*roleIndex=*/3),
     };
     return package;
   }
 
-  std::vector<uint8_t> bytesFor(const PackageResourceRecord &resource) const {
-    return {static_cast<uint8_t>(resource.roleIndex + 1),
-            static_cast<uint8_t>(resource.roleIndex),
-            static_cast<uint8_t>(resource.roleIndex * 2), UINT8_C(0x5a)};
+  static PackageManifest manifestWithoutOutputs() {
+    PackageManifest package(
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
+            wafer::KernelLaunchForm::Grid,
+            wafer::KernelEntryABI::TileMajorPointerTable,
+            {wafer::RuntimeLaunchPhaseRole::Main})),
+        wafer::kCurrentTargetModuleFormat);
+    package.program = wafer::runtime::ProgramId(0);
+    package.cardCount = 1;
+    package.tileCount = 16;
+    return package;
+  }
+
+  std::vector<uint8_t> bytesFor(const ExternalPortRecord &port) const {
+    return {static_cast<uint8_t>(port.roleIndex + 1),
+            static_cast<uint8_t>(port.roleIndex),
+            static_cast<uint8_t>(port.roleIndex * 2), UINT8_C(0x5a)};
   }
 
   BoardInvocationFilePlan
   plan(const PackageManifest &package,
        const std::set<int64_t> &externallyExpectedRoleIndices,
-       llvm::StringRef unusedPathPrefix,
        const std::set<int64_t> &relaxedF16RoleIndices = {}) const {
     BoardInvocationFilePlan result;
-    for (const PackageResourceRecord &resource : package.resources) {
-      const uint64_t id = resource.id.getValue();
-      result.writableResourceBytes[id] = resource.bytes;
-      if (externallyExpectedRoleIndices.count(resource.roleIndex) != 0) {
-        result.expectedBytes[id] = bytesFor(resource);
+    for (const ExternalPortRecord &port : package.outputs) {
+      const uint64_t id = port.id.getValue();
+      result.outputBytes[id] = port.bytes;
+      result.outputPaths[id] =
+          (root.str() + "/never-written-" + std::to_string(id)).str();
+      if (externallyExpectedRoleIndices.count(port.roleIndex) != 0) {
+        result.expectedBytes[id] = bytesFor(port);
         result.expectedComparisons[id] =
-            relaxedF16RoleIndices.count(resource.roleIndex) != 0
+            relaxedF16RoleIndices.count(port.roleIndex) != 0
                 ? BoardOutputComparisonKind::RelaxedF16
                 : BoardOutputComparisonKind::Exact;
-      } else {
-        result.outputPaths[id] =
-            (unusedPathPrefix + llvm::Twine("-") + llvm::Twine(id)).str();
       }
     }
     return result;
   }
 
-  std::vector<BoardRuntimeOutput>
-  outputs(const PackageManifest &package) const {
+  std::vector<BoardRuntimeOutput> outputs(const PackageManifest &package) const {
     std::vector<BoardRuntimeOutput> result;
-    for (const PackageResourceRecord &resource : package.resources)
-      result.push_back({resource.id, bytesFor(resource)});
+    for (const ExternalPortRecord &port : package.outputs)
+      result.push_back({port.id, bytesFor(port)});
     return result;
   }
 
@@ -402,43 +406,42 @@ TEST(WaferProfileCollectionTest, FixedOrderRunsOnePrimaryThenCountAndTrace) {
 
 TEST_F(WaferProfileOutputValidationTest,
        AllExpectedPreservesComparisonPolicyAndCanonicalSemanticKeys) {
-  PackageManifest primary = manifest(101, 102, "primary");
+  PackageManifest primary = manifest(101, 102);
   BoardInvocationFilePlan primaryPlan =
-      plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output",
+      plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7},
            {/*relaxedF16RoleIndex=*/7});
   BoardProfileOutputValidator validation(root.str().str());
   ASSERT_FALSE(
       validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
   EXPECT_EQ(validation.getMode(),
             BoardProfileOutputValidationMode::ExternalExpected);
+  // Resources are keyed by PortId, not role index: port 101 (role index 7)
+  // comes first even though its role index is larger.
   ASSERT_EQ(validation.getResources().size(), 2u);
-  EXPECT_EQ(
-      std::get<CardResourceScope>(validation.getResources()[0].scope).cardId,
-      wafer::CardId(0));
-  EXPECT_EQ(validation.getResources()[0].roleIndex, 3);
-  EXPECT_EQ(
-      std::get<CardResourceScope>(validation.getResources()[1].scope).cardId,
-      wafer::CardId(0));
-  EXPECT_EQ(validation.getResources()[1].roleIndex, 7);
+  EXPECT_EQ(validation.getResources()[0].port, PortId(101));
+  EXPECT_EQ(validation.getResources()[0].roleIndex, 7);
+  EXPECT_EQ(validation.getResources()[1].port, PortId(102));
+  EXPECT_EQ(validation.getResources()[1].roleIndex, 3);
   ASSERT_TRUE(
       validation.getResources()[0].externalExpectedComparison.has_value());
   EXPECT_EQ(*validation.getResources()[0].externalExpectedComparison,
-            BoardOutputComparisonKind::Exact);
+            BoardOutputComparisonKind::RelaxedF16);
   ASSERT_TRUE(
       validation.getResources()[1].externalExpectedComparison.has_value());
   EXPECT_EQ(*validation.getResources()[1].externalExpectedComparison,
-            BoardOutputComparisonKind::RelaxedF16);
+            BoardOutputComparisonKind::Exact);
   for (const auto &resource : validation.getResources()) {
-    EXPECT_TRUE(
-        llvm::StringRef(resource.referenceSha256).starts_with("sha256:"));
+    EXPECT_TRUE(llvm::StringRef(resource.referenceSha256).starts_with("sha256:"));
     EXPECT_EQ(resource.referenceSha256.size(), 71u);
     EXPECT_TRUE(resource.primaryOutputValidated);
     EXPECT_FALSE(resource.diagnosticCapturesMatchPrimary);
   }
 
-  PackageManifest capture = manifest(901, 902, "capture");
+  // The capture package must reuse the same external port ids; the typed
+  // contract equality includes the port identity.
+  PackageManifest capture = manifest(101, 102);
   BoardInvocationFilePlan capturePlan =
-      plan(capture, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-capture",
+      plan(capture, {/*roleIndex=*/3, /*roleIndex=*/7},
            {/*relaxedF16RoleIndex=*/7});
   ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
@@ -454,15 +457,39 @@ TEST_F(WaferProfileOutputValidationTest,
 }
 
 TEST_F(WaferProfileOutputValidationTest,
-       ReportWriteRequiresBothDiagnosticCaptures) {
-  PackageManifest primary = manifest(121, 122, "primary");
-  BoardInvocationFilePlan primaryPlan = plan(primary, {}, "/unused-output");
+       CaptureWithDifferentPortIdsIsRejected) {
+  PackageManifest primary = manifest(101, 102);
+  BoardInvocationFilePlan primaryPlan =
+      plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7},
+           {/*relaxedF16RoleIndex=*/7});
   BoardProfileOutputValidator validation(root.str().str());
   ASSERT_FALSE(
       validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
 
-  PackageManifest capture = manifest(221, 222, "capture");
-  BoardInvocationFilePlan capturePlan = plan(capture, {}, "/unused-capture");
+  // Same role indices and typed contracts, but different port ids: the
+  // semantic key domain no longer matches the staged primary.
+  PackageManifest capture = manifest(901, 902);
+  BoardInvocationFilePlan capturePlan =
+      plan(capture, {/*roleIndex=*/3, /*roleIndex=*/7},
+           {/*relaxedF16RoleIndex=*/7});
+  llvm::Error error = validation.validateDiagnosticOutputs(capture, capturePlan,
+                                                           outputs(capture));
+  ASSERT_TRUE(static_cast<bool>(error));
+  EXPECT_NE(llvm::toString(std::move(error))
+                .find("semantic resource domain changed"),
+            std::string::npos);
+}
+
+TEST_F(WaferProfileOutputValidationTest,
+       ReportWriteRequiresBothDiagnosticCaptures) {
+  PackageManifest primary = manifest(121, 122);
+  BoardInvocationFilePlan primaryPlan = plan(primary, {});
+  BoardProfileOutputValidator validation(root.str().str());
+  ASSERT_FALSE(
+      validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
+
+  PackageManifest capture = manifest(121, 122);
+  BoardInvocationFilePlan capturePlan = plan(capture, {});
   ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
   llvm::Error error = validation.removeReferenceFiles();
@@ -473,17 +500,16 @@ TEST_F(WaferProfileOutputValidationTest,
 
 TEST_F(WaferProfileOutputValidationTest,
        ComparisonPolicyChangeIsRejectedEvenWhenCoverageIsUnchanged) {
-  PackageManifest primary = manifest(111, 112, "primary");
+  PackageManifest primary = manifest(111, 112);
   BoardInvocationFilePlan primaryPlan =
-      plan(primary, {/*roleIndex=*/3}, "/unused-output");
+      plan(primary, {/*roleIndex=*/3});
   BoardProfileOutputValidator validation(root.str().str());
   ASSERT_FALSE(
       validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
 
-  PackageManifest capture = manifest(211, 212, "capture");
+  PackageManifest capture = manifest(111, 112);
   BoardInvocationFilePlan capturePlan =
-      plan(capture, {/*roleIndex=*/3}, "/unused-capture",
-           {/*relaxedF16RoleIndex=*/3});
+      plan(capture, {/*roleIndex=*/3}, {/*relaxedF16RoleIndex=*/3});
   llvm::Error error = validation.validateDiagnosticOutputs(capture, capturePlan,
                                                            outputs(capture));
   ASSERT_TRUE(static_cast<bool>(error));
@@ -492,10 +518,9 @@ TEST_F(WaferProfileOutputValidationTest,
 }
 
 TEST_F(WaferProfileOutputValidationTest,
-       OutputOnlyUsesSameSessionReferenceAcrossIdsNamesAndPaths) {
-  PackageManifest primary = manifest(11, 12, "primary");
-  BoardInvocationFilePlan primaryPlan =
-      plan(primary, {}, "/path-that-must-not-be-read-or-written");
+       OutputOnlyUsesSameSessionReferenceAcrossPackageVariants) {
+  PackageManifest primary = manifest(11, 12);
+  BoardInvocationFilePlan primaryPlan = plan(primary, {});
   BoardProfileOutputValidator validation(root.str().str());
   ASSERT_FALSE(
       validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
@@ -504,9 +529,8 @@ TEST_F(WaferProfileOutputValidationTest,
   for (const auto &resource : validation.getResources())
     EXPECT_FALSE(resource.externalExpectedComparison.has_value());
 
-  PackageManifest capture = manifest(501, 502, "different-names");
-  BoardInvocationFilePlan capturePlan =
-      plan(capture, {}, "/completely-different-unused-path");
+  PackageManifest capture = manifest(11, 12);
+  BoardInvocationFilePlan capturePlan = plan(capture, {});
   ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
   ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
@@ -521,24 +545,24 @@ TEST_F(WaferProfileOutputValidationTest,
 
 TEST_F(WaferProfileOutputValidationTest,
        PartialExpectedUsesMixedPerResourceCoverage) {
-  PackageManifest primary = manifest(21, 22, "primary");
+  PackageManifest primary = manifest(21, 22);
   BoardInvocationFilePlan primaryPlan =
-      plan(primary, {/*roleIndex=*/7}, "/unused-output");
+      plan(primary, {/*roleIndex=*/7});
   BoardProfileOutputValidator validation(root.str().str());
   ASSERT_FALSE(
       validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
   EXPECT_EQ(validation.getMode(), BoardProfileOutputValidationMode::Mixed);
   ASSERT_EQ(validation.getResources().size(), 2u);
-  EXPECT_FALSE(
-      validation.getResources()[0].externalExpectedComparison.has_value());
   ASSERT_TRUE(
-      validation.getResources()[1].externalExpectedComparison.has_value());
-  EXPECT_EQ(*validation.getResources()[1].externalExpectedComparison,
+      validation.getResources()[0].externalExpectedComparison.has_value());
+  EXPECT_EQ(*validation.getResources()[0].externalExpectedComparison,
             BoardOutputComparisonKind::Exact);
+  EXPECT_FALSE(
+      validation.getResources()[1].externalExpectedComparison.has_value());
 
-  PackageManifest capture = manifest(71, 72, "capture");
+  PackageManifest capture = manifest(21, 22);
   BoardInvocationFilePlan capturePlan =
-      plan(capture, {/*roleIndex=*/7}, "/unused-capture");
+      plan(capture, {/*roleIndex=*/7});
   ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
                                                     outputs(capture)));
   ASSERT_FALSE(validation.validateDiagnosticOutputs(capture, capturePlan,
@@ -548,17 +572,16 @@ TEST_F(WaferProfileOutputValidationTest,
 
 TEST_F(WaferProfileOutputValidationTest,
        ExternalExpectedMismatchPrecedesSameSessionReference) {
-  PackageManifest primary = manifest(31, 32, "primary");
+  PackageManifest primary = manifest(31, 32);
   BoardInvocationFilePlan primaryPlan =
-      plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output");
+      plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7});
   std::vector<BoardRuntimeOutput> actual = outputs(primary);
   actual.front().bytes[1] ^= UINT8_C(0xff);
   BoardProfileOutputValidator validation(root.str().str());
   llvm::Error error =
       validation.recordPrimaryOutputs(primary, primaryPlan, actual);
   ASSERT_TRUE(static_cast<bool>(error));
-  EXPECT_NE(llvm::toString(std::move(error))
-                .find("complete board output differs for ResourceId"),
+  EXPECT_NE(llvm::toString(std::move(error)).find("differs for port 31"),
             std::string::npos);
 }
 
@@ -574,12 +597,12 @@ TEST_F(WaferProfileOutputValidationTest,
         std::pair(FailureKind::CountCapture, size_t(2)),
         std::pair(FailureKind::TraceCapture, size_t(3))}) {
     SCOPED_TRACE(static_cast<int>(failure));
-    PackageManifest primary = manifest(41, 42, "primary");
-    PackageManifest capture = manifest(81, 82, "capture");
+    PackageManifest primary = manifest(41, 42);
+    PackageManifest capture = manifest(41, 42);
     BoardInvocationFilePlan primaryPlan =
-        plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-output");
+        plan(primary, {/*roleIndex=*/3, /*roleIndex=*/7});
     BoardInvocationFilePlan capturePlan =
-        plan(capture, {/*roleIndex=*/3, /*roleIndex=*/7}, "/unused-capture");
+        plan(capture, {/*roleIndex=*/3, /*roleIndex=*/7});
     BoardProfileOutputValidator validation(root.str().str());
     size_t calls = 0;
     bool measurementsConsumed = false;
@@ -626,6 +649,40 @@ TEST_F(WaferProfileOutputValidationTest,
     EXPECT_NE(llvm::toString(result.takeError()).find("differs"),
               std::string::npos);
   }
+}
+
+TEST_F(WaferProfileOutputValidationTest,
+       RejectsInvalidStagingAndDuplicatePrimaryRecording) {
+  BoardProfileOutputValidator invalidStaging(/*stagingDirectory=*/"");
+  llvm::Error error = invalidStaging.recordPrimaryOutputs(
+      manifest(51, 52), plan(manifest(51, 52), {}), outputs(manifest(51, 52)));
+  ASSERT_TRUE(static_cast<bool>(error));
+  EXPECT_NE(llvm::toString(std::move(error))
+                .find("staging directory is invalid"),
+            std::string::npos);
+
+  PackageManifest primary = manifest(61, 62);
+  BoardInvocationFilePlan primaryPlan = plan(primary, {});
+  BoardProfileOutputValidator validation(root.str().str());
+  ASSERT_FALSE(
+      validation.recordPrimaryOutputs(primary, primaryPlan, outputs(primary)));
+  error = validation.recordPrimaryOutputs(primary, primaryPlan,
+                                          outputs(primary));
+  ASSERT_TRUE(static_cast<bool>(error));
+  EXPECT_NE(llvm::toString(std::move(error)).find("already "
+                                                  "primaryOutputsRecorded"),
+            std::string::npos);
+
+  // A package with no writable output resources cannot start a collection.
+  // Use a fresh validator: the previous one already recorded its primary.
+  PackageManifest empty = manifestWithoutOutputs();
+  BoardInvocationFilePlan emptyPlan;
+  BoardProfileOutputValidator noOutputs(root.str().str());
+  error = noOutputs.recordPrimaryOutputs(empty, emptyPlan, {});
+  ASSERT_TRUE(static_cast<bool>(error));
+  EXPECT_NE(llvm::toString(std::move(error))
+                .find("no writable output resource"),
+            std::string::npos);
 }
 
 TEST(WaferProfileCollectionTest, FirstLaunchErrorStopsEveryLaterCall) {

@@ -39,7 +39,6 @@ add_executable(WaferUnitTests
   Runtime/PackageManifestTest.cpp
   Runtime/ProfileInstrumentationTest.cpp
   Runtime/ProfilerRecordTest.cpp
-  Runtime/Tx81ModelABITest.cpp
   Target/FormalNumericTest.cpp
   Target/NumericCodecTest.cpp
   Target/NumericDependencyConformanceTest.cpp

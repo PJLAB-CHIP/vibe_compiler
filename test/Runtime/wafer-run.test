@@ -1,6 +1,8 @@
 # RUN: rm -rf %t.package %t.bad-package
 # RUN: mkdir -p %t.package/modules
 # RUN: touch %t.package/modules/tile_00000.so
+# RUN: mkdir -p %t.package/data
+# RUN: touch %t.package/data/program-data.bin
 # RUN: cp %S/Inputs/typed-package-manifest.json %t.package/manifest.json
 # RUN: wafer-run --package-dir %t.package --no-card | FileCheck %s --check-prefix=PLAN
 # RUN: not wafer-run --package-dir %t.package 2>&1 | FileCheck %s --check-prefix=NO-MODE
@@ -25,9 +27,9 @@
 # PLAN: entry: 0 card_id=0 tile_id=1 launch_slot=0
 # PLAN: module: 0 path=modules/tile_00000.so
 # PLAN: launch_phase: role=main symbol=main
-# PLAN: launch_slot: 0 resource=0 role=user_input bytes=64 alignment=256 access=read_only externally_bound=true
-# PLAN: launch_slot: 1 resource=1 role=output bytes=64 alignment=256 access=write_only externally_bound=true
-# PLAN: launch_slot: 2 resource=2 role=workspace bytes=512 alignment=256 access=read_write externally_bound=false
+# PLAN: launch_argument: 0 base=invocation offset=0
+# PLAN: launch_argument: 1 base=invocation offset=256
+# PLAN: launch_argument: 2 base=invocation offset=512
 # PLAN: completion: return_after_local_drain
 # PLAN: invocation_tiles: 16
 # PLAN: board_execution: false
@@ -35,7 +37,7 @@
 # NO-MODE: wafer-run requires explicit --no-card
 # BOARD-QUALIFICATION: --board requires complete explicit TX qualification options
 # BOARD-OPTIONS: no-card verification options are not valid with --board
-# CAPACITY: runtime environment resource capacity is insufficient
+# CAPACITY: runtime environment invocation capacity is insufficient
 # NO-CARD-BOARD-OPTION: board binding and qualification options require --board
 # EXTRA: package modules contain an unreferenced payload
 # DIGEST: package module digest mismatch

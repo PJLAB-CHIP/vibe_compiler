@@ -20,8 +20,7 @@
 namespace {
 
 TEST(CompilationTest, ExecutionConfigSeparatesPartitionsFromTiles) {
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
   EXPECT_EQ(config->getNumPartitions(), 1);
   EXPECT_EQ(config->getTileCount(), 16);
@@ -31,27 +30,20 @@ TEST(CompilationTest, ExecutionConfigSeparatesPartitionsFromTiles) {
         int64_t{2}, int64_t{8}, int64_t{15}, int64_t{16}, int64_t{17},
         std::numeric_limits<int64_t>::max()}) {
     auto rejectedConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
-        rejected, wafer::RuntimeLaunchKind::Kernel);
+        rejected);
     ASSERT_FALSE(static_cast<bool>(rejectedConfig));
     EXPECT_FALSE(llvm::toString(rejectedConfig.takeError()).empty());
   }
 }
 
-TEST(CompilationTest, ExecutionConfigEqualityCoversTypedDomainsAndLaunchKind) {
-  auto first = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
-  auto same = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
-  auto differentLaunchKind =
-      wafer::compiler::ExecutionConfig::createForSingleCard(
-          1, wafer::RuntimeLaunchKind::Model);
+TEST(CompilationTest, ExecutionConfigEqualityCoversTypedDomains) {
+  auto first = wafer::compiler::ExecutionConfig::createForSingleCard(1);
+  auto same = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(first));
   ASSERT_TRUE(static_cast<bool>(same));
-  ASSERT_TRUE(static_cast<bool>(differentLaunchKind));
   EXPECT_EQ(*first, *same);
-  EXPECT_NE(*first, *differentLaunchKind);
-  EXPECT_EQ(differentLaunchKind->getNumPartitions(), 1);
-  EXPECT_EQ(differentLaunchKind->getTileCount(), 16);
+  EXPECT_EQ(first->getNumPartitions(), 1);
+  EXPECT_EQ(first->getTileCount(), 16);
 }
 
 TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
@@ -99,8 +91,7 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
       !std::is_copy_constructible_v<wafer::compiler::VerifiedPackage>);
   static_assert(std::is_move_constructible_v<wafer::compiler::VerifiedPackage>);
 
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
   std::string source = "/tmp/source.program";
   auto request =
@@ -112,13 +103,10 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   EXPECT_EQ(request->getExecutionConfig().getTileCount(), 16);
   EXPECT_EQ(request->getExecutionConfig().getTargetIdentityId(),
             wafer::TargetIdentityId::waferTx81SingleCard());
-  EXPECT_EQ(request->getExecutionConfig().getRuntimeLaunchKind(),
-            wafer::RuntimeLaunchKind::Kernel);
 }
 
 TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));
   auto request = wafer::compiler::CompilationRequest::create("", *config);
   ASSERT_FALSE(static_cast<bool>(request));
@@ -126,8 +114,7 @@ TEST(CompilationTest, CompilationRequestRejectsEmptySourceLocator) {
 }
 
 TEST(CompilationTest, ProfileOptionsRequireCompleteTileKernelDomain) {
-  auto fullCard = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Kernel);
+  auto fullCard = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(fullCard));
   auto accepted = wafer::compiler::CompilationOptions::profile(*fullCard);
   ASSERT_TRUE(static_cast<bool>(accepted));
@@ -143,14 +130,6 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteTileKernelDomain) {
   ASSERT_TRUE(static_cast<bool>(acceptedTimed));
   EXPECT_TRUE(acceptedTimed->shouldReportDetailedTiming());
 
-  auto model = wafer::compiler::ExecutionConfig::createForSingleCard(
-      1, wafer::RuntimeLaunchKind::Model);
-  ASSERT_TRUE(static_cast<bool>(model));
-  auto rejectedModel = wafer::compiler::CompilationOptions::profile(*model);
-  ASSERT_FALSE(static_cast<bool>(rejectedModel));
-  EXPECT_NE(llvm::toString(rejectedModel.takeError())
-                .find("complete-card Tile kernel launch"),
-            std::string::npos);
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
                    .shouldProduceProfileInstrumentation());
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()

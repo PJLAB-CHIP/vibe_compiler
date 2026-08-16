@@ -11,9 +11,9 @@ namespace wafer::compiler::detail {
 
 /// Resource names are diagnostic payload only. These package-boundary
 /// predicates intentionally compare typed identity and storage facts.
-bool doesPackageSlotMatchProgramBinding(const KernelABISlot &slot,
+bool doesPackageSlotMatchProgramBinding(const TileEntryArgument &slot,
                                         const ProgramResourceBinding &binding);
-bool isValidPackageCompilerManagedSlot(const KernelABISlot &slot);
+bool isValidPackageCompilerManagedSlot(const TileEntryArgument &slot);
 
 llvm::Expected<VerifiedPackage>
 writePackage(llvm::StringRef tensorProgramDirectory,

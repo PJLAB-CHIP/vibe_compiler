@@ -22,7 +22,6 @@ import wafer_runtime_launch_contract as runtime_launch
 TILE_COUNT = 16
 UNSUPPORTED_PARTICIPANT_COUNTS = (1, 2, 4, 8, 15)
 RESOURCE_BYTES = 256
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
@@ -261,7 +260,6 @@ def compile_package(
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -269,28 +267,32 @@ def compile_package(
         raise RuntimeError("wafer-compile did not write the barrier seed")
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
-    bindings = runtime_launch.configure_direct_dte_tile_package(
+    shared_bindings = runtime_launch.configure_direct_dte_tile_package(
         manifest,
-        resources=(
-            runtime_launch.SharedBoundaryResourceSpec(
-                role="user_input",
+        ports=(
+            runtime_launch.SharedBoundaryPortSpec(
+                table="inputs",
                 role_index=0,
-                name="barrier_request",
-                type={"dtype": "i8", "shape": [TILE_COUNT * RESOURCE_BYTES]},
+                logical_dtype="i8",
+                logical_shape=[TILE_COUNT * RESOURCE_BYTES],
+                dtype="i8",
+                layout="tensor",
+                shape=[TILE_COUNT * RESOURCE_BYTES],
                 bytes=TILE_COUNT * RESOURCE_BYTES,
                 alignment=256,
                 access="read_only",
-                host_visible=True,
             ),
-            runtime_launch.SharedBoundaryResourceSpec(
-                role="output",
+            runtime_launch.SharedBoundaryPortSpec(
+                table="outputs",
                 role_index=0,
-                name="barrier_result",
-                type={"dtype": "i8", "shape": [TILE_COUNT * RESOURCE_BYTES]},
+                logical_dtype="i8",
+                logical_shape=[TILE_COUNT * RESOURCE_BYTES],
+                dtype="i8",
+                layout="tensor",
+                shape=[TILE_COUNT * RESOURCE_BYTES],
                 bytes=TILE_COUNT * RESOURCE_BYTES,
                 alignment=256,
                 access="write_only",
-                host_visible=True,
             ),
         ),
         status_abi=STATUS_ABI,
@@ -298,6 +300,11 @@ def compile_package(
         status_alignment=STATUS_STORAGE_ALIGNMENT,
         context="barrier probe",
     )
+    bindings: dict[tuple[int, str, int], int] = {}
+    for (table, role_index), port_id in shared_bindings.items():
+        role = "user_input" if table == "inputs" else "output"
+        for tile_id in range(TILE_COUNT):
+            bindings[(tile_id, role, role_index)] = port_id
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     slot_layout = validate_terminal_slots(package, bindings)
     module_path = package / manifest["modules"][0]["path"]
@@ -317,79 +324,66 @@ def validate_terminal_slots(
     entries = runtime_launch.require_complete_tile_domain(
         manifest, context="barrier probe"
     )
-    resources = manifest.get("resources")
-    if not isinstance(resources, list):
-        raise RuntimeError("barrier probe resources are missing")
-    resources_by_id = {
-        resource.get("id"): resource
-        for resource in resources
-        if isinstance(resource, dict) and isinstance(resource.get("id"), int)
-    }
-    if len(resources_by_id) != len(resources):
-        raise RuntimeError("barrier resource IDs are not unique")
     common_layout: ProbeSlotLayout | None = None
     for entry in entries:
         tile_id = entry.get("tile_id")
-        slots = entry.get("slots")
+        arguments = entry.get("arguments")
         transport = entry.get("transport")
         if (
             not isinstance(tile_id, int)
             or not 0 <= tile_id < TILE_COUNT
-            or not isinstance(slots, list)
-            or not slots
-            or not all(isinstance(slot, dict) for slot in slots)
-            or [slot.get("ordinal") for slot in slots]
-            != list(range(len(slots)))
+            or not isinstance(arguments, list)
+            or not arguments
+            or not all(isinstance(argument, dict) for argument in arguments)
+            or [argument.get("ordinal") for argument in arguments]
+            != list(range(len(arguments)))
             or not isinstance(transport, dict)
         ):
             raise RuntimeError(
-                "barrier Tile does not expose canonical ordered slots"
+                "barrier Tile does not expose canonical ordered arguments"
             )
-        status_id = transport.get("status_resource")
-        status = resources_by_id.get(status_id)
         input_id = bindings[(tile_id, "user_input", 0)]
         output_id = bindings[(tile_id, "output", 0)]
-        input_slots = [
-            slot for slot in slots if slot.get("resource") == input_id
+        input_arguments = [
+            argument
+            for argument in arguments
+            if argument.get("kind") == "external_input"
+            and argument.get("port") == input_id
         ]
-        output_slots = [
-            slot for slot in slots if slot.get("resource") == output_id
+        output_arguments = [
+            argument
+            for argument in arguments
+            if argument.get("kind") == "external_output"
+            and argument.get("port") == output_id
         ]
-        status_slots = [
-            slot for slot in slots if slot.get("resource") == status_id
+        status_arguments = [
+            argument
+            for argument in arguments
+            if argument.get("kind") == "transport_status"
         ]
         if (
-            len(input_slots) != 1
-            or input_slots[0].get("access") != "read_only"
-            or len(output_slots) != 1
-            or output_slots[0].get("access") != "write_only"
-            or len(status_slots) != 1
-            or status_slots[0].get("access") != "read_write"
+            len(input_arguments) != 1
+            or input_arguments[0].get("access") != "read_only"
+            or len(output_arguments) != 1
+            or output_arguments[0].get("access") != "write_only"
+            or len(status_arguments) != 1
+            or status_arguments[0].get("access") != "read_write"
+            or status_arguments[0].get("status_abi") != STATUS_ABI
+            or status_arguments[0].get("bytes") != STATUS_STORAGE_BYTES
+            or status_arguments[0].get("alignment")
+            != STATUS_STORAGE_ALIGNMENT
             or transport.get("kind") != "direct_dte"
             or transport.get("status_abi") != STATUS_ABI
             or transport.get("host_watchdog_required") is not True
-            or status
-            != {
-                "id": status_id,
-                "scope": {"kind": "tile", "card_id": 0, "tile_id": tile_id},
-                "role": "transport_status",
-                "role_index": 0,
-                "name": f"transport_status_tile_{tile_id}",
-                "type": {"dtype": "u32", "shape": [1]},
-                "bytes": STATUS_STORAGE_BYTES,
-                "alignment": STATUS_STORAGE_ALIGNMENT,
-                "access": "read_write",
-                "host_visible": False,
-            }
         ):
             raise RuntimeError(
-                f"Tile {tile_id} transport resources are not canonically bound"
+                f"Tile {tile_id} transport arguments are not canonically bound"
             )
         layout = ProbeSlotLayout(
-            slots_per_tile=len(slots),
-            input_ordinal=input_slots[0]["ordinal"],
-            output_ordinal=output_slots[0]["ordinal"],
-            status_ordinal=status_slots[0]["ordinal"],
+            slots_per_tile=len(arguments),
+            input_ordinal=input_arguments[0]["ordinal"],
+            output_ordinal=output_arguments[0]["ordinal"],
+            status_ordinal=status_arguments[0]["ordinal"],
         )
         if common_layout is None:
             common_layout = layout

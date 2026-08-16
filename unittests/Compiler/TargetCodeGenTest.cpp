@@ -83,12 +83,6 @@ static wafer::RuntimeLaunchContract makeKernelLaunch(
   llvm_unreachable("unknown kernel launch form");
 }
 
-static wafer::RuntimeLaunchContract makeModelLaunch() {
-  constexpr std::array main{wafer::RuntimeLaunchPhaseRole::Main};
-  return llvm::cantFail(wafer::RuntimeLaunchContract::createModel(
-      wafer::ModelEntryABI::Tx81ModelBootParam, main));
-}
-
 struct SharedKernelTransportScenario {
   wafer::KernelLaunchForm form;
   wafer::compiler::TransportContract transport;
@@ -140,10 +134,10 @@ static llvm::Expected<wafer::compiler::TargetToolchain> makeTestToolchain() {
       pythonExecutable, WAFER_TEST_DEVICE_LINKER_SCRIPT, llvmClangXX);
 }
 
-static wafer::compiler::KernelABISlot
-makeSlot(int64_t ordinal, wafer::compiler::KernelABISlotRole role,
+static wafer::compiler::TileEntryArgument
+makeSlot(int64_t ordinal, wafer::compiler::TileEntryArgumentKind role,
          llvm::StringRef name) {
-  if (role == wafer::compiler::KernelABISlotRole::TransportStatus)
+  if (role == wafer::compiler::TileEntryArgumentKind::TransportStatus)
     return {ordinal,
             role,
             0,
@@ -152,9 +146,14 @@ makeSlot(int64_t ordinal, wafer::compiler::KernelABISlotRole role,
             wafer::MemLayout::Tensor,
             {1},
             WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
-            WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT};
+            WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT,
+            wafer::compiler::TileEntryArgumentAccess::ReadWrite};
+  const auto access =
+      role == wafer::compiler::TileEntryArgumentKind::ExternalOutput
+          ? wafer::compiler::TileEntryArgumentAccess::WriteOnly
+          : wafer::compiler::TileEntryArgumentAccess::ReadOnly;
   return {ordinal, role, ordinal, name.str(), "f32", wafer::MemLayout::Tensor,
-          {4},     16,   64};
+          {4},     16,   64,     access};
 }
 
 static llvm::Expected<wafer::compiler::TargetLLVMModules>
@@ -164,34 +163,31 @@ makeRuntimeLaunchModules(
         wafer::compiler::TransportContract::None,
     std::optional<int64_t> mismatchedSchemaTile = std::nullopt,
     std::optional<int64_t> mismatchedBodyTile = std::nullopt,
-    bool unsupportedModelRole = false, size_t slotCount = 2,
+    size_t slotCount = 2,
     bool withCollidingClosure = false, bool withUnsupportedInlineAsm = false,
     std::optional<int64_t> renamedSlotTile = std::nullopt,
     bool permuteTiles = false) {
   const int64_t tileCount = 16;
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
-      wafer::compiler::ExecutionConfig::createForSingleCard(1,
-                                                            launch.getKind());
+      wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
     return config.takeError();
   std::vector<wafer::compiler::TargetLLVMModule> modules;
   modules.reserve(tileCount);
   for (int64_t tile = 0; tile < tileCount; ++tile) {
-    std::vector<wafer::compiler::KernelABISlot> slots;
+    std::vector<wafer::compiler::TileEntryArgument> slots;
     slots.reserve(slotCount);
     for (size_t slot = 0; slot < slotCount; ++slot) {
-      wafer::compiler::KernelABISlotRole role =
+      wafer::compiler::TileEntryArgumentKind role =
           transport == wafer::compiler::TransportContract::DirectDTE &&
                   slot + 1 == slotCount
-              ? wafer::compiler::KernelABISlotRole::TransportStatus
+              ? wafer::compiler::TileEntryArgumentKind::TransportStatus
           : slot + 1 == slotCount
-              ? wafer::compiler::KernelABISlotRole::Output
-              : wafer::compiler::KernelABISlotRole::UserInput;
-      if (unsupportedModelRole && slot == 0)
-        role = wafer::compiler::KernelABISlotRole::Parameter;
+              ? wafer::compiler::TileEntryArgumentKind::ExternalOutput
+              : wafer::compiler::TileEntryArgumentKind::ExternalInput;
       llvm::StringRef name =
-          role == wafer::compiler::KernelABISlotRole::Output ? "output"
-          : role == wafer::compiler::KernelABISlotRole::TransportStatus
+          role == wafer::compiler::TileEntryArgumentKind::ExternalOutput ? "output"
+          : role == wafer::compiler::TileEntryArgumentKind::TransportStatus
               ? "direct_dte_status"
               : "input";
       slots.push_back(makeSlot(
@@ -250,20 +246,21 @@ makeRuntimeLaunchModules(
       *config, std::move(launch), std::move(modules));
 }
 
-static wafer::compiler::KernelABISlot
+static wafer::compiler::TileEntryArgument
 makeProfilerSlot(int64_t ordinal,
                  wafer::compiler::detail::ProfileCaptureKind capture) {
   const int64_t bytes = static_cast<int64_t>(
       wafer::compiler::detail::getProfileCaptureRecordBytes(capture));
   return {ordinal,
-          wafer::compiler::KernelABISlotRole::Workspace,
-          1,
+          wafer::compiler::TileEntryArgumentKind::ProfileRecord,
+          0,
           "tx81_profiler_record",
           "u8",
           wafer::MemLayout::Tensor,
           {bytes},
           bytes,
-          WAFER_TX81_PROFILER_BUFFER_ALIGNMENT};
+          WAFER_TX81_PROFILER_BUFFER_ALIGNMENT,
+          wafer::compiler::TileEntryArgumentAccess::ReadWrite};
 }
 
 static llvm::Expected<wafer::compiler::TargetLLVMModules>
@@ -271,24 +268,19 @@ makeProfileRuntimeLaunchModules(
     wafer::RuntimeLaunchContract launch,
     wafer::compiler::detail::ProfileCaptureKind capture,
     wafer::compiler::TransportContract transport) {
-  if (!launch.getKernel())
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "profile runtime-launch test requires a shared kernel form");
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
-      wafer::compiler::ExecutionConfig::createForSingleCard(
-          1, wafer::RuntimeLaunchKind::Kernel);
+      wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
     return config.takeError();
   std::vector<wafer::compiler::TargetLLVMModule> modules;
   modules.reserve(16);
   for (int64_t tile = 0; tile < 16; ++tile) {
-    std::vector<wafer::compiler::KernelABISlot> slots;
+    std::vector<wafer::compiler::TileEntryArgument> slots;
     slots.push_back(
-        makeSlot(0, wafer::compiler::KernelABISlotRole::UserInput, "input"));
+        makeSlot(0, wafer::compiler::TileEntryArgumentKind::ExternalInput, "input"));
     if (transport == wafer::compiler::TransportContract::DirectDTE)
       slots.push_back(
-          makeSlot(1, wafer::compiler::KernelABISlotRole::TransportStatus,
+          makeSlot(1, wafer::compiler::TileEntryArgumentKind::TransportStatus,
                    "direct_dte_status"));
     slots.push_back(makeProfilerSlot(slots.size(), capture));
 
@@ -322,13 +314,8 @@ static llvm::Expected<wafer::compiler::CardExecutable>
 makeProfileCardExecutable(
     const wafer::RuntimeLaunchContract &launch,
     wafer::compiler::TransportContract transport) {
-  if (!launch.getKernel())
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "profile executable test requires a shared kernel form");
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
-      wafer::compiler::ExecutionConfig::createForSingleCard(
-          1, wafer::RuntimeLaunchKind::Kernel);
+      wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
     return config.takeError();
   auto context = std::make_shared<mlir::MLIRContext>();
@@ -377,8 +364,8 @@ TEST(TargetCodeGenTest, PackageSlotLegalityIgnoresDiagnosticNames) {
   binding.name = "frontend_name";
   binding.dtype = "f32";
   binding.localShape = {4};
-  wafer::compiler::KernelABISlot userInput =
-      makeSlot(0, wafer::compiler::KernelABISlotRole::UserInput,
+  wafer::compiler::TileEntryArgument userInput =
+      makeSlot(0, wafer::compiler::TileEntryArgumentKind::ExternalInput,
                "lowered_diagnostic_alias");
   EXPECT_TRUE(wafer::compiler::detail::doesPackageSlotMatchProgramBinding(
       userInput, binding));
@@ -386,48 +373,54 @@ TEST(TargetCodeGenTest, PackageSlotLegalityIgnoresDiagnosticNames) {
   EXPECT_FALSE(wafer::compiler::detail::doesPackageSlotMatchProgramBinding(
       userInput, binding));
 
-  wafer::compiler::KernelABISlot workspace{
-      1,    wafer::compiler::KernelABISlotRole::Workspace,
-      0,    "renamed_workspace",
-      "u8", wafer::MemLayout::Tensor,
-      {64}, 64,
-      64};
+  wafer::compiler::TileEntryArgument workspace{
+      1,
+      wafer::compiler::TileEntryArgumentKind::Workspace,
+      0,
+      "renamed_workspace",
+      "u8",
+      wafer::MemLayout::Tensor,
+      {64},
+      64,
+      64,
+      wafer::compiler::TileEntryArgumentAccess::ReadWrite};
   EXPECT_TRUE(
       wafer::compiler::detail::isValidPackageCompilerManagedSlot(workspace));
   workspace.name = "another_workspace_label";
   EXPECT_TRUE(
       wafer::compiler::detail::isValidPackageCompilerManagedSlot(workspace));
-  wafer::compiler::KernelABISlot profileWorkspace{
+  wafer::compiler::TileEntryArgument profileWorkspace{
       2,
-      wafer::compiler::KernelABISlotRole::Workspace,
-      1,
+      wafer::compiler::TileEntryArgumentKind::ProfileRecord,
+      0,
       "diagnostic_profile_name",
       "u8",
       wafer::MemLayout::Tensor,
       {WAFER_TX81_PROFILER_MIN_BUFFER_BYTES},
       WAFER_TX81_PROFILER_MIN_BUFFER_BYTES,
-      WAFER_TX81_PROFILER_BUFFER_ALIGNMENT};
+      WAFER_TX81_PROFILER_BUFFER_ALIGNMENT,
+      wafer::compiler::TileEntryArgumentAccess::ReadWrite};
   EXPECT_TRUE(wafer::compiler::detail::isValidPackageCompilerManagedSlot(
       profileWorkspace));
   profileWorkspace.name = "another_diagnostic_profile_name";
   EXPECT_TRUE(wafer::compiler::detail::isValidPackageCompilerManagedSlot(
       profileWorkspace));
-  std::vector<wafer::compiler::KernelABISlot> captureSlots = {
+  std::vector<wafer::compiler::TileEntryArgument> captureSlots = {
       userInput, workspace, profileWorkspace};
   EXPECT_FALSE(static_cast<bool>(
-      wafer::compiler::detail::verifyProfileCaptureKernelABISlots(
+      wafer::compiler::detail::verifyProfileCaptureTileEntryArguments(
           captureSlots, wafer::compiler::detail::ProfileCaptureKind::Count)));
   captureSlots.back().name = "renamed_without_changing_typed_identity";
   EXPECT_FALSE(static_cast<bool>(
-      wafer::compiler::detail::verifyProfileCaptureKernelABISlots(
+      wafer::compiler::detail::verifyProfileCaptureTileEntryArguments(
           captureSlots, wafer::compiler::detail::ProfileCaptureKind::Count)));
   profileWorkspace.byteSize += 1;
   profileWorkspace.shape = {profileWorkspace.byteSize};
   EXPECT_FALSE(wafer::compiler::detail::isValidPackageCompilerManagedSlot(
       profileWorkspace));
 
-  wafer::compiler::KernelABISlot status = makeSlot(
-      2, wafer::compiler::KernelABISlotRole::TransportStatus, "renamed_status");
+  wafer::compiler::TileEntryArgument status = makeSlot(
+      2, wafer::compiler::TileEntryArgumentKind::TransportStatus, "renamed_status");
   EXPECT_TRUE(
       wafer::compiler::detail::isValidPackageCompilerManagedSlot(status));
   status.alignment = 8;
@@ -762,102 +755,7 @@ TEST(TargetCodeGenTest,
             std::string::npos);
 }
 
-TEST(TargetCodeGenTest, TileMajorKernelEntryRequiresAggregateDomain) {
-  llvm::LLVMContext context;
-  llvm::Module module("kernel-grid-entry", context);
-  llvm::Type *i64 = llvm::Type::getInt64Ty(context);
-  llvm::FunctionType *type = llvm::FunctionType::get(
-      llvm::Type::getVoidTy(context), {i64, i64}, /*isVarArg=*/false);
-  llvm::Function *entry = llvm::Function::Create(
-      type, llvm::GlobalValue::ExternalLinkage, "main", module);
-  llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", entry));
-  builder.CreateRetVoid();
-
-  llvm::SmallString<256> temporaryDirectory;
-  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory("wafer-kernel-grid-entry",
-                                                    temporaryDirectory));
-  auto cleanup = llvm::make_scope_exit(
-      [&]() { (void)llvm::sys::fs::remove_directories(temporaryDirectory); });
-  llvm::SmallString<256> outputPath =
-      pathInDirectory(temporaryDirectory, "entry.ll");
-  std::vector<wafer::compiler::KernelABISlot> slots = {
-      makeSlot(0, wafer::compiler::KernelABISlotRole::UserInput, "input"),
-      makeSlot(1, wafer::compiler::KernelABISlotRole::Output, "output")};
-  llvm::Error error = wafer::compiler::detail::writeLLVMIR(
-      module, "main", slots, makeKernelLaunch(wafer::KernelLaunchForm::Grid),
-      wafer::LaunchSlotId(0), /*tileCount=*/16, outputPath);
-  ASSERT_TRUE(static_cast<bool>(error));
-  EXPECT_NE(llvm::toString(std::move(error))
-                .find("must use complete-Tile aggregation"),
-            std::string::npos);
-  EXPECT_FALSE(llvm::sys::fs::exists(outputPath));
-}
-
-TEST(TargetCodeGenTest,
-     ModelEntryLoadsRoleMajorLaunchSlotDescriptorsAndExports) {
-  llvm::LLVMContext context;
-  llvm::Module module("model-entry", context);
-  llvm::Type *i64 = llvm::Type::getInt64Ty(context);
-  llvm::FunctionType *type =
-      llvm::FunctionType::get(llvm::Type::getVoidTy(context), {i64, i64, i64},
-                              /*isVarArg=*/false);
-  llvm::Function *entry = llvm::Function::Create(
-      type, llvm::GlobalValue::ExternalLinkage, "main", module);
-  llvm::IRBuilder<> builder(llvm::BasicBlock::Create(context, "entry", entry));
-  builder.CreateRetVoid();
-
-  llvm::SmallString<256> temporaryDirectory;
-  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory("wafer-model-entry",
-                                                    temporaryDirectory));
-  auto cleanup = llvm::make_scope_exit(
-      [&]() { (void)llvm::sys::fs::remove_directories(temporaryDirectory); });
-  llvm::SmallString<256> llvmIRPath =
-      pathInDirectory(temporaryDirectory, "entry.ll");
-  llvm::SmallString<256> modulePath =
-      pathInDirectory(temporaryDirectory, "entry.so");
-  std::vector<wafer::compiler::KernelABISlot> slots = {
-      makeSlot(0, wafer::compiler::KernelABISlotRole::UserInput, "lhs"),
-      makeSlot(1, wafer::compiler::KernelABISlotRole::Output, "output"),
-      makeSlot(2, wafer::compiler::KernelABISlotRole::UserInput, "rhs")};
-  if (llvm::Error error = wafer::compiler::detail::writeLLVMIR(
-          module, "main", slots, makeModelLaunch(), wafer::LaunchSlotId(3),
-          /*tileCount=*/16, llvmIRPath))
-    FAIL() << llvm::toString(std::move(error));
-
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> output =
-      llvm::MemoryBuffer::getFile(llvmIRPath);
-  ASSERT_TRUE(static_cast<bool>(output)) << output.getError().message();
-  llvm::StringRef text = (*output)->getBuffer();
-  EXPECT_TRUE(text.contains("define void @main(ptr %boot_parameter)"));
-  EXPECT_TRUE(
-      text.contains("getelementptr inbounds i8, ptr %boot_parameter, i64 488"));
-  EXPECT_TRUE(text.contains(
-      "getelementptr inbounds i8, ptr %boot_parameter, i64 2576"));
-  EXPECT_TRUE(
-      text.contains("getelementptr inbounds i8, ptr %boot_parameter, i64 560"));
-  EXPECT_TRUE(text.contains("section \"ExportedDYNSYMTab\""));
-  EXPECT_TRUE(text.contains("@llvm.used"));
-
-  ASSERT_EQ(linkTargetModule(llvmIRPath, modulePath), 0);
-  llvm::Expected<wafer::compiler::VerifiedTargetModule> verified =
-      wafer::compiler::detail::verifyLinkedTargetModuleForTesting(
-          modulePath, "main", kTargetIdentity, makeModelLaunch());
-  ASSERT_TRUE(static_cast<bool>(verified))
-      << llvm::toString(verified.takeError());
-
-  std::vector<wafer::compiler::KernelABISlot> unsupportedSlots = slots;
-  unsupportedSlots[1] =
-      makeSlot(1, wafer::compiler::KernelABISlotRole::Parameter, "parameter");
-  llvm::Error unsupported = wafer::compiler::detail::writeLLVMIR(
-      module, "main", unsupportedSlots, makeModelLaunch(),
-      wafer::LaunchSlotId(3), /*tileCount=*/16, llvmIRPath);
-  ASSERT_TRUE(static_cast<bool>(unsupported));
-  EXPECT_NE(llvm::toString(std::move(unsupported))
-                .find("only supports rank-1..6 f32 user-input and output"),
-            std::string::npos);
-}
-
-TEST(TargetCodeGenTest, MultiTileLaunchValidationRejectsSchemaAndModelRoles) {
+TEST(TargetCodeGenTest, MultiTileLaunchValidationRejectsMismatchedSchemas) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> mismatchedSchema =
       makeRuntimeLaunchModules(makeKernelLaunch(wafer::KernelLaunchForm::Grid),
                                wafer::compiler::TransportContract::None,
@@ -870,21 +768,6 @@ TEST(TargetCodeGenTest, MultiTileLaunchValidationRejectsSchemaAndModelRoles) {
   ASSERT_TRUE(static_cast<bool>(schemaError));
   EXPECT_NE(llvm::toString(std::move(schemaError))
                 .find("identical per-Tile slot schemas"),
-            std::string::npos);
-
-  llvm::Expected<wafer::compiler::TargetLLVMModules> unsupportedModel =
-      makeRuntimeLaunchModules(makeModelLaunch(),
-                               wafer::compiler::TransportContract::None,
-                               std::nullopt, std::nullopt,
-                               /*unsupportedModelRole=*/true);
-  ASSERT_TRUE(static_cast<bool>(unsupportedModel))
-      << llvm::toString(unsupportedModel.takeError());
-  llvm::Error modelError =
-      wafer::compiler::detail::validateRuntimeLaunchContractDomainForTesting(
-          *unsupportedModel);
-  ASSERT_TRUE(static_cast<bool>(modelError));
-  EXPECT_NE(llvm::toString(std::move(modelError))
-                .find("only supports rank-1..6 f32 user-input and output"),
             std::string::npos);
 }
 
@@ -899,10 +782,10 @@ TEST(TargetCodeGenTest,
       wafer::compiler::detail::validateRuntimeLaunchContractDomainForTesting(
           *gridWithTransport)));
   EXPECT_EQ(llvm::count_if(
-                gridWithTransport->getModules().front().getKernelABISlots(),
-                [](const wafer::compiler::KernelABISlot &slot) {
-                  return slot.role ==
-                         wafer::compiler::KernelABISlotRole::TransportStatus;
+                gridWithTransport->getModules().front().getTileEntryArguments(),
+                [](const wafer::compiler::TileEntryArgument &slot) {
+                  return slot.kind ==
+                         wafer::compiler::TileEntryArgumentKind::TransportStatus;
                 }),
             1);
 
@@ -917,10 +800,10 @@ TEST(TargetCodeGenTest,
           *clusterWithoutTransport)));
   EXPECT_EQ(
       llvm::count_if(
-          clusterWithoutTransport->getModules().front().getKernelABISlots(),
-          [](const wafer::compiler::KernelABISlot &slot) {
-            return slot.role ==
-                   wafer::compiler::KernelABISlotRole::TransportStatus;
+          clusterWithoutTransport->getModules().front().getTileEntryArguments(),
+          [](const wafer::compiler::TileEntryArgument &slot) {
+            return slot.kind ==
+                   wafer::compiler::TileEntryArgumentKind::TransportStatus;
           }),
       0);
 }
@@ -934,7 +817,7 @@ TEST(TargetCodeGenTest, KernelArgumentPacketLimitIsCheckedBeforeDeviceLink) {
         makeRuntimeLaunchModules(std::move(launch),
                                  wafer::compiler::TransportContract::None,
                                  std::nullopt, std::nullopt,
-                                 /*unsupportedModelRole=*/false, slotCount);
+                                 slotCount);
     EXPECT_TRUE(static_cast<bool>(targetLLVMModules));
     if (!targetLLVMModules)
       return targetLLVMModules.takeError();
@@ -986,7 +869,7 @@ TEST(TargetCodeGenTest,
           makeKernelLaunch(wafer::KernelLaunchForm::Grid,
                            wafer::KernelEntryABI::TileRowPointerTable),
           wafer::compiler::TransportContract::None, std::nullopt, std::nullopt,
-          /*unsupportedModelRole=*/false, /*slotCount=*/18);
+          /*slotCount=*/18);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
       << llvm::toString(targetLLVMModules.takeError());
 
@@ -1020,7 +903,7 @@ TEST(TargetCodeGenTest,
           makeKernelLaunch(wafer::KernelLaunchForm::Grid,
                            wafer::KernelEntryABI::TileRowPointerTable),
           wafer::compiler::TransportContract::None, std::nullopt, std::nullopt,
-          /*unsupportedModelRole=*/false, /*slotCount=*/2,
+          /*slotCount=*/2,
           /*withCollidingClosure=*/false,
           /*withUnsupportedInlineAsm=*/false, /*renamedSlotTile=*/std::nullopt,
           /*permuteTiles=*/true);
@@ -1059,8 +942,7 @@ TEST(TargetCodeGenTest,
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Cluster),
           wafer::compiler::TransportContract::DirectDTE, std::nullopt,
-          std::nullopt, /*unsupportedModelRole=*/false,
-          /*slotCount=*/2, /*withCollidingClosure=*/true,
+          std::nullopt,           /*slotCount=*/2, /*withCollidingClosure=*/true,
           /*withUnsupportedInlineAsm=*/false,
           /*renamedSlotTile=*/7);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
@@ -1169,8 +1051,7 @@ TEST(TargetCodeGenTest, KernelAggregationRejectsUnsupportedLinkConstructs) {
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Cluster),
           wafer::compiler::TransportContract::DirectDTE, std::nullopt,
-          std::nullopt, /*unsupportedModelRole=*/false,
-          /*slotCount=*/2, /*withCollidingClosure=*/false,
+          std::nullopt,           /*slotCount=*/2, /*withCollidingClosure=*/false,
           /*withUnsupportedInlineAsm=*/true);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
       << llvm::toString(targetLLVMModules.takeError());
@@ -1247,8 +1128,7 @@ TEST(TargetCodeGenTest,
     llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
         makeRuntimeLaunchModules(launch, scenario.transport, std::nullopt,
                                  std::nullopt,
-                                 /*unsupportedModelRole=*/false,
-                                 /*slotCount=*/2,
+                                                                  /*slotCount=*/2,
                                  /*withCollidingClosure=*/false,
                                  /*withUnsupportedInlineAsm=*/false,
                                  /*renamedSlotTile=*/7);
@@ -1289,7 +1169,7 @@ TEST(TargetCodeGenTest,
       EXPECT_EQ(tileInterface.getLaunchSlotId(),
                 wafer::LaunchSlotId(static_cast<int64_t>(launchSlot)));
       EXPECT_EQ(tileInterface.getModuleId().getValue(), 0u);
-      EXPECT_EQ(tileInterface.getKernelABISlots().size(), 2u);
+      EXPECT_EQ(tileInterface.getTileEntryArguments().size(), 2u);
     }
     llvm::SmallString<256> modulePath(outputDirectory);
     llvm::sys::path::append(modulePath, module.getRelativePath());
@@ -1345,16 +1225,16 @@ TEST(TargetCodeGenTest,
     ASSERT_EQ(targetModules->getTileInterfaces().size(), 16u);
     for (const wafer::compiler::VerifiedTargetTileInterface &tileInterface :
          targetModules->getTileInterfaces()) {
-      ASSERT_FALSE(tileInterface.getKernelABISlots().empty());
-      const wafer::compiler::KernelABISlot &profileSlot =
-          tileInterface.getKernelABISlots().back();
-      EXPECT_EQ(profileSlot.role,
-                wafer::compiler::KernelABISlotRole::Workspace);
-      EXPECT_EQ(profileSlot.resourceIndex, 1);
+      ASSERT_FALSE(tileInterface.getTileEntryArguments().empty());
+      const wafer::compiler::TileEntryArgument &profileSlot =
+          tileInterface.getTileEntryArguments().back();
+      EXPECT_EQ(profileSlot.kind,
+                wafer::compiler::TileEntryArgumentKind::ProfileRecord);
+      EXPECT_EQ(profileSlot.resourceIndex, 0);
       EXPECT_EQ(profileSlot.byteSize, WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
       EXPECT_FALSE(static_cast<bool>(
-          wafer::compiler::detail::verifyProfileCaptureKernelABISlots(
-              tileInterface.getKernelABISlots(), capture)));
+          wafer::compiler::detail::verifyProfileCaptureTileEntryArguments(
+              tileInterface.getTileEntryArguments(), capture)));
     }
 
     llvm::Expected<wafer::compiler::CardExecutable> executable =
@@ -1378,43 +1258,24 @@ TEST(TargetCodeGenTest,
     EXPECT_EQ(manifest.tileCount, 16);
     EXPECT_EQ(manifest.modules.size(), 1u);
     ASSERT_EQ(manifest.entries.size(), 16u);
-    auto sharedInput = llvm::find_if(
-        manifest.resources,
-        [](const wafer::runtime::PackageResourceRecord &resource) {
-          return resource.role ==
-                 wafer::runtime::PackageResourceRole::UserInput;
-        });
-    ASSERT_NE(sharedInput, manifest.resources.end());
-    EXPECT_EQ(llvm::count_if(
-                  manifest.resources,
-                  [](const wafer::runtime::PackageResourceRecord &resource) {
-                    return resource.role ==
-                           wafer::runtime::PackageResourceRole::UserInput;
-                  }),
-              1);
-    ASSERT_TRUE(std::holds_alternative<wafer::runtime::CardResourceScope>(
-        sharedInput->scope));
-    EXPECT_EQ(
-        std::get<wafer::runtime::CardResourceScope>(sharedInput->scope).cardId,
-        wafer::CardId(0));
+    const wafer::runtime::ExternalPortRecord &sharedInput =
+        manifest.inputs.front();
+    ASSERT_EQ(manifest.inputs.size(), 1u);
+    EXPECT_EQ(sharedInput.roleIndex, 0);
     wafer::runtime::RuntimeEnvironment noCardEnvironment{
         manifest.targetIdentity, manifest.runtimeABI, manifest.moduleFormat};
-    const wafer::KernelRuntimeLaunchContract *kernel =
+    const wafer::KernelRuntimeLaunchContract &kernel =
         manifest.launch.getKernel();
-    ASSERT_NE(kernel, nullptr);
-    noCardEnvironment.supportedKernelLaunchForms = {kernel->form};
-    noCardEnvironment.supportedKernelEntryABIs = {kernel->entryABI};
+    noCardEnvironment.supportedKernelLaunchForms = {kernel.form};
+    noCardEnvironment.supportedKernelEntryABIs = {kernel.entryABI};
     noCardEnvironment.supportsDirectDTE =
         scenario.transport == wafer::compiler::TransportContract::DirectDTE;
     noCardEnvironment.directDTEStatusABI =
         wafer::runtime::kDirectDTEStatusABI.str();
     noCardEnvironment.supportsHostWatchdog = true;
     std::vector<wafer::runtime::RuntimeInvocationBinding> noCardBindings;
-    for (const wafer::runtime::PackageResourceRecord &resource :
-         manifest.resources)
-      if (resource.hostVisible)
-        noCardBindings.push_back({resource.id, resource.bytes,
-                                  resource.alignment, resource.access, true});
+    for (const wafer::runtime::ExternalPortRecord &port : manifest.inputs)
+      noCardBindings.push_back({port.id, port.bytes, port.alignment});
     llvm::Expected<wafer::runtime::RuntimeInvocationPlan> noCardPlan =
         wafer::runtime::planRuntimeInvocation(
             package->getManifest(), noCardBindings, noCardEnvironment);
@@ -1422,39 +1283,37 @@ TEST(TargetCodeGenTest,
         << llvm::toString(noCardPlan.takeError());
     ASSERT_EQ(noCardPlan->tiles.size(), 16u);
     EXPECT_TRUE(llvm::all_of(noCardPlan->tiles, [&](const auto &tile) {
-      return !tile.launchOrder.empty() &&
-             tile.launchOrder.front() == sharedInput->id;
+      return !tile.argumentAddresses.empty() &&
+             tile.argumentAddresses.front().base ==
+                 wafer::runtime::RuntimeArgumentAddressBase::Invocation;
     }));
-    EXPECT_EQ(llvm::count_if(
-                  manifest.resources,
-                  [](const wafer::runtime::PackageResourceRecord &resource) {
-                    return resource.role ==
-                               wafer::runtime::PackageResourceRole::Workspace &&
-                           resource.roleIndex == 1 &&
-                           resource.bytes ==
-                               WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES &&
-                           resource.alignment ==
-                               WAFER_TX81_PROFILER_BUFFER_ALIGNMENT &&
-                           !resource.hostVisible;
-                  }),
-              16);
+    EXPECT_EQ(
+        llvm::count_if(
+            manifest.entries, [](const auto &entry) {
+              return llvm::any_of(entry.arguments, [](const auto &argument) {
+                if (const auto *profile = std::get_if<
+                        wafer::runtime::ProfileRecordArgument>(
+                        &argument.reference))
+                  return profile->bytes ==
+                         WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
+                return false;
+              });
+            }),
+        16);
     for (const wafer::runtime::PackageEntrypointRecord &entry :
          manifest.entries) {
-      ASSERT_FALSE(entry.slots.empty());
-      EXPECT_EQ(entry.slots.front().resource, sharedInput->id);
-      const wafer::runtime::ResourceId profileResource =
-          entry.slots.back().resource;
-      ASSERT_LT(profileResource.getValue(), manifest.resources.size());
-      const wafer::runtime::PackageResourceRecord &resource =
-          manifest.resources[profileResource.getValue()];
-      ASSERT_TRUE(std::holds_alternative<wafer::runtime::TileResourceScope>(
-          resource.scope));
-      const auto &scope =
-          std::get<wafer::runtime::TileResourceScope>(resource.scope);
-      EXPECT_EQ(scope.cardId, entry.cardId);
-      EXPECT_EQ(scope.tileId, entry.tileId);
-      EXPECT_EQ(resource.role, wafer::runtime::PackageResourceRole::Workspace);
-      EXPECT_EQ(resource.roleIndex, 1);
+      ASSERT_FALSE(entry.arguments.empty());
+      EXPECT_TRUE(std::holds_alternative<
+                  wafer::runtime::ExternalInputArgument>(
+          entry.arguments.front().reference));
+      EXPECT_TRUE(std::holds_alternative<
+                  wafer::runtime::ProfileRecordArgument>(
+          entry.arguments.back().reference));
+      EXPECT_EQ(
+          std::get<wafer::runtime::ProfileRecordArgument>(
+              entry.arguments.back().reference)
+              .bytes,
+          WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
       EXPECT_EQ(
           std::holds_alternative<
               wafer::runtime::DirectDTETransportRequirements>(entry.transport),
@@ -1474,14 +1333,6 @@ TEST(TargetCodeGenTest, LinkedRiscvELFReadbackCarriesTypedProfileFacts) {
   llvm::SmallString<256> modulePath =
       pathInDirectory(temporaryDirectory, "kernel.so");
   ASSERT_EQ(linkTargetFixture(modulePath), 0);
-
-  llvm::Expected<wafer::compiler::VerifiedTargetModule> missingModelExport =
-      wafer::compiler::detail::verifyLinkedTargetModuleForTesting(
-          modulePath, "kernel_entry", kTargetIdentity, makeModelLaunch());
-  ASSERT_FALSE(static_cast<bool>(missingModelExport));
-  EXPECT_NE(llvm::toString(missingModelExport.takeError())
-                .find("missing ExportedDYNSYMTab"),
-            std::string::npos);
 
   llvm::Expected<wafer::compiler::VerifiedTargetModule> module =
       wafer::compiler::detail::verifyLinkedTargetModuleForTesting(

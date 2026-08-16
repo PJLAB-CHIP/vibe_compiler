@@ -272,3 +272,33 @@ source program
   的所有可恢复失败都必须填充typed `ProgramDataFailure`（kind+locator+detail），不得落入默认MissingPayload。
 - source snapshot只复制IR/metadata/目录结构；16个Tile binding只引用`ProgramTensorId`和range，
   parameter/constant按range一次materialize并shared view共享，card-shared target resource只encode一次。
+
+## ExecutablePackage与one-shot runtime（Q56 current合同）
+
+- package目录只有三样：`manifest.json`、`modules/module_*.so`、`data/program-data.bin`（empty case也写canonical空文件，
+  `total_bytes=0`、`base_alignment=1`、canonical empty digest）。source tree、IR copy、NPY目录、exporter payload
+  一律不进入package；测试用`test ! -e`钉住该合同。
+- manifest是closed schema：program/target/launch/card_count/tile_count/program_data/program_tensors/target_tensors/
+  inputs/outputs/modules/entries（exact fields，canonical JSON，无版本分支）；参数identity是`role+role_index`
+  （=tensor program参数位），无name字段。
+- 每个entry参数是closed union `TileEntryArgument`：ExternalInput{port}、TargetTensor{tensor}、ExternalOutput{port}、
+  Workspace、ProfileRecord、TransportStatus；port id按table dense，target tensor id全局dense。
+- runtime两块allocation：program data一块（non-empty一次整体H2D，empty零provider调用），invocation一块（inputs/outputs/
+  每Tile workspace/profile/status/pointer rows预排）；TargetTensor地址=program-data base+file_offset，其余=invocation
+  base+offset；no-card打印`launch_argument: N base=invocation|program_data offset=M`。
+- 验证入口：no-card`wafer-run --package-dir <pkg> --no-card`；包布局/清单断言用python一行式
+  （hashlib digest对比、role/role_index、bytes/alignment/file_offset）。
+- `txLoadGraph`/`txLaunchModel`只存在于`docs/`反向工程资料；Wafer-owned接口、CLI、runtime只有`txLaunchKernel` family。
+
+## Q56构建与验证命令（stable）
+
+- 主树：`cmake --build build/q55-current-fresh -j$(nproc)`；board runtime树：`build/wafer-board-check`
+  （`WAFER_ENABLE_BOARD_RUNTIME=ON`）；SystemC树：`build/q54-fresh-model`（改公共API后三棵树都要重编）。
+- 默认lit gate：`lit -sv build/q55-current-fresh/test/{Dialect,Frontend,Pipelines,Spmd,Transforms}`。
+- Tools/Runtime lit整跑：`lit -sv build/q55-current-fresh/test/Runtime build/q55-current-fresh/test/Tools`
+  （部分case分钟级，整跑10分钟+）。
+- 单测：`WaferRunBoardIOUnitTests`（42）、`WaferRuntimePublicLinkSmoke`、`WaferUnitTests --gtest_filter='...'`
+  定向套件；全量`WaferUnitTests`存在已知卡死case（见bugs.md），全量跑前必须排除。
+- 板测：`test/Board/wafer_board_single_op_add_test.py`是Q56 board gate case；`WAFER_EXECUTE_HARDWARE_TESTS=1`才执行，
+  无硬件时exit 77；真实板测通过前Q56不标done。
+- Tools测试的python断言先脱离lit验证：把`%t.outputs/...`替换为真实package路径后用`python3 -c`跑一遍，再交给lit。

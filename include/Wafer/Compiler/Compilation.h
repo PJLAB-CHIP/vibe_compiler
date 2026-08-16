@@ -69,21 +69,18 @@ public:
   static constexpr int64_t kSingleCardTileCount = 16;
 
   static llvm::Expected<ExecutionConfig>
-  createForSingleCard(int64_t numPartitions,
-                      RuntimeLaunchKind runtimeLaunchKind);
+  createForSingleCard(int64_t numPartitions);
 
   int64_t getNumPartitions() const { return numPartitions; }
   int64_t getTileCount() const { return tileCount; }
   TargetIdentityId getTargetIdentityId() const {
     return TargetIdentityId::waferTx81SingleCard();
   }
-  RuntimeLaunchKind getRuntimeLaunchKind() const { return runtimeLaunchKind; }
 
   friend bool operator==(const ExecutionConfig &lhs,
                          const ExecutionConfig &rhs) {
     return lhs.numPartitions == rhs.numPartitions &&
-           lhs.tileCount == rhs.tileCount &&
-           lhs.runtimeLaunchKind == rhs.runtimeLaunchKind;
+           lhs.tileCount == rhs.tileCount;
   }
   friend bool operator!=(const ExecutionConfig &lhs,
                          const ExecutionConfig &rhs) {
@@ -91,14 +88,11 @@ public:
   }
 
 private:
-  ExecutionConfig(int64_t numPartitions, int64_t tileCount,
-                  RuntimeLaunchKind runtimeLaunchKind)
-      : numPartitions(numPartitions), tileCount(tileCount),
-        runtimeLaunchKind(runtimeLaunchKind) {}
+  ExecutionConfig(int64_t numPartitions, int64_t tileCount)
+      : numPartitions(numPartitions), tileCount(tileCount) {}
 
   int64_t numPartitions;
   int64_t tileCount;
-  RuntimeLaunchKind runtimeLaunchKind;
 };
 
 /// Move-only semantic input to the compiler driver. Output locations,

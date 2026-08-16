@@ -3,16 +3,16 @@
 设计合同由`tasks/14-target-code-generation.md`、`tasks/15-launch-runtime-package.md`和
 `tasks/16-verification-contract.md`拥有，状态只看`tasks/progress.md`。本计划只拆施工顺序，不建立第二套总体架构。
 
-状态：Q58先闭合编译事务中的parameter/constant所有权和target data handoff；Q56随后将current产品收口到
-`CardExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支；Q57保持later，只在主compiler和新package都达到
-`board-ready`后启动。
+状态：Q58已闭合编译事务中的parameter/constant所有权和target data handoff；Q56已把current产品收口到
+`CardExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支（实施证据见
+`tasks/progress.md` Q56行）；Q57保持later，只在主compiler和新package都达到`board-ready`后启动。
 
 ## 1. 拆分依据
 
 当前工程已经固定以下事实：
 
-- `ProgramResourceBinding`表达逻辑input、parameter、constant和output；当前实现名`KernelABISlot`实际表达每个Tile entry
-  的有序target参数，本设计统一称为`TileEntryArgument`；它记录
+- `ProgramResourceBinding`表达逻辑input、parameter、constant和output；旧实现名`KernelABISlot`实际表达每个Tile entry
+  的有序target参数，current名称是`TileEntryArgument`；它记录
   target layout、physical bytes、alignment和argument ordinal。
 - kernel target entry从pointer table逐槽读取64位DDR地址。Compiler生成的RDMA/WDMA指令负责执行期间DDR与SPM之间的数据搬运；
   host `txMemcpy`只负责调用前后的host/device传输。
@@ -131,7 +131,7 @@ entries
   completion与transport。argument直接引用input、output、TargetTensor或entry-local requirement。
 
 不序列化provider allocation表；上述records直接被writer、loader和runtime plan消费。package中的file offset只是target-ready bytes的位置；
-实际`BoardDeviceMemory`只在board execution或PreparedExecution中取得。Q56实施时将当前误导性的`KernelABISlot`原位重命名为
+实际`BoardDeviceMemory`只在board execution或PreparedExecution中取得。Q56已将当前误导性的`KernelABISlot`原位重命名为
 `TileEntryArgument`并同步替换producer、kernel pointer-row wrapper、package/runtime consumer和测试；同时从Wafer-owned
 current compiler/package/runtime接口删除`txLoadGraph`/`txLaunchModel`分支，不保留旧symbol、枚举值、选择开关或兼容alias。
 

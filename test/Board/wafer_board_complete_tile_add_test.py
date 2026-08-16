@@ -24,7 +24,6 @@ import wafer_runtime_launch_contract as runtime_launch
 class RuntimeLaunchCalibrationCase:
     key: str
     tile_count: int
-    launch_kind: str
     oracle: str
     completion: str
 
@@ -38,24 +37,15 @@ PROFILE_INSTRUMENTATION_READY = "profile_instrumentation: ready cards=1 tiles=16
 PROFILE_MEASUREMENT_COUNT = 3
 PROFILE_PRIMARY_EXECUTION_COUNT = 1
 BOARD_PROCESS_TIMEOUT_MARGIN_SECONDS = 120.0
-LAUNCH_EVIDENCE = {
-    runtime_launch.KERNEL_LAUNCH_KIND: (
-        "kernel-grid-x16",
-        "scheduler-pid-x-and-exact-tile-slices",
-    ),
-}
-LAUNCH_CONTRACTS = {
-    runtime_launch.KERNEL_LAUNCH_KIND: runtime_launch.GRID_KERNEL_LAUNCH,
-}
-RUNTIME_LAUNCH_CALIBRATION_CASES = tuple(
+LAUNCH_PATTERN = "kernel-grid-x16"
+TILE_EXECUTION_BASIS = "scheduler-pid-x-and-exact-tile-slices"
+RUNTIME_LAUNCH_CALIBRATION_CASES = (
     RuntimeLaunchCalibrationCase(
-        f"tile16-{launch_kind}-add",
+        "tile16-kernel-add",
         TILE_COUNT,
-        launch_kind,
         "full f16 output and exact complete-Tile runtime domain",
         "all-Tile local drain, device-to-host copy, and normal cleanup",
-    )
-    for launch_kind in LAUNCH_EVIDENCE
+    ),
 )
 CALIBRATION_LEAF_BINDINGS = {
     "tile16-kernel-add": RUNTIME_LAUNCH_CALIBRATION_CASES,
@@ -106,11 +96,6 @@ def parse_args() -> argparse.Namespace:
             "compile byte-identical ordinary/profile packages, then execute "
             "one fixed Primary->Count->Trace profile collection"
         ),
-    )
-    parser.add_argument(
-        "--launch-kind",
-        choices=tuple(LAUNCH_EVIDENCE),
-        default=runtime_launch.KERNEL_LAUNCH_KIND,
     )
     parser.add_argument("--device-id", type=int, default=0)
     parser.add_argument("--expected-runtime-version", type=int)
@@ -180,7 +165,6 @@ def compile_package(
         "--output-program-dir",
         str(package),
         "--num-partitions=1",
-        f"--launch-kind={args.launch_kind}",
     ]
     if profile:
         command.append("--profile")
@@ -240,13 +224,13 @@ def require_profile_instrumentation_permissions(package: pathlib.Path) -> None:
 
 
 def validate_manifest(
-    package: pathlib.Path, launch_kind: str
+    package: pathlib.Path,
 ) -> dict[tuple[str, int], int]:
     manifest = json.loads((package / "manifest.json").read_text())
     target = manifest.get("target")
     runtime_launch.require_manifest_launch(
         manifest,
-        LAUNCH_CONTRACTS[launch_kind],
+        runtime_launch.GRID_KERNEL_LAUNCH,
         context="all-tile board gate",
     )
     entries = runtime_launch.require_complete_tile_domain(
@@ -270,44 +254,35 @@ def validate_manifest(
     ):
         raise RuntimeError("package module export contract is invalid")
 
-    resources = manifest.get("resources")
-    if not isinstance(resources, list):
-        raise RuntimeError("package resources must be a list")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
+    if not isinstance(inputs, list) or not isinstance(outputs, list):
+        raise RuntimeError("package port tables must be lists")
     resource_ids: set[int] = set()
     bindings: dict[tuple[str, int], int] = {}
-    for resource in resources:
-        if not isinstance(resource, dict):
-            raise RuntimeError("package resources must be objects")
-        if not resource.get("host_visible"):
-            continue
-        resource_id = resource.get("id")
-        role = resource.get("role")
-        role_index = resource.get("role_index")
-        key = (role, role_index)
-        if (
-            not isinstance(resource_id, int)
-            or resource_id in resource_ids
-            or key in bindings
-            or resource.get("scope") != {"kind": "card", "card_id": 0}
-            or resource.get("type") != {"dtype": "f16", "shape": [GLOBAL_ELEMENTS]}
-            or resource.get("bytes") != GLOBAL_ELEMENTS * ELEMENT_DTYPE.itemsize
-        ):
-            raise RuntimeError(f"unexpected tile-16 Add resource: {resource}")
-        if role == "user_input" and role_index in (0, 1):
-            expected_access = "read_only"
-        elif role == "output" and role_index == 0:
-            expected_access = "write_only"
-        else:
-            raise RuntimeError(f"unexpected host-visible resource binding: {key}")
-        if resource.get("access") != expected_access:
-            raise RuntimeError(f"unexpected resource access for binding: {key}")
-        resource_ids.add(resource_id)
-        bindings[key] = resource_id
+    for table, role in (("inputs", "user_input"), ("outputs", "output")):
+        for record in manifest.get(table, []):
+            if not isinstance(record, dict):
+                raise RuntimeError("package port records must be objects")
+            resource_id = record.get("id")
+            role_index = record.get("role_index")
+            key = (role, role_index)
+            if (
+                not isinstance(resource_id, int)
+                or resource_id in resource_ids
+                or key in bindings
+                or record.get("dtype") != "f16"
+                or record.get("shape") != [GLOBAL_ELEMENTS]
+                or record.get("bytes") != GLOBAL_ELEMENTS * ELEMENT_DTYPE.itemsize
+            ):
+                raise RuntimeError(f"unexpected tile-16 Add port: {record}")
+            resource_ids.add(resource_id)
+            bindings[key] = resource_id
 
     expected_keys = {("user_input", 0), ("user_input", 1), ("output", 0)}
     if set(bindings) != expected_keys:
         raise RuntimeError(
-            "package resources do not exactly cover the Add bindings"
+            "package ports do not exactly cover the Add bindings"
         )
 
     for entry in entries:
@@ -316,18 +291,38 @@ def validate_manifest(
             or entry.get("transport") != {"kind": "none"}
         ):
             raise RuntimeError("Tile entry contract is invalid")
-        expected_slots = [
-            (0, bindings[("user_input", 0)], "read_only"),
-            (1, bindings[("user_input", 1)], "read_only"),
-            (2, bindings[("output", 0)], "write_only"),
+        expected_arguments = [
+            {
+                "ordinal": 0,
+                "kind": "external_input",
+                "port": bindings[("user_input", 0)],
+                "access": "read_only",
+            },
+            {
+                "ordinal": 1,
+                "kind": "external_input",
+                "port": bindings[("user_input", 1)],
+                "access": "read_only",
+            },
+            {
+                "ordinal": 2,
+                "kind": "external_output",
+                "port": bindings[("output", 0)],
+                "access": "write_only",
+            },
         ]
-        actual_slots = [
-            (slot.get("ordinal"), slot.get("resource"), slot.get("access"))
-            for slot in entry.get("slots", [])[:3]
-            if isinstance(slot, dict)
+        actual_arguments = [
+            {
+                "ordinal": argument.get("ordinal"),
+                "kind": argument.get("kind"),
+                "port": argument.get("port"),
+                "access": argument.get("access"),
+            }
+            for argument in entry.get("arguments", [])[:3]
+            if isinstance(argument, dict)
         ]
-        if actual_slots != expected_slots:
-            raise RuntimeError("Tile launch slots do not match typed resources")
+        if actual_arguments != expected_arguments:
+            raise RuntimeError("Tile launch arguments do not match typed ports")
     return bindings
 
 
@@ -377,11 +372,11 @@ def write_tile_payloads(
 
 def verify_board_evidence(
     stdout: str,
-    launch_kind: str,
     output_ids: set[int],
     entry_evidence: set[tuple[int, int, int]],
 ) -> None:
-    launch_pattern, tile_execution_basis = LAUNCH_EVIDENCE[launch_kind]
+    launch_pattern = LAUNCH_PATTERN
+    tile_execution_basis = TILE_EXECUTION_BASIS
     required = (
         "board_stage: validation",
         "board_stage: device-selection",
@@ -410,7 +405,7 @@ def verify_board_evidence(
         stdout, re.MULTILINE,
     )
     output_matches = re.findall(
-        rf"^output_compare: resource=(\d+) "
+        rf"^output_compare: port=(\d+) "
         rf"bytes={GLOBAL_ELEMENTS * ELEMENT_DTYPE.itemsize} exact=true$",
         stdout,
         re.MULTILINE,
@@ -723,7 +718,7 @@ def main() -> int:
     else:
         compile_package(args, source, package, profile=False)
 
-    bindings = validate_manifest(package, args.launch_kind)
+    bindings = validate_manifest(package)
     if args.no_card:
         no_card_packages = (
             (ordinary_package, package)
@@ -748,7 +743,7 @@ def main() -> int:
                     "no-card launch did not prove the exact profile instrumentation "
                     "activation boundary"
                 )
-        print(f"no_card_launch_kind: {args.launch_kind}")
+        print("no_card_launch_kind: kernel")
         print(f"no_card_profile: {str(args.profile).lower()}")
         return 0
 
@@ -795,7 +790,6 @@ def main() -> int:
         )
         verify_board_evidence(
             profile_result.stdout,
-            args.launch_kind,
             output_ids,
             entry_evidence,
         )
@@ -822,13 +816,12 @@ def main() -> int:
         result = run(command)
         verify_board_evidence(
             result.stdout,
-            args.launch_kind,
             output_ids,
             entry_evidence,
         )
         print(
             "board_complete_tile_add_iteration: "
-            f"{iteration + 1}/{args.repeat} launch_kind={args.launch_kind}"
+            f"{iteration + 1}/{args.repeat} launch_kind=kernel"
         )
         print(result.stdout, end="")
     return 0

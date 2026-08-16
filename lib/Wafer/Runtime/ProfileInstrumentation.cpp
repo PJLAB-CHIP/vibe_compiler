@@ -1212,33 +1212,6 @@ llvm::Error verifyProfileGraph(const RawPlan &plan,
   return llvm::Error::success();
 }
 
-bool sameSemanticResource(const PackageResourceRecord &lhs,
-                          const PackageResourceRecord &rhs) {
-  auto sameScope = [](const PackageResourceScope &lhsScope,
-                      const PackageResourceScope &rhsScope) {
-    if (lhsScope.index() != rhsScope.index())
-      return false;
-    if (const auto *lhsCard = std::get_if<CardResourceScope>(&lhsScope))
-      return lhsCard->cardId == std::get<CardResourceScope>(rhsScope).cardId;
-    const auto &lhsTile = std::get<TileResourceScope>(lhsScope);
-    const auto &rhsTile = std::get<TileResourceScope>(rhsScope);
-    return lhsTile.cardId == rhsTile.cardId && lhsTile.tileId == rhsTile.tileId;
-  };
-  return sameScope(lhs.scope, rhs.scope) && lhs.role == rhs.role &&
-         lhs.roleIndex == rhs.roleIndex && lhs.type.dtype == rhs.type.dtype &&
-         lhs.type.shape == rhs.type.shape && lhs.bytes == rhs.bytes &&
-         lhs.alignment == rhs.alignment && lhs.access == rhs.access &&
-         lhs.hostVisible == rhs.hostVisible;
-}
-
-const PackageResourceRecord *findResource(const PackageManifest &manifest,
-                                          ResourceId id) {
-  auto iterator = llvm::find_if(manifest.resources, [&](const auto &resource) {
-    return resource.id == id;
-  });
-  return iterator == manifest.resources.end() ? nullptr : &*iterator;
-}
-
 const PackageEntrypointRecord *findEntryForTile(const PackageManifest &manifest,
                                                 int64_t tileId) {
   auto iterator = llvm::find_if(manifest.entries, [&](const auto &entry) {
@@ -1288,9 +1261,7 @@ verifyProfilePhysicalBindings(const ProfiledPackage &profiledPackage,
   return llvm::Error::success();
 }
 
-bool sameTransport(const PackageManifest &lhsManifest,
-                   const TransportRequirements &lhs,
-                   const PackageManifest &rhsManifest,
+bool sameTransport(const TransportRequirements &lhs,
                    const TransportRequirements &rhs) {
   if (lhs.index() != rhs.index())
     return false;
@@ -1298,27 +1269,17 @@ bool sameTransport(const PackageManifest &lhsManifest,
   const auto *rhsDirect = std::get_if<DirectDTETransportRequirements>(&rhs);
   if (!lhsDirect)
     return true;
-  const PackageResourceRecord *lhsStatus =
-      findResource(lhsManifest, lhsDirect->statusResource);
-  const PackageResourceRecord *rhsStatus =
-      rhsDirect ? findResource(rhsManifest, rhsDirect->statusResource)
-                : nullptr;
-  return rhsDirect && lhsStatus && rhsStatus &&
-         lhsDirect->statusABI == rhsDirect->statusABI &&
-         lhsDirect->hostWatchdogRequired == rhsDirect->hostWatchdogRequired &&
-         sameSemanticResource(*lhsStatus, *rhsStatus);
+  return rhsDirect && lhsDirect->statusABI == rhsDirect->statusABI &&
+         lhsDirect->hostWatchdogRequired == rhsDirect->hostWatchdogRequired;
 }
 
-bool isProfilerRecordResource(const PackageResourceRecord &resource,
-                              uint64_t recordBytes) {
-  return resource.role == PackageResourceRole::Workspace &&
-         resource.roleIndex == 1 && resource.type.dtype == "u8" &&
-         resource.type.shape ==
-             std::vector<int64_t>{static_cast<int64_t>(recordBytes)} &&
-         resource.bytes == recordBytes &&
-         resource.alignment == WAFER_TX81_PROFILER_BUFFER_ALIGNMENT &&
-         resource.access == PackageAccessMode::ReadWrite &&
-         !resource.hostVisible;
+const ProfileRecordArgument *
+findProfileRecordArgument(const PackageEntrypointRecord &entry) {
+  for (const TileEntryArgumentRecord &argument : entry.arguments)
+    if (const auto *profile =
+            std::get_if<ProfileRecordArgument>(&argument.reference))
+      return profile;
+  return nullptr;
 }
 
 llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
@@ -1336,58 +1297,23 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
     return invalid("profile capture packages must each contain one card and "
                    "16 Tiles");
 
-  std::vector<const PackageResourceRecord *> executionResources;
-  std::vector<const PackageResourceRecord *> captureResources;
-  std::array<const PackageResourceRecord *, kProfileInstrumentationTileCount>
-      profilerResources{};
-  for (const PackageResourceRecord &resource : execution.resources) {
-    if (resource.role == PackageResourceRole::Workspace &&
-        resource.roleIndex == 1)
-      return invalid("execution package occupies the reserved profiler "
-                     "workspace index");
-    executionResources.push_back(&resource);
-  }
-  for (const PackageResourceRecord &resource : capture.resources) {
-    if (resource.role == PackageResourceRole::Workspace &&
-        resource.roleIndex == 1) {
-      if (!isProfilerRecordResource(resource, recordBytes))
-        return invalid("profile capture has an invalid profiler workspace");
-      const auto *scope = std::get_if<TileResourceScope>(&resource.scope);
-      if (!scope || scope->cardId != CardId(0) ||
-          scope->tileId.getValue() < 0 ||
-          scope->tileId.getValue() >= kProfileInstrumentationTileCount ||
-          profilerResources[scope->tileId.getValue()])
-        return invalid("profile capture profiler workspace Tile domain is "
-                       "not unique");
-      profilerResources[scope->tileId.getValue()] = &resource;
-      continue;
-    }
-    captureResources.push_back(&resource);
-  }
-  if (llvm::any_of(profilerResources,
-                   [](const auto *resource) { return resource == nullptr; }))
-    return invalid("profile capture must contain one profiler workspace for "
-                   "each of 16 Tiles");
-  auto byResourceKey = [](const auto *lhs, const auto *rhs) {
-    auto key = [](const PackageResourceRecord &resource) {
-      if (const auto *card = std::get_if<CardResourceScope>(&resource.scope))
-        return std::tuple(0, card->cardId.getValue(), int64_t{-1},
-                          static_cast<int>(resource.role), resource.roleIndex);
-      const auto &tile = std::get<TileResourceScope>(resource.scope);
-      return std::tuple(1, tile.cardId.getValue(), tile.tileId.getValue(),
-                        static_cast<int>(resource.role), resource.roleIndex);
-    };
-    return key(*lhs) < key(*rhs);
-  };
-  llvm::sort(executionResources, byResourceKey);
-  llvm::sort(captureResources, byResourceKey);
-  if (executionResources.size() != captureResources.size())
-    return invalid("profile capture contains resources other than its exact "
-                   "profiler workspace extension");
-  for (auto [lhs, rhs] : llvm::zip(executionResources, captureResources))
-    if (!sameSemanticResource(*lhs, *rhs))
-      return invalid("profile capture base resource contract differs from its "
-                     "execution package");
+  // The capture package reuses the same accepted Tile domain: program
+  // tensors, target tensors, ports and program data are byte-identical;
+  // only the entry-local profile record extends each entry.
+  if (execution.programTensors != capture.programTensors ||
+      execution.targetTensors != capture.targetTensors ||
+      execution.inputs != capture.inputs ||
+      execution.outputs != capture.outputs)
+    return invalid("profile capture program/target tensor or port contract "
+                   "differs from its execution package");
+  if (execution.programData.digest != capture.programData.digest ||
+      execution.programData.totalBytes != capture.programData.totalBytes ||
+      execution.programData.baseAlignment !=
+          capture.programData.baseAlignment ||
+      execution.programData.relativePath !=
+          capture.programData.relativePath)
+    return invalid("profile capture program data contract differs from its "
+                   "execution package");
 
   for (int64_t tileId = 0; tileId < kProfileInstrumentationTileCount;
        ++tileId) {
@@ -1400,27 +1326,34 @@ llvm::Error verifyCapturePackageContract(const PackageManifest &execution,
         executionEntry->tileId != captureEntry->tileId ||
         executionEntry->launchSlot != captureEntry->launchSlot ||
         executionEntry->completion != captureEntry->completion ||
-        captureEntry->slots.size() != executionEntry->slots.size() + 1 ||
-        !sameTransport(execution, executionEntry->transport, capture,
-                       captureEntry->transport))
+        captureEntry->arguments.size() !=
+            executionEntry->arguments.size() + 1 ||
+        !sameTransport(executionEntry->transport, captureEntry->transport))
       return invalid("profile capture entry ABI extension is invalid");
-    const PackageABISlotBinding &profilerSlot = captureEntry->slots.back();
-    if (profilerSlot.resource != profilerResources[tileId]->id ||
-        profilerSlot.access != PackageAccessMode::ReadWrite)
-      return invalid("profile capture profiler workspace is not the final "
-                     "entry slot");
-    for (size_t index = 0; index < executionEntry->slots.size(); ++index) {
-      const PackageResourceRecord *executionResource =
-          findResource(execution, executionEntry->slots[index].resource);
-      const PackageResourceRecord *captureResource =
-          findResource(capture, captureEntry->slots[index].resource);
-      if (!executionResource || !captureResource ||
-          executionEntry->slots[index].access !=
-              captureEntry->slots[index].access ||
-          !sameSemanticResource(*executionResource, *captureResource))
-        return invalid("profile capture entry ABI base slots differ from its "
-                       "execution package");
+    for (size_t index = 0; index < executionEntry->arguments.size(); ++index) {
+      const TileEntryArgumentRecord &executionArgument =
+          executionEntry->arguments[index];
+      const TileEntryArgumentRecord &captureArgument =
+          captureEntry->arguments[index];
+      if (executionArgument.reference != captureArgument.reference ||
+          executionArgument.access != captureArgument.access)
+        return invalid("profile capture entry ABI base arguments differ from "
+                       "its execution package");
     }
+    const ProfileRecordArgument *profile =
+        findProfileRecordArgument(*captureEntry);
+    if (!profile ||
+        profile->recordABI != kProfileRecordABI ||
+        profile->bytes != recordBytes ||
+        profile->alignment != WAFER_TX81_PROFILER_BUFFER_ALIGNMENT ||
+        captureEntry->arguments.back().access != PackageAccessMode::ReadWrite ||
+        !std::holds_alternative<ProfileRecordArgument>(
+            captureEntry->arguments.back().reference))
+      return invalid("profile capture profiler record is not the exact final "
+                     "entry argument");
+    if (findProfileRecordArgument(*executionEntry))
+      return invalid("execution package occupies the reserved profiler "
+                     "record argument");
   }
   return llvm::Error::success();
 }

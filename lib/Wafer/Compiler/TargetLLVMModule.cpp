@@ -13,14 +13,14 @@ TargetLLVMModule::TargetLLVMModule(
     CardId cardId, TileId tileId,
     LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
     TargetIdentityId targetIdentity, KernelRuntimeABIId kernelRuntimeABI,
-    llvm::StringRef moduleFormat, std::vector<KernelABISlot> kernelABISlots,
+    llvm::StringRef moduleFormat, std::vector<TileEntryArgument> tileEntryArguments,
     std::unique_ptr<llvm::LLVMContext> context,
     std::unique_ptr<llvm::Module> module)
     : cardId(cardId), tileId(tileId),
       launchSlotId(launchSlotId), entrySymbol(entrySymbol.str()),
       targetIdentity(targetIdentity), kernelRuntimeABI(kernelRuntimeABI),
       moduleFormat(moduleFormat.str()),
-      kernelABISlots(std::move(kernelABISlots)), context(std::move(context)),
+      tileEntryArguments(std::move(tileEntryArguments)), context(std::move(context)),
       module(std::move(module)) {}
 
 TargetLLVMModule::~TargetLLVMModule() = default;

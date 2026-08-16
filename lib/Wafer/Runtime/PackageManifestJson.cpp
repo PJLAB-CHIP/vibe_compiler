@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 
 namespace wafer::runtime {
 namespace {
@@ -118,20 +119,12 @@ llvm::Expected<bool> requireBoolean(const llvm::json::Object &object,
   return *value;
 }
 
-llvm::Expected<PackageResourceRole> parseRole(llvm::StringRef role) {
-  if (role == "user_input")
-    return PackageResourceRole::UserInput;
+llvm::Expected<ProgramTensorRole> parseProgramTensorRole(llvm::StringRef role) {
   if (role == "parameter")
-    return PackageResourceRole::Parameter;
+    return ProgramTensorRole::Parameter;
   if (role == "constant")
-    return PackageResourceRole::Constant;
-  if (role == "output")
-    return PackageResourceRole::Output;
-  if (role == "workspace")
-    return PackageResourceRole::Workspace;
-  if (role == "transport_status")
-    return PackageResourceRole::TransportStatus;
-  return invalid("unsupported package resource role '" + role + "'");
+    return ProgramTensorRole::Constant;
+  return invalid("unsupported package program tensor role '" + role + "'");
 }
 
 llvm::Expected<PackageAccessMode> parseAccess(llvm::StringRef access) {
@@ -142,6 +135,18 @@ llvm::Expected<PackageAccessMode> parseAccess(llvm::StringRef access) {
   if (access == "read_write")
     return PackageAccessMode::ReadWrite;
   return invalid("unsupported package access mode '" + access + "'");
+}
+
+llvm::Expected<PackageMemLayout> parseMemLayout(llvm::StringRef layout) {
+  if (layout == "tensor")
+    return PackageMemLayout::Tensor;
+  if (layout == "ntensor")
+    return PackageMemLayout::NTensor;
+  if (layout == "cx")
+    return PackageMemLayout::Cx;
+  if (layout == "ncx")
+    return PackageMemLayout::NCx;
+  return invalid("unsupported package memory layout '" + layout + "'");
 }
 
 llvm::Expected<PackageModuleExportRole>
@@ -194,184 +199,272 @@ llvm::Expected<RuntimeLaunchContract>
 parseRuntimeLaunchContract(const llvm::json::Object &object,
                            llvm::StringRef context,
                            const PackageParseLimits &limits) {
+  if (llvm::Error error = requireExactFields(
+          object, {"kind", "form", "entry_abi", "phases"}, context))
+    return std::move(error);
   llvm::Expected<std::string> kindSpelling =
       requireString(object, "kind", context, limits);
   if (!kindSpelling)
     return kindSpelling.takeError();
-  llvm::Expected<RuntimeLaunchKind> kind =
-      parseRuntimeLaunchKind(*kindSpelling);
-  if (!kind)
-    return kind.takeError();
-
-  if (*kind == RuntimeLaunchKind::Kernel) {
-    if (llvm::Error error = requireExactFields(
-            object, {"kind", "form", "entry_abi", "phases"}, context))
-      return std::move(error);
-    llvm::Expected<std::string> formSpelling =
-        requireString(object, "form", context, limits);
-    if (!formSpelling)
-      return formSpelling.takeError();
-    llvm::Expected<KernelLaunchForm> form =
-        parseKernelLaunchForm(*formSpelling);
-    if (!form)
-      return form.takeError();
-    llvm::Expected<std::string> entryABISpelling =
-        requireString(object, "entry_abi", context, limits);
-    if (!entryABISpelling)
-      return entryABISpelling.takeError();
-    llvm::Expected<KernelEntryABI> entryABI =
-        parseKernelEntryABI(*entryABISpelling);
-    if (!entryABI)
-      return entryABI.takeError();
-    llvm::Expected<std::vector<RuntimeLaunchPhaseRole>> phases =
-        parseRuntimeLaunchPhases(object, context, limits);
-    if (!phases)
-      return phases.takeError();
-    return RuntimeLaunchContract::createKernel(*form, *entryABI, *phases);
-  }
-
-  if (llvm::Error error =
-          requireExactFields(object, {"kind", "entry_abi", "phases"}, context))
-    return std::move(error);
+  if (*kindSpelling != "kernel")
+    return invalid(context + ".kind must be 'kernel'");
+  llvm::Expected<std::string> formSpelling =
+      requireString(object, "form", context, limits);
+  if (!formSpelling)
+    return formSpelling.takeError();
+  llvm::Expected<KernelLaunchForm> form =
+      parseKernelLaunchForm(*formSpelling);
+  if (!form)
+    return form.takeError();
   llvm::Expected<std::string> entryABISpelling =
       requireString(object, "entry_abi", context, limits);
   if (!entryABISpelling)
     return entryABISpelling.takeError();
-  llvm::Expected<ModelEntryABI> entryABI =
-      parseModelEntryABI(*entryABISpelling);
+  llvm::Expected<KernelEntryABI> entryABI =
+      parseKernelEntryABI(*entryABISpelling);
   if (!entryABI)
     return entryABI.takeError();
   llvm::Expected<std::vector<RuntimeLaunchPhaseRole>> phases =
       parseRuntimeLaunchPhases(object, context, limits);
   if (!phases)
     return phases.takeError();
-  return RuntimeLaunchContract::createModel(*entryABI, *phases);
+  return RuntimeLaunchContract::createKernel(*form, *entryABI, *phases);
 }
 
-llvm::Expected<PackageResourceRecord>
-parseResource(const llvm::json::Value &value, uint64_t index,
-              const PackageParseLimits &limits) {
+llvm::Expected<std::vector<int64_t>>
+parseShape(const llvm::json::Object &object, llvm::StringRef field,
+           llvm::StringRef context, const PackageParseLimits &limits) {
+  llvm::Expected<const llvm::json::Array *> shape =
+      requireArray(object, field, context);
+  if (!shape)
+    return shape.takeError();
+  if ((*shape)->size() > limits.maxShapeRank)
+    return invalid(context + "." + field + " exceeds rank limit");
+  std::vector<int64_t> result;
+  result.reserve((*shape)->size());
+  for (const llvm::json::Value &dimensionValue : **shape) {
+    std::optional<int64_t> dimension = dimensionValue.getAsInteger();
+    if (!dimension || *dimension < 0)
+      return invalid(context + "." + field +
+                     " must contain non-negative integers");
+    result.push_back(*dimension);
+  }
+  return result;
+}
+
+llvm::Expected<ProgramTensorRecord>
+parseProgramTensorRecord(const llvm::json::Value &value, uint64_t index,
+                         const PackageParseLimits &limits) {
   const llvm::json::Object *object = value.getAsObject();
-  std::string context = "resources[" + std::to_string(index) + "]";
+  std::string context = "program_tensors[" + std::to_string(index) + "]";
   if (!object)
     return invalid(context + " must be an object");
   if (llvm::Error error = requireExactFields(
           *object,
-          {"id", "scope", "role", "role_index", "name", "type", "bytes",
-           "alignment", "access", "host_visible"},
+          {"id", "role", "role_index", "dtype", "global_shape", "local_shape",
+           "slice_offsets", "slice_sizes"},
           context))
     return std::move(error);
 
-  PackageResourceRecord record;
+  ProgramTensorRecord record;
   llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
   if (!id)
     return id.takeError();
-  llvm::Expected<const llvm::json::Object *> scope =
-      requireObject(*object, "scope", context);
-  if (!scope)
-    return scope.takeError();
-  llvm::Expected<std::string> scopeKind =
-      requireString(**scope, "kind", context + ".scope", limits);
-  if (!scopeKind)
-    return scopeKind.takeError();
-  const bool cardScope = *scopeKind == "card";
-  const bool tileScope = *scopeKind == "tile";
-  if (!cardScope && !tileScope)
-    return invalid(context + ".scope.kind is unsupported");
-  if (cardScope) {
-    if (llvm::Error error = requireExactFields(
-            **scope, {"kind", "card_id"}, context + ".scope"))
-      return std::move(error);
-  } else if (llvm::Error error = requireExactFields(
-                 **scope, {"kind", "card_id", "tile_id"},
-                 context + ".scope")) {
-    return std::move(error);
-  }
-  llvm::Expected<int64_t> cardId =
-      requireInteger(**scope, "card_id", context + ".scope");
-  if (!cardId)
-    return cardId.takeError();
-  int64_t tileId = 0;
-  if (tileScope) {
-    llvm::Expected<int64_t> parsedTileId =
-        requireInteger(**scope, "tile_id", context + ".scope");
-    if (!parsedTileId)
-      return parsedTileId.takeError();
-    tileId = *parsedTileId;
-  }
+  record.id = ProgramTensorId(*id);
   llvm::Expected<std::string> roleText =
       requireString(*object, "role", context, limits);
   if (!roleText)
     return roleText.takeError();
+  llvm::Expected<ProgramTensorRole> role = parseProgramTensorRole(*roleText);
+  if (!role)
+    return role.takeError();
+  record.role = *role;
   llvm::Expected<int64_t> roleIndex =
       requireInteger(*object, "role_index", context);
   if (!roleIndex)
     return roleIndex.takeError();
-  llvm::Expected<std::string> name =
-      requireString(*object, "name", context, limits, /*allowEmpty=*/true);
-  if (!name)
-    return name.takeError();
-  llvm::Expected<const llvm::json::Object *> type =
-      requireObject(*object, "type", context);
-  if (!type)
-    return type.takeError();
+  record.roleIndex = *roleIndex;
+  llvm::Expected<std::string> dtype =
+      requireString(*object, "dtype", context, limits);
+  if (!dtype)
+    return dtype.takeError();
+  record.dtype = std::move(*dtype);
+  llvm::Expected<std::vector<int64_t>> globalShape =
+      parseShape(*object, "global_shape", context, limits);
+  if (!globalShape)
+    return globalShape.takeError();
+  record.globalShape = std::move(*globalShape);
+  llvm::Expected<std::vector<int64_t>> localShape =
+      parseShape(*object, "local_shape", context, limits);
+  if (!localShape)
+    return localShape.takeError();
+  record.localShape = std::move(*localShape);
+  llvm::Expected<std::vector<int64_t>> sliceOffsets =
+      parseShape(*object, "slice_offsets", context, limits);
+  if (!sliceOffsets)
+    return sliceOffsets.takeError();
+  record.sliceOffsets = std::move(*sliceOffsets);
+  llvm::Expected<std::vector<int64_t>> sliceSizes =
+      parseShape(*object, "slice_sizes", context, limits);
+  if (!sliceSizes)
+    return sliceSizes.takeError();
+  record.sliceSizes = std::move(*sliceSizes);
+  return record;
+}
+
+llvm::Expected<TargetTensorRecord>
+parseTargetTensorRecord(const llvm::json::Value &value, uint64_t index,
+                        const PackageParseLimits &limits) {
+  const llvm::json::Object *object = value.getAsObject();
+  std::string context = "target_tensors[" + std::to_string(index) + "]";
+  if (!object)
+    return invalid(context + " must be an object");
+  if (llvm::Error error = requireExactFields(
+          *object,
+          {"id", "program_tensor", "dtype", "layout", "shape", "bytes",
+           "alignment", "file_offset"},
+          context))
+    return std::move(error);
+
+  TargetTensorRecord record;
+  llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
+  if (!id)
+    return id.takeError();
+  record.id = TargetTensorId(*id);
+  llvm::Expected<uint64_t> programTensor =
+      requireUnsigned(*object, "program_tensor", context);
+  if (!programTensor)
+    return programTensor.takeError();
+  record.programTensor = ProgramTensorId(*programTensor);
+  llvm::Expected<std::string> dtype =
+      requireString(*object, "dtype", context, limits);
+  if (!dtype)
+    return dtype.takeError();
+  record.dtype = std::move(*dtype);
+  llvm::Expected<std::string> layoutText =
+      requireString(*object, "layout", context, limits);
+  if (!layoutText)
+    return layoutText.takeError();
+  llvm::Expected<PackageMemLayout> layout = parseMemLayout(*layoutText);
+  if (!layout)
+    return layout.takeError();
+  record.layout = *layout;
+  llvm::Expected<std::vector<int64_t>> shape =
+      parseShape(*object, "shape", context, limits);
+  if (!shape)
+    return shape.takeError();
+  record.shape = std::move(*shape);
   llvm::Expected<uint64_t> bytes = requireUnsigned(*object, "bytes", context);
   if (!bytes)
     return bytes.takeError();
+  record.bytes = *bytes;
   llvm::Expected<uint64_t> alignment =
       requireUnsigned(*object, "alignment", context);
   if (!alignment)
     return alignment.takeError();
-  llvm::Expected<std::string> accessText =
-      requireString(*object, "access", context, limits);
-  if (!accessText)
-    return accessText.takeError();
-  llvm::Expected<bool> hostVisible =
-      requireBoolean(*object, "host_visible", context);
-  if (!hostVisible)
-    return hostVisible.takeError();
-  if (llvm::Error error =
-          requireExactFields(**type, {"dtype", "shape"}, context + ".type"))
+  record.alignment = *alignment;
+  llvm::Expected<uint64_t> fileOffset =
+      requireUnsigned(*object, "file_offset", context);
+  if (!fileOffset)
+    return fileOffset.takeError();
+  record.fileOffset = *fileOffset;
+  return record;
+}
+
+llvm::Expected<ProgramDataRecord>
+parseProgramDataRecord(const llvm::json::Object &object,
+                       const PackageParseLimits &limits) {
+  if (llvm::Error error = requireExactFields(
+          object,
+          {"relative_path", "total_bytes", "base_alignment", "digest"},
+          "manifest.program_data"))
     return std::move(error);
+  ProgramDataRecord record;
+  llvm::Expected<std::string> relativePath =
+      requireString(object, "relative_path", "manifest.program_data", limits);
+  if (!relativePath)
+    return relativePath.takeError();
+  record.relativePath = std::move(*relativePath);
+  llvm::Expected<uint64_t> totalBytes =
+      requireUnsigned(object, "total_bytes", "manifest.program_data");
+  if (!totalBytes)
+    return totalBytes.takeError();
+  record.totalBytes = *totalBytes;
+  llvm::Expected<uint64_t> baseAlignment =
+      requireUnsigned(object, "base_alignment", "manifest.program_data");
+  if (!baseAlignment)
+    return baseAlignment.takeError();
+  record.baseAlignment = *baseAlignment;
+  llvm::Expected<std::string> digest =
+      requireString(object, "digest", "manifest.program_data", limits);
+  if (!digest)
+    return digest.takeError();
+  record.digest = std::move(*digest);
+  return record;
+}
+
+llvm::Expected<ExternalPortRecord>
+parseExternalPortRecord(const llvm::json::Value &value, uint64_t index,
+                        llvm::StringRef tableName,
+                        const PackageParseLimits &limits) {
+  const llvm::json::Object *object = value.getAsObject();
+  std::string context = tableName.str() + "[" + std::to_string(index) + "]";
+  if (!object)
+    return invalid(context + " must be an object");
+  if (llvm::Error error = requireExactFields(
+          *object,
+          {"id", "role_index", "logical_dtype", "logical_shape", "dtype",
+           "layout", "shape", "bytes", "alignment"},
+          context))
+    return std::move(error);
+
+  ExternalPortRecord record;
+  llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
+  if (!id)
+    return id.takeError();
+  record.id = PortId(*id);
+  llvm::Expected<int64_t> roleIndex =
+      requireInteger(*object, "role_index", context);
+  if (!roleIndex)
+    return roleIndex.takeError();
+  record.roleIndex = *roleIndex;
+  llvm::Expected<std::string> logicalDtype =
+      requireString(*object, "logical_dtype", context, limits);
+  if (!logicalDtype)
+    return logicalDtype.takeError();
+  record.logicalDtype = std::move(*logicalDtype);
+  llvm::Expected<std::vector<int64_t>> logicalShape =
+      parseShape(*object, "logical_shape", context, limits);
+  if (!logicalShape)
+    return logicalShape.takeError();
+  record.logicalShape = std::move(*logicalShape);
   llvm::Expected<std::string> dtype =
-      requireString(**type, "dtype", context + ".type", limits);
+      requireString(*object, "dtype", context, limits);
   if (!dtype)
     return dtype.takeError();
-  llvm::Expected<const llvm::json::Array *> shape =
-      requireArray(**type, "shape", context + ".type");
+  record.dtype = std::move(*dtype);
+  llvm::Expected<std::string> layoutText =
+      requireString(*object, "layout", context, limits);
+  if (!layoutText)
+    return layoutText.takeError();
+  llvm::Expected<PackageMemLayout> layout = parseMemLayout(*layoutText);
+  if (!layout)
+    return layout.takeError();
+  record.layout = *layout;
+  llvm::Expected<std::vector<int64_t>> shape =
+      parseShape(*object, "shape", context, limits);
   if (!shape)
     return shape.takeError();
-  if ((*shape)->size() > limits.maxShapeRank)
-    return invalid(context + ".type.shape exceeds rank limit");
-
-  llvm::Expected<PackageResourceRole> role = parseRole(*roleText);
-  if (!role)
-    return role.takeError();
-  llvm::Expected<PackageAccessMode> access = parseAccess(*accessText);
-  if (!access)
-    return access.takeError();
-
-  record.id = ResourceId(*id);
-  record.scope = cardScope
-                     ? PackageResourceScope(
-                           CardResourceScope{CardId(*cardId)})
-                     : PackageResourceScope(TileResourceScope{
-                           CardId(*cardId), TileId(tileId)});
-  record.role = *role;
-  record.roleIndex = *roleIndex;
-  record.name = std::move(*name);
-  record.type.dtype = std::move(*dtype);
-  for (const llvm::json::Value &dimensionValue : **shape) {
-    std::optional<int64_t> dimension = dimensionValue.getAsInteger();
-    if (!dimension || *dimension < 0)
-      return invalid(context +
-                     ".type.shape must contain non-negative integers");
-    record.type.shape.push_back(*dimension);
-  }
+  record.shape = std::move(*shape);
+  llvm::Expected<uint64_t> bytes = requireUnsigned(*object, "bytes", context);
+  if (!bytes)
+    return bytes.takeError();
   record.bytes = *bytes;
+  llvm::Expected<uint64_t> alignment =
+      requireUnsigned(*object, "alignment", context);
+  if (!alignment)
+    return alignment.takeError();
   record.alignment = *alignment;
-  record.access = *access;
-  record.hostVisible = *hostVisible;
   return record;
 }
 
@@ -454,14 +547,8 @@ parseTransportRequirements(const llvm::json::Object &object,
   if (*kind != "direct_dte")
     return invalid(context + " has unsupported transport kind '" + *kind + "'");
   if (llvm::Error error = requireExactFields(
-          object,
-          {"kind", "status_resource", "status_abi", "host_watchdog_required"},
-          context))
+          object, {"kind", "status_abi", "host_watchdog_required"}, context))
     return std::move(error);
-  llvm::Expected<uint64_t> statusResource =
-      requireUnsigned(object, "status_resource", context);
-  if (!statusResource)
-    return statusResource.takeError();
   llvm::Expected<std::string> statusABI =
       requireString(object, "status_abi", context, limits);
   if (!statusABI)
@@ -471,7 +558,130 @@ parseTransportRequirements(const llvm::json::Object &object,
   if (!watchdog)
     return watchdog.takeError();
   return TransportRequirements{DirectDTETransportRequirements{
-      ResourceId(*statusResource), std::move(*statusABI), *watchdog}};
+      std::move(*statusABI), *watchdog}};
+}
+
+llvm::Expected<TileEntryArgumentReference>
+parseTileEntryArgumentReference(const llvm::json::Object &object,
+                                llvm::StringRef context,
+                                const PackageParseLimits &limits) {
+  llvm::Expected<std::string> kind =
+      requireString(object, "kind", context, limits);
+  if (!kind)
+    return kind.takeError();
+  if (*kind == "external_input") {
+    if (llvm::Error error = requireExactFields(
+            object, {"kind", "ordinal", "port", "access"}, context))
+      return std::move(error);
+    llvm::Expected<uint64_t> port = requireUnsigned(object, "port", context);
+    if (!port)
+      return port.takeError();
+    return TileEntryArgumentReference{ExternalInputArgument{PortId(*port)}};
+  }
+  if (*kind == "target_tensor") {
+    if (llvm::Error error = requireExactFields(
+            object, {"kind", "ordinal", "tensor", "access"}, context))
+      return std::move(error);
+    llvm::Expected<uint64_t> tensor =
+        requireUnsigned(object, "tensor", context);
+    if (!tensor)
+      return tensor.takeError();
+    return TileEntryArgumentReference{
+        TargetTensorArgument{TargetTensorId(*tensor)}};
+  }
+  if (*kind == "external_output") {
+    if (llvm::Error error = requireExactFields(
+            object, {"kind", "ordinal", "port", "access"}, context))
+      return std::move(error);
+    llvm::Expected<uint64_t> port = requireUnsigned(object, "port", context);
+    if (!port)
+      return port.takeError();
+    return TileEntryArgumentReference{ExternalOutputArgument{PortId(*port)}};
+  }
+  if (*kind == "workspace") {
+    if (llvm::Error error = requireExactFields(
+            object,
+            {"kind", "ordinal", "bytes", "alignment", "access"}, context))
+      return std::move(error);
+    llvm::Expected<uint64_t> bytes = requireUnsigned(object, "bytes", context);
+    if (!bytes)
+      return bytes.takeError();
+    llvm::Expected<uint64_t> alignment =
+        requireUnsigned(object, "alignment", context);
+    if (!alignment)
+      return alignment.takeError();
+    return TileEntryArgumentReference{WorkspaceArgument{*bytes, *alignment}};
+  }
+  if (*kind == "profile_record") {
+    if (llvm::Error error = requireExactFields(
+            object,
+            {"kind", "ordinal", "record_abi", "bytes", "alignment", "access"},
+            context))
+      return std::move(error);
+    llvm::Expected<std::string> recordABI =
+        requireString(object, "record_abi", context, limits);
+    if (!recordABI)
+      return recordABI.takeError();
+    llvm::Expected<uint64_t> bytes = requireUnsigned(object, "bytes", context);
+    if (!bytes)
+      return bytes.takeError();
+    llvm::Expected<uint64_t> alignment =
+        requireUnsigned(object, "alignment", context);
+    if (!alignment)
+      return alignment.takeError();
+    return TileEntryArgumentReference{ProfileRecordArgument{
+        std::move(*recordABI), *bytes, *alignment}};
+  }
+  if (*kind == "transport_status") {
+    if (llvm::Error error = requireExactFields(
+            object,
+            {"kind", "ordinal", "status_abi", "bytes", "alignment", "access"},
+            context))
+      return std::move(error);
+    llvm::Expected<std::string> statusABI =
+        requireString(object, "status_abi", context, limits);
+    if (!statusABI)
+      return statusABI.takeError();
+    llvm::Expected<uint64_t> bytes = requireUnsigned(object, "bytes", context);
+    if (!bytes)
+      return bytes.takeError();
+    llvm::Expected<uint64_t> alignment =
+        requireUnsigned(object, "alignment", context);
+    if (!alignment)
+      return alignment.takeError();
+    return TileEntryArgumentReference{TransportStatusArgument{
+        std::move(*statusABI), *bytes, *alignment}};
+  }
+  return invalid(context + " has unsupported argument kind '" + *kind + "'");
+}
+
+llvm::Expected<TileEntryArgumentRecord>
+parseTileEntryArgument(const llvm::json::Value &value, uint64_t index,
+                       const PackageParseLimits &limits) {
+  const llvm::json::Object *object = value.getAsObject();
+  std::string context = "entries.arguments[" + std::to_string(index) + "]";
+  if (!object)
+    return invalid(context + " must be an object");
+  TileEntryArgumentRecord record;
+  llvm::Expected<uint64_t> ordinal =
+      requireUnsigned(*object, "ordinal", context);
+  if (!ordinal)
+    return ordinal.takeError();
+  record.ordinal = *ordinal;
+  llvm::Expected<TileEntryArgumentReference> reference =
+      parseTileEntryArgumentReference(*object, context, limits);
+  if (!reference)
+    return reference.takeError();
+  record.reference = std::move(*reference);
+  llvm::Expected<std::string> accessText =
+      requireString(*object, "access", context, limits);
+  if (!accessText)
+    return accessText.takeError();
+  llvm::Expected<PackageAccessMode> access = parseAccess(*accessText);
+  if (!access)
+    return access.takeError();
+  record.access = *access;
+  return record;
 }
 
 llvm::Expected<PackageEntrypointRecord>
@@ -483,7 +693,7 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
     return invalid(context + " must be an object");
   if (llvm::Error error = requireExactFields(
           *object,
-          {"id", "card_id", "tile_id", "launch_slot", "module", "slots",
+          {"id", "card_id", "tile_id", "launch_slot", "module", "arguments",
            "completion", "transport"},
           context))
     return std::move(error);
@@ -503,10 +713,10 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
   llvm::Expected<uint64_t> module = requireUnsigned(*object, "module", context);
   if (!module)
     return module.takeError();
-  llvm::Expected<const llvm::json::Array *> slots =
-      requireArray(*object, "slots", context);
-  if (!slots)
-    return slots.takeError();
+  llvm::Expected<const llvm::json::Array *> arguments =
+      requireArray(*object, "arguments", context);
+  if (!arguments)
+    return arguments.takeError();
   llvm::Expected<std::string> completion =
       requireString(*object, "completion", context, limits);
   if (!completion)
@@ -523,8 +733,8 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
       **transportObject, context + ".transport", limits);
   if (!transport)
     return transport.takeError();
-  if ((*slots)->size() > limits.maxRecords)
-    return invalid(context + ".slots exceeds record limit");
+  if ((*arguments)->size() > limits.maxRecords)
+    return invalid(context + ".arguments exceeds record limit");
 
   PackageEntrypointRecord record;
   record.id = EntryId(*id);
@@ -534,31 +744,12 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
   record.module = ModuleId(*module);
   record.completion = *completionKind;
   record.transport = std::move(*transport);
-  for (auto [slotIndex, slotValue] : llvm::enumerate(**slots)) {
-    const llvm::json::Object *slot = slotValue.getAsObject();
-    std::string slotContext =
-        context + ".slots[" + std::to_string(slotIndex) + "]";
-    if (!slot)
-      return invalid(slotContext + " must be an object");
-    if (llvm::Error error = requireExactFields(
-            *slot, {"ordinal", "resource", "access"}, slotContext))
-      return std::move(error);
-    llvm::Expected<uint64_t> ordinal =
-        requireUnsigned(*slot, "ordinal", slotContext);
-    if (!ordinal)
-      return ordinal.takeError();
-    llvm::Expected<uint64_t> resource =
-        requireUnsigned(*slot, "resource", slotContext);
-    if (!resource)
-      return resource.takeError();
-    llvm::Expected<std::string> accessText =
-        requireString(*slot, "access", slotContext, limits);
-    if (!accessText)
-      return accessText.takeError();
-    llvm::Expected<PackageAccessMode> access = parseAccess(*accessText);
-    if (!access)
-      return access.takeError();
-    record.slots.push_back({*ordinal, ResourceId(*resource), *access});
+  for (auto [argumentIndex, argumentValue] : llvm::enumerate(**arguments)) {
+    llvm::Expected<TileEntryArgumentRecord> argument =
+        parseTileEntryArgument(argumentValue, argumentIndex, limits);
+    if (!argument)
+      return argument.takeError();
+    record.arguments.push_back(std::move(*argument));
   }
   return record;
 }
@@ -579,8 +770,9 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
     return invalid("package manifest must be a JSON object");
   if (llvm::Error error = requireExactFields(
           *root,
-          {"program", "target", "card_count", "tile_count", "resources",
-           "modules", "entries"},
+          {"program", "target", "launch", "card_count", "tile_count",
+           "program_data", "program_tensors", "target_tensors", "inputs",
+           "outputs", "modules", "entries"},
           "manifest"))
     return std::move(error);
   llvm::Expected<const llvm::json::Object *> program =
@@ -591,6 +783,10 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireObject(*root, "target", "manifest");
   if (!target)
     return target.takeError();
+  llvm::Expected<const llvm::json::Object *> launch =
+      requireObject(*root, "launch", "manifest");
+  if (!launch)
+    return launch.takeError();
   llvm::Expected<int64_t> cardCount =
       requireInteger(*root, "card_count", "manifest");
   if (!cardCount)
@@ -599,10 +795,26 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireInteger(*root, "tile_count", "manifest");
   if (!tileCount)
     return tileCount.takeError();
-  llvm::Expected<const llvm::json::Array *> resources =
-      requireArray(*root, "resources", "manifest");
-  if (!resources)
-    return resources.takeError();
+  llvm::Expected<const llvm::json::Object *> programData =
+      requireObject(*root, "program_data", "manifest");
+  if (!programData)
+    return programData.takeError();
+  llvm::Expected<const llvm::json::Array *> programTensors =
+      requireArray(*root, "program_tensors", "manifest");
+  if (!programTensors)
+    return programTensors.takeError();
+  llvm::Expected<const llvm::json::Array *> targetTensors =
+      requireArray(*root, "target_tensors", "manifest");
+  if (!targetTensors)
+    return targetTensors.takeError();
+  llvm::Expected<const llvm::json::Array *> inputs =
+      requireArray(*root, "inputs", "manifest");
+  if (!inputs)
+    return inputs.takeError();
+  llvm::Expected<const llvm::json::Array *> outputs =
+      requireArray(*root, "outputs", "manifest");
+  if (!outputs)
+    return outputs.takeError();
   llvm::Expected<const llvm::json::Array *> modules =
       requireArray(*root, "modules", "manifest");
   if (!modules)
@@ -611,16 +823,12 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireArray(*root, "entries", "manifest");
   if (!entries)
     return entries.takeError();
-  uint64_t totalRecords =
-      (*resources)->size() + (*modules)->size() + (*entries)->size();
-  if (totalRecords > limits.maxRecords)
-    return invalid("package manifest exceeds record limit");
+
   if (llvm::Error error =
           requireExactFields(**program, {"id"}, "manifest.program"))
     return std::move(error);
   if (llvm::Error error = requireExactFields(
-          **target,
-          {"identity", "runtime_abi", "launch", "module_format"},
+          **target, {"identity", "runtime_abi", "module_format"},
           "manifest.target"))
     return std::move(error);
   llvm::Expected<uint64_t> programId =
@@ -635,15 +843,10 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
       requireString(**target, "runtime_abi", "manifest.target", limits);
   if (!runtimeABI)
     return runtimeABI.takeError();
-  llvm::Expected<const llvm::json::Object *> launch =
-      requireObject(**target, "launch", "manifest.target");
-  if (!launch)
-    return launch.takeError();
   llvm::Expected<std::string> moduleFormat =
       requireString(**target, "module_format", "manifest.target", limits);
   if (!moduleFormat)
     return moduleFormat.takeError();
-
   llvm::Expected<TargetIdentityId> parsedTargetIdentity =
       parseTargetIdentityId(*targetIdentity);
   if (!parsedTargetIdentity)
@@ -653,21 +856,54 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
   if (!parsedRuntimeABI)
     return parsedRuntimeABI.takeError();
   llvm::Expected<RuntimeLaunchContract> parsedLaunch =
-      parseRuntimeLaunchContract(**launch, "manifest.target.launch", limits);
+      parseRuntimeLaunchContract(**launch, "manifest.launch", limits);
   if (!parsedLaunch)
     return parsedLaunch.takeError();
   PackageManifest manifest(*parsedTargetIdentity, *parsedRuntimeABI,
                            std::move(*parsedLaunch), *moduleFormat);
-
   manifest.program = ProgramId(*programId);
   manifest.cardCount = *cardCount;
   manifest.tileCount = *tileCount;
-  for (auto [index, value] : llvm::enumerate(**resources)) {
-    llvm::Expected<PackageResourceRecord> record =
-        parseResource(value, index, limits);
+
+  llvm::Expected<ProgramDataRecord> parsedProgramData =
+      parseProgramDataRecord(**programData, limits);
+  if (!parsedProgramData)
+    return parsedProgramData.takeError();
+  manifest.programData = std::move(*parsedProgramData);
+
+  uint64_t totalRecords =
+      (*programTensors)->size() + (*targetTensors)->size() +
+      (*inputs)->size() + (*outputs)->size() + (*modules)->size() +
+      (*entries)->size();
+  if (totalRecords > limits.maxRecords)
+    return invalid("package manifest exceeds record limit");
+  for (auto [index, value] : llvm::enumerate(**programTensors)) {
+    llvm::Expected<ProgramTensorRecord> record =
+        parseProgramTensorRecord(value, index, limits);
     if (!record)
       return record.takeError();
-    manifest.resources.push_back(std::move(*record));
+    manifest.programTensors.push_back(std::move(*record));
+  }
+  for (auto [index, value] : llvm::enumerate(**targetTensors)) {
+    llvm::Expected<TargetTensorRecord> record =
+        parseTargetTensorRecord(value, index, limits);
+    if (!record)
+      return record.takeError();
+    manifest.targetTensors.push_back(std::move(*record));
+  }
+  for (auto [index, value] : llvm::enumerate(**inputs)) {
+    llvm::Expected<ExternalPortRecord> record =
+        parseExternalPortRecord(value, index, "inputs", limits);
+    if (!record)
+      return record.takeError();
+    manifest.inputs.push_back(std::move(*record));
+  }
+  for (auto [index, value] : llvm::enumerate(**outputs)) {
+    llvm::Expected<ExternalPortRecord> record =
+        parseExternalPortRecord(value, index, "outputs", limits);
+    if (!record)
+      return record.takeError();
+    manifest.outputs.push_back(std::move(*record));
   }
   for (auto [index, value] : llvm::enumerate(**modules)) {
     llvm::Expected<PackageModuleRecord> record =

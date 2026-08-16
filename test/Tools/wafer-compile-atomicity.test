@@ -20,76 +20,76 @@
 
 # A helper that has already written a partial staging program and then fails
 # must not mutate the source or write the requested output.
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/failed --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=LATE
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/failed --num-partitions=1 2>&1 | FileCheck %s --check-prefix=LATE
 # RUN: diff -ru %t.input.before %t.input
 # RUN: test ! -e %t.outputs/failed
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
 # A helper marker is insufficient when the returned program still contains
 # an SDY intermediate op.
-# RUN: not env HELPER_MODE=sdy WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/residual-sdy --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY
+# RUN: not env HELPER_MODE=sdy WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/residual-sdy --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY
 # RUN: test ! -e %t.outputs/residual-sdy
 
 # SDY attributes are residual sharding semantics even when every operation
 # belongs to an admitted post-helper dialect.
-# RUN: not env HELPER_MODE=sdy-attribute WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/residual-sdy-attribute --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-ATTRIBUTE
+# RUN: not env HELPER_MODE=sdy-attribute WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/residual-sdy-attribute --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-ATTRIBUTE
 # RUN: test ! -e %t.outputs/residual-sdy-attribute
 
 # A builtin string still carries Shardy semantics when its attribute key is in
 # the sdy namespace. The post-helper gate checks names as well as dialect-owned
 # attribute values.
-# RUN: not env HELPER_MODE=sdy-string WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/residual-sdy-string --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-STRING
+# RUN: not env HELPER_MODE=sdy-string WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/residual-sdy-string --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-STRING
 # RUN: test ! -e %t.outputs/residual-sdy-string
 
 # Post-helper metadata is checked inside the same compilation transaction.
-# RUN: not env HELPER_MODE=bad-partitions WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/bad-metadata --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=BAD-METADATA
+# RUN: not env HELPER_MODE=bad-partitions WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/bad-metadata --num-partitions=1 2>&1 | FileCheck %s --check-prefix=BAD-METADATA
 # RUN: test ! -e %t.outputs/bad-metadata
 
 # A marker alone cannot establish the typed user-input/result distribution
 # contract that the tensor program hands to CardModule construction.
-# RUN: not env HELPER_MODE=no-boundary WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/missing-boundary --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=NO-BOUNDARY
+# RUN: not env HELPER_MODE=no-boundary WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/missing-boundary --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-BOUNDARY
 # RUN: test ! -e %t.outputs/missing-boundary
 
 # A no-op process cannot masquerade as the SPMD helper without an explicit
 # post-partition marker.
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.bad-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/fake-success --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=NO-MARKER
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.bad-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/fake-success --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-MARKER
 # RUN: test ! -e %t.outputs/fake-success
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
 # The marker path must be a regular file; a directory with the canonical name
 # cannot satisfy the partition boundary.
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.marker-dir-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/marker-directory --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=MARKER-DIRECTORY
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.marker-dir-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/marker-directory --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MARKER-DIRECTORY
 # RUN: test ! -e %t.outputs/marker-directory
 
 # The helper output root itself must be a real directory, not a symlink back
 # into another transaction member that would dangle after cleanup.
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.symlink-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/helper-root-symlink --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=HELPER-ROOT-SYMLINK
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.symlink-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/helper-root-symlink --num-partitions=1 2>&1 | FileCheck %s --check-prefix=HELPER-ROOT-SYMLINK
 # RUN: test ! -e %t.outputs/helper-root-symlink
 # RUN: test ! -L %t.outputs/helper-root-symlink
 
 # An existing final directory is never replaced by the package directory rename.
 # RUN: mkdir -p %t.outputs/final/nested && printf old > %t.outputs/final/nested/sentinel
 # RUN: cp -R %t.outputs/final %t.final.before
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/final --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=EXISTING
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/final --num-partitions=1 2>&1 | FileCheck %s --check-prefix=EXISTING
 # RUN: diff -ru %t.input.before %t.input
 # RUN: diff -ru %t.final.before %t.outputs/final
 
 # The directory rename remains no-replace when a competing writer creates the requested
 # final directory after the initial existence check but before renameat2.
-# RUN: not env HELPER_MODE=output-race FINAL_OUTPUT=%t.outputs/raced-final WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/raced-final --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=OUTPUT-RACE
+# RUN: not env HELPER_MODE=output-race FINAL_OUTPUT=%t.outputs/raced-final WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.outputs/raced-final --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OUTPUT-RACE
 # RUN: FileCheck %s --input-file=%t.outputs/raced-final/sentinel --check-prefix=COMPETITOR
 # RUN: test ! -e %t.outputs/raced-final/functions
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
 # A symlinked output parent cannot bypass source/output containment.
 # RUN: ln -sfn %t.input %t.alias-parent
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.alias-parent/output --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=ALIASED-OUTPUT
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.alias-parent/output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=ALIASED-OUTPUT
 # RUN: diff -ru %t.input.before %t.input
 # RUN: test ! -e %t.input/output
 
 # A not-yet-created deep output parent below the source is rejected before any
 # parent directory or staging state is created.
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.input/not-yet-created/deep/output --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DEEP-SOURCE-OUTPUT
+# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.input/not-yet-created/deep/output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DEEP-SOURCE-OUTPUT
 # RUN: diff -ru %t.input.before %t.input
 # RUN: test ! -e %t.input/not-yet-created
 # RUN: test ! -e %t.helper-called
@@ -97,14 +97,14 @@
 # Source snapshots reject symlink members instead of following data outside
 # the admitted program tree.
 # RUN: cp -R %t.input %t.symlink-input && ln -s functions/forward.meta %t.symlink-input/metadata-link
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.symlink-input --output-program-dir %t.outputs/symlink-output --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=SOURCE-SYMLINK
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.symlink-input --output-program-dir %t.outputs/symlink-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=SOURCE-SYMLINK
 # RUN: test ! -e %t.outputs/symlink-output
 
 # Lower-level instruction IR is already beyond the admitted exporter stage and
 # is rejected before the external helper can run.
 # RUN: cp -R %t.input %t.stage-instr
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    wafer.instr.ncc_join [0]\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.stage-instr/functions/forward.mlir
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.stage-instr --output-program-dir %t.outputs/stage-instr --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=STAGE-INSTR
+# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.stage-instr --output-program-dir %t.outputs/stage-instr --num-partitions=1 2>&1 | FileCheck %s --check-prefix=STAGE-INSTR
 # RUN: test ! -e %t.outputs/stage-instr
 # RUN: test ! -e %t.helper-called
 
@@ -112,7 +112,7 @@
 # before helper orchestration.
 # RUN: cp -R %t.input %t.source-sdy-string
 # RUN: printf '%b' 'module attributes {sdy.leftover = "opaque"} {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.source-sdy-string/functions/forward.mlir
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.source-sdy-string --output-program-dir %t.outputs/source-sdy-string --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=SOURCE-SDY-STRING
+# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.source-sdy-string --output-program-dir %t.outputs/source-sdy-string --num-partitions=1 2>&1 | FileCheck %s --check-prefix=SOURCE-SDY-STRING
 # RUN: test ! -e %t.outputs/source-sdy-string
 # RUN: test ! -e %t.helper-called
 
@@ -120,7 +120,7 @@
 # substitute for the direct members owned by the compiled program module.
 # RUN: cp -R %t.input %t.nested-facts
 # RUN: printf '%b' 'module {\n  module @nested {\n    wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n    wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}\n  }\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.nested-facts/functions/forward.mlir
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.nested-facts --output-program-dir %t.outputs/nested-facts --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=NESTED-FACTS
+# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.nested-facts --output-program-dir %t.outputs/nested-facts --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NESTED-FACTS
 # RUN: test ! -e %t.outputs/nested-facts
 # RUN: test ! -e %t.helper-called
 
@@ -129,38 +129,40 @@
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>, %%arg1: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg1 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.single-card-input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]},{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"},{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.single-card-input/functions/forward.meta
 # RUN: %python -c 'import numpy as np; from pathlib import Path; p=Path("%t.single-card-input/data/weight"); f=p.open("wb"); np.save(f, np.ones((16,), dtype=np.float32)); f.close()'
-# RUN: wafer-compile --input-program-dir %t.single-card-input --output-program-dir %t.outputs/single-card --num-partitions=1 --launch-kind=kernel | FileCheck %s --check-prefix=SINGLE-CARD
-# RUN: FileCheck %s --input-file=%t.outputs/single-card/functions/forward.mlir --check-prefix=SINGLE-CARD-IR
-# RUN: FileCheck %s --input-file=%t.outputs/single-card/functions/forward.parameter_shards.json --check-prefix=SINGLE-CARD-SHARDS
-# RUN: %python -c 'import json, pathlib; b=json.loads(pathlib.Path("%t.outputs/single-card/functions/forward.meta").read_text())["distributed_boundary"]; assert "version" not in b and b["num_partitions"]==1; assert b["inputs"][0]["argument_index"]==0 and b["inputs"][0]["distribution"]=="replicated" and [p["partition_id"] for p in b["inputs"][0]["partitions"]]==[0]; assert b["outputs"][0]["result_index"]==0 and b["outputs"][0]["distribution"]=="replicated" and [p["partition_id"] for p in b["outputs"][0]["partitions"]]==[0]'
-# RUN: test -f %t.outputs/single-card/parameter_shards/weight/partition_00000.npy
+# RUN: wafer-compile --input-program-dir %t.single-card-input --output-program-dir %t.outputs/single-card --num-partitions=1 | FileCheck %s --check-prefix=SINGLE-CARD
+# The executable package carries manifest/modules/program data only; the
+# source tree, IR copy, parameter shard directory and auxiliary exporter
+# payload do not enter the package.
+# RUN: test ! -e %t.outputs/single-card/functions
+# RUN: test ! -e %t.outputs/single-card/parameter_shards
 # RUN: test -s %t.outputs/single-card/modules/module_00000.so
+# RUN: %python -c 'import hashlib, json, pathlib; p=pathlib.Path("%t.outputs/single-card"); m=json.loads((p/"manifest.json").read_text()); pd=m["program_data"]; data=(p/pd["relative_path"]).read_bytes(); assert len(data)==64 and pd["total_bytes"]==64 and pd["base_alignment"]==256 and pd["digest"]=="sha256:"+hashlib.sha256(data).hexdigest(); pt=m["program_tensors"]; assert len(pt)==1 and pt[0]["role"]=="parameter" and pt[0]["role_index"]==1 and pt[0]["dtype"]=="f32" and pt[0]["global_shape"]==[16]; tt=m["target_tensors"]; assert len(tt)==1 and tt[0]["program_tensor"]==0 and tt[0]["dtype"]=="f32" and tt[0]["bytes"]==64 and tt[0]["file_offset"]==0 and tt[0]["alignment"]==256'
 # RUN: %python -c 'from pathlib import Path; modules=list(Path("%t.outputs/single-card/modules").glob("module_*.so")); assert modules and all(p.read_bytes().startswith(b"\x7fELF") for p in modules)'
-# RUN: %python -c 'import json, pathlib; m=json.loads(pathlib.Path("%t.outputs/single-card/manifest.json").read_text()); assert m["target"]["identity"]=="wafer-tx81-single-card" and m["target"]["launch"]=={"kind":"kernel","form":"grid","entry_abi":"tile-major-pointer-table","phases":["main"]} and m["card_count"]==1 and m["tile_count"]==16; assert len(m["entries"])==16 and {e["card_id"] for e in m["entries"]}=={0} and {e["tile_id"] for e in m["entries"]}==set(range(16)) and {e["launch_slot"] for e in m["entries"]}==set(range(16)) and {e["completion"] for e in m["entries"]}=={"return_after_local_drain"}; assert all([s["ordinal"] for s in e["slots"]]==list(range(len(e["slots"]))) for e in m["entries"]); assert "completions" not in m'
+# RUN: %python -c 'import json, pathlib; m=json.loads(pathlib.Path("%t.outputs/single-card/manifest.json").read_text()); assert m["target"]["identity"]=="wafer-tx81-single-card" and m["launch"]=={"kind":"kernel","form":"grid","entry_abi":"tile-major-pointer-table","phases":["main"]} and m["card_count"]==1 and m["tile_count"]==16; assert len(m["entries"])==16 and {e["card_id"] for e in m["entries"]}=={0} and {e["tile_id"] for e in m["entries"]}==set(range(16)) and {e["launch_slot"] for e in m["entries"]}==set(range(16)) and {e["completion"] for e in m["entries"]}=={"return_after_local_drain"}; assert all([a["ordinal"] for a in e["arguments"]]==list(range(len(e["arguments"]))) for e in m["entries"]); assert "completions" not in m'
 # RUN: wafer-run --package-dir %t.outputs/single-card --no-card | FileCheck %s --check-prefix=NO-CARD
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
 # A valid but mismatched pre-existing mesh must not be silently reused.
 # RUN: cp -R %t.input %t.mismatch
 # RUN: printf '%b' 'module {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 2>}\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.mismatch/functions/forward.mlir
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.mismatch --output-program-dir %t.outputs/mismatch-output --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=MISMATCH
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.mismatch --output-program-dir %t.outputs/mismatch-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MISMATCH
 # RUN: test ! -e %t.outputs/mismatch-output
 
 # Multiple individually valid topology facts are ambiguous to the typed driver.
 # RUN: cp -R %t.input %t.duplicate
 # RUN: printf '%b' 'module {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  wafer.target.topology @other {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.duplicate/functions/forward.mlir
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.duplicate --output-program-dir %t.outputs/duplicate-output --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.duplicate --output-program-dir %t.outputs/duplicate-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE
 # RUN: test ! -e %t.outputs/duplicate-output
 
 # Multiple execution meshes and a non-canonical topology are independently
 # rejected even when every individual IR op verifies.
 # RUN: cp -R %t.input %t.duplicate-mesh
 # RUN: printf '%b' 'module {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}\n  wafer.execution.mesh @other_mesh {axes = ["card_partition"], shape = array<i64: 1>}\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.duplicate-mesh/functions/forward.mlir
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.duplicate-mesh --output-program-dir %t.outputs/duplicate-mesh-output --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=DUPLICATE-MESH
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.duplicate-mesh --output-program-dir %t.outputs/duplicate-mesh-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-MESH
 # RUN: test ! -e %t.outputs/duplicate-mesh-output
 # RUN: cp -R %t.input %t.bad-topology
 # RUN: printf '%b' 'module {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 2, 8>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.bad-topology/functions/forward.mlir
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.bad-topology --output-program-dir %t.outputs/bad-topology-output --num-partitions=1 --launch-kind=kernel 2>&1 | FileCheck %s --check-prefix=BAD-TOPOLOGY
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.bad-topology --output-program-dir %t.outputs/bad-topology-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=BAD-TOPOLOGY
 # RUN: test ! -e %t.outputs/bad-topology-output
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
@@ -179,23 +181,15 @@
 # ALIASED-OUTPUT: wafer-compile: output program directory must not equal or be nested under the source program directory
 # DEEP-SOURCE-OUTPUT: wafer-compile: output program directory must not equal or be nested under the source program directory
 # SOURCE-SYMLINK: wafer-compile: program directory contains unsupported symbolic link
-# STAGE-INSTR: 'wafer.instr.ncc_join [0]' op is not legal in an exporter or post-SPMD StableHLO program
+# STAGE-INSTR: 'wafer.instr.ncc_join' op is not legal in an exporter or post-SPMD StableHLO program
 # SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume
 # NESTED-FACTS: target topology and execution mesh must be direct module members
 # SINGLE-CARD: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 # NO-CARD: package: id=0 cards=1 tiles=16
 # NO-CARD: entry: 0 card_id=0 tile_id=0 launch_slot=0
 # NO-CARD: launch_phase: role=main symbol=main
+# NO-CARD: launch_argument: 1 base=program_data offset=0
 # NO-CARD: board_execution: false
-# SINGLE-CARD-IR: wafer.execution.mesh @default_mesh
-# SINGLE-CARD-IR-SAME: axes = ["card_partition"]
-# SINGLE-CARD-IR-SAME: shape = array<i64: 1>
-# SINGLE-CARD-IR: tensor.empty
-# SINGLE-CARD-IR: linalg.generic
-# SINGLE-CARD-SHARDS: "num_partitions": 1
-# SINGLE-CARD-SHARDS-NOT: parameter_shards_version
-# SINGLE-CARD-SHARDS: "partition_id": 0
-# SINGLE-CARD-SHARDS: "name": "weight"
 # MISMATCH: execution mesh does not exactly match the requested num-partitions
 # DUPLICATE: typed compilation requires exactly one target topology
 # DUPLICATE-MESH: typed compilation requires exactly one execution mesh

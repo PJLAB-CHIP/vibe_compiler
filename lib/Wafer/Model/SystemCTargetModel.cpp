@@ -343,7 +343,7 @@ public:
     std::vector<TargetModelResourceId> outputResources;
     for (const TargetModelPlannedSlot &slot :
          memory.getAddressPlan().getSlots()) {
-      if (slot.role != compiler::KernelABISlotRole::Output)
+      if (slot.kind != compiler::TileEntryArgumentKind::ExternalOutput)
         continue;
       if (llvm::is_contained(outputResources, slot.resource))
         continue;
@@ -587,7 +587,7 @@ private:
           slot.slotOrdinal == *status->slotOrdinal)
         statusSlot = &slot;
     if (!statusSlot ||
-        statusSlot->role != compiler::KernelABISlotRole::TransportStatus) {
+        statusSlot->kind != compiler::TileEntryArgumentKind::TransportStatus) {
       latchFailure(SystemCTargetModelErrorCode::InvocationFailure, "dte-begin",
                    launchSlot, command.issueOrdinal,
                    "Direct DTE status address is not the transport slot");

@@ -184,7 +184,6 @@ BOARD_RUNTIME_SOURCES = (
     "BoardRuntime.cpp",
     "ProfileInstrumentation.cpp",
     "ProfilerRecord.cpp",
-    "Tx81ModelABI.cpp",
 )
 WAFER_RUN_SOURCES = (
     "TxBoardRuntime.cpp",

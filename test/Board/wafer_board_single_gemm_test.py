@@ -30,7 +30,6 @@ GEMM_CASE_SHAPES = {
 M, K, N = GEMM_CASE_SHAPES["single-tile"]
 F16_BYTES = 2
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 PROCESS_TIMEOUT_MARGIN_SECONDS = 30
 PYTORCH_SEED = 20260803
 
@@ -175,14 +174,16 @@ def validate_manifest(package: pathlib.Path) -> tuple[dict[tuple[str, int], int]
 
     modules = manifest.get("modules")
     entries = manifest.get("entries")
-    resources = manifest.get("resources")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
     entries = runtime_launch.require_complete_tile_domain(
         manifest, context="standalone GEMM"
     )
     if (
         not isinstance(modules, list)
         or len(modules) != 1
-        or not isinstance(resources, list)
+        or not isinstance(inputs, list)
+        or not isinstance(outputs, list)
     ):
         raise RuntimeError("standalone GEMM package domains are invalid")
     module = modules[0]
@@ -204,55 +205,70 @@ def validate_manifest(package: pathlib.Path) -> tuple[dict[tuple[str, int], int]
         ("user_input", 0): (
             {"dtype": "f16", "shape": [M, K]},
             M * K * F16_BYTES,
-            "read_only",
         ),
         ("user_input", 1): (
             {"dtype": "f16", "shape": [K, N]},
             K * N * F16_BYTES,
-            "read_only",
         ),
         ("output", 0): (
             {"dtype": "f16", "shape": [M, N]},
             M * N * F16_BYTES,
-            "write_only",
         ),
     }
     bindings: dict[tuple[str, int], int] = {}
-    for resource in resources:
-        if not isinstance(resource, dict):
-            raise RuntimeError("standalone GEMM resources must be objects")
-        if not resource.get("host_visible"):
-            continue
-        key = (resource.get("role"), resource.get("role_index"))
-        if key not in expected or key in bindings:
-            raise RuntimeError(f"unexpected standalone GEMM resource: {key}")
-        type_, bytes_, access = expected[key]
-        if (
-            resource.get("scope") != {"kind": "card", "card_id": 0}
-            or resource.get("type") != type_
-            or resource.get("bytes") != bytes_
-            or resource.get("alignment") != 256
-            or resource.get("access") != access
-            or resource.get("host_visible") is not True
-            or not isinstance(resource.get("id"), int)
-        ):
-            raise RuntimeError(f"invalid standalone GEMM resource: {key}")
-        bindings[key] = resource["id"]
+    for table, role in (("inputs", "user_input"), ("outputs", "output")):
+        for record in manifest.get(table, []):
+            if not isinstance(record, dict):
+                raise RuntimeError("standalone GEMM ports must be objects")
+            role_index = record.get("role_index")
+            key = (role, role_index)
+            if key not in expected or key in bindings:
+                raise RuntimeError(f"unexpected standalone GEMM port: {key}")
+            type_, bytes_ = expected[key]
+            if (
+                record.get("dtype") != type_["dtype"]
+                or record.get("shape") != type_["shape"]
+                or record.get("bytes") != bytes_
+                or record.get("alignment") != 256
+                or not isinstance(record.get("id"), int)
+            ):
+                raise RuntimeError(f"invalid standalone GEMM port: {key}")
+            bindings[key] = record["id"]
     if set(bindings) != set(expected):
         raise RuntimeError("standalone GEMM host bindings are incomplete")
 
-    expected_slots = [
-        (0, bindings[("user_input", 0)], "read_only"),
-        (1, bindings[("user_input", 1)], "read_only"),
-        (2, bindings[("output", 0)], "write_only"),
+    expected_arguments = [
+        {
+            "ordinal": 0,
+            "kind": "external_input",
+            "port": bindings[("user_input", 0)],
+            "access": "read_only",
+        },
+        {
+            "ordinal": 1,
+            "kind": "external_input",
+            "port": bindings[("user_input", 1)],
+            "access": "read_only",
+        },
+        {
+            "ordinal": 2,
+            "kind": "external_output",
+            "port": bindings[("output", 0)],
+            "access": "write_only",
+        },
     ]
-    actual_slots = [
-        (slot.get("ordinal"), slot.get("resource"), slot.get("access"))
-        for slot in entry.get("slots", [])[:3]
-        if isinstance(slot, dict)
+    actual_arguments = [
+        {
+            "ordinal": argument.get("ordinal"),
+            "kind": argument.get("kind"),
+            "port": argument.get("port"),
+            "access": argument.get("access"),
+        }
+        for argument in entry.get("arguments", [])[:3]
+        if isinstance(argument, dict)
     ]
-    if actual_slots != expected_slots:
-        raise RuntimeError("standalone GEMM launch slots are invalid")
+    if actual_arguments != expected_arguments:
+        raise RuntimeError("standalone GEMM launch arguments are invalid")
     return bindings, bindings[("output", 0)]
 
 
@@ -314,7 +330,7 @@ def verify_board_evidence(stdout: str, output_id: int) -> None:
             f"board output omitted standalone GEMM lifecycle evidence: {missing}"
         )
     if not re.search(
-        rf"^output_capture: resource={output_id} bytes={M * N * F16_BYTES} path=.+$",
+        rf"^output_capture: port={output_id} bytes={M * N * F16_BYTES} path=.+$",
         stdout,
         re.MULTILINE,
     ):
@@ -352,7 +368,6 @@ def main() -> int:
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ]
     )
     if "wrote verified package with num-partitions=1 tiles=16" not in compile_result.stdout:

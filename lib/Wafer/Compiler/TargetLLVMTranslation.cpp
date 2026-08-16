@@ -44,24 +44,36 @@ constexpr llvm::StringLiteral kTargetLLVMABIMetadata = "wafer.target.abi";
 constexpr llvm::StringLiteral kTargetLLVMFormatMetadata =
     "wafer.target.module_format";
 constexpr llvm::StringLiteral kTargetLLVMSlotsMetadata =
-    "wafer.target.abi_slots";
+    "wafer.target.entry_arguments";
 
-llvm::StringRef stringifyKernelABISlotRole(KernelABISlotRole role) {
-  switch (role) {
-  case KernelABISlotRole::UserInput:
-    return "user-input";
-  case KernelABISlotRole::Parameter:
-    return "parameter";
-  case KernelABISlotRole::Constant:
-    return "constant";
-  case KernelABISlotRole::Output:
-    return "output";
-  case KernelABISlotRole::Workspace:
+llvm::StringRef stringifyTileEntryArgumentKind(TileEntryArgumentKind kind) {
+  switch (kind) {
+  case TileEntryArgumentKind::ExternalInput:
+    return "external-input";
+  case TileEntryArgumentKind::TargetTensor:
+    return "target-tensor";
+  case TileEntryArgumentKind::ExternalOutput:
+    return "external-output";
+  case TileEntryArgumentKind::Workspace:
     return "workspace";
-  case KernelABISlotRole::TransportStatus:
+  case TileEntryArgumentKind::ProfileRecord:
+    return "profile-record";
+  case TileEntryArgumentKind::TransportStatus:
     return "transport-status";
   }
-  llvm_unreachable("unknown Kernel ABI slot role");
+  llvm_unreachable("unknown tile entry argument kind");
+}
+
+llvm::StringRef stringifyTileEntryArgumentAccess(TileEntryArgumentAccess access) {
+  switch (access) {
+  case TileEntryArgumentAccess::ReadOnly:
+    return "read-only";
+  case TileEntryArgumentAccess::WriteOnly:
+    return "write-only";
+  case TileEntryArgumentAccess::ReadWrite:
+    return "read-write";
+  }
+  llvm_unreachable("unknown tile entry argument access");
 }
 
 llvm::Metadata *signedMetadata(llvm::LLVMContext &context, int64_t value) {
@@ -103,16 +115,17 @@ void attachTargetLLVMMetadata(llvm::Module &module,
   llvm::LLVMContext &context = module.getContext();
   llvm::NamedMDNode *slots =
       module.getOrInsertNamedMetadata(kTargetLLVMSlotsMetadata);
-  for (const KernelABISlot &slot : prepared.slots) {
-    llvm::SmallVector<llvm::Metadata *, 12> fields = {
+  for (const TileEntryArgument &slot : prepared.slots) {
+    llvm::SmallVector<llvm::Metadata *, 13> fields = {
         signedMetadata(context, slot.ordinal),
-        llvm::MDString::get(context, stringifyKernelABISlotRole(slot.role)),
+        llvm::MDString::get(context, stringifyTileEntryArgumentKind(slot.kind)),
         signedMetadata(context, slot.resourceIndex),
         llvm::MDString::get(context, slot.name),
         llvm::MDString::get(context, slot.dtype),
         llvm::MDString::get(context, stringifyMemLayout(slot.layout)),
         signedMetadata(context, slot.byteSize),
         signedMetadata(context, slot.alignment),
+        llvm::MDString::get(context, stringifyTileEntryArgumentAccess(slot.access)),
     };
     for (int64_t dimension : slot.shape)
       fields.push_back(signedMetadata(context, dimension));
@@ -195,71 +208,76 @@ readStringMetadataOperand(const llvm::MDNode &row, unsigned index,
 
 llvm::Error
 verifyTargetLLVMSlotMetadata(const llvm::Module &module,
-                             llvm::ArrayRef<KernelABISlot> expectedSlots) {
+                             llvm::ArrayRef<TileEntryArgument> expectedSlots) {
   const llvm::NamedMDNode *slots =
       module.getNamedMetadata(kTargetLLVMSlotsMetadata);
   if (!slots || slots->getNumOperands() != expectedSlots.size())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "target LLVM Kernel ABI slot metadata does not cover the typed ABI");
+        "target LLVM tile entry argument metadata does not cover the typed ABI");
   for (auto [index, expected] : llvm::enumerate(expectedSlots)) {
     const llvm::MDNode &row = *slots->getOperand(index);
-    if (row.getNumOperands() != 8 + expected.shape.size())
+    if (row.getNumOperands() != 9 + expected.shape.size())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "target LLVM Kernel ABI slot %zu has an invalid field count", index);
+          "target LLVM tile entry argument %zu has an invalid field count", index);
     llvm::Expected<int64_t> ordinal =
-        readSignedMetadataOperand(row, 0, "Kernel ABI slot ordinal");
+        readSignedMetadataOperand(row, 0, "tile entry argument ordinal");
     if (!ordinal)
       return ordinal.takeError();
-    llvm::Expected<llvm::StringRef> role =
-        readStringMetadataOperand(row, 1, "Kernel ABI slot role");
-    if (!role)
-      return role.takeError();
+    llvm::Expected<llvm::StringRef> kind =
+        readStringMetadataOperand(row, 1, "tile entry argument kind");
+    if (!kind)
+      return kind.takeError();
     llvm::Expected<int64_t> resource =
-        readSignedMetadataOperand(row, 2, "Kernel ABI resource index");
+        readSignedMetadataOperand(row, 2, "tile entry argument resource index");
     if (!resource)
       return resource.takeError();
     llvm::Expected<llvm::StringRef> name =
-        readStringMetadataOperand(row, 3, "Kernel ABI slot name");
+        readStringMetadataOperand(row, 3, "tile entry argument name");
     if (!name)
       return name.takeError();
     llvm::Expected<llvm::StringRef> dtype =
-        readStringMetadataOperand(row, 4, "Kernel ABI slot dtype");
+        readStringMetadataOperand(row, 4, "tile entry argument dtype");
     if (!dtype)
       return dtype.takeError();
     llvm::Expected<llvm::StringRef> layout =
-        readStringMetadataOperand(row, 5, "Kernel ABI slot layout");
+        readStringMetadataOperand(row, 5, "tile entry argument layout");
     if (!layout)
       return layout.takeError();
     llvm::Expected<int64_t> byteSize =
-        readSignedMetadataOperand(row, 6, "Kernel ABI slot byte size");
+        readSignedMetadataOperand(row, 6, "tile entry argument byte size");
     if (!byteSize)
       return byteSize.takeError();
     llvm::Expected<int64_t> alignment =
-        readSignedMetadataOperand(row, 7, "Kernel ABI slot alignment");
+        readSignedMetadataOperand(row, 7, "tile entry argument alignment");
     if (!alignment)
       return alignment.takeError();
+    llvm::Expected<llvm::StringRef> access =
+        readStringMetadataOperand(row, 8, "tile entry argument access");
+    if (!access)
+      return access.takeError();
     if (*ordinal != expected.ordinal ||
-        *role != stringifyKernelABISlotRole(expected.role) ||
+        *kind != stringifyTileEntryArgumentKind(expected.kind) ||
         *resource != expected.resourceIndex || *name != expected.name ||
         *dtype != expected.dtype ||
         *layout != stringifyMemLayout(expected.layout) ||
-        *byteSize != expected.byteSize || *alignment != expected.alignment)
+        *byteSize != expected.byteSize || *alignment != expected.alignment ||
+        *access != stringifyTileEntryArgumentAccess(expected.access))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "target LLVM Kernel ABI slot %zu does not match the typed ABI",
+          "target LLVM tile entry argument %zu does not match the typed ABI",
           index);
     for (auto [dimensionIndex, expectedDimension] :
          llvm::enumerate(expected.shape)) {
       llvm::Expected<int64_t> dimension = readSignedMetadataOperand(
-          row, 8 + dimensionIndex, "Kernel ABI slot shape dimension");
+          row, 9 + dimensionIndex, "tile entry argument shape dimension");
       if (!dimension)
         return dimension.takeError();
       if (*dimension != expectedDimension)
         return llvm::createStringError(
             llvm::errc::invalid_argument,
-            "target LLVM Kernel ABI slot %zu shape does not match the typed "
+            "target LLVM tile entry argument %zu shape does not match the typed "
             "ABI",
             index);
     }
@@ -276,7 +294,7 @@ verifyTargetLLVMModule(const llvm::Module &module, CardId expectedCardId,
                        TargetIdentityId expectedTargetIdentity,
                        KernelRuntimeABIId expectedKernelRuntimeABI,
                        llvm::StringRef expectedModuleFormat,
-                       llvm::ArrayRef<KernelABISlot> expectedSlots) {
+                       llvm::ArrayRef<TileEntryArgument> expectedSlots) {
   std::string verifierOutput;
   llvm::raw_string_ostream verifierDiagnostics(verifierOutput);
   if (llvm::verifyModule(module, &verifierDiagnostics))
@@ -359,7 +377,7 @@ verifyTargetLLVMModule(const llvm::Module &module, CardId expectedCardId,
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "target LLVM entry must be fixed void(i64...) with one parameter per "
-        "typed Kernel ABI slot");
+        "typed tile entry argument");
   return verifyTargetLLVMSlotMetadata(module, expectedSlots);
 }
 
@@ -394,7 +412,7 @@ mlir::LogicalResult verifyLoweredKernelABI(PreparedTile &prepared,
       }))
     return entry.emitError()
            << "target_abi_mismatch: lowered entry must be fixed void(i64...) "
-              "with one parameter per typed Kernel ABI slot";
+              "with one parameter per typed tile entry argument";
   return mlir::success();
 }
 

@@ -19,7 +19,6 @@ import wafer_runtime_launch_contract as runtime_launch
 
 
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TOOLCHAIN_DIR = "Xuantie-900-gcc-elf-newlib-x86_64-V2.10.2"
 INPUT_DIR = pathlib.Path(__file__).resolve().parent / "Inputs"
 PROBE_C = INPUT_DIR / "wafer_ddr_sparse_high_offset_probe.c"
@@ -288,7 +287,6 @@ def compile_seed_package(
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -297,24 +295,15 @@ def compile_seed_package(
     return package
 
 
-def _resource_by_role(
-    resources: list[object], role: str
-) -> list[dict[str, object]]:
-    return [
-        resource
-        for resource in resources
-        if isinstance(resource, dict) and resource.get("role") == role
-    ]
-
-
 def prepare_workspace_manifest(
     package: pathlib.Path, workspace_size: int,
-) -> tuple[pathlib.Path, tuple[int, int, int], int]:
+) -> tuple[pathlib.Path, tuple[int, int], int]:
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     entries = manifest.get("entries")
     modules = manifest.get("modules")
-    resources = manifest.get("resources")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
     target = manifest.get("target")
     runtime_launch.require_manifest_launch(
         manifest,
@@ -329,108 +318,69 @@ def prepare_workspace_manifest(
         or target.get("identity") != TARGET_IDENTITY
         or not isinstance(modules, list)
         or len(modules) != 1
-        or not isinstance(resources, list)
+        or not isinstance(inputs, list)
+        or not isinstance(outputs, list)
+        or len(inputs) != 1
+        or len(outputs) != 1
     ):
         raise RuntimeError("sparse high-offset seed manifest is invalid")
 
     entry = entries[0]
     module = modules[0]
-    slots = entry.get("slots")
     if (
         not isinstance(entry, dict)
         or entry.get("card_id") != 0
         or entry.get("tile_id") != 0
         or entry.get("module") != module.get("id")
         or module.get("exports") != [{"role": "main", "symbol": "main"}]
-        or not isinstance(slots, list)
     ):
         raise RuntimeError("sparse high-offset seed entry is invalid")
 
-    inputs = _resource_by_role(resources, "user_input")
-    outputs = _resource_by_role(resources, "output")
-    workspaces = _resource_by_role(resources, "workspace")
-    allowed = {"user_input", "output", "workspace"}
-    if (
-        len(inputs) != 1
-        or len(outputs) != 1
-        or len(workspaces) not in (0, runtime_launch.TARGET_TILE_COUNT)
-        or any(
-            not isinstance(resource, dict)
-            or resource.get("role") not in allowed
-            for resource in resources
-        )
-    ):
-        raise RuntimeError(
-            "sparse high-offset seed resources are not input/output/workspace"
-        )
-
     expected_host = (
-        (inputs[0], "read_only"),
-        (outputs[0], "write_only"),
+        (inputs[0], "user_input"),
+        (outputs[0], "output"),
     )
-    for resource, access in expected_host:
+    for record, role in expected_host:
         if (
-            resource.get("scope") != {"kind": "card", "card_id": 0}
-            or resource.get("role_index") != 0
-            or resource.get("type")
-            != {"dtype": "f16", "shape": [LOCAL_ELEMENTS]}
-            or resource.get("bytes") != RESOURCE_BYTES
-            or resource.get("alignment") != 256
-            or resource.get("access") != access
-            or resource.get("host_visible") is not True
-            or not isinstance(resource.get("id"), int)
+            not isinstance(record, dict)
+            or record.get("role_index") != 0
+            or record.get("dtype") != "f16"
+            or record.get("shape") != [LOCAL_ELEMENTS]
+            or record.get("bytes") != RESOURCE_BYTES
+            or record.get("alignment") != 256
+            or not isinstance(record.get("id"), int)
         ):
             raise RuntimeError(
-                f"sparse high-offset host resource is invalid: {resource}"
+                f"sparse high-offset host port is invalid: {record}"
             )
 
     input_id = int(inputs[0]["id"])
     output_id = int(outputs[0]["id"])
-    if not workspaces:
-        next_id = max(int(resource["id"]) for resource in resources) + 1
-        for tile_id in range(runtime_launch.TARGET_TILE_COUNT):
-            workspace = {
-                "id": next_id + tile_id,
-                "scope": {"kind": "tile", "card_id": 0, "tile_id": tile_id},
-                "role": "workspace",
-                "role_index": 0,
-            }
-            resources.append(workspace)
-            workspaces.append(workspace)
-    workspace_by_tile: dict[int, dict[str, object]] = {}
-    for workspace in workspaces:
-        scope = workspace.get("scope")
-        if (
-            not isinstance(workspace.get("id"), int)
-            or not isinstance(scope, dict)
-            or scope.get("kind") != "tile"
-            or scope.get("card_id") != 0
-            or not isinstance(scope.get("tile_id"), int)
-        ):
-            raise RuntimeError("seed workspace scope is invalid")
-        tile_id = int(scope["tile_id"])
-        workspace_by_tile[tile_id] = workspace
-        workspace.update(
-            {
-                "name": f"ddr_sparse_workspace_tile_{tile_id}",
-                "type": {"dtype": "u8", "shape": [workspace_size]},
-                "bytes": workspace_size,
-                "alignment": 256,
-                "access": "read_write",
-                "host_visible": False,
-            }
-        )
-    if set(workspace_by_tile) != set(range(runtime_launch.TARGET_TILE_COUNT)):
-        raise RuntimeError("seed workspaces do not cover the Tile domain")
+    workspace_arguments = [
+        {
+            "ordinal": 2,
+            "kind": "workspace",
+            "bytes": workspace_size,
+            "alignment": 256,
+            "access": "read_write",
+        }
+    ]
     for tile_entry in entries:
-        tile_id = int(tile_entry["tile_id"])
-        workspace_id = int(workspace_by_tile[tile_id]["id"])
-        tile_entry["slots"] = [
-            {"ordinal": 0, "resource": input_id, "access": "read_only"},
-            {"ordinal": 1, "resource": output_id, "access": "write_only"},
-            {"ordinal": 2, "resource": workspace_id, "access": "read_write"},
+        tile_entry["arguments"] = [
+            {
+                "ordinal": 0,
+                "kind": "external_input",
+                "port": input_id,
+                "access": "read_only",
+            },
+            {
+                "ordinal": 1,
+                "kind": "external_output",
+                "port": output_id,
+                "access": "write_only",
+            },
+            *workspace_arguments,
         ]
-    workspace_id = int(workspace_by_tile[0]["id"])
 
     module_path_value = module.get("path")
     if not isinstance(module_path_value, str):
@@ -442,78 +392,64 @@ def prepare_workspace_manifest(
     staged = manifest_path.with_name(".manifest.json.ddr-sparse-high-offset")
     staged.write_text(json.dumps(manifest, indent=2) + "\n")
     os.replace(staged, manifest_path)
-    validate_manifest(
-        package, (input_id, output_id, workspace_id), workspace_size
-    )
-    return module_path, (input_id, output_id, workspace_id), len(entry["slots"])
+    validate_manifest(package, (input_id, output_id), workspace_size)
+    return module_path, (input_id, output_id), len(entry["arguments"])
 
 
 def validate_manifest(
     package: pathlib.Path,
-    resource_ids: tuple[int, int, int],
+    resource_ids: tuple[int, int],
     workspace_size: int,
 ) -> None:
     manifest = json.loads((package / "manifest.json").read_text())
-    resources = manifest.get("resources")
-    entries = manifest.get("entries")
-    if (
-        not isinstance(resources, list)
-        or len(resources) != 2 + runtime_launch.TARGET_TILE_COUNT
-    ):
-        raise RuntimeError("sparse high-offset final resource domains are wrong")
-    resources_by_id = {
-        resource.get("id"): resource
-        for resource in resources
-        if isinstance(resource, dict) and isinstance(resource.get("id"), int)
-    }
-    input_id, output_id, workspace_id = resource_ids
-    expected = {
-        input_id: ("user_input", "read_only", True, RESOURCE_BYTES),
-        output_id: ("output", "write_only", True, RESOURCE_BYTES),
-        workspace_id: (
-            "workspace",
-            "read_write",
-            False,
-            workspace_size,
-        ),
-    }
-    for resource_id, contract in expected.items():
-        resource = resources_by_id[resource_id]
-        if (
-            (
-                resource.get("role"),
-                resource.get("access"),
-                resource.get("host_visible"),
-                resource.get("bytes"),
-            )
-            != contract
-            or resource.get("role_index") != 0
-            or resource.get("alignment") != 256
-        ):
-            raise RuntimeError(
-                f"sparse high-offset resource {resource_id} is invalid"
-            )
-    if resources_by_id[workspace_id].get("type") != {
-        "dtype": "u8",
-        "shape": [workspace_size],
-    }:
-        raise RuntimeError("sparse high-offset workspace type is invalid")
     tile_entries = runtime_launch.require_complete_tile_domain(
         manifest, context="sparse high-offset package"
     )
-    slots = tile_entries[0].get("slots")
-    expected_slots = [
-        (0, input_id, "read_only"),
-        (1, output_id, "write_only"),
-        (2, workspace_id, "read_write"),
+    input_id, output_id = resource_ids
+    expected_arguments = [
+        {
+            "ordinal": 0,
+            "kind": "external_input",
+            "port": input_id,
+            "access": "read_only",
+            "bytes": None,
+            "alignment": None,
+        },
+        {
+            "ordinal": 1,
+            "kind": "external_output",
+            "port": output_id,
+            "access": "write_only",
+            "bytes": None,
+            "alignment": None,
+        },
+        {
+            "ordinal": 2,
+            "kind": "workspace",
+            "port": None,
+            "access": "read_write",
+            "bytes": workspace_size,
+            "alignment": 256,
+        },
     ]
-    actual_slots = [
-        (slot.get("ordinal"), slot.get("resource"), slot.get("access"))
-        for slot in slots
-        if isinstance(slot, dict)
-    ] if isinstance(slots, list) else []
-    if actual_slots != expected_slots:
-        raise RuntimeError("sparse high-offset ABI slots are not canonical")
+    for tile_entry in tile_entries:
+        arguments = tile_entry.get("arguments")
+        actual_arguments = [
+            {
+                "ordinal": argument.get("ordinal"),
+                "kind": argument.get("kind"),
+                "port": argument.get("port"),
+                "access": argument.get("access"),
+                "bytes": argument.get("bytes"),
+                "alignment": argument.get("alignment"),
+            }
+            for argument in arguments
+            if isinstance(argument, dict)
+        ] if isinstance(arguments, list) else []
+        if actual_arguments != expected_arguments:
+            raise RuntimeError(
+                "sparse high-offset ABI arguments are not canonical"
+            )
 
 
 def build_probe(
@@ -619,7 +555,7 @@ def build_probe(
 def verify_no_card(
     args: argparse.Namespace,
     package: pathlib.Path,
-    resource_ids: tuple[int, int, int],
+    resource_ids: tuple[int, int],
     workspace_size: int,
 ) -> None:
     result = run(
@@ -630,15 +566,12 @@ def verify_no_card(
             "--no-card",
         ]
     )
-    workspace_id = resource_ids[2]
-    workspace_plan = (
-        f"launch_slot: 2 resource={workspace_id} role=workspace "
-        f"bytes={workspace_size} alignment=256 access=read_write "
-        "externally_bound=false"
+    workspace_plan = re.compile(
+        r"^launch_argument: 2 base=invocation offset=\d+$"
     )
     if (
         "board_execution: false" not in result.stdout
-        or workspace_plan not in result.stdout
+        or workspace_plan.search(result.stdout) is None
     ):
         raise RuntimeError(
             "sparse high-offset no-card launch evidence is incomplete"
@@ -699,11 +632,11 @@ def make_input(
 def board_command(
     args: argparse.Namespace,
     package: pathlib.Path,
-    resource_ids: tuple[int, int, int],
+    resource_ids: tuple[int, int],
     input_path: pathlib.Path,
     output_path: pathlib.Path,
 ) -> list[str]:
-    input_id, output_id, _workspace_id = resource_ids
+    input_id, output_id = resource_ids
     return [
         str(args.wafer_run),
         "--package-dir",
@@ -853,7 +786,7 @@ def validate_output(
 def execute_board(
     args: argparse.Namespace,
     package: pathlib.Path,
-    resource_ids: tuple[int, int, int],
+    resource_ids: tuple[int, int],
     workspace_size: int,
 ) -> None:
     raw_dir = args.work_dir / "raw"

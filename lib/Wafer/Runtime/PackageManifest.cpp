@@ -14,13 +14,6 @@ llvm::Error invalid(llvm::Twine message) {
                                  message.str().c_str());
 }
 
-const PackageResourceRecord *
-findResource(llvm::ArrayRef<PackageResourceRecord> resources, ResourceId id) {
-  auto iterator = llvm::find_if(
-      resources, [&](const auto &resource) { return resource.id == id; });
-  return iterator == resources.end() ? nullptr : &*iterator;
-}
-
 const PackageModuleRecord *
 findModule(llvm::ArrayRef<PackageModuleRecord> modules, ModuleId id) {
   auto iterator = llvm::find_if(
@@ -31,31 +24,43 @@ findModule(llvm::ArrayRef<PackageModuleRecord> modules, ModuleId id) {
 const PackageModuleExportRecord *
 findModuleExport(const PackageModuleRecord &module,
                  PackageModuleExportRole role) {
-  auto iterator = llvm::find_if(
-      module.exports, [&](const auto &moduleExport) {
-        return moduleExport.role == role;
-      });
+  auto iterator = llvm::find_if(module.exports, [&](const auto &moduleExport) {
+    return moduleExport.role == role;
+  });
   return iterator == module.exports.end() ? nullptr : &*iterator;
+}
+
+const ProgramTensorRecord *
+findProgramTensor(llvm::ArrayRef<ProgramTensorRecord> tensors, ProgramTensorId id) {
+  auto iterator = llvm::find_if(
+      tensors, [&](const auto &tensor) { return tensor.id == id; });
+  return iterator == tensors.end() ? nullptr : &*iterator;
+}
+
+const TargetTensorRecord *
+findTargetTensor(llvm::ArrayRef<TargetTensorRecord> tensors, TargetTensorId id) {
+  auto iterator = llvm::find_if(
+      tensors, [&](const auto &tensor) { return tensor.id == id; });
+  return iterator == tensors.end() ? nullptr : &*iterator;
+}
+
+const ExternalPortRecord *findPort(llvm::ArrayRef<ExternalPortRecord> ports,
+                                   PortId id) {
+  auto iterator =
+      llvm::find_if(ports, [&](const auto &port) { return port.id == id; });
+  return iterator == ports.end() ? nullptr : &*iterator;
 }
 
 } // namespace detail
 
-llvm::StringRef stringifyPackageResourceRole(PackageResourceRole role) {
+llvm::StringRef stringifyProgramTensorRole(ProgramTensorRole role) {
   switch (role) {
-  case PackageResourceRole::UserInput:
-    return "user_input";
-  case PackageResourceRole::Parameter:
+  case ProgramTensorRole::Parameter:
     return "parameter";
-  case PackageResourceRole::Constant:
+  case ProgramTensorRole::Constant:
     return "constant";
-  case PackageResourceRole::Output:
-    return "output";
-  case PackageResourceRole::Workspace:
-    return "workspace";
-  case PackageResourceRole::TransportStatus:
-    return "transport_status";
   }
-  llvm_unreachable("unknown package resource role");
+  llvm_unreachable("unknown program tensor role");
 }
 
 llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access) {
@@ -68,6 +73,20 @@ llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access) {
     return "read_write";
   }
   llvm_unreachable("unknown package access mode");
+}
+
+llvm::StringRef stringifyPackageMemLayout(PackageMemLayout layout) {
+  switch (layout) {
+  case PackageMemLayout::Tensor:
+    return "tensor";
+  case PackageMemLayout::NTensor:
+    return "ntensor";
+  case PackageMemLayout::Cx:
+    return "cx";
+  case PackageMemLayout::NCx:
+    return "ncx";
+  }
+  llvm_unreachable("unknown package memory layout");
 }
 
 llvm::StringRef

@@ -48,7 +48,6 @@ METADATA = {
 }
 
 TARGET_IDENTITY = "wafer-tx81-single-card"
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 PROBE_BYTES = 256
 PROBE_WORDS = 32
 PROBE_MAGIC = 0x3130554D50464157
@@ -167,7 +166,6 @@ def compile_seed_package(args: argparse.Namespace, source: pathlib.Path) -> path
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=300,
     )
@@ -184,7 +182,8 @@ def validate_manifest(
     target = manifest.get("target")
     modules = manifest.get("modules")
     entries = manifest.get("entries")
-    resources = manifest.get("resources")
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
     runtime_launch.require_manifest_launch(
         manifest,
         runtime_launch.GRID_KERNEL_LAUNCH,
@@ -198,7 +197,8 @@ def validate_manifest(
         or target.get("identity") != TARGET_IDENTITY
         or not isinstance(modules, list)
         or len(modules) != 1
-        or not isinstance(resources, list)
+        or not isinstance(inputs, list)
+        or not isinstance(outputs, list)
     ):
         raise RuntimeError("PMU probe seed package contract is invalid")
 
@@ -225,38 +225,41 @@ def validate_manifest(
 
     input_ids: list[int] = []
     output_id: int | None = None
-    for resource in resources:
-        if (
-            not isinstance(resource, dict)
-            or resource.get("scope") != {"kind": "card", "card_id": 0}
-            or resource.get("bytes") != PROBE_BYTES
-            or resource.get("alignment") != 256
-            or resource.get("host_visible") is not True
-            or not isinstance(resource.get("id"), int)
-        ):
-            raise RuntimeError("PMU probe resource contract is invalid")
-        role = resource.get("role")
-        access = resource.get("access")
-        if role == "user_input" and access == "read_only":
-            input_ids.append(resource["id"])
-        elif role == "output" and access == "write_only" and output_id is None:
-            output_id = resource["id"]
-        else:
-            raise RuntimeError(f"unexpected PMU probe resource: {resource}")
+    for table, role in (("inputs", "user_input"), ("outputs", "output")):
+        for record in manifest.get(table, []):
+            if (
+                not isinstance(record, dict)
+                or record.get("bytes") != PROBE_BYTES
+                or record.get("alignment") != 256
+                or not isinstance(record.get("id"), int)
+            ):
+                raise RuntimeError("PMU probe port contract is invalid")
+            if role == "user_input":
+                input_ids.append(record["id"])
+            elif output_id is None:
+                output_id = record["id"]
+            else:
+                raise RuntimeError(f"unexpected PMU probe port: {record}")
     if len(input_ids) != 2 or output_id is None:
         raise RuntimeError("PMU probe host-visible bindings are incomplete")
 
-    slots = entry.get("slots")
+    arguments = entry.get("arguments")
     if (
-        not isinstance(slots, list)
-        or [slot.get("ordinal") for slot in slots] != [0, 1, 2]
-        or [slot.get("resource") for slot in slots]
+        not isinstance(arguments, list)
+        or [argument.get("ordinal") for argument in arguments] != [0, 1, 2]
+        or [argument.get("kind") for argument in arguments]
+        != ["external_input", "external_input", "external_output"]
+        or [argument.get("port") for argument in arguments]
         != [input_ids[0], input_ids[1], output_id]
+        or [argument.get("access") for argument in arguments]
+        != ["read_only", "read_only", "write_only"]
     ):
-        raise RuntimeError("PMU probe entry must keep output at pointer-table slot 2")
+        raise RuntimeError(
+            "PMU probe entry must keep output at pointer-table argument 2"
+        )
     if any(other.get("module") != module.get("id") for other in entries):
         raise RuntimeError("PMU probe entries do not share one module")
-    return manifest, module_path, input_ids, output_id, len(slots)
+    return manifest, module_path, input_ids, output_id, len(arguments)
 
 
 def build_probe(

@@ -111,14 +111,15 @@ module {
                                singlePartitionBoundary(1, {2, 128, 16})};
   program.distributedOutputs = {singlePartitionBoundary(0, {2, 1, 16})};
   llvm::Expected<ExecutionConfig> config =
-      ExecutionConfig::createForSingleCard(1, RuntimeLaunchKind::Kernel);
+      ExecutionConfig::createForSingleCard(1);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::ProgramDataHandoff programData;
   llvm::Expected<CardExecutable> executable =
       compiler::detail::buildCardExecutable(
           context, *tensorProgram, std::move(program), *config,
-          OptimizationConfig::none(), diagnostics, std::nullopt);
+          OptimizationConfig::none(), diagnostics, std::nullopt, programData);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
@@ -190,26 +191,26 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
                          {}});
     size_t inputCount = 0;
     size_t outputCount = 0;
-    for (const KernelABISlot &slot : module.getKernelABISlots()) {
-      const bool tileOwned = slot.role == KernelABISlotRole::Workspace ||
-                             slot.role == KernelABISlotRole::TransportStatus;
+    for (const TileEntryArgument &slot : module.getTileEntryArguments()) {
+      const bool tileOwned = slot.kind == TileEntryArgumentKind::Workspace ||
+                             slot.kind == TileEntryArgumentKind::TransportStatus;
       const uint64_t base =
           tileOwned
               ? UINT64_C(0x10000000) +
                     static_cast<uint64_t>(launchSlot) * UINT64_C(0x100000) +
                     static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x10000)
-              : (slot.role == KernelABISlotRole::Output
+              : (slot.kind == TileEntryArgumentKind::ExternalOutput
                      ? UINT64_C(0x400000)
                      : UINT64_C(0x100000) +
                            static_cast<uint64_t>(slot.resourceIndex) *
                                UINT64_C(0x100000));
       arguments.back().slots.push_back(base);
-      if (slot.role == KernelABISlotRole::Output) {
+      if (slot.kind == TileEntryArgumentKind::ExternalOutput) {
         EXPECT_EQ(slot.shape, (std::vector<int64_t>{2, 1, 16}));
         ++outputCount;
         continue;
       }
-      if (slot.role != KernelABISlotRole::UserInput)
+      if (slot.kind != TileEntryArgumentKind::ExternalInput)
         continue;
       ASSERT_LT(slot.resourceIndex, 2);
       const size_t inputIndex = static_cast<size_t>(slot.resourceIndex);
@@ -223,7 +224,7 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
       if (launchSlot == 0)
         inputs.push_back(
             {getTargetModelResourceId(module.getCardId(),
-                                      module.getTileId(), slot.role,
+                                      module.getTileId(), slot.kind,
                                       slot.resourceIndex),
              std::move(bytes)});
       ++inputCount;

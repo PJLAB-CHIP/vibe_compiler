@@ -9,23 +9,26 @@ from typing import Any
 
 
 KERNEL_LAUNCH_KIND = "kernel"
-MODEL_LAUNCH_KIND = "model"
 TARGET_TILE_COUNT = 16
 LOCAL_DRAIN_COMPLETION = "return_after_local_drain"
 PACKAGE_FIELDS = frozenset(
     {
         "program",
         "target",
+        "launch",
         "card_count",
         "tile_count",
-        "resources",
+        "program_data",
+        "program_tensors",
+        "target_tensors",
+        "inputs",
+        "outputs",
         "modules",
         "entries",
     }
 )
-TARGET_FIELDS = frozenset(
-    {"identity", "runtime_abi", "launch", "module_format"}
-)
+TARGET_FIELDS = frozenset({"identity", "runtime_abi", "module_format"})
+LAUNCH_FIELDS = frozenset({"kind", "form", "entry_abi", "phases"})
 
 GRID_KERNEL_LAUNCH: dict[str, Any] = {
     "kind": KERNEL_LAUNCH_KIND,
@@ -41,12 +44,6 @@ CLUSTER_KERNEL_LAUNCH: dict[str, Any] = {
     "phases": ["prepare", "main"],
 }
 
-MODEL_LAUNCH: dict[str, Any] = {
-    "kind": MODEL_LAUNCH_KIND,
-    "entry_abi": "tx81-model-bootparam",
-    "phases": ["main"],
-}
-
 KERNEL_PREPARE_EXPORT = {
     "role": "prepare",
     "symbol": "__wafer_kernel_prepare",
@@ -55,17 +52,19 @@ KERNEL_MAIN_EXPORT = {"role": "main", "symbol": "main"}
 
 
 @dataclasses.dataclass(frozen=True)
-class SharedBoundaryResourceSpec:
-    """One program-boundary resource shared by every Tile entry."""
+class SharedBoundaryPortSpec:
+    """One external program-boundary port shared by every Tile entry."""
 
-    role: str
+    table: str  # "inputs" | "outputs"
     role_index: int
-    name: str
-    type: Mapping[str, Any]
+    logical_dtype: str
+    logical_shape: list[int]
+    dtype: str
+    layout: str
+    shape: list[int]
     bytes: int
     alignment: int
     access: str
-    host_visible: bool
 
 
 def expected_kernel_module_exports(
@@ -96,10 +95,13 @@ def require_manifest_launch(
     if frozenset(manifest) != PACKAGE_FIELDS:
         raise RuntimeError(f"{context} package fields are not current")
     target = manifest.get("target")
+    launch = manifest.get("launch")
     if (
         not isinstance(target, Mapping)
         or frozenset(target) != TARGET_FIELDS
-        or target.get("launch") != expected
+        or not isinstance(launch, Mapping)
+        or frozenset(launch) != LAUNCH_FIELDS
+        or launch != expected
     ):
         raise RuntimeError(f"{context} runtime launch contract is invalid")
 
@@ -162,12 +164,12 @@ def require_board_completion(stdout: str, *, context: str) -> None:
 def configure_direct_dte_tile_package(
     manifest: dict[str, Any],
     *,
-    resources: tuple[SharedBoundaryResourceSpec, ...],
+    ports: tuple[SharedBoundaryPortSpec, ...],
     status_abi: str,
     status_bytes: int,
     status_alignment: int,
     context: str,
-) -> dict[tuple[int, str, int], int]:
+) -> dict[tuple[str, str, int], int]:
     """Configure one shared module for Direct-DTE execution on all Tiles."""
 
     require_manifest_launch(manifest, GRID_KERNEL_LAUNCH, context=context)
@@ -178,76 +180,61 @@ def configure_direct_dte_tile_package(
     module = modules[0]
     if not isinstance(module, dict) or not isinstance(module.get("id"), int):
         raise RuntimeError(f"{context} module record is invalid")
-    if not resources or len({(spec.role, spec.role_index) for spec in resources}) != len(
-        resources
-    ):
-        raise RuntimeError(f"{context} resource roles are not unique")
+    if not ports or len(
+        {(spec.table, spec.role_index) for spec in ports}
+    ) != len(ports):
+        raise RuntimeError(f"{context} port roles are not unique")
     if any(
         spec.bytes <= 0
         or spec.alignment <= 0
         or spec.role_index < 0
         or spec.access not in {"read_only", "write_only", "read_write"}
-        for spec in resources
+        for spec in ports
     ):
-        raise RuntimeError(f"{context} resource specification is invalid")
+        raise RuntimeError(f"{context} port specification is invalid")
 
-    manifest["target"]["launch"] = dict(CLUSTER_KERNEL_LAUNCH)
+    manifest["launch"] = dict(CLUSTER_KERNEL_LAUNCH)
     module["exports"] = expected_kernel_module_exports(CLUSTER_KERNEL_LAUNCH)
-    manifest_resources: list[dict[str, Any]] = []
+    inputs: list[dict[str, Any]] = []
+    outputs: list[dict[str, Any]] = []
+    next_port_id = {"inputs": 0, "outputs": 0}
     entries: list[dict[str, Any]] = []
-    bindings: dict[tuple[int, str, int], int] = {}
-    next_resource_id = 0
-    shared_resources: list[tuple[SharedBoundaryResourceSpec, int]] = []
-    for spec in resources:
-        resource_id = next_resource_id
-        next_resource_id += 1
-        shared_resources.append((spec, resource_id))
-        manifest_resources.append(
-            {
-                "id": resource_id,
-                "scope": {"kind": "card", "card_id": 0},
-                "role": spec.role,
-                "role_index": spec.role_index,
-                "name": spec.name,
-                "type": dict(spec.type),
-                "bytes": spec.bytes,
-                "alignment": spec.alignment,
-                "access": spec.access,
-                "host_visible": spec.host_visible,
-            }
-        )
+    bindings: dict[tuple[str, str, int], int] = {}
+    for spec in ports:
+        port_id = next_port_id[spec.table]
+        next_port_id[spec.table] += 1
+        bindings[(spec.table, spec.role_index)] = port_id
+        record = {
+            "id": port_id,
+            "role_index": spec.role_index,
+            "logical_dtype": spec.logical_dtype,
+            "logical_shape": list(spec.logical_shape),
+            "dtype": spec.dtype,
+            "layout": spec.layout,
+            "shape": list(spec.shape),
+            "bytes": spec.bytes,
+            "alignment": spec.alignment,
+        }
+        (inputs if spec.table == "inputs" else outputs).append(record)
     for tile_id in range(TARGET_TILE_COUNT):
-        slots: list[dict[str, Any]] = []
-        for spec, resource_id in shared_resources:
-            bindings[(tile_id, spec.role, spec.role_index)] = resource_id
-            slots.append(
+        arguments: list[dict[str, Any]] = []
+        for spec in ports:
+            kind = "external_input" if spec.table == "inputs" else "external_output"
+            arguments.append(
                 {
-                    "ordinal": len(slots),
-                    "resource": resource_id,
+                    "ordinal": len(arguments),
+                    "kind": kind,
+                    "port": bindings[(spec.table, spec.role_index)],
                     "access": spec.access,
                 }
             )
-        status_id = next_resource_id
-        next_resource_id += 1
-        bindings[(tile_id, "transport_status", 0)] = status_id
-        manifest_resources.append(
+        arguments.append(
             {
-                "id": status_id,
-                "scope": {"kind": "tile", "card_id": 0, "tile_id": tile_id},
-                "role": "transport_status",
-                "role_index": 0,
-                "name": f"transport_status_tile_{tile_id}",
-                "type": {"dtype": "u32", "shape": [1]},
+                "ordinal": len(arguments),
+                "kind": "transport_status",
+                "status_abi": status_abi,
                 "bytes": status_bytes,
                 "alignment": status_alignment,
-                "access": "read_write",
-                "host_visible": False,
-            }
-        )
-        slots.append(
-            {
-                "ordinal": len(slots),
-                "resource": status_id,
                 "access": "read_write",
             }
         )
@@ -258,11 +245,10 @@ def configure_direct_dte_tile_package(
                 "tile_id": tile_id,
                 "launch_slot": tile_id,
                 "module": module["id"],
-                "slots": slots,
+                "arguments": arguments,
                 "completion": LOCAL_DRAIN_COMPLETION,
                 "transport": {
                     "kind": "direct_dte",
-                    "status_resource": status_id,
                     "status_abi": status_abi,
                     "host_watchdog_required": True,
                 },
@@ -270,6 +256,7 @@ def configure_direct_dte_tile_package(
         )
     if len(seed_entries) != len(entries):
         raise RuntimeError(f"{context} Tile domain changed unexpectedly")
-    manifest["resources"] = manifest_resources
+    manifest["inputs"] = inputs
+    manifest["outputs"] = outputs
     manifest["entries"] = entries
     return bindings

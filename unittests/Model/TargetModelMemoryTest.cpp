@@ -44,32 +44,35 @@ TargetCallInvocationDescriptor makeInvocation(size_t tileCount = 2) {
         TileId(static_cast<int64_t>(launchSlot)),
         LaunchSlotId(static_cast<int64_t>(launchSlot)),
         {{0,
-          KernelABISlotRole::UserInput,
+          TileEntryArgumentKind::ExternalInput,
           0,
           "ignored-input-name",
           "f32",
           MemLayout::Tensor,
           {4},
           16,
-          256},
+          256,
+          TileEntryArgumentAccess::ReadOnly},
          {1,
-          KernelABISlotRole::Output,
+          TileEntryArgumentKind::ExternalOutput,
           0,
           "ignored-output-name",
           "f32",
           MemLayout::Tensor,
           {4},
           16,
-          256},
+          256,
+          TileEntryArgumentAccess::WriteOnly},
          {2,
-          KernelABISlotRole::Workspace,
+          TileEntryArgumentKind::Workspace,
           0,
           "ignored-workspace-name",
           "u8",
           MemLayout::Tensor,
           {64},
           64,
-          256}},
+          256,
+          TileEntryArgumentAccess::ReadWrite}},
         {UINT64_C(0x100000), UINT64_C(0x101000), workspace},
         TargetIdentityId::waferTx81SingleCard(),
         KernelRuntimeABIId::waferTx81Kernel()});
@@ -80,7 +83,7 @@ TargetCallInvocationDescriptor makeInvocation(size_t tileCount = 2) {
 std::vector<TargetModelInputBinding> makeBindings(size_t tileCount = 2) {
   (void)tileCount;
   return {{getTargetModelResourceId(CardId(0), TileId(0),
-                                    KernelABISlotRole::UserInput,
+                                    TileEntryArgumentKind::ExternalInput,
                                     /*resourceIndex=*/0),
            std::vector<uint8_t>(16, 1)}};
 }
@@ -100,7 +103,7 @@ TEST(TargetModelMemoryTest, RequiresExactInputsAndOwnsPrivateSlotBytes) {
   std::vector<TargetModelInputBinding> mutableBinding = makeBindings(1);
   mutableBinding.push_back(
       {getTargetModelResourceId(CardId(0), TileId(0),
-                                KernelABISlotRole::Output,
+                                TileEntryArgumentKind::ExternalOutput,
                                 /*resourceIndex=*/0),
        std::vector<uint8_t>(16, 9)});
   error =

@@ -21,7 +21,6 @@ import wafer_runtime_launch_contract as runtime_launch
 
 TILE_COUNT = 16
 LOCAL_ELEMENTS = 458752
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 TARGET_IDENTITY = "wafer-tx81-single-card"
 STATUS_ABI = "wafer-direct-dte-status"
 STATUS_STORAGE_BYTES = 64
@@ -106,8 +105,7 @@ def compile_package(
         "--output-program-dir",
         str(package),
         "--num-partitions=1",
-        f"--launch-kind={LAUNCH_KIND}",
-    ]
+        f    ]
     if profile:
         command.append("--profile")
     result = run(command)
@@ -266,35 +264,30 @@ def validate_manifest(
         for entry in entries
     ):
         raise RuntimeError("Direct-DTE Tile transport contract is invalid")
-    resources = manifest.get("resources")
-    if not isinstance(resources, list):
-        raise RuntimeError("Direct-DTE resources are not a list")
-    host_resources = [
-        resource
-        for resource in resources
-        if isinstance(resource, dict) and resource.get("host_visible") is True
-    ]
+    inputs = manifest.get("inputs")
+    outputs = manifest.get("outputs")
+    if not isinstance(inputs, list) or not isinstance(outputs, list):
+        raise RuntimeError("Direct-DTE port tables are not lists")
     host_bindings: dict[tuple[str, int], int] = {}
-    expected_type = {
-        "dtype": element_type,
-        "shape": [TILE_COUNT, local_elements],
-    }
     expected_bytes = TILE_COUNT * local_elements * element_dtype.itemsize
-    for resource in host_resources:
-        scope = resource.get("scope")
-        key = (resource.get("role"), resource.get("role_index"))
-        if (
-            key not in {("user_input", 0), ("output", 0)}
-            or key in host_bindings
-            or scope != {"kind": "card", "card_id": 0}
-            or resource.get("type") != expected_type
-            or resource.get("bytes") != expected_bytes
-            or not isinstance(resource.get("id"), int)
-        ):
-            raise RuntimeError("Direct-DTE program-boundary resource is invalid")
-        host_bindings[key] = resource["id"]
+    for table, role in (("inputs", "user_input"), ("outputs", "output")):
+        for record in manifest.get(table, []):
+            if not isinstance(record, dict):
+                raise RuntimeError("Direct-DTE port records must be objects")
+            role_index = record.get("role_index")
+            key = (role, role_index)
+            if (
+                key not in {("user_input", 0), ("output", 0)}
+                or key in host_bindings
+                or record.get("dtype") != element_type
+                or record.get("shape") != [TILE_COUNT, local_elements]
+                or record.get("bytes") != expected_bytes
+                or not isinstance(record.get("id"), int)
+            ):
+                raise RuntimeError("Direct-DTE program-boundary port is invalid")
+            host_bindings[key] = record["id"]
     if set(host_bindings) != {("user_input", 0), ("output", 0)}:
-        raise RuntimeError("Direct-DTE host resources are not exact")
+        raise RuntimeError("Direct-DTE host ports are not exact")
     return host_bindings
 
 
@@ -382,7 +375,7 @@ def verify_board_evidence(
     if not required_evidence.issubset(set(stdout.splitlines())):
         raise RuntimeError("board output omitted complete Direct-DTE evidence")
     output_matches = re.findall(
-        rf"^output_compare: resource=(\d+) "
+        rf"^output_compare: port=(\d+) "
         rf"bytes={TILE_COUNT * LOCAL_ELEMENTS * 2} "
         r"exact=true$",
         stdout,
@@ -391,10 +384,10 @@ def verify_board_evidence(
     if output_matches != [str(bindings[("output", 0)])]:
         raise RuntimeError("board output omitted exact global output evidence")
     runtime_launch.require_board_completion(stdout, context="Direct-DTE case")
-    # BoardRuntime checks every typed Direct-DTE status resource for Success
-    # before it runs DeviceToHost/Cleanup. Reaching both stages therefore
-    # retains the existing exact 16-Tile status gate without inventing a second
-    # host-visible status protocol in this harness.
+    # BoardRuntime checks every per-Tile Direct-DTE transport status argument
+    # for Success before it runs DeviceToHost/Cleanup. Reaching both stages
+    # therefore retains the existing exact 16-Tile status gate without
+    # inventing a second host-visible status protocol in this harness.
 
 
 def verify_profile_report(

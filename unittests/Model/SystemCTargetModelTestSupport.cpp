@@ -136,8 +136,7 @@ module {
   program.distributedInputs = {partitionedBoundary(0)};
   program.distributedOutputs = {partitionedBoundary(0)};
   llvm::Expected<compiler::ExecutionConfig> config =
-      compiler::ExecutionConfig::createForSingleCard(16,
-                                                     RuntimeLaunchKind::Kernel);
+      compiler::ExecutionConfig::createForSingleCard(16);
   if (!config)
     return config.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
@@ -171,7 +170,7 @@ llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
                                      "is outside the canonical domain");
     compiler::TargetCallRankArguments arguments{rank, {}};
     size_t userInputCount = 0;
-    for (const compiler::KernelABISlot &slot : module.getKernelABISlots()) {
+    for (const compiler::TileEntryArgument &slot : module.getTileEntryArguments()) {
       if (slot.ordinal < 0 || slot.byteSize <= 0 || slot.byteSize >= 0x10000)
         return llvm::createStringError(
             "Direct-DTE test slot is outside its synthetic DDR stride");
@@ -180,7 +179,7 @@ llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
           static_cast<uint64_t>(rank) * UINT64_C(0x100000) +
           static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x10000);
       arguments.slots.push_back(base);
-      if (slot.role == compiler::KernelABISlotRole::UserInput) {
+      if (slot.kind == compiler::TileEntryArgumentKind::ExternalInput) {
         ++userInputCount;
         llvm::Expected<std::vector<uint8_t>> bytes =
             packPhysicalTensorLogicalValues(tensorKey, makeRankValues(rank),
@@ -192,8 +191,8 @@ llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
               "Direct-DTE test input bytes disagree with the typed ABI slot");
         result.inputBytesByRank[static_cast<size_t>(rank)] = *bytes;
         result.inputBindings.push_back({rank, slot.ordinal, std::move(*bytes)});
-      } else if (slot.role == compiler::KernelABISlotRole::Parameter ||
-                 slot.role == compiler::KernelABISlotRole::Constant) {
+      } else if (slot.kind == compiler::TileEntryArgumentKind::TargetTensor ||
+                 slot.kind == compiler::TileEntryArgumentKind::TargetTensor) {
         return llvm::createStringError(
             "Direct-DTE source vertical unexpectedly gained a read-only slot");
       }

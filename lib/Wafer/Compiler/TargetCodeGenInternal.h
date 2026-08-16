@@ -27,12 +27,12 @@ struct TargetLLVMModulesBuilder {
              LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
              TargetIdentityId targetIdentity,
              KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
-             std::vector<KernelABISlot> kernelABISlots,
+             std::vector<TileEntryArgument> tileEntryArguments,
              std::unique_ptr<llvm::LLVMContext> context,
              std::unique_ptr<llvm::Module> module) {
     return TargetLLVMModule(cardId, tileId, launchSlotId,
                             entrySymbol, targetIdentity, kernelRuntimeABI,
-                            moduleFormat, std::move(kernelABISlots),
+                            moduleFormat, std::move(tileEntryArguments),
                             std::move(context), std::move(module));
   }
 
@@ -65,10 +65,10 @@ struct LinkedTargetModulesBuilder {
   makeTileInterface(CardId cardId,
                     TileId tileId, LaunchSlotId launchSlotId,
                     TargetModuleId moduleId,
-                    std::vector<KernelABISlot> kernelABISlots) {
+                    std::vector<TileEntryArgument> tileEntryArguments) {
     return VerifiedTargetTileInterface(cardId, tileId,
                                        launchSlotId, moduleId,
-                                       std::move(kernelABISlots));
+                                       std::move(tileEntryArguments));
   }
 
   static LinkedTargetModules
@@ -94,7 +94,7 @@ enum class ProfileCaptureKind : uint8_t { None, Count, Trace };
 llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture);
 uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture);
 llvm::Error
-verifyProfileCaptureKernelABISlots(llvm::ArrayRef<KernelABISlot> slots,
+verifyProfileCaptureTileEntryArguments(llvm::ArrayRef<TileEntryArgument> slots,
                                    ProfileCaptureKind capture);
 
 struct ProfileTargetCallSite {
@@ -149,7 +149,7 @@ struct PreparedTile {
                        bool transportPreparedBeforeEntry);
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
-  std::vector<KernelABISlot> slots;
+  std::vector<TileEntryArgument> slots;
   bool transportPreparedBeforeEntry = false;
   TargetIdentityId targetIdentity;
   KernelRuntimeABIId kernelRuntimeABI;
@@ -190,15 +190,8 @@ llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
                                    TargetIdentityId expectedTargetIdentity,
                                    KernelRuntimeABIId expectedKernelRuntimeABI,
                                    llvm::StringRef expectedModuleFormat,
-                                   llvm::ArrayRef<KernelABISlot> expectedSlots);
+                                   llvm::ArrayRef<TileEntryArgument> expectedSlots);
 
-llvm::Error
-writeLLVMIR(const llvm::Module &module, llvm::StringRef entrySymbol,
-            llvm::ArrayRef<KernelABISlot> slots,
-            const RuntimeLaunchContract &runtimeLaunchContract,
-            LaunchSlotId launchSlotId, int64_t tileCount,
-            llvm::StringRef path,
-            ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 llvm::Error writeTargetLLVMIR(const llvm::Module &module, llvm::StringRef path);
 
 /// Imports the complete Tile domain into one context, scopes every

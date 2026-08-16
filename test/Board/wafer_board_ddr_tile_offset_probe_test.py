@@ -107,7 +107,6 @@ MAX_RECORD_BYTES = max(
 )
 MODE_OFFSET = 0
 MODE_CONFLICT_EQUIVALENCE = 1
-LAUNCH_KIND = runtime_launch.KERNEL_LAUNCH_KIND
 STATUS_ABI = "wafer-direct-dte-status"
 STATUS_STORAGE_BYTES = 64
 STATUS_STORAGE_ALIGNMENT = 64
@@ -473,27 +472,34 @@ def configure_manifest(
     manifest = json.loads(manifest_path.read_text())
     shared_bytes = TILE_COUNT * RESOURCE_BYTES
     specs = tuple(
-        runtime_launch.SharedBoundaryResourceSpec(
-            role=role,
+        runtime_launch.SharedBoundaryPortSpec(
+            table="inputs" if role == "user_input" else "outputs",
             role_index=allocation,
-            name=f"ddr_{role}_{allocation}",
-            type={"dtype": "f16", "shape": [TILE_COUNT, LOCAL_ELEMENTS]},
+            logical_dtype="f16",
+            logical_shape=[TILE_COUNT, LOCAL_ELEMENTS],
+            dtype="f16",
+            layout="tensor",
+            shape=[TILE_COUNT, LOCAL_ELEMENTS],
             bytes=shared_bytes,
             alignment=256,
             access="read_only" if role == "user_input" else "write_only",
-            host_visible=True,
         )
         for role in ("user_input", "output")
         for allocation in range(ALLOCATION_COUNT)
     )
-    bindings = runtime_launch.configure_direct_dte_tile_package(
+    shared_bindings = runtime_launch.configure_direct_dte_tile_package(
         manifest,
-        resources=specs,
+        ports=specs,
         status_abi=STATUS_ABI,
         status_bytes=STATUS_STORAGE_BYTES,
         status_alignment=STATUS_STORAGE_ALIGNMENT,
         context="DDR tile/offset probe",
     )
+    bindings: dict[tuple[int, str, int], int] = {}
+    for (table, role_index), port_id in shared_bindings.items():
+        role = "user_input" if table == "inputs" else "output"
+        for tile_id in range(TILE_COUNT):
+            bindings[(tile_id, role, role_index)] = port_id
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
     runtime_launch.require_manifest_launch(
         manifest,
@@ -503,8 +509,8 @@ def configure_manifest(
     entries = runtime_launch.require_complete_tile_domain(
         manifest, context="DDR tile/offset probe"
     )
-    if any(len(entry.get("slots", [])) != 5 for entry in entries):
-        raise RuntimeError("DDR tile/offset slot layout is invalid")
+    if any(len(entry.get("arguments", [])) != 5 for entry in entries):
+        raise RuntimeError("DDR tile/offset argument layout is invalid")
     modules = manifest.get("modules")
     if not isinstance(modules, list) or len(modules) != 1:
         raise RuntimeError("DDR tile/offset shared module is missing")
@@ -527,7 +533,6 @@ def compile_package(
             "--output-program-dir",
             str(package),
             "--num-partitions=1",
-            f"--launch-kind={LAUNCH_KIND}",
         ],
         timeout_seconds=600,
     )

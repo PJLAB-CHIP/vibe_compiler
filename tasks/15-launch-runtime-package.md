@@ -38,8 +38,8 @@ Pipeline position:
 
 ## 2. 已确认的Wafer执行事实
 
-- 每个Tile target entry消费一个有序参数表。当前实现名`KernelABISlot`并不准确：它描述Tile target entry参数，
-  不拥有kernel pointer-row storage；current设计统一称`TileEntryArgument`。current产品provider只把该参数表lower为
+- 每个Tile target entry消费一个有序参数表。旧实现名`KernelABISlot`并不准确：它描述Tile target entry参数，
+  不拥有kernel pointer-row storage；current名称是`TileEntryArgument`。current产品provider只把该参数表lower为
   `txLaunchKernel`所需的pointer row。`txLoadGraph`/`txLaunchModel`不进入本合同。
 - `TileEntryArgument`只描述某个Tile target entry的一个有序参数：ordinal、closed kind、恰一个typed reference
   （ProgramTensor/TargetTensor、external port或entry-local requirement）、`MemLayout`、shape、physical bytes、alignment和access。
@@ -228,10 +228,9 @@ reset或下一次submit不能重传、重排或覆盖program data。one-shot仍�
 这样静态大小、alignment和lifetime在side effect前一次排好，不逐tensor或逐Tile调用allocator。若某个provider能力要求分开，
 必须由typed capability和明确memory-plan分支决定，不能静默按失败顺序拆分。
 
-current产品合同只接受kernel launch family。`txLoadGraph`/`txLaunchModel`的exact-build反向工程和历史adapter代码不作为
-package能力、runtime fallback或Q56完成门禁；Q56实施时从Wafer-owned current compiler/package/runtime接口原位删除该分支，
-不保留兼容reader、枚举值或选择开关。反向工程事实继续留在`docs/`，但不得反向改写ProgramTensor、TargetTensor、
-`TileEntryArgument`或runtime memory plan语义。
+current产品合同只接受kernel launch family。`txLoadGraph`/`txLaunchModel`的exact-build反向工程事实保留在`docs/`，
+不进入compiler/package/runtime接口，也不得反向改写ProgramTensor、TargetTensor、`TileEntryArgument`或runtime memory
+plan语义。
 
 ## 6. Board lifecycle
 

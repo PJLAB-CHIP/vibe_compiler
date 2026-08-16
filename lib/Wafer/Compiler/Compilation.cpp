@@ -29,14 +29,12 @@
 namespace wafer::compiler {
 
 llvm::Expected<ExecutionConfig>
-ExecutionConfig::createForSingleCard(int64_t numPartitions,
-                                     RuntimeLaunchKind runtimeLaunchKind) {
+ExecutionConfig::createForSingleCard(int64_t numPartitions) {
   if (numPartitions != 1)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "num-partitions must be exactly 1 for the single-card compiler");
-  return ExecutionConfig(numPartitions, kSingleCardTileCount,
-                         runtimeLaunchKind);
+  return ExecutionConfig(numPartitions, kSingleCardTileCount);
 }
 
 llvm::Expected<CompilationRequest>
@@ -54,8 +52,7 @@ CompilationOptions::profile(const ExecutionConfig &executionConfig,
                             OptimizationConfig optimizations,
                             CompilationTimingMode timing) {
   if (executionConfig.getTileCount() !=
-          ExecutionConfig::kSingleCardTileCount ||
-      executionConfig.getRuntimeLaunchKind() != RuntimeLaunchKind::Kernel)
+      ExecutionConfig::kSingleCardTileCount)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "profile compilation requires a complete-card Tile kernel "

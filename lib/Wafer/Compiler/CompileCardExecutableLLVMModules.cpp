@@ -34,10 +34,6 @@ compileCardExecutableToTargetLLVMModulesImpl(
 
   const RuntimeLaunchContract &runtimeLaunchContract =
       cardExecutable.getRuntimeLaunchContract();
-  if (runtimeLaunchContract.getKind() != executionConfig.getRuntimeLaunchKind())
-    return fail(diagnostics,
-                "executable runtime launch contract does not match the "
-                "execution configuration");
   const bool transportPreparedBeforeEntry = llvm::is_contained(
       runtimeLaunchContract.getPhases(), RuntimeLaunchPhaseRole::Prepare);
   std::set<int64_t> tileIds;
@@ -64,7 +60,7 @@ compileCardExecutableToTargetLLVMModulesImpl(
                   "target ABI preparation failed for launch_slot=" +
                       std::to_string(tile.getLaunchSlotId().getValue()));
     if (llvm::Error error =
-            verifyProfileCaptureKernelABISlots(prepared->slots, profileCapture))
+            verifyProfileCaptureTileEntryArguments(prepared->slots, profileCapture))
       return fail(diagnostics,
                   "target ABI profiler slot verification failed for physical "
                   "Tile launch_slot=" +
@@ -129,7 +125,7 @@ verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule) {
       targetModule.getTileId(), targetModule.getLaunchSlotId(),
       targetModule.getEntrySymbol(), targetModule.getTargetIdentityId(),
       targetModule.getKernelRuntimeABIId(), targetModule.getModuleFormat(),
-      targetModule.getKernelABISlots());
+      targetModule.getTileEntryArguments());
 }
 
 } // namespace wafer::compiler::detail

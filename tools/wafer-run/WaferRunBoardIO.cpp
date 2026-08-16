@@ -21,7 +21,6 @@
 #include <set>
 #include <string>
 #include <system_error>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -29,7 +28,8 @@ namespace wafer::runtime::cli {
 namespace {
 
 llvm::Expected<std::vector<uint8_t>> readRawFile(llvm::StringRef path,
-                                                 uint64_t expectedBytes) {
+                                                 uint64_t expectedBytes,
+                                                 llvm::StringRef portLabel) {
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
       llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
@@ -40,22 +40,23 @@ llvm::Expected<std::vector<uint8_t>> readRawFile(llvm::StringRef path,
   if (bytes.size() != expectedBytes)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "raw tensor file byte count does not match ResourceId: " + path);
+        "raw tensor file byte count does not match " + portLabel + ": " +
+            path);
   return std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(bytes.data()),
                               reinterpret_cast<const uint8_t *>(bytes.data()) +
                                   bytes.size());
 }
 
 llvm::Expected<llvm::DenseMap<uint64_t, std::string>>
-indexResourceFiles(llvm::ArrayRef<ResourceFile> files, llvm::StringRef option) {
+indexPortFiles(llvm::ArrayRef<PortFile> files, llvm::StringRef option) {
   llvm::DenseMap<uint64_t, std::string> indexed;
-  for (const ResourceFile &file : files) {
+  for (const PortFile &file : files) {
     if (file.path.empty())
       return llvm::createStringError(llvm::errc::invalid_argument,
                                      "empty raw file path for " + option);
-    if (!indexed.try_emplace(file.resourceId, file.path).second)
+    if (!indexed.try_emplace(file.portId, file.path).second)
       return llvm::createStringError(llvm::errc::invalid_argument,
-                                     "duplicate ResourceId for " + option);
+                                     "duplicate port id for " + option);
   }
   return indexed;
 }
@@ -93,26 +94,6 @@ struct StagedRawFile {
   llvm::SmallString<256> temporary;
 };
 
-using SemanticResourceKey =
-    std::tuple<int, int64_t, int64_t, PackageResourceRole, int64_t>;
-
-SemanticResourceKey semanticKey(const PackageResourceRecord &resource) {
-  if (const auto *card = std::get_if<CardResourceScope>(&resource.scope))
-    return {0, card->cardId.getValue(), -1, resource.role, resource.roleIndex};
-  const auto &tile = std::get<TileResourceScope>(resource.scope);
-  return {1, tile.cardId.getValue(), tile.tileId.getValue(), resource.role,
-          resource.roleIndex};
-}
-
-bool hasExactUserContract(const PackageResourceRecord &lhs,
-                          const PackageResourceRecord &rhs) {
-  return semanticKey(lhs) == semanticKey(rhs) &&
-         lhs.roleIndex == rhs.roleIndex && lhs.type.dtype == rhs.type.dtype &&
-         lhs.type.shape == rhs.type.shape && lhs.bytes == rhs.bytes &&
-         lhs.alignment == rhs.alignment && lhs.access == rhs.access &&
-         lhs.hostVisible == rhs.hostVisible;
-}
-
 uint16_t readLittleEndianU16(llvm::ArrayRef<uint8_t> bytes, size_t offset) {
   return static_cast<uint16_t>(bytes[offset]) |
          (static_cast<uint16_t>(bytes[offset + 1]) << 8);
@@ -139,7 +120,7 @@ uint32_t orderedF16(uint16_t bits) {
              : sign + static_cast<uint32_t>(bits);
 }
 
-llvm::Error validateRelaxedF16Output(uint64_t resourceId,
+llvm::Error validateRelaxedF16Output(uint64_t portId,
                                      llvm::ArrayRef<uint8_t> expected,
                                      llvm::ArrayRef<uint8_t> actual) {
   for (size_t offset = 0; offset < expected.size(); offset += 2) {
@@ -149,8 +130,8 @@ llvm::Error validateRelaxedF16Output(uint64_t resourceId,
     if (!isFiniteF16(expectedBits) || !isFiniteF16(actualBits))
       return llvm::createStringError(
           llvm::errc::result_out_of_range,
-          "relaxed f16 board output contains NaN or infinity for ResourceId " +
-              std::to_string(resourceId) + " at element " +
+          "relaxed f16 board output contains NaN or infinity for port " +
+              std::to_string(portId) + " at element " +
               std::to_string(element));
 
     const double expectedValue = decodeFiniteF16(expectedBits);
@@ -170,7 +151,7 @@ llvm::Error validateRelaxedF16Output(uint64_t resourceId,
 
     std::string detail;
     llvm::raw_string_ostream message(detail);
-    message << "relaxed f16 board output differs for ResourceId " << resourceId
+    message << "relaxed f16 board output differs for port " << portId
             << " at element " << element << ": expected=" << expectedValue
             << " actual=" << actualValue << " abs=" << absoluteError
             << " limit=" << limit << " ulp=" << ulpDistance;
@@ -231,30 +212,28 @@ llvm::Error writeRawFilesViaTemporaryFiles(
 
 llvm::Expected<BoardInvocationFilePlan> prepareBoardInvocationFiles(
     const PackageManifest &manifest, BoardRuntimeInvocationRequest request,
-    llvm::ArrayRef<ResourceFile> resourceFiles,
-    llvm::ArrayRef<ResourceFile> expectedFiles,
-    llvm::ArrayRef<ResourceFile> outputFiles,
-    llvm::ArrayRef<ResourceFile> relaxedF16ExpectedFiles) {
-  llvm::Expected<llvm::DenseMap<uint64_t, std::string>> resources =
-      indexResourceFiles(resourceFiles, "--resource");
-  if (!resources)
-    return resources.takeError();
+    llvm::ArrayRef<PortFile> inputFiles, llvm::ArrayRef<PortFile> expectedFiles,
+    llvm::ArrayRef<PortFile> outputFiles,
+    llvm::ArrayRef<PortFile> relaxedF16ExpectedFiles) {
+  llvm::Expected<llvm::DenseMap<uint64_t, std::string>> inputs =
+      indexPortFiles(inputFiles, "--resource");
+  if (!inputs)
+    return inputs.takeError();
   llvm::Expected<llvm::DenseMap<uint64_t, std::string>> expected =
-      indexResourceFiles(expectedFiles, "--expected");
+      indexPortFiles(expectedFiles, "--expected");
   if (!expected)
     return expected.takeError();
   llvm::Expected<llvm::DenseMap<uint64_t, std::string>> relaxedF16Expected =
-      indexResourceFiles(relaxedF16ExpectedFiles, "--expected-f16-relaxed");
+      indexPortFiles(relaxedF16ExpectedFiles, "--expected-f16-relaxed");
   if (!relaxedF16Expected)
     return relaxedF16Expected.takeError();
   for (const auto &entry : *relaxedF16Expected)
     if (expected->contains(entry.first))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "duplicate ResourceId across --expected and "
-          "--expected-f16-relaxed");
+          "duplicate port id across --expected and --expected-f16-relaxed");
   llvm::Expected<llvm::DenseMap<uint64_t, std::string>> outputs =
-      indexResourceFiles(outputFiles, "--output");
+      indexPortFiles(outputFiles, "--output");
   if (!outputs)
     return outputs.takeError();
 
@@ -267,123 +246,100 @@ llvm::Expected<BoardInvocationFilePlan> prepareBoardInvocationFiles(
     if (!distinctOutputPaths.insert(entry.second).second)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "multiple --output ResourceIds use the same raw file path");
+          "multiple --output ports use the same raw file path");
   }
 
   BoardInvocationFilePlan plan;
   plan.request = std::move(request);
   plan.outputPaths = *outputs;
-  for (const PackageResourceRecord &resource : manifest.resources) {
-    if (!resource.hostVisible)
-      continue;
-    const uint64_t resourceId = resource.id.getValue();
-    std::vector<uint8_t> bytes(resource.bytes, 0);
-    auto source = resources->find(resourceId);
-    if (resource.access != PackageAccessMode::WriteOnly) {
-      if (source == resources->end())
-        return llvm::createStringError(llvm::errc::invalid_argument,
-                                       "--resource omits readable ResourceId " +
-                                           std::to_string(resourceId));
-      llvm::Expected<std::vector<uint8_t>> loaded =
-          readRawFile(source->second, resource.bytes);
-      if (!loaded)
-        return loaded.takeError();
-      bytes = std::move(*loaded);
-      resources->erase(source);
-    } else if (source != resources->end()) {
+  for (const ExternalPortRecord &port : manifest.inputs) {
+    auto source = inputs->find(port.id.getValue());
+    if (source == inputs->end())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "--resource must not initialize write-only ResourceId " +
-              std::to_string(resourceId));
-    }
-
-    if (resource.access != PackageAccessMode::ReadOnly) {
-      plan.writableResourceBytes[resourceId] = resource.bytes;
-      auto reference = expected->find(resourceId);
-      auto relaxedReference = relaxedF16Expected->find(resourceId);
-      auto capture = outputs->find(resourceId);
-      if (reference == expected->end() &&
-          relaxedReference == relaxedF16Expected->end() &&
-          capture == outputs->end())
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "--expected/--output omit writable ResourceId " +
-                std::to_string(resourceId));
-      const bool useRelaxedF16 = relaxedReference != relaxedF16Expected->end();
-      if (useRelaxedF16 &&
-          (resource.type.dtype != "f16" || resource.bytes % 2 != 0))
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "--expected-f16-relaxed requires an f16 writable ResourceId");
-      if (reference != expected->end() || useRelaxedF16) {
-        const std::string &path =
-            useRelaxedF16 ? relaxedReference->second : reference->second;
-        llvm::Expected<std::vector<uint8_t>> loaded =
-            readRawFile(path, resource.bytes);
-        if (!loaded)
-          return loaded.takeError();
-        plan.expectedBytes[resourceId] = std::move(*loaded);
-        plan.expectedComparisons[resourceId] =
-            useRelaxedF16 ? BoardOutputComparisonKind::RelaxedF16
-                          : BoardOutputComparisonKind::Exact;
-        if (useRelaxedF16)
-          relaxedF16Expected->erase(relaxedReference);
-        else
-          expected->erase(reference);
-      }
-      if (capture != outputs->end())
-        outputs->erase(capture);
-      if (resource.access == PackageAccessMode::WriteOnly) {
-        if (auto known = plan.expectedBytes.find(resourceId);
-            known != plan.expectedBytes.end()) {
-          for (size_t index = 0; index < bytes.size(); ++index)
-            bytes[index] = static_cast<uint8_t>(~known->second[index]);
-        } else {
-          std::fill(bytes.begin(), bytes.end(), UINT8_C(0xa5));
-        }
-      }
-    }
-    plan.request.bindings.push_back({resource.id, std::move(bytes)});
+          "--resource omits input port " +
+              std::to_string(port.id.getValue()));
+    llvm::Expected<std::vector<uint8_t>> loaded = readRawFile(
+        source->second, port.bytes,
+        (llvm::Twine("input port ") + llvm::Twine(port.id.getValue())).str());
+    if (!loaded)
+      return loaded.takeError();
+    plan.request.bindings.push_back({port.id, std::move(*loaded)});
+    inputs->erase(source);
   }
-  if (!resources->empty() || !expected->empty() ||
+  for (const ExternalPortRecord &port : manifest.outputs) {
+    const uint64_t portId = port.id.getValue();
+    plan.outputBytes[portId] = port.bytes;
+    auto reference = expected->find(portId);
+    auto relaxedReference = relaxedF16Expected->find(portId);
+    auto capture = outputs->find(portId);
+    if (reference == expected->end() &&
+        relaxedReference == relaxedF16Expected->end() &&
+        capture == outputs->end())
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "--expected/--output omit output port " + std::to_string(portId));
+    const bool useRelaxedF16 = relaxedReference != relaxedF16Expected->end();
+    if (useRelaxedF16 && (port.dtype != "f16" || port.bytes % 2 != 0))
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "--expected-f16-relaxed requires an f16 output port");
+    if (reference != expected->end() || useRelaxedF16) {
+      const std::string &path =
+          useRelaxedF16 ? relaxedReference->second : reference->second;
+      llvm::Expected<std::vector<uint8_t>> loaded = readRawFile(
+          path, port.bytes,
+          (llvm::Twine("output port ") + llvm::Twine(portId)).str());
+      if (!loaded)
+        return loaded.takeError();
+      plan.expectedBytes[portId] = std::move(*loaded);
+      plan.expectedComparisons[portId] =
+          useRelaxedF16 ? BoardOutputComparisonKind::RelaxedF16
+                        : BoardOutputComparisonKind::Exact;
+      if (useRelaxedF16)
+        relaxedF16Expected->erase(relaxedReference);
+      else
+        expected->erase(reference);
+    }
+    if (capture != outputs->end())
+      outputs->erase(capture);
+  }
+  if (!inputs->empty() || !expected->empty() ||
       !relaxedF16Expected->empty() || !outputs->empty())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "board invocation contains ResourceIds outside the package");
+        "board invocation contains port ids outside the package");
   return plan;
 }
 
 llvm::Error validateBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
                                  const BoardInvocationFilePlan &plan) {
-  llvm::DenseSet<uint64_t> returnedResources;
+  llvm::DenseSet<uint64_t> returnedPorts;
   for (const BoardRuntimeOutput &output : outputs) {
-    const uint64_t resourceId = output.resource.getValue();
-    if (!plan.writableResourceBytes.contains(resourceId) ||
-        !returnedResources.insert(resourceId).second)
+    const uint64_t portId = output.port.getValue();
+    if (!plan.outputBytes.contains(portId) ||
+        !returnedPorts.insert(portId).second)
       return llvm::createStringError(
           llvm::errc::result_out_of_range,
-          "board returned an unexpected or duplicate writable ResourceId " +
-              std::to_string(resourceId));
-    auto expectedSize = plan.writableResourceBytes.find(resourceId);
-    if (expectedSize == plan.writableResourceBytes.end() ||
-        output.bytes.size() != expectedSize->second)
+          "board returned an unexpected or duplicate output port " +
+              std::to_string(portId));
+    if (output.bytes.size() != plan.outputBytes.lookup(portId))
       return llvm::createStringError(
           llvm::errc::result_out_of_range,
-          "board returned a wrong-sized writable ResourceId " +
-              std::to_string(resourceId));
-    auto reference = plan.expectedBytes.find(resourceId);
+          "board returned a wrong-sized output port " +
+              std::to_string(portId));
+    auto reference = plan.expectedBytes.find(portId);
     if (reference == plan.expectedBytes.end())
       continue;
-    auto comparison = plan.expectedComparisons.find(resourceId);
+    auto comparison = plan.expectedComparisons.find(portId);
     if (comparison == plan.expectedComparisons.end())
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "board expected output has no typed comparison policy for "
-          "ResourceId " +
-              std::to_string(resourceId));
+          "board expected output has no typed comparison policy for port " +
+              std::to_string(portId));
     if (comparison->second == BoardOutputComparisonKind::RelaxedF16) {
-      if (llvm::Error error = validateRelaxedF16Output(
-              resourceId, reference->second, output.bytes))
+      if (llvm::Error error =
+              validateRelaxedF16Output(portId, reference->second, output.bytes))
         return error;
       continue;
     }
@@ -393,17 +349,16 @@ llvm::Error validateBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
           static_cast<size_t>(mismatch.first - reference->second.begin());
       return llvm::createStringError(
           llvm::errc::result_out_of_range,
-          "complete board output differs for ResourceId " +
-              std::to_string(resourceId) + " at byte " +
-              std::to_string(offset) + ": expected=0x" +
+          "complete board output differs for port " + std::to_string(portId) +
+              " at byte " + std::to_string(offset) + ": expected=0x" +
               llvm::utohexstr(*mismatch.first) + " actual=0x" +
               llvm::utohexstr(*mismatch.second));
     }
   }
-  if (returnedResources.size() != plan.writableResourceBytes.size())
+  if (returnedPorts.size() != plan.outputBytes.size())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "board result did not return all-and-only writable resources");
+        "board result did not return all-and-only output ports");
   return llvm::Error::success();
 }
 
@@ -411,55 +366,70 @@ llvm::Expected<BoardInvocationFilePlan>
 remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
                              const PackageManifest &sourceManifest,
                              const PackageManifest &targetManifest) {
-  if (!sourcePlan.request.profilerBindings.empty())
+  if (sourcePlan.request.profilerRecordBytes)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "cannot remap a board invocation that already has profiler bindings");
+        "cannot remap a board invocation that already has profiler records");
 
-  std::map<SemanticResourceKey, const PackageResourceRecord *> sourceResources;
-  std::map<SemanticResourceKey, const PackageResourceRecord *> targetResources;
-  llvm::DenseMap<uint64_t, uint64_t> sourceToTarget;
-  auto indexVisible =
-      [](const PackageManifest &manifest,
-         std::map<SemanticResourceKey, const PackageResourceRecord *> &index)
-      -> llvm::Error {
-    for (const PackageResourceRecord &resource : manifest.resources) {
-      if (!resource.hostVisible)
-        continue;
-      if (!index.try_emplace(semanticKey(resource), &resource).second)
-        return llvm::createStringError(
-            llvm::errc::invalid_argument,
-            "package contains duplicate host-visible semantic resource");
-    }
-    return llvm::Error::success();
-  };
-  if (llvm::Error error = indexVisible(sourceManifest, sourceResources))
-    return std::move(error);
-  if (llvm::Error error = indexVisible(targetManifest, targetResources))
-    return std::move(error);
-  if (sourceResources.size() != targetResources.size())
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "profile package host-visible resource domain differs from the "
-        "production package");
-  for (const auto &[key, source] : sourceResources) {
-    auto target = targetResources.find(key);
-    if (target == targetResources.end() ||
-        !hasExactUserContract(*source, *target->second))
+  // Stable external port identity: the program-boundary role index within the
+  // input/output domain. Port ids are dense per package and may differ.
+  llvm::DenseMap<int64_t, uint64_t> inputByRoleIndex;
+  for (const ExternalPortRecord &port : sourceManifest.inputs)
+    inputByRoleIndex[port.roleIndex] = port.id.getValue();
+  llvm::DenseMap<int64_t, uint64_t> outputByRoleIndex;
+  for (const ExternalPortRecord &port : sourceManifest.outputs)
+    outputByRoleIndex[port.roleIndex] = port.id.getValue();
+  llvm::DenseMap<int64_t, uint64_t> targetInputByRoleIndex;
+  for (const ExternalPortRecord &port : targetManifest.inputs) {
+    auto source = inputByRoleIndex.find(port.roleIndex);
+    if (source == inputByRoleIndex.end() || port.bytes == 0)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "profile package host-visible resource contract differs from the "
-          "production package");
-    sourceToTarget[source->id.getValue()] = target->second->id.getValue();
+          "profile package input port domain differs from the production "
+          "package");
+    targetInputByRoleIndex[port.roleIndex] = port.id.getValue();
   }
-
-  auto remapId = [&](uint64_t sourceId) -> llvm::Expected<uint64_t> {
-    auto target = sourceToTarget.find(sourceId);
-    if (target == sourceToTarget.end())
+  llvm::DenseMap<int64_t, uint64_t> targetOutputByRoleIndex;
+  for (const ExternalPortRecord &port : targetManifest.outputs) {
+    auto source = outputByRoleIndex.find(port.roleIndex);
+    if (source == outputByRoleIndex.end() || port.bytes == 0)
       return llvm::createStringError(
           llvm::errc::invalid_argument,
-          "prepared board invocation references a non-host-visible or "
-          "unknown production ResourceId");
+          "profile package output port domain differs from the production "
+          "package");
+    targetOutputByRoleIndex[port.roleIndex] = port.id.getValue();
+  }
+  if (targetManifest.inputs.size() != sourceManifest.inputs.size() ||
+      targetManifest.outputs.size() != sourceManifest.outputs.size())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "profile package external port domain differs from the production "
+        "package");
+
+  auto remapInput = [&](uint64_t sourcePort) -> llvm::Expected<uint64_t> {
+    if (sourcePort >= sourceManifest.inputs.size())
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "prepared board invocation references an "
+                                     "unknown production input port");
+    const int64_t roleIndex = sourceManifest.inputs[sourcePort].roleIndex;
+    auto target = targetInputByRoleIndex.find(roleIndex);
+    if (target == targetInputByRoleIndex.end())
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "production input port has no profile "
+                                     "package counterpart");
+    return target->second;
+  };
+  auto remapOutput = [&](uint64_t sourcePort) -> llvm::Expected<uint64_t> {
+    if (sourcePort >= sourceManifest.outputs.size())
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "prepared board invocation references an "
+                                     "unknown production output port");
+    const int64_t roleIndex = sourceManifest.outputs[sourcePort].roleIndex;
+    auto target = targetOutputByRoleIndex.find(roleIndex);
+    if (target == targetOutputByRoleIndex.end())
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "production output port has no profile "
+                                     "package counterpart");
     return target->second;
   };
 
@@ -470,10 +440,10 @@ remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
   targetPlan.request.qualification = sourcePlan.request.qualification;
   targetPlan.request.bindings.reserve(sourcePlan.request.bindings.size());
   for (const BoardRuntimeBinding &binding : sourcePlan.request.bindings) {
-    llvm::Expected<uint64_t> target = remapId(binding.resource.getValue());
+    llvm::Expected<uint64_t> target = remapInput(binding.port.getValue());
     if (!target)
       return target.takeError();
-    targetPlan.request.bindings.push_back({ResourceId(*target), binding.bytes});
+    targetPlan.request.bindings.push_back({PortId(*target), binding.bytes});
   }
 
   auto remapVectorMap =
@@ -481,7 +451,7 @@ remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
           llvm::DenseMap<uint64_t, std::vector<uint8_t>> &target)
       -> llvm::Error {
     for (const auto &entry : source) {
-      llvm::Expected<uint64_t> targetId = remapId(entry.first);
+      llvm::Expected<uint64_t> targetId = remapOutput(entry.first);
       if (!targetId)
         return targetId.takeError();
       target[*targetId] = entry.second;
@@ -492,23 +462,22 @@ remapBoardInvocationFilePlan(const BoardInvocationFilePlan &sourcePlan,
           remapVectorMap(sourcePlan.expectedBytes, targetPlan.expectedBytes))
     return std::move(error);
   for (const auto &entry : sourcePlan.expectedComparisons) {
-    llvm::Expected<uint64_t> targetId = remapId(entry.first);
+    llvm::Expected<uint64_t> targetId = remapOutput(entry.first);
     if (!targetId)
       return targetId.takeError();
     targetPlan.expectedComparisons[*targetId] = entry.second;
   }
-
   for (const auto &entry : sourcePlan.outputPaths) {
-    llvm::Expected<uint64_t> targetId = remapId(entry.first);
+    llvm::Expected<uint64_t> targetId = remapOutput(entry.first);
     if (!targetId)
       return targetId.takeError();
     targetPlan.outputPaths[*targetId] = entry.second;
   }
-  for (const auto &entry : sourcePlan.writableResourceBytes) {
-    llvm::Expected<uint64_t> targetId = remapId(entry.first);
+  for (const auto &entry : sourcePlan.outputBytes) {
+    llvm::Expected<uint64_t> targetId = remapOutput(entry.first);
     if (!targetId)
       return targetId.takeError();
-    targetPlan.writableResourceBytes[*targetId] = entry.second;
+    targetPlan.outputBytes[*targetId] = entry.second;
   }
   return targetPlan;
 }
@@ -522,7 +491,7 @@ validateAndWriteBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
   std::vector<std::pair<llvm::StringRef, llvm::ArrayRef<uint8_t>>> captures;
   captures.reserve(plan.outputPaths.size());
   for (const BoardRuntimeOutput &output : outputs) {
-    auto capture = plan.outputPaths.find(output.resource.getValue());
+    auto capture = plan.outputPaths.find(output.port.getValue());
     if (capture != plan.outputPaths.end())
       captures.emplace_back(capture->second, output.bytes);
   }

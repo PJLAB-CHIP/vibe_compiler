@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 #include <variant>
@@ -22,6 +23,8 @@
 namespace wafer::runtime {
 
 inline constexpr llvm::StringLiteral kPackageManifestFileName = "manifest.json";
+inline constexpr llvm::StringLiteral kPackageProgramDataRelativePath =
+    "data/program-data.bin";
 inline constexpr llvm::StringLiteral kDirectDTEStatusABI =
     WAFER_TX81_DIRECT_DTE_STATUS_ABI;
 enum class DirectDTEStatusValue : uint32_t {
@@ -64,66 +67,223 @@ private:
 };
 
 struct ProgramIdTag;
-struct ResourceIdTag;
+struct ProgramTensorIdTag;
+struct TargetTensorIdTag;
+struct PortIdTag;
 struct ModuleIdTag;
 struct EntryIdTag;
 struct LaunchSlotIdTag;
 using ProgramId = StrongId<ProgramIdTag>;
-using ResourceId = StrongId<ResourceIdTag>;
+using ProgramTensorId = StrongId<ProgramTensorIdTag>;
+using TargetTensorId = StrongId<TargetTensorIdTag>;
+using PortId = StrongId<PortIdTag>;
 using ModuleId = StrongId<ModuleIdTag>;
 using EntryId = StrongId<EntryIdTag>;
 using LaunchSlotId = StrongId<LaunchSlotIdTag>;
 
-enum class PackageResourceRole {
-  UserInput,
-  Parameter,
-  Constant,
-  Output,
-  Workspace,
-  TransportStatus,
-};
+/// Logical role of one package-owned program tensor. Parameters come from the
+/// program argument domain, constants from the captured-constant domain.
+enum class ProgramTensorRole { Parameter, Constant };
 
 enum class PackageAccessMode { ReadOnly, WriteOnly, ReadWrite };
+
+/// Closed physical memory layout family of the current target. Values match
+/// the compiler IR MemLayout enumeration; the manifest keeps its own closed
+/// copy so the runtime schema never consumes MLIR IR.
+enum class PackageMemLayout : uint32_t {
+  Tensor = 0,
+  NTensor = 1,
+  Cx = 2,
+  NCx = 3,
+};
 
 struct PackageTensorType {
   std::string dtype;
   std::vector<int64_t> shape;
 };
 
-struct CardResourceScope {
-  CardId cardId{0};
-};
-
-struct TileResourceScope {
-  CardId cardId{0};
-  TileId tileId{0};
-};
-
-using PackageResourceScope = std::variant<CardResourceScope, TileResourceScope>;
-
-struct PackageResourceRecord {
-  /// ResourceId is physical allocation identity. A card-module boundary
-  /// resource may be referenced by every Tile entry; such repeated slot
-  /// references intentionally carry the same device address. Compiler-managed
-  /// workspace and transport resources remain owned by exactly one entry.
-  ResourceId id;
-  PackageResourceScope scope;
-  PackageResourceRole role = PackageResourceRole::UserInput;
+/// Logical identity of one package-owned parameter/constant. Identity is the
+/// program tensor's role/index and its verified partition slice; it is never
+/// recovered from name, path, shape, or digest. The record does not carry a
+/// source path.
+struct ProgramTensorRecord {
+  ProgramTensorId id;
+  ProgramTensorRole role = ProgramTensorRole::Parameter;
+  /// User-visible index within the program-boundary role domain.
   int64_t roleIndex = -1;
-  std::string name;
-  PackageTensorType type;
+  /// Logical (source) dtype.
+  std::string dtype;
+  std::vector<int64_t> globalShape;
+  std::vector<int64_t> localShape;
+  /// Partition/slice identity over the global tensor.
+  std::vector<int64_t> sliceOffsets;
+  std::vector<int64_t> sliceSizes;
+
+  friend bool operator==(const ProgramTensorRecord &lhs,
+                         const ProgramTensorRecord &rhs) {
+    return lhs.id == rhs.id && lhs.role == rhs.role &&
+           lhs.roleIndex == rhs.roleIndex && lhs.dtype == rhs.dtype &&
+           lhs.globalShape == rhs.globalShape &&
+           lhs.localShape == rhs.localShape &&
+           lhs.sliceOffsets == rhs.sliceOffsets &&
+           lhs.sliceSizes == rhs.sliceSizes;
+  }
+};
+
+/// One compiler-selected target representation of a program tensor. Sharing
+/// is expressed exclusively by multiple Tile entry arguments referencing the
+/// same TargetTensor; equal fields or ranges never merge automatically.
+struct TargetTensorRecord {
+  TargetTensorId id;
+  ProgramTensorId programTensor;
+  /// Selected target dtype.
+  std::string dtype;
+  PackageMemLayout layout = PackageMemLayout::Tensor;
+  /// Logical target shape.
+  std::vector<int64_t> shape;
   uint64_t bytes = 0;
   uint64_t alignment = 0;
-  PackageAccessMode access = PackageAccessMode::ReadOnly;
-  bool hostVisible = false;
+  /// Byte offset of this target tensor's target-ready bytes inside
+  /// program-data.bin. It is a file offset, never a device address or an
+  /// allocation identity.
+  uint64_t fileOffset = 0;
+
+  friend bool operator==(const TargetTensorRecord &lhs,
+                         const TargetTensorRecord &rhs) {
+    return lhs.id == rhs.id && lhs.programTensor == rhs.programTensor &&
+           lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
+           lhs.shape == rhs.shape && lhs.bytes == rhs.bytes &&
+           lhs.alignment == rhs.alignment && lhs.fileOffset == rhs.fileOffset;
+  }
 };
 
-struct PackageABISlotBinding {
+/// The single program-data file record. The digest covers target bytes and
+/// canonical zero padding of the whole file.
+struct ProgramDataRecord {
+  std::string relativePath = kPackageProgramDataRelativePath.str();
+  uint64_t totalBytes = 0;
+  uint64_t baseAlignment = 1;
+  std::string digest;
+};
+
+/// One caller-visible program-boundary port (input or output). External
+/// ports have no TargetTensor identity and no package bytes; the logical
+/// descriptor lets the invocation adapter encode caller values, and the
+/// target descriptor plus physical bytes/alignment is the selected runtime
+/// representation.
+struct ExternalPortRecord {
+  PortId id;
+  /// User-visible index within the port's program-boundary domain.
+  int64_t roleIndex = -1;
+  /// Logical (source) descriptor.
+  std::string logicalDtype;
+  std::vector<int64_t> logicalShape;
+  /// Selected target descriptor.
+  std::string dtype;
+  PackageMemLayout layout = PackageMemLayout::Tensor;
+  std::vector<int64_t> shape;
+  uint64_t bytes = 0;
+  uint64_t alignment = 0;
+
+  friend bool operator==(const ExternalPortRecord &lhs,
+                         const ExternalPortRecord &rhs) {
+    return lhs.id == rhs.id && lhs.roleIndex == rhs.roleIndex &&
+           lhs.logicalDtype == rhs.logicalDtype &&
+           lhs.logicalShape == rhs.logicalShape && lhs.dtype == rhs.dtype &&
+           lhs.layout == rhs.layout && lhs.shape == rhs.shape &&
+           lhs.bytes == rhs.bytes && lhs.alignment == rhs.alignment;
+  }
+};
+
+/// Closed union of what one ordered Tile entry argument references.
+struct ExternalInputArgument {
+  PortId port;
+  friend bool operator==(const ExternalInputArgument &lhs,
+                         const ExternalInputArgument &rhs) {
+    return lhs.port == rhs.port;
+  }
+  friend bool operator!=(const ExternalInputArgument &lhs,
+                         const ExternalInputArgument &rhs) {
+    return !(lhs == rhs);
+  }
+};
+struct TargetTensorArgument {
+  TargetTensorId tensor;
+  friend bool operator==(const TargetTensorArgument &lhs,
+                         const TargetTensorArgument &rhs) {
+    return lhs.tensor == rhs.tensor;
+  }
+  friend bool operator!=(const TargetTensorArgument &lhs,
+                         const TargetTensorArgument &rhs) {
+    return !(lhs == rhs);
+  }
+};
+struct ExternalOutputArgument {
+  PortId port;
+  friend bool operator==(const ExternalOutputArgument &lhs,
+                         const ExternalOutputArgument &rhs) {
+    return lhs.port == rhs.port;
+  }
+  friend bool operator!=(const ExternalOutputArgument &lhs,
+                         const ExternalOutputArgument &rhs) {
+    return !(lhs == rhs);
+  }
+};
+/// Entry-local compiler-managed default DDR arena.
+struct WorkspaceArgument {
+  uint64_t bytes = 0;
+  uint64_t alignment = 0;
+  friend bool operator==(const WorkspaceArgument &lhs,
+                         const WorkspaceArgument &rhs) {
+    return lhs.bytes == rhs.bytes && lhs.alignment == rhs.alignment;
+  }
+  friend bool operator!=(const WorkspaceArgument &lhs,
+                         const WorkspaceArgument &rhs) {
+    return !(lhs == rhs);
+  }
+};
+/// Entry-local profiler capture record.
+struct ProfileRecordArgument {
+  std::string recordABI;
+  uint64_t bytes = 0;
+  uint64_t alignment = 0;
+  friend bool operator==(const ProfileRecordArgument &lhs,
+                         const ProfileRecordArgument &rhs) {
+    return lhs.recordABI == rhs.recordABI && lhs.bytes == rhs.bytes &&
+           lhs.alignment == rhs.alignment;
+  }
+  friend bool operator!=(const ProfileRecordArgument &lhs,
+                         const ProfileRecordArgument &rhs) {
+    return !(lhs == rhs);
+  }
+};
+/// Entry-local Direct-DTE status.
+struct TransportStatusArgument {
+  std::string statusABI;
+  uint64_t bytes = 0;
+  uint64_t alignment = 0;
+  friend bool operator==(const TransportStatusArgument &lhs,
+                         const TransportStatusArgument &rhs) {
+    return lhs.statusABI == rhs.statusABI && lhs.bytes == rhs.bytes &&
+           lhs.alignment == rhs.alignment;
+  }
+  friend bool operator!=(const TransportStatusArgument &lhs,
+                         const TransportStatusArgument &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+using TileEntryArgumentReference =
+    std::variant<ExternalInputArgument, TargetTensorArgument,
+                 ExternalOutputArgument, WorkspaceArgument,
+                 ProfileRecordArgument, TransportStatusArgument>;
+
+/// One ordered argument of one Tile target entry. Ordinals are dense and
+/// zero-based. The argument carries a closed reference and an access mode; it
+/// never owns bytes, a file range, a device address, or pointer-row storage.
+struct TileEntryArgumentRecord {
   uint64_t ordinal = std::numeric_limits<uint64_t>::max();
-  /// Referencing the same ResourceId from multiple entries is the sole
-  /// package-level expression of shared card-local storage; runtime consumers
-  /// must not infer sharing from role, name, type, or shape.
-  ResourceId resource;
+  TileEntryArgumentReference reference;
   PackageAccessMode access = PackageAccessMode::ReadOnly;
 };
 
@@ -145,7 +305,6 @@ struct PackageModuleRecord {
 struct NoTransportRequirements {};
 
 struct DirectDTETransportRequirements {
-  ResourceId statusResource;
   std::string statusABI = kDirectDTEStatusABI.str();
   bool hostWatchdogRequired = true;
 };
@@ -161,7 +320,7 @@ struct PackageEntrypointRecord {
   TileId tileId{0};
   LaunchSlotId launchSlot;
   ModuleId module;
-  std::vector<PackageABISlotBinding> slots;
+  std::vector<TileEntryArgumentRecord> arguments;
   PackageEntryCompletionKind completion =
       PackageEntryCompletionKind::ReturnAfterLocalDrain;
   TransportRequirements transport;
@@ -181,7 +340,11 @@ struct PackageManifest {
   std::string moduleFormat;
   int64_t cardCount = 0;
   int64_t tileCount = 0;
-  std::vector<PackageResourceRecord> resources;
+  ProgramDataRecord programData;
+  std::vector<ProgramTensorRecord> programTensors;
+  std::vector<TargetTensorRecord> targetTensors;
+  std::vector<ExternalPortRecord> inputs;
+  std::vector<ExternalPortRecord> outputs;
   std::vector<PackageModuleRecord> modules;
   std::vector<PackageEntrypointRecord> entries;
 };
@@ -214,8 +377,9 @@ private:
   PackageManifest manifest;
 };
 
-llvm::StringRef stringifyPackageResourceRole(PackageResourceRole role);
+llvm::StringRef stringifyProgramTensorRole(ProgramTensorRole role);
 llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access);
+llvm::StringRef stringifyPackageMemLayout(PackageMemLayout layout);
 llvm::StringRef stringifyPackageModuleExportRole(PackageModuleExportRole role);
 llvm::StringRef
 stringifyPackageEntryCompletionKind(PackageEntryCompletionKind kind);
@@ -235,12 +399,12 @@ llvm::Expected<VerifiedPackageManifest>
 loadVerifiedPackageManifest(llvm::StringRef packageRoot,
                             const PackageParseLimits &limits = {});
 
+/// One caller-side binding for an external input port. Output ports are
+/// prepared and read back by the runtime and never caller-bound.
 struct RuntimeInvocationBinding {
-  ResourceId resource;
+  PortId port;
   uint64_t bytes = 0;
   uint64_t alignment = 0;
-  PackageAccessMode access = PackageAccessMode::ReadOnly;
-  bool hostVisible = false;
 };
 
 struct RuntimeEnvironment {
@@ -257,24 +421,35 @@ struct RuntimeEnvironment {
   uint64_t maxResourceBytes = std::numeric_limits<uint64_t>::max();
   std::vector<KernelLaunchForm> supportedKernelLaunchForms;
   std::vector<KernelEntryABI> supportedKernelEntryABIs;
-  std::vector<ModelEntryABI> supportedModelEntryABIs;
   bool supportsDirectDTE = false;
   std::string directDTEStatusABI;
   bool supportsHostWatchdog = false;
 };
 
-struct PlannedRuntimeResource {
-  ResourceId resource;
-  PackageResourceRole role = PackageResourceRole::UserInput;
-  uint64_t bytes = 0;
-  uint64_t alignment = 0;
-  PackageAccessMode access = PackageAccessMode::ReadOnly;
-  bool externallyBound = false;
-};
-
 struct PlannedRuntimeLaunchPhase {
   RuntimeLaunchPhaseRole role = RuntimeLaunchPhaseRole::Main;
   std::string symbol;
+};
+
+/// One checked child range inside one device allocation. It is never freed
+/// on its own; the owning allocation controls its lifetime.
+struct RuntimePlannedRange {
+  uint64_t offset = 0;
+  uint64_t bytes = 0;
+};
+
+/// Where one Tile entry argument's device address points.
+enum class RuntimeArgumentAddressBase { ProgramData, Invocation };
+
+struct RuntimeArgumentAddress {
+  RuntimeArgumentAddressBase base = RuntimeArgumentAddressBase::Invocation;
+  uint64_t offset = 0;
+};
+
+struct RuntimeEntryLocalRanges {
+  std::optional<RuntimePlannedRange> workspace;
+  std::optional<RuntimePlannedRange> profileRecord;
+  std::optional<RuntimePlannedRange> transportStatus;
 };
 
 struct RuntimeSessionPlan {
@@ -287,18 +462,44 @@ struct RuntimeSessionPlan {
   std::vector<PlannedRuntimeLaunchPhase> phases;
   PackageEntryCompletionKind completion =
       PackageEntryCompletionKind::ReturnAfterLocalDrain;
-  std::vector<PlannedRuntimeResource> resources;
-  std::vector<ResourceId> launchOrder;
+  /// Parallel to the entry's ordered arguments: one resolved address per
+  /// argument. TargetTensor addresses are program-data base + file offset;
+  /// every other address is invocation base + planned offset.
+  std::vector<RuntimeArgumentAddress> argumentAddresses;
   TransportRequirements transport;
 };
 
 struct RuntimeInvocationPlan {
   int64_t cardCount = 0;
   int64_t tileCount = 0;
+  /// The non-empty program-data allocation requirement. When the package has
+  /// no TargetTensor this stays zero and the runtime issues no provider call.
+  bool programDataRequired = false;
+  uint64_t programDataBytes = 0;
+  uint64_t programDataAlignment = 1;
+  /// TargetTensor child ranges inside the program-data allocation, indexed by
+  /// TargetTensor id; each offset equals the manifest file offset.
+  std::vector<RuntimePlannedRange> targetTensorRanges;
+  /// The single invocation allocation requirement and its child ranges.
+  uint64_t invocationBytes = 0;
+  uint64_t invocationAlignment = 1;
+  /// Input/output child ranges, indexed by PortId.
+  std::vector<RuntimePlannedRange> inputRanges;
+  std::vector<RuntimePlannedRange> outputRanges;
+  /// Per-Tile entry-local ranges, indexed by launch slot.
+  std::vector<RuntimeEntryLocalRanges> tileRanges;
+  /// Per-Tile device pointer rows for the TileRowPointerTable entry ABI;
+  /// empty for the TileMajorPointerTable ABI whose row travels in the kernel
+  /// command packet.
+  std::vector<RuntimePlannedRange> pointerRows;
   /// One record for every package Tile, in canonical launch-slot order.
   std::vector<RuntimeSessionPlan> tiles;
 };
 
+/// Builds the complete side-effect-free invocation plan: optional program
+/// data allocation, one invocation allocation with deterministic non-overlap
+/// child ranges, and every Tile argument resolved to a checked address. The
+/// plan never serializes back into the package and never calls a provider.
 llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
     const VerifiedPackageManifest &package,
     llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,

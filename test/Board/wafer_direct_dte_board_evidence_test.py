@@ -17,17 +17,24 @@ def valid_manifest() -> dict[str, object]:
         "target": {
             "identity": "wafer-tx81-single-card",
             "runtime_abi": "wafer-tx81-kernel",
-            "launch": {
-                "kind": "kernel",
-                "form": "grid",
-                "entry_abi": "tile-major-pointer-table",
-                "phases": ["main"],
-            },
             "module_format": "elf-riscv64",
         },
+        "launch": dict(runtime_launch.GRID_KERNEL_LAUNCH),
         "card_count": 1,
         "tile_count": evidence.TILE_COUNT,
-        "resources": [],
+        "program_data": {
+            "relative_path": "data/program-data.bin",
+            "total_bytes": 0,
+            "base_alignment": 1,
+            "digest": (
+                "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649"
+                "349ca495991b7852b855"
+            ),
+        },
+        "program_tensors": [],
+        "target_tensors": [],
+        "inputs": [],
+        "outputs": [],
         "modules": [
             {
                 "id": 0,
@@ -49,7 +56,7 @@ def valid_manifest() -> dict[str, object]:
                 "tile_id": tile,
                 "launch_slot": tile,
                 "module": 0,
-                "slots": [],
+                "arguments": [],
                 "completion": "return_after_local_drain",
                 "transport": {"kind": "none"},
             }
@@ -58,26 +65,30 @@ def valid_manifest() -> dict[str, object]:
     }
     runtime_launch.configure_direct_dte_tile_package(
         manifest,
-        resources=(
-            runtime_launch.SharedBoundaryResourceSpec(
-                role="user_input",
+        ports=(
+            runtime_launch.SharedBoundaryPortSpec(
+                table="inputs",
                 role_index=0,
-                name="input",
-                type={"dtype": "i8", "shape": [256]},
+                logical_dtype="i8",
+                logical_shape=[256],
+                dtype="i8",
+                layout="tensor",
+                shape=[256],
                 bytes=256,
                 alignment=256,
                 access="read_only",
-                host_visible=True,
             ),
-            runtime_launch.SharedBoundaryResourceSpec(
-                role="output",
+            runtime_launch.SharedBoundaryPortSpec(
+                table="outputs",
                 role_index=0,
-                name="output",
-                type={"dtype": "i8", "shape": [256]},
+                logical_dtype="i8",
+                logical_shape=[256],
+                dtype="i8",
+                layout="tensor",
+                shape=[256],
                 bytes=256,
                 alignment=256,
                 access="write_only",
-                host_visible=True,
             ),
         ),
         status_abi=evidence.DIRECT_DTE_STATUS_ABI,
@@ -115,8 +126,11 @@ class DirectDTEManifestEvidenceTest(unittest.TestCase):
     def test_accepts_exact_status_watchdog_completion_domain(self) -> None:
         result = evidence.validate_direct_dte_manifest(valid_manifest())
         self.assertEqual(
-            dict(result.status_resource_by_tile),
-            {tile: tile + 2 for tile in range(evidence.TILE_COUNT)},
+            dict(result.status_abi_by_tile),
+            {
+                tile: evidence.DIRECT_DTE_STATUS_ABI
+                for tile in range(evidence.TILE_COUNT)
+            },
         )
         self.assertEqual(
             result.completion_by_tile,
@@ -133,19 +147,24 @@ class DirectDTEManifestEvidenceTest(unittest.TestCase):
         mutations = []
 
         missing_status = valid_manifest()
-        missing_status["resources"] = missing_status["resources"][:-1]
+        missing_status["entries"][15]["arguments"] = (
+            missing_status["entries"][15]["arguments"][:-1]
+        )
         mutations.append(missing_status)
 
         wrong_storage = valid_manifest()
-        wrong_storage["resources"][2]["bytes"] = 4
+        wrong_storage["entries"][2]["arguments"][-1]["bytes"] = 4
         mutations.append(wrong_storage)
 
-        host_visible = valid_manifest()
-        host_visible["resources"][2]["host_visible"] = True
-        mutations.append(host_visible)
+        host_bound = valid_manifest()
+        host_bound["entries"][2]["arguments"][-1]["kind"] = "external_input"
+        host_bound["entries"][2]["arguments"][-1]["port"] = 0
+        mutations.append(host_bound)
 
         unbound = valid_manifest()
-        unbound["entries"][0]["slots"] = unbound["entries"][0]["slots"][:-1]
+        unbound["entries"][0]["arguments"] = (
+            unbound["entries"][0]["arguments"][:-1]
+        )
         mutations.append(unbound)
 
         for manifest in mutations:
@@ -165,10 +184,10 @@ class DirectDTEManifestEvidenceTest(unittest.TestCase):
             "host_watchdog_required"
         ] = False
 
-        wrong_status_resource = valid_manifest()
-        wrong_status_resource["entries"][4]["transport"][
-            "status_resource"
-        ] = 2
+        wrong_status_abi = valid_manifest()
+        wrong_status_abi["entries"][4]["transport"]["status_abi"] = (
+            "mismatched-status-abi"
+        )
 
         wrong_completion = valid_manifest()
         wrong_completion["entries"][15]["completion"] = "unsupported"
@@ -179,7 +198,7 @@ class DirectDTEManifestEvidenceTest(unittest.TestCase):
         for manifest in (
             wrong_abi,
             no_watchdog,
-            wrong_status_resource,
+            wrong_status_abi,
             wrong_completion,
             duplicate_tile,
         ):
@@ -235,7 +254,6 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
         observations = [
             evidence.DirectDTEStatusObservation(
                 tile=tile_id,
-                resource=dict(self.manifest.status_resource_by_tile)[tile_id],
                 status_abi=evidence.DIRECT_DTE_STATUS_ABI,
                 value=evidence.DIRECT_DTE_STATUS_SUCCESS,
             )
@@ -256,9 +274,9 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
 
         partial = observations[:-1]
         duplicate = observations + [copy.copy(observations[-1])]
-        wrong_resource = list(observations)
-        wrong_resource[5] = dataclasses.replace(
-            wrong_resource[5], resource=wrong_resource[4].resource
+        wrong_identity = list(observations)
+        wrong_identity[5] = dataclasses.replace(
+            wrong_identity[5], status_abi="wafer-direct-dte-status-other"
         )
         wrong_abi = list(observations)
         wrong_abi[6] = dataclasses.replace(
@@ -271,7 +289,7 @@ class DirectDTEBoardEvidenceTest(unittest.TestCase):
         for rows in (
             partial,
             duplicate,
-            wrong_resource,
+            wrong_identity,
             wrong_abi,
             transport_error,
         ):

@@ -118,15 +118,6 @@ formRuntimeLaunchContract(const ExecutionConfig &executionConfig,
         requiresRuntimePrepare = true;
     });
 
-  if (executionConfig.getRuntimeLaunchKind() == RuntimeLaunchKind::Model) {
-    if (executionConfig.getTileCount() != 16 || requiresRuntimePrepare)
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "model runtime launch requires 16 Tiles without a prepare "
-          "phase");
-    return RuntimeLaunchContract::createModel(ModelEntryABI::Tx81ModelBootParam,
-                                              main);
-  }
   if (executionConfig.getTileCount() != 16)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
