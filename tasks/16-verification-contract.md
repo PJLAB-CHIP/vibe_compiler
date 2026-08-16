@@ -93,6 +93,11 @@ mismatched send/recv、payload/domain/encoding mismatch、缺失wait和premature
 - same-region不同temporal tile、selective spill/reload、recompute和region cut；
 - compute、DDR、NoC与显式SPM movement在已有independence/buffering证明时的overlap。
 
+每个spatial trial的logical demand gate必须消费完整consumer iteration/contribution domain、producer ownership domains、
+data/init/support dependency role和IR epoch，不能以result axis、shard dimension或participant count代替。独立query正负测试至少
+覆盖reduction input/init/partial contribution与merge role、broadcast、affine window的stride/dilation/halo/pad、strided
+slice/view、multi-piece union、multi-result/fanout/fanin、explicit init root和multi-operand pure support graph。
+
 candidate generation只能读取current structured semantics、indexing maps、SSA/effects、type/shape/dtype、explicit
 physical communication和target capability。测试要搜索并拒绝framework/model/function/value-name、固定shape、operand
 position、Attention/decode/mask专用matcher或公共pass残留。
@@ -113,6 +118,13 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - 所有materialized candidate执行同一Tile→Instr、fresh completion、SPM/DDR、transport/resource/ABI和final recost；
 - proven exact failure只拒绝对应causal assignment并消耗确定work unit，不触发late repair、retile、spill或另一selector；
   `ResourceExhausted`、solver timeout或internal failure属于indeterminate，必须保留合法state，不能形成no-good；
+- logical demand outcome必须区分`satisfied`、带direct uncovered/role witness的`proven logical infeasible`、`unsupported semantic
+  relation`和`indeterminate/compiler failure`；只有第二类可以删除当前placement trial，禁止将`FailureOr + string`压成
+  legality bool或no-good；
+- 对同一logical trial切换dense/strided/multi-piece carrier能力、layout或route可用性，exact demand与logical outcome必须
+  extensionally相同；physical分解必须回证pieces union等于原set，carrier失败只拒绝对应representation/movement assignment；
+- exact-demand cache改变IR epoch、consumer domain、producer ownership或partition/reduction/replication role必须失效；任何窄
+  cache key都要有extensional equivalence proof，不能以当前单轴fixture观察结果代签；
 - serial/parallel proposal evaluation得到相同admitted set、winner和package digest；
 - wall/RSS是回归证据，不设任意60秒硬gate；
 - beam、candidate cap、随机启发式或其它会损失完整性/最优性的策略，只能在实际负载profiling后作为显式trade-off启用，
@@ -303,8 +315,12 @@ current target容量、target-model能力或host预算不足，必须按stage报
    受测，最小合法tile仍失败才返回direct typed capacity failure，indeterminate作为compiler failure而非unsupported。
    fresh prefill/decode/Llama还需证明CardModule、CardExecutable与package digest稳定、oracle/no-card通过。
 2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair；Q50.A：
-   placement给定后从IndexRelation形成layout-independent exact logical demand，carrier/layout/route失败不反写spatial legality；
-   Q50.S：typed proof和online/partitioned-KV等算法参数点均物化成真实TensorProgram alternatives。
+   每次closed placement trial以完整logical domain、typed data/init/support relation、reduction/replication role和IR epoch从
+   IndexRelation形成layout-independent exact demand/ownership proof，四态outcome中只有proven logical infeasible删除trial；
+   reduction、broadcast、affine window及stride/dilation、strided slice/view、multi-piece、multi-result、explicit init root和
+   pure support graph全部由独立query test与production调用链证明，carrier/layout/route失败不反写spatial legality；Q49.P
+   canonical correctness carrier与Q50.G/H均消费同一`satisfied` proof。Q50.S：typed proof和online/partitioned-KV等算法参数点
+   均物化成真实TensorProgram alternatives。
 3. Q50.B–Q50.K依次闭合spatial placement、single-root TileRegion、coupled traversal/region fusion、complete temporal tile与
    wave-loop order、
    scoped actual probe、layout/representation、movement、rotating buffers、event/resource schedule与conditional stage pipeline。

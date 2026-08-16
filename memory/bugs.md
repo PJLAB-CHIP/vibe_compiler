@@ -447,17 +447,23 @@
 - 防复发：none与search unit分别断言0次和1次selected executable rematerialization；模型规模timing检查结果返回前不再出现
   第二轮16-Tile exact pipeline。
 
-## 分配器carrier失败不得反向删除logical placement
+## logical placement legality不能由physical carrier或未分类失败代签
 
-- 现象：logical demand analysis已经用`IndexRelation.image()`正确求出consumer需要的producer集合，但placement evaluation
-  随即把它降成dense rectangle/layout fragments/route；当前carrier表达失败被当成spatial placement非法，导致搜索域仍被悄悄缩窄。
-- 根因：layout-independent demand与physical representation/movement materialization没有形成调用边界，analysis“存在”被误报为
-  production合同已闭合；memory/edge planner又同时承担候选生成和准入。
-- 修复模式：placement transition只消费logical demand与ownership coverage；layout、fragment、route和transport只在对应
-  physical坐标关闭后物化。任何carrier失败只拒绝包含这些坐标的candidate，并把typed rejection交回唯一search owner；
-  lowering、SPM/DDR planner和communication verification都不能修候选或直接操作candidate search。
-- 防复发：用同一logical placement构造至少两个representation/movement alternatives，其中一个carrier失败、另一个actual
-  accepted；断言spatial state仍可回溯并找到accepted winner。任务状态必须核对production调用链，不能只凭analysis单测标done。
+- 现象：exact `IndexRelation.image()`与ownership coverage query已经存在，但placement evaluator随即把结果降成dense
+  fragment、layout、route和resource calendar；任一后续表达失败都被压成`bool legal=false`。同时DPS init和经过pure support
+  graph的dependency被以“稍后lowering会处理”为由省略，使显式init producer无法形成跨root demand。
+- 根因：logical relation/ownership proof与physical representation/movement选择共用candidate/schedule类型和失败通道；query又从
+  shard dimension与participant count恢复balanced一维矩形，导致当前实现限制反向定义上游合法域。`FailureOr + string`无法
+  区分proven logical contradiction、semantic unsupported、资源/内部indeterminate和physical carrier failure。
+- 修复模式：以完整logical iteration/result/ownership domain、typed data/init/support relation、reduction/replication role和
+  IR epoch作为policy-free query输入；exact set与ownership intersection原样保留，返回`satisfied`、带direct witness的
+  `proven logical infeasible`、`unsupported semantic relation`或`indeterminate/compiler failure`。只有proven logical failure
+  可以删除placement trial；layout/descriptor/route失败只拒绝对应physical assignment。显式init root保留dependency，非root
+  support graph组合typed relation；reduction、broadcast、window/stride和multi-piece都不能先densify。
+- 防复发：logical-demand单测与edge-strategy/materializer测试分离，并增加carrier metamorphic test；改变dense/strided/
+  multi-piece carrier或route可用性时logical outcome必须不变。cache观察IR epoch和完整semantic assignment，禁止把字符串失败
+  压成legality bool，也禁止analysis header反向依赖candidate schedule carrier。任务状态必须核对production调用链，不能只凭
+  analysis单测标done。
 
 ## 编译边界不能把typed allocator failure压成一个布尔值
 

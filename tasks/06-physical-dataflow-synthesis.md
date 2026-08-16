@@ -220,21 +220,74 @@ temporal选择，不能由spatial proposal暗中固定tile或loop order。
 
 ### 5.3 Exact producer/consumer demand
 
-不同 op 可以选择不同 mapping。对每个 consumer Tile：
+不同op可以选择不同mapping。exact-demand query消费的是一次trial中已经显式形成的完整logical shard assignment：consumer
+all-iterator execution domain、result/update domain、producer ownership domains、logical shard-to-Tile binding，以及
+parallel/reduction、unique/replicated/partial-contribution role。它不能从result axis、单个`shardDimension`、participant count
+或balanced一维矩形反推这些事实。对每个consumer logical shard：
 
 ```text
-consumer local iteration domain
+consumer complete logical iteration/contribution domain
   -> IndexRelation.image
   -> exact producer logical demand
   -> 与每个producer Tile ownership求交
-  -> local / remote / reduction demand
+  -> exact coverage / uncovered witness
 ```
 
-需求与 ownership all-and-only覆盖失败才是 logical placement failure。Layout、dense rectangle、fragment carrier、route 或
-transport暂时表达不了，只能拒绝对应的physical representation/movement choice，不能反写删除logical placement。
+dependency descriptor从current SSA use-def、producer result、consumer operand、DPS operand role、structured indexing
+semantics和pure support graph派生，不从op名、shape或后续lowering猜测：
+
+- 普通data input应用consumer已选完整iteration domain到operand indexing relation；
+- reduction保留partial contribution domain、combiner/numeric约束与merge role；只看result shard会丢掉reduction iterator，
+  也会把必须全部参与的partial owners误写成可互换replica；
+- 显式structured Fill或其它DPS init producer是独立root，其init/update dependency必须有exact demand；consumer lowering以后
+  负责init不能成为省略edge的理由；
+- view、reshape、slice、pad等没有独立structured root的pure support graph组合typed relation；多operand support graph对每个
+  data-carrying predecessor分别保留dependency，不假设unary chain；
+- multi-result、fanout和fanin按实际producer result与consumer operand分别建relation，不固定`result(0)`、单init或equal shape。
+
+relation image与producer ownership intersection都保留为exact logical set。intersection的union必须覆盖all-and-only demand；
+非空uncovered set才形成当前trial的proven logical infeasibility witness。显式replication产生多个eligible owners时query保留
+等价ownership而不选择source；partial reduction owner是不同必要contribution，不能去重。logical query不选择local/remote、
+DDR/peer或reduction transport action。
+
+该边界必须通用支持以下relation，而不是把当前fixture或physical carrier限制升级成协议：
+
+- reduction的parallel/reduction partition、input/init demand、partial contribution和merge role；
+- broadcast/projection的many-to-one image，重复consumer使用不膨胀唯一source set；
+- convolution、pooling和supported reduce-window等affine window的kernel、offset、stride、dilation、halo及显式pad/fill pieces；
+- non-unit-stride slice/view、permutation、collapse/expand等可组合static relation；
+- Presburger union、tail、pad/window分段和组合relation形成的有限multi-piece set。
+
+这些声明支持的类别不能因为不是dense rectangle而返回unsupported。真正超出typed structured/IndexRelation合同的dynamic、
+non-affine或未定义numeric semantics可以形成semantic unsupported，但该结论作用于语义/alternative，不是换一个physical
+placement即可消除的no-good。
+
+query返回named typed outcome：
+
+1. `satisfied`携带relation identity、consumer domain、producer demand、ownership intersections、dependency/reduction/init role
+   和空uncovered proof；
+2. `proven logical infeasible`只表示well-formed trial存在精确partition/relation/ownership矛盾，并携带direct witness；
+3. `unsupported semantic relation`表示current typed relation能力不能解释verified source semantics，不得缓存成placement非法；
+4. `indeterminate/compiler failure`覆盖Presburger预算/内部错误、IR epoch失效和上游协议缺失，调用者不得靠尝试其它placement
+   掩盖。
+
+baseline feasibility和spatial search只有收到第2类结果才能删除当前trial。`FailureOr + diagnostic string`压成`bool legal`会把
+unsupported/internal failure误当候选no-good，禁止作为跨stage协议。malformed assignment和过期IR epoch同样是compiler
+contract failure，不是普通logical rejection。
+
+`satisfied`结果不包含layout、encoding、bytes、dense fragment、local/remote action、route、buffer、send/recv、fusion或
+resource schedule。Representation/movement materialization稍后才对exact demand与ownership求交并将其有限分解为physical
+pieces；dense rectangle、descriptor、route或transport暂时表达不了，只能拒绝对应physical assignment，不能反写删除logical
+placement。deterministic baseline必须为已声明支持的exact set提供一条canonical correctness carrier；它与完整search
+representation/movement域都消费同一proof，不另建压缩版demand。
+
+analysis result只在current IR epoch有效。relation cache观察IR epoch和typed edge/relation identity；demand/coverage cache还要
+观察完整consumer domain、producer ownership、partition/reduction/replication role和所有会改变image的assignment。只有具备
+extensional equivalence proof才能投影cache key；按shard dimension和participant count缓存一个legality bool不满足合同。
 
 当前 production placement evaluation仍过早调用physical edge strategy planning；因此“exact demand analysis已存在”不等于
-这一边界已在主线闭合，任务状态必须据实际调用链重新开放。
+这一边界已在主线闭合。current query还受candidate schedule placement type、direct static single-result/single-init Linalg、
+balanced一维shard、skip-init/support和字符串失败分类约束；这些是待替换实现事实，不得缩小上述终态能力。
 
 ### 5.4 Spatial与融合机会
 
@@ -334,8 +387,10 @@ legal仍保留在domain，但会因低compute利用率、更多waves/messages/in
 boundary obligation编码为typed assignment；lifetime和completion再从实际region、movement、buffer、order与IR epoch重算。
 Lowering只能消费并验证selected choice，不能提供隐藏canonical winner。
 
-Logical demand先于physical fragment。Movement materialization必须对exact demand与producer ownership求交，证明local和remote
-fragments all-and-only覆盖、互不重叠，再生成实际staging、send/recv/wait或DDR store/load。
+Logical demand先于physical fragment。Movement materialization必须对reduction、broadcast、window/stride与multi-piece在内的
+exact demand和producer ownership求交，保留init/contribution/replication role，证明local和remote fragments all-and-only覆盖、
+必要contribution不丢失且非显式replica不重叠，再生成实际staging、send/recv/wait或DDR store/load。任何densify、bounding-box
+或descriptor分段都必须回证union等于原exact set。
 
 Movement proposal可以消费一个query-local、可失效的relation-derived reuse analysis：它从Q50.A exact demand、selected
 placement、TileRegion/traversal、wave-loop order和representation推导spatial-demand equivalence/invariance classes、
@@ -534,13 +589,19 @@ resolution遍历baseline合同内的合法fallback，返回固定全序中第一
 completion；只有随后一次完整Q50.0 gate才能将其标为accepted。query-local trial和fit结果
 只是合法化过程，不是Q51 search candidate：controller不评分、不维护incumbent/candidate family、不保留用于比较的备选方案，
 也不得创建或调用search candidate/state、search-oriented domain/ranking evaluator、grouping materializer和feedback repair。
-它复用policy-free placement option/relation legality query，不能复制第二套placement语义。
+它复用policy-free placement-domain机制和上述logical demand/coverage query，不能复制第二套placement语义，也不能调用
+physical edge strategy/evaluator来决定logical trial是否合法。
 
 controller产出的窄immutable selected assignment是feasibility resolution的**输出**，不是baseline入口的前置条件；baseline与
 search可以在这个policy-free已选事实或actual IR边界汇合，而不是共享candidate wrapper。该结果只含materialization所需的
 per-root placement、显式singleton region boundary、完整temporal vector以及已经由baseline确定的canonical
 representation/movement/buffer/order/completion事实，不含score、derived metrics、stable ordinal、transition/failure history或
 controller flags；materializer不得自行补grouping/default choice。
+
+logical query对reduction、broadcast、affine window、stride/view和multi-piece返回`satisfied`后，baseline的canonical
+correctness carrier必须把exact set有限分解为all-and-only DDR/必要peer movement并继续完整编译；dense-only fragment或单条
+descriptor表达失败是baseline carrier的实现缺口，不是logical placement failure。完整search可在之后枚举其它representation、
+route、retention或collective，但不能因此改变Q50.A logical outcome。
 
 temporal feasibility从root的完整local iterator extent开始，在iterator/indexing semantics、tail、target vector/alignment、
 source numeric/reassociation、reduction order及最小合法粒度共同定义的有限breakpoint lattice上按semantic全序推进。每次trial
@@ -612,7 +673,9 @@ CardExecutable compilation；但它仍未满足本设计：
   wrapper；requires-ancestor-scope没有在最近合法scope完成probe；
 - SPM failure attribution仍可能从DAG edge和相同type/shape反推受影响producer并扩大refinement，缺少从实际
   lifetime/packing到当前single root及其temporal assignment的direct typed causal witness；
-- placement production transition仍过早消费physical edge strategy；
+- placement production transition仍过早消费physical edge strategy；exact-demand API还依赖candidate schedule placement type，
+  只接受direct static single-result/single-init Linalg与balanced一维shard，跳过DPS init/support dependency，并把所有失败压成
+  placement legality bool；
 - candidate、shortlist、repair与完整编译混在单体synthesis文件；
 - spatial domain仍主要是单output axis与连通矩形Tile group；
 - region/temporal/fusion/layout/buffer/communication尚未由一个轻量state联合回溯；
@@ -622,8 +685,9 @@ CardExecutable compilation；但它仍未满足本设计：
 任务按以下output闭环推进，具体状态以`tasks/progress.md`为准：
 
 1. 提取无repair的CardExecutable compilation/verification边界；
-2. 修复placement与layout-independent exact demand边界，给baseline和search提供不携带representation/movement policy的
-   typed事实；
+2. 修复placement与layout-independent exact demand边界，以完整logical shard domain、typed dependency role和四态outcome给
+   baseline/search提供不携带representation/movement policy的proof；闭合reduction、broadcast、window/stride、multi-piece、
+   DPS init与support relation，删除carrier失败和字符串失败对spatial legality的反写；
 3. 保留Q49 correctness证据并以Q49.P闭合baseline功能合法化、结构、policy、probe、causal witness和materialization解耦；
 4. 在accepted baseline可直接作为incumbent后建立search core与两层small exhaustive oracle；
 5. 依次闭合structured alternatives、spatial partition/placement、TileRegion/temporal/fusion、representation/movement、
@@ -640,6 +704,8 @@ CardExecutable compilation；但它仍未满足本设计：
 - duplicate/unavailable Tile、coverage hole/overlap、illegal reduction merge、cross-Tile/region SPM alias失败；
 - same-region independent traversal、coupled traversal、region cut、selective spill、recompute和communication staging可验证；
 - selected spatial mapping的iteration coverage、result ownership和edge demand all-and-only闭合。
+- exact-demand query按完整logical domain支持reduction input/init/partial contribution、broadcast、affine window+stride/dilation、
+  strided view/slice、multi-piece、multi-result和support relation；physical carrier变化不改变logical outcome。
 
 ### Baseline与search correctness
 
@@ -648,6 +714,8 @@ CardExecutable compilation；但它仍未满足本设计：
 - 构造必须联合改变spatial/region/temporal等多个choice才改善的陷阱，anytime策略能找到actual accepted改进；
 - estimate、memo、no-good或dominance逐项开启不改变small-oracle winner；
 - `none`和`search`共用完整candidate compilation/verification；
+- baseline与spatial mechanism共用policy-free typed exact-demand query，只有`proven logical infeasible`删除trial；unsupported和
+  indeterminate不会进入legality bool/no-good cache，IR epoch或任一观察到的domain/role变化使cache失效；
 - `none`不构造或调用search state/candidate、search-oriented domain/ranking evaluator、proposal ordering/group materializer
   或candidate统计；每个baseline TileRegion恰有一个structured compute root，跨root shaped dependency均有显式DDR边界，
   同Tile多root表现为多个顺序TileRegion；

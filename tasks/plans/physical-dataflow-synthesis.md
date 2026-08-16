@@ -116,7 +116,7 @@ exact gate仍失败，必须是最小canonical fallback已被typed proof排除�
 | --- | --- | --- | --- |
 | 0 | Q50.0 CardExecutable compilation boundary | 抽出无策略的actual compile/verification seam，不允许lowering修候选 | Q54 |
 | 1 | Q54 MLIR infrastructure conformance | typed IR/interface、scoped pass/analysis、named pipeline与rewrite transaction收口 | Q49.P、Q50.A |
-| 2 | Q50.A placement-demand repair | `IndexRelation.image()` exact demand不被carrier/layout/route反写 | Q49.P、Q51.Core |
+| 2 | Q50.A placement-demand repair | 对完整logical shard trial形成typed exact-demand/coverage proof；reduction、broadcast、window/stride、multi-piece、init与support relation均不被carrier/layout/route反写 | Q49.P、Q51.Core |
 | 3 | Q49.P baseline functional closure与policy isolation | canonical `none`从正常上游IR完成确定性placement/tiling/SPM合法化且不消费search对象；一root一region；最窄exact probe后完整CardModule与CardExecutable各形成一次 | Q51.Core、baseline性能复核 |
 | 4 | Q51.Core | 共同state、transition、candidate set、incumbent、ledger、budget与oracle harness | Q50.S、Q50.B |
 | 5 | Q50.S structured semantic alternatives | typed proof与actual TensorProgram roots接入共同owner | Q51 closure |
@@ -156,7 +156,7 @@ CardExecutable cost与全轴actual winner都是Q51 closure gate，不得用尚�
 | 类别 | 当前代表实现 | 处置 |
 | --- | --- | --- |
 | 稳定 downstream trunk | CardModule/TileModule IR、CardModule-to-Tile conversion、TileRegion-to-Instr、Tile memory planning、card resource/target verification、package/runtime | 保留；所有 policy 复用同一路径；现有`TileMemoryPlanning`/`CardExecutableLowering`仅作实现定位，后者仍需按实际职责收敛名称 |
-| 可复用 core | `StructuredDAGAnalysis`、现有schedule-state/candidate类、edge-demand plan与placement domain/cost mechanics | immutable structured/relation事实可供baseline读取；schedule-state/candidate/evaluator/proposal-order只纳入Q51.Core，Q49.P必须先断开对它们的依赖。旧类名只是实现定位，不升级成长期架构对象，也不让其自行选择winner |
+| 可复用 core | `StructuredDAGAnalysis`、现有schedule-state/candidate类、edge-demand plan与placement domain/cost mechanics | immutable structured/relation事实及policy-free logical placement-assignment窄类型供baseline构造trial并由exact-demand query读取；该窄类型和query必须从candidate/schedule依赖中抽离。schedule-state/candidate/evaluator/proposal-order只纳入Q51.Core，Q49.P必须先断开对它们的依赖。旧类名只是实现定位，不升级成长期架构对象，也不让其自行选择winner |
 | 可复用 mechanism | `BidirectionalTiling`、`CompleteTraversal`、`TileMaterialization`、`CandidateMaterialization`、movement/collective lowering、selected-buffer materialization、ready-order/worker/completion verifier | 按Q50.S与Q50.B–Q50.K接到transition/materializer seam；保留符合新合同的算法与verifier |
 | 过渡 monolith | 当前executable-synthesis实现中的coordinate sweep、candidate family、allocation/buffer feedback、shortlist和mixed materialization | public entry暂保留，先抽出Q50.0编译边界，再按轴抽出；最终只保留Q49 baseline controller、Q51 driver和共同materialization seam |
 | 旧 bounded/rank search | `RankCandidateSearch`、旧structured candidate generation/evaluation/selection及rank-era candidate set | 只作为 transformation、typed proof、diagnostic 和测试来源；不得恢复固定 beam/cap 或 rank-local winner |
@@ -219,8 +219,9 @@ wrapper；`RequiresFunctionScope`被计数后跳过；capacity attribution会按
 ```text
 Pipeline position:
 - Upstream IR / input:
-  verified card-local TensorProgram、Q50.A闭合后的layout-independent exact logical demand、available Tile与immutable target
-  facts；尚未创建search state/candidate，也没有selected TileRegion grouping、temporal、layout、route或buffer choice。
+  verified card-local TensorProgram、available Tile、immutable target facts及可从current SSA/structured semantics派生的policy-free
+  relation机制；尚未创建search state/candidate，也没有预先计算的placement-specific demand或selected spatial、TileRegion
+  grouping、temporal、layout、route、buffer choice。Q50.A exact demand由controller对每次closed spatial trial现场查询。
 - Current stage responsibility:
   由独立deterministic feasibility controller从正常上游IR自行构造canonical spatial assignment、每root独立TileRegion、显式
   DDR boundary、target-required representation/movement、single-buffer assignment、order/completion和完整temporal vector；
@@ -251,8 +252,8 @@ Pipeline position:
 ```
 
 `none`不得构造Q51 state、candidate set、candidate family或全图performance Cartesian组合，也不得通过调用search-oriented
-domain/ranking evaluator后只取第一个结果来伪装canonical construction。但它必须复用Q50.A之后policy-free placement option
-和relation legality query，对baseline合同内的mandatory coordinates执行有限、完整、确定且不被beam/cap/time budget截断的
+domain/ranking evaluator后只取第一个结果来伪装canonical construction。但它必须复用policy-free placement-domain机制和
+Q50.A logical demand/coverage query，对baseline合同内的mandatory coordinates执行有限、完整、确定且不被beam/cap/time budget截断的
 feasibility resolution，取得semantic全序中第一个required scoped probe全部fit的canonical completion，再交给一次Q50.0完整
 gate准入；不能复制第二套placement语义。query-local
 trial/fit是功能合法化状态，不是search candidate。它可以在single-root范围内反复探测temporal breakpoint，全部root接受后只
@@ -305,6 +306,12 @@ producer只要映回另一个structured DAG node就仍算第二root；一个root
 root cardinality由同次materialization relation证明。多个独立root共用region即使edge action全为RegionCut，也会共同占用
 SPM/lifetime/lowering scope，属于search的region-grouping选择，baseline不得使用。
 
+Q50.A对reduction、broadcast、affine window及stride/dilation、strided slice/view和multi-piece set给出`satisfied`后，baseline
+必须由policy-free canonical correctness carrier把同一exact demand有限分解并形成all-and-only DDR/必要peer movement；dense-only
+fragment或单descriptor表达失败不能改判logical placement，只说明该canonical carrier尚未闭合。Q49.P负责走通这一条确定性
+correctness carrier，Q50.G/H随后扩展可搜索的representation/movement完整选择域；二者都消费同一Q50.A proof，不重建或压缩
+logical demand。
+
 Q49.P建立比Q50.F更窄的policy-free scoped TileRegion-to-Instr/lifetime/SPM capacity seam。每次调用的输入是controller当前
 trial已物化的single-root TileRegion、完整temporal tile vector以及该trial的spatial、DDR-boundary、representation和
 single-buffer assignment；这些closed coordinates只约束一次exact query，不表示baseline入口已经选好完整assignment。
@@ -344,18 +351,135 @@ workset/lifetime、没有beam/cap/budget截断fallback，且这些trial不进入
 
 ## Q50.A：Placement-Demand Boundary Repair
 
-输入是 current structured producer/consumer SSA edge 和一组给定 placement。query-local placement-demand analysis从
-structured indexing semantics导出`IndexRelation`，以relation image求每个consumer shard需要的all-and-only producer
-logical set，并验证producer shard ownership coverage。当前`StructuredDAGEdgeDemandPlanner`只是待改造的实现索引。
+“给定placement”只表示调用者正在检查的一次closed logical shard trial，不表示baseline或search入口已经拥有selected
+assignment。Q49.P按canonical feasibility顺序产生trial，Q50.B在共同state中产生spatial transition；Q50.A只回答当前trial的
+logical dependency demand是否被精确表达和覆盖，不生成placement、不选择winner，也不物化physical carrier。
 
-该query-local analysis result只包含consumer logical domain、producer logical demand和producer ownership；不包含
-layout、encoding、bytes、local/remote action、route、buffer、send/recv或fusion。当前`StructuredDAGEdgeDemandPlan`与dense fragment carrier由显式
-compatibility lowering 消费该 output；它不是长期 search owner。
+```text
+Pipeline position:
+- Upstream IR / input:
+  verified card-local structured TensorProgram、current SSA/structured DAG、从typed op/interface/indexing semantics派生的
+  dependency relation，以及producer/consumer当前trial的完整logical iteration/result/ownership domain、reduction/replication
+  role和IR epoch；尚未选择layout、encoding、movement、route、buffer或schedule。
+- Current stage responsibility:
+  对每条data/init dependency及其中间pure support relation形成或组合exact IndexRelation；将consumer当前完整logical
+  execution domain取image得到all-and-only producer demand，与producer shard ownership求交并形成typed coverage proof；
+  区分satisfied、proven logical infeasible、unsupported semantic relation和indeterminate/compiler failure。
+- Output IR / files:
+  不修改IR、不产生文件；输出仅在当前IR epoch有效的query-local typed result，包含dependency/relation identity、consumer
+  logical domain、producer logical demand、每个producer ownership intersection、dependency/reduction/init role及coverage witness。
+- Downstream consumer:
+  Q49.P deterministic feasibility controller与Q50.B spatial transition只消费logical outcome；Q49.P canonical correctness
+  carrier及Q50.G/H representation/movement materializer在相应坐标关闭后消费`satisfied` exact demand；Q50.0仍是完整
+  CardExecutable准入边界。
+- User-level driver / named pipeline:
+  wafer-compile source-to-package pipeline中的typed `none`与`search`共同physical-dataflow synthesis路径；不提供独立public pass、
+  selector或磁盘格式。
+- Explicit non-goals:
+  不枚举、排序或选择placement；不决定TileRegion/fusion、temporal tile、layout/encoding、local/remote/DDR/peer action、route、
+  bytes、fragment、buffer、send/recv、schedule或cost；不把physical carrier能力当logical legality；不保存跨IR mutation的side table。
+- Done criteria:
+  policy-free placement-assignment与typed outcome API脱离candidate/schedule/evaluator；production baseline和spatial transition只在
+  `proven logical infeasible`时删除当前trial，unsupported/indeterminate不形成placement no-good；reduction、broadcast、
+  affine window及stride/dilation、strided slice/view、multi-piece、multi-result、DPS init producer与pure support-chain relation
+  的exact image/coverage正负测试通过；carrier失败不改变logical结果；cache key/invalidation、production接线和fresh
+  source-to-package witness闭合。
+```
 
-Q50.A的analysis和reduction、broadcast/window、stride、multi-piece与ownership coverage正负测试已经闭合，但production
-placement query当前仍会立即降成dense rectangle、layout fragments和route，因此任务不能标done。修复后，placement
-transition只消费上述layout-independent demand；compatibility carrier只在representation/movement坐标关闭后由显式lowering
-消费。carrier表达失败不得反写为spatial placement非法。
+### Logical domain、dependency与ownership合同
+
+Q50.A输入的是完整logical domain，不得再从`shardDimension + participant count`恢复balanced一维矩形。producer和consumer
+trial必须显式包含all-iterator spatial factors、parallel/reduction role、remainder/tail、logical shard-to-Tile binding，以及
+unique partition、explicit replication或partial-reduction contribution等ownership语义。Q50.B负责生成并验证这些placement
+assignment；Q50.A在本checkpoint先用显式typed test assignment闭合query合同，使后续multi-axis、非整除、非矩形、非对称和
+非连通placement不被旧单轴接口截断。
+
+每条structured dependency按current SSA use、producer result、consumer operand、DPS operand role和support op semantics形成
+typed descriptor：
+
+- 普通DPS/data input对consumer已选完整iteration domain应用operand indexing relation；
+- reduction保留当前partial contribution domain、combiner/numeric约束与merge role，不能只从result shard推回完整K域，也不能
+  把多个partial owner当作可互换replica；
+- 显式structured Fill或其它DPS init producer仍是独立DAG root，其init/update dependency必须形成exact demand，不能因consumer
+  typed lowering稍后会处理init就从计划中消失；
+- 没有独立structured root的view/reshape/slice/pad等pure support graph按typed semantics组合relation；多operand support graph
+  对每个data-carrying predecessor分别保留dependency，不能假设只有unary chain，也不能把support名字当语义；
+- multi-result、fanout和fanin按实际producer result/consumer operand分别建relation，不假设`result(0)`、单init或equal shape。
+
+对每个consumer logical shard，query以其完整execution domain求relation image，再与每个producer ownership domain求交。
+这些intersection的typed union必须精确覆盖producer demand；未覆盖set是`proven logical infeasible`的direct witness。显式
+replica允许多个eligible owner时，Q50.A保留等价ownership relation而不选择source；partial reduction owner则全部保留为必需
+contribution并交给已选merge语义。malformed assignment、过期IR epoch或缺失上游role是compiler contract failure，不得作为
+某个placement的普通no-good。
+
+以下不是case特化，而是本边界必须支持的通用relation类别：
+
+- **reduction**：parallel与reduction iterator共同定义consumer contribution domain，exact demand覆盖所有必要input/init片段，
+  partial结果与merge义务不丢失；
+- **broadcast**：many-to-one/投影relation的image保持唯一source logical set，重复consumer使用不膨胀为伪造ownership需求；
+- **affine window**：convolution、pooling或supported reduce-window的offset、stride、dilation、kernel和显式pad/fill relation共同
+  推导halo与valid source pieces；边界fill与真实producer demand分别保留；
+- **stride与view/slice**：非unit stride、permutation、collapse/expand和static slice通过relation组合形成精确strided set；
+- **multi-piece**：Presburger union、window/pad分段、tail或组合relation产生的有限多piece set原样保留，禁止先取bounding box或
+  dense rectangle再声称exact。
+
+上述current声明支持的类别不能以`unsupported`作为Q50.A完成后的常规出口。真正超出typed structured/IndexRelation合同的
+dynamic、non-affine或未定义numeric semantics可以返回`unsupported semantic relation`，但它作用于对应语义/alternative，
+不是换一个physical placement即可消除的失败。
+
+### Typed outcome与physical隔离
+
+query结果必须是named typed outcome，而不是`FailureOr + string`再压成`bool legal`：
+
+1. `satisfied`：携带exact relation image、ownership intersections和空uncovered witness；
+2. `proven logical infeasible`：只表示well-formed trial在logical partition/relation/ownership上存在可证明矛盾，并携带direct
+   uncovered或role witness；Q49.P/Q50.B只有收到该结果才能跳过当前trial；
+3. `unsupported semantic relation`：当前typed relation能力无法表达verified source semantics；不得缓存或改写为placement非法；
+4. `indeterminate/compiler failure`：Presburger预算/内部错误、过期epoch、协议缺失或无法分类的失败；调用者停止对应合法化路径
+   并保留compiler failure，不尝试其它placement掩盖问题。
+
+`satisfied`结果不包含layout、encoding、bytes、dense rectangle、local/remote action、route、buffer、send/recv、fusion或
+resource schedule。representation/movement关闭后，lowering才可把exact set分解为physical pieces并证明其union all-and-only
+覆盖logical demand；某个dense/strided descriptor或route表达失败只拒绝该physical assignment。Q49.P为baseline选择的
+canonical DDR/必要peer carrier若还不能有限表达一个已支持的exact set，属于baseline correctness carrier缺口，不是Q50.A
+relation失败；Q50.G/H扩展完整performance alternatives时仍复用同一proof。
+
+### API、cache与current迁移
+
+policy-free logical placement assignment必须位于structured/relation边界，不能因Q50.A读取它就include candidate schedule或携带
+evaluation、stable ordinal、route、residency、calendar和candidate统计。query只读current IR和immutable typed assignment，
+不apply mutation；关系或domain需要跨mutation时由新IR epoch重算，不把operation pointer、diagnostic字符串或旁路side table
+当稳定语义键。
+
+relation cache至少按IR epoch与typed edge/relation identity失效；demand/coverage cache还必须观察完整consumer execution
+domain、producer ownership domains、partition/reduction/replication role及会改变relation image的全部assignment。只有证明某些
+字段在当前relation下extensionally等价时才能使用投影key；当前仅按两端shard dimension和participant count缓存`bool`不能成为
+终态合同。
+
+当前`StructuredDAGEdgeDemandPlanner`、`StructuredDAGEdgeStrategyPlanner`、placement evaluator与相关测试只是迁移索引：
+实现仍经candidate schedule取得placement type，只接受direct static single-result/single-init Linalg与balanced一维矩形，跳过
+DPS init和非direct support dependency，并把relation、carrier、route/resource失败混入同一个placement rejection。施工顺序是：
+
+1. 抽出窄policy-free placement assignment、typed dependency descriptor与typed outcome；
+2. 让exact relation/image/coverage query直接支持上述完整relation类别，并把DPS init/support graph纳入all-and-only DAG依赖；
+3. 将production placement transition改为只消费logical outcome，删除`bool legal`/diagnostic-string控制流；
+4. 把dense fragment、layout、route、residency和resource calendar移到显式compatibility/representation/movement lowering；
+5. compatibility code保留到Q50.G/H能力迁移完成，但其失败不得回写Q50.A cache或删除spatial trial。
+
+### Gate
+
+- 独立exact-demand suite直接测试query，不以edge-strategy/materializer成功代签；覆盖multi-axis remainder、reduction input/init与
+  partial merge、broadcast、affine window+stride+dilation+pad、strided slice/view、multi-piece union、multi-result、fanout/fanin、
+  explicit init root及多operand pure support graph；
+- metamorphic gate对同一logical trial替换dense/strided/multi-piece carrier能力或让route失败，Q50.A outcome和exact set
+  extensionally不变；ownership hole只产生typed `proven logical infeasible`，unsupported与indeterminate不会进入
+  legality `bool`或no-good cache；
+- cache gate改变任一观察到的domain/role或IR epoch都会miss/invalidate；extensionally等价placement重算得到相同stable logical
+  proof，结果不依赖Tile/pointer/hash遍历顺序；
+- Q49.P定向调用链不出现candidate/schedule evaluator或edge strategy selector，只对proven logical failure推进canonical
+  placement trial；上述五类relation至少各有一个normal TensorProgram进入baseline canonical carrier并继续到完整Q50.0 gate；
+- Q50.B explicit test assignment与后续production domain调用同一query；Q50.G/H只消费`satisfied` output，不从physical fragments
+  反推另一份logical demand。旧skip-init/support与carrier-rejects-placement测试必须替换为current合同的正负证据。
 
 ## Q51.Core：先建立共同搜索骨架
 
@@ -450,8 +574,9 @@ Tile count或KV length都不能提前替代该选择。Q50.S不暴露public Flas
   时才由对应typed relation/embedding区别；等价factorization的生成顺序canonicalize，不进入state identity。未映射local
   extent只传给Q50.E，不能在这里隐式固定temporal tile或wave-loop order；
 - 不同 op 可使用不同 Tile sets，独立 branches 可并行，dependent nodes 可 co-locate、partial overlap 或 disjoint；
-- consumer placement 关闭时直接调用 Q50.A exact demand/ownership coverage；physical representation 限制不得反写成
-  logical demand 不合法；
+- consumer placement关闭时直接以完整logical domain调用Q50.A exact demand/ownership coverage；只有typed `proven logical
+  infeasible`删除该transition，unsupported/indeterminate向owning scope传播。physical representation限制不得反写成logical
+  demand不合法；
 - 只有topology、已选placement和当前resource assignments同时对称时才能omit symmetric state；coverage lower bound
   和admissible placement bound可在共同candidate set内剪枝；mechanism不保留
   “最佳 placement”。
