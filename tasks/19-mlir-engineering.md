@@ -60,8 +60,9 @@ Q54 已把首轮全仓审计发现的 MLIR 基础设施问题收敛到下列稳�
 | target/runtime/model layering | pure physical layout、target operation/transaction 与 numeric protocol不依赖 MLIR；MLIR adapter、host frontend和model consumer按 output 单向分层，public-header/link-closure在 feature on/off 均受测 |
 | source/build/test truth | active/dormant source由18号CMake政策和organization checker唯一判定；fresh generated/build、public link smoke、unit/lit、IR/source checker和受影响模型测试共同防止 stale build 假通过 |
 
-Q54 不把性能搜索本身改写成 PassManager。Q49.P消费这些scope/pipeline seam，继续删除`none`对search-policy对象的依赖、
-闭合single-root TileRegion、ancestor-scope probe、typed causal witness和card重物化；rotating buffer必须先有真实共同
+Q54 不把性能搜索本身改写成 PassManager。Q49.P消费这些scope/pipeline seam，让`none`从正常上游IR完成确定性功能
+合法化，同时删除其对search-policy对象的依赖，并闭合single-root TileRegion、ancestor-scope probe、typed causal witness和
+card重物化；rotating buffer必须先有真实共同
 wave/stage loop的要求由Q50.I实现；全仓更广的术语润色由Q45继续，但Q54引入或迁移的active API已无semantic Location
 pointer payload、synthetic local wrapper和旧的通用candidate容器。
 
@@ -76,7 +77,7 @@ Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆�
 | Frontend | parse schema、metadata、typed compile result和IR验证边界分离 | 外部字符串只允许停在解析边界 |
 | StableHLO/Linalg | normalization、legalization、bounded simplification拆成语义stage；scoped pattern/fold带预算且失败原子 | canonicalizer只优化，不承担 correctness |
 | SPMD/Sharding | TableGen声明、全量validation、module级mesh/signature边界和feature-off gate闭合 | 外部 XLA helper保持其原生 pass/status 边界 |
-| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次clone以`IRMapping`维护关系 | Q49.P继续闭合baseline single-root region、最窄合法probe scope、direct typed witness和唯一完整card materialization |
+| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次clone以`IRMapping`维护关系 | Q49.P继续闭合baseline deterministic feasibility legalization、single-root region、最窄合法probe scope、direct typed witness和唯一完整card materialization |
 | TileRegion→Instr | region-anchored conversion、frozen patterns、marker fail-closed legality、DRR和function NCC join pipeline闭合 | function outstanding access保持 Func scope |
 | Memory planning | SPM/DDR plan-then-apply、timeline/call analysis与preservation闭合 | shared arena与DDR仍是 function/module 合同 |
 | Search/scheduling | assignment/evaluation/transition拆分，current-IR relation替代pointer/print identity，enumeration名称说明真实动作 | Q50/Q51拥有候选域和选择语义，不由Q54另建selector |

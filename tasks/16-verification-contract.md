@@ -120,8 +120,9 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - top-k还必须报告`best-found@k`、winner recall@k、regret@k和estimate-vs-final recost误差；永久丢弃合法completion时结果只可
   标`budgeted-feasible`，外部系统的固定`k`不得成为本项目默认值。
 
-`search`和`none`跨越同一output seam。`none`只materialize deterministic conservative baseline；`search`从完整合法域
-惰性生成candidate。测试不得把两者相同结果写成长期合同，也不得为某个case硬编码winner。
+`search`和`none`跨越同一output seam。`none`从正常上游IR自行完成deterministic conservative baseline的功能合法化并
+materialize accepted executable；它不是只消费预选fixed assignment的validator。`search`从完整性能合法域惰性生成candidate。
+测试不得把两者相同结果写成长期合同，也不得为某个case硬编码winner。
 
 搜索结果分级必须与实际coverage一致：finite域与global bound闭合才是`optimal-certified`；未展开completion仍由完整
 exact continuation和admissible bound表示时可为`feasible-with-bound`；已经丢弃或未表示合法completion时只能是
@@ -296,8 +297,11 @@ current target容量、target-model能力或host预算不足，必须按stage报
    提升到最近合法isolated ancestor。capacity rejection的typed witness将all-and-only conflict owner直接关联到当前single
    root及其temporal assignment，unsupported witness命名typed lifetime/call relation和实际scope，equal-shape fanin不扩大
    归因；scoped probe不构造card-shaped/no-work-Tile wrapper，完整CardModule materialization与CardExecutable compilation各
-   一次。fresh prefill/decode/Llama还需证明CardModule、CardExecutable与package digest稳定、
-   oracle/no-card通过。
+   一次。Q49.P还必须从没有selected assignment的正常TensorProgram证明功能闭环：初始完整temporal tile因精确
+   operand/halo/result/temporary/movement/alignment/bank/lifetime footprint超出SPM时，controller沿不截断的合法breakpoint
+   lattice重新推导workset并缩小到第一个fit，随后通过完整CardExecutable、package和no-card；multi-axis/tail/minimum-granularity
+   受测，最小合法tile仍失败才返回direct typed capacity failure，indeterminate作为compiler failure而非unsupported。
+   fresh prefill/decode/Llama还需证明CardModule、CardExecutable与package digest稳定、oracle/no-card通过。
 2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair；Q50.A：
    placement给定后从IndexRelation形成layout-independent exact logical demand，carrier/layout/route失败不反写spatial legality；
    Q50.S：typed proof和online/partitioned-KV等算法参数点均物化成真实TensorProgram alternatives。

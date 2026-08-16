@@ -91,8 +91,8 @@ Pipeline position:
   feature-on/off配置、active/dormant CMake truth与IR/source organization checker闭合。
 - M24：当前合同只由18–19、任务队列和active CMake拥有；旧实现材料明确归档或列入optional source，不再冒充production。
 
-Q49.P仍负责`none`的search-policy依赖、single-root TileRegion、ancestor-scope probe、typed causal witness、重复card
-materialization和耗时；Q50.I仍负责先物化真实共同wave/stage loop再生成
+Q49.P仍负责`none`从正常上游IR完成deterministic functional fallback，并闭合search-policy依赖、single-root TileRegion、
+ancestor-scope probe、typed causal witness、重复card materialization和耗时；Q50.I仍负责先物化真实共同wave/stage loop再生成
 rotating slots；Q45继续全仓一般术语治理。这三项不恢复Q54已经删除的wrapper、Location关系或旧命名，也不构成Q54
 基础设施未闭合。
 
@@ -497,7 +497,8 @@ fresh 验证：
 5. FP16/BF16普通多 op、sharded compute、prefill/decode/Llama代表 source-to-package，比较 semantic oracle、
    CardModule/CardExecutable/package digest和 no-card plan；
 6. 记录 pass/analysis/clone/materialization count与wall time，证明TileRegion query、nested pass和analysis scope真实生效；
-   Q54不得保留synthetic local wrapper或每region完整Tile pipeline。`none`的search-policy、region结构、scope/witness和card重复工作由Q49.P负责，
+   Q54不得保留synthetic local wrapper或每region完整Tile pipeline。`none`的deterministic functional fallback、search-policy、
+   region结构、scope/witness和card重复工作由Q49.P负责，
    不能反向要求Q54重建search或用并行clone遮蔽。
 
 Q54 的 A–I 已完成，active source中不再存在semantic `OpaqueLoc` pointer payload、synthetic local wrapper、旧的通用candidate容器、
@@ -511,7 +512,8 @@ Q54 的 A–I 已完成，active source中不再存在semantic `OpaqueLoc` point
   需要call/function lifetime时提升到最近合法isolated ancestor，不能跳过或回退card-shaped wrapper。
 - Q54完成后先闭合Q50.A demand boundary，Q49.P再消费两者的current seam，之后才进入Q51.Core及后续mechanism/search，
   避免把Location side channel、shadow identity和全module pipeline继续固化进baseline或新candidate state。
-- Q49.P先以closed-coordinate方式消费Q54的region-local conversion/lifetime/packing seam；Q50.F在同一实现上增加deferred
-  coordinates和common-state反馈，不另建probe pipeline。
+- Q49.P的deterministic feasibility controller以逐trial closed coordinates消费Q54的region-local
+  conversion/lifetime/packing seam并自行推进功能fallback；selected assignment是该过程的输出，不是入口前置条件。Q50.F在
+  同一probe实现上增加deferred coordinates和common-state反馈，不另建probe pipeline。
 - Q52只优化在 Q54 scope/analysis整改后的真实热点；不得用并行 clone掩盖错误的 transaction边界。
 - Q32.T仍是未来有明确 external control-plane consumer时的 Transform dialect任务，不因 Q54自动启动。

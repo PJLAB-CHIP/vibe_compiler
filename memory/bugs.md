@@ -401,6 +401,19 @@
   数、search-policy调用计数、完整CardModule/CardExecutable各一次；equal-shape fanin与function-scope case验证SPM失败只沿直接
   typed causal witness refinement，不能猜测或跳过scope。
 
+## 去search耦合不能把baseline退化成fixed-assignment validator
+
+- 现象：设计为了禁止`none`复用candidate/evaluator，把baseline写成只apply已选placement/temporal/buffer并执行一次scoped
+  probe；正常上游IR的完整tile超出SPM时，反而没有owner继续缩tile并产出可执行结果。
+- 根因：混淆了“禁止性能候选选择”和“禁止确定性功能合法化”，把resolved assignment误当成baseline输入；只设计了单次
+  closed-coordinate query，没有定义谁遍历合法breakpoint、何时终止以及支持域内的完成保证。
+- 修复模式：`none`从未绑定物理选择的正常IR进入，以不被beam/cap/budget截断的有限semantic全序遍历canonical fallback；
+  每个temporal trial重新推导operand/halo/result/temporary/movement/alignment/bank/lifetime并运行exact scoped probe，第一个fit
+  形成resolved assignment。trial是query-local feasibility状态，不进入Q51 candidate、score、incumbent或proposal统计。
+- 防复发：至少一个初始完整tile超SPM而较小合法tile可放下的source-to-package/no-card正例，以及最小合法tile仍超限的typed
+  negative；声明支持且baseline域存在completion时必须得到accepted executable，indeterminate必须作为compiler failure，不能
+  用“未进入search”或“没有fixed assignment”解释失败。
+
 ## Baseline不搜索通信方案不等于所有依赖零peer
 
 - 现象：为落实逐op DDR baseline而把所有peer fragment禁止后，带reshape/transpose和多种spatial轴的Llama DAG在16-Tile

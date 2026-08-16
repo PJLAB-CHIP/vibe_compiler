@@ -63,8 +63,9 @@ Q46与Q47的旧施工记录已移入`tasks/archive/`。current layout、target A
 
 Q49–Q53共用card-local multi-Tile综合计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：Q49保留
 current `none`数值正确性证据；Q50.0建立candidate compilation/verification seam；Q50.A先收口IndexRelation demand边界；
-Q49.P再闭合baseline canonical construction、single-root TileRegion、最窄scope probe、typed causal witness、整图物化与
-search-policy隔离；Q50.S把算法等价改写物化为actual `TensorProgram`；Q50.B–Q50.K逐项接入
+Q49.P再闭合从正常上游IR产生accepted executable的baseline deterministic feasibility legalization、single-root TileRegion、
+最窄scope probe、typed causal witness、整图物化与search-policy隔离；Q50.S把算法等价改写物化为actual `TensorProgram`；
+Q50.B–Q50.K逐项接入
 spatial、TileRegion/temporal/fusion、physical representation/movement、buffer/order/completion和条件式stage pipeline选择；
 Q51.Core直接复用Q49.P accepted baseline作为incumbent后建立唯一search owner，Q51随后闭合联合选择，Q52按实际负载优化
 scalability，Q53形成production
