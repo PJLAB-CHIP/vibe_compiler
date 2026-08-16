@@ -248,14 +248,18 @@ source program
 - rotating buffer的iteration/release/reuse证据必须来自actual producer、consumer和message endpoint共享的static loop。
   logical edge、Location provenance或上游structured relation只能帮助找到候选，不能代签共同loop。
 
-## Program data ownership
+## Program data ownership验收
 
-- payload只由`ProgramDataHandoff`持有的`ProgramDataSource`/`ProgramDataRange`传递；open/hash/read只发生在owner建立、
-  helper materialization和target consumer的range materialization处，账本以`program-data-io` diagnostics行输出
-  （source_opens/header_reads/digest_passes/shard_readbacks/range_materializations/materialized_file_writes/bytes）。
-- source snapshot只复制IR/metadata/目录结构，跳过`readProgramInputLocators`发现的payload成员；helper input view由
-  `materializeSourceToFile`从owned source materialize并digest readback；byte-identical shard按region digest复用原source，
-  只有真实改变bytes的partition成为新source。
-- 16个Tile binding引用`ProgramTensorId`和range，不携带payload；`prepareProgramInvocations`不再接收packageRoot，
-  parameter/constant一次materialize并shared view共享；target model的card-shared resource只encode一次。
-- 验证payload内容走`ProgramPayloadResolver` seam（`verifyProgramDirectory`可选参数），不得先验证路径再后续stage无owner重新打开。
+- `MemoryBuffer::getFile`对较大普通文件通常使用只读`MAP_PRIVATE`；这不是immutable snapshot，外部对同一inode原地写入仍可能
+  改变后续观察到的bytes。transaction ownership必须复制到真正由transaction独占的存储，或者使用能证明内容不变的等价
+  owner；mutation测试必须超过mmap阈值并覆盖同inode原地改写，不能只覆盖rename replacement或小文件heap copy。
+- payload open/hash/read账本必须覆盖source verification、helper boundary、helper output verification、IR readback、
+  CardExecutable和target consumer整条pipeline。owner建立后所有payload验证走`ProgramPayloadResolver`或等价owned source seam；
+  任何默认参数触发的path reader都算重复I/O，不能只统计`ProgramDataHandoff`内部调用后声称per-source闭合。
+- `ProgramDataRange`不仅检查rank、dtype和byte extent，还必须证明source shape与range来源一致：original source对应global shape，
+  materialized shard对应local shape。相同byte count不能替代shape/layout证明。
+- source encoding的element width不等于target/program-boundary admitted dtype。NPY可解析一种dtype时，只有target representation、
+  conversion和consumer全部存在后才能把它加入`ProgramTensor`允许集合。
+- source snapshot只复制IR/metadata/目录结构；helper input由owned source materialize并digest readback；byte-identical shard可按
+  region digest复用原source，真实改变bytes的partition形成新source。16个Tile binding只引用`ProgramTensorId`和range，
+  parameter/constant按range一次materialize并shared view共享，card-shared target resource只encode一次。
