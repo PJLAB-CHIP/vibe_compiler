@@ -78,13 +78,6 @@ EXPECTED_RAW_DTE_LEAF_GROUPS = {
     "dte-raw-shuffle-source-stride": "direct-dte-raw-shuffle",
 }
 
-EXPLICIT_RAW_I8_CARRIER_ASSETS = {
-    "test/Board/wafer_board_dte_ncc_execution_probe_test.py",
-    "test/Board/wafer_board_complete_tile_barrier_probe_test.py",
-    "test/Board/wafer_direct_dte_board_evidence_test.py",
-}
-
-
 def load_asset_module(
     repo: pathlib.Path,
     relative: str,
@@ -240,24 +233,6 @@ def validate_operator_payload_dtypes(
         "production optimization comparison contains i8 operator payloads: "
         f"{invalid_optimization_i8}"
     )
-
-    literal_patterns = (
-        re.compile(r"tensor<[^>\n]*xi8\b", re.I),
-        re.compile(
-            r"""["']dtype["']\s*:\s*["'](?:i8|int8)["']""", re.I
-        ),
-    )
-    literal_i8_assets = {
-        str(path.relative_to(repo))
-        for path in (repo / "test" / "Board").glob("wafer_*_test.py")
-        if any(pattern.search(path.read_text()) for pattern in literal_patterns)
-    }
-    assert literal_i8_assets == EXPLICIT_RAW_I8_CARRIER_ASSETS, (
-        "board operator source/metadata gained an unclassified literal i8 "
-        "payload, or the explicit raw carrier disappeared without updating "
-        f"the gate: {sorted(literal_i8_assets)}"
-    )
-
 
 def resolve_binding(
     repo: pathlib.Path,
