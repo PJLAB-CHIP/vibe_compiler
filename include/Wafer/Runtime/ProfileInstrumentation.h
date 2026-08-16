@@ -26,13 +26,6 @@ struct TargetCallDescriptor;
 
 namespace runtime {
 
-inline constexpr llvm::StringLiteral kProfileInstrumentationActivationFileName =
-    "activation.json";
-inline constexpr llvm::StringLiteral kProfileInstrumentationPlanFileName =
-    "plan.json";
-inline constexpr llvm::StringLiteral kProfileInstrumentationSiteMapFileName =
-    "site-map.json";
-
 class ProfiledPackage {
 public:
   ProfiledPackage(std::string manifestDigest,

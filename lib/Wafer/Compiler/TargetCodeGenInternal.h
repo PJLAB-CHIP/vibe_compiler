@@ -6,7 +6,7 @@
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
-#include "Wafer/Runtime/ProfileInstrumentation.h"
+#include "Wafer/Package/ProfileInstrumentationModel.h"
 #include "Wafer/Target/TargetCall.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -23,17 +23,16 @@ namespace wafer::compiler {
 
 struct TargetLLVMModulesBuilder {
   static TargetLLVMModule
-  makeModule(CardId cardId, TileId tileId,
-             LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
-             TargetIdentityId targetIdentity,
+  makeModule(CardId cardId, TileId tileId, LaunchSlotId launchSlotId,
+             llvm::StringRef entrySymbol, TargetIdentityId targetIdentity,
              KernelRuntimeABIId kernelRuntimeABI, llvm::StringRef moduleFormat,
              std::vector<TileEntryArgument> tileEntryArguments,
              std::unique_ptr<llvm::LLVMContext> context,
              std::unique_ptr<llvm::Module> module) {
-    return TargetLLVMModule(cardId, tileId, launchSlotId,
-                            entrySymbol, targetIdentity, kernelRuntimeABI,
-                            moduleFormat, std::move(tileEntryArguments),
-                            std::move(context), std::move(module));
+    return TargetLLVMModule(cardId, tileId, launchSlotId, entrySymbol,
+                            targetIdentity, kernelRuntimeABI, moduleFormat,
+                            std::move(tileEntryArguments), std::move(context),
+                            std::move(module));
   }
 
   static TargetLLVMModules
@@ -62,12 +61,10 @@ struct LinkedTargetModulesBuilder {
   }
 
   static VerifiedTargetTileInterface
-  makeTileInterface(CardId cardId,
-                    TileId tileId, LaunchSlotId launchSlotId,
+  makeTileInterface(CardId cardId, TileId tileId, LaunchSlotId launchSlotId,
                     TargetModuleId moduleId,
                     std::vector<TileEntryArgument> tileEntryArguments) {
-    return VerifiedTargetTileInterface(cardId, tileId,
-                                       launchSlotId, moduleId,
+    return VerifiedTargetTileInterface(cardId, tileId, launchSlotId, moduleId,
                                        std::move(tileEntryArguments));
   }
 
@@ -95,7 +92,7 @@ llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture);
 uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture);
 llvm::Error
 verifyProfileCaptureTileEntryArguments(llvm::ArrayRef<TileEntryArgument> slots,
-                                   ProfileCaptureKind capture);
+                                       ProfileCaptureKind capture);
 
 struct ProfileTargetCallSite {
   uint64_t siteId = 0;
@@ -146,7 +143,7 @@ struct OwnedTargetLLVMModule {
 
 struct PreparedTile {
   PreparedTile(const ExecutionConfig &executionConfig,
-                       bool transportPreparedBeforeEntry);
+               bool transportPreparedBeforeEntry);
 
   mlir::OwningOpRef<mlir::ModuleOp> module;
   std::vector<TileEntryArgument> slots;
@@ -180,17 +177,15 @@ mlir::LogicalResult lowerToTargetLLVM(PreparedTile &prepared);
 mlir::LogicalResult verifyLoweredKernelABI(PreparedTile &prepared,
                                            llvm::StringRef entrySymbol);
 llvm::Expected<TargetLLVMModule>
-translatePreparedTile(PreparedTile prepared,
-                              llvm::StringRef entrySymbol);
-llvm::Error verifyTargetLLVMModule(const llvm::Module &module,
-                                   CardId expectedCardId,
-                                   TileId expectedTileId,
-                                   LaunchSlotId expectedLaunchSlotId,
-                                   llvm::StringRef expectedEntrySymbol,
-                                   TargetIdentityId expectedTargetIdentity,
-                                   KernelRuntimeABIId expectedKernelRuntimeABI,
-                                   llvm::StringRef expectedModuleFormat,
-                                   llvm::ArrayRef<TileEntryArgument> expectedSlots);
+translatePreparedTile(PreparedTile prepared, llvm::StringRef entrySymbol);
+llvm::Error
+verifyTargetLLVMModule(const llvm::Module &module, CardId expectedCardId,
+                       TileId expectedTileId, LaunchSlotId expectedLaunchSlotId,
+                       llvm::StringRef expectedEntrySymbol,
+                       TargetIdentityId expectedTargetIdentity,
+                       KernelRuntimeABIId expectedKernelRuntimeABI,
+                       llvm::StringRef expectedModuleFormat,
+                       llvm::ArrayRef<TileEntryArgument> expectedSlots);
 
 llvm::Error writeTargetLLVMIR(const llvm::Module &module, llvm::StringRef path);
 
@@ -226,10 +221,9 @@ verifyTargetLLVMModuleForTesting(const TargetLLVMModule &targetModule);
 llvm::Error validateRuntimeLaunchContractDomainForTesting(
     const TargetLLVMModules &targetLLVMModules);
 
-llvm::Expected<TargetLLVMModules>
-compileCardExecutableToTargetLLVMModulesImpl(
-    const CardExecutable &cardExecutable,
-    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
+llvm::Expected<TargetLLVMModules> compileCardExecutableToTargetLLVMModulesImpl(
+    const CardExecutable &cardExecutable, llvm::raw_ostream &diagnostics,
+    std::optional<int64_t> failAfterLaunchSlot,
     ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
 
 llvm::Expected<LinkedTargetModules> linkTargetLLVMModulesImpl(

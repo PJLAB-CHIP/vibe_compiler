@@ -71,51 +71,53 @@ packPhysicalTensorLogicalValues(const NumericTensorKey &key,
                                 llvm::ArrayRef<RawLogicalValue> values,
                                 uint8_t paddingFill);
 
-/// Bounded-window physical packer over one validated tensor key. Logical
-/// values are consumed in row-major order and packed into contiguous physical
-/// byte spans using the same shared layout calculator as the full-buffer
-/// codec; padding bytes are written as `paddingFill`. Memory never scales with
-/// the full tensor: spans are capped by the caller's byte budget, with one
-/// single-channel-row fallback for blocked layouts whose row exceeds the
-/// budget. Bit-packed elements (single-bit storage) are rejected.
-class PhysicalTensorWindowPacker {
+/// Bounded physical-order write plan over one validated tensor key. Each
+/// returned window is a disjoint contiguous byte span and names the logical
+/// row-major values that belong in that span. This inverse view of the shared
+/// physical geometry lets callers fetch arbitrary logical source ranges
+/// without assuming that a logical C row is contiguous in Cx/NCx storage.
+/// Both output bytes and element mappings are bounded by caller budgets;
+/// bit-packed BOOL uses byte-aligned windows.
+class PhysicalTensorWindowPlan {
 public:
-  /// One contiguous physical span produced from a leading window of the
-  /// supplied logical values. `physicalOffset` is a byte offset relative to
-  /// the start of the physical storage; it is always byte-aligned.
-  struct WriteWindow {
-    uint64_t physicalOffset = 0;
-    /// Number of leading input values this window consumed.
-    uint64_t valueCount = 0;
-    /// The packed span, zero-padded, of size <= the requested byte budget
-    /// (except the single-row fallback described above).
-    std::vector<uint8_t> bytes;
+  struct ElementWrite {
+    /// Row-major logical element index in the tensor key.
+    uint64_t logicalIndex = 0;
+    /// Destination bit offset relative to `WriteWindow::bytes`.
+    uint64_t windowBitOffset = 0;
   };
 
-  static llvm::Expected<PhysicalTensorWindowPacker>
+  /// One disjoint physical span. `bytes` starts with `paddingFill`; callers
+  /// overwrite only the positions named by `elements` through NumericCodec.
+  struct WriteWindow {
+    uint64_t physicalOffset = 0;
+    std::vector<uint8_t> bytes;
+    std::vector<ElementWrite> elements;
+  };
+
+  static llvm::Expected<PhysicalTensorWindowPlan>
   create(const NumericTensorKey &key);
 
-  PhysicalTensorWindowPacker();
-  PhysicalTensorWindowPacker(PhysicalTensorWindowPacker &&) noexcept;
-  PhysicalTensorWindowPacker(const PhysicalTensorWindowPacker &) = delete;
-  PhysicalTensorWindowPacker &
-  operator=(const PhysicalTensorWindowPacker &) = delete;
-  PhysicalTensorWindowPacker &
-  operator=(PhysicalTensorWindowPacker &&) noexcept;
-  ~PhysicalTensorWindowPacker();
+  PhysicalTensorWindowPlan();
+  PhysicalTensorWindowPlan(PhysicalTensorWindowPlan &&) noexcept;
+  PhysicalTensorWindowPlan(const PhysicalTensorWindowPlan &) = delete;
+  PhysicalTensorWindowPlan &
+  operator=(const PhysicalTensorWindowPlan &) = delete;
+  PhysicalTensorWindowPlan &operator=(PhysicalTensorWindowPlan &&) noexcept;
+  ~PhysicalTensorWindowPlan();
 
   uint64_t getStorageBytes() const;
   uint64_t getElementCount() const;
-  /// Number of logical values already packed, in row-major order.
-  uint64_t getPackedValueCount() const;
+  uint64_t getPlannedValueCount() const;
+  bool done() const;
 
-  /// Packs the next window. `values` are row-major logical values continuing
-  /// after the already packed prefix; every consumed value must be in the
-  /// key's format. Returns an error on format mismatch, an exhausted packer,
-  /// or geometry failure; the packer state is unchanged on error.
+  /// Plans the next physical window. Both budgets must be positive. `maxBytes`
+  /// bounds `bytes`; `maxLogicalValues` bounds the logical mappings. A
+  /// non-final BOOL window needs room for at least eight physical elements so
+  /// the next window remains byte-aligned. Returns an error on an
+  /// exhausted/moved-from plan or invalid budget, leaving state intact.
   llvm::Expected<WriteWindow>
-  packNext(llvm::ArrayRef<RawLogicalValue> values, uint64_t budgetBytes,
-           uint8_t paddingFill);
+  takeNext(uint64_t maxBytes, uint64_t maxLogicalValues, uint8_t paddingFill);
 
 private:
   struct Impl;

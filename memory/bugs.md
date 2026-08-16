@@ -591,3 +591,37 @@
 - 修复模式：slice调用写成`slice(start, start + length)`；涉及区间的验证一律配能直接触发原缺口的负例测试，
   不能只靠正例通过。
 - 防复发：新写StringRef区间逻辑时对照pinned header确认slice/substr参数语义；review零值/空区间退化路径。
+
+## Blocked layout的logical row不是bounded physical window
+
+- 现象：window packer按logical C row取值，用该row首尾physical offset构造一个contiguous span；Cx`{2,128}`第一行覆盖
+  `[0,192)`，第二行却从64开始，writer报window overlap。单outer-row小fixture会掩盖该问题，且超大C row还绕过byte budget。
+- 根因：Cx/NCx是block-major physical order；logical row-major traversal在多个outer element、full block、tail和bank padding之间
+  不保持physical offset单调或连续。把logical边界当physical边界属于表示层混淆。
+- 修复模式：bounded encoder遍历disjoint contiguous physical-element windows，再从shared physical geometry反算每个位置的
+  optional logical index；padding没有owner。byte与element budget均为硬上限，BOOL窗口保持byte alignment；caller只对当前窗口的
+  logical indices排序并读取连续source runs。
+- 防复发：window输出必须逐字节等于full codec，并覆盖多outer-row Cx/NCx、full block、tail、bank padding和bitpacked BOOL；
+  测试同时断言每个window不超过budget、offset连续且logical value all-and-only covered。
+
+## 同storage width不能代签dtype数值转换
+
+- 现象：F16 1.0转换到BF16时直接把`0x3c00`塞进BF16，结果仍是`0x3c00`而非`0x3f80`；因为两者都是16 bit，
+  size/count/codec roundtrip均可能通过。
+- 根因：代码只比较storage width/category，并调用目标format的raw-value构造器清padding；该操作验证encoding宽度但不执行数值语义。
+- 修复模式：source/target format不同就解析current target conversion route并调用formal numeric conversion；rounding参数显式选择
+  deterministic nearest-even，缺route、未实现route或缺zero-point等语义参数时fail closed。identity只能是同format的raw copy。
+- 防复发：转换测试必须选择同宽但不同encoding的已知值并断言exact target bits；review中看到`RawLogicalValue{target, source.bits}`或
+  `makeRawLogicalValue(target, source.bits, ...)`应默认视为bitcast，除非接口明确命名并验证bitcast语义。
+
+## Strict manifest不能只相信自洽的bytes字段和文件digest
+
+- 现象：manifest可把F32 Tensor`shape={4}`写成`bytes=1`，只要offset、total bytes、文件大小和digest一起修改，旧verifier就接受；
+  尾随全零字节和`modules/`下额外空目录也能穿过closure。
+- 根因：verifier只检查字段之间自洽，没有从dtype/layout/shape重算physical storage，也把“零padding”扩展到最后一个range之后；
+  文件closure只枚举regular payload，忽略目录拓扑。
+- 修复模式：strict verifier经同一`NumericTensorKey`/physical codec重算TargetTensor及external port bytes并核对logical/target
+  element count；program-data必须精确结束于最后range，尾随字节无论内容都拒绝；目录closure由declared file paths推导全部必要祖先，
+  其它目录/文件/symlink一律拒绝。
+- 防复发：负例要协同更新size/digest使输入保持表面自洽，分别覆盖wrong codec bytes、logical/target count mismatch、zero/nonzero
+  trailing bytes和额外空目录；只篡改digest的测试不能证明semantic verifier有效。

@@ -4,9 +4,9 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <limits>
 #include <optional>
@@ -238,50 +238,82 @@ packPhysicalTensorLogicalValues(const NumericTensorKey &key,
       std::vector<uint8_t>(static_cast<size_t>(*bytes), paddingFill));
 }
 
-
-struct PhysicalTensorWindowPacker::Impl {
-  NumericTensorKey key;
+struct PhysicalTensorWindowPlan::Impl {
   OwnedPhysicalLayout layout;
-  uint64_t storageBytes;
-  uint64_t elementCount;
-  int64_t elementBitWidth;
-  int64_t blockedWindowBoundary;
-  llvm::SmallVector<int64_t, 4> shape;
-  uint64_t nextValueIndex = 0;
+  uint64_t storageBytes = 0;
+  uint64_t elementCount = 0;
+  uint64_t physicalElementCount = 0;
+  uint64_t elementBitWidth = 0;
+  std::vector<uint64_t> shape;
+  uint64_t nextPhysicalElement = 0;
+  uint64_t plannedLogicalElements = 0;
 
-  /// Maps a row-major logical index to its coordinate.
-  llvm::SmallVector<int64_t, 4> coordinateForValue(uint64_t index) const {
-    llvm::SmallVector<int64_t, 4> coordinate(shape.size(), 0);
-    uint64_t remaining = index;
-    for (size_t reverse = shape.size(); reverse > 0; --reverse) {
-      size_t dim = reverse - 1;
-      coordinate[dim] =
-          static_cast<int64_t>(remaining % static_cast<uint64_t>(shape[dim]));
-      remaining /= static_cast<uint64_t>(shape[dim]);
+  /// Inverts the physical geometry for one physical element. Padding has no
+  /// logical owner and returns nullopt. This is the same block-major geometry
+  /// used by StaticPhysicalTensorOffsetCalculator::getBitOffset.
+  std::optional<uint64_t>
+  logicalIndexForPhysicalElement(uint64_t physicalElement) const {
+    if (layout.info.layout == PhysicalTensorLayout::Tensor ||
+        layout.info.layout == PhysicalTensorLayout::NTensor)
+      return physicalElement < elementCount
+                 ? std::optional<uint64_t>(physicalElement)
+                 : std::nullopt;
+
+    const uint64_t channels = shape.back();
+    const uint64_t block = static_cast<uint64_t>(layout.info.cBlock);
+    const uint64_t blocks = static_cast<uint64_t>(layout.info.cxBlocks);
+    const uint64_t tail = static_cast<uint64_t>(layout.info.c0);
+    const uint64_t blockOuter =
+        static_cast<uint64_t>(layout.info.layout == PhysicalTensorLayout::NCx
+                                  ? layout.info.hwElements
+                                  : layout.info.outerElements);
+    const uint64_t blockStride = blockOuter * block;
+    const uint64_t fullBlockElements = blocks * blockStride;
+
+    uint64_t batch = 0;
+    uint64_t localPhysical = physicalElement;
+    if (layout.info.layout == PhysicalTensorLayout::NCx) {
+      const uint64_t batchElements =
+          static_cast<uint64_t>(layout.info.batchElements);
+      batch = physicalElement / batchElements;
+      localPhysical = physicalElement % batchElements;
+      const uint64_t batches = shape.size() > 1 ? shape.front() : 1;
+      if (batch >= batches)
+        return std::nullopt;
     }
-    return coordinate;
-  }
 
-  llvm::Expected<uint64_t> bitOffsetForValue(uint64_t index) const {
-    std::optional<int64_t> offset =
-        layout.offsets.getBitOffset(coordinateForValue(index));
-    if (!offset || *offset < 0)
-      return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
-                        "shared layout helper could not map a window start");
-    return static_cast<uint64_t>(*offset);
+    uint64_t outer = 0;
+    uint64_t channel = 0;
+    if (localPhysical < fullBlockElements) {
+      const uint64_t blockIndex = localPhysical / blockStride;
+      const uint64_t withinBlock = localPhysical % blockStride;
+      outer = withinBlock / block;
+      channel = blockIndex * block + withinBlock % block;
+    } else {
+      const uint64_t tailPhysical = localPhysical - fullBlockElements;
+      if (tail == 0 || tailPhysical >= blockOuter * tail)
+        return std::nullopt;
+      outer = tailPhysical / tail;
+      channel = blocks * block + tailPhysical % tail;
+    }
+    if (outer >= blockOuter || channel >= channels)
+      return std::nullopt;
+    const uint64_t outerWithBatch = batch * blockOuter + outer;
+    const uint64_t logicalIndex = outerWithBatch * channels + channel;
+    return logicalIndex < elementCount ? std::optional<uint64_t>(logicalIndex)
+                                       : std::nullopt;
   }
 };
 
-PhysicalTensorWindowPacker::PhysicalTensorWindowPacker() = default;
-PhysicalTensorWindowPacker::PhysicalTensorWindowPacker(
-    PhysicalTensorWindowPacker &&) noexcept = default;
-PhysicalTensorWindowPacker &
-PhysicalTensorWindowPacker::operator=(PhysicalTensorWindowPacker &&) noexcept =
-    default;
-PhysicalTensorWindowPacker::~PhysicalTensorWindowPacker() = default;
+PhysicalTensorWindowPlan::PhysicalTensorWindowPlan() = default;
+PhysicalTensorWindowPlan::PhysicalTensorWindowPlan(
+    PhysicalTensorWindowPlan &&) noexcept = default;
+PhysicalTensorWindowPlan &PhysicalTensorWindowPlan::operator=(
+    PhysicalTensorWindowPlan &&) noexcept = default;
+PhysicalTensorWindowPlan::~PhysicalTensorWindowPlan() = default;
 
-llvm::Expected<PhysicalTensorWindowPacker>
-PhysicalTensorWindowPacker::create(const NumericTensorKey &key) {
+llvm::Expected<PhysicalTensorWindowPlan>
+PhysicalTensorWindowPlan::create(const NumericTensorKey &key) {
   llvm::Expected<OwnedPhysicalLayout> layout = makePhysicalLayout(key);
   if (!layout)
     return layout.takeError();
@@ -290,93 +322,76 @@ PhysicalTensorWindowPacker::create(const NumericTensorKey &key) {
   if (!format)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
                       "tensor has an unknown format or layout");
-  if (format->storageBits <= 0 || format->storageBits == 1)
+  if (format->storageBits <= 0 ||
+      (format->storageBits != 1 && format->storageBits % 8 != 0))
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
-                      "bit-packed window packing is unsupported");
-  int64_t blockedWindowBoundary = 0;
-  if (key.getLayout() == PhysicalTensorLayout::Cx ||
-      key.getLayout() == PhysicalTensorLayout::NCx) {
-    if (key.getShape().empty())
-      return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
-                        "blocked layout requires a channel dimension");
-    blockedWindowBoundary =
-        static_cast<int64_t>(key.getShape().back());
-  }
-  llvm::SmallVector<int64_t, 4> shape;
-  for (uint64_t dimension : key.getShape())
-    shape.push_back(static_cast<int64_t>(dimension));
-  PhysicalTensorWindowPacker packer;
-  packer.impl = std::make_unique<Impl>(
-      Impl{key, std::move(*layout),
-           static_cast<uint64_t>(layout->info.physicalBytes),
-           key.getElementCount(), format->storageBits,
-           blockedWindowBoundary, std::move(shape)});
-  return packer;
+                      "window planning requires bitpacked or byte-sized "
+                      "logical storage");
+  if (layout->info.physicalElements < 0 ||
+      static_cast<uint64_t>(layout->info.physicalElements) <
+          key.getElementCount())
+    return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
+                      "physical geometry cannot cover all logical elements");
+  const uint64_t storageBytes =
+      static_cast<uint64_t>(layout->info.physicalBytes);
+  const uint64_t physicalElementCount =
+      static_cast<uint64_t>(layout->info.physicalElements);
+  PhysicalTensorWindowPlan plan;
+  plan.impl = std::make_unique<Impl>(Impl{
+      std::move(*layout), storageBytes, key.getElementCount(),
+      physicalElementCount, static_cast<uint64_t>(format->storageBits),
+      std::vector<uint64_t>(key.getShape().begin(), key.getShape().end())});
+  return plan;
 }
 
-uint64_t PhysicalTensorWindowPacker::getStorageBytes() const {
+uint64_t PhysicalTensorWindowPlan::getStorageBytes() const {
   return impl ? impl->storageBytes : 0;
 }
-uint64_t PhysicalTensorWindowPacker::getElementCount() const {
+uint64_t PhysicalTensorWindowPlan::getElementCount() const {
   return impl ? impl->elementCount : 0;
 }
-uint64_t PhysicalTensorWindowPacker::getPackedValueCount() const {
-  return impl ? impl->nextValueIndex : 0;
+uint64_t PhysicalTensorWindowPlan::getPlannedValueCount() const {
+  return impl ? impl->plannedLogicalElements : 0;
+}
+bool PhysicalTensorWindowPlan::done() const {
+  return impl && impl->nextPhysicalElement == impl->physicalElementCount;
 }
 
-llvm::Expected<PhysicalTensorWindowPacker::WriteWindow>
-PhysicalTensorWindowPacker::packNext(llvm::ArrayRef<RawLogicalValue> values,
-                                     uint64_t budgetBytes,
-                                     uint8_t paddingFill) {
+llvm::Expected<PhysicalTensorWindowPlan::WriteWindow>
+PhysicalTensorWindowPlan::takeNext(uint64_t maxBytes, uint64_t maxLogicalValues,
+                                   uint8_t paddingFill) {
   if (!impl)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
-                      "window packer was moved from");
+                      "physical window plan was moved from");
   Impl &state = *impl;
-  if (state.nextValueIndex == state.elementCount)
+  if (state.nextPhysicalElement == state.physicalElementCount)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalValueCount,
-                      "window packer is exhausted");
-  if (values.empty())
+                      "physical window plan is exhausted");
+  if (maxBytes == 0 || maxLogicalValues == 0)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalValueCount,
-                      "window packer requires at least one value");
-  const uint64_t remainingValues =
-      state.elementCount - state.nextValueIndex;
-  uint64_t valueCount = std::min<uint64_t>(
-      values.size(), remainingValues);
-  // Linear layouts accept any window; blocked layouts may only end at a
-  // channel-row boundary so the packed span stays contiguous.
-  if (state.blockedWindowBoundary > 0) {
-    const uint64_t boundary = static_cast<uint64_t>(state.blockedWindowBoundary);
-    const uint64_t nextBoundary = llvm::alignTo(state.nextValueIndex, boundary);
-    if (nextBoundary < state.nextValueIndex + valueCount)
-      valueCount = nextBoundary - state.nextValueIndex;
-    if (valueCount == 0)
-      valueCount = std::min<uint64_t>(boundary, remainingValues);
+                      "physical window budgets must be positive");
+
+  const uint64_t remainingPhysical =
+      state.physicalElementCount - state.nextPhysicalElement;
+  uint64_t byteLimitedElements = 0;
+  if (state.elementBitWidth == 1) {
+    byteLimitedElements = maxBytes > std::numeric_limits<uint64_t>::max() / 8
+                              ? std::numeric_limits<uint64_t>::max()
+                              : maxBytes * 8;
+  } else {
+    byteLimitedElements = maxBytes / (state.elementBitWidth / 8);
   }
-  if (valueCount == 0)
+  uint64_t physicalCount =
+      std::min({remainingPhysical, byteLimitedElements, maxLogicalValues});
+  if (state.elementBitWidth == 1 && physicalCount < remainingPhysical)
+    physicalCount -= physicalCount % 8;
+  if (physicalCount == 0)
     return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalValueCount,
-                      "window packer produced an empty window");
-  // Cap by the byte budget; the single-row fallback above may exceed it.
-  const uint64_t bitsPerWindow = static_cast<uint64_t>(state.elementBitWidth) *
-                                 valueCount;
-  if (bitsPerWindow > 0 &&
-      (bitsPerWindow + 7) / 8 > budgetBytes &&
-      state.blockedWindowBoundary == 0) {
-    uint64_t budgetValues = budgetBytes * 8 /
-                            static_cast<uint64_t>(state.elementBitWidth);
-    valueCount = std::max<uint64_t>(1, budgetValues);
-  }
-  uint64_t startBit = 0;
-  llvm::Expected<uint64_t> start =
-      state.bitOffsetForValue(state.nextValueIndex);
-  if (!start)
-    return start.takeError();
-  startBit = *start;
-  llvm::Expected<uint64_t> last =
-      state.bitOffsetForValue(state.nextValueIndex + valueCount - 1);
-  if (!last)
-    return last.takeError();
-  const uint64_t spanBits =
-      *last + static_cast<uint64_t>(state.elementBitWidth) - startBit;
+                      "physical window budgets cannot hold one aligned "
+                      "element span");
+
+  const uint64_t startBit = state.nextPhysicalElement * state.elementBitWidth;
+  const uint64_t spanBits = physicalCount * state.elementBitWidth;
   const uint64_t spanBytes = (spanBits + 7) / 8;
   if (spanBytes > std::numeric_limits<size_t>::max())
     return codecError(PhysicalTensorCodecErrorCode::InvalidStorageSize,
@@ -385,29 +400,32 @@ PhysicalTensorWindowPacker::packNext(llvm::ArrayRef<RawLogicalValue> values,
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
                       "window start is not byte-aligned");
 
-  const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministic())
-          .numericEncodePolicy;
-  std::vector<uint8_t> span(static_cast<size_t>(spanBytes), paddingFill);
-  for (uint64_t windowIndex = 0; windowIndex < valueCount; ++windowIndex) {
-    RawLogicalValue value = values[static_cast<size_t>(windowIndex)];
-    if (value.format != state.key.getFormat())
-      return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalEncoding,
-                        "logical value format does not match the tensor key");
-    llvm::Expected<uint64_t> offset = state.bitOffsetForValue(
-        state.nextValueIndex + windowIndex);
-    if (!offset)
-      return offset.takeError();
-    if (llvm::Error writeError = writeRawLogicalValue(
-            value, span, *offset - startBit, policy))
-      return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalEncoding,
-                        llvm::toString(std::move(writeError)));
-  }
-  state.nextValueIndex += valueCount;
   WriteWindow window;
   window.physicalOffset = startBit / 8;
-  window.valueCount = valueCount;
-  window.bytes = std::move(span);
+  window.bytes.assign(static_cast<size_t>(spanBytes), paddingFill);
+  window.elements.reserve(static_cast<size_t>(
+      std::min(physicalCount,
+               static_cast<uint64_t>(std::numeric_limits<size_t>::max()))));
+  for (uint64_t index = 0; index < physicalCount; ++index) {
+    const uint64_t physicalElement = state.nextPhysicalElement + index;
+    std::optional<uint64_t> logicalIndex =
+        state.logicalIndexForPhysicalElement(physicalElement);
+    if (!logicalIndex)
+      continue;
+    window.elements.push_back(
+        ElementWrite{*logicalIndex, index * state.elementBitWidth});
+  }
+  const uint64_t nextPlanned =
+      state.plannedLogicalElements + window.elements.size();
+  const uint64_t nextPhysical = state.nextPhysicalElement + physicalCount;
+  if (nextPlanned > state.elementCount ||
+      (nextPhysical == state.physicalElementCount &&
+       nextPlanned != state.elementCount))
+    return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
+                      "inverse physical geometry does not cover each logical "
+                      "element exactly once");
+  state.plannedLogicalElements = nextPlanned;
+  state.nextPhysicalElement = nextPhysical;
   return window;
 }
 

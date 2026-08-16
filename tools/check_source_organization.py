@@ -1815,6 +1815,36 @@ def check_compiler_target_module_and_package_sources(
         target="WaferCompiler",
         errors=errors,
     )
+    # Header-level direction is as important as the link edge: compiler and
+    # neutral package support may consume package/target contracts but never a
+    # runtime-owned facade, even when an inline constant would make the link
+    # graph appear clean.
+    neutral_roots = (
+        compiler_root,
+        root / "include/Wafer/Compiler",
+        package_root,
+        root / "include/Wafer/Package",
+    )
+    for neutral_root in neutral_roots:
+        for path in sorted(neutral_root.rglob("*")):
+            if not path.is_file() or path.suffix not in {
+                ".h",
+                ".hpp",
+                ".cpp",
+                ".cc",
+            }:
+                continue
+            runtime_includes = [
+                include
+                for include in source_includes(read_required(path, errors))
+                if include.startswith("Wafer/Runtime/")
+            ]
+            if runtime_includes:
+                fail(
+                    errors,
+                    f"{path} crosses the neutral compiler/package boundary "
+                    f"through runtime include(s): {', '.join(runtime_includes)}",
+                )
     check_no_textual_source_includes(
         [compiler_root / name for name in compiler_sources]
         + [

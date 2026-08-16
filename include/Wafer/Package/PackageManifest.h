@@ -4,9 +4,10 @@
 #define WAFER_PACKAGE_PACKAGEMANIFEST_H
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
-#include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Target/PhysicalLayout.h"
 #include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetIdentity.h"
+#include "Wafer/Target/TopologyIds.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -380,6 +381,7 @@ private:
 llvm::StringRef stringifyProgramTensorRole(ProgramTensorRole role);
 llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access);
 llvm::StringRef stringifyPackageMemLayout(PackageMemLayout layout);
+PhysicalTensorLayout getPhysicalTensorLayout(PackageMemLayout layout);
 llvm::StringRef stringifyPackageModuleExportRole(PackageModuleExportRole role);
 llvm::StringRef
 stringifyPackageEntryCompletionKind(PackageEntryCompletionKind kind);
@@ -504,7 +506,6 @@ llvm::Expected<RuntimeInvocationPlan> planRuntimeInvocation(
     const VerifiedPackageManifest &package,
     llvm::ArrayRef<RuntimeInvocationBinding> invocationBindings,
     const RuntimeEnvironment &environment);
-
 
 /// Typed lookup helpers over the canonical manifest tables. They are stable
 /// package-model accessors shared by the writer, verifier, planner and

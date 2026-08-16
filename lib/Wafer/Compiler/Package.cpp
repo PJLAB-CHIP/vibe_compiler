@@ -4,7 +4,8 @@
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Compiler/ProgramData.h"
-#include "Wafer/Runtime/ProfileInstrumentation.h"
+#include "Wafer/Package/ProfileInstrumentationModel.h"
+#include "Wafer/Target/FormalNumeric.h"
 #include "Wafer/Target/NumericCodec.h"
 #include "Wafer/Target/NumericSemantics.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
@@ -24,6 +25,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <string>
@@ -104,21 +106,6 @@ runtime::PackageAccessMode getAccess(TileEntryArgumentAccess access) {
   llvm_unreachable("unknown tile entry argument access");
 }
 
-PhysicalTensorLayout
-getPhysicalTensorLayout(runtime::PackageMemLayout layout) {
-  switch (layout) {
-  case runtime::PackageMemLayout::Tensor:
-    return PhysicalTensorLayout::Tensor;
-  case runtime::PackageMemLayout::NTensor:
-    return PhysicalTensorLayout::NTensor;
-  case runtime::PackageMemLayout::Cx:
-    return PhysicalTensorLayout::Cx;
-  case runtime::PackageMemLayout::NCx:
-    return PhysicalTensorLayout::NCx;
-  }
-  llvm_unreachable("unknown package memory layout");
-}
-
 runtime::PackageMemLayout getMemLayout(MemLayout layout) {
   switch (layout) {
   case MemLayout::Tensor:
@@ -180,6 +167,64 @@ llvm::Error checkedAlignUp(uint64_t value, uint64_t alignment,
                                    "package placement offset overflows");
   result = value + padding;
   return llvm::Error::success();
+}
+
+/// Resolves the exact current-target scalar conversion used while producing a
+/// selected package representation. A different logical format never falls
+/// back to storage-bit reinterpretation. Rounding-mode routes use the model's
+/// deterministic nearest-even policy; routes needing a semantic zero-point
+/// fail closed because a package descriptor carries no such parameter.
+llvm::Expected<std::optional<ResolvedNumericCommand>>
+resolvePackageScalarConversion(LogicalFormat source,
+                               LogicalFormat destination) {
+  if (source == destination)
+    return std::optional<ResolvedNumericCommand>{};
+  const TargetConvertRoute *route = findTargetConvertRoute(source, destination);
+  if (!route)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "current target has no numeric conversion route from %s to %s",
+        stringifyLogicalFormat(source).str().c_str(),
+        stringifyLogicalFormat(destination).str().c_str());
+  std::optional<NumericConvertParameter> parameter;
+  switch (route->parameterKind) {
+  case TargetConvertParameterKind::None:
+    break;
+  case TargetConvertParameterKind::RoundingMode:
+    parameter =
+        NumericConvertParameter::roundingMode(NumericRoundingMode::NearestEven);
+    break;
+  case TargetConvertParameterKind::ZeroPoint:
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "target numeric conversion route '%s' requires a zero-point that is "
+        "not present in the package tensor descriptor",
+        route->canonicalSpelling.str().c_str());
+  }
+  llvm::Expected<NumericTensorKey> sourceKey =
+      NumericTensorKey::create(source, PhysicalTensorLayout::Tensor, {1});
+  if (!sourceKey)
+    return sourceKey.takeError();
+  llvm::Expected<NumericTensorKey> destinationKey =
+      NumericTensorKey::create(destination, PhysicalTensorLayout::Tensor, {1});
+  if (!destinationKey)
+    return destinationKey.takeError();
+  llvm::Expected<NumericCommandKey> command =
+      NumericCommandKey::createCTConvert(route->opcode, std::move(*sourceKey),
+                                         std::move(*destinationKey), parameter);
+  if (!command)
+    return command.takeError();
+  llvm::Expected<ResolvedNumericCommand> resolved = resolveNumericCommand(
+      ModelProfileId::formalDeterministic(), std::move(*command));
+  if (!resolved)
+    return resolved.takeError();
+  if (!resolved->isSupported())
+    return llvm::createStringError(
+        llvm::errc::not_supported,
+        "target numeric conversion route '%s' has no implemented formal "
+        "semantics",
+        route->canonicalSpelling.str().c_str());
+  return std::optional<ResolvedNumericCommand>(std::move(*resolved));
 }
 
 struct PackageAssembly {
@@ -276,11 +321,11 @@ buildManifest(const CardExecutable &cardExecutable,
                                "typed card-shared resource domain");
   }
 
-  PackageAssembly assembly(runtime::PackageManifest(
-      firstTargetModule.getTargetIdentityId(),
-      firstTargetModule.getKernelRuntimeABIId(),
-      targetModules.getRuntimeLaunchContract(),
-      firstTargetModule.getModuleFormat()));
+  PackageAssembly assembly(
+      runtime::PackageManifest(firstTargetModule.getTargetIdentityId(),
+                               firstTargetModule.getKernelRuntimeABIId(),
+                               targetModules.getRuntimeLaunchContract(),
+                               firstTargetModule.getModuleFormat()));
   runtime::PackageManifest &manifest = assembly.manifest;
   manifest.program = runtime::ProgramId(0);
   manifest.cardCount = 1;
@@ -313,8 +358,8 @@ buildManifest(const CardExecutable &cardExecutable,
       module.exports.push_back({getPackageExportRole(targetExport.getRole()),
                                 targetExport.getSymbol().str()});
     }
-    const bool hasPrepare = llvm::is_contained(
-        manifest.launch.getPhases(), RuntimeLaunchPhaseRole::Prepare);
+    const bool hasPrepare = llvm::is_contained(manifest.launch.getPhases(),
+                                               RuntimeLaunchPhaseRole::Prepare);
     if (!seenMain || seenPrepare != hasPrepare ||
         module.exports.size() != (hasPrepare ? 2u : 1u))
       return fail(
@@ -329,8 +374,8 @@ buildManifest(const CardExecutable &cardExecutable,
   std::map<ProgramTensorId, std::unique_ptr<ProgramTensorJoin>>
       programTensorJoins;
   std::vector<std::unique_ptr<TargetTensorJoin>> targetTensorJoins;
-  std::map<int64_t, PortJoin> inputJoins;   // keyed by programIndex
-  std::map<int64_t, PortJoin> outputJoins;  // keyed by programIndex
+  std::map<int64_t, PortJoin> inputJoins;  // keyed by programIndex
+  std::map<int64_t, PortJoin> outputJoins; // keyed by programIndex
 
   auto getBinding =
       [&](const TileExecutable &tile, TileEntryArgumentKind kind,
@@ -395,7 +440,8 @@ buildManifest(const CardExecutable &cardExecutable,
     entry.completion =
         runtime::PackageEntryCompletionKind::ReturnAfterLocalDrain;
 
-    for (const TileEntryArgument &slot : tileInterface.getTileEntryArguments()) {
+    for (const TileEntryArgument &slot :
+         tileInterface.getTileEntryArguments()) {
       if (slot.ordinal != static_cast<int64_t>(entry.arguments.size()) ||
           slot.byteSize <= 0 || slot.alignment <= 0)
         return fail(diagnostics,
@@ -415,8 +461,7 @@ buildManifest(const CardExecutable &cardExecutable,
         auto existing = joins.find(binding->programIndex);
         if (existing == joins.end()) {
           PortJoin join;
-          join.record.id =
-              runtime::PortId(static_cast<uint64_t>(joins.size()));
+          join.record.id = runtime::PortId(static_cast<uint64_t>(joins.size()));
           join.record.roleIndex = binding->programIndex;
           join.record.logicalDtype = binding->dtype;
           join.record.logicalShape = binding->localShape;
@@ -428,8 +473,7 @@ buildManifest(const CardExecutable &cardExecutable,
           join.seenTile = tile.getTileId();
           joins.emplace(binding->programIndex, std::move(join));
         } else {
-          const runtime::ExternalPortRecord &record =
-              existing->second.record;
+          const runtime::ExternalPortRecord &record = existing->second.record;
           if (record.logicalDtype != binding->dtype ||
               record.logicalShape != binding->localShape ||
               record.dtype != slot.dtype ||
@@ -445,13 +489,11 @@ buildManifest(const CardExecutable &cardExecutable,
             {static_cast<uint64_t>(slot.ordinal),
              slot.kind == TileEntryArgumentKind::ExternalInput
                  ? runtime::TileEntryArgumentReference(
-                       runtime::ExternalInputArgument{joins.at(
-                           binding->programIndex)
-                                                          .record.id})
+                       runtime::ExternalInputArgument{
+                           joins.at(binding->programIndex).record.id})
                  : runtime::TileEntryArgumentReference(
-                       runtime::ExternalOutputArgument{joins.at(
-                           binding->programIndex)
-                                                           .record.id}),
+                       runtime::ExternalOutputArgument{
+                           joins.at(binding->programIndex).record.id}),
              getAccess(slot.access)});
         continue;
       }
@@ -464,15 +506,15 @@ buildManifest(const CardExecutable &cardExecutable,
                       "package tile entry argument does not match executable "
                       "resource binding");
         ProgramTensorJoin *programTensor = nullptr;
-        auto programExisting = programTensorJoins.find(binding->programTensorId);
+        auto programExisting =
+            programTensorJoins.find(binding->programTensorId);
         if (programExisting == programTensorJoins.end()) {
           auto join = std::make_unique<ProgramTensorJoin>();
           join->binding = binding;
           const ProgramDataRange *range =
               handoff.findRange(binding->programTensorId);
           if (!range)
-            return fail(diagnostics,
-                        "program tensor has no owned data range");
+            return fail(diagnostics, "program tensor has no owned data range");
           if (range->getDType() != binding->dtype ||
               !(range->getLocalShape() ==
                 llvm::ArrayRef<int64_t>(binding->localShape)) ||
@@ -488,10 +530,9 @@ buildManifest(const CardExecutable &cardExecutable,
           join->range = range;
           join->record.id = runtime::ProgramTensorId(
               static_cast<uint64_t>(programTensorJoins.size()));
-          join->record.role =
-              binding->role == ProgramResourceRole::Parameter
-                  ? runtime::ProgramTensorRole::Parameter
-                  : runtime::ProgramTensorRole::Constant;
+          join->record.role = binding->role == ProgramResourceRole::Parameter
+                                  ? runtime::ProgramTensorRole::Parameter
+                                  : runtime::ProgramTensorRole::Constant;
           join->record.roleIndex = binding->programTensorId.roleIndex;
           join->record.dtype = binding->dtype;
           join->record.globalShape = binding->globalShape;
@@ -499,8 +540,7 @@ buildManifest(const CardExecutable &cardExecutable,
           join->record.sliceOffsets = binding->slice.offsets;
           join->record.sliceSizes = binding->slice.sizes;
           programTensor = join.get();
-          programTensorJoins.emplace(binding->programTensorId,
-                                     std::move(join));
+          programTensorJoins.emplace(binding->programTensorId, std::move(join));
         } else {
           programTensor = programExisting->second.get();
           if (programTensor->record.dtype != binding->dtype ||
@@ -574,11 +614,10 @@ buildManifest(const CardExecutable &cardExecutable,
                       "is invalid");
         entry.arguments.push_back(
             {static_cast<uint64_t>(slot.ordinal),
-             runtime::TileEntryArgumentReference(
-                 runtime::ProfileRecordArgument{
-                     runtime::kProfileRecordABI.str(),
-                     static_cast<uint64_t>(slot.byteSize),
-                     static_cast<uint64_t>(slot.alignment)}),
+             runtime::TileEntryArgumentReference(runtime::ProfileRecordArgument{
+                 runtime::kProfileRecordABI.str(),
+                 static_cast<uint64_t>(slot.byteSize),
+                 static_cast<uint64_t>(slot.alignment)}),
              getAccess(slot.access)});
         continue;
       }
@@ -637,15 +676,15 @@ buildManifest(const CardExecutable &cardExecutable,
   assembly.placement.reserve(assembly.targetTensorJoins.size());
   for (const auto &join : assembly.targetTensorJoins)
     assembly.placement.push_back(join.get());
-  llvm::sort(assembly.placement, [](TargetTensorJoin *lhs,
-                                    TargetTensorJoin *rhs) {
-    const runtime::TargetTensorRecord &left = lhs->record;
-    const runtime::TargetTensorRecord &right = rhs->record;
-    return std::tie(left.programTensor, left.dtype, left.layout, left.shape,
-                    left.bytes, left.alignment) <
-           std::tie(right.programTensor, right.dtype, right.layout, right.shape,
-                    right.bytes, right.alignment);
-  });
+  llvm::sort(assembly.placement,
+             [](TargetTensorJoin *lhs, TargetTensorJoin *rhs) {
+               const runtime::TargetTensorRecord &left = lhs->record;
+               const runtime::TargetTensorRecord &right = rhs->record;
+               return std::tie(left.programTensor, left.dtype, left.layout,
+                               left.shape, left.bytes, left.alignment) <
+                      std::tie(right.programTensor, right.dtype, right.layout,
+                               right.shape, right.bytes, right.alignment);
+             });
   uint64_t nextOffset = 0;
   uint64_t baseAlignment = 1;
   // Entries were recorded under discovery-order TargetTensor ids; re-issue
@@ -661,10 +700,8 @@ buildManifest(const CardExecutable &cardExecutable,
     if (llvm::Error error =
             checkedAlignUp(nextOffset, record.alignment, offset))
       return fail(diagnostics, llvm::toString(std::move(error)));
-    if (record.bytes >
-        std::numeric_limits<uint64_t>::max() - offset)
-      return fail(diagnostics,
-                  "package program data layout overflows");
+    if (record.bytes > std::numeric_limits<uint64_t>::max() - offset)
+      return fail(diagnostics, "package program data layout overflows");
     record.fileOffset = offset;
     nextOffset = offset + record.bytes;
     baseAlignment = std::max(baseAlignment, record.alignment);
@@ -672,8 +709,7 @@ buildManifest(const CardExecutable &cardExecutable,
   for (runtime::PackageEntrypointRecord &entry : manifest.entries) {
     for (runtime::TileEntryArgumentRecord &argument : entry.arguments) {
       if (const runtime::TargetTensorArgument *target =
-              std::get_if<runtime::TargetTensorArgument>(
-                  &argument.reference)) {
+              std::get_if<runtime::TargetTensorArgument>(&argument.reference)) {
         argument.reference = runtime::TargetTensorArgument{
             canonicalTargetTensorId[target->tensor.getValue()]};
       }
@@ -722,13 +758,12 @@ llvm::Error copyTargetModules(const LinkedTargetModules &targetModules,
 /// file digest. Each selected target representation is materialized exactly
 /// once; the identity conversion requires the target descriptor to equal the
 /// owned source range descriptor.
-llvm::Expected<std::string>
-writeProgramData(llvm::StringRef programDataPath, PackageAssembly &assembly,
-                 const ProgramDataHandoff &handoff,
-                 llvm::raw_ostream &diagnostics) {
+llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
+                                             PackageAssembly &assembly,
+                                             const ProgramDataHandoff &handoff,
+                                             llvm::raw_ostream &diagnostics) {
   std::error_code error;
-  llvm::raw_fd_ostream output(programDataPath, error,
-                              llvm::sys::fs::OF_None);
+  llvm::raw_fd_ostream output(programDataPath, error, llvm::sys::fs::OF_None);
   if (error)
     return fail(diagnostics,
                 "failed to create package program data: " + error.message());
@@ -743,9 +778,9 @@ writeProgramData(llvm::StringRef programDataPath, PackageAssembly &assembly,
       output.write(reinterpret_cast<const char *>(data + written), chunk);
       if (output.has_error())
         return fail(diagnostics, "failed to write package program data");
-      hasher.update(llvm::StringRef(
-          reinterpret_cast<const char *>(data + written),
-          static_cast<size_t>(chunk)));
+      hasher.update(
+          llvm::StringRef(reinterpret_cast<const char *>(data + written),
+                          static_cast<size_t>(chunk)));
       written += chunk;
     }
     return llvm::Error::success();
@@ -761,34 +796,34 @@ writeProgramData(llvm::StringRef programDataPath, PackageAssembly &assembly,
       if (output.has_error())
         return fail(diagnostics,
                     "failed to write package program data padding");
-      hasher.update(llvm::StringRef(reinterpret_cast<const char *>(zeros.data()),
-                                    static_cast<size_t>(chunk)));
+      hasher.update(
+          llvm::StringRef(reinterpret_cast<const char *>(zeros.data()),
+                          static_cast<size_t>(chunk)));
       remaining -= chunk;
     }
     return llvm::Error::success();
   };
 
-  const LogicalScalarCodecPolicy scalarPolicy =
-      getModelProfileRecord(ModelProfileId::formalDeterministic())
-          .numericDecodePolicy;
+  const ModelProfileRecord &model =
+      getModelProfileRecord(ModelProfileId::formalDeterministic());
+  const LogicalScalarCodecPolicy decodePolicy = model.numericDecodePolicy;
+  const LogicalScalarCodecPolicy encodePolicy = model.numericEncodePolicy;
 
   uint64_t cursor = 0;
   for (TargetTensorJoin *join : assembly.placement) {
     const runtime::TargetTensorRecord &record = join->record;
     if (record.fileOffset > cursor) {
-      if (llvm::Error paddingError =
-              writeZeros(record.fileOffset - cursor))
+      if (llvm::Error paddingError = writeZeros(record.fileOffset - cursor))
         return paddingError;
       cursor = record.fileOffset;
     }
-    const ProgramDataRange *range =
-        handoff.findRange(join->programTensor);
+    const ProgramDataRange *range = handoff.findRange(join->programTensor);
     if (!range)
-      return fail(diagnostics,
-                  "package TargetTensor has no owned data range (role=" +
-                      std::to_string(static_cast<int>(join->programTensor.role)) +
-                      " index=" + std::to_string(join->programTensor.roleIndex) +
-                      ")");
+      return fail(
+          diagnostics,
+          "package TargetTensor has no owned data range (role=" +
+              std::to_string(static_cast<int>(join->programTensor.role)) +
+              " index=" + std::to_string(join->programTensor.roleIndex) + ")");
     llvm::Expected<LogicalFormat> targetFormat =
         parseLogicalFormat(record.dtype);
     if (!targetFormat)
@@ -809,9 +844,8 @@ writeProgramData(llvm::StringRef programDataPath, PackageAssembly &assembly,
       return fail(diagnostics, "package TargetTensor format is not "
                                "registered in the target format table");
     const PhysicalTensorLayout physicalLayout =
-        getPhysicalTensorLayout(record.layout);
-    std::vector<uint64_t> targetShape(record.shape.begin(),
-                                      record.shape.end());
+        runtime::getPhysicalTensorLayout(record.layout);
+    std::vector<uint64_t> targetShape(record.shape.begin(), record.shape.end());
     llvm::Expected<NumericTensorKey> targetKey =
         NumericTensorKey::create(*targetFormat, physicalLayout, targetShape);
     if (!targetKey)
@@ -830,18 +864,13 @@ writeProgramData(llvm::StringRef programDataPath, PackageAssembly &assembly,
                   "physical tensor codec (codec=" +
                       std::to_string(*storageBytes) +
                       " manifest=" + std::to_string(record.bytes) + ")");
-    // The current physical tensor codec re-encodes scalar storage bits; it
-    // does not convert values across bit widths.
-    if (targetDescriptor->storageBits != sourceDescriptor->storageBits)
+    if (sourceDescriptor->storageBits == 1 ||
+        sourceDescriptor->storageBits % 8 != 0)
       return fail(diagnostics,
-                  "logical format conversion across bit widths is not "
-                  "expressible by the current physical tensor codec");
-    if (targetDescriptor->storageBits == 1)
-      return fail(diagnostics,
-                  "bit-packed target representation is not supported by "
-                  "the windowed package writer");
+                  "bit-packed source program tensors are not admitted by "
+                  "the current program-data boundary");
     const uint64_t sourceElementBytes =
-        static_cast<uint64_t>(sourceDescriptor->storageBits) / 8;
+        static_cast<uint64_t>(sourceDescriptor->storageBits / 8);
     if (range->getRegionLength() % sourceElementBytes != 0)
       return fail(diagnostics,
                   "package TargetTensor source region is not element-aligned");
@@ -855,15 +884,21 @@ writeProgramData(llvm::StringRef programDataPath, PackageAssembly &assembly,
         record.bytes == range->getRegionLength()) {
       // Identity representation: the target bytes are the source region
       // bytes; stream them with bounded windows and no host copy.
+      llvm::Expected<ProgramDataRangeMaterialization> materialization =
+          handoff.beginRangeMaterialization(join->programTensor);
+      if (!materialization)
+        return fail(diagnostics,
+                    "package TargetTensor could not begin source range "
+                    "materialization: " +
+                        llvm::toString(materialization.takeError()));
       uint64_t written = 0;
       while (written < record.bytes) {
         const uint64_t chunk =
             std::min<uint64_t>(kWindowBytes, record.bytes - written);
         std::vector<uint8_t> window(static_cast<size_t>(chunk));
-        if (llvm::Error materializeError = handoff.materializeRangeWindow(
-                *range, written, window))
-          return fail(diagnostics,
-                      llvm::toString(std::move(materializeError)));
+        if (llvm::Error materializeError =
+                materialization->materializeWindow(written, window))
+          return fail(diagnostics, llvm::toString(std::move(materializeError)));
         if (llvm::Error writeError = writeWindow(window.data(), chunk))
           return writeError;
         written += chunk;
@@ -878,74 +913,94 @@ writeProgramData(llvm::StringRef programDataPath, PackageAssembly &assembly,
       return fail(diagnostics,
                   "package TargetTensor element count disagrees with the "
                   "source program tensor region");
-    if (*targetFormat != *sourceFormat &&
-        targetDescriptor->category != sourceDescriptor->category)
-      return fail(diagnostics,
-                  "logical format re-encoding across value classes is not "
-                  "expressible by the current physical tensor codec");
-    llvm::Expected<PhysicalTensorWindowPacker> packer =
-        PhysicalTensorWindowPacker::create(*targetKey);
-    if (!packer)
-      return fail(diagnostics, "package TargetTensor window packing failed: " +
-                                   llvm::toString(packer.takeError()));
+    llvm::Expected<std::optional<ResolvedNumericCommand>> conversion =
+        resolvePackageScalarConversion(*sourceFormat, *targetFormat);
+    if (!conversion)
+      return fail(diagnostics, "package TargetTensor numeric conversion is "
+                               "unsupported: " +
+                                   llvm::toString(conversion.takeError()));
+    llvm::Expected<PhysicalTensorWindowPlan> physicalPlan =
+        PhysicalTensorWindowPlan::create(*targetKey);
+    if (!physicalPlan)
+      return fail(diagnostics, "package TargetTensor physical window planning "
+                               "failed: " +
+                                   llvm::toString(physicalPlan.takeError()));
     const uint64_t valueBudget =
-        std::max<uint64_t>(1, kWindowBytes /
-                                  std::max<uint64_t>(sourceElementBytes,
-                                                     static_cast<uint64_t>(
-                                                         targetDescriptor
-                                                             ->storageBits) /
-                                                         8));
-    while (packer->getPackedValueCount() < sourceElementCount) {
-      const uint64_t windowValues = std::min<uint64_t>(
-          valueBudget, sourceElementCount - packer->getPackedValueCount());
-      std::vector<uint8_t> sourceWindow(static_cast<size_t>(
-          windowValues * sourceElementBytes));
-      if (llvm::Error materializeError = handoff.materializeRangeWindow(
-              *range, packer->getPackedValueCount() * sourceElementBytes,
-              sourceWindow))
-        return fail(diagnostics,
-                    llvm::toString(std::move(materializeError)));
-      std::vector<RawLogicalValue> values;
-      values.reserve(static_cast<size_t>(windowValues));
-      for (uint64_t valueIndex = 0; valueIndex < windowValues;
-           ++valueIndex) {
-        llvm::Expected<RawLogicalValue> value = readRawLogicalValue(
-            *sourceFormat, sourceWindow,
-            valueIndex * static_cast<uint64_t>(sourceDescriptor->storageBits),
-            scalarPolicy);
-        if (!value)
-          return fail(diagnostics,
-                      "package TargetTensor source value read failed: " +
-                          llvm::toString(value.takeError()));
-        if (*sourceFormat != *targetFormat) {
-          llvm::Expected<RawLogicalValue> reencoded =
-              makeRawLogicalValue(
-                  *targetFormat, value->bits,
-                  NonCanonicalEncodingPolicy::ClearUnusedBits);
-          if (!reencoded)
-            return fail(diagnostics,
-                        "package TargetTensor format re-encoding failed: " +
-                            llvm::toString(reencoded.takeError()));
-          values.push_back(*reencoded);
-        } else {
-          values.push_back(*value);
-        }
-      }
-      llvm::Expected<PhysicalTensorWindowPacker::WriteWindow> window =
-          packer->packNext(values, kWindowBytes, /*paddingFill=*/0);
+        std::max<uint64_t>(1, kWindowBytes / sourceElementBytes);
+    llvm::Expected<ProgramDataRangeMaterialization> materialization =
+        handoff.beginRangeMaterialization(join->programTensor);
+    if (!materialization)
+      return fail(diagnostics,
+                  "package TargetTensor could not begin source range "
+                  "materialization: " +
+                      llvm::toString(materialization.takeError()));
+    while (!physicalPlan->done()) {
+      llvm::Expected<PhysicalTensorWindowPlan::WriteWindow> window =
+          physicalPlan->takeNext(kWindowBytes, valueBudget,
+                                 /*paddingFill=*/0);
       if (!window)
-        return fail(diagnostics, "package TargetTensor window packing "
-                                 "failed: " +
+        return fail(diagnostics, "package TargetTensor physical window "
+                                 "planning failed: " +
                                      llvm::toString(window.takeError()));
-      if (window->valueCount > values.size())
-        return fail(diagnostics,
-                    "package TargetTensor window packer over-consumed "
-                    "values");
+
+      // Physical Cx/NCx order can visit non-contiguous logical values. Sort
+      // only this bounded window's mappings and materialize consecutive
+      // source runs; no full logical or physical tensor is resident on host.
+      std::vector<size_t> logicalOrder(window->elements.size());
+      std::iota(logicalOrder.begin(), logicalOrder.end(), 0);
+      llvm::sort(logicalOrder, [&](size_t lhs, size_t rhs) {
+        return window->elements[lhs].logicalIndex <
+               window->elements[rhs].logicalIndex;
+      });
+      size_t orderIndex = 0;
+      while (orderIndex < logicalOrder.size()) {
+        const uint64_t firstLogical =
+            window->elements[logicalOrder[orderIndex]].logicalIndex;
+        size_t runEnd = orderIndex + 1;
+        while (runEnd < logicalOrder.size() &&
+               window->elements[logicalOrder[runEnd]].logicalIndex ==
+                   firstLogical + (runEnd - orderIndex))
+          ++runEnd;
+        const uint64_t runValues = runEnd - orderIndex;
+        std::vector<uint8_t> sourceWindow(
+            static_cast<size_t>(runValues * sourceElementBytes));
+        if (llvm::Error materializeError = materialization->materializeWindow(
+                firstLogical * sourceElementBytes, sourceWindow))
+          return fail(diagnostics, llvm::toString(std::move(materializeError)));
+        for (size_t current = orderIndex; current < runEnd; ++current) {
+          const auto &element = window->elements[logicalOrder[current]];
+          const uint64_t runIndex = element.logicalIndex - firstLogical;
+          llvm::Expected<RawLogicalValue> value = readRawLogicalValue(
+              *sourceFormat, sourceWindow,
+              runIndex * static_cast<uint64_t>(sourceDescriptor->storageBits),
+              decodePolicy);
+          if (!value)
+            return fail(diagnostics,
+                        "package TargetTensor source value read failed: " +
+                            llvm::toString(value.takeError()));
+          RawLogicalValue targetValue = *value;
+          if (*conversion) {
+            llvm::Expected<FormalNumericResult> converted =
+                evaluateFormalConvert(**conversion, *value);
+            if (!converted)
+              return fail(diagnostics,
+                          "package TargetTensor numeric conversion failed: " +
+                              llvm::toString(converted.takeError()));
+            targetValue = converted->value;
+          }
+          if (llvm::Error encodeError =
+                  writeRawLogicalValue(targetValue, window->bytes,
+                                       element.windowBitOffset, encodePolicy))
+            return fail(diagnostics,
+                        "package TargetTensor target value write failed: " +
+                            llvm::toString(std::move(encodeError)));
+        }
+        orderIndex = runEnd;
+      }
       const uint64_t windowFileOffset =
           record.fileOffset + window->physicalOffset;
       if (windowFileOffset > cursor) {
-        if (llvm::Error paddingError =
-                writeZeros(windowFileOffset - cursor))
+        if (llvm::Error paddingError = writeZeros(windowFileOffset - cursor))
           return paddingError;
         cursor = windowFileOffset;
       } else if (windowFileOffset < cursor) {
@@ -957,15 +1012,13 @@ writeProgramData(llvm::StringRef programDataPath, PackageAssembly &assembly,
         return writeError;
       cursor += window->bytes.size();
     }
-    if (packer->getPackedValueCount() != sourceElementCount)
-      return fail(diagnostics,
-                  "package TargetTensor conversion is incomplete");
+    if (physicalPlan->getPlannedValueCount() != sourceElementCount)
+      return fail(diagnostics, "package TargetTensor conversion is incomplete");
   }
-  if (assembly.manifest.programData.totalBytes > cursor) {
-    if (llvm::Error paddingError =
-            writeZeros(assembly.manifest.programData.totalBytes - cursor))
-      return paddingError;
-  }
+  if (assembly.manifest.programData.totalBytes != cursor)
+    return fail(diagnostics,
+                "package program data does not end at the last canonical "
+                "TargetTensor range");
   output.close();
   if (output.has_error())
     return fail(diagnostics, "failed to write package program data");
@@ -1113,9 +1166,9 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
     return fail(diagnostics, llvm::toString(std::move(error)));
   llvm::SmallString<256> programDataPath(dataDirectory);
   llvm::sys::path::append(programDataPath, "program-data.bin");
-  llvm::Expected<std::string> programDataDigest = writeProgramData(
-      programDataPath, *assembly, cardExecutable.getProgramDataHandoff(),
-      diagnostics);
+  llvm::Expected<std::string> programDataDigest =
+      writeProgramData(programDataPath, *assembly,
+                       cardExecutable.getProgramDataHandoff(), diagnostics);
   if (!programDataDigest)
     return programDataDigest.takeError();
   assembly->manifest.programData.digest = std::move(*programDataDigest);

@@ -108,9 +108,7 @@ protected:
     ASSERT_FALSE(output.has_error());
   }
 
-  void writeEmptyProgramData() const {
-    writeProgramData(/*bytes=*/{});
-  }
+  void writeEmptyProgramData() const { writeProgramData(/*bytes=*/{}); }
 
   void writeFullProgramData() const { writeProgramData(programDataBytes()); }
 
@@ -126,16 +124,40 @@ protected:
     manifest.tileCount = 16;
     if (withTargetTensors) {
       manifest.programTensors = {
-          {ProgramTensorId(0), ProgramTensorRole::Parameter, 0, "f32",
-           {16}, {16}, {0}, {16}},
-          {ProgramTensorId(1), ProgramTensorRole::Constant, 0, "f32",
-           {4}, {4}, {0}, {4}},
+          {ProgramTensorId(0),
+           ProgramTensorRole::Parameter,
+           0,
+           "f32",
+           {16},
+           {16},
+           {0},
+           {16}},
+          {ProgramTensorId(1),
+           ProgramTensorRole::Constant,
+           0,
+           "f32",
+           {4},
+           {4},
+           {0},
+           {4}},
       };
       manifest.targetTensors = {
-          {TargetTensorId(0), ProgramTensorId(0), "f32",
-           PackageMemLayout::Tensor, {16}, 64, 64, 0},
-          {TargetTensorId(1), ProgramTensorId(1), "f32",
-           PackageMemLayout::Tensor, {4}, 16, 64, 64},
+          {TargetTensorId(0),
+           ProgramTensorId(0),
+           "f32",
+           PackageMemLayout::Tensor,
+           {16},
+           64,
+           64,
+           0},
+          {TargetTensorId(1),
+           ProgramTensorId(1),
+           "f32",
+           PackageMemLayout::Tensor,
+           {4},
+           16,
+           64,
+           64},
       };
       manifest.programData = {"data/program-data.bin", 80, 64,
                               programDataDigest()};
@@ -144,15 +166,31 @@ protected:
                               emptyProgramDataDigest()};
     }
     manifest.inputs = {
-        {PortId(0), 0, "f32", {16}, "f32", PackageMemLayout::Tensor,
-         {16}, 64, 256},
+        {PortId(0),
+         0,
+         "f32",
+         {16},
+         "f32",
+         PackageMemLayout::Tensor,
+         {16},
+         64,
+         256},
     };
     manifest.outputs = {
-        {PortId(0), 0, "f32", {16}, "f32", PackageMemLayout::Tensor,
-         {16}, 64, 256},
+        {PortId(0),
+         0,
+         "f32",
+         {16},
+         "f32",
+         PackageMemLayout::Tensor,
+         {16},
+         64,
+         256},
     };
     manifest.modules = {
-        {ModuleId(0), "modules/tile_00000.so", moduleDigest(),
+        {ModuleId(0),
+         "modules/tile_00000.so",
+         moduleDigest(),
          wafer::kCurrentTargetModuleFormat.str(),
          {{PackageModuleExportRole::Main, "main"}}},
     };
@@ -161,21 +199,19 @@ protected:
       std::vector<TileEntryArgumentRecord> arguments = {
           {0, ExternalInputArgument{PortId(0)}, PackageAccessMode::ReadOnly}};
       if (withTargetTensors) {
-        arguments.push_back(
-            {static_cast<uint64_t>(arguments.size()),
-             TargetTensorArgument{TargetTensorId(0)},
-             PackageAccessMode::ReadOnly});
-        arguments.push_back(
-            {static_cast<uint64_t>(arguments.size()),
-             TargetTensorArgument{TargetTensorId(1)},
-             PackageAccessMode::ReadOnly});
+        arguments.push_back({static_cast<uint64_t>(arguments.size()),
+                             TargetTensorArgument{TargetTensorId(0)},
+                             PackageAccessMode::ReadOnly});
+        arguments.push_back({static_cast<uint64_t>(arguments.size()),
+                             TargetTensorArgument{TargetTensorId(1)},
+                             PackageAccessMode::ReadOnly});
       }
-      arguments.push_back(
-          {static_cast<uint64_t>(arguments.size()),
-           ExternalOutputArgument{PortId(0)}, PackageAccessMode::WriteOnly});
-      arguments.push_back(
-          {static_cast<uint64_t>(arguments.size()),
-           WorkspaceArgument{512, 256}, PackageAccessMode::ReadWrite});
+      arguments.push_back({static_cast<uint64_t>(arguments.size()),
+                           ExternalOutputArgument{PortId(0)},
+                           PackageAccessMode::WriteOnly});
+      arguments.push_back({static_cast<uint64_t>(arguments.size()),
+                           WorkspaceArgument{512, 256},
+                           PackageAccessMode::ReadWrite});
       manifest.entries.push_back(
           {EntryId(launchSlot), wafer::CardId(0), wafer::TileId(tileId),
            LaunchSlotId(launchSlot), ModuleId(0), std::move(arguments),
@@ -188,10 +224,12 @@ protected:
   /// A 16-Tile package with one shared module, per-Tile workspace arguments,
   /// and optional Direct DTE transport status on every Tile or on the last
   /// Tile only. `permuteIdentities` permutes Entry ids across launch slots.
-  PackageManifest makeTileManifest(
-      int64_t tileCount, bool permuteIdentities, bool allDirectDTE = false,
-      bool lastTileDirectDTEOnly = false, bool forceClusterLaunch = false,
-      bool forceGridLaunch = false, bool tileRowEntryABI = false) const {
+  PackageManifest makeTileManifest(int64_t tileCount, bool permuteIdentities,
+                                   bool allDirectDTE = false,
+                                   bool lastTileDirectDTEOnly = false,
+                                   bool forceClusterLaunch = false,
+                                   bool forceGridLaunch = false,
+                                   bool tileRowEntryABI = false) const {
     const bool cluster =
         forceClusterLaunch ||
         (!forceGridLaunch && (allDirectDTE || lastTileDirectDTEOnly));
@@ -202,8 +240,7 @@ protected:
                   {RuntimeLaunchPhaseRole::Main}))
             : (cluster ? makeClusterLaunch() : makeGridLaunch());
     PackageManifest manifest(wafer::kCurrentTargetIdentity,
-                             wafer::kCurrentKernelRuntimeABI,
-                             std::move(launch),
+                             wafer::kCurrentKernelRuntimeABI, std::move(launch),
                              wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
     manifest.cardCount = 1;
@@ -211,32 +248,47 @@ protected:
     manifest.programData = {"data/program-data.bin", 0, 1,
                             emptyProgramDataDigest()};
     manifest.inputs = {
-        {PortId(0), 0, "f32", {16}, "f32", PackageMemLayout::Tensor,
-         {16}, 64, 256},
+        {PortId(0),
+         0,
+         "f32",
+         {16},
+         "f32",
+         PackageMemLayout::Tensor,
+         {16},
+         64,
+         256},
     };
     manifest.outputs = {
-        {PortId(0), 0, "f32", {16}, "f32", PackageMemLayout::Tensor,
-         {16}, 64, 256},
+        {PortId(0),
+         0,
+         "f32",
+         {16},
+         "f32",
+         PackageMemLayout::Tensor,
+         {16},
+         64,
+         256},
     };
     manifest.modules = {
         {ModuleId(0), "modules/tile_00000.so", moduleDigest(),
          wafer::kCurrentTargetModuleFormat.str(),
          cluster
-             ? std::vector<PackageModuleExportRecord>{
-                   {PackageModuleExportRole::Prepare, "prepare"},
-                   {PackageModuleExportRole::Main, "main"}}
-             : std::vector<PackageModuleExportRecord>{
-                   {PackageModuleExportRole::Main, "main"}}},
+             ? std::vector<
+                   PackageModuleExportRecord>{{PackageModuleExportRole::Prepare,
+                                               "prepare"},
+                                              {PackageModuleExportRole::Main,
+                                               "main"}}
+             : std::vector<
+                   PackageModuleExportRecord>{{PackageModuleExportRole::Main,
+                                               "main"}}},
     };
     for (int64_t tile = 0; tile < tileCount; ++tile) {
-      const uint64_t entryId = permuteIdentities
-                                   ? static_cast<uint64_t>((tile * 5 + 3) %
-                                                           tileCount)
-                                   : static_cast<uint64_t>(tile);
+      const uint64_t entryId =
+          permuteIdentities ? static_cast<uint64_t>((tile * 5 + 3) % tileCount)
+                            : static_cast<uint64_t>(tile);
       std::vector<TileEntryArgumentRecord> arguments = {
           {0, ExternalInputArgument{PortId(0)}, PackageAccessMode::ReadOnly},
-          {1, ExternalOutputArgument{PortId(0)},
-           PackageAccessMode::WriteOnly},
+          {1, ExternalOutputArgument{PortId(0)}, PackageAccessMode::WriteOnly},
           {2, WorkspaceArgument{512, 256}, PackageAccessMode::ReadWrite}};
       const bool directDTE =
           allDirectDTE || (lastTileDirectDTEOnly && tile == tileCount - 1);
@@ -265,9 +317,8 @@ protected:
     PackageManifest manifest = makeManifest();
     for (PackageEntrypointRecord &entry : manifest.entries) {
       const uint64_t tile = entry.tileId.getValue();
-      entry.arguments[4] = {
-          4, WorkspaceArgument{256 + 16 * tile, 16},
-          PackageAccessMode::ReadWrite};
+      entry.arguments[4] = {4, WorkspaceArgument{256 + 16 * tile, 16},
+                            PackageAccessMode::ReadWrite};
     }
     return manifest;
   }
@@ -285,23 +336,38 @@ protected:
     manifest.programData = {"data/program-data.bin", 0, 1,
                             emptyProgramDataDigest()};
     manifest.inputs = {
-        {PortId(0), 0, "f32", {16}, "f32", PackageMemLayout::Tensor,
-         {16}, 64, 256},
+        {PortId(0),
+         0,
+         "f32",
+         {16},
+         "f32",
+         PackageMemLayout::Tensor,
+         {16},
+         64,
+         256},
     };
     manifest.outputs = {
-        {PortId(0), 0, "f32", {16}, "f32", PackageMemLayout::Tensor,
-         {16}, 64, 256},
+        {PortId(0),
+         0,
+         "f32",
+         {16},
+         "f32",
+         PackageMemLayout::Tensor,
+         {16},
+         64,
+         256},
     };
     manifest.modules = {
-        {ModuleId(0), "modules/tile_00000.so", moduleDigest(),
+        {ModuleId(0),
+         "modules/tile_00000.so",
+         moduleDigest(),
          wafer::kCurrentTargetModuleFormat.str(),
          {{PackageModuleExportRole::Main, "main"}}},
     };
     for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
       std::vector<TileEntryArgumentRecord> arguments = {
           {0, ExternalInputArgument{PortId(0)}, PackageAccessMode::ReadOnly},
-          {1, ExternalOutputArgument{PortId(0)},
-           PackageAccessMode::WriteOnly},
+          {1, ExternalOutputArgument{PortId(0)}, PackageAccessMode::WriteOnly},
           {2,
            ProfileRecordArgument{WAFER_TX81_PROFILER_RECORD_ABI,
                                  WAFER_TX81_PROFILER_MIN_BUFFER_BYTES,
@@ -318,9 +384,9 @@ protected:
         transport = DirectDTETransportRequirements{};
       }
       if (withWorkspace)
-        arguments.push_back(
-            {static_cast<uint64_t>(arguments.size()),
-             WorkspaceArgument{512, 256}, PackageAccessMode::ReadWrite});
+        arguments.push_back({static_cast<uint64_t>(arguments.size()),
+                             WorkspaceArgument{512, 256},
+                             PackageAccessMode::ReadWrite});
       manifest.entries.push_back(
           {EntryId(launchSlot), wafer::CardId(0), wafer::TileId(launchSlot),
            LaunchSlotId(launchSlot), ModuleId(0), std::move(arguments),
@@ -341,28 +407,34 @@ protected:
     manifest.programData = {"data/program-data.bin", 0, 1,
                             emptyProgramDataDigest()};
     manifest.modules = {
-        {ModuleId(0), "modules/tile_00000.so", moduleDigest(),
+        {ModuleId(0),
+         "modules/tile_00000.so",
+         moduleDigest(),
          wafer::kCurrentTargetModuleFormat.str(),
          {{PackageModuleExportRole::Main, "main"}}},
     };
     for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot)
       manifest.entries.push_back(
-          {EntryId(launchSlot), wafer::CardId(0), wafer::TileId(launchSlot),
-           LaunchSlotId(launchSlot), ModuleId(0), {},
+          {EntryId(launchSlot),
+           wafer::CardId(0),
+           wafer::TileId(launchSlot),
+           LaunchSlotId(launchSlot),
+           ModuleId(0),
+           {},
            PackageEntryCompletionKind::ReturnAfterLocalDrain,
            NoTransportRequirements{}});
     return manifest;
   }
 
   RuntimeEnvironment makeEnvironment(uint64_t maxResourceBytes) const {
-    RuntimeEnvironment environment{wafer::kCurrentTargetIdentity,
-                                   wafer::kCurrentKernelRuntimeABI,
-                                   wafer::kCurrentTargetModuleFormat,
-                                   maxResourceBytes};
+    RuntimeEnvironment environment{
+        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        wafer::kCurrentTargetModuleFormat, maxResourceBytes};
     environment.supportedKernelLaunchForms = {KernelLaunchForm::Grid,
                                               KernelLaunchForm::Cluster};
-    environment.supportedKernelEntryABIs = {KernelEntryABI::TileMajorPointerTable,
-                                            KernelEntryABI::TileRowPointerTable};
+    environment.supportedKernelEntryABIs = {
+        KernelEntryABI::TileMajorPointerTable,
+        KernelEntryABI::TileRowPointerTable};
     return environment;
   }
 
@@ -435,12 +507,9 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
   EXPECT_NE(canonical.find("\"outputs\": ["), std::string::npos);
   EXPECT_NE(canonical.find("\"modules\": ["), std::string::npos);
   EXPECT_NE(canonical.find("\"entries\": ["), std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"external_input\""),
-            std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"target_tensor\""),
-            std::string::npos);
-  EXPECT_NE(canonical.find("\"kind\": \"external_output\""),
-            std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\": \"external_input\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\": \"target_tensor\""), std::string::npos);
+  EXPECT_NE(canonical.find("\"kind\": \"external_output\""), std::string::npos);
   EXPECT_NE(canonical.find("\"kind\": \"workspace\""), std::string::npos);
   EXPECT_NE(canonical.find("\"access\": \"read_only\""), std::string::npos);
   EXPECT_NE(canonical.find("\"access\": \"write_only\""), std::string::npos);
@@ -457,8 +526,7 @@ TEST_F(PackageManifestTest, CanonicalRoundtripOwnsTypedManifest) {
   EXPECT_EQ(parsed->getManifest().modules.front().exports.front().symbol,
             "main");
   ASSERT_EQ(parsed->getManifest().entries.size(), 16u);
-  const PackageEntrypointRecord &entry =
-      parsed->getManifest().entries.front();
+  const PackageEntrypointRecord &entry = parsed->getManifest().entries.front();
   ASSERT_EQ(entry.arguments.size(), 5u);
   EXPECT_EQ(entry.arguments[0].ordinal, 0u);
   EXPECT_TRUE(std::holds_alternative<ExternalInputArgument>(
@@ -585,8 +653,7 @@ TEST_F(PackageManifestTest, RejectsUnknownFieldsAndNonCanonicalJSON) {
             std::string::npos);
 
   std::string duplicate = canonical;
-  duplicate.insert(duplicate.find("\"card_count\""),
-                   "\"card_count\": 1,\n  ");
+  duplicate.insert(duplicate.find("\"card_count\""), "\"card_count\": 1,\n  ");
   rejected = parseCanonicalPackageJson(duplicate, root);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_FALSE(llvm::toString(rejected.takeError()).empty());
@@ -664,7 +731,17 @@ TEST_F(PackageManifestTest, RejectsEntryAndPayloadMismatches) {
   manifest = makeManifest();
   manifest.targetTensors[1].bytes = 32;
   rejected = verifyPackageManifest(std::move(manifest), root);
-  expectRejected(std::move(rejected), "outside program data");
+  expectRejected(std::move(rejected), "physical tensor codec");
+
+  manifest = makeManifest();
+  manifest.inputs[0].bytes = 1;
+  rejected = verifyPackageManifest(std::move(manifest), root);
+  expectRejected(std::move(rejected), "input target descriptor byte count");
+
+  manifest = makeManifest();
+  manifest.outputs[0].logicalShape = {8};
+  rejected = verifyPackageManifest(std::move(manifest), root);
+  expectRejected(std::move(rejected), "element counts disagree");
 
   manifest = makeManifest();
   manifest.programTensors[0].sliceSizes = {8};
@@ -724,8 +801,7 @@ TEST_F(PackageManifestTest,
       verifyPackageManifest(std::move(clusterNoTransport), root);
   ASSERT_TRUE(static_cast<bool>(verifiedCluster))
       << llvm::toString(verifiedCluster.takeError());
-  const auto &clusterKernel =
-      verifiedCluster->getManifest().launch.getKernel();
+  const auto &clusterKernel = verifiedCluster->getManifest().launch.getKernel();
   EXPECT_EQ(clusterKernel.form, wafer::KernelLaunchForm::Cluster);
   EXPECT_TRUE(llvm::all_of(
       verifiedCluster->getManifest().entries, [](const auto &entry) {
@@ -933,8 +1009,8 @@ TEST_F(PackageManifestTest, RejectsDuplicateTileLocalWorkspaceInOneEntry) {
   writeFullProgramData();
   PackageManifest manifest = makeManifest();
   for (PackageEntrypointRecord &entry : manifest.entries)
-    entry.arguments.push_back({5, WorkspaceArgument{64, 64},
-                               PackageAccessMode::ReadWrite});
+    entry.arguments.push_back(
+        {5, WorkspaceArgument{64, 64}, PackageAccessMode::ReadWrite});
   llvm::Expected<VerifiedPackageManifest> verified =
       verifyPackageManifest(std::move(manifest), root);
   ASSERT_TRUE(static_cast<bool>(verified))
@@ -943,8 +1019,9 @@ TEST_F(PackageManifestTest, RejectsDuplicateTileLocalWorkspaceInOneEntry) {
   llvm::Expected<RuntimeInvocationPlan> rejected = planRuntimeInvocation(
       *verified, makeInputBindings(verified->getManifest()), environment);
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("more than one workspace"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("more than one workspace"),
+      std::string::npos);
 }
 
 TEST_F(PackageManifestTest,
@@ -973,7 +1050,8 @@ TEST_F(PackageManifestTest,
     EXPECT_EQ(session.cardId, wafer::CardId(0));
     EXPECT_EQ(session.tileId, wafer::TileId(tile));
     EXPECT_EQ(session.launchSlot, LaunchSlotId(tile));
-    EXPECT_EQ(session.entry, EntryId(static_cast<uint64_t>((tile * 5 + 3) % 16)));
+    EXPECT_EQ(session.entry,
+              EntryId(static_cast<uint64_t>((tile * 5 + 3) % 16)));
     EXPECT_EQ(session.modulePath, "modules/tile_00000.so");
   }
 
@@ -1076,9 +1154,8 @@ TEST_F(PackageManifestTest,
                 .find("transport status exists"),
             std::string::npos);
 
-  PackageManifest direct =
-      makeTileManifest(16, /*permuteIdentities=*/true,
-                       /*allDirectDTE=*/true);
+  PackageManifest direct = makeTileManifest(16, /*permuteIdentities=*/true,
+                                            /*allDirectDTE=*/true);
   llvm::Expected<VerifiedPackageManifest> verifiedDirect =
       verifyPackageManifest(std::move(direct), root);
   ASSERT_TRUE(static_cast<bool>(verifiedDirect))
@@ -1176,7 +1253,7 @@ TEST_F(PackageManifestTest, ProgramDataByteCountAndTargetTensorRanges) {
   manifest.targetTensors[1].bytes = 32;
   manifest.programData.totalBytes = 80;
   rejected = verifyPackageManifest(std::move(manifest), root);
-  expectRejected(std::move(rejected), "outside program data");
+  expectRejected(std::move(rejected), "physical tensor codec");
 
   manifest = makeManifest();
   manifest.targetTensors[0].fileOffset = 4;
@@ -1299,8 +1376,7 @@ TEST_F(PackageManifestTest,
   EXPECT_EQ(session.argumentAddresses[2].offset, first.profileRecord->offset);
   EXPECT_EQ(session.argumentAddresses[3].base,
             RuntimeArgumentAddressBase::Invocation);
-  EXPECT_EQ(session.argumentAddresses[3].offset,
-            first.transportStatus->offset);
+  EXPECT_EQ(session.argumentAddresses[3].offset, first.transportStatus->offset);
   EXPECT_EQ(session.argumentAddresses[4].base,
             RuntimeArgumentAddressBase::Invocation);
   EXPECT_EQ(session.argumentAddresses[4].offset, first.workspace->offset);
@@ -1323,21 +1399,44 @@ TEST_F(PackageManifestTest, RejectsNonCanonicalTargetTensorIdOrder) {
 TEST_F(PackageManifestTest, RejectsNonCanonicalTargetTensorOffset) {
   PackageManifest manifest = makeManifest();
   manifest.programTensors = {
-      {ProgramTensorId(0), ProgramTensorRole::Parameter, 0, "f32", {4}, {4},
-       {0}, {4}},
-      {ProgramTensorId(1), ProgramTensorRole::Constant, 0, "f32", {4}, {4},
-       {0}, {4}},
+      {ProgramTensorId(0),
+       ProgramTensorRole::Parameter,
+       0,
+       "f32",
+       {4},
+       {4},
+       {0},
+       {4}},
+      {ProgramTensorId(1),
+       ProgramTensorRole::Constant,
+       0,
+       "f32",
+       {4},
+       {4},
+       {0},
+       {4}},
   };
   manifest.targetTensors = {
-      {TargetTensorId(0), ProgramTensorId(0), "f32", PackageMemLayout::Tensor,
-       {4}, 16, 16, 0},
+      {TargetTensorId(0),
+       ProgramTensorId(0),
+       "f32",
+       PackageMemLayout::Tensor,
+       {4},
+       16,
+       16,
+       0},
       // 48 is aligned but the canonical aligned placement from cursor 16 is
       // 16; the unexplained gap is rejected.
-      {TargetTensorId(1), ProgramTensorId(1), "f32", PackageMemLayout::Tensor,
-       {4}, 16, 16, 48},
+      {TargetTensorId(1),
+       ProgramTensorId(1),
+       "f32",
+       PackageMemLayout::Tensor,
+       {4},
+       16,
+       16,
+       48},
   };
-  manifest.programData = {"data/program-data.bin", 80, 16,
-                          programDataDigest()};
+  manifest.programData = {"data/program-data.bin", 80, 16, programDataDigest()};
   writeFullProgramData();
   expectRejected(verifyPackageManifest(std::move(manifest), root),
                  "offset is not canonical");
@@ -1354,16 +1453,40 @@ TEST_F(PackageManifestTest, RejectsNonCanonicalProgramDataBaseAlignment) {
 TEST_F(PackageManifestTest, RejectsNonZeroPaddingBetweenCanonicalTensors) {
   PackageManifest manifest = makeManifest();
   manifest.programTensors = {
-      {ProgramTensorId(0), ProgramTensorRole::Parameter, 0, "f32", {4}, {4},
-       {0}, {4}},
-      {ProgramTensorId(1), ProgramTensorRole::Constant, 0, "f32", {4}, {4},
-       {0}, {4}},
+      {ProgramTensorId(0),
+       ProgramTensorRole::Parameter,
+       0,
+       "f32",
+       {4},
+       {4},
+       {0},
+       {4}},
+      {ProgramTensorId(1),
+       ProgramTensorRole::Constant,
+       0,
+       "f32",
+       {4},
+       {4},
+       {0},
+       {4}},
   };
   manifest.targetTensors = {
-      {TargetTensorId(0), ProgramTensorId(0), "f32", PackageMemLayout::Tensor,
-       {4}, 16, 16, 0},
-      {TargetTensorId(1), ProgramTensorId(1), "f32", PackageMemLayout::Tensor,
-       {4}, 16, 32, 32},
+      {TargetTensorId(0),
+       ProgramTensorId(0),
+       "f32",
+       PackageMemLayout::Tensor,
+       {4},
+       16,
+       16,
+       0},
+      {TargetTensorId(1),
+       ProgramTensorId(1),
+       "f32",
+       PackageMemLayout::Tensor,
+       {4},
+       16,
+       32,
+       32},
   };
   std::vector<uint8_t> bytes(48, UINT8_C(0xAB));
   llvm::SHA256 hasher;
@@ -1388,7 +1511,21 @@ TEST_F(PackageManifestTest, RejectsNonZeroTrailingProgramDataBytes) {
                                                   /*LowerCase=*/true)};
   writeProgramData(bytes);
   expectRejected(verifyPackageManifest(std::move(manifest), root),
-                 "padding is not zero");
+                 "trailing bytes");
+}
+
+TEST_F(PackageManifestTest, RejectsZeroTrailingProgramDataBytes) {
+  PackageManifest manifest = makeManifest();
+  std::vector<uint8_t> bytes = programDataBytes();
+  bytes.resize(96, 0);
+  llvm::SHA256 hasher;
+  hasher.update(bytes);
+  manifest.programData = {"data/program-data.bin", 96, 64,
+                          "sha256:" + llvm::toHex(hasher.final(),
+                                                  /*LowerCase=*/true)};
+  writeProgramData(bytes);
+  expectRejected(verifyPackageManifest(std::move(manifest), root),
+                 "trailing bytes");
 }
 
 // The strict loader closes the whole package root: exactly manifest.json,
@@ -1458,4 +1595,24 @@ TEST_F(PackageManifestTest, StrictLoaderRejectsSymlinkMember) {
   llvm::Expected<VerifiedPackageManifest> loaded =
       loadVerifiedPackageManifest(root);
   expectRejected(std::move(loaded), "unsupported member");
+}
+
+TEST_F(PackageManifestTest, StrictLoaderRejectsUndeclaredModulesDirectory) {
+  writeFullProgramData();
+  llvm::Expected<VerifiedPackageManifest> verified =
+      verifyPackageManifest(makeManifest(), root);
+  ASSERT_TRUE(static_cast<bool>(verified));
+  llvm::SmallString<256> manifestPath(root);
+  llvm::sys::path::append(manifestPath, kPackageManifestFileName);
+  std::error_code error;
+  llvm::raw_fd_ostream output(manifestPath, error, llvm::sys::fs::OF_Text);
+  ASSERT_FALSE(error);
+  output << serializeCanonicalPackageJson(*verified);
+  output.close();
+  llvm::SmallString<256> extra(root);
+  llvm::sys::path::append(extra, "modules", "undeclared");
+  ASSERT_FALSE(llvm::sys::fs::create_directory(extra));
+  llvm::Expected<VerifiedPackageManifest> loaded =
+      loadVerifiedPackageManifest(root);
+  expectRejected(std::move(loaded), "undeclared directory");
 }

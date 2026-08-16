@@ -170,14 +170,18 @@ transaction bridge，不能进入package/runtime ABI文档或public header。
 
 ### 4.2 Package/runtime
 
-当前package实现物理上位于`Runtime`目录；Q56完成时必须按依赖方向收敛，而不是让compiler依赖BoardRuntime：
+current package实现已按Q56依赖方向收敛到中立`Package`目录，compiler不依赖BoardRuntime：
 
 - 中立的package support library拥有`ExecutablePackage`、PackageManifest typed model与canonical spelling、JSON parser/serializer、
   semantic verifier以及module/data readback；
 - compiler package writer依赖该library完成assembly和atomic commit，不拥有第二套schema/parser；
 - Runtime loader依赖该library取得verified `ExecutablePackage`；Runtime自身继续拥有`RuntimeEnvironment`匹配、caller binding、
   device inventory/capability和no-card invocation planning，再进入BoardRuntime generic lifecycle和TX provider adapter；
-- ProfileInstrumentation strict loader/verifier保持独立的runtime consumer，不反向成为package schema owner。
+- ProfileInstrumentation的typed model、canonical spelling和共享filename常量由中立package support拥有；strict loader、device
+  collection与verified runtime object仍是独立runtime consumer，不反向成为package schema owner。
+
+source-organization gate同时禁止`WaferCompiler`链接`WaferRuntime`和Compiler/Package源码或public header include
+`Wafer/Runtime/*`；只修link edge而保留runtime header反向依赖不算边界闭合。
 
 ExecutablePackage manifest identity与profile activation format identity分别只在其typed owner定义；profile plan/site map不拥有版本；
 package各文件的fields、resource scopes、entry completion和verification由package owner统一定义。Python runner只能消费canonical manifest/evidence或调用public tool；

@@ -289,6 +289,14 @@ source program
 - 验证入口：no-card`wafer-run --package-dir <pkg> --no-card`；包布局/清单断言用python一行式
   （hashlib digest对比、role/role_index、bytes/alignment/file_offset）。
 - `txLoadGraph`/`txLaunchModel`只存在于`docs/`反向工程资料；Wafer-owned接口、CLI、runtime只有`txLaunchKernel` family。
+- selected representation按physical-order bounded windows写出；Cx/NCx source读取可按当前window logical index分成多个连续run，
+  不得假设logical row对应contiguous physical span。不同dtype统一走current formal conversion route，identity raw copy只允许同format。
+- strict loader从package dtype/layout/shape经shared physical codec重算TargetTensor和external port bytes，并要求program-data精确结束于
+  最后一个canonical range；`modules/`所需目录祖先从declared module paths推导，额外空目录也属于closure违规。
+- 每个TargetTensor创建一个move-only `ProgramDataRangeMaterialization` reader；reader创建计一次materialization，其bounded window
+  read数量单独进入read ledger。同一ProgramTensor的不同target descriptor必须各有一个reader，16-Tile共享只复用TargetTensor。
+- `WaferPackageSupport`拥有profile instrumentation共享model/filename常量；Compiler/Package不仅不能链接`WaferRuntime`，源码和public
+  header也不能include`Wafer/Runtime/*`，该双边界由source-organization检查。
 
 ## Q56构建与验证命令（stable）
 

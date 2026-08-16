@@ -1,4 +1,4 @@
-//===- ProgramData.h - Transaction-owned program data ------------*- C++ -*-===//
+//===- ProgramData.h - Transaction-owned program data -----------*- C++ -*-===//
 //
 // Transaction-owned parameter/constant payload ownership for one compilation.
 // ProgramDataSource owns an immutable transaction-private copy of one payload
@@ -26,7 +26,6 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -34,6 +33,7 @@
 namespace wafer::compiler {
 
 struct ProgramDataIOStatistics;
+class ProgramDataHandoff;
 
 /// Maximum byte count of one positional program-data read. The same bound is
 /// used for establishment, digest, materialization and target range reads.
@@ -301,8 +301,9 @@ struct ProgramDataIOStatistics {
   /// Helper output payloads read back at establishment (shards that the
   /// helper produced for the transaction).
   uint64_t helperOutputReadbacks = 0;
-  /// Target-consumer range materializations (one per program tensor identity,
-  /// shared across Tiles).
+  /// Consumer-declared range materializations. Full-range consumers count one
+  /// per call; the package writer counts one per TargetTensor representation,
+  /// independent of how many bounded source windows it needs.
   uint64_t rangeMaterializations = 0;
   /// Helper-input payload files written from owned content.
   uint64_t materializedFileWrites = 0;
@@ -310,6 +311,33 @@ struct ProgramDataIOStatistics {
   uint64_t materializedWriteBytes = 0;
 
   void print(llvm::raw_ostream &stream) const;
+};
+
+/// Move-only reader for one consumer-declared range materialization. Creation
+/// accounts exactly one ledger event; any number of bounded reads through the
+/// reader remain part of that same materialization. The reader is valid only
+/// while its ProgramDataHandoff remains alive and unmoved.
+class ProgramDataRangeMaterialization {
+public:
+  ProgramDataRangeMaterialization(ProgramDataRangeMaterialization &&) noexcept;
+  ProgramDataRangeMaterialization &
+  operator=(ProgramDataRangeMaterialization &&) noexcept;
+  ProgramDataRangeMaterialization(const ProgramDataRangeMaterialization &) =
+      delete;
+  ProgramDataRangeMaterialization &
+  operator=(const ProgramDataRangeMaterialization &) = delete;
+
+  llvm::Error materializeWindow(uint64_t regionByteOffset,
+                                llvm::MutableArrayRef<uint8_t> out) const;
+
+private:
+  friend class ProgramDataHandoff;
+  ProgramDataRangeMaterialization(const ProgramDataHandoff &handoff,
+                                  ProgramTensorId tensorId)
+      : handoff(&handoff), tensorId(tensorId) {}
+
+  const ProgramDataHandoff *handoff = nullptr;
+  ProgramTensorId tensorId;
 };
 
 /// SHA-256 digest (lowercase hex) of one element region of a payload source.
@@ -380,13 +408,12 @@ public:
   llvm::Error materializeRange(const ProgramDataRange &range,
                                llvm::MutableArrayRef<uint8_t> out) const;
 
-  /// Materializes one element-aligned byte window of `range` for target
-  /// output. Windows account reads; the first window of a range also
-  /// accounts the range materialization event so a windowed target writer
-  /// still reports one materialization per TargetTensor.
-  llvm::Error materializeRangeWindow(const ProgramDataRange &range,
-                                     uint64_t regionByteOffset,
-                                     llvm::MutableArrayRef<uint8_t> out) const;
+  /// Begins one consumer-owned materialization of the identified range and
+  /// accounts it exactly once. An unknown identity is rejected without
+  /// changing the ledger. The package writer creates one reader per selected
+  /// TargetTensor representation.
+  llvm::Expected<ProgramDataRangeMaterialization>
+  beginRangeMaterialization(ProgramTensorId tensorId) const;
 
   /// Streams one owned source into a transaction path with bounded windows
   /// and verifies the written file digest against the owned content. This is
@@ -419,6 +446,13 @@ public:
   }
 
 private:
+  friend class ProgramDataRangeMaterialization;
+
+  /// Low-level window read used by ProgramDataRangeMaterialization. It
+  /// accounts reads but not a materialization identity.
+  llvm::Error materializeRangeWindow(const ProgramDataRange &range,
+                                     uint64_t regionByteOffset,
+                                     llvm::MutableArrayRef<uint8_t> out) const;
   llvm::Error ensureOwnedDirectory(llvm::StringRef locator,
                                    ProgramDataFailure *failure);
   void releaseOwnedStorage() noexcept;
@@ -430,7 +464,6 @@ private:
   std::vector<std::unique_ptr<ProgramDataSource>> sources;
   std::vector<std::unique_ptr<ProgramDataSource>> candidates;
   std::vector<ProgramDataRange> ranges;
-  mutable std::set<ProgramTensorId> windowMaterializedRanges;
 };
 
 } // namespace wafer::compiler

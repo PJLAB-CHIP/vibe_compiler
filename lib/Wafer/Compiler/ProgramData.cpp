@@ -821,17 +821,52 @@ ProgramDataRange::materializeWindow(const ProgramDataSource &source,
   return result;
 }
 
-llvm::Error
-ProgramDataHandoff::materializeRangeWindow(const ProgramDataRange &range,
-                                           uint64_t regionByteOffset,
-                                           llvm::MutableArrayRef<uint8_t> out) const {
-  if (llvm::Error error =
-          range.materializeWindow(getSource(range.getSourceId()),
-                                  regionByteOffset, out))
+llvm::Error ProgramDataHandoff::materializeRangeWindow(
+    const ProgramDataRange &range, uint64_t regionByteOffset,
+    llvm::MutableArrayRef<uint8_t> out) const {
+  if (llvm::Error error = range.materializeWindow(
+          getSource(range.getSourceId()), regionByteOffset, out))
     return error;
-  if (windowMaterializedRanges.insert(range.getTensorId()).second)
-    ++ioStatistics->rangeMaterializations;
   return llvm::Error::success();
+}
+
+llvm::Expected<ProgramDataRangeMaterialization>
+ProgramDataHandoff::beginRangeMaterialization(ProgramTensorId tensorId) const {
+  if (!findRange(tensorId))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "cannot begin materialization for an unknown program tensor range");
+  ++ioStatistics->rangeMaterializations;
+  return ProgramDataRangeMaterialization(*this, tensorId);
+}
+
+ProgramDataRangeMaterialization::ProgramDataRangeMaterialization(
+    ProgramDataRangeMaterialization &&other) noexcept
+    : handoff(std::exchange(other.handoff, nullptr)),
+      tensorId(other.tensorId) {}
+
+ProgramDataRangeMaterialization &
+ProgramDataRangeMaterialization::operator=(
+    ProgramDataRangeMaterialization &&other) noexcept {
+  if (this == &other)
+    return *this;
+  handoff = std::exchange(other.handoff, nullptr);
+  tensorId = other.tensorId;
+  return *this;
+}
+
+llvm::Error ProgramDataRangeMaterialization::materializeWindow(
+    uint64_t regionByteOffset, llvm::MutableArrayRef<uint8_t> out) const {
+  if (!handoff)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "cannot read through a moved-from program data materialization");
+  const ProgramDataRange *range = handoff->findRange(tensorId);
+  if (!range)
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "program tensor range disappeared during materialization");
+  return handoff->materializeRangeWindow(*range, regionByteOffset, out);
 }
 
 ProgramDataHandoff::ProgramDataHandoff(std::string storageParent)

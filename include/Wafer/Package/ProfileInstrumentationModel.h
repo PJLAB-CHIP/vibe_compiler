@@ -32,6 +32,12 @@ struct TargetCallDescriptor;
 
 namespace runtime {
 
+inline constexpr llvm::StringLiteral kProfileInstrumentationActivationFileName =
+    "activation.json";
+inline constexpr llvm::StringLiteral kProfileInstrumentationPlanFileName =
+    "plan.json";
+inline constexpr llvm::StringLiteral kProfileInstrumentationSiteMapFileName =
+    "site-map.json";
 inline constexpr int64_t kProfileInstrumentationCardCount = 1;
 inline constexpr int64_t kProfileInstrumentationTileCount = 16;
 inline constexpr llvm::StringLiteral kProfileSiteCorrelationBasis =

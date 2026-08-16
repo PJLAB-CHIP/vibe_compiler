@@ -214,9 +214,19 @@ protected:
     manifest.inputs = {
         {PortId(0), 0, "f32", {1}, "f32", PackageMemLayout::Tensor, {1}, 4, 4},
     };
+    ASSERT_NE(outputBytes, 0u);
+    ASSERT_EQ(outputBytes % 4, 0u);
+    const int64_t outputElements = static_cast<int64_t>(outputBytes / 4);
     manifest.outputs = {
-        {PortId(0), 0, "f32", {1}, "f32", PackageMemLayout::Tensor, {1},
-         outputBytes, 4},
+        {PortId(0),
+         0,
+         "f32",
+         {outputElements},
+         "f32",
+         PackageMemLayout::Tensor,
+         {outputElements},
+         outputBytes,
+         4},
     };
     const uint64_t programDataAlignment =
         includeProgramData
@@ -228,23 +238,35 @@ protected:
     ASSERT_FALSE(llvm::sys::fs::create_directories(data));
     if (includeProgramData) {
       manifest.programTensors = {
-          {ProgramTensorId(0), ProgramTensorRole::Parameter, 0, "f32", {4},
-           {4}, {0}, {4}},
+          {ProgramTensorId(0),
+           ProgramTensorRole::Parameter,
+           0,
+           "f32",
+           {4},
+           {4},
+           {0},
+           {4}},
       };
       manifest.targetTensors = {
-          {TargetTensorId(0), ProgramTensorId(0), "f32",
-           PackageMemLayout::Tensor, {4}, 16, 16, 0},
+          {TargetTensorId(0),
+           ProgramTensorId(0),
+           "f32",
+           PackageMemLayout::Tensor,
+           {4},
+           16,
+           16,
+           0},
       };
-      manifest.programData = {"data/program-data.bin", 16,
-                              programDataAlignment, programDataDigest()};
+      manifest.programData = {"data/program-data.bin", 16, programDataAlignment,
+                              programDataDigest()};
       std::vector<uint8_t> programData(16);
       for (size_t index = 0; index < programData.size(); ++index)
         programData[index] = static_cast<uint8_t>(index);
       llvm::SmallString<256> programDataPath(data);
       llvm::sys::path::append(programDataPath, "program-data.bin");
-      writeText(programDataPath,
-                llvm::StringRef(reinterpret_cast<const char *>(programData.data()),
-                                programData.size()));
+      writeText(programDataPath, llvm::StringRef(reinterpret_cast<const char *>(
+                                                     programData.data()),
+                                                 programData.size()));
     } else {
       manifest.programData = {"data/program-data.bin", 0, 1,
                               emptyProgramDataDigest()};
@@ -272,8 +294,7 @@ protected:
       const int64_t tile = tileForLaunchSlot(launchSlot, permuteTiles);
       std::vector<TileEntryArgumentRecord> arguments = {
           {0, ExternalInputArgument{PortId(0)}, PackageAccessMode::ReadOnly},
-          {1, ExternalOutputArgument{PortId(0)},
-           PackageAccessMode::WriteOnly}};
+          {1, ExternalOutputArgument{PortId(0)}, PackageAccessMode::WriteOnly}};
       if (includeProgramData)
         arguments.push_back({static_cast<uint64_t>(arguments.size()),
                              TargetTensorArgument{TargetTensorId(0)},
@@ -293,12 +314,11 @@ protected:
                                    WAFER_TX81_PROFILER_BUFFER_ALIGNMENT},
              PackageAccessMode::ReadWrite});
         if (doubleProfileRecord)
-          arguments.push_back(
-              {static_cast<uint64_t>(arguments.size()),
-               ProfileRecordArgument{WAFER_TX81_PROFILER_RECORD_ABI,
-                                     recordBytes,
-                                     WAFER_TX81_PROFILER_BUFFER_ALIGNMENT},
-               PackageAccessMode::ReadWrite});
+          arguments.push_back({static_cast<uint64_t>(arguments.size()),
+                               ProfileRecordArgument{
+                                   WAFER_TX81_PROFILER_RECORD_ABI, recordBytes,
+                                   WAFER_TX81_PROFILER_BUFFER_ALIGNMENT},
+                               PackageAccessMode::ReadWrite});
       } else if (recordBytes != 0 &&
                  finalArgument == FinalArgumentKind::Workspace) {
         arguments.push_back({static_cast<uint64_t>(arguments.size()),
@@ -551,10 +571,10 @@ TEST_F(ProfileInstrumentationTest,
 }
 
 TEST_F(ProfileInstrumentationTest, PreservesExplicitTileAndLaunchSlotBinding) {
-  ASSERT_NO_FATAL_FAILURE(writePackage(
-      primary, /*outputBytes=*/4, /*recordBytes=*/0,
-      wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
-      /*permuteTiles=*/true));
+  ASSERT_NO_FATAL_FAILURE(
+      writePackage(primary, /*outputBytes=*/4, /*recordBytes=*/0,
+                   wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
+                   /*permuteTiles=*/true));
   ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
       /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
       /*permuteTiles=*/true));
@@ -596,9 +616,9 @@ TEST_F(ProfileInstrumentationTest, RejectsStaleManifestDigest) {
 }
 
 TEST_F(ProfileInstrumentationTest, RejectsDifferentRuntimeLaunchContract) {
-  ASSERT_NO_FATAL_FAILURE(writePackage(
-      primary, /*outputBytes=*/4, /*recordBytes=*/0,
-      wafer::KernelLaunchForm::Cluster));
+  ASSERT_NO_FATAL_FAILURE(writePackage(primary, /*outputBytes=*/4,
+                                       /*recordBytes=*/0,
+                                       wafer::KernelLaunchForm::Cluster));
   ASSERT_NO_FATAL_FAILURE(writeInstrumentation());
   auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
       instrumentation, primary);
@@ -805,7 +825,8 @@ TEST_F(ProfileInstrumentationTest, RejectsTargetCallOrdinalSymbolDisagreement) {
             std::string::npos);
 }
 
-TEST_F(ProfileInstrumentationTest, RejectsCaptureFinalArgumentNotProfileRecord) {
+TEST_F(ProfileInstrumentationTest,
+       RejectsCaptureFinalArgumentNotProfileRecord) {
   ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
       /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
       /*permuteTiles=*/false, FinalArgumentKind::Workspace));
@@ -824,9 +845,9 @@ TEST_F(ProfileInstrumentationTest, RejectsCaptureMissingProfileRecordArgument) {
   auto loaded = wafer::runtime::loadVerifiedProfileInstrumentation(
       instrumentation, primary);
   ASSERT_FALSE(static_cast<bool>(loaded));
-  EXPECT_NE(llvm::toString(loaded.takeError())
-                .find("entry ABI extension is invalid"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(loaded.takeError()).find("entry ABI extension is invalid"),
+      std::string::npos);
 }
 
 TEST_F(ProfileInstrumentationTest, RejectsCapturePortContractDrift) {
@@ -859,11 +880,11 @@ TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramDataAlignmentDrift) {
   // A capture package whose program data carries a non-canonical base
   // alignment is rejected by the strict canonical-layout verification before
   // any capture comparison can observe it.
-  ASSERT_NO_FATAL_FAILURE(writePackage(
-      primary, /*outputBytes=*/4, /*recordBytes=*/0,
-      wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
-      /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
-      /*includeProgramData=*/true));
+  ASSERT_NO_FATAL_FAILURE(
+      writePackage(primary, /*outputBytes=*/4, /*recordBytes=*/0,
+                   wafer::KernelLaunchForm::Grid, wafer::kCurrentTargetIdentity,
+                   /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
+                   /*includeProgramData=*/true));
   ASSERT_NO_FATAL_FAILURE(writeInstrumentation(
       /*badSiteSymbol=*/false, /*finalDigestOverride=*/{},
       /*permuteTiles=*/false, FinalArgumentKind::ProfileRecord,
@@ -876,7 +897,8 @@ TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramDataAlignmentDrift) {
   std::string json = (*buffer)->getBuffer().str();
   const std::string canonical = "\"base_alignment\": 16";
   ASSERT_NE(json.find(canonical), std::string::npos);
-  json.replace(json.find(canonical), canonical.size(), "\"base_alignment\": 32");
+  json.replace(json.find(canonical), canonical.size(),
+               "\"base_alignment\": 32");
   writeText(captureManifest, json);
   llvm::SmallString<256> captureRoot(instrumentation);
   llvm::sys::path::append(captureRoot, "captures/count");

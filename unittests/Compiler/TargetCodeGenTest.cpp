@@ -1,9 +1,9 @@
 //===- TargetCodeGenTest.cpp - Target code generation tests -------------===//
 
-#include "../../lib/Wafer/Compiler/PackageInternal.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
-#include "Wafer/Compiler/ProgramData.h"
+#include "../../lib/Wafer/Compiler/PackageInternal.h"
 #include "../../lib/Wafer/Compiler/TargetCodeGenInternal.h"
+#include "Wafer/Compiler/ProgramData.h"
 
 #include "Wafer/Target/RuntimeLaunchContract.h"
 #include "Wafer/Target/TargetIdentity.h"
@@ -153,7 +153,7 @@ makeSlot(int64_t ordinal, wafer::compiler::TileEntryArgumentKind role,
           ? wafer::compiler::TileEntryArgumentAccess::WriteOnly
           : wafer::compiler::TileEntryArgumentAccess::ReadOnly;
   return {ordinal, role, ordinal, name.str(), "f32", wafer::MemLayout::Tensor,
-          {4},     16,   64,     access};
+          {4},     16,   64,      access};
 }
 
 static llvm::Expected<wafer::compiler::TargetLLVMModules>
@@ -163,8 +163,8 @@ makeRuntimeLaunchModules(
         wafer::compiler::TransportContract::None,
     std::optional<int64_t> mismatchedSchemaTile = std::nullopt,
     std::optional<int64_t> mismatchedBodyTile = std::nullopt,
-    size_t slotCount = 2,
-    bool withCollidingClosure = false, bool withUnsupportedInlineAsm = false,
+    size_t slotCount = 2, bool withCollidingClosure = false,
+    bool withUnsupportedInlineAsm = false,
     std::optional<int64_t> renamedSlotTile = std::nullopt,
     bool permuteTiles = false) {
   const int64_t tileCount = 16;
@@ -186,7 +186,8 @@ makeRuntimeLaunchModules(
               ? wafer::compiler::TileEntryArgumentKind::ExternalOutput
               : wafer::compiler::TileEntryArgumentKind::ExternalInput;
       llvm::StringRef name =
-          role == wafer::compiler::TileEntryArgumentKind::ExternalOutput ? "output"
+          role == wafer::compiler::TileEntryArgumentKind::ExternalOutput
+              ? "output"
           : role == wafer::compiler::TileEntryArgumentKind::TransportStatus
               ? "direct_dte_status"
               : "input";
@@ -236,8 +237,7 @@ makeRuntimeLaunchModules(
     builder.CreateRetVoid();
     modules.push_back(wafer::compiler::TargetLLVMModulesBuilder::makeModule(
         wafer::CardId(0),
-        wafer::TileId(permuteTiles && tile < 2 ? 1 - tile
-                                                               : tile),
+        wafer::TileId(permuteTiles && tile < 2 ? 1 - tile : tile),
         wafer::LaunchSlotId(tile), "main", wafer::kCurrentTargetIdentity,
         wafer::kCurrentKernelRuntimeABI, wafer::kCurrentTargetModuleFormat,
         std::move(slots), std::move(context), std::move(module)));
@@ -276,8 +276,8 @@ makeProfileRuntimeLaunchModules(
   modules.reserve(16);
   for (int64_t tile = 0; tile < 16; ++tile) {
     std::vector<wafer::compiler::TileEntryArgument> slots;
-    slots.push_back(
-        makeSlot(0, wafer::compiler::TileEntryArgumentKind::ExternalInput, "input"));
+    slots.push_back(makeSlot(
+        0, wafer::compiler::TileEntryArgumentKind::ExternalInput, "input"));
     if (transport == wafer::compiler::TransportContract::DirectDTE)
       slots.push_back(
           makeSlot(1, wafer::compiler::TileEntryArgumentKind::TransportStatus,
@@ -301,19 +301,18 @@ makeProfileRuntimeLaunchModules(
                 *module, "main", capture))
       return std::move(error);
     modules.push_back(wafer::compiler::TargetLLVMModulesBuilder::makeModule(
-        wafer::CardId(0), wafer::TileId(tile),
-        wafer::LaunchSlotId(tile), "main", wafer::kCurrentTargetIdentity,
-        wafer::kCurrentKernelRuntimeABI, wafer::kCurrentTargetModuleFormat,
-        std::move(slots), std::move(context), std::move(module)));
+        wafer::CardId(0), wafer::TileId(tile), wafer::LaunchSlotId(tile),
+        "main", wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+        wafer::kCurrentTargetModuleFormat, std::move(slots), std::move(context),
+        std::move(module)));
   }
   return wafer::compiler::TargetLLVMModulesBuilder::makeModules(
       *config, std::move(launch), std::move(modules));
 }
 
 static llvm::Expected<wafer::compiler::CardExecutable>
-makeProfileCardExecutable(
-    const wafer::RuntimeLaunchContract &launch,
-    wafer::compiler::TransportContract transport) {
+makeProfileCardExecutable(const wafer::RuntimeLaunchContract &launch,
+                          wafer::compiler::TransportContract transport) {
   llvm::Expected<wafer::compiler::ExecutionConfig> config =
       wafer::compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
@@ -340,11 +339,9 @@ makeProfileCardExecutable(
     binding.slice.offsets = {0};
     binding.slice.sizes = {4};
     binding.slice.strides = {1};
-    tiles.push_back(
-        wafer::compiler::CardExecutableBuilder::makeTileExecutable(
-            wafer::CardId(0), wafer::TileId(tileId),
-            wafer::LaunchSlotId(tileId), std::move(module), "main",
-            {std::move(binding)}, transport));
+    tiles.push_back(wafer::compiler::CardExecutableBuilder::makeTileExecutable(
+        wafer::CardId(0), wafer::TileId(tileId), wafer::LaunchSlotId(tileId),
+        std::move(module), "main", {std::move(binding)}, transport));
   }
   return wafer::compiler::CardExecutableBuilder::makeCardExecutable(
       *config, launch, std::move(context), std::move(tiles),
@@ -377,24 +374,29 @@ TEST(TargetCodeGenTest,
   auto cleanup = llvm::make_scope_exit(
       [&]() { (void)llvm::sys::fs::remove_directories(temporaryDirectory); });
 
-  // Two payload sources: weight f32{4} and bias f32{2}.
+  // Two payload sources: weight f32{4} and bias f16{2}. Bias is selected as
+  // BF16 so same-width conversion must change 1.0 from 0x3c00 to 0x3f80.
   const std::vector<uint8_t> weightPayload = {
       0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40,
       0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40,
   };
   const std::vector<uint8_t> biasPayload = {
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
+      0x00,
+      0x3c,
+      0x00,
+      0x40,
   };
-  auto writeNpy = [&](llvm::StringRef fileName,
-                      llvm::ArrayRef<uint8_t> payload,
+  auto writeNpy = [&](llvm::StringRef fileName, llvm::ArrayRef<uint8_t> payload,
+                      llvm::StringRef npyDType, uint64_t elementBytes,
                       llvm::SmallVectorImpl<char> &pathOut) {
     const char magic[] = "\x93NUMPY";
     std::vector<uint8_t> npy(magic, magic + 6);
     npy.push_back(1);
     npy.push_back(0);
-    const std::string header =
-        "{'descr': '<f4', 'fortran_order': False, 'shape': (" +
-        std::to_string(payload.size() / 4) + ",), }";
+    const std::string header = "{'descr': '" + npyDType.str() +
+                               "', 'fortran_order': False, 'shape': (" +
+                               std::to_string(payload.size() / elementBytes) +
+                               ",), }";
     npy.push_back(static_cast<uint8_t>(header.size() & 0xff));
     npy.push_back(static_cast<uint8_t>((header.size() >> 8) & 0xff));
     npy.insert(npy.end(), header.begin(), header.end());
@@ -402,16 +404,16 @@ TEST(TargetCodeGenTest,
     pathOut = temporaryDirectory;
     llvm::sys::path::append(pathOut, fileName);
     std::error_code error;
-    llvm::raw_fd_ostream output(llvm::StringRef(pathOut.data(),
-                                    pathOut.size()), error);
+    llvm::raw_fd_ostream output(llvm::StringRef(pathOut.data(), pathOut.size()),
+                                error);
     ASSERT_FALSE(error);
     output.write(reinterpret_cast<const char *>(npy.data()), npy.size());
     output.close();
   };
   llvm::SmallString<256> weightPath;
-  writeNpy("weight.npy", weightPayload, weightPath);
+  writeNpy("weight.npy", weightPayload, "<f4", 4, weightPath);
   llvm::SmallString<256> biasPath;
-  writeNpy("bias.npy", biasPayload, biasPath);
+  writeNpy("bias.npy", biasPayload, "<f2", 2, biasPath);
   auto handoff = std::make_unique<wafer::compiler::ProgramDataHandoff>(
       temporaryDirectory.str().str());
   llvm::Expected<wafer::compiler::SourceDataId> weightSource =
@@ -424,8 +426,8 @@ TEST(TargetCodeGenTest,
       << llvm::toString(biasSource.takeError());
   llvm::Expected<wafer::compiler::ProgramDataRange> weightRange =
       wafer::compiler::ProgramDataRange::create(
-          {wafer::compiler::ProgramResourceRole::Parameter, 0}, "f32", {4},
-          {4}, wafer::frontend::ProgramDistributionKind::Replicated,
+          {wafer::compiler::ProgramResourceRole::Parameter, 0}, "f32", {4}, {4},
+          wafer::frontend::ProgramDistributionKind::Replicated,
           wafer::compiler::ProgramDataRangeOrigin::OriginalSource, {0}, {4},
           {1}, *weightSource, handoff->getSource(*weightSource), nullptr);
   ASSERT_TRUE(static_cast<bool>(weightRange))
@@ -433,8 +435,8 @@ TEST(TargetCodeGenTest,
   ASSERT_FALSE(static_cast<bool>(handoff->addRange(std::move(*weightRange))));
   llvm::Expected<wafer::compiler::ProgramDataRange> biasRange =
       wafer::compiler::ProgramDataRange::create(
-          {wafer::compiler::ProgramResourceRole::Parameter, 1}, "f32", {2},
-          {2}, wafer::frontend::ProgramDistributionKind::Replicated,
+          {wafer::compiler::ProgramResourceRole::Parameter, 1}, "f16", {2}, {2},
+          wafer::frontend::ProgramDistributionKind::Replicated,
           wafer::compiler::ProgramDataRangeOrigin::OriginalSource, {0}, {2},
           {1}, *biasSource, handoff->getSource(*biasSource), nullptr);
   ASSERT_TRUE(static_cast<bool>(biasRange))
@@ -450,14 +452,35 @@ TEST(TargetCodeGenTest,
   modules.reserve(16);
   for (int64_t tile = 0; tile < 16; ++tile) {
     std::vector<wafer::compiler::TileEntryArgument> slots = {
-        {0, wafer::compiler::TileEntryArgumentKind::TargetTensor, 1, "bias",
-         "f32", wafer::MemLayout::Tensor, {2}, 8, 16,
+        {0,
+         wafer::compiler::TileEntryArgumentKind::TargetTensor,
+         1,
+         "bias",
+         "bf16",
+         wafer::MemLayout::Tensor,
+         {2},
+         4,
+         16,
          wafer::compiler::TileEntryArgumentAccess::ReadOnly},
-        {1, wafer::compiler::TileEntryArgumentKind::TargetTensor, 0, "weight",
-         "f32", wafer::MemLayout::Cx, {4}, 256, 64,
+        {1,
+         wafer::compiler::TileEntryArgumentKind::TargetTensor,
+         0,
+         "weight",
+         "f32",
+         wafer::MemLayout::Cx,
+         {4},
+         256,
+         64,
          wafer::compiler::TileEntryArgumentAccess::ReadOnly},
-        {2, wafer::compiler::TileEntryArgumentKind::TargetTensor, 0, "weight",
-         "f32", wafer::MemLayout::Tensor, {4}, 16, 64,
+        {2,
+         wafer::compiler::TileEntryArgumentKind::TargetTensor,
+         0,
+         "weight",
+         "f32",
+         wafer::MemLayout::Tensor,
+         {4},
+         16,
+         64,
          wafer::compiler::TileEntryArgumentAccess::ReadOnly},
     };
     slots.push_back(makeProfilerSlot(
@@ -513,6 +536,7 @@ TEST(TargetCodeGenTest,
         mlir::ModuleOp::create(builder.getUnknownLoc());
     auto makeBinding = [](wafer::compiler::ProgramResourceRole role,
                           int64_t roleIndex, int64_t index,
+                          llvm::StringRef dtype,
                           llvm::ArrayRef<int64_t> shape) {
       wafer::compiler::ProgramResourceBinding binding{};
       binding.role = role;
@@ -520,7 +544,7 @@ TEST(TargetCodeGenTest,
       binding.index = index;
       binding.programIndex = index;
       binding.name = index == 0 ? "weight" : "bias";
-      binding.dtype = "f32";
+      binding.dtype = dtype.str();
       binding.distribution =
           wafer::frontend::ProgramDistributionKind::Replicated;
       binding.globalShape.assign(shape.begin(), shape.end());
@@ -532,15 +556,14 @@ TEST(TargetCodeGenTest,
       binding.slice.strides.assign(shape.size(), 1);
       return binding;
     };
-    tiles.push_back(
-        wafer::compiler::CardExecutableBuilder::makeTileExecutable(
-            wafer::CardId(0), wafer::TileId(tile),
-            wafer::LaunchSlotId(tile), std::move(module), "main",
-            {makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 0, 0,
-                         {4}),
-             makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 1, 1,
-                         {2})},
-            wafer::compiler::TransportContract::None));
+    tiles.push_back(wafer::compiler::CardExecutableBuilder::makeTileExecutable(
+        wafer::CardId(0), wafer::TileId(tile), wafer::LaunchSlotId(tile),
+        std::move(module), "main",
+        {makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 0, 0,
+                     "f32", {4}),
+         makeBinding(wafer::compiler::ProgramResourceRole::Parameter, 1, 1,
+                     "f16", {2})},
+        wafer::compiler::TransportContract::None));
   }
   llvm::Expected<wafer::compiler::CardExecutable> executable =
       wafer::compiler::CardExecutableBuilder::makeCardExecutable(
@@ -552,9 +575,9 @@ TEST(TargetCodeGenTest,
   llvm::SmallString<256> packageDirectory = temporaryDirectory;
   llvm::sys::path::append(packageDirectory, "package");
   llvm::Expected<wafer::compiler::VerifiedPackage> package =
-      wafer::compiler::detail::writePackage(
-          temporaryDirectory, *executable, *targetModules, packageDirectory,
-          diagnostics, std::nullopt);
+      wafer::compiler::detail::writePackage(temporaryDirectory, *executable,
+                                            *targetModules, packageDirectory,
+                                            diagnostics, std::nullopt);
   ASSERT_TRUE(static_cast<bool>(package))
       << diagnosticsStorage << llvm::toString(package.takeError());
   const wafer::runtime::PackageManifest &manifest =
@@ -562,13 +585,14 @@ TEST(TargetCodeGenTest,
 
   // Program-tensor ids are discovery-ordered: bias (ordinal 0) is id 0 and
   // weight is id 1. The canonical placement therefore sorts
-  // [bias-Tensor (id 0, offset 0, 8 bytes), weight-Tensor (id 1, offset 64,
-  // 16 bytes), weight-Cx (id 2, offset 128, 256 bytes)].
+  // [bias-BF16-Tensor (id 0, offset 0, 4 bytes), weight-Tensor (id 1, offset
+  // 64, 16 bytes), weight-Cx (id 2, offset 128, 256 bytes)].
   ASSERT_EQ(manifest.targetTensors.size(), 3u);
   EXPECT_EQ(manifest.targetTensors[0].programTensor.getValue(), 0u);
   EXPECT_EQ(manifest.targetTensors[0].layout,
             wafer::runtime::PackageMemLayout::Tensor);
-  EXPECT_EQ(manifest.targetTensors[0].bytes, 8u);
+  EXPECT_EQ(manifest.targetTensors[0].dtype, "bf16");
+  EXPECT_EQ(manifest.targetTensors[0].bytes, 4u);
   EXPECT_EQ(manifest.targetTensors[0].fileOffset, 0u);
   EXPECT_EQ(manifest.targetTensors[1].programTensor.getValue(), 1u);
   EXPECT_EQ(manifest.targetTensors[1].layout,
@@ -591,17 +615,15 @@ TEST(TargetCodeGenTest,
        manifest.entries) {
     ASSERT_EQ(entry.arguments.size(), 4u);
     for (size_t ordinal = 0; ordinal < 3; ++ordinal) {
-      const auto *argument =
-          std::get_if<wafer::runtime::TargetTensorArgument>(
-              &entry.arguments[ordinal].reference);
+      const auto *argument = std::get_if<wafer::runtime::TargetTensorArgument>(
+          &entry.arguments[ordinal].reference);
       ASSERT_NE(argument, nullptr);
       EXPECT_EQ(argument->tensor.getValue(), expectedReferences[ordinal]);
     }
   }
 
-  // Exact program-data bytes: weight payload at [0,16), zero padding to 64,
-  // the blocked Cx representation at [64,80) with canonical zero block
-  // padding to 320, and the bias payload at [320,328).
+  // Exact program-data bytes: converted bias BF16 at [0,4), weight payload at
+  // [64,80), and blocked Cx weight at [128,144), with canonical zero padding.
   llvm::SmallString<256> programDataPath(packageDirectory);
   llvm::sys::path::append(programDataPath, "data", "program-data.bin");
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
@@ -610,21 +632,28 @@ TEST(TargetCodeGenTest,
   ASSERT_TRUE(static_cast<bool>(buffer));
   llvm::StringRef content = (*buffer)->getBuffer();
   ASSERT_EQ(content.size(), 384u);
-  EXPECT_EQ(content.slice(0, 8),
-            llvm::StringRef(reinterpret_cast<const char *>(biasPayload.data()),
-                            biasPayload.size()));
-  EXPECT_TRUE(content.slice(8, 64).find_first_not_of('\0') ==
+  const uint8_t expectedBiasBF16[] = {0x80, 0x3f, 0x00, 0x40};
+  EXPECT_EQ(content.slice(0, 4),
+            llvm::StringRef(reinterpret_cast<const char *>(expectedBiasBF16),
+                            sizeof(expectedBiasBF16)));
+  EXPECT_TRUE(content.slice(4, 64).find_first_not_of('\0') ==
               llvm::StringRef::npos);
-  EXPECT_EQ(content.slice(64, 80),
-            llvm::StringRef(reinterpret_cast<const char *>(weightPayload.data()),
-                            weightPayload.size()));
+  EXPECT_EQ(
+      content.slice(64, 80),
+      llvm::StringRef(reinterpret_cast<const char *>(weightPayload.data()),
+                      weightPayload.size()));
   EXPECT_TRUE(content.slice(80, 128).find_first_not_of('\0') ==
               llvm::StringRef::npos);
-  EXPECT_EQ(content.slice(128, 144),
-            llvm::StringRef(reinterpret_cast<const char *>(weightPayload.data()),
-                            weightPayload.size()));
+  EXPECT_EQ(
+      content.slice(128, 144),
+      llvm::StringRef(reinterpret_cast<const char *>(weightPayload.data()),
+                      weightPayload.size()));
   EXPECT_TRUE(content.slice(144, 384).find_first_not_of('\0') ==
               llvm::StringRef::npos);
+  EXPECT_EQ(executable->getProgramDataHandoff()
+                .getIOStatistics()
+                .rangeMaterializations,
+            3u);
 }
 
 TEST(TargetCodeGenTest, PackageSlotLegalityIgnoresDiagnosticNames) {
@@ -645,16 +674,11 @@ TEST(TargetCodeGenTest, PackageSlotLegalityIgnoresDiagnosticNames) {
       userInput, binding));
 
   wafer::compiler::TileEntryArgument workspace{
-      1,
-      wafer::compiler::TileEntryArgumentKind::Workspace,
-      0,
-      "renamed_workspace",
-      "u8",
-      wafer::MemLayout::Tensor,
-      {64},
-      64,
-      64,
-      wafer::compiler::TileEntryArgumentAccess::ReadWrite};
+      1,    wafer::compiler::TileEntryArgumentKind::Workspace,
+      0,    "renamed_workspace",
+      "u8", wafer::MemLayout::Tensor,
+      {64}, 64,
+      64,   wafer::compiler::TileEntryArgumentAccess::ReadWrite};
   EXPECT_TRUE(
       wafer::compiler::detail::isValidPackageCompilerManagedSlot(workspace));
   workspace.name = "another_workspace_label";
@@ -690,8 +714,9 @@ TEST(TargetCodeGenTest, PackageSlotLegalityIgnoresDiagnosticNames) {
   EXPECT_FALSE(wafer::compiler::detail::isValidPackageCompilerManagedSlot(
       profileWorkspace));
 
-  wafer::compiler::TileEntryArgument status = makeSlot(
-      2, wafer::compiler::TileEntryArgumentKind::TransportStatus, "renamed_status");
+  wafer::compiler::TileEntryArgument status =
+      makeSlot(2, wafer::compiler::TileEntryArgumentKind::TransportStatus,
+               "renamed_status");
   EXPECT_TRUE(
       wafer::compiler::detail::isValidPackageCompilerManagedSlot(status));
   status.alignment = 8;
@@ -1052,13 +1077,14 @@ TEST(TargetCodeGenTest,
   EXPECT_FALSE(static_cast<bool>(
       wafer::compiler::detail::validateRuntimeLaunchContractDomainForTesting(
           *gridWithTransport)));
-  EXPECT_EQ(llvm::count_if(
-                gridWithTransport->getModules().front().getTileEntryArguments(),
-                [](const wafer::compiler::TileEntryArgument &slot) {
-                  return slot.kind ==
-                         wafer::compiler::TileEntryArgumentKind::TransportStatus;
-                }),
-            1);
+  EXPECT_EQ(
+      llvm::count_if(
+          gridWithTransport->getModules().front().getTileEntryArguments(),
+          [](const wafer::compiler::TileEntryArgument &slot) {
+            return slot.kind ==
+                   wafer::compiler::TileEntryArgumentKind::TransportStatus;
+          }),
+      1);
 
   llvm::Expected<wafer::compiler::TargetLLVMModules> clusterWithoutTransport =
       makeRuntimeLaunchModules(
@@ -1087,8 +1113,7 @@ TEST(TargetCodeGenTest, KernelArgumentPacketLimitIsCheckedBeforeDeviceLink) {
     llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
         makeRuntimeLaunchModules(std::move(launch),
                                  wafer::compiler::TransportContract::None,
-                                 std::nullopt, std::nullopt,
-                                 slotCount);
+                                 std::nullopt, std::nullopt, slotCount);
     EXPECT_TRUE(static_cast<bool>(targetLLVMModules));
     if (!targetLLVMModules)
       return targetLLVMModules.takeError();
@@ -1167,8 +1192,7 @@ TEST(TargetCodeGenTest,
       std::string::npos);
 }
 
-TEST(TargetCodeGenTest,
-     KernelAggregationDispatchesTileToExplicitLaunchSlot) {
+TEST(TargetCodeGenTest, KernelAggregationDispatchesTileToExplicitLaunchSlot) {
   llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Grid,
@@ -1191,10 +1215,8 @@ TEST(TargetCodeGenTest,
   aggregate->module->print(output, nullptr);
   output.flush();
 
-  EXPECT_NE(ir.find("i32 1, label %tile.1.launch_slot.0"),
-            std::string::npos);
-  EXPECT_NE(ir.find("i32 0, label %tile.0.launch_slot.1"),
-            std::string::npos);
+  EXPECT_NE(ir.find("i32 1, label %tile.1.launch_slot.0"), std::string::npos);
+  EXPECT_NE(ir.find("i32 0, label %tile.0.launch_slot.1"), std::string::npos);
   EXPECT_NE(ir.find("%launch_slot.0.row.address = getelementptr inbounds i64, "
                     "ptr %tile_row_pointers, i64 0"),
             std::string::npos);
@@ -1213,7 +1235,7 @@ TEST(TargetCodeGenTest,
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Cluster),
           wafer::compiler::TransportContract::DirectDTE, std::nullopt,
-          std::nullopt,           /*slotCount=*/2, /*withCollidingClosure=*/true,
+          std::nullopt, /*slotCount=*/2, /*withCollidingClosure=*/true,
           /*withUnsupportedInlineAsm=*/false,
           /*renamedSlotTile=*/7);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
@@ -1322,7 +1344,7 @@ TEST(TargetCodeGenTest, KernelAggregationRejectsUnsupportedLinkConstructs) {
       makeRuntimeLaunchModules(
           makeKernelLaunch(wafer::KernelLaunchForm::Cluster),
           wafer::compiler::TransportContract::DirectDTE, std::nullopt,
-          std::nullopt,           /*slotCount=*/2, /*withCollidingClosure=*/false,
+          std::nullopt, /*slotCount=*/2, /*withCollidingClosure=*/false,
           /*withUnsupportedInlineAsm=*/true);
   ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
       << llvm::toString(targetLLVMModules.takeError());
@@ -1399,7 +1421,7 @@ TEST(TargetCodeGenTest,
     llvm::Expected<wafer::compiler::TargetLLVMModules> targetLLVMModules =
         makeRuntimeLaunchModules(launch, scenario.transport, std::nullopt,
                                  std::nullopt,
-                                                                  /*slotCount=*/2,
+                                 /*slotCount=*/2,
                                  /*withCollidingClosure=*/false,
                                  /*withUnsupportedInlineAsm=*/false,
                                  /*renamedSlotTile=*/7);
@@ -1560,11 +1582,12 @@ TEST(TargetCodeGenTest,
     }));
     EXPECT_EQ(
         llvm::count_if(
-            manifest.entries, [](const auto &entry) {
+            manifest.entries,
+            [](const auto &entry) {
               return llvm::any_of(entry.arguments, [](const auto &argument) {
-                if (const auto *profile = std::get_if<
-                        wafer::runtime::ProfileRecordArgument>(
-                        &argument.reference))
+                if (const auto *profile =
+                        std::get_if<wafer::runtime::ProfileRecordArgument>(
+                            &argument.reference))
                   return profile->bytes ==
                          WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES;
                 return false;
@@ -1574,17 +1597,14 @@ TEST(TargetCodeGenTest,
     for (const wafer::runtime::PackageEntrypointRecord &entry :
          manifest.entries) {
       ASSERT_FALSE(entry.arguments.empty());
-      EXPECT_TRUE(std::holds_alternative<
-                  wafer::runtime::ExternalInputArgument>(
+      EXPECT_TRUE(std::holds_alternative<wafer::runtime::ExternalInputArgument>(
           entry.arguments.front().reference));
-      EXPECT_TRUE(std::holds_alternative<
-                  wafer::runtime::ProfileRecordArgument>(
+      EXPECT_TRUE(std::holds_alternative<wafer::runtime::ProfileRecordArgument>(
           entry.arguments.back().reference));
-      EXPECT_EQ(
-          std::get<wafer::runtime::ProfileRecordArgument>(
-              entry.arguments.back().reference)
-              .bytes,
-          WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
+      EXPECT_EQ(std::get<wafer::runtime::ProfileRecordArgument>(
+                    entry.arguments.back().reference)
+                    .bytes,
+                WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
       EXPECT_EQ(
           std::holds_alternative<
               wafer::runtime::DirectDTETransportRequirements>(entry.transport),

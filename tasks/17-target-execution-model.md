@@ -2,8 +2,9 @@
 
 状态：当前模型是 owner-backed target LLVM/TargetCall 上的 untimed functional-event model。它验证target语义、physical
 Tile交互和完整输出，不是accepted IR解释器、runtime ABI替代品或cycle model。动态任务状态只看
-`tasks/progress.md`；Q58/Q56的program-data ownership与target representation复用合同尚未实现，现有model能力必须由current `CardExecutable` source vertical
-重新证明，不能沿用旧执行域结论。
+`tasks/progress.md`；Q58已经闭合program-data ownership，Q56已把compiler/package侧target representation合同推进到
+`board-ready`；model仍是独立的typed invocation consumer，必须由current `CardExecutable` source vertical重新证明，不能沿用旧执行域
+结论或把package结果代签model能力。
 
 ## 1. Pipeline Contract
 
@@ -51,10 +52,10 @@ card级`TargetTensor`、input/output由card共享，workspace/status由Tile独�
 16个Tile entry arguments绑定同一base；input physical bytes与argument values由prepared invocation拥有，不alias source
 NPY storage。这里的model-private memory只服务functional model，不定义package中的provider allocation identity。
 
-Q58/Q56完成后，parameter/external captured-constant不得经per-Tile invocation重新打开或读取。model直接消费compiler
-transaction持有的`ProgramDataRange`和已选`TargetTensor`，对每个`TargetTensor`执行一次bounded codec，并让引用它的
-`TileEntryArgument`共享同一model-private bytes。profile、package和model可以复用同一transaction内已经验证的
-materialization owner，但不能各自从source bytes重新转换；相同digest不合并不同`ProgramTensor`或不同target representation。
+Q58/Q56 current合同下，parameter/external captured-constant不得经per-Tile invocation重新打开或读取。当前model先从同一
+`ProgramDataHandoff`形成typed `ProgramTileInvocation`，再按explicit `TileEntryArgument`建立model-private bytes；它不得读取package
+文件或重新解释manifest。后续若让model与package共享materialization owner，必须保持每个selected representation一次转换和
+bounded window合同；相同digest仍不能合并不同`ProgramTensor`或不同target representation。
 
 ### 2.2 Explicit physical identity
 

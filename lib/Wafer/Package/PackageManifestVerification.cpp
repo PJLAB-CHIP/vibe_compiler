@@ -3,7 +3,8 @@
 #include "PackageManifestInternal.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Runtime/ProfileInstrumentation.h"
+#include "Wafer/Package/ProfileInstrumentationModel.h"
+#include "Wafer/Target/PhysicalTensorCodec.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -69,9 +70,54 @@ bool isValidRelativePath(llvm::StringRef path) {
   });
 }
 
-bool isValidShape(llvm::ArrayRef<int64_t> shape, const PackageParseLimits &limits) {
+bool isValidShape(llvm::ArrayRef<int64_t> shape,
+                  const PackageParseLimits &limits) {
   return shape.size() <= limits.maxShapeRank &&
          llvm::all_of(shape, [](int64_t dimension) { return dimension >= 0; });
+}
+
+llvm::Expected<NumericTensorKey>
+makePackageTensorKey(llvm::StringRef dtype, PackageMemLayout layout,
+                     llvm::ArrayRef<int64_t> shape, llvm::StringRef owner) {
+  llvm::Expected<LogicalFormat> format = parseLogicalFormat(dtype);
+  if (!format)
+    return invalid(llvm::Twine(owner) + " has an unknown logical dtype '" +
+                   dtype + "'");
+  std::vector<uint64_t> unsignedShape;
+  unsignedShape.reserve(shape.size());
+  for (int64_t dimension : shape) {
+    if (dimension < 0)
+      return invalid(llvm::Twine(owner) + " has a negative tensor dimension");
+    unsignedShape.push_back(static_cast<uint64_t>(dimension));
+  }
+  llvm::Expected<NumericTensorKey> key = NumericTensorKey::create(
+      *format, getPhysicalTensorLayout(layout), std::move(unsignedShape));
+  if (!key)
+    return invalid(llvm::Twine(owner) +
+                   " is rejected by the physical tensor codec: " +
+                   llvm::toString(key.takeError()));
+  return key;
+}
+
+llvm::Expected<uint64_t>
+verifyPhysicalTensorDescriptor(llvm::StringRef dtype, PackageMemLayout layout,
+                               llvm::ArrayRef<int64_t> shape, uint64_t bytes,
+                               llvm::StringRef owner) {
+  llvm::Expected<NumericTensorKey> key =
+      makePackageTensorKey(dtype, layout, shape, owner);
+  if (!key)
+    return key.takeError();
+  llvm::Expected<uint64_t> expectedBytes = getPhysicalTensorStorageBytes(*key);
+  if (!expectedBytes)
+    return invalid(llvm::Twine(owner) + " physical geometry is invalid: " +
+                   llvm::toString(expectedBytes.takeError()));
+  if (*expectedBytes != bytes)
+    return invalid(llvm::Twine(owner) +
+                   " byte count disagrees with the physical tensor "
+                   "codec (expected " +
+                   llvm::Twine(*expectedBytes) + ", got " + llvm::Twine(bytes) +
+                   ")");
+  return key->getElementCount();
 }
 
 llvm::Expected<std::string> digestFile(llvm::StringRef path) {
@@ -100,8 +146,8 @@ bool hasDenseIds(const Range &records, Projection projection) {
   return llvm::all_of(seen, [](bool value) { return value; });
 }
 
-PackageAccessMode expectedArgumentAccess(
-    const TileEntryArgumentReference &reference) {
+PackageAccessMode
+expectedArgumentAccess(const TileEntryArgumentReference &reference) {
   if (std::holds_alternative<ExternalInputArgument>(reference) ||
       std::holds_alternative<TargetTensorArgument>(reference))
     return PackageAccessMode::ReadOnly;
@@ -124,9 +170,8 @@ llvm::Error verifyProgramData(const PackageManifest &manifest,
       llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
                                   /*RequiresNullTerminator=*/false);
   if (!buffer)
-    return llvm::createStringError(buffer.getError(),
-                                   "failed to read package program data: " +
-                                       path);
+    return llvm::createStringError(
+        buffer.getError(), "failed to read package program data: " + path);
   llvm::SHA256 hasher;
   hasher.update((*buffer)->getBuffer());
   const std::string digest =
@@ -140,7 +185,7 @@ llvm::Error verifyProgramData(const PackageManifest &manifest,
           "empty package program data must record zero bytes and unit "
           "alignment");
     if (digest != "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4"
-                 "95991b7852b855")
+                  "95991b7852b855")
       return invalid("empty package program data must be the canonical empty "
                      "file");
     return llvm::Error::success();
@@ -158,21 +203,20 @@ llvm::Error verifyProgramData(const PackageManifest &manifest,
   // padding and byte accounting follow it exactly.
   llvm::SmallVector<TargetTensorRecord, 4> canonical(
       manifest.targetTensors.begin(), manifest.targetTensors.end());
-  llvm::sort(canonical, [](const TargetTensorRecord &lhs,
-                           const TargetTensorRecord &rhs) {
-    return std::tie(lhs.programTensor, lhs.dtype, lhs.layout, lhs.shape,
-                    lhs.bytes, lhs.alignment) <
-           std::tie(rhs.programTensor, rhs.dtype, rhs.layout, rhs.shape,
-                    rhs.bytes, rhs.alignment);
-  });
+  llvm::sort(canonical,
+             [](const TargetTensorRecord &lhs, const TargetTensorRecord &rhs) {
+               return std::tie(lhs.programTensor, lhs.dtype, lhs.layout,
+                               lhs.shape, lhs.bytes, lhs.alignment) <
+                      std::tie(rhs.programTensor, rhs.dtype, rhs.layout,
+                               rhs.shape, rhs.bytes, rhs.alignment);
+             });
   uint64_t cursor = 0;
   uint64_t baseAlignment = 1;
   auto verifyZeroPadding = [&](uint64_t offset, uint64_t bytes) -> llvm::Error {
     constexpr uint64_t kWindowBytes = 1 << 20;
     uint64_t checked = 0;
     while (checked < bytes) {
-      const uint64_t chunk =
-          std::min<uint64_t>(kWindowBytes, bytes - checked);
+      const uint64_t chunk = std::min<uint64_t>(kWindowBytes, bytes - checked);
       if (llvm::StringRef(content)
               .slice(offset + checked, offset + checked + chunk)
               .find_first_not_of('\0') != llvm::StringRef::npos)
@@ -185,18 +229,15 @@ llvm::Error verifyProgramData(const PackageManifest &manifest,
     if (tensor.id.getValue() != static_cast<uint64_t>(index))
       return invalid(
           "package target tensor ids do not follow the canonical order");
-    if (cursor > std::numeric_limits<uint64_t>::max() -
-                     (tensor.alignment - 1))
+    if (cursor > std::numeric_limits<uint64_t>::max() - (tensor.alignment - 1))
       return invalid("package program data offset overflows");
-    const uint64_t alignedCursor =
-        llvm::alignTo(cursor, tensor.alignment);
+    const uint64_t alignedCursor = llvm::alignTo(cursor, tensor.alignment);
     if (alignedCursor < cursor)
       return invalid("package target tensor ranges overlap");
     if (tensor.fileOffset != alignedCursor)
       return invalid("package target tensor offset is not canonical");
     if (alignedCursor > cursor) {
-      if (llvm::Error error =
-              verifyZeroPadding(cursor, alignedCursor - cursor))
+      if (llvm::Error error = verifyZeroPadding(cursor, alignedCursor - cursor))
         return error;
     }
     if (tensor.bytes > std::numeric_limits<uint64_t>::max() - alignedCursor)
@@ -207,11 +248,9 @@ llvm::Error verifyProgramData(const PackageManifest &manifest,
   if (programData.totalBytes < cursor)
     return invalid("package program data is shorter than the canonical "
                    "placement");
-  if (programData.totalBytes > cursor) {
-    if (llvm::Error error =
-            verifyZeroPadding(cursor, programData.totalBytes - cursor))
-      return error;
-  }
+  if (programData.totalBytes > cursor)
+    return invalid("package program data has trailing bytes after the "
+                   "canonical placement");
   if (programData.baseAlignment != baseAlignment)
     return invalid("package program data base alignment is not canonical");
   return llvm::Error::success();
@@ -283,14 +322,12 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
 
   const size_t firstTransportKind = first.transport.index();
   for (int64_t launchSlot = 0; launchSlot < manifest.tileCount; ++launchSlot) {
-    const PackageEntrypointRecord &entry =
-        *entriesByLaunchSlot[launchSlot];
+    const PackageEntrypointRecord &entry = *entriesByLaunchSlot[launchSlot];
     const PackageModuleRecord *module =
         findModule(manifest.modules, entry.module);
     const PackageModuleExportRecord *main =
-        module
-            ? findModuleExport(*module, PackageModuleExportRole::Main)
-            : nullptr;
+        module ? findModuleExport(*module, PackageModuleExportRole::Main)
+               : nullptr;
     if (!module || !main)
       return invalid("runtime launch entry has no typed main export");
     if (entry.transport.index() != firstTransportKind)
@@ -319,7 +356,15 @@ llvm::Error verifyRuntimeLaunchContract(const PackageManifest &manifest) {
 
 llvm::Error verifyModuleFiles(const PackageManifest &manifest,
                               llvm::StringRef packageRoot) {
+  llvm::SmallString<256> modulesRoot(packageRoot);
+  llvm::sys::path::append(modulesRoot, "modules");
+  if (llvm::sys::fs::get_file_type(modulesRoot, /*Follow=*/false) !=
+      llvm::sys::fs::file_type::directory_file)
+    return invalid("package modules directory is missing or not a directory");
+
   llvm::StringSet<> expectedPaths;
+  llvm::StringSet<> expectedDirectories;
+  expectedDirectories.insert(modulesRoot);
   for (const PackageModuleRecord &module : manifest.modules) {
     llvm::SmallString<256> path(packageRoot);
     llvm::sys::path::append(path, module.relativePath);
@@ -329,13 +374,15 @@ llvm::Error verifyModuleFiles(const PackageManifest &manifest,
     if (*digest != module.digest)
       return invalid("package module digest mismatch: " + module.relativePath);
     expectedPaths.insert(path);
+    llvm::SmallString<256> parent(path);
+    llvm::sys::path::remove_filename(parent);
+    while (parent != modulesRoot) {
+      if (parent.size() <= modulesRoot.size())
+        return invalid("package module path escapes the modules directory");
+      expectedDirectories.insert(parent);
+      llvm::sys::path::remove_filename(parent);
+    }
   }
-
-  llvm::SmallString<256> modulesRoot(packageRoot);
-  llvm::sys::path::append(modulesRoot, "modules");
-  if (llvm::sys::fs::get_file_type(modulesRoot, /*Follow=*/false) !=
-      llvm::sys::fs::file_type::directory_file)
-    return invalid("package modules directory is missing or not a directory");
 
   std::error_code error;
   for (llvm::sys::fs::recursive_directory_iterator
@@ -345,8 +392,12 @@ llvm::Error verifyModuleFiles(const PackageManifest &manifest,
     if (error)
       return invalid("failed to walk package modules: " + error.message());
     llvm::sys::fs::file_type type = iterator->type();
-    if (type == llvm::sys::fs::file_type::directory_file)
+    if (type == llvm::sys::fs::file_type::directory_file) {
+      if (!expectedDirectories.contains(iterator->path()))
+        return invalid("package modules contain an undeclared directory: " +
+                       iterator->path());
       continue;
+    }
     if (type != llvm::sys::fs::file_type::regular_file)
       return invalid("package modules contain a non-regular member");
     if (!expectedPaths.contains(iterator->path()))
@@ -373,14 +424,12 @@ llvm::Error verifyPackageRoot(const PackageManifest &manifest,
   constexpr llvm::StringLiteral kDataDirectory = "data";
   constexpr llvm::StringLiteral kProgramDataName = "program-data.bin";
   std::set<std::string> allowedRootMembers = {
-      (packageRoot + llvm::sys::path::get_separator() + kManifestName)
-          .str()};
+      (packageRoot + llvm::sys::path::get_separator() + kManifestName).str()};
   allowedRootMembers.insert(
       (packageRoot + llvm::sys::path::get_separator() + kModulesDirectory)
           .str());
   allowedRootMembers.insert(
-      (packageRoot + llvm::sys::path::get_separator() + kDataDirectory)
-          .str());
+      (packageRoot + llvm::sys::path::get_separator() + kDataDirectory).str());
 
   llvm::SmallString<256> manifestPath(packageRoot);
   llvm::sys::path::append(manifestPath, kManifestName);
@@ -438,7 +487,6 @@ llvm::Error verifyPackageRoot(const PackageManifest &manifest,
     return invalid("failed to walk package data directory: " + error.message());
   return llvm::Error::success();
 }
-
 
 } // namespace detail
 
@@ -502,6 +550,8 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
              [](const auto &lhs, const auto &rhs) { return lhs.id < rhs.id; });
 
   std::set<std::pair<ProgramTensorRole, int64_t>> programTensorRoles;
+  std::vector<uint64_t> programTensorElementCounts(
+      manifest.programTensors.size(), 0);
   for (const ProgramTensorRecord &tensor : manifest.programTensors) {
     if (tensor.roleIndex < 0 ||
         tensor.roleIndex > std::numeric_limits<uint32_t>::max() ||
@@ -515,8 +565,19 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
         tensor.localShape != tensor.sliceSizes)
       return invalid("package program tensor has invalid identity or shape");
     if (!programTensorRoles.insert({tensor.role, tensor.roleIndex}).second)
-      return invalid(
-          "package program tensor role/index is duplicated");
+      return invalid("package program tensor role/index is duplicated");
+    llvm::Expected<NumericTensorKey> localKey = makePackageTensorKey(
+        tensor.dtype, PackageMemLayout::Tensor, tensor.localShape,
+        "package program tensor local descriptor");
+    if (!localKey)
+      return localKey.takeError();
+    llvm::Expected<NumericTensorKey> globalKey = makePackageTensorKey(
+        tensor.dtype, PackageMemLayout::Tensor, tensor.globalShape,
+        "package program tensor global descriptor");
+    if (!globalKey)
+      return globalKey.takeError();
+    programTensorElementCounts[tensor.id.getValue()] =
+        localKey->getElementCount();
   }
 
   std::set<std::tuple<ProgramTensorId, std::string, PackageMemLayout,
@@ -528,7 +589,8 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
                      "tensor");
     if (tensor.dtype.empty() || tensor.dtype.size() > limits.maxStringBytes ||
         !isValidShape(tensor.shape, limits) || tensor.bytes == 0 ||
-        tensor.bytes > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
+        tensor.bytes >
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
         tensor.alignment == 0 || !isPowerOfTwo(tensor.alignment) ||
         tensor.fileOffset % tensor.alignment != 0)
       return invalid("package target tensor has invalid descriptor or offset");
@@ -537,6 +599,15 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
                       tensor.shape, tensor.bytes, tensor.alignment})
              .second)
       return invalid("package target tensor descriptors are duplicated");
+    llvm::Expected<uint64_t> elementCount = verifyPhysicalTensorDescriptor(
+        tensor.dtype, tensor.layout, tensor.shape, tensor.bytes,
+        "package target tensor descriptor");
+    if (!elementCount)
+      return elementCount.takeError();
+    if (*elementCount !=
+        programTensorElementCounts[tensor.programTensor.getValue()])
+      return invalid("package target tensor element count disagrees with its "
+                     "program tensor");
     if (tensor.fileOffset >
             std::numeric_limits<uint64_t>::max() - tensor.bytes ||
         tensor.fileOffset + tensor.bytes > manifest.programData.totalBytes)
@@ -556,6 +627,20 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
         port.alignment == 0 || !isPowerOfTwo(port.alignment))
       return invalid("package input port has invalid descriptor");
+    llvm::Expected<NumericTensorKey> logicalKey = makePackageTensorKey(
+        port.logicalDtype, PackageMemLayout::Tensor, port.logicalShape,
+        "package input logical descriptor");
+    if (!logicalKey)
+      return logicalKey.takeError();
+    llvm::Expected<uint64_t> physicalElementCount =
+        verifyPhysicalTensorDescriptor(port.dtype, port.layout, port.shape,
+                                       port.bytes,
+                                       "package input target descriptor");
+    if (!physicalElementCount)
+      return physicalElementCount.takeError();
+    if (*physicalElementCount != logicalKey->getElementCount())
+      return invalid("package input logical and target element counts "
+                     "disagree");
     if (!inputRoleIndices.insert(port.roleIndex).second)
       return invalid("package input port role index is duplicated");
   }
@@ -572,6 +657,20 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
         port.alignment == 0 || !isPowerOfTwo(port.alignment))
       return invalid("package output port has invalid descriptor");
+    llvm::Expected<NumericTensorKey> logicalKey = makePackageTensorKey(
+        port.logicalDtype, PackageMemLayout::Tensor, port.logicalShape,
+        "package output logical descriptor");
+    if (!logicalKey)
+      return logicalKey.takeError();
+    llvm::Expected<uint64_t> physicalElementCount =
+        verifyPhysicalTensorDescriptor(port.dtype, port.layout, port.shape,
+                                       port.bytes,
+                                       "package output target descriptor");
+    if (!physicalElementCount)
+      return physicalElementCount.takeError();
+    if (*physicalElementCount != logicalKey->getElementCount())
+      return invalid("package output logical and target element counts "
+                     "disagree");
     if (!outputRoleIndices.insert(port.roleIndex).second)
       return invalid("package output port role index is duplicated");
   }
@@ -626,8 +725,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
             static_cast<uint64_t>(manifest.tileCount) ||
         seenLaunchSlots[entry.launchSlot.getValue()] ||
         !seenTileIds.insert(entry.tileId.getValue()).second ||
-        entry.completion !=
-            PackageEntryCompletionKind::ReturnAfterLocalDrain)
+        entry.completion != PackageEntryCompletionKind::ReturnAfterLocalDrain)
       return invalid("package entry Tile domain is invalid");
     seenLaunchSlots[entry.launchSlot.getValue()] = true;
     const PackageModuleRecord *module =
@@ -653,8 +751,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
                      std::get_if<TargetTensorArgument>(&argument.reference)) {
         if (!reference->tensor.isValid() ||
             reference->tensor.getValue() >= targetTensorReferenceCounts.size())
-          return invalid(
-              "package entry references a missing TargetTensor");
+          return invalid("package entry references a missing TargetTensor");
         ++targetTensorReferenceCounts[reference->tensor.getValue()];
       } else if (const auto *reference =
                      std::get_if<ExternalOutputArgument>(&argument.reference)) {
@@ -672,9 +769,8 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
                      argument.reference)) {
         const auto &profile =
             std::get<ProfileRecordArgument>(argument.reference);
-        if (profile.recordABI != kProfileRecordABI ||
-            profile.bytes == 0 || profile.alignment == 0 ||
-            !isPowerOfTwo(profile.alignment) ||
+        if (profile.recordABI != kProfileRecordABI || profile.bytes == 0 ||
+            profile.alignment == 0 || !isPowerOfTwo(profile.alignment) ||
             profile.alignment != WAFER_TX81_PROFILER_BUFFER_ALIGNMENT ||
             (profile.bytes != WAFER_TX81_PROFILER_MIN_BUFFER_BYTES &&
              profile.bytes != WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES))
@@ -700,8 +796,8 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
     } else {
       const auto &requirements =
           std::get<DirectDTETransportRequirements>(entry.transport);
-      const auto statusCount = llvm::count_if(
-          entry.arguments, [](const auto &argument) {
+      const auto statusCount =
+          llvm::count_if(entry.arguments, [](const auto &argument) {
             return std::holds_alternative<TransportStatusArgument>(
                 argument.reference);
           });

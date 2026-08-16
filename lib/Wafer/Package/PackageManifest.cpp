@@ -33,14 +33,16 @@ findModuleExport(const PackageModuleRecord &module,
 }
 
 const ProgramTensorRecord *
-findProgramTensor(llvm::ArrayRef<ProgramTensorRecord> tensors, ProgramTensorId id) {
+findProgramTensor(llvm::ArrayRef<ProgramTensorRecord> tensors,
+                  ProgramTensorId id) {
   auto iterator = llvm::find_if(
       tensors, [&](const auto &tensor) { return tensor.id == id; });
   return iterator == tensors.end() ? nullptr : &*iterator;
 }
 
 const TargetTensorRecord *
-findTargetTensor(llvm::ArrayRef<TargetTensorRecord> tensors, TargetTensorId id) {
+findTargetTensor(llvm::ArrayRef<TargetTensorRecord> tensors,
+                 TargetTensorId id) {
   auto iterator = llvm::find_if(
       tensors, [&](const auto &tensor) { return tensor.id == id; });
   return iterator == tensors.end() ? nullptr : &*iterator;
@@ -89,8 +91,21 @@ llvm::StringRef stringifyPackageMemLayout(PackageMemLayout layout) {
   llvm_unreachable("unknown package memory layout");
 }
 
-llvm::StringRef
-stringifyPackageModuleExportRole(PackageModuleExportRole role) {
+PhysicalTensorLayout getPhysicalTensorLayout(PackageMemLayout layout) {
+  switch (layout) {
+  case PackageMemLayout::Tensor:
+    return PhysicalTensorLayout::Tensor;
+  case PackageMemLayout::NTensor:
+    return PhysicalTensorLayout::NTensor;
+  case PackageMemLayout::Cx:
+    return PhysicalTensorLayout::Cx;
+  case PackageMemLayout::NCx:
+    return PhysicalTensorLayout::NCx;
+  }
+  llvm_unreachable("unknown package memory layout");
+}
+
+llvm::StringRef stringifyPackageModuleExportRole(PackageModuleExportRole role) {
   switch (role) {
   case PackageModuleExportRole::Prepare:
     return "prepare";

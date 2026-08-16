@@ -4,6 +4,7 @@
 
 #include "gtest/gtest.h"
 
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -27,6 +28,49 @@ NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
                             std::vector<uint64_t> shape) {
   return llvm::cantFail(
       NumericTensorKey::create(format, layout, std::move(shape)));
+}
+
+llvm::Expected<std::vector<uint8_t>>
+packWithWindows(const NumericTensorKey &key,
+                llvm::ArrayRef<RawLogicalValue> values, uint64_t maxBytes,
+                uint64_t maxValues, uint8_t paddingFill) {
+  llvm::Expected<PhysicalTensorWindowPlan> plan =
+      PhysicalTensorWindowPlan::create(key);
+  if (!plan)
+    return plan.takeError();
+  const LogicalScalarCodecPolicy policy =
+      getModelProfileRecord(ModelProfileId::formalDeterministic())
+          .numericEncodePolicy;
+  std::vector<uint8_t> result;
+  while (!plan->done()) {
+    llvm::Expected<PhysicalTensorWindowPlan::WriteWindow> window =
+        plan->takeNext(maxBytes, maxValues, paddingFill);
+    if (!window)
+      return window.takeError();
+    if (window->physicalOffset != result.size())
+      return llvm::createStringError(
+          llvm::errc::invalid_argument,
+          "physical window plan produced a non-contiguous span");
+    if (window->bytes.size() > maxBytes)
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "physical window exceeded byte budget");
+    for (const auto &element : window->elements) {
+      if (element.logicalIndex >= values.size())
+        return llvm::createStringError(
+            llvm::errc::invalid_argument,
+            "physical window referenced an unknown logical value");
+      if (llvm::Error error =
+              writeRawLogicalValue(values[element.logicalIndex], window->bytes,
+                                   element.windowBitOffset, policy))
+        return std::move(error);
+    }
+    result.insert(result.end(), window->bytes.begin(), window->bytes.end());
+  }
+  if (plan->getPlannedValueCount() != values.size())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "physical window plan did not cover every logical value");
+  return result;
 }
 
 TEST(PhysicalTensorCodecTest, CxRoundTripPreservesTemplatePadding) {
@@ -128,6 +172,49 @@ TEST(PhysicalTensorCodecTest, RejectsSizeCountAndEncodingMismatch) {
   values.back().format = LogicalFormat::I32;
   error = expectError(packPhysicalTensorLogicalValues(key, values, UINT8_C(0)));
   EXPECT_NE(error.find("invalid-logical-encoding"), std::string::npos);
+}
+
+TEST(PhysicalTensorCodecTest,
+     BoundedPhysicalOrderWindowsMatchFullCodecForBlockedAndBoolLayouts) {
+  struct Case {
+    LogicalFormat format;
+    PhysicalTensorLayout layout;
+    std::vector<uint64_t> shape;
+    uint64_t maxBytes;
+    uint64_t maxValues;
+  };
+  const std::vector<Case> cases = {
+      {LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 128}, 64, 16},
+      {LogicalFormat::F32, PhysicalTensorLayout::NCx, {2, 3, 128}, 68, 17},
+      {LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 65}, 30, 15},
+      {LogicalFormat::Bool, PhysicalTensorLayout::Tensor, {2, 5}, 1, 8},
+      {LogicalFormat::Bool, PhysicalTensorLayout::Cx, {2, 5}, 7, 56},
+      {LogicalFormat::Bool, PhysicalTensorLayout::NCx, {2, 3, 5}, 9, 72},
+  };
+  for (const Case &testCase : cases) {
+    NumericTensorKey key =
+        makeTensor(testCase.format, testCase.layout, testCase.shape);
+    std::vector<RawLogicalValue> values;
+    values.reserve(static_cast<size_t>(key.getElementCount()));
+    for (uint64_t index = 0; index < key.getElementCount(); ++index) {
+      const uint64_t bits = testCase.format == LogicalFormat::Bool
+                                ? index % 3 == 0
+                                : (testCase.format == LogicalFormat::F16
+                                       ? UINT64_C(0x3c00) + index
+                                       : UINT64_C(0x3f800000) + index);
+      values.push_back({testCase.format, bits});
+    }
+    llvm::Expected<std::vector<uint8_t>> full =
+        packPhysicalTensorLogicalValues(key, values, UINT8_C(0xa5));
+    ASSERT_TRUE(static_cast<bool>(full)) << llvm::toString(full.takeError());
+    llvm::Expected<std::vector<uint8_t>> bounded = packWithWindows(
+        key, values, testCase.maxBytes, testCase.maxValues, UINT8_C(0xa5));
+    ASSERT_TRUE(static_cast<bool>(bounded))
+        << llvm::toString(bounded.takeError());
+    EXPECT_EQ(*bounded, *full)
+        << "layout=" << stringifyPhysicalTensorLayout(testCase.layout).str()
+        << " format=" << stringifyLogicalFormat(testCase.format).str();
+  }
 }
 
 } // namespace
