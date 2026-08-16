@@ -233,7 +233,8 @@ Compiler package writing / Runtime / Model
 ### 5.1 Compiler library、产品工具与安装
 
 request/result/commit语义由01和15拥有，failure taxonomy由19拥有，frontend输入由02拥有；本节只规定它们如何落到library、
-tool与CMake依赖边界。Q59完成后的实现状态：
+tool与CMake依赖边界。Q59首轮实现已落下但代码review重开；以下是可继续复用的当前mechanics，不代表result ownership、
+ordinary/profile共同commit和所有错误出口已经满足completion gate，具体阻塞项只看其实施计划：
 
 - 唯一source-to-package entry是`wafer::compiler::compileProgram`，返回`llvm::Expected<CompilationResult>`：primary product为
   commit后按installed root readback的move-only `ExecutablePackage`，显式profile时另持有compiler-owned

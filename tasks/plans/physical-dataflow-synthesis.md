@@ -1,9 +1,10 @@
 # Physical Dataflow Synthesis 实施计划
 
 状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其search-policy隔离、结构不变量、scoped
-probe闭合和整图物化成本不属于已签发的正确性证据。Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure与
-Q59 compiler entry transaction均已闭合；当前先修复Q50.A production demand boundary，再由Q49.P在current
-source-to-package路径上闭合baseline functional legalization及policy/structure/probe/materialization隔离，之后建立
+probe闭合和整图物化成本不属于已签发的正确性证据。Q50.0无策略CardExecutable编译/准入边界与Q54 MLIR infrastructure
+已闭合；Q59 compiler entry transaction在代码review后重开，Q49.P继续等待其重新完成。当前先修复Q50.A production
+demand boundary，再由Q49.P在current source-to-package路径上闭合baseline functional legalization及
+policy/structure/probe/materialization隔离，之后建立
 Q51.Core共同状态、transition和actual-probe seam；随后让
 Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
@@ -1072,8 +1073,8 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 
 ## 提交与收尾
 
-1. Q58、Q56、Q59、Q50.0与Q54已由各自计划闭合；随后Q50.A、Q49.P、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、
-   Q52、Q60与Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
+1. Q58、Q56、Q50.0与Q54已达到各自当前门禁；Q59按其计划先闭合review阻塞项。随后Q50.A、Q49.P、Q51.Core、Q50.S、
+   Q50.B–Q50.K、Q51 closure、Q52、Q60与Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
 2. 每个 checkpoint 开始前记录将替换的旧 owner 调用链；提交前证明新调用链唯一，并只删除当前轴满足三项门禁的旧入口。
 3. 状态转换以 `tasks/progress.md` 为准；本计划不单独维护第二份动态状态表。
 4. 每项提交前运行 fresh 定向 build/test；端到端或主线 gate 还需确认 relevant lit/CTest 实际执行而非 skip/unsupported。

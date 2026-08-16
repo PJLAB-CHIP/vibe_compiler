@@ -10,6 +10,9 @@ Q59 `compiler-entry-transaction-closure` 在 Q58 完成且 Q56 达到 `board-rea
 `frontend-production-entry` 在 Q52、Q44 和 Q59 完成后执行。Q53 production readiness 增加 Q60 为直接前置，
 并只消费 Q60 交付的产品 frontend output；Q59/Q60 均不以测试 generator 或历史 package 代替完成证据。
 
+当前状态：Q59在2026-08-16代码review后由`done`重开为`doing`，review缺口和重新完成门禁见2.1节；Q60继续等待
+Q59及其其它直接前置闭合。
+
 ## 1. 拆分依据
 
 当前 source-to-package driver 已经拥有 source snapshot、frontend/SPMD 再验证、共享 named pipelines、
@@ -125,6 +128,45 @@ Pipeline position:
    Compilation/TargetCodeGen unit 28/28。工具测试矩阵见各测试与Q59 row；pre-existing外部缺口：
    `wafer-compile-structured-tensor-program.test`的32x32 dot输入被pinned XLA helper拒绝（helper调用byte-identical，与Q59无关）；
    `wafer-compile-spmd-partition.test`同一输入上search 45分钟+未收敛（候选序号持续增长，Q52 search cost范围）。）
+
+### 2.1 2026-08-16代码review重新打开（待修复）
+
+本轮review确认CLI current cutover、internal/production入口拆分、tool resolver和普通成功路径可以继续复用，但Q59的
+result ownership、commit与profile共同产品合同尚未闭合，因此任务恢复为`doing`。以下问题都属于Q59当前边界，不能转移给
+Q60、Q53或runtime consumer：
+
+1. **`ExecutablePackage`不拥有package成员。** current类型只保存canonical root字符串、`ExecutionConfig`和
+   `VerifiedPackageManifest`；strict loader用于manifest、module与program-data校验的`MemoryBuffer`在返回前已经销毁。
+   move-only和digest identity不能代替resource control，磁盘成员在result lifetime内仍可被删除或替换。这违反15号合同
+   “实际持有opened/mmap module/program-data members；随后按root重新打开不算ownership”的要求。重新完成时唯一current
+   semantic type必须直接RAII持有all-and-only verified成员，runtime/compiler不得再建立第二个verified wrapper。
+2. **最终发布之后仍存在可失败步骤。** transaction先把staged package（profile模式还包括instrumentation sibling）rename到
+   canonical output，再读取installed manifest/activation；任一readback失败都会返回`CompilationFailure(PackageCommit)`，但scope
+   cleanup只删除transaction staging root，不撤销已经可见的output。I/O错误、并发删除/替换或内部不变量错误因此都会产生
+   “返回失败且本轮目标仍可见”。重新完成必须让所有可能失败的validation在单一visibility point之前闭合；若仍需installed-path
+   binding，必须用明确事务状态和可测试恢复保证任一错误出口不泄漏本轮目标，不能用“只可能是compiler bug”免除合同。
+3. **ordinary/profile不是共同原子commit。** current helper先rename ordinary package，再rename `<output>.profile`；第二次返回失败时
+   可以best-effort把package移回staging，但两个独立rename之间仍存在partial visibility，进程退出或观察者读取时也无法回滚。
+   “两个rename各自原子”不等于“两个产品共同原子”。重新完成必须选择一个可被单次发布的共同owner/root，或形成等价的
+   current事务表示；不得让runtime靠等待、重试或猜测sibling完整性修补。
+4. **profile installed readback被result retention条件化。** `runCompilationTransaction`只有在
+   `retainedProfileProduct != nullptr`时调用`verifyCommittedProfileInstrumentation`；
+   `compileProgramWithTargetLLVMModules`始终传空指针，因此该internal API携带profile options时可以提交instrumentation并成功返回，
+   却没有验证installed activation binding。Validation必须由请求的产品集合决定，不能由caller是否保留某个返回字段决定；
+   不支持的internal组合应在commit前typed拒绝，支持的组合则必须走同一无条件验证。
+5. **committed类型在outer commit前构造。** package writer会为`transactionRoot/package`构造`ExecutablePackage`，
+   `stageExecutablePackage`随即丢弃它，outer transaction最终rename后再构造第二个对象。这样同一类型既表示staged package又表示
+   committed installed result，破坏类注释和public result依赖的类型不变量。Writer应返回窄的staged assembly/readback result，
+   只有唯一outer commit owner能构造committed `ExecutablePackage`。
+6. **新增typed failure没有直接测试。** 当前unit/lit没有消费`CompilationStage`或`CompilationFailure`，也没有注入最终commit后
+   manifest/activation readback失败；已有atomicity测试停在helper、IR、target/package assembly及rename竞争路径。因此常规路径通过
+   不能证明stage分类或“失败不留目标”。
+
+本轮review使用current HEAD fresh增量构建；`CompilationTest`、`CompilationOutputTest`和`TargetCodeGenTest`共26/26通过，
+request/internal-options/atomicity/install-relocate lit 4/4通过，source organization、dependency layering/consistency和diff check通过。
+这些结果只证明未触发上述缺陷的路径没有回归。Q59重新完成后必须新增能直接触发每个原问题的回归，fresh验证ordinary/profile
+library与CLI parity、source/helper/target/package/commit typed failure、existing/racing output、真实member lifetime、profile共同可见性、
+internal profile行为、install relocate和no-card；在此之前不得恢复`done`。
 
 ## 3. Q60：Frontend production entry
 

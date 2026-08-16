@@ -675,3 +675,24 @@
 - `llvm::errc`没有`state_not_recoverable`：内部不变量错误用`llvm::errc::operation_not_permitted`；
   `llvm::sys::path::append`最多接受path+3个组件，超过必须分两步append；`llvm::sys::path::join`不存在。
   编译期宏路径烘焙会在install后失效，外部工具/资源一律运行时发现。
+
+## Move-only path和digest不等于文件资源ownership
+
+- 现象：compiler返回的package对象被称为move-only owner，但字段只有root path、typed manifest和digest；strict readback临时打开的
+  module/program-data buffer在返回前已经销毁。对象仍可存活时，磁盘成员却能被删除或替换，后续consumer只能重新按path打开。
+- 根因：把不可复制的value identity误当成resource control。`move-only`只约束C++对象复制，digest只证明某次读取的内容；二者都不延长
+  file descriptor、mapping或immutable storage的lifetime。
+- 修复模式：若类型合同声明拥有文件成员，就用RAII直接持有all-and-only opened handle/mmap或等价不可变storage，并明确析构顺序；
+  只需要瞬时验证时则把类型命名和API收窄为verified manifest/snapshot，不得称为package owner。
+- 防复发：owner测试必须在返回后删除/替换原path并继续从owner读取已签发内容；只断言move trait、root字符串和digest相等不能证明ownership。
+
+## 发布点之后不能再运行会翻转事务结果的validation
+
+- 现象：staging目录先rename到最终路径，随后installed-root readback失败并返回错误；cleanup只覆盖staging，最终目标仍可见。
+  profile用两个顺序rename时还会短暂或在进程退出后永久暴露ordinary-only状态。
+- 根因：把单次rename的原子性扩张成整个多产品事务的原子性，并假设post-commit readback“只会因compiler bug失败”。任何真实I/O、
+  并发mutation和内部不变量错误都仍是可达错误边，两个各自原子的rename也不是共同原子commit。
+- 修复模式：所有可失败validation和identity binding在唯一visibility point之前完成，全部共同产品位于一个可单次发布的owner/root；
+  若协议确需installed-path动作，显式建模committing/committed状态和可恢复操作，并证明每个错误出口不泄漏本轮目标。
+- 防复发：failure injection必须覆盖最后一次发布前后、installed readback和进程/第二产品边界；同时断言返回status、ordinary/profile
+  可见性和staging残留，不能只测第二次rename正常返回失败时的best-effort rollback。
