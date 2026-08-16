@@ -100,6 +100,17 @@ module {
     return std::move(*dag);
   }
 
+  static StructuredDAGNodePlacement
+  placement(StructuredDAGNodeID node, unsigned dimension,
+            std::initializer_list<int64_t> tileValues) {
+    StructuredDAGNodePlacement result;
+    result.node = node;
+    result.shardDimension = dimension;
+    for (int64_t value : tileValues)
+      result.tiles.push_back(TileId(value));
+    return result;
+  }
+
   llvm::SmallVector<StructuredDAGPlacementCandidate, 12>
   derive(mlir::ModuleOp module, StructuredDAGPlacementEnumerationStatistics &stats) {
     std::string failureReason;
@@ -524,6 +535,131 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
       EXPECT_EQ(lhs.tiles, rhs.tiles);
     }
   }
+}
+
+TEST_F(StructuredDAGPlacementEnumerationTest,
+       IndeterminateDemandAbortsEvaluationWithTypedStatus) {
+  std::string dims = "1";
+  for (unsigned index = 1; index < 17; ++index)
+    dims += "x1";
+  auto module = parse(R"mlir(
+  func.func @rank17(%input: tensor<)mlir" +
+                     dims + R"mlir(xf16>) -> tensor<)mlir" + dims +
+                     R"mlir(xf16> {
+    %out0 = tensor.empty() : tensor<)mlir" +
+                     dims + R"mlir(xf16>
+    %producer = linalg.map ins(%input : tensor<)mlir" +
+                     dims + R"mlir(xf16>)
+        outs(%out0 : tensor<)mlir" +
+                     dims + R"mlir(xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %out1 = tensor.empty() : tensor<)mlir" +
+                     dims + R"mlir(xf16>
+    %consumer = linalg.map ins(%producer : tensor<)mlir" +
+                     dims + R"mlir(xf16>)
+        outs(%out1 : tensor<)mlir" +
+                     dims + R"mlir(xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %consumer : tensor<)mlir" +
+                     dims + R"mlir(xf16>
+  }
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto topology = TargetTopology::create(*module, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(topology)) << failureReason;
+  StructuredDAGAnalysis dag = buildDAG(*module);
+
+  StructuredDAGPlacementEvaluator evaluator(dag, *topology, CardId(0));
+  StructuredDAGPlacementLegality legality;
+  auto result = evaluator.evaluate({placement(0, 0, {0}), placement(1, 0, {0})},
+                                   &failureReason, &legality);
+  EXPECT_TRUE(mlir::failed(result));
+  // The 34-variable relation space exceeds the IndexRelation budget; this is
+  // a machinery failure, never a placement rejection.
+  EXPECT_EQ(legality.status, analysis::ExactDemandStatus::IndeterminateFailure);
+}
+
+TEST_F(StructuredDAGPlacementEnumerationTest,
+       UnsupportedDemandAbortsEvaluationWithTypedStatus) {
+  auto module = parse(R"mlir(
+  func.func @ambiguous(%input: tensor<16xf16>) -> tensor<8xf16> {
+    %out0 = tensor.empty() : tensor<16xf16>
+    %producer = linalg.map ins(%input : tensor<16xf16>)
+        outs(%out0 : tensor<16xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %t = tensor.extract_slice %producer[0] [8] [1]
+        : tensor<16xf16> to tensor<8xf16>
+    %empty0 = tensor.empty() : tensor<8xf16>
+    %stage = tensor.insert_slice %t into %empty0[0] [8] [1]
+        : tensor<8xf16> into tensor<8xf16>
+    %cat = tensor.insert_slice %t into %stage[0] [8] [1]
+        : tensor<8xf16> into tensor<8xf16>
+    %out1 = tensor.empty() : tensor<8xf16>
+    %consumer = linalg.map ins(%cat : tensor<8xf16>)
+        outs(%out1 : tensor<8xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %consumer : tensor<8xf16>
+  }
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto topology = TargetTopology::create(*module, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(topology)) << failureReason;
+  StructuredDAGAnalysis dag = buildDAG(*module);
+
+  StructuredDAGPlacementEvaluator evaluator(dag, *topology, CardId(0));
+  StructuredDAGPlacementLegality legality;
+  auto result = evaluator.evaluate({placement(0, 0, {0}), placement(1, 0, {0})},
+                                   &failureReason, &legality);
+  EXPECT_TRUE(mlir::failed(result));
+  // One support operation carries the producer through two of its operands;
+  // no placement fixes that semantic ambiguity.
+  EXPECT_EQ(legality.status,
+            analysis::ExactDemandStatus::UnsupportedSemanticRelation);
+}
+
+TEST_F(StructuredDAGPlacementEnumerationTest,
+       CarrierFailureDoesNotRejectThePlacementTrial) {
+  auto module = parse(R"mlir(
+  func.func @strided(%input: tensor<8xf16>) -> tensor<4xf16> {
+    %out0 = tensor.empty() : tensor<8xf16>
+    %producer = linalg.map ins(%input : tensor<8xf16>)
+        outs(%out0 : tensor<8xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %out1 = tensor.empty() : tensor<4xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0 * 2)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%producer : tensor<8xf16>)
+        outs(%out1 : tensor<4xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        linalg.yield %value : f16
+    } -> tensor<4xf16>
+    return %consumer : tensor<4xf16>
+  }
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto topology = TargetTopology::create(*module, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(topology)) << failureReason;
+  StructuredDAGAnalysis dag = buildDAG(*module);
+
+  StructuredDAGPlacementEvaluator evaluator(dag, *topology, CardId(0));
+  StructuredDAGPlacementLegality legality;
+  auto result = evaluator.evaluate({placement(0, 0, {0}), placement(1, 0, {0})},
+                                   &failureReason, &legality);
+  // The strided demand is logically exact; the canonical carrier cannot
+  // express it and only marks the candidate carrier-incomplete.
+  ASSERT_TRUE(mlir::succeeded(result)) << failureReason;
+  EXPECT_EQ(legality.status, analysis::ExactDemandStatus::Satisfied);
+  EXPECT_FALSE(result->edgeCarrierComplete);
 }
 
 } // namespace

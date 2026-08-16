@@ -3,6 +3,7 @@
 
 #include "../../lib/Wafer/Compiler/StructuredDAGEdgeStrategyPlan.h"
 #include "../../lib/Wafer/Compiler/StructuredDAGCandidateSchedule.h"
+#include "../../lib/Wafer/Compiler/StructuredDAGExactDemandQuery.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -704,6 +705,9 @@ module {
 
 TEST_F(StructuredDAGEdgeStrategyPlanTest,
        StridedLogicalDemandSurvivesUntilCanonicalPhysicalLowering) {
+  // The typed exact-demand query accepts the exact strided demand; only the
+  // canonical dense-rectangle carrier rejects the physical assignment here.
+  // Placement legality is never rewritten by that carrier failure.
   auto module = parse(R"mlir(
 module {
   func.func @strided_edge(%input: tensor<8xf16>) -> tensor<4xf16> {
@@ -756,22 +760,21 @@ module {
 }
 
 TEST_F(StructuredDAGEdgeStrategyPlanTest,
-       RejectsProducerShardOwnershipThatDoesNotCoverExactDemand) {
+       DuplicateTileOwnershipIsReportedAsMalformedTrial) {
   auto module = parse(kChain);
   ASSERT_TRUE(module);
   StructuredDAGAnalysis dag = buildDAG(*module);
 
-  // Repeating one producer Tile gives both ownership records the first
-  // balanced shard and leaves the upper half of the logical tensor unowned.
-  // The demand planner must prove coverage from domains, not infer it from the
-  // participant count.
+  // Repeating one producer Tile cannot form a partition: the typed query
+  // reports a malformed trial instead of turning the missing upper half into
+  // a placement legality bool. Proven coverage holes of well-formed trials
+  // are asserted by the exact-demand query suite directly.
   std::string failureReason;
   auto demandPlan = deriveStructuredDAGEdgeDemandPlan(
       dag, {placement(0, 0, {0, 0}), placement(1, 0, {1, 2})},
       &failureReason);
   EXPECT_TRUE(mlir::failed(demandPlan));
-  EXPECT_NE(failureReason.find("ownership does not cover exact demand"),
-            std::string::npos)
+  EXPECT_NE(failureReason.find("several owner domains"), std::string::npos)
       << failureReason;
 }
 
@@ -870,10 +873,12 @@ module {
 
 TEST_F(StructuredDAGEdgeStrategyPlanTest,
        InitOperandEdgesCarryNoSpatialActionInAnyPlacement) {
-  // A fill feeding the DPS init of a matmul is initialization state rather
-  // than a spatial data edge: the card-materialization contract keeps it
-  // governed by the consumer's typed lowering, so the plan must not derive
-  // any strategy for it, whether the nodes share Tiles or are disjoint.
+  // The typed exact-demand query proves the init dependency (an explicit
+  // init producer is an independent root with an exact demand); the
+  // canonical carrier still emits no strategy for it: the
+  // card-materialization contract keeps the init governed by the consumer's
+  // typed lowering, so the plan must not derive any strategy for it,
+  // whether the nodes share Tiles or are disjoint.
   auto module = parse(R"mlir(
 module {
   func.func @gemm(%lhs: tensor<8x8xf16>, %rhs: tensor<8x8xf16>)
@@ -906,13 +911,33 @@ module {
   ASSERT_TRUE(mlir::succeeded(disjoint)) << failureReason;
   EXPECT_TRUE(disjoint->strategies.empty());
   EXPECT_EQ(disjoint->totalPeerBytes, 0u);
+
+  // The typed exact-demand query still proves the init dependency with its
+  // exact demand, in every placement.
+  analysis::IREpoch epoch = analysis::IREpoch::current();
+  StructuredDAGExactDemandQuery demandQuery(dag, epoch);
+  for (auto placements :
+       {llvm::SmallVector<StructuredDAGNodePlacement, 2>{
+            placement(0, 0, {0, 1}), placement(1, 0, {0, 1})},
+        llvm::SmallVector<StructuredDAGNodePlacement, 2>{
+            placement(0, 0, {0, 1}), placement(1, 0, {2, 3})}}) {
+    std::string trialFailure;
+    auto trial = buildLogicalShardTrial(dag, placements, epoch, &trialFailure);
+    ASSERT_TRUE(mlir::succeeded(trial)) << trialFailure;
+    analysis::ExactDemandResult demand = demandQuery.query(0, *trial);
+    EXPECT_EQ(demand.status, analysis::ExactDemandStatus::Satisfied)
+        << demand.detail;
+    EXPECT_EQ(demand.dependencyKind, analysis::DemandEdgeKind::InitInput);
+  }
 }
 
 TEST_F(StructuredDAGEdgeStrategyPlanTest,
        SupportChainEdgesCarryNoSpatialActionInAnyPlacement) {
   // A DAG edge that reaches the nearest structured producer through a pure
   // support chain (here tensor.expand_shape) is not a direct current-SSA
-  // edge.  The card-materialization contract resolves the chain inside the
+  // edge. The typed exact-demand query proves the composed support relation
+  // with its exact demand; the canonical carrier still emits no strategy:
+  // the card-materialization contract resolves the chain inside the
   // consumer's typed lowering, so the plan must not derive a strategy for
   // it, whether the nodes share Tiles or are disjoint.
   auto module = parse(R"mlir(
@@ -954,6 +979,24 @@ module {
   ASSERT_TRUE(mlir::succeeded(disjoint)) << failureReason;
   EXPECT_TRUE(disjoint->strategies.empty());
   EXPECT_EQ(disjoint->totalPeerBytes, 0u);
+
+  // The typed exact-demand query proves the composed support relation with
+  // its exact demand, in every placement.
+  analysis::IREpoch epoch = analysis::IREpoch::current();
+  StructuredDAGExactDemandQuery demandQuery(dag, epoch);
+  for (auto placements :
+       {llvm::SmallVector<StructuredDAGNodePlacement, 2>{
+            placement(0, 0, {0, 1}), placement(1, 0, {0, 1})},
+        llvm::SmallVector<StructuredDAGNodePlacement, 2>{
+            placement(0, 0, {0, 1}), placement(1, 0, {2, 3})}}) {
+    std::string trialFailure;
+    auto trial = buildLogicalShardTrial(dag, placements, epoch, &trialFailure);
+    ASSERT_TRUE(mlir::succeeded(trial)) << trialFailure;
+    analysis::ExactDemandResult demand = demandQuery.query(0, *trial);
+    EXPECT_EQ(demand.status, analysis::ExactDemandStatus::Satisfied)
+        << demand.detail;
+    EXPECT_EQ(demand.dependencyKind, analysis::DemandEdgeKind::DataInput);
+  }
 }
 
 } // namespace

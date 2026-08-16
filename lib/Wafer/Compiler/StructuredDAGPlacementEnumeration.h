@@ -5,6 +5,7 @@
 
 #include "StructuredDAGEdgeStrategyPlan.h"
 
+#include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/IR/Target/TargetTopology.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -36,6 +37,10 @@ struct StructuredDAGPlacementCandidate {
   llvm::SmallVector<StructuredDAGObservablePlacement, 4> outputPlacements;
   StructuredDAGCandidateSchedule schedule;
   StructuredDAGEdgeStrategyPlan edgePlan;
+  /// False when the canonical carrier could not express every edge of this
+  /// candidate. The placement remains logically legal; actual materialization
+  /// rejects the physical assignment at its own gate.
+  bool edgeCarrierComplete = true;
   uint64_t topologyHopByteWork = 0;
   uint64_t topologyCompactnessWork = 0;
   uint32_t distinctTileGroupCount = 0;
@@ -46,14 +51,25 @@ struct StructuredDAGPlacementCandidate {
   uint32_t disjointEdgeCount = 0;
 };
 
+/// Typed legality of one evaluated placement trial. Only
+/// ProvenLogicalInfeasible deletes the trial; UnsupportedSemanticRelation and
+/// IndeterminateFailure stop the owning legalization path.
+struct StructuredDAGPlacementLegality {
+  analysis::ExactDemandStatus status = analysis::ExactDemandStatus::Satisfied;
+  std::string detail;
+};
+
 /// Query instrumentation only. `expandedStates` counts retained partial
 /// node-placement states expanded before any actual IR clone; rejected
-/// transitions never reach TileMapping.
+/// transitions never reach TileMapping. `edgeCarrierIncompleteTransitions`
+/// counts complete trials whose canonical carrier could not express every
+/// edge; those are physical-assignment gaps, not placement rejections.
 struct StructuredDAGPlacementEnumerationStatistics {
   uint64_t placementGroupCount = 0;
   uint64_t expandedStates = 0;
   uint64_t rejectedTransitions = 0;
   uint64_t resourceRenamingEquivalentStates = 0;
+  uint64_t edgeCarrierIncompleteTransitions = 0;
 };
 
 /// Factorized spatial coordinate domain for the common card search.
@@ -79,9 +95,10 @@ deriveStructuredDAGPlacementSearchDomain(const StructuredDAGAnalysis &dag,
 /// requested complete coordinate assignment.
 class StructuredDAGPlacementEvaluator {
 public:
-  StructuredDAGPlacementEvaluator(const StructuredDAGAnalysis &dag,
-                             const TargetTopology &topology,
-                             CardId cardId);
+  StructuredDAGPlacementEvaluator(
+      const StructuredDAGAnalysis &dag, const TargetTopology &topology,
+      CardId cardId,
+      analysis::IREpoch epoch = analysis::IREpoch::current());
   ~StructuredDAGPlacementEvaluator();
   StructuredDAGPlacementEvaluator(StructuredDAGPlacementEvaluator &&) noexcept;
   StructuredDAGPlacementEvaluator &operator=(StructuredDAGPlacementEvaluator &&) noexcept;
@@ -89,9 +106,15 @@ public:
   StructuredDAGPlacementEvaluator &
   operator=(const StructuredDAGPlacementEvaluator &) = delete;
 
+  /// On failure `legality` receives the typed verdict:
+  /// ProvenLogicalInfeasible only for a proven partition/relation/ownership
+  /// contradiction of the requested trial; UnsupportedSemanticRelation and
+  /// IndeterminateFailure stop the owning legalization path. The canonical
+  /// carrier failure never fails evaluation.
   mlir::FailureOr<StructuredDAGPlacementCandidate>
   evaluate(llvm::ArrayRef<StructuredDAGNodePlacement> nodePlacements,
-           std::string *failureReason = nullptr);
+           std::string *failureReason = nullptr,
+           StructuredDAGPlacementLegality *legality = nullptr);
 
 private:
   class Impl;
@@ -105,7 +128,8 @@ private:
 mlir::FailureOr<StructuredDAGPlacementCandidate> evaluateStructuredDAGPlacement(
     const StructuredDAGAnalysis &dag, const TargetTopology &topology,
     CardId cardId, llvm::ArrayRef<StructuredDAGNodePlacement> nodePlacements,
-    std::string *failureReason = nullptr);
+    std::string *failureReason = nullptr,
+    StructuredDAGPlacementLegality *legality = nullptr);
 
 /// Explores the finite per-node static shard dimensions and all connected
 /// rectangular Tile groups exposed by the verified topology. Each node is
@@ -125,6 +149,7 @@ enumerateStructuredDAGPlacements(
     const StructuredDAGAnalysis &dag, const TargetTopology &topology,
     CardId cardId,
     StructuredDAGPlacementEnumerationStatistics *statistics = nullptr,
-    std::string *failureReason = nullptr);
+    std::string *failureReason = nullptr,
+    StructuredDAGPlacementLegality *legality = nullptr);
 
 } // namespace wafer::compiler::detail

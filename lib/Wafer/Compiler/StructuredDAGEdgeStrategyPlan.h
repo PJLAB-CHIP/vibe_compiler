@@ -42,7 +42,9 @@ lowerStructuredDAGEdgeDemandPlanToCanonicalStrategies(
 /// lowering above; it never reconstructs the relation from layout or action.
 class StructuredDAGEdgeStrategyPlanner {
 public:
-  explicit StructuredDAGEdgeStrategyPlanner(const StructuredDAGAnalysis &dag);
+  explicit StructuredDAGEdgeStrategyPlanner(
+      const StructuredDAGAnalysis &dag,
+      analysis::IREpoch epoch = analysis::IREpoch::current());
   ~StructuredDAGEdgeStrategyPlanner();
   StructuredDAGEdgeStrategyPlanner(StructuredDAGEdgeStrategyPlanner &&) noexcept;
   StructuredDAGEdgeStrategyPlanner &

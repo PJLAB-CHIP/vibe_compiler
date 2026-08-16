@@ -8,6 +8,7 @@
 #include "StructuredBufferRelations.h"
 #include "StructuredDAGCandidateSchedule.h"
 #include "StructuredDAGEdgeStrategyPlan.h"
+#include "StructuredDAGExactDemandQuery.h"
 #include "StructuredDAGPlacementEnumeration.h"
 #include "StructuredDAGSchedule.h"
 #include "StructuredDAGSchedulePlan.h"
@@ -175,6 +176,10 @@ struct TileExecutionCandidate {
   TileExecutionAssignment assignment;
   TileExecutionMetrics evaluation;
   TileExecutionTransition transition;
+  /// False when the canonical carrier could not express every edge of this
+  /// candidate. The placement stays logically legal; actual materialization
+  /// rejects the physical assignment at the edge-carrier gate.
+  bool edgeCarrierComplete = true;
 };
 
 static SPMDemandRelation
@@ -694,6 +699,7 @@ makeNodePlacementCandidate(uint64_t stableOrdinal,
     return std::nullopt;
 
   TileExecutionCandidate candidate;
+  candidate.edgeCarrierComplete = placement.edgeCarrierComplete;
   candidate.transition.stableOrdinal = stableOrdinal;
   candidate.transition.nodePlacementCandidate = true;
   candidate.evaluation.peerBytes = placement.edgePlan.totalPeerBytes;
@@ -3130,7 +3136,9 @@ static std::optional<TileExecutionCandidate>
 deriveBaseline(const TargetTopology &topology, CardId cardId,
                llvm::ArrayRef<TileId> availableTileIds,
                const StaticOutputDomains &outputDomains,
-               const StructuredDAGAnalysis &dag, std::string *failureReason) {
+               const StructuredDAGAnalysis &dag, analysis::IREpoch epoch,
+               CardExecutableSynthesisStatistics &statistics,
+               std::string *failureReason) {
   // The deterministic baseline is a full-card SPMD execution, not a
   // single-Tile escape hatch. Pick the largest participant count that every
   // structured node can use (all available Tiles for ordinary Attention),
@@ -3206,7 +3214,11 @@ deriveBaseline(const TargetTopology &topology, CardId cardId,
     }
   };
 
-  StructuredDAGEdgeStrategyPlanner edgePlanner(dag);
+  // Typed logical gate over every edge (data, init and support): only a
+  // proven partition/relation/ownership contradiction removes an option
+  // pair; unsupported semantics and indeterminate failures stop the whole
+  // baseline as typed failures instead of being masked by another placement.
+  StructuredDAGExactDemandQuery demandQuery(dag, epoch);
   std::vector<EdgeCompatibility> compatibility(dag.getEdges().size());
   for (const StructuredDAGEdge &edge : dag.getEdges()) {
     EdgeCompatibility &relation = compatibility[edge.id];
@@ -3221,32 +3233,37 @@ deriveBaseline(const TargetTopology &topology, CardId cardId,
          llvm::enumerate(nodeOptions[edge.producer])) {
       for (auto [consumerIndex, consumer] :
            llvm::enumerate(nodeOptions[edge.consumer])) {
-        const StructuredDAGNode *producerNode = dag.getNode(edge.producer);
-        const StructuredDAGNode *consumerNode = dag.getNode(edge.consumer);
-        const bool direct =
-            producerNode && consumerNode && producerNode->operation &&
-            consumerNode->operation &&
-            consumerNode->operation->getOperand(edge.consumerOperand) ==
-                producerNode->operation->getResult(edge.producerResult);
-        bool local = false;
-        std::string ignoredFailure;
-        if (direct) {
-          mlir::FailureOr<StructuredDAGEdgeStrategyPlan> plan =
-              edgePlanner.derive(edge.id, producer, consumer, &ignoredFailure);
-          // A baseline disables fusion, not required data movement. Exact
-          // peer fragments are a legal op boundary when two 16-Tile spatial
-          // axes differ; local edges become DDR RegionCuts below.
-          local = mlir::succeeded(plan);
-        } else if (producerNode && consumerNode &&
-                   producer.tiles == consumer.tiles) {
-          local = mlir::succeeded(deriveUnaryPureSupportChain(
-              producerNode->operation, edge.producerResult,
-              consumerNode->operation, edge.consumerOperand, &ignoredFailure));
+        std::string trialFailure;
+        mlir::FailureOr<analysis::LogicalShardTrial> trial =
+            buildEdgeShardTrial(dag, producer, consumer, epoch,
+                                &trialFailure);
+        if (mlir::failed(trial)) {
+          statistics.indeterminateDemandQueries = saturatingAdd(
+              statistics.indeterminateDemandQueries, 1);
+          statistics.demandAbortStatus =
+              analysis::ExactDemandStatus::IndeterminateFailure;
+          statistics.demandAbortDetail = std::move(trialFailure);
+          return std::nullopt;
         }
-        if (!local)
-          lastRelationFailure = ignoredFailure;
-        relation.legal[producerIndex * relation.consumerOptionCount +
-                       consumerIndex] = local ? 1 : 0;
+        analysis::ExactDemandResult demand =
+            demandQuery.query(edge.id, *trial);
+        if (demand.status == analysis::ExactDemandStatus::Satisfied) {
+          statistics.exactDemandSatisfiedEdges = saturatingAdd(
+              statistics.exactDemandSatisfiedEdges, 1);
+          relation.legal[producerIndex * relation.consumerOptionCount +
+                         consumerIndex] = 1;
+          continue;
+        }
+        if (demand.status ==
+            analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
+          statistics.provenLogicalInfeasibleTrials = saturatingAdd(
+              statistics.provenLogicalInfeasibleTrials, 1);
+          lastRelationFailure = std::move(demand.detail);
+          continue;
+        }
+        statistics.demandAbortStatus = demand.status;
+        statistics.demandAbortDetail = std::move(demand.detail);
+        return std::nullopt;
       }
     }
     if (llvm::none_of(relation.legal,
@@ -3271,7 +3288,7 @@ deriveBaseline(const TargetTopology &topology, CardId cardId,
     }
   }
 
-  StructuredDAGPlacementEvaluator evaluator(dag, topology, cardId);
+  StructuredDAGPlacementEvaluator evaluator(dag, topology, cardId, epoch);
   using BaselineDomains = std::vector<std::vector<size_t>>;
   BaselineDomains initialDomains;
   initialDomains.reserve(nodeOptions.size());
@@ -3313,8 +3330,9 @@ deriveBaseline(const TargetTopology &topology, CardId cardId,
 
   std::optional<StructuredDAGPlacementCandidate> evaluated;
   std::string evaluationFailure;
+  bool evaluationAborted = false;
   std::function<bool(BaselineDomains)> solve = [&](BaselineDomains domains) {
-    if (!propagate(domains))
+    if (evaluationAborted || !propagate(domains))
       return false;
     size_t selectedNode = domains.size();
     for (size_t node = 0; node < domains.size(); ++node)
@@ -3327,10 +3345,19 @@ deriveBaseline(const TargetTopology &topology, CardId cardId,
       placements.reserve(domains.size());
       for (size_t node = 0; node < domains.size(); ++node)
         placements.push_back(nodeOptions[node][domains[node].front()]);
+      StructuredDAGPlacementLegality evaluationLegality;
       mlir::FailureOr<StructuredDAGPlacementCandidate> result =
-          evaluator.evaluate(placements, &evaluationFailure);
-      if (mlir::failed(result))
+          evaluator.evaluate(placements, &evaluationFailure,
+                             &evaluationLegality);
+      if (mlir::failed(result)) {
+        if (evaluationLegality.status !=
+            analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
+          statistics.demandAbortStatus = evaluationLegality.status;
+          statistics.demandAbortDetail = std::move(evaluationLegality.detail);
+          evaluationAborted = true;
+        }
         return false;
+      }
       evaluated = std::move(*result);
       return true;
     }
@@ -3359,15 +3386,24 @@ deriveDeterministicBaseline(const TargetTopology &topology, CardId cardId,
                             llvm::ArrayRef<TileId> availableTileIds,
                             const StaticOutputDomains &outputDomains,
                             const StructuredDAGAnalysis &dag,
+                            analysis::IREpoch epoch,
                             CardExecutableSynthesisStatistics &statistics,
                             llvm::raw_ostream &diagnostics) {
   std::string failure;
   std::optional<TileExecutionCandidate> spatial = deriveBaseline(
-      topology, cardId, availableTileIds, outputDomains, dag, &failure);
+      topology, cardId, availableTileIds, outputDomains, dag, epoch,
+      statistics, &failure);
   if (!spatial || !prepareEdgeStrategies(*spatial, dag)) {
-    diagnostics << "wafer-compile: deterministic card baseline failed: "
-                << (failure.empty() ? "no legal spatial coordinate" : failure)
-                << '\n';
+    if (statistics.demandAbortStatus !=
+        analysis::ExactDemandStatus::Satisfied) {
+      diagnostics << "wafer-compile: deterministic card baseline aborted: "
+                  << statistics.demandAbortDetail << '\n';
+    } else {
+      diagnostics << "wafer-compile: deterministic card baseline failed: "
+                  << (failure.empty() ? "no legal spatial coordinate"
+                                      : failure)
+                  << '\n';
+    }
     return std::nullopt;
   }
   spatial->assignment.mapping.materializationMode =
@@ -3415,20 +3451,27 @@ static std::vector<TileExecutionCandidate>
 deriveShortlist(const TargetTopology &topology, CardId cardId,
                 llvm::ArrayRef<TileId> availableTileIds,
                 const StaticOutputDomains &outputDomains,
-                const StructuredDAGAnalysis &dag,
+                const StructuredDAGAnalysis &dag, analysis::IREpoch epoch,
                 CardExecutableSynthesisStatistics &statistics,
                 llvm::raw_ostream &diagnostics,
                 CandidateResourceScheduleMemo &resourceScheduleMemo) {
   std::string baselineFailure;
   std::optional<TileExecutionCandidate> derivedBaseline = deriveBaseline(
-      topology, cardId, availableTileIds, outputDomains, dag, &baselineFailure);
+      topology, cardId, availableTileIds, outputDomains, dag, epoch,
+      statistics, &baselineFailure);
   if (!derivedBaseline) {
     statistics.candidateProposals = 0;
     statistics.shortlistedCandidates = 0;
-    diagnostics << "wafer-compile: deterministic card baseline failed: "
-                << (baselineFailure.empty() ? "no legal spatial coordinate"
-                                            : baselineFailure)
-                << '\n';
+    if (statistics.demandAbortStatus !=
+        analysis::ExactDemandStatus::Satisfied) {
+      diagnostics << "wafer-compile: card search aborted: "
+                  << statistics.demandAbortDetail << '\n';
+    } else {
+      diagnostics << "wafer-compile: deterministic card baseline failed: "
+                  << (baselineFailure.empty() ? "no legal spatial coordinate"
+                                              : baselineFailure)
+                  << '\n';
+    }
     return {};
   }
   TileExecutionCandidate baselineSpatial = std::move(*derivedBaseline);
@@ -3523,6 +3566,7 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
           llvm::SmallVector<StructuredDAGNodePlacement, 16> placements;
           std::optional<StructuredDAGPlacementCandidate> result;
           std::string failure;
+          StructuredDAGPlacementLegality legality;
         };
         std::vector<PlacementQuery> queries;
         queries.reserve(spatialDomain->nodeOptions[node].size());
@@ -3558,7 +3602,8 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
         for (unsigned worker = 0; worker < placementWorkers; ++worker)
           workerEvaluators.push_back(
               std::make_unique<StructuredDAGPlacementEvaluator>(dag, topology,
-                                                                cardId));
+                                                                cardId,
+                                                                epoch));
         for (size_t batchBegin = 0; batchBegin < queries.size();
              batchBegin += placementWorkers) {
           const size_t batchSize =
@@ -3569,7 +3614,8 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
                 PlacementQuery &query = queries[batchBegin + localIndex];
                 mlir::FailureOr<StructuredDAGPlacementCandidate> evaluated =
                     workerEvaluators[localIndex]->evaluate(query.placements,
-                                                           &query.failure);
+                                                           &query.failure,
+                                                           &query.legality);
                 if (mlir::succeeded(evaluated))
                   query.result = std::move(*evaluated);
               },
@@ -3580,8 +3626,21 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
             statistics.nodePlacementStatesExpanded, queries.size());
         for (PlacementQuery &query : queries) {
           if (!query.result) {
+            if (query.legality.status !=
+                analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
+              // Unsupported semantics and indeterminate failures stop the
+              // owning legalization path; they are never masked by trying
+              // another placement.
+              statistics.demandAbortStatus = query.legality.status;
+              statistics.demandAbortDetail = std::move(query.legality.detail);
+              diagnostics << "wafer-compile: card search aborted: "
+                          << statistics.demandAbortDetail << '\n';
+              return {};
+            }
             statistics.nodePlacementTransitionsRejected =
                 saturatingAdd(statistics.nodePlacementTransitionsRejected, 1);
+            statistics.provenLogicalInfeasibleTrials = saturatingAdd(
+                statistics.provenLogicalInfeasibleTrials, 1);
             spatialFailure = std::move(query.failure);
             continue;
           }
@@ -3673,14 +3732,58 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
   appendDistinctSpatialWitness(bestPartialOverlapSpatial);
   appendDistinctSpatialWitness(bestDisjointSpatial);
 
-  // Every spatial seed enters temporal refinement with a complete edge-action
-  // carrier. Unsupported exact redistribution removes only that seed; it does
-  // not restore an implicit fusion fallback or mutate its placement.
+  // Typed logical gate per seed: only a proven logical contradiction removes
+  // the seed; unsupported semantics and indeterminate failures stop the
+  // whole search. The canonical carrier is derived best-effort for modeling
+  // afterwards; its failure never deletes a placement trial and is resolved
+  // by the materialization gate.
+  StructuredDAGExactDemandQuery seedDemandQuery(dag, epoch);
   std::vector<TileExecutionCandidate> preparedSpatialSeeds;
   preparedSpatialSeeds.reserve(spatialSeeds.size());
-  for (TileExecutionCandidate &seed : spatialSeeds)
-    if (prepareEdgeStrategies(seed, dag))
-      preparedSpatialSeeds.push_back(std::move(seed));
+  for (TileExecutionCandidate &seed : spatialSeeds) {
+    std::string trialFailure;
+    mlir::FailureOr<analysis::LogicalShardTrial> trial = buildLogicalShardTrial(
+        dag, seed.assignment.nodePlacements, epoch, &trialFailure);
+    if (mlir::failed(trial)) {
+      statistics.indeterminateDemandQueries = saturatingAdd(
+          statistics.indeterminateDemandQueries, 1);
+      statistics.demandAbortStatus =
+          analysis::ExactDemandStatus::IndeterminateFailure;
+      statistics.demandAbortDetail = std::move(trialFailure);
+      diagnostics << "wafer-compile: card search aborted: "
+                  << statistics.demandAbortDetail << '\n';
+      return {};
+    }
+    bool seedInfeasible = false;
+    for (const StructuredDAGEdge &edge : dag.getEdges()) {
+      analysis::ExactDemandResult demand =
+          seedDemandQuery.query(edge.id, *trial);
+      if (demand.status == analysis::ExactDemandStatus::Satisfied) {
+        statistics.exactDemandSatisfiedEdges = saturatingAdd(
+            statistics.exactDemandSatisfiedEdges, 1);
+        continue;
+      }
+      if (demand.status ==
+          analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
+        seedInfeasible = true;
+        break;
+      }
+      statistics.demandAbortStatus = demand.status;
+      statistics.demandAbortDetail = std::move(demand.detail);
+      diagnostics << "wafer-compile: card search aborted: "
+                  << statistics.demandAbortDetail << '\n';
+      return {};
+    }
+    if (seedInfeasible) {
+      statistics.provenLogicalInfeasibleTrials = saturatingAdd(
+          statistics.provenLogicalInfeasibleTrials, 1);
+      continue;
+    }
+    // Best-effort modeling carrier; a failure keeps the seed with an
+    // incomplete carrier and never deletes the placement trial.
+    prepareEdgeStrategies(seed, dag);
+    preparedSpatialSeeds.push_back(std::move(seed));
+  }
   spatialSeeds = std::move(preparedSpatialSeeds);
 
   // All non-spatial coordinates now stay factorized as well.  A complete
@@ -4570,7 +4673,18 @@ static mlir::FailureOr<CardExecutableLoweringResult> materializeCandidate(
   acceptedOperationNodes.clear();
   tileDataflowIRTrace.clear();
   (void)preferredFailureProbeTileId;
-  (void)searchStatistics;
+  if (!candidate.edgeCarrierComplete) {
+    // The placement is logically legal, but the canonical carrier cannot
+    // express every edge: reject the physical assignment at this gate and
+    // never treat it as a placement no-good.
+    if (searchStatistics)
+      searchStatistics->edgeCarrierMaterializationRejections = saturatingAdd(
+          searchStatistics->edgeCarrierMaterializationRejections, 1);
+    failureGate = "edge-carrier-materialization";
+    failureReason =
+        "candidate edge carrier is incomplete for actual materialization";
+    return mlir::failure();
+  }
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   StructuredMaterializationRelations materializationRelations;
   {
@@ -4785,10 +4899,11 @@ synthesizeDeterministicBaseline(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics &statistics,
-    unsigned tilePipelineParallelism) {
+    unsigned tilePipelineParallelism, analysis::IREpoch epoch) {
   std::optional<TileExecutionCandidate> candidate =
       deriveDeterministicBaseline(topology, cardId, expectedTileIds,
-                                  outputDomains, dag, statistics, diagnostics);
+                                  outputDomains, dag, epoch, statistics,
+                                  diagnostics);
   if (!candidate)
     return mlir::failure();
 
@@ -5273,6 +5388,10 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
   CardExecutableSynthesisStatistics &resultStatistics =
       statistics ? *statistics : localStatistics;
   resultStatistics = {};
+  // One IR generation for the whole synthesis: the structured program is
+  // borrowed and never mutated inside this boundary, so every exact-demand
+  // query shares this epoch.
+  const analysis::IREpoch epoch = analysis::IREpoch::current();
 
   std::string failureReason;
   mlir::FailureOr<TargetTopology> topology =
@@ -5331,7 +5450,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     return synthesizeDeterministicBaseline(
         tensorProgram, *topology, cardId, *availableTileIds, *outputDomains,
         *dag, operationNodes, program, executionConfig, diagnostics,
-        programData, resultStatistics, tilePipelineParallelism);
+        programData, resultStatistics, tilePipelineParallelism, epoch);
   assert(optimizations.isSearch() &&
          "non-baseline synthesis must use the search controller");
 
@@ -5340,7 +5459,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
   const uint64_t usableSPMCapacity =
       static_cast<uint64_t>(targetMemory.spmLimit - targetMemory.spmBase);
   std::vector<TileExecutionCandidate> shortlist = deriveShortlist(
-      *topology, cardId, *availableTileIds, *outputDomains, *dag,
+      *topology, cardId, *availableTileIds, *outputDomains, *dag, epoch,
       resultStatistics, diagnostics, resourceScheduleMemo);
   std::tie(resultStatistics.resourceScheduleMemoHits,
            resultStatistics.resourceScheduleMemoMisses) =
@@ -5638,6 +5757,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
           failureGate == "card-module-to-tile-modules" ||
           failureGate == "selected-fusion-materialization" ||
           failureGate == "selected-layout-materialization" ||
+          failureGate == "edge-carrier-materialization" ||
           failureGate == "tile-region-to-instr") {
         preBufferFailureCache[preBufferHash].push_back(
             CachedPreBufferFailure{candidate, failureGate, failureReason});

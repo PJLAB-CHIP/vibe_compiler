@@ -6,6 +6,7 @@ set(LLVM_OPTIONAL_SOURCES
 add_mlir_library(WaferAnalysis
   DirectCallGraphAnalysis.cpp
   PhysicalDataflow/IndexRelation.cpp
+  PhysicalDataflow/ExactDemand.cpp
   PhysicalDataflow/PhysicalAccessRelation.cpp
   PhysicalDataflow/PhysicalLayoutRelation.cpp
   PhysicalDataflow/TransferRealizability.cpp

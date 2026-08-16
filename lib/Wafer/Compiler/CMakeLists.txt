@@ -58,6 +58,7 @@ add_mlir_library(WaferCompiler
   TileRegionSPMCapacityEvaluation.cpp
   CompileCardExecutableLLVMModules.cpp
   SelectedBufferMaterialization.cpp
+  StructuredDAGExactDemandQuery.cpp
   TargetCallFrontend.cpp
   StructuredDAGCandidateSchedule.cpp
   StructuredDAGPlacementEnumeration.cpp

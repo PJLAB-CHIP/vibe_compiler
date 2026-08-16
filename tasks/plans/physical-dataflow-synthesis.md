@@ -482,6 +482,47 @@ DPS init和非direct support dependency，并把relation、carrier、route/resou
 - Q50.B explicit test assignment与后续production domain调用同一query；Q50.G/H只消费`satisfied` output，不从physical fragments
   反推另一份logical demand。旧skip-init/support与carrier-rejects-placement测试必须替换为current合同的正负证据。
 
+### 实现结论（2026-08-16）
+
+- 新policy-free类型位于`include/Wafer/Analysis/PhysicalDataflow/ExactDemand.h`：`IREpoch`（进程级IR世代
+  token，synthesis入口捕获一次、全链query共享）、`LogicalShardTrial`（完整consumer iteration domain +
+  per-Tile result-space ownership + UniquePartition/ExplicitReplication/PartialReductionContribution
+  角色）、`DemandDependency`（DataInput/InitInput + support chain）、四态`ExactDemandStatus`与
+  `ExactDemandResult`（per-owner intersection、uncovered witness、dependencyKind、mergeObligation）。
+- typed query位于`lib/Wafer/Compiler/StructuredDAGExactDemandQuery.{h,cpp}`：对每条edge构造consumer
+  iteration空间→producer result空间的exact `IndexRelation`；support chain逐op compose
+  （expand/collapse→`staticReshape`、extract_slice→`staticSlice`、insert_slice source→
+  `staticInsertSlice`、insert_slice dest→identity∩补集、pad→`staticInsertSlice`、transpose→置换map、
+  cast→identity），`IndexRelation::staticInsertSlice`为新增builder；coverage为typed union与uncovered
+  witness，UniquePartition重叠为可证partition矛盾。多operand support op对每个data-carrying
+  predecessor各建一条依赖；同一op多路径指向同一producer为UnsupportedSemanticRelation。状态映射：
+  Exact→继续，Unsupported→UnsupportedSemanticRelation，SoundBound/Invalid/ResourceExhausted→
+  IndeterminateFailure。query只保留per-edge placement-independent relation memo（实例绑定epoch +
+  函数指针防御），不建demand/coverage bool缓存；热路径memo由调用方按完整placement内容或
+  （对balanced adapter已证明的）域决定字段投影键控，值始终typed。
+- production接线：evaluator `getEdgeEntry`每edge存typed verdict，carrier只作建模输入、其失败置
+  `edgeCarrierComplete=false`不删placement；`EdgeTransitionLegalityCache`用投影键但只存typed
+  status；baseline EdgeCompatibility对全部edge（data/init/support）由query判定，仅
+  ProvenLogicalInfeasible删option pair，Unsupported/Indeterminate写
+  `statistics.demandAbortStatus/demandAbortDetail`并终止baseline；seed filter query-gated（只
+  ProvenLogicalInfeasible丢seed），carrier best-effort；search worker loop按typed verdict区分reject
+  与abort；`materializeCandidate`入口新增`edge-carrier-materialization` gate（exact
+  physical-assignment rejection，进preBufferFailureCache），
+  `StructuredDAGPlacementCandidate/TileExecutionCandidate`携带`edgeCarrierComplete`标记。
+- 生产适配器`buildLogicalShardTrial`/`buildEdgeShardTrial`/`buildBalancedOwnership`从当前balanced单轴
+  placement构造显式trial；balanced矩形是当前placement域形状（Q50.B后扩展），不是query恢复。枚举
+  entry（`enumerateStructuredDAGPlacements`，当前仅单测路径）的final-accept loop同样由typed query判定，
+  carrier失败计入`edgeCarrierIncompleteTransitions`。
+- 测试：独立exact-demand suite 18个（五类relation、multi-result、fanout/fanin、init root、多operand
+  support graph、ProvenLogicalInfeasible witness、Unsupported、Indeterminate含预算/epoch/malformed、
+  carrier metamorphic、等价placement与顺序无关）；evaluator级typed abort与carrier-failure不删
+  placement 3个；旧init/support skip测试拆成query级Satisfied+carrier级no-strategy双半；dup-tile
+  测试改为malformed trial断言。
+- 已知限制（移交Q50.B/Q52）：枚举测试的prefix状态空间与`extendState`逐option pairwise拓扑距离成本是
+  既有搜索域形状，未在本任务内改动——`DiamondFanin...`/`ReductionDataTransition...`两case在HEAD即>30min
+  （状态数100→10,000→1M逐节点膨胀），已与`MultiOutputFanout...`一并登记为既有病理长跑case；
+  multi-piece等非dense demand在materialization gate被物理拒绝，Q50.G/H迁移carrier时补上表达与成本罚项。
+
 ## Q51.Core：先建立共同搜索骨架
 
 ### 责任

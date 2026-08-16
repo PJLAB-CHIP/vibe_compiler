@@ -5,6 +5,7 @@
 
 #include "CardExecutableLowering.h"
 
+#include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Analysis/TheoreticalScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Frontend/Program.h"
@@ -66,6 +67,19 @@ struct CardExecutableSynthesisStatistics {
   uint64_t shortlistedCandidates = 0;
   uint64_t materializedCandidates = 0;
   uint64_t indeterminateCompilationFailures = 0;
+  /// Exact-demand instrumentation: only proven logical contradictions delete
+  /// placement trials; unsupported semantics and indeterminate failures stop
+  /// the owning legalization path as typed failures.
+  uint64_t exactDemandSatisfiedEdges = 0;
+  uint64_t provenLogicalInfeasibleTrials = 0;
+  uint64_t unsupportedSemanticRelationTrials = 0;
+  uint64_t indeterminateDemandQueries = 0;
+  uint64_t edgeCarrierMaterializationRejections = 0;
+  /// Typed abort state of the owning legalization path, when it stopped for
+  /// unsupported semantics or an indeterminate failure. Diagnostic only.
+  analysis::ExactDemandStatus demandAbortStatus =
+      analysis::ExactDemandStatus::Satisfied;
+  std::string demandAbortDetail;
   uint64_t baselineCardModuleMaterializations = 0;
   uint64_t baselineScopedCardModuleMaterializations = 0;
   uint64_t baselineRegionSPMCapacityChecks = 0;

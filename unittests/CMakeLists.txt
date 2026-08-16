@@ -4,6 +4,7 @@ add_executable(WaferUnitTests
   Analysis/DirectCallGraphAnalysisTest.cpp
   Analysis/TheoreticalScheduleCostAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
+  Analysis/PhysicalDataflow/ExactDemandTest.cpp
   Analysis/ScheduleCostAnalysisTest.cpp
   Analysis/StaticBufferRangeTest.cpp
   Compiler/CompilationOutputTest.cpp
@@ -21,6 +22,7 @@ add_executable(WaferUnitTests
   Compiler/TileRegionSPMCapacityEvaluationTest.cpp
   Compiler/StructuredDAGScheduleTest.cpp
   Compiler/StructuredDAGEdgeStrategyPlanTest.cpp
+  Compiler/StructuredDAGExactDemandQueryTest.cpp
   Compiler/StructuredDAGPlacementEnumerationTest.cpp
   Compiler/ProgramResourceVerificationTest.cpp
   Compiler/CardExecutableSynthesisTest.cpp

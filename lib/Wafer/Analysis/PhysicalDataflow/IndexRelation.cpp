@@ -474,6 +474,43 @@ IndexRelation::staticConcatPiece(llvm::ArrayRef<int64_t> destinationShape,
       destinationShape, sourceShape, limits);
 }
 
+IndexRelationResult
+IndexRelation::staticInsertSlice(llvm::ArrayRef<int64_t> destinationShape,
+                                 llvm::ArrayRef<int64_t> sourceShape,
+                                 llvm::ArrayRef<int64_t> offsets,
+                                 const IndexRelationLimits &limits) {
+  if (destinationShape.size() != sourceShape.size() ||
+      offsets.size() != destinationShape.size() ||
+      !isShapeValid(destinationShape) || !isShapeValid(sourceShape) ||
+      hasDynamicDim(destinationShape) || hasDynamicDim(sourceShape))
+    return fail(IndexRelationStatus::Invalid,
+                "insert slice requires equal-rank static shapes with one "
+                "offset per dimension");
+  if (llvm::any_of(offsets, [](int64_t offset) { return offset < 0; }))
+    return fail(IndexRelationStatus::Invalid,
+                "insert slice offsets must be non-negative");
+  for (auto [index, size] : llvm::enumerate(sourceShape)) {
+    int64_t pieceEnd = 0;
+    if (llvm::AddOverflow(offsets[index], size, pieceEnd) ||
+        pieceEnd > destinationShape[index])
+      return fail(IndexRelationStatus::Invalid,
+                  "insert slice piece exceeds destination domain");
+  }
+
+  MLIRContext context;
+  llvm::SmallVector<AffineExpr, 4> results;
+  results.reserve(sourceShape.size());
+  for (unsigned index = 0; index < sourceShape.size(); ++index) {
+    AffineExpr expression = getAffineDimExpr(index, &context);
+    if (offsets[index] != 0)
+      expression = expression - offsets[index];
+    results.push_back(expression);
+  }
+  return fromAffineMap(
+      AffineMap::get(destinationShape.size(), 0, results, &context),
+      destinationShape, sourceShape, limits);
+}
+
 IndexSetResult IndexRelation::staticDomain(llvm::ArrayRef<int64_t> shape,
                                            const IndexRelationLimits &limits) {
   llvm::SmallVector<int64_t, 4> offsets(shape.size(), 0);

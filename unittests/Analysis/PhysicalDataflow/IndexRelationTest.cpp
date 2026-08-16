@@ -726,4 +726,28 @@ TEST(IndexRelationTest, DistinguishesBoundUnsupportedInvalidAndBudgetFailure) {
             IndexRelationStatus::ResourceExhausted);
 }
 
+TEST(IndexRelationTest, RepresentsStaticInsertSliceExactly) {
+  IndexRelationResult relation = IndexRelation::staticInsertSlice(
+      /*destinationShape=*/{8, 4}, /*sourceShape=*/{3, 2},
+      /*offsets=*/{2, 1});
+  ASSERT_TRUE(relation.isExact());
+  EXPECT_TRUE(relation.get()->contains({3, 2}, {1, 1}));
+  EXPECT_TRUE(relation.get()->contains({2, 1}, {0, 0}));
+  EXPECT_TRUE(relation.get()->contains({4, 2}, {2, 1}));
+  EXPECT_FALSE(relation.get()->contains({1, 1}, {0, 0}));
+  EXPECT_FALSE(relation.get()->contains({8, 1}, {0, 0}));
+  EXPECT_FALSE(relation.get()->contains({5, 1}, {2, 0}));
+
+  // Out-of-domain pieces are invalid, never silently clamped.
+  EXPECT_EQ(IndexRelation::staticInsertSlice({8, 4}, {3, 2}, {6, 1}).status,
+            IndexRelationStatus::Invalid);
+  EXPECT_EQ(IndexRelation::staticInsertSlice({8, 4}, {3, 2}, {2, 3}).status,
+            IndexRelationStatus::Invalid);
+  // Negative offsets and rank mismatches are invalid.
+  EXPECT_EQ(IndexRelation::staticInsertSlice({8, 4}, {3, 2}, {-1, 1}).status,
+            IndexRelationStatus::Invalid);
+  EXPECT_EQ(IndexRelation::staticInsertSlice({8}, {3, 2}, {0, 0}).status,
+            IndexRelationStatus::Invalid);
+}
+
 } // namespace

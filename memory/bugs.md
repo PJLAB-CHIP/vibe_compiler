@@ -605,6 +605,11 @@
 - 修复模式：先用`--gtest_filter`单跑可疑suite定位具体case；全量验证用filter排除该case并单独登记后续任务；
   杀掉遗留的孤儿gtest进程避免抢占CPU造成新的"疑似挂起"。
 - 防复发：全量gtest运行前先对已知慢/爆炸suite做budget检查；新增枚举测试必须自带状态规模上界或明确标注预期case数。
+- 2026-08-16补充（Q50.A验证）：同一suite还有两个同类病理长跑case——`DiamondFaninRetainsAnExpressibleTwoOperandBoundary`
+  与`ReductionDataTransitionKeepsExactFragmentsAndLocalAlternatives`，1800s内不完成（状态数100→10,000→1M逐节点膨胀，
+  每状态`extendState`含120次pairwise拓扑最短路径查询约260µs，与Q50.A改动无关——相同状态数、相同legality结果已在
+  HEAD代码路径上逐项核对）。全量filter需一并排除这三个case；`ThreeStageChain...`与`CompletePlacementOrder...`
+  可正常完成。该状态空间与per-state成本是Q50.B/Q52的搜索域问题，不是测试自身目标。
 
 ## 跨tree调用点没有随signature变更同步编译
 
@@ -675,6 +680,19 @@
 - `llvm::errc`没有`state_not_recoverable`：内部不变量错误用`llvm::errc::operation_not_permitted`；
   `llvm::sys::path::append`最多接受path+3个组件，超过必须分两步append；`llvm::sys::path::join`不存在。
   编译期宏路径烘焙会在install后失效，外部工具/资源一律运行时发现。
+- `PresburgerSet`没有默认构造函数（只有space/move构造）：带`PresburgerSet`成员的结构体用
+  `std::optional<PresburgerSet>`字段（`IndexSetResult`同款），默认构造的set语义用"absent"表达，
+  不用裸成员+聚合初始化碰运气。
+- tensor方言接口归属：`tensor.insert_slice`原生实现`DestinationStyleOpInterface`但**不**声明
+  `TilingInterface`；`tensor.pad/pack/unpack`的`TilingInterface`走external model，未注册该model的
+  context里`isa<TilingInterface>(pad)`直接fatal（"promised by dialect but never implemented"）。
+  判定DAG节点（DPS && Tiling）时必须DPS在前短路，不能让Tiling先查；生产与测试都要注册
+  `mlir::tensor::registerTilingInterfaceExternalModels`（声明在`TensorTilingInterfaceImpl.h`，需要显式include）。
+- pinned的`linalg.generic`汇编要求显式`} -> tensor<...>`结果类型；省略时op解析为零结果，
+  报"cannot name an operation with no results"（该报错指被命名的op无结果）。
+- `tensor::ExtractSliceOp::getMixedOffsets/getMixedStrides`、`InsertSliceOp::getMixedOffsets`、
+  `PadOp::getMixedLowPad`返回`SmallVector<OpFoldResult>`（动态值不保证常量），常量用
+  `mlir::getConstantIntValue`解析后走`staticSlice`/`staticInsertSlice`。
 
 ## Move-only path和digest不等于文件资源ownership
 
@@ -687,6 +705,19 @@
   只需要瞬时验证时则把类型命名和API收窄为verified manifest/snapshot，不得称为package owner。
 - 防复发：owner测试必须在返回后覆盖同inode、删除/替换原path，并继续从owner读取已签发内容；还要检查descriptor不泄漏。
   只断言move trait、root字符串和digest相等不能证明ownership。
+
+## Baseline probe-fit与final SPM planning可能分歧（Q49.P gate case）
+
+- 现象：`CardExecutableSynthesisTest.NoneJointlyRefinesExplicitProducerStageAndConsumerDemand`（transpose+
+  fill→matmul 4096规模、none policy）在2026-08-16的HEAD（22eb9931）即失败：一次temporal refinement
+  （4096→2048）后全卡TileRegion静态SPM probe全部fit，唯一完整CardExecutable编译仍以gate=spm-allocation
+  失败。
+- 根因（未定位，登记于Q49.P）：region-scoped capacity probe与最终TileRegion→Instr后的memory planning在
+  2048 breakpoint上消费的demand集合不一致。2026-08-16用旧pair-legality逻辑与纯HEAD二进制复现同一失败，
+  证明不是Q50.A改动引入。
+- 防复发：该测试是Q49.P“初始完整tile超SPM后沿canonical fallback缩到合法tile并完成package/no-card”的
+  gate case；Q49.P闭合时必须让它由新controller路径fresh通过。probe与final planning的一致性由Q49.P的
+  scoped-probe合同（Q50.F）覆盖。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
 

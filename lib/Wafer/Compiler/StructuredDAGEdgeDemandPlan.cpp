@@ -2,6 +2,8 @@
 
 #include "StructuredDAGEdgeDemandPlan.h"
 
+#include "StructuredDAGExactDemandQuery.h"
+
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -227,6 +229,7 @@ appendEdgeDemandPlan(const StructuredDAGAnalysis &dag, const StructuredDAGEdge &
                      const StructuredDAGNodePlacement &producerPlacement,
                      const StructuredDAGNodePlacement &consumerPlacement,
                      StructuredDAGEdgeDemandPlan *result,
+                     StructuredDAGExactDemandQuery *query,
                      ExactEdgeRelationCache *relationCache,
                      std::string *failureReason) {
   if (producerPlacement.node != edge.producer ||
@@ -246,9 +249,10 @@ appendEdgeDemandPlan(const StructuredDAGAnalysis &dag, const StructuredDAGEdge &
                "dependent edge source or destination is unavailable");
     return mlir::failure();
   }
-  if (consumerNode->operation->getOperand(edge.consumerOperand) !=
-      producerNode->operation->getResult(edge.producerResult))
-    return mlir::success();
+
+  const bool direct =
+      consumerNode->operation->getOperand(edge.consumerOperand) ==
+      producerNode->operation->getResult(edge.producerResult);
   auto consumerDps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(
       consumerNode->operation);
   const bool isDataInput =
@@ -257,7 +261,31 @@ appendEdgeDemandPlan(const StructuredDAGAnalysis &dag, const StructuredDAGEdge &
                    [&](mlir::OpOperand *operand) {
                      return operand->getOperandNumber() == edge.consumerOperand;
                    });
-  if (!isDataInput)
+
+  // Typed logical gate: the four-state exact-demand query proves whether the
+  // edge carries a legal demand for this closed trial. Only Satisfied direct
+  // data-input edges are assembled into canonical per-Tile demands below;
+  // init and support dependencies remain owned by the consumer typed
+  // lowering, and their logical verdicts are consumed by the placement
+  // legality owner, not by this carrier adapter.
+  std::string trialFailure;
+  mlir::FailureOr<analysis::LogicalShardTrial> trial = buildEdgeShardTrial(
+      dag, producerPlacement, consumerPlacement, query->getEpoch(),
+      &trialFailure);
+  if (mlir::failed(trial)) {
+    setFailure(failureReason, trialFailure);
+    return mlir::failure();
+  }
+  analysis::ExactDemandResult demand = query->query(edge.id, *trial);
+  if (direct && isDataInput &&
+      demand.status != analysis::ExactDemandStatus::Satisfied) {
+    setFailure(failureReason,
+               demand.detail.empty()
+                   ? "edge demand does not form an exact coverage proof"
+                   : demand.detail);
+    return mlir::failure();
+  }
+  if (!direct || !isDataInput)
     return mlir::success();
 
   std::optional<ExactEdgeRelation> ownedRelation;
@@ -340,14 +368,17 @@ appendEdgeDemandPlan(const StructuredDAGAnalysis &dag, const StructuredDAGEdge &
 
 class StructuredDAGEdgeDemandPlanner::Impl {
 public:
-  explicit Impl(const StructuredDAGAnalysis &dag) : dag(dag) {}
+  Impl(const StructuredDAGAnalysis &dag, analysis::IREpoch epoch)
+      : dag(dag), query(dag, epoch) {}
 
   const StructuredDAGAnalysis &dag;
+  StructuredDAGExactDemandQuery query;
   ExactEdgeRelationCache relationCache;
 };
 
-StructuredDAGEdgeDemandPlanner::StructuredDAGEdgeDemandPlanner(const StructuredDAGAnalysis &dag)
-    : impl(std::make_unique<Impl>(dag)) {}
+StructuredDAGEdgeDemandPlanner::StructuredDAGEdgeDemandPlanner(
+    const StructuredDAGAnalysis &dag, analysis::IREpoch epoch)
+    : impl(std::make_unique<Impl>(dag, epoch)) {}
 
 StructuredDAGEdgeDemandPlanner::~StructuredDAGEdgeDemandPlanner() = default;
 StructuredDAGEdgeDemandPlanner::StructuredDAGEdgeDemandPlanner(
@@ -368,6 +399,7 @@ mlir::FailureOr<StructuredDAGEdgeDemandPlan> StructuredDAGEdgeDemandPlanner::der
   StructuredDAGEdgeDemandPlan result;
   if (mlir::failed(appendEdgeDemandPlan(impl->dag, *edge, producerPlacement,
                                         consumerPlacement, &result,
+                                        &impl->query,
                                         &impl->relationCache, failureReason)))
     return mlir::failure();
   return result;
@@ -400,6 +432,7 @@ mlir::FailureOr<StructuredDAGEdgeDemandPlan> StructuredDAGEdgeDemandPlanner::der
     const StructuredDAGNodePlacement &consumerPlacement = *placements[edge.consumer];
     if (mlir::failed(appendEdgeDemandPlan(impl->dag, edge, producerPlacement,
                                           consumerPlacement, &result,
+                                          &impl->query,
                                           &impl->relationCache, failureReason)))
       return mlir::failure();
   }

@@ -4,6 +4,7 @@
 
 #include "StructuredDAGCandidateSchedule.h"
 
+#include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -51,7 +52,9 @@ struct StructuredDAGEdgeDemandPlan {
 /// edge is derived once while every consumer domain is imaged exactly.
 class StructuredDAGEdgeDemandPlanner {
 public:
-  explicit StructuredDAGEdgeDemandPlanner(const StructuredDAGAnalysis &dag);
+  explicit StructuredDAGEdgeDemandPlanner(
+      const StructuredDAGAnalysis &dag,
+      analysis::IREpoch epoch = analysis::IREpoch::current());
   ~StructuredDAGEdgeDemandPlanner();
   StructuredDAGEdgeDemandPlanner(StructuredDAGEdgeDemandPlanner &&) noexcept;
   StructuredDAGEdgeDemandPlanner &operator=(StructuredDAGEdgeDemandPlanner &&) noexcept;

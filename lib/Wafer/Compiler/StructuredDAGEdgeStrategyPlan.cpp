@@ -256,15 +256,16 @@ lowerStructuredDAGEdgeDemandPlanToCanonicalStrategies(
 
 class StructuredDAGEdgeStrategyPlanner::Impl {
 public:
-  explicit Impl(const StructuredDAGAnalysis &dag) : dag(dag), demandPlanner(dag) {}
+  Impl(const StructuredDAGAnalysis &dag, analysis::IREpoch epoch)
+      : dag(dag), demandPlanner(dag, epoch) {}
 
   const StructuredDAGAnalysis &dag;
   StructuredDAGEdgeDemandPlanner demandPlanner;
 };
 
 StructuredDAGEdgeStrategyPlanner::StructuredDAGEdgeStrategyPlanner(
-    const StructuredDAGAnalysis &dag)
-    : impl(std::make_unique<Impl>(dag)) {}
+    const StructuredDAGAnalysis &dag, analysis::IREpoch epoch)
+    : impl(std::make_unique<Impl>(dag, epoch)) {}
 
 StructuredDAGEdgeStrategyPlanner::~StructuredDAGEdgeStrategyPlanner() = default;
 StructuredDAGEdgeStrategyPlanner::StructuredDAGEdgeStrategyPlanner(

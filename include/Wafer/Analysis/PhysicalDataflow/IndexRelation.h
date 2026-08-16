@@ -118,6 +118,17 @@ public:
                     int64_t destinationOffset,
                     const IndexRelationLimits &limits = IndexRelationLimits());
 
+  /// Build the exact destination-to-source relation of one static unit-stride
+  /// insert_slice: the source coordinate on every dimension is the
+  /// destination coordinate shifted by the per-dimension offset. Strided or
+  /// negative inserts are not expressible as one piece and stay outside this
+  /// builder.
+  static IndexRelationResult
+  staticInsertSlice(llvm::ArrayRef<int64_t> destinationShape,
+                    llvm::ArrayRef<int64_t> sourceShape,
+                    llvm::ArrayRef<int64_t> offsets,
+                    const IndexRelationLimits &limits = IndexRelationLimits());
+
   /// Build a static rectangular index domain.
   static IndexSetResult
   staticDomain(llvm::ArrayRef<int64_t> shape,
