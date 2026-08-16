@@ -5,6 +5,7 @@
 #include "Wafer/Target/TargetCall.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "Wafer/Compiler/ProgramData.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -120,9 +121,10 @@ module {
   if (!executionConfig)
     return executionConfig.takeError();
   llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::buildCardExecutable(
       context, *tensorProgram, std::move(program), *executionConfig,
-      wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
+      wafer::OptimizationConfig::search(), diagnostics, std::nullopt, programData);
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;

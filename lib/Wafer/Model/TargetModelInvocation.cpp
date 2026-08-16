@@ -194,6 +194,21 @@ bool haveSameResourceGeometry(const compiler::KernelABISlot &lhs,
          lhs.alignment == rhs.alignment;
 }
 
+bool haveSameBytesView(llvm::ArrayRef<uint8_t> lhs,
+                       llvm::ArrayRef<uint8_t> rhs) {
+  return (lhs.data() == rhs.data() && lhs.size() == rhs.size()) ||
+         llvm::equal(lhs, rhs);
+}
+
+/// Invocation-local materialization of one card-owned read-only input. The
+/// source view is non-owning; it is only compared while the invocation
+/// inputs are alive.
+struct MaterializedInput {
+  TargetModelResourceId resource;
+  std::vector<uint8_t> bytes;
+  llvm::ArrayRef<uint8_t> sourceView;
+};
+
 } // namespace
 
 llvm::StringRef
@@ -300,6 +315,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
 
   std::vector<compiler::TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputBindings;
+  std::vector<MaterializedInput> materializedInputs;
   struct Allocation {
     TargetModelResourceId resource;
     compiler::KernelABISlot slot;
@@ -397,24 +413,31 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
         return invocationError(
             TargetModelInvocationErrorCode::InvalidProgramInvocation,
             "program input is referenced by multiple Kernel ABI slots");
-      llvm::Expected<std::vector<uint8_t>> bytes =
-          encodeTargetModelProgramTensor(input->tensor, slot);
-      if (!bytes)
-        return bytes.takeError();
       consumedInputs[inputIndex] = true;
-      TargetModelInputBinding *existing = nullptr;
-      for (TargetModelInputBinding &binding : inputBindings)
-        if (binding.resource == resource) {
-          existing = &binding;
+      MaterializedInput *existing = nullptr;
+      for (MaterializedInput &candidate : materializedInputs)
+        if (candidate.resource == resource) {
+          existing = &candidate;
           break;
         }
       if (existing) {
-        if (existing->bytes != *bytes)
+        // One card-owned resource referenced by several Tile ABI slots:
+        // the identical partition-0 binding must present the same bytes.
+        // Shared transaction materialization views agree by storage
+        // identity; independently sliced inputs agree by byte comparison.
+        // The target codec runs exactly once per card-shared resource.
+        if (!haveSameBytesView(existing->sourceView,
+                               input->tensor.getBytes()))
           return invocationError(
               TargetModelInvocationErrorCode::InvalidProgramInvocation,
               "Tile invocations disagree on one card-shared input resource");
       } else {
-        inputBindings.push_back({resource, std::move(*bytes)});
+        llvm::Expected<std::vector<uint8_t>> bytes =
+            encodeTargetModelProgramTensor(input->tensor, slot);
+        if (!bytes)
+          return bytes.takeError();
+        materializedInputs.push_back(
+            {resource, std::move(*bytes), input->tensor.getBytes()});
       }
     }
     if (!llvm::all_of(consumedInputs, [](bool consumed) { return consumed; }))
@@ -433,6 +456,10 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
           "physical resource owner disagrees with its Tile ABI domain");
   }
 
+  inputBindings.reserve(materializedInputs.size());
+  for (MaterializedInput &materialized : materializedInputs)
+    inputBindings.push_back(
+        {materialized.resource, std::move(materialized.bytes)});
   llvm::Expected<compiler::TargetCallExecutable> executable =
       compiler::createTargetCallExecutable(targetLLVMModules, arguments);
   if (!executable)

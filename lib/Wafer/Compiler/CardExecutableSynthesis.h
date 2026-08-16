@@ -185,7 +185,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
-    llvm::raw_ostream &diagnostics,
+    llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics *statistics = nullptr,
     unsigned tilePipelineParallelism = 0);
 

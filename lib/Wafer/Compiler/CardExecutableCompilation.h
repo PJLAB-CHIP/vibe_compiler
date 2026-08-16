@@ -102,6 +102,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics = nullptr,
     unsigned tilePipelineParallelism = 0);
 

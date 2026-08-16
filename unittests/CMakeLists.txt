@@ -24,6 +24,7 @@ add_executable(WaferUnitTests
   Compiler/StructuredDAGPlacementEnumerationTest.cpp
   Compiler/ProgramResourceVerificationTest.cpp
   Compiler/CardExecutableSynthesisTest.cpp
+  Compiler/ProgramDataTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
   Conversion/WaferCardModuleToTileModulesTest.cpp

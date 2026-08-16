@@ -7,6 +7,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -382,7 +383,8 @@ namespace {
 bool verifyParameterDataFile(llvm::StringRef programDir,
                              const ProgramInputLocation &location,
                              RankedTensorType tensorType,
-                             llvm::raw_ostream &diagnostics) {
+                             llvm::raw_ostream &diagnostics,
+                             const ProgramPayloadResolver *resolver) {
   if (location.name.empty())
     return rejectProgramDirectory("parameter location name must be non-empty",
                                   diagnostics);
@@ -393,7 +395,20 @@ bool verifyParameterDataFile(llvm::StringRef programDir,
         "parameter location name must be a safe single path component",
         diagnostics);
 
-  std::string path = programPath(programDir, {"data", location.name});
+  std::string relativePath = (Twine("data/") + Twine(location.name)).str();
+  if (resolver) {
+    const ProgramPayloadSource *source = resolver->resolve(relativePath);
+    if (!source)
+      return rejectProgramDirectory(
+          "parameter payload is unavailable in the transaction: " +
+              relativePath,
+          diagnostics);
+    return verifyNpyTensorPayloadFromSource(
+        *source, relativePath, tensorType.getShape(),
+        tensorType.getElementType(), diagnostics);
+  }
+
+  std::string path = programPath(programDir, {relativePath});
   llvm::sys::fs::file_status status;
   if (std::error_code error = llvm::sys::fs::status(path, status))
     return rejectProgramDirectory(
@@ -404,20 +419,33 @@ bool verifyParameterDataFile(llvm::StringRef programDir,
         diagnostics);
 
   return verifyNpyTensorPayloadFile(
-      path, ("data/" + Twine(location.name)).str(), tensorType.getShape(),
-      tensorType.getElementType(), diagnostics);
+      path, relativePath, tensorType.getShape(), tensorType.getElementType(),
+      diagnostics);
 }
 
 bool verifyConstantDataFile(llvm::StringRef programDir,
                             const ProgramInputLocation &location,
                             RankedTensorType tensorType,
-                            llvm::raw_ostream &diagnostics) {
+                            llvm::raw_ostream &diagnostics,
+                            const ProgramPayloadResolver *resolver) {
   if (location.position < 0)
     return rejectProgramDirectory("constant location has negative position",
                                   diagnostics);
 
   std::string relativePath =
       (Twine("constants/") + Twine(location.position)).str();
+  if (resolver) {
+    const ProgramPayloadSource *source = resolver->resolve(relativePath);
+    if (!source)
+      return rejectProgramDirectory(
+          "constant payload is unavailable in the transaction: " +
+              relativePath,
+          diagnostics);
+    return verifyNpyTensorPayloadFromSource(
+        *source, relativePath, tensorType.getShape(),
+        tensorType.getElementType(), diagnostics);
+  }
+
   std::string path = programPath(programDir, {relativePath});
   llvm::sys::fs::file_status status;
   if (std::error_code error = llvm::sys::fs::status(path, status))
@@ -437,7 +465,8 @@ bool verifyConstantDataFile(llvm::StringRef programDir,
 bool verifyProgramMetadata(
     ModuleOp module, llvm::StringRef programDir, const ProgramMetadata &meta,
     llvm::raw_ostream &diagnostics,
-    wafer::frontend::FrontendProgramVerificationResult *result) {
+    wafer::frontend::FrontendProgramVerificationResult *result,
+    const ProgramPayloadResolver *resolver) {
   if (meta.name != "forward")
     return rejectProgramDirectory("program metadata name must be 'forward'",
                                   diagnostics);
@@ -477,13 +506,13 @@ bool verifyProgramMetadata(
       if (!partitioned) {
         if (auto tensorType = dyn_cast<RankedTensorType>(inputType))
           rejected |= verifyParameterDataFile(programDir, location, tensorType,
-                                              diagnostics);
+                                              diagnostics, resolver);
       }
     } else if (location.type == "constant") {
       ++constantCount;
       if (auto tensorType = dyn_cast<RankedTensorType>(inputType)) {
         rejected |= verifyConstantDataFile(programDir, location, tensorType,
-                                           diagnostics);
+                                           diagnostics, resolver);
         if (result) {
           wafer::frontend::ProgramConstantBinding constant;
           constant.argumentIndex = index;
@@ -538,3 +567,25 @@ bool verifyProgramMetadata(
 }
 
 } // namespace wafer::frontend::program_detail
+
+namespace wafer::frontend {
+
+llvm::Expected<std::vector<ProgramInputLocator>>
+readProgramInputLocators(llvm::StringRef metaPath) {
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  FailureOr<program_detail::ProgramMetadata> meta =
+      program_detail::parseProgramMetadata(metaPath, diagnostics);
+  if (failed(meta))
+    return llvm::createStringError(llvm::errc::invalid_argument, "%s",
+                                   diagnostics.str().c_str());
+  std::vector<ProgramInputLocator> locators;
+  locators.reserve(meta->inputLocations.size());
+  for (const program_detail::ProgramInputLocation &location :
+       meta->inputLocations)
+    locators.push_back(
+        {location.type, location.position, location.name});
+  return locators;
+}
+
+} // namespace wafer::frontend

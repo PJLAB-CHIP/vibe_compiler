@@ -20,6 +20,25 @@
 
 namespace wafer::compiler {
 
+CardExecutable::CardExecutable(CardExecutable &&) = default;
+CardExecutable &CardExecutable::operator=(CardExecutable &&) = default;
+CardExecutable::~CardExecutable() = default;
+
+CardExecutable::CardExecutable(
+    ExecutionConfig executionConfig,
+    RuntimeLaunchContract runtimeLaunchContract,
+    std::shared_ptr<mlir::MLIRContext> context,
+    std::vector<TileExecutable> tiles,
+    std::unique_ptr<ProgramDataHandoff> programData)
+    : executionConfig(executionConfig),
+      runtimeLaunchContract(std::move(runtimeLaunchContract)),
+      context(std::move(context)), tiles(std::move(tiles)),
+      programData(std::move(programData)) {}
+
+const ProgramDataHandoff &CardExecutable::getProgramDataHandoff() const {
+  return *programData;
+}
+
 static void
 printInstructionWorkMetric(llvm::raw_ostream &os,
                            const analysis::ScheduleCostMetric &metric) {
@@ -169,7 +188,7 @@ compileTensorProgramModuleToCardExecutable(
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
     const detail::CompileClock::time_point &totalStart,
-    CompilationIRTrace &irTrace) {
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     diagnostics << "wafer-compile: " << message << "\n";
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -186,7 +205,8 @@ compileTensorProgramModuleToCardExecutable(
       detail::CompileClock::now();
   mlir::FailureOr<detail::CardExecutableSynthesisResult> compiled =
       detail::synthesizeCardExecutable(tensorModule, program, executionConfig,
-                                       optimizations, diagnostics, &statistics);
+                                       optimizations, diagnostics, programData,
+                                       &statistics);
   if (mlir::failed(compiled))
     return fail("card executable synthesis failed");
   detail::CardExecutableLoweringResult &accepted = compiled->executable;
@@ -268,7 +288,8 @@ compileTensorProgramModuleToCardExecutable(
               << " peak_rss_kib=" << detail::getCompilePeakRSSKiB() << "\n";
   return CardExecutableBuilder::makeCardExecutable(
       executionConfig, std::move(accepted.runtimeLaunchContract), context,
-      std::move(tiles));
+      std::move(tiles),
+      std::make_unique<ProgramDataHandoff>(std::move(programData)));
 }
 
 static llvm::Expected<CardExecutable> buildCardExecutableImpl(
@@ -276,14 +297,14 @@ static llvm::Expected<CardExecutable> buildCardExecutableImpl(
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
-    CompilationIRTrace &irTrace) {
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
   const detail::CompileClock::time_point totalStart =
       detail::CompileClock::now();
   wafer::support::ScopedCompileTimingSpan cardExecutableTiming(
       "stage", "tensor-program-to-executable", "card-executable");
   return compileTensorProgramModuleToCardExecutable(
       context, tensorModule, program, executionConfig, optimizations,
-      diagnostics, failAfterLaunchSlot, totalStart, irTrace);
+      diagnostics, failAfterLaunchSlot, totalStart, programData, irTrace);
 }
 
 llvm::Expected<CardExecutable> detail::buildCardExecutable(
@@ -291,11 +312,13 @@ llvm::Expected<CardExecutable> detail::buildCardExecutable(
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot) {
+    std::optional<int64_t> failAfterLaunchSlot,
+    ProgramDataHandoff &programData) {
   CompilationIRTrace discardedTrace;
   return buildCardExecutableImpl(context, tensorModule, std::move(program),
                                  executionConfig, optimizations, diagnostics,
-                                 failAfterLaunchSlot, discardedTrace);
+                                 failAfterLaunchSlot, programData,
+                                 discardedTrace);
 }
 
 llvm::Expected<CardExecutable> detail::buildCardExecutableWithIRTrace(
@@ -303,10 +326,10 @@ llvm::Expected<CardExecutable> detail::buildCardExecutableWithIRTrace(
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
-    CompilationIRTrace &irTrace) {
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
   return buildCardExecutableImpl(context, tensorModule, std::move(program),
                                  executionConfig, optimizations, diagnostics,
-                                 failAfterLaunchSlot, irTrace);
+                                 failAfterLaunchSlot, programData, irTrace);
 }
 
 } // namespace wafer::compiler

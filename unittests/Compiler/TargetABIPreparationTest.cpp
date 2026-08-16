@@ -5,6 +5,7 @@
 #include "Wafer/InitWaferDialects.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "Wafer/Compiler/ProgramData.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 #include "../../lib/Wafer/Compiler/TargetCodeGenInternal.h"
 
@@ -120,10 +121,11 @@ module {
   ASSERT_TRUE(static_cast<bool>(config));
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
+  wafer::compiler::ProgramDataHandoff programData;
   auto cardExecutable =
       wafer::compiler::detail::buildCardExecutable(
           context, *tensorProgram, std::move(program), *config,
-          wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
+          wafer::OptimizationConfig::search(), diagnostics, std::nullopt, programData);
   if (!cardExecutable)
     FAIL() << diagnosticsText
            << llvm::toString(cardExecutable.takeError());

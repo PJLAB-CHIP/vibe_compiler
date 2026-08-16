@@ -53,8 +53,7 @@ bool runTargetModelGate(
   }
 
   auto programInvocations = wafer::compiler::prepareProgramInvocations(
-      compiledProgram.getCardExecutable(),
-      *options.outputProgramDirectory, globalInputs);
+      compiledProgram.getCardExecutable(), globalInputs);
   if (!programInvocations) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(programInvocations.takeError()) << "\n";

@@ -4550,6 +4550,7 @@ static mlir::FailureOr<CardExecutableLoweringResult> materializeCandidate(
     const StructuredDAGAnalysis &dag,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics &gateStatistics,
     CardExecutableSynthesisStatistics *searchStatistics,
     uint64_t &rotatingSlotAllocationsMaterialized,
@@ -4641,7 +4642,7 @@ static mlir::FailureOr<CardExecutableLoweringResult> materializeCandidate(
   CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
       std::move(cardModule), cardId, expectedTileIds, selectedBufferRequests,
       materializationRelations, program, executionConfig, diagnostics,
-      &gateStatistics, tilePipelineParallelism);
+      programData, &gateStatistics, tilePipelineParallelism);
   rotatingSlotAllocationsMaterialized +=
       compilation.rotatingSlotAllocationsMaterialized;
   if (compilation.isAccepted()) {
@@ -4782,6 +4783,7 @@ synthesizeDeterministicBaseline(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics &statistics,
     unsigned tilePipelineParallelism) {
   std::optional<TileExecutionCandidate> candidate =
@@ -5093,7 +5095,7 @@ synthesizeDeterministicBaseline(
     CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
         std::move(cardModule), cardId, expectedTileIds,
         /*selectedBufferRequests=*/{}, materializationRelations, program,
-        executionConfig, diagnostics, &statistics.exactGates,
+        executionConfig, diagnostics, programData, &statistics.exactGates,
         tilePipelineParallelism);
     statistics.rotatingSlotAllocationsMaterialized +=
         compilation.rotatingSlotAllocationsMaterialized;
@@ -5255,7 +5257,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
-    llvm::raw_ostream &diagnostics,
+    llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics *statistics,
     unsigned tilePipelineParallelism) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
@@ -5329,7 +5331,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     return synthesizeDeterministicBaseline(
         tensorProgram, *topology, cardId, *availableTileIds, *outputDomains,
         *dag, operationNodes, program, executionConfig, diagnostics,
-        resultStatistics, tilePipelineParallelism);
+        programData, resultStatistics, tilePipelineParallelism);
   assert(optimizations.isSearch() &&
          "non-baseline synthesis must use the search controller");
 
@@ -5612,7 +5614,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     mlir::FailureOr<CardExecutableLoweringResult> accepted =
         materializeCandidate(
             tensorProgram, candidate, cardId, *availableTileIds, operationNodes,
-            *dag, program, executionConfig, diagnostics,
+            *dag, program, executionConfig, diagnostics, programData,
             resultStatistics.exactGates, &resultStatistics,
             resultStatistics.rotatingSlotAllocationsMaterialized,
             candidateActualFusedLogicalEdges, tilePipelineParallelism,
@@ -7156,7 +7158,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
       materializeCandidate(
           tensorProgram, admitted[selectedIndex]->candidate, cardId,
           *availableTileIds, operationNodes, *dag, program, executionConfig,
-          diagnostics,
+          diagnostics, programData,
           resultStatistics.selectedExecutableRematerializationGates,
           /*searchStatistics=*/nullptr, selectedRotatingSlots,
           selectedActualFusedLogicalEdges, tilePipelineParallelism,

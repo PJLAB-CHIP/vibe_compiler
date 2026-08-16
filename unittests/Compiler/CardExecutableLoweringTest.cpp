@@ -3,6 +3,7 @@
 #include "../../lib/Wafer/Compiler/CardExecutableLowering.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "Wafer/Compiler/ProgramData.h"
 
 #include "Wafer/IR/WaferDialect.h"
 
@@ -99,9 +100,10 @@ TEST_F(CardExecutableLoweringTest, ConsumesCompleteTileDomain) {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
   wafer::compiler::detail::CardExecutableLoweringFailure failure;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::lowerTileModulesToCardExecutable(
       std::move(tiles), emptyProgram(), *config, diagnostics, failure,
-      &statistics);
+      programData, &statistics);
 
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticText;
   ASSERT_EQ(executable->tiles.size(), 16u);
@@ -136,9 +138,10 @@ TEST_F(CardExecutableLoweringTest, ReportsTargetABIFailureAfterInstrLowering) {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
   wafer::compiler::detail::CardExecutableLoweringFailure failure;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::lowerTileModulesToCardExecutable(
       std::move(tiles), emptyProgram(), *config, diagnostics, failure,
-      &statistics);
+      programData, &statistics);
 
   EXPECT_TRUE(mlir::failed(executable));
   EXPECT_EQ(failure.kind,
@@ -171,9 +174,10 @@ TEST_F(CardExecutableLoweringTest, RejectsIncompleteTileDomainBeforeMutation) {
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
   wafer::compiler::detail::CardExecutableLoweringFailure failure;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::lowerTileModulesToCardExecutable(
       std::move(tiles), emptyProgram(), *config, diagnostics, failure,
-      &statistics);
+      programData, &statistics);
 
   EXPECT_TRUE(mlir::failed(executable));
   EXPECT_EQ(

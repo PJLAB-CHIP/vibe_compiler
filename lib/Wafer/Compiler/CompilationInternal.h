@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_COMPILATIONINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/ProgramData.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Frontend/Program.h"
 
@@ -30,7 +31,8 @@ std::string programFile(llvm::StringRef programDirectory,
                         llvm::ArrayRef<llvm::StringRef> components);
 bool copyDirectory(llvm::StringRef sourceDirectory,
                    llvm::StringRef destinationDirectory,
-                   llvm::raw_ostream &diagnostics);
+                   llvm::raw_ostream &diagnostics,
+                   llvm::ArrayRef<llvm::StringRef> skipMembers = {});
 bool validateRegularDirectoryTree(llvm::StringRef root,
                                   llvm::raw_ostream &diagnostics);
 bool mergeMissingProgramMembers(llvm::StringRef sourceDirectory,
@@ -67,7 +69,8 @@ parseProgramDirectoryModule(llvm::StringRef programDirectory,
 mlir::LogicalResult verifyProgramDirectoryMetadata(
     mlir::ModuleOp module, llvm::StringRef programDirectory,
     llvm::raw_ostream &diagnostics,
-    wafer::frontend::FrontendProgramVerificationResult *result = nullptr);
+    wafer::frontend::FrontendProgramVerificationResult *result = nullptr,
+    const wafer::frontend::ProgramPayloadResolver *resolver = nullptr);
 bool hasPostSpmdMarker(mlir::ModuleOp module, llvm::StringRef programDirectory);
 bool containsDialectSemantics(mlir::ModuleOp module,
                               llvm::StringRef dialectNamespace);
@@ -95,7 +98,8 @@ llvm::Expected<CardExecutable>
 compileTensorProgramToCardExecutable(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot, CompilationIRTrace &irTrace);
+    std::optional<int64_t> failAfterLaunchSlot,
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace);
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -106,7 +110,7 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
-    CompilationIRTrace &irTrace);
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace);
 
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -117,7 +121,7 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
-    CompilationIRTrace &irTrace);
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace);
 
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,

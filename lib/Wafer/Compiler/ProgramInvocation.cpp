@@ -2,6 +2,8 @@
 
 #include "Wafer/Compiler/ProgramInvocation.h"
 
+#include "Wafer/Compiler/ProgramData.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Errc.h"
@@ -10,6 +12,8 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -40,32 +44,13 @@ struct ProgramTensorDTypeInfo {
 
 std::optional<ProgramTensorDTypeInfo>
 getProgramTensorDTypeInfo(llvm::StringRef dtype) {
-  if (dtype == "i8" || dtype == "ui8")
-    return ProgramTensorDTypeInfo{1, false};
-  if (dtype == "i16" || dtype == "ui16")
-    return ProgramTensorDTypeInfo{2, false};
-  if (dtype == "f16" || dtype == "bf16")
-    return ProgramTensorDTypeInfo{2, true};
-  if (dtype == "i32" || dtype == "ui32")
-    return ProgramTensorDTypeInfo{4, false};
-  if (dtype == "f32" || dtype == "tf32")
-    return ProgramTensorDTypeInfo{4, true};
-  if (dtype == "i64" || dtype == "ui64")
-    return ProgramTensorDTypeInfo{8, false};
-  if (dtype == "f64")
-    return ProgramTensorDTypeInfo{8, true};
-  return std::nullopt;
-}
-
-bool isSafeRelativePath(llvm::StringRef path) {
-  if (path.empty() || llvm::sys::path::is_absolute(path) || path.contains('\\'))
-    return false;
-  for (llvm::sys::path::const_iterator current = llvm::sys::path::begin(path),
-                                       end = llvm::sys::path::end(path);
-       current != end; ++current)
-    if (*current == "." || *current == ".." || current->empty())
-      return false;
-  return true;
+  std::optional<int64_t> elementBytes = getProgramDTypeElementBytes(dtype);
+  if (!elementBytes)
+    return std::nullopt;
+  const bool floating = dtype == "f16" || dtype == "bf16" ||
+                        dtype == "f32" || dtype == "tf32" ||
+                        dtype == "f64";
+  return ProgramTensorDTypeInfo{*elementBytes, floating};
 }
 
 llvm::Expected<ProgramTensor>
@@ -165,6 +150,31 @@ ProgramTensor::create(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
                        std::vector<uint8_t>(bytes));
 }
 
+llvm::Expected<ProgramTensor>
+ProgramTensor::share(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
+                     std::shared_ptr<const std::vector<uint8_t>> storage,
+                     size_t offset) {
+  std::optional<int64_t> expected = computeProgramTensorByteCount(dtype, shape);
+  if (!expected)
+    return invalid("program tensor has unsupported dtype or shape");
+  if (!storage || *expected < 0 ||
+      offset > storage->size() ||
+      static_cast<size_t>(*expected) > storage->size() - offset)
+    return invalid("program tensor view is outside its shared storage");
+  ProgramTensor tensor(dtype.str(), std::vector<int64_t>(shape), {});
+  tensor.sharedStorage = std::move(storage);
+  tensor.sharedOffset = offset;
+  tensor.sharedSize = static_cast<size_t>(*expected);
+  return tensor;
+}
+
+llvm::ArrayRef<uint8_t> ProgramTensor::getBytes() const {
+  if (!sharedStorage)
+    return bytes;
+  return llvm::ArrayRef<uint8_t>(sharedStorage->data() + sharedOffset,
+                                 sharedSize);
+}
+
 llvm::Expected<ProgramTensor> ProgramTensor::loadNpy(llvm::StringRef path) {
   auto payload = frontend::loadNpyTensorPayload(path);
   if (!payload)
@@ -174,15 +184,18 @@ llvm::Expected<ProgramTensor> ProgramTensor::loadNpy(llvm::StringRef path) {
 
 llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
     const CardExecutable &cardExecutable,
-    llvm::StringRef packageRoot,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs) {
-  if (packageRoot.empty())
-    return invalid("program invocation package root must not be empty");
   if (cardExecutable.getTileExecutables().empty())
     return invalid("program invocation executable domain must not be empty");
+  const ProgramDataHandoff &handoff = cardExecutable.getProgramDataHandoff();
+
+  // One shared materialization per owned data range: every Tile binding for
+  // the same program tensor references the same storage, so parameter and
+  // constant payload bytes are read exactly once per range, never per Tile.
+  std::map<ProgramTensorId, std::shared_ptr<const std::vector<uint8_t>>>
+      materializedRanges;
   std::vector<ProgramTileInvocation> invocations;
-  invocations.reserve(
-      cardExecutable.getTileExecutables().size());
+  invocations.reserve(cardExecutable.getTileExecutables().size());
   for (const TileExecutable &tile :
        cardExecutable.getTileExecutables()) {
     if (tile.getCardId() != CardId(0))
@@ -209,17 +222,30 @@ llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
             return invalid("missing global program input index");
           return sliceProgramTensor(match->tensor, binding);
         }
-        if (!isSafeRelativePath(binding.slice.payloadPath))
-          return invalid("program payload path is not safe and relative");
-        llvm::SmallString<256> payload(packageRoot);
-        llvm::sys::path::append(payload, binding.slice.payloadPath);
-        auto loaded = ProgramTensor::loadNpy(payload);
-        if (!loaded)
-          return loaded.takeError();
-        if (loaded->getDType() != binding.dtype ||
-            loaded->getShape() != llvm::ArrayRef<int64_t>(binding.localShape))
-          return invalid("program payload disagrees with typed Tile binding");
-        return loaded;
+
+        const ProgramDataRange *range =
+            handoff.findRange(binding.programTensorId);
+        if (!range)
+          return invalid("program tensor has no owned data range");
+        if (range->getDType() != binding.dtype ||
+            range->getLocalShape() !=
+                llvm::ArrayRef<int64_t>(binding.localShape))
+          return invalid("program data range disagrees with typed Tile "
+                         "binding");
+        auto existing = materializedRanges.find(binding.programTensorId);
+        if (existing != materializedRanges.end())
+          return ProgramTensor::share(binding.dtype, binding.localShape,
+                                      existing->second, 0);
+        if (range->getRegionLength() >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()))
+          return invalid("program data range is not host-representable");
+        auto storage = std::make_shared<std::vector<uint8_t>>(
+            static_cast<size_t>(range->getRegionLength()));
+        if (llvm::Error error = handoff.materializeRange(*range, *storage))
+          return invalid(llvm::toString(std::move(error)));
+        materializedRanges.emplace(binding.programTensorId, storage);
+        return ProgramTensor::share(binding.dtype, binding.localShape,
+                                    std::move(storage), 0);
       }();
       if (!tensor)
         return tensor.takeError();

@@ -247,3 +247,15 @@ source program
   应从每个fragment的source Tile判断，不能从strategy级默认source反向推断。
 - rotating buffer的iteration/release/reuse证据必须来自actual producer、consumer和message endpoint共享的static loop。
   logical edge、Location provenance或上游structured relation只能帮助找到候选，不能代签共同loop。
+
+## Program data ownership
+
+- payload只由`ProgramDataHandoff`持有的`ProgramDataSource`/`ProgramDataRange`传递；open/hash/read只发生在owner建立、
+  helper materialization和target consumer的range materialization处，账本以`program-data-io` diagnostics行输出
+  （source_opens/header_reads/digest_passes/shard_readbacks/range_materializations/materialized_file_writes/bytes）。
+- source snapshot只复制IR/metadata/目录结构，跳过`readProgramInputLocators`发现的payload成员；helper input view由
+  `materializeSourceToFile`从owned source materialize并digest readback；byte-identical shard按region digest复用原source，
+  只有真实改变bytes的partition成为新source。
+- 16个Tile binding引用`ProgramTensorId`和range，不携带payload；`prepareProgramInvocations`不再接收packageRoot，
+  parameter/constant一次materialize并shared view共享；target model的card-shared resource只encode一次。
+- 验证payload内容走`ProgramPayloadResolver` seam（`verifyProgramDirectory`可选参数），不得先验证路径再后续stage无owner重新打开。

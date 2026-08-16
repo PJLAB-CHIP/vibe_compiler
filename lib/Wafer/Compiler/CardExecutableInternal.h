@@ -5,6 +5,7 @@
 #define WAFER_COMPILER_CARDEXECUTABLEINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/ProgramData.h"
 
 #include "llvm/Support/Error.h"
 
@@ -34,10 +35,11 @@ struct CardExecutableBuilder {
   makeCardExecutable(ExecutionConfig executionConfig,
                      RuntimeLaunchContract runtimeLaunchContract,
                      std::shared_ptr<mlir::MLIRContext> context,
-                     std::vector<TileExecutable> tiles) {
+                     std::vector<TileExecutable> tiles,
+                     std::unique_ptr<ProgramDataHandoff> programData) {
     return CardExecutable(
         executionConfig, std::move(runtimeLaunchContract), std::move(context),
-        std::move(tiles));
+        std::move(tiles), std::move(programData));
   }
 };
 
@@ -51,14 +53,15 @@ llvm::Expected<CardExecutable> buildCardExecutable(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
-    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot);
+    llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
+    ProgramDataHandoff &programData);
 
 llvm::Expected<CardExecutable> buildCardExecutableWithIRTrace(
     std::shared_ptr<mlir::MLIRContext> &context, mlir::ModuleOp tensorModule,
     frontend::FrontendProgramVerificationResult program,
     ExecutionConfig executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
-    CompilationIRTrace &irTrace);
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace);
 
 } // namespace detail
 } // namespace wafer::compiler

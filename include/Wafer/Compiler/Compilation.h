@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace llvm {
@@ -27,6 +28,33 @@ class raw_ostream;
 namespace wafer::compiler {
 
 class TargetToolchain;
+class ProgramDataHandoff;
+
+enum class ProgramResourceRole { UserInput, Parameter, Constant, Output };
+
+/// Stable identity of one logical program tensor inside a compilation.
+/// Parameters use the function argument index, captured constants use the
+/// exporter position, user inputs and outputs use the program boundary
+/// index. The role disambiguates equal numbers across disjoint boundary
+/// domains.
+struct ProgramTensorId {
+  ProgramResourceRole role = ProgramResourceRole::UserInput;
+  int64_t roleIndex = -1;
+
+  friend bool operator==(const ProgramTensorId &lhs,
+                         const ProgramTensorId &rhs) {
+    return lhs.role == rhs.role && lhs.roleIndex == rhs.roleIndex;
+  }
+  friend bool operator!=(const ProgramTensorId &lhs,
+                         const ProgramTensorId &rhs) {
+    return !(lhs == rhs);
+  }
+  friend bool operator<(const ProgramTensorId &lhs,
+                        const ProgramTensorId &rhs) {
+    return std::make_pair(static_cast<uint8_t>(lhs.role), lhs.roleIndex) <
+           std::make_pair(static_cast<uint8_t>(rhs.role), rhs.roleIndex);
+  }
+};
 
 /// Invocation-local diagnostic policy. Detailed timing never changes source
 /// semantics, candidate verification, selection, or written outputs.
@@ -142,16 +170,20 @@ private:
   CompilationTimingMode timing;
 };
 
-enum class ProgramResourceRole { UserInput, Parameter, Constant, Output };
 enum class EntryLocalCompletionKind { ReturnAfterLocalDrain };
 enum class TransportContract { None, DirectDTE };
 enum class DDRAllocationContract { DefaultArenaRelativeOffsets };
 
 /// A verified program-boundary resource projected to one card partition. The
 /// slice is copied from the frontend verifier's typed result; partition
-/// identity is never inferred from its payload locator.
+/// identity is never inferred from its payload locator. The stable program
+/// tensor identity resolves parameter/constant payload access through the
+/// CardExecutable's ProgramDataHandoff; the binding never carries payload
+/// bytes and the slice payload path is provenance only.
 struct ProgramResourceBinding {
   ProgramResourceRole role;
+  /// Stable logical program tensor identity within this compilation.
+  ProgramTensorId programTensorId;
   /// Accepted entry argument/result index.
   int64_t index;
   /// User-visible index within the resource role's program-boundary domain.
@@ -235,13 +267,17 @@ private:
 };
 
 /// Owns the complete executable for one target card. The context is owned
-/// alongside all Tile modules and is destroyed only after them.
+/// alongside all Tile modules and is destroyed only after them. The program
+/// data handoff owns all-and-only payload sources this compilation consumed;
+/// it lives exactly as long as the executable so target consumers read
+/// parameter/constant bytes from owned content instead of reopening paths.
 class CardExecutable {
 public:
-  CardExecutable(CardExecutable &&) = default;
-  CardExecutable &operator=(CardExecutable &&) = default;
+  CardExecutable(CardExecutable &&);
+  CardExecutable &operator=(CardExecutable &&);
   CardExecutable(const CardExecutable &) = delete;
   CardExecutable &operator=(const CardExecutable &) = delete;
+  ~CardExecutable();
 
   const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
   const std::vector<TileExecutable> &getTileExecutables() const {
@@ -250,6 +286,7 @@ public:
   const RuntimeLaunchContract &getRuntimeLaunchContract() const {
     return runtimeLaunchContract;
   }
+  const ProgramDataHandoff &getProgramDataHandoff() const;
 
 private:
   friend struct CardExecutableBuilder;
@@ -257,15 +294,14 @@ private:
   CardExecutable(ExecutionConfig executionConfig,
                  RuntimeLaunchContract runtimeLaunchContract,
                  std::shared_ptr<mlir::MLIRContext> context,
-                 std::vector<TileExecutable> tiles)
-      : executionConfig(executionConfig),
-        runtimeLaunchContract(std::move(runtimeLaunchContract)),
-        context(std::move(context)), tiles(std::move(tiles)) {}
+                 std::vector<TileExecutable> tiles,
+                 std::unique_ptr<ProgramDataHandoff> programData);
 
   ExecutionConfig executionConfig;
   RuntimeLaunchContract runtimeLaunchContract;
   std::shared_ptr<mlir::MLIRContext> context;
   std::vector<TileExecutable> tiles;
+  std::unique_ptr<ProgramDataHandoff> programData;
 };
 
 /// Compiles the source program and writes the requested package directory.

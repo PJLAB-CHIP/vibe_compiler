@@ -98,25 +98,72 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
 
 ## 4. Q58 checkpoints
 
-1. **现状账本**
+1. **现状账本**（2026-08-15 完成盘点，以下为实施前基线）
    - 逐项记录source verify、snapshot、SPMD input/output、CardExecutable binding和target consumer的open/read/hash/write/copy。
    - 分开统计ProgramTensor、ProgramDataSource、ProgramDataRange、TargetTensor和package byte range，不能用一个resource计数。
-2. **Transaction ownership**
-   - 在首次下游消费前完成open、size、header和digest验证；用户path随后变化不能改变本次编译bytes。
-   - truncation、replacement、range overflow、dtype/shape mismatch和digest mismatch分类失败。
-3. **Bounded reader**
-   - metadata只读取必要header；hash、compare和target conversion使用配置的bounded window。
-   - 不为每个Tile构造完整tensor vector；同一whole-file pass必须有明确consumer。
-4. **SPMD handoff**
-   - helper只消费transaction给出的content-stable file/range和all-and-only metadata，不重新打开原source path。
-   - 输出先写staging，compiler readback dtype/shape/range/digest后接管；partial output或helper失败使transaction原子失败。
-5. **Card/target handoff**
-   - 16个Tile bindings all-and-only解析到ProgramDataRange；同一range的引用数量可增长，source bytes不增长。
+
+   实施前一次source→package的payload I/O账本（num_partitions=1，每parameter全量复制路径）：
+
+   | 阶段 | 动作 | payload影响 |
+   | --- | --- | --- |
+   | snapshot | `copyDirectory(source→transactionRoot/source)` | 整树复制#1，含全部data/constants NPY |
+   | source verify | `verifyProgramDirectoryMetadata(sourceSnapshot)` | `MemoryBuffer::getFile`逐payload mmap+header+extent；replicated shard逐文件全量byte比较；**无content digest** |
+   | propagated | `copyDirectory(source→propagated)` | 整树复制#2，helper在副本上重新打开原payload |
+   | SPMD helper | 外部进程读`data/<param>` | helper进程内整NPY读入vector；写`parameter_shards/`；copy constants |
+   | merge | `mergeMissingProgramMembers(source→tensorProgram)` | 整树复制#3：data/等缺失成员再次全量复制 |
+   | tensor verify | `verifyProgramDirectoryMetadata(tensorProgram)` | shard逐文件header+extent再读一遍 |
+   | CardExecutable | `compileTensorProgramToCardExecutable` | 第三次`verifyProgramDirectoryMetadata`：同一批shard/constant文件再open/read |
+   | package | `writePackage: copyDirectory(tensorProgram→package)` | 整树复制#4：全部payload进入package（Q56才改schema） |
+   | target consumer | `prepareProgramInvocations(card, packageRoot, …)` | **每Tile**按`slice.payloadPath`重新打开package内NPY，16×全量读入host vector；`ProgramTensor::loadNpy`整文件mmap+copy |
+   | target model | `prepareTargetModelInvocation` | 同一card-owned resource在16个Tile上各调用一次`encodeTargetModelProgramTensor`（codec重复16×，结果去重保留一份） |
+
+   基线问题：snapshot/propagated/merge三层整树payload复制；验证无digest事实；16 Tile绑定各自持有payloadPath并重复打开；
+   target codec按Tile重复调用；host heap随total parameter bytes×16增长。Q58实施后必须删除上述全部重复路径。
+2. **Transaction ownership**（2026-08-15 实施）
+   - `ProgramDataSource::establish`在首次下游消费前完成open、pinned content、header parse、exact extent和
+     SHA-256 digest；用户path随后变化不改变本次编译bytes（pinned MemoryBuffer + digest证明）。
+   - 失败分类`ProgramDataFailureKind`：MissingPayload、HeaderInvalid、UnsupportedEncoding、ShapeMismatch、
+     DTypeMismatch、TruncatedPayload、TrailingPayload、SizeOverflow、DigestMismatch、MissingRange；replacement在
+     establishment前表现为上述分类失败，之后由pinned owner保证稳定。
+3. **Bounded reader**（2026-08-15 实施）
+   - metadata只读取必要header（NPY header bounded parse，1MiB上限）；文件I/O digest与materialization使用
+     1MiB window流式读写；pinned in-memory content按range直接复制。
+   - target consumer不再为每个Tile构造完整tensor vector：`prepareProgramInvocations`按owned range一次
+     materialize并让16个Tile共享同一shared storage view；target model的card-shared resource只调用一次codec。
+4. **SPMD handoff**（2026-08-15 实施）
+   - snapshot只隔离IR/metadata/目录结构，不复制payload；payload由resolver在source verification时从canonical
+     source建立一次ownership，verifier通过`ProgramPayloadResolver` seam从owned content验证header/extent。
+   - helper input view只materialize all-and-only consumed payload（`materializeSourceToFile`，1MiB window +
+     digest readback分类DigestMismatch）；helper不重新打开原source path。
+   - helper输出shard逐个establish+digest；与原始source对应region digest相等（replication/contiguous slice）时
+     复用原始source和新range，只有真实改变bytes的partition成为新`ProgramDataSource`。partial output或helper失败
+     保持transaction原子失败。
+5. **Card/target handoff**（2026-08-15 实施）
+   - `ProgramResourceBinding`携带stable `ProgramTensorId`；16个Tile bindings all-and-only解析到
+     `ProgramDataHandoff`的range（Parameter/Constant缺range时binding构建fail closed）；同一range的引用数量
+     可增长，source bytes不增长。
+   - `ProgramDataHandoff`由`CardExecutable`持有并与executable同lifetime；`prepareProgramInvocations`不再接收
+     packageRoot，target consumer按program identity和range读取。
    - Q56按`ProgramTensorId + range + selected target descriptor`建立TargetTensor并materialize，禁止按Tile重复。
-6. **规模证据**
-   - semantic case覆盖replication、contiguous slice、materialized partition、相同内容不同identity和mutation failure。
-   - byte-volume case实际读取、hash和转换全部payload；metadata-only、sparse hole或lazy zero不能代替。
-   - 至少三个递增byte规模记录read/write、wall、peak RSS和peak disk。
+6. **规模证据**（2026-08-15 完成）
+   - semantic case由`ProgramDataTest`（9/9）覆盖：replication/byte-identical shard dedup（region digest相等→复用原source）、
+     contiguous slice与strided slice materialize、相同内容不同identity（不同tensorId不自动合并）、mutation
+     stability（establish后改写path，pinned bytes和digest不变）、establishment失败分类
+     （truncated/trailing/fortran/unsupported/missing/bad-magic）、range几何与overflow负例、shared view不复制payload。
+   - byte-volume case：elementwise f16程序（2 parameter + 1 constant + 1 input），三档递增（N=512/1024/2048）
+     全量读取、hash和转换全部payload，fresh source→package exit 0 且`wafer-run --no-card` 16 Tile通过。
+     账本（三档完全一致，按source计不按bytes/Tile计）：
+     `source_opens=3 header_reads=5 digest_passes=12 shard_readbacks=2 range_materializations=0
+      materialized_file_writes=3`；materialized_write_bytes分别为526,720 / 2,101,632 / 8,397,184。
+   - 三档 wall=52.7s/52.8s/52.9s；peak RSS=60,488/64,332/69,808 KiB（payload增大16×，RSS只增9MB——
+      pinned mmap source + 无host全量副本）；package bytes=606,402/2,169,152/8,464,704。
+   - 限制：n=1024 f16 GEMM 在none baseline下因SPM容量拒绝（`exhausted its temporal domain`），与本任务无关，
+     改用可任意tiling的elementwise workload完成byte-volume证据。
+   - many-binding inventory（12 parameter + 3 constant）fresh compile：program-data ownership 全链完成
+     （`source-to-tensor-program wall_ms=127`，establish/verify/helper-input/merge 全部通过）；none baseline
+     的 card synthesis 67 分钟未收敛而终止（与 30-op 变体同一现象），package 阶段未到达。该程序
+     inventory 部分由 source-to-tensor-program 全链通过证明；byte-volume 与 per-source 账本 gate 由上述
+     三档 elementwise 证据覆盖。
 
 ## 5. Q58 measurement
 

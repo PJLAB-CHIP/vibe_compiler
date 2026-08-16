@@ -2,6 +2,7 @@
 
 #include "../../lib/Wafer/Compiler/PackageInternal.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
+#include "Wafer/Compiler/ProgramData.h"
 #include "../../lib/Wafer/Compiler/TargetCodeGenInternal.h"
 
 #include "Wafer/Target/RuntimeLaunchContract.h"
@@ -339,6 +340,7 @@ makeProfileCardExecutable(
         mlir::ModuleOp::create(builder.getUnknownLoc());
     wafer::compiler::ProgramResourceBinding binding{};
     binding.role = wafer::compiler::ProgramResourceRole::UserInput;
+    binding.programTensorId = {binding.role, 0};
     binding.index = 0;
     binding.programIndex = 0;
     binding.name = "input";
@@ -358,7 +360,8 @@ makeProfileCardExecutable(
             {std::move(binding)}, transport));
   }
   return wafer::compiler::CardExecutableBuilder::makeCardExecutable(
-      *config, launch, std::move(context), std::move(tiles));
+      *config, launch, std::move(context), std::move(tiles),
+      std::make_unique<wafer::compiler::ProgramDataHandoff>());
 }
 
 TEST(TargetCodeGenTest, PublicVerifiedModuleCannotBeForgedOrDefaulted) {
@@ -369,6 +372,7 @@ TEST(TargetCodeGenTest, PublicVerifiedModuleCannotBeForgedOrDefaulted) {
 TEST(TargetCodeGenTest, PackageSlotLegalityIgnoresDiagnosticNames) {
   wafer::compiler::ProgramResourceBinding binding{};
   binding.role = wafer::compiler::ProgramResourceRole::UserInput;
+  binding.programTensorId = {binding.role, 0};
   binding.index = 0;
   binding.name = "frontend_name";
   binding.dtype = "f32";

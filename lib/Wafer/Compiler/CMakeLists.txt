@@ -39,6 +39,7 @@ add_mlir_library(WaferCompiler
   CardExecutable.cpp
   TensorProgramCompilation.cpp
   Package.cpp
+  ProgramData.cpp
   ProgramDirectoryTransaction.cpp
   ProgramInvocation.cpp
   ProgramTensorComparison.cpp

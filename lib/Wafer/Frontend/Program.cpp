@@ -19,7 +19,8 @@ using namespace program_detail;
 static LogicalResult
 verifyProgramDirectoryImpl(ModuleOp module, llvm::StringRef programPath,
                            llvm::raw_ostream &diagnostics,
-                           FrontendProgramVerificationResult *result) {
+                           FrontendProgramVerificationResult *result,
+                           const ProgramPayloadResolver *resolver) {
   FrontendProgramVerificationResult verified;
 
   if (failed(verifyFrontendProgram(module, diagnostics, &verified)))
@@ -31,8 +32,8 @@ verifyProgramDirectoryImpl(ModuleOp module, llvm::StringRef programPath,
   if (failed(meta))
     return failure();
 
-  bool rejected =
-      verifyProgramMetadata(module, programPath, *meta, diagnostics, &verified);
+  bool rejected = verifyProgramMetadata(module, programPath, *meta, diagnostics,
+                                        &verified, resolver);
   if (!rejected) {
     FailureOr<func::FuncOp> func = findSingleFunction(module, diagnostics);
     if (failed(func))
@@ -57,8 +58,10 @@ verifyProgramDirectoryImpl(ModuleOp module, llvm::StringRef programPath,
 LogicalResult
 verifyProgramDirectory(ModuleOp module, llvm::StringRef programPath,
                        llvm::raw_ostream &diagnostics,
-                       FrontendProgramVerificationResult *result) {
-  return verifyProgramDirectoryImpl(module, programPath, diagnostics, result);
+                       FrontendProgramVerificationResult *result,
+                       const ProgramPayloadResolver *resolver) {
+  return verifyProgramDirectoryImpl(module, programPath, diagnostics, result,
+                                    resolver);
 }
 
 } // namespace wafer::frontend

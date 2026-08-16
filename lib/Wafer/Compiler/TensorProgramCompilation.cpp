@@ -78,10 +78,11 @@ llvm::Expected<CardExecutable>
 compileTensorProgramToCardExecutable(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
-    std::optional<int64_t> failAfterLaunchSlot, CompilationIRTrace &irTrace) {
+    std::optional<int64_t> failAfterLaunchSlot,
+    ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
   return compileTensorProgram<CardExecutable>(
       tensorProgramDirectory, executionConfig, diagnostics, failAfterLaunchSlot,
-      [optimizations,
+      [optimizations, &programData,
        &irTrace](std::shared_ptr<mlir::MLIRContext> &context,
                  mlir::ModuleOp tensorModule,
                  frontend::FrontendProgramVerificationResult program,
@@ -89,7 +90,7 @@ compileTensorProgramToCardExecutable(
                  std::optional<int64_t> failAfterLaunchSlot) {
         return buildCardExecutableWithIRTrace(
             context, tensorModule, std::move(program), config, optimizations,
-            output, failAfterLaunchSlot, irTrace);
+            output, failAfterLaunchSlot, programData, irTrace);
       });
 }
 

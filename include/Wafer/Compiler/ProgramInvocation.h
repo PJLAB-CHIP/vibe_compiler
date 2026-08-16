@@ -31,7 +31,9 @@ bool isFloatingProgramTensorDType(llvm::StringRef dtype);
 
 /// Owner-backed compact row-major tensor at a typed program boundary.
 /// Multi-byte elements use canonical little-endian storage. This is source
-/// invocation data, not an execution result or device storage.
+/// invocation data, not an execution result or device storage. Tensors can
+/// be shared views over one transaction-owned materialization; repeated
+/// Tile bindings then never duplicate payload bytes.
 class ProgramTensor {
 public:
   static llvm::Expected<ProgramTensor> create(llvm::StringRef dtype,
@@ -39,9 +41,16 @@ public:
                                               llvm::ArrayRef<uint8_t> bytes);
   static llvm::Expected<ProgramTensor> loadNpy(llvm::StringRef path);
 
+  /// Non-owning view over shared materialized storage. The view covers
+  /// [offset, offset + byteCount) of `storage`; the shared owner keeps the
+  /// bytes alive for the lifetime of every view.
+  static llvm::Expected<ProgramTensor>
+  share(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
+        std::shared_ptr<const std::vector<uint8_t>> storage, size_t offset);
+
   llvm::StringRef getDType() const { return dtype; }
   llvm::ArrayRef<int64_t> getShape() const { return shape; }
-  llvm::ArrayRef<uint8_t> getBytes() const { return bytes; }
+  llvm::ArrayRef<uint8_t> getBytes() const;
 
 private:
   ProgramTensor(std::string dtype, std::vector<int64_t> shape,
@@ -52,6 +61,9 @@ private:
   std::string dtype;
   std::vector<int64_t> shape;
   std::vector<uint8_t> bytes;
+  std::shared_ptr<const std::vector<uint8_t>> sharedStorage;
+  size_t sharedOffset = 0;
+  size_t sharedSize = 0;
 };
 
 /// Exact non-output source resource supplied to one accepted Tile.
@@ -77,13 +89,13 @@ struct ProgramGlobalInputBinding {
 
 /// Builds all Tile-local source bindings from typed cardExecutable
 /// slices. User inputs are sliced from complete logical tensors;
-/// parameters/constants are loaded from their already-verified package-relative
-/// NPY payload paths. The function performs no compute and is shared by
-/// independent execution consumers without sharing their numeric kernels or
-/// schedulers.
+/// parameters/constants are materialized exactly once per owned
+/// ProgramDataRange through the card executable's program data handoff, and
+/// every Tile view shares the same materialized storage. The function
+/// performs no compute and is shared by independent execution consumers
+/// without sharing their numeric kernels or schedulers.
 llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
     const CardExecutable &cardExecutable,
-    llvm::StringRef packageRoot,
     llvm::ArrayRef<ProgramGlobalInputBinding> globalInputs);
 
 /// Applies one already-verified program binding slice to a complete logical

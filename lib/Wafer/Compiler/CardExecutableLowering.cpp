@@ -463,7 +463,8 @@ findPartitionSlice(llvm::ArrayRef<frontend::ProgramPartitionSlice> slices,
 static mlir::FailureOr<std::vector<ProgramResourceBinding>>
 buildProgramResourceBindings(
     const frontend::FrontendProgramVerificationResult &program,
-    int64_t partitionId, mlir::ModuleOp diagnosticAnchor) {
+    int64_t partitionId, mlir::ModuleOp diagnosticAnchor,
+    const ProgramDataHandoff &programData) {
   std::vector<ProgramResourceBinding> bindings;
   auto appendBoundary = [&](const frontend::ProgramBoundaryBinding &binding,
                             ProgramResourceRole role) -> mlir::LogicalResult {
@@ -474,6 +475,7 @@ buildProgramResourceBindings(
           "typed program boundary does not contain exactly one partition "
           "slice");
     bindings.push_back({role,
+                        {role, binding.programIndex},
                         binding.index,
                         binding.programIndex,
                         {},
@@ -498,10 +500,19 @@ buildProgramResourceBindings(
           "slice");
       return mlir::failure();
     }
-    bindings.push_back({ProgramResourceRole::Parameter, parameter.argumentIndex,
-                        -1, parameter.name, parameter.dtype,
-                        parameter.distribution, parameter.globalShape,
-                        parameter.localShape, std::move(*slice)});
+    ProgramTensorId tensorId{ProgramResourceRole::Parameter,
+                             parameter.argumentIndex};
+    if (!programData.findRange(tensorId)) {
+      diagnosticAnchor.emitOpError()
+          << "parameter program tensor has no owned data range: "
+          << parameter.name;
+      return mlir::failure();
+    }
+    bindings.push_back({ProgramResourceRole::Parameter, tensorId,
+                        parameter.argumentIndex, -1, parameter.name,
+                        parameter.dtype, parameter.distribution,
+                        parameter.globalShape, parameter.localShape,
+                        std::move(*slice)});
   }
   for (const frontend::ProgramConstantBinding &constant : program.constants) {
     frontend::ProgramPartitionSlice slice;
@@ -511,7 +522,16 @@ buildProgramResourceBindings(
     slice.sizes = constant.shape;
     slice.strides.assign(constant.shape.size(), 1);
     slice.payloadPath = constant.payloadPath;
+    ProgramTensorId tensorId{ProgramResourceRole::Constant,
+                             constant.position};
+    if (!programData.findRange(tensorId)) {
+      diagnosticAnchor.emitOpError()
+          << "captured constant program tensor has no owned data range: "
+          << constant.payloadPath;
+      return mlir::failure();
+    }
     bindings.push_back({ProgramResourceRole::Constant,
+                        tensorId,
                         constant.argumentIndex,
                         constant.position,
                         {},
@@ -595,7 +615,7 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig,
     CardExecutableLoweringFailureKind &failureKind,
-    unsigned tilePipelineParallelism) {
+    ProgramDataHandoff &programData, unsigned tilePipelineParallelism) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "lowering", "tile-modules-to-card-executable", "instr-modules");
 
@@ -720,7 +740,8 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     // Tile therefore consumes the same logical partition-0 boundary
     // projection; tile_id is never substituted for partition_id.
     mlir::FailureOr<std::vector<ProgramResourceBinding>> bindings =
-        buildProgramResourceBindings(program, kSingleCardPartitionId, module);
+        buildProgramResourceBindings(program, kSingleCardPartitionId, module,
+                                     programData);
     if (mlir::failed(bindings)) {
       failureKind = CardExecutableLoweringFailureKind::ProgramResourceBindings;
       return mlir::failure();
@@ -814,7 +835,7 @@ mlir::FailureOr<CardExecutableLoweringResult> lowerTileModulesToCardExecutable(
     std::vector<mlir::OwningOpRef<mlir::ModuleOp>> tileModules,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    CardExecutableLoweringFailure &failure,
+    CardExecutableLoweringFailure &failure, ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics,
     unsigned tilePipelineParallelism) {
   failure = {};
@@ -833,7 +854,7 @@ mlir::FailureOr<CardExecutableLoweringResult> lowerTileModulesToCardExecutable(
     ++statistics->tileModuleLoweringAttempts;
   mlir::FailureOr<InstrModuleLoweringResult> loweredInstrModules =
       lowerTileInstructionModules(std::move(tileModules), program,
-                                  executionConfig, failureKind,
+                                  executionConfig, failureKind, programData,
                                   tilePipelineParallelism);
   if (mlir::failed(loweredInstrModules) &&
       failureKind == CardExecutableLoweringFailureKind::None)

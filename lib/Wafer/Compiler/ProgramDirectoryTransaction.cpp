@@ -63,7 +63,8 @@ std::string programFile(llvm::StringRef programDirectory,
 
 bool copyDirectory(llvm::StringRef sourceDirectory,
                    llvm::StringRef destinationDirectory,
-                   llvm::raw_ostream &diagnostics) {
+                   llvm::raw_ostream &diagnostics,
+                   llvm::ArrayRef<llvm::StringRef> skipMembers) {
   if (!isDirectory(sourceDirectory))
     return reject(diagnostics,
                   "source program directory is not a directory: '" +
@@ -91,6 +92,10 @@ bool copyDirectory(llvm::StringRef sourceDirectory,
       return reject(diagnostics, "failed to derive source program member path");
     if (relative.starts_with(llvm::sys::path::get_separator()))
       relative = relative.drop_front();
+    if (llvm::is_contained(skipMembers, relative)) {
+      iterator.no_push();
+      continue;
+    }
 
     llvm::SmallString<256> destination(destinationDirectory);
     llvm::sys::path::append(destination, relative);

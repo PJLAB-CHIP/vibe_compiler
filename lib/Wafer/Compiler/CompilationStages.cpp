@@ -74,11 +74,12 @@ parseProgramDirectoryModule(llvm::StringRef programDirectory,
 mlir::LogicalResult verifyProgramDirectoryMetadata(
     mlir::ModuleOp module, llvm::StringRef programDirectory,
     llvm::raw_ostream &diagnostics,
-    wafer::frontend::FrontendProgramVerificationResult *result) {
+    wafer::frontend::FrontendProgramVerificationResult *result,
+    const wafer::frontend::ProgramPayloadResolver *resolver) {
   std::string verifierDiagnostics;
   llvm::raw_string_ostream verifierStream(verifierDiagnostics);
   mlir::LogicalResult status = wafer::frontend::verifyProgramDirectory(
-      module, programDirectory, verifierStream, result);
+      module, programDirectory, verifierStream, result, resolver);
   if (mlir::succeeded(status))
     return status;
 

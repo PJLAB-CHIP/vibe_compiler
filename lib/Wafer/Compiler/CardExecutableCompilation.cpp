@@ -125,6 +125,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics,
     unsigned tilePipelineParallelism) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
@@ -276,7 +277,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
   mlir::FailureOr<CardExecutableLoweringResult> executable =
       lowerTileModulesToCardExecutable(
           std::move(instructionModules), program, executionConfig, diagnostics,
-          loweringFailure, statistics, tilePipelineParallelism);
+          loweringFailure, programData, statistics, tilePipelineParallelism);
   if (mlir::failed(executable))
     return reportFailure(
         fail(loweringFailure.isProvenExactRejection()

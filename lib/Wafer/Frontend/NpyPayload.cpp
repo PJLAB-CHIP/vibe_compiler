@@ -4,6 +4,7 @@
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Errc.h"
@@ -22,6 +23,11 @@ using namespace mlir;
 namespace wafer::frontend::program_detail {
 
 namespace {
+
+/// Upper bound for a parsed NPY header. Version 2 headers can legally declare
+/// larger lengths, but no current Wafer producer needs them and unbounded
+/// header reads would break the bounded-read contract.
+constexpr uint64_t kMaximumNpyHeaderBytes = 1 << 20;
 
 struct NpyPayloadMetadata {
   uint64_t fileSize = 0;
@@ -168,6 +174,7 @@ readNpyPayloadMetadata(llvm::StringRef path, llvm::StringRef displayName,
   return metadata;
 }
 
+
 std::optional<std::pair<llvm::StringRef, uint64_t>>
 decodeNpyDescr(llvm::StringRef descr) {
   // ProgramTensor owns canonical little-endian compact bytes. NumPy '=' means
@@ -208,6 +215,132 @@ bool npyDescrMatchesDtype(llvm::StringRef descr, Type elementType) {
 }
 
 } // namespace
+
+FailureOr<NpyPayloadMetadata>
+readNpyPayloadMetadataFromSource(const ProgramPayloadSource &source,
+                                 llvm::StringRef displayName,
+                                 llvm::raw_ostream &diagnostics) {
+  const uint64_t fileSize = source.getPayloadFileSize();
+  auto readBytes = [&](uint64_t offset,
+                       llvm::MutableArrayRef<uint8_t> out) -> bool {
+    if (offset > fileSize || out.size() > fileSize - offset) {
+      rejectProgramDirectory(
+          ("truncated npy payload: " + displayName).str(), diagnostics);
+      return true;
+    }
+    if (llvm::Error error = source.readPayloadBytes(offset, out)) {
+      rejectProgramDirectory(
+          ("failed to read npy payload source: " + displayName).str(),
+          diagnostics);
+      return true;
+    }
+    return false;
+  };
+
+  llvm::SmallVector<uint8_t, 12> prefix;
+  prefix.resize(10);
+  if (readBytes(0, prefix))
+    return failure();
+  if (llvm::ArrayRef<uint8_t>(prefix).take_front(6) !=
+      llvm::ArrayRef<uint8_t>(
+          reinterpret_cast<const uint8_t *>("\x93NUMPY"), 6)) {
+    rejectProgramDirectory(
+        ("npy payload is missing magic: " + displayName).str(), diagnostics);
+    return failure();
+  }
+
+  uint64_t major = prefix[6];
+  uint64_t headerLen = 0;
+  uint64_t headerOffset = 0;
+  if (major == 1) {
+    headerOffset = 10;
+    headerLen = prefix[8] | (prefix[9] << 8);
+  } else if (major == 2) {
+    headerOffset = 12;
+    llvm::SmallVector<uint8_t, 4> lengthBytes;
+    lengthBytes.resize(4);
+    if (readBytes(8, lengthBytes))
+      return failure();
+    headerLen = static_cast<uint64_t>(lengthBytes[0]) |
+                (static_cast<uint64_t>(lengthBytes[1]) << 8) |
+                (static_cast<uint64_t>(lengthBytes[2]) << 16) |
+                (static_cast<uint64_t>(lengthBytes[3]) << 24);
+  } else {
+    rejectProgramDirectory(
+        ("unsupported npy payload version: " + displayName).str(), diagnostics);
+    return failure();
+  }
+
+  if (headerLen > kMaximumNpyHeaderBytes || headerOffset > fileSize ||
+      headerLen > fileSize - headerOffset) {
+    rejectProgramDirectory(
+        ("npy payload header is truncated or unreasonably large: " +
+         displayName)
+            .str(),
+        diagnostics);
+    return failure();
+  }
+
+  std::vector<uint8_t> headerStorage(static_cast<size_t>(headerLen));
+  if (readBytes(headerOffset, headerStorage))
+    return failure();
+  llvm::StringRef header(reinterpret_cast<const char *>(headerStorage.data()),
+                         headerStorage.size());
+  std::optional<std::string> descr = parseNpyStringField(header, "descr");
+  std::optional<bool> fortranOrder = parseNpyBoolField(header, "fortran_order");
+  std::optional<std::vector<int64_t>> shape = parseNpyShapeField(header);
+  if (!descr || !fortranOrder || !shape) {
+    rejectProgramDirectory(("invalid npy payload header: " + displayName).str(),
+                           diagnostics);
+    return failure();
+  }
+
+  NpyPayloadMetadata metadata;
+  metadata.fileSize = fileSize;
+  metadata.dataOffset = headerOffset + headerLen;
+  metadata.descr = std::move(*descr);
+  metadata.fortranOrder = *fortranOrder;
+  metadata.shape = std::move(*shape);
+  return metadata;
+}
+
+bool verifyNpyTensorPayloadFromSource(const ProgramPayloadSource &source,
+                                      llvm::StringRef displayName,
+                                      llvm::ArrayRef<int64_t> expectedShape,
+                                      Type elementType,
+                                      llvm::raw_ostream &diagnostics) {
+  FailureOr<NpyPayloadMetadata> metadata =
+      readNpyPayloadMetadataFromSource(source, displayName, diagnostics);
+  if (failed(metadata))
+    return true;
+
+  if (metadata->fortranOrder)
+    return rejectProgramDirectory(
+        ("npy payload must be row-major: " + displayName).str(), diagnostics);
+  if (!llvm::equal(metadata->shape, expectedShape))
+    return rejectProgramDirectory(
+        ("npy payload shape does not match tensor: " + displayName).str(),
+        diagnostics);
+  if (!npyDescrMatchesDtype(metadata->descr, elementType))
+    return rejectProgramDirectory(
+        ("npy payload dtype does not match tensor: " + displayName).str(),
+        diagnostics);
+
+  std::optional<uint64_t> expectedRawBytes =
+      checkedRawByteSize(expectedShape, elementType);
+  if (!expectedRawBytes)
+    return rejectProgramDirectory(
+        ("npy tensor byte size is not representable: " + displayName).str(),
+        diagnostics);
+  if (metadata->dataOffset > metadata->fileSize ||
+      *expectedRawBytes > metadata->fileSize - metadata->dataOffset)
+    return rejectProgramDirectory(
+        ("npy payload file is smaller than tensor payload: " + displayName)
+            .str(),
+        diagnostics);
+
+  return false;
+}
 
 bool verifyNpyTensorPayloadFile(llvm::StringRef path,
                                 llvm::StringRef displayName,
@@ -299,6 +432,26 @@ llvm::Expected<NpyTensorPayload> loadNpyTensorPayload(llvm::StringRef path) {
       static_cast<size_t>(rawBytes));
   return NpyTensorPayload{decoded->first.str(), metadata->shape,
                           std::vector<uint8_t>(payload.begin(), payload.end())};
+}
+
+llvm::Expected<NpyPayloadHeader>
+parseNpyPayloadHeader(const ProgramPayloadSource &source,
+                      llvm::StringRef displayName) {
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  FailureOr<NpyPayloadMetadata> metadata =
+      readNpyPayloadMetadataFromSource(source, displayName, diagnostics);
+  if (failed(metadata))
+    return llvm::createStringError(llvm::errc::invalid_argument, "%s",
+                                   diagnostics.str().c_str());
+  return NpyPayloadHeader{metadata->fileSize, metadata->dataOffset,
+                          std::move(metadata->descr), metadata->fortranOrder,
+                          std::move(metadata->shape)};
+}
+
+std::optional<std::pair<llvm::StringRef, uint64_t>>
+decodeProgramNpyDescr(llvm::StringRef descr) {
+  return decodeNpyDescr(descr);
 }
 
 } // namespace wafer::frontend

@@ -4,6 +4,7 @@
 #include "Wafer/Compiler/TargetCodeGen.h"
 
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "Wafer/Compiler/ProgramData.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -237,10 +238,11 @@ module {
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
+  wafer::compiler::ProgramDataHandoff programData;
   llvm::Expected<wafer::compiler::CardExecutable> executable =
       wafer::compiler::detail::buildCardExecutable(
           context, *module, std::move(program), *executionConfig,
-          wafer::OptimizationConfig::search(), diagnostics, std::nullopt);
+          wafer::OptimizationConfig::search(), diagnostics, std::nullopt, programData);
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticsText
       << (executable ? "" : llvm::toString(executable.takeError()));

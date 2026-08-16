@@ -2,6 +2,7 @@
 
 #include "../../lib/Wafer/Compiler/CardExecutableSynthesis.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "Wafer/Compiler/ProgramData.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 #include "../../lib/Wafer/Compiler/SelectedBufferMaterialization.h"
 #include "../../lib/Wafer/Compiler/StructuredDAGSchedulePlan.h"
@@ -785,9 +786,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, &statistics);
+      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   expectCompleteTileDomain(*executable);
@@ -844,9 +846,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, branchMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, &statistics);
+      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
@@ -871,13 +874,14 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream firstDiagnostics(firstDiagnosticsText);
   llvm::raw_string_ostream secondDiagnostics(secondDiagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics firstStats;
+  wafer::compiler::ProgramDataHandoff programData;
   wafer::compiler::detail::CardExecutableSynthesisStatistics secondStats;
   auto first = wafer::compiler::detail::synthesizeCardExecutable(
       *firstProgram.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), firstDiagnostics, &firstStats);
+      wafer::OptimizationConfig::none(), firstDiagnostics, programData, &firstStats);
   auto second = wafer::compiler::detail::synthesizeCardExecutable(
       *secondProgram.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), secondDiagnostics, &secondStats);
+      wafer::OptimizationConfig::none(), secondDiagnostics, programData, &secondStats);
   firstDiagnostics.flush();
   secondDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(first)) << firstDiagnosticsText;
@@ -993,9 +997,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   expectCompleteTileDomain(*executable);
@@ -1051,7 +1056,7 @@ TEST(CardExecutableSynthesisTest,
   auto repeated = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, programMetadata(), executionConfig(),
       wafer::OptimizationConfig::search(), repeatDiagnostics,
-      &repeatStatistics);
+      programData, &repeatStatistics);
   repeatDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(repeated)) << repeatDiagnosticsText;
   EXPECT_EQ(repeatStatistics.candidateProposals, statistics.candidateProposals);
@@ -1080,9 +1085,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, branchMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(statistics.dependencyComponentCount, 2u);
@@ -1105,9 +1111,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, dependentProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(statistics.plannedCandidates,
@@ -1135,9 +1142,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, dependentProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.multiStagePlacementCandidateProposals, 0u);
@@ -1165,9 +1173,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, layoutPipelineProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.layoutConversionCandidateProposals, 0u);
@@ -1223,9 +1232,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, twoReductionAxisProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.multiReductionAxisCandidateProposals, 0u);
@@ -1245,9 +1255,10 @@ TEST(CardExecutableSynthesisTest,
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, largeProducerStageProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, &statistics);
+      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(statistics.materializedCandidates, 1u);
@@ -1269,9 +1280,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream baselineDiagnostics(baselineDiagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics
       baselineStatistics;
+  wafer::compiler::ProgramDataHandoff programData;
   auto baseline = wafer::compiler::detail::synthesizeCardExecutable(
       *baselineProgram.module, largeTemporalProgramMetadata(),
-      executionConfig(), wafer::OptimizationConfig::none(), baselineDiagnostics,
+      executionConfig(), wafer::OptimizationConfig::none(), baselineDiagnostics, programData,
       &baselineStatistics);
   baselineDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(baseline)) << baselineDiagnosticsText;
@@ -1340,7 +1352,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *searchProgram.module, largeTemporalProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
@@ -1388,7 +1400,7 @@ TEST(CardExecutableSynthesisTest,
   auto repeated = wafer::compiler::detail::synthesizeCardExecutable(
       *repeatedProgram.module, largeTemporalProgramMetadata(),
       executionConfig(), wafer::OptimizationConfig::search(),
-      repeatedDiagnostics, &repeatedStatistics);
+      repeatedDiagnostics, programData, &repeatedStatistics);
   repeatedDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(repeated)) << repeatedDiagnosticsText;
   EXPECT_EQ(repeatedStatistics.candidateProposals,

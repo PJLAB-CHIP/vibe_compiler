@@ -2,6 +2,7 @@
 
 #include "../../lib/Wafer/Compiler/CardExecutableCompilation.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "Wafer/Compiler/ProgramData.h"
 
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -106,17 +107,18 @@ TEST_F(CardExecutableCompilationTest,
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
 
   auto result = wafer::compiler::detail::compileCardModuleToExecutable(
       std::move(cardModule), wafer::CardId(0), expectedTileIds,
       /*selectedBufferRequests=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
-      &statistics);
+      programData, &statistics);
   auto repeated = wafer::compiler::detail::compileCardModuleToExecutable(
       std::move(repeatedCardModule), wafer::CardId(0), expectedTileIds,
       /*selectedBufferRequests=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
-      &statistics);
+      programData, &statistics);
   diagnostics.flush();
 
   EXPECT_FALSE(result.isAccepted());
@@ -143,12 +145,13 @@ TEST_F(CardExecutableCompilationTest,
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
 
   auto result = wafer::compiler::detail::compileCardModuleToExecutable(
       {}, wafer::CardId(0), expectedTileIds,
       /*selectedBufferRequests=*/{},
       /*materializationRelations=*/{}, program, executionConfig(), diagnostics,
-      &statistics);
+      programData, &statistics);
   diagnostics.flush();
 
   EXPECT_FALSE(result.isAccepted());

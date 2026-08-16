@@ -92,6 +92,12 @@ bool verifyNpyTensorPayloadFile(llvm::StringRef path,
                                 mlir::Type elementType,
                                 llvm::raw_ostream &diagnostics);
 
+bool verifyNpyTensorPayloadFromSource(const ProgramPayloadSource &source,
+                                      llvm::StringRef displayName,
+                                      llvm::ArrayRef<int64_t> expectedShape,
+                                      mlir::Type elementType,
+                                      llvm::raw_ostream &diagnostics);
+
 mlir::FailureOr<mlir::func::FuncOp>
 findSingleFunction(mlir::ModuleOp module, llvm::raw_ostream &diagnostics);
 std::string programPath(llvm::StringRef programDir,
@@ -101,7 +107,8 @@ bool fileExists(llvm::StringRef path);
 bool verifyProgramMetadata(mlir::ModuleOp module, llvm::StringRef programDir,
                            const ProgramMetadata &meta,
                            llvm::raw_ostream &diagnostics,
-                           FrontendProgramVerificationResult *result);
+                           FrontendProgramVerificationResult *result,
+                           const ProgramPayloadResolver *resolver);
 bool hasSpmdParameterShardings(mlir::ModuleOp module);
 ProgramDistributionKind
 getVerifiedDistributionKind(llvm::StringRef distribution);

@@ -93,7 +93,7 @@ lowerTileModulesToCardExecutable(
     std::vector<mlir::OwningOpRef<mlir::ModuleOp>> tileModules,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
-    CardExecutableLoweringFailure &failure,
+    CardExecutableLoweringFailure &failure, ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics = nullptr,
     unsigned tilePipelineParallelism = 0);
 
