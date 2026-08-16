@@ -19,7 +19,7 @@ template <typename ProductT, typename BuilderT>
 static llvm::Expected<ProductT> compileTensorProgram(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     llvm::raw_ostream &diagnostics, std::optional<int64_t> failAfterLaunchSlot,
-    BuilderT &&builder) {
+    const frontend::ProgramPayloadResolver &resolver, BuilderT &&builder) {
   auto fail = [&](llvm::StringRef message) -> llvm::Error {
     reject(diagnostics, message);
     return llvm::createStringError(llvm::errc::invalid_argument, "%s",
@@ -60,7 +60,8 @@ static llvm::Expected<ProductT> compileTensorProgram(
 
   frontend::FrontendProgramVerificationResult program;
   if (mlir::failed(verifyProgramDirectoryMetadata(
-          *tensorModule, tensorProgramDirectory, diagnostics, &program)))
+          *tensorModule, tensorProgramDirectory, diagnostics, &program,
+          &resolver)))
     return fail("tensor program metadata verification failed");
   if (program.numPartitions != executionConfig.getNumPartitions())
     return fail(
@@ -79,9 +80,12 @@ compileTensorProgramToCardExecutable(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot,
-    ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
+    ProgramDataHandoff &programData,
+    const frontend::ProgramPayloadResolver &resolver,
+    CompilationIRTrace &irTrace) {
   return compileTensorProgram<CardExecutable>(
       tensorProgramDirectory, executionConfig, diagnostics, failAfterLaunchSlot,
+      resolver,
       [optimizations, &programData,
        &irTrace](std::shared_ptr<mlir::MLIRContext> &context,
                  mlir::ModuleOp tensorModule,

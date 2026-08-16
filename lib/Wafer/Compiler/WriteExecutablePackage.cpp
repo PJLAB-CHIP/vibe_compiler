@@ -657,14 +657,16 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
-    ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
+    ProgramDataHandoff &programData,
+    const frontend::ProgramPayloadResolver &resolver,
+    CompilationIRTrace &irTrace) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "executable-package");
   llvm::Expected<CardExecutable> compiledCardExecutable =
       compileTensorProgramToCardExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLaunchSlot, programData, irTrace);
+          failAfterLaunchSlot, programData, resolver, irTrace);
   if (!compiledCardExecutable) {
     llvm::consumeError(compiledCardExecutable.takeError());
     return mlir::failure();
@@ -698,14 +700,16 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
-    ProgramDataHandoff &programData, CompilationIRTrace &irTrace) {
+    ProgramDataHandoff &programData,
+    const frontend::ProgramPayloadResolver &resolver,
+    CompilationIRTrace &irTrace) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "profile-package");
   llvm::Expected<CardExecutable> compiled =
       compileTensorProgramToCardExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
-          failAfterLaunchSlot, programData, irTrace);
+          failAfterLaunchSlot, programData, resolver, irTrace);
   if (!compiled) {
     llvm::consumeError(compiled.takeError());
     return mlir::failure();

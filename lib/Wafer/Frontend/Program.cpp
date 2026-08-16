@@ -46,7 +46,7 @@ verifyProgramDirectoryImpl(ModuleOp module, llvm::StringRef programPath,
                                           diagnostics, &verified);
     if (!rejected)
       rejected |= verifyParameterShards(module, programPath, *meta, *func,
-                                        diagnostics, &verified);
+                                        diagnostics, resolver, &verified);
   }
   if (rejected)
     return failure();

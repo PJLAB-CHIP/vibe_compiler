@@ -116,6 +116,13 @@ public:
   virtual llvm::Error readPayloadBytes(uint64_t offset,
                                        llvm::MutableArrayRef<uint8_t> out)
       const = 0;
+
+  /// Whole-content SHA-256 digest (lowercase hex) when the source already
+  /// owns a verified digest fact; std::nullopt when it does not. Verifiers
+  /// use it for byte-identity proofs instead of re-reading content.
+  virtual std::optional<std::string> getOwnedContentDigest() const {
+    return std::nullopt;
+  }
 };
 
 /// Resolves program-relative payload locators ("data/<name>",

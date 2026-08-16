@@ -84,6 +84,7 @@ bool verifyShardEntry(const llvm::json::Object &object, int64_t numPartitions,
                       llvm::ArrayRef<int64_t> localShape, Type elementType,
                       llvm::StringRef parameterName, llvm::StringRef programDir,
                       llvm::StringRef distribution,
+                      const ProgramPayloadResolver *resolver,
                       std::vector<bool> &seenPartitions,
                       std::vector<bool> &seenReplicaIds,
                       std::vector<ParameterShardSlice> &verifiedSlices,
@@ -165,8 +166,19 @@ bool verifyShardEntry(const llvm::json::Object &object, int64_t numPartitions,
     return rejectProgramDirectory(
         "parameter shard path is not a regular file: " + file, diagnostics);
 
-  if (verifyNpyTensorPayloadFile(path, file, sizes, elementType, diagnostics))
+  if (resolver) {
+    const ProgramPayloadSource *source = resolver->resolve(file);
+    if (!source)
+      return rejectProgramDirectory(
+          "parameter shard payload is unavailable in the transaction: " + file,
+          diagnostics);
+    if (verifyNpyTensorPayloadFromSource(*source, file, sizes, elementType,
+                                         diagnostics))
+      return true;
+  } else if (verifyNpyTensorPayloadFile(path, file, sizes, elementType,
+                                       diagnostics)) {
     return true;
+  }
   verifiedSlices.push_back(ParameterShardSlice{
       partitionId, replicaId, std::move(offsets), std::move(sizes),
       std::move(strides), std::move(path), std::move(file)});
@@ -176,9 +188,9 @@ bool verifyShardEntry(const llvm::json::Object &object, int64_t numPartitions,
 bool verifyParameterShardCoverage(llvm::ArrayRef<ParameterShardSlice> slices,
                                   llvm::ArrayRef<int64_t> globalShape,
                                   llvm::StringRef distribution,
+                                  const ProgramPayloadResolver *resolver,
                                   llvm::raw_ostream &diagnostics) {
   if (distribution == "replicated") {
-    std::unique_ptr<llvm::MemoryBuffer> canonicalPayload;
     for (const ParameterShardSlice &slice : slices) {
       if (!llvm::all_of(slice.offsets,
                         [](int64_t offset) { return offset == 0; }) ||
@@ -186,7 +198,38 @@ bool verifyParameterShardCoverage(llvm::ArrayRef<ParameterShardSlice> slices,
         return rejectProgramDirectory(
             "replicated parameter shard must contain the full global tensor",
             diagnostics);
+    }
 
+    if (resolver) {
+      // Owned sources carry their establishment digest; byte identity is a
+      // digest fact and never re-reads content.
+      std::optional<std::string> canonicalDigest;
+      for (const ParameterShardSlice &slice : slices) {
+        const ProgramPayloadSource *source = resolver->resolve(slice.relativePath);
+        if (!source)
+          return rejectProgramDirectory(
+              "replicated parameter shard payload is unavailable in the "
+              "transaction: " +
+                  slice.relativePath,
+              diagnostics);
+        std::optional<std::string> digest = source->getOwnedContentDigest();
+        if (!digest)
+          return rejectProgramDirectory(
+              "replicated parameter shard source has no owned digest: " +
+                  slice.relativePath,
+              diagnostics);
+        if (!canonicalDigest)
+          canonicalDigest = *digest;
+        else if (*canonicalDigest != *digest)
+          return rejectProgramDirectory(
+              "replicated parameter shard payloads must be byte-identical",
+              diagnostics);
+      }
+      return false;
+    }
+
+    std::unique_ptr<llvm::MemoryBuffer> canonicalPayload;
+    for (const ParameterShardSlice &slice : slices) {
       auto payload = llvm::MemoryBuffer::getFile(slice.path);
       if (!payload)
         return rejectProgramDirectory(
@@ -256,7 +299,7 @@ bool verifyParameterShardMetadata(
     const llvm::json::Object &object, const ProgramMetadata &meta,
     FunctionType functionType, int64_t numPartitions,
     std::vector<bool> &seenParameterArgs, llvm::StringRef programDir,
-    llvm::raw_ostream &diagnostics,
+    llvm::raw_ostream &diagnostics, const ProgramPayloadResolver *resolver,
     wafer::frontend::ProgramParameterBinding *verifiedBinding) {
   int64_t argumentIndex = -1;
   std::string name;
@@ -340,8 +383,8 @@ bool verifyParameterShardMetadata(
                                     diagnostics);
     if (verifyShardEntry(*shardObject, numPartitions, globalShape, localShape,
                          tensorType.getElementType(), name, programDir,
-                         distribution, seenPartitions, seenReplicaIds,
-                         verifiedSlices, diagnostics))
+                         distribution, resolver, seenPartitions,
+                         seenReplicaIds, verifiedSlices, diagnostics))
       return true;
   }
   if (distribution == "replicated" &&
@@ -350,7 +393,7 @@ bool verifyParameterShardMetadata(
         "replicated parameter shard replica_id domain is incomplete",
         diagnostics);
   if (verifyParameterShardCoverage(verifiedSlices, globalShape, distribution,
-                                   diagnostics))
+                                   resolver, diagnostics))
     return true;
 
   seenParameterArgs[argumentIndex] = true;
@@ -374,6 +417,7 @@ bool verifyParameterShardMetadata(
 bool verifyParameterShards(
     ModuleOp module, llvm::StringRef programDir, const ProgramMetadata &meta,
     func::FuncOp func, llvm::raw_ostream &diagnostics,
+    const ProgramPayloadResolver *resolver,
     wafer::frontend::FrontendProgramVerificationResult *result) {
   std::string path =
       programPath(programDir, {"functions", "forward.parameter_shards.json"});
@@ -438,7 +482,8 @@ bool verifyParameterShards(
     wafer::frontend::ProgramParameterBinding verifiedBinding;
     if (verifyParameterShardMetadata(*object, meta, functionType, numPartitions,
                                      seenParameterArgs, programDir, diagnostics,
-                                     result ? &verifiedBinding : nullptr))
+                                     resolver, result ? &verifiedBinding
+                                                      : nullptr))
       return true;
     if (result)
       result->parameters.push_back(std::move(verifiedBinding));

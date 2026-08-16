@@ -500,3 +500,15 @@
   deterministic oracle和完整待执行要求，并在catalog/inventory绑定具体blocker。只有这些内容已有current owner后才删除旧executor。
 - 防复发：逐个核对删除文件的source、shape/dtype、payload、numeric oracle、structural checks、status、timeout、cleanup和profile要求；
   inventory测试必须能从每个保留case解析到真实source/catalog与CMake入口或明确blocker。
+
+## StringRef视图必须绑定在SmallString最后一次修改之后
+
+- 现象：Q58 TensorPayloadResolver持有指向`SmallString tensorProgram`的StringRef，构造时该path尚未append
+  "tensor-program"子目录；后续append触发缓冲重分配，resolver仍指向旧缓冲，stat出transactionRoot而非
+  tensor-program目录，constants存在性检查误报MissingPayload且找不到新物化的文件。
+- 根因：可修改的SmallString在视图（StringRef成员）建立之后继续append；SmallString内联缓冲与堆缓冲的
+  重分配时机不透明，旧缓冲内容残留使错误表现为"路径少一段"而非崩溃。
+- 修复模式：指向SmallString/String的StringRef成员必须在最后一次修改之后构造；需要跨阶段复用的路径
+  用std::string拥有并只取视图，或用值传递的std::string成员。
+- 防复发：新代码里任何`StringRef member`绑定本地SmallString时，先确认绑定后该SmallString不再被append/
+  resize；评审时对"resolver持有路径引用"这类长生命周期视图重点检查。

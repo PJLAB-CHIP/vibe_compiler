@@ -233,7 +233,7 @@ mlir::LogicalResult runCompilationTransaction(
   // Program data ownership: discover payload members, snapshot only IR/
   // metadata/directory structure, open and verify each payload exactly once,
   // and pass content-stable files to the external SPMD helper boundary.
-  ProgramDataHandoff programData;
+  ProgramDataHandoff programData(transactionRoot.str().str());
   std::string sourceMetaPath =
       programFile(canonicalSource, {llvm::StringRef("functions"),
                                     llvm::StringRef("forward.meta")});
@@ -315,8 +315,10 @@ mlir::LogicalResult runCompilationTransaction(
     const frontend::ProgramPayloadSource *resolve(llvm::StringRef locator)
         const override {
       auto existing = resolved.find(locator);
-      if (existing != resolved.end())
+      if (existing != resolved.end()) {
+        ++handoff.getIOStatistics().headerReads;
         return &handoff.getSource(existing->second);
+      }
       llvm::SmallString<256> path(canonicalSource);
       llvm::sys::path::append(path, locator);
       ProgramDataFailure establishmentFailure;
@@ -329,6 +331,7 @@ mlir::LogicalResult runCompilationTransaction(
         return nullptr;
       }
       resolved[locator] = *id;
+      ++handoff.getIOStatistics().headerReads;
       return &handoff.getSource(*id);
     }
   };
@@ -375,7 +378,63 @@ mlir::LogicalResult runCompilationTransaction(
   }
 
   llvm::SmallString<256> tensorProgram(transactionRoot);
+  // Post-SPMD payload verification resolves helper output (shard files)
+  // through the tensor resolver: each shard is read back and established
+  // exactly once as a handoff candidate, and owned content answers every
+  // later verification. Constants resolve to the pre-SPMD owned source;
+  // only their on-disk presence is re-checked.
+  struct TensorPayloadResolver final
+      : public frontend::ProgramPayloadResolver {
+    ProgramDataHandoff &handoff;
+    llvm::StringRef tensorProgram;
+    mutable std::optional<ProgramDataFailure> failure;
+
+    TensorPayloadResolver(ProgramDataHandoff &handoff,
+                          llvm::StringRef tensorProgram)
+        : handoff(handoff), tensorProgram(tensorProgram) {}
+
+    const frontend::ProgramPayloadSource *resolve(llvm::StringRef locator)
+        const override {
+      if (const ProgramDataSource *existing =
+              handoff.findByLocator(locator)) {
+        // Constant copies in the helper output are dead data after
+        // ownership, but the tensor program directory must still carry the
+        // member the metadata lists.
+        if (locator.starts_with("constants/")) {
+          llvm::SmallString<256> member(tensorProgram);
+          llvm::sys::path::append(member, locator);
+          llvm::sys::fs::file_status status;
+          std::error_code error = llvm::sys::fs::status(member, status);
+          if (error || !llvm::sys::fs::is_regular_file(status)) {
+            if (!failure)
+              failure = ProgramDataFailure{
+                  ProgramDataFailureKind::MissingPayload, locator.str(),
+                  "tensor program directory is missing the constant member"};
+            return nullptr;
+          }
+        }
+        ++handoff.getIOStatistics().headerReads;
+        return existing;
+      }
+      llvm::SmallString<256> path(tensorProgram);
+      llvm::sys::path::append(path, locator);
+      ProgramDataFailure establishmentFailure;
+      llvm::Expected<const ProgramDataSource *> candidate =
+          handoff.establishHelperOutput(path, locator, &establishmentFailure);
+      if (!candidate) {
+        llvm::consumeError(candidate.takeError());
+        if (!failure)
+          failure = std::move(establishmentFailure);
+        return nullptr;
+      }
+      ++handoff.getIOStatistics().headerReads;
+      return *candidate;
+    }
+  };
   llvm::sys::path::append(tensorProgram, "tensor-program");
+  // Constructed after the path append: the resolver holds a StringRef into
+  // the tensor-program path buffer.
+  TensorPayloadResolver tensorResolver(programData, tensorProgram);
   if (mlir::failed(runSpmdHelper(xlaSpmdPartitionerHelper, helperInput,
                                  tensorProgram, request.getExecutionConfig(),
                                  diagnostics)))
@@ -406,6 +465,24 @@ mlir::LogicalResult runCompilationTransaction(
   if (mergeMissingProgramMembers(sourceSnapshot, tensorProgram, diagnostics) ||
       validateRegularDirectoryTree(tensorProgram, diagnostics))
     return mlir::failure();
+  // The helper output does not carry constant payloads; restore them from
+  // owned content so the tensor program directory stays complete. These
+  // writes are counted in the ledger with digest readback.
+  for (const auto &entry : resolver.resolved) {
+    if (!entry.getKey().starts_with("constants/"))
+      continue;
+    ProgramDataFailure constantFailure;
+    std::string restored = programFile(tensorProgram, {entry.getKey()});
+    if (llvm::Error error = programData.materializeSourceToFile(
+            entry.getValue(), restored, &constantFailure)) {
+      diagnostics << "wafer-compile: program-data-failure kind="
+                  << stringifyProgramDataFailureKind(constantFailure.kind)
+                  << " locator=" << constantFailure.locator
+                  << " detail=" << constantFailure.detail << "\n";
+      llvm::consumeError(std::move(error));
+      return mlir::failure();
+    }
+  }
 
   mlir::OwningOpRef<mlir::ModuleOp> tensorModule =
       parseProgramDirectoryModule(tensorProgram, context);
@@ -427,14 +504,23 @@ mlir::LogicalResult runCompilationTransaction(
   if (mlir::failed(verifyStablehloStageOperations(*tensorModule)))
     return mlir::failure();
   frontend::FrontendProgramVerificationResult verifiedTensorFacts;
-  if (mlir::failed(verifyProgramDirectoryMetadata(*tensorModule, tensorProgram,
-                                                  diagnostics,
-                                                  &verifiedTensorFacts)))
+  if (mlir::failed(verifyProgramDirectoryMetadata(
+          *tensorModule, tensorProgram, diagnostics, &verifiedTensorFacts,
+          &tensorResolver))) {
+    if (tensorResolver.failure) {
+      const ProgramDataFailure &payloadFailure = *tensorResolver.failure;
+      diagnostics << "wafer-compile: program-data-failure kind="
+                  << stringifyProgramDataFailureKind(payloadFailure.kind)
+                  << " locator=" << payloadFailure.locator
+                  << " detail=" << payloadFailure.detail << "\n";
+    }
     return mlir::failure();
+  }
 
-  // Helper shard readback: verify each shard payload against the owned
-  // pre-SPMD source region. Byte-identical shards keep referencing the
-  // original source; only real partitions become new owned sources.
+  // Helper shard readback: each shard was established exactly once during
+  // tensor verification. Prove the shard payload bytes against the owned
+  // pre-SPMD source region; byte-identical shards keep referencing the
+  // original source, real partitions are adopted as new owned sources.
   auto reportProgramDataFailure =
       [&](const ProgramDataFailure &failure) {
         diagnostics << "wafer-compile: program-data-failure kind="
@@ -448,12 +534,14 @@ mlir::LogicalResult runCompilationTransaction(
                             llvm::ArrayRef<int64_t> globalShape,
                             llvm::ArrayRef<int64_t> localShape,
                             frontend::ProgramDistributionKind distribution,
+                            ProgramDataRangeOrigin origin,
                             llvm::ArrayRef<int64_t> offsets,
                             llvm::ArrayRef<int64_t> sizes,
                             SourceDataId sourceId) -> bool {
     ProgramDataFailure rangeFailure;
     llvm::Expected<ProgramDataRange> range = ProgramDataRange::create(
-        tensorId, dtype, globalShape, localShape, distribution, offsets, sizes,
+        tensorId, dtype, globalShape, localShape, distribution, origin,
+        offsets, sizes,
         llvm::ArrayRef<int64_t>(std::vector<int64_t>(offsets.size(), 1)),
         sourceId, programData.getSource(sourceId), &rangeFailure);
     if (!range) {
@@ -496,31 +584,39 @@ mlir::LogicalResult runCompilationTransaction(
                  parameter.name);
       return mlir::failure();
     }
+    const ProgramDataSource *shardSource =
+        programData.findByLocator(partitionSlice->payloadPath);
+    if (!shardSource) {
+      reject(diagnostics,
+             "parameter shard payload has no established transaction "
+             "candidate: " +
+                 partitionSlice->payloadPath);
+      return mlir::failure();
+    }
     ProgramDataFailure shardFailure;
-    llvm::Expected<ShardVerification> verification =
-        programData.verifyShardAgainstSource(
-            programFile(tensorProgram, {partitionSlice->payloadPath}),
-            partitionSlice->payloadPath, original->second,
-            partitionSlice->offsets, partitionSlice->sizes, &shardFailure);
-    if (!verification) {
-      llvm::consumeError(verification.takeError());
+    llvm::Expected<bool> byteIdentical = programData.verifyShardAgainstSource(
+        *shardSource, original->second, partitionSlice->offsets,
+        partitionSlice->sizes, &shardFailure);
+    if (!byteIdentical) {
+      llvm::consumeError(byteIdentical.takeError());
       reportProgramDataFailure(shardFailure);
       return mlir::failure();
     }
     const ProgramTensorId tensorId{ProgramResourceRole::Parameter,
                                    parameter.argumentIndex};
-    if (verification->byteIdentical) {
+    if (*byteIdentical) {
       // Replication or contiguous slice: reference the original source.
       if (establishRange(tensorId, parameter.dtype, parameter.globalShape,
                          parameter.localShape, parameter.distribution,
+                         ProgramDataRangeOrigin::OriginalSource,
                          partitionSlice->offsets, partitionSlice->sizes,
                          original->second))
         return mlir::failure();
     } else {
-      SourceDataId shardId =
-          programData.addSource(std::move(verification->shard));
+      SourceDataId shardId = programData.adoptCandidate(shardSource);
       if (establishRange(tensorId, parameter.dtype, parameter.globalShape,
                          parameter.localShape, parameter.distribution,
+                         ProgramDataRangeOrigin::MaterializedShard,
                          /*offsets=*/std::vector<int64_t>(
                              parameter.localShape.size(), 0),
                          parameter.localShape, shardId))
@@ -541,6 +637,7 @@ mlir::LogicalResult runCompilationTransaction(
     if (establishRange({ProgramResourceRole::Constant, constant.position},
                        constant.dtype, constant.shape, constant.shape,
                        frontend::ProgramDistributionKind::Replicated,
+                       ProgramDataRangeOrigin::OriginalSource,
                        std::vector<int64_t>(constant.shape.size(), 0),
                        constant.shape, established->second))
       return mlir::failure();
@@ -580,7 +677,8 @@ mlir::LogicalResult runCompilationTransaction(
   }
   if (mlir::failed(verifyTensorProgramStageOperations(*verifiedTensorModule)) ||
       mlir::failed(verifyProgramDirectoryMetadata(*verifiedTensorModule,
-                                                  tensorProgram, diagnostics)))
+                                                  tensorProgram, diagnostics,
+                                                  nullptr, &tensorResolver)))
     return mlir::failure();
 
   sourceTiming.reset();
@@ -601,14 +699,14 @@ mlir::LogicalResult runCompilationTransaction(
             options.getOptimizationConfig(), targetToolchain, diagnostics,
             failAfterLaunchSlot, failAfterTargetLaunchSlot,
             failAfterPackageLaunchSlot, cardExecutable,
-            targetLLVMModules, programData, irTrace)))
+            targetLLVMModules, programData, tensorResolver, irTrace)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
                  options.getOptimizationConfig(), targetToolchain, diagnostics,
                  failAfterLaunchSlot, failAfterTargetLaunchSlot,
                  failAfterPackageLaunchSlot, cardExecutable,
-                 targetLLVMModules, programData, irTrace))) {
+                 targetLLVMModules, programData, tensorResolver, irTrace))) {
     return mlir::failure();
   }
   diagnostics << "wafer-compile: program-data-io ";

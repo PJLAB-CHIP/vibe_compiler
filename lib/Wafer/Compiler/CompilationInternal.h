@@ -99,7 +99,9 @@ compileTensorProgramToCardExecutable(
     llvm::StringRef tensorProgramDirectory, ExecutionConfig executionConfig,
     OptimizationConfig optimizations, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot,
-    ProgramDataHandoff &programData, CompilationIRTrace &irTrace);
+    ProgramDataHandoff &programData,
+    const frontend::ProgramPayloadResolver &resolver,
+    CompilationIRTrace &irTrace);
 
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -110,7 +112,9 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
-    ProgramDataHandoff &programData, CompilationIRTrace &irTrace);
+    ProgramDataHandoff &programData,
+    const frontend::ProgramPayloadResolver &resolver,
+    CompilationIRTrace &irTrace);
 
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -121,7 +125,9 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<CardExecutable> &cardExecutable,
     std::optional<TargetLLVMModules> &targetLLVMModules,
-    ProgramDataHandoff &programData, CompilationIRTrace &irTrace);
+    ProgramDataHandoff &programData,
+    const frontend::ProgramPayloadResolver &resolver,
+    CompilationIRTrace &irTrace);
 
 mlir::LogicalResult runCompilationTransaction(
     CompilationRequest request, llvm::StringRef outputProgramDirectory,

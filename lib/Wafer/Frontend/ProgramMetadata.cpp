@@ -397,6 +397,9 @@ bool verifyParameterDataFile(llvm::StringRef programDir,
 
   std::string relativePath = (Twine("data/") + Twine(location.name)).str();
   if (resolver) {
+    // The resolver owns payload existence (establishment opens the
+    // canonical source); the verified directory may legitimately be a
+    // payload-free snapshot.
     const ProgramPayloadSource *source = resolver->resolve(relativePath);
     if (!source)
       return rejectProgramDirectory(
@@ -435,6 +438,9 @@ bool verifyConstantDataFile(llvm::StringRef programDir,
   std::string relativePath =
       (Twine("constants/") + Twine(location.position)).str();
   if (resolver) {
+    // The resolver owns payload existence (establishment opens the
+    // canonical source); the verified directory may legitimately be a
+    // payload-free snapshot.
     const ProgramPayloadSource *source = resolver->resolve(relativePath);
     if (!source)
       return rejectProgramDirectory(

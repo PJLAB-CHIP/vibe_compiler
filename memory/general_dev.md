@@ -248,18 +248,24 @@ source program
 - rotating buffer的iteration/release/reuse证据必须来自actual producer、consumer和message endpoint共享的static loop。
   logical edge、Location provenance或上游structured relation只能帮助找到候选，不能代签共同loop。
 
-## Program data ownership验收
+## Program data ownership
 
-- `MemoryBuffer::getFile`对较大普通文件通常使用只读`MAP_PRIVATE`；这不是immutable snapshot，外部对同一inode原地写入仍可能
-  改变后续观察到的bytes。transaction ownership必须复制到真正由transaction独占的存储，或者使用能证明内容不变的等价
-  owner；mutation测试必须超过mmap阈值并覆盖同inode原地改写，不能只覆盖rename replacement或小文件heap copy。
-- payload open/hash/read账本必须覆盖source verification、helper boundary、helper output verification、IR readback、
-  CardExecutable和target consumer整条pipeline。owner建立后所有payload验证走`ProgramPayloadResolver`或等价owned source seam；
-  任何默认参数触发的path reader都算重复I/O，不能只统计`ProgramDataHandoff`内部调用后声称per-source闭合。
-- `ProgramDataRange`不仅检查rank、dtype和byte extent，还必须证明source shape与range来源一致：original source对应global shape，
-  materialized shard对应local shape。相同byte count不能替代shape/layout证明。
-- source encoding的element width不等于target/program-boundary admitted dtype。NPY可解析一种dtype时，只有target representation、
-  conversion和consumer全部存在后才能把它加入`ProgramTensor`允许集合。
-- source snapshot只复制IR/metadata/目录结构；helper input由owned source materialize并digest readback；byte-identical shard可按
-  region digest复用原source，真实改变bytes的partition形成新source。16个Tile binding只引用`ProgramTensorId`和range，
+- `MemoryBuffer::getFile`对较大普通文件使用只读mmap；它不冻结其它进程对同一inode的原地写入，不能当owned
+  content。`ProgramDataSource::establish`必须把用户文件流式复制到transaction独占的owned file（1MiB window
+  边复制边SHA-256），header在复制前bounded parse，extent/dtype对owned bytes验证；用户path此后不再打开。
+  mutation测试必须覆盖同inode原地改写（保留header、改写payload区），不能只测rename replacement。
+- payload open/hash/read账本必须覆盖整条source-to-pipeline：source阶段establishment（source_opens）、
+  tensor阶段helper输出candidate establishment（helper_output_readbacks）、每次verification seam header
+  read（header_reads）、region/readback digest（digest_passes）、target consumer range materialization
+  （range_materializations）。tensor-phase verification、readback和CardExecutable边界都必须经resolver消费
+  owned content，任何默认参数触发的path reader都算重复I/O。
+- `ProgramDataRange`携带显式来源合同：`OriginalSource`证明source shape==global shape，`MaterializedShard`
+  证明source shape==local shape且slice从原点精确覆盖；相同byte count不能替代shape/layout证明。
+- source encoding width（`decodeProgramNpyDescr`）与program boundary admitted dtype
+  （`getProgramDTypeElementBytes`）是两套事实；只有target representation、conversion和consumer全部存在后才能
+  进入admission表（i1目前不在表内，establishment即typed拒绝）。
+- helper输出的constant不会由helper复制；tensor program目录完整性由owned content materialize回填
+  （digest readback，计入账本）。helper-input materialization、shard region digest、materialize readback
+  的所有可恢复失败都必须填充typed `ProgramDataFailure`（kind+locator+detail），不得落入默认MissingPayload。
+- source snapshot只复制IR/metadata/目录结构；16个Tile binding只引用`ProgramTensorId`和range，
   parameter/constant按range一次materialize并shared view共享，card-shared target resource只encode一次。

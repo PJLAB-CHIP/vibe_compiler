@@ -123,6 +123,7 @@ bool verifyDistributedBoundary(mlir::ModuleOp module,
 bool verifyParameterShards(mlir::ModuleOp module, llvm::StringRef programDir,
                            const ProgramMetadata &meta, mlir::func::FuncOp func,
                            llvm::raw_ostream &diagnostics,
+                           const ProgramPayloadResolver *resolver,
                            FrontendProgramVerificationResult *result);
 
 } // namespace wafer::frontend::program_detail
