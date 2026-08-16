@@ -387,6 +387,20 @@
 - 防复发：none source-to-package测试断言`actual_fused_edges=0`和中间DDR movement；search-policy三阶段/layout-buffering测试断言
   actual fusion candidate被接受且selected actual fused edges非零。
 
+## 零actual fusion不能证明baseline已与search policy和region资源解耦
+
+- 现象：`none`在candidate family前提前返回且`actual_fused_edges=0`，但仍复用search candidate/domain evaluator、proposal
+  ordering和group materializer；多个独立structured root可能进入同一TileRegion，共享SPM预算、lifetime/lowering scope和失败归因。
+- 根因：把“没有执行search loop”和“没有coupled edge”当成完整解耦证明，只约束edge action，没有约束baseline调用闭包和
+  TileRegion structured-root cardinality。后端允许multi-root region只说明IR合法，不代表它适合作为canonical baseline。
+- 修复模式：baseline controller直接从typed structured/relation/target facts构造唯一方案；每个TileRegion只拥有一个structured
+  compute root及必要non-root support closure，root cardinality由materialization relation证明；同一Tile上的其它root进入独立
+  顺序region，跨root shaped dependency显式DDR。只与search
+  共享policy-free single-root materialization、scoped probe和最终lowering/verification，不共享state/candidate/grouping/ordering。
+- 防复发：除零actual fusion和DDR movement外，测试还要检查每个baseline region的structured-root数、同Tile multi-root的region
+  数、search-policy调用计数、完整CardModule/CardExecutable各一次；equal-shape fanin与function-scope case验证SPM失败只沿直接
+  typed causal witness refinement，不能猜测或跳过scope。
+
 ## Baseline不搜索通信方案不等于所有依赖零peer
 
 - 现象：为落实逐op DDR baseline而把所有peer fragment禁止后，带reshape/transpose和多种spatial轴的Llama DAG在16-Tile

@@ -1,9 +1,10 @@
 # Physical Dataflow Synthesis 实施计划
 
-状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其控制流隔离和编译耗时不属于已签发的
-正确性证据。Q50.0无策略CardExecutable编译/准入边界与Q54 MLIR infrastructure已闭合；当前先由Q58/Q56/Q59收口
-program data ownership、package data和compiler entry transaction，再以该current source-to-package路径隔离Q49.P baseline控制流，
-并修复Q50.A production demand boundary、建立Q51.Core共同状态、transition和actual-probe seam；随后让
+状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其search-policy隔离、结构不变量、scoped
+probe闭合和整图物化成本不属于已签发的正确性证据。Q50.0无策略CardExecutable编译/准入边界与Q54 MLIR infrastructure
+已闭合；当前由Q59收口compiler entry transaction，同时先修复Q50.A production demand boundary，再由Q49.P在current
+source-to-package路径上闭合baseline policy/structure/probe/materialization隔离，之后建立Q51.Core共同状态、transition和
+actual-probe seam；随后让
 Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
 `tasks/06-physical-dataflow-synthesis.md` 拥有；本文件只规定施工依赖、现有代码处置和独立 checkpoint。
@@ -39,8 +40,9 @@ Pipeline position:
   superoptimization。
 - Completion gate:
   Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q58/Q56/Q59先闭合
-  program data ownership、package data与compile commit；Q49.P基于该current入口隔离
-  baseline控制流；Q50.A修复production exact-demand boundary；Q51.Core建立共同search kernel；Q50.S与Q50.B–Q50.K逐轴交付
+  program data ownership、package data与compile commit；Q50.A修复production exact-demand boundary；Q49.P基于这些
+  current事实闭合baseline policy、结构、probe和materialization隔离；Q51.Core复用其accepted executable作为初始incumbent
+  并建立共同search kernel；Q50.S与Q50.B–Q50.K逐轴交付
   mechanism 且移除对应旧 owner；Q51 通过two-layer small exhaustive oracle、complete CardExecutable gates 和有效 fusion 闭合；
   Q52 在真实 workload 上形成可复现的 10/30 分钟 anytime 质量与吞吐结论；Q60建立产品frontend后，Q53从该入口生成 fresh package、oracle、runner
   并通过 no-card 达到 board-ready，真实 matched 板端 A/B 后才 done。
@@ -111,12 +113,12 @@ candidate”不等于搜索失败。若baseline本身无法通过exact gate，�
 | --- | --- | --- | --- |
 | 0 | Q50.0 CardExecutable compilation boundary | 抽出无策略的actual compile/verification seam，不允许lowering修候选 | Q54 |
 | 1 | Q54 MLIR infrastructure conformance | typed IR/interface、scoped pass/analysis、named pipeline与rewrite transaction收口 | Q49.P、Q50.A |
-| 2 | Q49.P baseline control-flow isolation | `none`不构造search对象；scoped probe后只完整编译一次 | baseline性能复核 |
-| 3 | Q50.A placement-demand repair | `IndexRelation.image()` exact demand不被carrier/layout/route反写 | Q51.Core |
+| 2 | Q50.A placement-demand repair | `IndexRelation.image()` exact demand不被carrier/layout/route反写 | Q49.P、Q51.Core |
+| 3 | Q49.P baseline policy isolation | canonical `none`不消费search对象；一root一region；最窄exact probe后完整CardModule与CardExecutable各形成一次 | Q51.Core、baseline性能复核 |
 | 4 | Q51.Core | 共同state、transition、candidate set、incumbent、ledger、budget与oracle harness | Q50.S、Q50.B |
 | 5 | Q50.S structured semantic alternatives | typed proof与actual TensorProgram roots接入共同owner | Q51 closure |
 | 6 | Q50.B spatial partition + placement | 完整spatial domain接入共同owner | Q50.C |
-| 7 | Q50.C maximal single-op TileRegion | 单op local work的完整actual region materialization | Q50.D |
+| 7 | Q50.C maximal single-root TileRegion | 单root local work的完整actual region materialization | Q50.D |
 | 8 | Q50.D coupled traversal / region fusion | 多op boundary、coupled traversal和合法cut进入同一state | Q50.E |
 | 9 | Q50.E complete temporal tiling | 全iterator finite breakpoint domain | Q50.F |
 | 10 | Q50.F actual region probe | actual lowering/lifetime/SPM反馈回共同candidate set | Q50.G |
@@ -151,7 +153,7 @@ CardExecutable cost与全轴actual winner都是Q51 closure gate，不得用尚�
 | 类别 | 当前代表实现 | 处置 |
 | --- | --- | --- |
 | 稳定 downstream trunk | CardModule/TileModule IR、CardModule-to-Tile conversion、TileRegion-to-Instr、Tile memory planning、card resource/target verification、package/runtime | 保留；所有 policy 复用同一路径；现有`TileMemoryPlanning`/`CardExecutableLowering`仅作实现定位，后者仍需按实际职责收敛名称 |
-| 可复用 core | `StructuredDAGAnalysis`、现有schedule-state/candidate类、edge-demand plan与placement domain/cost mechanics | 行为测试保护后纳入Q51.Core；旧类名只是实现定位，不升级成长期架构对象，也不让其自行选择winner |
+| 可复用 core | `StructuredDAGAnalysis`、现有schedule-state/candidate类、edge-demand plan与placement domain/cost mechanics | immutable structured/relation事实可供baseline读取；schedule-state/candidate/evaluator/proposal-order只纳入Q51.Core，Q49.P必须先断开对它们的依赖。旧类名只是实现定位，不升级成长期架构对象，也不让其自行选择winner |
 | 可复用 mechanism | `BidirectionalTiling`、`CompleteTraversal`、`TileMaterialization`、`CandidateMaterialization`、movement/collective lowering、selected-buffer materialization、ready-order/worker/completion verifier | 按Q50.S与Q50.B–Q50.K接到transition/materializer seam；保留符合新合同的算法与verifier |
 | 过渡 monolith | 当前executable-synthesis实现中的coordinate sweep、candidate family、allocation/buffer feedback、shortlist和mixed materialization | public entry暂保留，先抽出Q50.0编译边界，再按轴抽出；最终只保留Q49 baseline controller、Q51 driver和共同materialization seam |
 | 旧 bounded/rank search | `RankCandidateSearch`、旧structured candidate generation/evaluation/selection及rank-era candidate set | 只作为 transformation、typed proof、diagnostic 和测试来源；不得恢复固定 beam/cap 或 rank-local winner |
@@ -194,12 +196,60 @@ accepted、proven exact rejection或indeterminate三态结果；baseline与searc
 memory planning保留SPM failure kind，只有capacity overflow与unsupported lifetime等可验证失败进入exact rejection，未分类
 allocator/internal failure保持indeterminate，调用方不得据此裁剪候选或启动repair。
 
-## Q49 / Q49.P：Deterministic Baseline与控制流隔离
+## Q49 / Q49.P：Deterministic Baseline Policy与结构隔离
 
-Q49已签发的正确性合同和历史board-ready状态不重定义；Q49.P只处理该证据未覆盖的控制流和耗时问题。
-但控制流改写后必须用本软件产物重新证明result/digest与no-card不变，不得把历史package当成新调用链的证明。
-`none`不得构造Q51 state、candidate set、candidate family或全图Cartesian组合；它可以在单op范围内探测temporal
-breakpoint，全部op接受后只通过Q50.0完整编译一次。
+Q49已签发的数值正确性、完整Tile domain、零实际fusion和历史board-ready状态不重定义；这些证据没有证明baseline与
+search-policy解耦，也没有证明每个TileRegion只有一个structured compute root。Q49.P因此不是对旧baseline做性能润色，而是
+补齐该证据未覆盖的policy、结构、probe、causal diagnosis和materialization边界。改写后必须用本软件产物重新证明
+result/digest与no-card不变，不得把历史package当成新调用链的证明。
+
+2026-08-16 current实现已经具备三个可复用事实：`none`在shortlist/candidate family前提前返回；
+TileRegion SPM capacity evaluation已经在scratch-owned真实region上运行；accepted路径只调用一次Q50.0完整
+CardExecutable compilation。它仍不满足Q49.P：baseline construction继续消费search-oriented placement domain/evaluator、
+`TileExecutionCandidate`及其stable ordinal/proposal mechanics；同Tile的多个独立structured root可由共同group materialization
+进入同一TileRegion；temporal refinement前后会重复完整CardModule materialization，tile-scoped路径仍形成其它Tile no-work
+wrapper；`RequiresFunctionScope`被计数后跳过；capacity attribution会按typed DAG edge加相同type/shape扩展歧义producer，并把
+同region其余root一并纳入refinement；baseline还写入candidate proposal/fusion/layout/buffer类统计。
+`actual_fused_edges=0`和“没有进入search loop”都不能证明这些耦合已经消失。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  verified card-local TensorProgram、Q50.A闭合后的layout-independent exact logical demand、available Tile与immutable target
+  facts；尚未创建search state/candidate，也没有selected TileRegion grouping、temporal、layout、route或buffer choice。
+- Current stage responsibility:
+  由独立deterministic controller按完整semantic tie-break构造唯一canonical spatial assignment、每root独立TileRegion、显式
+  DDR boundary、single-buffer assignment和有限temporal breakpoint；使用最窄合法scope的actual lowering/lifetime/SPM
+  probe，只沿直接causal witness推进。有限exact constraint resolution只寻找第一个canonical legal completion，不评分或保留
+  alternative。
+- Output IR / files:
+  一次性物化的完整baseline CardModule，以及经Q50.0一次完整准入后得到的accepted CardExecutable；Q59 transaction随后提交
+  verified ExecutablePackage。局部probe clone和query-local witness不成为output或shadow plan。
+- Downstream consumer:
+  `none`直接发布accepted executable/package；Q51.Core复用同一个accepted executable及其actual cost/digest作为初始
+  incumbent，不用search carrier重新构造baseline。
+- User-level driver / named pipeline:
+  wafer-compile source-to-package pipeline的typed `none`；typed `search`只调用该controller取得初始incumbent，之后才进入
+  candidate-selection owner。
+- Explicit non-goals:
+  不增加第二套Card/Tile/Instr lowering或SPM planner；不在baseline比较placement质量或搜索group/fusion/layout/route/buffer/
+  order；不把一个region的局部fit冒充card-level transport/resource/ABI证明；不改变Q51的合法候选域。
+- Done criteria:
+  baseline不依赖search state/candidate、search-oriented domain/ranking evaluator、proposal order/group materializer；每个
+  baseline TileRegion恰有一个structured compute root和必要non-root support closure；跨root shaped dependency显式DDR；
+  region-local和最近合法isolated-ancestor probe均闭合，exact rejection携带direct typed causal witness；完整CardModule materialization与
+  CardExecutable compilation各一次；baseline diagnostics/statistics不再冒充candidate proposal；fresh source-to-package、
+  oracle/no-card、digest、计数和结构正负测试通过。
+```
+
+`none`不得构造Q51 state、candidate set、candidate family或全图Cartesian组合，也不得通过调用search-oriented domain/ranking
+evaluator后只取第一个结果来伪装canonical construction。它可以复用Q50.A之后policy-free placement option和relation legality
+query，以有限exact constraint resolution取得第一个canonical legal completion；不能复制第二套placement语义。它可以在
+single-root范围内探测temporal breakpoint，全部root接受后只形成一次完整CardModule并通过Q50.0完整编译一次。
+
+controller交给共同materializer的是窄immutable selected assignment：只含per-root placement、显式singleton region boundary、
+完整temporal vector和baseline固定的representation/buffer事实，不含evaluation/score、stable ordinal、transition/failure
+history或controller flags。materializer只apply这些已选事实，不得根据同Tile root集合自行group，也不得补search default。
 
 ```text
 TensorProgram
@@ -211,29 +261,50 @@ TensorProgram
 -> ExecutablePackage writing
 ```
 
-`OptimizationConfig::none()` 使用独立 deterministic controller：最大合法 Tile participation；每个 Linalg op 独立
-TileRegion；op 间显式 DDR boundary；零 fusion；buffer count 为 1。它不创建 search candidate set、candidate family、Pareto、
-feedback beam 或 optional edge action。实际 SPM 失败只沿同一 baseline 状态按有限 temporal breakpoint 前进，不产生分支，
-不启用 fusion/layout/buffer/route 搜索。
+`OptimizationConfig::none()` 使用独立 deterministic controller：最大合法非空 Tile participation；每个structured compute
+root独立TileRegion；root间显式DDR boundary；零fusion；buffer count为1。participant count、Tile group、iterator/factor和独立
+root顺序按typed structured/relation/topology facts的完整semantic key决定，不使用pointer、walk ordinal、`stableOrdinal`或
+search proposal order。controller可用有限exact constraint resolution跳过illegal option并取得第一个canonical legal
+completion，但不计算score、不维护incumbent/candidate family，也不保留备选方案。
 
-Q49.P先抽出比Q50.F更窄的policy-free `local-fit` seam。它的输入是单个已物化op/TileRegion、当前完整temporal
-tile vector以及baseline已固定的spatial、DDR-boundary、representation和single-buffer assignment；它只运行该独立
-region所需的lowering、fresh lifetime和fixed-capacity SPM packing，返回fit、带conflict witness的proven infeasible/unsupported，
-或indeterminate。只有第二类的proven failure才允许baseline controller前进到下一确定性breakpoint；indeterminate必须
-终止并报告，不能冒充“当前tile放不下”。
-`local-fit`直接以真实TileRegion或能提供必要call/symbol closure的最近`IsolatedFromAbove` ancestor为scope；不得为每个region
-构造synthetic Module/Func并运行完整Tile memory planning。region-local lowering/lifetime/packing与必要的Func/Module
-summary边界遵循19号合同；需要全局事实却无法形成exact summary时返回indeterminate，不扩大局部结论。
-`local-fit`不生成下一tile，baseline controller才按唯一确定性breakpoint顺序前进。它的安全性仅来自“每op独立
-TileRegion + op边界DDR + 无fusion”；该合同改变后必须返回完整CardExecutable gate，不得复用局部成功。
+participant group按root定义，只包含该root的非空执行Tile；accepted full CardModule仍必须拥有target要求的all-and-only完整
+Tile domain。未参与某个root的Tile只在最终完整CardModule中按IR合同存在，scoped probe不得为保持card形状创建no-work
+Tile/Func wrapper。
 
-Q49与`search`只共享actual Card/Tile/Instr、completion、SPM/DDR、verification和package seam；baseline默认值不限制
-Q51 域。历史official HF prefill、functional decode、Llama block 的 source、oracle、package 和 no-card runner只证明
+同一Tile可以按上述顺序承载多个region，但一个baseline TileRegion最多有一个structured compute root；shape/index/view、
+target-local materialization等没有独立structured DAG identity的op才是non-root support closure。显式Fill、Reduce或DPS init
+producer只要映回另一个structured DAG node就仍算第二root；一个root lower成多个compute/instruction op则仍算同一root。
+root cardinality由同次materialization relation证明。多个独立root共用region即使edge action全为RegionCut，也会共同占用
+SPM/lifetime/lowering scope，属于search的region-grouping选择，baseline不得使用。
+
+Q49.P建立比Q50.F更窄的policy-free scoped TileRegion-to-Instr/lifetime/SPM capacity seam。输入是一个已物化single-root
+TileRegion、当前完整temporal tile vector以及baseline已固定的spatial、DDR-boundary、representation和single-buffer
+assignment；region-local lowering若需要call/symbol closure或function lifetime，只提升到最近合法`IsolatedFromAbove`
+ancestor并在那里完成同一次probe。`RequiresFunctionScope`是scope escalation请求，不是fit或可忽略结果；无法在准确scope形成
+结论时返回indeterminate，不扩大局部结论。
+
+probe返回fit、带direct typed witness的proven infeasible/unsupported，或indeterminate。capacity witness可以是冲突集合，
+但其中all-and-only actual allocation/lifetime owner必须经同次materialization relation关联到当前single root的result/
+operand demand和temporal assignment；unsupported witness必须命名无法表达的typed lifetime/call relation及已尝试的最窄合法
+scope。不按type/shape、位置字符串、region内“可能相关”的其它root、pointer identity或diagnostic字符串猜测。只有
+proven failure允许baseline controller沿唯一确定性breakpoint前进；probe本身不生成下一tile、分支、repair或candidate。
+
+Q49与`search`共享immutable structured/relation/target facts、policy-free single-root TileRegion materializer、scoped probe和
+actual Card/Tile/Instr、completion、SPM/DDR、verification、package机制；不共享search state/candidate/evaluator、group
+boundary、proposal order、score或feedback。Q49.P先产出并准入baseline，Q51只把accepted executable/cost作为incumbent，
+不得通过search representation重建同一baseline。Q49.P施工时先把固定assignment所需的single-root apply和closed-coordinate
+probe落在稳定PhysicalDataflow/Conversion边界；Q50.B/C/F随后扩展完整search domain、single-root mechanism和deferred
+probe taxonomy时必须复用同一实现，不能再建baseline-private或search-private materializer/probe。baseline默认值不限制Q51域。
+历史official HF prefill、functional decode、Llama block 的 source、oracle、package 和 no-card runner只证明
 旧入口mechanics，未执行真实板端，故不得标`done`。Q49.P的gate必须经Q59 current compile transaction用fresh
 prefill/decode/Llama输入证明
-CardModule、accepted CardExecutable与package digest稳定，fresh no-card与oracle通过，并以fresh阶段计时确认不再为
-同一baseline反复materialize/compile whole graph。它不把历史耗时写成长期阈值，也不得借“统一入口”让
-`none`再进入search feedback。
+CardModule、accepted CardExecutable与package digest稳定，fresh no-card与oracle通过，并以fresh阶段计时和work count确认
+完整CardModule materialization与CardExecutable compilation各一次，scoped probe不构造card-shaped/no-work-Tile wrapper。
+定向结构测试必须覆盖：同Tile多个独立root形成多个region；显式structured producer不能伪装成support closure且一个root的
+lowered multi-op不会误判成多root；call或unsupported lifetime提升到最近合法scope；equal-shape fanin只按direct witness
+refinement；search state/candidate、search-oriented domain/ranking
+evaluator和grouping调用计数为零，baseline work不写入candidate proposal统计。它不把历史耗时
+写成长期阈值，也不得借“统一入口”让`none`再进入search feedback。
 
 ## Q50.A：Placement-Demand Boundary Repair
 
@@ -361,22 +432,25 @@ winner”是Q51 closure的跨轴gate。
 不同typed witness；extensionally等价的生成路径必须canonicalize。regular/full-occupancy proposal与非矩形、partial、
 asymmetric、disconnected合法补集均可达；关闭或改变proposal排序后，tiny exhaustive domain和winner不变。
 
-## Q50.C：Maximal Single-Op TileRegion
+## Q50.C：Maximal Single-Root TileRegion
 
 ### 机制
 
-对给定 op、spatial shard 和尚未细分的 local iterator domain，每个 Tile 物化一个覆盖该 op 所有必需 producer/support
-closure 的 maximal single-op TileRegion。这里 maximal 表示“对已选 region boundary 不漏 work、不把同一 local work 任意拆成
-多个相互不知情 region”，不是强迫使用最大 tile、最大 fusion group 或单一结果驱动入口。
+对给定structured root、spatial shard和尚未细分的local iterator domain，每个Tile物化一个覆盖该root全部local work和
+non-root support closure的maximal single-root TileRegion。显式producer只要映回另一个structured DAG node，就以boundary
+input/DDR obligation留在region外，除非后续Q50.D显式选择multi-root coupled group。这里maximal表示“对已选region boundary
+不漏work、不把同一root local work任意拆成多个相互不知情region”，不是强迫使用最大tile、最大fusion group或单一结果驱动入口。
 
-region materializer 必须由 SSA、structured interface、indexing maps、DPS init/effect 和 observable roots 驱动；不得从 buffer、
-op、result 名恢复 traversal。多个 result、init operand、support chain 和 reduction 均要得到 all-and-only local work。
+region materializer必须由SSA、structured interface、indexing maps、DPS init/effect和observable roots驱动；不得从buffer、
+op、result名恢复traversal。多个result、init operand、non-root support chain和reduction均要得到all-and-only local work；
+root cardinality由materialization relation映回structured DAG node，不能按lowered compute op数量或“support”标签猜测。
 
 ### Gate
 
 - single-result、multi-result、DPS init、reduction 和 side-effect boundary 正负测试通过；
-- actual Tile IR 对每个 selected Tile 都有唯一、完整、可 verifier 的 single-op region witness；
-- baseline 的 per-op independent TileRegion 复用同一 materializer；
+- actual Tile IR 对每个 selected Tile 都有唯一、完整、可 verifier 的 single-root region witness；
+- Q49.P已建立的fixed-assignment baseline apply与Q51显式test assignment复用该policy-free single-root materializer；
+  materializer只消费调用方已给定的singleton root boundary，不接收或自行推导search candidate/grouping；
 - 不在本 checkpoint 做 multi-op fusion、temporal winner、layout 或 buffer 选择。
 
 ## Q50.D：Maximal Coupled Traversal
@@ -468,7 +542,8 @@ probe不选择下一tile，不修改state，不在clone内spill/retile/rebuffer�
 - exact failure回共同parent并保留不同temporal/traversal以及required-coordinate siblings；这里只证明candidate set继续，
   不在本checkpoint选出跨轴winner；
 - source IR 无变化、probe clone 全销毁、任意时刻最多一个 live actual；
-- Q49 baseline probe 与 Q51 probe 共用 downstream mechanics，但 baseline 不进入 candidate set；
+- Q49.P closed-coordinate probe与Q51 probe复用同一lowering/lifetime/packing implementation；Q50.F只增加deferred坐标和
+  common-state反馈taxonomy，baseline不进入candidate set；
 - 删除 allocator repair 和 feedback beam，保留 packer、conflict witness 与 exact validator。
 
 ## Q50.G：Layout and Physical Representation
@@ -828,7 +903,7 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 
 ## 提交与收尾
 
-1. Q58、Q56、Q59由各自计划先行闭合；Q50.0、Q54、Q49.P、Q50.A、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、
+1. Q58、Q56、Q59由各自计划先行闭合；Q50.0、Q54已闭合，随后Q50.A、Q49.P、Q51.Core、Q50.S、Q50.B–Q50.K、Q51 closure、
    Q52、Q60与Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
 2. 每个 checkpoint 开始前记录将替换的旧 owner 调用链；提交前证明新调用链唯一，并只删除当前轴满足三项门禁的旧入口。
 3. 状态转换以 `tasks/progress.md` 为准；本计划不单独维护第二份动态状态表。

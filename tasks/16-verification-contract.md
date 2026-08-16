@@ -287,20 +287,28 @@ current target容量、target-model能力或host预算不足，必须按stage报
 各队列项分别形成fresh证据，不能用后项的局部通过倒签前项：
 
 1. Q49：`none`通过current TensorProgram→CardModule→TileRegion/Instr→fresh SPM/DDR→CardExecutable→ExecutablePackage链路；
-   普通多op、spatially sharded compute和cross-Tile baseline package/no-card通过。Q49.P用fresh prefill/decode/Llama证明
-   CardModule、CardExecutable与package digest稳定、oracle/no-card通过，并以fresh阶段计时证明`none`不构造search对象、
-   不重复全图materialization，且只对accepted baseline完整编译一次。
+   普通多op、spatially sharded compute和cross-Tile baseline package/no-card通过。该证据只签发数值正确性和完整准入，不以
+   `actual_fused_edges=0`代签region/policy隔离。Q49.P还必须证明：baseline调用闭包不包含search
+   state/candidate、search-oriented domain/ranking evaluator、proposal order/group materializer或candidate统计；每个baseline
+   TileRegion恰有一个structured compute root和必要non-root support closure，同Tile多root形成多个顺序region，跨root shaped
+   dependency显式DDR；root cardinality按materialization relation映回structured DAG node，显式init producer不能伪装成
+   support，而一个root lower成多个compute/instruction op不能误判成多root；region-local probe在需要call/function lifetime时
+   提升到最近合法isolated ancestor。capacity rejection的typed witness将all-and-only conflict owner直接关联到当前single
+   root及其temporal assignment，unsupported witness命名typed lifetime/call relation和实际scope，equal-shape fanin不扩大
+   归因；scoped probe不构造card-shaped/no-work-Tile wrapper，完整CardModule materialization与CardExecutable compilation各
+   一次。fresh prefill/decode/Llama还需证明CardModule、CardExecutable与package digest稳定、
+   oracle/no-card通过。
 2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair；Q50.A：
    placement给定后从IndexRelation形成layout-independent exact logical demand，carrier/layout/route失败不反写spatial legality；
    Q50.S：typed proof和online/partitioned-KV等算法参数点均物化成真实TensorProgram alternatives。
-3. Q50.B–Q50.K依次闭合spatial placement、single-op TileRegion、coupled traversal/region fusion、complete temporal tile与
+3. Q50.B–Q50.K依次闭合spatial placement、single-root TileRegion、coupled traversal/region fusion、complete temporal tile与
    wave-loop order、
    scoped actual probe、layout/representation、movement、rotating buffers、event/resource schedule与conditional stage pipeline。
    probe缺少因果坐标时必须deferred，资源耗尽不得当作不可行；pipeline event structure形成后必须使旧calendar失效并
    重入event/resource schedule，由新assignment证明实际overlap。
    每项都需current接入点、actual-IR witness和实际执行的正负测试；旧owner删除不能代替能力迁移。
-4. Q51.Core：independent reference enumerator与production flat exhaustive runner、baseline incumbent、global ledger、budget与
-   actual-probe seam闭合；Q51中两层oracle与`search` winner一致，全部联合维度实际参与选择，late exact failure回到同一
+4. Q51.Core：直接复用Q49.P accepted baseline executable/actual cost作为incumbent，不经search carrier重建；independent
+   reference enumerator与production flat exhaustive runner、global ledger、budget与actual-probe seam闭合；Q51中两层oracle与`search` winner一致，全部联合维度实际参与选择，late exact failure回到同一
    candidate set。selected IR必须有共享TileRegion，并以coupled traversal或明确retained SSA、tile-sized intermediate及无中间
    DDR round-trip证明有效融合；group字段不能代签。
 5. Q52：generic/HF/Llama representative load的work、wall、RSS和热点fresh记录；基于实测引入的优化在小图oracle上

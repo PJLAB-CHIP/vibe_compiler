@@ -62,17 +62,20 @@ Q46与Q47的旧施工记录已移入`tasks/archive/`。current layout、target A
 11、14-17编号设计文档拥有，状态只看`tasks/progress.md`；不得从旧计划恢复接口。
 
 Q49–Q53共用card-local multi-Tile综合计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：Q49保留
-current `none`正确性证据；Q50.0建立candidate compilation/verification seam；Q49.P隔离baseline的局部probe与最终整卡编译；
-Q50.A收口IndexRelation demand边界；Q50.S把算法等价改写物化为actual `TensorProgram`；Q50.B–Q50.K逐项接入
+current `none`数值正确性证据；Q50.0建立candidate compilation/verification seam；Q50.A先收口IndexRelation demand边界；
+Q49.P再闭合baseline canonical construction、single-root TileRegion、最窄scope probe、typed causal witness、整图物化与
+search-policy隔离；Q50.S把算法等价改写物化为actual `TensorProgram`；Q50.B–Q50.K逐项接入
 spatial、TileRegion/temporal/fusion、physical representation/movement、buffer/order/completion和条件式stage pipeline选择；
-Q51.Core尽早建立唯一search owner，Q51随后闭合联合选择，Q52按实际负载优化scalability，Q53形成production
+Q51.Core直接复用Q49.P accepted baseline作为incumbent后建立唯一search owner，Q51随后闭合联合选择，Q52按实际负载优化
+scalability，Q53形成production
 `board-ready`与真实板端证据。06仍是唯一联合决策设计owner；任务拆分只提供可验证接入checkpoint，不产生独立layout、
 fusion、buffering、communication或worker selector。动态状态、依赖和完成门禁只看`tasks/progress.md`。
 
 Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。19是横向工程合同owner：让现有operation/region
 层级成为真实pass与analysis层级，收口typed ODS、standard interface、named nested pipeline和transactional rewrite，并
-通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54优先于Q49.P、Q50.A/Q51继续施工，避免把semantic
-Location、whole-module local wrapper和手工analysis lifecycle固化进baseline probe或新的candidate/search实现。
+通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54优先于Q50.A，Q49.P再消费Q50.A与Q54的
+current seam后由Q51继续施工，避免把semantic Location、whole-module local wrapper和手工analysis lifecycle固化进
+baseline probe或新的candidate/search实现。
 
 Q55接口版本收敛计划见`tasks/plans/interface-version-consolidation.md`。20只定义版本owner和兼容边界；02、11、14-17
 继续拥有具体frontend、target、package、runtime、profiler与verification字段语义。Q55不建立compatibility mode，
