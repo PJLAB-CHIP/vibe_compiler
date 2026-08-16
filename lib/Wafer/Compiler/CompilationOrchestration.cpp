@@ -2,6 +2,7 @@
 
 #include "CompilationInternal.h"
 #include "CompilationStatistics.h"
+#include "PackageInternal.h"
 
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -63,7 +64,7 @@ static void printOptimizationConfig(OptimizationConfig config,
 }
 
 mlir::LogicalResult runCompilationTransaction(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
@@ -71,10 +72,13 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<CardExecutable> *retainedCardExecutable,
     std::optional<TargetLLVMModules> *retainedTargetLLVMModules,
-    std::optional<CompilationIRTrace> *retainedIRTrace) {
+    std::optional<CompilationIRTrace> *retainedIRTrace,
+    std::optional<ExecutablePackage> *retainedPackage,
+    std::optional<ProfileInstrumentationProduct> *retainedProfileProduct,
+    CompilationStage *failureStage) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
-  (void)outputProgramDirectory;
+  (void)outputPackageDirectory;
   (void)xlaSpmdPartitionerHelper;
   (void)targetToolchain;
   (void)options;
@@ -84,10 +88,21 @@ mlir::LogicalResult runCompilationTransaction(
   (void)retainedCardExecutable;
   (void)retainedTargetLLVMModules;
   (void)retainedIRTrace;
+  (void)retainedPackage;
+  (void)retainedProfileProduct;
+  if (failureStage)
+    *failureStage = CompilationStage::SourceVerification;
   reject(diagnostics,
          "StableHLO and SPMD partitioner dependencies are required");
   return mlir::failure();
 #else
+  CompilationStageTracker stages;
+  // The stage is written on every exit; callers consume it only when the
+  // transaction failed.
+  auto failureStageReport = llvm::make_scope_exit([&] {
+    if (failureStage)
+      *failureStage = stages.current;
+  });
   const CompileClock::time_point transactionStart = CompileClock::now();
   std::shared_ptr<wafer::support::CompileTimingSession> timingSession;
   if (options.shouldReportDetailedTiming())
@@ -119,8 +134,8 @@ mlir::LogicalResult runCompilationTransaction(
       "stage", "source-to-package", "compile-transaction");
   auto sourceTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "stage", "source-to-package", "source-to-tensor-program");
-  if (outputProgramDirectory.empty()) {
-    reject(diagnostics, "output program directory must not be empty");
+  if (outputPackageDirectory.empty()) {
+    reject(diagnostics, "output package directory must not be empty");
     return mlir::failure();
   }
   if (xlaSpmdPartitionerHelper.empty()) {
@@ -151,17 +166,17 @@ mlir::LogicalResult runCompilationTransaction(
   }
 
   llvm::SmallString<256> absoluteOutput;
-  if (makeAbsoluteNormalizedPath(outputProgramDirectory, absoluteOutput,
+  if (makeAbsoluteNormalizedPath(outputPackageDirectory, absoluteOutput,
                                  diagnostics))
     return mlir::failure();
   llvm::StringRef outputName = llvm::sys::path::filename(absoluteOutput);
   if (outputName.empty()) {
-    reject(diagnostics, "output program directory must name a directory");
+    reject(diagnostics, "output package directory must name a directory");
     return mlir::failure();
   }
   if (pathEntryExists(absoluteOutput)) {
     reject(diagnostics,
-           "refusing to replace existing output program directory: '" +
+           "refusing to replace existing output package directory: '" +
                absoluteOutput.str().str() + "'");
     return mlir::failure();
   }
@@ -180,7 +195,7 @@ mlir::LogicalResult runCompilationTransaction(
   llvm::sys::path::append(prospectiveCanonicalOutput, outputName);
   if (pathIsWithin(prospectiveCanonicalOutput, canonicalSource)) {
     reject(diagnostics,
-           "output program directory must not equal or be nested under the "
+           "output package directory must not equal or be nested under the "
            "source program directory");
     return mlir::failure();
   }
@@ -199,13 +214,13 @@ mlir::LogicalResult runCompilationTransaction(
   llvm::sys::path::append(canonicalOutput, outputName);
   if (pathIsWithin(canonicalOutput, canonicalSource)) {
     reject(diagnostics,
-           "output program directory must not equal or be nested under the "
+           "output package directory must not equal or be nested under the "
            "source program directory");
     return mlir::failure();
   }
   if (pathEntryExists(canonicalOutput)) {
     reject(diagnostics,
-           "refusing to replace existing output program directory: '" +
+           "refusing to replace existing output package directory: '" +
                canonicalOutput.str().str() + "'");
     return mlir::failure();
   }
@@ -438,11 +453,13 @@ mlir::LogicalResult runCompilationTransaction(
   // Constructed after the path append: the resolver holds a StringRef into
   // the tensor-program path buffer.
   TensorPayloadResolver tensorResolver(programData, tensorProgram);
+  stages.enter(CompilationStage::SpmdPartitioning);
   if (mlir::failed(runSpmdHelper(xlaSpmdPartitionerHelper, helperInput,
                                  tensorProgram, request.getExecutionConfig(),
                                  diagnostics)))
     return mlir::failure();
 
+  stages.enter(CompilationStage::TensorProgramPreparation);
   if (validateRegularDirectoryTree(tensorProgram, diagnostics))
     return mlir::failure();
   for (llvm::StringRef requiredMember :
@@ -696,20 +713,23 @@ mlir::LogicalResult runCompilationTransaction(
   std::optional<CardExecutable> cardExecutable;
   std::optional<TargetLLVMModules> targetLLVMModules;
   CompilationIRTrace irTrace;
+  ProfileInstrumentationIdentity profileIdentity;
   if (options.shouldProduceProfileInstrumentation()) {
     if (mlir::failed(stageProfileTargetPackages(
             tensorProgram, transactionRoot, request.getExecutionConfig(),
             options.getOptimizationConfig(), targetToolchain, diagnostics,
             failAfterLaunchSlot, failAfterTargetLaunchSlot,
             failAfterPackageLaunchSlot, cardExecutable,
-            targetLLVMModules, programData, tensorResolver, irTrace)))
+            targetLLVMModules, programData, tensorResolver, irTrace, stages,
+            profileIdentity)))
       return mlir::failure();
   } else if (mlir::failed(stageTargetPackage(
                  tensorProgram, transactionRoot, request.getExecutionConfig(),
                  options.getOptimizationConfig(), targetToolchain, diagnostics,
                  failAfterLaunchSlot, failAfterTargetLaunchSlot,
                  failAfterPackageLaunchSlot, cardExecutable,
-                 targetLLVMModules, programData, tensorResolver, irTrace))) {
+                 targetLLVMModules, programData, tensorResolver, irTrace,
+                 stages))) {
     return mlir::failure();
   }
   diagnostics << "wafer-compile: program-data-io ";
@@ -727,6 +747,7 @@ mlir::LogicalResult runCompilationTransaction(
   auto outputRenameTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "source-to-package", "output-rename");
+  stages.enter(CompilationStage::PackageCommit);
   llvm::SmallString<256> stagedPackage(transactionRoot);
   llvm::sys::path::append(stagedPackage, "package");
   if (options.shouldProduceProfileInstrumentation()) {
@@ -739,6 +760,36 @@ mlir::LogicalResult runCompilationTransaction(
   } else if (renameDirectoryNoReplace(stagedPackage, canonicalOutput,
                                       diagnostics))
     return mlir::failure();
+
+  // The primary result binds the installed root: the verified manifest is
+  // loaded back from the committed directory, and an explicitly requested
+  // profile product is bound against the installed activation.json. Both
+  // renames are atomic, so these readbacks can only fail on compiler bugs.
+  llvm::Expected<runtime::VerifiedPackageManifest> installedManifest =
+      runtime::loadVerifiedPackageManifest(canonicalOutput);
+  if (!installedManifest) {
+    reject(diagnostics, "committed package manifest readback failed: " +
+                            llvm::toString(installedManifest.takeError()));
+    return mlir::failure();
+  }
+  if (retainedPackage) {
+    retainedPackage->emplace(
+        ExecutablePackageBuilder::makePackage(
+            canonicalOutput, request.getExecutionConfig(),
+            std::move(*installedManifest)));
+  }
+  if (options.shouldProduceProfileInstrumentation() &&
+      retainedProfileProduct) {
+    if (llvm::Error error = verifyCommittedProfileInstrumentation(
+            canonicalOutput, canonicalProfileOutput, profileIdentity)) {
+      reject(diagnostics, "committed profile instrumentation readback "
+                          "failed: " +
+                              llvm::toString(std::move(error)));
+      return mlir::failure();
+    }
+    retainedProfileProduct->emplace(ProfileInstrumentationProductBuilder::make(
+        canonicalProfileOutput, profileIdentity));
+  }
   if (retainedCardExecutable)
     retainedCardExecutable->emplace(
         std::move(*cardExecutable));

@@ -106,7 +106,7 @@ Pipeline position:
   未接受时丢弃当前CardModule clone并返回typed outcome，不允许allocator原地repair或直接操作共同candidate set；只有
   proven exact failure可以拒绝对应assignment，资源耗尽或internal failure保持indeterminate。
 - User-level driver / named pipeline:
-  `wafer-compile --input-program-dir ... --output-program-dir ... --num-partitions=1 --launch-kind={kernel|model}`
+  `wafer-compile --input-program-dir ... --output-package-dir ... --num-partitions=1`
   的physical-dataflow selection loop调用本stage；frontend只产出verified card-partition structured program，不执行SPM planning；
   `wafer-opt`和`wafer-plan-spm-memory`只处理显式IR，用于instruction-level replay/lit/debug，不能成为
   用户stop-stage，也不能把full-shape initial candidate、单op或单Tile结果直接提交。

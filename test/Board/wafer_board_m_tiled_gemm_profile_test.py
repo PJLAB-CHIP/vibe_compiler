@@ -119,7 +119,7 @@ def compile_package(
         str(compiler),
         "--input-program-dir",
         str(source),
-        "--output-program-dir",
+        "--output-package-dir",
         str(package),
         "--num-partitions=1",
             ]

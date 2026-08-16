@@ -138,6 +138,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-single-card-gemm-no-card PROPERTIES
       LABELS "runtime;no-card;pytorch;source;gemm"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 600
     )
     add_test(NAME wafer-runtime-pytorch-single-card-gemm-bf16-no-card
@@ -156,6 +157,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-single-card-gemm-bf16-no-card PROPERTIES
       LABELS "runtime;no-card;pytorch;source;gemm;bf16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 600
     )
     add_test(NAME wafer-runtime-pytorch-heterogeneous-tiling-dataflow-fp16-no-card
@@ -175,6 +177,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-heterogeneous-tiling-dataflow-fp16-no-card PROPERTIES
       LABELS "runtime;no-card;pytorch;source;heterogeneous;tiling-interface;fp16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 900
     )
     add_test(NAME wafer-runtime-pytorch-heterogeneous-tiling-dataflow-bf16-no-card
@@ -194,6 +197,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-heterogeneous-tiling-dataflow-bf16-no-card PROPERTIES
       LABELS "runtime;no-card;pytorch;source;heterogeneous;tiling-interface;bf16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 900
     )
     add_test(NAME wafer-runtime-pytorch-conv-mixed-dag-fp16-no-card
@@ -213,6 +217,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-conv-mixed-dag-fp16-no-card PROPERTIES
       LABELS "runtime;no-card;pytorch;source;conv;mixed-dag;fp16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 900
     )
     add_test(NAME wafer-runtime-pytorch-conv-mixed-dag-bf16-no-card
@@ -232,6 +237,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-conv-mixed-dag-bf16-no-card PROPERTIES
       LABELS "runtime;no-card;pytorch;source;conv;mixed-dag;bf16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 900
     )
     add_test(NAME wafer-runtime-pytorch-attention-prefill-fp16-no-card
@@ -253,6 +259,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-attention-prefill-fp16-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;prefill;fp16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-attention-prefill-fp16-optimization-none-no-card
@@ -274,6 +281,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-attention-prefill-fp16-optimization-none-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;prefill;fp16;optimization-none"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-attention-prefill-bf16-no-card
@@ -293,6 +301,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-attention-prefill-bf16-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;prefill;bf16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-attention-decode-kv-cache-no-card
@@ -314,6 +323,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-attention-decode-kv-cache-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;decode;kv-cache;fp16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-none-no-card
@@ -333,6 +343,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-none-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;decode;kv-cache;fp16;optimization-none"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-attention-decode-kv-cache-bf16-no-card
@@ -352,6 +363,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-attention-decode-kv-cache-bf16-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;attention;decode;kv-cache;bf16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-llama-2-7b-block-fp16-no-card
@@ -371,6 +383,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-llama-2-7b-block-fp16-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;llama;block;fp16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card
@@ -390,6 +403,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;llama;block;fp16;optimization-none"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
     add_test(NAME wafer-runtime-pytorch-llama-2-7b-block-bf16-no-card
@@ -409,6 +423,7 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     set_tests_properties(
       wafer-runtime-pytorch-llama-2-7b-block-bf16-no-card PROPERTIES
       LABELS "runtime;no-card;heavy;pytorch;source;huggingface;llama;block;bf16"
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
       TIMEOUT 3600
     )
   endif()
@@ -490,6 +505,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 600
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     )
     add_test(NAME wafer-board-pytorch-attention-prefill-optimization-none
       COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
@@ -518,6 +534,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 1800
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     )
     add_test(NAME wafer-board-pytorch-attention-decode-kv-cache
       COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
@@ -546,6 +563,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 1800
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     )
     add_test(NAME wafer-board-pytorch-attention-decode-kv-cache-optimization-none
       COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
@@ -574,6 +592,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 1800
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     )
     add_test(NAME wafer-board-pytorch-llama-2-7b-block
       COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}
@@ -602,6 +621,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
       TIMEOUT 9000
+      ENVIRONMENT "TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     )
     add_test(NAME wafer-board-pytorch-llama-2-7b-block-optimization-none
       COMMAND ${WAFER_IMPORTER_PYTHON_EXECUTABLE}

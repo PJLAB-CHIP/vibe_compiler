@@ -160,7 +160,7 @@ Pipeline position:
   closed-loop physical-dataflow selection driver；这里的每个Instr variant都是完整Tile module；CardExecutable原子形成后才由
   target LLVM、package 和 runtime 消费。
 - User-level driver / named pipeline:
-  `wafer-compile --input-program-dir ... --output-program-dir ... --num-partitions=1 --launch-kind={kernel|model}`内的closed-loop
+  `wafer-compile --input-program-dir ... --output-package-dir ... --num-partitions=1`内的closed-loop
   candidate loop调用；worker-aware candidate和oriented GEMM都使用同一current ABI，不接受target选择。
   当前Q15只产出verified structured tensor program directory，不执行instruction lowering；
   `wafer-opt`只处理显式IR，局部bring-up / candidate evaluation入口是

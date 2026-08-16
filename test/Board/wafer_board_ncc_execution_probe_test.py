@@ -115,7 +115,7 @@ def compile_seed_package(
             str(args.wafer_compile),
             "--input-program-dir",
             str(source),
-            "--output-program-dir",
+            "--output-package-dir",
             str(package),
             "--num-partitions=1",
         ],

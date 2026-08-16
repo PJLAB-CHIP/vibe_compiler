@@ -129,16 +129,16 @@ ctest --test-dir build/wafer-dev -j"$(nproc)" --output-on-failure
 ```bash
 build/wafer-dev/bin/wafer-compile \
   --input-program-dir <stablehlo-program-dir> \
-  --output-program-dir <verified-package-dir> \
+  --output-package-dir <verified-package-dir> \
   --num-partitions 1 \
-  --optimization-policy search \
-  --launch-kind kernel
+  --optimization-policy search
 ```
 
 `search` 和 `none` 都经过同一 CardModule、Tile selection 和 exact verification pipeline；`search`启用
-compiler-owned候选搜索，`none`只生成保守baseline。完整 TargetCall/SystemC 参数通过
-`build/wafer-dev/bin/wafer-compile --help` 查看；target-model
-模式必须提供显式 input、CPU expected、数值 policy 和 resource budget。package可先做无板卡 validation：
+compiler-owned候选搜索，`none`只生成保守baseline。编译成功当且仅当 package 已原子提交并 readback
+验证：CLI 退出 0 时目标 package 必然可见，退出非 0 时本次目标 package 不可见。target-model 与
+compiler IR dump 只属于 internal/test 入口（`wafer-compile-test`），不进入 production compile status。
+package 可先做无板卡 validation：
 
 ```bash
 build/wafer-dev/bin/wafer-run \
@@ -148,6 +148,11 @@ build/wafer-dev/bin/wafer-run \
 
 `wafer-opt` 只用于局部 MLIR 调试和底层 rewrite/conversion，不拥有另一套 candidate selector，也不能把单 pass 输出直接当成
 production package。
+
+安装后的 production compiler 通过单一 resolver 发现外部工具事实：SPMD helper 与 device linker
+script/CRT/ABI 资源位于可执行文件旁的 install 目录，`python3`/`clang++` 从 PATH 解析；pinned TX8
+依赖根由环境变量 `TX8_DEPS_ROOT` 显式配置。二进制不烘焙 source/build tree 绝对路径。
+
 
 ## 当前边界
 

@@ -143,6 +143,11 @@ bool isExecutableTargetFile(llvm::StringRef path) {
          !llvm::sys::fs::access(path, llvm::sys::fs::AccessMode::Execute);
 }
 
+bool isDirectory(llvm::StringRef path) {
+  return llvm::sys::fs::get_file_type(path, /*Follow=*/true) ==
+         llvm::sys::fs::file_type::directory_file;
+}
+
 bool renameDirectoryNoReplace(llvm::StringRef source,
                               llvm::StringRef destination,
                               llvm::raw_ostream &diagnostics) {
@@ -202,6 +207,19 @@ llvm::Expected<LinkedTargetModules> detail::linkTargetLLVMModulesImpl(
   if (!detail::isExecutableTargetFile(toolchain.getLLVMClangXX()))
     return detail::fail(diagnostics,
                         "configured LLVM clang++ is not executable");
+  if (!detail::isDirectory(toolchain.getTx8DepsRoot()))
+    return detail::fail(diagnostics,
+                        "configured TX8 dependency root is not a directory");
+  if (!detail::isDirectory(toolchain.getWaferIncludeDir()))
+    return detail::fail(
+        diagnostics, "configured Wafer include directory is not a directory");
+  if (!detail::isRegularTargetFile(toolchain.getWaferCrtSource()))
+    return detail::fail(diagnostics,
+                        "configured Wafer CRT source is not a regular file");
+  if (!detail::isDirectory(toolchain.getWaferCrtIncludeDir()))
+    return detail::fail(diagnostics,
+                        "configured Wafer CRT include directory is not a "
+                        "directory");
 
   llvm::SmallString<256> outputParent(outputDirectory);
   llvm::sys::path::remove_filename(outputParent);

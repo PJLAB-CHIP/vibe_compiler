@@ -4,6 +4,7 @@
 #define WAFER_TOOLS_WAFER_COMPILE_DRIVERINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/Package.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 #include "Wafer/Model/SystemCTargetModel.h"
@@ -11,6 +12,7 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 
 #include <cstdint>
 #include <optional>
@@ -21,12 +23,14 @@ namespace wafer::compile_driver {
 
 struct CommandLineOptions {
   std::optional<std::string> inputProgramDirectory;
-  std::optional<std::string> outputProgramDirectory;
+  std::optional<std::string> outputPackageDirectory;
   std::optional<std::string> numPartitions;
   std::optional<std::string> compilerIRDumpDirectory;
   std::optional<std::string> optimizationPolicy;
   bool compileTiming = false;
   bool profile = false;
+  // The following fields belong to the internal qualification/debug entry
+  // (wafer-compile-test) and are never parsed by the production compiler.
   std::vector<std::string> modelInputs;
   std::vector<std::string> modelExpected;
   std::optional<std::string> modelAtol;
@@ -44,6 +48,21 @@ struct CommandLineOptions {
   std::optional<std::string> targetModelMaximumBulkReorderBytes;
 };
 
+/// Validated external tool facts for one invocation. The single resolver
+/// discovers installed resources relative to the executable and toolchain
+/// interpreters via PATH; every fact is validated before use and the driver
+/// never falls back to searching source or build tree paths.
+struct DriverToolFacts {
+  std::string spmdPartitionerHelper;
+  std::string pythonExecutable;
+  std::string deviceLinkerScript;
+  std::string llvmClangXX;
+  std::string tx8DepsRoot;
+  std::string waferIncludeDir;
+  std::string waferCrtSource;
+  std::string waferCrtIncludeDir;
+};
+
 struct IndexedPath {
   int64_t index = -1;
   std::string path;
@@ -53,7 +72,9 @@ void printHelp();
 bool parseCommandLine(int argc, char **argv, CommandLineOptions &options);
 bool requireOption(const std::optional<std::string> &value,
                    llvm::StringRef option);
-std::string resolveSpmdPartitionerHelperPath();
+/// Single external tool resolver: test-only environment override, installed
+/// resource next to the executable, then PATH for toolchain interpreters.
+llvm::Expected<DriverToolFacts> resolveDriverToolFacts();
 std::optional<std::vector<IndexedPath>>
 parseIndexedPaths(llvm::ArrayRef<std::string> values, llvm::StringRef option);
 std::optional<double> parseTolerance(const std::optional<std::string> &value,
@@ -65,6 +86,7 @@ std::optional<uint64_t>
 parsePositiveCount(const std::optional<std::string> &value,
                    llvm::StringRef option);
 
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 /// Writes the accepted instruction modules and their exact Target LLVM
 /// translations for compiler inspection. The destination must not exist.
 bool dumpCompilerIR(llvm::StringRef destination,
@@ -79,6 +101,7 @@ bool runTargetModelGate(
     llvm::ArrayRef<IndexedPath> expectedPaths, double atol, double rtol,
     wafer::model::TargetModelKernelBudget budget,
     wafer::model::TargetModelExecutionPolicy executionPolicy);
+#endif
 #endif
 
 } // namespace wafer::compile_driver

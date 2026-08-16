@@ -103,6 +103,14 @@ WAFER_COMPILE_SOURCES = (
     "TargetModelGate.cpp",
     "wafer-compile.cpp",
 )
+WAFER_COMPILE_PRODUCTION_SOURCES = (
+    "DriverOptions.cpp",
+    "wafer-compile.cpp",
+)
+WAFER_COMPILE_TEST_ONLY_SOURCES = (
+    "CompilerIRDump.cpp",
+    "TargetModelGate.cpp",
+)
 REFERENCE_EXECUTOR_LEGACY_PATHS = (
     "include/Wafer/Compiler/ReferenceExecutor.h",
     "lib/Wafer/Compiler/ReferenceExecutor.cpp",
@@ -1284,22 +1292,45 @@ def check_wafer_compile_owners(root: Path, errors: list[str]) -> None:
 
     check_exact_sources(source_root, WAFER_COMPILE_SOURCES, "wafer-compile", errors)
     read_required(source_root / "DriverInternal.h", errors)
-    source_body = cmake_target_body(
+    # The production compiler owns the source-to-package entry only; the
+    # target-model gate and the compiler IR dump are internal/test-only
+    # consumers compiled exclusively into wafer-compile-test.
+    production_body = cmake_target_body(
         cmake_text, "set", "_wafer_compile_sources", cmake_path, errors
     )
     check_cmake_sources(
-        body=source_body,
-        required=WAFER_COMPILE_SOURCES,
+        body=production_body,
+        required=WAFER_COMPILE_PRODUCTION_SOURCES,
         cmake_path=cmake_path,
         target="_wafer_compile_sources",
         errors=errors,
     )
-    for target in ("wafer-compile", "wafer-compile-test"):
-        target_body = cmake_target_body(
-            cmake_text, "add_executable", target, cmake_path, errors
-        )
-        if "${_wafer_compile_sources}" not in target_body:
-            fail(errors, f"{cmake_path}: {target} must use shared driver source set")
+    test_body = cmake_target_body(
+        cmake_text, "set", "_wafer_compile_test_sources", cmake_path, errors
+    )
+    check_cmake_sources(
+        body=test_body,
+        required=WAFER_COMPILE_TEST_ONLY_SOURCES,
+        cmake_path=cmake_path,
+        target="_wafer_compile_test_sources",
+        errors=errors,
+    )
+    production_target_body = cmake_target_body(
+        cmake_text, "add_executable", "wafer-compile", cmake_path, errors
+    )
+    if "${_wafer_compile_sources}" not in production_target_body:
+        fail(errors, f"{cmake_path}: wafer-compile must use shared driver source set")
+    if "${_wafer_compile_test_sources}" in production_target_body:
+        fail(errors,
+             f"{cmake_path}: wafer-compile must not compile test-only sources")
+    test_target_body = cmake_target_body(
+        cmake_text, "add_executable", "wafer-compile-test", cmake_path, errors
+    )
+    for variable in ("${_wafer_compile_sources}", "${_wafer_compile_test_sources}"):
+        if variable not in test_target_body:
+            fail(errors,
+                 f"{cmake_path}: wafer-compile-test must use both driver "
+                 f"source sets ({variable})")
     facade = read_required(source_root / "wafer-compile.cpp", errors)
     for implementation in (
         "bool parseCommandLine(",

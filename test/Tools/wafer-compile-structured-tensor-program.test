@@ -2,7 +2,7 @@
 
 # RUN: rm -rf %t.input.program %t.package
 # RUN: env CPU_NUM_DEVICES=16 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-sharded-program --sharding-strategy column --size 32 --output-program-dir %t.input.program
-# RUN: wafer-compile --input-program-dir %t.input.program --output-program-dir %t.package --num-partitions=1 | FileCheck %s --check-prefix=PIPELINE
+# RUN: wafer-compile --input-program-dir %t.input.program --output-package-dir %t.package --num-partitions=1 | FileCheck %s --check-prefix=PIPELINE
 # RUN: %python -c 'import json, pathlib; p=pathlib.Path("%t.package"); m=json.loads((p/"manifest.json").read_text()); assert m["launch"]=={"kind":"kernel","form":"grid","entry_abi":"tile-major-pointer-table","phases":["main"]} and m["card_count"]==1 and m["tile_count"]==16; assert len(m["entries"])==16 and all([a["ordinal"] for a in e["arguments"]]==list(range(len(e["arguments"]))) for e in m["entries"]); pd=m["program_data"]; assert (p/pd["relative_path"]).exists()'
 # RUN: test ! -e %t.package/functions
 

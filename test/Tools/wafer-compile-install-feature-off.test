@@ -1,0 +1,11 @@
+// A feature-off install tree must not install a production compiler that
+// would only fail at runtime. The install rules are guarded by the importer,
+// SPMD partitioner and helper configuration; wafer-run (whose dependencies
+// are closed) remains installable.
+
+# UNSUPPORTED: stablehlo
+
+# RUN: rm -rf %t.install
+# RUN: %cmake --install %wafer_obj_root --prefix %t.install
+# RUN: test ! -e %t.install/bin/wafer-compile
+# RUN: test ! -e %t.install/libexec/wafer/wafer_xla_spmd_partitioner

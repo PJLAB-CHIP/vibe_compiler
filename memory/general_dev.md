@@ -298,6 +298,19 @@ source program
 - `WaferPackageSupport`拥有profile instrumentation共享model/filename常量；Compiler/Package不仅不能链接`WaferRuntime`，源码和public
   header也不能include`Wafer/Runtime/*`，该双边界由source-organization检查。
 
+## Q59外部工具facts与安装（stable）
+
+- `wafer-compile`不烘焙任何source/build绝对路径：SPMD helper、device linker script与CRT/ABI资源按executable-relative
+  install位置发现（build tree由`wafer-compile-resources`目标同步生成`bin/../share/wafer`与`bin/../libexec/wafer`，
+  install tree由install规则放置同一布局）；`python3`/`clang++`经PATH解析；pinned TX8依赖根必须显式设
+  `TX8_DEPS_ROOT=<repo>/third_party/tx8_deps`（lit/CTest已注入，手动跑build tree的`wafer-compile`必须自设）。
+- `--target-model*`/`--dump-compiler-ir`/失败注入是`wafer-compile-test`（`WAFER_ENABLE_TEST_HELPER_OVERRIDE`）专用；
+  production `wafer-compile`对它们和旧`--output-program-dir`报unknown argument。
+- install闭包验证：`cmake --install <build> --prefix <dir>`后直接跑`<dir>/bin/wafer-compile`做source→package→no-card；
+  feature-off配置（importer/SPMD deps关）不安装wafer-compile。
+- SPMD helper进程接口保持`--input-program-dir/--output-program-dir`（helper输出本来就是program目录），
+  不要和wafer-compile CLI的`--output-package-dir`混改。
+
 ## Q56构建与验证命令（stable）
 
 - 主树：`cmake --build build/q55-current-fresh -j$(nproc)`；board runtime树：`build/wafer-board-check`

@@ -1,6 +1,7 @@
 //===- Compilation.cpp - Typed Wafer compiler facade --------------------===//
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/Package.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Compiler/Testing.h"
 #include "Wafer/IR/WaferDialect.h"
@@ -27,6 +28,28 @@
 #include <vector>
 
 namespace wafer::compiler {
+
+char CompilationFailure::ID = 0;
+
+llvm::StringRef stringifyCompilationStage(CompilationStage stage) {
+  switch (stage) {
+  case CompilationStage::SourceVerification:
+    return "source-verification";
+  case CompilationStage::SpmdPartitioning:
+    return "spmd-partitioning";
+  case CompilationStage::TensorProgramPreparation:
+    return "tensor-program-preparation";
+  case CompilationStage::ExecutableCompilation:
+    return "executable-compilation";
+  case CompilationStage::TargetCodeGeneration:
+    return "target-code-generation";
+  case CompilationStage::PackageAssembly:
+    return "package-assembly";
+  case CompilationStage::PackageCommit:
+    return "package-commit";
+  }
+  llvm_unreachable("unknown compilation stage");
+}
 
 llvm::Expected<ExecutionConfig>
 ExecutionConfig::createForSingleCard(int64_t numPartitions) {
@@ -61,47 +84,68 @@ CompilationOptions::profile(const ExecutionConfig &executionConfig,
                             timing);
 }
 
-mlir::FailureOr<CardExecutable>
+llvm::Expected<CompilationResult>
 compileProgram(CompilationRequest request,
-               llvm::StringRef outputProgramDirectory,
+               llvm::StringRef outputPackageDirectory,
                llvm::StringRef xlaSpmdPartitionerHelper,
                const TargetToolchain &targetToolchain,
                CompilationOptions options, llvm::raw_ostream &diagnostics) {
-  std::optional<CardExecutable> retainedCardExecutable;
+  std::optional<ExecutablePackage> retainedPackage;
+  std::optional<ProfileInstrumentationProduct> retainedProfileProduct;
+  CompilationStage failureStage = CompilationStage::SourceVerification;
   if (mlir::failed(detail::runCompilationTransaction(
-          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          std::move(request), outputPackageDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
-          std::nullopt, &retainedCardExecutable, nullptr)))
-    return mlir::failure();
-  if (!retainedCardExecutable) {
-    detail::reject(
-        diagnostics,
-        "successful compilation did not retain Tile executables");
-    return mlir::failure();
+          std::nullopt, nullptr, nullptr, nullptr, &retainedPackage,
+          &retainedProfileProduct, &failureStage)))
+    return llvm::make_error<CompilationFailure>(failureStage);
+  if (!retainedPackage) {
+    detail::reject(diagnostics,
+                   "successful compilation did not retain the committed "
+                   "package");
+    return llvm::createStringError(
+        llvm::errc::operation_not_permitted,
+        "successful compilation did not retain the committed package");
   }
-  return std::move(*retainedCardExecutable);
+  if (options.shouldProduceProfileInstrumentation() &&
+      !retainedProfileProduct) {
+    detail::reject(diagnostics,
+                   "successful profile compilation did not retain the "
+                   "committed profile instrumentation");
+    return llvm::createStringError(
+        llvm::errc::operation_not_permitted,
+        "successful profile compilation did not retain the committed profile "
+        "instrumentation");
+  }
+  return CompilationResult(std::move(*retainedPackage),
+                           std::move(retainedProfileProduct));
 }
 
-mlir::FailureOr<CompiledProgram> compileProgramWithTargetLLVMModules(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics) {
   std::optional<CardExecutable> retainedCardExecutable;
   std::optional<TargetLLVMModules> retainedTargetLLVMModules;
   std::optional<CompilationIRTrace> retainedIRTrace;
+  CompilationStage failureStage = CompilationStage::SourceVerification;
   if (mlir::failed(detail::runCompilationTransaction(
-          std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+          std::move(request), outputPackageDirectory, xlaSpmdPartitionerHelper,
           targetToolchain, diagnostics, options, std::nullopt, std::nullopt,
           std::nullopt, &retainedCardExecutable,
-          &retainedTargetLLVMModules, &retainedIRTrace)))
-    return mlir::failure();
+          &retainedTargetLLVMModules, &retainedIRTrace, nullptr, nullptr,
+          &failureStage)))
+    return llvm::make_error<CompilationFailure>(failureStage);
   if (!retainedCardExecutable || !retainedTargetLLVMModules ||
       !retainedIRTrace) {
     detail::reject(diagnostics,
                    "successful compilation did not retain the complete "
                    "compiled program");
-    return mlir::failure();
+    return llvm::createStringError(
+        llvm::errc::operation_not_permitted,
+        "successful compilation did not retain the complete compiled "
+        "program");
   }
   return CompiledProgram(std::move(*retainedCardExecutable),
                          std::move(*retainedTargetLLVMModules),
@@ -109,7 +153,7 @@ mlir::FailureOr<CompiledProgram> compileProgramWithTargetLLVMModules(
 }
 
 mlir::LogicalResult testing::compileProgramWithExecutableLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics) {
@@ -121,13 +165,13 @@ mlir::LogicalResult testing::compileProgramWithExecutableLaunchSlotFailure(
     return mlir::failure();
   }
   return detail::runCompilationTransaction(
-      std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+      std::move(request), outputPackageDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, CompilationOptions::standard(),
       failAfterLaunchSlot, std::nullopt, std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithTargetLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics) {
@@ -139,13 +183,13 @@ mlir::LogicalResult testing::compileProgramWithTargetLaunchSlotFailure(
     return mlir::failure();
   }
   return detail::runCompilationTransaction(
-      std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+      std::move(request), outputPackageDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, CompilationOptions::standard(),
       std::nullopt, failAfterLaunchSlot, std::nullopt, nullptr, nullptr);
 }
 
 mlir::LogicalResult testing::compileProgramWithPackageLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics) {
@@ -157,7 +201,7 @@ mlir::LogicalResult testing::compileProgramWithPackageLaunchSlotFailure(
     return mlir::failure();
   }
   return detail::runCompilationTransaction(
-      std::move(request), outputProgramDirectory, xlaSpmdPartitionerHelper,
+      std::move(request), outputPackageDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, CompilationOptions::standard(),
       std::nullopt, std::nullopt, failAfterLaunchSlot, nullptr, nullptr);
 }

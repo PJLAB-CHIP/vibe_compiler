@@ -86,10 +86,23 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
   static_assert(
       std::is_move_constructible_v<wafer::compiler::LinkedTargetModules>);
   static_assert(
-      !std::is_default_constructible_v<wafer::compiler::VerifiedPackage>);
+      !std::is_default_constructible_v<wafer::compiler::ExecutablePackage>);
   static_assert(
-      !std::is_copy_constructible_v<wafer::compiler::VerifiedPackage>);
-  static_assert(std::is_move_constructible_v<wafer::compiler::VerifiedPackage>);
+      !std::is_copy_constructible_v<wafer::compiler::ExecutablePackage>);
+  static_assert(
+      std::is_move_constructible_v<wafer::compiler::ExecutablePackage>);
+  static_assert(!std::is_default_constructible_v<
+                wafer::compiler::ProfileInstrumentationProduct>);
+  static_assert(!std::is_copy_constructible_v<
+                wafer::compiler::ProfileInstrumentationProduct>);
+  static_assert(std::is_move_constructible_v<
+                wafer::compiler::ProfileInstrumentationProduct>);
+  static_assert(
+      !std::is_default_constructible_v<wafer::compiler::CompilationResult>);
+  static_assert(
+      !std::is_copy_constructible_v<wafer::compiler::CompilationResult>);
+  static_assert(
+      std::is_move_constructible_v<wafer::compiler::CompilationResult>);
 
   auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
   ASSERT_TRUE(static_cast<bool>(config));

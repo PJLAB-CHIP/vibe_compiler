@@ -24,7 +24,7 @@ Pipeline position:
   构造CardModule，并选择target tile_id。Tile module splitting只发生在selected CardModule之后。
 - User-level driver / named pipeline:
   正式入口为
-  `wafer-compile --input-program-dir=... --output-program-dir=... --num-partitions=N --launch-kind={kernel|model}`；
+  `wafer-compile --input-program-dir=... --output-package-dir=... --num-partitions=N`；
   `num_partitions`是card-level logical partition数，不是单卡Tile数。wafer-opt和IR-local sharding pipeline只用于
   debug/test，不能形成第二条production入口。
 - Explicit non-goals:

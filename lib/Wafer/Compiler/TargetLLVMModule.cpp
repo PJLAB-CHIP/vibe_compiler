@@ -44,7 +44,11 @@ TargetLLVMModules &TargetLLVMModules::operator=(TargetLLVMModules &&) = default;
 llvm::Expected<TargetToolchain>
 TargetToolchain::create(llvm::StringRef pythonExecutable,
                         llvm::StringRef deviceLinkerScript,
-                        llvm::StringRef llvmClangXX) {
+                        llvm::StringRef llvmClangXX,
+                        llvm::StringRef tx8DepsRoot,
+                        llvm::StringRef waferIncludeDir,
+                        llvm::StringRef waferCrtSource,
+                        llvm::StringRef waferCrtIncludeDir) {
   if (pythonExecutable.empty())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "Python executable must not be empty");
@@ -54,7 +58,22 @@ TargetToolchain::create(llvm::StringRef pythonExecutable,
   if (llvmClangXX.empty())
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "LLVM clang++ must not be empty");
-  return TargetToolchain(pythonExecutable, deviceLinkerScript, llvmClangXX);
+  if (tx8DepsRoot.empty())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "TX8 dependency root must not be empty");
+  if (waferIncludeDir.empty())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "Wafer include directory must not be empty");
+  if (waferCrtSource.empty())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "Wafer CRT source must not be empty");
+  if (waferCrtIncludeDir.empty())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "Wafer CRT include directory must not be empty");
+  return TargetToolchain(pythonExecutable, deviceLinkerScript, llvmClangXX,
+                         tx8DepsRoot, waferIncludeDir, waferCrtSource,
+                         waferCrtIncludeDir);
 }
 
 llvm::Expected<TargetLLVMModules>

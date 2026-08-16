@@ -152,27 +152,46 @@ private:
   std::vector<TargetLLVMModule> modules;
 };
 
+/// Invocation-local external tool and resource facts consumed by target
+/// device linking: the toolchain interpreters, the pinned TX8 dependency
+/// root, and the Wafer CRT/ABI resources. Every path is validated by the
+/// driver resolver before this value is constructed.
 class TargetToolchain {
 public:
   static llvm::Expected<TargetToolchain>
   create(llvm::StringRef pythonExecutable, llvm::StringRef deviceLinkerScript,
-         llvm::StringRef llvmClangXX);
+         llvm::StringRef llvmClangXX, llvm::StringRef tx8DepsRoot,
+         llvm::StringRef waferIncludeDir, llvm::StringRef waferCrtSource,
+         llvm::StringRef waferCrtIncludeDir);
 
   llvm::StringRef getPythonExecutable() const { return pythonExecutable; }
   llvm::StringRef getDeviceLinkerScript() const { return deviceLinkerScript; }
   llvm::StringRef getLLVMClangXX() const { return llvmClangXX; }
+  llvm::StringRef getTx8DepsRoot() const { return tx8DepsRoot; }
+  llvm::StringRef getWaferIncludeDir() const { return waferIncludeDir; }
+  llvm::StringRef getWaferCrtSource() const { return waferCrtSource; }
+  llvm::StringRef getWaferCrtIncludeDir() const { return waferCrtIncludeDir; }
 
 private:
   TargetToolchain(llvm::StringRef pythonExecutable,
-                  llvm::StringRef deviceLinkerScript,
-                  llvm::StringRef llvmClangXX)
+                  llvm::StringRef deviceLinkerScript, llvm::StringRef llvmClangXX,
+                  llvm::StringRef tx8DepsRoot, llvm::StringRef waferIncludeDir,
+                  llvm::StringRef waferCrtSource,
+                  llvm::StringRef waferCrtIncludeDir)
       : pythonExecutable(pythonExecutable.str()),
         deviceLinkerScript(deviceLinkerScript.str()),
-        llvmClangXX(llvmClangXX.str()) {}
+        llvmClangXX(llvmClangXX.str()), tx8DepsRoot(tx8DepsRoot.str()),
+        waferIncludeDir(waferIncludeDir.str()),
+        waferCrtSource(waferCrtSource.str()),
+        waferCrtIncludeDir(waferCrtIncludeDir.str()) {}
 
   std::string pythonExecutable;
   std::string deviceLinkerScript;
   std::string llvmClangXX;
+  std::string tx8DepsRoot;
+  std::string waferIncludeDir;
+  std::string waferCrtSource;
+  std::string waferCrtIncludeDir;
 };
 
 class CompiledProgram;
@@ -197,8 +216,8 @@ public:
   const CompilationIRTrace &getIRTrace() const { return irTrace; }
 
 private:
-  friend mlir::FailureOr<CompiledProgram> compileProgramWithTargetLLVMModules(
-      CompilationRequest request, llvm::StringRef outputProgramDirectory,
+  friend llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
+      CompilationRequest request, llvm::StringRef outputPackageDirectory,
       llvm::StringRef xlaSpmdPartitionerHelper,
       const TargetToolchain &targetToolchain, CompilationOptions options,
       llvm::raw_ostream &diagnostics);
@@ -215,12 +234,13 @@ private:
   CompilationIRTrace irTrace;
 };
 
-/// Runs the same compilation as compileProgram while
-/// retaining both owner-backed inputs required by downstream target-call
-/// consumers. TargetLLVMModules contains the exact modules used to create
-/// the linked target modules; no second lowering is performed.
-mlir::FailureOr<CompiledProgram> compileProgramWithTargetLLVMModules(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+/// Runs the same compilation transaction as compileProgram while
+/// retaining the owner-backed CardExecutable, the exact target LLVM modules
+/// used to create the linked target modules, and the IR trace. This is the
+/// internal qualification/debug entry; no second lowering is performed and
+/// the members never enter the ordinary public result.
+llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics);

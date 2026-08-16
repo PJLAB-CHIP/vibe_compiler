@@ -131,7 +131,9 @@ static llvm::Expected<wafer::compiler::TargetToolchain> makeTestToolchain() {
           llvm::sys::fs::real_path(WAFER_TEST_LLVM_CLANGXX, llvmClangXX))
     return llvm::createStringError(error, "failed to resolve test clang++");
   return wafer::compiler::TargetToolchain::create(
-      pythonExecutable, WAFER_TEST_DEVICE_LINKER_SCRIPT, llvmClangXX);
+      pythonExecutable, WAFER_TEST_DEVICE_LINKER_SCRIPT, llvmClangXX,
+      WAFER_TEST_TX8_DEPS_ROOT, WAFER_TEST_WAFER_INCLUDE_DIR,
+      WAFER_TEST_WAFER_CRT_SOURCE, WAFER_TEST_WAFER_CRT_INCLUDE_DIR);
 }
 
 static wafer::compiler::TileEntryArgument
@@ -574,7 +576,7 @@ TEST(TargetCodeGenTest,
 
   llvm::SmallString<256> packageDirectory = temporaryDirectory;
   llvm::sys::path::append(packageDirectory, "package");
-  llvm::Expected<wafer::compiler::VerifiedPackage> package =
+  llvm::Expected<wafer::compiler::ExecutablePackage> package =
       wafer::compiler::detail::writePackage(temporaryDirectory, *executable,
                                             *targetModules, packageDirectory,
                                             diagnostics, std::nullopt);
@@ -1372,7 +1374,9 @@ TEST(TargetCodeGenTest, KernelGridLinkingAcceptsTileSpecializedModules) {
   ASSERT_FALSE(llvm::sys::fs::real_path(WAFER_TEST_LLVM_CLANGXX, llvmClangXX));
   llvm::Expected<wafer::compiler::TargetToolchain> toolchain =
       wafer::compiler::TargetToolchain::create(
-          pythonExecutable, WAFER_TEST_DEVICE_LINKER_SCRIPT, llvmClangXX);
+          pythonExecutable, WAFER_TEST_DEVICE_LINKER_SCRIPT, llvmClangXX,
+          WAFER_TEST_TX8_DEPS_ROOT, WAFER_TEST_WAFER_INCLUDE_DIR,
+          WAFER_TEST_WAFER_CRT_SOURCE, WAFER_TEST_WAFER_CRT_INCLUDE_DIR);
   ASSERT_TRUE(static_cast<bool>(toolchain))
       << llvm::toString(toolchain.takeError());
 
@@ -1538,7 +1542,7 @@ TEST(TargetCodeGenTest,
         temporaryDirectory, (llvm::Twine("package-") +
                              wafer::stringifyKernelLaunchForm(scenario.form))
                                 .str());
-    llvm::Expected<wafer::compiler::VerifiedPackage> package =
+    llvm::Expected<wafer::compiler::ExecutablePackage> package =
         wafer::compiler::detail::writePackage(sourceDirectory, *executable,
                                               *targetModules, packageDirectory,
                                               diagnostics, std::nullopt);

@@ -5,16 +5,16 @@
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[4,8],"dtype":"float16","dynamic_dims":[]},{"shape":[8,16],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[4,16],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.compile.program/functions/forward.meta
 # RUN: wafer-compile-stablehlo --help | FileCheck %s --check-prefix=HELP
 # RUN: not wafer-compile-stablehlo --partition-stablehlo-program %t.compile.program 2>&1 | FileCheck %s --check-prefix=NO-PARTITION
-# RUN: not wafer-compile-stablehlo --output-program-dir %t.out 2>&1 | FileCheck %s --check-prefix=NO-OUTPUT-DIR
+# RUN: not wafer-compile-stablehlo --output-package-dir %t.out 2>&1 | FileCheck %s --check-prefix=NO-OUTPUT-DIR
 # RUN: not wafer-compile-stablehlo --xla-spmd-partitioner-helper %t.helper 2>&1 | FileCheck %s --check-prefix=NO-HELPER
 # RUN: not wafer-compile-stablehlo --default-tile-count=16 2>&1 | FileCheck %s --check-prefix=NO-TILE-COUNT
 
 # HELP-NOT: --propagate-stablehlo-sharding
 # HELP-NOT: --partition-stablehlo-program
-# HELP-NOT: --output-program-dir
+# HELP-NOT: --output-package-dir
 # HELP-NOT: --xla-spmd-partitioner-helper
 # HELP-NOT: --default-tile-count
 # NO-PARTITION: wafer-compile-stablehlo: unknown argument: --partition-stablehlo-program
-# NO-OUTPUT-DIR: wafer-compile-stablehlo: unknown argument: --output-program-dir
+# NO-OUTPUT-DIR: wafer-compile-stablehlo: unknown argument: --output-package-dir
 # NO-HELPER: wafer-compile-stablehlo: unknown argument: --xla-spmd-partitioner-helper
 # NO-TILE-COUNT: wafer-compile-stablehlo: unknown argument: --default-tile-count=16

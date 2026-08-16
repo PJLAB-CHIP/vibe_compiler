@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_COMPILATIONINTERNAL_H
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/Package.h"
 #include "Wafer/Compiler/ProgramData.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
 #include "Wafer/Frontend/Program.h"
@@ -22,6 +23,24 @@
 namespace wafer::compiler::detail {
 
 bool reject(llvm::raw_ostream &diagnostics, llvm::StringRef message);
+
+/// Transaction-local current stage. Each stable pipeline phase enters its
+/// stage before running; on failure the transaction reports the stage so the
+/// library entry can classify the error without parsing diagnostics.
+struct CompilationStageTracker {
+  CompilationStage current = CompilationStage::SourceVerification;
+
+  void enter(CompilationStage stage) { current = stage; }
+};
+
+/// Digests the profile instrumentation writer computed from the staged files
+/// before commit. The transaction re-verifies them against the installed
+/// activation.json after the commit rename.
+struct ProfileInstrumentationIdentity {
+  std::string primaryManifestDigest;
+  std::string planDigest;
+  std::string siteMapDigest;
+};
 
 bool pathEntryExists(llvm::StringRef path);
 bool isDirectory(llvm::StringRef path);
@@ -114,7 +133,7 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
-    CompilationIRTrace &irTrace);
+    CompilationIRTrace &irTrace, CompilationStageTracker &stages);
 
 mlir::LogicalResult stageProfileTargetPackages(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
@@ -127,10 +146,11 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
-    CompilationIRTrace &irTrace);
+    CompilationIRTrace &irTrace, CompilationStageTracker &stages,
+    ProfileInstrumentationIdentity &profileIdentity);
 
 mlir::LogicalResult runCompilationTransaction(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
@@ -138,8 +158,37 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<CardExecutable> *retainedCardExecutable,
     std::optional<TargetLLVMModules> *retainedTargetLLVMModules,
-    std::optional<CompilationIRTrace> *retainedIRTrace = nullptr);
+    std::optional<CompilationIRTrace> *retainedIRTrace = nullptr,
+    std::optional<ExecutablePackage> *retainedPackage = nullptr,
+    std::optional<ProfileInstrumentationProduct> *retainedProfileProduct =
+        nullptr,
+    CompilationStage *failureStage = nullptr);
+
+/// Post-commit readback binding for the committed sibling profile
+/// instrumentation: digests the installed ordinary manifest and requires the
+/// installed activation.json to carry exactly that primary digest and the
+/// staged plan/site-map digests. Returns an error on any mismatch; the
+/// runtime strict loader remains the semantic reader at launch.
+llvm::Error verifyCommittedProfileInstrumentation(
+    llvm::StringRef packageRoot, llvm::StringRef instrumentationRoot,
+    const ProfileInstrumentationIdentity &identity);
 
 } // namespace wafer::compiler::detail
+
+namespace wafer::compiler {
+
+/// Internal constructor for the committed profile instrumentation product.
+struct ProfileInstrumentationProductBuilder {
+  static ProfileInstrumentationProduct
+  make(llvm::StringRef rootDirectory,
+       const detail::ProfileInstrumentationIdentity &identity) {
+    return ProfileInstrumentationProduct(rootDirectory,
+                                         identity.primaryManifestDigest,
+                                         identity.planDigest,
+                                         identity.siteMapDigest);
+  }
+};
+
+} // namespace wafer::compiler
 
 #endif // WAFER_COMPILER_COMPILATIONINTERNAL_H

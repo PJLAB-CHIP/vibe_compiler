@@ -402,7 +402,7 @@ def check_cmake_target_visibility() -> None:
         "Wafer/Frontend",
         "--program-pipeline",
         "--input-program-dir",
-        "--output-program-dir",
+        "--output-package-dir",
         "WAFER_XLA_SPMD_PARTITIONER_HELPER",
         "llvm/Support/FileSystem.h",
         "llvm/Support/Program.h",

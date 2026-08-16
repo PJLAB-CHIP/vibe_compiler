@@ -105,10 +105,12 @@ static mlir::LogicalResult stageExecutablePackage(
     std::optional<int64_t> failAfterTargetLaunchSlot,
     std::optional<int64_t> failAfterPackageLaunchSlot,
     std::optional<TargetLLVMModules> &retainedTargetLLVMModules,
+    CompilationStageTracker &stages,
     ProfileCaptureKind profileCapture = ProfileCaptureKind::None) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan targetPackageTiming(
       "stage", "executable-to-package", "target-package");
+  stages.enter(CompilationStage::TargetCodeGeneration);
   const CompileClock::time_point targetIRStart = CompileClock::now();
   auto targetIRTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -141,7 +143,8 @@ static mlir::LogicalResult stageExecutablePackage(
   auto packageTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "executable-to-package", "package-assembly");
-  llvm::Expected<VerifiedPackage> package =
+  stages.enter(CompilationStage::PackageAssembly);
+  llvm::Expected<ExecutablePackage> package =
       writePackage(tensorProgramDirectory, cardExecutable, *targetModules,
                    stagedPackage, diagnostics, failAfterPackageLaunchSlot);
   if (!package) {
@@ -392,7 +395,8 @@ static mlir::LogicalResult stageCapturePackages(
     llvm::StringRef instrumentationRoot, const CardExecutable &cardExecutable,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     ProfileCapturePackages &metadata,
-    std::optional<TargetLLVMModules> &traceTargetLLVM) {
+    std::optional<TargetLLVMModules> &traceTargetLLVM,
+    CompilationStageTracker &stages) {
   for (auto [index, capture] : llvm::enumerate(kProfileCaptures)) {
     llvm::SmallString<256> package(instrumentationRoot);
     llvm::sys::path::append(package, "captures",
@@ -405,7 +409,7 @@ static mlir::LogicalResult stageCapturePackages(
     if (mlir::failed(stageExecutablePackage(
             tensorProgramDirectory, cardExecutable, targetModulesDirectory,
             package, targetToolchain, diagnostics, std::nullopt, std::nullopt,
-            targetLLVM, capture)))
+            targetLLVM, stages, capture)))
       return mlir::failure();
     if (!targetLLVM) {
       reject(diagnostics, "profile capture target LLVM modules are missing");
@@ -433,6 +437,7 @@ writeProfileInstrumentation(llvm::StringRef instrumentationRoot,
                             const TargetLLVMModules &productionTargetLLVM,
                             const TargetLLVMModules &productionTraceTargetLLVM,
                             const ProfileCapturePackages &productionCaptures,
+                            ProfileInstrumentationIdentity &identity,
                             llvm::raw_ostream &diagnostics) {
   if (createDirectory(instrumentationRoot, diagnostics))
     return mlir::failure();
@@ -585,19 +590,24 @@ writeProfileInstrumentation(llvm::StringRef instrumentationRoot,
   // digest.
   llvm::SmallString<256> activationPath(instrumentationRoot);
   llvm::sys::path::append(activationPath, "activation.json");
-  return writeJSONFile(
-      activationPath,
-      [&](llvm::json::OStream &json) {
-        json.object([&] {
-          json.attribute("schema", "wafer-profile-activation");
-          json.attribute("primary_manifest_sha256", *productionDigest);
-          json.attributeObject("metadata_sha256", [&] {
-            json.attribute("plan.json", *planDigest);
-            json.attribute("site-map.json", *siteMapDigest);
-          });
-        });
-      },
-      diagnostics);
+  if (mlir::failed(writeJSONFile(
+          activationPath,
+          [&](llvm::json::OStream &json) {
+            json.object([&] {
+              json.attribute("schema", "wafer-profile-activation");
+              json.attribute("primary_manifest_sha256", *productionDigest);
+              json.attributeObject("metadata_sha256", [&] {
+                json.attribute("plan.json", *planDigest);
+                json.attribute("site-map.json", *siteMapDigest);
+              });
+            });
+          },
+          diagnostics)))
+    return mlir::failure();
+  identity.primaryManifestDigest = std::move(*productionDigest);
+  identity.planDigest = std::move(*planDigest);
+  identity.siteMapDigest = std::move(*siteMapDigest);
+  return mlir::success();
 }
 
 static mlir::LogicalResult
@@ -648,6 +658,65 @@ makeProfileInstrumentationWorldAccessible(llvm::StringRef instrumentationRoot,
 
 } // namespace
 
+llvm::Error verifyCommittedProfileInstrumentation(
+    llvm::StringRef packageRoot, llvm::StringRef instrumentationRoot,
+    const ProfileInstrumentationIdentity &identity) {
+  llvm::Expected<std::string> installedManifestDigest =
+      getPackageManifestDigest(packageRoot);
+  if (!installedManifestDigest)
+    return installedManifestDigest.takeError();
+  if (*installedManifestDigest != identity.primaryManifestDigest)
+    return llvm::createStringError(
+        llvm::errc::operation_not_permitted,
+        "committed package manifest digest does not match the profile "
+        "primary digest");
+  llvm::SmallString<256> activationPath(instrumentationRoot);
+  llvm::sys::path::append(activationPath, "activation.json");
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+      llvm::MemoryBuffer::getFile(activationPath);
+  if (!buffer)
+    return llvm::createStringError(
+        buffer.getError(), "failed to read back committed profile "
+                           "instrumentation activation");
+  llvm::Expected<llvm::json::Value> parsed =
+      llvm::json::parse((*buffer)->getBuffer());
+  if (!parsed)
+    return parsed.takeError();
+  llvm::json::Object *root = parsed->getAsObject();
+  if (!root)
+    return llvm::createStringError(llvm::errc::operation_not_permitted,
+                                   "committed profile instrumentation "
+                                   "activation is not a JSON object");
+  auto requireString = [&](llvm::json::Object &object, llvm::StringRef key,
+                           llvm::StringRef expected) -> llvm::Error {
+    std::optional<llvm::StringRef> value = object.getString(key);
+    if (!value || *value != expected)
+      return llvm::createStringError(
+          llvm::errc::operation_not_permitted,
+          "committed profile instrumentation activation field '" + key +
+              "' does not match the staged value");
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          requireString(*root, "schema", "wafer-profile-activation"))
+    return error;
+  if (llvm::Error error = requireString(*root, "primary_manifest_sha256",
+                                        identity.primaryManifestDigest))
+    return error;
+  llvm::json::Object *metadata = root->getObject("metadata_sha256");
+  if (!metadata)
+    return llvm::createStringError(llvm::errc::operation_not_permitted,
+                                   "committed profile instrumentation "
+                                   "activation is missing metadata_sha256");
+  if (llvm::Error error =
+          requireString(*metadata, "plan.json", identity.planDigest))
+    return error;
+  if (llvm::Error error =
+          requireString(*metadata, "site-map.json", identity.siteMapDigest))
+    return error;
+  return llvm::Error::success();
+}
+
 mlir::LogicalResult stageTargetPackage(
     llvm::StringRef tensorProgramDirectory, llvm::StringRef transactionRoot,
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
@@ -659,10 +728,11 @@ mlir::LogicalResult stageTargetPackage(
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
-    CompilationIRTrace &irTrace) {
+    CompilationIRTrace &irTrace, CompilationStageTracker &stages) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "executable-package");
+  stages.enter(CompilationStage::ExecutableCompilation);
   llvm::Expected<CardExecutable> compiledCardExecutable =
       compileTensorProgramToCardExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
@@ -680,7 +750,7 @@ mlir::LogicalResult stageTargetPackage(
           tensorProgramDirectory, *compiledCardExecutable, stagedTargetModules,
           stagedPackage, targetToolchain, diagnostics,
           failAfterTargetLaunchSlot, failAfterPackageLaunchSlot,
-          targetLLVMModules)))
+          targetLLVMModules, stages)))
     return mlir::failure();
 
   cardExecutable.emplace(std::move(*compiledCardExecutable));
@@ -702,10 +772,12 @@ mlir::LogicalResult stageProfileTargetPackages(
     std::optional<TargetLLVMModules> &targetLLVMModules,
     ProgramDataHandoff &programData,
     const frontend::ProgramPayloadResolver &resolver,
-    CompilationIRTrace &irTrace) {
+    CompilationIRTrace &irTrace, CompilationStageTracker &stages,
+    ProfileInstrumentationIdentity &profileIdentity) {
   const CompileClock::time_point totalStart = CompileClock::now();
   wafer::support::ScopedCompileTimingSpan productTiming(
       "stage", "target-codegen", "profile-package");
+  stages.enter(CompilationStage::ExecutableCompilation);
   llvm::Expected<CardExecutable> compiled =
       compileTensorProgramToCardExecutable(
           tensorProgramDirectory, executionConfig, optimizations, diagnostics,
@@ -724,7 +796,7 @@ mlir::LogicalResult stageProfileTargetPackages(
           tensorProgramDirectory, *compiled, productionTargetModules,
           productionPackage, targetToolchain, diagnostics,
           failAfterTargetLaunchSlot, failAfterPackageLaunchSlot,
-          productionTargetLLVM)))
+          productionTargetLLVM, stages)))
     return mlir::failure();
 
   llvm::SmallString<256> instrumentationRoot(transactionRoot);
@@ -735,14 +807,14 @@ mlir::LogicalResult stageProfileTargetPackages(
   if (mlir::failed(stageCapturePackages(
           tensorProgramDirectory, transactionRoot, instrumentationRoot,
           *compiled, targetToolchain, diagnostics, productionCaptures,
-          productionTraceTargetLLVM)))
+          productionTraceTargetLLVM, stages)))
     return mlir::failure();
 
   if (!productionTargetLLVM || !productionTraceTargetLLVM ||
       mlir::failed(writeProfileInstrumentation(
           instrumentationRoot, productionPackage, *compiled,
           *productionTargetLLVM, *productionTraceTargetLLVM, productionCaptures,
-          diagnostics)))
+          profileIdentity, diagnostics)))
     return mlir::failure();
   if (mlir::failed(makeProfileInstrumentationWorldAccessible(
           instrumentationRoot, diagnostics)))

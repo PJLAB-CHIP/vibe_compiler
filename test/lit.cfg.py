@@ -17,10 +17,13 @@ path = os.pathsep.join(
     ]
 )
 config.environment["PATH"] = path
+if os.path.isdir(config.tx8_deps_root):
+    config.environment["TX8_DEPS_ROOT"] = config.tx8_deps_root
 config.substitutions.append(("%python", config.python_executable))
 config.substitutions.append(("%wafer_obj_root", config.wafer_obj_root))
 config.substitutions.append(("%wafer_compile_test", config.wafer_compile_test))
 config.substitutions.append(("%wafer_bulk_qualify", config.wafer_bulk_qualify))
+config.substitutions.append(("%cmake", config.cmake_command))
 config.importer_python_executable = getattr(
     config, "importer_python_executable", config.python_executable
 )

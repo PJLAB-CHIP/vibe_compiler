@@ -3,25 +3,28 @@
 #include "DriverInternal.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Errc.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
 
-#ifndef WAFER_XLA_SPMD_PARTITIONER_HELPER
-#define WAFER_XLA_SPMD_PARTITIONER_HELPER ""
-#endif
-
 namespace wafer::compile_driver {
 
 void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
-                  "--output-program-dir <dir> --num-partitions <1> "
-                  "[--dump-compiler-ir <dir>] "
+                  "--output-package-dir <dir> --num-partitions <1> "
                   "[--optimization-policy <search|none>] "
                   "[--compile-timing] "
-                  "[--profile] "
+                  "[--profile]\n";
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
+  llvm::outs() << "test-only internal entry also accepts: "
+                  "[--dump-compiler-ir <dir>] "
                   "[--target-model "
                   "--model-input <index>=<npy> "
                   "--model-expected <index>=<npy> "
@@ -37,6 +40,7 @@ void printHelp() {
                   "--target-model-max-bulk-total-bytes <bytes> "
                   "--target-model-max-bulk-scratchpad-bytes <bytes> "
                   "--target-model-max-bulk-reorder-bytes <bytes>]]\n";
+#endif
 }
 
 namespace {
@@ -87,6 +91,56 @@ bool parseRepeatedValueOption(int argc, char **argv, int &index,
   return false;
 }
 
+bool isRegularFile(llvm::StringRef path) {
+  return llvm::sys::fs::get_file_type(path, /*Follow=*/false) ==
+         llvm::sys::fs::file_type::regular_file;
+}
+
+bool isDirectory(llvm::StringRef path) {
+  return llvm::sys::fs::get_file_type(path, /*Follow=*/true) ==
+         llvm::sys::fs::file_type::directory_file;
+}
+
+llvm::Error requireExecutableFile(llvm::StringRef path,
+                                  llvm::StringRef factName) {
+  if (path.empty())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "no " + factName + " configured");
+  llvm::SmallString<256> canonical;
+  if (std::error_code error = llvm::sys::fs::real_path(path, canonical))
+    return llvm::createStringError(
+        error, factName + " cannot be resolved: '" + path + "'");
+  if (!isRegularFile(canonical))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        factName + " is not a regular file: '" + path + "'");
+  if (!llvm::sys::fs::can_execute(canonical))
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        factName + " is not executable: '" + path + "'");
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::string>
+findExecutableRelativeResource(llvm::StringRef relativePath,
+                              llvm::StringRef factName) {
+  static int executableAnchor = 0;
+  std::string executable =
+      llvm::sys::fs::getMainExecutable(/*argv0=*/nullptr, &executableAnchor);
+  if (executable.empty())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "failed to resolve the compiler "
+                                   "executable");
+  llvm::SmallString<256> resource(llvm::sys::path::parent_path(executable));
+  llvm::sys::path::append(resource, relativePath);
+  llvm::SmallString<256> canonical;
+  if (std::error_code error = llvm::sys::fs::real_path(resource, canonical))
+    return llvm::createStringError(
+        error, "failed to resolve installed " + factName + ": '" +
+                   resource.str().str() + "'");
+  return canonical.str().str();
+}
+
 } // namespace
 
 bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
@@ -103,10 +157,10 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--output-program-dir" ||
-        arg.starts_with("--output-program-dir=")) {
-      if (parseValueOption(argc, argv, index, arg, "--output-program-dir",
-                           options.outputProgramDirectory))
+    if (arg == "--output-package-dir" ||
+        arg.starts_with("--output-package-dir=")) {
+      if (parseValueOption(argc, argv, index, arg, "--output-package-dir",
+                           options.outputPackageDirectory))
         return false;
       continue;
     }
@@ -116,25 +170,11 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--dump-compiler-ir" || arg.starts_with("--dump-compiler-ir=")) {
-      if (parseValueOption(argc, argv, index, arg, "--dump-compiler-ir",
-                           options.compilerIRDumpDirectory))
-        return false;
-      continue;
-    }
     if (arg == "--optimization-policy" ||
         arg.starts_with("--optimization-policy=")) {
       if (parseValueOption(argc, argv, index, arg, "--optimization-policy",
                            options.optimizationPolicy))
         return false;
-      continue;
-    }
-    if (arg == "--target-model") {
-      if (options.targetModel) {
-        llvm::errs() << "wafer-compile: duplicate option: --target-model\n";
-        return false;
-      }
-      options.targetModel = true;
       continue;
     }
     if (arg == "--compile-timing") {
@@ -151,6 +191,22 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       }
       options.profile = true;
+      continue;
+    }
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
+    if (arg == "--dump-compiler-ir" ||
+        arg.starts_with("--dump-compiler-ir=")) {
+      if (parseValueOption(argc, argv, index, arg, "--dump-compiler-ir",
+                           options.compilerIRDumpDirectory))
+        return false;
+      continue;
+    }
+    if (arg == "--target-model") {
+      if (options.targetModel) {
+        llvm::errs() << "wafer-compile: duplicate option: --target-model\n";
+        return false;
+      }
+      options.targetModel = true;
       continue;
     }
     if (arg == "--model-report-numeric-statistics") {
@@ -258,6 +314,7 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
+#endif
 
     llvm::errs() << "wafer-compile: unknown argument: " << arg << "\n";
     return false;
@@ -273,13 +330,150 @@ bool requireOption(const std::optional<std::string> &value,
   return false;
 }
 
-std::string resolveSpmdPartitionerHelperPath() {
+llvm::Expected<DriverToolFacts> resolveDriverToolFacts() {
+  DriverToolFacts facts;
+  bool helperOverridden = false;
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
+  // The test seam treats an explicitly set variable as authoritative, so an
+  // empty value exercises the no-helper failure instead of falling through.
   if (const char *environment =
-          std::getenv("WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER"))
-    return environment;
+          std::getenv("WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER")) {
+    facts.spmdPartitionerHelper = environment;
+    helperOverridden = true;
+  }
 #endif
-  return WAFER_XLA_SPMD_PARTITIONER_HELPER;
+  if (!helperOverridden) {
+    llvm::SmallString<256> helperRelative;
+    llvm::sys::path::append(helperRelative, "..", "libexec", "wafer");
+    llvm::sys::path::append(helperRelative, "wafer_xla_spmd_partitioner");
+    llvm::Expected<std::string> helper = findExecutableRelativeResource(
+        helperRelative, "XLA SPMD partitioner helper");
+    if (!helper)
+      return helper.takeError();
+    facts.spmdPartitionerHelper = std::move(*helper);
+  }
+  if (facts.spmdPartitionerHelper.empty())
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "no XLA SPMD partitioner helper "
+                                   "configured");
+  if (!isRegularFile(facts.spmdPartitionerHelper))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "installed XLA SPMD partitioner helper is "
+                                   "not a regular file: '" +
+                                       facts.spmdPartitionerHelper + "'");
+  llvm::SmallString<256> linkerRelative;
+  llvm::sys::path::append(linkerRelative, "..", "share", "wafer");
+  llvm::sys::path::append(linkerRelative, "wafer_device_link.py");
+  llvm::Expected<std::string> linkerScript =
+      findExecutableRelativeResource(linkerRelative, "device linker script");
+  if (!linkerScript)
+    return linkerScript.takeError();
+  facts.deviceLinkerScript = std::move(*linkerScript);
+  if (!isRegularFile(facts.deviceLinkerScript))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "installed device linker script is not a "
+                                   "regular file: '" +
+                                       facts.deviceLinkerScript + "'");
+
+  // The pinned TX8 dependency root is an external dependency configured for
+  // the deployment, never a source or build tree path inside the binary.
+  if (const char *environment = std::getenv("TX8_DEPS_ROOT")) {
+    facts.tx8DepsRoot = environment;
+    if (!facts.tx8DepsRoot.empty()) {
+      llvm::SmallString<256> canonical;
+      if (std::error_code error =
+              llvm::sys::fs::real_path(facts.tx8DepsRoot, canonical))
+        return llvm::createStringError(
+            error, "failed to resolve TX8_DEPS_ROOT: '" +
+                       facts.tx8DepsRoot + "'");
+      facts.tx8DepsRoot = canonical.str().str();
+    }
+  }
+  if (facts.tx8DepsRoot.empty())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "TX8_DEPS_ROOT environment variable must name the pinned TX8 "
+        "dependency root");
+  if (!isDirectory(facts.tx8DepsRoot))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "TX8_DEPS_ROOT is not a directory: '" +
+                                       facts.tx8DepsRoot + "'");
+
+  llvm::SmallString<256> waferIncludeRelative;
+  llvm::sys::path::append(waferIncludeRelative, "..", "share", "wafer");
+  llvm::sys::path::append(waferIncludeRelative, "include");
+  llvm::Expected<std::string> waferInclude = findExecutableRelativeResource(
+      waferIncludeRelative, "Wafer include directory");
+  if (!waferInclude)
+    return waferInclude.takeError();
+  facts.waferIncludeDir = std::move(*waferInclude);
+  if (!isDirectory(facts.waferIncludeDir))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "installed Wafer include resource is not "
+                                   "a directory: '" +
+                                       facts.waferIncludeDir + "'");
+  llvm::SmallString<256> crtSourceRelative;
+  llvm::sys::path::append(crtSourceRelative, "..", "share", "wafer");
+  llvm::sys::path::append(crtSourceRelative, "crt", "src",
+                          "wafer_tx81_crt.c");
+  llvm::Expected<std::string> crtSource = findExecutableRelativeResource(
+      crtSourceRelative, "Wafer CRT source");
+  if (!crtSource)
+    return crtSource.takeError();
+  facts.waferCrtSource = std::move(*crtSource);
+  if (!isRegularFile(facts.waferCrtSource))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "installed Wafer CRT source is not a "
+                                   "regular file: '" +
+                                       facts.waferCrtSource + "'");
+  llvm::SmallString<256> crtIncludeRelative;
+  llvm::sys::path::append(crtIncludeRelative, "..", "share", "wafer");
+  llvm::sys::path::append(crtIncludeRelative, "crt", "include");
+  llvm::Expected<std::string> crtInclude = findExecutableRelativeResource(
+      crtIncludeRelative, "Wafer CRT include directory");
+  if (!crtInclude)
+    return crtInclude.takeError();
+  facts.waferCrtIncludeDir = std::move(*crtInclude);
+  if (!isDirectory(facts.waferCrtIncludeDir))
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   "installed Wafer CRT include resource is "
+                                   "not a directory: '" +
+                                       facts.waferCrtIncludeDir + "'");
+
+  llvm::ErrorOr<std::string> python =
+      llvm::sys::findProgramByName("python3");
+  if (!python)
+    return llvm::createStringError(
+        python.getError(), "failed to resolve python3 on PATH");
+  facts.pythonExecutable = *python;
+  llvm::ErrorOr<std::string> clangXX =
+      llvm::sys::findProgramByName("clang++");
+  if (!clangXX)
+    return llvm::createStringError(
+        clangXX.getError(), "failed to resolve clang++ on PATH");
+  facts.llvmClangXX = *clangXX;
+
+  if (llvm::Error error = requireExecutableFile(
+          facts.spmdPartitionerHelper, "XLA SPMD partitioner helper"))
+    return std::move(error);
+  if (llvm::Error error =
+          requireExecutableFile(facts.pythonExecutable, "python3"))
+    return std::move(error);
+  if (llvm::Error error =
+          requireExecutableFile(facts.llvmClangXX, "clang++"))
+    return std::move(error);
+  // Store canonical paths: downstream consumers validate the exact file
+  // facts and must never re-resolve through symlinks or PATH.
+  llvm::SmallString<256> canonical;
+  for (std::string *fact :
+       {&facts.pythonExecutable, &facts.llvmClangXX}) {
+    if (std::error_code error = llvm::sys::fs::real_path(*fact, canonical))
+      return llvm::createStringError(error,
+                                     "failed to resolve toolchain path: '" +
+                                         *fact + "'");
+    *fact = canonical.str().str();
+  }
+  return facts;
 }
 
 std::optional<std::vector<IndexedPath>>

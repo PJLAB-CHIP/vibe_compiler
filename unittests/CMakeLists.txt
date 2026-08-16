@@ -64,6 +64,10 @@ target_compile_definitions(WaferUnitTests PRIVATE
   WAFER_TEST_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
   WAFER_TEST_DEVICE_LINKER_SCRIPT="${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
   WAFER_TEST_LLVM_CLANGXX="${WAFER_TEST_LLVM_CLANGXX}"
+  WAFER_TEST_TX8_DEPS_ROOT="${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
+  WAFER_TEST_WAFER_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/include"
+  WAFER_TEST_WAFER_CRT_SOURCE="${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_crt.c"
+  WAFER_TEST_WAFER_CRT_INCLUDE_DIR="${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include"
   WAFER_TEST_TARGET_DATA_ENTRY_LLVM_IR="${CMAKE_SOURCE_DIR}/test/Tools/Inputs/minimal-target-data-entry.ll"
 )
 target_link_libraries(WaferUnitTests

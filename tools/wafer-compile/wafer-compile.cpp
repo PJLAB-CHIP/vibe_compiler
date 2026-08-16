@@ -3,6 +3,7 @@
 #include "DriverInternal.h"
 
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/Package.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 #include "Wafer/Model/SystemCTargetModel.h"
@@ -19,22 +20,38 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 
-#ifndef WAFER_PYTHON_EXECUTABLE
-#define WAFER_PYTHON_EXECUTABLE ""
-#endif
-#ifndef WAFER_DEVICE_LINKER_SCRIPT
-#define WAFER_DEVICE_LINKER_SCRIPT ""
-#endif
-#ifndef WAFER_DEVICE_CLANGXX
-#define WAFER_DEVICE_CLANGXX ""
-#endif
-
 using namespace wafer::compile_driver;
+
+namespace {
+
+/// Renders a failed typed compilation to the CLI status: the detailed
+/// diagnostics already went to stderr during the transaction, so the CLI only
+/// classifies the failure and exits non-zero without touching any output.
+int reportCompilationFailure(llvm::Error error) {
+  llvm::errs() << "wafer-compile: " << llvm::toString(std::move(error))
+               << "\n";
+  return 1;
+}
+
+int reportSuccess(const wafer::compiler::CompilationResult &result,
+                  int64_t numPartitions) {
+  llvm::outs() << "wafer-compile: wrote verified package with "
+                  "num-partitions="
+               << numPartitions << " tiles="
+               << wafer::compiler::ExecutionConfig::kSingleCardTileCount
+               << ": " << result.getPackage().getRootDirectory() << "\n";
+  if (result.getProfileInstrumentation())
+    llvm::outs() << "wafer-compile: wrote profile instrumentation: "
+                 << result.getProfileInstrumentation()->getRootDirectory()
+                 << "\n";
+  return 0;
+}
+
+} // namespace
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 extern "C" int sc_main(int argc, char **argv) {
@@ -50,15 +67,16 @@ int main(int argc, char **argv) {
   if (!parseCommandLine(argc, argv, options))
     return 1;
   if (!requireOption(options.inputProgramDirectory, "--input-program-dir") ||
-      !requireOption(options.outputProgramDirectory, "--output-program-dir") ||
+      !requireOption(options.outputPackageDirectory, "--output-package-dir") ||
       !requireOption(options.numPartitions, "--num-partitions"))
     return 1;
+
+#ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   if (options.profile && options.targetModel) {
     llvm::errs()
         << "wafer-compile: --profile cannot be combined with --target-model\n";
     return 1;
   }
-
   bool modelInvocationRequested = !options.modelInputs.empty() ||
                                   !options.modelExpected.empty() ||
                                   options.modelAtol || options.modelRtol;
@@ -111,121 +129,6 @@ int main(int argc, char **argv) {
       parseIndexedPaths(options.modelExpected, "--model-expected");
   if (!modelInputs || !modelExpected)
     return 1;
-
-#ifdef WAFER_ENABLE_SYSTEMC_MODEL
-  std::optional<wafer::model::TargetModelKernelBudget> targetModelBudget;
-  std::optional<wafer::model::TargetModelExecutionPolicy>
-      targetModelExecutionPolicy;
-#ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-  std::unique_ptr<wafer::model::TargetModelBulkBackend> targetModelBulkBackend;
-  std::unique_ptr<wafer::model::ManagedReferenceTargetModelBackend>
-      targetModelManagedReferenceBackend;
-#endif
-  if (options.targetModel) {
-    auto scalar =
-        parsePositiveCount(options.targetModelMaximumScalarEvaluations,
-                           "--target-model-max-scalar-evaluations");
-    auto fusedMultiplyAdds =
-        parsePositiveCount(options.targetModelMaximumFusedMultiplyAdds,
-                           "--target-model-max-fused-multiply-adds");
-    auto movementBytes =
-        parsePositiveCount(options.targetModelMaximumMovementBytes,
-                           "--target-model-max-movement-bytes");
-    auto movementSegments =
-        parsePositiveCount(options.targetModelMaximumMovementSegments,
-                           "--target-model-max-movement-segments");
-    if (!scalar || !fusedMultiplyAdds || !movementBytes || !movementSegments)
-      return 1;
-    targetModelBudget.emplace(wafer::model::TargetModelKernelBudget::create(
-        wafer::FormalNumericWorkBudget::create(*scalar, *fusedMultiplyAdds),
-        *movementBytes, *movementSegments));
-
-    llvm::StringRef numericPolicy =
-        options.targetModelNumericPolicy
-            ? llvm::StringRef(*options.targetModelNumericPolicy)
-            : llvm::StringRef("formal");
-    const bool hasBulkConfiguration =
-        !options.targetModelBulkRecords.empty() ||
-        options.targetModelMaximumBulkTotalBytes ||
-        options.targetModelMaximumBulkScratchpadBytes ||
-        options.targetModelMaximumBulkReorderBytes;
-    if (numericPolicy == "formal") {
-      if (hasBulkConfiguration) {
-        llvm::errs() << "wafer-compile: bulk model options require "
-                        "--target-model-numeric-policy=bulk-then-formal or "
-                        "managed-reference\n";
-        return 1;
-      }
-      targetModelExecutionPolicy.emplace(
-          wafer::model::TargetModelExecutionPolicy::formalOnly());
-    } else if (numericPolicy == "bulk-then-formal" ||
-               numericPolicy == "managed-reference") {
-#ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-      if (numericPolicy == "bulk-then-formal" &&
-          options.targetModelBulkRecords.empty()) {
-        llvm::errs() << "wafer-compile: bulk-then-formal GEMM requires at "
-                        "least one --target-model-bulk-record\n";
-        return 1;
-      }
-      if (numericPolicy == "managed-reference" &&
-          !options.targetModelBulkRecords.empty()) {
-        llvm::errs() << "wafer-compile: managed-reference GEMM does not "
-                        "consume exact --target-model-bulk-record entries\n";
-        return 1;
-      }
-      auto maximumTotalBytes =
-          parsePositiveCount(options.targetModelMaximumBulkTotalBytes,
-                             "--target-model-max-bulk-total-bytes");
-      auto maximumScratchpadBytes =
-          parsePositiveCount(options.targetModelMaximumBulkScratchpadBytes,
-                             "--target-model-max-bulk-scratchpad-bytes");
-      auto maximumReorderBytes =
-          parsePositiveCount(options.targetModelMaximumBulkReorderBytes,
-                             "--target-model-max-bulk-reorder-bytes");
-      if (!maximumTotalBytes || !maximumScratchpadBytes || !maximumReorderBytes)
-        return 1;
-      const wafer::BulkNumericWorkBudget bulkBudget =
-          wafer::BulkNumericWorkBudget::create(*maximumTotalBytes,
-                                               *maximumScratchpadBytes,
-                                               *maximumReorderBytes);
-      if (numericPolicy == "bulk-then-formal") {
-        auto qualified = wafer::model::QualifiedTargetModelBulkBackend::create(
-            options.targetModelBulkRecords, bulkBudget);
-        if (!qualified) {
-          llvm::errs() << "wafer-compile: "
-                       << llvm::toString(qualified.takeError()) << "\n";
-          return 1;
-        }
-        targetModelBulkBackend = std::move(*qualified);
-        targetModelExecutionPolicy.emplace(
-            wafer::model::TargetModelExecutionPolicy::bulkThenFormal(
-                *targetModelBulkBackend));
-      } else {
-        auto managed = wafer::model::ManagedReferenceTargetModelBackend::create(
-            bulkBudget);
-        if (!managed) {
-          llvm::errs() << "wafer-compile: "
-                       << llvm::toString(managed.takeError()) << "\n";
-          return 1;
-        }
-        targetModelManagedReferenceBackend = std::move(*managed);
-        targetModelExecutionPolicy.emplace(
-            wafer::model::TargetModelExecutionPolicy::managedReference(
-                *targetModelManagedReferenceBackend,
-                *targetModelManagedReferenceBackend));
-      }
-#else
-      llvm::errs() << "wafer-compile: bulk model support is not "
-                      "configured\n";
-      return 1;
-#endif
-    } else {
-      llvm::errs() << "wafer-compile: invalid "
-                      "--target-model-numeric-policy value: "
-                   << numericPolicy << "\n";
-      return 1;
-    }
-  }
 #endif
 
   int64_t numPartitions = 0;
@@ -274,26 +177,24 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  std::string helperPath = resolveSpmdPartitionerHelperPath();
-  if (helperPath.empty()) {
-    llvm::errs()
-        << "wafer-compile: no XLA SPMD partitioner helper configured\n";
+  llvm::Expected<DriverToolFacts> toolFacts = resolveDriverToolFacts();
+  if (!toolFacts) {
+    llvm::errs() << "wafer-compile: "
+                 << llvm::toString(toolFacts.takeError()) << "\n";
     return 1;
   }
   llvm::Expected<wafer::compiler::TargetToolchain> targetToolchain =
-      wafer::compiler::TargetToolchain::create(WAFER_PYTHON_EXECUTABLE,
-                                               WAFER_DEVICE_LINKER_SCRIPT,
-                                               WAFER_DEVICE_CLANGXX);
+      wafer::compiler::TargetToolchain::create(
+          toolFacts->pythonExecutable, toolFacts->deviceLinkerScript,
+          toolFacts->llvmClangXX, toolFacts->tx8DepsRoot,
+          toolFacts->waferIncludeDir, toolFacts->waferCrtSource,
+          toolFacts->waferCrtIncludeDir);
   if (!targetToolchain) {
     llvm::errs() << "wafer-compile: "
                  << llvm::toString(targetToolchain.takeError()) << "\n";
     return 1;
   }
 
-  mlir::LogicalResult compilationStatus = mlir::failure();
-  std::optional<wafer::compiler::CardExecutable>
-      cardExecutable;
-  std::optional<wafer::compiler::CompiledProgram> targetCompilationProduct;
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
   const char *executableFailureSlot =
       std::getenv("WAFER_TEST_FAIL_AFTER_EXECUTABLE_LAUNCH_SLOT");
@@ -329,89 +230,220 @@ int main(int argc, char **argv) {
           << "wafer-compile: invalid test-only executable launch slot\n";
       return 1;
     }
-    compilationStatus =
+    mlir::LogicalResult injectionStatus =
         wafer::compiler::testing::compileProgramWithExecutableLaunchSlotFailure(
-            std::move(*request), *options.outputProgramDirectory, helperPath,
-            *targetToolchain, parsedFailureSlot, llvm::errs());
-  } else if (targetFailureSlot) {
+            std::move(*request), *options.outputPackageDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            parsedFailureSlot, llvm::errs());
+    if (mlir::failed(injectionStatus))
+      return 1;
+    llvm::outs() << "wafer-compile: wrote verified package with "
+                    "num-partitions="
+                 << numPartitions << " tiles="
+                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
+                 << ": " << *options.outputPackageDirectory << "\n";
+    return 0;
+  }
+  if (targetFailureSlot) {
     int64_t parsedFailureSlot = -1;
     if (llvm::StringRef(targetFailureSlot)
             .getAsInteger(10, parsedFailureSlot)) {
       llvm::errs() << "wafer-compile: invalid test-only target launch slot\n";
       return 1;
     }
-    compilationStatus =
+    mlir::LogicalResult injectionStatus =
         wafer::compiler::testing::compileProgramWithTargetLaunchSlotFailure(
-            std::move(*request), *options.outputProgramDirectory, helperPath,
-            *targetToolchain, parsedFailureSlot, llvm::errs());
-  } else if (packageFailureSlot) {
+            std::move(*request), *options.outputPackageDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            parsedFailureSlot, llvm::errs());
+    if (mlir::failed(injectionStatus))
+      return 1;
+    llvm::outs() << "wafer-compile: wrote verified package with "
+                    "num-partitions="
+                 << numPartitions << " tiles="
+                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
+                 << ": " << *options.outputPackageDirectory << "\n";
+    return 0;
+  }
+  if (packageFailureSlot) {
     int64_t parsedFailureSlot = -1;
     if (llvm::StringRef(packageFailureSlot)
             .getAsInteger(10, parsedFailureSlot)) {
       llvm::errs() << "wafer-compile: invalid test-only package launch slot\n";
       return 1;
     }
-    compilationStatus =
+    mlir::LogicalResult injectionStatus =
         wafer::compiler::testing::compileProgramWithPackageLaunchSlotFailure(
-            std::move(*request), *options.outputProgramDirectory, helperPath,
-            *targetToolchain, parsedFailureSlot, llvm::errs());
-  } else
-#endif
-  {
-    if (options.targetModel || options.compilerIRDumpDirectory) {
-      mlir::FailureOr<wafer::compiler::CompiledProgram> compiledProgram =
-          wafer::compiler::compileProgramWithTargetLLVMModules(
-              std::move(*request), *options.outputProgramDirectory, helperPath,
-              *targetToolchain, compilationOptions, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        targetCompilationProduct.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    } else {
-      mlir::FailureOr<wafer::compiler::CardExecutable>
-          compiledProgram = wafer::compiler::compileProgram(
-              std::move(*request), *options.outputProgramDirectory, helperPath,
-              *targetToolchain, compilationOptions, llvm::errs());
-      if (mlir::succeeded(compiledProgram)) {
-        cardExecutable.emplace(std::move(*compiledProgram));
-        compilationStatus = mlir::success();
-      }
-    }
-  }
-  if (mlir::failed(compilationStatus))
-    return 1;
-
-  if (options.compilerIRDumpDirectory) {
-    if (!targetCompilationProduct ||
-        !dumpCompilerIR(*options.compilerIRDumpDirectory,
-                        *targetCompilationProduct, llvm::errs()))
+            std::move(*request), *options.outputPackageDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            parsedFailureSlot, llvm::errs());
+    if (mlir::failed(injectionStatus))
       return 1;
-    llvm::outs() << "wafer-compile: dumped compiler IR: "
-                 << *options.compilerIRDumpDirectory << "\n";
+    llvm::outs() << "wafer-compile: wrote verified package with "
+                    "num-partitions="
+                 << numPartitions << " tiles="
+                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
+                 << ": " << *options.outputPackageDirectory << "\n";
+    return 0;
   }
-
-  llvm::outs() << "wafer-compile: wrote verified package with "
-                  "num-partitions="
-               << numPartitions << " tiles="
-               << wafer::compiler::ExecutionConfig::kSingleCardTileCount
-               << ": " << *options.outputProgramDirectory << "\n";
-  if (options.profile)
-    llvm::outs() << "wafer-compile: wrote profile instrumentation: "
-                 << *options.outputProgramDirectory << ".profile\n";
+  if (options.targetModel || options.compilerIRDumpDirectory) {
+    llvm::Expected<wafer::compiler::CompiledProgram> compiledProgram =
+        wafer::compiler::compileProgramWithTargetLLVMModules(
+            std::move(*request), *options.outputPackageDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            compilationOptions, llvm::errs());
+    if (!compiledProgram)
+      return reportCompilationFailure(compiledProgram.takeError());
+    if (options.compilerIRDumpDirectory) {
+      if (!dumpCompilerIR(*options.compilerIRDumpDirectory, *compiledProgram,
+                          llvm::errs()))
+        return 1;
+      llvm::outs() << "wafer-compile: dumped compiler IR: "
+                   << *options.compilerIRDumpDirectory << "\n";
+    }
+    llvm::outs() << "wafer-compile: wrote verified package with "
+                    "num-partitions="
+                 << numPartitions << " tiles="
+                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
+                 << ": " << *options.outputPackageDirectory << "\n";
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
-  if (options.targetModel) {
-    llvm::outs().flush();
-    if (!targetCompilationProduct || !targetModelBudget ||
-        !targetModelExecutionPolicy) {
-      llvm::errs() << "wafer-compile: compiled program or "
-                      "budget is missing\n";
-      return 1;
+    if (options.targetModel) {
+      std::optional<wafer::model::TargetModelKernelBudget> targetModelBudget;
+      std::optional<wafer::model::TargetModelExecutionPolicy>
+          targetModelExecutionPolicy;
+#ifdef WAFER_ENABLE_TARGET_BULK_MODEL
+      std::unique_ptr<wafer::model::TargetModelBulkBackend>
+          targetModelBulkBackend;
+      std::unique_ptr<wafer::model::ManagedReferenceTargetModelBackend>
+          targetModelManagedReferenceBackend;
+#endif
+      auto scalar =
+          parsePositiveCount(options.targetModelMaximumScalarEvaluations,
+                             "--target-model-max-scalar-evaluations");
+      auto fusedMultiplyAdds =
+          parsePositiveCount(options.targetModelMaximumFusedMultiplyAdds,
+                             "--target-model-max-fused-multiply-adds");
+      auto movementBytes =
+          parsePositiveCount(options.targetModelMaximumMovementBytes,
+                             "--target-model-max-movement-bytes");
+      auto movementSegments =
+          parsePositiveCount(options.targetModelMaximumMovementSegments,
+                             "--target-model-max-movement-segments");
+      if (!scalar || !fusedMultiplyAdds || !movementBytes || !movementSegments)
+        return 1;
+      targetModelBudget.emplace(wafer::model::TargetModelKernelBudget::create(
+          wafer::FormalNumericWorkBudget::create(*scalar, *fusedMultiplyAdds),
+          *movementBytes, *movementSegments));
+
+      llvm::StringRef numericPolicy =
+          options.targetModelNumericPolicy
+              ? llvm::StringRef(*options.targetModelNumericPolicy)
+              : llvm::StringRef("formal");
+      const bool hasBulkConfiguration =
+          !options.targetModelBulkRecords.empty() ||
+          options.targetModelMaximumBulkTotalBytes ||
+          options.targetModelMaximumBulkScratchpadBytes ||
+          options.targetModelMaximumBulkReorderBytes;
+      if (numericPolicy == "formal") {
+        if (hasBulkConfiguration) {
+          llvm::errs() << "wafer-compile: bulk model options require "
+                          "--target-model-numeric-policy=bulk-then-formal or "
+                          "managed-reference\n";
+          return 1;
+        }
+        targetModelExecutionPolicy.emplace(
+            wafer::model::TargetModelExecutionPolicy::formalOnly());
+      } else if (numericPolicy == "bulk-then-formal" ||
+                 numericPolicy == "managed-reference") {
+#ifdef WAFER_ENABLE_TARGET_BULK_MODEL
+        if (numericPolicy == "bulk-then-formal" &&
+            options.targetModelBulkRecords.empty()) {
+          llvm::errs() << "wafer-compile: bulk-then-formal GEMM requires at "
+                          "least one --target-model-bulk-record\n";
+          return 1;
+        }
+        if (numericPolicy == "managed-reference" &&
+            !options.targetModelBulkRecords.empty()) {
+          llvm::errs() << "wafer-compile: managed-reference GEMM does not "
+                          "consume exact --target-model-bulk-record entries\n";
+          return 1;
+        }
+        auto maximumTotalBytes =
+            parsePositiveCount(options.targetModelMaximumBulkTotalBytes,
+                               "--target-model-max-bulk-total-bytes");
+        auto maximumScratchpadBytes =
+            parsePositiveCount(options.targetModelMaximumBulkScratchpadBytes,
+                               "--target-model-max-bulk-scratchpad-bytes");
+        auto maximumReorderBytes =
+            parsePositiveCount(options.targetModelMaximumBulkReorderBytes,
+                               "--target-model-max-bulk-reorder-bytes");
+        if (!maximumTotalBytes || !maximumScratchpadBytes ||
+            !maximumReorderBytes)
+          return 1;
+        const wafer::BulkNumericWorkBudget bulkBudget =
+            wafer::BulkNumericWorkBudget::create(*maximumTotalBytes,
+                                                 *maximumScratchpadBytes,
+                                                 *maximumReorderBytes);
+        if (numericPolicy == "bulk-then-formal") {
+          auto qualified = wafer::model::QualifiedTargetModelBulkBackend::create(
+              options.targetModelBulkRecords, bulkBudget);
+          if (!qualified) {
+            llvm::errs() << "wafer-compile: "
+                         << llvm::toString(qualified.takeError()) << "\n";
+            return 1;
+          }
+          targetModelBulkBackend = std::move(*qualified);
+          targetModelExecutionPolicy.emplace(
+              wafer::model::TargetModelExecutionPolicy::bulkThenFormal(
+                  *targetModelBulkBackend));
+        } else {
+          auto managed =
+              wafer::model::ManagedReferenceTargetModelBackend::create(
+                  bulkBudget);
+          if (!managed) {
+            llvm::errs() << "wafer-compile: "
+                         << llvm::toString(managed.takeError()) << "\n";
+            return 1;
+          }
+          targetModelManagedReferenceBackend = std::move(*managed);
+          targetModelExecutionPolicy.emplace(
+              wafer::model::TargetModelExecutionPolicy::managedReference(
+                  *targetModelManagedReferenceBackend,
+                  *targetModelManagedReferenceBackend));
+        }
+#else
+        llvm::errs() << "wafer-compile: bulk model support is not "
+                        "configured\n";
+        return 1;
+#endif
+      } else {
+        llvm::errs() << "wafer-compile: invalid "
+                        "--target-model-numeric-policy value: "
+                     << numericPolicy << "\n";
+        return 1;
+      }
+      llvm::outs().flush();
+      if (!targetModelBudget || !targetModelExecutionPolicy) {
+        llvm::errs() << "wafer-compile: compiled program or "
+                        "budget is missing\n";
+        return 1;
+      }
+      if (runTargetModelGate(options, *compiledProgram, *modelInputs,
+                             *modelExpected, *modelAtol, *modelRtol,
+                             *targetModelBudget, *targetModelExecutionPolicy))
+        return 1;
     }
-    if (runTargetModelGate(options, *targetCompilationProduct, *modelInputs,
-                           *modelExpected, *modelAtol, *modelRtol,
-                           *targetModelBudget, *targetModelExecutionPolicy))
-      return 1;
+#endif
+    return 0;
   }
 #endif
-  return 0;
+
+  llvm::Expected<wafer::compiler::CompilationResult> result =
+      wafer::compiler::compileProgram(
+          std::move(*request), *options.outputPackageDirectory,
+          toolFacts->spmdPartitionerHelper, *targetToolchain,
+          compilationOptions, llvm::errs());
+  if (!result)
+    return reportCompilationFailure(result.takeError());
+  return reportSuccess(*result, numPartitions);
 }

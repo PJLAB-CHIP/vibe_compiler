@@ -15,5 +15,7 @@ config.wafer_enable_bulk_model = "@WAFER_ENABLE_BULK_MODEL_DEPS@"
 config.wafer_enable_systemc_model = "@WAFER_ENABLE_SYSTEMC_MODEL@"
 config.numeric_model_library_path = r"@WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR@:@WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR@"
 config.xla_spmd_partitioner_helper = "@WAFER_XLA_SPMD_PARTITIONER_HELPER@"
+config.cmake_command = "@CMAKE_COMMAND@"
+config.tx8_deps_root = "@CMAKE_SOURCE_DIR@/third_party/tx8_deps"
 
 lit_config.load_config(config, r"@CMAKE_CURRENT_SOURCE_DIR@/lit.cfg.py")

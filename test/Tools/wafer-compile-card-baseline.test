@@ -11,19 +11,19 @@
 # RUN: mkdir -p %t.chain/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x32xf16>, %%rhs: tensor<32x32xf16>) -> tensor<32x32xf16> {\n    %%sum = stablehlo.add %%lhs, %%rhs : tensor<32x32xf16>\n    %%result = stablehlo.multiply %%sum, %%rhs : tensor<32x32xf16>\n    return %%result : tensor<32x32xf16>\n  }\n}\n' > %t.chain/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.chain/functions/forward.meta
-# RUN: wafer-compile --input-program-dir %t.chain --output-program-dir %t.chain-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=CHAIN
+# RUN: wafer-compile --input-program-dir %t.chain --output-package-dir %t.chain-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=CHAIN
 # RUN: wafer-run --package-dir %t.chain-package --no-card | FileCheck %s --check-prefix=NO-CARD
 
 # RUN: mkdir -p %t.gemm/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x32xf16>, %%rhs: tensor<32x32xf16>) -> tensor<32x32xf16> {\n    %%result = "stablehlo.dot_general"(%%lhs, %%rhs) {dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<32x32xf16>, tensor<32x32xf16>) -> tensor<32x32xf16>\n    return %%result : tensor<32x32xf16>\n  }\n}\n' > %t.gemm/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.gemm/functions/forward.meta
-# RUN: wafer-compile --input-program-dir %t.gemm --output-program-dir %t.gemm-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=SPATIAL
+# RUN: wafer-compile --input-program-dir %t.gemm --output-package-dir %t.gemm-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=SPATIAL
 # RUN: wafer-run --package-dir %t.gemm-package --no-card | FileCheck %s --check-prefix=NO-CARD
 
 # RUN: mkdir -p %t.cross/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x32xf16>, %%rhs: tensor<32x32xf16>) -> (tensor<32x32xf16>, tensor<32x32xf16>) {\n    %%sum = stablehlo.add %%lhs, %%rhs : tensor<32x32xf16>\n    %%transposed = "stablehlo.transpose"(%%sum) {permutation = array<i64: 1, 0>} : (tensor<32x32xf16>) -> tensor<32x32xf16>\n    %%result = stablehlo.multiply %%transposed, %%transposed : tensor<32x32xf16>\n    return %%sum, %%result : tensor<32x32xf16>, tensor<32x32xf16>\n  }\n}\n' > %t.cross/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.cross/functions/forward.meta
-# RUN: wafer-compile --input-program-dir %t.cross --output-program-dir %t.cross-package --num-partitions=1 --optimization-policy=none --dump-compiler-ir %t.cross-ir 2>&1 | FileCheck %s --check-prefix=CROSS
+# RUN: %wafer_compile_test --input-program-dir %t.cross --output-package-dir %t.cross-package --num-partitions=1 --optimization-policy=none --dump-compiler-ir %t.cross-ir 2>&1 | FileCheck %s --check-prefix=CROSS
 # RUN: FileCheck %s --input-file=%t.cross-ir/instruction/tile_00000.mlir --check-prefix=CROSS-INSTR
 # RUN: wafer-run --package-dir %t.cross-package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
 

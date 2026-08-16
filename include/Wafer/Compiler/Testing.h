@@ -28,19 +28,19 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> tileModules,
 /// selected Tile executable launch slot has completed lowering and
 /// verification. This API is callable only through test drivers.
 mlir::LogicalResult compileProgramWithExecutableLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics);
 
 mlir::LogicalResult compileProgramWithTargetLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics);
 
 mlir::LogicalResult compileProgramWithPackageLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputProgramDirectory,
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics);

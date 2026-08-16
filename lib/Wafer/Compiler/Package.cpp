@@ -42,15 +42,6 @@
 #endif
 
 namespace wafer::compiler {
-
-struct VerifiedPackageBuilder {
-  static VerifiedPackage
-  makePackage(llvm::StringRef rootDirectory, ExecutionConfig executionConfig,
-              runtime::VerifiedPackageManifest manifest) {
-    return VerifiedPackage(rootDirectory, executionConfig, std::move(manifest));
-  }
-};
-
 namespace {
 
 llvm::Error fail(llvm::raw_ostream &diagnostics, llvm::StringRef message) {
@@ -1121,7 +1112,7 @@ bool renameDirectoryNoReplace(llvm::StringRef source,
 
 } // namespace
 
-llvm::Expected<VerifiedPackage>
+llvm::Expected<ExecutablePackage>
 detail::writePackage(llvm::StringRef tensorProgramDirectory,
                      const CardExecutable &cardExecutable,
                      const LinkedTargetModules &targetModules,
@@ -1207,7 +1198,7 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
     return llvm::createStringError(llvm::errc::io_error,
                                    "package directory rename failed");
   cleanup.release();
-  return VerifiedPackageBuilder::makePackage(
+  return ExecutablePackageBuilder::makePackage(
       outputDirectory, cardExecutable.getExecutionConfig(),
       std::move(*readback));
 }

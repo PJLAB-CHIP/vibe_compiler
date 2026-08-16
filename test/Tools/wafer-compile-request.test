@@ -1,27 +1,27 @@
-# RUN: not wafer-compile --output-program-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MISSING-INPUT
+# RUN: not wafer-compile --output-package-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MISSING-INPUT
 # RUN: not wafer-compile --input-program-dir %t.input --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MISSING-OUTPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output 2>&1 | FileCheck %s --check-prefix=MISSING-PARTITIONS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=not-an-integer 2>&1 | FileCheck %s --check-prefix=INVALID-PARTITIONS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=18446744073709551616 2>&1 | FileCheck %s --check-prefix=OVERFLOW-PARTITIONS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=16 2>&1 | FileCheck %s --check-prefix=MULTI-CARD-PARTITIONS
-# RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-program-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=1 --compile-timing --compile-timing 2>&1 | FileCheck %s --check-prefix=DUPLICATE-TIMING
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=1 --optimization-policy=production 2>&1 | FileCheck %s --check-prefix=RETIRED-POLICY
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --output-program-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=1 --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PARTITIONS
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=1 --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.profile-model --num-partitions=1 --profile --target-model 2>&1 | FileCheck %s --check-prefix=PROFILE-MODEL
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output 2>&1 | FileCheck %s --check-prefix=MISSING-PARTITIONS
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=not-an-integer 2>&1 | FileCheck %s --check-prefix=INVALID-PARTITIONS
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=18446744073709551616 2>&1 | FileCheck %s --check-prefix=OVERFLOW-PARTITIONS
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=16 2>&1 | FileCheck %s --check-prefix=MULTI-CARD-PARTITIONS
+# RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 --compile-timing --compile-timing 2>&1 | FileCheck %s --check-prefix=DUPLICATE-TIMING
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 --optimization-policy=production 2>&1 | FileCheck %s --check-prefix=RETIRED-POLICY
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --output-package-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PARTITIONS
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
+# RUN: not %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.profile-model --num-partitions=1 --profile --target-model 2>&1 | FileCheck %s --check-prefix=PROFILE-MODEL
 # RUN: test ! -e %t.profile-model
 # RUN: test ! -e %t.profile-model.profile
 # RUN: rm -rf %t.input %t.no-helper-output
 # RUN: mkdir -p %t.input
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-program-dir %t.no-helper-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-HELPER
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.no-helper-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-HELPER
 # RUN: test ! -e %t.no-helper-output
-# RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.model-without-target --num-partitions=1 --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=MODEL-WITHOUT-TARGET
+# RUN: not %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.model-without-target --num-partitions=1 --model-input 0=%t.input.npy --model-expected 0=%t.expected.npy 2>&1 | FileCheck %s --check-prefix=MODEL-WITHOUT-TARGET
 # RUN: test ! -e %t.model-without-target
 
 # MISSING-INPUT: wafer-compile: missing required --input-program-dir
-# MISSING-OUTPUT: wafer-compile: missing required --output-program-dir
+# MISSING-OUTPUT: wafer-compile: missing required --output-package-dir
 # MISSING-PARTITIONS: wafer-compile: missing required --num-partitions
 # INVALID-PARTITIONS: wafer-compile: invalid --num-partitions value: not-an-integer
 # OVERFLOW-PARTITIONS: wafer-compile: invalid --num-partitions value: 18446744073709551616
@@ -29,7 +29,7 @@
 # DUPLICATE-INPUT: wafer-compile: duplicate option: --input-program-dir
 # DUPLICATE-TIMING: wafer-compile: duplicate option: --compile-timing
 # RETIRED-POLICY: wafer-compile: invalid --optimization-policy value: production (expected search or none)
-# DUPLICATE-OUTPUT: wafer-compile: duplicate option: --output-program-dir
+# DUPLICATE-OUTPUT: wafer-compile: duplicate option: --output-package-dir
 # DUPLICATE-PARTITIONS: wafer-compile: duplicate option: --num-partitions
 # DUPLICATE-PROFILE-PRODUCT: wafer-compile: duplicate option: --profile
 # PROFILE-MODEL: wafer-compile: --profile cannot be combined with --target-model

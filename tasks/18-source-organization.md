@@ -233,23 +233,26 @@ Compiler package writing / Runtime / Model
 ### 5.1 Compiler library、产品工具与安装
 
 request/result/commit语义由01和15拥有，failure taxonomy由19拥有，frontend输入由02拥有；本节只规定它们如何落到library、
-tool与CMake依赖边界。Q59/Q60完成后应形成：
+tool与CMake依赖边界。Q59完成后的实现状态：
 
-- 一个repo-current C++ compiler library target实现唯一source-to-package entry；`wafer-compile`只链接该target并负责参数解析、
-  resolved SPMD helper与`TargetToolchain`构造、调用和diagnostic rendering，不复制driver流程；
-- target-model、IR dump和board qualification分别链接其所需的internal inspection API，不进入production CLI的post-commit控制流；
-- source verifier和产品Python adapter复用Frontend ingestion实现，tool层不复制parser/verifier；
-- `wafer-opt`保持IR development component，不进入production source-to-package调用链；
-- external tool discovery只有一个resolver：输入是明确的SPMD helper与`TargetToolchain`配置，输出是validated executable facts，
-  不形成可随意塞字段的environment bag，也不由多个CLI各自实现fallback搜索。
+- 唯一source-to-package entry是`wafer::compiler::compileProgram`，返回`llvm::Expected<CompilationResult>`：primary product为
+  commit后按installed root readback的move-only `ExecutablePackage`，显式profile时另持有compiler-owned
+  `ProfileInstrumentationProduct`（root+primary manifest/plan/site-map digest）；失败返回`CompilationFailure`并携带
+  `CompilationStage`分类。`wafer-compile`只链接该target并负责参数解析、单一tool resolver构造、调用和diagnostic rendering；
+- `compileProgramWithTargetLLVMModules`（`llvm::Expected<CompiledProgram>`）保留CardExecutable/target modules/IR trace，只由
+  internal inspection consumer（`wafer-compile-test`的target-model gate与compiler IR dump）消费，不进入production CLI的
+  post-commit控制流；production `wafer-compile`对`--target-model*`/`--dump-compiler-ir`/旧`--output-program-dir`报unknown
+  argument；
+- source verifier和产品Python adapter复用Frontend ingestion实现（Q60继续）；`wafer-opt`保持IR development component；
+- external tool discovery只有一个resolver（`resolveDriverToolFacts`）：SPMD helper、device linker script、CRT/ABI资源按
+  executable-relative install位置发现，`python3`/`clang++`按PATH解析，pinned TX8依赖根由`TX8_DEPS_ROOT`显式配置，全部facts
+  经existence/type/executability验证；不形成environment bag，不烘焙source/build tree绝对路径。
 
-Q59安装闭包只承诺可运行的production `wafer-compile`及其必需helper/configuration；Q60再安装产品Python adapter和
-`wafer-verify-program`。C++ library/header目前是repo-current build component，不在这两项中承诺SDK、CMake package export或
-外部consumer link compatibility。installed tools不得把source/build tree绝对路径编进binary，并必须在脱离source/build cwd后
-完成代表性source→package readback smoke。缺少真实frontend/importer依赖时不得把运行即失败的adapter/verifier stub放入install tree；
-feature-off configuration只安装其依赖闭合且可运行的工具。
+安装闭包为可运行的production `wafer-compile`+helper+device linker script+CRT/ABI资源，且仅在importer、SPMD partitioner依赖与
+configured helper同时存在时注册install规则；feature-off install tree不安装运行即失败的production compiler
+（`wafer-compile-install-feature-off.test`钉住）。Q60再安装产品Python adapter和`wafer-verify-program`。C++ library/header是
+repo-current build component，不承诺SDK、CMake package export或外部consumer link compatibility。
 
-当前实现仍返回中间`CardExecutable`并在package commit后运行附加gate；这些差距由Q59跟踪，不能把本节目标当成已实现事实。
 这一边界不承诺稳定C ABI、plugin SDK、通用compiler session或用户可拼pass pipeline。Wafer-owned CLI/current API原位替换，
 不保留旧flag alias、build-tree compatibility wrapper或第二production driver。
 

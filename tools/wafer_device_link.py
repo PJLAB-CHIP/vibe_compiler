@@ -176,6 +176,7 @@ def build_commands(
     tx8_deps_root = pathlib.Path(args.tx8_deps_root)
     wafer_crt_source = pathlib.Path(args.wafer_crt_source)
     wafer_crt_include_dir = pathlib.Path(args.wafer_crt_include_dir)
+    wafer_include_dir = pathlib.Path(args.wafer_include_dir)
     tx8_include_dir = resolve_tx8_include_dir(tx8_deps_root, args.tx8_include_dir)
     toolchain_root = tx8_deps_root / args.toolchain_dir_name
     libc_dir = toolchain_root / "riscv64-unknown-elf" / "lib" / args.march / args.mabi
@@ -230,7 +231,7 @@ def build_commands(
         "-DCONFIG_NO_PLATFORM_HOOK_H",
         "-DUSING_RISCV",
         f"-I{wafer_crt_include_dir}",
-        f"-I{DEFAULT_WAFER_INCLUDE_DIR}",
+        f"-I{wafer_include_dir}",
         f"-I{tx8_include_dir}",
         f"-mcpu={args.crt_mcpu}",
         f"-mabi={args.mabi}",
@@ -335,8 +336,9 @@ def validate_execute_inputs(
     wafer_crt_include_dir = pathlib.Path(args.wafer_crt_include_dir)
     if not wafer_crt_include_dir.is_dir():
         fail(f"Wafer CRT include dir does not exist: {wafer_crt_include_dir}")
-    if not DEFAULT_WAFER_INCLUDE_DIR.is_dir():
-        fail(f"Wafer public include dir does not exist: {DEFAULT_WAFER_INCLUDE_DIR}")
+    wafer_include_dir = pathlib.Path(args.wafer_include_dir)
+    if not wafer_include_dir.is_dir():
+        fail(f"Wafer public include dir does not exist: {wafer_include_dir}")
     tx8_include_dir = resolve_tx8_include_dir(
         pathlib.Path(args.tx8_deps_root), args.tx8_include_dir
     )
@@ -508,6 +510,11 @@ def main() -> int:
         "--wafer-crt-include-dir",
         default=str(DEFAULT_WAFER_CRT_INCLUDE_DIR),
         help="repo-local Wafer CRT include directory",
+    )
+    parser.add_argument(
+        "--wafer-include-dir",
+        default=str(DEFAULT_WAFER_INCLUDE_DIR),
+        help="repo-local Wafer public include directory",
     )
     parser.add_argument("--tx8-include-dir")
     parser.add_argument("--llvm-clangxx")

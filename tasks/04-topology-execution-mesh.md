@@ -24,7 +24,7 @@ Pipeline position:
   和target topology的available tile_id domain，产生CardModule；target/package lowering再把selected
   `(card_id, tile_id)`投影为当前ABI launch slot。
 - User-level driver / named pipeline:
-  正式入口为`wafer-compile --num-partitions=N --launch-kind={kernel|model}`。topology/mesh materialization passes和
+  正式入口为`wafer-compile --num-partitions=N`。topology/mesh materialization passes和
   `wafer-opt`只处理显式IR，用于debug/test，不能成为production placement旁路。
 - Explicit non-goals:
   本层不表达spatial work assignment、temporal tiling、TileRegion/融合、route、DTE binding、cost、target ABI、

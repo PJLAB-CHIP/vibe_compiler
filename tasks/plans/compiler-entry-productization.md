@@ -59,7 +59,32 @@ Pipeline position:
 
 ### Q59 checkpoints
 
-1. **入口事实映射**：逐项列出 `CompilationRequest -> transaction -> CardExecutable -> target writing ->
+> **Checkpoint 1 入口事实映射（2026-08-16 完成）**。以下 producer/owner/lifetime/failure edge 以当前代码为准，
+> 不依赖 diagnostic 字符串或 output existence 反推控制流。
+>
+> | 边界 | Producer | Owner / lifetime | 当前事实与 Q59 差距 |
+> | --- | --- | --- | --- |
+> | CLI options | `DriverOptions.cpp` 手写 parser | `CommandLineOptions`（未定型 string slot），main 内校验 | `--output-program-dir` 命名误导；`--target-model*`/`--model-*`/`--dump-compiler-ir` 混入 production CLI |
+> | request/options | `ExecutionConfig::createForSingleCard`、`CompilationOptions::standard/profile`、`CompilationRequest::create` | main 栈内，move 进 `compileProgram` | 已 typed，保持不变 |
+> | 外部工具事实 | `WAFER_XLA_SPMD_PARTITIONER_HELPER`、`WAFER_PYTHON_EXECUTABLE`、`WAFER_DEVICE_LINKER_SCRIPT`（=source-tree 绝对路径）、`WAFER_DEVICE_CLANGXX`（=build-tree LLVM install 路径）编译期宏 | 二进制内烘焙，永远存活 | 违反 install 可迁移；helper 实际指向 `build/xla-spmd-helper/`，clang++ 指向 `build/third_party/llvm-install/` |
+> | library entry | `Compilation.cpp::compileProgram` | 返回 `mlir::FailureOr<CardExecutable>` | primary result 是中间 CardExecutable；`writePackage` 产出的 `VerifiedPackage` 在 `stageExecutablePackage` 被丢弃 |
+> | transaction | `runCompilationTransaction` | staging `.wafer-compile-staging*` scope_exit 清理 | 失败不留目标目录（no-replace rename 唯一发布点）✓；失败无 stage 分类 |
+> | package staging | `Package.cpp::writePackage` | 自建 `.wafer-package-staging*` → 内部 readback/fsync → no-replace rename 到 `<transactionRoot>/package` | readback 发生在 staging root，最终 rename 后不重读 installed root |
+> | profile 共同提交 | `WriteExecutablePackage.cpp::writeProfileInstrumentation` | `renamePackageAndProfileNoReplace`：profile rename 失败回滚 package | write 侧已计算 primary/plan/site-map digest 但丢弃；commit 后无 installed-root readback |
+> | commit | `runCompilationTransaction` 尾部 rename | canonicalOutput 一次性可见 | ✓ 原子 |
+> | CLI status | `wafer-compile.cpp` main | commit 后执行 `--dump-compiler-ir`/`--target-model` gate，gate 失败翻转 exit 1 | package 已提交却 exit≠0，违反「success ⟺ package 可见」；01.11 明确禁止 |
+> | 内部/qualification 消费 | `compileProgramWithTargetLLVMModules` → `CompiledProgram` | CLI model/IR-dump 路径 | 保留为 internal inspection entry，退出 production CLI |
+> | 测试注入 seam | `testing::compileProgramWith*LaunchSlotFailure`（`WAFER_ENABLE_TEST_HELPER_OVERRIDE`） | lit 失败注入 | 保持 `wafer-compile-test` 专用，不进入 production |
+> | install | 根 CMake 无 install 规则（仅 wafer-run 有） | — | Q59 新增；feature-off 不得安装运行即失败的 production compiler |
+>
+> 普通调用必须返回的唯一产品 = 已 readback 且原子提交的 `ExecutablePackage`（root+ExecutionConfig+VerifiedPackageManifest）；
+> 显式 profile 时共同提交的 profile product 以 compiler-owned `ProfileInstrumentationProduct`（root+primary manifest digest+plan/site-map
+> digest，commit 后经 installed-root activation.json readback 绑定）表达，runtime strict loader 仍是唯一语义 reader。
+> `CardExecutable`、`TargetLLVMModules`、`CompilationIRTrace` 只保留给 internal/qualification 入口（`compileProgramWithTargetLLVMModules`）。
+> 约束：Compiler/Package 不能链接 `WaferRuntime`、不能 include `Wafer/Runtime/*`（18 号 source-organization gate），因此 profile product
+> 类型与 activation readback 位于 compiler 层。
+>
+> 1. **入口事实映射**：逐项列出 `CompilationRequest -> transaction -> CardExecutable -> target writing ->
    ExecutablePackage -> CLI status` 的producer、owner、lifetime和failure edge；确认普通调用必须返回的唯一产品、仅供
    qualification/debug保留的中间值，以及profile共同提交边界。不得用diagnostic字符串或output existence反推控制流。
 2. **Typed result/error**：Q56将现有compiler-only `VerifiedPackage`与runtime-only `VerifiedPackageManifest`收敛为一个
@@ -67,20 +92,39 @@ Pipeline position:
    `CompilationResult`表达普通结果。MLIR transformation内部继续使用`LogicalResult`/diagnostic，filesystem、external tool、
    package和library边界使用`llvm::Error`/`Expected`及可分类stage failure。普通public result不暴露CardExecutable、
    target LLVM modules或IR trace。
+   （2026-08-16 完成：`VerifiedPackage`原位改名`ExecutablePackage`；`CompilationResult`持有
+   ExecutablePackage+optional `ProfileInstrumentationProduct`；`compileProgram`返回`llvm::Expected<CompilationResult>`，
+   `compileProgramWithTargetLLVMModules`返回`llvm::Expected<CompiledProgram>`；新增`CompilationStage`+`CompilationFailure`
+   ErrorInfo分类。Compiler/Package不链接`WaferRuntime`、不include`Wafer/Runtime/*`的source-organization边界保持。）
 3. **Commit与附加action隔离**：compile请求的全部产品在commit前完成validation；CLI返回成功后目标package必然可见，
    CLI返回失败时本次目标package不可见。target-model qualification移出production compile status；IR dump只保留在明确的
    internal/test debug入口，或在commit前作为不进入package语义的受检diagnostic output完成。
+   （2026-08-16 完成：`wafer-compile-test`是唯一internal/test入口；production `wafer-compile`对
+   `--target-model*`/`--model-*`/`--dump-compiler-ir`报unknown argument。transaction在no-replace rename后按installed root
+   readback manifest/activation.json并以digest绑定`CompilationResult`，读回失败作为typed internal error。）
 4. **CLI current cutover**：`wafer-compile`只把命令行解析成typed request/options/destination并渲染typed result/error；
    将当前误导的`--output-program-dir`原位替换为`--output-package-dir`并同步全部consumer，不保留alias；同时删除其它
    model/budget混合参数。手写parser是否替换不是本任务
    完成条件，除非它阻碍唯一action、稳定help或错误分类。
+   （2026-08-16 完成：CLI、success/error渲染、全部consumer（test/Board、test/Tools、README、check_deps）同步；
+   SPMD helper进程接口的`--output-program-dir`是helper自身语义，保持不动。）
 5. **Install与tool discovery**：按18号owner安装production `wafer-compile`及其运行所需helper/configuration；helper、Python、
    device linker和target toolchain不再以source/build绝对路径固化到产品二进制。feature-off install tree不安装一个只能在运行时
    报依赖缺失却冒充可用的production compiler。`wafer-opt`仍是developer component，本任务不借安装要求把它提升为产品入口。
+   （2026-08-16 完成：install规则+单一resolver `resolveDriverToolFacts`；helper/linker script/CRT/ABI为
+   executable-relative install资源，python3/clang++经PATH，pinned TX8依赖根经`TX8_DEPS_ROOT`；`TargetToolchain`显式携带
+   tx8-deps/CRT/ABI facts并在device link逐项传参；build-tree资源copy与install共享同一发现路径；install规则被
+   importer+SPMD deps+configured helper条件门控。）
 6. **定向验证**：覆盖request/options正负例、source/helper/target/package各阶段typed failure、existing-output与竞争writer、
    ordinary/profile共同提交、API/CLI manifest identity一致、post-commit action absence、install-prefix relocate smoke以及
    feature-on/off构建。Q59不改变package/runtime/board语义，因此不重复Q56板测；fresh source→package readback/no-card是其
    最大完成证据。
+   （2026-08-16：`wafer-compile-internal-options.test`（production拒绝internal选项/旧flag/help面）、
+   `wafer-compile-install-relocate.test`（fresh source→package readback/no-card于relocated install tree）、
+   `wafer-compile-install-feature-off.test`（feature-off不安装production compiler）新增；atomicity/request/install测试通过；
+   Compilation/TargetCodeGen unit 28/28。工具测试矩阵见各测试与Q59 row；pre-existing外部缺口：
+   `wafer-compile-structured-tensor-program.test`的32x32 dot输入被pinned XLA helper拒绝（helper调用byte-identical，与Q59无关）；
+   `wafer-compile-spmd-partition.test`同一输入上search 45分钟+未收敛（候选序号持续增长，Q52 search cost范围）。）
 
 ## 3. Q60：Frontend production entry
 

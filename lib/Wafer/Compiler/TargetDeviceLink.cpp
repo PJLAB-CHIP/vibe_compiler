@@ -50,6 +50,10 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
   std::string python = toolchain.getPythonExecutable().str();
   std::string script = toolchain.getDeviceLinkerScript().str();
   std::string clangXX = toolchain.getLLVMClangXX().str();
+  std::string tx8DepsRoot = toolchain.getTx8DepsRoot().str();
+  std::string waferIncludeDir = toolchain.getWaferIncludeDir().str();
+  std::string waferCrtSource = toolchain.getWaferCrtSource().str();
+  std::string waferCrtIncludeDir = toolchain.getWaferCrtIncludeDir().str();
   std::string llvmIRStorage = llvmIR.str();
   std::string moduleStorage = module.str();
   std::string objectStorage = object.str();
@@ -60,20 +64,29 @@ llvm::Error runDeviceLink(const TargetToolchain &toolchain,
     loaderABI = "tx8-kcore-loader-grid";
   else if (kernel.form == KernelLaunchForm::Cluster)
     loaderABI = "tx8-kcore-loader-cluster";
-  llvm::SmallVector<llvm::StringRef, 18> arguments = {python,
-                                                      script,
-                                                      "--llvm-ir",
-                                                      llvmIRStorage,
-                                                      "--llvm-clangxx",
-                                                      clangXX,
-                                                      "--output",
-                                                      moduleStorage,
-                                                      "--object-output",
-                                                      objectStorage,
-                                                      "--crt-object-output",
-                                                      crtObjectStorage,
-                                                      "--loader-abi",
-                                                      loaderABI};
+  llvm::SmallVector<llvm::StringRef, 26> arguments = {
+      python,
+      script,
+      "--llvm-ir",
+      llvmIRStorage,
+      "--llvm-clangxx",
+      clangXX,
+      "--tx8-deps-root",
+      tx8DepsRoot,
+      "--wafer-crt-source",
+      waferCrtSource,
+      "--wafer-crt-include-dir",
+      waferCrtIncludeDir,
+      "--wafer-include-dir",
+      waferIncludeDir,
+      "--output",
+      moduleStorage,
+      "--object-output",
+      objectStorage,
+      "--crt-object-output",
+      crtObjectStorage,
+      "--loader-abi",
+      loaderABI};
   std::string captureStorage;
   if (profileCapture != ProfileCaptureKind::None) {
     captureStorage = stringifyProfileCaptureKind(profileCapture).str();

@@ -639,3 +639,20 @@
   其它目录/文件/symlink一律拒绝。
 - 防复发：负例要协同更新size/digest使输入保持表面自洽，分别覆盖wrong codec bytes、logical/target count mismatch、zero/nonzero
   trailing bytes和额外空目录；只篡改digest的测试不能证明semantic verifier有效。
+
+## CMake多OUTPUT custom command不能靠第二个同OUTPUT命令补文件
+
+- 现象：resources自定义命令把linker script和SPMD helper symlink都列进第一个`add_custom_command`的OUTPUT，再为helper单独
+  建一个同OUTPUT的命令；ninja只生成第一条rule，helper资源目录存在但symlink从不创建，编译在target阶段才以
+  `device link failed`暴露。
+- 根因：同一OUTPUT出现两次时CMake只保留第一条custom command，不报错也不合并；目标级`add_custom_target`依赖的是
+  OUTPUT名，无法区分。
+- 修复模式：一个custom command的OUTPUT必须是它实际产出的全部文件；不同产物分属不同command，各自带真实DEPENDS；
+  reconfigure后直接`ninja -t targets`核对产物rule存在。
+- 防复发：新增build-tree/install资源时，先检查目标输出文件是否真的生成（`ls`/`test -f`），再测消费它的编译路径。
+
+## pinned LLVM版本的API事实
+
+- `llvm::errc`没有`state_not_recoverable`：内部不变量错误用`llvm::errc::operation_not_permitted`；
+  `llvm::sys::path::append`最多接受path+3个组件，超过必须分两步append；`llvm::sys::path::join`不存在。
+  编译期宏路径烘焙会在install后失效，外部工具/资源一律运行时发现。

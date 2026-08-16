@@ -13,6 +13,7 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -298,22 +299,45 @@ private:
   std::unique_ptr<ProgramDataHandoff> programData;
 };
 
-/// Compiles the source program and writes the requested package directory.
-/// It traverses executable, target-module and typed package boundaries; the
-/// final root becomes visible only after canonical manifest readback verifies
-/// every source tensor-program and target module member. The returned value is
-/// the same card executable consumed by target code generation
-/// and package writing; downstream consumers must not rebuild it from files.
-/// When profiling is requested, the ordinary output remains the production
-/// package, and a verified sibling `<output>.profile` instrumentation is
-/// written only after the ordinary package and its profile-only captures have
-/// passed their respective validation steps.
-mlir::FailureOr<CardExecutable>
-compileProgram(CompilationRequest request,
-               llvm::StringRef outputProgramDirectory,
-               llvm::StringRef xlaSpmdPartitionerHelper,
-               const TargetToolchain &targetToolchain,
-               CompilationOptions options, llvm::raw_ostream &diagnostics);
+/// Host-boundary classification of one compilation transaction failure. The
+/// stage is set by the transaction at each stable pipeline phase; the caller's
+/// diagnostics stream carries the detailed diagnostics and is never parsed to
+/// recover control flow.
+enum class CompilationStage {
+  SourceVerification,
+  SpmdPartitioning,
+  TensorProgramPreparation,
+  ExecutableCompilation,
+  TargetCodeGeneration,
+  PackageAssembly,
+  PackageCommit,
+};
+
+llvm::StringRef stringifyCompilationStage(CompilationStage stage);
+
+/// Typed failure for the compiler library entry. The stage classifies where
+/// the transaction stopped; detailed diagnostics remain on the caller-owned
+/// stream.
+class CompilationFailure final : public llvm::ErrorInfo<CompilationFailure> {
+public:
+  static char ID;
+
+  explicit CompilationFailure(CompilationStage stage) : stage(stage) {}
+
+  CompilationStage getStage() const { return stage; }
+
+  void log(llvm::raw_ostream &stream) const override {
+    stream << "compilation failed at the "
+           << stringifyCompilationStage(stage) << " stage";
+  }
+
+  std::error_code convertToErrorCode() const override {
+    return llvm::errc::operation_not_permitted;
+  }
+
+private:
+  CompilationStage stage;
+};
 
 } // namespace wafer::compiler
 

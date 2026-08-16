@@ -1,45 +1,131 @@
 set(_wafer_compile_sources
-  CompilerIRDump.cpp
   DriverOptions.cpp
-  TargetModelGate.cpp
   wafer-compile.cpp
 )
-file(REAL_PATH "${Python3_EXECUTABLE}" _wafer_python_executable)
-file(REAL_PATH "${LLVM_TOOLS_BINARY_DIR}/clang++" _wafer_device_clangxx)
-if(NOT EXISTS "${_wafer_device_clangxx}")
-  message(FATAL_ERROR "LLVM clang++ is required for TX device code")
+set(_wafer_compile_test_sources
+  CompilerIRDump.cpp
+  TargetModelGate.cpp
+)
+
+# Installed/build-tree resources discovered relative to the executable:
+# the device linker script (share/wafer) and the pinned XLA SPMD partitioner
+# helper (libexec/wafer). No source or build tree absolute path is compiled
+# into the production binary.
+set(_wafer_compile_resource_directory
+  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../share/wafer")
+set(_wafer_compile_libexec_directory
+  "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../libexec/wafer")
+set(_wafer_device_linker_resource
+  "${_wafer_compile_resource_directory}/wafer_device_link.py")
+set(_wafer_spmd_helper_resource
+  "${_wafer_compile_libexec_directory}/wafer_xla_spmd_partitioner")
+set(_wafer_compile_crt_resource_directory
+  "${_wafer_compile_resource_directory}/crt")
+set(_wafer_compile_crt_source_resource
+  "${_wafer_compile_crt_resource_directory}/src/wafer_tx81_crt.c")
+set(_wafer_compile_crt_profile_impl_resource
+  "${_wafer_compile_crt_resource_directory}/src/wafer_tx81_profiler_impl.inc")
+set(_wafer_compile_crt_include_resource
+  "${_wafer_compile_crt_resource_directory}/include/wafer_tx81_crt.h")
+set(_wafer_compile_crt_profiler_include_resource
+  "${_wafer_compile_crt_resource_directory}/include/wafer_tx81_profiler.h")
+set(_wafer_compile_abi_resource_directory
+  "${_wafer_compile_resource_directory}/include/Wafer/ABI")
+set(_wafer_compile_abi_direct_dte_resource
+  "${_wafer_compile_abi_resource_directory}/Tx81DirectDTEStatusABI.h")
+set(_wafer_compile_abi_ncc_resource
+  "${_wafer_compile_abi_resource_directory}/Tx81NCCABI.h")
+set(_wafer_compile_abi_profiler_resource
+  "${_wafer_compile_abi_resource_directory}/Tx81ProfilerABI.h")
+
+set(_wafer_compile_resource_outputs
+  "${_wafer_device_linker_resource}"
+  "${_wafer_compile_crt_source_resource}"
+  "${_wafer_compile_crt_profile_impl_resource}"
+  "${_wafer_compile_crt_include_resource}"
+  "${_wafer_compile_crt_profiler_include_resource}"
+  "${_wafer_compile_abi_direct_dte_resource}"
+  "${_wafer_compile_abi_ncc_resource}"
+  "${_wafer_compile_abi_profiler_resource}")
+add_custom_command(
+  OUTPUT
+    "${_wafer_device_linker_resource}"
+    "${_wafer_compile_crt_source_resource}"
+    "${_wafer_compile_crt_profile_impl_resource}"
+    "${_wafer_compile_crt_include_resource}"
+    "${_wafer_compile_crt_profiler_include_resource}"
+    "${_wafer_compile_abi_direct_dte_resource}"
+    "${_wafer_compile_abi_ncc_resource}"
+    "${_wafer_compile_abi_profiler_resource}"
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+    "${_wafer_compile_resource_directory}"
+    "${_wafer_compile_crt_resource_directory}/src"
+    "${_wafer_compile_crt_resource_directory}/include"
+    "${_wafer_compile_abi_resource_directory}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
+    "${_wafer_device_linker_resource}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_crt.c"
+    "${_wafer_compile_crt_source_resource}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_profiler_impl.inc"
+    "${_wafer_compile_crt_profile_impl_resource}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include/wafer_tx81_crt.h"
+    "${_wafer_compile_crt_include_resource}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include/wafer_tx81_profiler.h"
+    "${_wafer_compile_crt_profiler_include_resource}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81DirectDTEStatusABI.h"
+    "${_wafer_compile_abi_direct_dte_resource}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81NCCABI.h"
+    "${_wafer_compile_abi_ncc_resource}"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81ProfilerABI.h"
+    "${_wafer_compile_abi_profiler_resource}"
+  DEPENDS
+    "${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_crt.c"
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_profiler_impl.inc"
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include/wafer_tx81_crt.h"
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include/wafer_tx81_profiler.h"
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81DirectDTEStatusABI.h"
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81NCCABI.h"
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81ProfilerABI.h"
+  VERBATIM
+)
+if(WAFER_XLA_SPMD_PARTITIONER_HELPER)
+  list(APPEND _wafer_compile_resource_outputs "${_wafer_spmd_helper_resource}")
+  add_custom_command(
+    OUTPUT "${_wafer_spmd_helper_resource}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+      "${_wafer_compile_libexec_directory}"
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+      "${WAFER_XLA_SPMD_PARTITIONER_HELPER}"
+      "${_wafer_spmd_helper_resource}"
+    DEPENDS "${WAFER_XLA_SPMD_PARTITIONER_HELPER}"
+    VERBATIM
+  )
 endif()
+add_custom_target(wafer-compile-resources
+  DEPENDS ${_wafer_compile_resource_outputs}
+)
 
 add_executable(wafer-compile ${_wafer_compile_sources})
 llvm_update_compile_flags(wafer-compile)
+add_dependencies(wafer-compile wafer-compile-resources)
 target_link_libraries(wafer-compile PRIVATE LLVMSupport WaferCompiler)
-target_compile_definitions(wafer-compile PRIVATE
-  WAFER_XLA_SPMD_PARTITIONER_HELPER="${WAFER_XLA_SPMD_PARTITIONER_HELPER}"
-  WAFER_PYTHON_EXECUTABLE="${_wafer_python_executable}"
-  WAFER_DEVICE_LINKER_SCRIPT="${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
-  WAFER_DEVICE_CLANGXX="${_wafer_device_clangxx}"
-)
-if(WAFER_ENABLE_SYSTEMC_MODEL)
-  target_compile_definitions(wafer-compile PRIVATE
-    WAFER_ENABLE_SYSTEMC_MODEL=1)
-  target_link_libraries(wafer-compile PRIVATE WaferSystemCModel)
-  if(WAFER_ENABLE_BULK_MODEL_DEPS)
-    target_compile_definitions(wafer-compile PRIVATE
-      WAFER_ENABLE_TARGET_BULK_MODEL=1)
-    target_link_libraries(wafer-compile PRIVATE WaferTargetBulkModel)
-  endif()
-endif()
 
-add_executable(wafer-compile-test ${_wafer_compile_sources})
+add_executable(wafer-compile-test ${_wafer_compile_sources}
+  ${_wafer_compile_test_sources})
 llvm_update_compile_flags(wafer-compile-test)
+add_dependencies(wafer-compile-test wafer-compile-resources)
 target_link_libraries(wafer-compile-test PRIVATE LLVMSupport WaferCompiler)
 target_compile_definitions(wafer-compile-test PRIVATE
-  WAFER_XLA_SPMD_PARTITIONER_HELPER="${WAFER_XLA_SPMD_PARTITIONER_HELPER}"
-  WAFER_PYTHON_EXECUTABLE="${_wafer_python_executable}"
-  WAFER_DEVICE_LINKER_SCRIPT="${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
-  WAFER_DEVICE_CLANGXX="${_wafer_device_clangxx}"
-  WAFER_ENABLE_TEST_HELPER_OVERRIDE=1
-)
+  WAFER_ENABLE_TEST_HELPER_OVERRIDE=1)
 if(WAFER_ENABLE_SYSTEMC_MODEL)
   target_compile_definitions(wafer-compile-test PRIVATE
     WAFER_ENABLE_SYSTEMC_MODEL=1)
@@ -50,5 +136,36 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     target_link_libraries(wafer-compile-test PRIVATE WaferTargetBulkModel)
   endif()
 endif()
-unset(_wafer_python_executable)
-unset(_wafer_device_clangxx)
+
+# The installed closure only contains a production compiler that can actually
+# run: it requires the frontend importer, the SPMD partitioner dependencies
+# and a configured helper. Feature-off install trees install neither the
+# compiler nor its resources.
+if(WAFER_ENABLE_IMPORTER_DEPS AND WAFER_ENABLE_SPMD_PARTITIONER_DEPS AND
+   WAFER_XLA_SPMD_PARTITIONER_HELPER)
+  include(GNUInstallDirs)
+  install(TARGETS wafer-compile RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(PROGRAMS "${WAFER_XLA_SPMD_PARTITIONER_HELPER}"
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/wafer")
+  install(FILES
+    "${CMAKE_SOURCE_DIR}/tools/wafer_device_link.py"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer")
+  install(FILES
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_crt.c"
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/src/wafer_tx81_profiler_impl.inc"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/crt/src")
+  install(FILES
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include/wafer_tx81_crt.h"
+    "${CMAKE_SOURCE_DIR}/runtime/wafer_crt/include/wafer_tx81_profiler.h"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/crt/include")
+  install(FILES
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81DirectDTEStatusABI.h"
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81NCCABI.h"
+    "${CMAKE_SOURCE_DIR}/include/Wafer/ABI/Tx81ProfilerABI.h"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/wafer/include/Wafer/ABI")
+endif()
+unset(_wafer_compile_resource_directory)
+unset(_wafer_compile_libexec_directory)
+unset(_wafer_device_linker_resource)
+unset(_wafer_spmd_helper_resource)
+unset(_wafer_compile_resource_outputs)
