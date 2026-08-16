@@ -512,3 +512,14 @@
   用std::string拥有并只取视图，或用值传递的std::string成员。
 - 防复发：新代码里任何`StringRef member`绑定本地SmallString时，先确认绑定后该SmallString不再被append/
   resize；评审时对"resolver持有路径引用"这类长生命周期视图重点检查。
+
+## Move-only结果不能引用先于结果销毁的staging文件
+
+- 现象：compiler成功返回`CardExecutable`，但返回后target consumer首次读取parameter就报文件不存在；同时byte-identical
+  helper shard虽未进入range identity，重复文件仍随结果存活，规模账本却显示open次数恒定。
+- 根因：handoff只保存transaction root下的path，外层scope cleanup在public compile返回时先删除root；source每次range/digest
+  再按path打开，真实open/read没有进入只统计establishment的账本；未adopt candidate也没有明确的最后consumer边界。
+- 修复模式：让结果类型自己RAII拥有稳定parent下的唯一目录和move-safe read handle；owned bytes成为header/extent/digest最终事实源；
+  最低层强制read window并记录actual open/window/bytes/max；最后一次verification后adopt真实source并销毁全部剩余candidate。
+- 防复发：直接测试move后删除staging仍能读取且析构清理文件；Card边界断言candidate归零；原地改写fixture明确超过pinned mmap
+  threshold；大range断言window数量/bytes、最大window与零新增open；source-to-package规模账本分开验证identity计数和实际I/O work。

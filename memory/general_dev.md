@@ -251,14 +251,17 @@ source program
 ## Program data ownership
 
 - `MemoryBuffer::getFile`对较大普通文件使用只读mmap；它不冻结其它进程对同一inode的原地写入，不能当owned
-  content。`ProgramDataSource::establish`必须把用户文件流式复制到transaction独占的owned file（1MiB window
-  边复制边SHA-256），header在复制前bounded parse，extent/dtype对owned bytes验证；用户path此后不再打开。
-  mutation测试必须覆盖同inode原地改写（保留header、改写payload区），不能只测rename replacement。
-- payload open/hash/read账本必须覆盖整条source-to-pipeline：source阶段establishment（source_opens）、
-  tensor阶段helper输出candidate establishment（helper_output_readbacks）、每次verification seam header
-  read（header_reads）、region/readback digest（digest_passes）、target consumer range materialization
-  （range_materializations）。tensor-phase verification、readback和CardExecutable边界都必须经resolver消费
-  owned content，任何默认参数触发的path reader都算重复I/O。
+  content。`ProgramDataSource::establish`必须从已打开source descriptor取得size并以1MiB window复制/边写边SHA-256，
+  再从owned descriptor重读header、exact extent、dtype和whole-file digest后发布；用户path此后不再打开。mutation测试必须覆盖超过
+  pinned mmap阈值的同inode原地改写（保留header、改写payload区），不能只测rename replacement。
+- 会随public compile结果继续存活的数据目录不能放在transaction staging下。handoff在稳定output parent下创建唯一
+  RAII目录，source持有move-safe只读handle；析构顺序固定为关闭handle、删除file、删除directory。helper candidate只服务
+  tensor verification，真实partition adopt后，CardExecutable签发前必须销毁全部未采用candidate。
+- payload open/hash/read账本必须覆盖整条compiler-owned source-to-pipeline：`source_opens`只表示canonical/helper
+  establishment分类，实际open另计`file_opens`，最低层positional read另计`read_windows`、`read_bytes`和
+  `maximum_read_window_bytes`；header/digest/helper readback/range materialization/write字段解释这些I/O的目的。
+  tensor-phase verification、readback和CardExecutable边界都必须经resolver消费owned content，任何默认参数触发的
+  path reader都算重复I/O；外部helper进程内不可观测的syscall不能伪装成compiler精确计数。
 - `ProgramDataRange`携带显式来源合同：`OriginalSource`证明source shape==global shape，`MaterializedShard`
   证明source shape==local shape且slice从原点精确覆盖；相同byte count不能替代shape/layout证明。
 - source encoding width（`decodeProgramNpyDescr`）与program boundary admitted dtype

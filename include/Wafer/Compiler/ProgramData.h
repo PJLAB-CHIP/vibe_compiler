@@ -19,8 +19,10 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cassert>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -29,6 +31,12 @@
 #include <vector>
 
 namespace wafer::compiler {
+
+struct ProgramDataIOStatistics;
+
+/// Maximum byte count of one positional program-data read. The same bound is
+/// used for establishment, digest, materialization and target range reads.
+inline constexpr size_t kProgramDataReadWindowBytes = 1 << 20;
 
 /// Dense identity of one transaction-owned payload source.
 struct SourceDataId {
@@ -79,8 +87,7 @@ struct ProgramDataFailure {
   std::string detail;
 };
 
-llvm::StringRef
-stringifyProgramDataFailureKind(ProgramDataFailureKind kind);
+llvm::StringRef stringifyProgramDataFailureKind(ProgramDataFailureKind kind);
 
 /// Element width in bytes for one dtype admitted at the program boundary, or
 /// std::nullopt for dtypes without a target representation and conversion.
@@ -110,8 +117,9 @@ enum class ProgramDataRangeOrigin {
 /// instead of reopening paths.
 class ProgramDataSource final : public frontend::ProgramPayloadSource {
 public:
-  ProgramDataSource(ProgramDataSource &&) = default;
-  ProgramDataSource &operator=(ProgramDataSource &&) = default;
+  ProgramDataSource(ProgramDataSource &&other) noexcept;
+  ProgramDataSource &operator=(ProgramDataSource &&other) noexcept;
+  ~ProgramDataSource() override;
   ProgramDataSource(const ProgramDataSource &) = delete;
   ProgramDataSource &operator=(const ProgramDataSource &) = delete;
 
@@ -141,24 +149,36 @@ public:
 
   /// Bounded read of a source-relative byte span from the owned file. The
   /// span must lie inside the owned file.
-  llvm::Error readPayloadBytes(uint64_t offset,
-                               llvm::MutableArrayRef<uint8_t> out)
-      const override;
+  llvm::Error
+  readPayloadBytes(uint64_t offset,
+                   llvm::MutableArrayRef<uint8_t> out) const override;
 
   /// Whole owned file size in bytes.
   uint64_t getSize() const { return size; }
 
   /// Bounded copy of a source-relative byte span from the owned file.
-  llvm::Error readRange(uint64_t offset, llvm::MutableArrayRef<uint8_t> out)
-      const;
+  llvm::Error readRange(uint64_t offset,
+                        llvm::MutableArrayRef<uint8_t> out) const;
 
 private:
+  friend class ProgramDataHandoff;
+
+  static llvm::Expected<ProgramDataSource>
+  establish(llvm::StringRef path, llvm::StringRef ownedFilePath,
+            llvm::StringRef locator, ProgramDataFailure *failure,
+            std::shared_ptr<ProgramDataIOStatistics> statistics);
+
   ProgramDataSource(std::string ownedFilePath, std::string locator,
                     std::string dtype, std::vector<int64_t> shape,
-                    uint64_t payloadOffset, uint64_t size, std::string digest)
+                    uint64_t payloadOffset, uint64_t size, std::string digest,
+                    llvm::sys::fs::file_t ownedFile,
+                    std::shared_ptr<ProgramDataIOStatistics> statistics)
       : ownedFilePath(std::move(ownedFilePath)), locator(std::move(locator)),
         dtype(std::move(dtype)), shape(std::move(shape)),
-        payloadOffset(payloadOffset), size(size), digest(std::move(digest)) {}
+        payloadOffset(payloadOffset), size(size), digest(std::move(digest)),
+        ownedFile(ownedFile), statistics(std::move(statistics)) {}
+
+  void releaseOwnedFile() noexcept;
 
   std::string ownedFilePath;
   std::string locator;
@@ -167,6 +187,12 @@ private:
   uint64_t payloadOffset;
   uint64_t size;
   std::string digest;
+  /// Kept open for the entire source lifetime. Range readers use positional
+  /// reads on this handle and never reopen the owned path.
+  llvm::sys::fs::file_t ownedFile = llvm::sys::fs::kInvalidFile;
+  /// Shared with the move-only handoff so reads remain accountable after the
+  /// handoff itself moves into a CardExecutable.
+  std::shared_ptr<ProgramDataIOStatistics> statistics;
 };
 
 /// Checked byte region one program tensor consumes inside one source. A range
@@ -218,9 +244,8 @@ private:
                    uint64_t regionOffset, uint64_t regionLength,
                    std::vector<int64_t> payloadShape, bool contiguous)
       : tensorId(tensorId), dtype(std::move(dtype)),
-        globalShape(std::move(globalShape)),
-        localShape(std::move(localShape)), distribution(distribution),
-        sliceOffsets(std::move(sliceOffsets)),
+        globalShape(std::move(globalShape)), localShape(std::move(localShape)),
+        distribution(distribution), sliceOffsets(std::move(sliceOffsets)),
         sliceSizes(std::move(sliceSizes)), sourceId(sourceId),
         regionOffset(regionOffset), regionLength(regionLength),
         payloadShape(std::move(payloadShape)), contiguous(contiguous) {}
@@ -248,11 +273,21 @@ struct ProgramDataIOStatistics {
   /// User payload files opened at establishment (canonical payloads and
   /// helper output readbacks).
   uint64_t sourceOpens = 0;
+  /// Every successfully opened payload-related file handle, including source
+  /// inputs, owned output/read handles and materialization write/readback.
+  uint64_t fileOpens = 0;
+  /// Actual bounded positional read operations over payload bytes.
+  uint64_t readWindows = 0;
+  /// Bytes returned by those bounded reads.
+  uint64_t readBytes = 0;
+  /// Largest single positional read. This must never exceed the program-data
+  /// file window contract.
+  uint64_t maximumReadWindowBytes = 0;
   /// Bounded NPY header parses: establishment plus every verification seam
   /// read of owned content.
   uint64_t headerReads = 0;
-  /// Whole-content SHA-256 passes: establishment digests, shard region
-  /// digests, and materialization readback digests.
+  /// Whole-content SHA-256 passes: source-copy and owned-content establishment
+  /// digests, shard region digests, and materialization readback digests.
   uint64_t digestPasses = 0;
   /// Helper output payloads read back at establishment (shards that the
   /// helper produced for the transaction).
@@ -273,23 +308,23 @@ struct ProgramDataIOStatistics {
 /// tensor with unit strides; contiguous regions hash one span, strided
 /// regions gather rows through a bounded window. `failure` classifies every
 /// recoverable failure when set.
-llvm::Expected<std::string>
-computePayloadRegionDigest(const ProgramDataSource &source,
-                           llvm::ArrayRef<int64_t> offsets,
-                           llvm::ArrayRef<int64_t> sizes,
-                           ProgramDataFailure *failure = nullptr);
+llvm::Expected<std::string> computePayloadRegionDigest(
+    const ProgramDataSource &source, llvm::ArrayRef<int64_t> offsets,
+    llvm::ArrayRef<int64_t> sizes, ProgramDataFailure *failure = nullptr);
 
 /// Move-only owner of all-and-only live payload sources and ranges of one
 /// compilation transaction. It lives with the CardExecutable until the target
-/// package stage has consumed the data (Q56). Owned files are stored under the
-/// scratch directory the handoff was constructed with.
+/// package stage has consumed the data. Owned files are stored under the unique
+/// storage directory the handoff owns through RAII.
 class ProgramDataHandoff {
 public:
-  /// `scratchDirectory` must be a transaction-private directory the handoff
-  /// may create `program-data-sources/` inside.
-  explicit ProgramDataHandoff(std::string scratchDirectory = {});
-  ProgramDataHandoff(ProgramDataHandoff &&) = default;
-  ProgramDataHandoff &operator=(ProgramDataHandoff &&) = default;
+  /// `storageParent` is a stable parent under which the handoff lazily creates
+  /// a unique private directory. The handoff, not the compilation staging
+  /// scope, removes that directory after all source handles are closed.
+  explicit ProgramDataHandoff(std::string storageParent = {});
+  ProgramDataHandoff(ProgramDataHandoff &&other) noexcept;
+  ProgramDataHandoff &operator=(ProgramDataHandoff &&other) noexcept;
+  ~ProgramDataHandoff();
   ProgramDataHandoff(const ProgramDataHandoff &) = delete;
   ProgramDataHandoff &operator=(const ProgramDataHandoff &) = delete;
 
@@ -313,6 +348,11 @@ public:
   /// `establishHelperOutput`; its establishment I/O is not recounted.
   SourceDataId adoptCandidate(const ProgramDataSource *candidate);
 
+  /// Drops every helper candidate that was not adopted as a live source.
+  /// This is called after the final tensor-program verification and before
+  /// the handoff is moved into a CardExecutable.
+  void discardUnadoptedCandidates();
+
   /// Returns the source or candidate carrying `locator`, or nullptr. Used by
   /// the verification resolver seam after establishment.
   const ProgramDataSource *findByLocator(llvm::StringRef locator) const;
@@ -324,6 +364,7 @@ public:
   const ProgramDataRange *findRange(ProgramTensorId tensorId) const;
   llvm::ArrayRef<ProgramDataRange> getRanges() const { return ranges; }
   size_t getSourceCount() const { return sources.size(); }
+  size_t getCandidateCount() const { return candidates.size(); }
 
   /// Materializes one range into `out` and accounts the read. `out` must have
   /// exactly range.getRegionLength() bytes.
@@ -346,26 +387,32 @@ public:
   /// referenced owned source region. Both region digests are computed over
   /// owned content with bounded windows. Accounts the digest passes in the
   /// I/O ledger.
-  llvm::Expected<bool>
-  verifyShardAgainstSource(const ProgramDataSource &shard,
-                           SourceDataId originalSourceId,
-                           llvm::ArrayRef<int64_t> offsets,
-                           llvm::ArrayRef<int64_t> sizes,
-                           ProgramDataFailure *failure = nullptr);
+  llvm::Expected<bool> verifyShardAgainstSource(
+      const ProgramDataSource &shard, SourceDataId originalSourceId,
+      llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,
+      ProgramDataFailure *failure = nullptr);
 
   const ProgramDataIOStatistics &getIOStatistics() const {
-    return ioStatistics;
+    assert(ioStatistics && "moved-from program data handoff has no ledger");
+    return *ioStatistics;
   }
-  ProgramDataIOStatistics &getIOStatistics() { return ioStatistics; }
+  ProgramDataIOStatistics &getIOStatistics() {
+    assert(ioStatistics && "moved-from program data handoff has no ledger");
+    return *ioStatistics;
+  }
 
 private:
-  std::string scratchDirectory;
+  llvm::Error ensureOwnedDirectory(llvm::StringRef locator,
+                                   ProgramDataFailure *failure);
+  void releaseOwnedStorage() noexcept;
+
+  std::string storageParent;
+  std::string ownedDirectory;
+  uint64_t nextOwnedFileOrdinal = 0;
+  std::shared_ptr<ProgramDataIOStatistics> ioStatistics;
   std::vector<std::unique_ptr<ProgramDataSource>> sources;
   std::vector<std::unique_ptr<ProgramDataSource>> candidates;
   std::vector<ProgramDataRange> ranges;
-  /// Mutable so const handoff accessors can still account target-consumer
-  /// materialization reads without weakening source/range ownership.
-  mutable ProgramDataIOStatistics ioStatistics;
 };
 
 } // namespace wafer::compiler

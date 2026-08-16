@@ -2,13 +2,13 @@
 
 #include "Wafer/Compiler/ProgramData.h"
 #include "Wafer/Compiler/ProgramInvocation.h"
-#include "Wafer/InitWaferDialects.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "Wafer/Frontend/Program.h"
 
-#include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
+#include "../../lib/Wafer/Compiler/CompilationInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -60,8 +60,8 @@ protected:
   void writeNpy(llvm::StringRef filename, llvm::StringRef descr,
                 llvm::ArrayRef<int64_t> shape,
                 llvm::ArrayRef<uint8_t> payload) {
-    std::string header = "{'descr': '" + descr.str() +
-                         "', 'fortran_order': False, 'shape': (";
+    std::string header =
+        "{'descr': '" + descr.str() + "', 'fortran_order': False, 'shape': (";
     for (auto [index, dim] : llvm::enumerate(shape)) {
       if (index)
         header += ", ";
@@ -115,16 +115,19 @@ TEST_F(ProgramDataTest, EstablishmentVerifiesHeaderExtentAndDigest) {
   ASSERT_TRUE(static_cast<bool>(source));
   EXPECT_EQ(source->getDType(), "f32");
   EXPECT_TRUE(source->getShape() == llvm::ArrayRef<int64_t>({2, 2}));
-  EXPECT_EQ(source->getSize(), static_cast<uint64_t>(source->getPayloadOffset()) +
-                                  payload.size());
+  EXPECT_EQ(source->getSize(),
+            static_cast<uint64_t>(source->getPayloadOffset()) + payload.size());
   EXPECT_EQ(source->getLocator(), "data/weight");
   EXPECT_FALSE(source->getContentDigest().empty());
+  auto ownedDigest =
+      ProgramDataHandoff::computeFileDigest(source->getOwnedFilePath());
+  ASSERT_TRUE(static_cast<bool>(ownedDigest));
+  EXPECT_EQ(*ownedDigest, source->getContentDigest());
 
   // Owned content: reads observe the established bytes.
   std::vector<uint8_t> readback(payload.size());
-  ASSERT_FALSE(
-      static_cast<bool>(source->readRange(source->getPayloadOffset(),
-                                          readback)));
+  ASSERT_FALSE(static_cast<bool>(
+      source->readRange(source->getPayloadOffset(), readback)));
   EXPECT_EQ(readback, payload);
 
   // Re-establishment of unchanged bytes produces the same digest.
@@ -217,20 +220,23 @@ TEST_F(ProgramDataTest, EstablishmentOwnsContentAgainstInPlaceMutation) {
   // file mapping, must answer reads after an in-place rewrite of the same
   // inode.
   std::vector<float> values;
-  for (int index = 0; index < 2048; ++index)
+  for (int index = 0; index < 8192; ++index)
     values.push_back(static_cast<float>(index));
   std::vector<uint8_t> payload = f32Bytes(values);
-  writeNpy("large.npy", "<f4", {2048}, payload);
+  writeNpy("large.npy", "<f4", {8192}, payload);
 
   auto source = ProgramDataSource::establish(
       path("large.npy"), ownedPath("large"), "data/large", nullptr);
   ASSERT_TRUE(static_cast<bool>(source));
+  EXPECT_GT(source->getSize(), 16384u)
+      << "fixture must exceed the pinned LLVM mmap threshold";
   const std::string digest = source->getContentDigest().str();
 
   // In-place rewrite of the same inode: the NPY header stays intact, the
   // payload bytes change to a different pattern of the same size.
   {
-    std::vector<uint8_t> prefix(static_cast<size_t>(source->getPayloadOffset()));
+    std::vector<uint8_t> prefix(
+        static_cast<size_t>(source->getPayloadOffset()));
     ASSERT_FALSE(static_cast<bool>(source->readRange(0, prefix)));
     std::vector<uint8_t> replacement(payload.size(), 0xAA);
     llvm::SmallString<256> target = path("large.npy");
@@ -259,8 +265,8 @@ TEST_F(ProgramDataTest, EstablishmentOwnsContentAgainstInPlaceMutation) {
 }
 
 TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
-  std::vector<uint8_t> payload = f32Bytes({1.0f, 2.0f, 3.0f, 4.0f,
-                                           5.0f, 6.0f, 7.0f, 8.0f});
+  std::vector<uint8_t> payload =
+      f32Bytes({1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f});
   writeNpy("range.npy", "<f4", {4, 2}, payload);
 
   auto source = ProgramDataSource::establish(
@@ -268,20 +274,19 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
   ASSERT_TRUE(static_cast<bool>(source));
   const ProgramTensorId tensorId{ProgramResourceRole::Parameter, 0};
 
-  auto classify = [&](llvm::ArrayRef<int64_t> offsets,
-                      llvm::ArrayRef<int64_t> sizes,
-                      llvm::ArrayRef<int64_t> strides,
-                      ProgramDataFailureKind expected) {
-    ProgramDataFailure failure;
-    auto range = ProgramDataRange::create(
-        tensorId, "f32", {4, 2}, sizes,
-        wafer::frontend::ProgramDistributionKind::Partitioned,
-        ProgramDataRangeOrigin::OriginalSource, offsets, sizes, strides,
-        SourceDataId{0}, *source, &failure);
-    ASSERT_FALSE(static_cast<bool>(range));
-    llvm::consumeError(range.takeError());
-    EXPECT_EQ(failure.kind, expected);
-  };
+  auto classify =
+      [&](llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,
+          llvm::ArrayRef<int64_t> strides, ProgramDataFailureKind expected) {
+        ProgramDataFailure failure;
+        auto range = ProgramDataRange::create(
+            tensorId, "f32", {4, 2}, sizes,
+            wafer::frontend::ProgramDistributionKind::Partitioned,
+            ProgramDataRangeOrigin::OriginalSource, offsets, sizes, strides,
+            SourceDataId{0}, *source, &failure);
+        ASSERT_FALSE(static_cast<bool>(range));
+        llvm::consumeError(range.takeError());
+        EXPECT_EQ(failure.kind, expected);
+      };
 
   // Full tensor: contiguous, materializes the whole payload.
   {
@@ -290,8 +295,8 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
         tensorId, "f32", {4, 2}, {4, 2},
         wafer::frontend::ProgramDistributionKind::Replicated,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 0},
-        std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1},
-        SourceDataId{0}, *source, &failure);
+        std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
+        *source, &failure);
     ASSERT_TRUE(static_cast<bool>(range));
     EXPECT_EQ(range->getRegionLength(), payload.size());
     std::vector<uint8_t> out(payload.size());
@@ -306,8 +311,8 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
         tensorId, "f32", {4, 2}, {2, 2},
         wafer::frontend::ProgramDistributionKind::Partitioned,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{1, 0},
-        std::vector<int64_t>{2, 2}, std::vector<int64_t>{1, 1},
-        SourceDataId{0}, *source, &failure);
+        std::vector<int64_t>{2, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
+        *source, &failure);
     ASSERT_TRUE(static_cast<bool>(range));
     std::vector<uint8_t> out(range->getRegionLength());
     ASSERT_FALSE(static_cast<bool>(range->materialize(*source, out)));
@@ -322,8 +327,8 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
         tensorId, "f32", {4, 2}, {4, 1},
         wafer::frontend::ProgramDistributionKind::Partitioned,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 1},
-        std::vector<int64_t>{4, 1}, std::vector<int64_t>{1, 1},
-        SourceDataId{0}, *source, &failure);
+        std::vector<int64_t>{4, 1}, std::vector<int64_t>{1, 1}, SourceDataId{0},
+        *source, &failure);
     ASSERT_TRUE(static_cast<bool>(range));
     std::vector<uint8_t> out(range->getRegionLength());
     ASSERT_FALSE(static_cast<bool>(range->materialize(*source, out)));
@@ -341,8 +346,8 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
         tensorId, "f16", {4, 2}, {4, 2},
         wafer::frontend::ProgramDistributionKind::Replicated,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 0},
-        std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1},
-        SourceDataId{0}, *source, &failure);
+        std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
+        *source, &failure);
     ASSERT_FALSE(static_cast<bool>(range));
     llvm::consumeError(range.takeError());
     EXPECT_EQ(failure.kind, ProgramDataFailureKind::DTypeMismatch);
@@ -359,8 +364,8 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
         tensorId, "f32", {4, 2}, {4, 2},
         wafer::frontend::ProgramDistributionKind::Replicated,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 0},
-        std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1},
-        SourceDataId{0}, *small, &failure);
+        std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
+        *small, &failure);
     ASSERT_FALSE(static_cast<bool>(range));
     llvm::consumeError(range.takeError());
     EXPECT_EQ(failure.kind, ProgramDataFailureKind::ShapeMismatch);
@@ -368,26 +373,24 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
 }
 
 TEST_F(ProgramDataTest, RangeCreationProvesSourceShapeByOrigin) {
-  std::vector<uint8_t> payload = f32Bytes({1.0f, 2.0f, 3.0f, 4.0f,
-                                           5.0f, 6.0f, 7.0f, 8.0f});
+  std::vector<uint8_t> payload =
+      f32Bytes({1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f});
   writeNpy("shape.npy", "<f4", {4, 2}, payload);
   auto source = ProgramDataSource::establish(
       path("shape.npy"), ownedPath("shape"), "data/weight", nullptr);
   ASSERT_TRUE(static_cast<bool>(source));
   const ProgramTensorId tensorId{ProgramResourceRole::Parameter, 0};
 
-  auto create = [&](llvm::ArrayRef<int64_t> global,
-                    llvm::ArrayRef<int64_t> local,
-                    ProgramDataRangeOrigin origin,
-                    llvm::ArrayRef<int64_t> offsets,
-                    llvm::ArrayRef<int64_t> sizes,
-                    ProgramDataFailure *failure) {
-    return ProgramDataRange::create(
-        tensorId, "f32", global, local,
-        wafer::frontend::ProgramDistributionKind::Partitioned, origin,
-        offsets, sizes, std::vector<int64_t>(offsets.size(), 1),
-        SourceDataId{0}, *source, failure);
-  };
+  auto create =
+      [&](llvm::ArrayRef<int64_t> global, llvm::ArrayRef<int64_t> local,
+          ProgramDataRangeOrigin origin, llvm::ArrayRef<int64_t> offsets,
+          llvm::ArrayRef<int64_t> sizes, ProgramDataFailure *failure) {
+        return ProgramDataRange::create(
+            tensorId, "f32", global, local,
+            wafer::frontend::ProgramDistributionKind::Partitioned, origin,
+            offsets, sizes, std::vector<int64_t>(offsets.size(), 1),
+            SourceDataId{0}, *source, failure);
+      };
 
   // Same rank and byte count, different shape: an original-source range must
   // prove source shape == global shape.
@@ -411,8 +414,9 @@ TEST_F(ProgramDataTest, RangeCreationProvesSourceShapeByOrigin) {
   // A materialized shard source must carry exactly the local shape.
   {
     ProgramDataFailure failure;
-    auto range = create({4, 2}, {2, 2}, ProgramDataRangeOrigin::MaterializedShard,
-                        {0, 0}, {2, 2}, &failure);
+    auto range =
+        create({4, 2}, {2, 2}, ProgramDataRangeOrigin::MaterializedShard,
+               {0, 0}, {2, 2}, &failure);
     ASSERT_FALSE(static_cast<bool>(range));
     llvm::consumeError(range.takeError());
     EXPECT_EQ(failure.kind, ProgramDataFailureKind::ShapeMismatch);
@@ -420,8 +424,9 @@ TEST_F(ProgramDataTest, RangeCreationProvesSourceShapeByOrigin) {
   {
     // Non-zero slice offsets are not a materialized shard.
     ProgramDataFailure failure;
-    auto range = create({4, 2}, {2, 2}, ProgramDataRangeOrigin::MaterializedShard,
-                        {2, 0}, {2, 2}, &failure);
+    auto range =
+        create({4, 2}, {2, 2}, ProgramDataRangeOrigin::MaterializedShard,
+               {2, 0}, {2, 2}, &failure);
     ASSERT_FALSE(static_cast<bool>(range));
     llvm::consumeError(range.takeError());
     EXPECT_EQ(failure.kind, ProgramDataFailureKind::ShapeMismatch);
@@ -429,8 +434,9 @@ TEST_F(ProgramDataTest, RangeCreationProvesSourceShapeByOrigin) {
   {
     // Partial coverage is not a materialized shard.
     ProgramDataFailure failure;
-    auto range = create({4, 2}, {2, 2}, ProgramDataRangeOrigin::MaterializedShard,
-                        {0, 0}, {2, 1}, &failure);
+    auto range =
+        create({4, 2}, {2, 2}, ProgramDataRangeOrigin::MaterializedShard,
+               {0, 0}, {2, 1}, &failure);
     ASSERT_FALSE(static_cast<bool>(range));
     llvm::consumeError(range.takeError());
     EXPECT_EQ(failure.kind, ProgramDataFailureKind::ShapeMismatch);
@@ -448,8 +454,8 @@ TEST_F(ProgramDataTest, RangeCreationProvesSourceShapeByOrigin) {
         tensorId, "f32", {4, 2}, {2, 2},
         wafer::frontend::ProgramDistributionKind::Partitioned,
         ProgramDataRangeOrigin::MaterializedShard, std::vector<int64_t>{0, 0},
-        std::vector<int64_t>{2, 2}, std::vector<int64_t>{1, 1},
-        SourceDataId{0}, *shard, &failure);
+        std::vector<int64_t>{2, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
+        *shard, &failure);
     ASSERT_TRUE(static_cast<bool>(range));
     std::vector<uint8_t> out(range->getRegionLength());
     ASSERT_FALSE(static_cast<bool>(range->materialize(*shard, out)));
@@ -463,8 +469,8 @@ TEST_F(ProgramDataTest, HandoffOwnsSourcesAndResolvesRanges) {
 
   ProgramDataHandoff handoff(temporaryDirectory.str().str());
   ProgramDataFailure failure;
-  auto id = handoff.establishSource(path("handoff.npy"), "data/weight",
-                                    &failure);
+  auto id =
+      handoff.establishSource(path("handoff.npy"), "data/weight", &failure);
   ASSERT_TRUE(static_cast<bool>(id));
   EXPECT_EQ(id->value, 0);
   EXPECT_EQ(handoff.getSourceCount(), 1u);
@@ -479,8 +485,8 @@ TEST_F(ProgramDataTest, HandoffOwnsSourcesAndResolvesRanges) {
   ASSERT_TRUE(static_cast<bool>(range));
   ASSERT_FALSE(static_cast<bool>(handoff.addRange(std::move(*range))));
 
-  const ProgramDataRange *found = handoff.findRange(
-      {ProgramResourceRole::Parameter, 0});
+  const ProgramDataRange *found =
+      handoff.findRange({ProgramResourceRole::Parameter, 0});
   ASSERT_NE(found, nullptr);
   EXPECT_EQ(found->getSourceId(), *id);
   EXPECT_EQ(handoff.findRange({ProgramResourceRole::Parameter, 1}), nullptr);
@@ -504,7 +510,91 @@ TEST_F(ProgramDataTest, HandoffOwnsSourcesAndResolvesRanges) {
   EXPECT_EQ(out, payload);
   EXPECT_EQ(handoff.getIOStatistics().rangeMaterializations, 1u);
   EXPECT_EQ(handoff.getIOStatistics().sourceOpens, 1u);
-  EXPECT_EQ(handoff.getIOStatistics().digestPasses, 1u);
+  EXPECT_EQ(handoff.getIOStatistics().fileOpens, 3u);
+  EXPECT_EQ(handoff.getIOStatistics().readWindows, 4u);
+  EXPECT_EQ(handoff.getIOStatistics().headerReads, 2u);
+  EXPECT_EQ(handoff.getIOStatistics().digestPasses, 2u);
+}
+
+TEST_F(ProgramDataTest, HandoffStorageSurvivesMoveAndStagingCleanup) {
+  std::vector<uint8_t> payload = f32Bytes({1.0f, 2.0f, 3.0f, 4.0f});
+  writeNpy("retained.npy", "<f4", {4}, payload);
+
+  llvm::SmallString<256> staging = path("compile-staging");
+  ASSERT_FALSE(llvm::sys::fs::create_directory(staging));
+  std::unique_ptr<ProgramDataHandoff> retained;
+  SourceDataId sourceId;
+  std::string ownedPath;
+  {
+    // Production uses the stable output parent, not `staging`, as the
+    // handoff storage parent.
+    ProgramDataHandoff handoff(temporaryDirectory.str().str());
+    ProgramDataFailure failure;
+    auto established = handoff.establishSource(path("retained.npy"),
+                                               "data/retained", &failure);
+    ASSERT_TRUE(static_cast<bool>(established));
+    sourceId = *established;
+    ownedPath = handoff.getSource(sourceId).getOwnedFilePath().str();
+    retained = std::make_unique<ProgramDataHandoff>(std::move(handoff));
+  }
+
+  ASSERT_FALSE(llvm::sys::fs::remove_directories(staging));
+  EXPECT_TRUE(llvm::sys::fs::exists(ownedPath));
+  std::vector<uint8_t> readback(payload.size());
+  ASSERT_FALSE(static_cast<bool>(retained->getSource(sourceId).readRange(
+      retained->getSource(sourceId).getPayloadOffset(), readback)));
+  EXPECT_EQ(readback, payload);
+
+  retained.reset();
+  EXPECT_FALSE(llvm::sys::fs::exists(ownedPath));
+}
+
+TEST_F(ProgramDataTest, LargeRangeUsesBoundedAccountedReadWindows) {
+  constexpr size_t kElementCount = 700000;
+  std::vector<uint8_t> payload(kElementCount * sizeof(float));
+  for (size_t index = 0; index < payload.size(); ++index)
+    payload[index] = static_cast<uint8_t>(index);
+  writeNpy("large-range.npy", "<f4", {static_cast<int64_t>(kElementCount)},
+           payload);
+
+  ProgramDataHandoff handoff(temporaryDirectory.str().str());
+  ProgramDataFailure failure;
+  auto sourceId = handoff.establishSource(path("large-range.npy"),
+                                          "data/large-range", &failure);
+  ASSERT_TRUE(static_cast<bool>(sourceId));
+  auto range = ProgramDataRange::create(
+      {ProgramResourceRole::Parameter, 0}, "f32",
+      {static_cast<int64_t>(kElementCount)},
+      {static_cast<int64_t>(kElementCount)},
+      wafer::frontend::ProgramDistributionKind::Replicated,
+      ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0},
+      std::vector<int64_t>{static_cast<int64_t>(kElementCount)},
+      std::vector<int64_t>{1}, *sourceId, handoff.getSource(*sourceId),
+      &failure);
+  ASSERT_TRUE(static_cast<bool>(range));
+  ASSERT_FALSE(static_cast<bool>(handoff.addRange(std::move(*range))));
+  const ProgramDataRange *establishedRange =
+      handoff.findRange({ProgramResourceRole::Parameter, 0});
+  ASSERT_NE(establishedRange, nullptr);
+
+  const uint64_t windowsBefore = handoff.getIOStatistics().readWindows;
+  const uint64_t bytesBefore = handoff.getIOStatistics().readBytes;
+  const uint64_t opensBefore = handoff.getIOStatistics().fileOpens;
+  std::vector<uint8_t> materialized(payload.size());
+  ASSERT_FALSE(static_cast<bool>(
+      handoff.materializeRange(*establishedRange, materialized)));
+  EXPECT_EQ(materialized, payload);
+  const uint64_t expectedWindows =
+      (payload.size() + kProgramDataReadWindowBytes - 1) /
+      kProgramDataReadWindowBytes;
+  EXPECT_EQ(handoff.getIOStatistics().readWindows - windowsBefore,
+            expectedWindows);
+  EXPECT_EQ(handoff.getIOStatistics().readBytes - bytesBefore, payload.size());
+  EXPECT_EQ(handoff.getIOStatistics().fileOpens, opensBefore)
+      << "range reads must reuse the source-owned handle";
+  EXPECT_LE(handoff.getIOStatistics().maximumReadWindowBytes,
+            kProgramDataReadWindowBytes);
+  EXPECT_EQ(handoff.getIOStatistics().rangeMaterializations, 1u);
 }
 
 TEST_F(ProgramDataTest, VerifyShardAgainstSourceDeduplicatesAndAdopts) {
@@ -518,8 +608,8 @@ TEST_F(ProgramDataTest, VerifyShardAgainstSourceDeduplicatesAndAdopts) {
 
   ProgramDataHandoff handoff(temporaryDirectory.str().str());
   ProgramDataFailure failure;
-  auto originalId = handoff.establishSource(path("original.npy"),
-                                            "data/weight", &failure);
+  auto originalId =
+      handoff.establishSource(path("original.npy"), "data/weight", &failure);
   ASSERT_TRUE(static_cast<bool>(originalId));
 
   auto replica = handoff.establishHelperOutput(
@@ -548,26 +638,35 @@ TEST_F(ProgramDataTest, VerifyShardAgainstSourceDeduplicatesAndAdopts) {
   EXPECT_FALSE(*partitioned);
   SourceDataId shardId = handoff.adoptCandidate(*realPartition);
   EXPECT_EQ(handoff.getSourceCount(), 2u);
+  EXPECT_EQ(handoff.getCandidateCount(), 1u);
   EXPECT_EQ(handoff.getSource(shardId).getContentDigest(),
             (*realPartition)->getContentDigest());
 
   // Region digest failures are typed, not raw I/O errors.
   ProgramDataFailure rankFailure;
   llvm::Expected<bool> badRank = handoff.verifyShardAgainstSource(
-      **replica, *originalId, std::vector<int64_t>{0},
-      std::vector<int64_t>{2}, &rankFailure);
+      **replica, *originalId, std::vector<int64_t>{0}, std::vector<int64_t>{2},
+      &rankFailure);
   ASSERT_FALSE(static_cast<bool>(badRank));
   llvm::consumeError(badRank.takeError());
   EXPECT_EQ(rankFailure.kind, ProgramDataFailureKind::ShapeMismatch);
 
+  const std::string unusedCandidatePath = (*replica)->getOwnedFilePath().str();
+  EXPECT_TRUE(llvm::sys::fs::exists(unusedCandidatePath));
+  handoff.discardUnadoptedCandidates();
+  EXPECT_EQ(handoff.getCandidateCount(), 0u);
+  EXPECT_FALSE(llvm::sys::fs::exists(unusedCandidatePath));
+
   // The I/O ledger covers every establishment and digest pass: two helper
-  // outputs, one canonical source, whole-file digests for all three, two
-  // shard region-digest pairs, plus the failed-rank attempt is classified
-  // before any I/O.
+  // outputs, one canonical source, source-copy and owned-content digests for
+  // all three, two shard region-digest pairs, plus the failed-rank attempt is
+  // classified before any I/O.
   EXPECT_EQ(handoff.getIOStatistics().sourceOpens, 3u);
-  EXPECT_EQ(handoff.getIOStatistics().headerReads, 3u);
+  EXPECT_EQ(handoff.getIOStatistics().fileOpens, 9u);
+  EXPECT_EQ(handoff.getIOStatistics().readWindows, 13u);
+  EXPECT_EQ(handoff.getIOStatistics().headerReads, 6u);
   EXPECT_EQ(handoff.getIOStatistics().helperOutputReadbacks, 2u);
-  EXPECT_EQ(handoff.getIOStatistics().digestPasses, 7u);
+  EXPECT_EQ(handoff.getIOStatistics().digestPasses, 10u);
 }
 
 TEST_F(ProgramDataTest, MaterializeSourceToFileVerifiesDigest) {
@@ -576,17 +675,18 @@ TEST_F(ProgramDataTest, MaterializeSourceToFileVerifiesDigest) {
 
   ProgramDataHandoff handoff(temporaryDirectory.str().str());
   ProgramDataFailure failure;
-  auto id = handoff.establishSource(path("copy.npy"), "data/weight",
-                                    &failure);
+  auto id = handoff.establishSource(path("copy.npy"), "data/weight", &failure);
   ASSERT_TRUE(static_cast<bool>(id));
 
   llvm::SmallString<256> destination = path("materialized.npy");
-  ASSERT_FALSE(static_cast<bool>(
-      handoff.materializeSourceToFile(*id, destination)));
+  ASSERT_FALSE(
+      static_cast<bool>(handoff.materializeSourceToFile(*id, destination)));
   auto digest = ProgramDataHandoff::computeFileDigest(destination);
   ASSERT_TRUE(static_cast<bool>(digest));
   EXPECT_EQ(*digest, handoff.getSource(*id).getContentDigest());
   EXPECT_EQ(handoff.getIOStatistics().materializedFileWrites, 1u);
+  EXPECT_EQ(handoff.getIOStatistics().fileOpens, 5u);
+  EXPECT_EQ(handoff.getIOStatistics().readWindows, 5u);
   EXPECT_EQ(handoff.getIOStatistics().materializedWriteBytes,
             handoff.getSource(*id).getSize());
 
@@ -610,8 +710,7 @@ TEST_F(ProgramDataTest, MaterializationFailuresCarryTypedClassification) {
 
   ProgramDataHandoff handoff(temporaryDirectory.str().str());
   ProgramDataFailure failure;
-  auto id = handoff.establishSource(path("copy.npy"), "data/weight",
-                                    &failure);
+  auto id = handoff.establishSource(path("copy.npy"), "data/weight", &failure);
   ASSERT_TRUE(static_cast<bool>(id));
 
   // A destination whose parent is a regular file cannot be created: the
@@ -641,8 +740,8 @@ TEST_F(ProgramDataTest, MaterializationFailuresCarryTypedClassification) {
   // not a raw environment error.
   ProgramDataHandoff unrooted;
   ProgramDataFailure unrootedFailure;
-  auto unrootedId = unrooted.establishSource(
-      path("copy.npy"), "data/weight", &unrootedFailure);
+  auto unrootedId = unrooted.establishSource(path("copy.npy"), "data/weight",
+                                             &unrootedFailure);
   ASSERT_FALSE(static_cast<bool>(unrootedId));
   llvm::consumeError(unrootedId.takeError());
   EXPECT_EQ(unrootedFailure.kind, ProgramDataFailureKind::MaterializationIO);
@@ -650,13 +749,13 @@ TEST_F(ProgramDataTest, MaterializationFailuresCarryTypedClassification) {
 
 TEST_F(ProgramDataTest, SharedProgramTensorViewsNeverDuplicatePayload) {
   std::vector<uint8_t> payload = f32Bytes({1.0f, 2.0f, 3.0f, 4.0f});
-  auto storage =
-      std::make_shared<const std::vector<uint8_t>>(payload);
+  auto storage = std::make_shared<const std::vector<uint8_t>>(payload);
   auto tensor = ProgramTensor::share("f32", {2, 2}, storage, 0);
   ASSERT_TRUE(static_cast<bool>(tensor));
   EXPECT_EQ(tensor->getBytes().size(), payload.size());
   EXPECT_EQ(tensor->getBytes().data(), storage->data());
-  EXPECT_EQ(llvm::ArrayRef<uint8_t>(tensor->getBytes()), llvm::ArrayRef<uint8_t>(payload));
+  EXPECT_EQ(llvm::ArrayRef<uint8_t>(tensor->getBytes()),
+            llvm::ArrayRef<uint8_t>(payload));
 
   // Out-of-bounds views are rejected.
   auto invalid = ProgramTensor::share("f32", {2, 2}, storage, 2);
@@ -707,6 +806,7 @@ shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
 TEST_F(ProgramDataTest, PrepareProgramInvocationsMaterializesOnceAcrossTiles) {
   std::vector<uint8_t> payload = f32Bytes({1.0f, 2.0f, 3.0f, 4.0f});
   writeNpy("weight.npy", "<f4", {4}, payload);
+  writeNpy("replicated-shard.npy", "<f4", {4}, payload);
 
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
@@ -748,8 +848,7 @@ module {
   wafer::frontend::ProgramParameterBinding parameter;
   parameter.argumentIndex = 1;
   parameter.name = "weight";
-  parameter.distribution =
-      wafer::frontend::ProgramDistributionKind::Replicated;
+  parameter.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   parameter.globalShape = {4};
   parameter.localShape = {4};
   parameter.dtype = "f32";
@@ -765,6 +864,11 @@ module {
   auto sourceId =
       handoff.establishSource(path("weight.npy"), "data/weight", &failure);
   ASSERT_TRUE(static_cast<bool>(sourceId));
+  auto unusedCandidate = handoff.establishHelperOutput(
+      path("replicated-shard.npy"),
+      "parameter_shards/weight/partition_00000.npy", &failure);
+  ASSERT_TRUE(static_cast<bool>(unusedCandidate));
+  EXPECT_EQ(handoff.getCandidateCount(), 1u);
   ProgramDataFailure rangeFailure;
   auto range = ProgramDataRange::create(
       {ProgramResourceRole::Parameter, 1}, "f32", {4}, {4},
@@ -781,12 +885,13 @@ module {
       context, *tensorProgram, std::move(program), *config,
       wafer::OptimizationConfig::none(), diagnostics, std::nullopt, handoff);
   if (!cardExecutable)
-    FAIL() << diagnosticsText
-           << llvm::toString(cardExecutable.takeError());
+    FAIL() << diagnosticsText << llvm::toString(cardExecutable.takeError());
   ASSERT_EQ(cardExecutable->getTileExecutables().size(), 16u);
+  EXPECT_EQ(cardExecutable->getProgramDataHandoff().getCandidateCount(), 0u)
+      << "CardExecutable must retain only adopted live sources";
 
-  auto inputTensor = ProgramTensor::create("f32", {4},
-      f32Bytes({9.0f, 9.0f, 9.0f, 9.0f}));
+  auto inputTensor =
+      ProgramTensor::create("f32", {4}, f32Bytes({9.0f, 9.0f, 9.0f, 9.0f}));
   ASSERT_TRUE(static_cast<bool>(inputTensor));
   ProgramGlobalInputBinding input{0, std::move(*inputTensor)};
   llvm::Expected<std::vector<ProgramTileInvocation>> invocations =
@@ -807,8 +912,7 @@ module {
         continue;
       EXPECT_EQ(binding.tensor.getDType(), "f32");
       EXPECT_EQ(binding.tensor.getShape(), llvm::ArrayRef<int64_t>({4}));
-      EXPECT_EQ(binding.tensor.getBytes(),
-                llvm::ArrayRef<uint8_t>(payload));
+      EXPECT_EQ(binding.tensor.getBytes(), llvm::ArrayRef<uint8_t>(payload));
       weight = &binding.tensor;
       break;
     }

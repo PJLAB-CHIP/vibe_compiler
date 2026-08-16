@@ -6,7 +6,7 @@ Frontend/CLI产品入口由`tasks/plans/compiler-entry-productization.md`单独�
 
 状态：
 
-- Q58 `program-data-ownership`：`done`（2026-08-16 review重开后同批修复并重新验证闭合），先于Q56完成；
+- Q58 `program-data-ownership`：`done`（2026-08-16二次review修复并以新账本重新验证），先于Q56完成；
 - Q61 `whole-program-scale-readiness`：`later`，只在Q53达到`board-ready`、Q58和Q60完成后启动。
 
 ## 1. 为什么先做Q58
@@ -59,9 +59,10 @@ ProgramDataSource:
   content digest（复制时1MiB window边写边hash）
 ```
 
-owner持有transaction独占的私有副本（scratch `program-data-sources/`）；不能只保存待重新打开的用户path，也不能
-把用户文件的mmap当作owned content——只读映射不冻结其它进程对同一inode的原地写入。content digest验证bytes，
-但不自动合并不同program identities，也不成为跨编译global cache key。establishment失败删除已写的owned file。
+owner在稳定output parent下建立RAII独占的唯一私有目录；它不属于会在public compile返回前删除的staging root。
+每个source持有一个只读handle并用positional read消费，不保存待重复打开的path，也不把用户文件的mmap当作owned
+content——只读映射不冻结其它进程对同一inode的原地写入。source析构先关闭handle再删除文件，handoff析构最后删除目录；
+content digest验证bytes，但不自动合并不同program identities，也不成为跨编译global cache key。establishment失败删除已写文件。
 
 ### 3.2 ProgramDataRange
 
@@ -120,21 +121,26 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
 
    基线问题：snapshot/propagated/merge三层整树payload复制；验证无digest事实；16 Tile绑定各自持有payloadPath并重复打开；
    target codec按Tile重复调用；host heap随total parameter bytes×16增长。Q58实施后必须删除上述全部重复路径。
-2. **Transaction ownership**（2026-08-16 review后重做并通过）
-   - `ProgramDataSource::establish`在首次下游消费前把用户文件流式复制到transaction独占的owned file
-     （scratch `program-data-sources/`），1MiB window边复制边SHA-256；NPY header在复制前bounded parse
-     （≤1MiB上限，只读已入缓冲的窗口）；header/exact extent/dtype admission全部对owned bytes验证。
-     用户path在establishment后不再被打开，同inode原地写入不影响本次编译bytes（回归测试覆盖>4KB payload的
-     原地改写）。失败时owned file被删除，transaction保持原子。
+2. **Transaction ownership**（2026-08-16二次review修复后通过）
+   - `ProgramDataSource::establish`先打开source descriptor并从该descriptor取得regular-file/size事实，复制前以≤1MiB
+     header span做bounded预检，再用1MiB window流式复制并SHA-256。写完后重新打开owned file一次并永久持有该只读
+     handle；最终dtype/shape/header offset/exact extent全部从owned descriptor重读，whole-file digest也从该handle按window
+     重算并与复制流比对，全部通过后才发布source。
+   - `ProgramDataHandoff`在稳定output parent下惰性创建`.wafer-program-data-*`唯一目录并move-own；compile staging删除
+     不影响returned `CardExecutable`，source/handoff析构按handle→file→directory顺序清理。用户path在establishment后
+     不再打开；同inode原地写入回归fixture为32KiB payload，明确超过pinned LLVM 16KiB mmap阈值。
    - 失败分类`ProgramDataFailureKind`：MissingPayload、HeaderInvalid、UnsupportedEncoding、ShapeMismatch、
      DTypeMismatch、TruncatedPayload、TrailingPayload、SizeOverflow、DigestMismatch、MissingRange、
      MaterializationIO；每个可恢复失败在被消费前形成准确typed kind、locator和detail。
-3. **Bounded reader**（2026-08-16 review后重做并通过）
-   - 全部文件I/O（establishment复制、owned-file digest/range读取、materialization、readback digest）使用
-     1MiB window；不再整文件mmap，metadata只读取必要header。
+3. **Bounded reader**（2026-08-16二次review修复后通过）
+   - 最低层`readFileSpan`无论caller传入多大span都拆成≤1MiB请求；establishment、owned header/range、region digest、
+     materialization和readback digest复用这一合同，不整文件mmap。source lifetime内只用持有的read handle，不按range重开。
+   - 账本新增actual `file_opens`、`read_windows`、`read_bytes`和`maximum_read_window_bytes`；`source_opens`只保留为
+     canonical/helper source establishment分类，不再冒充总open数。2.8MB连续range回归证明一次逻辑materialization拆成
+     3个window、read bytes精确相等且file open数不增加。
    - target consumer不为每个Tile构造完整tensor vector：`prepareProgramInvocations`按owned range一次
      materialize并让16个Tile共享同一shared storage view；target model的card-shared resource只调用一次codec。
-4. **SPMD handoff**（2026-08-16 review后重做并通过）
+4. **SPMD handoff**（2026-08-16二次review修复后通过）
    - snapshot只隔离IR/metadata/目录结构，不复制payload；payload由resolver在source verification时从canonical
      source建立一次ownership，verifier通过`ProgramPayloadResolver` seam从owned content验证header/extent，
      每次seam消费计入账本header_reads。
@@ -144,45 +150,39 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
      handoff candidate，是唯一一次读取（计入helper_output_readbacks）；shard与原始source对应region digest
      相等（replication/contiguous slice）时复用原始source和新range，只有真实改变bytes的partition经
      `adoptCandidate`成为新`ProgramDataSource`；constant在tensor phase只stat存在性并消费owned content，
-     helper副本内容不再重读。partial output或helper失败保持transaction原子失败。
-5. **Card/target handoff**（2026-08-16 review后通过）
+     helper副本内容不再重读。Card边界在最后一次tensor verification后销毁全部未adopt candidate，byte-identical shard
+     不再随executable保留重复文件；partial output或helper失败保持transaction原子失败。
+5. **Card/target handoff**（2026-08-16二次review修复后通过）
    - `ProgramResourceBinding`携带stable `ProgramTensorId`；16个Tile bindings all-and-only解析到
      `ProgramDataHandoff`的range（Parameter/Constant缺range时binding构建fail closed）；同一range的引用数量
      可增长，source bytes不增长。
    - range携带显式来源合同：`OriginalSource`证明source shape==global shape，`MaterializedShard`证明
      source shape==local shape且slice从原点精确覆盖；同字节数不同shape被typed拒绝。
-   - `ProgramDataHandoff`由`CardExecutable`持有并与executable同lifetime；tensor-program readback与
-     CardExecutable边界验证经resolver消费owned content，不产生新payload open/read；
+   - `ProgramDataHandoff`由`CardExecutable`持有并与executable同lifetime；其RAII目录独立于compile staging，move后
+     source handle和共享账本地址稳定。tensor-program readback与CardExecutable边界验证经resolver消费owned content，
+     不产生新owned-file open；
      `prepareProgramInvocations`不再接收packageRoot，target consumer按program identity和range读取。
    - Q56按`ProgramTensorId + range + selected target descriptor`建立TargetTensor并materialize，禁止按Tile重复。
-6. **规模证据**（2026-08-16 review修复后重新生成）
-   - semantic case由`ProgramDataTest`（13/13）覆盖：establishment复制到transaction独占owned file并验证
-     header/exact extent/digest；同inode原地改写（>4KB payload，header保留、payload区改写）后owned bytes与
-     digest不变；i1在program边界typed拒绝（source层可decode）；range来源合同正负例（OriginalSource证明
-     source shape==global、MaterializedShard证明source shape==local且slice从原点精确覆盖，同字节数不同shape
-     被ShapeMismatch拒绝）；`verifyShardAgainstSource`经handoff集成证明byte-identical复用原source、真实
-     partition经`adoptCandidate`成为新source；materialize/region-digest可恢复失败全部typed
-     （MaterializationIO/ShapeMismatch，含locator/detail）；`prepareProgramInvocations` 16 Tile对同一
-     parameter只产生一次range materialization且全部共享同一storage视图；ledger精确计数断言。
-   - byte-volume case：elementwise f16程序（2 parameter + 1 constant + 1 input），三档递增（N=512/1024/2048），
-     本轮新构建fresh source→package exit 0 且`wafer-run --no-card` 16 Tile通过。账本（三档除字节数外完全一致，
-     按source计不按bytes/Tile计）：
-     `source_opens=5 header_reads=23 digest_passes=13 helper_output_readbacks=2 range_materializations=0
-      materialized_file_writes=4`；materialized_write_bytes分别为527,872 / 2,103,808 / 8,401,408。
-     每个计数有唯一调用点：source_opens=3 canonical + 2 helper shard；header_reads=每次establishment与
-     verification seam的bounded header parse；digest_passes=5个establishment全文件digest + 4个shard region
-     digest + 4个materialization readback digest；helper_output_readbacks=2个shard readback；
-     materialized_file_writes=3个helper-input + 1个tensor-program constant回填。
-   - 三档 wall=51.7s/51.9s/52.0s（executable-package阶段约51.5s主导，为既有baseline成本）；peak RSS=
-     45,096/45,336/44,340 KiB（source-to-tensor-program）与67,624/60,696/59,732 KiB（executable-package）：
-     payload增大16×，RSS不随payload总量增长——owned file为transaction独占存储，host无全量副本。
-   - 限制：n=1024 f16 GEMM 在none baseline下因SPM容量拒绝（`exhausted its temporal domain`），与本任务无关，
-     改用可任意tiling的elementwise workload完成byte-volume证据。
-   - many-binding inventory（12 parameter + 3 constant）fresh compile：program-data ownership 全链完成
-     （`source-to-tensor-program wall_ms=127`，establish/verify/helper-input/merge 全部通过）；none baseline
-     的 card synthesis 67 分钟未收敛而终止（与 30-op 变体同一现象），package 阶段未到达。该程序
-     inventory 部分由 source-to-tensor-program 全链通过证明；byte-volume 与 per-source 账本 gate 由上述
-     三档 elementwise 证据覆盖。
+6. **规模证据**（2026-08-16二次review修复后重新生成）
+   - `ProgramDataTest` 15/15：除第一次review的typed range/dtype/error/16-Tile shared-view覆盖外，新增handoff move后删除
+     staging仍可读、析构删除owned file、Card边界candidate从1归零、candidate文件立即消失、32KiB同inode改写，以及
+     2.8MB range分3个window且零新增open。Q58直接受影响的Npy、target memory、compilation/lowering/ABI/frontend filtered
+     unit合计52/52通过。
+   - `wafer-compile-program-data-package.test` fresh通过：小型FP16 parameter从source→helper candidate/dedup→CardExecutable→
+     package并经16-Tile no-card，CLI返回后`.wafer-program-data-*`为零。实际账本为
+     `source_opens=2 file_opens=8 read_windows=18 read_bytes=1568 maximum_read_window_bytes=160 header_reads=11
+      digest_passes=7 helper_output_readbacks=1 range_materializations=0 materialized_file_writes=1`。
+   - 三档FP16 elementwise parameter（512²/1024²/2048²，对应owned file 524,416/2,097,280/8,388,736 bytes）fresh
+     source→package和no-card全部通过。`source_opens=2 file_opens=8 header_reads=11 digest_passes=7
+     helper_output_readbacks=1 materialized_file_writes=1`三档恒定；`read_windows=18/32/80`、
+     `read_bytes=5,244,128/18,875,408/69,207,056`随实际work增长，其中包含每次establishment对owned content的
+     whole-file digest自校验；最大window为524,416/1,048,576/1,048,576，从未越过1MiB。最终并行lit中的compile
+     transaction wall=1170/1127/1413ms，peak RSS=56,332/55,828/55,392KiB；payload增长16倍时peak RSS保持在
+     55,392–56,332KiB，没有按payload bytes或Tile引用倍增。
+   - feature-on public-return→target-model参数回归已加入并按`numeric-model`/`systemc-model` feature gate注册；当前core build
+     正确报告unsupported。现有feature-on build因managed numeric-model conformance record缺失无法fresh reconfigure，故本轮不把
+     该skipped case计入完成证明；returned executable lifetime由直接move/staging-cleanup单测、Card边界prepare集成和production
+     storage-parent路径共同证明。
 ### 4.1 2026-08-16代码review重新打开（同批修复后闭合）
 
 本轮review确认8月15日实现和测试是可继续施工的部分结果，但不足以签发Q58完成。以下问题属于当前
@@ -216,13 +216,37 @@ pipeline contract内的阻断项，不转移到Q56或Q61。全部六项已在同
 但不能证明上述合同。修复后必须使用本轮新构建和新输出重跑相关unit、source-to-package、no-card及三档规模账本，再将Q58
 标回`done`。
 
+### 4.2 2026-08-16二次代码review重新打开（同批修复后闭合）
+
+第一次review修复补齐了resolver、typed range与错误分类，但后续检查确认以下合同仍未真正闭合，因此本轮曾把Q58恢复为
+`doing`。这些问题仍属于Q58当前边界，不转移给Q56；以下六项现已按checkpoint 2-6实现并以本轮fresh证据闭合：
+
+1. `compileTensorProgramToCardExecutable`返回时会删除transaction root，而handoff的owned path位于该root下；返回的
+   `CardExecutable`随后通过public `prepareProgramInvocations`读取range时已经没有可用文件。handoff必须用move-only RAII
+   资源覆盖整个`CardExecutable` lifetime，不能只持有会被外部scope cleanup删除的path。
+2. byte-identical helper shard虽然复用原source，但candidate只是不被adopt，并未在最后一次metadata验证后销毁；结果仍保留
+   无consumer的重复文件。candidate必须在Card边界签发前all-and-only收口。
+3. `readRange`、strided materialization与region digest会重复打开owned file；底层`readFileSpan`也允许一次请求超过1MiB。
+   现有`source_opens`只统计establishment，无法解释实际open/read。需要让source本身持有只读handle，最低层强制window，
+   并记录实际file open、read window、read bytes与最大window。
+4. 原地写入回归的8272-byte fixture小于pinned LLVM 16KiB mmap阈值，不能证明旧mmap实现会失败；回归payload必须明确超过
+   该阈值。
+5. establishment只解析复制前source header；最终owned bytes没有重新解析并成为typed facts的事实源。必须从同一open
+   descriptor复制，并以owned descriptor重新做bounded header、exact extent和digest验证后才发布source。
+6. 规模测试账本中的`range_materializations=0`没有覆盖大range consumer。需要增加大payload materialization回归，证明
+   单次逻辑materialization会拆成多个不超过1MiB的底层read window，且计数随bytes而不是Tile引用增长。
+
+完成门禁已满足：returned executable lifetime、candidate purge、owned self-verification、bounded reads和真实ledger均有直接
+回归；fresh build、15/15 semantic unit、52/52受影响filtered unit、两条source-to-package/no-card lit和三档规模账本通过。
+feature-on target-model case因当前managed dependency record缺失而unsupported，未被计入上述通过数，也不替代直接lifetime证明。
+
 ## 5. Q58 measurement
 
 | 维度 | 必须记录 | 完成条件 |
 | --- | --- | --- |
 | Identity | ProgramTensor、ProgramDataSource、ProgramDataRange、materialized partition、TargetTensor和Tile引用数 | 每层all-and-only对账；source数量和bytes不随Tile引用数增长 |
 | Bytes | logical source、unique source、partition output、target physical、package bytes | 差额可由partition、physical encoding或alignment解释 |
-| I/O | open、range read、hash、write、copy及whole-file pass次数 | 无按Tile重复全量扫描；每个pass有明确correctness owner；账本字段`source_opens`/`header_reads`/`digest_passes`/`helper_output_readbacks`/`range_materializations`/`materialized_file_writes`/`materialized_write_bytes`覆盖整条source-to-package |
+| I/O | open、range read、hash、write、copy及whole-file pass次数 | 无按Tile重复全量扫描；每个pass有明确correctness owner；`source_opens`记录establishment分类，`file_opens`记录compiler实际成功open，`read_windows`/`read_bytes`/`maximum_read_window_bytes`记录实际positional read，再由`header_reads`/`digest_passes`/`helper_output_readbacks`/`range_materializations`/`materialized_file_writes`/`materialized_write_bytes`解释目的；外部helper进程内部syscall不伪装成compiler可观测计数 |
 | Memory | phase peak RSS、最大window、同时live source数量 | 除真实target materialization外，heap不按total parameter bytes增长 |
 | Storage | source、transaction、partition、target/package staging的live/peak bytes | 不同时保留无consumer的整树副本 |
 | Time | verify、SPMD、handoff、target conversion、write/readback | normalized throughput异常必须能对应实际I/O work |

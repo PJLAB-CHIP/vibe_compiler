@@ -286,6 +286,10 @@ compileTensorProgramModuleToCardExecutable(
   diagnostics << "wafer-compile: compile-stats stage=card-executable"
               << " wall_ms=" << detail::elapsedCompileMilliseconds(totalStart)
               << " peak_rss_kib=" << detail::getCompilePeakRSSKiB() << "\n";
+  // All tensor-program verification is complete. Real partitions have been
+  // adopted into the source identity space; every remaining helper candidate
+  // is byte-identical dead data and must not escape in the executable.
+  programData.discardUnadoptedCandidates();
   return CardExecutableBuilder::makeCardExecutable(
       executionConfig, std::move(accepted.runtimeLaunchContract), context,
       std::move(tiles),

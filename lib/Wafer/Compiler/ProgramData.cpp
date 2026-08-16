@@ -18,11 +18,6 @@ namespace wafer::compiler {
 
 namespace {
 
-/// Materialization window for streaming digest and file copies. Header
-/// parsing is separately bounded by the frontend NPY header cap; this window
-/// bounds all file I/O.
-constexpr size_t kProgramDataFileWindowBytes = 1 << 20;
-
 bool checkedMulU64(uint64_t lhs, uint64_t rhs, uint64_t &result) {
   if (lhs != 0 && rhs > std::numeric_limits<uint64_t>::max() / lhs)
     return false;
@@ -76,24 +71,58 @@ std::string hexEncode(llvm::ArrayRef<uint8_t> bytes) {
 /// Exact read of one byte span at an absolute file offset. Short reads are
 /// an environment failure; callers classify it with `failIO`.
 llvm::Error readFileSpan(llvm::sys::fs::file_t file, uint64_t offset,
-                         llvm::MutableArrayRef<uint8_t> out) {
+                         llvm::MutableArrayRef<uint8_t> out,
+                         ProgramDataIOStatistics *statistics = nullptr) {
   uint64_t done = 0;
   while (done < out.size()) {
+    const size_t requested =
+        std::min<size_t>(out.size() - done, kProgramDataReadWindowBytes);
     llvm::Expected<size_t> read = llvm::sys::fs::readNativeFileSlice(
         file,
-        llvm::MutableArrayRef<char>(
-            reinterpret_cast<char *>(out.data() + done),
-            out.size() - done),
+        llvm::MutableArrayRef<char>(reinterpret_cast<char *>(out.data() + done),
+                                    requested),
         offset + done);
     if (!read)
       return read.takeError();
     if (*read == 0)
       return llvm::createStringError(llvm::errc::io_error,
                                      "payload file ended unexpectedly");
+    if (statistics) {
+      ++statistics->readWindows;
+      statistics->readBytes += *read;
+      statistics->maximumReadWindowBytes =
+          std::max<uint64_t>(statistics->maximumReadWindowBytes, *read);
+    }
     done += *read;
   }
   return llvm::Error::success();
 }
+
+llvm::Expected<std::string>
+computeFileDigestWithStatistics(llvm::StringRef path,
+                                ProgramDataIOStatistics *statistics);
+
+class ScopedFile {
+public:
+  explicit ScopedFile(llvm::sys::fs::file_t file) : file(file) {}
+  ~ScopedFile() { close(); }
+  ScopedFile(const ScopedFile &) = delete;
+  ScopedFile &operator=(const ScopedFile &) = delete;
+
+  llvm::sys::fs::file_t get() const { return file; }
+  void close() {
+    llvm::sys::fs::file_t openFile =
+        std::exchange(file, llvm::sys::fs::kInvalidFile);
+    if (openFile != llvm::sys::fs::kInvalidFile)
+      llvm::sys::fs::closeFile(openFile);
+  }
+  llvm::sys::fs::file_t release() {
+    return std::exchange(file, llvm::sys::fs::kInvalidFile);
+  }
+
+private:
+  llvm::sys::fs::file_t file;
+};
 
 /// Buffer-backed adapter exposing one in-memory byte span through the
 /// frontend payload-source seam. Used to parse the bounded NPY header region
@@ -105,9 +134,9 @@ public:
 
   uint64_t getPayloadFileSize() const override { return fileSize; }
 
-  llvm::Error readPayloadBytes(uint64_t offset,
-                               llvm::MutableArrayRef<uint8_t> out)
-      const override {
+  llvm::Error
+  readPayloadBytes(uint64_t offset,
+                   llvm::MutableArrayRef<uint8_t> out) const override {
     if (offset > span.size() || out.size() > span.size() - offset)
       return llvm::createStringError(llvm::errc::invalid_argument,
                                      "payload header read is outside the "
@@ -132,10 +161,68 @@ std::optional<uint64_t> elementCount(llvm::ArrayRef<int64_t> shape) {
   return count;
 }
 
+struct ValidatedPayload {
+  std::string dtype;
+  std::vector<int64_t> shape;
+  uint64_t dataOffset = 0;
+};
+
+llvm::Expected<ValidatedPayload>
+validatePayloadHeader(const frontend::ProgramPayloadSource &source,
+                      llvm::StringRef locator, ProgramDataFailure *failure) {
+  llvm::Expected<frontend::NpyPayloadHeader> header =
+      frontend::parseNpyPayloadHeader(source, locator);
+  if (!header) {
+    llvm::consumeError(header.takeError());
+    return fail(ProgramDataFailureKind::HeaderInvalid, locator,
+                "npy payload header cannot be parsed", failure);
+  }
+  if (header->fortranOrder)
+    return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
+                "npy payload must be row-major", failure);
+
+  auto decoded = frontend::decodeProgramNpyDescr(header->descr);
+  if (!decoded)
+    return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
+                "npy payload has unsupported dtype", failure);
+  std::optional<int64_t> admittedBytes =
+      getProgramDTypeElementBytes(decoded->first);
+  if (!admittedBytes)
+    return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
+                "npy payload dtype is not admitted at the program boundary",
+                failure);
+  if (decoded->second != static_cast<uint64_t>(*admittedBytes))
+    return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
+                "npy payload dtype width disagrees with the program boundary",
+                failure);
+
+  std::optional<uint64_t> elements = elementCount(header->shape);
+  if (!elements)
+    return fail(ProgramDataFailureKind::SizeOverflow, locator,
+                "npy tensor element count is not representable", failure);
+  uint64_t payloadBytes = 0;
+  if (!checkedMulU64(*elements, decoded->second, payloadBytes))
+    return fail(ProgramDataFailureKind::SizeOverflow, locator,
+                "npy tensor byte count is not representable", failure);
+  uint64_t expectedFileBytes = 0;
+  if (!checkedAddU64(header->dataOffset, payloadBytes, expectedFileBytes))
+    return fail(ProgramDataFailureKind::SizeOverflow, locator,
+                "npy payload extent is not representable", failure);
+  if (source.getPayloadFileSize() < expectedFileBytes)
+    return fail(ProgramDataFailureKind::TruncatedPayload, locator,
+                "npy payload file is smaller than the tensor payload", failure);
+  if (source.getPayloadFileSize() != expectedFileBytes)
+    return fail(ProgramDataFailureKind::TrailingPayload, locator,
+                "npy payload file is larger than the exact tensor payload",
+                failure);
+
+  return ValidatedPayload{decoded->first.str(), std::move(header->shape),
+                          header->dataOffset};
+}
+
 } // namespace
 
-llvm::StringRef
-stringifyProgramDataFailureKind(ProgramDataFailureKind kind) {
+llvm::StringRef stringifyProgramDataFailureKind(ProgramDataFailureKind kind) {
   switch (kind) {
   case ProgramDataFailureKind::MissingPayload:
     return "missing-payload";
@@ -184,20 +271,16 @@ std::optional<int64_t> getProgramDTypeElementBytes(llvm::StringRef dtype) {
   return std::nullopt;
 }
 
-llvm::Expected<ProgramDataSource>
-ProgramDataSource::establish(llvm::StringRef path, llvm::StringRef ownedFilePath,
-                             llvm::StringRef locator,
-                             ProgramDataFailure *failure) {
-  std::error_code statusError;
-  llvm::sys::fs::file_status status;
-  if ((statusError = llvm::sys::fs::status(path, status)))
-    return fail(ProgramDataFailureKind::MissingPayload, locator,
-                "failed to stat payload: " + statusError.message(), failure);
-  if (!llvm::sys::fs::is_regular_file(status))
-    return fail(ProgramDataFailureKind::MissingPayload, locator,
-                "payload path is not a regular file", failure);
-  const uint64_t sourceFileSize = status.getSize();
+llvm::Expected<ProgramDataSource> ProgramDataSource::establish(
+    llvm::StringRef path, llvm::StringRef ownedFilePath,
+    llvm::StringRef locator, ProgramDataFailure *failure) {
+  return establish(path, ownedFilePath, locator, failure, {});
+}
 
+llvm::Expected<ProgramDataSource> ProgramDataSource::establish(
+    llvm::StringRef path, llvm::StringRef ownedFilePath,
+    llvm::StringRef locator, ProgramDataFailure *failure,
+    std::shared_ptr<ProgramDataIOStatistics> statistics) {
   llvm::Expected<llvm::sys::fs::file_t> inputFile =
       llvm::sys::fs::openNativeFileForRead(path);
   if (!inputFile)
@@ -205,87 +288,43 @@ ProgramDataSource::establish(llvm::StringRef path, llvm::StringRef ownedFilePath
                 "failed to open payload: " +
                     llvm::toString(inputFile.takeError()),
                 failure);
+  if (statistics) {
+    ++statistics->sourceOpens;
+    ++statistics->fileOpens;
+  }
+  ScopedFile input(*inputFile);
+
+  // Derive identity and size from the opened file, not from a path stat that
+  // could name a different inode by the time the open completes.
+  llvm::sys::fs::file_status sourceStatus;
+  if (std::error_code error = llvm::sys::fs::status(input.get(), sourceStatus))
+    return fail(ProgramDataFailureKind::MissingPayload, locator,
+                "failed to stat opened payload: " + error.message(), failure);
+  if (!llvm::sys::fs::is_regular_file(sourceStatus))
+    return fail(ProgramDataFailureKind::MissingPayload, locator,
+                "payload path is not a regular file", failure);
+  const uint64_t sourceFileSize = sourceStatus.getSize();
 
   // The header region is bounded (frontend cap: 1 MiB). Parse and validate
   // it before any byte is written to the owned file, so malformed payloads
   // cost bounded I/O only.
   const size_t headerSpanBytes = static_cast<size_t>(
-      std::min<uint64_t>(sourceFileSize, kProgramDataFileWindowBytes));
+      std::min<uint64_t>(sourceFileSize, kProgramDataReadWindowBytes));
   llvm::SmallVector<uint8_t, 16> headerSpan(headerSpanBytes);
   if (llvm::Error readError =
-          readFileSpan(*inputFile, 0, headerSpan)) {
+          readFileSpan(input.get(), 0, headerSpan, statistics.get())) {
     llvm::consumeError(std::move(readError));
-    llvm::sys::fs::closeFile(*inputFile);
     return fail(ProgramDataFailureKind::MissingPayload, locator,
                 "failed to read the payload header region", failure);
   }
 
   SpanPayloadSource headerSource(headerSpan, sourceFileSize);
-  llvm::Expected<frontend::NpyPayloadHeader> header =
-      frontend::parseNpyPayloadHeader(headerSource, locator);
-  if (!header) {
-    llvm::consumeError(header.takeError());
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::HeaderInvalid, locator,
-                "npy payload header cannot be parsed", failure);
-  }
-  if (header->fortranOrder) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
-                "npy payload must be row-major", failure);
-  }
-
-  auto decoded = frontend::decodeProgramNpyDescr(header->descr);
-  if (!decoded) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
-                "npy payload has unsupported dtype", failure);
-  }
-  const std::string dtype = decoded->first.str();
-  const uint64_t elementBytes = decoded->second;
-  if (!getProgramDTypeElementBytes(dtype)) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
-                "npy payload dtype is not admitted at the program boundary",
-                failure);
-  }
-  if (decoded->second != static_cast<uint64_t>(*getProgramDTypeElementBytes(dtype))) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
-                "npy payload dtype width disagrees with the program boundary",
-                failure);
-  }
-
-  std::optional<uint64_t> elements = elementCount(header->shape);
-  if (!elements) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::SizeOverflow, locator,
-                "npy tensor element count is not representable", failure);
-  }
-  uint64_t payloadBytes = 0;
-  if (!checkedMulU64(*elements, elementBytes, payloadBytes)) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::SizeOverflow, locator,
-                "npy tensor byte count is not representable", failure);
-  }
-  uint64_t expectedFileBytes = 0;
-  if (!checkedAddU64(header->dataOffset, payloadBytes, expectedFileBytes)) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::SizeOverflow, locator,
-                "npy payload extent is not representable", failure);
-  }
-  if (sourceFileSize < expectedFileBytes) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::TruncatedPayload, locator,
-                "npy payload file is smaller than the tensor payload",
-                failure);
-  }
-  if (sourceFileSize != expectedFileBytes) {
-    llvm::sys::fs::closeFile(*inputFile);
-    return fail(ProgramDataFailureKind::TrailingPayload, locator,
-                "npy payload file is larger than the exact tensor payload",
-                failure);
-  }
+  if (statistics)
+    ++statistics->headerReads;
+  llvm::Expected<ValidatedPayload> preliminary =
+      validatePayloadHeader(headerSource, locator, failure);
+  if (!preliminary)
+    return preliminary.takeError();
 
   // Stream the file into transaction-private storage while hashing the exact
   // bytes written. The owned file, not the user path, is the source of all
@@ -293,16 +332,16 @@ ProgramDataSource::establish(llvm::StringRef path, llvm::StringRef ownedFilePath
   std::error_code outputError;
   llvm::raw_fd_ostream output(ownedFilePath, outputError);
   if (outputError) {
-    llvm::sys::fs::closeFile(*inputFile);
     return failIO(ProgramDataFailureKind::MaterializationIO, locator,
                   "failed to create owned payload file: " +
                       outputError.message(),
                   failure);
   }
+  if (statistics)
+    ++statistics->fileOpens;
 
   auto abort = [&](llvm::StringRef detail) -> llvm::Error {
     output.close();
-    llvm::sys::fs::closeFile(*inputFile);
     llvm::sys::fs::remove(ownedFilePath);
     return failIO(ProgramDataFailureKind::MaterializationIO, locator, detail,
                   failure);
@@ -313,10 +352,10 @@ ProgramDataSource::establish(llvm::StringRef path, llvm::StringRef ownedFilePath
   uint64_t written = 0;
   while (written < sourceFileSize) {
     const size_t chunk = static_cast<size_t>(std::min<uint64_t>(
-        sourceFileSize - written, kProgramDataFileWindowBytes));
+        sourceFileSize - written, kProgramDataReadWindowBytes));
     window.resize(chunk);
     if (llvm::Error readError =
-            readFileSpan(*inputFile, written, window))
+            readFileSpan(input.get(), written, window, statistics.get()))
       return abort("failed to copy payload bytes: " +
                    llvm::toString(std::move(readError)));
     hash.update(window);
@@ -330,12 +369,127 @@ ProgramDataSource::establish(llvm::StringRef path, llvm::StringRef ownedFilePath
   output.close();
   if (output.has_error())
     return abort("failed to close owned payload file");
-  llvm::sys::fs::closeFile(*inputFile);
 
-  llvm::ArrayRef<uint8_t> digest = hash.final();
-  return ProgramDataSource(ownedFilePath.str(), locator.str(), std::move(dtype),
-                           std::move(header->shape), header->dataOffset,
-                           written, hexEncode(digest));
+  llvm::Expected<llvm::sys::fs::file_t> ownedFile =
+      llvm::sys::fs::openNativeFileForRead(ownedFilePath);
+  if (!ownedFile) {
+    llvm::sys::fs::remove(ownedFilePath);
+    return failIO(ProgramDataFailureKind::MaterializationIO, locator,
+                  "failed to open owned payload file: " +
+                      llvm::toString(ownedFile.takeError()),
+                  failure);
+  }
+  if (statistics)
+    ++statistics->fileOpens;
+  ScopedFile owned(*ownedFile);
+  llvm::sys::fs::file_status ownedStatus;
+  if (std::error_code error = llvm::sys::fs::status(owned.get(), ownedStatus)) {
+    owned.close();
+    llvm::sys::fs::remove(ownedFilePath);
+    return failIO(ProgramDataFailureKind::MaterializationIO, locator,
+                  "failed to stat owned payload file: " + error.message(),
+                  failure);
+  }
+  const uint64_t ownedFileSize = ownedStatus.getSize();
+  const size_t ownedHeaderSpanBytes = static_cast<size_t>(
+      std::min<uint64_t>(ownedFileSize, kProgramDataReadWindowBytes));
+  llvm::SmallVector<uint8_t, 16> ownedHeaderSpan(ownedHeaderSpanBytes);
+  if (llvm::Error readError =
+          readFileSpan(owned.get(), 0, ownedHeaderSpan, statistics.get())) {
+    owned.close();
+    llvm::sys::fs::remove(ownedFilePath);
+    return failIO(ProgramDataFailureKind::MaterializationIO, locator,
+                  "failed to read owned payload header: " +
+                      llvm::toString(std::move(readError)),
+                  failure);
+  }
+  SpanPayloadSource ownedHeaderSource(ownedHeaderSpan, ownedFileSize);
+  if (statistics)
+    ++statistics->headerReads;
+  llvm::Expected<ValidatedPayload> validated =
+      validatePayloadHeader(ownedHeaderSource, locator, failure);
+  if (!validated) {
+    owned.close();
+    llvm::sys::fs::remove(ownedFilePath);
+    return validated.takeError();
+  }
+
+  // The digest carried by the source must describe the bytes that downstream
+  // readers actually own, not merely the buffer presented to the write call.
+  // Reuse the already-read header span as the first digest window, then stream
+  // the remainder from the persistent owned descriptor.
+  const std::string copiedDigest = hexEncode(hash.final());
+  llvm::SHA256 ownedHash;
+  ownedHash.update(ownedHeaderSpan);
+  uint64_t digested = ownedHeaderSpan.size();
+  while (digested < ownedFileSize) {
+    const size_t chunk = static_cast<size_t>(std::min<uint64_t>(
+        ownedFileSize - digested, kProgramDataReadWindowBytes));
+    window.resize(chunk);
+    if (llvm::Error readError =
+            readFileSpan(owned.get(), digested, window, statistics.get())) {
+      owned.close();
+      llvm::sys::fs::remove(ownedFilePath);
+      return failIO(ProgramDataFailureKind::MaterializationIO, locator,
+                    "failed to digest owned payload: " +
+                        llvm::toString(std::move(readError)),
+                    failure);
+    }
+    ownedHash.update(window);
+    digested += chunk;
+  }
+  const std::string ownedDigest = hexEncode(ownedHash.final());
+  if (ownedDigest != copiedDigest) {
+    owned.close();
+    llvm::sys::fs::remove(ownedFilePath);
+    return fail(ProgramDataFailureKind::DigestMismatch, locator,
+                "owned payload digest disagrees with copied content", failure);
+  }
+
+  return ProgramDataSource(
+      ownedFilePath.str(), locator.str(), std::move(validated->dtype),
+      std::move(validated->shape), validated->dataOffset, ownedFileSize,
+      ownedDigest, owned.release(), std::move(statistics));
+}
+
+ProgramDataSource::ProgramDataSource(ProgramDataSource &&other) noexcept
+    : ownedFilePath(std::move(other.ownedFilePath)),
+      locator(std::move(other.locator)), dtype(std::move(other.dtype)),
+      shape(std::move(other.shape)), payloadOffset(other.payloadOffset),
+      size(other.size), digest(std::move(other.digest)),
+      ownedFile(std::exchange(other.ownedFile, llvm::sys::fs::kInvalidFile)),
+      statistics(std::move(other.statistics)) {
+  other.ownedFilePath.clear();
+}
+
+ProgramDataSource &
+ProgramDataSource::operator=(ProgramDataSource &&other) noexcept {
+  if (this == &other)
+    return *this;
+  releaseOwnedFile();
+  ownedFilePath = std::move(other.ownedFilePath);
+  locator = std::move(other.locator);
+  dtype = std::move(other.dtype);
+  shape = std::move(other.shape);
+  payloadOffset = other.payloadOffset;
+  size = other.size;
+  digest = std::move(other.digest);
+  ownedFile = std::exchange(other.ownedFile, llvm::sys::fs::kInvalidFile);
+  statistics = std::move(other.statistics);
+  other.ownedFilePath.clear();
+  return *this;
+}
+
+ProgramDataSource::~ProgramDataSource() { releaseOwnedFile(); }
+
+void ProgramDataSource::releaseOwnedFile() noexcept {
+  llvm::sys::fs::file_t openFile =
+      std::exchange(ownedFile, llvm::sys::fs::kInvalidFile);
+  if (openFile != llvm::sys::fs::kInvalidFile)
+    llvm::sys::fs::closeFile(openFile);
+  if (!ownedFilePath.empty())
+    llvm::sys::fs::remove(ownedFilePath);
+  ownedFilePath.clear();
 }
 
 llvm::Error
@@ -350,13 +504,10 @@ ProgramDataSource::readRange(uint64_t offset,
   if (offset > size || out.size() > size - offset)
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "payload range is outside the owned file");
-  llvm::Expected<llvm::sys::fs::file_t> file =
-      llvm::sys::fs::openNativeFileForRead(ownedFilePath);
-  if (!file)
-    return file.takeError();
-  llvm::Error result = readFileSpan(*file, offset, out);
-  llvm::sys::fs::closeFile(*file);
-  return result;
+  if (ownedFile == llvm::sys::fs::kInvalidFile)
+    return llvm::createStringError(llvm::errc::bad_file_descriptor,
+                                   "owned payload file is closed");
+  return readFileSpan(ownedFile, offset, out, statistics.get());
 }
 
 llvm::Expected<ProgramDataRange> ProgramDataRange::create(
@@ -401,8 +552,7 @@ llvm::Expected<ProgramDataRange> ProgramDataRange::create(
                   failure);
     if (llvm::any_of(sliceOffsets, [](int64_t offset) { return offset != 0; }))
       return fail(ProgramDataFailureKind::ShapeMismatch, locator,
-                  "materialized shard slice must start at the origin",
-                  failure);
+                  "materialized shard slice must start at the origin", failure);
     if (!llvm::equal(sliceSizes, localShape))
       return fail(ProgramDataFailureKind::ShapeMismatch, locator,
                   "materialized shard slice must cover the local tensor "
@@ -411,14 +561,13 @@ llvm::Expected<ProgramDataRange> ProgramDataRange::create(
   }
 
   std::vector<int64_t> payloadShape(source.getShape());
-  std::vector<int64_t> payloadStrides(rank, 1);
+  std::vector<uint64_t> payloadStrides(rank, 1);
   uint64_t stride = 1;
   for (size_t reverse = rank; reverse > 0; --reverse) {
     size_t dim = reverse - 1;
-    payloadStrides[dim] = static_cast<int64_t>(stride);
+    payloadStrides[dim] = stride;
     uint64_t next = 0;
-    if (!checkedMulU64(stride,
-                       static_cast<uint64_t>(payloadShape[dim]), next))
+    if (!checkedMulU64(stride, static_cast<uint64_t>(payloadShape[dim]), next))
       return fail(ProgramDataFailureKind::SizeOverflow, locator,
                   "payload row stride is not representable", failure);
     stride = next;
@@ -440,8 +589,7 @@ llvm::Expected<ProgramDataRange> ProgramDataRange::create(
             static_cast<uint64_t>(globalShape[dim]) -
                 static_cast<uint64_t>(sliceOffsets[dim]))
       return fail(ProgramDataFailureKind::ShapeMismatch, locator,
-                  "program tensor slice is outside the global tensor",
-                  failure);
+                  "program tensor slice is outside the global tensor", failure);
     if (sliceSizes[dim] != localShape[dim])
       return fail(ProgramDataFailureKind::ShapeMismatch, locator,
                   "program tensor slice does not match the local shape",
@@ -449,46 +597,45 @@ llvm::Expected<ProgramDataRange> ProgramDataRange::create(
 
     uint64_t start = 0;
     if (!checkedMulU64(static_cast<uint64_t>(sliceOffsets[dim]),
-                       static_cast<uint64_t>(payloadStrides[dim]), start) ||
+                       payloadStrides[dim], start) ||
         !checkedAddU64(regionStartElement, start, regionStartElement))
       return fail(ProgramDataFailureKind::SizeOverflow, locator,
                   "program tensor slice offset is not representable", failure);
     uint64_t elements = 0;
-    if (!checkedMulU64(regionElements,
-                       static_cast<uint64_t>(sliceSizes[dim]), elements))
+    if (!checkedMulU64(regionElements, static_cast<uint64_t>(sliceSizes[dim]),
+                       elements))
       return fail(ProgramDataFailureKind::SizeOverflow, locator,
                   "program tensor region size is not representable", failure);
     regionElements = elements;
-    if (dim > 0 && (sliceOffsets[dim] != 0 ||
-                    sliceSizes[dim] != payloadShape[dim]))
+    if (dim > 0 &&
+        (sliceOffsets[dim] != 0 || sliceSizes[dim] != payloadShape[dim]))
       contiguous = false;
   }
 
   uint64_t regionOffsetBytes = 0;
   uint64_t regionLength = 0;
-  if (!checkedMulU64(regionStartElement,
-                     static_cast<uint64_t>(*elementBytes), regionOffsetBytes) ||
+  if (!checkedMulU64(regionStartElement, static_cast<uint64_t>(*elementBytes),
+                     regionOffsetBytes) ||
       !checkedMulU64(regionElements, static_cast<uint64_t>(*elementBytes),
                      regionLength))
     return fail(ProgramDataFailureKind::SizeOverflow, locator,
                 "program tensor region byte size is not representable",
                 failure);
-  const uint64_t sourcePayloadBytes = source.getSize() > source.getPayloadOffset()
-                                          ? source.getSize() -
-                                                source.getPayloadOffset()
-                                          : 0;
+  const uint64_t sourcePayloadBytes =
+      source.getSize() > source.getPayloadOffset()
+          ? source.getSize() - source.getPayloadOffset()
+          : 0;
   if (regionOffsetBytes > sourcePayloadBytes ||
       regionLength > sourcePayloadBytes - regionOffsetBytes)
     return fail(ProgramDataFailureKind::TruncatedPayload, locator,
-                "program tensor region is outside the payload source",
-                failure);
+                "program tensor region is outside the payload source", failure);
 
-  return ProgramDataRange(tensorId, dtype.str(), std::vector<int64_t>(globalShape),
-                          std::vector<int64_t>(localShape), distribution,
-                          std::vector<int64_t>(sliceOffsets),
-                          std::vector<int64_t>(sliceSizes), sourceId,
-                          regionOffsetBytes, regionLength,
-                          std::move(payloadShape), contiguous);
+  return ProgramDataRange(
+      tensorId, dtype.str(), std::vector<int64_t>(globalShape),
+      std::vector<int64_t>(localShape), distribution,
+      std::vector<int64_t>(sliceOffsets), std::vector<int64_t>(sliceSizes),
+      sourceId, regionOffsetBytes, regionLength, std::move(payloadShape),
+      contiguous);
 }
 
 llvm::Error
@@ -498,36 +645,41 @@ ProgramDataRange::materialize(const ProgramDataSource &source,
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "materialization buffer does not match the "
                                    "program tensor region byte count");
-  if (contiguous)
-    return source.readRange(source.getPayloadOffset() + regionOffset, out);
+  if (contiguous) {
+    uint64_t fileOffset = 0;
+    if (!checkedAddU64(source.getPayloadOffset(), regionOffset, fileOffset))
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "program tensor file offset overflows");
+    return source.readRange(fileOffset, out);
+  }
 
   std::optional<int64_t> elementBytes = getProgramDTypeElementBytes(dtype);
   if (!elementBytes)
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "program tensor dtype is unsupported");
   const size_t rank = payloadShape.size();
-  std::vector<int64_t> payloadStrides(rank, 1);
+  std::vector<uint64_t> payloadStrides(rank, 1);
   for (size_t reverse = rank; reverse > 1; --reverse) {
     size_t dim = reverse - 1;
-    int64_t stride = payloadStrides[dim] * payloadShape[dim];
-    if (payloadStrides[dim] != 0 &&
-        stride / payloadStrides[dim] != payloadShape[dim])
+    uint64_t stride = 0;
+    if (payloadShape[dim] < 0 ||
+        !checkedMulU64(payloadStrides[dim],
+                       static_cast<uint64_t>(payloadShape[dim]), stride))
       return llvm::createStringError(llvm::errc::invalid_argument,
                                      "payload row stride overflows");
     payloadStrides[dim - 1] = stride;
   }
 
   std::optional<uint64_t> localElements = elementCount(localShape);
+  uint64_t localBytes = 0;
   if (!localElements ||
-      *localElements * static_cast<uint64_t>(*elementBytes) != regionLength)
+      !checkedMulU64(*localElements, static_cast<uint64_t>(*elementBytes),
+                     localBytes) ||
+      localBytes != regionLength)
     return llvm::createStringError(llvm::errc::invalid_argument,
                                    "program tensor region geometry is invalid");
-  llvm::Expected<llvm::sys::fs::file_t> file =
-      llvm::sys::fs::openNativeFileForRead(source.getOwnedFilePath());
-  if (!file)
-    return file.takeError();
   llvm::Error result = llvm::Error::success();
-  std::vector<int64_t> coordinate(rank, 0);
+  std::vector<uint64_t> coordinate(rank, 0);
   uint64_t written = 0;
   for (uint64_t linear = 0; linear < *localElements && !result; ++linear) {
     uint64_t remaining = linear;
@@ -536,36 +688,112 @@ ProgramDataRange::materialize(const ProgramDataSource &source,
       size_t dim = reverse - 1;
       coordinate[dim] = remaining % static_cast<uint64_t>(localShape[dim]);
       remaining /= static_cast<uint64_t>(localShape[dim]);
-      int64_t payloadCoordinate = sliceOffsets[dim] + coordinate[dim];
-      payloadLinear += static_cast<uint64_t>(payloadCoordinate) *
-                       static_cast<uint64_t>(payloadStrides[dim]);
+      uint64_t payloadCoordinate = 0;
+      uint64_t contribution = 0;
+      if (!checkedAddU64(static_cast<uint64_t>(sliceOffsets[dim]),
+                         coordinate[dim], payloadCoordinate) ||
+          !checkedMulU64(payloadCoordinate, payloadStrides[dim],
+                         contribution) ||
+          !checkedAddU64(payloadLinear, contribution, payloadLinear)) {
+        result = llvm::createStringError(llvm::errc::invalid_argument,
+                                         "strided program tensor addressing "
+                                         "overflows");
+        break;
+      }
     }
+    if (result)
+      break;
     uint64_t payloadByte = 0;
-    if (!checkedMulU64(payloadLinear,
-                       static_cast<uint64_t>(*elementBytes), payloadByte)) {
+    if (!checkedMulU64(payloadLinear, static_cast<uint64_t>(*elementBytes),
+                       payloadByte)) {
       result = llvm::createStringError(llvm::errc::invalid_argument,
                                        "strided program tensor addressing "
                                        "overflows");
       break;
     }
-    result = readFileSpan(*file, source.getPayloadOffset() + payloadByte,
-                          out.slice(written, static_cast<size_t>(*elementBytes)));
+    uint64_t fileOffset = 0;
+    if (!checkedAddU64(source.getPayloadOffset(), payloadByte, fileOffset)) {
+      result = llvm::createStringError(llvm::errc::invalid_argument,
+                                       "strided program tensor file offset "
+                                       "overflows");
+      break;
+    }
+    result = source.readRange(
+        fileOffset, out.slice(written, static_cast<size_t>(*elementBytes)));
     written += static_cast<uint64_t>(*elementBytes);
   }
-  llvm::sys::fs::closeFile(*file);
   return result;
 }
 
-ProgramDataHandoff::ProgramDataHandoff(std::string scratchDirectory)
-    : scratchDirectory(std::move(scratchDirectory)) {}
+ProgramDataHandoff::ProgramDataHandoff(std::string storageParent)
+    : storageParent(std::move(storageParent)),
+      ioStatistics(std::make_shared<ProgramDataIOStatistics>()) {}
+
+ProgramDataHandoff::ProgramDataHandoff(ProgramDataHandoff &&other) noexcept
+    : storageParent(std::move(other.storageParent)),
+      ownedDirectory(std::move(other.ownedDirectory)),
+      nextOwnedFileOrdinal(other.nextOwnedFileOrdinal),
+      ioStatistics(std::move(other.ioStatistics)),
+      sources(std::move(other.sources)),
+      candidates(std::move(other.candidates)), ranges(std::move(other.ranges)) {
+  other.ownedDirectory.clear();
+}
+
+ProgramDataHandoff &
+ProgramDataHandoff::operator=(ProgramDataHandoff &&other) noexcept {
+  if (this == &other)
+    return *this;
+  releaseOwnedStorage();
+  storageParent = std::move(other.storageParent);
+  ownedDirectory = std::move(other.ownedDirectory);
+  nextOwnedFileOrdinal = other.nextOwnedFileOrdinal;
+  ioStatistics = std::move(other.ioStatistics);
+  sources = std::move(other.sources);
+  candidates = std::move(other.candidates);
+  ranges = std::move(other.ranges);
+  other.ownedDirectory.clear();
+  return *this;
+}
+
+ProgramDataHandoff::~ProgramDataHandoff() { releaseOwnedStorage(); }
+
+void ProgramDataHandoff::releaseOwnedStorage() noexcept {
+  // Sources close their persistent handles and unlink their individual files
+  // before the containing directory is removed.
+  candidates.clear();
+  sources.clear();
+  if (!ownedDirectory.empty())
+    llvm::sys::fs::remove_directories(ownedDirectory);
+  ownedDirectory.clear();
+}
+
+llvm::Error
+ProgramDataHandoff::ensureOwnedDirectory(llvm::StringRef locator,
+                                         ProgramDataFailure *failure) {
+  if (!ownedDirectory.empty())
+    return llvm::Error::success();
+  if (storageParent.empty())
+    return fail(ProgramDataFailureKind::MaterializationIO, locator,
+                "program data handoff has no storage parent", failure);
+  llvm::SmallString<256> prefix(storageParent);
+  llvm::sys::path::append(prefix, ".wafer-program-data");
+  llvm::SmallString<256> created;
+  if (std::error_code error =
+          llvm::sys::fs::createUniqueDirectory(prefix, created))
+    return failIO(ProgramDataFailureKind::MaterializationIO, locator,
+                  "failed to create owned payload directory: " +
+                      error.message(),
+                  failure);
+  ownedDirectory = created.str().str();
+  return llvm::Error::success();
+}
 
 namespace {
 /// Owned-file path for one source or candidate. The counter keeps names
 /// unique inside the transaction.
-std::string ownedPathFor(llvm::StringRef scratchDirectory,
-                         llvm::StringRef kind, int64_t index) {
-  llvm::SmallString<256> path(scratchDirectory);
-  llvm::sys::path::append(path, "program-data-sources");
+std::string ownedPathFor(llvm::StringRef ownedDirectory, llvm::StringRef kind,
+                         int64_t index) {
+  llvm::SmallString<256> path(ownedDirectory);
   llvm::sys::path::append(path,
                           (llvm::Twine(kind) + "-" + llvm::Twine(index)).str());
   return path.str().str();
@@ -576,27 +804,16 @@ llvm::Expected<SourceDataId>
 ProgramDataHandoff::establishSource(llvm::StringRef path,
                                     llvm::StringRef locator,
                                     ProgramDataFailure *failure) {
-  if (scratchDirectory.empty())
-    return fail(ProgramDataFailureKind::MaterializationIO, locator,
-                "program data handoff has no scratch directory", failure);
-  llvm::SmallString<256> ownedDirectory(scratchDirectory);
-  llvm::sys::path::append(ownedDirectory, "program-data-sources");
-  if (std::error_code error =
-          llvm::sys::fs::create_directories(ownedDirectory))
-    return fail(ProgramDataFailureKind::MaterializationIO, locator,
-                "failed to create owned payload directory: " + error.message(),
-                failure);
+  if (llvm::Error error = ensureOwnedDirectory(locator, failure))
+    return std::move(error);
   std::string ownedPath = ownedPathFor(
-      scratchDirectory, "source", static_cast<int64_t>(sources.size()));
-  llvm::Expected<ProgramDataSource> source =
-      ProgramDataSource::establish(path, ownedPath, locator, failure);
+      ownedDirectory, "source", static_cast<int64_t>(nextOwnedFileOrdinal++));
+  llvm::Expected<ProgramDataSource> source = ProgramDataSource::establish(
+      path, ownedPath, locator, failure, ioStatistics);
   if (!source)
     return source.takeError();
-  sources.push_back(
-      std::make_unique<ProgramDataSource>(std::move(*source)));
-  ++ioStatistics.sourceOpens;
-  ++ioStatistics.headerReads;
-  ++ioStatistics.digestPasses;
+  sources.push_back(std::make_unique<ProgramDataSource>(std::move(*source)));
+  ioStatistics->digestPasses += 2;
   return SourceDataId{static_cast<int64_t>(sources.size()) - 1};
 }
 
@@ -604,28 +821,18 @@ llvm::Expected<const ProgramDataSource *>
 ProgramDataHandoff::establishHelperOutput(llvm::StringRef path,
                                           llvm::StringRef locator,
                                           ProgramDataFailure *failure) {
-  if (scratchDirectory.empty())
-    return fail(ProgramDataFailureKind::MaterializationIO, locator,
-                "program data handoff has no scratch directory", failure);
-  llvm::SmallString<256> ownedDirectory(scratchDirectory);
-  llvm::sys::path::append(ownedDirectory, "program-data-sources");
-  if (std::error_code error =
-          llvm::sys::fs::create_directories(ownedDirectory))
-    return fail(ProgramDataFailureKind::MaterializationIO, locator,
-                "failed to create owned payload directory: " + error.message(),
-                failure);
-  std::string ownedPath = ownedPathFor(
-      scratchDirectory, "candidate", static_cast<int64_t>(candidates.size()));
-  llvm::Expected<ProgramDataSource> source =
-      ProgramDataSource::establish(path, ownedPath, locator, failure);
+  if (llvm::Error error = ensureOwnedDirectory(locator, failure))
+    return std::move(error);
+  std::string ownedPath =
+      ownedPathFor(ownedDirectory, "candidate",
+                   static_cast<int64_t>(nextOwnedFileOrdinal++));
+  llvm::Expected<ProgramDataSource> source = ProgramDataSource::establish(
+      path, ownedPath, locator, failure, ioStatistics);
   if (!source)
     return source.takeError();
-  candidates.push_back(
-      std::make_unique<ProgramDataSource>(std::move(*source)));
-  ++ioStatistics.sourceOpens;
-  ++ioStatistics.headerReads;
-  ++ioStatistics.digestPasses;
-  ++ioStatistics.helperOutputReadbacks;
+  candidates.push_back(std::make_unique<ProgramDataSource>(std::move(*source)));
+  ioStatistics->digestPasses += 2;
+  ++ioStatistics->helperOutputReadbacks;
   return candidates.back().get();
 }
 
@@ -642,6 +849,8 @@ ProgramDataHandoff::adoptCandidate(const ProgramDataSource *candidate) {
   }
   llvm_unreachable("adopted candidate must come from this handoff");
 }
+
+void ProgramDataHandoff::discardUnadoptedCandidates() { candidates.clear(); }
 
 const ProgramDataSource *
 ProgramDataHandoff::findByLocator(llvm::StringRef locator) const {
@@ -681,11 +890,13 @@ ProgramDataHandoff::findRange(ProgramTensorId tensorId) const {
   return nullptr;
 }
 
-llvm::Error ProgramDataHandoff::materializeRange(
-    const ProgramDataRange &range, llvm::MutableArrayRef<uint8_t> out) const {
-  if (llvm::Error error = range.materialize(getSource(range.getSourceId()), out))
+llvm::Error
+ProgramDataHandoff::materializeRange(const ProgramDataRange &range,
+                                     llvm::MutableArrayRef<uint8_t> out) const {
+  if (llvm::Error error =
+          range.materialize(getSource(range.getSourceId()), out))
     return error;
-  ++ioStatistics.rangeMaterializations;
+  ++ioStatistics->rangeMaterializations;
   return llvm::Error::success();
 }
 
@@ -705,20 +916,21 @@ llvm::Error ProgramDataHandoff::materializeSourceToFile(
     return failIO(ProgramDataFailureKind::MaterializationIO, locator,
                   "failed to open payload destination: " + error.message(),
                   failure);
+  ++ioStatistics->fileOpens;
   std::vector<uint8_t> window;
   const uint64_t size = source.getSize();
   uint64_t written = 0;
   while (written < size) {
     const uint64_t remaining = size - written;
     const size_t chunk = static_cast<size_t>(
-        std::min<uint64_t>(remaining, kProgramDataFileWindowBytes));
+        std::min<uint64_t>(remaining, kProgramDataReadWindowBytes));
     window.resize(chunk);
     if (llvm::Error readError = source.readRange(written, window)) {
-      llvm::Error classified = failIO(
-          ProgramDataFailureKind::MaterializationIO, locator,
-          "failed to read owned payload for materialization: " +
-              llvm::toString(std::move(readError)),
-          failure);
+      llvm::Error classified =
+          failIO(ProgramDataFailureKind::MaterializationIO, locator,
+                 "failed to read owned payload for materialization: " +
+                     llvm::toString(std::move(readError)),
+                 failure);
       output.close();
       return classified;
     }
@@ -736,7 +948,8 @@ llvm::Error ProgramDataHandoff::materializeSourceToFile(
     return failIO(ProgramDataFailureKind::MaterializationIO, locator,
                   "failed to close payload destination", failure);
 
-  llvm::Expected<std::string> digest = computeFileDigest(path);
+  llvm::Expected<std::string> digest =
+      computeFileDigestWithStatistics(path, ioStatistics.get());
   if (!digest)
     return failIO(ProgramDataFailureKind::MaterializationIO, locator,
                   "failed to digest the materialized payload: " +
@@ -746,14 +959,13 @@ llvm::Error ProgramDataHandoff::materializeSourceToFile(
     return fail(ProgramDataFailureKind::DigestMismatch, locator,
                 "materialized payload digest disagrees with owned content",
                 failure);
-  ++ioStatistics.materializedFileWrites;
-  ++ioStatistics.digestPasses;
-  ioStatistics.materializedWriteBytes += size;
+  ++ioStatistics->materializedFileWrites;
+  ++ioStatistics->digestPasses;
+  ioStatistics->materializedWriteBytes += size;
   return llvm::Error::success();
 }
 
-llvm::Expected<bool>
-ProgramDataHandoff::verifyShardAgainstSource(
+llvm::Expected<bool> ProgramDataHandoff::verifyShardAgainstSource(
     const ProgramDataSource &shard, SourceDataId originalSourceId,
     llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,
     ProgramDataFailure *failure) {
@@ -761,61 +973,66 @@ ProgramDataHandoff::verifyShardAgainstSource(
   const ProgramDataSource &original = getSource(originalSourceId);
   llvm::Expected<std::string> shardRegionDigest = computePayloadRegionDigest(
       shard, std::vector<int64_t>(sizes.size(), 0), sizes, failure);
-  llvm::Expected<std::string> originalRegionDigest = computePayloadRegionDigest(
-      original, offsets, sizes, failure);
+  llvm::Expected<std::string> originalRegionDigest =
+      computePayloadRegionDigest(original, offsets, sizes, failure);
   if (!shardRegionDigest || !originalRegionDigest) {
     llvm::Error joined = llvm::Error::success();
     if (!shardRegionDigest)
-      joined = llvm::joinErrors(std::move(joined),
-                                shardRegionDigest.takeError());
+      joined =
+          llvm::joinErrors(std::move(joined), shardRegionDigest.takeError());
     if (!originalRegionDigest)
-      joined = llvm::joinErrors(std::move(joined),
-                                originalRegionDigest.takeError());
+      joined =
+          llvm::joinErrors(std::move(joined), originalRegionDigest.takeError());
     return std::move(joined);
   }
   (void)locator;
-  ioStatistics.digestPasses += 2;
+  ioStatistics->digestPasses += 2;
   return *shardRegionDigest == *originalRegionDigest;
 }
 
+namespace {
 llvm::Expected<std::string>
-ProgramDataHandoff::computeFileDigest(llvm::StringRef path) {
+computeFileDigestWithStatistics(llvm::StringRef path,
+                                ProgramDataIOStatistics *statistics) {
   llvm::Expected<llvm::sys::fs::file_t> file =
       llvm::sys::fs::openNativeFileForRead(path);
   if (!file)
     return file.takeError();
+  if (statistics)
+    ++statistics->fileOpens;
+  ScopedFile input(*file);
   llvm::sys::fs::file_status status;
-  std::error_code statusError;
-  uint64_t size = 0;
-  if ((statusError = llvm::sys::fs::status(path, status)))
-    return llvm::createStringError(statusError,
-                                   "failed to stat file for digest: %s",
-                                   path.str().c_str());
-  size = status.getSize();
+  if (std::error_code statusError = llvm::sys::fs::status(input.get(), status))
+    return llvm::createStringError(
+        statusError, "failed to stat file for digest: %s", path.str().c_str());
+  const uint64_t size = status.getSize();
   llvm::SHA256 hash;
   std::vector<uint8_t> window;
   uint64_t consumed = 0;
   llvm::Error readError = llvm::Error::success();
   while (!readError && consumed < size) {
-    const size_t chunk = static_cast<size_t>(std::min<uint64_t>(
-        size - consumed, kProgramDataFileWindowBytes));
+    const size_t chunk = static_cast<size_t>(
+        std::min<uint64_t>(size - consumed, kProgramDataReadWindowBytes));
     window.resize(chunk);
-    readError = readFileSpan(*file, consumed, window);
+    readError = readFileSpan(input.get(), consumed, window, statistics);
     if (!readError)
       hash.update(window);
     consumed += chunk;
   }
-  llvm::sys::fs::closeFile(*file);
   if (readError)
     return std::move(readError);
   return hexEncode(hash.final());
 }
+} // namespace
 
 llvm::Expected<std::string>
-computePayloadRegionDigest(const ProgramDataSource &source,
-                           llvm::ArrayRef<int64_t> offsets,
-                           llvm::ArrayRef<int64_t> sizes,
-                           ProgramDataFailure *failure) {
+ProgramDataHandoff::computeFileDigest(llvm::StringRef path) {
+  return computeFileDigestWithStatistics(path, nullptr);
+}
+
+llvm::Expected<std::string> computePayloadRegionDigest(
+    const ProgramDataSource &source, llvm::ArrayRef<int64_t> offsets,
+    llvm::ArrayRef<int64_t> sizes, ProgramDataFailure *failure) {
   const std::string locator = source.getLocator().str();
   const llvm::ArrayRef<int64_t> payloadShape = source.getShape();
   const size_t rank = payloadShape.size();
@@ -828,11 +1045,13 @@ computePayloadRegionDigest(const ProgramDataSource &source,
     return fail(ProgramDataFailureKind::UnsupportedEncoding, locator,
                 "payload dtype is unsupported", failure);
 
-  std::vector<int64_t> payloadStrides(rank, 1);
+  std::vector<uint64_t> payloadStrides(rank, 1);
   for (size_t reverse = rank; reverse > 1; --reverse) {
     size_t dim = reverse - 1;
-    int64_t stride = payloadStrides[dim] * payloadShape[dim];
-    if (payloadStrides[dim] != 0 && stride / payloadStrides[dim] != payloadShape[dim])
+    uint64_t stride = 0;
+    if (payloadShape[dim] < 0 ||
+        !checkedMulU64(payloadStrides[dim],
+                       static_cast<uint64_t>(payloadShape[dim]), stride))
       return fail(ProgramDataFailureKind::SizeOverflow, locator,
                   "payload row stride overflows", failure);
     payloadStrides[dim - 1] = stride;
@@ -851,8 +1070,8 @@ computePayloadRegionDigest(const ProgramDataSource &source,
       return fail(ProgramDataFailureKind::ShapeMismatch, locator,
                   "payload region is outside the tensor", failure);
     uint64_t start = 0;
-    if (!checkedMulU64(static_cast<uint64_t>(offsets[dim]),
-                       static_cast<uint64_t>(payloadStrides[dim]), start) ||
+    if (!checkedMulU64(static_cast<uint64_t>(offsets[dim]), payloadStrides[dim],
+                       start) ||
         !checkedAddU64(startElement, start, startElement))
       return fail(ProgramDataFailureKind::SizeOverflow, locator,
                   "payload region offset overflows", failure);
@@ -875,13 +1094,6 @@ computePayloadRegionDigest(const ProgramDataSource &source,
                   failure);
   };
 
-  llvm::Expected<llvm::sys::fs::file_t> file =
-      llvm::sys::fs::openNativeFileForRead(source.getOwnedFilePath());
-  if (!file)
-    return failIO(ProgramDataFailureKind::MaterializationIO, locator,
-                  "failed to open owned payload for region digest: " +
-                      llvm::toString(file.takeError()),
-                  failure);
   llvm::Error result = llvm::Error::success();
   llvm::SHA256 hash;
   const uint64_t elementWidth = static_cast<uint64_t>(*elementBytes);
@@ -891,25 +1103,35 @@ computePayloadRegionDigest(const ProgramDataSource &source,
       result = fail(ProgramDataFailureKind::SizeOverflow, locator,
                     "payload region byte offset overflows", failure);
     std::vector<uint8_t> window;
-    uint64_t remaining = regionElements * elementWidth;
+    uint64_t remaining = 0;
+    if (!checkedMulU64(regionElements, elementWidth, remaining))
+      result = fail(ProgramDataFailureKind::SizeOverflow, locator,
+                    "payload region byte size overflows", failure);
     uint64_t consumed = 0;
     while (!result && consumed < remaining) {
       const size_t chunk = static_cast<size_t>(std::min<uint64_t>(
-          remaining - consumed, kProgramDataFileWindowBytes));
+          remaining - consumed, kProgramDataReadWindowBytes));
       window.resize(chunk);
-      if (llvm::Error error = readFileSpan(
-              *file, source.getPayloadOffset() + byteOffset + consumed,
-              window))
+      uint64_t payloadOffset = 0;
+      uint64_t fileOffset = 0;
+      if (!checkedAddU64(byteOffset, consumed, payloadOffset) ||
+          !checkedAddU64(source.getPayloadOffset(), payloadOffset,
+                         fileOffset)) {
+        result = fail(ProgramDataFailureKind::SizeOverflow, locator,
+                      "payload region file offset overflows", failure);
+        break;
+      }
+      if (llvm::Error error = source.readRange(fileOffset, window))
         result = readError(std::move(error));
       else
         hash.update(window);
       consumed += chunk;
     }
   } else {
-    std::vector<int64_t> coordinate(rank, 0);
+    std::vector<uint64_t> coordinate(rank, 0);
     std::vector<uint8_t> window;
     const size_t elementChunk = std::max<size_t>(
-        1, kProgramDataFileWindowBytes / static_cast<size_t>(elementWidth));
+        1, kProgramDataReadWindowBytes / static_cast<size_t>(elementWidth));
     uint64_t remainingElements = regionElements;
     for (uint64_t linear = 0; linear < regionElements && !result;) {
       const size_t batch = static_cast<size_t>(
@@ -923,21 +1145,37 @@ computePayloadRegionDigest(const ProgramDataSource &source,
           size_t dim = reverse - 1;
           coordinate[dim] = current % static_cast<uint64_t>(sizes[dim]);
           current /= static_cast<uint64_t>(sizes[dim]);
-          payloadElement +=
-              static_cast<uint64_t>(offsets[dim] + coordinate[dim]) *
-              static_cast<uint64_t>(payloadStrides[dim]);
+          uint64_t payloadCoordinate = 0;
+          uint64_t contribution = 0;
+          if (!checkedAddU64(static_cast<uint64_t>(offsets[dim]),
+                             coordinate[dim], payloadCoordinate) ||
+              !checkedMulU64(payloadCoordinate, payloadStrides[dim],
+                             contribution) ||
+              !checkedAddU64(payloadElement, contribution, payloadElement)) {
+            result = fail(ProgramDataFailureKind::SizeOverflow, locator,
+                          "payload region addressing overflows", failure);
+            break;
+          }
         }
+        if (result)
+          break;
         uint64_t payloadByte = 0;
         if (!checkedMulU64(payloadElement, elementWidth, payloadByte)) {
           result = fail(ProgramDataFailureKind::SizeOverflow, locator,
                         "payload region addressing overflows", failure);
           break;
         }
-        if (llvm::Error error = readFileSpan(
-                *file, source.getPayloadOffset() + payloadByte,
-                llvm::MutableArrayRef<uint8_t>(
-                    window.data() + windowBytes,
-                    static_cast<size_t>(elementWidth)))) {
+        uint64_t fileOffset = 0;
+        if (!checkedAddU64(source.getPayloadOffset(), payloadByte,
+                           fileOffset)) {
+          result = fail(ProgramDataFailureKind::SizeOverflow, locator,
+                        "payload region file offset overflows", failure);
+          break;
+        }
+        if (llvm::Error error = source.readRange(
+                fileOffset, llvm::MutableArrayRef<uint8_t>(
+                                window.data() + windowBytes,
+                                static_cast<size_t>(elementWidth)))) {
           result = readError(std::move(error));
           break;
         }
@@ -948,16 +1186,16 @@ computePayloadRegionDigest(const ProgramDataSource &source,
       remainingElements -= batch;
     }
   }
-  llvm::sys::fs::closeFile(*file);
   if (result)
     return result;
   return hexEncode(hash.final());
 }
 
 void ProgramDataIOStatistics::print(llvm::raw_ostream &stream) const {
-  stream << "source_opens=" << sourceOpens
-         << " header_reads=" << headerReads
-         << " digest_passes=" << digestPasses
+  stream << "source_opens=" << sourceOpens << " file_opens=" << fileOpens
+         << " read_windows=" << readWindows << " read_bytes=" << readBytes
+         << " maximum_read_window_bytes=" << maximumReadWindowBytes
+         << " header_reads=" << headerReads << " digest_passes=" << digestPasses
          << " helper_output_readbacks=" << helperOutputReadbacks
          << " range_materializations=" << rangeMaterializations
          << " materialized_file_writes=" << materializedFileWrites

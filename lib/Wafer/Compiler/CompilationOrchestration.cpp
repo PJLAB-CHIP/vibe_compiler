@@ -233,7 +233,10 @@ mlir::LogicalResult runCompilationTransaction(
   // Program data ownership: discover payload members, snapshot only IR/
   // metadata/directory structure, open and verify each payload exactly once,
   // and pass content-stable files to the external SPMD helper boundary.
-  ProgramDataHandoff programData(transactionRoot.str().str());
+  // Program-data storage is a sibling of compilation staging and is owned by
+  // the handoff itself. A returned CardExecutable therefore remains readable
+  // after the transaction root is removed.
+  ProgramDataHandoff programData(canonicalOutputParent.str().str());
   std::string sourceMetaPath =
       programFile(canonicalSource, {llvm::StringRef("functions"),
                                     llvm::StringRef("forward.meta")});
