@@ -5,6 +5,7 @@
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Compiler/Package.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -27,20 +28,20 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> tileModules,
 /// Runs the production transaction while injecting a failure after the
 /// selected Tile executable launch slot has completed lowering and
 /// verification. This API is callable only through test drivers.
-mlir::LogicalResult compileProgramWithExecutableLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputPackageDirectory,
+llvm::Expected<CompilationResult> compileProgramWithExecutableLaunchSlotFailure(
+    CompilationRequest request, llvm::StringRef outputDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics);
 
-mlir::LogicalResult compileProgramWithTargetLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputPackageDirectory,
+llvm::Expected<CompilationResult> compileProgramWithTargetLaunchSlotFailure(
+    CompilationRequest request, llvm::StringRef outputDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics);
 
-mlir::LogicalResult compileProgramWithPackageLaunchSlotFailure(
-    CompilationRequest request, llvm::StringRef outputPackageDirectory,
+llvm::Expected<CompilationResult> compileProgramWithPackageLaunchSlotFailure(
+    CompilationRequest request, llvm::StringRef outputDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics);
@@ -48,8 +49,26 @@ mlir::LogicalResult compileProgramWithPackageLaunchSlotFailure(
 /// Runs the production transaction while injecting a failure after the
 /// commit-stage verification and before the single publication rename. The
 /// target output must remain invisible.
-mlir::LogicalResult compileProgramWithCommitVerificationFailure(
-    CompilationRequest request, llvm::StringRef outputPackageDirectory,
+llvm::Expected<CompilationResult> compileProgramWithCommitVerificationFailure(
+    CompilationRequest request, llvm::StringRef outputDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    llvm::raw_ostream &diagnostics);
+
+/// Corrupts the staged program-data member immediately before package binding.
+/// The public facade must return a PackageCommit CompilationFailure and publish
+/// no output.
+llvm::Expected<CompilationResult> compileProgramWithPackageBindingFailure(
+    CompilationRequest request, llvm::StringRef outputDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    llvm::raw_ostream &diagnostics);
+
+/// Corrupts the staged profile plan immediately before instrumentation
+/// binding. The public facade must return a PackageCommit CompilationFailure
+/// and publish no delivery root.
+llvm::Expected<CompilationResult> compileProgramWithProfileBindingFailure(
+    CompilationRequest request, llvm::StringRef outputDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics);

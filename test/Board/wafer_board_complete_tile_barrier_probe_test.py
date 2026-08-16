@@ -257,7 +257,7 @@ def compile_package(
             str(args.wafer_compile),
             "--input-program-dir",
             str(source),
-            "--output-package-dir",
+            "--output-dir",
             str(package),
             "--num-partitions=1",
         ],

@@ -3,17 +3,20 @@
 // directory spelling are internal/test-only or removed and must be rejected
 // as unknown arguments before any filesystem access.
 
-# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 --target-model 2>&1 | FileCheck %s --check-prefix=MODEL
-# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 --model-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=MODEL-INPUT
-# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 --dump-compiler-ir %t.ir 2>&1 | FileCheck %s --check-prefix=DUMP
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --target-model 2>&1 | FileCheck %s --check-prefix=MODEL
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --model-input 0=%t.input.npy 2>&1 | FileCheck %s --check-prefix=MODEL-INPUT
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --dump-compiler-ir %t.ir 2>&1 | FileCheck %s --check-prefix=DUMP
 # RUN: not wafer-compile --input-program-dir %t.input --output-program-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OLD-FLAG
+# RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OLD-PACKAGE-FLAG
 # RUN: wafer-compile --help | FileCheck %s --check-prefix=HELP
 
 # MODEL: wafer-compile: unknown argument: --target-model
 # MODEL-INPUT: wafer-compile: unknown argument: --model-input
 # DUMP: wafer-compile: unknown argument: --dump-compiler-ir
 # OLD-FLAG: wafer-compile: unknown argument: --output-program-dir
-# HELP: --output-package-dir
+# OLD-PACKAGE-FLAG: wafer-compile: unknown argument: --output-package-dir
+# HELP: --output-dir
 # HELP-NOT: --target-model
 # HELP-NOT: --dump-compiler-ir
 # HELP-NOT: --output-program-dir
+# HELP-NOT: --output-package-dir

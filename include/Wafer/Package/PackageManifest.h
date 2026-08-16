@@ -12,9 +12,11 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/MemoryBuffer.h"
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -378,6 +380,97 @@ private:
   PackageManifest manifest;
 };
 
+namespace detail {
+
+/// Pre-publication package resource binding. It owns the exact canonical
+/// manifest, module and program-data buffers whose bytes were checked against
+/// `manifest`, but deliberately carries no committed root identity.
+struct BoundExecutablePackage {
+  VerifiedPackageManifest manifest;
+  std::unique_ptr<llvm::MemoryBuffer> manifestBuffer;
+  std::vector<std::unique_ptr<llvm::MemoryBuffer>> moduleBuffers;
+  std::unique_ptr<llvm::MemoryBuffer> programDataBuffer;
+};
+
+struct ExecutablePackageFactory;
+
+llvm::Expected<BoundExecutablePackage>
+bindExecutablePackage(llvm::StringRef packageRoot,
+                      const PackageParseLimits &limits = {});
+
+/// Opens one regular file by descriptor, derives its size from that descriptor,
+/// reads an owned snapshot and closes the descriptor on every exit. The
+/// returned bytes are independent of later path replacement and same-inode
+/// mutation.
+llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>>
+openPackageMember(llvm::StringRef path, llvm::StringRef description);
+
+} // namespace detail
+
+/// The single move-only owner used by compiler results and runtime loaders for
+/// a committed executable package. It owns the canonical root identity, the
+/// verified manifest, and the exact all-and-only member buffers. Deleting or
+/// replacing member paths cannot invalidate the owned content.
+class ExecutablePackage {
+public:
+  ExecutablePackage(ExecutablePackage &&) = default;
+  ExecutablePackage &operator=(ExecutablePackage &&) = default;
+  ExecutablePackage(const ExecutablePackage &) = delete;
+  ExecutablePackage &operator=(const ExecutablePackage &) = delete;
+
+  llvm::StringRef getRootDirectory() const { return rootDirectory; }
+  const PackageManifest &getManifest() const {
+    return verifiedManifest.getManifest();
+  }
+  const VerifiedPackageManifest &getVerifiedManifest() const {
+    return verifiedManifest;
+  }
+  const llvm::MemoryBuffer &getManifestBuffer() const {
+    return *manifestBuffer;
+  }
+  const std::vector<std::unique_ptr<llvm::MemoryBuffer>> &
+  getModuleBuffers() const {
+    return moduleBuffers;
+  }
+  const llvm::MemoryBuffer &getProgramDataBuffer() const {
+    return *programDataBuffer;
+  }
+
+private:
+  friend struct detail::ExecutablePackageFactory;
+
+  ExecutablePackage(
+      std::string rootDirectory, VerifiedPackageManifest verifiedManifest,
+      std::unique_ptr<llvm::MemoryBuffer> manifestBuffer,
+      std::vector<std::unique_ptr<llvm::MemoryBuffer>> moduleBuffers,
+      std::unique_ptr<llvm::MemoryBuffer> programDataBuffer)
+      : rootDirectory(std::move(rootDirectory)),
+        verifiedManifest(std::move(verifiedManifest)),
+        manifestBuffer(std::move(manifestBuffer)),
+        moduleBuffers(std::move(moduleBuffers)),
+        programDataBuffer(std::move(programDataBuffer)) {}
+
+  std::string rootDirectory;
+  VerifiedPackageManifest verifiedManifest;
+  std::unique_ptr<llvm::MemoryBuffer> manifestBuffer;
+  std::vector<std::unique_ptr<llvm::MemoryBuffer>> moduleBuffers;
+  std::unique_ptr<llvm::MemoryBuffer> programDataBuffer;
+};
+
+namespace detail {
+
+struct ExecutablePackageFactory {
+  static ExecutablePackage make(std::string committedRoot,
+                                BoundExecutablePackage package) {
+    return ExecutablePackage(
+        std::move(committedRoot), std::move(package.manifest),
+        std::move(package.manifestBuffer), std::move(package.moduleBuffers),
+        std::move(package.programDataBuffer));
+  }
+};
+
+} // namespace detail
+
 llvm::StringRef stringifyProgramTensorRole(ProgramTensorRole role);
 llvm::StringRef stringifyPackageAccessMode(PackageAccessMode access);
 llvm::StringRef stringifyPackageMemLayout(PackageMemLayout layout);
@@ -397,9 +490,9 @@ llvm::Expected<VerifiedPackageManifest>
 parseCanonicalPackageJson(llvm::StringRef json, llvm::StringRef packageRoot,
                           const PackageParseLimits &limits = {});
 
-llvm::Expected<VerifiedPackageManifest>
-loadVerifiedPackageManifest(llvm::StringRef packageRoot,
-                            const PackageParseLimits &limits = {});
+llvm::Expected<ExecutablePackage>
+loadExecutablePackage(llvm::StringRef packageRoot,
+                      const PackageParseLimits &limits = {});
 
 /// One caller-side binding for an external input port. Output ports are
 /// prepared and read back by the runtime and never caller-bound.

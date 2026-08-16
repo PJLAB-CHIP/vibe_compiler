@@ -303,7 +303,7 @@ void printNoCardTilePlan(const wafer::runtime::RuntimeSessionPlan &plan) {
 
 int runNoCard(
     const Options &options,
-    const wafer::runtime::VerifiedPackageManifest &package,
+    const wafer::runtime::ExecutablePackage &package,
     const std::optional<wafer::runtime::VerifiedProfileInstrumentation>
         &profileInstrumentation) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
@@ -322,7 +322,8 @@ int runNoCard(
   }
   environment.supportsHostWatchdog = options.supportsHostWatchdog;
   llvm::Expected<wafer::runtime::RuntimeInvocationPlan> invocationPlan =
-      wafer::runtime::planRuntimeInvocation(package, bindings, environment);
+      wafer::runtime::planRuntimeInvocation(package.getVerifiedManifest(),
+                                            bindings, environment);
   if (!invocationPlan)
     return fail(invocationPlan.takeError());
 
@@ -354,7 +355,7 @@ int runNoCard(
 
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
 int runBoard(const Options &options,
-             const wafer::runtime::VerifiedPackageManifest &package,
+             const wafer::runtime::ExecutablePackage &package,
              const std::optional<wafer::runtime::VerifiedProfileInstrumentation>
                  &profileInstrumentation) {
   const wafer::runtime::PackageManifest &manifest = package.getManifest();
@@ -414,8 +415,7 @@ int runBoard(const Options &options,
     }
     completedPlan = std::move(*filePlan);
     return wafer::runtime::executeBoardInvocation(
-        package, options.packageDirectory, std::move(completedPlan.request),
-        **driver);
+        package, std::move(completedPlan.request), **driver);
   }();
   if (!result) {
     llvm::Error error = result.takeError();
@@ -512,8 +512,8 @@ int main(int argc, char **argv) {
   if (!options)
     return fail(options.takeError());
 
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
-      wafer::runtime::loadVerifiedPackageManifest(options->packageDirectory);
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
+      wafer::runtime::loadExecutablePackage(options->packageDirectory);
   if (!package)
     return fail(package.takeError());
   llvm::Expected<std::optional<wafer::runtime::VerifiedProfileInstrumentation>>

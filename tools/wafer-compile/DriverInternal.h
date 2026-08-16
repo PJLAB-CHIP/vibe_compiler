@@ -23,7 +23,7 @@ namespace wafer::compile_driver {
 
 struct CommandLineOptions {
   std::optional<std::string> inputProgramDirectory;
-  std::optional<std::string> outputPackageDirectory;
+  std::optional<std::string> outputDirectory;
   std::optional<std::string> numPartitions;
   std::optional<std::string> compilerIRDumpDirectory;
   std::optional<std::string> optimizationPolicy;

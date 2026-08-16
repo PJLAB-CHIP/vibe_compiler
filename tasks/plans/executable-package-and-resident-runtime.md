@@ -195,7 +195,7 @@ invocation memory另成一块，是因为它承载每次更新/回读并可在�
 2. selected representation：`writeProgramData`消费`PhysicalTensorCodec`新增的physical-order bounded window plan按窗口materialize，identity路径直接流式source range不再分配整tensor host vector，Cx块padding为canonical零（同一回归覆盖RSS/read-window路径；8MiB identity流式由program-data scale lit覆盖）；
 3. TileRow单一invocation allocation：executor把16个pointer row H2D到`invocation base + planned offset`，不再逐Tile allocate；fake provider测试断言allocation次数、row地址、每Tile失败注入与reverse cleanup与同一plan一致；
 4. program-data canonical layout：verifier按writer同一tie-break重建non-overlap placement并证明id顺序、offset、全零padding、total bytes与base alignment精确；`PackageManifestTest`新增5个拒绝路径正/负例；
-5. package root closure：strict loader（`loadVerifiedPackageManifest`）验证package root恰好`manifest.json`+`modules/`+`data/program-data.bin`，拒绝额外member/symlink/非regular payload（3个负例）；
+5. package root closure：strict loader（`loadExecutablePackage`）验证package root恰好`manifest.json`+`modules/`+`data/program-data.bin`，拒绝额外member/symlink/非regular payload（3个负例）；
 6. 中立package support library：`lib/Wafer/Package`/`include/Wafer/Package`拥有typed model、canonical spelling、parser/serializer、verifier、readback与profile instrumentation model；`WaferCompiler`链接`WaferPackageSupport`且不链接`WaferRuntime`，`tools/check_source_organization.py`新增CMake依赖边界检查。
 
 修复后验证：三棵树fresh build；Q56定向单测161/161；WaferRunBoardIOUnitTests 42/42；Runtime/Compiler public link smoke exit 0；默认lit gate 216/216；source organization与board python检查通过；fresh参数add source→package→no-card通过。真实板测仍按本文件原门禁串行执行。

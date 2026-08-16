@@ -682,9 +682,11 @@
   module/program-data buffer在返回前已经销毁。对象仍可存活时，磁盘成员却能被删除或替换，后续consumer只能重新按path打开。
 - 根因：把不可复制的value identity误当成resource control。`move-only`只约束C++对象复制，digest只证明某次读取的内容；二者都不延长
   file descriptor、mapping或immutable storage的lifetime。
-- 修复模式：若类型合同声明拥有文件成员，就用RAII直接持有all-and-only opened handle/mmap或等价不可变storage，并明确析构顺序；
+- 修复模式：若类型合同声明拥有文件内容，就用RAII直接持有all-and-only不可变snapshot；只持有fd或file-backed只读mmap仍会
+  观察同inode原地改写，不能冒充content ownership。明确descriptor关闭和snapshot析构顺序；
   只需要瞬时验证时则把类型命名和API收窄为verified manifest/snapshot，不得称为package owner。
-- 防复发：owner测试必须在返回后删除/替换原path并继续从owner读取已签发内容；只断言move trait、root字符串和digest相等不能证明ownership。
+- 防复发：owner测试必须在返回后覆盖同inode、删除/替换原path，并继续从owner读取已签发内容；还要检查descriptor不泄漏。
+  只断言move trait、root字符串和digest相等不能证明ownership。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
 

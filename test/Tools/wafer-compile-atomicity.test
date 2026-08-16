@@ -20,76 +20,76 @@
 
 # A helper that has already written a partial staging program and then fails
 # must not mutate the source or write the requested output.
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/failed --num-partitions=1 2>&1 | FileCheck %s --check-prefix=LATE
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/failed --num-partitions=1 2>&1 | FileCheck %s --check-prefix=LATE
 # RUN: diff -ru %t.input.before %t.input
 # RUN: test ! -e %t.outputs/failed
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
 # A helper marker is insufficient when the returned program still contains
 # an SDY intermediate op.
-# RUN: not env HELPER_MODE=sdy WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/residual-sdy --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY
+# RUN: not env HELPER_MODE=sdy WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/residual-sdy --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY
 # RUN: test ! -e %t.outputs/residual-sdy
 
 # SDY attributes are residual sharding semantics even when every operation
 # belongs to an admitted post-helper dialect.
-# RUN: not env HELPER_MODE=sdy-attribute WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/residual-sdy-attribute --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-ATTRIBUTE
+# RUN: not env HELPER_MODE=sdy-attribute WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/residual-sdy-attribute --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-ATTRIBUTE
 # RUN: test ! -e %t.outputs/residual-sdy-attribute
 
 # A builtin string still carries Shardy semantics when its attribute key is in
 # the sdy namespace. The post-helper gate checks names as well as dialect-owned
 # attribute values.
-# RUN: not env HELPER_MODE=sdy-string WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/residual-sdy-string --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-STRING
+# RUN: not env HELPER_MODE=sdy-string WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/residual-sdy-string --num-partitions=1 2>&1 | FileCheck %s --check-prefix=RESIDUAL-SDY-STRING
 # RUN: test ! -e %t.outputs/residual-sdy-string
 
 # Post-helper metadata is checked inside the same compilation transaction.
-# RUN: not env HELPER_MODE=bad-partitions WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/bad-metadata --num-partitions=1 2>&1 | FileCheck %s --check-prefix=BAD-METADATA
+# RUN: not env HELPER_MODE=bad-partitions WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/bad-metadata --num-partitions=1 2>&1 | FileCheck %s --check-prefix=BAD-METADATA
 # RUN: test ! -e %t.outputs/bad-metadata
 
 # A marker alone cannot establish the typed user-input/result distribution
 # contract that the tensor program hands to CardModule construction.
-# RUN: not env HELPER_MODE=no-boundary WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/missing-boundary --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-BOUNDARY
+# RUN: not env HELPER_MODE=no-boundary WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/missing-boundary --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-BOUNDARY
 # RUN: test ! -e %t.outputs/missing-boundary
 
 # A no-op process cannot masquerade as the SPMD helper without an explicit
 # post-partition marker.
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.bad-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/fake-success --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-MARKER
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.bad-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/fake-success --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-MARKER
 # RUN: test ! -e %t.outputs/fake-success
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
 # The marker path must be a regular file; a directory with the canonical name
 # cannot satisfy the partition boundary.
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.marker-dir-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/marker-directory --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MARKER-DIRECTORY
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.marker-dir-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/marker-directory --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MARKER-DIRECTORY
 # RUN: test ! -e %t.outputs/marker-directory
 
 # The helper output root itself must be a real directory, not a symlink back
 # into another transaction member that would dangle after cleanup.
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.symlink-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/helper-root-symlink --num-partitions=1 2>&1 | FileCheck %s --check-prefix=HELPER-ROOT-SYMLINK
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.symlink-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/helper-root-symlink --num-partitions=1 2>&1 | FileCheck %s --check-prefix=HELPER-ROOT-SYMLINK
 # RUN: test ! -e %t.outputs/helper-root-symlink
 # RUN: test ! -L %t.outputs/helper-root-symlink
 
 # An existing final directory is never replaced by the package directory rename.
 # RUN: mkdir -p %t.outputs/final/nested && printf old > %t.outputs/final/nested/sentinel
 # RUN: cp -R %t.outputs/final %t.final.before
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/final --num-partitions=1 2>&1 | FileCheck %s --check-prefix=EXISTING
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/final --num-partitions=1 2>&1 | FileCheck %s --check-prefix=EXISTING
 # RUN: diff -ru %t.input.before %t.input
 # RUN: diff -ru %t.final.before %t.outputs/final
 
 # The directory rename remains no-replace when a competing writer creates the requested
 # final directory after the initial existence check but before renameat2.
-# RUN: not env HELPER_MODE=output-race FINAL_OUTPUT=%t.outputs/raced-final WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/raced-final --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OUTPUT-RACE
+# RUN: not env HELPER_MODE=output-race FINAL_OUTPUT=%t.outputs/raced-final WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.mock-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/raced-final --num-partitions=1 2>&1 | FileCheck %s --check-prefix=OUTPUT-RACE
 # RUN: FileCheck %s --input-file=%t.outputs/raced-final/sentinel --check-prefix=COMPETITOR
 # RUN: test ! -e %t.outputs/raced-final/functions
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
 # A symlinked output parent cannot bypass source/output containment.
 # RUN: ln -sfn %t.input %t.alias-parent
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.alias-parent/output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=ALIASED-OUTPUT
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.alias-parent/output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=ALIASED-OUTPUT
 # RUN: diff -ru %t.input.before %t.input
 # RUN: test ! -e %t.input/output
 
 # A not-yet-created deep output parent below the source is rejected before any
 # parent directory or staging state is created.
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.input/not-yet-created/deep/output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DEEP-SOURCE-OUTPUT
+# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.input --output-dir %t.input/not-yet-created/deep/output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DEEP-SOURCE-OUTPUT
 # RUN: diff -ru %t.input.before %t.input
 # RUN: test ! -e %t.input/not-yet-created
 # RUN: test ! -e %t.helper-called
@@ -97,14 +97,14 @@
 # Source snapshots reject symlink members instead of following data outside
 # the admitted program tree.
 # RUN: cp -R %t.input %t.symlink-input && ln -s functions/forward.meta %t.symlink-input/metadata-link
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.symlink-input --output-package-dir %t.outputs/symlink-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=SOURCE-SYMLINK
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.symlink-input --output-dir %t.outputs/symlink-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=SOURCE-SYMLINK
 # RUN: test ! -e %t.outputs/symlink-output
 
 # Lower-level instruction IR is already beyond the admitted exporter stage and
 # is rejected before the external helper can run.
 # RUN: cp -R %t.input %t.stage-instr
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    wafer.instr.ncc_join [0]\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.stage-instr/functions/forward.mlir
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.stage-instr --output-package-dir %t.outputs/stage-instr --num-partitions=1 2>&1 | FileCheck %s --check-prefix=STAGE-INSTR
+# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.stage-instr --output-dir %t.outputs/stage-instr --num-partitions=1 2>&1 | FileCheck %s --check-prefix=STAGE-INSTR
 # RUN: test ! -e %t.outputs/stage-instr
 # RUN: test ! -e %t.helper-called
 
@@ -112,7 +112,7 @@
 # before helper orchestration.
 # RUN: cp -R %t.input %t.source-sdy-string
 # RUN: printf '%b' 'module attributes {sdy.leftover = "opaque"} {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.source-sdy-string/functions/forward.mlir
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.source-sdy-string --output-package-dir %t.outputs/source-sdy-string --num-partitions=1 2>&1 | FileCheck %s --check-prefix=SOURCE-SDY-STRING
+# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.source-sdy-string --output-dir %t.outputs/source-sdy-string --num-partitions=1 2>&1 | FileCheck %s --check-prefix=SOURCE-SDY-STRING
 # RUN: test ! -e %t.outputs/source-sdy-string
 # RUN: test ! -e %t.helper-called
 
@@ -120,7 +120,7 @@
 # substitute for the direct members owned by the compiled program module.
 # RUN: cp -R %t.input %t.nested-facts
 # RUN: printf '%b' 'module {\n  module @nested {\n    wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n    wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}\n  }\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.nested-facts/functions/forward.mlir
-# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.nested-facts --output-package-dir %t.outputs/nested-facts --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NESTED-FACTS
+# RUN: not env HELPER_CALLED=%t.helper-called WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.unexpected-helper %wafer_compile_test --input-program-dir %t.nested-facts --output-dir %t.outputs/nested-facts --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NESTED-FACTS
 # RUN: test ! -e %t.outputs/nested-facts
 # RUN: test ! -e %t.helper-called
 
@@ -129,7 +129,7 @@
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>, %%arg1: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg1 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.single-card-input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]},{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"},{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.single-card-input/functions/forward.meta
 # RUN: %python -c 'import numpy as np; from pathlib import Path; p=Path("%t.single-card-input/data/weight"); f=p.open("wb"); np.save(f, np.ones((16,), dtype=np.float32)); f.close()'
-# RUN: wafer-compile --input-program-dir %t.single-card-input --output-package-dir %t.outputs/single-card --num-partitions=1 | FileCheck %s --check-prefix=SINGLE-CARD
+# RUN: wafer-compile --input-program-dir %t.single-card-input --output-dir %t.outputs/single-card --num-partitions=1 | FileCheck %s --check-prefix=SINGLE-CARD
 # The executable package carries manifest/modules/program data only; the
 # source tree, IR copy, parameter shard directory and auxiliary exporter
 # payload do not enter the package.
@@ -145,24 +145,24 @@
 # A valid but mismatched pre-existing mesh must not be silently reused.
 # RUN: cp -R %t.input %t.mismatch
 # RUN: printf '%b' 'module {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 2>}\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.mismatch/functions/forward.mlir
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.mismatch --output-package-dir %t.outputs/mismatch-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MISMATCH
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.mismatch --output-dir %t.outputs/mismatch-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=MISMATCH
 # RUN: test ! -e %t.outputs/mismatch-output
 
 # Multiple individually valid topology facts are ambiguous to the typed driver.
 # RUN: cp -R %t.input %t.duplicate
 # RUN: printf '%b' 'module {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  wafer.target.topology @other {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.duplicate/functions/forward.mlir
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.duplicate --output-package-dir %t.outputs/duplicate-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.duplicate --output-dir %t.outputs/duplicate-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE
 # RUN: test ! -e %t.outputs/duplicate-output
 
 # Multiple execution meshes and a non-canonical topology are independently
 # rejected even when every individual IR op verifies.
 # RUN: cp -R %t.input %t.duplicate-mesh
 # RUN: printf '%b' 'module {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}\n  wafer.execution.mesh @other_mesh {axes = ["card_partition"], shape = array<i64: 1>}\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.duplicate-mesh/functions/forward.mlir
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.duplicate-mesh --output-package-dir %t.outputs/duplicate-mesh-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-MESH
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.duplicate-mesh --output-dir %t.outputs/duplicate-mesh-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-MESH
 # RUN: test ! -e %t.outputs/duplicate-mesh-output
 # RUN: cp -R %t.input %t.bad-topology
 # RUN: printf '%b' 'module {\n  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 2, 8>, unavailable_tiles = array<i64>}\n  wafer.execution.mesh @default_mesh {axes = ["card_partition"], shape = array<i64: 1>}\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.bad-topology/functions/forward.mlir
-# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.bad-topology --output-package-dir %t.outputs/bad-topology-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=BAD-TOPOLOGY
+# RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER=%t.fail-helper %wafer_compile_test --input-program-dir %t.bad-topology --output-dir %t.outputs/bad-topology-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=BAD-TOPOLOGY
 # RUN: test ! -e %t.outputs/bad-topology-output
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 
@@ -175,11 +175,11 @@
 # RESIDUAL-SDY-STRING: wafer-compile: XLA SPMD partitioner output still contains Shardy semantics
 # BAD-METADATA: parameter shard num_partitions does not match execution mesh partition count
 # NO-BOUNDARY: post-SPMD program directory is missing distributed_boundary
-# EXISTING: wafer-compile: refusing to replace existing output package directory
-# OUTPUT-RACE: wafer-compile: output package directory appeared before rename; refusing to replace it
+# EXISTING: wafer-compile: refusing to replace existing output directory
+# OUTPUT-RACE: wafer-compile: output directory appeared before rename; refusing to replace it
 # COMPETITOR: competitor
-# ALIASED-OUTPUT: wafer-compile: output package directory must not equal or be nested under the source program directory
-# DEEP-SOURCE-OUTPUT: wafer-compile: output package directory must not equal or be nested under the source program directory
+# ALIASED-OUTPUT: wafer-compile: output directory must not equal or be nested under the source program directory
+# DEEP-SOURCE-OUTPUT: wafer-compile: output directory must not equal or be nested under the source program directory
 # SOURCE-SYMLINK: wafer-compile: program directory contains unsupported symbolic link
 # STAGE-INSTR: 'wafer.instr.ncc_join' op is not legal in an exporter or post-SPMD StableHLO program
 # SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume

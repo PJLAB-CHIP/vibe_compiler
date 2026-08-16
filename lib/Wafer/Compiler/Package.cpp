@@ -1173,12 +1173,13 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
   if (llvm::Error error = writeManifest(stagingRoot, *verified))
     return fail(diagnostics, llvm::toString(std::move(error)));
 
-  llvm::Expected<runtime::VerifiedPackageManifest> readback =
-      runtime::loadVerifiedPackageManifest(stagingRoot);
+  llvm::Expected<runtime::detail::BoundExecutablePackage> readback =
+      runtime::detail::bindExecutablePackage(stagingRoot);
   if (!readback)
     return fail(diagnostics, "package manifest readback failed: " +
                                  llvm::toString(readback.takeError()));
-  const runtime::PackageManifest &readbackManifest = readback->getManifest();
+  const runtime::PackageManifest &readbackManifest =
+      readback->manifest.getManifest();
   const ExecutionConfig &executionConfig = cardExecutable.getExecutionConfig();
   const VerifiedTargetModule &targetReadback =
       targetModules.getModules().front();
@@ -1198,104 +1199,7 @@ detail::writePackage(llvm::StringRef tensorProgramDirectory,
     return llvm::createStringError(llvm::errc::io_error,
                                    "package directory rename failed");
   cleanup.release();
-  return std::move(*readback);
-}
-
-llvm::Expected<OpenedPackageMembers>
-detail::openPackageMembers(
-    llvm::StringRef packageRoot,
-    const runtime::VerifiedPackageManifest &verifiedManifest) {
-  const runtime::PackageManifest &manifest = verifiedManifest.getManifest();
-  OpenedPackageMembers members;
-
-  llvm::SmallString<256> manifestPath(packageRoot);
-  llvm::sys::path::append(manifestPath, runtime::kPackageManifestFileName);
-  llvm::sys::fs::file_t manifestFD = 0;
-  if (std::error_code error = llvm::sys::fs::openFileForRead(
-          manifestPath, manifestFD, llvm::sys::fs::OF_None))
-    return llvm::createStringError(error,
-                                   "failed to open package manifest member");
-  llvm::sys::fs::file_status manifestStatus;
-  if (std::error_code error =
-          llvm::sys::fs::status(manifestPath, manifestStatus))
-    return llvm::createStringError(error,
-                                   "failed to stat package manifest member");
-  const uint64_t manifestSize = manifestStatus.getSize();
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> manifestBuffer =
-      llvm::MemoryBuffer::getOpenFile(manifestFD, manifestPath, manifestSize,
-                                      /*RequiresNullTerminator=*/false);
-  if (!manifestBuffer)
-    return llvm::createStringError(manifestBuffer.getError(),
-                                   "failed to map package manifest member");
-  members.manifest = std::move(*manifestBuffer);
-
-  members.modules.reserve(manifest.modules.size());
-  for (const runtime::PackageModuleRecord &module : manifest.modules) {
-    llvm::SmallString<256> modulePath(packageRoot);
-    llvm::sys::path::append(modulePath, module.relativePath);
-    llvm::sys::fs::file_t moduleFD = 0;
-    if (std::error_code error = llvm::sys::fs::openFileForRead(
-            modulePath, moduleFD, llvm::sys::fs::OF_None))
-      return llvm::createStringError(error,
-                                     "failed to open package module member: " +
-                                         module.relativePath);
-    llvm::sys::fs::file_status moduleStatus;
-    if (std::error_code error = llvm::sys::fs::status(modulePath, moduleStatus))
-      return llvm::createStringError(error,
-                                     "failed to stat package module member: " +
-                                         module.relativePath);
-    const uint64_t moduleSize = moduleStatus.getSize();
-    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> moduleBuffer =
-        llvm::MemoryBuffer::getOpenFile(moduleFD, modulePath, moduleSize,
-                                        /*RequiresNullTerminator=*/false);
-    if (!moduleBuffer)
-      return llvm::createStringError(moduleBuffer.getError(),
-                                     "failed to map package module member: " +
-                                         module.relativePath);
-    llvm::SHA256 hasher;
-    hasher.update((*moduleBuffer)->getBuffer());
-    std::string digest =
-        "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
-    if (digest != module.digest)
-      return llvm::createStringError(
-          llvm::errc::operation_not_permitted,
-          "opened package module member digest does not match the verified "
-          "manifest record: " +
-              module.relativePath);
-    members.modules.push_back(std::move(*moduleBuffer));
-  }
-
-  llvm::SmallString<256> programDataPath(packageRoot);
-  llvm::sys::path::append(programDataPath, manifest.programData.relativePath);
-  llvm::sys::fs::file_t programDataFD = 0;
-  if (std::error_code error = llvm::sys::fs::openFileForRead(
-          programDataPath, programDataFD, llvm::sys::fs::OF_None))
-    return llvm::createStringError(error,
-                                   "failed to open package program data "
-                                   "member");
-  llvm::sys::fs::file_status programDataStatus;
-  if (std::error_code error =
-          llvm::sys::fs::status(programDataPath, programDataStatus))
-    return llvm::createStringError(error,
-                                   "failed to stat package program data "
-                                   "member");
-  const uint64_t programDataSize = programDataStatus.getSize();
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> programDataBuffer =
-      llvm::MemoryBuffer::getOpenFile(programDataFD, programDataPath,
-                                      programDataSize,
-                                      /*RequiresNullTerminator=*/false);
-  if (!programDataBuffer)
-    return llvm::createStringError(programDataBuffer.getError(),
-                                   "failed to map package program data "
-                                   "member");
-  if ((*programDataBuffer)->getBufferSize() !=
-      manifest.programData.totalBytes)
-    return llvm::createStringError(
-        llvm::errc::operation_not_permitted,
-        "opened package program data member size does not match the "
-        "verified manifest record");
-  members.programData = std::move(*programDataBuffer);
-  return members;
+  return std::move(readback->manifest);
 }
 
 bool detail::doesPackageSlotMatchProgramBinding(

@@ -233,16 +233,16 @@ Compiler package writing / Runtime / Model
 ### 5.1 Compiler library、产品工具与安装
 
 request/result/commit语义由01和15拥有，failure taxonomy由19拥有，frontend输入由02拥有；本节只规定它们如何落到library、
-tool与CMake依赖边界。Q59首轮实现已落下但代码review重开；以下是可继续复用的当前mechanics，不代表result ownership、
-ordinary/profile共同commit和所有错误出口已经满足completion gate，具体阻塞项只看其实施计划：
+tool与CMake依赖边界。Q59的完成状态和验证证据只看`tasks/progress.md`及其实施计划；这里记录稳定library拓扑：
 
 - 唯一source-to-package entry是`wafer::compiler::compileProgram`，返回`llvm::Expected<CompilationResult>`：primary product为
-  commit后按installed root readback的move-only `ExecutablePackage`，显式profile时另持有compiler-owned
-  `ProfileInstrumentationProduct`（root+primary manifest/plan/site-map digest）；失败返回`CompilationFailure`并携带
+  publication前严格绑定、publication成功后才取得committed root identity的move-only package-layer `ExecutablePackage`；
+  显式profile时另持有compiler-owned `ProfileInstrumentationProduct`（root+identity digests+exact metadata/capture owners）；
+  失败返回`CompilationFailure`并携带
   `CompilationStage`分类。`wafer-compile`只链接该target并负责参数解析、单一tool resolver构造、调用和diagnostic rendering；
 - `compileProgramWithTargetLLVMModules`（`llvm::Expected<CompiledProgram>`）保留CardExecutable/target modules/IR trace，只由
   internal inspection consumer（`wafer-compile-test`的target-model gate与compiler IR dump）消费，不进入production CLI的
-  post-commit控制流；production `wafer-compile`对`--target-model*`/`--dump-compiler-ir`/旧`--output-program-dir`报unknown
+  post-commit控制流；production `wafer-compile`对`--target-model*`/`--dump-compiler-ir`及旧output flag报unknown
   argument；
 - source verifier和产品Python adapter复用Frontend ingestion实现（Q60继续）；`wafer-opt`保持IR development component；
 - external tool discovery只有一个resolver（`resolveDriverToolFacts`）：SPMD helper、device linker script、CRT/ABI资源按

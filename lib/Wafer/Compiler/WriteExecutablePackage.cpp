@@ -607,6 +607,9 @@ writeProfileInstrumentation(llvm::StringRef instrumentationRoot,
   identity.primaryManifestDigest = std::move(*productionDigest);
   identity.planDigest = std::move(*planDigest);
   identity.siteMapDigest = std::move(*siteMapDigest);
+  for (auto [index, capture] :
+       llvm::enumerate(productionCaptures.captures))
+    identity.captureManifestDigests[index] = capture.manifestDigest;
   return mlir::success();
 }
 
@@ -658,28 +661,99 @@ makeProfileInstrumentationWorldAccessible(llvm::StringRef instrumentationRoot,
 
 } // namespace
 
-llvm::Error verifyProfileInstrumentationBinding(
-    llvm::StringRef packageRoot, llvm::StringRef instrumentationRoot,
-    const ProfileInstrumentationIdentity &identity) {
-  llvm::Expected<std::string> installedManifestDigest =
-      getPackageManifestDigest(packageRoot);
-  if (!installedManifestDigest)
-    return installedManifestDigest.takeError();
-  if (*installedManifestDigest != identity.primaryManifestDigest)
+static std::string digestOwnedBuffer(const llvm::MemoryBuffer &buffer) {
+  llvm::SHA256 hasher;
+  hasher.update(buffer.getBuffer());
+  return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
+}
+
+static llvm::Error verifyExactDirectory(
+    llvm::StringRef root,
+    llvm::ArrayRef<std::pair<llvm::StringRef, llvm::sys::fs::file_type>>
+        expected) {
+  std::set<std::string> seen;
+  std::error_code walkError;
+  for (llvm::sys::fs::directory_iterator iterator(root, walkError), end;
+       iterator != end; iterator.increment(walkError)) {
+    if (walkError)
+      return llvm::createStringError(
+          walkError, "failed to walk staged profile instrumentation");
+    llvm::StringRef name = llvm::sys::path::filename(iterator->path());
+    auto match = llvm::find_if(expected, [&](const auto &entry) {
+      return entry.first == name;
+    });
+    if (match == expected.end() || iterator->type() != match->second ||
+        !seen.insert(name.str()).second)
+      return llvm::createStringError(
+          llvm::errc::operation_not_permitted,
+          "staged profile instrumentation topology is not all-and-only: " +
+              name);
+  }
+  if (walkError)
+    return llvm::createStringError(
+        walkError, "failed to finish staged profile instrumentation walk");
+  if (seen.size() != expected.size())
     return llvm::createStringError(
         llvm::errc::operation_not_permitted,
-        "staged package manifest digest does not match the profile "
-        "primary digest");
+        "staged profile instrumentation topology is incomplete");
+  return llvm::Error::success();
+}
+
+llvm::Expected<BoundProfileInstrumentation> bindProfileInstrumentation(
+    const runtime::detail::BoundExecutablePackage &primaryPackage,
+    llvm::StringRef instrumentationRoot,
+    const ProfileInstrumentationIdentity &identity) {
+  if (digestOwnedBuffer(*primaryPackage.manifestBuffer) !=
+      identity.primaryManifestDigest)
+    return llvm::createStringError(
+        llvm::errc::operation_not_permitted,
+        "owned primary manifest does not match the profile identity");
+
+  if (llvm::Error error = verifyExactDirectory(
+          instrumentationRoot,
+          {{"activation.json", llvm::sys::fs::file_type::regular_file},
+           {"plan.json", llvm::sys::fs::file_type::regular_file},
+           {"site-map.json", llvm::sys::fs::file_type::regular_file},
+           {"captures", llvm::sys::fs::file_type::directory_file}}))
+    return std::move(error);
+
+  llvm::SmallString<256> capturesRoot(instrumentationRoot);
+  llvm::sys::path::append(capturesRoot, "captures");
+  if (llvm::Error error = verifyExactDirectory(
+          capturesRoot,
+          {{"count", llvm::sys::fs::file_type::directory_file},
+           {"trace", llvm::sys::fs::file_type::directory_file}}))
+    return std::move(error);
+
   llvm::SmallString<256> activationPath(instrumentationRoot);
   llvm::sys::path::append(activationPath, "activation.json");
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
-      llvm::MemoryBuffer::getFile(activationPath);
-  if (!buffer)
+  llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> activation =
+      runtime::detail::openPackageMember(
+          activationPath, "profile instrumentation activation");
+  if (!activation)
+    return activation.takeError();
+  llvm::SmallString<256> planPath(instrumentationRoot);
+  llvm::sys::path::append(planPath, "plan.json");
+  llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> plan =
+      runtime::detail::openPackageMember(planPath,
+                                         "profile instrumentation plan");
+  if (!plan)
+    return plan.takeError();
+  llvm::SmallString<256> siteMapPath(instrumentationRoot);
+  llvm::sys::path::append(siteMapPath, "site-map.json");
+  llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> siteMap =
+      runtime::detail::openPackageMember(
+          siteMapPath, "profile instrumentation site map");
+  if (!siteMap)
+    return siteMap.takeError();
+  if (digestOwnedBuffer(**plan) != identity.planDigest ||
+      digestOwnedBuffer(**siteMap) != identity.siteMapDigest)
     return llvm::createStringError(
-        buffer.getError(), "failed to read back staged profile "
-                           "instrumentation activation");
+        llvm::errc::operation_not_permitted,
+        "owned profile metadata digest does not match the writer identity");
+
   llvm::Expected<llvm::json::Value> parsed =
-      llvm::json::parse((*buffer)->getBuffer());
+      llvm::json::parse((*activation)->getBuffer());
   if (!parsed)
     return parsed.takeError();
   llvm::json::Object *root = parsed->getAsObject();
@@ -687,6 +761,10 @@ llvm::Error verifyProfileInstrumentationBinding(
     return llvm::createStringError(llvm::errc::operation_not_permitted,
                                    "staged profile instrumentation "
                                    "activation is not a JSON object");
+  if (root->size() != 3)
+    return llvm::createStringError(
+        llvm::errc::operation_not_permitted,
+        "staged profile instrumentation activation fields are not exact");
   auto requireString = [&](llvm::json::Object &object, llvm::StringRef key,
                            llvm::StringRef expected) -> llvm::Error {
     std::optional<llvm::StringRef> value = object.getString(key);
@@ -708,13 +786,38 @@ llvm::Error verifyProfileInstrumentationBinding(
     return llvm::createStringError(llvm::errc::operation_not_permitted,
                                    "staged profile instrumentation "
                                    "activation is missing metadata_sha256");
+  if (metadata->size() != 2)
+    return llvm::createStringError(
+        llvm::errc::operation_not_permitted,
+        "staged profile instrumentation metadata fields are not exact");
   if (llvm::Error error =
           requireString(*metadata, "plan.json", identity.planDigest))
     return error;
   if (llvm::Error error =
           requireString(*metadata, "site-map.json", identity.siteMapDigest))
     return error;
-  return llvm::Error::success();
+
+  std::vector<runtime::detail::BoundExecutablePackage> captures;
+  captures.reserve(kProfileCaptures.size());
+  for (auto [index, capture] : llvm::enumerate(kProfileCaptures)) {
+    llvm::SmallString<256> captureRoot(capturesRoot);
+    llvm::sys::path::append(captureRoot,
+                            stringifyProfileCaptureKind(capture));
+    llvm::Expected<runtime::detail::BoundExecutablePackage> package =
+        runtime::detail::bindExecutablePackage(captureRoot);
+    if (!package)
+      return package.takeError();
+    if (digestOwnedBuffer(*package->manifestBuffer) !=
+        identity.captureManifestDigests[index])
+      return llvm::createStringError(
+          llvm::errc::operation_not_permitted,
+          "owned profile capture manifest does not match the writer identity");
+    captures.push_back(std::move(*package));
+  }
+
+  return BoundProfileInstrumentation{
+      std::move(*activation), std::move(*plan), std::move(*siteMap),
+      std::move(captures)};
 }
 
 mlir::LogicalResult stageTargetPackage(

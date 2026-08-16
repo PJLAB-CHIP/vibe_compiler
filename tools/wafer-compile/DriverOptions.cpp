@@ -18,7 +18,7 @@ namespace wafer::compile_driver {
 
 void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
-                  "--output-package-dir <dir> --num-partitions <1> "
+                  "--output-dir <dir> --num-partitions <1> "
                   "[--optimization-policy <search|none>] "
                   "[--compile-timing] "
                   "[--profile]\n";
@@ -157,10 +157,10 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--output-package-dir" ||
-        arg.starts_with("--output-package-dir=")) {
-      if (parseValueOption(argc, argv, index, arg, "--output-package-dir",
-                           options.outputPackageDirectory))
+    if (arg == "--output-dir" ||
+        arg.starts_with("--output-dir=")) {
+      if (parseValueOption(argc, argv, index, arg, "--output-dir",
+                           options.outputDirectory))
         return false;
       continue;
     }

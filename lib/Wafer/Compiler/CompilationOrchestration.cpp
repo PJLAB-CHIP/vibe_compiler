@@ -16,6 +16,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -35,7 +36,7 @@ static void printOptimizationConfig(OptimizationConfig config,
 }
 
 mlir::LogicalResult runCompilationTransaction(
-    CompilationRequest request, llvm::StringRef outputPackageDirectory,
+    CompilationRequest request, llvm::StringRef outputDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, llvm::raw_ostream &diagnostics,
     CompilationOptions options, std::optional<int64_t> failAfterLaunchSlot,
@@ -46,10 +47,11 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<CompilationIRTrace> *retainedIRTrace,
     std::optional<ExecutablePackage> *retainedPackage,
     std::optional<ProfileInstrumentationProduct> *retainedProfileProduct,
-    CompilationStage *failureStage, bool failCommitVerification) {
+    CompilationStage *failureStage,
+    CommitFailureInjection commitFailureInjection) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
-  (void)outputPackageDirectory;
+  (void)outputDirectory;
   (void)xlaSpmdPartitionerHelper;
   (void)targetToolchain;
   (void)options;
@@ -61,7 +63,7 @@ mlir::LogicalResult runCompilationTransaction(
   (void)retainedIRTrace;
   (void)retainedPackage;
   (void)retainedProfileProduct;
-  (void)failCommitVerification;
+  (void)commitFailureInjection;
   if (failureStage)
     *failureStage = CompilationStage::SourceVerification;
   reject(diagnostics,
@@ -106,8 +108,8 @@ mlir::LogicalResult runCompilationTransaction(
       "stage", "source-to-package", "compile-transaction");
   auto sourceTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "stage", "source-to-package", "source-to-tensor-program");
-  if (outputPackageDirectory.empty()) {
-    reject(diagnostics, "output package directory must not be empty");
+  if (outputDirectory.empty()) {
+    reject(diagnostics, "output directory must not be empty");
     return mlir::failure();
   }
   if (xlaSpmdPartitionerHelper.empty()) {
@@ -138,17 +140,17 @@ mlir::LogicalResult runCompilationTransaction(
   }
 
   llvm::SmallString<256> absoluteOutput;
-  if (makeAbsoluteNormalizedPath(outputPackageDirectory, absoluteOutput,
+  if (makeAbsoluteNormalizedPath(outputDirectory, absoluteOutput,
                                  diagnostics))
     return mlir::failure();
   llvm::StringRef outputName = llvm::sys::path::filename(absoluteOutput);
   if (outputName.empty()) {
-    reject(diagnostics, "output package directory must name a directory");
+    reject(diagnostics, "output directory must name a directory");
     return mlir::failure();
   }
   if (pathEntryExists(absoluteOutput)) {
     reject(diagnostics,
-           "refusing to replace existing output package directory: '" +
+           "refusing to replace existing output directory: '" +
                absoluteOutput.str().str() + "'");
     return mlir::failure();
   }
@@ -167,7 +169,7 @@ mlir::LogicalResult runCompilationTransaction(
   llvm::sys::path::append(prospectiveCanonicalOutput, outputName);
   if (pathIsWithin(prospectiveCanonicalOutput, canonicalSource)) {
     reject(diagnostics,
-           "output package directory must not equal or be nested under the "
+           "output directory must not equal or be nested under the "
            "source program directory");
     return mlir::failure();
   }
@@ -186,13 +188,13 @@ mlir::LogicalResult runCompilationTransaction(
   llvm::sys::path::append(canonicalOutput, outputName);
   if (pathIsWithin(canonicalOutput, canonicalSource)) {
     reject(diagnostics,
-           "output package directory must not equal or be nested under the "
+           "output directory must not equal or be nested under the "
            "source program directory");
     return mlir::failure();
   }
   if (pathEntryExists(canonicalOutput)) {
     reject(diagnostics,
-           "refusing to replace existing output package directory: '" +
+           "refusing to replace existing output directory: '" +
                canonicalOutput.str().str() + "'");
     return mlir::failure();
   }
@@ -715,9 +717,8 @@ mlir::LogicalResult runCompilationTransaction(
   // Single-visibility-point commit. Every fallible step closes here, before
   // the one no-replace rename that publishes the output:
   // 1. the staged package is freshly loaded and verified;
-  // 2. its all-and-only members are opened and bound (module digests and
-  //    program data size against the verified manifest), pinning the exact
-  //    inodes the rename will publish;
+  // 2. its all-and-only members are opened and bound by exact size and digest
+  //    against the verified manifest;
   // 3. an explicitly requested profile instrumentation is bound by digest
   //    against the same staged inodes.
   // The ordinary case publishes the staged package as the output directory.
@@ -735,50 +736,85 @@ mlir::LogicalResult runCompilationTransaction(
   } else {
     llvm::sys::path::append(stagedPackage, "package");
   }
-  llvm::Expected<runtime::VerifiedPackageManifest> verifiedManifest =
-      runtime::loadVerifiedPackageManifest(stagedPackage);
-  if (!verifiedManifest) {
-    reject(diagnostics, "staged package manifest verification failed: " +
-                            llvm::toString(verifiedManifest.takeError()));
-    return mlir::failure();
+  if (commitFailureInjection ==
+      CommitFailureInjection::CorruptPackageProgramData) {
+    llvm::SmallString<256> programDataPath(stagedPackage);
+    llvm::sys::path::append(programDataPath, "data", "program-data.bin");
+    std::error_code error;
+    llvm::raw_fd_ostream stream(programDataPath, error,
+                                llvm::sys::fs::OF_Append);
+    if (error) {
+      reject(diagnostics,
+             "test-only staged package corruption failed: " +
+                 error.message());
+      return mlir::failure();
+    }
+    stream << 'x';
+    stream.close();
+    if (stream.has_error()) {
+      reject(diagnostics,
+             "test-only staged package corruption failed while writing");
+      return mlir::failure();
+    }
   }
-  llvm::Expected<OpenedPackageMembers> openedMembers =
-      detail::openPackageMembers(stagedPackage, *verifiedManifest);
-  if (!openedMembers) {
-    reject(diagnostics, "staged package member binding failed: " +
-                            llvm::toString(openedMembers.takeError()));
+  llvm::Expected<runtime::detail::BoundExecutablePackage> boundPackage =
+      runtime::detail::bindExecutablePackage(stagedPackage);
+  if (!boundPackage) {
+    reject(diagnostics, "staged package manifest verification failed: " +
+                            llvm::toString(boundPackage.takeError()));
     return mlir::failure();
   }
   llvm::SmallString<256> publishedPackageRoot(canonicalOutput);
   if (profileRequested)
     llvm::sys::path::append(publishedPackageRoot, "package");
-  if (retainedPackage) {
-    retainedPackage->emplace(ExecutablePackageBuilder::makePackage(
-        publishedPackageRoot, request.getExecutionConfig(),
-        std::move(*verifiedManifest), std::move(*openedMembers)));
-  }
+  std::string publishedPackageRootStorage = publishedPackageRoot.str().str();
+  std::optional<BoundProfileInstrumentation> boundProfileInstrumentation;
+  std::string publishedInstrumentationRootStorage;
   if (profileRequested) {
     llvm::SmallString<256> stagedInstrumentation(transactionRoot);
     llvm::sys::path::append(stagedInstrumentation, "delivery",
                             "package.profile");
+    if (commitFailureInjection == CommitFailureInjection::CorruptProfilePlan) {
+      llvm::SmallString<256> planPath(stagedInstrumentation);
+      llvm::sys::path::append(planPath, "plan.json");
+      std::error_code error;
+      llvm::raw_fd_ostream stream(planPath, error, llvm::sys::fs::OF_Append);
+      if (error) {
+        reject(diagnostics,
+               "test-only staged profile corruption failed: " +
+                   error.message());
+        return mlir::failure();
+      }
+      stream << ' ';
+      stream.close();
+      if (stream.has_error()) {
+        reject(diagnostics,
+               "test-only staged profile corruption failed while writing");
+        return mlir::failure();
+      }
+    }
     // The co-commit verification is unconditional on the requested product
     // set, never on whether a caller retains the result member.
-    if (llvm::Error error = verifyProfileInstrumentationBinding(
-            stagedPackage, stagedInstrumentation, profileIdentity)) {
+    llvm::Expected<BoundProfileInstrumentation> boundInstrumentation =
+        bindProfileInstrumentation(*boundPackage, stagedInstrumentation,
+                                   profileIdentity);
+    if (!boundInstrumentation) {
       reject(diagnostics, "staged profile instrumentation binding failed: " +
-                              llvm::toString(std::move(error)));
+                              llvm::toString(
+                                  boundInstrumentation.takeError()));
       return mlir::failure();
     }
+    boundProfileInstrumentation.emplace(std::move(*boundInstrumentation));
     if (retainedProfileProduct) {
       llvm::SmallString<256> publishedInstrumentationRoot(canonicalOutput);
       llvm::sys::path::append(publishedInstrumentationRoot, "package.profile");
-      retainedProfileProduct->emplace(
-          ProfileInstrumentationProductBuilder::make(
-              publishedInstrumentationRoot, profileIdentity));
+      publishedInstrumentationRootStorage =
+          publishedInstrumentationRoot.str().str();
     }
   }
 
-  if (failCommitVerification) {
+  if (commitFailureInjection ==
+      CommitFailureInjection::FailAfterVerification) {
     reject(diagnostics,
            "test-only commit verification failure injected before "
            "publication");
@@ -795,6 +831,17 @@ mlir::LogicalResult runCompilationTransaction(
   // below only moves already-verified owners into the result.
   if (renameDirectoryNoReplace(publicationRoot, canonicalOutput, diagnostics))
     return mlir::failure();
+  if (retainedPackage)
+    retainedPackage->emplace(runtime::detail::ExecutablePackageFactory::make(
+        std::move(publishedPackageRootStorage), std::move(*boundPackage)));
+  if (profileRequested && retainedProfileProduct) {
+    if (!boundProfileInstrumentation)
+      llvm_unreachable("profile transaction lost its bound resources");
+    retainedProfileProduct->emplace(ProfileInstrumentationProductBuilder::make(
+        std::move(publishedInstrumentationRootStorage),
+        std::move(profileIdentity),
+        std::move(*boundProfileInstrumentation)));
+  }
   if (retainedCardExecutable)
     retainedCardExecutable->emplace(
         std::move(*cardExecutable));

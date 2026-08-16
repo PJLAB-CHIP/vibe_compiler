@@ -131,7 +131,8 @@ CardExecutable (all-and-only Tile executables)
 
 target-model transaction container不是第三份program表示；它只维持同一CardExecutable与同次target modules的生命周期。
 verified target modules包含device-linked Tile modules及typed readback facts；`ExecutablePackage`包含已验证
-package root、execution configuration和manifest，不是另一份program或package外的sidecar。当前C++容器类型只是这些
+committed package root、manifest和exact member snapshots，execution configuration由外层`CompilationResult`持有；它不是
+另一份program或package外的sidecar。当前C++容器类型只是这些
 output的实现索引，不能提升为额外架构层。
 
 ## 4. IR 与 Output 分层
@@ -147,7 +148,7 @@ output的实现索引，不能提升为额外架构层。
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
 | CardExecutable | all-and-only Tile executable records | Tile modules、entry、program bindings、completion、transport和resource的card-scoped atomic acceptance | target object、runtime session、rejected choice |
 | Target modules/data preparation | 一次target conversion产生的owner-backed modules、device-linked verified modules、`TargetTensor` descriptor与`TileEntryArgument` | target dtype/layout/shape/bytes/alignment、entry argument relation、profile identity、module readback | source bytes ownership、package file placement、runtime allocation、CModel重新lowering |
-| ExecutablePackage / runtime | typed manifest、verified package root、target/launch、`data/program-data.bin`、ProgramTensor/TargetTensor/ports/modules/entries和`RuntimeInvocationPlan` | CardExecutable、target modules、program data range、Tile entry argument与runtime checked child range的all-and-only关系；delivery与side-effect-free validation | source checkpoint解析、target repack、instruction schedule、provider执行、重新规划 |
+| ExecutablePackage / runtime | typed manifest、committed package root、exact member snapshots、target/launch、`data/program-data.bin`、ProgramTensor/TargetTensor/ports/modules/entries和`RuntimeInvocationPlan` | CardExecutable、target modules、program data range、Tile entry argument与runtime checked child range的all-and-only关系；delivery、content ownership与side-effect-free validation | source checkpoint解析、target repack、instruction schedule、provider执行、重新规划 |
 | Target-model result | invocation-local transaction/event/memory/result | supported profile内的untimed functional-numeric执行与完整output | compiler output、board/timing/packet claim |
 
 若未来target/package consumer需要`RequiredCapabilitySet`，它只能在post-selection阶段从winner实际Instr/TargetCall rows派生并

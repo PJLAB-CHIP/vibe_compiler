@@ -90,7 +90,7 @@ function(wafer_add_raw_probe_no_card test_name script)
       --no-card
   )
   set_tests_properties(${test_name} PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     LABELS "board;no-card;calibration;current-interface"
     TIMEOUT 600
   )
@@ -180,7 +180,7 @@ function(wafer_add_current_source_no_card test_name script)
       --no-card
   )
   set_tests_properties(${test_name} PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     LABELS "board;no-card;calibration;current-interface"
     TIMEOUT 600
   )
@@ -206,7 +206,7 @@ add_test(NAME wafer-runtime-engine-pipeline-characterization-no-card
     --cell single/ct/small)
 set_tests_properties(wafer-runtime-engine-pipeline-characterization-no-card
   PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     LABELS "board;no-card;calibration;current-interface"
     TIMEOUT 600)
 
@@ -223,7 +223,7 @@ add_test(NAME wafer-runtime-ddr-active-tile-contention-no-card
     --case ddr-contention-rdma-only-4k-contiguous-active-1)
 set_tests_properties(wafer-runtime-ddr-active-tile-contention-no-card
   PROPERTIES
-    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR}"
+    ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps"
     LABELS "board;no-card;calibration;current-interface"
     TIMEOUT 600)
 
@@ -246,7 +246,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
           ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256}
     )
     set_tests_properties(${test_name} PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};WAFER_EXECUTE_HARDWARE_TESTS=1"
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_EXECUTE_HARDWARE_TESTS=1"
       LABELS "board;hardware;calibration;current-interface;pending"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77
@@ -270,7 +270,7 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
           ${WAFER_BOARD_TEST_EXPECTED_RUNTIME_LIBRARY_SHA256}
     )
     set_tests_properties(${test_name} PROPERTIES
-      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};WAFER_EXECUTE_HARDWARE_TESTS=1"
+      ENVIRONMENT "PYTHONPATH=${CMAKE_CURRENT_SOURCE_DIR};TX8_DEPS_ROOT=${CMAKE_SOURCE_DIR}/third_party/tx8_deps;WAFER_EXECUTE_HARDWARE_TESTS=1"
       LABELS "board;hardware;calibration;current-interface;pending"
       RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"
       SKIP_RETURN_CODE 77

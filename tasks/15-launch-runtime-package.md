@@ -198,9 +198,9 @@ Compiler assembly顺序：
 7. 构造manifest，运行semantic verification、whole-root closure和canonical serialize/parse/readback；
 8. 全部成功后原子发布。
 
-`ExecutablePackage`若作为move-only C++ owner，必须实际持有verified manifest和已打开或mmap的module/program-data成员；
-只保存root path、随后任意重新打开不算ownership。Compiler writer与runtime loader使用同一semantic type，不能保留
-compiler-only和runtime-only两套verified壳。
+`ExecutablePackage`若作为move-only C++ owner，必须实际持有verified manifest和manifest/module/program-data的exact
+owned snapshots；只保存root path、fd或file-backed只读mmap都不等于不可变content ownership，随后按path重新打开也不算
+ownership。Compiler writer与runtime loader使用同一semantic type，不能保留compiler-only和runtime-only两套verified壳。
 
 任一失败销毁staging root。已有package、历史manifest、board output或profile证据不能修补本次transaction。
 

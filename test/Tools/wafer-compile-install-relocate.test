@@ -17,7 +17,7 @@
 # RUN: mkdir -p %t.input/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
-# RUN: %t.install/bin/wafer-compile --input-program-dir %t.input --output-package-dir %t.package --num-partitions=1 | FileCheck %s
+# RUN: %t.install/bin/wafer-compile --input-program-dir %t.input --output-dir %t.package --num-partitions=1 | FileCheck %s
 # RUN: test -s %t.package/manifest.json
 # RUN: test -s %t.package/modules/module_00000.so
 # RUN: test -f %t.package/data/program-data.bin

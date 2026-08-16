@@ -1,7 +1,5 @@
 //===- CompilationTest.cpp - Typed compiler request tests ----------------===//
 
-#include "Wafer/Compiler/PackageInternal.h"
-
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/Package.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
@@ -275,7 +273,7 @@ TEST(CompilationTest, CompilationFailureClassifiesStageAndRendersLog) {
   }
 }
 
-TEST(CompilationTest, ExecutablePackageOwnsOpenedMembersAfterPathRemoval) {
+TEST(CompilationTest, ExecutablePackageOwnsExactMemberSnapshots) {
   llvm::SmallString<256> temporaryDirectory;
   ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
       "wafer-package-members", temporaryDirectory));
@@ -286,7 +284,8 @@ TEST(CompilationTest, ExecutablePackageOwnsOpenedMembersAfterPathRemoval) {
   llvm::SmallString<256> modulesDirectory(temporaryDirectory);
   llvm::sys::path::append(modulesDirectory, "modules");
   ASSERT_FALSE(llvm::sys::fs::create_directories(modulesDirectory));
-  const std::string moduleBytes = "\x7fELF-wafer-test-module";
+  std::string moduleBytes = "\x7f" "ELF-wafer-test-module";
+  moduleBytes.resize(32 * 1024, 'm');
   llvm::SmallString<256> modulePath(modulesDirectory);
   llvm::sys::path::append(modulePath, "tile_00000.so");
   {
@@ -359,37 +358,65 @@ TEST(CompilationTest, ExecutablePackageOwnsOpenedMembersAfterPathRemoval) {
     std::error_code error;
     llvm::raw_fd_ostream output(manifestPath, error, llvm::sys::fs::OF_Text);
     ASSERT_FALSE(error);
-    output << wafer::runtime::serializeCanonicalPackageJson(*verified) << "\n";
+    output << wafer::runtime::serializeCanonicalPackageJson(*verified);
     output.close();
     ASSERT_FALSE(output.has_error());
   }
 
-  llvm::Expected<wafer::compiler::OpenedPackageMembers> members =
-      wafer::compiler::detail::openPackageMembers(temporaryDirectory,
-                                                  *verified);
-  ASSERT_TRUE(static_cast<bool>(members))
-      << llvm::toString(members.takeError());
-  ASSERT_EQ(members->modules.size(), size_t{1});
+  auto countOpenDescriptors = []() -> size_t {
+    size_t count = 0;
+    std::error_code error;
+    for (llvm::sys::fs::directory_iterator iterator("/proc/self/fd", error),
+         end;
+         iterator != end && !error; iterator.increment(error))
+      ++count;
+    EXPECT_FALSE(error);
+    return count;
+  };
+  const size_t descriptorsBefore = countOpenDescriptors();
+  llvm::Expected<wafer::runtime::ExecutablePackage> loaded =
+      wafer::runtime::loadExecutablePackage(temporaryDirectory);
+  ASSERT_TRUE(static_cast<bool>(loaded))
+      << llvm::toString(loaded.takeError());
+  wafer::compiler::ExecutablePackage package = std::move(*loaded);
+  EXPECT_EQ(countOpenDescriptors(), descriptorsBefore);
 
-  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
-  ASSERT_TRUE(static_cast<bool>(config));
-  wafer::compiler::ExecutablePackage package =
-      wafer::compiler::ExecutablePackageBuilder::makePackage(
-          temporaryDirectory, std::move(*config), std::move(*verified),
-          std::move(*members));
+  const std::string canonicalManifest =
+      wafer::runtime::serializeCanonicalPackageJson(
+          package.getVerifiedManifest());
 
-  // Remove every path: the opened members stay readable and unchanged.
+  // Overwrite the same inodes after binding. Owned snapshots must not observe
+  // the writes (a retained read-only mmap would fail this contract).
+  const std::string mutatedModule(moduleBytes.size(), 'x');
+  for (const auto &mutation :
+       std::vector<std::pair<llvm::StringRef, llvm::StringRef>>{
+           {modulePath, mutatedModule},
+           {dataPath, "mutated-program-data"}}) {
+    std::error_code error;
+    llvm::raw_fd_ostream output(mutation.first, error,
+                                llvm::sys::fs::CD_OpenExisting,
+                                llvm::sys::fs::FA_Write,
+                                llvm::sys::fs::OF_None);
+    ASSERT_FALSE(error);
+    output << mutation.second;
+    output.close();
+    ASSERT_FALSE(output.has_error());
+  }
+  EXPECT_EQ(package.getModuleBuffers().front()->getBuffer(), moduleBytes);
+  EXPECT_EQ(package.getModuleBuffers().front()->getBufferKind(),
+            llvm::MemoryBuffer::MemoryBuffer_Malloc);
+  EXPECT_EQ(package.getProgramDataBuffer().getBufferSize(), size_t{0});
+
+  // Remove every path: the snapshots remain readable and unchanged.
   ASSERT_FALSE(llvm::sys::fs::remove_directories(temporaryDirectory));
 
   EXPECT_EQ(package.getRootDirectory(), temporaryDirectory.str().str());
   EXPECT_EQ(package.getModuleBuffers().size(), size_t{1});
   EXPECT_EQ(package.getModuleBuffers().front()->getBuffer(), moduleBytes);
   EXPECT_EQ(package.getProgramDataBuffer().getBufferSize(), size_t{0});
-  // The opened manifest member carries exactly the canonical bytes of the
+  // The owned manifest member carries exactly the canonical bytes of the
   // verified manifest this package was bound to.
-  EXPECT_TRUE(package.getManifestBuffer().getBuffer().starts_with(
-      wafer::runtime::serializeCanonicalPackageJson(
-          package.getManifest())));
+  EXPECT_EQ(package.getManifestBuffer().getBuffer(), canonicalManifest);
 }
 
 } // namespace

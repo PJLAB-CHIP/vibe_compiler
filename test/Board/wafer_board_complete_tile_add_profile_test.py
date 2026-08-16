@@ -276,7 +276,8 @@ class CompleteTileAddProfileGateTest(unittest.TestCase):
                     "verify_profile_report",
                     return_value=(
                         1024,
-                        work_dir / "package.profile/runs/current/index.html",
+                        work_dir
+                        / "package/package.profile/runs/current/index.html",
                     ),
                 )
             )
@@ -312,7 +313,7 @@ class CompleteTileAddProfileGateTest(unittest.TestCase):
         collection = run.call_args
         self.assertEqual(
             collection.args[0][1:3],
-            ["--package-dir", str(work_dir / "package")],
+            ["--package-dir", str(work_dir / "package/package")],
         )
         self.assertEqual(
             collection.kwargs["timeout_seconds"],

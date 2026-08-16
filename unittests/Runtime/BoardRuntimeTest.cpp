@@ -741,7 +741,30 @@ protected:
       entry.tileId = swapTile(entry.tileId);
   }
 
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> verifyTile16(
+  llvm::Expected<wafer::runtime::ExecutablePackage>
+  loadPackage(wafer::runtime::PackageManifest manifest) const {
+    llvm::Expected<wafer::runtime::VerifiedPackageManifest> verified =
+        wafer::runtime::verifyPackageManifest(std::move(manifest), root);
+    if (!verified)
+      return verified.takeError();
+    llvm::SmallString<256> manifestPath(root);
+    llvm::sys::path::append(manifestPath,
+                            wafer::runtime::kPackageManifestFileName);
+    std::error_code error;
+    llvm::raw_fd_ostream output(manifestPath, error,
+                                llvm::sys::fs::OF_Text);
+    if (error)
+      return llvm::createStringError(error,
+                                     "failed to write test package manifest");
+    output << wafer::runtime::serializeCanonicalPackageJson(*verified);
+    output.close();
+    if (output.has_error())
+      return llvm::createStringError(
+          llvm::errc::io_error, "failed to close test package manifest");
+    return wafer::runtime::loadExecutablePackage(root);
+  }
+
+  llvm::Expected<wafer::runtime::ExecutablePackage> verifyTile16(
       TestLaunchContractCase launchCase = TestLaunchContractCase::Grid,
       bool withProfiler = false,
       std::optional<bool> directDTEOverride = std::nullopt) const {
@@ -763,8 +786,8 @@ protected:
       createTileModules(16);
     }
     writeProgramDataFile({});
-    return wafer::runtime::verifyPackageManifest(
-        makeTile16Manifest(launchCase, withProfiler, directDTEOverride), root);
+    return loadPackage(
+        makeTile16Manifest(launchCase, withProfiler, directDTEOverride));
   }
 
   static uint8_t tileInputByte(int64_t tile, size_t byte) {
@@ -814,7 +837,7 @@ protected:
 TEST_F(BoardRuntimeTest,
        ExecutesCanonicalTile16InvocationWithOneProviderSubmission) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -822,7 +845,7 @@ TEST_F(BoardRuntimeTest,
   FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(manifest), driver);
+          *package, makeTile16Request(manifest), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   ASSERT_EQ(result->tiles.size(), 16u);
@@ -911,15 +934,14 @@ TEST_F(BoardRuntimeTest, ExecutesExplicitNonIdentityTileLaunchBinding) {
   writeProgramDataFile({});
   PackageManifest manifest = makeTile16Manifest();
   permuteTileBindings(manifest);
-  llvm::Expected<VerifiedPackageManifest> package =
-      verifyPackageManifest(std::move(manifest), root);
+  llvm::Expected<ExecutablePackage> package = loadPackage(std::move(manifest));
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
   FakeBoardDriver driver;
   driver.permuteTileBindings = true;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root,
+      executeBoardInvocation(*package,
                              makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   ASSERT_EQ(result->tiles.size(), 16u);
@@ -937,14 +959,13 @@ TEST_F(BoardRuntimeTest, RejectsPackageBindingAbsentFromDeviceInventory) {
   writeProgramDataFile({});
   PackageManifest manifest = makeTile16Manifest();
   permuteTileBindings(manifest);
-  llvm::Expected<VerifiedPackageManifest> package =
-      verifyPackageManifest(std::move(manifest), root);
+  llvm::Expected<ExecutablePackage> package = loadPackage(std::move(manifest));
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
   FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> rejected =
-      executeBoardInvocation(*package, root,
+      executeBoardInvocation(*package,
                              makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError())
@@ -956,7 +977,7 @@ TEST_F(BoardRuntimeTest, RejectsPackageBindingAbsentFromDeviceInventory) {
 
 TEST_F(BoardRuntimeTest,
        RejectsQualificationLargerThanCompletePackageDomainBeforeProviderCall) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -966,7 +987,7 @@ TEST_F(BoardRuntimeTest,
   request.qualification.tileCount = 32;
   FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> rejected =
-      wafer::runtime::executeBoardInvocation(*package, root,
+      wafer::runtime::executeBoardInvocation(*package,
                                              std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError())
@@ -978,7 +999,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        KernelGridLoadsOneSharedModuleAndSubmitsOneCanonicalGrid) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -986,7 +1007,7 @@ TEST_F(BoardRuntimeTest,
   FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(manifest), driver);
+          *package, makeTile16Request(manifest), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "load-module"),
@@ -1023,7 +1044,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        KernelGridTileRowsOwnDeviceStorageAndSubmitOnePointerPacket) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::GridTileRows);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1035,11 +1056,12 @@ TEST_F(BoardRuntimeTest,
     planBindings.push_back({port.id, port.bytes, port.alignment});
   llvm::Expected<wafer::runtime::RuntimeInvocationPlan> plan =
       wafer::runtime::planRuntimeInvocation(
-          *package, planBindings, driver.getProviderEnvironment());
+          package->getVerifiedManifest(), planBindings,
+          driver.getProviderEnvironment());
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(manifest), driver);
+          *package, makeTile16Request(manifest), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   // Exactly one invocation allocation: the 16 pointer rows are H2D'd into
@@ -1078,8 +1100,8 @@ TEST_F(BoardRuntimeTest,
        CardSharedProgramResourcesUseOneAllocationAcrossAllTileRows) {
   using namespace wafer::runtime;
   writeProgramDataFile({});
-  llvm::Expected<VerifiedPackageManifest> package =
-      verifyPackageManifest(makeCardSharedTile16Manifest(), root);
+  llvm::Expected<ExecutablePackage> package =
+      loadPackage(makeCardSharedTile16Manifest());
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
@@ -1089,11 +1111,11 @@ TEST_F(BoardRuntimeTest,
   for (const ExternalPortRecord &port : manifest.inputs)
     planBindings.push_back({port.id, port.bytes, port.alignment});
   llvm::Expected<RuntimeInvocationPlan> plan =
-      planRuntimeInvocation(*package, planBindings,
+      planRuntimeInvocation(package->getVerifiedManifest(), planBindings,
                             driver.getProviderEnvironment());
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, makeTile16Request(manifest),
+      executeBoardInvocation(*package, makeTile16Request(manifest),
                              driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
@@ -1135,7 +1157,7 @@ TEST_F(BoardRuntimeTest,
        ProfilerWorkspaceIsInitializedAndReturnedOutsideUserOutputs) {
   using namespace wafer::runtime;
   createTileModules(16);
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid, /*withProfiler=*/true);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1150,7 +1172,7 @@ TEST_F(BoardRuntimeTest,
 
   FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(result->outputs.size(), 1u);
   EXPECT_EQ(std::count_if(driver.h2dPayloads.begin(), driver.h2dPayloads.end(),
@@ -1175,7 +1197,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresAllSixteenTiles) {
   using namespace wafer::runtime;
   createTileModules(16);
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid, /*withProfiler=*/true);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1190,7 +1212,7 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresAllSixteenTiles) {
 
   FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError())
                 .find("without the complete record domain"),
@@ -1200,7 +1222,7 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresAllSixteenTiles) {
 
 TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresExactRecordByteCount) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid, /*withProfiler=*/true);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1215,7 +1237,7 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRequiresExactRecordByteCount) {
 
   FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("byte count is not exact"),
             std::string::npos);
@@ -1232,8 +1254,7 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRejectsUnregisteredAlignedSize) {
     for (TileEntryArgumentRecord &argument : entry.arguments)
       if (auto *profile = std::get_if<ProfileRecordArgument>(&argument.reference))
         profile->bytes = unregisteredBytes;
-  llvm::Expected<VerifiedPackageManifest> package =
-      verifyPackageManifest(std::move(manifest), root);
+  llvm::Expected<ExecutablePackage> package = loadPackage(std::move(manifest));
   ASSERT_FALSE(static_cast<bool>(package));
   EXPECT_NE(llvm::toString(package.takeError())
                 .find("profile record requirement"),
@@ -1244,7 +1265,7 @@ TEST_F(BoardRuntimeTest,
        OrdinaryWorkspaceCannotBeInjectedThroughProfilerBindings) {
   using namespace wafer::runtime;
   createTileModules(16);
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid, /*withProfiler=*/true);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1259,7 +1280,7 @@ TEST_F(BoardRuntimeTest,
 
   FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("byte count is not exact"),
             std::string::npos);
@@ -1269,7 +1290,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        CompleteFirstInvocationStartsReusableCardSession) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1281,7 +1302,7 @@ TEST_F(BoardRuntimeTest,
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
-          *package, root, std::move(seed), driver);
+          *package, std::move(seed), driver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   EXPECT_EQ(
@@ -1296,7 +1317,7 @@ TEST_F(BoardRuntimeTest,
   for (unsigned iteration = 0; iteration < 2; ++iteration) {
     llvm::Expected<BoardRuntimeInvocationResult> result =
         executeBoardInvocationInSession(
-            *package, root, makeTile16Request(package->getManifest()), session);
+            *package, makeTile16Request(package->getManifest()), session);
     ASSERT_TRUE(static_cast<bool>(result))
         << llvm::toString(result.takeError());
     EXPECT_GT(result->launchToCompletionNanoseconds, 0u);
@@ -1325,14 +1346,14 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        StartSessionFirstInvocationIsTheOrdinaryNormalOneShotPath) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
   FakeBoardDriver ordinaryDriver;
   llvm::Expected<BoardRuntimeInvocationResult> ordinary =
-      executeBoardInvocation(*package, root,
+      executeBoardInvocation(*package,
                              makeTile16Request(package->getManifest()),
                              ordinaryDriver);
   ASSERT_TRUE(static_cast<bool>(ordinary))
@@ -1342,7 +1363,7 @@ TEST_F(BoardRuntimeTest,
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
-          *package, root, makeTile16Request(package->getManifest()),
+          *package, makeTile16Request(package->getManifest()),
           sessionDriver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
@@ -1366,7 +1387,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, StartSessionAcceptsHighResolutionFirstObservation) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1380,7 +1401,7 @@ TEST_F(BoardRuntimeTest, StartSessionAcceptsHighResolutionFirstObservation) {
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
-          *package, root, std::move(request), driver);
+          *package, std::move(request), driver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   EXPECT_TRUE(started->second.isUsable());
@@ -1396,7 +1417,7 @@ TEST_F(BoardRuntimeTest, StartSessionAcceptsHighResolutionFirstObservation) {
 TEST_F(BoardRuntimeTest,
        StartSessionFailureReturnsNoCapabilityAndPoisonStopsLaterCalls) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1406,7 +1427,7 @@ TEST_F(BoardRuntimeTest,
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       failed = executeBoardInvocationAndStartSession(
-          *package, root, makeTile16Request(package->getManifest()),
+          *package, makeTile16Request(package->getManifest()),
           firstFailureDriver);
   ASSERT_FALSE(static_cast<bool>(failed));
   llvm::consumeError(failed.takeError());
@@ -1415,7 +1436,7 @@ TEST_F(BoardRuntimeTest,
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   QualifiedBoardRuntimeSession session = std::move(started->second);
@@ -1423,7 +1444,7 @@ TEST_F(BoardRuntimeTest,
   driver.poisonOnFailure = true;
   llvm::Expected<BoardRuntimeInvocationResult> poisoned =
       executeBoardInvocationInSession(
-          *package, root, makeTile16Request(package->getManifest()), session);
+          *package, makeTile16Request(package->getManifest()), session);
   ASSERT_FALSE(static_cast<bool>(poisoned));
   llvm::consumeError(poisoned.takeError());
   EXPECT_FALSE(session.isUsable());
@@ -1433,7 +1454,7 @@ TEST_F(BoardRuntimeTest,
   driver.poisonOnFailure = false;
   llvm::Expected<BoardRuntimeInvocationResult> rejected =
       executeBoardInvocationInSession(
-          *package, root, makeTile16Request(package->getManifest()), session);
+          *package, makeTile16Request(package->getManifest()), session);
   ASSERT_FALSE(static_cast<bool>(rejected));
   llvm::consumeError(rejected.takeError());
   EXPECT_EQ(driver.calls.size(), callsAfterPoison);
@@ -1442,7 +1463,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        ProfileCompletionObservationCoversSubmitAndForwardsHighResolution) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1455,7 +1476,7 @@ TEST_F(BoardRuntimeTest,
   driver.submitDelay = std::chrono::milliseconds(2);
   driver.waitDelay = std::chrono::milliseconds(2);
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   EXPECT_EQ(driver.observedCompletionObservationPolicy,
@@ -1477,7 +1498,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        StreamEventTimingSeparatesDeviceSubmitAndHostEnvelope) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1490,7 +1511,7 @@ TEST_F(BoardRuntimeTest,
   driver.waitDelay = std::chrono::milliseconds(2);
   driver.deviceExecutionNanosecondsByWait = {750000};
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   ASSERT_TRUE(result->deviceExecutionNanoseconds.has_value());
@@ -1505,7 +1526,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, StreamEventTimingSupportsCompleteGrid) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1516,7 +1537,7 @@ TEST_F(BoardRuntimeTest, StreamEventTimingSupportsCompleteGrid) {
   FakeBoardDriver driver;
   driver.deviceExecutionNanosecondsByWait = {125};
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   ASSERT_TRUE(result->deviceExecutionNanoseconds.has_value());
@@ -1531,7 +1552,7 @@ TEST_F(BoardRuntimeTest, StreamEventTimingSupportsCompleteGrid) {
 
 TEST_F(BoardRuntimeTest, StreamEventTimingSumsEveryKernelPhase) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1542,7 +1563,7 @@ TEST_F(BoardRuntimeTest, StreamEventTimingSumsEveryKernelPhase) {
   FakeBoardDriver driver;
   driver.deviceExecutionNanosecondsByWait = {250, 750};
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   ASSERT_TRUE(result->deviceExecutionNanoseconds.has_value());
@@ -1556,7 +1577,7 @@ TEST_F(BoardRuntimeTest, StreamEventTimingSumsEveryKernelPhase) {
 
 TEST_F(BoardRuntimeTest, StreamEventTimingRejectsMissingProviderObservation) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1566,7 +1587,7 @@ TEST_F(BoardRuntimeTest, StreamEventTimingRejectsMissingProviderObservation) {
 
   FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root, std::move(request), driver);
+      executeBoardInvocation(*package, std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError())
                 .find("omitted requested same-stream device timing"),
@@ -1575,7 +1596,7 @@ TEST_F(BoardRuntimeTest, StreamEventTimingRejectsMissingProviderObservation) {
 
 TEST_F(BoardRuntimeTest, DisabledTimingRejectsUnexpectedProviderObservation) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package =
+  llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1583,7 +1604,7 @@ TEST_F(BoardRuntimeTest, DisabledTimingRejectsUnexpectedProviderObservation) {
   FakeBoardDriver driver;
   driver.deviceExecutionNanosecondsByWait = {1};
   llvm::Expected<BoardRuntimeInvocationResult> result = executeBoardInvocation(
-      *package, root, makeTile16Request(package->getManifest()), driver);
+      *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(
       llvm::toString(result.takeError()).find("device timing when disabled"),
@@ -1593,7 +1614,7 @@ TEST_F(BoardRuntimeTest, DisabledTimingRejectsUnexpectedProviderObservation) {
 TEST_F(BoardRuntimeTest,
        QualifiedSessionRejectsDifferentInvocationIdentityWithoutProviderCall) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package = verifyTile16();
+  llvm::Expected<ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   BoardRuntimeInvocationRequest seed =
@@ -1602,7 +1623,7 @@ TEST_F(BoardRuntimeTest,
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
-          *package, root, std::move(seed), driver);
+          *package, std::move(seed), driver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   QualifiedBoardRuntimeSession session = std::move(started->second);
@@ -1613,7 +1634,7 @@ TEST_F(BoardRuntimeTest,
   mismatched.qualification.runtimeLibraryDigest =
       "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocationInSession(*package, root, std::move(mismatched),
+      executeBoardInvocationInSession(*package, std::move(mismatched),
                                       session);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("session identity"),
@@ -1625,7 +1646,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        PoisonedQualifiedSessionCannotIssueAnotherProviderCall) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package = verifyTile16();
+  llvm::Expected<ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   BoardRuntimeInvocationRequest seed =
@@ -1634,7 +1655,7 @@ TEST_F(BoardRuntimeTest,
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
-          *package, root, std::move(seed), driver);
+          *package, std::move(seed), driver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   QualifiedBoardRuntimeSession session = std::move(started->second);
@@ -1643,7 +1664,7 @@ TEST_F(BoardRuntimeTest,
   driver.poisonOnFailure = true;
   llvm::Expected<BoardRuntimeInvocationResult> failed =
       executeBoardInvocationInSession(
-          *package, root, makeTile16Request(package->getManifest()), session);
+          *package, makeTile16Request(package->getManifest()), session);
   ASSERT_FALSE(static_cast<bool>(failed));
   llvm::consumeError(failed.takeError());
   ASSERT_FALSE(driver.calls.empty());
@@ -1655,7 +1676,7 @@ TEST_F(BoardRuntimeTest,
   driver.poisonOnFailure = false;
   llvm::Expected<BoardRuntimeInvocationResult> rejected =
       executeBoardInvocationInSession(
-          *package, root, makeTile16Request(package->getManifest()), session);
+          *package, makeTile16Request(package->getManifest()), session);
   ASSERT_FALSE(static_cast<bool>(rejected));
   bool sawPoison = false;
   llvm::handleAllErrors(rejected.takeError(),
@@ -1669,7 +1690,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, QualifiedSessionRequiresCompleteTileDomain) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package = verifyTile16();
+  llvm::Expected<ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   BoardRuntimeInvocationRequest request =
@@ -1679,7 +1700,7 @@ TEST_F(BoardRuntimeTest, QualifiedSessionRequiresCompleteTileDomain) {
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
-          *package, root, std::move(request), driver);
+          *package, std::move(request), driver);
   ASSERT_FALSE(static_cast<bool>(started));
   EXPECT_NE(llvm::toString(started.takeError()).find("availability"),
             std::string::npos);
@@ -1689,7 +1710,7 @@ TEST_F(BoardRuntimeTest, QualifiedSessionRequiresCompleteTileDomain) {
 
 TEST_F(BoardRuntimeTest,
        ClusterDirectDTEUsesTypedPrepareMainAndChecksStatusBeforeOutputs) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1697,7 +1718,7 @@ TEST_F(BoardRuntimeTest,
   FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(manifest), driver);
+          *package, makeTile16Request(manifest), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(), "load-module"),
@@ -1754,7 +1775,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        ClusterMainSubmitFailureIsLaunchStageAfterPrepareTerminal) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1762,7 +1783,7 @@ TEST_F(BoardRuntimeTest,
   driver.failOperation = "submit-kernel-phase:cluster:main";
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   bool sawLaunchFailure = false;
   llvm::handleAllErrors(
@@ -1786,7 +1807,7 @@ TEST_F(BoardRuntimeTest,
 }
 
 TEST_F(BoardRuntimeTest, DirectDTEStatusHandlingIsIndependentOfGridLaunchForm) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid, /*withProfiler=*/false,
                    /*directDTEOverride=*/true);
   ASSERT_TRUE(static_cast<bool>(package))
@@ -1794,7 +1815,7 @@ TEST_F(BoardRuntimeTest, DirectDTEStatusHandlingIsIndependentOfGridLaunchForm) {
   FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
                        "submit-kernel-phase:grid:main"),
@@ -1804,7 +1825,7 @@ TEST_F(BoardRuntimeTest, DirectDTEStatusHandlingIsIndependentOfGridLaunchForm) {
 
 TEST_F(BoardRuntimeTest,
        ClusterResolvesEveryPhaseBeforeTheFirstProviderSubmission) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1813,7 +1834,7 @@ TEST_F(BoardRuntimeTest,
   driver.failIndex = 1;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   bool sawResolveFailure = false;
   llvm::handleAllErrors(
@@ -1835,7 +1856,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        ClusterLaunchWithoutDirectDTEHasNoTransportStatusReadback) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Cluster, /*withProfiler=*/false,
                    /*directDTEOverride=*/false);
   ASSERT_TRUE(static_cast<bool>(package))
@@ -1843,7 +1864,7 @@ TEST_F(BoardRuntimeTest,
   FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   EXPECT_EQ(std::count(driver.calls.begin(), driver.calls.end(),
                        "submit-kernel-phase:cluster:prepare"),
@@ -1856,7 +1877,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        ClusterDirectDTEBadStatusQuarantinesBeforeAnyUserOutputReadback) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1865,7 +1886,7 @@ TEST_F(BoardRuntimeTest,
       static_cast<uint32_t>(wafer::runtime::DirectDTEStatusValue::Pending);
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   bool sawPoison = false;
   llvm::handleAllErrors(
@@ -1889,7 +1910,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        ClusterDirectDTEStatusReadbackFailureQuarantinesWithoutCleanup) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1897,7 +1918,7 @@ TEST_F(BoardRuntimeTest,
   driver.failOperation = "d2h";
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   llvm::consumeError(result.takeError());
   ASSERT_GE(driver.calls.size(), 2u);
@@ -1912,7 +1933,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest,
        ClusterDirectDTEOutputReadbackFailureQuarantinesWithoutCleanup) {
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Cluster);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1921,7 +1942,7 @@ TEST_F(BoardRuntimeTest,
   driver.failIndex = 16;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   llvm::consumeError(result.takeError());
   ASSERT_GE(driver.calls.size(), 2u);
@@ -1937,7 +1958,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, Tile16RequiresCompleteUniqueTileInventory) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1945,7 +1966,7 @@ TEST_F(BoardRuntimeTest, Tile16RequiresCompleteUniqueTileInventory) {
   driver.unavailableTileId = 15;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   bool sawDeviceSelection = false;
   llvm::handleAllErrors(
@@ -1962,7 +1983,7 @@ TEST_F(BoardRuntimeTest, Tile16RequiresCompleteUniqueTileInventory) {
 TEST_F(BoardRuntimeTest,
        Tile15RecoverableFailuresReturnNoPartialInvocationAndCleanup) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::GridTileRows);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -1986,7 +2007,7 @@ TEST_F(BoardRuntimeTest,
     driver.failIndex = scenario.failIndex;
     llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
         wafer::runtime::executeBoardInvocation(
-            *package, root, makeTile16Request(manifest), driver);
+            *package, makeTile16Request(manifest), driver);
     ASSERT_FALSE(static_cast<bool>(result));
     bool sawTile15Failure = false;
     llvm::handleAllErrors(
@@ -2019,7 +2040,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        Tile15PoisonedFailuresAreTheFinalProviderCallWithoutCleanup) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::GridTileRows);
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -2043,7 +2064,7 @@ TEST_F(BoardRuntimeTest,
     driver.poisonOnFailure = true;
     llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
         wafer::runtime::executeBoardInvocation(
-            *package, root, makeTile16Request(manifest), driver);
+            *package, makeTile16Request(manifest), driver);
     ASSERT_FALSE(static_cast<bool>(result));
     bool sawTile15Failure = false;
     llvm::handleAllErrors(
@@ -2080,7 +2101,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        WholeDomainSubmitAndWaitFailuresNeverReturnPartialResults) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -2101,7 +2122,7 @@ TEST_F(BoardRuntimeTest,
     driver.failOperation = scenario.operation.str();
     llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
         wafer::runtime::executeBoardInvocation(
-            *package, root, makeTile16Request(package->getManifest()), driver);
+            *package, makeTile16Request(package->getManifest()), driver);
     ASSERT_FALSE(static_cast<bool>(result));
     bool sawWholeDomainFailure = false;
     llvm::handleAllErrors(result.takeError(),
@@ -2124,7 +2145,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, Tile16PoisonedWaitIsTheFinalProviderCall) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
+  llvm::Expected<wafer::runtime::ExecutablePackage> package =
       verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
@@ -2133,7 +2154,7 @@ TEST_F(BoardRuntimeTest, Tile16PoisonedWaitIsTheFinalProviderCall) {
   driver.poisonOnFailure = true;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
-          *package, root, makeTile16Request(package->getManifest()), driver);
+          *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_FALSE(static_cast<bool>(result));
   llvm::consumeError(result.takeError());
   ASSERT_FALSE(driver.calls.empty());
@@ -2153,14 +2174,13 @@ TEST_F(BoardRuntimeTest,
   const std::vector<uint8_t> programData = ownedTensorProgramDataBytes();
   writeProgramDataFile(programData);
   PackageManifest manifest = makeOwnedTensorTile16Manifest();
-  llvm::Expected<VerifiedPackageManifest> package =
-      verifyPackageManifest(std::move(manifest), root);
+  llvm::Expected<ExecutablePackage> package = loadPackage(std::move(manifest));
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
   FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root,
+      executeBoardInvocation(*package,
                              makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
@@ -2199,13 +2219,13 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, EmptyProgramDataIssuesNoProgramDataProviderCall) {
   using namespace wafer::runtime;
-  llvm::Expected<VerifiedPackageManifest> package = verifyTile16();
+  llvm::Expected<ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
   FakeBoardDriver driver;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, root,
+      executeBoardInvocation(*package,
                              makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 

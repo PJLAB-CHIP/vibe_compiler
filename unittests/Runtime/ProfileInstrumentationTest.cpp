@@ -902,8 +902,8 @@ TEST_F(ProfileInstrumentationTest, RejectsCaptureProgramDataAlignmentDrift) {
   writeText(captureManifest, json);
   llvm::SmallString<256> captureRoot(instrumentation);
   llvm::sys::path::append(captureRoot, "captures/count");
-  llvm::Expected<wafer::runtime::VerifiedPackageManifest> loaded =
-      wafer::runtime::loadVerifiedPackageManifest(captureRoot);
+  llvm::Expected<wafer::runtime::ExecutablePackage> loaded =
+      wafer::runtime::loadExecutablePackage(captureRoot);
   ASSERT_FALSE(static_cast<bool>(loaded));
   EXPECT_NE(llvm::toString(loaded.takeError())
                 .find("program data base alignment is not canonical"),

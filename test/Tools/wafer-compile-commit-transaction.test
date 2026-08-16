@@ -1,7 +1,8 @@
 // The commit stage closes every fallible verification step before the single
-// publication rename. A failure injected after commit verification must
-// classify as package-commit, must not publish the output (ordinary or
-// profile delivery root) and must not leave transaction staging behind.
+// publication rename. Exact staged package/profile byte corruption and a
+// failure injected after verification must classify as package-commit, must
+// not publish the output (ordinary or profile delivery root), and must not
+// leave transaction staging behind.
 
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
@@ -11,12 +12,18 @@
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
 # RUN: cp -R %t.input %t.input.before
 
-# RUN: not env WAFER_TEST_FAIL_COMMIT_VERIFICATION=1 %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/ordinary --num-partitions=1 2>&1 | FileCheck %s --check-prefix=ORDINARY
+# RUN: not env WAFER_TEST_FAIL_COMMIT_VERIFICATION=1 %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/ordinary --num-partitions=1 2>&1 | FileCheck %s --check-prefix=ORDINARY
 # RUN: test ! -e %t.outputs/ordinary
-# RUN: not env WAFER_TEST_FAIL_COMMIT_VERIFICATION=1 %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.outputs/profiled --num-partitions=1 --profile 2>&1 | FileCheck %s --check-prefix=PROFILE
+# RUN: not env WAFER_TEST_FAIL_COMMIT_VERIFICATION=1 %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/profiled --num-partitions=1 --profile 2>&1 | FileCheck %s --check-prefix=PROFILE
 # RUN: test ! -e %t.outputs/profiled
 # RUN: test ! -e %t.outputs/profiled/package
 # RUN: test ! -e %t.outputs/profiled/package.profile
+# RUN: not env WAFER_TEST_CORRUPT_PACKAGE_COMMIT_MEMBER=1 %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/package-corrupt --num-partitions=1 2>&1 | FileCheck %s --check-prefix=PACKAGE-CORRUPT
+# RUN: test ! -e %t.outputs/package-corrupt
+# RUN: not env WAFER_TEST_CORRUPT_PROFILE_COMMIT_MEMBER=1 %wafer_compile_test --input-program-dir %t.input --output-dir %t.outputs/profile-corrupt --num-partitions=1 --profile 2>&1 | FileCheck %s --check-prefix=PROFILE-CORRUPT
+# RUN: test ! -e %t.outputs/profile-corrupt
+# RUN: test ! -e %t.outputs/profile-corrupt/package
+# RUN: test ! -e %t.outputs/profile-corrupt/package.profile
 # RUN: diff -ru %t.input.before %t.input
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-compile-staging-*" -print -quit)"'
 # RUN: bash -c 'test -z "$(find "%t.outputs" -maxdepth 1 -name ".wafer-package-staging-*" -print -quit)"'
@@ -25,3 +32,7 @@
 # ORDINARY: wafer-compile: compilation failed at the package-commit stage
 # PROFILE: wafer-compile: test-only commit verification failure injected before publication
 # PROFILE: wafer-compile: compilation failed at the package-commit stage
+# PACKAGE-CORRUPT: wafer-compile: staged package manifest verification failed: package program data digest mismatch
+# PACKAGE-CORRUPT: wafer-compile: compilation failed at the package-commit stage
+# PROFILE-CORRUPT: wafer-compile: staged profile instrumentation binding failed: owned profile metadata digest does not match the writer identity
+# PROFILE-CORRUPT: wafer-compile: compilation failed at the package-commit stage

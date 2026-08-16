@@ -28,7 +28,7 @@ Pipeline position:
   形成`CardModule`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
 - User-level driver / named pipeline:
   `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend verification；继续编译只经
-  当前`wafer-compile --input-program-dir=... --output-package-dir=... --num-partitions=1`；
+  当前`wafer-compile --input-program-dir=... --output-dir=... --num-partitions=1`；
   Q59会按真实package destination原位改名并同步全部consumer，不保留旧alias；
   source-to-package optimization policy只为`search|none`，current target identity由compiler固定提供，不是用户选择。
   `wafer-opt`及named MLIR pipelines只处理显式IR，不拥有program-directory I/O。

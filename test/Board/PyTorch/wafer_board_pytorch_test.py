@@ -499,7 +499,7 @@ def prepare_case_step(
         str(args.wafer_compile),
         "--input-program-dir",
         str(source),
-        "--output-package-dir",
+        "--output-dir",
         str(package),
         f"--num-partitions={case.num_partitions}",
         f"--optimization-policy={args.optimization_policy}",

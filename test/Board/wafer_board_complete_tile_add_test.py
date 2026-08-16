@@ -162,7 +162,7 @@ def compile_package(
         str(args.wafer_compile),
         "--input-program-dir",
         str(source),
-        "--output-package-dir",
+        "--output-dir",
         str(package),
         "--num-partitions=1",
     ]
@@ -258,10 +258,11 @@ def validate_manifest(
     outputs = manifest.get("outputs")
     if not isinstance(inputs, list) or not isinstance(outputs, list):
         raise RuntimeError("package port tables must be lists")
-    resource_ids: set[int] = set()
     bindings: dict[tuple[str, int], int] = {}
     for table, role in (("inputs", "user_input"), ("outputs", "output")):
-        for record in manifest.get(table, []):
+        records = manifest.get(table, [])
+        table_resource_ids: set[int] = set()
+        for record in records:
             if not isinstance(record, dict):
                 raise RuntimeError("package port records must be objects")
             resource_id = record.get("id")
@@ -269,15 +270,17 @@ def validate_manifest(
             key = (role, role_index)
             if (
                 not isinstance(resource_id, int)
-                or resource_id in resource_ids
+                or resource_id in table_resource_ids
                 or key in bindings
                 or record.get("dtype") != "f16"
                 or record.get("shape") != [GLOBAL_ELEMENTS]
                 or record.get("bytes") != GLOBAL_ELEMENTS * ELEMENT_DTYPE.itemsize
             ):
                 raise RuntimeError(f"unexpected tile-16 Add port: {record}")
-            resource_ids.add(resource_id)
+            table_resource_ids.add(resource_id)
             bindings[key] = resource_id
+        if table_resource_ids != set(range(len(records))):
+            raise RuntimeError(f"{table} port ids are not a dense domain")
 
     expected_keys = {("user_input", 0), ("user_input", 1), ("output", 0)}
     if set(bindings) != expected_keys:

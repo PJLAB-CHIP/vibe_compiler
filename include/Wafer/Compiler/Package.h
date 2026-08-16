@@ -23,72 +23,14 @@ class raw_ostream;
 
 namespace wafer::compiler {
 
-/// Move-only owner of one committed, readback-verified package: the canonical
-/// root, the execution configuration, the verified manifest and the opened
-/// all-and-only package members (manifest, modules and program data). The
-/// members are pinned by open file descriptors opened before the single
-/// publication rename, so later deletion or replacement of the paths cannot
-/// invalidate the result content; reopening by root is not ownership.
-class ExecutablePackage {
-public:
-  ExecutablePackage(ExecutablePackage &&) = default;
-  ExecutablePackage &operator=(ExecutablePackage &&) = default;
-  ExecutablePackage(const ExecutablePackage &) = delete;
-  ExecutablePackage &operator=(const ExecutablePackage &) = delete;
+/// Compiler spelling of the single package-layer owner also returned by the
+/// runtime strict loader. This is an alias, never a second verified wrapper.
+using ExecutablePackage = runtime::ExecutablePackage;
 
-  llvm::StringRef getRootDirectory() const { return rootDirectory; }
-  const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
-  const runtime::VerifiedPackageManifest &getManifest() const {
-    return manifest;
-  }
-  /// Opened canonical manifest member, the same bytes the manifest verifier
-  /// consumed.
-  const llvm::MemoryBuffer &getManifestBuffer() const {
-    return *manifestBuffer;
-  }
-  /// Opened module members in the verified manifest module order.
-  const std::vector<std::unique_ptr<llvm::MemoryBuffer>> &
-  getModuleBuffers() const {
-    return moduleBuffers;
-  }
-  /// Opened target-ready program data member (canonical empty file when the
-  /// package carries no program data).
-  const llvm::MemoryBuffer &getProgramDataBuffer() const {
-    return *programDataBuffer;
-  }
-
-private:
-  friend struct ExecutablePackageBuilder;
-
-  ExecutablePackage(
-      llvm::StringRef rootDirectory, ExecutionConfig executionConfig,
-      runtime::VerifiedPackageManifest manifest,
-      std::unique_ptr<llvm::MemoryBuffer> manifestBuffer,
-      std::vector<std::unique_ptr<llvm::MemoryBuffer>> moduleBuffers,
-      std::unique_ptr<llvm::MemoryBuffer> programDataBuffer)
-      : rootDirectory(rootDirectory.str()), executionConfig(executionConfig),
-        manifest(std::move(manifest)),
-        manifestBuffer(std::move(manifestBuffer)),
-        moduleBuffers(std::move(moduleBuffers)),
-        programDataBuffer(std::move(programDataBuffer)) {}
-
-  std::string rootDirectory;
-  ExecutionConfig executionConfig;
-  runtime::VerifiedPackageManifest manifest;
-  // Declaration order keeps the manifest alive as long as any member; the
-  // buffers are independent open handles and are destroyed in reverse order.
-  std::unique_ptr<llvm::MemoryBuffer> manifestBuffer;
-  std::vector<std::unique_ptr<llvm::MemoryBuffer>> moduleBuffers;
-  std::unique_ptr<llvm::MemoryBuffer> programDataBuffer;
-};
-
-/// Compiler-side identity of one profile instrumentation committed together
-/// with the ordinary package. The digests are the values the instrumentation
-/// writer computed from the staged files and re-verified against the staged
-/// activation.json before the single publication rename; the published
-/// inodes are the verified ones. The runtime strict loader remains the
-/// single semantic reader at launch; this type only binds the co-commit
-/// identity and never duplicates plan/site-map parsing.
+/// Compiler-side owner of profile instrumentation committed together with the
+/// ordinary package. It owns the exact activation/plan/site-map buffers and
+/// both strictly bound capture packages selected before the publication
+/// rename. The runtime loader remains the semantic parser at launch.
 class ProfileInstrumentationProduct {
 public:
   ProfileInstrumentationProduct(ProfileInstrumentationProduct &&) = default;
@@ -109,18 +51,30 @@ public:
 private:
   friend struct ProfileInstrumentationProductBuilder;
 
-  ProfileInstrumentationProduct(llvm::StringRef rootDirectory,
-                                llvm::StringRef primaryManifestDigest,
-                                llvm::StringRef planDigest,
-                                llvm::StringRef siteMapDigest)
-      : rootDirectory(rootDirectory.str()),
-        primaryManifestDigest(primaryManifestDigest.str()),
-        planDigest(planDigest.str()), siteMapDigest(siteMapDigest.str()) {}
+  ProfileInstrumentationProduct(
+      std::string rootDirectory, std::string primaryManifestDigest,
+      std::string planDigest, std::string siteMapDigest,
+      std::unique_ptr<llvm::MemoryBuffer> activationBuffer,
+      std::unique_ptr<llvm::MemoryBuffer> planBuffer,
+      std::unique_ptr<llvm::MemoryBuffer> siteMapBuffer,
+      std::vector<runtime::detail::BoundExecutablePackage> capturePackages)
+      : rootDirectory(std::move(rootDirectory)),
+        primaryManifestDigest(std::move(primaryManifestDigest)),
+        planDigest(std::move(planDigest)),
+        siteMapDigest(std::move(siteMapDigest)),
+        activationBuffer(std::move(activationBuffer)),
+        planBuffer(std::move(planBuffer)),
+        siteMapBuffer(std::move(siteMapBuffer)),
+        capturePackages(std::move(capturePackages)) {}
 
   std::string rootDirectory;
   std::string primaryManifestDigest;
   std::string planDigest;
   std::string siteMapDigest;
+  std::unique_ptr<llvm::MemoryBuffer> activationBuffer;
+  std::unique_ptr<llvm::MemoryBuffer> planBuffer;
+  std::unique_ptr<llvm::MemoryBuffer> siteMapBuffer;
+  std::vector<runtime::detail::BoundExecutablePackage> capturePackages;
 };
 
 /// The complete typed product of one production compilation transaction. The
@@ -137,24 +91,27 @@ public:
   CompilationResult &operator=(const CompilationResult &) = delete;
 
   const ExecutablePackage &getPackage() const { return package; }
+  const ExecutionConfig &getExecutionConfig() const { return executionConfig; }
   const std::optional<ProfileInstrumentationProduct>
       &getProfileInstrumentation() const {
     return profileInstrumentation;
   }
 
 private:
+  friend struct CompilationResultBuilder;
   friend llvm::Expected<CompilationResult> compileProgram(
-      CompilationRequest request, llvm::StringRef outputPackageDirectory,
+      CompilationRequest request, llvm::StringRef outputDirectory,
       llvm::StringRef xlaSpmdPartitionerHelper,
       const TargetToolchain &targetToolchain, CompilationOptions options,
       llvm::raw_ostream &diagnostics);
 
-  CompilationResult(ExecutablePackage package,
+  CompilationResult(ExecutionConfig executionConfig, ExecutablePackage package,
                     std::optional<ProfileInstrumentationProduct>
                         profileInstrumentation)
-      : package(std::move(package)),
+      : executionConfig(executionConfig), package(std::move(package)),
         profileInstrumentation(std::move(profileInstrumentation)) {}
 
+  ExecutionConfig executionConfig;
   ExecutablePackage package;
   std::optional<ProfileInstrumentationProduct> profileInstrumentation;
 };
@@ -173,7 +130,7 @@ private:
 /// transaction stage.
 llvm::Expected<CompilationResult>
 compileProgram(CompilationRequest request,
-               llvm::StringRef outputPackageDirectory,
+               llvm::StringRef outputDirectory,
                llvm::StringRef xlaSpmdPartitionerHelper,
                const TargetToolchain &targetToolchain,
                CompilationOptions options, llvm::raw_ostream &diagnostics);

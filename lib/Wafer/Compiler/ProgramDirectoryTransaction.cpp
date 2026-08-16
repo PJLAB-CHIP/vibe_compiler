@@ -320,11 +320,11 @@ bool renameDirectoryNoReplace(llvm::StringRef source,
   int errorNumber = errno;
   if (errorNumber == EEXIST)
     return reject(diagnostics,
-                  "output package directory appeared before rename; "
+                  "output directory appeared before rename; "
                   "refusing to replace it");
   return reject(
       diagnostics,
-      "failed to rename output package directory "
+      "failed to rename output directory "
       "without replacement: " +
           std::error_code(errorNumber, std::generic_category()).message());
 #else

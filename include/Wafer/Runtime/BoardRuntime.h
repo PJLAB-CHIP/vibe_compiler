@@ -331,14 +331,12 @@ private:
   bool usable = false;
 
   friend llvm::Expected<BoardRuntimeInvocationResult>
-  executeBoardInvocationInSession(const VerifiedPackageManifest &,
-                                  llvm::StringRef,
+  executeBoardInvocationInSession(const ExecutablePackage &,
                                   BoardRuntimeInvocationRequest,
                                   QualifiedBoardRuntimeSession &);
   friend llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
-  executeBoardInvocationAndStartSession(const VerifiedPackageManifest &,
-                                        llvm::StringRef,
+  executeBoardInvocationAndStartSession(const ExecutablePackage &,
                                         BoardRuntimeInvocationRequest,
                                         BoardRuntimeDriver &);
 };
@@ -349,8 +347,7 @@ private:
 /// count/selection/info are not repeated. A poisoned capability can never be
 /// used again.
 llvm::Expected<BoardRuntimeInvocationResult>
-executeBoardInvocationInSession(const VerifiedPackageManifest &package,
-                                llvm::StringRef packageRoot,
+executeBoardInvocationInSession(const ExecutablePackage &package,
                                 BoardRuntimeInvocationRequest request,
                                 QualifiedBoardRuntimeSession &session);
 
@@ -361,8 +358,7 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
 /// qualification path. Failure returns no session capability.
 llvm::Expected<
     std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
-executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
-                                      llvm::StringRef packageRoot,
+executeBoardInvocationAndStartSession(const ExecutablePackage &package,
                                       BoardRuntimeInvocationRequest request,
                                       BoardRuntimeDriver &driver);
 
@@ -371,8 +367,8 @@ executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
 /// requirements, including Direct DTE, are verified independently and never
 /// select another runtime entry point.
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
-    const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
-    BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver);
+    const ExecutablePackage &package, BoardRuntimeInvocationRequest request,
+    BoardRuntimeDriver &driver);
 
 } // namespace wafer::runtime
 

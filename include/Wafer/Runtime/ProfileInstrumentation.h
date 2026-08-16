@@ -30,8 +30,7 @@ class ProfiledPackage {
 public:
   ProfiledPackage(std::string manifestDigest,
                   ProfileStaticCostModel staticCostModel,
-                  std::string packageDirectory,
-                  VerifiedPackageManifest package);
+                  ExecutablePackage package);
   ProfiledPackage(ProfiledPackage &&) = default;
   ProfiledPackage &operator=(ProfiledPackage &&) = default;
   ProfiledPackage(const ProfiledPackage &) = delete;
@@ -41,14 +40,15 @@ public:
   const ProfileStaticCostModel &getStaticCostModel() const {
     return staticCostModel;
   }
-  llvm::StringRef getPackageDirectory() const { return packageDirectory; }
-  const VerifiedPackageManifest &getPackage() const { return package; }
+  llvm::StringRef getPackageDirectory() const {
+    return package.getRootDirectory();
+  }
+  const ExecutablePackage &getPackage() const { return package; }
 
 private:
   std::string manifestDigest;
   ProfileStaticCostModel staticCostModel;
-  std::string packageDirectory;
-  VerifiedPackageManifest package;
+  ExecutablePackage package;
 };
 
 class ProfileCapturePackage {
@@ -56,8 +56,7 @@ public:
   ProfileCapturePackage(ProfileCaptureKind capture,
                         std::string packageReference,
                         std::string manifestDigest, std::string recordABI,
-                        uint64_t recordBytes, std::string packageDirectory,
-                        VerifiedPackageManifest package);
+                        uint64_t recordBytes, ExecutablePackage package);
   ProfileCapturePackage(ProfileCapturePackage &&) = default;
   ProfileCapturePackage &operator=(ProfileCapturePackage &&) = default;
   ProfileCapturePackage(const ProfileCapturePackage &) = delete;
@@ -68,8 +67,10 @@ public:
   llvm::StringRef getManifestDigest() const { return manifestDigest; }
   llvm::StringRef getRecordABI() const { return recordABI; }
   uint64_t getRecordBytes() const { return recordBytes; }
-  llvm::StringRef getPackageDirectory() const { return packageDirectory; }
-  const VerifiedPackageManifest &getPackage() const { return package; }
+  llvm::StringRef getPackageDirectory() const {
+    return package.getRootDirectory();
+  }
+  const ExecutablePackage &getPackage() const { return package; }
 
 private:
   ProfileCaptureKind capture;
@@ -77,8 +78,7 @@ private:
   std::string manifestDigest;
   std::string recordABI;
   uint64_t recordBytes;
-  std::string packageDirectory;
-  VerifiedPackageManifest package;
+  ExecutablePackage package;
 };
 
 class VerifiedProfileInstrumentation {

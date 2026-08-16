@@ -1532,8 +1532,7 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
 
   std::optional<QualifiedBoardRuntimeSession> session;
   std::optional<BoardDeviceInfo> device;
-  auto execute = [&](const VerifiedPackageManifest &package,
-                     llvm::StringRef packageRoot,
+  auto execute = [&](const ExecutablePackage &package,
                      const BoardInvocationFilePlan &plan, bool profilerExpected,
                      BoardCompletionObservationPolicy observationPolicy,
                      BoardDeviceTimingPolicy deviceTimingPolicy)
@@ -1543,12 +1542,12 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
     request.deviceTimingPolicy = deviceTimingPolicy;
     llvm::Expected<BoardRuntimeInvocationResult> result = [&]() {
       if (session)
-        return executeBoardInvocationInSession(package, packageRoot,
-                                               std::move(request), *session);
+        return executeBoardInvocationInSession(package, std::move(request),
+                                               *session);
       llvm::Expected<
           std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
           started = executeBoardInvocationAndStartSession(
-              package, packageRoot, std::move(request), driver);
+              package, std::move(request), driver);
       if (!started)
         return llvm::Expected<BoardRuntimeInvocationResult>(
             started.takeError());
@@ -1584,7 +1583,6 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
             case BoardProfileProtocolLaunch::Primary: {
               llvm::Expected<BoardRuntimeInvocationResult> result = execute(
                   collection.profiledPackage->getPackage(),
-                  collection.profiledPackage->getPackageDirectory(),
                   collection.executionPlan,
                   /*profilerExpected=*/false,
                   BoardCompletionObservationPolicy::ProfileHighResolution,
@@ -1608,7 +1606,6 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
             case BoardProfileProtocolLaunch::Count: {
               llvm::Expected<BoardRuntimeInvocationResult> result =
                   execute(collection.countPackage->getPackage(),
-                          collection.countPackage->getPackageDirectory(),
                           collection.countPlan,
                           /*profilerExpected=*/true,
                           BoardCompletionObservationPolicy::Normal,
@@ -1634,7 +1631,6 @@ runBoardProfileCollection(const VerifiedProfileInstrumentation &instrumentation,
             case BoardProfileProtocolLaunch::Trace: {
               llvm::Expected<BoardRuntimeInvocationResult> result =
                   execute(collection.tracePackage->getPackage(),
-                          collection.tracePackage->getPackageDirectory(),
                           collection.tracePlan,
                           /*profilerExpected=*/true,
                           BoardCompletionObservationPolicy::Normal,

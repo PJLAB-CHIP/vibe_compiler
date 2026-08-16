@@ -451,7 +451,8 @@ protected:
     return verifyPackageManifest(makeManifest(), root);
   }
 
-  static void expectRejected(llvm::Expected<VerifiedPackageManifest> result,
+  template <typename T>
+  static void expectRejected(llvm::Expected<T> result,
                              llvm::StringRef expectedMessage) {
     ASSERT_FALSE(static_cast<bool>(result));
     std::string message = llvm::toString(result.takeError());
@@ -1549,8 +1550,7 @@ TEST_F(PackageManifestTest, StrictLoaderRejectsUndeclaredRootMember) {
   ASSERT_FALSE(error);
   extraOutput << "extra";
   extraOutput.close();
-  llvm::Expected<VerifiedPackageManifest> loaded =
-      loadVerifiedPackageManifest(root);
+  llvm::Expected<ExecutablePackage> loaded = loadExecutablePackage(root);
   expectRejected(std::move(loaded), "undeclared member");
 }
 
@@ -1572,8 +1572,7 @@ TEST_F(PackageManifestTest, StrictLoaderRejectsUndeclaredDataMember) {
   ASSERT_FALSE(error);
   extraOutput << "aux";
   extraOutput.close();
-  llvm::Expected<VerifiedPackageManifest> loaded =
-      loadVerifiedPackageManifest(root);
+  llvm::Expected<ExecutablePackage> loaded = loadExecutablePackage(root);
   expectRejected(std::move(loaded), "undeclared member");
 }
 
@@ -1592,8 +1591,7 @@ TEST_F(PackageManifestTest, StrictLoaderRejectsSymlinkMember) {
   llvm::SmallString<256> link(root);
   llvm::sys::path::append(link, "linked-manifest");
   ASSERT_FALSE(llvm::sys::fs::create_link(manifestPath, link));
-  llvm::Expected<VerifiedPackageManifest> loaded =
-      loadVerifiedPackageManifest(root);
+  llvm::Expected<ExecutablePackage> loaded = loadExecutablePackage(root);
   expectRejected(std::move(loaded), "unsupported member");
 }
 
@@ -1612,7 +1610,6 @@ TEST_F(PackageManifestTest, StrictLoaderRejectsUndeclaredModulesDirectory) {
   llvm::SmallString<256> extra(root);
   llvm::sys::path::append(extra, "modules", "undeclared");
   ASSERT_FALSE(llvm::sys::fs::create_directory(extra));
-  llvm::Expected<VerifiedPackageManifest> loaded =
-      loadVerifiedPackageManifest(root);
+  llvm::Expected<ExecutablePackage> loaded = loadExecutablePackage(root);
   expectRejected(std::move(loaded), "undeclared directory");
 }

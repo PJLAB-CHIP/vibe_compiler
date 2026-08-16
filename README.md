@@ -129,7 +129,7 @@ ctest --test-dir build/wafer-dev -j"$(nproc)" --output-on-failure
 ```bash
 build/wafer-dev/bin/wafer-compile \
   --input-program-dir <stablehlo-program-dir> \
-  --output-package-dir <verified-package-dir> \
+  --output-dir <output-dir> \
   --num-partitions 1 \
   --optimization-policy search
 ```
@@ -139,11 +139,12 @@ compiler-owned候选搜索，`none`只生成保守baseline。编译成功当且�
 验证：CLI 退出 0 时目标 package 必然可见，退出非 0 时本次目标 package 不可见。`--profile` 时输出目录是
 共同 delivery root，一次 rename 发布 `<output>/package` 与 `<output>/package.profile`，runtime 的
 `<package-root>.profile` sibling 规则不变。target-model 与 compiler IR dump 只属于 internal/test 入口
-（`wafer-compile-test`），不进入 production compile status。package 可先做无板卡 validation：
+（`wafer-compile-test`），不进入 production compile status。普通模式的`<output-dir>`就是package root；`--profile`模式下
+它是共同delivery root，package root为`<output-dir>/package`。package可先做无板卡validation：
 
 ```bash
 build/wafer-dev/bin/wafer-run \
-  --package-dir <verified-package-dir> \
+  --package-dir <package-root> \
   --no-card
 ```
 

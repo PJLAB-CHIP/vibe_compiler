@@ -67,7 +67,7 @@ int main(int argc, char **argv) {
   if (!parseCommandLine(argc, argv, options))
     return 1;
   if (!requireOption(options.inputProgramDirectory, "--input-program-dir") ||
-      !requireOption(options.outputPackageDirectory, "--output-package-dir") ||
+      !requireOption(options.outputDirectory, "--output-dir") ||
       !requireOption(options.numPartitions, "--num-partitions"))
     return 1;
 
@@ -202,12 +202,18 @@ int main(int argc, char **argv) {
       std::getenv("WAFER_TEST_FAIL_AFTER_TARGET_LAUNCH_SLOT");
   const char *packageFailureSlot =
       std::getenv("WAFER_TEST_FAIL_AFTER_PACKAGE_LAUNCH_SLOT");
-  const char *commitFailureSlot =
+  const char *commitVerificationFailure =
       std::getenv("WAFER_TEST_FAIL_COMMIT_VERIFICATION");
+  const char *packageBindingFailure =
+      std::getenv("WAFER_TEST_CORRUPT_PACKAGE_COMMIT_MEMBER");
+  const char *profileBindingFailure =
+      std::getenv("WAFER_TEST_CORRUPT_PROFILE_COMMIT_MEMBER");
   unsigned failureInjectionCount = (executableFailureSlot ? 1u : 0u) +
                                    (targetFailureSlot ? 1u : 0u) +
                                    (packageFailureSlot ? 1u : 0u) +
-                                   (commitFailureSlot ? 1u : 0u);
+                                   (commitVerificationFailure ? 1u : 0u) +
+                                   (packageBindingFailure ? 1u : 0u) +
+                                   (profileBindingFailure ? 1u : 0u);
   if (*optimizationConfig != wafer::OptimizationConfig::search() &&
       failureInjectionCount != 0) {
     llvm::errs()
@@ -219,6 +225,11 @@ int main(int argc, char **argv) {
       (executableFailureSlot || targetFailureSlot || packageFailureSlot)) {
     llvm::errs() << "wafer-compile: --profile cannot be combined with "
                     "test-only launch-slot failure injections\n";
+    return 1;
+  }
+  if (profileBindingFailure && !options.profile) {
+    llvm::errs() << "wafer-compile: test-only profile member corruption "
+                    "requires --profile\n";
     return 1;
   }
   if (failureInjectionCount > 1) {
@@ -234,19 +245,14 @@ int main(int argc, char **argv) {
           << "wafer-compile: invalid test-only executable launch slot\n";
       return 1;
     }
-    mlir::LogicalResult injectionStatus =
+    llvm::Expected<wafer::compiler::CompilationResult> injectionResult =
         wafer::compiler::testing::compileProgramWithExecutableLaunchSlotFailure(
-            std::move(*request), *options.outputPackageDirectory,
+            std::move(*request), *options.outputDirectory,
             toolFacts->spmdPartitionerHelper, *targetToolchain,
             parsedFailureSlot, llvm::errs());
-    if (mlir::failed(injectionStatus))
-      return 1;
-    llvm::outs() << "wafer-compile: wrote verified package with "
-                    "num-partitions="
-                 << numPartitions << " tiles="
-                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
-                 << ": " << *options.outputPackageDirectory << "\n";
-    return 0;
+    if (!injectionResult)
+      return reportCompilationFailure(injectionResult.takeError());
+    return reportSuccess(*injectionResult, numPartitions);
   }
   if (targetFailureSlot) {
     int64_t parsedFailureSlot = -1;
@@ -255,19 +261,14 @@ int main(int argc, char **argv) {
       llvm::errs() << "wafer-compile: invalid test-only target launch slot\n";
       return 1;
     }
-    mlir::LogicalResult injectionStatus =
+    llvm::Expected<wafer::compiler::CompilationResult> injectionResult =
         wafer::compiler::testing::compileProgramWithTargetLaunchSlotFailure(
-            std::move(*request), *options.outputPackageDirectory,
+            std::move(*request), *options.outputDirectory,
             toolFacts->spmdPartitionerHelper, *targetToolchain,
             parsedFailureSlot, llvm::errs());
-    if (mlir::failed(injectionStatus))
-      return 1;
-    llvm::outs() << "wafer-compile: wrote verified package with "
-                    "num-partitions="
-                 << numPartitions << " tiles="
-                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
-                 << ": " << *options.outputPackageDirectory << "\n";
-    return 0;
+    if (!injectionResult)
+      return reportCompilationFailure(injectionResult.takeError());
+    return reportSuccess(*injectionResult, numPartitions);
   }
   if (packageFailureSlot) {
     int64_t parsedFailureSlot = -1;
@@ -276,46 +277,49 @@ int main(int argc, char **argv) {
       llvm::errs() << "wafer-compile: invalid test-only package launch slot\n";
       return 1;
     }
-    mlir::LogicalResult injectionStatus =
+    llvm::Expected<wafer::compiler::CompilationResult> injectionResult =
         wafer::compiler::testing::compileProgramWithPackageLaunchSlotFailure(
-            std::move(*request), *options.outputPackageDirectory,
+            std::move(*request), *options.outputDirectory,
             toolFacts->spmdPartitionerHelper, *targetToolchain,
             parsedFailureSlot, llvm::errs());
-    if (mlir::failed(injectionStatus))
-      return 1;
-    llvm::outs() << "wafer-compile: wrote verified package with "
-                    "num-partitions="
-                 << numPartitions << " tiles="
-                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
-                 << ": " << *options.outputPackageDirectory << "\n";
-    return 0;
+    if (!injectionResult)
+      return reportCompilationFailure(injectionResult.takeError());
+    return reportSuccess(*injectionResult, numPartitions);
   }
-  if (commitFailureSlot) {
-    mlir::LogicalResult injectionStatus =
-        wafer::compiler::testing::compileProgramWithCommitVerificationFailure(
-            std::move(*request), *options.outputPackageDirectory,
+  if (packageBindingFailure) {
+    llvm::Expected<wafer::compiler::CompilationResult> injectionResult =
+        wafer::compiler::testing::compileProgramWithPackageBindingFailure(
+            std::move(*request), *options.outputDirectory,
             toolFacts->spmdPartitionerHelper, *targetToolchain,
             compilationOptions, llvm::errs());
-    if (mlir::failed(injectionStatus)) {
-      // Test-only rendering of the injected commit-stage failure, identical
-      // to the library facade's CompilationFailure classification.
-      llvm::errs() << "wafer-compile: compilation failed at the "
-                   << wafer::compiler::stringifyCompilationStage(
-                          wafer::compiler::CompilationStage::PackageCommit)
-                   << " stage\n";
-      return 1;
-    }
-    llvm::outs() << "wafer-compile: wrote verified package with "
-                    "num-partitions="
-                 << numPartitions << " tiles="
-                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
-                 << ": " << *options.outputPackageDirectory << "\n";
-    return 0;
+    if (!injectionResult)
+      return reportCompilationFailure(injectionResult.takeError());
+    return reportSuccess(*injectionResult, numPartitions);
+  }
+  if (profileBindingFailure) {
+    llvm::Expected<wafer::compiler::CompilationResult> injectionResult =
+        wafer::compiler::testing::compileProgramWithProfileBindingFailure(
+            std::move(*request), *options.outputDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            compilationOptions, llvm::errs());
+    if (!injectionResult)
+      return reportCompilationFailure(injectionResult.takeError());
+    return reportSuccess(*injectionResult, numPartitions);
+  }
+  if (commitVerificationFailure) {
+    llvm::Expected<wafer::compiler::CompilationResult> injectionResult =
+        wafer::compiler::testing::compileProgramWithCommitVerificationFailure(
+            std::move(*request), *options.outputDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            compilationOptions, llvm::errs());
+    if (!injectionResult)
+      return reportCompilationFailure(injectionResult.takeError());
+    return reportSuccess(*injectionResult, numPartitions);
   }
   if (options.targetModel || options.compilerIRDumpDirectory) {
     llvm::Expected<wafer::compiler::CompiledProgram> compiledProgram =
         wafer::compiler::compileProgramWithTargetLLVMModules(
-            std::move(*request), *options.outputPackageDirectory,
+            std::move(*request), *options.outputDirectory,
             toolFacts->spmdPartitionerHelper, *targetToolchain,
             compilationOptions, llvm::errs());
     if (!compiledProgram)
@@ -331,7 +335,7 @@ int main(int argc, char **argv) {
                     "num-partitions="
                  << numPartitions << " tiles="
                  << wafer::compiler::ExecutionConfig::kSingleCardTileCount
-                 << ": " << *options.outputPackageDirectory << "\n";
+                 << ": " << *options.outputDirectory << "\n";
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
     if (options.targetModel) {
       std::optional<wafer::model::TargetModelKernelBudget> targetModelBudget;
@@ -466,7 +470,7 @@ int main(int argc, char **argv) {
 
   llvm::Expected<wafer::compiler::CompilationResult> result =
       wafer::compiler::compileProgram(
-          std::move(*request), *options.outputPackageDirectory,
+          std::move(*request), *options.outputDirectory,
           toolFacts->spmdPartitionerHelper, *targetToolchain,
           compilationOptions, llvm::errs());
   if (!result)

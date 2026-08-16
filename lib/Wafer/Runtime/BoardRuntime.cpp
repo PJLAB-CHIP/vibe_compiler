@@ -190,68 +190,6 @@ llvm::Error verifyPlannedTileBindings(const BoardDeviceInfo &device,
   return llvm::Error::success();
 }
 
-/// Streams the verified program-data member and checks its whole-file digest
-/// against the manifest before returning the exact bytes.
-llvm::Expected<std::vector<uint8_t>>
-readVerifiedProgramData(llvm::StringRef packageRoot,
-                        const ProgramDataRecord &programData) {
-  llvm::SmallString<256> path(packageRoot);
-  llvm::sys::path::append(path, programData.relativePath);
-  if (llvm::sys::fs::get_file_type(path, /*Follow=*/false) !=
-      llvm::sys::fs::file_type::regular_file)
-    return boardError(BoardRuntimeStage::Validation, {},
-                      "package program data is no longer a regular file");
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
-      llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
-                                  /*RequiresNullTerminator=*/false);
-  if (!buffer)
-    return boardError(BoardRuntimeStage::Validation, {},
-                      "failed to open verified package program data: " +
-                          buffer.getError().message());
-  llvm::StringRef content = (*buffer)->getBuffer();
-  llvm::SHA256 hasher;
-  hasher.update(content);
-  std::string digest =
-      "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
-  if (digest != programData.digest)
-    return boardError(BoardRuntimeStage::Validation, {},
-                      "package program data changed after manifest "
-                      "verification");
-  return std::vector<uint8_t>(
-      reinterpret_cast<const uint8_t *>(content.data()),
-      reinterpret_cast<const uint8_t *>(content.data()) + content.size());
-}
-
-llvm::Expected<std::vector<uint8_t>>
-readVerifiedModule(llvm::StringRef packageRoot,
-                   const PackageModuleRecord &module,
-                   DiagnosticLocation location) {
-  llvm::SmallString<256> path(packageRoot);
-  llvm::sys::path::append(path, module.relativePath);
-  if (llvm::sys::fs::get_file_type(path, /*Follow=*/false) !=
-      llvm::sys::fs::file_type::regular_file)
-    return boardError(BoardRuntimeStage::ModuleLoad, location,
-                      "package module is no longer a regular file");
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
-      llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
-                                  /*RequiresNullTerminator=*/false);
-  if (!buffer)
-    return boardError(BoardRuntimeStage::ModuleLoad, location,
-                      "failed to reopen verified package module: " +
-                          buffer.getError().message());
-  llvm::StringRef bytes = (*buffer)->getBuffer();
-  llvm::SHA256 hasher;
-  hasher.update(bytes);
-  std::string digest =
-      "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
-  if (digest != module.digest)
-    return boardError(BoardRuntimeStage::ModuleLoad, location,
-                      "package module changed after manifest verification");
-  return std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(bytes.data()),
-                              reinterpret_cast<const uint8_t *>(bytes.data()) +
-                                  bytes.size());
-}
-
 struct VerifiedModuleSnapshot {
   const PackageModuleRecord *module = nullptr;
   DiagnosticLocation diagnosticLocation;
@@ -332,7 +270,7 @@ struct BoardLiveAllocation {
 };
 
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
-    const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
+    const ExecutablePackage &package,
     BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver,
     const BoardDeviceInfo *qualifiedDevice, uint32_t qualifiedTileCount,
     bool *qualifiedSessionUsable) {
@@ -433,26 +371,31 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   const RuntimeEnvironment &providerEnvironment =
       driver.getProviderEnvironment();
   llvm::Expected<RuntimeInvocationPlan> semanticPlan =
-      planRuntimeInvocation(package, invocationBindings, providerEnvironment);
+      planRuntimeInvocation(package.getVerifiedManifest(), invocationBindings,
+                            providerEnvironment);
   if (!semanticPlan)
     return wrapDriverError(BoardRuntimeStage::Validation, {},
                            semanticPlan.takeError());
 
   std::vector<VerifiedModuleSnapshot> moduleSnapshots;
   moduleSnapshots.reserve(manifest.modules.size());
-  for (const PackageModuleRecord &module : manifest.modules) {
+  if (package.getModuleBuffers().size() != manifest.modules.size())
+    return boardError(BoardRuntimeStage::Validation, {},
+                      "owned package module domain is incomplete");
+  for (auto [moduleIndex, module] : llvm::enumerate(manifest.modules)) {
     auto firstTile = llvm::find_if(semanticPlan->tiles, [&](const auto &tile) {
       return tile.module == module.id;
     });
     if (firstTile == semanticPlan->tiles.end())
       return boardError(BoardRuntimeStage::Validation, {},
                         "package contains an unreferenced module");
-    llvm::Expected<std::vector<uint8_t>> bytes =
-        readVerifiedModule(packageRoot, module, locationFor(*firstTile));
-    if (!bytes)
-      return bytes.takeError();
+    llvm::StringRef owned =
+        package.getModuleBuffers()[moduleIndex]->getBuffer();
+    std::vector<uint8_t> bytes(
+        reinterpret_cast<const uint8_t *>(owned.data()),
+        reinterpret_cast<const uint8_t *>(owned.data()) + owned.size());
     moduleSnapshots.push_back(
-        {&module, locationFor(*firstTile), std::move(*bytes)});
+        {&module, locationFor(*firstTile), std::move(bytes)});
   }
   llvm::sort(moduleSnapshots, [](const auto &lhs, const auto &rhs) {
     return lhs.diagnosticLocation.launchSlot.getValue() <
@@ -489,7 +432,8 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   RuntimeEnvironment capacityEnvironment = providerEnvironment;
   capacityEnvironment.maxResourceBytes = device.freeMemoryBytes;
   llvm::Expected<RuntimeInvocationPlan> capacityPlan =
-      planRuntimeInvocation(package, invocationBindings, capacityEnvironment);
+      planRuntimeInvocation(package.getVerifiedManifest(), invocationBindings,
+                            capacityEnvironment);
   if (!capacityPlan)
     return wrapDriverError(BoardRuntimeStage::Validation, {},
                            capacityPlan.takeError());
@@ -599,11 +543,10 @@ llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocationImpl(
   std::optional<BoardDeviceMemory> programDataMemory;
   std::vector<uint8_t> programDataBytes;
   if (capacityPlan->programDataRequired) {
-    llvm::Expected<std::vector<uint8_t>> bytes =
-        readVerifiedProgramData(packageRoot, manifest.programData);
-    if (!bytes)
-      return bytes.takeError();
-    programDataBytes = std::move(*bytes);
+    llvm::StringRef owned = package.getProgramDataBuffer().getBuffer();
+    programDataBytes.assign(
+        reinterpret_cast<const uint8_t *>(owned.data()),
+        reinterpret_cast<const uint8_t *>(owned.data()) + owned.size());
     llvm::Expected<BoardDeviceMemory> memory =
         driver.allocate(capacityPlan->programDataBytes,
                         capacityPlan->programDataAlignment);
@@ -1000,8 +943,7 @@ QualifiedBoardRuntimeSession &QualifiedBoardRuntimeSession::operator=(
 }
 
 llvm::Expected<BoardRuntimeInvocationResult>
-executeBoardInvocationInSession(const VerifiedPackageManifest &package,
-                                llvm::StringRef packageRoot,
+executeBoardInvocationInSession(const ExecutablePackage &package,
                                 BoardRuntimeInvocationRequest request,
                                 QualifiedBoardRuntimeSession &session) {
   if (!session.driver || !session.usable)
@@ -1026,14 +968,13 @@ executeBoardInvocationInSession(const VerifiedPackageManifest &package,
                       BoardRuntimeContextState::Poisoned);
   }
   return executeBoardInvocationImpl(
-      package, packageRoot, std::move(request), *session.driver,
+      package, std::move(request), *session.driver,
       &session.device, session.qualifiedTileCount, &session.usable);
 }
 
 llvm::Expected<
     std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
-executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
-                                      llvm::StringRef packageRoot,
+executeBoardInvocationAndStartSession(const ExecutablePackage &package,
                                       BoardRuntimeInvocationRequest request,
                                       BoardRuntimeDriver &driver) {
   const uint32_t deviceId = request.deviceId;
@@ -1041,7 +982,7 @@ executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
       static_cast<uint32_t>(package.getManifest().tileCount);
   BoardDeviceQualification qualification = request.qualification;
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocationImpl(package, packageRoot, std::move(request),
+      executeBoardInvocationImpl(package, std::move(request),
                                  driver, /*qualifiedDevice=*/nullptr,
                                  /*qualifiedTileCount=*/0,
                                  /*qualifiedSessionUsable=*/nullptr);
@@ -1053,9 +994,9 @@ executeBoardInvocationAndStartSession(const VerifiedPackageManifest &package,
 }
 
 llvm::Expected<BoardRuntimeInvocationResult> executeBoardInvocation(
-    const VerifiedPackageManifest &package, llvm::StringRef packageRoot,
-    BoardRuntimeInvocationRequest request, BoardRuntimeDriver &driver) {
-  return executeBoardInvocationImpl(package, packageRoot, std::move(request),
+    const ExecutablePackage &package, BoardRuntimeInvocationRequest request,
+    BoardRuntimeDriver &driver) {
+  return executeBoardInvocationImpl(package, std::move(request),
                                     driver, /*qualifiedDevice=*/nullptr,
                                     /*qualifiedTileCount=*/0,
                                     /*qualifiedSessionUsable=*/nullptr);

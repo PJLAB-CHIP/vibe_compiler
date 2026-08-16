@@ -217,7 +217,7 @@ public:
 
 private:
   friend llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
-      CompilationRequest request, llvm::StringRef outputPackageDirectory,
+      CompilationRequest request, llvm::StringRef outputDirectory,
       llvm::StringRef xlaSpmdPartitionerHelper,
       const TargetToolchain &targetToolchain, CompilationOptions options,
       llvm::raw_ostream &diagnostics);
@@ -240,7 +240,7 @@ private:
 /// internal qualification/debug entry; no second lowering is performed and
 /// the members never enter the ordinary public result.
 llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
-    CompilationRequest request, llvm::StringRef outputPackageDirectory,
+    CompilationRequest request, llvm::StringRef outputDirectory,
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics);

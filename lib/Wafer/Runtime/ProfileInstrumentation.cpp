@@ -1051,20 +1051,9 @@ bool isLowercaseSHA256(llvm::StringRef digest) {
   });
 }
 
-llvm::Expected<std::string> digestManifest(llvm::StringRef packageRoot) {
-  llvm::SmallString<256> manifest(packageRoot);
-  llvm::sys::path::append(manifest, kPackageManifestFileName);
-  if (llvm::sys::fs::get_file_type(manifest, /*Follow=*/false) !=
-      llvm::sys::fs::file_type::regular_file)
-    return invalid("profile primary manifest is not a regular file");
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
-      llvm::MemoryBuffer::getFile(manifest, /*IsText=*/false,
-                                  /*RequiresNullTerminator=*/false);
-  if (!buffer)
-    return llvm::createStringError(buffer.getError(),
-                                   "failed to read profile primary manifest");
+std::string digestOwnedBuffer(const llvm::MemoryBuffer &buffer) {
   llvm::SHA256 hasher;
-  hasher.update((*buffer)->getBuffer());
+  hasher.update(buffer.getBuffer());
   return "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
 }
 
@@ -1279,18 +1268,15 @@ llvm::Expected<ProfiledPackage> loadProfiledPackage(
     ProfileStaticCostModel staticCostModel, const PackageParseLimits &limits) {
   if (!isLowercaseSHA256(manifestDigest))
     return invalid("profile primary manifest_sha256 is malformed");
-  llvm::Expected<std::string> digest = digestManifest(primaryPackageRoot);
-  if (!digest)
-    return digest.takeError();
-  if (*digest != manifestDigest)
-    return invalid("profile primary manifest digest mismatch");
-  llvm::Expected<VerifiedPackageManifest> package =
-      loadVerifiedPackageManifest(primaryPackageRoot, limits);
+  llvm::Expected<ExecutablePackage> package =
+      loadExecutablePackage(primaryPackageRoot, limits);
   if (!package)
     return package.takeError();
+  if (digestOwnedBuffer(package->getManifestBuffer()) != manifestDigest)
+    return invalid("profile primary manifest digest mismatch");
 
   return ProfiledPackage(manifestDigest.str(), std::move(staticCostModel),
-                         primaryPackageRoot.str(), std::move(*package));
+                         std::move(*package));
 }
 
 llvm::Expected<ProfileCapturePackage> loadCapturePackage(
@@ -1306,23 +1292,20 @@ llvm::Expected<ProfileCapturePackage> loadCapturePackage(
       instrumentationRoot, capture.packageReference);
   if (!packageDirectory)
     return packageDirectory.takeError();
-  llvm::Expected<std::string> digest = digestManifest(*packageDirectory);
-  if (!digest)
-    return digest.takeError();
-  if (*digest != capture.manifestDigest)
-    return invalid("profile capture manifest digest mismatch");
-  llvm::Expected<VerifiedPackageManifest> package =
-      loadVerifiedPackageManifest(*packageDirectory, limits);
+  llvm::Expected<ExecutablePackage> package =
+      loadExecutablePackage(*packageDirectory, limits);
   if (!package)
     return package.takeError();
+  if (digestOwnedBuffer(package->getManifestBuffer()) !=
+      capture.manifestDigest)
+    return invalid("profile capture manifest digest mismatch");
   if (llvm::Error error = verifyCapturePackageContract(
           profiledPackage.getPackage().getManifest(), package->getManifest(),
           capture.recordBytes))
     return std::move(error);
   return ProfileCapturePackage(capture.capture, capture.packageReference,
                                capture.manifestDigest, capture.recordABI,
-                               capture.recordBytes, *packageDirectory,
-                               std::move(*package));
+                               capture.recordBytes, std::move(*package));
 }
 
 } // namespace
@@ -1330,11 +1313,10 @@ llvm::Expected<ProfileCapturePackage> loadCapturePackage(
 ProfileCapturePackage::ProfileCapturePackage(
     ProfileCaptureKind capture, std::string packageReference,
     std::string manifestDigest, std::string recordABI, uint64_t recordBytes,
-    std::string packageDirectory, VerifiedPackageManifest package)
+    ExecutablePackage package)
     : capture(capture), packageReference(std::move(packageReference)),
       manifestDigest(std::move(manifestDigest)),
       recordABI(std::move(recordABI)), recordBytes(recordBytes),
-      packageDirectory(std::move(packageDirectory)),
       package(std::move(package)) {}
 
 const ProfileCapturePackage *
@@ -1354,12 +1336,9 @@ uint64_t VerifiedProfileInstrumentation::getSiteCount() const {
 
 ProfiledPackage::ProfiledPackage(std::string manifestDigest,
                                  ProfileStaticCostModel staticCostModel,
-                                 std::string packageDirectory,
-                                 VerifiedPackageManifest package)
+                                 ExecutablePackage package)
     : manifestDigest(std::move(manifestDigest)),
-      staticCostModel(std::move(staticCostModel)),
-      packageDirectory(std::move(packageDirectory)),
-      package(std::move(package)) {}
+      staticCostModel(std::move(staticCostModel)), package(std::move(package)) {}
 
 llvm::Expected<VerifiedProfileInstrumentation>
 loadVerifiedProfileInstrumentation(llvm::StringRef instrumentationRoot,
@@ -1399,12 +1378,6 @@ loadVerifiedProfileInstrumentation(llvm::StringRef instrumentationRoot,
       parseActivation(*activationJSON->root.getAsObject(), limits);
   if (!activation)
     return activation.takeError();
-
-  llvm::Expected<std::string> primaryDigest = digestManifest(canonicalPrimary);
-  if (!primaryDigest)
-    return primaryDigest.takeError();
-  if (*primaryDigest != activation->manifestDigest)
-    return invalid("profile activation primary manifest digest mismatch");
 
   llvm::Expected<LoadedJSONDocument> planJSON =
       loadJSONDocument(planPath, "profile plan", limits);

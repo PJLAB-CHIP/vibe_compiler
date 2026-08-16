@@ -86,7 +86,7 @@ Pipeline position:
   selected materialization只把已通过全部gates的complete CardModule candidate及typed C++ resources/entry bindings一次写回。
   target/package/runtime不得从raw instruction IR重新恢复resource语义。
 - User-level driver / named pipeline:
-  `wafer-compile --input-program-dir ... --output-package-dir ... --num-partitions=1`
+  `wafer-compile --input-program-dir ... --output-dir ... --num-partitions=1`
   的physical-dataflow selection loop调用本stage；frontend只产出verified card-partition structured tensor program，不执行DDR planning；
   `wafer-opt`、局部`wafer-plan-ddr-memory`和从tile-region/instruction/SPM跑到DDR offset assignment的
   named pipeline只处理显式IR，用于IR-local replay/test，不是用户stop-stage。completion proof必须覆盖
