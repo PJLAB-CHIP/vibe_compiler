@@ -3,9 +3,10 @@
 设计合同由`tasks/14-target-code-generation.md`、`tasks/15-launch-runtime-package.md`和
 `tasks/16-verification-contract.md`拥有，状态只看`tasks/progress.md`。本计划只拆施工顺序，不建立第二套总体架构。
 
-状态：Q58已闭合编译事务中的parameter/constant所有权和target data handoff；Q56已把current产品收口到
-`CardExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支（实施证据见
-`tasks/progress.md` Q56行）；Q57保持later，只在主compiler和新package都达到`board-ready`后启动。
+状态：Q58已闭合编译事务中的parameter/constant所有权和target data handoff；Q56首轮实现已落下
+`CardExecutable -> ExecutablePackage -> txLaunchKernel one-shot runtime`并退役model launch分支，但代码review发现
+target identity、physical encoding、runtime allocation、strict verification和library boundary尚未闭合，当前重新进入修复；
+Q57保持later，只在主compiler和新package都达到`board-ready`后启动。
 
 ## 1. 拆分依据
 
@@ -155,6 +156,38 @@ non-empty program data选择一块连续静态数据内存，因为所有package
 invocation memory另成一块，是因为它承载每次更新/回读并可在后续submit间复用；两块对应不同lifetime/access，而不是按tensor或Tile拆分。
 若真实provider证明单次allocation/copy存在上限，必须先形成typed capability和新的compiler/package block plan；runtime不得静默
 逐tensor回退。
+
+### 3.4 当前review闭环项
+
+Q56重新达到`board-ready`前必须一次性修复以下问题，并补齐能够直接触发原缺口的回归测试：
+
+1. **TargetTensor identity在确定性排序后失配。** 当前entry argument在TargetTensor首次发现时保存临时ID，placement按完整descriptor
+   排序后又重写record ID，却没有重写已经保存的entry引用。必须先形成canonical TargetTensor顺序再签发稳定ID，或在排序后根据
+   typed consumer关系统一回填；不得依靠发现顺序、pointer或未消费的旁路consumer表。回归必须覆盖同一ProgramTensor被两个不同
+   target descriptor消费且发现顺序与canonical顺序相反，并证明每个Tile entry解析到对应descriptor及file range。
+2. **Selected target representation没有真正materialize。** 当前writer只接受source dtype/shape/bytes完全相同且layout为`Tensor`的
+   identity情况，其它已由final `TileEntryArgument`选择、既有physical tensor codec能够表达的layout、padding或dtype转换会失败；
+   identity路径还先分配完整tensor大小的host vector。writer必须消费既有codec并按bounded window产生target bytes，每个不同
+   TargetTensor只转换一次，additional host heap不随最大tensor线性增长。回归必须覆盖同一source形成不同selected representation、
+   physical padding和大payload RSS/read-window边界。
+3. **Tile-row pointer table绕过单一invocation allocation。** planner已经把每Tile pointer row排入invocation child range，board executor
+   却再次逐Tile申请独立device allocation并把这些额外地址交给launch，导致预排range闲置、provider call数量错误且资格阶段低估
+   实际allocation demand。executor必须把row H2D到`invocation base + planned offset`，TileRow路径只拥有一块invocation memory和
+   optional program-data memory；fake provider测试要断言allocation次数、地址、容量失败和reverse cleanup都与同一个plan一致。
+4. **Program-data strict verification没有证明canonical layout。** 当前verifier只逐项检查TargetTensor对齐/边界，并比较whole-file
+   size/digest，仍会接受overlap、未解释gap、trailing bytes、非canonical offset/base alignment和非零padding。readback必须按同一
+   stable identity/tie-break重建完整non-overlap placement，证明ranges all-and-only覆盖payload、所有padding为零、total bytes/base
+   alignment精确，且entry引用与canonical TargetTensor ID一致；正负测试分别覆盖这些拒绝路径。
+5. **Package root没有all-and-only closure。** 当前文件遍历只关闭`modules/`，package root或`data/`中的额外regular file、directory、
+   symlink及其它未声明member仍可能被接受。strict loader必须从package root验证恰好存在`manifest.json`、all-and-only modules和
+   `data/program-data.bin`所需目录拓扑，拒绝任何额外或非regular payload；source NPY、IR和exporter临时文件继续不得进入package。
+6. **Package support仍反向绑定BoardRuntime。** manifest typed model、canonical spelling、parser/serializer、semantic verifier和readback
+   必须按`tasks/18-source-organization.md`拆到中立package support library；compiler writer和Runtime loader都依赖该owner，Compiler
+   不得为了写package链接包含`BoardRuntime`执行实现的整个Runtime library。CMake依赖检查和public link smoke必须覆盖该边界。
+
+现有Q56定向host/no-card测试通过只说明已有用例自洽：其中TileRow测试把额外16次allocation写成了预期，多representation、canonical
+range closure和whole-root negative cases也缺失，因此不能继续作为`board-ready`证明。修复后必须重新执行受影响unit、source-to-package、
+strict readback/no-card、fake provider、public link/source organization检查并生成新的完整package；真实板测仍按本文件原门禁串行执行。
 
 ## 4. Q57：设备常驻执行
 
