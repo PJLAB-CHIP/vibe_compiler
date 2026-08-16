@@ -9,10 +9,13 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/MemoryBuffer.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace llvm {
 class raw_ostream;
@@ -21,10 +24,11 @@ class raw_ostream;
 namespace wafer::compiler {
 
 /// Move-only owner of one committed, readback-verified package: the canonical
-/// installed root, the execution configuration, and the verified manifest
-/// loaded back from the installed root. The manifest readback closes the
-/// whole package tree, so module and program-data members are bound by the
-/// same identity. It is the primary product of the compiler library entry.
+/// root, the execution configuration, the verified manifest and the opened
+/// all-and-only package members (manifest, modules and program data). The
+/// members are pinned by open file descriptors opened before the single
+/// publication rename, so later deletion or replacement of the paths cannot
+/// invalidate the result content; reopening by root is not ownership.
 class ExecutablePackage {
 public:
   ExecutablePackage(ExecutablePackage &&) = default;
@@ -37,27 +41,54 @@ public:
   const runtime::VerifiedPackageManifest &getManifest() const {
     return manifest;
   }
+  /// Opened canonical manifest member, the same bytes the manifest verifier
+  /// consumed.
+  const llvm::MemoryBuffer &getManifestBuffer() const {
+    return *manifestBuffer;
+  }
+  /// Opened module members in the verified manifest module order.
+  const std::vector<std::unique_ptr<llvm::MemoryBuffer>> &
+  getModuleBuffers() const {
+    return moduleBuffers;
+  }
+  /// Opened target-ready program data member (canonical empty file when the
+  /// package carries no program data).
+  const llvm::MemoryBuffer &getProgramDataBuffer() const {
+    return *programDataBuffer;
+  }
 
 private:
   friend struct ExecutablePackageBuilder;
 
-  ExecutablePackage(llvm::StringRef rootDirectory,
-                    ExecutionConfig executionConfig,
-                    runtime::VerifiedPackageManifest manifest)
+  ExecutablePackage(
+      llvm::StringRef rootDirectory, ExecutionConfig executionConfig,
+      runtime::VerifiedPackageManifest manifest,
+      std::unique_ptr<llvm::MemoryBuffer> manifestBuffer,
+      std::vector<std::unique_ptr<llvm::MemoryBuffer>> moduleBuffers,
+      std::unique_ptr<llvm::MemoryBuffer> programDataBuffer)
       : rootDirectory(rootDirectory.str()), executionConfig(executionConfig),
-        manifest(std::move(manifest)) {}
+        manifest(std::move(manifest)),
+        manifestBuffer(std::move(manifestBuffer)),
+        moduleBuffers(std::move(moduleBuffers)),
+        programDataBuffer(std::move(programDataBuffer)) {}
 
   std::string rootDirectory;
   ExecutionConfig executionConfig;
   runtime::VerifiedPackageManifest manifest;
+  // Declaration order keeps the manifest alive as long as any member; the
+  // buffers are independent open handles and are destroyed in reverse order.
+  std::unique_ptr<llvm::MemoryBuffer> manifestBuffer;
+  std::vector<std::unique_ptr<llvm::MemoryBuffer>> moduleBuffers;
+  std::unique_ptr<llvm::MemoryBuffer> programDataBuffer;
 };
 
 /// Compiler-side identity of one profile instrumentation committed together
 /// with the ordinary package. The digests are the values the instrumentation
-/// writer computed from the staged files and re-verified against the
-/// installed activation.json after the commit rename. The runtime strict
-/// loader remains the single semantic reader at launch; this type only binds
-/// the co-commit identity and never duplicates plan/site-map parsing.
+/// writer computed from the staged files and re-verified against the staged
+/// activation.json before the single publication rename; the published
+/// inodes are the verified ones. The runtime strict loader remains the
+/// single semantic reader at launch; this type only binds the co-commit
+/// identity and never duplicates plan/site-map parsing.
 class ProfileInstrumentationProduct {
 public:
   ProfileInstrumentationProduct(ProfileInstrumentationProduct &&) = default;
@@ -128,15 +159,18 @@ private:
   std::optional<ProfileInstrumentationProduct> profileInstrumentation;
 };
 
-/// Compiles the source program, atomically commits the requested package
-/// directory and returns the readback-verified committed result. Success means
-/// the target package root is visible and its manifest identity was read back
-/// from the installed root; failure means no target package from this
-/// invocation is visible. When profiling is requested, the ordinary package
-/// remains the production package and a verified sibling `<output>.profile`
-/// instrumentation is committed together with it; both are read back before
-/// success is reported. Detailed diagnostics are rendered on the caller-owned
-/// stream; the returned error classifies the failing transaction stage.
+/// Compiles the source program and atomically publishes the requested output
+/// directory. Success means the target package root is visible and every
+/// fallible verification step closed before the single publication rename;
+/// failure means no target output from this invocation is visible. The
+/// ordinary case publishes the package as the output directory itself. When
+/// profiling is requested, the output directory is the common delivery root
+/// published by one rename: it contains exactly `package/` (the ordinary
+/// package root) and `package.profile/` (the instrumentation root), so the
+/// runtime sibling rule `<package-root>.profile` is preserved and both
+/// products become visible atomically. Detailed diagnostics are rendered on
+/// the caller-owned stream; the returned error classifies the failing
+/// transaction stage.
 llvm::Expected<CompilationResult>
 compileProgram(CompilationRequest request,
                llvm::StringRef outputPackageDirectory,

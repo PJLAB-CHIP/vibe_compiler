@@ -136,9 +136,10 @@ build/wafer-dev/bin/wafer-compile \
 
 `search` 和 `none` 都经过同一 CardModule、Tile selection 和 exact verification pipeline；`search`启用
 compiler-owned候选搜索，`none`只生成保守baseline。编译成功当且仅当 package 已原子提交并 readback
-验证：CLI 退出 0 时目标 package 必然可见，退出非 0 时本次目标 package 不可见。target-model 与
-compiler IR dump 只属于 internal/test 入口（`wafer-compile-test`），不进入 production compile status。
-package 可先做无板卡 validation：
+验证：CLI 退出 0 时目标 package 必然可见，退出非 0 时本次目标 package 不可见。`--profile` 时输出目录是
+共同 delivery root，一次 rename 发布 `<output>/package` 与 `<output>/package.profile`，runtime 的
+`<package-root>.profile` sibling 规则不变。target-model 与 compiler IR dump 只属于 internal/test 入口
+（`wafer-compile-test`），不进入 production compile status。package 可先做无板卡 validation：
 
 ```bash
 build/wafer-dev/bin/wafer-run \

@@ -13,73 +13,66 @@
 
 namespace {
 
-int renameCallCount = 0;
-
-bool failSecondRename(llvm::StringRef source, llvm::StringRef destination,
-                      llvm::raw_ostream &diagnostics) {
-  ++renameCallCount;
-  if (renameCallCount == 2)
-    return true;
-  return wafer::compiler::detail::renameDirectoryNoReplace(source, destination,
-                                                           diagnostics);
-}
-
-TEST(CompilationOutputTest, RestoresPackageWhenProfileDirectoryRenameFails) {
+TEST(CompilationOutputTest,
+     SinglePublicationRenamePublishesAllOrNothing) {
   llvm::SmallString<256> prefix;
   llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/true, prefix);
-  llvm::sys::path::append(prefix, "wafer-profile-directory-rename");
+  llvm::sys::path::append(prefix, "wafer-single-publication-rename");
   llvm::SmallString<256> root;
   ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(prefix, root));
   auto cleanup = llvm::make_scope_exit(
       [&] { (void)llvm::sys::fs::remove_directories(root); });
 
-  llvm::SmallString<256> stagedPackage(root);
-  llvm::sys::path::append(stagedPackage, "staged-package");
-  llvm::SmallString<256> stagedInstrumentation(root);
-  llvm::sys::path::append(stagedInstrumentation, "staged-instrumentation");
-  ASSERT_FALSE(llvm::sys::fs::create_directory(stagedPackage));
-  ASSERT_FALSE(llvm::sys::fs::create_directory(stagedInstrumentation));
+  // The common delivery root carries both products; one no-replace rename
+  // publishes or publishes nothing.
+  llvm::SmallString<256> delivery(root);
+  llvm::sys::path::append(delivery, "delivery");
+  llvm::SmallString<256> deliveryPackage(delivery);
+  llvm::sys::path::append(deliveryPackage, "package");
+  llvm::SmallString<256> deliveryInstrumentation(delivery);
+  llvm::sys::path::append(deliveryInstrumentation, "package.profile");
+  ASSERT_FALSE(llvm::sys::fs::create_directories(deliveryPackage));
+  ASSERT_FALSE(llvm::sys::fs::create_directories(deliveryInstrumentation));
 
-  llvm::SmallString<256> packageMember(stagedPackage);
-  llvm::sys::path::append(packageMember, "manifest.json");
-  std::error_code error;
-  llvm::raw_fd_ostream packageOutput(packageMember, error,
-                                     llvm::sys::fs::OF_Text);
-  ASSERT_FALSE(error);
-  packageOutput << "{}\n";
-  packageOutput.close();
-  ASSERT_FALSE(packageOutput.has_error());
-
-  llvm::SmallString<256> instrumentationMember(stagedInstrumentation);
-  llvm::sys::path::append(instrumentationMember, "activation.json");
-  llvm::raw_fd_ostream instrumentationOutput(instrumentationMember, error,
-                                             llvm::sys::fs::OF_Text);
-  ASSERT_FALSE(error);
-  instrumentationOutput << "{}\n";
-  instrumentationOutput.close();
-  ASSERT_FALSE(instrumentationOutput.has_error());
-
-  llvm::SmallString<256> outputPackage(root);
-  llvm::sys::path::append(outputPackage, "output");
-  llvm::SmallString<256> outputInstrumentation(root);
-  llvm::sys::path::append(outputInstrumentation, "output.profile");
-
-  renameCallCount = 0;
+  llvm::SmallString<256> output(root);
+  llvm::sys::path::append(output, "output");
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
-  EXPECT_TRUE(
-      mlir::failed(wafer::compiler::detail::renamePackageAndProfileNoReplace(
-          stagedPackage, outputPackage, stagedInstrumentation,
-          outputInstrumentation, diagnostics, failSecondRename)));
-  diagnostics.flush();
 
-  EXPECT_EQ(renameCallCount, 2);
-  EXPECT_TRUE(wafer::compiler::detail::isDirectory(stagedPackage));
-  EXPECT_TRUE(wafer::compiler::detail::isDirectory(stagedInstrumentation));
-  EXPECT_FALSE(wafer::compiler::detail::pathEntryExists(outputPackage));
-  EXPECT_FALSE(wafer::compiler::detail::pathEntryExists(outputInstrumentation));
-  EXPECT_NE(diagnosticText.find("package was restored to staging"),
-            std::string::npos);
+  // A competing writer occupies the final name: the rename must fail and
+  // leave both products staged and the competitor untouched.
+  ASSERT_FALSE(llvm::sys::fs::create_directories(output));
+  {
+    llvm::SmallString<256> competitorMember(output);
+    llvm::sys::path::append(competitorMember, "sentinel");
+    std::error_code error;
+    llvm::raw_fd_ostream competitor(competitorMember, error,
+                                    llvm::sys::fs::OF_Text);
+    ASSERT_FALSE(error);
+    competitor << "competitor\n";
+    competitor.close();
+    ASSERT_FALSE(competitor.has_error());
+  }
+  EXPECT_TRUE(wafer::compiler::detail::renameDirectoryNoReplace(
+      delivery, output, diagnostics));
+  diagnostics.flush();
+  EXPECT_NE(diagnosticText.find("appeared before rename"), std::string::npos);
+  EXPECT_TRUE(wafer::compiler::detail::isDirectory(deliveryPackage));
+  EXPECT_TRUE(wafer::compiler::detail::isDirectory(deliveryInstrumentation));
+  ASSERT_FALSE(llvm::sys::fs::remove_directories(output));
+
+  // Without a competing writer the single rename publishes the whole
+  // delivery root and the staged name disappears.
+  EXPECT_FALSE(wafer::compiler::detail::renameDirectoryNoReplace(
+      delivery, output, diagnostics));
+  EXPECT_TRUE(wafer::compiler::detail::isDirectory(output));
+  EXPECT_TRUE(wafer::compiler::detail::isDirectory(
+      [&] {
+        llvm::SmallString<256> publishedPackage(output);
+        llvm::sys::path::append(publishedPackage, "package");
+        return publishedPackage;
+      }()));
+  EXPECT_FALSE(wafer::compiler::detail::pathEntryExists(delivery));
 }
 
 } // namespace

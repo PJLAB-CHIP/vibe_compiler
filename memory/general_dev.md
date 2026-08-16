@@ -298,7 +298,7 @@ source program
 - `WaferPackageSupport`拥有profile instrumentation共享model/filename常量；Compiler/Package不仅不能链接`WaferRuntime`，源码和public
   header也不能include`Wafer/Runtime/*`，该双边界由source-organization检查。
 
-## Q59外部工具facts与安装（stable）
+## Q59外部工具facts、commit合同与安装（stable）
 
 - `wafer-compile`不烘焙任何source/build绝对路径：SPMD helper、device linker script与CRT/ABI资源按executable-relative
   install位置发现（build tree由`wafer-compile-resources`目标同步生成`bin/../share/wafer`与`bin/../libexec/wafer`，
@@ -310,6 +310,16 @@ source program
   feature-off配置（importer/SPMD deps关）不安装wafer-compile。
 - SPMD helper进程接口保持`--input-program-dir/--output-program-dir`（helper输出本来就是program目录），
   不要和wafer-compile CLI的`--output-package-dir`混改。
+
+## Q59单一发布点commit合同（stable）
+
+- 全部可失败验证（fresh manifest load、member open/bind、profile activation digest binding）在staged root上、唯一一次
+  no-replace rename之前闭合；rename之后零可失败步骤，失败出口必然无本轮目标。不要在发布后再加任何readback。
+- `ExecutablePackage`以`openFileForRead`+`MemoryBuffer::getOpenFile`在rename前打开manifest、modules（manifest顺序）与
+  program-data，module digest与data size对照verified manifest；fds pin住inode，之后删除/替换路径不影响result内容。
+- `--profile`输出是共同delivery root：一次rename发布`<output>/package`+`<output>/package.profile`；runtime sibling规则
+  `<primaryPackageRoot>.profile`不变（wafer-run `--package-dir <output>/package`即可发现）；普通模式`<output>`直接是package root。
+  board profile测试取`<output>/package`为package根。两次顺序rename+回滚没有共同原子性，禁止恢复。
 
 ## Q56构建与验证命令（stable）
 

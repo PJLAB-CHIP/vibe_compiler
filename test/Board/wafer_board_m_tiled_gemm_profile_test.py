@@ -86,7 +86,6 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
         "source-program",
         "ordinary-package",
         "package",
-        "package.profile",
         "raw",
     }
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -350,6 +349,9 @@ def main() -> int:
     package = args.work_dir / "package"
     compile_package(args.wafer_compile, source, ordinary, profile=False)
     compile_package(args.wafer_compile, source, package, profile=True)
+    # The profiled output directory is the common delivery root; the
+    # package root inside it keeps the <root>.profile sibling rule.
+    package = package / "package"
     profile_support.require_byte_identical_packages(ordinary, package)
     profile_support.require_profile_instrumentation_permissions(package)
     bindings, output_id = validate_manifest(package)

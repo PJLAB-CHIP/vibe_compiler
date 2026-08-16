@@ -1,11 +1,22 @@
 //===- CompilationTest.cpp - Typed compiler request tests ----------------===//
 
+#include "Wafer/Compiler/PackageInternal.h"
+
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Compiler/Package.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
+#include "Wafer/Package/PackageManifest.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Target/RuntimeLaunchContract.h"
+#include "Wafer/Target/TargetIdentity.h"
 
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/SHA256.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
 #include <cstdint>
@@ -214,6 +225,171 @@ TEST(CompilationTest, DetailedTimingAggregatesInvocationLocalSpans) {
       std::string::npos);
   EXPECT_NE(output.find("compile-timing-summary-end transaction_wall_ms="),
             std::string::npos);
+}
+
+TEST(CompilationTest, InternalEntryRejectsProfileOptionsBeforeTransaction) {
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
+  ASSERT_TRUE(static_cast<bool>(config));
+  auto request = wafer::compiler::CompilationRequest::create(
+      "/tmp/never-touched.program", std::move(*config));
+  ASSERT_TRUE(static_cast<bool>(request));
+  auto toolchain = wafer::compiler::TargetToolchain::create(
+      "python3", "wafer_device_link.py", "clang++",
+      "/tmp/never-touched-tx8-deps", "/tmp/never-touched-include",
+      "/tmp/never-touched-crt.c", "/tmp/never-touched-crt-include");
+  ASSERT_TRUE(static_cast<bool>(toolchain))
+      << llvm::toString(toolchain.takeError());
+  auto profileOptions = wafer::compiler::CompilationOptions::profile(
+      request->getExecutionConfig());
+  ASSERT_TRUE(static_cast<bool>(profileOptions));
+  llvm::Expected<wafer::compiler::CompiledProgram> rejected =
+      wafer::compiler::compileProgramWithTargetLLVMModules(
+          std::move(*request), "/tmp/never-touched-output", "helper",
+          *toolchain, *profileOptions, llvm::errs());
+  ASSERT_FALSE(static_cast<bool>(rejected));
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("profile"),
+            std::string::npos);
+}
+
+TEST(CompilationTest, CompilationFailureClassifiesStageAndRendersLog) {
+  for (wafer::compiler::CompilationStage stage : {
+           wafer::compiler::CompilationStage::SourceVerification,
+           wafer::compiler::CompilationStage::SpmdPartitioning,
+           wafer::compiler::CompilationStage::TensorProgramPreparation,
+           wafer::compiler::CompilationStage::ExecutableCompilation,
+           wafer::compiler::CompilationStage::TargetCodeGeneration,
+           wafer::compiler::CompilationStage::PackageAssembly,
+           wafer::compiler::CompilationStage::PackageCommit,
+       }) {
+    wafer::compiler::CompilationFailure failure(stage);
+    EXPECT_EQ(failure.getStage(), stage);
+    std::string rendered;
+    llvm::raw_string_ostream stream(rendered);
+    failure.log(stream);
+    EXPECT_EQ(rendered,
+              std::string("compilation failed at the ") +
+                  wafer::compiler::stringifyCompilationStage(stage).str() +
+                  " stage");
+    EXPECT_EQ(failure.convertToErrorCode(),
+              llvm::errc::operation_not_permitted);
+  }
+}
+
+TEST(CompilationTest, ExecutablePackageOwnsOpenedMembersAfterPathRemoval) {
+  llvm::SmallString<256> temporaryDirectory;
+  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
+      "wafer-package-members", temporaryDirectory));
+  auto cleanup = llvm::make_scope_exit(
+      [&]() { (void)llvm::sys::fs::remove_directories(temporaryDirectory); });
+
+  // Write the module and canonical empty program-data members.
+  llvm::SmallString<256> modulesDirectory(temporaryDirectory);
+  llvm::sys::path::append(modulesDirectory, "modules");
+  ASSERT_FALSE(llvm::sys::fs::create_directories(modulesDirectory));
+  const std::string moduleBytes = "\x7fELF-wafer-test-module";
+  llvm::SmallString<256> modulePath(modulesDirectory);
+  llvm::sys::path::append(modulePath, "tile_00000.so");
+  {
+    std::error_code error;
+    llvm::raw_fd_ostream output(modulePath, error, llvm::sys::fs::OF_None);
+    ASSERT_FALSE(error);
+    output << moduleBytes;
+    output.close();
+    ASSERT_FALSE(output.has_error());
+  }
+  llvm::SmallString<256> dataDirectory(temporaryDirectory);
+  llvm::sys::path::append(dataDirectory, "data");
+  ASSERT_FALSE(llvm::sys::fs::create_directories(dataDirectory));
+  llvm::SmallString<256> dataPath(dataDirectory);
+  llvm::sys::path::append(dataPath, "program-data.bin");
+  {
+    std::error_code error;
+    llvm::raw_fd_ostream output(dataPath, error, llvm::sys::fs::OF_None);
+    ASSERT_FALSE(error);
+  }
+  llvm::SHA256 hasher;
+  hasher.update(moduleBytes);
+  std::string moduleDigest =
+      "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
+
+  wafer::RuntimeLaunchContract launch = llvm::cantFail(
+      wafer::RuntimeLaunchContract::createKernel(
+          wafer::KernelLaunchForm::Grid,
+          wafer::KernelEntryABI::TileMajorPointerTable,
+          {wafer::RuntimeLaunchPhaseRole::Main}));
+  wafer::runtime::PackageManifest manifest(
+      wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
+      std::move(launch), wafer::kCurrentTargetModuleFormat);
+  manifest.program = wafer::runtime::ProgramId(0);
+  manifest.cardCount = 1;
+  manifest.tileCount = 16;
+  manifest.programData = {
+      "data/program-data.bin", 0, 1,
+      "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"};
+  manifest.modules = {
+      {wafer::runtime::ModuleId(0), "modules/tile_00000.so", moduleDigest,
+       wafer::kCurrentTargetModuleFormat.str(),
+       {{wafer::runtime::PackageModuleExportRole::Main, "main"}}},
+  };
+  for (int64_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
+    wafer::runtime::PackageEntrypointRecord entry;
+    entry.id = wafer::runtime::EntryId(launchSlot);
+    entry.cardId = wafer::CardId(0);
+    entry.tileId = wafer::TileId(launchSlot);
+    entry.launchSlot = wafer::runtime::LaunchSlotId(launchSlot);
+    entry.module = wafer::runtime::ModuleId(0);
+    entry.completion =
+        wafer::runtime::PackageEntryCompletionKind::ReturnAfterLocalDrain;
+    entry.arguments.push_back(
+        {0, wafer::runtime::WorkspaceArgument{512, 256},
+         wafer::runtime::PackageAccessMode::ReadWrite});
+    entry.transport = wafer::runtime::NoTransportRequirements{};
+    manifest.entries.push_back(std::move(entry));
+  }
+
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> verified =
+      wafer::runtime::verifyPackageManifest(std::move(manifest),
+                                            temporaryDirectory);
+  ASSERT_TRUE(static_cast<bool>(verified))
+      << llvm::toString(verified.takeError());
+  {
+    llvm::SmallString<256> manifestPath(temporaryDirectory);
+    llvm::sys::path::append(manifestPath,
+                            wafer::runtime::kPackageManifestFileName);
+    std::error_code error;
+    llvm::raw_fd_ostream output(manifestPath, error, llvm::sys::fs::OF_Text);
+    ASSERT_FALSE(error);
+    output << wafer::runtime::serializeCanonicalPackageJson(*verified) << "\n";
+    output.close();
+    ASSERT_FALSE(output.has_error());
+  }
+
+  llvm::Expected<wafer::compiler::OpenedPackageMembers> members =
+      wafer::compiler::detail::openPackageMembers(temporaryDirectory,
+                                                  *verified);
+  ASSERT_TRUE(static_cast<bool>(members))
+      << llvm::toString(members.takeError());
+  ASSERT_EQ(members->modules.size(), size_t{1});
+
+  auto config = wafer::compiler::ExecutionConfig::createForSingleCard(1);
+  ASSERT_TRUE(static_cast<bool>(config));
+  wafer::compiler::ExecutablePackage package =
+      wafer::compiler::ExecutablePackageBuilder::makePackage(
+          temporaryDirectory, std::move(*config), std::move(*verified),
+          std::move(*members));
+
+  // Remove every path: the opened members stay readable and unchanged.
+  ASSERT_FALSE(llvm::sys::fs::remove_directories(temporaryDirectory));
+
+  EXPECT_EQ(package.getRootDirectory(), temporaryDirectory.str().str());
+  EXPECT_EQ(package.getModuleBuffers().size(), size_t{1});
+  EXPECT_EQ(package.getModuleBuffers().front()->getBuffer(), moduleBytes);
+  EXPECT_EQ(package.getProgramDataBuffer().getBufferSize(), size_t{0});
+  // The opened manifest member carries exactly the canonical bytes of the
+  // verified manifest this package was bound to.
+  EXPECT_TRUE(package.getManifestBuffer().getBuffer().starts_with(
+      wafer::runtime::serializeCanonicalPackageJson(
+          package.getManifest())));
 }
 
 } // namespace

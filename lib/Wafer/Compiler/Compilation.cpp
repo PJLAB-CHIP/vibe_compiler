@@ -126,6 +126,11 @@ llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
     llvm::StringRef xlaSpmdPartitionerHelper,
     const TargetToolchain &targetToolchain, CompilationOptions options,
     llvm::raw_ostream &diagnostics) {
+  if (options.shouldProduceProfileInstrumentation())
+    return llvm::createStringError(
+        llvm::errc::invalid_argument,
+        "the internal qualification entry does not support profile "
+        "instrumentation; use compileProgram for the production entry");
   std::optional<CardExecutable> retainedCardExecutable;
   std::optional<TargetLLVMModules> retainedTargetLLVMModules;
   std::optional<CompilationIRTrace> retainedIRTrace;
@@ -204,6 +209,18 @@ mlir::LogicalResult testing::compileProgramWithPackageLaunchSlotFailure(
       std::move(request), outputPackageDirectory, xlaSpmdPartitionerHelper,
       targetToolchain, diagnostics, CompilationOptions::standard(),
       std::nullopt, std::nullopt, failAfterLaunchSlot, nullptr, nullptr);
+}
+
+mlir::LogicalResult testing::compileProgramWithCommitVerificationFailure(
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    llvm::raw_ostream &diagnostics) {
+  return detail::runCompilationTransaction(
+      std::move(request), outputPackageDirectory, xlaSpmdPartitionerHelper,
+      targetToolchain, diagnostics, std::move(options),
+      std::nullopt, std::nullopt, std::nullopt, nullptr, nullptr, nullptr,
+      nullptr, nullptr, nullptr, /*failCommitVerification=*/true);
 }
 
 } // namespace wafer::compiler

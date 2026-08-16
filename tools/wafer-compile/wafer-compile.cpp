@@ -202,9 +202,12 @@ int main(int argc, char **argv) {
       std::getenv("WAFER_TEST_FAIL_AFTER_TARGET_LAUNCH_SLOT");
   const char *packageFailureSlot =
       std::getenv("WAFER_TEST_FAIL_AFTER_PACKAGE_LAUNCH_SLOT");
+  const char *commitFailureSlot =
+      std::getenv("WAFER_TEST_FAIL_COMMIT_VERIFICATION");
   unsigned failureInjectionCount = (executableFailureSlot ? 1u : 0u) +
                                    (targetFailureSlot ? 1u : 0u) +
-                                   (packageFailureSlot ? 1u : 0u);
+                                   (packageFailureSlot ? 1u : 0u) +
+                                   (commitFailureSlot ? 1u : 0u);
   if (*optimizationConfig != wafer::OptimizationConfig::search() &&
       failureInjectionCount != 0) {
     llvm::errs()
@@ -212,9 +215,10 @@ int main(int argc, char **argv) {
            "combined with test-only compilation controls\n";
     return 1;
   }
-  if (options.profile && failureInjectionCount != 0) {
+  if (options.profile &&
+      (executableFailureSlot || targetFailureSlot || packageFailureSlot)) {
     llvm::errs() << "wafer-compile: --profile cannot be combined with "
-                    "test-only compilation controls\n";
+                    "test-only launch-slot failure injections\n";
     return 1;
   }
   if (failureInjectionCount > 1) {
@@ -279,6 +283,28 @@ int main(int argc, char **argv) {
             parsedFailureSlot, llvm::errs());
     if (mlir::failed(injectionStatus))
       return 1;
+    llvm::outs() << "wafer-compile: wrote verified package with "
+                    "num-partitions="
+                 << numPartitions << " tiles="
+                 << wafer::compiler::ExecutionConfig::kSingleCardTileCount
+                 << ": " << *options.outputPackageDirectory << "\n";
+    return 0;
+  }
+  if (commitFailureSlot) {
+    mlir::LogicalResult injectionStatus =
+        wafer::compiler::testing::compileProgramWithCommitVerificationFailure(
+            std::move(*request), *options.outputPackageDirectory,
+            toolFacts->spmdPartitionerHelper, *targetToolchain,
+            compilationOptions, llvm::errs());
+    if (mlir::failed(injectionStatus)) {
+      // Test-only rendering of the injected commit-stage failure, identical
+      // to the library facade's CompilationFailure classification.
+      llvm::errs() << "wafer-compile: compilation failed at the "
+                   << wafer::compiler::stringifyCompilationStage(
+                          wafer::compiler::CompilationStage::PackageCommit)
+                   << " stage\n";
+      return 1;
+    }
     llvm::outs() << "wafer-compile: wrote verified package with "
                     "num-partitions="
                  << numPartitions << " tiles="

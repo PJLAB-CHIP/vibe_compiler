@@ -45,6 +45,15 @@ mlir::LogicalResult compileProgramWithPackageLaunchSlotFailure(
     const TargetToolchain &targetToolchain, int64_t failAfterLaunchSlot,
     llvm::raw_ostream &diagnostics);
 
+/// Runs the production transaction while injecting a failure after the
+/// commit-stage verification and before the single publication rename. The
+/// target output must remain invisible.
+mlir::LogicalResult compileProgramWithCommitVerificationFailure(
+    CompilationRequest request, llvm::StringRef outputPackageDirectory,
+    llvm::StringRef xlaSpmdPartitionerHelper,
+    const TargetToolchain &targetToolchain, CompilationOptions options,
+    llvm::raw_ostream &diagnostics);
+
 } // namespace wafer::compiler::testing
 
 #endif // WAFER_COMPILER_TESTING_H

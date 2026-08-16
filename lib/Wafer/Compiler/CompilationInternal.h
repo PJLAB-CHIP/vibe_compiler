@@ -70,17 +70,6 @@ bool renameDirectoryNoReplace(llvm::StringRef source,
                               llvm::StringRef destination,
                               llvm::raw_ostream &diagnostics);
 
-using DirectoryRenameFunction = bool (*)(llvm::StringRef source,
-                                         llvm::StringRef destination,
-                                         llvm::raw_ostream &diagnostics);
-
-/// Renames a package and profile directory to their final paths. If the second
-/// rename fails, the package is renamed back to its staging path.
-mlir::LogicalResult renamePackageAndProfileNoReplace(
-    llvm::StringRef stagedPackage, llvm::StringRef outputPackage,
-    llvm::StringRef stagedInstrumentation,
-    llvm::StringRef outputInstrumentation, llvm::raw_ostream &diagnostics,
-    DirectoryRenameFunction renameDirectory);
 
 mlir::OwningOpRef<mlir::ModuleOp>
 parseProgramDirectoryModule(llvm::StringRef programDirectory,
@@ -162,14 +151,17 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<ExecutablePackage> *retainedPackage = nullptr,
     std::optional<ProfileInstrumentationProduct> *retainedProfileProduct =
         nullptr,
-    CompilationStage *failureStage = nullptr);
+    CompilationStage *failureStage = nullptr,
+    bool failCommitVerification = false);
 
-/// Post-commit readback binding for the committed sibling profile
-/// instrumentation: digests the installed ordinary manifest and requires the
-/// installed activation.json to carry exactly that primary digest and the
-/// staged plan/site-map digests. Returns an error on any mismatch; the
-/// runtime strict loader remains the semantic reader at launch.
-llvm::Error verifyCommittedProfileInstrumentation(
+/// Pre-publication binding for the co-committed profile instrumentation:
+/// digests the staged ordinary manifest and requires the staged
+/// activation.json to carry exactly that primary digest and the staged
+/// plan/site-map digests. The single publication rename then makes the
+/// verified inodes visible, so no post-rename readback exists. Returns an
+/// error on any mismatch; the runtime strict loader remains the semantic
+/// reader at launch.
+llvm::Error verifyProfileInstrumentationBinding(
     llvm::StringRef packageRoot, llvm::StringRef instrumentationRoot,
     const ProfileInstrumentationIdentity &identity);
 

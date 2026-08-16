@@ -576,14 +576,14 @@ TEST(TargetCodeGenTest,
 
   llvm::SmallString<256> packageDirectory = temporaryDirectory;
   llvm::sys::path::append(packageDirectory, "package");
-  llvm::Expected<wafer::compiler::ExecutablePackage> package =
+  llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
       wafer::compiler::detail::writePackage(temporaryDirectory, *executable,
                                             *targetModules, packageDirectory,
                                             diagnostics, std::nullopt);
   ASSERT_TRUE(static_cast<bool>(package))
       << diagnosticsStorage << llvm::toString(package.takeError());
   const wafer::runtime::PackageManifest &manifest =
-      package->getManifest().getManifest();
+      package->getManifest();
 
   // Program-tensor ids are discovery-ordered: bias (ordinal 0) is id 0 and
   // weight is id 1. The canonical placement therefore sorts
@@ -1542,14 +1542,14 @@ TEST(TargetCodeGenTest,
         temporaryDirectory, (llvm::Twine("package-") +
                              wafer::stringifyKernelLaunchForm(scenario.form))
                                 .str());
-    llvm::Expected<wafer::compiler::ExecutablePackage> package =
+    llvm::Expected<wafer::runtime::VerifiedPackageManifest> package =
         wafer::compiler::detail::writePackage(sourceDirectory, *executable,
                                               *targetModules, packageDirectory,
                                               diagnostics, std::nullopt);
     ASSERT_TRUE(static_cast<bool>(package))
         << diagnosticsStorage << llvm::toString(package.takeError());
     const wafer::runtime::PackageManifest &manifest =
-        package->getManifest().getManifest();
+        package->getManifest();
     EXPECT_EQ(manifest.launch, launch);
     EXPECT_EQ(manifest.cardCount, 1);
     EXPECT_EQ(manifest.tileCount, 16);
@@ -1575,7 +1575,7 @@ TEST(TargetCodeGenTest,
       noCardBindings.push_back({port.id, port.bytes, port.alignment});
     llvm::Expected<wafer::runtime::RuntimeInvocationPlan> noCardPlan =
         wafer::runtime::planRuntimeInvocation(
-            package->getManifest(), noCardBindings, noCardEnvironment);
+            *package, noCardBindings, noCardEnvironment);
     ASSERT_TRUE(static_cast<bool>(noCardPlan))
         << llvm::toString(noCardPlan.takeError());
     ASSERT_EQ(noCardPlan->tiles.size(), 16u);

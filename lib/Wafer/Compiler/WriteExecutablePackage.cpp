@@ -144,11 +144,11 @@ static mlir::LogicalResult stageExecutablePackage(
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "executable-to-package", "package-assembly");
   stages.enter(CompilationStage::PackageAssembly);
-  llvm::Expected<ExecutablePackage> package =
+  llvm::Expected<runtime::VerifiedPackageManifest> stagedReadback =
       writePackage(tensorProgramDirectory, cardExecutable, *targetModules,
                    stagedPackage, diagnostics, failAfterPackageLaunchSlot);
-  if (!package) {
-    llvm::consumeError(package.takeError());
+  if (!stagedReadback) {
+    llvm::consumeError(stagedReadback.takeError());
     return mlir::failure();
   }
   const int64_t packageWallMs = elapsedCompileMilliseconds(packageStart);
@@ -658,7 +658,7 @@ makeProfileInstrumentationWorldAccessible(llvm::StringRef instrumentationRoot,
 
 } // namespace
 
-llvm::Error verifyCommittedProfileInstrumentation(
+llvm::Error verifyProfileInstrumentationBinding(
     llvm::StringRef packageRoot, llvm::StringRef instrumentationRoot,
     const ProfileInstrumentationIdentity &identity) {
   llvm::Expected<std::string> installedManifestDigest =
@@ -668,7 +668,7 @@ llvm::Error verifyCommittedProfileInstrumentation(
   if (*installedManifestDigest != identity.primaryManifestDigest)
     return llvm::createStringError(
         llvm::errc::operation_not_permitted,
-        "committed package manifest digest does not match the profile "
+        "staged package manifest digest does not match the profile "
         "primary digest");
   llvm::SmallString<256> activationPath(instrumentationRoot);
   llvm::sys::path::append(activationPath, "activation.json");
@@ -676,7 +676,7 @@ llvm::Error verifyCommittedProfileInstrumentation(
       llvm::MemoryBuffer::getFile(activationPath);
   if (!buffer)
     return llvm::createStringError(
-        buffer.getError(), "failed to read back committed profile "
+        buffer.getError(), "failed to read back staged profile "
                            "instrumentation activation");
   llvm::Expected<llvm::json::Value> parsed =
       llvm::json::parse((*buffer)->getBuffer());
@@ -685,7 +685,7 @@ llvm::Error verifyCommittedProfileInstrumentation(
   llvm::json::Object *root = parsed->getAsObject();
   if (!root)
     return llvm::createStringError(llvm::errc::operation_not_permitted,
-                                   "committed profile instrumentation "
+                                   "staged profile instrumentation "
                                    "activation is not a JSON object");
   auto requireString = [&](llvm::json::Object &object, llvm::StringRef key,
                            llvm::StringRef expected) -> llvm::Error {
@@ -693,7 +693,7 @@ llvm::Error verifyCommittedProfileInstrumentation(
     if (!value || *value != expected)
       return llvm::createStringError(
           llvm::errc::operation_not_permitted,
-          "committed profile instrumentation activation field '" + key +
+          "staged profile instrumentation activation field '" + key +
               "' does not match the staged value");
     return llvm::Error::success();
   };
@@ -706,7 +706,7 @@ llvm::Error verifyCommittedProfileInstrumentation(
   llvm::json::Object *metadata = root->getObject("metadata_sha256");
   if (!metadata)
     return llvm::createStringError(llvm::errc::operation_not_permitted,
-                                   "committed profile instrumentation "
+                                   "staged profile instrumentation "
                                    "activation is missing metadata_sha256");
   if (llvm::Error error =
           requireString(*metadata, "plan.json", identity.planDigest))
@@ -787,9 +787,11 @@ mlir::LogicalResult stageProfileTargetPackages(
     return mlir::failure();
   }
 
+  llvm::SmallString<256> deliveryRoot(transactionRoot);
+  llvm::sys::path::append(deliveryRoot, "delivery");
   llvm::SmallString<256> productionTargetModules(transactionRoot);
   llvm::sys::path::append(productionTargetModules, "target-modules");
-  llvm::SmallString<256> productionPackage(transactionRoot);
+  llvm::SmallString<256> productionPackage(deliveryRoot);
   llvm::sys::path::append(productionPackage, "package");
   std::optional<TargetLLVMModules> productionTargetLLVM;
   if (mlir::failed(stageExecutablePackage(
@@ -799,8 +801,8 @@ mlir::LogicalResult stageProfileTargetPackages(
           productionTargetLLVM, stages)))
     return mlir::failure();
 
-  llvm::SmallString<256> instrumentationRoot(transactionRoot);
-  llvm::sys::path::append(instrumentationRoot, "profile-instrumentation");
+  llvm::SmallString<256> instrumentationRoot(deliveryRoot);
+  llvm::sys::path::append(instrumentationRoot, "package.profile");
 
   ProfileCapturePackages productionCaptures;
   std::optional<TargetLLVMModules> productionTraceTargetLLVM;

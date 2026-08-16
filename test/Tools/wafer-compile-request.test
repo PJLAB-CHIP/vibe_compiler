@@ -12,7 +12,8 @@
 # RUN: not wafer-compile --input-program-dir %t.input --output-package-dir %t.output --num-partitions=1 --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
 # RUN: not %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.profile-model --num-partitions=1 --profile --target-model 2>&1 | FileCheck %s --check-prefix=PROFILE-MODEL
 # RUN: test ! -e %t.profile-model
-# RUN: test ! -e %t.profile-model.profile
+# RUN: test ! -e %t.profile-model/package
+# RUN: test ! -e %t.profile-model/package.profile
 # RUN: rm -rf %t.input %t.no-helper-output
 # RUN: mkdir -p %t.input
 # RUN: not env WAFER_TEST_XLA_SPMD_PARTITIONER_HELPER= %wafer_compile_test --input-program-dir %t.input --output-package-dir %t.no-helper-output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=NO-HELPER

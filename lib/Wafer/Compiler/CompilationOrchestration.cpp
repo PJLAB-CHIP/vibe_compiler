@@ -28,35 +28,6 @@
 
 namespace wafer::compiler::detail {
 
-mlir::LogicalResult renamePackageAndProfileNoReplace(
-    llvm::StringRef stagedPackage, llvm::StringRef outputPackage,
-    llvm::StringRef stagedInstrumentation,
-    llvm::StringRef outputInstrumentation, llvm::raw_ostream &diagnostics,
-    DirectoryRenameFunction renameDirectory) {
-  if (!renameDirectory || stagedPackage.empty() || outputPackage.empty() ||
-      stagedInstrumentation.empty() || outputInstrumentation.empty()) {
-    reject(diagnostics, "package and profile output paths are invalid");
-    return mlir::failure();
-  }
-  if (renameDirectory(stagedPackage, outputPackage, diagnostics))
-    return mlir::failure();
-  if (!renameDirectory(stagedInstrumentation, outputInstrumentation,
-                       diagnostics))
-    return mlir::success();
-
-  if (std::error_code rollbackError =
-          llvm::sys::fs::rename(outputPackage, stagedPackage)) {
-    reject(diagnostics,
-           "failed to restore staged package after profile directory rename "
-           "failed: " +
-               rollbackError.message());
-    return mlir::failure();
-  }
-  reject(diagnostics,
-         "profile directory rename failed; package was restored to staging");
-  return mlir::failure();
-}
-
 static void printOptimizationConfig(OptimizationConfig config,
                                     llvm::raw_ostream &diagnostics) {
   diagnostics << "wafer-compile: optimization-policy="
@@ -75,7 +46,7 @@ mlir::LogicalResult runCompilationTransaction(
     std::optional<CompilationIRTrace> *retainedIRTrace,
     std::optional<ExecutablePackage> *retainedPackage,
     std::optional<ProfileInstrumentationProduct> *retainedProfileProduct,
-    CompilationStage *failureStage) {
+    CompilationStage *failureStage, bool failCommitVerification) {
 #if !defined(WAFER_ENABLE_STABLEHLO) || !defined(WAFER_ENABLE_SHARDY)
   (void)request;
   (void)outputPackageDirectory;
@@ -90,6 +61,7 @@ mlir::LogicalResult runCompilationTransaction(
   (void)retainedIRTrace;
   (void)retainedPackage;
   (void)retainedProfileProduct;
+  (void)failCommitVerification;
   if (failureStage)
     *failureStage = CompilationStage::SourceVerification;
   reject(diagnostics,
@@ -222,15 +194,6 @@ mlir::LogicalResult runCompilationTransaction(
     reject(diagnostics,
            "refusing to replace existing output package directory: '" +
                canonicalOutput.str().str() + "'");
-    return mlir::failure();
-  }
-  llvm::SmallString<256> canonicalProfileOutput(canonicalOutput);
-  canonicalProfileOutput += ".profile";
-  if (options.shouldProduceProfileInstrumentation() &&
-      pathEntryExists(canonicalProfileOutput)) {
-    reject(diagnostics,
-           "refusing to replace existing profile instrumentation directory: '" +
-               canonicalProfileOutput.str().str() + "'");
     return mlir::failure();
   }
   llvm::SmallString<256> stagingPrefix(canonicalOutputParent);
@@ -748,48 +711,90 @@ mlir::LogicalResult runCompilationTransaction(
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "source-to-package", "output-rename");
   stages.enter(CompilationStage::PackageCommit);
-  llvm::SmallString<256> stagedPackage(transactionRoot);
-  llvm::sys::path::append(stagedPackage, "package");
-  if (options.shouldProduceProfileInstrumentation()) {
-    llvm::SmallString<256> stagedInstrumentation(transactionRoot);
-    llvm::sys::path::append(stagedInstrumentation, "profile-instrumentation");
-    if (mlir::failed(renamePackageAndProfileNoReplace(
-            stagedPackage, canonicalOutput, stagedInstrumentation,
-            canonicalProfileOutput, diagnostics, renameDirectoryNoReplace)))
-      return mlir::failure();
-  } else if (renameDirectoryNoReplace(stagedPackage, canonicalOutput,
-                                      diagnostics))
-    return mlir::failure();
 
-  // The primary result binds the installed root: the verified manifest is
-  // loaded back from the committed directory, and an explicitly requested
-  // profile product is bound against the installed activation.json. Both
-  // renames are atomic, so these readbacks can only fail on compiler bugs.
-  llvm::Expected<runtime::VerifiedPackageManifest> installedManifest =
-      runtime::loadVerifiedPackageManifest(canonicalOutput);
-  if (!installedManifest) {
-    reject(diagnostics, "committed package manifest readback failed: " +
-                            llvm::toString(installedManifest.takeError()));
+  // Single-visibility-point commit. Every fallible step closes here, before
+  // the one no-replace rename that publishes the output:
+  // 1. the staged package is freshly loaded and verified;
+  // 2. its all-and-only members are opened and bound (module digests and
+  //    program data size against the verified manifest), pinning the exact
+  //    inodes the rename will publish;
+  // 3. an explicitly requested profile instrumentation is bound by digest
+  //    against the same staged inodes.
+  // The ordinary case publishes the staged package as the output directory.
+  // The profile case publishes the common delivery root `<output>`
+  // containing exactly `package/` and `package.profile/`, so the package and
+  // the instrumentation become visible in one rename and the runtime sibling
+  // rule `<package-root>.profile` is preserved. After the rename no step can
+  // fail, so a failure return always leaves this invocation's output
+  // invisible.
+  const bool profileRequested =
+      options.shouldProduceProfileInstrumentation();
+  llvm::SmallString<256> stagedPackage(transactionRoot);
+  if (profileRequested) {
+    llvm::sys::path::append(stagedPackage, "delivery", "package");
+  } else {
+    llvm::sys::path::append(stagedPackage, "package");
+  }
+  llvm::Expected<runtime::VerifiedPackageManifest> verifiedManifest =
+      runtime::loadVerifiedPackageManifest(stagedPackage);
+  if (!verifiedManifest) {
+    reject(diagnostics, "staged package manifest verification failed: " +
+                            llvm::toString(verifiedManifest.takeError()));
     return mlir::failure();
   }
-  if (retainedPackage) {
-    retainedPackage->emplace(
-        ExecutablePackageBuilder::makePackage(
-            canonicalOutput, request.getExecutionConfig(),
-            std::move(*installedManifest)));
+  llvm::Expected<OpenedPackageMembers> openedMembers =
+      detail::openPackageMembers(stagedPackage, *verifiedManifest);
+  if (!openedMembers) {
+    reject(diagnostics, "staged package member binding failed: " +
+                            llvm::toString(openedMembers.takeError()));
+    return mlir::failure();
   }
-  if (options.shouldProduceProfileInstrumentation() &&
-      retainedProfileProduct) {
-    if (llvm::Error error = verifyCommittedProfileInstrumentation(
-            canonicalOutput, canonicalProfileOutput, profileIdentity)) {
-      reject(diagnostics, "committed profile instrumentation readback "
-                          "failed: " +
+  llvm::SmallString<256> publishedPackageRoot(canonicalOutput);
+  if (profileRequested)
+    llvm::sys::path::append(publishedPackageRoot, "package");
+  if (retainedPackage) {
+    retainedPackage->emplace(ExecutablePackageBuilder::makePackage(
+        publishedPackageRoot, request.getExecutionConfig(),
+        std::move(*verifiedManifest), std::move(*openedMembers)));
+  }
+  if (profileRequested) {
+    llvm::SmallString<256> stagedInstrumentation(transactionRoot);
+    llvm::sys::path::append(stagedInstrumentation, "delivery",
+                            "package.profile");
+    // The co-commit verification is unconditional on the requested product
+    // set, never on whether a caller retains the result member.
+    if (llvm::Error error = verifyProfileInstrumentationBinding(
+            stagedPackage, stagedInstrumentation, profileIdentity)) {
+      reject(diagnostics, "staged profile instrumentation binding failed: " +
                               llvm::toString(std::move(error)));
       return mlir::failure();
     }
-    retainedProfileProduct->emplace(ProfileInstrumentationProductBuilder::make(
-        canonicalProfileOutput, profileIdentity));
+    if (retainedProfileProduct) {
+      llvm::SmallString<256> publishedInstrumentationRoot(canonicalOutput);
+      llvm::sys::path::append(publishedInstrumentationRoot, "package.profile");
+      retainedProfileProduct->emplace(
+          ProfileInstrumentationProductBuilder::make(
+              publishedInstrumentationRoot, profileIdentity));
+    }
   }
+
+  if (failCommitVerification) {
+    reject(diagnostics,
+           "test-only commit verification failure injected before "
+           "publication");
+    return mlir::failure();
+  }
+
+  llvm::SmallString<256> publicationRoot(transactionRoot);
+  if (profileRequested) {
+    llvm::sys::path::append(publicationRoot, "delivery");
+  } else {
+    llvm::sys::path::append(publicationRoot, "package");
+  }
+  // The single visibility point. Everything above was fallible; everything
+  // below only moves already-verified owners into the result.
+  if (renameDirectoryNoReplace(publicationRoot, canonicalOutput, diagnostics))
+    return mlir::failure();
   if (retainedCardExecutable)
     retainedCardExecutable->emplace(
         std::move(*cardExecutable));

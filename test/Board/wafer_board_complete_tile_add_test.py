@@ -713,6 +713,9 @@ def main() -> int:
             args, source, ordinary_package, profile=False
         )
         compile_package(args, source, package, profile=True)
+        # The profiled output directory is the common delivery root; the
+        # package root inside it keeps the <root>.profile sibling rule.
+        package = package / "package"
         require_byte_identical_packages(ordinary_package, package)
         require_profile_instrumentation_permissions(package)
     else:
