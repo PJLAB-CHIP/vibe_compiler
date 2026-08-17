@@ -67,23 +67,24 @@ buildBalancedOwnership(mlir::RankedTensorType type, unsigned shardDimension,
                        std::string *failureReason = nullptr);
 
 /// Two-node closed trial for one dependency edge: the exact-demand query only
-/// observes the edge endpoints. Ownership domains come from the same balanced
-/// placement domain as the full trial builder.
-mlir::FailureOr<analysis::LogicalShardTrial> buildEdgeShardTrial(
-    const StructuredDAGAnalysis &dag,
-    const StructuredDAGNodePlacement &producerPlacement,
-    const StructuredDAGNodePlacement &consumerPlacement,
-    analysis::IREpoch epoch, std::string *failureReason = nullptr);
+/// observes the edge endpoints. Execution shards and per-result ownership come
+/// from the same iterator-space placement adapter as the full trial builder.
+mlir::FailureOr<analysis::LogicalShardTrial>
+buildEdgeShardTrial(const StructuredDAGAnalysis &dag,
+                    const StructuredDAGNodePlacement &producerPlacement,
+                    const StructuredDAGNodePlacement &consumerPlacement,
+                    analysis::IREpoch epoch,
+                    std::string *failureReason = nullptr);
 
 /// Production adapter: materializes one closed trial from the current
-/// placement domain (balanced single-axis result shards over
-/// `shardDimension` and the Tile group, complete iteration domains from
-/// static loop ranges, unique-partition ownership). The balanced rectangle is
-/// a property of the current placement domain, not a recovery performed by
-/// the query; the full spatial domain replaces it with Q50.B. Malformed
-/// placements (missing/duplicate node, empty group, Tile outside its group,
-/// shard dimension outside the result, dynamic or multi-result node) report
-/// failure with a reason and never form a trial.
+/// placement domain. The selected spatial iterator is balanced over the Tile
+/// group in iteration space; every result's ownership is then the exact image
+/// of those execution shards under its own indexing map and is classified as
+/// a unique partition or explicit replication. This is a property of the
+/// current placement domain, not a recovery performed by the query; the full
+/// spatial domain replaces it with Q50.B. Malformed placements (missing or
+/// duplicate node, empty group, invalid spatial iterator, dynamic result or
+/// inexpressible ownership role) report failure and never form a trial.
 mlir::FailureOr<analysis::LogicalShardTrial> buildLogicalShardTrial(
     const StructuredDAGAnalysis &dag,
     llvm::ArrayRef<StructuredDAGNodePlacement> nodePlacements,

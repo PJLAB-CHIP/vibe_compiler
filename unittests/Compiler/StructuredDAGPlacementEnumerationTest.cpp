@@ -1,4 +1,5 @@
-//===- StructuredDAGPlacementEnumerationTest.cpp -------------------------------===//
+//===- StructuredDAGPlacementEnumerationTest.cpp
+//-------------------------------===//
 
 #include "../../lib/Wafer/Compiler/StructuredDAGPlacementEnumeration.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
@@ -106,13 +107,15 @@ module {
     StructuredDAGNodePlacement result;
     result.node = node;
     result.shardDimension = dimension;
+    result.spatialIteratorDimension = dimension;
     for (int64_t value : tileValues)
       result.tiles.push_back(TileId(value));
     return result;
   }
 
   llvm::SmallVector<StructuredDAGPlacementCandidate, 12>
-  derive(mlir::ModuleOp module, StructuredDAGPlacementEnumerationStatistics &stats) {
+  derive(mlir::ModuleOp module,
+         StructuredDAGPlacementEnumerationStatistics &stats) {
     std::string failureReason;
     auto topology = TargetTopology::create(module, &failureReason);
     EXPECT_TRUE(mlir::succeeded(topology)) << failureReason;
@@ -130,6 +133,75 @@ module {
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
+
+TEST_F(StructuredDAGPlacementEnumerationTest,
+       MultiResultProducerEntersProductionDomainAndEvaluator) {
+  auto module = parse(R"mlir(
+  func.func @multi(%input: tensor<8xf16>) -> (tensor<8xf16>, tensor<8xf16>) {
+    %preout = tensor.empty() : tensor<8xf16>
+    %pre = linalg.map ins(%input : tensor<8xf16>)
+        outs(%preout : tensor<8xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %out0 = tensor.empty() : tensor<8xf16>
+    %out1 = tensor.empty() : tensor<8xf16>
+    %producer:2 = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%pre : tensor<8xf16>)
+        outs(%out0, %out1 : tensor<8xf16>, tensor<8xf16>) {
+      ^bb0(%in: f16, %o0: f16, %o1: f16):
+        %sum = arith.addf %in, %o0 : f16
+        linalg.yield %sum, %sum : f16, f16
+    } -> (tensor<8xf16>, tensor<8xf16>)
+    %out2 = tensor.empty() : tensor<8xf16>
+    %consumer0 = linalg.map ins(%producer#0 : tensor<8xf16>)
+        outs(%out2 : tensor<8xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %out3 = tensor.empty() : tensor<8xf16>
+    %consumer1 = linalg.map ins(%producer#1 : tensor<8xf16>)
+        outs(%out3 : tensor<8xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %consumer0, %consumer1 : tensor<8xf16>, tensor<8xf16>
+  }
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto topology = TargetTopology::create(*module, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(topology)) << failureReason;
+  StructuredDAGAnalysis dag = buildDAG(*module);
+  auto domain = deriveStructuredDAGPlacementSearchDomain(
+      dag, *topology, CardId(0), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+  ASSERT_EQ(domain->nodeOptions.size(), 4u);
+
+  auto firstPair = llvm::find_if(domain->nodeOptions.front(),
+                                 [](const StructuredDAGNodePlacement &option) {
+                                   return option.tiles.size() == 2;
+                                 });
+  ASSERT_NE(firstPair, domain->nodeOptions.front().end());
+  llvm::SmallVector<StructuredDAGNodePlacement, 16> placements;
+  for (const auto &options : domain->nodeOptions) {
+    auto matching = llvm::find_if(options, [&](const auto &option) {
+      return option.tiles == firstPair->tiles &&
+             option.spatialIteratorDimension == 0;
+    });
+    ASSERT_NE(matching, options.end());
+    placements.push_back(*matching);
+  }
+
+  StructuredDAGPlacementEvaluator evaluator(dag, *topology, CardId(0));
+  StructuredDAGPlacementLegality legality;
+  auto candidate = evaluator.evaluate(placements, &failureReason, &legality);
+  ASSERT_TRUE(mlir::succeeded(candidate)) << failureReason;
+  EXPECT_EQ(legality.status, analysis::ExactDemandStatus::Satisfied);
+  EXPECT_TRUE(candidate->edgeCarrierComplete);
+  EXPECT_EQ(candidate->nodePlacements.size(), 4u);
+}
 
 TEST_F(StructuredDAGPlacementEnumerationTest,
        ChainExploresBoundedPartialAndDisjointTopologyPlacements) {
@@ -178,7 +250,8 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
     EXPECT_GT(candidate.schedule.eventCount, 0u);
     EXPECT_GT(candidate.schedule.makespan, 0u);
     sawScheduledResidency |= candidate.schedule.peakLiveSPMBytes != 0;
-    for (const StructuredDAGNodePlacement &placement : candidate.nodePlacements) {
+    for (const StructuredDAGNodePlacement &placement :
+         candidate.nodePlacements) {
       ASSERT_FALSE(placement.iteratorPartitionFactors.empty());
       ASSERT_LT(placement.spatialIteratorDimension,
                 placement.iteratorPartitionFactors.size());
@@ -214,9 +287,8 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
   ASSERT_FALSE(candidates.empty());
   EXPECT_EQ(statistics.placementGroupCount, 100u);
   ASSERT_EQ(candidates.front().nodePlacements.size(), 1u);
-  llvm::SmallVector<TileId, 4> expected = {
-      TileId(0), TileId(1), TileId(4),
-      TileId(5)};
+  llvm::SmallVector<TileId, 4> expected = {TileId(0), TileId(1), TileId(4),
+                                           TileId(5)};
   EXPECT_EQ(candidates.front().nodePlacements.front().tiles, expected);
 }
 
@@ -544,26 +616,26 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
     dims += "x1";
   auto module = parse(R"mlir(
   func.func @rank17(%input: tensor<)mlir" +
-                     dims + R"mlir(xf16>) -> tensor<)mlir" + dims +
-                     R"mlir(xf16> {
+                      dims + R"mlir(xf16>) -> tensor<)mlir" + dims +
+                      R"mlir(xf16> {
     %out0 = tensor.empty() : tensor<)mlir" +
-                     dims + R"mlir(xf16>
+                      dims + R"mlir(xf16>
     %producer = linalg.map ins(%input : tensor<)mlir" +
-                     dims + R"mlir(xf16>)
+                      dims + R"mlir(xf16>)
         outs(%out0 : tensor<)mlir" +
-                     dims + R"mlir(xf16>) (%value: f16) {
+                      dims + R"mlir(xf16>) (%value: f16) {
       linalg.yield %value : f16
     }
     %out1 = tensor.empty() : tensor<)mlir" +
-                     dims + R"mlir(xf16>
+                      dims + R"mlir(xf16>
     %consumer = linalg.map ins(%producer : tensor<)mlir" +
-                     dims + R"mlir(xf16>)
+                      dims + R"mlir(xf16>)
         outs(%out1 : tensor<)mlir" +
-                     dims + R"mlir(xf16>) (%value: f16) {
+                      dims + R"mlir(xf16>) (%value: f16) {
       linalg.yield %value : f16
     }
     return %consumer : tensor<)mlir" +
-                     dims + R"mlir(xf16>
+                      dims + R"mlir(xf16>
   }
 )mlir");
   ASSERT_TRUE(module);

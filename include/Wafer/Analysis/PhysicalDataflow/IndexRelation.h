@@ -192,11 +192,13 @@ private:
   /// its destination dimension, or -1 for constant zero. It is populated only
   /// when construction already proved this map equivalent to `relation` and
   /// avoids retaining AffineExpr objects from another MLIRContext. The paired
-  /// destination shape validates fast-path queries against the exact relation
-  /// domain rather than accepting an out-of-bounds rectangle.
+  /// destination/source shapes validate fast-path queries against both sides
+  /// of the exact bounded relation. If either bound would clip a projected
+  /// rectangle, the query falls back to the generic Presburger proof.
   std::optional<llvm::SmallVector<int64_t, 4>> projectedRectanglePattern;
   std::optional<llvm::SmallVector<int64_t, 4>>
       projectedRectangleDestinationShape;
+  std::optional<llvm::SmallVector<int64_t, 4>> projectedRectangleSourceShape;
 
   friend struct IndexRelationResult;
 };

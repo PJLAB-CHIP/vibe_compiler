@@ -56,6 +56,7 @@ protected:
     StructuredDAGNodePlacement result;
     result.node = node;
     result.shardDimension = dimension;
+    result.spatialIteratorDimension = dimension;
     for (int64_t value : tileValues)
       result.tiles.push_back(TileId(value));
     return result;
@@ -165,7 +166,8 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements = {
       placement(0, 0, {0, 1, 2, 3}), placement(1, 0, {0, 1, 4, 5})};
   std::string failureReason;
-  auto plan = deriveStructuredDAGEdgeStrategyPlan(dag, placements, &failureReason);
+  auto plan =
+      deriveStructuredDAGEdgeStrategyPlan(dag, placements, &failureReason);
   ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
   ASSERT_EQ(plan->strategies.size(), 4u);
   auto resident = collectFragments(*plan, SpatialEdgeFragmentKind::Resident);
@@ -184,8 +186,7 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
 
   const SpatialEdgeStrategy *destinationZero =
       findDestination(*plan, TileId(0));
-  const SpatialEdgeStrategy *destinationOne =
-      findDestination(*plan, TileId(1));
+  const SpatialEdgeStrategy *destinationOne = findDestination(*plan, TileId(1));
   ASSERT_NE(destinationZero, nullptr);
   ASSERT_NE(destinationOne, nullptr);
   EXPECT_EQ(destinationZero->action, SpatialEdgeAction::LocalShardResidency);
@@ -230,7 +231,8 @@ module {
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements = {
       placement(0, 0, {0, 1}), placement(1, 1, {1, 2})};
   std::string failureReason;
-  auto plan = deriveStructuredDAGEdgeStrategyPlan(dag, placements, &failureReason);
+  auto plan =
+      deriveStructuredDAGEdgeStrategyPlan(dag, placements, &failureReason);
   ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
   ASSERT_EQ(plan->strategies.size(), 2u);
   auto resident = collectFragments(*plan, SpatialEdgeFragmentKind::Resident);
@@ -242,8 +244,7 @@ module {
   EXPECT_EQ(resident[0]->offsets, (llvm::SmallVector<int64_t, 4>{2, 0}));
   EXPECT_EQ(resident[0]->sizes, (llvm::SmallVector<int64_t, 4>{2, 2}));
   EXPECT_EQ(resident[0]->bytes, 0u);
-  const SpatialEdgeStrategy *destinationOne =
-      findDestination(*plan, TileId(1));
+  const SpatialEdgeStrategy *destinationOne = findDestination(*plan, TileId(1));
   ASSERT_NE(destinationOne, nullptr);
   EXPECT_EQ(destinationOne->producerOffsets,
             (llvm::SmallVector<int64_t, 4>{0, 0}));
@@ -326,10 +327,10 @@ module {
   ASSERT_EQ(dag.getNodes().size(), 3u);
   std::string failureReason;
   auto plan = deriveStructuredDAGEdgeStrategyPlan(dag,
-                                             {placement(0, 0, {0, 1}),
-                                              placement(1, 0, {0, 1}),
-                                              placement(2, 0, {0, 1})},
-                                             &failureReason);
+                                                  {placement(0, 0, {0, 1}),
+                                                   placement(1, 0, {0, 1}),
+                                                   placement(2, 0, {0, 1})},
+                                                  &failureReason);
   ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
   ASSERT_FALSE(plan->strategies.empty());
   for (const SpatialEdgeStrategy &strategy : plan->strategies) {
@@ -377,17 +378,17 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
   StructuredDAGAnalysis dag = buildDAG(*module);
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements = {
       placement(0, 0, {0}), placement(1, 0, {1})};
-  llvm::SmallVector<StructuredDAGPeerMovement, 1> movements = {StructuredDAGPeerMovement{
-      /*edge=*/0,
-      TileId(0),
-      TileId(1),
-      /*duration=*/2,
-      /*bufferCount=*/1,
-      {TileLink{TileId(0), TileId(1)}}}};
+  llvm::SmallVector<StructuredDAGPeerMovement, 1> movements = {
+      StructuredDAGPeerMovement{/*edge=*/0,
+                                TileId(0),
+                                TileId(1),
+                                /*duration=*/2,
+                                /*bufferCount=*/1,
+                                {TileLink{TileId(0), TileId(1)}}}};
   std::string failureReason;
   auto scheduled = scheduleStructuredDAGCandidate(dag, available(2), placements,
-                                             /*localResidencies=*/{},
-                                             &failureReason, movements);
+                                                  /*localResidencies=*/{},
+                                                  &failureReason, movements);
   ASSERT_TRUE(mlir::succeeded(scheduled)) << failureReason;
   EXPECT_GT(scheduled->movementEventCount, 0u);
   EXPECT_EQ(scheduled->peerMovementWork, 6u)
@@ -422,17 +423,16 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
       placement(0, 0, {0}), placement(1, 0, {1})};
   auto schedule = [&](uint8_t bufferCount) {
     llvm::SmallVector<StructuredDAGPeerMovement, 1> movements = {
-        StructuredDAGPeerMovement{
-            /*edge=*/0,
-            TileId(0),
-            TileId(1),
-            /*duration=*/2,
-            bufferCount,
-            {TileLink{TileId(0), TileId(1)}}}};
+        StructuredDAGPeerMovement{/*edge=*/0,
+                                  TileId(0),
+                                  TileId(1),
+                                  /*duration=*/2,
+                                  bufferCount,
+                                  {TileLink{TileId(0), TileId(1)}}}};
     std::string failureReason;
     auto result = scheduleStructuredDAGCandidate(dag, available(2), placements,
-                                            /*localResidencies=*/{},
-                                            &failureReason, movements);
+                                                 /*localResidencies=*/{},
+                                                 &failureReason, movements);
     EXPECT_TRUE(mlir::succeeded(result)) << failureReason;
     return result;
   };
@@ -441,15 +441,17 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
   ASSERT_TRUE(mlir::succeeded(single));
   ASSERT_TRUE(mlir::succeeded(doubled));
 
-  auto producerSteadyStart = [](const StructuredDAGCandidateSchedule &candidate) {
-    auto found =
-        llvm::find_if(candidate.dispatchedWaves, [](const RunningOpWave &wave) {
-          return wave.wave == SymbolicWaveClass{0, SymbolicWaveKind::Steady};
-        });
-    EXPECT_NE(found, candidate.dispatchedWaves.end());
-    return found == candidate.dispatchedWaves.end() ? ScheduleTime{0}
-                                                    : found->startTime;
-  };
+  auto producerSteadyStart =
+      [](const StructuredDAGCandidateSchedule &candidate) {
+        auto found = llvm::find_if(
+            candidate.dispatchedWaves, [](const RunningOpWave &wave) {
+              return wave.wave ==
+                     SymbolicWaveClass{0, SymbolicWaveKind::Steady};
+            });
+        EXPECT_NE(found, candidate.dispatchedWaves.end());
+        return found == candidate.dispatchedWaves.end() ? ScheduleTime{0}
+                                                        : found->startTime;
+      };
   EXPECT_GT(producerSteadyStart(*single), producerSteadyStart(*doubled));
   EXPECT_GT(single->makespan, doubled->makespan);
 
@@ -475,9 +477,9 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
       placement(0, 0, {0}), placement(1, 0, {1}), placement(2, 0, {2})};
   llvm::SmallVector<StructuredDAGLocalMovement, 2> disjointMovements = {
       StructuredDAGLocalMovement{0, StructuredDAGLocalMovementResource::TileSPM,
-                            TileId(1), 2, 2},
+                                 TileId(1), 2, 2},
       StructuredDAGLocalMovement{1, StructuredDAGLocalMovementResource::TileSPM,
-                            TileId(2), 3, 2}};
+                                 TileId(2), 3, 2}};
   auto disjoint = scheduleStructuredDAGCandidate(
       dag, available(3), disjointPlacements, /*localResidencies=*/{},
       &failureReason, /*peerMovements=*/{}, disjointMovements);
@@ -499,9 +501,9 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
       placement(0, 0, {0}), placement(1, 0, {1}), placement(2, 0, {1})};
   llvm::SmallVector<StructuredDAGLocalMovement, 2> sharedMovements = {
       StructuredDAGLocalMovement{0, StructuredDAGLocalMovementResource::TileSPM,
-                            TileId(1), 2, 2},
+                                 TileId(1), 2, 2},
       StructuredDAGLocalMovement{1, StructuredDAGLocalMovementResource::TileSPM,
-                            TileId(1), 3, 2}};
+                                 TileId(1), 3, 2}};
   auto shared = scheduleStructuredDAGCandidate(
       dag, available(2), sharedPlacements, /*localResidencies=*/{},
       &failureReason, /*peerMovements=*/{}, sharedMovements);
@@ -525,25 +527,15 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
       placement(0, 0, {0}), placement(1, 0, {1}), placement(2, 0, {2})};
   llvm::SmallVector<StructuredDAGPeerMovement, 2> separateLinks = {
       StructuredDAGPeerMovement{
-          0,
-          TileId(0),
-          TileId(1),
-          2,
-          2,
-          {TileLink{TileId(0), TileId(1)}}},
+          0, TileId(0), TileId(1), 2, 2, {TileLink{TileId(0), TileId(1)}}},
       StructuredDAGPeerMovement{
-          1,
-          TileId(0),
-          TileId(2),
-          3,
-          2,
-          {TileLink{TileId(0), TileId(2)}}}};
+          1, TileId(0), TileId(2), 3, 2, {TileLink{TileId(0), TileId(2)}}}};
   auto parallelLinks = scheduleStructuredDAGCandidate(
       dag, available(3), separateDestinations, /*localResidencies=*/{},
       &failureReason, separateLinks);
   ASSERT_TRUE(mlir::succeeded(parallelLinks)) << failureReason;
-  auto parallelNoC =
-      collectReservations(*parallelLinks, StructuredDAGReservationResource::NoCLink);
+  auto parallelNoC = collectReservations(
+      *parallelLinks, StructuredDAGReservationResource::NoCLink);
   ASSERT_GE(parallelNoC.size(), 2u);
   EXPECT_EQ(parallelNoC[0]->startTime, parallelNoC[1]->startTime);
 
@@ -551,19 +543,9 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
       placement(0, 0, {0}), placement(1, 0, {1}), placement(2, 0, {1})};
   llvm::SmallVector<StructuredDAGPeerMovement, 2> sharedLink = {
       StructuredDAGPeerMovement{
-          0,
-          TileId(0),
-          TileId(1),
-          2,
-          2,
-          {TileLink{TileId(0), TileId(1)}}},
+          0, TileId(0), TileId(1), 2, 2, {TileLink{TileId(0), TileId(1)}}},
       StructuredDAGPeerMovement{
-          1,
-          TileId(0),
-          TileId(1),
-          3,
-          2,
-          {TileLink{TileId(0), TileId(1)}}}};
+          1, TileId(0), TileId(1), 3, 2, {TileLink{TileId(0), TileId(1)}}}};
   auto serializedLink = scheduleStructuredDAGCandidate(
       dag, available(2), sharedDestination, /*localResidencies=*/{},
       &failureReason, sharedLink);
@@ -577,15 +559,15 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
 
   llvm::SmallVector<StructuredDAGLocalMovement, 2> ddrMovements = {
       StructuredDAGLocalMovement{0, StructuredDAGLocalMovementResource::CardDDR,
-                            TileId(1), 2, 2},
+                                 TileId(1), 2, 2},
       StructuredDAGLocalMovement{1, StructuredDAGLocalMovementResource::CardDDR,
-                            TileId(2), 3, 2}};
+                                 TileId(2), 3, 2}};
   auto serializedDDR = scheduleStructuredDAGCandidate(
       dag, available(3), separateDestinations, /*localResidencies=*/{},
       &failureReason, /*peerMovements=*/{}, ddrMovements);
   ASSERT_TRUE(mlir::succeeded(serializedDDR)) << failureReason;
-  auto ddr =
-      collectReservations(*serializedDDR, StructuredDAGReservationResource::CardDDR);
+  auto ddr = collectReservations(*serializedDDR,
+                                 StructuredDAGReservationResource::CardDDR);
   ASSERT_GE(ddr.size(), 2u);
   for (auto [previous, current] : llvm::zip(ddr, llvm::drop_begin(ddr)))
     EXPECT_LE(previous->finishTime, current->startTime);
@@ -603,8 +585,8 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
       StructuredDAGLocalResidency{/*edge=*/0, TileId(0), /*bytes=*/4},
       StructuredDAGLocalResidency{/*edge=*/0, TileId(1), /*bytes=*/4}};
 
-  auto scheduled = scheduleStructuredDAGCandidate(dag, available(8), placements,
-                                             localResidencies, &failureReason);
+  auto scheduled = scheduleStructuredDAGCandidate(
+      dag, available(8), placements, localResidencies, &failureReason);
   ASSERT_TRUE(mlir::succeeded(scheduled)) << failureReason;
   // The overlapping placement serializes producer and consumer waves.  All
   // three producer classes are therefore live before the first matching
@@ -658,10 +640,10 @@ module {
   // valid residency even though a result point does not identify one producer
   // point.
   auto aligned = deriveStructuredDAGEdgeStrategyPlan(dag,
-                                                {placement(0, 0, {0, 1}),
-                                                 placement(1, 0, {0, 1}),
-                                                 placement(2, 0, {0, 1})},
-                                                &failureReason);
+                                                     {placement(0, 0, {0, 1}),
+                                                      placement(1, 0, {0, 1}),
+                                                      placement(2, 0, {0, 1})},
+                                                     &failureReason);
   ASSERT_TRUE(mlir::succeeded(aligned)) << failureReason;
   ASSERT_EQ(aligned->strategies.size(), 2u);
   EXPECT_TRUE(llvm::all_of(
@@ -771,8 +753,7 @@ TEST_F(StructuredDAGEdgeStrategyPlanTest,
   // are asserted by the exact-demand query suite directly.
   std::string failureReason;
   auto demandPlan = deriveStructuredDAGEdgeDemandPlan(
-      dag, {placement(0, 0, {0, 0}), placement(1, 0, {1, 2})},
-      &failureReason);
+      dag, {placement(0, 0, {0, 0}), placement(1, 0, {1, 2})}, &failureReason);
   EXPECT_TRUE(mlir::failed(demandPlan));
   EXPECT_NE(failureReason.find("several owner domains"), std::string::npos)
       << failureReason;
@@ -807,8 +788,7 @@ module {
 
   std::string failureReason;
   auto demandPlan = deriveStructuredDAGEdgeDemandPlan(
-      dag, {placement(0, 0, {0}), placement(1, 0, {1, 2})},
-      &failureReason);
+      dag, {placement(0, 0, {0}), placement(1, 0, {1, 2})}, &failureReason);
   ASSERT_TRUE(mlir::succeeded(demandPlan)) << failureReason;
   ASSERT_EQ(demandPlan->demands.size(), 2u);
   for (const StructuredDAGEdgeDemand &demand : demandPlan->demands) {
@@ -816,14 +796,13 @@ module {
         analysis::IndexRelationStatus::Exact, demand.producerDemand, {}};
     auto rectangle = exactDemand.getExactStaticRectangularDomain();
     ASSERT_TRUE(rectangle.isExact()) << rectangle.reason;
-    EXPECT_EQ(rectangle.domain->offsets,
-              (llvm::SmallVector<int64_t, 4>{0}));
-    EXPECT_EQ(rectangle.domain->sizes,
-              (llvm::SmallVector<int64_t, 4>{4}));
+    EXPECT_EQ(rectangle.domain->offsets, (llvm::SmallVector<int64_t, 4>{0}));
+    EXPECT_EQ(rectangle.domain->sizes, (llvm::SmallVector<int64_t, 4>{4}));
   }
 }
 
-TEST_F(StructuredDAGEdgeStrategyPlanTest, DerivationIsDeterministicForFanoutEdges) {
+TEST_F(StructuredDAGEdgeStrategyPlanTest,
+       DerivationIsDeterministicForFanoutEdges) {
   auto module = parse(R"mlir(
 module {
   func.func @fanout(%input: tensor<8xf16>)
@@ -853,9 +832,11 @@ module {
       placement(0, 0, {0, 1}), placement(1, 0, {2, 3}),
       placement(2, 0, {4, 5})};
   std::string failureReason;
-  auto first = deriveStructuredDAGEdgeStrategyPlan(dag, placements, &failureReason);
+  auto first =
+      deriveStructuredDAGEdgeStrategyPlan(dag, placements, &failureReason);
   ASSERT_TRUE(mlir::succeeded(first)) << failureReason;
-  auto second = deriveStructuredDAGEdgeStrategyPlan(dag, placements, &failureReason);
+  auto second =
+      deriveStructuredDAGEdgeStrategyPlan(dag, placements, &failureReason);
   ASSERT_TRUE(mlir::succeeded(second)) << failureReason;
   auto firstPeer = collectFragments(*first, SpatialEdgeFragmentKind::Peer);
   auto secondPeer = collectFragments(*second, SpatialEdgeFragmentKind::Peer);

@@ -1,8 +1,8 @@
 # Physical Dataflow Synthesis 实施计划
 
 状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其search-policy隔离、结构不变量、scoped
-probe闭合和整图物化成本不属于已签发的正确性证据。Q50.0无策略CardExecutable编译/准入边界与Q54 MLIR infrastructure
-已闭合；Q59 compiler entry transaction在代码review后重开，Q49.P继续等待其重新完成。当前先修复Q50.A production
+probe闭合和整图物化成本不属于已签发的正确性证据。Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure
+与Q59 compiler entry transaction已闭合。当前先完成Q50.A production
 demand boundary，再由Q49.P在current source-to-package路径上闭合baseline functional legalization及
 policy/structure/probe/materialization隔离，之后建立
 Q51.Core共同状态、transition和actual-probe seam；随后让
@@ -482,103 +482,38 @@ DPS init和非direct support dependency，并把relation、carrier、route/resou
 - Q50.B explicit test assignment与后续production domain调用同一query；Q50.G/H只消费`satisfied` output，不从physical fragments
   反推另一份logical demand。旧skip-init/support与carrier-rejects-placement测试必须替换为current合同的正负证据。
 
-### 实现检查点与review结论（2026-08-17）
+### 实现检查点与follow-up review结论（2026-08-17）
 
-- 新policy-free类型位于`include/Wafer/Analysis/PhysicalDataflow/ExactDemand.h`：`IREpoch`（进程级IR世代
-  token，synthesis入口捕获一次、全链query共享）、`LogicalShardTrial`（完整consumer iteration domain +
-  per-Tile result-space ownership + UniquePartition/ExplicitReplication/PartialReductionContribution
-  角色）、`DemandDependency`（DataInput/InitInput + support chain）、四态`ExactDemandStatus`与
-  `ExactDemandResult`（per-owner intersection、uncovered witness、dependencyKind、mergeObligation）。
-- typed query位于`lib/Wafer/Compiler/StructuredDAGExactDemandQuery.{h,cpp}`：对每条edge构造consumer
-  iteration空间→producer result空间的exact `IndexRelation`；support chain逐op compose
-  （expand/collapse→`staticReshape`、extract_slice→`staticSlice`、insert_slice source→
-  `staticInsertSlice`、insert_slice dest→identity∩补集、pad→`staticInsertSlice`、transpose→置换map、
-  cast→identity），`IndexRelation::staticInsertSlice`为新增builder；coverage为typed union与uncovered
-  witness，UniquePartition重叠为可证partition矛盾。多operand support op对每个data-carrying
-  predecessor各建一条依赖；同一op多路径指向同一producer为UnsupportedSemanticRelation。状态映射：
-  Exact→继续，Unsupported→UnsupportedSemanticRelation，SoundBound/Invalid/ResourceExhausted→
-  IndeterminateFailure。query只保留per-edge placement-independent relation memo（实例绑定epoch +
-  函数指针防御），不建demand/coverage bool缓存；热路径memo由调用方按完整placement内容或
-  域决定字段投影键控，值始终typed；该投影是否足以表达per-consumer-shard demand仍需按下述review阻塞项修正。
-- production接线：evaluator `getEdgeEntry`每edge存typed verdict，carrier只作建模输入、其失败置
-  `edgeCarrierComplete=false`不删placement；`EdgeTransitionLegalityCache`用投影键但只存typed
-  status；baseline EdgeCompatibility对全部edge（data/init/support）由query判定，仅
-  ProvenLogicalInfeasible删option pair，Unsupported/Indeterminate写
-  `statistics.demandAbortStatus/demandAbortDetail`并终止baseline；seed filter query-gated（只
-  ProvenLogicalInfeasible丢seed），carrier best-effort；search worker loop按typed verdict区分reject
-  与abort；`materializeCandidate`入口新增`edge-carrier-materialization` gate（exact
-  physical-assignment rejection，进preBufferFailureCache），
-  `StructuredDAGPlacementCandidate/TileExecutionCandidate`携带`edgeCarrierComplete`标记。
-- 生产适配器`buildLogicalShardTrial`/`buildEdgeShardTrial`从当前balanced单轴placement构造trial：
-  每node携带完整iteration domain、per-Tile result-space ownership（含resultIndex与角色）和
-  per-consumer-shard execution domain（`LogicalExecutionShard`，由result indexing map preimage逐Tile
-  精确推导）。枚举入口`enumerateStructuredDAGPlacements`（当前仅单测路径）的final-accept loop由typed
-  query判定全部edge，carrier计划从同一trial与verdict经`assembleStructuredDAGEdgeDemandPlan`组装，
-  carrier失败计入`edgeCarrierIncompleteTransitions`。
-- `StructuredDAGExactDemandQueryTest.cpp`现有24个query case：direct/permuted/strided relation、
-  node-wide reduction/broadcast、init、insert/pad support、coverage witness、unsupported/indeterminate
-  分类、carrier metamorphic，以及review阻塞项对应的per-destination facts（逐shard exact demand、
-  per-shard witness、balanced remainder 10÷3、carrier组装与query fact一致）、multi-result
-  per-result ownership、真实IR mutation invalidation、replication fallback与partial-reduction query。
-- 其它限制（移交Q50.B/Q52/Q50.G/H）：枚举测试的prefix状态空间与`extendState`逐option pairwise拓扑距离成本是
-  既有搜索域形状，未在本任务内改动——`DiamondFanin...`/`ReductionDataTransition...`两case在HEAD即>30min
-  （状态数100→10,000→1M逐节点膨胀），已与`MultiOutputFanout...`一并登记为既有病理长跑case；
-  multi-piece等非dense demand在materialization gate被物理拒绝，Q50.G/H迁移carrier时补上表达与成本罚项。
+- policy-free合同位于`ExactDemand.h`：`LogicalNodeTrial`同时携带完整iteration domain、按唯一Tile绑定的
+  exact execution shard，以及按producer result绑定的ownership；role区分unique partition、explicit replication
+  和partial-reduction contribution。`IREpoch`是由共享immutable token表达的borrow identity，不使用进程级
+  mutable generation，也不冒充IR mutation detector。
+- production adapter先按placement选定的spatial iterator直接在iteration space构造all-and-only balanced shard，
+  再分别通过每个result的indexing map求exact image并分类ownership。这样multi-result不会把各result的preimage
+  并集成重叠执行域；无法由unique partition或完整replication表达的partial overlap会fail closed。production
+  placement domain不再排除multi-result node，定向case证明multi-result node可同时作为producer和consumer进入
+  `StructuredDAGPlacementEvaluator`并得到完整carrier。
+- query入口验证execution shard的space、非空性、唯一Tile、两两不交及对完整iteration domain的all-and-only
+  覆盖；随后按Tile id稳定顺序分别求relation image、ownership intersection和uncovered witness。carrier组装要求
+  `perDestination`的Tile集合与consumer placement完全相等，遗漏或重复destination均为physical carrier合同失败，
+  不回写logical verdict。
+- per-edge relation memo的真实失效边界由借入function的nested `OperationFingerPrint`保护。fingerprint观察operation
+  identity/nesting、attributes/properties、block arguments、location、operands、successors和result types；保持op数量
+  不变的nested attribute原位mutation也使旧query返回`IndeterminateFailure`。`IREpoch`只检查trial与query属于同一
+  borrow，不承担第二份mutation状态。
+- `IndexRelation`的projected-rectangle fast path同时保留source和destination bounds；矩形越界时回退generic
+  Presburger结果。composition不再未经证明传播projection pattern，只有对完整bounded relation做等价证明的builder
+  才恢复fast path，避免中间domain clipping被丢失。
+- typed payload在成功与失败路径都按semantic Tile id稳定排序，补齐consumer domain、producer result、dependency
+  role、per-destination intersection和merge obligation。partial-reduction定向case证明倒序caller input仍保留全部
+  contribution owners与merge义务；overlap failure witness同样不依赖caller枚举顺序。
+- 本轮follow-up定向验证覆盖relation/epoch/query 44个case、carrier 17个case和multi-result production evaluator
+  1个case。`ThreeStageChainCanUseThreeDistinctTileGroups`单独通过但仍耗时约163秒；该placement枚举成本未在本批
+  继续扩大处理，也不作为Q50.A logical correctness结论。
 
-本次review确认Q50.A尚未满足本节completion gate，阻塞项如下：
-
-1. **production尚未对每个consumer logical shard求demand。** Trial builder将整个Linalg loop domain写入
-   `completeIterationDomain`，query只对该node-wide domain求一次image且不读取consumer Tile binding。
-   因此consumer shard/Tile变化不会产生相应的per-destination exact demand、ownership intersections和
-   witness；逐destination Tile demand仍由`StructuredDAGEdgeDemandPlan`的direct-data-only路径重新从
-   balanced result shard求得，不能代签统一logical boundary。
-2. **multi-result不可表达且production adapter显式拒绝。** `LogicalTileBinding`没有producer-result
-   identity，无法为同一node的不同result表达各自shape/domain/ownership；两个trial builder均固定读取
-   `result(0)`并在`getNumResults() != 1`时失败。完成时ownership必须与具体producer result绑定，valid
-   multi-result TensorProgram必须经production adapter/query进入下游。
-3. **`IREpoch`没有形成真实per-IR mutation invalidation。** 当前进程级全局generation没有production
-   mutation owner推进；query只比较trial与自身捕获的epoch及FuncOp指针。原位mutation后old query + old
-   trial仍可使用旧relation cache。应由真实IR snapshot/lifetime表达失效边界，不依赖进程级mutable
-   singleton作为编译语义。
-4. **typed result与确定性合同未闭合。** `ExactDemandResult::consumerIterationDomain`在成功路径没有填充；
-   `ownershipIntersections`沿caller binding顺序输出，多overlap时witness也取决于首个遍历pair。完成时应
-   补齐consumer domain、dependency/result identity和role payload，并以完整semantic tie-break保证结果
-   与Tile、pointer、hash及caller enumeration顺序无关。
-
-#### Review阻塞项修复结论（2026-08-17）
-
-四项阻塞均已在上述文件内闭合，关键机制如下：
-
-- **Gap 1 per-consumer-shard demand**：`LogicalExecutionShard{ tile, executionDomain }`进入
-  `LogicalNodeTrial`，adapter按consumer result indexing map逐Tile求balanced result shard preimage
-  （多result取并集）得到exact execution domain；query的per-destination循环按Tile id排序，对每个shard
-  求`relation.image(executionDomain)`得到exact producerDemand、per-owner intersections与per-shard
-  uncoveredWitness，填充`ExactDemandResult::perDestination`。canonical carrier
-  （`StructuredDAGEdgeDemandPlanner`/evaluator/enumerator）只消费query fact——逐destination Tile demand
-  不再由carrier从balanced result shard重算；`deriveExactEdgeRelation`/`ExactEdgeRelationCache`/
-  `mapConsumerShardToProducer`/`getBalancedShard`旧机制已删除，carrier组装收敛到
-  `assembleStructuredDAGEdgeDemandPlan(dag, edge, placements, trial, demand, plan)`这一条入口。
-  该函数自带direct/data-input gate（init/support edge仍不进carrier组装，由consumer typed lowering
-  处理），evaluator与enumerator final loop复用同一trial与verdict，不再重复建trial或重复query。
-- **Gap 2 multi-result**：`LogicalTileBinding.resultIndex`绑定ownership到具体producer result；
-  两个trial builder逐result构造binding，query只读取edge指名的result；replication fallback按
-  result rank独立判定。multi-result producer/consumer的production路径由
-  `MultiResultProducerCarriesPerResultOwnership`等case覆盖。
-- **Gap 3 invalidation**：`IREpoch`仅为borrow identity token（`mint()`唯一性），真实失效边界是query
-  构造时捕获的structural IR snapshot——借出function的operation identity + body operation count，每次
-  query入口校验，原位mutation后旧query立即以IndeterminateFailure拒绝，不继续使用任何cache。
-  `InPlaceMutationInvalidatesTheQuerySnapshot`覆盖。
-- **Gap 4 payload/确定性**：Satisfied路径填充`consumerIterationDomain`/`producerDemand`/
-  `ownershipIntersections`/`perDestination`/`role`/`mergeObligation`；ownership intersections与
-  per-destination均按Tile id排序；overlap witness改为单遍累加（owner与之前全部owner的union求交，
-  与all-pairs witness逐点等价），与caller binding顺序无关。
-- **性能**：`fromAffineMap`对projected permutation map按构造直接设置`projectedRectanglePattern`
-  （无需等价证明）；`IndexRelation::preimage`对矩形domain走算术fast path；query的矩形image按
-  `(edge, rectangle content)` typed-content memo缓存（epoch-scoped、确定性）；adapter的per-result
-  relation只推导一次。这些均为纯优化，不改typed合同或结果内容。
-
-以上缺口修复后，需要用对应定向正负case和正常TensorProgram→Q50.0路径重新签发，才能将Q50.A恢复为
-`done`；Q52长跑性能与Q50.G/H physical carrier扩展不用于掩盖这些logical boundary缺口。
+上述四项review阻塞已闭合，但本轮没有执行正常TensorProgram→完整Q50.0 source-to-package gate，因此Q50.A在
+`tasks/progress.md`保持`doing`。恢复`done`仍须按本节Gate重放五类relation的production链路；Q52枚举性能与
+Q50.G/H physical carrier扩展不能代签该completion gate。
 
 ## Q51.Core：先建立共同搜索骨架
 

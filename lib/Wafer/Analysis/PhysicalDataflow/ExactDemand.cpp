@@ -2,24 +2,12 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 
-#include <atomic>
-
 namespace wafer::analysis {
-namespace {
-
-std::atomic<uint64_t> &getProcessGeneration() {
-  static std::atomic<uint64_t> generation{1};
-  return generation;
-}
-
-} // namespace
 
 IREpoch IREpoch::mint() {
-  // The process counter provides token uniqueness only; it is not an
-  // invalidation mechanism and never enters a cache key or legality
-  // decision.
-  return IREpoch(getProcessGeneration().fetch_add(1, std::memory_order_relaxed) +
-                 1);
+  // Allocation identity is owned by this value and its copies. It provides a
+  // borrow-lifetime token without process-global mutable compiler state.
+  return IREpoch(std::make_shared<const Token>());
 }
 
 ExactDemandStatus mapIndexRelationStatus(IndexRelationStatus status) {

@@ -11,6 +11,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -35,19 +36,20 @@ public:
   /// never an invalidation mechanism.
   static IREpoch mint();
 
-  uint64_t getGeneration() const { return generation; }
-  bool isValid() const { return generation != 0; }
+  bool isValid() const { return token != nullptr; }
 
-  friend bool operator==(IREpoch lhs, IREpoch rhs) {
-    return lhs.generation == rhs.generation;
+  friend bool operator==(const IREpoch &lhs, const IREpoch &rhs) {
+    return lhs.token == rhs.token;
   }
-  friend bool operator!=(IREpoch lhs, IREpoch rhs) {
+  friend bool operator!=(const IREpoch &lhs, const IREpoch &rhs) {
     return !(lhs == rhs);
   }
 
 private:
-  explicit constexpr IREpoch(uint64_t generation) : generation(generation) {}
-  uint64_t generation = 0;
+  struct Token {};
+  explicit IREpoch(std::shared_ptr<const Token> token)
+      : token(std::move(token)) {}
+  std::shared_ptr<const Token> token;
 };
 
 /// Ownership role of one logical shard owner.
@@ -90,9 +92,9 @@ struct LogicalExecutionShard {
 /// and, per producer result, every owner's exact result-space domain.
 /// `node` is the DAG node identity of the consuming query. `executionShards`
 /// is optional for whole-edge-only proofs; the production adapter populates
-/// it and the canonical carrier requires it, except under Presburger budget
-/// exhaustion where it stays empty and the query reports the same machinery
-/// failure as IndeterminateFailure.
+/// it and the canonical carrier requires it. Adapter construction failures,
+/// including Presburger budget exhaustion, remain typed machinery failures
+/// and never masquerade as the optional whole-edge-only form.
 struct LogicalNodeTrial {
   uint32_t node = 0;
   std::optional<mlir::presburger::PresburgerSet> completeIterationDomain;

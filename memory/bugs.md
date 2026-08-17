@@ -750,3 +750,24 @@
   （attach被ptrace禁止，但gdb启动inferior可行）。
 - 防复发：Tools目录的lit/ctest在声称gate通过前要单独执行并带wall-time上限；materialization验证链的
   每op递归walk需要memo化或按relation反向索引，避免O(N²)回归。
+
+## operation count不能作为IR mutation snapshot
+
+- 现象：analysis/query缓存借入一个FuncOp后只记录顶层operation数量；原位修改nested op的attribute、operand或result type时，
+  operation数量和root指针均不变，旧relation cache仍被接受。
+- 根因：结构元素数量不是IR语义identity；MLIR rewrite可以在不增删operation的情况下改变legality、index relation和lowering。
+- 修复模式：需要在不可控mutation边界外fail closed时，使用pinned MLIR的nested `OperationFingerPrint`观察operation identity/
+  nesting、attributes/properties、blocks、operands、successors和result types；borrow token只表达共同lifetime，不再维护第二份
+  process-global generation。若owner能控制全部mutation，优先由明确的analysis invalidation边界重建query。
+- 防复发：invalidation测试必须修改nested semantic attribute、operand或type且保持operation count不变；只测试插入/删除op不能
+  证明snapshot完整。
+
+## projected affine fast path必须保留relation两侧和中间domain bounds
+
+- 现象：projected-permutation relation的矩形image/preimage fast path只检查destination bounds，source较小时返回越界矩形；两个
+  各自有界的projection compose后直接传播pattern，还会绕过intermediate domain clipping。
+- 根因：projection pattern只描述坐标等式，不包含bounded Presburger relation的source、destination和composition中间域；把pattern
+  当成完整relation会扩大exact set。
+- 修复模式：fast path同时保存并检查source/destination shape，任何边界可能裁剪时回退generic Presburger证明；composition默认丢弃
+  pattern，只有builder对完整bounded relation完成等价证明后才能恢复。测试同时比较越界image、反向preimage和bounded compose。
+- 防复发：每个关系fast path都必须说明它保留了哪些domain constraints；不能只用in-bounds identity/permutation正例证明exactness。

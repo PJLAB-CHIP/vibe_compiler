@@ -1,4 +1,5 @@
-//===- StructuredDAGEdgeDemandPlan.cpp - Exact logical edge demand ---------===//
+//===- StructuredDAGEdgeDemandPlan.cpp - Exact logical edge demand
+//---------===//
 
 #include "StructuredDAGEdgeDemandPlan.h"
 
@@ -8,6 +9,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <memory>
 
 namespace wafer::compiler::detail {
@@ -24,13 +26,12 @@ mlir::FailureOr<T> fail(std::string *failureReason, llvm::StringRef message) {
   return mlir::failure();
 }
 
-mlir::LogicalResult
-appendEdgeDemandPlan(const StructuredDAGAnalysis &dag, const StructuredDAGEdge &edge,
-                     const StructuredDAGNodePlacement &producerPlacement,
-                     const StructuredDAGNodePlacement &consumerPlacement,
-                     StructuredDAGEdgeDemandPlan *result,
-                     StructuredDAGExactDemandQuery *query,
-                     std::string *failureReason) {
+mlir::LogicalResult appendEdgeDemandPlan(
+    const StructuredDAGAnalysis &dag, const StructuredDAGEdge &edge,
+    const StructuredDAGNodePlacement &producerPlacement,
+    const StructuredDAGNodePlacement &consumerPlacement,
+    StructuredDAGEdgeDemandPlan *result, StructuredDAGExactDemandQuery *query,
+    std::string *failureReason) {
   if (producerPlacement.node != edge.producer ||
       consumerPlacement.node != edge.consumer ||
       producerPlacement.tiles.empty() || consumerPlacement.tiles.empty()) {
@@ -68,9 +69,9 @@ appendEdgeDemandPlan(const StructuredDAGAnalysis &dag, const StructuredDAGEdge &
   // lowering, and their logical verdicts are consumed by the placement
   // legality owner, not by this carrier adapter.
   std::string trialFailure;
-  mlir::FailureOr<analysis::LogicalShardTrial> trial = buildEdgeShardTrial(
-      dag, producerPlacement, consumerPlacement, query->getEpoch(),
-      &trialFailure);
+  mlir::FailureOr<analysis::LogicalShardTrial> trial =
+      buildEdgeShardTrial(dag, producerPlacement, consumerPlacement,
+                          query->getEpoch(), &trialFailure);
   if (mlir::failed(trial)) {
     setFailure(failureReason, trialFailure);
     return mlir::failure();
@@ -87,9 +88,9 @@ appendEdgeDemandPlan(const StructuredDAGAnalysis &dag, const StructuredDAGEdge &
   if (!direct || !isDataInput)
     return mlir::success();
 
-  return assembleStructuredDAGEdgeDemandPlan(
-      dag, edge, producerPlacement, consumerPlacement, *trial, demand, result,
-      failureReason);
+  return assembleStructuredDAGEdgeDemandPlan(dag, edge, producerPlacement,
+                                             consumerPlacement, *trial, demand,
+                                             result, failureReason);
 }
 
 } // namespace
@@ -144,16 +145,29 @@ mlir::LogicalResult assembleStructuredDAGEdgeDemandPlan(
     setFailure(failureReason, "dependent edge trial misses an endpoint");
     return mlir::failure();
   }
-  // The canonical carrier expresses the consumer access window in consumer
-  // result space; a multi-result consumer has no single such window.
-  if (consumerNode->operation->getNumResults() != 1) {
-    setFailure(failureReason,
-               "canonical edge demand requires a single consumer result");
-    return mlir::failure();
-  }
   if (demand.perDestination.empty()) {
     setFailure(failureReason,
                "canonical edge demand has no destination shard facts");
+    return mlir::failure();
+  }
+  llvm::SmallVector<TileId, 16> expectedDestinations(
+      consumerPlacement.tiles.begin(), consumerPlacement.tiles.end());
+  llvm::SmallVector<TileId, 16> actualDestinations;
+  actualDestinations.reserve(demand.perDestination.size());
+  for (const analysis::ExactDestinationDemand &destination :
+       demand.perDestination)
+    actualDestinations.push_back(destination.destinationTile);
+  auto tileLess = [](TileId lhs, TileId rhs) {
+    return lhs.getValue() < rhs.getValue();
+  };
+  llvm::sort(expectedDestinations, tileLess);
+  llvm::sort(actualDestinations, tileLess);
+  if (expectedDestinations != actualDestinations ||
+      std::adjacent_find(expectedDestinations.begin(),
+                         expectedDestinations.end()) !=
+          expectedDestinations.end()) {
+    setFailure(failureReason,
+               "canonical edge demand does not cover every destination Tile");
     return mlir::failure();
   }
 
@@ -221,8 +235,10 @@ StructuredDAGEdgeDemandPlanner::StructuredDAGEdgeDemandPlanner(
 StructuredDAGEdgeDemandPlanner &StructuredDAGEdgeDemandPlanner::operator=(
     StructuredDAGEdgeDemandPlanner &&) noexcept = default;
 
-mlir::FailureOr<StructuredDAGEdgeDemandPlan> StructuredDAGEdgeDemandPlanner::derive(
-    StructuredDAGEdgeID edgeID, const StructuredDAGNodePlacement &producerPlacement,
+mlir::FailureOr<StructuredDAGEdgeDemandPlan>
+StructuredDAGEdgeDemandPlanner::derive(
+    StructuredDAGEdgeID edgeID,
+    const StructuredDAGNodePlacement &producerPlacement,
     const StructuredDAGNodePlacement &consumerPlacement,
     std::string *failureReason) {
   if (failureReason)
@@ -239,7 +255,8 @@ mlir::FailureOr<StructuredDAGEdgeDemandPlan> StructuredDAGEdgeDemandPlanner::der
   return result;
 }
 
-mlir::FailureOr<StructuredDAGEdgeDemandPlan> StructuredDAGEdgeDemandPlanner::derive(
+mlir::FailureOr<StructuredDAGEdgeDemandPlan>
+StructuredDAGEdgeDemandPlanner::derive(
     llvm::ArrayRef<StructuredDAGNodePlacement> requestedPlacements,
     std::string *failureReason) {
   if (failureReason)
@@ -262,8 +279,10 @@ mlir::FailureOr<StructuredDAGEdgeDemandPlan> StructuredDAGEdgeDemandPlanner::der
 
   StructuredDAGEdgeDemandPlan result;
   for (const StructuredDAGEdge &edge : impl->dag.getEdges()) {
-    const StructuredDAGNodePlacement &producerPlacement = *placements[edge.producer];
-    const StructuredDAGNodePlacement &consumerPlacement = *placements[edge.consumer];
+    const StructuredDAGNodePlacement &producerPlacement =
+        *placements[edge.producer];
+    const StructuredDAGNodePlacement &consumerPlacement =
+        *placements[edge.consumer];
     if (mlir::failed(appendEdgeDemandPlan(impl->dag, edge, producerPlacement,
                                           consumerPlacement, &result,
                                           &impl->query, failureReason)))
@@ -272,11 +291,11 @@ mlir::FailureOr<StructuredDAGEdgeDemandPlan> StructuredDAGEdgeDemandPlanner::der
   return result;
 }
 
-mlir::FailureOr<StructuredDAGEdgeDemandPlan>
-deriveStructuredDAGEdgeDemandPlan(const StructuredDAGAnalysis &dag, StructuredDAGEdgeID edgeID,
-                             const StructuredDAGNodePlacement &producerPlacement,
-                             const StructuredDAGNodePlacement &consumerPlacement,
-                             std::string *failureReason) {
+mlir::FailureOr<StructuredDAGEdgeDemandPlan> deriveStructuredDAGEdgeDemandPlan(
+    const StructuredDAGAnalysis &dag, StructuredDAGEdgeID edgeID,
+    const StructuredDAGNodePlacement &producerPlacement,
+    const StructuredDAGNodePlacement &consumerPlacement,
+    std::string *failureReason) {
   StructuredDAGEdgeDemandPlanner planner(dag);
   return planner.derive(edgeID, producerPlacement, consumerPlacement,
                         failureReason);

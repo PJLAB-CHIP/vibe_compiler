@@ -9,28 +9,28 @@
 
 namespace {
 
+using wafer::TileId;
 using wafer::analysis::DemandDependency;
 using wafer::analysis::DemandEdgeKind;
 using wafer::analysis::ExactDemandResult;
 using wafer::analysis::ExactDemandStatus;
-using wafer::analysis::IREpoch;
 using wafer::analysis::IndexRelation;
 using wafer::analysis::IndexRelationStatus;
+using wafer::analysis::IREpoch;
 using wafer::analysis::LogicalNodeTrial;
 using wafer::analysis::LogicalShardTrial;
 using wafer::analysis::LogicalTileBinding;
 using wafer::analysis::TileRole;
-using wafer::TileId;
 
 TEST(IREpochTest, MintsDistinctTokensAndDefaultIsInvalid) {
   IREpoch first = IREpoch::mint();
   ASSERT_TRUE(first.isValid());
   EXPECT_EQ(first, first);
-  EXPECT_EQ(first.getGeneration(), first.getGeneration());
+  IREpoch copied = first;
+  EXPECT_EQ(first, copied);
 
   IREpoch second = IREpoch::mint();
   EXPECT_NE(first, second);
-  EXPECT_GT(second.getGeneration(), first.getGeneration());
 
   IREpoch invalid;
   EXPECT_FALSE(invalid.isValid());
@@ -38,15 +38,18 @@ TEST(IREpochTest, MintsDistinctTokensAndDefaultIsInvalid) {
 }
 
 TEST(ExactDemandTest, MapsRelationFailuresToTypedVerdicts) {
-  EXPECT_EQ(wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::Unsupported),
-            ExactDemandStatus::UnsupportedSemanticRelation);
-  EXPECT_EQ(wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::SoundBound),
-            ExactDemandStatus::IndeterminateFailure);
-  EXPECT_EQ(wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::Invalid),
-            ExactDemandStatus::IndeterminateFailure);
   EXPECT_EQ(
-      wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::ResourceExhausted),
+      wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::Unsupported),
+      ExactDemandStatus::UnsupportedSemanticRelation);
+  EXPECT_EQ(
+      wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::SoundBound),
       ExactDemandStatus::IndeterminateFailure);
+  EXPECT_EQ(
+      wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::Invalid),
+      ExactDemandStatus::IndeterminateFailure);
+  EXPECT_EQ(wafer::analysis::mapIndexRelationStatus(
+                IndexRelationStatus::ResourceExhausted),
+            ExactDemandStatus::IndeterminateFailure);
 }
 
 TEST(ExactDemandTest, OnlyProvenConclusionsAreCacheableAsLegality) {
@@ -72,12 +75,12 @@ TEST(ExactDemandTest, TrialCarriesExplicitDomainsRolesAndEpoch) {
   LogicalNodeTrial node;
   node.node = 3;
   node.completeIterationDomain = *iteration.set;
-  node.bindings.push_back(LogicalTileBinding{
-      TileId(2), /*resultIndex=*/0, *firstOwner.set,
-      TileRole::PartialReductionContribution});
   node.bindings.push_back(
-      LogicalTileBinding{TileId(5), /*resultIndex=*/0, *secondOwner.set,
-                         TileRole::UniquePartition});
+      LogicalTileBinding{TileId(2), /*resultIndex=*/0, *firstOwner.set,
+                         TileRole::PartialReductionContribution});
+  node.bindings.push_back(LogicalTileBinding{TileId(5), /*resultIndex=*/0,
+                                             *secondOwner.set,
+                                             TileRole::UniquePartition});
 
   IREpoch epoch = IREpoch::mint();
   LogicalShardTrial trial;

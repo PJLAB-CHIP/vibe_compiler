@@ -1,4 +1,5 @@
-//===- StructuredDAGPlacementEnumeration.cpp - Joint node placement ------------===//
+//===- StructuredDAGPlacementEnumeration.cpp - Joint node placement
+//------------===//
 
 #include "StructuredDAGPlacementEnumeration.h"
 
@@ -47,17 +48,15 @@ uint64_t saturatingAdd(uint64_t lhs, uint64_t rhs) {
              : lhs + rhs;
 }
 
-bool tileVectorLess(llvm::ArrayRef<TileId> lhs,
-                    llvm::ArrayRef<TileId> rhs) {
-  return std::lexicographical_compare(
-      lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
-      [](TileId left, TileId right) {
-        return left.getValue() < right.getValue();
-      });
+bool tileVectorLess(llvm::ArrayRef<TileId> lhs, llvm::ArrayRef<TileId> rhs) {
+  return std::lexicographical_compare(lhs.begin(), lhs.end(), rhs.begin(),
+                                      rhs.end(), [](TileId left, TileId right) {
+                                        return left.getValue() <
+                                               right.getValue();
+                                      });
 }
 
-size_t getOverlap(llvm::ArrayRef<TileId> lhs,
-                  llvm::ArrayRef<TileId> rhs) {
+size_t getOverlap(llvm::ArrayRef<TileId> lhs, llvm::ArrayRef<TileId> rhs) {
   size_t overlap = 0;
   for (TileId tile : lhs)
     overlap += llvm::is_contained(rhs, tile);
@@ -73,8 +72,7 @@ bool sameGroup(const TopologyTileGroup &lhs, const TopologyTileGroup &rhs) {
   return lhs.tiles == rhs.tiles;
 }
 
-uint64_t getInternalHopWork(const TargetTopology &topology,
-                            CardId cardId,
+uint64_t getInternalHopWork(const TargetTopology &topology, CardId cardId,
                             llvm::ArrayRef<TileId> tiles) {
   // Pairwise topology distance is independent of Tile ID traversal order and
   // distinguishes a compact 2x2 rectangle from a 1x4 strip of the same size.
@@ -102,10 +100,8 @@ deriveTopologyGroups(const TargetTopology &topology, CardId cardId,
     TopologyTileGroup group;
     group.tiles.append(tiles.begin(), tiles.end());
     llvm::sort(group.tiles, [&](TileId lhs, TileId rhs) {
-      std::optional<TileCoordinate> left =
-          topology.getTileCoordinate(lhs);
-      std::optional<TileCoordinate> right =
-          topology.getTileCoordinate(rhs);
+      std::optional<TileCoordinate> left = topology.getTileCoordinate(lhs);
+      std::optional<TileCoordinate> right = topology.getTileCoordinate(rhs);
       if (!left || !right)
         return lhs.getValue() < rhs.getValue();
       return std::tuple(left->y, left->x, lhs.getValue()) <
@@ -170,7 +166,7 @@ struct StaticSpatialAxis {
 
 std::optional<llvm::SmallVector<StaticSpatialAxis, 4>>
 getNodeSpatialAxes(const StructuredDAGNode &node) {
-  if (!node.operation || node.operation->getNumResults() != 1)
+  if (!node.operation || node.operation->getNumResults() == 0)
     return std::nullopt;
   auto type = mlir::dyn_cast<mlir::RankedTensorType>(
       node.operation->getResult(0).getType());
@@ -282,11 +278,9 @@ public:
                               analysis::IREpoch epoch)
       : dag(dag), query(dag, epoch) {}
 
-  analysis::ExactDemandStatus
-  lookupOrCompute(StructuredDAGEdgeID edgeID,
-                  const StructuredDAGNodePlacement &producer,
-                  const StructuredDAGNodePlacement &consumer,
-                  std::string *failureReason) {
+  analysis::ExactDemandStatus lookupOrCompute(
+      StructuredDAGEdgeID edgeID, const StructuredDAGNodePlacement &producer,
+      const StructuredDAGNodePlacement &consumer, std::string *failureReason) {
     TransitionRelation relation = getRelation(producer, consumer);
     const size_t hash = static_cast<size_t>(llvm::hash_combine(
         edgeID, relation.producerShardDimension,
@@ -414,7 +408,8 @@ findPlacement(const PartialPlacementState &state, StructuredDAGNodeID node) {
 
 static llvm::SmallVector<StructuredDAGNodePlacement, 16>
 materializePlacements(const PartialPlacementState &state) {
-  llvm::SmallVector<StructuredDAGNodePlacement, 16> result(getPlacementCount(state));
+  llvm::SmallVector<StructuredDAGNodePlacement, 16> result(
+      getPlacementCount(state));
   for (const PlacementPathNode *current = state.path.get(); current;
        current = current->parent.get())
     result[current->placement.node] = current->placement;
@@ -440,7 +435,8 @@ classifyPlacementRelation(const StructuredDAGNodePlacement &producer,
   return PlacementRelationClass::Disjoint;
 }
 
-uint32_t countDistinctGroups(llvm::ArrayRef<StructuredDAGNodePlacement> placements) {
+uint32_t
+countDistinctGroups(llvm::ArrayRef<StructuredDAGNodePlacement> placements) {
   uint32_t result = 0;
   for (size_t index = 0; index < placements.size(); ++index)
     if (llvm::none_of(llvm::ArrayRef(placements).take_front(index),
@@ -452,7 +448,8 @@ uint32_t countDistinctGroups(llvm::ArrayRef<StructuredDAGNodePlacement> placemen
   return result;
 }
 
-uint32_t countUtilizedTiles(llvm::ArrayRef<StructuredDAGNodePlacement> placements) {
+uint32_t
+countUtilizedTiles(llvm::ArrayRef<StructuredDAGNodePlacement> placements) {
   llvm::SmallVector<int64_t, 16> tiles;
   for (const StructuredDAGNodePlacement &placement : placements)
     for (TileId tile : placement.tiles)
@@ -596,7 +593,8 @@ deriveNodePlacementDomain(const StructuredDAGNode &node,
 }
 
 llvm::SmallVector<StructuredDAGNodePlacement, 32>
-deriveNodeOptions(const StructuredDAGAnalysis &dag, const StructuredDAGNode &node,
+deriveNodeOptions(const StructuredDAGAnalysis &dag,
+                  const StructuredDAGNode &node,
                   const PartialPlacementState &state,
                   llvm::ArrayRef<TopologyTileGroup> groups,
                   EdgeTransitionLegalityCache &transitionCache,
@@ -631,8 +629,8 @@ deriveNodeOptions(const StructuredDAGAnalysis &dag, const StructuredDAGNode &nod
       option.placement.shardDimension = axis.resultDimension;
       option.placement.tiles = group.tiles;
       option.internalHopWork = group.internalHopWork;
-      option.unusedTiles = static_cast<uint32_t>(
-          llvm::count_if(group.tiles, [&](TileId tile) {
+      option.unusedTiles =
+          static_cast<uint32_t>(llvm::count_if(group.tiles, [&](TileId tile) {
             return !utilized.contains(tile.getValue());
           }));
       options.push_back(std::move(option));
@@ -654,7 +652,8 @@ deriveNodeOptions(const StructuredDAGAnalysis &dag, const StructuredDAGNode &nod
   auto isLegal = [&](size_t optionIndex) {
     if (optionLegality[optionIndex] >= 0)
       return optionLegality[optionIndex] != 0;
-    const StructuredDAGNodePlacement &candidate = options[optionIndex].placement;
+    const StructuredDAGNodePlacement &candidate =
+        options[optionIndex].placement;
     for (StructuredDAGEdgeID edgeID : node.incomingEdges) {
       const StructuredDAGEdge *edge = dag.getEdge(edgeID);
       const StructuredDAGNodePlacement *producer =
@@ -726,8 +725,7 @@ deriveNodeOptions(const StructuredDAGAnalysis &dag, const StructuredDAGNode &nod
 }
 
 PartialPlacementState extendState(const StructuredDAGAnalysis &dag,
-                                  const TargetTopology &topology,
-                                  CardId cardId,
+                                  const TargetTopology &topology, CardId cardId,
                                   const PartialPlacementState &parent,
                                   StructuredDAGNodePlacement placement) {
   PartialPlacementState result = parent;
@@ -837,7 +835,8 @@ bool partialStateLess(const PartialPlacementState &lhs,
   return false;
 }
 
-static bool isObservableRoot(const StructuredDAGAnalysis &dag, StructuredDAGNodeID node) {
+static bool isObservableRoot(const StructuredDAGAnalysis &dag,
+                             StructuredDAGNodeID node) {
   return llvm::any_of(dag.getObservableOutputRootNodes(),
                       [&](llvm::ArrayRef<StructuredDAGNodeID> roots) {
                         return llvm::is_contained(roots, node);
@@ -845,7 +844,8 @@ static bool isObservableRoot(const StructuredDAGAnalysis &dag, StructuredDAGNode
 }
 
 static bool remainsOnLiveBoundary(const StructuredDAGAnalysis &dag,
-                                  StructuredDAGNodeID node, size_t placedNodes) {
+                                  StructuredDAGNodeID node,
+                                  size_t placedNodes) {
   if (isObservableRoot(dag, node))
     return true;
   const StructuredDAGNode *current = dag.getNode(node);
@@ -1108,8 +1108,9 @@ mapRootShardAxisToOutput(const StructuredDAGAnalysis &dag, unsigned outputIndex,
 }
 
 mlir::FailureOr<llvm::SmallVector<StructuredDAGObservablePlacement, 4>>
-deriveObservablePlacements(const StructuredDAGAnalysis &dag,
-                           llvm::ArrayRef<StructuredDAGNodePlacement> placements) {
+deriveObservablePlacements(
+    const StructuredDAGAnalysis &dag,
+    llvm::ArrayRef<StructuredDAGNodePlacement> placements) {
   llvm::SmallVector<StructuredDAGObservablePlacement, 4> outputs;
   outputs.reserve(dag.getFunction().getNumResults());
   mlir::func::ReturnOp returnOp = mlir::dyn_cast<mlir::func::ReturnOp>(
@@ -1209,7 +1210,8 @@ derivePlacementResidencies(const StructuredDAGAnalysis &dag,
                            const StructuredDAGEdgeStrategyPlan &plan) {
   std::map<std::pair<StructuredDAGEdgeID, int64_t>, uint64_t> bytesByEdgeTile;
   for (const SpatialEdgeStrategy &strategy : plan.strategies) {
-    std::optional<StructuredDAGEdgeID> edge = resolveStrategyEdge(dag, strategy);
+    std::optional<StructuredDAGEdgeID> edge =
+        resolveStrategyEdge(dag, strategy);
     std::optional<uint64_t> elementBytes = getStrategyElementBytes(strategy);
     if (!edge || !elementBytes)
       return std::nullopt;
@@ -1251,7 +1253,8 @@ derivePeerMovements(const TargetTopology &topology, CardId cardId,
                     const StructuredDAGEdgeStrategyPlan &plan) {
   llvm::SmallVector<StructuredDAGPeerMovement, 32> movements;
   for (const SpatialEdgeStrategy &strategy : plan.strategies) {
-    std::optional<StructuredDAGEdgeID> edge = resolveStrategyEdge(dag, strategy);
+    std::optional<StructuredDAGEdgeID> edge =
+        resolveStrategyEdge(dag, strategy);
     if (!edge)
       return std::nullopt;
     for (const SpatialEdgeFragment &fragment : strategy.fragments) {
@@ -1432,9 +1435,9 @@ bool candidateLess(const StructuredDAGPlacementCandidate &lhs,
 
 mlir::FailureOr<StructuredDAGPlacementSearchDomain>
 deriveStructuredDAGPlacementSearchDomain(const StructuredDAGAnalysis &dag,
-                                    const TargetTopology &topology,
-                                    CardId cardId,
-                                    std::string *failureReason) {
+                                         const TargetTopology &topology,
+                                         CardId cardId,
+                                         std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
   if (dag.getNodes().empty()) {
@@ -1527,8 +1530,8 @@ public:
       // the logical boundary is derived exactly once per placement pair.
       StructuredDAGEdgeDemandPlan demandPlan;
       if (mlir::succeeded(assembleStructuredDAGEdgeDemandPlan(
-              dag, edge, producer, consumer, *trial, entry.demand,
-              &demandPlan, &entry.failureReason))) {
+              dag, edge, producer, consumer, *trial, entry.demand, &demandPlan,
+              &entry.failureReason))) {
         mlir::FailureOr<StructuredDAGEdgeStrategyPlan> plan =
             lowerStructuredDAGEdgeDemandPlanToCanonicalStrategies(
                 dag, demandPlan, &entry.failureReason);
@@ -1560,8 +1563,7 @@ StructuredDAGPlacementEvaluator &StructuredDAGPlacementEvaluator::operator=(
 mlir::FailureOr<StructuredDAGPlacementCandidate>
 StructuredDAGPlacementEvaluator::evaluate(
     llvm::ArrayRef<StructuredDAGNodePlacement> requestedPlacements,
-    std::string *failureReason,
-    StructuredDAGPlacementLegality *legality) {
+    std::string *failureReason, StructuredDAGPlacementLegality *legality) {
   if (failureReason)
     failureReason->clear();
   auto reportIndeterminate = [&](llvm::StringRef detail) {
@@ -1594,8 +1596,9 @@ StructuredDAGPlacementEvaluator::evaluate(
   for (auto [node, placement] :
        llvm::zip_equal(dag.getNodes(), requestedPlacements)) {
     if (placement.node != node.id || placement.tiles.empty()) {
-      setFailure(failureReason,
-                 "structured-DAG placement evaluation has an invalid node option");
+      setFailure(
+          failureReason,
+          "structured-DAG placement evaluation has an invalid node option");
       reportIndeterminate(
           "structured-DAG placement evaluation has an invalid node option");
       return mlir::failure();
@@ -1604,8 +1607,8 @@ StructuredDAGPlacementEvaluator::evaluate(
   }
   llvm::SmallVector<StructuredDAGNodePlacement, 16> placements =
       materializePlacements(state);
-  mlir::FailureOr<llvm::SmallVector<StructuredDAGObservablePlacement, 4>> outputs =
-      deriveObservablePlacements(dag, placements);
+  mlir::FailureOr<llvm::SmallVector<StructuredDAGObservablePlacement, 4>>
+      outputs = deriveObservablePlacements(dag, placements);
   if (mlir::failed(outputs)) {
     setFailure(failureReason,
                "structured-DAG placement has inconsistent observable roots");
@@ -1650,8 +1653,8 @@ StructuredDAGPlacementEvaluator::evaluate(
   }
   std::optional<llvm::SmallVector<StructuredDAGPeerMovement, 32>> movements =
       derivePeerMovements(topology, cardId, dag, edgePlan);
-  std::optional<llvm::SmallVector<StructuredDAGLocalResidency, 32>> residencies =
-      derivePlacementResidencies(dag, edgePlan);
+  std::optional<llvm::SmallVector<StructuredDAGLocalResidency, 32>>
+      residencies = derivePlacementResidencies(dag, edgePlan);
   if (!movements || !residencies) {
     setFailure(failureReason,
                "structured-DAG placement cannot derive exact edge resources");
@@ -1660,10 +1663,10 @@ StructuredDAGPlacementEvaluator::evaluate(
     return mlir::failure();
   }
   mlir::FailureOr<StructuredDAGCandidateSchedule> schedule =
-      scheduleStructuredDAGCandidate(dag, *availableTiles, placements, *residencies,
-                                failureReason, *movements,
-                                /*localMovements=*/{},
-                                /*enforceSPMCapacity=*/false);
+      scheduleStructuredDAGCandidate(dag, *availableTiles, placements,
+                                     *residencies, failureReason, *movements,
+                                     /*localMovements=*/{},
+                                     /*enforceSPMCapacity=*/false);
   if (mlir::failed(schedule)) {
     reportIndeterminate(
         "structured-DAG placement cannot schedule the candidate");
@@ -1695,19 +1698,16 @@ mlir::FailureOr<StructuredDAGPlacementCandidate> evaluateStructuredDAGPlacement(
     const StructuredDAGAnalysis &dag, const TargetTopology &topology,
     CardId cardId,
     llvm::ArrayRef<StructuredDAGNodePlacement> requestedPlacements,
-    std::string *failureReason,
-    StructuredDAGPlacementLegality *legality) {
+    std::string *failureReason, StructuredDAGPlacementLegality *legality) {
   StructuredDAGPlacementEvaluator evaluator(dag, topology, cardId);
   return evaluator.evaluate(requestedPlacements, failureReason, legality);
 }
 
 mlir::FailureOr<llvm::SmallVector<StructuredDAGPlacementCandidate, 12>>
-enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
-                            const TargetTopology &topology,
-                            CardId cardId,
-                            StructuredDAGPlacementEnumerationStatistics *statistics,
-                            std::string *failureReason,
-                            StructuredDAGPlacementLegality *legality) {
+enumerateStructuredDAGPlacements(
+    const StructuredDAGAnalysis &dag, const TargetTopology &topology,
+    CardId cardId, StructuredDAGPlacementEnumerationStatistics *statistics,
+    std::string *failureReason, StructuredDAGPlacementLegality *legality) {
   if (failureReason)
     failureReason->clear();
   StructuredDAGPlacementEnumerationStatistics localStatistics;
@@ -1715,7 +1715,8 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
       statistics ? *statistics : localStatistics;
   resultStatistics = {};
   if (dag.getNodes().empty()) {
-    setFailure(failureReason, "structured-DAG placement enumeration requires a DAG");
+    setFailure(failureReason,
+               "structured-DAG placement enumeration requires a DAG");
     return mlir::failure();
   }
   std::optional<llvm::ArrayRef<TileId>> availableTiles =
@@ -1727,17 +1728,19 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
   }
   if (dag.getObservableOutputRootNodes().size() !=
           dag.getFunction().getNumResults() ||
-      llvm::any_of(
-          dag.getObservableOutputRootNodes(),
-          [](llvm::ArrayRef<StructuredDAGNodeID> roots) { return roots.empty(); }))
+      llvm::any_of(dag.getObservableOutputRootNodes(),
+                   [](llvm::ArrayRef<StructuredDAGNodeID> roots) {
+                     return roots.empty();
+                   }))
     return llvm::SmallVector<StructuredDAGPlacementCandidate, 12>{};
 
   llvm::SmallVector<TopologyTileGroup, 128> groups =
       deriveTopologyGroups(topology, cardId, *availableTiles);
   resultStatistics.placementGroupCount = groups.size();
   if (groups.empty()) {
-    setFailure(failureReason,
-               "structured-DAG placement enumeration has no connected Tile group");
+    setFailure(
+        failureReason,
+        "structured-DAG placement enumeration has no connected Tile group");
     return mlir::failure();
   }
 
@@ -1767,8 +1770,9 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
             extendState(dag, topology, cardId, state, std::move(option)));
     }
     if (expanded.empty()) {
-      setFailure(failureReason,
-                 "structured-DAG placement enumeration cannot place a DAG node");
+      setFailure(
+          failureReason,
+          "structured-DAG placement enumeration cannot place a DAG node");
       return mlir::failure();
     }
     retainedStates =
@@ -1812,13 +1816,12 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
   llvm::SmallVector<StructuredDAGPlacementCandidate, 24> accepted;
   std::unordered_map<size_t, llvm::SmallVector<size_t, 1>>
       resourceRenamingClasses;
-  StructuredDAGExactDemandQuery demandQuery(dag,
-                                            analysis::IREpoch::mint());
+  StructuredDAGExactDemandQuery demandQuery(dag, analysis::IREpoch::mint());
   for (PartialPlacementState &state : retainedStates) {
     llvm::SmallVector<StructuredDAGNodePlacement, 16> statePlacements =
         materializePlacements(state);
-    mlir::FailureOr<llvm::SmallVector<StructuredDAGObservablePlacement, 4>> outputs =
-        deriveObservablePlacements(dag, statePlacements);
+    mlir::FailureOr<llvm::SmallVector<StructuredDAGObservablePlacement, 4>>
+        outputs = deriveObservablePlacements(dag, statePlacements);
     if (mlir::failed(outputs)) {
       resultStatistics.rejectedTransitions =
           saturatingAdd(resultStatistics.rejectedTransitions, 1);
@@ -1894,8 +1897,8 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
     }
     std::optional<llvm::SmallVector<StructuredDAGPeerMovement, 32>> movements =
         derivePeerMovements(topology, cardId, dag, *edgePlan);
-    std::optional<llvm::SmallVector<StructuredDAGLocalResidency, 32>> residencies =
-        derivePlacementResidencies(dag, *edgePlan);
+    std::optional<llvm::SmallVector<StructuredDAGLocalResidency, 32>>
+        residencies = derivePlacementResidencies(dag, *edgePlan);
     if (!movements || !residencies) {
       resultStatistics.rejectedTransitions =
           saturatingAdd(resultStatistics.rejectedTransitions, 1);
@@ -1948,9 +1951,10 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
     // and enforce the search-time proven capacity bound.
     mlir::FailureOr<StructuredDAGCandidateSchedule> schedule =
         scheduleStructuredDAGCandidate(dag, *availableTiles, statePlacements,
-                                  *residencies, &ignoredFailure, *movements,
-                                  /*localMovements=*/{},
-                                  /*enforceSPMCapacity=*/false);
+                                       *residencies, &ignoredFailure,
+                                       *movements,
+                                       /*localMovements=*/{},
+                                       /*enforceSPMCapacity=*/false);
     if (mlir::failed(schedule)) {
       resultStatistics.rejectedTransitions =
           saturatingAdd(resultStatistics.rejectedTransitions, 1);

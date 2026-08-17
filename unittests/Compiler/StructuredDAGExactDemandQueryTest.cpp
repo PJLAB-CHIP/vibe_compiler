@@ -61,6 +61,7 @@ protected:
     StructuredDAGNodePlacement result;
     result.node = node;
     result.shardDimension = dimension;
+    result.spatialIteratorDimension = dimension;
     for (int64_t value : tileValues)
       result.tiles.push_back(TileId(value));
     return result;
@@ -75,10 +76,10 @@ protected:
     return result;
   }
 
-  static analysis::LogicalShardTrial buildTrial(
-      const StructuredDAGAnalysis &dag,
-      llvm::ArrayRef<StructuredDAGNodePlacement> placements,
-      analysis::IREpoch epoch = analysis::IREpoch::mint()) {
+  static analysis::LogicalShardTrial
+  buildTrial(const StructuredDAGAnalysis &dag,
+             llvm::ArrayRef<StructuredDAGNodePlacement> placements,
+             analysis::IREpoch epoch = analysis::IREpoch::mint()) {
     std::string failureReason;
     auto trial = buildLogicalShardTrial(dag, placements, epoch, &failureReason);
     EXPECT_TRUE(mlir::succeeded(trial)) << failureReason;
@@ -96,8 +97,8 @@ protected:
     std::abort();
   }
 
-  static analysis::LogicalNodeTrial &findNode(analysis::LogicalShardTrial &trial,
-                                              uint32_t node) {
+  static analysis::LogicalNodeTrial &
+  findNode(analysis::LogicalShardTrial &trial, uint32_t node) {
     for (analysis::LogicalNodeTrial &entry : trial.nodes)
       if (entry.node == node)
         return entry;
@@ -121,8 +122,8 @@ protected:
     }
   }
 
-  static const analysis::ExactOwnershipIntersection *findIntersection(
-      const analysis::ExactDemandResult &result, TileId tile) {
+  static const analysis::ExactOwnershipIntersection *
+  findIntersection(const analysis::ExactDemandResult &result, TileId tile) {
     for (const analysis::ExactOwnershipIntersection &intersection :
          result.ownershipIntersections)
       if (intersection.tile == tile)
@@ -491,7 +492,8 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   expectDemandPoints(result, {{0, 0}, {0, 7}, {3, 0}, {3, 7}}, {});
 }
 
-TEST_F(StructuredDAGExactDemandQueryTest, BroadcastRelationKeepsUniqueSourceSet) {
+TEST_F(StructuredDAGExactDemandQueryTest,
+       BroadcastRelationKeepsUniqueSourceSet) {
   auto module = parse(kBroadcast);
   StructuredDAGAnalysis dag = buildDAG(*module);
   StructuredDAGEdgeID edge = findEdge(dag, 0, 1);
@@ -505,7 +507,8 @@ TEST_F(StructuredDAGExactDemandQueryTest, BroadcastRelationKeepsUniqueSourceSet)
   expectDemandPoints(result, {{0}, {3}}, {{5}});
 }
 
-TEST_F(StructuredDAGExactDemandQueryTest, ExplicitInitProducerCarriesExactDemand) {
+TEST_F(StructuredDAGExactDemandQueryTest,
+       ExplicitInitProducerCarriesExactDemand) {
   auto module = parse(kInitRoot);
   StructuredDAGAnalysis dag = buildDAG(*module);
   StructuredDAGEdgeID edge = findEdge(dag, 0, 1);
@@ -575,7 +578,8 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   StructuredDAGExactDemandQuery query(dag, trial.epoch);
   analysis::ExactDemandResult result = query.query(edge, trial);
 
-  EXPECT_EQ(result.status, analysis::ExactDemandStatus::ProvenLogicalInfeasible);
+  EXPECT_EQ(result.status,
+            analysis::ExactDemandStatus::ProvenLogicalInfeasible);
   ASSERT_TRUE(result.uncoveredWitness);
   llvm::SmallVector<int64_t, 4> covered({0});
   llvm::SmallVector<int64_t, 4> uncovered({7});
@@ -592,13 +596,13 @@ TEST_F(StructuredDAGExactDemandQueryTest,
       buildTrial(dag, fullPlacements(dag, 0, {0, 1}));
   // Both owners claim the first half: a provable partition contradiction.
   analysis::LogicalNodeTrial &producerTrial = findNode(trial, 0);
-  producerTrial.bindings[1].ownedDomain =
-      producerTrial.bindings[0].ownedDomain;
+  producerTrial.bindings[1].ownedDomain = producerTrial.bindings[0].ownedDomain;
 
   StructuredDAGExactDemandQuery query(dag, trial.epoch);
   analysis::ExactDemandResult result = query.query(edge, trial);
 
-  EXPECT_EQ(result.status, analysis::ExactDemandStatus::ProvenLogicalInfeasible);
+  EXPECT_EQ(result.status,
+            analysis::ExactDemandStatus::ProvenLogicalInfeasible);
   ASSERT_TRUE(result.uncoveredWitness);
   llvm::SmallVector<int64_t, 4> overlapped({2});
   EXPECT_TRUE(result.uncoveredWitness->containsPoint(overlapped));
@@ -613,8 +617,11 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   EXPECT_EQ(reversedResult.status,
             analysis::ExactDemandStatus::ProvenLogicalInfeasible);
   ASSERT_TRUE(reversedResult.uncoveredWitness);
-  EXPECT_TRUE(reversedResult.uncoveredWitness->isEqual(
-      *result.uncoveredWitness));
+  EXPECT_TRUE(
+      reversedResult.uncoveredWitness->isEqual(*result.uncoveredWitness));
+  ASSERT_EQ(reversedResult.ownershipIntersections.size(), 2u);
+  EXPECT_EQ(reversedResult.ownershipIntersections[0].tile, TileId(0));
+  EXPECT_EQ(reversedResult.ownershipIntersections[1].tile, TileId(1));
 }
 
 TEST_F(StructuredDAGExactDemandQueryTest,
@@ -685,15 +692,17 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   EXPECT_EQ(query.query(edge, *trial).status,
             analysis::ExactDemandStatus::Satisfied);
 
-  // Mutate the borrowed function in place (insert one op into the body).
+  // Mutate a nested operation attribute without changing any operation count.
   // The old query must fail closed on every derived fact, including its
   // relation cache; the epoch token itself is not an invalidation mechanism.
   mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
-  mlir::Block &body = function.getBody().front();
-  mlir::OpBuilder builder(&body, body.begin());
-  builder.create<mlir::tensor::EmptyOp>(function.getLoc(),
-                                        function.getResultTypes().front(),
-                                        mlir::ValueRange{});
+  const size_t operationCount =
+      function.getBody().front().getOperations().size();
+  mlir::linalg::MapOp consumer =
+      *std::next(function.getOps<mlir::linalg::MapOp>().begin());
+  consumer->setAttr("test.semantic_revision",
+                    mlir::UnitAttr::get(function.getContext()));
+  EXPECT_EQ(operationCount, function.getBody().front().getOperations().size());
   EXPECT_EQ(query.query(edge, *trial).status,
             analysis::ExactDemandStatus::IndeterminateFailure);
 
@@ -716,8 +725,8 @@ TEST_F(StructuredDAGExactDemandQueryTest, MalformedTrialIsIndeterminate) {
   // Missing producer node entry.
   {
     analysis::LogicalShardTrial broken = trial;
-    broken.nodes.erase(
-        llvm::find_if(broken.nodes, [](const analysis::LogicalNodeTrial &entry) {
+    broken.nodes.erase(llvm::find_if(
+        broken.nodes, [](const analysis::LogicalNodeTrial &entry) {
           return entry.node == 0;
         }));
     EXPECT_EQ(query.query(edge, broken).status,
@@ -751,6 +760,45 @@ TEST_F(StructuredDAGExactDemandQueryTest, MalformedTrialIsIndeterminate) {
     EXPECT_EQ(query.query(edge, broken).status,
               analysis::ExactDemandStatus::IndeterminateFailure);
   }
+  // Present destination shards must all-and-only cover the complete domain.
+  {
+    analysis::LogicalShardTrial broken = trial;
+    findNode(broken, 1).executionShards.pop_back();
+    analysis::ExactDemandResult result = query.query(edge, broken);
+    EXPECT_EQ(result.status, analysis::ExactDemandStatus::IndeterminateFailure);
+    EXPECT_NE(result.detail.find("do not cover"), std::string::npos);
+  }
+  // Overlapping execution domains are malformed even when their union covers.
+  {
+    analysis::LogicalShardTrial broken = trial;
+    analysis::LogicalNodeTrial &consumer = findNode(broken, 1);
+    consumer.executionShards[1].executionDomain =
+        consumer.executionShards[0].executionDomain;
+    analysis::ExactDemandResult result = query.query(edge, broken);
+    EXPECT_EQ(result.status, analysis::ExactDemandStatus::IndeterminateFailure);
+    EXPECT_NE(result.detail.find("overlap"), std::string::npos);
+  }
+  // A Tile has exactly one execution shard.
+  {
+    analysis::LogicalShardTrial broken = trial;
+    analysis::LogicalNodeTrial &consumer = findNode(broken, 1);
+    consumer.executionShards[1].tile = consumer.executionShards[0].tile;
+    analysis::ExactDemandResult result = query.query(edge, broken);
+    EXPECT_EQ(result.status, analysis::ExactDemandStatus::IndeterminateFailure);
+    EXPECT_NE(result.detail.find("repeat"), std::string::npos);
+  }
+  // Every execution shard uses the complete iteration space.
+  {
+    analysis::LogicalShardTrial broken = trial;
+    analysis::IndexSetResult wrongRank =
+        analysis::IndexRelation::staticDomain({8, 8});
+    ASSERT_TRUE(wrongRank.isExact());
+    findNode(broken, 1).executionShards[0].executionDomain = *wrongRank.set;
+    analysis::ExactDemandResult result = query.query(edge, broken);
+    EXPECT_EQ(result.status, analysis::ExactDemandStatus::IndeterminateFailure);
+    EXPECT_NE(result.detail.find("incompatible iteration space"),
+              std::string::npos);
+  }
 }
 
 TEST_F(StructuredDAGExactDemandQueryTest,
@@ -758,8 +806,22 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   auto module = parse(rank17Module());
   StructuredDAGAnalysis dag = buildDAG(*module);
   StructuredDAGEdgeID edge = findEdge(dag, 0, 1);
-  analysis::LogicalShardTrial trial =
-      buildTrial(dag, fullPlacements(dag, 0, {0}));
+  llvm::SmallVector<int64_t, 17> shape(17, 1);
+  analysis::IndexSetResult full = analysis::IndexRelation::staticDomain(shape);
+  ASSERT_TRUE(full.isExact());
+  analysis::LogicalShardTrial trial;
+  trial.epoch = analysis::IREpoch::mint();
+  for (const StructuredDAGNode &node : dag.getNodes()) {
+    analysis::LogicalNodeTrial nodeTrial;
+    nodeTrial.node = node.id;
+    nodeTrial.completeIterationDomain = *full.set;
+    nodeTrial.executionShards.push_back(
+        analysis::LogicalExecutionShard{TileId(0), *full.set});
+    nodeTrial.bindings.push_back(
+        analysis::LogicalTileBinding{TileId(0), /*resultIndex=*/0, *full.set,
+                                     analysis::TileRole::UniquePartition});
+    trial.nodes.push_back(std::move(nodeTrial));
+  }
 
   StructuredDAGExactDemandQuery query(dag, trial.epoch);
   analysis::ExactDemandResult result = query.query(edge, trial);
@@ -836,8 +898,7 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   const analysis::ExactOwnershipIntersection *tile0 =
       findIntersection(resultR, TileId(0));
   ASSERT_TRUE(tile0);
-  EXPECT_TRUE(tile0->set->isEqual(
-      *findIntersection(resultA, TileId(0))->set));
+  EXPECT_TRUE(tile0->set->isEqual(*findIntersection(resultA, TileId(0))->set));
 }
 
 TEST_F(StructuredDAGExactDemandQueryTest,
@@ -853,7 +914,8 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   llvm::SmallVector<int64_t, 4> iterPoint({7});
   EXPECT_TRUE(producerTrial.completeIterationDomain->containsPoint(iterPoint));
   ASSERT_EQ(producerTrial.bindings.size(), 2u);
-  EXPECT_EQ(producerTrial.bindings[0].role, analysis::TileRole::UniquePartition);
+  EXPECT_EQ(producerTrial.bindings[0].role,
+            analysis::TileRole::UniquePartition);
   llvm::SmallVector<int64_t, 4> owned({0});
   llvm::SmallVector<int64_t, 4> notOwned({6});
   EXPECT_TRUE(producerTrial.bindings[0].ownedDomain->containsPoint(owned));
@@ -883,17 +945,12 @@ TEST_F(StructuredDAGExactDemandQueryTest,
     EXPECT_TRUE(mlir::failed(buildLogicalShardTrial(
         dag, placements, analysis::IREpoch::mint(), &failureReason)));
   }
-  // A shard dimension outside the result rank cannot express the balanced
-  // shard axis: the result becomes an explicit replica instead of failing.
+  // A spatial iterator outside the loop rank is a malformed placement.
   {
     auto placements = fullPlacements(dag, 5, {0, 1});
     std::string failureReason;
-    auto replicationTrial = buildLogicalShardTrial(
-        dag, placements, analysis::IREpoch::mint(), &failureReason);
-    ASSERT_TRUE(mlir::succeeded(replicationTrial)) << failureReason;
-    for (const analysis::LogicalNodeTrial &node : replicationTrial->nodes)
-      for (const analysis::LogicalTileBinding &binding : node.bindings)
-        EXPECT_EQ(binding.role, analysis::TileRole::ExplicitReplication);
+    EXPECT_TRUE(mlir::failed(buildLogicalShardTrial(
+        dag, placements, analysis::IREpoch::mint(), &failureReason)));
   }
 }
 
@@ -964,13 +1021,14 @@ module {
 TEST_F(StructuredDAGExactDemandQueryTest,
        UnshardableResultFallsBackToExplicitReplication) {
   mlir::MLIRContext context;
-  auto type = mlir::RankedTensorType::get({8}, mlir::FloatType::getF16(&context));
+  auto type =
+      mlir::RankedTensorType::get({8}, mlir::FloatType::getF16(&context));
   // The rank-1 result cannot express shard dimension 2: every Tile of the
   // group owns the complete result as an explicit replica.
   std::string failureReason;
-  auto ownership = buildBalancedOwnership(type, /*shardDimension=*/2,
-                                          {TileId(0), TileId(1)},
-                                          /*resultIndex=*/0, &failureReason);
+  auto ownership =
+      buildBalancedOwnership(type, /*shardDimension=*/2, {TileId(0), TileId(1)},
+                             /*resultIndex=*/0, &failureReason);
   ASSERT_TRUE(mlir::succeeded(ownership)) << failureReason;
   ASSERT_EQ(ownership->size(), 2u);
   for (const analysis::LogicalTileBinding &binding : *ownership) {
@@ -1007,6 +1065,38 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   for (const analysis::ExactOwnershipIntersection &intersection :
        result.ownershipIntersections)
     EXPECT_TRUE(intersection.set->containsPoint(point));
+}
+
+TEST_F(StructuredDAGExactDemandQueryTest,
+       PartialReductionContributionsPreserveEveryRequiredOwner) {
+  auto module = parse(kChain);
+  StructuredDAGAnalysis dag = buildDAG(*module);
+  StructuredDAGEdgeID edge = findEdge(dag, 0, 1);
+  analysis::LogicalShardTrial trial =
+      buildTrial(dag, fullPlacements(dag, 0, {0, 1}));
+  analysis::IndexSetResult full = analysis::IndexRelation::staticDomain({8});
+  ASSERT_TRUE(full.isExact());
+  analysis::LogicalNodeTrial &producer = findNode(trial, 0);
+  for (analysis::LogicalTileBinding &binding : producer.bindings) {
+    binding.ownedDomain = *full.set;
+    binding.role = analysis::TileRole::PartialReductionContribution;
+  }
+  std::reverse(producer.bindings.begin(), producer.bindings.end());
+
+  StructuredDAGExactDemandQuery query(dag, trial.epoch);
+  analysis::ExactDemandResult result = query.query(edge, trial);
+
+  EXPECT_EQ(result.status, analysis::ExactDemandStatus::Satisfied)
+      << result.detail;
+  EXPECT_TRUE(result.mergeObligation);
+  EXPECT_EQ(result.role, analysis::TileRole::PartialReductionContribution);
+  ASSERT_EQ(result.ownershipIntersections.size(), 2u);
+  EXPECT_EQ(result.ownershipIntersections[0].tile, TileId(0));
+  EXPECT_EQ(result.ownershipIntersections[1].tile, TileId(1));
+  ASSERT_EQ(result.perDestination.size(), 2u);
+  for (const analysis::ExactDestinationDemand &destination :
+       result.perDestination)
+    EXPECT_EQ(destination.ownershipIntersections.size(), 2u);
 }
 
 TEST_F(StructuredDAGExactDemandQueryTest,
@@ -1169,8 +1259,7 @@ TEST_F(StructuredDAGExactDemandQueryTest,
     ASSERT_TRUE(fact->producerDemand);
     EXPECT_TRUE(entry.producerDemand.isEqual(*fact->producerDemand));
     const analysis::LogicalTileBinding *binding = nullptr;
-    for (const analysis::LogicalTileBinding &candidate :
-         consumerTrial.bindings)
+    for (const analysis::LogicalTileBinding &candidate : consumerTrial.bindings)
       if (candidate.tile == entry.destinationTile &&
           candidate.resultIndex == 0) {
         binding = &candidate;
@@ -1181,6 +1270,16 @@ TEST_F(StructuredDAGExactDemandQueryTest,
     EXPECT_TRUE(entry.consumerDomain.isEqual(*binding->ownedDomain));
     EXPECT_EQ(entry.producerShardOwnership.size(), 2u);
   }
+
+  // A fabricated satisfied payload that omits one placement destination is
+  // rejected by the carrier instead of silently dropping its movement.
+  demand.perDestination.pop_back();
+  StructuredDAGEdgeDemandPlan incompletePlan;
+  failureReason.clear();
+  EXPECT_TRUE(mlir::failed(assembleStructuredDAGEdgeDemandPlan(
+      dag, *dag.getEdge(edge), placements[0], placements[1], trial, demand,
+      &incompletePlan, &failureReason)));
+  EXPECT_NE(failureReason.find("every destination Tile"), std::string::npos);
 }
 
 } // namespace

@@ -440,6 +440,59 @@ TEST(IndexRelationTest, ProjectedRectangleFastPathRejectsOutOfBoundsDomain) {
   EXPECT_NE(outOfBounds.reason.find("out of bounds"), std::string::npos);
 }
 
+TEST(IndexRelationTest, ProjectedRectangleFastPathPreservesSourceBounds) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+
+  // The affine expression is identity, but the exact bounded relation exists
+  // only on [0,4). The projected fast path must not return the unbounded map
+  // image [0,8).
+  IndexRelationResult clipped = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(1, 0, {d0}, &context),
+      /*destinationShape=*/{8}, /*sourceShape=*/{4});
+  ASSERT_TRUE(clipped.isExact());
+  StaticRectangularIndexSetResult image =
+      clipped.get()->getExactStaticRectangularImage(/*offsets=*/{0},
+                                                    /*sizes=*/{8});
+  ASSERT_TRUE(image.isExact()) << image.reason;
+  EXPECT_EQ(image.domain->offsets, (llvm::SmallVector<int64_t, 4>{0}));
+  EXPECT_EQ(image.domain->sizes, (llvm::SmallVector<int64_t, 4>{4}));
+
+  // Source queries are clipped symmetrically by the destination bound.
+  IndexRelationResult reverseClip = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(1, 0, {d0}, &context),
+      /*destinationShape=*/{4}, /*sourceShape=*/{8});
+  IndexSetResult fullSource = IndexRelation::staticDomain({8});
+  ASSERT_TRUE(reverseClip.isExact());
+  ASSERT_TRUE(fullSource.isExact());
+  IndexSetResult preimage = reverseClip.get()->preimage(*fullSource.set);
+  ASSERT_TRUE(preimage.isExact()) << preimage.reason;
+  EXPECT_TRUE(preimage.contains({0}));
+  EXPECT_TRUE(preimage.contains({3}));
+  EXPECT_FALSE(preimage.contains({4}));
+}
+
+TEST(IndexRelationTest, CompositionDoesNotDropIntermediateBounds) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  IndexRelationResult toIntermediate = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(1, 0, {d0}, &context),
+      /*destinationShape=*/{8}, /*sourceShape=*/{4});
+  IndexRelationResult fromIntermediate = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(1, 0, {d0}, &context),
+      /*destinationShape=*/{8}, /*sourceShape=*/{8});
+  ASSERT_TRUE(toIntermediate.isExact());
+  ASSERT_TRUE(fromIntermediate.isExact());
+  IndexRelationResult composed =
+      toIntermediate.get()->compose(*fromIntermediate.get());
+  ASSERT_TRUE(composed.isExact());
+  StaticRectangularIndexSetResult image =
+      composed.get()->getExactStaticRectangularImage(/*offsets=*/{0},
+                                                     /*sizes=*/{8});
+  ASSERT_TRUE(image.isExact()) << image.reason;
+  EXPECT_EQ(image.domain->sizes, (llvm::SmallVector<int64_t, 4>{4}));
+}
+
 TEST(IndexRelationTest, ProvesFunctionalInjectiveBijectiveAndContainment) {
   mlir::MLIRContext context;
   mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
