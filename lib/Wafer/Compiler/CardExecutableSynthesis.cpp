@@ -5443,41 +5443,35 @@ synthesizeDeterministicBaseline(
                                          /*composePrimaryAllocationOwner=*/true,
                                          diagnostics, demands);
 
-        // Capacity attribution is direct typed witness only: every causal
-        // demand must name an operation result, operand demand or output
-        // through the materialization relations of the probed IR. A demand
-        // that matches no relation (for example a full-wave SPM staging
-        // buffer whose producers and consumers are the region's own compute)
-        // is attributed to the region's single structured root, which the
-        // one-root-per-region contract makes the only possible owner. There
-        // is no shape/type matching against typed DAG edges and no
-        // composition of other roots; a conflict with zero or several
-        // roots is a typed compiler failure, never a guessed refinement
-        // target.
+        // Capacity attribution is direct typed witness only: causal
+        // coordinates come exclusively from demands whose allocation reached
+        // an operation result, operand demand or output through the
+        // materialization relations of the probed IR. A demand without a
+        // typed witness contributes no coordinate and is never guessed from
+        // the region's root cardinality; the one-root-per-region contract
+        // narrows the probe scope but does not substitute for the
+        // allocation-to-owner relation, and a function-scoped certificate
+        // never attributes another region's unmatched allocation to the
+        // escalating root. A conflict whose certificate carries no direct
+        // witness at all is a typed indeterminate failure; mixed
+        // certificates refine only their direct witnesses, independent of
+        // enumeration order.
         bool sawAttributedDemand = false;
-        for (SPMCapacityDemandEvidence &demand : demands) {
-          const bool attributed = demand.operationNode ||
-                                  demand.outputIndex ||
-                                  demand.operandDemandNode;
-          sawAttributedDemand |= attributed;
-          if (attributed)
+        for (const SPMCapacityDemandEvidence &demand : demands) {
+          if (demand.operationNode || demand.outputIndex ||
+              demand.operandDemandNode) {
+            sawAttributedDemand = true;
             continue;
-          if (conflict.resultRoots.size() != 1) {
-            diagnostics << "wafer-compile: deterministic card baseline "
-                           "region SPM capacity conflict has no direct typed "
-                           "causal witness tile_id="
-                        << conflict.tileId.getValue()
-                        << " region_roots=" << conflict.resultRoots.size()
-                        << " demand_bytes=" << demand.bytes << '\n';
-            return mlir::failure();
           }
-          demand.operandDemandNode = conflict.resultRoots.front();
-          demand.relationFromAllocation = true;
+          diagnostics << "wafer-compile: card-unwitnessed-spm-demand"
+                      << " tile_id=" << conflict.tileId.getValue()
+                      << " demand_bytes=" << demand.bytes
+                      << " demand_type=" << demand.type << '\n';
         }
         if (!sawAttributedDemand) {
           diagnostics << "wafer-compile: deterministic card baseline "
-                         "region SPM capacity conflict produced no demand "
-                         "evidence tile_id="
+                         "region SPM capacity conflict produced no direct "
+                         "typed causal witness tile_id="
                       << conflict.tileId.getValue() << '\n';
           return mlir::failure();
         }

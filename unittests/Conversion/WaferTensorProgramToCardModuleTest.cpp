@@ -1578,6 +1578,20 @@ module {
       /*targetRoot=*/1, rootModule, &failureReason, operationNodes,
       observableRoots, &relations)))
       << failureReason;
+  if (getenv("WAFER_DUMP_NARROW")) {
+    llvm::errs() << *rootModule << "\n";
+    mlir::OwningOpRef<mlir::ModuleOp> producerModule;
+    wafer::StructuredMaterializationRelations producerRelations;
+    std::string producerReason;
+    llvm::errs() << "=== producer narrow ===\n";
+    if (mlir::succeeded(wafer::lowerTensorProgramToTileRootShard(
+            *source, wafer::CardId(0), wafer::TileId(0), selected,
+            /*targetRoot=*/0, producerModule, &producerReason, operationNodes,
+            observableRoots, &producerRelations)))
+      llvm::errs() << *producerModule << "\n";
+    else
+      llvm::errs() << "producer narrow failed: " << producerReason << "\n";
+  }
 
   // The probe scope is one detached entry function: no Card/Tile shell and
   // no sibling-root compute may appear in the module.

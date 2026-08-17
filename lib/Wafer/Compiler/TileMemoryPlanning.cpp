@@ -84,13 +84,43 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
       if (!value || !visited.insert(value).second)
         continue;
       for (mlir::Operation *user : value.getUsers()) {
-        if (auto store = mlir::dyn_cast<StorageStoreOp>(user))
+        if (auto store = mlir::dyn_cast<StorageStoreOp>(user)) {
           witnesses.push_back(store.getSource());
-        else if (auto load = mlir::dyn_cast<StorageLoadOp>(user))
+        } else if (auto load = mlir::dyn_cast<StorageLoadOp>(user)) {
           witnesses.push_back(load.getDest());
-        else if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user))
+        } else if (auto view =
+                       mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {
           for (mlir::Value result : view->getResults())
             witnesses.push_back(result);
+        } else if (auto rdma = mlir::dyn_cast<InstrRDMAOp>(user)) {
+          // The typed SPM/DDR transfer endpoints of the exact allocation:
+          // the upstream boundary source and the downstream layout dest are
+          // both evidence of the same causal dataflow.
+          witnesses.push_back(rdma.getSource());
+          witnesses.push_back(rdma.getDest());
+        } else if (auto wdma = mlir::dyn_cast<InstrWDMAOp>(user)) {
+          witnesses.push_back(wdma.getSource());
+          witnesses.push_back(wdma.getDest());
+        } else if (auto scatter =
+                       mlir::dyn_cast<InstrGatherScatterOp>(user)) {
+          witnesses.push_back(scatter.getSource());
+          witnesses.push_back(scatter.getDest());
+        } else if (auto dataMove =
+                       mlir::dyn_cast<InstrTDMADataMoveOp>(user)) {
+          witnesses.push_back(dataMove.getSource());
+          witnesses.push_back(dataMove.getDest());
+        } else {
+          // A compute (or other downstream consumer) owning this buffer is
+          // destination-style: its materialized destination is the value the
+          // result relation names. Ordinary SSA results are followed as
+          // well for non-DPS consumers.
+          if (auto dps =
+                  mlir::dyn_cast<mlir::DestinationStyleOpInterface>(user))
+            for (mlir::Value init : dps.getDpsInits())
+              witnesses.push_back(init);
+          for (mlir::Value result : user->getResults())
+            witnesses.push_back(result);
+        }
       }
     }
     auto sharesStorageWithWitness = [&](mlir::Value buffer) {
