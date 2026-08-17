@@ -688,7 +688,7 @@ CardExecutable compilation；但它仍未满足本设计：
 2. 修复placement与layout-independent exact demand边界，以完整logical shard domain、typed dependency role和四态outcome给
    baseline/search提供不携带representation/movement policy的proof；闭合reduction、broadcast、window/stride、multi-piece、
    DPS init与support relation，删除carrier失败和字符串失败对spatial legality的反写；
-3. 保留Q49 correctness证据并以Q49.P闭合baseline功能合法化、结构、policy、probe、causal witness和materialization解耦；
+3. 以Q49.P从current输入闭合baseline功能合法化、结构、policy、probe、causal witness和materialization解耦；
 4. 在accepted baseline可直接作为incumbent后建立search core与两层small exhaustive oracle；
 5. 依次闭合structured alternatives、spatial partition/placement、TileRegion/temporal/fusion、representation/movement、
    Instr pipeline机制，每项边实现边接入common state；
@@ -741,6 +741,8 @@ CardExecutable compilation；但它仍未满足本设计：
 
 - generic mixed DAG、official HF prefill、functional KV-cache decode和Llama block以FP16/BF16 fresh生成完整
   ExecutablePackage并通过no-card；
+- current package逐case证明selected layout/physical payload、all-and-only movement、Direct-DTE issue/wait与compute overlap
+  witness；source、fixed seed、dtype、framework eager oracle和原dtype/shape comparator由case owner固定，不进入产品frontend；
 - Q52在10/30分钟检查点解释主要热点、重复工作和质量曲线；
 - board-ready后真实设备只串行执行current matched cases；Llama及至少一个prefill/decode代表相对同源baseline获得可重复
   改善后才能标记done。

@@ -7,7 +7,7 @@ Q59/Q60 的施工顺序、checkpoint 和验证门禁，不复制 frontend progra
 或接口演进合同，也不建立第二条 source-to-package pipeline。
 
 Q59 `compiler-entry-transaction-closure` 在 Q58 完成且 Q56 达到 `board-ready` 后执行；Q60
-`frontend-production-entry` 在 Q52、Q44 和 Q59 完成后执行。Q53 production readiness 增加 Q60 为直接前置，
+`frontend-production-entry` 在 Q52、current PyTorch/XLA capture/export资产和 Q59 完成后执行。Q53 production readiness 增加 Q60 为直接前置，
 并只消费 Q60 交付的产品 frontend output；Q59/Q60 均不以测试 generator 或历史 package 代替完成证据。
 
 当前状态：Q59的2026-08-16 follow-up review缺口已闭合（修复记录见2.1节），任务恢复`done`；
@@ -23,7 +23,7 @@ CardExecutable/target writing、package readback和 no-replace publication。尚
    不依赖 Q51/Q52 search 设计。
 2. framework/exporter 到 source program 的真实机制目前由测试 corpus generator 承载，没有可安装的最小产品 adapter；
    外部 StableHLO 入口也尚未以 portable bytecode 形成单一兼容边界。这不应打断主 compiler search 闭环，因此放在
-   Q52 和既有 Q44 source mechanics 之后、Q53 production readiness 之前闭合。
+   Q52 和current source capture/export mechanics之后、Q53 production readiness之前闭合。
 
 Q59 不修改 frontend source 格式或 search/runtime 语义；Q60 不修改 compiler selection、target、package 或 execution
 合同。两项只把已经存在的语义 pipeline 暴露为一致、可迁移、可验证的产品入口。
@@ -193,8 +193,8 @@ Q60、Q53或runtime consumer：
 Pipeline position:
 - Upstream IR / input:
   supported framework module/export request，或pre-exported StableHLO portable bytecode；current static-ranked
-  single-entry boundary metadata及其外部数据引用。Q44只提供真实capture、reproducibility和source oracle mechanics，
-  测试case、模型名与corpus CLI不属于产品输入。
+  single-entry boundary metadata及其外部数据引用。现有测试资产只提供真实capture、reproducibility和source oracle mechanics，
+  测试case、固定seed、CPU expected/comparator、模型名与corpus CLI不属于产品输入。
 - Current stage responsibility:
   framework-specific adapter完成capture/export并拒绝graph break、eager fallback和不支持的side effect；common ingestion
   在compiler-owned snapshot中deserialize、parse并验证StableHLO、metadata、shape/dtype/role和安全引用。framework版本
@@ -226,7 +226,7 @@ Pipeline position:
 
 ### Q60 checkpoints
 
-1. **测试mechanics与产品职责分离**：审计Q44真实PyTorch/XLA capture generator，只迁移framework capture/export、
+1. **测试mechanics与产品职责分离**：审计现有真实PyTorch/XLA capture generator，只迁移framework capture/export、
    graph-break/fallback detection、metadata/payload emission和canonical-equivalence机制；corpus dispatch、固定case、seed、
    CPU expected、numeric comparator、board路径和workload名称留在测试owner。产品代码不得import test module。
 2. **Portable StableHLO单一入口**：使用pinned StableHLO portable serialization API读取外部bytecode，把其format/version作为

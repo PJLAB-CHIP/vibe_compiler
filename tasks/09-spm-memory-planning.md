@@ -15,8 +15,8 @@ all-and-only fixed allocation problems，并用每Tile 3 MiB MiniMalloc与独立
 actual high-water只作capacity/headroom诊断，不触发反复收紧query，也不作为06的主Pareto维度。bank phase只允许进入
 hard-valid placement间的soft preference；不得改变hard feasible set或新增candidate/relocation分支。
 
-旧C1-C6在rank==Tile架构上形成的decision point、packing和board-ready记录只作历史mechanics证据，不证明当前
-Q49–Q53主线。当前施工要把同一fixed-problem allocator接到physical-dataflow search的actual candidate：packing query
+旧C1-C6在rank==Tile架构上形成的decision point、packing和board-ready记录只作历史mechanics证据，不证明current
+physical-dataflow主线。当前施工要把同一fixed-problem allocator接到physical-dataflow search的actual candidate：packing query
 结束后销毁未接受的当前clone并返回完整typed outcome；只有`ProvenInfeasible`形成exact rejection，`ResourceExhausted`
 或internal failure保持indeterminate。不复用failed Instr或partial offset，也不由allocator修改placement、tiling、fusion或spill。
 完成状态只看`tasks/progress.md`，本文不把迁移中实现写成已闭合。

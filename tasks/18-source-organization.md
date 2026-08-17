@@ -289,9 +289,9 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 `rank`。当前source合同不得再出现旧execution-domain API、旧manifest version/reader、late selector、按模型/shape/name
 恢复语义的matcher、拥有独立selection/public控制面的algorithm pass或已删除board tooling入口。
 
-## 8. Q49/P、Q50、Q51–Q53 与产品入口 completion boundary
+## 8. Q49.P、Q50、Q51–Q53 与产品入口 completion boundary
 
-源码组织收口横跨Q49/P、Q50.0/Q50.S/Q50.A–Q50.K及Q51–Q53；当前状态只看`tasks/progress.md`。相关源码删除必须满足：
+源码组织收口横跨Q49.P、Q50.0/Q50.S/Q50.A–Q50.K及Q51–Q53；当前状态只看`tasks/progress.md`。相关源码删除必须满足：
 
 - physical-dataflow selection成为唯一decision owner，public optimization policy只为`search|none`，`none`只提供同pipeline baseline；
 - old/new双interface、compatibility wrapper、unused public pass和only-for-them tests全部删除；
@@ -300,7 +300,7 @@ source。删除功能时删除对应only-purpose fixture/golden/catalog；通用
 - Q59使compiler library primary result、package commit、CLI exit与install tree属于同一owner；Q60产品adapter和portable
   StableHLO ingestion复用唯一Frontend verifier与CompilationRequest；
 - Q50.0、Q50.S和Q50.A–Q50.K各自能为其负责的旧能力指向current实现、actual witness和替代测试，并独立提交；
-- current TensorProgram→CardModule/TileRegion/Instr→CardExecutable→ExecutablePackage→no-card/model纵向由Q49/Q51 fresh通过；
+- current TensorProgram→CardModule/TileRegion/Instr→CardExecutable→ExecutablePackage→no-card/model纵向由Q49.P/Q51 fresh通过；
 - generic DAG、HF prefill/decode和Llama workload由Q53完整达到board-ready；
 - Q61在主search闭合后用完整程序验证IR/search/data/package规模，不把单block证据当成完整模型；
 - 真实板端matched A/B完成后Q53才满足最终done gate。

@@ -1,9 +1,7 @@
 # Physical Dataflow Synthesis 实施计划
 
-状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其search-policy隔离、结构不变量、scoped
-probe闭合和整图物化成本不属于已签发的正确性证据。Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure
-与Q59 compiler entry transaction、Q50.A production demand boundary均已闭合。当前由Q49.P在current
-source-to-package路径上闭合baseline functional legalization及
+状态：Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure、Q59 compiler entry transaction与Q50.A
+production demand boundary均已闭合。当前由Q49.P在current source-to-package路径上闭合baseline functional legalization及
 policy/structure/probe/materialization隔离，之后建立
 Q51.Core共同状态、transition和actual-probe seam；随后让
 Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
@@ -106,7 +104,7 @@ current immutable structured IR
   completion，只证明返回 actual executable 合法，不得宣称全局 bound 或最优。仅有 hard
   work/time budget 不自动降级，等级取决于未展开域是否仍被 exact candidate set 和 bound 完整代表。
 
-所有等级都必须保留已经通过Q50.0 exact verification的Q49 `none` baseline作为合法incumbent；“没有比baseline更好的
+所有等级都必须保留已经通过Q50.0 exact verification的Q49.P `none` baseline作为合法incumbent；“没有比baseline更好的
 candidate”不等于搜索失败。`none`对声明支持的正常上游输入必须先完成自己的deterministic feasibility legalization；若最终
 exact gate仍失败，必须是最小canonical fallback已被typed proof排除、输入确实超出支持域，或明确的compiler/internal failure，
 不能把没有进入performance search当作失败，也不能伪造fallback。
@@ -159,7 +157,7 @@ CardExecutable cost与全轴actual winner都是Q51 closure gate，不得用尚�
 | 稳定 downstream trunk | CardModule/TileModule IR、CardModule-to-Tile conversion、TileRegion-to-Instr、Tile memory planning、card resource/target verification、package/runtime | 保留；所有 policy 复用同一路径；现有`TileMemoryPlanning`/`CardExecutableLowering`仅作实现定位，后者仍需按实际职责收敛名称 |
 | 可复用 core | `StructuredDAGAnalysis`、现有schedule-state/candidate类、edge-demand plan与placement domain/cost mechanics | immutable structured/relation事实及policy-free logical placement-assignment窄类型供baseline构造trial并由exact-demand query读取；该窄类型和query必须从candidate/schedule依赖中抽离。schedule-state/candidate/evaluator/proposal-order只纳入Q51.Core，Q49.P必须先断开对它们的依赖。旧类名只是实现定位，不升级成长期架构对象，也不让其自行选择winner |
 | 可复用 mechanism | `BidirectionalTiling`、`CompleteTraversal`、`TileMaterialization`、`CandidateMaterialization`、movement/collective lowering、selected-buffer materialization、ready-order/worker/completion verifier | 按Q50.S与Q50.B–Q50.K接到transition/materializer seam；保留符合新合同的算法与verifier |
-| 过渡 monolith | 当前executable-synthesis实现中的coordinate sweep、candidate family、allocation/buffer feedback、shortlist和mixed materialization | public entry暂保留，先抽出Q50.0编译边界，再按轴抽出；最终只保留Q49 baseline controller、Q51 driver和共同materialization seam |
+| 过渡 monolith | 当前executable-synthesis实现中的coordinate sweep、candidate family、allocation/buffer feedback、shortlist和mixed materialization | public entry暂保留，先抽出Q50.0编译边界，再按轴抽出；最终只保留Q49.P baseline controller、Q51 driver和共同materialization seam |
 | 旧 bounded/rank search | `RankCandidateSearch`、旧structured candidate generation/evaluation/selection及rank-era candidate set | 只作为 transformation、typed proof、diagnostic 和测试来源；不得恢复固定 beam/cap 或 rank-local winner |
 | compatibility lowering | `StructuredDAGEdgeStrategyPlan`、dense rectangle fragment、现有 local/peer lowering | 在新 representation/movement IR 可完整消费 exact demand 前保留；Q50.G/H 逐项替换，不提前删除 |
 | late selector/fixup | layout/movement optimization、ready-order、worker placement、buffer/allocation feedback 中会重新做选择的部分 | 先改成 verifier/materializer 或 typed transition mechanism，再按轴删除选择责任 |
@@ -192,7 +190,7 @@ communication/resource/ABI verification，输出accepted CardExecutable、proven
 返回taxonomy必须完整区分`accepted CardExecutable`、`proven exact rejection`与`indeterminate failure`；allocator
 `ResourceExhausted`、timeout或内部错误属于最后一类，不能伪装成candidate非法。
 
-这个边界不得枚举候选、修改选择、在lowering中retile/spill/rebuffer，也不得把失败降级成performance Unknown。Q49与Q51
+这个边界不得枚举候选、修改选择、在lowering中retile/spill/rebuffer，也不得把失败降级成performance Unknown。Q49.P与Q51
 必须共用它；定向测试要证明同一CardModule得到相同accepted digest或相同rejection，且没有第二条兼容编译路径。
 
 实现结论：actual compile/verification seam只接收owned、已选择的CardModule和typed buffering assignment，返回
@@ -200,11 +198,10 @@ accepted、proven exact rejection或indeterminate三态结果；baseline与searc
 memory planning保留SPM failure kind，只有capacity overflow与unsupported lifetime等可验证失败进入exact rejection，未分类
 allocator/internal failure保持indeterminate，调用方不得据此裁剪候选或启动repair。
 
-## Q49 / Q49.P：Deterministic Baseline功能闭环、Policy与结构隔离
+## Q49.P：Deterministic Baseline功能闭环、Policy与结构隔离
 
-Q49已签发的数值正确性、完整Tile domain、零实际fusion和历史board-ready状态不重定义；这些证据没有证明baseline与
-search-policy解耦，也没有证明每个TileRegion只有一个structured compute root。Q49.P因此不是对旧baseline做性能润色，也
-不是把`none`缩成fixed-assignment verifier；它要同时补齐功能合法化、policy、结构、probe、causal diagnosis和materialization
+Q49.P不是对既有baseline做性能润色，也不是把`none`缩成fixed-assignment verifier；它要从current正常上游输入同时补齐
+功能合法化、policy、结构、probe、causal diagnosis和materialization
 边界。改写后必须从未选placement/temporal/layout/buffer的正常上游IR产生可执行结果，并用本软件产物重新证明result/digest与
 no-card，不得把历史package当成新调用链的证明。
 
@@ -327,7 +324,7 @@ scope。不按type/shape、位置字符串、region内“可能相关”的其�
 proven failure允许baseline controller沿确定性fallback lattice前进；probe本身只判断当前closed-coordinate trial，不生成下一
 tile、不选择分支、不repair IR，也不创建Q51 candidate。
 
-Q49与`search`共享immutable structured/relation/target facts、policy-free single-root TileRegion materializer、scoped probe和
+`none`与`search`共享immutable structured/relation/target facts、policy-free single-root TileRegion materializer、scoped probe和
 actual Card/Tile/Instr、completion、SPM/DDR、verification、package机制；不共享search state/candidate/evaluator、group
 boundary、proposal order、score或feedback。Q49.P先产出并准入baseline，Q51只把accepted executable/cost作为incumbent，
 不得通过search representation重建同一baseline。Q49.P施工时先把resolved baseline assignment的single-root apply与每次
@@ -544,7 +541,7 @@ assignment重算；它们可用于future-compatible dominance，不能反向成�
 
 ### 初始算法
 
-- 以 Q49 actual baseline 作为第一个 incumbent；
+- 以 Q49.P accepted baseline 作为第一个 incumbent；
 - production使用确定性best-first constructive search：先形成baseline，优先构造大TileRegion、coupled traversal、较大高效
   temporal tile、ordered factorized regular mapping与relation-derived reuse proposal；这些只是稳定排序seed，不是生成条件；
 - exact lane每次展开parent都必须把其余合法region cut、tile、layout、movement、buffer和schedule sibling以可惰性
@@ -938,7 +935,7 @@ layout × movement × buffer × stage/order/resource的全部合法typed combina
 - ordinary attention/decode 等已物化 semantic roots 复用同一 physical search，不存在算法专用 selector；
 - complete candidate 通过 TileRegion-to-Instr、fresh completion、fixed SPM/DDR、communication/resource、ABI、verification 和
   final recost；
-- actual rejection 可继续 candidate set，`search` 无更优 accepted candidate 时返回同源 Q49 baseline；
+- actual rejection 可继续 candidate set，`search` 无更优 accepted candidate 时返回同源 Q49.P accepted baseline；
 - selected IR 至少有一个有效 multi-op fusion，中间 actual value resident 且没有无意义 DDR round-trip；
 - public policy 只剩 `search|none`；旧 bounded/rank owner、各轴 local winner、performance `Unknown` 和 shadow plan 均已删除；
 - Q51 独立提交并标完成后，Q52 才开始改变 search policy 的吞吐与预算行为。
@@ -960,7 +957,7 @@ Q52 的生产目标不是在 10–30 分钟内证明所有真实 workload 全局
 - **10 分钟以内**：可接受，但仍记录 work、RSS、time-to-first-actual 和 incumbent 曲线；
 - **超过 10 分钟**：不立刻停止，必须形成热点、重复状态和质量停滞归因；
 - **最长先观察到 30 分钟**：收集完整 profile；若仍无法承受，才根据已测证据启用明确的 bounded/heuristic policy；
-- 到预算返回的 executable 必须 actual accepted 且不劣于同源 Q49 baseline；若永久丢过合法状态，结果标
+- 到预算返回的 executable 必须 actual accepted 且不劣于同源 Q49.P accepted baseline；若永久丢过合法状态，结果标
   `budgeted-feasible`，不能沿用 exact gap 或暗示最优。
 
 预算是 policy 参数和回归证据，不是合法域定义。不得为了满足时间线提前固定 tile、fusion depth、layout、buffer count、

@@ -253,9 +253,9 @@ variant仍由同一PyTorch eager block产生expected、由同一真实exporter�
 variant seed和原固定seed全部通过后，scale case只把source/model comparator policy收紧为`atol=0.004, rtol=0.002`；该字段
 不进入source/config/payload/program digest，也不把variant提升为corpus verification。
 
-旧Q44的TP16/rank-as-Tile资格只作历史背景，不属于current frontend合同。当前GEMM、HuggingFace attention、
+旧TP16/rank-as-Tile资格只作历史背景，不属于current frontend合同。当前GEMM、HuggingFace attention、
 KV-cache decode与Llama-2 7B block都从真实framework module和原始dtype tensor导出
-`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q49 `none` baseline与Q51 `search`随后
+`num_partitions=1`的card-local program；source IR不携带物理Tile mesh或卡内TP标记。Q49.P `none` baseline与Q51 `search`随后
 从同一structured DAG决定16个Tile上的spatial mapping、temporal tiling、TileRegion/融合与通信。不得用手写
 StableHLO/MLIR、parameter name或测试fixture把这些卡内决定提前编码进frontend。
 同一组tensor先在PyTorch eager CPU执行形成唯一用户级expected；NumPy不得参与expected生成或最终结果比较。

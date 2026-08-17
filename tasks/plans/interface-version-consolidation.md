@@ -34,7 +34,7 @@ Wafer-owned编号schema、nested `version`、带编号identifier、symbol和语�
 - package manifest以schema identity和exact fields验证，target ABI/CRT symbol使用无编号canonical名称，profiler与Direct-DTE
   record以magic、size、offset、alignment和guard验证唯一布局；没有旧reader、compatibility alias或编号分支。
 - raw Board probe已迁到current package/runtime/status接口；22个raw probe加complete-Tile add普通/profile共24个
-  `current-interface` no-card CTest证明各driver能生成并验证完整package。10个真实Board CTest进入同一串行runner，
+  `current-interface` no-card CTest证明各driver能生成并验证完整package。10个Q55-owned真实Board CTest进入同一串行runner，
   但本任务不执行真实板测。
 - source-level calibration已改为current global source与host oracle。当前global lowering尚不能承接的optimizer/collective
   case不恢复退役SPMD/manifest路径，只保留受测source/oracle合同并在inventory中标明阻塞条件；full-4096 K-tiled
@@ -45,3 +45,5 @@ Wafer-owned编号schema、nested `version`、带编号identifier、symbol和语�
   CMake不复制case注册表。旧reader、旧CLI、旧manifest字段和版本分叉保持零残留。
 - Checkpoint 5的fresh build、核心unit/link、Board host/no-card、source organization、残留扫描和memory同步已经闭合；真实板端
   execution及被当前global lowering阻塞的source case不属于Q55完成条件。
+- current queue只保留current owner：被后继pipeline吸收的旧板端条目已经移除，仍有效的capture/oracle、layout/movement、
+  overlap与telemetry mechanics分别进入Q50/Q52/Q60/Q53合同；Q56专用program-data板端入口独立注册，不改变Q55 completion语义。

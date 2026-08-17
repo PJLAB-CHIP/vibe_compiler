@@ -42,13 +42,13 @@ Pipeline position:
 
 ```text
 TensorProgram
--> physical-dataflow decision (`search`: Q51唯一selection owner; `none`: Q49 deterministic baseline)
+-> physical-dataflow decision (`search`: Q51唯一selection owner; `none`: Q49.P deterministic baseline)
 -> CardModule / TileRegion / Instr
 -> CardExecutable
 -> ExecutablePackage
 ```
 
-Q49只构造单一、可确定重现的`none` baseline，不管理candidate set、shortlist或winner。
+Q49.P只构造单一、可确定重现的`none` baseline，不管理candidate set、shortlist或winner。
 
 ## 证据解释
 
@@ -122,7 +122,7 @@ capability均闭合时，steady state才取可并行resource maximum。GS和comp
 tile、resource binding和dependency signal共同决定compute/communication overlap；collective-capable NoC
 给出`α + nβ`、congestion/dilation及double-buffer steady-state resource maximum。论文平台的绝对cycle、
 bandwidth和startup数字均不进入TX81 profile。Q51选出的actual CardExecutable仍需fresh correctness；
-configured-board matched `search`/`none` A/B由Q53签发production evidence。Q49只提供同源deterministic
+configured-board matched `search`/`none` A/B由Q53签发production evidence。Q49.P只提供同源deterministic
 `none` baseline，不反向建立第二个compiler promotion或selection接口。
 
 ## 硬件实验、行为结论与compiler价值

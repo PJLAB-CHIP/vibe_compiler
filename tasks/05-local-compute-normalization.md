@@ -1,7 +1,7 @@
 # Wafer StableHLO 到 Card-Local Structured Tensor IR
 
 状态：2026-08-13按card-level GSPMD与card-local physical-dataflow主线同步。本文只拥有post-SPMD
-StableHLO到target-independent structured tensor IR的normalization合同；current主线已拆为Q49–Q53，本层不把Q49
+StableHLO到target-independent structured tensor IR的normalization合同；current主线已拆为Q49.P、Q50、Q51–Q53，本层不把Q49.P
 保守baseline误写成Q51完整physical-dataflow综合。动态状态只看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
@@ -86,7 +86,7 @@ Tile、DTE endpoint、route、SPM buffer或launch slot。
 
 normalization不得把collective直接lower成Direct DTE，也不得把algorithm、Tile group或physical peer写入
 LinalgExt attrs。single-card mesh上的singleton collective可在后续materialization中证明为identity；非singleton
-card-partition collective需要独立的跨卡transport合同。当前Q49–Q53 CardModule主线只接受single-card partition，
+card-partition collective需要独立的跨卡transport合同。当前physical-dataflow CardModule主线只接受single-card partition，
 因此非singleton跨卡执行仍未闭合，而不是借用片内16 Tile通信凑出一个结果。
 
 all-reduce/reduce-scatter可保留operand、combiner accumulator和result之间经verifier允许的element-type关系。

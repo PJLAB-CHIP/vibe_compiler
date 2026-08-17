@@ -46,9 +46,16 @@ Pipeline position:
 只有第3层完成，且case、oracle、runner都齐全，板端任务才可写 `board-ready`。只有任务定义所需的第5/6层通过才可
 写 `done`。instruction count、理论makespan、host wall time、SystemC event count和no-card成功都不是实卡性能证据。
 
+`board-ready`只描述current producer、current package/runtime合同和current executable runner组成的可执行门禁，不是历史能力标签。
+如果candidate owner、IR/output边界、package/ABI或runner已被替换，旧状态必须立即撤销：仍需要同一任务时重新生成current
+package并fresh no-card；职责已由后继接管时直接从current queue移除旧任务，并把仍有效的source、oracle、effect witness、
+计时或codec mechanics写入current owner。历史只由Git和archive保留，不能继续授权历史板端批次，也不建立旧任务状态索引。
+
 ## 3. Freshness 与执行纪律
 
 - 每轮代码/测试改变后只使用本轮build和本轮输出；历史raw/log/report只作审计记录，不作为test input。
+- producer/consumer合同或runner失去current executable路径时，即使source与oracle仍存在，也不能沿用旧`board-ready`；
+  source-only、`executable=false`或pending-lowering资产只能等待current successor消费。
 - 不重复执行已经有结论且代码/环境未变化的板端case；host/no-card仅在对应实现变化或异常归因时重跑。
 - host build、unit、CTest、catalog与no-card默认使用 `nproc` 可用并行度；只有真实资源约束才降低并说明。
 - 真实device launch始终单进程、逐case、bounded timeout；首个timeout/device异常后停止，不自动retry/reset/power。
@@ -295,13 +302,12 @@ Llama-2 7B完整inventory或完整graph可以作为可选named scale witness，�
 current target容量、target-model能力或host预算不足，必须按stage报告typed unsupported/capacity，不得用缩成单block冒充，
 但也不阻塞已经满足的通用Q61完成门禁。
 
-## 10. Q49/P、Q50、Q51–Q53 completion gate
+## 10. Q49.P、Q50、Q51–Q53 completion gate
 
 各队列项分别形成fresh证据，不能用后项的局部通过倒签前项：
 
-1. Q49：`none`通过current TensorProgram→CardModule→TileRegion/Instr→fresh SPM/DDR→CardExecutable→ExecutablePackage链路；
-   普通多op、spatially sharded compute和cross-Tile baseline package/no-card通过。该证据只签发数值正确性和完整准入，不以
-   `actual_fused_edges=0`代签region/policy隔离。Q49.P还必须证明：baseline调用闭包不包含search
+1. Q49.P从current TensorProgram→CardModule→TileRegion/Instr→fresh SPM/DDR→CardExecutable→ExecutablePackage链路
+   签发baseline功能闭环，并且必须证明：baseline调用闭包不包含search
    state/candidate、search-oriented domain/ranking evaluator、proposal order/group materializer或candidate统计；每个baseline
    TileRegion恰有一个structured compute root和必要non-root support closure，同Tile多root形成多个顺序region，跨root shaped
    dependency显式DDR；root cardinality按materialization relation映回structured DAG node，显式init producer不能伪装成
@@ -313,7 +319,8 @@ current target容量、target-model能力或host预算不足，必须按stage报
    operand/halo/result/temporary/movement/alignment/bank/lifetime footprint超出SPM时，controller沿不截断的合法breakpoint
    lattice重新推导workset并缩小到第一个fit，随后通过完整CardExecutable、package和no-card；multi-axis/tail/minimum-granularity
    受测，最小合法tile仍失败才返回direct typed capacity failure，indeterminate作为compiler failure而非unsupported。
-   fresh prefill/decode/Llama还需证明CardModule、CardExecutable与package digest稳定、oracle/no-card通过。
+   fresh prefill/decode/Llama还需证明CardModule、CardExecutable与package digest稳定、oracle/no-card通过。Q49.P完成后
+   不再建立独立baseline板端任务；Q53只把该accepted baseline作为current matched A/B的一侧。
 2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair；Q50.A：
    每次closed placement trial以完整logical domain、typed data/init/support relation、reduction/replication role和IR epoch从
    IndexRelation形成layout-independent exact demand/ownership proof，四态outcome中只有proven logical infeasible删除trial；
@@ -339,5 +346,9 @@ current target容量、target-model能力或host预算不足，必须按stage报
    才标`board-ready`。
 7. 真实设备上Llama及一个prefill/decode代表分别做同源`none`/`search` matched A/B，exact output/guard通过，
    多次样本显示可重复实际改善，Q53才标`done`。
+
+Direct-DTE overlap、host search telemetry、framework capture/oracle和layout/movement能力直接由上述current
+Q50/Q51/Q52/Q60/Q53边界拥有，不再建立独立旧任务门禁。Q47 current ABI correctness与Q56 program-data/one-shot runtime correctness
+仍是低层独立板端合同；它们可以与Q53复用同一qualified device session串行执行，但不得合并completion语义或相互代签。
 
 历史package、历史board raw、已删除harness、旧schema、instruction数量下降或理论估计都不能解除第1至第7项。

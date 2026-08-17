@@ -291,6 +291,9 @@ if(WAFER_ENABLE_BOARD_TEST_EXECUTION)
   wafer_add_current_source_board_case(
     wafer-board-complete-tile-add-profile
     wafer_board_complete_tile_add_test.py --profile --repeat 1)
+  wafer_add_current_source_board_case(
+    wafer-board-program-data-add
+    wafer_board_single_op_add_test.py --repeat 2)
   wafer_add_current_board_probe(
     wafer-board-ddr-tile-offset-probe
     wafer_board_ddr_tile_offset_probe_test.py)

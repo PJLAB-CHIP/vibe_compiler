@@ -43,7 +43,7 @@ Pipeline position:
    builder，不为 pass manager 和 direct compiler各写一份业务逻辑。
 6. host build/test 使用 `nproc`；本任务默认不执行真实板端。若 target output发生有意变化，先转交14–17扩大 gate。
 7. dormant source不按“未进CMake”机械删除。先建立逐文件去向：`reactivate/refactor`、`extract-then-delete`或`delete`；
-   当前或Q49–Q53合同仍需要的算法、proof、diagnostic和测试资产必须先进入新的active实现并受测，再删除旧实现。
+   当前physical-dataflow合同仍需要的算法、proof、diagnostic和测试资产必须先进入新的active实现并受测，再删除旧实现。
 
 ## 全仓审计问题与施工归属
 
@@ -111,7 +111,7 @@ plan-then-apply、SystemC ABI bridge和Q42默认快速测试边界均不得因�
 
 - 核对 `lib/Wafer/**/CMakeLists.txt` 与 active source，为每个dormant collective/lowering/materializer/search source记录
   `reactivate/refactor`、`extract-then-delete`或`delete`及其替代实现；`CompleteTraversal`、attention materializer、topology
-  analysis和旧coordinated/rank实现中的独有mechanism/proof/test资产必须逐项对照Q49–Q53合同，不能因未进CMake直接删除；
+  analysis和旧coordinated/rank实现中的独有mechanism/proof/test资产必须逐项对照Q49.P、Q50、Q51–Q53合同，不能因未进CMake直接删除；
 - 对`reactivate/refactor`恢复active build并补compile/test职责；对`extract-then-delete`先把仍需能力与测试迁入新active
   实现，再删除旧实现；只有已被现行IR/API淘汰且无独有能力的`delete`项可直接清理，最终不能留两份实现事实源；
 - fresh configure/build 生成 ODS headers，禁止复用 stale generated declarations判断 current API；
@@ -481,7 +481,7 @@ runtime/analysis/tool合同；dormant和active source只有一份明确事实源
 - semantic OpaqueLoc pointer payload、raw attr accessor、ordinal/print identity、synthetic local-fit wrapper；
 - flat all-Module pass、重复 direct/pipeline implementation、手工 analysis revision/cache；
 - 已完成独有能力/测试迁移的dormant旧实现、stale API declaration和only-for-retired-semantics tests；不得以删除仍被
-  Q49–Q53合同需要的实现资产来满足本门禁；
+  current physical-dataflow合同需要的实现资产来满足本门禁；
 - whole-module greedy/fixed-point helper和由 canonicalizer承担的 correctness前置；
 - 与新 standard interface重复的 whitelist/special case。
 - 核心output中的printed-IR shadow snapshot、stage-regression scrub入口和已由typed failure taxonomy取代的宽泛exact rejection；
@@ -504,7 +504,7 @@ fresh 验证：
 Q54 的 A–I 已完成，active source中不再存在semantic `OpaqueLoc` pointer payload、synthetic local wrapper、旧的通用candidate容器、
 平行production PassManager或旧single-pass pipeline别名。fresh core/model build通过；Q54定向单测168/168、其余非搜索
 单测629/629、受影响card关系用例1/1、lit 1/1、feature-on依赖/模型/链接17/17、IR/source organization与
-`git diff --check`均通过。Q49/Q52长时间placement/search枚举不冒充Q54完成门禁，也未宣称在本批全量执行。
+`git diff --check`均通过。Q49.P/Q52长时间placement/search枚举不冒充Q54完成门禁，也未宣称在本批全量执行。
 
 ## 与后续任务的关系
 

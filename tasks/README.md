@@ -58,12 +58,12 @@
 
 ## 实施计划导航
 
-Q46与Q47的旧施工记录已移入`tasks/archive/`。current layout、target ABI、package和runtime合同只由06、08、
+旧layout与ABI施工记录已移入`tasks/archive/`。current layout、target ABI、package和runtime合同只由06、08、
 11、14-17编号设计文档拥有，状态只看`tasks/progress.md`；不得从旧计划恢复接口。
 
-Q49–Q53共用card-local multi-Tile综合计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：Q49保留
-current `none`数值正确性证据；Q50.0建立candidate compilation/verification seam；Q50.A先收口IndexRelation demand边界；
-Q49.P再闭合从正常上游IR产生accepted executable的baseline deterministic feasibility legalization、single-root TileRegion、
+Q49.P、Q50、Q51–Q53共用card-local multi-Tile综合计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
+Q50.0建立candidate compilation/verification seam；Q50.A先收口IndexRelation demand边界；Q49.P闭合从正常上游IR产生
+accepted executable的baseline deterministic feasibility legalization、single-root TileRegion、
 最窄scope probe、typed causal witness、整图物化与search-policy隔离；Q50.S把算法等价改写物化为actual `TensorProgram`；
 Q50.B–Q50.K逐项接入
 spatial、TileRegion/temporal/fusion、physical representation/movement、buffer/order/completion和条件式stage pipeline选择；
@@ -183,7 +183,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非verification多seed 7B重放及source/model comparator gate收紧记录 |
 | `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |
 | `tasks/archive/llama-7b-block-vertical.md` | 已完成Q28的标准Llama-2 7B单block TP16 source/package、repo-owned SystemC managed-reference和完整PyTorch eager output differential记录 |
-| `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29历史structured tensor program直达bounded task/dataflow scheduling、当时的跨region SPM合同、card结果写入、旧group executable surface退役及7B TP16 compile-only验证记录；当前region语义已由07/Q49替代 |
+| `tasks/archive/tile-dataflow-scheduling.md` | 已完成Q29历史structured tensor program直达bounded task/dataflow scheduling、当时的跨region SPM合同、card结果写入、旧group executable surface退役及7B TP16 compile-only验证记录；current region语义已由07及Q49.P/Q50/Q51边界替代 |
 | `tasks/archive/reference-executor-retirement.md` | 已完成Q27的accepted-IR第二套解释器、oracle分支和旧CLI退役，以及CPU-expected到target CModel纵向gate收敛记录 |
 | `tasks/archive/memory-lifetime-analysis.md` | 已完成Q26的共享structured lifetime/packing core、DDR issue-to-fence completion、两侧scope/source relation、offset一次性写入和双配置gate记录 |
 | `tasks/archive/residual-source-modularity.md` | 已完成Q25的reference/model、numeric/bulk、compiler/output/package与frontend bridge共11个聚合实现模块化和双配置gate记录 |

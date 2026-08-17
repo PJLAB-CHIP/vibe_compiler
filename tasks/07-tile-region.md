@@ -1,9 +1,9 @@
 # Wafer Selected Tile-Dataflow IR、SPM Residency Region 与原子物化
 
 状态：2026-08-08按CardModule / Tile MPMD更新。本文定义selected Tile-dataflow IR的MLIR-native边界；
-`wafer.tile.region`表达一个Tile内的显式SPM residency domain。Q32/Q46的typed materialization、
+`wafer.tile.region`表达一个Tile内的显式SPM residency domain。现有typed materialization、
 relation和physical-version机制可被新scheduler复用，但旧complete-rank/rank==Tile调用域只作历史背景。
-Q49–Q53各自是否完成只看`tasks/progress.md`。
+Q49.P、Q50、Q51–Q53各自是否完成只看`tasks/progress.md`。
 
 source structured op 的数学语义始终存在于当前 operation、region、SSA、type、attribute 和标准
 MLIR interfaces 中。tasks/06与本文不是“先发布全局plan，再由本文import”的两个管线阶段：上游一次
@@ -99,7 +99,7 @@ completion都必须最终出现在actual Tile/Instr IR中并通过09–13的late
   physical-dataflow selection选中的TileRegion、cut/release boundary与materialization结构并由actual IR证明。region数量不单独计奖惩，真实DDR、GS、completion、
   tile utilization和materialization工作分别计价。
 - 不因SPM bank phase/conflict选择region partition或DDR spill；09只允许allocator在hard-valid placement中把可重算
-  bank phase作为soft preference。当前实现状态见Q49–Q53队列。
+  bank phase作为soft preference。当前实现状态见`tasks/progress.md`的physical-dataflow队列。
 - 不 lower raw packet、CRT、LLVM、runtime handle 或 package 字段。
 - 不通过 op/value/parameter 名、固定 shape、参数顺序或 workload topology 恢复语义。
 - 不把单个region、representative temporal tile、单个Tile或局部FileCheck当成完整完成证据。
@@ -490,9 +490,10 @@ Q32.V已排期闭合并由同一physical-dataflow selection消费：
 - physical-footprint fill及其valid/padding/bitpacked domain；
 - baseline以外的typed contraction operand orientation和对应target command form。
 
-relation-guided Cx/NCx physical-version absorption属于physical-version assignment而不是新target capability：Q32现有
-concrete verifier已接受GEMM/batched GEMM和native reduce的Cx/NCx形态；Q46在相同verifier边界补齐hardware-supported、
-physical-traversal-compatible CT relation/select/logic/convert/bitpacked。若08的exact physical-map/valid-lane proof允许，前置
+relation-guided Cx/NCx physical-version absorption属于physical-version assignment而不是新target capability：现有
+concrete verifier已接受GEMM/batched GEMM和native reduce的Cx/NCx形态，也已覆盖hardware-supported、
+physical-traversal-compatible CT relation/select/logic/convert/bitpacked；Q50.G/H把这些机制接入current representation/movement
+candidate，Q51只选择完整assignment。若08的exact physical-map/valid-lane proof允许，前置
 `materialize_layout`/GS movement在本clone中消失；packing identity仍只存在于encoding，不增加vector-width或packing
 side attr。
 
@@ -581,8 +582,8 @@ region内只spill某个root、让其它root继续驻留。也要保留“独立l
     materializer消费；其它未实现target能力结构化拒绝。
 11. Q50.S为Q32 existing share/recompute、hoist及每个current numeric variant分别产生production TensorProgram actual-IR
     roots和negative；Q51只选择其中一个root并展开physical dataflow，本层证明selected root可被physical tiling消费，
-    不重新生成alternative。Cx/NCx GEMM absorption与Q46
-    relation-guided absorption另按独立physical gate验收。floating reduction reorder/tree与integer exact/modular
+    不重新生成alternative。Cx/NCx GEMM与CT relation-guided absorption由Q50.G/H物化，并随Q51 selected assignment按同一
+    physical gate验收。floating reduction reorder/tree与integer exact/modular
     均复用Q32.N的numeric validation；online reduction、non-GEMM FMA及超出current integer-domain子集的
     distribution/factorization只有完整typed semantic/numeric/lowering纵向闭合后才能准入，不能靠伪装attr。
 

@@ -205,6 +205,8 @@ source program
 ## Board证据
 
 - 无板阶段必须生成current package、payload、oracle、runner并fresh no-card，才可标 `board-ready`。
+- `board-ready`只对current producer/package/runtime/runner有效；任一边界被替换后，旧队列项直接移除，把仍有效的
+  source、oracle和mechanics吸收到current owner后重新签发。source-only、`executable=false`或pending-lowering资产不能沿用旧状态。
 - board默认FP16/BF16；F32只用于本身是F32格式/ABI/转换/数值边界或真实source明确要求的case。
 - matched A/B固定source snapshot、config、payload、target identity、runtime ABI、bindings和target-call inventory，只改变被测scheduler选择。
 - correctness先于performance：两包均需完整output/guard和lifecycle通过；多次样本报告分布与观测分辨率。
@@ -331,6 +333,7 @@ source program
   （部分case分钟级，整跑10分钟+）。
 - 单测：`WaferRunBoardIOUnitTests`（42）、`WaferRuntimePublicLinkSmoke`、`WaferUnitTests --gtest_filter='...'`
   定向套件；全量`WaferUnitTests`存在已知卡死case（见bugs.md），全量跑前必须排除。
-- 板测：`test/Board/wafer_board_single_op_add_test.py`是Q56 board gate case；`WAFER_EXECUTE_HARDWARE_TESTS=1`才执行，
+- 板测：`test/Board/wafer_board_single_op_add_test.py`是Q56 board gate case，CTest名为`wafer-board-program-data-add`；
+  `WAFER_EXECUTE_HARDWARE_TESTS=1`才执行，
   无硬件时exit 77；真实板测通过前Q56不标done。
 - Tools测试的python断言先脱离lit验证：把`%t.outputs/...`替换为真实package路径后用`python3 -c`跑一遍，再交给lit。

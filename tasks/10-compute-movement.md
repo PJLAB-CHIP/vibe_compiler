@@ -2,7 +2,7 @@
 
 状态：2026-08-09按CardModule / Tile MPMD主线重写。本文拥有source structured op的
 确定性typed lowering、selected `wafer.tile.*` compute/movement及其Instr lowering legality；不拥有
-physical-dataflow placement、fusion或winner。Q49–Q53动态状态只看`tasks/progress.md`。
+physical-dataflow placement、fusion或winner。Q49.P、Q50、Q51–Q53动态状态只看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
@@ -204,7 +204,7 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 任何Tile失败都拒绝整个complete CardModule candidate；不能发布partial Tile set，也不能在exact gate中retile、spill、换layout或
 换transport。`none`与`search`走相同的materialization和late gates，区别只在上游候选生成/选择策略。
 
-## 8. Verification 与当前Q49–Q53边界
+## 8. Verification 与当前physical-dataflow边界
 
 验证至少覆盖：
 
@@ -215,5 +215,5 @@ bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roo
 - distinct Tile modules、no-work Tile、cross-Tile SPM SSA rejection；
 - Tile-to-Instr、fresh completion、SPM/DDR、communication、target与package全链实际执行。
 
-Q49–Q53当前实现状态由06与`tasks/progress.md`统一记录。本文不得用local lowering或movement特判代替physical-dataflow能力，
+Q49.P、Q50、Q51–Q53当前实现状态由06与`tasks/progress.md`统一记录。本文不得用local lowering或movement特判代替physical-dataflow能力，
 也不得据单op或局部fixture宣称joint search完成。

@@ -229,7 +229,8 @@ invocation memory另成一块，是因为它承载每次更新/回读并可在�
 二次review修复后fresh验证：主构建与启用板端配置的`wafer-run`重编译通过；Q56定向unit 128/128、
 WaferRunBoardIOUnitTests 42/42、Compiler/Runtime public link smoke 2/2、SystemC integration与numeric model 65/65；
 parameter source→package→no-card及program-data scale lit 2/2、source-organization lit 1/1，直接source-organization检查通过。
-本轮没有启动真实设备，状态恢复为`board-ready`而不是`done`。
+本轮没有启动真实设备，状态恢复为`board-ready`而不是`done`。专用runner
+`test/Board/wafer_board_single_op_add_test.py`以CTest `wafer-board-program-data-add`进入current串行板端入口。
 
 ## 4. Q57：设备常驻执行
 

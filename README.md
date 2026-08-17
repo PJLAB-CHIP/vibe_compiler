@@ -58,9 +58,9 @@ analysis 和 rejected state 都是 query-local compiler state，不进入 IR 或
 
 ## 当前演进
 
-当前 owner 是 Q49 structured-DAG multi-Tile synthesis。它将 spatial mapping、temporal tiling、fusion/SPM residency、
-NoC 和 compute/communication overlap 放入同一个有界搜索，并删除旧 rank==Tile、late selector、single-entry ABI
-和专用 workload shortcut。动态状态、前置和完成门禁只看 [`tasks/progress.md`](tasks/progress.md)；README
+当前 owner 是06号physical-dataflow主线：Q49.P先从正常上游IR闭合deterministic `none`，Q51再通过Q50各轴把
+spatial mapping、temporal tiling、fusion/SPM residency、NoC和compute/communication overlap纳入唯一共同搜索。
+旧rank==Tile、late selector、single-entry ABI和专用workload shortcut不再是current owner。动态状态、前置和完成门禁只看 [`tasks/progress.md`](tasks/progress.md)；README
 不复制实施日志或历史性能结论。
 
 ## 仓库结构
@@ -164,7 +164,7 @@ script/CRT/ABI 资源位于可执行文件旁的 install 目录，`python3`/`cla
 - 数学变换只能从 current structured semantics 和显式 proof 合法产生；不授权任意 fast-math、未证明的
   FMA contraction，也不放宽 special value、index、layout、guard 或 physical-span 检查。
 - SystemC 是 untimed functional-event model，不证明 vendor packet、RISC-V ELF exact execution、板端性能或 cycle accuracy。
-- 历史板端证据只证明当时 profile、shape、dtype、payload、ABI 和 runtime identity 下的能力；Q49 的
+- 历史板端证据只证明当时 profile、shape、dtype、payload、ABI 和 runtime identity 下的能力；Q49.P/Q53 的
   current package 和性能结论必须用新 pipeline fresh 产生，不回放旧输出代签。
 - card 理论 cost 只使用 cohort 内全部候选共有的已知 term；不知的硬件参数不进入比较，不产生
   候选局部缺项或候选局部零值；raw collector的`unavailable`只作诊断，不进入最终数值makespan。

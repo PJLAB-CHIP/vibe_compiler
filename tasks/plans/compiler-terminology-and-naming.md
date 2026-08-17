@@ -93,7 +93,7 @@ type、function、pass option、pipeline timing和diagnostic均使用`Card`、`T
 ## 已完成批次验证
 
 - `build/q45-fresh`独立配置并完成419个构建步骤；没有复用`build/wafer-dev`生成物。
-- fresh `WaferUnitTests`排除Q49/Q52已知长搜索后为629/629通过；长搜索不属于命名整改门禁。
+- fresh `WaferUnitTests`排除Q49.P/Q52已知长搜索后为629/629通过；长搜索不属于命名整改门禁。
 - fresh CTest 1–11为11/11通过，包含lit、dependency snapshot、PyTorch/no-card和配置测试。
 - fresh CTest 13–20为8/8通过，包含runtime IO、public-header/link smoke和feature-off link closure。
 - source/IR organization、Python compileall、profile report、dependency helpers及受影响Board协议的host-only测试通过。
@@ -107,7 +107,7 @@ type、function、pass option、pipeline timing和diagnostic均使用`Card`、`T
 - CTest 1–11为11/11通过，CTest 13–20为8/8通过；Wafer lit 216/216由CTest实际执行；
 - IR/source organization、Python compileall和`git diff --check`通过。
 
-StructuredDAG placement enumeration和CardExecutable candidate synthesis属于Q49/Q52搜索行为，本批没有用
+StructuredDAG placement enumeration和CardExecutable candidate synthesis属于Q49.P/Q52搜索行为，本批没有用
 长搜索代替命名合同验证；没有执行真实板端测试。
 
 未注册到CMake/CTest且依赖已退役实现的旧Board calibration、catalog和probe已经删除，不再作为后续任务的隐式入口。

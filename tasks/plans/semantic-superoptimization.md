@@ -1,6 +1,6 @@
 # Semantic Superoptimization 实施计划
 
-状态：`later`。动态状态与依赖只看`tasks/progress.md`。本任务不在当前Q49–Q53施工中实现；Q50.S先建立
+状态：`later`。动态状态与依赖只看`tasks/progress.md`。本任务不在当前Q49.P、Q50、Q51–Q53施工中实现；Q50.S先建立
 “算法/语义alternative必须成为actual `TensorProgram`”的接入边界，Q48只在Q53重新达到`board-ready`后扩展该边界，
 不建立第二条优化管线或第二个winner owner。
 

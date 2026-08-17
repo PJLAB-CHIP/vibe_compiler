@@ -1,7 +1,7 @@
 # Wafer Target Code Generation 与 TargetCall
 
 状态：本文是target conversion、target-ready program data、LLVM module、device link、readback与TargetCall的唯一现行设计合同；
-Q58/Q56的数据代码实施状态只看`tasks/progress.md`。单卡编译边界固定覆盖16个available Tiles；Q49先收口`none` baseline，
+Q58/Q56的数据代码实施状态只看`tasks/progress.md`。单卡编译边界固定覆盖16个available Tiles；Q49.P先收口`none` baseline，
 Q51再把selected `CardExecutable`接入这条边界。现有host/model
 验证不能代替Q53的fresh package/no-card和真实板端matched A/B gate。
 
@@ -10,7 +10,7 @@ Q51再把selected `CardExecutable`接入这条边界。现有host/model
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q49 `none` baseline或Q51 `search`选中的`CardExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
+  Q49.P `none` baseline或Q51 `search`选中的`CardExecutable`；其中all-and-only `wafer.tile.module`已投影为16个
   Tile ModuleOp，并完成TileRegion→Instr、fresh completion、SPM/DDR placement、transport与executable verification；
   Tile entry携带typed program binding，Q58 `ProgramDataHandoff`稳定拥有对应parameter/external captured-constant文件与checked range。
 - Current stage responsibility:
@@ -116,7 +116,7 @@ requirement）、dtype、`MemLayout`、shape、physical bytes、alignment与acce
 - target call descriptor 是唯一 field-position 与 scalar-width 事实源。
 
 ABI preparation不得改变 selected mapping、temporal tile、fusion、movement、worker、completion 或 placement；
-late failure拒绝整个`CardExecutable` candidate，由Q51 candidate set选择其它候选；Q49 baseline则返回明确失败诊断。
+late failure拒绝整个`CardExecutable` candidate，由Q51 candidate set选择其它候选；Q49.P baseline则返回明确失败诊断。
 
 ### 3.2 Accepted immutable data preparation
 
