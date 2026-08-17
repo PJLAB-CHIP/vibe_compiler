@@ -1996,6 +1996,11 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
               << operation.getName() << "/store=" << storesStage
               << "/load=" << loadsStage;
     }
+    if (getenv("WAFER_DUMP_CUT_REGION")) {
+      llvm::errs() << "--- cut region dump ---\n";
+      region.print(llvm::errs());
+      llvm::errs() << "\n";
+    }
     return failResult(
         failureReason,
         "region cut requires an ordered exact store/reload "
@@ -2851,11 +2856,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         return mlir::failure();
       break;
     case SpatialEdgeAction::SpillReload: {
-      // A narrow per-root probe scope declares its carrier boundaries as
-      // externally carried (no spill is materialized here); the deterministic
-      // baseline full path materializes the canonical carrier and splits the
-      // region at construction time.
-      if (independentDDRStages && externalBoundaryCarrier)
+      if (independentDDRStages)
         break;
       bool ignoredCreatedRegionCut = false;
       if (mlir::failed(
@@ -2866,7 +2867,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         return mlir::failure();
     } break;
     case SpatialEdgeAction::RegionCut: {
-      if (independentDDRStages && externalBoundaryCarrier)
+      if (independentDDRStages)
         break;
       bool createdRegionCut = false;
       if (mlir::failed(materializeSpill(

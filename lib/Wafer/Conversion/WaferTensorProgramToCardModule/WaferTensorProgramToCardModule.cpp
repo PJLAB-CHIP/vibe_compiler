@@ -1086,6 +1086,13 @@ static mlir::FailureOr<mlir::func::FuncOp> lowerBaselineTileEntry(
         /*materializeTile=*/true, failureReason, &tileRelations);
     if (mlir::failed(entry))
       return entry;
+    // Dependent roots connected by carrier edges share one whole-Tile
+    // closure; the exported split kernel separates them into one-region-per-
+    // root form with retargeted reload relations before the structural
+    // postcondition.
+    if (mlir::failed(splitStructuredRootBoundaries(*entry, tileRelations,
+                                                   failureReason)))
+      return mlir::failure();
     if (mlir::failed(verifyOneStructuredRootPerRegion(*entry, tileRelations,
                                                       failureReason)))
       return mlir::failure();
@@ -1148,6 +1155,9 @@ static mlir::FailureOr<mlir::func::FuncOp> lowerBaselineTileEntry(
       failureReason);
   if (mlir::failed(merged))
     return merged;
+  if (mlir::failed(splitStructuredRootBoundaries(*merged, tileRelations,
+                                                 failureReason)))
+    return mlir::failure();
   if (mlir::failed(verifyOneStructuredRootPerRegion(*merged, tileRelations,
                                                     failureReason)))
     return mlir::failure();

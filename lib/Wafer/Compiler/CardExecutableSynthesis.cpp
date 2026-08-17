@@ -704,17 +704,6 @@ static bool appendBaselineSupportChainTransfersImpl(
               "baseline support demand has no physical ownership fragment";
         return false;
       }
-      // Fully resident support ownership is the local dependency cut: the
-      // producer and consumer stages own consecutive TileRegions and the
-      // support chain is rebuilt from the exact DDR spill. Mixed or pure
-      // remote ownership keeps the exact peer fragment carrier.
-      if (llvm::all_of(strategy.fragments, [](const SpatialEdgeFragment &fragment) {
-            return fragment.kind == SpatialEdgeFragmentKind::Resident;
-          })) {
-        strategy.action = SpatialEdgeAction::RegionCut;
-        strategy.fragments.clear();
-      }
-
       mapping.edgeStrategies.push_back(
           std::move(strategy));
     }
