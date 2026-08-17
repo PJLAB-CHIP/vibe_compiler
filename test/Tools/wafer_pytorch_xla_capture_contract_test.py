@@ -67,6 +67,7 @@ class FakeTorch(types.ModuleType):
         self.empty_calls = []
         self.no_grad_entered = False
         self.float32 = "float32"
+        self.float16 = "float16"
         self.bfloat16 = "bfloat16"
         self.uint16 = "uint16"
 

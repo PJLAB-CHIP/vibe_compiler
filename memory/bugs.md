@@ -793,3 +793,35 @@
   只拒绝该physical assignment，不改写logical verdict。
 - 防复发：production gate至少包含一个strided support view和一个overwrite产生empty destinations的multi-piece relation，并证明
   它们进入完整CardModule/CardExecutable gate；只测whole-edge query或只用连续concat piece不能覆盖这类重复恢复缺陷。
+
+## SPMD card-level 合同切换后未跟上的 stale 测试（2026-08-17 修复）
+
+- 现象：Tools/Runtime lit 4 个失败，全部在 Q49.P 之前即存在（2026-08-11 `76f68e29` 把 SPMD 层从 16-rank 改成
+  card-level 后测试未同步）：
+  1. `wafer-compile-structured-tensor-program.test`：用 `CPU_NUM_DEVICES=16` + `--emit-sharded-program` 采 16-device
+     sharding 程序喂给 `num_partitions=1` 的 card-level helper，撞 pinned XLA partitioner 未初始化内存 bug（`%pad`
+     垃圾 shape 且每次运行值不同，非确定性）；03 合同已废止"partition 数 = Tile 数"旧语义。
+  2. `wafer-compile-stablehlo-sharding-propagation.test`：`wafer-materialize-execution-mesh` 的 shape 在 76f68e29
+     改为必须显式传（旧 `--default-tile-count=16` fallback 已删），测试 pipeline 没传 → `logical mesh shape must be
+     explicit`。
+  3. `wafer-run.test`：manifest 读取失败消息已改（`failed to open package manifest member`），FileCheck 期望串过期。
+  4. `wafer-compile-spmd-partition.test`：reference capture 是 f32，target 明确拒绝 f32 GEMM
+     （`unsupported_target_instr: GEMM does not support f32`），连带 search 在 selected-buffer-materialization 报
+     indeterminate；且 manifest `inputs[].role_index` 语义已改（input 域内从 0 编号，不再沿用 parameter 的连续编号）。
+- 修复模式：reference capture 模块和输入按 dtype 政策改 f16（`wafer_pytorch_xla_capture.py` 的
+  `_make_reference_matmul_module`/`emit_reference_stablehlo_program`），contract mock 同步补 `float16`；
+  source-to-package 测试切 `--optimization-policy=none`（Q49.P gate 是 baseline，f16 下默认 search 同样通过但一次 ~60s）；
+  mesh pipeline 补 `{shape="1"}`；manifest 断言同步 current 合同。
+- 防复发：target 合同里明确不支持的组合（f32 GEMM）先写 verifier 拒绝，再把功能纵向/qualification 默认 dtype 保持在
+  f16/bf16（见仓库板测 dtype 规则）；改 SPMD/partition 边界合同时，同批 grep 所有消费旧 CLI/字段/消息的 lit 测试。
+  外部 helper 出现非确定性垃圾 shape 时先查"喂给 helper 的输入是否符合当前合同"，不要先怀疑 helper 二进制。
+
+## 给 LLVM_OPTIONAL_SOURCES 里的退役源码插桩不产生任何效果
+
+- 现象：往 `lib/Wafer/Compiler/LowerRankInstrModules.cpp` 加调试打印后 `cmake --build` 报 "ninja: no work to do"，
+  二进制里 grep 不到新字符串，运行输出也没有。
+- 根因：该文件在 CMakeLists 的 `LLVM_OPTIONAL_SOURCES` 列表而非 `add_mlir_library` 主源列表——它是退役源码，不属于
+  active build；同名门禁逻辑已由 `CardExecutableLowering.cpp`/`CompileCardExecutableLLVMModules.cpp` 承接。插桩前没核对
+  对象文件是否存在。
+- 防复发：改代码前先确认文件在 active build 里（`ninja -C build/… -t query lib/libWaferCompiler.a | grep <文件名>` 或
+  `ar t lib/libWaferCompiler.a`）；"ninja: no work to do" + 符号不在二进制 = 源码不在构建图，立即改查 active 实现。

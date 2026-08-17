@@ -41,4 +41,4 @@
 # NO-CARD-BOARD-OPTION: board binding and qualification options require --board
 # EXTRA: package modules contain an unreferenced payload
 # DIGEST: package module digest mismatch
-# MISSING-MANIFEST: failed to read package manifest
+# MISSING-MANIFEST: failed to open package manifest member

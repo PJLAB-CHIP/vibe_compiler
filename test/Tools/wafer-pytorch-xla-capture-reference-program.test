@@ -13,8 +13,8 @@
 # RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.program | FileCheck %s --check-prefix=VERIFY
 
 # MLIR: func.func
-# MLIR: tensor<4096xf32>
-# MLIR: tensor<4096x4096xf32>
+# MLIR: tensor<4096xf16>
+# MLIR: tensor<4096x4096xf16>
 # MLIR: stablehlo
 
 # META: "input_locations":

@@ -616,10 +616,13 @@ P1–P2 是两个既有失败的根因修复（gate case），P3–P6 是契约�
 
 - 更新 `tasks/progress.md` Q49.P 行和本节实现结论；`memory/bugs.md` 两条既有失败标修复；
   `memory/general_dev.md` 沉淀 probe/memo 经验。
-- fresh 验证：受影响 unit（CardExecutableSynthesis、TileRegionSPMCapacity 相关）、默认 lit gate、
-  Tools/Runtime lit（带 wall-time 上限）、source-to-package/no-card（含 overfull-to-fit、prefill/decode/Llama
-  代表输入；minimum-tile 负例按上节结论不可构造，已删除并记录）、IR/package digest 稳定性与 work count（完整
-  CardModule materialization 与 CardExecutable compilation 各一次）。
+- fresh 验证（2026-08-17 实测）：受影响 unit 70/70、默认 lit gate 216/216、三棵树 fresh 构建通过；
+  Tools/Runtime lit 33/38（5 unsupported、0 failed）——原 4 个失败全部是 `76f68e29` SPMD card-level 合同切换后
+  未跟上的 stale 测试，本轮修复：reference capture 改 f16（target 拒绝 f32 GEMM）、capture 改 card-level
+  reference 模式、mesh pass 补显式 shape、manifest 消息与 `role_index` 断言同步 current 合同；source-to-package
+  以 `none` 编译 f16 reference/AddModel 走通完整 gate（f16 下默认 search 同样通过）；Llama block fresh capture 完成、
+  `none` 编译验证中（block 较大，wall 超单次 400s 观察窗后转后台）。
+  IR/package digest 稳定性与 work count（完整 CardModule materialization 与 CardExecutable compilation 各一次）。
 - 提交本批改动（作者规范见 `CLAUDE.md`）。
 
 ## Q51.Core：Search Control Kernel

@@ -7,7 +7,7 @@
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,16],"dtype":"float32","dynamic_dims":[]},{"shape":[16,8],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[32,8],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.sharding.program/functions/forward.meta
 
 # RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.sharding.program | FileCheck %s --check-prefix=VERIFY
-# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-materialize-target-topology,wafer-materialize-execution-mesh,wafer-propagate-stablehlo-sharding)' %t.sharding.program/functions/forward.mlir | FileCheck %s --check-prefix=PROPAGATE
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-materialize-target-topology,wafer-materialize-execution-mesh{shape="1"},wafer-propagate-stablehlo-sharding)' %t.sharding.program/functions/forward.mlir | FileCheck %s --check-prefix=PROPAGATE
 # RUN: not wafer-compile-stablehlo --propagate-stablehlo-sharding %t.sharding.program 2>&1 | FileCheck %s --check-prefix=NO-PROPAGATE
 
 # VERIFY: wafer-compile-stablehlo: verified StableHLO program

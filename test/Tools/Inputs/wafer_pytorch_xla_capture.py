@@ -795,10 +795,10 @@ def _make_reference_matmul_module(torch_module: Any, size: int) -> Any:
         def __init__(self):
             super().__init__()
             self.weight = torch_module.nn.Parameter(
-                torch_module.empty(size, size, dtype=torch_module.float32)
+                torch_module.empty(size, size, dtype=torch_module.float16)
             )
             self.bias = torch_module.nn.Parameter(
-                torch_module.empty(size, dtype=torch_module.float32)
+                torch_module.empty(size, dtype=torch_module.float16)
             )
 
         def forward(self, x):
@@ -1867,7 +1867,7 @@ def emit_reference_stablehlo_program(
     else:
         reference_module = reference_module_factory()
     reference_module.eval()
-    input_tensor = torch_module.empty(size, size, dtype=torch_module.float32)
+    input_tensor = torch_module.empty(size, size, dtype=torch_module.float16)
 
     options = stablehlo_module.StableHLOExportOptions()
     options.export_weights = True
