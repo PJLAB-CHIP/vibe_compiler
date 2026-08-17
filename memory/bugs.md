@@ -859,3 +859,26 @@
   对象文件是否存在。
 - 防复发：改代码前先确认文件在 active build 里（`ninja -C build/… -t query lib/libWaferCompiler.a | grep <文件名>` 或
   `ar t lib/libWaferCompiler.a`）；"ninja: no work to do" + 符号不在二进制 = 源码不在构建图，立即改查 active 实现。
+
+
+## TileRegion 拼接与 carrier spill 陷阱（2026-08-17）
+
+- **现象**：`concatenateTileEntries` 合并 per-component entry 时，先 `erase` 了 terminator 再对
+  `Block::without_terminator()` 迭代 splice，导致最后一个 op（region）没被移动，随后
+  `entry->erase()` 把 region 连带销毁；relation buffer 悬挂后被打印成别的 op 的 SSA 值。
+- **根因**：`without_terminator()` 的范围由 terminator 定位；没有 terminator 时 `getTerminator()`
+  按 last op 计算，把 region 排除在范围外。擦除顺序必须保证块在每一步都维持合法状态：
+  先 RAUW/retarget 尾部 to_tensor 结果，再擦除「lastRegion 之后、terminator 之前」的 op，
+  最后 splice 剩余 op，`entry->erase()` 收尾。
+- **防复发**：region 块内不能引用 entry-level SSA（`memref.subview op using value defined
+  outside the region`）；合并时 region 的 dest block arg 必须保留（operand 重接共享 dest 即可），
+  不能把 block arg RAUW 成 entry-level 值。relation retarget（`relation.buffer == old`）必须在
+  每次 SSA rebase 时同步执行，否则 probe 的 strict remap fail-closed。
+- **wave-clone spill**：canonical carrier 的 RegionCut spill 插在 consumer 位置，consumer 的
+  temporal tiling 会把 spill 的 insert/store 按 wave 克隆（store 写 clone alloc、reload 读原
+  alloc），`splitAtRegionCut` 的 store/reload 区间检查正确拒绝。多波 baseline（CROSS gate）
+  在 carrier 拥有 wave-hoisted store/reload 发射前必须走 split kernel。现象特征是
+  `stores=N/loads=0` 且 store 的 dest 是同一 marked alloc 的多个 wave subview。
+- **插入覆盖的 demand 过拉**：`tensor.insert_slice` 的窗口被插入区完全覆盖时，目的窗口的
+  producer 是已被 exact demand 证明为空的覆盖需求；无条件 materialize 目的窗口会把它拉进
+  scope（多 root region）。完全覆盖 + unit stride 时用 fresh empty 作目的窗口。

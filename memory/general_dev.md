@@ -373,3 +373,18 @@ source program
 - Q51完整new-search链闭合前，不执行重型LLaMA block的`none`或`search`，包括Q49.P、Q50各checkpoint、Q51.Core、普通
   regression和诊断重跑；使用有界小图、同relation结构的定向case和上述轻量source-to-package入口。重型LLaMA首次只在Q52
   显式bounded scalability profile中运行，Q53再生成正式package/oracle/no-card；旧输出不回放为current证据。
+
+
+## Q49.P baseline 结构（2026-08-17 收敛）
+
+- baseline 完整路径 = per-component 构造 + split kernel + typed one-root postcondition：
+  独立 root 按 observableOutputRootNodes 分组件各自窄 materialize 再 `concatenateTileEntries`
+  合并（共享 dest 集合）；依赖 root 的边界由 split kernel 在同一 transaction 里 store/reload +
+  relation retarget。probe 用 `StructuredBoundarySupply` + `externalBoundaryCarrier` 声明边界
+  外部承载，阻止 sibling compute 进入窄 scope。
+- 验证入口：`WaferUnitTests --gtest_filter='CardExecutableSynthesisTest.*:WaferTensorProgramToCardModuleTest.*:TileRegionSPMCapacityEvaluationTest.*:StructuredBufferRelationsTest.*:TileMemoryPlanningTest.*:PipelinesTest.*'`（85 例）
+  + `lit -sv test/Tools/wafer-compile-card-baseline.test`（CHAIN/CROSS/GEMM/NO-CARD）。
+- baseline 诊断行 `card-executable-baseline-controller` 的字段全部来自
+  `DeterministicBaselineLedger`（exact_demand_edges、baseline_*、exactGates），
+  search bag 不再承载 baseline 计数。`buildCardExecutable` 的 Tile IR trace 只在
+  `buildCardExecutableWithIRTrace` 请求时捕获并检查覆盖。
