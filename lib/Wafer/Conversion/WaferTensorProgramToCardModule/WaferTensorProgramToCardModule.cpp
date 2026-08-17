@@ -273,9 +273,12 @@ static mlir::LogicalResult removeSchedulingOutputDestinations(
     eraseArguments.set(outputBase + index);
   }
   entry.eraseArguments(eraseArguments);
-  if (mlir::failed(mlir::verify(entry)))
+  if (mlir::failed(mlir::verify(entry))) {
+    llvm::errs() << "--- entry IR on boundary verify failure ---\n";
+    entry->getParentOfType<mlir::ModuleOp>().print(llvm::errs());
     return failCardModule(
         failureReason, "Tile functional result boundary is not verifier-legal");
+  }
   return mlir::success();
 }
 
@@ -311,42 +314,61 @@ static void cloneModuleFacts(mlir::ModuleOp sourceModule,
 
 } // namespace
 
-static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
-    mlir::ModuleOp sourceModule, CardId cardId, const TileMapping &mapping,
-    mlir::OwningOpRef<mlir::ModuleOp> &cardModule, std::string *failureReason,
-    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
-    StructuredMaterializationRelations *materializationRelations,
-    std::optional<TileId> materializeOnlyTileId) {
+/// Validated, schedule-ready input shared by whole-card and single-Tile
+/// materialization. Owns the private scheduling clone; the per-Tile lowering
+/// below only consumes its validated pieces.
+struct TileMaterializationPreparation {
+  mlir::OwningOpRef<mlir::ModuleOp> schedulingModule;
+  mlir::func::FuncOp schedulingProgram;
+  unsigned sourceArgumentCount = 0;
+  llvm::SmallVector<TileId, 16> availableTiles;
+  llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 4> outputDomains;
+  llvm::SmallVector<const OutputTileMapping *, 4> outputMappings;
+  llvm::SmallVector<StructuredOpTemporalTile, 16>
+      schedulingOperationTemporalTiles;
+  llvm::SmallVector<StructuredOperationNodeMapping, 16>
+      schedulingOperationNodes;
+  llvm::SmallVector<SpatialEdgeStrategy, 16> schedulingEdgeStrategies;
+};
+
+static mlir::FailureOr<TileMaterializationPreparation>
+prepareTileMaterialization(mlir::ModuleOp sourceModule, CardId cardId,
+                           const TileMapping &mapping,
+                           llvm::ArrayRef<StructuredOperationNodeMapping>
+                               operationNodes,
+                           std::string *failureReason) {
+  TileMaterializationPreparation preparation;
   if (failureReason)
     failureReason->clear();
   if (!sourceModule)
-    return failCardModule(failureReason, "source module is null");
+    return failCardModuleValue<TileMaterializationPreparation>(
+        failureReason, "source module is null");
 
   {
     mlir::ScopedDiagnosticHandler suppress(
         sourceModule.getContext(),
         [](mlir::Diagnostic &) { return mlir::success(); });
     if (mlir::failed(mlir::verify(sourceModule)))
-      return failCardModule(failureReason,
-                            "source module is not verifier-legal");
+      return failCardModuleValue<TileMaterializationPreparation>(
+          failureReason, "source module is not verifier-legal");
   }
 
   std::string topologyFailure;
   mlir::FailureOr<TargetTopology> topology =
       TargetTopology::create(sourceModule, &topologyFailure);
   if (mlir::failed(topology))
-    return failCardModule(failureReason, topologyFailure);
+    return failCardModuleValue<TileMaterializationPreparation>(
+        failureReason, topologyFailure);
   std::optional<llvm::ArrayRef<TileId>> availableTiles =
       topology->getAvailableTileIds(cardId);
   if (!availableTiles)
-    return failCardModule(failureReason,
-                          "requested card_id is outside target topology");
+    return failCardModuleValue<TileMaterializationPreparation>(
+        failureReason, "requested card_id is outside target topology");
   if (availableTiles->empty())
-    return failCardModule(failureReason,
-                          "requested card has no available Tiles");
-  if (materializeOnlyTileId &&
-      !llvm::is_contained(*availableTiles, *materializeOnlyTileId))
-    return failCardModule(failureReason, "requested Tile is unavailable");
+    return failCardModuleValue<TileMaterializationPreparation>(
+        failureReason, "requested card has no available Tiles");
+  preparation.availableTiles.assign(availableTiles->begin(),
+                                    availableTiles->end());
   if (mlir::failed(verifyLogicalMesh(sourceModule, failureReason)))
     return mlir::failure();
 
@@ -360,50 +382,50 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
       outputDomains = getStaticOutputDomains(*sourceProgram, failureReason);
   if (mlir::failed(outputDomains))
     return mlir::failure();
+  preparation.outputDomains = std::move(*outputDomains);
 
-  const unsigned sourceArgumentCount = sourceProgram->getNumArguments();
+  preparation.sourceArgumentCount = sourceProgram->getNumArguments();
   mlir::IRMapping sourceToScheduling;
-  mlir::OwningOpRef<mlir::ModuleOp> schedulingModule =
-      mlir::cast<mlir::ModuleOp>(sourceModule->clone(sourceToScheduling));
-  auto schedulingProgram = sourceToScheduling.lookupOrNull(*sourceProgram);
+  preparation.schedulingModule = mlir::cast<mlir::ModuleOp>(
+      sourceModule->clone(sourceToScheduling));
+  auto schedulingProgram =
+      sourceToScheduling.lookupOrNull(*sourceProgram);
   if (!schedulingProgram ||
       mlir::failed(appendSchedulingOutputDestinations(
           mlir::cast<mlir::func::FuncOp>(schedulingProgram), failureReason)))
     return mlir::failure();
+  preparation.schedulingProgram =
+      mlir::cast<mlir::func::FuncOp>(schedulingProgram);
 
   llvm::DenseSet<mlir::Operation *> nodeOperations;
   llvm::DenseSet<uint32_t> nodeIds;
-  llvm::SmallVector<StructuredOperationNodeMapping, 16>
-      schedulingOperationNodes;
-  schedulingOperationNodes.reserve(operationNodes.size());
+  preparation.schedulingOperationNodes.reserve(operationNodes.size());
   for (const StructuredOperationNodeMapping &node : operationNodes) {
     if (!node.operation || !nodeOperations.insert(node.operation).second ||
         !nodeIds.insert(node.structuredNodeId).second)
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card structured operation-node mapping is null or duplicated");
     mlir::Operation *cloned = sourceToScheduling.lookupOrNull(node.operation);
     if (!cloned)
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card structured operation-node mapping is outside the tensor "
           "program");
-    schedulingOperationNodes.push_back({cloned, node.structuredNodeId});
+    preparation.schedulingOperationNodes.push_back({cloned, node.structuredNodeId});
   }
 
   llvm::DenseSet<mlir::Operation *> temporalSources;
-  llvm::SmallVector<StructuredOpTemporalTile, 16>
-      schedulingOperationTemporalTiles;
-  schedulingOperationTemporalTiles.reserve(
+  preparation.schedulingOperationTemporalTiles.reserve(
       mapping.operationTemporalTiles.size());
   for (const StructuredOpTemporalTile &tile : mapping.operationTemporalTiles) {
     if (!tile.operation || !temporalSources.insert(tile.operation).second)
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card structured temporal mapping is null or duplicated");
     mlir::Operation *cloned = sourceToScheduling.lookupOrNull(tile.operation);
     if (!cloned)
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card structured temporal mapping is outside the tensor program");
     auto tiling = mlir::dyn_cast<mlir::TilingInterface>(cloned);
@@ -411,7 +433,7 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
         tile.iteratorTileSizes.size() != tiling.getLoopIteratorTypes().size() ||
         llvm::any_of(tile.iteratorTileSizes,
                      [](int64_t size) { return size <= 0; }))
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card structured temporal tile does not match its iteration "
           "domain");
@@ -434,11 +456,11 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
                        return mlir::ShapedType::isDynamic(range) ||
                               range <= 0 || tileSize > range;
                      }))
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card structured temporal tile is outside its static iteration "
           "domain");
-    schedulingOperationTemporalTiles.push_back(
+    preparation.schedulingOperationTemporalTiles.push_back(
         StructuredOpTemporalTile{cloned, tile.iteratorTileSizes});
   }
   for (mlir::Operation &operation :
@@ -447,27 +469,26 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
         !mlir::isa<mlir::TilingInterface>(&operation))
       continue;
     if (!temporalSources.contains(&operation))
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card structured temporal mapping must cover every scheduled "
           "operation exactly once");
   }
 
-  llvm::SmallVector<SpatialEdgeStrategy, 16> schedulingEdgeStrategies;
-  schedulingEdgeStrategies.reserve(mapping.edgeStrategies.size());
+  preparation.schedulingEdgeStrategies.reserve(mapping.edgeStrategies.size());
   for (const SpatialEdgeStrategy &strategy : mapping.edgeStrategies) {
     mlir::Operation *producer =
         sourceToScheduling.lookupOrNull(strategy.producer);
     mlir::Operation *consumer =
         sourceToScheduling.lookupOrNull(strategy.consumer);
     if (!producer || !consumer)
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card edge strategy is outside the source tensor program");
     SpatialEdgeStrategy mapped = strategy;
     mapped.producer = producer;
     mapped.consumer = consumer;
-    schedulingEdgeStrategies.push_back(std::move(mapped));
+    preparation.schedulingEdgeStrategies.push_back(std::move(mapped));
   }
 
   // Every selected structured producer/data-input dependency is an exact
@@ -482,7 +503,7 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
         mlir::failed(deriveUnaryPureSupportChain(
             strategy.producer, strategy.producerResult, strategy.consumer,
             strategy.consumerOperand, failureReason)))
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card edge strategy must name an exact structured SSA dependency");
     auto dps =
@@ -493,7 +514,7 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
           return operand->getOperandNumber() == strategy.consumerOperand;
         });
     if (!isDataInput)
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card edge strategy must target a structured data input");
     coveredDataInputs.insert({strategy.consumer, strategy.consumerOperand});
@@ -513,83 +534,209 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
         continue;
       if (!coveredDataInputs.contains(
               {&operation, operand->getOperandNumber()}))
-        return failCardModule(
+        return failCardModuleValue<TileMaterializationPreparation>(
             failureReason,
             "card spatial mapping is missing a direct structured edge action");
     }
   }
 
   llvm::DenseSet<int64_t> availableTileValues;
-  for (TileId tileId : *availableTiles)
+  for (TileId tileId : preparation.availableTiles)
     availableTileValues.insert(tileId.getValue());
   for (const SpatialEdgeStrategy &strategy : mapping.edgeStrategies) {
     if (!availableTileValues.contains(strategy.destinationTile.getValue()) ||
         (strategy.action != SpatialEdgeAction::PeerFragments &&
          !availableTileValues.contains(strategy.sourceTile.getValue())))
-      return failCardModule(failureReason,
-                            "card edge strategy names an unavailable Tile");
+      return failCardModuleValue<TileMaterializationPreparation>(
+          failureReason, "card edge strategy names an unavailable Tile");
     for (const SpatialEdgeFragment &fragment : strategy.fragments)
       if (!availableTileValues.contains(fragment.sourceTile.getValue()))
-        return failCardModule(failureReason,
-                              "card edge fragment names an unavailable Tile");
+        return failCardModuleValue<TileMaterializationPreparation>(
+            failureReason,
+            "card edge fragment names an unavailable Tile");
   }
 
-  if (mapping.outputs.size() != outputDomains->size())
-    return failCardModule(
+  if (mapping.outputs.size() != preparation.outputDomains.size())
+    return failCardModuleValue<TileMaterializationPreparation>(
         failureReason,
         "card spatial mapping must cover every function result exactly once");
-  llvm::SmallVector<const OutputTileMapping *, 4> outputMappings(
-      outputDomains->size(), nullptr);
+  preparation.outputMappings.assign(preparation.outputDomains.size(), nullptr);
   for (const OutputTileMapping &output : mapping.outputs) {
-    if (output.outputIndex >= outputDomains->size())
-      return failCardModule(
+    if (output.outputIndex >= preparation.outputDomains.size())
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card spatial mapping output index is outside function results");
-    if (outputMappings[output.outputIndex])
-      return failCardModule(failureReason,
-                            "card spatial mapping output index is duplicated");
-    if (output.shardDimension >= (*outputDomains)[output.outputIndex].size())
-      return failCardModule(
+    if (preparation.outputMappings[output.outputIndex])
+      return failCardModuleValue<TileMaterializationPreparation>(
+          failureReason,
+          "card spatial mapping output index is duplicated");
+    if (output.shardDimension >=
+        preparation.outputDomains[output.outputIndex].size())
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card spatial mapping shard dimension is outside output domain");
     if (output.activeTileIds.empty())
-      return failCardModule(failureReason,
-                            "card spatial mapping output has no active Tiles");
+      return failCardModuleValue<TileMaterializationPreparation>(
+          failureReason,
+          "card spatial mapping output has no active Tiles");
     if (output.temporalTileSizes.size() !=
-        (*outputDomains)[output.outputIndex].size())
-      return failCardModule(
+        preparation.outputDomains[output.outputIndex].size())
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card spatial mapping temporal tile rank differs from output");
     for (auto [tileSize, extent] : llvm::zip_equal(
-             output.temporalTileSizes, (*outputDomains)[output.outputIndex]))
+             output.temporalTileSizes,
+             preparation.outputDomains[output.outputIndex]))
       if (tileSize <= 0 || tileSize > extent)
-        return failCardModule(
+        return failCardModuleValue<TileMaterializationPreparation>(
             failureReason,
             "card spatial mapping temporal tile is outside output domain");
 
     llvm::DenseSet<int64_t> outputTiles;
     for (TileId tileId : output.activeTileIds) {
       if (!availableTileValues.contains(tileId.getValue()))
-        return failCardModule(failureReason,
-                              "card spatial mapping names an unavailable Tile");
+        return failCardModuleValue<TileMaterializationPreparation>(
+            failureReason,
+            "card spatial mapping names an unavailable Tile");
       if (!outputTiles.insert(tileId.getValue()).second)
-        return failCardModule(
+        return failCardModuleValue<TileMaterializationPreparation>(
             failureReason,
             "card spatial mapping output contains a duplicate Tile");
     }
     const int64_t extent =
-        (*outputDomains)[output.outputIndex][output.shardDimension];
+        preparation.outputDomains[output.outputIndex][output.shardDimension];
     if (output.activeTileIds.size() > static_cast<size_t>(extent))
-      return failCardModule(
+      return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card spatial mapping output has more active Tiles than nonempty "
           "shards");
-    outputMappings[output.outputIndex] = &output;
+    preparation.outputMappings[output.outputIndex] = &output;
   }
-  if (llvm::is_contained(outputMappings, nullptr))
-    return failCardModule(
+  if (llvm::is_contained(preparation.outputMappings, nullptr))
+    return failCardModuleValue<TileMaterializationPreparation>(
         failureReason,
         "card spatial mapping must cover every function result exactly once");
+  return preparation;
+}
+
+/// Computes one Tile's balanced nonempty output shards from the validated
+/// mapping and adds their shard extents to the coverage ledger.
+static void collectTileOutputShards(
+    const TileMaterializationPreparation &preparation, TileId tileId,
+    llvm::SmallVectorImpl<SpatialOutputShard> &tileShards,
+    llvm::SmallVectorImpl<int64_t> &coveredShardExtents) {
+  for (auto [outputIndex, output] :
+       llvm::enumerate(preparation.outputMappings)) {
+    auto active = llvm::find(output->activeTileIds, tileId);
+    if (active == output->activeTileIds.end())
+      continue;
+    const size_t activeOrdinal = static_cast<size_t>(
+        std::distance(output->activeTileIds.begin(), active));
+    const size_t activeShardCount = output->activeTileIds.size();
+    const llvm::SmallVector<int64_t, 4> &domain =
+        preparation.outputDomains[outputIndex];
+    const int64_t shardExtent = domain[output->shardDimension];
+    const int64_t baseShardSize =
+        shardExtent / static_cast<int64_t>(activeShardCount);
+    const int64_t largerShardCount =
+        shardExtent % static_cast<int64_t>(activeShardCount);
+    const int64_t size =
+        baseShardSize +
+        (static_cast<int64_t>(activeOrdinal) < largerShardCount);
+    const int64_t offset =
+        static_cast<int64_t>(activeOrdinal) * baseShardSize +
+        std::min<int64_t>(static_cast<int64_t>(activeOrdinal),
+                          largerShardCount);
+    SpatialOutputShard shard;
+    shard.outputIndex = static_cast<unsigned>(outputIndex);
+    shard.offsets.assign(domain.size(), 0);
+    shard.sizes = domain;
+    shard.offsets[output->shardDimension] = offset;
+    shard.sizes[output->shardDimension] = size;
+    shard.temporalTileSizes.reserve(domain.size());
+    for (auto [temporalSize, shardSize] :
+         llvm::zip_equal(output->temporalTileSizes, shard.sizes))
+      shard.temporalTileSizes.push_back(std::min(temporalSize, shardSize));
+    coveredShardExtents[outputIndex] += size;
+    tileShards.push_back(std::move(shard));
+  }
+}
+
+/// Lowers one Tile entry from the prepared scheduling clone. The returned
+/// function is detached from any module; the caller attaches it to its final
+/// IR scope before `removeSchedulingOutputDestinations` runs, because peer
+/// endpoint verification resolves physical identities through the enclosing
+/// module topology.
+static mlir::FailureOr<mlir::func::FuncOp> lowerTileEntry(
+    const TileMaterializationPreparation &preparation, CardId cardId,
+    TileId tileId, const TileMapping &mapping,
+    llvm::ArrayRef<SpatialOutputShard> tileShards, bool materializeTile,
+    std::string *failureReason,
+    StructuredMaterializationRelations *tileRelations) {
+  mlir::func::FuncOp entry;
+  const bool hasEdgeAction =
+      materializeTile &&
+      llvm::any_of(
+          mapping.edgeStrategies, [&](const SpatialEdgeStrategy &strategy) {
+            return isSpatialEdgeStrategyIncidentOnTile(strategy, tileId);
+          });
+  if (hasEdgeAction) {
+    mlir::OwningOpRef<mlir::ModuleOp> loweredShard;
+    if (mlir::failed(lowerSpatialEdgeStrategiesToTileRegionModule(
+            *preparation.schedulingModule, preparation.sourceArgumentCount,
+            tileShards, tileId, mapping.materializationMode,
+            preparation.schedulingEdgeStrategies, loweredShard, failureReason,
+            /*currentLogicalPartition=*/0,
+            preparation.schedulingOperationTemporalTiles,
+            preparation.schedulingOperationNodes, tileRelations)))
+      return mlir::failure();
+    mlir::FailureOr<mlir::func::FuncOp> loweredEntry =
+        takeLoweredTensorProgram(*loweredShard, failureReason);
+    if (mlir::failed(loweredEntry))
+      return mlir::failure();
+    entry = *loweredEntry;
+  } else if (materializeTile && !tileShards.empty()) {
+    mlir::OwningOpRef<mlir::ModuleOp> loweredShard;
+    if (mlir::failed(lowerSpatialOutputShardsToTileRegionModule(
+            *preparation.schedulingModule, preparation.sourceArgumentCount,
+            tileShards, loweredShard, failureReason,
+            /*currentLogicalPartition=*/0,
+            preparation.schedulingOperationTemporalTiles,
+            preparation.schedulingOperationNodes, tileRelations)))
+      return mlir::failure();
+    mlir::FailureOr<mlir::func::FuncOp> loweredEntry =
+        takeLoweredTensorProgram(*loweredShard, failureReason);
+    if (mlir::failed(loweredEntry))
+      return mlir::failure();
+    entry = *loweredEntry;
+  } else {
+    mlir::FailureOr<mlir::func::FuncOp> noWork = createNoWorkEntry(
+        preparation.schedulingProgram, failureReason);
+    if (mlir::failed(noWork))
+      return mlir::failure();
+    entry = *noWork;
+  }
+  // Deterministic baseline contract: every TileRegion carries exactly one
+  // structured compute root; independent roots on one Tile form multiple
+  // sequential regions. Search-owned region grouping is never rewritten.
+  if (mapping.materializationMode ==
+          SpatialDataflowMaterializationMode::IndependentDDRStages &&
+      mlir::failed(splitStructuredRootBoundaries(entry, *tileRelations,
+                                                failureReason)))
+    return mlir::failure();
+  return entry;
+}
+
+mlir::LogicalResult lowerTensorProgramToCardModule(
+    mlir::ModuleOp sourceModule, CardId cardId, const TileMapping &mapping,
+    mlir::OwningOpRef<mlir::ModuleOp> &cardModule, std::string *failureReason,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    StructuredMaterializationRelations *materializationRelations) {
+  mlir::FailureOr<TileMaterializationPreparation> preparation =
+      prepareTileMaterialization(sourceModule, cardId, mapping, operationNodes,
+                                 failureReason);
+  if (mlir::failed(preparation))
+    return mlir::failure();
 
   mlir::OwningOpRef<mlir::ModuleOp> result =
       mlir::ModuleOp::create(sourceModule.getLoc());
@@ -611,101 +758,33 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
       cardBuilder.clone(operation, declarationMapping);
   }
 
-  llvm::SmallVector<int64_t, 4> coveredShardExtents(outputDomains->size(), 0);
+  llvm::SmallVector<int64_t, 4> coveredShardExtents(
+      preparation->outputDomains.size(), 0);
   StructuredMaterializationRelations resultRelations;
-  for (TileId tileId : *availableTiles) {
+  for (TileId tileId : preparation->availableTiles) {
     auto tile = cardBuilder.create<TileModuleOp>(
         sourceModule.getLoc(),
         cardBuilder.getI64IntegerAttr(tileId.getValue()));
     tile.getBody().push_back(new mlir::Block());
     mlir::Block &tileBody = tile.getBody().front();
 
-    mlir::func::FuncOp entry;
     StructuredMaterializationRelations tileRelations;
     llvm::SmallVector<SpatialOutputShard, 4> tileShards;
-    for (auto [outputIndex, output] : llvm::enumerate(outputMappings)) {
-      auto active = llvm::find(output->activeTileIds, tileId);
-      if (active == output->activeTileIds.end())
-        continue;
-      const size_t activeOrdinal = static_cast<size_t>(
-          std::distance(output->activeTileIds.begin(), active));
-      const size_t activeShardCount = output->activeTileIds.size();
-      const llvm::SmallVector<int64_t, 4> &domain =
-          (*outputDomains)[outputIndex];
-      const int64_t shardExtent = domain[output->shardDimension];
-      const int64_t baseShardSize =
-          shardExtent / static_cast<int64_t>(activeShardCount);
-      const int64_t largerShardCount =
-          shardExtent % static_cast<int64_t>(activeShardCount);
-      const int64_t size =
-          baseShardSize +
-          (static_cast<int64_t>(activeOrdinal) < largerShardCount);
-      const int64_t offset =
-          static_cast<int64_t>(activeOrdinal) * baseShardSize +
-          std::min<int64_t>(static_cast<int64_t>(activeOrdinal),
-                            largerShardCount);
-      SpatialOutputShard shard;
-      shard.outputIndex = static_cast<unsigned>(outputIndex);
-      shard.offsets.assign(domain.size(), 0);
-      shard.sizes = domain;
-      shard.offsets[output->shardDimension] = offset;
-      shard.sizes[output->shardDimension] = size;
-      shard.temporalTileSizes.reserve(domain.size());
-      for (auto [temporalSize, shardSize] :
-           llvm::zip_equal(output->temporalTileSizes, shard.sizes))
-        shard.temporalTileSizes.push_back(std::min(temporalSize, shardSize));
-      coveredShardExtents[outputIndex] += size;
-      tileShards.push_back(std::move(shard));
-    }
-
-    const bool materializeTile =
-        !materializeOnlyTileId || tileId == *materializeOnlyTileId;
-    const bool hasEdgeAction =
-        materializeTile &&
-        llvm::any_of(
-            mapping.edgeStrategies, [&](const SpatialEdgeStrategy &strategy) {
-              return isSpatialEdgeStrategyIncidentOnTile(strategy, tileId);
-            });
-    if (hasEdgeAction) {
-      mlir::OwningOpRef<mlir::ModuleOp> loweredShard;
-      if (mlir::failed(lowerSpatialEdgeStrategiesToTileRegionModule(
-              *schedulingModule, sourceArgumentCount, tileShards, tileId,
-              mapping.materializationMode, schedulingEdgeStrategies,
-              loweredShard, failureReason,
-              /*currentLogicalPartition=*/0, schedulingOperationTemporalTiles,
-              schedulingOperationNodes, &tileRelations)))
-        return mlir::failure();
-      mlir::FailureOr<mlir::func::FuncOp> loweredEntry =
-          takeLoweredTensorProgram(*loweredShard, failureReason);
-      if (mlir::failed(loweredEntry))
-        return mlir::failure();
-      entry = *loweredEntry;
-    } else if (materializeTile && !tileShards.empty()) {
-      mlir::OwningOpRef<mlir::ModuleOp> loweredShard;
-      if (mlir::failed(lowerSpatialOutputShardsToTileRegionModule(
-              *schedulingModule, sourceArgumentCount, tileShards, loweredShard,
-              failureReason,
-              /*currentLogicalPartition=*/0, schedulingOperationTemporalTiles,
-              schedulingOperationNodes, &tileRelations)))
-        return mlir::failure();
-      mlir::FailureOr<mlir::func::FuncOp> loweredEntry =
-          takeLoweredTensorProgram(*loweredShard, failureReason);
-      if (mlir::failed(loweredEntry))
-        return mlir::failure();
-      entry = *loweredEntry;
-    } else {
-      mlir::FailureOr<mlir::func::FuncOp> noWork = createNoWorkEntry(
-          mlir::cast<mlir::func::FuncOp>(schedulingProgram), failureReason);
-      if (mlir::failed(noWork))
-        return mlir::failure();
-      entry = *noWork;
-    }
-    tileBody.push_back(entry.getOperation());
+    collectTileOutputShards(*preparation, tileId, tileShards,
+                            coveredShardExtents);
+    mlir::FailureOr<mlir::func::FuncOp> entry =
+        lowerTileEntry(*preparation, cardId, tileId, mapping, tileShards,
+                       /*materializeTile=*/true, failureReason,
+                       &tileRelations);
+    if (mlir::failed(entry))
+      return mlir::failure();
+    tileBody.push_back(entry->getOperation());
     // Peer endpoint verification resolves physical identities through the
     // enclosing module topology, so transform and verify the entry only after
     // it has been attached to its final Card/Tile IR scope.
     if (mlir::failed(removeSchedulingOutputDestinations(
-            entry, sourceArgumentCount, tileRelations, failureReason)))
+            *entry, preparation->sourceArgumentCount, tileRelations,
+            failureReason)))
       return mlir::failure();
     resultRelations.operationResultBuffers.append(
         tileRelations.operationResultBuffers.begin(),
@@ -723,8 +802,9 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
         "current IR");
 
   for (auto [outputIndex, covered] : llvm::enumerate(coveredShardExtents)) {
-    const OutputTileMapping *output = outputMappings[outputIndex];
-    if (covered != (*outputDomains)[outputIndex][output->shardDimension])
+    const OutputTileMapping *output = preparation->outputMappings[outputIndex];
+    if (covered !=
+        preparation->outputDomains[outputIndex][output->shardDimension])
       return failCardModule(failureReason,
                             "card spatial shards do not cover output "
                             "domain exactly");
@@ -744,26 +824,62 @@ static mlir::LogicalResult lowerTensorProgramToCardModuleImpl(
   return mlir::success();
 }
 
-mlir::LogicalResult lowerTensorProgramToCardModule(
-    mlir::ModuleOp sourceModule, CardId cardId, const TileMapping &mapping,
-    mlir::OwningOpRef<mlir::ModuleOp> &cardModule, std::string *failureReason,
-    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
-    StructuredMaterializationRelations *materializationRelations) {
-  return lowerTensorProgramToCardModuleImpl(
-      sourceModule, cardId, mapping, cardModule, failureReason, operationNodes,
-      materializationRelations,
-      /*materializeOnlyTileId=*/std::nullopt);
-}
-
-mlir::LogicalResult lowerTensorProgramToCardModuleForTile(
+mlir::LogicalResult lowerTensorProgramToTileModule(
     mlir::ModuleOp sourceModule, CardId cardId, TileId tileId,
-    const TileMapping &mapping, mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
+    const TileMapping &mapping, mlir::OwningOpRef<mlir::ModuleOp> &tileModule,
     std::string *failureReason,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     StructuredMaterializationRelations *materializationRelations) {
-  return lowerTensorProgramToCardModuleImpl(
-      sourceModule, cardId, mapping, cardModule, failureReason, operationNodes,
-      materializationRelations, tileId);
+  mlir::FailureOr<TileMaterializationPreparation> preparation =
+      prepareTileMaterialization(sourceModule, cardId, mapping, operationNodes,
+                                 failureReason);
+  if (mlir::failed(preparation))
+    return mlir::failure();
+  if (!llvm::is_contained(preparation->availableTiles, tileId))
+    return failCardModule(failureReason, "requested Tile is unavailable");
+
+  StructuredMaterializationRelations tileRelations;
+  llvm::SmallVector<SpatialOutputShard, 4> tileShards;
+  llvm::SmallVector<int64_t, 4> coveredShardExtents(
+      preparation->outputDomains.size(), 0);
+  collectTileOutputShards(*preparation, tileId, tileShards,
+                          coveredShardExtents);
+  mlir::FailureOr<mlir::func::FuncOp> entry =
+      lowerTileEntry(*preparation, cardId, tileId, mapping, tileShards,
+                     /*materializeTile=*/true, failureReason, &tileRelations);
+  if (mlir::failed(entry))
+    return mlir::failure();
+
+  // The probe scope is the Tile entry function itself: no CardModule shell,
+  // no sibling Tile modules and no no-work wrappers are materialized.
+  mlir::OwningOpRef<mlir::ModuleOp> result =
+      mlir::ModuleOp::create(sourceModule.getLoc());
+  result->getOperation()->setAttrs(sourceModule->getAttrDictionary());
+  cloneModuleFacts(sourceModule, *result);
+  result->getBody()->push_back(entry->getOperation());
+  if (mlir::failed(removeSchedulingOutputDestinations(
+          *entry, preparation->sourceArgumentCount, tileRelations,
+          failureReason)))
+    return mlir::failure();
+  if (!relationsBelongTo(result->getOperation(), tileRelations))
+    return failCardModule(
+        failureReason,
+        "single-Tile materialization produced a buffer relation outside the "
+        "current IR");
+  {
+    mlir::ScopedDiagnosticHandler suppress(
+        sourceModule.getContext(),
+        [](mlir::Diagnostic &) { return mlir::success(); });
+    if (mlir::failed(mlir::verify(*result)))
+      return failCardModule(failureReason,
+                            "materialized single-Tile module is not "
+                            "verifier-legal");
+  }
+
+  if (materializationRelations)
+    *materializationRelations = std::move(tileRelations);
+  tileModule = std::move(result);
+  return mlir::success();
 }
 
 } // namespace wafer

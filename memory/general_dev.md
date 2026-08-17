@@ -337,3 +337,25 @@ source program
   `WAFER_EXECUTE_HARDWARE_TESTS=1`才执行，
   无硬件时exit 77；真实板测通过前Q56不标done。
 - Tools测试的python断言先脱离lit验证：把`%t.outputs/...`替换为真实package路径后用`python3 -c`跑一遍，再交给lit。
+
+## Q49.P deterministic baseline 机制（stable，2026-08-17）
+
+- baseline 两级 SPM probe：region-scope `evaluateTileRegionSPMCapacity`（isolated clone，`RequiresFunctionScope`
+  是 escalation 请求不是 fit）；function-scope `evaluateTileFunctionSPMCapacity`（clone Tile FuncOp 跑与最终 gate
+  相同的 `instr-memory-planning-preparation` + `assign-spm-offsets` 序列，probe/final 消费同一 demand 集合）。
+  probe evidence 归因必须经 clone-remapped relations（`remapStructuredBufferRelations` +
+  `StructuredBufferReplacementListener`），witness 收集沿 store/load/view 链找 transfer 端点。
+- 一 root 一 region：`splitStructuredRootBoundaries`（Conversion lib）在 `lowerTileEntry` 的
+  IndependentDDRStages 模式下把多 root region 反复切分；独立 root 无 crossing 直接切，SSA crossing 的
+  SPM 值用 store/reload spill 过 DDR 边界（spill store 放在 prefix 末尾以观察 in-place 覆写后的值）。
+  通用 split core `splitRegionAfterPrefix` 同时服务 RegionCut（spill 单数/多数）。
+- `StorageRootMemo`（StructuredBufferRelations.h）：query-local per-value 存储根 memo，内层 set 用
+  `unique_ptr` 持有（map rehash 不悬空引用）；只读同一 IR epoch 内共享。
+- baseline 只消费 policy-free 入口：`deriveStructuredDAGNodePlacementOptions` +
+  `buildStructuredDAGPlacementClosure`（StructuredDAGPlacementEnumeration.h）+ 窄
+  `ResolvedBaselineAssignment`；不消费 search domain/evaluator/candidate/stable ordinal，不写候选统计。
+- scoped probe 用 `lowerTensorProgramToTileModule`（单 Tile FuncOp，无 CardModule/TileModule shell、
+  无 no-work wrapper）；完整 CardModule 走 `lowerTensorProgramToCardModule` 并验证完整 Tile domain。
+- 验证入口：`WaferUnitTests --gtest_filter='CardExecutableSynthesisTest.*'`（~80s）、
+  `lit -sv build/q55-current-fresh/test/Tools --filter wafer-compile-card-baseline.test`（~35s，
+  CROSS/CHAIN/GEMM 三 case 一体的 wall-time 上限验证）。

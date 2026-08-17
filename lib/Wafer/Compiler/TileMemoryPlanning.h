@@ -5,6 +5,7 @@
 #define WAFER_COMPILER_TILEMEMORYPLANNING_H
 
 #include "SelectedBufferMaterialization.h"
+#include "StructuredBufferRelations.h"
 
 #include "Wafer/Transforms/MemoryPlanning.h"
 
@@ -58,6 +59,15 @@ struct TileMemoryPlanningFailure {
   /// independent exact rejection evidence.
   llvm::SmallVector<SPMDemandEvidence, 8> spmIndividuallyOversizedDemands;
 };
+
+/// Converts one raw SPM planning failure into Tile-local planning evidence,
+/// attributing every demand to structured operation nodes, operand-demand
+/// nodes and output indices through the materialization relations of the IR
+/// the failure was produced on. The relation buffers must be current values
+/// of that IR; a probe may therefore call this with clone-remapped relations.
+TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
+    const SPMMemoryPlanningFailure &spmFailure,
+    const StructuredMaterializationRelations &relations);
 
 /// Consumes one Tile's owned canonical Instr module and runs the
 /// complete current hard-gate sequence: prepare Instr IR for memory planning,

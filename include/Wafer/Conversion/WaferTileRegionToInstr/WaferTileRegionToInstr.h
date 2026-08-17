@@ -7,6 +7,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LLVM.h"
 
@@ -64,8 +65,14 @@ mlir::LogicalResult rebuildRequiredNCCJoins(mlir::ModuleOp module);
 /// drains those roots before they leave their owning region. It does not
 /// model unrelated function-level outstanding accesses and must not replace
 /// the function-anchored production pass.
+///
+/// The rebuilt body replaces the region body, so values materialized before
+/// the rebuild do not survive it. When `valueRemap` is provided it receives
+/// the pre-rebuild value -> rebuilt value mapping of the internal clone, so a
+/// caller can remap query relations onto the rebuilt body.
 mlir::LogicalResult
-rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion);
+rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion,
+                                             mlir::IRMapping *valueRemap = nullptr);
 
 /// Returns true when `root` contains a typed Tile dataflow operation consumed
 /// by Tile-region-to-Instr conversion. TileRegionOp and TileYieldOp are

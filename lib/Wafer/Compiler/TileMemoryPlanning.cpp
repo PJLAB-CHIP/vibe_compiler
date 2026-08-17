@@ -54,6 +54,80 @@ static bool hasDDROrTransportAssignments(mlir::ModuleOp module) {
 
 } // namespace
 
+TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
+    const SPMMemoryPlanningFailure &spmFailure,
+    const StructuredMaterializationRelations &relations) {
+  TileMemoryPlanningFailure failure;
+  failure.kind = TileMemoryPlanningFailureKind::SPMAllocation;
+  failure.spmCapacityOverflow =
+      spmFailure.kind == SPMMemoryPlanningFailureKind::CapacityOverflow;
+  failure.spmPlanningFailureKind = spmFailure.kind;
+  failure.spmLargestDemandLocation = spmFailure.largestDemandLocation;
+  failure.spmLargestDemandType = spmFailure.largestDemandType;
+  failure.spmLargestDemandBytes = spmFailure.largestDemandBytes;
+  failure.spmDemandCount = spmFailure.demandCount;
+  auto convertEvidence = [&](const auto &demand) {
+    TileMemoryPlanningFailure::SPMDemandEvidence evidence{
+        demand.location, demand.allocation, demand.type, demand.bytes, {}};
+    evidence.userLocations.append(demand.userLocations.begin(),
+                                  demand.userLocations.end());
+    // A staged DDR wave is written by the producer's seal store and read by
+    // the consumer's reload; neither endpoint aliases the wave buffer
+    // through SSA views, so a direct storage-root match misses both. The
+    // witnesses are the typed transfer endpoints of the exact allocation,
+    // never a shape/type guess.
+    llvm::SmallVector<mlir::Value, 8> witnesses;
+    witnesses.push_back(demand.allocation);
+    llvm::DenseSet<mlir::Value> visited;
+    for (size_t index = 0; index < witnesses.size(); ++index) {
+      mlir::Value value = witnesses[index];
+      if (!value || !visited.insert(value).second)
+        continue;
+      for (mlir::Operation *user : value.getUsers()) {
+        if (auto store = mlir::dyn_cast<StorageStoreOp>(user))
+          witnesses.push_back(store.getSource());
+        else if (auto load = mlir::dyn_cast<StorageLoadOp>(user))
+          witnesses.push_back(load.getDest());
+        else if (auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(user))
+          for (mlir::Value result : view->getResults())
+            witnesses.push_back(result);
+      }
+    }
+    auto sharesStorageWithWitness = [&](mlir::Value buffer) {
+      return llvm::any_of(witnesses, [&](mlir::Value witness) {
+        return shareStructuredBufferStorage(witness, buffer);
+      });
+    };
+    auto appendNode = [&](auto &nodes, uint32_t node) {
+      if (!llvm::is_contained(nodes, node))
+        nodes.push_back(node);
+    };
+    for (const auto &relation : relations.operationResultBuffers)
+      if (sharesStorageWithWitness(relation.buffer))
+        appendNode(evidence.operationResultNodes, relation.structuredNodeId);
+    for (const auto &relation : relations.operandBuffers)
+      if (sharesStorageWithWitness(relation.buffer))
+        appendNode(evidence.operandDemandNodes, relation.structuredNodeId);
+    for (const auto &relation : relations.outputBuffers)
+      if (sharesStorageWithWitness(relation.buffer) &&
+          !llvm::is_contained(evidence.outputIndices, relation.outputIndex))
+        evidence.outputIndices.push_back(relation.outputIndex);
+    return evidence;
+  };
+  failure.spmLargestDemands.reserve(spmFailure.largestDemands.size());
+  for (const auto &demand : spmFailure.largestDemands)
+    failure.spmLargestDemands.push_back(convertEvidence(demand));
+  failure.spmCapacityConflictDemands.reserve(
+      spmFailure.capacityConflictDemands.size());
+  for (const auto &demand : spmFailure.capacityConflictDemands)
+    failure.spmCapacityConflictDemands.push_back(convertEvidence(demand));
+  failure.spmIndividuallyOversizedDemands.reserve(
+      spmFailure.individuallyOversizedDemands.size());
+  for (const auto &demand : spmFailure.individuallyOversizedDemands)
+    failure.spmIndividuallyOversizedDemands.push_back(convertEvidence(demand));
+  return failure;
+}
+
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
                TileMemoryPlanningFailure *failure,
@@ -168,57 +242,20 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
       });
   if (mlir::failed(spmResult)) {
     recordFailure(TileMemoryPlanningFailureKind::SPMAllocation);
-    if (failure)
-      failure->spmCapacityOverflow =
-          spmFailure.kind == SPMMemoryPlanningFailureKind::CapacityOverflow;
     if (failure) {
-      failure->spmPlanningFailureKind = spmFailure.kind;
-      failure->spmLargestDemandLocation = spmFailure.largestDemandLocation;
-      failure->spmLargestDemandType = spmFailure.largestDemandType;
-      failure->spmLargestDemandBytes = spmFailure.largestDemandBytes;
-      failure->spmDemandCount = spmFailure.demandCount;
-      auto convertEvidence = [&](const auto &demand) {
-        TileMemoryPlanningFailure::SPMDemandEvidence evidence{
-            demand.location, demand.allocation, demand.type, demand.bytes, {}};
-        evidence.userLocations.append(demand.userLocations.begin(),
-                                      demand.userLocations.end());
-        if (materializationRelations) {
-          auto appendNode = [&](auto &nodes, uint32_t node) {
-            if (!llvm::is_contained(nodes, node))
-              nodes.push_back(node);
-          };
-          for (const auto &relation :
-               materializationRelations->operationResultBuffers)
-            if (shareStructuredBufferStorage(demand.allocation,
-                                             relation.buffer))
-              appendNode(evidence.operationResultNodes,
-                         relation.structuredNodeId);
-          for (const auto &relation : materializationRelations->operandBuffers)
-            if (shareStructuredBufferStorage(demand.allocation,
-                                             relation.buffer))
-              appendNode(evidence.operandDemandNodes,
-                         relation.structuredNodeId);
-          for (const auto &relation : materializationRelations->outputBuffers)
-            if (shareStructuredBufferStorage(demand.allocation,
-                                             relation.buffer) &&
-                !llvm::is_contained(evidence.outputIndices,
-                                    relation.outputIndex))
-              evidence.outputIndices.push_back(relation.outputIndex);
-        }
-        return evidence;
-      };
-      failure->spmLargestDemands.reserve(spmFailure.largestDemands.size());
-      for (const auto &demand : spmFailure.largestDemands)
-        failure->spmLargestDemands.push_back(convertEvidence(demand));
-      failure->spmCapacityConflictDemands.reserve(
-          spmFailure.capacityConflictDemands.size());
-      for (const auto &demand : spmFailure.capacityConflictDemands)
-        failure->spmCapacityConflictDemands.push_back(convertEvidence(demand));
-      failure->spmIndividuallyOversizedDemands.reserve(
-          spmFailure.individuallyOversizedDemands.size());
-      for (const auto &demand : spmFailure.individuallyOversizedDemands)
-        failure->spmIndividuallyOversizedDemands.push_back(
-            convertEvidence(demand));
+      if (materializationRelations)
+        *failure =
+            convertSPMMemoryPlanningFailure(spmFailure,
+                                            *materializationRelations);
+      else {
+        failure->spmCapacityOverflow =
+            spmFailure.kind == SPMMemoryPlanningFailureKind::CapacityOverflow;
+        failure->spmPlanningFailureKind = spmFailure.kind;
+        failure->spmLargestDemandLocation = spmFailure.largestDemandLocation;
+        failure->spmLargestDemandType = spmFailure.largestDemandType;
+        failure->spmLargestDemandBytes = spmFailure.largestDemandBytes;
+        failure->spmDemandCount = spmFailure.demandCount;
+      }
     }
     return mlir::failure();
   }

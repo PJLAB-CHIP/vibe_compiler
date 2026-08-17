@@ -30,13 +30,13 @@
 # CHAIN-NOT: card-executable-search policy=none
 # CHAIN: wafer-compile: card-executable-baseline-controller search_states=0 placement_enumeration=0 candidate_family=0
 # CHAIN-SAME: full_compilations=1
-# CHAIN: wafer-compile: card-executable-selection
+# CHAIN: wafer-compile: card-executable-baseline-admission
 # CHAIN-SAME: active_tiles=16
 # CHAIN-SAME: peer_transfers=0
 # CHAIN-SAME: actual_fused_edges=0
 # CHAIN: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 
-# SPATIAL: wafer-compile: card-executable-selection
+# SPATIAL: wafer-compile: card-executable-baseline-admission
 # SPATIAL-SAME: active_tiles=16
 # SPATIAL-SAME: peer_transfers=0
 # SPATIAL-SAME: actual_fused_edges=0
@@ -45,7 +45,7 @@
 # CROSS-NOT: card-executable-search policy=none
 # CROSS: wafer-compile: card-executable-baseline-controller search_states=0 placement_enumeration=0 candidate_family=0
 # CROSS-SAME: full_compilations=1
-# CROSS: wafer-compile: card-executable-selection
+# CROSS: wafer-compile: card-executable-baseline-admission
 # CROSS-SAME: active_tiles=16
 # CROSS-SAME: peer_transfers={{[1-9][0-9]*}}
 # CROSS-SAME: peer_bytes={{[1-9][0-9]*}}

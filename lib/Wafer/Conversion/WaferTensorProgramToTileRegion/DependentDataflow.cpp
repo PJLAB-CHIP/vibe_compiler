@@ -1468,6 +1468,438 @@ mlir::LogicalResult rebindSelectedReceiveEndpoints(
   return mlir::success();
 }
 
+void eraseUnreadDirectPrivateLoads(mlir::Operation *operation) {
+  llvm::SmallVector<StorageLoadOp, 8> unreadLoads;
+  operation->walk([&](StorageLoadOp load) {
+    auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
+    if (allocation && allocation.getResult().hasOneUse())
+      unreadLoads.push_back(load);
+  });
+  for (StorageLoadOp load : unreadLoads) {
+    auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
+    load.erase();
+    if (allocation.getResult().use_empty())
+      allocation.erase();
+  }
+}
+
+} // namespace
+namespace wafer {
+
+/// Generic region split core: moves every operation in `prefix` into a new
+/// prefix TileRegion and the remainder into a suffix TileRegion that takes the
+/// original result types. Prefix-produced DDR values used by the suffix cross
+/// as explicit typed region results/inputs; prefix-owned boundary resources
+/// the suffix still needs are cloned. `spillAllocation` is optional: a
+/// RegionCut split hoists its compiler-owned spill out of the region and
+/// crosses it explicitly, while a structured-root-boundary split has no
+/// crossing spill and yields only carried DDR values.
+static mlir::LogicalResult splitRegionAfterPrefix(
+    TileRegionOp region,
+    llvm::MutableArrayRef<mlir::memref::AllocOp> spillAllocations,
+    llvm::ArrayRef<mlir::Value> selectedDDRStageBuffers,
+    llvm::DenseSet<mlir::Operation *> prefix,
+    StructuredMaterializationRelations *materializationRelations,
+    std::string *failureReason) {
+  if (!region || !region.getBody().hasOneBlock())
+    return failResult(failureReason,
+                      "region split requires one verifier-legal block");
+  mlir::Block &body = region.getBody().front();
+  auto getTopLevelOperation = [&](mlir::Operation *operation) {
+    while (operation && operation->getBlock() != &body)
+      operation = operation->getParentOp();
+    return operation;
+  };
+  auto isSpill = [&](mlir::Operation *operation) {
+    return llvm::any_of(spillAllocations, [&](mlir::memref::AllocOp spill) {
+      return spill.getOperation() == operation;
+    });
+  };
+  auto findSpillIndex = [&](mlir::Value value) -> std::optional<size_t> {
+    for (auto [index, spill] : llvm::enumerate(spillAllocations))
+      if (value == spill.getOperation()->getResult(0))
+        return index;
+    return std::nullopt;
+  };
+
+  // A compiler-owned residency release belongs to the same side of the cut
+  // as the value it releases.  Temporal materialization emits memref.dealloc
+  // after the value's last tensor-level observation; when RegionCut replaces
+  // a later consumer with store/reload, that last observation becomes the
+  // prefix spill store.  Move the marker with the prefix instead of treating
+  // it as shaped data that must cross the DDR boundary.
+  llvm::SmallVector<mlir::memref::DeallocOp, 4> prefixReleases;
+  for (mlir::Operation *operation : prefix)
+    for (mlir::Value result : operation->getResults())
+      for (mlir::Operation *user : result.getUsers())
+        if (auto release = mlir::dyn_cast<mlir::memref::DeallocOp>(user);
+            release && release.getMemref() == result &&
+            release->getBlock() == &body)
+          prefixReleases.push_back(release);
+  prefix.insert(prefixReleases.begin(), prefixReleases.end());
+
+  // Source-only peer producers are sealed in compiler-owned DDR even though
+  // they do not own a destination-side edge marker on this Tile. A later
+  // selected cut may need that same allocation on both sides (for example,
+  // one prefix peer send and one suffix consumer/send). Duplicating the alloc
+  // would create two unrelated DDR objects; carrying an SPM value would be
+  // illegal. Hoist only unmarked static DDR allocations that are proven used
+  // on both sides and pass the one object explicitly to both regions.
+  llvm::SmallVector<mlir::memref::AllocOp, 4> eligibleSharedDDRAllocations;
+  llvm::DenseMap<mlir::Value, size_t> eligibleSharedDDRIndices;
+  llvm::SmallVector<std::pair<bool, bool>, 4> sharedDDRUses;
+  llvm::SmallVector<mlir::memref::AllocOp, 4> sharedDDRAllocations;
+  llvm::DenseSet<mlir::Operation *> sharedDDRAllocationOps;
+  for (mlir::Operation &operation : body.without_terminator()) {
+    auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(operation);
+    if (!allocation || isSpill(allocation.getOperation()) ||
+        !isWaferDDRMemRefType(allocation.getType()) ||
+        !allocation.getDynamicSizes().empty() ||
+        !allocation.getSymbolOperands().empty() ||
+        llvm::is_contained(selectedDDRStageBuffers, allocation.getResult()))
+      continue;
+    eligibleSharedDDRIndices.try_emplace(allocation.getResult(),
+                                         eligibleSharedDDRAllocations.size());
+    eligibleSharedDDRAllocations.push_back(allocation);
+    sharedDDRUses.push_back({false, false});
+  }
+  // Classify every eligible allocation in one region walk. Scanning the
+  // complete region separately for every allocation made an independent
+  // op-stage chain cubic in practice once this split was repeated for every
+  // selected edge.
+  region.walk([&](mlir::Operation *user) {
+    mlir::Operation *root = getTopLevelOperation(user);
+    if (!root)
+      return;
+    for (mlir::Value operand : user->getOperands()) {
+      auto found = eligibleSharedDDRIndices.find(getViewRoot(operand));
+      if (found == eligibleSharedDDRIndices.end())
+        continue;
+      auto &uses = sharedDDRUses[found->second];
+      if (prefix.contains(root))
+        uses.first = true;
+      else
+        uses.second = true;
+    }
+  });
+  for (auto [index, allocation] :
+       llvm::enumerate(eligibleSharedDDRAllocations)) {
+    if (sharedDDRUses[index].first && sharedDDRUses[index].second) {
+      sharedDDRAllocations.push_back(allocation);
+      sharedDDRAllocationOps.insert(allocation.getOperation());
+    }
+  }
+
+  auto isBoundaryView = [&](mlir::Operation *operation) {
+    auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(operation);
+    if (!view)
+      return false;
+    mlir::Value root = getViewRoot(view.getViewSource());
+    if (findSpillIndex(root))
+      return true;
+    if (auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
+        allocation &&
+        sharedDDRAllocationOps.contains(allocation.getOperation()))
+      return true;
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(root);
+    return argument && argument.getOwner() == &body;
+  };
+
+  // A temporal loop or another prefix operation may produce additional DDR
+  // state that a later independent op stage consumes. Such values are legal
+  // TileRegion boundaries and must be explicit region results/inputs. Tensor
+  // and SPM values remain forbidden: admitting only typed DDR memrefs keeps
+  // the selected op boundary concrete without turning this into an opaque
+  // cross-region value channel.
+  llvm::SmallVector<mlir::Value, 8> carriedDDRValues;
+  llvm::DenseSet<mlir::Value> carriedDDRValueSet;
+  for (mlir::Operation &operation : body.without_terminator()) {
+    if (!prefix.contains(&operation))
+      continue;
+    for (mlir::Value result : operation.getResults()) {
+      for (mlir::OpOperand &use : result.getUses()) {
+        mlir::Operation *useRoot = getTopLevelOperation(use.getOwner());
+        if (useRoot && prefix.contains(useRoot))
+          continue;
+        // Scalar constants, static allocations, and views rooted in a region
+        // input or the selected spill are region-local resources, not
+        // produced SSA data. Reconstruct such views on each side of the cut;
+        // an additional produced DDR value crosses as an explicit typed
+        // result/input. No tensor or SPM value may bypass the selected
+        // spill/reload boundary.
+        if (mlir::isa<mlir::arith::ConstantOp, mlir::memref::AllocOp>(
+                &operation) ||
+            isBoundaryView(&operation))
+          continue;
+        if (isWaferDDRMemRefType(result.getType())) {
+          if (carriedDDRValueSet.insert(result).second)
+            carriedDDRValues.push_back(result);
+          break;
+        }
+        std::string detail;
+        llvm::raw_string_ostream stream(detail);
+        mlir::Value root = getViewRoot(result);
+        stream << "region cut has a producer value from " << operation.getName()
+               << " used by " << use.getOwner()->getName();
+        if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(root))
+          stream << " (view root is block argument " << argument.getArgNumber()
+                 << ')';
+        else if (mlir::Operation *rootDefinition = root.getDefiningOp())
+          stream << " (view root is " << rootDefinition->getName() << ')';
+        stream << " that bypasses the DDR boundary; operation=";
+        operation.print(stream, mlir::OpPrintingFlags().skipRegions());
+        for (mlir::memref::AllocOp spill : spillAllocations)
+          stream << "; spill=" << spill.getType();
+        return failResult(failureReason, stream.str());
+      }
+    }
+  }
+
+  mlir::OpBuilder outer(region);
+  llvm::SmallVector<mlir::Value, 2> externalSpills;
+  for (mlir::memref::AllocOp spill : spillAllocations)
+    externalSpills.push_back(
+        outer
+            .create<mlir::memref::AllocOp>(spill.getLoc(), spill.getType())
+            .getResult());
+  llvm::SmallVector<mlir::Value, 4> externalSharedDDR;
+  for (mlir::memref::AllocOp allocation : sharedDDRAllocations)
+    externalSharedDDR.push_back(
+        outer
+            .create<mlir::memref::AllocOp>(allocation.getLoc(),
+                                           allocation.getType())
+            .getResult());
+
+  llvm::SmallVector<mlir::Value, 8> prefixInputs(region.getInputs().begin(),
+                                                 region.getInputs().end());
+  prefixInputs.append(externalSpills);
+  prefixInputs.append(externalSharedDDR);
+  llvm::SmallVector<mlir::Type, 8> prefixResultTypes;
+  for (mlir::Value spill : externalSpills)
+    prefixResultTypes.push_back(spill.getType());
+  for (mlir::Value value : carriedDDRValues)
+    prefixResultTypes.push_back(value.getType());
+  auto prefixRegion = outer.create<TileRegionOp>(
+      region.getLoc(), prefixResultTypes, prefixInputs);
+  prefixRegion.getBody().push_back(new mlir::Block());
+  mlir::Block &prefixBody = prefixRegion.getBody().front();
+  for (mlir::Value input : prefixRegion.getInputs())
+    prefixBody.addArgument(input.getType(), input.getLoc());
+
+  llvm::SmallVector<mlir::Value, 8> suffixInputs(region.getInputs().begin(),
+                                                 region.getInputs().end());
+  suffixInputs.append(prefixRegion.getResults().begin(),
+                      prefixRegion.getResults().end());
+  suffixInputs.append(externalSharedDDR);
+  auto suffixRegion = outer.create<TileRegionOp>(
+      region.getLoc(), region.getResultTypes(), suffixInputs);
+  suffixRegion.getBody().push_back(new mlir::Block());
+  mlir::Block &suffixBody = suffixRegion.getBody().front();
+  for (mlir::Value input : suffixRegion.getInputs())
+    suffixBody.addArgument(input.getType(), input.getLoc());
+
+  mlir::IRMapping prefixMapping;
+  mlir::IRMapping suffixMapping;
+  for (auto [original, replacement] : llvm::zip_equal(
+           body.getArguments(),
+           prefixBody.getArguments().take_front(body.getNumArguments())))
+    prefixMapping.map(original, replacement);
+  for (auto [original, replacement] : llvm::zip_equal(
+           body.getArguments(),
+           suffixBody.getArguments().take_front(body.getNumArguments())))
+    suffixMapping.map(original, replacement);
+  for (auto [index, spill] : llvm::enumerate(spillAllocations))
+    prefixMapping.map(spill.getOperation()->getResult(0),
+                      prefixBody.getArgument(body.getNumArguments() + index));
+  for (auto [index, spill] : llvm::enumerate(spillAllocations))
+    suffixMapping.map(spill.getOperation()->getResult(0),
+                      suffixBody.getArgument(body.getNumArguments() + index));
+  for (auto [index, value] : llvm::enumerate(carriedDDRValues))
+    suffixMapping.map(
+        value, suffixBody.getArgument(body.getNumArguments() + 1 + index));
+  for (auto [index, allocation] : llvm::enumerate(sharedDDRAllocations)) {
+    prefixMapping.map(
+        allocation.getResult(),
+        prefixBody.getArgument(body.getNumArguments() + 1 + index));
+    suffixMapping.map(allocation.getResult(),
+                      suffixBody.getArgument(body.getNumArguments() +
+                                             prefixRegion.getNumResults() +
+                                             index));
+  }
+
+  // Discover the small set of prefix-owned resources that the suffix must
+  // duplicate before moving either side. The prior implementation cloned
+  // every prefix and suffix operation for every selected cut, making a chain
+  // of independent DDR stages quadratic in the remaining IR size. Moving
+  // each ordinary operation preserves its exact SSA body and makes only true
+  // two-sided resources pay a clone cost.
+  mlir::OpBuilder suffixBuilder = mlir::OpBuilder::atBlockEnd(&suffixBody);
+  std::function<mlir::LogicalResult(mlir::Operation *)> cloneResource =
+      [&](mlir::Operation *operation) -> mlir::LogicalResult {
+    if (operation->getNumResults() == 0)
+      return failResult(failureReason,
+                        "region cut suffix resource has no result");
+    if (llvm::all_of(operation->getResults(), [&](mlir::Value result) {
+          return suffixMapping.contains(result);
+        }))
+      return mlir::success();
+    auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(operation);
+    const bool boundaryView = isBoundaryView(operation);
+    // A shared boundary load reads the same DDR input into its own SPM
+    // allocation and is an ordinary cloneable region-local resource; its
+    // destination allocation is cloned recursively below.
+    const bool boundaryLoad = mlir::isa<StorageLoadOp>(operation);
+    if (!mlir::isa<mlir::arith::ConstantOp>(operation) && !boundaryView &&
+        !boundaryLoad &&
+        (!allocation || !allocation.getDynamicSizes().empty() ||
+         !allocation.getSymbolOperands().empty()))
+      return failResult(failureReason,
+                        "region cut suffix depends on an uncut producer");
+    if (boundaryView || boundaryLoad) {
+      for (mlir::Value operand : operation->getOperands()) {
+        if (suffixMapping.contains(operand) ||
+            mlir::isa<mlir::BlockArgument>(operand))
+          continue;
+        mlir::Operation *definition = operand.getDefiningOp();
+        if (!definition || !prefix.contains(definition) ||
+            mlir::failed(cloneResource(definition)))
+          return failResult(
+              failureReason,
+              "region input view has an uncloneable suffix dependency");
+      }
+    }
+    suffixBuilder.clone(*operation, suffixMapping);
+    return mlir::success();
+  };
+
+  llvm::SmallVector<mlir::Operation *, 64> bodyOperations;
+  for (mlir::Operation &operation : body.without_terminator())
+    bodyOperations.push_back(&operation);
+  auto oldYield = mlir::cast<TileYieldOp>(body.getTerminator());
+  llvm::SmallVector<mlir::Value, 4> oldYieldValues(oldYield.getValues());
+  mlir::Location oldYieldLoc = oldYield.getLoc();
+
+  for (mlir::Operation *operation : bodyOperations) {
+    if (prefix.contains(operation) || isSpill(operation) ||
+        sharedDDRAllocationOps.contains(operation))
+      continue;
+    // Region-bearing suffix operations may lexically capture a boundary view
+    // without listing it as a parent-op operand (for example a subview used
+    // only inside scf.for). Discover and clone only those boundary resources
+    // before moving the parent; otherwise its nested region retains a use of
+    // the soon-to-be erased original TileRegion value.
+    mlir::WalkResult resourceResult =
+        operation->walk([&](mlir::Operation *nested) -> mlir::WalkResult {
+          for (mlir::Value operand : nested->getOperands()) {
+            mlir::Operation *definition = operand.getDefiningOp();
+            if (definition && prefix.contains(definition) &&
+                !suffixMapping.contains(operand) &&
+                mlir::failed(cloneResource(definition)))
+              return mlir::WalkResult::interrupt();
+          }
+          return mlir::WalkResult::advance();
+        });
+    if (resourceResult.wasInterrupted())
+      return mlir::failure();
+  }
+
+  auto remapOperationTree = [](mlir::Operation *operation,
+                               mlir::IRMapping &mapping) {
+    operation->walk([&](mlir::Operation *nested) {
+      for (mlir::OpOperand &operand : nested->getOpOperands())
+        if (mlir::Value replacement = mapping.lookupOrNull(operand.get()))
+          operand.set(replacement);
+    });
+  };
+  for (mlir::Operation *operation : bodyOperations) {
+    if (isSpill(operation) || sharedDDRAllocationOps.contains(operation))
+      continue;
+    if (prefix.contains(operation)) {
+      remapOperationTree(operation, prefixMapping);
+      operation->moveBefore(&prefixBody, prefixBody.end());
+      continue;
+    }
+    remapOperationTree(operation, suffixMapping);
+    operation->moveBefore(&suffixBody, suffixBody.end());
+  }
+
+  mlir::OpBuilder prefixBuilder = mlir::OpBuilder::atBlockEnd(&prefixBody);
+  llvm::SmallVector<mlir::Value, 8> prefixYields;
+  for (size_t index = 0; index < spillAllocations.size(); ++index)
+    prefixYields.push_back(
+        prefixBody.getArgument(body.getNumArguments() + index));
+  prefixYields.append(carriedDDRValues.begin(), carriedDDRValues.end());
+  prefixBuilder.create<TileYieldOp>(region.getLoc(), prefixYields);
+
+  llvm::SmallVector<mlir::Value, 4> suffixYields;
+  for (mlir::Value value : oldYieldValues) {
+    mlir::Value mapped = suffixMapping.lookupOrDefault(value);
+    mlir::Operation *definition = mapped.getDefiningOp();
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(mapped);
+    if ((!definition || definition->getBlock() != &suffixBody) &&
+        (!argument || argument.getOwner() != &suffixBody))
+      return failResult(
+          failureReason,
+          "region cut could not map an observable result into its suffix");
+    suffixYields.push_back(mapped);
+  }
+  suffixBuilder.create<TileYieldOp>(oldYieldLoc, suffixYields);
+
+  mlir::Operation *externalUseOwner = nullptr;
+  mlir::Operation *externalUseDefinition = nullptr;
+  region.walk([&](mlir::Operation *operation) {
+    if (operation == region.getOperation() || externalUseOwner)
+      return;
+    for (mlir::Value result : operation->getResults())
+      for (mlir::Operation *user : result.getUsers())
+        if (user->getParentOfType<TileRegionOp>() != region) {
+          externalUseDefinition = operation;
+          externalUseOwner = user;
+          return;
+        }
+  });
+  if (externalUseOwner) {
+    std::string detail;
+    llvm::raw_string_ostream stream(detail);
+    stream << "region cut cannot erase an internal value used outside its "
+              "TileRegion; definition="
+           << externalUseDefinition->getName()
+           << ", user=" << externalUseOwner->getName() << "; definition_ir=";
+    externalUseDefinition->print(stream, mlir::OpPrintingFlags().skipRegions());
+    stream << "; user_ir=";
+    externalUseOwner->print(stream, mlir::OpPrintingFlags().skipRegions());
+    return failResult(failureReason, stream.str());
+  }
+
+  if (materializationRelations) {
+    auto retargetValue = [&](mlir::Value value) -> mlir::Value {
+      if (std::optional<size_t> index = findSpillIndex(value))
+        return externalSpills[*index];
+      for (auto [index, allocation] : llvm::enumerate(sharedDDRAllocations))
+        if (value == allocation.getResult())
+          return externalSharedDDR[index];
+      if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+          argument && argument.getOwner() == &body)
+        return suffixMapping.lookupOrDefault(value);
+      if (auto result = mlir::dyn_cast<mlir::OpResult>(value);
+          result && result.getOwner() == region.getOperation() &&
+          result.getResultNumber() < suffixRegion.getNumResults())
+        return suffixRegion.getResult(result.getResultNumber());
+      return value;
+    };
+    auto retarget = [&](auto &entries) {
+      for (auto &relation : entries)
+        relation.buffer = retargetValue(relation.buffer);
+    };
+    retarget(materializationRelations->operationResultBuffers);
+    retarget(materializationRelations->operandBuffers);
+    retarget(materializationRelations->outputBuffers);
+  }
+
+  region.replaceAllUsesWith(suffixRegion.getResults());
+  region.erase();
+  return mlir::success();
+}
 /// Split the one ordinary TileRegion at the store/reload associated with a
 /// selected RegionCut.  The prefix yields only compiler-owned DDR; the suffix
 /// reloads it through a new region argument.  No SPM value is allowed to cross.
@@ -1758,388 +2190,243 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
     }
   }
 
-  // A compiler-owned residency release belongs to the same side of the cut
-  // as the value it releases.  Temporal materialization emits memref.dealloc
-  // after the value's last tensor-level observation; when RegionCut replaces
-  // a later consumer with store/reload, that last observation becomes the
-  // prefix spill store.  Move the marker with the prefix instead of treating
-  // it as shaped data that must cross the DDR boundary.
-  llvm::SmallVector<mlir::memref::DeallocOp, 4> prefixReleases;
-  for (mlir::Operation *operation : prefix)
-    for (mlir::Value result : operation->getResults())
-      for (mlir::Operation *user : result.getUsers())
-        if (auto release = mlir::dyn_cast<mlir::memref::DeallocOp>(user);
-            release && release.getMemref() == result &&
-            release->getBlock() == &body)
-          prefixReleases.push_back(release);
-  prefix.insert(prefixReleases.begin(), prefixReleases.end());
+  llvm::SmallVector<mlir::memref::AllocOp, 1> spills{spillAllocation};
+  return splitRegionAfterPrefix(region, spills, selectedDDRStageBuffers,
+                                std::move(prefix), materializationRelations,
+                                failureReason);
+}
 
-  // Source-only peer producers are sealed in compiler-owned DDR even though
-  // they do not own a destination-side edge marker on this Tile. A later
-  // selected cut may need that same allocation on both sides (for example,
-  // one prefix peer send and one suffix consumer/send). Duplicating the alloc
-  // would create two unrelated DDR objects; carrying an SPM value would be
-  // illegal. Hoist only unmarked static DDR allocations that are proven used
-  // on both sides and pass the one object explicitly to both regions.
-  llvm::SmallVector<mlir::memref::AllocOp, 4> eligibleSharedDDRAllocations;
-  llvm::DenseMap<mlir::Value, size_t> eligibleSharedDDRIndices;
-  llvm::SmallVector<std::pair<bool, bool>, 4> sharedDDRUses;
-  llvm::SmallVector<mlir::memref::AllocOp, 4> sharedDDRAllocations;
-  llvm::DenseSet<mlir::Operation *> sharedDDRAllocationOps;
-  for (mlir::Operation &operation : body.without_terminator()) {
-    auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(operation);
-    if (!allocation || allocation == spillAllocation ||
-        !isWaferDDRMemRefType(allocation.getType()) ||
-        !allocation.getDynamicSizes().empty() ||
-        !allocation.getSymbolOperands().empty() ||
-        llvm::is_contained(selectedDDRStageBuffers, allocation.getResult()))
-      continue;
-    eligibleSharedDDRIndices.try_emplace(allocation.getResult(),
-                                         eligibleSharedDDRAllocations.size());
-    eligibleSharedDDRAllocations.push_back(allocation);
-    sharedDDRUses.push_back({false, false});
-  }
-  // Classify every eligible allocation in one region walk. Scanning the
-  // complete region separately for every allocation made an independent
-  // op-stage chain cubic in practice once this split was repeated for every
-  // selected edge.
-  region.walk([&](mlir::Operation *user) {
-    mlir::Operation *root = getTopLevelOperation(user);
-    if (!root)
-      return;
-    for (mlir::Value operand : user->getOperands()) {
-      auto found = eligibleSharedDDRIndices.find(getViewRoot(operand));
-      if (found == eligibleSharedDDRIndices.end())
-        continue;
-      auto &uses = sharedDDRUses[found->second];
-      if (prefix.contains(root))
-        uses.first = true;
-      else
-        uses.second = true;
-    }
-  });
-  for (auto [index, allocation] :
-       llvm::enumerate(eligibleSharedDDRAllocations)) {
-    if (sharedDDRUses[index].first && sharedDDRUses[index].second) {
-      sharedDDRAllocations.push_back(allocation);
-      sharedDDRAllocationOps.insert(allocation.getOperation());
-    }
-  }
-
-  auto isBoundaryView = [&](mlir::Operation *operation) {
-    auto view = mlir::dyn_cast<mlir::ViewLikeOpInterface>(operation);
-    if (!view)
-      return false;
-    mlir::Value root = getViewRoot(view.getViewSource());
-    if (root == spillAllocation.getResult())
-      return true;
-    if (auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
-        allocation &&
-        sharedDDRAllocationOps.contains(allocation.getOperation()))
-      return true;
-    auto argument = mlir::dyn_cast<mlir::BlockArgument>(root);
-    return argument && argument.getOwner() == &body;
+/// Splits off the closure of the smallest structured compute root (canonical
+/// node-id order) as a prefix region. Used by the deterministic baseline to
+/// give every TileRegion exactly one structured root: independent roots on
+/// one Tile form multiple sequential regions without a fabricated DDR edge.
+/// Returns success without splitting when the region already carries at most
+/// one root.
+static mlir::LogicalResult splitRegionAtStructuredRootBoundary(
+    TileRegionOp region, StructuredMaterializationRelations &relations,
+    std::string *failureReason) {
+  if (!region || !region.getBody().hasOneBlock())
+    return failResult(failureReason,
+                      "structured root split requires one verifier-legal "
+                      "region block");
+  mlir::Block &body = region.getBody().front();
+  auto getTopLevelOperation = [&](mlir::Operation *operation) {
+    while (operation && operation->getBlock() != &body)
+      operation = operation->getParentOp();
+    return operation;
   };
 
-  // A temporal loop or another prefix operation may produce additional DDR
-  // state that a later independent op stage consumes. Such values are legal
-  // TileRegion boundaries and must be explicit region results/inputs. Tensor
-  // and SPM values remain forbidden: admitting only typed DDR memrefs keeps
-  // the selected op boundary concrete without turning this into an opaque
-  // cross-region value channel.
-  llvm::SmallVector<mlir::Value, 8> carriedDDRValues;
-  llvm::DenseSet<mlir::Value> carriedDDRValueSet;
-  for (mlir::Operation &operation : body.without_terminator()) {
-    if (!prefix.contains(&operation))
-      continue;
-    for (mlir::Value result : operation.getResults()) {
-      for (mlir::OpOperand &use : result.getUses()) {
-        mlir::Operation *useRoot = getTopLevelOperation(use.getOwner());
-        if (useRoot && prefix.contains(useRoot))
-          continue;
-        // Scalar constants, static allocations, and views rooted in a region
-        // input or the selected spill are region-local resources, not
-        // produced SSA data. Reconstruct such views on each side of the cut;
-        // an additional produced DDR value crosses as an explicit typed
-        // result/input. No tensor or SPM value may bypass the selected
-        // spill/reload boundary.
-        if (mlir::isa<mlir::arith::ConstantOp, mlir::memref::AllocOp>(
-                &operation) ||
-            isBoundaryView(&operation))
-          continue;
-        if (isWaferDDRMemRefType(result.getType())) {
-          if (carriedDDRValueSet.insert(result).second)
-            carriedDDRValues.push_back(result);
-          break;
-        }
-        std::string detail;
-        llvm::raw_string_ostream stream(detail);
-        mlir::Value root = getViewRoot(result);
-        stream << "region cut has a producer value from " << operation.getName()
-               << " used by " << use.getOwner()->getName();
-        if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(root))
-          stream << " (view root is block argument " << argument.getArgNumber()
-                 << ')';
-        else if (mlir::Operation *rootDefinition = root.getDefiningOp())
-          stream << " (view root is " << rootDefinition->getName() << ')';
-        stream << " that bypasses the DDR boundary; operation=";
-        operation.print(stream, mlir::OpPrintingFlags().skipRegions());
-        stream << "; spill=" << spillAllocation.getType()
-               << "; last_store_root=" << lastStoreRoot->getName();
-        return failResult(failureReason, stream.str());
-      }
-    }
-  }
-
-  mlir::OpBuilder outer(region);
-  auto externalSpill = outer.create<mlir::memref::AllocOp>(
-      spillAllocation.getLoc(), spillAllocation.getType());
-  llvm::SmallVector<mlir::Value, 4> externalSharedDDR;
-  for (mlir::memref::AllocOp allocation : sharedDDRAllocations)
-    externalSharedDDR.push_back(
-        outer
-            .create<mlir::memref::AllocOp>(allocation.getLoc(),
-                                           allocation.getType())
-            .getResult());
-
-  llvm::SmallVector<mlir::Value, 8> prefixInputs(region.getInputs().begin(),
-                                                 region.getInputs().end());
-  prefixInputs.push_back(externalSpill.getResult());
-  prefixInputs.append(externalSharedDDR);
-  llvm::SmallVector<mlir::Type, 8> prefixResultTypes{spillAllocation.getType()};
-  for (mlir::Value value : carriedDDRValues)
-    prefixResultTypes.push_back(value.getType());
-  auto prefixRegion = outer.create<TileRegionOp>(
-      region.getLoc(), prefixResultTypes, prefixInputs);
-  prefixRegion.getBody().push_back(new mlir::Block());
-  mlir::Block &prefixBody = prefixRegion.getBody().front();
-  for (mlir::Value input : prefixRegion.getInputs())
-    prefixBody.addArgument(input.getType(), input.getLoc());
-
-  llvm::SmallVector<mlir::Value, 8> suffixInputs(region.getInputs().begin(),
-                                                 region.getInputs().end());
-  suffixInputs.append(prefixRegion.getResults().begin(),
-                      prefixRegion.getResults().end());
-  suffixInputs.append(externalSharedDDR);
-  auto suffixRegion = outer.create<TileRegionOp>(
-      region.getLoc(), region.getResultTypes(), suffixInputs);
-  suffixRegion.getBody().push_back(new mlir::Block());
-  mlir::Block &suffixBody = suffixRegion.getBody().front();
-  for (mlir::Value input : suffixRegion.getInputs())
-    suffixBody.addArgument(input.getType(), input.getLoc());
-
-  mlir::IRMapping prefixMapping;
-  mlir::IRMapping suffixMapping;
-  for (auto [original, replacement] : llvm::zip_equal(
-           body.getArguments(),
-           prefixBody.getArguments().take_front(body.getNumArguments())))
-    prefixMapping.map(original, replacement);
-  for (auto [original, replacement] : llvm::zip_equal(
-           body.getArguments(),
-           suffixBody.getArguments().take_front(body.getNumArguments())))
-    suffixMapping.map(original, replacement);
-  prefixMapping.map(spillAllocation.getResult(),
-                    prefixBody.getArgument(body.getNumArguments()));
-  suffixMapping.map(spillAllocation.getResult(),
-                    suffixBody.getArgument(body.getNumArguments()));
-  for (auto [index, value] : llvm::enumerate(carriedDDRValues))
-    suffixMapping.map(
-        value, suffixBody.getArgument(body.getNumArguments() + 1 + index));
-  for (auto [index, allocation] : llvm::enumerate(sharedDDRAllocations)) {
-    prefixMapping.map(
-        allocation.getResult(),
-        prefixBody.getArgument(body.getNumArguments() + 1 + index));
-    suffixMapping.map(allocation.getResult(),
-                      suffixBody.getArgument(body.getNumArguments() +
-                                             prefixRegion.getNumResults() +
-                                             index));
-  }
-
-  // Discover the small set of prefix-owned resources that the suffix must
-  // duplicate before moving either side. The prior implementation cloned
-  // every prefix and suffix operation for every selected cut, making a chain
-  // of independent DDR stages quadratic in the remaining IR size. Moving
-  // each ordinary operation preserves its exact SSA body and makes only true
-  // two-sided resources pay a clone cost.
-  mlir::OpBuilder suffixBuilder = mlir::OpBuilder::atBlockEnd(&suffixBody);
-  std::function<mlir::LogicalResult(mlir::Operation *)> cloneResource =
-      [&](mlir::Operation *operation) -> mlir::LogicalResult {
-    if (operation->getNumResults() == 0)
-      return failResult(failureReason,
-                        "region cut suffix resource has no result");
-    if (llvm::all_of(operation->getResults(), [&](mlir::Value result) {
-          return suffixMapping.contains(result);
-        }))
-      return mlir::success();
-    auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(operation);
-    const bool boundaryView = isBoundaryView(operation);
-    if (!mlir::isa<mlir::arith::ConstantOp>(operation) && !boundaryView &&
-        (!allocation || !allocation.getDynamicSizes().empty() ||
-         !allocation.getSymbolOperands().empty()))
-      return failResult(failureReason,
-                        "region cut suffix depends on an uncut producer");
-    if (boundaryView) {
-      for (mlir::Value operand : operation->getOperands()) {
-        if (suffixMapping.contains(operand) ||
-            mlir::isa<mlir::BlockArgument>(operand))
-          continue;
-        mlir::Operation *definition = operand.getDefiningOp();
-        if (!definition || !prefix.contains(definition) ||
-            mlir::failed(cloneResource(definition)))
-          return failResult(
-              failureReason,
-              "region input view has an uncloneable suffix dependency");
-      }
-    }
-    suffixBuilder.clone(*operation, suffixMapping);
-    return mlir::success();
-  };
-
-  llvm::SmallVector<mlir::Operation *, 64> bodyOperations;
+  // Collect the structured roots carried by every top-level operation.
+  llvm::SmallVector<mlir::Operation *, 16> topLevelOps;
   for (mlir::Operation &operation : body.without_terminator())
-    bodyOperations.push_back(&operation);
-  auto oldYield = mlir::cast<TileYieldOp>(body.getTerminator());
-  llvm::SmallVector<mlir::Value, 4> oldYieldValues(oldYield.getValues());
-  mlir::Location oldYieldLoc = oldYield.getLoc();
+    if (getTopLevelOperation(&operation) == &operation)
+      topLevelOps.push_back(&operation);
+  uint32_t firstNode = std::numeric_limits<uint32_t>::max();
+  llvm::SmallVector<uint32_t, 4> allNodes;
+  // A materialized compute result may be forwarded through typed views or
+  // staging copies before its buffer relation is recorded; match the
+  // relation buffer by identity or by its typed view root.
+  auto resultCarriesNode = [&](mlir::Value result,
+                               uint32_t nodeId) {
+    return llvm::any_of(relations.operationResultBuffers,
+                        [&](const auto &relation) {
+                          return relation.structuredNodeId == nodeId &&
+                                 (relation.buffer == result ||
+                                  getViewRoot(relation.buffer) == result);
+                        });
+  };
+  auto appendNodes = [&](mlir::Operation *operation) {
+    for (mlir::Value result : operation->getResults())
+      for (const auto &relation : relations.operationResultBuffers)
+        if ((relation.buffer == result ||
+             getViewRoot(relation.buffer) == result) &&
+            !llvm::is_contained(allNodes, relation.structuredNodeId))
+          allNodes.push_back(relation.structuredNodeId);
+  };
+  for (mlir::Operation *operation : topLevelOps) {
+    appendNodes(operation);
+    operation->walk([&](mlir::Operation *nested) {
+      if (nested != operation)
+        appendNodes(nested);
+    });
+  }
+  if (allNodes.size() <= 1)
+    return mlir::success();
+  firstNode = *std::min_element(allNodes.begin(), allNodes.end());
 
-  for (mlir::Operation *operation : bodyOperations) {
-    if (prefix.contains(operation) ||
-        operation == spillAllocation.getOperation() ||
-        sharedDDRAllocationOps.contains(operation))
-      continue;
-    // Region-bearing suffix operations may lexically capture a boundary view
-    // without listing it as a parent-op operand (for example a subview used
-    // only inside scf.for). Discover and clone only those boundary resources
-    // before moving the parent; otherwise its nested region retains a use of
-    // the soon-to-be erased original TileRegion value.
-    mlir::WalkResult resourceResult =
+  // Prefix = backward SSA closure of every operation whose materialized
+  // compute result belongs to the first root. Dependent structured roots are
+  // separated by selected RegionCut/peer edges before this split runs; a
+  // closure reaching another root's operation is therefore a selected-cut
+  // gap and must fail closed. Spill machinery created for crossing SPM
+  // values is excluded from closure pulls and placed explicitly: the spill
+  // store joins the prefix, the reload joins the suffix, and the split core
+  // hoists the shared spill allocation itself.
+  llvm::DenseSet<mlir::Operation *> prefix;
+  llvm::DenseSet<mlir::Operation *> spillClosureOps;
+  std::function<mlir::LogicalResult(mlir::Operation *)> collectPrefix =
+      [&](mlir::Operation *operation) -> mlir::LogicalResult {
+    if (!operation || operation->getBlock() != &body ||
+        mlir::isa<TileYieldOp>(operation) || spillClosureOps.contains(operation) ||
+        !prefix.insert(operation).second)
+      return mlir::success();
+    mlir::WalkResult dependencyResult =
         operation->walk([&](mlir::Operation *nested) -> mlir::WalkResult {
           for (mlir::Value operand : nested->getOperands()) {
+            if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(operand);
+                argument && argument.getOwner() == &body)
+              continue;
             mlir::Operation *definition = operand.getDefiningOp();
-            if (definition && prefix.contains(definition) &&
-                !suffixMapping.contains(operand) &&
-                mlir::failed(cloneResource(definition)))
+            mlir::Operation *root = getTopLevelOperation(definition);
+            if (root && root != operation &&
+                mlir::failed(collectPrefix(root)))
               return mlir::WalkResult::interrupt();
           }
           return mlir::WalkResult::advance();
         });
-    if (resourceResult.wasInterrupted())
+    return dependencyResult.wasInterrupted() ? mlir::failure()
+                                             : mlir::success();
+  };
+  for (mlir::Operation *operation : topLevelOps) {
+    const bool belongs = llvm::any_of(operation->getResults(), [&](mlir::Value result) {
+      return resultCarriesNode(result, firstNode);
+    });
+    if (belongs && mlir::failed(collectPrefix(operation)))
       return mlir::failure();
   }
+  if (prefix.empty())
+    return failResult(failureReason,
+                      "structured root split found no prefix closure");
 
-  auto remapOperationTree = [](mlir::Operation *operation,
-                               mlir::IRMapping &mapping) {
-    operation->walk([&](mlir::Operation *nested) {
-      for (mlir::OpOperand &operand : nested->getOpOperands())
-        if (mlir::Value replacement = mapping.lookupOrNull(operand.get()))
-          operand.set(replacement);
-    });
-  };
-  for (mlir::Operation *operation : bodyOperations) {
-    if (operation == spillAllocation.getOperation() ||
-        sharedDDRAllocationOps.contains(operation))
-      continue;
-    if (prefix.contains(operation)) {
-      remapOperationTree(operation, prefixMapping);
-      operation->moveBefore(&prefixBody, prefixBody.end());
-      continue;
-    }
-    remapOperationTree(operation, suffixMapping);
-    operation->moveBefore(&suffixBody, suffixBody.end());
-  }
-
-  mlir::OpBuilder prefixBuilder = mlir::OpBuilder::atBlockEnd(&prefixBody);
-  llvm::SmallVector<mlir::Value, 8> prefixYields{
-      prefixBody.getArgument(body.getNumArguments())};
-  prefixYields.append(carriedDDRValues.begin(), carriedDDRValues.end());
-  prefixBuilder.create<TileYieldOp>(region.getLoc(), prefixYields);
-
-  llvm::SmallVector<mlir::Value, 4> suffixYields;
-  for (mlir::Value value : oldYieldValues) {
-    mlir::Value mapped = suffixMapping.lookupOrDefault(value);
-    mlir::Operation *definition = mapped.getDefiningOp();
-    auto argument = mlir::dyn_cast<mlir::BlockArgument>(mapped);
-    if ((!definition || definition->getBlock() != &suffixBody) &&
-        (!argument || argument.getOwner() != &suffixBody))
-      return failResult(
-          failureReason,
-          "region cut could not map an observable result into its suffix");
-    suffixYields.push_back(mapped);
-  }
-  suffixBuilder.create<TileYieldOp>(oldYieldLoc, suffixYields);
-
-  mlir::Operation *externalUseOwner = nullptr;
-  mlir::Operation *externalUseDefinition = nullptr;
-  region.walk([&](mlir::Operation *operation) {
-    if (operation == region.getOperation() || externalUseOwner)
-      return;
-    for (mlir::Value result : operation->getResults())
-      for (mlir::Operation *user : result.getUsers())
-        if (user->getParentOfType<TileRegionOp>() != region) {
-          externalUseDefinition = operation;
-          externalUseOwner = user;
-          return;
+  // A prefix-produced value consumed outside the prefix is an explicit DDR
+  // boundary between the two structured roots. DDR-typed values cross as
+  // carried region results; SPM-typed values are sealed into a fresh
+  // compiler-owned spill with an exact store/reload pair, mirroring the
+  // RegionCut carrier. Compute ops carrying another structured root never
+  // join the prefix; a shared boundary resource they still need is cloned
+  // into the suffix by the split core.
+  llvm::SmallVector<mlir::memref::AllocOp, 2> spills;
+  llvm::DenseMap<mlir::Value, mlir::Value> spilledReloads;
+  bool addedUser = true;
+  while (addedUser) {
+    addedUser = false;
+    for (mlir::Operation &operation : body.without_terminator()) {
+      if (prefix.contains(&operation) || spillClosureOps.contains(&operation))
+        continue;
+      const bool otherRootCompute = llvm::any_of(
+          operation.getResults(), [&](mlir::Value result) {
+            return llvm::any_of(relations.operationResultBuffers,
+                                [&](const auto &relation) {
+                                  return relation.structuredNodeId !=
+                                             firstNode &&
+                                         (relation.buffer == result ||
+                                          getViewRoot(relation.buffer) ==
+                                              result);
+                                });
+          });
+      const bool usesPrefixValue = llvm::any_of(
+          operation.getOperands(), [&](mlir::Value operand) {
+            return prefix.contains(getTopLevelOperation(
+                operand.getDefiningOp()));
+          });
+      if (!usesPrefixValue)
+        continue;
+      if (otherRootCompute) {
+        // Spill every prefix-owned SPM operand of this other-root compute
+        // through an exact DDR store/reload boundary, then retarget the
+        // operand to the reloaded SPM allocation. The spill store is placed
+        // at the end of the region body so it observes the value after the
+        // prefix's own in-place support materialization (for example an
+        // insert-slice overwrite); the reload is placed immediately before
+        // the consuming operation. Repeated uses of one value share one
+        // spill.
+        for (mlir::OpOperand &use : operation.getOpOperands()) {
+          mlir::Value operand = use.get();
+          mlir::Operation *producerRoot =
+              getTopLevelOperation(operand.getDefiningOp());
+          if (!producerRoot || !prefix.contains(producerRoot))
+            continue;
+          if (!isWaferSPMMemRefType(operand.getType()))
+            continue;
+          mlir::Value reloadResult = spilledReloads.lookup(operand);
+          if (!reloadResult) {
+            auto spmType = mlir::cast<mlir::MemRefType>(operand.getType());
+            mlir::MemRefType ddrType = mlir::MemRefType::get(
+                spmType.getShape(), spmType.getElementType(),
+                mlir::MemRefLayoutAttrInterface{},
+                MemoryAttr::get(operation.getContext(), MemorySpace::DDR,
+                                MemLayout::Tensor));
+            mlir::OpBuilder bodyBuilder(&body, body.begin());
+            auto spill = bodyBuilder.create<mlir::memref::AllocOp>(
+                operation.getLoc(), ddrType);
+            spillClosureOps.insert(spill.getOperation());
+            mlir::OpBuilder storeBuilder =
+                mlir::OpBuilder::atBlockTerminator(&body);
+            auto store = storeBuilder.create<StorageStoreOp>(
+                operation.getLoc(), operand, spill.getResult());
+            spillClosureOps.insert(store.getOperation());
+            prefix.insert(store.getOperation());
+            mlir::OpBuilder loadBuilder(&operation);
+            auto reload = loadBuilder.create<mlir::memref::AllocOp>(
+                operation.getLoc(), spmType);
+            spillClosureOps.insert(reload.getOperation());
+            auto reloadLoad = loadBuilder.create<StorageLoadOp>(
+                operation.getLoc(), spill, reload.getResult());
+            spillClosureOps.insert(reloadLoad.getOperation());
+            reloadResult = reload.getResult();
+            spilledReloads[operand] = reloadResult;
+            spills.push_back(spill);
+          }
+          use.set(reloadResult);
+          addedUser = true;
         }
-  });
-  if (externalUseOwner) {
-    std::string detail;
-    llvm::raw_string_ostream stream(detail);
-    stream << "region cut cannot erase an internal value used outside its "
-              "TileRegion; definition="
-           << externalUseDefinition->getName()
-           << ", user=" << externalUseOwner->getName() << "; definition_ir=";
-    externalUseDefinition->print(stream, mlir::OpPrintingFlags().skipRegions());
-    stream << "; user_ir=";
-    externalUseOwner->print(stream, mlir::OpPrintingFlags().skipRegions());
-    return failResult(failureReason, stream.str());
+        continue;
+      }
+      if (mlir::failed(collectPrefix(&operation)))
+        return mlir::failure();
+      addedUser = true;
+    }
   }
-
-  if (materializationRelations) {
-    auto retargetValue = [&](mlir::Value value) -> mlir::Value {
-      if (value == spillAllocation.getResult())
-        return externalSpill.getResult();
-      for (auto [index, allocation] : llvm::enumerate(sharedDDRAllocations))
-        if (value == allocation.getResult())
-          return externalSharedDDR[index];
-      if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
-          argument && argument.getOwner() == &body)
-        return suffixMapping.lookupOrDefault(value);
-      if (auto result = mlir::dyn_cast<mlir::OpResult>(value);
-          result && result.getOwner() == region.getOperation() &&
-          result.getResultNumber() < suffixRegion.getNumResults())
-        return suffixRegion.getResult(result.getResultNumber());
-      return value;
-    };
-    auto retarget = [&](auto &entries) {
-      for (auto &relation : entries)
-        relation.buffer = retargetValue(relation.buffer);
-    };
-    retarget(materializationRelations->operationResultBuffers);
-    retarget(materializationRelations->operandBuffers);
-    retarget(materializationRelations->outputBuffers);
-  }
-
-  region.replaceAllUsesWith(suffixRegion.getResults());
-  region.erase();
-  return mlir::success();
+  return splitRegionAfterPrefix(region, spills,
+                                /*selectedDDRStageBuffers=*/{},
+                                std::move(prefix), &relations, failureReason);
 }
 
-void eraseUnreadDirectPrivateLoads(mlir::Operation *operation) {
-  llvm::SmallVector<StorageLoadOp, 8> unreadLoads;
-  operation->walk([&](StorageLoadOp load) {
-    auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
-    if (allocation && allocation.getResult().hasOneUse())
-      unreadLoads.push_back(load);
-  });
-  for (StorageLoadOp load : unreadLoads) {
-    auto allocation = load.getDest().getDefiningOp<mlir::memref::AllocOp>();
-    load.erase();
-    if (allocation.getResult().use_empty())
-      allocation.erase();
+/// Gives every TileRegion of one Tile entry exactly one structured compute
+/// root by repeatedly splitting multi-root regions at root boundaries. The
+/// deterministic baseline materialization mode (IndependentDDRStages) is the
+/// only caller; search-owned region grouping is never rewritten here.
+mlir::LogicalResult splitStructuredRootBoundaries(
+    mlir::func::FuncOp entry, StructuredMaterializationRelations &relations,
+    std::string *failureReason) {
+  if (!entry)
+    return failResult(failureReason,
+                      "structured root split requires a Tile entry");
+  for (unsigned iteration = 0; iteration < 256; ++iteration) {
+    llvm::SmallVector<TileRegionOp, 8> regions;
+    entry.walk([&](TileRegionOp region) {
+      if (!region->getParentOfType<TileRegionOp>())
+        regions.push_back(region);
+    });
+    bool changed = false;
+    for (TileRegionOp region : regions)
+      if (mlir::failed(splitRegionAtStructuredRootBoundary(
+              region, relations, failureReason)))
+        return mlir::failure();
+    entry.walk([&](TileRegionOp region) {
+      if (!region->getParentOfType<TileRegionOp>() &&
+          !llvm::is_contained(regions, region))
+        changed = true;
+    });
+    if (!changed)
+      return mlir::success();
   }
+  return failResult(failureReason,
+                    "structured root split did not converge to one root per "
+                    "region");
 }
 
-} // namespace
+} // namespace wafer
 
 mlir::LogicalResult wafer::deriveSpatialEdgeConsumerResultDomain(
     const SpatialEdgeStrategy &strategy,

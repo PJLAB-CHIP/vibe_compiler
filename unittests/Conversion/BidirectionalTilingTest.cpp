@@ -172,7 +172,7 @@ module {
       } ins(%input : tensor<4x8xf32>)
         outs(%init : tensor<4xf32>) {
     ^bb0(%value: f32, %acc: f32):
-      %sum = arith.addf %value, %acc fastmath<reassoc> : f32
+      %sum = arith.addf %value, %acc  : f32
       linalg.yield %sum : f32
     } -> tensor<4xf32>
     return %result : tensor<4xf32>

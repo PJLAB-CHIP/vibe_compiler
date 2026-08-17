@@ -436,20 +436,29 @@ module {
 
   mlir::OwningOpRef<mlir::ModuleOp> selectedTileModule;
   std::string failureReason;
-  ASSERT_TRUE(
-      mlir::succeeded(wafer::lowerTensorProgramToCardModuleForTile(
-          *source, wafer::CardId(0), wafer::TileId(7), selected,
-          selectedTileModule, &failureReason)))
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToTileModule(
+      *source, wafer::CardId(0), wafer::TileId(7), selected,
+      selectedTileModule, &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*selectedTileModule)));
+  // The scoped probe scope is the Tile entry function itself: no CardModule
+  // shell, no sibling Tile modules and no no-work wrappers.
   EXPECT_EQ(countOps<wafer::TileModuleOp>(selectedTileModule->getOperation()),
-            16u);
+            0u);
+  EXPECT_EQ(countOps<wafer::CardModuleOp>(selectedTileModule->getOperation()),
+            0u);
   EXPECT_EQ(countOps<wafer::TileRegionOp>(selectedTileModule->getOperation()),
             1u);
-  wafer::CardModuleOp selectedTileCardModule =
-      *selectedTileModule->getOps<wafer::CardModuleOp>().begin();
-  llvm::SmallVector<StoreShard, 16> selectedTileShards =
-      collectSecondDimensionStoreShards(selectedTileCardModule);
+  llvm::SmallVector<StoreShard, 16> selectedTileShards;
+  selectedTileModule->walk([&](wafer::StorageStoreOp store) {
+    auto view = store.getDest().getDefiningOp<mlir::memref::SubViewOp>();
+    ASSERT_TRUE(view);
+    if (!view || view.getStaticOffsets().size() < 2 ||
+        view.getStaticSizes().size() < 2)
+      return;
+    selectedTileShards.push_back(StoreShard{7, view.getStaticOffsets()[1],
+                                            view.getStaticSizes()[1]});
+  });
   ASSERT_EQ(selectedTileShards.size(), 1u);
   EXPECT_EQ(selectedTileShards.front().tileId, 7);
   EXPECT_EQ(selectedTileShards.front().offset, 28);
@@ -1062,24 +1071,11 @@ module {
   selected.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
       sourceReduction.getOperation(), {2, 4, 3}});
 
-  mlir::OwningOpRef<mlir::ModuleOp> rejectedModule;
-  std::string failureReason;
-  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0), selected, rejectedModule,
-      &failureReason)));
-  EXPECT_EQ(failureReason,
-            "candidate reduction split changes floating-point addition order "
-            "without reassoc fastmath semantics");
-  EXPECT_FALSE(rejectedModule);
-
-  mlir::arith::AddFOp sourceAdd;
-  sourceReduction->walk(
-      [&](mlir::arith::AddFOp operation) { sourceAdd = operation; });
-  ASSERT_TRUE(sourceAdd);
-  sourceAdd.setFastmath(mlir::arith::FastMathFlags::reassoc);
-
+  // Floating-point reduction reassociation (split and tree) is a supported
+  // numeric transformation: no fast-math flag is consumed as a semantics
+  // switch, and the typed comparator owns acceptance.
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
-  failureReason.clear();
+  std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
       *source, wafer::CardId(0), selected, cardModule, &failureReason)))
       << failureReason;

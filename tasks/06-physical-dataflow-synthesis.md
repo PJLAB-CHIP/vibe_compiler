@@ -219,7 +219,7 @@ relation表达tail，不能要求整除、丢元素或产生非法重叠。必�
 - parallel shards all-and-only覆盖原迭代域；
 - 除selected recompute外没有重复执行；
 - reduction partitions完整且存在显式合法merge；
-- floating-point reduction order满足current numeric policy。
+- floating-point reduction reassociation符合current numeric policy（typed comparator验收，不消费fast-math flag）。
 
 初期可先完整支持multi-axis block partition；未来若支持cyclic/block-cyclic，应扩展typed relation和lowering，不增加
 shape/name matcher。
@@ -658,7 +658,9 @@ descriptor表达失败是baseline carrier的实现缺口，不是logical placeme
 route、retention或collective，但不能因此改变Q50.A logical outcome。
 
 temporal feasibility从root的完整local iterator extent开始，在iterator/indexing semantics、tail、target vector/alignment、
-source numeric/reassociation、reduction order及最小合法粒度共同定义的有限breakpoint lattice上按semantic全序推进。每次trial
+source numeric/reassociation及最小合法粒度共同定义的有限breakpoint lattice上按semantic全序推进；浮点reduction iterator
+与parallel iterator共享同一lattice（自由重结合，typed comparator验收，不消费fast-math flag），整数no-wrap/overflow语义
+保持barrier。每次trial
 都重新推导全部operand slice、stride/dilation halo、result/init/accumulator、temporary、materializing copy、movement staging、
 alignment/bank和实际lifetime，不得只按output tensor字节数缩放估算。actual SPM overflow时只沿direct typed witness影响的
 合法维度进入下一组更小breakpoint，重新执行同一exact probe；

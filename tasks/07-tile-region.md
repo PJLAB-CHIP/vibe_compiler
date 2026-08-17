@@ -438,7 +438,7 @@ complete traversal可以用compact structured loop表达，不要求静态展开
 - result-driven pull或operand-driven push所覆盖的consumer iteration、boundary tile和peer segment all-and-only；
 - interior和tail不重叠且union完整；
 - branch/yield和multi-result的每条路径类型及effect闭合；
-- reduction order符合source numeric contract；
+- reduction split满足numeric contract（浮点自由重结合，typed comparator验收；整数no-wrap/overflow语义保持barrier）；
 - fanout的每个consumer读取同一版本或显式派生版本；
 - 任一reuse发生在所有相关completion之后。
 

@@ -71,6 +71,7 @@ struct CardExecutableSynthesisStatistics {
   /// placement trials; unsupported semantics and indeterminate failures stop
   /// the owning legalization path as typed failures.
   uint64_t exactDemandSatisfiedEdges = 0;
+  uint64_t baselineExactDemandPairQueries = 0;
   uint64_t provenLogicalInfeasibleTrials = 0;
   uint64_t unsupportedSemanticRelationTrials = 0;
   uint64_t indeterminateDemandQueries = 0;
@@ -85,6 +86,7 @@ struct CardExecutableSynthesisStatistics {
   uint64_t baselineRegionSPMCapacityChecks = 0;
   uint64_t baselineRegionSPMCapacityOverflowProofs = 0;
   uint64_t baselineRegionSPMChecksRequiringFunctionScope = 0;
+  uint64_t baselineFunctionScopedSPMCapacityChecks = 0;
   uint64_t baselineRegionSPMCapacityAnalysisFailures = 0;
   uint64_t baselineMaximumRegionSPMQueryWorkers = 1;
   uint64_t multiReductionAxisCandidateMaterializations = 0;

@@ -85,14 +85,16 @@ mlir::LogicalResult lowerTensorProgramToCardModule(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr);
 
-/// Materializes one Tile while emitting verifier-legal no-work bodies
-/// for the other available Tiles. The returned CardModule exists only for
-/// Tile SPM capacity evaluation: a capacity rejection also rejects
-/// the complete mapping, while a passing module is discarded and followed by
+/// Materializes exactly one Tile entry function for scoped feasibility
+/// probing. The result module contains the module-scope target topology,
+/// logical mesh and the single detached Tile entry; it deliberately builds no
+/// CardModule/TileModule shell, no sibling Tile modules and no no-work
+/// wrappers. A capacity rejection of this Tile also rejects the complete
+/// mapping, while a passing module is discarded and followed by
 /// `lowerTensorProgramToCardModule`.
-mlir::LogicalResult lowerTensorProgramToCardModuleForTile(
+mlir::LogicalResult lowerTensorProgramToTileModule(
     mlir::ModuleOp sourceModule, CardId cardId, TileId tileId,
-    const TileMapping &mapping, mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
+    const TileMapping &mapping, mlir::OwningOpRef<mlir::ModuleOp> &tileModule,
     std::string *failureReason = nullptr,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr);

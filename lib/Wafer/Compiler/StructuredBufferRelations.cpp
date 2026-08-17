@@ -132,6 +132,17 @@ static void appendRemapped(llvm::ArrayRef<RelationT> source,
 
 } // namespace
 
+const llvm::DenseSet<mlir::Value> &
+StorageRootMemo::getStorageRoots(mlir::Value value) {
+  auto [iterator, inserted] = memo.try_emplace(value);
+  if (inserted) {
+    iterator->second = std::make_unique<llvm::DenseSet<mlir::Value>>();
+    llvm::DenseSet<mlir::Value> visited;
+    collectStorageRoots(value, *iterator->second, visited);
+  }
+  return *iterator->second;
+}
+
 struct StructuredBufferReplacementListener::Impl {
   struct RelationReference {
     mlir::Value *buffer = nullptr;
@@ -271,15 +282,31 @@ bool shareStructuredBufferStorage(mlir::Value lhs, mlir::Value rhs) {
       lhsRoots, [&](mlir::Value root) { return rhsRoots.contains(root); });
 }
 
+bool shareStructuredBufferStorage(mlir::Value lhs, mlir::Value rhs,
+                                  StorageRootMemo &memo) {
+  const llvm::DenseSet<mlir::Value> &lhsRoots = memo.getStorageRoots(lhs);
+  const llvm::DenseSet<mlir::Value> &rhsRoots = memo.getStorageRoots(rhs);
+  return llvm::any_of(
+      lhsRoots, [&](mlir::Value root) { return rhsRoots.contains(root); });
+}
+
 llvm::SmallVector<uint32_t, 4> collectStructuredNodesUsedByOperation(
     mlir::Operation *operation,
     const StructuredMaterializationRelations &relations) {
+  StorageRootMemo memo;
+  return collectStructuredNodesUsedByOperation(operation, relations, memo);
+}
+
+llvm::SmallVector<uint32_t, 4> collectStructuredNodesUsedByOperation(
+    mlir::Operation *operation,
+    const StructuredMaterializationRelations &relations,
+    StorageRootMemo &memo) {
   llvm::SmallVector<mlir::Value, 8> values =
       collectOperationBufferValues(operation);
   llvm::SmallVector<uint32_t, 4> nodes;
   auto collect = [&](const StructuredOperationBufferRelation &relation) {
     if (llvm::any_of(values, [&](mlir::Value value) {
-          return shareStructuredBufferStorage(value, relation.buffer);
+          return shareStructuredBufferStorage(value, relation.buffer, memo);
         }))
       nodes.push_back(relation.structuredNodeId);
   };
@@ -297,6 +324,15 @@ bool operationUsesStructuredNode(
     const StructuredMaterializationRelations &relations) {
   llvm::SmallVector<uint32_t, 4> nodes =
       collectStructuredNodesUsedByOperation(operation, relations);
+  return llvm::is_contained(nodes, structuredNodeId);
+}
+
+bool operationUsesStructuredNode(
+    mlir::Operation *operation, uint32_t structuredNodeId,
+    const StructuredMaterializationRelations &relations,
+    StorageRootMemo &memo) {
+  llvm::SmallVector<uint32_t, 4> nodes =
+      collectStructuredNodesUsedByOperation(operation, relations, memo);
   return llvm::is_contained(nodes, structuredNodeId);
 }
 

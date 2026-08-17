@@ -330,16 +330,18 @@
 - 防复发：用一个operand footprints能放入SPM、但iteration-volume模型必然超限的GEMM检查none baseline不产生虚假K wave；
   affine-window conv同时覆盖stride/dilation map。
 
-## 多reduction轴分块必须服从源浮点顺序语义
+## 浮点reduction split不再以源顺序或fastmath为gate
 
-- 现象：矩形分块两个reduction轴后，chunk坐标被提到in-tile坐标之前，浮点`addf`求和顺序改变；没有fastmath的source也被
-  当成合法候选。
-- 根因：numeric gate只识别combiner种类，没有比较materialized traversal顺序，也没有读取源`reassoc`语义。
-- 修复模式：compact traversal明确判断是否保持源lexicographic reduction顺序；前置reduction轴未unit-tiled时，后轴split会
-  重排，只有源`arith.addf`带`fastmath<reassoc>`才允许。候选生成也用同一规则逐adjacent breakpoint推进，避免none先生成
-  必然被exact gate拒绝的baseline。
-- 防复发：两轴非整除case先验证无`reassoc`原子拒绝，再验证源显式授权后的nested offsets、tail coverage和numeric accumulator；
-  单K GEMM仍必须证明顺序保持且可split。
+- 现象（历史）：矩形分块两个reduction轴后，chunk坐标被提到in-tile坐标之前，浮点`addf`求和顺序改变；旧实现把没有
+  fastmath的source当成非法候选，还要求前置reduction轴unit-tiled才能split后轴。
+- 收敛结论：上述顺序/fastmath gate与01 numeric policy冲突，已删除。f16/bf16/f32的reassociation、tree、distribution/
+  factorization、reduction/GEMM split是supported numeric transformation，不消费任何fast-math flag作语义开关，验收统一
+  归typed comparator。`verifyReductionSplitNumericLegality`对`addf`直接合法；`preservesSequentialReductionOrder`事实只保留给
+  整数combiner分支——整数no-wrap/overflow语义是唯一剩余barrier。
+- 防复发：新增reduction split/树合法化时只按整数overflow语义设barrier，不得以源combiner顺序、`fastmath` attr或
+  lexicographic前轴条件拒绝浮点split；负例构造注意纯reduction标量输出没有parallel轴，placement domain本就不表达
+  （见`tasks/plans/physical-dataflow-synthesis.md` Q49.P gate），且浮点demand都可缩到最小合法vector，「最小tile超SPM」的
+  浮点capacity反例当前lowering下不可构造。
 
 ## Affine-window convolution不能退化成projected-permutation generic
 
@@ -706,18 +708,22 @@
 - 防复发：owner测试必须在返回后覆盖同inode、删除/替换原path，并继续从owner读取已签发内容；还要检查descriptor不泄漏。
   只断言move trait、root字符串和digest相等不能证明ownership。
 
-## Baseline probe-fit与final SPM planning可能分歧（Q49.P gate case）
+## Baseline probe-fit与final SPM planning可能分歧（Q49.P，已修复 2026-08-17）
 
 - 现象：`CardExecutableSynthesisTest.NoneJointlyRefinesExplicitProducerStageAndConsumerDemand`（transpose+
   fill→matmul 4096规模、none policy）在2026-08-16的HEAD（22eb9931）即失败：一次temporal refinement
   （4096→2048）后全卡TileRegion静态SPM probe全部fit，唯一完整CardExecutable编译仍以gate=spm-allocation
   失败。
-- 根因（未定位，登记于Q49.P）：region-scoped capacity probe与最终TileRegion→Instr后的memory planning在
-  2048 breakpoint上消费的demand集合不一致。2026-08-16用旧pair-legality逻辑与纯HEAD二进制复现同一失败，
-  证明不是Q50.A改动引入。
-- 防复发：该测试是Q49.P“初始完整tile超SPM后沿canonical fallback缩到合法tile并完成package/no-card”的
-  gate case；Q49.P闭合时必须让它由新controller路径fresh通过。probe与final planning的一致性由Q49.P的
-  scoped-probe合同（Q50.F）覆盖。
+- 根因：2048 breakpoint上所有region probe返回`UnsupportedLifetime`（`requires-function-scope`），
+  controller把它当fit计数后跳过；唯一完整gate的函数级planning才暴露真实overflow。
+- 修复：Q49.P新增函数级probe `evaluateTileFunctionSPMCapacity`（clone Tile FuncOp后跑与最终gate相同的
+  `instr-memory-planning-preparation`+`assign-spm-offsets`序列）；`RequiresFunctionScope`是scope
+  escalation请求：提升到最近合法IsolatedFromAbove ancestor（该Tile的FuncOp），其typed verdict作为该
+  region的结论；无法在准确scope得出结论时indeterminate中止，不再跳过。probe与final由此消费同一demand
+  集合。
+- 防复发：probe若克隆IR，evidence attribution必须经clone-side relations（`StructuredBufferReplacementListener`
+  + remap），且attribution的witness收集要沿store/load/view链找transfer端点（DDR wave两端不通过SSA
+  别名与wave buffer相连，直接storage-root匹配会miss）。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
 
@@ -730,7 +736,7 @@
 - 防复发：failure injection必须覆盖最后一次发布前后、installed readback和进程/第二产品边界；同时断言返回status、ordinary/profile
   可见性和staging残留，不能只测第二次rename正常返回失败时的best-effort rollback。
 
-## wafer-compile-card-baseline CROSS case在baseline materialization验证中长时间挂起（既有缺陷）
+## wafer-compile-card-baseline CROSS case在baseline materialization验证中长时间挂起（已修复 2026-08-17）
 
 - 现象：`test/Tools/wafer-compile-card-baseline.test`的CROSS（16-Tile transpose support chain，256个peer
   fragment）在`source-to-tensor-program`后无输出、CPU 100%数分钟以上（90s/280s timeout均杀不掉自然结束）；
@@ -745,9 +751,12 @@
 - 证据：`git checkout 22b3fd12`（Q50.A前）与HEAD（92abdf29）均复现同一挂起；Q50.A review-gap批次与
   Gap 1 per-destination改动无关。Tools lit不在默认lit/ctest路径（见“非默认gate的lit期望静默过时”条），
   该测试长期无人执行，属Q49.P baseline functional closure域。
-- 修复模式：登记为Q49.P既有失败（与`NoneJointlyRefines...`同类），不在Q50.A批内修；排查这类“编译挂起”
-  时先在同一二进制内用阶段探针二分，再用gdb从启动开始跑inferior并向其进程发SIGINT采样栈
-  （attach被ptrace禁止，但gdb启动inferior可行）。
+- 修复：`StructuredBufferRelations`新增query-local `StorageRootMemo`（每value一个heap-owned
+  `DenseSet`，同一IR epoch内共享），`validateSelectedTileLayouts`等每root一个memo贯穿调用链，把
+  per-op×per-relation的storage-root walk摊销为O(1)。注意：memo内层set必须heap-owned（`unique_ptr`），
+  否则外层map rehash会悬空已返回的引用。CROSS由分钟级降到~34s整套lit。
+- 修复模式：排查这类“编译挂起”时先在同一二进制内用阶段探针二分，再用gdb从启动开始跑inferior并向其
+  进程发SIGINT采样栈（attach被ptrace禁止，但gdb启动inferior可行）。
 - 防复发：Tools目录的lit/ctest在声称gate通过前要单独执行并带wall-time上限；materialization验证链的
   每op递归walk需要memo化或按relation反向索引，避免O(N²)回归。
 

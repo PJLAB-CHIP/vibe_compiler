@@ -1433,11 +1433,12 @@ bool candidateLess(const StructuredDAGPlacementCandidate &lhs,
 
 } // namespace
 
-mlir::FailureOr<StructuredDAGPlacementSearchDomain>
-deriveStructuredDAGPlacementSearchDomain(const StructuredDAGAnalysis &dag,
-                                         const TargetTopology &topology,
-                                         CardId cardId,
-                                         std::string *failureReason) {
+mlir::FailureOr<
+    llvm::SmallVector<llvm::SmallVector<StructuredDAGNodePlacement, 32>, 16>>
+deriveStructuredDAGNodePlacementOptions(const StructuredDAGAnalysis &dag,
+                                        const TargetTopology &topology,
+                                        CardId cardId,
+                                        std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
   if (dag.getNodes().empty()) {
@@ -1458,9 +1459,9 @@ deriveStructuredDAGPlacementSearchDomain(const StructuredDAGAnalysis &dag,
                "structured-DAG placement domain has no connected Tile group");
     return mlir::failure();
   }
-  StructuredDAGPlacementSearchDomain domain;
-  domain.placementGroupCount = groups.size();
-  domain.nodeOptions.reserve(dag.getNodes().size());
+  llvm::SmallVector<llvm::SmallVector<StructuredDAGNodePlacement, 32>, 16>
+      nodeOptions;
+  nodeOptions.reserve(dag.getNodes().size());
   for (const StructuredDAGNode &node : dag.getNodes()) {
     llvm::SmallVector<StructuredDAGNodePlacement, 32> options =
         deriveNodePlacementDomain(node, groups);
@@ -1469,9 +1470,161 @@ deriveStructuredDAGPlacementSearchDomain(const StructuredDAGAnalysis &dag,
                  "structured-DAG placement domain cannot place a DAG node");
       return mlir::failure();
     }
-    domain.nodeOptions.push_back(std::move(options));
+    nodeOptions.push_back(std::move(options));
   }
+  return nodeOptions;
+}
+
+mlir::FailureOr<StructuredDAGPlacementSearchDomain>
+deriveStructuredDAGPlacementSearchDomain(const StructuredDAGAnalysis &dag,
+                                         const TargetTopology &topology,
+                                         CardId cardId,
+                                         std::string *failureReason) {
+  mlir::FailureOr<llvm::SmallVector<
+      llvm::SmallVector<StructuredDAGNodePlacement, 32>, 16>>
+      nodeOptions = deriveStructuredDAGNodePlacementOptions(dag, topology,
+                                                            cardId,
+                                                            failureReason);
+  if (mlir::failed(nodeOptions))
+    return mlir::failure();
+  std::optional<llvm::ArrayRef<TileId>> availableTiles =
+      topology.getAvailableTileIds(cardId);
+  llvm::SmallVector<TopologyTileGroup, 128> groups =
+      deriveTopologyGroups(topology, cardId, *availableTiles);
+  StructuredDAGPlacementSearchDomain domain;
+  domain.placementGroupCount = groups.size();
+  domain.nodeOptions = std::move(*nodeOptions);
   return domain;
+}
+
+mlir::FailureOr<StructuredDAGPlacementClosure>
+buildStructuredDAGPlacementClosure(
+    const StructuredDAGAnalysis &dag, const TargetTopology &topology,
+    CardId cardId, llvm::ArrayRef<StructuredDAGNodePlacement> nodePlacements,
+    analysis::IREpoch epoch, std::string *failureReason,
+    StructuredDAGPlacementLegality *legality) {
+  if (failureReason)
+    failureReason->clear();
+  auto reportIndeterminate = [&](llvm::StringRef detail) {
+    if (legality) {
+      legality->status = analysis::ExactDemandStatus::IndeterminateFailure;
+      legality->detail = detail.str();
+    }
+  };
+  if (nodePlacements.size() != dag.getNodes().size()) {
+    setFailure(failureReason,
+               "structured-DAG placement closure requires every DAG node");
+    reportIndeterminate(
+        "structured-DAG placement closure requires every DAG node");
+    return mlir::failure();
+  }
+  std::optional<llvm::ArrayRef<TileId>> availableTiles =
+      topology.getAvailableTileIds(cardId);
+  if (!availableTiles || availableTiles->empty()) {
+    setFailure(failureReason,
+               "structured-DAG placement closure requires available Tiles");
+    reportIndeterminate(
+        "structured-DAG placement closure requires available Tiles");
+    return mlir::failure();
+  }
+
+  PartialPlacementState state;
+  for (auto [node, placement] :
+       llvm::zip_equal(dag.getNodes(), nodePlacements)) {
+    if (placement.node != node.id || placement.tiles.empty()) {
+      setFailure(failureReason,
+                 "structured-DAG placement closure has an invalid node "
+                 "option");
+      reportIndeterminate(
+          "structured-DAG placement closure has an invalid node option");
+      return mlir::failure();
+    }
+    state = extendState(dag, topology, cardId, state, placement);
+  }
+  llvm::SmallVector<StructuredDAGNodePlacement, 16> placements =
+      materializePlacements(state);
+  mlir::FailureOr<llvm::SmallVector<StructuredDAGObservablePlacement, 4>>
+      outputs = deriveObservablePlacements(dag, placements);
+  if (mlir::failed(outputs)) {
+    setFailure(failureReason,
+               "structured-DAG placement has inconsistent observable roots");
+    reportIndeterminate(
+        "structured-DAG placement has inconsistent observable roots");
+    return mlir::failure();
+  }
+
+  // Typed logical gate per edge followed by the canonical carrier. The
+  // carrier failure never deletes the placement.
+  StructuredDAGExactDemandQuery demandQuery(dag, epoch);
+  StructuredDAGEdgeStrategyPlan edgePlan;
+  bool carrierComplete = true;
+  for (const StructuredDAGEdge &edge : dag.getEdges()) {
+    const StructuredDAGNodePlacement &producer =
+        placements[edge.producer];
+    const StructuredDAGNodePlacement &consumer =
+        placements[edge.consumer];
+    std::string trialFailure;
+    mlir::FailureOr<analysis::LogicalShardTrial> trial = buildEdgeShardTrial(
+        dag, producer, consumer, epoch, &trialFailure);
+    if (mlir::failed(trial)) {
+      if (legality) {
+        legality->status = analysis::ExactDemandStatus::IndeterminateFailure;
+        legality->detail = std::move(trialFailure);
+      }
+      setFailure(failureReason, legality ? legality->detail
+                                         : "edge trial is indeterminate");
+      return mlir::failure();
+    }
+    analysis::ExactDemandResult demand = demandQuery.query(edge.id, *trial);
+    if (demand.status != analysis::ExactDemandStatus::Satisfied) {
+      if (legality) {
+        legality->status = demand.status;
+        legality->detail = std::move(demand.detail);
+      }
+      setFailure(failureReason,
+                 legality ? legality->detail
+                          : "structured-DAG placement edge demand is not "
+                            "provable");
+      return mlir::failure();
+    }
+    StructuredDAGEdgeDemandPlan demandPlan;
+    std::string carrierFailure;
+    if (mlir::succeeded(assembleStructuredDAGEdgeDemandPlan(
+            dag, edge, producer, consumer, *trial, demand, &demandPlan,
+            &carrierFailure))) {
+      mlir::FailureOr<StructuredDAGEdgeStrategyPlan> plan =
+          lowerStructuredDAGEdgeDemandPlanToCanonicalStrategies(
+              dag, demandPlan, &carrierFailure);
+      if (mlir::succeeded(plan)) {
+        if (plan->totalPeerBytes >
+            std::numeric_limits<uint64_t>::max() - edgePlan.totalPeerBytes) {
+          setFailure(failureReason,
+                     "structured-DAG placement peer bytes overflow");
+          reportIndeterminate(
+              "structured-DAG placement peer bytes overflow");
+          return mlir::failure();
+        }
+        edgePlan.totalPeerBytes += plan->totalPeerBytes;
+        edgePlan.strategies.append(plan->strategies.begin(),
+                                   plan->strategies.end());
+      } else {
+        carrierComplete = false;
+      }
+    } else {
+      carrierComplete = false;
+    }
+  }
+
+  StructuredDAGPlacementClosure closure;
+  closure.nodePlacements = std::move(placements);
+  closure.outputPlacements = std::move(*outputs);
+  closure.edgePlan = std::move(edgePlan);
+  closure.edgeCarrierComplete = carrierComplete;
+  if (legality) {
+    legality->status = analysis::ExactDemandStatus::Satisfied;
+    legality->detail.clear();
+  }
+  return closure;
 }
 
 class StructuredDAGPlacementEvaluator::Impl {

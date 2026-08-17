@@ -489,9 +489,10 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
   // The traversal order is [chunk coordinates..., in-tile coordinates...].
   // It is identical to the source reduction's lexicographic order only when
   // every reduction axis preceding the last split axis has a unit in-tile
-  // extent. A sole split of the first reduction axis is therefore exact; a
-  // rectangular split of two non-unit axes requires source-authorized
-  // floating-point reassociation.
+  // extent. Floating-point reassociation is a supported numeric
+  // transformation (the typed comparator owns acceptance, no fast-math flag
+  // is consumed); the preserved-order fact still gates integer
+  // overflow-flag combinations below.
   bool preservesSequentialReductionOrder = true;
   const unsigned lastSplitOrdinal = splitOrdinals.back();
   for (unsigned ordinal = 0; ordinal < lastSplitOrdinal; ++ordinal) {

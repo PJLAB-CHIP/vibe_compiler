@@ -242,7 +242,8 @@ Pipeline position:
   baseline TileRegion恰有一个structured compute root和必要non-root support closure；跨root shaped dependency显式DDR；
   region-local和最近合法isolated-ancestor probe均闭合，exact rejection携带direct typed causal witness；完整CardModule materialization与
   CardExecutable compilation各一次；初始完整tile超SPM的正例会重新推导完整workset并确定性缩到合法tile后通过package/no-card，
-  最小合法tile超限的反例返回typed capacity failure；baseline diagnostics/statistics不再冒充candidate proposal；fresh
+  浮点reduction轴自由重结合后每个demand都可缩到最小合法vector，故「最小合法tile超限」的浮点capacity负例在当前lowering下不可构造，
+  typed capacity/unsupported terminal保留为fail-closed防御出口；baseline diagnostics/statistics不再冒充candidate proposal；fresh
   source-to-package、oracle/no-card、digest、计数和结构正负测试通过。
 ```
 
@@ -262,7 +263,9 @@ controller flags。materializer只apply这些已选事实，不得根据同Tile 
 ### 功能合法化与SPM收缩
 
 baseline以每个root的完整local iterator extent作为第一个temporal trial，并从structured iterator、indexing map、tail、target
-vector/alignment、source numeric/reassociation、reduction order和最小合法粒度形成有限breakpoint lattice。每个trial必须按
+vector/alignment、source numeric/reassociation、最小合法粒度形成有限breakpoint lattice；浮点reduction iterator与parallel
+iterator共享同一breakpoint lattice（自由重结合，typed comparator验收，不消费fast-math flag），整数no-wrap/overflow语义
+保持barrier。每个trial必须按
 当前tile重新推导全部operand slice、stride/dilation halo、result/init/accumulator、temporary、materializing copy、movement
 staging、alignment/bank和actual lifetime，再由同一scoped exact probe判断fit；不能只缩output shape或沿用上一trial的
 workset/lifetime。
@@ -341,7 +344,9 @@ evaluator和grouping调用计数为零，baseline work不写入candidate proposa
 
 定向功能测试还必须从没有selected assignment的正常TensorProgram进入：至少覆盖初始完整tile因operand/halo/temporary/
 alignment/lifetime真实占用而溢出、经过多个合法breakpoint后fit并完成source-to-package/no-card；覆盖multi-axis、tail和最小
-合法粒度；negative case只有遍历到最小合法vector后才返回direct typed capacity failure。测试同时断言每次trial重新计算
+合法粒度。浮点reduction轴自由重结合后每个demand都可沿其breakpoint lattice缩到最小合法vector，「最小合法tile超限」的
+浮点capacity negative case在当前lowering下不可构造（原反例程序还落在placement domain之外：纯reduction标量输出没有
+parallel轴，placement domain本就不表达）；typed capacity/unsupported terminal保留为fail-closed防御出口。测试同时断言每次trial重新计算
 workset/lifetime、没有beam/cap/budget截断fallback，且这些trial不进入candidate统计。
 
 ## Q50.A：Placement-Demand Boundary Repair
@@ -509,6 +514,113 @@ Q50.G/H后续扩展的physical alternatives；其失败不得回写Q50.A cache�
 
 Q50.A completion gate已闭合并在`tasks/progress.md`标为`done`。Q50.G/H继续扩展完整physical carrier alternatives；
 这些后续性能/representation能力不重建或改判本节的logical proof。
+
+## Q49.P 施工步骤（2026-08-17 建立）
+
+Q49.P 的 contract 见上节；本节只拆解施工步骤、依赖 checkpoint 和每个步骤的验证。步骤按依赖顺序编号，
+P1–P2 是两个既有失败的根因修复（gate case），P3–P6 是契约隔离收口，P7 是 fresh 端到端验证。
+
+现状基线（2026-08-17 HEAD，`build/q55-current-fresh`）：
+`NoneJointlyRefinesExplicitProducerStageAndConsumerDemand` 已复现：2048 breakpoint 上全部 region probe 返回
+`requires-function-scope`（`UnsupportedLifetime`），controller 计数后跳过视同 fit，随后唯一完整 gate 以
+`spm-allocation` 失败。CROSS 挂起按 `memory/bugs.md` 记录复现（`validateSelectedTileLayouts` 每 op×每 relation
+从零递归 `collectStorageRoots`，无 memo）。
+
+### P1 RequiresFunctionScope escalation（probe/final 一致性）
+
+- 目标：region-scoped probe 返回 `RequiresFunctionScope` 时不是 fit，也不可跳过；controller 提升到最近合法
+  `IsolatedFromAbove` ancestor（该 Tile 的 FuncOp）做函数级 probe，并以其 typed verdict 作为该 region 的结论。
+- 实现：
+  1. 新增函数级 capacity probe `evaluateTileFunctionSPMCapacity`（`TileRegionSPMCapacityEvaluation.h/.cpp`）：
+     输入该 Tile FuncOp（clone 到 scratch，block args 替换 inputs，同 `TileRegionEvaluationScope` 模式），
+     运行与最终 `planTileMemory` 相同的 `instr-memory-planning-preparation` named pipeline 和
+     `assign-spm-offsets` capacity 检查，返回 Fits / proven CapacityExceeded（含 `SPMMemoryPlanningFailure`
+     evidence）/ unsupported lifetime / indeterminate。命名、失败分类与 `TileRegionSPMCapacityEvaluation` 对齐。
+     该实现与 Q50.0 最终 planning 共用同一 pipeline/checker，probe 与 final 消费同一 demand 集合。
+  2. `evaluateTileRegionSPMCapacity` 的 `RequiresFunctionScope` 不再由 controller 计数跳过：controller 对该
+     region 的 owner FuncOp 调用函数级 probe，`Fits` 记为 fit，`CapacityExceeded` 进入现有 causal refinement
+     路径（evidence 经同一 `makeTileSPMCapacityFailure`/materializationRelations 转换），其余为
+     indeterminate 并中止 baseline（typed failure），不得跳过。
+  3. 诊断保留 region-scope 与 function-scope 两层 outcome；`baselineRegionSPMChecksRequiringFunctionScope`
+     只作计数，新增 `baselineFunctionScopedSPMCapacityChecks`。
+- 验证：`NoneJointlyRefines...` 由新路径 fresh 通过（一次 refinement 后所有 probe fit、唯一完整 gate accepted、
+  `cardModuleCompilationInvocations==1`）；原有 `baselineCardModuleMaterializations==2` 类断言按新契约更新。
+
+### P2 CROSS 挂起修复（storage-root memo）
+
+- 目标：`validateSelectedTileLayouts` 链路在 CROSS（16 destination × 16 owner peer fragment）上不出现
+  O(ops×strategies×walk) 分钟级放大。
+- 实现：`StructuredBufferRelations` 增加 query-local `StorageRootMemo`（`DenseMap<Value, DenseSet<Value>>`，
+  同一 IR epoch 内只读），`shareStructuredBufferStorage`/`collectStructuredNodesUsedByOperation`/
+  `operationUsesStructuredNode` 增加带 memo 的重载；`validateSelectedTileLayouts` 每 Tile root 构造一个 memo
+  并贯穿调用链。旧无 memo 入口保留给一次性调用点。
+- 验证：CROSS lit case 在 wall-time 上限内通过（目标秒级）；`WaferUnitTests --gtest_filter=...` 相关
+  layout/fusion 测试不回归；fresh 主树构建通过。
+
+### P3 scoped probe 不再构造 card-shaped/no-work-Tile wrapper
+
+- 目标：tile-scoped probe 只物化被探 Tile 的 FuncOp，不创建其它 Tile 的 no-work entry，也不创建
+  CardModule/TileModule shell。
+- 实现：`WaferTensorProgramToCardModule` 增加只物化单 Tile FuncOp 的入口（复用 `lowerTensorProgramToCardModuleImpl`
+  的 per-Tile lowering，输出 minimal module + 该 Tile 的 relations）；controller 的 scoped probe 改走该入口，
+  region 收集从该 FuncOp walk，删除“跳过非探 Tile module”逻辑。完整 CardModule 路径不变，
+  Tile domain 完整性检查仍只作用于完整 materialization。
+- 验证：定向单测断言 scoped probe 输出无 no-work TileModule；`baselineCardModuleMaterializations` 与
+  `baselineScopedCardModuleMaterializations` 语义分离；CROSS/CHAIN/GEMM 及现有 baseline 单测通过。
+
+### P4 一 root 一 region 结构合同
+
+- 目标：每个 baseline TileRegion 恰有一个 structured compute root 和必要 non-root support closure；
+  同 Tile 多 root 形成多个顺序 region；跨 root shaped dependency 显式 DDR。
+- 实现：完整 CardModule materialization 后做结构验证：每 region 经 materializationRelations 收集 distinct
+  structured root（现有 `collectStructuredNodesUsedByOperation` + 显式 structured DAG 节点集合），
+  多 root 即 typed failure 并命名两个 root；同 root lower 出多 compute op 仍算一 root（按 node id 去重）。
+  若当前 `IndependentDDRStages` materialization 在已有 case 上不满足，则按 root 切分 stage 使每 region 一 root。
+- 验证：新增结构单测（同 Tile 多独立 root → 多 region；显式 structured producer 不伪装成 support closure；
+  单 root multi-op 不误判多 root）；现有五类 production gate 与 CROSS/CHAIN/GEMM 通过。
+
+### P5 direct-witness-only capacity attribution
+
+- 目标：capacity refinement 的 causal coordinate 只来自 typed conflict certificate 和 materializationRelations，
+  不做同 shape/type 的歧义 producer 扩展，不把同 region 其余 root 并入 refinement。
+- 实现：删除 `synthesizeDeterministicBaseline` 中 equal-shape producer 扩展（`StructuredDAGEdgeStrategyPlan`
+  段落的 shape 匹配）与 region-wide structuredNodes 组合；demand 无 typed node witness 时返回
+  indeterminate（typed failure），不得按 shape/type 猜测。P4 的 one-root-per-region 保证 region 内唯一
+  refinement root 即当前 single root。
+- 验证：equal-shape fanin 定向测试证明只按 direct witness 选择 refinement 目标；`NoneJointlyRefines...` 仍通过。
+
+### P6 baseline 不消费 search state/candidate/evaluator/statistics
+
+- 目标：baseline controller 只消费 policy-free placement-option 推导、Q50.A exact-demand query 和 canonical
+  carrier；不构造 `StructuredDAGPlacementSearchDomain`、`StructuredDAGPlacementEvaluator`、stable ordinal、
+  proposal/transition 统计或 selected evaluation metrics；交给 materializer 的是窄 resolved baseline
+  assignment（placement、singleton region boundary、完整 temporal vector、canonical representation/
+  movement/buffer/order/completion），不含 score/ordinal/transition history。
+- 实现：
+  1. 从 `deriveStructuredDAGPlacementSearchDomain` 抽出 policy-free 的 per-node placement-option 推导
+     （`StructuredDAGPlacementEnumeration`），search domain 保持原 API；baseline 改调 policy-free 入口。
+  2. `deriveBaseline`/`deriveDeterministicBaseline` 改为直接构造 `TileMapping`（nodePlacements +
+     outputPlacements + canonical edge strategies/layouts + 完整 temporal vector + materializationMode +
+     bufferCount=1）的窄 assignment 类型，不再经 `TileExecutionCandidate`（stableOrdinal、evaluation、
+     transition、feedbackRootOrdinal）与 `StructuredDAGPlacementEvaluator`；legality 由 Q50.A edge gate
+     （现有 compatibility 表）+ 全 assignment 的 demand plan/canonical carrier 闭合。
+  3. baseline 路径不再写 candidate proposal/fusion/layout/buffer 统计和 selected evaluation metrics；
+     diagnostics 以 baseline 专用行报告（`card-executable-selection` 行移除 stable ordinal/evaluation 字段或
+     由 baseline 专用行替代），测试断言 search 统计全零。
+- 验证：grep/调用计数证明 baseline 调用链不含 search domain/evaluator；`candidateProposals`、
+  `materializedCandidates`、`acceptedCandidates`、`selectedStableOrdinal` 等保持 0；CROSS/CHAIN/GEMM、
+  `SearchUsesFiniteTemporalTraversalWhenOneWaveExceedsSPM`（契约更新后）与五类 production gate 通过；
+  主树、board runtime、SystemC 三棵树 fresh 构建通过。
+
+### P7 fresh 端到端验证与收口
+
+- 更新 `tasks/progress.md` Q49.P 行和本节实现结论；`memory/bugs.md` 两条既有失败标修复；
+  `memory/general_dev.md` 沉淀 probe/memo 经验。
+- fresh 验证：受影响 unit（CardExecutableSynthesis、TileRegionSPMCapacity 相关）、默认 lit gate、
+  Tools/Runtime lit（带 wall-time 上限）、source-to-package/no-card（含 overfull-to-fit、prefill/decode/Llama
+  代表输入；minimum-tile 负例按上节结论不可构造，已删除并记录）、IR/package digest 稳定性与 work count（完整
+  CardModule materialization 与 CardExecutable compilation 各一次）。
+- 提交本批改动（作者规范见 `CLAUDE.md`）。
 
 ## Q51.Core：Search Control Kernel
 
@@ -773,10 +885,10 @@ layout、buffer或implementation facts的breakpoint是对这些typed assignment�
 - `ceilDiv` wave 数、tail 和 divisor；
 - native issued geometry、padding 和 physical work；
 - DDR/SPM/NoC transaction、descriptor 和 layout footprint；
-- implementation geometry、reduction order 和 buffer-count feasibility；
+- implementation geometry、reduction split 和 buffer-count feasibility；
 - actual region probe 产生的 scoped infeasible/feasible boundary。
 
-只有能证明生成相同actual traversal、reuse、lifetime、tail和numeric reduction order的permutation才能canonicalize。Q50.E
+只有能证明生成相同actual traversal、reuse、lifetime、tail且整数wrap/overflow语义的reduction order一致的permutation才能canonicalize；浮点reduction reassociation是supported numeric variant，不因order差异阻止canonicalize。Q50.E
 不在内部选择load/receive hoist或retention winner；Q50.H在已选wave-loop order下生成这些movement alternatives。
 
 容量失败可在其它轴固定的 branch 内产生二分子状态，再补入区间内所有非二次幂 breakpoint；二分只用于发现 breakpoint，

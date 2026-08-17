@@ -7,6 +7,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TopologyIds.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -155,6 +156,15 @@ mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles = {},
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr);
+
+/// Gives every TileRegion of one Tile entry exactly one structured compute
+/// root by repeatedly splitting multi-root regions at structured root
+/// boundaries. The deterministic baseline (IndependentDDRStages) is the only
+/// caller; search-owned region grouping is never rewritten here. Relations
+/// are retargeted onto the split regions in place.
+mlir::LogicalResult splitStructuredRootBoundaries(
+    mlir::func::FuncOp entry, StructuredMaterializationRelations &relations,
+    std::string *failureReason = nullptr);
 
 } // namespace wafer
 

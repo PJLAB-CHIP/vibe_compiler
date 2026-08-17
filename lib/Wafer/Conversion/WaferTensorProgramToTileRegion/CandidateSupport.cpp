@@ -283,16 +283,12 @@ verifyReductionSplitNumericLegality(mlir::linalg::LinalgOp root,
   }
 
   mlir::Operation *combiner = combinerOps.front();
-  if (auto addf = mlir::dyn_cast<mlir::arith::AddFOp>(combiner)) {
-    if (preservesSequentialReductionOrder ||
-        static_cast<bool>(addf.getFastmath() &
-                          mlir::arith::FastMathFlags::reassoc))
-      return mlir::success();
-    setFailureReason(
-        failureReason,
-        "candidate reduction split changes floating-point addition order "
-        "without reassoc fastmath semantics");
-    return mlir::failure();
+  if (mlir::isa<mlir::arith::AddFOp>(combiner)) {
+    // Floating-point reassociation (including reduction split and tree) is a
+    // supported numeric transformation per the architecture numeric policy:
+    // acceptance is owned by the typed comparator, and no fast-math flag is
+    // consumed as a semantics switch.
+    return mlir::success();
   }
   if (auto addi = mlir::dyn_cast<mlir::arith::AddIOp>(combiner)) {
     if (preservesSequentialReductionOrder ||

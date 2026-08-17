@@ -1069,14 +1069,19 @@ mlir::LogicalResult wafer::rebuildRequiredNCCJoins(mlir::ModuleOp module) {
 }
 
 mlir::LogicalResult
-wafer::rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion) {
+wafer::rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion,
+                                                    mlir::IRMapping *valueRemap) {
   if (!tileRegion)
     return mlir::failure();
-  mlir::OwningOpRef<TileRegionOp> transaction = tileRegion.clone();
+  mlir::IRMapping mapping;
+  mlir::OwningOpRef<TileRegionOp> transaction =
+      mlir::cast<TileRegionOp>(tileRegion->clone(mapping));
   eraseDerivedNCCJoins(transaction->getOperation());
   if (mlir::failed(RequiredNCCJoinPlacement().run(*transaction)))
     return mlir::failure();
   tileRegion.getBody().takeBody(transaction->getBody());
+  if (valueRemap)
+    *valueRemap = mapping;
   return mlir::success();
 }
 

@@ -489,7 +489,7 @@ module {
       } ins(%input : tensor<1x10x11xf16>)
         outs(%init : tensor<1xf16>) {
       ^bb0(%value: f16, %acc: f16):
-        %sum = arith.addf %value, %acc fastmath<reassoc> : f16
+        %sum = arith.addf %value, %acc  : f16
         linalg.yield %sum : f16
     } -> tensor<1xf16>
     return %result : tensor<1xf16>
@@ -500,6 +500,10 @@ module {
   return ParsedProgram{std::move(context), std::move(module)};
 }
 
+// The broadcast source must be fully resident on every Tile for every
+// temporal breakpoint: 1536x1024xf16 is 3 MiB, above the fixed SPM capacity,
+// so even the minimum legal tile proves a capacity overflow. This is the
+// minimum-tile negative case of the deterministic baseline.
 static ParsedProgram parseBroadcastProgram() {
   mlir::DialectRegistry registry;
   wafer::compiler::detail::registerCompilationDialects(registry);
@@ -876,7 +880,13 @@ static void expectDemandProgramCompletesExecutableGate(
   EXPECT_EQ(statistics.demandAbortStatus,
             wafer::analysis::ExactDemandStatus::Satisfied);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
-  EXPECT_EQ(statistics.acceptedCandidates, 1u);
+  EXPECT_EQ(statistics.acceptedCandidates, 0u);
+  // Baseline structural contract: every TileRegion carries exactly one
+  // structured compute root; an in-region operand demand of a foreign node
+  // never counts as a second root.
+  EXPECT_EQ(diagnosticsText.find("multiple structured compute roots"),
+            std::string::npos)
+      << diagnosticsText;
 }
 
 TEST(CardExecutableSynthesisTest,
@@ -1061,17 +1071,19 @@ TEST(CardExecutableSynthesisTest,
 
   EXPECT_EQ(statistics.structuredNodeCount, 1u);
   EXPECT_EQ(statistics.structuredEdgeCount, 0u);
-  EXPECT_EQ(statistics.candidateProposals, 1u);
+  // The deterministic baseline never constructs search candidates and never
+  // writes candidate proposal/selection statistics.
+  EXPECT_EQ(statistics.candidateProposals, 0u);
   EXPECT_EQ(statistics.cheapPrunedCandidates, 0u);
   EXPECT_EQ(statistics.shortlistedCandidates, 0u);
-  EXPECT_EQ(statistics.materializedCandidates, 1u);
+  EXPECT_EQ(statistics.materializedCandidates, 0u);
   EXPECT_EQ(statistics.materializationRejections, 0u);
-  EXPECT_EQ(statistics.acceptedCandidates, 1u);
-  EXPECT_EQ(statistics.plannedCandidates, 1u);
+  EXPECT_EQ(statistics.acceptedCandidates, 0u);
+  EXPECT_EQ(statistics.plannedCandidates, 0u);
   EXPECT_EQ(statistics.schedulePlanRejections, 0u);
-  EXPECT_EQ(statistics.selectedOutputMappingCount, 1u);
-  EXPECT_EQ(statistics.selectedUniqueActiveTileCount, 16u);
-  EXPECT_EQ(statistics.selectedParallelComponentCount, 1u);
+  EXPECT_EQ(statistics.selectedOutputMappingCount, 0u);
+  EXPECT_EQ(statistics.selectedUniqueActiveTileCount, 0u);
+  EXPECT_EQ(statistics.selectedParallelComponentCount, 0u);
   EXPECT_EQ(statistics.exactGates.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_EQ(statistics.exactGates.targetLoweringVerificationInvocations, 1u);
@@ -1097,8 +1109,7 @@ TEST(CardExecutableSynthesisTest,
                            "candidate_family=0"),
       std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find(
-                "selected baseline reuses exact-admitted executable"),
+  EXPECT_NE(diagnosticsText.find("card-executable-baseline-admission"),
             std::string::npos)
       << diagnosticsText;
 }
@@ -1120,10 +1131,12 @@ TEST(CardExecutableSynthesisTest,
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
   EXPECT_EQ(statistics.structuredNodeCount, 2u);
   EXPECT_EQ(statistics.structuredEdgeCount, 0u);
-  EXPECT_EQ(statistics.materializedCandidates, 1u);
+  EXPECT_EQ(statistics.materializedCandidates, 0u);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_EQ(statistics.selectedActualFusedLogicalEdges, 0u);
-  EXPECT_EQ(diagnosticsText.find("multiple structured compute owners"),
+  // Two independent structured roots on one Tile form multiple sequential
+  // regions: the shared Tile (Tile 0) carries one region per root.
+  EXPECT_EQ(diagnosticsText.find("multiple structured compute roots"),
             std::string::npos)
       << diagnosticsText;
 }
@@ -1561,7 +1574,7 @@ TEST(CardExecutableSynthesisTest,
       wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
-  EXPECT_EQ(statistics.materializedCandidates, 1u);
+  EXPECT_EQ(statistics.materializedCandidates, 0u);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_GT(statistics.allocationFeedbackTransitions, 0u);
   EXPECT_NE(diagnosticsText.find("card-executable-baseline-temporal-refinement"),
@@ -1593,7 +1606,7 @@ TEST(CardExecutableSynthesisTest,
   // exactly once. It never constructs the search placement enumeration or
   // shortlist.
   EXPECT_EQ(baselineStatistics.shortlistedCandidates, 0u);
-  EXPECT_EQ(baselineStatistics.materializedCandidates, 1u);
+  EXPECT_EQ(baselineStatistics.materializedCandidates, 0u);
   EXPECT_EQ(baselineStatistics.materializationRejections, 0u);
   EXPECT_EQ(baselineStatistics.baselineCardModuleMaterializations, 2u);
   EXPECT_GT(baselineStatistics.baselineScopedCardModuleMaterializations, 0u);
@@ -1630,9 +1643,9 @@ TEST(CardExecutableSynthesisTest,
       baselineDiagnosticsText.find("tile-execution-allocation-feedback-joint"),
       std::string::npos)
       << baselineDiagnosticsText;
-  EXPECT_EQ(baselineStatistics.acceptedCandidates, 1u);
+  EXPECT_EQ(baselineStatistics.acceptedCandidates, 0u);
   EXPECT_EQ(baselineStatistics.selectedExecutableRematerializations, 0u);
-  EXPECT_GT(baselineStatistics.selectedTemporalWaveLowerBound, 1u);
+  EXPECT_EQ(baselineStatistics.selectedTemporalWaveLowerBound, 0u);
   EXPECT_LE(baselineStatistics.selectedPeakAlignedResidencyEstimate,
             3080192u - 65536u);
   for (llvm::StringRef tileDataflowIR : baseline->tileDataflowIRTrace) {

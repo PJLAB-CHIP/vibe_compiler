@@ -1,6 +1,6 @@
 //===- TileRegionSPMCapacityEvaluationTest.cpp ------------------------------===//
 
-#include "../../lib/Wafer/Compiler/TileRegionSPMCapacityEvaluation.h"
+#include "../../lib/Wafer/Compiler/SPMCapacityEvaluation.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
@@ -91,8 +91,9 @@ TEST_F(TileRegionSPMCapacityEvaluationTest,
       rejected.phase,
       wafer::compiler::detail::TileRegionSPMCapacityPhase::StaticPacking);
   EXPECT_EQ(rejected.getPhaseDiagnosticLabel(), "static-spm-packing");
-  EXPECT_EQ(rejected.planningFailure.kind,
+  EXPECT_EQ(rejected.planningFailure.spmPlanningFailureKind,
             wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
+  EXPECT_TRUE(rejected.planningFailure.spmCapacityOverflow);
   EXPECT_NE(diagnosticText.find("outcome=capacity-exceeded"),
             std::string::npos);
 }
@@ -153,10 +154,61 @@ module {
   EXPECT_EQ(
       result.status,
       wafer::compiler::detail::TileRegionSPMCapacityStatus::RequiresFunctionScope);
-  EXPECT_EQ(result.planningFailure.kind,
+  EXPECT_EQ(result.planningFailure.spmPlanningFailureKind,
             wafer::SPMMemoryPlanningFailureKind::UnsupportedLifetime);
   EXPECT_NE(diagnosticText.find("outcome=requires-function-scope"),
             std::string::npos);
+}
+
+TEST_F(TileRegionSPMCapacityEvaluationTest,
+       FunctionScopedProbeReplaysFinalGateSequence) {
+  auto fitting = parse(/*elements=*/16);
+  auto oversized = parse(/*elements=*/2000000);
+  ASSERT_TRUE(fitting);
+  ASSERT_TRUE(oversized);
+  mlir::func::FuncOp fittingFunction;
+  mlir::func::FuncOp oversizedFunction;
+  fitting->walk([&](mlir::func::FuncOp function) {
+    if (!function.isExternal())
+      fittingFunction = function;
+  });
+  oversized->walk([&](mlir::func::FuncOp function) {
+    if (!function.isExternal())
+      oversizedFunction = function;
+  });
+  ASSERT_TRUE(fittingFunction);
+  ASSERT_TRUE(oversizedFunction);
+
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::StructuredMaterializationRelations relations;
+  auto fit = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
+      fittingFunction, relations, diagnostics);
+  auto rejected = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
+      oversizedFunction, relations, diagnostics);
+  diagnostics.flush();
+
+  EXPECT_TRUE(fit.fits());
+  EXPECT_TRUE(rejected.capacityExceeded());
+  EXPECT_EQ(rejected.getPhaseDiagnosticLabel(), "static-spm-packing");
+  EXPECT_EQ(rejected.planningFailure.spmPlanningFailureKind,
+            wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
+  EXPECT_NE(diagnosticText.find("tile-function-spm-capacity outcome=capacity-exceeded"),
+            std::string::npos);
+}
+
+TEST_F(TileRegionSPMCapacityEvaluationTest,
+       FunctionScopedProbeRejectsMissingFunction) {
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::StructuredMaterializationRelations relations;
+  auto result = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
+      mlir::func::FuncOp{}, relations, diagnostics);
+  EXPECT_EQ(result.status,
+            wafer::compiler::detail::TileFunctionSPMCapacityStatus::AnalysisFailure);
+  EXPECT_EQ(result.phase,
+            wafer::compiler::detail::TileFunctionSPMCapacityPhase::InputValidation);
+  EXPECT_EQ(result.getPhaseDiagnosticLabel(), "input-validation");
 }
 
 TEST_F(TileRegionSPMCapacityEvaluationTest,

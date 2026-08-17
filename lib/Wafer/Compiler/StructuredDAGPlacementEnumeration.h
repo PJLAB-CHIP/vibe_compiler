@@ -83,11 +83,43 @@ struct StructuredDAGPlacementSearchDomain {
   uint64_t placementGroupCount = 0;
 };
 
+/// Policy-free per-node placement-option derivation from structured
+/// iterator semantics and the verified topology. Every node owns every legal
+/// static iterator-axis/connected-rectangle option. The deterministic
+/// baseline consumes the same option domain as the search; this entry
+/// carries no search state, ordering or proposal mechanics.
+mlir::FailureOr<
+    llvm::SmallVector<llvm::SmallVector<StructuredDAGNodePlacement, 32>, 16>>
+deriveStructuredDAGNodePlacementOptions(const StructuredDAGAnalysis &dag,
+                                        const TargetTopology &topology,
+                                        CardId cardId,
+                                        std::string *failureReason = nullptr);
+
 mlir::FailureOr<StructuredDAGPlacementSearchDomain>
 deriveStructuredDAGPlacementSearchDomain(const StructuredDAGAnalysis &dag,
                                     const TargetTopology &topology,
                                     CardId cardId,
                                     std::string *failureReason = nullptr);
+
+/// Policy-free closure of one complete node-placement assignment: the exact
+/// demand gate over every edge and the canonical edge strategy carrier, plus
+/// the observable output placements. It builds no schedule, movement,
+/// residency, resource calendar, or candidate metrics. `legality` receives
+/// the typed verdict on failure; carrier incompleteness never fails the
+/// closure and never changes the logical verdict.
+struct StructuredDAGPlacementClosure {
+  llvm::SmallVector<StructuredDAGNodePlacement, 16> nodePlacements;
+  llvm::SmallVector<StructuredDAGObservablePlacement, 4> outputPlacements;
+  StructuredDAGEdgeStrategyPlan edgePlan;
+  bool edgeCarrierComplete = true;
+};
+
+mlir::FailureOr<StructuredDAGPlacementClosure>
+buildStructuredDAGPlacementClosure(
+    const StructuredDAGAnalysis &dag, const TargetTopology &topology,
+    CardId cardId, llvm::ArrayRef<StructuredDAGNodePlacement> nodePlacements,
+    analysis::IREpoch epoch, std::string *failureReason = nullptr,
+    StructuredDAGPlacementLegality *legality = nullptr);
 
 /// Query-local evaluator reused by factorized search. It memoizes only the
 /// placement-independent exact SSA/index relation of each edge; every concrete

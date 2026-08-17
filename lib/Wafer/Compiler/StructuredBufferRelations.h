@@ -8,6 +8,8 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -55,9 +57,28 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
 void retainCurrentStructuredBufferRelations(
     mlir::Operation *root, StructuredMaterializationRelations &relations);
 
+/// Query-local memo of per-value storage roots. Values are only valid within
+/// one unchanged IR epoch; a caller constructs one memo per validation root
+/// and threads it through every buffer query in that scope, turning
+/// per-op×per-relation storage-root walks into amortized O(1) lookups.
+/// The per-value sets are heap-owned so the returned references stay valid
+/// across later map rehashes.
+class StorageRootMemo {
+public:
+  const llvm::DenseSet<mlir::Value> &getStorageRoots(mlir::Value value);
+
+private:
+  llvm::DenseMap<mlir::Value, std::unique_ptr<llvm::DenseSet<mlir::Value>>>
+      memo;
+};
+
 /// Returns true when both values reach at least one common storage root through
 /// typed view, TileRegion and structured-control-flow forwarding.
 bool shareStructuredBufferStorage(mlir::Value lhs, mlir::Value rhs);
+
+/// Memoized variant; the memo must cover the same unchanged IR epoch.
+bool shareStructuredBufferStorage(mlir::Value lhs, mlir::Value rhs,
+                                  StorageRootMemo &memo);
 
 /// Returns the sorted unique DAG node ids whose current materialized buffers
 /// are read, written or forwarded by `operation`.
@@ -65,9 +86,19 @@ llvm::SmallVector<uint32_t, 4> collectStructuredNodesUsedByOperation(
     mlir::Operation *operation,
     const StructuredMaterializationRelations &relations);
 
+/// Memoized variant; the memo must cover the same unchanged IR epoch.
+llvm::SmallVector<uint32_t, 4> collectStructuredNodesUsedByOperation(
+    mlir::Operation *operation,
+    const StructuredMaterializationRelations &relations, StorageRootMemo &memo);
+
 bool operationUsesStructuredNode(
     mlir::Operation *operation, uint32_t structuredNodeId,
     const StructuredMaterializationRelations &relations);
+
+/// Memoized variant; the memo must cover the same unchanged IR epoch.
+bool operationUsesStructuredNode(
+    mlir::Operation *operation, uint32_t structuredNodeId,
+    const StructuredMaterializationRelations &relations, StorageRootMemo &memo);
 
 } // namespace wafer::compiler::detail
 
