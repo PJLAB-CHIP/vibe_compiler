@@ -130,8 +130,9 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   legality bool或no-good；
 - 对同一logical trial切换dense/strided/multi-piece carrier能力、layout或route可用性，exact demand与logical outcome必须
   extensionally相同；physical分解必须回证pieces union等于原set，carrier失败只拒绝对应representation/movement assignment；
-- exact-demand cache改变IR epoch、consumer domain、producer ownership或partition/reduction/replication role必须失效；任何窄
-  cache key都要有extensional equivalence proof，不能以当前单轴fixture观察结果代签；
+- exact-demand cache跨immutable borrow、nested structural snapshot变化、consumer domain、producer ownership或
+  partition/reduction/replication role变化时必须失效；`IREpoch`只拒绝跨borrow trial，不作为mutation detector或semantic key。
+  任何窄cache key都要有extensional equivalence proof，不能以当前单轴fixture观察结果代签；
 - serial/parallel proposal evaluation得到相同admitted set、winner和package digest；
 - wall/RSS是回归证据，不设任意60秒硬gate；
 - beam、candidate cap、随机启发式或其它会损失完整性/最优性的策略，只能在实际负载profiling后作为显式trade-off启用，
@@ -334,10 +335,13 @@ current target容量、target-model能力或host预算不足，必须按stage报
    probe缺少因果坐标时必须deferred，资源耗尽不得当作不可行；pipeline event structure形成后必须使旧calendar失效并
    重入event/resource schedule，由新assignment证明实际overlap。
    每项都需current接入点、actual-IR witness和实际执行的正负测试；旧owner删除不能代替能力迁移。
-4. Q51.Core：直接复用Q49.P accepted baseline executable/actual cost作为incumbent，不经search carrier重建；independent
-   reference enumerator与production flat exhaustive runner、global ledger、budget与actual-probe seam闭合；Q51中两层oracle与`search` winner一致，全部联合维度实际参与选择，late exact failure回到同一
-   candidate set。selected IR必须有共享TileRegion，并以coupled traversal或明确retained SSA、tile-sized intermediate及无中间
-   DDR round-trip证明有效融合；group字段不能代签。
+4. Q51.Core：直接复用Q49.P accepted baseline executable/actual cost作为session-level incumbent，不经search carrier重建，
+   也不把baseline choices当未来轴default；Core只以独立finite state-graph model闭合typed transition apply、deterministic
+   frontier、stable dedup、global ledger/budget、evaluation routing和coverage/bound evidence。每轴independent reference
+   enumerator随Q50.S/B–K交付，通用actual-region probe归Q50.F。Core checkpoint原子接管public frontier、actual comparison和
+   winner control，既有bounded generation只作显式lossy typed proposal；production flat exhaustive runner、全部联合维度、
+   exact domain和过渡proposal清理由Q51闭合。late exact failure回到同一candidate set，selected IR必须有共享TileRegion，并以
+   coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。
 5. Q52：generic/HF/Llama representative load的work、wall、RSS和热点fresh记录；基于实测引入的优化在小图oracle上
    不改变最优结果，代表负载不劣于同源`none`，没有固定shape/tile/fusion/buffer shortcut。
 6. Q60先把framework adapter与pre-exported portable StableHLO接入同一product source contract；Q53的generic DAG与

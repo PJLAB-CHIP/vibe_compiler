@@ -67,8 +67,11 @@ accepted executable的baseline deterministic feasibility legalization、single-r
 最窄scope probe、typed causal witness、整图物化与search-policy隔离；Q50.S把算法等价改写物化为actual `TensorProgram`；
 Q50.B–Q50.K逐项接入
 spatial、TileRegion/temporal/fusion、physical representation/movement、buffer/order/completion和条件式stage pipeline选择；
-Q51.Core直接复用Q49.P accepted baseline作为incumbent后建立唯一search owner，Q51随后闭合联合选择，Q52按实际负载优化
-scalability，Q53形成production
+Q51.Core直接复用Q49.P accepted baseline作为session-level incumbent后，只建立typed assignment/transition、deterministic
+frontier、ledger/budget和evaluation/result evidence的search control kernel，并原子接管public `search`的winner control；既有
+bounded generation只作为显式lossy typed proposal source保全待迁移能力。Core不预声明未来轴、不拥有Q50.F actual probe，也不以
+fixture签发真实domain完整性。Q50.S/B–K逐轴补齐mechanism与独立reference oracle，Q51再以full actual oracle闭合联合选择并删除
+有损过渡proposal，Q52按实际负载优化scalability，Q53形成production
 `board-ready`与真实板端证据。06仍是唯一联合决策设计owner；任务拆分只提供可验证接入checkpoint，不产生独立layout、
 fusion、buffering、communication或worker selector。动态状态、依赖和完成门禁只看`tasks/progress.md`。
 

@@ -1,6 +1,6 @@
 # Card 内 Physical Dataflow 综合
 
-状态：2026-08-16 按 current `TensorProgram -> CardModule -> TileRegion -> Instr -> CardExecutable`
+状态：2026-08-17 按 current `TensorProgram -> CardModule -> TileRegion -> Instr -> CardExecutable`
 主线收敛。本文是 card 内 spatial mapping、TileRegion formation、temporal tiling、融合、physical
 representation、movement、buffering、instruction scheduling 与候选选择的唯一设计 owner。动态状态和施工顺序只看
 `tasks/progress.md` 与 `tasks/plans/physical-dataflow-synthesis.md`。
@@ -137,9 +137,31 @@ verification 的执行对象。`ExecutablePackage` 是 target lowering、link �
 
 它不保存 winner，不保存 accepted offset，也不把算法名或 opaque parameter bag 传入 physical legality。
 
-### 4.2 Search state
+### 4.2 Search session、incumbent 与 candidate assignment
 
-状态只保存不可从当前选择重算的 typed assignments：
+一次 search invocation 内的事实分为四类，不能再合并成一个 candidate bag：
+
+1. **immutable session input**：borrowed TensorProgram root、transaction-owned ProgramData view、target facts、cost comparison cohort，以及本次可用的
+   typed mechanism；mechanism顺序由唯一current driver静态组合，不是runtime registry、user option或candidate字段；
+   `IREpoch`只证明query与trial属于同一immutable borrow，并保护query/cache生命周期，不进入
+   candidate semantic key，也不充当IR mutation counter；
+2. **session control**：candidate frontier、已经通过完整gate的move-only incumbent、global work/budget ledger和coverage/
+   lower-bound evidence；这些事实不属于任一candidate；
+3. **candidate assignment**：只保存当前已经实现且不能从current IR与其它选择重算的typed choices；
+4. **derived query-local facts**：exact demand、ready/live set、lifetime、resource calendar、SPM high-water、cost estimate和
+   lower bound，按IR borrow、target facts和相关assignment重算或失效。
+
+Q49.P accepted baseline只作为session-level incumbent和fallback，不进入candidate frontier，不被重编码为search assignment，
+也不把其canonical functional choices当作未施工轴的默认值。mechanism availability、proposal priority、work ledger、diagnostic
+statistics和incumbent同样不进入candidate identity。
+
+`ProgramDataHandoff`继续由外层compiler transaction唯一拥有，不复制进baseline或candidate。Q50.0 accepted result只引用已验证
+program identity/range；落选actual executable析构不改变handoff，最终winner确定后才由Q59同一outer transaction把handoff随
+唯一发布结果向下游移动。search不得为每个candidate写package或提交目录。
+
+Q51终态的candidate assignment包含下列typed choices；Q51.Core不预声明尚未由对应Q50 mechanism实现、验证和消费的字段。
+每个Q50 checkpoint在同一current aggregate中加入本轴的named typed field、ephemeral transition、canonical encoding和精确
+失效关系，不能使用`any`、字符串tag、opaque payload、通用provider registry或placeholder optional field提前占位：
 
 ```text
 TensorProgram alternative
@@ -152,9 +174,9 @@ ValueId  -> selected physical representation
 TileId   -> buffer recipe / instruction order / worker / completion choice
 ```
 
-状态不保存 raw `Operation *`、estimated SPM、汇总 bytes、fragments、resource calendar、makespan、actual offsets 或
-repair history。exact edge demand、lifetime、calendar、cost 和 SPM high-water 都是 query-local、可失效、可重算的
-analysis cache；候选物化后以 IR 为唯一事实源。
+typed transition只用于从parent原子构造child；child保存apply后的assignment，不保存transition history、proposal ordinal、
+allocator feedback history或repair path。状态不保存 raw `Operation *`、estimated SPM、汇总 bytes、fragments、resource
+calendar、makespan、actual offsets 或repair history。候选物化后以 IR 为唯一事实源。
 
 ### 4.3 失效依赖
 
@@ -281,9 +303,10 @@ pieces；dense rectangle、descriptor、route或transport暂时表达不了，�
 placement。deterministic baseline必须为已声明支持的exact set提供一条canonical correctness carrier；它与完整search
 representation/movement域都消费同一proof，不另建压缩版demand。
 
-analysis result只在current IR epoch有效。relation cache观察IR epoch和typed edge/relation identity；demand/coverage cache还要
-观察完整consumer domain、producer ownership、partition/reduction/replication role和所有会改变image的assignment。只有具备
-extensional equivalence proof才能投影cache key；按shard dimension和participant count缓存一个legality bool不满足合同。
+analysis result只在current immutable IR borrow有效；`IREpoch`token只拒绝跨borrow trial，不进入semantic cache key或替代
+nested structural snapshot。relation cache观察typed edge/relation identity和borrow内结构，demand/coverage cache还要观察完整
+consumer domain、producer ownership、partition/reduction/replication role和所有会改变image的assignment。只有具备extensional
+equivalence proof才能投影cache key；按shard dimension和participant count缓存一个legality bool不满足合同。
 
 当前 production placement evaluation仍过早调用physical edge strategy planning；因此“exact demand analysis已存在”不等于
 这一边界已在主线闭合。current query还受candidate schedule placement type、direct static single-result/single-init Linalg、
@@ -517,8 +540,17 @@ legality或admissible bound。
 
 ### 11.1 唯一 owner与两种策略
 
-只有`PhysicalDataflowSearch`语义层可以管理candidate set、回溯、budget、incumbent和最终choice。它通过所属IR层的普通analysis
-取得合法choices，通过transformation/conversion物化selected choices；不存在统一`Providers`框架或局部selector。
+只有`PhysicalDataflowSearch`语义层可以管理candidate frontier、回溯、budget、incumbent和最终choice。它通过所属IR层的普通
+analysis取得合法choices，通过transformation/conversion物化selected choices；不存在统一`Providers`框架或局部selector。
+search kernel本身不生成spatial、region、temporal、layout、movement、buffer或schedule choice，也不预先定义这些轴的
+placeholder schema。每个mechanism进行pure domain query并返回named typed transition；kernel只验证/apply transition、维护
+deterministic frontier和stable dedup、路由typed evaluation outcome、记账并更新同一个incumbent。
+
+Q51.Core只先闭合上述control kernel。它不拥有Q49.P的single-root capacity probe；Q50.F在完整causal coordinates闭合后加入
+通用affected-region probe。Core也不靠mock domain签发真实physical domain完整性：它只用独立finite state-graph model检查
+frontier mechanics；每个Q50轴再加入本轴的independent reference enumerator，全部真实轴的production flat exhaustive runner
+与actual digest/winner comparison由Q51 closure签发。Core checkpoint即原子接管public `search`的frontier、actual comparison和
+winner update；尚未迁移的current bounded generation只可作为显式lossy proposal source进入同一Core，不再是第二owner。
 
 同一choice domain支持：
 
@@ -528,21 +560,23 @@ legality或admissible bound。
 
 ### 11.2 Anytime构造
 
-真实负载不展开平铺笛卡尔积。推荐过程是：
+真实负载不展开平铺笛卡尔积。Q51 closure建立的non-lossy基本过程是：
 
-1. 编译deterministic baseline，立即获得合法incumbent；
+1. 直接接收Q49.P已经完整准入的deterministic baseline及同comparison cohort actual cost，立即获得合法incumbent，不重新
+   materialize或compile baseline；
 2. 生成producer/consumer aligned、compute-balanced、topology-local、reduction-parallel及ordered factorized regular mapping等
    spatial seeds；
 3. 对每个seed构造最大TileRegion、最大coupled closure和高效大temporal tile，并用relation-derived reuse signature优先
    direct/local、multicast/broadcast与temporal retention alternatives；
 4. exact cheap gates后按cost与结构diversity排序；
 5. promising state做affected-region probe，少量完整state做CardExecutable compilation；
-6. actual accepted cost更新incumbent；只有proven exact failure才对其causal choices形成no-good，resource exhaustion或internal
-   failure保留为indeterminate；
-7. 使用large-neighborhood search联合重选一个fused region、fanout、SPM热点、NoC/DDR热点或stage边界；
-8. budget耗尽返回best actual accepted candidate。
+6. actual accepted cost按完整semantic tie-break更新incumbent；只有proven exact failure及future-compatible causal scope才能
+   形成no-good，resource exhaustion或未分类evaluation保留为unresolved，不能删除state或签发最优性；
+7. budget耗尽返回best actual accepted candidate及frontier coverage、valid lower bound、unresolved work和ledger evidence。
 
-Large neighborhood必须联合修改耦合choices，例如`spatial+region+coupled+temporal`，或
+Q51.Core不固定production best-first priority、默认budget、dominance/no-good算法或LNS。Q51只使用不会永久丢state的稳定
+ordering和exact continuation闭合正确性；Q52依据fresh profile再加入或调整candidate priority、memo、safe dominance、
+branch-and-bound和large-neighborhood search。Large neighborhood必须联合修改耦合choices，例如`spatial+region+coupled+temporal`，或
 `stage cut+两侧Tile groups+chunk+movement+buffer+order`；当前单坐标改进只能暂时作为warm-start，不能继续拥有coverage、
 family closure或最终winner。
 
@@ -654,17 +688,25 @@ store/completion/load和search-policy调用闭包的结构检查。
 - PhysicalDataflow analysis/transforms：exact demand、TileRegion formation、coupled traversal、representation、movement；
 - Instr analysis/transforms：buffer lifetime、ready order、worker、completion；
 - Conversion：TensorProgram到CardModule、TileRegion到Instr；
-- Compiler search：轻量state、dependency invalidation、exhaustive/anytime/LNS strategy和cost ordering；
+- Compiler search：typed assignment、deterministic frontier、dependency invalidation、session evidence与exact/anytime control；
+  profile-driven priority、scalability优化和LNS由Q52加入；
 - CardExecutable compilation/verification：串接既有lowering和exact gates，不实现choice generation。
 
-顶层编译入口只编排`none`或`search`并发布结果；不能继续容纳具体spatial/fusion/layout/buffer算法。每迁移一个choice轴，
-同批删除旧owner中的对应字段、hash分支和repair逻辑，不能长期保留两套事实源。
+顶层编译入口只编排`none`或`search`并发布结果；不能继续容纳具体spatial/fusion/layout/buffer算法。Q51.Core先原子抽出唯一
+public frontier、incumbent和winner control；尚未迁移的current生成能力只能作为显式lossy typed proposal回到同一Core，内部
+beam/cap/shortlist必须报告coverage loss，不能伪装成exact domain、比较actual cost、更新winner或repair accepted IR。每迁移一个choice轴，新旧生成路径复用只消费显式typed
+assignment的同一mechanism并删除重复mechanics；新路径迁移同等能力并通过actual witness后，旧字段、hash分支和repair逻辑
+必须删除，不能长期保留两套事实源。
 
 ## 13. 当前差距与任务闭环
 
-当前代码已经有baseline正确性证据、exact logical demand analysis和完整Card/Tile/Instr/SPM/DDR/verification机制。baseline
-也已经在进入candidate family前提前返回，具备TileRegion scoped SPM query，并且accepted路径只调用一次完整
-CardExecutable compilation；但它仍未满足本设计：
+Q50.0、Q54、Q59与Q50.A已经闭合无策略complete-candidate compilation、MLIR scope/pipeline、compiler transaction和
+policy-free exact logical demand边界。Q50.A current API已经脱离candidate schedule/evaluator，以immutable borrow、完整logical
+trial、typed relation/role和四态outcome服务baseline及未来spatial mechanism；reduction、broadcast、window/stride、multi-piece、
+multi-result、init/support relation与production carrier gate已经受测，不再属于Q51.Core待修接口。
+
+Q49.P仍在闭合baseline functional legalization、single-root structure、scope escalation、direct causal witness和search-policy
+隔离；其动态缺口只看`tasks/progress.md`与实施计划。主线仍有下列设计差距：
 
 - baseline仍复用search-oriented candidate/domain evaluator、stable ordinal/proposal ordering、candidate统计和group
   materialization，同Tile的多个独立structured root可能进入同一TileRegion；零fused-edge统计掩盖了
@@ -673,9 +715,8 @@ CardExecutable compilation；但它仍未满足本设计：
   wrapper；requires-ancestor-scope没有在最近合法scope完成probe；
 - SPM failure attribution仍可能从DAG edge和相同type/shape反推受影响producer并扩大refinement，缺少从实际
   lifetime/packing到当前single root及其temporal assignment的direct typed causal witness；
-- placement production transition仍过早消费physical edge strategy；exact-demand API还依赖candidate schedule placement type，
-  只接受direct static single-result/single-init Linalg与balanced一维shard，跳过DPS init/support dependency，并把所有失败压成
-  placement legality bool；
+- placement production transition仍过早消费physical edge strategy；Q50.B尚未从all-iterator semantics生成完整multi-axis、
+  remainder、reduction/merge和非矩形physical placement域；
 - candidate、shortlist、repair与完整编译混在单体synthesis文件；
 - spatial domain仍主要是单output axis与连通矩形Tile group；
 - region/temporal/fusion/layout/buffer/communication尚未由一个轻量state联合回溯；
@@ -689,10 +730,11 @@ CardExecutable compilation；但它仍未满足本设计：
    baseline/search提供不携带representation/movement policy的proof；闭合reduction、broadcast、window/stride、multi-piece、
    DPS init与support relation，删除carrier失败和字符串失败对spatial legality的反写；
 3. 以Q49.P从current输入闭合baseline功能合法化、结构、policy、probe、causal witness和materialization解耦；
-4. 在accepted baseline可直接作为incumbent后建立search core与两层small exhaustive oracle；
+4. 在accepted baseline可直接作为incumbent后建立只管理frontier/evaluation/result的search control core，以独立finite
+   state-graph model证明kernel不会漏state、吞sibling或把indeterminate改成rejection，并原子接管public winner control；
 5. 依次闭合structured alternatives、spatial partition/placement、TileRegion/temporal/fusion、representation/movement、
-   Instr pipeline机制，每项边实现边接入common state；
-6. 完成所有维度的search closure和实际fusion gate；
+   Instr pipeline机制，每项边实现边接入common state，并加入本轴独立reference domain oracle；
+6. 完成所有维度的production flat exhaustive runner、search closure和实际fusion gate；
 7. 从第一版保留条件式stage-pipeline transition；Q52只在profile后优化其proposal顺序，并加入或加强memo、typed no-good与LNS；
 8. fresh workload/package/no-card/board closure。
 
@@ -715,7 +757,8 @@ CardExecutable compilation；但它仍未满足本设计：
 - estimate、memo、no-good或dominance逐项开启不改变small-oracle winner；
 - `none`和`search`共用完整candidate compilation/verification；
 - baseline与spatial mechanism共用policy-free typed exact-demand query，只有`proven logical infeasible`删除trial；unsupported和
-  indeterminate不会进入legality bool/no-good cache，IR epoch或任一观察到的domain/role变化使cache失效；
+  indeterminate不会进入legality bool/no-good cache；跨immutable borrow、nested structural snapshot或任一观察到的domain/role
+  变化使cache失效；
 - `none`不构造或调用search state/candidate、search-oriented domain/ranking evaluator、proposal ordering/group materializer
   或candidate统计；每个baseline TileRegion恰有一个structured compute root，跨root shaped dependency均有显式DDR边界，
   同Tile多root表现为多个顺序TileRegion；

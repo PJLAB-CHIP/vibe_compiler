@@ -3,7 +3,7 @@
 状态：Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure、Q59 compiler entry transaction与Q50.A
 production demand boundary均已闭合。当前由Q49.P在current source-to-package路径上闭合baseline functional legalization及
 policy/structure/probe/materialization隔离，之后建立
-Q51.Core共同状态、transition和actual-probe seam；随后让
+Q51.Core的typed assignment、deterministic frontier、incumbent和evaluation/result control seam；随后让
 Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
 `tasks/06-physical-dataflow-synthesis.md` 拥有；本文件只规定施工依赖、现有代码处置和独立 checkpoint。
@@ -42,8 +42,9 @@ Pipeline position:
   Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q58/Q56/Q59先闭合
   program data ownership、package data与compile commit；Q50.A修复production exact-demand boundary；Q49.P基于这些
   current事实闭合baseline功能合法化及policy、结构、probe和materialization隔离；Q51.Core复用其accepted executable作为初始incumbent
-  并建立共同search kernel；Q50.S与Q50.B–Q50.K逐轴交付
-  mechanism 且移除对应旧 owner；Q51 通过two-layer small exhaustive oracle、complete CardExecutable gates 和有效 fusion 闭合；
+  并建立只管理frontier/evaluation/result的共同control kernel；Q50.S与Q50.B–Q50.K逐轴交付mechanism及本轴独立domain oracle；
+  Q50.F才加入通用actual-region probe；Core已原子接管public winner control后，Q51再通过full production flat exhaustive runner、
+  complete CardExecutable gates、有效fusion和有损过渡proposal清理闭合；
   Q52 在真实 workload 上形成可复现的 10/30 分钟 anytime 质量与吞吐结论；Q60建立产品frontend后，Q53从该入口生成 fresh package、oracle、runner
   并通过 no-card 达到 board-ready，真实 matched 板端 A/B 后才 done。
 ```
@@ -83,11 +84,12 @@ current immutable structured IR
 ```
 
 - query-local state 只保存不能从 current IR 和已选坐标重算的 typed assignments；ready/live、exact
-  demand、lifetime、resource calendar、SPM high-water、lower bound 和 makespan 都是按 IR epoch 与 typed
-  assignment 重算的 query-local analysis cache，不进入 state identity，也不序列化为 output 或计划 attr；
+  demand、lifetime、resource calendar、SPM high-water、lower bound 和 makespan 都绑定一次immutable IR borrow并按typed
+  assignment重算，是query-local analysis cache，不进入state identity，也不序列化为output或计划attr；
 - actual probe 不修改原 source，也不在 clone 内修复 candidate；
-- analysis/probe cache key 必须包含 IR epoch、target facts 和会影响结论的全部 typed assignments。改变
-  traversal、tile、layout、movement、buffer 或 schedule 后，旧 calendar、lifetime、SPM/legality 结果全部失效；
+- analysis/probe cache只在一个immutable borrow内存活；Q50.A `IREpoch`只拒绝跨borrow trial，不进入semantic cache key，也不
+  代替nested structural snapshot。borrow内的key必须包含target facts和会影响结论的全部typed assignments；改变traversal、
+  tile、layout、movement、buffer或schedule后，旧calendar、lifetime、SPM/legality结果全部失效；
 - 任意时刻最多一个 live actual clone；host 可并行计算 immutable analysis，但 candidate set insertion 和 tie-break 使用稳定 key；
 - regular mapping、reuse signature和coarse resource estimate只能给普通typed transitions排序；不能clone-per-mapping，不能把
   reuse/cost annotation写进候选IR，也不能用function name、JSON或opaque solver payload跨越compile seam；
@@ -115,9 +117,9 @@ exact gate仍失败，必须是最小canonical fallback已被typed proof排除�
 | --- | --- | --- | --- |
 | 0 | Q50.0 CardExecutable compilation boundary | 抽出无策略的actual compile/verification seam，不允许lowering修候选 | Q54 |
 | 1 | Q54 MLIR infrastructure conformance | typed IR/interface、scoped pass/analysis、named pipeline与rewrite transaction收口 | Q49.P、Q50.A |
-| 2 | Q50.A placement-demand repair | 对完整logical shard trial形成typed exact-demand/coverage proof；reduction、broadcast、window/stride、multi-piece、init与support relation均不被carrier/layout/route反写 | Q49.P、Q51.Core |
+| 2 | Q50.A placement-demand repair | 对完整logical shard trial形成typed exact-demand/coverage proof；reduction、broadcast、window/stride、multi-piece、init与support relation均不被carrier/layout/route反写 | Q49.P；Core完成后供Q50.B消费 |
 | 3 | Q49.P baseline functional closure与policy isolation | canonical `none`从正常上游IR完成确定性placement/tiling/SPM合法化且不消费search对象；一root一region；最窄exact probe后完整CardModule与CardExecutable各形成一次 | Q51.Core、baseline性能复核 |
-| 4 | Q51.Core | 共同state、transition、candidate set、incumbent、ledger、budget与oracle harness | Q50.S、Q50.B |
+| 4 | Q51.Core | typed assignment与transition apply、deterministic frontier、baseline incumbent、ledger/budget、evaluation/result evidence及finite state-graph model；原子接管public winner control，既有complete proposal改成显式lossy source；不含新真实轴或actual probe | Q50.S、Q50.B |
 | 5 | Q50.S structured semantic alternatives | typed proof与actual TensorProgram roots接入共同owner | Q51 closure |
 | 6 | Q50.B spatial partition + placement | 完整spatial domain接入共同owner | Q50.C |
 | 7 | Q50.C maximal single-root TileRegion | 单root local work的完整actual region materialization | Q50.D |
@@ -129,12 +131,13 @@ exact gate仍失败，必须是最小canonical fallback已被typed proof排除�
 | 13 | Q50.I rotating buffers | rotating slots与multi-buffer lifetime | Q50.J |
 | 14 | Q50.J event/resource schedule | ready/order/worker/completion/resource calendars | Q50.K |
 | 15 | Q50.K conditional stage pipeline | 在已证明条件下组合跨op wave pipeline | Q51 closure |
-| 16 | Q51 closure | 全轴联合正确性、small oracle、旧owner清理和policy cutover | Q52 |
+| 16 | Q51 closure | 全轴联合正确性、small oracle、有损过渡proposal/旧选择逻辑清理和exact-domain closure | Q52 |
 | 17 | Q52 profile-driven anytime / LNS | 10–30分钟内高质量actual winner与可解释trade-off | Q53 |
 | 18 | Q53 production | representative workload package/no-card/board A/B | Q48后续工作 |
 
-Q51.Core是Q51的提前施工checkpoint，不等于Q51已完成。Q50.S与Q50.B–Q50.K必须在core上逐轴交付；Q51只有在全部
-轴组合、small exhaustive oracle、actual fusion 和旧 owner 删除门禁都满足后才能整体完成。
+Q51.Core是Q51的提前施工checkpoint，不等于Q51已完成。Q50.S与Q50.B–Q50.K必须在core上逐轴交付；每轴独立reference
+enumerator、全部轴的production flat exhaustive runner、actual fusion、exact-domain证明和有损过渡proposal删除门禁满足后，
+Q51才能整体完成。
 
 ### Checkpoint gate 分层
 
@@ -155,9 +158,9 @@ CardExecutable cost与全轴actual winner都是Q51 closure gate，不得用尚�
 | 类别 | 当前代表实现 | 处置 |
 | --- | --- | --- |
 | 稳定 downstream trunk | CardModule/TileModule IR、CardModule-to-Tile conversion、TileRegion-to-Instr、Tile memory planning、card resource/target verification、package/runtime | 保留；所有 policy 复用同一路径；现有`TileMemoryPlanning`/`CardExecutableLowering`仅作实现定位，后者仍需按实际职责收敛名称 |
-| 可复用 core | `StructuredDAGAnalysis`、现有schedule-state/candidate类、edge-demand plan与placement domain/cost mechanics | immutable structured/relation事实及policy-free logical placement-assignment窄类型供baseline构造trial并由exact-demand query读取；该窄类型和query必须从candidate/schedule依赖中抽离。schedule-state/candidate/evaluator/proposal-order只纳入Q51.Core，Q49.P必须先断开对它们的依赖。旧类名只是实现定位，不升级成长期架构对象，也不让其自行选择winner |
+| 可复用 core facts | `StructuredDAGAnalysis`、Q50.A immutable-borrow/exact-demand合同、Q50.0 accepted result与现有work-ledger reservation思路 | 只迁移current IR可重算事实、move-only accepted result和无固定cap的work reservation；policy-free placement assignment保持窄边界。`TileExecutionCandidate`、schedule-state、metrics、stable ordinal、feedback history、evaluator和proposal order不得整体纳入Core |
 | 可复用 mechanism | `BidirectionalTiling`、`CompleteTraversal`、`TileMaterialization`、`CandidateMaterialization`、movement/collective lowering、selected-buffer materialization、ready-order/worker/completion verifier | 按Q50.S与Q50.B–Q50.K接到transition/materializer seam；保留符合新合同的算法与verifier |
-| 过渡 monolith | 当前executable-synthesis实现中的coordinate sweep、candidate family、allocation/buffer feedback、shortlist和mixed materialization | public entry暂保留，先抽出Q50.0编译边界，再按轴抽出；最终只保留Q49.P baseline controller、Q51 driver和共同materialization seam |
+| 过渡 monolith | 当前executable-synthesis实现中的coordinate sweep、candidate family、allocation/buffer feedback、shortlist和mixed materialization | Q51.Core先原子抽出唯一public frontier/incumbent/winner control；剩余generation原位改成只返回current typed complete proposal并显式标记lossy，不得更新winner或repair accepted IR。Q50逐轴替换其domain/mechanism，Q51 closure删除最后的过渡生成逻辑 |
 | 旧 bounded/rank search | `RankCandidateSearch`、旧structured candidate generation/evaluation/selection及rank-era candidate set | 只作为 transformation、typed proof、diagnostic 和测试来源；不得恢复固定 beam/cap 或 rank-local winner |
 | compatibility lowering | `StructuredDAGEdgeStrategyPlan`、dense rectangle fragment、现有 local/peer lowering | 在新 representation/movement IR 可完整消费 exact demand 前保留；Q50.G/H 逐项替换，不提前删除 |
 | late selector/fixup | layout/movement optimization、ready-order、worker placement、buffer/allocation feedback 中会重新做选择的部分 | 先改成 verifier/materializer 或 typed transition mechanism，再按轴删除选择责任 |
@@ -175,11 +178,14 @@ tracked 删除必须同时给出：current replacement、actual-IR witness、fre
 | layout / movement | layout selector、edge strategy local winner、late route/spill repair | Q50.G/H 产出 actual representation/movement IR 并由 Q51 选择 |
 | buffer | buffer feedback family、固定默认 buffer winner | Q50.I 的 slot/rotation/release/hazard typed choices 接入共同 state，lifetime保持为可重算analysis |
 | order / worker / overlap | ready-order、worker、completion 或 overlap 的独立 selector | Q50.J/K 的可重入event/resource transition与actual verifier局部闭合；pipeline winner留Q51 closure |
-| 全局旧 owner | bounded rank candidate set、rank candidate selector、shadow schedule | Q51 small oracle、full actual gate、public `search|none` cutover 全部通过 |
+| 全局旧 owner | bounded rank candidate set、rank candidate selector、shadow schedule | Q51.Core先完成public control cutover；Q51 small oracle、full actual gate和过渡proposal清理全部通过后删除剩余选择逻辑 |
 
-任何轴在 replacement 完成前都允许旧代码继续存在，但只能由当前旧路径消费；不得同时让新旧 owner 对同一 candidate
-各选一次。迁移当批需要用定向测试证明新路径仅消费显式typed assignment，再删除本轴旧选择入口；跨轴
-协同与production cutover仍必须等Q51 closure，不以局部fixture winner代替。
+Q51.Core之后不存在第二个public owner：旧代码若仍维持尚未迁移的proposal coverage，只能通过同一current typed transition/
+complete-assignment seam回到Core；内部beam/cap/shortlist必须标明lossy coverage，不能伪装成exact domain、比较actual cost、
+更新winner或repair accepted IR。
+每批先把可复用mechanism变成只消费显式typed assignment的共同实现，并删除重复mechanics。只有新路径已迁移同等能力、具备
+actual-IR witness和fresh replacement test时，才删除对应旧生成逻辑；不能为追求逐轴“清零”提前退役尚未承接的算法、proof、
+diagnostic或negative test。
 
 ## Q50.0：CardExecutable Compilation Boundary
 
@@ -446,13 +452,13 @@ relation失败；Q50.G/H扩展完整performance alternatives时仍复用同一pr
 
 policy-free logical placement assignment必须位于structured/relation边界，不能因Q50.A读取它就include candidate schedule或携带
 evaluation、stable ordinal、route、residency、calendar和candidate统计。query只读current IR和immutable typed assignment，
-不apply mutation；关系或domain需要跨mutation时由新IR epoch重算，不把operation pointer、diagnostic字符串或旁路side table
-当稳定语义键。
+不apply mutation；关系或domain需要跨mutation时建立新immutable borrow并重算，不把operation pointer、diagnostic字符串或旁路
+side table当稳定语义键。
 
-relation cache至少按IR epoch与typed edge/relation identity失效；demand/coverage cache还必须观察完整consumer execution
-domain、producer ownership domains、partition/reduction/replication role及会改变relation image的全部assignment。只有证明某些
-字段在当前relation下extensionally等价时才能使用投影key；当前仅按两端shard dimension和participant count缓存`bool`不能成为
-终态合同。
+relation cache绑定一次immutable borrow，并以nested structural snapshot保护borrow内mutation；`IREpoch`token只拒绝跨borrow
+trial，不进入semantic key。cache还必须观察typed edge/relation identity、完整consumer execution domain、producer ownership
+domains、partition/reduction/replication role及会改变relation image的全部assignment。只有证明某些字段在当前relation下
+extensionally等价时才能使用投影key；当前仅按两端shard dimension和participant count缓存`bool`不能成为终态合同。
 
 current query和production adapter已经消费窄policy-free placement assignment、typed dependency descriptor与four-state outcome；
 DPS init、pure support graph和multi-result ownership均进入同一all-and-only exact relation/coverage边界。baseline support carrier直接消费
@@ -468,8 +474,8 @@ Q50.G/H后续扩展的physical alternatives；其失败不得回写Q50.A cache�
 - metamorphic gate对同一logical trial替换dense/strided/multi-piece carrier能力或让route失败，Q50.A outcome和exact set
   extensionally不变；ownership hole只产生typed `proven logical infeasible`，unsupported与indeterminate不会进入
   legality `bool`或no-good cache；
-- cache gate改变任一观察到的domain/role或IR epoch都会miss/invalidate；extensionally等价placement重算得到相同stable logical
-  proof，结果不依赖Tile/pointer/hash遍历顺序；
+- cache gate跨immutable borrow、改变nested structural snapshot或任一观察到的domain/role都会miss/invalidate；
+  extensionally等价placement重算得到相同stable logical proof，结果不依赖Tile/pointer/hash遍历顺序；
 - Q49.P定向调用链不出现candidate/schedule evaluator或edge strategy selector，只对proven logical failure推进canonical
   placement trial；上述五类relation至少各有一个normal TensorProgram进入baseline canonical carrier并继续到完整Q50.0 gate；
 - Q50.B explicit test assignment与后续production domain调用同一query；Q50.G/H只消费`satisfied` output，不从physical fragments
@@ -513,72 +519,142 @@ Q50.G/H后续扩展的physical alternatives；其失败不得回写Q50.A cache�
 Q50.A completion gate已闭合并在`tasks/progress.md`标为`done`。Q50.G/H继续扩展完整physical carrier alternatives；
 这些后续性能/representation能力不重建或改判本节的logical proof。
 
-## Q51.Core：先建立共同搜索骨架
+## Q51.Core：Search Control Kernel
 
-### 责任
+### 2026-08-17 review 结论
 
-Q51.Core 在增加下一项 capability 前建立唯一、可测试的 search kernel：
+原节把Q51终态assignment schema、Q50.F actual probe、Q51全轴oracle和Q52 production策略都提前算进Core，和current施工
+顺序不一致，也会诱导实现直接复用正在由Q49.P拆除的`TileExecutionCandidate`。Core现在只拥有**搜索控制**：typed child
+state的原子接纳、deterministic frontier、stable dedup、incumbent、budget/work ledger、typed evaluation outcome与result
+evidence。它不生成任何physical choice，不预声明尚未施工的轴，也不签发真实domain completeness。
 
 ```text
-immutable structured IR + IR epoch
-  + semantic DAG root assignment
-  + spatial / region / traversal / temporal tile and wave-loop order assignments
-  + representation / movement / buffer assignments
-  + order / worker / completion / stage assignments
-  + enabled mechanism transitions
-  + incumbent / global work ledger
-
-derived query-local analysis caches:
-  StructuredDAGAnalysis, exact demand, ready/live set, lifetime,
-  resource calendar, SPM high-water, lower bound and makespan
+Pipeline position:
+- Upstream IR / input:
+  一个immutable TensorProgram borrow、transaction-owned ProgramData view及target/cost-cohort facts；Q49.P已经通过Q50.0完整准入的move-only baseline
+  executable、actual resource cost和stable actual digest。Core入口没有semantic-alternative、spatial、region、temporal、
+  layout、movement、buffer或schedule assignment，也不重新构造baseline。
+- Current stage responsibility:
+  建立唯一replacement search session的control plane：管理typed partial assignments及其ephemeral transitions、对已接纳
+  transitions不丢state的deterministic frontier、canonical dedup、global work/time budget、typed evaluation routing、
+  session-level incumbent和coverage/lower-bound evidence。Core只接受mechanism已经形成的typed transition/evaluation result，
+  不枚举或物化某个轴。
+- Output IR / files:
+  不产生新IR层或文件。输出query-local move-only search result；它至少原样持有Q49.P baseline incumbent，也可接纳current
+  proposal source已经形成的complete typed assignment并经Q50.0得到actual executable，同时携带work、frontier coverage、
+  valid bound和unresolved-work evidence。candidate不写package、不commit目录；Q59 outer transaction只发布最终winner一次。
+- Downstream consumer:
+  Q50.S与Q50.B–Q50.K逐项扩展current typed assignment和transition；Q50.F接入affected-region probe；Q51 closure接入
+  全部真实轴后的complete actual materialization/Q50.0 gate parity、全轴oracle、exact-domain证明和有损过渡proposal清理。
+- User-level driver / named pipeline:
+  不新增pass、CLI、optimization policy或磁盘sidecar。Q51.Core在本checkpoint原子接管现有source-to-package `search`的
+  candidate frontier、actual comparison和winner更新；原monolith剩余candidate generation原位改成只返回current typed
+  assignment/proposal的有损mechanism，不再拥有shortlist winner、accepted repair或incumbent。任一compile invocation始终
+  只有Core一个owner；Q50.S/B–K再逐轴原位替换proposal/domain实现，Q51 closure删除最后的有损过渡生成逻辑。
+- Explicit non-goals:
+  不实现Q50.S/B–K任一choice domain；不把Q49.P scoped capacity probe升级成通用search probe；不预设best-first priority、
+  default budget、no-good/dominance/DP/LNS算法；不创建generic provider registry、`any`/字符串tag/opaque payload或future-axis
+  placeholder；不以mock domain声明production physical domain完整。
+- Done criteria:
+  finite typed fixture由独立state-graph model证明Core遍历与reference reachable-state set一致；budget stop不会吞掉仍由exact
+  frontier表示的state，lossy drop只能由显式policy标记；rejected/indeterminate child都不影响合法siblings；baseline不进入
+  candidate key或candidate统计且不会重编译；stable winner与ledger不依赖hash iteration、pointer、proposal ordinal或
+  evaluation完成顺序。public `search`只经Core更新incumbent，当前complete proposal仍走Q50.0并明确报告lossy coverage；
+  Q50.S/Q50.B可在不修改control semantics的前提下加入第一批真实typed轴。
 ```
 
-partial state 的 canonical key 必须只由 current IR identity/epoch 和已选 typed assignments 构成，不依赖
-pointer/hash iteration、op 名、历史 ordinal 或 analysis cache。future-boundary equivalence可以投影不再可观测的旧assignment，
-但必须保留将来会影响physical version、layout、region boundary、buffer/slot、order/worker/completion和resource
-reservation的所有typed choices。ready/live、retained-value lifetime、calendar、resource availability与makespan从这些
-assignment重算；它们可用于future-compatible dominance，不能反向成为第二份state事实。
+### 四类query-local事实
 
-### 初始算法
+```text
+Immutable session input:
+  immutable IR borrow + target facts + cost cohort + currently implemented mechanism set
 
-- 以 Q49.P accepted baseline 作为第一个 incumbent；
-- production使用确定性best-first constructive search：先形成baseline，优先构造大TileRegion、coupled traversal、较大高效
-  temporal tile、ordered factorized regular mapping与relation-derived reuse proposal；这些只是稳定排序seed，不是生成条件；
-- exact lane每次展开parent都必须把其余合法region cut、tile、layout、movement、buffer和schedule sibling以可惰性
-  continuation保留在共同candidate set，不论先展开的child是accepted还是rejected。typed rejection只能产生与其
-  causal assignment精确对应的no-good或调整排序，不能作为生成sibling的触发器；
-- 完整合法域由mechanism惰性可生成，不把固定candidate count、depth、beam width或wall timeout写成legality；真实负载从
-  第一天支持中断于global work/time budget；如果exact continuation与bound仍完整则可返回
-  `feasible-with-bound`，只有丢弃或未表示合法completion时才是`budgeted-feasible`；Q52再基于fresh profile确定
-  production默认budget和有损策略；
-- clone 前只允许 typed legality、topology symmetry、exact equivalence、已证明 lower bound、作用域正确的 no-good 和严格
-  future-compatible dominance；
-- estimates 只决定展开顺序；admissible lower bound 才能 branch-and-bound；
-- linear/tree 或小 separator 只允许 boundary-compatible DP，返回 alternatives 给共同 candidate set，不返回局部 winner；
-- global ledger 分别计数 generated、rejected、deduplicated、expanded、actual-probed、accepted 与各 exact gate work。
+Candidate assignment:
+  only named typed choices implemented and consumed by current Q50 mechanisms
 
-### Core oracle harness
+Session control:
+  deterministic non-dropping frontier + incumbent + work/budget ledger + coverage/bound evidence
 
-oracle必须分两层，不能用同一mechanism生成的域反过来证明它自己完整：
+Derived cache:
+  current-IR analysis + exact demand + lifetime/calendar/SPM/cost facts
+```
 
-1. **independent tiny reference domain enumerator**：直接从tiny structured semantics、verifier legality、tiny topology和target
-   facts平铺枚举有限typed choices，不调用production mechanism的domain builder；它与mechanism生成域比较stable
-   key集合，发现漏项、多项或重复。
-2. **production-mechanism flat exhaustive runner**：使用真实mechanism、materializer、cost比较和exact gates，但禁用排序
-   剪枝，对mechanism合法域全展开；再与Q51 candidate set/memo/no-good/dominance逐项对比optimum与actual digest。
+- `IREpoch`沿用Q50.A的current合同：它只验证query与trial属于同一immutable borrow，不进入semantic key，也不替代nested IR
+  structural snapshot或MLIR analysis invalidation。Core不得把token地址、`Operation *`、walk ordinal或printed IR当stable key。
+- Core建立的current assignment aggregate起初不含未来轴。每个Q50 checkpoint同批加入本轴named typed field、transition、
+  canonical encoding、query/apply和失效关系；Wafer-owned接口原位演进，不保留编号schema、旧wrapper或两套state。
+- mechanism query只读source、target和parent assignment；transition apply先完整验证，再原子构造child。child不保存transition
+  history、proposal priority、feedback root、failure history或derived metric。缺少尚未施工的轴表示partial assignment不可
+  materialize，不允许从baseline default或旧selector暗中补齐。
+- mechanism set、priority、incumbent和ledger是session facts，不属于任一candidate。future-boundary equivalence只有在本轴
+  mechanism证明被投影choice不再影响任何future consumer时才可合并；Core不提供按aggregate bytes/makespan自动合并state的
+  generic shortcut。mechanism顺序由唯一current driver静态组合，不提供runtime registry、dynamic plugin list或user option。
 
-两层都通过tiny topology、tiny static extent和真实有限breakpoint得到小空间，而不是通过隐藏cap缩小
-production域。第一批至少覆盖single op、two-op chain、independent branches和diamond；每增加一个Q50轴，
-都向independent enumerator和flat exhaustive runner加入完整tiny域与至少一组对立choice。
+### Baseline incumbent 与actual candidate
 
-### Gate
+Q51 driver先运行Q49.P并把已经accepted的move-only executable直接交给Core。Core从该executable已有的actual resource facts按
+本次冻结的comparison cohort取得cost；同一term对baseline和后续candidate同时启用或删除，不能candidate-local缺项。baseline：
 
-- `none` 不构造 Q51 state，`search` 只存在一个 driver；
-- 空 mechanism 集、单轴 mock mechanism 和 exact-rejection 回退都能稳定运行；
-- serial/parallel immutable analysis与actual cost比较得到相同state/winner digest；
-- baseline incumbent、lower-bound、ledger 和 actual-probe 生命周期有 unit test；
-- core不含fixed seed、预设beam/candidate cap、workload分支或任一实际轴的局部winner；
-- 本checkpoint独立提交，但Q51状态仍为未闭合；随后Q50.S与Q50.B可以在同一core上按依赖施工。
+- 不是root search state，不进入frontier/dedup/no-good，也不把canonical placement/temporal等functional choice变成seed；
+- 不计入generated/expanded/actual-probed/search-accepted统计，baseline时间与Q50.0 work单独记账；
+- 没有更优complete candidate、其它candidate exact reject或保持unresolved时，仍原样成为结果，不再次materialize或compile；
+- accepted candidate只有在完整actual cost更优，或cost相同且完整semantic tie-break更小时，才以move替换incumbent；比较不依赖
+  queue ordinal、hash insertion或并行完成顺序。
+
+Core checkpoint用typed fixture evaluator证明控制算法，并把current proposal generation原位拆成complete typed assignment
+source，实际通过Q50.0验证public `search`的accepted-candidate比较和baseline fallback。该source中仍存在的bounded/beam/
+coordinate coverage必须显式标为lossy，不能冒充exact domain；它只产生proposal，不保留局部winner。Q50.S/B–K新引入的
+partial state在全部required coordinates闭合前不能调用Q50.0，也不存在“用baseline补齐未施工轴”的complete candidate。
+
+`ProgramDataHandoff`始终由外层compiler transaction唯一拥有，Core和每个actual executable只消费stable program
+identity/range，不复制owner或为candidate materialize package。落选executable按RAII销毁；最终winner选定后，Q59才把同一
+handoff随唯一结果继续交给target/package transaction。baseline work不进入candidate统计，但driver保留从Q49.P开始的总wall/
+work账本和time-to-baseline，Core不能重置计时起点掩盖baseline成本。
+
+### Transition、evaluation 与budget
+
+- exact expansion对一个parent返回当前mechanism的全部immediate typed children，或返回仍留在frontier中的typed semantic
+  continuation；opaque iterator/cursor不能成为遗漏siblings的旁路。先访问的child无论accepted、rejected或indeterminate，
+  其它siblings都保持可达。
+- `deferred(required coordinates)`列出typed prerequisite，只有相关assignment改变或闭合后才重新query；不得poll同一state。
+  proven exact rejection只删除被其typed causal witness覆盖的state。Core本身不从diagnostic string合成no-good或扩大scope。
+- resource/solver exhaustion及Q50.0 indeterminate outcome形成unresolved work：不删除state、不更新incumbent，也不能签发
+  optimality。Core自身的malformed transition、stale borrow或broken invariant是fatal compiler error，不得用baseline掩盖。
+- Q51.Core路由fixture及current complete-assignment Q50.0 evaluator outcome，但不拥有scoped probe。Q49.P的single-root capacity
+  seam仍服务baseline；完整causal coordinates关闭后，Q50.F复用其policy-free lowering/packing mechanics并加入search-specific
+  deferred、memo和causal scope合同。
+- ledger分别记录generated、deduplicated、expanded、deferred、exact-rejected、unresolved、actual-probed、full-compiled、accepted
+  及每个exact gate work；执行work前先reserve确定的credit。wall deadline只是安全中断，不能改变已完成state的stable排序。
+- budget中止时Core只报告typed evidence，不自行声称`feasible-with-bound`：Q51 closure只有在exact frontier仍完整且有typed
+  admissible bound时才映射为该等级；显式丢弃/未表示state后只能是`budgeted-feasible`。Q52再根据profile确定默认budget和
+  有损policy。
+
+### Oracle分层
+
+1. **Core state-graph model**：test-only typed fixture直接给出有限reference graph和accepted cost，不调用Core expansion；比较
+   reachable state key、frontier exhaustion、winner、ledger和budget coverage。覆盖empty domain、diamond convergence、同state
+   不同transition order、exact rejection、deferred、indeterminate、fatal invariant、budget stop及显式lossy drop。
+2. **Per-axis reference enumerator**：从Q50.S开始，每个mechanism用tiny真实semantics独立枚举本轴合法typed choice，并与
+   production mechanism逐parent比较stable key；这不是Core gate。
+3. **Full production flat exhaustive runner**：Q51 closure在全部真实轴闭合后才使用actual materializer、cost和Q50.0 gates，
+   比较candidate set、pruning、winner与actual digest。Core fixture不能替代这一层。
+
+### Current code处置与Gate
+
+- 可直接复用Q50.0 move-only accepted result、Q49.P resolved baseline handoff、Q50.A immutable-borrow合同，以及
+  `StructuredDAGAnalysis`中仍为current IR可重算的事实；existing work-ledger reservation思路可迁移，但固定cap和rank合同不得带入。
+- 当前`TileExecutionCandidate`混合assignment、`TileExecutionMetrics`和`TileExecutionTransition`；后者还含stable ordinal、
+  feedback root、allocator history和beam控制。Core checkpoint原位拆开三类事实：只有current named typed assignment进入
+  state，metrics按assignment重算，proposal/feedback只留在明确lossy的生成policy中且不更新winner。旧组合类型不成为Core API；
+  `StructuredDAGScheduleState`中的ready/live状态继续是可重算analysis，不进入candidate identity。
+- `CardExecutableSynthesisStatistics`的baseline、proposal、feedback和selected metrics必须按owner拆分；Core ledger只记录search
+  work，Q49.P统计保持独立，derived selected metrics从accepted executable重算。
+- Core state-graph tests全部通过；同一fixture按不同insertion/hash/analysis completion顺序得到相同state set、incumbent和ledger；
+  public source-to-package `search`只通过Core比较actual Q50.0 result并可稳定回退同源baseline；任意时刻最多一个live actual
+  clone，Core checkpoint不要求并行actual evaluation。
+- 本checkpoint独立提交但不改变Q51整体`queued`状态；它完成后Q50.S与Q50.B开始加入真实typed axes。per-axis reference
+  enumerator、full production flat exhaustive runner、exact full-domain coverage、有效fusion和有损过渡proposal全部删除仍是
+  Q51 closure gate。
 
 ## Q50.S：Structured Semantic Alternatives
 
@@ -815,7 +891,7 @@ participant、route、join、premature completion、非finite route和跨region�
 buffer count 是 op-wave/edge pipeline 的共同候选维度。domain 至少表达 single/double/triple buffering；若 current IR 与硬件
 允许更多 slot，则以并发 wave、lifetime 和 capacity 推导有限上界，不能把 3 作为未证明的永久 cap。每个候选显式携带 slot
 binding scope、rotation、producer release、最后async consumer和prologue/steady/epilogue phase等typed choices；aligned footprint和actual lifetime
-由current IR epoch与region/representation/movement/order assignment重算。
+由current immutable IR borrow与region/representation/movement/order assignment重算。
 
 buffer mechanism 只生成 serialized/overlap-capable actual alternatives；是否真正 overlap 由 Q50.J/K resource schedule 决定。
 无法证明 buffer 独立或无 alias 时不生成对应 transition。
@@ -839,7 +915,7 @@ buffer feedback family/local buffer winner，保留selected-buffer materializer�
 
 共同state只保存ready choice、resource order、worker、issue/wait和completion等typed assignments。ready/running/completed
 op-wave、pending data/completion、per-Tile compute/SPM、每条directed NoC link、card-shared DDR和observable obligations
-由current IR epoch与这些assignment重建query-local event/resource analysis；calendar与makespan是可失效cache，不是state字段。
+由current immutable IR borrow与这些assignment重建query-local event/resource analysis；calendar与makespan是可失效cache，不是state字段。
 实际transition必须发布data-ready/completion，不能在最后用`max(compute, movement)`猜overlap。
 
 schedule域使用finite normal form：枚举有限ready event、worker、dependency/resource order和从已选issue/wait形成的有限
@@ -905,8 +981,8 @@ stage/event/resource order, worker and completion choices
 ```
 
 `StructuredDAGAnalysis`、exact demand、ready/running/completed classes、live physical versions、retained-value lifetime、live SPM roots、
-pending data/completion events、resource calendars、lower bound和current makespan都不是state字段。它们是从current IR epoch、
-target facts与上述assignments重算的query-local analysis cache；任一依赖assignment变化都必须精确失效。
+pending data/completion events、resource calendars、lower bound和current makespan都不是state字段。它们是从current immutable IR
+borrow、target facts与上述assignments重算的query-local analysis cache；任一依赖assignment变化都必须精确失效。
 
 任何 exact failure 都回到生成它的共同 parent，允许修改任一因果轴；不存在 late allocator、layout、movement、buffer、route、
 worker 或 schedule repair selector。

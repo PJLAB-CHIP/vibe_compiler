@@ -151,7 +151,8 @@ source前fail closed。Q48不增加public solver mode。
 ```text
 baseline TensorProgram
   + query-local proven actual TensorProgram alternatives
-  -> Q51.Core single search state / incumbent / global work ledger
+  -> Q51.Core single control owner:
+       typed assignment/frontier + session-level incumbent/global work ledger
   -> CardModule / TileRegion / Instr candidate compilation
   -> fresh completion / SPM / DDR / communication / resource / ABI verification
   -> best accepted CardExecutable
