@@ -630,6 +630,10 @@ typed materialization relation计算，因此一个root lower成多个compute/in
 local spatial extent开始确定性缩减完整temporal tile vector直到actual SPM可放下；relation要求的必要peer fragments只用于
 correctness，不搜索route或communication方案。
 
+“最大合法Tile participation”不要求虚构一个spatial axis：root没有映射到result的parallel iterator时，baseline构造
+all-factor=1、one-Tile、完整result domain的typed unpartitioned coordinate。纯reduction由同一temporal breakpoint机制缩减；
+reduction spatial factor大于1所需的partial ownership和显式merge仍由Q50.B引入，不能因该search机制尚未实现而拒绝功能baseline。
+
 这里的baseline是功能闭环的最低实现，不是“只验证预先选好方案”的通道。它接收未绑定Tile、TileRegion、temporal tile、
 representation或buffer choice的正常上游IR，并拥有产生可执行结果所必需的全部canonical决定。对于声明支持的
 structured semantics和target，只要baseline合法域内存在可执行completion，`none`必须结束于accepted CardExecutable；没有
@@ -745,15 +749,22 @@ trial、typed relation/role和四态outcome服务baseline及未来spatial mechan
 multi-result、init/support relation与production carrier gate已经受测，不再属于Q51.Core待修接口。
 
 Q49.P仍在闭合baseline functional legalization、single-root structure、scope escalation、direct causal witness和search-policy
-隔离；其动态缺口只看`tasks/progress.md`与实施计划。主线仍有下列设计差距：
+隔离；其动态缺口只看`tasks/progress.md`与实施计划。current function-scope routing、无Card/Tile shell的single-Tile入口、
+storage-root memo、DDR boundary kernel和reduction temporal materialization只作为新baseline mechanism融合，不形成第二条控制线。
+主线仍有下列设计差距：
 
-- baseline仍复用search-oriented candidate/domain evaluator、stable ordinal/proposal ordering、candidate统计和group
-  materialization，同Tile的多个独立structured root可能进入同一TileRegion；零fused-edge统计掩盖了
-  SPM/lifetime/lowering scope耦合；
-- temporal refinement前后仍重复完整CardModule materialization，scoped路径仍会形成包含no-work Tile的card-shaped
-  wrapper；requires-ancestor-scope没有在最近合法scope完成probe；
-- SPM failure attribution仍可能从DAG edge和相同type/shape反推受影响producer并扩大refinement，缺少从实际
-  lifetime/packing到当前single root及其temporal assignment的direct typed causal witness；
+- baseline仍生成全部iterator-axis×connected-rectangle placement options，经domain propagation与recursive solve取一个结果，
+  并继续复用search statistics/result owner；固定打印零placement enumeration不能证明policy隔离；
+- 第一个trial仍先完整materialize CardModule；refinement后scoped入口虽已无card-shaped/no-work wrapper，却仍clone/prepare完整
+  TensorProgram并物化该Tile全部root，fit后再次回到完整CardModule，尚未形成从一开始single-root/single-Tile的trial；
+- function-scope probe已经typed routing到真实planning sequence，但clone/body-swap/bufferization后的relation completeness与final
+  gate不一致；current remap/retain可以省略witness，root-boundary SPM reload也没有同步retarget consumer operand relation；
+- one-root结构仍由whole-Tile materialization后的post-hoc splitter修补，validator只拒绝多root而接受zero-root，且splitter存在固定
+  轮数；终态必须由resolved singleton boundary直接materialize region，DS DDR/SSA移动能力迁入该mechanism后旧split控制退出；
+- capacity attribution对无direct relation的allocation仍会按唯一root猜测，且all-unattributed与mixed证据受局部bool更新顺序影响；
+  缺少从actual lifetime/packing到当前single root及temporal assignment的all-and-only typed witness；
+- accepted Q50.0 executable之后仍构造未消费的schedule/duration并默认打印全部Tile IR；baseline temporal fallback还写入旧search
+  feedback/statistics；
 - placement production transition仍过早消费physical edge strategy；Q50.B尚未从all-iterator semantics生成完整multi-axis、
   remainder、reduction/merge和非矩形physical placement域；
 - candidate、shortlist、repair与完整编译混在单体synthesis文件；

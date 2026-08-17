@@ -339,9 +339,10 @@
   归typed comparator。`verifyReductionSplitNumericLegality`对`addf`直接合法；`preservesSequentialReductionOrder`事实只保留给
   整数combiner分支——整数no-wrap/overflow语义是唯一剩余barrier。
 - 防复发：新增reduction split/树合法化时只按整数overflow语义设barrier，不得以源combiner顺序、`fastmath` attr或
-  lexicographic前轴条件拒绝浮点split；负例构造注意纯reduction标量输出没有parallel轴，placement domain本就不表达
-  （见`tasks/plans/physical-dataflow-synthesis.md` Q49.P gate），且浮点demand都可缩到最小合法vector，「最小tile超SPM」的
-  浮点capacity反例当前lowering下不可构造。
+  lexicographic前轴条件拒绝浮点split。纯reduction标量输出没有parallel轴时仍必须先构造all-factor=1、one-Tile的typed
+  unpartitioned functional coordinate；current placement domain表达不了是baseline implementation gap，不能用来跳过temporal
+  split或把source判unsupported。已知「最小tile超SPM」反例在current lowering下未形成合法terminal proof时，只保留typed
+  capacity/unsupported出口，不用无关placement失败冒充负例。
 
 ## Affine-window convolution不能退化成projected-permutation generic
 
@@ -735,7 +736,7 @@
 - 防复发：owner测试必须在返回后覆盖同inode、删除/替换原path，并继续从owner读取已签发内容；还要检查descriptor不泄漏。
   只断言move trait、root字符串和digest相等不能证明ownership。
 
-## Baseline probe-fit与final SPM planning可能分歧（Q49.P，已修复 2026-08-17）
+## Baseline probe-fit与final SPM planning的scope和witness必须分别对齐
 
 - 现象：`CardExecutableSynthesisTest.NoneJointlyRefinesExplicitProducerStageAndConsumerDemand`（transpose+
   fill→matmul 4096规模、none policy）在2026-08-16的HEAD（22eb9931）即失败：一次temporal refinement
@@ -746,11 +747,17 @@
 - 修复：Q49.P新增函数级probe `evaluateTileFunctionSPMCapacity`（clone Tile FuncOp后跑与最终gate相同的
   `instr-memory-planning-preparation`+`assign-spm-offsets`序列）；`RequiresFunctionScope`是scope
   escalation请求：提升到最近合法IsolatedFromAbove ancestor（该Tile的FuncOp），其typed verdict作为该
-  region的结论；无法在准确scope得出结论时indeterminate中止，不再跳过。probe与final由此消费同一demand
-  集合。
-- 防复发：probe若克隆IR，evidence attribution必须经clone-side relations（`StructuredBufferReplacementListener`
-  + remap），且attribution的witness收集要沿store/load/view链找transfer端点（DDR wave两端不通过SSA
-  别名与wave buffer相连，直接storage-root匹配会miss）。
+  region的结论；无法在准确scope得出结论时indeterminate中止，不再跳过。这只修复scope routing，不能单独证明
+  probe与final拥有相同witness/evidence。
+- 后续复核：`remapStructuredBufferRelations`会省略unmapped entry，body-swap caller只检查剩余value是否live；final
+  memory-planning preparation还会`retainCurrentStructuredBufferRelations`静默丢掉stale relation，而function probe对同类
+  stale relation返回AnalysisFailure。root-boundary split把consumer改到新SPM reload时，旧prefix buffer仍live也会让liveness
+  check假通过。因此“跑了同一pass pipeline”不等于relation/evidence parity。
+- 防复发：probe若克隆或改写IR，evidence attribution必须经complete clone-side relations（replacement listener、显式
+  old→new mapping或current-IR重建），并核对应保留relation的数量、role和actual consumer/result/output endpoint；禁止用省略、
+  retain/drop把missing witness变成成功。attribution的witness收集还要沿store/load/view链找transfer端点（DDR wave两端不通过
+  SSA别名与wave buffer相连，直接storage-root匹配会miss）。测试必须使用非空result/operand/output relations并比较probe/final
+  certificate，空relations正例只能证明planner sequence可运行。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
 

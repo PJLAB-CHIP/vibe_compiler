@@ -319,8 +319,9 @@ current target容量、target-model能力或host预算不足，必须按stage报
    TileRegion恰有一个structured compute root和必要non-root support closure，同Tile多root形成多个顺序region，跨root shaped
    dependency显式DDR；root cardinality按materialization relation映回structured DAG node，显式init producer不能伪装成
    support，而一个root lower成多个compute/instruction op不能误判成多root；region-local probe在需要call/function lifetime时
-   提升到最近合法isolated ancestor。capacity rejection的typed witness将all-and-only conflict owner直接关联到当前single
-   root及其temporal assignment，unsupported witness命名typed lifetime/call relation和实际scope，equal-shape fanin不扩大
+   提升到最近合法isolated ancestor。split/clone/bufferization后的relation必须仍指向actual current consumer/result/output buffer；
+   “旧value仍live”不能替代relation语义完整性，unmapped/stale witness也不得被retain/drop后视为成功。capacity rejection的typed
+   witness将all-and-only conflict owner直接关联到当前single root及其temporal assignment，unsupported witness命名typed lifetime/call relation和实际scope，equal-shape fanin不扩大
    归因；scoped probe不构造card-shaped/no-work-Tile wrapper，完整CardModule materialization与CardExecutable compilation各
    一次。Q49.P还必须从没有selected assignment的正常TensorProgram证明功能闭环：初始完整temporal tile因精确
    operand/halo/result/temporary/movement/alignment/bank/lifetime footprint超出SPM时，controller沿不截断的合法breakpoint
