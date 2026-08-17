@@ -777,17 +777,30 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
       return op->emitOpError("reduce dimensions must be unique");
   }
 
+  // The canonical rank-reduced result drops every reduced dimension. The
+  // complete-reduction boundary instead keeps the source rank with extent
+  // one on each reduced dimension (a constant-position output map); every
+  // other rank mismatch stays illegal.
+  const bool extentOneBoundary =
+      resultTensor->getRank() == inputTensor->getRank() &&
+      llvm::all_of(reducedDims, [&](int64_t dim) {
+        return !hasStaticMismatch(resultTensor->getDimSize(dim), 1);
+      });
   if (resultTensor->getRank() !=
-      inputTensor->getRank() - static_cast<int64_t>(dims.size()))
+          inputTensor->getRank() - static_cast<int64_t>(dims.size()) &&
+      !extentOneBoundary)
     return op->emitOpError(
-        "reduce result rank must match input rank minus reduce dimensions");
+        "reduce result rank must match input rank minus reduce dimensions, "
+        "or the complete-reduction boundary with extent-one reduced "
+        "positions");
 
   int64_t resultDim = 0;
   for (int64_t inputDim = 0; inputDim < inputTensor->getRank(); ++inputDim) {
     if (reducedDims.contains(inputDim))
       continue;
+    const int64_t resultPosition = extentOneBoundary ? inputDim : resultDim;
     if (hasStaticMismatch(inputTensor->getDimSize(inputDim),
-                          resultTensor->getDimSize(resultDim)))
+                          resultTensor->getDimSize(resultPosition)))
       return op->emitOpError(
           "reduce result shape must match non-reduced input dimensions");
     ++resultDim;

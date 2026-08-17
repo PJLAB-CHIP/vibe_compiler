@@ -184,6 +184,13 @@ public:
   IndexRelationQueryResult
   implies(const IndexRelation &other,
           const IndexRelationLimits &limits = IndexRelationLimits()) const;
+  /// True when construction already proves the relation single-valued and
+  /// total over its destination box (an affine map flattened to Presburger
+  /// constraints with static shape bounds). Callers may skip redundant
+  /// generic domain/range containment proofs for such relations.
+  bool hasExactAffineMapConstruction() const {
+    return functionalByConstruction;
+  }
 
 private:
   mlir::presburger::PresburgerRelation relation;
@@ -199,6 +206,11 @@ private:
   std::optional<llvm::SmallVector<int64_t, 4>>
       projectedRectangleDestinationShape;
   std::optional<llvm::SmallVector<int64_t, 4>> projectedRectangleSourceShape;
+  /// True when construction already proves the relation single-valued (for
+  /// example an affine map flattened to Presburger constraints). The
+  /// functionality query returns proven-true without running the generic
+  /// self-composition proof for such relations.
+  bool functionalByConstruction = false;
 
   friend struct IndexRelationResult;
 };

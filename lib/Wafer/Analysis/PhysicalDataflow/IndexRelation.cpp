@@ -272,6 +272,9 @@ IndexRelationResult IndexRelation::fromAffineMap(
       finishExactOrBound(std::move(relation), isBound, limits);
   if (!result.isExact())
     return result;
+  // An affine map is single-valued by construction; the flattened relation
+  // preserves that property.
+  result.relation->functionalByConstruction = true;
   // A projected permutation map is a rectangle pattern by construction: the
   // relation is exactly the map, so no equivalence proof is required. The
   // pattern enables the arithmetic rectangular image/preimage fast paths.
@@ -291,6 +294,26 @@ IndexRelationResult IndexRelation::fromAffineMap(
       pattern.push_back(-1);
     }
     if (valid && pattern.size() == map.getNumResults()) {
+      result.relation->projectedRectanglePattern = std::move(pattern);
+      result.relation->projectedRectangleDestinationShape =
+          llvm::SmallVector<int64_t, 4>(destinationShape);
+      result.relation->projectedRectangleSourceShape =
+          llvm::SmallVector<int64_t, 4>(sourceShape);
+    }
+  } else {
+    // A complete-reduction map sends every destination iterator to a
+    // constant position: the relation is exactly "every destination point
+    // covers the complete source domain". Attach the closed-form full-image
+    // pattern (-2 = unconstrained source dimension) so the arithmetic
+    // rectangle fast paths never enter generic Presburger equality recovery.
+    const bool allConstantZeroDestination = llvm::all_of(
+        map.getResults(), [](mlir::AffineExpr expression) {
+          auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+          return constant && constant.getValue() == 0;
+        });
+    if (allConstantZeroDestination &&
+        map.getNumResults() == sourceShape.size()) {
+      llvm::SmallVector<int64_t, 4> pattern(sourceShape.size(), -2);
       result.relation->projectedRectanglePattern = std::move(pattern);
       result.relation->projectedRectangleDestinationShape =
           llvm::SmallVector<int64_t, 4>(destinationShape);
@@ -354,6 +377,27 @@ IndexRelationResult IndexRelation::fromCommonIterationDomain(
               llvm::SmallVector<int64_t, 4>(sourceShape);
         }
       }
+    }
+  } else {
+    // A complete-reduction destination maps every iterator to a constant
+    // position, so no inverse permutation exists. The composed relation is
+    // still exactly "every destination point covers the complete source
+    // domain"; attach the closed-form full-image pattern so the arithmetic
+    // rectangle fast paths never enter generic Presburger equality
+    // recovery. An unconstrained source dimension is encoded as -2.
+    const bool allConstantZeroDestination = llvm::all_of(
+        iterationToDestination.getResults(), [](mlir::AffineExpr expression) {
+          auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+          return constant && constant.getValue() == 0;
+        });
+    if (allConstantZeroDestination &&
+        iterationToDestination.getNumResults() == iterationShape.size()) {
+      llvm::SmallVector<int64_t, 4> pattern(sourceShape.size(), -2);
+      result.relation->projectedRectanglePattern = std::move(pattern);
+      result.relation->projectedRectangleDestinationShape =
+          llvm::SmallVector<int64_t, 4>(destinationShape);
+      result.relation->projectedRectangleSourceShape =
+          llvm::SmallVector<int64_t, 4>(sourceShape);
     }
   }
   return result;
@@ -692,8 +736,16 @@ IndexRelationResult IndexRelation::intersectDestinationDomain(
   if (exceedsRelationLimits(restricted, limits))
     return fail(IndexRelationStatus::ResourceExhausted,
                 "destination-domain intersection exceeds budget");
-  return IndexRelationResult{
-      status, IndexRelation(std::move(restricted), status), {}};
+  // Restricting the domain keeps the map semantics: the closed-form
+  // rectangle pattern survives the intersection unchanged.
+  IndexRelation restrictedRelation(std::move(restricted), status);
+  restrictedRelation.functionalByConstruction = functionalByConstruction;
+  restrictedRelation.projectedRectanglePattern = projectedRectanglePattern;
+  restrictedRelation.projectedRectangleDestinationShape =
+      projectedRectangleDestinationShape;
+  restrictedRelation.projectedRectangleSourceShape =
+      projectedRectangleSourceShape;
+  return IndexRelationResult{status, std::move(restrictedRelation), {}};
 }
 
 IndexRelationResult
@@ -706,8 +758,16 @@ IndexRelation::intersectSourceDomain(const PresburgerSet &domain,
   if (exceedsRelationLimits(restricted, limits))
     return fail(IndexRelationStatus::ResourceExhausted,
                 "source-domain intersection exceeds budget");
-  return IndexRelationResult{
-      status, IndexRelation(std::move(restricted), status), {}};
+  // Restricting the range keeps the map semantics: the closed-form
+  // rectangle pattern survives the intersection unchanged.
+  IndexRelation restrictedRelation(std::move(restricted), status);
+  restrictedRelation.functionalByConstruction = functionalByConstruction;
+  restrictedRelation.projectedRectanglePattern = projectedRectanglePattern;
+  restrictedRelation.projectedRectangleDestinationShape =
+      projectedRectangleDestinationShape;
+  restrictedRelation.projectedRectangleSourceShape =
+      projectedRectangleSourceShape;
+  return IndexRelationResult{status, std::move(restrictedRelation), {}};
 }
 
 IndexSetResult IndexRelation::image(const PresburgerSet &destinationDomain,
@@ -754,6 +814,18 @@ StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
          llvm::enumerate(*projectedRectanglePattern)) {
       const int64_t sourceExtent =
           (*projectedRectangleSourceShape)[sourceDimension];
+      if (mappedDimension == -2) {
+        // Unconstrained source dimension of a complete-reduction relation:
+        // the image covers the complete source extent for every destination
+        // rectangle.
+        if (sourceExtent <= 0) {
+          sourceBoundsPreserveProjection = false;
+          break;
+        }
+        result.offsets.push_back(0);
+        result.sizes.push_back(sourceExtent);
+        continue;
+      }
       if (mappedDimension >= 0) {
         const unsigned position = static_cast<unsigned>(mappedDimension);
         int64_t upper = 0;
@@ -783,6 +855,9 @@ StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
       staticRectangularDomain(destinationOffsets, destinationSizes, limits);
   if (!destination.isExact())
     return failRectangle(destination.status, destination.reason);
+  llvm::errs() << "IMGFALLBACK-DEBUG generic image path rank="
+               << getDestinationRank() << "->" << getSourceRank()
+               << "\n";
   IndexSetResult exactImage = image(*destination.set, limits);
   return exactImage.getExactStaticRectangularDomain(limits);
 }
@@ -821,6 +896,11 @@ IndexRelation::preimage(const PresburgerSet &sourceDomain,
             (*projectedRectangleDestinationShape)[destinationDim];
       for (unsigned sourceDim = 0; sourceDim < getSourceRank(); ++sourceDim) {
         const int64_t mapped = (*projectedRectanglePattern)[sourceDim];
+        if (mapped == -2) {
+          // Unconstrained source dimension: the destination domain is fully
+          // covered and the destination rectangle is the complete shape.
+          continue;
+        }
         if (mapped < 0) {
           if (!(source.offsets[sourceDim] <= 0 &&
                 0 < source.offsets[sourceDim] + source.sizes[sourceDim]))
@@ -865,6 +945,8 @@ IndexRelation::isFunctional(const IndexRelationLimits &limits) const {
   if (status != IndexRelationStatus::Exact)
     return failQuery(IndexRelationStatus::SoundBound,
                      "functionality requires an exact relation");
+  if (functionalByConstruction)
+    return IndexRelationQueryResult{IndexRelationStatus::Exact, true, {}};
   PresburgerRelation sharedDestination = relation;
   sharedDestination.inverse();
   sharedDestination.compose(relation);
@@ -883,6 +965,41 @@ IndexRelation::isInjective(const IndexRelationLimits &limits) const {
   if (status != IndexRelationStatus::Exact)
     return failQuery(IndexRelationStatus::SoundBound,
                      "injectivity requires an exact relation");
+  if (projectedRectanglePattern && projectedRectangleDestinationShape) {
+    const llvm::SmallVector<int64_t, 4> &pattern =
+        *projectedRectanglePattern;
+    const llvm::SmallVector<int64_t, 4> &destinationShape =
+        *projectedRectangleDestinationShape;
+    // Closed-form injectivity for the rectangle pattern. An unconstrained
+    // (-2) source dimension means every destination point covers the
+    // complete source: injective only for a single-point destination. A
+    // constant (-1) source dimension pins its value; the destination dims
+    // it does not cover must then be extent one.
+    if (llvm::is_contained(pattern, int64_t{-2}))
+      return IndexRelationQueryResult{
+          IndexRelationStatus::Exact,
+          llvm::all_of(destinationShape,
+                       [](int64_t extent) { return extent == 1; }),
+          {}};
+    llvm::SmallVector<int64_t, 4> coverage(destinationShape.size(), 0);
+    for (int64_t mapped : pattern) {
+      if (mapped < 0)
+        continue;
+      if (static_cast<size_t>(mapped) >= coverage.size())
+        return failQuery(IndexRelationStatus::SoundBound,
+                         "rectangle pattern is out of destination rank");
+      ++coverage[mapped];
+    }
+    for (auto [dimension, count] : llvm::enumerate(coverage)) {
+      if (count > 1)
+        return IndexRelationQueryResult{
+            IndexRelationStatus::Exact, false, {}};
+      if (count == 0 && destinationShape[dimension] != 1)
+        return IndexRelationQueryResult{
+            IndexRelationStatus::Exact, false, {}};
+    }
+    return IndexRelationQueryResult{IndexRelationStatus::Exact, true, {}};
+  }
   PresburgerRelation inverseRelation = relation;
   inverseRelation.inverse();
   PresburgerRelation sharedSource = relation;

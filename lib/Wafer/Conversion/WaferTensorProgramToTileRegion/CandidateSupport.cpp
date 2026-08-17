@@ -173,6 +173,10 @@ buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
 
   llvm::DenseMap<unsigned, unsigned> resultDimForLoopDim;
   for (auto [resultDim, expr] : llvm::enumerate(outputMap.getResults())) {
+    if (mlir::isa<mlir::AffineConstantExpr>(expr))
+      // A constant-position extent-one result dimension is not mapped from
+      // any loop dimension; its complete slice is part of every output tile.
+      continue;
     auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr);
     if (!dimExpr) {
       setFailureReason(failureReason,

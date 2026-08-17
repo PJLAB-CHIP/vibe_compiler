@@ -33,6 +33,12 @@ struct StructuredDAGNodePlacement {
   /// implementation exposes a legal cross-Tile reduction transition.
   unsigned spatialIteratorDimension = 0;
   llvm::SmallVector<uint32_t, 4> iteratorPartitionFactors;
+  /// True for the unpartitioned canonical coordinate of a root without any
+  /// parallel result axis: exactly one participating Tile, unit partition
+  /// factors over every iterator and the complete result domain. The shard
+  /// fields above are unused in that state; consumers must treat the root
+  /// as fully owned by its single Tile instead of sharding any axis.
+  bool unpartitioned = false;
 };
 
 /// One producer-to-consumer edge domain that remains on a Tile.

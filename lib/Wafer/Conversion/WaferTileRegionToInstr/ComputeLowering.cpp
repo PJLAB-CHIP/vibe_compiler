@@ -646,12 +646,22 @@ public:
       else
         nonReducedDims.push_back(inputDim);
     }
-    if (static_cast<int64_t>(nonReducedDims.size()) != resultType.getRank())
+    // The complete-reduction boundary keeps the source rank with extent one
+    // on every reduced dimension (constant-position output map); the
+    // canonical form drops the reduced dimensions entirely.
+    const bool extentOneBoundary =
+        resultType.getRank() == inputType.getRank() &&
+        llvm::all_of(reducedDims, [&](int64_t dim) {
+          return resultType.getDimSize(dim) == 1;
+        });
+    if (!extentOneBoundary &&
+        static_cast<int64_t>(nonReducedDims.size()) != resultType.getRank())
       return failPattern(
           rewriter, op,
           "tile.reduce result rank does not match non-reduced dimensions");
     for (auto [resultDim, inputDim] : llvm::enumerate(nonReducedDims))
-      if (resultType.getDimSize(resultDim) != inputType.getDimSize(inputDim))
+      if (resultType.getDimSize(extentOneBoundary ? inputDim : resultDim) !=
+          inputType.getDimSize(inputDim))
         return failPattern(
             rewriter, op,
             "tile.reduce result shape does not match non-reduced dimensions");

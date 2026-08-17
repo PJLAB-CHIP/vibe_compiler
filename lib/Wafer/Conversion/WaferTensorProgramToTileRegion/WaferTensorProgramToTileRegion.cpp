@@ -210,6 +210,14 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         "analysis-phase", "convertTensorProgramToTileRegionModuleInPlace",
         "verify");
     if (mlir::failed(mlir::verify(module))) {
+      mlir::ScopedDiagnosticHandler dumpHandler(
+          module.getContext(),
+          [&](mlir::Diagnostic &diagnostic) {
+            diagnostic.print(llvm::errs());
+            llvm::errs() << "\n";
+            return mlir::success();
+          });
+      (void)mlir::verify(module);
       setFailureReason(failureReason,
                        "lowered tile-region module failed verifier");
       return mlir::failure();

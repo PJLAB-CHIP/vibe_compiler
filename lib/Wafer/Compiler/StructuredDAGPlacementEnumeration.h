@@ -18,6 +18,24 @@
 #include <string>
 
 namespace wafer::compiler::detail {
+/// One static spatial (parallel-iterator) axis of a structured node: the
+/// iterator dimension, its mapped result dimension, its static extent and
+/// the unit partition factors the canonical coordinate starts from.
+struct StaticSpatialAxis {
+  unsigned iteratorDimension = 0;
+  unsigned resultDimension = 0;
+  uint64_t extent = 0;
+  llvm::SmallVector<uint32_t, 4> basePartitionFactors;
+};
+
+/// The typed spatial-axis facts of one node, sorted by descending result
+/// extent. Empty when the node has no parallel result axis; an unpartitioned
+/// canonical coordinate (one Tile, unit factors, full result domain) is the
+/// caller's degradation for that case, never a fabricated shard axis.
+std::optional<llvm::SmallVector<StaticSpatialAxis, 4>>
+getNodeSpatialAxes(const StructuredDAGNode &node);
+
+
 
 /// Physical placement of one observable function result.  Every structured
 /// root of the result has the same node placement; the query-local record can

@@ -787,8 +787,24 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
     // Affine window expressions are the canonical structured representation
     // of convolution. Admit them only when Linalg itself proves convolution
     // dimensions; all other non-projected maps remain unsupported rather than
-    // falling through a generic or name-based route.
+    // falling through a generic or name-based route. A scalar/reduction
+    // boundary whose result dims are constant positions (extent one, the
+    // complete result slice of an unpartitioned coordinate) is admitted on
+    // top of projected permutations.
+    const bool mapsAreProjectedOrConstant = [&] {
+      for (mlir::Attribute attribute : linalg.getIndexingMaps()) {
+        auto mapAttribute = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
+        if (!mapAttribute)
+          return false;
+        for (mlir::AffineExpr expression : mapAttribute.getValue().getResults())
+          if (!mlir::isa<mlir::AffineDimExpr, mlir::AffineConstantExpr>(
+                  expression))
+            return false;
+      }
+      return true;
+    }();
     if (!linalg.hasOnlyProjectedPermutations() &&
+        !mapsAreProjectedOrConstant &&
         mlir::failed(mlir::linalg::inferConvolutionDims(linalg)))
       return fail("unsupported linalg indexing maps");
     return convertStructured(

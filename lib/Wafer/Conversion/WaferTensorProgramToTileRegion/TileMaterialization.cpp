@@ -452,6 +452,12 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
   for (auto [resultDimension, expression] :
        llvm::enumerate(indexingMaps[outputMapIndex].getResults())) {
     auto loopDimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+    if (mlir::isa<mlir::AffineConstantExpr>(expression)) {
+      // A result dimension that does not project any loop iterator is a
+      // constant-position extent-one slice of the complete result; its full
+      // requested extent is the tile and no sub-traversal exists for it.
+      continue;
+    }
     if (!loopDimension ||
         loopDimension.getPosition() >= selected->iteratorTileSizes.size()) {
       setFailureReason(
@@ -872,6 +878,13 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
   for (auto [resultDimension, expression] :
        llvm::enumerate(maps[outputMapIndex].getResults())) {
     auto loopDimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+    if (mlir::isa<mlir::AffineConstantExpr>(expression)) {
+      // A result dimension that does not project any loop iterator is a
+      // constant-position extent-one slice of the complete result; its full
+      // requested extent is the tile and no split exists for it.
+      parallelTileSizes.push_back(requestedOutputSizes[resultDimension]);
+      continue;
+    }
     if (!loopDimension ||
         loopDimension.getPosition() >= selected->iteratorTileSizes.size()) {
       setFailureReason(

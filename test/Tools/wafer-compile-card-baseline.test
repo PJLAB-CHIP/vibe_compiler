@@ -28,7 +28,7 @@
 # RUN: wafer-run --package-dir %t.cross-package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
 
 # CHAIN-NOT: card-executable-search policy=none
-# CHAIN: wafer-compile: card-executable-baseline-controller search_states=0 placement_enumeration=0 candidate_family=0
+# CHAIN: wafer-compile: card-executable-baseline-controller
 # CHAIN-SAME: full_compilations=1
 # CHAIN: wafer-compile: card-executable-baseline-admission
 # CHAIN-SAME: active_tiles=16
@@ -43,7 +43,7 @@
 # SPATIAL: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 
 # CROSS-NOT: card-executable-search policy=none
-# CROSS: wafer-compile: card-executable-baseline-controller search_states=0 placement_enumeration=0 candidate_family=0
+# CROSS: wafer-compile: card-executable-baseline-controller
 # CROSS-SAME: full_compilations=1
 # CROSS: wafer-compile: card-executable-baseline-admission
 # CROSS-SAME: active_tiles=16

@@ -80,6 +80,24 @@ PhysicalLayoutRelation::create(mlir::MemRefType type,
       return mlir::failure();
   }
 
+  // Layout pieces are per-dimension bounded boxes (getPieceDomain builds one
+  // lower/upper bound per dimension), so pairwise disjointness is a plain
+  // interval-overlap test. The generic integer-emptiness proof on the
+  // same boxes can enter unbounded Presburger simplex pivoting and is never
+  // needed for the rectangle case.
+  auto rectanglesOverlap = [&](const WaferPhysicalLayoutPiece &lhs,
+                               const WaferPhysicalLayoutPiece &rhs) {
+    for (auto [dim, bounds] : llvm::enumerate(
+             llvm::zip_equal(lhs.logicalLowerBounds, lhs.logicalUpperBounds,
+                             rhs.logicalLowerBounds, rhs.logicalUpperBounds))) {
+      auto [lhsLower, lhsUpper, rhsLower, rhsUpper] = bounds;
+      if (lhsLower >= rhsUpper || rhsLower >= lhsUpper)
+        return false;
+    }
+    return true;
+  };
+  llvm::SmallVector<WaferPhysicalLayoutPiece, 2> previousPieces;
+
   std::optional<PresburgerRelation> combined;
   std::optional<PresburgerRelation> combinedOrdinals;
   llvm::SmallVector<PresburgerSet, 2> pieceDomains;
@@ -100,9 +118,10 @@ PhysicalLayoutRelation::create(mlir::MemRefType type,
         getPieceDomain(type.getShape(), piece);
     if (!pieceDomain)
       return mlir::failure();
-    for (const PresburgerSet &existing : pieceDomains)
-      if (!existing.intersect(*pieceDomain).isIntegerEmpty())
+    for (const WaferPhysicalLayoutPiece &previous : previousPieces)
+      if (rectanglesOverlap(previous, piece))
         return mlir::failure();
+    previousPieces.push_back(piece);
     pieceDomains.push_back(*pieceDomain);
     IndexRelationResult pieceRelation = IndexRelation::fromAffineMap(
         piece.logicalToPhysicalBitOffset, type.getShape(), {offsetDomainSize},
@@ -150,13 +169,26 @@ PhysicalLayoutRelation::create(mlir::MemRefType type,
   IndexRelation relation(std::move(*combined), IndexRelationStatus::Exact);
   IndexRelation ordinalRelation(std::move(*combinedOrdinals),
                                 IndexRelationStatus::Exact);
-  IndexSetResult logicalDomain =
-      IndexRelation::staticDomain(type.getShape(), limits);
-  if (!logicalDomain.isExact() ||
-      !relation.getPresburgerRelation().getDomainSet().isEqual(
-          *logicalDomain.set) ||
-      !ordinalRelation.getPresburgerRelation().getDomainSet().isEqual(
-          *logicalDomain.set))
+  // The piece boxes are pairwise disjoint axis-aligned rectangles. Disjoint
+  // rectangles cover the complete logical domain exactly when their volumes
+  // sum to the domain volume; the generic set-equality proof on the same
+  // boxes can enter unbounded Presburger elimination and is never needed
+  // for the rectangle case.
+  int64_t totalVolume = 1;
+  for (int64_t extent : type.getShape())
+    if (llvm::MulOverflow(totalVolume, extent, totalVolume))
+      return mlir::failure();
+  int64_t coveredVolume = 0;
+  for (const WaferPhysicalLayoutPiece &piece : *pieces) {
+    int64_t pieceVolume = 1;
+    for (auto [lower, upper] : llvm::zip_equal(
+             piece.logicalLowerBounds, piece.logicalUpperBounds))
+      if (llvm::MulOverflow(pieceVolume, upper - lower, pieceVolume))
+        return mlir::failure();
+    if (llvm::AddOverflow(coveredVolume, pieceVolume, coveredVolume))
+      return mlir::failure();
+  }
+  if (coveredVolume != totalVolume)
     return mlir::failure();
 
   return PhysicalLayoutRelation(type, std::move(relation),

@@ -81,14 +81,6 @@ struct CardExecutableSynthesisStatistics {
   analysis::ExactDemandStatus demandAbortStatus =
       analysis::ExactDemandStatus::Satisfied;
   std::string demandAbortDetail;
-  uint64_t baselineCardModuleMaterializations = 0;
-  uint64_t baselineScopedCardModuleMaterializations = 0;
-  uint64_t baselineRegionSPMCapacityChecks = 0;
-  uint64_t baselineRegionSPMCapacityOverflowProofs = 0;
-  uint64_t baselineRegionSPMChecksRequiringFunctionScope = 0;
-  uint64_t baselineFunctionScopedSPMCapacityChecks = 0;
-  uint64_t baselineRegionSPMCapacityAnalysisFailures = 0;
-  uint64_t baselineMaximumRegionSPMQueryWorkers = 1;
   uint64_t multiReductionAxisCandidateMaterializations = 0;
   uint64_t nodePlacementCandidateMaterializations = 0;
   uint64_t multiStagePlacementCandidateMaterializations = 0;
@@ -144,6 +136,33 @@ struct CardExecutableSynthesisStatistics {
   CardExecutableLoweringStatistics exactGates;
   uint64_t selectedExecutableRematerializations = 0;
   CardExecutableLoweringStatistics selectedExecutableRematerializationGates;
+};
+
+/// Policy-free baseline work ledger. The deterministic baseline records only
+/// these counters; the candidate search statistics bag is not in its call
+/// closure. None of these values is persisted in IR or package files.
+struct DeterministicBaselineLedger {
+  /// Closed per-edge single-coordinate exact-demand queries: the baseline
+  /// queries each structured edge exactly once against the one closed
+  /// producer/consumer shard pair.
+  uint64_t exactDemandSatisfiedEdges = 0;
+  /// Typed abort state when the baseline stopped for unsupported semantics or
+  /// an indeterminate failure. Diagnostic only.
+  analysis::ExactDemandStatus demandAbortStatus =
+      analysis::ExactDemandStatus::Satisfied;
+  std::string demandAbortDetail;
+  uint64_t baselineCardModuleMaterializations = 0;
+  uint64_t baselineScopedCardModuleMaterializations = 0;
+  uint64_t baselineRegionSPMCapacityChecks = 0;
+  uint64_t baselineRegionSPMCapacityOverflowProofs = 0;
+  uint64_t baselineRegionSPMChecksRequiringFunctionScope = 0;
+  uint64_t baselineFunctionScopedSPMCapacityChecks = 0;
+  uint64_t baselineRegionSPMCapacityAnalysisFailures = 0;
+  uint64_t baselineMaximumRegionSPMQueryWorkers = 1;
+  uint64_t materializationRejections = 0;
+  uint64_t indeterminateCompilationFailures = 0;
+  uint64_t rotatingSlotAllocationsMaterialized = 0;
+  CardExecutableLoweringStatistics exactGates;
 };
 
 /// Query result at the TensorProgram-to-executable boundary. The executable IR
@@ -203,6 +222,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics *statistics = nullptr,
+    DeterministicBaselineLedger *baselineLedger = nullptr,
     unsigned tilePipelineParallelism = 0, bool requestTileIRTrace = false);
 
 } // namespace wafer::compiler::detail

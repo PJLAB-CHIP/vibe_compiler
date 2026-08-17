@@ -201,15 +201,29 @@ compileTensorProgramModuleToCardExecutable(
                 std::to_string(*failAfterLaunchSlot));
 
   detail::CardExecutableSynthesisStatistics statistics;
+  detail::DeterministicBaselineLedger baselineLedger;
   const detail::CompileClock::time_point synthesisStart =
       detail::CompileClock::now();
   mlir::FailureOr<detail::CardExecutableSynthesisResult> compiled =
       detail::synthesizeCardExecutable(tensorModule, program, executionConfig,
                                        optimizations, diagnostics, programData,
-                                       &statistics);
+                                       &statistics, &baselineLedger);
   if (mlir::failed(compiled))
     return fail("card executable synthesis failed");
   detail::CardExecutableLoweringResult &accepted = compiled->executable;
+
+  // The deterministic baseline reports work from its narrow ledger; the
+  // search controller from the candidate statistics bag. Exactly one policy
+  // runs per invocation.
+  const detail::CardExecutableLoweringStatistics &exactGates =
+      optimizations.isNone() ? baselineLedger.exactGates : statistics.exactGates;
+  const uint64_t materializationRejections =
+      optimizations.isNone() ? baselineLedger.materializationRejections
+                             : statistics.materializationRejections;
+  const uint64_t indeterminateCompilationFailures =
+      optimizations.isNone()
+          ? baselineLedger.indeterminateCompilationFailures
+          : statistics.indeterminateCompilationFailures;
 
   diagnostics
       << "wafer-compile: compile-stats "
@@ -227,20 +241,20 @@ compileTensorProgramModuleToCardExecutable(
       << " shortlisted_candidates=" << statistics.shortlistedCandidates
       << " materialized_candidates=" << statistics.materializedCandidates
       << " indeterminate_compilation_failures="
-      << statistics.indeterminateCompilationFailures
+      << indeterminateCompilationFailures
       << " baseline_card_program_materializations="
-      << statistics.baselineCardModuleMaterializations
+      << baselineLedger.baselineCardModuleMaterializations
       << " baseline_scoped_card_program_materializations="
-      << statistics.baselineScopedCardModuleMaterializations
+      << baselineLedger.baselineScopedCardModuleMaterializations
       << " baseline_region_spm_capacity_checks="
-      << statistics.baselineRegionSPMCapacityChecks
+      << baselineLedger.baselineRegionSPMCapacityChecks
       << " baseline_region_spm_capacity_overflow_proofs="
-      << statistics.baselineRegionSPMCapacityOverflowProofs
+      << baselineLedger.baselineRegionSPMCapacityOverflowProofs
       << " baseline_region_spm_capacity_analysis_failures="
-      << statistics.baselineRegionSPMCapacityAnalysisFailures
+      << baselineLedger.baselineRegionSPMCapacityAnalysisFailures
       << " baseline_maximum_region_spm_query_workers="
-      << statistics.baselineMaximumRegionSPMQueryWorkers
-      << " materialization_rejections=" << statistics.materializationRejections
+      << baselineLedger.baselineMaximumRegionSPMQueryWorkers
+      << " materialization_rejections=" << materializationRejections
       << " accepted_candidates=" << statistics.acceptedCandidates
       << " selected_stable_ordinal=" << statistics.selectedStableOrdinal
       << " selected_output_mapping_count="
@@ -252,11 +266,11 @@ compileTensorProgramModuleToCardExecutable(
       << " selected_makespan_ps=" << statistics.selectedMakespanPicoseconds
       << " enabled_duration_terms=" << statistics.enabledDurationTerms
       << " target_gate_invocations="
-      << statistics.exactGates.targetLoweringVerificationInvocations
+      << exactGates.targetLoweringVerificationInvocations
       << " card_executable_compilations="
-      << statistics.exactGates.cardModuleCompilationInvocations
+      << exactGates.cardModuleCompilationInvocations
       << " target_tile_gate_invocations="
-      << statistics.exactGates.targetTileLoweringVerificationInvocations
+      << exactGates.targetTileLoweringVerificationInvocations
       << " selected_executable_rematerializations="
       << statistics.selectedExecutableRematerializations
       << " selected_rematerialization_target_gate_invocations="
@@ -266,7 +280,7 @@ compileTensorProgramModuleToCardExecutable(
       << statistics.selectedExecutableRematerializationGates
              .cardModuleCompilationInvocations
       << " tile_pipeline_workers="
-      << statistics.exactGates.maximumTilePipelineWorkers << '\n';
+      << exactGates.maximumTilePipelineWorkers << '\n';
   printAcceptedInstructionWork(diagnostics, accepted);
 
   if (accepted.tiles.size() != compiled->tileDataflowIRTrace.size())

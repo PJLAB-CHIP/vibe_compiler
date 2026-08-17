@@ -157,12 +157,7 @@ deriveTopologyGroups(const TargetTopology &topology, CardId cardId,
   return groups;
 }
 
-struct StaticSpatialAxis {
-  unsigned iteratorDimension = 0;
-  unsigned resultDimension = 0;
-  uint64_t extent = 0;
-  llvm::SmallVector<uint32_t, 4> basePartitionFactors;
-};
+} // namespace
 
 std::optional<llvm::SmallVector<StaticSpatialAxis, 4>>
 getNodeSpatialAxes(const StructuredDAGNode &node) {
@@ -228,6 +223,8 @@ getNodeSpatialAxes(const StructuredDAGNode &node) {
     return std::nullopt;
   return axes;
 }
+
+namespace {
 
 bool samePlacement(const StructuredDAGNodePlacement &lhs,
                    const StructuredDAGNodePlacement &rhs) {
