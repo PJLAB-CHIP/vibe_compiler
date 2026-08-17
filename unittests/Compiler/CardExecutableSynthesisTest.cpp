@@ -871,7 +871,7 @@ static void expectDemandProgramCompletesExecutableGate(
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, metadata, executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
 
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
@@ -1064,7 +1064,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   expectCompleteTileDomain(*executable);
@@ -1125,7 +1125,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, branchMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
@@ -1191,10 +1191,10 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::detail::CardExecutableSynthesisStatistics secondStats;
   auto first = wafer::compiler::detail::synthesizeCardExecutable(
       *firstProgram.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), firstDiagnostics, programData, &firstStats);
+      wafer::OptimizationConfig::none(), firstDiagnostics, programData, &firstStats, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   auto second = wafer::compiler::detail::synthesizeCardExecutable(
       *secondProgram.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), secondDiagnostics, programData, &secondStats);
+      wafer::OptimizationConfig::none(), secondDiagnostics, programData, &secondStats, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   firstDiagnostics.flush();
   secondDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(first)) << firstDiagnosticsText;
@@ -1313,7 +1313,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   expectCompleteTileDomain(*executable);
@@ -1369,7 +1369,7 @@ TEST(CardExecutableSynthesisTest,
   auto repeated = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, programMetadata(), executionConfig(),
       wafer::OptimizationConfig::search(), repeatDiagnostics,
-      programData, &repeatStatistics);
+      programData, &repeatStatistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   repeatDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(repeated)) << repeatDiagnosticsText;
   EXPECT_EQ(repeatStatistics.candidateProposals, statistics.candidateProposals);
@@ -1401,7 +1401,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, branchMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(statistics.dependencyComponentCount, 2u);
@@ -1427,7 +1427,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, dependentProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(statistics.plannedCandidates,
@@ -1458,7 +1458,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, dependentProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.multiStagePlacementCandidateProposals, 0u);
@@ -1489,7 +1489,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, layoutPipelineProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.layoutConversionCandidateProposals, 0u);
@@ -1548,7 +1548,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, twoReductionAxisProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.multiReductionAxisCandidateProposals, 0u);
@@ -1571,12 +1571,14 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *parsed.module, largeProducerStageProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(statistics.materializedCandidates, 0u);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
-  EXPECT_GT(statistics.allocationFeedbackTransitions, 0u);
+  // P7: the baseline temporal fallback is a functional legalization step
+  // and never writes the search feedback bag.
+  EXPECT_EQ(statistics.allocationFeedbackTransitions, 0u);
   EXPECT_NE(diagnosticsText.find("card-executable-baseline-temporal-refinement"),
             std::string::npos)
       << diagnosticsText;
@@ -1597,7 +1599,7 @@ TEST(CardExecutableSynthesisTest,
   auto baseline = wafer::compiler::detail::synthesizeCardExecutable(
       *baselineProgram.module, largeTemporalProgramMetadata(),
       executionConfig(), wafer::OptimizationConfig::none(), baselineDiagnostics, programData,
-      &baselineStatistics);
+      &baselineStatistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   baselineDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(baseline)) << baselineDiagnosticsText;
   // The deterministic controller consumes proven region-capacity overflows
@@ -1665,7 +1667,7 @@ TEST(CardExecutableSynthesisTest,
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   auto executable = wafer::compiler::detail::synthesizeCardExecutable(
       *searchProgram.module, largeTemporalProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics);
+      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
@@ -1713,7 +1715,7 @@ TEST(CardExecutableSynthesisTest,
   auto repeated = wafer::compiler::detail::synthesizeCardExecutable(
       *repeatedProgram.module, largeTemporalProgramMetadata(),
       executionConfig(), wafer::OptimizationConfig::search(),
-      repeatedDiagnostics, programData, &repeatedStatistics);
+      repeatedDiagnostics, programData, &repeatedStatistics, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   repeatedDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(repeated)) << repeatedDiagnosticsText;
   EXPECT_EQ(repeatedStatistics.candidateProposals,

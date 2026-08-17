@@ -4785,6 +4785,7 @@ static mlir::FailureOr<CardExecutableLoweringResult> materializeCandidate(
     CardExecutableSynthesisStatistics *searchStatistics,
     uint64_t &rotatingSlotAllocationsMaterialized,
     uint64_t &actualFusedLogicalEdges, unsigned tilePipelineParallelism,
+    bool requestTileIRTrace,
     std::optional<TileId> preferredFailureProbeTileId, std::string &failureGate,
     std::string &failureReason,
     SelectedBufferMaterializationFailure &selectedBufferFailure,
@@ -4883,7 +4884,8 @@ static mlir::FailureOr<CardExecutableLoweringResult> materializeCandidate(
   CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
       std::move(cardModule), cardId, expectedTileIds, selectedBufferRequests,
       materializationRelations, program, executionConfig, diagnostics,
-      programData, &gateStatistics, tilePipelineParallelism);
+      programData, &gateStatistics, tilePipelineParallelism,
+      requestTileIRTrace);
   rotatingSlotAllocationsMaterialized +=
       compilation.rotatingSlotAllocationsMaterialized;
   if (compilation.isAccepted()) {
@@ -5029,7 +5031,8 @@ synthesizeDeterministicBaseline(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics &statistics,
-    unsigned tilePipelineParallelism, analysis::IREpoch epoch) {
+    unsigned tilePipelineParallelism, bool requestTileIRTrace,
+    analysis::IREpoch epoch) {
   std::optional<ResolvedBaselineAssignment> candidate =
       deriveDeterministicBaseline(topology, cardId, expectedTileIds,
                                   outputDomains, dag, epoch, statistics,
@@ -5489,7 +5492,6 @@ synthesizeDeterministicBaseline(
                 refinedDimension, previousExtent, refinedExtent))
           continue;
 
-        ++statistics.allocationFeedbackTransitions;
         diagnostics
             << "wafer-compile: card-executable-baseline-temporal-refinement"
             << " state=single source="
@@ -5538,7 +5540,7 @@ synthesizeDeterministicBaseline(
         std::move(cardModule), cardId, expectedTileIds,
         /*selectedBufferRequests=*/{}, materializationRelations, program,
         executionConfig, diagnostics, programData, &statistics.exactGates,
-        tilePipelineParallelism);
+        tilePipelineParallelism, requestTileIRTrace);
     statistics.rotatingSlotAllocationsMaterialized +=
         compilation.rotatingSlotAllocationsMaterialized;
     if (!compilation.isAccepted()) {
@@ -5553,30 +5555,11 @@ synthesizeDeterministicBaseline(
       return mlir::failure();
     }
 
+    // The accepted Q50.0 result is the baseline semantic result. No shadow
+    // schedule plan or duration estimate is constructed afterwards: an
+    // unconsumed cost model can never fail a legal executable, and Q51
+    // derives its cohort cost from the accepted Instr/resource facts itself.
     CardExecutableLoweringResult executable = compilation.takeExecutable();
-    llvm::SmallVector<analysis::CardInstructionProgramCost, 16> phaseCosts;
-    mlir::FailureOr<analysis::StaticSchedulePlan> plan =
-        buildAcceptedStructuredDAGSchedulePlan(
-            dag, candidate->nodePlacements,
-            compilation.operationNodeRelations, executable, phaseCosts,
-            &failureReason);
-    if (mlir::failed(plan)) {
-      ++statistics.schedulePlanRejections;
-      diagnostics << "wafer-compile: deterministic card baseline "
-                     "failed accepted schedule plan: "
-                  << failureReason << '\n';
-      return mlir::failure();
-    }
-    llvm::SmallVector<const analysis::StaticSchedulePlan *, 1> plans = {&*plan};
-    llvm::SmallVector<analysis::ProgramDurationEstimate, 16> estimates =
-        analysis::estimateStaticSchedulePlanDurations(
-            plans, analysis::getTargetScheduleCostPolicy());
-    if (estimates.size() != 1) {
-      diagnostics << "wafer-compile: deterministic card baseline "
-                     "duration estimation failed\n";
-      return mlir::failure();
-    }
-
     diagnostics << "wafer-compile: card-executable-baseline-controller"
                 << " search_states=0 placement_enumeration=0 candidate_family=0"
                 << " controller_iterations=" << controllerIterations
@@ -5663,7 +5646,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics *statistics,
-    unsigned tilePipelineParallelism) {
+    unsigned tilePipelineParallelism, bool requestTileIRTrace) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "stage", "tensor-program-to-executable", "card-executable-synthesis");
   if (!tensorProgram || executionConfig.getNumPartitions() != 1 ||
@@ -5739,7 +5722,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     return synthesizeDeterministicBaseline(
         tensorProgram, *topology, cardId, *availableTileIds, *outputDomains,
         *dag, operationNodes, program, executionConfig, diagnostics,
-        programData, resultStatistics, tilePipelineParallelism, epoch);
+        programData, resultStatistics, tilePipelineParallelism, requestTileIRTrace, epoch);
   assert(optimizations.isSearch() &&
          "non-baseline synthesis must use the search controller");
 
@@ -6027,7 +6010,8 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
             resultStatistics.exactGates, &resultStatistics,
             resultStatistics.rotatingSlotAllocationsMaterialized,
             candidateActualFusedLogicalEdges, tilePipelineParallelism,
-            preferredSPMFailureProbeTileId, failureGate, failureReason,
+            requestTileIRTrace, preferredSPMFailureProbeTileId, failureGate,
+            failureReason,
             selectedBufferFailure, indeterminateFailure, spmCapacityOverflow,
             spmCapacityDemands, acceptedOperationNodes, tileDataflowIRTrace);
     if (mlir::failed(accepted)) {
@@ -7581,7 +7565,8 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
           resultStatistics.selectedExecutableRematerializationGates,
           /*searchStatistics=*/nullptr, selectedRotatingSlots,
           selectedActualFusedLogicalEdges, tilePipelineParallelism,
-          /*preferredFailureProbeTileId=*/std::nullopt, selectedFailureGate,
+          requestTileIRTrace, /*preferredFailureProbeTileId=*/std::nullopt,
+          selectedFailureGate,
           failureReason, selectedBufferFailure, selectedIndeterminateFailure,
           selectedSPMCapacityOverflow, selectedSPMCapacityDemands,
           selectedOperationNodes, selectedTileDataflowIRTrace);

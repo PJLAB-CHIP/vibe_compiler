@@ -203,7 +203,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
     const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
     llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics *statistics = nullptr,
-    unsigned tilePipelineParallelism = 0);
+    unsigned tilePipelineParallelism = 0, bool requestTileIRTrace = false);
 
 } // namespace wafer::compiler::detail
 

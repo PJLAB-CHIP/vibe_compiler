@@ -127,7 +127,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics,
-    unsigned tilePipelineParallelism) {
+    unsigned tilePipelineParallelism, bool captureTileIRTrace) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "stage", "card-module-to-executable", "card-executable-compilation");
   if (statistics)
@@ -171,15 +171,28 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
              "card-module-to-tile-modules",
              "CardModule does not contain the expected Tile domain"));
 
+  // Tile IR inspection is an explicit request: production compilation,
+  // candidate evaluation and the deterministic baseline never pay the
+  // printer unless the caller asks for the inspection snapshot.
   std::vector<std::string> tileDataflowIRTrace;
-  tileDataflowIRTrace.reserve(projectedModules->size());
-  for (auto [index, tile] : llvm::enumerate(*projectedModules)) {
-    if (tile.cardId != expectedCardId || tile.tileId != expectedTileIds[index])
-      return reportFailure(
-          fail(CardExecutableCompilationStatus::IndeterminateFailure,
-               "card-module-to-tile-modules",
-               "per-Tile modules changed the selected Tile domain"));
-    tileDataflowIRTrace.push_back(captureTileIR(*tile.module));
+  if (captureTileIRTrace) {
+    tileDataflowIRTrace.reserve(projectedModules->size());
+    for (auto [index, tile] : llvm::enumerate(*projectedModules)) {
+      if (tile.cardId != expectedCardId ||
+          tile.tileId != expectedTileIds[index])
+        return reportFailure(
+            fail(CardExecutableCompilationStatus::IndeterminateFailure,
+                 "card-module-to-tile-modules",
+                 "per-Tile modules changed the selected Tile domain"));
+      tileDataflowIRTrace.push_back(captureTileIR(*tile.module));
+    }
+  } else {
+    for (auto [index, tile] : llvm::enumerate(*projectedModules))
+      if (tile.cardId != expectedCardId || tile.tileId != expectedTileIds[index])
+        return reportFailure(
+            fail(CardExecutableCompilationStatus::IndeterminateFailure,
+                 "card-module-to-tile-modules",
+                 "per-Tile modules changed the selected Tile domain"));
   }
 
   std::vector<TileLoweringResult> loweringResults(projectedModules->size());
