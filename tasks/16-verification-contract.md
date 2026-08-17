@@ -338,9 +338,10 @@ current target容量、target-model能力或host预算不足，必须按stage报
 4. Q51.Core：直接复用Q49.P accepted baseline executable/actual cost作为session-level incumbent，不经search carrier重建，
    也不把baseline choices当未来轴default；Core只以独立finite state-graph model闭合typed transition apply、deterministic
    frontier、stable dedup、global ledger/budget、evaluation routing和coverage/bound evidence。每轴independent reference
-   enumerator随Q50.S/B–K交付，通用actual-region probe归Q50.F。Core checkpoint原子接管public frontier、actual comparison和
-   winner control，既有bounded generation只作显式lossy typed proposal；production flat exhaustive runner、全部联合维度、
-   exact domain和过渡proposal清理由Q51闭合。late exact failure回到同一candidate set，selected IR必须有共享TileRegion，并以
+   enumerator随Q50.S/B–K交付，通用actual-region probe归Q50.F。Core从零建立new-search控制并同批接管public `search`，不适配旧
+   candidate/generator/feedback/selector；旧控制链、旧输出测试和长耗时integration同批删除。production flat exhaustive runner、
+   全部联合维度、exact domain和new source-to-package链由Q51闭合；各Q50机制交付时同步删除对应旧实现。late exact
+   failure回到同一new candidate set，selected IR必须有共享TileRegion，并以
    coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。
 5. Q52：generic/HF/Llama representative load的work、wall、RSS和热点fresh记录；基于实测引入的优化在小图oracle上
    不改变最优结果，代表负载不劣于同源`none`，没有固定shape/tile/fusion/buffer shortcut。

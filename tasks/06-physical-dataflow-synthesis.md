@@ -549,8 +549,28 @@ deterministic frontier和stable dedup、路由typed evaluation outcome、记账�
 Q51.Core只先闭合上述control kernel。它不拥有Q49.P的single-root capacity probe；Q50.F在完整causal coordinates闭合后加入
 通用affected-region probe。Core也不靠mock domain签发真实physical domain完整性：它只用独立finite state-graph model检查
 frontier mechanics；每个Q50轴再加入本轴的independent reference enumerator，全部真实轴的production flat exhaustive runner
-与actual digest/winner comparison由Q51 closure签发。Core checkpoint即原子接管public `search`的frontier、actual comparison和
-winner update；尚未迁移的current bounded generation只可作为显式lossy proposal source进入同一Core，不再是第二owner。
+与actual digest/winner comparison由Q51 closure签发。Core从零建立新search链，不包装、调用或兼容current
+`deriveShortlist`/candidate family/feedback/selector路径；本checkpoint同批让public `search`只进入新Core并删除旧search控制链。
+此时production mechanism set为空，`search`直接返回Q49.P accepted incumbent，不启动候选生成。Q50.S与Q50.B–Q50.K只向这条
+新链增加机制，并在各自变更中清理对应的旧算法入口、selector、repair、统计和测试；Q51只闭合全部真实轴和新链自身的
+source-to-package结果，public routing已由Core完成。
+
+终态调用关系固定为：
+
+```text
+CompilationOptions::search
+  -> Q49.P accepted baseline executable / actual cost
+  -> new PhysicalDataflowSearch session
+  -> Q50.S and Q50.B–Q50.K typed domain/query/transition/apply
+  -> Q50.F affected-region actual probe when causal coordinates are closed
+  -> complete assignment actual CardModule materialization
+  -> Q50.0 CardExecutable compilation / verification / final recost
+  -> session incumbent update
+  -> one accepted CardExecutable winner
+  -> Q59 target/package transaction
+```
+
+旧search不处于这张图的任何节点，也不作为fallback；唯一fallback是已经独立通过Q50.0的Q49.P baseline executable。
 
 同一choice domain支持：
 
@@ -667,18 +687,19 @@ store/completion/load和search-policy调用闭包的结构检查。
 
 ### 12.1 处置分类
 
-1. **直接复用**：`StructuredDAGAnalysis`、`IndexRelation` exact demand、physical access/transfer proof、Card/Tile/Instr
-   lowering、SPM/DDR planning、transport/resource/ABI verification。
-2. **改造接口后复用**：placement domain、event/resource mechanics、selected-buffer materialization、physical movement
-   materialization、当前完整候选正常编译链。
-3. **提取机制后替换owner**：旧layout PBQP的合法域/materialization、ready-order、software pipeline、worker/completion、
-   NoC/collective、structured algorithm transformations。
-4. **replacement稳定后删除**：当前大candidate bag、coordinate-descent winner owner、materialization failure后的原地repair、
-   hidden layout/route/action winner、forced-fusion selector和旧coordinated selector。
-5. **无适配价值则删除**：只服务rank==Tile、固定proposal cap、旧qualification组合或重复事实源的代码和测试。
-
-旧机制文件存在不等于production能力；若未进入current build，必须按新接口逐项恢复、编译和验证。反过来，旧文件曾经工作也
-不构成永久保留理由。
+1. **直接复用的独立边界**：Q50.0 move-only CardExecutable compilation result、Q50.A `IndexRelation` exact demand、
+   `StructuredDAGAnalysis`与target topology facts，以及Card/Tile/Instr lowering、SPM/DDR packing、transport/resource/ABI verifier。
+   这些对象必须能在不include或构造旧candidate/search owner的前提下单独调用。
+2. **仅作算法与proof素材**：placement option推导、event/resource scheduling、edge carrier、selected-buffer、movement、layout、
+   NoC/collective和software-pipeline实现。Q50.S/B–K按终态typed mechanism重新定义输入输出后，可迁入仍正确的局部算法、
+   verifier和negative case；不迁移旧API、状态布局、调用顺序或winner行为。
+3. **Q51.Core同批删除的旧search owner**：`TileExecutionCandidate`/metrics/transition bag、`deriveShortlist`、coordinate descent、witness
+   shortlist、candidate-local schedule/evaluator、allocator/buffer feedback、beam/budget closure、equivalence cache、accepted cohort、
+   `StaticSchedulePlan` selector、stable ordinal tie-break、winner rematerialization及其统计/diagnostic合同。它们不是新Core的过渡输入。
+4. **非current源码**：未进入active build的rank/coordinated/algorithm/NoC旧实现不恢复；具体Q50任务若需要其中独有proof、算法或
+   test witness，则在同一变更中移入新owner并删除对应旧文件，不以“曾经工作”形成兼容义务。
+5. **旧测试资产**：只迁移仍能独立表达新IR/mechanism合同的source、oracle和negative witness；绑定旧proposal数、stable ordinal、
+   shortlist、feedback、winner digest或异常长旧`search`执行的测试直接删除，不进入新链测试集合，也不形成对照基准。
 
 ### 12.2 源码层次
 
@@ -692,11 +713,11 @@ store/completion/load和search-policy调用闭包的结构检查。
   profile-driven priority、scalability优化和LNS由Q52加入；
 - CardExecutable compilation/verification：串接既有lowering和exact gates，不实现choice generation。
 
-顶层编译入口只编排`none`或`search`并发布结果；不能继续容纳具体spatial/fusion/layout/buffer算法。Q51.Core先原子抽出唯一
-public frontier、incumbent和winner control；尚未迁移的current生成能力只能作为显式lossy typed proposal回到同一Core，内部
-beam/cap/shortlist必须报告coverage loss，不能伪装成exact domain、比较actual cost、更新winner或repair accepted IR。每迁移一个choice轴，新旧生成路径复用只消费显式typed
-assignment的同一mechanism并删除重复mechanics；新路径迁移同等能力并通过actual witness后，旧字段、hash分支和repair逻辑
-必须删除，不能长期保留两套事实源。
+顶层编译入口只编排`none`或新`search`并发布结果；不能继续容纳具体spatial/fusion/layout/buffer算法。Q51.Core直接替换public
+`search`的control owner并删除旧candidate/generator/evaluator/feedback/selector/rematerialization调用闭包及其专属测试；在
+production mechanism尚未闭合时，新Core只返回Q49.P accepted incumbent。每个Q50 checkpoint只在新链中验证本轴typed
+domain/query/apply、actual-IR witness和下游Q50.0定向准入，同时删除本轴不再使用的旧机制文件和测试；不重放旧monolith，
+不保持旧candidate set、winner、统计、digest或耗时。
 
 ## 13. 当前差距与任务闭环
 
@@ -730,11 +751,13 @@ Q49.P仍在闭合baseline functional legalization、single-root structure、scop
    baseline/search提供不携带representation/movement policy的proof；闭合reduction、broadcast、window/stride、multi-piece、
    DPS init与support relation，删除carrier失败和字符串失败对spatial legality的反写；
 3. 以Q49.P从current输入闭合baseline功能合法化、结构、policy、probe、causal witness和materialization解耦；
-4. 在accepted baseline可直接作为incumbent后建立只管理frontier/evaluation/result的search control core，以独立finite
-   state-graph model证明kernel不会漏state、吞sibling或把indeterminate改成rejection，并原子接管public winner control；
+4. 在accepted baseline可直接作为incumbent后，从零建立只管理frontier/evaluation/result的新search control core，以独立finite
+   state-graph model证明kernel不会漏state、吞sibling或把indeterminate改成rejection；同批切换public入口并删除旧search控制链；
 5. 依次闭合structured alternatives、spatial partition/placement、TileRegion/temporal/fusion、representation/movement、
-   Instr pipeline机制，每项边实现边接入common state，并加入本轴独立reference domain oracle；
-6. 完成所有维度的production flat exhaustive runner、search closure和实际fusion gate；
+   Instr pipeline机制，每项只接入新common state，加入本轴独立reference domain oracle和定向actual-IR gate，并删除对应旧
+   mechanism/selector/repair/test；
+6. 完成所有维度的production flat exhaustive runner、完整source-to-CardExecutable链和实际fusion验证，确认public `search`
+   始终只经过新链且不存在旧search残留；
 7. 从第一版保留条件式stage-pipeline transition；Q52只在profile后优化其proposal顺序，并加入或加强memo、typed no-good与LNS；
 8. fresh workload/package/no-card/board closure。
 
@@ -756,6 +779,8 @@ Q49.P仍在闭合baseline functional legalization、single-root structure、scop
 - 构造必须联合改变spatial/region/temporal等多个choice才改善的陷阱，anytime策略能找到actual accepted改进；
 - estimate、memo、no-good或dominance逐项开启不改变small-oracle winner；
 - `none`和`search`共用完整candidate compilation/verification；
+- Q51.Core起旧`search` candidate/winner/统计/digest和长耗时integration即被删除，不进入任何Q50 checkpoint；每个checkpoint
+  只验证新owner的typed contract，Q51只比较新链与独立oracle、actual IR和Q50.0结果；
 - baseline与spatial mechanism共用policy-free typed exact-demand query，只有`proven logical infeasible`删除trial；unsupported和
   indeterminate不会进入legality bool/no-good cache；跨immutable borrow、nested structural snapshot或任一观察到的domain/role
   变化使cache失效；

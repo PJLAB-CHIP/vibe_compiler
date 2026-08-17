@@ -151,7 +151,7 @@ source前fail closed。Q48不增加public solver mode。
 ```text
 baseline TensorProgram
   + query-local proven actual TensorProgram alternatives
-  -> Q51.Core single control owner:
+  -> Q51 PhysicalDataflowSearch session:
        typed assignment/frontier + session-level incumbent/global work ledger
   -> CardModule / TileRegion / Instr candidate compilation
   -> fresh completion / SPM / DDR / communication / resource / ABI verification
@@ -170,7 +170,7 @@ tile shape或排序分数。
 ## 6. 实施顺序
 
 1. **Boundary closure**：复用Q50.S的actual TensorProgram alternative接口，删除recipe/sidecar、post-Instr selector与
-   重复winner入口；确认Q51.Core是唯一consumer和work-ledger owner。
+   重复winner入口；确认Q51 new-search session是唯一consumer和work-ledger owner。
 2. **Proof core**：接入managed solver，实现BV/Bool/floating-point/UF、partial-operation定义域、observable
    memory/effect与`IndexRelation` precondition bridge；所有对象保持query-local。
 3. **Typed semantic coverage**：对可进入grammar的structured op、region和numeric category建立exhaustive分类；缺少权威
@@ -181,7 +181,7 @@ tile shape或排序分数。
    TensorProgram；不改变DAG的temporal块大小与physical资源选择留给Q51。
 6. **Pipeline integration**：所有alternative进入同一CardExecutable compilation/verification；删除旧独立selector、shortlist、
    fallback repair和不能被下游消费的proof residue。
-7. **Vertical verification**：重放host/full-feature、source→package/fresh no-card，准备FP16/BF16 source/oracle/runner；
+7. **Source-to-package与board-ready验证**：重放host/full-feature、source→package/fresh no-card，准备FP16/BF16 source/oracle/runner；
    达到`board-ready`后才串行执行同源`none`/`search`真实板端A/B。
 
 每个checkpoint必须独立闭合设计同步、实现、direct tests与current pipeline integration；不保留临时public开关、双路径、
