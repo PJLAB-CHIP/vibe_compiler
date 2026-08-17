@@ -576,8 +576,10 @@ region内只spill某个root、让其它root继续驻留。也要保留“独立l
    every async issue都有SSA或typed fence completion。
 7. selected Tile IR经per-Tile tile-to-instruction conversion、SPM/DDR、cross-Tile communication、transport和ABI gate直接消费。
 8. 任一clone、Tile module或later exact gate失败都不产生partial accepted IR、CardExecutable、module、output或package。
-9. generic DAG、HF prefill/decode与Llama block以card-level `num_partitions=1`完成source-to-package-to-no-card fresh纵向；
+9. generic DAG、HF prefill/decode与LLaMA block最终都以card-level `num_partitions=1`完成source-to-package-to-no-card fresh纵向；
    package必须含all-and-only topology-available Tile launch entries，且允许per-Tile op/loop/shape不同。局部fixture不算完成。
+   该矩阵按06的任务阶段执行：Q51完整new-search链闭合前，本层及Q50.C/D checkpoint只使用有界generic/relation与轻量
+   attention/decode case，不执行重型LLaMA；重型profile与正式package/no-card分别归Q52、Q53。
 10. Q32.V mapped DMA、physical fill和oriented GEMM通过typed Tile/Instr/TargetCall/ABI/SystemC纵向后由同一
     materializer消费；其它未实现target能力结构化拒绝。
 11. Q50.S为Q32 existing share/recompute、hoist及每个current numeric variant分别产生production TensorProgram actual-IR

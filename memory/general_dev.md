@@ -352,8 +352,13 @@ source program
 - `StorageRootMemo`（StructuredBufferRelations.h）：query-local per-value 存储根 memo，内层 set 用
   `unique_ptr` 持有（map rehash 不悬空引用）；只读同一 IR epoch 内共享。
 - baseline controller只消费typed iterator/topology facts、当前coordinate的legality/materialization和exact scoped probe；按typed
-  rejection推进下一项必要coordinate。先展开全部iterator-axis×connected-rectangle options再递归选一个，即使helper标为
-  `policy-free`，本质上仍是search-domain construction，不能留在baseline transitive closure。
+  rejection推进下一项必要coordinate。任一helper只要接收option列表/domain并通过propagation、recursive CSP、backtracking或
+  assignment solve返回一个结果，即使确定、只取第一个或标为`policy-free`，本质上仍是search，不能留在baseline transitive
+  closure。baseline只保留一个live coordinate；functional legalization transition必须预定义、单调、不分支且不回溯。
+- exact relation的变量/分段数量限制不等于wall-time有界。支持的projected/permuted/static-rectangle语义应沿
+  `IndexRelation` builder/composition保留closed-form witness，避免在baseline热路径用generic
+  `PresburgerSet::isEqual/isSubsetOf/subtract`恢复矩形；generic fallback须有preflight和query-local work ledger，资源耗尽返回
+  indeterminate，不能当logical rejection推进coordinate。
 - scoped probe 用 `lowerTensorProgramToTileModule`（单 Tile FuncOp，无 CardModule/TileModule shell、
   无 no-work wrapper）；完整 CardModule 走 `lowerTensorProgramToCardModule` 并验证完整 Tile domain。
 - full CardModule和最终CardExecutable各物化一次；已经exact accepted的executable直接move到输出，不再为winner protocol重物化，
@@ -364,5 +369,7 @@ source program
   `env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU third_party/python-importer-py311/bin/python
   test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir <dir>`
   后 `TX8_DEPS_ROOT=/root/dlc_dev/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
-  --output-dir <pkg> --num-partitions=1 --optimization-policy=none`。hf Llama block 用 `--emit-hf-llama-block --hf-config-json
-  test/Tools/Inputs/hf/tiny-random-llama-fp16-config.json`，block 更大、编译明显更慢。
+  --output-dir <pkg> --num-partitions=1 --optimization-policy=none`。
+- Q51完整new-search链闭合前，不执行重型LLaMA block的`none`或`search`，包括Q49.P、Q50各checkpoint、Q51.Core、普通
+  regression和诊断重跑；使用有界小图、同relation结构的定向case和上述轻量source-to-package入口。重型LLaMA首次只在Q52
+  显式bounded scalability profile中运行，Q53再生成正式package/oracle/no-card；旧输出不回放为current证据。

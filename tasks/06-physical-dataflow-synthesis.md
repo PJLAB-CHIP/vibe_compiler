@@ -297,6 +297,11 @@ baseline feasibility和spatial search只有收到第2类结果才能删除当前
 unsupported/internal failure误当候选no-good，禁止作为跨stage协议。malformed assignment和过期IR epoch同样是compiler
 contract failure，不是普通logical rejection。
 
+exact不等于允许无界求证。对typed projected/permuted/static-rectangle indexing semantics，relation builder与可证明安全的
+composition应保留closed-form image witness，baseline的single-coordinate热路径直接消费它；generic Presburger recovery只在完整
+complexity preflight允许时执行并计入query-local work ledger。变量数或disjunct数的结构上限不能单独代替该门禁。budget或内部
+resource exhaustion返回第4类indeterminate，不得伪装成第2类、不得驱动另一个placement，也不得靠重型workload超长运行来发现。
+
 `satisfied`结果不包含layout、encoding、bytes、dense fragment、local/remote action、route、buffer、send/recv、fusion或
 resource schedule。Representation/movement materialization稍后才对exact demand与ownership求交并将其有限分解为physical
 pieces；dense rectangle、descriptor、route或transport暂时表达不了，只能拒绝对应physical assignment，不能反写删除logical
@@ -643,9 +648,14 @@ resolution遍历baseline合同内的合法fallback，返回固定全序中第一
 completion；只有随后一次完整Q50.0 gate才能将其标为accepted。query-local trial和fit结果
 只是合法化过程，不是Q51 search candidate：controller不评分、不维护incumbent/candidate family、不保留用于比较的备选方案，
 也不得创建或调用search candidate/state、search-oriented domain/ranking evaluator、grouping materializer和feedback repair。
-它只复用typed iterator/topology事实、单coordinate legality/materialization机制和上述logical demand/coverage query；不得先生成
-每个node全部iterator-axis × connected-rectangle placement options再递归取第一个，也不能调用physical edge
-strategy/evaluator来决定logical trial是否合法。Q50.B未来完整placement域由自己的惰性mechanism拥有，baseline不复用整域generator。
+它只复用typed iterator/topology事实、single-coordinate legality/materialization机制和上述logical demand/coverage query。
+任一接收option列表/domain并通过propagation、recursive CSP、backtracking或其它assignment solve返回一个结果的helper，即使输出
+确定、只取第一个或命名为`policy-free`，仍属于search，禁止出现在`none`的transitive call graph。baseline始终只有一个live
+coordinate：直接构造当前canonical spatial placement，对每条edge只查询这一对已关闭的producer/consumer shard；direct typed
+rejection只能触发预定义、单调、不分支且不回溯的functional legalization transition，旧coordinate随即销毁，不保留alternative、
+no-good、score或winner比较。不得先生成每个node全部iterator-axis × connected-rectangle placement options，也不能调用physical
+edge strategy/evaluator来决定logical trial是否合法。Q50.B未来完整placement域由自己的惰性mechanism拥有，baseline不复用整域
+generator。
 
 controller产出的窄immutable selected assignment是feasibility resolution的**输出**，不是baseline入口的前置条件；baseline与
 search可以在这个policy-free已选事实或actual IR边界汇合，而不是共享candidate wrapper。该结果只含materialization所需的
@@ -822,6 +832,12 @@ Q49.P仍在闭合baseline functional legalization、single-root structure、scop
 - Q52在10/30分钟检查点解释主要热点、重复工作和质量曲线；
 - board-ready后真实设备只串行执行current matched cases；Llama及至少一个prefill/decode代表相对同源baseline获得可重复
   改善后才能标记done。
+
+上述workload按任务阶段执行，不是每个checkpoint的共同回归集。Q49.P只运行有界direct unit、定向lit和轻量
+source-to-package/no-card来证明baseline功能与work closure；Q51完整new-search链闭合前，Q49.P、Q50各机制checkpoint和
+Q51.Core均不得执行重型LLaMA block，无论policy是`none`还是`search`，也不得把旧重型运行回放为current证据。Q51闭合后，
+重型LLaMA首次进入Q52显式、bounded scalability profile；Q53才fresh生成正式LLaMA package/oracle/no-card并进入board-ready矩阵。
+轻量case不能由模型名特判产生，仍须覆盖相同IR/relation/resource边界。
 
 ## 15. 参考算法原则
 

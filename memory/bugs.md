@@ -398,7 +398,8 @@
 - 修复模式：baseline controller直接从typed structured/relation/target facts构造唯一方案；每个TileRegion只拥有一个structured
   compute root及必要non-root support closure，root cardinality由materialization relation证明；同一Tile上的其它root进入独立
   顺序region，跨root shaped dependency显式DDR。只与search
-  共享policy-free single-root materialization、scoped probe和最终lowering/verification，不共享state/candidate/grouping/ordering。
+  共享single-coordinate的policy-free materialization、scoped probe和最终lowering/verification，不共享state/candidate/grouping/
+  ordering，也不调用option-domain、propagation、recursive CSP/backtracking或“只取第一个”的assignment solver。
 - 防复发：除零actual fusion和DDR movement外，测试还要检查每个baseline region的structured-root数、同Tile multi-root的region
   数、search-policy调用计数、完整CardModule/CardExecutable各一次；equal-shape fanin与function-scope case验证SPM失败只沿直接
   typed causal witness refinement，不能猜测或跳过scope。
@@ -412,10 +413,24 @@
 - 修复模式：`none`从未绑定物理选择的正常IR进入，由controller按semantic全序维护一个current coordinate；每次只构造当前
   coordinate、重新推导operand/halo/result/temporary/movement/alignment/bank/lifetime并运行exact scoped probe，再按typed
   rejection推进下一项必要coordinate，第一个fit形成resolved assignment。不得预先生成完整placement/temporal option domain；
-  trial是query-local feasibility状态，不进入candidate、score、incumbent或proposal统计。
+  trial是query-local feasibility状态，不进入candidate、score、incumbent或proposal统计；任一transition必须预定义、单调、
+  不分支且不回溯，旧coordinate立即销毁，避免把deterministic search换名为functional fallback。
 - 防复发：至少一个初始完整tile超SPM而较小合法tile可放下的source-to-package/no-card正例，以及最小合法tile仍超限的typed
   negative；声明支持且baseline域存在completion时必须得到accepted executable，indeterminate必须作为compiler failure，不能
   用“未进入search”或“没有fixed assignment”解释失败。
+
+## Exact矩形恢复不能把generic Presburger等价证明放在baseline热路径
+
+- 现象：即使单独观察一个logical shard pair query，CPU仍可长时间停在`getExactStaticRectangularImage`后的
+  `PresburgerSet::isEqual/isSubsetOf/subtract`；变量数和disjunct数没有超现有limit，因此静态budget检查没有阻止该路径。
+- 根因：supported projected/permuted/static-rectangle indexing semantics在relation composition后丢失closed-form witness，矩形
+  recovery只好先求generic image、构造bounding rectangle，再调用通用集合等价证明。结构规模上限不能约束Presburger算法实际
+  work，外层placement option-pair/CSP又会乘法放大同一查询。
+- 修复模式：builder/composition在typed proof成立时保留或直接重建closed-form rectangular-image witness，single-coordinate
+  baseline优先消费该witness；generic recovery调用前使用覆盖constraint/local/coefficients等复杂度的fail-closed preflight并记录
+  query-local ledger。超限是`ResourceExhausted`/indeterminate，不能当logical infeasible、不能推进fallback。
+- 防复发：用轻量synthetic relation复现相同composition形态，断言supported路径generic equality调用数为零且pair-query数只随
+  actual DAG edge和deterministic legalization step增长；重型模型只归后续显式scalability profile，不作为功能bug的常规复现器。
 
 ## Baseline不搜索通信方案不等于所有依赖零peer
 
@@ -607,7 +622,7 @@
 - 修复模式：逐项确认行为变化commit与测试最后touch的先后（`git merge-base --is-ancestor`），结合pinned LLVM/MLIR源码
   判断哪个是current合同；Q56只修自己造成的失败和本批已触及文件的陈旧期望，其余登记为独立后续任务。
 - 防复发：改production行为时搜索所有test目录（含非默认gate），同步更新期望；"该目录不在CI"不能作为让测试红的理由；
-  单测跑全量前先单跑疑似膨胀的枚举case确认无死循环。
+  未知枚举case先用bounded小范围filter定位；已经定性为旧实现状态爆炸的case直接从当前批次排除，不再用长时间单跑确认。
 
 ## 全量单测二进制中的单个case可能100% CPU死循环
 
@@ -615,14 +630,15 @@
   卡死（两个遗留进程各烧CPU 1.5-2小时）；gtest stdout块缓冲下无输出，看起来像整批挂起。
 - 根因：placement枚举在该case上状态空间爆炸，100% CPU自旋；测试文件与枚举实现均在Q56改动范围外（最后一次touch是
   前置refactor commit）。
-- 修复模式：先用`--gtest_filter`单跑可疑suite定位具体case；全量验证用filter排除该case并单独登记后续任务；
-  杀掉遗留的孤儿gtest进程避免抢占CPU造成新的"疑似挂起"。
-- 防复发：全量gtest运行前先对已知慢/爆炸suite做budget检查；新增枚举测试必须自带状态规模上界或明确标注预期case数。
+- 修复模式：已有bounded诊断已经定位到旧placement枚举后，不再反复单跑长case；普通全量验证显式排除它。Q51.Core删除旧
+  search/test owner，Q50.B以带状态规模上界的tiny reference enumerator重建spatial domain，Q52只profile完整new chain。
+- 防复发：全量gtest运行前排除已知旧爆炸suite；新增枚举测试必须自带状态规模上界或明确标注预期case数，超界诊断使用更小的
+  同构fixture而不是继续烧原始长case。
 - 2026-08-16补充（Q50.A验证）：同一suite还有两个同类病理长跑case——`DiamondFaninRetainsAnExpressibleTwoOperandBoundary`
   与`ReductionDataTransitionKeepsExactFragmentsAndLocalAlternatives`，1800s内不完成（状态数100→10,000→1M逐节点膨胀，
   每状态`extendState`含120次pairwise拓扑最短路径查询约260µs，与Q50.A改动无关——相同状态数、相同legality结果已在
   HEAD代码路径上逐项核对）。全量filter需一并排除这三个case；`ThreeStageChain...`与`CompletePlacementOrder...`
-  可正常完成。该状态空间与per-state成本是Q50.B/Q52的搜索域问题，不是测试自身目标。
+  可正常完成。旧case随Q51.Core删除；需要保留的domain witness迁到Q50.B tiny oracle，Q52不以旧实现耗时作profile基准。
 
 ## 跨tree调用点没有随signature变更同步编译
 

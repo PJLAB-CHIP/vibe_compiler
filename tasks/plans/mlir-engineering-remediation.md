@@ -500,8 +500,9 @@ fresh 验证：
 3. 默认host unit/lit/CTest以`nproc`执行并保持Q42快速面；另行点名运行analysis unit、受影响的`test/Runtime`/`test/Tools`
    与organization tests，审计unsupported/skip；
 4. named pipeline parse/print、verify-each、production builder parity；
-5. FP16/BF16普通多 op、sharded compute、prefill/decode/Llama代表 source-to-package，比较 semantic oracle、
-   CardModule/CardExecutable/package digest和 no-card plan；
+5. FP16/BF16普通多 op、sharded compute及轻量prefill/decode代表source-to-package，比较semantic oracle、
+   CardModule/CardExecutable/package digest和no-card plan；重型LLaMA不是本底层remediation的常规重跑门禁，Q51完整new-search链
+   闭合后才分别由Q52显式profile和Q53正式package/no-card执行；
 6. 记录 pass/analysis/clone/materialization count与wall time，证明TileRegion query、nested pass和analysis scope真实生效；
    Q54不得保留synthetic local wrapper或每region完整Tile pipeline。`none`的deterministic functional fallback、search-policy、
    region结构、scope/witness和card重复工作由Q49.P负责，

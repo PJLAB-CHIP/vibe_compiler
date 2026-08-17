@@ -257,8 +257,9 @@ Pipeline position:
   route；不把一个region的局部fit冒充card-level transport/resource/ABI证明；不改变Q51的性能候选域。这里的非目标不排除
   baseline为走通程序而确定canonical placement、temporal tile、representation/movement、buffer、order和completion。
 - Done criteria:
-  baseline不依赖search state/candidate、完整placement-option domain/ranking evaluator、proposal order/group materializer；
-  canonical placement从typed structured/topology facts直接推导，不能先展开全部connected rectangle/axis options再取第一个；每个
+  baseline不依赖search state/candidate、完整placement-option domain/ranking evaluator、proposal order/group materializer，也不
+  调用domain propagation、recursive CSP/backtracking或其它option-list assignment solver；canonical placement从typed
+  structured/topology facts直接推导，始终只有一个live coordinate，不能先展开全部connected rectangle/axis options再取第一个；每个
   baseline TileRegion恰有一个structured compute root和必要non-root support closure；跨root shaped dependency显式DDR；
   region-local和最近合法isolated-ancestor probe均闭合，exact rejection携带direct typed causal witness；完整CardModule materialization与
   CardExecutable compilation各一次；accepted后不构造`StaticSchedulePlan`、duration estimate或其它不被output消费的shadow result，
@@ -353,12 +354,17 @@ boundary、proposal order、score或feedback。Q49.P先产出并准入baseline�
 不得通过search representation重建同一baseline。Q49.P施工时先把resolved baseline assignment的single-root apply与每次
 closed-coordinate feasibility probe落在稳定PhysicalDataflow/Conversion边界；Q50.B/C/F随后扩展完整search domain、
 single-root mechanism和deferred
-probe taxonomy时必须复用同一实现，不能再建baseline-private或search-private materializer/probe。baseline默认值不限制Q51域。
-历史official HF prefill、functional decode、Llama block 的 source、oracle、package 和 no-card runner只证明
-旧入口mechanics，未执行真实板端，故不得标`done`。Q49.P的gate必须经Q59 current compile transaction用fresh
-prefill/decode/Llama输入证明
-CardModule、accepted CardExecutable与package digest稳定，fresh no-card与oracle通过，并以fresh阶段计时和work count确认
-完整CardModule materialization与CardExecutable compilation各一次，scoped probe不构造card-shaped/no-work-Tile wrapper。
+probe taxonomy时必须复用同一实现，不能再建baseline-private或search-private materializer/probe。共享的是已关闭coordinate的
+mechanism，不是生成或选择coordinate的控制：任何option-domain construction、constraint propagation、recursive CSP、backtracking、
+candidate/evaluator或winner协议都不得进入`none`的transitive call graph。baseline默认值不限制Q51域。
+
+历史official HF prefill、functional decode、LLaMA block 的 source、oracle、package 和 no-card runner只证明旧入口mechanics，
+未执行真实板端，故不得标`done`。Q49.P的gate经Q59 current compile transaction使用fresh有界小图、overfull-to-fit、五类relation
+定向case及轻量source-to-package/no-card输入，证明CardModule、accepted CardExecutable与package digest稳定、oracle/no-card通过，
+并以fresh阶段计时和work count确认完整CardModule materialization与CardExecutable compilation各一次，scoped probe不构造
+card-shaped/no-work-Tile wrapper。Q51完整new-search链闭合前，Q49.P、Q50各checkpoint和Q51.Core都不执行重型LLaMA block，
+`none`与`search`均如此；也不把既有未完成运行变成重跑门禁或current证据。首轮重型LLaMA执行归Q52显式scalability profile，
+Q53才签发正式package/oracle/no-card与board-ready证据。
 定向结构测试必须覆盖：同Tile多个独立root形成多个region；显式structured producer不能伪装成support closure且一个root的
 lowered multi-op不会误判成多root；call或unsupported lifetime提升到最近合法scope；equal-shape fanin只按direct witness
 refinement；search state/candidate、search-oriented domain/ranking
@@ -521,7 +527,9 @@ Q50.G/H后续扩展的physical alternatives；其失败不得回写Q50.A cache�
   borrow，不承担第二份mutation状态。
 - `IndexRelation`的projected-rectangle fast path同时保留source和destination bounds；矩形越界时回退generic
   Presburger结果。composition不再未经证明传播projection pattern，只有对完整bounded relation做等价证明的builder
-  才恢复fast path，避免中间domain clipping被丢失。
+  才恢复fast path，避免中间domain clipping被丢失。follow-up stack capture说明variable/disjunct structural limit不能单独约束
+  generic `isEqual/isSubsetOf/subtract`的wall-time；logical proof和four-state outcome仍由Q50.A拥有，supported rectangle在baseline
+  热路径上的closed-form witness保留、generic preflight和work ledger由Q49.P P6闭合，不重新打开physical carrier或placement选择。
 - typed payload在成功与失败路径都按semantic Tile id稳定排序，补齐consumer domain、producer result、dependency
   role、per-destination intersection和merge obligation。partial-reduction定向case证明倒序caller input仍保留全部
   contribution owners与merge义务；overlap failure witness同样不依赖caller枚举顺序。
@@ -535,8 +543,9 @@ Q50.G/H后续扩展的physical alternatives；其失败不得回写Q50.A cache�
   baseline/稳定性/reduction 3/3、source-to-package 1/1和主树完整构建。`ThreeStageChainCanUseThreeDistinctTileGroups`
   仍有约163秒的既有placement枚举成本；它归Q52，不改变Q50.A logical correctness结论。
 
-Q50.A completion gate已闭合并在`tasks/progress.md`标为`done`。Q50.G/H继续扩展完整physical carrier alternatives；
-这些后续性能/representation能力不重建或改判本节的logical proof。
+Q50.A logical completion gate已闭合并在`tasks/progress.md`标为`done`。Q49.P P6补的是single-coordinate调用方的work closure，
+不改变本节typed outcome；Q50.G/H继续扩展完整physical carrier alternatives，这些后续性能/representation能力不重建或改判
+本节的logical proof。
 
 ## Q49.P 施工步骤（2026-08-17 建立）
 
@@ -622,20 +631,32 @@ P1–P2 是两个既有失败的根因修复（gate case），P3–P7 是契约�
   movement/buffer/order/completion），不含 score/ordinal/transition history。
 - 实现：
   1. 删除baseline对`deriveStructuredDAGNodePlacementOptions`及其“全部iterator-axis × connected-rectangle”结果的调用；
-     从current node structured axes、verified topology和semantic tie-break直接产生当前maximum-participation coordinate，只有
-     typed exact rejection才推进下一个必要axis/group。Q50.B未来完整domain仍由自己的惰性mechanism与reference enumerator拥有。
+     删除`deriveCanonicalBaselinePlacements`中的domain propagation与recursive CSP/backtracking。从current node structured axes、
+     verified topology和semantic tie-break直接产生唯一current maximum-participation coordinate；每条edge只查询这一对已关闭的
+     producer/consumer shard。只有direct typed exact rejection才执行预定义、单调且不回溯的functional legalization transition，
+     同时销毁旧coordinate；不得保存alternative、回退栈或no-good。Q50.B未来完整domain仍由自己的惰性mechanism与reference
+     enumerator拥有。
   2. `deriveBaseline`/`deriveDeterministicBaseline` 改为直接构造 `TileMapping`（nodePlacements +
      outputPlacements + canonical edge strategies/layouts + 完整 temporal vector + materializationMode +
      bufferCount=1）的窄 assignment 类型，不再经 `TileExecutionCandidate`（stableOrdinal、evaluation、
-     transition、feedbackRootOrdinal）与 `StructuredDAGPlacementEvaluator`；legality 由 Q50.A edge gate
-     （现有 compatibility 表）+ 全 assignment 的 demand plan/canonical carrier 闭合。
-  3. baseline 路径不再接收`CardExecutableSynthesisStatistics`这个search bag，也不再写candidate proposal/fusion/layout/buffer
+     transition、feedbackRootOrdinal）与 `StructuredDAGPlacementEvaluator`；legality由每edge当前single pair的Q50.A query及全
+     assignment demand plan/canonical carrier闭合，不建立option compatibility table。
+  3. 对single-coordinate exact-demand热路径建立独立work closure。2026-08-17 bounded stack capture确认当前LLaMA诊断停在
+     `getExactStaticRectangularImage`的generic `PresburgerSet::isEqual`，继而进入`isSubsetOf/subtract`；变量/分段数上限不能保证该
+     等价证明有界。支持的projected/permuted/static-rectangle indexing semantics必须由`IndexRelation` builder/composition保留或
+     直接构造closed-form rectangular-image witness，使baseline不进入generic equality recovery；generic fallback在调用前按完整
+     relation complexity做fail-closed preflight并计入query-local ledger，超限返回`ResourceExhausted`/indeterminate，绝不能当作
+     logical rejection或触发下一个coordinate。用轻量、同relation结构的定向case覆盖该路径，不靠重型LLaMA重现。
+  4. baseline 路径不再接收`CardExecutableSynthesisStatistics`这个search bag，也不再写candidate proposal/fusion/layout/buffer
      统计和selected evaluation metrics；必要的probe/materialization/work计数进入baseline专属窄ledger，
      diagnostics 以 baseline 专用行报告（`card-executable-selection` 行移除 stable ordinal/evaluation 字段或
      由 baseline 专用行替代），测试只断言窄ledger和旧statistics type不在调用闭包。
 - 验证：grep/调用计数证明 baseline 调用链不含完整placement-option/search domain/evaluator及旧statistics type；
-  `deriveStructuredDAGNodePlacementOptions`、`TileExecutionCandidate`和`CardExecutableSynthesisStatistics`不在baseline transitive
-  call graph；CROSS/CHAIN/GEMM、显式`none`的overfull-to-fit与五类production gate通过，不执行或改造旧search-named回归；
+  `deriveStructuredDAGNodePlacementOptions`、`deriveCanonicalBaselinePlacements`、`TileExecutionCandidate`和
+  `CardExecutableSynthesisStatistics`不在baseline transitive call graph；ledger证明placement domain size=0、recursive
+  solve/backtrack=0、exact pair query数只随actual DAG edge和deterministic legalization step增长，且supported rectangular-image
+  case不进入generic Presburger equality recovery；CROSS/CHAIN/GEMM、显式`none`的overfull-to-fit与五类production gate通过，
+  不执行或改造旧search-named回归；
   主树、board runtime、SystemC 三棵树 fresh 构建通过。
 
 ### P7 baseline materialization/output seam清理
@@ -655,29 +676,38 @@ P1–P2 是两个既有失败的根因修复（gate case），P3–P7 是契约�
 
 ### P8 fresh 端到端验证与收口
 
-未闭合问题（2026-08-17 实测，记录待处理，不在本批修复）：
+2026-08-17复核把剩余缺口定性如下：
 
-- `TileMemoryPlanningTest.ReportsSPMFailureForOwnedTileModule`在当前二进制上失败：SPM capacity overflow 失败结果的
-  `spmLargestDemands`为空（期望携带最大demand证据）。该字段由Q49.P新增的`convertSPMMemoryPlanningFailure`
-  （TileMemoryPlanning.cpp）从`SPMMemoryPlanningFailure.largestDemands`转换；根因未定性——需确认是上游
-  SPM planning失败未填充largestDemands，还是转换路径丢失。
-- Llama decoder block（`--emit-hf-llama-block --hf-config-json tiny-random-llama-fp16-config.json`，
-  batch=1 seq=32）的`none`编译wall 2h21m未完成（全程100% CPU、RSS约46MB，卡在card-executable-synthesis，
-  无中间日志）：在完整placement-option展开、重复完整CardModule materialization、无条件IR打印和废弃cost plan清除前，
-  该问题仍属于Q49.P baseline work closure；不得提前转交Q52。Q52只优化Q51之后的新search state expansion。
-- 相关单测套件中`StructuredDAGPlacementEnumerationTest.MultiOutputFanoutCanPlaceBranchesOnDifferentDestinationGroups`
-  单case运行超过3h、RSS达4.3GB未完成：placement枚举在该形状上的扩展失控，属Q50.B/Q51域，作为已知问题记录。
+- `TileMemoryPlanningTest.ReportsSPMFailureForOwnedTileModule`失败不是上游SPM planner没有evidence。
+  `PlanSPMMemory`已填充`largestDemands`、`capacityConflictDemands`和`individuallyOversizedDemands`；
+  `planTileMemory`在没有`materializationRelations`的分支只复制scalar summary，漏传这三个集合。Q49.P须让有无relations两条路径
+  都先保留完整typed evidence，再由relations可选补充structured owner attribution；定向测试同时覆盖两个入口。
+- 重型LLaMA block的`none`曾运行2h21m仍未完成。bounded stack capture显示它在
+  `deriveCanonicalBaselinePlacements → StructuredDAGExactDemandQuery::imageDemand →
+  IndexRelation::getExactStaticRectangularImage → PresburgerSet::isEqual/isSubsetOf/subtract`消耗CPU。这里同时暴露了完整
+  placement-option/recursive CSP和generic Presburger rectangle recovery两层无界工作，按P6分别拆除；该运行只作根因证据，
+  不再继续、重跑或作为Q49.P完成门禁。
+- current spatial placement只从parallel iterator生成axis，reduction factor保持1且没有partial-result merge；这是Q50.B的明确
+  implementation gap。相反，fresh `SearchProposesAndMaterializesMultipleReductionIteratorAxes`和
+  `NoneCarriesReductionDemandThroughTheCompleteExecutableGate`已经证明多reduction轴temporal materialization与baseline complete
+  gate存在；Q50.E待闭合的是完整breakpoint/wave-loop domain，不是从零补一个reduction temporal split。
+- 旧`MultiOutputFanoutCanPlaceBranchesOnDifferentDestinationGroups`单case超过3h、RSS约4.3GB的现象属于待删除的旧spatial/search
+  枚举链。Q51.Core前不再运行该长case；Q50.B以tiny reference enumerator重建域，Q51 closure只验证new chain。
 
-- 更新 `tasks/progress.md` Q49.P 行和本节实现结论；`memory/bugs.md` 两条既有失败标修复；
-  `memory/general_dev.md` 沉淀 probe/memo 经验。
-- fresh 验证（2026-08-17 实测）：受影响 unit 70/70、默认 lit gate 216/216、三棵树 fresh 构建通过；
-  Tools/Runtime lit 33/38（5 unsupported、0 failed）——原 4 个失败全部是 `76f68e29` SPMD card-level 合同切换后
-  未跟上的 stale 测试，本轮修复：reference capture 改 f16（target 拒绝 f32 GEMM）、capture 改 card-level
-  reference 模式、mesh pass 补显式 shape、manifest 消息与 `role_index` 断言同步 current 合同；source-to-package
-  以 `none` 编译 f16 reference/AddModel 走通完整 gate；Llama block fresh capture 完成、
-  `none` 编译验证中（block 较大，wall 超单次 400s 观察窗后转后台）。
-  IR/package digest 稳定性与 work count（完整 CardModule materialization 与 CardExecutable compilation 各一次）。
-- 提交本批改动（作者规范见 `AGENTS.md`）。
+P8完成顺序：
+
+1. 闭合P1–P7及上述SPM evidence copy，更新`tasks/progress.md`、相关设计和稳定memory；
+2. fresh运行direct unit、定向lit、overfull-to-fit、五类relation和轻量source-to-package/no-card；显式`none`，不进入旧search、
+   paired optimization或重型LLaMA；
+3. ledger证明placement option/domain/recursive solve/backtrack为零，single-coordinate exact query有界，完整CardModule
+   materialization与CardExecutable compilation各一次，accepted后schedule-plan/默认IR print为零；
+4. 检查主树、board runtime与SystemC/model三棵树构建；确认相关lit/CTest实际执行而非unsupported；
+5. 提交本批改动（作者规范见`AGENTS.md`）。
+
+已有fresh证据（2026-08-17）可复用但不代签剩余门禁：受影响unit 70/70、默认lit gate 216/216、三棵树fresh构建通过；
+Tools/Runtime lit 33/38（5 unsupported、0 failed）；显式`none`的f16 reference/AddModel已走通source-to-package/no-card。
+LLaMA capture或旧未完成compile不进入本项证据。Q51完整new-search链闭合后，Q52才首次运行重型LLaMA显式profile；Q53再生成
+正式package/oracle/no-card并进入board-ready。
 
 ## Q51.Core：Search Control Kernel
 
@@ -1261,7 +1291,9 @@ split、placement group 或候选数。
 
 ### Fresh profiling
 
-在 generic mixed DAG、HF prefill、functional decode 和 Llama representative block 上记录：
+Q51完整new-search链提交并通过其small-oracle/new source-to-package gate后，本节才首次允许执行重型LLaMA block；执行必须是
+显式选择的bounded profile批次，不进入普通unit/lit/CTest或每次功能改动回归。在 generic mixed DAG、HF prefill、functional
+decode 和 LLaMA representative block 上记录：
 
 - 各轴 transition generated/rejected/deduplicated/expanded 数和 candidate set width/peak live states；
 - canonical key 重复率、separator width、dominance/no-good 命中和失败作用域；

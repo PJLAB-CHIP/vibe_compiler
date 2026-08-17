@@ -312,7 +312,10 @@ current target容量、target-model能力或host预算不足，必须按stage报
 
 1. Q49.P从current TensorProgram→CardModule→TileRegion/Instr→fresh SPM/DDR→CardExecutable→ExecutablePackage链路
    签发baseline功能闭环，并且必须证明：baseline调用闭包不包含search
-   state/candidate、search-oriented domain/ranking evaluator、proposal order/group materializer或candidate统计；每个baseline
+   state/candidate、search-oriented domain/ranking evaluator、proposal order/group materializer或candidate统计，也不包含完整
+   placement-option生成、domain propagation、recursive CSP/backtracking或任何“从option列表返回一个assignment”的deterministic
+   search helper。baseline始终只有一个live coordinate；direct typed rejection只能触发预定义、单调、不分支且不回溯的
+   functional legalization transition，旧coordinate不作为alternative保留。每个baseline
    TileRegion恰有一个structured compute root和必要non-root support closure，同Tile多root形成多个顺序region，跨root shaped
    dependency显式DDR；root cardinality按materialization relation映回structured DAG node，显式init producer不能伪装成
    support，而一个root lower成多个compute/instruction op不能误判成多root；region-local probe在需要call/function lifetime时
@@ -323,7 +326,10 @@ current target容量、target-model能力或host预算不足，必须按stage报
    operand/halo/result/temporary/movement/alignment/bank/lifetime footprint超出SPM时，controller沿不截断的合法breakpoint
    lattice重新推导workset并缩小到第一个fit，随后通过完整CardExecutable、package和no-card；multi-axis/tail/minimum-granularity
    受测，最小合法tile仍失败才返回direct typed capacity failure，indeterminate作为compiler failure而非unsupported。
-   fresh prefill/decode/Llama还需证明CardModule、CardExecutable与package digest稳定、oracle/no-card通过。Q49.P完成后
+   fresh有界小图、五类relation、overfull-to-fit与轻量source-to-package/no-card还需证明CardModule、CardExecutable与package
+   digest稳定、oracle通过；single-coordinate exact-demand ledger必须证明supported rectangular-image relation不落入无界generic
+   Presburger equality recovery。Q51完整new-search链闭合前，不运行重型LLaMA block的`none`或`search`，也不回放或重跑旧长耗时
+   输出。Q49.P完成后
    不再建立独立baseline板端任务；Q53只把该accepted baseline作为current matched A/B的一侧。
 2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair；Q50.A：
    每次closed placement trial以完整logical domain、typed data/init/support relation、reduction/replication role和IR epoch从
@@ -335,6 +341,8 @@ current target容量、target-model能力或host预算不足，必须按stage报
 3. Q50.B–Q50.K依次闭合spatial placement、single-root TileRegion、coupled traversal/region fusion、complete temporal tile与
    wave-loop order、
    scoped actual probe、layout/representation、movement、rotating buffers、event/resource schedule与conditional stage pipeline。
+   Q50.B必须新增current尚不存在的reduction spatial factor、partial ownership与显式merge；Q50.E复用已经能物化的reduction
+   temporal tile，但须以多reduction轴property/reference enumerator证明完整breakpoint与wave-loop domain。两项证据不得互相代签。
    probe缺少因果坐标时必须deferred，资源耗尽不得当作不可行；pipeline event structure形成后必须使旧calendar失效并
    重入event/resource schedule，由新assignment证明实际overlap。
    每项都需current接入点、actual-IR witness和实际执行的正负测试；旧owner删除不能代替能力迁移。
@@ -346,8 +354,9 @@ current target容量、target-model能力或host预算不足，必须按stage报
    全部联合维度、exact domain和new source-to-package链由Q51闭合；各Q50机制交付时同步删除对应旧实现。late exact
    failure回到同一new candidate set，selected IR必须有共享TileRegion，并以
    coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。
-5. Q52：generic/HF/Llama representative load的work、wall、RSS和热点fresh记录；基于实测引入的优化在小图oracle上
-   不改变最优结果，代表负载不劣于同源`none`，没有固定shape/tile/fusion/buffer shortcut。
+5. Q52：它是Q51完整new-search链闭合后首个允许执行重型LLaMA的任务；generic/HF/LLaMA representative load只在显式、bounded
+   profile批次记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在小图oracle上不改变最优结果，代表负载不劣于
+   同源`none`，没有固定shape/tile/fusion/buffer shortcut。
 6. Q60先把framework adapter与pre-exported portable StableHLO接入同一product source contract；Q53的generic DAG与
    HF/Llama matrix全部由该产品入口fresh生成完整ExecutablePackage并fresh no-card；每个package包含all-and-only 16 Tile
    entries、current TileEntryArgument/program-data/completion闭包，runner与oracle完整；融合有效性证据闭合后
