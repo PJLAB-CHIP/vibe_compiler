@@ -63,13 +63,23 @@ public:
   }
   unsigned getOutputCount() { return function.getNumResults(); }
   unsigned getInputCount() { return functionalArgumentCount; }
+  /// Narrow per-root construction contract: extra tensor entry arguments
+  /// appended after the scheduling destinations, one per consumer-side
+  /// boundary supply. They never reach a sibling structured root.
+  unsigned getBoundaryArgumentCount() {
+    return function.getNumArguments() - getInputCount() - getOutputCount();
+  }
   mlir::ValueRange getInputs() {
     return mlir::ValueRange(function.getArguments())
         .take_front(getInputCount());
   }
   mlir::ValueRange getOutputs() {
     return mlir::ValueRange(function.getArguments())
-        .take_back(getOutputCount());
+        .slice(getInputCount(), getOutputCount());
+  }
+  mlir::ValueRange getBoundaryArguments() {
+    return mlir::ValueRange(function.getArguments())
+        .take_back(getBoundaryArgumentCount());
   }
   mlir::TypeRange getResultTypes() { return function.getResultTypes(); }
   mlir::Location getLoc() { return function.getLoc(); }
@@ -200,7 +210,8 @@ mlir::func::FuncOp findSingleStandaloneTensorProgram(mlir::ModuleOp module);
 
 mlir::LogicalResult verifyTensorProgramScope(mlir::func::FuncOp function,
                                              unsigned functionalArgumentCount,
-                                             std::string *failureReason);
+                                             std::string *failureReason,
+                                             unsigned boundaryArgumentCount = 0);
 
 bool isTensorProgramOutputBoundary(TensorProgramScope scope, mlir::Value value,
                                    unsigned outputIndex);

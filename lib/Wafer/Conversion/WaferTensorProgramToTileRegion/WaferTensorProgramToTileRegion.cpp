@@ -79,8 +79,10 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
         "standalone module must contain exactly one tensor program function");
     return mlir::failure();
   }
+  TensorProgramScope scope(function, functionalArgumentCount);
   if (mlir::failed(verifyTensorProgramScope(function, functionalArgumentCount,
-                                            failureReason)))
+                                            failureReason,
+                                            scope.getBoundaryArgumentCount())))
     return mlir::failure();
 
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -88,7 +90,6 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
   llvm::SmallVector<StructuredOperationNodeMapping, 16>
       normalizedOperationNodes(operationNodes.begin(), operationNodes.end());
   normalizeMapOps(function, peerEndpoints, normalizedOperationNodes);
-  TensorProgramScope scope(function, functionalArgumentCount);
   llvm::SmallVector<mlir::Operation *, 16> sourceOperations;
   for (mlir::Operation &operation : scope.getBody().without_terminator())
     sourceOperations.push_back(&operation);

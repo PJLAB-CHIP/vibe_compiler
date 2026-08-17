@@ -2530,7 +2530,9 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     int64_t currentLogicalPartition,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
-    StructuredMaterializationRelations *materializationRelations) {
+    StructuredMaterializationRelations *materializationRelations,
+    llvm::ArrayRef<StructuredBoundarySupply> boundarySupplies,
+    uint64_t boundaryArgumentCount, bool externalBoundaryCarrier) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModule || currentLogicalPartition < 0)
@@ -2544,15 +2546,57 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
   mlir::func::FuncOp function = findSingleStandaloneTensorProgram(*candidate);
   mlir::func::FuncOp supportTemplateFunction =
       findSingleStandaloneTensorProgram(sourceModule);
-  if (!function || mlir::failed(verifyTensorProgramScope(
-                       function, functionalArgumentCount, failureReason)))
-    return mlir::failure();
-  if (!supportTemplateFunction || supportTemplateFunction.isExternal() ||
+  if (!function || !supportTemplateFunction ||
+      supportTemplateFunction.isExternal() ||
       !supportTemplateFunction.getBody().hasOneBlock())
     return failResult(
         failureReason,
         "edge-action lowering requires one pristine support template body");
+  // Narrow per-root construction: append one tensor entry argument per
+  // consumer-side boundary supply. The sibling structured producer's compute
+  // is never pulled into this scope; the merge step carries the producer's
+  // exact DDR boundary across the root cut.
+  if (boundaryArgumentCount != 0 ||
+      !boundarySupplies.empty()) {
+    if (boundarySupplies.size() != boundaryArgumentCount)
+      return failResult(failureReason,
+                        "boundary supplies must exactly fill the declared "
+                        "boundary argument count");
+    llvm::SmallVector<bool, 8> seenBoundaryArguments(boundaryArgumentCount,
+                                                     false);
+    llvm::SmallVector<mlir::Type, 8> boundaryTypes(boundaryArgumentCount);
+    for (const StructuredBoundarySupply &supply : boundarySupplies) {
+      if (supply.boundaryArgumentIndex >= boundaryArgumentCount ||
+          seenBoundaryArguments[supply.boundaryArgumentIndex] ||
+          !supply.consumer ||
+          supply.consumerOperand >= supply.consumer->getNumOperands())
+        return failResult(failureReason,
+                          "boundary supply names a null, duplicate or "
+                          "out-of-range consumer operand");
+      seenBoundaryArguments[supply.boundaryArgumentIndex] = true;
+      boundaryTypes[supply.boundaryArgumentIndex] =
+          supply.consumer->getOperand(supply.consumerOperand).getType();
+    }
+    for (mlir::Type type : boundaryTypes) {
+      if (!type || !mlir::isa<mlir::RankedTensorType>(type))
+        return failResult(failureReason,
+                          "boundary supply operand is not a ranked tensor");
+    }
+    llvm::SmallVector<mlir::Type, 8> argumentTypes(function.getArgumentTypes());
+    argumentTypes.reserve(argumentTypes.size() + boundaryArgumentCount);
+    argumentTypes.append(boundaryTypes.begin(), boundaryTypes.end());
+    function.setFunctionType(mlir::FunctionType::get(
+        function.getContext(), argumentTypes, function.getResultTypes()));
+    // The extended entry needs one fresh entry block argument per boundary
+    // supply before the lowering clones into the new signature.
+    function.getBody().front().addArguments(
+        mlir::TypeRange(boundaryTypes), function.getLoc());
+  }
   TensorProgramScope scope(function, functionalArgumentCount);
+  if (mlir::failed(verifyTensorProgramScope(function, functionalArgumentCount,
+                                            failureReason,
+                                            scope.getBoundaryArgumentCount())))
+    return mlir::failure();
   mlir::Block &supportTemplateBody = supportTemplateFunction.getBody().front();
 
   llvm::DenseSet<mlir::Operation *> seenTemporalOperations;
@@ -2701,6 +2745,30 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
           "local edge strategy requires one Tile placement");
     mappedStrategies.push_back(std::move(mapped));
   }
+
+  // Narrow per-root construction: bind each consumer-side boundary supply to
+  // its entry argument before any demand pull runs. The closure walk sees an
+  // external boundary operand and never materializes the sibling structured
+  // producer into this scope.
+  for (const StructuredBoundarySupply &supply : boundarySupplies) {
+    mlir::Operation *mappedConsumer = cloneMapping.lookupOrNull(supply.consumer);
+    if (!mappedConsumer ||
+        supply.consumerOperand >= mappedConsumer->getNumOperands())
+      return failResult(failureReason,
+                        "boundary supply consumer is outside the cloned scope");
+    const unsigned boundaryArgNumber =
+        functionalArgumentCount + function.getNumResults() +
+        supply.boundaryArgumentIndex;
+    mlir::BlockArgument boundaryArg =
+        function.getBody().front().getArgument(boundaryArgNumber);
+    if (!boundaryArg ||
+        boundaryArg.getType() !=
+            mappedConsumer->getOperand(supply.consumerOperand).getType())
+      return failResult(failureReason,
+                        "boundary supply argument type does not match the "
+                        "consumer operand");
+    mappedConsumer->setOperand(supply.consumerOperand, boundaryArg);
+  }
   if (mappedStrategies.empty())
     return failResult(failureReason,
                       "edge-action lowering has no action on this Tile");
@@ -2783,7 +2851,11 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         return mlir::failure();
       break;
     case SpatialEdgeAction::SpillReload: {
-      if (independentDDRStages)
+      // A narrow per-root probe scope declares its carrier boundaries as
+      // externally carried (no spill is materialized here); the deterministic
+      // baseline full path materializes the canonical carrier and splits the
+      // region at construction time.
+      if (independentDDRStages && externalBoundaryCarrier)
         break;
       bool ignoredCreatedRegionCut = false;
       if (mlir::failed(
@@ -2794,7 +2866,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         return mlir::failure();
     } break;
     case SpatialEdgeAction::RegionCut: {
-      if (independentDDRStages)
+      if (independentDDRStages && externalBoundaryCarrier)
         break;
       bool createdRegionCut = false;
       if (mlir::failed(materializeSpill(

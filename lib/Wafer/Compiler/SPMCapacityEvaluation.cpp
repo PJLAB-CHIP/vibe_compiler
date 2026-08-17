@@ -236,21 +236,41 @@ evaluateTileRegionSPMCapacity(TileRegionOp region,
   TileRegionOp isolatedRegion = (*evaluation)->getRegion();
   mlir::IRMapping rebuildMapping;
   std::string remapDetail;
-  if (mlir::failed(convertTileRegionToInstr(
-          isolatedRegion, loweringSession, (*evaluation)->getListener())) ||
-      containsTileDataflowOperations(isolatedRegion.getOperation()) ||
-      !(*evaluation)->relationsCurrent() ||
-      mlir::failed(rebuildRequiredNCCJoinsForIsolatedTileRegion(
-          isolatedRegion, &rebuildMapping)) ||
-      !(*evaluation)->remapAfterBodySwap(rebuildMapping, remapDetail) ||
-      mlir::failed(mlir::verify(isolatedRegion)))
-    return report(classifyRegion(
-        TileRegionSPMCapacityStatus::AnalysisFailure,
-        TileRegionSPMCapacityPhase::InstructionLowering,
-        remapDetail.empty()
-            ? "TileRegion-to-Instr conversion or isolated required-join "
-              "analysis failed"
-            : remapDetail));
+  std::string conversionDiagnostics;
+  {
+    llvm::raw_string_ostream stream(conversionDiagnostics);
+    mlir::ScopedDiagnosticHandler captureHandler(
+        isolatedRegion.getContext(),
+        [&](mlir::Diagnostic &diag) {
+          diag.print(stream);
+          stream << "\n";
+        });
+    if (mlir::failed(convertTileRegionToInstr(
+            isolatedRegion, loweringSession, (*evaluation)->getListener())))
+      return report(classifyRegion(
+          TileRegionSPMCapacityStatus::AnalysisFailure,
+          TileRegionSPMCapacityPhase::InstructionLowering,
+          "TileRegion-to-Instr conversion failed: " + conversionDiagnostics));
+  }
+  {
+    std::string stage;
+    if (containsTileDataflowOperations(isolatedRegion.getOperation()))
+      stage = "residual tile dataflow after conversion";
+    else if (!(*evaluation)->relationsCurrent()) {
+      stage = "relations left the current IR";
+    }
+    else if (mlir::failed(rebuildRequiredNCCJoinsForIsolatedTileRegion(
+                 isolatedRegion, &rebuildMapping)))
+      stage = "isolated required-join rebuild failed";
+    else if (!(*evaluation)->remapAfterBodySwap(rebuildMapping, remapDetail))
+      stage = remapDetail;
+    else if (mlir::failed(mlir::verify(isolatedRegion)))
+      stage = "isolated region verify failed";
+    if (!stage.empty())
+      return report(classifyRegion(
+          TileRegionSPMCapacityStatus::AnalysisFailure,
+          TileRegionSPMCapacityPhase::InstructionLowering, stage));
+  }
 
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
   SPMMemoryPlanningFailure spmFailure;

@@ -147,6 +147,16 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
       return mlir::failure();
     tileRegionInputs.push_back(*boundary);
   }
+  // Narrow per-root construction: consumer-side boundary supplies enter the
+  // region as read-only DDR boundaries exactly like source inputs; the
+  // sibling structured producer's compute is never pulled into this scope.
+  for (mlir::Value original : scope.getBoundaryArguments()) {
+    mlir::FailureOr<mlir::Value> boundary = materializeDdrBoundary(
+        original, original, /*readOnly=*/true, rewriter);
+    if (mlir::failed(boundary))
+      return mlir::failure();
+    tileRegionInputs.push_back(*boundary);
+  }
 
   llvm::SmallVector<mlir::Type, 2> tileRegionResultTypes;
   for (mlir::Type resultType : scope.getResultTypes()) {
@@ -708,8 +718,9 @@ TileRegionBodyEmitter::initializeBoundary(TensorProgramScope scope,
                                           mlir::OpBuilder &builder) {
   mlir::Block &sourceBlock = scope.getBody();
   mlir::Block &tileBlock = tileRegion.getBody().front();
-  if (sourceBlock.getNumArguments() !=
-      scope.getInputCount() + scope.getOutputCount())
+  if (sourceBlock.getNumArguments() != scope.getInputCount() +
+                                          scope.getOutputCount() +
+                                          scope.getBoundaryArgumentCount())
     return fail("tensor program boundary argument count mismatch");
 
   unsigned tileArgIndex = 0;
@@ -746,7 +757,8 @@ TileRegionBodyEmitter::initializeBoundary(TensorProgramScope scope,
       return fail("tensor program boundary is not a ranked tensor or scalar");
     }
     externalBuffers[sourceArg] = tileArg;
-    if (argIndex >= inputCount) {
+    if (argIndex >= inputCount &&
+        argIndex < inputCount + scope.getOutputCount()) {
       writableExternalBuffers.insert(sourceArg);
       externalOutputIndices[sourceArg] = argIndex - inputCount;
     }

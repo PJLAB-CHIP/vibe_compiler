@@ -83,7 +83,9 @@ mlir::LogicalResult lowerTensorProgramToCardModule(
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
     std::string *failureReason = nullptr,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-    StructuredMaterializationRelations *materializationRelations = nullptr);
+    StructuredMaterializationRelations *materializationRelations = nullptr,
+    llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>> observableOutputRootNodes =
+        {});
 
 /// Materializes exactly one Tile entry function for scoped feasibility
 /// probing. The result module contains the module-scope target topology,

@@ -49,7 +49,8 @@ mlir::func::FuncOp findSingleStandaloneTensorProgram(mlir::ModuleOp module) {
 
 mlir::LogicalResult verifyTensorProgramScope(mlir::func::FuncOp function,
                                              unsigned functionalArgumentCount,
-                                             std::string *failureReason) {
+                                             std::string *failureReason,
+                                             unsigned boundaryArgumentCount) {
   if (!function || function.isExternal() ||
       !llvm::hasSingleElement(function.getBody())) {
     setFailureReason(
@@ -58,12 +59,14 @@ mlir::LogicalResult verifyTensorProgramScope(mlir::func::FuncOp function,
     return mlir::failure();
   }
   if (function.getNumResults() == 0 ||
-      function.getNumArguments() !=
-          functionalArgumentCount + function.getNumResults()) {
+      function.getNumArguments() != functionalArgumentCount +
+                                        function.getNumResults() +
+                                        boundaryArgumentCount) {
     setFailureReason(
         failureReason,
         "private scheduling boundary does not exactly extend the functional "
-        "arguments with one destination per result");
+        "arguments with one destination per result and the declared boundary "
+        "supplies");
     return mlir::failure();
   }
 

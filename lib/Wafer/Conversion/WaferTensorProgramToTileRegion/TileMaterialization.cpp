@@ -1414,6 +1414,7 @@ mlir::LogicalResult fuseCandidateProducerSlices(
         llvm::SmallVector<int64_t, 4> relativeOffsets(rank);
         llvm::SmallVector<int64_t, 4> intersectSizes(rank);
         bool disjoint = false;
+        bool fullyCovered = true;
         for (size_t dimension = 0; dimension < rank; ++dimension) {
           const int64_t insertLo = insertOffsets[dimension];
           const int64_t insertHi = insertLo + insertSizes[dimension];
@@ -1427,16 +1428,36 @@ mlir::LogicalResult fuseCandidateProducerSlices(
           }
           relativeOffsets[dimension] = intersectLo - insertLo;
           intersectSizes[dimension] = intersectHi - intersectLo;
+          fullyCovered &=
+              intersectLo == windowLo && intersectHi == windowHi &&
+              insertStrides[dimension] == 1;
         }
         rewriter.setInsertionPoint(slice);
         llvm::SmallVector<mlir::OpFoldResult, 4> unitStrides(
             rank, rewriter.getIndexAttr(1));
-        mlir::Value destSlice =
-            rewriter
-                .create<mlir::tensor::ExtractSliceOp>(
-                    slice.getLoc(), slice.getType(), insert.getDest(),
-                    slice.getMixedOffsets(), slice.getMixedSizes(), unitStrides)
-                .getResult();
+        // A window fully covered by the inserted region takes every value
+        // from the inserted source; the destination's contribution is dead.
+        // Materializing the destination window would pull the destination's
+        // structured producer (an exact overwritten demand the closure
+        // already proved empty) into this scope, so use a fresh destination
+        // window instead.
+        mlir::Value destSlice;
+        if (!disjoint && fullyCovered) {
+          auto windowType =
+              mlir::cast<mlir::RankedTensorType>(slice.getType());
+          auto empty = rewriter.create<mlir::tensor::EmptyOp>(
+              slice.getLoc(), windowType.getShape(),
+              windowType.getElementType());
+          destSlice = empty.getResult();
+        } else {
+          destSlice =
+              rewriter
+                  .create<mlir::tensor::ExtractSliceOp>(
+                      slice.getLoc(), slice.getType(), insert.getDest(),
+                      slice.getMixedOffsets(), slice.getMixedSizes(),
+                      unitStrides)
+                  .getResult();
+        }
         mlir::Value tiled = destSlice;
         if (!disjoint) {
           auto sourceType =

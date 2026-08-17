@@ -140,12 +140,35 @@ mlir::LogicalResult deriveSpatialEdgeConsumerResultDomain(
 bool isSpatialEdgeStrategyIncidentOnTile(const SpatialEdgeStrategy &strategy,
                                          TileId tile);
 
+/// Consumer-side boundary supply for one narrow per-root materialization: the
+/// named consumer operand is bound to an extra tensor entry argument instead
+/// of pulling the sibling structured producer's compute into this scope. The
+/// boundary arguments are appended after the scheduling destinations; the
+/// producing root's narrow entry stores into the same compiler-owned DDR
+/// boundary and carries it across the root boundary at merge time.
+struct StructuredBoundarySupply {
+  /// Consumer operation in the pristine source IR.
+  mlir::Operation *consumer = nullptr;
+  unsigned consumerOperand = 0;
+  /// Position of the boundary entry argument, counted from zero over this
+  /// materialization's boundary arguments.
+  unsigned boundaryArgumentIndex = 0;
+};
+
 /// Lowers one Tile's selected output shards and every selected edge
 /// action incident on that Tile.  Each action is reflected by actual IR:
 /// fused SSA, explicit local staging, peer fragment assembly, compiler-owned
 /// DDR store/reload, cloned pure compute, or a real TileRegion boundary.
 /// Unsupported semantics reject this actual candidate atomically; the API
 /// never repairs placement or substitutes a different action.
+///
+/// `boundarySupplies`/`boundaryArgumentCount` are the narrow per-root
+/// construction contract: the extra entry arguments never reach a sibling
+/// structured root, so the sibling producer's compute is never pulled into
+/// this scope. `externalBoundaryCarrier` declares every RegionCut/SpillReload
+/// carrier boundary as externally carried; the deterministic baseline full
+/// path leaves it false so the canonical carrier emits the exact DDR
+/// store/reload and splits the region at construction time.
 mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,
     llvm::ArrayRef<SpatialOutputShard> outputShards, TileId currentTile,
@@ -155,7 +178,10 @@ mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     int64_t currentLogicalPartition,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles = {},
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-    StructuredMaterializationRelations *materializationRelations = nullptr);
+    StructuredMaterializationRelations *materializationRelations = nullptr,
+    llvm::ArrayRef<StructuredBoundarySupply> boundarySupplies = {},
+    uint64_t boundaryArgumentCount = 0,
+    bool externalBoundaryCarrier = false);
 
 /// Gives every TileRegion of one Tile entry exactly one structured compute
 /// root by repeatedly splitting multi-root regions at structured root

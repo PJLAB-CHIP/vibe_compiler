@@ -7,6 +7,7 @@
 #include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -240,10 +241,12 @@ createNoWorkEntry(mlir::func::FuncOp sourceProgram,
 /// result path. The source argument boundary is never inferred or changed.
 static mlir::LogicalResult removeSchedulingOutputDestinations(
     mlir::func::FuncOp entry, unsigned sourceArgumentCount,
-    StructuredMaterializationRelations &relations, std::string *failureReason) {
+    StructuredMaterializationRelations &relations, std::string *failureReason,
+    uint64_t boundaryArgumentCount = 0) {
   const unsigned resultCount = entry.getNumResults();
   if (resultCount == 0 ||
-      entry.getNumArguments() != sourceArgumentCount + resultCount)
+      entry.getNumArguments() !=
+          sourceArgumentCount + resultCount + boundaryArgumentCount)
     return failCardModule(
         failureReason, "Tile entry does not have the exact private scheduling "
                        "boundary");
@@ -673,7 +676,10 @@ static mlir::FailureOr<mlir::func::FuncOp> lowerTileEntry(
     llvm::ArrayRef<SpatialOutputShard> tileShards, bool materializeTile,
     std::string *failureReason,
     StructuredMaterializationRelations *tileRelations,
-    llvm::ArrayRef<SpatialEdgeStrategy> narrowedEdgeStrategies = {}) {
+    llvm::ArrayRef<SpatialEdgeStrategy> narrowedEdgeStrategies = {},
+    llvm::ArrayRef<StructuredBoundarySupply> boundarySupplies = {},
+    uint64_t boundaryArgumentCount = 0,
+    bool externalBoundaryCarrier = false) {
   mlir::func::FuncOp entry;
   const llvm::ArrayRef<SpatialEdgeStrategy> edgeStrategies =
       narrowedEdgeStrategies.empty() ? llvm::ArrayRef<SpatialEdgeStrategy>(
@@ -693,7 +699,9 @@ static mlir::FailureOr<mlir::func::FuncOp> lowerTileEntry(
             loweredShard, failureReason,
             /*currentLogicalPartition=*/0,
             preparation.schedulingOperationTemporalTiles,
-            preparation.schedulingOperationNodes, tileRelations)))
+            preparation.schedulingOperationNodes, tileRelations,
+            boundarySupplies, boundaryArgumentCount,
+            externalBoundaryCarrier)))
       return mlir::failure();
     mlir::FailureOr<mlir::func::FuncOp> loweredEntry =
         takeLoweredTensorProgram(*loweredShard, failureReason);
@@ -701,6 +709,10 @@ static mlir::FailureOr<mlir::func::FuncOp> lowerTileEntry(
       return mlir::failure();
     entry = *loweredEntry;
   } else if (materializeTile && !tileShards.empty()) {
+    if (!boundarySupplies.empty() || boundaryArgumentCount != 0)
+      return failCardModule(
+          failureReason,
+          "boundary supplies require an incident edge strategy on the Tile");
     mlir::OwningOpRef<mlir::ModuleOp> loweredShard;
     if (mlir::failed(lowerSpatialOutputShardsToTileRegionModule(
             *preparation.schedulingModule, preparation.sourceArgumentCount,
@@ -715,28 +727,440 @@ static mlir::FailureOr<mlir::func::FuncOp> lowerTileEntry(
       return mlir::failure();
     entry = *loweredEntry;
   } else {
+    if (!boundarySupplies.empty() || boundaryArgumentCount != 0)
+      return failCardModule(
+          failureReason,
+          "boundary supplies require materializable Tile work");
     mlir::FailureOr<mlir::func::FuncOp> noWork = createNoWorkEntry(
         preparation.schedulingProgram, failureReason);
     if (mlir::failed(noWork))
       return mlir::failure();
     entry = *noWork;
   }
-  // Deterministic baseline contract: every TileRegion carries exactly one
-  // structured compute root; independent roots on one Tile form multiple
-  // sequential regions. Search-owned region grouping is never rewritten.
-  if (mapping.materializationMode ==
-          SpatialDataflowMaterializationMode::IndependentDDRStages &&
-      mlir::failed(splitStructuredRootBoundaries(entry, *tileRelations,
-                                                failureReason)))
-    return mlir::failure();
   return entry;
+}
+
+/// Collects the consumer-side boundary supplies of one structured root on
+/// one Tile: same-Tile RegionCut edges whose consumer is the target root and
+/// whose producer is a sibling structured root. The sibling producer's
+/// compute is never pulled into the narrow scope; its operand is bound to an
+/// extra entry argument instead.
+static void collectRootBoundarySupplies(
+    const TileMaterializationPreparation &preparation, TileId tileId,
+    uint32_t targetRoot,
+    llvm::SmallVectorImpl<StructuredBoundarySupply> &consumerSupplies) {
+  auto mappedNode = [&](mlir::Operation *operation) -> std::optional<uint32_t> {
+    for (const StructuredOperationNodeMapping &node :
+         preparation.schedulingOperationNodes)
+      if (node.operation == operation)
+        return node.structuredNodeId;
+    return std::nullopt;
+  };
+  for (const SpatialEdgeStrategy &strategy :
+       preparation.schedulingEdgeStrategies) {
+    if (strategy.destinationTile != tileId ||
+        strategy.action != SpatialEdgeAction::RegionCut)
+      continue;
+    std::optional<uint32_t> producerNode = mappedNode(strategy.producer);
+    std::optional<uint32_t> consumerNode = mappedNode(strategy.consumer);
+    if (producerNode && consumerNode && producerNode != consumerNode &&
+        *consumerNode == targetRoot) {
+      StructuredBoundarySupply supply;
+      supply.consumer = strategy.consumer;
+      supply.consumerOperand = strategy.consumerOperand;
+      supply.boundaryArgumentIndex = consumerSupplies.size();
+      consumerSupplies.push_back(supply);
+    }
+  }
+}
+
+/// Concatenates already-materialized per-component Tile entries of one Tile
+/// into one entry function. Every component entry shares the full-card
+/// input/result ABI and carries no boundary arguments; the merged entry keeps
+/// the first entry's destination allocations as the single shared
+/// destination set, rebases every later entry onto them and returns them
+/// exactly once. Independent structured roots on one Tile therefore form
+/// multiple sequential regions without any post-hoc region repair.
+static mlir::FailureOr<mlir::func::FuncOp> concatenateTileEntries(
+    llvm::SmallVectorImpl<mlir::func::FuncOp> &entries,
+    unsigned sourceArgumentCount, StructuredMaterializationRelations &relations,
+    std::string *failureReason) {
+  if (entries.empty())
+    return failCardModule(
+        failureReason,
+        "Tile entry concatenation needs at least one component entry");
+  mlir::func::FuncOp first = entries.front();
+  const unsigned resultCount = first.getNumResults();
+  if (first.getNumArguments() != sourceArgumentCount + resultCount)
+    return failCardModule(
+        failureReason,
+        "component entry does not have the exact private scheduling boundary");
+  // Every SSA rebase performed by the concatenation also retargets the
+  // current-IR buffer relations, so the merged relations describe exactly the
+  // values that survive in the merged entry.
+  auto retargetRelations = [&](mlir::Value oldValue, mlir::Value newValue) {
+    if (oldValue == newValue)
+      return;
+    auto retarget = [&](auto &entries) {
+      for (auto &relation : entries)
+        if (relation.buffer == oldValue)
+          relation.buffer = newValue;
+    };
+    retarget(relations.operationResultBuffers);
+    retarget(relations.operandBuffers);
+    retarget(relations.outputBuffers);
+  };
+  mlir::Block &mergedBody = first.getBody().front();
+  // The first entry's trailing tensor boundary becomes the merged return;
+  // later entries retarget any relation referencing their own trailing
+  // to_tensor results onto the corresponding merged boundary.
+  llvm::SmallVector<mlir::Value, 4> mergedBoundaryTensors;
+  {
+    mlir::Operation *lastRegion = nullptr;
+    for (mlir::Operation &operation : mergedBody.without_terminator())
+      if (mlir::isa<TileRegionOp>(operation))
+        lastRegion = &operation;
+    for (mlir::Operation *node = lastRegion ? lastRegion->getNextNode()
+                                            : nullptr;
+         node; node = node->getNextNode()) {
+      if (auto toTensor = mlir::dyn_cast<mlir::bufferization::ToTensorOp>(node))
+        mergedBoundaryTensors.push_back(toTensor.getResult());
+    }
+  }
+  if (mergedBoundaryTensors.size() != resultCount)
+    return failCardModule(
+        failureReason,
+        "component entry does not expose one tensor boundary per result");
+  auto entryDestinations = [&](mlir::func::FuncOp entry)
+      -> llvm::SmallVector<mlir::Value, 4> {
+    llvm::SmallVector<mlir::Value, 4> destinations;
+    for (mlir::Operation &operation : entry.getBody().front()) {
+      auto region = mlir::dyn_cast<TileRegionOp>(operation);
+      if (!region)
+        continue;
+      for (unsigned index = 0; index < resultCount; ++index) {
+        mlir::Value operand =
+            region.getOperand(sourceArgumentCount + index);
+        if (llvm::is_contained(destinations, operand))
+          continue;
+        destinations.push_back(operand);
+      }
+      if (!destinations.empty())
+        break;
+    }
+    return destinations;
+  };
+  const llvm::SmallVector<mlir::Value, 4> sharedDestinations =
+      entryDestinations(first);
+  if (sharedDestinations.size() != resultCount)
+    return failCardModule(
+        failureReason,
+        "component entry does not expose one destination per result");
+  for (mlir::func::FuncOp entry : llvm::drop_begin(entries)) {
+    if (entry.getNumArguments() != first.getNumArguments() ||
+        entry.getResultTypes() != first.getResultTypes())
+      return failCardModule(
+          failureReason,
+          "component entries do not share one full-card ABI");
+    const llvm::SmallVector<mlir::Value, 4> destinations =
+        entryDestinations(entry);
+    if (destinations.size() != resultCount)
+      return failCardModule(
+          failureReason,
+          "component entry does not expose one destination per result");
+    // Rebase the entry onto the merged arguments and the shared
+    // destinations, then splice its body (minus its own trailing tensor
+    // boundary) in front of the merged return.
+    for (unsigned index = 0; index < entry.getNumArguments(); ++index) {
+      retargetRelations(entry.getArgument(index),
+                        mergedBody.getArgument(index));
+      entry.getArgument(index).replaceAllUsesWith(
+          mergedBody.getArgument(index));
+    }
+    for (auto [destination, shared] :
+         llvm::zip_equal(destinations, sharedDestinations)) {
+      retargetRelations(destination, shared);
+      mlir::Value mutableDestination = destination;
+      mutableDestination.replaceAllUsesWith(shared);
+    }
+    // Each region keeps its own destination block arguments; the region
+    // operands were already rebased onto the shared destination allocations,
+    // so the block arguments receive the shared values through the rewired
+    // operand list and every relation keeps naming its in-region buffer.
+    mlir::Block &entryBody = entry.getBody().front();
+    mlir::Operation *lastRegion = nullptr;
+    for (mlir::Operation &operation : entryBody.without_terminator())
+      if (mlir::isa<TileRegionOp>(operation))
+        lastRegion = &operation;
+    // Everything after the last region is the entry's own tensor boundary
+    // (to_tensor/return); the merged entry returns the shared destinations.
+    // Relations and uses referencing the entry's trailing to_tensor results
+    // retarget onto the merged tensor boundary before the ops are erased.
+    {
+      llvm::SmallVector<mlir::Value, 4> entryBoundaryTensors;
+      for (mlir::Operation *node = lastRegion ? lastRegion->getNextNode()
+                                              : nullptr;
+           node; node = node->getNextNode()) {
+        if (auto toTensor =
+                mlir::dyn_cast<mlir::bufferization::ToTensorOp>(node))
+          entryBoundaryTensors.push_back(toTensor.getResult());
+      }
+      if (entryBoundaryTensors.size() != resultCount)
+        return failCardModule(
+            failureReason,
+            "component entry does not expose one tensor boundary per result");
+      for (auto [boundary, merged] :
+           llvm::zip_equal(entryBoundaryTensors, mergedBoundaryTensors)) {
+        retargetRelations(boundary, merged);
+        mlir::Value mutableBoundary = boundary;
+        mutableBoundary.replaceAllUsesWith(merged);
+      }
+    }
+    for (mlir::Operation *node = lastRegion ? lastRegion->getNextNode()
+                                            : nullptr;
+         node && node != entryBody.getTerminator();) {
+      mlir::Operation *next = node->getNextNode();
+      node->erase();
+      node = next;
+    }
+    // Rebased entry-level views whose results no longer have users (for
+    // example a duplicated destination to_memref) are dead after the SSA
+    // rebase and must not reach the merged entry.
+    for (mlir::Operation &operation :
+         llvm::make_early_inc_range(entryBody.without_terminator())) {
+      if (mlir::isa<TileRegionOp>(operation))
+        continue;
+      if (llvm::all_of(operation.getResults(),
+                       [](mlir::OpResult result) { return result.use_empty(); }))
+        operation.erase();
+    }
+    for (mlir::Operation &operation :
+         llvm::make_early_inc_range(entryBody.without_terminator()))
+      operation.moveBefore(mergedBody.getTerminator());
+    entry->erase();
+  }
+  return first;
+}
+
+/// Deterministic baseline structural postcondition: the canonical carrier
+/// and the per-component construction give every compute TileRegion exactly
+/// one structured compute root. A zero-root compute region violates the
+/// contract as much as a multi-root region; a movement-only boundary region
+/// legitimately carries no compute root.
+static mlir::LogicalResult verifyOneStructuredRootPerRegion(
+    mlir::func::FuncOp entry,
+    const StructuredMaterializationRelations &tileRelations,
+    std::string *failureReason) {
+  bool contractViolated = false;
+  llvm::SmallVector<uint32_t, 4> roots;
+  entry.walk([&](TileRegionOp region) {
+    if (contractViolated || region->getParentOfType<TileRegionOp>())
+      return;
+    bool hasCompute = false;
+    region.walk([&](mlir::Operation *operation) {
+      if (mlir::isa<ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
+                    ComputeConvOp, ComputeElementwiseOp, ComputeReduceOp>(
+              operation))
+        hasCompute = true;
+    });
+    if (!hasCompute)
+      return;
+    roots.clear();
+    region.walk([&](mlir::Operation *operation) {
+      for (mlir::Value result : operation->getResults())
+        for (const auto &relation : tileRelations.operationResultBuffers)
+          if (relation.buffer == result &&
+              !llvm::is_contained(roots, relation.structuredNodeId))
+            roots.push_back(relation.structuredNodeId);
+    });
+    if (roots.size() != 1)
+      contractViolated = true;
+  });
+  if (contractViolated)
+    return failCardModule(
+        failureReason,
+        "carrier-boundary materialization produced a compute region "
+        "without exactly one structured compute root");
+  return mlir::success();
+}
+
+/// Lowers one Tile entry for the deterministic baseline
+/// (IndependentDDRStages). Structured roots on the Tile that are not
+/// connected by any same-Tile dependency edge form separate dependency
+/// components; each component is materialized through its own narrow closure
+/// and the resulting regions are concatenated in canonical node order, so
+/// every TileRegion carries exactly one structured compute root by
+/// construction. Roots connected by carrier edges stay in one component: the
+/// canonical carrier emits the exact DDR store/reload and splits the region
+/// at construction time.
+static mlir::FailureOr<mlir::func::FuncOp> lowerBaselineTileEntry(
+    const TileMaterializationPreparation &preparation, CardId cardId,
+    TileId tileId, const TileMapping &mapping,
+    llvm::ArrayRef<SpatialOutputShard> tileShards,
+    llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>> observableOutputRootNodes,
+    StructuredMaterializationRelations &tileRelations,
+    std::string *failureReason) {
+  if (observableOutputRootNodes.empty() || tileShards.empty()) {
+    // Legacy direct-API callers without the observable-root mapping keep the
+    // exported split kernel for the IndependentDDRStages structure contract;
+    // the deterministic baseline always supplies the mapping and never
+    // reaches this path. The carrier boundaries are declared externally
+    // carried here so the whole-Tile closure materializes once and the split
+    // kernel owns the root-boundary separation.
+    mlir::FailureOr<mlir::func::FuncOp> entry = lowerTileEntry(
+        preparation, cardId, tileId, mapping, tileShards,
+        /*materializeTile=*/true, failureReason, &tileRelations,
+        /*narrowedEdgeStrategies=*/{},
+        /*boundarySupplies=*/{}, /*boundaryArgumentCount=*/0,
+        /*externalBoundaryCarrier=*/mapping.materializationMode ==
+            SpatialDataflowMaterializationMode::IndependentDDRStages);
+    if (mlir::failed(entry))
+      return entry;
+    if (mapping.materializationMode ==
+            SpatialDataflowMaterializationMode::IndependentDDRStages &&
+        mlir::failed(splitStructuredRootBoundaries(*entry, tileRelations,
+                                                   failureReason)))
+      return mlir::failure();
+    return entry;
+  }
+
+  auto mappedNode = [&](mlir::Operation *operation)
+      -> std::optional<uint32_t> {
+    for (const StructuredOperationNodeMapping &node :
+         preparation.schedulingOperationNodes)
+      if (node.operation == operation)
+        return node.structuredNodeId;
+    return std::nullopt;
+  };
+  llvm::SmallVector<uint32_t, 4> roots;
+  for (const SpatialOutputShard &shard : tileShards) {
+    if (shard.outputIndex >= observableOutputRootNodes.size())
+      return failCardModule(failureReason,
+                            "output shard index is outside the observable "
+                            "root mapping");
+    const auto &shardRoots = observableOutputRootNodes[shard.outputIndex];
+    if (shardRoots.size() != 1)
+      return failCardModule(
+          failureReason,
+          "baseline output must have exactly one nearest structured root");
+    if (!llvm::is_contained(roots, shardRoots.front()))
+      roots.push_back(shardRoots.front());
+  }
+  // Same-Tile dependency edges between two structured roots connect their
+  // components. A strategy without two structured endpoints keeps the whole
+  // Tile in one component: its support closure cannot be attributed to one
+  // root here.
+  llvm::DenseMap<uint32_t, uint32_t> parent;
+  auto findRoot = [&](uint32_t node) {
+    while (parent.lookup(node) != node)
+      node = parent[node];
+    return node;
+  };
+  for (uint32_t root : roots)
+    parent[root] = root;
+  bool singleComponent = false;
+  for (const SpatialEdgeStrategy &strategy :
+       preparation.schedulingEdgeStrategies) {
+    if (strategy.destinationTile != tileId)
+      continue;
+    std::optional<uint32_t> producerNode = mappedNode(strategy.producer);
+    std::optional<uint32_t> consumerNode = mappedNode(strategy.consumer);
+    if (!producerNode || !consumerNode) {
+      singleComponent = true;
+      break;
+    }
+    if (!llvm::is_contained(roots, *producerNode) ||
+        !llvm::is_contained(roots, *consumerNode))
+      continue;
+    parent[findRoot(*producerNode)] = findRoot(*consumerNode);
+  }
+  llvm::SmallVector<std::pair<uint32_t, uint32_t>, 4> rootComponents;
+  for (uint32_t root : roots)
+    rootComponents.push_back({root, findRoot(root)});
+  if (singleComponent || rootComponents.size() <= 1 ||
+      llvm::all_of(rootComponents, [&](const auto &pair) {
+        return pair.second == rootComponents.front().second;
+      })) {
+    mlir::FailureOr<mlir::func::FuncOp> entry = lowerTileEntry(
+        preparation, cardId, tileId, mapping, tileShards,
+        /*materializeTile=*/true, failureReason, &tileRelations);
+    if (mlir::failed(entry))
+      return entry;
+    if (mlir::failed(verifyOneStructuredRootPerRegion(*entry, tileRelations,
+                                                      failureReason)))
+      return mlir::failure();
+    return entry;
+  }
+
+  // Materialize one entry per dependency component and concatenate the
+  // regions in canonical root order.
+  llvm::sort(rootComponents, [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
+  llvm::SmallVector<mlir::func::FuncOp, 4> componentEntries;
+  for (const auto &[root, component] : rootComponents) {
+    // One entry per distinct component id; roots are already unique.
+    if (llvm::any_of(rootComponents, [&](const auto &other) {
+          return other.second == component && other.first < root;
+        }))
+      continue;
+    llvm::SmallVector<SpatialOutputShard, 4> componentShards;
+    for (const SpatialOutputShard &shard : tileShards) {
+      const auto &shardRoots = observableOutputRootNodes[shard.outputIndex];
+      if (shardRoots.size() != 1 ||
+          findRoot(shardRoots.front()) != component)
+        continue;
+      componentShards.push_back(shard);
+    }
+    llvm::SmallVector<SpatialEdgeStrategy, 8> componentStrategies;
+    for (const SpatialEdgeStrategy &strategy :
+         preparation.schedulingEdgeStrategies) {
+      if (strategy.destinationTile != tileId)
+        continue;
+      std::optional<uint32_t> producerNode = mappedNode(strategy.producer);
+      std::optional<uint32_t> consumerNode = mappedNode(strategy.consumer);
+      if (producerNode && consumerNode &&
+          llvm::is_contained(roots, *producerNode) &&
+          llvm::is_contained(roots, *consumerNode) &&
+          findRoot(*producerNode) == component &&
+          findRoot(*consumerNode) == component)
+        componentStrategies.push_back(strategy);
+    }
+    StructuredMaterializationRelations componentRelations;
+    mlir::FailureOr<mlir::func::FuncOp> entry = lowerTileEntry(
+        preparation, cardId, tileId, mapping, componentShards,
+        /*materializeTile=*/true, failureReason, &componentRelations,
+        componentStrategies);
+    if (mlir::failed(entry))
+      return mlir::failure();
+    tileRelations.operationResultBuffers.append(
+        componentRelations.operationResultBuffers.begin(),
+        componentRelations.operationResultBuffers.end());
+    tileRelations.operandBuffers.append(
+        componentRelations.operandBuffers.begin(),
+        componentRelations.operandBuffers.end());
+    tileRelations.outputBuffers.append(componentRelations.outputBuffers.begin(),
+                                       componentRelations.outputBuffers.end());
+    componentEntries.push_back(*entry);
+  }
+  mlir::FailureOr<mlir::func::FuncOp> merged = concatenateTileEntries(
+      componentEntries, preparation.sourceArgumentCount, tileRelations,
+      failureReason);
+  if (mlir::failed(merged))
+    return merged;
+  if (mlir::failed(verifyOneStructuredRootPerRegion(*merged, tileRelations,
+                                                    failureReason)))
+    return mlir::failure();
+  return merged;
 }
 
 mlir::LogicalResult lowerTensorProgramToCardModule(
     mlir::ModuleOp sourceModule, CardId cardId, const TileMapping &mapping,
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule, std::string *failureReason,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
-    StructuredMaterializationRelations *materializationRelations) {
+    StructuredMaterializationRelations *materializationRelations,
+    llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>>
+        observableOutputRootNodes) {
   mlir::FailureOr<TileMaterializationPreparation> preparation =
       prepareTileMaterialization(sourceModule, cardId, mapping, operationNodes,
                                  failureReason);
@@ -777,10 +1201,16 @@ mlir::LogicalResult lowerTensorProgramToCardModule(
     llvm::SmallVector<SpatialOutputShard, 4> tileShards;
     collectTileOutputShards(*preparation, tileId, tileShards,
                             coveredShardExtents);
-    mlir::FailureOr<mlir::func::FuncOp> entry =
-        lowerTileEntry(*preparation, cardId, tileId, mapping, tileShards,
-                       /*materializeTile=*/true, failureReason,
-                       &tileRelations);
+    mlir::FailureOr<mlir::func::FuncOp> entry;
+    if (mapping.materializationMode ==
+        SpatialDataflowMaterializationMode::IndependentDDRStages)
+      entry = lowerBaselineTileEntry(*preparation, cardId, tileId, mapping,
+                                     tileShards, observableOutputRootNodes,
+                                     tileRelations, failureReason);
+    else
+      entry = lowerTileEntry(*preparation, cardId, tileId, mapping, tileShards,
+                             /*materializeTile=*/true, failureReason,
+                             &tileRelations);
     if (mlir::failed(entry))
       return mlir::failure();
     tileBody.push_back(entry->getOperation());
@@ -908,10 +1338,18 @@ mlir::LogicalResult lowerTensorProgramToTileRootShard(
         failureReason,
         "structured root has no materializable shard or edge on the "
         "requested Tile");
-  mlir::FailureOr<mlir::func::FuncOp> entry =
-      lowerTileEntry(*preparation, cardId, tileId, mapping, rootShards,
-                     /*materializeTile=*/true, failureReason,
-                     &rootRelations, rootStrategies);
+  // The narrow probe declares every carrier boundary as externally carried:
+  // no spill is materialized inside the probe, and consumer-side boundaries
+  // bind the sibling producer's operand to an entry argument so the sibling
+  // compute is never pulled into this scope.
+  llvm::SmallVector<StructuredBoundarySupply, 4> consumerSupplies;
+  collectRootBoundarySupplies(*preparation, tileId, targetRoot,
+                              consumerSupplies);
+  mlir::FailureOr<mlir::func::FuncOp> entry = lowerTileEntry(
+      *preparation, cardId, tileId, mapping, rootShards,
+      /*materializeTile=*/true, failureReason, &rootRelations, rootStrategies,
+      consumerSupplies, consumerSupplies.size(),
+      /*externalBoundaryCarrier=*/true);
   if (mlir::failed(entry))
     return mlir::failure();
 
@@ -924,7 +1362,7 @@ mlir::LogicalResult lowerTensorProgramToTileRootShard(
   result->getBody()->push_back(entry->getOperation());
   if (mlir::failed(removeSchedulingOutputDestinations(
           *entry, preparation->sourceArgumentCount, rootRelations,
-          failureReason)))
+          failureReason, consumerSupplies.size())))
     return mlir::failure();
   if (!relationsBelongTo(result->getOperation(), rootRelations))
     return failCardModule(
