@@ -197,9 +197,10 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
         TileMemoryPlanningFailureKind::InstrMemoryPlanningPreparation);
     return mlir::failure();
   }
-  if (materializationRelations)
-    retainCurrentStructuredBufferRelations(module->getOperation(),
-                                           *materializationRelations);
+  // The preparation pipeline must preserve every attribution relation. A
+  // relation whose buffer left the current IR is a probe/final evidence
+  // contract violation and fails closed here instead of being silently
+  // dropped from the certificate.
   if (mlir::failed(
           requireCurrentBufferRelations("memory-planning preparation"))) {
     recordFailure(
@@ -243,19 +244,13 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
   if (mlir::failed(spmResult)) {
     recordFailure(TileMemoryPlanningFailureKind::SPMAllocation);
     if (failure) {
-      if (materializationRelations)
-        *failure =
-            convertSPMMemoryPlanningFailure(spmFailure,
-                                            *materializationRelations);
-      else {
-        failure->spmCapacityOverflow =
-            spmFailure.kind == SPMMemoryPlanningFailureKind::CapacityOverflow;
-        failure->spmPlanningFailureKind = spmFailure.kind;
-        failure->spmLargestDemandLocation = spmFailure.largestDemandLocation;
-        failure->spmLargestDemandType = spmFailure.largestDemandType;
-        failure->spmLargestDemandBytes = spmFailure.largestDemandBytes;
-        failure->spmDemandCount = spmFailure.demandCount;
-      }
+      // The raw planner certificate is preserved completely on both entry
+      // paths: structured relations only add owner attribution on top of the
+      // full typed evidence, they never decide which evidence is copied.
+      *failure = convertSPMMemoryPlanningFailure(
+          spmFailure, materializationRelations
+                          ? *materializationRelations
+                          : StructuredMaterializationRelations{});
     }
     return mlir::failure();
   }

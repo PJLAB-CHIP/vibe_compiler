@@ -1397,6 +1397,109 @@ module {
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
+     NarrowRootShardEntryMaterializesOnlyTargetRoot) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %out = tensor.empty() : tensor<8xf16>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%input : tensor<8xf16>) outs(%out : tensor<8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %value : f16
+        linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    %final = tensor.empty() : tensor<8xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%producer : tensor<8xf16>) outs(%final : tensor<8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %old : f16
+        linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    return %consumer : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  mlir::linalg::GenericOp producer;
+  mlir::linalg::GenericOp consumer;
+  source->walk([&](mlir::linalg::GenericOp operation) {
+    if (!producer)
+      producer = operation;
+    else
+      consumer = operation;
+  });
+  ASSERT_TRUE(producer);
+  ASSERT_TRUE(consumer);
+
+  wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
+  selected.materializationMode =
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
+  // The producer/consumer boundary is an explicit single-buffer DDR cut:
+  // IndependentDDRStages rejects coupled fusion on this edge, and the narrow
+  // probe of the consumer root must see the producer only as a DDR boundary.
+  wafer::SpatialEdgeStrategy cut = edgeStrategy(
+      producer.getOperation(), consumer.getOperation(), wafer::TileId(0),
+      wafer::SpatialEdgeAction::RegionCut,
+      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8});
+  cut.producerResult = 0;
+  cut.consumerOperand = 0;
+  selected.edgeStrategies.push_back(std::move(cut));
+  selected = completeTemporalMapping(*source, std::move(selected));
+
+  llvm::SmallVector<wafer::StructuredOperationNodeMapping, 2> operationNodes = {
+      {producer.getOperation(), /*structuredNodeId=*/0},
+      {consumer.getOperation(), /*structuredNodeId=*/1}};
+  llvm::SmallVector<llvm::SmallVector<uint32_t, 2>, 1> observableRoots = {
+      {1}};
+
+  mlir::OwningOpRef<mlir::ModuleOp> rootModule;
+  wafer::StructuredMaterializationRelations relations;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToTileRootShard(
+      *source, wafer::CardId(0), wafer::TileId(0), selected,
+      /*targetRoot=*/1, rootModule, &failureReason, operationNodes,
+      observableRoots, &relations)))
+      << failureReason;
+
+  // The probe scope is one detached entry function: no Card/Tile shell and
+  // no sibling-root compute may appear in the module.
+  EXPECT_EQ(countOps<wafer::CardModuleOp>(rootModule->getOperation()), 0u);
+  EXPECT_EQ(countOps<wafer::TileModuleOp>(rootModule->getOperation()), 0u);
+  llvm::SmallVector<mlir::func::FuncOp, 2> entries;
+  rootModule->walk(
+      [&](mlir::func::FuncOp entry) { entries.push_back(entry); });
+  ASSERT_EQ(entries.size(), 1u);
+  // The narrow module is scoped to the target root's dataflow: the consumer
+  // compute is present. The same-Tile producer boundary write still enters
+  // through the shared RegionCut strategy materializer; direct single-side
+  // per-root region construction removes it in P4.
+  EXPECT_GE(countOps<wafer::ComputeElementwiseOp>(rootModule->getOperation()),
+            1u);
+  // Relations are non-empty and every relation buffer stays inside the
+  // narrow module so a strict probe remap sees a complete evidence set.
+  EXPECT_FALSE(relations.operationResultBuffers.empty());
+  EXPECT_FALSE(relations.outputBuffers.empty());
+  for (const auto &relation : relations.operationResultBuffers)
+    EXPECT_TRUE(relation.buffer);
+  for (const auto &relation : relations.outputBuffers)
+    EXPECT_TRUE(relation.buffer);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*rootModule)));
+}
+
+TEST(WaferTensorProgramToCardModuleTest,
      SkipsUnavailableTopologyIdsWithoutRenumberingShards) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(

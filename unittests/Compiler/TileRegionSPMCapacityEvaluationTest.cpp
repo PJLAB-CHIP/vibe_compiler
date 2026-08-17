@@ -5,6 +5,7 @@
 
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
 
@@ -195,6 +196,109 @@ TEST_F(TileRegionSPMCapacityEvaluationTest,
             wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
   EXPECT_NE(diagnosticText.find("tile-function-spm-capacity outcome=capacity-exceeded"),
             std::string::npos);
+}
+
+TEST_F(TileRegionSPMCapacityEvaluationTest,
+       FunctionScopedProbePreservesNonEmptyRelations) {
+  auto module = parse(/*elements=*/16);
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function;
+  wafer::TileRegionOp region;
+  module->walk([&](mlir::func::FuncOp candidate) {
+    if (!candidate.isExternal())
+      function = candidate;
+  });
+  module->walk([&](wafer::TileRegionOp candidate) { region = candidate; });
+  ASSERT_TRUE(function);
+  ASSERT_TRUE(region);
+
+  // Non-empty evidence across every probe category: the SPM buffer as the
+  // structured result/operand owner and the region result as the output
+  // boundary. The probe must keep all three through clone, conversion,
+  // required-join placement, memory-planning preparation and SPM assignment.
+  wafer::StructuredMaterializationRelations relations;
+  mlir::Value spmBuffer;
+  region.walk([&](mlir::Operation *operation) {
+    if (auto alloc = mlir::dyn_cast<mlir::memref::AllocOp>(operation))
+      if (!spmBuffer)
+        spmBuffer = alloc.getResult();
+  });
+  ASSERT_TRUE(spmBuffer);
+  relations.operationResultBuffers.push_back(
+      {/*structuredNodeId=*/7, spmBuffer});
+  relations.operandBuffers.push_back({/*structuredNodeId=*/3, spmBuffer});
+  relations.outputBuffers.push_back(
+      {/*outputIndex=*/0, region.getResult(0)});
+
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto result = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
+      function, relations, diagnostics);
+  diagnostics.flush();
+  EXPECT_TRUE(result.fits()) << diagnosticText;
+}
+
+TEST_F(TileRegionSPMCapacityEvaluationTest,
+       FunctionScopedProbeFailsClosedOnForeignRelation) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @probe(%boundary: memref<16xf16, #wafer.memory<ddr, tensor>>) {
+    %unused = wafer.tile.region(
+        %boundary : memref<16xf16, #wafer.memory<ddr, tensor>>) ->
+        (memref<16xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%ddr: memref<16xf16, #wafer.memory<ddr, tensor>>):
+      wafer.tile.yield %ddr
+          : memref<16xf16, #wafer.memory<ddr, tensor>>
+    }
+    return
+  }
+  func.func @foreign() {
+    %outside = memref.alloc()
+        : memref<16xf16, #wafer.memory<spm, tensor>>
+    memref.dealloc %outside : memref<16xf16, #wafer.memory<spm, tensor>>
+    return
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp probeFunction;
+  mlir::func::FuncOp foreignFunction;
+  for (mlir::func::FuncOp function : module->getOps<mlir::func::FuncOp>()) {
+    if (function.getSymName() == "probe")
+      probeFunction = function;
+    else if (function.getSymName() == "foreign")
+      foreignFunction = function;
+  }
+  ASSERT_TRUE(probeFunction);
+  ASSERT_TRUE(foreignFunction);
+  mlir::Value outsideBuffer;
+  foreignFunction.walk([&](mlir::Operation *operation) {
+    if (auto alloc = mlir::dyn_cast<mlir::memref::AllocOp>(operation))
+      outsideBuffer = alloc.getResult();
+  });
+  ASSERT_TRUE(outsideBuffer);
+
+  // A relation on another function's buffer cannot be remapped into the
+  // cloned Tile entry: the evidence contract fails closed instead of probing
+  // with a silently dropped witness.
+  wafer::StructuredMaterializationRelations relations;
+  relations.operationResultBuffers.push_back(
+      {/*structuredNodeId=*/9, outsideBuffer});
+
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  auto result = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
+      probeFunction, relations, diagnostics);
+  diagnostics.flush();
+  EXPECT_EQ(
+      result.status,
+      wafer::compiler::detail::TileFunctionSPMCapacityStatus::AnalysisFailure);
+  EXPECT_EQ(result.phase,
+            wafer::compiler::detail::TileFunctionSPMCapacityPhase::InputValidation);
+  EXPECT_NE(diagnosticText.find("relation remap is incomplete"),
+            std::string::npos)
+      << diagnosticText;
 }
 
 TEST_F(TileRegionSPMCapacityEvaluationTest,

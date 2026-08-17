@@ -672,20 +672,25 @@ static mlir::FailureOr<mlir::func::FuncOp> lowerTileEntry(
     TileId tileId, const TileMapping &mapping,
     llvm::ArrayRef<SpatialOutputShard> tileShards, bool materializeTile,
     std::string *failureReason,
-    StructuredMaterializationRelations *tileRelations) {
+    StructuredMaterializationRelations *tileRelations,
+    llvm::ArrayRef<SpatialEdgeStrategy> narrowedEdgeStrategies = {}) {
   mlir::func::FuncOp entry;
+  const llvm::ArrayRef<SpatialEdgeStrategy> edgeStrategies =
+      narrowedEdgeStrategies.empty() ? llvm::ArrayRef<SpatialEdgeStrategy>(
+                                           preparation.schedulingEdgeStrategies)
+                                     : narrowedEdgeStrategies;
   const bool hasEdgeAction =
       materializeTile &&
       llvm::any_of(
-          mapping.edgeStrategies, [&](const SpatialEdgeStrategy &strategy) {
+          edgeStrategies, [&](const SpatialEdgeStrategy &strategy) {
             return isSpatialEdgeStrategyIncidentOnTile(strategy, tileId);
           });
   if (hasEdgeAction) {
     mlir::OwningOpRef<mlir::ModuleOp> loweredShard;
     if (mlir::failed(lowerSpatialEdgeStrategiesToTileRegionModule(
             *preparation.schedulingModule, preparation.sourceArgumentCount,
-            tileShards, tileId, mapping.materializationMode,
-            preparation.schedulingEdgeStrategies, loweredShard, failureReason,
+            tileShards, tileId, mapping.materializationMode, edgeStrategies,
+            loweredShard, failureReason,
             /*currentLogicalPartition=*/0,
             preparation.schedulingOperationTemporalTiles,
             preparation.schedulingOperationNodes, tileRelations)))
@@ -821,6 +826,124 @@ mlir::LogicalResult lowerTensorProgramToCardModule(
   if (materializationRelations)
     *materializationRelations = std::move(resultRelations);
   cardModule = std::move(result);
+  return mlir::success();
+}
+
+mlir::LogicalResult lowerTensorProgramToTileRootShard(
+    mlir::ModuleOp sourceModule, CardId cardId, TileId tileId,
+    const TileMapping &mapping, uint32_t targetRoot,
+    mlir::OwningOpRef<mlir::ModuleOp> &tileModule, std::string *failureReason,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>> observableOutputRootNodes,
+    StructuredMaterializationRelations *materializationRelations) {
+  mlir::FailureOr<TileMaterializationPreparation> preparation =
+      prepareTileMaterialization(sourceModule, cardId, mapping, operationNodes,
+                                 failureReason);
+  if (mlir::failed(preparation))
+    return mlir::failure();
+  if (!llvm::is_contained(preparation->availableTiles, tileId))
+    return failCardModule(failureReason, "requested Tile is unavailable");
+
+  // Probe scope is one root's shard on one participating Tile: keep only the
+  // output shards whose nearest structured root is the target root, so the
+  // pull closure materializes exactly that root's region plus its non-root
+  // support. Sibling roots and no-work entries are never created.
+  llvm::SmallVector<SpatialOutputShard, 4> allTileShards;
+  llvm::SmallVector<int64_t, 4> coveredShardExtents(
+      preparation->outputDomains.size(), 0);
+  collectTileOutputShards(*preparation, tileId, allTileShards,
+                          coveredShardExtents);
+  llvm::SmallVector<SpatialOutputShard, 4> rootShards;
+  for (const SpatialOutputShard &shard : allTileShards) {
+    if (shard.outputIndex >= observableOutputRootNodes.size())
+      return failCardModule(failureReason,
+                            "output shard index is outside the observable "
+                            "root mapping");
+    if (llvm::is_contained(observableOutputRootNodes[shard.outputIndex],
+                           targetRoot))
+      rootShards.push_back(shard);
+  }
+  // An intermediate producer root has no program-result shard of its own;
+  // its probe scope is driven by the narrowed edge strategies below. An
+  // observable root whose result shards miss this Tile is a caller error.
+  bool isObservableRoot = false;
+  for (const auto &roots : observableOutputRootNodes)
+    if (llvm::is_contained(roots, targetRoot)) {
+      isObservableRoot = true;
+      break;
+    }
+  if (rootShards.empty() && isObservableRoot)
+    return failCardModule(
+        failureReason,
+        "structured root has no output shard on the requested Tile");
+
+  // Edge strategies stay when both endpoints belong to the target root or
+  // to generic non-structured support operations without a node mapping.
+  // A strategy touching a sibling structured root never enters the probe.
+  auto mappedNode = [&](mlir::Operation *operation)
+      -> std::optional<uint32_t> {
+    for (const StructuredOperationNodeMapping &node :
+         preparation->schedulingOperationNodes)
+      if (node.operation == operation)
+        return node.structuredNodeId;
+    return std::nullopt;
+  };
+  llvm::SmallVector<SpatialEdgeStrategy, 8> rootStrategies;
+  for (const SpatialEdgeStrategy &strategy :
+       preparation->schedulingEdgeStrategies) {
+    std::optional<uint32_t> producerNode = mappedNode(strategy.producer);
+    std::optional<uint32_t> consumerNode = mappedNode(strategy.consumer);
+    // An edge stays when the target root is one of its structured endpoints
+    // (the other endpoint contributes the sibling-root DDR boundary) or when
+    // neither endpoint is a structured node (generic non-root support).
+    if ((!producerNode && !consumerNode) ||
+        (producerNode && *producerNode == targetRoot) ||
+        (consumerNode && *consumerNode == targetRoot))
+      rootStrategies.push_back(strategy);
+  }
+
+  StructuredMaterializationRelations rootRelations;
+  if (rootShards.empty() && rootStrategies.empty())
+    return failCardModule(
+        failureReason,
+        "structured root has no materializable shard or edge on the "
+        "requested Tile");
+  mlir::FailureOr<mlir::func::FuncOp> entry =
+      lowerTileEntry(*preparation, cardId, tileId, mapping, rootShards,
+                     /*materializeTile=*/true, failureReason,
+                     &rootRelations, rootStrategies);
+  if (mlir::failed(entry))
+    return mlir::failure();
+
+  // The probe scope is the Tile entry function itself: no CardModule shell,
+  // no sibling Tile modules and no sibling-root regions are materialized.
+  mlir::OwningOpRef<mlir::ModuleOp> result =
+      mlir::ModuleOp::create(sourceModule.getLoc());
+  result->getOperation()->setAttrs(sourceModule->getAttrDictionary());
+  cloneModuleFacts(sourceModule, *result);
+  result->getBody()->push_back(entry->getOperation());
+  if (mlir::failed(removeSchedulingOutputDestinations(
+          *entry, preparation->sourceArgumentCount, rootRelations,
+          failureReason)))
+    return mlir::failure();
+  if (!relationsBelongTo(result->getOperation(), rootRelations))
+    return failCardModule(
+        failureReason,
+        "single-root Tile materialization produced a buffer relation outside "
+        "the current IR");
+  {
+    mlir::ScopedDiagnosticHandler suppress(
+        sourceModule.getContext(),
+        [](mlir::Diagnostic &) { return mlir::success(); });
+    if (mlir::failed(mlir::verify(*result)))
+      return failCardModule(
+          failureReason,
+          "materialized single-root Tile module is not verifier-legal");
+  }
+
+  if (materializationRelations)
+    *materializationRelations = std::move(rootRelations);
+  tileModule = std::move(result);
   return mlir::success();
 }
 

@@ -99,6 +99,23 @@ mlir::LogicalResult lowerTensorProgramToTileModule(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr);
 
+/// Materializes only the shard of one structured root on one participating
+/// Tile for scoped feasibility probing: the result module carries the module
+/// topology facts and a single detached Tile entry whose pull closure covers
+/// exactly `targetRoot`'s output shards and its non-root support. Sibling
+/// roots, other Tiles, CardModule/TileModule shells and no-work wrappers are
+/// never created. `observableOutputRootNodes` is the DAG's per-function-result
+/// nearest-root list used to select the shards owned by `targetRoot`.
+mlir::LogicalResult lowerTensorProgramToTileRootShard(
+    mlir::ModuleOp sourceModule, CardId cardId, TileId tileId,
+    const TileMapping &mapping, uint32_t targetRoot,
+    mlir::OwningOpRef<mlir::ModuleOp> &tileModule,
+    std::string *failureReason = nullptr,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+    llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>> observableOutputRootNodes =
+        {},
+    StructuredMaterializationRelations *materializationRelations = nullptr);
+
 } // namespace wafer
 
 #endif // WAFER_CONVERSION_WAFERTENSORPROGRAMTOCARDMODULE_H

@@ -121,12 +121,15 @@ collectOperationBufferValues(mlir::Operation *operation) {
 template <typename RelationT>
 static void appendRemapped(llvm::ArrayRef<RelationT> source,
                            const mlir::IRMapping &mapping,
-                           llvm::SmallVectorImpl<RelationT> &destination) {
+                           llvm::SmallVectorImpl<RelationT> &destination,
+                           llvm::SmallVectorImpl<RelationT> *unmapped) {
   for (const RelationT &relation : source)
     if (mlir::Value mapped = mapping.lookupOrNull(relation.buffer)) {
       RelationT copy = relation;
       copy.buffer = mapped;
       destination.push_back(copy);
+    } else if (unmapped) {
+      unmapped->push_back(relation);
     }
 }
 
@@ -232,46 +235,81 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
                        allCurrent(relations.outputBuffers));
 }
 
-void retainCurrentStructuredBufferRelations(
-    mlir::Operation *root, StructuredMaterializationRelations &relations) {
-  if (!root) {
-    relations.clear();
-    return;
-  }
-
-  llvm::DenseSet<const void *> liveValues;
-  root->walk([&](mlir::Operation *operation) {
-    for (mlir::Value result : operation->getResults())
-      liveValues.insert(result.getAsOpaquePointer());
-    for (mlir::Region &region : operation->getRegions())
-      for (mlir::Block &block : region)
-        for (mlir::BlockArgument argument : block.getArguments())
-          liveValues.insert(argument.getAsOpaquePointer());
-  });
-  auto retain = [&](auto &entries) {
-    llvm::erase_if(entries, [&](const auto &entry) {
-      return !entry.buffer ||
-             !liveValues.contains(entry.buffer.getAsOpaquePointer());
-    });
-  };
-  retain(relations.operationResultBuffers);
-  retain(relations.operandBuffers);
-  retain(relations.outputBuffers);
-}
-
 StructuredMaterializationRelations
 remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
                                const mlir::IRMapping &mapping) {
   StructuredMaterializationRelations result;
+  llvm::SmallVectorImpl<StructuredOperationBufferRelation> *noUnmappedOps =
+      nullptr;
+  llvm::SmallVectorImpl<SpatialOutputBufferRelation> *noUnmappedOutputs =
+      nullptr;
   appendRemapped(llvm::ArrayRef<StructuredOperationBufferRelation>(
                      source.operationResultBuffers),
-                 mapping, result.operationResultBuffers);
+                 mapping, result.operationResultBuffers, noUnmappedOps);
   appendRemapped(
       llvm::ArrayRef<StructuredOperationBufferRelation>(source.operandBuffers),
-      mapping, result.operandBuffers);
+      mapping, result.operandBuffers, noUnmappedOps);
   appendRemapped(
       llvm::ArrayRef<SpatialOutputBufferRelation>(source.outputBuffers),
-      mapping, result.outputBuffers);
+      mapping, result.outputBuffers, noUnmappedOutputs);
+  return result;
+}
+
+StructuredMaterializationRelations
+scopeStructuredBufferRelations(mlir::Operation *root,
+                               const StructuredMaterializationRelations &relations) {
+  llvm::DenseSet<const void *> inScope;
+  auto insert = [&](mlir::Value value) {
+    if (value)
+      inScope.insert(value.getAsOpaquePointer());
+  };
+  for (mlir::Value operand : root->getOperands())
+    insert(operand);
+  for (mlir::Value result : root->getResults())
+    insert(result);
+  for (mlir::Region &region : root->getRegions())
+    for (mlir::Block &block : region)
+      for (mlir::BlockArgument argument : block.getArguments())
+        insert(argument);
+  root->walk([&](mlir::Operation *operation) {
+    for (mlir::Value result : operation->getResults())
+      insert(result);
+  });
+  auto inScopeEntry = [&](const auto &entry) {
+    return entry.buffer && inScope.contains(entry.buffer.getAsOpaquePointer());
+  };
+  StructuredMaterializationRelations result;
+  for (const auto &entry : relations.operationResultBuffers)
+    if (inScopeEntry(entry))
+      result.operationResultBuffers.push_back(entry);
+  for (const auto &entry : relations.operandBuffers)
+    if (inScopeEntry(entry))
+      result.operandBuffers.push_back(entry);
+  for (const auto &entry : relations.outputBuffers)
+    if (inScopeEntry(entry))
+      result.outputBuffers.push_back(entry);
+  return result;
+}
+
+mlir::FailureOr<StructuredMaterializationRelations>
+remapStructuredBufferRelationsComplete(
+    const StructuredMaterializationRelations &source,
+    const mlir::IRMapping &mapping, StructuredRelationRemapIssue *issue) {
+  StructuredRelationRemapIssue localIssue;
+  StructuredRelationRemapIssue &reported = issue ? *issue : localIssue;
+  StructuredMaterializationRelations result;
+  appendRemapped(llvm::ArrayRef<StructuredOperationBufferRelation>(
+                     source.operationResultBuffers),
+                 mapping, result.operationResultBuffers,
+                 &reported.unmappedResultBuffers);
+  appendRemapped(
+      llvm::ArrayRef<StructuredOperationBufferRelation>(source.operandBuffers),
+      mapping, result.operandBuffers, &reported.unmappedOperandBuffers);
+  appendRemapped(
+      llvm::ArrayRef<SpatialOutputBufferRelation>(source.outputBuffers),
+      mapping, result.outputBuffers, &reported.unmappedOutputBuffers);
+  if (!reported.empty())
+    return mlir::failure();
   return result;
 }
 

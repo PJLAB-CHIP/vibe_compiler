@@ -5044,32 +5044,90 @@ synthesizeDeterministicBaseline(
     const bool scopedProbe = scopedProbeTileId.has_value();
     mlir::OwningOpRef<mlir::ModuleOp> cardModule;
     StructuredMaterializationRelations materializationRelations;
+    llvm::SmallVector<mlir::OwningOpRef<mlir::ModuleOp>, 8> scopedProbeModules;
     std::string failureReason;
     {
       wafer::support::ScopedCompileTimingSpan timing(
           "conversion", "deterministic-baseline",
           "tensor-program-to-card-module");
-      mlir::LogicalResult lowered =
-          scopedProbe
-              ? lowerTensorProgramToTileModule(
-                    tensorProgram, cardId, *scopedProbeTileId,
-                    candidate->mapping, cardModule, &failureReason,
-                    operationNodes, &materializationRelations)
-              : lowerTensorProgramToCardModule(
-                    tensorProgram, cardId, candidate->mapping,
-                    cardModule, &failureReason, operationNodes,
-                    &materializationRelations);
-      if (mlir::failed(lowered)) {
+      if (scopedProbe) {
+        // The scoped probe materializes one narrow module per structured
+        // root participating on the probed Tile: each module carries exactly
+        // that root's shard and its non-root support closure, never sibling
+        // roots, sibling Tiles or card-shaped wrappers.
+        auto nodeMapsTo = [&](mlir::Operation *operation)
+            -> std::optional<uint32_t> {
+          for (const StructuredOperationNodeMapping &node : operationNodes)
+            if (node.operation == operation)
+              return node.structuredNodeId;
+          return std::nullopt;
+        };
+        for (const StructuredDAGNodePlacement &placement :
+             candidate->nodePlacements) {
+          if (!llvm::is_contained(placement.tiles, *scopedProbeTileId))
+            continue;
+          // A support-only node (for example an init fill materialized inside
+          // its consumer's region) has no independent TileRegion; its demand
+          // is probed together with the owning compute root's region.
+          const bool observableRoot =
+              llvm::any_of(dag.getObservableOutputRootNodes(),
+                           [&](const auto &roots) {
+                             return llvm::is_contained(roots, placement.node);
+                           });
+          const bool hasOwnEdge = llvm::any_of(
+              candidate->mapping.edgeStrategies,
+              [&](const SpatialEdgeStrategy &strategy) {
+                std::optional<uint32_t> producerNode =
+                    nodeMapsTo(strategy.producer);
+                std::optional<uint32_t> consumerNode =
+                    nodeMapsTo(strategy.consumer);
+                return (producerNode && *producerNode == placement.node) ||
+                       (consumerNode && *consumerNode == placement.node);
+              });
+          if (!observableRoot && !hasOwnEdge)
+            continue;
+          mlir::OwningOpRef<mlir::ModuleOp> rootModule;
+          StructuredMaterializationRelations rootRelations;
+          std::string rootFailure;
+          if (mlir::failed(lowerTensorProgramToTileRootShard(
+                  tensorProgram, cardId, *scopedProbeTileId,
+                  candidate->mapping, placement.node, rootModule, &rootFailure,
+                  operationNodes, dag.getObservableOutputRootNodes(),
+                  &rootRelations))) {
+            diagnostics << "wafer-compile: deterministic card baseline "
+                           "failed scoped root materialization for node "
+                        << placement.node << ": " << rootFailure << '\n';
+            return mlir::failure();
+          }
+          materializationRelations.operationResultBuffers.append(
+              rootRelations.operationResultBuffers.begin(),
+              rootRelations.operationResultBuffers.end());
+          materializationRelations.operandBuffers.append(
+              rootRelations.operandBuffers.begin(),
+              rootRelations.operandBuffers.end());
+          materializationRelations.outputBuffers.append(
+              rootRelations.outputBuffers.begin(),
+              rootRelations.outputBuffers.end());
+          scopedProbeModules.push_back(std::move(rootModule));
+          ++statistics.baselineScopedCardModuleMaterializations;
+        }
+        if (scopedProbeModules.empty()) {
+          diagnostics << "wafer-compile: deterministic card baseline "
+                         "scoped probe has no participating root on Tile "
+                      << scopedProbeTileId->getValue() << '\n';
+          return mlir::failure();
+        }
+      } else if (mlir::failed(lowerTensorProgramToCardModule(
+                     tensorProgram, cardId, candidate->mapping,
+                     cardModule, &failureReason, operationNodes,
+                     &materializationRelations))) {
         diagnostics << "wafer-compile: deterministic card baseline "
-                       "failed "
-                    << (scopedProbe ? "scoped " : "")
-                    << "CardModule materialization: " << failureReason << '\n';
+                       "failed CardModule materialization: "
+                    << failureReason << '\n';
         return mlir::failure();
       }
     }
-    if (scopedProbe)
-      ++statistics.baselineScopedCardModuleMaterializations;
-    else
+    if (!scopedProbe)
       ++statistics.baselineCardModuleMaterializations;
 
     uint64_t actualFusedLogicalEdges = 0;
@@ -5085,19 +5143,26 @@ synthesizeDeterministicBaseline(
     }
 
     llvm::SmallVector<TileModuleOp, 16> tileModules;
-    cardModule->walk(
-        [&](TileModuleOp tileModule) { tileModules.push_back(tileModule); });
-    llvm::sort(tileModules, [](TileModuleOp lhs, TileModuleOp rhs) {
-      return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
-    });
+    if (!scopedProbe) {
+      cardModule->walk(
+          [&](TileModuleOp tileModule) { tileModules.push_back(tileModule); });
+      llvm::sort(tileModules, [](TileModuleOp lhs, TileModuleOp rhs) {
+        return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
+      });
+    }
     if (scopedProbe) {
-      // The scoped probe materializes exactly the probed Tile entry function:
-      // no CardModule/TileModule shell, no sibling Tile modules and no
-      // no-work wrappers.
-      if (!tileModules.empty()) {
-        diagnostics << "wafer-compile: deterministic card baseline "
-                       "scoped probe materialized a card-shaped wrapper\n";
-        return mlir::failure();
+      // The scoped probe materializes exactly one narrow entry function per
+      // participating root: no CardModule/TileModule shell, no sibling Tile
+      // modules and no no-work wrappers.
+      for (mlir::OwningOpRef<mlir::ModuleOp> &probeModule :
+           scopedProbeModules) {
+        bool cardShaped = false;
+        probeModule->walk([&](TileModuleOp) { cardShaped = true; });
+        if (cardShaped) {
+          diagnostics << "wafer-compile: deterministic card baseline "
+                         "scoped probe materialized a card-shaped wrapper\n";
+          return mlir::failure();
+        }
       }
     } else if (tileModules.size() != expectedTileIds.size()) {
       diagnostics << "wafer-compile: deterministic card baseline "
@@ -5185,20 +5250,23 @@ synthesizeDeterministicBaseline(
       return mlir::success();
     };
     if (scopedProbe) {
-      mlir::func::FuncOp tileFunction;
-      cardModule->walk([&](mlir::func::FuncOp function) {
-        if (!function.isExternal() && !tileFunction)
-          tileFunction = function;
-      });
-      if (!tileFunction) {
-        diagnostics << "wafer-compile: deterministic card baseline "
-                       "scoped probe module has no defined entry function\n";
-        return mlir::failure();
+      for (mlir::OwningOpRef<mlir::ModuleOp> &probeModule :
+           scopedProbeModules) {
+        mlir::func::FuncOp tileFunction;
+        probeModule->walk([&](mlir::func::FuncOp function) {
+          if (!function.isExternal() && !tileFunction)
+            tileFunction = function;
+        });
+        if (!tileFunction) {
+          diagnostics << "wafer-compile: deterministic card baseline "
+                         "scoped probe module has no defined entry function\n";
+          return mlir::failure();
+        }
+        if (mlir::failed(appendRegionEvaluations(probeModule->getOperation(),
+                                                 *scopedProbeTileId,
+                                                 tileFunction)))
+          return mlir::failure();
       }
-      if (mlir::failed(appendRegionEvaluations(cardModule->getOperation(),
-                                               *scopedProbeTileId,
-                                               tileFunction)))
-        return mlir::failure();
     } else {
       for (auto [tileIndex, tileModule] : llvm::enumerate(tileModules)) {
         const TileId tileId(tileModule.getTileIdAttr().getInt());
@@ -5226,19 +5294,30 @@ synthesizeDeterministicBaseline(
     std::vector<TileRegionSPMCapacityEvaluation> capacityResults(
         regionEvaluations.size());
     std::vector<std::string> capacityDiagnostics(regionEvaluations.size());
-    TileRegionToInstrLoweringSession loweringSession(*cardModule->getContext());
+    // The scoped pass owns only detached entry modules; the lowering session
+    // shares the borrowed TensorProgram context like every candidate IR.
+    TileRegionToInstrLoweringSession loweringSession(
+        *tensorProgram.getContext());
     auto evaluateRegionSPM = [&](size_t index) {
       llvm::raw_string_ostream stream(capacityDiagnostics[index]);
+      // The probe evidence contract scopes relations to the probed region:
+      // a foreign buffer would make the strict scratch remap fail closed.
+      StructuredMaterializationRelations regionRelations =
+          scopeStructuredBufferRelations(regionEvaluations[index].region,
+                                         materializationRelations);
       capacityResults[index] = evaluateTileRegionSPMCapacity(
           regionEvaluations[index].region, loweringSession, stream,
-          &materializationRelations);
+          &regionRelations);
       stream.flush();
     };
     const unsigned requestedWorkers = tilePipelineParallelism == 0
                                           ? kMaximumBoundedTilePipelineWorkers
                                           : tilePipelineParallelism;
+    // The worker executor needs the IR context. The scoped pass owns only
+    // detached entry modules; every candidate IR derives from the borrowed
+    // TensorProgram, so its context is the stable executor context.
     const unsigned workers = runBoundedTilePipelines(
-        cardModule->getContext(), regionEvaluations.size(), evaluateRegionSPM,
+        tensorProgram.getContext(), regionEvaluations.size(), evaluateRegionSPM,
         requestedWorkers);
     statistics.baselineMaximumRegionSPMQueryWorkers = std::max<uint64_t>(
         statistics.baselineMaximumRegionSPMQueryWorkers, workers);
@@ -5299,10 +5378,15 @@ synthesizeDeterministicBaseline(
         continue;
       escalatedTiles.push_back(tileId);
       ++statistics.baselineFunctionScopedSPMCapacityChecks;
+      // Function-scoped escalation probes the Tile entry function: relations
+      // are scoped to that function so the strict scratch remap sees only
+      // in-scope evidence.
+      StructuredMaterializationRelations functionRelations =
+          scopeStructuredBufferRelations(regionEvaluations[index].function,
+                                         materializationRelations);
       TileFunctionSPMCapacityEvaluation probe =
           evaluateTileFunctionSPMCapacity(regionEvaluations[index].function,
-                                          materializationRelations,
-                                          diagnostics);
+                                          functionRelations, diagnostics);
       if (probe.fits())
         continue;
       if (probe.capacityExceeded()) {

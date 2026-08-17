@@ -24,6 +24,42 @@ StructuredMaterializationRelations
 remapStructuredBufferRelations(const StructuredMaterializationRelations &source,
                                const mlir::IRMapping &mapping);
 
+/// Source relations a strict remap could not map. An unmapped relation means
+/// the rewrite consumed a value that still carries attribution evidence; the
+/// caller reports these and fails closed instead of probing or planning with
+/// incomplete evidence.
+struct StructuredRelationRemapIssue {
+  llvm::SmallVector<StructuredOperationBufferRelation, 4>
+      unmappedResultBuffers;
+  llvm::SmallVector<StructuredOperationBufferRelation, 4> unmappedOperandBuffers;
+  llvm::SmallVector<SpatialOutputBufferRelation, 4> unmappedOutputBuffers;
+
+  bool empty() const {
+    return unmappedResultBuffers.empty() && unmappedOperandBuffers.empty() &&
+           unmappedOutputBuffers.empty();
+  }
+};
+
+/// Strict form of remapStructuredBufferRelations for the probe/final evidence
+/// contract: every relation buffer must be mapped through the clone. Any
+/// unmapped relation fails the remap and is reported in `issue` for typed
+/// diagnostics; an incomplete remap is a contract violation, never "no
+/// relation".
+mlir::FailureOr<StructuredMaterializationRelations>
+remapStructuredBufferRelationsComplete(
+    const StructuredMaterializationRelations &source,
+    const mlir::IRMapping &mapping,
+    StructuredRelationRemapIssue *issue = nullptr);
+
+/// Keeps only relations whose buffer belongs to `root`'s current probe scope:
+/// an operand or result of `root`, or a value defined inside one of `root`'s
+/// regions. Relations on sibling regions or other scopes are dropped so a
+/// strict probe remap sees a complete in-scope evidence set instead of
+/// failing closed on a foreign buffer.
+StructuredMaterializationRelations
+scopeStructuredBufferRelations(mlir::Operation *root,
+                               const StructuredMaterializationRelations &relations);
+
 /// Tracks result replacements performed by one successful rewrite driver and
 /// retargets the current-IR buffer relations in place. It owns no IR and
 /// must not outlive either the relations or the rewrite invocation.
@@ -50,12 +86,6 @@ private:
 /// and therefore never dereferences a stale relation while reporting failure.
 mlir::LogicalResult checkStructuredBufferRelationsCurrent(
     mlir::Operation *root, const StructuredMaterializationRelations &relations);
-
-/// Drops query relations whose SSA value was erased by a completed
-/// best-effort cleanup. This never infers a replacement: a downstream query
-/// that still requires the missing structured witness must fail closed.
-void retainCurrentStructuredBufferRelations(
-    mlir::Operation *root, StructuredMaterializationRelations &relations);
 
 /// Query-local memo of per-value storage roots. Values are only valid within
 /// one unchanged IR epoch; a caller constructs one memo per validation root

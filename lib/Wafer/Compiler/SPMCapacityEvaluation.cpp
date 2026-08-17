@@ -80,8 +80,15 @@ public:
       return mlir::failure();
     }
     if (relations) {
-      evaluation->relations = remapStructuredBufferRelations(*relations,
-                                                             mapping);
+      mlir::FailureOr<StructuredMaterializationRelations> remapped =
+          remapStructuredBufferRelationsComplete(*relations, mapping);
+      if (mlir::failed(remapped)) {
+        detail =
+            "region probe relation remap is incomplete: a relation buffer "
+            "was not mapped into the scratch clone";
+        return mlir::failure();
+      }
+      evaluation->relations = std::move(*remapped);
       evaluation->relationsProvided = true;
     }
     evaluation->listener =
@@ -105,10 +112,19 @@ public:
   /// Remaps relations onto the rebuilt body after the isolated join rebuild
   /// replaced the region body. A relation that cannot be remapped (its buffer
   /// was consumed by the rebuild) makes the attribution contract fail closed.
-  bool remapAfterBodySwap(const mlir::IRMapping &mapping) {
+  bool remapAfterBodySwap(const mlir::IRMapping &mapping,
+                          std::string &detail) {
     if (!relationsProvided)
       return true;
-    relations = remapStructuredBufferRelations(relations, mapping);
+    mlir::FailureOr<StructuredMaterializationRelations> remapped =
+        remapStructuredBufferRelationsComplete(relations, mapping);
+    if (mlir::failed(remapped)) {
+      detail =
+          "relation remap after required-join rebuild is incomplete: a "
+          "relation buffer was consumed by the rebuild";
+      return false;
+    }
+    relations = std::move(*remapped);
     return relationsCurrent();
   }
 
@@ -219,19 +235,22 @@ evaluateTileRegionSPMCapacity(TileRegionOp region,
         TileRegionSPMCapacityPhase::InputValidation, detail));
   TileRegionOp isolatedRegion = (*evaluation)->getRegion();
   mlir::IRMapping rebuildMapping;
+  std::string remapDetail;
   if (mlir::failed(convertTileRegionToInstr(
           isolatedRegion, loweringSession, (*evaluation)->getListener())) ||
       containsTileDataflowOperations(isolatedRegion.getOperation()) ||
       !(*evaluation)->relationsCurrent() ||
       mlir::failed(rebuildRequiredNCCJoinsForIsolatedTileRegion(
           isolatedRegion, &rebuildMapping)) ||
-      !(*evaluation)->remapAfterBodySwap(rebuildMapping) ||
+      !(*evaluation)->remapAfterBodySwap(rebuildMapping, remapDetail) ||
       mlir::failed(mlir::verify(isolatedRegion)))
     return report(classifyRegion(
         TileRegionSPMCapacityStatus::AnalysisFailure,
         TileRegionSPMCapacityPhase::InstructionLowering,
-        "TileRegion-to-Instr conversion or isolated required-join analysis "
-        "failed"));
+        remapDetail.empty()
+            ? "TileRegion-to-Instr conversion or isolated required-join "
+              "analysis failed"
+            : remapDetail));
 
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
   SPMMemoryPlanningFailure spmFailure;
@@ -299,8 +318,16 @@ TileFunctionSPMCapacityEvaluation evaluateTileFunctionSPMCapacity(
         TileFunctionSPMCapacityPhase::InputValidation,
         "cloned Tile entry function is not locally verifier-legal"));
   }
+  mlir::FailureOr<StructuredMaterializationRelations> remappedRelations =
+      remapStructuredBufferRelationsComplete(relations, mapping);
+  if (mlir::failed(remappedRelations))
+    return report(classifyFunction(
+        TileFunctionSPMCapacityStatus::AnalysisFailure,
+        TileFunctionSPMCapacityPhase::InputValidation,
+        "function-scoped probe relation remap is incomplete: a relation "
+        "buffer was not mapped into the cloned Tile entry"));
   StructuredMaterializationRelations cloneRelations =
-      remapStructuredBufferRelations(relations, mapping);
+      std::move(*remappedRelations);
   if (mlir::failed(checkStructuredBufferRelationsCurrent(
           scratch->getOperation(), cloneRelations))) {
     return report(classifyFunction(
