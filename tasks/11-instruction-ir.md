@@ -750,9 +750,9 @@ lowering存活的完整expansion，checked统计实际拆分后的engine command
 
 terminal `wafer.instr.reduce`的ODS移除optional init operand，verifier拒绝`init_value`等残留attr。它只表示无init字段的
 target-native leaf；current production source path只有在完整logical reduction domain、dimension、combiner和init合同没有丢失，
-且target `NumericSemanticsProfile`通过既有数值验证时才可选择它。floating leaf order无需与source一致，integer仍须满足
-exact/modular合同；host默认或有限corpus不能替代该gate。保留在Instr IR但不进入CRT call的init不是合法production语义，
-CModel不得补偿。
+且current target revision对该完整command tuple已有足以证明source等价的target-owned numeric contract时才可选择它。
+formal CModel是否实现、bulk backend是否可用或有限host corpus是否通过都不能代签该compiler gate。floating leaf order无需与
+source一致，integer仍须满足exact/modular合同；保留在Instr IR但不进入CRT call的init不是合法production语义，CModel不得补偿。
 
 ### 7.5 GEMM
 
@@ -787,16 +787,17 @@ byte-order歧义。Fused bias、activation、quant、psum accumulation policy �
 
 目标Instr IR在选择oriented ABI时必须显式携带两个orientation字段且不得依赖default；未携带orientation的
 plain form只表示normal/normal。orientation进入tasks/14的typed target-call/ABI capability和tasks/17的
-`NumericCommandKey`/qualification identity。typed ABI、compiler emission和SystemC qualification闭合后可进入model-only
-profile；真实board provider还必须命中对应environment的board-supported allowlist，二者不能混称。
+family-specific model request及concrete GEMM qualification identity。typed ABI与compiler emission、formal/model support、
+bulk qualification和真实board provider allowlist是四个独立结论，不能由通用profile混称或互相代签。
 
 plain GEMM还只要求lhs/rhs/dest element type相同，target CRT call只传一个format；IR没有product、accumulator、
 逐MAC rounding、FMA或reduction-order字段。若这些行为是program-selectable，必须先扩typed tile/instruction op及CRT ABI；
-若它们是target revision固定行为，则target revision和完整command tuple必须在execution capability中唯一映射到一个
-`NumericSemanticsProfile`。未校准的f16/bf16 narrow/wide、TF32和integer候选不能由lowering/CModel按dtype猜测。
+若它们是target revision固定行为，则由target-owned numeric operation contract对target revision和完整command tuple给出唯一
+解释；formal model按同一typed tuple直接实现或分类拒绝，不建立第二份profile registry。未校准的f16/bf16 narrow/wide、TF32
+和integer候选不能由lowering/CModel按dtype猜测。
 
 generic online reduction和non-GEMM FMA contraction因此不属于current Q32 instruction contract。Q32.N必须先增加明确source
-predicate、selected state/fused op、对应Instr/TargetCall/必要ABI和SystemC数值纵向；target固定GEMM FMA profile不能被source
+predicate、selected state/fused op、对应Instr/TargetCall/必要ABI和SystemC数值纵向；target固定GEMM FMA behavior不能被source
 rewrite当作通用contract许可。
 
 floating Tile-local algebraic reassociation/reduction-tree rewrite不通过Instr attr恢复：Q32.N把选择直接物化为
@@ -960,10 +961,11 @@ compute/movement并写入destination，Instr effect、path verifier和target con
 lifetime据此排序。terminal participant join只收口实际pending worker，不能替代Count op自身的同步合同。
 
 当前资料只证明opcode/wrapper和raw low-u32 writeback，不能证明Count predicate、特殊值或format语义。因此current
-source interface不得产生Count candidate，target/model/board全部pre-effect拒绝。Q3.6只有取得明确source semantics、
-typed TargetCall、独立golden和实际model consumer后才开放对应普通capability row；不预先冻结completion wire ordinal、
-execution digest、qualification record或package schema。ArgMax/ArgMin已有wait-before-store实现只能作为同步effect的
-代码证据，不能外推Count numeric语义。
+source interface不得产生Count candidate，target/model/board全部pre-effect拒绝。Q3.6只有取得明确source semantics、typed
+TargetCall、target-owned operation contract和独立golden后才可开放对应compiler capability row；formal model consumer与board
+qualification分别覆盖同一typed tuple，但不负责开放或定义该row。不预先冻结completion wire ordinal、execution digest、
+qualification record或package schema。ArgMax/ArgMin已有wait-before-store实现只能作为同步effect的代码证据，不能外推Count
+numeric语义。
 
 ## 8. Lowering Rules
 
@@ -1106,13 +1108,13 @@ R3.2d verifier checks only instruction legality:
   `Fmt_UNUSED`、F64和unknown code拒绝；唯一额外dtype特例是GEMM拒绝F32，这不关闭整个NE×F32 row。
 - ABI format可编码不等于任意数学op自动合法。elementwise/reduce/convert仍须证明source semantic、opcode/kind、
   operand/result relation、shape/layout、parameter fields、rounding/zero-point policy和typed convert route；失败必须归因到
-  对应op-specific fact，不能由私有numeric capability表把某个current dtype整体改成target-illegal。target-model尚未实现
+  对应op-specific fact，不能由model registry把某个current dtype整体改成target-illegal。target-model尚未实现
   某个op×dtype的数值执行也只限制model gate，不反向缩小compiler/ABI legality。
 - NE GEMM and CT reduce require supported aligned layout marker, dtype and rank. current plain GEMM按implicit
   normal/normal relation匹配stored shape与M/K/N/batch；Q32.V oriented tuple只有在typed orientation字段、
-  target ABI和capability row同时匹配时合法。每个command tuple还必须唯一映射numeric semantics profile；terminal CT reduce has no init operand/
+  target ABI和op-specific verifier同时匹配时合法；model或bulk coverage是下游独立gate。terminal CT reduce has no init operand/
   attr，任何残留字段target-illegal；Q0.L source reduce必须更早lower为有序fill/movement/elementwise composite或拒绝，native
-  reduce只有compiler-owned full-domain mapping与numeric-verification proof后才可进入production。
+  reduce只有compiler-owned full-domain mapping与target-owned numeric proof后才可进入production。
 - relation-guided physical-encoding absorption不增加Instr字段；verifier只从current Instr/operands的memref type与
   existing encoding证明shape/tail对应的packing，并核对geometry、valid/padding lane、range、alias、effect和completion。
   current target helpers只回答instruction/format capability，不参与physical encoding查询。既有GEMM absorption证据保持不变；

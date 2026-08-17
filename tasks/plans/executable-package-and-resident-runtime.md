@@ -210,15 +210,17 @@ invocation memory另成一块，是因为它承载每次更新/回读并可在�
 2. package writer只按窗口内logical index排序并读取连续source runs；最大source/output live window均有界。同一窗口通过
    `NumericCodec`写回physical bit offset，测试逐字节对比full codec，覆盖Cx`{2,128}`、NCx`{2,3,128}`、Cx tail及
    Tensor/Cx/NCx BOOL。
-3. source/target dtype不同时必须解析current `TargetConvertRoute`并执行formal numeric conversion；rounding route固定使用
-   deterministic nearest-even，缺route或需要package descriptor未携带的zero-point时fail closed。F16 1.0到BF16的回归要求
-   `0x3c00 -> 0x3f80`，禁止同宽storage-bit reinterpret。
+3. source/target dtype不同时必须执行明确的value conversion，不能做同宽storage-bit reinterpret。Q56完成时的实现通过current
+   `TargetConvertRoute`进入formal conversion并固定nearest-even，缺route或zero-point时fail closed；这只是当时保全bytes正确性的
+   mechanic，不是terminal compiler→model合同。Q62将其原位替换为accepted representation携带的typed materialization action，
+   保留F16 1.0到BF16 `0x3c00 -> 0x3f80`的行为覆盖而不保留fake CT command/profile resolver。
 4. `ProgramDataRangeMaterialization`作为move-only typed reader绑定一个`ProgramTensorId`；创建一次计一次materialization，任意多个
    bounded reads仍属于同一事件。package为每个TargetTensor创建一个reader，因此同一ProgramTensor的Tensor/Cx等不同表示分别计数，
    多Tile共享不重复计数。
 5. strict manifest verifier把PackageMemLayout映射集中到package model，并对ProgramTensor logical descriptor、TargetTensor和
-   external port target descriptor调用同一`NumericTensorKey`/`getPhysicalTensorStorageBytes`合同；bytes或logical/target element
-   count不一致在runtime allocation planning前拒绝。
+   external port target descriptor调用同一physical tensor descriptor/`getPhysicalTensorStorageBytes`合同；当前实现类
+   `NumericTensorKey`由Q62无compatibility alias地原位替换。bytes或logical/target element count不一致在runtime allocation
+   planning前拒绝。
 6. `program-data.bin`必须精确结束于最后一个canonical TargetTensor range；无论尾随字节是否为零都拒绝。`modules/`递归closure
    同时验证declared module path所需目录祖先，额外空目录也拒绝。
 7. profile instrumentation的共享filename/model常量归中立`WaferPackageSupport`；Compiler和Package源码/头文件不再include

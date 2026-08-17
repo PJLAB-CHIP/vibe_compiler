@@ -223,7 +223,8 @@ target conversion只消费已经accepted、memory-planned的Tile instruction pro
 - device link、symbol/entry/format/digest与card-scoped readback全部成功后才形成verified target modules。
 
 target层不恢复candidate、layout、SPM/DDR或transport planning。mapped movement、GEMM orientation和其它新能力只有在Instr、
-TargetCall、CRT、model与capability predicates纵向闭合后才可由对应target capability row发射；底层flag或symbol存在不等于compiler支持。
+TargetCall、CRT及target-owned op-specific verifier闭合后才可由对应target capability row发射；底层flag或symbol存在不等于
+compiler支持。formal/SystemC model coverage与board qualification是同一typed tuple的独立下游证据，不定义或反向修改compiler row。
 
 ## 8. Package、Runtime 与 Target Consumer 分支
 

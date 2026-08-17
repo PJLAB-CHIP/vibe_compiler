@@ -193,6 +193,13 @@ count/trace captures和一个16-Tile site map，不保留output集合shell或重
 `Target`拥有closed TargetCall descriptor registry与decoder。`Compiler/TargetCallFrontend`只负责same-invocation LLVM JIT、
 physical identity binding和atomic transaction sink lifecycle。
 
+`Target`中的typed facts进一步按真实职责分开：`TargetOperation`拥有target command enum/parameter，physical tensor descriptor/codec
+拥有format、layout、shape、count与bounded byte mapping，raw scalar codec只拥有encoding。它不得再以一个public numeric umbrella
+聚合model profile、formal policy、compiler emittability、hardware evidence、command key和qualification digest。
+
+Compiler accepted-data preparation拥有显式TargetTensor materialization action并依赖上述physical/scalar primitives；它不能链接或
+include formal/bulk model来构造静态program data。Package verifier只验证descriptor、exact bytes与file closure，不执行model command。
+
 `Model`进一步拆成：
 
 - program tensor/target tensor↔`TileEntryArgument` binding/codec；
@@ -203,7 +210,9 @@ physical identity binding和atomic transaction sink lifecycle。
 - invocation/result assembly。
 
 model不依赖package parser来重建compiler owners，也不共享vendor runtime mutable state。SystemC bridge隔离RTTI/exception ABI
-差异；LLVM/MLIR-facing TUs维持仓库编译选项。
+差异；LLVM/MLIR-facing TUs维持仓库编译选项。formal与bulk libraries可以依赖Target typed facts和physical codec，但
+`WaferTarget`基础library不得反向包含formal arithmetic、model capability registry或qualification implementation。model从decoded
+TargetCall直接进入family-specific API；不建立`ResolvedNumericCommand`一类跨library join object。
 
 ## 5. Build graph
 
@@ -220,12 +229,18 @@ Support / Target typed facts
       -> Compiler package writing
       -> Runtime validation -> Board provider or Model consumer
 
+Target operation / physical tensor / scalar codec
+  -> Compiler TargetTensor materialization
+  -> Formal model -> managed/bulk model -> SystemC consumer
+
 Compiler package writing / Runtime / Model
   -> Tools
 ```
 
 禁止runtime/model反向依赖compiler private search，禁止analysis依赖writing，禁止conversion调用tool/runner。CMake target
 明确列出受控source，不依赖glob保住已经删除的文件；删除source时同批删除target/source list和only-for-it test。
+source-organization gate还必须禁止Compiler search/Analysis/Conversion include formal/bulk model header，并确认退役numeric
+umbrella/profile/pattern/resolver没有compatibility header、typedef或旧source残留。
 
 独立host build/test按 `nproc`并行。若一个聚合library使无关功能被可选依赖拖住，应拆分target或用明确feature boundary，
 但不能复制接口实现。

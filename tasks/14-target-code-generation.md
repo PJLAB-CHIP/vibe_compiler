@@ -124,9 +124,14 @@ accepted immutable data preparation只消费上一节闭合的ProgramDataRange�
 materialization input；转换器以bounded source window产生target-ready bytes，不能按Tile构造16份source/physical payload，也不能
 建立按元素总数增长的`RawLogicalValue[]`或整模型byte vector。
 
+materialization input必须显式表达identity或具体value conversion，并携带rounding、zero-point等该转换实际需要的typed参数。
+writer不能仅比较source/destination dtype后默选转换策略，不能为静态数据伪造TargetCall/CT command，也不能查询formal model
+profile或capability registry。缺少必要参数的selected representation在产生文件effect前拒绝。
+
 这一阶段不决定device base或provider allocation；它给15号package owner提供确定的ProgramDataRange、TargetTensor descriptor、
 exact byte count和可流式写入的转换动作。Q56为这些TargetTensor预排`program-data.bin` offset并计算whole-file digest。
-target model与profile writing必须复用同一materialization，不得重新打开source path或按Tile重复转换。
+target model与profile writing必须复用同一physical descriptor、codec和materialization实现，不得重新打开source path、按Tile重复转换，
+也不得通过model-only arithmetic dispatcher重建另一条静态数据转换路径。
 
 ### 3.3 Instr 到 TargetCall
 

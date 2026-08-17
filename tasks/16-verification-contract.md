@@ -245,7 +245,10 @@ model必须消费与target writing相同的owner-backed target module set，不�
 - frontend为每个transaction显式绑定target card/tile/launch slot和Tile-local issue ordinal；
 - `begin`、16个Tile的`executeTile`与单次`finish`构成原子调用生命周期，任一失败`abort`且不返回partial result；
 - SystemC一Tile一SC_THREAD，跨Tiledata-ready/completion关系由event表达，无OS thread或symbol恢复身份；
-- private address spaces、range/alias/hazard、formal numeric与qualified bulk lane；
+- private address spaces、range/alias/hazard、family-specific formal numeric与qualified bulk lane；formal/model从decoded TargetCall
+  直接验证并执行或typed拒绝，不经过model profile、capability pattern或resolved-command registry；
+- bulk qualification record只按concrete operation problem、physical payload、comparator、backend/environment和implementation
+  evidence严格匹配；model support、bulk qualification与board correlation互不代签；
 - complete output physical bytes解码为source dtype/shape，与独立CPU expected比较并检查NaN/Inf/tolerance policy。
 
 SystemC是functional-event model，不声明cycle accuracy、板端吞吐或真实NoC arbitration。model pass不替代current manifest exact

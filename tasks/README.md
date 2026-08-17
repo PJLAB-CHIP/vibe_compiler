@@ -86,6 +86,12 @@ Q55接口版本收敛计划见`tasks/plans/interface-version-consolidation.md`�
 继续拥有具体frontend、target、package、runtime、profiler与verification字段语义。Q55不建立compatibility mode，
 只保留真实外围版本并让repo内同步接口回到一种current表示。
 
+Q62 Target数值合同重建计划见`tasks/plans/target-numeric-contract-reconstruction.md`。它保留physical codec、formal arithmetic、
+managed/bulk backend与qualification的真实能力，但删除Q22.N时期把target command、model policy、compiler emittability和evidence
+捆在一起的`NumericSemantics` profile/registry。顶层依赖原则由01拥有，target字段回到11/14的TargetOperation/TargetCall，
+TargetTensor materialization由14显式拥有，formal/SystemC和bulk evidence由16/17拥有，library/include方向由18约束；不建立
+兼容header、旧resolver或回归旧registry。
+
 Q58 program data ownership与Q61 whole-program scale共用
 `tasks/plans/program-data-and-whole-program-scale.md`。Q58先把verified source→外部SPMD helper→CardExecutable同事务
 data handoff切换成`ProgramDataSource`、checked `ProgramDataRange`和move-only `ProgramDataHandoff`，删除整树和per-Tile

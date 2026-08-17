@@ -1,0 +1,251 @@
+# Q62 Target 数值合同重建实施计划
+
+状态：`next`。动态状态只看`tasks/progress.md`；稳定语义由01、11、14、16、17、18号设计文档共同拥有。
+
+本任务不是给`NumericSemantics`换名，也不是继续维护Q22.N时期的profile/registry框架。终态是保留真实需要的
+target operation、physical codec、formal arithmetic与bulk qualification能力，同时删除把这些能力捆成一套全局
+“numeric semantics”身份的对象、digest、resolver、兼容路径和专属测试。
+
+## 1. 已确认的问题
+
+当前`include/Wafer/Target/NumericSemantics.h`同时公开以下互不相同的事实：
+
+- 唯一取值为`formalDeterministic`的model profile及其codec policy；
+- format/layout/shape/element count组成的physical tensor描述；
+- TargetCall已经表达过的convert、elementwise、GEMM和reduce command；
+- formal model的rounding、NaN、signed-zero、accumulator与reduction-order实现策略；
+- model implementation、compiler emittability和hardware evidence状态；
+- capability wildcard selector、全局registry、resolution及四层digest。
+
+由此形成的实际依赖是：
+
+```text
+TargetCall / physical codec / Compiler package / Package verifier
+                         -> NumericSemantics umbrella
+                         -> exact command key
+                         -> global profile + capability pattern
+                         -> ResolvedNumericCommand
+                         -> formal model / managed reference / bulk qualification
+```
+
+这条链有六个概念错误：
+
+1. target byte/bit encoding被伪装成model profile选择，尽管当前只有一个常量profile；
+2. `NumericCommandKey`复制了typed TargetCall payload，并额外塞入model/qualification需要的shape和layout；
+3. compiler package为了离线TargetTensor数据转换构造假的CT command，再查询model-only registry；
+4. compiler emittability和hardware evidence只是registry中的恒定占位字段，没有compiler或board consumer；
+5. formal evaluator先生成一张大而稀疏、充满`NotApplicable`的policy row，再逐字段验证这张row等于实现中已经写死的行为；
+6. qualification evidence通过semantic/profile/pattern/resolution多层digest绑定重复身份，而不是绑定具体GEMM问题、payload、
+   comparator、backend和environment。
+
+因此不能保留旧umbrella并在周围加新API，也不能以兼容alias、adapter或dual reader逐步拖延退役。
+
+## 2. Pipeline Contract
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  已通过Instr/target verifier的current TargetCall typed payload；accepted CardExecutable中的ProgramTensor、
+  selected TargetTensor descriptor与显式materialization action；same-invocation target LLVM owner；bulk qualification
+  的concrete GEMM spec、physical payload和host environment。
+- Current stage responsibility:
+  验证并编解码current target physical tensor；按显式materialization action生成target-ready immutable bytes；
+  从decoded TargetCall直接调用family-specific formal functional implementation或可选bulk implementation；
+  只在bulk evidence边界核对具体problem、payload、comparator、backend和environment。
+- Output IR / files:
+  target-ready program-data bytes；TargetModelCommandEffect/TargetModelResult；current bulk qualification
+  spec/policy/validated record。该阶段不产生compiler IR、search sidecar或全局numeric profile文件。
+- Downstream consumer:
+  ExecutablePackage assembly/verification、TargetCall/SystemC functional model、source/model differential、
+  configured bulk backend与后续独立board numeric correlation。
+- User-level driver / named pipeline:
+  既有wafer-compile package/no-card路径和configured target-model/qualification入口；不增加numeric mode、
+  compatibility mode或第三条compiler/search driver。
+- Explicit non-goals:
+  不改变physical-dataflow search，不恢复Q22.N registry，不用formal model support缩小compiler/ABI legality，
+  不把model结果升级为hardware numeric证据，不在本任务运行历史长搜索或真实板端批次。
+- Done criteria:
+  NumericSemantics umbrella、profile/pattern/resolver及其digest全部删除；所有producer/consumer原位切到正确owner；
+  compiler/package不依赖formal/model dispatch；formal/model按typed family直接执行或分类拒绝；bulk record只绑定
+  concrete evidence；fresh定向build/unit/integration/no-card与source-organization检查通过。
+```
+
+## 3. 终态职责
+
+### 3.1 Target operation与TargetCall
+
+`TargetOperation`拥有真实target command字段：rounding mode、elementwise operation、reduce operation和reduce dimension。
+`TargetCall`继续拥有exact ABI descriptor、field position、typed payload、engine/worker与completion behavior。
+
+- `NumericRoundingMode`原位演进为target字段类型；
+- `NumericElementwiseOperation`、`NumericReduceOperation`和`NativeCTReduceDimension`进入`TargetOperation`；
+- convert的rounding mode与zero point由一个typed optional parameter表达，删除两个nullable整数可以同时存在的状态；
+- operation arity、enum closure、convert route和reduce-dimension映射随target operation定义；
+- model不再创建第二份command family/key，qualification也不把地址无关问题伪装成完整TargetCall。
+
+### 3.2 Physical tensor与codec
+
+format、physical layout、static shape和checked element count形成`PhysicalTensorDescriptor`。它是package、model和bulk共享的
+纯physical描述，不携带model identity或内建digest。`PhysicalTensorCodec`只消费该descriptor和明确的scalar encoding
+policy；固定source/target边界可以提供自己的typed policy，但不能从process-global model profile取得。
+
+`NumericCodec`继续拥有raw logical value、canonical encoding检查和caller-selected byte/bit order。它不拥有arithmetic、
+model selection或qualification。
+
+### 3.3 TargetTensor materialization
+
+accepted immutable data preparation必须在写package前形成typed materialization action，至少区分identity与明确的value
+conversion，并显式携带rounding/quantization所需参数。writer不能只看source/destination dtype再默选nearest-even，不能构造
+CT command，也不能查询formal model registry。
+
+同一bounded materialization实现由package writer与model input preparation复用；package verifier只重算physical descriptor和
+exact bytes，不运行model arithmetic。若某种转换缺少显式参数，当前target representation在effect前拒绝，不增加fallback。
+
+### 3.4 Formal functional model
+
+formal API按convert、elementwise、GEMM和reduce family直接接收target operation、format、必要参数与raw values。每个family
+在首次effect前完成自己的支持域和operand/result验证，并以typed error区分invalid command、unsupported operation/format/
+parameter和arithmetic failure。
+
+formal实现中的RNE、NaN canonicalization、signed-zero、F32 FMA accumulator及reduction traversal是真正的model算法合同，
+由family实现和行为测试证明；不再复制成一张公共policy row，也不暴露kernel/backend/comparator selector enum。
+
+### 3.5 Target model dispatch
+
+TargetCall handler从decoded payload及其固定target layout规则构造family-specific execution input，直接调用formal或显式选择的
+managed/bulk backend。`TargetModelResult`保留target identity、numeric flags、命令计数和真实backend evidence；删除恒定
+`modelProfile`。`NumericResolutionFailure`拆成能定位command validation、formal unsupported/execution及backend failure的typed
+错误，不再解析registry状态。
+
+### 3.6 Bulk qualification
+
+bulk lane当前只服务具体GEMM问题，因此接口和evidence都按GEMM表达：format、layout、M/K/N/batch、orientation、physical
+input/destination和implementation environment。validated record保留真正需要的record、policy/comparator、adapter、problem、
+payload、expected output、backend/environment与implementation digests；删除`semanticProfileDigest`和`resolutionDigest`。
+
+exact runtime matching使用canonical concrete GEMM problem digest，不使用通用numeric selector或global registry。managed-reference
+lane按自己的明确支持域执行，它不是qualification record，也不借formal profile扩大target capability。
+
+### 3.7 Compiler legality与search
+
+Instr/TargetCall legality只读取typed IR、current target operation/format/call合同及target-owned capability事实。formal model是否实现、
+bulk backend是否可用、是否已有board correlation都只影响各自下游gate，不反向改变compiler-emittable集合。
+
+Q49.P/Q51及所有Analysis/Conversion/search source不得include model formal/bulk header，也不得出现model profile、resolved numeric
+command或qualification digest。Q62不运行、不维护也不对照任何历史search winner、candidate set或异常长integration。
+
+## 4. 旧对象处置表
+
+| 当前对象 | 实际事实 | 终态处置 |
+| --- | --- | --- |
+| `ModelProfileId`、`ModelProfileRecord`及registry/parser | 只有一个formal model常量及codec policy | 全部删除；codec policy归具体source/target encoding边界 |
+| `NumericTensorKey` | physical format/layout/static shape/count | 迁为无digest的`PhysicalTensorDescriptor`；更新package/model/bulk全部consumer |
+| `NumericRoundingMode` | target RND_MODE字段 | 迁入`TargetOperation`并使用target命名 |
+| `NumericConvertParameter` | target convert的rounding或zero point | 迁为typed target parameter；TargetCall payload不再暴露两个并存nullable字段 |
+| `NumericElementwiseOperation`、`NumericReduceOperation` | target wrapper semantic enum | 迁入`TargetOperation`并使用target命名 |
+| `NativeCTReduceDimension`及dimension helper | target reduce字段与logical-axis映射 | 迁入`TargetOperation` |
+| `NumericCommandFamily`、四个`Numeric*Command`、`NumericCommandKey` | TargetCall重复命令加model tensor描述 | 能力迁入target/model family validator后删除，不保留wrapper |
+| `NumericGemmAxes` | 永远要求canonical的非target字段 | 删除；structured axes由IR拥有，target GEMM只验证实际M/K/N/batch/orientation与physical descriptor |
+| `NumericComparatorKind`、`FormalKernelKind`、`FormalNumericBackendKind` | 单一dispatcher元数据 | 删除；由调用的family API和concrete backend类型表达 |
+| 所有`*Policy` enum、四个`*SemanticsKey`、`NumericSemanticsProfile` | formal实现常量的稀疏镜像 | 全部删除；行为留在family实现和测试 |
+| model/compiler/evidence capability status/reason | 混合三种owner且compiler/evidence字段为占位 | 全部删除；各边界用自己的typed success/unsupported/evidence结果 |
+| selector、`NumericCapabilityPattern`及registry validator | model dispatch wildcard表 | 全部删除；family validator直接判定 |
+| `ResolvedNumericCommand`、`resolveNumericCommand` | exact key与registry pointer的join | 全部删除；不增加新resolver |
+| tensor/key/profile/pattern/resolution digest | 重复的内部身份 | 全部删除；只在package或qualification evidence owner按实际字段计算canonical digest |
+| `TargetModelNumericRequest` | generic request中嵌入resolved registry对象 | 拆成family-specific model/backend request |
+| `TargetModelResult::modelProfile` | 恒定值 | 删除 |
+| bulk `semanticProfileDigest`、`resolutionDigest` | 对旧registry的证据绑定 | 用concrete GEMM problem与真实policy/adapter/evidence字段替代 |
+
+## 5. 能力迁移清单
+
+退役旧对象前必须保全以下能力，不能因源码位于旧aggregate体系就直接丢弃：
+
+| 能力 | 承接owner与证明 |
+| --- | --- |
+| logical raw bit validation、TF32非canonical处理、BOOL bit order | `NumericCodec`及其正负例 |
+| Tensor/NTensor/Cx/NCx/BOOL geometry、padding/tail、bounded physical windows | `PhysicalTensorDescriptor` + `PhysicalTensorCodec` |
+| convert route、rounding field、elementwise/reduce enum closure和arity | `TargetOperation`/`TargetCall` tests |
+| convert APFloat/APInt、elementwise、GEMM FMA/finalize、reduce step | family-specific formal tests与SoftFloat/MPFR differential |
+| tensor work budget、failure atomicity与flags aggregation | formal tensor/model kernel tests |
+| managed reference与oneDNN execution | concrete family/backend tests |
+| calibration/freeze/held-out validation、environment和payload binding | bulk qualification tests与tool roundtrip |
+| package physical bytes、bounded source reads和model/package一致性 | program-data/package/no-card与target-model materialization tests |
+
+`NumericSemanticsTest.cpp`不保留为回归基准。其physical descriptor、target enum和formal行为覆盖迁入上述owner测试；只验证旧
+registry条数、pattern closure、digest稳定性和profile字段的case随旧合同一起删除。
+
+## 6. Checkpoints
+
+### C1：收口target operation和physical descriptor
+
+- 在`TargetOperation`建立target-named rounding/elementwise/reduce/dimension类型及typed convert parameter；
+- 建立`PhysicalTensorDescriptor`，迁移physical codec、package verifier和简单model/bulk storage consumer；
+- 从`TargetCall.h`移除`NumericSemantics.h` include；decoder直接生成完整typed payload；
+- 迁移enum、route、descriptor、geometry与codec tests。
+
+完成标志：TargetCall、PhysicalTensorCodec和PackageManifestVerification均不再依赖umbrella；没有compat alias。
+
+### C2：重建TargetTensor materialization
+
+- 在accepted target representation到package writer之间加入显式materialization action；
+- 将identity、source decode、value conversion、target encode和physical window写入收敛为一个bounded实现；
+- Compiler/Package删除`ModelProfileId`、`NumericCommandKey`、`ResolvedNumericCommand`和formal model include；
+- model input/output preparation复用同一descriptor/codec/materialization合同，不按Tile重复转换。
+
+完成标志：compiler/package不构造target compute command来转换静态数据，不存在隐藏nearest-even或zero-point fallback；fresh
+parameter/constant source→package→no-card证明bytes、window bound和digest。
+
+### C3：formal API直连
+
+- 将formal scalar/tensor API改成family-specific typed input；
+- 把旧profile字段中真正影响算法的行为落实为代码内局部常量或必要的typed function parameter；
+- 以typed unsupported/error替换registry resolution；
+- 将formal/model source从基础`WaferTarget` typed-facts library边界移出，保持feature依赖单向。
+
+完成标志：formal source不出现profile、pattern、selector、resolution或`NotApplicable` policy matrix；现有oracle与failure atomicity
+能力由新API覆盖。
+
+### C4：迁移Target model与bulk evidence
+
+- TargetModelTensorNumeric从TargetCall payload直接进入formal/managed/bulk family API；
+- 删除generic resolved request、model profile结果字段和resolution error；
+- bulk/managed backend改用concrete GEMM或family request；
+- qualification spec、validated record、tool和fixtures切换到concrete problem/payload/environment evidence，删除semantic/profile/
+  resolution digest字段。
+
+完成标志：model与bulk全链不存在global registry join；unsupported command在任何write/flags mutation前分类返回；qualification
+record仍可严格read-back验证且没有旧reader。
+
+### C5：删除旧实现与专属测试
+
+- 删除`include/Wafer/Target/NumericSemantics.h`；
+- 删除`NumericCapability.cpp`、`NumericProfiles.cpp`、`NumericSemanticsInternal.cpp/.h`；
+- 从`NumericCommand.cpp`迁完target operation与physical descriptor能力后删除该旧聚合owner；
+- 删除`NumericSemanticsTest.cpp`，更新CMake、public includes、tools与source-organization checker；
+- 全仓清除旧symbol、diagnostic、fixture field和active文档措辞，不增加兼容typedef/header/source。
+
+完成标志：active source和test对`NumericSemantics`、`ModelProfile`、`NumericCapabilityPattern`、
+`ResolvedNumericCommand`、semantic/resolution digest均为零残留；archive保持历史原文。
+
+### C6：current pipeline验证与收尾
+
+- 同步01、11、14、16、17、18号设计合同、任务队列和必要memory；
+- feature-off fresh并行构建target/compiler/package及其direct tests；
+- feature-on fresh并行构建formal numeric、bulk和SystemC/model libraries；
+- 运行迁移后的target operation、codec、package materialization、formal、bulk qualification、model kernel/SystemC定向测试；
+- 运行一个包含非identity physical layout和实际dtype conversion的fresh source→package→no-card case；
+- 运行source organization、dependency/link closure和旧symbol/field残留扫描。
+
+本任务不运行Q49.P/Q51长搜索、历史numeric registry基准、历史package、历史板端raw或真实板端批次。若direct source-to-package
+case意外进入search，应使用已接受的最小`none`路径定位调用错误，不能把旧异常长路径加入回归。
+
+## 7. 完成标准
+
+- 所有旧对象按处置表删除或迁入唯一终态owner，没有新旧双路径；
+- compiler legality、target ABI、formal model support和hardware/qualification evidence四个边界不再混合；
+- physical tensor与TargetTensor materialization只有一个current实现，package/model consumer结果一致；
+- formal/model直接消费typed target operation并fail closed，不通过全局registry或digest恢复语义；
+- bulk evidence严格但只绑定真实问题和环境，不绑定内部selector/profile/resolution；
+- current docs、CMake、source checker、tools、fixtures和tests同步；
+- fresh定向验证实际执行且通过，未用旧长链或旧测试给新合同背书；
+- 本轮若没有产生可复用的新workflow经验，则不为完成任务强写memory。

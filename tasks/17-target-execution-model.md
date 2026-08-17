@@ -18,7 +18,7 @@ Pipeline position:
   将每个`TargetTensor`编码一次并绑定到exact `TileEntryArgument`；通过host JIT执行final target LLVM entries并解码closed TargetCall
   registry；在SystemC中按Tile、worker、engine、event和private memory执行functional语义；原子发布完整结果。
 - Output IR / files:
-  TargetModelResult：target/model identity、card-scoped completion统计、numeric flags、typed outputs及诊断；
+  TargetModelResult：target identity、model implementation/evidence、card-scoped completion统计、numeric flags、typed outputs及诊断；
   不产生可被compiler或runtime消费的schedule sidecar。
 - Downstream consumer:
   source/model differential、target command qualification、Q53无卡验证，以及后续独立board numeric correlation。
@@ -136,12 +136,27 @@ peripheral和transport。unsupported组合返回typed error，不能落到“近
 
 ## 5. Numeric contract
 
+target numeric command、physical tensor、formal arithmetic和bulk evidence是四个owner，不存在跨四者共享的profile/registry：
+
+- `TargetOperation`/`TargetCall`拥有rounding、operation、dimension、format、geometry field及exact decoded payload；
+- shared physical tensor descriptor只拥有format、layout、static shape与checked count，不携model identity或内建digest；
+- formal/model implementation从typed command直接进入family-specific validator/kernel，支持或拒绝都不经过global resolver；
+- bulk qualification只绑定concrete problem、payload、comparator、backend和environment，不记录semantic profile或resolution digest。
+
+compiler/ABI legality不读取formal/bulk support；model support和board correlation也不能反向签发compiler legality。Q22.N时期的
+`NumericSemantics` aggregate、model profile、capability pattern和resolved command不是current合同，按Q62计划原位退役且不保留
+compatibility surface。
+
 ### 5.1 Physical codec
 
 source tensors先按对应TargetTensor或external port的target descriptor以及exact `TileEntryArgument`编码。outputs从
 相同descriptor解码回source-visible dtype/shape，并按unique output port一次发布；多个Tile output arguments只是同一
 model-private memory的checked byte range，不形成
 多个结果。byte size相等不能推断layout；padding、blocked layout、bitpacked format和narrow integer都由共享physical codec处理。
+
+source compact encoding与target physical encoding各自提供明确的byte/bit/noncanonical policy；codec不得从process-global model
+profile取得这些事实。TargetTensor的非identity value conversion由14号显式materialization action拥有，不通过fake CT command进入
+formal model。
 
 codec必须提供bounded window接口：source range、target range、padding和incremental digest都以checked 64-bit arithmetic推进；
 禁止为完整tensor建立每element对象数组、完整logical副本加完整physical副本，或按Tile重复编码。formal小tensor路径可以保留
@@ -150,13 +165,15 @@ codec必须提供bounded window接口：source range、target range、padding和
 ### 5.2 Formal lane
 
 formal lane拥有确定的dtype arithmetic、rounding、NaN/Inf/signed-zero、conversion和exception flags。它用于边界语义和
-小规模exact/typed tolerance验证，不调用target lowering或执行结果本身作oracle。
+小规模exact/typed tolerance验证，不调用target lowering或执行结果本身作oracle。API按convert、elementwise、GEMM和reduce
+family接收typed target operation/format/parameter；实现未覆盖的组合在任何memory write或flags merge前分类拒绝，不以稀疏policy row、
+wildcard selector或digest resolution决定控制流。
 
 ### 5.3 Qualified bulk lane
 
 大规模支持项可以进入qualified bulk implementation，但必须：
 
-- 通过固定environment/digest与capability record准入；
+- 通过固定concrete problem、payload、comparator、backend/environment与validated record准入；
 - 使用与formal lane相同的typed input/output codec；
 - 对unsupported shape/layout/dtype fail closed；
 - 保留command count与implementation provenance；
