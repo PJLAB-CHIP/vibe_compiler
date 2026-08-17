@@ -55,14 +55,15 @@ private:
   std::unique_ptr<Impl> impl;
 };
 
-/// Balanced single-axis result-space ownership of one node of the current
-/// placement domain. The balanced rectangle is a property of the current
-/// placement domain, not a recovery performed by the query; the full spatial
-/// domain replaces it with Q50.B. A Tile outside its group, an empty group,
-/// or a shard dimension outside the result reports failure.
+/// Balanced single-axis result-space ownership of one producer result of
+/// the current placement domain. The balanced rectangle is a property of the
+/// current placement domain, not a recovery performed by the query; the full
+/// spatial domain replaces it with Q50.B. A result whose rank cannot express
+/// the shard axis is owned by every Tile of the group as an explicit
+/// replica. An empty group or a non-static type reports failure.
 mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
 buildBalancedOwnership(mlir::RankedTensorType type, unsigned shardDimension,
-                       llvm::ArrayRef<TileId> tiles,
+                       llvm::ArrayRef<TileId> tiles, uint32_t resultIndex,
                        std::string *failureReason = nullptr);
 
 /// Two-node closed trial for one dependency edge: the exact-demand query only

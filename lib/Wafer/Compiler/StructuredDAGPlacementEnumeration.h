@@ -98,7 +98,7 @@ public:
   StructuredDAGPlacementEvaluator(
       const StructuredDAGAnalysis &dag, const TargetTopology &topology,
       CardId cardId,
-      analysis::IREpoch epoch = analysis::IREpoch::current());
+      analysis::IREpoch epoch = analysis::IREpoch::mint());
   ~StructuredDAGPlacementEvaluator();
   StructuredDAGPlacementEvaluator(StructuredDAGPlacementEvaluator &&) noexcept;
   StructuredDAGPlacementEvaluator &operator=(StructuredDAGPlacementEvaluator &&) noexcept;

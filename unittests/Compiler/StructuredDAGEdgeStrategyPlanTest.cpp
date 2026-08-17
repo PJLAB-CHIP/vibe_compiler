@@ -914,7 +914,7 @@ module {
 
   // The typed exact-demand query still proves the init dependency with its
   // exact demand, in every placement.
-  analysis::IREpoch epoch = analysis::IREpoch::current();
+  analysis::IREpoch epoch = analysis::IREpoch::mint();
   StructuredDAGExactDemandQuery demandQuery(dag, epoch);
   for (auto placements :
        {llvm::SmallVector<StructuredDAGNodePlacement, 2>{
@@ -982,7 +982,7 @@ module {
 
   // The typed exact-demand query proves the composed support relation with
   // its exact demand, in every placement.
-  analysis::IREpoch epoch = analysis::IREpoch::current();
+  analysis::IREpoch epoch = analysis::IREpoch::mint();
   StructuredDAGExactDemandQuery demandQuery(dag, epoch);
   for (auto placements :
        {llvm::SmallVector<StructuredDAGNodePlacement, 2>{

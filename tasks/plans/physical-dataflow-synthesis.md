@@ -509,16 +509,17 @@ DPS init和非direct support dependency，并把relation、carrier、route/resou
   与abort；`materializeCandidate`入口新增`edge-carrier-materialization` gate（exact
   physical-assignment rejection，进preBufferFailureCache），
   `StructuredDAGPlacementCandidate/TileExecutionCandidate`携带`edgeCarrierComplete`标记。
-- 生产适配器`buildLogicalShardTrial`/`buildEdgeShardTrial`/`buildBalancedOwnership`从当前balanced单轴
-  placement构造trial；当前adapter实际写入node-wide loop domain，并未形成per-consumer-shard execution domain，
-  因此只能视为过渡实现。枚举入口`enumerateStructuredDAGPlacements`（当前仅单测路径）的
-  final-accept loop同样由typed query判定，
+- 生产适配器`buildLogicalShardTrial`/`buildEdgeShardTrial`从当前balanced单轴placement构造trial：
+  每node携带完整iteration domain、per-Tile result-space ownership（含resultIndex与角色）和
+  per-consumer-shard execution domain（`LogicalExecutionShard`，由result indexing map preimage逐Tile
+  精确推导）。枚举入口`enumerateStructuredDAGPlacements`（当前仅单测路径）的final-accept loop由typed
+  query判定全部edge，carrier计划从同一trial与verdict经`assembleStructuredDAGEdgeDemandPlan`组装，
   carrier失败计入`edgeCarrierIncompleteTransitions`。
-- 当前`StructuredDAGExactDemandQueryTest.cpp`实际包含17个query case；它们覆盖direct/permuted/strided
-  relation、node-wide reduction/broadcast、init、insert/pad support、coverage witness、
-  unsupported/indeterminate分类和carrier metamorphic等局部mechanism，但没有证明multi-result、
-  per-consumer-shard demand、partial-reduction/replication query、affine window+stride+dilation、
-  multi-axis remainder或真实IR mutation invalidation。
+- `StructuredDAGExactDemandQueryTest.cpp`现有24个query case：direct/permuted/strided relation、
+  node-wide reduction/broadcast、init、insert/pad support、coverage witness、unsupported/indeterminate
+  分类、carrier metamorphic，以及review阻塞项对应的per-destination facts（逐shard exact demand、
+  per-shard witness、balanced remainder 10÷3、carrier组装与query fact一致）、multi-result
+  per-result ownership、真实IR mutation invalidation、replication fallback与partial-reduction query。
 - 其它限制（移交Q50.B/Q52/Q50.G/H）：枚举测试的prefix状态空间与`extendState`逐option pairwise拓扑距离成本是
   既有搜索域形状，未在本任务内改动——`DiamondFanin...`/`ReductionDataTransition...`两case在HEAD即>30min
   （状态数100→10,000→1M逐节点膨胀），已与`MultiOutputFanout...`一并登记为既有病理长跑case；
@@ -543,6 +544,38 @@ DPS init和非direct support dependency，并把relation、carrier、route/resou
    `ownershipIntersections`沿caller binding顺序输出，多overlap时witness也取决于首个遍历pair。完成时应
    补齐consumer domain、dependency/result identity和role payload，并以完整semantic tie-break保证结果
    与Tile、pointer、hash及caller enumeration顺序无关。
+
+#### Review阻塞项修复结论（2026-08-17）
+
+四项阻塞均已在上述文件内闭合，关键机制如下：
+
+- **Gap 1 per-consumer-shard demand**：`LogicalExecutionShard{ tile, executionDomain }`进入
+  `LogicalNodeTrial`，adapter按consumer result indexing map逐Tile求balanced result shard preimage
+  （多result取并集）得到exact execution domain；query的per-destination循环按Tile id排序，对每个shard
+  求`relation.image(executionDomain)`得到exact producerDemand、per-owner intersections与per-shard
+  uncoveredWitness，填充`ExactDemandResult::perDestination`。canonical carrier
+  （`StructuredDAGEdgeDemandPlanner`/evaluator/enumerator）只消费query fact——逐destination Tile demand
+  不再由carrier从balanced result shard重算；`deriveExactEdgeRelation`/`ExactEdgeRelationCache`/
+  `mapConsumerShardToProducer`/`getBalancedShard`旧机制已删除，carrier组装收敛到
+  `assembleStructuredDAGEdgeDemandPlan(dag, edge, placements, trial, demand, plan)`这一条入口。
+  该函数自带direct/data-input gate（init/support edge仍不进carrier组装，由consumer typed lowering
+  处理），evaluator与enumerator final loop复用同一trial与verdict，不再重复建trial或重复query。
+- **Gap 2 multi-result**：`LogicalTileBinding.resultIndex`绑定ownership到具体producer result；
+  两个trial builder逐result构造binding，query只读取edge指名的result；replication fallback按
+  result rank独立判定。multi-result producer/consumer的production路径由
+  `MultiResultProducerCarriesPerResultOwnership`等case覆盖。
+- **Gap 3 invalidation**：`IREpoch`仅为borrow identity token（`mint()`唯一性），真实失效边界是query
+  构造时捕获的structural IR snapshot——借出function的operation identity + body operation count，每次
+  query入口校验，原位mutation后旧query立即以IndeterminateFailure拒绝，不继续使用任何cache。
+  `InPlaceMutationInvalidatesTheQuerySnapshot`覆盖。
+- **Gap 4 payload/确定性**：Satisfied路径填充`consumerIterationDomain`/`producerDemand`/
+  `ownershipIntersections`/`perDestination`/`role`/`mergeObligation`；ownership intersections与
+  per-destination均按Tile id排序；overlap witness改为单遍累加（owner与之前全部owner的union求交，
+  与all-pairs witness逐点等价），与caller binding顺序无关。
+- **性能**：`fromAffineMap`对projected permutation map按构造直接设置`projectedRectanglePattern`
+  （无需等价证明）；`IndexRelation::preimage`对矩形domain走算术fast path；query的矩形image按
+  `(edge, rectangle content)` typed-content memo缓存（epoch-scoped、确定性）；adapter的per-result
+  relation只推导一次。这些均为纯优化，不改typed合同或结果内容。
 
 以上缺口修复后，需要用对应定向正负case和正常TensorProgram→Q50.0路径重新签发，才能将Q50.A恢复为
 `done`；Q52长跑性能与Q50.G/H physical carrier扩展不用于掩盖这些logical boundary缺口。

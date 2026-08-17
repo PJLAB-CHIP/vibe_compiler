@@ -268,7 +268,35 @@ IndexRelationResult IndexRelation::fromAffineMap(
       relation.getNumLocalVars()));
   addStaticShapeBounds(relation, destinationShape, sourceShape);
   bool isBound = hasDynamicDim(destinationShape) || hasDynamicDim(sourceShape);
-  return finishExactOrBound(std::move(relation), isBound, limits);
+  IndexRelationResult result =
+      finishExactOrBound(std::move(relation), isBound, limits);
+  if (!result.isExact())
+    return result;
+  // A projected permutation map is a rectangle pattern by construction: the
+  // relation is exactly the map, so no equivalence proof is required. The
+  // pattern enables the arithmetic rectangular image/preimage fast paths.
+  if (map.isProjectedPermutation(/*allowZeroInResults=*/true)) {
+    llvm::SmallVector<int64_t, 4> pattern;
+    bool valid = true;
+    for (AffineExpr expression : map.getResults()) {
+      if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
+        pattern.push_back(dimension.getPosition());
+        continue;
+      }
+      auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+      if (!constant || constant.getValue() != 0) {
+        valid = false;
+        break;
+      }
+      pattern.push_back(-1);
+    }
+    if (valid && pattern.size() == map.getNumResults()) {
+      result.relation->projectedRectanglePattern = std::move(pattern);
+      result.relation->projectedRectangleDestinationShape =
+          llvm::SmallVector<int64_t, 4>(destinationShape);
+    }
+  }
+  return result;
 }
 
 IndexRelationResult IndexRelation::fromCommonIterationDomain(
@@ -632,8 +660,28 @@ IndexRelation::compose(const IndexRelation &next,
               next.status == IndexRelationStatus::Exact
           ? IndexRelationStatus::Exact
           : IndexRelationStatus::SoundBound;
-  return IndexRelationResult{
-      composedStatus, IndexRelation(std::move(composed), composedStatus), {}};
+  IndexRelation result(std::move(composed), composedStatus);
+  // Rectangle patterns compose arithmetically: pattern[i] names the
+  // destination dimension that source dimension i reads (-1 = constant
+  // zero). For the composed relation, result source dimension t reads this's
+  // destination dimension this.pattern[next.pattern[t]], or stays constant
+  // when the intermediate is constant. Both relations are functional
+  // projections by construction, so the composed pattern is valid without
+  // an equivalence proof.
+  if (projectedRectanglePattern && next.projectedRectanglePattern &&
+      projectedRectangleDestinationShape) {
+    llvm::SmallVector<int64_t, 4> composedPattern;
+    composedPattern.reserve(next.projectedRectanglePattern->size());
+    for (int64_t intermediate : *next.projectedRectanglePattern)
+      composedPattern.push_back(intermediate < 0
+                                    ? -1
+                                    : (*projectedRectanglePattern)
+                                          [intermediate]);
+    result.projectedRectanglePattern = std::move(composedPattern);
+    result.projectedRectangleDestinationShape =
+        *projectedRectangleDestinationShape;
+  }
+  return IndexRelationResult{composedStatus, std::move(result), {}};
 }
 
 IndexRelationResult
@@ -737,6 +785,46 @@ StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
 IndexSetResult
 IndexRelation::preimage(const PresburgerSet &sourceDomain,
                         const IndexRelationLimits &limits) const {
+  if (!isCompatibleSet(sourceDomain, getSourceRank()))
+    return failSet(IndexRelationStatus::Invalid,
+                   "source domain rank or symbols are incompatible");
+  if (projectedRectanglePattern && projectedRectangleDestinationShape) {
+    StaticRectangularIndexSetResult rectangle =
+        IndexSetResult{IndexRelationStatus::Exact, sourceDomain, {}}
+            .getExactStaticRectangularDomain(limits);
+    if (rectangle.isExact()) {
+      const StaticRectangularIndexSet &source = *rectangle.domain;
+      bool nonEmpty = true;
+      llvm::SmallVector<int64_t, 4> offsets(getDestinationRank(), 0);
+      llvm::SmallVector<int64_t, 4> sizes(getDestinationRank(), 0);
+      for (unsigned destinationDim = 0;
+           destinationDim < getDestinationRank(); ++destinationDim)
+        sizes[destinationDim] =
+            (*projectedRectangleDestinationShape)[destinationDim];
+      for (unsigned sourceDim = 0; sourceDim < getSourceRank(); ++sourceDim) {
+        const int64_t mapped = (*projectedRectanglePattern)[sourceDim];
+        if (mapped < 0) {
+          if (!(source.offsets[sourceDim] <= 0 &&
+                0 < source.offsets[sourceDim] + source.sizes[sourceDim]))
+            nonEmpty = false;
+          continue;
+        }
+        offsets[mapped] = source.offsets[sourceDim];
+        sizes[mapped] = source.sizes[sourceDim];
+      }
+      if (nonEmpty) {
+        IndexSetResult preimage =
+            staticRectangularDomain(offsets, sizes, limits);
+        if (preimage.isExact())
+          return preimage;
+      } else {
+        PresburgerSet empty = PresburgerSet::getEmpty(
+            PresburgerSpace::getSetSpace(getDestinationRank()));
+        return IndexSetResult{IndexRelationStatus::Exact, std::move(empty),
+                              {}};
+      }
+    }
+  }
   IndexRelationResult restricted = intersectSourceDomain(sourceDomain, limits);
   if (!restricted.relation)
     return failSet(restricted.status, restricted.reason);

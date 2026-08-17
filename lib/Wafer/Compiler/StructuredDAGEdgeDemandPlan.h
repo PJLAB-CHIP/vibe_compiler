@@ -54,7 +54,7 @@ class StructuredDAGEdgeDemandPlanner {
 public:
   explicit StructuredDAGEdgeDemandPlanner(
       const StructuredDAGAnalysis &dag,
-      analysis::IREpoch epoch = analysis::IREpoch::current());
+      analysis::IREpoch epoch = analysis::IREpoch::mint());
   ~StructuredDAGEdgeDemandPlanner();
   StructuredDAGEdgeDemandPlanner(StructuredDAGEdgeDemandPlanner &&) noexcept;
   StructuredDAGEdgeDemandPlanner &operator=(StructuredDAGEdgeDemandPlanner &&) noexcept;
@@ -81,6 +81,20 @@ deriveStructuredDAGEdgeDemandPlan(const StructuredDAGAnalysis &dag, StructuredDA
                              const StructuredDAGNodePlacement &producerPlacement,
                              const StructuredDAGNodePlacement &consumerPlacement,
                              std::string *failureReason = nullptr);
+
+/// Assemble the canonical carrier demand plan for one edge from an already
+/// computed typed verdict: the query's per-destination facts and the trial's
+/// producer ownership. `demand.status` must be Satisfied. Fails when the
+/// carrier cannot express the edge (multi-result consumer, missing
+/// destination facts, non-empty per-shard witness).
+mlir::LogicalResult assembleStructuredDAGEdgeDemandPlan(
+    const StructuredDAGAnalysis &dag, const StructuredDAGEdge &edge,
+    const StructuredDAGNodePlacement &producerPlacement,
+    const StructuredDAGNodePlacement &consumerPlacement,
+    const analysis::LogicalShardTrial &trial,
+    const analysis::ExactDemandResult &demand,
+    StructuredDAGEdgeDemandPlan *result,
+    std::string *failureReason = nullptr);
 
 mlir::FailureOr<StructuredDAGEdgeDemandPlan> deriveStructuredDAGEdgeDemandPlan(
     const StructuredDAGAnalysis &dag,

@@ -44,7 +44,7 @@ class StructuredDAGEdgeStrategyPlanner {
 public:
   explicit StructuredDAGEdgeStrategyPlanner(
       const StructuredDAGAnalysis &dag,
-      analysis::IREpoch epoch = analysis::IREpoch::current());
+      analysis::IREpoch epoch = analysis::IREpoch::mint());
   ~StructuredDAGEdgeStrategyPlanner();
   StructuredDAGEdgeStrategyPlanner(StructuredDAGEdgeStrategyPlanner &&) noexcept;
   StructuredDAGEdgeStrategyPlanner &

@@ -22,17 +22,15 @@ using wafer::analysis::LogicalTileBinding;
 using wafer::analysis::TileRole;
 using wafer::TileId;
 
-TEST(IREpochTest, IsStableUntilAdvancedAndAdvancesMonotonically) {
-  IREpoch first = IREpoch::current();
+TEST(IREpochTest, MintsDistinctTokensAndDefaultIsInvalid) {
+  IREpoch first = IREpoch::mint();
   ASSERT_TRUE(first.isValid());
-  EXPECT_EQ(first, IREpoch::current());
-  EXPECT_EQ(first.getGeneration(), IREpoch::current().getGeneration());
+  EXPECT_EQ(first, first);
+  EXPECT_EQ(first.getGeneration(), first.getGeneration());
 
-  IREpoch::advance();
-  IREpoch second = IREpoch::current();
+  IREpoch second = IREpoch::mint();
   EXPECT_NE(first, second);
   EXPECT_GT(second.getGeneration(), first.getGeneration());
-  EXPECT_EQ(second, IREpoch::current());
 
   IREpoch invalid;
   EXPECT_FALSE(invalid.isValid());
@@ -75,12 +73,15 @@ TEST(ExactDemandTest, TrialCarriesExplicitDomainsRolesAndEpoch) {
   node.node = 3;
   node.completeIterationDomain = *iteration.set;
   node.bindings.push_back(LogicalTileBinding{
-      TileId(2), *firstOwner.set, TileRole::PartialReductionContribution});
+      TileId(2), /*resultIndex=*/0, *firstOwner.set,
+      TileRole::PartialReductionContribution});
   node.bindings.push_back(
-      LogicalTileBinding{TileId(5), *secondOwner.set, TileRole::UniquePartition});
+      LogicalTileBinding{TileId(5), /*resultIndex=*/0, *secondOwner.set,
+                         TileRole::UniquePartition});
 
+  IREpoch epoch = IREpoch::mint();
   LogicalShardTrial trial;
-  trial.epoch = IREpoch::current();
+  trial.epoch = epoch;
   trial.nodes.push_back(std::move(node));
 
   ASSERT_EQ(trial.nodes.size(), 1u);
@@ -93,7 +94,8 @@ TEST(ExactDemandTest, TrialCarriesExplicitDomainsRolesAndEpoch) {
   EXPECT_EQ(trial.nodes[0].bindings[1].role, TileRole::UniquePartition);
   EXPECT_FALSE(trial.nodes[0].bindings[0].ownedDomain->isEqual(
       trial.nodes[0].bindings[1].ownedDomain.value()));
-  EXPECT_EQ(trial.epoch, IREpoch::current());
+  EXPECT_EQ(trial.epoch, epoch);
+  EXPECT_NE(trial.epoch, IREpoch::mint());
 
   DemandDependency dependency;
   dependency.producerNode = 3;

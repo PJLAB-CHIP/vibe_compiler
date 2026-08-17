@@ -5391,7 +5391,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
   // One IR generation for the whole synthesis: the structured program is
   // borrowed and never mutated inside this boundary, so every exact-demand
   // query shares this epoch.
-  const analysis::IREpoch epoch = analysis::IREpoch::current();
+  const analysis::IREpoch epoch = analysis::IREpoch::mint();
 
   std::string failureReason;
   mlir::FailureOr<TargetTopology> topology =

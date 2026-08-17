@@ -1475,13 +1475,11 @@ class StructuredDAGPlacementEvaluator::Impl {
 public:
   Impl(const StructuredDAGAnalysis &dag, const TargetTopology &topology,
        CardId cardId, analysis::IREpoch epoch)
-      : dag(dag), topology(topology), cardId(cardId), edgePlanner(dag, epoch),
-        demandQuery(dag, epoch) {}
+      : dag(dag), topology(topology), cardId(cardId), demandQuery(dag, epoch) {}
 
   const StructuredDAGAnalysis &dag;
   const TargetTopology &topology;
   CardId cardId;
-  StructuredDAGEdgeStrategyPlanner edgePlanner;
   StructuredDAGExactDemandQuery demandQuery;
 
   struct EdgePlanEntry {
@@ -1525,12 +1523,19 @@ public:
       entry.demand = demandQuery.query(edge.id, *trial);
     }
     if (entry.demand.status == analysis::ExactDemandStatus::Satisfied) {
-      mlir::FailureOr<StructuredDAGEdgeStrategyPlan> plan =
-          edgePlanner.derive(edge.id, producer, consumer,
-                             &entry.failureReason);
-      if (mlir::succeeded(plan)) {
-        entry.plan = std::move(*plan);
-        entry.carrierComplete = true;
+      // The carrier plan is assembled from the same typed verdict and trial:
+      // the logical boundary is derived exactly once per placement pair.
+      StructuredDAGEdgeDemandPlan demandPlan;
+      if (mlir::succeeded(assembleStructuredDAGEdgeDemandPlan(
+              dag, edge, producer, consumer, *trial, entry.demand,
+              &demandPlan, &entry.failureReason))) {
+        mlir::FailureOr<StructuredDAGEdgeStrategyPlan> plan =
+            lowerStructuredDAGEdgeDemandPlanToCanonicalStrategies(
+                dag, demandPlan, &entry.failureReason);
+        if (mlir::succeeded(plan)) {
+          entry.plan = std::move(*plan);
+          entry.carrierComplete = true;
+        }
       }
     }
     bucket.push_back(std::move(entry));
@@ -1737,7 +1742,7 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
   }
 
   llvm::SmallVector<PartialPlacementState, 24> retainedStates(1);
-  EdgeTransitionLegalityCache transitionCache(dag, analysis::IREpoch::current());
+  EdgeTransitionLegalityCache transitionCache(dag, analysis::IREpoch::mint());
   for (const StructuredDAGNode &node : dag.getNodes()) {
     resultStatistics.expandedStates =
         saturatingAdd(resultStatistics.expandedStates, retainedStates.size());
@@ -1807,9 +1812,8 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
   llvm::SmallVector<StructuredDAGPlacementCandidate, 24> accepted;
   std::unordered_map<size_t, llvm::SmallVector<size_t, 1>>
       resourceRenamingClasses;
-  StructuredDAGEdgeStrategyPlanner finalEdgePlanner(dag);
   StructuredDAGExactDemandQuery demandQuery(dag,
-                                            analysis::IREpoch::current());
+                                            analysis::IREpoch::mint());
   for (PartialPlacementState &state : retainedStates) {
     llvm::SmallVector<StructuredDAGNodePlacement, 16> statePlacements =
         materializePlacements(state);
@@ -1835,10 +1839,14 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
       return mlir::failure();
     }
     bool logicallyInfeasible = false;
+    llvm::SmallVector<analysis::ExactDemandResult, 8> edgeDemands;
+    edgeDemands.reserve(dag.getEdges().size());
     for (const StructuredDAGEdge &edge : dag.getEdges()) {
       analysis::ExactDemandResult demand = demandQuery.query(edge.id, *trial);
-      if (demand.status == analysis::ExactDemandStatus::Satisfied)
+      if (demand.status == analysis::ExactDemandStatus::Satisfied) {
+        edgeDemands.push_back(std::move(demand));
         continue;
+      }
       if (demand.status ==
           analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
         logicallyInfeasible = true;
@@ -1860,11 +1868,26 @@ enumerateStructuredDAGPlacements(const StructuredDAGAnalysis &dag,
     }
     // The canonical carrier remains a modeling input for movements,
     // residency, schedule and cost; its failure is a physical-assignment
-    // gap, never a placement rejection.
+    // gap, never a placement rejection. It is assembled from the same
+    // typed trial and verdicts: the logical boundary is derived exactly
+    // once per complete placement.
+    StructuredDAGEdgeDemandPlan demandPlan;
+    bool carrierAssembled = true;
+    for (auto [edge, demand] : llvm::zip_equal(dag.getEdges(), edgeDemands)) {
+      if (mlir::failed(assembleStructuredDAGEdgeDemandPlan(
+              dag, edge, statePlacements[edge.producer],
+              statePlacements[edge.consumer], *trial, demand, &demandPlan,
+              /*failureReason=*/nullptr))) {
+        carrierAssembled = false;
+        break;
+      }
+    }
     std::string ignoredFailure;
-    mlir::FailureOr<StructuredDAGEdgeStrategyPlan> edgePlan =
-        finalEdgePlanner.derive(statePlacements, &ignoredFailure);
-    if (mlir::failed(edgePlan)) {
+    mlir::FailureOr<StructuredDAGEdgeStrategyPlan> edgePlan;
+    if (carrierAssembled)
+      edgePlan = lowerStructuredDAGEdgeDemandPlanToCanonicalStrategies(
+          dag, demandPlan, &ignoredFailure);
+    if (!carrierAssembled || mlir::failed(edgePlan)) {
       resultStatistics.edgeCarrierIncompleteTransitions =
           saturatingAdd(resultStatistics.edgeCarrierIncompleteTransitions, 1);
       continue;

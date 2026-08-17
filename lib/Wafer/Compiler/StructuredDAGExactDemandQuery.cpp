@@ -36,6 +36,7 @@ using analysis::IndexRelation;
 using analysis::IndexRelationResult;
 using analysis::IndexRelationStatus;
 using analysis::IndexSetResult;
+using analysis::LogicalExecutionShard;
 using analysis::LogicalNodeTrial;
 using analysis::LogicalShardTrial;
 using analysis::LogicalTileBinding;
@@ -64,6 +65,22 @@ ExactDemandResult demandResult(ExactDemandStatus status, uint32_t edge,
   result.detail = detail.str();
   return result;
 }
+
+/// Typed content key for one rectangular demand image: the image is a pure
+/// function of the edge relation and the destination rectangle, so the
+/// rectangle content itself is the identity.
+struct RectangularDemandKey {
+  StructuredDAGEdgeID edge = 0;
+  llvm::SmallVector<int64_t, 8> rectangle;
+
+  bool operator<(const RectangularDemandKey &other) const {
+    if (edge != other.edge)
+      return edge < other.edge;
+    return std::lexicographical_compare(
+        rectangle.begin(), rectangle.end(), other.rectangle.begin(),
+        other.rectangle.end());
+  }
+};
 
 /// One pure support path between a producer result and a consumer operand.
 struct SupportPath {
@@ -391,7 +408,10 @@ const LogicalNodeTrial *findNodeTrial(const LogicalShardTrial &trial,
 class StructuredDAGExactDemandQuery::Impl {
 public:
   Impl(const StructuredDAGAnalysis &dag, IREpoch epoch)
-      : dag(dag), epoch(epoch), functionOperation(dag.getFunction().getOperation()) {}
+      : dag(dag), epoch(epoch),
+        functionOperation(dag.getFunction().getOperation()),
+        bodyOperationCount(
+            dag.getFunction().getBody().front().getOperations().size()) {}
 
   ExactDemandResult query(StructuredDAGEdgeID edgeId,
                           const LogicalShardTrial &trial) {
@@ -400,7 +420,13 @@ public:
     if (!trial.epoch.isValid() || trial.epoch != epoch)
       return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
                           "logical trial belongs to another IR epoch");
-    if (functionOperation != dag.getFunction().getOperation())
+    // Real IR invalidation: the query's structural snapshot of the borrowed
+    // function (operation identity plus body operation count) must still
+    // match. An in-place mutation invalidates every derived fact, including
+    // the per-edge relation cache; the token is only a borrow identity.
+    if (functionOperation != dag.getFunction().getOperation() ||
+        bodyOperationCount !=
+            dag.getFunction().getBody().front().getOperations().size())
       return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
                           "current IR changed under the demand query");
     const StructuredDAGEdge *edge = dag.getEdge(edgeId);
@@ -415,16 +441,22 @@ public:
         !consumerTrial->completeIterationDomain)
       return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
                           "trial does not cover every edge endpoint");
-    if (producerTrial->bindings.empty())
-      return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
-                          "trial producer has no ownership");
+    // Ownership is per producer result; only this edge's result is
+    // validated and consumed.
+    llvm::SmallVector<const LogicalTileBinding *, 16> resultBindings;
     for (const LogicalTileBinding &binding : producerTrial->bindings)
-      if (!binding.ownedDomain)
+      if (binding.resultIndex == edge->producerResult)
+        resultBindings.push_back(&binding);
+    if (resultBindings.empty())
+      return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
+                          "trial producer result has no ownership");
+    for (const LogicalTileBinding *binding : resultBindings)
+      if (!binding->ownedDomain)
         return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
                             "trial producer ownership domain is missing");
     llvm::SmallVector<TileId, 16> sortedTiles;
-    for (const LogicalTileBinding &binding : producerTrial->bindings)
-      sortedTiles.push_back(binding.tile);
+    for (const LogicalTileBinding *binding : resultBindings)
+      sortedTiles.push_back(binding->tile);
     llvm::sort(sortedTiles, [](TileId lhs, TileId rhs) {
       return lhs.getValue() < rhs.getValue();
     });
@@ -516,13 +548,53 @@ private:
       return demandResult(ExactDemandStatus::IndeterminateFailure, edge.id,
                           "exact demand relation ranks do not meet the trial");
 
-    IndexSetResult demandSet =
-        relation.get()->image(*consumerTrial.completeIterationDomain);
+    IndexSetResult demandSet = imageDemand(
+        edge.id, *relation.get(), *consumerTrial.completeIterationDomain);
     if (!demandSet.isExact())
       return demandResult(mapIndexRelationStatus(demandSet.status), edge.id,
                           demandSet.reason);
 
-    return deriveCoverage(edge.id, producerTrial, *demandSet.set, kind);
+    return deriveCoverage(edge, *relation.get(), producerTrial,
+                          consumerTrial, *demandSet.set, kind);
+  }
+
+  /// Exact image of one destination domain under the edge relation. A dense
+  /// rectangle under a projected rectangle pattern relation images
+  /// arithmetically; every other case uses the generic Presburger image.
+  /// Rectangular images are memoized by (edge, rectangle content): the image
+  /// is a pure function of the relation and the domain, the relation is
+  /// immutable per edge during this query's lifetime, and the key is the
+  /// domain content itself. The memo never enters legality decisions beyond
+  /// the exact image it names.
+  IndexSetResult imageDemand(StructuredDAGEdgeID edgeId,
+                             const IndexRelation &relation,
+                             const mlir::presburger::PresburgerSet &domain) {
+    analysis::StaticRectangularIndexSetResult rectangle =
+        IndexSetResult{IndexRelationStatus::Exact, domain, {}}
+            .getExactStaticRectangularDomain();
+    if (rectangle.isExact()) {
+      RectangularDemandKey key;
+      key.edge = edgeId;
+      key.rectangle.append(rectangle.domain->offsets.begin(),
+                           rectangle.domain->offsets.end());
+      key.rectangle.append(rectangle.domain->sizes.begin(),
+                           rectangle.domain->sizes.end());
+      auto cached = rectangularDemandMemo.find(key);
+      if (cached != rectangularDemandMemo.end())
+        return IndexSetResult{IndexRelationStatus::Exact, cached->second, {}};
+      analysis::StaticRectangularIndexSetResult exactImage =
+          relation.getExactStaticRectangularImage(rectangle.domain->offsets,
+                                                  rectangle.domain->sizes);
+      if (exactImage.isExact()) {
+        IndexSetResult result = IndexRelation::staticRectangularDomain(
+            exactImage.domain->offsets, exactImage.domain->sizes);
+        if (result.isExact()) {
+          rectangularDemandMemo.emplace(std::move(key), *result.set);
+          return result;
+        }
+      }
+    }
+    return relation.image(domain);
   }
 
   IndexRelationResult deriveEdgeRelation(const StructuredDAGEdge &edge,
@@ -588,55 +660,123 @@ private:
   }
 
   ExactDemandResult
-  deriveCoverage(uint32_t edgeId, const LogicalNodeTrial &producerTrial,
+  deriveCoverage(const StructuredDAGEdge &edge, const IndexRelation &relation,
+                 const LogicalNodeTrial &producerTrial,
+                 const LogicalNodeTrial &consumerTrial,
                  const mlir::presburger::PresburgerSet &demand,
                  DemandEdgeKind kind) {
     ExactDemandResult result;
     result.status = ExactDemandStatus::Satisfied;
-    result.edge = edgeId;
+    result.edge = edge.id;
+    result.producerResult = edge.producerResult;
+    result.consumerOperand = edge.consumerOperand;
     result.dependencyKind = kind;
+    if (consumerTrial.completeIterationDomain)
+      result.consumerIterationDomain =
+          *consumerTrial.completeIterationDomain;
     result.producerDemand = demand;
 
-    // Unique-partition owners tile the result domain; an overlap with any
-    // other owner is a provable partition contradiction.
-    for (size_t outerIndex = 0; outerIndex < producerTrial.bindings.size();
-         ++outerIndex) {
-      const LogicalTileBinding &outer = producerTrial.bindings[outerIndex];
-      for (const LogicalTileBinding &inner :
-           llvm::drop_begin(producerTrial.bindings, outerIndex + 1)) {
-        if (outer.role != TileRole::UniquePartition &&
-            inner.role != TileRole::UniquePartition)
-          continue;
-        mlir::presburger::PresburgerSet overlap =
-            outer.ownedDomain->intersect(*inner.ownedDomain);
-        if (!overlap.isIntegerEmpty()) {
-          result.status = ExactDemandStatus::ProvenLogicalInfeasible;
-          result.uncoveredWitness = std::move(overlap);
-          result.detail =
-              "unique-partition owners overlap in their result domains";
-          return result;
-        }
-      }
-    }
+    // Only this edge's producer result participates in the coverage proof;
+    // other results of the same node carry their own ownership.
+    llvm::SmallVector<const LogicalTileBinding *, 16> resultBindings;
+    for (const LogicalTileBinding &binding : producerTrial.bindings)
+      if (binding.resultIndex == edge.producerResult)
+        resultBindings.push_back(&binding);
 
+    // Unique-partition owners tile the result domain; an overlap with any
+    // other owner is a provable partition contradiction. The witness is the
+    // union of every pairwise overlap that involves at least one
+    // unique-partition owner. One pass replaces the all-pairs scan: the
+    // overlap of an owner with the union of all earlier owners equals the
+    // union of its pairwise overlaps, and union accumulation is commutative,
+    // so the outcome never depends on the caller's binding enumeration
+    // order.
+    std::optional<mlir::presburger::PresburgerSet> overlapWitness;
     std::optional<mlir::presburger::PresburgerSet> ownedUnion;
+    std::optional<mlir::presburger::PresburgerSet> coveredUnique;
     bool hasReplication = false;
     bool hasPartialContribution = false;
-    for (const LogicalTileBinding &binding : producerTrial.bindings) {
-      hasReplication |= binding.role == TileRole::ExplicitReplication;
+    for (const LogicalTileBinding *binding : resultBindings) {
+      const bool unique = binding->role == TileRole::UniquePartition;
+      hasReplication |= binding->role == TileRole::ExplicitReplication;
       hasPartialContribution |=
-          binding.role == TileRole::PartialReductionContribution;
-      ownedUnion = ownedUnion ? ownedUnion->unionSet(*binding.ownedDomain)
-                              : *binding.ownedDomain;
+          binding->role == TileRole::PartialReductionContribution;
+      const std::optional<mlir::presburger::PresburgerSet> &prior =
+          unique ? ownedUnion : coveredUnique;
+      if (prior) {
+        mlir::presburger::PresburgerSet overlap =
+            binding->ownedDomain->intersect(*prior);
+        if (!overlap.isIntegerEmpty())
+          overlapWitness = overlapWitness ? overlapWitness->unionSet(overlap)
+                                          : std::move(overlap);
+      }
+      ownedUnion = ownedUnion ? ownedUnion->unionSet(*binding->ownedDomain)
+                              : *binding->ownedDomain;
+      if (unique)
+        coveredUnique =
+            coveredUnique ? coveredUnique->unionSet(*binding->ownedDomain)
+                          : *binding->ownedDomain;
       mlir::presburger::PresburgerSet intersection =
-          demand.intersect(*binding.ownedDomain);
+          demand.intersect(*binding->ownedDomain);
       if (!intersection.isIntegerEmpty()) {
-        if (binding.role == TileRole::PartialReductionContribution)
+        if (binding->role == TileRole::PartialReductionContribution)
           result.mergeObligation = true;
         result.ownershipIntersections.push_back(
-            analysis::ExactOwnershipIntersection{binding.tile,
+            analysis::ExactOwnershipIntersection{binding->tile,
                                                  std::move(intersection)});
       }
+    }
+    if (overlapWitness) {
+      result.status = ExactDemandStatus::ProvenLogicalInfeasible;
+      result.uncoveredWitness = std::move(*overlapWitness);
+      result.detail =
+          "unique-partition owners overlap in their result domains";
+      return result;
+    }
+
+    // Per-destination facts for every consumer execution shard, ordered by
+    // Tile id: each shard's exact demand, per-owner intersections and
+    // per-shard uncovered witness derive from the same relation proof.
+    llvm::SmallVector<const LogicalExecutionShard *, 16> sortedShards;
+    for (const LogicalExecutionShard &shard : consumerTrial.executionShards)
+      if (shard.executionDomain)
+        sortedShards.push_back(&shard);
+    llvm::sort(sortedShards, [](const LogicalExecutionShard *lhs,
+                                const LogicalExecutionShard *rhs) {
+      return lhs->tile.getValue() < rhs->tile.getValue();
+    });
+    for (const LogicalExecutionShard *shard : sortedShards) {
+      IndexSetResult shardDemand =
+          imageDemand(edge.id, relation, *shard->executionDomain);
+      if (!shardDemand.isExact())
+        return demandResult(mapIndexRelationStatus(shardDemand.status),
+                            edge.id, shardDemand.reason);
+      analysis::ExactDestinationDemand entry;
+      entry.destinationTile = shard->tile;
+      entry.consumerExecutionDomain = *shard->executionDomain;
+      entry.producerDemand = *shardDemand.set;
+      // The shard demand is a subset of the whole-edge demand, so only
+      // owners with a non-empty whole-edge intersection can contribute; the
+      // shard intersection equals the intersection with that smaller set.
+      for (const analysis::ExactOwnershipIntersection &owner :
+           result.ownershipIntersections) {
+        mlir::presburger::PresburgerSet intersection =
+            shardDemand.set->intersect(*owner.set);
+        if (!intersection.isIntegerEmpty())
+          entry.ownershipIntersections.push_back(
+              analysis::ExactOwnershipIntersection{owner.tile,
+                                                   std::move(intersection)});
+      }
+      llvm::sort(entry.ownershipIntersections,
+                 [](const analysis::ExactOwnershipIntersection &lhs,
+                    const analysis::ExactOwnershipIntersection &rhs) {
+                   return lhs.tile.getValue() < rhs.tile.getValue();
+                 });
+      mlir::presburger::PresburgerSet shardUncovered =
+          shardDemand.set->subtract(*ownedUnion);
+      if (!shardUncovered.isIntegerEmpty())
+        entry.uncoveredWitness = std::move(shardUncovered);
+      result.perDestination.push_back(std::move(entry));
     }
 
     mlir::presburger::PresburgerSet uncovered =
@@ -652,6 +792,13 @@ private:
                       ? TileRole::PartialReductionContribution
                       : (hasReplication ? TileRole::ExplicitReplication
                                         : TileRole::UniquePartition);
+    // Deterministic outcome: per-owner intersections ordered by Tile id,
+    // never by the caller's binding enumeration order.
+    llvm::sort(result.ownershipIntersections,
+               [](const analysis::ExactOwnershipIntersection &lhs,
+                  const analysis::ExactOwnershipIntersection &rhs) {
+                 return lhs.tile.getValue() < rhs.tile.getValue();
+               });
     return result;
   }
 
@@ -662,9 +809,14 @@ private:
   const StructuredDAGAnalysis &dag;
   IREpoch epoch;
   mlir::Operation *functionOperation = nullptr;
+  size_t bodyOperationCount = 0;
   /// Placement-independent relation proofs per edge; the query instance is
   /// bound to one IR epoch and the DAG is immutable during its lifetime.
   std::map<StructuredDAGEdgeID, IndexRelation> relationCache;
+  /// Rectangular demand images by (edge, rectangle content); typed-content
+  /// keyed, deterministic, epoch-scoped with the query instance.
+  std::map<RectangularDemandKey, mlir::presburger::PresburgerSet>
+      rectangularDemandMemo;
 };
 
 StructuredDAGExactDemandQuery::StructuredDAGExactDemandQuery(
@@ -687,40 +839,143 @@ StructuredDAGExactDemandQuery::query(StructuredDAGEdgeID edge,
   return impl->query(edge, trial);
 }
 
-mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
-buildBalancedOwnership(mlir::RankedTensorType type,
-                       unsigned shardDimension,
-                       llvm::ArrayRef<TileId> group,
-                       std::string *failureReason) {
-  llvm::SmallVector<analysis::LogicalTileBinding, 16> result;
-  if (!type || !type.hasStaticShape() || type.getRank() == 0 ||
-      shardDimension >= static_cast<unsigned>(type.getRank()) ||
-      group.empty())
-    return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
+/// Exact result-space shard of one Tile in the balanced placement domain. A
+/// result whose rank cannot express the shard axis yields its complete
+/// domain (the replication fallback).
+mlir::FailureOr<mlir::presburger::PresburgerSet>
+deriveBalancedShardDomain(mlir::RankedTensorType type,
+                          unsigned shardDimension,
+                          llvm::ArrayRef<TileId> group, TileId tile,
+                          std::string *failureReason) {
+  if (!type || !type.hasStaticShape() || group.empty())
+    return fail<mlir::presburger::PresburgerSet>(
         failureReason, "logical trial placement has an invalid static shard");
+  if (shardDimension >= static_cast<unsigned>(type.getRank())) {
+    IndexSetResult full = IndexRelation::staticDomain(type.getShape());
+    if (!full.isExact())
+      return fail<mlir::presburger::PresburgerSet>(failureReason,
+                                                   full.reason);
+    return *full.set;
+  }
+  auto found = llvm::find(group, tile);
+  if (found == group.end())
+    return fail<mlir::presburger::PresburgerSet>(
+        failureReason, "logical trial Tile is outside its node group");
   const int64_t extent = type.getDimSize(shardDimension);
   if (extent <= 0 || group.size() > static_cast<size_t>(extent))
-    return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
+    return fail<mlir::presburger::PresburgerSet>(
         failureReason,
         "logical trial cannot form nonempty balanced shards");
+  const int64_t ordinal = std::distance(group.begin(), found);
   const int64_t participants = static_cast<int64_t>(group.size());
   const int64_t base = extent / participants;
   const int64_t larger = extent % participants;
-  for (auto [ordinal, tile] : llvm::enumerate(group)) {
-    const int64_t index = static_cast<int64_t>(ordinal);
-    llvm::SmallVector<int64_t, 4> offsets(type.getRank(), 0);
-    llvm::SmallVector<int64_t, 4> sizes(type.getShape().begin(),
-                                        type.getShape().end());
-    offsets[shardDimension] =
-        index * base + std::min<int64_t>(index, larger);
-    sizes[shardDimension] = base + (index < larger);
-    IndexSetResult domain =
-        IndexRelation::staticRectangularDomain(offsets, sizes);
-    if (!domain.isExact())
-      return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(failureReason,
-                                                domain.reason);
+  llvm::SmallVector<int64_t, 4> offsets(type.getRank(), 0);
+  llvm::SmallVector<int64_t, 4> sizes(type.getShape().begin(),
+                                      type.getShape().end());
+  offsets[shardDimension] =
+      ordinal * base + std::min<int64_t>(ordinal, larger);
+  sizes[shardDimension] = base + (ordinal < larger);
+  IndexSetResult domain =
+      IndexRelation::staticRectangularDomain(offsets, sizes);
+  if (!domain.isExact())
+    return fail<mlir::presburger::PresburgerSet>(failureReason,
+                                                 domain.reason);
+  return *domain.set;
+}
+
+mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
+buildBalancedOwnership(mlir::RankedTensorType type,
+                       unsigned shardDimension,
+                       llvm::ArrayRef<TileId> group, uint32_t resultIndex,
+                       std::string *failureReason) {
+  llvm::SmallVector<analysis::LogicalTileBinding, 16> result;
+  if (!type || !type.hasStaticShape() || group.empty())
+    return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
+        failureReason, "logical trial placement has an invalid static shard");
+  const bool replicated =
+      shardDimension >= static_cast<unsigned>(type.getRank());
+  for (TileId tile : group) {
+    auto domain =
+        deriveBalancedShardDomain(type, shardDimension, group, tile,
+                                  failureReason);
+    if (mlir::failed(domain))
+      return mlir::failure();
     result.push_back(analysis::LogicalTileBinding{
-        tile, *domain.set, analysis::TileRole::UniquePartition});
+        tile, resultIndex, *domain,
+        replicated ? analysis::TileRole::ExplicitReplication
+                   : analysis::TileRole::UniquePartition});
+  }
+  return result;
+}
+
+/// Per-Tile consumer execution shards: for every Tile of the group, the
+/// exact iteration-space domain that produces the Tile's result shards,
+/// computed as the union over every result of the preimage of the result's
+/// balanced shard under the result indexing map. Presburger budget
+/// exhaustion yields an empty shard list: the query reports the same
+/// machinery failure from the whole-edge derivation as IndeterminateFailure,
+/// so the trial build never pre-empts the typed outcome.
+mlir::FailureOr<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>
+deriveConsumerExecutionShards(mlir::linalg::LinalgOp linalg,
+                              const StructuredDAGNodePlacement &placement,
+                              std::string *failureReason) {
+  llvm::SmallVector<analysis::LogicalExecutionShard, 16> result;
+  llvm::SmallVector<int64_t, 4> loopShape = linalg.getStaticLoopRanges();
+  // The per-result iteration-to-result relations are Tile-independent and
+  // derived once per node.
+  llvm::SmallVector<std::pair<mlir::RankedTensorType, IndexRelation>, 2>
+      resultRelations;
+  for (unsigned resultIndex = 0;
+       resultIndex < linalg->getNumResults(); ++resultIndex) {
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+        linalg->getResult(resultIndex).getType());
+    if (!resultType || !resultType.hasStaticShape())
+      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+          failureReason,
+          "consumer execution shards require static tensor results");
+    mlir::AffineMap resultMap = linalg.getIndexingMapMatchingResult(
+        linalg->getResult(resultIndex));
+    if (!resultMap || resultMap.getNumDims() != loopShape.size() ||
+        resultMap.getNumResults() !=
+            static_cast<unsigned>(resultType.getRank()))
+      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+          failureReason,
+          "consumer execution shard has an inconsistent result map");
+    IndexRelationResult iterationToResult = IndexRelation::fromAffineMap(
+        resultMap, loopShape, resultType.getShape());
+    if (!iterationToResult.isExact()) {
+      if (iterationToResult.status == IndexRelationStatus::ResourceExhausted)
+        return llvm::SmallVector<analysis::LogicalExecutionShard, 16>{};
+      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+          failureReason, "consumer execution shard relation is not exact");
+    }
+    resultRelations.emplace_back(resultType, *iterationToResult.relation);
+  }
+  for (TileId tile : placement.tiles) {
+    std::optional<mlir::presburger::PresburgerSet> executionDomain;
+    for (auto &[resultType, iterationToResult] : resultRelations) {
+      auto shard = deriveBalancedShardDomain(
+          resultType, placement.shardDimension, placement.tiles, tile,
+          failureReason);
+      if (mlir::failed(shard))
+        return mlir::failure();
+      IndexSetResult preimage = iterationToResult.preimage(*shard);
+      if (!preimage.isExact()) {
+        if (preimage.status == IndexRelationStatus::ResourceExhausted)
+          return llvm::SmallVector<analysis::LogicalExecutionShard, 16>{};
+        return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+            failureReason, "consumer execution shard preimage is not exact");
+      }
+      executionDomain = executionDomain
+                            ? executionDomain->unionSet(*preimage.set)
+                            : *preimage.set;
+    }
+    if (!executionDomain)
+      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+            failureReason, "consumer execution shard is empty");
+    result.push_back(analysis::LogicalExecutionShard{tile,
+                                                     executionDomain});
   }
   return result;
 }
@@ -739,13 +994,10 @@ mlir::FailureOr<analysis::LogicalShardTrial> buildEdgeShardTrial(
       return fail<analysis::LogicalShardTrial>(
           failureReason, "dependent edge demand has an unavailable node");
     auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(node->operation);
-    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
-        node->operation->getResult(0).getType());
-    if (!linalg || !resultType || !resultType.hasStaticShape() ||
-        node->operation->getNumResults() != 1)
+    if (!linalg)
       return fail<analysis::LogicalShardTrial>(
           failureReason,
-          "dependent edge demand requires one static Linalg result per node");
+          "dependent edge demand requires a static Linalg node");
     llvm::SmallVector<int64_t, 4> loopShape = linalg.getStaticLoopRanges();
     if (llvm::any_of(loopShape, [](int64_t extent) { return extent < 0; }))
       return fail<analysis::LogicalShardTrial>(
@@ -759,13 +1011,27 @@ mlir::FailureOr<analysis::LogicalShardTrial> buildEdgeShardTrial(
     analysis::LogicalNodeTrial entry;
     entry.node = placement.node;
     entry.completeIterationDomain = *iterationDomain.set;
-    mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
-        ownership = buildBalancedOwnership(
-            resultType, placement.shardDimension, placement.tiles,
-            failureReason);
-    if (mlir::failed(ownership))
+    auto executionShards =
+        deriveConsumerExecutionShards(linalg, placement, failureReason);
+    if (mlir::failed(executionShards))
       return mlir::failure();
-    entry.bindings = std::move(*ownership);
+    entry.executionShards = std::move(*executionShards);
+    for (uint32_t resultIndex = 0;
+         resultIndex < node->operation->getNumResults(); ++resultIndex) {
+      auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+          node->operation->getResult(resultIndex).getType());
+      if (!resultType || !resultType.hasStaticShape())
+        return fail<analysis::LogicalShardTrial>(
+            failureReason,
+            "dependent edge demand requires static tensor results");
+      mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
+          ownership = buildBalancedOwnership(
+              resultType, placement.shardDimension, placement.tiles,
+              resultIndex, failureReason);
+      if (mlir::failed(ownership))
+        return mlir::failure();
+      entry.bindings.append(std::move(*ownership));
+    }
     trial.nodes.push_back(std::move(entry));
   }
   llvm::sort(trial.nodes, [](const analysis::LogicalNodeTrial &lhs,
@@ -800,13 +1066,9 @@ mlir::FailureOr<analysis::LogicalShardTrial> buildLogicalShardTrial(
     const StructuredDAGNodePlacement &placement = *placements[node.id];
     mlir::Operation *operation = node.operation;
     auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation);
-    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
-        operation->getResult(0).getType());
-    if (!linalg || !resultType || !resultType.hasStaticShape() ||
-        operation->getNumResults() != 1)
+    if (!linalg)
       return fail<analysis::LogicalShardTrial>(
-          failureReason,
-          "logical trial requires one static Linalg result per node");
+          failureReason, "logical trial requires a static Linalg node");
     llvm::SmallVector<int64_t, 4> loopShape = linalg.getStaticLoopRanges();
     if (llvm::any_of(loopShape, [](int64_t extent) { return extent < 0; }))
       return fail<analysis::LogicalShardTrial>(
@@ -820,13 +1082,27 @@ mlir::FailureOr<analysis::LogicalShardTrial> buildLogicalShardTrial(
     analysis::LogicalNodeTrial nodeTrial;
     nodeTrial.node = node.id;
     nodeTrial.completeIterationDomain = *iterationDomain.set;
-    mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
-        ownership = buildBalancedOwnership(
-            resultType, placement.shardDimension, placement.tiles,
-            failureReason);
-    if (mlir::failed(ownership))
+    auto executionShards =
+        deriveConsumerExecutionShards(linalg, placement, failureReason);
+    if (mlir::failed(executionShards))
       return mlir::failure();
-    nodeTrial.bindings = std::move(*ownership);
+    nodeTrial.executionShards = std::move(*executionShards);
+    for (uint32_t resultIndex = 0; resultIndex < operation->getNumResults();
+         ++resultIndex) {
+      auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+          operation->getResult(resultIndex).getType());
+      if (!resultType || !resultType.hasStaticShape())
+        return fail<analysis::LogicalShardTrial>(
+            failureReason,
+            "logical trial requires static tensor results");
+      mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
+          ownership = buildBalancedOwnership(
+              resultType, placement.shardDimension, placement.tiles,
+              resultIndex, failureReason);
+      if (mlir::failed(ownership))
+        return mlir::failure();
+      nodeTrial.bindings.append(std::move(*ownership));
+    }
     trial.nodes.push_back(std::move(nodeTrial));
   }
   llvm::sort(trial.nodes, [](const analysis::LogicalNodeTrial &lhs,

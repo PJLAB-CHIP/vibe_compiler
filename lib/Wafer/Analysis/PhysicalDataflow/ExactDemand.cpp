@@ -14,12 +14,12 @@ std::atomic<uint64_t> &getProcessGeneration() {
 
 } // namespace
 
-IREpoch IREpoch::current() {
-  return IREpoch(getProcessGeneration().load(std::memory_order_acquire));
-}
-
-void IREpoch::advance() {
-  getProcessGeneration().fetch_add(1, std::memory_order_release);
+IREpoch IREpoch::mint() {
+  // The process counter provides token uniqueness only; it is not an
+  // invalidation mechanism and never enters a cache key or legality
+  // decision.
+  return IREpoch(getProcessGeneration().fetch_add(1, std::memory_order_relaxed) +
+                 1);
 }
 
 ExactDemandStatus mapIndexRelationStatus(IndexRelationStatus status) {

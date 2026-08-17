@@ -729,3 +729,24 @@
   若协议确需installed-path动作，显式建模committing/committed状态和可恢复操作，并证明每个错误出口不泄漏本轮目标。
 - 防复发：failure injection必须覆盖最后一次发布前后、installed readback和进程/第二产品边界；同时断言返回status、ordinary/profile
   可见性和staging残留，不能只测第二次rename正常返回失败时的best-effort rollback。
+
+## wafer-compile-card-baseline CROSS case在baseline materialization验证中长时间挂起（既有缺陷）
+
+- 现象：`test/Tools/wafer-compile-card-baseline.test`的CROSS（16-Tile transpose support chain，256个peer
+  fragment）在`source-to-tensor-program`后无输出、CPU 100%数分钟以上（90s/280s timeout均杀不掉自然结束）；
+  CHAIN与GEMM case正常（~1-4s）。直接gdb启动+对inferior发SIGINT采样：主线程在
+  `synthesizeDeterministicBaseline → validateSelectedTileLayouts → rootContainsNodeLayout →
+  operationUsesStructuredNode → collectStructuredNodesUsedByOperation → shareStructuredBufferStorage →
+  collectStorageRoots`区域（StructuredBufferRelations.cpp），两次采样位置不同说明在推进而非死循环。
+- 根因：`rootContainsNodeLayout`对每个strategy在整棵tile root上walk，每个op×每个buffer relation都从零
+  递归`collectStorageRoots`（fresh visited set，无memo）；CROSS的16 destination × 16 owner peer fragment
+  使指令模块膨胀，O(ops×strategies×walk)放大到分钟级。该验证链是旧refactor遗留
+  （`git log -S validateSelectedTileLayouts` → ab8bf482/318bba75，早于Q50.A）。
+- 证据：`git checkout 22b3fd12`（Q50.A前）与HEAD（92abdf29）均复现同一挂起；Q50.A review-gap批次与
+  Gap 1 per-destination改动无关。Tools lit不在默认lit/ctest路径（见“非默认gate的lit期望静默过时”条），
+  该测试长期无人执行，属Q49.P baseline functional closure域。
+- 修复模式：登记为Q49.P既有失败（与`NoneJointlyRefines...`同类），不在Q50.A批内修；排查这类“编译挂起”
+  时先在同一二进制内用阶段探针二分，再用gdb从启动开始跑inferior并向其进程发SIGINT采样栈
+  （attach被ptrace禁止，但gdb启动inferior可行）。
+- 防复发：Tools目录的lit/ctest在声称gate通过前要单独执行并带wall-time上限；materialization验证链的
+  每op递归walk需要memo化或按relation反向索引，避免O(N²)回归。

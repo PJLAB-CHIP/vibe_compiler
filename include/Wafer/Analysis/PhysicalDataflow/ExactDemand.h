@@ -20,18 +20,20 @@ class Operation;
 
 namespace wafer::analysis {
 
-/// Generation token for one immutable IR snapshot. Query-local analysis
-/// caches are keyed by it, and a query constructed for one epoch rejects
-/// trials from any other epoch as an indeterminate compiler failure. IR
-/// mutation owners call advance() around rewrites so derived analysis can
-/// never silently cross a mutation boundary; queries and analyses never
-/// mutate IR and must not advance.
+/// Identity token for one immutable IR borrow, minted by the borrow owner
+/// (the compilation entry) and shared by every query and trial of that
+/// borrow. The token participates in no cache key and no legality decision;
+/// a query rejects trials minted for another borrow, but IR-mutation
+/// invalidation is the query's own structural snapshot of the borrowed
+/// function, never this token. No process-global mutable state may enter
+/// compiler semantics.
 class IREpoch {
 public:
   IREpoch() = default;
 
-  static IREpoch current();
-  static void advance();
+  /// Mint one fresh token. Uniqueness is the only guarantee; the token is
+  /// never an invalidation mechanism.
+  static IREpoch mint();
 
   uint64_t getGeneration() const { return generation; }
   bool isValid() const { return generation != 0; }
@@ -62,22 +64,39 @@ enum class TileRole : uint8_t {
   PartialReductionContribution,
 };
 
-/// Per-Tile ownership of one logical node shard. `ownedDomain` is exact and
-/// expressed in the node result space; it carries no layout, encoding,
-/// bytes, movement, or transport decision. A missing domain is a malformed
-/// assignment for the consuming query.
+/// Per-Tile ownership of one producer result shard. `resultIndex` binds the
+/// ownership to a concrete producer result, so a multi-result node carries
+/// independent domains and roles per result. `ownedDomain` is exact and
+/// expressed in the result space of `resultIndex`; it carries no layout,
+/// encoding, bytes, movement, or transport decision. A missing domain is a
+/// malformed assignment for the consuming query.
 struct LogicalTileBinding {
   TileId tile{0};
+  uint32_t resultIndex = 0;
   std::optional<mlir::presburger::PresburgerSet> ownedDomain;
   TileRole role = TileRole::UniquePartition;
 };
 
+/// Per-Tile execution domain of one consumer shard, expressed in the node's
+/// iteration space. Every shard must be exact and all-and-only tile the
+/// complete iteration domain.
+struct LogicalExecutionShard {
+  TileId tile{0};
+  std::optional<mlir::presburger::PresburgerSet> executionDomain;
+};
+
 /// Closed logical trial of one structured DAG node: the complete consumer
-/// execution domain (iteration space) and every owner's exact result-space
-/// domain. `node` is the DAG node identity of the consuming query.
+/// execution domain (iteration space), per-Tile consumer execution shards,
+/// and, per producer result, every owner's exact result-space domain.
+/// `node` is the DAG node identity of the consuming query. `executionShards`
+/// is optional for whole-edge-only proofs; the production adapter populates
+/// it and the canonical carrier requires it, except under Presburger budget
+/// exhaustion where it stays empty and the query reports the same machinery
+/// failure as IndeterminateFailure.
 struct LogicalNodeTrial {
   uint32_t node = 0;
   std::optional<mlir::presburger::PresburgerSet> completeIterationDomain;
+  llvm::SmallVector<LogicalExecutionShard, 16> executionShards;
   llvm::SmallVector<LogicalTileBinding, 16> bindings;
 };
 
@@ -140,6 +159,19 @@ struct ExactOwnershipIntersection {
   std::optional<mlir::presburger::PresburgerSet> set;
 };
 
+/// Per-destination facts of one consumer shard: the shard's exact execution
+/// domain, the exact producer demand imaged from it, the per-owner
+/// intersections, and the per-shard uncovered witness.
+struct ExactDestinationDemand {
+  TileId destinationTile{0};
+  std::optional<mlir::presburger::PresburgerSet> consumerExecutionDomain;
+  std::optional<mlir::presburger::PresburgerSet> producerDemand;
+  llvm::SmallVector<ExactOwnershipIntersection, 8> ownershipIntersections;
+  /// Present and non-empty only when this shard's demand has an uncovered
+  /// portion; absent otherwise.
+  std::optional<mlir::presburger::PresburgerSet> uncoveredWitness;
+};
+
 /// Query-local verdict for one dependency. It contains no layout, encoding,
 /// bytes, dense fragment, action, route, buffer, or schedule facts; those
 /// belong to later representation and movement stages. `detail` is for
@@ -149,14 +181,26 @@ struct ExactOwnershipIntersection {
 struct ExactDemandResult {
   ExactDemandStatus status = ExactDemandStatus::IndeterminateFailure;
   uint32_t edge = 0;
+  /// Typed dependency identity recovered from the DPS contract (producer
+  /// result and consumer operand). Never recovered from operand order or op
+  /// names.
+  uint32_t producerResult = 0;
+  uint32_t consumerOperand = 0;
   /// Typed dependency role recovered from the DPS contract (data input or
   /// init operand). Never recovered from operand order or op names.
   DemandEdgeKind dependencyKind = DemandEdgeKind::DataInput;
   std::optional<mlir::presburger::PresburgerSet> consumerIterationDomain;
   std::optional<mlir::presburger::PresburgerSet> producerDemand;
+  /// Exact per-owner intersections, ordered by Tile id: the outcome never
+  /// depends on the caller's binding enumeration order.
   llvm::SmallVector<ExactOwnershipIntersection, 8> ownershipIntersections;
+  /// Per-destination facts for every consumer execution shard of the trial,
+  /// ordered by Tile id. Empty only when the trial carries no execution
+  /// shards (whole-edge-only proofs).
+  llvm::SmallVector<ExactDestinationDemand, 16> perDestination;
   /// Present and non-empty only for ProvenLogicalInfeasible; absent
-  /// otherwise.
+  /// otherwise. For overlapping unique-partition owners the witness is the
+  /// union of every pairwise overlap, again independent of caller order.
   std::optional<mlir::presburger::PresburgerSet> uncoveredWitness;
   TileRole role = TileRole::UniquePartition;
   bool mergeObligation = false;
