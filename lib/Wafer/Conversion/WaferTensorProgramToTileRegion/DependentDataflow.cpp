@@ -1996,11 +1996,6 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
               << operation.getName() << "/store=" << storesStage
               << "/load=" << loadsStage;
     }
-    if (getenv("WAFER_DUMP_CUT_REGION")) {
-      llvm::errs() << "--- cut region dump ---\n";
-      region.print(llvm::errs());
-      llvm::errs() << "\n";
-    }
     return failResult(
         failureReason,
         "region cut requires an ordered exact store/reload "
