@@ -2313,17 +2313,15 @@ static mlir::LogicalResult splitRegionAtStructuredRootBoundary(
     for (mlir::Operation &operation : body.without_terminator()) {
       if (prefix.contains(&operation) || spillClosureOps.contains(&operation))
         continue;
-      const bool otherRootCompute = llvm::any_of(
-          operation.getResults(), [&](mlir::Value result) {
-            return llvm::any_of(relations.operationResultBuffers,
-                                [&](const auto &relation) {
-                                  return relation.structuredNodeId !=
-                                             firstNode &&
-                                         (relation.buffer == result ||
-                                          getViewRoot(relation.buffer) ==
-                                              result);
-                                });
-          });
+      llvm::SmallVector<uint32_t, 4> consumerNodes;
+      for (mlir::Value result : operation.getResults())
+        for (const auto &relation : relations.operationResultBuffers)
+          if (relation.structuredNodeId != firstNode &&
+              (relation.buffer == result ||
+               getViewRoot(relation.buffer) == result) &&
+              !llvm::is_contained(consumerNodes, relation.structuredNodeId))
+            consumerNodes.push_back(relation.structuredNodeId);
+      const bool otherRootCompute = !consumerNodes.empty();
       const bool usesPrefixValue = llvm::any_of(
           operation.getOperands(), [&](mlir::Value operand) {
             return prefix.contains(getTopLevelOperation(
@@ -2378,6 +2376,15 @@ static mlir::LogicalResult splitRegionAtStructuredRootBoundary(
             spills.push_back(spill);
           }
           use.set(reloadResult);
+          // The consuming root's operand relation must describe the actual
+          // buffer it reads after the cut: retarget it to the reloaded SPM
+          // allocation in the same transaction. The producer's own result
+          // relation keeps pointing at the original value.
+          for (auto &relation : relations.operandBuffers)
+            if (llvm::is_contained(consumerNodes, relation.structuredNodeId) &&
+                (relation.buffer == operand ||
+                 getViewRoot(relation.buffer) == getViewRoot(operand)))
+              relation.buffer = reloadResult;
           addedUser = true;
         }
         continue;
@@ -2402,28 +2409,90 @@ mlir::LogicalResult splitStructuredRootBoundaries(
   if (!entry)
     return failResult(failureReason,
                       "structured root split requires a Tile entry");
-  for (unsigned iteration = 0; iteration < 256; ++iteration) {
+
+  // Excess roots over one per region, summed across the Tile entry. Every
+  // successful split moves at least one structured compute root out of a
+  // multi-root region, so the total strictly decreases and terminates
+  // without any IR-unrelated round limit. A non-decreasing step is a
+  // split-core bug and fails closed.
+  auto collectRegionRootNodes = [&](TileRegionOp region,
+                                    llvm::SmallVectorImpl<uint32_t> &roots) {
+    region.walk([&](mlir::Operation *operation) {
+      for (mlir::Value result : operation->getResults())
+        for (const auto &relation : relations.operationResultBuffers)
+          if ((relation.buffer == result ||
+               getViewRoot(relation.buffer) == result) &&
+              !llvm::is_contained(roots, relation.structuredNodeId))
+            roots.push_back(relation.structuredNodeId);
+    });
+  };
+  auto countExcessRoots = [&]() -> unsigned {
+    unsigned excess = 0;
+    entry.walk([&](TileRegionOp region) {
+      if (region->getParentOfType<TileRegionOp>())
+        return;
+      llvm::SmallVector<uint32_t, 4> roots;
+      collectRegionRootNodes(region, roots);
+      if (roots.size() > 1)
+        excess += roots.size() - 1;
+    });
+    return excess;
+  };
+
+  unsigned excess = countExcessRoots();
+  while (excess > 0) {
     llvm::SmallVector<TileRegionOp, 8> regions;
     entry.walk([&](TileRegionOp region) {
       if (!region->getParentOfType<TileRegionOp>())
         regions.push_back(region);
     });
-    bool changed = false;
     for (TileRegionOp region : regions)
       if (mlir::failed(splitRegionAtStructuredRootBoundary(
               region, relations, failureReason)))
         return mlir::failure();
-    entry.walk([&](TileRegionOp region) {
-      if (!region->getParentOfType<TileRegionOp>() &&
-          !llvm::is_contained(regions, region))
-        changed = true;
-    });
-    if (!changed)
-      return mlir::success();
+    const unsigned nextExcess = countExcessRoots();
+    if (nextExcess >= excess)
+      return failResult(failureReason,
+                        "structured root split did not reduce the excess-root "
+                        "count");
+    excess = nextExcess;
   }
-  return failResult(failureReason,
-                    "structured root split did not converge to one root per "
-                    "region");
+
+  // Postcondition: every region carries exactly one structured compute root.
+  // A zero-root compute region violates the one-root contract as much as a
+  // multi-root region does.
+  llvm::SmallVector<TileRegionOp, 8> finalRegions;
+  entry.walk([&](TileRegionOp region) {
+    if (!region->getParentOfType<TileRegionOp>())
+      finalRegions.push_back(region);
+  });
+  // Postcondition: every compute region carries exactly one structured
+  // compute root. A zero-root compute region violates the one-root contract
+  // as much as a multi-root region does; a movement-only boundary carrier
+  // region (DDR staging between two root regions) legitimately carries no
+  // compute root. Without any node mapping the caller supplies no
+  // attribution relations, so no root cardinality can be verified here; the
+  // baseline always supplies the complete relation set.
+  if (relations.operationResultBuffers.empty())
+    return mlir::success();
+  for (TileRegionOp region : finalRegions) {
+    bool hasCompute = false;
+    region.walk([&](mlir::Operation *operation) {
+      if (mlir::isa<ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
+                    ComputeConvOp, ComputeElementwiseOp, ComputeReduceOp>(
+              operation))
+        hasCompute = true;
+    });
+    if (!hasCompute)
+      continue;
+    llvm::SmallVector<uint32_t, 4> roots;
+    collectRegionRootNodes(region, roots);
+    if (roots.size() != 1)
+      return failResult(failureReason,
+                        "structured root split produced a compute region "
+                        "without exactly one structured compute root");
+  }
+  return mlir::success();
 }
 
 } // namespace wafer

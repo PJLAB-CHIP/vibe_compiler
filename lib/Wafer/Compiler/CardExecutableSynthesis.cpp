@@ -5230,12 +5230,24 @@ synthesizeDeterministicBaseline(
         // structured DAG node; an explicit structured producer (Fill, init
         // producer, ...) is its own root and may not be disguised as a
         // support closure. Multiple independent roots on one Tile must form
-        // multiple sequential regions with explicit DDR boundaries.
-        if (evaluation.resultRoots.size() > 1) {
+        // multiple sequential regions with explicit DDR boundaries; a
+        // compute region without any root violates the same contract.
+        // Movement-only boundary carrier regions (DDR staging between two
+        // root regions) carry no compute root and are not compute regions;
+        // only regions containing compute must have exactly one root.
+        bool regionHasCompute = false;
+        region.walk([&](mlir::Operation *operation) {
+          if (mlir::isa<ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
+                        ComputeConvOp, ComputeElementwiseOp, ComputeReduceOp>(
+                  operation))
+            regionHasCompute = true;
+        });
+        if (regionHasCompute && evaluation.resultRoots.size() != 1) {
           llvm::sort(evaluation.resultRoots);
           diagnostics << "wafer-compile: deterministic card baseline "
-                         "TileRegion carries multiple structured compute roots"
-                      << " tile_id=" << tileId.getValue() << " region_roots=";
+                         "TileRegion does not carry exactly one structured "
+                         "compute root tile_id="
+                      << tileId.getValue() << " region_roots=";
           for (auto [rootIndex, node] :
                llvm::enumerate(evaluation.resultRoots)) {
             if (rootIndex)

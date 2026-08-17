@@ -1397,6 +1397,111 @@ module {
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
+     BaselineSplitProducesOneRootPerRegionWithRetargetedReload) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain(%input: tensor<8xf16>) -> tensor<8xf16> {
+    %out = tensor.empty() : tensor<8xf16>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%input : tensor<8xf16>) outs(%out : tensor<8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %value : f16
+        linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    %final = tensor.empty() : tensor<8xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%producer : tensor<8xf16>) outs(%final : tensor<8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %old : f16
+        linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    return %consumer : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+  mlir::linalg::GenericOp producer;
+  mlir::linalg::GenericOp consumer;
+  source->walk([&](mlir::linalg::GenericOp operation) {
+    if (!producer)
+      producer = operation;
+    else
+      consumer = operation;
+  });
+  ASSERT_TRUE(producer);
+  ASSERT_TRUE(consumer);
+
+  wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
+  selected.materializationMode =
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
+  wafer::SpatialEdgeStrategy cut = edgeStrategy(
+      producer.getOperation(), consumer.getOperation(), wafer::TileId(0),
+      wafer::SpatialEdgeAction::RegionCut,
+      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8});
+  cut.producerResult = 0;
+  cut.consumerOperand = 0;
+  selected.edgeStrategies.push_back(std::move(cut));
+  selected = completeTemporalMapping(*source, std::move(selected));
+
+  llvm::SmallVector<wafer::StructuredOperationNodeMapping, 2> operationNodes = {
+      {producer.getOperation(), /*structuredNodeId=*/0},
+      {consumer.getOperation(), /*structuredNodeId=*/1}};
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  wafer::StructuredMaterializationRelations relations;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardModule(
+      *source, wafer::CardId(0), selected, cardModule, &failureReason,
+      operationNodes, &relations)))
+      << failureReason;
+
+  // Structure: the two roots form separate regions; every compute region
+  // carries exactly one structured root.
+  llvm::SmallVector<wafer::TileRegionOp, 4> regions;
+  cardModule->walk([&](wafer::TileRegionOp region) {
+    if (!region->getParentOfType<wafer::TileRegionOp>())
+      regions.push_back(region);
+  });
+  // Structure: two sequential regions on the shared Tile, each carrying its
+  // own compute, connected by explicit DDR boundary movement.
+  ASSERT_EQ(regions.size(), 2u);
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(cardModule->getOperation()),
+            2u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 4u);
+  EXPECT_GE(countOps<wafer::StorageLoadOp>(cardModule->getOperation()), 4u);
+  // The controller path supplies the complete relation set per root; this
+  // hand-made conversion-level cut records the consumer-side evidence and
+  // verifies the reload retarget. Producer result-relation emission parity
+  // for hand-made RegionCut carriers is a recorded P4 follow-up.
+  ASSERT_EQ(relations.operandBuffers.size(), 1u);
+  mlir::Value consumerOperand = relations.operandBuffers.front().buffer;
+  ASSERT_TRUE(consumerOperand);
+  EXPECT_EQ(relations.operandBuffers.front().structuredNodeId, 1u);
+  auto reloadAlloc =
+      consumerOperand.getDefiningOp<mlir::memref::AllocOp>();
+  ASSERT_TRUE(reloadAlloc);
+  auto reloadType = mlir::dyn_cast<mlir::MemRefType>(reloadAlloc.getType());
+  ASSERT_TRUE(reloadType);
+  EXPECT_TRUE(mlir::isa<wafer::MemoryAttr>(reloadType.getMemorySpace()));
+  EXPECT_EQ(mlir::cast<wafer::MemoryAttr>(reloadType.getMemorySpace())
+                .getSpace(),
+            wafer::MemorySpace::SPM);
+}
+
+TEST(WaferTensorProgramToCardModuleTest,
      NarrowRootShardEntryMaterializesOnlyTargetRoot) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
