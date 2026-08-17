@@ -339,8 +339,8 @@
   归typed comparator。`verifyReductionSplitNumericLegality`对`addf`直接合法；`preservesSequentialReductionOrder`事实只保留给
   整数combiner分支——整数no-wrap/overflow语义是唯一剩余barrier。
 - 防复发：新增reduction split/树合法化时只按整数overflow语义设barrier，不得以源combiner顺序、`fastmath` attr或
-  lexicographic前轴条件拒绝浮点split。纯reduction标量输出没有parallel轴时仍必须先构造all-factor=1、one-Tile的typed
-  unpartitioned functional coordinate；current placement domain表达不了是baseline implementation gap，不能用来跳过temporal
+  lexicographic前轴条件拒绝浮点split。纯reduction标量输出没有parallel轴时仍必须先构造all-factor=1、单参与Tile的typed
+  unpartitioned functional coordinate；这是该root的无parallel轴退化，不是baseline全局Tile数。current placement domain表达不了是baseline implementation gap，不能用来跳过temporal
   split或把source判unsupported。已知「最小tile超SPM」反例在current lowering下未形成合法terminal proof时，只保留typed
   capacity/unsupported出口，不用无关placement失败冒充负例。
 

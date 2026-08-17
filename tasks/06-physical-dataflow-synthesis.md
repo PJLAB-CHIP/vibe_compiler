@@ -631,7 +631,8 @@ local spatial extent开始确定性缩减完整temporal tile vector直到actual 
 correctness，不搜索route或communication方案。
 
 “最大合法Tile participation”不要求虚构一个spatial axis：root没有映射到result的parallel iterator时，baseline构造
-all-factor=1、one-Tile、完整result domain的typed unpartitioned coordinate。纯reduction由同一temporal breakpoint机制缩减；
+all-factor=1、单参与Tile、完整result domain的typed unpartitioned coordinate；这只是该root没有parallel轴时的退化，不是
+baseline全局只用一个Tile。纯reduction由同一temporal breakpoint机制缩减；
 reduction spatial factor大于1所需的partial ownership和显式merge仍由Q50.B引入，不能因该search机制尚未实现而拒绝功能baseline。
 
 这里的baseline是功能闭环的最低实现，不是“只验证预先选好方案”的通道。它接收未绑定Tile、TileRegion、temporal tile、
@@ -749,14 +750,14 @@ trial、typed relation/role和四态outcome服务baseline及未来spatial mechan
 multi-result、init/support relation与production carrier gate已经受测，不再属于Q51.Core待修接口。
 
 Q49.P仍在闭合baseline functional legalization、single-root structure、scope escalation、direct causal witness和search-policy
-隔离；其动态缺口只看`tasks/progress.md`与实施计划。current function-scope routing、无Card/Tile shell的single-Tile入口、
+隔离；其动态缺口只看`tasks/progress.md`与实施计划。current function-scope routing、无Card/Tile shell的per-Tile scoped入口、
 storage-root memo、DDR boundary kernel和reduction temporal materialization只作为新baseline mechanism融合，不形成第二条控制线。
 主线仍有下列设计差距：
 
 - baseline仍生成全部iterator-axis×connected-rectangle placement options，经domain propagation与recursive solve取一个结果，
   并继续复用search statistics/result owner；固定打印零placement enumeration不能证明policy隔离；
 - 第一个trial仍先完整materialize CardModule；refinement后scoped入口虽已无card-shaped/no-work wrapper，却仍clone/prepare完整
-  TensorProgram并物化该Tile全部root，fit后再次回到完整CardModule，尚未形成从一开始single-root/single-Tile的trial；
+  TensorProgram并物化该Tile全部root，fit后再次回到完整CardModule，尚未形成从一开始按root的每参与Tile shard trial；
 - function-scope probe已经typed routing到真实planning sequence，但clone/body-swap/bufferization后的relation completeness与final
   gate不一致；current remap/retain可以省略witness，root-boundary SPM reload也没有同步retarget consumer operand relation；
 - one-root结构仍由whole-Tile materialization后的post-hoc splitter修补，validator只拒绝多root而接受zero-root，且splitter存在固定
