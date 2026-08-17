@@ -2,8 +2,8 @@
 
 状态：Q49 deterministic `none` baseline 已于 2026-08-11 达到 `board-ready`，但其search-policy隔离、结构不变量、scoped
 probe闭合和整图物化成本不属于已签发的正确性证据。Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure
-与Q59 compiler entry transaction已闭合。当前先完成Q50.A production
-demand boundary，再由Q49.P在current source-to-package路径上闭合baseline functional legalization及
+与Q59 compiler entry transaction、Q50.A production demand boundary均已闭合。当前由Q49.P在current
+source-to-package路径上闭合baseline functional legalization及
 policy/structure/probe/materialization隔离，之后建立
 Q51.Core共同状态、transition和actual-probe seam；随后让
 Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
@@ -457,15 +457,11 @@ domain、producer ownership domains、partition/reduction/replication role及会
 字段在当前relation下extensionally等价时才能使用投影key；当前仅按两端shard dimension和participant count缓存`bool`不能成为
 终态合同。
 
-当前`StructuredDAGEdgeDemandPlanner`、`StructuredDAGEdgeStrategyPlanner`、placement evaluator与相关测试只是迁移索引：
-实现仍经candidate schedule取得placement type，只接受direct static single-result/single-init Linalg与balanced一维矩形，跳过
-DPS init和非direct support dependency，并把relation、carrier、route/resource失败混入同一个placement rejection。施工顺序是：
-
-1. 抽出窄policy-free placement assignment、typed dependency descriptor与typed outcome；
-2. 让exact relation/image/coverage query直接支持上述完整relation类别，并把DPS init/support graph纳入all-and-only DAG依赖；
-3. 将production placement transition改为只消费logical outcome，删除`bool legal`/diagnostic-string控制流；
-4. 把dense fragment、layout、route、residency和resource calendar移到显式compatibility/representation/movement lowering；
-5. compatibility code保留到Q50.G/H能力迁移完成，但其失败不得回写Q50.A cache或删除spatial trial。
+current query和production adapter已经消费窄policy-free placement assignment、typed dependency descriptor与four-state outcome；
+DPS init、pure support graph和multi-result ownership均进入同一all-and-only exact relation/coverage边界。baseline support carrier直接消费
+query给出的per-destination demand与ownership intersections，并把empty destination解释为无physical action，不再从balanced producer
+rectangle正向猜测support image。direct edge的canonical dense carrier及其它layout、route、residency和resource calendar仍是
+Q50.G/H后续扩展的physical alternatives；其失败不得回写Q50.A cache或删除spatial trial。
 
 ### Gate
 
@@ -507,13 +503,18 @@ DPS init和非direct support dependency，并把relation、carrier、route/resou
 - typed payload在成功与失败路径都按semantic Tile id稳定排序，补齐consumer domain、producer result、dependency
   role、per-destination intersection和merge obligation。partial-reduction定向case证明倒序caller input仍保留全部
   contribution owners与merge义务；overlap failure witness同样不依赖caller枚举顺序。
-- 本轮follow-up定向验证覆盖relation/epoch/query 44个case、carrier 17个case和multi-result production evaluator
-  1个case。`ThreeStageChainCanUseThreeDistinctTileGroups`单独通过但仍耗时约163秒；该placement枚举成本未在本批
-  继续扩大处理，也不作为Q50.A logical correctness结论。
+- baseline support-chain carrier不再为每个balanced producer shard正向重建单矩形image，而是复用同一borrow上的
+  per-destination exact-demand结果；strided view按destination形成有限fragment，insert-slice overwrite造成的empty
+  destination不生成physical action，global multi-piece set由其余destination fragments all-and-only覆盖。
+- normal TensorProgram production gate分别覆盖reduction、broadcast、affine convolution window、stride-2
+  `extract_slice` view和middle-overwrite multi-piece relation；五个case都进入canonical baseline carrier，完成一次
+  CardModule compilation并形成accepted 16-Tile CardExecutable。fresh source-to-package入口也实际执行并通过。
+- fresh验证覆盖relation/epoch/query及carrier/multi-result production 62/62、上述五类production gate 5/5、Q50.0
+  baseline/稳定性/reduction 3/3、source-to-package 1/1和主树完整构建。`ThreeStageChainCanUseThreeDistinctTileGroups`
+  仍有约163秒的既有placement枚举成本；它归Q52，不改变Q50.A logical correctness结论。
 
-上述四项review阻塞已闭合，但本轮没有执行正常TensorProgram→完整Q50.0 source-to-package gate，因此Q50.A在
-`tasks/progress.md`保持`doing`。恢复`done`仍须按本节Gate重放五类relation的production链路；Q52枚举性能与
-Q50.G/H physical carrier扩展不能代签该completion gate。
+Q50.A completion gate已闭合并在`tasks/progress.md`标为`done`。Q50.G/H继续扩展完整physical carrier alternatives；
+这些后续性能/representation能力不重建或改判本节的logical proof。
 
 ## Q51.Core：先建立共同搜索骨架
 
@@ -1106,7 +1107,7 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 
 ## 提交与收尾
 
-1. Q58、Q56、Q50.0与Q54已达到各自当前门禁；Q59按其计划先闭合review阻塞项。随后Q50.A、Q49.P、Q51.Core、Q50.S、
+1. Q58、Q56、Q50.0、Q54、Q59与Q50.A已达到各自当前门禁；随后Q49.P、Q51.Core、Q50.S、
    Q50.B–Q50.K、Q51 closure、Q52、Q60与Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
 2. 每个 checkpoint 开始前记录将替换的旧 owner 调用链；提交前证明新调用链唯一，并只删除当前轴满足三项门禁的旧入口。
 3. 状态转换以 `tasks/progress.md` 为准；本计划不单独维护第二份动态状态表。

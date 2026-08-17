@@ -127,6 +127,57 @@ twoReductionAxisProgramMetadata() {
   return program;
 }
 
+static wafer::frontend::FrontendProgramVerificationResult
+broadcastProgramMetadata() {
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  program.programUserInputCount = 1;
+  program.distributedInputs = {boundary(0, {16})};
+  program.distributedOutputs = {boundary(0, {16, 8})};
+  return program;
+}
+
+static wafer::frontend::FrontendProgramVerificationResult
+reductionDemandProgramMetadata() {
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  program.programUserInputCount = 1;
+  program.distributedInputs = {boundary(0, {16, 8})};
+  program.distributedOutputs = {boundary(0, {16})};
+  return program;
+}
+
+static wafer::frontend::FrontendProgramVerificationResult
+windowDemandProgramMetadata() {
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  program.programUserInputCount = 2;
+  program.distributedInputs = {boundary(0, {1, 18, 18, 1}),
+                               boundary(1, {3, 3, 1, 1})};
+  program.distributedOutputs = {boundary(0, {1, 16, 16, 1})};
+  return program;
+}
+
+static wafer::frontend::FrontendProgramVerificationResult
+stridedDemandProgramMetadata() {
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  program.programUserInputCount = 1;
+  program.distributedInputs = {boundary(0, {32})};
+  program.distributedOutputs = {boundary(0, {16})};
+  return program;
+}
+
+static wafer::frontend::FrontendProgramVerificationResult
+multiPieceDemandProgramMetadata() {
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  program.programUserInputCount = 2;
+  program.distributedInputs = {boundary(0, {16}), boundary(1, {4})};
+  program.distributedOutputs = {boundary(0, {16})};
+  return program;
+}
+
 struct ParsedProgram {
   std::shared_ptr<mlir::MLIRContext> context;
   mlir::OwningOpRef<mlir::ModuleOp> module;
@@ -449,6 +500,198 @@ module {
   return ParsedProgram{std::move(context), std::move(module)};
 }
 
+static ParsedProgram parseBroadcastProgram() {
+  mlir::DialectRegistry registry;
+  wafer::compiler::detail::registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: tensor<16xf16>) -> tensor<16x8xf16> {
+    %producerOut = tensor.empty() : tensor<16xf16>
+    %producer = linalg.map ins(%input : tensor<16xf16>)
+        outs(%producerOut : tensor<16xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %resultOut = tensor.empty() : tensor<16x8xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0)>,
+                         affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%producer : tensor<16xf16>)
+        outs(%resultOut : tensor<16x8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %next = arith.addf %value, %old : f16
+        linalg.yield %next : f16
+    } -> tensor<16x8xf16>
+    return %result : tensor<16x8xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  return ParsedProgram{std::move(context), std::move(module)};
+}
+
+static ParsedProgram parseReductionDemandProgram() {
+  mlir::DialectRegistry registry;
+  wafer::compiler::detail::registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: tensor<16x8xf16>) -> tensor<16xf16> {
+    %producerOut = tensor.empty() : tensor<16x8xf16>
+    %producer = linalg.map ins(%input : tensor<16x8xf16>)
+        outs(%producerOut : tensor<16x8xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %resultOut = tensor.empty() : tensor<16xf16>
+    %zero = arith.constant 0.0 : f16
+    %init = linalg.fill ins(%zero : f16)
+        outs(%resultOut : tensor<16xf16>) -> tensor<16xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> (d0)>],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%producer : tensor<16x8xf16>) outs(%init : tensor<16xf16>) {
+      ^bb0(%value: f16, %acc: f16):
+        %next = arith.addf %value, %acc : f16
+        linalg.yield %next : f16
+    } -> tensor<16xf16>
+    return %result : tensor<16xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  return ParsedProgram{std::move(context), std::move(module)};
+}
+
+static ParsedProgram parseWindowDemandProgram() {
+  mlir::DialectRegistry registry;
+  wafer::compiler::detail::registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: tensor<1x18x18x1xf16>,
+                  %filter: tensor<3x3x1x1xf16>) -> tensor<1x16x16x1xf16> {
+    %producerOut = tensor.empty() : tensor<1x18x18x1xf16>
+    %producer = linalg.map ins(%input : tensor<1x18x18x1xf16>)
+        outs(%producerOut : tensor<1x18x18x1xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %resultOut = tensor.empty() : tensor<1x16x16x1xf16>
+    %zero = arith.constant 0.0 : f16
+    %init = linalg.fill ins(%zero : f16)
+        outs(%resultOut : tensor<1x16x16x1xf16>) -> tensor<1x16x16x1xf16>
+    %result = linalg.conv_2d_nhwc_hwcf
+        {dilations = dense<1> : tensor<2xi64>,
+         strides = dense<1> : tensor<2xi64>}
+        ins(%producer, %filter : tensor<1x18x18x1xf16>, tensor<3x3x1x1xf16>)
+        outs(%init : tensor<1x16x16x1xf16>) -> tensor<1x16x16x1xf16>
+    return %result : tensor<1x16x16x1xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  return ParsedProgram{std::move(context), std::move(module)};
+}
+
+static ParsedProgram parseStridedDemandProgram() {
+  mlir::DialectRegistry registry;
+  wafer::compiler::detail::registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%input: tensor<32xf16>) -> tensor<16xf16> {
+    %producerOut = tensor.empty() : tensor<32xf16>
+    %producer = linalg.map ins(%input : tensor<32xf16>)
+        outs(%producerOut : tensor<32xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %view = tensor.extract_slice %producer[0] [16] [2]
+        : tensor<32xf16> to tensor<16xf16>
+    %resultOut = tensor.empty() : tensor<16xf16>
+    %result = linalg.map ins(%view : tensor<16xf16>)
+        outs(%resultOut : tensor<16xf16>) (%value: f16) {
+        %next = arith.addf %value, %value : f16
+        linalg.yield %next : f16
+    }
+    return %result : tensor<16xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  return ParsedProgram{std::move(context), std::move(module)};
+}
+
+static ParsedProgram parseMultiPieceDemandProgram() {
+  mlir::DialectRegistry registry;
+  wafer::compiler::detail::registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%left: tensor<16xf16>, %right: tensor<4xf16>)
+      -> tensor<16xf16> {
+    %leftOut = tensor.empty() : tensor<16xf16>
+    %producer = linalg.map ins(%left : tensor<16xf16>)
+        outs(%leftOut : tensor<16xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %withMiddle = tensor.insert_slice %right into %producer[6] [4] [1]
+        : tensor<4xf16> into tensor<16xf16>
+    %resultOut = tensor.empty() : tensor<16xf16>
+    %result = linalg.map ins(%withMiddle : tensor<16xf16>)
+        outs(%resultOut : tensor<16xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    return %result : tensor<16xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  return ParsedProgram{std::move(context), std::move(module)};
+}
+
 static size_t countOccurrences(llvm::StringRef text, llvm::StringRef needle) {
   size_t count = 0;
   while (true) {
@@ -611,6 +854,29 @@ static void expectCompleteTileDomain(
     EXPECT_NE(tileDataflowIR.find("wafer.tile.load"), llvm::StringRef::npos);
     EXPECT_NE(tileDataflowIR.find("wafer.tile.store"), llvm::StringRef::npos);
   }
+}
+
+static void expectDemandProgramCompletesExecutableGate(
+    ParsedProgram &parsed,
+    const wafer::frontend::FrontendProgramVerificationResult &metadata) {
+  ASSERT_TRUE(parsed.module);
+
+  std::string diagnosticsText;
+  llvm::raw_string_ostream diagnostics(diagnosticsText);
+  wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::ProgramDataHandoff programData;
+  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
+      *parsed.module, metadata, executionConfig(),
+      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics);
+  diagnostics.flush();
+
+  ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
+  expectCompleteTileDomain(*executable);
+  EXPECT_GT(statistics.exactDemandSatisfiedEdges, 0u);
+  EXPECT_EQ(statistics.demandAbortStatus,
+            wafer::analysis::ExactDemandStatus::Satisfied);
+  EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
+  EXPECT_EQ(statistics.acceptedCandidates, 1u);
 }
 
 TEST(CardExecutableSynthesisTest,
@@ -860,6 +1126,41 @@ TEST(CardExecutableSynthesisTest,
   EXPECT_EQ(diagnosticsText.find("multiple structured compute owners"),
             std::string::npos)
       << diagnosticsText;
+}
+
+TEST(CardExecutableSynthesisTest,
+     NoneCarriesBroadcastDemandThroughTheCompleteExecutableGate) {
+  ParsedProgram parsed = parseBroadcastProgram();
+  expectDemandProgramCompletesExecutableGate(parsed,
+                                             broadcastProgramMetadata());
+}
+
+TEST(CardExecutableSynthesisTest,
+     NoneCarriesReductionDemandThroughTheCompleteExecutableGate) {
+  ParsedProgram parsed = parseReductionDemandProgram();
+  expectDemandProgramCompletesExecutableGate(parsed,
+                                             reductionDemandProgramMetadata());
+}
+
+TEST(CardExecutableSynthesisTest,
+     NoneCarriesWindowDemandThroughTheCompleteExecutableGate) {
+  ParsedProgram parsed = parseWindowDemandProgram();
+  expectDemandProgramCompletesExecutableGate(parsed,
+                                             windowDemandProgramMetadata());
+}
+
+TEST(CardExecutableSynthesisTest,
+     NoneCarriesStridedDemandThroughTheCompleteExecutableGate) {
+  ParsedProgram parsed = parseStridedDemandProgram();
+  expectDemandProgramCompletesExecutableGate(parsed,
+                                             stridedDemandProgramMetadata());
+}
+
+TEST(CardExecutableSynthesisTest,
+     NoneCarriesMultiPieceDemandThroughTheCompleteExecutableGate) {
+  ParsedProgram parsed = parseMultiPieceDemandProgram();
+  expectDemandProgramCompletesExecutableGate(parsed,
+                                             multiPieceDemandProgramMetadata());
 }
 
 TEST(CardExecutableSynthesisTest,

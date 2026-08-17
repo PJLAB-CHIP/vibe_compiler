@@ -446,80 +446,61 @@ static bool prepareEdgeStrategies(TileExecutionCandidate &candidate,
   return true;
 }
 
-static bool deriveBalancedBaselineShard(mlir::RankedTensorType type,
-                                        unsigned shardDimension,
-                                        llvm::ArrayRef<TileId> tiles,
-                                        TileId tile,
-                                        llvm::SmallVectorImpl<int64_t> &offsets,
-                                        llvm::SmallVectorImpl<int64_t> &sizes) {
-  auto found = llvm::find(tiles, tile);
-  if (!type || !type.hasStaticShape() ||
-      shardDimension >= static_cast<unsigned>(type.getRank()) ||
-      tiles.empty() || found == tiles.end())
-    return false;
-  const int64_t extent = type.getDimSize(shardDimension);
-  const int64_t participants = static_cast<int64_t>(tiles.size());
-  if (extent <= 0 || extent < participants)
-    return false;
-  const int64_t ordinal = std::distance(tiles.begin(), found);
-  const int64_t base = extent / participants;
-  const int64_t larger = extent % participants;
-  offsets.assign(type.getRank(), 0);
-  sizes.assign(type.getShape().begin(), type.getShape().end());
-  offsets[shardDimension] = ordinal * base + std::min(ordinal, larger);
-  sizes[shardDimension] = base + (ordinal < larger ? 1 : 0);
-  return true;
-}
-
-static bool staticDomainsOverlap(llvm::ArrayRef<int64_t> lhsOffsets,
-                                 llvm::ArrayRef<int64_t> lhsSizes,
-                                 llvm::ArrayRef<int64_t> rhsOffsets,
-                                 llvm::ArrayRef<int64_t> rhsSizes) {
-  if (lhsOffsets.size() != lhsSizes.size() ||
-      lhsOffsets.size() != rhsOffsets.size() ||
-      lhsOffsets.size() != rhsSizes.size())
-    return false;
-  return llvm::all_of(
-      llvm::zip_equal(lhsOffsets, lhsSizes, rhsOffsets, rhsSizes),
-      [](auto values) {
-        auto [lhsOffset, lhsSize, rhsOffset, rhsSize] = values;
-        return lhsOffset >= 0 && rhsOffset >= 0 && lhsSize > 0 && rhsSize > 0 &&
-               lhsOffset < rhsOffset + rhsSize &&
-               rhsOffset < lhsOffset + lhsSize;
-      });
-}
-
 /// The general edge planner leaves dependencies through pure support ops to
 /// consumer traversal because search policy may choose to keep them resident.
 /// The no-fusion baseline has a stricter contract: dependencies through a
-/// reshape/view support graph cannot remain implicit fusion. Map each
-/// producer spatial shard forward through the exact support/index relation
-/// and retain only shards that contribute to the destination consumer shard;
-/// the consumer side then rebuilds the support graph from those explicit
-/// fragments. Direct local dependencies remain DDR RegionCuts; direct
-/// nonlocal dependencies retain their exact peer plan.
-static bool
-appendBaselineSupportChainTransfers(TileExecutionCandidate &candidate,
-                                    const StructuredDAGAnalysis &dag,
-                                    std::string *failureReason) {
-  llvm::SmallVector<const StructuredDAGNodePlacement *, 16> placements(
-      dag.getNodes().size(), nullptr);
-  for (const StructuredDAGNodePlacement &placement :
-       candidate.assignment.nodePlacements) {
-    if (placement.node >= placements.size() || placements[placement.node]) {
-      if (failureReason)
-        *failureReason = "baseline has an invalid structured placement";
-      return false;
-    }
-    placements[placement.node] = &placement;
+/// reshape/view support graph cannot remain implicit fusion. Consume the same
+/// per-destination exact-demand result as the logical gate and materialize its
+/// ownership intersections directly. This preserves empty destinations and
+/// finite strided/multi-piece demand instead of reconstructing them by mapping
+/// balanced producer rectangles forward. The consumer side then rebuilds the
+/// support graph from those explicit fragments. Direct local dependencies
+/// remain DDR RegionCuts; direct nonlocal dependencies retain their exact peer
+/// plan.
+static bool appendBaselineSupportChainTransfers(
+    TileExecutionCandidate &candidate, const StructuredDAGAnalysis &dag,
+    analysis::IREpoch epoch, std::string *failureReason) {
+  std::string trialFailure;
+  mlir::FailureOr<analysis::LogicalShardTrial> trial = buildLogicalShardTrial(
+      dag, candidate.assignment.nodePlacements, epoch, &trialFailure);
+  if (mlir::failed(trial)) {
+    if (failureReason)
+      *failureReason = "baseline support trial is unavailable: " + trialFailure;
+    return false;
   }
+  StructuredDAGExactDemandQuery query(dag, epoch);
+
+  auto getNodeTrial =
+      [&](StructuredDAGNodeID node) -> const analysis::LogicalNodeTrial * {
+    auto found = llvm::find_if(trial->nodes,
+                               [&](const analysis::LogicalNodeTrial &entry) {
+                                 return entry.node == node;
+                               });
+    return found == trial->nodes.end() ? nullptr : &*found;
+  };
+  auto getRectangle = [](const mlir::presburger::PresburgerSet &set,
+                         llvm::SmallVectorImpl<int64_t> &offsets,
+                         llvm::SmallVectorImpl<int64_t> &sizes) {
+    analysis::IndexSetResult exact{
+        analysis::IndexRelationStatus::Exact, set, {}};
+    analysis::StaticRectangularIndexSetResult rectangle =
+        exact.getExactStaticRectangularDomain();
+    if (!rectangle.isExact())
+      return false;
+    offsets.assign(rectangle.domain->offsets.begin(),
+                   rectangle.domain->offsets.end());
+    sizes.assign(rectangle.domain->sizes.begin(),
+                 rectangle.domain->sizes.end());
+    return true;
+  };
 
   for (const StructuredDAGEdge &edge : dag.getEdges()) {
     const StructuredDAGNode *producerNode = dag.getNode(edge.producer);
     const StructuredDAGNode *consumerNode = dag.getNode(edge.consumer);
     if (!producerNode || !consumerNode || !producerNode->operation ||
-        !consumerNode->operation || !placements[edge.producer] ||
-        !placements[edge.consumer]) {
+        !consumerNode->operation ||
+        edge.producerResult >= producerNode->operation->getNumResults() ||
+        edge.consumerOperand >= consumerNode->operation->getNumOperands()) {
       if (failureReason)
         *failureReason = "baseline dependency references an unknown node";
       return false;
@@ -536,133 +517,111 @@ appendBaselineSupportChainTransfers(TileExecutionCandidate &candidate,
             consumerNode->operation, edge.consumerOperand, failureReason);
     if (mlir::failed(supportChain) || supportChain->empty())
       return false;
-    const StructuredDAGNodePlacement &producerPlacement =
-        *placements[edge.producer];
-    const StructuredDAGNodePlacement &consumerPlacement =
-        *placements[edge.consumer];
+    const analysis::LogicalNodeTrial *consumerTrial =
+        getNodeTrial(edge.consumer);
+    if (!consumerTrial) {
+      if (failureReason)
+        *failureReason = "baseline support consumer trial is unavailable";
+      return false;
+    }
     auto producerType =
         mlir::dyn_cast<mlir::RankedTensorType>(producerResult.getType());
-    auto consumerType = mlir::dyn_cast<mlir::RankedTensorType>(
-        consumerNode->operation->getResult(0).getType());
     mlir::Type elementType =
         producerType ? producerType.getElementType() : mlir::Type{};
     const unsigned elementBits = elementType && elementType.isIntOrFloat()
                                      ? elementType.getIntOrFloatBitWidth()
                                      : 0;
-    if (!producerType || !consumerType || !producerType.hasStaticShape() ||
-        !consumerType.hasStaticShape() || elementBits == 0 ||
-        elementBits % 8 != 0 ||
-        producerPlacement.shardDimension >=
-            static_cast<unsigned>(producerType.getRank()) ||
-        consumerPlacement.shardDimension >=
-            static_cast<unsigned>(consumerType.getRank())) {
+    if (!producerType || !producerType.hasStaticShape() || elementBits == 0 ||
+        elementBits % 8 != 0) {
       if (failureReason)
         *failureReason =
             "baseline support dependency has no static byte-addressable "
-            "producer/consumer shard";
+            "producer result";
       return false;
     }
+
+    analysis::ExactDemandResult demand = query.query(edge.id, *trial);
+    if (demand.status != analysis::ExactDemandStatus::Satisfied) {
+      if (failureReason)
+        *failureReason =
+            "baseline support exact-demand query failed: " + demand.detail;
+      return false;
+    }
+
     int64_t payloadSlice = 0;
-    for (TileId destination : consumerPlacement.tiles) {
+    for (const analysis::ExactDestinationDemand &destination :
+         demand.perDestination) {
+      if (!destination.producerDemand) {
+        if (failureReason)
+          *failureReason =
+              "baseline support destination has no exact producer demand";
+        return false;
+      }
+      // The logical query deliberately retains empty per-destination facts.
+      // They require no physical edge action and must not be converted into a
+      // carrier failure or a fabricated dense rectangle.
+      if (destination.producerDemand->isIntegerEmpty())
+        continue;
+
       SpatialEdgeStrategy strategy;
       strategy.producer = producerNode->operation;
       strategy.producerResult = edge.producerResult;
       strategy.consumer = consumerNode->operation;
       strategy.consumerOperand = edge.consumerOperand;
-      if (!deriveBalancedBaselineShard(
-              consumerType, consumerPlacement.shardDimension,
-              consumerPlacement.tiles, destination, strategy.consumerOffsets,
-              strategy.consumerSizes)) {
-        if (failureReason)
-          *failureReason =
-              "baseline support consumer cannot form nonempty shards";
-        return false;
-      }
-      strategy.sourceTile = destination;
-      strategy.destinationTile = destination;
+      strategy.destinationTile = destination.destinationTile;
+      strategy.sourceTile = destination.destinationTile;
       strategy.action = SpatialEdgeAction::PeerFragments;
       strategy.bufferCount = 1;
-      struct ContributingShard {
-        TileId source{0};
-        llvm::SmallVector<int64_t, 4> offsets;
-        llvm::SmallVector<int64_t, 4> sizes;
-      };
-      llvm::SmallVector<ContributingShard, 16> contributing;
-      for (TileId source : producerPlacement.tiles) {
-        llvm::SmallVector<int64_t, 4> offsets;
-        llvm::SmallVector<int64_t, 4> sizes;
-        if (!deriveBalancedBaselineShard(
-                producerType, producerPlacement.shardDimension,
-                producerPlacement.tiles, source, offsets, sizes)) {
-          if (failureReason)
-            *failureReason =
-                "baseline support producer cannot form nonempty shards";
-          return false;
-        }
-        SpatialEdgeStrategy sourceRelation = strategy;
-        sourceRelation.producerOffsets = offsets;
-        sourceRelation.producerSizes = sizes;
-        llvm::SmallVector<int64_t, 4> imageOffsets;
-        llvm::SmallVector<int64_t, 4> imageSizes;
-        std::string relationFailure;
-        if (mlir::failed(deriveSpatialEdgeConsumerResultDomain(
-                sourceRelation, imageOffsets, imageSizes, &relationFailure))) {
-          if (failureReason)
-            *failureReason =
-                "baseline support shard has no exact forward relation: " +
-                relationFailure;
-          return false;
-        }
-        if (staticDomainsOverlap(imageOffsets, imageSizes,
-                                 strategy.consumerOffsets,
-                                 strategy.consumerSizes))
-          contributing.push_back(
-              ContributingShard{source, std::move(offsets), std::move(sizes)});
-      }
-      if (contributing.empty()) {
+      if (!getRectangle(*destination.producerDemand, strategy.producerOffsets,
+                        strategy.producerSizes)) {
         if (failureReason)
           *failureReason =
-              "baseline support dependency has no producer contribution for "
-              "one consumer shard";
+              "baseline support destination demand needs a finite rectangular "
+              "carrier fragment";
         return false;
       }
 
-      strategy.producerOffsets = contributing.front().offsets;
-      strategy.producerSizes = contributing.front().sizes;
-      const unsigned shardDimension = producerPlacement.shardDimension;
-      int64_t demandBegin = strategy.producerOffsets[shardDimension];
-      int64_t demandEnd = demandBegin + strategy.producerSizes[shardDimension];
-      uint64_t coveredElements = 0;
-      for (const ContributingShard &shard : contributing) {
-        demandBegin = std::min(demandBegin, shard.offsets[shardDimension]);
-        demandEnd = std::max(demandEnd, shard.offsets[shardDimension] +
-                                            shard.sizes[shardDimension]);
-        uint64_t elements = 1;
-        for (int64_t size : shard.sizes)
-          elements = saturatingMultiply(elements, static_cast<uint64_t>(size));
-        coveredElements = saturatingAdd(coveredElements, elements);
+      const analysis::LogicalTileBinding *consumerBinding = nullptr;
+      for (const analysis::LogicalTileBinding &binding :
+           consumerTrial->bindings) {
+        if (binding.tile == destination.destinationTile &&
+            binding.resultIndex == 0 && binding.ownedDomain) {
+          consumerBinding = &binding;
+          break;
+        }
       }
-      strategy.producerOffsets[shardDimension] = demandBegin;
-      strategy.producerSizes[shardDimension] = demandEnd - demandBegin;
-      uint64_t demandedElements = 1;
-      for (int64_t size : strategy.producerSizes)
-        demandedElements =
-            saturatingMultiply(demandedElements, static_cast<uint64_t>(size));
-      if (coveredElements != demandedElements) {
+      if (!consumerBinding ||
+          !getRectangle(*consumerBinding->ownedDomain, strategy.consumerOffsets,
+                        strategy.consumerSizes)) {
         if (failureReason)
           *failureReason =
-              "baseline support contribution is not one exact rectangular "
-              "producer demand";
+              "baseline support consumer result shard is unavailable";
         return false;
       }
 
-      for (const ContributingShard &shard : contributing) {
-        TileId source = shard.source;
-        const llvm::SmallVector<int64_t, 4> &offsets = shard.offsets;
-        const llvm::SmallVector<int64_t, 4> &sizes = shard.sizes;
-        if (source == destination) {
+      for (const analysis::ExactOwnershipIntersection &intersection :
+           destination.ownershipIntersections) {
+        if (!intersection.set) {
+          if (failureReason)
+            *failureReason =
+                "baseline support ownership intersection is unavailable";
+          return false;
+        }
+        if (intersection.set->isIntegerEmpty())
+          continue;
+        llvm::SmallVector<int64_t, 4> offsets;
+        llvm::SmallVector<int64_t, 4> sizes;
+        if (!getRectangle(*intersection.set, offsets, sizes)) {
+          if (failureReason)
+            *failureReason =
+                "baseline support ownership needs a finite rectangular "
+                "carrier fragment";
+          return false;
+        }
+        if (intersection.tile == destination.destinationTile) {
           strategy.fragments.push_back(SpatialEdgeFragment{
-              SpatialEdgeFragmentKind::Resident, offsets, sizes, source,
+              SpatialEdgeFragmentKind::Resident, offsets, sizes,
+              intersection.tile,
               /*bytes=*/0, /*communicationId=*/0, /*payloadSlice=*/0});
           continue;
         }
@@ -677,10 +636,16 @@ appendBaselineSupportChainTransfers(TileExecutionCandidate &candidate,
           return false;
         }
         strategy.fragments.push_back(SpatialEdgeFragment{
-            SpatialEdgeFragmentKind::Peer, offsets, sizes, source, bytes,
-            static_cast<int64_t>(edge.id), payloadSlice++});
+            SpatialEdgeFragmentKind::Peer, offsets, sizes, intersection.tile,
+            bytes, static_cast<int64_t>(edge.id), payloadSlice++});
         candidate.evaluation.peerBytes =
             saturatingAdd(candidate.evaluation.peerBytes, bytes);
+      }
+      if (strategy.fragments.empty()) {
+        if (failureReason)
+          *failureReason =
+              "baseline support demand has no physical ownership fragment";
+        return false;
       }
 
       candidate.assignment.mapping.edgeStrategies.push_back(
@@ -3420,7 +3385,7 @@ deriveDeterministicBaseline(const TargetTopology &topology, CardId cardId,
     }
     strategy.bufferCount = 1;
   }
-  if (!appendBaselineSupportChainTransfers(*spatial, dag, &failure)) {
+  if (!appendBaselineSupportChainTransfers(*spatial, dag, epoch, &failure)) {
     diagnostics << "wafer-compile: deterministic card baseline cannot "
                    "isolate a structured support dependency: "
                 << failure << '\n';

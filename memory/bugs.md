@@ -771,3 +771,16 @@
 - 修复模式：fast path同时保存并检查source/destination shape，任何边界可能裁剪时回退generic Presburger证明；composition默认丢弃
   pattern，只有builder对完整bounded relation完成等价证明后才能恢复。测试同时比较越界image、反向preimage和bounded compose。
 - 防复发：每个关系fast path都必须说明它保留了哪些domain constraints；不能只用in-bounds identity/permutation正例证明exactness。
+
+## support-chain carrier不能从balanced producer rectangle正向重建exact demand
+
+- 现象：logical query已精确支持strided view和`insert_slice` overwrite，但baseline carrier仍逐个正向映射balanced producer
+  shard并要求每个image都是非空单矩形。stride未选中的source shard或overwrite掉的destination因此被误报为relation失败；
+  multi-piece relation也会被迫构造成bounding rectangle并随即被carrier拒绝。
+- 根因：physical compatibility路径重复恢复了一份logical relation，并把“该edge对某个destination无贡献”和“当前dense
+  descriptor不能表达”混成placement legality。它既绕过query的per-destination exact set，也丢失empty set的合法语义。
+- 修复模式：在同一immutable IR borrow上复用typed exact-demand结果；physical carrier只消费per-destination producer demand和
+  ownership intersections。empty demand显式表示无physical action；非空集合按可证明all-and-only的有限fragment分解，无法表达时
+  只拒绝该physical assignment，不改写logical verdict。
+- 防复发：production gate至少包含一个strided support view和一个overwrite产生empty destinations的multi-piece relation，并证明
+  它们进入完整CardModule/CardExecutable gate；只测whole-edge query或只用连续concat piece不能覆盖这类重复恢复缺陷。
