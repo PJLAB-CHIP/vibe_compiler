@@ -359,3 +359,10 @@ source program
 - 验证入口：`WaferUnitTests --gtest_filter='CardExecutableSynthesisTest.*'`（~80s）、
   `lit -sv build/q55-current-fresh/test/Tools --filter wafer-compile-card-baseline.test`（~35s，
   CROSS/CHAIN/GEMM 三 case 一体的 wall-time 上限验证）。
+- source-to-package 端到端：reference capture 按仓库 dtype 政策是 f16（target 拒绝 f32 GEMM），
+  `env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU third_party/python-importer-py311/bin/python
+  test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir <dir>`
+  后 `TX8_DEPS_ROOT=/root/dlc_dev/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
+  --output-dir <pkg> --num-partitions=1 --optimization-policy=none`（~2s 出 16-Tile package；默认 search 同样通过
+  但一次 ~60s，非 baseline gate）。hf Llama block 用 `--emit-hf-llama-block --hf-config-json
+  test/Tools/Inputs/hf/tiny-random-llama-fp16-config.json`，block 更大、编译明显更慢。

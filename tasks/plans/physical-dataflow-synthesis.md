@@ -614,6 +614,19 @@ P1–P2 是两个既有失败的根因修复（gate case），P3–P6 是契约�
 
 ### P7 fresh 端到端验证与收口
 
+未闭合问题（2026-08-17 实测，记录待处理，不在本批修复）：
+
+- `TileMemoryPlanningTest.ReportsSPMFailureForOwnedTileModule`在当前二进制上失败：SPM capacity overflow 失败结果的
+  `spmLargestDemands`为空（期望携带最大demand证据）。该字段由Q49.P新增的`convertSPMMemoryPlanningFailure`
+  （TileMemoryPlanning.cpp）从`SPMMemoryPlanningFailure.largestDemands`转换；根因未定性——需确认是上游
+  SPM planning失败未填充largestDemands，还是转换路径丢失。
+- Llama decoder block（`--emit-hf-llama-block --hf-config-json tiny-random-llama-fp16-config.json`，
+  batch=1 seq=32）的`none`编译wall 2h21m未完成（全程100% CPU、RSS约46MB，卡在card-executable-synthesis，
+  无中间日志）：baseline对block级输入的wall-time未闭合，属Q52 workload-driven scalability域，但作为Q49.P
+  gate记录未闭合。
+- 相关单测套件中`StructuredDAGPlacementEnumerationTest.MultiOutputFanoutCanPlaceBranchesOnDifferentDestinationGroups`
+  单case运行超过3h、RSS达4.3GB未完成：placement枚举在该形状上的扩展失控，属Q50.B/Q51域，作为已知问题记录。
+
 - 更新 `tasks/progress.md` Q49.P 行和本节实现结论；`memory/bugs.md` 两条既有失败标修复；
   `memory/general_dev.md` 沉淀 probe/memo 经验。
 - fresh 验证（2026-08-17 实测）：受影响 unit 70/70、默认 lit gate 216/216、三棵树 fresh 构建通过；
