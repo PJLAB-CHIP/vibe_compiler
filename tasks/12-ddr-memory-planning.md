@@ -265,7 +265,7 @@ Q16 typed fields。
 
 ### 4.1 Streamed Immutable Chunk Contract
 
-本节只记录未来extension约束，当前planner、CardExecutable和active vertical gate均不实现streaming/state resource；
+本节只记录未来extension约束，当前planner、CardExecutable和current source-to-package路径均不实现streaming/state resource；
 它不能作为当前output、typed field或completion事实。
 
 streaming是CardModule-wide actual resource/lifetime形态，不是package读取优化，也不是DDR planner内部的window search。

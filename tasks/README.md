@@ -64,12 +64,14 @@
 Q49.P、Q50、Q51–Q53共用card-local multi-Tile综合计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
 Q50.0建立candidate compilation/verification seam；Q50.A先收口IndexRelation demand边界；Q49.P闭合从正常上游IR产生
 accepted executable的baseline deterministic feasibility legalization、single-root TileRegion、
-最窄scope probe、typed causal witness、整图物化与search-policy隔离；Q50.S把算法等价改写物化为actual `TensorProgram`；
+最窄scope probe、typed causal witness、direct canonical placement、唯一整图物化与search-policy隔离；baseline不展开完整
+placement domain、不在accepted后建立shadow schedule/cost，也不在普通编译无条件打印IR；Q50.S把算法等价改写物化为actual `TensorProgram`；
 Q50.B–Q50.K逐项接入
 spatial、TileRegion/temporal/fusion、physical representation/movement、buffer/order/completion和条件式stage pipeline选择；
 Q51.Core直接复用Q49.P accepted baseline作为session-level incumbent后，只建立typed assignment/transition、deterministic
 frontier、ledger/budget和evaluation/result evidence的new-search control kernel。Core不适配旧candidate/generator/feedback/
-selector，同批让public `search`只进入新Core并删除旧search控制链；未接入production mechanism时直接返回Q49.P accepted
+selector，同批让public `search`只进入新Core并删除旧search控制链、Rank/coordinated source island、源码marker CTest、paired
+optimization catalog/driver、旧stderr/statistics合同；未接入production mechanism时直接返回Q49.P accepted
 incumbent。Core不预声明未来轴、不拥有Q50.F actual probe，也不以fixture签发真实domain完整性。Q50.S/B–K只向新链逐轴补齐
 mechanism与独立reference oracle，并同批删除对应旧实现和测试；Q51以full actual oracle和new source-to-package链闭合联合选择。
 旧candidate set、winner、统计、digest和异常长integration不是验证对象或对照基准。Q52按实际负载优化scalability，Q53形成production
@@ -82,6 +84,10 @@ Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。
 current seam后由Q51继续施工，避免把semantic Location、whole-module local wrapper和手工analysis lifecycle固化进
 baseline probe或新的candidate/search实现。
 
+Q63 NCC completion合同分层计划见`tasks/plans/ncc-synchronization-contract-layering.md`。它显式承接Q54 contract map中后续review
+确认尚未实际闭合的`NCCSynchronizationContract`：pure target completion protocol、MLIR op adapter和query-local analysis分层，
+删除IR header到TX81 ABI的反向include与free TypeSwitch特殊case；Q50.J不得在Q63前把该混合接口固化进新schedule。
+
 Q55接口版本收敛计划见`tasks/plans/interface-version-consolidation.md`。20只定义版本owner和兼容边界；02、11、14-17
 继续拥有具体frontend、target、package、runtime、profiler与verification字段语义。Q55不建立compatibility mode，
 只保留真实外围版本并让repo内同步接口回到一种current表示。
@@ -90,7 +96,12 @@ Q62 Target数值合同重建计划见`tasks/plans/target-numeric-contract-recons
 managed/bulk backend与qualification的真实能力，但删除Q22.N时期把target command、model policy、compiler emittability和evidence
 捆在一起的`NumericSemantics` profile/registry。顶层依赖原则由01拥有，target字段回到11/14的TargetOperation/TargetCall，
 TargetTensor materialization由14显式拥有，formal/SystemC和bulk evidence由16/17拥有，library/include方向由18约束；不建立
-兼容header、旧resolver或回归旧registry。
+兼容header、旧resolver或回归旧registry。Q62同批把parser后的logical/target dtype从字符串切为closed typed value，
+把managed dependency conformance迁出always-built target execution API，并删除TargetModelCore到Compiler的反向link。
+
+Q64 source registration truth闭合计划见`tasks/plans/source-registration-truth-closure.md`。18继续拥有稳定source/library规则；Q64在
+Q51.Core、Q62、Q63删除各自旧island后，让checker从filesystem与实际CMake/test graph闭合repo-wide active/dormant truth，
+未注册source/test不能再因目录不在hard-coded检查范围而假绿，也不能靠读取旧source marker的CTest获得保留身份。
 
 Q58 program data ownership与Q61 whole-program scale共用
 `tasks/plans/program-data-and-whole-program-scale.md`。Q58先把verified source→外部SPMD helper→CardExecutable同事务

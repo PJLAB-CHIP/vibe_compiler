@@ -148,8 +148,14 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 | `AttentionSemantics.cpp`、`MaterializeFlashAttention.cpp`、`MaterializeFlashDecoding.cpp`及对应未注册tests | 从current SSA证明attention/decode语义并物化online/split recurrence | `extract-then-delete`：Q50.S接入统一structured semantic-alternative builder，不恢复独立Flash pass/selector；actual TensorProgram与替代test闭合后删除 |
 | `CompleteTraversal.cpp`及依赖它的optional attention implementation source | complete structured traversal和partition/local-reduction/merge materialization | `extract-then-delete`：Q50.S/Q50.D迁到active traversal/materializer seam，chain/fanout/fanin/diamond witness受测后删除旧实现 |
 
-`tools/check_source_organization.py`从CMake target读取active translation unit；本表列出的dormant文件作为政策allowlist单独核对。
-新增dormant source必须先在本节说明承接合同和删除门禁，不能通过扩allowlist逃避build/test职责。
+`tools/check_source_organization.py`当前只对少数目录闭合active/dormant集合；2026-08-17 follow-up review确认其余目录仍可能存在
+既未进入CMake、也未进入本表却获得green结果的source/test island。Q64
+`tasks/plans/source-registration-truth-closure.md`负责把filesystem、实际CMake target/test graph与本表扩为repo-wide唯一事实源。
+Q64完成前，各current任务必须同批删除或注册自己触及的旧source/test，不能把checker green当作全仓闭合证明。
+
+本表列出的dormant文件只作为带current task owner、独有能力和删除门禁的最小政策allowlist。新增dormant source必须先在本节说明
+承接合同和删除门禁，不能通过扩allowlist逃避build/test职责；读取implementation symbol/source marker来保活未注册实现的CTest
+一律不是合法registration，Q51.Core负责删除当前optimization comparison实例。
 
 ## 4. Target、runtime与model organization
 
@@ -212,7 +218,9 @@ include formal/bulk model来构造静态program data。Package verifier只验证
 model不依赖package parser来重建compiler owners，也不共享vendor runtime mutable state。SystemC bridge隔离RTTI/exception ABI
 差异；LLVM/MLIR-facing TUs维持仓库编译选项。formal与bulk libraries可以依赖Target typed facts和physical codec，但
 `WaferTarget`基础library不得反向包含formal arithmetic、model capability registry或qualification implementation。model从decoded
-TargetCall直接进入family-specific API；不建立`ResolvedNumericCommand`一类跨library join object。
+TargetCall直接进入family-specific API；不建立`ResolvedNumericCommand`一类跨library join object。Q62同批删除
+`WaferTargetModelCore -> WaferCompiler`反向link；managed dependency record/source-tree/license/loaded-object conformance迁到optional
+bootstrap/qualification/tool test support，不作为always-built`WaferTarget` public execution API。
 
 ## 5. Build graph
 
@@ -241,6 +249,8 @@ Compiler package writing / Runtime / Model
 明确列出受控source，不依赖glob保住已经删除的文件；删除source时同批删除target/source list和only-for-it test。
 source-organization gate还必须禁止Compiler search/Analysis/Conversion include formal/bulk model header，并确认退役numeric
 umbrella/profile/pattern/resolver没有compatibility header、typedef或旧source残留。
+Q63进一步禁止runtime/model为复用NCC completion classification依赖WaferIR/WaferCompiler；Q64把这些link/include规则与
+repo-wide source/test registration一起纳入实际CMake graph检查。
 
 独立host build/test按 `nproc`并行。若一个聚合library使无关功能被可选依赖拖住，应拆分target或用明确feature boundary，
 但不能复制接口实现。

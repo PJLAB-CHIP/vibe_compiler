@@ -211,6 +211,24 @@ wrapper；`RequiresFunctionScope`被计数后跳过；capacity attribution会按
 同region其余root一并纳入refinement；baseline还写入candidate proposal/fusion/layout/buffer类统计。
 `actual_fused_edges=0`和“没有进入search loop”都不能证明这些耦合已经消失。
 
+2026-08-17 follow-up review又确认了四个仍属于Q49.P、不能转交Q52的结构问题：
+
+1. 所谓policy-free baseline仍调用`deriveStructuredDAGNodePlacementOptions`，先展开每个node的全部合法
+   iterator-axis × connected-rectangle placement options，再用递归constraint solve只取一个canonical assignment；这是把旧
+   search domain换了入口名，baseline必须改为从typed axis/topology facts直接推导当前canonical coordinate，只在typed exact
+   rejection后推进下一个必要coordinate，不得materialize完整Q50.B域。
+2. controller先完整materialize CardModule才能发现capacity conflict，refinement后再做Tile scoped probe，probe通过后又重新完整
+   materialize CardModule。声明“最终完整CardModule一次”不能只统计Q50.0 compile；所有feasibility trial必须先走single-root/
+   single-Tile最窄materializer，全部fit后才形成唯一完整CardModule。
+3. Q50.0已经返回accepted executable后，baseline仍构造`StaticSchedulePlan`并运行duration estimation，结果既不影响baseline
+   output也不进入Q51 incumbent；该shadow plan可让合法executable因旧cost失败而失败，必须从baseline路径删除。
+4. common compile seam在每次trial/compile中无条件把全部Tile dataflow IR打印成字符串，即使production caller最终丢弃trace；
+   IR inspection必须是显式请求且只在最终accepted output上执行，不能成为baseline或candidate admission的固定成本。
+
+同一review还确认baseline代码、100字段的search statistics和trace-bearing synthesis result仍共同定义在旧search
+monolith/header中。Q49.P完成前必须把baseline的窄assignment、typed outcome和必要work ledger移到不依赖旧search对象的current
+owner；Q51.Core随后删除旧controller时不能再次迁移或适配baseline。
+
 ```text
 Pipeline position:
 - Upstream IR / input:
@@ -226,7 +244,8 @@ Pipeline position:
   不合法或没有search candidate而停止。
 - Output IR / files:
   一次性物化的完整baseline CardModule，以及经Q50.0一次完整准入后得到的accepted CardExecutable；Q59 transaction随后提交
-  verified ExecutablePackage。局部probe clone和query-local witness不成为output或shadow plan。
+  verified ExecutablePackage。局部probe clone和query-local witness不成为output或shadow plan；普通编译不生成printed-IR
+  snapshot，显式inspection只在最终accepted output上按请求采集。
 - Downstream consumer:
   `none`直接发布accepted executable/package；Q51.Core复用同一个accepted executable及其actual cost/digest作为初始
   incumbent，不用search carrier重新构造baseline。
@@ -238,18 +257,22 @@ Pipeline position:
   route；不把一个region的局部fit冒充card-level transport/resource/ABI证明；不改变Q51的性能候选域。这里的非目标不排除
   baseline为走通程序而确定canonical placement、temporal tile、representation/movement、buffer、order和completion。
 - Done criteria:
-  baseline不依赖search state/candidate、search-oriented domain/ranking evaluator、proposal order/group materializer；每个
+  baseline不依赖search state/candidate、完整placement-option domain/ranking evaluator、proposal order/group materializer；
+  canonical placement从typed structured/topology facts直接推导，不能先展开全部connected rectangle/axis options再取第一个；每个
   baseline TileRegion恰有一个structured compute root和必要non-root support closure；跨root shaped dependency显式DDR；
   region-local和最近合法isolated-ancestor probe均闭合，exact rejection携带direct typed causal witness；完整CardModule materialization与
-  CardExecutable compilation各一次；初始完整tile超SPM的正例会重新推导完整workset并确定性缩到合法tile后通过package/no-card，
+  CardExecutable compilation各一次；accepted后不构造`StaticSchedulePlan`、duration estimate或其它不被output消费的shadow result，
+  production调用不打印/保存Tile IR trace；初始完整tile超SPM的正例会重新推导完整workset并确定性缩到合法tile后通过package/no-card，
   浮点reduction轴自由重结合后每个demand都可缩到最小合法vector，故「最小合法tile超限」的浮点capacity负例在当前lowering下不可构造，
-  typed capacity/unsupported terminal保留为fail-closed防御出口；baseline diagnostics/statistics不再冒充candidate proposal；fresh
+  typed capacity/unsupported terminal保留为fail-closed防御出口；baseline使用独立窄work ledger，不持有或清零旧search统计来
+  证明隔离；fresh
   source-to-package、oracle/no-card、digest、计数和结构正负测试通过。
 ```
 
 `none`不得构造Q51 state、candidate set、candidate family或全图performance Cartesian组合，也不得通过调用search-oriented
-domain/ranking evaluator后只取第一个结果来伪装canonical construction。但它必须复用policy-free placement-domain机制和
-Q50.A logical demand/coverage query，对baseline合同内的mandatory coordinates执行有限、完整、确定且不被beam/cap/time budget截断的
+domain/ranking evaluator后只取第一个结果来伪装canonical construction。它只复用typed iterator/topology事实、单coordinate
+legality/materialization机制和Q50.A logical demand/coverage query，不复用“生成全部合法placement options”的domain API；对baseline
+合同内的mandatory coordinates执行有限、完整、确定且不被beam/cap/time budget截断的
 feasibility resolution，取得semantic全序中第一个required scoped probe全部fit的canonical completion，再交给一次Q50.0完整
 gate准入；不能复制第二套placement语义。query-local
 trial/fit是功能合法化状态，不是search candidate。它可以在single-root范围内反复探测temporal breakpoint，全部root接受后只
@@ -518,7 +541,7 @@ Q50.A completion gate已闭合并在`tasks/progress.md`标为`done`。Q50.G/H继
 ## Q49.P 施工步骤（2026-08-17 建立）
 
 Q49.P 的 contract 见上节；本节只拆解施工步骤、依赖 checkpoint 和每个步骤的验证。步骤按依赖顺序编号，
-P1–P2 是两个既有失败的根因修复（gate case），P3–P6 是契约隔离收口，P7 是 fresh 端到端验证。
+P1–P2 是两个既有失败的根因修复（gate case），P3–P7 是契约隔离收口，P8 是 fresh 端到端验证。
 
 现状基线（2026-08-17 HEAD，`build/q55-current-fresh`）：
 `NoneJointlyRefinesExplicitProducerStageAndConsumerDemand` 已复现：2048 breakpoint 上全部 region probe 返回
@@ -589,30 +612,48 @@ P1–P2 是两个既有失败的根因修复（gate case），P3–P6 是契约�
   refinement root 即当前 single root。
 - 验证：equal-shape fanin 定向测试证明只按 direct witness 选择 refinement 目标；`NoneJointlyRefines...` 仍通过。
 
-### P6 baseline 不消费 search state/candidate/evaluator/statistics
+### P6 baseline 不消费 search domain/state/candidate/evaluator/statistics
 
-- 目标：baseline controller 只消费 policy-free placement-option 推导、Q50.A exact-demand query 和 canonical
-  carrier；不构造 `StructuredDAGPlacementSearchDomain`、`StructuredDAGPlacementEvaluator`、stable ordinal、
+- 目标：baseline controller 只消费typed iterator/topology事实、单coordinate legality、Q50.A exact-demand query 和 canonical
+  carrier；不构造完整per-node placement-option集合、`StructuredDAGPlacementSearchDomain`、
+  `StructuredDAGPlacementEvaluator`、stable ordinal、
   proposal/transition 统计或 selected evaluation metrics；交给 materializer 的是窄 resolved baseline
   assignment（placement、singleton region boundary、完整 temporal vector、canonical representation/
   movement/buffer/order/completion），不含 score/ordinal/transition history。
 - 实现：
-  1. 从 `deriveStructuredDAGPlacementSearchDomain` 抽出 policy-free 的 per-node placement-option 推导
-     （`StructuredDAGPlacementEnumeration`），search domain 保持原 API；baseline 改调 policy-free 入口。
+  1. 删除baseline对`deriveStructuredDAGNodePlacementOptions`及其“全部iterator-axis × connected-rectangle”结果的调用；
+     从current node structured axes、verified topology和semantic tie-break直接产生当前maximum-participation coordinate，只有
+     typed exact rejection才推进下一个必要axis/group。Q50.B未来完整domain仍由自己的惰性mechanism与reference enumerator拥有。
   2. `deriveBaseline`/`deriveDeterministicBaseline` 改为直接构造 `TileMapping`（nodePlacements +
      outputPlacements + canonical edge strategies/layouts + 完整 temporal vector + materializationMode +
      bufferCount=1）的窄 assignment 类型，不再经 `TileExecutionCandidate`（stableOrdinal、evaluation、
      transition、feedbackRootOrdinal）与 `StructuredDAGPlacementEvaluator`；legality 由 Q50.A edge gate
      （现有 compatibility 表）+ 全 assignment 的 demand plan/canonical carrier 闭合。
-  3. baseline 路径不再写 candidate proposal/fusion/layout/buffer 统计和 selected evaluation metrics；
+  3. baseline 路径不再接收`CardExecutableSynthesisStatistics`这个search bag，也不再写candidate proposal/fusion/layout/buffer
+     统计和selected evaluation metrics；必要的probe/materialization/work计数进入baseline专属窄ledger，
      diagnostics 以 baseline 专用行报告（`card-executable-selection` 行移除 stable ordinal/evaluation 字段或
-     由 baseline 专用行替代），测试断言 search 统计全零。
-- 验证：grep/调用计数证明 baseline 调用链不含 search domain/evaluator；`candidateProposals`、
-  `materializedCandidates`、`acceptedCandidates`、`selectedStableOrdinal` 等保持 0；CROSS/CHAIN/GEMM、
-  `SearchUsesFiniteTemporalTraversalWhenOneWaveExceedsSPM`（契约更新后）与五类 production gate 通过；
+     由 baseline 专用行替代），测试只断言窄ledger和旧statistics type不在调用闭包。
+- 验证：grep/调用计数证明 baseline 调用链不含完整placement-option/search domain/evaluator及旧statistics type；
+  `deriveStructuredDAGNodePlacementOptions`、`TileExecutionCandidate`和`CardExecutableSynthesisStatistics`不在baseline transitive
+  call graph；CROSS/CHAIN/GEMM、显式`none`的overfull-to-fit与五类production gate通过，不执行或改造旧search-named回归；
   主树、board runtime、SystemC 三棵树 fresh 构建通过。
 
-### P7 fresh 端到端验证与收口
+### P7 baseline materialization/output seam清理
+
+- 所有capacity feasibility trial只materialize当前single-root/single-Tile最窄scope；不得先建完整CardModule再决定需要probe。
+  全部required trial fit后只构造一次完整CardModule，并只调用一次Q50.0 complete compile。
+- Q50.0 accepted result直接成为baseline semantic result；删除baseline的`buildAcceptedStructuredDAGSchedulePlan`、duration
+  estimation和`StaticSchedulePlan`/theoretical-cost include。Q51需要的同cohort actual cost从accepted current Instr/resource
+  facts按自己的typed cost边界取得，不由baseline预建shadow schedule。
+- compile API把IR inspection改为显式optional sink/请求；普通source-to-package、`none`及候选evaluation均不调用IR printer。
+  显式dump只对最终accepted Tile modules生成一次，不进入executable/package语义或acceptance gate。
+- baseline implementation和typed result从旧search monolith/shared header中分离；result只拥有move-only accepted executable、
+  必要actual facts和窄ledger，不携旧search statistics、printed trace、candidate relation或failure string state machine。
+- transaction/failure-injection与baseline定向测试显式使用最短`none`路径；不运行默认旧search、旧winner对照或异常长integration。
+- 验证：work count证明完整CardModule=1、Q50.0 compile=1、IR print=0、schedule-plan build=0；显式IR dump单独证明winner后
+  每Tile恰好一次；accepted baseline不可能因未消费的cost/trace失败。
+
+### P8 fresh 端到端验证与收口
 
 未闭合问题（2026-08-17 实测，记录待处理，不在本批修复）：
 
@@ -622,8 +663,8 @@ P1–P2 是两个既有失败的根因修复（gate case），P3–P6 是契约�
   SPM planning失败未填充largestDemands，还是转换路径丢失。
 - Llama decoder block（`--emit-hf-llama-block --hf-config-json tiny-random-llama-fp16-config.json`，
   batch=1 seq=32）的`none`编译wall 2h21m未完成（全程100% CPU、RSS约46MB，卡在card-executable-synthesis，
-  无中间日志）：baseline对block级输入的wall-time未闭合，属Q52 workload-driven scalability域，但作为Q49.P
-  gate记录未闭合。
+  无中间日志）：在完整placement-option展开、重复完整CardModule materialization、无条件IR打印和废弃cost plan清除前，
+  该问题仍属于Q49.P baseline work closure；不得提前转交Q52。Q52只优化Q51之后的新search state expansion。
 - 相关单测套件中`StructuredDAGPlacementEnumerationTest.MultiOutputFanoutCanPlaceBranchesOnDifferentDestinationGroups`
   单case运行超过3h、RSS达4.3GB未完成：placement枚举在该形状上的扩展失控，属Q50.B/Q51域，作为已知问题记录。
 
@@ -633,10 +674,10 @@ P1–P2 是两个既有失败的根因修复（gate case），P3–P6 是契约�
   Tools/Runtime lit 33/38（5 unsupported、0 failed）——原 4 个失败全部是 `76f68e29` SPMD card-level 合同切换后
   未跟上的 stale 测试，本轮修复：reference capture 改 f16（target 拒绝 f32 GEMM）、capture 改 card-level
   reference 模式、mesh pass 补显式 shape、manifest 消息与 `role_index` 断言同步 current 合同；source-to-package
-  以 `none` 编译 f16 reference/AddModel 走通完整 gate（f16 下默认 search 同样通过）；Llama block fresh capture 完成、
+  以 `none` 编译 f16 reference/AddModel 走通完整 gate；Llama block fresh capture 完成、
   `none` 编译验证中（block 较大，wall 超单次 400s 观察窗后转后台）。
   IR/package digest 稳定性与 work count（完整 CardModule materialization 与 CardExecutable compilation 各一次）。
-- 提交本批改动（作者规范见 `CLAUDE.md`）。
+- 提交本批改动（作者规范见 `AGENTS.md`）。
 
 ## Q51.Core：Search Control Kernel
 
@@ -655,6 +696,12 @@ current public `search`不是可保留的proposal provider，而是一条需要�
 4. complete compile失败后在同一loop里生成allocator/buffer siblings、beam closure、priority reorder和candidate-local caches；
 5. accepted cohort清空actual executable，以`StaticSchedulePlan`和旧tie-break选winner，再完整rematerialize一次；
 6. public diagnostics、statistics和大量测试锁定上述proposal数、ordinal、feedback与旧winner行为，并反复执行异常长旧链。
+7. registered board “source contract”逐文件读取源码并检查旧`RankCandidateSearch/Evaluation/Selection` symbol marker，optimization
+   comparison catalog和pending hardware inventory又强制保留`none/search` paired driver；旧source即使不进active CMake也因此不能删除。
+8. PyTorch/board runner默认选择旧`search`并解析`card-executable-selection actual_fused_edges` stderr；package commit等test-only
+   failure injection也被硬绑为只有`search` policy可用，使与搜索无关的回归重复进入旧长链。
+9. common candidate boundary把failure原因降成字符串`gate`，controller再比较这些字符串决定cache、feedback和排序；
+   `CardExecutableSynthesisStatistics`以约百个字段把baseline、proposal、feedback、winner和rematerialization耦成一个协议。
 
 这些责任不通过adapter迁入Core，旧行为不参与任何新链判定。新链只复用能脱离旧owner独立调用的IR facts、Q50.A exact demand、
 Q50.0 complete compilation和downstream lowering/verifier；其它算法只有在对应Q50机制按新typed合同重新证明后才选择性迁入。
@@ -670,7 +717,10 @@ Q50.0 complete compilation和downstream lowering/verifier；其它算法只有�
 | actual materialization | `materializeCandidate`混合CardModule构造、fusion/layout/buffer检查与complete compile | 各Q50 apply只物化已选事实；complete assignment经唯一materializer进入Q50.0，Q50.0保持无策略 |
 | late failure handling | allocator/buffer failure生成siblings、lookahead、beam closure并重排shortlist | Q50.F及complete gate只返回deferred/exact rejection/indeterminate；Core回到typed parent，不做late repair |
 | incumbent/winner | accepted cohort丢弃actual modules，以schedule plan/stable ordinal选winner后再rematerialize | Q51 session持有move-only accepted incumbent，以同cohort actual cost和semantic tie-break原子替换；不重物化winner |
-| telemetry/tests | proposal、feedback、ordinal、selected metrics及旧长链golden | 新global ledger、per-axis oracle和new source-to-package tests；旧数值、digest、耗时与执行路径无兼容要求 |
+| failure routing | materializer写字符串`failureGate`，controller按字符串决定prune/cache/feedback/order | 新Core只消费closed typed evaluation outcome和typed causal evidence；diagnostic label只打印，不参与控制流 |
+| inspection | 每个complete compile在acceptance前无条件打印全部Tile IR并穿过synthesis result | Q49.P先把common seam改为显式winner-only inspection；Core/candidate evaluation不携printed IR |
+| policy/cost aggregate | `WaferTargetPolicy`混合memory facts与Quick/Default/Deep、candidate/beam cap；`TargetScheduleCostPolicy`混合hard memory、profile reference和未校准prior | hard target facts回各target/memory owner；Core只接收session-level typed comparable cost，不消费aggregate policy；Q52只在fresh profile后建立独立estimate prior |
+| telemetry/tests | proposal、feedback、ordinal、selected metrics及旧长链golden；源码marker CTest、paired optimization catalog、stderr parser和search-only fault injection保活旧实现 | 新global ledger、per-axis oracle和new source-to-package tests；删除旧source-contract/catalog/inventory binding、旧数值/digest/耗时/执行路径断言，事务测试走最短current路径 |
 
 ```text
 Pipeline position:
@@ -703,8 +753,9 @@ Pipeline position:
   frontier表示的state；rejected/indeterminate child都不影响合法siblings；baseline不进入
   candidate key或candidate统计且不会重编译；stable winner与ledger不依赖hash iteration、pointer、proposal ordinal或
   evaluation完成顺序。public `search`只进入新Core并在空production domain时返回Q49.P incumbent；Core实现、链接和测试均不含
-  `TileExecutionCandidate`、旧generator/evaluator/feedback/selector或旧长耗时integration；Q50.S/Q50.B可在不修改control
-  semantics的前提下加入第一批真实typed轴。
+  `TileExecutionCandidate`、旧generator/evaluator/feedback/selector、字符串gate控制或旧长耗时integration；registered CTest/
+  board inventory不再读取旧source marker、不要求`none/search` paired package或解析旧selection stderr；与搜索无关的transaction/
+  failure-injection test不再被强制走`search`；Q50.S/Q50.B可在不修改control semantics的前提下加入第一批真实typed轴。
 ```
 
 ### 四类query-local事实
@@ -793,7 +844,15 @@ work账本和time-to-baseline，Core不能重置计时起点掩盖baseline成本
   mechanism加入本轴named typed field。`StructuredDAGScheduleState`中的ready/live算法只有在Q50.J按新event assignment合同
   重建后才能迁入，旧candidate schedule不进入identity或Core API。
 - `CardExecutableSynthesisStatistics`中只服务旧proposal、feedback、shortlist、selected ordinal和winner rematerialization的字段
-  随Core旧branch同批删除；Core使用新的global ledger，Q49.P统计保持独立，derived winner metrics从accepted executable重算。
+  随Core旧branch同批删除；Q49.P已在前一任务脱离该shared bag，Core使用新的global ledger，derived winner metrics从accepted
+  executable重算。不得保留同字段的新struct或为旧diagnostic提供compat adapter。
+- 删除旧`RankCandidateSearch/Evaluation/Selection`、coordinated/bounded driver及其未注册test/source island；仍被Q50未来合同需要的
+  独有mechanic按对应Q50 owner逐项迁移，其余直接删除。同步删除`wafer-compiler-optimization-source-contract`、optimization
+  comparison cases/driver、pending hardware inventory中的paired qualification row和只验证旧symbol/source文本的tests；不把它们
+  改名移植为新Core gate。
+- `OptimizationConfig::search`的public spelling可以保留，但默认/显式调用都只能路由new Core；现有14处显式旧search长链CTest、
+  PyTorch board默认值/`actual_fused_edges` stderr assertion及search-only test-control限制逐项改为current最小路径或基于actual
+  IR/package的测试。旧winner、统计、耗时与日志格式无回归义务。
 - Core state-graph tests全部通过；同一fixture按不同insertion/hash/analysis completion顺序得到相同state set、incumbent和ledger；
   public source-to-package `search`只进入新Core并返回同源incumbent；link closure不引用旧generator/evaluator/feedback/selector，
   也不要求并行actual evaluation。
@@ -1077,11 +1136,16 @@ Query-local hierarchical resource projection复用existing target facts，把Ins
 优先形成并行proposal；是否可重叠仍由actual event/resource semantics判定。Nominal bandwidth split和解析关键路径只作
 estimate，不能替代actual event calendar、completion、legality或admissible bound。
 
+current `TargetSchedulingCapabilityRegistry`以稀疏静态row同时表达pair/group legality和profitability，缺row又返回`Unknown`；它不能
+成为Q50.J的新事实源。hard issue/completion/resource相容性必须来自typed target operation facts、Instr interface/effect及Q63拆层后的
+completion adapter；profitability只属于Q52 profile/estimate。Q50.J接入新event calendar时删除该registry、row table和只验证
+registry closure的专属tests，不增加第二份capability matrix。
+
 ### Gate
 
 independent branches、fanin/fanout、shared DDR、NoC link contention、multi-worker join、effect ordering和completion hazard有
 正负测试；actual Instr顺序、worker和completion可验证，finite normal form的tiny域与independent reference
-enumerator一致。删除ready-order、worker和overlap的独立selector；query-local calendar在对应IR epoch/assignment
+enumerator一致。删除ready-order、worker和overlap的独立selector及静态scheduling capability registry；query-local calendar在对应IR epoch/assignment
 失效或winner materialize后销毁，不成为shadow schedule。
 
 ## Q50.K：Conditional Stage Pipeline
@@ -1174,6 +1238,12 @@ correctness mode在真实负载上无限运行。Q52基于fresh profile选择pro
 time-to-first和incumbent质量。
 
 ## Q52：Profile-Driven Anytime Search and LNS
+
+Q52开始前必须先拆掉`TargetScheduleCostPolicy`/`WaferTargetPolicy`这类跨owner aggregate：exact accepted Instr只产生可重算的
+resource/work metrics；hard SPM/DDR地址、容量和alignment留在target memory owner；package/profile的reference rate留在其报告
+owner；只有fresh profile证明可用的bandwidth/startup/hop/issue prior才形成独立search estimate输入。Q52不保留
+`TileSearchEffort::{Quick,Default,Deep}`、固定candidate/beam cap或默认构造全局policy；新的budget/priority均从本任务的profile和
+coverage等级显式产生，不能影响legality或Q51 exact oracle。
 
 ### 目标与时间合同
 

@@ -93,6 +93,8 @@ ProgramTensorRecord:
 ```
 
 identity来自verified source和Q58 handoff，不从name/path/shape/digest推导。Package不保存source path。
+typed package model中的logical dtype是closed value；manifest JSON只在serializer/parser边界使用canonical external spelling，
+parser一次性类型化并拒绝unknown/alias spelling，runtime/compiler不得再次按字符串恢复语义。
 
 ### 3.2 TargetTensor
 
@@ -118,6 +120,8 @@ TargetTensorRecord:
 - `offset % required alignment == 0`，文件base alignment覆盖all target requirements；
 - placement按stable identity和完整tie-break确定，padding全为canonical zero；
 - physical bytes只能来自14号target descriptor/codec，不能用logical shape×dtype代替。
+- typed package model中的target dtype同样是closed value；它与source logical dtype及physical storage format分别验证，不复用一个
+  字符串字段混合三种事实。
 
 ### 3.3 Program data
 

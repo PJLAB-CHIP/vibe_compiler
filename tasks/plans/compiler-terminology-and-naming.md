@@ -62,7 +62,7 @@ Pipeline position:
 | `WholeCardInstructionProgramCost` / `WholeCardResourceDurationEstimate` | `CardInstructionProgramCost` / `ProgramDurationEstimate` | instruction cost存在Card/Tile两个真实强类型层级；duration只有一个program范围，不重复限定 |
 | `PhysicalTileExecutables` / internal `WholeCardExecutable` | public `CardExecutable` / internal `CardExecutableLoweringResult` | public owner原子持有一个card的all-and-only `TileExecutable`；internal result只表示lowering结果，不再造第二个executable概念 |
 | `WholeCardExecutableLowering*` | `CardExecutableLowering*` | lowering边界产生一个`CardExecutable`；`whole`只重复容器已表达的范围 |
-| optional card rank sources | `RankCandidate*`、`RankInstrLowering*`、`RankResourceCostValidation*` | 这些未构建source实际消费完整logical-rank tuple，不能伪装成current Card/Tile module实现 |
+| optional card rank sources | 由Q51.Core删除，不再重命名或恢复build | follow-up search review确认这些未构建source属于旧rank/coordinated链；仍被current合同需要的独有proof、verifier或test witness先迁入对应Q50/稳定owner，其余源码与marker test同批删除 |
 
 `CardResourceScope`、`TileResourceScope`、card/Tile topology字段、logical-to-Tile placement边界以及logical range与target byte
 range的真实对照继续保留必要限定；它们不是本批要消除的重复范围词。
@@ -71,6 +71,9 @@ profile activation保留真实format version；correlation basis、static-cost s
 不再把内部算法revision伪装成独立版本。新的
 type、function、pass option、pipeline timing和diagnostic均使用`Card`、`Tile`、`CardExecutable`等已由IR和强类型
 定义的名称。
+
+Q45的历史命名核对不赋予旧实现current身份。Q51.Core已确认退役的rank/coordinated/search对象直接删除，不得因为本计划曾记录
+过语义名称而保留source、compat symbol或回归路径。
 
 ## 已完成批次
 

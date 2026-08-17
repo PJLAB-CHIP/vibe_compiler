@@ -409,9 +409,10 @@
   probe；正常上游IR的完整tile超出SPM时，反而没有owner继续缩tile并产出可执行结果。
 - 根因：混淆了“禁止性能候选选择”和“禁止确定性功能合法化”，把resolved assignment误当成baseline输入；只设计了单次
   closed-coordinate query，没有定义谁遍历合法breakpoint、何时终止以及支持域内的完成保证。
-- 修复模式：`none`从未绑定物理选择的正常IR进入，以不被beam/cap/budget截断的有限semantic全序遍历canonical fallback；
-  每个temporal trial重新推导operand/halo/result/temporary/movement/alignment/bank/lifetime并运行exact scoped probe，第一个fit
-  形成resolved assignment。trial是query-local feasibility状态，不进入Q51 candidate、score、incumbent或proposal统计。
+- 修复模式：`none`从未绑定物理选择的正常IR进入，由controller按semantic全序维护一个current coordinate；每次只构造当前
+  coordinate、重新推导operand/halo/result/temporary/movement/alignment/bank/lifetime并运行exact scoped probe，再按typed
+  rejection推进下一项必要coordinate，第一个fit形成resolved assignment。不得预先生成完整placement/temporal option domain；
+  trial是query-local feasibility状态，不进入candidate、score、incumbent或proposal统计。
 - 防复发：至少一个初始完整tile超SPM而较小合法tile可放下的source-to-package/no-card正例，以及最小合法tile仍超限的typed
   negative；声明支持且baseline域存在completion时必须得到accepted executable，indeterminate必须作为compiler failure，不能
   用“未进入search”或“没有fixed assignment”解释失败。
@@ -438,16 +439,26 @@
   operation而不是clone整段body；verifier使用query-local provenance memo。不得把索引或memo写入IR。
 - 防复发：长RegionCut chain测试验证最终IR和provenance，并在模型规模compile timing中检查单Tile split不再随edge数乘法增长。
 
-## 单状态baseline不得套用多候选winner重物化
+## 单状态baseline不得套用多候选winner协议或accepted后旁路工作
 
 - 现象：唯一exact-verified Llama baseline在selection后又完整执行一次CardModule、16-Tile Instr、SPM、DDR和resource verification，额外消耗
-  数分钟，但产物语义没有变化。
+  数分钟；accepted后还构造并丢弃schedule/duration结果，普通compile无条件生成Tile IR trace，但这些都不改变产物语义。
 - 根因：为search cohort控制峰值内存而清空每个accepted candidate Tile module的策略，无条件复用到了只有一个semantic state的
-  `none` controller。
-- 修复模式：search继续只保留comparison summary并重物化winner；`none`保留已经通过全部exact verification且已清除query-local source relation
-  的唯一executable，selection直接move返回。统计必须明确baseline rematerialization为零。
-- 防复发：none与search unit分别断言0次和1次selected executable rematerialization；模型规模timing检查结果返回前不再出现
-  第二轮16-Tile exact pipeline。
+  `none` controller；同时把未消费分析和调试输出误放在producer主路径，而不是由真实consumer显式请求。
+- 修复模式：`none`保留已经通过全部exact verification且已清除query-local source relation的唯一executable，直接move返回；
+  未被输出合同消费的schedule/duration工作删除，可选trace在请求方惰性生成。未来候选策略如何保存或重建winner由其自身任务决定，
+  不能反向规定baseline控制流。
+- 防复发：none定向测试断言完整CardModule和CardExecutable各一次、selected executable rematerialization为零、默认trace为零；
+  模型规模检查work count和结果返回前的stage计数，不运行旧search或历史winner行为作对照。
+
+## 读取源码marker的测试会把退役实现伪装成合同
+
+- 现象：source或test没有进入active CMake/lit/CTest执行图，但一个已注册测试逐文件读取其文本并断言旧symbol marker存在，整体仍显示green。
+- 根因：把“仓库里还有某段源码”当成“能力已被编译并经过行为验证”，source inventory又只检查已知子集，形成互相放行的假闭环。
+- 修复模式：组织检查以filesystem、CMake source、unit/lit/CTest registration和明确的current-task dormant owner做双向集合闭合；
+  能力测试只验证编译后的接口和行为。退役实现独有能力先迁入active owner并受测，再删除源码和marker断言。
+- 防复发：新增源码或测试时，checker fixture分别覆盖unregistered source、unregistered test、stale registration和无owner dormant
+  四类negative；禁止用源码文本marker作为build/behavior contract。
 
 ## logical placement legality不能由physical carrier或未分类失败代签
 
@@ -810,7 +821,7 @@
      indeterminate；且 manifest `inputs[].role_index` 语义已改（input 域内从 0 编号，不再沿用 parameter 的连续编号）。
 - 修复模式：reference capture 模块和输入按 dtype 政策改 f16（`wafer_pytorch_xla_capture.py` 的
   `_make_reference_matmul_module`/`emit_reference_stablehlo_program`），contract mock 同步补 `float16`；
-  source-to-package 测试切 `--optimization-policy=none`（Q49.P gate 是 baseline，f16 下默认 search 同样通过但一次 ~60s）；
+  source-to-package 测试切 `--optimization-policy=none`，只验证当前baseline source-to-package合同，不附带运行或对照旧search；
   mesh pipeline 补 `{shape="1"}`；manifest 断言同步 current 合同。
 - 防复发：target 合同里明确不支持的组合（f32 GEMM）先写 verifier 拒绝，再把功能纵向/qualification 默认 dtype 保持在
   f16/bf16（见仓库板测 dtype 规则）；改 SPMD/partition 边界合同时，同批 grep 所有消费旧 CLI/字段/消息的 lit 测试。

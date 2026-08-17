@@ -338,7 +338,7 @@ source program
   无硬件时exit 77；真实板测通过前Q56不标done。
 - Tools测试的python断言先脱离lit验证：把`%t.outputs/...`替换为真实package路径后用`python3 -c`跑一遍，再交给lit。
 
-## Q49.P deterministic baseline 机制（stable，2026-08-17）
+## Deterministic baseline 的直接链路约束（stable，2026-08-17）
 
 - baseline 两级 SPM probe：region-scope `evaluateTileRegionSPMCapacity`（isolated clone，`RequiresFunctionScope`
   是 escalation 请求不是 fit）；function-scope `evaluateTileFunctionSPMCapacity`（clone Tile FuncOp 跑与最终 gate
@@ -351,18 +351,18 @@ source program
   通用 split core `splitRegionAfterPrefix` 同时服务 RegionCut（spill 单数/多数）。
 - `StorageRootMemo`（StructuredBufferRelations.h）：query-local per-value 存储根 memo，内层 set 用
   `unique_ptr` 持有（map rehash 不悬空引用）；只读同一 IR epoch 内共享。
-- baseline 只消费 policy-free 入口：`deriveStructuredDAGNodePlacementOptions` +
-  `buildStructuredDAGPlacementClosure`（StructuredDAGPlacementEnumeration.h）+ 窄
-  `ResolvedBaselineAssignment`；不消费 search domain/evaluator/candidate/stable ordinal，不写候选统计。
+- baseline controller只消费typed iterator/topology facts、当前coordinate的legality/materialization和exact scoped probe；按typed
+  rejection推进下一项必要coordinate。先展开全部iterator-axis×connected-rectangle options再递归选一个，即使helper标为
+  `policy-free`，本质上仍是search-domain construction，不能留在baseline transitive closure。
 - scoped probe 用 `lowerTensorProgramToTileModule`（单 Tile FuncOp，无 CardModule/TileModule shell、
   无 no-work wrapper）；完整 CardModule 走 `lowerTensorProgramToCardModule` 并验证完整 Tile domain。
-- 验证入口：`WaferUnitTests --gtest_filter='CardExecutableSynthesisTest.*'`（~80s）、
-  `lit -sv build/q55-current-fresh/test/Tools --filter wafer-compile-card-baseline.test`（~35s，
-  CROSS/CHAIN/GEMM 三 case 一体的 wall-time 上限验证）。
+- full CardModule和最终CardExecutable各物化一次；已经exact accepted的executable直接move到输出，不再为winner protocol重物化，
+  也不再运行未被输出消费的schedule/duration分析。可选IR trace在显式请求的consumer边界惰性生成，普通compile不承担打印成本。
+- baseline验证只走显式`none`的direct unit、定向lit和source-to-package/no-card case；不运行旧search、旧winner对照或paired
+  optimization回归。wall-time只用于发现work-count回归，不能把历史长路径变成每次改动后的门禁。
 - source-to-package 端到端：reference capture 按仓库 dtype 政策是 f16（target 拒绝 f32 GEMM），
   `env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU third_party/python-importer-py311/bin/python
   test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir <dir>`
   后 `TX8_DEPS_ROOT=/root/dlc_dev/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
-  --output-dir <pkg> --num-partitions=1 --optimization-policy=none`（~2s 出 16-Tile package；默认 search 同样通过
-  但一次 ~60s，非 baseline gate）。hf Llama block 用 `--emit-hf-llama-block --hf-config-json
+  --output-dir <pkg> --num-partitions=1 --optimization-policy=none`。hf Llama block 用 `--emit-hf-llama-block --hf-config-json
   test/Tools/Inputs/hf/tiny-random-llama-fp16-config.json`，block 更大、编译明显更慢。

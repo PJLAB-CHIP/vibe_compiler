@@ -238,6 +238,12 @@ semantic Location删除而消失，不能只改名。后续清单以本节为唯
 本表只列影响 accepted decision、跨 IR epoch/clone 或容易成为长期协议的对象；函数栈内 descriptor、loop worklist、builder
 validation plan 等局部值仍按同一规则检查，但不因含有 `state`、`plan`、`mapping` 字样机械迁移。
 
+2026-08-17 follow-up review确认本表的`NCCSynchronizationContract`项并未实际完成：IR public header仍include TX81 NCC ABI，
+free `TypeSwitch`仍混合join、CT peripheral和interface特殊case，Lifetime/ScheduleCost/TargetScheduling/lowering继续共同消费。
+该缺口不再被Q54的“pure target/MLIR adapter已闭合”措辞掩盖；独立current owner为Q63
+`tasks/plans/ncc-synchronization-contract-layering.md`，并作为Q50.J前置完成迁移与删除。Q54其余已交付的pass/scope/
+transaction整改保持历史完成状态。
+
 ## Checkpoint B：IR 自包含与 ODS schema
 
 目标：文本/bytecode roundtrip、clone 和独立 verifier 不依赖进程内裸指针、字符串 schema 或默认名字。
@@ -501,10 +507,11 @@ fresh 验证：
    region结构、scope/witness和card重复工作由Q49.P负责，
    不能反向要求Q54重建search或用并行clone遮蔽。
 
-Q54 的 A–I 已完成，active source中不再存在semantic `OpaqueLoc` pointer payload、synthetic local wrapper、旧的通用candidate容器、
+Q54 的A–I已完成其pass/scope/transaction整改，active source中不再存在semantic `OpaqueLoc` pointer payload、synthetic local wrapper、旧的通用candidate容器、
 平行production PassManager或旧single-pass pipeline别名。fresh core/model build通过；Q54定向单测168/168、其余非搜索
 单测629/629、受影响card关系用例1/1、lit 1/1、feature-on依赖/模型/链接17/17、IR/source organization与
-`git diff --check`均通过。Q49.P/Q52长时间placement/search枚举不冒充Q54完成门禁，也未宣称在本批全量执行。
+`git diff --check`均通过。后续review发现的NCC target/MLIR completion分层缺口由Q63显式排队，不能再引用本段验证声称它已闭合。
+Q49.P/Q52长时间placement/search枚举不冒充Q54完成门禁，也未宣称在本批全量执行。
 
 ## 与后续任务的关系
 
@@ -516,4 +523,6 @@ Q54 的 A–I 已完成，active source中不再存在semantic `OpaqueLoc` point
   conversion/lifetime/packing seam并自行推进功能fallback；selected assignment是该过程的输出，不是入口前置条件。Q50.F在
   同一probe实现上增加deferred coordinates和common-state反馈，不另建probe pipeline。
 - Q52只优化在 Q54 scope/analysis整改后的真实热点；不得用并行 clone掩盖错误的 transaction边界。
+- Q63承接Q54 contract map中未实际闭合的NCC completion分层；Q50.J必须等待Q63 typed target protocol/MLIR adapter完成，
+  不能继续把free TypeSwitch或runtime/model enum带入新event/resource schedule。
 - Q32.T仍是未来有明确 external control-plane consumer时的 Transform dialect任务，不因 Q54自动启动。

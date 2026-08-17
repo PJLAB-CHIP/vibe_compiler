@@ -64,6 +64,8 @@ GSPMD的card-level domain。当前实现类`CardExecutable`必须收敛为`CardE
 
 Q58 `ProgramDataHandoff`为每个parameter/constant提供稳定`ProgramTensorId`、logical descriptor、owned file和
 checked `ProgramDataRange`；`CardExecutable`的Tile bindings只引用这些identity/slice，不携带payload。
+Q62把source parser之后仍以`std::string dtype`传播的实现原位切为closed typed logical element value；本层只消费该typed
+descriptor，不能重新解析NPY/JSON spelling或维护第二份element-byte/floating分类表。
 
 target ABI preparation将16个Tile的program bindings与最终entry argument types做一次card-scoped join，验证all-and-only覆盖并形成：
 
@@ -102,7 +104,8 @@ type 或 entry argument mismatch 均在 writing 前失败。
 ABI preparation只消费final accepted Instr IR和program boundary bindings，生成dense、zero-based
 `TileEntryArgument[]`。`TileEntryArgument`只描述某个Tile target entry
 的一个有序参数：ordinal、closed kind、恰一个typed reference（ProgramTensor/TargetTensor、external port或entry-local
-requirement）、dtype、`MemLayout`、shape、physical bytes、alignment与access；它不拥有bytes、file range或device address。
+requirement）、closed typed target element value、`MemLayout`、shape、physical bytes、alignment与access；它不拥有bytes、file
+range或device address。字符串dtype只允许在外部format parser/printer边界出现，不是`TileEntryArgument`合同。
 
 稳定规则：
 

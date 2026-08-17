@@ -643,8 +643,9 @@ resolution遍历baseline合同内的合法fallback，返回固定全序中第一
 completion；只有随后一次完整Q50.0 gate才能将其标为accepted。query-local trial和fit结果
 只是合法化过程，不是Q51 search candidate：controller不评分、不维护incumbent/candidate family、不保留用于比较的备选方案，
 也不得创建或调用search candidate/state、search-oriented domain/ranking evaluator、grouping materializer和feedback repair。
-它复用policy-free placement-domain机制和上述logical demand/coverage query，不能复制第二套placement语义，也不能调用
-physical edge strategy/evaluator来决定logical trial是否合法。
+它只复用typed iterator/topology事实、单coordinate legality/materialization机制和上述logical demand/coverage query；不得先生成
+每个node全部iterator-axis × connected-rectangle placement options再递归取第一个，也不能调用physical edge
+strategy/evaluator来决定logical trial是否合法。Q50.B未来完整placement域由自己的惰性mechanism拥有，baseline不复用整域generator。
 
 controller产出的窄immutable selected assignment是feasibility resolution的**输出**，不是baseline入口的前置条件；baseline与
 search可以在这个policy-free已选事实或actual IR边界汇合，而不是共享candidate wrapper。该结果只含materialization所需的
@@ -682,6 +683,9 @@ single-buffer execution”结构不变量上；改变任一项后局部成功不
 vector连同其它canonical fallback都被exact证明不可行时，才能返回typed capacity/unsupported；声明支持的输入在完整gate才
 暴露可由更早baseline legality query发现的失败，属于compiler contract缺口，不是正常`none`结果。没有search candidate绝不能
 成为失败原因。
+accepted CardExecutable就是baseline semantic result；不得随后构造未被output消费的`StaticSchedulePlan`/duration estimate，
+也不得让普通compile无条件打印或保存Tile IR snapshot。显式IR inspection只在最终accepted output上按请求执行一次，不参与
+admission、package语义或Q51 incumbent构造。
 `actual_fused_edges == 0`只是必要结果，不能替代对每个baseline TileRegion structured-root cardinality、跨root DDR
 store/completion/load和search-policy调用闭包的结构检查。
 
@@ -697,7 +701,9 @@ store/completion/load和search-policy调用闭包的结构检查。
    verifier和negative case；不迁移旧API、状态布局、调用顺序或winner行为。
 3. **Q51.Core同批删除的旧search owner**：`TileExecutionCandidate`/metrics/transition bag、`deriveShortlist`、coordinate descent、witness
    shortlist、candidate-local schedule/evaluator、allocator/buffer feedback、beam/budget closure、equivalence cache、accepted cohort、
-   `StaticSchedulePlan` selector、stable ordinal tie-break、winner rematerialization及其统计/diagnostic合同。它们不是新Core的过渡输入。
+   `StaticSchedulePlan` selector、stable ordinal tie-break、winner rematerialization、字符串failure-gate状态机及其统计/diagnostic合同。
+   同批删除读取旧Rank/coordinated source marker的CTest、paired `none/search` optimization catalog/driver和旧长链test registration；
+   它们不是新Core的过渡输入或回归基准。
 4. **非current源码**：未进入active build的rank/coordinated/algorithm/NoC旧实现不恢复；具体Q50任务若需要其中独有proof、算法或
    test witness，则在同一变更中移入新owner并删除对应旧文件，不以“曾经工作”形成兼容义务。
 5. **旧测试资产**：只迁移仍能独立表达新IR/mechanism合同的source、oracle和negative witness；绑定旧proposal数、stable ordinal、
