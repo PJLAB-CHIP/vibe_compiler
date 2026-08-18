@@ -1088,17 +1088,13 @@ TEST(CardExecutableSynthesisTest,
   EXPECT_EQ(baselineLedger.exactGates.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_EQ(baselineLedger.baselineCardModuleMaterializations, 1u);
+  EXPECT_EQ(baselineLedger.baselineTileEntryMaterializations, 16u);
+  EXPECT_GT(baselineLedger.baselineMaximumTileMaterializationWorkers, 1u);
   EXPECT_EQ(baselineLedger.baselineSourcePreparations, 1u);
   EXPECT_EQ(baselineLedger.baselineMaterializationPreparations, 1u);
-  EXPECT_EQ(baselineLedger.baselineRootShardMaterializations, 16u);
-  EXPECT_EQ(baselineLedger.baselineTileEntryMaterializations, 16u);
-  EXPECT_EQ(baselineLedger.baselineRegionSPMCapacityChecks, 16u);
-  EXPECT_EQ(baselineLedger.baselineFunctionScopedSPMCapacityChecks, 16u);
-  EXPECT_EQ(baselineLedger.baselineRegionSPMCapacityOverflowProofs, 0u);
-  EXPECT_EQ(baselineLedger.baselineFunctionSPMCapacityOverflowProofs, 0u);
+  EXPECT_EQ(baselineLedger.baselineSPMCapacityOverflowProofs, 0u);
+  EXPECT_EQ(baselineLedger.baselineSPMCapacityRefinements, 0u);
   EXPECT_EQ(baselineLedger.baselineTileIRPrints, 16u);
-  EXPECT_GT(baselineLedger.baselineMaximumRegionSPMQueryWorkers, 1u);
-  EXPECT_GT(baselineLedger.baselineMaximumFunctionSPMQueryWorkers, 1u);
   EXPECT_EQ(baselineLedger.exactDemandSatisfiedEdges, 0u);
   EXPECT_EQ(baselineLedger.spatialCoordinateQueries, 1u);
   EXPECT_EQ(baselineLedger.spatialLegalizationTransitions, 0u);
@@ -1120,7 +1116,7 @@ TEST(CardExecutableSynthesisTest,
 }
 
 TEST(CardExecutableSynthesisTest,
-     NoneProbesIndependentStructuredOwnersInOneActualRegion) {
+     NoneExtractsIndependentStructuredOwnersIntoFinalRegions) {
   ParsedProgram parsed = parseBranchProgram();
   ASSERT_TRUE(parsed.module);
 
@@ -1138,6 +1134,11 @@ TEST(CardExecutableSynthesisTest,
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
   EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
+  EXPECT_EQ(baselineLedger.baselineCardModuleMaterializations, 1u);
+  EXPECT_EQ(baselineLedger.baselineTileEntryMaterializations, 16u);
+  EXPECT_EQ(baselineLedger.baselineRegionClosureAnalyses, 2u);
+  EXPECT_EQ(baselineLedger.baselineRegionClosureAnalysisOperations, 4u);
+  EXPECT_GT(baselineLedger.baselineMaximumTileMaterializationWorkers, 1u);
   // Two independent structured roots on one Tile form multiple sequential
   // regions: the shared Tile (Tile 0) carries one region per root.
   ASSERT_EQ(tileDataflowIRTrace.size(), 16u);
@@ -1320,12 +1321,20 @@ TEST(CardExecutableSynthesisTest,
   }
   EXPECT_EQ(firstLedger.baselineCardModuleMaterializations,
             secondLedger.baselineCardModuleMaterializations);
+  EXPECT_EQ(firstLedger.baselineTileEntryMaterializations,
+            secondLedger.baselineTileEntryMaterializations);
+  EXPECT_EQ(firstLedger.baselineRegionClosureAnalyses,
+            secondLedger.baselineRegionClosureAnalyses);
+  EXPECT_EQ(firstLedger.baselineRegionClosureAnalysisOperations,
+            secondLedger.baselineRegionClosureAnalysisOperations);
+  EXPECT_EQ(firstLedger.baselineMaximumTileMaterializationWorkers,
+            secondLedger.baselineMaximumTileMaterializationWorkers);
   EXPECT_EQ(firstLedger.baselineMaterializationPreparations,
             secondLedger.baselineMaterializationPreparations);
-  EXPECT_EQ(firstLedger.baselineRootShardMaterializations,
-            secondLedger.baselineRootShardMaterializations);
-  EXPECT_EQ(firstLedger.baselineRegionSPMCapacityChecks,
-            secondLedger.baselineRegionSPMCapacityChecks);
+  EXPECT_EQ(firstLedger.baselineSPMCapacityOverflowProofs,
+            secondLedger.baselineSPMCapacityOverflowProofs);
+  EXPECT_EQ(firstLedger.baselineSPMCapacityRefinements,
+            secondLedger.baselineSPMCapacityRefinements);
   EXPECT_EQ(firstLedger.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_EQ(secondLedger.exactGates.cardModuleCompilationInvocations, 1u);
 }
@@ -1723,7 +1732,12 @@ TEST(CardExecutableSynthesisTest,
           /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
-  EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
+  EXPECT_GT(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
+  EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations,
+            baselineLedger.baselineCardModuleMaterializations);
+  EXPECT_EQ(baselineLedger.baselineTileEntryMaterializations,
+            baselineLedger.baselineCardModuleMaterializations * 16u);
+  EXPECT_GT(baselineLedger.baselineSPMCapacityRefinements, 0u);
   // The baseline temporal fallback is a functional legalization step. The
   // baseline API cannot observe or write the search feedback bag.
   ASSERT_FALSE(tileDataflowIRTrace.empty());
@@ -1758,28 +1772,24 @@ TEST(CardExecutableSynthesisTest,
           /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
   baselineDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(baseline)) << baselineDiagnosticsText;
-  // The deterministic controller consumes proven region-capacity overflows
-  // through the finite temporal domain, then compiles the complete
-  // CardExecutable exactly once. The baseline entry cannot construct or
-  // observe the search placement enumeration or shortlist.
-  EXPECT_EQ(baselineLedger.materializationRejections, 0u);
-  EXPECT_EQ(baselineLedger.baselineCardModuleMaterializations, 1u);
+  // Every closed coordinate owns one CardModule and one Q50.0 invocation.
+  // Proven SPM rejection destroys that owner and advances the finite
+  // deterministic temporal domain; the accepted owner is not rebuilt.
+  EXPECT_GT(baselineLedger.materializationRejections, 0u);
+  EXPECT_GT(baselineLedger.baselineCardModuleMaterializations, 1u);
   EXPECT_EQ(baselineLedger.baselineSourcePreparations, 1u);
-  EXPECT_GT(baselineLedger.baselineMaterializationPreparations, 1u);
-  EXPECT_GT(baselineLedger.baselineRootShardMaterializations, 0u);
-  EXPECT_GT(baselineLedger.baselineRegionSPMCapacityOverflowProofs, 0u);
-  EXPECT_GT(baselineLedger.baselineMaximumRegionSPMQueryWorkers, 1u);
+  EXPECT_EQ(baselineLedger.baselineMaterializationPreparations,
+            baselineLedger.baselineCardModuleMaterializations);
+  EXPECT_GT(baselineLedger.baselineSPMCapacityOverflowProofs, 0u);
+  EXPECT_GT(baselineLedger.baselineSPMCapacityRefinements, 0u);
   // Exact allocator conflicts can carry several tied structured node
   // relations.
   // The deterministic controller composes their temporal changes in one
   // mutable baseline state. It never creates candidate siblings, progressive
   // promotions, priority selections or lookahead states.
+  EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations,
+            baselineLedger.baselineCardModuleMaterializations);
   EXPECT_NE(baselineDiagnosticsText.find(
-                "tile-region-spm-capacity outcome=capacity-exceeded"),
-            std::string::npos)
-      << baselineDiagnosticsText;
-  EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
-  EXPECT_EQ(baselineDiagnosticsText.find(
                 "card-executable-compilation outcome=exact-rejection"),
             std::string::npos)
       << baselineDiagnosticsText;

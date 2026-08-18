@@ -32,12 +32,14 @@ struct IndexRelationLimits {
   unsigned maxConstraintsPerDisjunct = 1024;
   unsigned maxLocalVariablesPerDisjunct = 32;
   uint64_t maxAbsoluteCoefficient = uint64_t{1} << 50;
+  uint64_t maxRectangularPieces = 4096;
 };
 
 struct IndexRelationResult;
 struct IndexSetResult;
 struct IndexRelationQueryResult;
 struct StaticRectangularIndexSetResult;
+struct StaticRectangularIndexSetPiecesResult;
 
 /// A transformation-local adapter over MLIR Presburger relations. Domain
 /// variables are destination logical indexes and range variables are source
@@ -171,6 +173,15 @@ public:
       llvm::ArrayRef<int64_t> destinationSizes,
       const IndexRelationLimits &limits = IndexRelationLimits()) const;
 
+  /// Decompose one exact rectangular destination image into a finite,
+  /// disjoint row-major rectangle union when the construction proof supports
+  /// it. This is the exact logical set in another representation, never a
+  /// bounding box; unusual piece counts fail with ResourceExhausted.
+  StaticRectangularIndexSetPiecesResult getExactStaticRectangularImagePieces(
+      llvm::ArrayRef<int64_t> destinationOffsets,
+      llvm::ArrayRef<int64_t> destinationSizes,
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
   IndexSetResult
   preimage(const mlir::presburger::PresburgerSet &sourceDomain,
            const IndexRelationLimits &limits = IndexRelationLimits()) const;
@@ -196,19 +207,25 @@ public:
   }
 
 private:
+  struct RowMajorRectangleMapping {
+    llvm::SmallVector<unsigned, 4> destinationDimensions;
+    llvm::SmallVector<unsigned, 4> sourceDimensions;
+  };
+
   mlir::presburger::PresburgerRelation relation;
   IndexRelationStatus status;
   /// Derived rectangular projected-map pattern. Each source coordinate holds
-  /// its destination dimension, or -1 for constant zero. It is populated only
-  /// when construction already proved this map equivalent to `relation` and
-  /// avoids retaining AffineExpr objects from another MLIRContext. The paired
-  /// destination/source shapes validate fast-path queries against both sides
-  /// of the exact bounded relation. If either bound would clip a projected
-  /// rectangle, the query falls back to the generic Presburger proof.
+  /// its destination dimension, -1 for constant zero, or -2 for a complete
+  /// source dimension. It supports projected image/preimage queries.
   std::optional<llvm::SmallVector<int64_t, 4>> projectedRectanglePattern;
-  std::optional<llvm::SmallVector<int64_t, 4>>
-      projectedRectangleDestinationShape;
-  std::optional<llvm::SmallVector<int64_t, 4>> projectedRectangleSourceShape;
+  /// Exact row-major reshape/projection image pattern. Every entry equates
+  /// the linear ordinal of one ordered destination-dimension group with one
+  /// ordered source-dimension group. Groups are disjoint on each side, so a
+  /// qualifying destination rectangle has a Cartesian-product source image.
+  std::optional<llvm::SmallVector<RowMajorRectangleMapping, 4>>
+      rowMajorRectangleMappings;
+  std::optional<llvm::SmallVector<int64_t, 4>> rectangleDestinationShape;
+  std::optional<llvm::SmallVector<int64_t, 4>> rectangleSourceShape;
   /// True when construction already proves the relation single-valued (for
   /// example an affine map flattened to Presburger constraints). The
   /// functionality query returns proven-true without running the generic
@@ -268,6 +285,14 @@ struct StaticRectangularIndexSetResult {
   bool isExact() const {
     return status == IndexRelationStatus::Exact && domain.has_value();
   }
+};
+
+struct StaticRectangularIndexSetPiecesResult {
+  IndexRelationStatus status = IndexRelationStatus::Invalid;
+  llvm::SmallVector<StaticRectangularIndexSet, 8> domains;
+  std::string reason;
+
+  bool isExact() const { return status == IndexRelationStatus::Exact; }
 };
 
 struct IndexRelationQueryResult {

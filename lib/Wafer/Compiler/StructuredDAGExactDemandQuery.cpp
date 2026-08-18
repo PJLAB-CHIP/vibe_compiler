@@ -5,6 +5,7 @@
 #include "StructuredDAGCandidateSchedule.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -17,6 +18,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -65,6 +67,181 @@ ExactDemandResult demandResult(ExactDemandStatus status, uint32_t edge,
   result.edge = edge;
   result.detail = detail.str();
   return result;
+}
+
+using StaticRectangle = analysis::StaticRectangularIndexSet;
+
+static std::optional<StaticRectangle>
+getStaticRectangle(const mlir::presburger::PresburgerSet &set) {
+  analysis::StaticRectangularIndexSetResult rectangle = IndexSetResult{
+      IndexRelationStatus::Exact, set, {}}.getExactStaticRectangularDomain();
+  if (!rectangle.isExact())
+    return std::nullopt;
+  return std::move(*rectangle.domain);
+}
+
+static std::optional<StaticRectangle>
+intersectRectangles(const StaticRectangle &lhs, const StaticRectangle &rhs) {
+  if (lhs.offsets.size() != rhs.offsets.size() ||
+      lhs.sizes.size() != lhs.offsets.size() ||
+      rhs.sizes.size() != rhs.offsets.size())
+    return std::nullopt;
+  StaticRectangle result;
+  result.offsets.reserve(lhs.offsets.size());
+  result.sizes.reserve(lhs.offsets.size());
+  for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] :
+       llvm::zip_equal(lhs.offsets, lhs.sizes, rhs.offsets, rhs.sizes)) {
+    int64_t lhsLimit = 0;
+    int64_t rhsLimit = 0;
+    if (lhsSize <= 0 || rhsSize <= 0 ||
+        llvm::AddOverflow(lhsOffset, lhsSize, lhsLimit) ||
+        llvm::AddOverflow(rhsOffset, rhsSize, rhsLimit))
+      return std::nullopt;
+    const int64_t offset = std::max(lhsOffset, rhsOffset);
+    const int64_t limit = std::min(lhsLimit, rhsLimit);
+    if (offset >= limit)
+      return std::nullopt;
+    result.offsets.push_back(offset);
+    result.sizes.push_back(limit - offset);
+  }
+  return result;
+}
+
+static bool rectangleContains(const StaticRectangle &outer,
+                              const StaticRectangle &inner) {
+  if (outer.offsets.size() != inner.offsets.size() ||
+      outer.sizes.size() != outer.offsets.size() ||
+      inner.sizes.size() != inner.offsets.size())
+    return false;
+  for (auto [outerOffset, outerSize, innerOffset, innerSize] : llvm::zip_equal(
+           outer.offsets, outer.sizes, inner.offsets, inner.sizes)) {
+    int64_t outerLimit = 0;
+    int64_t innerLimit = 0;
+    if (outerSize <= 0 || innerSize <= 0 ||
+        llvm::AddOverflow(outerOffset, outerSize, outerLimit) ||
+        llvm::AddOverflow(innerOffset, innerSize, innerLimit) ||
+        innerOffset < outerOffset || innerLimit > outerLimit)
+      return false;
+  }
+  return true;
+}
+
+static bool sameRectangle(const StaticRectangle &lhs,
+                          const StaticRectangle &rhs) {
+  return lhs.offsets == rhs.offsets && lhs.sizes == rhs.sizes;
+}
+
+static std::optional<mlir::presburger::PresburgerSet>
+materializeRectangle(const StaticRectangle &rectangle) {
+  IndexSetResult set = IndexRelation::staticRectangularDomain(rectangle.offsets,
+                                                              rectangle.sizes);
+  if (!set.isExact())
+    return std::nullopt;
+  return std::move(*set.set);
+}
+
+enum class RectangleCoverageStatus : uint8_t {
+  Covered,
+  Uncovered,
+  ResourceExhausted,
+};
+
+struct RectangleCoverageResult {
+  RectangleCoverageStatus status = RectangleCoverageStatus::ResourceExhausted;
+  std::optional<StaticRectangle> uncoveredWitness;
+};
+
+/// Proves coverage of one integer rectangle by a finite rectangle union using
+/// only half-open interval arithmetic. Every recursive slab boundary comes
+/// from an input rectangle, so an uncovered leaf is itself an exact nonempty
+/// rectangular witness. The work bound makes unusual high-rank/many-piece
+/// inputs fail closed instead of falling into unbounded generic Presburger
+/// equality/subtraction.
+static RectangleCoverageResult
+proveRectangleCoverage(const StaticRectangle &target,
+                       llvm::ArrayRef<StaticRectangle> pieces) {
+  constexpr uint64_t kMaximumSlabVisits = 100000;
+  llvm::SmallVector<StaticRectangle, 16> clipped;
+  clipped.reserve(pieces.size());
+  for (const StaticRectangle &piece : pieces)
+    if (std::optional<StaticRectangle> intersection =
+            intersectRectangles(target, piece))
+      clipped.push_back(std::move(*intersection));
+
+  if (target.offsets.size() != target.sizes.size())
+    return {};
+  if (clipped.empty())
+    return RectangleCoverageResult{RectangleCoverageStatus::Uncovered, target};
+  if (target.offsets.empty())
+    return RectangleCoverageResult{RectangleCoverageStatus::Covered,
+                                   std::nullopt};
+
+  StaticRectangle witness;
+  witness.offsets.assign(target.offsets.begin(), target.offsets.end());
+  witness.sizes.assign(target.sizes.begin(), target.sizes.end());
+  uint64_t slabVisits = 0;
+  std::function<RectangleCoverageStatus(unsigned, llvm::ArrayRef<unsigned>)>
+      coverDimension = [&](unsigned dimension,
+                           llvm::ArrayRef<unsigned> activePieces) {
+        if (dimension == target.offsets.size())
+          return activePieces.empty() ? RectangleCoverageStatus::Uncovered
+                                      : RectangleCoverageStatus::Covered;
+        if (activePieces.empty())
+          return RectangleCoverageStatus::Uncovered;
+
+        int64_t targetLimit = 0;
+        if (llvm::AddOverflow(target.offsets[dimension],
+                              target.sizes[dimension], targetLimit))
+          return RectangleCoverageStatus::ResourceExhausted;
+        llvm::SmallVector<int64_t, 34> boundaries = {target.offsets[dimension],
+                                                     targetLimit};
+        for (unsigned pieceIndex : activePieces) {
+          const StaticRectangle &piece = clipped[pieceIndex];
+          int64_t pieceLimit = 0;
+          if (llvm::AddOverflow(piece.offsets[dimension],
+                                piece.sizes[dimension], pieceLimit))
+            return RectangleCoverageStatus::ResourceExhausted;
+          boundaries.push_back(piece.offsets[dimension]);
+          boundaries.push_back(pieceLimit);
+        }
+        llvm::sort(boundaries);
+        boundaries.erase(std::unique(boundaries.begin(), boundaries.end()),
+                         boundaries.end());
+        for (auto [begin, end] :
+             llvm::zip(boundaries, llvm::drop_begin(boundaries))) {
+          if (begin >= end)
+            continue;
+          if (++slabVisits > kMaximumSlabVisits)
+            return RectangleCoverageStatus::ResourceExhausted;
+          llvm::SmallVector<unsigned, 16> slabPieces;
+          for (unsigned pieceIndex : activePieces) {
+            const StaticRectangle &piece = clipped[pieceIndex];
+            int64_t pieceLimit = 0;
+            if (llvm::AddOverflow(piece.offsets[dimension],
+                                  piece.sizes[dimension], pieceLimit))
+              return RectangleCoverageStatus::ResourceExhausted;
+            if (piece.offsets[dimension] <= begin && end <= pieceLimit)
+              slabPieces.push_back(pieceIndex);
+          }
+          RectangleCoverageStatus status =
+              coverDimension(dimension + 1, slabPieces);
+          if (status != RectangleCoverageStatus::Covered) {
+            witness.offsets[dimension] = begin;
+            witness.sizes[dimension] = end - begin;
+            return status;
+          }
+        }
+        return RectangleCoverageStatus::Covered;
+      };
+
+  llvm::SmallVector<unsigned, 16> allPieces;
+  for (unsigned index = 0; index < clipped.size(); ++index)
+    allPieces.push_back(index);
+  RectangleCoverageStatus status = coverDimension(0, allPieces);
+  return RectangleCoverageResult{
+      status, status == RectangleCoverageStatus::Uncovered
+                  ? std::optional<StaticRectangle>(std::move(witness))
+                  : std::nullopt};
 }
 
 /// Typed content key for one rectangular demand image: the image is a pure
@@ -433,6 +610,45 @@ validateExecutionShards(const LogicalNodeTrial &trial) {
     if (domain.isIntegerEmpty())
       return "consumer execution shard has an empty domain";
   }
+
+  // Production balanced shards and future explicitly rectangular assignments
+  // carry an exact box per Tile. Prove their all-and-only partition directly;
+  // constructing a 16-disjunct union and asking generic Presburger equality
+  // loses this proof and can be exponentially slower than the IR itself.
+  std::optional<StaticRectangle> completeRectangle =
+      getStaticRectangle(complete);
+  llvm::SmallVector<StaticRectangle, 16> shardRectangles;
+  if (completeRectangle) {
+    for (const LogicalExecutionShard *shard : shards) {
+      std::optional<StaticRectangle> rectangle =
+          getStaticRectangle(*shard->executionDomain);
+      if (!rectangle) {
+        shardRectangles.clear();
+        break;
+      }
+      shardRectangles.push_back(std::move(*rectangle));
+    }
+  }
+  if (completeRectangle && shardRectangles.size() == shards.size()) {
+    for (const StaticRectangle &rectangle : shardRectangles)
+      if (!rectangleContains(*completeRectangle, rectangle))
+        return "consumer execution shard exceeds the complete iteration "
+               "domain";
+    for (size_t lhs = 0; lhs < shardRectangles.size(); ++lhs)
+      for (size_t rhs = lhs + 1; rhs < shardRectangles.size(); ++rhs)
+        if (intersectRectangles(shardRectangles[lhs], shardRectangles[rhs]))
+          return "consumer execution shards overlap";
+    RectangleCoverageResult coverage =
+        proveRectangleCoverage(*completeRectangle, shardRectangles);
+    if (coverage.status == RectangleCoverageStatus::ResourceExhausted)
+      return "consumer execution shard rectangular coverage exceeds work "
+             "budget";
+    if (coverage.status == RectangleCoverageStatus::Uncovered)
+      return "consumer execution shards do not cover the complete iteration "
+             "domain";
+    return std::nullopt;
+  }
+
   mlir::presburger::PresburgerSet covered =
       mlir::presburger::PresburgerSet::getEmpty(complete.getSpace());
   for (const LogicalExecutionShard *shard : shards) {
@@ -486,10 +702,14 @@ public:
         !consumerTrial->completeIterationDomain)
       return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
                           "trial does not cover every edge endpoint");
-    if (std::optional<std::string> invalid =
-            validateExecutionShards(*consumerTrial))
+    std::optional<std::string> invalidExecutionShards = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "exact-demand", "validate-execution-shards");
+      return validateExecutionShards(*consumerTrial);
+    }();
+    if (invalidExecutionShards)
       return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
-                          *invalid);
+                          *invalidExecutionShards);
     // Ownership is per producer result; only this edge's result is
     // validated and consumed.
     llvm::SmallVector<const LogicalTileBinding *, 16> resultBindings;
@@ -515,7 +735,62 @@ public:
         return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
                             "trial binds one Tile to several owner domains");
 
+    wafer::support::ScopedCompileTimingSpan timing("query", "exact-demand",
+                                                   "derive-edge-demand");
     return deriveDemand(*edge, *producerTrial, *consumerTrial);
+  }
+
+  analysis::StaticRectangularIndexSetPiecesResult getExactProducerDemandPieces(
+      StructuredDAGEdgeID edgeId,
+      const mlir::presburger::PresburgerSet &consumerExecutionDomain) {
+    auto failPieces = [](IndexRelationStatus status, llvm::StringRef reason) {
+      return analysis::StaticRectangularIndexSetPiecesResult{
+          status, {}, reason.str()};
+    };
+    if (functionOperation != dag.getFunction().getOperation() ||
+        functionFingerprint != mlir::OperationFingerPrint(functionOperation))
+      return failPieces(IndexRelationStatus::Invalid,
+                        "current IR changed under the demand query");
+    const StructuredDAGEdge *edge = dag.getEdge(edgeId);
+    if (!edge)
+      return failPieces(IndexRelationStatus::Invalid,
+                        "demand references an unknown edge");
+    const StructuredDAGNode *producerNode = dag.getNode(edge->producer);
+    const StructuredDAGNode *consumerNode = dag.getNode(edge->consumer);
+    if (!producerNode || !consumerNode || !producerNode->operation ||
+        !consumerNode->operation ||
+        edge->producerResult >= producerNode->operation->getNumResults() ||
+        edge->consumerOperand >= consumerNode->operation->getNumOperands())
+      return failPieces(IndexRelationStatus::Invalid,
+                        "demand edge indexes are outside their operations");
+    auto producerType = mlir::dyn_cast<mlir::RankedTensorType>(
+        producerNode->operation->getResult(edge->producerResult).getType());
+    auto operandType = mlir::dyn_cast<mlir::RankedTensorType>(
+        consumerNode->operation->getOperand(edge->consumerOperand).getType());
+    if (!producerType || !producerType.hasStaticShape() || !operandType ||
+        !operandType.hasStaticShape())
+      return failPieces(IndexRelationStatus::Unsupported,
+                        "demand decomposition requires static tensor types");
+    SupportPathResolution resolution =
+        resolveSupportPath(producerNode->operation, edge->producerResult,
+                           consumerNode->operation, edge->consumerOperand);
+    if (!resolution.path)
+      return failPieces(resolution.status == SupportPathStatus::Unsupported
+                            ? IndexRelationStatus::Unsupported
+                            : IndexRelationStatus::Invalid,
+                        resolution.detail);
+    IndexRelationResult relation =
+        deriveEdgeRelation(*edge, producerType, operandType, *resolution.path);
+    if (!relation.isExact())
+      return failPieces(relation.status, relation.reason);
+    analysis::StaticRectangularIndexSetResult destination = IndexSetResult{
+        IndexRelationStatus::Exact,
+        consumerExecutionDomain,
+        {}}.getExactStaticRectangularDomain();
+    if (!destination.isExact())
+      return failPieces(destination.status, destination.reason);
+    return relation.get()->getExactStaticRectangularImagePieces(
+        destination.domain->offsets, destination.domain->sizes);
   }
 
 private:
@@ -582,8 +857,12 @@ private:
                           "support path resolution produced no path");
 
     // Placement-independent relation proof, derived once per edge.
-    IndexRelationResult relation =
-        deriveEdgeRelation(edge, producerType, operandType, *resolution.path);
+    IndexRelationResult relation = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing("query", "exact-demand",
+                                                     "derive-index-relation");
+      return deriveEdgeRelation(edge, producerType, operandType,
+                                *resolution.path);
+    }();
     if (!relation.isExact())
       return demandResult(mapIndexRelationStatus(relation.status), edge.id,
                           relation.reason);
@@ -595,12 +874,18 @@ private:
       return demandResult(ExactDemandStatus::IndeterminateFailure, edge.id,
                           "exact demand relation ranks do not meet the trial");
 
-    IndexSetResult demandSet = imageDemand(
-        edge.id, *relation.get(), *consumerTrial.completeIterationDomain);
+    IndexSetResult demandSet = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing("query", "exact-demand",
+                                                     "image-complete-demand");
+      return imageDemand(edge.id, *relation.get(),
+                         *consumerTrial.completeIterationDomain);
+    }();
     if (!demandSet.isExact())
       return demandResult(mapIndexRelationStatus(demandSet.status), edge.id,
                           demandSet.reason);
 
+    wafer::support::ScopedCompileTimingSpan timing("query", "exact-demand",
+                                                   "prove-ownership-coverage");
     return deriveCoverage(edge, *relation.get(), producerTrial, consumerTrial,
                           *demandSet.set, kind);
   }
@@ -708,6 +993,211 @@ private:
     return bounded;
   }
 
+  ExactDemandResult deriveRectangularCoverage(
+      const StructuredDAGEdge &edge, const IndexRelation &relation,
+      const LogicalNodeTrial &consumerTrial,
+      llvm::ArrayRef<const LogicalTileBinding *> resultBindings,
+      const mlir::presburger::PresburgerSet &demand, DemandEdgeKind kind,
+      bool &applicable) {
+    applicable = false;
+    const std::string edgeDetail =
+        (llvm::Twine("edge=") + llvm::Twine(edge.id)).str();
+    std::optional<StaticRectangle> demandRectangle = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "exact-demand-rectangle", "recover-complete-demand",
+          edgeDetail);
+      return getStaticRectangle(demand);
+    }();
+    if (!demandRectangle)
+      return {};
+
+    llvm::SmallVector<StaticRectangle, 16> ownerRectangles;
+    ownerRectangles.reserve(resultBindings.size());
+    for (const LogicalTileBinding *binding : resultBindings) {
+      std::optional<StaticRectangle> rectangle = [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "exact-demand-rectangle", "recover-owner-domain",
+            edgeDetail);
+        return getStaticRectangle(*binding->ownedDomain);
+      }();
+      if (!rectangle)
+        return {};
+      ownerRectangles.push_back(std::move(*rectangle));
+    }
+
+    struct DestinationRectangle {
+      const LogicalExecutionShard *shard = nullptr;
+      mlir::presburger::PresburgerSet demand;
+      StaticRectangle rectangle;
+    };
+    llvm::SmallVector<const LogicalExecutionShard *, 16> sortedShards;
+    for (const LogicalExecutionShard &shard : consumerTrial.executionShards)
+      if (shard.executionDomain)
+        sortedShards.push_back(&shard);
+    llvm::sort(sortedShards, [](const LogicalExecutionShard *lhs,
+                                const LogicalExecutionShard *rhs) {
+      return lhs->tile.getValue() < rhs->tile.getValue();
+    });
+    llvm::SmallVector<DestinationRectangle, 16> destinationRectangles;
+    destinationRectangles.reserve(sortedShards.size());
+    for (const LogicalExecutionShard *shard : sortedShards) {
+      IndexSetResult shardDemand = [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "exact-demand-rectangle", "image-destination-demand",
+            edgeDetail);
+        return imageDemand(edge.id, relation, *shard->executionDomain);
+      }();
+      if (!shardDemand.isExact())
+        return {};
+      std::optional<StaticRectangle> rectangle = [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "exact-demand-rectangle", "recover-destination-demand",
+            edgeDetail);
+        return getStaticRectangle(*shardDemand.set);
+      }();
+      if (!rectangle)
+        return {};
+      destinationRectangles.push_back(DestinationRectangle{
+          shard, std::move(*shardDemand.set), std::move(*rectangle)});
+    }
+    applicable = true;
+
+    ExactDemandResult result;
+    result.status = ExactDemandStatus::Satisfied;
+    result.edge = edge.id;
+    result.producerResult = edge.producerResult;
+    result.consumerOperand = edge.consumerOperand;
+    result.dependencyKind = kind;
+    if (consumerTrial.completeIterationDomain)
+      result.consumerIterationDomain = *consumerTrial.completeIterationDomain;
+    result.producerDemand = demand;
+
+    bool hasReplication = false;
+    bool hasPartialContribution = false;
+    for (const LogicalTileBinding *binding : resultBindings) {
+      hasReplication |= binding->role == TileRole::ExplicitReplication;
+      hasPartialContribution |=
+          binding->role == TileRole::PartialReductionContribution;
+    }
+    result.role = hasPartialContribution
+                      ? TileRole::PartialReductionContribution
+                      : (hasReplication ? TileRole::ExplicitReplication
+                                        : TileRole::UniquePartition);
+
+    for (auto [binding, owner] :
+         llvm::zip_equal(resultBindings, ownerRectangles)) {
+      std::optional<StaticRectangle> intersection =
+          intersectRectangles(*demandRectangle, owner);
+      if (!intersection)
+        continue;
+      std::optional<mlir::presburger::PresburgerSet> intersectionSet =
+          materializeRectangle(*intersection);
+      if (!intersectionSet) {
+        result.status = ExactDemandStatus::IndeterminateFailure;
+        result.detail = "cannot materialize rectangular ownership demand";
+        return result;
+      }
+      if (binding->role == TileRole::PartialReductionContribution)
+        result.mergeObligation = true;
+      result.ownershipIntersections.push_back(
+          analysis::ExactOwnershipIntersection{binding->tile,
+                                               std::move(*intersectionSet)});
+    }
+
+    std::optional<mlir::presburger::PresburgerSet> overlapWitness;
+    for (size_t lhs = 0; lhs < resultBindings.size(); ++lhs) {
+      for (size_t rhs = lhs + 1; rhs < resultBindings.size(); ++rhs) {
+        if (resultBindings[lhs]->role != TileRole::UniquePartition &&
+            resultBindings[rhs]->role != TileRole::UniquePartition)
+          continue;
+        std::optional<StaticRectangle> overlap =
+            intersectRectangles(ownerRectangles[lhs], ownerRectangles[rhs]);
+        if (!overlap)
+          continue;
+        std::optional<mlir::presburger::PresburgerSet> overlapSet =
+            materializeRectangle(*overlap);
+        if (!overlapSet) {
+          result.status = ExactDemandStatus::IndeterminateFailure;
+          result.detail = "cannot materialize rectangular ownership overlap";
+          return result;
+        }
+        overlapWitness = overlapWitness ? overlapWitness->unionSet(*overlapSet)
+                                        : std::move(*overlapSet);
+      }
+    }
+    if (overlapWitness) {
+      result.status = ExactDemandStatus::ProvenLogicalInfeasible;
+      result.uncoveredWitness = std::move(*overlapWitness);
+      result.detail = "unique-partition owners overlap in their result domains";
+      return result;
+    }
+
+    for (const DestinationRectangle &destination : destinationRectangles) {
+      analysis::ExactDestinationDemand entry;
+      entry.destinationTile = destination.shard->tile;
+      entry.consumerExecutionDomain = *destination.shard->executionDomain;
+      entry.producerDemand = destination.demand;
+      for (auto [binding, owner] :
+           llvm::zip_equal(resultBindings, ownerRectangles)) {
+        std::optional<StaticRectangle> intersection =
+            intersectRectangles(destination.rectangle, owner);
+        if (!intersection)
+          continue;
+        std::optional<mlir::presburger::PresburgerSet> intersectionSet =
+            materializeRectangle(*intersection);
+        if (!intersectionSet) {
+          result.status = ExactDemandStatus::IndeterminateFailure;
+          result.detail =
+              "cannot materialize per-destination rectangular ownership";
+          return result;
+        }
+        entry.ownershipIntersections.push_back(
+            analysis::ExactOwnershipIntersection{binding->tile,
+                                                 std::move(*intersectionSet)});
+      }
+      RectangleCoverageResult coverage =
+          proveRectangleCoverage(destination.rectangle, ownerRectangles);
+      if (coverage.status == RectangleCoverageStatus::ResourceExhausted) {
+        result.status = ExactDemandStatus::IndeterminateFailure;
+        result.detail =
+            "per-destination rectangular coverage exceeds work budget";
+        return result;
+      }
+      if (coverage.status == RectangleCoverageStatus::Uncovered) {
+        std::optional<mlir::presburger::PresburgerSet> witness =
+            materializeRectangle(*coverage.uncoveredWitness);
+        if (!witness) {
+          result.status = ExactDemandStatus::IndeterminateFailure;
+          result.detail = "cannot materialize rectangular uncovered witness";
+          return result;
+        }
+        entry.uncoveredWitness = std::move(*witness);
+      }
+      result.perDestination.push_back(std::move(entry));
+    }
+
+    RectangleCoverageResult coverage =
+        proveRectangleCoverage(*demandRectangle, ownerRectangles);
+    if (coverage.status == RectangleCoverageStatus::ResourceExhausted) {
+      result.status = ExactDemandStatus::IndeterminateFailure;
+      result.detail = "rectangular ownership coverage exceeds work budget";
+      return result;
+    }
+    if (coverage.status == RectangleCoverageStatus::Uncovered) {
+      std::optional<mlir::presburger::PresburgerSet> witness =
+          materializeRectangle(*coverage.uncoveredWitness);
+      if (!witness) {
+        result.status = ExactDemandStatus::IndeterminateFailure;
+        result.detail = "cannot materialize rectangular uncovered witness";
+        return result;
+      }
+      result.status = ExactDemandStatus::ProvenLogicalInfeasible;
+      result.uncoveredWitness = std::move(*witness);
+      result.detail = "producer shard ownership does not cover exact demand";
+    }
+    return result;
+  }
+
   ExactDemandResult
   deriveCoverage(const StructuredDAGEdge &edge, const IndexRelation &relation,
                  const LogicalNodeTrial &producerTrial,
@@ -734,6 +1224,16 @@ private:
                                   const LogicalTileBinding *rhs) {
       return lhs->tile.getValue() < rhs->tile.getValue();
     });
+
+    bool rectangularCoverageApplicable = false;
+    ExactDemandResult rectangularCoverage =
+        deriveRectangularCoverage(edge, relation, consumerTrial, resultBindings,
+                                  demand, kind, rectangularCoverageApplicable);
+    if (rectangularCoverageApplicable)
+      return rectangularCoverage;
+
+    wafer::support::ScopedCompileTimingSpan genericTiming(
+        "query", "exact-demand", "generic-ownership-coverage");
 
     // Unique-partition owners tile the result domain; an overlap with any
     // other owner is a provable partition contradiction. The witness is the
@@ -886,6 +1386,13 @@ ExactDemandResult
 StructuredDAGExactDemandQuery::query(StructuredDAGEdgeID edge,
                                      const LogicalShardTrial &trial) {
   return impl->query(edge, trial);
+}
+
+analysis::StaticRectangularIndexSetPiecesResult
+StructuredDAGExactDemandQuery::getExactProducerDemandPieces(
+    StructuredDAGEdgeID edge,
+    const mlir::presburger::PresburgerSet &consumerExecutionDomain) {
+  return impl->getExactProducerDemandPieces(edge, consumerExecutionDomain);
 }
 
 /// Exact result-space shard of one Tile in the balanced placement domain. A
@@ -1072,6 +1579,53 @@ deriveResultOwnership(
   }
 
   bool everyOwnerHasFullResult = bindings.size() > 1;
+  std::optional<StaticRectangle> fullRectangle =
+      getStaticRectangle(*fullResult.set);
+  llvm::SmallVector<StaticRectangle, 16> bindingRectangles;
+  if (fullRectangle) {
+    for (const analysis::LogicalTileBinding &binding : bindings) {
+      std::optional<StaticRectangle> rectangle =
+          getStaticRectangle(*binding.ownedDomain);
+      if (!rectangle) {
+        bindingRectangles.clear();
+        break;
+      }
+      bindingRectangles.push_back(std::move(*rectangle));
+    }
+  }
+  if (fullRectangle && bindingRectangles.size() == bindings.size()) {
+    bool overlaps = false;
+    for (const StaticRectangle &rectangle : bindingRectangles) {
+      everyOwnerHasFullResult &= sameRectangle(rectangle, *fullRectangle);
+      if (!rectangleContains(*fullRectangle, rectangle))
+        return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
+            failureReason,
+            "logical trial result ownership exceeds the result domain");
+    }
+    for (size_t lhs = 0; lhs < bindingRectangles.size(); ++lhs)
+      for (size_t rhs = lhs + 1; rhs < bindingRectangles.size(); ++rhs)
+        overlaps |= static_cast<bool>(intersectRectangles(
+            bindingRectangles[lhs], bindingRectangles[rhs]));
+    RectangleCoverageResult coverage =
+        proveRectangleCoverage(*fullRectangle, bindingRectangles);
+    if (coverage.status == RectangleCoverageStatus::ResourceExhausted)
+      return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
+          failureReason,
+          "logical trial rectangular ownership exceeds work budget");
+    if (coverage.status == RectangleCoverageStatus::Uncovered)
+      return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
+          failureReason,
+          "logical trial result ownership does not cover the result domain");
+    if (overlaps && !everyOwnerHasFullResult)
+      return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
+          failureReason,
+          "logical trial result ownership overlap needs an explicit role");
+    if (everyOwnerHasFullResult)
+      for (analysis::LogicalTileBinding &binding : bindings)
+        binding.role = analysis::TileRole::ExplicitReplication;
+    return bindings;
+  }
+
   std::optional<mlir::presburger::PresburgerSet> covered;
   bool overlaps = false;
   for (const analysis::LogicalTileBinding &binding : bindings) {

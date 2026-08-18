@@ -338,21 +338,19 @@ source program
   无硬件时exit 77；真实板测通过前Q56不标done。
 - Tools测试的python断言先脱离lit验证：把`%t.outputs/...`替换为真实package路径后用`python3 -c`跑一遍，再交给lit。
 
-## Deterministic baseline 的直接链路约束（stable，2026-08-17）
+## Deterministic baseline 的直接链路约束（stable，2026-08-18）
 
-- baseline 两级 SPM probe：region-scope `evaluateTileRegionSPMCapacity`只 clone 最近的 isolated TileRegion，
-  `RequiresFunctionScope`是 escalation 请求不是 fit；function-scope `evaluateTileFunctionSPMCapacity`消费调用方已经
-  detached 的单 Tile entry Module，不在内部再次 clone Func，并运行与最终 gate 相同的
-  `instr-memory-planning-preparation` + `assign-spm-offsets`序列。region scratch的外部operand与relation在首次clone时用
-  `IRMapping`完整映射；function probe的relations随owned Module一起move，之后只做current-IR完整性检查。witness收集沿
-  store/load/view链找transfer端点。
+- baseline不建立region/function capacity probe。每个closed coordinate只构造一个actual CardModule并立即交给Q50.0；Q50.0
+  accepted executable直接下传，exact SPM rejection销毁该owner并用同一份current relation certificate驱动下一次确定性
+  temporal refinement，indeterminate或其它exact failure fail closed。不得在同一coordinate上依次构造root shard、Tile entry、
+  CardModule，也不得为accepted winner重建IR。
 - 一 root 一 region：IndependentDDRStages从observable output shard与actual selected edge endpoint推导该Tile的真实
   root集合；独立component逐root/closure构造后按canonical node order拼接，connected root由selected RegionCut在物化时直接
   形成DDR store/reload边界。baseline不再先形成multi-root region再调用post-hoc root splitter；通用
   `splitRegionAfterPrefix`只服务已选择的RegionCut/resource crossing。
 - `StorageRootMemo`（StructuredBufferRelations.h）：query-local per-value 存储根 memo，内层 set 用
   `unique_ptr` 持有（map rehash 不悬空引用）；只读同一 IR epoch 内共享。
-- baseline controller只消费typed iterator/topology facts、当前coordinate的legality/materialization和exact scoped probe；按typed
+- baseline controller只消费typed iterator/topology facts、当前coordinate的一次性materialization和Q50.0 exact verdict；按typed
   rejection推进下一项必要coordinate。任一helper只要接收option列表/domain并通过propagation、recursive CSP、backtracking或
   assignment solve返回一个结果，即使确定、只取第一个或标为`policy-free`，本质上仍是search，不能留在baseline transitive
   closure。baseline只保留一个live coordinate；functional legalization transition必须预定义、单调、不分支且不回溯。
@@ -362,9 +360,10 @@ source program
   每段constraint、local variable和绝对系数上限，资源耗尽返回indeterminate，不能当logical rejection推进coordinate。
 - 一个baseline invocation先建立一次immutable `TileMaterializationSourceSession`，只做source verifier、topology/logical mesh、
   static output domain和structured-node identity；每个deterministic legalization coordinate只建立mapping-local
-  `TileMaterializationSession`。scoped probe走`lowerRootShards`（一个root/参与Tile的detached FuncOp），同coordinate的完整
-  Tile lifetime走`lowerTileEntries`，全部fit后`lowerCardModule`形成唯一完整CardModule。
-- full CardModule和最终CardExecutable各物化一次；已经exact accepted的executable直接move到输出，不再为winner protocol重物化，
+  `TileMaterializationSession`并调用一次`lowerCardModule`。root/edge的immutable SSA闭包和support facts按semantic key只分析一次；
+  多root Tile的每个最终region只复制必要operation，不克隆整份TensorProgram。16个Tile entry用共享MLIR线程池bounded并发构造，
+  按Tile ID稳定归并；cache只保存同一IR epoch的analysis facts，不保存materialized IR。
+- 每个closed coordinate的CardModule和Q50.0 invocation严格一一对应；已经exact accepted的executable直接move到输出，不再为winner protocol重物化，
   也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR trace
   写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。
 - baseline验证只走显式`none`的direct unit、定向lit和source-to-package/no-card case；不运行旧search、旧winner对照或paired
@@ -374,24 +373,20 @@ source program
   test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir <dir>`
   后 `TX8_DEPS_ROOT=<repo>/third_party/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
   --output-dir <pkg> --num-partitions=1 --optimization-policy=none`。
-- Q51完整new-search链闭合前不执行重型LLaMA `search`，Q50各checkpoint、Q51.Core、普通regression和诊断重跑使用有界小图、
-  同relation结构的定向case和上述轻量source-to-package入口。Q49.P收尾单独执行一次有界FP16 LLaMA baseline门禁：compiler
-  不超过600秒、capture→package→no-card不超过900秒；它只证明`none`功能链有界，不作为search profile。重型LLaMA search首次
-  只在Q52显式bounded scalability profile中运行，Q53再生成正式search package/oracle/no-card；旧输出不回放为current证据。
+- Q51完整new-search链闭合前不执行重型LLaMA block，`none`与`search`都只用有界小图、同relation结构的定向case和上述轻量
+  source-to-package入口。FP16 LLaMA baseline/search首次统一放在Q52显式bounded scalability profile中，Q53再生成正式
+  package/oracle/no-card；旧输出不回放为current证据。
 
 
 ## baseline 定向验证边界
 
 - 不使用 `CardExecutableSynthesisTest.*` 作为 baseline filter：该 wildcard 同时匹配 `Search*` case，会把旧搜索链和
   长时间 placement 枚举带进本应有界的功能验证。使用 `CardExecutableSynthesisTest.None*`，再显式列出
-  `WaferTensorProgramToCardModuleTest.*`、`TileRegionSPMCapacityEvaluationTest.*`、
-  `StructuredBufferRelationsTest.*`、`TileMemoryPlanningTest.*`和`PipelinesTest.*`；测试总数随current suite变化，
+  `WaferTensorProgramToCardModuleTest.*`、`StructuredBufferRelationsTest.*`、`TileMemoryPlanningTest.*`和`PipelinesTest.*`；测试总数随current suite变化，
   不把固定数字写成合同。
-- baseline 工具链用 `wafer-compile-card-baseline` 的 CHAIN/CROSS/GEMM/no-card 定向 lit；除Q49.P的单次有界FP16 LLaMA
-  完成门禁外，Q51完整search链闭合前不运行重型LLaMA block。需要定位relation热路径时，用同结构小图和明确work count，
+- baseline 工具链用 `wafer-compile-card-baseline` 的 CHAIN/CROSS/GEMM/no-card 定向 lit；Q51完整search链闭合前不运行重型
+  LLaMA block。需要定位relation热路径时，用同结构小图和明确work count，
   不用大模型wall-time代替算法证据。
-- 最终 CardModule 的各 Tile lowering、DDR/index及target ABI阶段由bounded executor并发；真实板端launch仍串行。
-  “16 Tile并发”只说明最终per-Tile stage调度方式，不能证明baseline materialization work有界。controller先后重复完整
-  CardModule、或每个root/Tile反复clone/prepare TensorProgram，属于独立的P7重复工作，必须分别计数。
-- one-root scoped probe必须直接检查actual IR的root identity和精确数量，不能以compute op `>= 1`或diagnostic缺失代替；
-  semantic flag新增后同时检查真实consumer，避免“已传参但未消费”的空合同。
+- CardModule构造、各Tile lowering、DDR/index及target ABI阶段都按独立Tile使用bounded executor；真实板端launch仍串行。
+  “16 Tile并发”不能掩盖重复整图分析：ledger同时记录Tile entry数、公共region闭包分析数/operation数、CardModule/Q50.0一一对应和
+  两段maximum workers。相同descriptor复用analysis，不同tail/offset/communication仍构造各自actual IR。

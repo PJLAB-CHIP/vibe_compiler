@@ -19,7 +19,6 @@ add_executable(WaferUnitTests
   Compiler/TargetCodeGenTest.cpp
   Compiler/TargetCallFrontendTest.cpp
   Compiler/TargetIdentityTest.cpp
-  Compiler/TileRegionSPMCapacityEvaluationTest.cpp
   Compiler/StructuredDAGScheduleTest.cpp
   Compiler/StructuredDAGEdgeStrategyPlanTest.cpp
   Compiler/StructuredDAGExactDemandQueryTest.cpp

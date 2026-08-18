@@ -399,20 +399,20 @@
 - 修复模式：baseline controller直接从typed structured/relation/target facts构造唯一方案；每个TileRegion只拥有一个structured
   compute root及必要non-root support closure，root cardinality由materialization relation证明；同一Tile上的其它root进入独立
   顺序region，跨root shaped dependency显式DDR。只与search
-  共享single-coordinate的policy-free materialization、scoped probe和最终lowering/verification，不共享state/candidate/grouping/
+  共享single-coordinate的policy-free materialization和Q50.0 lowering/verification，不共享state/candidate/grouping/
   ordering，也不调用option-domain、propagation、recursive CSP/backtracking或“只取第一个”的assignment solver。
 - 防复发：除零actual fusion和DDR movement外，测试还要检查每个baseline region的structured-root数、同Tile multi-root的region
-  数、search-policy调用计数、完整CardModule/CardExecutable各一次；equal-shape fanin与function-scope case验证SPM失败只沿直接
+  数及search-policy调用计数；每个closed coordinate的CardModule与Q50.0严格一一对应，accepted owner不重建。SPM失败只沿直接
   typed causal witness refinement，不能猜测或跳过scope。
 
 ## 去search耦合不能把baseline退化成fixed-assignment validator
 
-- 现象：设计为了禁止`none`复用candidate/evaluator，把baseline写成只apply已选placement/temporal/buffer并执行一次scoped
-  probe；正常上游IR的完整tile超出SPM时，反而没有owner继续缩tile并产出可执行结果。
+- 现象：设计为了禁止`none`复用candidate/evaluator，把baseline写成只apply已选placement/temporal/buffer并验证一次；正常上游IR的
+  完整tile超出SPM时，反而没有owner继续缩tile并产出可执行结果。
 - 根因：混淆了“禁止性能候选选择”和“禁止确定性功能合法化”，把resolved assignment误当成baseline输入；只设计了单次
   closed-coordinate query，没有定义谁遍历合法breakpoint、何时终止以及支持域内的完成保证。
 - 修复模式：`none`从未绑定物理选择的正常IR进入，由controller按semantic全序维护一个current coordinate；每次只构造当前
-  coordinate、重新推导operand/halo/result/temporary/movement/alignment/bank/lifetime并运行exact scoped probe，再按typed
+  coordinate、重新推导operand/halo/result/temporary/movement/alignment/bank/lifetime并运行一次Q50.0，再按typed
   rejection推进下一项必要coordinate，第一个fit形成resolved assignment。不得预先生成完整placement/temporal option domain；
   trial是query-local feasibility状态，不进入candidate、score、incumbent或proposal统计；任一transition必须预定义、单调、
   不分支且不回溯，旧coordinate立即销毁，避免把deterministic search换名为functional fallback。
@@ -455,6 +455,18 @@
   operation而不是clone整段body；verifier使用query-local provenance memo。不得把索引或memo写入IR。
 - 防复发：长RegionCut chain测试验证最终IR和provenance，并在模型规模compile timing中检查单Tile split不再随edge数乘法增长。
 
+## 16 Tile不能把root公共分析和整图clone机械重复16次
+
+- 现象：structured roots较多时，旧baseline按root shard、Tile entry、完整CardModule三轮构造；仅root阶段就接近
+  `root数 × 16 Tile`次TensorProgram conversion。即使16个worker并发，CPU work、RSS和诊断仍是同一工作被放大16倍。
+- 根因：把Tile差异（offset/tail/peer endpoint）和root不变量（SSA/support closure、consumer order、iterator/index facts）放在同一个
+  per-Tile materializer里；为得到局部结论又clone完整函数，而不是在immutable scheduling IR上先形成可重算analysis。
+- 修复模式：每个coordinate只保留一个scheduling owner；root/edge闭包与support facts按semantic key分析一次，cache只保存同一IR
+  epoch的operation关系，不保存materialized IR。多root Tile的每个最终region从公共分析复制必要SSA closure；16个Tile实际构造
+  bounded并发，按Tile ID稳定归并，再把同一CardModule交给Q50.0。
+- 防复发：ledger同时检查公共closure分析数/operation数、Tile entry数、materialization worker数及CardModule/Q50.0一一对应；
+  Q51 partial state也只能共享immutable analysis，不能按candidate/Tile缓存actual clone或通过并发掩盖重复work。
+
 ## 单状态baseline不得套用多候选winner协议或accepted后旁路工作
 
 - 现象：唯一exact-verified Llama baseline在selection后又完整执行一次CardModule、16-Tile Instr、SPM、DDR和resource verification，额外消耗
@@ -462,7 +474,8 @@
 - 根因：为search cohort控制峰值内存而清空每个accepted candidate Tile module的策略，无条件复用到了只有一个semantic state的
   `none` controller；同时把未消费分析和调试输出误放在producer主路径，而不是由真实consumer显式请求。
 - 修复模式：`none`保留已经通过全部exact verification且已清除query-local source relation的唯一executable，直接move返回；
-  未被输出合同消费的schedule/duration工作删除，可选trace在请求方惰性生成。未来候选策略如何保存或重建winner由其自身任务决定，
+  未被输出合同消费的schedule/duration工作删除，可选trace在请求方惰性生成。未来search同样让accepted executable直接进入incumbent，
+  winner只move所有权，不重建或重编译，
   不能反向规定baseline控制流。
 - 防复发：none定向测试断言完整CardModule和CardExecutable各一次、selected executable rematerialization为零、默认trace为零；
   模型规模检查work count和结果返回前的stage计数，不运行旧search或历史winner行为作对照。
@@ -736,29 +749,18 @@
 - 防复发：owner测试必须在返回后覆盖同inode、删除/替换原path，并继续从owner读取已签发内容；还要检查descriptor不泄漏。
   只断言move trait、root字符串和digest相等不能证明ownership。
 
-## Baseline probe-fit与final SPM planning的scope和witness必须分别对齐
+## Discarded capacity IR与最终gate会产生不同scope和witness
 
-- 现象：`CardExecutableSynthesisTest.NoneJointlyRefinesExplicitProducerStageAndConsumerDemand`（transpose+
-  fill→matmul 4096规模、none policy）在2026-08-16的HEAD（22eb9931）即失败：一次temporal refinement
-  （4096→2048）后全卡TileRegion静态SPM probe全部fit，唯一完整CardExecutable编译仍以gate=spm-allocation
-  失败。
-- 根因：2048 breakpoint上所有region probe返回`UnsupportedLifetime`（`requires-function-scope`），
-  controller把它当fit计数后跳过；唯一完整gate的函数级planning才暴露真实overflow。
-- 修复：Q49.P新增函数级probe `evaluateTileFunctionSPMCapacity`，运行与最终gate相同的
-  `instr-memory-planning-preparation`+`assign-spm-offsets`序列；当前接口直接消费调用方已经detached且带current relations的
-  单Tile entry Module，不在probe内部再次clone Func。`RequiresFunctionScope`是scope
-  escalation请求：提升到最近合法IsolatedFromAbove ancestor（该Tile的FuncOp），其typed verdict作为该
-  region的结论；无法在准确scope得出结论时indeterminate中止，不再跳过。这只修复scope routing，不能单独证明
-  probe与final拥有相同witness/evidence。
-- 后续复核：`remapStructuredBufferRelations`会省略unmapped entry，body-swap caller只检查剩余value是否live；final
-  memory-planning preparation还会`retainCurrentStructuredBufferRelations`静默丢掉stale relation，而function probe对同类
-  stale relation返回AnalysisFailure。root-boundary split把consumer改到新SPM reload时，旧prefix buffer仍live也会让liveness
-  check假通过。因此“跑了同一pass pipeline”不等于relation/evidence parity。
-- 防复发：probe owner若克隆或改写IR，evidence attribution必须经complete clone-side relations（replacement listener、显式
-  old→new mapping或current-IR重建），并核对应保留relation的数量、role和actual consumer/result/output endpoint；禁止用省略、
-  retain/drop把missing witness变成成功。attribution的witness收集还要沿store/load/view链找transfer端点（DDR wave两端不通过
-  SSA别名与wave buffer相连，直接storage-root匹配会miss）。测试必须使用非空result/operand/output relations并比较probe/final
-  certificate，空relations正例只能证明planner sequence可运行。
+- 现象：baseline先用root/region/function级scratch IR判断SPM，再重新构造完整CardModule；局部路径可能报告fit或要求扩大scope，
+  最终Q50.0却在函数级packing失败。relation remap还可能在两次构造间省略或保留不同owner，使同一allocation得到不同归因。
+- 根因：把“调用相同pass/checker”误当成消费同一actual IR和同一current relation certificate。只要第一次IR被销毁、第二次重建，
+  operation lifetime、buffer relation、region boundary和packing scope就已经是两个事实源；继续增加scope escalation只会扩张平行链。
+- 修复模式：删除baseline的root/Tile/function capacity materialization。每个closed coordinate只构造一个CardModule并由Q50.0消费；
+  accepted owner直接下传，exact SPM certificate复制成不含scratch SSA handle的typed witness后销毁rejected owner。缺direct relation
+  attribution即indeterminate，不能按region恰有一个root猜owner。
+- 防复发：work ledger必须证明CardModule materialization与Q50.0 invocation一一对应、accepted rematerialization为零；partial
+  assignment只允许immutable analysis，构造actual IR后必须继续进入complete evaluation。测试使用非空result/operand/output
+  relations检查certificate，不以空relation或diagnostic字符串证明一致性。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
 
@@ -898,35 +900,35 @@
 - **成功路径不得遗留debug stderr**：fast path/fallback命中计数进入显式ledger或测试hook，不能用无条件`llvm::errs()`作为
   长期观测；全绿测试仍打印debug不是完成状态。
 
-## scratch IR 的 SSA handle 不能逃出 probe lifetime
+## scratch IR 的 SSA handle 不能逃出 transformation lifetime
 
-- isolated probe返回后scratch module/func/region随RAII scope销毁；结果结构若保存其中的`mlir::Value`，即使当前caller暂时只读
+- isolated transformation返回后scratch module/func/region随RAII scope销毁；结果结构若保存其中的`mlir::Value`，即使当前caller暂时只读
   同结构中的bytes/type字段，public contract也已经包含悬空handle。
-- probe边界返回可独立存活的typed evidence：稳定structured node identity、复制后的type/shape/bytes、relation role及必要的
+- 边界只返回可独立存活的typed evidence：稳定structured node identity、复制后的type/shape/bytes、relation role及必要的
   semantic coordinate。需要在scratch内追踪SSA时只在scope内消费并转换，不能把地址或`Value`留给controller。
 - 新增semantic flag或“narrow”入口时，测试必须检查flag有真实consumer以及actual IR的all-and-only identity/cardinality；
   `>= 1`、diagnostic缺失或仅证明target存在，都无法证明sibling没有被物化。
 
 ## DDR stage 不能先在 SPM 拼完整 spatial shard再复制到 DDR
 
-- 现象：temporal tile已从大wave持续缩小，root-region probe仍保留两个完整`memref<256x4096xf16>` SPM allocation；
+- 现象：temporal tile已从大wave持续缩小，actual Tile entry仍保留两个完整`memref<256x4096xf16>` SPM allocation；
   `NoneJointlyRefinesExplicitProducerStageAndConsumerDemand`长期不收敛，缩temporal coordinate对峰值容量基本无效。
 - 根因：independent consumer stage先用`getOrMaterializeSource`把完整spatial shard组装进SPM，再创建第二个完整SPM destination，
   最后才整体copy到DDR。controller缩的是leaf workset，而物化器在leaf之外重建了与temporal tile无关的full-shard residency。
 - 修复模式：先分配最终DDR stage destination，把它作为wave loop carry，逐leaf调用
   `materializeCandidateRootTileIntoDestination`直接写DDR；完成后seal为read-only并缓存exact slice。SPM只保留当前leaf/staging，
   不再出现full-shard assembly。
-- 防复发：overfull-to-fit case同时检查收缩后的actual Tile entry/function-scope SPM，不只看temporal shape或region-local leaf；
-  compiler work应在秒级完成且最终CardModule/CardExecutable仍各一次。
+- 防复发：overfull-to-fit case检查收缩后的actual Tile entry与Q50.0 certificate，不只看temporal shape或region-local leaf；
+  compiler work应在秒级完成，且每个closed coordinate的CardModule/Q50.0严格一一对应。
 
 ## 扩展 FuncOp 参数必须同步 argument attrs
 
-- 现象：小型unit里narrow boundary probe通过，但正常source-to-package的frontend函数带`arg_attrs`时，追加一个boundary参数后
+- 现象：小型unit里函数签名扩展通过，但正常source-to-package的frontend函数带`arg_attrs`时，追加一个scheduling destination参数后
   verifier报告“argument attribute array ... got 3, expected 4”。
 - 根因：代码分别调用`setFunctionType`和entry block `addArguments`，绕过了FuncOp对signature、block argument和argument attr
   数组的一体化维护。
 - 修复模式：使用pinned MLIR的`FuncOp::insertArgument`追加typed boundary参数及空`DictionaryAttr`，由op API原子更新三者。
-- 防复发：narrow root probe除无attr unit外必须经过一个带frontend argument metadata的真实source-to-package gate；本轮
+- 防复发：任何函数签名扩展除无attr unit外必须经过一个带frontend argument metadata的真实source-to-package gate；本轮
   CHAIN/CROSS/GEMM定向lit即覆盖该路径。
 
 ## 跨RegionCut的显式DDR读写也必须进入effect closure

@@ -58,6 +58,16 @@ struct TileMapping {
   llvm::SmallVector<SpatialEdgeStrategy, 16> edgeStrategies;
 };
 
+/// Invocation-local work performed while constructing one actual CardModule.
+/// Counts describe final IR construction only; they are not candidate state
+/// and are never serialized into IR or package metadata.
+struct CardModuleMaterializationStatistics {
+  uint64_t tileEntryMaterializations = 0;
+  uint64_t regionClosureAnalyses = 0;
+  uint64_t regionClosureAnalysisOperations = 0;
+  uint64_t maximumTileMaterializationWorkers = 1;
+};
+
 /// Materializes one explicit spatial mapping for a card-local structured
 /// tensor program.
 ///
@@ -91,31 +101,12 @@ mlir::LogicalResult lowerTensorProgramToCardModule(
     llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>> observableOutputRootNodes =
         {});
 
-struct TileRootShardRequest {
-  TileId tileId{0};
-  uint32_t targetRoot = 0;
-};
-
-struct TileRootShardMaterialization {
-  TileId tileId{0};
-  uint32_t targetRoot = 0;
-  mlir::OwningOpRef<mlir::ModuleOp> module;
-  StructuredMaterializationRelations relations;
-};
-
-struct TileEntryMaterialization {
-  TileId tileId{0};
-  mlir::OwningOpRef<mlir::ModuleOp> module;
-  StructuredMaterializationRelations relations;
-};
-
 class TileMaterializationSourceSession;
 
-/// Mapping-local materialization session shared by narrow root/Tile probes and
-/// the final CardModule assembly. Creation verifies the borrowed source,
-/// target topology and complete mapping once and owns one immutable scheduling
-/// clone. Every lowering method clones only the requested apply scope; the
-/// source and session preparation remain unchanged on success or failure.
+/// Mapping-local materialization session for one actual CardModule apply.
+/// Creation verifies the coordinate-dependent mapping and owns one private
+/// scheduling form. The resulting CardModule is constructed once and handed
+/// directly to the downstream compilation boundary.
 class TileMaterializationSession {
 public:
   /// Builds one mapping-local apply session from an already-validated source
@@ -149,21 +140,8 @@ public:
   mlir::LogicalResult lowerCardModule(
       mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
       StructuredMaterializationRelations *materializationRelations = nullptr,
-      std::string *failureReason = nullptr) const;
-
-  mlir::LogicalResult lowerRootShards(
-      llvm::ArrayRef<TileRootShardRequest> requests,
-      llvm::SmallVectorImpl<TileRootShardMaterialization> &materializations,
-      std::string *failureReason = nullptr) const;
-
-  /// Materializes complete detached Tile entry functions after all root-local
-  /// probes fit. This is the nearest isolated lifetime scope that can observe
-  /// cross-region residency; it creates no CardModule/TileModule shell,
-  /// sibling Tile or no-work wrapper.
-  mlir::LogicalResult lowerTileEntries(
-      llvm::ArrayRef<TileId> tileIds,
-      llvm::SmallVectorImpl<TileEntryMaterialization> &materializations,
-      std::string *failureReason = nullptr) const;
+      std::string *failureReason = nullptr,
+      CardModuleMaterializationStatistics *statistics = nullptr) const;
 
 private:
   struct Impl;
@@ -197,22 +175,6 @@ private:
   explicit TileMaterializationSourceSession(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl;
 };
-
-/// Materializes a batch of root/Tile shards for scoped feasibility probing.
-/// Source verification, topology construction, scheduling clone and mapping
-/// validation are performed once for the whole batch; each result owns one
-/// detached Tile entry whose pull closure covers exactly the requested root
-/// and its non-root support. Sibling roots, CardModule/TileModule shells and
-/// no-work wrappers are never created. Results preserve request order and the
-/// caller-owned output is unchanged on failure.
-mlir::LogicalResult lowerTensorProgramToTileRootShards(
-    mlir::ModuleOp sourceModule, CardId cardId, const TileMapping &mapping,
-    llvm::ArrayRef<TileRootShardRequest> requests,
-    llvm::SmallVectorImpl<TileRootShardMaterialization> &materializations,
-    std::string *failureReason = nullptr,
-    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-    llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>> observableOutputRootNodes =
-        {});
 
 } // namespace wafer
 

@@ -14,7 +14,6 @@
 #include "StructuredDAGPlacementEnumeration.h"
 #include "StructuredDAGSchedule.h"
 #include "StructuredDAGSchedulePlan.h"
-#include "SPMCapacityEvaluation.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
 #include "Wafer/IR/Target/TargetTopology.h"
@@ -424,8 +423,8 @@ makeJointCandidate(uint64_t stableOrdinal, size_t activeTileCount,
                   resultMap.getResult(shardDimension)))
             iteratorDimension = dimension.getPosition();
       }
-      placement.spatialPartition = StructuredDAGSpatialPartition{
-          iteratorDimension, shardDimension};
+      placement.spatialPartition =
+          StructuredDAGSpatialPartition{iteratorDimension, shardDimension};
       if (iteratorDimension < placement.iteratorPartitionFactors.size())
         placement.iteratorPartitionFactors[iteratorDimension] =
             static_cast<uint32_t>(activeTileCount);
@@ -458,10 +457,10 @@ static bool prepareEdgeStrategies(ResolvedBaselineAssignment &assignment,
 /// Search counterpart: layout assignment plus candidate instrumentation.
 static bool prepareEdgeStrategies(TileExecutionCandidate &candidate,
                                   const StructuredDAGAnalysis &dag) {
-  return prepareEdgeStrategiesImpl(
-      candidate.assignment.mapping, candidate.assignment.nodePlacements, dag,
-      &candidate.evaluation.peerBytes,
-      &candidate.evaluation.queryExpansionWork);
+  return prepareEdgeStrategiesImpl(candidate.assignment.mapping,
+                                   candidate.assignment.nodePlacements, dag,
+                                   &candidate.evaluation.peerBytes,
+                                   &candidate.evaluation.queryExpansionWork);
 }
 
 static bool prepareEdgeStrategiesImpl(
@@ -510,8 +509,8 @@ static bool appendBaselineSupportChainTransfers(
     analysis::IREpoch epoch, std::string *failureReason) {
   uint64_t peerBytesAccumulator = 0;
   return appendBaselineSupportChainTransfersImpl(
-      assignment.mapping, assignment.nodePlacements, dag, epoch,
-      failureReason, &peerBytesAccumulator);
+      assignment.mapping, assignment.nodePlacements, dag, epoch, failureReason,
+      &peerBytesAccumulator);
 }
 
 static bool appendBaselineSupportChainTransfersImpl(
@@ -520,8 +519,8 @@ static bool appendBaselineSupportChainTransfersImpl(
     const StructuredDAGAnalysis &dag, analysis::IREpoch epoch,
     std::string *failureReason, uint64_t *peerBytesAccumulator) {
   std::string trialFailure;
-  mlir::FailureOr<analysis::LogicalShardTrial> trial = buildLogicalShardTrial(
-      dag, nodePlacements, epoch, &trialFailure);
+  mlir::FailureOr<analysis::LogicalShardTrial> trial =
+      buildLogicalShardTrial(dag, nodePlacements, epoch, &trialFailure);
   if (mlir::failed(trial)) {
     if (failureReason)
       *failureReason = "baseline support trial is unavailable: " + trialFailure;
@@ -552,6 +551,31 @@ static bool appendBaselineSupportChainTransfersImpl(
                  rectangle.domain->sizes.end());
     return true;
   };
+  auto intersectRectangles = [](const analysis::StaticRectangularIndexSet &lhs,
+                                llvm::ArrayRef<int64_t> rhsOffsets,
+                                llvm::ArrayRef<int64_t> rhsSizes)
+      -> std::optional<analysis::StaticRectangularIndexSet> {
+    if (lhs.offsets.size() != rhsOffsets.size() ||
+        lhs.sizes.size() != rhsSizes.size())
+      return std::nullopt;
+    analysis::StaticRectangularIndexSet result;
+    for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] :
+         llvm::zip_equal(lhs.offsets, lhs.sizes, rhsOffsets, rhsSizes)) {
+      int64_t lhsLimit = 0;
+      int64_t rhsLimit = 0;
+      if (lhsSize <= 0 || rhsSize <= 0 ||
+          llvm::AddOverflow(lhsOffset, lhsSize, lhsLimit) ||
+          llvm::AddOverflow(rhsOffset, rhsSize, rhsLimit))
+        return std::nullopt;
+      const int64_t offset = std::max(lhsOffset, rhsOffset);
+      const int64_t limit = std::min(lhsLimit, rhsLimit);
+      if (offset >= limit)
+        return std::nullopt;
+      result.offsets.push_back(offset);
+      result.sizes.push_back(limit - offset);
+    }
+    return result;
+  };
 
   for (const StructuredDAGEdge &edge : dag.getEdges()) {
     const StructuredDAGNode *producerNode = dag.getNode(edge.producer);
@@ -578,9 +602,11 @@ static bool appendBaselineSupportChainTransfersImpl(
       return false;
     const analysis::LogicalNodeTrial *consumerTrial =
         getNodeTrial(edge.consumer);
-    if (!consumerTrial) {
+    const analysis::LogicalNodeTrial *producerTrial =
+        getNodeTrial(edge.producer);
+    if (!consumerTrial || !producerTrial) {
       if (failureReason)
-        *failureReason = "baseline support consumer trial is unavailable";
+        *failureReason = "baseline support endpoint trial is unavailable";
       return false;
     }
     auto producerType =
@@ -621,6 +647,23 @@ static bool appendBaselineSupportChainTransfersImpl(
       // carrier failure or a fabricated dense rectangle.
       if (destination.producerDemand->isIntegerEmpty())
         continue;
+      if (!destination.consumerExecutionDomain) {
+        if (failureReason)
+          *failureReason =
+              "baseline support destination execution domain is unavailable";
+        return false;
+      }
+      analysis::StaticRectangularIndexSetPiecesResult demandPieces =
+          query.getExactProducerDemandPieces(
+              edge.id, *destination.consumerExecutionDomain);
+      if (!demandPieces.isExact() || demandPieces.domains.empty()) {
+        if (failureReason)
+          *failureReason =
+              "baseline support destination demand has no finite exact "
+              "rectangle decomposition: " +
+              demandPieces.reason;
+        return false;
+      }
 
       SpatialEdgeStrategy strategy;
       strategy.producer = producerNode->operation;
@@ -631,13 +674,31 @@ static bool appendBaselineSupportChainTransfersImpl(
       strategy.sourceTile = destination.destinationTile;
       strategy.action = SpatialEdgeAction::PeerFragments;
       strategy.bufferCount = 1;
-      if (!getRectangle(*destination.producerDemand, strategy.producerOffsets,
-                        strategy.producerSizes)) {
-        if (failureReason)
-          *failureReason =
-              "baseline support destination demand needs a finite rectangular "
-              "carrier fragment";
-        return false;
+      strategy.fragmentsDefineProducerDemand = demandPieces.domains.size() > 1;
+      strategy.producerOffsets = demandPieces.domains.front().offsets;
+      strategy.producerSizes = demandPieces.domains.front().sizes;
+      for (const analysis::StaticRectangularIndexSet &piece :
+           llvm::drop_begin(demandPieces.domains)) {
+        for (size_t dimension = 0; dimension < piece.offsets.size();
+             ++dimension) {
+          int64_t currentLimit = 0;
+          int64_t pieceLimit = 0;
+          if (llvm::AddOverflow(strategy.producerOffsets[dimension],
+                                strategy.producerSizes[dimension],
+                                currentLimit) ||
+              llvm::AddOverflow(piece.offsets[dimension],
+                                piece.sizes[dimension], pieceLimit)) {
+            if (failureReason)
+              *failureReason =
+                  "baseline support destination carrier bounds overflow";
+            return false;
+          }
+          const int64_t offset = std::min(strategy.producerOffsets[dimension],
+                                          piece.offsets[dimension]);
+          const int64_t limit = std::max(currentLimit, pieceLimit);
+          strategy.producerOffsets[dimension] = offset;
+          strategy.producerSizes[dimension] = limit - offset;
+        }
       }
 
       const analysis::LogicalTileBinding *consumerBinding = nullptr;
@@ -668,37 +729,53 @@ static bool appendBaselineSupportChainTransfersImpl(
         }
         if (intersection.set->isIntegerEmpty())
           continue;
-        llvm::SmallVector<int64_t, 4> offsets;
-        llvm::SmallVector<int64_t, 4> sizes;
-        if (!getRectangle(*intersection.set, offsets, sizes)) {
+        const analysis::LogicalTileBinding *owner = nullptr;
+        for (const analysis::LogicalTileBinding &binding :
+             producerTrial->bindings)
+          if (binding.resultIndex == edge.producerResult &&
+              binding.tile == intersection.tile && binding.ownedDomain) {
+            owner = &binding;
+            break;
+          }
+        llvm::SmallVector<int64_t, 4> ownerOffsets;
+        llvm::SmallVector<int64_t, 4> ownerSizes;
+        if (!owner ||
+            !getRectangle(*owner->ownedDomain, ownerOffsets, ownerSizes)) {
           if (failureReason)
             *failureReason =
-                "baseline support ownership needs a finite rectangular "
-                "carrier fragment";
+                "baseline support owner has no finite rectangular domain";
           return false;
         }
-        if (intersection.tile == destination.destinationTile) {
+        for (const analysis::StaticRectangularIndexSet &piece :
+             demandPieces.domains) {
+          std::optional<analysis::StaticRectangularIndexSet> owned =
+              intersectRectangles(piece, ownerOffsets, ownerSizes);
+          if (!owned)
+            continue;
+          if (intersection.tile == destination.destinationTile) {
+            strategy.fragments.push_back(SpatialEdgeFragment{
+                SpatialEdgeFragmentKind::Resident, owned->offsets, owned->sizes,
+                intersection.tile,
+                /*bytes=*/0, /*communicationId=*/0, /*payloadSlice=*/0});
+            continue;
+          }
+          uint64_t elements = 1;
+          for (int64_t size : owned->sizes)
+            elements =
+                saturatingMultiply(elements, static_cast<uint64_t>(size));
+          const uint64_t bytes = saturatingMultiply(elements, elementBits / 8);
+          if (bytes == 0 || bytes > std::numeric_limits<uint32_t>::max()) {
+            if (failureReason)
+              *failureReason =
+                  "baseline support peer fragment exceeds target payload";
+            return false;
+          }
           strategy.fragments.push_back(SpatialEdgeFragment{
-              SpatialEdgeFragmentKind::Resident, offsets, sizes,
-              intersection.tile,
-              /*bytes=*/0, /*communicationId=*/0, /*payloadSlice=*/0});
-          continue;
+              SpatialEdgeFragmentKind::Peer, owned->offsets, owned->sizes,
+              intersection.tile, bytes, static_cast<int64_t>(edge.id),
+              payloadSlice++});
+          *peerBytesAccumulator = saturatingAdd(*peerBytesAccumulator, bytes);
         }
-        uint64_t elements = 1;
-        for (int64_t size : sizes)
-          elements = saturatingMultiply(elements, static_cast<uint64_t>(size));
-        const uint64_t bytes = saturatingMultiply(elements, elementBits / 8);
-        if (bytes == 0 || bytes > std::numeric_limits<uint32_t>::max()) {
-          if (failureReason)
-            *failureReason =
-                "baseline support peer fragment exceeds target payload";
-          return false;
-        }
-        strategy.fragments.push_back(SpatialEdgeFragment{
-            SpatialEdgeFragmentKind::Peer, offsets, sizes, intersection.tile,
-            bytes, static_cast<int64_t>(edge.id), payloadSlice++});
-        *peerBytesAccumulator =
-            saturatingAdd(*peerBytesAccumulator, bytes);
       }
       if (strategy.fragments.empty()) {
         if (failureReason)
@@ -706,8 +783,7 @@ static bool appendBaselineSupportChainTransfersImpl(
               "baseline support demand has no physical ownership fragment";
         return false;
       }
-      mapping.edgeStrategies.push_back(
-          std::move(strategy));
+      mapping.edgeStrategies.push_back(std::move(strategy));
     }
   }
   return true;
@@ -759,8 +835,8 @@ makeNodePlacementCandidate(uint64_t stableOrdinal,
     if (selected.shardDimension)
       candidate.evaluation.shardImbalance = saturatingAdd(
           candidate.evaluation.shardImbalance,
-          static_cast<uint64_t>(outputDomains[selected.outputIndex]
-                                             [*selected.shardDimension]) %
+          static_cast<uint64_t>(
+              outputDomains[selected.outputIndex][*selected.shardDimension]) %
               selected.tiles.size());
     candidate.assignment.mapping.outputs.push_back(std::move(output));
   }
@@ -800,9 +876,9 @@ getMaximumSpatialShardShape(const OutputTileMapping &mapping,
                             llvm::ArrayRef<int64_t> outputDomain) {
   llvm::SmallVector<int64_t, 4> shape(outputDomain.begin(), outputDomain.end());
   if (mapping.shardDimension)
-    shape[*mapping.shardDimension] = static_cast<int64_t>(ceilDivide(
-        static_cast<uint64_t>(outputDomain[*mapping.shardDimension]),
-        mapping.activeTileIds.size()));
+    shape[*mapping.shardDimension] = static_cast<int64_t>(
+        ceilDivide(static_cast<uint64_t>(outputDomain[*mapping.shardDimension]),
+                   mapping.activeTileIds.size()));
   return shape;
 }
 
@@ -1361,8 +1437,8 @@ static bool populateOperationTemporalTiles(
         nodePlacements[node.id].node != node.id)
       return false;
     std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-        getMaximumSpatialIteratorRanges(
-            node.operation, nodePlacements[node.id]);
+        getMaximumSpatialIteratorRanges(node.operation,
+                                        nodePlacements[node.id]);
     if (!ranges)
       return false;
     rangesByNode.push_back(std::move(*ranges));
@@ -1372,16 +1448,14 @@ static bool populateOperationTemporalTiles(
     if (minimumEndpoint)
       std::fill(tile.iteratorTileSizes.begin(), tile.iteratorTileSizes.end(),
                 1);
-    mapping.operationTemporalTiles.push_back(
-        std::move(tile));
+    mapping.operationTemporalTiles.push_back(std::move(tile));
   }
   if (minimumEndpoint)
     return true;
   for (unsigned refinement = 0; refinement < additionalWaveRefinements;
        ++refinement) {
     bool changed = false;
-    for (auto [node, tile] :
-         llvm::enumerate(mapping.operationTemporalTiles)) {
+    for (auto [node, tile] : llvm::enumerate(mapping.operationTemporalTiles)) {
       std::optional<unsigned> dimension = selectOperationTemporalRefinementAxis(
           tile.operation, rangesByNode[node], tile.iteratorTileSizes, memory);
       if (!dimension)
@@ -2021,12 +2095,11 @@ makeTemporalVariant(const TileExecutionCandidate &spatial,
 static bool refineOperationTemporalVariantOnce(
     TileMapping &mapping,
     llvm::ArrayRef<StructuredDAGNodePlacement> nodePlacements,
-    unsigned &temporalRefinementDepth,
-    const StaticOutputDomains &outputDomains, const StructuredDAGAnalysis &dag,
-    mlir::Operation *preferredOperation, bool preferredIsOperandDemand,
-    mlir::Operation **refinedOperation = nullptr, size_t *refinedNode = nullptr,
-    unsigned *refinedDimension = nullptr, int64_t *previousExtent = nullptr,
-    int64_t *refinedExtent = nullptr,
+    unsigned &temporalRefinementDepth, const StaticOutputDomains &outputDomains,
+    const StructuredDAGAnalysis &dag, mlir::Operation *preferredOperation,
+    bool preferredIsOperandDemand, mlir::Operation **refinedOperation = nullptr,
+    size_t *refinedNode = nullptr, unsigned *refinedDimension = nullptr,
+    int64_t *previousExtent = nullptr, int64_t *refinedExtent = nullptr,
     bool explicitProducerCanStreamToDDR = false) {
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
 
@@ -2059,8 +2132,7 @@ static bool refineOperationTemporalVariantOnce(
                                   *elementBytes) > capacity;
       };
   if (!explicitProducerCanStreamToDDR && preferredOperation &&
-      llvm::any_of(mapping.edgeStrategies,
-                   hasOversizedExplicitProducerWindow))
+      llvm::any_of(mapping.edgeStrategies, hasOversizedExplicitProducerWindow))
     return false;
 
   struct Refinement {
@@ -2072,13 +2144,11 @@ static bool refineOperationTemporalVariantOnce(
   };
   std::optional<Refinement> downstream;
   std::optional<Refinement> preferred;
-  for (auto [node, tile] :
-       llvm::enumerate(mapping.operationTemporalTiles)) {
+  for (auto [node, tile] : llvm::enumerate(mapping.operationTemporalTiles)) {
     if (node >= nodePlacements.size())
       continue;
     std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-        getMaximumSpatialIteratorRanges(
-            tile.operation, nodePlacements[node]);
+        getMaximumSpatialIteratorRanges(tile.operation, nodePlacements[node]);
     if (!ranges || ranges->size() != tile.iteratorTileSizes.size())
       continue;
     std::optional<unsigned> dimension = selectOperationTemporalRefinementAxis(
@@ -2105,8 +2175,7 @@ static bool refineOperationTemporalVariantOnce(
       const StructuredDAGNode *producer = dag.getNode(edge.producer);
       const StructuredDAGNode *consumer = dag.getNode(edge.consumer);
       if (!producer || !consumer || producer->operation != preferredOperation ||
-          edge.consumer >=
-              mapping.operationTemporalTiles.size())
+          edge.consumer >= mapping.operationTemporalTiles.size())
         continue;
       StructuredOpTemporalTile &consumerTile =
           mapping.operationTemporalTiles[edge.consumer];
@@ -2115,9 +2184,8 @@ static bool refineOperationTemporalVariantOnce(
       if (!linalg || edge.consumerOperand >= linalg->getNumOperands())
         continue;
       std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-          getMaximumSpatialIteratorRanges(
-              consumerTile.operation,
-              nodePlacements[edge.consumer]);
+          getMaximumSpatialIteratorRanges(consumerTile.operation,
+                                          nodePlacements[edge.consumer]);
       if (!ranges || ranges->size() != consumerTile.iteratorTileSizes.size())
         continue;
       mlir::AffineMap operandMap = linalg.getMatchingIndexingMap(
@@ -2179,8 +2247,8 @@ static bool refineOperationTemporalVariantOnce(
   StructuredOpTemporalTile &tile =
       mapping.operationTemporalTiles[selected->node];
   std::optional<llvm::SmallVector<int64_t, 4>> ranges =
-      getMaximumSpatialIteratorRanges(
-          tile.operation, nodePlacements[selected->node]);
+      getMaximumSpatialIteratorRanges(tile.operation,
+                                      nodePlacements[selected->node]);
   if (!ranges || selected->dimension >= ranges->size())
     return false;
   const int64_t previous = tile.iteratorTileSizes[selected->dimension];
@@ -2251,10 +2319,9 @@ static bool refineOperationTemporalVariantOnce(
     *previousExtent = previous;
   if (refinedExtent)
     *refinedExtent = tile.iteratorTileSizes[selected->dimension];
-  if (temporalRefinementDepth !=
-      std::numeric_limits<unsigned>::max())
+  if (temporalRefinementDepth != std::numeric_limits<unsigned>::max())
     ++temporalRefinementDepth;
-  
+
   return true;
 }
 
@@ -2268,12 +2335,11 @@ static bool refineOutputTemporalVariantOnce(
     const StaticOutputDomains &outputDomains, const StructuredDAGAnalysis &dag,
     unsigned outputIndex, unsigned *refinedDimension = nullptr,
     int64_t *previousExtent = nullptr, int64_t *refinedExtent = nullptr) {
-  auto output = llvm::find_if(mapping.outputs,
-                              [&](const OutputTileMapping &mapping) {
-                                return mapping.outputIndex == outputIndex;
-                              });
-  if (output == mapping.outputs.end() ||
-      outputIndex >= outputDomains.size())
+  auto output =
+      llvm::find_if(mapping.outputs, [&](const OutputTileMapping &mapping) {
+        return mapping.outputIndex == outputIndex;
+      });
+  if (output == mapping.outputs.end() || outputIndex >= outputDomains.size())
     return false;
   std::optional<uint64_t> elementBytes =
       getElementByteWidth(dag.getFunction().getResultTypes()[outputIndex]);
@@ -2298,10 +2364,9 @@ static bool refineOutputTemporalVariantOnce(
     *previousExtent = previous;
   if (refinedExtent)
     *refinedExtent = output->temporalTileSizes[*dimension];
-  if (temporalRefinementDepth !=
-      std::numeric_limits<unsigned>::max())
+  if (temporalRefinementDepth != std::numeric_limits<unsigned>::max())
     ++temporalRefinementDepth;
-  
+
   return true;
 }
 
@@ -2320,11 +2385,11 @@ isLargerThanKnownOperationResultTile(const TileExecutionCandidate &candidate,
                                      uint64_t demandBytes) {
   if (!operation || demandBytes == 0)
     return false;
-  auto selected = llvm::find_if(
-      candidate.assignment.mapping.operationTemporalTiles,
-      [&](const StructuredOpTemporalTile &tile) {
-        return tile.operation == operation;
-      });
+  auto selected =
+      llvm::find_if(candidate.assignment.mapping.operationTemporalTiles,
+                    [&](const StructuredOpTemporalTile &tile) {
+                      return tile.operation == operation;
+                    });
   if (selected == candidate.assignment.mapping.operationTemporalTiles.end())
     return false;
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
@@ -2394,8 +2459,8 @@ static bool refineAllocationDemandTowardCapacityProbe(
       refined = refineOutputTemporalVariantOnce(
           candidate.assignment.mapping,
           candidate.transition.temporalRefinementDepth, outputDomains, dag,
-          *demand.outputIndex, &refinedDimension,
-          &previousExtent, &refinedExtent);
+          *demand.outputIndex, &refinedDimension, &previousExtent,
+          &refinedExtent);
     } else if (demand.operationNode) {
       refined = refineOperationTemporalVariantOnce(
           candidate.assignment.mapping, candidate.assignment.nodePlacements,
@@ -2433,22 +2498,19 @@ static bool sameMapping(const TileMapping &lhs, const TileMapping &rhs) {
       lhs.operationTemporalTiles.size() != rhs.operationTemporalTiles.size() ||
       lhs.edgeStrategies.size() != rhs.edgeStrategies.size())
     return false;
-  for (auto [lhsOutput, rhsOutput] :
-       llvm::zip_equal(lhs.outputs, rhs.outputs))
+  for (auto [lhsOutput, rhsOutput] : llvm::zip_equal(lhs.outputs, rhs.outputs))
     if (lhsOutput.outputIndex != rhsOutput.outputIndex ||
         lhsOutput.shardDimension != rhsOutput.shardDimension ||
         lhsOutput.activeTileIds != rhsOutput.activeTileIds ||
         lhsOutput.temporalTileSizes != rhsOutput.temporalTileSizes)
       return false;
   for (auto [lhsTile, rhsTile] :
-       llvm::zip_equal(lhs.operationTemporalTiles,
-                       rhs.operationTemporalTiles))
+       llvm::zip_equal(lhs.operationTemporalTiles, rhs.operationTemporalTiles))
     if (lhsTile.operation != rhsTile.operation ||
         lhsTile.iteratorTileSizes != rhsTile.iteratorTileSizes)
       return false;
   for (auto [lhsStrategy, rhsStrategy] :
-       llvm::zip_equal(lhs.edgeStrategies,
-                       rhs.edgeStrategies)) {
+       llvm::zip_equal(lhs.edgeStrategies, rhs.edgeStrategies)) {
     if (lhsStrategy.producer != rhsStrategy.producer ||
         lhsStrategy.producerResult != rhsStrategy.producerResult ||
         lhsStrategy.consumer != rhsStrategy.consumer ||
@@ -2464,6 +2526,8 @@ static bool sameMapping(const TileMapping &lhs, const TileMapping &rhs) {
         lhsStrategy.producerLayout != rhsStrategy.producerLayout ||
         lhsStrategy.consumerLayout != rhsStrategy.consumerLayout ||
         lhsStrategy.bufferCount != rhsStrategy.bufferCount ||
+        lhsStrategy.fragmentsDefineProducerDemand !=
+            rhsStrategy.fragmentsDefineProducerDemand ||
         lhsStrategy.fragments.size() != rhsStrategy.fragments.size())
       return false;
     for (auto [lhsFragment, rhsFragment] :
@@ -2520,6 +2584,7 @@ static size_t getMappingHash(const TileExecutionCandidate &candidate,
     mix(static_cast<unsigned>(strategy.consumerLayout));
     if (includeBufferCount)
       mix(strategy.bufferCount);
+    mix(strategy.fragmentsDefineProducerDemand);
     mix(strategy.fragments.size());
   }
   return static_cast<size_t>(hash);
@@ -2555,7 +2620,7 @@ static bool samePreBufferMapping(const TileExecutionCandidate &lhs,
        normalizedRhs.assignment.mapping.edgeStrategies)
     strategy.bufferCount = 1;
   return sameMapping(normalizedLhs.assignment.mapping,
-                       normalizedRhs.assignment.mapping);
+                     normalizedRhs.assignment.mapping);
 }
 
 /// Buffer multiplicity changes slot count and the minimum steady-state trip
@@ -2602,7 +2667,7 @@ static bool sameNonTemporalState(const TileExecutionCandidate &lhs,
        normalizedRhs.assignment.mapping.operationTemporalTiles)
     tile.iteratorTileSizes.clear();
   return sameMapping(normalizedLhs.assignment.mapping,
-                       normalizedRhs.assignment.mapping);
+                     normalizedRhs.assignment.mapping);
 }
 
 static bool
@@ -2835,13 +2900,10 @@ static bool sameLogicalEdge(const SpatialEdgeStrategy &lhs,
 static llvm::SmallVector<llvm::SmallVector<size_t, 16>, 32>
 getLogicalEdgeStrategyGroups(const TileMapping &mapping) {
   llvm::SmallVector<llvm::SmallVector<size_t, 16>, 32> groups;
-  for (auto [index, strategy] :
-       llvm::enumerate(mapping.edgeStrategies)) {
+  for (auto [index, strategy] : llvm::enumerate(mapping.edgeStrategies)) {
     auto group = llvm::find_if(groups, [&](llvm::ArrayRef<size_t> members) {
       return !members.empty() &&
-             sameLogicalEdge(
-                 mapping.edgeStrategies[members.front()],
-                 strategy);
+             sameLogicalEdge(mapping.edgeStrategies[members.front()], strategy);
     });
     if (group == groups.end())
       groups.push_back({index});
@@ -2853,14 +2915,14 @@ getLogicalEdgeStrategyGroups(const TileMapping &mapping) {
 
 static uint64_t
 countBufferedLogicalEdges(const TileExecutionCandidate &candidate) {
-  return llvm::count_if(getLogicalEdgeStrategyGroups(candidate.assignment.mapping),
-                        [&](llvm::ArrayRef<size_t> group) {
-                          return llvm::any_of(group, [&](size_t index) {
-                            return candidate.assignment.mapping
-                                       .edgeStrategies[index]
-                                       .bufferCount > 1;
-                          });
-                        });
+  return llvm::count_if(
+      getLogicalEdgeStrategyGroups(candidate.assignment.mapping),
+      [&](llvm::ArrayRef<size_t> group) {
+        return llvm::any_of(group, [&](size_t index) {
+          return candidate.assignment.mapping.edgeStrategies[index]
+                     .bufferCount > 1;
+        });
+      });
 }
 
 static bool isLegalLocalEdgeAction(const TileExecutionCandidate &candidate,
@@ -3015,7 +3077,8 @@ refineOversizedExplicitProducerEdges(TileExecutionCandidate &candidate,
   const uint64_t capacity =
       static_cast<uint64_t>(memory.spmLimit - memory.spmBase);
   unsigned refinedGroups = 0;
-  for (llvm::ArrayRef<size_t> group : getLogicalEdgeStrategyGroups(candidate.assignment.mapping)) {
+  for (llvm::ArrayRef<size_t> group :
+       getLogicalEdgeStrategyGroups(candidate.assignment.mapping)) {
     const bool hasProvenOversizedWindow =
         llvm::any_of(group, [&](size_t index) {
           const SpatialEdgeStrategy &strategy =
@@ -3115,8 +3178,7 @@ deriveCanonicalBaselinePlacements(
     llvm::ArrayRef<llvm::SmallVector<StructuredDAGNodePlacement, 32>>
         nodeOptions,
     size_t availableTileCount, analysis::IREpoch epoch,
-    CardExecutableSynthesisStatistics &statistics,
-    std::string *failureReason) {
+    CardExecutableSynthesisStatistics &statistics, std::string *failureReason) {
   if (nodeOptions.size() != dag.getNodes().size()) {
     if (failureReason)
       *failureReason = "baseline node option domain is incomplete";
@@ -3156,8 +3218,7 @@ deriveCanonicalBaselinePlacements(
     return mlir::failure();
   }
 
-  std::vector<llvm::SmallVector<StructuredDAGNodePlacement, 4>>
-      groupOptions;
+  std::vector<llvm::SmallVector<StructuredDAGNodePlacement, 4>> groupOptions;
   groupOptions.reserve(nodeOptions.size());
   for (const auto &options : nodeOptions) {
     llvm::SmallVector<StructuredDAGNodePlacement, 4> selected;
@@ -3193,9 +3254,9 @@ deriveCanonicalBaselinePlacements(
     /// unsupported semantics and indeterminate failures set `aborted` and
     /// stop the whole baseline as typed failures.
     bool contains(size_t producerIndex, size_t consumerIndex, bool &aborted) {
-      const uint64_t key = static_cast<uint64_t>(producerIndex) *
-                               consumerOptionCount +
-                           consumerIndex;
+      const uint64_t key =
+          static_cast<uint64_t>(producerIndex) * consumerOptionCount +
+          consumerIndex;
       auto found = legal.find(key);
       if (found != legal.end())
         return found->second;
@@ -3205,8 +3266,8 @@ deriveCanonicalBaselinePlacements(
           *dag, producerOptions[producerIndex], consumerOptions[consumerIndex],
           epoch, &trialFailure);
       if (mlir::failed(trial)) {
-        statistics->indeterminateDemandQueries = saturatingAdd(
-            statistics->indeterminateDemandQueries, 1);
+        statistics->indeterminateDemandQueries =
+            saturatingAdd(statistics->indeterminateDemandQueries, 1);
         statistics->demandAbortStatus =
             analysis::ExactDemandStatus::IndeterminateFailure;
         statistics->demandAbortDetail = std::move(trialFailure);
@@ -3215,14 +3276,15 @@ deriveCanonicalBaselinePlacements(
       }
       analysis::ExactDemandResult demand = demandQuery->query(edgeId, *trial);
       if (demand.status == analysis::ExactDemandStatus::Satisfied) {
-        statistics->exactDemandSatisfiedEdges = saturatingAdd(
-            statistics->exactDemandSatisfiedEdges, 1);
+        statistics->exactDemandSatisfiedEdges =
+            saturatingAdd(statistics->exactDemandSatisfiedEdges, 1);
         legal[key] = true;
         return true;
       }
-      if (demand.status == analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
-        statistics->provenLogicalInfeasibleTrials = saturatingAdd(
-            statistics->provenLogicalInfeasibleTrials, 1);
+      if (demand.status ==
+          analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
+        statistics->provenLogicalInfeasibleTrials =
+            saturatingAdd(statistics->provenLogicalInfeasibleTrials, 1);
         *lastRelationFailure = std::move(demand.detail);
         legal[key] = false;
         return false;
@@ -3434,8 +3496,8 @@ static std::optional<ResolvedBaselineAssignment> derivePolicyFreeBaseline(
     }
     if (*advance == DeterministicSpatialAdvance::Exhausted) {
       if (failureReason)
-        *failureReason = closureFailure.empty() ? legality.detail
-                                                : closureFailure;
+        *failureReason =
+            closureFailure.empty() ? legality.detail : closureFailure;
       return std::nullopt;
     }
     ++ledger.spatialLegalizationTransitions;
@@ -3460,9 +3522,8 @@ static std::optional<ResolvedBaselineAssignment> derivePolicyFreeBaseline(
     output.outputIndex = selected.outputIndex;
     output.shardDimension = selected.shardDimension;
     output.activeTileIds = selected.tiles;
-    output.temporalTileSizes.assign(
-        outputDomains[selected.outputIndex].begin(),
-        outputDomains[selected.outputIndex].end());
+    output.temporalTileSizes.assign(outputDomains[selected.outputIndex].begin(),
+                                    outputDomains[selected.outputIndex].end());
     assignment.mapping.outputs.push_back(std::move(output));
   }
   llvm::sort(assignment.mapping.outputs,
@@ -3485,16 +3546,17 @@ deriveBaseline(const TargetTopology &topology, CardId cardId,
   // The search's baseline seed shares the canonical solve with the
   // deterministic baseline and then closes the assignment through the search
   // evaluator.
-  mlir::FailureOr<llvm::SmallVector<
-      llvm::SmallVector<StructuredDAGNodePlacement, 32>, 16>>
+  mlir::FailureOr<
+      llvm::SmallVector<llvm::SmallVector<StructuredDAGNodePlacement, 32>, 16>>
       options = deriveStructuredDAGNodePlacementOptions(dag, topology, cardId,
                                                         failureReason);
   if (mlir::failed(options))
     return std::nullopt;
   mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>>
-      placements = deriveCanonicalBaselinePlacements(
-          dag, *options, availableTileIds.size(), epoch, statistics,
-          failureReason);
+      placements =
+          deriveCanonicalBaselinePlacements(dag, *options,
+                                            availableTileIds.size(), epoch,
+                                            statistics, failureReason);
   if (mlir::failed(placements))
     return std::nullopt;
 
@@ -3502,8 +3564,7 @@ deriveBaseline(const TargetTopology &topology, CardId cardId,
   std::string evaluationFailure;
   StructuredDAGPlacementLegality evaluationLegality;
   mlir::FailureOr<StructuredDAGPlacementCandidate> evaluated =
-      evaluator.evaluate(*placements, &evaluationFailure,
-                         &evaluationLegality);
+      evaluator.evaluate(*placements, &evaluationFailure, &evaluationLegality);
   if (mlir::failed(evaluated)) {
     if (evaluationLegality.status !=
         analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
@@ -3521,26 +3582,23 @@ deriveBaseline(const TargetTopology &topology, CardId cardId,
                                     outputDomains, dag);
 }
 
-static std::optional<ResolvedBaselineAssignment>
-deriveDeterministicBaseline(const TargetTopology &topology, CardId cardId,
-                            llvm::ArrayRef<TileId> availableTileIds,
-                            const StaticOutputDomains &outputDomains,
-                            const StructuredDAGAnalysis &dag,
-                            analysis::IREpoch epoch,
-                            DeterministicBaselineLedger &ledger,
-                            llvm::raw_ostream &diagnostics) {
+static std::optional<ResolvedBaselineAssignment> deriveDeterministicBaseline(
+    const TargetTopology &topology, CardId cardId,
+    llvm::ArrayRef<TileId> availableTileIds,
+    const StaticOutputDomains &outputDomains, const StructuredDAGAnalysis &dag,
+    analysis::IREpoch epoch, DeterministicBaselineLedger &ledger,
+    llvm::raw_ostream &diagnostics) {
   std::string failure;
-  std::optional<ResolvedBaselineAssignment> spatial = derivePolicyFreeBaseline(
-      topology, cardId, availableTileIds, outputDomains, dag, epoch, ledger,
-      &failure);
+  std::optional<ResolvedBaselineAssignment> spatial =
+      derivePolicyFreeBaseline(topology, cardId, availableTileIds,
+                               outputDomains, dag, epoch, ledger, &failure);
   if (!spatial || !prepareEdgeStrategies(*spatial, dag)) {
     if (ledger.demandAbortStatus != analysis::ExactDemandStatus::Satisfied) {
       diagnostics << "wafer-compile: deterministic card baseline aborted: "
                   << ledger.demandAbortDetail << '\n';
     } else {
       diagnostics << "wafer-compile: deterministic card baseline failed: "
-                  << (failure.empty() ? "no legal spatial coordinate"
-                                      : failure)
+                  << (failure.empty() ? "no legal spatial coordinate" : failure)
                   << '\n';
     }
     return std::nullopt;
@@ -3584,9 +3642,9 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
                 llvm::raw_ostream &diagnostics,
                 CandidateResourceScheduleMemo &resourceScheduleMemo) {
   std::string baselineFailure;
-  std::optional<TileExecutionCandidate> derivedBaseline = deriveBaseline(
-      topology, cardId, availableTileIds, outputDomains, dag, epoch,
-      statistics, &baselineFailure);
+  std::optional<TileExecutionCandidate> derivedBaseline =
+      deriveBaseline(topology, cardId, availableTileIds, outputDomains, dag,
+                     epoch, statistics, &baselineFailure);
   if (!derivedBaseline) {
     statistics.candidateProposals = 0;
     statistics.shortlistedCandidates = 0;
@@ -3702,8 +3760,7 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
              spatialDomain->nodeOptions[node]) {
           const StructuredDAGNodePlacement &currentPlacement =
               incumbent.assignment.nodePlacements[node];
-          if (option.spatialPartition ==
-                  currentPlacement.spatialPartition &&
+          if (option.spatialPartition == currentPlacement.spatialPartition &&
               option.iteratorPartitionFactors ==
                   currentPlacement.iteratorPartitionFactors &&
               option.tiles == currentPlacement.tiles)
@@ -3729,8 +3786,7 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
         for (unsigned worker = 0; worker < placementWorkers; ++worker)
           workerEvaluators.push_back(
               std::make_unique<StructuredDAGPlacementEvaluator>(dag, topology,
-                                                                cardId,
-                                                                epoch));
+                                                                cardId, epoch));
         for (size_t batchBegin = 0; batchBegin < queries.size();
              batchBegin += placementWorkers) {
           const size_t batchSize =
@@ -3740,9 +3796,8 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
               [&](size_t localIndex) {
                 PlacementQuery &query = queries[batchBegin + localIndex];
                 mlir::FailureOr<StructuredDAGPlacementCandidate> evaluated =
-                    workerEvaluators[localIndex]->evaluate(query.placements,
-                                                           &query.failure,
-                                                           &query.legality);
+                    workerEvaluators[localIndex]->evaluate(
+                        query.placements, &query.failure, &query.legality);
                 if (mlir::succeeded(evaluated))
                   query.result = std::move(*evaluated);
               },
@@ -3766,8 +3821,8 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
             }
             statistics.nodePlacementTransitionsRejected =
                 saturatingAdd(statistics.nodePlacementTransitionsRejected, 1);
-            statistics.provenLogicalInfeasibleTrials = saturatingAdd(
-                statistics.provenLogicalInfeasibleTrials, 1);
+            statistics.provenLogicalInfeasibleTrials =
+                saturatingAdd(statistics.provenLogicalInfeasibleTrials, 1);
             spatialFailure = std::move(query.failure);
             continue;
           }
@@ -3872,8 +3927,8 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
     mlir::FailureOr<analysis::LogicalShardTrial> trial = buildLogicalShardTrial(
         dag, seed.assignment.nodePlacements, epoch, &trialFailure);
     if (mlir::failed(trial)) {
-      statistics.indeterminateDemandQueries = saturatingAdd(
-          statistics.indeterminateDemandQueries, 1);
+      statistics.indeterminateDemandQueries =
+          saturatingAdd(statistics.indeterminateDemandQueries, 1);
       statistics.demandAbortStatus =
           analysis::ExactDemandStatus::IndeterminateFailure;
       statistics.demandAbortDetail = std::move(trialFailure);
@@ -3886,8 +3941,8 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
       analysis::ExactDemandResult demand =
           seedDemandQuery.query(edge.id, *trial);
       if (demand.status == analysis::ExactDemandStatus::Satisfied) {
-        statistics.exactDemandSatisfiedEdges = saturatingAdd(
-            statistics.exactDemandSatisfiedEdges, 1);
+        statistics.exactDemandSatisfiedEdges =
+            saturatingAdd(statistics.exactDemandSatisfiedEdges, 1);
         continue;
       }
       if (demand.status ==
@@ -3902,8 +3957,8 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
       return {};
     }
     if (seedInfeasible) {
-      statistics.provenLogicalInfeasibleTrials = saturatingAdd(
-          statistics.provenLogicalInfeasibleTrials, 1);
+      statistics.provenLogicalInfeasibleTrials =
+          saturatingAdd(statistics.provenLogicalInfeasibleTrials, 1);
       continue;
     }
     // Best-effort modeling carrier; a failure keeps the seed with an
@@ -4204,7 +4259,7 @@ deriveShortlist(const TargetTopology &topology, CardId cardId,
                   makeLogicalEdgeVariant(incumbent, group, action, buffers,
                                          nextStableOrdinal++);
               if (!candidate || sameMapping(candidate->assignment.mapping,
-                                             incumbent.assignment.mapping))
+                                            incumbent.assignment.mapping))
                 continue;
               candidates.push_back(std::move(*candidate));
             }
@@ -4312,7 +4367,8 @@ buildSelectedBufferRequestsForTile(const TileExecutionCandidate &candidate,
                                    const StructuredDAGAnalysis &dag,
                                    std::string &failureReason) {
   llvm::SmallVector<SelectedBufferRequest, 4> requests;
-  for (llvm::ArrayRef<size_t> group : getLogicalEdgeStrategyGroups(candidate.assignment.mapping)) {
+  for (llvm::ArrayRef<size_t> group :
+       getLogicalEdgeStrategyGroups(candidate.assignment.mapping)) {
     if (group.empty())
       continue;
     const SpatialEdgeStrategy &representative =
@@ -4514,8 +4570,7 @@ static bool rootContainsActualFusedEdge(
 }
 
 static mlir::LogicalResult validateSelectedFusion(
-    mlir::ModuleOp cardModule,
-    const ResolvedBaselineAssignment &assignment,
+    mlir::ModuleOp cardModule, const ResolvedBaselineAssignment &assignment,
     const StructuredDAGAnalysis &dag,
     const StructuredMaterializationRelations &materializationRelations,
     uint64_t &actualFusedLogicalEdges, std::string &failureReason) {
@@ -4547,8 +4602,7 @@ static mlir::LogicalResult validateSelectedFusionImpl(
                  SpatialEdgeAction::CoupledFusion;
         }))
       continue;
-    const SpatialEdgeStrategy &strategy =
-        mapping.edgeStrategies[group.front()];
+    const SpatialEdgeStrategy &strategy = mapping.edgeStrategies[group.front()];
     std::optional<StructuredDAGNodeID> producer =
         findStructuredNode(dag, strategy.producer);
     std::optional<StructuredDAGNodeID> consumer =
@@ -4595,8 +4649,7 @@ static mlir::LogicalResult validateSelectedTileLayoutsImpl(
     mlir::Operation *root, const TileMapping &mapping, TileId tile,
     const StructuredDAGAnalysis &dag,
     const StructuredMaterializationRelations &materializationRelations,
-    std::string &failureReason,
-    std::optional<StructuredDAGNodeID> scopedNode) {
+    std::string &failureReason, std::optional<StructuredDAGNodeID> scopedNode) {
   // One walk builds both indexes: the structured nodes each op serves
   // (memoized storage-root queries against the relation lists) and the SPM
   // layouts each op carries on its operand/result types. Per-strategy
@@ -4609,8 +4662,7 @@ static mlir::LogicalResult validateSelectedTileLayoutsImpl(
   llvm::DenseMap<mlir::Value, llvm::SmallVector<uint32_t, 2>> rootToNodes;
   auto indexRelationList = [&](const auto &relations) {
     for (const auto &relation : relations)
-      for (mlir::Value root :
-           storageRootMemo.getStorageRoots(relation.buffer))
+      for (mlir::Value root : storageRootMemo.getStorageRoots(relation.buffer))
         if (!llvm::is_contained(rootToNodes[root], relation.structuredNodeId))
           rootToNodes[root].push_back(relation.structuredNodeId);
   };
@@ -4668,8 +4720,7 @@ static mlir::LogicalResult validateSelectedTileLayoutsImpl(
   auto anyCarriesLayout = [&](MemLayout layout) {
     return llvm::is_contained(carriedLayouts, layout);
   };
-  for (const SpatialEdgeStrategy &strategy :
-       mapping.edgeStrategies) {
+  for (const SpatialEdgeStrategy &strategy : mapping.edgeStrategies) {
     if (!strategy.hasLayoutAssignment ||
         !isSpatialEdgeStrategyIncidentOnTile(strategy, tile))
       continue;
@@ -4860,9 +4911,8 @@ static mlir::FailureOr<CardExecutableLoweringResult> materializeCandidate(
     CardExecutableSynthesisStatistics *searchStatistics,
     uint64_t &rotatingSlotAllocationsMaterialized,
     uint64_t &actualFusedLogicalEdges, unsigned tilePipelineParallelism,
-    bool requestTileIRTrace,
-    std::optional<TileId> preferredFailureProbeTileId, std::string &failureGate,
-    std::string &failureReason,
+    bool requestTileIRTrace, std::optional<TileId> preferredFailureProbeTileId,
+    std::string &failureGate, std::string &failureReason,
     SelectedBufferMaterializationFailure &selectedBufferFailure,
     bool &indeterminateFailure, bool &spmCapacityOverflow,
     llvm::SmallVectorImpl<SPMCapacityDemandEvidence> &spmCapacityDemands,
@@ -5107,14 +5157,20 @@ static bool refineDeterministicBaselineFromSPM(
     }
     ++temporalTransitions;
   }
-  if (temporalTransitions == 0 || sameMapping(refined.mapping, candidate.mapping))
+  if (temporalTransitions == 0 ||
+      sameMapping(refined.mapping, candidate.mapping))
     return false;
   candidate = std::move(refined);
   return true;
 }
 
+/// Materializes each closed deterministic coordinate exactly once and lets
+/// the policy-free CardModule compilation boundary produce the only actual
+/// capacity verdict. A rejected coordinate is destroyed; an accepted
+/// executable is retained directly. No root, Tile-entry or winner replay is
+/// part of this ownership chain.
 static mlir::FailureOr<DeterministicCardExecutableSynthesisResult>
-synthesizeDeterministicBaseline(
+synthesizeDeterministicBaselineDirect(
     mlir::ModuleOp tensorProgram, const TargetTopology &topology, CardId cardId,
     llvm::ArrayRef<TileId> expectedTileIds,
     const StaticOutputDomains &outputDomains, const StructuredDAGAnalysis &dag,
@@ -5123,19 +5179,27 @@ synthesizeDeterministicBaseline(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData, DeterministicBaselineLedger &ledger,
     unsigned tilePipelineParallelism,
-    std::vector<std::string> *tileDataflowIRTrace,
-    analysis::IREpoch epoch) {
-  std::optional<ResolvedBaselineAssignment> candidate =
-      deriveDeterministicBaseline(topology, cardId, expectedTileIds,
-                                  outputDomains, dag, epoch, ledger,
-                                  diagnostics);
+    std::vector<std::string> *tileDataflowIRTrace, analysis::IREpoch epoch) {
+  std::optional<ResolvedBaselineAssignment> candidate = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "deterministic-baseline",
+        "derive-spatial-and-temporal-assignment");
+    return deriveDeterministicBaseline(topology, cardId, expectedTileIds,
+                                       outputDomains, dag, epoch, ledger,
+                                       diagnostics);
+  }();
   if (!candidate)
     return mlir::failure();
 
   std::string sourcePreparationFailure;
   mlir::FailureOr<std::unique_ptr<TileMaterializationSourceSession>>
-      sourceSession = TileMaterializationSourceSession::create(
-          tensorProgram, cardId, operationNodes, &sourcePreparationFailure);
+      sourceSession = [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "deterministic-baseline",
+            "prepare-tile-materialization-source");
+        return TileMaterializationSourceSession::create(
+            tensorProgram, cardId, operationNodes, &sourcePreparationFailure);
+      }();
   if (mlir::failed(sourceSession)) {
     diagnostics << "wafer-compile: deterministic card baseline failed "
                    "source materialization preparation: "
@@ -5147,505 +5211,51 @@ synthesizeDeterministicBaseline(
   uint64_t controllerIterations = 0;
   while (true) {
     ++controllerIterations;
-    // Every feasibility iteration starts from root/Tile-scoped probes. A full
-    // CardModule is not constructed until the current coordinate has passed
-    // all local capacity checks.
-    mlir::OwningOpRef<mlir::ModuleOp> cardModule;
-    std::unique_ptr<TileMaterializationSession> materializationSession;
-    StructuredMaterializationRelations materializationRelations;
-    struct ScopedRootProbeModule {
-      TileId tileId;
-      StructuredDAGNodeID targetRoot = 0;
-      mlir::OwningOpRef<mlir::ModuleOp> module;
-    };
-    llvm::SmallVector<ScopedRootProbeModule, 16> scopedProbeModules;
     std::string failureReason;
+    mlir::FailureOr<std::unique_ptr<TileMaterializationSession>> session;
     {
       wafer::support::ScopedCompileTimingSpan timing(
           "conversion", "deterministic-baseline",
           "tensor-program-materialization-session");
-      mlir::FailureOr<std::unique_ptr<TileMaterializationSession>> session =
-          TileMaterializationSession::create(
-              **sourceSession, candidate->mapping, &failureReason,
-              dag.getObservableOutputRootNodes());
-      if (mlir::failed(session)) {
-        diagnostics << "wafer-compile: deterministic card baseline failed "
-                       "materialization preparation: "
-                    << failureReason << '\n';
-        return mlir::failure();
-      }
-      materializationSession = std::move(*session);
-      ++ledger.baselineMaterializationPreparations;
-
-      // Materialize one narrow module per structured root participating on
-      // the probed Tile. Each module carries exactly that root's shard and its
-      // non-root support closure, never sibling roots, sibling Tiles or
-      // card-shaped wrappers.
-      auto nodeMapsTo = [&](mlir::Operation *operation)
-          -> std::optional<uint32_t> {
-        for (const StructuredOperationNodeMapping &node : operationNodes)
-          if (node.operation == operation)
-            return node.structuredNodeId;
-        return std::nullopt;
-      };
-      llvm::SmallVector<TileRootShardRequest, 32> probeRequests;
-      for (const StructuredDAGNodePlacement &placement :
-           candidate->nodePlacements) {
-        // Placement participants are an upper ownership domain, not proof of
-        // actual work. A multi-piece overwrite can leave an intermediate root
-        // with empty exact demand on one of those Tiles. Request only Tiles
-        // that own an observable shard or a concrete selected edge endpoint;
-        // support-only and empty-demand placements are probed with their
-        // actual owning root instead of manufacturing a no-work root module.
-        auto ownsObservableShard = [&](TileId tileId) {
-          for (const OutputTileMapping &output : candidate->mapping.outputs) {
-            if (output.outputIndex >=
-                    dag.getObservableOutputRootNodes().size() ||
-                !llvm::is_contained(output.activeTileIds, tileId) ||
-                !llvm::is_contained(
-                    dag.getObservableOutputRootNodes()[output.outputIndex],
-                    placement.node))
-              continue;
-            return true;
-          }
-          return false;
-        };
-        auto ownsEdgeEndpoint = [&](TileId tileId) {
-          return llvm::any_of(
-              candidate->mapping.edgeStrategies,
-              [&](const SpatialEdgeStrategy &strategy) {
-                std::optional<uint32_t> producerNode =
-                    nodeMapsTo(strategy.producer);
-                std::optional<uint32_t> consumerNode =
-                    nodeMapsTo(strategy.consumer);
-                const bool materializesProducer =
-                    producerNode && *producerNode == placement.node &&
-                    (strategy.action == SpatialEdgeAction::PeerFragments
-                         ? llvm::any_of(
-                               strategy.fragments,
-                               [&](const SpatialEdgeFragment &fragment) {
-                                 return fragment.sourceTile == tileId;
-                               })
-                         : strategy.sourceTile == tileId);
-                const bool materializesConsumer =
-                    consumerNode && *consumerNode == placement.node &&
-                    strategy.destinationTile == tileId;
-                return materializesProducer || materializesConsumer;
-              });
-        };
-        for (TileId probeTileId : placement.tiles)
-          if (ownsObservableShard(probeTileId) ||
-              ownsEdgeEndpoint(probeTileId))
-            probeRequests.push_back(
-                TileRootShardRequest{probeTileId, placement.node});
-      }
-      if (probeRequests.empty()) {
-        diagnostics << "wafer-compile: deterministic card baseline scoped "
-                       "probe has no participating root\n";
-        return mlir::failure();
-      }
-      llvm::SmallVector<TileRootShardMaterialization, 32>
-          rootMaterializations;
-      std::string rootFailure;
-      if (mlir::failed(materializationSession->lowerRootShards(
-              probeRequests, rootMaterializations, &rootFailure))) {
-        diagnostics << "wafer-compile: deterministic card baseline failed "
-                       "scoped root materialization: "
-                    << rootFailure << '\n';
-        return mlir::failure();
-      }
-      for (TileRootShardMaterialization &root : rootMaterializations) {
-        materializationRelations.operationResultBuffers.append(
-            root.relations.operationResultBuffers.begin(),
-            root.relations.operationResultBuffers.end());
-        materializationRelations.operandBuffers.append(
-            root.relations.operandBuffers.begin(),
-            root.relations.operandBuffers.end());
-        materializationRelations.outputBuffers.append(
-            root.relations.outputBuffers.begin(),
-            root.relations.outputBuffers.end());
-        scopedProbeModules.push_back(ScopedRootProbeModule{
-            root.tileId, root.targetRoot, std::move(root.module)});
-      }
-      ledger.baselineRootShardMaterializations += rootMaterializations.size();
+      session = TileMaterializationSession::create(
+          **sourceSession, candidate->mapping, &failureReason,
+          dag.getObservableOutputRootNodes());
     }
-
-    llvm::SmallVector<TileModuleOp, 16> tileModules;
-    // The scoped probe materializes exactly one narrow entry function per
-    // participating root: no CardModule/TileModule shell, no sibling Tile
-    // modules and no no-work wrappers.
-    for (ScopedRootProbeModule &probe : scopedProbeModules) {
-      bool cardShaped = false;
-      probe.module->walk([&](TileModuleOp) { cardShaped = true; });
-      if (cardShaped) {
-        diagnostics << "wafer-compile: deterministic card baseline scoped "
-                       "probe materialized a card-shaped wrapper\n";
-        return mlir::failure();
-      }
-    }
-
-    struct RegionEvaluation {
-      TileId tileId;
-      TileRegionOp region;
-      /// Compute-owning structured roots of this region, matched by result
-      /// relations only.
-      llvm::SmallVector<StructuredDAGNodeID, 2> resultRoots;
-    };
-    llvm::SmallVector<RegionEvaluation, 32> regionEvaluations;
-    auto appendRegionEvaluations = [&](mlir::Operation *validationRoot,
-                                       TileId tileId,
-                                       std::optional<StructuredDAGNodeID>
-                                           scopedNode) {
-      if (mlir::failed(validateSelectedTileLayouts(
-              validationRoot, *candidate, tileId, dag,
-              materializationRelations, failureReason, scopedNode))) {
-        diagnostics << "wafer-compile: deterministic card baseline "
-                       "lost its selected physical assignment: "
-                    << failureReason << '\n';
-        return mlir::failure();
-      }
-      llvm::SmallVector<TileRegionOp, 16> regions;
-      validationRoot->walk([&](TileRegionOp region) {
-        if (!region->getParentOfType<TileRegionOp>())
-          regions.push_back(region);
-      });
-      StorageRootMemo storageRootMemo;
-      for (TileRegionOp region : regions) {
-        RegionEvaluation evaluation{tileId, region, {}};
-        region.walk([&](mlir::Operation *operation) {
-          if (!mlir::isa<ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
-                         ComputeConvOp, ComputeElementwiseOp, ComputeReduceOp>(
-                  operation))
-            return;
-          // Structural root cardinality counts only compute-owning results.
-          // A foreign node attributed through an in-region operand demand
-          // (for example a fully overwritten producer buffer that also serves
-          // as the consumer's materialized operand) does not make this
-          // operation a second structured root.
-          for (mlir::Value result : operation->getResults())
-            for (const auto &relation :
-                 materializationRelations.operationResultBuffers)
-              if (shareStructuredBufferStorage(result, relation.buffer,
-                                               storageRootMemo) &&
-                  !llvm::is_contained(evaluation.resultRoots,
-                                      relation.structuredNodeId))
-                evaluation.resultRoots.push_back(relation.structuredNodeId);
-        });
-        // Baseline structural contract: one TileRegion carries exactly one
-        // structured compute root plus its non-root support closure. A root
-        // that lowers to several compute instructions still maps to one
-        // structured DAG node; an explicit structured producer (Fill, init
-        // producer, ...) is its own root and may not be disguised as a
-        // support closure. Multiple independent roots on one Tile must form
-        // multiple sequential regions with explicit DDR boundaries; a
-        // compute region without any root violates the same contract.
-        // Movement-only boundary carrier regions (DDR staging between two
-        // root regions) carry no compute root and are not compute regions;
-        // only regions containing compute must have exactly one root.
-        bool regionHasCompute = false;
-        region.walk([&](mlir::Operation *operation) {
-          if (mlir::isa<ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
-                        ComputeConvOp, ComputeElementwiseOp, ComputeReduceOp>(
-                  operation))
-            regionHasCompute = true;
-        });
-        if (regionHasCompute && evaluation.resultRoots.size() != 1) {
-          llvm::sort(evaluation.resultRoots);
-          diagnostics << "wafer-compile: deterministic card baseline "
-                         "TileRegion does not carry exactly one structured "
-                         "compute root tile_id="
-                      << tileId.getValue() << " region_roots=";
-          for (auto [rootIndex, node] :
-               llvm::enumerate(evaluation.resultRoots)) {
-            if (rootIndex)
-              diagnostics << ",";
-            diagnostics << node;
-          }
-          diagnostics << '\n';
-          return mlir::failure();
-        }
-        regionEvaluations.push_back(std::move(evaluation));
-      }
-      return mlir::success();
-    };
-    for (ScopedRootProbeModule &probe : scopedProbeModules) {
-      mlir::func::FuncOp tileFunction;
-      probe.module->walk([&](mlir::func::FuncOp function) {
-        if (!function.isExternal() && !tileFunction)
-          tileFunction = function;
-      });
-      if (!tileFunction) {
-        diagnostics << "wafer-compile: deterministic card baseline scoped "
-                       "probe module has no defined entry function\n";
-        return mlir::failure();
-      }
-      if (mlir::failed(appendRegionEvaluations(probe.module->getOperation(),
-                                               probe.tileId,
-                                               probe.targetRoot)))
-        return mlir::failure();
-    }
-
-    std::vector<TileRegionSPMCapacityEvaluation> capacityResults(
-        regionEvaluations.size());
-    std::vector<std::string> capacityDiagnostics(regionEvaluations.size());
-    // The scoped pass owns only detached entry modules; the lowering session
-    // shares the borrowed TensorProgram context like every candidate IR.
-    TileRegionToInstrLoweringSession loweringSession(
-        *tensorProgram.getContext());
-    auto evaluateRegionSPM = [&](size_t index) {
-      llvm::raw_string_ostream stream(capacityDiagnostics[index]);
-      // The probe evidence contract scopes relations to the probed region:
-      // a foreign buffer would make the strict scratch remap fail closed.
-      StructuredMaterializationRelations regionRelations =
-          scopeStructuredBufferRelations(regionEvaluations[index].region,
-                                         materializationRelations);
-      capacityResults[index] = evaluateTileRegionSPMCapacity(
-          regionEvaluations[index].region, loweringSession, stream,
-          &regionRelations);
-      stream.flush();
-    };
-    const unsigned requestedWorkers = tilePipelineParallelism == 0
-                                          ? kMaximumBoundedTilePipelineWorkers
-                                          : tilePipelineParallelism;
-    // The worker executor needs the IR context. The scoped pass owns only
-    // detached entry modules; every candidate IR derives from the borrowed
-    // TensorProgram, so its context is the stable executor context.
-    unsigned workers = 0;
-    {
-      // Capacity overflow is an expected typed query outcome, not a failed
-      // compilation diagnostic. Install one handler around the whole bounded
-      // batch (rather than one handler per worker on the shared MLIRContext)
-      // and publish only the stable query outcome below.
-      mlir::ScopedDiagnosticHandler suppressProbeDiagnostics(
-          tensorProgram.getContext(),
-          [](mlir::Diagnostic &) { return mlir::success(); });
-      workers = runBoundedTilePipelines(
-          tensorProgram.getContext(), regionEvaluations.size(),
-          evaluateRegionSPM, requestedWorkers);
-    }
-    ledger.baselineMaximumRegionSPMQueryWorkers = std::max<uint64_t>(
-        ledger.baselineMaximumRegionSPMQueryWorkers, workers);
-    ledger.baselineRegionSPMCapacityChecks += regionEvaluations.size();
-
-    struct BaselineCapacityConflict {
-      TileId tileId;
-      TileMemoryPlanningFailure planningFailure;
-      bool functionScoped = false;
-    };
-    llvm::SmallVector<BaselineCapacityConflict, 16> conflicts;
-    for (auto [index, capacity] : llvm::enumerate(capacityResults)) {
-      diagnostics << capacityDiagnostics[index];
-      if (capacity.fits())
-        continue;
-      if (capacity.requiresFunctionScope()) {
-        ++ledger.baselineRegionSPMChecksRequiringFunctionScope;
-        continue;
-      }
-      if (!capacity.capacityExceeded()) {
-        ++ledger.baselineRegionSPMCapacityAnalysisFailures;
-        diagnostics << "wafer-compile: deterministic card baseline "
-                       "region SPM query is indeterminate phase="
-                    << capacity.getPhaseDiagnosticLabel()
-                    << " detail=" << capacity.detail << '\n';
-        return mlir::failure();
-      }
-      ++ledger.baselineRegionSPMCapacityOverflowProofs;
-      if (!capacity.planningFailure.spmCapacityOverflow) {
-        diagnostics << "wafer-compile: deterministic card baseline "
-                       "received a non-capacity infeasibility proof phase="
-                    << capacity.getPhaseDiagnosticLabel()
-                    << " detail=" << capacity.detail << '\n';
-        return mlir::failure();
-      }
-      conflicts.push_back({regionEvaluations[index].tileId,
-                           capacity.planningFailure,
-                           /*functionScoped=*/false});
-    }
-
-    // Region-local proofs do not cover cross-region lifetimes. Once every
-    // root-local region is individually feasible, materialize the complete
-    // detached Tile entries from the same immutable session and replay the
-    // exact function-scoped final-gate sequence before any CardModule exists.
-    // This nearest IsolatedFromAbove probe is required even when no region
-    // explicitly returned RequiresFunctionScope: a DDR carrier or program
-    // output may remain live across two otherwise independent regions.
-    if (conflicts.empty()) {
-      llvm::SmallVector<TileId, 16> participatingTiles;
-      for (const ScopedRootProbeModule &probe : scopedProbeModules)
-        if (!llvm::is_contained(participatingTiles, probe.tileId))
-          participatingTiles.push_back(probe.tileId);
-      llvm::sort(participatingTiles, [](TileId lhs, TileId rhs) {
-        return lhs.getValue() < rhs.getValue();
-      });
-      llvm::SmallVector<TileEntryMaterialization, 16> tileEntries;
-      std::string tileEntryFailure;
-      if (mlir::failed(materializationSession->lowerTileEntries(
-              participatingTiles, tileEntries, &tileEntryFailure))) {
-        diagnostics << "wafer-compile: deterministic card baseline failed "
-                       "Tile-entry materialization: "
-                    << tileEntryFailure << '\n';
-        return mlir::failure();
-      }
-      ledger.baselineTileEntryMaterializations += tileEntries.size();
-      std::vector<TileFunctionSPMCapacityEvaluation> functionResults(
-          tileEntries.size());
-      std::vector<std::string> functionDiagnostics(tileEntries.size());
-      auto evaluateFunctionSPM = [&](size_t index) {
-        llvm::raw_string_ostream stream(functionDiagnostics[index]);
-        functionResults[index] = evaluateTileFunctionSPMCapacity(
-            std::move(tileEntries[index].module),
-            std::move(tileEntries[index].relations), stream);
-        stream.flush();
-      };
-      unsigned functionWorkers = 0;
-      {
-        mlir::ScopedDiagnosticHandler suppressProbeDiagnostics(
-            tensorProgram.getContext(),
-            [](mlir::Diagnostic &) { return mlir::success(); });
-        functionWorkers = runBoundedTilePipelines(
-            tensorProgram.getContext(), tileEntries.size(),
-            evaluateFunctionSPM, requestedWorkers);
-      }
-      ledger.baselineMaximumFunctionSPMQueryWorkers = std::max<uint64_t>(
-          ledger.baselineMaximumFunctionSPMQueryWorkers, functionWorkers);
-      ledger.baselineFunctionScopedSPMCapacityChecks += tileEntries.size();
-      for (auto [index, probe] : llvm::enumerate(functionResults)) {
-        diagnostics << functionDiagnostics[index];
-        if (probe.fits())
-          continue;
-        if (probe.capacityExceeded()) {
-          ++ledger.baselineFunctionSPMCapacityOverflowProofs;
-          conflicts.push_back({tileEntries[index].tileId,
-                               probe.planningFailure,
-                               /*functionScoped=*/true});
-          continue;
-        }
-        diagnostics << "wafer-compile: deterministic card baseline "
-                    << (probe.unsupportedLifetime()
-                            ? "function-scoped SPM planning cannot express "
-                              "the Tile lifetime"
-                            : "function-scoped SPM planning is indeterminate")
-                    << " tile_id=" << tileEntries[index].tileId.getValue()
-                    << " phase=" << probe.getPhaseDiagnosticLabel()
-                    << " detail=" << probe.detail << '\n';
-        return mlir::failure();
-      }
-    }
-    if (!conflicts.empty()) {
-      bool refinedConflict = false;
-      for (const BaselineCapacityConflict &conflict : conflicts) {
-        llvm::SmallVector<SPMCapacityDemandEvidence, 8> demands;
-        llvm::SmallVector<CardExecutableTileFailure, 1> localFailures;
-        CardExecutableTileFailure tileFailure;
-        tileFailure.tileId = conflict.tileId;
-        tileFailure.memoryPlanning = conflict.planningFailure;
-        localFailures.push_back(std::move(tileFailure));
-        collectSPMCapacityDemandEvidence(localFailures,
-                                         /*composePrimaryAllocationOwner=*/true,
-                                         diagnostics, demands);
-
-        // Capacity attribution is direct typed witness only: causal
-        // coordinates come exclusively from demands whose allocation reached
-        // an operation result, operand demand or output through the
-        // materialization relations of the probed IR. A demand without a
-        // typed witness contributes no coordinate and is never guessed from
-        // the region's root cardinality; the one-root-per-region contract
-        // narrows the probe scope but does not substitute for the
-        // allocation-to-owner relation, and a function-scoped certificate
-        // never attributes another region's unmatched allocation to the
-        // escalating root. A conflict whose certificate carries no direct
-        // witness at all is a typed indeterminate failure; mixed
-        // certificates refine only their direct witnesses, independent of
-        // enumeration order.
-        bool sawAttributedDemand = false;
-        bool sawUnattributedDemand = false;
-        for (const SPMCapacityDemandEvidence &demand : demands) {
-          if (demand.operationNode || demand.outputIndex ||
-              demand.operandDemandNode) {
-            sawAttributedDemand = true;
-            continue;
-          }
-          sawUnattributedDemand = true;
-          diagnostics << "wafer-compile: card-unwitnessed-spm-demand"
-                      << " tile_id=" << conflict.tileId.getValue()
-                      << " demand_bytes=" << demand.bytes
-                      << " demand_type=" << demand.type << '\n';
-        }
-        if (!sawAttributedDemand || sawUnattributedDemand) {
-          diagnostics << "wafer-compile: deterministic card baseline "
-                         "region SPM capacity conflict has an incomplete "
-                         "direct typed causal witness set tile_id="
-                      << conflict.tileId.getValue() << '\n';
-          return mlir::failure();
-        }
-
-        uint64_t temporalTransitions = 0;
-        uint64_t causalOperationCount = 0;
-        uint64_t causalOutputCount = 0;
-        int64_t causalNode = -1;
-        unsigned refinedDimension = 0;
-        int64_t previousExtent = 0;
-        int64_t refinedExtent = 0;
-        if (!refineDeterministicBaselineFromSPM(
-                *candidate, outputDomains, dag, demands, temporalTransitions,
-                causalOperationCount, causalOutputCount, causalNode,
-                refinedDimension, previousExtent, refinedExtent))
-          continue;
-
-        diagnostics
-            << "wafer-compile: card-executable-baseline-temporal-refinement"
-            << " state=single source="
-            << (conflict.functionScoped ? "tile-function-spm-capacity"
-                                        : "tile-region-spm-capacity")
-            << " scope="
-            << (conflict.functionScoped ? "tile-entry"
-                                        : "root-tile-shard")
-            << " capacity_overflow_regions=" << conflicts.size()
-            << " selected_overflow_tile=" << conflict.tileId.getValue()
-            << " causal_operations=" << causalOperationCount
-            << " causal_outputs=" << causalOutputCount
-            << " temporal_transitions=" << temporalTransitions
-            << " causal_node=" << causalNode
-            << " refined_dimension=" << refinedDimension
-            << " previous_extent=" << previousExtent
-            << " refined_extent=" << refinedExtent
-            << " placement_changed=0 edge_action_changed=0"
-            << " layout_changed=0 buffer_count_changed=0\n";
-        refinedConflict = true;
-        break;
-      }
-      if (refinedConflict)
-        continue;
-      diagnostics << "wafer-compile: deterministic card baseline "
-                     "exhausted its temporal domain for all proven SPM "
-                     "capacity conflicts\n";
+    if (mlir::failed(session)) {
+      diagnostics << "wafer-compile: deterministic card baseline failed "
+                     "materialization preparation: "
+                  << failureReason << '\n';
       return mlir::failure();
     }
+    ++ledger.baselineMaterializationPreparations;
 
-    diagnostics
-        << "wafer-compile: card-executable-baseline-capacity-check"
-        << " scope=root-regions-and-participating-tile-entries"
-           " outcome=within-capacity"
-           " full_card_materialization_required=1\n";
-
-    // All narrow proofs for the current coordinate are complete. Assemble the
-    // full CardModule from the same immutable preparation exactly once,
-    // validate its complete Tile domain, and hand that owning value to the
-    // unique final compile.
-    materializationRelations.clear();
+    mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+    StructuredMaterializationRelations materializationRelations;
+    CardModuleMaterializationStatistics materializationStatistics;
     {
       wafer::support::ScopedCompileTimingSpan timing(
           "conversion", "deterministic-baseline",
           "tensor-program-to-card-module");
-      if (mlir::failed(materializationSession->lowerCardModule(
-              cardModule, &materializationRelations, &failureReason))) {
+      if (mlir::failed((*session)->lowerCardModule(
+              cardModule, &materializationRelations, &failureReason,
+              &materializationStatistics))) {
         diagnostics << "wafer-compile: deterministic card baseline failed "
-                       "final CardModule materialization: "
+                       "CardModule materialization: "
                     << failureReason << '\n';
         return mlir::failure();
       }
     }
     ++ledger.baselineCardModuleMaterializations;
+    ledger.baselineTileEntryMaterializations +=
+        materializationStatistics.tileEntryMaterializations;
+    ledger.baselineRegionClosureAnalyses +=
+        materializationStatistics.regionClosureAnalyses;
+    ledger.baselineRegionClosureAnalysisOperations +=
+        materializationStatistics.regionClosureAnalysisOperations;
+    ledger.baselineMaximumTileMaterializationWorkers = std::max<uint64_t>(
+        ledger.baselineMaximumTileMaterializationWorkers,
+        materializationStatistics.maximumTileMaterializationWorkers);
+
     uint64_t actualFusedLogicalEdges = 0;
     if (mlir::failed(validateSelectedFusion(
             *cardModule, *candidate, dag, materializationRelations,
@@ -5656,29 +5266,35 @@ synthesizeDeterministicBaseline(
                   << failureReason << '\n';
       return mlir::failure();
     }
-    tileModules.clear();
+
+    llvm::SmallVector<TileModuleOp, 16> tileModules;
     cardModule->walk(
         [&](TileModuleOp tileModule) { tileModules.push_back(tileModule); });
     llvm::sort(tileModules, [](TileModuleOp lhs, TileModuleOp rhs) {
       return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
     });
     if (tileModules.size() != expectedTileIds.size()) {
-      diagnostics << "wafer-compile: deterministic card baseline final "
-                     "CardModule has an incomplete Tile domain\n";
+      diagnostics << "wafer-compile: deterministic card baseline CardModule "
+                     "has an incomplete Tile domain\n";
       return mlir::failure();
     }
-    for (auto [tileIndex, tileModule] : llvm::enumerate(tileModules))
-      if (TileId(tileModule.getTileIdAttr().getInt()) !=
-          expectedTileIds[tileIndex]) {
-        diagnostics << "wafer-compile: deterministic card baseline final "
-                       "CardModule changed the Tile identity domain\n";
+    for (auto [index, tileModule] : llvm::enumerate(tileModules)) {
+      const TileId tileId(tileModule.getTileIdAttr().getInt());
+      if (tileId != expectedTileIds[index]) {
+        diagnostics << "wafer-compile: deterministic card baseline CardModule "
+                       "changed the Tile identity domain\n";
         return mlir::failure();
       }
+      if (mlir::failed(validateSelectedTileLayouts(
+              tileModule.getOperation(), *candidate, tileId, dag,
+              materializationRelations, failureReason))) {
+        diagnostics << "wafer-compile: deterministic card baseline lost its "
+                       "selected physical assignment: "
+                    << failureReason << '\n';
+        return mlir::failure();
+      }
+    }
 
-    // Every root-local region fits, and the complete participating Tile entry
-    // has replayed the exact function-scoped SPM sequence. Run the unique full
-    // CardExecutable seam exactly once for final SPM assignment plus DDR,
-    // transport, resource, ABI and program-output executable facts.
     CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
         std::move(cardModule), cardId, expectedTileIds,
         /*selectedBufferRequests=*/{}, materializationRelations, program,
@@ -5686,23 +5302,95 @@ synthesizeDeterministicBaseline(
         tilePipelineParallelism, tileDataflowIRTrace != nullptr);
     ledger.rotatingSlotAllocationsMaterialized +=
         compilation.rotatingSlotAllocationsMaterialized;
-    ledger.baselineTileIRPrints += compilation.tileDataflowIRTrace.size();
+
     if (!compilation.isAccepted()) {
       ++ledger.materializationRejections;
       if (compilation.status ==
-          CardExecutableCompilationStatus::IndeterminateFailure)
+          CardExecutableCompilationStatus::IndeterminateFailure) {
         ++ledger.indeterminateCompilationFailures;
-      diagnostics << "wafer-compile: deterministic card baseline "
-                     "failed final CardExecutable gate="
-                  << compilation.gate << " detail=" << compilation.detail
-                  << '\n';
-      return mlir::failure();
+        diagnostics << "wafer-compile: deterministic card baseline failed "
+                       "CardExecutable gate="
+                    << compilation.gate << " detail=" << compilation.detail
+                    << '\n';
+        return mlir::failure();
+      }
+
+      const bool onlySPMCapacityFailures =
+          !compilation.tileFailures.empty() &&
+          llvm::all_of(compilation.tileFailures,
+                       [](const CardExecutableTileFailure &failure) {
+                         return failure.memoryPlanning.spmCapacityOverflow;
+                       });
+      if (!onlySPMCapacityFailures) {
+        diagnostics << "wafer-compile: deterministic card baseline received "
+                       "a non-SPM exact rejection gate="
+                    << compilation.gate << " detail=" << compilation.detail
+                    << '\n';
+        return mlir::failure();
+      }
+      ++ledger.baselineSPMCapacityOverflowProofs;
+
+      llvm::SmallVector<SPMCapacityDemandEvidence, 16> demands;
+      collectSPMCapacityDemandEvidence(
+          compilation.tileFailures,
+          /*composePrimaryAllocationOwner=*/true, diagnostics, demands);
+      bool sawAttributedDemand = false;
+      bool sawUnattributedDemand = false;
+      for (const SPMCapacityDemandEvidence &demand : demands) {
+        if (demand.operationNode || demand.outputIndex ||
+            demand.operandDemandNode) {
+          sawAttributedDemand = true;
+          continue;
+        }
+        sawUnattributedDemand = true;
+        diagnostics << "wafer-compile: card-unwitnessed-spm-demand"
+                    << " tile_id=" << demand.tileId.getValue()
+                    << " demand_bytes=" << demand.bytes
+                    << " demand_type=" << demand.type << '\n';
+      }
+      if (!sawAttributedDemand || sawUnattributedDemand) {
+        diagnostics << "wafer-compile: deterministic card baseline SPM "
+                       "rejection has an incomplete direct typed witness set\n";
+        return mlir::failure();
+      }
+
+      uint64_t temporalTransitions = 0;
+      uint64_t causalOperationCount = 0;
+      uint64_t causalOutputCount = 0;
+      int64_t causalNode = -1;
+      unsigned refinedDimension = 0;
+      int64_t previousExtent = 0;
+      int64_t refinedExtent = 0;
+      if (!refineDeterministicBaselineFromSPM(
+              *candidate, outputDomains, dag, demands, temporalTransitions,
+              causalOperationCount, causalOutputCount, causalNode,
+              refinedDimension, previousExtent, refinedExtent)) {
+        diagnostics << "wafer-compile: deterministic card baseline exhausted "
+                       "its temporal domain for the proven SPM capacity "
+                       "conflict\n";
+        return mlir::failure();
+      }
+      ++ledger.baselineSPMCapacityRefinements;
+      diagnostics
+          << "wafer-compile: card-executable-baseline-temporal-refinement"
+          << " state=single source=card-executable-spm-capacity"
+          << " scope=actual-card-coordinate"
+          << " capacity_overflow_tiles=" << compilation.tileFailures.size()
+          << " selected_overflow_tile="
+          << compilation.tileFailures.front().tileId.getValue()
+          << " causal_operations=" << causalOperationCount
+          << " causal_outputs=" << causalOutputCount
+          << " temporal_transitions=" << temporalTransitions
+          << " causal_node=" << causalNode
+          << " refined_dimension=" << refinedDimension
+          << " previous_extent=" << previousExtent
+          << " refined_extent=" << refinedExtent
+          << " placement_changed=0 edge_action_changed=0"
+          << " layout_changed=0 buffer_count_changed=0\n";
+      continue;
     }
 
-    // The accepted Q50.0 result is the baseline semantic result. No shadow
-    // schedule plan or duration estimate is constructed afterwards: an
-    // unconsumed cost model can never fail a legal executable, and Q51
-    // derives its cohort cost from the accepted Instr/resource facts itself.
+    ledger.baselineTileIRPrints += compilation.tileDataflowIRTrace.size();
     CardExecutableLoweringResult executable = compilation.takeExecutable();
     diagnostics << "wafer-compile: card-executable-baseline-controller"
                 << " controller_iterations=" << controllerIterations
@@ -5710,47 +5398,39 @@ synthesizeDeterministicBaseline(
                 << ledger.baselineCardModuleMaterializations
                 << " materialization_preparations="
                 << ledger.baselineMaterializationPreparations
-                << " source_preparations="
-                << ledger.baselineSourcePreparations
-                << " root_shard_materializations="
-                << ledger.baselineRootShardMaterializations
+                << " source_preparations=" << ledger.baselineSourcePreparations
                 << " tile_entry_materializations="
                 << ledger.baselineTileEntryMaterializations
-                << " region_spm_capacity_checks="
-                << ledger.baselineRegionSPMCapacityChecks
-                << " region_spm_capacity_overflow_proofs="
-                << ledger.baselineRegionSPMCapacityOverflowProofs
-                << " region_spm_function_scope_checks="
-                << ledger.baselineRegionSPMChecksRequiringFunctionScope
-                << " function_scoped_spm_capacity_checks="
-                << ledger.baselineFunctionScopedSPMCapacityChecks
-                << " function_spm_capacity_overflow_proofs="
-                << ledger.baselineFunctionSPMCapacityOverflowProofs
-                << " region_spm_query_workers="
-                << ledger.baselineMaximumRegionSPMQueryWorkers
-                << " function_spm_query_workers="
-                << ledger.baselineMaximumFunctionSPMQueryWorkers
+                << " region_closure_analyses="
+                << ledger.baselineRegionClosureAnalyses
+                << " region_closure_analysis_operations="
+                << ledger.baselineRegionClosureAnalysisOperations
+                << " tile_materialization_workers="
+                << ledger.baselineMaximumTileMaterializationWorkers
+                << " spm_capacity_overflow_proofs="
+                << ledger.baselineSPMCapacityOverflowProofs
+                << " spm_capacity_refinements="
+                << ledger.baselineSPMCapacityRefinements
                 << " tile_ir_prints=" << ledger.baselineTileIRPrints
-                << " exact_demand_edges="
-                << ledger.exactDemandSatisfiedEdges
+                << " exact_demand_edges=" << ledger.exactDemandSatisfiedEdges
                 << " spatial_coordinate_queries="
                 << ledger.spatialCoordinateQueries
                 << " spatial_legalization_transitions="
                 << ledger.spatialLegalizationTransitions
                 << " full_compilations="
-                << ledger.exactGates.cardModuleCompilationInvocations
-                << '\n';
+                << ledger.exactGates.cardModuleCompilationInvocations << '\n';
     uint64_t baselinePeerBytes = 0;
-    for (const SpatialEdgeStrategy &strategy : candidate->mapping.edgeStrategies)
+    for (const SpatialEdgeStrategy &strategy :
+         candidate->mapping.edgeStrategies)
       for (const SpatialEdgeFragment &fragment : strategy.fragments)
         if (fragment.kind == SpatialEdgeFragmentKind::Peer)
-          baselinePeerBytes =
-              saturatingAdd(baselinePeerBytes, fragment.bytes);
+          baselinePeerBytes = saturatingAdd(baselinePeerBytes, fragment.bytes);
     diagnostics << "wafer-compile: card-executable-baseline-admission"
                 << " active_tiles="
                 << getUniqueActiveTileCount(candidate->mapping,
                                             candidate->nodePlacements)
-                << " peer_transfers=" << getPeerFragmentCount(candidate->mapping)
+                << " peer_transfers="
+                << getPeerFragmentCount(candidate->mapping)
                 << " peer_bytes=" << baselinePeerBytes
                 << " buffer_count=1 actual_fused_edges=0"
                 << " selected_executable_rematerializations=0\n";
@@ -5759,6 +5439,7 @@ synthesizeDeterministicBaseline(
     return DeterministicCardExecutableSynthesisResult(std::move(executable));
   }
 }
+
 
 static bool
 selectionLess(const AcceptedTileExecutionCandidate &lhs,
@@ -5865,7 +5546,7 @@ prepareCardSynthesisInput(
   for (const StructuredDAGNode &node : dag->getNodes())
     operationNodes.push_back({node.operation, node.id});
   llvm::SmallVector<TileId, 16> copiedTileIds(availableTileIds->begin(),
-                                             availableTileIds->end());
+                                              availableTileIds->end());
   return std::make_unique<PreparedCardSynthesisInput>(
       std::move(*topology), std::move(copiedTileIds), std::move(*dag),
       std::move(*outputDomains), std::move(operationNodes),
@@ -5901,25 +5582,22 @@ advanceDeterministicSpatialCoordinateImpl(
       }
       continue;
     }
-    const unsigned iterator =
-        placement.spatialPartition->iteratorDimension;
+    const unsigned iterator = placement.spatialPartition->iteratorDimension;
     if (iterator >= placement.iteratorPartitionFactors.size() ||
         placement.iteratorPartitionFactors[iterator] !=
             placement.tiles.size() ||
-        llvm::any_of(
-            llvm::enumerate(placement.iteratorPartitionFactors),
-            [&](auto indexedFactor) {
-              return indexedFactor.index() != iterator &&
-                     indexedFactor.value() != 1;
-            })) {
+        llvm::any_of(llvm::enumerate(placement.iteratorPartitionFactors),
+                     [&](auto indexedFactor) {
+                       return indexedFactor.index() != iterator &&
+                              indexedFactor.value() != 1;
+                     })) {
       if (failureReason)
         *failureReason =
             "partitioned spatial coordinate has inconsistent iterator "
             "factors";
       return mlir::failure();
     }
-    maximumParticipants =
-        std::max(maximumParticipants, placement.tiles.size());
+    maximumParticipants = std::max(maximumParticipants, placement.tiles.size());
   }
   if (maximumParticipants == 1)
     return DeterministicSpatialAdvance::Exhausted;
@@ -5931,15 +5609,14 @@ advanceDeterministicSpatialCoordinateImpl(
       continue;
     placement.tiles.erase(placement.tiles.begin() + nextMaximumParticipants,
                           placement.tiles.end());
-    placement.iteratorPartitionFactors
-        [placement.spatialPartition->iteratorDimension] =
+    placement.iteratorPartitionFactors[placement.spatialPartition
+                                           ->iteratorDimension] =
         static_cast<uint32_t>(nextMaximumParticipants);
   }
   return DeterministicSpatialAdvance::Advanced;
 }
 
-llvm::SmallVector<int64_t, 4>
-deriveCapacityTemporalShapeImplForBaseline(
+llvm::SmallVector<int64_t, 4> deriveCapacityTemporalShapeImplForBaseline(
     llvm::ArrayRef<int64_t> maximumShardShape, uint64_t elementBytes,
     uint64_t tensorMultiplicity, const TargetMemoryPolicy &memory,
     unsigned additionalWaveRefinements) {
@@ -5952,8 +5629,8 @@ mlir::FailureOr<DeterministicCardExecutableSynthesisResult>
 synthesizeDeterministicCardExecutableImpl(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig,
-    llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData,
     DeterministicBaselineLedger *baselineLedger,
     unsigned tilePipelineParallelism,
     std::vector<std::string> *tileDataflowIRTrace) {
@@ -5965,13 +5642,17 @@ synthesizeDeterministicCardExecutableImpl(
       baselineLedger ? *baselineLedger : localBaselineLedger;
   baselineWork = {};
   mlir::FailureOr<std::unique_ptr<PreparedCardSynthesisInput>> prepared =
-      prepareCardSynthesisInput(tensorProgram, program, executionConfig,
-                                diagnostics);
+      [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "deterministic-baseline", "prepare-card-synthesis-input");
+        return prepareCardSynthesisInput(tensorProgram, program,
+                                         executionConfig, diagnostics);
+      }();
   if (mlir::failed(prepared))
     return mlir::failure();
   PreparedCardSynthesisInput &input = **prepared;
   constexpr CardId cardId(0);
-  return synthesizeDeterministicBaseline(
+  return synthesizeDeterministicBaselineDirect(
       tensorProgram, input.topology, cardId, input.availableTileIds,
       input.outputDomains, input.dag, input.operationNodes, program,
       executionConfig, diagnostics, programData, baselineWork,
@@ -6122,7 +5803,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> searchCardExecutable(
                                const TileExecutionCandidate &existing) {
     return sameNodePlacements(candidate, existing) &&
            sameMapping(candidate.assignment.mapping,
-                        existing.assignment.mapping);
+                       existing.assignment.mapping);
   };
   auto findPendingExactState = [&](const TileExecutionCandidate &candidate) {
     return llvm::find_if(shortlist,
@@ -6299,9 +5980,9 @@ mlir::FailureOr<CardExecutableSynthesisResult> searchCardExecutable(
             resultStatistics.rotatingSlotAllocationsMaterialized,
             candidateActualFusedLogicalEdges, tilePipelineParallelism,
             requestTileIRTrace, preferredSPMFailureProbeTileId, failureGate,
-            failureReason,
-            selectedBufferFailure, indeterminateFailure, spmCapacityOverflow,
-            spmCapacityDemands, acceptedOperationNodes, tileDataflowIRTrace);
+            failureReason, selectedBufferFailure, indeterminateFailure,
+            spmCapacityOverflow, spmCapacityDemands, acceptedOperationNodes,
+            tileDataflowIRTrace);
     if (mlir::failed(accepted)) {
       if (indeterminateFailure) {
         ++resultStatistics.indeterminateCompilationFailures;
@@ -6558,8 +6239,7 @@ mlir::FailureOr<CardExecutableSynthesisResult> searchCardExecutable(
                 } else if (refinedOperation) {
                   mlir::Operation *trialOperation = nullptr;
                   advancedSameCoordinate = refineOperationTemporalVariantOnce(
-                      trial.assignment.mapping,
-                      trial.assignment.nodePlacements,
+                      trial.assignment.mapping, trial.assignment.nodePlacements,
                       trial.transition.temporalRefinementDepth, *outputDomains,
                       *dag, refinementAnchor, anchorIsOperandDemand,
                       &trialOperation, &trialNode, &trialDimension,
@@ -7852,10 +7532,10 @@ mlir::FailureOr<CardExecutableSynthesisResult> searchCardExecutable(
           /*searchStatistics=*/nullptr, selectedRotatingSlots,
           selectedActualFusedLogicalEdges, tilePipelineParallelism,
           requestTileIRTrace, /*preferredFailureProbeTileId=*/std::nullopt,
-          selectedFailureGate,
-          failureReason, selectedBufferFailure, selectedIndeterminateFailure,
-          selectedSPMCapacityOverflow, selectedSPMCapacityDemands,
-          selectedOperationNodes, selectedTileDataflowIRTrace);
+          selectedFailureGate, failureReason, selectedBufferFailure,
+          selectedIndeterminateFailure, selectedSPMCapacityOverflow,
+          selectedSPMCapacityDemands, selectedOperationNodes,
+          selectedTileDataflowIRTrace);
   ++resultStatistics.selectedExecutableRematerializations;
   if (mlir::failed(selectedExecutable)) {
     diagnostics << "wafer-compile: selected card state failed exact "

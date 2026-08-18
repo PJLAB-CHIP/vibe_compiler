@@ -231,23 +231,23 @@ compileTensorProgramModuleToCardExecutable(
           << ledger.baselineMaterializationPreparations
           << " card_program_materializations="
           << ledger.baselineCardModuleMaterializations
-          << " root_shard_materializations="
-          << ledger.baselineRootShardMaterializations
           << " tile_entry_materializations="
           << ledger.baselineTileEntryMaterializations
+          << " region_closure_analyses="
+          << ledger.baselineRegionClosureAnalyses
+          << " region_closure_analysis_operations="
+          << ledger.baselineRegionClosureAnalysisOperations
+          << " tile_materialization_workers="
+          << ledger.baselineMaximumTileMaterializationWorkers
           << " spatial_legalization_transitions="
           << ledger.spatialLegalizationTransitions
           << " spatial_coordinate_queries="
           << ledger.spatialCoordinateQueries
           << " exact_demand_edges=" << ledger.exactDemandSatisfiedEdges
-          << " region_spm_capacity_checks="
-          << ledger.baselineRegionSPMCapacityChecks
-          << " region_spm_capacity_overflow_proofs="
-          << ledger.baselineRegionSPMCapacityOverflowProofs
-          << " function_spm_capacity_overflow_proofs="
-          << ledger.baselineFunctionSPMCapacityOverflowProofs
-          << " region_spm_capacity_analysis_failures="
-          << ledger.baselineRegionSPMCapacityAnalysisFailures
+          << " spm_capacity_overflow_proofs="
+          << ledger.baselineSPMCapacityOverflowProofs
+          << " spm_capacity_refinements="
+          << ledger.baselineSPMCapacityRefinements
           << " indeterminate_compilation_failures="
           << ledger.indeterminateCompilationFailures
           << " materialization_rejections="
@@ -256,12 +256,6 @@ compileTensorProgramModuleToCardExecutable(
           << exactGates.cardModuleCompilationInvocations
           << " tile_pipeline_workers="
           << exactGates.maximumTilePipelineWorkers
-          << " region_spm_query_workers="
-          << ledger.baselineMaximumRegionSPMQueryWorkers
-          << " function_spm_capacity_checks="
-          << ledger.baselineFunctionScopedSPMCapacityChecks
-          << " function_spm_query_workers="
-          << ledger.baselineMaximumFunctionSPMQueryWorkers
           << " tile_ir_prints=" << ledger.baselineTileIRPrints << '\n';
       return detail::CardExecutableSynthesisResult(
           std::move(result->executable), std::move(tileDataflowIRTrace));

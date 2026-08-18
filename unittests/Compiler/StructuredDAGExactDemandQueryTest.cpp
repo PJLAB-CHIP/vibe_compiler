@@ -1148,6 +1148,45 @@ TEST_F(StructuredDAGExactDemandQueryTest,
 }
 
 TEST_F(StructuredDAGExactDemandQueryTest,
+       SixteenLargeBalancedRectanglesUseExactIntervalCoverage) {
+  auto module = parse(R"mlir(
+module {
+  func.func @large_chain(%input: tensor<11008xf16>) -> tensor<11008xf16> {
+    %out0 = tensor.empty() : tensor<11008xf16>
+    %out1 = tensor.empty() : tensor<11008xf16>
+    %producer = linalg.map ins(%input : tensor<11008xf16>)
+        outs(%out0 : tensor<11008xf16>) (%value: f16) {
+      %result = arith.addf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    %consumer = linalg.map ins(%producer : tensor<11008xf16>)
+        outs(%out1 : tensor<11008xf16>) (%value: f16) {
+      %result = arith.mulf %value, %value : f16
+      linalg.yield %result : f16
+    }
+    return %consumer : tensor<11008xf16>
+  }
+}
+)mlir");
+  StructuredDAGAnalysis dag = buildDAG(*module);
+  StructuredDAGEdgeID edge = findEdge(dag, 0, 1);
+  analysis::LogicalShardTrial trial = buildTrial(
+      dag, fullPlacements(dag, 0, {0, 1, 2, 3, 4, 5, 6, 7,
+                                   8, 9, 10, 11, 12, 13, 14, 15}));
+
+  StructuredDAGExactDemandQuery query(dag, trial.epoch);
+  analysis::ExactDemandResult result = query.query(edge, trial);
+
+  EXPECT_EQ(result.status, analysis::ExactDemandStatus::Satisfied)
+      << result.detail;
+  EXPECT_EQ(result.ownershipIntersections.size(), 16u);
+  EXPECT_EQ(result.perDestination.size(), 16u);
+  for (const analysis::ExactDestinationDemand &destination :
+       result.perDestination)
+    EXPECT_FALSE(destination.uncoveredWitness);
+}
+
+TEST_F(StructuredDAGExactDemandQueryTest,
        PerDestinationWitnessIdentifiesTheUncoveredShard) {
   auto module = parse(kChain);
   StructuredDAGAnalysis dag = buildDAG(*module);

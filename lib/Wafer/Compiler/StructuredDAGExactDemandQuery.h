@@ -50,6 +50,13 @@ public:
   analysis::ExactDemandResult query(StructuredDAGEdgeID edge,
                                     const analysis::LogicalShardTrial &trial);
 
+  /// Exact finite rectangle-union form of one already-selected destination
+  /// shard's producer demand. This is a representation query over the same
+  /// cached edge relation; it does not affect logical placement legality.
+  analysis::StaticRectangularIndexSetPiecesResult getExactProducerDemandPieces(
+      StructuredDAGEdgeID edge,
+      const mlir::presburger::PresburgerSet &consumerExecutionDomain);
+
 private:
   class Impl;
   std::unique_ptr<Impl> impl;

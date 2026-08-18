@@ -25,6 +25,7 @@ using wafer::analysis::IndexRelationStatus;
 using wafer::analysis::IndexSetResult;
 using wafer::analysis::PhysicalAccessRelation;
 using wafer::analysis::PhysicalLayoutRelation;
+using wafer::analysis::StaticRectangularIndexSetPiecesResult;
 using wafer::analysis::StaticRectangularIndexSetResult;
 using wafer::analysis::TransferRealizability;
 
@@ -50,10 +51,149 @@ TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
   EXPECT_TRUE(broadcast.get()->contains({0, 2}, {2}));
   EXPECT_TRUE(broadcast.get()->contains({3, 2}, {2}));
 
+  IndexRelationResult constantProjection = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(1, 0, {mlir::getAffineConstantExpr(0, &context)},
+                           &context),
+      /*destinationShape=*/{4}, /*sourceShape=*/{3});
+  ASSERT_TRUE(constantProjection.isExact());
+  StaticRectangularIndexSetPiecesResult constantImage =
+      constantProjection.get()->getExactStaticRectangularImagePieces(
+          /*destinationOffsets=*/{0}, /*destinationSizes=*/{4});
+  ASSERT_TRUE(constantImage.isExact()) << constantImage.reason;
+  ASSERT_EQ(constantImage.domains.size(), 1u);
+  EXPECT_EQ(constantImage.domains.front().offsets,
+            llvm::SmallVector<int64_t>({0}));
+  EXPECT_EQ(constantImage.domains.front().sizes,
+            llvm::SmallVector<int64_t>({1}));
+
   std::optional<mlir::AffineMap> recovered =
       permutation.get()->getProjectedAffineMap(&context);
   ASSERT_TRUE(recovered);
   EXPECT_EQ(*recovered, mlir::AffineMap::get(2, 0, {d1, d0}, &context));
+}
+
+TEST(IndexRelationTest,
+     SingletonReshapeCompositionKeepsProjectedRectangleImage) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d2 = mlir::getAffineDimExpr(2, &context);
+  IndexRelationResult matmulInput = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(3, 0, {d0, d2}, &context),
+      /*destinationShape=*/{16, 4096, 4096},
+      /*sourceShape=*/{16, 4096});
+  ASSERT_TRUE(matmulInput.isExact());
+  IndexRelationResult insertUnitDimension =
+      IndexRelation::staticReshape(/*destinationShape=*/{16, 4096},
+                                   /*sourceShape=*/{1, 16, 4096});
+  ASSERT_TRUE(insertUnitDimension.isExact());
+
+  IndexRelationResult composed =
+      matmulInput.get()->compose(*insertUnitDimension.get());
+  ASSERT_TRUE(composed.isExact());
+  IndexSetResult fullSource = IndexRelation::staticDomain({1, 16, 4096});
+  ASSERT_TRUE(fullSource.isExact());
+  IndexRelationResult restricted =
+      composed.get()->intersectSourceDomain(*fullSource.set);
+  ASSERT_TRUE(restricted.isExact());
+
+  StaticRectangularIndexSetResult first =
+      restricted.get()->getExactStaticRectangularImage(
+          /*destinationOffsets=*/{0, 0, 0},
+          /*destinationSizes=*/{16, 256, 4096});
+  StaticRectangularIndexSetResult second =
+      restricted.get()->getExactStaticRectangularImage(
+          /*destinationOffsets=*/{0, 256, 0},
+          /*destinationSizes=*/{16, 256, 4096});
+  ASSERT_TRUE(first.isExact()) << first.reason;
+  ASSERT_TRUE(second.isExact()) << second.reason;
+  EXPECT_EQ(first.domain->offsets, llvm::SmallVector<int64_t>({0, 0, 0}));
+  EXPECT_EQ(first.domain->sizes, llvm::SmallVector<int64_t>({1, 16, 4096}));
+  EXPECT_EQ(second.domain->offsets, first.domain->offsets);
+  EXPECT_EQ(second.domain->sizes, first.domain->sizes);
+}
+
+TEST(IndexRelationTest,
+     CollapsingReshapeCompositionKeepsMixedRadixRectangleImage) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d1 = mlir::getAffineDimExpr(1, &context);
+  mlir::AffineExpr d2 = mlir::getAffineDimExpr(2, &context);
+  mlir::AffineExpr d3 = mlir::getAffineDimExpr(3, &context);
+  IndexRelationResult transpose = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(4, 0, {d0, d2, d1, d3}, &context),
+      /*destinationShape=*/{1, 32, 16, 128},
+      /*sourceShape=*/{1, 16, 32, 128});
+  ASSERT_TRUE(transpose.isExact());
+  IndexRelationResult collapse =
+      IndexRelation::staticReshape(/*destinationShape=*/{1, 16, 32, 128},
+                                   /*sourceShape=*/{16, 4096});
+  ASSERT_TRUE(collapse.isExact());
+  IndexRelationResult composed = transpose.get()->compose(*collapse.get());
+  ASSERT_TRUE(composed.isExact());
+
+  StaticRectangularIndexSetResult complete =
+      composed.get()->getExactStaticRectangularImage(
+          /*destinationOffsets=*/{0, 0, 0, 0},
+          /*destinationSizes=*/{1, 32, 16, 128});
+  StaticRectangularIndexSetResult shard =
+      composed.get()->getExactStaticRectangularImage(
+          /*destinationOffsets=*/{0, 2, 0, 0},
+          /*destinationSizes=*/{1, 2, 16, 128});
+  ASSERT_TRUE(complete.isExact()) << complete.reason;
+  ASSERT_TRUE(shard.isExact()) << shard.reason;
+  EXPECT_EQ(complete.domain->offsets, llvm::SmallVector<int64_t>({0, 0}));
+  EXPECT_EQ(complete.domain->sizes, llvm::SmallVector<int64_t>({16, 4096}));
+  EXPECT_EQ(shard.domain->offsets, llvm::SmallVector<int64_t>({0, 256}));
+  EXPECT_EQ(shard.domain->sizes, llvm::SmallVector<int64_t>({16, 256}));
+
+  StaticRectangularIndexSetPiecesResult strided =
+      composed.get()->getExactStaticRectangularImagePieces(
+          /*destinationOffsets=*/{0, 0, 0, 0},
+          /*destinationSizes=*/{1, 32, 16, 8});
+  ASSERT_TRUE(strided.isExact()) << strided.reason;
+  ASSERT_EQ(strided.domains.size(), 32u);
+  for (auto [ordinal, piece] : llvm::enumerate(strided.domains)) {
+    EXPECT_EQ(piece.offsets,
+              llvm::SmallVector<int64_t>({0, int64_t(ordinal) * 128}));
+    EXPECT_EQ(piece.sizes, llvm::SmallVector<int64_t>({16, 8}));
+  }
+}
+
+TEST(IndexRelationTest,
+     ExpandingReshapeCompositionKeepsMixedRadixRectangleImage) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr d2 = mlir::getAffineDimExpr(2, &context);
+  IndexRelationResult matmulInput = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(3, 0, {d0, d2}, &context),
+      /*destinationShape=*/{16, 4096, 4096},
+      /*sourceShape=*/{16, 4096});
+  ASSERT_TRUE(matmulInput.isExact());
+  IndexRelationResult expand =
+      IndexRelation::staticReshape(/*destinationShape=*/{16, 4096},
+                                   /*sourceShape=*/{1, 16, 32, 128});
+  ASSERT_TRUE(expand.isExact());
+  IndexRelationResult composed = matmulInput.get()->compose(*expand.get());
+  ASSERT_TRUE(composed.isExact());
+
+  StaticRectangularIndexSetResult outputShard =
+      composed.get()->getExactStaticRectangularImage(
+          /*destinationOffsets=*/{0, 512, 0},
+          /*destinationSizes=*/{16, 256, 4096});
+  StaticRectangularIndexSetResult reductionShard =
+      composed.get()->getExactStaticRectangularImage(
+          /*destinationOffsets=*/{0, 0, 256},
+          /*destinationSizes=*/{16, 4096, 256});
+  ASSERT_TRUE(outputShard.isExact()) << outputShard.reason;
+  ASSERT_TRUE(reductionShard.isExact()) << reductionShard.reason;
+  EXPECT_EQ(outputShard.domain->offsets,
+            llvm::SmallVector<int64_t>({0, 0, 0, 0}));
+  EXPECT_EQ(outputShard.domain->sizes,
+            llvm::SmallVector<int64_t>({1, 16, 32, 128}));
+  EXPECT_EQ(reductionShard.domain->offsets,
+            llvm::SmallVector<int64_t>({0, 0, 2, 0}));
+  EXPECT_EQ(reductionShard.domain->sizes,
+            llvm::SmallVector<int64_t>({1, 16, 2, 128}));
 }
 
 TEST(PhysicalAccessRelationTest,
@@ -487,9 +627,9 @@ TEST(PhysicalAccessRelationTest, RejectsAffineMapClippedByEndpointBounds) {
 
   auto memory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
                                        wafer::MemLayout::Tensor);
-  mlir::MemRefType endpoint = mlir::MemRefType::get(
-      {10}, mlir::Float16Type::get(&context),
-      mlir::MemRefLayoutAttrInterface{}, memory);
+  mlir::MemRefType endpoint =
+      mlir::MemRefType::get({10}, mlir::Float16Type::get(&context),
+                            mlir::MemRefLayoutAttrInterface{}, memory);
   EXPECT_TRUE(mlir::failed(PhysicalAccessRelation::create(
       endpoint, /*iterationShape=*/{10}, *clipped.get(),
       /*requireInjective=*/true)));
@@ -517,7 +657,7 @@ TEST(IndexRelationTest, DomainRestrictionInvalidatesProjectedRectangleProof) {
   ASSERT_TRUE(restricted.isExact());
   StaticRectangularIndexSetResult clippedImage =
       restricted.get()->getExactStaticRectangularImage(/*offsets=*/{5},
-                                                        /*sizes=*/{1});
+                                                       /*sizes=*/{1});
   EXPECT_FALSE(clippedImage.isExact());
   EXPECT_EQ(clippedImage.status, IndexRelationStatus::Unsupported);
 }
@@ -536,10 +676,9 @@ TEST(IndexRelationTest,
 
   StaticRectangularIndexSetResult image =
       reduction.get()->getExactStaticRectangularImage(/*offsets=*/{0},
-                                                       /*sizes=*/{1});
+                                                      /*sizes=*/{1});
   ASSERT_TRUE(image.isExact()) << image.reason;
-  EXPECT_EQ(image.domain->offsets,
-            (llvm::SmallVector<int64_t, 4>{0, 0}));
+  EXPECT_EQ(image.domain->offsets, (llvm::SmallVector<int64_t, 4>{0, 0}));
   EXPECT_EQ(image.domain->sizes, (llvm::SmallVector<int64_t, 4>{4, 1}));
 }
 

@@ -332,7 +332,7 @@ rewriter与`IRMapping`合同。
 | `prepareTileMaterialization`的TensorProgram scheduling Module | active；每个actual Card/Tile materialization一次 | materializer拥有；通过`IRMapping`携带node/temporal关系，结果继续形成Card/Tile IR | 保留actual candidate，Q52只按实测work/RSS决定是否缩scope |
 | `lowerSpatialOutputShardsToTileRegionModule`与`lowerSpatialEdgeStrategiesToTileRegionModule` | active；每个被请求的actual Tile candidate各一次 | 输出参数获得完整candidate Module；失败candidate销毁，source保持可复用 | 保留actual candidate；禁止把post-hoc repair或第二selector塞入该边界 |
 | CardModule→Tile modules中的declaration、topology、mesh和body复制 | active；每个最终Tile output一次 | fan-out owner构造16个独立下游Module，全部被CardExecutable消费 | 保留output fan-out并按Tile/LaunchSlot identity汇合 |
-| `evaluateTileRegionSPMCapacity`的isolated TileRegion scratch | active baseline query；每次被路由的region probe一次 | query拥有并销毁；外部operand与relation在首次clone用`IRMapping`进入scratch | 保留最小destructive query；scratch内required-NCC不再二次clone |
+| Q49已删除的TileRegion/function capacity probe | 不再属于active baseline；旧实现曾为每个root/Tile构造并销毁scratch IR | 实际CardModule直接进入一次Q50.0 exact gate，accepted owner继续成为`CardExecutable` | probe API、实现、测试和CMake registration已同批删除；容量证据只由实际候选的Instr lowering与memory planning产生 |
 | function SPM probe | active baseline query；每次scope escalation一次 | 调用方直接move detached单entry Module和current relations，probe内不clone Func/Module | 保留query，失败后整个owner销毁 |
 | `prepareTargetABI`的per-Tile Module | active retained output；ordinary/profile每个被请求variant、每Tile一次 | target output owner拥有，成功继续lower、ABI readback和LLVM translation | 保留表示边界；真实work ledger计数 |
 | `SelectedBufferMaterialization` | active actualization；每次selected request最多一次 | `planTileMemory`按值移交独占Module，成功返回同一owner，失败销毁；没有root clone | 已改为single in-place apply |

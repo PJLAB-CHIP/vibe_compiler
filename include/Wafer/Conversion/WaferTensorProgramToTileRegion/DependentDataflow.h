@@ -32,8 +32,8 @@ enum class SpatialDataflowMaterializationMode : uint8_t {
 /// One query-local physical treatment of a structured SSA dependency. A
 /// dependency may be direct or may cross a statically provable unary pure
 /// support chain such as expand/collapse shape. This is the only carrier
-/// between structured-DAG selection and actual CardModule materialization: it is
-/// never persisted, serialized, or recovered from an operation name/ordinal.
+/// between structured-DAG selection and actual CardModule materialization: it
+/// is never persisted, serialized, or recovered from an operation name/ordinal.
 enum class SpatialEdgeAction : uint8_t {
   /// Consumer-driven traversal recursively materializes the producer in the
   /// same TileRegion and keeps the exact producer value resident.
@@ -87,7 +87,10 @@ struct SpatialEdgeFragment {
 /// consumer result domain from the exact producer demand; lowering resolves
 /// and validates that relation before changing IR. For PeerFragments,
 /// `fragments` must cover the producer demand all-and-only; every other action
-/// has no fragments.
+/// has no fragments. A finite non-rectangular support demand uses the
+/// rectangle-union form: `producerOffsets`/`producerSizes` are its carrier
+/// bounds and `fragmentsDefineProducerDemand` states that the disjoint
+/// fragment union, rather than those bounds, is the exact demand.
 struct SpatialEdgeStrategy {
   mlir::Operation *producer = nullptr;
   unsigned producerResult = 0;
@@ -101,9 +104,9 @@ struct SpatialEdgeStrategy {
   TileId destinationTile{0};
   SpatialEdgeAction action = SpatialEdgeAction::LocalShardResidency;
   /// Explicit physical-representation assignment selected by the common
-  /// structured-DAG transition.  A false `hasLayoutAssignment` means that current
-  /// interfaces expose no provable choice and the incomplete term is omitted;
-  /// it never means that Tensor layout was guessed.
+  /// structured-DAG transition.  A false `hasLayoutAssignment` means that
+  /// current interfaces expose no provable choice and the incomplete term is
+  /// omitted; it never means that Tensor layout was guessed.
   bool hasLayoutAssignment = false;
   MemLayout producerLayout = MemLayout::Tensor;
   MemLayout consumerLayout = MemLayout::Tensor;
@@ -111,7 +114,16 @@ struct SpatialEdgeStrategy {
   /// must either produce the requested slot family or reject the candidate;
   /// it must not silently choose another count.
   uint8_t bufferCount = 1;
+  bool fragmentsDefineProducerDemand = false;
   llvm::SmallVector<SpatialEdgeFragment, 4> fragments;
+};
+
+/// Immutable, query-local facts derived once for one selected edge in its
+/// scheduling TensorProgram.  The array is positionally paired with the
+/// caller's edge-strategy array and never enters IR or candidate identity.
+struct SpatialEdgeMaterializationFacts {
+  bool hasSupportPath = false;
+  uint64_t consumerScheduleOrdinal = 0;
 };
 
 /// Returns the topologically ordered pure support path connecting one selected
@@ -141,33 +153,12 @@ mlir::LogicalResult deriveSpatialEdgeConsumerResultDomain(
 bool isSpatialEdgeStrategyIncidentOnTile(const SpatialEdgeStrategy &strategy,
                                          TileId tile);
 
-/// Consumer-side boundary supply for one narrow per-root materialization: the
-/// named consumer operand is bound to an extra tensor entry argument instead
-/// of pulling the sibling structured producer's compute into this scope. The
-/// boundary arguments are appended after the scheduling destinations; the
-/// producing root's narrow entry stores into the same compiler-owned DDR
-/// boundary and carries it across the root boundary at merge time.
-struct StructuredBoundarySupply {
-  /// Consumer operation in the pristine source IR.
-  mlir::Operation *consumer = nullptr;
-  unsigned consumerOperand = 0;
-  /// Position of the boundary entry argument, counted from zero over this
-  /// materialization's boundary arguments.
-  unsigned boundaryArgumentIndex = 0;
-};
-
 /// Lowers one Tile's selected output shards and every selected edge
 /// action incident on that Tile.  Each action is reflected by actual IR:
 /// fused SSA, explicit local staging, peer fragment assembly, compiler-owned
 /// DDR store/reload, cloned pure compute, or a real TileRegion boundary.
 /// Unsupported semantics reject this actual candidate atomically; the API
 /// never repairs placement or substitutes a different action.
-///
-/// `boundarySupplies`/`boundaryArgumentCount` and `scopedRootNode` form the
-/// narrow per-root construction contract. The extra entry arguments cut
-/// incoming sibling dependencies, while the typed node identity restricts
-/// demand materialization to that root's exact Tile domains. Omission selects
-/// the ordinary complete Tile action lowering.
 mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,
     llvm::ArrayRef<SpatialOutputShard> outputShards, TileId currentTile,
@@ -178,9 +169,7 @@ mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles = {},
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr,
-    llvm::ArrayRef<StructuredBoundarySupply> boundarySupplies = {},
-    uint64_t boundaryArgumentCount = 0,
-    std::optional<uint32_t> scopedRootNode = std::nullopt);
+    llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts = {});
 
 } // namespace wafer
 

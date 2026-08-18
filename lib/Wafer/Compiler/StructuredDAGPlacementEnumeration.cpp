@@ -3,6 +3,8 @@
 
 #include "StructuredDAGPlacementEnumeration.h"
 
+#include "Wafer/Support/CompileTiming.h"
+
 #include "StructuredDAGExactDemandQuery.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -16,6 +18,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 
 #include <algorithm>
 #include <array>
@@ -248,9 +251,8 @@ bool placementLess(const StructuredDAGNodePlacement &lhs,
 static size_t getPlacementHash(const StructuredDAGNodePlacement &placement) {
   llvm::hash_code hash = llvm::hash_combine(
       placement.spatialPartition.has_value(),
-      placement.spatialPartition
-          ? placement.spatialPartition->iteratorDimension
-          : 0,
+      placement.spatialPartition ? placement.spatialPartition->iteratorDimension
+                                 : 0,
       placement.spatialPartition ? placement.spatialPartition->resultDimension
                                  : 0,
       placement.iteratorPartitionFactors.size(), placement.tiles.size());
@@ -284,9 +286,8 @@ public:
     TransitionRelation relation = getRelation(producer, consumer);
     const size_t hash = static_cast<size_t>(llvm::hash_combine(
         edgeID, relation.producerPartitioned, relation.consumerPartitioned,
-        relation.producerShardDimension,
-        relation.consumerShardDimension, relation.producerParticipants,
-        relation.consumerParticipants));
+        relation.producerShardDimension, relation.consumerShardDimension,
+        relation.producerParticipants, relation.consumerParticipants));
     llvm::SmallVector<Entry, 1> &bucket = buckets[hash];
     auto found = llvm::find_if(bucket, [&](const Entry &entry) {
       return entry.edgeID == edgeID && entry.relation == relation;
@@ -1362,6 +1363,7 @@ static std::vector<uint64_t> getResourceRenamingSignature(
     signature.push_back(static_cast<uint32_t>(strategy.producerLayout));
     signature.push_back(static_cast<uint32_t>(strategy.consumerLayout));
     signature.push_back(strategy.bufferCount);
+    signature.push_back(strategy.fragmentsDefineProducerDemand);
     signature.push_back(label(strategy.sourceTile));
     signature.push_back(label(strategy.destinationTile));
     signature.push_back(strategy.producerOffsets.size());
@@ -1507,11 +1509,10 @@ deriveStructuredDAGPlacementSearchDomain(const StructuredDAGAnalysis &dag,
                                          const TargetTopology &topology,
                                          CardId cardId,
                                          std::string *failureReason) {
-  mlir::FailureOr<llvm::SmallVector<
-      llvm::SmallVector<StructuredDAGNodePlacement, 32>, 16>>
-      nodeOptions = deriveStructuredDAGNodePlacementOptions(dag, topology,
-                                                            cardId,
-                                                            failureReason);
+  mlir::FailureOr<
+      llvm::SmallVector<llvm::SmallVector<StructuredDAGNodePlacement, 32>, 16>>
+      nodeOptions = deriveStructuredDAGNodePlacementOptions(
+          dag, topology, cardId, failureReason);
   if (mlir::failed(nodeOptions))
     return mlir::failure();
   std::optional<llvm::ArrayRef<TileId>> availableTiles =
@@ -1586,23 +1587,32 @@ buildStructuredDAGPlacementClosure(
   StructuredDAGEdgeStrategyPlan edgePlan;
   bool carrierComplete = true;
   for (const StructuredDAGEdge &edge : dag.getEdges()) {
-    const StructuredDAGNodePlacement &producer =
-        placements[edge.producer];
-    const StructuredDAGNodePlacement &consumer =
-        placements[edge.consumer];
+    const StructuredDAGNodePlacement &producer = placements[edge.producer];
+    const StructuredDAGNodePlacement &consumer = placements[edge.consumer];
     std::string trialFailure;
-    mlir::FailureOr<analysis::LogicalShardTrial> trial = buildEdgeShardTrial(
-        dag, producer, consumer, epoch, &trialFailure);
+    const std::string edgeDetail =
+        (llvm::Twine("edge=") + llvm::Twine(edge.id)).str();
+    mlir::FailureOr<analysis::LogicalShardTrial> trial = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "structured-dag-placement-closure", "build-edge-trial",
+          edgeDetail);
+      return buildEdgeShardTrial(dag, producer, consumer, epoch, &trialFailure);
+    }();
     if (mlir::failed(trial)) {
       if (legality) {
         legality->status = analysis::ExactDemandStatus::IndeterminateFailure;
         legality->detail = std::move(trialFailure);
       }
-      setFailure(failureReason, legality ? legality->detail
-                                         : "edge trial is indeterminate");
+      setFailure(failureReason,
+                 legality ? legality->detail : "edge trial is indeterminate");
       return mlir::failure();
     }
-    analysis::ExactDemandResult demand = demandQuery.query(edge.id, *trial);
+    analysis::ExactDemandResult demand = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "structured-dag-placement-closure", "exact-edge-demand",
+          edgeDetail);
+      return demandQuery.query(edge.id, *trial);
+    }();
     if (demand.status != analysis::ExactDemandStatus::Satisfied) {
       if (legality) {
         legality->status = demand.status;
@@ -1627,8 +1637,7 @@ buildStructuredDAGPlacementClosure(
             std::numeric_limits<uint64_t>::max() - edgePlan.totalPeerBytes) {
           setFailure(failureReason,
                      "structured-DAG placement peer bytes overflow");
-          reportIndeterminate(
-              "structured-DAG placement peer bytes overflow");
+          reportIndeterminate("structured-DAG placement peer bytes overflow");
           return mlir::failure();
         }
         edgePlan.totalPeerBytes += plan->totalPeerBytes;

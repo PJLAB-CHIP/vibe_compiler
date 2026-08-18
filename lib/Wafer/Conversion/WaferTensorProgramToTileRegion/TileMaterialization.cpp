@@ -2359,6 +2359,20 @@ static mlir::LogicalResult materializeCandidateOutputAnchors(
     mlir::Operation *definition = returned.getDefiningOp();
     if (classifyStructuredRoot(definition) == StructuredRootCapability::Tiled)
       continue;
+    mlir::FailureOr<mlir::Value> outputBoundary = getCandidateOutputBoundary(
+        scope, static_cast<unsigned>(outputIndex), failureReason);
+    if (mlir::failed(outputBoundary))
+      return mlir::failure();
+    const bool selected = llvm::any_of(
+        outputShards, [&](const SpatialOutputShard &shard) {
+          return shard.outputIndex == outputIndex;
+        });
+    // A narrow final-region source represents every sibling result by its
+    // private scheduling destination.  Give that no-store path the same
+    // temporary typed root shape expected by the common traversal code; the
+    // omitted-output branch below immediately restores the boundary and the
+    // dead anchor never reaches TileRegion IR.
+    const bool omittedBoundary = !selected && returned == *outputBoundary;
     auto toTensor =
         mlir::dyn_cast_or_null<mlir::bufferization::ToTensorOp>(definition);
     auto compilerOwnedAllocation =
@@ -2369,8 +2383,10 @@ static mlir::LogicalResult materializeCandidateOutputAnchors(
         isWaferDDRMemRefType(compilerOwnedAllocation.getType()) &&
         compilerOwnedAllocation.getDynamicSizes().empty() &&
         compilerOwnedAllocation.getSymbolOperands().empty();
-    if (!definition || definition->getBlock() != &scope.getBody() ||
-        (!mlir::isMemoryEffectFree(definition) && !compilerOwnedDDRBoundary)) {
+    if ((!definition && !omittedBoundary) ||
+        (definition && definition->getBlock() != &scope.getBody()) ||
+        (definition && !mlir::isMemoryEffectFree(definition) &&
+         !compilerOwnedDDRBoundary)) {
       setFailureReason(failureReason,
                        "candidate traversal root is unsupported");
       return mlir::failure();
@@ -2383,11 +2399,6 @@ static mlir::LogicalResult materializeCandidateOutputAnchors(
           "candidate output anchor requires a static ranked tensor");
       return mlir::failure();
     }
-    mlir::FailureOr<mlir::Value> outputBoundary = getCandidateOutputBoundary(
-        scope, static_cast<unsigned>(outputIndex), failureReason);
-    if (mlir::failed(outputBoundary))
-      return mlir::failure();
-
     mlir::AffineMap identity = mlir::AffineMap::getMultiDimIdentityMap(
         resultType.getRank(), builder.getContext());
     llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes(

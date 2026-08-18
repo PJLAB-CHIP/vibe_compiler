@@ -51,8 +51,8 @@ static bool exceedsVariableLimit(unsigned destinationRank, unsigned sourceRank,
          sourceRank > limits.maxVariables - destinationRank;
 }
 
-static bool exceedsDisjunctWorkLimits(
-    const IntegerRelation &disjunct, const IndexRelationLimits &limits) {
+static bool exceedsDisjunctWorkLimits(const IntegerRelation &disjunct,
+                                      const IndexRelationLimits &limits) {
   if (disjunct.getNumVars() > limits.maxVariables ||
       disjunct.getNumConstraints() > limits.maxConstraintsPerDisjunct ||
       disjunct.getNumLocalVars() > limits.maxLocalVariablesPerDisjunct)
@@ -310,10 +310,18 @@ IndexRelationResult IndexRelation::fromAffineMap(
   // pattern enables the arithmetic rectangular image/preimage fast paths.
   if (map.isProjectedPermutation(/*allowZeroInResults=*/true)) {
     llvm::SmallVector<int64_t, 4> pattern;
+    llvm::SmallVector<IndexRelation::RowMajorRectangleMapping, 4>
+        rowMajorMappings;
     bool valid = true;
-    for (AffineExpr expression : map.getResults()) {
+    bool hasExactRowMajorMapping = true;
+    for (auto [sourceDimension, expression] :
+         llvm::enumerate(map.getResults())) {
+      IndexRelation::RowMajorRectangleMapping mapping;
+      mapping.sourceDimensions.push_back(sourceDimension);
       if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
         pattern.push_back(dimension.getPosition());
+        mapping.destinationDimensions.push_back(dimension.getPosition());
+        rowMajorMappings.push_back(std::move(mapping));
         continue;
       }
       auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
@@ -322,12 +330,22 @@ IndexRelationResult IndexRelation::fromAffineMap(
         break;
       }
       pattern.push_back(-1);
+      // A constant projection into a non-singleton source dimension is still
+      // handled exactly by projectedRectanglePattern, but it is not a
+      // row-major reshape group: only coordinate zero is in the image.
+      if (sourceShape[sourceDimension] == 1)
+        rowMajorMappings.push_back(std::move(mapping));
+      else
+        hasExactRowMajorMapping = false;
     }
     if (valid && pattern.size() == map.getNumResults()) {
       result.relation->projectedRectanglePattern = std::move(pattern);
-      result.relation->projectedRectangleDestinationShape =
+      if (hasExactRowMajorMapping)
+        result.relation->rowMajorRectangleMappings =
+            std::move(rowMajorMappings);
+      result.relation->rectangleDestinationShape =
           llvm::SmallVector<int64_t, 4>(destinationShape);
-      result.relation->projectedRectangleSourceShape =
+      result.relation->rectangleSourceShape =
           llvm::SmallVector<int64_t, 4>(sourceShape);
 
       // Functionality alone does not make the bounded map total: a source
@@ -337,8 +355,7 @@ IndexRelationResult IndexRelation::fromAffineMap(
       bool totalAndBounded = true;
       for (auto [sourceDimension, expression] :
            llvm::enumerate(map.getResults())) {
-        if (auto dimension =
-                mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
+        if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
           if (destinationShape[dimension.getPosition()] >
               sourceShape[sourceDimension]) {
             totalAndBounded = false;
@@ -346,8 +363,7 @@ IndexRelationResult IndexRelation::fromAffineMap(
           }
           continue;
         }
-        auto constant =
-            mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+        auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
         if (!constant || constant.getValue() < 0 ||
             constant.getValue() >= sourceShape[sourceDimension]) {
           totalAndBounded = false;
@@ -407,10 +423,14 @@ IndexRelationResult IndexRelation::fromCommonIterationDomain(
             projectedRelation.relation->isEquivalentTo(*result.relation, limits)
                 .isProvenTrue()) {
           result.relation->projectedRectanglePattern = std::move(pattern);
-          result.relation->projectedRectangleDestinationShape =
+          result.relation->rowMajorRectangleMappings =
+              projectedRelation.relation->rowMajorRectangleMappings;
+          result.relation->rectangleDestinationShape =
               llvm::SmallVector<int64_t, 4>(destinationShape);
-          result.relation->projectedRectangleSourceShape =
+          result.relation->rectangleSourceShape =
               llvm::SmallVector<int64_t, 4>(sourceShape);
+          result.relation->totalBoundedAffineMapByConstruction =
+              projectedRelation.relation->totalBoundedAffineMapByConstruction;
         }
       }
     }
@@ -426,9 +446,8 @@ IndexRelationResult IndexRelation::fromCommonIterationDomain(
           auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
           return constant && constant.getValue() == 0;
         });
-    const bool singletonDestination =
-        llvm::all_of(destinationShape,
-                     [](int64_t extent) { return extent == 1; });
+    const bool singletonDestination = llvm::all_of(
+        destinationShape, [](int64_t extent) { return extent == 1; });
     const bool sourceCoversCompleteDomain =
         iterationToSource.isProjectedPermutation(
             /*allowZeroInResults=*/true) &&
@@ -438,8 +457,7 @@ IndexRelationResult IndexRelation::fromCommonIterationDomain(
                            indexedExpression.index();
                        mlir::AffineExpr expression = indexedExpression.value();
                        if (auto dimension =
-                               mlir::dyn_cast<mlir::AffineDimExpr>(
-                                   expression))
+                               mlir::dyn_cast<mlir::AffineDimExpr>(expression))
                          return iterationShape[dimension.getPosition()] ==
                                 sourceShape[sourceDimension];
                        auto constant =
@@ -452,9 +470,9 @@ IndexRelationResult IndexRelation::fromCommonIterationDomain(
         singletonDestination && sourceCoversCompleteDomain) {
       llvm::SmallVector<int64_t, 4> pattern(sourceShape.size(), -2);
       result.relation->projectedRectanglePattern = std::move(pattern);
-      result.relation->projectedRectangleDestinationShape =
+      result.relation->rectangleDestinationShape =
           llvm::SmallVector<int64_t, 4>(destinationShape);
-      result.relation->projectedRectangleSourceShape =
+      result.relation->rectangleSourceShape =
           llvm::SmallVector<int64_t, 4>(sourceShape);
     }
   }
@@ -558,6 +576,118 @@ IndexRelation::staticReshape(llvm::ArrayRef<int64_t> destinationShape,
     return fail(IndexRelationStatus::Invalid,
                 "reshape source and destination element counts differ");
 
+  // Recover the reshape's exact reassociation as equal-product row-major
+  // groups. This is a construction proof for both collapse and expansion;
+  // it does not depend on a solver rediscovering quotient/remainder facts.
+  llvm::SmallVector<RowMajorRectangleMapping, 4> rowMajorMappings;
+  size_t destinationDimension = 0;
+  size_t sourceDimension = 0;
+  bool hasRowMajorMapping =
+      llvm::all_of(destinationShape,
+                   [](int64_t extent) { return extent > 0; }) &&
+      llvm::all_of(sourceShape, [](int64_t extent) { return extent > 0; });
+  while (hasRowMajorMapping && destinationDimension < destinationShape.size() &&
+         sourceDimension < sourceShape.size()) {
+    RowMajorRectangleMapping mapping;
+    int64_t destinationProduct = destinationShape[destinationDimension];
+    int64_t sourceProduct = sourceShape[sourceDimension];
+    mapping.destinationDimensions.push_back(destinationDimension++);
+    mapping.sourceDimensions.push_back(sourceDimension++);
+    while (destinationProduct != sourceProduct) {
+      if (destinationProduct < sourceProduct &&
+          destinationDimension < destinationShape.size()) {
+        if (llvm::MulOverflow(destinationProduct,
+                              destinationShape[destinationDimension],
+                              destinationProduct)) {
+          hasRowMajorMapping = false;
+          break;
+        }
+        mapping.destinationDimensions.push_back(destinationDimension++);
+        continue;
+      }
+      if (sourceProduct < destinationProduct &&
+          sourceDimension < sourceShape.size()) {
+        if (llvm::MulOverflow(sourceProduct, sourceShape[sourceDimension],
+                              sourceProduct)) {
+          hasRowMajorMapping = false;
+          break;
+        }
+        mapping.sourceDimensions.push_back(sourceDimension++);
+        continue;
+      }
+      hasRowMajorMapping = false;
+      break;
+    }
+    if (hasRowMajorMapping)
+      rowMajorMappings.push_back(std::move(mapping));
+  }
+  if (hasRowMajorMapping && destinationDimension < destinationShape.size()) {
+    RowMajorRectangleMapping mapping;
+    while (destinationDimension < destinationShape.size()) {
+      if (destinationShape[destinationDimension] != 1) {
+        hasRowMajorMapping = false;
+        break;
+      }
+      mapping.destinationDimensions.push_back(destinationDimension++);
+    }
+    if (hasRowMajorMapping)
+      rowMajorMappings.push_back(std::move(mapping));
+  }
+  if (hasRowMajorMapping && sourceDimension < sourceShape.size()) {
+    RowMajorRectangleMapping mapping;
+    while (sourceDimension < sourceShape.size()) {
+      if (sourceShape[sourceDimension] != 1) {
+        hasRowMajorMapping = false;
+        break;
+      }
+      mapping.sourceDimensions.push_back(sourceDimension++);
+    }
+    if (hasRowMajorMapping)
+      rowMajorMappings.push_back(std::move(mapping));
+  }
+
+  const bool isAffineCollapse =
+      hasRowMajorMapping &&
+      llvm::all_of(rowMajorMappings,
+                   [](const RowMajorRectangleMapping &mapping) {
+                     return mapping.sourceDimensions.size() <= 1;
+                   });
+  if (isAffineCollapse) {
+    MLIRContext context;
+    llvm::SmallVector<AffineExpr, 4> results(
+        sourceShape.size(), getAffineConstantExpr(0, &context));
+    for (const RowMajorRectangleMapping &mapping : rowMajorMappings) {
+      if (mapping.sourceDimensions.empty())
+        continue;
+      AffineExpr expression = getAffineConstantExpr(0, &context);
+      int64_t stride = 1;
+      for (unsigned destination :
+           llvm::reverse(mapping.destinationDimensions)) {
+        expression =
+            expression + getAffineDimExpr(destination, &context) * stride;
+        if (llvm::MulOverflow(stride, destinationShape[destination], stride)) {
+          hasRowMajorMapping = false;
+          break;
+        }
+      }
+      if (!hasRowMajorMapping)
+        break;
+      results[mapping.sourceDimensions.front()] = expression;
+    }
+    IndexRelationResult result = fromAffineMap(
+        AffineMap::get(destinationShape.size(), 0, results, &context),
+        destinationShape, sourceShape, limits);
+    if (result.isExact()) {
+      result.relation->rowMajorRectangleMappings = std::move(rowMajorMappings);
+      result.relation->rectangleDestinationShape =
+          llvm::SmallVector<int64_t, 4>(destinationShape);
+      result.relation->rectangleSourceShape =
+          llvm::SmallVector<int64_t, 4>(sourceShape);
+      result.relation->totalBoundedAffineMapByConstruction = true;
+      return result;
+    }
+  }
+
   IntegerRelation relation(PresburgerSpace::getRelationSpace(
       destinationShape.size(), sourceShape.size()));
   llvm::SmallVector<int64_t, 8> equality(relation.getNumVars() + 1, 0);
@@ -567,7 +697,18 @@ IndexRelation::staticReshape(llvm::ArrayRef<int64_t> destinationShape,
     equality[destinationShape.size() + index] = -stride;
   relation.addEquality(equality);
   addStaticShapeBounds(relation, destinationShape, sourceShape);
-  return finishExactOrBound(std::move(relation), /*isBound=*/false, limits);
+  IndexRelationResult result =
+      finishExactOrBound(std::move(relation), /*isBound=*/false, limits);
+  if (result.isExact() && hasRowMajorMapping) {
+    result.relation->rowMajorRectangleMappings = std::move(rowMajorMappings);
+    result.relation->rectangleDestinationShape =
+        llvm::SmallVector<int64_t, 4>(destinationShape);
+    result.relation->rectangleSourceShape =
+        llvm::SmallVector<int64_t, 4>(sourceShape);
+    result.relation->functionalByConstruction = true;
+    result.relation->totalBoundedAffineMapByConstruction = true;
+  }
+  return result;
 }
 
 IndexRelationResult
@@ -692,6 +833,87 @@ StaticRectangularIndexSetResult IndexSetResult::getExactStaticRectangularDomain(
   if (exceedsSetLimits(*set, limits))
     return failRectangle(IndexRelationStatus::ResourceExhausted,
                          "rectangular recovery exceeds index-set budget");
+
+  // A single conjunction of unit, one-dimensional lower/upper bounds is
+  // exactly a static rectangle by construction. Recover it arithmetically
+  // before invoking any Presburger emptiness/extremum/equality query. This is
+  // the common representation of balanced execution and ownership shards;
+  // rebuilding a many-piece union and asking a generic solver to rediscover
+  // the same box proof is not bounded by the structural limits above.
+  if (set->getNumDisjuncts() == 1) {
+    const IntegerRelation &box = set->getDisjunct(0);
+    const unsigned rank = set->getSpace().getNumSetDimVars();
+    if (box.getNumSymbolVars() == 0 && box.getNumLocalVars() == 0 &&
+        box.getNumEqualities() == 0) {
+      llvm::SmallVector<std::optional<int64_t>, 4> lowerBounds(rank);
+      llvm::SmallVector<std::optional<int64_t>, 4> upperBounds(rank);
+      bool isUnitBox = true;
+      for (unsigned row = 0; row < box.getNumInequalities(); ++row) {
+        llvm::SmallVector<int64_t, 8> inequality = box.getInequality64(row);
+        std::optional<unsigned> dimension;
+        int64_t coefficient = 0;
+        for (unsigned index = 0; index < rank; ++index) {
+          if (inequality[index] == 0)
+            continue;
+          if (dimension ||
+              (inequality[index] != 1 && inequality[index] != -1)) {
+            isUnitBox = false;
+            break;
+          }
+          dimension = index;
+          coefficient = inequality[index];
+        }
+        if (!isUnitBox || !dimension) {
+          isUnitBox = false;
+          break;
+        }
+        const int64_t constant = inequality.back();
+        if (coefficient == 1) {
+          if (constant == std::numeric_limits<int64_t>::min()) {
+            isUnitBox = false;
+            break;
+          }
+          const int64_t lower = -constant;
+          lowerBounds[*dimension] =
+              lowerBounds[*dimension]
+                  ? std::max(*lowerBounds[*dimension], lower)
+                  : lower;
+        } else {
+          upperBounds[*dimension] =
+              upperBounds[*dimension]
+                  ? std::min(*upperBounds[*dimension], constant)
+                  : constant;
+        }
+      }
+      if (isUnitBox &&
+          llvm::all_of(lowerBounds,
+                       [](const auto &bound) { return bound.has_value(); }) &&
+          llvm::all_of(upperBounds,
+                       [](const auto &bound) { return bound.has_value(); })) {
+        StaticRectangularIndexSet rectangle;
+        rectangle.offsets.reserve(rank);
+        rectangle.sizes.reserve(rank);
+        for (unsigned dimension = 0; dimension < rank; ++dimension) {
+          int64_t size = 0;
+          if (*upperBounds[dimension] < *lowerBounds[dimension] ||
+              llvm::SubOverflow(*upperBounds[dimension],
+                                *lowerBounds[dimension], size) ||
+              llvm::AddOverflow(size, int64_t{1}, size)) {
+            isUnitBox = false;
+            break;
+          }
+          rectangle.offsets.push_back(*lowerBounds[dimension]);
+          rectangle.sizes.push_back(size);
+        }
+        if (isUnitBox)
+          return StaticRectangularIndexSetResult{
+              IndexRelationStatus::Exact, std::move(rectangle), {}};
+      }
+      if (isUnitBox && rank == 0 && box.getNumInequalities() == 0)
+        return StaticRectangularIndexSetResult{
+            IndexRelationStatus::Exact, StaticRectangularIndexSet{{}, {}}, {}};
+    }
+  }
   if (set->isIntegerEmpty())
     return failRectangle(IndexRelationStatus::Unsupported,
                          "empty index demand has no transfer rectangle");
@@ -764,6 +986,61 @@ IndexRelation::compose(const IndexRelation &next,
   if (exceedsVariableLimit(getDestinationRank(), next.getSourceRank(), limits))
     return fail(IndexRelationStatus::ResourceExhausted,
                 "composed index relation exceeds variable budget");
+
+  // If every intermediate coordinate is produced by one current row-major
+  // group, substitute those groups into the next relation's reassociation.
+  // This covers projected indexing followed by either collapse or expansion.
+  // The total/bounded premises are essential: without them an intermediate
+  // bound may clip the apparent map.
+  std::optional<llvm::SmallVector<RowMajorRectangleMapping, 4>>
+      composedMappings;
+  if (status == IndexRelationStatus::Exact &&
+      next.status == IndexRelationStatus::Exact &&
+      totalBoundedAffineMapByConstruction &&
+      next.totalBoundedAffineMapByConstruction && rowMajorRectangleMappings &&
+      next.rowMajorRectangleMappings && rectangleDestinationShape &&
+      rectangleSourceShape && next.rectangleDestinationShape &&
+      next.rectangleSourceShape &&
+      *rectangleSourceShape == *next.rectangleDestinationShape) {
+    llvm::SmallVector<std::optional<unsigned>, 4> intermediateProducer(
+        rectangleSourceShape->size());
+    bool validMappings = true;
+    for (auto [mappingIndex, mapping] :
+         llvm::enumerate(*rowMajorRectangleMappings)) {
+      if (mapping.sourceDimensions.empty())
+        continue;
+      if (mapping.sourceDimensions.size() != 1 ||
+          mapping.sourceDimensions.front() >= intermediateProducer.size() ||
+          intermediateProducer[mapping.sourceDimensions.front()]) {
+        validMappings = false;
+        break;
+      }
+      intermediateProducer[mapping.sourceDimensions.front()] = mappingIndex;
+    }
+    llvm::SmallVector<RowMajorRectangleMapping, 4> mappings;
+    for (const RowMajorRectangleMapping &nextMapping :
+         *next.rowMajorRectangleMappings) {
+      RowMajorRectangleMapping mapping;
+      mapping.sourceDimensions = nextMapping.sourceDimensions;
+      for (unsigned intermediateDimension : nextMapping.destinationDimensions) {
+        if (!validMappings ||
+            intermediateDimension >= intermediateProducer.size() ||
+            !intermediateProducer[intermediateDimension]) {
+          validMappings = false;
+          break;
+        }
+        llvm::append_range(mapping.destinationDimensions,
+                           (*rowMajorRectangleMappings)
+                               [*intermediateProducer[intermediateDimension]]
+                                   .destinationDimensions);
+      }
+      if (!validMappings)
+        break;
+      mappings.push_back(std::move(mapping));
+    }
+    if (validMappings)
+      composedMappings = std::move(mappings);
+  }
   PresburgerRelation composed = relation;
   composed.compose(next.relation);
   if (exceedsRelationLimits(composed, limits))
@@ -774,13 +1051,16 @@ IndexRelation::compose(const IndexRelation &next,
               next.status == IndexRelationStatus::Exact
           ? IndexRelationStatus::Exact
           : IndexRelationStatus::SoundBound;
-  // Do not propagate a projected-rectangle pattern through composition: the
-  // bounded intermediate domain can clip the apparent outer projection even
-  // when both component maps are projected permutations. Builders such as
-  // fromCommonIterationDomain may restore the pattern after an explicit
-  // equivalence proof against the fully composed relation.
-  return IndexRelationResult{
+  IndexRelationResult result{
       composedStatus, IndexRelation(std::move(composed), composedStatus), {}};
+  if (composedStatus == IndexRelationStatus::Exact && composedMappings) {
+    result.relation->rowMajorRectangleMappings = std::move(composedMappings);
+    result.relation->rectangleDestinationShape = rectangleDestinationShape;
+    result.relation->rectangleSourceShape = next.rectangleSourceShape;
+    result.relation->functionalByConstruction = true;
+    result.relation->totalBoundedAffineMapByConstruction = true;
+  }
+  return result;
 }
 
 IndexRelationResult
@@ -808,6 +1088,24 @@ IndexRelationResult IndexRelation::intersectDestinationDomain(
   // pattern bypass the intersection.
   IndexRelation restrictedRelation(std::move(restricted), status);
   restrictedRelation.functionalByConstruction = functionalByConstruction;
+  if ((projectedRectanglePattern || rowMajorRectangleMappings) &&
+      rectangleDestinationShape && rectangleSourceShape) {
+    StaticRectangularIndexSetResult rectangle = IndexSetResult{
+        IndexRelationStatus::Exact,
+        domain,
+        {}}.getExactStaticRectangularDomain(limits);
+    if (rectangle.isExact() &&
+        llvm::all_of(rectangle.domain->offsets,
+                     [](int64_t offset) { return offset == 0; }) &&
+        rectangle.domain->sizes == *rectangleDestinationShape) {
+      restrictedRelation.projectedRectanglePattern = projectedRectanglePattern;
+      restrictedRelation.rowMajorRectangleMappings = rowMajorRectangleMappings;
+      restrictedRelation.rectangleDestinationShape = rectangleDestinationShape;
+      restrictedRelation.rectangleSourceShape = rectangleSourceShape;
+      restrictedRelation.totalBoundedAffineMapByConstruction =
+          totalBoundedAffineMapByConstruction;
+    }
+  }
   return IndexRelationResult{status, std::move(restrictedRelation), {}};
 }
 
@@ -825,6 +1123,24 @@ IndexRelation::intersectSourceDomain(const PresburgerSet &domain,
   // projected-rectangle proof while preserving single-valuedness.
   IndexRelation restrictedRelation(std::move(restricted), status);
   restrictedRelation.functionalByConstruction = functionalByConstruction;
+  if ((projectedRectanglePattern || rowMajorRectangleMappings) &&
+      rectangleDestinationShape && rectangleSourceShape) {
+    StaticRectangularIndexSetResult rectangle = IndexSetResult{
+        IndexRelationStatus::Exact,
+        domain,
+        {}}.getExactStaticRectangularDomain(limits);
+    if (rectangle.isExact() &&
+        llvm::all_of(rectangle.domain->offsets,
+                     [](int64_t offset) { return offset == 0; }) &&
+        rectangle.domain->sizes == *rectangleSourceShape) {
+      restrictedRelation.projectedRectanglePattern = projectedRectanglePattern;
+      restrictedRelation.rowMajorRectangleMappings = rowMajorRectangleMappings;
+      restrictedRelation.rectangleDestinationShape = rectangleDestinationShape;
+      restrictedRelation.rectangleSourceShape = rectangleSourceShape;
+      restrictedRelation.totalBoundedAffineMapByConstruction =
+          totalBoundedAffineMapByConstruction;
+    }
+  }
   return IndexRelationResult{status, std::move(restrictedRelation), {}};
 }
 
@@ -853,11 +1169,170 @@ StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
     return failRectangle(IndexRelationStatus::Invalid,
                          "rectangular image destination rank is invalid");
 
-  if (projectedRectanglePattern && projectedRectangleDestinationShape &&
-      projectedRectangleSourceShape) {
+  if (rowMajorRectangleMappings && rectangleDestinationShape &&
+      rectangleSourceShape) {
     for (auto [offset, size, extent] :
          llvm::zip_equal(destinationOffsets, destinationSizes,
-                         *projectedRectangleDestinationShape)) {
+                         *rectangleDestinationShape)) {
+      int64_t upper = 0;
+      if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, upper) ||
+          upper > extent)
+        return failRectangle(IndexRelationStatus::Invalid,
+                             "rectangular image destination is out of bounds");
+    }
+
+    StaticRectangularIndexSet result;
+    result.offsets.assign(rectangleSourceShape->size(), 0);
+    result.sizes.assign(rectangleSourceShape->size(), 0);
+    llvm::SmallVector<bool, 4> coveredSource(rectangleSourceShape->size(),
+                                             false);
+    bool exactRectangle = true;
+    for (const RowMajorRectangleMapping &mapping : *rowMajorRectangleMappings) {
+      int64_t linearOffset = 0;
+      int64_t destinationProduct = 1;
+      for (unsigned destination :
+           llvm::reverse(mapping.destinationDimensions)) {
+        if (destination >= rectangleDestinationShape->size()) {
+          exactRectangle = false;
+          break;
+        }
+        int64_t contribution = 0;
+        if (llvm::MulOverflow(destinationOffsets[destination],
+                              destinationProduct, contribution) ||
+            llvm::AddOverflow(linearOffset, contribution, linearOffset) ||
+            llvm::MulOverflow(destinationProduct,
+                              (*rectangleDestinationShape)[destination],
+                              destinationProduct)) {
+          exactRectangle = false;
+          break;
+        }
+      }
+      if (!exactRectangle)
+        break;
+
+      int64_t sourceProduct = 1;
+      for (unsigned source : mapping.sourceDimensions) {
+        if (source >= rectangleSourceShape->size() || coveredSource[source] ||
+            (*rectangleSourceShape)[source] <= 0 ||
+            llvm::MulOverflow(sourceProduct, (*rectangleSourceShape)[source],
+                              sourceProduct)) {
+          exactRectangle = false;
+          break;
+        }
+      }
+      if (!exactRectangle || destinationProduct != sourceProduct) {
+        exactRectangle = false;
+        break;
+      }
+
+      std::optional<size_t> firstVarying;
+      for (auto [ordinal, destination] :
+           llvm::enumerate(mapping.destinationDimensions))
+        if (destinationSizes[destination] > 1) {
+          firstVarying = ordinal;
+          break;
+        }
+      int64_t linearSize = 1;
+      if (firstVarying) {
+        const unsigned varyingDestination =
+            mapping.destinationDimensions[*firstVarying];
+        int64_t innerExtent = 1;
+        for (unsigned destination : llvm::drop_begin(
+                 mapping.destinationDimensions, *firstVarying + 1)) {
+          if (destinationOffsets[destination] != 0 ||
+              destinationSizes[destination] !=
+                  (*rectangleDestinationShape)[destination] ||
+              llvm::MulOverflow(innerExtent,
+                                (*rectangleDestinationShape)[destination],
+                                innerExtent)) {
+            exactRectangle = false;
+            break;
+          }
+        }
+        if (!exactRectangle ||
+            llvm::MulOverflow(destinationSizes[varyingDestination], innerExtent,
+                              linearSize)) {
+          exactRectangle = false;
+          break;
+        }
+      }
+      int64_t linearLimit = 0;
+      if (llvm::AddOverflow(linearOffset, linearSize, linearLimit) ||
+          linearLimit > sourceProduct) {
+        exactRectangle = false;
+        break;
+      }
+
+      if (mapping.sourceDimensions.empty()) {
+        if (linearOffset != 0 || linearSize != 1)
+          exactRectangle = false;
+        continue;
+      }
+
+      std::optional<size_t> varyingSource;
+      int64_t varyingOffset = 0;
+      int64_t varyingSize = 0;
+      for (size_t candidate = 0; candidate < mapping.sourceDimensions.size();
+           ++candidate) {
+        int64_t innerExtent = 1;
+        bool validInnerExtent = true;
+        for (unsigned source :
+             llvm::drop_begin(mapping.sourceDimensions, candidate + 1))
+          if (llvm::MulOverflow(innerExtent, (*rectangleSourceShape)[source],
+                                innerExtent)) {
+            validInnerExtent = false;
+            break;
+          }
+        if (!validInnerExtent || linearOffset % innerExtent != 0 ||
+            linearSize % innerExtent != 0)
+          continue;
+        const unsigned source = mapping.sourceDimensions[candidate];
+        const int64_t offset =
+            (linearOffset / innerExtent) % (*rectangleSourceShape)[source];
+        const int64_t size = linearSize / innerExtent;
+        int64_t limit = 0;
+        if (size > 0 && !llvm::AddOverflow(offset, size, limit) &&
+            limit <= (*rectangleSourceShape)[source]) {
+          varyingSource = candidate;
+          varyingOffset = offset;
+          varyingSize = size;
+          break;
+        }
+      }
+      if (!varyingSource) {
+        exactRectangle = false;
+        break;
+      }
+
+      int64_t sourceStride = sourceProduct;
+      for (auto [ordinal, source] : llvm::enumerate(mapping.sourceDimensions)) {
+        sourceStride /= (*rectangleSourceShape)[source];
+        coveredSource[source] = true;
+        if (ordinal < *varyingSource) {
+          result.offsets[source] =
+              (linearOffset / sourceStride) % (*rectangleSourceShape)[source];
+          result.sizes[source] = 1;
+        } else if (ordinal == *varyingSource) {
+          result.offsets[source] = varyingOffset;
+          result.sizes[source] = varyingSize;
+        } else {
+          result.offsets[source] = 0;
+          result.sizes[source] = (*rectangleSourceShape)[source];
+        }
+      }
+    }
+    exactRectangle &=
+        llvm::all_of(coveredSource, [](bool covered) { return covered; });
+    if (exactRectangle)
+      return StaticRectangularIndexSetResult{
+          IndexRelationStatus::Exact, std::move(result), {}};
+  }
+
+  if (projectedRectanglePattern && rectangleDestinationShape &&
+      rectangleSourceShape) {
+    for (auto [offset, size, extent] :
+         llvm::zip_equal(destinationOffsets, destinationSizes,
+                         *rectangleDestinationShape)) {
       int64_t upper = 0;
       if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, upper) ||
           upper > extent)
@@ -870,8 +1345,7 @@ StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
     bool sourceBoundsPreserveProjection = true;
     for (auto [sourceDimension, mappedDimension] :
          llvm::enumerate(*projectedRectanglePattern)) {
-      const int64_t sourceExtent =
-          (*projectedRectangleSourceShape)[sourceDimension];
+      const int64_t sourceExtent = (*rectangleSourceShape)[sourceDimension];
       if (mappedDimension == -2) {
         // Unconstrained source dimension of a complete-reduction relation:
         // the image covers the complete source extent for every destination
@@ -917,14 +1391,269 @@ StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
   return exactImage.getExactStaticRectangularDomain(limits);
 }
 
+StaticRectangularIndexSetPiecesResult
+IndexRelation::getExactStaticRectangularImagePieces(
+    llvm::ArrayRef<int64_t> destinationOffsets,
+    llvm::ArrayRef<int64_t> destinationSizes,
+    const IndexRelationLimits &limits) const {
+  auto failPieces = [](IndexRelationStatus failureStatus,
+                       llvm::StringRef reason) {
+    return StaticRectangularIndexSetPiecesResult{
+        failureStatus, {}, reason.str()};
+  };
+  if (status != IndexRelationStatus::Exact)
+    return failPieces(IndexRelationStatus::SoundBound,
+                      "rectangular image decomposition requires an exact "
+                      "relation");
+  if (destinationOffsets.size() != getDestinationRank() ||
+      destinationSizes.size() != getDestinationRank())
+    return failPieces(IndexRelationStatus::Invalid,
+                      "rectangular image destination rank is invalid");
+  if (!rowMajorRectangleMappings || !rectangleDestinationShape ||
+      !rectangleSourceShape) {
+    StaticRectangularIndexSetResult rectangle = getExactStaticRectangularImage(
+        destinationOffsets, destinationSizes, limits);
+    if (!rectangle.isExact())
+      return failPieces(rectangle.status, rectangle.reason);
+    return StaticRectangularIndexSetPiecesResult{
+        IndexRelationStatus::Exact, {std::move(*rectangle.domain)}, {}};
+  }
+
+  for (auto [offset, size, extent] : llvm::zip_equal(
+           destinationOffsets, destinationSizes, *rectangleDestinationShape)) {
+    int64_t upper = 0;
+    if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, upper) ||
+        upper > extent)
+      return failPieces(IndexRelationStatus::Invalid,
+                        "rectangular image destination is out of bounds");
+  }
+
+  llvm::SmallVector<StaticRectangularIndexSet, 8> result(1);
+  result.front().offsets.assign(rectangleSourceShape->size(), 0);
+  result.front().sizes.assign(rectangleSourceShape->size(), 0);
+  llvm::SmallVector<bool, 4> coveredSource(rectangleSourceShape->size(), false);
+
+  for (const RowMajorRectangleMapping &mapping : *rowMajorRectangleMappings) {
+    int64_t destinationProduct = 1;
+    for (unsigned destination : mapping.destinationDimensions) {
+      if (destination >= rectangleDestinationShape->size() ||
+          (*rectangleDestinationShape)[destination] <= 0 ||
+          llvm::MulOverflow(destinationProduct,
+                            (*rectangleDestinationShape)[destination],
+                            destinationProduct))
+        return failPieces(IndexRelationStatus::Invalid,
+                          "row-major destination group is invalid");
+    }
+    int64_t sourceProduct = 1;
+    for (unsigned source : mapping.sourceDimensions) {
+      if (source >= rectangleSourceShape->size() || coveredSource[source] ||
+          (*rectangleSourceShape)[source] <= 0 ||
+          llvm::MulOverflow(sourceProduct, (*rectangleSourceShape)[source],
+                            sourceProduct))
+        return failPieces(IndexRelationStatus::Invalid,
+                          "row-major source group is invalid");
+      coveredSource[source] = true;
+    }
+    if (destinationProduct != sourceProduct)
+      return failPieces(IndexRelationStatus::Invalid,
+                        "row-major group element counts differ");
+
+    struct LinearInterval {
+      int64_t offset = 0;
+      int64_t size = 0;
+    };
+    llvm::SmallVector<LinearInterval, 8> linearIntervals;
+    if (mapping.destinationDimensions.empty()) {
+      linearIntervals.push_back({0, 1});
+    } else {
+      size_t contiguousDimension = mapping.destinationDimensions.size() - 1;
+      for (size_t candidate = 0;
+           candidate < mapping.destinationDimensions.size(); ++candidate) {
+        const bool innerDimensionsAreComplete = llvm::all_of(
+            llvm::drop_begin(mapping.destinationDimensions, candidate + 1),
+            [&](unsigned destination) {
+              return destinationOffsets[destination] == 0 &&
+                     destinationSizes[destination] ==
+                         (*rectangleDestinationShape)[destination];
+            });
+        if (innerDimensionsAreComplete) {
+          contiguousDimension = candidate;
+          break;
+        }
+      }
+
+      uint64_t prefixCount = 1;
+      for (unsigned destination :
+           llvm::ArrayRef<unsigned>(mapping.destinationDimensions)
+               .take_front(contiguousDimension)) {
+        if (static_cast<uint64_t>(destinationSizes[destination]) >
+            limits.maxRectangularPieces / prefixCount)
+          return failPieces(IndexRelationStatus::ResourceExhausted,
+                            "row-major image decomposition exceeds piece "
+                            "budget");
+        prefixCount *= static_cast<uint64_t>(destinationSizes[destination]);
+      }
+      for (uint64_t ordinal = 0; ordinal < prefixCount; ++ordinal) {
+        llvm::SmallVector<int64_t, 4> coordinates(destinationOffsets.begin(),
+                                                  destinationOffsets.end());
+        uint64_t remainingOrdinal = ordinal;
+        for (unsigned destination : llvm::reverse(
+                 llvm::ArrayRef<unsigned>(mapping.destinationDimensions)
+                     .take_front(contiguousDimension))) {
+          const uint64_t extent =
+              static_cast<uint64_t>(destinationSizes[destination]);
+          coordinates[destination] +=
+              static_cast<int64_t>(remainingOrdinal % extent);
+          remainingOrdinal /= extent;
+        }
+
+        int64_t linearOffset = 0;
+        int64_t stride = 1;
+        for (unsigned destination :
+             llvm::reverse(mapping.destinationDimensions)) {
+          int64_t contribution = 0;
+          if (llvm::MulOverflow(coordinates[destination], stride,
+                                contribution) ||
+              llvm::AddOverflow(linearOffset, contribution, linearOffset) ||
+              llvm::MulOverflow(
+                  stride, (*rectangleDestinationShape)[destination], stride))
+            return failPieces(IndexRelationStatus::Invalid,
+                              "row-major destination interval overflows");
+        }
+        const unsigned contiguousDestination =
+            mapping.destinationDimensions[contiguousDimension];
+        int64_t innerExtent = 1;
+        for (unsigned destination : llvm::drop_begin(
+                 mapping.destinationDimensions, contiguousDimension + 1))
+          if (llvm::MulOverflow(innerExtent,
+                                (*rectangleDestinationShape)[destination],
+                                innerExtent))
+            return failPieces(IndexRelationStatus::Invalid,
+                              "row-major destination interval overflows");
+        int64_t linearSize = 0;
+        if (llvm::MulOverflow(destinationSizes[contiguousDestination],
+                              innerExtent, linearSize))
+          return failPieces(IndexRelationStatus::Invalid,
+                            "row-major destination interval overflows");
+        linearIntervals.push_back({linearOffset, linearSize});
+      }
+    }
+
+    llvm::SmallVector<StaticRectangularIndexSet, 8> mappingPieces;
+    for (LinearInterval interval : linearIntervals) {
+      if (mapping.sourceDimensions.empty()) {
+        if (interval.offset != 0 || interval.size != 1)
+          return failPieces(IndexRelationStatus::Invalid,
+                            "row-major dropped dimensions are not singleton");
+        StaticRectangularIndexSet empty;
+        empty.offsets.assign(rectangleSourceShape->size(), 0);
+        empty.sizes.assign(rectangleSourceShape->size(), 0);
+        mappingPieces.push_back(std::move(empty));
+        continue;
+      }
+
+      int64_t position = interval.offset;
+      int64_t remaining = interval.size;
+      while (remaining > 0) {
+        std::optional<size_t> selectedDimension;
+        int64_t selectedBlock = 0;
+        int64_t selectedOffset = 0;
+        int64_t selectedSize = 0;
+        for (size_t candidate = 0; candidate < mapping.sourceDimensions.size();
+             ++candidate) {
+          int64_t innerExtent = 1;
+          for (unsigned source :
+               llvm::drop_begin(mapping.sourceDimensions, candidate + 1))
+            if (llvm::MulOverflow(innerExtent, (*rectangleSourceShape)[source],
+                                  innerExtent))
+              return failPieces(IndexRelationStatus::Invalid,
+                                "row-major source interval overflows");
+          if (position % innerExtent != 0 || remaining < innerExtent)
+            continue;
+          const unsigned source = mapping.sourceDimensions[candidate];
+          const int64_t digit =
+              (position / innerExtent) % (*rectangleSourceShape)[source];
+          const int64_t count = std::min(
+              (*rectangleSourceShape)[source] - digit, remaining / innerExtent);
+          int64_t block = 0;
+          if (count <= 0 || llvm::MulOverflow(count, innerExtent, block))
+            continue;
+          if (block > selectedBlock) {
+            selectedDimension = candidate;
+            selectedBlock = block;
+            selectedOffset = digit;
+            selectedSize = count;
+          }
+        }
+        if (!selectedDimension || selectedBlock <= 0)
+          return failPieces(IndexRelationStatus::Invalid,
+                            "row-major source interval cannot be decomposed");
+        if (mappingPieces.size() >= limits.maxRectangularPieces)
+          return failPieces(IndexRelationStatus::ResourceExhausted,
+                            "row-major image decomposition exceeds piece "
+                            "budget");
+
+        StaticRectangularIndexSet piece;
+        piece.offsets.assign(rectangleSourceShape->size(), 0);
+        piece.sizes.assign(rectangleSourceShape->size(), 0);
+        int64_t sourceStride = sourceProduct;
+        for (auto [ordinal, source] :
+             llvm::enumerate(mapping.sourceDimensions)) {
+          sourceStride /= (*rectangleSourceShape)[source];
+          if (ordinal < *selectedDimension) {
+            piece.offsets[source] =
+                (position / sourceStride) % (*rectangleSourceShape)[source];
+            piece.sizes[source] = 1;
+          } else if (ordinal == *selectedDimension) {
+            piece.offsets[source] = selectedOffset;
+            piece.sizes[source] = selectedSize;
+          } else {
+            piece.offsets[source] = 0;
+            piece.sizes[source] = (*rectangleSourceShape)[source];
+          }
+        }
+        mappingPieces.push_back(std::move(piece));
+        position += selectedBlock;
+        remaining -= selectedBlock;
+      }
+    }
+
+    if (!mapping.sourceDimensions.empty()) {
+      if (mappingPieces.empty() ||
+          result.size() > limits.maxRectangularPieces / mappingPieces.size())
+        return failPieces(IndexRelationStatus::ResourceExhausted,
+                          "row-major image decomposition exceeds piece "
+                          "budget");
+      llvm::SmallVector<StaticRectangularIndexSet, 8> combined;
+      combined.reserve(result.size() * mappingPieces.size());
+      for (const StaticRectangularIndexSet &base : result)
+        for (const StaticRectangularIndexSet &piece : mappingPieces) {
+          StaticRectangularIndexSet value = base;
+          for (unsigned source : mapping.sourceDimensions) {
+            value.offsets[source] = piece.offsets[source];
+            value.sizes[source] = piece.sizes[source];
+          }
+          combined.push_back(std::move(value));
+        }
+      result = std::move(combined);
+    }
+  }
+
+  if (!llvm::all_of(coveredSource, [](bool covered) { return covered; }))
+    return failPieces(IndexRelationStatus::Invalid,
+                      "row-major image leaves a source dimension undefined");
+  return StaticRectangularIndexSetPiecesResult{
+      IndexRelationStatus::Exact, std::move(result), {}};
+}
+
 IndexSetResult
 IndexRelation::preimage(const PresburgerSet &sourceDomain,
                         const IndexRelationLimits &limits) const {
   if (!isCompatibleSet(sourceDomain, getSourceRank()))
     return failSet(IndexRelationStatus::Invalid,
                    "source domain rank or symbols are incompatible");
-  if (projectedRectanglePattern && projectedRectangleDestinationShape &&
-      projectedRectangleSourceShape) {
+  if (projectedRectanglePattern && rectangleDestinationShape &&
+      rectangleSourceShape) {
     StaticRectangularIndexSetResult rectangle = IndexSetResult{
         IndexRelationStatus::Exact,
         sourceDomain,
@@ -933,7 +1662,7 @@ IndexRelation::preimage(const PresburgerSet &sourceDomain,
       const StaticRectangularIndexSet &source = *rectangle.domain;
       bool sourceRectangleIsInBounds = true;
       for (auto [offset, size, extent] : llvm::zip_equal(
-               source.offsets, source.sizes, *projectedRectangleSourceShape)) {
+               source.offsets, source.sizes, *rectangleSourceShape)) {
         int64_t upper = 0;
         if (offset < 0 || size <= 0 || llvm::AddOverflow(offset, size, upper) ||
             upper > extent) {
@@ -947,8 +1676,7 @@ IndexRelation::preimage(const PresburgerSet &sourceDomain,
       llvm::SmallVector<int64_t, 4> sizes(getDestinationRank(), 0);
       for (unsigned destinationDim = 0; destinationDim < getDestinationRank();
            ++destinationDim)
-        sizes[destinationDim] =
-            (*projectedRectangleDestinationShape)[destinationDim];
+        sizes[destinationDim] = (*rectangleDestinationShape)[destinationDim];
       for (unsigned sourceDim = 0; sourceDim < getSourceRank(); ++sourceDim) {
         const int64_t mapped = (*projectedRectanglePattern)[sourceDim];
         if (mapped == -2) {
@@ -966,7 +1694,7 @@ IndexRelation::preimage(const PresburgerSet &sourceDomain,
         if (llvm::AddOverflow(source.offsets[sourceDim],
                               source.sizes[sourceDim], upper) ||
             source.offsets[sourceDim] < 0 ||
-            upper > (*projectedRectangleDestinationShape)[mapped]) {
+            upper > (*rectangleDestinationShape)[mapped]) {
           destinationBoundsPreserveProjection = false;
           break;
         }
@@ -1020,11 +1748,10 @@ IndexRelation::isInjective(const IndexRelationLimits &limits) const {
   if (status != IndexRelationStatus::Exact)
     return failQuery(IndexRelationStatus::SoundBound,
                      "injectivity requires an exact relation");
-  if (projectedRectanglePattern && projectedRectangleDestinationShape) {
-    const llvm::SmallVector<int64_t, 4> &pattern =
-        *projectedRectanglePattern;
+  if (projectedRectanglePattern && rectangleDestinationShape) {
+    const llvm::SmallVector<int64_t, 4> &pattern = *projectedRectanglePattern;
     const llvm::SmallVector<int64_t, 4> &destinationShape =
-        *projectedRectangleDestinationShape;
+        *rectangleDestinationShape;
     // Closed-form injectivity for the rectangle pattern. An unconstrained
     // (-2) source dimension means every destination point covers the
     // complete source: injective only for a single-point destination. A
@@ -1047,11 +1774,9 @@ IndexRelation::isInjective(const IndexRelationLimits &limits) const {
     }
     for (auto [dimension, count] : llvm::enumerate(coverage)) {
       if (count > 1)
-        return IndexRelationQueryResult{
-            IndexRelationStatus::Exact, false, {}};
+        return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
       if (count == 0 && destinationShape[dimension] != 1)
-        return IndexRelationQueryResult{
-            IndexRelationStatus::Exact, false, {}};
+        return IndexRelationQueryResult{IndexRelationStatus::Exact, false, {}};
     }
     return IndexRelationQueryResult{IndexRelationStatus::Exact, true, {}};
   }

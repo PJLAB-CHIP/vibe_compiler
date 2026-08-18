@@ -160,15 +160,18 @@ mlir::LogicalResult validateEdge(mlir::Operation *producer,
                                  unsigned producerResult,
                                  mlir::Operation *consumer,
                                  unsigned consumerOperand, mlir::Block &body,
-                                 std::string *failureReason) {
+                                 std::string *failureReason,
+                                 bool dependencyAlreadyValidated = false) {
   if (!producer || !consumer || producer->getBlock() != &body ||
       consumer->getBlock() != &body ||
       producerResult >= producer->getNumResults() ||
       consumerOperand >= consumer->getNumOperands())
     return failResult(failureReason,
                       "edge strategy must name one current-SSA dependency");
-  if (mlir::failed(deriveUnaryPureSupportChain(
-          producer, producerResult, consumer, consumerOperand, failureReason)))
+  if (!dependencyAlreadyValidated &&
+      mlir::failed(deriveUnaryPureSupportChain(producer, producerResult,
+                                               consumer, consumerOperand,
+                                               failureReason)))
     return mlir::failure();
   if (producerResult != 0 || producer->getNumResults() != 1 ||
       consumer->getNumResults() != 1)
@@ -1659,8 +1662,7 @@ static mlir::LogicalResult splitRegionAfterPrefix(
   llvm::SmallVector<mlir::Value, 2> externalSpills;
   for (mlir::memref::AllocOp spill : spillAllocations)
     externalSpills.push_back(
-        outer
-            .create<mlir::memref::AllocOp>(spill.getLoc(), spill.getType())
+        outer.create<mlir::memref::AllocOp>(spill.getLoc(), spill.getType())
             .getResult());
   llvm::SmallVector<mlir::Value, 4> externalSharedDDR;
   for (mlir::memref::AllocOp allocation : sharedDDRAllocations)
@@ -2253,15 +2255,17 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     StructuredMaterializationRelations *materializationRelations,
-    llvm::ArrayRef<StructuredBoundarySupply> boundarySupplies,
-    uint64_t boundaryArgumentCount,
-    std::optional<uint32_t> scopedRootNode) {
+    llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModule || currentLogicalPartition < 0)
     return failResult(failureReason,
                       "edge-action lowering requires a source module and "
                       "logical card partition");
+  if (!edgeFacts.empty() && edgeFacts.size() != edgeStrategies.size())
+    return failResult(
+        failureReason,
+        "edge materialization facts must cover every selected edge");
 
   mlir::IRMapping cloneMapping;
   mlir::OwningOpRef<mlir::ModuleOp> candidate =
@@ -2275,44 +2279,6 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     return failResult(
         failureReason,
         "edge-action lowering requires one pristine support template body");
-  // Narrow per-root construction: append one tensor entry argument per
-  // consumer-side boundary supply. The sibling structured producer's compute
-  // is never pulled into this scope; the merge step carries the producer's
-  // exact DDR boundary across the root cut.
-  if (boundaryArgumentCount != 0 ||
-      !boundarySupplies.empty()) {
-    if (boundarySupplies.size() != boundaryArgumentCount)
-      return failResult(failureReason,
-                        "boundary supplies must exactly fill the declared "
-                        "boundary argument count");
-    llvm::SmallVector<bool, 8> seenBoundaryArguments(boundaryArgumentCount,
-                                                     false);
-    llvm::SmallVector<mlir::Type, 8> boundaryTypes(boundaryArgumentCount);
-    for (const StructuredBoundarySupply &supply : boundarySupplies) {
-      if (supply.boundaryArgumentIndex >= boundaryArgumentCount ||
-          seenBoundaryArguments[supply.boundaryArgumentIndex] ||
-          !supply.consumer ||
-          supply.consumerOperand >= supply.consumer->getNumOperands())
-        return failResult(failureReason,
-                          "boundary supply names a null, duplicate or "
-                          "out-of-range consumer operand");
-      seenBoundaryArguments[supply.boundaryArgumentIndex] = true;
-      boundaryTypes[supply.boundaryArgumentIndex] =
-          supply.consumer->getOperand(supply.consumerOperand).getType();
-    }
-    for (mlir::Type type : boundaryTypes) {
-      if (!type || !mlir::isa<mlir::RankedTensorType>(type))
-        return failResult(failureReason,
-                          "boundary supply operand is not a ranked tensor");
-    }
-    // FuncOp owns argument type, entry block argument and arg_attrs as one
-    // contract. Use its insertion API so source functions carrying explicit
-    // per-argument metadata remain verifier-legal after the narrow boundary
-    // extension.
-    for (mlir::Type type : boundaryTypes)
-      function.insertArgument(function.getNumArguments(), type,
-                              mlir::DictionaryAttr{}, function.getLoc());
-  }
   TensorProgramScope scope(function, functionalArgumentCount);
   if (mlir::failed(verifyTensorProgramScope(function, functionalArgumentCount,
                                             failureReason,
@@ -2368,7 +2334,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
 
   llvm::SmallVector<MappedStrategy, 16> mappedStrategies;
   mappedStrategies.reserve(normalizedEdgeStrategies.size());
-  for (const SpatialEdgeStrategy &strategy : normalizedEdgeStrategies) {
+  for (auto [strategyIndex, strategy] :
+       llvm::enumerate(normalizedEdgeStrategies)) {
     if (!isSpatialEdgeStrategyIncidentOnTile(strategy, currentTile))
       continue;
     MappedStrategy mapped;
@@ -2381,30 +2348,41 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
           strategy.consumer->getOperand(strategy.consumerOperand);
     mapped.producer = cloneMapping.lookupOrNull(strategy.producer);
     mapped.consumer = cloneMapping.lookupOrNull(strategy.consumer);
-    auto consumerPosition =
-        llvm::find_if(supportTemplateBody, [&](mlir::Operation &operation) {
-          return &operation == mapped.supportTemplateConsumer;
-        });
-    if (consumerPosition == supportTemplateBody.end())
-      return failResult(
-          failureReason,
-          "edge strategy consumer is outside the pristine program body");
-    mapped.consumerScheduleOrdinal = static_cast<uint64_t>(
-        std::distance(supportTemplateBody.begin(), consumerPosition));
+    if (edgeFacts.empty()) {
+      auto consumerPosition =
+          llvm::find_if(supportTemplateBody, [&](mlir::Operation &operation) {
+            return &operation == mapped.supportTemplateConsumer;
+          });
+      if (consumerPosition == supportTemplateBody.end())
+        return failResult(
+            failureReason,
+            "edge strategy consumer is outside the pristine program body");
+      mapped.consumerScheduleOrdinal = static_cast<uint64_t>(
+          std::distance(supportTemplateBody.begin(), consumerPosition));
+    } else {
+      mapped.consumerScheduleOrdinal =
+          edgeFacts[strategyIndex].consumerScheduleOrdinal;
+    }
     mapped.strategy.producer = mapped.producer;
     mapped.strategy.consumer = mapped.consumer;
     if (mlir::failed(validateEdge(mapped.producer, strategy.producerResult,
                                   mapped.consumer, strategy.consumerOperand,
-                                  scope.getBody(), failureReason)))
+                                  scope.getBody(), failureReason,
+                                  /*dependencyAlreadyValidated=*/
+                                      !edgeFacts.empty())))
       return mlir::failure();
-    mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>> supportChain =
-        deriveUnaryPureSupportChain(mapped.producer, strategy.producerResult,
-                                    mapped.consumer, strategy.consumerOperand,
-                                    failureReason);
-    if (mlir::failed(supportChain))
-      return mlir::failure();
-    mapped.hasSupportPath = !supportChain->empty();
-    if (!supportChain->empty() &&
+    if (edgeFacts.empty()) {
+      mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>> supportChain =
+          deriveUnaryPureSupportChain(mapped.producer, strategy.producerResult,
+                                      mapped.consumer,
+                                      strategy.consumerOperand, failureReason);
+      if (mlir::failed(supportChain))
+        return mlir::failure();
+      mapped.hasSupportPath = !supportChain->empty();
+    } else {
+      mapped.hasSupportPath = edgeFacts[strategyIndex].hasSupportPath;
+    }
+    if (mapped.hasSupportPath &&
         strategy.action != SpatialEdgeAction::RegionCut &&
         strategy.action != SpatialEdgeAction::PeerFragments)
       return failResult(
@@ -2432,7 +2410,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         mlir::failed(validateStaticDomain(
             consumerType, validated.consumerOffsets, validated.consumerSizes,
             failureReason, "edge consumer demand")) ||
-        (supportChain->empty() &&
+        (!mapped.hasSupportPath &&
          mlir::failed(validateDemandIndexRelation(
              mapped.consumer, validated.consumerOperand,
              validated.consumerOffsets, validated.consumerSizes,
@@ -2456,154 +2434,24 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
           failureReason,
           "local physical conversion requires distinct typed layouts");
     if (strategy.action != SpatialEdgeAction::PeerFragments &&
-        !strategy.fragments.empty())
+        (!strategy.fragments.empty() || strategy.fragmentsDefineProducerDemand))
       return failResult(failureReason,
                         "non-peer edge strategy cannot carry fragments");
-    if (strategy.action != SpatialEdgeAction::PeerFragments &&
-        strategy.sourceTile != strategy.destinationTile)
+    if (strategy.fragmentsDefineProducerDemand && !mapped.hasSupportPath)
       return failResult(
           failureReason,
-          "local edge strategy requires one Tile placement");
+          "fragment-union producer demand requires a typed support path");
+    if (strategy.action != SpatialEdgeAction::PeerFragments &&
+        strategy.sourceTile != strategy.destinationTile)
+      return failResult(failureReason,
+                        "local edge strategy requires one Tile placement");
     mappedStrategies.push_back(std::move(mapped));
   }
 
-  // Narrow per-root construction: bind each consumer-side boundary supply to
-  // its entry argument before any demand pull runs. The closure walk sees an
-  // external boundary operand and never materializes the sibling structured
-  // producer into this scope.
-  for (const StructuredBoundarySupply &supply : boundarySupplies) {
-    mlir::Operation *mappedConsumer = cloneMapping.lookupOrNull(supply.consumer);
-    if (!mappedConsumer ||
-        supply.consumerOperand >= mappedConsumer->getNumOperands())
-      return failResult(failureReason,
-                        "boundary supply consumer is outside the cloned scope");
-    const unsigned boundaryArgNumber =
-        functionalArgumentCount + function.getNumResults() +
-        supply.boundaryArgumentIndex;
-    mlir::BlockArgument boundaryArg =
-        function.getBody().front().getArgument(boundaryArgNumber);
-    if (!boundaryArg ||
-        boundaryArg.getType() !=
-            mappedConsumer->getOperand(supply.consumerOperand).getType())
-      return failResult(failureReason,
-                        "boundary supply argument type does not match the "
-                        "consumer operand");
-    mappedConsumer->setOperand(supply.consumerOperand, boundaryArg);
-  }
   if (mappedStrategies.empty())
     return failResult(failureReason,
                       "edge-action lowering has no action on this Tile");
 
-  if (scopedRootNode) {
-    auto targetMapping = llvm::find_if(
-        mappedOperationNodes, [&](const StructuredOperationNodeMapping &node) {
-          return node.structuredNodeId == *scopedRootNode;
-        });
-    if (targetMapping == mappedOperationNodes.end() ||
-        !targetMapping->operation)
-      return failResult(failureReason,
-                        "scoped root node is outside the current program");
-    mlir::Operation *targetOperation = targetMapping->operation;
-
-    if (!outputShards.empty()) {
-      // Observable roots already have an exact output-shard request. Incoming
-      // sibling operands were rebound above, so ordinary output traversal now
-      // pulls only the target root and its non-structured support closure.
-      if (mlir::failed(materializeCandidateOutputTileSlices(
-              scope, outputShards, mappedTemporalTiles, failureReason,
-              &mappedOperationNodes)))
-        return mlir::failure();
-    } else {
-      struct RootDomain {
-        llvm::SmallVector<int64_t, 4> offsets;
-        llvm::SmallVector<int64_t, 4> sizes;
-      };
-      llvm::SmallVector<RootDomain, 8> outgoingDomains;
-      llvm::SmallVector<RootDomain, 8> incomingDomains;
-      auto appendDomain = [](llvm::SmallVectorImpl<RootDomain> &domains,
-                             llvm::ArrayRef<int64_t> offsets,
-                             llvm::ArrayRef<int64_t> sizes) {
-        if (offsets.size() != sizes.size() ||
-            llvm::any_of(sizes, [](int64_t size) { return size <= 0; }))
-          return;
-        if (llvm::none_of(domains, [&](const RootDomain &domain) {
-              return llvm::ArrayRef(domain.offsets) == offsets &&
-                     llvm::ArrayRef(domain.sizes) == sizes;
-            }))
-          domains.push_back(
-              RootDomain{llvm::to_vector(offsets), llvm::to_vector(sizes)});
-      };
-      for (MappedStrategy &mapped : mappedStrategies) {
-        const SpatialEdgeStrategy &strategy = mapped.strategy;
-        if (mapped.producer == targetOperation) {
-          if (strategy.action == SpatialEdgeAction::PeerFragments) {
-            for (const SpatialEdgeFragment &fragment : strategy.fragments)
-              if (fragment.sourceTile == currentTile)
-                appendDomain(outgoingDomains, fragment.offsets,
-                             fragment.sizes);
-          } else if (strategy.sourceTile == currentTile) {
-            appendDomain(outgoingDomains, strategy.producerOffsets,
-                         strategy.producerSizes);
-          }
-        }
-        if (mapped.consumer == targetOperation &&
-            strategy.destinationTile == currentTile)
-          appendDomain(incomingDomains, strategy.consumerOffsets,
-                       strategy.consumerSizes);
-      }
-      llvm::ArrayRef<RootDomain> targetDomains =
-          outgoingDomains.empty() ? llvm::ArrayRef<RootDomain>(incomingDomains)
-                                  : llvm::ArrayRef<RootDomain>(outgoingDomains);
-      if (targetDomains.empty())
-        return failResult(failureReason,
-                          "scoped root has no exact domain on this Tile");
-
-      llvm::SmallVector<MaterializedSource, 8> materialized;
-      llvm::DenseSet<mlir::Operation *> preserved;
-      for (const RootDomain &domain : targetDomains) {
-        mlir::FailureOr<mlir::Value> value = getOrMaterializeSource(
-            scope, targetOperation, /*producerResult=*/0, domain.offsets,
-            domain.sizes, materialized, preserved, mappedTemporalTiles,
-            failureReason, &mappedOperationNodes);
-        if (mlir::failed(value))
-          return mlir::failure();
-      }
-
-      // An intermediate root has no functional result of its own. Keep the
-      // full-card ABI as typed no-store outputs, then erase every now-dead
-      // sibling closure while preserving the requested root traversals.
-      mlir::func::ReturnOp returnOp = scope.getReturn();
-      for (unsigned index = 0; index < scope.getOutputCount(); ++index) {
-        mlir::FailureOr<mlir::Value> output =
-            getCandidateOutputBoundary(scope, index, failureReason);
-        if (mlir::failed(output))
-          return mlir::failure();
-        returnOp->setOperand(index, *output);
-      }
-      eraseDeadExcept(scope, preserved);
-      llvm::DenseSet<mlir::Operation *> liveOperations;
-      candidate->walk(
-          [&](mlir::Operation *operation) { liveOperations.insert(operation); });
-      llvm::erase_if(mappedOperationNodes, [&](const auto &mapping) {
-        return !liveOperations.contains(mapping.operation);
-      });
-    }
-
-    TileRegionEmissionRelations emissionRelations;
-    if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
-            *candidate, sourceModule.getContext(), functionalArgumentCount,
-            currentLogicalPartition, failureReason,
-            /*suppressDiagnostics=*/true, /*verifyResult=*/true,
-            /*populateFallbackFailureReason=*/true,
-            /*peerEndpoints=*/{}, /*selectedDDRStages=*/{},
-            &emissionRelations, mappedOperationNodes)))
-      return mlir::failure();
-    if (materializationRelations)
-      *materializationRelations =
-          std::move(emissionRelations.materializedBuffers);
-    module = std::move(candidate);
-    return mlir::success();
-  }
 
   if (independentDDRStages &&
       !llvm::all_of(mappedStrategies, [](const MappedStrategy &mapped) {
@@ -2984,7 +2832,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
       }
       std::optional<uint64_t> demandedElements =
           getDomainElements(strategy.producerSizes);
-      if (!demandedElements || coveredElements != *demandedElements)
+      if (!demandedElements || (!strategy.fragmentsDefineProducerDemand &&
+                                coveredElements != *demandedElements))
         return failResult(
             failureReason,
             "dependent fragments do not exactly cover the consumer demand");
@@ -3474,8 +3323,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
           llvm::SmallVector<int64_t, 4>(strategy.consumerOffsets),
           llvm::SmallVector<int64_t, 4>(strategy.consumerSizes),
           cachedSelectedResult});
-      auto cached = llvm::find_if(
-          materialized, [&](const MaterializedSource &candidate) {
+      auto cached =
+          llvm::find_if(materialized, [&](const MaterializedSource &candidate) {
             return candidate.producer == mapped.consumer &&
                    candidate.result == 0 &&
                    candidate.offsets == strategy.consumerOffsets &&
