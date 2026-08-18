@@ -360,22 +360,24 @@ source program
   每段constraint、local variable和绝对系数上限，资源耗尽返回indeterminate，不能当logical rejection推进coordinate。
 - 一个baseline invocation先建立一次immutable `TileMaterializationSourceSession`，只做source verifier、topology/logical mesh、
   static output domain和structured-node identity；每个deterministic legalization coordinate只建立mapping-local
-  `TileMaterializationSession`并调用一次`lowerCardModule`。root/edge的immutable SSA闭包和support facts按semantic key只分析一次；
-  多root Tile的每个最终region只复制必要operation，不克隆整份TensorProgram。16个Tile entry用共享MLIR线程池bounded并发构造，
-  按Tile ID稳定归并；cache只保存同一IR epoch的analysis facts，不保存materialized IR。
+  `TileMaterializationSession`并调用一次`lowerCardModule`。同一coordinate的全部Tile从root execution domain共同反向传播exact
+  operand demand；relation按operation/result/operand建立一次，structured producer形成停止边界。验证carrier all-and-only覆盖后，
+  每个final single-root region只一次性物化typed recipe要求的operation和endpoint，不先建立SSA closure或scratch module再rebuild。
+  16个Tile entry用共享MLIR线程池bounded并发构造并按Tile ID稳定归并；cache只保存同一IR epoch的analysis facts，不保存materialized IR。
 - 每个closed coordinate的CardModule和Q50.0 invocation严格一一对应；已经exact accepted的executable直接move到输出，不再为winner protocol重物化，
   也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR trace
   写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。
-- baseline验证只走显式`none`的direct unit、定向lit和source-to-package/no-card case；不运行旧search、旧winner对照或paired
-  optimization回归。wall-time只用于发现work-count回归，不能把历史长路径变成每次改动后的门禁。
+- baseline迭代验证只走显式`none`的direct unit、定向lit和轻量source-to-package/no-card case；不运行旧search、旧winner对照或
+  paired optimization回归。模型级materialization任务在定向门禁闭合后只运行一次fresh FP16 LLaMA `optimization-none`
+  source-to-package/no-card；wall-time用于发现work-count回归，不在每次小改后重复重模型。
 - source-to-package 端到端：reference capture 按仓库 dtype 政策是 f16（target 拒绝 f32 GEMM），
   `env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU third_party/python-importer-py311/bin/python
   test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir <dir>`
   后 `TX8_DEPS_ROOT=<repo>/third_party/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
   --output-dir <pkg> --num-partitions=1 --optimization-policy=none`。
-- Q51完整new-search链闭合前不执行重型LLaMA block，`none`与`search`都只用有界小图、同relation结构的定向case和上述轻量
-  source-to-package入口。FP16 LLaMA baseline/search首次统一放在Q52显式bounded scalability profile中，Q53再生成正式
-  package/oracle/no-card；旧输出不回放为current证据。
+- Q51完整new-search链闭合前不执行LLaMA `search`；Q49.P完成门禁中的单次fresh FP16 LLaMA只验证`none`功能链和work closure，
+  不作候选质量profile。Q52再执行显式bounded LLaMA search scalability profile，Q53生成正式模型package/oracle/no-card；
+  旧输出不回放为current证据。
 
 
 ## baseline 定向验证边界

@@ -269,9 +269,9 @@ whole-Tile trial或search result/statistics拥有。
 
 现有测试还有三类假阳性必须同步清理：baseline测试把固定字符串`placement_enumeration=0`当隔离证明，却没有检查transitive
 call graph或真实work；root结构测试只看diagnostic缺失；function-scope probe测试用空relations，无法覆盖relation replacement、
-completeness和evidence一致性。Q49.P fresh gate必须新增非空relation的clone/body-swap/bufferization正负例、split后actual IR结构与
-consumer reload relation，以及无direct witness必须indeterminate的case。review不要求重跑旧search或重型LLaMA；这些缺口都可用
-有界小图和静态调用闭包证明。
+completeness和evidence一致性。该次2026-08-17 review先用有界小图定位这些缺口；它当时不运行重型LLaMA的决定不是current
+完成合同。下方fresh模型复核已经证明小图未覆盖multi-producer support materialization，因此current Q49.P在定向证明闭合后还
+必须执行一轮fresh FP16 LLaMA `optimization-none` source-to-package/no-card。
 
 ```text
 Pipeline position:
@@ -304,10 +304,11 @@ Pipeline position:
   baseline不依赖search state/candidate、完整placement-option domain/ranking evaluator、proposal order/group materializer，也不
   调用domain propagation、recursive CSP/backtracking或其它option-list assignment solver；canonical placement从typed
   structured/topology facts直接推导，始终只有一个live coordinate，不能先展开全部connected rectangle/axis options再取第一个；每个
-  baseline TileRegion恰有一个structured compute root和必要non-root support closure；跨root shaped dependency显式DDR；
+  baseline TileRegion恰有一个structured compute root和由exact demand证明必要的non-root support operations；跨root shaped dependency显式DDR；
   exact rejection携带来自同一actual owner的direct typed causal witness；每个closed coordinate的完整CardModule materialization与
-  CardExecutable compilation严格一一对应，accepted owner不重建；root/support SSA闭包按semantic key在coordinate内只分析一次，
-  每个最终region只复制必要operation，16个独立Tile构造bounded并发并按Tile ID稳定归并；accepted后不构造`StaticSchedulePlan`、duration estimate或其它不被output消费的shadow result，
+  CardExecutable compilation严格一一对应，accepted owner不重建；同一coordinate的全部Tile root execution domain由一次
+  grouped exact-demand query处理，relation按operation/result/operand只建立一次；structured producer形成停止边界，final region
+  只一次性物化typed recipe证明需要的operation和carrier endpoint，16个独立Tile构造bounded并发并按Tile ID稳定归并；accepted后不构造`StaticSchedulePlan`、duration estimate或其它不被output消费的shadow result，
   production调用不打印/保存Tile IR trace；初始完整tile超SPM的正例会重新推导完整workset并确定性缩到合法tile后通过package/no-card，
   浮点reduction轴自由重结合后每个demand都可缩到最小合法vector，故「最小合法tile超限」的浮点capacity负例在当前lowering下不可构造，
   typed capacity/unsupported terminal保留为fail-closed防御出口；baseline使用独立窄work ledger，不持有或清零旧search统计来
@@ -361,8 +362,9 @@ TensorProgram
 `OptimizationConfig::none()` 使用独立 deterministic feasibility controller：最大合法非空 Tile participation；每个structured compute
 root独立TileRegion；root间显式DDR boundary；零fusion；buffer count为1。participant count、Tile group、iterator/factor和独立
 root顺序按typed structured/relation/topology facts的完整semantic key决定，不使用pointer、walk ordinal、`stableOrdinal`或
-search proposal order。controller沿不截断的有限canonical fallback跳过illegal option并取得第一个scoped-exact-feasible
-completion，再由Q50.0签发accepted；它不计算score、不维护incumbent/candidate family，也不保留用于质量比较的备选方案。
+search proposal order。controller沿不截断的有限canonical fallback逐个形成closed coordinate；每个coordinate先完成grouped
+exact-demand与carrier coverage验证，再只构造一个actual CardModule交给Q50.0，第一个accepted executable即完成。它不计算score、
+不维护incumbent/candidate family，也不保留用于质量比较的备选方案。
 
 participant group按root定义，只包含该root的非空执行Tile；accepted full CardModule仍必须拥有target要求的all-and-only完整
 Tile domain。未参与某个root的Tile只在最终完整CardModule中按IR合同存在；baseline不为局部结论创建额外no-work
@@ -397,12 +399,11 @@ mechanism，不是生成或选择coordinate的控制：任何option-domain const
 candidate/evaluator或winner协议都不得进入`none`的transitive call graph。baseline默认值不限制Q51域。
 
 历史official HF prefill、functional decode、LLaMA block 的 source、oracle、package 和 no-card runner只证明旧入口mechanics；
-这批历史证据未执行真实板端，不能单独把Q49.P标为`done`。Q49.P的current gate经Q59 compile transaction使用fresh有界小图、overfull-to-fit、五类relation
-定向case及轻量source-to-package/no-card输入，证明CardModule、accepted CardExecutable与package digest稳定、oracle/no-card通过，
-并以fresh阶段计时和work count确认每个closed coordinate的CardModule materialization与CardExecutable compilation一一对应，
-accepted coordinate不重物化。Q51完整new-search链闭合前，Q49.P、Q50各checkpoint和Q51.Core都不执行重型LLaMA block，
-`none`与`search`均如此；也不把既有未完成运行变成重跑门禁或current证据。首轮重型LLaMA执行归Q52显式scalability profile，
-Q53才签发正式package/oracle/no-card与board-ready证据。
+它们不能单独把Q49.P标为`done`。Q49.P迭代期经Q59 compile transaction使用fresh有界小图、overfull-to-fit、五类relation及轻量
+source-to-package/no-card输入定位correctness/work缺口；算法、结构和ledger闭合后只执行一轮fresh FP16 LLaMA
+`optimization-none` source-to-package/no-card作为真实baseline门禁。该运行不得进入search，也不承担性能比较。Q51完整new-search
+链闭合前不执行LLaMA `search`或反复执行重型baseline；Q52才执行LLaMA search的bounded scalability profile，Q53签发正式
+模型package/oracle/no-card与board-ready证据。
 定向结构测试必须覆盖：同Tile多个独立root形成多个region；显式structured producer不能伪装成support closure且一个root的
 lowered multi-op不会误判成多root；call或unsupported lifetime提升到最近合法scope；equal-shape fanin只按direct witness
 refinement；search state/candidate、search-oriented domain/ranking
@@ -623,31 +624,33 @@ single-root structure、policy isolation与work/output问题仍未闭合，不�
 - 验证：CROSS lit case 在 wall-time 上限内通过（目标秒级）；`WaferUnitTests --gtest_filter=...` 相关
   layout/fusion 测试不回归；fresh 主树构建通过。
 
-### P3 root公共分析与最终Tile shard物化
+### P3 全Tile exact-demand分析与最终single-root物化
 
-- 目标：structured root的support/call closure、operand/result role、index relation和static iterator domain从immutable
-  TensorProgram每root派生一次；16 Tile只apply各自typed shard、boundary、edge、layout和target facts。最终仍有每Tile实际IR，
-  但不为每个root/Tile重新clone和遍历完整TensorProgram。
-- 实现：source session拥有query-local root分析，生命周期受同一immutable IR epoch约束；actual CardModule materializer按最终
-  root/Tile descriptor用`IRMapping`直接构造目标region。相同shape不自动等价，Tile差异由完整typed descriptor保留；第一版不
-  缓存或复制materialized IR。16个独立Tile apply使用bounded executor并发，结果按Tile identity稳定归并。
-- Q51沿用同一分层：source/target、SSA closure、support path和静态index facts只要不依赖candidate assignment即可在search session
-  内共享；candidate-dependent demand/lifetime key必须包含全部相关坐标并可失效重算。complete candidate仍各自只构造一份actual
-  CardModule，accepted executable直接进入incumbent；不按Tile/candidate缓存actual IR，也不为winner再次构造。
-- `lowerRootShards`、`lowerTileEntries`及其只为discarded probe存在的carrier/API/test退出current合同；仍需的single-root
-  construction能力迁入唯一CardModule materializer后再删除旧入口。
-- 验证：work count证明root公共分析次数等于structured root数、per-root完整TensorProgram clone为零；相同descriptor的16 Tile
-  复用公共分析，不同tail/offset/communication descriptor仍产生各自正确IR；CROSS/CHAIN/GEMM通过。
+- 目标：从全部structured root的Tile execution domain一次性推导operand demand；support relation按
+  operation/result/operand建立一次，structured producer形成typed停止边界。16 Tile只apply各自非空demand、boundary、layout和
+  target facts，不按root/Tile clone或遍历完整TensorProgram。
+- 实现：source session拥有同一immutable IR epoch内的`TileRootDemand`、`OperandDemand`、`BoundaryDemand`和
+  `SupportDemandRecipe`；以`(value, Tile)`合并exact set并按反向SSA拓扑传播。所有boundary carrier coverage在mutation前验证；
+  actual CardModule materializer用`IRMapping`把recipe选中的operation一次性构造成final single-root region，不缓存materialized IR。
+  16个独立Tile apply使用bounded executor并发，结果按Tile identity稳定归并。
+- Q51沿用同一query/apply分层：与assignment无关的typed relation对象可在immutable search session共享；candidate-dependent
+  execution/ownership demand必须观察全部相关坐标并可失效重算。partial state不构造IR，complete candidate只构造一份actual
+  CardModule，accepted executable直接进入incumbent，不按Tile/candidate缓存actual clone或为winner再次构造。
+- `lowerRootShards`、`lowerTileEntries`、`BaselineRegionSource`、support rebuild及只为discarded probe/closure存在的carrier、API和
+  test退出current合同；仍需的single-root construction与relation proof先迁入唯一CardModule materializer再删除旧入口。
+- 验证：work count证明relation construction不随Tile重复、每个非空`(value, Tile)`只处理一次、per-root完整TensorProgram clone为
+  零；相同relation的16 Tile共享分析，不同tail/offset/communication demand仍产生各自正确IR；multi-producer
+  `insert_slice`、CROSS/CHAIN/GEMM和最终fresh FP16 LLaMA baseline通过。
 
 ### P4 一 root 一 region 结构合同
 
-- 目标：每个 baseline TileRegion 恰有一个 structured compute root 和必要 non-root support closure；
+- 目标：每个 baseline TileRegion 恰有一个 structured compute root 和exact operand demand证明必要的non-root support operation；
   同 Tile 多 root 形成多个顺序 region；跨 root shaped dependency 显式 DDR。
-- 实现：resolved baseline assignment显式携带singleton root boundary；materializer按一个root及其non-root support closure直接
-  创建一个TileRegion，不能先把同Tile root group进共同region再做late repair。跨root shaped dependency在边界构造时使用current
+- 实现：resolved baseline assignment显式携带singleton root boundary；materializer按一个root及其`SupportDemandRecipe`证明需要的
+  non-root support operations直接创建一个TileRegion，不能先把同Tile root group进共同region再做late repair。跨root shaped dependency在边界构造时使用current
   canonical carrier形成显式DDR store/reload；从DS splitter迁移SSA/resource移动能力时，必须在同一transaction同步retarget
-  consumer operand relation到actual reload。current固定256轮的post-hoc splitter退出baseline调用链；若内部复用拆分kernel，必须
-  使用excess-root单调下降worklist且不设与IR/target无关的轮数。唯一actual materialization逐region验证`rootCount == 1`，
+  consumer operand relation到actual reload。current固定256轮的post-hoc splitter和所有late boundary construction退出baseline
+  调用链；generic split kernel只能服务其它已经显式选择的IR transformation，不能被baseline apply调用。唯一actual materialization逐region验证`rootCount == 1`，
   zero-root compute region也拒绝；同root lower成多compute op仍按node ID归一。
 - 验证：新增结构单测并直接检查actual IR（同 Tile 多独立 root → 多 region；每region恰一root；跨root有显式DDR
   store/reload且consumer relation指向reload；显式structured producer不伪装成support closure；单 root multi-op不误判多root；
@@ -737,7 +740,8 @@ single-root structure、policy isolation与work/output问题仍未闭合，不�
   `deriveCanonicalBaselinePlacements → StructuredDAGExactDemandQuery::imageDemand →
   IndexRelation::getExactStaticRectangularImage → PresburgerSet::isEqual/isSubsetOf/subtract`消耗CPU。这里同时暴露了完整
   placement-option/recursive CSP和generic Presburger rectangle recovery两层无界工作，按P6分别拆除；该运行只作根因证据，
-  不再继续、重跑或作为Q49.P完成门禁。
+  不能作为通过证据。对应算法、结构与work ledger闭合后，Q49.P仍须运行一轮fresh、bounded FP16 LLaMA
+  `optimization-none` source-to-package/no-card；不得在施工中反复用重模型代替定向定位。
 - current spatial placement只从parallel iterator生成axis，reduction factor保持1且没有partial-result merge；这是Q50.B的明确
   implementation gap；同时current placement carrier在没有parallel result轴时连该root的factor=1/单参与Tile coordinate也不能表达，后者是
   Q49.P功能baseline必须修复的前置缺口。相反，fresh `SearchProposesAndMaterializesMultipleReductionIteratorAxes`和
@@ -751,8 +755,8 @@ single-root structure、policy isolation与work/output问题仍未闭合，不�
 P8完成顺序：
 
 1. 闭合P1–P7及上述SPM evidence copy，更新`tasks/progress.md`、相关设计和稳定memory；
-2. fresh运行direct unit、定向lit、overfull-to-fit、五类relation和轻量source-to-package/no-card；显式`none`，不进入旧search、
-   paired optimization或重型LLaMA；
+2. fresh运行direct unit、定向lit、overfull-to-fit、五类relation和轻量source-to-package/no-card；显式`none`，不进入旧search或
+   paired optimization；这些门禁闭合后只运行一轮fresh FP16 LLaMA `optimization-none` source-to-package/no-card；
 3. ledger证明placement option/domain/recursive solve/backtrack为零，single-coordinate exact query有界，完整CardModule
    materialization与CardExecutable compilation各一次，accepted后schedule-plan/默认IR print为零；
 4. 检查主树、board runtime与SystemC/model三棵树构建；确认相关lit/CTest实际执行而非unsupported；
@@ -761,16 +765,18 @@ P8完成顺序：
 此前fresh证据（2026-08-17）的默认lit 216/216、三棵树构建、Tools/Runtime lit 33/38（5 unsupported、0 failed）及显式
 `none` f16 reference/AddModel source-to-package/no-card可复用为未改边界的背景，但不代签新baseline。原“受影响unit 70/70”
 已被current `TileMemoryPlanningTest.ReportsSPMFailureForOwnedTileModule` fresh失败覆盖，不能继续写成current通过结论；P1–P7施工后
-必须按上述新relation/structure/work gate重跑有界集合。LLaMA capture或旧未完成compile不进入本项证据。Q51完整new-search链
-闭合后，Q52才首次运行重型LLaMA显式profile；Q53再生成正式package/oracle/no-card并进入board-ready。
+必须按上述新relation/structure/work gate重跑有界集合。旧LLaMA capture或未完成compile不进入本项证据；新算法闭合后的fresh
+FP16 LLaMA baseline no-card是Q49.P最终功能门禁。Q51完整new-search链闭合后，Q52才首次运行重型LLaMA `search`显式profile；
+Q53再生成正式模型package/oracle/no-card并进入board-ready。
 
-### 2026-08-18 施工前合并代码复核（问题已由下节闭合）
+### 2026-08-18 施工前合并代码复核（后续模型复核再次打开）
 
 本次复核以合并后的 current HEAD 为对象，同时检查 baseline 新路径、DS 引入的 probe/relation/split 代码及其
 直接消费者，不把 DS commit 孤立成第二条实现线。复核只运行有界 `none`/relation 定向验证，没有执行 search，
 也没有执行重型 LLaMA block。结论是：function-scope escalation、raw demand evidence copy、storage-root memo、
 accepted-result move、shadow schedule 删除和显式 IR trace 等资产可以保留，但原“P1/P3/P5/P6/P7 已闭合”的状态
-在该复核时点尚不成立，因此当时将Q49.P保持为`doing`；下节记录修复后的current完成结论和fresh证据。
+在该复核时点尚不成立，因此当时将Q49.P保持为`doing`；后续小图修复曾形成一份完成记录，但fresh FP16 LLaMA又证明
+materialization算法仍未闭合，下面将该记录明确标为已撤回并给出current替代合同。
 
 阻塞项按 correctness 优先级如下：
 
@@ -821,10 +827,12 @@ baseline product closure中的旧 search statistics/header，并用 P1–P8 原 
 成功case会无条件打印`IMGFALLBACK-DEBUG`；pinned MLIR verifier也接受非零constant output map的合法上游IR，证明
 current lowering不能假设所有constant天然等价于extent-one zero slice。后续修复须把这些反例变成negative/structural gate。
 
-### 2026-08-18 Q49.P 完成结论
+### 2026-08-18 Q49.P 旧完成记录（已撤回）
 
-本轮在同一current baseline调用链中完成P1–P8，并逐项复核、修正合入代码；没有建立“DS实现”和“baseline新实现”两条
-平行路径。最终合同如下：
+以下内容记录当时合入P1–P8后观察到的局部能力，不再是current完成结论。随后fresh FP16 LLaMA baseline证明
+multi-producer support operand仍会被过宽SSA closure和post-hoc rebuild错误物化，因此这些证据只能说明旧小图门禁通过。
+其中一次CardModule/Q50.0 owner、非search controller、unpartitioned coordinate、relation exactness、temporal reduction和
+bounded Tile executor等独立能力继续保留；root closure/rebuild及其work证据不再属于目标设计。当时记录如下：
 
 - `none`直接从typed iterator/topology事实构造一个live canonical coordinate；exact rejection只推进预定义、单调、无分支且
   不回溯的spatial/temporal functional legalization。baseline public API/result/ledger由
@@ -855,7 +863,7 @@ current lowering不能假设所有constant天然等价于extent-one zero slice�
 共同materialization cache，导致CROSS重新融合或重算sibling root。修复后carrier、current relation和query cache均以actual
 producer/consumer endpoint及当前IR epoch为准。
 
-本轮fresh验收证据：
+当时的局部验收证据：
 
 1. fresh定向unit 106/106通过，覆盖exact relation、16-shard interval coverage、CardModule actual construction、one-root-per-region、
    root闭包公共分析、Q50.0一一对应、SPM overfull-to-fit refinement、memory planning和current relation；
@@ -865,12 +873,145 @@ producer/consumer endpoint及当前IR epoch为准。
    public link smoke 2/2通过；
 4. ledger证明每个coordinate的CardModule与Q50.0一一对应、accepted不重物化；fit branch图只做2次公共closure分析/4个operation，
    而不是16 Tile各自重扫完整TensorProgram；16 Tile actual entry通过共享线程池并发且按Tile ID稳定归并；
-5. 按任务约束没有运行search case或重型LLaMA block。重型LLaMA仍只在Q51完整new-search链闭合后的Q52 bounded scalability
-   profile首次恢复，不以历史输出代签当前结论。
+5. 当时没有运行search case或重型LLaMA block；把重型LLaMA完全推迟到Q52的决定已经由后续fresh baseline反例推翻。
 
-Q49.P的一次性owner链、root公共分析、actual 16 Tile构造和bounded非search验证已经闭合；重型LLaMA不再是Q49.P门禁，
-`tasks/progress.md`同步标为`done`。后续Q51/Q50机制必须继续遵守complete candidate只actualize一次、accepted owner直接进入
-incumbent、只共享immutable analysis而不缓存materialized IR的合同。
+fresh FP16 LLaMA `optimization-none`在约33秒内到达Q49 materialization并失败，diagnostic为support dependency存在未组装的
+structured producer。定向诊断确认同一consumer operand由两个structured producer经`extract_slice`和`insert_slice`汇合：
+其中一个producer对该destination的exact demand为空，另一个producer有非空需求；Q50.A已经给出正确empty事实，但
+`buildBaselineRegionSource`仍从result/edge endpoint无条件回溯operand closure，`rebuildPeerSupportInput`随后又从consumer operand
+递归复制support graph，于是把empty producer重新拉入。该反例撤销Q49.P的`done`状态，也证明“公共closure操作数较少”不能作为
+需求正确性或模型通用性的证据。
+
+### 2026-08-18 current exact-demand materialization算法
+
+本节替换上方旧记录中的root closure、support rebuild和LLaMA门禁；前文Q49.P Pipeline Contract的其它边界继续有效。
+
+#### 输入、结果与不变量
+
+算法只读同一immutable TensorProgram epoch、Q50.A logical shard trial、structured node/result identity、每个node在每个Tile上的
+exact execution domain、每个producer result的exact ownership和已经关闭的temporal coordinate。查询产生三类短生命周期typed
+结果：
+
+- `TileRootDemand`：一个structured root、semantic Tile及其exact execution domain；
+- `OperandDemand`：该root一个tensor operand实际读取的exact index set；
+- `BoundaryDemand`：传播到structured producer result后形成的停止边界，包含producer node/result、destination Tile和非空exact
+  required domain。
+
+pure support operation另外产生`SupportDemandRecipe`：记录current operation/result、output demand、各tensor operand的exact read
+demand和同一语义对应的reconstruction动作。上述对象不持有materialized IR，不进入IR attr、mapping identity、candidate、磁盘格式
+或跨epoch cache；apply前若borrow失效即返回indeterminate。`TileMapping.edgeStrategies`只表达已经证明非空的physical carrier，
+不增加empty flag或nullable旁路。
+
+必须始终满足：structured producer是传播停止边界；每个final TileRegion恰有一个structured root；每个operand reconstruction的
+initialized coverage与`OperandDemand`相等；每个`BoundaryDemand`由local/peer/DDR fragment all-and-only覆盖；同一
+`(structured node, Tile)`只执行一次，同一physical fragment只发射一次。
+
+#### 全Tile反向传播
+
+先为closed coordinate中全部nonempty `(root, Tile)`建立seed，而不是为16个Tile分别walk TensorProgram：
+
+```text
+for each scheduled structured node N:
+  for each Tile T with nonempty execution domain E[N,T]:
+    for each tensor operand K of N:
+      D = exactAccessRelation(N, K).image(E[N,T])
+      addDemand(N.operand[K], T, D)
+```
+
+`addDemand`以`(SSA value, semantic Tile)`为key累积Presburger set union，只传播相对已处理集合的新差集。当前single-block
+functional TensorProgram按反向SSA拓扑序即可一次完成；同一operation/result/operand的`IndexRelation`建立一次并对所有Tile demand
+复用。若未来region/control-flow不能提供等价typed relation和稳定拓扑，则保持unsupported，不能退回递归closure。
+
+```text
+propagate(V, T, D):
+  D := D - processed[V,T]
+  if D is empty: return
+
+  if V is a function argument or constant:
+    record directly available input(V,T,D); return
+
+  if V is tensor.empty and D is nonempty:
+    return typed unsupported uninitialized read
+
+  if V is a structured producer result:
+    record BoundaryDemand(V,T,D); return
+
+  if V = tensor.extract_slice X:
+    DX := extractRelation.preimage(D)
+    record recipe(V,D,{X:DX}); addDemand(X,T,DX); return
+
+  if V = tensor.insert_slice Source into Destination over image W:
+    DS := inverseInsert(D intersect W)
+    DD := D − W
+    record recipe(V,D,{Source:DS, Destination:DD})
+    addDemand(Source,T,DS); addDemand(Destination,T,DD); return
+
+  if V is an admitted pure unary view/support operation:
+    DI := exactRelation.preimage(D)
+    record recipe(V,D,{Input:DI}); addDemand(Input,T,DI); return
+
+  return typed unsupported or indeterminate
+```
+
+generic multi-input compute不属于support：具有structured semantics的operation必须成为structured node；effectful、alias不明、
+只能近似传播或没有reconstruction证明的operation在mutation前fail closed。nonrectangular demand保留exact Presburger set或有限
+disjoint rectangle union，不先扩大成bounding rectangle。
+
+#### 局部语义证明与组合证明
+
+对任意value `V`和需求`D`，apply必须建立`M(V,D)|D == V|D`，且`D`外没有consumer读取。每个admitted
+`SupportDemandRecipe`必须证明：若所有operand materialization分别在recipe给出的read demand上等于源operand，则reconstruction
+在output demand上等于源operation。query和apply只消费这一份recipe，不各自维护matcher。
+
+`tensor.insert_slice`的证明直接来自overwrite语义。设source覆盖result区域`W`，任意需求`D`唯一分为
+`D ∩ W`和`D − W`；source demand是前者的inverse image，destination demand是后者。destination demand为空时，
+apply可以用未初始化tensor作为只承载source insertion的容器，但coverage仍只有`D intersect W`，任何其它读取都会被拒绝；这不是
+empty strategy或模型特判。`extract_slice`和一元view由exact preimage得到同样的局部定理。
+
+function argument/constant与已验证carrier构成归纳基，structured producer result形成停止边界，每个support recipe构成归纳步；
+因此沿acyclic SSA结构归纳可得每个root operand在其read domain上与源程序相等，再由structured op indexing semantics推出root在
+execution domain上相等。temporal waves按稳定顺序all-and-only覆盖execution domain，reduction accumulator显式跨wave携带；
+没有partial-result merge时reduction spatial factor仍保持1。
+
+#### Boundary覆盖与一次性apply
+
+对每个`BoundaryDemand(producer result P, destination T, required D)`，按producer ownership求：
+
+```text
+fragment[S] = D intersect ownership[P,S]
+```
+
+所有非空fragment必须两两不重叠且disjoint union等于`D`。本地fragment绑定baseline的compiler-owned DDR stage，远端fragment绑定
+peer send/receive/wait；empty intersection没有physical action。coverage缺口、重叠、route/descriptor无法表达和内部失败保持各自
+typed outcome，不能改判Q50.A logical result。
+
+全部query和coverage验证成功后才创建最终CardModule。每个Tile按structured DAG稳定拓扑顺序直接构造single-root regions；
+`IRMapping`只把已经选定的source argument、constant、support operation和root映射到最终region，每个operation只作为最终IR复制
+一次。apply按recipe重建operand：boundary leaf使用已绑定fragment，view/extract使用exact slice，insert按两路coverage组合；完成
+后检查coverage等于`OperandDemand`再物化root。source-only send只加入producer endpoint，不拉入remote consumer。禁止创建
+`BaselineRegionSource` scratch module、无条件operand closure、post-hoc region splitter、RegionCut/Peer support rebuild、replay或
+失败后补边。
+
+whole-shard `BoundaryDemand`定义persistent carrier coverage；root temporal loop内以当前wave execution domain重新求同一recipe的
+wave-local slice，只把当前wave demand带入SPM，不先组装完整spatial shard。interior和tail使用同一relation与loop IV表达，不按wave
+复制support graph。
+
+#### 实现迁移和完成门禁
+
+1. 将Q50.A current query原位扩展为按consumer operand分组的exact-demand结果；现有per-edge consumer全部迁移，不能并存第二套
+   baseline relation恢复逻辑。
+2. `TileMaterializationSession::create`在borrowed source上完成全Tile query和carrier coverage验证；`lowerCardModule`只apply已验证
+   typed结果。partial/search query不构造IR，complete coordinate才进入同一apply。
+3. common CardModule/TileRegion materializer直接构造final single-root region；baseline与后续search复用该policy-free apply，不能
+   保留baseline-only修补分支。
+4. 同批删除`buildBaselineRegionSource`、两套support rebuild、empty/destination补丁、post-hoc root closure/splitter及只覆盖这些
+   路径的statistics/tests；旧SPM capacity probe API不恢复。
+5. 每种admitted support recipe用tiny static shape穷举需求子集，比较full evaluation与partial reconstruction；组合测试覆盖
+   chain、diamond、fanout、multi-producer `insert_slice`、Peer/RegionCut混合、multi-result、empty branch、nonrectangular pieces、
+   reduction temporal wave和unsupported atomic failure。
+6. ledger证明relation construction按semantic support edge计数、每个非空`(value, Tile)`只处理一次、16 Tile没有完整DAG重复walk、
+   CardModule/Q50.0一一对应且accepted不重物化。定向unit/lit与轻量FP16 source-to-package/no-card通过后，只运行一轮fresh FP16
+   LLaMA `optimization-none` source-to-package/no-card；不得进入search。该门禁通过前Q49.P保持`doing`。
 
 ## Q51.Core：Search Control Kernel
 
@@ -918,7 +1059,7 @@ Q50.0 complete compilation和downstream lowering/verifier；其它算法只有�
 ```text
 Pipeline position:
 - Upstream IR / input:
-  一个immutable TensorProgram borrow、transaction-owned ProgramData view及target/cost-cohort facts；Q49.P已经通过Q50.0完整准入的move-only baseline
+  一个immutable TensorProgram borrow、transaction-owned ProgramData view及target/cost-cohort facts；Q49.P完成后通过Q50.0完整准入的move-only baseline
   executable、actual resource cost和stable actual digest。Core入口没有semantic-alternative、spatial、region、temporal、
   layout、movement、buffer或schedule assignment，也不重新构造baseline。
 - Current stage responsibility:
@@ -1103,7 +1244,7 @@ asymmetric、disconnected合法补集均可达；关闭或改变proposal排序�
 ### 机制
 
 对给定structured root、spatial shard和尚未细分的local iterator domain，每个Tile物化一个覆盖该root全部local work和
-non-root support closure的maximal single-root TileRegion。显式producer只要映回另一个structured DAG node，就以boundary
+exact operand demand所需non-root support operations的maximal single-root TileRegion。显式producer只要映回另一个structured DAG node，就以boundary
 input/DDR obligation留在region外，除非后续Q50.D显式选择multi-root coupled group。这里maximal表示“对已选region boundary
 不漏work、不把同一root local work任意拆成多个相互不知情region”，不是强迫使用最大tile、最大fusion group或单一结果驱动入口。
 
@@ -1115,7 +1256,7 @@ root cardinality由materialization relation映回structured DAG node，不能按
 
 - single-result、multi-result、DPS init、reduction 和 side-effect boundary 正负测试通过；
 - actual Tile IR 对每个 selected Tile 都有唯一、完整、可 verifier 的 single-root region witness；
-- Q49.P已建立的resolved baseline assignment apply与Q51显式test assignment复用该policy-free single-root materializer；
+- Q49.P完成后建立的resolved baseline assignment apply与Q51显式test assignment复用该policy-free single-root materializer；
   materializer只消费调用方已给定的singleton root boundary，不接收或自行推导search candidate/grouping；
 - 不在本 checkpoint 做 multi-op fusion、temporal winner、layout 或 buffer 选择。
 
@@ -1449,8 +1590,9 @@ split、placement group 或候选数。
 
 ### Fresh profiling
 
-Q51完整new-search链提交并通过其small-oracle/new source-to-package gate后，本节才首次允许执行重型LLaMA block；执行必须是
-显式选择的bounded profile批次，不进入普通unit/lit/CTest或每次功能改动回归。在 generic mixed DAG、HF prefill、functional
+Q51完整new-search链提交并通过其small-oracle/new source-to-package gate后，本节才首次允许执行重型LLaMA `search`与质量
+profile；Q49.P的单次fresh FP16 LLaMA `optimization-none`只证明baseline功能/materialization，不提供本节证据。profile必须是
+显式选择的bounded批次，不进入普通unit/lit/CTest或每次功能改动回归。在 generic mixed DAG、HF prefill、functional
 decode 和 LLaMA representative block 上记录：
 
 - 各轴 transition generated/rejected/deduplicated/expanded 数和 candidate set width/peak live states；

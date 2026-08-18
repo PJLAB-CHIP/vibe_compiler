@@ -397,7 +397,7 @@
 - 根因：把“没有执行search loop”和“没有coupled edge”当成完整解耦证明，只约束edge action，没有约束baseline调用闭包和
   TileRegion structured-root cardinality。后端允许multi-root region只说明IR合法，不代表它适合作为canonical baseline。
 - 修复模式：baseline controller直接从typed structured/relation/target facts构造唯一方案；每个TileRegion只拥有一个structured
-  compute root及必要non-root support closure，root cardinality由materialization relation证明；同一Tile上的其它root进入独立
+  compute root及exact operand demand证明必要的non-root support operations，root cardinality由materialization relation证明；同一Tile上的其它root进入独立
   顺序region，跨root shaped dependency显式DDR。只与search
   共享single-coordinate的policy-free materialization和Q50.0 lowering/verification，不共享state/candidate/grouping/
   ordering，也不调用option-domain、propagation、recursive CSP/backtracking或“只取第一个”的assignment solver。
@@ -459,13 +459,30 @@
 
 - 现象：structured roots较多时，旧baseline按root shard、Tile entry、完整CardModule三轮构造；仅root阶段就接近
   `root数 × 16 Tile`次TensorProgram conversion。即使16个worker并发，CPU work、RSS和诊断仍是同一工作被放大16倍。
-- 根因：把Tile差异（offset/tail/peer endpoint）和root不变量（SSA/support closure、consumer order、iterator/index facts）放在同一个
-  per-Tile materializer里；为得到局部结论又clone完整函数，而不是在immutable scheduling IR上先形成可重算analysis。
-- 修复模式：每个coordinate只保留一个scheduling owner；root/edge闭包与support facts按semantic key分析一次，cache只保存同一IR
-  epoch的operation关系，不保存materialized IR。多root Tile的每个最终region从公共分析复制必要SSA closure；16个Tile实际构造
-  bounded并发，按Tile ID稳定归并，再把同一CardModule交给Q50.0。
-- 防复发：ledger同时检查公共closure分析数/operation数、Tile entry数、materialization worker数及CardModule/Q50.0一一对应；
-  Q51 partial state也只能共享immutable analysis，不能按candidate/Tile缓存actual clone或通过并发掩盖重复work。
+- 根因：把Tile差异（offset/tail/peer endpoint）和root不变量（support relation、consumer access和structured identity）放在同一个
+  per-Tile materializer里；materializer从output/edge endpoint无条件回溯SSA closure并clone scratch function，而不是从全部root
+  execution domain一次性求exact operand demand。并发只缩短wall time，没有消除重复分析或过宽物化。
+- 修复模式：每个coordinate在immutable source上同时seed全部`(root, Tile)`，以`(value, Tile)`合并exact domain并按反向SSA拓扑传播；
+  relation按operation/result/operand建立一次，structured producer立即形成boundary demand。carrier coverage验证后，final region只
+  一次性物化typed demand recipe要求的operation和endpoint，不建立公共SSA closure或materialized-IR cache。16个Tile实际构造可
+  bounded并发并按Tile ID稳定归并，但并发不是work消重机制。
+- 防复发：ledger检查relation construction、非空value/Tile demand、physical fragment、Tile entry和CardModule/Q50.0一一对应；
+  测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。Q51 partial state只共享immutable analysis，不能按
+  candidate/Tile缓存actual clone。
+
+## exact-empty producer不能被support graph重建重新拉入
+
+- 现象：fresh FP16 LLaMA baseline中，一个consumer operand由两个structured producer经`extract_slice`/`insert_slice`组合；Q50.A
+  已证明其中一个producer对当前destination的demand为空，physical strategy没有为它生成fragment，但consumer侧递归重建support
+  graph时仍遇到该producer并报“unassembled structured producer”。
+- 根因：logical exact demand、root scope选择和support reconstruction由三条独立路径恢复。空需求只在per-edge carrier阶段被丢弃，
+  无条件SSA closure和post-hoc rebuild不知道该证明，遂把本应停止的structured producer再次拉入。这不是缺少一个empty布尔字段，
+  而是query/apply没有共享同一typed demand decomposition。
+- 修复模式：从consumer root execution domain求operand demand；每个support operation返回同时供query/apply消费的typed transfer
+  recipe。到structured producer停止并形成非空boundary demand；`insert_slice`按写入区域`W`把任意需求`D`精确分成
+  `inverse(D ∩ W)`与`D − W`。全部boundary按ownership all-and-only绑定后才一次性构造final single-root region。
+- 防复发：穷举tiny shape的insert overwrite需求子集，并覆盖multi-producer、empty branch、Peer/RegionCut混合与模型级baseline。
+  删除无条件closure、support clone/rebuild/replay；unsupported relation在mutation前typed fail closed，不能退回复制全部operand。
 
 ## 单状态baseline不得套用多候选winner协议或accepted后旁路工作
 
@@ -882,9 +899,10 @@
   alloc），`splitAtRegionCut` 的 store/reload 区间检查正确拒绝。多波 baseline（CROSS gate）
   在 carrier 拥有 wave-hoisted store/reload 发射前必须走 split kernel。现象特征是
   `stores=N/loads=0` 且 store 的 dest 是同一 marked alloc 的多个 wave subview。
-- **插入覆盖的 demand 过拉**：`tensor.insert_slice` 的窗口被插入区完全覆盖时，目的窗口的
-  producer 是已被 exact demand 证明为空的覆盖需求；无条件 materialize 目的窗口会把它拉进
-  scope（多 root region）。完全覆盖 + unit stride 时用 fresh empty 作目的窗口。
+- **插入覆盖的 demand 过拉**：`tensor.insert_slice`的source覆盖result区域`W`时，任意需求`D`必须精确分成
+  source的`inverse(D ∩ W)`和destination的`D − W`。后者为空时可以用未初始化tensor作为只承载source insertion的容器，但
+  initialized coverage仍只有前者映回的区域，consumer不得读取其它位置。它必须来自typed transfer recipe，不是
+  “完全覆盖 + unit stride”特判或materializer临时补丁。
 
 ## 证明型 relation fast path 的元数据不能强于关系本身
 

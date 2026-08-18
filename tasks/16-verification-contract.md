@@ -355,8 +355,9 @@ current target容量、target-model能力或host预算不足，必须按stage报
    全部联合维度、exact domain和new source-to-package链由Q51闭合；各Q50机制交付时同步删除对应旧实现。late exact
    failure回到同一new candidate set，selected IR必须有共享TileRegion，并以
    coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。
-5. Q52：它是Q51完整new-search链闭合后首个允许执行重型LLaMA的任务；generic/HF/LLaMA representative load只在显式、bounded
-   profile批次记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在小图oracle上不改变最优结果，代表负载不劣于
+5. Q52：它是Q51完整new-search链闭合后首个允许执行重型LLaMA `search`和质量profile的任务；Q49.P的单次fresh FP16 LLaMA
+   `optimization-none`只证明baseline功能/materialization。generic/HF/LLaMA representative load只在显式、bounded profile批次
+   记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在小图oracle上不改变最优结果，代表负载不劣于
    同源`none`，没有固定shape/tile/fusion/buffer shortcut。
 6. Q60先把framework adapter与pre-exported portable StableHLO接入同一product source contract；Q53的generic DAG与
    HF/Llama matrix全部由该产品入口fresh生成完整ExecutablePackage并fresh no-card；每个package包含all-and-only 16 Tile

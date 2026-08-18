@@ -77,7 +77,7 @@ Pipeline position:
 single-root region、temporal tiling、canonical representation/movement、single buffering、order与completion合法化，形成一个
 可直接发布的CardExecutable，而不是要求调用方先提供已经合法的fixed assignment。`optimization=search`再由本文唯一
 candidate-selection owner管理多个性能选择。两者可以共享由current IR导出的immutable typed facts、single-root region
-materializer、scoped exact probe以及后续lowering、memory planning、verification和package emission，但不能共享会携带
+materializer、grouped exact-demand query以及后续lowering、memory planning、verification和package emission，但不能共享会携带
 候选集合、group boundary、proposal order、score、backtracking或repair语义的search state/carrier/evaluator。baseline完成
 唯一确定性可执行结构后才进入共同CardModule materialization和CardExecutable compilation；“提前跳出search loop”本身不构成
 policy解耦，去掉search依赖也不能删掉使程序走通所必需的feasibility legalization。
@@ -112,7 +112,7 @@ store/completion/load；不同 Tile 间则由 source SPM、NoC/DTE send、destin
 不能共享同一个 SPM root。
 
 上述是IR的一般合法能力，不是`optimization=none`的默认分组策略。`none`中每个TileRegion最多拥有一个独立
-structured compute root及其不可分割的non-root support closure；root cardinality按materialization relation映回current
+structured compute root及其exact operand demand证明必要的non-root support operations；root cardinality按materialization relation映回current
 structured DAG node计算，不按lower后的compute op数量计算。同一Tile可以按确定顺序拥有多个这样的TileRegion。将多个独立
 compute root放入同一TileRegion即使没有coupled producer/consumer edge，也会共享SPM预算、lifetime/lowering scope和失败
 归因，属于需要由`search`显式选择的region grouping，不能因后端legal或`actual_fused_edges == 0`而泄漏到baseline。
@@ -587,7 +587,7 @@ CompilationOptions::search
 
 真实负载不展开平铺笛卡尔积。Q51 closure建立的non-lossy基本过程是：
 
-1. 直接接收Q49.P已经完整准入的deterministic baseline及同comparison cohort actual cost，立即获得合法incumbent，不重新
+1. 直接接收Q49.P完成后已经完整准入的deterministic baseline及同comparison cohort actual cost，立即获得合法incumbent，不重新
    materialize或compile baseline；
 2. 生成producer/consumer aligned、compute-balanced、topology-local、reduction-parallel及ordered factorized regular mapping等
    spatial seeds；
@@ -624,7 +624,7 @@ Q52代表负载以10分钟作为热点与首轮质量检查点，允许继续到
 `none`在performance search之外构造单一方案：原始DAG、每个structured compute root独立使用最大合法Tile participation、
 每root独立TileRegion、root boundary compiler-owned DDR、buffer=1、零fusion和零可选edge action。同一Tile允许按完整
 semantic tie-break承载多个独立TileRegion，但一个baseline TileRegion只能有一个structured compute root。shape/index/view、
-target-local materialization等没有独立structured DAG identity且不能独立调度的op才属于non-root support closure；显式
+target-local materialization等没有独立structured DAG identity、不能独立调度且被exact operand demand选中的op才属于non-root support；显式
 Fill、Reduce或DPS init producer只要是另一个structured DAG node就仍是第二root，不能借support名义并入。root cardinality按
 typed materialization relation计算，因此一个root lower成多个compute/instruction op仍只算一个root。每个root从其
 local spatial extent开始确定性缩减完整temporal tile vector直到actual SPM可放下；relation要求的必要peer fragments只用于
@@ -649,8 +649,8 @@ per-root participant group只描述该root的非空执行Tile；最终CardModule
 baseline controller直接从typed structured semantics、exact relation和target facts构造这一条canonical路径。最大非空
 participant count、physical Tile group、iterator/factor choice和独立root顺序均使用完整semantic tie-break，不使用pointer、
 walk ordinal、`stableOrdinal`或search proposal order。它以有限、确定且不会被beam/cap/time budget截断的feasibility
-resolution遍历baseline合同内的合法fallback，返回固定全序中第一个所有required scoped exact probe均为fit的canonical
-completion；只有随后一次完整Q50.0 gate才能将其标为accepted。query-local trial和fit结果
+resolution遍历baseline合同内的合法fallback；每个closed coordinate只构造一个actual CardModule并立即进入一次完整Q50.0
+gate，accepted owner直接成为结果，带direct typed witness的exact rejection才推进到下一个canonical coordinate。query-local trial和fit结果
 只是合法化过程，不是Q51 search candidate：controller不评分、不维护incumbent/candidate family、不保留用于比较的备选方案，
 也不得创建或调用search candidate/state、search-oriented domain/ranking evaluator、grouping materializer和feedback repair。
 它只复用typed iterator/topology事实、single-coordinate legality/materialization机制和上述logical demand/coverage query。
@@ -673,6 +673,40 @@ correctness carrier必须把exact set有限分解为all-and-only DDR/必要peer 
 descriptor表达失败是baseline carrier的实现缺口，不是logical placement failure。完整search可在之后枚举其它representation、
 route、retention或collective，但不能因此改变Q50.A logical outcome。
 
+CardModule构造前先从同一closed coordinate的全部Tile root execution domain执行一次multi-destination反向需求传播。worklist项是
+current SSA value、semantic Tile和exact integer domain；同一support operation的relation只建立一次，再对各Tile domain应用。
+ordinary unary/view support通过`IndexRelation`求exact preimage，`tensor.insert_slice`按被插入区域把需求严格分解到source与
+destination；到structured producer result立即停止并形成typed boundary obligation，不继续回溯producer body。exact-empty分支
+没有physical action，不能伪造成edge strategy、空fragment或缺失carrier。所有非空obligation必须在任何IR mutation前由已选
+local/peer/DDR carrier all-and-only覆盖；缺口、重叠、无法exact传播分别保持typed rejection或indeterminate。验证通过后按稳定
+拓扑序一次性构造各Tile最终root、必要support op和endpoint；send-only endpoint不引入remote consumer。禁止先复制result/edge
+endpoint的递归SSA闭包，再通过support clone、rebuild、replay或失败后补边修正范围。
+
+上述传播的正确性合同不是“在代表模型上能跑通”，而是对每个current value `V`和exact需求集合`D`证明：物化值
+`M(V,D)`在`D`上的投影与源程序`V`相等，`D`外没有consumer读取。每个被接纳的pure tensor support operation必须由同一个
+短生命周期typed transfer recipe同时给出output demand、各tensor operand的exact read demand和reconstruction动作，并满足：
+只要每个operand在其read demand上与源值相等，reconstruction就在output demand上与源operation相等。query与apply共同消费
+该recipe；不能让analysis和materializer各自维护op matcher。recipe只在同一immutable IR epoch内存活，不进入IR、candidate
+identity或跨stage cache。
+
+`tensor.insert_slice`的transfer由overwrite语义唯一确定：设source写入result的区域为`W`，则对任意需求`D`，source demand为
+`inverse(D ∩ W)`，destination demand为`D − W`；两者经reconstruction形成`D`的all-and-only覆盖。destination demand为空时
+可以使用未初始化tensor作为仅承载source insertion的容器，但必须由该集合等式证明，且最终coverage verifier拒绝任何对容器
+其它区域的读取。`extract_slice`及一元view/reshape类operation由exact `IndexRelation` preimage给出transfer；effectful、alias
+不明、多输入语义未证明或只能近似传播的operation在mutation前返回typed unsupported/indeterminate，不能退回全operand闭包。
+
+整图结论由acyclic SSA上的结构归纳得到：function argument/constant和已验证carrier是归纳基；structured producer result是
+停止边界；每个support recipe提供局部归纳步。structured root在Tile上的execution domain通过operand indexing relation产生
+read demand，所有operand在这些domain上相等即可推出root在该execution domain上相等。temporal wave必须按稳定顺序all-and-only
+覆盖root execution domain并显式携带reduction accumulator；没有partial-result merge时reduction spatial factor仍只能为1。
+任一新support semantics只有同时提供上述transfer/reconstruction证明和定向law test后才能进入支持集合。
+
+多Tile通用性由同一传播参数化，而不是复制16份分析：一次查询同时seed全部`(root, Tile, execution domain)`，以
+`(SSA value, semantic Tile)`为key累积domain union，只传播新增差集；relation对象按operation/result/operand建立一次。当前
+single-block functional TensorProgram可按反向SSA拓扑序一次处理，未来region/control-flow若不能提供等价typed transfer则保持
+unsupported。复杂度和ledger按非空value/Tile demand、relation application及carrier fragment计数，不能用线程并发掩盖
+16次完整DAG walk。
+
 temporal feasibility从root的完整local iterator extent开始，在iterator/indexing semantics、tail、target vector/alignment、
 source numeric/reassociation及最小合法粒度共同定义的有限breakpoint lattice上按semantic全序推进；浮点reduction iterator
 与parallel iterator共享同一lattice（自由重结合，typed comparator验收，不消费fast-math flag），整数no-wrap/overflow语义
@@ -683,14 +717,11 @@ alignment/bank和实际lifetime，不得只按output tensor字节数缩放估算
 序列必须覆盖到target允许的最小合法temporal vector。第一个fit立即成为该root的resolved assignment，不为了性能继续比较
 其它fit；trial数不得写入candidate proposal/fusion/layout/buffer统计。
 
-为避免重复整图materialization，baseline在单root TileRegion边界做actual scoped fit。probe先消费真实TileRegion；lowering若
-需要call/symbol closure，则只提升到最近合法`IsolatedFromAbove` ancestor并在该scope得到最终typed结果，不得忽略
-requires-ancestor-scope，也不得为单region构造synthetic Module/Func或带其它no-work Tile的整卡wrapper。结果只能是fit、带
-direct typed witness的proven exact rejection/unsupported，或indeterminate。capacity witness可以包含一个冲突集合，但必须把
-all-and-only allocation/lifetime owner直接关联到当前single root的result/operand demand和temporal assignment；unsupported
-witness必须命名无法表达的typed lifetime/call relation及已尝试的最窄合法scope。两者都不能按相同type/shape猜测producer、
-解析diagnostic字符串或同时缩减多个歧义match。只有proven exact rejection允许controller推进确定性fallback；
-indeterminate必须终止并作为compiler/internal failure报告，不能伪装成输入unsupported或“none没有方案”。
+capacity结论只来自该coordinate唯一一次actual CardModule→CardExecutable编译，不再构造root/Tile/function scratch IR或局部
+capacity probe。capacity witness可以包含一个冲突集合，但必须把all-and-only allocation/lifetime owner直接关联到当前single
+root的result/operand demand和temporal assignment；unsupported witness必须命名无法表达的typed lifetime/call relation。两者都
+不能按相同type/shape猜测producer、解析diagnostic字符串或同时缩减多个歧义match。只有proven exact rejection允许controller
+推进确定性fallback；indeterminate必须终止并作为compiler/internal failure报告，不能伪装成输入unsupported或“none没有方案”。
 
 全部root获得resolved baseline assignment后，baseline只物化一次完整CardModule，并只进行一次complete CardExecutable
 compilation。局部成功的安全性建立在“一root一TileRegion、跨root shaped dependency显式DDR、无fusion、sequential
@@ -845,11 +876,12 @@ storage-root memo、DDR boundary kernel和reduction temporal materialization只�
 - board-ready后真实设备只串行执行current matched cases；Llama及至少一个prefill/decode代表相对同源baseline获得可重复
   改善后才能标记done。
 
-上述workload按任务阶段执行，不是每个checkpoint的共同回归集。Q49.P只运行有界direct unit、定向lit和轻量
-source-to-package/no-card来证明baseline功能与work closure；Q51完整new-search链闭合前，Q49.P、Q50各机制checkpoint和
-Q51.Core均不得执行重型LLaMA block，无论policy是`none`还是`search`，也不得把旧重型运行回放为current证据。Q51闭合后，
-重型LLaMA首次进入Q52显式、bounded scalability profile；Q53才fresh生成正式LLaMA package/oracle/no-card并进入board-ready矩阵。
-轻量case不能由模型名特判产生，仍须覆盖相同IR/relation/resource边界。
+上述workload按任务阶段执行，不是每个checkpoint的共同回归集。Q49.P迭代期使用有界direct unit、定向lit和轻量
+source-to-package/no-card；算法、结构与work ledger闭合后必须只运行一轮fresh FP16 LLaMA `optimization-none`
+source-to-package/no-card，证明baseline在真实multi-producer support DAG上完成且没有进入search。该功能门禁不承担search质量
+profile，也不能由历史输出代签。Q51完整new-search链闭合前不得运行LLaMA `search`或反复执行重型baseline；Q52才对LLaMA
+search执行显式、bounded scalability profile，Q53再签发正式模型package/oracle/no-card与board-ready矩阵。轻量case和LLaMA
+均不能由模型名特判产生，必须经过同一typed relation、carrier和materialization合同。
 
 ## 15. 参考算法原则
 
