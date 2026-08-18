@@ -165,6 +165,16 @@ struct TargetModuleReadback {
   std::string moduleFormat;
 };
 
+/// Invocation-local accounting for the retained per-Tile target output.
+/// Counts refer to calls that actually ran, including calls completed before
+/// another Tile reported a failure.
+struct TargetLLVMCompilationStatistics {
+  uint64_t targetABIPreparationAttempts = 0;
+  uint64_t targetLoweringAttempts = 0;
+  uint64_t targetTranslationAttempts = 0;
+  uint64_t maximumTilePipelineWorkers = 1;
+};
+
 llvm::Error fail(llvm::raw_ostream &diagnostics, llvm::StringRef message);
 bool isRegularTargetFile(llvm::StringRef path);
 
@@ -224,7 +234,8 @@ llvm::Error validateRuntimeLaunchContractDomainForTesting(
 llvm::Expected<TargetLLVMModules> compileCardExecutableToTargetLLVMModulesImpl(
     const CardExecutable &cardExecutable, llvm::raw_ostream &diagnostics,
     std::optional<int64_t> failAfterLaunchSlot,
-    ProfileCaptureKind profileCapture = ProfileCaptureKind::None);
+    ProfileCaptureKind profileCapture = ProfileCaptureKind::None,
+    TargetLLVMCompilationStatistics *statistics = nullptr);
 
 llvm::Expected<LinkedTargetModules> linkTargetLLVMModulesImpl(
     const TargetLLVMModules &targetLLVMModules, llvm::StringRef outputDirectory,

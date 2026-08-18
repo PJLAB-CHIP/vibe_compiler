@@ -622,15 +622,11 @@ struct FoldStaticTensorOpsPass
   void runOnOperation() final {
 #ifdef WAFER_ENABLE_STABLEHLO
     mlir::ModuleOp module = getOperation();
-    mlir::OwningOpRef<mlir::ModuleOp> transaction =
-        mlir::cast<mlir::ModuleOp>(module->clone());
-    if (mlir::failed(
-            stablehlo_normalization::foldConstantTensorOps(*transaction)) ||
-        mlir::failed(mlir::verify(*transaction))) {
+    if (mlir::failed(stablehlo_normalization::foldConstantTensorOps(module)) ||
+        mlir::failed(mlir::verify(module))) {
       signalPassFailure();
       return;
     }
-    module.getBodyRegion().takeBody(transaction->getBodyRegion());
 #endif
   }
 };

@@ -17,18 +17,22 @@ namespace wafer::support {
 enum class CompileWorkKind : size_t {
   TileMemoryPlanning,
   TileToInstructionLowering,
-  SelectedBufferModuleClone,
   SPMPlanning,
   DDRPlanning,
+  TargetABIModuleClone,
+  TargetLowering,
+  TargetTranslation,
   Count,
 };
 
 struct CompileWorkStatistics {
   uint64_t tileMemoryPlanningInvocations = 0;
   uint64_t tileToInstructionLowerings = 0;
-  uint64_t selectedBufferModuleClones = 0;
   uint64_t spmPlanningInvocations = 0;
   uint64_t ddrPlanningInvocations = 0;
+  uint64_t targetABIModuleClones = 0;
+  uint64_t targetLoweringInvocations = 0;
+  uint64_t targetTranslationInvocations = 0;
 };
 
 /// Thread-safe owner for one compile transaction. Bounded worker owners
@@ -49,9 +53,11 @@ public:
     return {
         read(CompileWorkKind::TileMemoryPlanning),
         read(CompileWorkKind::TileToInstructionLowering),
-        read(CompileWorkKind::SelectedBufferModuleClone),
         read(CompileWorkKind::SPMPlanning),
         read(CompileWorkKind::DDRPlanning),
+        read(CompileWorkKind::TargetABIModuleClone),
+        read(CompileWorkKind::TargetLowering),
+        read(CompileWorkKind::TargetTranslation),
     };
   }
 

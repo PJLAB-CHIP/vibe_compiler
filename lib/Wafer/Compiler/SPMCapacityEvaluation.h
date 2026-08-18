@@ -6,9 +6,10 @@
 //  - region scope: one materialized single-root TileRegion is cloned into a
 //    private evaluation scope, lowered to Instr, its isolated required joins
 //    are rebuilt, and static SPM packing runs without assigning offsets;
-//  - function scope: one Tile FuncOp is cloned into a private module and runs
-//    the same TileRegion-to-Instr, required-join placement, memory-planning
-//    preparation and SPM offset-assignment sequence as the final Q50.0 gate.
+//  - function scope: one caller-owned detached Tile entry module is consumed
+//    by the same TileRegion-to-Instr, required-join placement,
+//    memory-planning preparation and SPM offset-assignment sequence as the
+//    final Q50.0 gate.
 //
 // Both probes classify Fits, proven capacity overflow, unsupported lifetime
 // and indeterminate analysis failure, and attribute every capacity demand to
@@ -106,10 +107,11 @@ enum class TileFunctionSPMCapacityPhase : uint8_t {
 };
 
 /// Classification produced by one function-scoped fixed-capacity SPM probe.
-/// The probe replays the exact TileRegion-to-Instr, required-join placement,
+/// The probe runs the exact TileRegion-to-Instr, required-join placement,
 /// memory-planning preparation and SPM offset assignment sequence of the final
-/// Q50.0 per-Tile gate on a private clone, so its verdict consumes the same
-/// demand set as the final planning. `UnsupportedLifetime` means the nearest
+/// Q50.0 per-Tile gate on a caller-owned disposable module, so its verdict
+/// consumes the same demand set as the final planning. `UnsupportedLifetime`
+/// means the nearest
 /// legal isolated ancestor itself cannot conclude; the owning controller must
 /// treat it as a typed unsupported result.
 struct TileFunctionSPMCapacityEvaluation {
@@ -131,14 +133,14 @@ struct TileFunctionSPMCapacityEvaluation {
   llvm::StringRef getPhaseDiagnosticLabel() const;
 };
 
-/// Runs one function-scoped fixed-capacity SPM probe over the given Tile
-/// FuncOp. The function and its regions are cloned into a private module;
-/// `relations` buffers are remapped into that clone and used to attribute
-/// the planning evidence.
-TileFunctionSPMCapacityEvaluation evaluateTileFunctionSPMCapacity(
-    mlir::func::FuncOp function,
-    const StructuredMaterializationRelations &relations,
-    llvm::raw_ostream &diagnostics);
+/// Consumes one detached module containing exactly one defined Tile entry.
+/// The module is already the caller's private probe artifact, so this API
+/// mutates it directly and destroys it on return instead of cloning it again.
+/// `relations` must refer only to that entry and are consumed with the module.
+TileFunctionSPMCapacityEvaluation
+evaluateTileFunctionSPMCapacity(mlir::OwningOpRef<mlir::ModuleOp> module,
+                                StructuredMaterializationRelations relations,
+                                llvm::raw_ostream &diagnostics);
 
 } // namespace wafer::compiler::detail
 

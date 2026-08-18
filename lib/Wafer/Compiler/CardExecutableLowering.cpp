@@ -8,7 +8,6 @@
 #include "DirectDTETransport.h"
 #include "ExecutableCallClosure.h"
 #include "ProgramResourceVerification.h"
-#include "TargetCodeGenInternal.h"
 
 #include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/Target/TargetTopology.h"
@@ -68,10 +67,6 @@ llvm::StringRef CardExecutableLoweringFailure::getDiagnosticLabel() const {
     return "program-resource-bindings";
   case CardExecutableLoweringFailureKind::RuntimeLaunchContract:
     return "runtime-launch-contract";
-  case CardExecutableLoweringFailureKind::TargetABIPreparation:
-    return "target-abi-preparation";
-  case CardExecutableLoweringFailureKind::TargetABILowering:
-    return "target-abi-lowering";
   }
   llvm_unreachable("unknown card executable lowering failure kind");
 }
@@ -763,63 +758,6 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
                                    std::move(*resourceCost));
 }
 
-static mlir::FailureOr<CardExecutableLoweringResult>
-verifyTargetLowering(InstrModuleLoweringResult candidate,
-                     const ExecutionConfig &executionConfig,
-                     CardExecutableLoweringStatistics *statistics,
-                     CardExecutableLoweringFailureKind &failureKind,
-                     unsigned tilePipelineParallelism) {
-  if (statistics)
-    ++statistics->targetLoweringVerificationInvocations;
-
-  const bool transportPreparedBeforeEntry =
-      llvm::is_contained(candidate.runtimeLaunchContract.getPhases(),
-                         RuntimeLaunchPhaseRole::Prepare);
-  llvm::SmallVector<mlir::ModuleOp, 16> tileModules;
-  tileModules.reserve(candidate.tiles.size());
-  for (const TileExecutable &tile : candidate.tiles)
-    tileModules.push_back(tile.getModule());
-
-  enum class TargetTileFailure : uint8_t { None, Preparation, Lowering };
-  std::vector<TargetTileFailure> tileFailures(candidate.tiles.size());
-  const unsigned workers = runBoundedTileModulePipelines(
-      tileModules,
-      [&](size_t tileIndex) {
-        TileExecutable &tile = candidate.tiles[tileIndex];
-        mlir::FailureOr<PreparedTile> prepared = prepareTargetABI(
-            tile, executionConfig, transportPreparedBeforeEntry);
-        if (mlir::failed(prepared)) {
-          tileFailures[tileIndex] = TargetTileFailure::Preparation;
-          return;
-        }
-        if (mlir::failed(lowerToTargetLLVM(*prepared)) ||
-            mlir::failed(
-                verifyLoweredKernelABI(*prepared, tile.getEntrySymbol())))
-          tileFailures[tileIndex] = TargetTileFailure::Lowering;
-      },
-      tilePipelineParallelism == 0 ? kMaximumBoundedTilePipelineWorkers
-                                   : tilePipelineParallelism);
-  if (statistics) {
-    statistics->targetTileLoweringVerificationInvocations +=
-        candidate.tiles.size();
-    statistics->maximumTilePipelineWorkers =
-        std::max<uint64_t>(statistics->maximumTilePipelineWorkers, workers);
-  }
-  for (TargetTileFailure failure : tileFailures) {
-    if (failure == TargetTileFailure::Preparation) {
-      failureKind = CardExecutableLoweringFailureKind::TargetABIPreparation;
-      return mlir::failure();
-    }
-    if (failure == TargetTileFailure::Lowering) {
-      failureKind = CardExecutableLoweringFailureKind::TargetABILowering;
-      return mlir::failure();
-    }
-  }
-  return CardExecutableLoweringResult(
-      std::move(candidate.tiles), std::move(candidate.runtimeLaunchContract),
-      std::move(candidate.resourceCost));
-}
-
 } // namespace
 
 mlir::FailureOr<CardExecutableLoweringResult> lowerTileModulesToCardExecutable(
@@ -861,24 +799,12 @@ mlir::FailureOr<CardExecutableLoweringResult> lowerTileModulesToCardExecutable(
   if (statistics)
     ++statistics->tileModuleLoweringSuccesses;
 
-  mlir::FailureOr<CardExecutableLoweringResult> executable =
-      verifyTargetLowering(std::move(*loweredInstrModules), executionConfig,
-                           statistics, failureKind, tilePipelineParallelism);
-  if (mlir::failed(executable) &&
-      failureKind == CardExecutableLoweringFailureKind::None)
-    return fail(CardExecutableLoweringFailureKind::Contract,
-                "target lowering verification failed without identifying the "
-                "failing operation");
-  if (mlir::failed(executable)) {
-    CardExecutableLoweringFailure classified{failureKind, {}};
-    std::string message =
-        "card executable failed target lowering verification step '" +
-        classified.getDiagnosticLabel().str() + "'";
-    return fail(failureKind, message);
-  }
   if (statistics)
     ++statistics->cardExecutablesProduced;
-  return executable;
+  return CardExecutableLoweringResult(
+      std::move(loweredInstrModules->tiles),
+      std::move(loweredInstrModules->runtimeLaunchContract),
+      std::move(loweredInstrModules->resourceCost));
 }
 
 } // namespace wafer::compiler::detail

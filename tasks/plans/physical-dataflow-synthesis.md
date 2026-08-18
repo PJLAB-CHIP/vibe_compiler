@@ -158,7 +158,7 @@ CardExecutable cost与全轴actual winner都由Q51 closure验收，不得用旧s
 
 | 类别 | 当前代表实现 | 处置 |
 | --- | --- | --- |
-| 稳定 downstream trunk | CardModule/TileModule IR、CardModule-to-Tile conversion、TileRegion-to-Instr、Tile memory planning、card resource/target verification、package/runtime | 保留；所有 policy 复用同一路径；现有`TileMemoryPlanning`/`CardExecutableLowering`仅作实现定位，后者仍需按实际职责收敛名称 |
+| 稳定 downstream trunk | CardModule/TileModule IR、CardModule-to-Tile conversion、TileRegion-to-Instr、Tile memory planning、card resource/runtime-launch verification、retained target output、package/runtime | 保留；所有 policy 复用同一路径；现有`TileMemoryPlanning`/`CardExecutableLowering`仅作实现定位，后者仍需按实际职责收敛名称 |
 | 可复用 core facts | `StructuredDAGAnalysis`、target topology、Q50.A immutable-borrow/exact-demand合同、Q50.0 move-only accepted result | 只消费能脱离旧candidate/search owner独立调用的current IR事实和accepted result；work reservation按新ledger重新实现。`TileExecutionCandidate`、schedule-state、metrics、stable ordinal、feedback history、evaluator和proposal order不进入Core |
 | 可提取 mechanism 素材 | `BidirectionalTiling`、`CompleteTraversal`、placement option、movement/collective lowering、selected-buffer materialization、ready-order/worker/completion verifier | Q50.S与Q50.B–Q50.K先定义终态typed query/transition/apply合同，再迁入仍正确的局部算法、proof、verifier和negative case；不迁移旧API、调用顺序或winner行为 |
 | Q51.Core同批删除的active search monolith | 当前executable-synthesis中的`deriveShortlist`、coordinate sweep、candidate family、mixed evaluator/materializer、allocation/buffer feedback、beam、accepted cohort、schedule-plan selector和winner rematerialization | 不建立adapter或proposal bridge；Core建立新control owner、改接public caller并删除整条旧控制/选择调用闭包及其专属统计和测试 |
@@ -181,7 +181,8 @@ selector、repair、stats和专属测试；确有独立价值的局部算法、p
 
 先从当前综合大流程抽出唯一、无策略的CardExecutable编译/准入函数：输入已经选择且物化的CardModule，依次执行
 Tile module splitting、TileRegion-to-Instr、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
-communication/resource/ABI verification，输出accepted CardExecutable、proven exact rejection或indeterminate failure。
+communication/resource/runtime-launch verification，输出accepted CardExecutable、proven exact rejection或indeterminate failure。
+target ABI preparation/lowering/translation属于下游真正保留的target output，不在candidate/CardExecutable准入时提前执行。
 
 返回taxonomy必须完整区分`accepted CardExecutable`、`proven exact rejection`与`indeterminate failure`；allocator
 `ResourceExhausted`、timeout或内部错误属于最后一类，不能伪装成candidate非法。
@@ -350,7 +351,8 @@ TensorProgram
 -> Tile module splitting
 -> TileRegion-to-Instr conversion
 -> Tile memory planning
--> card resource and target verification
+-> card resource and runtime-launch verification
+-> retained target ABI / LLVM output
 -> ExecutablePackage writing
 ```
 
@@ -573,7 +575,7 @@ Q50.G/H后续扩展的physical alternatives；其失败不得回写Q50.A cache�
   Presburger结果。composition不再未经证明传播projection pattern，只有对完整bounded relation做等价证明的builder
   才恢复fast path，避免中间domain clipping被丢失。follow-up stack capture说明variable/disjunct structural limit不能单独约束
   generic `isEqual/isSubsetOf/subtract`的wall-time；logical proof和four-state outcome仍由Q50.A拥有，supported rectangle在baseline
-  热路径上的closed-form witness保留、generic preflight和work ledger由Q49.P P6闭合，不重新打开physical carrier或placement选择。
+  热路径上的closed-form witness保留、generic solver调用前的结构预算检查和work ledger由Q49.P P6闭合，不重新打开physical carrier或placement选择。
 - typed payload在成功与失败路径都按semantic Tile id稳定排序，补齐consumer domain、producer result、dependency
   role、per-destination intersection和merge obligation。partial-reduction定向case证明倒序caller input仍保留全部
   contribution owners与merge义务；overlap failure witness同样不依赖caller枚举顺序。
@@ -609,7 +611,8 @@ single-root structure、policy isolation与work/output问题仍未闭合，不�
   `IsolatedFromAbove` ancestor（该 Tile 的 FuncOp）做函数级 probe，并以其 typed verdict 作为该 region 的结论。
 - 实现：
   1. 新增函数级 capacity probe `evaluateTileFunctionSPMCapacity`（`SPMCapacityEvaluation.h/.cpp`）：
-     输入该 Tile FuncOp（clone 到 scratch，block args 替换 inputs，同 `TileRegionEvaluationScope` 模式），
+     输入调用方已经detached、只含一个defined Tile entry且relations指向current IR的owned Module，直接消费并修改该owner，
+     不在probe内部再次clone Func或构造synthetic Module；
      运行与最终 `planTileMemory` 相同的 `instr-memory-planning-preparation` named pipeline 和
      `assign-spm-offsets` capacity 检查，返回 Fits / proven CapacityExceeded（含 `SPMMemoryPlanningFailure`
      evidence）/ unsupported lifetime / indeterminate。命名、失败分类与 `TileRegionSPMCapacityEvaluation` 对齐。
@@ -620,10 +623,10 @@ single-root structure、policy isolation与work/output问题仍未闭合，不�
      indeterminate 并中止 baseline（typed failure），不得跳过。
   3. 诊断保留 region-scope 与 function-scope 两层 outcome；`baselineRegionSPMChecksRequiringFunctionScope`
      只作计数，新增 `baselineFunctionScopedSPMCapacityChecks`。
-  4. current DS实现已完成scope routing，但尚未完成relation一致性：所有clone/body swap/pass rewrite必须返回complete
-     old-current-value→new-current-value mapping，或在current IR上重建relation；不得用“省略unmapped entry”或
-     `retainCurrentStructuredBufferRelations`把缺失witness变成成功。function-scope scratch必须只保留目标root及准确support/call
-     closure；若合法lifetime确实跨root，certificate须分别命名全部owner，不能把whole-Func unmatched allocation归给发起region。
+  4. relation一致性由ownership合同闭合：region scratch在首次clone时用完整`IRMapping`，function probe的relations与owned
+     Module一起move，后续每次destructive stage检查其仍属于current entry；不得用“省略unmapped entry”或
+     `retainCurrentStructuredBufferRelations`把缺失witness变成成功。若合法lifetime确实跨root，certificate须分别命名全部owner，
+     不能把whole-Func unmatched allocation归给发起region。
 - 验证：`NoneJointlyRefines...` 由新路径 fresh 通过（所有 probe fit、唯一完整 gate accepted、
   `cardModuleCompilationInvocations==1`）；增加非空operation-result/operand/output relation跨conversion、join rebuild、bufferization和
   canonicalization的probe/final parity；任一应保留relation缺失必须typed fail closed。原有`baselineCardModuleMaterializations==2`
@@ -708,7 +711,7 @@ single-root structure、policy isolation与work/output问题仍未闭合，不�
      `getExactStaticRectangularImage`的generic `PresburgerSet::isEqual`，继而进入`isSubsetOf/subtract`；变量/分段数上限不能保证该
      等价证明有界。支持的projected/permuted/static-rectangle indexing semantics必须由`IndexRelation` builder/composition保留或
      直接构造closed-form rectangular-image witness，使baseline不进入generic equality recovery；generic fallback在调用前按完整
-     relation complexity做fail-closed preflight并计入query-local ledger，超限返回`ResourceExhausted`/indeterminate，绝不能当作
+     relation完整结构复杂度在任何昂贵solver调用前检查并计入query-local ledger，超限返回`ResourceExhausted`/indeterminate，绝不能当作
      logical rejection或触发下一个coordinate。用轻量、同relation结构的定向case覆盖该路径，不靠重型LLaMA重现。
   4. baseline 路径不再接收`CardExecutableSynthesisStatistics`这个search bag，也不再写candidate proposal/fusion/layout/buffer
      统计和selected evaluation metrics；必要的probe/materialization/work计数进入baseline专属窄ledger，

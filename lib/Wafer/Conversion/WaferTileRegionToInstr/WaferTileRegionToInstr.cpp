@@ -911,20 +911,6 @@ normalizeRequiredNCCJoinsInPlace(mlir::ModuleOp module,
   return mlir::success();
 }
 
-/// Validate the complete function rewrite before touching the pass root.
-/// Required-join placement is a multi-operation rewrite whose
-/// structured-loop fixed point may discover an unsupported control-flow case
-/// after earlier joins have already been inserted or narrowed. MLIR's pass
-/// manager does not roll back an arbitrary failed pass, so validate on the
-/// nearest isolated operation and only then replay the deterministic rewrite
-/// on the current function.
-static mlir::LogicalResult
-validateRequiredNCCJoinRewrite(mlir::func::FuncOp function,
-                               bool rebuildDerivedJoins) {
-  mlir::OwningOpRef<mlir::func::FuncOp> validation = function.clone();
-  return normalizeRequiredNCCJoinsInPlace(*validation, rebuildDerivedJoins);
-}
-
 struct ConvertTileRegionToInstrPass
     : public wafer::impl::ConvertTileRegionToInstrPassBase<
           ConvertTileRegionToInstrPass> {
@@ -954,9 +940,7 @@ struct PlaceRequiredNCCJoinsPass
   void runOnOperation() final {
     unsigned before = 0;
     getOperation().walk([&](SyncNCCJoinOp) { ++before; });
-    if (mlir::succeeded(validateRequiredNCCJoinRewrite(
-            getOperation(), /*rebuildDerivedJoins=*/false)) &&
-        mlir::succeeded(normalizeRequiredNCCJoinsInPlace(
+    if (mlir::succeeded(normalizeRequiredNCCJoinsInPlace(
             getOperation(), /*rebuildDerivedJoins=*/false))) {
       unsigned after = 0;
       getOperation().walk([&](SyncNCCJoinOp) { ++after; });
@@ -977,9 +961,7 @@ struct RebuildRequiredNCCJoinsPass
   void runOnOperation() final {
     unsigned before = 0;
     getOperation().walk([&](SyncNCCJoinOp) { ++before; });
-    if (mlir::succeeded(validateRequiredNCCJoinRewrite(
-            getOperation(), /*rebuildDerivedJoins=*/true)) &&
-        mlir::succeeded(normalizeRequiredNCCJoinsInPlace(
+    if (mlir::succeeded(normalizeRequiredNCCJoinsInPlace(
             getOperation(), /*rebuildDerivedJoins=*/true))) {
       unsigned after = 0;
       getOperation().walk([&](SyncNCCJoinOp) { ++after; });
@@ -1018,26 +1000,20 @@ mlir::LogicalResult wafer::placeRequiredNCCJoins(mlir::func::FuncOp function) {
     return mlir::failure();
   wafer::support::ScopedCompileTimingSpan timing(
       "lowering-phase", "tile-region-to-instr", "required-ncc-join-placement");
-  mlir::OwningOpRef<mlir::func::FuncOp> transaction = function.clone();
   if (mlir::failed(
-          normalizeRequiredNCCJoinsInPlace(*transaction,
+          normalizeRequiredNCCJoinsInPlace(function,
                                            /*rebuildDerivedJoins=*/false))) {
     timing.markFailed();
     return mlir::failure();
   }
-  function.getBody().takeBody(transaction->getBody());
   return mlir::success();
 }
 
 mlir::LogicalResult wafer::placeRequiredNCCJoins(mlir::ModuleOp module) {
   if (!module)
     return mlir::failure();
-  mlir::OwningOpRef<mlir::ModuleOp> transaction = module.clone();
-  if (mlir::failed(normalizeRequiredNCCJoinsInPlace(
-          *transaction, /*rebuildDerivedJoins=*/false)))
-    return mlir::failure();
-  module.getBodyRegion().takeBody(transaction->getBodyRegion());
-  return mlir::success();
+  return normalizeRequiredNCCJoinsInPlace(module,
+                                          /*rebuildDerivedJoins=*/false);
 }
 
 mlir::LogicalResult
@@ -1046,43 +1022,27 @@ wafer::rebuildRequiredNCCJoins(mlir::func::FuncOp function) {
     return mlir::failure();
   wafer::support::ScopedCompileTimingSpan timing(
       "lowering-phase", "tile-region-to-instr", "fresh-ncc-join-rebuild");
-  mlir::OwningOpRef<mlir::func::FuncOp> transaction = function.clone();
   if (mlir::failed(
-          normalizeRequiredNCCJoinsInPlace(*transaction,
+          normalizeRequiredNCCJoinsInPlace(function,
                                            /*rebuildDerivedJoins=*/true))) {
     timing.markFailed();
     return mlir::failure();
   }
-  function.getBody().takeBody(transaction->getBody());
   return mlir::success();
 }
 
 mlir::LogicalResult wafer::rebuildRequiredNCCJoins(mlir::ModuleOp module) {
   if (!module)
     return mlir::failure();
-  mlir::OwningOpRef<mlir::ModuleOp> transaction = module.clone();
-  if (mlir::failed(normalizeRequiredNCCJoinsInPlace(
-          *transaction, /*rebuildDerivedJoins=*/true)))
-    return mlir::failure();
-  module.getBodyRegion().takeBody(transaction->getBodyRegion());
-  return mlir::success();
+  return normalizeRequiredNCCJoinsInPlace(module, /*rebuildDerivedJoins=*/true);
 }
 
 mlir::LogicalResult
-wafer::rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion,
-                                                    mlir::IRMapping *valueRemap) {
+wafer::rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion) {
   if (!tileRegion)
     return mlir::failure();
-  mlir::IRMapping mapping;
-  mlir::OwningOpRef<TileRegionOp> transaction =
-      mlir::cast<TileRegionOp>(tileRegion->clone(mapping));
-  eraseDerivedNCCJoins(transaction->getOperation());
-  if (mlir::failed(RequiredNCCJoinPlacement().run(*transaction)))
-    return mlir::failure();
-  tileRegion.getBody().takeBody(transaction->getBody());
-  if (valueRemap)
-    *valueRemap = mapping;
-  return mlir::success();
+  eraseDerivedNCCJoins(tileRegion.getOperation());
+  return RequiredNCCJoinPlacement().run(tileRegion);
 }
 
 bool wafer::containsTileDataflowOperations(mlir::Operation *root) {

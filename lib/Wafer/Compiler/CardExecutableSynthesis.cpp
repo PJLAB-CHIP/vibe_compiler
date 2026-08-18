@@ -5492,20 +5492,9 @@ synthesizeDeterministicBaseline(
       std::vector<std::string> functionDiagnostics(tileEntries.size());
       auto evaluateFunctionSPM = [&](size_t index) {
         llvm::raw_string_ostream stream(functionDiagnostics[index]);
-        mlir::func::FuncOp entry;
-        tileEntries[index].module->walk([&](mlir::func::FuncOp function) {
-          if (!function.isExternal() && !entry)
-            entry = function;
-        });
-        if (!entry) {
-          functionResults[index].status =
-              TileFunctionSPMCapacityStatus::AnalysisFailure;
-          functionResults[index].detail =
-              "detached Tile-entry probe has no defined function";
-          return;
-        }
         functionResults[index] = evaluateTileFunctionSPMCapacity(
-            entry, tileEntries[index].relations, stream);
+            std::move(tileEntries[index].module),
+            std::move(tileEntries[index].relations), stream);
         stream.flush();
       };
       unsigned functionWorkers = 0;

@@ -121,10 +121,10 @@ module {
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::ProgramDataHandoff programData;
-  auto cardExecutable =
-      wafer::compiler::detail::buildCardExecutable(
-          context, *tensorProgram, std::move(program), *config,
-          wafer::OptimizationConfig::search(), diagnostics, std::nullopt, programData);
+  auto cardExecutable = wafer::compiler::detail::buildCardExecutable(
+      context, *tensorProgram, std::move(program), *config,
+      wafer::OptimizationConfig::none(), diagnostics, std::nullopt,
+      programData);
   if (!cardExecutable)
     FAIL() << diagnosticsText
            << llvm::toString(cardExecutable.takeError());

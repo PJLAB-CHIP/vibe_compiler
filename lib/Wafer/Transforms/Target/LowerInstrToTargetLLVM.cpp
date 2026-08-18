@@ -44,10 +44,9 @@ struct LowerInstrToTargetLLVMPass
       return;
     }
 
-    mlir::OwningOpRef<mlir::ModuleOp> loweredModule = moduleOp.clone();
     uint64_t executableOperationCount = 0;
-    switch (detail::countStaticExecutableOperations(
-        loweredModule->getOperation(), executableOperationCount)) {
+    switch (detail::countStaticExecutableOperations(moduleOp.getOperation(),
+                                                    executableOperationCount)) {
     case detail::StaticExecutableOperationCountStatus::Counted:
       break;
     case detail::StaticExecutableOperationCountStatus::CountOverflow:
@@ -58,15 +57,12 @@ struct LowerInstrToTargetLLVMPass
       return;
     }
     if (mlir::failed(target_llvm_detail::lowerModuleInPlace(
-            *loweredModule, transportPreparedBeforeEntry,
+            moduleOp, transportPreparedBeforeEntry,
             defaultDDRArenaArgumentIndex, cardId, tileId,
             transportStatusArgumentIndex, profileRecordArgumentIndex))) {
       signalPassFailure();
       return;
     }
-
-    moduleOp->setAttrs((*loweredModule)->getAttrs());
-    moduleOp.getBodyRegion().takeBody(loweredModule->getBodyRegion());
   }
 };
 

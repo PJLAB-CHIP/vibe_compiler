@@ -242,15 +242,15 @@ module {
   llvm::Expected<wafer::compiler::CardExecutable> executable =
       wafer::compiler::detail::buildCardExecutable(
           context, *module, std::move(program), *executionConfig,
-          wafer::OptimizationConfig::search(), diagnostics, std::nullopt, programData);
+          wafer::OptimizationConfig::none(), diagnostics, std::nullopt,
+          programData);
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticsText
       << (executable ? "" : llvm::toString(executable.takeError()));
   EXPECT_NE(diagnosticsText.find(
-                "compile-stats stage=card-executable-synthesis"),
+                "compile-stats stage=deterministic-card-executable-synthesis"),
             std::string::npos);
-  EXPECT_NE(diagnosticsText.find("card-executable-search policy=search"),
-            std::string::npos);
+  EXPECT_EQ(diagnosticsText.find("card-executable-search"), std::string::npos);
   EXPECT_NE(diagnosticsText.find("tile_count=16"), std::string::npos);
   // The Tile executables retain the MLIRContext on success. Destroy
   // the source module before that owner so its uniqued state stays live.

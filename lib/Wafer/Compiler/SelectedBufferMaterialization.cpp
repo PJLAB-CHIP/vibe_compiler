@@ -7,8 +7,6 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Support/CompileWorkStatistics.h"
-
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -41,8 +39,7 @@
 namespace wafer::compiler::detail {
 namespace {
 
-struct SelectedBufferCandidate {
-  mlir::OwningOpRef<mlir::ModuleOp> module;
+struct SelectedBufferMaterialization {
   StructuredMaterializationRelations materializationRelations;
   unsigned stageCount = 0;
   unsigned slotAllocationCount = 0;
@@ -109,8 +106,8 @@ failPlan(std::string *failureReason,
   return failPlan(failureReason, message);
 }
 
-static mlir::FailureOr<SelectedBufferCandidate>
-failCandidate(std::string *failureReason, llvm::Twine message) {
+static mlir::FailureOr<SelectedBufferMaterialization>
+failMaterialization(std::string *failureReason, llvm::Twine message) {
   if (failureReason)
     *failureReason = message.str();
   return mlir::failure();
@@ -1622,9 +1619,9 @@ canonicalizePipelinedKernelUpperBound(mlir::scf::ForOp loop,
 
 } // namespace
 
-static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
-    mlir::ModuleOp sourceModule, mlir::scf::ForOp sourceLoop,
-    std::string *failureReason,
+static mlir::FailureOr<SelectedBufferMaterialization>
+materializeSelectedBufferCandidateInPlace(
+    mlir::ModuleOp module, mlir::scf::ForOp loop, std::string *failureReason,
     llvm::ArrayRef<SelectedBufferRequest> requests = {},
     const StructuredMaterializationRelations *materializationRelations =
         nullptr,
@@ -1632,7 +1629,7 @@ static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
     size_t *failedRequest = nullptr) {
   wafer::support::ScopedCompileTimingSpan timing(
       "optimization", "static-selected-buffer-buffering",
-      "deriveSelectedBufferCandidate");
+      "materializeSelectedBufferCandidateInPlace");
   if (failureReason)
     failureReason->clear();
   if (failureKind)
@@ -1640,42 +1637,37 @@ static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
         SelectedBufferMaterializationFailureKind::UnsupportedStructure;
   if (failedRequest)
     *failedRequest = std::numeric_limits<size_t>::max();
-  if (!sourceModule || !sourceLoop ||
-      !sourceModule->isAncestor(sourceLoop.getOperation()))
-    return failCandidate(
+  if (!module || !loop || !module->isAncestor(loop.getOperation()))
+    return failMaterialization(
         failureReason,
         "selected buffering loop is not owned by the source module");
-  if (hasPhysicalPlacementFacts(sourceModule))
-    return failCandidate(
+  if (!requests.empty() && !materializationRelations)
+    return failMaterialization(
+        failureReason,
+        "selected buffering edge requests require current buffer relations");
+  if (hasPhysicalPlacementFacts(module))
+    return failMaterialization(
         failureReason,
         "selected buffering requires unplaced input without physical "
         "SPM/DDR offset facts");
 
-  std::optional<uint64_t> sourceTripCount =
-      getPositiveStaticTripCount(sourceLoop);
+  std::optional<uint64_t> sourceTripCount = getPositiveStaticTripCount(loop);
   if (sourceTripCount && *sourceTripCount == 1) {
     if (!requests.empty()) {
       if (failureKind)
         *failureKind =
             SelectedBufferMaterializationFailureKind::NoCrossEngineStage;
-      return failCandidate(
+      return failMaterialization(
           failureReason,
           "selected buffering exact edge loop has only one iteration");
     }
-    if (!sourceLoop.getRegion().hasOneBlock())
-      return failCandidate(
+    if (!loop.getRegion().hasOneBlock())
+      return failMaterialization(
           failureReason,
           "selected buffering identity requires a single-block scf.for");
-    wafer::support::recordCompileWork(
-        wafer::support::CompileWorkKind::SelectedBufferModuleClone);
-    mlir::IRMapping identityMapping;
-    mlir::OwningOpRef<mlir::ModuleOp> identity(
-        mlir::cast<mlir::ModuleOp>(sourceModule->clone(identityMapping)));
-    SelectedBufferCandidate result;
-    result.module = std::move(identity);
+    SelectedBufferMaterialization result;
     if (materializationRelations)
-      result.materializationRelations = remapStructuredBufferRelations(
-          *materializationRelations, identityMapping);
+      result.materializationRelations = *materializationRelations;
     result.stageCount = 1;
     result.slotAllocationCount = 0;
     return result;
@@ -1684,11 +1676,11 @@ static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
   mlir::FailureOr<SelectedBufferPlan> sourcePlan;
   {
     wafer::support::ScopedCompileTimingSpan planTiming(
-        "analysis-phase", "deriveSelectedBufferCandidate",
+        "analysis-phase", "materializeSelectedBufferCandidateInPlace",
         "buildSelectedBufferPlan(source)");
-    sourcePlan = buildSelectedBufferPlan(sourceLoop, failureReason, failureKind,
-                                         requests, materializationRelations,
-                                         failedRequest);
+    sourcePlan =
+        buildSelectedBufferPlan(loop, failureReason, failureKind, requests,
+                                materializationRelations, failedRequest);
   }
   if (mlir::failed(sourcePlan))
     return mlir::failure();
@@ -1697,137 +1689,116 @@ static mlir::FailureOr<SelectedBufferCandidate> deriveSelectedBufferCandidate(
           *sourcePlan, requests, *materializationRelations, failedRequest))) {
     if (failureKind)
       *failureKind = SelectedBufferMaterializationFailureKind::EdgeNotWitnessed;
-    return failCandidate(
+    return failMaterialization(
         failureReason,
         "selected buffering loop has no staged dependency for the requested "
         "logical edge");
   }
 
-  mlir::IRMapping cloneMapping;
-  mlir::OwningOpRef<mlir::ModuleOp> candidate;
-  {
-    wafer::support::ScopedCompileTimingSpan cloneTiming(
-        "transformation-phase", "deriveSelectedBufferCandidate", "clone");
-    wafer::support::recordCompileWork(
-        wafer::support::CompileWorkKind::SelectedBufferModuleClone);
-    mlir::Operation *clonedOperation = sourceModule->clone(cloneMapping);
-    candidate = mlir::cast<mlir::ModuleOp>(clonedOperation);
-  }
-  auto clonedLoop = mlir::dyn_cast_or_null<mlir::scf::ForOp>(
-      cloneMapping.lookupOrNull(sourceLoop.getOperation()));
-  if (!clonedLoop)
-    return failCandidate(
-        failureReason,
-        "selected buffering clone did not preserve the selected loop");
-  StructuredMaterializationRelations clonedRelations;
+  StructuredMaterializationRelations currentRelations;
   if (materializationRelations)
-    clonedRelations =
-        remapStructuredBufferRelations(*materializationRelations, cloneMapping);
+    currentRelations = *materializationRelations;
 
   // A grouped wait couples tokens whose producers may belong to different
   // pipeline stages. Split it inside the private candidate so each exact
   // event stays with its own issue stage; this preserves the normal
   // single-sender ABI and keeps transport acceptance on direct SSA edges.
-  splitDirectDTEWaitGroups(clonedLoop);
-  mlir::FailureOr<SelectedBufferPlan> clonedPlan;
+  splitDirectDTEWaitGroups(loop);
+  mlir::FailureOr<SelectedBufferPlan> currentPlan;
   {
     wafer::support::ScopedCompileTimingSpan planTiming(
-        "analysis-phase", "deriveSelectedBufferCandidate",
-        "buildSelectedBufferPlan(clone)");
-    clonedPlan =
-        buildSelectedBufferPlan(clonedLoop, failureReason, failureKind,
-                                requests, &clonedRelations, failedRequest);
+        "analysis-phase", "materializeSelectedBufferCandidateInPlace",
+        "buildSelectedBufferPlan(current)");
+    currentPlan =
+        buildSelectedBufferPlan(loop, failureReason, failureKind, requests,
+                                &currentRelations, failedRequest);
   }
-  if (mlir::failed(clonedPlan))
+  if (mlir::failed(currentPlan))
     return mlir::failure();
   if (!requests.empty() &&
       mlir::failed(validateSelectedBufferRequests(
-          *clonedPlan, requests, clonedRelations, failedRequest))) {
+          *currentPlan, requests, currentRelations, failedRequest))) {
     if (failureKind)
       *failureKind = SelectedBufferMaterializationFailureKind::EdgeNotWitnessed;
-    return failCandidate(
+    return failMaterialization(
         failureReason,
-        "selected buffering cloned loop lost the requested logical-edge "
+        "selected buffering current loop lost the requested logical-edge "
         "dependency");
   }
-  std::optional<int64_t> clonedUpper =
-      mlir::getConstantIntValue(clonedLoop.getUpperBound());
-  std::optional<int64_t> clonedStep =
-      mlir::getConstantIntValue(clonedLoop.getStep());
-  if (!clonedUpper || !clonedStep)
-    return failCandidate(
+  std::optional<int64_t> currentUpper =
+      mlir::getConstantIntValue(loop.getUpperBound());
+  std::optional<int64_t> currentStep =
+      mlir::getConstantIntValue(loop.getStep());
+  if (!currentUpper || !currentStep)
+    return failMaterialization(
         failureReason,
-        "selected buffering clone lost its admitted static loop bounds");
+        "selected buffering loop lost its admitted static bounds");
   mlir::FailureOr<mlir::scf::ForOp> pipelined;
   {
     wafer::support::ScopedCompileTimingSpan materializeTiming(
-        "transformation-phase", "deriveSelectedBufferCandidate",
+        "transformation-phase", "materializeSelectedBufferCandidateInPlace",
         "materializeSlotsAndRotation");
-    pipelined = materializeSlotsAndRotation(clonedLoop, *clonedPlan,
-                                            &clonedRelations, failureReason);
+    pipelined = materializeSlotsAndRotation(loop, *currentPlan,
+                                            &currentRelations, failureReason);
   }
   if (mlir::failed(pipelined))
     return mlir::failure();
   {
     wafer::support::ScopedCompileTimingSpan canonicalizeTiming(
-        "transformation-phase", "deriveSelectedBufferCandidate",
+        "transformation-phase", "materializeSelectedBufferCandidateInPlace",
         "canonicalize");
     if (mlir::failed(canonicalizePipelinedKernelUpperBound(
-            *pipelined, *clonedUpper, *clonedStep, clonedPlan->maxStage)))
-      return failCandidate(
+            *pipelined, *currentUpper, *currentStep, currentPlan->maxStage)))
+      return failMaterialization(
           failureReason,
           "selected buffering failed kernel-bound canonicalization");
-    eraseSynthesizedPointerPermutations(*candidate);
+    eraseSynthesizedPointerPermutations(module);
   }
   {
     wafer::support::ScopedCompileTimingSpan normalizeTiming(
-        "transformation-phase", "deriveSelectedBufferCandidate",
+        "transformation-phase", "materializeSelectedBufferCandidateInPlace",
         "placeRequiredNCCJoins");
     if (mlir::failed(checkStructuredBufferRelationsCurrent(
-            candidate->getOperation(), clonedRelations)))
-      return failCandidate(
+            module.getOperation(), currentRelations)))
+      return failMaterialization(
           failureReason,
-          "selected buffering produced relations outside its private "
-          "candidate IR");
-    for (mlir::func::FuncOp function : candidate->getOps<mlir::func::FuncOp>())
+          "selected buffering produced relations outside its current IR");
+    for (mlir::func::FuncOp function : module.getOps<mlir::func::FuncOp>())
       if (mlir::failed(
               wafer::detail::placeRequiredNCCJoinsInPrivateFunction(function)))
-        return failCandidate(
+        return failMaterialization(
             failureReason,
             "selected buffering failed required NCC join placement");
     if (mlir::failed(checkStructuredBufferRelationsCurrent(
-            candidate->getOperation(), clonedRelations)))
-      return failCandidate(
+            module.getOperation(), currentRelations)))
+      return failMaterialization(
           failureReason,
           "selected buffering NCC join placement changed its buffer relation "
           "domain");
   }
   {
     wafer::support::ScopedCompileTimingSpan verifyTiming(
-        "analysis-phase", "deriveSelectedBufferCandidate", "verify");
-    if (mlir::failed(mlir::verify(*candidate)))
-      return failCandidate(
+        "analysis-phase", "materializeSelectedBufferCandidateInPlace",
+        "verify");
+    if (mlir::failed(mlir::verify(module)))
+      return failMaterialization(
           failureReason,
           "selected buffering failed verification after materialization");
   }
 
-  SelectedBufferCandidate result;
-  result.module = std::move(candidate);
-  result.materializationRelations = std::move(clonedRelations);
-  result.stageCount = clonedPlan->maxStage + 1;
-  result.slotAllocationCount = clonedPlan->slotAllocationCount;
-  result.maximumSlotCount = clonedPlan->maximumSlotCount;
+  SelectedBufferMaterialization result;
+  result.materializationRelations = std::move(currentRelations);
+  result.stageCount = currentPlan->maxStage + 1;
+  result.slotAllocationCount = currentPlan->slotAllocationCount;
+  result.maximumSlotCount = currentPlan->maximumSlotCount;
   return result;
 }
 
-mlir::LogicalResult materializeSelectedBuffering(
-    mlir::OwningOpRef<mlir::ModuleOp> &module, uint8_t requestedBufferCount,
-    unsigned *materializedSlotAllocationCount, std::string *failureReason,
-    bool permitNoOpportunity) {
+mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
+    mlir::OwningOpRef<mlir::ModuleOp> module, uint8_t requestedBufferCount,
+    std::string *failureReason, bool permitNoOpportunity) {
   if (failureReason)
     failureReason->clear();
-  if (materializedSlotAllocationCount)
-    *materializedSlotAllocationCount = 0;
   if (!module || requestedBufferCount < 2 || requestedBufferCount > 3) {
     if (failureReason)
       *failureReason =
@@ -1872,25 +1843,25 @@ mlir::LogicalResult materializeSelectedBuffering(
   }
   if (selectedLoop) {
     std::string materializationFailure;
-    mlir::FailureOr<SelectedBufferCandidate> candidate =
-        deriveSelectedBufferCandidate(*module, selectedLoop,
-                                      &materializationFailure);
-    if (mlir::failed(candidate)) {
+    mlir::FailureOr<SelectedBufferMaterialization> materialized =
+        materializeSelectedBufferCandidateInPlace(*module, selectedLoop,
+                                                  &materializationFailure);
+    if (mlir::failed(materialized)) {
       if (failureReason)
         *failureReason = std::move(materializationFailure);
       return mlir::failure();
     }
-    if (candidate->maximumSlotCount != requestedBufferCount) {
+    if (materialized->maximumSlotCount != requestedBufferCount) {
       if (failureReason)
         *failureReason =
             "selected buffering plan changed while materializing the chosen "
             "loop";
       return mlir::failure();
     }
-    if (materializedSlotAllocationCount)
-      *materializedSlotAllocationCount = candidate->slotAllocationCount;
-    module = std::move(candidate->module);
-    return mlir::success();
+    SelectedBufferingResult result;
+    result.module = std::move(module);
+    result.slotAllocationCount = materialized->slotAllocationCount;
+    return result;
   }
   if (permitNoOpportunity && !sawPositiveMultiplicityMismatch) {
     if (failureReason) {
@@ -1913,21 +1884,20 @@ mlir::LogicalResult materializeSelectedBuffering(
         *failureReason += tripCount ? std::to_string(*tripCount) : "dynamic";
       }
     }
-    return mlir::success();
+    SelectedBufferingResult result;
+    result.module = std::move(module);
+    return result;
   }
   if (failureReason)
     *failureReason = std::move(lastFailure);
   return mlir::failure();
 }
 
-mlir::LogicalResult materializeSelectedBuffering(
-    mlir::OwningOpRef<mlir::ModuleOp> &module,
+mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
+    mlir::OwningOpRef<mlir::ModuleOp> module,
     llvm::ArrayRef<SelectedBufferRequest> requests,
-    StructuredMaterializationRelations *materializationRelations,
-    unsigned *materializedSlotAllocationCount,
+    StructuredMaterializationRelations materializationRelations,
     SelectedBufferMaterializationFailure *failure) {
-  if (materializedSlotAllocationCount)
-    *materializedSlotAllocationCount = 0;
   if (failure)
     *failure = {};
 
@@ -1946,7 +1916,7 @@ mlir::LogicalResult materializeSelectedBuffering(
     }
     return mlir::failure();
   };
-  if (!module || requests.empty() || !materializationRelations)
+  if (!module || requests.empty())
     return fail(SelectedBufferMaterializationFailureKind::InvalidRequest,
                 "selected buffering requires a live module and exact edge "
                 "request");
@@ -1967,8 +1937,7 @@ mlir::LogicalResult materializeSelectedBuffering(
   llvm::SmallVector<mlir::scf::ForOp, 8> loops;
   module->walk([&](mlir::scf::ForOp loop) {
     if (llvm::all_of(requests, [&](const SelectedBufferRequest &request) {
-          return loopMayContainRequest(loop, request,
-                                       *materializationRelations);
+          return loopMayContainRequest(loop, request, materializationRelations);
         }))
       loops.push_back(loop);
   });
@@ -1992,10 +1961,10 @@ mlir::LogicalResult materializeSelectedBuffering(
     size_t failedRequest = std::numeric_limits<size_t>::max();
     mlir::FailureOr<SelectedBufferPlan> plan =
         buildSelectedBufferPlan(loop, &attemptFailure, &attemptKind, requests,
-                                materializationRelations, &failedRequest);
+                                &materializationRelations, &failedRequest);
     if (mlir::succeeded(plan) &&
         mlir::failed(validateSelectedBufferRequests(
-            *plan, requests, *materializationRelations, &failedRequest))) {
+            *plan, requests, materializationRelations, &failedRequest))) {
       attemptKind = SelectedBufferMaterializationFailureKind::EdgeNotWitnessed;
       attemptFailure =
           "selected buffering loop has no staged dependency for the requested "
@@ -2035,14 +2004,14 @@ mlir::LogicalResult materializeSelectedBuffering(
     SelectedBufferMaterializationFailureKind attemptKind =
         SelectedBufferMaterializationFailureKind::UnsupportedStructure;
     size_t failedRequest = std::numeric_limits<size_t>::max();
-    mlir::FailureOr<SelectedBufferCandidate> candidate =
-        deriveSelectedBufferCandidate(*module, selectedLoop, &attemptFailure,
-                                      requests, materializationRelations,
-                                      &attemptKind, &failedRequest);
-    if (mlir::failed(candidate) ||
-        candidate->maximumSlotCount != requestedBufferCount) {
+    mlir::FailureOr<SelectedBufferMaterialization> materialized =
+        materializeSelectedBufferCandidateInPlace(
+            *module, selectedLoop, &attemptFailure, requests,
+            &materializationRelations, &attemptKind, &failedRequest);
+    if (mlir::failed(materialized) ||
+        materialized->maximumSlotCount != requestedBufferCount) {
       if (failure) {
-        failure->kind = mlir::failed(candidate)
+        failure->kind = mlir::failed(materialized)
                             ? attemptKind
                             : SelectedBufferMaterializationFailureKind::
                                   MultiplicityMismatch;
@@ -2053,18 +2022,19 @@ mlir::LogicalResult materializeSelectedBuffering(
         }
         failure->bufferCount = requestedBufferCount;
         failure->detail =
-            mlir::failed(candidate)
+            mlir::failed(materialized)
                 ? std::move(attemptFailure)
                 : "selected buffering plan changed while materializing the "
                   "chosen loop";
       }
       return mlir::failure();
     }
-    if (materializedSlotAllocationCount)
-      *materializedSlotAllocationCount = candidate->slotAllocationCount;
-    module = std::move(candidate->module);
-    *materializationRelations = std::move(candidate->materializationRelations);
-    return mlir::success();
+    SelectedBufferingResult result;
+    result.module = std::move(module);
+    result.materializationRelations =
+        std::move(materialized->materializationRelations);
+    result.slotAllocationCount = materialized->slotAllocationCount;
+    return result;
   }
   if (failure)
     *failure = std::move(lastFailure);

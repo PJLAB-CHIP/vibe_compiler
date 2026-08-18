@@ -162,31 +162,18 @@ module {
 }
 
 TEST_F(TileRegionSPMCapacityEvaluationTest,
-       FunctionScopedProbeReplaysFinalGateSequence) {
+       FunctionScopedProbeConsumesOwnedModulesThroughFinalGateSequence) {
   auto fitting = parse(/*elements=*/16);
   auto oversized = parse(/*elements=*/2000000);
   ASSERT_TRUE(fitting);
   ASSERT_TRUE(oversized);
-  mlir::func::FuncOp fittingFunction;
-  mlir::func::FuncOp oversizedFunction;
-  fitting->walk([&](mlir::func::FuncOp function) {
-    if (!function.isExternal())
-      fittingFunction = function;
-  });
-  oversized->walk([&](mlir::func::FuncOp function) {
-    if (!function.isExternal())
-      oversizedFunction = function;
-  });
-  ASSERT_TRUE(fittingFunction);
-  ASSERT_TRUE(oversizedFunction);
-
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::StructuredMaterializationRelations relations;
   auto fit = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
-      fittingFunction, relations, diagnostics);
+      std::move(fitting), relations, diagnostics);
   auto rejected = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
-      oversizedFunction, relations, diagnostics);
+      std::move(oversized), relations, diagnostics);
   diagnostics.flush();
 
   EXPECT_TRUE(fit.fits());
@@ -202,19 +189,13 @@ TEST_F(TileRegionSPMCapacityEvaluationTest,
        FunctionScopedProbePreservesNonEmptyRelations) {
   auto module = parse(/*elements=*/16);
   ASSERT_TRUE(module);
-  mlir::func::FuncOp function;
   wafer::TileRegionOp region;
-  module->walk([&](mlir::func::FuncOp candidate) {
-    if (!candidate.isExternal())
-      function = candidate;
-  });
   module->walk([&](wafer::TileRegionOp candidate) { region = candidate; });
-  ASSERT_TRUE(function);
   ASSERT_TRUE(region);
 
   // Non-empty evidence across every probe category: the SPM buffer as the
   // structured result/operand owner and the region result as the output
-  // boundary. The probe must keep all three through clone, conversion,
+  // boundary. The probe must keep all three through conversion,
   // required-join placement, memory-planning preparation and SPM assignment.
   wafer::StructuredMaterializationRelations relations;
   mlir::Value spmBuffer;
@@ -233,25 +214,16 @@ TEST_F(TileRegionSPMCapacityEvaluationTest,
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto result = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
-      function, relations, diagnostics);
+      std::move(module), std::move(relations), diagnostics);
   diagnostics.flush();
   EXPECT_TRUE(result.fits()) << diagnosticText;
 }
 
 TEST_F(TileRegionSPMCapacityEvaluationTest,
        FunctionScopedProbeFailsClosedOnForeignRelation) {
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+  auto module = parse(/*elements=*/16);
+  auto foreignModule = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
-  func.func @probe(%boundary: memref<16xf16, #wafer.memory<ddr, tensor>>) {
-    %unused = wafer.tile.region(
-        %boundary : memref<16xf16, #wafer.memory<ddr, tensor>>) ->
-        (memref<16xf16, #wafer.memory<ddr, tensor>>) {
-    ^bb0(%ddr: memref<16xf16, #wafer.memory<ddr, tensor>>):
-      wafer.tile.yield %ddr
-          : memref<16xf16, #wafer.memory<ddr, tensor>>
-    }
-    return
-  }
   func.func @foreign() {
     %outside = memref.alloc()
         : memref<16xf16, #wafer.memory<spm, tensor>>
@@ -260,17 +232,11 @@ module {
   }
 }
 )mlir",
-                                                        context.get());
+                                                               context.get());
   ASSERT_TRUE(module);
-  mlir::func::FuncOp probeFunction;
-  mlir::func::FuncOp foreignFunction;
-  for (mlir::func::FuncOp function : module->getOps<mlir::func::FuncOp>()) {
-    if (function.getSymName() == "probe")
-      probeFunction = function;
-    else if (function.getSymName() == "foreign")
-      foreignFunction = function;
-  }
-  ASSERT_TRUE(probeFunction);
+  ASSERT_TRUE(foreignModule);
+  mlir::func::FuncOp foreignFunction =
+      foreignModule->lookupSymbol<mlir::func::FuncOp>("foreign");
   ASSERT_TRUE(foreignFunction);
   mlir::Value outsideBuffer;
   foreignFunction.walk([&](mlir::Operation *operation) {
@@ -279,9 +245,8 @@ module {
   });
   ASSERT_TRUE(outsideBuffer);
 
-  // A relation on another function's buffer cannot be remapped into the
-  // cloned Tile entry: the evidence contract fails closed instead of probing
-  // with a silently dropped witness.
+  // A relation on another function's buffer is outside the single-entry
+  // input contract and must fail closed.
   wafer::StructuredMaterializationRelations relations;
   relations.operationResultBuffers.push_back(
       {/*structuredNodeId=*/9, outsideBuffer});
@@ -289,14 +254,14 @@ module {
   std::string diagnosticText;
   llvm::raw_string_ostream diagnostics(diagnosticText);
   auto result = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
-      probeFunction, relations, diagnostics);
+      std::move(module), std::move(relations), diagnostics);
   diagnostics.flush();
   EXPECT_EQ(
       result.status,
       wafer::compiler::detail::TileFunctionSPMCapacityStatus::AnalysisFailure);
   EXPECT_EQ(result.phase,
             wafer::compiler::detail::TileFunctionSPMCapacityPhase::InputValidation);
-  EXPECT_NE(diagnosticText.find("relation remap is incomplete"),
+  EXPECT_NE(diagnosticText.find("relations are outside the owned Tile entry"),
             std::string::npos)
       << diagnosticText;
 }
@@ -307,12 +272,39 @@ TEST_F(TileRegionSPMCapacityEvaluationTest,
   llvm::raw_string_ostream diagnostics(diagnosticText);
   wafer::StructuredMaterializationRelations relations;
   auto result = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
-      mlir::func::FuncOp{}, relations, diagnostics);
+      mlir::OwningOpRef<mlir::ModuleOp>{}, std::move(relations), diagnostics);
   EXPECT_EQ(result.status,
             wafer::compiler::detail::TileFunctionSPMCapacityStatus::AnalysisFailure);
   EXPECT_EQ(result.phase,
             wafer::compiler::detail::TileFunctionSPMCapacityPhase::InputValidation);
   EXPECT_EQ(result.getPhaseDiagnosticLabel(), "input-validation");
+}
+
+TEST_F(TileRegionSPMCapacityEvaluationTest,
+       FunctionScopedProbeRejectsMultipleDefinedFunctions) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @first() { return }
+  func.func @second() { return }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::StructuredMaterializationRelations relations;
+  auto result = wafer::compiler::detail::evaluateTileFunctionSPMCapacity(
+      std::move(module), std::move(relations), diagnostics);
+  diagnostics.flush();
+  EXPECT_EQ(
+      result.status,
+      wafer::compiler::detail::TileFunctionSPMCapacityStatus::AnalysisFailure);
+  EXPECT_EQ(
+      result.phase,
+      wafer::compiler::detail::TileFunctionSPMCapacityPhase::InputValidation);
+  EXPECT_NE(diagnosticText.find("exactly one defined Tile entry"),
+            std::string::npos)
+      << diagnosticText;
 }
 
 TEST_F(TileRegionSPMCapacityEvaluationTest,

@@ -685,8 +685,8 @@ StaticRectangularIndexSetResult IndexSetResult::getExactStaticRectangularDomain(
     return failRectangle(
         status,
         reason.empty() ? "rectangular recovery requires an exact set" : reason);
-  // Apply the complete structural work preflight before any emptiness,
-  // extremum or equality query. Variable/disjunct counts alone do not bound
+  // Reject over-budget structure before any emptiness, extremum or equality
+  // query. Variable/disjunct counts alone do not bound
   // Presburger work when a disjunct has many constraints, locals or very
   // large coefficients.
   if (exceedsSetLimits(*set, limits))

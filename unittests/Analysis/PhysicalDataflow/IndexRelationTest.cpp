@@ -875,7 +875,7 @@ TEST(IndexRelationTest, RepresentsStaticInsertSliceExactly) {
 }
 
 TEST(IndexRelationTest,
-     GenericRectangleRecoveryPreflightsCompleteStructuralWork) {
+     GenericRectangleRecoveryRejectsOverBudgetStructureBeforeSolverWork) {
   IndexSetResult domain = IndexRelation::staticDomain({4});
   ASSERT_TRUE(domain.isExact());
 

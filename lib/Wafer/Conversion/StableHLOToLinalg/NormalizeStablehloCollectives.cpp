@@ -482,8 +482,8 @@ static bool isSelectedOperation(mlir::Operation *op,
 }
 
 static bool
-requiresStablehloNormalizationTransaction(mlir::ModuleOp module,
-                                          StablehloNormalizationAction action) {
+containsSelectedStablehloOperation(mlir::ModuleOp module,
+                                   StablehloNormalizationAction action) {
   bool found = false;
   module.walk([&](mlir::Operation *op) {
     if (isSelectedOperation(op, action)) {
@@ -538,16 +538,13 @@ normalizeStablehloModuleInPlace(mlir::ModuleOp module,
 }
 
 static mlir::LogicalResult
-runAtomicStablehloNormalization(mlir::ModuleOp module,
-                                StablehloNormalizationAction action) {
-  if (!requiresStablehloNormalizationTransaction(module, action))
+runStablehloNormalization(mlir::ModuleOp module,
+                          StablehloNormalizationAction action) {
+  if (!containsSelectedStablehloOperation(module, action))
     return mlir::success();
-  mlir::OwningOpRef<mlir::ModuleOp> transaction =
-      mlir::cast<mlir::ModuleOp>(module->clone());
-  if (mlir::failed(normalizeStablehloModuleInPlace(*transaction, action)) ||
-      mlir::failed(mlir::verify(*transaction)))
+  if (mlir::failed(normalizeStablehloModuleInPlace(module, action)) ||
+      mlir::failed(mlir::verify(module)))
     return mlir::failure();
-  module.getBodyRegion().takeBody(transaction->getBodyRegion());
   return mlir::success();
 }
 
@@ -569,7 +566,7 @@ struct NormalizeStablehloCollectivesPass
 
   void runOnOperation() final {
 #ifdef WAFER_ENABLE_STABLEHLO
-    if (mlir::failed(runAtomicStablehloNormalization(
+    if (mlir::failed(runStablehloNormalization(
             getOperation(), StablehloNormalizationAction::Collective)))
       signalPassFailure();
 #endif
@@ -593,7 +590,7 @@ struct FoldDefaultStablehloExecutionIdsPass
 
   void runOnOperation() final {
 #ifdef WAFER_ENABLE_STABLEHLO
-    if (mlir::failed(runAtomicStablehloNormalization(
+    if (mlir::failed(runStablehloNormalization(
             getOperation(), StablehloNormalizationAction::DefaultExecutionId)))
       signalPassFailure();
 #endif
@@ -609,7 +606,7 @@ struct FoldConstantIntegerTensorCastsPass
 
   void runOnOperation() final {
 #ifdef WAFER_ENABLE_STABLEHLO
-    if (mlir::failed(runAtomicStablehloNormalization(
+    if (mlir::failed(runStablehloNormalization(
             getOperation(),
             StablehloNormalizationAction::ConstantIntegerTensorCast)))
       signalPassFailure();

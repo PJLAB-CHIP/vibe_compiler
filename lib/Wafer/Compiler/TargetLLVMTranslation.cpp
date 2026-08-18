@@ -3,6 +3,8 @@
 #include "CompilationInternal.h"
 #include "TargetCodeGenInternal.h"
 
+#include "Wafer/Support/CompileWorkStatistics.h"
+
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Support/TargetPolicy.h"
@@ -382,6 +384,8 @@ verifyTargetLLVMModule(const llvm::Module &module, CardId expectedCardId,
 }
 
 mlir::LogicalResult lowerToTargetLLVM(PreparedTile &prepared) {
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::TargetLowering);
   TargetConversionRequest request{};
   request.defaultDDRArenaArgumentIndex = prepared.defaultDDRArenaArgumentIndex;
   request.cardId = prepared.cardId.getValue();
@@ -418,6 +422,8 @@ mlir::LogicalResult verifyLoweredKernelABI(PreparedTile &prepared,
 
 llvm::Expected<TargetLLVMModule>
 translatePreparedTile(PreparedTile prepared, llvm::StringRef entrySymbol) {
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::TargetTranslation);
   auto llvmContext = std::make_unique<llvm::LLVMContext>();
   std::unique_ptr<llvm::Module> llvmModule = mlir::translateModuleToLLVMIR(
       *prepared.module, *llvmContext, "wafer_target_physical_tile");

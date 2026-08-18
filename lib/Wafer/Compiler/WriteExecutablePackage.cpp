@@ -115,10 +115,11 @@ static mlir::LogicalResult stageExecutablePackage(
   auto targetIRTiming =
       std::make_unique<wafer::support::ScopedCompileTimingSpan>(
           "stage", "executable-to-package", "target-ir-lowering");
+  TargetLLVMCompilationStatistics targetCompilationStatistics;
   llvm::Expected<TargetLLVMModules> translatedModules =
-      compileCardExecutableToTargetLLVMModulesImpl(cardExecutable, diagnostics,
-                                                   failAfterTargetLaunchSlot,
-                                                   profileCapture);
+      compileCardExecutableToTargetLLVMModulesImpl(
+          cardExecutable, diagnostics, failAfterTargetLaunchSlot,
+          profileCapture, &targetCompilationStatistics);
   if (!translatedModules) {
     llvm::consumeError(translatedModules.takeError());
     return mlir::failure();
@@ -157,8 +158,14 @@ static mlir::LogicalResult stageExecutablePackage(
               << " wall_ms=" << targetIRWallMs
               << " peak_rss_kib=" << getCompilePeakRSSKiB()
               << " capture=" << stringifyProfileCaptureKind(profileCapture)
-              << " tile_lowerings=" << translatedModules->getModules().size()
-              << "\n";
+              << " abi_preparations="
+              << targetCompilationStatistics.targetABIPreparationAttempts
+              << " tile_lowerings="
+              << targetCompilationStatistics.targetLoweringAttempts
+              << " tile_translations="
+              << targetCompilationStatistics.targetTranslationAttempts
+              << " tile_pipeline_workers="
+              << targetCompilationStatistics.maximumTilePipelineWorkers << "\n";
   diagnostics << "wafer-compile: compile-stats stage=target-module"
               << " wall_ms=" << targetModuleWallMs
               << " peak_rss_kib=" << getCompilePeakRSSKiB()

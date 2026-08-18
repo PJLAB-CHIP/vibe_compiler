@@ -7,6 +7,7 @@
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 #include "Wafer/Analysis/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Support/TargetPolicy.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -139,6 +140,8 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                  bool transportPreparedBeforeEntry,
                  ProfileCaptureKind profileCapture) {
   PreparedTile prepared(executionConfig, transportPreparedBeforeEntry);
+  wafer::support::recordCompileWork(
+      wafer::support::CompileWorkKind::TargetABIModuleClone);
   prepared.module = tileExecutable.getModule().clone();
   if (tileExecutable.getCardId() != CardId(0) ||
       tileExecutable.getTileId().getValue() < 0 ||
@@ -168,8 +171,8 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   }
   mlir::func::FuncOp function = closure->entry;
 
-  unsigned originalArgumentCount = function.getNumArguments();
-  unsigned resultCount = function.getFunctionType().getNumResults();
+  const unsigned originalArgumentCount = function.getNumArguments();
+  const unsigned resultCount = function.getFunctionType().getNumResults();
   std::vector<const ProgramResourceBinding *> argumentBindings(
       originalArgumentCount, nullptr);
   std::vector<const ProgramResourceBinding *> outputBindings(resultCount,
@@ -197,7 +200,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     return mlir::failure();
   }
 
-  prepared.slots.reserve(originalArgumentCount + resultCount + 1);
+  prepared.slots.reserve(originalArgumentCount + resultCount + 3);
   auto appendSlot = [&](const ProgramResourceBinding &binding, mlir::Type type,
                         TileEntryArgumentKind kind) -> mlir::LogicalResult {
     mlir::FailureOr<WaferPhysicalTensorInfo> physical =
@@ -237,6 +240,9 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     return mlir::failure();
   }
 
+  llvm::SmallPtrSet<mlir::Operation *, 4> outputAllocations;
+  llvm::SmallVector<mlir::memref::AllocOp, 4> orderedOutputAllocations;
+  orderedOutputAllocations.reserve(resultCount);
   for (unsigned index = 0; index < resultCount; ++index) {
     mlir::Value root =
         resolveOutputAllocation(returns.front().getOperand(index));
@@ -254,13 +260,13 @@ prepareTargetABI(const TileExecutable &tileExecutable,
           << "target_abi_mismatch: output root type differs from result type";
       return mlir::failure();
     }
-    unsigned outputArgumentIndex = function.getNumArguments();
-    function.insertArgument(outputArgumentIndex, resultType,
-                            mlir::DictionaryAttr{}, function.getLoc());
-    mlir::BlockArgument outputArgument =
-        function.getArgument(outputArgumentIndex);
-    allocation.getResult().replaceAllUsesWith(outputArgument);
-    allocation.erase();
+    if (!outputAllocations.insert(allocation.getOperation()).second) {
+      returns.front().emitError()
+          << "target_abi_mismatch: output results require distinct "
+             "compiler-managed DDR roots";
+      return mlir::failure();
+    }
+    orderedOutputAllocations.push_back(allocation);
     if (mlir::failed(appendSlot(*outputBindings[index], resultType,
                                 TileEntryArgumentKind::ExternalOutput)))
       return mlir::failure();
@@ -271,6 +277,8 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   mlir::LogicalResult arenaValid = mlir::success();
   function.walk([&](mlir::memref::AllocOp allocation) {
     if (mlir::failed(arenaValid) || !isWaferDDRMemRefType(allocation.getType()))
+      return;
+    if (outputAllocations.contains(allocation.getOperation()))
       return;
     auto offset =
         allocation->getAttrOfType<DDROffsetAttr>(kWaferDDROffsetAttrName);
@@ -299,6 +307,36 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   });
   if (mlir::failed(arenaValid))
     return mlir::failure();
+
+  std::optional<uint64_t> profileRecordBytes;
+  if (profileCapture != ProfileCaptureKind::None) {
+    if (executionConfig.getTileCount() != WAFER_TX81_PROFILER_TILE_COUNT) {
+      function.emitError()
+          << "target_abi_mismatch: profiler capture requires the complete "
+             "16-Tile pointer-table launch domain";
+      return mlir::failure();
+    }
+    profileRecordBytes = getProfileCaptureRecordBytes(profileCapture);
+    if (*profileRecordBytes >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      function.emitError()
+          << "target_abi_mismatch: profiler record bytes exceed int64";
+      return mlir::failure();
+    }
+  }
+
+  for (unsigned index = 0; index < resultCount; ++index) {
+    const unsigned outputArgumentIndex = originalArgumentCount + index;
+    function.insertArgument(outputArgumentIndex,
+                            function.getFunctionType().getResult(index),
+                            mlir::DictionaryAttr{}, function.getLoc());
+  }
+  for (auto [index, allocation] : llvm::enumerate(orderedOutputAllocations)) {
+    mlir::BlockArgument outputArgument =
+        function.getArgument(originalArgumentCount + index);
+    allocation.getResult().replaceAllUsesWith(outputArgument);
+    allocation.erase();
+  }
 
   if (arenaBytes > 0) {
     prepared.defaultDDRArenaArgumentIndex = function.getNumArguments();
@@ -336,36 +374,22 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                                   TileEntryArgumentKind::TransportStatus)});
   }
 
-  if (profileCapture != ProfileCaptureKind::None) {
-    if (executionConfig.getTileCount() !=
-        WAFER_TX81_PROFILER_TILE_COUNT) {
-      function.emitError()
-          << "target_abi_mismatch: profiler capture requires the complete "
-             "16-Tile pointer-table launch domain";
-      return mlir::failure();
-    }
-    const uint64_t recordBytes = getProfileCaptureRecordBytes(profileCapture);
-    if (recordBytes >
-        static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-      function.emitError()
-          << "target_abi_mismatch: profiler record bytes exceed int64";
-      return mlir::failure();
-    }
+  if (profileRecordBytes) {
     prepared.profileRecordArgumentIndex = function.getNumArguments();
     function.insertArgument(prepared.profileRecordArgumentIndex,
                             mlir::IntegerType::get(function.getContext(), 64),
                             mlir::DictionaryAttr{}, function.getLoc());
-    prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
-                              TileEntryArgumentKind::ProfileRecord,
-                              0,
-                              "tx81_profiler_record",
-                              "u8",
-                              MemLayout::Tensor,
-                              {static_cast<int64_t>(recordBytes)},
-                              static_cast<int64_t>(recordBytes),
-                              WAFER_TX81_PROFILER_BUFFER_ALIGNMENT,
-                              getTileEntryArgumentAccess(
-                                  TileEntryArgumentKind::ProfileRecord)});
+    prepared.slots.push_back(
+        {static_cast<int64_t>(prepared.slots.size()),
+         TileEntryArgumentKind::ProfileRecord,
+         0,
+         "tx81_profiler_record",
+         "u8",
+         MemLayout::Tensor,
+         {static_cast<int64_t>(*profileRecordBytes)},
+         static_cast<int64_t>(*profileRecordBytes),
+         WAFER_TX81_PROFILER_BUFFER_ALIGNMENT,
+         getTileEntryArgumentAccess(TileEntryArgumentKind::ProfileRecord)});
   }
 
   if (mlir::failed(mlir::verify(*prepared.module)))

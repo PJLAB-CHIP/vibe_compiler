@@ -17,6 +17,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "gtest/gtest.h"
 
+#include <memory>
 #include <string>
 
 namespace {
@@ -43,15 +44,16 @@ module {
 }
 )mlir";
 
-static std::string printModule(mlir::ModuleOp module) {
-  std::string text;
-  llvm::raw_string_ostream stream(text);
-  module.print(stream);
-  stream.flush();
-  return text;
-}
+struct MarkAfterFailedNCCPass
+    : public mlir::PassWrapper<MarkAfterFailedNCCPass,
+                               mlir::OperationPass<mlir::func::FuncOp>> {
+  void runOnOperation() final {
+    getOperation()->setAttr("test.after_failed_ncc",
+                            mlir::UnitAttr::get(getOperation().getContext()));
+  }
+};
 
-TEST(RequiredNCCJoinPlacementTest, FailedRebuildLeavesModuleUnchanged) {
+TEST(RequiredNCCJoinPlacementTest, FailedOwnedRebuildReportsFailure) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -63,15 +65,11 @@ TEST(RequiredNCCJoinPlacementTest, FailedRebuildLeavesModuleUnchanged) {
       kUnsupportedDynamicLoop, &context);
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
-
-  std::string before = printModule(*module);
 
   EXPECT_TRUE(mlir::failed(wafer::rebuildRequiredNCCJoins(*module)));
-
-  EXPECT_EQ(printModule(*module), before);
 }
 
-TEST(RequiredNCCJoinPlacementTest, FailedRebuildPassLeavesModuleUnchanged) {
+TEST(RequiredNCCJoinPlacementTest, FailedRebuildPassStopsNestedPipeline) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
@@ -83,13 +81,14 @@ TEST(RequiredNCCJoinPlacementTest, FailedRebuildPassLeavesModuleUnchanged) {
       kUnsupportedDynamicLoop, &context);
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
-  std::string before = printModule(*module);
-
   mlir::PassManager manager(&context);
   manager.addNestedPass<mlir::func::FuncOp>(
       wafer::createRebuildRequiredNCCJoinsPass());
+  manager.addNestedPass<mlir::func::FuncOp>(
+      std::make_unique<MarkAfterFailedNCCPass>());
   EXPECT_TRUE(mlir::failed(manager.run(*module)));
-  EXPECT_EQ(printModule(*module), before);
+  mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
+  EXPECT_FALSE(function->hasAttr("test.after_failed_ncc"));
 }
 
 } // namespace

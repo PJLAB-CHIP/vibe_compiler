@@ -15,7 +15,8 @@ Pipeline position:
   让operation hierarchy成为真实的pass、analysis和rewrite作用域；用ODS、SSA、标准interface、
   SymbolRef 和 verifier 表达稳定语义；用 named nested pipeline、AnalysisManager、DialectConversion 和
   PatternRewriter 实现可验证、可插桩、可复用的 lowering，不以 whole-module wrapper、Location 指针、结构序号或
-  pass 外 mutable side state 代替 MLIR 合同。
+  pass 外 mutable side state 代替 MLIR 合同；明确普通pass、framework transaction、显式alternative/reducer/autotuning、
+  candidate materialization与最终output fan-out各自的owner、失败语义和产物生命周期，删除没有对应语义边界的重复改写。
 - Output IR / files:
   与 01–18 定义相同的 TensorProgram、CardModule/TileRegion、Instr、CardExecutable 和 target modules；每层 IR
   自包含、可 roundtrip、可由 verifier 判定，pass pipeline 可打印并在相同输入上确定性重放。
@@ -35,32 +36,36 @@ Pipeline position:
 - Completion gate:
   semantic Location 和 schema 外 semantic attr 清零；标准 interface 与 alias/effect 合同闭合；local、function、
   module/card scope各自只有一个实现事实源；production与named pipeline复用同一lowering；analysis可重算且
-  invalidation 正确；rewrite failure 原子；fresh build、unit/lit、IR/source organization、代表 source-to-package
-  digest/oracle/no-card 和 compile-stage 计数/耗时门禁通过。
+  invalidation 正确；pattern局部mutation安全且compiler失败结果不发布；active与dormant source中的clone/materialization
+  均有可复核的scope、owner、work上界和产物去向；fresh build、unit/lit、IR/source organization、代表
+  source-to-package digest/oracle/no-card和真实执行点计数/耗时门禁通过。
 ```
 
 本任务是 compiler 工程化重构，不包含板端行为或性能结论。若实现改变 target modules 或 runtime ABI，必须由对应
 14–17对应合同另行扩大验证；否则Q54的完成证据停在fresh host、output readback和no-card。
 
-## 2. 审计结论与落地状态
+## 2. 审计结论与当前整改状态
 
-Q54 已把首轮全仓审计发现的 MLIR 基础设施问题收敛到下列稳定边界。这里记录的是当前合同与完成证据，
-不是继续扩张任务范围的待办清单；source/build 的逐文件归属仍只由 18 号合同拥有。
+2026-08-18复核发现Q54首轮把几种不同机制混成了一个“failure atomicity”问题。MLIR普通pass失败后不保证root恢复，
+但DialectConversion自身有rollback bookkeeping，Transform dialect alternatives会clone isolated scope，Reducer会clone
+Module；XLA autotuning和TVM MetaSchedule还会显式编译或重放多个候选。这些都不能由“是否clone”一个条件判定。Q54因此
+重新进入整改：先记录每个机制的decision representation、owner、scope、失败语义、产物是否保留以及为何需要重放，再判断
+Wafer对应实现是必要隔离、最终output构造、可测量trade-off，还是无合同支撑的重复工作。source/build逐文件归属仍由18号合同拥有。
 
 | 领域 | Q54 已落地边界 |
 | --- | --- |
 | IR 自包含性与 ODS | active source 不再用 `OpaqueLoc`、裸指针、结构序号或打印文本恢复编译语义；GEMM batch、elementwise maps、reduce init 等稳定字段进入 ODS/generated accessor，discardable instrumentation attr 可组合 |
 | alias/effect/dataflow | alias-only view 与 materializing reshape 分离；TileRegion 提供 RegionBranch/terminator 合同，通用 flow 使用 RegionBranch、Call、ViewLike、MemoryEffect 与指令语义 interface，目标特有异步约束保留窄分析 |
 | pass hierarchy | TileRegion lowering 运行在真实 `TileRegionOp` anchor，required NCC join 运行在 `func.func`，call/shared arena、DDR、card verification 与 closed target conversion 保持真实全局边界；不再构造 synthetic Module/Func local wrapper |
-| analysis | timeline、direct call graph 与 target scheduling facts进入 operation-anchored AnalysisManager seam，并按 mutation 明确 preserve/invalidate；一次性 candidate/cost value 仍是 query-local typed value，不机械 analysis 化 |
+| analysis | timeline、direct call graph 与 target scheduling facts进入锚定operation的AnalysisManager接口，并按 mutation 明确 preserve/invalidate；一次性 candidate/cost value 仍是 query-local typed value，不机械 analysis 化 |
 | pipeline | active compiler 只由统一 runner 构造 production PassManager；16 个 atomic pass 组成 7 条常驻 named semantic pipeline，另有 1 条 Shardy 条件 pipeline；textual pipeline、production builder、nested anchor 与 statistics 共享事实源 |
 | rewrite/conversion | active pattern 不持有 rollback 外 mutable failure state；validation 先于 mutation，greedy rewrite 限定 affected roots，Tile dataflow marker 使新增 source op fail closed，简单 Fill rewrite 使用 DRR，复杂 layout/index/resource lowering保留 C++ |
-| transaction/error | required-join、StableHLO/SPMD rewrite、Tile conversion、memory placement 与 target lowering具备 failure atomicity；IR 侧使用 MLIR result/diagnostic，host/output 侧使用 typed result/error，不解析诊断字符串控制流程 |
-| search/materialization relation | candidate assignment、current-IR evaluation 与 controller transition 已拆分；跨 clone 关系使用 `IRMapping`/typed current-IR relation，dead relation只丢弃而不猜测替代，required witness继续 fail closed |
+| transaction/error | pattern callback保持局部mutation纪律；普通pass、显式事务API和compiler output transaction分别说明失败后的IR是否仍可使用。required-join的validate/replay、StableHLO与target的root snapshot逐项按caller ownership复核，不能从“失败原子”直接推出必须clone或必须删除；IR侧继续使用MLIR result/diagnostic，host/output侧使用typed result/error，不解析诊断字符串控制流程 |
+| search/materialization relation | assignment/query/apply分离；是否同时保留多个actual candidate、是否以trace/config重物化，取决于analytic search、compile-and-measure autotuning、持久化tuning database和明确RSS/work预算。Q51.Core仍删除旧string gate与旧controller，但未来设计不能把“单一live materialization”写成成熟compiler通则 |
 | target/runtime/model layering | pure physical layout、target operation/transaction 与 numeric protocol不依赖 MLIR；MLIR adapter、host frontend和model consumer按 output 单向分层，public-header/link-closure在 feature on/off 均受测 |
 | source/build/test truth | active/dormant source由18号CMake政策和organization checker唯一判定；fresh generated/build、public link smoke、unit/lit、IR/source checker和受影响模型测试共同防止 stale build 假通过 |
 
-Q54 不把性能搜索本身改写成 PassManager。Q49.P消费这些scope/pipeline seam，让`none`从正常上游IR完成确定性功能
+Q54 不把性能搜索本身改写成 PassManager。Q49.P消费这些作用域和pipeline接口，让`none`从正常上游IR完成确定性功能
 合法化，同时删除其对search-policy对象的依赖，并闭合single-root TileRegion、ancestor-scope probe、typed causal witness和
 card重物化；rotating buffer必须先有真实共同
 wave/stage loop的要求由Q50.I实现；全仓更广的术语润色由Q45继续，但Q54引入或迁移的active API已无semantic Location
@@ -75,13 +80,13 @@ Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆�
 | --- | --- | --- |
 | IR/ODS | typed physical encoding、Tile marker、RegionBranch、DPS/Tiling、typed attrs和discardable attr合同闭合 | 新字段继续按 ODS/interface/verifier 顺序扩展 |
 | Frontend | parse schema、metadata、typed compile result和IR验证边界分离 | 外部字符串只允许停在解析边界 |
-| StableHLO/Linalg | normalization、legalization、bounded simplification拆成语义stage；scoped pattern/fold带预算且失败原子 | canonicalizer只优化，不承担 correctness |
+| StableHLO/Linalg | normalization、legalization、bounded simplification保持语义stage与bounded work | 核对普通pass caller是否会继续使用失败IR；若不会，删除root snapshot；若API明确承诺保留输入，则将transaction放在该API边界而不是机械套在每个pass上 |
 | SPMD/Sharding | TableGen声明、全量validation、module级mesh/signature边界和feature-off gate闭合 | 外部 XLA helper保持其原生 pass/status 边界 |
 | Card/Tile materialization | semantic Location和synthetic wrapper移除；同次clone以`IRMapping`维护关系 | Q49.P继续闭合baseline deterministic feasibility legalization、single-root region、最窄合法probe scope、direct typed witness和唯一完整card materialization |
 | TileRegion→Instr | region-anchored conversion、frozen patterns、marker fail-closed legality、DRR和function NCC join pipeline闭合 | function outstanding access保持 Func scope |
 | Memory planning | SPM/DDR plan-then-apply、timeline/call analysis与preservation闭合 | shared arena与DDR仍是 function/module 合同 |
 | Search/scheduling | assignment/evaluation/transition拆分，current-IR relation替代pointer/print identity，enumeration名称说明真实动作 | Q50/Q51拥有候选域和选择语义，不由Q54另建selector |
-| Target LLVM | interface pattern、converted adaptor、closed full conversion和postcheck复用同一production builder | closed conversion保持 Module 原子事务 |
+| Target LLVM | interface pattern、converted adaptor、closed full conversion和postcheck复用同一production builder | CardExecutable只验证current Instr/binding/resource/launch合同；target ABI变换只在真正保留的ordinary/profile output上执行一次，最终独立Tile output可并发构造并按稳定identity汇合 |
 | Compiler orchestration | 统一pipeline runner；module fan-out、RAII临时目录和atomic rename保持driver边界 | 不把filesystem transaction伪装成MLIR pass |
 | Analysis/cost | 可复用IR事实进入AnalysisManager；一次性cost/query对象保持typed local value | Q52只优化经测量确认的热点 |
 | Target/runtime/model | pure target protocol/layout与MLIR adapter分层，SystemC/oneDNN exception/RTTI隔离保留 | runtime/model不机械改造成pass |
@@ -280,15 +285,87 @@ verifier，不能把unknown全legal的`applyFullConversion`当作闭合证明。
 
 ## 7. Clone、transaction 与跨output对应
 
-- 同一 source/clone transaction 使用 `IRMapping`，不得按 top-level region ordinal、block operation index 或 walk 顺序找回
-  clone op。
-- 失败即丢弃的private candidate只有一个最外层rollback边界；callee提供in-place-on-private-IR API，不再嵌套
-  clone whole module后 `takeBody`。
-- local query克隆最近的 `IsolatedFromAbove` ancestor；若所需 symbol/call closure确实越界，再提升 anchor并在 API 中写明。
-- 每Tile投影成独立output module、accepted output→ABI prepared output、跨module atomic tuple等真实所有权变化
-  可以 clone whole output；这些不能因“减少 clone”被错误删除。
-- 跨独立 materialization 的 global correspondence通过共同上游 SSA/typed stable relation表达，不用 op print digest、
-  sibling ordinal、pointer location 或默认 symbol 名。
+### 7.1 代表实现对照
+
+下面记录的是具体实现机制，不把其中任意一行单独提升成所有compiler都必须遵守的规则。版本基线分别为仓库pinned
+`llvm-project@f0b3287297`、`xla@32ebd694c4d0`，以及本轮核对的
+`tvm@f792a1d1aa63`、`iree@1e43d5458e33`。
+
+| 场景与代表实现 | decision representation | clone / materialization | 失败与产物命运 | 对Wafer的直接启示 |
+| --- | --- | --- | --- | --- |
+| MLIR普通pass、XLA `HloPassPipeline` | current IR和pass-local analysis | 通常直接改当前IR；pass manager会clone可变pass executor用于并发，但不是clone IR | 失败停止后续pipeline；普通pass没有统一的root rollback承诺 | 不能仅为“pass失败后入口IR字节不变”机械套Module snapshot；先看caller是否还需要失败IR |
+| MLIR DialectConversion与PatternRewriter局部修改事务 | rewrite log、conversion legality、pattern state | conversion driver记录mutation并能`undoRewrites`；`applyAnalysisConversion`运行legalization搜索但不提交变换 | rollback是framework语义的一部分，范围是该driver管理的rewrite | 能直接使用framework transaction时不另造root snapshot；也不能把framework rollback描述成所有pass都无事务 |
+| Transform dialect `alternatives` | 显式alternative region | 对每个alternative clone `IsolatedFromAbove` scope，失败clone销毁，首个成功clone替换原scope | 多个真实IR可依次存在，clone正是operation语义 | 未来Q50.S的actual structured alternative可以clone，但scope、顺序、替换语义必须由IR合同说明 |
+| MLIR reducer / crash-reproducer | interestingness、size、reproducer config | reducer clone整个Module并运行待测pipeline；debug快照也可clone root | 这是显式工具模式，不是production pass惯例 | reducer/debug clone列为独立模式，不能用它论证普通lowering snapshot，也不能把它误删 |
+| LLVM LoopVectorize/SLP/FunctionSpecialization/AMDGPU split proposal | VPlan、tree/cost、specialization record、`SplitProposal` | 多数选择先比较轻量plan，选中后执行；specialization和module split只clone最终保留的函数/partition | selected clone成为最终CFG或output | analytic search优先比较能精确表达decision的plan；但这不是禁止actual candidate materialization |
+| XLA GPU autotuning | backend config、isolated HLO module、compiled executable、`AutotuneResult` | 各config可并发extract/compile/profile；winner config写回原HLO，完整程序随后按集成上下文再编译 | candidate executable是测量对象；失败分类、结果cache和确定顺序均为显式合同 | compile-and-measure允许多actual artifact和后续集成编译；必须与普通analytic search分开建模 |
+| TVM MetaSchedule | base workload、`Trace`、Schedule/IRModule、builder artifact、measurement record | 每worker持有base module copy，trace可并行replay成多个schedule；database query也会重放trace | replay是持久化tuning record的定义，不要求winner沿用第一次内存中的IR对象 | rematerialization本身不是错误；需要稳定trace/base/version合同、确定性和测得的memory/work取舍 |
+| LLVM `SplitModule`、AMDGPU split、IREE executable variants | partition/target assignment和稳定output identity | 选择后clone多个最终Module/variant；独立output可并发lower/codegen并按identity汇合 | clone均被下游消费，不是rollback snapshot | Card→16 Tile与target/profile variants首先按output fan-out审查，不应与discarded validation混为一谈 |
+| inliner、unroll、tiling、fusion | 变换自身的CFG/region语义 | clone局部block/op/region并保留在最终IR | clone就是变换结果 | local semantic duplication按变换语义和`IRMapping`审查，不受whole-root transaction讨论替代 |
+
+### 7.2 Wafer逐点分类
+
+同一source/clone transaction仍使用`IRMapping`；不用ordinal、walk顺序、打印文本、默认symbol名或跨epoch裸指针恢复对应。
+除此之外，本轮不采用“见到clone即删除”的判据，而按下表逐项处理：
+
+| 现有位置 | 当前owner与产物命运 | 判定与处置 |
+| --- | --- | --- |
+| CardModule→16个Tile module、I/O declaration/topology复制 | 每个clone进入独立最终Tile output | 保留output fan-out；核对稳定Tile/launch identity和最终并发汇合 |
+| `prepareTargetABI` | 从可复用`CardExecutable`构造一个target/profile variant的私有Module，随后翻译为保留的LLVM output | 保留表示边界；每个被请求的真实variant只执行一次，不在CardExecutable构造时提前推导并丢弃同一变换计划 |
+| TensorProgram→Card/TileRegion candidate materialization | source需保持可重用；clone是一个actual candidate的工作IR，结果或其子树进入Card/Tile output | 不是pass rollback。先记录每candidate次数、峰值RSS和所需symbol closure，再决定是否缩scope；Q52不能预设只能保留一个actual candidate |
+| Shardy helper输入 | source继续供compiler使用，clone经删减后序列化给外部helper | 保留显式外部output projection |
+| TileRegion/Func SPM capacity evaluation | query必须观察Instr lowering与packing后的事实，scratch结束即销毁 | 保留显式destructive query scratch；删除scratch内部再次clone同一region的NCC rebuild |
+| StableHLO folding/normalization和target lowering pass的Module snapshot | caller通过compiler output owner或pass manager处理失败；成功只`takeBody`回同一root | 按普通pass复核并移除没有外部preserve-input承诺的snapshot；保留DialectConversion自身事务 |
+| required-NCC pass的validate-transform-replay | clone Func运行完整变换后又在原Func运行同一变换 | 普通pass内重复工作，改为一次in-place apply；若public API明确承诺失败保留输入，可在该API边界保留一次显式transaction |
+| selected-buffer materialization | `planTileMemory`及定向机制调用都把owned Module交给actualization；失败后该IR不再有consumer | API按值消费`OwningOpRef`并只在成功时返回同一Module；in-place apply失败直接随owner销毁，不提供会迫使production额外clone的preserve-input旁路 |
+| CardExecutable与target output | CardExecutable曾为每个Tile推导target ABI计划并丢弃，最终output又推导、应用、lower和translate | 删除前一调用；CardExecutable只验证自身IR边界，最终output对每个被保留variant完整执行一次，16 Tile按稳定index并发汇合 |
+| 旧search accepted cohort/winner replay | actual Instr被清空，只保留assignment、cost和schedule summary，winner重跑完整exact gate | 与TVM trace replay不同：当前没有持久化trace/base版本合同，且重复target gate；Q51.Core仍按既定cutover删除旧controller。未来是否重放由new search的representation与实测预算重新决定 |
+| dormant rank/coordinated/physical-dataflow sources | 不在active CMake，但仍含whole-module clone和可能独有proof/mechanism | 依18先做能力迁移分类；不能因clone关键词直接删除，也不能未经复核重新激活 |
+
+本轮对current source registration逐调用点复核后的root/materialization账本如下。这里列全root clone、完整target lowering和
+output fan-out；`PatternRewriter::clone`形成最终loop/body/resource语义的局部clone不与root transaction混算，但仍必须遵守
+rewriter与`IRMapping`合同。
+
+| current调用点 | registration与每次compile次数 | owner、失败与artifact命运 | 处置 |
+| --- | --- | --- | --- |
+| `CompilationOrchestration`的Shardy helper Module | active条件路径；每次外部helper调用一次 | transaction拥有；删去target topology后序列化为helper input，失败随transaction销毁 | 保留外部output projection |
+| `prepareTileMaterialization`的TensorProgram scheduling Module | active；每个actual Card/Tile materialization一次 | materializer拥有；通过`IRMapping`携带node/temporal关系，结果继续形成Card/Tile IR | 保留actual candidate，Q52只按实测work/RSS决定是否缩scope |
+| `lowerSpatialOutputShardsToTileRegionModule`与`lowerSpatialEdgeStrategiesToTileRegionModule` | active；每个被请求的actual Tile candidate各一次 | 输出参数获得完整candidate Module；失败candidate销毁，source保持可复用 | 保留actual candidate；禁止把post-hoc repair或第二selector塞入该边界 |
+| CardModule→Tile modules中的declaration、topology、mesh和body复制 | active；每个最终Tile output一次 | fan-out owner构造16个独立下游Module，全部被CardExecutable消费 | 保留output fan-out并按Tile/LaunchSlot identity汇合 |
+| `evaluateTileRegionSPMCapacity`的isolated TileRegion scratch | active baseline query；每次被路由的region probe一次 | query拥有并销毁；外部operand与relation在首次clone用`IRMapping`进入scratch | 保留最小destructive query；scratch内required-NCC不再二次clone |
+| function SPM probe | active baseline query；每次scope escalation一次 | 调用方直接move detached单entry Module和current relations，probe内不clone Func/Module | 保留query，失败后整个owner销毁 |
+| `prepareTargetABI`的per-Tile Module | active retained output；ordinary/profile每个被请求variant、每Tile一次 | target output owner拥有，成功继续lower、ABI readback和LLVM translation | 保留表示边界；真实work ledger计数 |
+| `SelectedBufferMaterialization` | active actualization；每次selected request最多一次 | `planTileMemory`按值移交独占Module，成功返回同一owner，失败销毁；没有root clone | 已改为single in-place apply |
+| `LLVM_OPTIONAL_SOURCES`中的rank/coordinated旧search（含`LowerRankInstrModules` target gate） | CMake明确不链接；production不可达 | 仍含candidate root clone和完整但被丢弃的target验证，只有旧source/test资产消费 | Q51.Core先迁移独有proof/negative witness，再整岛删除，不重新激活 |
+| 未注册的`Transforms/PhysicalDataflow`、`Scheduling/FixedSlotPipeline`、`WorkerPlacement` | dormant；production不可达 | 含旧whole-Module candidate clone/`takeBody`及局部mechanism实现 | 由Q50对应axis逐项extract-then-delete；Q64核对最终registration mirror |
+
+复核后active pass中不存在whole-root `takeBody`提交或validate-transform-replay；active完整target lowering只在最终保留output中
+执行。dormant/optional代码不是“已经没问题”，而是有明确迁移/删除owner且在完成迁移前不得重启的旧能力输入。
+
+真实执行点要记录clone/materialize/lower次数，而不是只统计外层API。Q54完成门禁扫描active source；dormant source则由
+18/Q51/Q50明确承接或删除，不能用“未编译”代替设计判断。
+
+### 7.3 历史形成路径与仍需验证的解释
+
+`git log`/`git blame`能确认下面的引入顺序，但只能说明哪些需求和测试把实现推到今天，不能单凭commit历史断言作者意图或
+证明某种实现必然错误：
+
+1. `bf62676a`为target failure隔离加入Module clone/`takeBody`，测试开始观察失败dump中不存在LLVM op；
+2. `76f68e29d`为降低accepted cohort峰值RSS清空Tile modules，并按selected assignment重新materialize；
+3. `318bba75`将required-join和StableHLO的失败前后generic IR equality写入测试，同时引入validate-transform-replay；
+4. `2f2e8de03`/`d76e39d4`在baseline闭合中增加source/scratch materialization，以获得function/topology和relation scope。
+
+共同薄弱点是这些变更没有同时记录decision representation、失败后谁继续持有IR、clone是否成为output、每次compile实际执行
+多少次以及memory/work的量化取舍。因此测试很容易把一个API的preserve-input需求扩散成所有pass的习惯，或把一次RSS优化
+扩散成无版本合同的通用replay。本轮先通过逐调用点ledger和fresh work统计验证这个解释；验证前不把它写成全仓永久原则。
+
+### 7.4 本轮review字段
+
+新增或保留clone/materialization时，设计与review至少回答：owner是谁；decision是IR、plan、trace、config还是measurement；
+最窄正确scope是什么；外部operand/symbol closure如何处理；一次用户compile会执行几次；失败后哪个对象仍有效；artifact是
+保留、替换、序列化、测量后销毁还是仅作debug；并行结果按什么semantic key汇合；若存在replay，base/version/determinism与
+测得的RSS/work收益是什么。只有这些事实收敛后，才把稳定的Wafer约束同步到`AGENTS.md`；本节当前是审计方法和项目处置表，
+不是对LLVM/MLIR/TVM/XLA/IREE实践的单句概括。
 
 ## 8. Source 与测试组织
 
@@ -308,7 +385,8 @@ transaction enum或invocation descriptor依赖整个`WaferCompiler`，`WaferRunt
 
 - Dialect：typed attr/property、generic/custom form roundtrip、region/symbol/interface、alias/effect 正负 verifier；
 - Analysis：preservation/invalidation、RegionBranch/call/loop flow、unknown interface fail-closed；
-- Rewrite/Conversion：failure atomicity、unknown source op legality、scoped worklist、serial/parallel determinism；
+- Rewrite/Conversion：pattern局部mutation安全、pass失败后pipeline停止与外层结果不发布、unknown source op legality、
+  scoped worklist、serial/parallel determinism；
 - Pipeline：named pipeline parse/print、`verify-each`、production builder parity、pass instrumentation；
 - Integration：代表 TensorProgram→CardModule/TileRegion→Instr→CardExecutable→package digest/oracle/no-card；
 - Performance：统计 clone/materialization/pass invocation 数和各 stage wall time，证明 local probe work随受影响 scope增长，
@@ -335,6 +413,10 @@ Runtime/Tools case、analysis unit和parser/verifier gate；“不进入默认li
 - [Pass Management](https://mlir.llvm.org/docs/PassManagement/)
 - [Pattern Rewriting](https://mlir.llvm.org/docs/PatternRewriter/)
 - [Dialect Conversion](https://mlir.llvm.org/docs/DialectConversion/)
+- [LLVM New Pass Manager](https://llvm.org/docs/NewPassManager.html)
+- [LLVM VPlan vectorization workflow](https://llvm.org/docs/VectorizationPlan.html#vectorization-workflow)
+- [XLA HLO pass interface](https://github.com/openxla/xla/blob/main/xla/hlo/pass/hlo_pass_interface.h)
+- [TVM MetaSchedule](https://tvm.apache.org/docs/deep_dive/tensor_ir/tutorials/meta_schedule.html)
 - [Interfaces](https://mlir.llvm.org/docs/Interfaces/)
 - [Data Flow Analysis](https://mlir.llvm.org/docs/Tutorials/DataFlowAnalysis/)
 - [Operation Definition Specification](https://mlir.llvm.org/docs/DefiningDialects/Operations/)
@@ -354,6 +436,22 @@ Runtime/Tools case、analysis unit和parser/verifier gate；“不进入默认li
 
 采用上述基础设施的标准是：它能让 IR 语义更显式、scope 更准确、analysis 可重算、rewrite 可验证，或删除重复
 实现/旁路；“MLIR 提供了该功能”本身不构成采用理由。
+
+对仓库pinned `llvm-project@f0b3287297`的实现核对给出的是一组并存事实：`Pass::signalPassFailure`允许当前IR无效，
+大量production pass直接改`getOperation()`；DialectConversion同时维护rewrite log并在conversion失败或analysis mode下
+`undoRewrites`；Transform `alternatives`明确clone isolated scope；Reducer又明确clone整个Module。LLVM LoopVectorize以VPlan
+比较多数候选后执行best plan，但XLA autotuner会为多个config构造并发compiled executable，TVM MetaSchedule会重放trace，
+LLVM/IREE会为最终partition/target clone多个output。因此本仓库不能用“上游也clone”或“上游从不clone”替代具体审查；
+必须比较decision representation、scope、owner、失败语义、artifact命运和work数量。
+
+第7节使用的实现链接固定到核对commit：[MLIR Pass failure](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/mlir/include/mlir/Pass/Pass.h)、
+[DialectConversion](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/mlir/lib/Transforms/Utils/DialectConversion.cpp)、
+[Transform alternatives](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/mlir/lib/Dialect/Transform/IR/TransformOps.cpp)、
+[MLIR reducer](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/mlir/lib/Reducer/OptReductionPass.cpp)、
+[LLVM LoopVectorize](https://github.com/llvm/llvm-project/blob/f0b3287297aeeddcf030e3c1b08d05a69ad465aa/llvm/lib/Transforms/Vectorize/LoopVectorize.cpp)、
+[XLA GemmFusion autotuner](https://github.com/openxla/xla/blob/32ebd694c4d0442e241d76324ff1a721831366b4/xla/service/gpu/autotuning/gemm_fusion_autotuner.cc)、
+[TVM evolutionary search](https://github.com/apache/tvm/blob/f792a1d1aa631ee8498600d0398d219df40d816c/src/s_tir/meta_schedule/search_strategy/evolutionary_search.cc)和
+[IREE executable interface materialization](https://github.com/iree-org/iree/blob/1e43d5458e3342e7644bc3b9b4ef61c38a17da7a/compiler/src/iree/compiler/Dialect/HAL/Transforms/MaterializeInterfaces.cpp)。
 
 C++ Core Guidelines只提供通用设计判据；与本仓库pinned MLIR/LLVM惯例冲突时，以pinned API、LLVM no-exception/no-RTTI
 错误模型和现有MLIR接口约定为准。例如，多结果优先named typed result，但MLIR惯用的非空caller-owned输出引用不是违规；

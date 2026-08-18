@@ -340,11 +340,12 @@ source program
 
 ## Deterministic baseline 的直接链路约束（stable，2026-08-17）
 
-- baseline 两级 SPM probe：region-scope `evaluateTileRegionSPMCapacity`（isolated clone，`RequiresFunctionScope`
-  是 escalation 请求不是 fit）；function-scope `evaluateTileFunctionSPMCapacity`（clone Tile FuncOp 跑与最终 gate
-  相同的 `instr-memory-planning-preparation` + `assign-spm-offsets` 序列，probe/final 消费同一 demand 集合）。
-  probe evidence 归因必须经 clone-remapped relations（`remapStructuredBufferRelations` +
-  `StructuredBufferReplacementListener`），witness 收集沿 store/load/view 链找 transfer 端点。
+- baseline 两级 SPM probe：region-scope `evaluateTileRegionSPMCapacity`只 clone 最近的 isolated TileRegion，
+  `RequiresFunctionScope`是 escalation 请求不是 fit；function-scope `evaluateTileFunctionSPMCapacity`消费调用方已经
+  detached 的单 Tile entry Module，不在内部再次 clone Func，并运行与最终 gate 相同的
+  `instr-memory-planning-preparation` + `assign-spm-offsets`序列。region scratch的外部operand与relation在首次clone时用
+  `IRMapping`完整映射；function probe的relations随owned Module一起move，之后只做current-IR完整性检查。witness收集沿
+  store/load/view链找transfer端点。
 - 一 root 一 region：IndependentDDRStages从observable output shard与actual selected edge endpoint推导该Tile的真实
   root集合；独立component逐root/closure构造后按canonical node order拼接，connected root由selected RegionCut在物化时直接
   形成DDR store/reload边界。baseline不再先形成multi-root region再调用post-hoc root splitter；通用
@@ -373,9 +374,10 @@ source program
   test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir <dir>`
   后 `TX8_DEPS_ROOT=<repo>/third_party/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
   --output-dir <pkg> --num-partitions=1 --optimization-policy=none`。
-- Q51完整new-search链闭合前，不执行重型LLaMA block的`none`或`search`，包括Q49.P、Q50各checkpoint、Q51.Core、普通
-  regression和诊断重跑；使用有界小图、同relation结构的定向case和上述轻量source-to-package入口。重型LLaMA首次只在Q52
-  显式bounded scalability profile中运行，Q53再生成正式package/oracle/no-card；旧输出不回放为current证据。
+- Q51完整new-search链闭合前不执行重型LLaMA `search`，Q50各checkpoint、Q51.Core、普通regression和诊断重跑使用有界小图、
+  同relation结构的定向case和上述轻量source-to-package入口。Q49.P收尾单独执行一次有界FP16 LLaMA baseline门禁：compiler
+  不超过600秒、capture→package→no-card不超过900秒；它只证明`none`功能链有界，不作为search profile。重型LLaMA search首次
+  只在Q52显式bounded scalability profile中运行，Q53再生成正式search package/oracle/no-card；旧输出不回放为current证据。
 
 
 ## baseline 定向验证边界
@@ -385,8 +387,9 @@ source program
   `WaferTensorProgramToCardModuleTest.*`、`TileRegionSPMCapacityEvaluationTest.*`、
   `StructuredBufferRelationsTest.*`、`TileMemoryPlanningTest.*`和`PipelinesTest.*`；测试总数随current suite变化，
   不把固定数字写成合同。
-- baseline 工具链用 `wafer-compile-card-baseline` 的 CHAIN/CROSS/GEMM/no-card 定向 lit；Q51完整search链闭合前不运行
-  重型LLaMA block。需要定位relation热路径时，用同结构小图和明确work count，不用大模型wall-time代替算法证据。
+- baseline 工具链用 `wafer-compile-card-baseline` 的 CHAIN/CROSS/GEMM/no-card 定向 lit；除Q49.P的单次有界FP16 LLaMA
+  完成门禁外，Q51完整search链闭合前不运行重型LLaMA block。需要定位relation热路径时，用同结构小图和明确work count，
+  不用大模型wall-time代替算法证据。
 - 最终 CardModule 的各 Tile lowering、DDR/index及target ABI阶段由bounded executor并发；真实板端launch仍串行。
   “16 Tile并发”只说明最终per-Tile stage调度方式，不能证明baseline materialization work有界。controller先后重复完整
   CardModule、或每个root/Tile反复clone/prepare TensorProgram，属于独立的P7重复工作，必须分别计数。

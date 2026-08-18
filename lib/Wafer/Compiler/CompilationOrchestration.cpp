@@ -98,11 +98,13 @@ mlir::LogicalResult runCompilationTransaction(
                 << work.tileMemoryPlanningInvocations
                 << " tile_to_instr_lowerings="
                 << work.tileToInstructionLowerings
-                << " selected_buffer_module_clones="
-                << work.selectedBufferModuleClones
                 << " spm_planning_invocations=" << work.spmPlanningInvocations
                 << " ddr_planning_invocations=" << work.ddrPlanningInvocations
-                << "\n";
+                << " target_abi_module_clones=" << work.targetABIModuleClones
+                << " target_lowering_invocations="
+                << work.targetLoweringInvocations
+                << " target_translation_invocations="
+                << work.targetTranslationInvocations << "\n";
   });
   wafer::support::ScopedCompileTimingSpan transactionTiming(
       "stage", "source-to-package", "compile-transaction");

@@ -8,8 +8,11 @@
 #include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -277,6 +280,76 @@ TEST_F(TileMemoryPlanningTest,
   EXPECT_EQ(work.tileMemoryPlanningInvocations, 1u);
   EXPECT_EQ(work.tileToInstructionLowerings, 0u);
   EXPECT_EQ(work.spmPlanningInvocations, 1u);
+}
+
+TEST_F(TileMemoryPlanningTest,
+       ExactSelectedBufferMaterializationUsesOwnedModuleInPlace) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(
+      %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    scf.for %iv = %c0 to %c2 step %c1 {
+      %slot = memref.alloc()
+          : memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.rdma %input to %slot
+          {byte_count = 8 : i64, inner_bytes = 8 : i64,
+           src_iterations = array<i64: 1, 1, 1>,
+           src_strides = array<i64: 0, 0, 0>}
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+         to memref<4xf16, #wafer.memory<spm, tensor>>
+      wafer.instr.elementwise <add> %slot, %slot into %slot
+          : memref<4xf16, #wafer.memory<spm, tensor>>,
+            memref<4xf16, #wafer.memory<spm, tensor>>
+        into memref<4xf16, #wafer.memory<spm, tensor>>
+      scf.yield
+    }
+    return
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function =
+      module->lookupSymbol<mlir::func::FuncOp>("main");
+  ASSERT_TRUE(function);
+  mlir::scf::ForOp loop;
+  mlir::memref::AllocOp slot;
+  function.walk([&](mlir::scf::ForOp candidate) { loop = candidate; });
+  function.walk([&](mlir::memref::AllocOp allocation) { slot = allocation; });
+  ASSERT_TRUE(loop);
+  ASSERT_TRUE(slot);
+
+  wafer::StructuredMaterializationRelations relations;
+  relations.operandBuffers.push_back(
+      {/*structuredNodeId=*/1, function.getArgument(0)});
+  relations.operationResultBuffers.push_back(
+      {/*structuredNodeId=*/2, slot.getResult()});
+  wafer::compiler::detail::SelectedBufferRequest request;
+  request.producerNode = 1;
+  request.consumerNode = 2;
+  request.bufferCount = 2;
+  request.requireLocalDataflow = true;
+
+  mlir::Operation *originalModule = module->getOperation();
+  unsigned slotAllocations = 0;
+  wafer::compiler::detail::SelectedBufferMaterializationFailure failure;
+  auto materialized = wafer::compiler::detail::materializeSelectedBuffering(
+      std::move(module), llvm::ArrayRef{request}, std::move(relations),
+      &failure);
+  ASSERT_TRUE(mlir::succeeded(materialized)) << failure.detail;
+  module = std::move(materialized->module);
+  relations = std::move(materialized->materializationRelations);
+  slotAllocations = materialized->slotAllocationCount;
+
+  EXPECT_EQ(module->getOperation(), originalModule);
+  EXPECT_EQ(slotAllocations, 2u);
+  EXPECT_TRUE(mlir::succeeded(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }
 
 } // namespace

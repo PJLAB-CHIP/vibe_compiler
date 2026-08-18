@@ -1,7 +1,10 @@
 // REQUIRES: stablehlo
 // RUN: not wafer-opt --mlir-disable-threading --wafer-normalize-stablehlo-collectives \
 // RUN:   --mlir-print-ir-after-failure --mlir-print-ir-module-scope -o /dev/null %s 2>&1 \
-// RUN:   | FileCheck %s --implicit-check-not=wafer.linalg_ext --implicit-check-not=tensor.empty
+// RUN:   | FileCheck %s
+
+// An ordinary pass failure stops the pipeline; already-applied rewrites remain
+// in the failed IR dump while the unsupported operation is still present.
 
 module {
   func.func @unsupported_second_collective(
@@ -23,6 +26,6 @@ module {
 
 // CHECK: failed to normalize residual StableHLO op before Wafer structured tensor-program scheduling
 // CHECK: IR Dump After NormalizeStablehloCollectivesPass Failed
-// CHECK: stablehlo.all_gather
+// CHECK: wafer.linalg_ext.collective.all_gather
 // CHECK: stablehlo.all_reduce
 // CHECK: stablehlo.multiply

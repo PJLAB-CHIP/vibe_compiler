@@ -428,7 +428,7 @@
   recovery只好先求generic image、构造bounding rectangle，再调用通用集合等价证明。结构规模上限不能约束Presburger算法实际
   work，外层placement option-pair/CSP又会乘法放大同一查询。
 - 修复模式：builder/composition在typed proof成立时保留或直接重建closed-form rectangular-image witness，single-coordinate
-  baseline优先消费该witness；generic recovery调用前使用覆盖constraint/local/coefficients等复杂度的fail-closed preflight并记录
+  baseline优先消费该witness；generic recovery在solver调用前检查constraint/local/coefficients等完整结构复杂度并记录
   query-local ledger。超限是`ResourceExhausted`/indeterminate，不能当logical infeasible、不能推进fallback。
 - 防复发：用轻量synthetic relation复现相同composition形态，断言supported路径generic equality调用数为零且pair-query数只随
   actual DAG edge和deterministic legalization step增长；重型模型只归后续显式scalability profile，不作为功能bug的常规复现器。
@@ -744,8 +744,9 @@
   失败。
 - 根因：2048 breakpoint上所有region probe返回`UnsupportedLifetime`（`requires-function-scope`），
   controller把它当fit计数后跳过；唯一完整gate的函数级planning才暴露真实overflow。
-- 修复：Q49.P新增函数级probe `evaluateTileFunctionSPMCapacity`（clone Tile FuncOp后跑与最终gate相同的
-  `instr-memory-planning-preparation`+`assign-spm-offsets`序列）；`RequiresFunctionScope`是scope
+- 修复：Q49.P新增函数级probe `evaluateTileFunctionSPMCapacity`，运行与最终gate相同的
+  `instr-memory-planning-preparation`+`assign-spm-offsets`序列；当前接口直接消费调用方已经detached且带current relations的
+  单Tile entry Module，不在probe内部再次clone Func。`RequiresFunctionScope`是scope
   escalation请求：提升到最近合法IsolatedFromAbove ancestor（该Tile的FuncOp），其typed verdict作为该
   region的结论；无法在准确scope得出结论时indeterminate中止，不再跳过。这只修复scope routing，不能单独证明
   probe与final拥有相同witness/evidence。
@@ -753,7 +754,7 @@
   memory-planning preparation还会`retainCurrentStructuredBufferRelations`静默丢掉stale relation，而function probe对同类
   stale relation返回AnalysisFailure。root-boundary split把consumer改到新SPM reload时，旧prefix buffer仍live也会让liveness
   check假通过。因此“跑了同一pass pipeline”不等于relation/evidence parity。
-- 防复发：probe若克隆或改写IR，evidence attribution必须经complete clone-side relations（replacement listener、显式
+- 防复发：probe owner若克隆或改写IR，evidence attribution必须经complete clone-side relations（replacement listener、显式
   old→new mapping或current-IR重建），并核对应保留relation的数量、role和actual consumer/result/output endpoint；禁止用省略、
   retain/drop把missing witness变成成功。attribution的witness收集还要沿store/load/view链找transfer端点（DDR wave两端不通过
   SSA别名与wave buffer相连，直接storage-root匹配会miss）。测试必须使用非空result/operand/output relations并比较probe/final

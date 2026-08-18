@@ -35,8 +35,6 @@ enum class CardExecutableLoweringFailureKind : uint8_t {
   CallClosure,
   ProgramResourceBindings,
   RuntimeLaunchContract,
-  TargetABIPreparation,
-  TargetABILowering,
 };
 
 /// Typed failure produced while lowering Tile modules into one card
@@ -75,8 +73,6 @@ struct CardExecutableLoweringStatistics {
   uint64_t cardModuleCompilationInvocations = 0;
   uint64_t tileModuleLoweringAttempts = 0;
   uint64_t tileModuleLoweringSuccesses = 0;
-  uint64_t targetLoweringVerificationInvocations = 0;
-  uint64_t targetTileLoweringVerificationInvocations = 0;
   uint64_t cardExecutablesProduced = 0;
   uint64_t maximumTilePipelineWorkers = 1;
 };
@@ -84,7 +80,7 @@ struct CardExecutableLoweringStatistics {
 /// Takes exactly one memory-planned Instr module per available Tile.
 /// The input modules receive DDR placement, index lowering,
 /// exact Direct-DTE binding, card resource validation, Tile
-/// executable construction, and target ABI/LLVM lowering verification.
+/// executable construction, and runtime launch-contract formation.
 /// `failure` is reset on entry and remains empty on success; callers branch on
 /// its typed kind, never its diagnostic label or detail. Diagnostic IR traces
 /// are deliberately outside this lowering boundary.

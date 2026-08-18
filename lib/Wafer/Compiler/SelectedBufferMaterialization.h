@@ -63,27 +63,36 @@ struct SelectedBufferMaterializationFailure {
   std::string detail;
 };
 
+/// Successful actualization of one caller-owned Tile module. Module ownership
+/// and every current-IR relation move together so a failed in-place rewrite
+/// cannot leave the caller with relations into destroyed IR.
+struct SelectedBufferingResult {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  StructuredMaterializationRelations materializationRelations;
+  unsigned slotAllocationCount = 0;
+};
+
 /// Materializes the buffer multiplicity already selected by the structured-DAG
 /// candidate into ordinary allocation, SSA recurrence and scf.for IR.  This
 /// is an exact actualization gate, not a second candidate owner: it either
 /// rewrites one (possibly nested) loop whose derived rotating-slot family has
-/// exactly `requestedBufferCount`, or leaves `module` unchanged and fails.
-/// This overload is the low-level mechanism test seam; search policy must use
-/// the exact logical-edge overload below.
-mlir::LogicalResult materializeSelectedBuffering(
-    mlir::OwningOpRef<mlir::ModuleOp> &module, uint8_t requestedBufferCount,
-    unsigned *materializedSlotAllocationCount = nullptr,
+/// exactly `requestedBufferCount`, or fails. Ownership is consumed so a failed
+/// in-place transformation cannot expose partially rewritten IR; this
+/// low-level mechanism entry does not clone the whole module to manufacture
+/// rollback. Search policy must use the exact logical-edge overload below.
+mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
+    mlir::OwningOpRef<mlir::ModuleOp> module, uint8_t requestedBufferCount,
     std::string *failureReason = nullptr, bool permitNoOpportunity = false);
 
-/// Search-policy exact gate. Unlike the low-level mechanism seam above, this
+/// Search-policy exact gate. Unlike the low-level mechanism entry above, this
 /// overload must prove that the materialized stage dependency belongs to all
 /// selected logical-edge requests on the Tile. A loop for an unrelated edge
-/// is not an admissible witness.
-mlir::LogicalResult materializeSelectedBuffering(
-    mlir::OwningOpRef<mlir::ModuleOp> &module,
+/// is not an admissible witness. Ownership is consumed and this overload
+/// applies once in place, returning the same owned module only on success.
+mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
+    mlir::OwningOpRef<mlir::ModuleOp> module,
     llvm::ArrayRef<SelectedBufferRequest> requests,
-    StructuredMaterializationRelations *materializationRelations,
-    unsigned *materializedSlotAllocationCount = nullptr,
+    StructuredMaterializationRelations materializationRelations,
     SelectedBufferMaterializationFailure *failure = nullptr);
 
 } // namespace wafer::compiler::detail

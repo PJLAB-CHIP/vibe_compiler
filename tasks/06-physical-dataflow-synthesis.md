@@ -299,7 +299,7 @@ contract failure，不是普通logical rejection。
 
 exact不等于允许无界求证。对typed projected/permuted/static-rectangle indexing semantics，relation builder与可证明安全的
 composition应保留closed-form image witness，baseline的single-coordinate热路径直接消费它；generic Presburger recovery只在完整
-complexity preflight允许时执行并计入query-local work ledger。变量数或disjunct数的结构上限不能单独代替该门禁。budget或内部
+完整结构复杂度在预算内时才执行并计入query-local work ledger。变量数或disjunct数的结构上限不能单独代替该门禁。budget或内部
 resource exhaustion返回第4类indeterminate，不得伪装成第2类、不得驱动另一个placement，也不得靠重型workload超长运行来发现。
 
 `satisfied`结果不包含layout、encoding、bytes、dense fragment、local/remote action、route、buffer、send/recv、fusion或

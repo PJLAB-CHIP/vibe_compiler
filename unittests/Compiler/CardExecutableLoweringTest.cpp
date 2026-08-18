@@ -1,11 +1,15 @@
 //===- CardExecutableLoweringTest.cpp ----------------------------===//
 
 #include "../../lib/Wafer/Compiler/CardExecutableLowering.h"
+#include "../../lib/Wafer/Compiler/BoundedTileExecutor.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "../../lib/Wafer/Compiler/TargetCodeGenInternal.h"
 #include "Wafer/Compiler/ProgramData.h"
 
 #include "Wafer/IR/WaferDialect.h"
+
+#include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -32,17 +36,17 @@ TEST(CardExecutableLoweringFailureTest,
   EXPECT_EQ(stageFailure.getDiagnosticLabel(), "tile-domain");
 
   CardExecutableLoweringFailure indeterminate{
-      CardExecutableLoweringFailureKind::TargetABILowering,
+      CardExecutableLoweringFailureKind::RuntimeLaunchContract,
       "tile-domain text must not affect classification"};
   EXPECT_FALSE(indeterminate.isProvenExactRejection());
-  EXPECT_EQ(indeterminate.getDiagnosticLabel(), "target-abi-lowering");
+  EXPECT_EQ(indeterminate.getDiagnosticLabel(), "runtime-launch-contract");
 }
 
 class CardExecutableLoweringTest : public ::testing::Test {
 protected:
   CardExecutableLoweringTest() {
     wafer::compiler::detail::registerCompilationDialects(registry);
-    context = std::make_unique<mlir::MLIRContext>(registry);
+    context = std::make_shared<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
   }
 
@@ -81,7 +85,7 @@ protected:
   }
 
   mlir::DialectRegistry registry;
-  std::unique_ptr<mlir::MLIRContext> context;
+  std::shared_ptr<mlir::MLIRContext> context;
 };
 
 TEST_F(CardExecutableLoweringTest, ConsumesCompleteTileDomain) {
@@ -116,12 +120,11 @@ TEST_F(CardExecutableLoweringTest, ConsumesCompleteTileDomain) {
   EXPECT_FALSE(failure);
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 1u);
-  EXPECT_EQ(statistics.targetLoweringVerificationInvocations, 1u);
-  EXPECT_EQ(statistics.targetTileLoweringVerificationInvocations, 16u);
   EXPECT_EQ(statistics.cardExecutablesProduced, 1u);
 }
 
-TEST_F(CardExecutableLoweringTest, ReportsTargetABIFailureAfterInstrLowering) {
+TEST_F(CardExecutableLoweringTest,
+       DefersTargetABIFailureToRetainedTargetOutput) {
   auto module = parseTileModule(R"mlir(
   func.func @main(
       %input: memref<4xf32, #wafer.memory<ddr, tensor>>) {
@@ -138,23 +141,103 @@ TEST_F(CardExecutableLoweringTest, ReportsTargetABIFailureAfterInstrLowering) {
   wafer::compiler::detail::CardExecutableLoweringStatistics statistics;
   wafer::compiler::detail::CardExecutableLoweringFailure failure;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::lowerTileModulesToCardExecutable(
+  auto lowered = wafer::compiler::detail::lowerTileModulesToCardExecutable(
       std::move(tiles), emptyProgram(), *config, diagnostics, failure,
       programData, &statistics);
 
-  EXPECT_TRUE(mlir::failed(executable));
-  EXPECT_EQ(failure.kind,
-            wafer::compiler::detail::CardExecutableLoweringFailureKind::
-                TargetABIPreparation);
-  EXPECT_FALSE(failure.isProvenExactRejection());
-  EXPECT_EQ(failure.getDiagnosticLabel(), "target-abi-preparation");
-  EXPECT_NE(diagnosticText.find("target-abi-preparation"), std::string::npos)
-      << diagnosticText;
+  ASSERT_TRUE(mlir::succeeded(lowered)) << diagnosticText;
+  EXPECT_FALSE(failure);
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 1u);
-  EXPECT_EQ(statistics.targetLoweringVerificationInvocations, 1u);
-  EXPECT_EQ(statistics.targetTileLoweringVerificationInvocations, 16u);
-  EXPECT_EQ(statistics.cardExecutablesProduced, 0u);
+  EXPECT_EQ(statistics.cardExecutablesProduced, 1u);
+
+  wafer::compiler::CardExecutable executable =
+      wafer::compiler::CardExecutableBuilder::makeCardExecutable(
+          *config, std::move(lowered->runtimeLaunchContract), context,
+          std::move(lowered->tiles),
+          std::make_unique<wafer::compiler::ProgramDataHandoff>());
+  wafer::compiler::detail::TargetLLVMCompilationStatistics targetStats;
+  targetStats.targetABIPreparationAttempts = 99;
+  targetStats.targetLoweringAttempts = 99;
+  targetStats.targetTranslationAttempts = 99;
+  targetStats.maximumTilePipelineWorkers = 99;
+  llvm::Expected<wafer::compiler::TargetLLVMModules> targetModules =
+      wafer::compiler::detail::compileCardExecutableToTargetLLVMModulesImpl(
+          executable, diagnostics, std::nullopt,
+          wafer::compiler::detail::ProfileCaptureKind::None, &targetStats);
+  ASSERT_FALSE(static_cast<bool>(targetModules));
+  llvm::consumeError(targetModules.takeError());
+  EXPECT_NE(diagnosticText.find("target ABI preparation failed"),
+            std::string::npos)
+      << diagnosticText;
+  EXPECT_EQ(targetStats.targetABIPreparationAttempts, 16u);
+  EXPECT_EQ(targetStats.targetLoweringAttempts, 0u);
+  EXPECT_EQ(targetStats.targetTranslationAttempts, 0u);
+}
+
+TEST_F(CardExecutableLoweringTest,
+       FinalTargetOutputRunsEachTileOnceWithBoundedParallelism) {
+  auto module = parseTileModule(R"mlir(
+  func.func @main() {
+    return
+  })mlir");
+  ASSERT_TRUE(module);
+  auto config = executionConfig();
+  ASSERT_TRUE(static_cast<bool>(config));
+
+  auto workSession =
+      std::make_shared<wafer::support::CompileWorkStatisticsSession>();
+  wafer::support::ScopedCompileWorkStatisticsActivation workActivation(
+      workSession);
+  std::string diagnosticText;
+  llvm::raw_string_ostream diagnostics(diagnosticText);
+  wafer::compiler::detail::CardExecutableLoweringStatistics loweringStats;
+  wafer::compiler::detail::CardExecutableLoweringFailure failure;
+  wafer::compiler::ProgramDataHandoff programData;
+  auto lowered = wafer::compiler::detail::lowerTileModulesToCardExecutable(
+      makeTileModules(*module), emptyProgram(), *config, diagnostics, failure,
+      programData, &loweringStats);
+  ASSERT_TRUE(mlir::succeeded(lowered)) << diagnosticText;
+
+  wafer::support::CompileWorkStatistics cardExecutableWork =
+      workSession->snapshot();
+  EXPECT_EQ(cardExecutableWork.targetABIModuleClones, 0u);
+  EXPECT_EQ(cardExecutableWork.targetLoweringInvocations, 0u);
+  EXPECT_EQ(cardExecutableWork.targetTranslationInvocations, 0u);
+
+  wafer::compiler::CardExecutable executable =
+      wafer::compiler::CardExecutableBuilder::makeCardExecutable(
+          *config, std::move(lowered->runtimeLaunchContract), context,
+          std::move(lowered->tiles),
+          std::make_unique<wafer::compiler::ProgramDataHandoff>());
+  wafer::compiler::detail::TargetLLVMCompilationStatistics targetStats;
+  llvm::Expected<wafer::compiler::TargetLLVMModules> targetModules =
+      wafer::compiler::detail::compileCardExecutableToTargetLLVMModulesImpl(
+          executable, diagnostics, std::nullopt,
+          wafer::compiler::detail::ProfileCaptureKind::None, &targetStats);
+  ASSERT_TRUE(static_cast<bool>(targetModules))
+      << diagnosticText << llvm::toString(targetModules.takeError());
+
+  const wafer::support::CompileWorkStatistics finalWork =
+      workSession->snapshot();
+  EXPECT_EQ(targetStats.targetABIPreparationAttempts, 16u);
+  EXPECT_EQ(targetStats.targetLoweringAttempts, 16u);
+  EXPECT_EQ(targetStats.targetTranslationAttempts, 16u);
+  EXPECT_EQ(finalWork.targetABIModuleClones, 16u);
+  EXPECT_EQ(finalWork.targetLoweringInvocations, 16u);
+  EXPECT_EQ(finalWork.targetTranslationInvocations, 16u);
+  const unsigned expectedWorkers =
+      wafer::compiler::detail::getBoundedTilePipelineWorkerCount(
+          context.get(), /*tileCount=*/16);
+  EXPECT_EQ(targetStats.maximumTilePipelineWorkers, expectedWorkers);
+  if (expectedWorkers > 1)
+    EXPECT_GT(targetStats.maximumTilePipelineWorkers, 1u);
+
+  ASSERT_EQ(targetModules->getModules().size(), 16u);
+  for (auto [launchSlot, targetModule] :
+       llvm::enumerate(targetModules->getModules()))
+    EXPECT_EQ(targetModule.getLaunchSlotId(),
+              wafer::LaunchSlotId(static_cast<int64_t>(launchSlot)));
 }
 
 TEST_F(CardExecutableLoweringTest, RejectsIncompleteTileDomainBeforeMutation) {
@@ -185,8 +268,6 @@ TEST_F(CardExecutableLoweringTest, RejectsIncompleteTileDomainBeforeMutation) {
   EXPECT_FALSE(failure.isProvenExactRejection());
   EXPECT_EQ(statistics.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(statistics.tileModuleLoweringSuccesses, 0u);
-  EXPECT_EQ(statistics.targetLoweringVerificationInvocations, 0u);
-  EXPECT_EQ(statistics.targetTileLoweringVerificationInvocations, 0u);
 }
 
 TEST_F(CardExecutableLoweringTest,

@@ -10,7 +10,6 @@
 
 #include "Wafer/Analysis/ScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Support/CompileWorkStatistics.h"
 #include "Wafer/Support/OptimizationConfig.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -1088,9 +1087,6 @@ TEST(CardExecutableSynthesisTest,
   EXPECT_EQ(baselineLedger.materializationRejections, 0u);
   EXPECT_EQ(baselineLedger.exactGates.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
-  EXPECT_EQ(baselineLedger.exactGates.targetLoweringVerificationInvocations, 1u);
-  EXPECT_EQ(baselineLedger.exactGates.targetTileLoweringVerificationInvocations,
-            16u);
   EXPECT_EQ(baselineLedger.baselineCardModuleMaterializations, 1u);
   EXPECT_EQ(baselineLedger.baselineSourcePreparations, 1u);
   EXPECT_EQ(baselineLedger.baselineMaterializationPreparations, 1u);
@@ -1377,17 +1373,12 @@ module {
 
   unsigned slotAllocations = 0;
   std::string failureReason;
-  auto workSession =
-      std::make_shared<wafer::support::CompileWorkStatisticsSession>();
-  wafer::support::ScopedCompileWorkStatisticsActivation workActivation(
-      workSession);
-  ASSERT_TRUE(
-      mlir::succeeded(wafer::compiler::detail::materializeSelectedBuffering(
-          module, /*requestedBufferCount=*/2, &slotAllocations,
-          &failureReason)))
-      << failureReason;
+  auto materialized = wafer::compiler::detail::materializeSelectedBuffering(
+      std::move(module), /*requestedBufferCount=*/2, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+  module = std::move(materialized->module);
+  slotAllocations = materialized->slotAllocationCount;
   EXPECT_EQ(slotAllocations, 2u);
-  EXPECT_EQ(workSession->snapshot().selectedBufferModuleClones, 1u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
   unsigned rotatingArguments = 0;
   module->walk([&](mlir::scf::ForOp loop) {
@@ -1399,18 +1390,9 @@ module {
   auto mismatched = mlir::parseSourceString<mlir::ModuleOp>(
       source, mlir::ParserConfig(context.get()));
   ASSERT_TRUE(mismatched);
-  std::string before;
-  llvm::raw_string_ostream beforeStream(before);
-  mismatched->print(beforeStream);
-  beforeStream.flush();
   EXPECT_TRUE(
       mlir::failed(wafer::compiler::detail::materializeSelectedBuffering(
-          mismatched, /*requestedBufferCount=*/3, nullptr, &failureReason)));
-  std::string after;
-  llvm::raw_string_ostream afterStream(after);
-  mismatched->print(afterStream);
-  afterStream.flush();
-  EXPECT_EQ(after, before);
+          std::move(mismatched), /*requestedBufferCount=*/3, &failureReason)));
 }
 
 TEST(CardExecutableSynthesisTest,
@@ -1450,10 +1432,6 @@ TEST(CardExecutableSynthesisTest,
             statistics.materializedCandidates);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations,
             statistics.materializedCandidates);
-  EXPECT_EQ(statistics.exactGates.targetLoweringVerificationInvocations,
-            statistics.acceptedCandidates);
-  EXPECT_EQ(statistics.exactGates.targetTileLoweringVerificationInvocations,
-            statistics.acceptedCandidates * 16);
   EXPECT_EQ(statistics.selectedExecutableRematerializations, 1u);
   EXPECT_EQ(statistics.selectedExecutableRematerializationGates
                 .tileModuleLoweringAttempts,

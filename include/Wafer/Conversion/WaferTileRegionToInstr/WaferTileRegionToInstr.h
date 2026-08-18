@@ -43,10 +43,13 @@ countStaticExecutableOperations(mlir::Operation *root,
 /// rerun this normalizer before lifetime/resource planning. The operation is
 /// intentionally function-level because pending NCC state can cross
 /// tile-region and static-loop boundaries, but never crosses a call boundary.
+/// The caller owns the mutable function and discards it if the operation
+/// fails; this API does not copy the function to manufacture rollback.
 mlir::LogicalResult placeRequiredNCCJoins(mlir::func::FuncOp function);
 
-/// Compatibility adapter for owned module transformations. New pass
-/// pipelines should use the function-anchored operation above.
+/// Applies the same operation to every directly nested function in a
+/// caller-owned mutable module. The caller discards the module on failure.
+/// New pass pipelines should use the function-anchored operation above.
 mlir::LogicalResult placeRequiredNCCJoins(mlir::ModuleOp module);
 
 /// Erase every compiler-derived NCC participant join and rebuild required joins
@@ -54,10 +57,12 @@ mlir::LogicalResult placeRequiredNCCJoins(mlir::ModuleOp module);
 /// aliases, ranges, event tokens, and observer boundaries. Tile
 /// memory planning uses this after function-boundary bufferization; action
 /// construction uses the incremental normalizer above while its loop-carried
-/// communication topology is still being formed.
+/// communication topology is still being formed. The operation mutates the
+/// caller-owned function once and does not promise rollback on failure.
 mlir::LogicalResult rebuildRequiredNCCJoins(mlir::func::FuncOp function);
 
-/// Compatibility adapter for owned module transformations.
+/// Applies the same rebuild to every directly nested function in a
+/// caller-owned mutable module. The caller discards the module on failure.
 mlir::LogicalResult rebuildRequiredNCCJoins(mlir::ModuleOp module);
 
 /// Rebuild joins required by one isolated TileRegion's local SPM roots.
@@ -66,13 +71,10 @@ mlir::LogicalResult rebuildRequiredNCCJoins(mlir::ModuleOp module);
 /// model unrelated function-level outstanding accesses and must not replace
 /// the function-anchored production pass.
 ///
-/// The rebuilt body replaces the region body, so values materialized before
-/// the rebuild do not survive it. When `valueRemap` is provided it receives
-/// the pre-rebuild value -> rebuilt value mapping of the internal clone, so a
-/// caller can remap query relations onto the rebuilt body.
+/// The caller owns a private disposable TileRegion. The rebuild mutates that
+/// region once; on failure the caller discards the complete query scope.
 mlir::LogicalResult
-rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion,
-                                             mlir::IRMapping *valueRemap = nullptr);
+rebuildRequiredNCCJoinsForIsolatedTileRegion(TileRegionOp tileRegion);
 
 /// Returns true when `root` contains a typed Tile dataflow operation consumed
 /// by Tile-region-to-Instr conversion. TileRegionOp and TileYieldOp are
@@ -117,7 +119,8 @@ mlir::LogicalResult convertTileRegionToInstr(TileRegionOp region);
 /// Compatibility adapter that lowers every TileRegion in an owned module and
 /// then runs function-wide required NCC join placement. Production pass
 /// pipelines should use the region-anchored conversion and function-anchored
-/// join-placement pass.
+/// join-placement pass. The caller discards the module on failure; this
+/// adapter does not clone the module to manufacture rollback.
 mlir::LogicalResult convertTileRegionToInstrModule(mlir::ModuleOp module);
 
 namespace detail {

@@ -243,12 +243,32 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
   // loop.
   // It must still run before SPM planning so every cloned slot receives a
   // fresh, nonoverlapping physical allocation below.
-  if (!selectedBufferRequests.empty() &&
-      mlir::failed(materializeSelectedBuffering(
-          module, selectedBufferRequests, materializationRelations,
-          materializedSlotAllocationCount, selectedBufferFailure))) {
-    recordFailure(TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
-    return mlir::failure();
+  if (!selectedBufferRequests.empty()) {
+    if (!materializationRelations) {
+      if (selectedBufferFailure) {
+        selectedBufferFailure->kind =
+            SelectedBufferMaterializationFailureKind::InvalidRequest;
+        selectedBufferFailure->detail =
+            "selected buffering requires current materialization relations";
+      }
+      recordFailure(
+          TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
+      return mlir::failure();
+    }
+    mlir::FailureOr<SelectedBufferingResult> materialized =
+        materializeSelectedBuffering(std::move(module), selectedBufferRequests,
+                                     std::move(*materializationRelations),
+                                     selectedBufferFailure);
+    if (mlir::failed(materialized)) {
+      recordFailure(
+          TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
+      return mlir::failure();
+    }
+    module = std::move(materialized->module);
+    *materializationRelations =
+        std::move(materialized->materializationRelations);
+    if (materializedSlotAllocationCount)
+      *materializedSlotAllocationCount = materialized->slotAllocationCount;
   }
   if (mlir::failed(
           requireCurrentBufferRelations("selected buffer materialization"))) {

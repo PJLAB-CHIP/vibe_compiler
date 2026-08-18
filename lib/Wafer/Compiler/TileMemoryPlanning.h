@@ -1,5 +1,4 @@
-//===- TileMemoryPlanning.h - Tile memory planning -*- C++
-//-*-===//
+//===- TileMemoryPlanning.h - Tile memory planning -*- C++ -*-===//
 
 #ifndef WAFER_COMPILER_TILEMEMORYPLANNING_H
 #define WAFER_COMPILER_TILEMEMORYPLANNING_H

@@ -252,12 +252,8 @@ compileTensorProgramModuleToCardExecutable(
           << ledger.indeterminateCompilationFailures
           << " materialization_rejections="
           << ledger.materializationRejections
-          << " target_gate_invocations="
-          << exactGates.targetLoweringVerificationInvocations
           << " card_executable_compilations="
           << exactGates.cardModuleCompilationInvocations
-          << " target_tile_gate_invocations="
-          << exactGates.targetTileLoweringVerificationInvocations
           << " tile_pipeline_workers="
           << exactGates.maximumTilePipelineWorkers
           << " region_spm_query_workers="
@@ -311,17 +307,10 @@ compileTensorProgramModuleToCardExecutable(
         << statistics.selectedParallelComponentCount
         << " selected_makespan_ps=" << statistics.selectedMakespanPicoseconds
         << " enabled_duration_terms=" << statistics.enabledDurationTerms
-        << " target_gate_invocations="
-        << exactGates.targetLoweringVerificationInvocations
         << " card_executable_compilations="
         << exactGates.cardModuleCompilationInvocations
-        << " target_tile_gate_invocations="
-        << exactGates.targetTileLoweringVerificationInvocations
         << " selected_executable_rematerializations="
         << statistics.selectedExecutableRematerializations
-        << " selected_rematerialization_target_gate_invocations="
-        << statistics.selectedExecutableRematerializationGates
-               .targetLoweringVerificationInvocations
         << " selected_rematerialization_card_executable_compilations="
         << statistics.selectedExecutableRematerializationGates
                .cardModuleCompilationInvocations
