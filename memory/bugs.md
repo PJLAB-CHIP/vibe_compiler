@@ -882,3 +882,26 @@
 - **插入覆盖的 demand 过拉**：`tensor.insert_slice` 的窗口被插入区完全覆盖时，目的窗口的
   producer 是已被 exact demand 证明为空的覆盖需求；无条件 materialize 目的窗口会把它拉进
   scope（多 root region）。完全覆盖 + unit stride 时用 fresh empty 作目的窗口。
+
+## 证明型 relation fast path 的元数据不能强于关系本身
+
+- **single-valued 不等于 total**：affine map按构造是函数，只证明同一输入至多一个输出；bounded source会裁剪其
+  destination domain。跳过access relation的domain equality或range containment前，metadata必须分别证明完整domain coverage、
+  range coverage和所需exactness，不能用一个`functionalByConstruction`布尔量同时代替。
+- **restriction/composition会使旧矩形证明失效**：对destination/source求交后，projected-rectangle pattern只有在重新证明
+  restricted relation等价时才能保留；否则exact image/preimage必须回退到受限关系本身。测试要查询被裁掉区域，而不只检查
+  in-bounds identity正例。
+- **complete reduction必须证明source coverage**：constant destination map只表示所有iteration落到同一destination，不能证明
+  iteration-to-source覆盖整个source。shortcut还要检查constant坐标值、对应extent、维度唯一性和完整source image；用非零
+  constant、duplicate dim和只访问source一条slice的反例防复发。
+- **成功路径不得遗留debug stderr**：fast path/fallback命中计数进入显式ledger或测试hook，不能用无条件`llvm::errs()`作为
+  长期观测；全绿测试仍打印debug不是完成状态。
+
+## scratch IR 的 SSA handle 不能逃出 probe lifetime
+
+- isolated probe返回后scratch module/func/region随RAII scope销毁；结果结构若保存其中的`mlir::Value`，即使当前caller暂时只读
+  同结构中的bytes/type字段，public contract也已经包含悬空handle。
+- probe边界返回可独立存活的typed evidence：稳定structured node identity、复制后的type/shape/bytes、relation role及必要的
+  semantic coordinate。需要在scratch内追踪SSA时只在scope内消费并转换，不能把地址或`Value`留给controller。
+- 新增semantic flag或“narrow”入口时，测试必须检查flag有真实consumer以及actual IR的all-and-only identity/cardinality；
+  `>= 1`、diagnostic缺失或仅证明target存在，都无法证明sibling没有被物化。

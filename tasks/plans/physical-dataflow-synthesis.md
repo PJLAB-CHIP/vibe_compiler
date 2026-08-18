@@ -779,6 +779,63 @@ P8完成顺序：
 必须按上述新relation/structure/work gate重跑有界集合。LLaMA capture或旧未完成compile不进入本项证据。Q51完整new-search链
 闭合后，Q52才首次运行重型LLaMA显式profile；Q53再生成正式package/oracle/no-card并进入board-ready。
 
+### 2026-08-18 合并后 current HEAD code review
+
+本次复核以合并后的 current HEAD 为对象，同时检查 baseline 新路径、DS 引入的 probe/relation/split 代码及其
+直接消费者，不把 DS commit 孤立成第二条实现线。复核只运行有界 `none`/relation 定向验证，没有执行 search，
+也没有执行重型 LLaMA block。结论是：function-scope escalation、raw demand evidence copy、storage-root memo、
+accepted-result move、shadow schedule 删除和显式 IR trace 等资产可以保留，但原“P1/P3/P5/P6/P7 已闭合”的状态
+不成立，Q49.P 继续为 `doing`。
+
+阻塞项按 correctness 优先级如下：
+
+1. **`IndexRelation` 新 fast path 不能作为 exact proof。** `functionalByConstruction`只证明 affine map
+   single-valued，不证明 bounded relation 对完整 destination domain total；domain/source restriction 后仍保留旧
+   projected-rectangle pattern，也会绕过 clipping。complete-reduction shortcut 没有证明 iteration domain 覆盖完整
+   source，all-zero affine fallback 还可能把常量坐标扩大成完整 source。相关 shortcut 会使 Q50.A demand legality
+   接受不完整或越界关系，必须先恢复数学正确性、删除成功路径的 `IMGFALLBACK-DEBUG`，并补 clipped-totality、
+   restricted-pattern、incomplete-reduction-coverage 负例。
+2. **P3 的 root-scoped probe 实际仍包含 sibling root。** `externalBoundaryCarrier`被传入 materializer 后没有
+   consumer；producer/consumer 两侧都会进入 root strategy，boundary supply 只重接 operand，不能阻止 sibling
+   compute materialize。fresh IR dump 中 producer-root 与 consumer-root 两个 probe 均有两个
+   `wafer.tile.elementwise`；现有测试只断言 compute op `>= 1`，与“无 sibling”注释不一致。
+3. **P7 仍是 full-card → per-root probe → full-card。** baseline 初次 materialize 完整 CardModule，冲突后才进入
+   scoped probe，fit 后重置 scope 再 materialize 完整 CardModule；现有测试还固定
+   `baselineCardModuleMaterializations == 2`。每个 root/Tile probe 又重新 clone/prepare 整个 TensorProgram。
+   这才是当前 LLaMA 慢 case 的本质 work amplification；最终 16 个 Tile 的 lowering 已经由 bounded executor
+   并发执行，不能用最终 Tile 并发掩盖 controller 前面的重复全图工作。
+4. **P5 的 witness attribution 仍会沿任意 downstream op 扩散。** 未识别 user 会把全部 DPS init/result
+   继续压入 worklist，一份 allocation 可被归给无关 descendant/fanout root；mixed attributed/unattributed evidence
+   也没有 fail closed。同时 probe result 的 `SPMDemandEvidence` 暴露 scratch IR 的 `mlir::Value`，scratch 销毁后
+   handle 悬空。跨 probe 边界只能返回稳定 node/type/bytes/relation witness，不能返回 scratch SSA。
+5. **P4 仍依赖 post-hoc splitter。** baseline 仍调用 `splitStructuredRootBoundaries`；one-root verifier 只做局部
+   buffer 等值匹配，不能证明 storage-root/alias 后的 structured root all-and-only，zero-root legacy branch仍可成功。
+   splitter 的 SSA/resource/reload retarget 能力可以迁移，但不能把 late repair 记为 construction-time singleton-root
+   合同已完成。
+6. **P6 只移除了 option/CSP 枚举，没有闭合整个 baseline seam。** `none` 当前确实直接构造一个 canonical
+   coordinate，不能再描述成候选枚举或 search；但 maximum-participation coordinate 被 exact reject 后会直接失败，
+   尚无确定、单调的 spatial legalization。typed `unpartitioned` 只是未被 consumer/hash/order/resource signature读取的
+   bool，所谓 scalar test 实际是 `tensor<1x1>`，rank-0 和无 parallel result轴仍没有端到端合同。product compile
+   入口也仍构造/打印旧 search statistics bag。
+7. **reduction temporal 与 spatial 必须分开表述。** current materializer和 baseline complete gate已经支持
+   reduction iterator 的 temporal tile；baseline capacity fallback是根据 exact conflict witness 逐步缩小有限 breakpoint
+   的确定性贪心 legalization，不是候选枚举。尚未实现的是 reduction 轴的 spatial partition及 partial-result merge，
+   归 Q50.B；Q50.E补的是完整 temporal breakpoint/wave-loop domain。另一方面，constant indexing-map 的新放宽过宽：
+   只检查“dim或constant”，没有证明 constant 为0、对应 extent为1、其余 dim不重复，upstream verifier 可接受的
+   非零constant map会被错误当作 complete reduction slice，必须收紧或实现真正的 exact general semantics。
+
+修复顺序固定为：先恢复 relation shortcut 的 exactness并补反例；再建立 session级 immutable preparation/index 和
+真正的 root/Tile 窄请求；随后把 singleton-root boundary前移到 construction并退出 post-hoc splitter；再收紧 direct
+witness与稳定 evidence 类型；之后闭合 end-to-end unpartitioned coordinate及 deterministic spatial legalization；最后删除
+baseline product closure中的旧 search statistics/header，并用 P1–P8 原 done criteria重新验收。局部测试绿色、最终 16 Tile
+并发或单个 gate通过均不构成 Q49.P 完成证明。
+
+本轮 fresh evidence：main、board-runtime和SystemC/model三棵现有build tree均成功增量构建；显式非search unit
+71/71、baseline CHAIN/CROSS/GEMM/no-card lit 1/1、relation定向unit 20/20通过。绿色结果没有覆盖上述反例：
+`WAFER_DUMP_NARROW=1` 的narrow-root定向case虽返回pass，两个probe dump仍各含两个structured compute op；relation
+成功case会无条件打印`IMGFALLBACK-DEBUG`；pinned MLIR verifier也接受非零constant output map的合法上游IR，证明
+current lowering不能假设所有constant天然等价于extent-one zero slice。后续修复须把这些反例变成negative/structural gate。
+
 ## Q51.Core：Search Control Kernel
 
 ### 2026-08-17 review 结论

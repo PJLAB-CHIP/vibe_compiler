@@ -375,16 +375,17 @@ source program
   显式bounded scalability profile中运行，Q53再生成正式package/oracle/no-card；旧输出不回放为current证据。
 
 
-## Q49.P baseline 结构（2026-08-17 收敛）
+## baseline 定向验证边界
 
-- baseline 完整路径 = per-component 构造 + split kernel + typed one-root postcondition：
-  独立 root 按 observableOutputRootNodes 分组件各自窄 materialize 再 `concatenateTileEntries`
-  合并（共享 dest 集合）；依赖 root 的边界由 split kernel 在同一 transaction 里 store/reload +
-  relation retarget。probe 用 `StructuredBoundarySupply` + `externalBoundaryCarrier` 声明边界
-  外部承载，阻止 sibling compute 进入窄 scope。
-- 验证入口：`WaferUnitTests --gtest_filter='CardExecutableSynthesisTest.*:WaferTensorProgramToCardModuleTest.*:TileRegionSPMCapacityEvaluationTest.*:StructuredBufferRelationsTest.*:TileMemoryPlanningTest.*:PipelinesTest.*'`（85 例）
-  + `lit -sv test/Tools/wafer-compile-card-baseline.test`（CHAIN/CROSS/GEMM/NO-CARD）。
-- baseline 诊断行 `card-executable-baseline-controller` 的字段全部来自
-  `DeterministicBaselineLedger`（exact_demand_edges、baseline_*、exactGates），
-  search bag 不再承载 baseline 计数。`buildCardExecutable` 的 Tile IR trace 只在
-  `buildCardExecutableWithIRTrace` 请求时捕获并检查覆盖。
+- 不使用 `CardExecutableSynthesisTest.*` 作为 baseline filter：该 wildcard 同时匹配 `Search*` case，会把旧搜索链和
+  长时间 placement 枚举带进本应有界的功能验证。使用 `CardExecutableSynthesisTest.None*`，再显式列出
+  `WaferTensorProgramToCardModuleTest.*`、`TileRegionSPMCapacityEvaluationTest.*`、
+  `StructuredBufferRelationsTest.*`、`TileMemoryPlanningTest.*`和`PipelinesTest.*`；测试总数随current suite变化，
+  不把固定数字写成合同。
+- baseline 工具链用 `wafer-compile-card-baseline` 的 CHAIN/CROSS/GEMM/no-card 定向 lit；Q51完整search链闭合前不运行
+  重型LLaMA block。需要定位relation热路径时，用同结构小图和明确work count，不用大模型wall-time代替算法证据。
+- 最终 CardModule 的各 Tile lowering、DDR/index及target ABI阶段由bounded executor并发；真实板端launch仍串行。
+  “16 Tile并发”只说明最终per-Tile stage调度方式，不能证明baseline materialization work有界。controller先后重复完整
+  CardModule、或每个root/Tile反复clone/prepare TensorProgram，属于独立的P7重复工作，必须分别计数。
+- one-root scoped probe必须直接检查actual IR的root identity和精确数量，不能以compute op `>= 1`或diagnostic缺失代替；
+  semantic flag新增后同时检查真实consumer，避免“已传参但未消费”的空合同。
