@@ -223,6 +223,13 @@ mlir::LogicalResult validateCandidateTile(mlir::RankedTensorType resultType,
 
 llvm::SmallVector<unsigned, 2> getReductionLoopDims(mlir::linalg::LinalgOp op);
 
+/// Returns true for a projected permutation extended only by constant-zero
+/// positions whose indexed tensor extent is exactly one. This is the precise
+/// complete-reduction boundary accepted by candidate tiling; arbitrary
+/// constants and repeated loop dimensions are not projections.
+bool isProjectedPermutationWithUnitConstants(
+    mlir::AffineMap map, mlir::RankedTensorType indexedType);
+
 mlir::LogicalResult buildCandidateLoopTile(
     mlir::OpBuilder &builder, mlir::Location loc, mlir::linalg::LinalgOp op,
     mlir::AffineMap outputMap,

@@ -2119,9 +2119,9 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
     // without it the allocation can be cloned into the prefix while its load
     // remains as an unread operation in the suffix.
     llvm::DenseSet<mlir::Value> prefixReadBuffers;
-    auto recordSPMRead = [&](mlir::Value value) {
+    auto recordReadBuffer = [&](mlir::Value value) {
       mlir::Value root = getViewRoot(value);
-      if (root && isWaferSPMMemRefType(root.getType()))
+      if (root && mlir::isa<mlir::MemRefType>(root.getType()))
         prefixReadBuffers.insert(root);
     };
     for (mlir::Operation *operation : prefix)
@@ -2130,15 +2130,15 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
                 nested))
           return;
         if (auto store = mlir::dyn_cast<StorageStoreOp>(nested)) {
-          recordSPMRead(store.getSource());
+          recordReadBuffer(store.getSource());
           return;
         }
         if (auto send = mlir::dyn_cast<CommPeerSendOp>(nested)) {
-          recordSPMRead(send.getBuffer());
+          recordReadBuffer(send.getBuffer());
           return;
         }
         for (mlir::Value operand : nested->getOperands())
-          recordSPMRead(operand);
+          recordReadBuffer(operand);
       });
     llvm::SmallVector<mlir::Operation *, 4> initializingLoads;
     region.walk([&](StorageLoadOp load) {
@@ -2150,6 +2150,27 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
     });
     for (mlir::Operation *loadRoot : initializingLoads) {
       if (mlir::failed(collectPrefix(loadRoot)))
+        return mlir::failure();
+      addedEffect = true;
+    }
+
+    // A compiler-owned DDR carrier also has memory, rather than SSA,
+    // dependence between its writer and a later resident-fragment load. If
+    // the cut prefix reads that carrier, move every same-region writer and
+    // its backward compute closure into the prefix. Without this edge the
+    // split can place peer assembly before the source-only producer store,
+    // leaving a read-before-write region followed by both producer and
+    // consumer compute roots.
+    llvm::SmallVector<mlir::Operation *, 4> initializingStores;
+    region.walk([&](StorageStoreOp store) {
+      mlir::Operation *storeRoot = getTopLevelOperation(store);
+      if (storeRoot && !prefix.contains(storeRoot) &&
+          prefixReadBuffers.contains(getViewRoot(store.getDest())) &&
+          !llvm::is_contained(initializingStores, storeRoot))
+        initializingStores.push_back(storeRoot);
+    });
+    for (mlir::Operation *storeRoot : initializingStores) {
+      if (mlir::failed(collectPrefix(storeRoot)))
         return mlir::failure();
       addedEffect = true;
     }
@@ -2196,305 +2217,6 @@ splitAtRegionCut(mlir::memref::AllocOp spillAllocation,
                                 failureReason);
 }
 
-/// Splits off the closure of the smallest structured compute root (canonical
-/// node-id order) as a prefix region. Used by the deterministic baseline to
-/// give every TileRegion exactly one structured root: independent roots on
-/// one Tile form multiple sequential regions without a fabricated DDR edge.
-/// Returns success without splitting when the region already carries at most
-/// one root.
-static mlir::LogicalResult splitRegionAtStructuredRootBoundary(
-    TileRegionOp region, StructuredMaterializationRelations &relations,
-    std::string *failureReason) {
-  if (!region || !region.getBody().hasOneBlock())
-    return failResult(failureReason,
-                      "structured root split requires one verifier-legal "
-                      "region block");
-  mlir::Block &body = region.getBody().front();
-  auto getTopLevelOperation = [&](mlir::Operation *operation) {
-    while (operation && operation->getBlock() != &body)
-      operation = operation->getParentOp();
-    return operation;
-  };
-
-  // Collect the structured roots carried by every top-level operation.
-  llvm::SmallVector<mlir::Operation *, 16> topLevelOps;
-  for (mlir::Operation &operation : body.without_terminator())
-    if (getTopLevelOperation(&operation) == &operation)
-      topLevelOps.push_back(&operation);
-  uint32_t firstNode = std::numeric_limits<uint32_t>::max();
-  llvm::SmallVector<uint32_t, 4> allNodes;
-  // A materialized compute result may be forwarded through typed views or
-  // staging copies before its buffer relation is recorded; match the
-  // relation buffer by identity or by its typed view root.
-  auto resultCarriesNode = [&](mlir::Value result,
-                               uint32_t nodeId) {
-    return llvm::any_of(relations.operationResultBuffers,
-                        [&](const auto &relation) {
-                          return relation.structuredNodeId == nodeId &&
-                                 (relation.buffer == result ||
-                                  getViewRoot(relation.buffer) == result);
-                        });
-  };
-  auto appendNodes = [&](mlir::Operation *operation) {
-    for (mlir::Value result : operation->getResults())
-      for (const auto &relation : relations.operationResultBuffers)
-        if ((relation.buffer == result ||
-             getViewRoot(relation.buffer) == result) &&
-            !llvm::is_contained(allNodes, relation.structuredNodeId))
-          allNodes.push_back(relation.structuredNodeId);
-  };
-  for (mlir::Operation *operation : topLevelOps) {
-    appendNodes(operation);
-    operation->walk([&](mlir::Operation *nested) {
-      if (nested != operation)
-        appendNodes(nested);
-    });
-  }
-  if (allNodes.size() <= 1)
-    return mlir::success();
-  firstNode = *std::min_element(allNodes.begin(), allNodes.end());
-
-  // Prefix = backward SSA closure of every operation whose materialized
-  // compute result belongs to the first root. Dependent structured roots are
-  // separated by selected RegionCut/peer edges before this split runs; a
-  // closure reaching another root's operation is therefore a selected-cut
-  // gap and must fail closed. Spill machinery created for crossing SPM
-  // values is excluded from closure pulls and placed explicitly: the spill
-  // store joins the prefix, the reload joins the suffix, and the split core
-  // hoists the shared spill allocation itself.
-  llvm::DenseSet<mlir::Operation *> prefix;
-  llvm::DenseSet<mlir::Operation *> spillClosureOps;
-  std::function<mlir::LogicalResult(mlir::Operation *)> collectPrefix =
-      [&](mlir::Operation *operation) -> mlir::LogicalResult {
-    if (!operation || operation->getBlock() != &body ||
-        mlir::isa<TileYieldOp>(operation) || spillClosureOps.contains(operation) ||
-        !prefix.insert(operation).second)
-      return mlir::success();
-    mlir::WalkResult dependencyResult =
-        operation->walk([&](mlir::Operation *nested) -> mlir::WalkResult {
-          for (mlir::Value operand : nested->getOperands()) {
-            if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(operand);
-                argument && argument.getOwner() == &body)
-              continue;
-            mlir::Operation *definition = operand.getDefiningOp();
-            mlir::Operation *root = getTopLevelOperation(definition);
-            if (root && root != operation &&
-                mlir::failed(collectPrefix(root)))
-              return mlir::WalkResult::interrupt();
-          }
-          return mlir::WalkResult::advance();
-        });
-    return dependencyResult.wasInterrupted() ? mlir::failure()
-                                             : mlir::success();
-  };
-  for (mlir::Operation *operation : topLevelOps) {
-    const bool belongs = llvm::any_of(operation->getResults(), [&](mlir::Value result) {
-      return resultCarriesNode(result, firstNode);
-    });
-    if (belongs && mlir::failed(collectPrefix(operation)))
-      return mlir::failure();
-  }
-  if (prefix.empty())
-    return failResult(failureReason,
-                      "structured root split found no prefix closure");
-
-  // A prefix-produced value consumed outside the prefix is an explicit DDR
-  // boundary between the two structured roots. DDR-typed values cross as
-  // carried region results; SPM-typed values are sealed into a fresh
-  // compiler-owned spill with an exact store/reload pair, mirroring the
-  // RegionCut carrier. Compute ops carrying another structured root never
-  // join the prefix; a shared boundary resource they still need is cloned
-  // into the suffix by the split core.
-  llvm::SmallVector<mlir::memref::AllocOp, 2> spills;
-  llvm::DenseMap<mlir::Value, mlir::Value> spilledReloads;
-  bool addedUser = true;
-  while (addedUser) {
-    addedUser = false;
-    for (mlir::Operation &operation : body.without_terminator()) {
-      if (prefix.contains(&operation) || spillClosureOps.contains(&operation))
-        continue;
-      llvm::SmallVector<uint32_t, 4> consumerNodes;
-      for (mlir::Value result : operation.getResults())
-        for (const auto &relation : relations.operationResultBuffers)
-          if (relation.structuredNodeId != firstNode &&
-              (relation.buffer == result ||
-               getViewRoot(relation.buffer) == result) &&
-              !llvm::is_contained(consumerNodes, relation.structuredNodeId))
-            consumerNodes.push_back(relation.structuredNodeId);
-      const bool otherRootCompute = !consumerNodes.empty();
-      const bool usesPrefixValue = llvm::any_of(
-          operation.getOperands(), [&](mlir::Value operand) {
-            return prefix.contains(getTopLevelOperation(
-                operand.getDefiningOp()));
-          });
-      if (!usesPrefixValue)
-        continue;
-      if (otherRootCompute) {
-        // Spill every prefix-owned SPM operand of this other-root compute
-        // through an exact DDR store/reload boundary, then retarget the
-        // operand to the reloaded SPM allocation. The spill store is placed
-        // at the end of the region body so it observes the value after the
-        // prefix's own in-place support materialization (for example an
-        // insert-slice overwrite); the reload is placed immediately before
-        // the consuming operation. Repeated uses of one value share one
-        // spill.
-        for (mlir::OpOperand &use : operation.getOpOperands()) {
-          mlir::Value operand = use.get();
-          mlir::Operation *producerRoot =
-              getTopLevelOperation(operand.getDefiningOp());
-          if (!producerRoot || !prefix.contains(producerRoot))
-            continue;
-          if (!isWaferSPMMemRefType(operand.getType()))
-            continue;
-          mlir::Value reloadResult = spilledReloads.lookup(operand);
-          if (!reloadResult) {
-            auto spmType = mlir::cast<mlir::MemRefType>(operand.getType());
-            mlir::MemRefType ddrType = mlir::MemRefType::get(
-                spmType.getShape(), spmType.getElementType(),
-                mlir::MemRefLayoutAttrInterface{},
-                MemoryAttr::get(operation.getContext(), MemorySpace::DDR,
-                                MemLayout::Tensor));
-            mlir::OpBuilder bodyBuilder(&body, body.begin());
-            auto spill = bodyBuilder.create<mlir::memref::AllocOp>(
-                operation.getLoc(), ddrType);
-            spillClosureOps.insert(spill.getOperation());
-            mlir::OpBuilder storeBuilder =
-                mlir::OpBuilder::atBlockTerminator(&body);
-            auto store = storeBuilder.create<StorageStoreOp>(
-                operation.getLoc(), operand, spill.getResult());
-            spillClosureOps.insert(store.getOperation());
-            prefix.insert(store.getOperation());
-            mlir::OpBuilder loadBuilder(&operation);
-            auto reload = loadBuilder.create<mlir::memref::AllocOp>(
-                operation.getLoc(), spmType);
-            spillClosureOps.insert(reload.getOperation());
-            auto reloadLoad = loadBuilder.create<StorageLoadOp>(
-                operation.getLoc(), spill, reload.getResult());
-            spillClosureOps.insert(reloadLoad.getOperation());
-            reloadResult = reload.getResult();
-            spilledReloads[operand] = reloadResult;
-            spills.push_back(spill);
-          }
-          use.set(reloadResult);
-          // The consuming root's operand relation must describe the actual
-          // buffer it reads after the cut: retarget it to the reloaded SPM
-          // allocation in the same transaction. The producer's own result
-          // relation keeps pointing at the original value.
-          for (auto &relation : relations.operandBuffers)
-            if (llvm::is_contained(consumerNodes, relation.structuredNodeId) &&
-                (relation.buffer == operand ||
-                 getViewRoot(relation.buffer) == getViewRoot(operand)))
-              relation.buffer = reloadResult;
-          addedUser = true;
-        }
-        continue;
-      }
-      if (mlir::failed(collectPrefix(&operation)))
-        return mlir::failure();
-      addedUser = true;
-    }
-  }
-  return splitRegionAfterPrefix(region, spills,
-                                /*selectedDDRStageBuffers=*/{},
-                                std::move(prefix), &relations, failureReason);
-}
-
-/// Gives every TileRegion of one Tile entry exactly one structured compute
-/// root by repeatedly splitting multi-root regions at root boundaries. The
-/// deterministic baseline materialization mode (IndependentDDRStages) is the
-/// only caller; search-owned region grouping is never rewritten here.
-mlir::LogicalResult splitStructuredRootBoundaries(
-    mlir::func::FuncOp entry, StructuredMaterializationRelations &relations,
-    std::string *failureReason) {
-  if (!entry)
-    return failResult(failureReason,
-                      "structured root split requires a Tile entry");
-
-  // Excess roots over one per region, summed across the Tile entry. Every
-  // successful split moves at least one structured compute root out of a
-  // multi-root region, so the total strictly decreases and terminates
-  // without any IR-unrelated round limit. A non-decreasing step is a
-  // split-core bug and fails closed.
-  auto collectRegionRootNodes = [&](TileRegionOp region,
-                                    llvm::SmallVectorImpl<uint32_t> &roots) {
-    region.walk([&](mlir::Operation *operation) {
-      for (mlir::Value result : operation->getResults())
-        for (const auto &relation : relations.operationResultBuffers)
-          if ((relation.buffer == result ||
-               getViewRoot(relation.buffer) == result) &&
-              !llvm::is_contained(roots, relation.structuredNodeId))
-            roots.push_back(relation.structuredNodeId);
-    });
-  };
-  auto countExcessRoots = [&]() -> unsigned {
-    unsigned excess = 0;
-    entry.walk([&](TileRegionOp region) {
-      if (region->getParentOfType<TileRegionOp>())
-        return;
-      llvm::SmallVector<uint32_t, 4> roots;
-      collectRegionRootNodes(region, roots);
-      if (roots.size() > 1)
-        excess += roots.size() - 1;
-    });
-    return excess;
-  };
-
-  unsigned excess = countExcessRoots();
-  while (excess > 0) {
-    llvm::SmallVector<TileRegionOp, 8> regions;
-    entry.walk([&](TileRegionOp region) {
-      if (!region->getParentOfType<TileRegionOp>())
-        regions.push_back(region);
-    });
-    for (TileRegionOp region : regions)
-      if (mlir::failed(splitRegionAtStructuredRootBoundary(
-              region, relations, failureReason)))
-        return mlir::failure();
-    const unsigned nextExcess = countExcessRoots();
-    if (nextExcess >= excess)
-      return failResult(failureReason,
-                        "structured root split did not reduce the excess-root "
-                        "count");
-    excess = nextExcess;
-  }
-
-  // Postcondition: every region carries exactly one structured compute root.
-  // A zero-root compute region violates the one-root contract as much as a
-  // multi-root region does.
-  llvm::SmallVector<TileRegionOp, 8> finalRegions;
-  entry.walk([&](TileRegionOp region) {
-    if (!region->getParentOfType<TileRegionOp>())
-      finalRegions.push_back(region);
-  });
-  // Postcondition: every compute region carries exactly one structured
-  // compute root. A zero-root compute region violates the one-root contract
-  // as much as a multi-root region does; a movement-only boundary carrier
-  // region (DDR staging between two root regions) legitimately carries no
-  // compute root. Without any node mapping the caller supplies no
-  // attribution relations, so no root cardinality can be verified here; the
-  // baseline always supplies the complete relation set.
-  if (relations.operationResultBuffers.empty())
-    return mlir::success();
-  for (TileRegionOp region : finalRegions) {
-    bool hasCompute = false;
-    region.walk([&](mlir::Operation *operation) {
-      if (mlir::isa<ComputeFillOp, ComputeConvertOp, ComputeGemmOp,
-                    ComputeConvOp, ComputeElementwiseOp, ComputeReduceOp>(
-              operation))
-        hasCompute = true;
-    });
-    if (!hasCompute)
-      continue;
-    llvm::SmallVector<uint32_t, 4> roots;
-    collectRegionRootNodes(region, roots);
-    if (roots.size() != 1)
-      return failResult(failureReason,
-                        "structured root split produced a compute region "
-                        "without exactly one structured compute root");
-  }
-  return mlir::success();
-}
-
 } // namespace wafer
 
 mlir::LogicalResult wafer::deriveSpatialEdgeConsumerResultDomain(
@@ -2532,7 +2254,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     StructuredMaterializationRelations *materializationRelations,
     llvm::ArrayRef<StructuredBoundarySupply> boundarySupplies,
-    uint64_t boundaryArgumentCount, bool externalBoundaryCarrier) {
+    uint64_t boundaryArgumentCount,
+    std::optional<uint32_t> scopedRootNode) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModule || currentLogicalPartition < 0)
@@ -2582,15 +2305,13 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         return failResult(failureReason,
                           "boundary supply operand is not a ranked tensor");
     }
-    llvm::SmallVector<mlir::Type, 8> argumentTypes(function.getArgumentTypes());
-    argumentTypes.reserve(argumentTypes.size() + boundaryArgumentCount);
-    argumentTypes.append(boundaryTypes.begin(), boundaryTypes.end());
-    function.setFunctionType(mlir::FunctionType::get(
-        function.getContext(), argumentTypes, function.getResultTypes()));
-    // The extended entry needs one fresh entry block argument per boundary
-    // supply before the lowering clones into the new signature.
-    function.getBody().front().addArguments(
-        mlir::TypeRange(boundaryTypes), function.getLoc());
+    // FuncOp owns argument type, entry block argument and arg_attrs as one
+    // contract. Use its insertion API so source functions carrying explicit
+    // per-argument metadata remain verifier-legal after the narrow boundary
+    // extension.
+    for (mlir::Type type : boundaryTypes)
+      function.insertArgument(function.getNumArguments(), type,
+                              mlir::DictionaryAttr{}, function.getLoc());
   }
   TensorProgramScope scope(function, functionalArgumentCount);
   if (mlir::failed(verifyTensorProgramScope(function, functionalArgumentCount,
@@ -2772,6 +2493,118 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
   if (mappedStrategies.empty())
     return failResult(failureReason,
                       "edge-action lowering has no action on this Tile");
+
+  if (scopedRootNode) {
+    auto targetMapping = llvm::find_if(
+        mappedOperationNodes, [&](const StructuredOperationNodeMapping &node) {
+          return node.structuredNodeId == *scopedRootNode;
+        });
+    if (targetMapping == mappedOperationNodes.end() ||
+        !targetMapping->operation)
+      return failResult(failureReason,
+                        "scoped root node is outside the current program");
+    mlir::Operation *targetOperation = targetMapping->operation;
+
+    if (!outputShards.empty()) {
+      // Observable roots already have an exact output-shard request. Incoming
+      // sibling operands were rebound above, so ordinary output traversal now
+      // pulls only the target root and its non-structured support closure.
+      if (mlir::failed(materializeCandidateOutputTileSlices(
+              scope, outputShards, mappedTemporalTiles, failureReason,
+              &mappedOperationNodes)))
+        return mlir::failure();
+    } else {
+      struct RootDomain {
+        llvm::SmallVector<int64_t, 4> offsets;
+        llvm::SmallVector<int64_t, 4> sizes;
+      };
+      llvm::SmallVector<RootDomain, 8> outgoingDomains;
+      llvm::SmallVector<RootDomain, 8> incomingDomains;
+      auto appendDomain = [](llvm::SmallVectorImpl<RootDomain> &domains,
+                             llvm::ArrayRef<int64_t> offsets,
+                             llvm::ArrayRef<int64_t> sizes) {
+        if (offsets.size() != sizes.size() ||
+            llvm::any_of(sizes, [](int64_t size) { return size <= 0; }))
+          return;
+        if (llvm::none_of(domains, [&](const RootDomain &domain) {
+              return llvm::ArrayRef(domain.offsets) == offsets &&
+                     llvm::ArrayRef(domain.sizes) == sizes;
+            }))
+          domains.push_back(
+              RootDomain{llvm::to_vector(offsets), llvm::to_vector(sizes)});
+      };
+      for (MappedStrategy &mapped : mappedStrategies) {
+        const SpatialEdgeStrategy &strategy = mapped.strategy;
+        if (mapped.producer == targetOperation) {
+          if (strategy.action == SpatialEdgeAction::PeerFragments) {
+            for (const SpatialEdgeFragment &fragment : strategy.fragments)
+              if (fragment.sourceTile == currentTile)
+                appendDomain(outgoingDomains, fragment.offsets,
+                             fragment.sizes);
+          } else if (strategy.sourceTile == currentTile) {
+            appendDomain(outgoingDomains, strategy.producerOffsets,
+                         strategy.producerSizes);
+          }
+        }
+        if (mapped.consumer == targetOperation &&
+            strategy.destinationTile == currentTile)
+          appendDomain(incomingDomains, strategy.consumerOffsets,
+                       strategy.consumerSizes);
+      }
+      llvm::ArrayRef<RootDomain> targetDomains =
+          outgoingDomains.empty() ? llvm::ArrayRef<RootDomain>(incomingDomains)
+                                  : llvm::ArrayRef<RootDomain>(outgoingDomains);
+      if (targetDomains.empty())
+        return failResult(failureReason,
+                          "scoped root has no exact domain on this Tile");
+
+      llvm::SmallVector<MaterializedSource, 8> materialized;
+      llvm::DenseSet<mlir::Operation *> preserved;
+      for (const RootDomain &domain : targetDomains) {
+        mlir::FailureOr<mlir::Value> value = getOrMaterializeSource(
+            scope, targetOperation, /*producerResult=*/0, domain.offsets,
+            domain.sizes, materialized, preserved, mappedTemporalTiles,
+            failureReason, &mappedOperationNodes);
+        if (mlir::failed(value))
+          return mlir::failure();
+      }
+
+      // An intermediate root has no functional result of its own. Keep the
+      // full-card ABI as typed no-store outputs, then erase every now-dead
+      // sibling closure while preserving the requested root traversals.
+      mlir::func::ReturnOp returnOp = scope.getReturn();
+      for (unsigned index = 0; index < scope.getOutputCount(); ++index) {
+        mlir::FailureOr<mlir::Value> output =
+            getCandidateOutputBoundary(scope, index, failureReason);
+        if (mlir::failed(output))
+          return mlir::failure();
+        returnOp->setOperand(index, *output);
+      }
+      eraseDeadExcept(scope, preserved);
+      llvm::DenseSet<mlir::Operation *> liveOperations;
+      candidate->walk(
+          [&](mlir::Operation *operation) { liveOperations.insert(operation); });
+      llvm::erase_if(mappedOperationNodes, [&](const auto &mapping) {
+        return !liveOperations.contains(mapping.operation);
+      });
+    }
+
+    TileRegionEmissionRelations emissionRelations;
+    if (mlir::failed(convertTensorProgramToTileRegionModuleInPlace(
+            *candidate, sourceModule.getContext(), functionalArgumentCount,
+            currentLogicalPartition, failureReason,
+            /*suppressDiagnostics=*/true, /*verifyResult=*/true,
+            /*populateFallbackFailureReason=*/true,
+            /*peerEndpoints=*/{}, /*selectedDDRStages=*/{},
+            &emissionRelations, mappedOperationNodes)))
+      return mlir::failure();
+    if (materializationRelations)
+      *materializationRelations =
+          std::move(emissionRelations.materializedBuffers);
+    module = std::move(candidate);
+    return mlir::success();
+  }
+
   if (independentDDRStages &&
       !llvm::all_of(mappedStrategies, [](const MappedStrategy &mapped) {
         return mapped.strategy.bufferCount == 1 &&
@@ -3471,7 +3304,8 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         mlir::FailureOr<mlir::Value> updated =
             materializeCandidateRootTileIntoDestination(
                 scope, operation, domain.offsets, domain.sizes,
-                mappedTemporalTiles, stored, failureReason);
+                mappedTemporalTiles, stored, failureReason,
+                &mappedOperationNodes);
         if (mlir::failed(updated))
           return mlir::failure();
         stored = *updated;
@@ -3582,127 +3416,75 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
         if (createdRegionCut)
           regionCuts.push_back(&incoming.strategy);
       }
-      mlir::FailureOr<mlir::Value> consumer = getOrMaterializeSource(
-          scope, mapped.consumer, /*producerResult=*/0,
-          strategy.consumerOffsets, strategy.consumerSizes, materialized,
-          preserved, mappedTemporalTiles, failureReason, &mappedOperationNodes);
-      if (mlir::failed(consumer))
-        return mlir::failure();
-      auto selectedType =
-          mlir::dyn_cast<mlir::RankedTensorType>(consumer->getType());
-      if (!selectedType || !selectedType.hasStaticShape())
+      // Materialize the independent op-wave directly into its compiler-owned
+      // DDR stage. Building a compact traversal value first would still need
+      // to assemble the complete spatial shard in a tensor.empty, then copy
+      // that full SPM object into DDR. The temporal coordinate would shrink
+      // the compute leaves while leaving one or two full-shard SPM buffers
+      // unchanged, so the deterministic capacity controller could never
+      // legalize the actual Tile entry. The destination-backed traversal
+      // carries the DDR tensor through its wave loops and only materializes
+      // each configured leaf in SPM.
+      auto fullType = mlir::dyn_cast<mlir::RankedTensorType>(
+          mapped.consumer->getResult(0).getType());
+      if (!fullType || !fullType.hasStaticShape())
         return failResult(
             failureReason,
             "independent consumer materialization requires one static ranked "
-            "tensor tile");
-      mlir::Operation *selectedDefinition = consumer->getDefiningOp();
-      if (!selectedDefinition ||
-          selectedDefinition->getBlock() != &scope.getBody())
+            "result domain");
+      mlir::OpBuilder builder(mapped.consumer);
+      auto ddrType = mlir::MemRefType::get(
+          fullType.getShape(), fullType.getElementType(),
+          mlir::MemRefLayoutAttrInterface{},
+          MemoryAttr::get(mapped.consumer->getContext(), MemorySpace::DDR,
+                          MemLayout::Tensor));
+      auto allocation = builder.create<mlir::memref::AllocOp>(
+          mapped.consumer->getLoc(), ddrType);
+      auto destination = builder.create<mlir::bufferization::ToTensorOp>(
+          mapped.consumer->getLoc(), allocation.getResult(),
+          /*restrict=*/true, /*writable=*/true);
+      mlir::FailureOr<mlir::Value> stored =
+          materializeCandidateRootTileIntoDestination(
+              scope, mapped.consumer, strategy.consumerOffsets,
+              strategy.consumerSizes, mappedTemporalTiles,
+              destination.getResult(), failureReason, &mappedOperationNodes);
+      if (mlir::failed(stored))
+        return mlir::failure();
+      mlir::Operation *storedDefinition = stored->getDefiningOp();
+      if (!storedDefinition || storedDefinition->getBlock() != &scope.getBody())
         return failResult(
             failureReason,
-            "independent consumer tile is not available in the tensor-program "
-            "body");
-      mlir::Value carrierRoot = *consumer;
-      while (true) {
-        if (auto slice =
-                carrierRoot.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-          carrierRoot = slice.getSource();
-          continue;
-        }
-        if (auto expand =
-                carrierRoot.getDefiningOp<mlir::tensor::ExpandShapeOp>()) {
-          carrierRoot = expand.getSrc();
-          continue;
-        }
-        if (auto collapse =
-                carrierRoot.getDefiningOp<mlir::tensor::CollapseShapeOp>()) {
-          carrierRoot = collapse.getSrc();
-          continue;
-        }
-        if (auto cast = carrierRoot.getDefiningOp<mlir::tensor::CastOp>()) {
-          carrierRoot = cast.getSource();
-          continue;
-        }
-        break;
-      }
-      auto existingDDRView =
-          carrierRoot.getDefiningOp<mlir::bufferization::ToTensorOp>();
-      const bool reusesSealedDDR =
-          existingDDRView && !existingDDRView.getWritable() &&
-          isWaferDDRMemRefType(existingDDRView.getMemref().getType());
-      mlir::Value selectedResult;
-      if (reusesSealedDDR) {
-        selectedResult = *consumer;
-      } else {
-        mlir::OpBuilder consumerBuilder(selectedDefinition);
-        consumerBuilder.setInsertionPointAfter(selectedDefinition);
-        auto selectedDest = consumerBuilder.create<mlir::tensor::EmptyOp>(
-            mapped.consumer->getLoc(), selectedType.getShape(),
-            selectedType.getElementType(), mlir::ValueRange{},
-            selectedType.getEncoding());
-        selectedResult =
-            consumerBuilder
-                .create<mlir::bufferization::MaterializeInDestinationOp>(
-                    mapped.consumer->getLoc(), selectedType, *consumer,
-                    selectedDest.getResult(), /*restrict=*/false,
-                    /*writable=*/false)
-                .getResult();
-        preserved.insert(selectedResult.getDefiningOp());
-      }
-      // Wire one typed full-domain carrier into external fanout even when this
-      // Tile owns only a spatial shard. Undefined regions are never read by a
-      // legal selected local demand; peer fragments for other shards are
-      // materialized independently on their owning Tiles. Unless an earlier
-      // source-only stage already supplied a read-only DDR carrier, reopen the
-      // independently executed result through DDR so outgoing peers and later
-      // op waves cannot retain its pre-store SPM cache entry.
-      mlir::Value cachedSelectedResult = selectedResult;
-      if (!reusesSealedDDR) {
-        auto fullType = mlir::dyn_cast<mlir::RankedTensorType>(
-            mapped.consumer->getResult(0).getType());
-        if (!fullType)
-          return failResult(
-              failureReason,
-              "selected consumer result is not one ranked spatial domain");
-        mlir::OpBuilder builder(selectedResult.getDefiningOp());
-        builder.setInsertionPointAfter(selectedResult.getDefiningOp());
-        auto ddrType = mlir::MemRefType::get(
-            fullType.getShape(), fullType.getElementType(),
-            mlir::MemRefLayoutAttrInterface{},
-            MemoryAttr::get(mapped.consumer->getContext(), MemorySpace::DDR,
-                            MemLayout::Tensor));
-        auto allocation = builder.create<mlir::memref::AllocOp>(
-            mapped.consumer->getLoc(), ddrType);
-        auto destination = builder.create<mlir::bufferization::ToTensorOp>(
-            mapped.consumer->getLoc(), allocation.getResult(),
-            /*restrict=*/true, /*writable=*/true);
-        mlir::Value stored =
-            insertExactSlice(builder, mapped.consumer->getLoc(), selectedResult,
-                             destination.getResult(), strategy.consumerOffsets,
-                             strategy.consumerSizes);
-        auto sealed = builder.create<mlir::bufferization::ToTensorOp>(
-            mapped.consumer->getLoc(), allocation.getResult(),
-            /*restrict=*/false, /*writable=*/false);
-        preserved.insert(allocation.getOperation());
-        preserved.insert(destination.getOperation());
-        preserved.insert(stored.getDefiningOp());
-        preserved.insert(sealed.getOperation());
-        selectedResult = sealed.getResult();
-        cachedSelectedResult =
-            createExactSlice(builder, mapped.consumer->getLoc(), selectedResult,
-                             strategy.consumerOffsets, strategy.consumerSizes);
-        preserved.insert(cachedSelectedResult.getDefiningOp());
-      }
+            "independent consumer traversal did not produce a scope-local "
+            "DDR stage");
+      builder.setInsertionPointAfter(storedDefinition);
+      auto sealed = builder.create<mlir::bufferization::ToTensorOp>(
+          mapped.consumer->getLoc(), allocation.getResult(),
+          /*restrict=*/false, /*writable=*/false);
+      preserved.insert(allocation.getOperation());
+      preserved.insert(destination.getOperation());
+      preserved.insert(storedDefinition);
+      preserved.insert(sealed.getOperation());
+      mlir::Value selectedResult = sealed.getResult();
+      mlir::Value cachedSelectedResult =
+          createExactSlice(builder, mapped.consumer->getLoc(), selectedResult,
+                           strategy.consumerOffsets, strategy.consumerSizes);
+      preserved.insert(cachedSelectedResult.getDefiningOp());
       independentConsumers.push_back(MaterializedSource{
           mapped.consumer, /*result=*/0,
           llvm::SmallVector<int64_t, 4>(strategy.consumerOffsets),
           llvm::SmallVector<int64_t, 4>(strategy.consumerSizes),
           cachedSelectedResult});
-      for (MaterializedSource &cached : materialized)
-        if (cached.producer == mapped.consumer && cached.result == 0 &&
-            cached.offsets == strategy.consumerOffsets &&
-            cached.sizes == strategy.consumerSizes)
-          cached.value = cachedSelectedResult;
+      auto cached = llvm::find_if(
+          materialized, [&](const MaterializedSource &candidate) {
+            return candidate.producer == mapped.consumer &&
+                   candidate.result == 0 &&
+                   candidate.offsets == strategy.consumerOffsets &&
+                   candidate.sizes == strategy.consumerSizes;
+          });
+      if (cached == materialized.end())
+        materialized.push_back(independentConsumers.back());
+      else
+        cached->value = cachedSelectedResult;
       if (selectedResult.getType() == mapped.consumer->getResult(0).getType()) {
         // Some legal destination-style traversals retain the original result as
         // an initialization dependency.  Do not rewrite uses inside the

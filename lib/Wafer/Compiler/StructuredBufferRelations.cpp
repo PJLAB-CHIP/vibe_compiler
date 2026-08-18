@@ -184,15 +184,25 @@ void StructuredBufferReplacementListener::notifyOperationReplaced(
   auto iterator = impl->references.find(operation);
   if (iterator == impl->references.end())
     return;
-  for (const Impl::RelationReference &reference : iterator->second) {
+  llvm::SmallVector<Impl::RelationReference, 2> references =
+      std::move(iterator->second);
+  impl->references.erase(iterator);
+  for (const Impl::RelationReference &reference : references) {
     if (reference.resultNumber >= replacements.size() ||
         !replacements[reference.resultNumber]) {
       impl->preservedAll = false;
       continue;
     }
-    *reference.buffer = replacements[reference.resultNumber];
+    mlir::Value replacement = replacements[reference.resultNumber];
+    *reference.buffer = replacement;
+    // A replacement can itself be replaced by a later pattern in the same
+    // rewrite driver. Re-register the relation under the current defining op
+    // so multi-hop legalization never leaves attribution on an erased value.
+    if (auto result = mlir::dyn_cast<mlir::OpResult>(replacement))
+      impl->references[result.getOwner()].push_back(
+          Impl::RelationReference{reference.buffer,
+                                  result.getResultNumber()});
   }
-  impl->references.erase(iterator);
 }
 
 void StructuredBufferReplacementListener::notifyOperationErased(
@@ -297,6 +307,7 @@ remapStructuredBufferRelationsComplete(
     const mlir::IRMapping &mapping, StructuredRelationRemapIssue *issue) {
   StructuredRelationRemapIssue localIssue;
   StructuredRelationRemapIssue &reported = issue ? *issue : localIssue;
+  reported = {};
   StructuredMaterializationRelations result;
   appendRemapped(llvm::ArrayRef<StructuredOperationBufferRelation>(
                      source.operationResultBuffers),

@@ -1,4 +1,5 @@
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "../../lib/Wafer/Conversion/WaferTensorProgramToTileRegion/Internal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -49,6 +50,31 @@ void expectConstantValues(llvm::ArrayRef<mlir::OpFoldResult> actual,
     ASSERT_TRUE(constant);
     EXPECT_EQ(*constant, expectedValue);
   }
+}
+
+TEST(CandidateOutputMapTest, AcceptsOnlyZeroConstantsAtUnitExtents) {
+  mlir::MLIRContext context;
+  mlir::Type f16 = mlir::Float16Type::get(&context);
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr zero = mlir::getAffineConstantExpr(0, &context);
+  mlir::AffineExpr one = mlir::getAffineConstantExpr(1, &context);
+
+  EXPECT_TRUE(wafer::tensor_program_to_tile_region::
+                  isProjectedPermutationWithUnitConstants(
+                      mlir::AffineMap::get(1, 0, {d0, zero}, &context),
+                      mlir::RankedTensorType::get({4, 1}, f16)));
+  EXPECT_FALSE(wafer::tensor_program_to_tile_region::
+                   isProjectedPermutationWithUnitConstants(
+                       mlir::AffineMap::get(1, 0, {d0, one}, &context),
+                       mlir::RankedTensorType::get({4, 2}, f16)));
+  EXPECT_FALSE(wafer::tensor_program_to_tile_region::
+                   isProjectedPermutationWithUnitConstants(
+                       mlir::AffineMap::get(1, 0, {d0, zero}, &context),
+                       mlir::RankedTensorType::get({4, 2}, f16)));
+  EXPECT_FALSE(wafer::tensor_program_to_tile_region::
+                   isProjectedPermutationWithUnitConstants(
+                       mlir::AffineMap::get(1, 0, {d0, d0}, &context),
+                       mlir::RankedTensorType::get({4, 4}, f16)));
 }
 
 TEST(BidirectionalTilingTest,

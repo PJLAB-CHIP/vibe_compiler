@@ -4,6 +4,7 @@
 
 #include "CardExecutableSynthesis.h"
 #include "CompilationStatistics.h"
+#include "DeterministicCardExecutableSynthesis.h"
 
 #include "Wafer/Support/CompileTiming.h"
 
@@ -12,6 +13,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cassert>
 #include <memory>
 #include <optional>
 #include <string>
@@ -201,88 +203,135 @@ compileTensorProgramModuleToCardExecutable(
     return fail("test-only injected failure after Tile launch slot " +
                 std::to_string(*failAfterLaunchSlot));
 
-  detail::CardExecutableSynthesisStatistics statistics;
-  detail::DeterministicBaselineLedger baselineLedger;
   const detail::CompileClock::time_point synthesisStart =
       detail::CompileClock::now();
   mlir::FailureOr<detail::CardExecutableSynthesisResult> compiled =
-      detail::synthesizeCardExecutable(
-          tensorModule, program, executionConfig, optimizations, diagnostics,
-          programData, &statistics, &baselineLedger,
-          /*tilePipelineParallelism=*/0, requestTileIRTrace);
+      [&]() -> mlir::FailureOr<detail::CardExecutableSynthesisResult> {
+    if (optimizations.isNone()) {
+      detail::DeterministicBaselineLedger ledger;
+      std::vector<std::string> tileDataflowIRTrace;
+      mlir::FailureOr<detail::DeterministicCardExecutableSynthesisResult>
+          result =
+          detail::synthesizeDeterministicCardExecutable(
+              tensorModule, program, executionConfig, diagnostics, programData,
+              &ledger, /*tilePipelineParallelism=*/0,
+              requestTileIRTrace ? &tileDataflowIRTrace : nullptr);
+      if (mlir::failed(result))
+        return mlir::failure();
+      const detail::CardExecutableLoweringStatistics &exactGates =
+          ledger.exactGates;
+      diagnostics
+          << "wafer-compile: compile-stats "
+             "stage=deterministic-card-executable-synthesis"
+          << " wall_ms=" << detail::elapsedCompileMilliseconds(synthesisStart)
+          << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
+          << " tile_count=" << result->executable.tiles.size()
+          << " source_preparations=" << ledger.baselineSourcePreparations
+          << " materialization_preparations="
+          << ledger.baselineMaterializationPreparations
+          << " card_program_materializations="
+          << ledger.baselineCardModuleMaterializations
+          << " root_shard_materializations="
+          << ledger.baselineRootShardMaterializations
+          << " tile_entry_materializations="
+          << ledger.baselineTileEntryMaterializations
+          << " spatial_legalization_transitions="
+          << ledger.spatialLegalizationTransitions
+          << " spatial_coordinate_queries="
+          << ledger.spatialCoordinateQueries
+          << " exact_demand_edges=" << ledger.exactDemandSatisfiedEdges
+          << " region_spm_capacity_checks="
+          << ledger.baselineRegionSPMCapacityChecks
+          << " region_spm_capacity_overflow_proofs="
+          << ledger.baselineRegionSPMCapacityOverflowProofs
+          << " function_spm_capacity_overflow_proofs="
+          << ledger.baselineFunctionSPMCapacityOverflowProofs
+          << " region_spm_capacity_analysis_failures="
+          << ledger.baselineRegionSPMCapacityAnalysisFailures
+          << " indeterminate_compilation_failures="
+          << ledger.indeterminateCompilationFailures
+          << " materialization_rejections="
+          << ledger.materializationRejections
+          << " target_gate_invocations="
+          << exactGates.targetLoweringVerificationInvocations
+          << " card_executable_compilations="
+          << exactGates.cardModuleCompilationInvocations
+          << " target_tile_gate_invocations="
+          << exactGates.targetTileLoweringVerificationInvocations
+          << " tile_pipeline_workers="
+          << exactGates.maximumTilePipelineWorkers
+          << " region_spm_query_workers="
+          << ledger.baselineMaximumRegionSPMQueryWorkers
+          << " function_spm_capacity_checks="
+          << ledger.baselineFunctionScopedSPMCapacityChecks
+          << " function_spm_query_workers="
+          << ledger.baselineMaximumFunctionSPMQueryWorkers
+          << " tile_ir_prints=" << ledger.baselineTileIRPrints << '\n';
+      return detail::CardExecutableSynthesisResult(
+          std::move(result->executable), std::move(tileDataflowIRTrace));
+    }
+
+    assert(optimizations.isSearch() &&
+           "card executable synthesis requires a typed optimization policy");
+    detail::CardExecutableSynthesisStatistics statistics;
+    mlir::FailureOr<detail::CardExecutableSynthesisResult> result =
+        detail::searchCardExecutable(
+            tensorModule, program, executionConfig, diagnostics, programData,
+            &statistics, /*tilePipelineParallelism=*/0, requestTileIRTrace);
+    if (mlir::failed(result))
+      return mlir::failure();
+    const detail::CardExecutableLoweringStatistics &exactGates =
+        statistics.exactGates;
+    diagnostics
+        << "wafer-compile: compile-stats stage=card-executable-search"
+        << " wall_ms=" << detail::elapsedCompileMilliseconds(synthesisStart)
+        << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
+        << " tile_count=" << result->executable.tiles.size()
+        << " candidate_proposals=" << statistics.candidateProposals
+        << " cheap_pruned_candidates=" << statistics.cheapPrunedCandidates
+        << " strict_dominated_candidates="
+        << statistics.strictDominatedCandidates
+        << " pre_buffer_equivalent_rejections="
+        << statistics.preBufferEquivalentRejections
+        << " buffer_structure_equivalent_rejections="
+        << statistics.bufferStructureEquivalentRejections
+        << " shortlisted_candidates=" << statistics.shortlistedCandidates
+        << " materialized_candidates=" << statistics.materializedCandidates
+        << " indeterminate_compilation_failures="
+        << statistics.indeterminateCompilationFailures
+        << " materialization_rejections="
+        << statistics.materializationRejections
+        << " accepted_candidates=" << statistics.acceptedCandidates
+        << " selected_stable_ordinal=" << statistics.selectedStableOrdinal
+        << " selected_output_mapping_count="
+        << statistics.selectedOutputMappingCount
+        << " selected_unique_active_tile_count="
+        << statistics.selectedUniqueActiveTileCount
+        << " selected_parallel_component_count="
+        << statistics.selectedParallelComponentCount
+        << " selected_makespan_ps=" << statistics.selectedMakespanPicoseconds
+        << " enabled_duration_terms=" << statistics.enabledDurationTerms
+        << " target_gate_invocations="
+        << exactGates.targetLoweringVerificationInvocations
+        << " card_executable_compilations="
+        << exactGates.cardModuleCompilationInvocations
+        << " target_tile_gate_invocations="
+        << exactGates.targetTileLoweringVerificationInvocations
+        << " selected_executable_rematerializations="
+        << statistics.selectedExecutableRematerializations
+        << " selected_rematerialization_target_gate_invocations="
+        << statistics.selectedExecutableRematerializationGates
+               .targetLoweringVerificationInvocations
+        << " selected_rematerialization_card_executable_compilations="
+        << statistics.selectedExecutableRematerializationGates
+               .cardModuleCompilationInvocations
+        << " tile_pipeline_workers="
+        << exactGates.maximumTilePipelineWorkers << '\n';
+    return std::move(*result);
+  }();
   if (mlir::failed(compiled))
     return fail("card executable synthesis failed");
   detail::CardExecutableLoweringResult &accepted = compiled->executable;
-
-  // The deterministic baseline reports work from its narrow ledger; the
-  // search controller from the candidate statistics bag. Exactly one policy
-  // runs per invocation.
-  const detail::CardExecutableLoweringStatistics &exactGates =
-      optimizations.isNone() ? baselineLedger.exactGates : statistics.exactGates;
-  const uint64_t materializationRejections =
-      optimizations.isNone() ? baselineLedger.materializationRejections
-                             : statistics.materializationRejections;
-  const uint64_t indeterminateCompilationFailures =
-      optimizations.isNone()
-          ? baselineLedger.indeterminateCompilationFailures
-          : statistics.indeterminateCompilationFailures;
-
-  diagnostics
-      << "wafer-compile: compile-stats "
-         "stage=card-executable-synthesis"
-      << " wall_ms=" << detail::elapsedCompileMilliseconds(synthesisStart)
-      << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-      << " tile_count=" << accepted.tiles.size()
-      << " candidate_proposals=" << statistics.candidateProposals
-      << " cheap_pruned_candidates=" << statistics.cheapPrunedCandidates
-      << " strict_dominated_candidates=" << statistics.strictDominatedCandidates
-      << " pre_buffer_equivalent_rejections="
-      << statistics.preBufferEquivalentRejections
-      << " buffer_structure_equivalent_rejections="
-      << statistics.bufferStructureEquivalentRejections
-      << " shortlisted_candidates=" << statistics.shortlistedCandidates
-      << " materialized_candidates=" << statistics.materializedCandidates
-      << " indeterminate_compilation_failures="
-      << indeterminateCompilationFailures
-      << " baseline_card_program_materializations="
-      << baselineLedger.baselineCardModuleMaterializations
-      << " baseline_scoped_card_program_materializations="
-      << baselineLedger.baselineScopedCardModuleMaterializations
-      << " baseline_region_spm_capacity_checks="
-      << baselineLedger.baselineRegionSPMCapacityChecks
-      << " baseline_region_spm_capacity_overflow_proofs="
-      << baselineLedger.baselineRegionSPMCapacityOverflowProofs
-      << " baseline_region_spm_capacity_analysis_failures="
-      << baselineLedger.baselineRegionSPMCapacityAnalysisFailures
-      << " baseline_maximum_region_spm_query_workers="
-      << baselineLedger.baselineMaximumRegionSPMQueryWorkers
-      << " materialization_rejections=" << materializationRejections
-      << " accepted_candidates=" << statistics.acceptedCandidates
-      << " selected_stable_ordinal=" << statistics.selectedStableOrdinal
-      << " selected_output_mapping_count="
-      << statistics.selectedOutputMappingCount
-      << " selected_unique_active_tile_count="
-      << statistics.selectedUniqueActiveTileCount
-      << " selected_parallel_component_count="
-      << statistics.selectedParallelComponentCount
-      << " selected_makespan_ps=" << statistics.selectedMakespanPicoseconds
-      << " enabled_duration_terms=" << statistics.enabledDurationTerms
-      << " target_gate_invocations="
-      << exactGates.targetLoweringVerificationInvocations
-      << " card_executable_compilations="
-      << exactGates.cardModuleCompilationInvocations
-      << " target_tile_gate_invocations="
-      << exactGates.targetTileLoweringVerificationInvocations
-      << " selected_executable_rematerializations="
-      << statistics.selectedExecutableRematerializations
-      << " selected_rematerialization_target_gate_invocations="
-      << statistics.selectedExecutableRematerializationGates
-             .targetLoweringVerificationInvocations
-      << " selected_rematerialization_card_executable_compilations="
-      << statistics.selectedExecutableRematerializationGates
-             .cardModuleCompilationInvocations
-      << " tile_pipeline_workers="
-      << exactGates.maximumTilePipelineWorkers << '\n';
   printAcceptedInstructionWork(diagnostics, accepted);
 
   if (requestTileIRTrace &&

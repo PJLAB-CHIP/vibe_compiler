@@ -9,4 +9,4 @@ module {
      -> memref<4xf16, #wafer.memory<spm, tensor>>
 }
 
-// CHECK: reduce rank <= 2 operands/results must use cx layout
+// CHECK: reduce rank-zero operands/results must use tensor layout and positive rank <= 2 operands/results must use cx layout

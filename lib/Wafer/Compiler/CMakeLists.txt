@@ -67,6 +67,7 @@ add_mlir_library(WaferCompiler
   StructuredDAGSchedule.cpp
   StructuredDAGSchedulePlan.cpp
   CardExecutableSynthesis.cpp
+  DeterministicCardExecutableSynthesis.cpp
   ProgramResourceVerification.cpp
 
   LINK_LIBS PUBLIC

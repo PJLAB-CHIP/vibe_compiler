@@ -735,16 +735,21 @@ mlir::LogicalResult verifyReduceTileContract(mlir::Operation *op,
     return op->emitOpError("reduce operands/results must use SPM memory space");
 
   MemLayout expectedInputLayout =
-      inputTensor->getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
+      inputTensor->getRank() == 0
+          ? MemLayout::Tensor
+          : (inputTensor->getRank() > 2 ? MemLayout::NCx : MemLayout::Cx);
   MemLayout expectedResultLayout =
-      resultTensor->getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
+      resultTensor->getRank() == 0
+          ? MemLayout::Tensor
+          : (resultTensor->getRank() > 2 ? MemLayout::NCx : MemLayout::Cx);
   if (!hasWaferLayout(input.getType(), expectedInputLayout) ||
       !hasWaferLayout(resultType, expectedResultLayout)) {
     if (inputTensor->getRank() > 2 || resultTensor->getRank() > 2)
       return op->emitOpError(
           "reduce rank > 2 operands/results must use ncx layout");
     return op->emitOpError(
-        "reduce rank <= 2 operands/results must use cx layout");
+        "reduce rank-zero operands/results must use tensor layout and "
+        "positive rank <= 2 operands/results must use cx layout");
   }
 
   if (inputTensor->getElementType() != resultTensor->getElementType())

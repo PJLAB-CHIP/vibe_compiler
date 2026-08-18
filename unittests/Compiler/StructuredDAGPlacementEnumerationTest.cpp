@@ -106,8 +106,8 @@ module {
             std::initializer_list<int64_t> tileValues) {
     StructuredDAGNodePlacement result;
     result.node = node;
-    result.shardDimension = dimension;
-    result.spatialIteratorDimension = dimension;
+    result.spatialPartition =
+        StructuredDAGSpatialPartition{dimension, dimension};
     for (int64_t value : tileValues)
       result.tiles.push_back(TileId(value));
     return result;
@@ -188,7 +188,8 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
   for (const auto &options : domain->nodeOptions) {
     auto matching = llvm::find_if(options, [&](const auto &option) {
       return option.tiles == firstPair->tiles &&
-             option.spatialIteratorDimension == 0;
+             option.spatialPartition &&
+             option.spatialPartition->iteratorDimension == 0;
     });
     ASSERT_NE(matching, options.end());
     placements.push_back(*matching);
@@ -253,15 +254,16 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
     for (const StructuredDAGNodePlacement &placement :
          candidate.nodePlacements) {
       ASSERT_FALSE(placement.iteratorPartitionFactors.empty());
-      ASSERT_LT(placement.spatialIteratorDimension,
+      ASSERT_TRUE(placement.spatialPartition);
+      ASSERT_LT(placement.spatialPartition->iteratorDimension,
                 placement.iteratorPartitionFactors.size());
       EXPECT_EQ(
-          placement
-              .iteratorPartitionFactors[placement.spatialIteratorDimension],
+          placement.iteratorPartitionFactors
+              [placement.spatialPartition->iteratorDimension],
           placement.tiles.size());
       for (auto [iterator, factor] :
            llvm::enumerate(placement.iteratorPartitionFactors))
-        if (iterator != placement.spatialIteratorDimension)
+        if (iterator != placement.spatialPartition->iteratorDimension)
           EXPECT_EQ(factor, 1u);
     }
   }
@@ -319,8 +321,10 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
   ASSERT_NE(remap, candidates.end());
   ASSERT_EQ(remap->nodePlacements.size(), 2u);
   EXPECT_EQ(remap->nodePlacements[0].tiles, remap->nodePlacements[1].tiles);
-  EXPECT_NE(remap->nodePlacements[0].shardDimension,
-            remap->nodePlacements[1].shardDimension);
+  ASSERT_TRUE(remap->nodePlacements[0].spatialPartition);
+  ASSERT_TRUE(remap->nodePlacements[1].spatialPartition);
+  EXPECT_NE(remap->nodePlacements[0].spatialPartition->resultDimension,
+            remap->nodePlacements[1].spatialPartition->resultDimension);
   EXPECT_EQ(remap->partialOverlapEdgeCount, 0u);
   EXPECT_EQ(remap->disjointEdgeCount, 0u);
   EXPECT_GT(countPeerFragments(remap->edgePlan), 0u);
@@ -549,7 +553,8 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
     ASSERT_EQ(candidate.nodePlacements.size(), 3u);
     const StructuredDAGNodePlacement &reduction = candidate.nodePlacements[2];
     ASSERT_EQ(reduction.iteratorPartitionFactors.size(), 2u);
-    EXPECT_EQ(reduction.spatialIteratorDimension, 0u);
+    ASSERT_TRUE(reduction.spatialPartition);
+    EXPECT_EQ(reduction.spatialPartition->iteratorDimension, 0u);
     EXPECT_EQ(reduction.iteratorPartitionFactors[0], reduction.tiles.size());
     EXPECT_EQ(reduction.iteratorPartitionFactors[1], 1u)
         << "reduction iterators remain explicit but unpartitioned";
@@ -603,7 +608,7 @@ TEST_F(StructuredDAGPlacementEnumerationTest,
     for (auto [lhs, rhs] : llvm::zip_equal(first[index].nodePlacements,
                                            second[index].nodePlacements)) {
       EXPECT_EQ(lhs.node, rhs.node);
-      EXPECT_EQ(lhs.shardDimension, rhs.shardDimension);
+      EXPECT_EQ(lhs.spatialPartition, rhs.spatialPartition);
       EXPECT_EQ(lhs.tiles, rhs.tiles);
     }
   }

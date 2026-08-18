@@ -981,10 +981,27 @@ deriveConsumerExecutionShards(mlir::linalg::LinalgOp linalg,
       uniqueTiles.end())
     return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
         failureReason, "logical trial binds one Tile to several owner domains");
+
+  if (!placement.spatialPartition) {
+    if (placement.tiles.size() != 1 ||
+        llvm::any_of(placement.iteratorPartitionFactors,
+                     [](uint32_t factor) { return factor != 1; }))
+      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+          failureReason,
+          "unpartitioned logical trial requires one Tile and unit factors");
+    IndexSetResult full = IndexRelation::staticDomain(loopShape);
+    if (!full.isExact())
+      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+          failureReason, full.reason);
+    result.push_back(
+        analysis::LogicalExecutionShard{placement.tiles.front(), *full.set});
+    return result;
+  }
+
   for (TileId tile : placement.tiles) {
     auto executionDomain = deriveBalancedPartitionDomain(
-        loopShape, placement.spatialIteratorDimension, placement.tiles, tile,
-        failureReason);
+        loopShape, placement.spatialPartition->iteratorDimension,
+        placement.tiles, tile, failureReason);
     if (mlir::failed(executionDomain))
       return mlir::failure();
     result.push_back(analysis::LogicalExecutionShard{tile, *executionDomain});

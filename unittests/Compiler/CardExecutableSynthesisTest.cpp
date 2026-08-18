@@ -1,6 +1,7 @@
 //===- CardExecutableSynthesisTest.cpp -----------------------------===//
 
 #include "../../lib/Wafer/Compiler/CardExecutableSynthesis.h"
+#include "../../lib/Wafer/Compiler/DeterministicCardExecutableSynthesis.h"
 #include "../../lib/Wafer/Compiler/CompilationInternal.h"
 #include "Wafer/Compiler/ProgramData.h"
 #include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
@@ -99,10 +100,9 @@ static wafer::frontend::FrontendProgramVerificationResult
 largeProducerStageProgramMetadata() {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
-  program.programUserInputCount = 2;
-  program.distributedInputs = {boundary(0, {1, 4096}),
-                               boundary(1, {4096, 4096})};
-  program.distributedOutputs = {boundary(0, {1, 4096})};
+  program.programUserInputCount = 1;
+  program.distributedInputs = {boundary(0, {4096, 4096})};
+  program.distributedOutputs = {boundary(0, {4096, 4096})};
   return program;
 }
 
@@ -401,27 +401,31 @@ module {
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @main(%input: tensor<1x4096xf16>,
-                  %weight: tensor<4096x4096xf16>)
-      -> tensor<1x4096xf16> {
-    %transposed_init = tensor.empty() : tensor<4096x4096xf16>
-    %transposed = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1) -> (d1, d0)>,
+  func.func @main(%input: tensor<4096x4096xf16>)
+      -> tensor<4096x4096xf16> {
+    %producer_init = tensor.empty() : tensor<4096x4096xf16>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
                          affine_map<(d0, d1) -> (d0, d1)>],
         iterator_types = ["parallel", "parallel"]
-      } ins(%weight : tensor<4096x4096xf16>)
-        outs(%transposed_init : tensor<4096x4096xf16>) {
+      } ins(%input : tensor<4096x4096xf16>)
+        outs(%producer_init : tensor<4096x4096xf16>) {
       ^bb0(%value: f16, %old: f16):
-        linalg.yield %value : f16
+        %next = arith.addf %value, %value : f16
+        linalg.yield %next : f16
     } -> tensor<4096x4096xf16>
-    %result_init = tensor.empty() : tensor<1x4096xf16>
-    %zero = arith.constant 0.0 : f16
-    %filled = linalg.fill ins(%zero : f16)
-        outs(%result_init : tensor<1x4096xf16>) -> tensor<1x4096xf16>
-    %result = linalg.matmul
-        ins(%input, %transposed : tensor<1x4096xf16>, tensor<4096x4096xf16>)
-        outs(%filled : tensor<1x4096xf16>) -> tensor<1x4096xf16>
-    return %result : tensor<1x4096xf16>
+    %result_init = tensor.empty() : tensor<4096x4096xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%producer : tensor<4096x4096xf16>)
+        outs(%result_init : tensor<4096x4096xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %next = arith.addf %value, %value : f16
+        linalg.yield %next : f16
+    } -> tensor<4096x4096xf16>
+    return %result : tensor<4096x4096xf16>
   }
 }
 )mlir",
@@ -842,14 +846,14 @@ analyzePlanTestDAG(mlir::ModuleOp module) {
 }
 
 static void expectCompleteTileDomain(
-    const wafer::compiler::detail::CardExecutableSynthesisResult &result) {
-  const auto &executable = result.executable;
+    const wafer::compiler::detail::CardExecutableLoweringResult &executable,
+    llvm::ArrayRef<std::string> tileDataflowIRTrace) {
   ASSERT_EQ(executable.tiles.size(), 16u);
-  ASSERT_EQ(result.tileDataflowIRTrace.size(), executable.tiles.size());
+  ASSERT_EQ(tileDataflowIRTrace.size(), executable.tiles.size());
   for (size_t index = 0; index < executable.tiles.size(); ++index) {
     const wafer::compiler::TileExecutable &tile =
         executable.tiles[index];
-    llvm::StringRef tileDataflowIR = result.tileDataflowIRTrace[index];
+    llvm::StringRef tileDataflowIR = tileDataflowIRTrace[index];
     EXPECT_EQ(tile.getCardId(), wafer::CardId(0));
     EXPECT_EQ(tile.getTileId(),
               wafer::TileId(static_cast<int64_t>(index)));
@@ -860,6 +864,11 @@ static void expectCompleteTileDomain(
   }
 }
 
+static void expectCompleteTileDomain(
+    const wafer::compiler::detail::CardExecutableSynthesisResult &result) {
+  expectCompleteTileDomain(result.executable, result.tileDataflowIRTrace);
+}
+
 static void expectDemandProgramCompletesExecutableGate(
     ParsedProgram &parsed,
     const wafer::frontend::FrontendProgramVerificationResult &metadata) {
@@ -867,22 +876,22 @@ static void expectDemandProgramCompletesExecutableGate(
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::detail::DeterministicBaselineLedger baselineLedger;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
-      *parsed.module, metadata, executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics,
-      &baselineLedger, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+  std::vector<std::string> tileDataflowIRTrace;
+  auto executable =
+      wafer::compiler::detail::synthesizeDeterministicCardExecutable(
+          *parsed.module, metadata, executionConfig(), diagnostics, programData,
+          &baselineLedger, /*tilePipelineParallelism=*/0,
+          &tileDataflowIRTrace);
   diagnostics.flush();
 
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
-  expectCompleteTileDomain(*executable);
+  expectCompleteTileDomain(executable->executable, tileDataflowIRTrace);
   EXPECT_GT(baselineLedger.exactDemandSatisfiedEdges, 0u);
   EXPECT_EQ(baselineLedger.demandAbortStatus,
             wafer::analysis::ExactDemandStatus::Satisfied);
   EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
-  EXPECT_EQ(statistics.acceptedCandidates, 0u);
   // Baseline structural contract: every TileRegion carries exactly one
   // structured compute root; an in-region operand demand of a foreign node
   // never counts as a second root.
@@ -901,8 +910,8 @@ TEST(CardExecutableSynthesisTest,
 
   llvm::SmallVector<wafer::compiler::detail::StructuredDAGNodePlacement, 2>
       placements;
-  placements.push_back({0, 0, {wafer::TileId(0)}});
-  placements.push_back({1, 0, {wafer::TileId(1)}});
+  placements.push_back({0, std::nullopt, {wafer::TileId(0)}, {}});
+  placements.push_back({1, std::nullopt, {wafer::TileId(1)}, {}});
   llvm::SmallVector<wafer::compiler::detail::AcceptedOperationNodeRelation, 4>
       relations;
   auto executable = makePlanTestExecutable(
@@ -938,8 +947,8 @@ TEST(CardExecutableSynthesisTest,
 
   llvm::SmallVector<wafer::compiler::detail::StructuredDAGNodePlacement, 2>
       placements;
-  placements.push_back({0, 0, {wafer::TileId(0)}});
-  placements.push_back({1, 0, {wafer::TileId(0)}});
+  placements.push_back({0, std::nullopt, {wafer::TileId(0)}, {}});
+  placements.push_back({1, std::nullopt, {wafer::TileId(0)}, {}});
   llvm::SmallVector<wafer::compiler::detail::AcceptedOperationNodeRelation, 4>
       relations;
   auto executable = makePlanTestExecutable(
@@ -972,8 +981,8 @@ TEST(CardExecutableSynthesisTest,
 
   llvm::SmallVector<wafer::compiler::detail::StructuredDAGNodePlacement, 2>
       placements;
-  placements.push_back({0, 0, {wafer::TileId(0)}});
-  placements.push_back({1, 0, {wafer::TileId(0)}});
+  placements.push_back({0, std::nullopt, {wafer::TileId(0)}, {}});
+  placements.push_back({1, std::nullopt, {wafer::TileId(0)}, {}});
   llvm::SmallVector<wafer::compiler::detail::AcceptedOperationNodeRelation, 4>
       relations;
   auto executable = makePlanTestExecutable(
@@ -1004,8 +1013,8 @@ TEST(CardExecutableSynthesisTest,
 
   llvm::SmallVector<wafer::compiler::detail::StructuredDAGNodePlacement, 2>
       placements;
-  placements.push_back({0, 0, {wafer::TileId(0)}});
-  placements.push_back({1, 0, {wafer::TileId(0)}});
+  placements.push_back({0, std::nullopt, {wafer::TileId(0)}, {}});
+  placements.push_back({1, std::nullopt, {wafer::TileId(0)}, {}});
   llvm::SmallVector<wafer::compiler::detail::AcceptedOperationNodeRelation, 4>
       relations;
   auto executable = makePlanTestExecutable(
@@ -1034,8 +1043,8 @@ TEST(CardExecutableSynthesisTest,
   ASSERT_EQ(dag->getNodes().size(), 2u);
   llvm::SmallVector<wafer::compiler::detail::StructuredDAGNodePlacement, 2>
       placements;
-  placements.push_back({0, 0, {wafer::TileId(0)}});
-  placements.push_back({1, 0, {wafer::TileId(1)}});
+  placements.push_back({0, std::nullopt, {wafer::TileId(0)}, {}});
+  placements.push_back({1, std::nullopt, {wafer::TileId(1)}, {}});
 
   for (TestOperationRelationMode mode :
        {TestOperationRelationMode::MissingLastNode,
@@ -1062,38 +1071,20 @@ TEST(CardExecutableSynthesisTest,
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::detail::DeterministicBaselineLedger baselineLedger;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
-      *parsed.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics,
-      &baselineLedger, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+  std::vector<std::string> tileDataflowIRTrace;
+  auto executable =
+      wafer::compiler::detail::synthesizeDeterministicCardExecutable(
+          *parsed.module, programMetadata(), executionConfig(), diagnostics,
+          programData, &baselineLedger, /*tilePipelineParallelism=*/0,
+          &tileDataflowIRTrace);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
-  expectCompleteTileDomain(*executable);
+  expectCompleteTileDomain(executable->executable, tileDataflowIRTrace);
 
-  EXPECT_EQ(statistics.structuredNodeCount, 1u);
-  EXPECT_EQ(statistics.structuredEdgeCount, 0u);
-  // The deterministic baseline never constructs search candidates and never
-  // writes candidate proposal/selection statistics.
-  EXPECT_EQ(statistics.candidateProposals, 0u);
-  EXPECT_EQ(statistics.cheapPrunedCandidates, 0u);
-  EXPECT_EQ(statistics.shortlistedCandidates, 0u);
-  EXPECT_EQ(statistics.materializedCandidates, 0u);
-  EXPECT_EQ(statistics.acceptedCandidates, 0u);
-  EXPECT_EQ(statistics.plannedCandidates, 0u);
-  EXPECT_EQ(statistics.schedulePlanRejections, 0u);
-  EXPECT_EQ(statistics.selectedOutputMappingCount, 0u);
-  EXPECT_EQ(statistics.selectedUniqueActiveTileCount, 0u);
-  EXPECT_EQ(statistics.selectedParallelComponentCount, 0u);
-  EXPECT_EQ(statistics.resourceScheduleMemoHits, 0u);
-  EXPECT_EQ(statistics.resourceScheduleMemoMisses, 0u);
-  EXPECT_EQ(statistics.selectedExecutableRematerializations, 0u);
-  EXPECT_EQ(statistics.selectedExecutableRematerializationGates
-                .tileModuleLoweringAttempts,
-            0u);
-  // Baseline work is recorded in the policy-free narrow ledger.
+  // The baseline API has no search statistics parameter. Its complete work is
+  // recorded in the policy-free narrow ledger.
   EXPECT_EQ(baselineLedger.materializationRejections, 0u);
   EXPECT_EQ(baselineLedger.exactGates.tileModuleLoweringAttempts, 1u);
   EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
@@ -1101,11 +1092,20 @@ TEST(CardExecutableSynthesisTest,
   EXPECT_EQ(baselineLedger.exactGates.targetTileLoweringVerificationInvocations,
             16u);
   EXPECT_EQ(baselineLedger.baselineCardModuleMaterializations, 1u);
-  EXPECT_EQ(baselineLedger.baselineScopedCardModuleMaterializations, 0u);
+  EXPECT_EQ(baselineLedger.baselineSourcePreparations, 1u);
+  EXPECT_EQ(baselineLedger.baselineMaterializationPreparations, 1u);
+  EXPECT_EQ(baselineLedger.baselineRootShardMaterializations, 16u);
+  EXPECT_EQ(baselineLedger.baselineTileEntryMaterializations, 16u);
   EXPECT_EQ(baselineLedger.baselineRegionSPMCapacityChecks, 16u);
+  EXPECT_EQ(baselineLedger.baselineFunctionScopedSPMCapacityChecks, 16u);
   EXPECT_EQ(baselineLedger.baselineRegionSPMCapacityOverflowProofs, 0u);
+  EXPECT_EQ(baselineLedger.baselineFunctionSPMCapacityOverflowProofs, 0u);
+  EXPECT_EQ(baselineLedger.baselineTileIRPrints, 16u);
   EXPECT_GT(baselineLedger.baselineMaximumRegionSPMQueryWorkers, 1u);
+  EXPECT_GT(baselineLedger.baselineMaximumFunctionSPMQueryWorkers, 1u);
   EXPECT_EQ(baselineLedger.exactDemandSatisfiedEdges, 0u);
+  EXPECT_EQ(baselineLedger.spatialCoordinateQueries, 1u);
+  EXPECT_EQ(baselineLedger.spatialLegalizationTransitions, 0u);
   EXPECT_EQ(diagnosticsText.find("card-executable-search policy=none"),
             std::string::npos)
       << diagnosticsText;
@@ -1130,23 +1130,25 @@ TEST(CardExecutableSynthesisTest,
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::detail::DeterministicBaselineLedger baselineLedger;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
-      *parsed.module, branchMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics,
-      &baselineLedger, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+  std::vector<std::string> tileDataflowIRTrace;
+  auto executable =
+      wafer::compiler::detail::synthesizeDeterministicCardExecutable(
+          *parsed.module, branchMetadata(), executionConfig(), diagnostics,
+          programData, &baselineLedger, /*tilePipelineParallelism=*/0,
+          &tileDataflowIRTrace);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
-  EXPECT_EQ(statistics.structuredNodeCount, 2u);
-  EXPECT_EQ(statistics.structuredEdgeCount, 0u);
-  EXPECT_EQ(statistics.materializedCandidates, 0u);
   EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
-  EXPECT_EQ(statistics.selectedActualFusedLogicalEdges, 0u);
   // Two independent structured roots on one Tile form multiple sequential
   // regions: the shared Tile (Tile 0) carries one region per root.
+  ASSERT_EQ(tileDataflowIRTrace.size(), 16u);
+  EXPECT_EQ(countOccurrences(tileDataflowIRTrace.front(),
+                             "wafer.tile.region"),
+            2u)
+      << tileDataflowIRTrace.front();
   EXPECT_EQ(diagnosticsText.find("multiple structured compute roots"),
             std::string::npos)
       << diagnosticsText;
@@ -1174,21 +1176,21 @@ module {
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @main(%input: tensor<32x32xf16>) -> tensor<1x1xf16> {
-    %resultOut = tensor.empty() : tensor<1x1xf16>
+  func.func @main(%input: tensor<32x32xf16>) -> tensor<f16> {
+    %resultOut = tensor.empty() : tensor<f16>
     %zero = arith.constant 0.0 : f16
     %init = linalg.fill ins(%zero : f16)
-        outs(%resultOut : tensor<1x1xf16>) -> tensor<1x1xf16>
+        outs(%resultOut : tensor<f16>) -> tensor<f16>
     %result = linalg.generic {
         indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> (0, 0)>],
+                         affine_map<(d0, d1) -> ()>],
         iterator_types = ["reduction", "reduction"]
-      } ins(%input : tensor<32x32xf16>) outs(%init : tensor<1x1xf16>) {
+      } ins(%input : tensor<32x32xf16>) outs(%init : tensor<f16>) {
       ^bb0(%value: f16, %acc: f16):
         %next = arith.addf %value, %acc : f16
         linalg.yield %next : f16
-    } -> tensor<1x1xf16>
-    return %result : tensor<1x1xf16>
+    } -> tensor<f16>
+    return %result : tensor<f16>
   }
 }
 )mlir",
@@ -1199,25 +1201,25 @@ module {
   program.numPartitions = 1;
   program.programUserInputCount = 1;
   program.distributedInputs = {boundary(0, {32, 32})};
-  program.distributedOutputs = {boundary(0, {1, 1})};
+  program.distributedOutputs = {boundary(0, {})};
 
   // The root has no parallel result axis. The canonical coordinate is the
   // typed unpartitioned form: one participating Tile, unit partition factors
   // over every iterator, the complete result domain and no fabricated shard
-  // axis. This test asserts the coordinate contract directly; the complete
-  // executable gate for the same program is exercised through the demand
-  // gate suite, and the movement-path Presburger remainder for large scalar
-  // reductions is recorded in the Q49.P plan.
+  // axis. This test proves that coordinate through the complete executable
+  // gate; the broader movement-demand cases remain in the demand gate suite.
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
+  wafer::compiler::detail::DeterministicBaselineLedger baselineLedger;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
-      *module, program, executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics,
-      /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/false);
+  auto executable =
+      wafer::compiler::detail::synthesizeDeterministicCardExecutable(
+          *module, program, executionConfig(), diagnostics, programData,
+          &baselineLedger, /*tilePipelineParallelism=*/0,
+          /*tileDataflowIRTrace=*/nullptr);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
+  EXPECT_EQ(baselineLedger.baselineTileIRPrints, 0u);
   ASSERT_FALSE(executable->executable.tiles.empty());
   // The unpartitioned root occupies exactly one Tile: the complete result
   // domain lives on a single participating Tile. The complete executable
@@ -1289,25 +1291,25 @@ TEST(CardExecutableSynthesisTest,
   std::string secondDiagnosticsText;
   llvm::raw_string_ostream firstDiagnostics(firstDiagnosticsText);
   llvm::raw_string_ostream secondDiagnostics(secondDiagnosticsText);
-  wafer::compiler::detail::CardExecutableSynthesisStatistics firstStats;
   wafer::compiler::detail::DeterministicBaselineLedger firstLedger;
   wafer::compiler::ProgramDataHandoff programData;
-  wafer::compiler::detail::CardExecutableSynthesisStatistics secondStats;
   wafer::compiler::detail::DeterministicBaselineLedger secondLedger;
-  auto first = wafer::compiler::detail::synthesizeCardExecutable(
+  std::vector<std::string> firstTileDataflowIRTrace;
+  std::vector<std::string> secondTileDataflowIRTrace;
+  auto first = wafer::compiler::detail::synthesizeDeterministicCardExecutable(
       *firstProgram.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), firstDiagnostics, programData,
-      &firstStats, &firstLedger, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
-  auto second = wafer::compiler::detail::synthesizeCardExecutable(
+      firstDiagnostics, programData, &firstLedger,
+      /*tilePipelineParallelism=*/0, &firstTileDataflowIRTrace);
+  auto second = wafer::compiler::detail::synthesizeDeterministicCardExecutable(
       *secondProgram.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), secondDiagnostics, programData,
-      &secondStats, &secondLedger, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      secondDiagnostics, programData, &secondLedger,
+      /*tilePipelineParallelism=*/0, &secondTileDataflowIRTrace);
   firstDiagnostics.flush();
   secondDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(first)) << firstDiagnosticsText;
   ASSERT_TRUE(mlir::succeeded(second)) << secondDiagnosticsText;
   ASSERT_EQ(first->executable.tiles.size(), second->executable.tiles.size());
-  EXPECT_EQ(first->tileDataflowIRTrace, second->tileDataflowIRTrace);
+  EXPECT_EQ(firstTileDataflowIRTrace, secondTileDataflowIRTrace);
   for (auto [firstTile, secondTile] :
        llvm::zip(first->executable.tiles, second->executable.tiles)) {
     std::string firstExecutableIR;
@@ -1322,8 +1324,10 @@ TEST(CardExecutableSynthesisTest,
   }
   EXPECT_EQ(firstLedger.baselineCardModuleMaterializations,
             secondLedger.baselineCardModuleMaterializations);
-  EXPECT_EQ(firstLedger.baselineScopedCardModuleMaterializations,
-            secondLedger.baselineScopedCardModuleMaterializations);
+  EXPECT_EQ(firstLedger.baselineMaterializationPreparations,
+            secondLedger.baselineMaterializationPreparations);
+  EXPECT_EQ(firstLedger.baselineRootShardMaterializations,
+            secondLedger.baselineRootShardMaterializations);
   EXPECT_EQ(firstLedger.baselineRegionSPMCapacityChecks,
             secondLedger.baselineRegionSPMCapacityChecks);
   EXPECT_EQ(firstLedger.exactGates.cardModuleCompilationInvocations, 1u);
@@ -1418,9 +1422,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
+  auto executable = wafer::compiler::detail::searchCardExecutable(
       *parsed.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0,
+      /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   expectCompleteTileDomain(*executable);
@@ -1473,10 +1478,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream repeatDiagnostics(repeatDiagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics
       repeatStatistics;
-  auto repeated = wafer::compiler::detail::synthesizeCardExecutable(
+  auto repeated = wafer::compiler::detail::searchCardExecutable(
       *parsed.module, programMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), repeatDiagnostics,
-      programData, &repeatStatistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      repeatDiagnostics, programData, &repeatStatistics,
+      /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   repeatDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(repeated)) << repeatDiagnosticsText;
   EXPECT_EQ(repeatStatistics.candidateProposals, statistics.candidateProposals);
@@ -1506,9 +1511,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
+  auto executable = wafer::compiler::detail::searchCardExecutable(
       *parsed.module, branchMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0,
+      /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(statistics.dependencyComponentCount, 2u);
@@ -1532,9 +1538,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
+  auto executable = wafer::compiler::detail::searchCardExecutable(
       *parsed.module, dependentProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0,
+      /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(statistics.plannedCandidates,
@@ -1563,9 +1570,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
+  auto executable = wafer::compiler::detail::searchCardExecutable(
       *parsed.module, dependentProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0,
+      /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.multiStagePlacementCandidateProposals, 0u);
@@ -1594,9 +1602,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
+  auto executable = wafer::compiler::detail::searchCardExecutable(
       *parsed.module, layoutPipelineProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0,
+      /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.layoutConversionCandidateProposals, 0u);
@@ -1645,6 +1654,57 @@ TEST(CardExecutableSynthesisTest,
 }
 
 TEST(CardExecutableSynthesisTest,
+     DeterministicSpatialCoordinateAdvancesOneMonotoneState) {
+  using wafer::compiler::detail::DeterministicSpatialAdvance;
+  using wafer::compiler::detail::StructuredDAGNodePlacement;
+  using wafer::compiler::detail::StructuredDAGSpatialPartition;
+  llvm::SmallVector<StructuredDAGNodePlacement, 3> placements;
+  placements.push_back(
+      {0, StructuredDAGSpatialPartition{0, 0},
+       {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2),
+        wafer::TileId(3), wafer::TileId(4)},
+       {5, 1}});
+  placements.push_back(
+      {1, StructuredDAGSpatialPartition{1, 0},
+       {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2)},
+       {1, 3}});
+  placements.push_back({2, std::nullopt, {wafer::TileId(0)}, {1, 1}});
+
+  unsigned transitions = 0;
+  while (true) {
+    std::string failureReason;
+    auto result =
+        wafer::compiler::detail::advanceDeterministicSpatialCoordinate(
+            placements, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(result)) << failureReason;
+    if (*result == DeterministicSpatialAdvance::Exhausted)
+      break;
+    ++transitions;
+  }
+  EXPECT_EQ(transitions, 4u);
+  for (const StructuredDAGNodePlacement &placement : placements) {
+    EXPECT_EQ(placement.tiles.size(), 1u);
+    if (placement.spatialPartition)
+      EXPECT_EQ(placement.iteratorPartitionFactors
+                    [placement.spatialPartition->iteratorDimension],
+                1u);
+    else
+      EXPECT_EQ(placement.iteratorPartitionFactors,
+                (llvm::SmallVector<uint32_t, 4>{1, 1}));
+  }
+
+  placements.front().iteratorPartitionFactors[0] = 2;
+  const size_t originalTileCount = placements.front().tiles.size();
+  std::string failureReason;
+  auto malformed =
+      wafer::compiler::detail::advanceDeterministicSpatialCoordinate(
+          placements, &failureReason);
+  EXPECT_TRUE(mlir::failed(malformed));
+  EXPECT_EQ(placements.front().tiles.size(), originalTileCount);
+  EXPECT_FALSE(failureReason.empty());
+}
+
+TEST(CardExecutableSynthesisTest,
      SearchProposesAndMaterializesMultipleReductionIteratorAxes) {
   ParsedProgram parsed = parseTwoReductionAxisProgram();
   ASSERT_TRUE(parsed.module);
@@ -1653,9 +1713,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
+  auto executable = wafer::compiler::detail::searchCardExecutable(
       *parsed.module, twoReductionAxisProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0,
+      /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_GT(statistics.multiReductionAxisCandidateProposals, 0u);
@@ -1674,20 +1735,27 @@ TEST(CardExecutableSynthesisTest,
 
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
-  wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
   wafer::compiler::detail::DeterministicBaselineLedger baselineLedger;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
-      *parsed.module, largeProducerStageProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::none(), diagnostics, programData, &statistics,
-      &baselineLedger, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+  std::vector<std::string> tileDataflowIRTrace;
+  auto executable =
+      wafer::compiler::detail::synthesizeDeterministicCardExecutable(
+          *parsed.module, largeProducerStageProgramMetadata(), executionConfig(),
+          diagnostics, programData, &baselineLedger,
+          /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
-  EXPECT_EQ(statistics.materializedCandidates, 0u);
   EXPECT_EQ(baselineLedger.exactGates.cardModuleCompilationInvocations, 1u);
-  // P7: the baseline temporal fallback is a functional legalization step
-  // and never writes the search feedback bag.
-  EXPECT_EQ(statistics.allocationFeedbackTransitions, 0u);
+  // The baseline temporal fallback is a functional legalization step. The
+  // baseline API cannot observe or write the search feedback bag.
+  ASSERT_FALSE(tileDataflowIRTrace.empty());
+  llvm::StringRef firstTileIR = tileDataflowIRTrace.front();
+  EXPECT_GE(countOccurrences(firstTileIR, "wafer.tile.region"), 2u)
+      << firstTileIR.str();
+  EXPECT_GT(countOccurrences(firstTileIR, "wafer.tile.store"), 1u)
+      << firstTileIR.str();
+  EXPECT_GT(countOccurrences(firstTileIR, "wafer.tile.load"), 1u)
+      << firstTileIR.str();
   EXPECT_NE(diagnosticsText.find("card-executable-baseline-temporal-refinement"),
             std::string::npos)
       << diagnosticsText;
@@ -1697,46 +1765,37 @@ TEST(CardExecutableSynthesisTest,
 }
 
 TEST(CardExecutableSynthesisTest,
-     SearchUsesFiniteTemporalTraversalWhenOneWaveExceedsSPM) {
+     NoneUsesFiniteTemporalTraversalWhenOneWaveExceedsSPM) {
   ParsedProgram baselineProgram = parseLargeTemporalProgram();
   ASSERT_TRUE(baselineProgram.module);
   std::string baselineDiagnosticsText;
   llvm::raw_string_ostream baselineDiagnostics(baselineDiagnosticsText);
-  wafer::compiler::detail::CardExecutableSynthesisStatistics
-      baselineStatistics;
   wafer::compiler::detail::DeterministicBaselineLedger baselineLedger;
   wafer::compiler::ProgramDataHandoff programData;
-  auto baseline = wafer::compiler::detail::synthesizeCardExecutable(
-      *baselineProgram.module, largeTemporalProgramMetadata(),
-      executionConfig(), wafer::OptimizationConfig::none(), baselineDiagnostics, programData,
-      &baselineStatistics, &baselineLedger, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+  std::vector<std::string> tileDataflowIRTrace;
+  auto baseline =
+      wafer::compiler::detail::synthesizeDeterministicCardExecutable(
+          *baselineProgram.module, largeTemporalProgramMetadata(),
+          executionConfig(), baselineDiagnostics, programData, &baselineLedger,
+          /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
   baselineDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(baseline)) << baselineDiagnosticsText;
   // The deterministic controller consumes proven region-capacity overflows
   // through the finite temporal domain, then compiles the complete
-  // CardExecutable
-  // exactly once. It never constructs the search placement enumeration or
-  // shortlist.
-  EXPECT_EQ(baselineStatistics.shortlistedCandidates, 0u);
-  EXPECT_EQ(baselineStatistics.materializedCandidates, 0u);
+  // CardExecutable exactly once. The baseline entry cannot construct or
+  // observe the search placement enumeration or shortlist.
   EXPECT_EQ(baselineLedger.materializationRejections, 0u);
-  EXPECT_EQ(baselineLedger.baselineCardModuleMaterializations, 2u);
-  EXPECT_GT(baselineLedger.baselineScopedCardModuleMaterializations, 0u);
+  EXPECT_EQ(baselineLedger.baselineCardModuleMaterializations, 1u);
+  EXPECT_EQ(baselineLedger.baselineSourcePreparations, 1u);
+  EXPECT_GT(baselineLedger.baselineMaterializationPreparations, 1u);
+  EXPECT_GT(baselineLedger.baselineRootShardMaterializations, 0u);
   EXPECT_GT(baselineLedger.baselineRegionSPMCapacityOverflowProofs, 0u);
-  EXPECT_GT(baselineLedger.baselineRegionSPMCapacityOverflowProofs,
-            baselineStatistics.allocationFeedbackTransitions);
   EXPECT_GT(baselineLedger.baselineMaximumRegionSPMQueryWorkers, 1u);
   // Exact allocator conflicts can carry several tied structured node
   // relations.
   // The deterministic controller composes their temporal changes in one
   // mutable baseline state. It never creates candidate siblings, progressive
   // promotions, priority selections or lookahead states.
-  EXPECT_EQ(baselineStatistics.allocationFeedbackCandidates, 0u);
-  EXPECT_EQ(baselineStatistics.spmFailureProbeAttempts, 0u);
-  EXPECT_EQ(baselineStatistics.allocationFeedbackProgressivePromotions, 0u);
-  EXPECT_EQ(baselineStatistics.allocationFeedbackLookaheadCandidates, 0u);
-  EXPECT_EQ(baselineStatistics.allocationFeedbackPrioritySelections, 0u);
-  EXPECT_EQ(baselineStatistics.spmFailureProbeTilesSkipped, 0u);
   EXPECT_NE(baselineDiagnosticsText.find(
                 "tile-region-spm-capacity outcome=capacity-exceeded"),
             std::string::npos)
@@ -1754,12 +1813,7 @@ TEST(CardExecutableSynthesisTest,
       baselineDiagnosticsText.find("tile-execution-allocation-feedback-joint"),
       std::string::npos)
       << baselineDiagnosticsText;
-  EXPECT_EQ(baselineStatistics.acceptedCandidates, 0u);
-  EXPECT_EQ(baselineStatistics.selectedExecutableRematerializations, 0u);
-  EXPECT_EQ(baselineStatistics.selectedTemporalWaveLowerBound, 0u);
-  EXPECT_LE(baselineStatistics.selectedPeakAlignedResidencyEstimate,
-            3080192u - 65536u);
-  for (llvm::StringRef tileDataflowIR : baseline->tileDataflowIRTrace) {
+  for (llvm::StringRef tileDataflowIR : tileDataflowIRTrace) {
     EXPECT_NE(tileDataflowIR.find("scf.for"), llvm::StringRef::npos)
         << tileDataflowIR.str();
     const size_t stores = countOccurrences(tileDataflowIR, "wafer.tile.store");
@@ -1768,15 +1822,20 @@ TEST(CardExecutableSynthesisTest,
     EXPECT_NE(tileDataflowIR.find("memref.dealloc"), llvm::StringRef::npos)
         << tileDataflowIR.str();
   }
+}
 
+TEST(CardExecutableSynthesisTest,
+     SearchUsesFiniteTemporalTraversalWhenOneWaveExceedsSPM) {
   ParsedProgram searchProgram = parseLargeTemporalProgram();
   ASSERT_TRUE(searchProgram.module);
   std::string diagnosticsText;
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics statistics;
-  auto executable = wafer::compiler::detail::synthesizeCardExecutable(
+  wafer::compiler::ProgramDataHandoff programData;
+  auto executable = wafer::compiler::detail::searchCardExecutable(
       *searchProgram.module, largeTemporalProgramMetadata(), executionConfig(),
-      wafer::OptimizationConfig::search(), diagnostics, programData, &statistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      diagnostics, programData, &statistics, /*tilePipelineParallelism=*/0,
+      /*requestTileIRTrace=*/true);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
@@ -1787,14 +1846,6 @@ TEST(CardExecutableSynthesisTest,
   EXPECT_GT(statistics.selectedTemporalWaveLowerBound, 1u);
   EXPECT_GT(statistics.selectedInstructionExecutionLowerBound, 1u);
   EXPECT_GT(statistics.selectedPeakOutputTileFootprintEstimate, 0u);
-  EXPECT_NE(
-      baselineDiagnosticsText.find("card-executable-baseline-temporal-refinement"),
-      std::string::npos)
-      << baselineDiagnosticsText;
-  EXPECT_EQ(
-      baselineDiagnosticsText.find("tile-execution-allocation-feedback-priority"),
-      std::string::npos)
-      << baselineDiagnosticsText;
   EXPECT_LE(statistics.selectedPeakAlignedResidencyEstimate, 3080192u - 65536u);
   // Prologue, repeated steady iterations and tail execute sequentially.  They
   // must not multiply simultaneous SPM residency; this generic has three
@@ -1821,10 +1872,10 @@ TEST(CardExecutableSynthesisTest,
   llvm::raw_string_ostream repeatedDiagnostics(repeatedDiagnosticsText);
   wafer::compiler::detail::CardExecutableSynthesisStatistics
       repeatedStatistics;
-  auto repeated = wafer::compiler::detail::synthesizeCardExecutable(
+  auto repeated = wafer::compiler::detail::searchCardExecutable(
       *repeatedProgram.module, largeTemporalProgramMetadata(),
-      executionConfig(), wafer::OptimizationConfig::search(),
-      repeatedDiagnostics, programData, &repeatedStatistics, /*baselineLedger=*/nullptr, /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
+      executionConfig(), repeatedDiagnostics, programData, &repeatedStatistics,
+      /*tilePipelineParallelism=*/0, /*requestTileIRTrace=*/true);
   repeatedDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(repeated)) << repeatedDiagnosticsText;
   EXPECT_EQ(repeatedStatistics.candidateProposals,

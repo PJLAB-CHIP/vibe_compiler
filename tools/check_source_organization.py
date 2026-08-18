@@ -1008,6 +1008,65 @@ def check_retired_rank_candidate_sources_removed(
             )
 
 
+def check_deterministic_baseline_owner(root: Path, errors: list[str]) -> None:
+    compiler_root = root / "lib/Wafer/Compiler"
+    public_header_path = compiler_root / "DeterministicCardExecutableSynthesis.h"
+    implementation_path = compiler_root / "DeterministicCardExecutableSynthesis.cpp"
+    search_header_path = compiler_root / "CardExecutableSynthesis.h"
+    card_materialization_path = (
+        root
+        / "lib/Wafer/Conversion/WaferTensorProgramToCardModule/"
+        "WaferTensorProgramToCardModule.cpp"
+    )
+    public_header = cpp_code(read_required(public_header_path, errors))
+    implementation = cpp_code(read_required(implementation_path, errors))
+    search_header = cpp_code(read_required(search_header_path, errors))
+    card_materialization = cpp_code(
+        read_required(card_materialization_path, errors)
+    )
+
+    forbidden_search_symbols = (
+        "CardExecutableSynthesisStatistics",
+        "TileExecutionCandidate",
+        "deriveShortlist",
+        "StructuredDAGPlacementSearchDomain",
+        "StructuredDAGPlacementEvaluator",
+    )
+    for symbol in forbidden_search_symbols:
+        if symbol in public_header or symbol in implementation:
+            fail(
+                errors,
+                f"deterministic baseline owner still consumes search symbol {symbol}",
+            )
+    if "StructuredDAGPlacementEnumeration.h" in public_header:
+        fail(
+            errors,
+            "deterministic baseline public API still includes placement-search owner",
+        )
+    for symbol in (
+        "DeterministicBaselineLedger",
+        "synthesizeDeterministicCardExecutable",
+    ):
+        if symbol in search_header:
+            fail(
+                errors,
+                f"search synthesis header still owns deterministic baseline symbol {symbol}",
+            )
+    if "splitStructuredRootBoundaries" in card_materialization:
+        fail(
+            errors,
+            "deterministic baseline still calls post-hoc structured-root split",
+        )
+
+    cmake_path = compiler_root / "CMakeLists.txt"
+    cmake_text = read_required(cmake_path, errors)
+    target_body = cmake_target_body(
+        cmake_text, "add_mlir_library", "WaferCompiler", cmake_path, errors
+    )
+    if "DeterministicCardExecutableSynthesis.cpp" not in target_body:
+        fail(errors, "WaferCompiler does not build deterministic baseline owner")
+
+
 def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
     transforms_root = root / "lib/Wafer/Transforms"
     source_root = transforms_root / "MemoryPlanning"
@@ -2075,6 +2134,7 @@ def main() -> int:
     check_tensor_program_to_tile_region_owners(root, errors)
     check_legacy_task_local_selection_removed(root, errors)
     check_retired_rank_candidate_sources_removed(root, errors)
+    check_deterministic_baseline_owner(root, errors)
     check_memory_planning_owners(root, errors)
     check_target_llvm_owners(root, errors)
     check_numeric_dependency_owners(root, errors)

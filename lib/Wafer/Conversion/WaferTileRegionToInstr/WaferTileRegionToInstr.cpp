@@ -1132,9 +1132,6 @@ wafer::convertTileRegionToInstr(TileRegionOp region,
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "full-conversion");
-    mlir::ScopedDiagnosticHandler handler(
-        region.getContext(),
-        [](mlir::Diagnostic &) { return mlir::success(); });
     mlir::ConversionConfig config;
     config.listener = listener;
     conversionSucceeded = mlir::succeeded(

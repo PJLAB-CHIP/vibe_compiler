@@ -406,6 +406,10 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeDdrBoundary(
 
 MemLayout TileRegionBodyEmitter::alignedLayoutForTensor(
     mlir::RankedTensorType tensorType) const {
+  // Blocked layouts require a channel dimension. A rank-zero tensor is one
+  // logical element and remains in the canonical Tensor layout.
+  if (tensorType.getRank() == 0)
+    return MemLayout::Tensor;
   return tensorType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
 }
 
@@ -803,20 +807,23 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
     // boundary whose result dims are constant positions (extent one, the
     // complete result slice of an unpartitioned coordinate) is admitted on
     // top of projected permutations.
-    const bool mapsAreProjectedOrConstant = [&] {
-      for (mlir::Attribute attribute : linalg.getIndexingMaps()) {
-        auto mapAttribute = mlir::dyn_cast<mlir::AffineMapAttr>(attribute);
-        if (!mapAttribute)
+    const bool mapsAreProjectedOrUnitConstant = [&] {
+      llvm::SmallVector<mlir::Value, 4> indexedValues(linalg.getDpsInputs());
+      indexedValues.append(linalg.getDpsInits().begin(),
+                           linalg.getDpsInits().end());
+      llvm::SmallVector<mlir::AffineMap, 4> maps =
+          linalg.getIndexingMapsArray();
+      if (maps.size() != indexedValues.size())
+        return false;
+      for (auto [map, value] : llvm::zip_equal(maps, indexedValues)) {
+        auto type = mlir::dyn_cast<mlir::RankedTensorType>(value.getType());
+        if (!type || !isProjectedPermutationWithUnitConstants(map, type))
           return false;
-        for (mlir::AffineExpr expression : mapAttribute.getValue().getResults())
-          if (!mlir::isa<mlir::AffineDimExpr, mlir::AffineConstantExpr>(
-                  expression))
-            return false;
       }
       return true;
     }();
     if (!linalg.hasOnlyProjectedPermutations() &&
-        !mapsAreProjectedOrConstant &&
+        !mapsAreProjectedOrUnitConstant &&
         mlir::failed(mlir::linalg::inferConvolutionDims(linalg)))
       return fail("unsupported linalg indexing maps");
     return convertStructured(

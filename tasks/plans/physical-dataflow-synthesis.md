@@ -1,8 +1,7 @@
 # Physical Dataflow Synthesis 实施计划
 
-状态：Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure、Q59 compiler entry transaction与Q50.A
-production demand boundary均已闭合。当前由Q49.P在current source-to-package路径上闭合baseline functional legalization及
-policy/structure/probe/materialization隔离，之后建立
+状态：Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure、Q59 compiler entry transaction、Q50.A
+production demand boundary及Q49.P deterministic baseline functional closure均已闭合。当前下一步建立
 Q51.Core的typed assignment、deterministic frontier、incumbent和evaluation/result control seam；随后让
 Q50.S与Q50.B–Q50.K逐轴接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
@@ -401,8 +400,8 @@ probe taxonomy时必须复用同一实现，不能再建baseline-private或searc
 mechanism，不是生成或选择coordinate的控制：任何option-domain construction、constraint propagation、recursive CSP、backtracking、
 candidate/evaluator或winner协议都不得进入`none`的transitive call graph。baseline默认值不限制Q51域。
 
-历史official HF prefill、functional decode、LLaMA block 的 source、oracle、package 和 no-card runner只证明旧入口mechanics，
-未执行真实板端，故不得标`done`。Q49.P的gate经Q59 current compile transaction使用fresh有界小图、overfull-to-fit、五类relation
+历史official HF prefill、functional decode、LLaMA block 的 source、oracle、package 和 no-card runner只证明旧入口mechanics；
+这批历史证据未执行真实板端，不能单独把Q49.P标为`done`。Q49.P的current gate经Q59 compile transaction使用fresh有界小图、overfull-to-fit、五类relation
 定向case及轻量source-to-package/no-card输入，证明CardModule、accepted CardExecutable与package digest稳定、oracle/no-card通过，
 并以fresh阶段计时和work count确认完整CardModule materialization与CardExecutable compilation各一次，scoped probe不构造
 card-shaped/no-work-Tile wrapper。Q51完整new-search链闭合前，Q49.P、Q50各checkpoint和Q51.Core都不执行重型LLaMA block，
@@ -835,6 +834,55 @@ baseline product closure中的旧 search statistics/header，并用 P1–P8 原 
 `WAFER_DUMP_NARROW=1` 的narrow-root定向case虽返回pass，两个probe dump仍各含两个structured compute op；relation
 成功case会无条件打印`IMGFALLBACK-DEBUG`；pinned MLIR verifier也接受非零constant output map的合法上游IR，证明
 current lowering不能假设所有constant天然等价于extent-one zero slice。后续修复须把这些反例变成negative/structural gate。
+
+### 2026-08-18 Q49.P 完成结论
+
+本轮在同一current baseline调用链中完成P1–P8，并逐项复核、修正合入代码；没有建立“DS实现”和“baseline新实现”两条
+平行路径。最终合同如下：
+
+- `none`直接从typed iterator/topology事实构造一个live canonical coordinate；exact rejection只推进预定义、单调、无分支且
+  不回溯的spatial/temporal functional legalization。baseline public API/result/ledger由
+  `DeterministicCardExecutableSynthesis`拥有，不接收旧search statistics、candidate/domain/evaluator、score、shadow schedule或
+  默认IR trace；普通compile的IR print为零，显式caller-owned trace只在accepted result后生成。
+- rank-0或无parallel result轴使用typed unpartitioned coordinate：一个canonical参与Tile、完整result domain、无伪造
+  `shardDimension`；一般ranked workload仍按canonical maximum-participation placement使用最多16个active Tiles，完整Card ABI
+  始终包含16个Tile entry。最终per-Tile lowering/probe由bounded executor并发；这不把baseline描述成single-Tile，也不改变
+  真实板端launch串行约束。
+- 一个immutable `TileMaterializationSourceSession`每次baseline只prepare一次；每个legalization coordinate建立一个mapping-local
+  session。trial从第一个coordinate起只物化一个root/参与Tile shard的detached FuncOp及其exact support closure；所有required
+  root/Tiles fit后才形成一次完整CardModule，并调用一次Q50.0 CardExecutable compile。
+- IndependentDDRStages从observable shard和actual selected edge endpoint推导真实参与root；独立component直接构造并按node顺序
+  拼接，selected RegionCut/Peer carrier在物化transaction中形成DDR store/reload边界。baseline调用链已删除post-hoc
+  `splitStructuredRootBoundaries`；每个compute TileRegion以current-SSA relation的region ownership验证恰一structured root，zero-root
+  和multi-root均fail closed。
+- exact relation fast path补齐bounded totality、restriction失效、complete-reduction source coverage、rank-0 Presburger矩形和
+  constant-map exact条件；generic rectangle recovery在任何昂贵solver工作前检查分段、constraint、local variable及绝对系数，
+  超限返回typed indeterminate。capacity attribution只返回稳定node/type/bytes witness，scratch SSA不逃逸；raw SPM certificate在
+  有无relation时均完整保留。
+- deterministic temporal fallback是贪心functional legalization，不是候选枚举；current已支持reduction iterator temporal tiling。
+  reduction轴spatial partition及partial-result merge仍归Q50.B，完整temporal breakpoint/wave-loop搜索域仍归Q50.E，二者均不反写
+  Q49.P为未完成。
+
+合入代码review另发现并修复了四个会破坏上述合同的实现问题：source-only destination traversal曾先在SPM拼完整spatial shard再
+复制到DDR；source-only clone漏传structured node mapping；RegionCut effect closure漏追resident-fragment DDR读对应的writer，能
+形成跨region读先于写；per-component edge过滤会删除remote incoming PeerFragments，且independent consumer sealed result未进入
+共同materialization cache，导致CROSS重新融合或重算sibling root。修复后carrier、current relation和query cache均以actual
+producer/consumer endpoint及当前IR epoch为准。
+
+本轮fresh验收证据：
+
+1. bounded非search host gate 117/117通过，包含rank-0、reduction、broadcast、window、stride、multi-piece、overfull-to-fit、
+   function-scope escalation、relation remap及CardModule conversion；总wall约16.2秒；
+2. configured build-tree定向lit 3/3通过：CHAIN/CROSS/GEMM均完成source-to-package和no-card，CROSS actual Instr含DTE
+   send/recv/wait；另含reduction layout negative与source-organization gate；
+3. `build/q55-current-fresh`、`build/wafer-board-check`和`build/q54-fresh-model`三棵树均以`-j$(nproc)` fresh增量构建通过；
+4. ledger定向证明source preparation=1、普通coordinate的mapping preparation=1、root/Tile scoped materialization精确、完整
+   CardModule=1、Q50.0 compile=1、默认IR print=0；显式trace覆盖16个ABI Tile，region/function probes实际出现多个并发worker；
+5. 按任务约束没有运行search case或重型LLaMA block。重型LLaMA仍只在Q51完整new-search链闭合后的Q52 bounded scalability
+   profile首次恢复，不以历史输出代签当前结论。
+
+因此Q49.P状态更新为`done`。下一checkpoint是Q51.Core；本结论不声称Q50.B reduction spatial merge、Q50.E complete temporal
+domain或Q51 search已经完成。
 
 ## Q51.Core：Search Control Kernel
 

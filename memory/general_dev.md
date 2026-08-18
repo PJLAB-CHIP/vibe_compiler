@@ -345,10 +345,10 @@ source program
   相同的 `instr-memory-planning-preparation` + `assign-spm-offsets` 序列，probe/final 消费同一 demand 集合）。
   probe evidence 归因必须经 clone-remapped relations（`remapStructuredBufferRelations` +
   `StructuredBufferReplacementListener`），witness 收集沿 store/load/view 链找 transfer 端点。
-- 一 root 一 region：`splitStructuredRootBoundaries`（Conversion lib）在 `lowerTileEntry` 的
-  IndependentDDRStages 模式下把多 root region 反复切分；独立 root 无 crossing 直接切，SSA crossing 的
-  SPM 值用 store/reload spill 过 DDR 边界（spill store 放在 prefix 末尾以观察 in-place 覆写后的值）。
-  通用 split core `splitRegionAfterPrefix` 同时服务 RegionCut（spill 单数/多数）。
+- 一 root 一 region：IndependentDDRStages从observable output shard与actual selected edge endpoint推导该Tile的真实
+  root集合；独立component逐root/closure构造后按canonical node order拼接，connected root由selected RegionCut在物化时直接
+  形成DDR store/reload边界。baseline不再先形成multi-root region再调用post-hoc root splitter；通用
+  `splitRegionAfterPrefix`只服务已选择的RegionCut/resource crossing。
 - `StorageRootMemo`（StructuredBufferRelations.h）：query-local per-value 存储根 memo，内层 set 用
   `unique_ptr` 持有（map rehash 不悬空引用）；只读同一 IR epoch 内共享。
 - baseline controller只消费typed iterator/topology facts、当前coordinate的legality/materialization和exact scoped probe；按typed
@@ -357,18 +357,21 @@ source program
   closure。baseline只保留一个live coordinate；functional legalization transition必须预定义、单调、不分支且不回溯。
 - exact relation的变量/分段数量限制不等于wall-time有界。支持的projected/permuted/static-rectangle语义应沿
   `IndexRelation` builder/composition保留closed-form witness，避免在baseline热路径用generic
-  `PresburgerSet::isEqual/isSubsetOf/subtract`恢复矩形；generic fallback须有preflight和query-local work ledger，资源耗尽返回
-  indeterminate，不能当logical rejection推进coordinate。
-- scoped probe 用 `lowerTensorProgramToTileModule`（单 Tile FuncOp，无 CardModule/TileModule shell、
-  无 no-work wrapper）；完整 CardModule 走 `lowerTensorProgramToCardModule` 并验证完整 Tile domain。
+  `PresburgerSet::isEqual/isSubsetOf/subtract`恢复矩形；generic fallback在任何emptiness/extremum/equality调用前检查变量、分段、
+  每段constraint、local variable和绝对系数上限，资源耗尽返回indeterminate，不能当logical rejection推进coordinate。
+- 一个baseline invocation先建立一次immutable `TileMaterializationSourceSession`，只做source verifier、topology/logical mesh、
+  static output domain和structured-node identity；每个deterministic legalization coordinate只建立mapping-local
+  `TileMaterializationSession`。scoped probe走`lowerRootShards`（一个root/参与Tile的detached FuncOp），同coordinate的完整
+  Tile lifetime走`lowerTileEntries`，全部fit后`lowerCardModule`形成唯一完整CardModule。
 - full CardModule和最终CardExecutable各物化一次；已经exact accepted的executable直接move到输出，不再为winner protocol重物化，
-  也不再运行未被输出消费的schedule/duration分析。可选IR trace在显式请求的consumer边界惰性生成，普通compile不承担打印成本。
+  也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR trace
+  写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。
 - baseline验证只走显式`none`的direct unit、定向lit和source-to-package/no-card case；不运行旧search、旧winner对照或paired
   optimization回归。wall-time只用于发现work-count回归，不能把历史长路径变成每次改动后的门禁。
 - source-to-package 端到端：reference capture 按仓库 dtype 政策是 f16（target 拒绝 f32 GEMM），
   `env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU third_party/python-importer-py311/bin/python
   test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir <dir>`
-  后 `TX8_DEPS_ROOT=/root/dlc_dev/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
+  后 `TX8_DEPS_ROOT=<repo>/third_party/tx8_deps build/q55-current-fresh/bin/wafer-compile --input-program-dir <dir>
   --output-dir <pkg> --num-partitions=1 --optimization-policy=none`。
 - Q51完整new-search链闭合前，不执行重型LLaMA block的`none`或`search`，包括Q49.P、Q50各checkpoint、Q51.Core、普通
   regression和诊断重跑；使用有界小图、同relation结构的定向case和上述轻量source-to-package入口。重型LLaMA首次只在Q52

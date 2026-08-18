@@ -449,6 +449,16 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
         "reduction temporal traversal lacks its exact output relation");
     return mlir::failure();
   }
+  auto outputType = mlir::dyn_cast<mlir::RankedTensorType>(
+      sourceReduction.getDpsInits().front().getType());
+  if (!isProjectedPermutationWithUnitConstants(
+          indexingMaps[outputMapIndex], outputType)) {
+    setFailureReason(
+        failureReason,
+        "reduction output relation requires projected dimensions or "
+        "constant-zero extent-one positions");
+    return mlir::failure();
+  }
   for (auto [resultDimension, expression] :
        llvm::enumerate(indexingMaps[outputMapIndex].getResults())) {
     auto loopDimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
@@ -870,6 +880,16 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
     setFailureReason(
         failureReason,
         "configured structured traversal lacks its exact output relation");
+    return mlir::failure();
+  }
+  auto outputType = mlir::dyn_cast<mlir::RankedTensorType>(
+      sourceCompute.getDpsInits().front().getType());
+  if (!isProjectedPermutationWithUnitConstants(maps[outputMapIndex],
+                                                outputType)) {
+    setFailureReason(
+        failureReason,
+        "configured output relation requires projected dimensions or "
+        "constant-zero extent-one positions");
     return mlir::failure();
   }
   llvm::SmallVector<int64_t, 4> parallelTileSizes;

@@ -43,7 +43,9 @@ getNodeSpatialAxes(const StructuredDAGNode &node);
 /// role from operation names or result shapes.
 struct StructuredDAGObservablePlacement {
   uint32_t outputIndex = 0;
-  unsigned shardDimension = 0;
+  /// Missing for an unpartitioned output, which is wholly owned by its one
+  /// participating Tile. No sentinel or fabricated axis is permitted.
+  std::optional<unsigned> shardDimension;
   llvm::SmallVector<TileId, 16> tiles;
 };
 

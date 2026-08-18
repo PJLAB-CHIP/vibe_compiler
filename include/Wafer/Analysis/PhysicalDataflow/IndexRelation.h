@@ -29,6 +29,9 @@ enum class IndexRelationStatus {
 struct IndexRelationLimits {
   unsigned maxVariables = 32;
   unsigned maxDisjuncts = 8;
+  unsigned maxConstraintsPerDisjunct = 1024;
+  unsigned maxLocalVariablesPerDisjunct = 32;
+  uint64_t maxAbsoluteCoefficient = uint64_t{1} << 50;
 };
 
 struct IndexRelationResult;
@@ -184,12 +187,12 @@ public:
   IndexRelationQueryResult
   implies(const IndexRelation &other,
           const IndexRelationLimits &limits = IndexRelationLimits()) const;
-  /// True when construction already proves the relation single-valued and
-  /// total over its destination box (an affine map flattened to Presburger
-  /// constraints with static shape bounds). Callers may skip redundant
-  /// generic domain/range containment proofs for such relations.
-  bool hasExactAffineMapConstruction() const {
-    return functionalByConstruction;
+  /// True when construction proves that the relation is total over its full
+  /// static destination box and every mapped point lies in the static source
+  /// box. This is stronger than affine-map functionality: source bounds can
+  /// clip an otherwise single-valued affine map.
+  bool hasTotalBoundedAffineMapConstruction() const {
+    return totalBoundedAffineMapByConstruction;
   }
 
 private:
@@ -211,6 +214,9 @@ private:
   /// functionality query returns proven-true without running the generic
   /// self-composition proof for such relations.
   bool functionalByConstruction = false;
+  /// True only for an affine construction whose source bounds cannot clip
+  /// any point in the complete destination box.
+  bool totalBoundedAffineMapByConstruction = false;
 
   friend struct IndexRelationResult;
 };

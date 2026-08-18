@@ -469,13 +469,27 @@ TileRegionBodyEmitter::convertScfFor(mlir::scf::ForOp forOp,
   for (auto [index, init] : llvm::enumerate(forOp.getInitArgs())) {
     ExternalCarry carry;
     auto external = externalBuffers.find(init);
+    const bool writable = writableExternalBuffers.contains(init);
     const bool tracesDestination = tracesExternalDestination(
         sourceYield.getResults()[index], forOp.getRegionIterArgs()[index]);
+    // A temporally tiled consumer may carry a sealed RegionCut tensor through
+    // scf.for solely to keep the functional tensor result list uniform. The
+    // read-only value is an identity recurrence, so retain its typed DDR
+    // memref across the loop and materialize only the exact extract_slice in
+    // the body. Converting this identity carry through
+    // materializeControlFlowValue would eagerly load the complete spatial
+    // shard into SPM before the loop, making further temporal refinement
+    // unable to change the actual allocation. Writable carries keep the
+    // existing exact destination-chain proof; a read-only carry is admitted
+    // only for the literal identity yield and cannot hide an update.
+    const bool readOnlyIdentityCarry =
+        !writable && sourceYield.getResults()[index] ==
+                         forOp.getRegionIterArgs()[index];
     if (external != externalBuffers.end() &&
-        writableExternalBuffers.contains(init) && tracesDestination) {
+        ((writable && tracesDestination) || readOnlyIdentityCarry)) {
       initArgs.push_back(external->second);
       carry.external = true;
-      carry.writable = writableExternalBuffers.contains(init);
+      carry.writable = writable;
       carry.baseBuffer = external->second;
       if (auto base = directYieldBuffers.find(init);
           base != directYieldBuffers.end())

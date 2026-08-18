@@ -905,3 +905,47 @@
   semantic coordinate。需要在scratch内追踪SSA时只在scope内消费并转换，不能把地址或`Value`留给controller。
 - 新增semantic flag或“narrow”入口时，测试必须检查flag有真实consumer以及actual IR的all-and-only identity/cardinality；
   `>= 1`、diagnostic缺失或仅证明target存在，都无法证明sibling没有被物化。
+
+## DDR stage 不能先在 SPM 拼完整 spatial shard再复制到 DDR
+
+- 现象：temporal tile已从大wave持续缩小，root-region probe仍保留两个完整`memref<256x4096xf16>` SPM allocation；
+  `NoneJointlyRefinesExplicitProducerStageAndConsumerDemand`长期不收敛，缩temporal coordinate对峰值容量基本无效。
+- 根因：independent consumer stage先用`getOrMaterializeSource`把完整spatial shard组装进SPM，再创建第二个完整SPM destination，
+  最后才整体copy到DDR。controller缩的是leaf workset，而物化器在leaf之外重建了与temporal tile无关的full-shard residency。
+- 修复模式：先分配最终DDR stage destination，把它作为wave loop carry，逐leaf调用
+  `materializeCandidateRootTileIntoDestination`直接写DDR；完成后seal为read-only并缓存exact slice。SPM只保留当前leaf/staging，
+  不再出现full-shard assembly。
+- 防复发：overfull-to-fit case同时检查收缩后的actual Tile entry/function-scope SPM，不只看temporal shape或region-local leaf；
+  compiler work应在秒级完成且最终CardModule/CardExecutable仍各一次。
+
+## 扩展 FuncOp 参数必须同步 argument attrs
+
+- 现象：小型unit里narrow boundary probe通过，但正常source-to-package的frontend函数带`arg_attrs`时，追加一个boundary参数后
+  verifier报告“argument attribute array ... got 3, expected 4”。
+- 根因：代码分别调用`setFunctionType`和entry block `addArguments`，绕过了FuncOp对signature、block argument和argument attr
+  数组的一体化维护。
+- 修复模式：使用pinned MLIR的`FuncOp::insertArgument`追加typed boundary参数及空`DictionaryAttr`，由op API原子更新三者。
+- 防复发：narrow root probe除无attr unit外必须经过一个带frontend argument metadata的真实source-to-package gate；本轮
+  CHAIN/CROSS/GEMM定向lit即覆盖该路径。
+
+## 跨RegionCut的显式DDR读写也必须进入effect closure
+
+- 现象：peer assembly region从source-only DDR载入resident fragment，但生产该DDR的compute/store落在后续region；actual IR形成
+  read-before-write，后续region同时包含producer与consumer两个structured root。
+- 根因：`splitAtRegionCut`只沿SSA依赖和SPM初始化load闭包移动prefix；compiler-owned DDR的store/load通过memory effect关联，
+  不存在把writer拉入prefix的SSA边。
+- 修复模式：从prefix内所有memref读取收集view root，在同一TileRegion内找到写入相同root的`wafer.tile.store`，把writer及其
+  backward compute closure加入prefix并迭代到effect fixed point；随后再按当前IR relation验证每个compute region恰一root。
+- 防复发：resident+peer混合fanin必须检查actual region顺序、send/recv/wait和一root一region，不能只检查通信数量或最终verifier。
+
+## root/component裁剪必须按本Tile拥有的edge endpoint保留策略
+
+- 现象：多输出CROSS或两个独立consumer在同一Tile时，per-component materializer删除remote incoming PeerFragments，ordinary
+  output traversal回退为本地融合remote producer；另一路中独立consumer已经seal到DDR，却在outgoing peer查询时被重新计算。
+- 根因：edge过滤错误要求producer、consumer两个structured node都属于当前Tile component；remote producer按定义不在当前Tile
+  root集合。独立stage又只在已有global materialization cache entry时更新value，cache miss时没有插入sealed result。
+- 修复模式：策略只要当前component实际拥有producer endpoint或consumer endpoint之一就保留；独立consumer stage完成后对共同
+  `materialized` cache执行insert-or-update，子窗口从sealed DDR view派生。source-only destination traversal还必须传递当前clone的
+  structured node mapping，否则BodyEmitter无法形成result-buffer relation。
+- 防复发：用多输出transpose→consumer的16-Tile source-to-package/no-card gate，同时由内部postcondition拒绝zero-root/multi-root；
+  单纯的小型single-output fixture不足以覆盖remote endpoint裁剪和outgoing cache复用。

@@ -679,6 +679,7 @@ public:
     constexpr uint64_t preferredMaximumOrderedReductionOperations = 4096;
     uint64_t tupleCount = static_cast<uint64_t>(*reductionTupleCount);
     bool preferNativeReduction =
+        resultType.getRank() != 0 &&
         tupleCount > (preferredMaximumOrderedReductionOperations - 4) / 4;
     if (preferNativeReduction) {
       // The native CT reduction encodes a complete logical reduction rather
@@ -742,7 +743,9 @@ public:
       MemLayout expectedInputLayout =
           inputType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
       MemLayout expectedResultLayout =
-          resultType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
+          resultType.getRank() == 0
+              ? MemLayout::Tensor
+              : (resultType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx);
       MemoryAttr inputMemory = wafer::getWaferMemoryAttr(inputType);
       MemoryAttr resultMemory = wafer::getWaferMemoryAttr(resultType);
       std::optional<LogicalFormat> logicalFormat;

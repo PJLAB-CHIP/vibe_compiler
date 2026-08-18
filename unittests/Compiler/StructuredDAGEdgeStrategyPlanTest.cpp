@@ -55,8 +55,8 @@ protected:
             std::initializer_list<int64_t> tileValues) {
     StructuredDAGNodePlacement result;
     result.node = node;
-    result.shardDimension = dimension;
-    result.spatialIteratorDimension = dimension;
+    result.spatialPartition =
+        StructuredDAGSpatialPartition{dimension, dimension};
     for (int64_t value : tileValues)
       result.tiles.push_back(TileId(value));
     return result;

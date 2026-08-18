@@ -14,6 +14,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace wafer {
@@ -162,13 +163,11 @@ struct StructuredBoundarySupply {
 /// Unsupported semantics reject this actual candidate atomically; the API
 /// never repairs placement or substitutes a different action.
 ///
-/// `boundarySupplies`/`boundaryArgumentCount` are the narrow per-root
-/// construction contract: the extra entry arguments never reach a sibling
-/// structured root, so the sibling producer's compute is never pulled into
-/// this scope. `externalBoundaryCarrier` declares every RegionCut/SpillReload
-/// carrier boundary as externally carried; the deterministic baseline full
-/// path leaves it false so the canonical carrier emits the exact DDR
-/// store/reload and splits the region at construction time.
+/// `boundarySupplies`/`boundaryArgumentCount` and `scopedRootNode` form the
+/// narrow per-root construction contract. The extra entry arguments cut
+/// incoming sibling dependencies, while the typed node identity restricts
+/// demand materialization to that root's exact Tile domains. Omission selects
+/// the ordinary complete Tile action lowering.
 mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,
     llvm::ArrayRef<SpatialOutputShard> outputShards, TileId currentTile,
@@ -181,16 +180,7 @@ mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     StructuredMaterializationRelations *materializationRelations = nullptr,
     llvm::ArrayRef<StructuredBoundarySupply> boundarySupplies = {},
     uint64_t boundaryArgumentCount = 0,
-    bool externalBoundaryCarrier = false);
-
-/// Gives every TileRegion of one Tile entry exactly one structured compute
-/// root by repeatedly splitting multi-root regions at structured root
-/// boundaries. The deterministic baseline (IndependentDDRStages) is the only
-/// caller; search-owned region grouping is never rewritten here. Relations
-/// are retargeted onto the split regions in place.
-mlir::LogicalResult splitStructuredRootBoundaries(
-    mlir::func::FuncOp entry, StructuredMaterializationRelations &relations,
-    std::string *failureReason = nullptr);
+    std::optional<uint32_t> scopedRootNode = std::nullopt);
 
 } // namespace wafer
 

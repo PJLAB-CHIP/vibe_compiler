@@ -51,16 +51,46 @@ static bool exceedsVariableLimit(unsigned destinationRank, unsigned sourceRank,
          sourceRank > limits.maxVariables - destinationRank;
 }
 
+static bool exceedsDisjunctWorkLimits(
+    const IntegerRelation &disjunct, const IndexRelationLimits &limits) {
+  if (disjunct.getNumVars() > limits.maxVariables ||
+      disjunct.getNumConstraints() > limits.maxConstraintsPerDisjunct ||
+      disjunct.getNumLocalVars() > limits.maxLocalVariablesPerDisjunct)
+    return true;
+  const llvm::DynamicAPInt maximumCoefficient(
+      static_cast<int64_t>(limits.maxAbsoluteCoefficient));
+  auto rowExceeds = [&](llvm::ArrayRef<llvm::DynamicAPInt> row) {
+    return llvm::any_of(row, [&](const llvm::DynamicAPInt &coefficient) {
+      return llvm::abs(coefficient) > maximumCoefficient;
+    });
+  };
+  for (unsigned row = 0; row < disjunct.getNumEqualities(); ++row)
+    if (rowExceeds(disjunct.getEquality(row)))
+      return true;
+  for (unsigned row = 0; row < disjunct.getNumInequalities(); ++row)
+    if (rowExceeds(disjunct.getInequality(row)))
+      return true;
+  return false;
+}
+
 static bool exceedsRelationLimits(const PresburgerRelation &relation,
                                   const IndexRelationLimits &limits) {
   return relation.getNumVars() > limits.maxVariables ||
-         relation.getNumDisjuncts() > limits.maxDisjuncts;
+         relation.getNumDisjuncts() > limits.maxDisjuncts ||
+         llvm::any_of(relation.getAllDisjuncts(),
+                      [&](const IntegerRelation &disjunct) {
+                        return exceedsDisjunctWorkLimits(disjunct, limits);
+                      });
 }
 
 static bool exceedsSetLimits(const PresburgerSet &set,
                              const IndexRelationLimits &limits) {
   return set.getNumVars() > limits.maxVariables ||
-         set.getNumDisjuncts() > limits.maxDisjuncts;
+         set.getNumDisjuncts() > limits.maxDisjuncts ||
+         llvm::any_of(set.getAllDisjuncts(),
+                      [&](const IntegerRelation &disjunct) {
+                        return exceedsDisjunctWorkLimits(disjunct, limits);
+                      });
 }
 
 static bool isCompatibleSet(const PresburgerSet &set, unsigned rank) {
@@ -299,26 +329,32 @@ IndexRelationResult IndexRelation::fromAffineMap(
           llvm::SmallVector<int64_t, 4>(destinationShape);
       result.relation->projectedRectangleSourceShape =
           llvm::SmallVector<int64_t, 4>(sourceShape);
-    }
-  } else {
-    // A complete-reduction map sends every destination iterator to a
-    // constant position: the relation is exactly "every destination point
-    // covers the complete source domain". Attach the closed-form full-image
-    // pattern (-2 = unconstrained source dimension) so the arithmetic
-    // rectangle fast paths never enter generic Presburger equality recovery.
-    const bool allConstantZeroDestination = llvm::all_of(
-        map.getResults(), [](mlir::AffineExpr expression) {
-          auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
-          return constant && constant.getValue() == 0;
-        });
-    if (allConstantZeroDestination &&
-        map.getNumResults() == sourceShape.size()) {
-      llvm::SmallVector<int64_t, 4> pattern(sourceShape.size(), -2);
-      result.relation->projectedRectanglePattern = std::move(pattern);
-      result.relation->projectedRectangleDestinationShape =
-          llvm::SmallVector<int64_t, 4>(destinationShape);
-      result.relation->projectedRectangleSourceShape =
-          llvm::SmallVector<int64_t, 4>(sourceShape);
+
+      // Functionality alone does not make the bounded map total: a source
+      // extent smaller than the mapped destination extent clips the relation
+      // domain. Prove the stronger property dimension by dimension before a
+      // caller may skip the generic domain/range checks.
+      bool totalAndBounded = true;
+      for (auto [sourceDimension, expression] :
+           llvm::enumerate(map.getResults())) {
+        if (auto dimension =
+                mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
+          if (destinationShape[dimension.getPosition()] >
+              sourceShape[sourceDimension]) {
+            totalAndBounded = false;
+            break;
+          }
+          continue;
+        }
+        auto constant =
+            mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+        if (!constant || constant.getValue() < 0 ||
+            constant.getValue() >= sourceShape[sourceDimension]) {
+          totalAndBounded = false;
+          break;
+        }
+      }
+      result.relation->totalBoundedAffineMapByConstruction = totalAndBounded;
     }
   }
   return result;
@@ -390,8 +426,30 @@ IndexRelationResult IndexRelation::fromCommonIterationDomain(
           auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
           return constant && constant.getValue() == 0;
         });
+    const bool singletonDestination =
+        llvm::all_of(destinationShape,
+                     [](int64_t extent) { return extent == 1; });
+    const bool sourceCoversCompleteDomain =
+        iterationToSource.isProjectedPermutation(
+            /*allowZeroInResults=*/true) &&
+        llvm::all_of(llvm::enumerate(iterationToSource.getResults()),
+                     [&](auto indexedExpression) {
+                       const unsigned sourceDimension =
+                           indexedExpression.index();
+                       mlir::AffineExpr expression = indexedExpression.value();
+                       if (auto dimension =
+                               mlir::dyn_cast<mlir::AffineDimExpr>(
+                                   expression))
+                         return iterationShape[dimension.getPosition()] ==
+                                sourceShape[sourceDimension];
+                       auto constant =
+                           mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+                       return constant && constant.getValue() == 0 &&
+                              sourceShape[sourceDimension] == 1;
+                     });
     if (allConstantZeroDestination &&
-        iterationToDestination.getNumResults() == iterationShape.size()) {
+        iterationToDestination.getNumResults() == destinationShape.size() &&
+        singletonDestination && sourceCoversCompleteDomain) {
       llvm::SmallVector<int64_t, 4> pattern(sourceShape.size(), -2);
       result.relation->projectedRectanglePattern = std::move(pattern);
       result.relation->projectedRectangleDestinationShape =
@@ -627,15 +685,24 @@ StaticRectangularIndexSetResult IndexSetResult::getExactStaticRectangularDomain(
     return failRectangle(
         status,
         reason.empty() ? "rectangular recovery requires an exact set" : reason);
+  // Apply the complete structural work preflight before any emptiness,
+  // extremum or equality query. Variable/disjunct counts alone do not bound
+  // Presburger work when a disjunct has many constraints, locals or very
+  // large coefficients.
+  if (exceedsSetLimits(*set, limits))
+    return failRectangle(IndexRelationStatus::ResourceExhausted,
+                         "rectangular recovery exceeds index-set budget");
   if (set->isIntegerEmpty())
     return failRectangle(IndexRelationStatus::Unsupported,
                          "empty index demand has no transfer rectangle");
-  if (set->getNumVars() > limits.maxVariables ||
-      set->getNumDisjuncts() > limits.maxDisjuncts)
-    return failRectangle(IndexRelationStatus::ResourceExhausted,
-                         "rectangular recovery exceeds index-set budget");
 
   const unsigned rank = set->getSpace().getNumSetDimVars();
+  // Every nonempty zero-dimensional Presburger set is the singleton {()}.
+  // Avoid generic set equality here: pinned MLIR's symbolic optimizer requires
+  // at least one set dimension and asserts for this scalar case.
+  if (rank == 0)
+    return StaticRectangularIndexSetResult{
+        IndexRelationStatus::Exact, StaticRectangularIndexSet{{}, {}}, {}};
   llvm::SmallVector<int64_t, 4> offsets(rank,
                                         std::numeric_limits<int64_t>::max());
   llvm::SmallVector<int64_t, 4> inclusiveUpper(
@@ -736,15 +803,11 @@ IndexRelationResult IndexRelation::intersectDestinationDomain(
   if (exceedsRelationLimits(restricted, limits))
     return fail(IndexRelationStatus::ResourceExhausted,
                 "destination-domain intersection exceeds budget");
-  // Restricting the domain keeps the map semantics: the closed-form
-  // rectangle pattern survives the intersection unchanged.
+  // An arbitrary restriction keeps single-valuedness but invalidates proofs
+  // about the complete rectangular domain. Do not let a stale construction
+  // pattern bypass the intersection.
   IndexRelation restrictedRelation(std::move(restricted), status);
   restrictedRelation.functionalByConstruction = functionalByConstruction;
-  restrictedRelation.projectedRectanglePattern = projectedRectanglePattern;
-  restrictedRelation.projectedRectangleDestinationShape =
-      projectedRectangleDestinationShape;
-  restrictedRelation.projectedRectangleSourceShape =
-      projectedRectangleSourceShape;
   return IndexRelationResult{status, std::move(restrictedRelation), {}};
 }
 
@@ -758,15 +821,10 @@ IndexRelation::intersectSourceDomain(const PresburgerSet &domain,
   if (exceedsRelationLimits(restricted, limits))
     return fail(IndexRelationStatus::ResourceExhausted,
                 "source-domain intersection exceeds budget");
-  // Restricting the range keeps the map semantics: the closed-form
-  // rectangle pattern survives the intersection unchanged.
+  // Range restriction likewise invalidates totality and the original
+  // projected-rectangle proof while preserving single-valuedness.
   IndexRelation restrictedRelation(std::move(restricted), status);
   restrictedRelation.functionalByConstruction = functionalByConstruction;
-  restrictedRelation.projectedRectanglePattern = projectedRectanglePattern;
-  restrictedRelation.projectedRectangleDestinationShape =
-      projectedRectangleDestinationShape;
-  restrictedRelation.projectedRectangleSourceShape =
-      projectedRectangleSourceShape;
   return IndexRelationResult{status, std::move(restrictedRelation), {}};
 }
 
@@ -855,9 +913,6 @@ StaticRectangularIndexSetResult IndexRelation::getExactStaticRectangularImage(
       staticRectangularDomain(destinationOffsets, destinationSizes, limits);
   if (!destination.isExact())
     return failRectangle(destination.status, destination.reason);
-  llvm::errs() << "IMGFALLBACK-DEBUG generic image path rank="
-               << getDestinationRank() << "->" << getSourceRank()
-               << "\n";
   IndexSetResult exactImage = image(*destination.set, limits);
   return exactImage.getExactStaticRectangularDomain(limits);
 }

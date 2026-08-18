@@ -7,6 +7,7 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Pipelines/Pipelines.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -119,6 +120,31 @@ TEST_F(StructuredBufferRelationsTest,
 }
 
 TEST_F(StructuredBufferRelationsTest,
+       ReplacementListenerTracksMultipleReplacementHops) {
+  mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function = *module->getOps<mlir::func::FuncOp>().begin();
+  auto first = *function.getOps<mlir::arith::ConstantOp>().begin();
+  mlir::OpBuilder builder(function.getBody().front().getTerminator());
+  auto second = builder.create<mlir::arith::ConstantIntOp>(
+      first.getLoc(), /*value=*/true, /*width=*/1);
+  auto third = builder.create<mlir::arith::ConstantIntOp>(
+      first.getLoc(), /*value=*/false, /*width=*/1);
+
+  wafer::StructuredMaterializationRelations relations;
+  relations.operationResultBuffers.push_back(
+      {/*structuredNodeId=*/7, first.getResult()});
+  wafer::compiler::detail::StructuredBufferReplacementListener listener(
+      relations);
+  listener.notifyOperationReplaced(first.getOperation(), second.getResult());
+  EXPECT_EQ(relations.operationResultBuffers.front().buffer,
+            second.getResult());
+  listener.notifyOperationReplaced(second.getOperation(), third.getResult());
+  EXPECT_EQ(relations.operationResultBuffers.front().buffer, third.getResult());
+  EXPECT_TRUE(listener.preservedAllRelations());
+}
+
+TEST_F(StructuredBufferRelationsTest,
          StrictRemapFailsClosedOnUnmappedRelationAndReportsTheIssue) {
   mlir::OwningOpRef<mlir::ModuleOp> module = createModule();
   ASSERT_TRUE(module);
@@ -156,6 +182,14 @@ TEST_F(StructuredBufferRelationsTest,
   EXPECT_EQ(issue.unmappedOperandBuffers.size(), 0u);
   ASSERT_EQ(issue.unmappedOutputBuffers.size(), 1u);
   EXPECT_EQ(issue.unmappedOutputBuffers.front().outputIndex, 1u);
+
+  // Reusing the caller-owned issue for a later successful remap must not
+  // retain stale failure entries from the previous attempt.
+  auto recovered = wafer::compiler::detail::
+      remapStructuredBufferRelationsComplete(relations, completeMapping,
+                                             &issue);
+  ASSERT_TRUE(mlir::succeeded(recovered));
+  EXPECT_TRUE(issue.empty());
 
   // The loose remap keeps omitting for one-shot call sites.
   wafer::StructuredMaterializationRelations loose =

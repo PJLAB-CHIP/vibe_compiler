@@ -68,7 +68,7 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
   failure.spmDemandCount = spmFailure.demandCount;
   auto convertEvidence = [&](const auto &demand) {
     TileMemoryPlanningFailure::SPMDemandEvidence evidence{
-        demand.location, demand.allocation, demand.type, demand.bytes, {}};
+        demand.location, demand.type, demand.bytes, {}};
     evidence.userLocations.append(demand.userLocations.begin(),
                                   demand.userLocations.end());
     // A staged DDR wave is written by the producer's seal store and read by
@@ -85,9 +85,15 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
         continue;
       for (mlir::Operation *user : value.getUsers()) {
         if (auto store = mlir::dyn_cast<StorageStoreOp>(user)) {
-          witnesses.push_back(store.getSource());
+          if (store.getDest() == value)
+            witnesses.push_back(store.getSource());
+          if (store.getSource() == value)
+            witnesses.push_back(store.getDest());
         } else if (auto load = mlir::dyn_cast<StorageLoadOp>(user)) {
-          witnesses.push_back(load.getDest());
+          if (load.getSource() == value)
+            witnesses.push_back(load.getDest());
+          if (load.getDest() == value)
+            witnesses.push_back(load.getSource());
         } else if (auto view =
                        mlir::dyn_cast<mlir::ViewLikeOpInterface>(user)) {
           for (mlir::Value result : view->getResults())
@@ -109,17 +115,6 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
                        mlir::dyn_cast<InstrTDMADataMoveOp>(user)) {
           witnesses.push_back(dataMove.getSource());
           witnesses.push_back(dataMove.getDest());
-        } else {
-          // A compute (or other downstream consumer) owning this buffer is
-          // destination-style: its materialized destination is the value the
-          // result relation names. Ordinary SSA results are followed as
-          // well for non-DPS consumers.
-          if (auto dps =
-                  mlir::dyn_cast<mlir::DestinationStyleOpInterface>(user))
-            for (mlir::Value init : dps.getDpsInits())
-              witnesses.push_back(init);
-          for (mlir::Value result : user->getResults())
-            witnesses.push_back(result);
         }
       }
     }

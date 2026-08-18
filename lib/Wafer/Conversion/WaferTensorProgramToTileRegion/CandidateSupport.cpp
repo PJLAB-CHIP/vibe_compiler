@@ -141,6 +141,28 @@ llvm::SmallVector<unsigned, 2> getReductionLoopDims(mlir::linalg::LinalgOp op) {
   return dims;
 }
 
+bool isProjectedPermutationWithUnitConstants(
+    mlir::AffineMap map, mlir::RankedTensorType indexedType) {
+  if (!map || !indexedType ||
+      map.getNumResults() != static_cast<unsigned>(indexedType.getRank()))
+    return false;
+  llvm::DenseSet<unsigned> projectedDimensions;
+  for (auto [resultDimension, expression] :
+       llvm::enumerate(map.getResults())) {
+    if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
+      if (dimension.getPosition() >= map.getNumDims() ||
+          !projectedDimensions.insert(dimension.getPosition()).second)
+        return false;
+      continue;
+    }
+    auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+    if (!constant || constant.getValue() != 0 ||
+        indexedType.getDimSize(resultDimension) != 1)
+      return false;
+  }
+  return true;
+}
+
 mlir::LogicalResult
 buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
                        mlir::linalg::LinalgOp op, mlir::AffineMap outputMap,
@@ -171,6 +193,16 @@ buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
       (hasReductionSplit &&
        candidateReductionOffsets.size() != reductionLoopDims.size())) {
     setFailureReason(failureReason, "candidate reduction split rank mismatch");
+    return mlir::failure();
+  }
+
+  auto outputType = mlir::dyn_cast<mlir::RankedTensorType>(
+      op.getDpsInits().front().getType());
+  if (!isProjectedPermutationWithUnitConstants(outputMap, outputType)) {
+    setFailureReason(
+        failureReason,
+        "candidate tile requires a projected output map with only "
+        "constant-zero extent-one positions");
     return mlir::failure();
   }
 

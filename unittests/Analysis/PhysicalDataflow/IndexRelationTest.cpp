@@ -472,6 +472,77 @@ TEST(IndexRelationTest, ProjectedRectangleFastPathPreservesSourceBounds) {
   EXPECT_FALSE(preimage.contains({4}));
 }
 
+TEST(PhysicalAccessRelationTest, RejectsAffineMapClippedByEndpointBounds) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  IndexRelationResult clipped = IndexRelation::fromAffineMap(
+      mlir::AffineMap::get(1, 0, {d0 + 5}, &context),
+      /*destinationShape=*/{10}, /*sourceShape=*/{10});
+  ASSERT_TRUE(clipped.isExact());
+  EXPECT_FALSE(clipped.get()->hasTotalBoundedAffineMapConstruction());
+
+  auto memory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                       wafer::MemLayout::Tensor);
+  mlir::MemRefType endpoint = mlir::MemRefType::get(
+      {10}, mlir::Float16Type::get(&context),
+      mlir::MemRefLayoutAttrInterface{}, memory);
+  EXPECT_TRUE(mlir::failed(PhysicalAccessRelation::create(
+      endpoint, /*iterationShape=*/{10}, *clipped.get(),
+      /*requireInjective=*/true)));
+}
+
+TEST(IndexRelationTest, RecoversNonemptyZeroDimensionalRectangleWithoutSolver) {
+  IndexSetResult scalarDomain = IndexRelation::staticDomain({});
+  ASSERT_TRUE(scalarDomain.isExact());
+  StaticRectangularIndexSetResult rectangle =
+      scalarDomain.getExactStaticRectangularDomain();
+  ASSERT_TRUE(rectangle.isExact()) << rectangle.reason;
+  EXPECT_TRUE(rectangle.domain->offsets.empty());
+  EXPECT_TRUE(rectangle.domain->sizes.empty());
+}
+
+TEST(IndexRelationTest, DomainRestrictionInvalidatesProjectedRectangleProof) {
+  IndexRelationResult identity = IndexRelation::identity({10});
+  IndexSetResult prefix =
+      IndexRelation::staticRectangularDomain(/*offsets=*/{0}, /*sizes=*/{5});
+  ASSERT_TRUE(identity.isExact());
+  ASSERT_TRUE(prefix.isExact());
+
+  IndexRelationResult restricted =
+      identity.get()->intersectDestinationDomain(*prefix.set);
+  ASSERT_TRUE(restricted.isExact());
+  StaticRectangularIndexSetResult clippedImage =
+      restricted.get()->getExactStaticRectangularImage(/*offsets=*/{5},
+                                                        /*sizes=*/{1});
+  EXPECT_FALSE(clippedImage.isExact());
+  EXPECT_EQ(clippedImage.status, IndexRelationStatus::Unsupported);
+}
+
+TEST(IndexRelationTest,
+     CompleteReductionShortcutRequiresCompleteSourceCoverage) {
+  mlir::MLIRContext context;
+  mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
+  mlir::AffineExpr zero = mlir::getAffineConstantExpr(0, &context);
+  IndexRelationResult reduction = IndexRelation::fromCommonIterationDomain(
+      mlir::AffineMap::get(2, 0, {zero}, &context),
+      /*destinationShape=*/{1},
+      mlir::AffineMap::get(2, 0, {d0, zero}, &context),
+      /*sourceShape=*/{4, 4}, /*iterationShape=*/{4, 4});
+  ASSERT_TRUE(reduction.isExact());
+
+  StaticRectangularIndexSetResult image =
+      reduction.get()->getExactStaticRectangularImage(/*offsets=*/{0},
+                                                       /*sizes=*/{1});
+  ASSERT_TRUE(image.isExact()) << image.reason;
+  EXPECT_EQ(image.domain->offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 0}));
+  EXPECT_EQ(image.domain->sizes, (llvm::SmallVector<int64_t, 4>{4, 1}));
+}
+
 TEST(IndexRelationTest, CompositionDoesNotDropIntermediateBounds) {
   mlir::MLIRContext context;
   mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);
@@ -801,6 +872,22 @@ TEST(IndexRelationTest, RepresentsStaticInsertSliceExactly) {
             IndexRelationStatus::Invalid);
   EXPECT_EQ(IndexRelation::staticInsertSlice({8}, {3, 2}, {0, 0}).status,
             IndexRelationStatus::Invalid);
+}
+
+TEST(IndexRelationTest,
+     GenericRectangleRecoveryPreflightsCompleteStructuralWork) {
+  IndexSetResult domain = IndexRelation::staticDomain({4});
+  ASSERT_TRUE(domain.isExact());
+
+  IndexRelationLimits constraintLimit;
+  constraintLimit.maxConstraintsPerDisjunct = 1;
+  EXPECT_EQ(domain.getExactStaticRectangularDomain(constraintLimit).status,
+            IndexRelationStatus::ResourceExhausted);
+
+  IndexRelationLimits coefficientLimit;
+  coefficientLimit.maxAbsoluteCoefficient = 2;
+  EXPECT_EQ(domain.getExactStaticRectangularDomain(coefficientLimit).status,
+            IndexRelationStatus::ResourceExhausted);
 }
 
 } // namespace

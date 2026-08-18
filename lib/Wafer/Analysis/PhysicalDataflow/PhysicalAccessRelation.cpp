@@ -99,11 +99,10 @@ mlir::FailureOr<PhysicalAccessRelation> PhysicalAccessRelation::create(
       iterationToLogical.getPresburgerRelation().getDomainSet();
   PresburgerSet relationRange =
       iterationToLogical.getPresburgerRelation().getRangeSet();
-  // An affine-map-built relation is total over its destination box and its
-  // range lies inside the source box by construction (static shape bounds),
-  // so the generic equality/subset proofs on the same boxes are redundant and
-  // a candidate-hot-path scalability hazard for large shapes.
-  if (!iterationToLogical.hasExactAffineMapConstruction() &&
+  // Only a construction carrying the stronger total-and-in-bounds proof may
+  // skip these generic checks. Affine-map functionality alone is insufficient
+  // because source bounds can clip the relation domain.
+  if (!iterationToLogical.hasTotalBoundedAffineMapConstruction() &&
       (!relationDomain.isEqual(*iterationDomain.set) ||
        !relationRange.isSubsetOf(*endpointDomain.set)))
     return mlir::failure();

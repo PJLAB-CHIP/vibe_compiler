@@ -42,7 +42,6 @@ struct TileMemoryPlanningFailure {
   uint64_t spmDemandCount = 0;
   struct SPMDemandEvidence {
     mlir::LocationAttr location;
-    mlir::Value allocation;
     mlir::Type type;
     uint64_t bytes = 0;
     llvm::SmallVector<mlir::LocationAttr, 4> userLocations;

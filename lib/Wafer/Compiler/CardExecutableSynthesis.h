@@ -4,12 +4,12 @@
 #define WAFER_COMPILER_CARDEXECUTABLESYNTHESIS_H
 
 #include "CardExecutableLowering.h"
+#include "StructuredDAGCandidateSchedule.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Analysis/TheoreticalScheduleCostAnalysis.h"
 #include "Wafer/Compiler/Compilation.h"
 #include "Wafer/Frontend/Program.h"
-#include "Wafer/Support/OptimizationConfig.h"
 #include "Wafer/Support/TargetPolicy.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -138,33 +138,6 @@ struct CardExecutableSynthesisStatistics {
   CardExecutableLoweringStatistics selectedExecutableRematerializationGates;
 };
 
-/// Policy-free baseline work ledger. The deterministic baseline records only
-/// these counters; the candidate search statistics bag is not in its call
-/// closure. None of these values is persisted in IR or package files.
-struct DeterministicBaselineLedger {
-  /// Closed per-edge single-coordinate exact-demand queries: the baseline
-  /// queries each structured edge exactly once against the one closed
-  /// producer/consumer shard pair.
-  uint64_t exactDemandSatisfiedEdges = 0;
-  /// Typed abort state when the baseline stopped for unsupported semantics or
-  /// an indeterminate failure. Diagnostic only.
-  analysis::ExactDemandStatus demandAbortStatus =
-      analysis::ExactDemandStatus::Satisfied;
-  std::string demandAbortDetail;
-  uint64_t baselineCardModuleMaterializations = 0;
-  uint64_t baselineScopedCardModuleMaterializations = 0;
-  uint64_t baselineRegionSPMCapacityChecks = 0;
-  uint64_t baselineRegionSPMCapacityOverflowProofs = 0;
-  uint64_t baselineRegionSPMChecksRequiringFunctionScope = 0;
-  uint64_t baselineFunctionScopedSPMCapacityChecks = 0;
-  uint64_t baselineRegionSPMCapacityAnalysisFailures = 0;
-  uint64_t baselineMaximumRegionSPMQueryWorkers = 1;
-  uint64_t materializationRejections = 0;
-  uint64_t indeterminateCompilationFailures = 0;
-  uint64_t rotatingSlotAllocationsMaterialized = 0;
-  CardExecutableLoweringStatistics exactGates;
-};
-
 /// Query result at the TensorProgram-to-executable boundary. The executable IR
 /// is the sole semantic result. The printed Tile dataflow snapshots are
 /// same-invocation diagnostic trace and are never admitted into the executable
@@ -179,50 +152,16 @@ struct CardExecutableSynthesisResult {
   std::vector<std::string> tileDataflowIRTrace;
 };
 
-/// Derives the capacity-respecting temporal tile at canonical ceilDiv wave
-/// breakpoints. Each capacity/refinement step moves to a strictly smaller
-/// class, so the algorithm is bounded by the finite static shape domain.
-llvm::SmallVector<int64_t, 4>
-deriveCapacityTemporalShape(llvm::ArrayRef<int64_t> maximumShardShape,
-                            uint64_t elementBytes, uint64_t tensorMultiplicity,
-                            const TargetMemoryPolicy &memory,
-                            unsigned additionalWaveRefinements);
-
-/// Searches, materializes and admits one card physical executable.
-///
-/// Both optimization policies follow the same IR sequence:
-///
-///   TensorProgram -> CardModule -> Tile modules -> Instr modules
-///   -> required NCC join placement/SPM planning -> card executable
-///   lowering.
-///
-/// `none` materializes only the deterministic maximum-participation,
-/// capacity-respecting joint baseline; disabling selection never permits a
-/// hard-resource-illegal executable. `search` derives a query-local joint
-/// spatial/temporal candidates from the current structured DAG, each static
-/// output/iteration domain, finite ceilDiv wave breakpoints, known tensor byte
-/// footprint and available Tiles. When SSA/effect analysis proves
-/// independent observable components, one joint candidate can bind those
-/// components to disjoint Tile groups and CardModule materialization emits
-/// only each Tile's selected root/producer closures. The factorized finite
-/// search has no candidate-count, depth, beam-width, or elapsed-time cap. It
-/// only removes proven-infeasible lower bounds and exact-equivalent work before
-/// cloning, then selects the admitted candidate with minimum theoretical
-/// makespan under one cohort-wide enabled-term set.
-///
-/// The source module is borrowed and remains unchanged. Every per-Tile module
-/// module crosses TileRegion -> Instr, Tile memory planning, and the
-/// same card verification path. Physical identities come from
-/// verified topology and CardModule structure, never from vector position
-/// or logical partition identity. Optional inspection output is returned as a
-/// separate same-invocation trace rather than stored in the executable.
-mlir::FailureOr<CardExecutableSynthesisResult> synthesizeCardExecutable(
+/// Runs the legacy candidate search controller. This boundary deliberately
+/// owns only search statistics; it does not accept or construct a baseline
+/// ledger. Q51.Core replaces this implementation while preserving the common
+/// exact CardModule-to-executable gates.
+mlir::FailureOr<CardExecutableSynthesisResult> searchCardExecutable(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig, OptimizationConfig optimizations,
-    llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData,
     CardExecutableSynthesisStatistics *statistics = nullptr,
-    DeterministicBaselineLedger *baselineLedger = nullptr,
     unsigned tilePipelineParallelism = 0, bool requestTileIRTrace = false);
 
 } // namespace wafer::compiler::detail

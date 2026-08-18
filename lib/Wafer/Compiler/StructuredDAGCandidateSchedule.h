@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "Wafer/IR/Target/TargetTopology.h"
+#include "StructuredDAGPlacement.h"
 #include "StructuredDAGSchedule.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -16,30 +16,6 @@
 #include <string>
 
 namespace wafer::compiler::detail {
-
-/// Physical placement selected for one structured DAG node.  The placement is
-/// deliberately query-local: selected execution is represented by the
-/// resulting Card/Tile IR, never by serializing this object.
-struct StructuredDAGNodePlacement {
-  StructuredDAGNodeID node = 0;
-  /// Result axis to which the selected parallel iterator maps.  The
-  /// CardModule output-shard carrier consumes this axis; keeping both fields
-  /// prevents a result dimension from standing in for iterator semantics.
-  unsigned shardDimension = 0;
-  llvm::SmallVector<TileId, 16> tiles;
-  /// Structured iterator selected for physical partitioning.  This is not
-  /// inferred from the result rank: reduction and projected-away iterators
-  /// remain explicit in `iteratorPartitionFactors` with factor one until an
-  /// implementation exposes a legal cross-Tile reduction transition.
-  unsigned spatialIteratorDimension = 0;
-  llvm::SmallVector<uint32_t, 4> iteratorPartitionFactors;
-  /// True for the unpartitioned canonical coordinate of a root without any
-  /// parallel result axis: exactly one participating Tile, unit partition
-  /// factors over every iterator and the complete result domain. The shard
-  /// fields above are unused in that state; consumers must treat the root
-  /// as fully owned by its single Tile instead of sharding any axis.
-  bool unpartitioned = false;
-};
 
 /// One producer-to-consumer edge domain that remains on a Tile.
 /// The exact edge/domain derivation owns `footprintBytes`; the scheduler owns

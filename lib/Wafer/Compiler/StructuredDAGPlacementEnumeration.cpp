@@ -228,28 +228,31 @@ namespace {
 
 bool samePlacement(const StructuredDAGNodePlacement &lhs,
                    const StructuredDAGNodePlacement &rhs) {
-  return lhs.spatialIteratorDimension == rhs.spatialIteratorDimension &&
+  return lhs.spatialPartition == rhs.spatialPartition &&
          lhs.iteratorPartitionFactors == rhs.iteratorPartitionFactors &&
-         lhs.shardDimension == rhs.shardDimension && lhs.tiles == rhs.tiles;
+         lhs.tiles == rhs.tiles;
 }
 
 bool placementLess(const StructuredDAGNodePlacement &lhs,
                    const StructuredDAGNodePlacement &rhs) {
-  if (lhs.spatialIteratorDimension != rhs.spatialIteratorDimension)
-    return lhs.spatialIteratorDimension < rhs.spatialIteratorDimension;
+  if (lhs.spatialPartition != rhs.spatialPartition)
+    return lhs.spatialPartition < rhs.spatialPartition;
   if (lhs.iteratorPartitionFactors != rhs.iteratorPartitionFactors)
     return std::lexicographical_compare(lhs.iteratorPartitionFactors.begin(),
                                         lhs.iteratorPartitionFactors.end(),
                                         rhs.iteratorPartitionFactors.begin(),
                                         rhs.iteratorPartitionFactors.end());
-  if (lhs.shardDimension != rhs.shardDimension)
-    return lhs.shardDimension < rhs.shardDimension;
   return tileVectorLess(lhs.tiles, rhs.tiles);
 }
 
 static size_t getPlacementHash(const StructuredDAGNodePlacement &placement) {
   llvm::hash_code hash = llvm::hash_combine(
-      placement.spatialIteratorDimension, placement.shardDimension,
+      placement.spatialPartition.has_value(),
+      placement.spatialPartition
+          ? placement.spatialPartition->iteratorDimension
+          : 0,
+      placement.spatialPartition ? placement.spatialPartition->resultDimension
+                                 : 0,
       placement.iteratorPartitionFactors.size(), placement.tiles.size());
   for (uint32_t factor : placement.iteratorPartitionFactors)
     hash = llvm::hash_combine(hash, factor);
@@ -280,7 +283,8 @@ public:
       const StructuredDAGNodePlacement &consumer, std::string *failureReason) {
     TransitionRelation relation = getRelation(producer, consumer);
     const size_t hash = static_cast<size_t>(llvm::hash_combine(
-        edgeID, relation.producerShardDimension,
+        edgeID, relation.producerPartitioned, relation.consumerPartitioned,
+        relation.producerShardDimension,
         relation.consumerShardDimension, relation.producerParticipants,
         relation.consumerParticipants));
     llvm::SmallVector<Entry, 1> &bucket = buckets[hash];
@@ -315,12 +319,16 @@ public:
 
 private:
   struct TransitionRelation {
+    bool producerPartitioned = false;
+    bool consumerPartitioned = false;
     unsigned producerShardDimension = 0;
     unsigned consumerShardDimension = 0;
     uint32_t producerParticipants = 0;
     uint32_t consumerParticipants = 0;
     bool operator==(const TransitionRelation &other) const {
-      return producerShardDimension == other.producerShardDimension &&
+      return producerPartitioned == other.producerPartitioned &&
+             consumerPartitioned == other.consumerPartitioned &&
+             producerShardDimension == other.producerShardDimension &&
              consumerShardDimension == other.consumerShardDimension &&
              producerParticipants == other.producerParticipants &&
              consumerParticipants == other.consumerParticipants;
@@ -331,8 +339,14 @@ private:
   getRelation(const StructuredDAGNodePlacement &producer,
               const StructuredDAGNodePlacement &consumer) {
     TransitionRelation relation;
-    relation.producerShardDimension = producer.shardDimension;
-    relation.consumerShardDimension = consumer.shardDimension;
+    relation.producerPartitioned = producer.spatialPartition.has_value();
+    relation.consumerPartitioned = consumer.spatialPartition.has_value();
+    if (producer.spatialPartition)
+      relation.producerShardDimension =
+          producer.spatialPartition->resultDimension;
+    if (consumer.spatialPartition)
+      relation.consumerShardDimension =
+          consumer.spatialPartition->resultDimension;
     relation.producerParticipants =
         static_cast<uint32_t>(producer.tiles.size());
     relation.consumerParticipants =
@@ -563,11 +577,11 @@ deriveNodePlacementDomain(const StructuredDAGNode &node,
         continue;
       PlacementOption option;
       option.placement.node = node.id;
-      option.placement.spatialIteratorDimension = axis.iteratorDimension;
+      option.placement.spatialPartition = StructuredDAGSpatialPartition{
+          axis.iteratorDimension, axis.resultDimension};
       option.placement.iteratorPartitionFactors = axis.basePartitionFactors;
       option.placement.iteratorPartitionFactors[axis.iteratorDimension] =
           static_cast<uint32_t>(group.tiles.size());
-      option.placement.shardDimension = axis.resultDimension;
       option.placement.tiles = group.tiles;
       option.internalHopWork = group.internalHopWork;
       options.push_back(std::move(option));
@@ -619,11 +633,11 @@ deriveNodeOptions(const StructuredDAGAnalysis &dag,
         continue;
       PlacementOption option;
       option.placement.node = node.id;
-      option.placement.spatialIteratorDimension = axis.iteratorDimension;
+      option.placement.spatialPartition = StructuredDAGSpatialPartition{
+          axis.iteratorDimension, axis.resultDimension};
       option.placement.iteratorPartitionFactors = axis.basePartitionFactors;
       option.placement.iteratorPartitionFactors[axis.iteratorDimension] =
           static_cast<uint32_t>(group.tiles.size());
-      option.placement.shardDimension = axis.resultDimension;
       option.placement.tiles = group.tiles;
       option.internalHopWork = group.internalHopWork;
       option.unusedTiles =
@@ -1125,6 +1139,19 @@ deriveObservablePlacements(
                  !samePlacement(owner, placements[root]);
         }))
       return mlir::failure();
+    auto outputType = mlir::dyn_cast<mlir::RankedTensorType>(
+        returnOp.getOperand(outputIndex).getType());
+    if (!outputType || !outputType.hasStaticShape())
+      return mlir::failure();
+    if (!owner.spatialPartition) {
+      if (owner.tiles.size() != 1 ||
+          llvm::any_of(owner.iteratorPartitionFactors,
+                       [](uint32_t factor) { return factor != 1; }))
+        return mlir::failure();
+      outputs.push_back(StructuredDAGObservablePlacement{
+          static_cast<uint32_t>(outputIndex), std::nullopt, owner.tiles});
+      continue;
+    }
     // The placed shard axis names an axis of the root result; map it through
     // the pure support chain to the observable output domain.  Every root of
     // the result must map to the same output axis, and the domain must be able
@@ -1136,17 +1163,14 @@ deriveObservablePlacements(
         return mlir::failure();
       mlir::FailureOr<unsigned> mapped = mapRootShardAxisToOutput(
           dag, static_cast<unsigned>(outputIndex), *rootNode,
-          owner.shardDimension, owner.tiles.size());
+          owner.spatialPartition->resultDimension, owner.tiles.size());
       if (mlir::failed(mapped))
         return mlir::failure();
       if (outputAxis && *outputAxis != *mapped)
         return mlir::failure();
       outputAxis = *mapped;
     }
-    auto outputType = mlir::dyn_cast<mlir::RankedTensorType>(
-        returnOp.getOperand(outputIndex).getType());
-    if (!outputType || !outputType.hasStaticShape() ||
-        *outputAxis >= static_cast<unsigned>(outputType.getRank()) ||
+    if (*outputAxis >= static_cast<unsigned>(outputType.getRank()) ||
         static_cast<uint64_t>(outputType.getShape()[*outputAxis]) <
             owner.tiles.size())
       return mlir::failure();
@@ -1306,8 +1330,13 @@ static std::vector<uint64_t> getResourceRenamingSignature(
   signature.push_back(placements.size());
   for (const StructuredDAGNodePlacement &placement : placements) {
     signature.push_back(placement.node);
-    signature.push_back(placement.spatialIteratorDimension);
-    signature.push_back(placement.shardDimension);
+    signature.push_back(placement.spatialPartition.has_value());
+    signature.push_back(placement.spatialPartition
+                            ? placement.spatialPartition->iteratorDimension
+                            : 0);
+    signature.push_back(placement.spatialPartition
+                            ? placement.spatialPartition->resultDimension
+                            : 0);
     signature.push_back(placement.iteratorPartitionFactors.size());
     for (uint32_t factor : placement.iteratorPartitionFactors)
       signature.push_back(factor);
@@ -1318,7 +1347,8 @@ static std::vector<uint64_t> getResourceRenamingSignature(
   signature.push_back(outputs.size());
   for (const StructuredDAGObservablePlacement &output : outputs) {
     signature.push_back(output.outputIndex);
-    signature.push_back(output.shardDimension);
+    signature.push_back(output.shardDimension.has_value());
+    signature.push_back(output.shardDimension.value_or(0));
     signature.push_back(output.tiles.size());
     for (TileId tile : output.tiles)
       signature.push_back(label(tile));
@@ -1949,9 +1979,9 @@ enumerateStructuredDAGPlacements(
       const StaticSpatialAxis &axis = axes->front();
       StructuredDAGNodePlacement placement;
       placement.node = node.id;
-      placement.shardDimension = axis.resultDimension;
+      placement.spatialPartition = StructuredDAGSpatialPartition{
+          axis.iteratorDimension, axis.resultDimension};
       placement.tiles.push_back((*availableTiles)[node.id]);
-      placement.spatialIteratorDimension = axis.iteratorDimension;
       placement.iteratorPartitionFactors = axis.basePartitionFactors;
       singletonPipeline = extendState(dag, topology, cardId, singletonPipeline,
                                       std::move(placement));
