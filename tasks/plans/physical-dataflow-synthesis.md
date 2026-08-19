@@ -1522,6 +1522,33 @@ observable-cache修正相关Q50/Baseline/CardModule conversion 71/71，source/IR
 
 ## Q50.E：Complete Temporal Tiling
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  immutable structured TensorProgram、Q50.B selected spatial assignment/trial和Q50.D explicit node-group partition；每个node已有static
+  local iterator box，actual group boundary已经固定，但尚未出现temporal wave loops。
+- Current stage responsibility:
+  为每个scheduled node产生覆盖全部iterator的positive tile-size vector，并为实际产生多wave的iterator产生canonical loop nesting
+  permutation；domain惰性覆盖全部有限整数size与语义不同order。调用方选定完整assignment后，Q50.C/D group materializer使用共同
+  TilingInterface leaf mechanics物化compact prologue/steady/tail traversal。
+- Output IR / files:
+  query输出typed temporal assignment，不写IR；apply直接更新当前actual CardModule中的group traversal并只保留真实loops/tails。
+  assignment不携score、capacity verdict、failure history、materialized body或默认layout/buffer/movement。
+- Downstream consumer:
+  Q50.F按selected spatial/group/temporal scope计算pure lower bound/deferred facts；Q50.G–K继续物化representation、movement、buffer和
+  schedule，complete candidate最终只进入一次Q50.0。
+- User-level driver / named pipeline:
+  只由public search session静态组合；baseline deterministic fallback与search domain复用同一local-extent、breakpoint和actual leaf
+  owner，但baseline只沿预定义单调顺序推进，不进入domain enumeration。
+- Explicit non-goals:
+  不选择layout、movement、retention、buffer、worker、schedule、cost或winner；不从allocator failure私下`tile/2`；不保存fixed seed、
+  maximum-fit或feedback history；不运行packer/probe，不clone/replay actual IR。
+- Done criteria:
+  parallel、single/multi-reduction、remainder、scalar及不同local extents的lazy domain与independent reference完全一致；inactive one-wave
+  iterator不制造等价order state，active iterator permutation完整；baseline与search共享breakpoint/workset函数；selected assignment
+  在singleton/coupled actual region中形成compact loops和finite tails；旧fixed temporal/rank feedback owner在能力迁移后删除。
+
 ### 机制
 
 每个 scheduled structured op 的 temporal assignment 是覆盖全部 iterator 的完整向量，加上Q50.D已选traversal内部有限、

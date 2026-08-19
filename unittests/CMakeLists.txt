@@ -33,6 +33,7 @@ add_executable(WaferUnitTests
   Planning/Search/SearchControlTest.cpp
   Planning/Search/SpatialPlacementTest.cpp
   Planning/Search/TensorProgramAlternativeTest.cpp
+  Planning/Search/TemporalTilingTest.cpp
   Program/ProgramDataTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/CoupledTileRegionTest.cpp

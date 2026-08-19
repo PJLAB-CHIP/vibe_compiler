@@ -4,6 +4,9 @@
 
 #include "Wafer/Target/Core/Tx81InstructionLimits.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Interfaces/TilingInterface.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -53,9 +56,47 @@ int64_t getWaveBreakpointAtOrBelow(int64_t extent, int64_t requested) {
 
 } // namespace
 
-uint64_t estimateAlignedTileResidencyBytes(
-    llvm::ArrayRef<int64_t> tileShape, uint64_t elementBytes,
-    uint64_t tensorMultiplicity, const TargetMemoryPolicy &memory) {
+mlir::FailureOr<llvm::SmallVector<int64_t, 4>>
+deriveLocalIteratorExtents(mlir::Operation *operation,
+                           llvm::ArrayRef<uint32_t> partitionFactors,
+                           std::string *failureReason) {
+  auto tiling = mlir::dyn_cast_or_null<mlir::TilingInterface>(operation);
+  if (!tiling) {
+    if (failureReason)
+      *failureReason = "structured operation has no iterator domain";
+    return mlir::failure();
+  }
+  llvm::SmallVector<int64_t, 4> extents;
+  if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation)) {
+    extents = linalg.getStaticLoopRanges();
+  } else if (operation->getNumResults() == 1) {
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(
+        operation->getResult(0).getType());
+    if (type && type.hasStaticShape())
+      extents.assign(type.getShape().begin(), type.getShape().end());
+  }
+  if (extents.size() != partitionFactors.size() ||
+      extents.size() != tiling.getLoopIteratorTypes().size()) {
+    if (failureReason)
+      *failureReason = "structured iterator/factor rank is inconsistent";
+    return mlir::failure();
+  }
+  for (auto [dimension, factor] : llvm::enumerate(partitionFactors)) {
+    if (factor == 0 || extents[dimension] <= 0) {
+      if (failureReason)
+        *failureReason = "structured iterator extent or factor is invalid";
+      return mlir::failure();
+    }
+    extents[dimension] =
+        extents[dimension] / factor + (extents[dimension] % factor != 0);
+  }
+  return extents;
+}
+
+uint64_t estimateAlignedTileResidencyBytes(llvm::ArrayRef<int64_t> tileShape,
+                                           uint64_t elementBytes,
+                                           uint64_t tensorMultiplicity,
+                                           const TargetMemoryPolicy &memory) {
   const uint64_t allocationBytes =
       saturatingMultiply(getElementCount(tileShape), elementBytes);
   const uint64_t alignedAllocation = saturatingAlignTo(
@@ -67,9 +108,9 @@ int64_t getNextLowerTemporalWaveTileSize(int64_t fullExtent,
                                          int64_t currentTileSize) {
   assert(fullExtent > 0 && currentTileSize > 1 &&
          currentTileSize <= fullExtent);
-  const uint64_t currentWaves = ceilDivide(
-      static_cast<uint64_t>(fullExtent),
-      static_cast<uint64_t>(currentTileSize));
+  const uint64_t currentWaves =
+      ceilDivide(static_cast<uint64_t>(fullExtent),
+                 static_cast<uint64_t>(currentTileSize));
   const uint64_t nextClassUpperBound =
       (static_cast<uint64_t>(fullExtent) - 1) / currentWaves;
   const int64_t next = getWaveBreakpointAtOrBelow(
@@ -96,9 +137,10 @@ int64_t getNextLowerDivisibleTemporalTileSize(int64_t fullExtent,
   return best;
 }
 
-std::optional<unsigned> selectTemporalTileRefinementAxis(
-    llvm::ArrayRef<int64_t> fullShape, llvm::ArrayRef<int64_t> currentShape,
-    uint64_t knownBytesPerIterationPoint) {
+std::optional<unsigned>
+selectTemporalTileRefinementAxis(llvm::ArrayRef<int64_t> fullShape,
+                                 llvm::ArrayRef<int64_t> currentShape,
+                                 uint64_t knownBytesPerIterationPoint) {
   assert(fullShape.size() == currentShape.size());
   struct Selection {
     unsigned dimension = 0;
@@ -114,18 +156,18 @@ std::optional<unsigned> selectTemporalTileRefinementAxis(
     uint64_t otherElements = 1;
     for (auto [otherDimension, extent] : llvm::enumerate(currentShape))
       if (otherDimension != dimension)
-        otherElements = saturatingMultiply(
-            otherElements, static_cast<uint64_t>(extent));
+        otherElements =
+            saturatingMultiply(otherElements, static_cast<uint64_t>(extent));
     const uint64_t removedElements = saturatingMultiply(
         otherElements, static_cast<uint64_t>(current - next));
     const uint64_t reduction = saturatingMultiply(
         removedElements, std::max<uint64_t>(1, knownBytesPerIterationPoint));
-    const uint64_t currentAxisWaves = ceilDivide(
-        static_cast<uint64_t>(fullShape[dimension]),
-        static_cast<uint64_t>(current));
-    const uint64_t nextAxisWaves = ceilDivide(
-        static_cast<uint64_t>(fullShape[dimension]),
-        static_cast<uint64_t>(next));
+    const uint64_t currentAxisWaves =
+        ceilDivide(static_cast<uint64_t>(fullShape[dimension]),
+                   static_cast<uint64_t>(current));
+    const uint64_t nextAxisWaves =
+        ceilDivide(static_cast<uint64_t>(fullShape[dimension]),
+                   static_cast<uint64_t>(next));
     Selection candidate{static_cast<unsigned>(dimension), reduction,
                         nextAxisWaves - currentAxisWaves};
     if (!selected) {

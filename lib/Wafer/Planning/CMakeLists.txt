@@ -18,6 +18,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/CoupledRegion.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp
   Planning/Search/SpatialPlacement.cpp
+  Planning/Search/TemporalTiling.cpp
   Planning/Search/SingleRootRegion.cpp
   Planning/Search/TensorProgramAlternative.cpp
   PARENT_SCOPE)
