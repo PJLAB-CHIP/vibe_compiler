@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -20,25 +21,23 @@ void setFailure(std::string *failureReason, llvm::StringRef message) {
 
 bool samePlacement(const StructuredDAGNodePlacement &lhs,
                    const StructuredDAGNodePlacement &rhs) {
-  return lhs.spatialPartition == rhs.spatialPartition &&
-         lhs.iteratorPartitionFactors == rhs.iteratorPartitionFactors &&
+  return lhs.iteratorPartitionFactors == rhs.iteratorPartitionFactors &&
          lhs.tiles == rhs.tiles;
 }
 
 mlir::FailureOr<unsigned>
-mapAxisForwardThroughSupportOp(mlir::Operation *operation,
-                               unsigned operandAxis, uint64_t shardCount) {
-  if (mlir::isa<mlir::tensor::ExtractSliceOp,
-                mlir::tensor::InsertSliceOp>(operation))
+mapAxisForwardThroughSupportOp(mlir::Operation *operation, unsigned operandAxis,
+                               uint64_t shardCount) {
+  if (mlir::isa<mlir::tensor::ExtractSliceOp, mlir::tensor::InsertSliceOp>(
+          operation))
     return operandAxis;
-  if (auto expand =
-          mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(operation)) {
+  if (auto expand = mlir::dyn_cast<mlir::tensor::ExpandShapeOp>(operation)) {
     llvm::SmallVector<mlir::ReassociationIndices, 4> reassociation =
         expand.getReassociationIndices();
-    auto operandType = mlir::cast<mlir::RankedTensorType>(
-        operation->getOperand(0).getType());
-    auto resultType = mlir::cast<mlir::RankedTensorType>(
-        operation->getResult(0).getType());
+    auto operandType =
+        mlir::cast<mlir::RankedTensorType>(operation->getOperand(0).getType());
+    auto resultType =
+        mlir::cast<mlir::RankedTensorType>(operation->getResult(0).getType());
     if (operandAxis >= reassociation.size() ||
         operandAxis >= static_cast<unsigned>(operandType.getRank()))
       return mlir::failure();
@@ -75,8 +74,8 @@ mapAxisForwardThroughSupportOp(mlir::Operation *operation,
   }
   if (auto collapse =
           mlir::dyn_cast<mlir::tensor::CollapseShapeOp>(operation)) {
-    auto operandType = mlir::cast<mlir::RankedTensorType>(
-        operation->getOperand(0).getType());
+    auto operandType =
+        mlir::cast<mlir::RankedTensorType>(operation->getOperand(0).getType());
     if (operandAxis >= static_cast<unsigned>(operandType.getRank()))
       return mlir::failure();
     const int64_t extent = operandType.getShape()[operandAxis];
@@ -100,8 +99,8 @@ mapAxisForwardThroughSupportOp(mlir::Operation *operation,
   }
   auto operandType = mlir::dyn_cast<mlir::RankedTensorType>(
       operation->getOperand(0).getType());
-  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
-      operation->getResult(0).getType());
+  auto resultType =
+      mlir::dyn_cast<mlir::RankedTensorType>(operation->getResult(0).getType());
   if (operandType && resultType && operandType.hasStaticShape() &&
       resultType.hasStaticShape() &&
       operandType.getRank() == resultType.getRank() &&
@@ -119,8 +118,7 @@ collectOutputSupportChain(mlir::Value value, mlir::Operation *rootOperation,
   mlir::Operation *owner = result.getOwner();
   if (owner == rootOperation)
     return result.getResultNumber() == 0 ? mlir::success() : mlir::failure();
-  if (!owner || owner->getNumResults() != 1 ||
-      !mlir::isMemoryEffectFree(owner))
+  if (!owner || owner->getNumResults() != 1 || !mlir::isMemoryEffectFree(owner))
     return mlir::failure();
   for (mlir::Value operand : owner->getOperands()) {
     if (mlir::succeeded(
@@ -132,9 +130,10 @@ collectOutputSupportChain(mlir::Value value, mlir::Operation *rootOperation,
   return mlir::failure();
 }
 
-mlir::FailureOr<unsigned> mapRootShardAxisToOutput(
-    const StructuredDAGAnalysis &dag, unsigned outputIndex,
-    const StructuredDAGNode &root, unsigned rootAxis, uint64_t shardCount) {
+mlir::FailureOr<unsigned>
+mapRootShardAxisToOutput(const StructuredDAGAnalysis &dag, unsigned outputIndex,
+                         const StructuredDAGNode &root, unsigned rootAxis,
+                         uint64_t shardCount) {
   auto returnOperation = mlir::dyn_cast<mlir::func::ReturnOp>(
       dag.getFunction().getBody().front().getTerminator());
   if (!returnOperation || outputIndex >= returnOperation.getNumOperands())
@@ -152,6 +151,37 @@ mlir::FailureOr<unsigned> mapRootShardAxisToOutput(
     axis = *mapped;
   }
   return axis;
+}
+
+mlir::FailureOr<unsigned>
+getRootResultDimensionForIterator(const StructuredDAGNode &root,
+                                  unsigned iteratorDimension) {
+  if (!root.operation || root.operation->getNumResults() == 0)
+    return mlir::failure();
+  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+      root.operation->getResult(0).getType());
+  if (!resultType)
+    return mlir::failure();
+  if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(root.operation)) {
+    mlir::AffineMap resultMap =
+        linalg.getIndexingMapMatchingResult(root.operation->getResult(0));
+    std::optional<unsigned> resultDimension;
+    for (auto [dimension, expression] :
+         llvm::enumerate(resultMap.getResults())) {
+      auto iterator = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+      if (!iterator || iterator.getPosition() != iteratorDimension)
+        continue;
+      if (resultDimension)
+        return mlir::failure();
+      resultDimension = dimension;
+    }
+    if (resultDimension)
+      return *resultDimension;
+    return mlir::failure();
+  }
+  if (iteratorDimension < static_cast<unsigned>(resultType.getRank()))
+    return iteratorDimension;
+  return mlir::failure();
 }
 
 mlir::FailureOr<llvm::SmallVector<CardBaselineObservablePlacement, 4>>
@@ -179,7 +209,16 @@ deriveObservablePlacements(
         returnOperation.getOperand(outputIndex).getType());
     if (!outputType || !outputType.hasStaticShape())
       return mlir::failure();
-    if (!owner.spatialPartition) {
+    std::optional<unsigned> partitionedIterator;
+    for (auto [iterator, factor] :
+         llvm::enumerate(owner.iteratorPartitionFactors)) {
+      if (factor == 1)
+        continue;
+      if (partitionedIterator)
+        return mlir::failure();
+      partitionedIterator = iterator;
+    }
+    if (!partitionedIterator) {
       if (owner.tiles.size() != 1 ||
           llvm::any_of(owner.iteratorPartitionFactors,
                        [](uint32_t factor) { return factor != 1; }))
@@ -193,9 +232,13 @@ deriveObservablePlacements(
       const StructuredDAGNode *root = dag.getNode(rootID);
       if (!root || !root->operation)
         return mlir::failure();
+      mlir::FailureOr<unsigned> rootResultDimension =
+          getRootResultDimensionForIterator(*root, *partitionedIterator);
+      if (mlir::failed(rootResultDimension))
+        return mlir::failure();
       mlir::FailureOr<unsigned> mapped = mapRootShardAxisToOutput(
-          dag, static_cast<unsigned>(outputIndex), *root,
-          owner.spatialPartition->resultDimension, owner.tiles.size());
+          dag, static_cast<unsigned>(outputIndex), *root, *rootResultDimension,
+          owner.tiles.size());
       if (mlir::failed(mapped) || (outputAxis && *outputAxis != *mapped))
         return mlir::failure();
       outputAxis = *mapped;
@@ -255,8 +298,8 @@ mlir::FailureOr<CardBaselinePlacementClosure> closeCardBaselinePlacement(
     const StructuredDAGNodePlacement &consumer =
         closure.nodePlacements[edge.consumer];
     std::string trialFailure;
-    auto trial = buildEdgeShardTrial(dag, producer, consumer, epoch,
-                                     &trialFailure);
+    auto trial =
+        buildEdgeShardTrial(dag, producer, consumer, epoch, &trialFailure);
     if (mlir::failed(trial)) {
       failIndeterminate(trialFailure);
       return mlir::failure();

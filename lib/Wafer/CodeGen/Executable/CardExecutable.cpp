@@ -259,7 +259,8 @@ compileTensorProgramModuleToCardExecutable(
   mlir::FailureOr<detail::CardExecutableLoweringResult> selected =
       optimizations.isSearch()
           ? detail::runCardExecutableSearch(
-                tensorModule, std::move(baseline->executable))
+                tensorModule, *baseline->programAnalysis,
+                std::move(baseline->executable))
           : mlir::FailureOr<detail::CardExecutableLoweringResult>(
                 std::move(baseline->executable));
   if (mlir::failed(selected))

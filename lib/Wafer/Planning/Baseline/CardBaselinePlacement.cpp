@@ -92,15 +92,20 @@ advanceDeterministicSpatialCoordinate(
   }
   size_t maximumParticipants = 1;
   for (const StructuredDAGNodePlacement &placement : placements) {
-    if (placement.tiles.empty()) {
+    if (placement.tiles.empty() ||
+        placement.iteratorPartitionFactors.empty()) {
       if (failureReason)
-        *failureReason = "deterministic spatial coordinate has no Tile";
+        *failureReason =
+            "deterministic spatial coordinate has no Tile or iterator";
       return mlir::failure();
     }
-    if (!placement.spatialPartition) {
-      if (placement.tiles.size() != 1 ||
-          llvm::any_of(placement.iteratorPartitionFactors,
-                       [](uint32_t factor) { return factor != 1; })) {
+    llvm::SmallVector<unsigned, 2> partitionedIterators;
+    for (auto [iterator, factor] :
+         llvm::enumerate(placement.iteratorPartitionFactors))
+      if (factor != 1)
+        partitionedIterators.push_back(iterator);
+    if (partitionedIterators.empty()) {
+      if (placement.tiles.size() != 1) {
         if (failureReason)
           *failureReason =
               "unpartitioned spatial coordinate is not singleton/unit";
@@ -108,15 +113,15 @@ advanceDeterministicSpatialCoordinate(
       }
       continue;
     }
-    const unsigned iterator = placement.spatialPartition->iteratorDimension;
-    if (iterator >= placement.iteratorPartitionFactors.size() ||
-        placement.iteratorPartitionFactors[iterator] !=
-            placement.tiles.size() ||
-        llvm::any_of(llvm::enumerate(placement.iteratorPartitionFactors),
-                     [&](auto indexedFactor) {
-                       return indexedFactor.index() != iterator &&
-                              indexedFactor.value() != 1;
-                     })) {
+    if (partitionedIterators.size() != 1) {
+      if (failureReason)
+        *failureReason =
+            "deterministic baseline coordinate partitions several iterators";
+      return mlir::failure();
+    }
+    const unsigned iterator = partitionedIterators.front();
+    if (placement.iteratorPartitionFactors[iterator] !=
+        placement.tiles.size()) {
       if (failureReason)
         *failureReason =
             "partitioned spatial coordinate has inconsistent iterator "
@@ -130,14 +135,21 @@ advanceDeterministicSpatialCoordinate(
 
   const size_t nextMaximumParticipants = maximumParticipants - 1;
   for (StructuredDAGNodePlacement &placement : placements) {
-    if (!placement.spatialPartition ||
-        placement.tiles.size() <= nextMaximumParticipants)
+    if (placement.tiles.size() <= nextMaximumParticipants)
+      continue;
+    std::optional<unsigned> partitionedIterator;
+    for (auto [iterator, factor] :
+         llvm::enumerate(placement.iteratorPartitionFactors))
+      if (factor != 1) {
+        partitionedIterator = iterator;
+        break;
+      }
+    if (!partitionedIterator)
       continue;
     placement.tiles.erase(placement.tiles.begin() + nextMaximumParticipants,
                           placement.tiles.end());
-    placement.iteratorPartitionFactors
-        [placement.spatialPartition->iteratorDimension] =
-            static_cast<uint32_t>(nextMaximumParticipants);
+    placement.iteratorPartitionFactors[*partitionedIterator] =
+        static_cast<uint32_t>(nextMaximumParticipants);
   }
   return DeterministicSpatialAdvance::Advanced;
 }

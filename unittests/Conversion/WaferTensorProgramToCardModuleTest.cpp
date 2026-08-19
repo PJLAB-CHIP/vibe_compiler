@@ -2,9 +2,9 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
-#include "Wafer/Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.h"
 #include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
@@ -992,17 +992,17 @@ module {
   });
   EXPECT_TRUE(sawParallelTail);
 
-  auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(cardModule),
-                                            &failureReason);
+  auto tileModules = wafer::splitCardModuleIntoTileModules(
+      std::move(cardModule), &failureReason);
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 1u);
   mlir::OwningOpRef<mlir::ModuleOp> tileModule =
       std::move(tileModules->front().module);
   ASSERT_TRUE(
       mlir::succeeded(wafer::convertTileRegionToInstrModule(*tileModule)));
-  EXPECT_EQ(countOps<wafer::ComputeElementwiseIntoOp>(tileModule->getOperation()),
-            0u);
+  EXPECT_EQ(
+      countOps<wafer::ComputeElementwiseIntoOp>(tileModule->getOperation()),
+      0u);
   unsigned inPlaceAccumulatorUpdates = 0;
   tileModule->walk([&](wafer::InstrElementwiseOp operation) {
     if (!operation.getInputs().empty() &&
@@ -1322,7 +1322,7 @@ module {
   EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(
       *source, wafer::CardId(0), selected, cardModule, &failureReason)));
   EXPECT_EQ(failureReason,
-            "candidate reduction split cannot preserve unsigned min/max "
+            "reduction partition cannot preserve unsigned min/max "
             "semantics with the current reduce kind");
   EXPECT_FALSE(cardModule);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
@@ -2069,9 +2069,8 @@ module {
   EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 2u);
   EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 4u);
 
-  auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(cardModule),
-                                            &failureReason);
+  auto tileModules = wafer::splitCardModuleIntoTileModules(
+      std::move(cardModule), &failureReason);
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 6u);
   unsigned sends = 0;
@@ -2209,9 +2208,8 @@ module {
     }
   }
 
-  auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(cardModule),
-                                            &failureReason);
+  auto tileModules = wafer::splitCardModuleIntoTileModules(
+      std::move(cardModule), &failureReason);
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   unsigned sends = 0;
   unsigned receives = 0;
@@ -2289,16 +2287,21 @@ module {
       /*producerSizes=*/{8}, /*consumerOffsets=*/{0},
       /*consumerSizes=*/{8});
   remote.consumerOperand = 0;
-  remote.fragments.push_back(wafer::SpatialEdgeFragment{
-      wafer::SpatialEdgeFragmentKind::Peer, {0}, {8}, wafer::TileId(0),
-      /*bytes=*/16, /*communicationId=*/0, /*payloadSlice=*/0});
+  remote.fragments.push_back(
+      wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Peer,
+                                 {0},
+                                 {8},
+                                 wafer::TileId(0),
+                                 /*bytes=*/16,
+                                 /*communicationId=*/0,
+                                 /*payloadSlice=*/0});
   selected.edgeStrategies.push_back(std::move(remote));
 
-  wafer::SpatialEdgeStrategy local = edgeStrategy(
-      structured[1], structured[2], wafer::TileId(1),
-      wafer::SpatialEdgeAction::RegionCut, /*producerOffsets=*/{0},
-      /*producerSizes=*/{8}, /*consumerOffsets=*/{0},
-      /*consumerSizes=*/{8});
+  wafer::SpatialEdgeStrategy local =
+      edgeStrategy(structured[1], structured[2], wafer::TileId(1),
+                   wafer::SpatialEdgeAction::RegionCut, /*producerOffsets=*/{0},
+                   /*producerSizes=*/{8}, /*consumerOffsets=*/{0},
+                   /*consumerSizes=*/{8});
   local.consumerOperand = 1;
   selected.edgeStrategies.push_back(std::move(local));
 
@@ -2537,12 +2540,15 @@ module {
       function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
 
-  auto placement = [](wafer::compiler::detail::StructuredDAGNodeID node,
-                      std::initializer_list<int64_t> tiles) {
+  auto placement = [&](wafer::compiler::detail::StructuredDAGNodeID node,
+                       std::initializer_list<int64_t> tiles) {
     wafer::compiler::detail::StructuredDAGNodePlacement result;
     result.node = node;
-    result.spatialPartition =
-        wafer::compiler::detail::StructuredDAGSpatialPartition{0, 0};
+    auto linalg =
+        mlir::cast<mlir::linalg::LinalgOp>(dag->getNode(node)->operation);
+    result.iteratorPartitionFactors.assign(
+        linalg.getIteratorTypesArray().size(), 1);
+    result.iteratorPartitionFactors[0] = tiles.size();
     for (int64_t tile : tiles)
       result.tiles.push_back(wafer::TileId(tile));
     return result;
@@ -2647,9 +2653,8 @@ module {
 
   std::string failureReason;
   for (mlir::OwningOpRef<mlir::ModuleOp> *actual : {&spilled, &cut}) {
-    auto tileModules =
-        wafer::splitCardModuleIntoTileModules(std::move(*actual),
-                                              &failureReason);
+    auto tileModules = wafer::splitCardModuleIntoTileModules(std::move(*actual),
+                                                             &failureReason);
     ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
     ASSERT_EQ(tileModules->size(), 1u);
     ASSERT_TRUE(mlir::succeeded(
@@ -2731,9 +2736,8 @@ module {
   EXPECT_TRUE(sawSharedProducerConsumerBuffer)
       << "coupled producer/consumer work must remain related by current SSA";
 
-  auto tileModules =
-      wafer::splitCardModuleIntoTileModules(std::move(fused), &failureReason,
-                                            &relations);
+  auto tileModules = wafer::splitCardModuleIntoTileModules(
+      std::move(fused), &failureReason, &relations);
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 1u);
   ASSERT_TRUE(mlir::succeeded(

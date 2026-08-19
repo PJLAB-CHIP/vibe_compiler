@@ -2,6 +2,7 @@
 //-----===//
 
 #include "Internal.h"
+#include "Wafer/Analysis/Structured/ReductionSemantics.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -236,7 +237,7 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
       break;
     }
   }
-  if (mlir::failed(verifyReductionSplitNumericLegality(
+  if (mlir::failed(analysis::verifyReductionPartitionLegality(
           sourceReduction, preservesSequentialReductionOrder, failureReason)))
     return mlir::failure();
 

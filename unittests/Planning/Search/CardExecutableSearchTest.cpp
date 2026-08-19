@@ -26,9 +26,9 @@ TEST(CardExecutableSearchTest,
   mlir::Operation *firstTileOwner =
       baseline->executable.tiles.front().getModule().getOperation();
 
-  auto selected =
-      wafer::compiler::detail::runCardExecutableSearch(
-          *parsed.module, std::move(baseline->executable));
+  auto selected = wafer::compiler::detail::runCardExecutableSearch(
+      *parsed.module, *baseline->programAnalysis,
+      std::move(baseline->executable));
 
   ASSERT_TRUE(mlir::succeeded(selected));
   ASSERT_EQ(selected->tiles.size(), 16u);

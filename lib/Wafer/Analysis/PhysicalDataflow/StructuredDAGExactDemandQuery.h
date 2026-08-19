@@ -91,15 +91,12 @@ buildEdgeShardTrial(const StructuredDAGAnalysis &dag,
                     analysis::IREpoch epoch,
                     std::string *failureReason = nullptr);
 
-/// Production adapter: materializes one closed trial from the current
-/// placement domain. The selected spatial iterator is balanced over the Tile
-/// group in iteration space; every result's ownership is then the exact image
-/// of those execution shards under its own indexing map and is classified as
-/// a unique partition or explicit replication. This is a property of the
-/// current placement domain, not a recovery performed by the query; the full
-/// spatial domain replaces it with Q50.B. Malformed placements (missing or
-/// duplicate node, empty group, invalid spatial iterator, dynamic result or
-/// inexpressible ownership role) report failure and never form a trial.
+/// Production adapter: materializes one closed trial from complete per-node
+/// iterator factor vectors and row-major logical-coordinate-to-Tile
+/// embeddings. Every result's ownership is the exact image of those execution
+/// shards and is classified as unique, replicated, or partial reduction with
+/// an explicit merge owner. Malformed or inexpressible assignments fail and
+/// never form a trial.
 mlir::FailureOr<analysis::LogicalShardTrial> buildLogicalShardTrial(
     const StructuredDAGAnalysis &dag,
     llvm::ArrayRef<StructuredDAGNodePlacement> nodePlacements,

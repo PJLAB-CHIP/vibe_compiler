@@ -16,5 +16,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/AttentionTensorOps.cpp
   Planning/Search/CardExecutableSearch.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp
+  Planning/Search/SpatialPlacement.cpp
   Planning/Search/TensorProgramAlternative.cpp
   PARENT_SCOPE)

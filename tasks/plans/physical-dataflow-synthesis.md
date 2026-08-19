@@ -1299,11 +1299,36 @@ Q51完整链闭合后再运行。
 
 ## Q50.B：Spatial Partition + Physical Placement
 
+```text
+Pipeline position:
+- Upstream IR / input:
+  Q50.S选定或original的immutable TensorProgram root、current StructuredDAG、verified available Tile集合和Q50.A exact-demand query。
+- Current stage responsibility:
+  为每个structured node惰性产生覆盖全部iterator的block factor vector、canonical logical-coordinate顺序、到distinct physical
+  Tile的有序embedding，以及spatial reduction的显式merge Tile；把完整per-node assignment闭合为Q50.A logical trial。
+- Output IR / files:
+  不产生新IR或文件。输出typed `CardSpatialPlacementAssignment`与`satisfied/proven logical infeasible/unsupported/indeterminate`
+  evaluation；satisfied携带all-and-only execution shards、result ownership、partial contribution和merge owner。
+- Downstream consumer:
+  Q50.C按选定per-Tile shard物化single-root TileRegion；Q50.D–K继续补region/fusion、temporal、representation、movement、buffer和
+  schedule。只有完整assignment才进入Q50.0。
+- User-level driver / named pipeline:
+  只由public `search` session内部静态组合，不新增pass、CLI、provider或独立placement selector。Q50.C–K未闭合时public路径只
+  query compact domain，不枚举Cartesian product、不clone并直接保留accepted baseline。
+- Explicit non-goals:
+  不物化TileRegion/CardModule，不选择temporal tile、layout、route、buffer或winner；不把connected/rectangle/all-16、result axis、
+  participant count或常见factor当legality；不把Q50.A unsupported/indeterminate改写成placement rejection。
+- Done criteria:
+  single node、chain、independent branch、diamond、multi-axis remainder、scalar、reduction merge和partial redistribution的production
+  domain与独立reference集合一致；任意有序available-Tile subset可达；numeric/PartialReduction interface不支持时reduction factor
+  只保留1；完整trial经Q50.A typed evaluation，旧single-axis placement字段零残留，query/production路径无clone与默认统计。
+```
+
 ### 机制
 
 - 从structured iterator semantics枚举每个op覆盖所有iterator的完整spatial factor vector与block partition
   relation；它必须联合表达multi-iterator factors、non-divisible remainder/tail、parallel/reduction iterator role和
-  必要的partial-reduction merge，result axis不能替代iterator axis；
+  必要的partial-reduction merge owner，result axis不能替代iterator axis；
 - 对每个partition惰性枚举verified topology上全部verifier-legal participant subsets、logical-mesh embedding和physical
   placement。compact rectangle、natural mesh、connected set和all-available-Tile只是排序seed；除非verifier能从硬件
   topology证明connectivity是legality，否则必须保留disconnected/asymmetric placement；available Tiles均可参与；
@@ -1322,14 +1347,28 @@ Q51完整链闭合后再运行。
 ### Actual witness 与 gate
 
 independent tiny reference enumerator与mechanism生成域在single op、chain、independent branch、diamond/fanin、
-multi-axis remainder、reduction merge和partial redistribution上的stable key集合完全一致；selected CardModule/TileModule
-直接表达Tile ownership。局部gate通过后删除spatial coordinate-descent owner和rank==Tile假设，但保留
+multi-axis remainder、reduction merge和partial redistribution上的stable key集合完全一致；Q50.B的actual witness是Q50.A
+消费的closed logical trial，selected CardModule/TileModule ownership由紧随其后的Q50.C物化。局部gate通过后删除旧single-axis
+placement field和rank==Tile假设，但保留
 可复用topology/domain/cost mechanics。“非最大参与、非相同Tile group或暂时更贵的placement成为global actual
 winner”是Q51 closure的跨轴gate。
 
 同一factor count中，确实改变partition relation、logical-mesh embedding或physical placement的不同axis/factor nesting必须产生
 不同typed witness；extensionally等价的生成路径必须canonicalize。regular/full-occupancy proposal与非矩形、partial、
 asymmetric、disconnected合法补集均可达；关闭或改变proposal排序后，tiny exhaustive domain和winner不变。
+
+### 2026-08-19 完成结果
+
+current placement identity只含完整iterator factor vector、row-major logical coordinate到physical Tile的有序embedding，以及
+reduction merge Tile；旧`spatialPartition(iteratorDimension,resultDimension)`双事实源已删除。每个factor维度覆盖`1..extent`且
+product不超过available Tile数，physical sequence惰性覆盖全部distinct ordered subsets，因此非最大、非连续、非对称和不同branch
+placement均可达。factor生成只有一个canonical iterator顺序；其它factor nesting若表达同一坐标到Tile映射不会产生重复state。
+
+spatial reduction只有同时具备`PartialReductionOpInterface`和current scalar combiner numeric proof时才广告factor>1；proof已从
+conversion私有实现迁到`Analysis/Structured/ReductionSemantics`，query与actual partial materializer共用。closed trial把每个partial
+owner标为`PartialReductionContribution`并携显式merge Tile，Q50.A保留全部必要intersection和merge obligation。7个Q50.B unit加
+27个exact-demand及5个partial materialization unit通过；public search只构造Q50.S/Q50.B compact domains，未枚举、clone或运行
+重型LLaMA search。fresh全量C++ unit 736/736、轻量public search source-to-package/no-card和source/IR organization通过。
 
 ## Q50.C：Maximal Single-Root TileRegion
 

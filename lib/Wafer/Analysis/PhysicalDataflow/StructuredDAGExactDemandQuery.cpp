@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -897,6 +898,14 @@ public:
       if (!binding->ownedDomain)
         return demandResult(ExactDemandStatus::IndeterminateFailure, edgeId,
                             "trial producer ownership domain is missing");
+    const bool hasPartialContribution =
+        llvm::any_of(resultBindings, [](const LogicalTileBinding *binding) {
+          return binding->role == TileRole::PartialReductionContribution;
+        });
+    if (hasPartialContribution != producerTrial->reductionMergeTile.has_value())
+      return demandResult(
+          ExactDemandStatus::IndeterminateFailure, edgeId,
+          "trial partial-reduction ownership and merge owner disagree");
     llvm::SmallVector<TileId, 16> sortedTiles;
     for (const LogicalTileBinding *binding : resultBindings)
       sortedTiles.push_back(binding->tile);
@@ -1713,6 +1722,7 @@ private:
     if (consumerTrial.completeIterationDomain)
       result.consumerIterationDomain = *consumerTrial.completeIterationDomain;
     result.producerDemand = demand;
+    result.reductionMergeTile = producerTrial.reductionMergeTile;
 
     // Only this edge's producer result participates in the coverage proof;
     // other results of the same node carry their own ownership.
@@ -1729,8 +1739,10 @@ private:
     ExactDemandResult rectangularCoverage =
         deriveRectangularCoverage(edge, relation, consumerTrial, resultBindings,
                                   demand, kind, rectangularCoverageApplicable);
-    if (rectangularCoverageApplicable)
+    if (rectangularCoverageApplicable) {
+      rectangularCoverage.reductionMergeTile = producerTrial.reductionMergeTile;
       return rectangularCoverage;
+    }
 
     wafer::support::ScopedCompileTimingSpan genericTiming(
         "query", "exact-demand", "generic-ownership-coverage");
@@ -1978,15 +1990,34 @@ buildBalancedOwnership(mlir::RankedTensorType type, unsigned shardDimension,
 }
 
 /// Per-Tile execution shards are defined directly in iteration space by the
-/// selected spatial iterator. Result ownership is derived afterwards as the
-/// exact image of these disjoint shards, so multiple results cannot create
-/// overlapping execution through independent result preimages.
+/// complete iterator factor vector and its row-major physical embedding.
+/// Result ownership is derived afterwards as the exact image of these
+/// disjoint shards; partitioned reduction images retain explicit partial roles.
 mlir::FailureOr<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>
 deriveConsumerExecutionShards(mlir::linalg::LinalgOp linalg,
                               const StructuredDAGNodePlacement &placement,
                               std::string *failureReason) {
   llvm::SmallVector<analysis::LogicalExecutionShard, 16> result;
   llvm::SmallVector<int64_t, 4> loopShape = linalg.getStaticLoopRanges();
+  llvm::SmallVector<uint32_t, 4> factors = placement.iteratorPartitionFactors;
+  if (factors.size() != loopShape.size() || placement.tiles.empty())
+    return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+        failureReason,
+        "logical trial requires one factor for every structured iterator");
+
+  uint64_t participantCount = 1;
+  for (auto [factor, extent] : llvm::zip_equal(factors, loopShape)) {
+    if (factor == 0 || extent <= 0 || factor > static_cast<uint64_t>(extent) ||
+        participantCount > std::numeric_limits<uint64_t>::max() / factor)
+      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+          failureReason, "logical trial has an invalid iterator factor");
+    participantCount *= factor;
+  }
+  if (participantCount != placement.tiles.size())
+    return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+        failureReason,
+        "logical trial factor product does not match its Tile embedding");
+
   llvm::SmallVector<TileId, 16> uniqueTiles(placement.tiles.begin(),
                                             placement.tiles.end());
   llvm::sort(uniqueTiles, [](TileId lhs, TileId rhs) {
@@ -1997,31 +2028,53 @@ deriveConsumerExecutionShards(mlir::linalg::LinalgOp linalg,
     return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
         failureReason, "logical trial binds one Tile to several owner domains");
 
-  if (!placement.spatialPartition) {
-    if (placement.tiles.size() != 1 ||
-        llvm::any_of(placement.iteratorPartitionFactors,
-                     [](uint32_t factor) { return factor != 1; }))
+  for (auto [linearCoordinate, tile] : llvm::enumerate(placement.tiles)) {
+    uint64_t remaining = linearCoordinate;
+    llvm::SmallVector<uint32_t, 4> coordinates(factors.size(), 0);
+    for (size_t reverse = 0; reverse < factors.size(); ++reverse) {
+      const size_t dimension = factors.size() - reverse - 1;
+      coordinates[dimension] = remaining % factors[dimension];
+      remaining /= factors[dimension];
+    }
+    if (remaining != 0)
       return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
-          failureReason,
-          "unpartitioned logical trial requires one Tile and unit factors");
-    IndexSetResult full = IndexRelation::staticDomain(loopShape);
-    if (!full.isExact())
-      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
-          failureReason, full.reason);
-    result.push_back(
-        analysis::LogicalExecutionShard{placement.tiles.front(), *full.set});
-    return result;
-  }
+          failureReason, "logical trial coordinate exceeds its factor mesh");
 
-  for (TileId tile : placement.tiles) {
-    auto executionDomain = deriveBalancedPartitionDomain(
-        loopShape, placement.spatialPartition->iteratorDimension,
-        placement.tiles, tile, failureReason);
-    if (mlir::failed(executionDomain))
-      return mlir::failure();
-    result.push_back(analysis::LogicalExecutionShard{tile, *executionDomain});
+    llvm::SmallVector<int64_t, 4> offsets(loopShape.size(), 0);
+    llvm::SmallVector<int64_t, 4> sizes(loopShape.size(), 0);
+    for (size_t dimension = 0; dimension < loopShape.size(); ++dimension) {
+      const int64_t factor = factors[dimension];
+      const int64_t coordinate = coordinates[dimension];
+      const int64_t base = loopShape[dimension] / factor;
+      const int64_t larger = loopShape[dimension] % factor;
+      offsets[dimension] =
+          coordinate * base + std::min<int64_t>(coordinate, larger);
+      sizes[dimension] = base + (coordinate < larger);
+    }
+    IndexSetResult executionDomain =
+        IndexRelation::staticRectangularDomain(offsets, sizes);
+    if (!executionDomain.isExact())
+      return fail<llvm::SmallVector<analysis::LogicalExecutionShard, 16>>(
+          failureReason, executionDomain.reason);
+    result.push_back(
+        analysis::LogicalExecutionShard{tile, *executionDomain.set});
   }
   return result;
+}
+
+bool hasSpatialReductionPartition(mlir::linalg::LinalgOp linalg,
+                                  const StructuredDAGNodePlacement &placement) {
+  llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes =
+      linalg.getIteratorTypesArray();
+  if (iteratorTypes.size() != placement.iteratorPartitionFactors.size())
+    return false;
+  return llvm::any_of(
+      llvm::zip_equal(iteratorTypes, placement.iteratorPartitionFactors),
+      [](auto iteratorAndFactor) {
+        return std::get<0>(iteratorAndFactor) ==
+                   mlir::utils::IteratorType::reduction &&
+               std::get<1>(iteratorAndFactor) > 1;
+      });
 }
 
 /// Exact per-result ownership induced by the already closed execution shards.
@@ -2032,7 +2085,7 @@ mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
 deriveResultOwnership(
     mlir::linalg::LinalgOp linalg, uint32_t resultIndex,
     llvm::ArrayRef<analysis::LogicalExecutionShard> executionShards,
-    std::string *failureReason) {
+    bool partialReduction, std::string *failureReason) {
   auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
       linalg->getResult(resultIndex).getType());
   llvm::SmallVector<int64_t, 4> loopShape = linalg.getStaticLoopRanges();
@@ -2124,6 +2177,11 @@ deriveResultOwnership(
       return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
           failureReason,
           "logical trial result ownership does not cover the result domain");
+    if (partialReduction) {
+      for (analysis::LogicalTileBinding &binding : bindings)
+        binding.role = analysis::TileRole::PartialReductionContribution;
+      return bindings;
+    }
     if (overlaps && !everyOwnerHasFullResult)
       return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
           failureReason,
@@ -2148,6 +2206,11 @@ deriveResultOwnership(
     return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
         failureReason,
         "logical trial result ownership does not cover the result domain");
+  if (partialReduction) {
+    for (analysis::LogicalTileBinding &binding : bindings)
+      binding.role = analysis::TileRole::PartialReductionContribution;
+    return bindings;
+  }
   if (overlaps && !everyOwnerHasFullResult)
     return fail<llvm::SmallVector<analysis::LogicalTileBinding, 16>>(
         failureReason,
@@ -2193,11 +2256,19 @@ buildEdgeShardTrial(const StructuredDAGAnalysis &dag,
     if (mlir::failed(executionShards))
       return mlir::failure();
     entry.executionShards = std::move(*executionShards);
+    const bool partialReduction =
+        hasSpatialReductionPartition(linalg, placement);
+    if (partialReduction != placement.reductionMergeTile.has_value())
+      return fail<analysis::LogicalShardTrial>(
+          failureReason,
+          "logical trial reduction partition and merge owner disagree");
+    entry.reductionMergeTile = placement.reductionMergeTile;
     for (uint32_t resultIndex = 0;
          resultIndex < node->operation->getNumResults(); ++resultIndex) {
       mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
-          ownership = deriveResultOwnership(
-              linalg, resultIndex, entry.executionShards, failureReason);
+          ownership =
+              deriveResultOwnership(linalg, resultIndex, entry.executionShards,
+                                    partialReduction, failureReason);
       if (mlir::failed(ownership))
         return mlir::failure();
       entry.bindings.append(std::move(*ownership));
@@ -2257,11 +2328,19 @@ mlir::FailureOr<analysis::LogicalShardTrial> buildLogicalShardTrial(
     if (mlir::failed(executionShards))
       return mlir::failure();
     nodeTrial.executionShards = std::move(*executionShards);
+    const bool partialReduction =
+        hasSpatialReductionPartition(linalg, placement);
+    if (partialReduction != placement.reductionMergeTile.has_value())
+      return fail<analysis::LogicalShardTrial>(
+          failureReason,
+          "logical trial reduction partition and merge owner disagree");
+    nodeTrial.reductionMergeTile = placement.reductionMergeTile;
     for (uint32_t resultIndex = 0; resultIndex < operation->getNumResults();
          ++resultIndex) {
       mlir::FailureOr<llvm::SmallVector<analysis::LogicalTileBinding, 16>>
-          ownership = deriveResultOwnership(
-              linalg, resultIndex, nodeTrial.executionShards, failureReason);
+          ownership = deriveResultOwnership(linalg, resultIndex,
+                                            nodeTrial.executionShards,
+                                            partialReduction, failureReason);
       if (mlir::failed(ownership))
         return mlir::failure();
       nodeTrial.bindings.append(std::move(*ownership));

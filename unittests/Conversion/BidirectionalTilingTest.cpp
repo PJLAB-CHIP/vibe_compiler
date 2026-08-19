@@ -1,5 +1,5 @@
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "../../lib/Wafer/Conversion/WaferTensorProgramToTileRegion/Internal.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -324,7 +324,7 @@ module {
   EXPECT_TRUE(mlir::failed(wafer::materializePartialReductionTile(
       reduction, builder, offsets, sizes, &failureReason)));
   EXPECT_EQ(failureReason,
-            "candidate reduction split cannot preserve unsigned min/max "
+            "reduction partition cannot preserve unsigned min/max "
             "semantics with the current reduce kind");
   EXPECT_EQ(findSingleOp<mlir::linalg::GenericOp>(*module), reduction);
   unsigned fillCount = 0;

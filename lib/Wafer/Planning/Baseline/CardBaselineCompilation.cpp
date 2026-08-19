@@ -1,9 +1,9 @@
 //===- CardBaselineCompilation.cpp -----------------------------------===//
 
 #include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
-#include "Wafer/Planning/Baseline/CardBaselineAssignment.h"
-#include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
+#include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
+#include "Wafer/Planning/Baseline/CardBaselineAssignment.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -13,9 +13,8 @@ namespace wafer::compiler::detail {
 mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
     mlir::ModuleOp tensorProgram,
     const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig,
-    llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
-    BaselineStatistics *baselineStatistics,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData, BaselineStatistics *baselineStatistics,
     unsigned tilePipelineParallelism,
     std::vector<std::string> *tileDataflowIRTrace) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
@@ -48,8 +47,8 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
   std::string failureReason;
   if (mlir::failed(verifyCardBaselineMaterialization(
           *materialized->module, *assignment, (*analysis)->dag,
-          materialized->relations,
-          (*analysis)->availableTileIds, failureReason))) {
+          materialized->relations, (*analysis)->availableTileIds,
+          failureReason))) {
     diagnostics << "wafer-compile: baseline CardModule verification failed: "
                 << failureReason << '\n';
     return mlir::failure();
@@ -58,8 +57,7 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
   CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
       std::move(materialized->module), cardId, (*analysis)->availableTileIds,
       /*selectedBufferRequests=*/{}, materialized->relations, program,
-      executionConfig,
-      diagnostics, programData,
+      executionConfig, diagnostics, programData,
       baselineStatistics ? &baselineStatistics->exactGates : nullptr,
       tilePipelineParallelism, tileDataflowIRTrace != nullptr);
   if (baselineStatistics)
@@ -73,8 +71,7 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
         ++baselineStatistics->indeterminateCompilationFailures;
     }
     diagnostics << "wafer-compile: baseline CardExecutable gate failed: gate="
-                << compilation.gate << " detail=" << compilation.detail
-                << '\n';
+                << compilation.gate << " detail=" << compilation.detail << '\n';
     if (!compilation.tileFailures.empty()) {
       const CardExecutableTileFailure &tile = compilation.tileFailures.front();
       const TileMemoryPlanningFailure &memory = tile.memoryPlanning;
@@ -83,8 +80,8 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
                     << tile.tileId.getValue();
         for (const auto &demand : memory.spmCapacityConflictDemands) {
           diagnostics << " demand(bytes=" << demand.bytes
-                      << ", type=" << demand.type << ", location="
-                      << demand.location << ", result_nodes=[";
+                      << ", type=" << demand.type
+                      << ", location=" << demand.location << ", result_nodes=[";
           for (uint32_t node : demand.operationResultNodes) {
             const StructuredDAGNode *owner = (*analysis)->dag.getNode(node);
             diagnostics << node;
@@ -113,7 +110,8 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
         compilation.tileDataflowIRTrace.size();
   if (tileDataflowIRTrace)
     *tileDataflowIRTrace = std::move(compilation.tileDataflowIRTrace);
-  return CardBaselineCompilationResult(compilation.takeExecutable());
+  return CardBaselineCompilationResult(compilation.takeExecutable(),
+                                       std::move(*analysis));
 }
 
 } // namespace wafer::compiler::detail

@@ -2,9 +2,9 @@
 //------------------------------------------===//
 
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.h"
-#include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGEdgeDemandPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 
@@ -56,12 +56,15 @@ protected:
   }
 
   static StructuredDAGNodePlacement
-  placement(StructuredDAGNodeID node, unsigned dimension,
+  placement(const StructuredDAGNode &node, unsigned dimension,
             std::initializer_list<int64_t> tileValues) {
     StructuredDAGNodePlacement result;
-    result.node = node;
-    result.spatialPartition =
-        StructuredDAGSpatialPartition{dimension, dimension};
+    result.node = node.id;
+    auto linalg = mlir::cast<mlir::linalg::LinalgOp>(node.operation);
+    result.iteratorPartitionFactors.assign(
+        linalg.getIteratorTypesArray().size(), 1);
+    if (dimension < result.iteratorPartitionFactors.size())
+      result.iteratorPartitionFactors[dimension] = tileValues.size();
     for (int64_t value : tileValues)
       result.tiles.push_back(TileId(value));
     return result;
@@ -72,7 +75,7 @@ protected:
                  std::initializer_list<int64_t> tileValues) {
     llvm::SmallVector<StructuredDAGNodePlacement, 16> result;
     for (const StructuredDAGNode &node : dag.getNodes())
-      result.push_back(placement(node.id, dimension, tileValues));
+      result.push_back(placement(node, dimension, tileValues));
     return result;
   }
 
@@ -595,8 +598,7 @@ TEST_F(StructuredDAGExactDemandQueryTest,
       << demand.detail;
   ASSERT_EQ(demand.perDestination.size(), 2u);
   for (auto [tileIndex, recipe] : llvm::enumerate(demand.perDestination)) {
-    EXPECT_EQ(recipe.destinationTile,
-              TileId(static_cast<int64_t>(tileIndex)));
+    EXPECT_EQ(recipe.destinationTile, TileId(static_cast<int64_t>(tileIndex)));
     ASSERT_EQ(recipe.boundaries.size(), 2u);
     const analysis::ProducerValueRequirement &producerA = recipe.boundaries[0];
     const analysis::ProducerValueRequirement &producerB = recipe.boundaries[1];
@@ -1150,6 +1152,7 @@ TEST_F(StructuredDAGExactDemandQueryTest,
     binding.ownedDomain = *full.set;
     binding.role = analysis::TileRole::PartialReductionContribution;
   }
+  producer.reductionMergeTile = TileId(0);
   std::reverse(producer.bindings.begin(), producer.bindings.end());
 
   StructuredDAGExactDemandQuery query(dag, trial.epoch);
@@ -1158,6 +1161,7 @@ TEST_F(StructuredDAGExactDemandQueryTest,
   EXPECT_EQ(result.status, analysis::ExactDemandStatus::Satisfied)
       << result.detail;
   EXPECT_TRUE(result.mergeObligation);
+  EXPECT_EQ(result.reductionMergeTile, TileId(0));
   EXPECT_EQ(result.role, analysis::TileRole::PartialReductionContribution);
   ASSERT_EQ(result.ownershipIntersections.size(), 2u);
   EXPECT_EQ(result.ownershipIntersections[0].tile, TileId(0));
@@ -1240,8 +1244,8 @@ module {
   StructuredDAGAnalysis dag = buildDAG(*module);
   StructuredDAGEdgeID edge = findEdge(dag, 0, 1);
   analysis::LogicalShardTrial trial = buildTrial(
-      dag, fullPlacements(dag, 0, {0, 1, 2, 3, 4, 5, 6, 7,
-                                   8, 9, 10, 11, 12, 13, 14, 15}));
+      dag, fullPlacements(
+               dag, 0, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}));
 
   StructuredDAGExactDemandQuery query(dag, trial.epoch);
   analysis::ExactDemandResult result = query.query(edge, trial);

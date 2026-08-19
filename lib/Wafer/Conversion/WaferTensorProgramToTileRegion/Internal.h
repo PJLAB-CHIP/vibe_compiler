@@ -206,11 +206,6 @@ mlir::LogicalResult buildCandidateLoopTile(
     llvm::ArrayRef<int64_t> candidateReductionSizes, CandidateLoopTile &tile,
     std::string *failureReason);
 
-mlir::LogicalResult
-verifyReductionSplitNumericLegality(mlir::linalg::LinalgOp root,
-                                    bool preservesSequentialReductionOrder,
-                                    std::string *failureReason);
-
 /// Records that `materialized` is the current-IR realization of every
 /// structured node represented by `source`.
 void recordStructuredOperationNodeMaterialization(

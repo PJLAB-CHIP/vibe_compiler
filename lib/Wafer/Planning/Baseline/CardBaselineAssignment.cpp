@@ -42,8 +42,6 @@ makeInitialPlacements(const CardProgramAnalysis &program,
     const CardBaselineSpatialAxis &axis = axes->front();
     const uint64_t participants = std::min<uint64_t>(
         program.availableTileIds.size(), std::max<uint64_t>(1, axis.extent));
-    placement.spatialPartition = StructuredDAGSpatialPartition{
-        axis.iteratorDimension, axis.resultDimension};
     placement.iteratorPartitionFactors = axis.unitPartitionFactors;
     placement.iteratorPartitionFactors[axis.iteratorDimension] =
         static_cast<uint32_t>(participants);

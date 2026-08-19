@@ -17,11 +17,10 @@ TEST(CardBaselineCompilationTest,
   wafer::compiler::detail::BaselineStatistics baselineStatistics;
   wafer::compiler::ProgramDataHandoff programData;
   std::vector<std::string> tileDataflowIRTrace;
-  auto executable =
-      wafer::compiler::detail::compileCardBaseline(
-          *parsed.module, programMetadata(), executionConfig(), diagnostics,
-          programData, &baselineStatistics, /*tilePipelineParallelism=*/0,
-          &tileDataflowIRTrace);
+  auto executable = wafer::compiler::detail::compileCardBaseline(
+      *parsed.module, programMetadata(), executionConfig(), diagnostics,
+      programData, &baselineStatistics, /*tilePipelineParallelism=*/0,
+      &tileDataflowIRTrace);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   expectCompleteTileDomain(executable->executable, tileDataflowIRTrace);
@@ -67,11 +66,10 @@ TEST(CardBaselineCompilationTest,
   wafer::compiler::detail::BaselineStatistics baselineStatistics;
   wafer::compiler::ProgramDataHandoff programData;
   std::vector<std::string> tileDataflowIRTrace;
-  auto executable =
-      wafer::compiler::detail::compileCardBaseline(
-          *parsed.module, branchMetadata(), executionConfig(), diagnostics,
-          programData, &baselineStatistics, /*tilePipelineParallelism=*/0,
-          &tileDataflowIRTrace);
+  auto executable = wafer::compiler::detail::compileCardBaseline(
+      *parsed.module, branchMetadata(), executionConfig(), diagnostics,
+      programData, &baselineStatistics, /*tilePipelineParallelism=*/0,
+      &tileDataflowIRTrace);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
@@ -82,8 +80,7 @@ TEST(CardBaselineCompilationTest,
   // Two independent structured roots on one Tile form multiple sequential
   // regions: the shared Tile (Tile 0) carries one region per root.
   ASSERT_EQ(tileDataflowIRTrace.size(), 16u);
-  EXPECT_EQ(countOccurrences(tileDataflowIRTrace.front(),
-                             "wafer.tile.region"),
+  EXPECT_EQ(countOccurrences(tileDataflowIRTrace.front(), "wafer.tile.region"),
             2u)
       << tileDataflowIRTrace.front();
   EXPECT_EQ(diagnosticsText.find("multiple structured compute roots"),
@@ -149,11 +146,10 @@ module {
   llvm::raw_string_ostream diagnostics(diagnosticsText);
   wafer::compiler::detail::BaselineStatistics baselineStatistics;
   wafer::compiler::ProgramDataHandoff programData;
-  auto executable =
-      wafer::compiler::detail::compileCardBaseline(
-          *module, program, executionConfig(), diagnostics, programData,
-          &baselineStatistics, /*tilePipelineParallelism=*/0,
-          /*tileDataflowIRTrace=*/nullptr);
+  auto executable = wafer::compiler::detail::compileCardBaseline(
+      *module, program, executionConfig(), diagnostics, programData,
+      &baselineStatistics, /*tilePipelineParallelism=*/0,
+      /*tileDataflowIRTrace=*/nullptr);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(baselineStatistics.baselineTileIRPrints, 0u);
@@ -167,8 +163,9 @@ module {
   wafer::TileId computeTile(-1);
   for (const wafer::compiler::TileExecutable &tile :
        executable->executable.tiles) {
-    mlir::func::FuncOp entry = tile.getModule().lookupSymbol<mlir::func::FuncOp>(
-        tile.getEntrySymbol());
+    mlir::func::FuncOp entry =
+        tile.getModule().lookupSymbol<mlir::func::FuncOp>(
+            tile.getEntrySymbol());
     ASSERT_TRUE(entry);
     // Every no-work entry is the typed shell contract (entry + return, plus
     // the ABI preparation allocation); all compute, movement and dataflow
@@ -225,8 +222,7 @@ TEST(CardBaselineCompilationTest,
       parsed, multiProducerJoinProgramMetadata());
 }
 
-TEST(CardBaselineCompilationTest,
-     ProducesStableCardModuleAndCardExecutableIR) {
+TEST(CardBaselineCompilationTest, ProducesStableCardModuleAndCardExecutableIR) {
   ParsedProgram firstProgram = parseProgram();
   ParsedProgram secondProgram = parseProgram();
   ASSERT_TRUE(firstProgram.module);
@@ -282,18 +278,14 @@ TEST(CardBaselineCompilationTest,
      DeterministicSpatialCoordinateAdvancesOneMonotoneState) {
   using wafer::compiler::detail::DeterministicSpatialAdvance;
   using wafer::compiler::detail::StructuredDAGNodePlacement;
-  using wafer::compiler::detail::StructuredDAGSpatialPartition;
   llvm::SmallVector<StructuredDAGNodePlacement, 3> placements;
+  placements.push_back({0,
+                        {5, 1},
+                        {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2),
+                         wafer::TileId(3), wafer::TileId(4)}});
   placements.push_back(
-      {0, StructuredDAGSpatialPartition{0, 0},
-       {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2),
-        wafer::TileId(3), wafer::TileId(4)},
-       {5, 1}});
-  placements.push_back(
-      {1, StructuredDAGSpatialPartition{1, 0},
-       {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2)},
-       {1, 3}});
-  placements.push_back({2, std::nullopt, {wafer::TileId(0)}, {1, 1}});
+      {1, {1, 3}, {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2)}});
+  placements.push_back({2, {1, 1}, {wafer::TileId(0)}});
 
   unsigned transitions = 0;
   while (true) {
@@ -309,13 +301,8 @@ TEST(CardBaselineCompilationTest,
   EXPECT_EQ(transitions, 4u);
   for (const StructuredDAGNodePlacement &placement : placements) {
     EXPECT_EQ(placement.tiles.size(), 1u);
-    if (placement.spatialPartition)
-      EXPECT_EQ(placement.iteratorPartitionFactors
-                    [placement.spatialPartition->iteratorDimension],
-                1u);
-    else
-      EXPECT_EQ(placement.iteratorPartitionFactors,
-                (llvm::SmallVector<uint32_t, 4>{1, 1}));
+    EXPECT_EQ(placement.iteratorPartitionFactors,
+              (llvm::SmallVector<uint32_t, 4>{1, 1}));
   }
 
   placements.front().iteratorPartitionFactors[0] = 2;
@@ -339,11 +326,10 @@ TEST(CardBaselineCompilationTest,
   wafer::compiler::detail::BaselineStatistics baselineStatistics;
   wafer::compiler::ProgramDataHandoff programData;
   std::vector<std::string> tileDataflowIRTrace;
-  auto executable =
-      wafer::compiler::detail::compileCardBaseline(
-          *parsed.module, largeProducerStageProgramMetadata(), executionConfig(),
-          diagnostics, programData, &baselineStatistics,
-          /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
+  auto executable = wafer::compiler::detail::compileCardBaseline(
+      *parsed.module, largeProducerStageProgramMetadata(), executionConfig(),
+      diagnostics, programData, &baselineStatistics,
+      /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   EXPECT_EQ(baselineStatistics.materializationRejections, 0u);
@@ -360,8 +346,9 @@ TEST(CardBaselineCompilationTest,
       << firstTileIR.str();
   EXPECT_GT(countOccurrences(firstTileIR, "wafer.tile.load"), 1u)
       << firstTileIR.str();
-  EXPECT_EQ(diagnosticsText.find("card-executable-baseline-temporal-refinement"),
-            std::string::npos)
+  EXPECT_EQ(
+      diagnosticsText.find("card-executable-baseline-temporal-refinement"),
+      std::string::npos)
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("exhausted its temporal domain"),
             std::string::npos)
@@ -377,11 +364,10 @@ TEST(CardBaselineCompilationTest,
   wafer::compiler::detail::BaselineStatistics baselineStatistics;
   wafer::compiler::ProgramDataHandoff programData;
   std::vector<std::string> tileDataflowIRTrace;
-  auto baseline =
-      wafer::compiler::detail::compileCardBaseline(
-          *baselineProgram.module, largeTemporalProgramMetadata(),
-          executionConfig(), baselineDiagnostics, programData, &baselineStatistics,
-          /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
+  auto baseline = wafer::compiler::detail::compileCardBaseline(
+      *baselineProgram.module, largeTemporalProgramMetadata(),
+      executionConfig(), baselineDiagnostics, programData, &baselineStatistics,
+      /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
   baselineDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(baseline)) << baselineDiagnosticsText;
   // Temporal wave shapes are derived before physical materialization. The
@@ -397,9 +383,8 @@ TEST(CardBaselineCompilationTest,
                 "card-executable-compilation outcome=exact-rejection"),
             std::string::npos)
       << baselineDiagnosticsText;
-  EXPECT_EQ(
-      baselineDiagnosticsText.find("card-exact-spm-conflict-certificate"),
-      std::string::npos)
+  EXPECT_EQ(baselineDiagnosticsText.find("card-exact-spm-conflict-certificate"),
+            std::string::npos)
       << baselineDiagnosticsText;
   EXPECT_EQ(
       baselineDiagnosticsText.find("tile-execution-allocation-feedback-joint"),
@@ -415,6 +400,5 @@ TEST(CardBaselineCompilationTest,
         << tileDataflowIR.str();
   }
 }
-
 
 } // namespace

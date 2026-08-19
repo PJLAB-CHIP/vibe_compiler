@@ -3,6 +3,7 @@
 #ifndef WAFER_COMPILER_CARDBASELINECOMPILATION_H
 #define WAFER_COMPILER_CARDBASELINECOMPILATION_H
 
+#include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/CodeGen/Executable/CardExecutableLowering.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 
@@ -50,23 +51,27 @@ struct BaselineStatistics {
 /// explicit caller-owned sink and is not carried by this result.
 struct CardBaselineCompilationResult {
   explicit CardBaselineCompilationResult(
-      CardExecutableLoweringResult executable)
-      : executable(std::move(executable)) {}
+      CardExecutableLoweringResult executable,
+      std::unique_ptr<CardProgramAnalysis> programAnalysis)
+      : executable(std::move(executable)),
+        programAnalysis(std::move(programAnalysis)) {}
 
   CardExecutableLoweringResult executable;
+  std::unique_ptr<CardProgramAnalysis> programAnalysis;
 };
 
 /// Materializes and admits the deterministic functional baseline. The source
 /// module is borrowed and unchanged. This boundary owns no candidate family,
 /// score, selector, search statistics or printed-IR result field.
-mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
-    mlir::ModuleOp tensorProgram,
-    const frontend::FrontendProgramVerificationResult &program,
-    const ExecutionConfig &executionConfig,
-    llvm::raw_ostream &diagnostics, ProgramDataHandoff &programData,
-    BaselineStatistics *baselineStatistics = nullptr,
-    unsigned tilePipelineParallelism = 0,
-    std::vector<std::string> *tileDataflowIRTrace = nullptr);
+mlir::FailureOr<CardBaselineCompilationResult>
+compileCardBaseline(mlir::ModuleOp tensorProgram,
+                    const frontend::FrontendProgramVerificationResult &program,
+                    const ExecutionConfig &executionConfig,
+                    llvm::raw_ostream &diagnostics,
+                    ProgramDataHandoff &programData,
+                    BaselineStatistics *baselineStatistics = nullptr,
+                    unsigned tilePipelineParallelism = 0,
+                    std::vector<std::string> *tileDataflowIRTrace = nullptr);
 
 } // namespace wafer::compiler::detail
 

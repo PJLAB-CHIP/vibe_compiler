@@ -101,6 +101,9 @@ struct LogicalNodeTrial {
   std::optional<mlir::presburger::PresburgerSet> completeIterationDomain;
   llvm::SmallVector<LogicalExecutionShard, 16> executionShards;
   llvm::SmallVector<LogicalTileBinding, 16> bindings;
+  /// Present exactly when this node has spatially partitioned reduction
+  /// contributions. It names the selected Tile that owns the explicit merge.
+  std::optional<TileId> reductionMergeTile;
 };
 
 /// One closed logical shard trial covering every DAG node of the consuming
@@ -207,6 +210,7 @@ struct ExactDemandResult {
   std::optional<mlir::presburger::PresburgerSet> uncoveredWitness;
   TileRole role = TileRole::UniquePartition;
   bool mergeObligation = false;
+  std::optional<TileId> reductionMergeTile;
   std::string detail;
 };
 
