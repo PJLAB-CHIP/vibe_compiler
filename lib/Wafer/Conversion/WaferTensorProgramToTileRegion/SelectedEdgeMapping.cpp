@@ -201,9 +201,6 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
       return failResult(failureReason,
                         "edge mapping duplicates one destination strategy");
 
-    if (strategy.bufferCount == 0 || strategy.bufferCount > 3)
-      return failResult(failureReason,
-                        "edge strategy buffer count is outside [1, 3]");
     if (strategy.action != SpatialEdgeAction::PeerFragments &&
         (!strategy.fragments.empty() || strategy.fragmentsDefineProducerDemand))
       return failResult(failureReason,
@@ -226,14 +223,13 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
 
   if (result.independentDDRStages &&
       !llvm::all_of(result.strategies, [](const MappedStrategy &mapped) {
-        return mapped.strategy.bufferCount == 1 &&
-               (mapped.strategy.action == SpatialEdgeAction::RegionCut ||
-                mapped.strategy.action == SpatialEdgeAction::PeerFragments);
+        return mapped.strategy.action == SpatialEdgeAction::RegionCut ||
+               mapped.strategy.action == SpatialEdgeAction::PeerFragments;
       }))
     return failResult(
         failureReason,
-        "independent DDR stages require single-buffer RegionCut or exact "
-        "cross-Tile fragment actions");
+        "independent DDR stages require RegionCut or exact cross-Tile "
+        "fragment actions");
 
   return result;
 }

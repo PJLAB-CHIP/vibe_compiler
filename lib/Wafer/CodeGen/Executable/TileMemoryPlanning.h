@@ -3,8 +3,8 @@
 #ifndef WAFER_COMPILER_TILEMEMORYPLANNING_H
 #define WAFER_COMPILER_TILEMEMORYPLANNING_H
 
-#include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
+#include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 
 #include "Wafer/Transforms/MemoryPlanning.h"
 
@@ -30,8 +30,7 @@ enum class TileMemoryPlanningFailureKind : uint8_t {
 /// Typed, invocation-local rejection evidence for one Tile module.
 /// It never carries a partially placed module.
 struct TileMemoryPlanningFailure {
-  TileMemoryPlanningFailureKind kind =
-      TileMemoryPlanningFailureKind::None;
+  TileMemoryPlanningFailureKind kind = TileMemoryPlanningFailureKind::None;
   bool spmCapacityOverflow = false;
   SPMMemoryPlanningFailureKind spmPlanningFailureKind =
       SPMMemoryPlanningFailureKind::None;
@@ -76,7 +75,7 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> planTileMemory(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     TileMemoryPlanningFailure *failure = nullptr,
-    llvm::ArrayRef<SelectedBufferRequest> selectedBufferRequests = {},
+    llvm::ArrayRef<SelectedBufferingScope> selectedBufferingScopes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr,
     unsigned *materializedSlotAllocationCount = nullptr,
     SelectedBufferMaterializationFailure *selectedBufferFailure = nullptr);

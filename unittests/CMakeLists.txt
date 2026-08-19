@@ -29,6 +29,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/TemporalTileShapeTest.cpp
   Analysis/Executable/ProgramResourceVerificationTest.cpp
   Planning/Search/CardExecutableSearchTest.cpp
+  Planning/Search/BufferingTest.cpp
   Planning/Search/CoupledRegionTest.cpp
   Planning/Search/DataMovementTest.cpp
   Planning/Search/PhysicalRepresentationTest.cpp

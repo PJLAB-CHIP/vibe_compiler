@@ -105,10 +105,6 @@ struct SpatialEdgeStrategy {
   TileId sourceTile{0};
   TileId destinationTile{0};
   SpatialEdgeAction action = SpatialEdgeAction::LocalShardResidency;
-  /// Selected rotating-buffer multiplicity for this edge.  The materializer
-  /// must either produce the requested slot family or reject the candidate;
-  /// it must not silently choose another count.
-  uint8_t bufferCount = 1;
   bool fragmentsDefineProducerDemand = false;
   llvm::SmallVector<SpatialEdgeFragment, 4> fragments;
 };

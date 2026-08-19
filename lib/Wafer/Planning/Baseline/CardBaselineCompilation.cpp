@@ -56,7 +56,7 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
 
   CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
       std::move(materialized->module), cardId, (*analysis)->availableTileIds,
-      /*selectedBufferRequests=*/{}, materialized->relations, program,
+      /*selectedBufferingScopes=*/{}, materialized->relations, program,
       executionConfig, diagnostics, programData,
       baselineStatistics ? &baselineStatistics->exactGates : nullptr,
       tilePipelineParallelism, tileDataflowIRTrace != nullptr);

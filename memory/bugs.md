@@ -1044,3 +1044,15 @@
   不能按打印文本或shape猜测复用。
 - 防复发：coupled fanout、diamond和“producer既observable又被consumer使用”都检查同一source/result/window只有一个actual emitted
   version；cache仍限制同block、type、完整offset/size/stride和definition-before-use，不跨IR epoch。
+
+## Rotating buffer不能由logical edge字段或无约束loop扫描拥有
+
+- 现象：logical movement carrier长期携带`bufferCount`，actual materializer又扫描Tile module中所有`scf.for`自行挑一个看似可用的loop，
+  并把合法multiplicity写死为2或3；同一Tile存在两个独立region时还会被错误要求共享一个loop。
+- 根因：候选identity、actual loop proof和memory planning三个边界混在一个入口。logical edge尚不知道temporal steady loop、physical
+  leaf footprint、alias、最后consumer或release，因此既不能拥有slot winner，也不能证明多buffer可物化。
+- 修复模式：buffering使用独立typed domain，输入closed spatial/group/temporal/representation/movement assignment和显式capacity；
+  single是无工作identity，multi-slot只携group scope、exact edge子集和count。每个scope在prepared Instr上用current buffer relation证明
+  exact endpoint共享static loop，再原位生成slot family/SSA rotation/phase/release并立即执行fresh SPM planning；不同scope顺序处理。
+- 防复发：删除logical carrier字段和无edge overload；测试必须同时覆盖2/3/4+、tail/capacity、external-write alias hazard、Direct-DTE
+  issue/wait、不同loop拒绝与同Tile多scope。query不得clone/lower，统计只在caller显式请求时启用，overlap winner只能由完整search选择。

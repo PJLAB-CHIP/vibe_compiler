@@ -14,6 +14,8 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/AttentionAlternative.cpp
   Planning/Search/AttentionAnalysis.cpp
   Planning/Search/AttentionTensorOps.cpp
+  Planning/Search/Buffering.cpp
+  Planning/Search/BufferingApply.cpp
   Planning/Search/CardExecutableSearch.cpp
   Planning/Search/CoupledRegion.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp

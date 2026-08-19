@@ -251,7 +251,6 @@ bool appendDestinationCarrier(
   strategy.destinationTile = destination.destinationTile;
   strategy.sourceTile = destination.destinationTile;
   strategy.action = SpatialEdgeAction::PeerFragments;
-  strategy.bufferCount = 1;
   strategy.fragmentsDefineProducerDemand = pieces.domains.size() > 1;
   strategy.producerOffsets = pieces.domains.front().offsets;
   strategy.producerSizes = pieces.domains.front().sizes;

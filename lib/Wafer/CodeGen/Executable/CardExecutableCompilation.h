@@ -4,8 +4,8 @@
 #ifndef WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
 #define WAFER_COMPILER_CARDEXECUTABLECOMPILATION_H
 
-#include "Wafer/CodeGen/Executable/TileMemoryPlanning.h"
 #include "Wafer/CodeGen/Executable/CardExecutableLowering.h"
+#include "Wafer/CodeGen/Executable/TileMemoryPlanning.h"
 
 #include "Wafer/Frontend/Program/Program.h"
 #include "Wafer/Target/Core/TopologyIds.h"
@@ -80,7 +80,9 @@ struct CardExecutableCompilationResult {
     return status == CardExecutableCompilationStatus::ProvenExactRejection;
   }
 
-  CardExecutableLoweringResult takeExecutable() { return std::move(*executable); }
+  CardExecutableLoweringResult takeExecutable() {
+    return std::move(*executable);
+  }
 };
 
 /// Compiles exactly one owned, verifier-legal, already selected CardModule.
@@ -90,22 +92,21 @@ struct CardExecutableCompilationResult {
 /// fixed-capacity SPM/DDR planning, Direct-DTE lowering, resource validation,
 /// and target ABI/LLVM verification.
 ///
-/// `selectedBufferRequests`, when nonempty, must have one entry for every
-/// expected Tile in canonical Tile order.  They are typed assignments
-/// owned by the caller; this boundary only materializes and verifies them.
+/// `selectedBufferingScopes`, when nonempty, must have one entry for every
+/// expected Tile in canonical Tile order. Each Tile entry contains independent
+/// exact-loop scopes. They are typed assignments owned by the caller; this
+/// boundary only materializes and verifies them.
 CardExecutableCompilationResult compileCardModuleToExecutable(
-    mlir::OwningOpRef<mlir::ModuleOp> cardModule,
-    CardId expectedCardId,
+    mlir::OwningOpRef<mlir::ModuleOp> cardModule, CardId expectedCardId,
     llvm::ArrayRef<TileId> expectedTileIds,
-    llvm::ArrayRef<llvm::SmallVector<SelectedBufferRequest, 4>>
-        selectedBufferRequests,
+    llvm::ArrayRef<llvm::SmallVector<SelectedBufferingScope, 4>>
+        selectedBufferingScopes,
     const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics = nullptr,
-    unsigned tilePipelineParallelism = 0,
-    bool captureTileIRTrace = false);
+    unsigned tilePipelineParallelism = 0, bool captureTileIRTrace = false);
 
 } // namespace wafer::compiler::detail
 

@@ -1851,12 +1851,40 @@ organization和主构建通过；没有运行LLaMA search。contention下broadca
 
 ## Q50.I：Buffer and Rotating Slots
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  immutable selected TensorProgram、Q50.B exact node/Tile shards、Q50.D coupled groups、Q50.E temporal leaf vector/order、Q50.G
+  physical representation、Q50.H exact movement assignment及调用方显式提供的target SPM capacity；尚未选择event/resource schedule。
+- Current stage responsibility:
+  按coupled-group内的exact logical edge子集建立serialized或rotating-slot候选，有限slot上界只由actual steady-wave count与单slot
+  exact physical payload的capacity下界推导；selected apply把每个独立scope变成actual allocation family、SSA rotation及SCF
+  prologue/steady/epilogue，并从current Instr关系证明producer、movement endpoint、consumer和最后use位于同一static loop。
+- Output IR / files:
+  query输出typed `CardBufferingAssignment`，其中每个scope只含Tile、group nodes、被pipeline的edge集合和slot count；apply输出
+  current Instr IR中的独立allocation、loop-carried pointer rotation与显式release。query结果不含IR pointer、location、score、
+  lifetime cache或默认统计。
+- Downstream consumer:
+  Q50.J从actual Instr control/effect和selected buffering重建ready/resource calendar；Q50.0 final gate在slot物化后重新执行SPM allocation、
+  message/completion和ABI验证。
+- User-level driver / named pipeline:
+  Q51 closure后的public `search` session；baseline保持serialized且不枚举buffer域。
+- Explicit non-goals:
+  不选择worker、issue order、route、winner或overlap收益，不clone/lower partial state，不把slot count写回logical edge carrier，不用3作为
+  永久上限，不把materializer失败升级成parent spatial/temporal rejection。
+- Done criteria:
+  lazy domain覆盖single/double/triple及wave/capacity允许的更多slot；selected scope可转换为exact per-Tile request；actual
+  double/triple/multi-slot、tail、Direct-DTE issue/wait、alias与共同循环正负例通过；旧edge `bufferCount`、无edge扫描入口、
+  local buffer winner和固定`[2,3]`上限删除。
+
 ### 机制
 
 buffer count 是 op-wave/edge pipeline 的共同候选维度。domain 至少表达 single/double/triple buffering；若 current IR 与硬件
-允许更多 slot，则以并发 wave、lifetime 和 capacity 推导有限上界，不能把 3 作为未证明的永久 cap。每个候选显式携带 slot
-binding scope、rotation、producer release、最后async consumer和prologue/steady/epilogue phase等typed choices；aligned footprint和actual lifetime
-由current immutable IR borrow与region/representation/movement/order assignment重算。
+允许更多 slot，则以并发 wave、lifetime 和 capacity 推导有限上界，不能把 3 作为未证明的永久 cap。候选只携带可独立物化的
+coupled-group scope、exact logical-edge子集和slot count；rotation、producer release、最后async consumer及
+prologue/steady/epilogue不是另一份shadow recipe，而是selected apply从actual allocation、SSA use、effect、wait和static loop直接构造并验证。
+aligned footprint和actual lifetime由current immutable IR borrow与region/representation/movement/order assignment重算。
 
 buffer mechanism 只生成 serialized/overlap-capable actual alternatives；是否真正 overlap 由 Q50.J/K resource schedule 决定。
 无法证明 buffer 独立或无 alias 时不生成对应 transition。
@@ -1873,6 +1901,25 @@ assignment与actual Instr正负测试；buffer recipe改变会进入state key，
 buffer feedback family/local buffer winner，保留selected-buffer materializer与verifier。不同buffer与schedule/stage组合是否
 实现重叠及其global winner只在Q51 closure证明。正例必须检查所有exact logical-edge endpoint共享actual static loop；
 循环外consumer负例必须稳定报告“no static loop containing every exact logical-edge endpoint”。
+
+### 2026-08-19 完成结果
+
+`CardBufferingDomain`对每个selected coupled group保留serialized identity，并惰性枚举可pipeline的retained edge非空子集与全部slot
+multiplicity。slot上界不再固定为3：temporal owner给出compact traversal中真正存在的steady full-wave trip count，Q50.G selected
+producer-result/consumer-operand leaf layout经`PhysicalLayoutRelation`给出单slot必须容纳的physical footprint下界，调用方显式SPM
+capacity再给出安全有限上界。不同edge可有不同上界，domain按当前count只枚举仍可达edge；tail wave不被错误计入steady loop。
+
+single-slot assignment不生成request、不运行materializer。multi-slot assignment经`BufferingApply`转换成按Tile排序的独立
+`SelectedBufferingScope`；同一Tile上的不同coupled groups顺序原位物化，绝不为了寻找共同anchor把两个scope合并或clone module。
+每个scope的request只绑定current DAG producer/consumer和actual retained dataflow。Q50.0在TileRegion-to-Instr和memory-preparation后，
+由current buffer relation检查每个endpoint属于同一static `scf.for`，再构造独立allocation family、loop-carried pointer rotation、
+SCF prologue/steady/epilogue和owner-block release；随后fresh SPM allocation验证全部slot真正可共存。
+
+旧`SpatialEdgeStrategy::bufferCount`和baseline赋值已删除，logical movement carrier不再拥有buffering；无logical-edge request、扫描任意
+loop并自行挑选candidate的overload删除，`[2,3]`硬上限删除。actual tests覆盖2/3/4 slots、wave上限、capacity上限、tail、
+loop-external cross-stage write hazard、Direct-DTE issue/direct wait/final release、不同static loops稳定拒绝，以及同一Tile两个独立scope
+顺序物化。query/apply均无默认统计、partial-state clone或local overlap winner；是否真正获益仍由Q50.J/K与Q51共同选择证明。
+fresh Q50.C–I/baseline/executable定向unit 87/87、lit 216/216、source/IR organization和主构建通过；按计划未运行重型LLaMA search。
 
 ## Q50.J：Ready/Order/Worker/Resource Schedule
 

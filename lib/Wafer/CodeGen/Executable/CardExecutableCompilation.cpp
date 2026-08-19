@@ -122,8 +122,8 @@ fail(CardExecutableCompilationStatus status, llvm::StringRef gate,
 CardExecutableCompilationResult compileCardModuleToExecutable(
     mlir::OwningOpRef<mlir::ModuleOp> cardModule, CardId expectedCardId,
     llvm::ArrayRef<TileId> expectedTileIds,
-    llvm::ArrayRef<llvm::SmallVector<SelectedBufferRequest, 4>>
-        selectedBufferRequests,
+    llvm::ArrayRef<llvm::SmallVector<SelectedBufferingScope, 4>>
+        selectedBufferingScopes,
     const StructuredMaterializationRelations &materializationRelations,
     const frontend::FrontendProgramVerificationResult &program,
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
@@ -146,8 +146,8 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
   };
 
   if (!cardModule || expectedTileIds.empty() ||
-      (!selectedBufferRequests.empty() &&
-       selectedBufferRequests.size() != expectedTileIds.size()))
+      (!selectedBufferingScopes.empty() &&
+       selectedBufferingScopes.size() != expectedTileIds.size()))
     return reportFailure(
         fail(CardExecutableCompilationStatus::IndeterminateFailure,
              "compilation-contract",
@@ -217,12 +217,12 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
       return;
     }
 
-    llvm::ArrayRef<SelectedBufferRequest> requests;
-    if (!selectedBufferRequests.empty())
-      requests = selectedBufferRequests[tileIndex];
+    llvm::ArrayRef<SelectedBufferingScope> bufferingScopes;
+    if (!selectedBufferingScopes.empty())
+      bufferingScopes = selectedBufferingScopes[tileIndex];
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> memoryPlanned =
         planTileMemory(std::move(result.module), &result.memoryPlanning,
-                       requests, &result.materializationRelations,
+                       bufferingScopes, &result.materializationRelations,
                        &result.rotatingSlotAllocationCount,
                        &result.selectedBuffer);
     if (mlir::failed(memoryPlanned)) {

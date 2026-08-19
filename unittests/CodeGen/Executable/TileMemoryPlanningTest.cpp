@@ -12,8 +12,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -156,15 +156,14 @@ TEST_F(TileMemoryPlanningTest,
         return mlir::success();
       });
   wafer::compiler::detail::TileMemoryPlanningFailure failure;
-  auto memoryPlanned = wafer::compiler::detail::planTileMemory(
-      std::move(module), &failure);
+  auto memoryPlanned =
+      wafer::compiler::detail::planTileMemory(std::move(module), &failure);
   EXPECT_TRUE(mlir::failed(memoryPlanned));
-  EXPECT_EQ(
-      failure.kind,
-      wafer::compiler::detail::TileMemoryPlanningFailureKind::Contract);
-  EXPECT_NE(diagnostics.find(
-                "tile_memory_planning_requires_canonical_instr_ir"),
-            std::string::npos)
+  EXPECT_EQ(failure.kind,
+            wafer::compiler::detail::TileMemoryPlanningFailureKind::Contract);
+  EXPECT_NE(
+      diagnostics.find("tile_memory_planning_requires_canonical_instr_ir"),
+      std::string::npos)
       << diagnostics;
 }
 
@@ -184,12 +183,12 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
         return mlir::success();
       });
   wafer::compiler::detail::TileMemoryPlanningFailure failure;
-  auto memoryPlanned = wafer::compiler::detail::planTileMemory(
-      std::move(module), &failure);
+  auto memoryPlanned =
+      wafer::compiler::detail::planTileMemory(std::move(module), &failure);
   EXPECT_TRUE(mlir::failed(memoryPlanned));
-  EXPECT_EQ(failure.kind,
-            wafer::compiler::detail::TileMemoryPlanningFailureKind::
-                SPMAllocation);
+  EXPECT_EQ(
+      failure.kind,
+      wafer::compiler::detail::TileMemoryPlanningFailureKind::SPMAllocation);
   EXPECT_TRUE(failure.spmCapacityOverflow);
   EXPECT_EQ(failure.spmPlanningFailureKind,
             wafer::SPMMemoryPlanningFailureKind::CapacityOverflow);
@@ -219,8 +218,7 @@ TEST_F(TileMemoryPlanningTest, ReportsSPMFailureForOwnedTileModule) {
       << diagnostics;
 }
 
-TEST_F(TileMemoryPlanningTest,
-       RejectsCardPlacementBeforeTileMemoryPlanning) {
+TEST_F(TileMemoryPlanningTest, RejectsCardPlacementBeforeTileMemoryPlanning) {
   mlir::OwningOpRef<mlir::ModuleOp> module = candidateWithDDRPlacement();
   ASSERT_TRUE(module);
 
@@ -233,8 +231,8 @@ TEST_F(TileMemoryPlanningTest,
         return mlir::success();
       });
   wafer::compiler::detail::TileMemoryPlanningFailure failure;
-  auto memoryPlanned = wafer::compiler::detail::planTileMemory(
-      std::move(module), &failure);
+  auto memoryPlanned =
+      wafer::compiler::detail::planTileMemory(std::move(module), &failure);
   EXPECT_TRUE(mlir::failed(memoryPlanned));
   EXPECT_EQ(failure.kind,
             wafer::compiler::detail::TileMemoryPlanningFailureKind::
@@ -251,8 +249,8 @@ TEST_F(TileMemoryPlanningTest,
   ASSERT_TRUE(module);
 
   wafer::compiler::detail::TileMemoryPlanningFailure failure;
-  auto memoryPlanned = wafer::compiler::detail::planTileMemory(
-      std::move(module), &failure);
+  auto memoryPlanned =
+      wafer::compiler::detail::planTileMemory(std::move(module), &failure);
   EXPECT_TRUE(mlir::failed(memoryPlanned));
   EXPECT_EQ(failure.kind,
             wafer::compiler::detail::TileMemoryPlanningFailureKind::
@@ -314,10 +312,8 @@ TEST_F(TileMemoryPlanningTest,
     mlir::Block &body = region.getBody().front();
     body.addArgument(ddrType, loc);
     mlir::OpBuilder bodyBuilder = mlir::OpBuilder::atBlockEnd(&body);
-    auto lower =
-        bodyBuilder.create<mlir::arith::ConstantIndexOp>(loc, 0);
-    auto upper =
-        bodyBuilder.create<mlir::arith::ConstantIndexOp>(loc, 2);
+    auto lower = bodyBuilder.create<mlir::arith::ConstantIndexOp>(loc, 0);
+    auto upper = bodyBuilder.create<mlir::arith::ConstantIndexOp>(loc, 2);
     auto step = bodyBuilder.create<mlir::arith::ConstantIndexOp>(loc, 1);
     auto loop = bodyBuilder.create<mlir::scf::ForOp>(
         loc, lower, upper, step, mlir::ValueRange{body.getArgument(0)});
@@ -331,9 +327,9 @@ TEST_F(TileMemoryPlanningTest,
   builder.create<mlir::func::ReturnOp>(loc, current);
 
   ASSERT_TRUE(mlir::succeeded(mlir::verify(module)));
-  EXPECT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
-      module, /*spmBase=*/0, /*spmLimit=*/1 << 20,
-      /*spmAlignment=*/16)));
+  EXPECT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(module, /*spmBase=*/0,
+                                                         /*spmLimit=*/1 << 20,
+                                                         /*spmAlignment=*/16)));
   EXPECT_TRUE(mlir::succeeded(wafer::planDDRMemoryModule(
       module, /*ddrAlignmentBytes=*/16, /*ddrCapacityBytes=*/1 << 20,
       /*ddrLargestContiguousBytes=*/1 << 20,
@@ -408,6 +404,107 @@ module {
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
+}
+
+TEST_F(TileMemoryPlanningTest,
+       AppliesIndependentSelectedBufferingScopesWithoutACommonLoop) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  func.func @main(
+      %input: memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    %first_boundary = wafer.tile.region(
+        %input : memref<4xf16, #wafer.memory<ddr, tensor>>) ->
+        (memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%ddr: memref<4xf16, #wafer.memory<ddr, tensor>>):
+      %first_c0 = arith.constant 0 : index
+      %first_c1 = arith.constant 1 : index
+      %first_c3 = arith.constant 3 : index
+      scf.for %iv = %first_c0 to %first_c3 step %first_c1 {
+        %first = memref.alloc()
+            : memref<4xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.rdma %ddr to %first
+            {byte_count = 8 : i64, inner_bytes = 8 : i64,
+             src_iterations = array<i64: 1, 1, 1>,
+             src_strides = array<i64: 0, 0, 0>}
+            : memref<4xf16, #wafer.memory<ddr, tensor>>
+           to memref<4xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.elementwise <add> %first, %first into %first
+            : memref<4xf16, #wafer.memory<spm, tensor>>,
+              memref<4xf16, #wafer.memory<spm, tensor>>
+          into memref<4xf16, #wafer.memory<spm, tensor>>
+        scf.yield
+      }
+      wafer.tile.yield %ddr
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    %second_boundary = wafer.tile.region(
+        %first_boundary : memref<4xf16, #wafer.memory<ddr, tensor>>) ->
+        (memref<4xf16, #wafer.memory<ddr, tensor>>) {
+    ^bb0(%ddr: memref<4xf16, #wafer.memory<ddr, tensor>>):
+      %second_c0 = arith.constant 0 : index
+      %second_c1 = arith.constant 1 : index
+      %second_c3 = arith.constant 3 : index
+      scf.for %iv = %second_c0 to %second_c3 step %second_c1 {
+        %second = memref.alloc()
+            : memref<4xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.rdma %ddr to %second
+            {byte_count = 8 : i64, inner_bytes = 8 : i64,
+             src_iterations = array<i64: 1, 1, 1>,
+             src_strides = array<i64: 0, 0, 0>}
+            : memref<4xf16, #wafer.memory<ddr, tensor>>
+           to memref<4xf16, #wafer.memory<spm, tensor>>
+        wafer.instr.elementwise <add> %second, %second into %second
+            : memref<4xf16, #wafer.memory<spm, tensor>>,
+              memref<4xf16, #wafer.memory<spm, tensor>>
+          into memref<4xf16, #wafer.memory<spm, tensor>>
+        scf.yield
+      }
+      wafer.tile.yield %ddr
+          : memref<4xf16, #wafer.memory<ddr, tensor>>
+    }
+    return
+  }
+}
+)mlir",
+                                                        context.get());
+  ASSERT_TRUE(module);
+  mlir::func::FuncOp function =
+      module->lookupSymbol<mlir::func::FuncOp>("main");
+  llvm::SmallVector<mlir::memref::AllocOp, 2> allocations;
+  function.walk([&](mlir::memref::AllocOp allocation) {
+    allocations.push_back(allocation);
+  });
+  ASSERT_EQ(allocations.size(), 2u);
+
+  wafer::StructuredMaterializationRelations relations;
+  relations.operandBuffers.push_back({1, function.getArgument(0)});
+  relations.operationResultBuffers.push_back({2, allocations[0].getResult()});
+  relations.operandBuffers.push_back({3, function.getArgument(0)});
+  relations.operationResultBuffers.push_back({4, allocations[1].getResult()});
+  wafer::compiler::detail::SelectedBufferingScope firstScope;
+  firstScope.requests.push_back(
+      {/*producerNode=*/1, /*consumerNode=*/2, /*bufferCount=*/2,
+       /*requireLocalDataflow=*/true, /*messages=*/{}});
+  wafer::compiler::detail::SelectedBufferingScope secondScope;
+  secondScope.requests.push_back(
+      {/*producerNode=*/3, /*consumerNode=*/4, /*bufferCount=*/2,
+       /*requireLocalDataflow=*/true, /*messages=*/{}});
+  llvm::SmallVector<wafer::compiler::detail::SelectedBufferingScope, 2> scopes;
+  scopes.push_back(std::move(firstScope));
+  scopes.push_back(std::move(secondScope));
+
+  unsigned slotAllocations = 0;
+  wafer::compiler::detail::TileMemoryPlanningFailure memoryFailure;
+  wafer::compiler::detail::SelectedBufferMaterializationFailure bufferFailure;
+  auto planned = wafer::compiler::detail::planTileMemory(
+      std::move(module), &memoryFailure, scopes, &relations, &slotAllocations,
+      &bufferFailure);
+  ASSERT_TRUE(mlir::succeeded(planned)) << bufferFailure.detail;
+  EXPECT_EQ(slotAllocations, 4u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(**planned)));
+  EXPECT_TRUE(mlir::succeeded(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          (*planned)->getOperation(), relations)));
 }
 
 } // namespace

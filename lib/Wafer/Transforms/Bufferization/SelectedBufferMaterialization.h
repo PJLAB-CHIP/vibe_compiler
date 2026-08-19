@@ -36,9 +36,16 @@ struct SelectedBufferMessage {
 struct SelectedBufferRequest {
   std::optional<uint32_t> producerNode;
   std::optional<uint32_t> consumerNode;
-  uint8_t bufferCount = 1;
+  uint32_t bufferCount = 1;
   bool requireLocalDataflow = false;
   llvm::SmallVector<SelectedBufferMessage, 2> messages;
+};
+
+/// Exact logical edges selected for one independently materializable static
+/// loop. Separate scopes on the same Tile are applied sequentially and never
+/// forced to share a synthetic common loop.
+struct SelectedBufferingScope {
+  llvm::SmallVector<SelectedBufferRequest, 4> requests;
 };
 
 enum class SelectedBufferMaterializationFailureKind : uint8_t {
@@ -56,10 +63,11 @@ enum class SelectedBufferMaterializationFailureKind : uint8_t {
 struct SelectedBufferMaterializationFailure {
   SelectedBufferMaterializationFailureKind kind =
       SelectedBufferMaterializationFailureKind::None;
+  size_t scopeIndex = std::numeric_limits<size_t>::max();
   size_t requestIndex = std::numeric_limits<size_t>::max();
   std::optional<uint32_t> producerNode;
   std::optional<uint32_t> consumerNode;
-  uint8_t bufferCount = 1;
+  uint32_t bufferCount = 1;
   std::string detail;
 };
 
@@ -72,24 +80,11 @@ struct SelectedBufferingResult {
   unsigned slotAllocationCount = 0;
 };
 
-/// Materializes the buffer multiplicity already selected by the structured-DAG
-/// candidate into ordinary allocation, SSA recurrence and scf.for IR.  This
-/// is an exact actualization gate, not a second candidate owner: it either
-/// rewrites one (possibly nested) loop whose derived rotating-slot family has
-/// exactly `requestedBufferCount`, or fails. Ownership is consumed so a failed
-/// in-place transformation cannot expose partially rewritten IR; this
-/// low-level mechanism entry does not clone the whole module to manufacture
-/// rollback. Callers selecting a logical dependency edge must use the exact
-/// logical-edge overload below.
-mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
-    mlir::OwningOpRef<mlir::ModuleOp> module, uint8_t requestedBufferCount,
-    std::string *failureReason = nullptr, bool permitNoOpportunity = false);
-
-/// Selected logical-edge gate. Unlike the low-level mechanism entry above, this
-/// overload must prove that the materialized stage dependency belongs to all
-/// selected logical-edge requests on the Tile. A loop for an unrelated edge
-/// is not an admissible witness. Ownership is consumed and this overload
-/// applies once in place, returning the same owned module only on success.
+/// Selected logical-edge gate. The materialized stage dependency must belong
+/// to every selected logical-edge request in this scope. A loop for an
+/// unrelated edge is not an admissible witness. Ownership is consumed and the
+/// rewrite applies once in place, returning the same owned module only on
+/// success.
 mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     llvm::ArrayRef<SelectedBufferRequest> requests,

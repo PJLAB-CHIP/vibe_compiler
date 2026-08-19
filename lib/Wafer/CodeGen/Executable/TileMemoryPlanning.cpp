@@ -18,6 +18,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
 
+#include "llvm/ADT/STLExtras.h"
+
 namespace wafer::compiler::detail {
 namespace {
 
@@ -154,7 +156,7 @@ TileMemoryPlanningFailure convertSPMMemoryPlanningFailure(
 mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>>
 planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
                TileMemoryPlanningFailure *failure,
-               llvm::ArrayRef<SelectedBufferRequest> selectedBufferRequests,
+               llvm::ArrayRef<SelectedBufferingScope> selectedBufferingScopes,
                StructuredMaterializationRelations *materializationRelations,
                unsigned *materializedSlotAllocationCount,
                SelectedBufferMaterializationFailure *selectedBufferFailure) {
@@ -241,7 +243,7 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
   // loop.
   // It must still run before SPM planning so every cloned slot receives a
   // fresh, nonoverlapping physical allocation below.
-  if (!selectedBufferRequests.empty()) {
+  if (!selectedBufferingScopes.empty()) {
     if (!materializationRelations) {
       if (selectedBufferFailure) {
         selectedBufferFailure->kind =
@@ -253,20 +255,36 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
           TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
       return mlir::failure();
     }
-    mlir::FailureOr<SelectedBufferingResult> materialized =
-        materializeSelectedBuffering(std::move(module), selectedBufferRequests,
-                                     std::move(*materializationRelations),
-                                     selectedBufferFailure);
-    if (mlir::failed(materialized)) {
-      recordFailure(
-          TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
-      return mlir::failure();
+    for (auto [scopeIndex, scope] : llvm::enumerate(selectedBufferingScopes)) {
+      if (scope.requests.empty()) {
+        if (selectedBufferFailure) {
+          selectedBufferFailure->kind =
+              SelectedBufferMaterializationFailureKind::InvalidRequest;
+          selectedBufferFailure->scopeIndex = scopeIndex;
+          selectedBufferFailure->detail =
+              "selected buffering scope has no exact logical edge";
+        }
+        recordFailure(
+            TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
+        return mlir::failure();
+      }
+      mlir::FailureOr<SelectedBufferingResult> materialized =
+          materializeSelectedBuffering(std::move(module), scope.requests,
+                                       std::move(*materializationRelations),
+                                       selectedBufferFailure);
+      if (mlir::failed(materialized)) {
+        if (selectedBufferFailure)
+          selectedBufferFailure->scopeIndex = scopeIndex;
+        recordFailure(
+            TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
+        return mlir::failure();
+      }
+      module = std::move(materialized->module);
+      *materializationRelations =
+          std::move(materialized->materializationRelations);
+      if (materializedSlotAllocationCount)
+        *materializedSlotAllocationCount += materialized->slotAllocationCount;
     }
-    module = std::move(materialized->module);
-    *materializationRelations =
-        std::move(materialized->materializationRelations);
-    if (materializedSlotAllocationCount)
-      *materializedSlotAllocationCount = materialized->slotAllocationCount;
   }
   if (mlir::failed(
           requireCurrentBufferRelations("selected buffer materialization"))) {

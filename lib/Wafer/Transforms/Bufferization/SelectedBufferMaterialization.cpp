@@ -1143,8 +1143,8 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
     return mlir::failure();
 
   // The joint state selected a logical edge, not an instruction-family-wide
-  // pipeline. For a selected logical edge, advance exactly one dependency cut for
-  // each requested local/transport endpoint. All other engine transitions
+  // pipeline. For a selected logical edge, advance exactly one dependency cut
+  // for each requested local/transport endpoint. All other engine transitions
   // preserve their original within-iteration order in the same stage.
   if (!requests.empty() &&
       mlir::failed(markSelectedBufferStageBoundaries(
@@ -1795,105 +1795,6 @@ materializeSelectedBufferCandidateInPlace(
 }
 
 mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
-    mlir::OwningOpRef<mlir::ModuleOp> module, uint8_t requestedBufferCount,
-    std::string *failureReason, bool permitNoOpportunity) {
-  if (failureReason)
-    failureReason->clear();
-  if (!module || requestedBufferCount < 2 || requestedBufferCount > 3) {
-    if (failureReason)
-      *failureReason =
-          "selected buffering requires a live module and count in [2, 3]";
-    return mlir::failure();
-  }
-
-  llvm::SmallVector<mlir::scf::ForOp, 8> loops;
-  module->walk([&](mlir::scf::ForOp loop) { loops.push_back(loop); });
-  std::string lastFailure = "selected buffering found no exact static loop";
-  llvm::SmallVector<std::string, 4> derivedFailures;
-  auto recordFailure = [&](llvm::StringRef message) {
-    if (message.empty() || llvm::is_contained(derivedFailures, message.str()) ||
-        derivedFailures.size() == 4)
-      return;
-    derivedFailures.push_back(message.str());
-  };
-  bool sawPositiveMultiplicityMismatch = false;
-  mlir::scf::ForOp selectedLoop;
-  for (mlir::scf::ForOp loop : loops) {
-    std::string attemptFailure;
-    mlir::FailureOr<SelectedBufferPlan> plan =
-        buildSelectedBufferPlan(loop, &attemptFailure);
-    if (mlir::failed(plan)) {
-      if (!attemptFailure.empty()) {
-        recordFailure(attemptFailure);
-        lastFailure = std::move(attemptFailure);
-      }
-      continue;
-    }
-    if (plan->maximumSlotCount != requestedBufferCount) {
-      sawPositiveMultiplicityMismatch |= plan->maximumSlotCount != 0;
-      lastFailure = "actual rotating-slot multiplicity " +
-                    std::to_string(plan->maximumSlotCount) +
-                    " differs from structured-DAG selection " +
-                    std::to_string(requestedBufferCount);
-      recordFailure(lastFailure);
-      continue;
-    }
-    selectedLoop = loop;
-    break;
-  }
-  if (selectedLoop) {
-    std::string materializationFailure;
-    mlir::FailureOr<SelectedBufferMaterialization> materialized =
-        materializeSelectedBufferCandidateInPlace(*module, selectedLoop,
-                                                  &materializationFailure);
-    if (mlir::failed(materialized)) {
-      if (failureReason)
-        *failureReason = std::move(materializationFailure);
-      return mlir::failure();
-    }
-    if (materialized->maximumSlotCount != requestedBufferCount) {
-      if (failureReason)
-        *failureReason =
-            "selected buffering plan changed while materializing the chosen "
-            "loop";
-      return mlir::failure();
-    }
-    SelectedBufferingResult result;
-    result.module = std::move(module);
-    result.slotAllocationCount = materialized->slotAllocationCount;
-    return result;
-  }
-  if (permitNoOpportunity && !sawPositiveMultiplicityMismatch) {
-    if (failureReason) {
-      *failureReason = "local identity: ";
-      if (derivedFailures.empty()) {
-        *failureReason += lastFailure;
-      } else {
-        for (auto [index, detail] : llvm::enumerate(derivedFailures)) {
-          if (index != 0)
-            *failureReason += "; ";
-          *failureReason += detail;
-        }
-      }
-      *failureReason +=
-          "; loops=" + std::to_string(loops.size()) + " trip_counts=";
-      for (auto [index, loop] : llvm::enumerate(loops)) {
-        if (index != 0)
-          *failureReason += ",";
-        std::optional<uint64_t> tripCount = getPositiveStaticTripCount(loop);
-        *failureReason += tripCount ? std::to_string(*tripCount) : "dynamic";
-      }
-    }
-    SelectedBufferingResult result;
-    result.module = std::move(module);
-    return result;
-  }
-  if (failureReason)
-    *failureReason = std::move(lastFailure);
-  return mlir::failure();
-}
-
-mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
     mlir::OwningOpRef<mlir::ModuleOp> module,
     llvm::ArrayRef<SelectedBufferRequest> requests,
     StructuredMaterializationRelations materializationRelations,
@@ -1921,16 +1822,17 @@ mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
                 "selected buffering requires a live module and exact edge "
                 "request");
 
-  const uint8_t requestedBufferCount = requests.front().bufferCount;
+  const uint32_t requestedBufferCount = requests.front().bufferCount;
   for (auto [index, request] : llvm::enumerate(requests)) {
     if (!request.producerNode || !request.consumerNode ||
-        request.bufferCount < 2 || request.bufferCount > 3 ||
+        request.bufferCount < 2 ||
         request.bufferCount != requestedBufferCount ||
         (!request.requireLocalDataflow && request.messages.empty()))
       return fail(
           SelectedBufferMaterializationFailureKind::InvalidRequest,
           "selected buffering edge requests must carry two DAG nodes, one "
-          "common count in [2, 3], and actual local or Direct-DTE dataflow",
+          "common count of at least two and actual local or Direct-DTE "
+          "dataflow",
           index);
   }
 
