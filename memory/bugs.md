@@ -984,3 +984,15 @@
   manifest读取。删除依赖package内structured IR的validator和case字段，不把IR dump重新塞回package。
 - 防复发：普通source-to-package测试断言package没有`functions`目录；runner unit分别传入source与package并检查各自消费边界。
   compiler IR、计时和work统计只能由显式diagnostic选项或caller-owned sink请求，不能成为默认编译路径或package成员。
+
+## Spatial reduction不能在每个contribution重复消费DPS init
+
+- 现象：reduction iterator被spatial partition后，每个Tile都物化“partial + 原始init”的merged result；后续再把Tile结果相加或
+  reduce会把同一个任意init累计participant次，zero-init小测试会掩盖错误。
+- 根因：把`PartialReductionOpInterface::mergeReductions`的单Tile便利路径误当成跨Tile contribution表示，没有区分neutral
+  partial accumulator和最终一次性DPS init语义。
+- 修复模式：contribution region只返回`generateInitialTensorForPartialReduction`产生的neutral accumulator上的partial tensor；
+  selected merge Tile按完整iteration rectangle无重叠assembly全部partial，再调用一次`mergeReductions`，其interface root只在这一步
+  消费原始DPS init。
+- 防复发：测试同时partition parallel和reduction iterator，merge Tile与至少一个contribution Tile重合，并检查region分布为
+  “每个contribution一个 + merge一个”；numeric legality仍与Q50.B共享combiner proof，不能用常见zero fill作为协议前提。

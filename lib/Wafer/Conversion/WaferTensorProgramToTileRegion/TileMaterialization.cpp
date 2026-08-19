@@ -1,6 +1,7 @@
 //===- TileMaterialization.cpp - Candidate root tile materialization -===//
 
 #include "Internal.h"
+#include "StructuredIterationTile.h"
 
 #include <optional>
 
@@ -296,30 +297,28 @@ static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
     return mlir::failure();
   }
 
-  mlir::FailureOr<mlir::TilingResult> tiled = tiling.getTiledImplementation(
-      builder, iteration->offsets, iteration->sizes);
-  if (mlir::failed(tiled)) {
-    setFailureReason(failureReason,
-                     "candidate interface root rejected the requested tile");
+  mlir::FailureOr<StructuredIterationTile> tiled =
+      materializeStructuredIterationTile(root, builder, iteration->offsets,
+                                         iteration->sizes, failureReason);
+  if (mlir::failed(tiled))
     return mlir::failure();
-  }
-  if (tiled->tiledOps.size() != 1 || tiled->tiledValues.size() != 1 ||
-      tiled->tiledOps.front()->getNumResults() != 1 ||
-      tiled->tiledOps.front()->getResult(0) != tiled->tiledValues.front()) {
+  if (tiled->operations.size() != 1 || tiled->values.size() != 1 ||
+      tiled->operations.front()->getNumResults() != 1 ||
+      tiled->operations.front()->getResult(0) != tiled->values.front()) {
     setFailureReason(
         failureReason,
         "candidate interface root must materialize one tiled op and result");
     return mlir::failure();
   }
 
-  mlir::Operation *tiledRoot = tiled->tiledOps.front();
+  mlir::Operation *tiledRoot = tiled->operations.front();
   recordStructuredOperationNodeMaterialization(root, tiledRoot, operationNodes);
   if (mlir::failed(fuseCandidateProducerSlices(
           tiledRoot, root, scope, loops, operationTemporalTiles,
           builder.getListener(), failureReason, operationNodes)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledRoot);
-  return tiled->tiledValues.front();
+  return tiled->values.front();
 }
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(

@@ -331,8 +331,8 @@ source program
 - 默认lit gate：`lit -sv build/q55-current-fresh/test/{Dialect,Frontend,Pipelines,Spmd,Transforms}`。
 - Tools/Runtime lit整跑：`lit -sv build/q55-current-fresh/test/Runtime build/q55-current-fresh/test/Tools`
   （部分case分钟级，整跑10分钟+）。
-- 单测：`WaferRunBoardIOUnitTests`（42）、`WaferRuntimePublicLinkSmoke`、`WaferUnitTests --gtest_filter='...'`
-  定向套件；全量`WaferUnitTests`存在已知卡死case（见bugs.md），全量跑前必须排除。
+- 单测：`WaferRunBoardIOUnitTests`、public link smoke和`WaferUnitTests --gtest_filter='...'`定向套件；全量数量随current
+  registration变化，不把固定数字写成workflow合同。长模型、外部依赖和板端case不属于这个host unit二进制。
 - 板测：`test/Board/wafer_board_single_op_add_test.py`是Q56 board gate case，CTest名为`wafer-board-program-data-add`；
   `WAFER_EXECUTE_HARDWARE_TESTS=1`才执行，
   无硬件时exit 77；真实板测通过前Q56不标done。
@@ -397,3 +397,17 @@ source program
 - CardModule构造、各Tile lowering、DDR/index及target ABI阶段都按独立Tile使用bounded executor；真实板端launch仍串行。
   “16 Tile并发”不能掩盖重复整图分析：显式timing/测试计数同时记录Tile entry数、公共analysis构造数、CardModule/Q50.0一一对应和
   两段maximum workers。相同descriptor复用analysis，不同tail/offset/communication仍构造各自actual IR。
+
+## Single-root TileRegion actual apply（stable，2026-08-19）
+
+- Q50.B closed trial先转换为每个node/Tile的exact iterator rectangle；Q50.C直接在最终`TileModule`中创建private root function并
+  原位lower成一个outer `wafer.tile.region`。function-level conversion是正式窄入口，不为获得module anchor创建synthetic
+  module，也不返回scratch SSA、probe verdict或可重放body。
+- root backward closure由current SSA/effect/interface驱动：source input和其它structured node result成为typed DDR function
+  boundary；只把实际进入root operand的pure non-structured tensor transforms复制到最终function。multi-producer support graph在每个
+  structured producer处分别停止，不能递归拉入sibling compute。
+- baseline configured temporal leaf与search node-shard apply共同调用`StructuredIterationTile`；primitive只负责一次
+  TilingInterface iterator request和result-position事实，policy、root grouping、temporal winner、movement和buffer都留在各自owner。
+- spatial partial reduction的每个contribution用`PartialReductionOpInterface`的neutral initial tensor产生partial value；所有partial
+  rectangle在selected merge Tile的独立single-root region中all-and-only assembly后再merge，原始DPS init只在这里消费一次。
+  contribution若各自先merge init，再做跨Tile combine，会重复累计任意非identity init，禁止采用。

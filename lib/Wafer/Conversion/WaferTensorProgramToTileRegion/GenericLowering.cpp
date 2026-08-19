@@ -436,19 +436,35 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
 
 mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseGenericExpression(
     mlir::linalg::GenericOp generic, mlir::OpBuilder &builder) {
-  auto resultTensorType =
-      mlir::dyn_cast<mlir::RankedTensorType>(generic->getResult(0).getType());
-  if (!resultTensorType)
-    return fail("generic result is not a ranked tensor");
+  if (generic->getNumResults() == 0 ||
+      generic.getNumDpsInits() != generic->getNumResults())
+    return fail("elementwise generic requires one destination per result");
+  llvm::SmallVector<mlir::RankedTensorType, 2> resultTensorTypes;
+  resultTensorTypes.reserve(generic->getNumResults());
+  for (mlir::Type type : generic->getResultTypes()) {
+    auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(type);
+    if (!tensor)
+      return fail("generic result is not a ranked tensor");
+    resultTensorTypes.push_back(tensor);
+  }
+  mlir::RankedTensorType expressionTensorType = resultTensorTypes.front();
+  if (llvm::any_of(llvm::drop_begin(resultTensorTypes),
+                   [&](mlir::RankedTensorType type) {
+                     return type.getShape() != expressionTensorType.getShape();
+                   }))
+    return fail("multi-result elementwise generic requires one result shape");
 
   llvm::SmallVector<mlir::AffineMap, 4> indexingMaps =
       generic.getIndexingMapsArray();
   if (indexingMaps.size() !=
       generic.getNumDpsInputs() + generic.getNumDpsInits())
     return fail("elementwise generic indexing map count mismatch");
-  mlir::AffineMap resultMap = indexingMaps.back();
-  if (!isIdentityMap(resultMap, resultTensorType.getRank()))
-    return fail("elementwise generic result map must be identity");
+  for (auto [resultNumber, resultType] : llvm::enumerate(resultTensorTypes)) {
+    mlir::AffineMap resultMap =
+        indexingMaps[generic.getNumDpsInputs() + resultNumber];
+    if (!isIdentityMap(resultMap, resultType.getRank()))
+      return fail("elementwise generic result map must be identity");
+  }
 
   llvm::DenseMap<mlir::Value, ElementwiseExprValue> values;
   mlir::Block &body = *generic.getBody();
@@ -478,22 +494,25 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseGenericExpression(
 
   for (mlir::Operation &op : body.without_terminator()) {
     if (mlir::failed(convertElementwiseScalarOp(generic, &op, values,
-                                                resultTensorType, builder)))
+                                                expressionTensorType, builder)))
       return mlir::failure();
   }
 
   auto yield = mlir::dyn_cast<mlir::linalg::YieldOp>(body.getTerminator());
-  if (!yield || yield.getValues().size() != 1)
+  if (!yield || yield.getValues().size() != generic->getNumResults())
     return fail("unsupported linalg.generic yield");
-  mlir::FailureOr<ElementwiseExprValue> yielded =
-      getElementwiseExprValue(values, yield.getValues().front());
-  if (mlir::failed(yielded))
-    return mlir::failure();
-  mlir::FailureOr<mlir::Value> result = materializeElementwiseExprOperand(
-      *yielded, resultTensorType, generic.getLoc(), builder);
-  if (mlir::failed(result))
-    return mlir::failure();
-  record(generic->getResult(0), MemLayout::Tensor, *result);
+  for (auto [resultNumber, yieldedValue, resultType] :
+       llvm::enumerate(yield.getValues(), resultTensorTypes)) {
+    mlir::FailureOr<ElementwiseExprValue> yielded =
+        getElementwiseExprValue(values, yieldedValue);
+    if (mlir::failed(yielded))
+      return mlir::failure();
+    mlir::FailureOr<mlir::Value> result = materializeElementwiseExprOperand(
+        *yielded, resultType, generic.getLoc(), builder);
+    if (mlir::failed(result))
+      return mlir::failure();
+    record(generic->getResult(resultNumber), MemLayout::Tensor, *result);
+  }
   return mlir::success();
 }
 
@@ -1064,25 +1083,28 @@ mlir::FailureOr<bool> TileRegionBodyEmitter::tryConvertTiledTwoWayConcatGeneric(
 mlir::LogicalResult
 TileRegionBodyEmitter::convertGeneric(mlir::linalg::GenericOp generic,
                                       mlir::OpBuilder &builder) {
-  if (generic.getNumDpsInits() != 1 || generic->getNumResults() != 1)
+  if (generic->getNumResults() == 0 ||
+      generic.getNumDpsInits() != generic->getNumResults())
     return fail("unsupported linalg.generic arity");
 
   if (hasReductionIterator(generic))
     return convertReduceGeneric(generic, builder);
-  if (getPassthroughInputIndex(generic))
+  if (generic->getNumResults() == 1 && getPassthroughInputIndex(generic))
     return convertPassthroughGeneric(generic, builder);
   int64_t concatAxis = -1;
-  if (mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> concatInputs =
-          matchTwoWayConcatGeneric(generic, concatAxis);
-      mlir::succeeded(concatInputs))
-    return convertTwoWayConcatGeneric(generic, *concatInputs, concatAxis,
-                                      builder);
-  mlir::FailureOr<bool> tiledConcat =
-      tryConvertTiledTwoWayConcatGeneric(generic, builder);
-  if (mlir::failed(tiledConcat))
-    return mlir::failure();
-  if (*tiledConcat)
-    return mlir::success();
+  if (generic->getNumResults() == 1) {
+    if (mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> concatInputs =
+            matchTwoWayConcatGeneric(generic, concatAxis);
+        mlir::succeeded(concatInputs))
+      return convertTwoWayConcatGeneric(generic, *concatInputs, concatAxis,
+                                        builder);
+    mlir::FailureOr<bool> tiledConcat =
+        tryConvertTiledTwoWayConcatGeneric(generic, builder);
+    if (mlir::failed(tiledConcat))
+      return mlir::failure();
+    if (*tiledConcat)
+      return mlir::success();
+  }
   return convertElementwiseGenericExpression(generic, builder);
 }
 

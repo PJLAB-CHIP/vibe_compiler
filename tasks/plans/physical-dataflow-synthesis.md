@@ -1372,6 +1372,42 @@ owner标为`PartialReductionContribution`并携显式merge Tile，Q50.A保留全
 
 ## Q50.C：Maximal Single-Root TileRegion
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  Q50.S选定或original的immutable单函数TensorProgram、current `StructuredDAG`、Q50.B已经满足Q50.A的
+  `LogicalShardTrial`，以及其中每个node在每个Tile上的exact rectangular iterator shard。调用方已经选择singleton
+  structured root boundary；本层不得自行产生或选择root group。
+- Current stage responsibility:
+  对每个非空node shard直接物化一个actual `wafer.tile.region`。该region只包含一个structured DAG node的local
+  iteration work和从其operand SSA反向可达、但在其它structured node处截断的pure tensor transform；function input、常量和
+  其它structured node result成为显式region DDR boundary。一次apply只构造将被下游继续消费的actual IR，不先构造probe、
+  不保存可重放body，也不在accepted后重建。
+- Output IR / files:
+  一个拥有完整available-Tile domain的`wafer.card.module`。每个`wafer.tile.module`包含该Tile选中node shards的
+  private single-root region functions；函数的shaped arguments/results是当前checkpoint的typed DDR boundary obligation。
+  `StructuredMaterializationRelations`把每个actual compute映回唯一structured node。该中间CardModule是Q50.D–K继续原位
+  变换的actual candidate ownership，不是可交给Q50.0的完整CardExecutable输入。
+- Downstream consumer:
+  Q50.D在actual regions上物化或拒绝coupled traversal/fusion；Q50.E–K继续加入temporal、representation、movement、buffer、
+  event/resource order和conditional pipeline。只有上述选择全部物化、boundary obligation被Q50.H具体movement关闭后，完整
+  CardModule才进入Q50.0。
+- User-level driver / named pipeline:
+  由public `search` session内部静态组合；Q50.C本身不新增CLI、pass、独立provider或用户可手拼pipeline。Q50.C–K未闭合时
+  public `search`仍不枚举完整Cartesian product、不运行重型LLaMA search。Q49.P与Q50.C复用同一个policy-free exact
+  iterator-tile与TileRegion body-emission mechanics；baseline继续由自己的canonical assignment controller提供boundary和
+  movement，不经search state或Q50.C中间容器重建。
+- Explicit non-goals:
+  不选择multi-root group、temporal tile、layout/encoding、local/peer/DDR action、route、buffer、schedule、cost或winner；不把
+  boundary argument当成已经选择的movement；不把函数名、operation ordinal、buffer或result axis当root identity；不缓存或复制
+  已物化的actual IR，不对相似Tile replay body。
+- Done criteria:
+  single-result、multi-result、DPS init、unpartitioned reduction、spatial partial-reduction contribution/merge ownership和effect
+  boundary正负例通过；每个非空selected shard恰有一个actual outer TileRegion且relation只映回请求的node；其它structured
+  producer不能进入该region；所有available Tiles存在且空Tile保持合法；baseline与Q50.C共用的iterator-tile primitive受同组
+  roundtrip/atomic-failure测试；不存在旧complete-rank/rank-tile私有入口仍独占本合同所需能力。
+
 ### 机制
 
 对给定structured root、spatial shard和尚未细分的local iterator domain，每个Tile物化一个覆盖该root全部local work和
@@ -1386,10 +1422,30 @@ root cardinality由materialization relation映回structured DAG node，不能按
 ### Gate
 
 - single-result、multi-result、DPS init、reduction 和 side-effect boundary 正负测试通过；
-- actual Tile IR 对每个 selected Tile 都有唯一、完整、可 verifier 的 single-root region witness；
+- actual Tile IR 对每个 selected node shard 都有唯一、完整、可 verifier 的 single-root region witness；spatial reduction的
+  selected merge Tile另有一个同node single-root merge witness，不能把merge伪装成某个contribution或movement标签；
 - Q49.P完成后建立的resolved baseline assignment apply与Q51显式test assignment复用该policy-free single-root materializer；
   materializer只消费调用方已给定的singleton root boundary，不接收或自行推导search candidate/grouping；
 - 不在本 checkpoint 做 multi-op fusion、temporal winner、layout 或 buffer 选择。
+
+### 2026-08-19 完成结果
+
+Q50.B的closed `LogicalShardTrial`先按node/Tile恢复exact rectangular iterator shards，再由一次actual apply建立完整available-Tile
+CardModule。每个shard函数直接创建在最终`TileModule`，其最小backward closure通过`IRMapping`一次性构造将成为actual body的pure tensor operation；
+其它structured node result和source input成为typed DDR function boundary。function-level conversion直接消费最终owner，不为取得
+module anchor构造synthetic module，也不存在probe、accepted replay、actual IR cache或默认统计。
+
+`StructuredIterationTile`现在是baseline configured temporal leaf与search single-root apply共同使用的TilingInterface primitive；
+multi-result elementwise generic lowering按每个typed result/yield建立实际buffer relation。spatial reduction contribution通过
+`PartialReductionOpInterface`使用neutral accumulator输出partial tensor，完整iteration-space partial assembly和merge只在Q50.B选定的
+merge Tile上物化，原始DPS init因此只消费一次。Card assembly、root function construction和partial merge分别位于独立source，
+没有回到单体conversion文件。
+
+fresh测试覆盖multi-axis remainder、空Tile、zero-dimensional iterator、multi-result、DPS-init structured producer、两个structured
+producer经`tensor.insert_slice`汇合、unpartitioned reduction、multi-axis spatial reduction contribution/merge和effect atomic failure。
+fresh host unit 745/745（普通722与dependency conformance 23分开执行）、相关Q49.P baseline/CardModule conversion/Q50.C定向64/64、
+source/IR/dependency organization和轻量public search routing通过；本checkpoint按约束未运行重型LLaMA search。旧
+complete-rank/coupled traversal仍只作为Q50.D能力donor，未重新注册为production owner。
 
 ## Q50.D：Maximal Coupled Traversal
 

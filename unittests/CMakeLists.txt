@@ -35,6 +35,7 @@ add_executable(WaferUnitTests
   Program/ProgramDataTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
+  Conversion/SingleRootTileRegionTest.cpp
   Conversion/WaferCardModuleToTileModulesTest.cpp
   Conversion/WaferTensorProgramToCardModuleTest.cpp
   Dialect/Wafer/WaferDialectTest.cpp

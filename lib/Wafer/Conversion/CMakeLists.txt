@@ -41,14 +41,18 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/EdgeFragmentPlanning.cpp
   WaferTensorProgramToTileRegion/GenericLowering.cpp
   WaferTensorProgramToTileRegion/NamedComputeLowering.cpp
+  WaferTensorProgramToTileRegion/PartialReductionRegion.cpp
   WaferTensorProgramToTileRegion/ProducerTileFusion.cpp
   WaferTensorProgramToTileRegion/ConsumerInputReconstruction.cpp
   WaferTensorProgramToTileRegion/RootRegionEmitter.cpp
+  WaferTensorProgramToTileRegion/SingleRootTileRegion.cpp
+  WaferTensorProgramToTileRegion/SingleRootRegionFunction.cpp
   WaferTensorProgramToTileRegion/SelectedEdgeActions.cpp
   WaferTensorProgramToTileRegion/SelectedEdgeFinalization.cpp
   WaferTensorProgramToTileRegion/SelectedEdgeMaterialization.cpp
   WaferTensorProgramToTileRegion/SelectedEdgeMapping.cpp
   WaferTensorProgramToTileRegion/SelectedPeerMaterialization.cpp
+  WaferTensorProgramToTileRegion/StructuredIterationTile.cpp
   WaferTensorProgramToTileRegion/TensorControlFlowLowering.cpp
   WaferTensorProgramToTileRegion/TemporalTileMaterialization.cpp
   WaferTensorProgramToTileRegion/TensorDependencyChain.cpp

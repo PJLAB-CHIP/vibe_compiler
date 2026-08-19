@@ -48,7 +48,6 @@ enum class StructuredRootCapability {
 
 StructuredRootCapability classifyStructuredRoot(mlir::Operation *operation);
 
-
 struct BufferVersions {
   mlir::Value tensor;
   mlir::Value nTensor;
@@ -254,7 +253,6 @@ mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     std::string *failureReason);
 
-
 mlir::FailureOr<mlir::Value>
 getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
                            std::string *failureReason);
@@ -295,7 +293,6 @@ mlir::LogicalResult materializeCandidateOutputTileSlices(
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
         nullptr,
     llvm::ArrayRef<mlir::Operation *> preservedOperations = {});
-
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason);
 
@@ -673,6 +670,20 @@ mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     unsigned functionalArgumentCount, int64_t currentLogicalPartition,
     std::string *failureReason, bool suppressDiagnostics = true,
     bool verifyResult = true, bool populateFallbackFailureReason = true,
+    llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
+    llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
+    TileRegionEmissionRelations *emissionRelations = nullptr,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+    bool requireOneStructuredRootPerRegion = false);
+
+/// In-place form for a function already owned by its final isolated
+/// Card/Tile construction. This avoids manufacturing a synthetic builtin
+/// module solely to obtain a conversion anchor.
+mlir::LogicalResult convertTensorProgramToTileRegionFunctionInPlace(
+    mlir::func::FuncOp function, unsigned functionalArgumentCount,
+    int64_t currentLogicalPartition, std::string *failureReason,
+    bool suppressDiagnostics = true, bool verifyResult = true,
+    bool populateFallbackFailureReason = true,
     llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
     TileRegionEmissionRelations *emissionRelations = nullptr,

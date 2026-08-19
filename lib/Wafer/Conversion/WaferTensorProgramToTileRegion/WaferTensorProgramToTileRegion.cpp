@@ -61,8 +61,8 @@ static void normalizeMapOps(
   }
 }
 
-static mlir::LogicalResult rewriteTensorProgramInPlace(
-    mlir::ModuleOp module, unsigned functionalArgumentCount,
+static mlir::LogicalResult rewriteTensorProgramFunctionInPlace(
+    mlir::func::FuncOp function, unsigned functionalArgumentCount,
     int64_t currentLogicalPartition, std::string *failureReason,
     llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints,
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
@@ -73,13 +73,8 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
       "conversion-phase", "rewriteTensorProgramInPlace", "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "analysis-phase", "rewriteTensorProgramInPlace", "verify-scope");
-  mlir::func::FuncOp function = findSingleStandaloneTensorProgram(module);
-  if (!function) {
-    setFailureReason(
-        failureReason,
-        "standalone module must contain exactly one tensor program function");
+  if (!function)
     return mlir::failure();
-  }
   TensorProgramScope scope(function, functionalArgumentCount);
   if (mlir::failed(verifyTensorProgramScope(function, functionalArgumentCount,
                                             failureReason,
@@ -96,7 +91,7 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
     sourceOperations.push_back(&operation);
 
   mlir::func::ReturnOp oldReturn = scope.getReturn();
-  mlir::IRRewriter rewriter(module.getContext());
+  mlir::IRRewriter rewriter(function.getContext());
   rewriter.setInsertionPoint(oldReturn);
   TileRegionBodyEmitter emitter(failureReason, currentLogicalPartition,
                                 peerEndpoints, selectedDDRStages,
@@ -161,6 +156,53 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
 } // namespace
 
 mlir::LogicalResult wafer::tensor_program_to_tile_region::
+    convertTensorProgramToTileRegionFunctionInPlace(
+        mlir::func::FuncOp function, unsigned functionalArgumentCount,
+        int64_t currentLogicalPartition, std::string *failureReason,
+        bool suppressDiagnostics, bool verifyResult,
+        bool populateFallbackFailureReason,
+        llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints,
+        llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
+        TileRegionEmissionRelations *emissionRelations,
+        llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+        bool requireOneStructuredRootPerRegion) {
+  if (emissionRelations) {
+    emissionRelations->selectedDDRStages.clear();
+    emissionRelations->materializedBuffers.clear();
+  }
+  llvm::SmallVector<CandidatePeerEndpoint, 8> mappedEndpoints(
+      peerEndpoints.begin(), peerEndpoints.end());
+  mlir::LogicalResult conversionResult = mlir::success();
+  if (suppressDiagnostics) {
+    mlir::ScopedDiagnosticHandler handler(
+        function.getContext(),
+        [](mlir::Diagnostic &) { return mlir::success(); });
+    conversionResult = rewriteTensorProgramFunctionInPlace(
+        function, functionalArgumentCount, currentLogicalPartition,
+        failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
+        operationNodes, requireOneStructuredRootPerRegion);
+  } else {
+    conversionResult = rewriteTensorProgramFunctionInPlace(
+        function, functionalArgumentCount, currentLogicalPartition,
+        failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
+        operationNodes, requireOneStructuredRootPerRegion);
+  }
+  if (mlir::failed(conversionResult)) {
+    if (populateFallbackFailureReason &&
+        (!failureReason || failureReason->empty()))
+      setFailureReason(failureReason,
+                       "tensor-program-to-tile-region lowering failed");
+    return mlir::failure();
+  }
+  if (verifyResult && mlir::failed(mlir::verify(function))) {
+    setFailureReason(failureReason,
+                     "lowered tile-region function failed verifier");
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult wafer::tensor_program_to_tile_region::
     convertTensorProgramToTileRegionModuleInPlace(
         mlir::ModuleOp module, mlir::MLIRContext *context,
         unsigned functionalArgumentCount, int64_t currentLogicalPartition,
@@ -173,43 +215,29 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         bool requireOneStructuredRootPerRegion) {
   wafer::support::ScopedCompileTimingSpan timing(
       "conversion", "convertTensorProgramToTileRegionModuleInPlace", "total");
+  if (!module || context != module.getContext()) {
+    setFailureReason(failureReason,
+                     "tile-region module/context boundary is inconsistent");
+    return mlir::failure();
+  }
   // The caller owns the already-private candidate and is the sole rollback
   // boundary.  A failed in-place conversion leaves that disposable candidate
   // mutated; adding another whole-module clone here would duplicate the same
   // rollback scope without improving failure isolation.
-  if (emissionRelations) {
-    emissionRelations->selectedDDRStages.clear();
-    emissionRelations->materializedBuffers.clear();
-  }
-  llvm::SmallVector<CandidatePeerEndpoint, 8> mappedEndpoints(
-      peerEndpoints.begin(), peerEndpoints.end());
-  mlir::LogicalResult conversionResult = mlir::success();
-  {
-    wafer::support::ScopedCompileTimingSpan rewriteTiming(
-        "conversion-phase", "convertTensorProgramToTileRegionModuleInPlace",
-        "rewriteTensorProgramInPlace");
-    if (suppressDiagnostics) {
-      mlir::ScopedDiagnosticHandler handler(
-          context, [](mlir::Diagnostic &) { return mlir::success(); });
-      conversionResult = rewriteTensorProgramInPlace(
-          module, functionalArgumentCount, currentLogicalPartition,
-          failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
-          operationNodes, requireOneStructuredRootPerRegion);
-    } else {
-      conversionResult = rewriteTensorProgramInPlace(
-          module, functionalArgumentCount, currentLogicalPartition,
-          failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
-          operationNodes, requireOneStructuredRootPerRegion);
-    }
-  }
-
-  if (mlir::failed(conversionResult)) {
-    if (populateFallbackFailureReason &&
-        (!failureReason || failureReason->empty()))
-      setFailureReason(failureReason,
-                       "tensor-program-to-tile-region lowering failed");
+  mlir::func::FuncOp function = findSingleStandaloneTensorProgram(module);
+  if (!function) {
+    setFailureReason(
+        failureReason,
+        "standalone module must contain exactly one tensor program function");
     return mlir::failure();
   }
+  if (mlir::failed(convertTensorProgramToTileRegionFunctionInPlace(
+          function, functionalArgumentCount, currentLogicalPartition,
+          failureReason, suppressDiagnostics,
+          /*verifyResult=*/false, populateFallbackFailureReason, peerEndpoints,
+          selectedDDRStages, emissionRelations, operationNodes,
+          requireOneStructuredRootPerRegion)))
+    return mlir::failure();
 
   if (verifyResult) {
     wafer::support::ScopedCompileTimingSpan verifyTiming(
@@ -217,8 +245,7 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         "verify");
     if (mlir::failed(mlir::verify(module))) {
       mlir::ScopedDiagnosticHandler dumpHandler(
-          module.getContext(),
-          [&](mlir::Diagnostic &diagnostic) {
+          module.getContext(), [&](mlir::Diagnostic &diagnostic) {
             diagnostic.print(llvm::errs());
             llvm::errs() << "\n";
             return mlir::success();

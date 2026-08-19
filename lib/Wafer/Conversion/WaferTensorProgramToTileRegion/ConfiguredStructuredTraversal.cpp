@@ -2,6 +2,7 @@
 //-----===//
 
 #include "Internal.h"
+#include "StructuredIterationTile.h"
 #include "Wafer/Analysis/Structured/ReductionSemantics.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
@@ -80,21 +81,21 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredLeaf(
           reductionSizes, loopTile, failureReason)))
     return mlir::failure();
 
-  auto tiling =
-      mlir::cast<mlir::TilingInterface>(sourceReduction.getOperation());
-  mlir::FailureOr<mlir::TilingResult> tiled = tiling.getTiledImplementation(
-      builder, loopTile.loopOffsets, loopTile.tileSizes);
-  if (mlir::failed(tiled) || tiled->tiledOps.size() != 1 ||
-      tiled->tiledValues.size() != 1 ||
-      tiled->tiledOps.front()->getNumResults() != 1 ||
-      tiled->tiledOps.front()->getResult(0) != tiled->tiledValues.front()) {
+  mlir::FailureOr<StructuredIterationTile> tiled =
+      materializeStructuredIterationTile(sourceReduction.getOperation(),
+                                         builder, loopTile.loopOffsets,
+                                         loopTile.tileSizes, failureReason);
+  if (mlir::failed(tiled) || tiled->operations.size() != 1 ||
+      tiled->values.size() != 1 ||
+      tiled->operations.front()->getNumResults() != 1 ||
+      tiled->operations.front()->getResult(0) != tiled->values.front()) {
     setFailureReason(
         failureReason,
         "TilingInterface rejected the configured reduction iterator tile");
     return mlir::failure();
   }
 
-  mlir::Operation *tiledOperation = tiled->tiledOps.front();
+  mlir::Operation *tiledOperation = tiled->operations.front();
   recordStructuredOperationNodeMaterialization(sourceReduction.getOperation(),
                                                tiledOperation, operationNodes);
   if (accumulator) {
@@ -123,7 +124,7 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredLeaf(
           operationNodes)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledOperation);
-  return tiled->tiledValues.front();
+  return tiled->values.front();
 }
 
 /// Materializes a compact sequential accumulator traversal for every
