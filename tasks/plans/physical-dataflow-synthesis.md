@@ -1612,6 +1612,31 @@ parallel/reduction相对顺序构造。若一个内部producer选择reduction-be
 
 ## Q50.F：Scoped Feasibility Analysis
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  immutable current TensorProgram/CardProgramAnalysis、Q50.B exact logical shard trial、Q50.D group assignment、Q50.E temporal assignment、
+  显式target memory facts，以及partial-state owner明确列出的尚缺physical coordinates；没有actual CardModule。
+- Current stage responsibility:
+  只从上述current IR和typed assignments计算单buffer必占logical payload下界、non-binding lowering residency estimate、
+  `deferred(required coordinates)`、exact lower-bound rejection或indeterminate；exact witness绑定node、Tile、group、spatial shard与
+  temporal vector/order。
+- Output IR / files:
+  不写IR或文件；返回typed `ScopedFeasibilityResult`。query结束后只留下value facts，不留下operation pointer cache、scratch module或
+  materialized candidate。
+- Downstream consumer:
+  Q51 partial-state transition只对`Deferred`展开明确缺失的Q50.G–J坐标，只对`ExactRejection`使用同一causal key的no-good；
+  complete assignment仍只由Q50.0签发actual accepted/rejected/indeterminate。
+- User-level driver / named pipeline:
+  public `search` session在Q51 closure后调用；`none`不进入candidate analysis，继续只走Q49.P→Q50.0。
+- Explicit non-goals:
+  不选择layout、movement、buffer、route、worker或schedule；不clone/lower IR，不调用packer，不从estimate签发legality，不修改
+  parent state，不生成retile/spill/rebuffer sibling。
+- Done criteria:
+  pure query不改source；缺坐标、unsupported footprint与single-buffer exact overflow可区分；estimate overfull不能reject；exact
+  rejection绑定完整causal key且更小temporal sibling仍可达；active search owner中没有allocator repair/feedback beam。
+
 ### 机制
 
 本checkpoint只建立从immutable IR、target facts和显式partial assignment可重算的scoped analysis，不物化actual candidate IR。
@@ -1643,6 +1668,24 @@ candidate的一次Q50.0；`ResourceExhausted`或internal failure返回indetermin
 - Q49.P与Q51都只让complete actual CardModule进入Q50.0；Q50.F只增加纯query lower bound、deferred坐标和causal taxonomy，
   baseline不进入candidate set；
 - 删除 allocator repair 和 feedback beam，保留 packer、conflict witness 与 exact validator。
+
+### 2026-08-19 完成结果
+
+current `ScopedFeasibility`直接接收program epoch、Q50.B trial、Q50.D/Q50.E domain与assignment、显式`TargetMemoryPolicy`和调用方
+列出的missing coordinates。它不建立默认memory policy或physical assignment。对每个selected node/Tile shard，query从actual
+temporal leaf vector和structured indexing map计算每个operand/result单独logical payload，取其中最大值作为“至少一个buffer必须
+容纳”的boundary-faithful下界；不同value、node或group的bytes不相加，因为layout alias、movement和lifetime尚未选择。
+现有lowering residency estimate仍可返回给后续排序，但明确标为non-binding。
+
+返回类型区分`LowerBound`、`Deferred`、`ExactRejection`与`Indeterminate`，并用typed reason区分missing coordinates、unsupported
+footprint和minimum-footprint overflow。exact rejection witness包含node、Tile、完整group、spatial offsets/sizes、temporal vector/order
+及capacity；同一full-tile overflow后更小temporal sibling重新query为deferred，证明结果没有写回parent或形成全局maximum-fit。
+complex element footprint在没有physical facts时返回indeterminate，不用zero/default代替。
+
+unit直接比较query前后source文本，证明没有IR mutation/clone；另有`estimate > capacity > proven minimum`反例保持deferred，
+single FP16 buffer最小payload超限才exact reject。Q51 Core既有测试继续证明exact rejection不删除accepted sibling、deferred与
+indeterminate留在unresolved set。active Planning/Search中不存在allocator repair、feedback beam或packer调用；actual packing与
+unsupported lowering仍只属于Q50.0 complete-candidate gate。
 
 ## Q50.G：Layout and Physical Representation
 

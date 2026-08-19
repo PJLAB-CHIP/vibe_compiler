@@ -437,3 +437,12 @@ source program
   consumer。builder可能被TilingInterface或递归fusion改变，leaf中的offset、accumulator和yield必须显式重设insertion point。
 - coupled内部producer只在选中order与共同traversal相容时留在该region；不相容assignment返回typed materialization failure并保留
   Q50.D cut sibling，不静默重排，也不通过临时full-tensor组装或actual IR cache伪造支持。
+
+## Partial-state feasibility（stable，2026-08-19）
+
+- 坐标未闭合时，能证明的SPM早拒绝边界是单个required buffer的minimum logical payload；不同value/node/group的bytes不能在
+  layout、movement、alias和lifetime前相加。lowering residency或summed footprint只能排序，不能签发legality。
+- query输入必须显式携带current epoch、spatial/group/temporal assignment、target memory facts和missing-coordinate集合；输出typed
+  lower bound/deferred/rejection/indeterminate与causal key，不clone/lower IR，不调用packer，不写回state。
+- exact witness key只包含结论实际依赖的assignment字段。full-tile rejection不能缓存成node级“最大可放下tile”，更小temporal、
+  不同group/layout/movement/buffer sibling必须重新query并保持可达；actual packing结果仍只来自complete Q50.0。
