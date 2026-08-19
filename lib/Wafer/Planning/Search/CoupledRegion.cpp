@@ -2,6 +2,10 @@
 
 #include "Wafer/Planning/Search/CoupledRegion.h"
 
+#include "Wafer/Planning/Search/PhysicalRepresentation.h"
+
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -374,15 +378,16 @@ bool CoupledRegionDomain::contains(
   return assignment.groups.size() == expectedGroups;
 }
 
-mlir::FailureOr<CardCoupledRegionMaterialization>
-materializeCardCoupledRegions(mlir::ModuleOp tensorProgram,
-                              const CardProgramAnalysis &program, CardId cardId,
-                              const analysis::LogicalShardTrial &trial,
-                              const CoupledRegionDomain &domain,
-                              const CoupledRegionAssignment &assignment,
-                              const CardTemporalDomain &temporalDomain,
-                              const CardTemporalAssignment &temporalAssignment,
-                              std::string *failureReason) {
+mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
+    mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
+    CardId cardId, const analysis::LogicalShardTrial &trial,
+    const CoupledRegionDomain &domain,
+    const CoupledRegionAssignment &assignment,
+    const CardTemporalDomain &temporalDomain,
+    const CardTemporalAssignment &temporalAssignment,
+    const CardPhysicalRepresentationDomain &representationDomain,
+    const CardPhysicalRepresentationAssignment &representationAssignment,
+    std::string *failureReason) {
   auto fail = [&](llvm::StringRef message)
       -> mlir::FailureOr<CardCoupledRegionMaterialization> {
     if (failureReason)
@@ -391,7 +396,8 @@ materializeCardCoupledRegions(mlir::ModuleOp tensorProgram,
   };
   if (!tensorProgram || trial.epoch != program.epoch ||
       !domain.contains(assignment) ||
-      !temporalDomain.contains(temporalAssignment))
+      !temporalDomain.contains(temporalAssignment) ||
+      !representationDomain.contains(representationAssignment))
     return fail("coupled-region apply received a stale or unknown assignment");
 
   llvm::SmallVector<StructuredNodeShardGroup, 32> groups;
@@ -437,6 +443,42 @@ materializeCardCoupledRegions(mlir::ModuleOp tensorProgram,
         return fail("coupled-region apply lost one temporal assignment");
       group.temporalTiles.push_back(StructuredNodeTemporalTile{
           node, temporal->iteratorTileSizes, temporal->waveLoopOrder});
+
+      mlir::Operation *operation = program.dag.getNode(node)->operation;
+      StructuredNodePhysicalRepresentation representation;
+      representation.structuredNodeId = node;
+      representation.operandLayouts.resize(operation->getNumOperands());
+      representation.resultLayouts.resize(operation->getNumResults());
+      for (const PhysicalRepresentationChoice &choice :
+           representationAssignment.values) {
+        if (choice.tile != selected.tile || choice.node != node)
+          continue;
+        if (choice.role == PhysicalValueRole::Operand) {
+          if (choice.index >= representation.operandLayouts.size())
+            return fail("physical operand choice is outside node arity");
+          representation.operandLayouts[choice.index] = choice.layout;
+        } else {
+          if (choice.index >= representation.resultLayouts.size())
+            return fail("physical result choice is outside node arity");
+          representation.resultLayouts[choice.index] = choice.layout;
+        }
+      }
+      for (auto [operandNumber, layout] :
+           llvm::enumerate(representation.operandLayouts)) {
+        mlir::OpOperand &operand = operation->getOpOperand(operandNumber);
+        if ((mlir::isa<mlir::RankedTensorType>(operand.get().getType()) &&
+             (!mlir::isa<mlir::linalg::LinalgOp>(operation) ||
+              mlir::cast<mlir::linalg::LinalgOp>(operation)
+                  .payloadUsesValueFromOperand(&operand))) !=
+            layout.has_value())
+          return fail("physical operand assignment is incomplete");
+      }
+      for (auto [result, layout] : llvm::zip_equal(
+               operation->getResults(), representation.resultLayouts))
+        if (mlir::isa<mlir::RankedTensorType>(result.getType()) !=
+            layout.has_value())
+          return fail("physical result assignment is incomplete");
+      group.representations.push_back(std::move(representation));
     }
     groups.push_back(std::move(group));
   }

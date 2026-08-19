@@ -108,6 +108,11 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
       return failResult(
           failureReason,
           "selected temporal group does not cover every node shard");
+    if (!group.representations.empty() &&
+        group.representations.size() != group.shards.size())
+      return failResult(
+          failureReason,
+          "selected representation group does not cover every node shard");
     const TileId groupTile = group.shards.front().tile;
     uint32_t previousNode = 0;
     bool firstNode = true;
@@ -170,6 +175,12 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
               failureReason,
               "one structured node has inconsistent temporal assignments");
       }
+      if (!group.representations.empty() &&
+          group.representations[index].structuredNodeId !=
+              shard.structuredNodeId)
+        return failResult(
+            failureReason,
+            "selected representation node identity is inconsistent");
     }
     orderedGroups.push_back(&group);
   }
@@ -212,6 +223,7 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
     TileId mergeTile{0};
     llvm::SmallVector<const StructuredNodeIterationShard *, 8> shards;
     llvm::SmallVector<mlir::func::FuncOp, 8> functions;
+    const StructuredNodePhysicalRepresentation *mergeRepresentation = nullptr;
   };
   std::map<uint32_t, PartialGroup> partialGroups;
   for (const StructuredNodeShardGroup *group : orderedGroups) {
@@ -226,6 +238,9 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
                                       group->temporalTiles.empty()
                                           ? nullptr
                                           : &group->temporalTiles.front(),
+                                      group->representations.empty()
+                                          ? nullptr
+                                          : &group->representations.front(),
                                       failureReason)
             : materializeCoupledRootFragment(tile, operationNodes, *group,
                                              failureReason);
@@ -237,6 +252,9 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
       partial.mergeTile = *firstShard.reductionMergeTile;
       partial.shards.push_back(&firstShard);
       partial.functions.push_back(fragment->function);
+      if (!group->representations.empty() &&
+          firstShard.tile == *firstShard.reductionMergeTile)
+        partial.mergeRepresentation = &group->representations.front();
     }
     appendRelations(relations, std::move(fragment->relations));
   }
@@ -252,7 +270,7 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
                         "partial merge lost its selected Tile owner");
     mlir::FailureOr<RootFragment> merge = materializeReductionMergeFragment(
         tile, operationNodes, node, group.shards, group.functions,
-        failureReason);
+        group.mergeRepresentation, failureReason);
     if (mlir::failed(merge))
       return mlir::failure();
     appendRelations(relations, std::move(merge->relations));

@@ -41,7 +41,9 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const StructuredNodeIterationShard &shard,
-    const StructuredNodeTemporalTile *temporal, std::string *failureReason);
+    const StructuredNodeTemporalTile *temporal,
+    const StructuredNodePhysicalRepresentation *representation,
+    std::string *failureReason);
 
 mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     TileModuleOp tileOwner,
@@ -54,6 +56,7 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
     uint32_t structuredNodeId,
     llvm::ArrayRef<const StructuredNodeIterationShard *> contributionShards,
     llvm::ArrayRef<mlir::func::FuncOp> contributionFunctions,
+    const StructuredNodePhysicalRepresentation *representation,
     std::string *failureReason);
 
 } // namespace wafer::tensor_program_to_tile_region

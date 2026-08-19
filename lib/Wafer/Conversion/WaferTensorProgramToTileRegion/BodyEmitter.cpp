@@ -1,7 +1,9 @@
 //===- BodyEmitter.cpp - Tensor program body lowering orchestration --===//
 
 #include "Internal.h"
+
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 
 #include <limits>
 
@@ -90,12 +92,22 @@ TileRegionBodyEmitter::TileRegionBodyEmitter(
     llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints,
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
     TileRegionEmissionRelations *emissionRelations,
-    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes)
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations)
     : failureReason(failureReason),
       currentLogicalPartition(currentLogicalPartition),
       peerEndpoints(peerEndpoints.begin(), peerEndpoints.end()),
       selectedDDRStages(selectedDDRStages),
       emissionRelations(emissionRelations) {
+  for (const StructuredNodePhysicalRepresentation &representation :
+       representations) {
+    SelectedNodeRepresentation selected{representation.operandLayouts,
+                                        representation.resultLayouts};
+    if (!selectedRepresentations
+             .try_emplace(representation.structuredNodeId, std::move(selected))
+             .second)
+      malformedRepresentations = true;
+  }
   for (const StructuredOperationNodeMapping &mapping : operationNodes) {
     if (!mapping.operation)
       continue;
@@ -151,8 +163,8 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
   // region as read-only DDR boundaries exactly like source inputs; the
   // sibling structured producer's compute is never pulled into this scope.
   for (mlir::Value original : scope.getBoundaryArguments()) {
-    mlir::FailureOr<mlir::Value> boundary = materializeDdrBoundary(
-        original, original, /*readOnly=*/true, rewriter);
+    mlir::FailureOr<mlir::Value> boundary =
+        materializeDdrBoundary(original, original, /*readOnly=*/true, rewriter);
     if (mlir::failed(boundary))
       return mlir::failure();
     tileRegionInputs.push_back(*boundary);
@@ -526,9 +538,9 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeTensorConstant(
   auto scalar = builder.create<mlir::arith::ConstantOp>(loc, scalarAttr);
   auto tensorBuffer = builder.create<mlir::memref::AllocOp>(
       loc, makeSPMMemRefType(tensorType, MemLayout::Tensor));
-  auto fill = builder.create<ComputeFillOp>(
-      loc, tensorBuffer.getResult(), scalar.getResult(),
-      /*fill_domain=*/FillDomainAttr{});
+  auto fill = builder.create<ComputeFillOp>(loc, tensorBuffer.getResult(),
+                                            scalar.getResult(),
+                                            /*fill_domain=*/FillDomainAttr{});
   recordStructuredComputeOperation(fill);
   record(original, MemLayout::Tensor, tensorBuffer.getResult());
   if (targetLayout == MemLayout::Tensor)
@@ -697,8 +709,7 @@ void TileRegionBodyEmitter::recordStructuredComputeOperation(
     mlir::Operation *operation) {
   if (!emissionRelations || !operation)
     return;
-  auto &relations =
-      emissionRelations->materializedBuffers.operationEmissions;
+  auto &relations = emissionRelations->materializedBuffers.operationEmissions;
   for (uint32_t node : activeStructuredNodes)
     if (!llvm::any_of(relations, [&](const auto &relation) {
           return relation.structuredNodeId == node &&
@@ -725,8 +736,7 @@ void TileRegionBodyEmitter::recordOutputBuffer(unsigned outputIndex,
     return;
   auto &relations = emissionRelations->materializedBuffers.outputBuffers;
   if (!llvm::any_of(relations, [&](const auto &relation) {
-        return relation.outputIndex == outputIndex &&
-               relation.buffer == buffer;
+        return relation.outputIndex == outputIndex && relation.buffer == buffer;
       }))
     relations.push_back({outputIndex, buffer});
 }
@@ -738,8 +748,8 @@ TileRegionBodyEmitter::initializeBoundary(TensorProgramScope scope,
   mlir::Block &sourceBlock = scope.getBody();
   mlir::Block &tileBlock = tileRegion.getBody().front();
   if (sourceBlock.getNumArguments() != scope.getInputCount() +
-                                          scope.getOutputCount() +
-                                          scope.getBoundaryArgumentCount())
+                                           scope.getOutputCount() +
+                                           scope.getBoundaryArgumentCount())
     return fail("tensor program boundary argument count mismatch");
 
   unsigned tileArgIndex = 0;
@@ -789,26 +799,150 @@ TileRegionBodyEmitter::initializeBoundary(TensorProgramScope scope,
 
 mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
                                                      mlir::OpBuilder &builder) {
-  auto convertStructured =
-      [&](llvm::function_ref<mlir::LogicalResult()> convert) {
-        llvm::SmallVector<uint32_t, 2> previous = activeStructuredNodes;
-        auto node = structuredNodeIds.find(op);
-        activeStructuredNodes.clear();
-        if (node != structuredNodeIds.end())
-          activeStructuredNodes.append(node->second.begin(),
-                                       node->second.end());
-        mlir::LogicalResult result = convert();
-        if (mlir::succeeded(result)) {
-          for (mlir::Value value : op->getResults()) {
-            MemLayout layout = MemLayout::Tensor;
-            if (mlir::Value buffer = lookupAny(value, layout))
-              for (uint32_t current : activeStructuredNodes)
-                recordOperationResultBuffer(current, buffer);
-          }
-        }
+  auto convertStructured = [&](llvm::function_ref<mlir::LogicalResult()>
+                                   convert) {
+    llvm::SmallVector<uint32_t, 2> previous = activeStructuredNodes;
+    auto node = structuredNodeIds.find(op);
+    activeStructuredNodes.clear();
+    if (node != structuredNodeIds.end())
+      activeStructuredNodes.append(node->second.begin(), node->second.end());
+    const SelectedNodeRepresentation *representation = nullptr;
+    if (!selectedRepresentations.empty()) {
+      if (malformedRepresentations || activeStructuredNodes.empty()) {
         activeStructuredNodes = std::move(previous);
-        return result;
-      };
+        return fail("selected physical representation has no node owner");
+      }
+      for (uint32_t current : activeStructuredNodes) {
+        auto selected = selectedRepresentations.find(current);
+        if (selected == selectedRepresentations.end() ||
+            (representation && (representation->operandLayouts !=
+                                    selected->second.operandLayouts ||
+                                representation->resultLayouts !=
+                                    selected->second.resultLayouts))) {
+          activeStructuredNodes = std::move(previous);
+          return fail("structured nodes disagree on physical representation");
+        }
+        representation = &selected->second;
+      }
+      if (!representation ||
+          representation->operandLayouts.size() != op->getNumOperands() ||
+          representation->resultLayouts.size() != op->getNumResults()) {
+        activeStructuredNodes = std::move(previous);
+        return fail("selected physical representation has inconsistent arity");
+      }
+    }
+
+    struct SavedVersions {
+      mlir::Value value;
+      std::optional<BufferVersions> versions;
+    };
+    llvm::SmallVector<SavedVersions, 4> savedOperands;
+    if (representation) {
+      for (auto [operandNumber, layout] :
+           llvm::enumerate(representation->operandLayouts)) {
+        mlir::OpOperand &opOperand = op->getOpOperand(operandNumber);
+        mlir::Value operand = opOperand.get();
+        const bool requiresRepresentation =
+            mlir::isa<mlir::RankedTensorType>(operand.getType()) &&
+            (!mlir::isa<mlir::linalg::LinalgOp>(op) ||
+             mlir::cast<mlir::linalg::LinalgOp>(op).payloadUsesValueFromOperand(
+                 &opOperand));
+        if (requiresRepresentation != layout.has_value()) {
+          activeStructuredNodes = std::move(previous);
+          return fail("selected operand representation is incomplete");
+        }
+        if (!layout)
+          continue;
+        auto existing = buffers.find(operand);
+        savedOperands.push_back(
+            {operand, existing == buffers.end()
+                          ? std::optional<BufferVersions>{}
+                          : std::optional<BufferVersions>(existing->second)});
+        mlir::FailureOr<mlir::Value> selected =
+            getOrMaterialize(operand, *layout, builder);
+        if (mlir::failed(selected)) {
+          if (failureReason)
+            failureReason->append(
+                "; while materializing selected operand representation");
+          activeStructuredNodes = std::move(previous);
+          return mlir::failure();
+        }
+        BufferVersions primary;
+        switch (*layout) {
+        case MemLayout::Tensor:
+          primary.tensor = *selected;
+          break;
+        case MemLayout::NTensor:
+          primary.nTensor = *selected;
+          break;
+        case MemLayout::Cx:
+          primary.cx = *selected;
+          break;
+        case MemLayout::NCx:
+          primary.nCx = *selected;
+          break;
+        }
+        buffers[operand] = primary;
+      }
+    }
+    mlir::LogicalResult result = convert();
+    for (const SavedVersions &saved : savedOperands) {
+      if (saved.versions)
+        buffers[saved.value] = *saved.versions;
+      else
+        buffers.erase(saved.value);
+    }
+    if (mlir::succeeded(result) && representation) {
+      for (auto [resultNumber, value, layout] :
+           llvm::enumerate(op->getResults(), representation->resultLayouts)) {
+        const bool shaped = mlir::isa<mlir::RankedTensorType>(value.getType());
+        if (shaped != layout.has_value()) {
+          result = fail("selected result representation is incomplete");
+          break;
+        }
+        if (!layout)
+          continue;
+        mlir::FailureOr<mlir::Value> selected =
+            getOrMaterialize(value, *layout, builder);
+        if (mlir::failed(selected)) {
+          if (failureReason)
+            failureReason->append(
+                "; while materializing selected result representation");
+          result = mlir::failure();
+          break;
+        }
+        BufferVersions primary;
+        switch (*layout) {
+        case MemLayout::Tensor:
+          primary.tensor = *selected;
+          break;
+        case MemLayout::NTensor:
+          primary.nTensor = *selected;
+          break;
+        case MemLayout::Cx:
+          primary.cx = *selected;
+          break;
+        case MemLayout::NCx:
+          primary.nCx = *selected;
+          break;
+        }
+        buffers[value] = primary;
+        for (uint32_t current : activeStructuredNodes)
+          recordOperationResultBuffer(current, *selected);
+        (void)resultNumber;
+      }
+    }
+    if (mlir::succeeded(result)) {
+      for (mlir::Value value : op->getResults()) {
+        MemLayout layout = MemLayout::Tensor;
+        if (mlir::Value buffer = lookupAny(value, layout))
+          for (uint32_t current : activeStructuredNodes)
+            recordOperationResultBuffer(current, buffer);
+      }
+    }
+    activeStructuredNodes = std::move(previous);
+    return result;
+  };
 
   if (mlir::isa<WaferLinalgExtCollectiveOpInterface>(op))
     return convertStructured(
@@ -841,8 +975,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
         !mapsAreProjectedOrUnitConstant &&
         mlir::failed(mlir::linalg::inferConvolutionDims(linalg)))
       return fail("unsupported linalg indexing maps");
-    return convertStructured(
-        [&] { return convertStructuredOp(op, builder); });
+    return convertStructured([&] { return convertStructuredOp(op, builder); });
   }
 
   if (mlir::isa<

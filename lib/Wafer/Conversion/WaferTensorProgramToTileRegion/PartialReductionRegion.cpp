@@ -29,6 +29,7 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
     uint32_t structuredNodeId,
     llvm::ArrayRef<const StructuredNodeIterationShard *> contributionShards,
     llvm::ArrayRef<mlir::func::FuncOp> contributionFunctions,
+    const StructuredNodePhysicalRepresentation *representation,
     std::string *failureReason) {
   if (contributionShards.empty() ||
       contributionShards.size() != contributionFunctions.size())
@@ -222,7 +223,11 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
           /*suppressDiagnostics=*/true, /*verifyResult=*/true,
           /*populateFallbackFailureReason=*/true,
           /*peerEndpoints=*/{}, /*selectedDDRStages=*/{}, &emissionRelations,
-          operationNodes, /*requireOneStructuredRootPerRegion=*/true)))
+          operationNodes, /*requireOneStructuredRootPerRegion=*/true,
+          representation
+              ? llvm::ArrayRef<StructuredNodePhysicalRepresentation>(
+                    representation, 1)
+              : llvm::ArrayRef<StructuredNodePhysicalRepresentation>{})))
     return mlir::failure();
   result.function = *function;
   unsigned regionCount = 0;

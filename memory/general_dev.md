@@ -446,3 +446,12 @@ source program
   lower bound/deferred/rejection/indeterminate与causal key，不clone/lower IR，不调用packer，不写回state。
 - exact witness key只包含结论实际依赖的assignment字段。full-tile rejection不能缓存成node级“最大可放下tile”，更小temporal、
   不同group/layout/movement/buffer sibling必须重新query并保持可达；actual packing结果仍只来自complete Q50.0。
+
+## Physical version选择（stable，2026-08-19）
+
+- physical representation identity按node/Tile的operand use与result value区分；producer result是fanout共享primary version，consumer
+  operand是use-local要求。未读取DPS init和scalar不制造layout state。
+- layout合法域从actual temporal leaf shape和`PhysicalLayoutRelation`建立，不从op名、历史winner或shape默认猜测。compute固定需要的
+  Cx/NCx与外部Tensor writeback是selected primary之外的显式derived versions，不能反写logical edge assignment。
+- apply期间consumer operand可暂时暴露selected use version；compute完成后必须恢复producer primary map。result selection则替换后续
+  consumer看到的primary map，确保同layout fanout只物化一个producer version。

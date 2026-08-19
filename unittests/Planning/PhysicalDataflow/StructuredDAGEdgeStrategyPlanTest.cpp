@@ -254,7 +254,7 @@ module {
 }
 
 TEST_F(StructuredDAGEdgeStrategyPlanTest,
-       ExactEdgePlanCarriesTypedProducerAndConsumerLayouts) {
+       ExactEdgePlanDoesNotSelectPhysicalRepresentation) {
   auto module = parse(R"mlir(
 module {
   func.func @layout_edge(%lhs: tensor<8x8xf16>, %rhs: tensor<8x8xf16>)
@@ -286,11 +286,6 @@ module {
       &failureReason);
   ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
   ASSERT_FALSE(plan->strategies.empty());
-  for (const SpatialEdgeStrategy &strategy : plan->strategies) {
-    EXPECT_TRUE(strategy.hasLayoutAssignment);
-    EXPECT_EQ(strategy.producerLayout, MemLayout::Cx);
-    EXPECT_EQ(strategy.consumerLayout, MemLayout::Tensor);
-  }
 }
 
 TEST_F(StructuredDAGEdgeStrategyPlanTest,

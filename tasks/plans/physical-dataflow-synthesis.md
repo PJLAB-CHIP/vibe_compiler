@@ -1689,6 +1689,32 @@ unsupported lowering仍只属于Q50.0 complete-candidate gate。
 
 ## Q50.G：Layout and Physical Representation
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  immutable selected TensorProgram、Q50.B exact node/Tile shards、Q50.D group partition、Q50.E temporal leaf shapes及current Wafer
+  physical encoding interface；没有movement、buffer或schedule assignment。
+- Current stage responsibility:
+  为每个node/Tile的实际shaped operand use和result value建立primary physical-version domain；只枚举encoding interface对该leaf
+  shape可完整解释的layout family。selected apply在最终TileRegion构造时物化primary version，target compute额外需要的layout形成
+  显式derived `wafer.tile.materialize_layout`，不改变primary identity。
+- Output IR / files:
+  query输出typed per-use/result `CardPhysicalRepresentationAssignment`；apply输出带exact MemoryAttr encoding和显式layout conversion的
+  current CardModule。assignment不携movement、lifetime、score、proposal ordinal或actual IR handle。
+- Downstream consumer:
+  Q50.H以producer primary version、consumer operand version和exact demand生成movement/conversion组合；Q50.F footprint、Q50.I lifetime及
+  Q50.J calendar在representation变化后重算。Q50.0只验证complete selected IR。
+- User-level driver / named pipeline:
+  Q51 closure后的public `search` session；baseline仍由Q49.P current deterministic representation构造，不进入本域枚举。
+- Explicit non-goals:
+  不选择route、spill、recompute、retention、buffer、worker或winner；不运行PBQP/top-k proposal，不按local conversion bytes冻结layout，
+  不把layout写回logical exact-demand或edge action。
+- Done criteria:
+  domain与independent value-layout Cartesian reference一致；unsupported encoding无候选；selected operand/result conversion、output
+  writeback、fanout primary sharing及malformed assignment atomic failure有actual证据；旧edge layout字段、fake conversion action、
+  late default selector和dormant PBQP implementation/test删除。
+
 ### 机制
 
 对每个 scheduled value 枚举 producer/consumer/implementation 可接受的 `MemLayout`、physical encoding 和 storage
@@ -1705,6 +1731,28 @@ actual IR有不同layout、conversion和fanout version-sharing witness；negativ
 conversion、错误alias/version，且不同layout assignment会使相关SPM analysis/probe cache失效。通过后删除
 layout independent selector和late default assignment；lowering只验证并消费selected typed representation。layout使相同
 temporal tile的SPM legality或global winner改变是Q51 closure gate。
+
+### 2026-08-19 完成结果
+
+`CardPhysicalRepresentationDomain`按stable `(Tile,node,operand|result,index)`顺序建立惰性Cartesian domain。operand是实际payload
+读取use；未读取DPS init不伪造version。每项shape来自Q50.B shard与Q50.E最大actual leaf经structured indexing map的精确像，
+`PhysicalLayoutRelation::create`逐项验证current `MemoryAttr` encoding的footprint、padding、alignment与logical-to-physical relation。
+current encoding合同没有独立于`MemLayout`的第二个可选schema，因此domain直接覆盖`Tensor/NTensor/Cx/NCx`中全部可解释layout；
+vector-element等unsupported encoding使domain fail closed。
+
+selected assignment随Q50.D group request进入final function conversion。Body emitter在每个structured op前临时暴露该consumer
+operand的selected version，target compute若需要不同layout便从它物化derived version；转换后恢复producer primary map，避免一个fanout
+consumer覆盖另一个consumer的source identity。structured result转换完成后只保留selected primary version供后续use，natural compute
+output仅作为其定义链。function output仍显式转换到外部Tensor DDR layout。Cx result正例产生Tensor→Cx primary与Cx→Tensor output
+writeback；fanout正例中一个Cx producer primary被两个consumer共同引用且relation只记录一个producer version。
+
+旧`SpatialEdgeStrategy::{hasLayoutAssignment,producerLayout,consumerLayout}`、不消费layout字段的`LocalPhysicalConversion` action和
+shape-driven `assignPhysicalLayouts`已删除；logical edge plan恢复只携带exact demand。dormant 1587行
+`LayoutMovementOptimization.cpp`的PBQP、fixed proposal cap、local cost winner、clone/apply owner及921行专属测试同批删除，
+`CompleteRankMaterialization`中的proposal ordinal入口也退出。malformed assignment在构造CardModule前拒绝且source不变。
+
+fresh Q50.G/Q50.C–E/legacy conversion定向unit 69/69、source/IR organization和主构建通过。layout影响SPM legality与global winner的
+跨轴比较仍归Q51；本checkpoint不运行LLaMA search。
 
 ## Q50.H：Explicit Data Movement
 

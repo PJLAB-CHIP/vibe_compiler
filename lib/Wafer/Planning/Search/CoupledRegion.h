@@ -21,6 +21,9 @@
 
 namespace wafer::compiler::detail {
 
+class CardPhysicalRepresentationDomain;
+struct CardPhysicalRepresentationAssignment;
+
 /// One selected connected group of structured node shards on one Tile. Node
 /// IDs are strictly increasing. The object carries no edge action, traversal
 /// cache, score, or actual IR handle.
@@ -92,14 +95,15 @@ struct CardCoupledRegionMaterialization {
 /// Applies one explicit complete group partition. The domain is supplied by
 /// the caller so apply validates membership without rebuilding or selecting a
 /// second grouping domain.
-mlir::FailureOr<CardCoupledRegionMaterialization>
-materializeCardCoupledRegions(mlir::ModuleOp tensorProgram,
-                              const CardProgramAnalysis &program, CardId cardId,
-                              const analysis::LogicalShardTrial &trial,
-                              const CoupledRegionDomain &domain,
-                              const CoupledRegionAssignment &assignment,
-                              const CardTemporalDomain &temporalDomain,
-                              const CardTemporalAssignment &temporalAssignment,
-                              std::string *failureReason = nullptr);
+mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
+    mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
+    CardId cardId, const analysis::LogicalShardTrial &trial,
+    const CoupledRegionDomain &domain,
+    const CoupledRegionAssignment &assignment,
+    const CardTemporalDomain &temporalDomain,
+    const CardTemporalAssignment &temporalAssignment,
+    const CardPhysicalRepresentationDomain &representationDomain,
+    const CardPhysicalRepresentationAssignment &representationAssignment,
+    std::string *failureReason = nullptr);
 
 } // namespace wafer::compiler::detail

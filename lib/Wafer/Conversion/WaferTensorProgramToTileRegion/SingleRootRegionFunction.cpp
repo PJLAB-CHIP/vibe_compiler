@@ -453,7 +453,9 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const StructuredNodeIterationShard &shard,
-    const StructuredNodeTemporalTile *temporal, std::string *failureReason) {
+    const StructuredNodeTemporalTile *temporal,
+    const StructuredNodePhysicalRepresentation *representation,
+    std::string *failureReason) {
   auto requested = llvm::find_if(
       sourceOperationNodes, [&](const StructuredOperationNodeMapping &mapping) {
         return mapping.structuredNodeId == shard.structuredNodeId;
@@ -515,7 +517,11 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
           /*suppressDiagnostics=*/true, /*verifyResult=*/true,
           /*populateFallbackFailureReason=*/true,
           /*peerEndpoints=*/{}, /*selectedDDRStages=*/{}, &emissionRelations,
-          operationNodes, /*requireOneStructuredRootPerRegion=*/true)))
+          operationNodes, /*requireOneStructuredRootPerRegion=*/true,
+          representation
+              ? llvm::ArrayRef<StructuredNodePhysicalRepresentation>(
+                    representation, 1)
+              : llvm::ArrayRef<StructuredNodePhysicalRepresentation>{})))
     return mlir::failure();
   result.function = *function;
 

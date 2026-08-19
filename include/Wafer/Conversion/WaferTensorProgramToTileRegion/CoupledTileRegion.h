@@ -4,6 +4,7 @@
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_COUPLEDTILEREGION_H
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
+#include "Wafer/IR/WaferDialect.h"
 
 namespace wafer {
 
@@ -11,6 +12,16 @@ struct StructuredNodeTemporalTile {
   uint32_t structuredNodeId = 0;
   llvm::SmallVector<int64_t, 4> iteratorTileSizes;
   llvm::SmallVector<uint32_t, 4> waveLoopOrder;
+};
+
+/// One selected primary physical version for every shaped operand/result of a
+/// structured node in this Tile shard. Scalar entries are std::nullopt. The
+/// conversion may create target-required derived versions explicitly, but
+/// subsequent consumers observe only the selected primary result version.
+struct StructuredNodePhysicalRepresentation {
+  uint32_t structuredNodeId = 0;
+  llvm::SmallVector<std::optional<MemLayout>, 4> operandLayouts;
+  llvm::SmallVector<std::optional<MemLayout>, 2> resultLayouts;
 };
 
 /// One already-selected group of node shards that must share one TileRegion.
@@ -21,6 +32,9 @@ struct StructuredNodeShardGroup {
   /// Empty before temporal selection. A complete selected group carries
   /// exactly one entry for every shard/node.
   llvm::SmallVector<StructuredNodeTemporalTile, 4> temporalTiles;
+  /// Empty before physical-representation selection. A complete selected
+  /// group carries exactly one entry for every shard/node.
+  llvm::SmallVector<StructuredNodePhysicalRepresentation, 4> representations;
 };
 
 /// Materializes a complete explicit node-shard partition. Multi-node groups

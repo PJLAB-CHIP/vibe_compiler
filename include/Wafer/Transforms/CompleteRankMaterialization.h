@@ -75,8 +75,7 @@ materializeCompleteRankCandidateTileModule(
     CandidateLoopMovementAction loopMovementAction,
     std::string *failureReason = nullptr,
     std::optional<TargetImplementationKind> selectedImplementation =
-        std::nullopt,
-    std::optional<unsigned> physicalLayoutProposalOrdinal = std::nullopt);
+        std::nullopt);
 
 /// Materializes one complete-rank Tile module from a full vector of
 /// current-SSA connection actions. The vector has exactly the count returned
@@ -92,8 +91,7 @@ materializeCompleteRankConnectionTileModule(
     CandidateLoopMovementAction loopMovementAction,
     std::string *failureReason = nullptr,
     std::optional<TargetImplementationKind> selectedImplementation =
-        std::nullopt,
-    std::optional<unsigned> physicalLayoutProposalOrdinal = std::nullopt);
+        std::nullopt);
 
 /// As above, with explicit producer- and consumer-side tile vectors for each
 /// connection. The choice vector is destroyed after the actual clone is built.
@@ -105,8 +103,7 @@ materializeCompleteRankConnectionChoicesTileModule(
     CandidateLoopMovementAction loopMovementAction,
     std::string *failureReason = nullptr,
     std::optional<TargetImplementationKind> selectedImplementation =
-        std::nullopt,
-    std::optional<unsigned> physicalLayoutProposalOrdinal = std::nullopt);
+        std::nullopt);
 
 /// Clones an already materialized, unplaced complete-rank Tile parent and
 /// applies one bounded residency action directly to that clone. This is the

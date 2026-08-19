@@ -509,7 +509,7 @@ materializeConservativeCompleteRankBaseline(mlir::ModuleOp sourceModule,
     unsigned regionCount = 0;
     mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> materialized =
         materializeCompleteRankTileModule(*stagedModule, logicalRank,
-                                           &regionCount);
+                                          &regionCount);
     if (mlir::failed(materialized) || regionCount != 1)
       return mlir::failure();
     baselineModule = std::move(*materialized);
@@ -536,8 +536,7 @@ materializeCompleteRankCandidateTileModule(
     CandidateTileResidencyAction residencyAction,
     CandidateBoundaryMovementAction boundaryMovementAction,
     CandidateLoopMovementAction loopMovementAction, std::string *failureReason,
-    std::optional<TargetImplementationKind> selectedImplementation,
-    std::optional<unsigned> physicalLayoutProposalOrdinal) {
+    std::optional<TargetImplementationKind> selectedImplementation) {
   if (!sourceModule || logicalRank < 0 || candidateTileSizes.empty())
     return mlir::failure();
   mlir::OwningOpRef<mlir::ModuleOp> stagedModule =
@@ -566,7 +565,7 @@ materializeCompleteRankCandidateTileModule(
     break;
   case CandidateTileResidencyAction::SplitAtExplicitDDRBoundary:
     realized = splitCompleteRankTileModuleAtDDRBoundary(std::move(*realized),
-                                                         failureReason);
+                                                        failureReason);
     break;
   case CandidateTileResidencyAction::SelectiveSpill:
     realized = materializeCompleteRankSelectiveSpill(std::move(*realized),
@@ -574,11 +573,6 @@ materializeCompleteRankCandidateTileModule(
     break;
   }
   if (mlir::failed(realized))
-    return mlir::failure();
-  if (physicalLayoutProposalOrdinal &&
-      mlir::failed(applyPhysicalLayoutProposal(
-          **realized, *physicalLayoutProposalOrdinal, /*result=*/nullptr,
-          failureReason)))
     return mlir::failure();
   return std::move(*realized);
 }
@@ -590,8 +584,7 @@ materializeCompleteRankConnectionTileModule(
     llvm::ArrayRef<CandidateTraversalConnectionAction> connectionActions,
     CandidateBoundaryMovementAction boundaryMovementAction,
     CandidateLoopMovementAction loopMovementAction, std::string *failureReason,
-    std::optional<TargetImplementationKind> selectedImplementation,
-    std::optional<unsigned> physicalLayoutProposalOrdinal) {
+    std::optional<TargetImplementationKind> selectedImplementation) {
   if (!sourceModule || logicalRank < 0 || connectionActions.empty())
     return mlir::failure();
   mlir::OwningOpRef<mlir::ModuleOp> stagedModule =
@@ -627,16 +620,11 @@ materializeCompleteRankConnectionTileModule(
   }
   for (unsigned index = 0; index < crossRegionCount; ++index) {
     auto split = splitCompleteRankTileModuleAtDDRBoundary(std::move(candidate),
-                                                           failureReason);
+                                                          failureReason);
     if (mlir::failed(split))
       return mlir::failure();
     candidate = std::move(*split);
   }
-  if (physicalLayoutProposalOrdinal &&
-      mlir::failed(applyPhysicalLayoutProposal(
-          *candidate, *physicalLayoutProposalOrdinal, /*result=*/nullptr,
-          failureReason)))
-    return mlir::failure();
   if (mlir::failed(mlir::verify(*candidate))) {
     if (failureReason)
       *failureReason =
@@ -652,8 +640,7 @@ materializeCompleteRankConnectionChoicesTileModule(
     llvm::ArrayRef<CandidateTraversalConnectionChoice> connectionChoices,
     CandidateBoundaryMovementAction boundaryMovementAction,
     CandidateLoopMovementAction loopMovementAction, std::string *failureReason,
-    std::optional<TargetImplementationKind> selectedImplementation,
-    std::optional<unsigned> physicalLayoutProposalOrdinal) {
+    std::optional<TargetImplementationKind> selectedImplementation) {
   if (!sourceModule || logicalRank < 0 || connectionChoices.empty())
     return mlir::failure();
   mlir::OwningOpRef<mlir::ModuleOp> stagedModule =
@@ -695,16 +682,11 @@ materializeCompleteRankConnectionChoicesTileModule(
   }
   for (unsigned index = 0; index < crossRegionCount; ++index) {
     auto split = splitCompleteRankTileModuleAtDDRBoundary(std::move(candidate),
-                                                           failureReason);
+                                                          failureReason);
     if (mlir::failed(split))
       return mlir::failure();
     candidate = std::move(*split);
   }
-  if (physicalLayoutProposalOrdinal &&
-      mlir::failed(applyPhysicalLayoutProposal(
-          *candidate, *physicalLayoutProposalOrdinal, /*result=*/nullptr,
-          failureReason)))
-    return mlir::failure();
   if (mlir::failed(mlir::verify(*candidate))) {
     if (failureReason)
       *failureReason =
@@ -746,7 +728,7 @@ materializeCompleteRankTileResidencySibling(
     llvm_unreachable("identity residency action rejected above");
   case CandidateTileResidencyAction::SplitAtExplicitDDRBoundary:
     return splitCompleteRankTileModuleAtDDRBoundary(std::move(sibling),
-                                                     failureReason);
+                                                    failureReason);
   case CandidateTileResidencyAction::SelectiveSpill:
     return materializeCompleteRankSelectiveSpill(std::move(sibling),
                                                  failureReason);

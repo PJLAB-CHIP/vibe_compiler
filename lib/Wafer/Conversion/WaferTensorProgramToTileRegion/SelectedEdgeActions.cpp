@@ -112,10 +112,6 @@ materializeSelectedDirectActions(SelectedEdgeLoweringState &state) {
       break;
     case SpatialEdgeAction::PeerFragments:
       break;
-    case SpatialEdgeAction::LocalPhysicalConversion:
-      if (mlir::failed(materializeLocalShardResidency(mapped, failureReason)))
-        return mlir::failure();
-      break;
     }
   }
   return mlir::success();

@@ -400,6 +400,19 @@
   compute/fusion之后；prologue/steady/tail统一由一个loop owner构造。
 - 防复发：测试必须比较同vector不同order的actual nesting，覆盖internal producer、multi-reduction、tail、partial contribution和
   clone/remap后的order；不能只比较domain key或loop数量。任何block conversion前先验证terminator与use-def，而不是等下游assert。
+
+## Physical representation不能藏在edge字段或late layout winner中
+
+- 现象：logical edge planner按op kind直接写`producerLayout/consumerLayout`，但所谓`LocalPhysicalConversion` materializer完全不消费
+  这些字段；另一个dormant PBQP在actual Tile IR上固定最多4个proposal并clone/apply local winner。两条路径都不能表达fanout共享的
+  primary version，也会让layout变化绕过search共同parent。
+- 根因：把consumer use representation、producer value version、target compute internal layout和movement conversion混成一个edge-local
+  hint；late selector只能看到已经默认lower的layout，反过来重写结果并重复事实源。
+- 修复模式：identity按`(Tile,node,operand|result,index)`建typed domain，合法性只来自current physical encoding interface；result选中
+  primary version，compute/output所需layout是显式derived version。consumer转换后恢复producer primary map，使fanout共享不被use-local
+  rewrite覆盖。logical edge plan不再携layout。
+- 防复发：domain与independent Cartesian reference比较；actual测试同时检查selected relation、layout materialize与fanout version数；
+  任何proposal ordinal、local cost winner、未消费layout字段或clone-then-apply owner都不得重新进入current pipeline。
 - 防复发：none source-to-package检查中间DDR boundary和single-root cardinality；search定向测试检查maximal/中间cut产生不同actual
   region、内部无DDR round-trip且fanout shared producer只有一个actual version。
 

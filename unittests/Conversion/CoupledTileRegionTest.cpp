@@ -1,6 +1,7 @@
 //===- CoupledTileRegionTest.cpp --------------------------------------===//
 
 #include "Wafer/Planning/Search/CoupledRegion.h"
+#include "Wafer/Planning/Search/PhysicalRepresentation.h"
 
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
@@ -34,12 +35,16 @@
 namespace {
 
 using wafer::TileId;
+using wafer::compiler::detail::CardPhysicalRepresentationAssignment;
+using wafer::compiler::detail::CardPhysicalRepresentationDomain;
 using wafer::compiler::detail::CardProgramAnalysis;
 using wafer::compiler::detail::CardTemporalAssignment;
 using wafer::compiler::detail::CardTemporalDomain;
 using wafer::compiler::detail::CoupledRegionAssignment;
 using wafer::compiler::detail::CoupledRegionDomain;
 using wafer::compiler::detail::CoupledRegionGroup;
+using wafer::compiler::detail::PhysicalRepresentationChoice;
+using wafer::compiler::detail::PhysicalValueRole;
 using wafer::compiler::detail::StaticOutputDomains;
 using wafer::compiler::detail::StructuredDAGAnalysis;
 using wafer::compiler::detail::StructuredDAGNodePlacement;
@@ -83,6 +88,8 @@ struct PreparedCase {
   CoupledRegionDomain domain;
   CardTemporalDomain temporalDomain;
   CardTemporalAssignment temporalAssignment;
+  CardPhysicalRepresentationDomain representationDomain;
+  CardPhysicalRepresentationAssignment representationAssignment;
 };
 
 mlir::FailureOr<PreparedCase> prepare(mlir::ModuleOp module,
@@ -133,9 +140,21 @@ mlir::FailureOr<PreparedCase> prepare(mlir::ModuleOp module,
   auto program = std::make_unique<CardProgramAnalysis>(
       std::move(*topology), available, std::move(*dag),
       std::move(outputDomains), std::move(operationNodes), epoch);
-  return PreparedCase{std::move(program), std::move(*trial), std::move(*domain),
+  CoupledRegionAssignment coupledAssignment = domain->getFirstAssignment();
+  auto representationDomain = CardPhysicalRepresentationDomain::create(
+      *program, *trial, *domain, coupledAssignment, *temporalDomain,
+      temporalAssignment, failureReason);
+  if (mlir::failed(representationDomain))
+    return mlir::failure();
+  CardPhysicalRepresentationAssignment representationAssignment =
+      representationDomain->getFirstAssignment();
+  return PreparedCase{std::move(program),
+                      std::move(*trial),
+                      std::move(*domain),
                       std::move(*temporalDomain),
-                      std::move(temporalAssignment)};
+                      std::move(temporalAssignment),
+                      std::move(*representationDomain),
+                      std::move(representationAssignment)};
 }
 
 std::set<uint32_t>
@@ -197,7 +216,8 @@ TEST(CoupledTileRegionTest, MaterializesMaximalAndIntermediateChainCuts) {
   auto maximalIR = wafer::compiler::detail::materializeCardCoupledRegions(
       *module, *prepared->program, wafer::CardId(0), prepared->trial,
       prepared->domain, maximal, prepared->temporalDomain,
-      prepared->temporalAssignment, &failureReason);
+      prepared->temporalAssignment, prepared->representationDomain,
+      prepared->representationAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(maximalIR)) << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(maximalIR->module->getOperation()),
             1u);
@@ -214,7 +234,8 @@ TEST(CoupledTileRegionTest, MaterializesMaximalAndIntermediateChainCuts) {
   auto cutIR = wafer::compiler::detail::materializeCardCoupledRegions(
       *module, *prepared->program, wafer::CardId(0), prepared->trial,
       prepared->domain, cut, prepared->temporalDomain,
-      prepared->temporalAssignment, &failureReason);
+      prepared->temporalAssignment, prepared->representationDomain,
+      prepared->representationAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(cutIR)) << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(cutIR->module->getOperation()), 2u);
   EXPECT_EQ(countOps<wafer::StorageStoreOp>(cutIR->module->getOperation()), 2u);
@@ -249,10 +270,17 @@ TEST(CoupledTileRegionTest,
     node.waveLoopOrder = {0};
   }
   ASSERT_TRUE(prepared->temporalDomain.contains(prepared->temporalAssignment));
+  auto representationDomain = CardPhysicalRepresentationDomain::create(
+      *prepared->program, prepared->trial, prepared->domain, maximal,
+      prepared->temporalDomain, prepared->temporalAssignment, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(representationDomain)) << failureReason;
+  CardPhysicalRepresentationAssignment representationAssignment =
+      representationDomain->getFirstAssignment();
   auto materialized = wafer::compiler::detail::materializeCardCoupledRegions(
       *module, *prepared->program, wafer::CardId(0), prepared->trial,
       prepared->domain, maximal, prepared->temporalDomain,
-      prepared->temporalAssignment, &failureReason);
+      prepared->temporalAssignment, *representationDomain,
+      representationAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
             1u);
@@ -340,6 +368,71 @@ module {
   ASSERT_TRUE(firstMajor && secondMajor);
   EXPECT_EQ(getNestingStep(*firstMajor), 2);
   EXPECT_EQ(getNestingStep(*secondMajor), 3);
+}
+
+TEST(CoupledTileRegionTest,
+     SharesOneSelectedProducerPhysicalVersionAcrossFanout) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 2, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+  func.func @fanout(%input: tensor<4xf16>)
+      -> (tensor<4xf16>, tensor<4xf16>) {
+    %e0 = tensor.empty() : tensor<4xf16>
+    %a = linalg.map ins(%input : tensor<4xf16>) outs(%e0 : tensor<4xf16>)
+        (%v: f16) { %x = arith.addf %v, %v : f16
+                    linalg.yield %x : f16 }
+    %e1 = tensor.empty() : tensor<4xf16>
+    %b = linalg.map ins(%a : tensor<4xf16>) outs(%e1 : tensor<4xf16>)
+        (%v: f16) { %x = arith.mulf %v, %v : f16
+                    linalg.yield %x : f16 }
+    %e2 = tensor.empty() : tensor<4xf16>
+    %c = linalg.map ins(%a : tensor<4xf16>) outs(%e2 : tensor<4xf16>)
+        (%v: f16) { %x = arith.addf %v, %v : f16
+                    linalg.yield %x : f16 }
+    return %b, %c : tensor<4xf16>, tensor<4xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto prepared = prepare(*module, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
+  CoupledRegionAssignment maximal = getMaximalAssignment(prepared->domain);
+  CardPhysicalRepresentationAssignment representation =
+      prepared->representationAssignment;
+  for (PhysicalRepresentationChoice &choice : representation.values) {
+    if (choice.node == 0 && choice.role == PhysicalValueRole::Result)
+      choice.layout = wafer::MemLayout::Cx;
+    if ((choice.node == 1 || choice.node == 2) &&
+        choice.role == PhysicalValueRole::Operand && choice.index == 0)
+      choice.layout = wafer::MemLayout::Cx;
+  }
+  ASSERT_TRUE(prepared->representationDomain.contains(representation));
+  auto materialized = materializeCardCoupledRegions(
+      *module, *prepared->program, wafer::CardId(0), prepared->trial,
+      prepared->domain, maximal, prepared->temporalDomain,
+      prepared->temporalAssignment, prepared->representationDomain,
+      representation, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+
+  unsigned producerVersions = 0;
+  for (const wafer::StructuredOperationBufferRelation &relation :
+       materialized->relations.operationResultBuffers) {
+    if (relation.structuredNodeId != 0)
+      continue;
+    auto type = mlir::dyn_cast<mlir::MemRefType>(relation.buffer.getType());
+    if (type &&
+        wafer::getWaferMemoryAttr(type).getLayout() == wafer::MemLayout::Cx)
+      ++producerVersions;
+  }
+  EXPECT_EQ(producerVersions, 1u);
+  EXPECT_EQ(countOps<wafer::LayoutMaterializeOp>(
+                materialized->module->getOperation()),
+            3u);
 }
 
 TEST(CoupledTileRegionTest,
@@ -497,7 +590,8 @@ module {
     auto materialized = wafer::compiler::detail::materializeCardCoupledRegions(
         *module, *prepared->program, wafer::CardId(0), prepared->trial,
         prepared->domain, maximal, prepared->temporalDomain,
-        prepared->temporalAssignment, &failureReason);
+        prepared->temporalAssignment, prepared->representationDomain,
+        prepared->representationAssignment, &failureReason);
     ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
     EXPECT_EQ(
         countOps<wafer::TileRegionOp>(materialized->module->getOperation()),

@@ -1,4 +1,5 @@
-//===- StructuredDAGEdgeStrategyPlan.cpp - Exact edge actions ---------------===//
+//===- StructuredDAGEdgeStrategyPlan.cpp - Exact edge actions
+//---------------===//
 
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.h"
 
@@ -61,68 +62,10 @@ std::optional<unsigned> getElementBitWidth(mlir::Type type) {
   return std::nullopt;
 }
 
-std::optional<MemLayout> getStructuredResultLayout(mlir::Operation *operation,
-                                                   unsigned resultNumber) {
-  if (!operation || resultNumber >= operation->getNumResults())
-    return std::nullopt;
-  auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
-      operation->getResult(resultNumber).getType());
-  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation);
-  if (!resultType || !linalg)
-    return std::nullopt;
-  if (mlir::succeeded(mlir::linalg::inferConvolutionDims(linalg)) ||
-      mlir::isa<mlir::linalg::BatchMatmulOp,
-                mlir::linalg::BatchMatmulTransposeAOp,
-                mlir::linalg::BatchMatmulTransposeBOp>(operation))
-    return MemLayout::NCx;
-  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
-                mlir::linalg::MatmulTransposeBOp>(operation))
-    return MemLayout::Cx;
-  if (llvm::is_contained(linalg.getIteratorTypesArray(),
-                         mlir::utils::IteratorType::reduction))
-    return resultType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
-  return MemLayout::Tensor;
-}
-
-std::optional<MemLayout> getStructuredOperandLayout(mlir::Operation *operation,
-                                                    unsigned operandNumber) {
-  if (!operation || operandNumber >= operation->getNumOperands())
-    return std::nullopt;
-  auto operandType = mlir::dyn_cast<mlir::RankedTensorType>(
-      operation->getOperand(operandNumber).getType());
-  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(operation);
-  if (!operandType || !linalg)
-    return std::nullopt;
-  if (mlir::succeeded(mlir::linalg::inferConvolutionDims(linalg)) ||
-      mlir::isa<mlir::linalg::BatchMatmulOp,
-                mlir::linalg::BatchMatmulTransposeAOp,
-                mlir::linalg::BatchMatmulTransposeBOp>(operation))
-    return MemLayout::NCx;
-  if (mlir::isa<mlir::linalg::MatmulOp, mlir::linalg::MatmulTransposeAOp,
-                mlir::linalg::MatmulTransposeBOp>(operation))
-    return MemLayout::Cx;
-  if (llvm::is_contained(linalg.getIteratorTypesArray(),
-                         mlir::utils::IteratorType::reduction))
-    return operandType.getRank() > 2 ? MemLayout::NCx : MemLayout::Cx;
-  return MemLayout::Tensor;
-}
-
-void assignPhysicalLayouts(SpatialEdgeStrategy &strategy) {
-  std::optional<MemLayout> producer =
-      getStructuredResultLayout(strategy.producer, strategy.producerResult);
-  std::optional<MemLayout> consumer =
-      getStructuredOperandLayout(strategy.consumer, strategy.consumerOperand);
-  if (!producer || !consumer)
-    return;
-  strategy.hasLayoutAssignment = true;
-  strategy.producerLayout = *producer;
-  strategy.consumerLayout = *consumer;
-}
-
 mlir::FailureOr<StructuredDAGEdgeStrategyPlan>
-lowerDemandPlanToCanonicalStrategies(const StructuredDAGAnalysis &dag,
-                                     const StructuredDAGEdgeDemandPlan &demandPlan,
-                                     std::string *failureReason) {
+lowerDemandPlanToCanonicalStrategies(
+    const StructuredDAGAnalysis &dag,
+    const StructuredDAGEdgeDemandPlan &demandPlan, std::string *failureReason) {
   StructuredDAGEdgeStrategyPlan result;
   std::unordered_map<StructuredDAGEdgeID, uint32_t> nextPayloadSlice;
   for (const StructuredDAGEdgeDemand &demand : demandPlan.demands) {
@@ -173,7 +116,6 @@ lowerDemandPlanToCanonicalStrategies(const StructuredDAGAnalysis &dag,
     strategy.producerSizes = producerRectangle.domain->sizes;
     strategy.sourceTile = demand.destinationTile;
     strategy.destinationTile = demand.destinationTile;
-    assignPhysicalLayouts(strategy);
 
     std::optional<mlir::presburger::PresburgerSet> covered;
     bool hasRemoteFragment = false;
@@ -224,7 +166,7 @@ lowerDemandPlanToCanonicalStrategies(const StructuredDAGAnalysis &dag,
       hasRemoteFragment = true;
       if (*bytes > std::numeric_limits<uint64_t>::max() - result.totalPeerBytes)
         return fail<StructuredDAGEdgeStrategyPlan>(failureReason,
-                                              "peer byte work overflows");
+                                                   "peer byte work overflows");
       result.totalPeerBytes += *bytes;
     }
     if (fragmentCount == 0 || !covered ||
@@ -247,8 +189,8 @@ lowerDemandPlanToCanonicalStrategies(const StructuredDAGAnalysis &dag,
 
 mlir::FailureOr<StructuredDAGEdgeStrategyPlan>
 lowerStructuredDAGEdgeDemandPlanToCanonicalStrategies(
-    const StructuredDAGAnalysis &dag, const StructuredDAGEdgeDemandPlan &demandPlan,
-    std::string *failureReason) {
+    const StructuredDAGAnalysis &dag,
+    const StructuredDAGEdgeDemandPlan &demandPlan, std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
   return lowerDemandPlanToCanonicalStrategies(dag, demandPlan, failureReason);
@@ -273,8 +215,10 @@ StructuredDAGEdgeStrategyPlanner::StructuredDAGEdgeStrategyPlanner(
 StructuredDAGEdgeStrategyPlanner &StructuredDAGEdgeStrategyPlanner::operator=(
     StructuredDAGEdgeStrategyPlanner &&) noexcept = default;
 
-mlir::FailureOr<StructuredDAGEdgeStrategyPlan> StructuredDAGEdgeStrategyPlanner::derive(
-    StructuredDAGEdgeID edgeID, const StructuredDAGNodePlacement &producerPlacement,
+mlir::FailureOr<StructuredDAGEdgeStrategyPlan>
+StructuredDAGEdgeStrategyPlanner::derive(
+    StructuredDAGEdgeID edgeID,
+    const StructuredDAGNodePlacement &producerPlacement,
     const StructuredDAGNodePlacement &consumerPlacement,
     std::string *failureReason) {
   if (failureReason)
@@ -288,7 +232,8 @@ mlir::FailureOr<StructuredDAGEdgeStrategyPlan> StructuredDAGEdgeStrategyPlanner:
       impl->dag, *demandPlan, failureReason);
 }
 
-mlir::FailureOr<StructuredDAGEdgeStrategyPlan> StructuredDAGEdgeStrategyPlanner::derive(
+mlir::FailureOr<StructuredDAGEdgeStrategyPlan>
+StructuredDAGEdgeStrategyPlanner::derive(
     llvm::ArrayRef<StructuredDAGNodePlacement> requestedPlacements,
     std::string *failureReason) {
   mlir::FailureOr<StructuredDAGEdgeDemandPlan> demandPlan =
@@ -310,22 +255,24 @@ uint64_t countPeerFragments(const StructuredDAGEdgeStrategyPlan &plan) {
 }
 
 mlir::FailureOr<StructuredDAGEdgeStrategyPlan>
-deriveStructuredDAGEdgeStrategyPlan(const StructuredDAGAnalysis &dag, StructuredDAGEdgeID edgeID,
-                               const StructuredDAGNodePlacement &producerPlacement,
-                               const StructuredDAGNodePlacement &consumerPlacement,
-                               std::string *failureReason) {
+deriveStructuredDAGEdgeStrategyPlan(
+    const StructuredDAGAnalysis &dag, StructuredDAGEdgeID edgeID,
+    const StructuredDAGNodePlacement &producerPlacement,
+    const StructuredDAGNodePlacement &consumerPlacement,
+    std::string *failureReason) {
   if (failureReason)
     failureReason->clear();
   mlir::FailureOr<StructuredDAGEdgeDemandPlan> demandPlan =
       deriveStructuredDAGEdgeDemandPlan(dag, edgeID, producerPlacement,
-                                   consumerPlacement, failureReason);
+                                        consumerPlacement, failureReason);
   if (mlir::failed(demandPlan))
     return mlir::failure();
   return lowerStructuredDAGEdgeDemandPlanToCanonicalStrategies(dag, *demandPlan,
-                                                          failureReason);
+                                                               failureReason);
 }
 
-mlir::FailureOr<StructuredDAGEdgeStrategyPlan> deriveStructuredDAGEdgeStrategyPlan(
+mlir::FailureOr<StructuredDAGEdgeStrategyPlan>
+deriveStructuredDAGEdgeStrategyPlan(
     const StructuredDAGAnalysis &dag,
     llvm::ArrayRef<StructuredDAGNodePlacement> requestedPlacements,
     std::string *failureReason) {

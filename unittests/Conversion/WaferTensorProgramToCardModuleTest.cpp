@@ -3033,56 +3033,6 @@ module {
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
-     RejectsLocalConversionWithoutTypedLayoutRequestAtomically) {
-  std::unique_ptr<mlir::MLIRContext> context = createContext();
-  auto source = parseModule(*context, R"mlir(
-module {
-  wafer.target.topology @target
-      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
-       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @logical
-      {axes = ["card"], shape = array<i64: 1>}
-  func.func @chain(%input: tensor<8xf16>) -> tensor<8xf16> {
-    %empty0 = tensor.empty() : tensor<8xf16>
-    %empty1 = tensor.empty() : tensor<8xf16>
-    %first = linalg.map ins(%input : tensor<8xf16>)
-        outs(%empty0 : tensor<8xf16>) (%value: f16) {
-      linalg.yield %value : f16
-    }
-    %second = linalg.map ins(%first : tensor<8xf16>)
-        outs(%empty1 : tensor<8xf16>) (%value: f16) {
-      linalg.yield %value : f16
-    }
-    return %second : tensor<8xf16>
-  }
-}
-)mlir");
-  ASSERT_TRUE(source);
-  const std::string sourceBefore = printOperation(source->getOperation());
-  llvm::SmallVector<mlir::linalg::MapOp, 2> structured;
-  source->walk(
-      [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
-  ASSERT_EQ(structured.size(), 2u);
-  wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
-  selected.edgeStrategies.push_back(edgeStrategy(
-      structured[0].getOperation(), structured[1].getOperation(),
-      wafer::TileId(0), wafer::SpatialEdgeAction::LocalPhysicalConversion,
-      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
-      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
-  mlir::OwningOpRef<mlir::ModuleOp> unchanged =
-      mlir::ModuleOp::create(mlir::UnknownLoc::get(context.get()));
-  mlir::ModuleOp unchangedPointer = *unchanged;
-  std::string failureReason;
-  EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0), std::move(selected), unchanged,
-      &failureReason)));
-  EXPECT_EQ(failureReason,
-            "local physical conversion requires distinct typed layouts");
-  EXPECT_EQ(*unchanged, unchangedPointer);
-  EXPECT_EQ(printOperation(source->getOperation()), sourceBefore);
-}
-
-TEST(WaferTensorProgramToCardModuleTest,
      RejectsDependentFragmentCoverageHolesAndOverlapAtomically) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(

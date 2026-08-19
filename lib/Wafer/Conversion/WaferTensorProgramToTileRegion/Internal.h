@@ -33,6 +33,7 @@
 
 namespace wafer {
 struct SpatialEdgeFragment;
+struct StructuredNodePhysicalRepresentation;
 struct SpatialEdgeStrategy;
 } // namespace wafer
 
@@ -53,6 +54,11 @@ struct BufferVersions {
   mlir::Value nTensor;
   mlir::Value cx;
   mlir::Value nCx;
+};
+
+struct SelectedNodeRepresentation {
+  llvm::SmallVector<std::optional<MemLayout>, 4> operandLayouts;
+  llvm::SmallVector<std::optional<MemLayout>, 2> resultLayouts;
 };
 
 struct BatchedGemmAttrs {
@@ -308,7 +314,9 @@ public:
       llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
       llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
       TileRegionEmissionRelations *emissionRelations = nullptr,
-      llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {});
+      llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+      llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations =
+          {});
 
   mlir::FailureOr<TileRegionOp> emit(TensorProgramScope scope,
                                      mlir::RewriterBase &rewriter);
@@ -328,6 +336,8 @@ private:
   TileRegionEmissionRelations *emissionRelations = nullptr;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
       structuredNodeIds;
+  llvm::DenseMap<uint32_t, SelectedNodeRepresentation> selectedRepresentations;
+  bool malformedRepresentations = false;
   llvm::SmallVector<uint32_t, 2> activeStructuredNodes;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
@@ -674,7 +684,8 @@ mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
     TileRegionEmissionRelations *emissionRelations = nullptr,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-    bool requireOneStructuredRootPerRegion = false);
+    bool requireOneStructuredRootPerRegion = false,
+    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {});
 
 /// In-place form for a function already owned by its final isolated
 /// Card/Tile construction. This avoids manufacturing a synthetic builtin
@@ -688,6 +699,7 @@ mlir::LogicalResult convertTensorProgramToTileRegionFunctionInPlace(
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
     TileRegionEmissionRelations *emissionRelations = nullptr,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-    bool requireOneStructuredRootPerRegion = false);
+    bool requireOneStructuredRootPerRegion = false,
+    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {});
 
 } // namespace wafer::tensor_program_to_tile_region

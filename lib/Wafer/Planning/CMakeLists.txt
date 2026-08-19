@@ -17,6 +17,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/CardExecutableSearch.cpp
   Planning/Search/CoupledRegion.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp
+  Planning/Search/PhysicalRepresentation.cpp
   Planning/Search/ScopedFeasibility.cpp
   Planning/Search/SpatialPlacement.cpp
   Planning/Search/TemporalTiling.cpp

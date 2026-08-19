@@ -60,10 +60,6 @@ enum class SpatialEdgeAction : uint8_t {
   /// and reload belong to two consecutive TileRegions so all SPM roots are
   /// released at the boundary.
   RegionCut,
-  /// Reserved for an exact typed layout conversion.  Materialization rejects
-  /// this action unless a concrete source/destination layout request is
-  /// available; selection must not invent one from tensor shape or names.
-  LocalPhysicalConversion,
 };
 
 enum class SpatialEdgeFragmentKind : uint8_t {
@@ -109,13 +105,6 @@ struct SpatialEdgeStrategy {
   TileId sourceTile{0};
   TileId destinationTile{0};
   SpatialEdgeAction action = SpatialEdgeAction::LocalShardResidency;
-  /// Explicit physical-representation assignment selected by the common
-  /// structured-DAG transition.  A false `hasLayoutAssignment` means that
-  /// current interfaces expose no provable choice and the incomplete term is
-  /// omitted; it never means that Tensor layout was guessed.
-  bool hasLayoutAssignment = false;
-  MemLayout producerLayout = MemLayout::Tensor;
-  MemLayout consumerLayout = MemLayout::Tensor;
   /// Selected rotating-buffer multiplicity for this edge.  The materializer
   /// must either produce the requested slot family or reject the candidate;
   /// it must not silently choose another count.

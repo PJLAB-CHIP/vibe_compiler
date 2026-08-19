@@ -204,12 +204,6 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
     if (strategy.bufferCount == 0 || strategy.bufferCount > 3)
       return failResult(failureReason,
                         "edge strategy buffer count is outside [1, 3]");
-    if (strategy.action == SpatialEdgeAction::LocalPhysicalConversion &&
-        (!strategy.hasLayoutAssignment ||
-         strategy.producerLayout == strategy.consumerLayout))
-      return failResult(
-          failureReason,
-          "local physical conversion requires distinct typed layouts");
     if (strategy.action != SpatialEdgeAction::PeerFragments &&
         (!strategy.fragments.empty() || strategy.fragmentsDefineProducerDemand))
       return failResult(failureReason,
