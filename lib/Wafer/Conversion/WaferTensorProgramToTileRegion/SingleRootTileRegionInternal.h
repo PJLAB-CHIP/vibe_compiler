@@ -40,7 +40,8 @@ void retainLiveOperationNodes(
 mlir::FailureOr<RootFragment> materializeRootFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
-    const StructuredNodeIterationShard &shard, std::string *failureReason);
+    const StructuredNodeIterationShard &shard,
+    const StructuredNodeTemporalTile *temporal, std::string *failureReason);
 
 mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     TileModuleOp tileOwner,

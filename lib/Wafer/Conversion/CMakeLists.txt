@@ -36,6 +36,7 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/CandidateSupport.cpp
   WaferTensorProgramToTileRegion/CollectiveLowering.cpp
   WaferTensorProgramToTileRegion/CoupledRegionFunction.cpp
+  WaferTensorProgramToTileRegion/ConfiguredReductionTraversal.cpp
   WaferTensorProgramToTileRegion/ConfiguredStructuredTraversal.cpp
   WaferTensorProgramToTileRegion/DependentDataflow.cpp
   WaferTensorProgramToTileRegion/EdgeDomain.cpp
@@ -56,6 +57,9 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/StructuredIterationTile.cpp
   WaferTensorProgramToTileRegion/TensorControlFlowLowering.cpp
   WaferTensorProgramToTileRegion/TemporalTileMaterialization.cpp
+  WaferTensorProgramToTileRegion/TemporalRegionTraversal.cpp
+  WaferTensorProgramToTileRegion/TemporalPartialReductionTraversal.cpp
+  WaferTensorProgramToTileRegion/TemporalWaveLoop.cpp
   WaferTensorProgramToTileRegion/TensorDependencyChain.cpp
   WaferTensorProgramToTileRegion/TileMaterialization.cpp
   WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp

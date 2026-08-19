@@ -11,6 +11,7 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <memory>
 #include <set>
 
@@ -72,6 +73,19 @@ module {
     ASSERT_TRUE(mlir::succeeded(next));
     current = *next;
   }
+  std::set<TemporalNodeAssignment> reference;
+  for (int64_t first = 1; first <= 2; ++first)
+    for (int64_t second = 1; second <= 3; ++second) {
+      llvm::SmallVector<uint32_t, 4> active;
+      if (first < 2)
+        active.push_back(0);
+      if (second < 3)
+        active.push_back(1);
+      do {
+        reference.insert({0, {first, second}, active});
+      } while (std::next_permutation(active.begin(), active.end()));
+    }
+  EXPECT_EQ(actual, reference);
   EXPECT_EQ(actual.size(), 8u);
   EXPECT_TRUE(actual.count({0, {2, 3}, {}}));
   EXPECT_TRUE(actual.count({0, {1, 2}, {0, 1}}));

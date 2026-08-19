@@ -52,8 +52,8 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
       return failResult(
           failureReason,
           "structured temporal mapping operation is outside source module");
-    result.operationTemporalTiles.push_back(
-        StructuredOpTemporalTile{mapped, tile.iteratorTileSizes});
+    result.operationTemporalTiles.push_back(StructuredOpTemporalTile{
+        mapped, tile.iteratorTileSizes, tile.waveLoopOrder});
   }
 
   llvm::DenseSet<mlir::Operation *> seenNodeOperations;

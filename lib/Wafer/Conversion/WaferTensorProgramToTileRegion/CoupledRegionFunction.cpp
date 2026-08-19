@@ -5,6 +5,7 @@
 #include "Internal.h"
 #include "ProducerTileFusionInternal.h"
 #include "StructuredIterationTile.h"
+#include "TemporalRegionTraversal.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
@@ -145,6 +146,32 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
 
   TensorProgramScope scope(*function, functionalArgumentCount);
   mlir::func::ReturnOp returnOp = scope.getReturn();
+  llvm::SmallVector<StructuredOpTemporalTile, 8> mappedTemporalTiles;
+  mappedTemporalTiles.reserve(group.temporalTiles.size());
+  for (const StructuredNodeTemporalTile &temporal : group.temporalTiles) {
+    auto mapped = llvm::find_if(
+        operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
+          return mapping.structuredNodeId == temporal.structuredNodeId;
+        });
+    if (mapped == operationNodes.end() || !mapped->operation)
+      return fail<RootFragment>(
+          failureReason,
+          "coupled temporal assignment has no current operation mapping");
+    const StructuredNodeIterationShard *shard =
+        shardsByNode.lookup(temporal.structuredNodeId);
+    if (!shard || shard->sizes.size() != temporal.iteratorTileSizes.size())
+      return fail<RootFragment>(
+          failureReason,
+          "coupled temporal assignment has no matching iterator shard");
+    if (llvm::none_of(llvm::zip_equal(shard->sizes, temporal.iteratorTileSizes),
+                      [](auto values) {
+                        auto [extent, tile] = values;
+                        return tile < extent;
+                      }))
+      continue;
+    mappedTemporalTiles.push_back(StructuredOpTemporalTile{
+        mapped->operation, temporal.iteratorTileSizes, temporal.waveLoopOrder});
+  }
   unsigned outputIndex = 0;
   llvm::SmallVector<MaterializedCoupledProducerTile, 8> sharedProducerTiles;
   for (mlir::Operation *sourceSink : sourceSinks) {
@@ -170,6 +197,82 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
 
     mlir::Operation *root = mapped->operation;
     mlir::OpBuilder builder(root);
+    auto selectedTemporal = llvm::find_if(
+        mappedTemporalTiles, [&](const StructuredOpTemporalTile &temporal) {
+          return temporal.operation == root;
+        });
+    if (selectedTemporal != mappedTemporalTiles.end()) {
+      llvm::SmallVector<mlir::Value, 2> destinations;
+      destinations.reserve(root->getNumResults());
+      for (unsigned resultNumber = 0; resultNumber < root->getNumResults();
+           ++resultNumber) {
+        mlir::FailureOr<mlir::Value> destination = getCandidateOutputBoundary(
+            scope, outputIndex + resultNumber, failureReason);
+        if (mlir::failed(destination))
+          return mlir::failure();
+        destinations.push_back(*destination);
+      }
+      mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> traversed =
+          materializeTemporalRegionTraversal(
+              root, scope, shard->offsets, shard->sizes, mappedTemporalTiles,
+              destinations, operationNodes, failureReason,
+              &sharedProducerTiles);
+      if (mlir::failed(traversed) || traversed->size() != root->getNumResults())
+        return mlir::failure();
+      for (unsigned resultNumber = 0; resultNumber < traversed->size();
+           ++resultNumber, ++outputIndex) {
+        auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
+            root->getResult(resultNumber).getType());
+        if (!resultType)
+          return fail<RootFragment>(
+              failureReason, "coupled temporal result is not a ranked tensor");
+        mlir::OpBuilder cacheBuilder(root);
+        llvm::SmallVector<mlir::OpFoldResult, 4> iterationOffsets;
+        llvm::SmallVector<mlir::OpFoldResult, 4> iterationSizes;
+        for (auto [offset, size] :
+             llvm::zip_equal(shard->offsets, shard->sizes)) {
+          iterationOffsets.push_back(cacheBuilder.getIndexAttr(offset));
+          iterationSizes.push_back(cacheBuilder.getIndexAttr(size));
+        }
+        llvm::SmallVector<mlir::OpFoldResult> resultOffsets;
+        llvm::SmallVector<mlir::OpFoldResult> resultSizes;
+        auto tiling = mlir::cast<mlir::TilingInterface>(root);
+        if (mlir::failed(tiling.getResultTilePosition(
+                cacheBuilder, resultNumber, iterationOffsets, iterationSizes,
+                resultOffsets, resultSizes)))
+          return fail<RootFragment>(
+              failureReason,
+              "coupled temporal result has no exact iterator relation");
+        bool coversFullResult =
+            resultOffsets.size() == static_cast<size_t>(resultType.getRank()) &&
+            resultSizes.size() == static_cast<size_t>(resultType.getRank());
+        for (auto [dimension, offset, size] :
+             llvm::enumerate(resultOffsets, resultSizes)) {
+          std::optional<int64_t> constantOffset =
+              mlir::getConstantIntValue(offset);
+          std::optional<int64_t> constantSize = mlir::getConstantIntValue(size);
+          coversFullResult &= constantOffset && *constantOffset == 0 &&
+                              constantSize &&
+                              *constantSize == resultType.getDimSize(dimension);
+        }
+        if (coversFullResult) {
+          llvm::SmallVector<mlir::OpFoldResult, 4> strides(
+              resultType.getRank(), cacheBuilder.getIndexAttr(1));
+          sharedProducerTiles.push_back(MaterializedCoupledProducerTile{
+              root->getResult(resultNumber),
+              (*traversed)[resultNumber].getParentBlock(),
+              (*traversed)[resultNumber].getType(), std::move(resultOffsets),
+              std::move(resultSizes), std::move(strides),
+              (*traversed)[resultNumber]});
+        }
+        for (mlir::OpOperand &use : llvm::make_early_inc_range(
+                 root->getResult(resultNumber).getUses()))
+          if (use.getOwner() != returnOp.getOperation())
+            use.set((*traversed)[resultNumber]);
+        returnOp->setOperand(outputIndex, (*traversed)[resultNumber]);
+      }
+      continue;
+    }
     llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
     llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
     for (auto [offset, size] : llvm::zip_equal(shard->offsets, shard->sizes)) {
@@ -187,9 +290,9 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
       recordStructuredOperationNodeMaterialization(root, tiledOperation,
                                                    &operationNodes);
       if (mlir::failed(fuseCandidateProducerSlicesWithCache(
-              tiledOperation, root, scope, loops,
-              /*operationTemporalTiles=*/{}, builder.getListener(),
-              failureReason, &operationNodes, sharedProducerTiles)))
+              tiledOperation, root, scope, loops, mappedTemporalTiles,
+              builder.getListener(), failureReason, &operationNodes,
+              sharedProducerTiles)))
         return mlir::failure();
     }
     for (unsigned resultNumber = 0; resultNumber < tile->values.size();

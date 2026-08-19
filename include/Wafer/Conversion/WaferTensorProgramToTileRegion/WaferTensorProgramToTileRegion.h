@@ -54,8 +54,7 @@ struct SpatialOutputBufferRelation {
 /// an input demand refines the consumer node, while a result buffer describes
 /// the producing node. No entry outlives or identifies a different IR epoch.
 struct StructuredMaterializationRelations {
-  llvm::SmallVector<StructuredOperationEmissionRelation, 16>
-      operationEmissions;
+  llvm::SmallVector<StructuredOperationEmissionRelation, 16> operationEmissions;
   llvm::SmallVector<StructuredOperationBufferRelation, 16>
       operationResultBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 16> operandBuffers;
@@ -138,6 +137,10 @@ struct SpatialOutputShard {
 struct StructuredOpTemporalTile {
   mlir::Operation *operation = nullptr;
   llvm::SmallVector<int64_t, 4> iteratorTileSizes;
+  /// Permutation of exactly the iterator dimensions that produce multiple
+  /// waves. Empty means canonical increasing order for legacy deterministic
+  /// callers; selected search assignments always provide the explicit order.
+  llvm::SmallVector<uint32_t, 4> waveLoopOrder;
 };
 
 /// Materializes a partial reduction for one iteration-domain tile and merges

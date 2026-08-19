@@ -388,6 +388,18 @@
   所有policy共享的结构改写。
 - 修复模式：显式consumer boundary只在independent baseline生效；search从source SSA按selected node group直接构造共同region，
   以actual in-region use-def和emitted-node relation证明，不以edge action/proposal代签。
+
+## Temporal order不能在remap或内部producer traversal中丢失
+
+- 现象：domain中相同tile vector的两个`waveLoopOrder` point都存在，但经过Card preparation或selected-edge clone后actual IR仍按
+  自然轴序；另一个缺陷会把DPS accumulator slice插到`scf.yield`之后，直到TileRegion lowering读取terminator才崩溃。
+- 根因：新增typed field后只更新了producer，三个current-IR remap仍用旧的二字段aggregate构造；内部producer的parallel与
+  reduction递归各自固定自然序。leaf materializer还沿用被TilingInterface改变后的builder insertion point创建accumulator。
+- 修复模式：所有current-IR remap原位复制完整typed value；root与producer分别验证并消费active order，不能支持的coupled跨类
+  nesting明确返回需要cut的失败。DPS accumulator与所有动态offset计算先把insertion point固定到tiled op之前，output insert固定在
+  compute/fusion之后；prologue/steady/tail统一由一个loop owner构造。
+- 防复发：测试必须比较同vector不同order的actual nesting，覆盖internal producer、multi-reduction、tail、partial contribution和
+  clone/remap后的order；不能只比较domain key或loop数量。任何block conversion前先验证terminator与use-def，而不是等下游assert。
 - 防复发：none source-to-package检查中间DDR boundary和single-root cardinality；search定向测试检查maximal/中间cut产生不同actual
   region、内部无DDR round-trip且fanout shared producer只有一个actual version。
 

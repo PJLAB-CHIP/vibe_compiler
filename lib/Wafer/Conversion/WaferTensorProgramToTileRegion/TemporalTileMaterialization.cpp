@@ -1,6 +1,7 @@
 //===- TemporalTileMaterialization.cpp - Root temporal traversal ------===//
 
 #include "Internal.h"
+#include "TemporalWaveLoop.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 
@@ -239,95 +240,36 @@ static mlir::FailureOr<mlir::Value> materializeTemporalRootTraversal(
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
-  if (dimension == shardSizes.size()) {
-    mlir::FailureOr<mlir::Value> tile = materializeCandidateRootTileValue(
-        builder, scope, root, outputIndex, tileOffsets, tileSizes, loops,
-        operationTemporalTiles, failureReason, operationNodes);
-    if (mlir::failed(tile))
-      return mlir::failure();
-    return insertCandidateRootTile(builder, root->getLoc(), *tile, output,
-                                   tileOffsets, tileSizes);
-  }
-
-  const int64_t shardOffset = shardOffsets[dimension];
-  const int64_t shardSize = shardSizes[dimension];
-  const int64_t temporalSize = temporalTileSizes[dimension];
-  const int64_t tailSize = shardSize % temporalSize;
-  const int64_t mainSize = shardSize - tailSize;
-  mlir::Value currentOutput = output;
-
-  // A one-wave dimension is still handled by this same traversal owner, but
-  // does not need a degenerate loop in the selected IR.
-  if (mainSize == shardSize && temporalSize == shardSize) {
-    tileOffsets.push_back(builder.getIndexAttr(shardOffset));
-    tileSizes.push_back(shardSize);
-    mlir::FailureOr<mlir::Value> next = materializeTemporalRootTraversal(
-        builder, scope, root, outputIndex, shardOffsets, shardSizes,
-        temporalTileSizes, dimension + 1, currentOutput, tileOffsets, tileSizes,
-        loops, operationTemporalTiles, failureReason, operationNodes);
-    tileSizes.pop_back();
-    tileOffsets.pop_back();
-    return next;
-  }
-
-  // The first full tile is an explicit prologue.  Keeping it outside the
-  // steady loop gives downstream lifetime/cost analyses a finite startup
-  // class without expanding the remaining waves.
-  tileOffsets.push_back(builder.getIndexAttr(shardOffset));
-  tileSizes.push_back(temporalSize);
-  mlir::FailureOr<mlir::Value> prologue = materializeTemporalRootTraversal(
-      builder, scope, root, outputIndex, shardOffsets, shardSizes,
-      temporalTileSizes, dimension + 1, currentOutput, tileOffsets, tileSizes,
-      loops, operationTemporalTiles, failureReason, operationNodes);
-  tileSizes.pop_back();
-  tileOffsets.pop_back();
-  if (mlir::failed(prologue))
+  if (dimension != 0 || !tileOffsets.empty() || !tileSizes.empty() ||
+      !loops.empty()) {
+    setFailureReason(failureReason,
+                     "temporal output traversal requires one root entry");
     return mlir::failure();
-  currentOutput = *prologue;
-
-  const int64_t steadySize = mainSize - temporalSize;
-  if (steadySize > 0) {
-    mlir::Location loc = root->getLoc();
-    auto lower = builder.create<mlir::arith::ConstantIndexOp>(
-        loc, shardOffset + temporalSize);
-    auto upper = builder.create<mlir::arith::ConstantIndexOp>(
-        loc, shardOffset + mainSize);
-    auto step = builder.create<mlir::arith::ConstantIndexOp>(loc, temporalSize);
-    auto loop = builder.create<mlir::scf::ForOp>(
-        loc, lower, upper, step, mlir::ValueRange(currentOutput));
-    tileOffsets.push_back(loop.getInductionVar());
-    tileSizes.push_back(temporalSize);
-    loops.push_back(mlir::cast<mlir::LoopLikeOpInterface>(loop.getOperation()));
-    mlir::OpBuilder bodyBuilder = mlir::OpBuilder::atBlockBegin(loop.getBody());
-    mlir::FailureOr<mlir::Value> next = materializeTemporalRootTraversal(
-        bodyBuilder, scope, root, outputIndex, shardOffsets, shardSizes,
-        temporalTileSizes, dimension + 1, loop.getRegionIterArgs().front(),
-        tileOffsets, tileSizes, loops, operationTemporalTiles, failureReason,
-        operationNodes);
-    loops.pop_back();
-    tileSizes.pop_back();
-    tileOffsets.pop_back();
-    if (mlir::failed(next))
-      return mlir::failure();
-    bodyBuilder.create<mlir::scf::YieldOp>(loc, *next);
-    builder.setInsertionPointAfter(loop);
-    currentOutput = loop.getResult(0);
   }
-
-  if (tailSize > 0) {
-    tileOffsets.push_back(builder.getIndexAttr(shardOffset + mainSize));
-    tileSizes.push_back(tailSize);
-    mlir::FailureOr<mlir::Value> tail = materializeTemporalRootTraversal(
-        builder, scope, root, outputIndex, shardOffsets, shardSizes,
-        temporalTileSizes, dimension + 1, currentOutput, tileOffsets, tileSizes,
-        loops, operationTemporalTiles, failureReason, operationNodes);
-    tileSizes.pop_back();
-    tileOffsets.pop_back();
-    if (mlir::failed(tail))
-      return mlir::failure();
-    currentOutput = *tail;
-  }
-  return currentOutput;
+  mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> traversed =
+      materializeTemporalWaveLoopNest(
+          builder, root->getLoc(), shardOffsets, shardSizes, temporalTileSizes,
+          /*waveLoopOrder=*/{}, mlir::ValueRange(output),
+          [&](mlir::OpBuilder &leafBuilder,
+              llvm::ArrayRef<mlir::OpFoldResult> leafOffsets,
+              llvm::ArrayRef<int64_t> leafSizes, mlir::ValueRange outputs,
+              llvm::MutableArrayRef<mlir::LoopLikeOpInterface> leafLoops)
+              -> mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> {
+            mlir::FailureOr<mlir::Value> tile =
+                materializeCandidateRootTileValue(
+                    leafBuilder, scope, root, outputIndex, leafOffsets,
+                    leafSizes, leafLoops, operationTemporalTiles, failureReason,
+                    operationNodes);
+            if (mlir::failed(tile) || outputs.size() != 1)
+              return mlir::failure();
+            return llvm::SmallVector<mlir::Value, 2>{insertCandidateRootTile(
+                leafBuilder, root->getLoc(), *tile, outputs.front(),
+                leafOffsets, leafSizes)};
+          },
+          failureReason);
+  if (mlir::failed(traversed) || traversed->size() != 1)
+    return mlir::failure();
+  return traversed->front();
 }
 
 mlir::LogicalResult materializeCandidateOutputTileSlices(

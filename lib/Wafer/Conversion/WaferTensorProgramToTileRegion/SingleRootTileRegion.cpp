@@ -96,14 +96,22 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
   std::set<std::pair<int64_t, uint32_t>> seenShards;
   std::map<uint32_t, StructuredNodeIterationShardRole> nodeRoles;
   std::map<uint32_t, TileId> reductionMergeTiles;
+  std::map<uint32_t, std::pair<llvm::SmallVector<int64_t, 4>,
+                               llvm::SmallVector<uint32_t, 4>>>
+      nodeTemporalTiles;
   llvm::SmallVector<const StructuredNodeShardGroup *, 32> orderedGroups;
   for (const StructuredNodeShardGroup &group : groups) {
     if (group.shards.empty())
       return failResult(failureReason, "node-shard group is empty");
+    if (!group.temporalTiles.empty() &&
+        group.temporalTiles.size() != group.shards.size())
+      return failResult(
+          failureReason,
+          "selected temporal group does not cover every node shard");
     const TileId groupTile = group.shards.front().tile;
     uint32_t previousNode = 0;
     bool firstNode = true;
-    for (const StructuredNodeIterationShard &shard : group.shards) {
+    for (auto [index, shard] : llvm::enumerate(group.shards)) {
       if (shard.tile != groupTile ||
           !llvm::is_contained(sortedTiles, shard.tile) ||
           (!firstNode && shard.structuredNodeId <= previousNode) ||
@@ -136,6 +144,31 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
       } else if (shard.reductionMergeTile) {
         return failResult(failureReason,
                           "complete node shard unexpectedly has a merge Tile");
+      }
+      if (!group.temporalTiles.empty()) {
+        const StructuredNodeTemporalTile &temporal = group.temporalTiles[index];
+        llvm::SmallVector<uint32_t, 4> sortedOrder = temporal.waveLoopOrder;
+        llvm::sort(sortedOrder);
+        if (temporal.structuredNodeId != shard.structuredNodeId ||
+            temporal.iteratorTileSizes.size() != shard.sizes.size() ||
+            llvm::any_of(temporal.iteratorTileSizes,
+                         [](int64_t size) { return size <= 0; }) ||
+            std::adjacent_find(sortedOrder.begin(), sortedOrder.end()) !=
+                sortedOrder.end() ||
+            llvm::any_of(sortedOrder, [&](uint32_t dimension) {
+              return dimension >= temporal.iteratorTileSizes.size();
+            }))
+          return failResult(failureReason,
+                            "selected temporal node assignment is malformed");
+        auto [stored, temporalInserted] = nodeTemporalTiles.try_emplace(
+            shard.structuredNodeId,
+            std::make_pair(temporal.iteratorTileSizes, temporal.waveLoopOrder));
+        if (!temporalInserted &&
+            (stored->second.first != temporal.iteratorTileSizes ||
+             stored->second.second != temporal.waveLoopOrder))
+          return failResult(
+              failureReason,
+              "one structured node has inconsistent temporal assignments");
       }
     }
     orderedGroups.push_back(&group);
@@ -190,6 +223,9 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
     mlir::FailureOr<RootFragment> fragment =
         group->shards.size() == 1
             ? materializeRootFragment(tile, operationNodes, firstShard,
+                                      group->temporalTiles.empty()
+                                          ? nullptr
+                                          : &group->temporalTiles.front(),
                                       failureReason)
             : materializeCoupledRootFragment(tile, operationNodes, *group,
                                              failureReason);

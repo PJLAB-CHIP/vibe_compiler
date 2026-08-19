@@ -113,8 +113,18 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
           failureReason,
           "card structured temporal tile is outside its static iteration "
           "domain");
-    preparation.operationTemporalTiles.push_back(
-        StructuredOpTemporalTile{tile.operation, tile.iteratorTileSizes});
+    llvm::SmallVector<uint32_t, 4> sortedOrder = tile.waveLoopOrder;
+    llvm::sort(sortedOrder);
+    if (std::adjacent_find(sortedOrder.begin(), sortedOrder.end()) !=
+            sortedOrder.end() ||
+        llvm::any_of(sortedOrder, [&](uint32_t dimension) {
+          return dimension >= tile.iteratorTileSizes.size();
+        }))
+      return failCardModuleValue<TileMaterializationPreparation>(
+          failureReason,
+          "card structured temporal wave-loop order is malformed");
+    preparation.operationTemporalTiles.push_back(StructuredOpTemporalTile{
+        tile.operation, tile.iteratorTileSizes, tile.waveLoopOrder});
   }
   for (mlir::Operation &operation :
        sourceProgram.getBody().front().without_terminator()) {

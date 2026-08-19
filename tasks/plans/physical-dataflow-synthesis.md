@@ -1582,10 +1582,33 @@ Q49.P只沿其中预定义的deterministic feasibility全序从完整local exten
 - Q49.P canonical fallback与Q50.E mechanism对相同closed coordinates产生相同legal breakpoint、workset和exact fit结论；
   baseline路径只是完整domain中的确定性功能路径，不是第二套generator或合法域限制；
 - reduction 的 numeric-order legality 由 current policy/IR 证明；
-- 至少一个tiny case证明相同tile vector的不同wave-loop order会改变reuse/SPM或global winner，且两种选择均可达；
+- 至少一个tiny case证明相同tile vector的不同wave-loop order会形成不同actual nesting且两种选择均可达；由layout、movement、
+  buffer和resource assignment才决定的reuse/SPM/global-winner影响留在Q51跨轴gate，不在本轴伪造默认坐标；
 - 删除 fixed temporal seed domain 和 allocation-feedback candidate family 的选择责任。
 
 “小tile使fusion/buffering成为winner”及任何需要actual layout/buffer/resource cost的比较统一放在Q51 closure。
+
+### 2026-08-19 完成结果
+
+`TemporalNodeDomain`从Q50.B placement的per-node local iterator extents出发，直接在assignment上推进全部positive size vector；
+每个vector只为实际多wave的iterator枚举全排列，one-wave iterator不进入identity。2x3 tiny domain由不调用production
+successor的双重循环与`next_permutation`独立得到同一8个stable points，spatial remainder仍使用Q49.P与search共享的
+`deriveLocalIteratorExtents`，没有第二套shape恢复。
+
+selected `CardTemporalAssignment`随Q50.D group partition一起转换成node-id绑定的conversion request；Card assembly验证同一node
+跨Tile assignment一致、rank/positive size/order合法，再只对actual shard上真正多wave的维度建loop。`TemporalWaveLoop`成为
+baseline output traversal与new singleton/coupled/partial apply共同的prologue/steady/tail owner；leaf继续只用
+`StructuredIterationTile`和producer fusion。完整spatial contribution在wave leaf中组装partial tensor，原始DPS init仍只由最终
+merge region消费。实际测试覆盖5x7 parallel tail、2x10 reduction accumulator、两reduction轴同vector的两种nesting、scalar、
+multi-result、coupled chain及spatial partial-reduction contributions。
+
+review同时发现并修复两类边界错误：`StructuredOpTemporalTile`新增order后，Card preparation、candidate clone与selected-edge clone
+最初只复制size vector，现均原位复制order；configured internal producer此前固定按result/reduction自然序，现分别按显式
+parallel/reduction相对顺序构造。若一个内部producer选择reduction-before-parallel而当前coupled consumer traversal要求相反外层，
+该group assignment明确失败并保留Q50.D cut sibling；不能静默重排，也不为兼容而组装、销毁再重建一份actual producer。
+
+实现没有引入allocator反馈、fixed seed、maximum-fit cache、probe、candidate clone/replay或默认统计。Q49.P的确定性capacity路径仍
+只沿共同合法域中的单调functional顺序前进，search域不受其第一个fit限制；重型LLaMA search继续等待Q51整条链闭合。
 
 ## Q50.F：Scoped Feasibility Analysis
 

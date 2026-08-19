@@ -20,18 +20,23 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
 #include "gtest/gtest.h"
 
+#include <array>
 #include <memory>
+#include <optional>
 #include <set>
 
 namespace {
 
 using wafer::TileId;
 using wafer::compiler::detail::CardProgramAnalysis;
+using wafer::compiler::detail::CardTemporalAssignment;
+using wafer::compiler::detail::CardTemporalDomain;
 using wafer::compiler::detail::CoupledRegionAssignment;
 using wafer::compiler::detail::CoupledRegionDomain;
 using wafer::compiler::detail::CoupledRegionGroup;
@@ -76,6 +81,8 @@ struct PreparedCase {
   std::unique_ptr<CardProgramAnalysis> program;
   wafer::analysis::LogicalShardTrial trial;
   CoupledRegionDomain domain;
+  CardTemporalDomain temporalDomain;
+  CardTemporalAssignment temporalAssignment;
 };
 
 mlir::FailureOr<PreparedCase> prepare(mlir::ModuleOp module,
@@ -106,6 +113,12 @@ mlir::FailureOr<PreparedCase> prepare(mlir::ModuleOp module,
       CoupledRegionDomain::create(*dag, *trial, failureReason);
   if (mlir::failed(domain))
     return mlir::failure();
+  mlir::FailureOr<CardTemporalDomain> temporalDomain =
+      CardTemporalDomain::create(*dag, placements, failureReason);
+  if (mlir::failed(temporalDomain))
+    return mlir::failure();
+  CardTemporalAssignment temporalAssignment =
+      temporalDomain->getFirstAssignment();
   mlir::FailureOr<wafer::TargetTopology> topology =
       wafer::TargetTopology::create(module, failureReason);
   if (mlir::failed(topology))
@@ -120,8 +133,9 @@ mlir::FailureOr<PreparedCase> prepare(mlir::ModuleOp module,
   auto program = std::make_unique<CardProgramAnalysis>(
       std::move(*topology), available, std::move(*dag),
       std::move(outputDomains), std::move(operationNodes), epoch);
-  return PreparedCase{std::move(program), std::move(*trial),
-                      std::move(*domain)};
+  return PreparedCase{std::move(program), std::move(*trial), std::move(*domain),
+                      std::move(*temporalDomain),
+                      std::move(temporalAssignment)};
 }
 
 std::set<uint32_t>
@@ -182,7 +196,8 @@ TEST(CoupledTileRegionTest, MaterializesMaximalAndIntermediateChainCuts) {
             (llvm::SmallVector<uint32_t, 4>{0, 1, 2}));
   auto maximalIR = wafer::compiler::detail::materializeCardCoupledRegions(
       *module, *prepared->program, wafer::CardId(0), prepared->trial,
-      prepared->domain, maximal, &failureReason);
+      prepared->domain, maximal, prepared->temporalDomain,
+      prepared->temporalAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(maximalIR)) << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(maximalIR->module->getOperation()),
             1u);
@@ -198,7 +213,8 @@ TEST(CoupledTileRegionTest, MaterializesMaximalAndIntermediateChainCuts) {
   ASSERT_TRUE(prepared->domain.contains(cut));
   auto cutIR = wafer::compiler::detail::materializeCardCoupledRegions(
       *module, *prepared->program, wafer::CardId(0), prepared->trial,
-      prepared->domain, cut, &failureReason);
+      prepared->domain, cut, prepared->temporalDomain,
+      prepared->temporalAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(cutIR)) << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(cutIR->module->getOperation()), 2u);
   EXPECT_EQ(countOps<wafer::StorageStoreOp>(cutIR->module->getOperation()), 2u);
@@ -215,6 +231,115 @@ TEST(CoupledTileRegionTest, MaterializesMaximalAndIntermediateChainCuts) {
       regionNodes.insert(std::move(nodes));
   });
   EXPECT_EQ(regionNodes, (std::set<std::set<uint32_t>>{{0, 1}, {2}}));
+}
+
+TEST(CoupledTileRegionTest,
+     MaterializesSelectedTemporalLoopsInsideOneCoupledRegion) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context, chain);
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto prepared = prepare(*module, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
+  CoupledRegionAssignment maximal = getMaximalAssignment(prepared->domain);
+  ASSERT_EQ(maximal.groups.size(), 1u);
+  for (auto &node : prepared->temporalAssignment.nodes) {
+    ASSERT_EQ(node.iteratorTileSizes.size(), 1u);
+    node.iteratorTileSizes.front() = 2;
+    node.waveLoopOrder = {0};
+  }
+  ASSERT_TRUE(prepared->temporalDomain.contains(prepared->temporalAssignment));
+  auto materialized = wafer::compiler::detail::materializeCardCoupledRegions(
+      *module, *prepared->program, wafer::CardId(0), prepared->trial,
+      prepared->domain, maximal, prepared->temporalDomain,
+      prepared->temporalAssignment, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
+            1u);
+  EXPECT_GT(countOps<mlir::scf::ForOp>(materialized->module->getOperation()),
+            0u);
+  // Two output waves each store once. All three selected nodes stay between
+  // the wave's input load and output store; there is no intermediate DDR
+  // store/reload between the coupled elementwise operations.
+  EXPECT_EQ(
+      countOps<wafer::StorageLoadOp>(materialized->module->getOperation()), 2u);
+  EXPECT_EQ(
+      countOps<wafer::StorageStoreOp>(materialized->module->getOperation()),
+      2u);
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(
+                materialized->module->getOperation()),
+            6u);
+  EXPECT_EQ(getEmittedNodes(materialized->relations),
+            (std::set<uint32_t>{0, 1, 2}));
+}
+
+TEST(CoupledTileRegionTest, PreservesInternalProducerParallelWaveLoopOrder) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto module = parse(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 2, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical {axes = ["card"], shape = array<i64: 1>}
+  func.func @chain2d(%input: tensor<5x7xf16>) -> tensor<5x7xf16> {
+    %e0 = tensor.empty() : tensor<5x7xf16>
+    %producer = linalg.map ins(%input : tensor<5x7xf16>)
+        outs(%e0 : tensor<5x7xf16>) (%v: f16) {
+      %x = arith.addf %v, %v : f16
+      linalg.yield %x : f16
+    }
+    %e1 = tensor.empty() : tensor<5x7xf16>
+    %consumer = linalg.map ins(%producer : tensor<5x7xf16>)
+        outs(%e1 : tensor<5x7xf16>) (%v: f16) {
+      %x = arith.mulf %v, %v : f16
+      linalg.yield %x : f16
+    }
+    return %consumer : tensor<5x7xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  llvm::SmallVector<mlir::linalg::MapOp, 2> operations;
+  module->walk(
+      [&](mlir::linalg::MapOp operation) { operations.push_back(operation); });
+  ASSERT_EQ(operations.size(), 2u);
+  std::array<wafer::StructuredOperationNodeMapping, 2> nodes = {
+      wafer::StructuredOperationNodeMapping{operations[0], 0},
+      wafer::StructuredOperationNodeMapping{operations[1], 1}};
+  std::array<TileId, 4> tiles = {TileId(0), TileId(1), TileId(2), TileId(3)};
+  auto materialize = [&](llvm::SmallVector<uint32_t, 2> order) {
+    wafer::StructuredNodeShardGroup group;
+    group.shards.push_back(
+        wafer::StructuredNodeIterationShard{0, TileId(0), {0, 0}, {5, 7}});
+    group.shards.push_back(
+        wafer::StructuredNodeIterationShard{1, TileId(0), {0, 0}, {5, 7}});
+    group.temporalTiles.push_back(
+        wafer::StructuredNodeTemporalTile{0, {2, 3}, std::move(order)});
+    group.temporalTiles.push_back(
+        wafer::StructuredNodeTemporalTile{1, {5, 7}, {}});
+    mlir::OwningOpRef<mlir::ModuleOp> result;
+    std::string failureReason;
+    EXPECT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeGroupsToCardModule(
+        *module, wafer::CardId(0), tiles, nodes, llvm::ArrayRef(&group, 1),
+        result, nullptr, &failureReason)))
+        << failureReason;
+    return result;
+  };
+  auto getNestingStep = [](mlir::ModuleOp result) -> std::optional<int64_t> {
+    std::optional<int64_t> step;
+    result.walk([&](mlir::scf::ForOp outer) {
+      bool hasNestedLoop = false;
+      outer.getRegion().walk([&](mlir::scf::ForOp) { hasNestedLoop = true; });
+      if (hasNestedLoop && !step)
+        step = mlir::getConstantIntValue(outer.getStep());
+    });
+    return step;
+  };
+  mlir::OwningOpRef<mlir::ModuleOp> firstMajor = materialize({0, 1});
+  mlir::OwningOpRef<mlir::ModuleOp> secondMajor = materialize({1, 0});
+  ASSERT_TRUE(firstMajor && secondMajor);
+  EXPECT_EQ(getNestingStep(*firstMajor), 2);
+  EXPECT_EQ(getNestingStep(*secondMajor), 3);
 }
 
 TEST(CoupledTileRegionTest,
@@ -371,7 +496,8 @@ module {
     ASSERT_EQ(maximal.groups.size(), 1u);
     auto materialized = wafer::compiler::detail::materializeCardCoupledRegions(
         *module, *prepared->program, wafer::CardId(0), prepared->trial,
-        prepared->domain, maximal, &failureReason);
+        prepared->domain, maximal, prepared->temporalDomain,
+        prepared->temporalAssignment, &failureReason);
     ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
     EXPECT_EQ(
         countOps<wafer::TileRegionOp>(materialized->module->getOperation()),

@@ -8,6 +8,7 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 #include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/Planning/Search/TemporalTiling.h"
 
 #include "mlir/Support/LogicalResult.h"
 
@@ -97,6 +98,8 @@ materializeCardCoupledRegions(mlir::ModuleOp tensorProgram,
                               const analysis::LogicalShardTrial &trial,
                               const CoupledRegionDomain &domain,
                               const CoupledRegionAssignment &assignment,
+                              const CardTemporalDomain &temporalDomain,
+                              const CardTemporalAssignment &temporalAssignment,
                               std::string *failureReason = nullptr);
 
 } // namespace wafer::compiler::detail

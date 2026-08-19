@@ -426,3 +426,14 @@ source program
 - correctness witness是一个outer TileRegion内的exact emitted-node集合和内部SSA：group内部没有额外DDR store/load，fanout/diamond
   相同producer slice只有一个actual version。`RecursiveProducerTiling`只是已选region内部的temporal lowering donor，不能重新成为
   search assignment或默认edge recipe。
+
+## Temporal assignment与actual loop（stable，2026-08-19）
+
+- temporal identity是每node完整iterator tile-size vector加actual multi-wave iterator permutation；spatial tail上变成one-wave的维度
+  只从该shard的loop中滤掉，不改全局assignment，也不制造等价state。
+- baseline与search actual traversal共用`TemporalWaveLoop`构造compact prologue/steady/tail，leaf共用TilingInterface；baseline只走
+  单调functional序，不能把其第一个fit或自然order写成search限制。
+- `StructuredOpTemporalTile`跨clone/remap必须整体复制；新增typed field后用整仓aggregate-construction搜索核对所有current producer和
+  consumer。builder可能被TilingInterface或递归fusion改变，leaf中的offset、accumulator和yield必须显式重设insertion point。
+- coupled内部producer只在选中order与共同traversal相容时留在该region；不相容assignment返回typed materialization failure并保留
+  Q50.D cut sibling，不静默重排，也不通过临时full-tensor组装或actual IR cache伪造支持。

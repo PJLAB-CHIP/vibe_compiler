@@ -66,8 +66,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
           "structured temporal mapping operation is outside source module");
       return mlir::failure();
     }
-    mappedTemporalTiles.push_back(
-        StructuredOpTemporalTile{mapped, tile.iteratorTileSizes});
+    mappedTemporalTiles.push_back(StructuredOpTemporalTile{
+        mapped, tile.iteratorTileSizes, tile.waveLoopOrder});
   }
 
   llvm::DenseSet<mlir::Operation *> seenNodeOperations;
@@ -104,9 +104,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
           /*suppressDiagnostics=*/true,
           /*verifyResult=*/true,
           /*populateFallbackFailureReason=*/true,
-          /*peerEndpoints=*/{}, /*selectedDDRStages=*/{},
-          &emissionRelations, mappedOperationNodes,
-          requireOneStructuredRootPerRegion)))
+          /*peerEndpoints=*/{}, /*selectedDDRStages=*/{}, &emissionRelations,
+          mappedOperationNodes, requireOneStructuredRootPerRegion)))
     return mlir::failure();
 
   if (materializationRelations)

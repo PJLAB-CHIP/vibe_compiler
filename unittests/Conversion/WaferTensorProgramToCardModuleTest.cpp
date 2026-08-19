@@ -1066,7 +1066,7 @@ module {
   ASSERT_TRUE(sourceReduction);
   wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {2});
   selected.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
-      sourceReduction.getOperation(), {2, 4, 3}});
+      sourceReduction.getOperation(), {2, 4, 3}, {1, 2}});
 
   // Floating-point reduction reassociation (split and tree) is a supported
   // numeric transformation: no fast-math flag is consumed as a semantics
@@ -1200,6 +1200,26 @@ module {
     for (const auto &outerCoverage : outputCoverage)
       for (unsigned count : outerCoverage)
         EXPECT_EQ(count, 1u);
+
+  wafer::TileMapping reversed = mapping(/*shardDimension=*/0, {0}, {2});
+  reversed.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
+      sourceReduction.getOperation(), {2, 4, 3}, {2, 1}});
+  mlir::OwningOpRef<mlir::ModuleOp> reversedModule;
+  failureReason.clear();
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
+      *source, wafer::CardId(0), reversed, reversedModule, &failureReason)))
+      << failureReason;
+  bool sawReversedNesting = false;
+  reversedModule->walk([&](mlir::scf::ForOp outer) {
+    if (mlir::getConstantIntValue(mlir::getAsOpFoldResult(outer.getStep())) !=
+        3)
+      return;
+    outer.getRegion().walk([&](mlir::scf::ForOp inner) {
+      sawReversedNesting |= mlir::getConstantIntValue(
+                                mlir::getAsOpFoldResult(inner.getStep())) == 4;
+    });
+  });
+  EXPECT_TRUE(sawReversedNesting);
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
@@ -2726,12 +2746,11 @@ module {
       {structured[0].getOperation(), {4}});
   selected.operationTemporalTiles.push_back(
       {structured[1].getOperation(), {4}});
-  selected.edgeStrategies.push_back(
-      edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
-                   wafer::TileId(0),
-                   wafer::SpatialEdgeAction::RecursiveProducerTiling,
-                   /*producerOffsets=*/{0}, /*producerSizes=*/{8},
-                   /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
+  selected.edgeStrategies.push_back(edgeStrategy(
+      structured[0].getOperation(), structured[1].getOperation(),
+      wafer::TileId(0), wafer::SpatialEdgeAction::RecursiveProducerTiling,
+      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
 
   mlir::OwningOpRef<mlir::ModuleOp> fused;
   std::string failureReason;

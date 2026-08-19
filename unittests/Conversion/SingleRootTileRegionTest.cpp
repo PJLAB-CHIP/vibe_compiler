@@ -1,6 +1,6 @@
 //===- SingleRootTileRegionTest.cpp -----------------------------------===//
 
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.h"
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tensor/IR/TensorTilingInterfaceImpl.h"
 #include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/TilingInterface.h"
@@ -402,6 +403,174 @@ TEST(SingleRootTileRegionTest, MaterializesZeroDimensionalIteratorShard) {
 }
 
 TEST(SingleRootTileRegionTest,
+     MaterializesSelectedTemporalLoopOrderAndFiniteTails) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
+  func.func @map(%input: tensor<5x7xf16>) -> tensor<5x7xf16> {
+    %empty = tensor.empty() : tensor<5x7xf16>
+    %result = linalg.map ins(%input : tensor<5x7xf16>)
+        outs(%empty : tensor<5x7xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    return %result : tensor<5x7xf16>
+  }
+})mlir")
+                               .str();
+  auto source = parse(*context, sourceText);
+  ASSERT_TRUE(source);
+  mlir::linalg::MapOp root;
+  source->walk([&](mlir::linalg::MapOp operation) { root = operation; });
+  std::array<wafer::StructuredOperationNodeMapping, 1> operationNodes = {
+      wafer::StructuredOperationNodeMapping{root.getOperation(), 0}};
+  std::array<wafer::TileId, 4> tiles = {wafer::TileId(0), wafer::TileId(1),
+                                        wafer::TileId(2), wafer::TileId(3)};
+
+  auto materialize = [&](llvm::SmallVector<uint32_t, 2> order) {
+    wafer::StructuredNodeShardGroup group;
+    group.shards.push_back(wafer::StructuredNodeIterationShard{
+        0, wafer::TileId(0), {0, 0}, {5, 7}});
+    group.temporalTiles.push_back(
+        wafer::StructuredNodeTemporalTile{0, {2, 3}, std::move(order)});
+    mlir::OwningOpRef<mlir::ModuleOp> result;
+    std::string failureReason;
+    EXPECT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeGroupsToCardModule(
+        *source, wafer::CardId(0), tiles, operationNodes,
+        llvm::ArrayRef(&group, 1), result, nullptr, &failureReason)))
+        << failureReason;
+    return result;
+  };
+
+  mlir::OwningOpRef<mlir::ModuleOp> rowMajor = materialize({0, 1});
+  mlir::OwningOpRef<mlir::ModuleOp> columnMajor = materialize({1, 0});
+  ASSERT_TRUE(rowMajor && columnMajor);
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(rowMajor->getOperation()), 4u);
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(columnMajor->getOperation()), 4u);
+
+  auto getNestingStep = [](mlir::ModuleOp module) -> std::optional<int64_t> {
+    std::optional<int64_t> result;
+    module.walk([&](mlir::scf::ForOp loop) {
+      bool hasNestedLoop = false;
+      loop.getRegion().walk(
+          [&](mlir::scf::ForOp nested) { hasNestedLoop |= nested != loop; });
+      if (hasNestedLoop && !result)
+        result = mlir::getConstantIntValue(loop.getStep());
+    });
+    return result;
+  };
+  EXPECT_EQ(getNestingStep(*rowMajor), 2);
+  EXPECT_EQ(getNestingStep(*columnMajor), 3);
+}
+
+TEST(SingleRootTileRegionTest,
+     CarriesReductionAccumulatorAcrossTemporalPrologueSteadyAndTail) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
+  func.func @reduce(%input: tensor<2x10xf16>, %init: tensor<2xf16>)
+      -> tensor<2xf16> {
+    %sum = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> (d0)>],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<2x10xf16>) outs(%init : tensor<2xf16>) {
+      ^bb0(%value: f16, %acc: f16):
+        %next = arith.addf %value, %acc : f16
+        linalg.yield %next : f16
+    } -> tensor<2xf16>
+    return %sum : tensor<2xf16>
+  }
+})mlir")
+                               .str();
+  auto source = parse(*context, sourceText);
+  ASSERT_TRUE(source);
+  mlir::linalg::GenericOp root;
+  source->walk([&](mlir::linalg::GenericOp operation) { root = operation; });
+  std::array<wafer::StructuredOperationNodeMapping, 1> operationNodes = {
+      wafer::StructuredOperationNodeMapping{root.getOperation(), 0}};
+  std::array<wafer::TileId, 4> tiles = {wafer::TileId(0), wafer::TileId(1),
+                                        wafer::TileId(2), wafer::TileId(3)};
+  wafer::StructuredNodeShardGroup group;
+  group.shards.push_back(wafer::StructuredNodeIterationShard{
+      0, wafer::TileId(0), {0, 0}, {2, 10}});
+  group.temporalTiles.push_back(
+      wafer::StructuredNodeTemporalTile{0, {2, 4}, {1}});
+  wafer::StructuredMaterializationRelations relations;
+  mlir::OwningOpRef<mlir::ModuleOp> materialized;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeGroupsToCardModule(
+      *source, wafer::CardId(0), tiles, operationNodes,
+      llvm::ArrayRef(&group, 1), materialized, &relations, &failureReason)))
+      << failureReason;
+  EXPECT_EQ(countOps<mlir::scf::ForOp>(materialized->getOperation()), 1u);
+  EXPECT_GE(relations.operationEmissions.size(), 3u);
+  EXPECT_TRUE(llvm::all_of(
+      relations.operationEmissions,
+      [](const wafer::StructuredOperationEmissionRelation &relation) {
+        return relation.structuredNodeId == 0 && relation.operation;
+      }));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized)));
+}
+
+TEST(SingleRootTileRegionTest,
+     MaterializesDistinctMultiReductionWaveLoopOrders) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
+  func.func @reduce2d(%input: tensor<4x6xf16>, %init: tensor<f16>)
+      -> tensor<f16> {
+    %sum = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> ()>],
+        iterator_types = ["reduction", "reduction"]
+      } ins(%input : tensor<4x6xf16>) outs(%init : tensor<f16>) {
+      ^bb0(%value: f16, %acc: f16):
+        %next = arith.addf %value, %acc : f16
+        linalg.yield %next : f16
+    } -> tensor<f16>
+    return %sum : tensor<f16>
+  }
+})mlir")
+                               .str();
+  auto source = parse(*context, sourceText);
+  ASSERT_TRUE(source);
+  mlir::linalg::GenericOp root;
+  source->walk([&](mlir::linalg::GenericOp operation) { root = operation; });
+  ASSERT_TRUE(root);
+  std::array<wafer::StructuredOperationNodeMapping, 1> operationNodes = {
+      wafer::StructuredOperationNodeMapping{root.getOperation(), 0}};
+  std::array<wafer::TileId, 4> tiles = {wafer::TileId(0), wafer::TileId(1),
+                                        wafer::TileId(2), wafer::TileId(3)};
+  auto materialize = [&](llvm::SmallVector<uint32_t, 2> order) {
+    wafer::StructuredNodeShardGroup group;
+    group.shards.push_back(wafer::StructuredNodeIterationShard{
+        0, wafer::TileId(0), {0, 0}, {4, 6}});
+    group.temporalTiles.push_back(
+        wafer::StructuredNodeTemporalTile{0, {2, 3}, std::move(order)});
+    mlir::OwningOpRef<mlir::ModuleOp> result;
+    std::string failureReason;
+    EXPECT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeGroupsToCardModule(
+        *source, wafer::CardId(0), tiles, operationNodes,
+        llvm::ArrayRef(&group, 1), result, nullptr, &failureReason)))
+        << failureReason;
+    return result;
+  };
+  mlir::OwningOpRef<mlir::ModuleOp> firstMajor = materialize({0, 1});
+  mlir::OwningOpRef<mlir::ModuleOp> secondMajor = materialize({1, 0});
+  ASSERT_TRUE(firstMajor && secondMajor);
+  auto getNestingStep = [](mlir::ModuleOp module) -> std::optional<int64_t> {
+    std::optional<int64_t> result;
+    module.walk([&](mlir::scf::ForOp loop) {
+      bool hasNestedLoop = false;
+      loop.getRegion().walk([&](mlir::scf::ForOp) { hasNestedLoop = true; });
+      if (hasNestedLoop && !result)
+        result = mlir::getConstantIntValue(loop.getStep());
+    });
+    return result;
+  };
+  EXPECT_EQ(getNestingStep(*firstMajor), 2);
+  EXPECT_EQ(getNestingStep(*secondMajor), 3);
+}
+
+TEST(SingleRootTileRegionTest,
      MaterializesPartialContributionsAndSelectedMergeRegion) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
@@ -460,6 +629,60 @@ TEST(SingleRootTileRegionTest,
     });
   });
   EXPECT_EQ(regionsByTile, (llvm::SmallVector<unsigned, 4>{1, 1, 2, 1}));
+}
+
+TEST(SingleRootTileRegionTest,
+     MaterializesTemporalWavesInsideSpatialReductionContributions) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
+  func.func @reduce(%input: tensor<4x8xf16>, %init: tensor<4xf16>)
+      -> tensor<4xf16> {
+    %sum = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                         affine_map<(d0, d1) -> (d0)>],
+        iterator_types = ["parallel", "reduction"]
+      } ins(%input : tensor<4x8xf16>) outs(%init : tensor<4xf16>) {
+      ^bb0(%value: f16, %acc: f16):
+        %next = arith.addf %value, %acc : f16
+        linalg.yield %next : f16
+    } -> tensor<4xf16>
+    return %sum : tensor<4xf16>
+  }
+})mlir")
+                               .str();
+  auto source = parse(*context, sourceText);
+  ASSERT_TRUE(source);
+  mlir::linalg::GenericOp root;
+  source->walk([&](mlir::linalg::GenericOp operation) { root = operation; });
+  std::array<wafer::StructuredOperationNodeMapping, 1> operationNodes = {
+      wafer::StructuredOperationNodeMapping{root.getOperation(), 0}};
+  std::array<wafer::TileId, 4> tiles = {wafer::TileId(0), wafer::TileId(1),
+                                        wafer::TileId(2), wafer::TileId(3)};
+  std::array<std::array<int64_t, 2>, 4> offsets = {
+      std::array<int64_t, 2>{0, 0}, {0, 4}, {2, 0}, {2, 4}};
+  llvm::SmallVector<wafer::StructuredNodeShardGroup, 4> groups;
+  for (unsigned tile = 0; tile < 4; ++tile) {
+    wafer::StructuredNodeShardGroup group;
+    group.shards.push_back(wafer::StructuredNodeIterationShard{
+        0,
+        wafer::TileId(tile),
+        {offsets[tile][0], offsets[tile][1]},
+        {2, 4},
+        wafer::StructuredNodeIterationShardRole::PartialReductionContribution,
+        wafer::TileId(2)});
+    group.temporalTiles.push_back(
+        wafer::StructuredNodeTemporalTile{0, {1, 2}, {0, 1}});
+    groups.push_back(std::move(group));
+  }
+  mlir::OwningOpRef<mlir::ModuleOp> materialized;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeGroupsToCardModule(
+      *source, wafer::CardId(0), tiles, operationNodes, groups, materialized,
+      nullptr, &failureReason)))
+      << failureReason;
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->getOperation()), 5u);
+  EXPECT_GT(countOps<mlir::scf::ForOp>(materialized->getOperation()), 0u);
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized)));
 }
 
 TEST(SingleRootTileRegionTest, RejectsEffectfulDependencyAtomically) {

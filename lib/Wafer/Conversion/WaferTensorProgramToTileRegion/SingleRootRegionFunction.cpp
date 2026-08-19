@@ -4,6 +4,8 @@
 
 #include "Internal.h"
 #include "StructuredIterationTile.h"
+#include "TemporalPartialReductionTraversal.h"
+#include "TemporalRegionTraversal.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -316,6 +318,57 @@ mlir::LogicalResult materializeRootIteratorShard(
   return mlir::success();
 }
 
+mlir::LogicalResult materializeTemporalRootIteratorShard(
+    mlir::func::FuncOp function, uint32_t structuredNodeId,
+    llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,
+    const StructuredNodeTemporalTile &selectedTemporal,
+    unsigned functionalArgumentCount,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
+    std::string *failureReason) {
+  if (selectedTemporal.structuredNodeId != structuredNodeId ||
+      offsets.size() != sizes.size() ||
+      sizes.size() != selectedTemporal.iteratorTileSizes.size() ||
+      llvm::any_of(sizes, [](int64_t size) { return size <= 0; }))
+    return failResult(failureReason, "single-root temporal shard is malformed");
+  auto rootMapping = llvm::find_if(
+      operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
+        return mapping.structuredNodeId == structuredNodeId;
+      });
+  if (rootMapping == operationNodes.end() || !rootMapping->operation)
+    return failResult(
+        failureReason,
+        "single-root temporal shard has no structured root mapping");
+  if (mlir::failed(appendTileOutputDestinations(function, failureReason)))
+    return mlir::failure();
+
+  mlir::Operation *root = rootMapping->operation;
+  StructuredOpTemporalTile temporal{root, selectedTemporal.iteratorTileSizes,
+                                    selectedTemporal.waveLoopOrder};
+  TensorProgramScope scope(function, functionalArgumentCount);
+  mlir::func::ReturnOp returnOp = scope.getReturn();
+  llvm::SmallVector<mlir::Value, 2> destinations;
+  destinations.reserve(returnOp.getNumOperands());
+  for (unsigned result = 0; result < returnOp.getNumOperands(); ++result) {
+    mlir::FailureOr<mlir::Value> destination =
+        getCandidateOutputBoundary(scope, result, failureReason);
+    if (mlir::failed(destination))
+      return mlir::failure();
+    destinations.push_back(*destination);
+  }
+  mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> traversed =
+      materializeTemporalRegionTraversal(root, scope, offsets, sizes, temporal,
+                                         destinations, operationNodes,
+                                         failureReason);
+  if (mlir::failed(traversed) || traversed->size() != returnOp.getNumOperands())
+    return mlir::failure();
+  for (auto [result, value] : llvm::enumerate(*traversed))
+    returnOp->setOperand(result, value);
+
+  eraseDeadCandidateSupportClosure(scope);
+  retainLiveOperationNodes(function, operationNodes);
+  return mlir::success();
+}
+
 void retainLiveOperationNodes(
     mlir::func::FuncOp function,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes) {
@@ -399,7 +452,8 @@ mlir::LogicalResult materializePartialReductionShard(
 mlir::FailureOr<RootFragment> materializeRootFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
-    const StructuredNodeIterationShard &shard, std::string *failureReason) {
+    const StructuredNodeIterationShard &shard,
+    const StructuredNodeTemporalTile *temporal, std::string *failureReason) {
   auto requested = llvm::find_if(
       sourceOperationNodes, [&](const StructuredOperationNodeMapping &mapping) {
         return mapping.structuredNodeId == shard.structuredNodeId;
@@ -424,14 +478,33 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
                         failureReason, operationNodes, functionalArgumentCount);
   if (mlir::failed(function))
     return mlir::failure();
-  mlir::LogicalResult materialized =
-      shard.role == StructuredNodeIterationShardRole::Complete
-          ? materializeRootIteratorShard(
-                *function, shard.structuredNodeId, shard.offsets, shard.sizes,
-                functionalArgumentCount, operationNodes, failureReason)
-          : materializePartialReductionShard(
-                *function, shard.structuredNodeId, shard.offsets, shard.sizes,
-                functionalArgumentCount, operationNodes, failureReason);
+  const bool hasTemporalWaves =
+      temporal &&
+      llvm::any_of(llvm::zip_equal(shard.sizes, temporal->iteratorTileSizes),
+                   [](auto values) {
+                     auto [extent, tile] = values;
+                     return tile < extent;
+                   });
+  mlir::LogicalResult materialized = mlir::failure();
+  if (shard.role == StructuredNodeIterationShardRole::Complete) {
+    materialized =
+        hasTemporalWaves
+            ? materializeTemporalRootIteratorShard(
+                  *function, shard.structuredNodeId, shard.offsets, shard.sizes,
+                  *temporal, functionalArgumentCount, operationNodes,
+                  failureReason)
+            : materializeRootIteratorShard(
+                  *function, shard.structuredNodeId, shard.offsets, shard.sizes,
+                  functionalArgumentCount, operationNodes, failureReason);
+  } else if (hasTemporalWaves) {
+    materialized = materializeTemporalPartialReductionShard(
+        *function, shard.structuredNodeId, shard.offsets, shard.sizes,
+        *temporal, functionalArgumentCount, operationNodes, failureReason);
+  } else {
+    materialized = materializePartialReductionShard(
+        *function, shard.structuredNodeId, shard.offsets, shard.sizes,
+        functionalArgumentCount, operationNodes, failureReason);
+  }
   if (mlir::failed(materialized))
     return mlir::failure();
 

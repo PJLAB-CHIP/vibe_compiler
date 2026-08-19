@@ -7,11 +7,20 @@
 
 namespace wafer {
 
+struct StructuredNodeTemporalTile {
+  uint32_t structuredNodeId = 0;
+  llvm::SmallVector<int64_t, 4> iteratorTileSizes;
+  llvm::SmallVector<uint32_t, 4> waveLoopOrder;
+};
+
 /// One already-selected group of node shards that must share one TileRegion.
 /// Every shard names the same physical Tile and a distinct structured node.
 /// Singleton groups are the ordinary single-root representation.
 struct StructuredNodeShardGroup {
   llvm::SmallVector<StructuredNodeIterationShard, 4> shards;
+  /// Empty before temporal selection. A complete selected group carries
+  /// exactly one entry for every shard/node.
+  llvm::SmallVector<StructuredNodeTemporalTile, 4> temporalTiles;
 };
 
 /// Materializes a complete explicit node-shard partition. Multi-node groups

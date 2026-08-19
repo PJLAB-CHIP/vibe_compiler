@@ -374,11 +374,15 @@ bool CoupledRegionDomain::contains(
   return assignment.groups.size() == expectedGroups;
 }
 
-mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
-    mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
-    CardId cardId, const analysis::LogicalShardTrial &trial,
-    const CoupledRegionDomain &domain,
-    const CoupledRegionAssignment &assignment, std::string *failureReason) {
+mlir::FailureOr<CardCoupledRegionMaterialization>
+materializeCardCoupledRegions(mlir::ModuleOp tensorProgram,
+                              const CardProgramAnalysis &program, CardId cardId,
+                              const analysis::LogicalShardTrial &trial,
+                              const CoupledRegionDomain &domain,
+                              const CoupledRegionAssignment &assignment,
+                              const CardTemporalDomain &temporalDomain,
+                              const CardTemporalAssignment &temporalAssignment,
+                              std::string *failureReason) {
   auto fail = [&](llvm::StringRef message)
       -> mlir::FailureOr<CardCoupledRegionMaterialization> {
     if (failureReason)
@@ -386,7 +390,8 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     return mlir::failure();
   };
   if (!tensorProgram || trial.epoch != program.epoch ||
-      !domain.contains(assignment))
+      !domain.contains(assignment) ||
+      !temporalDomain.contains(temporalAssignment))
     return fail("coupled-region apply received a stale or unknown assignment");
 
   llvm::SmallVector<StructuredNodeShardGroup, 32> groups;
@@ -423,6 +428,15 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
               ? StructuredNodeIterationShardRole::PartialReductionContribution
               : StructuredNodeIterationShardRole::Complete,
           nodeTrial->reductionMergeTile});
+      auto temporal =
+          llvm::find_if(temporalAssignment.nodes,
+                        [&](const TemporalNodeAssignment &candidate) {
+                          return candidate.node == node;
+                        });
+      if (temporal == temporalAssignment.nodes.end())
+        return fail("coupled-region apply lost one temporal assignment");
+      group.temporalTiles.push_back(StructuredNodeTemporalTile{
+          node, temporal->iteratorTileSizes, temporal->waveLoopOrder});
     }
     groups.push_back(std::move(group));
   }
