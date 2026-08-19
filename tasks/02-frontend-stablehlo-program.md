@@ -1,6 +1,6 @@
 # Wafer Frontend 与 StableHLO Program Directory 设计
 
-状态：2026-08-15按card-level GSPMD、产品frontend入口与program-data ownership边界同步。本文只拥有StableHLO program directory、
+状态：2026-08-19已完成portable StableHLO与产品frontend current cutover。本文只拥有StableHLO program directory、
 metadata/payload和frontend verification合同；`num_partitions`描述card partition，不描述单卡16个Tile。
 typed model/state/resource graph与Tile级时空综合属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
@@ -9,8 +9,8 @@ typed model/state/resource graph与Tile级时空综合属于下游，不是front
 ```text
 Pipeline position:
 - Upstream IR / input:
-  production只接受framework/exporter生成的StableHLO program directory，其中`functions/forward.mlir`可来自
-  pre-exported StableHLO且可包含frontend `mhlo.sharding`。显式module只进入IR-local frontend verifier，
+  production只接受framework adapter或pre-exported source生成的StableHLO program directory，其中
+  `functions/forward.stablehlo.bc`是唯一IR authority。显式text module只进入IR-local frontend verifier，
   不是`wafer-compile`的第二种production输入。
 - Current stage responsibility:
   parse并verify StableHLO module；校验单entry function与`forward.meta`的shape/dtype/arg-role关系；校验
@@ -27,20 +27,19 @@ Pipeline position:
   optimization继续在同一IR上建立verified `TensorProgram` boundary。06随后以target physical topology为独立输入，
   形成`CardModule`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
 - User-level driver / named pipeline:
-  `wafer-compile-stablehlo --verify-stablehlo-program`只做frontend verification；继续编译只经
+  `wafer-verify-program --program-dir`只做program-directory advisory verification；继续编译只经
   当前`wafer-compile --input-program-dir=... --output-dir=... --num-partitions=1`；
-  Q59会按真实package destination原位改名并同步全部consumer，不保留旧alias；
   source-to-package optimization policy只为`search|none`，current target identity由compiler固定提供，不是用户选择。
-  `wafer-opt`及named MLIR pipelines只处理显式IR，不拥有program-directory I/O。
+  `wafer-opt`的`wafer-frontend-verification` named pipeline只处理显式IR，不拥有program-directory I/O。
 - Explicit non-goals:
   不定义typed model/state ABI、MPMD member graph、physical endpoint、layout、SPM/DDR allocation、DTE、
   target ABI、manifest或runtime handle；不从parameter/function/file名恢复后端语义。
 - Completion gate:
-  当前实现门禁是测试owner生成的真实PyTorch/XLA exporter产物及pre-exported text fixtures通过同一program verifier，metadata、
+  当前实现门禁是产品adapter生成的真实PyTorch/XLA exporter产物及pre-exported portable fixtures通过同一program ingestion，metadata、
   payload、static boundary和post-SPMD shard负例在进入下游前fail closed；Q15直接消费该verified output，而不是重建第二份
-  frontend对象模型。Q60完成门禁另要求产品`wafer.frontend.export_pytorch_program`产出的program与pre-exported portable
-  StableHLO进入同一ingestion；installed `wafer-verify-program`只复用该ingestion做advisory validation，compiler transaction仍独立
-  snapshot、重新验证并构造`CompilationRequest`。在Q60完成前不得把测试generator写成产品frontend。
+  frontend对象模型。产品`wafer.frontend.export_pytorch_program`与pre-exported portable StableHLO进入同一ingestion；installed
+  `wafer-verify-program`只复用该ingestion做advisory validation，compiler transaction仍独立snapshot、重新验证并构造
+  `CompilationRequest`。
 ```
 
 ## 2. 当前 Program Directory 合同
@@ -50,9 +49,8 @@ Pipeline position:
 ```text
 program/
   functions/
-    forward.mlir
+    forward.stablehlo.bc                # 唯一production IR authority
     forward.meta
-    forward.bytecode                    # 可选，保留但不作为当前IR事实源
     forward.parameter_shards.json       # 仅post-SPMD program存在
   data/<parameter>                      # pre-SPMD immutable parameter NPY
   constants/<position>                  # exporter-captured constant NPY
@@ -60,9 +58,9 @@ program/
   ...                                   # 其它exporter成员按原字节保留
 ```
 
-`functions/forward.mlir`与`functions/forward.meta`共同拥有function boundary事实；二者任何shape、dtype、
-arg/result数量或role不一致都使整个program非法。bytecode和其它非IR成员可以随directory保留，但当前compiler
-不从它们恢复语义。某stage没有明确typed rewrite合同时，不得静默丢弃或改写这些成员。
+portable artifact反序列化后的function boundary与`functions/forward.meta`必须一致；任何shape、dtype、arg/result数量或role
+不一致都使整个program非法。`forward.mlir`与旧`forward.bytecode`在source directory中直接拒绝，不存在reader fallback；text IR只在
+program directory外作为diagnostic/development输入。其它非IR exporter成员按原字节保留。
 
 `forward.meta`当前消费的字段是：
 
@@ -115,11 +113,11 @@ object直连C++ compiler的第二入口。产品adapter只负责capture/export�
 effect、写入metadata与外部数据引用并调用共享verifier；workload corpus、seed、CPU oracle、模型名分支、target topology和
 optimization policy都留在adapter之外。
 
-当前真实PyTorch/XLA路径仍由测试generator承载，forward.mlir仍是current IR事实源。Q60会做一次current-only cutover：
-program IR authority原位替换为`functions/forward.stablehlo.bc`承载的StableHLO portable serialization，text MLIR只作可选诊断
+当前真实PyTorch/XLA路径由产品`wafer.frontend.export_pytorch_program`承载；program IR authority是
+`functions/forward.stablehlo.bc`中的StableHLO portable serialization，text MLIR只作可选诊断
 且不进入program directory；pre-exported input与framework adapter output进入
 同一compiler-owned snapshot、deserialize/parser和verifier。不保留text/portable双reader、raw StableHLO旁路或可跨source
-mutation复用的“verified path”。
+mutation复用的“verified path”。旧测试generator调用产品export/save policy，只保留case、oracle与corpus职责。
 
 产品adapter和source verifier必须复用同一ingestion实现；advisory verifier只报告当前路径是否通过检查，compiler仍在自己的
 transaction中重新打开、拥有并验证全部输入。参数内容的`ProgramDataSource`/`ProgramDataRange`生命周期由Q58负责，

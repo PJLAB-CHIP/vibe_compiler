@@ -98,7 +98,9 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(obj.WaferCompiler PRIVATE WAFER_ENABLE_STABLEHLO=1)
   target_compile_definitions(WaferCompiler PRIVATE WAFER_ENABLE_STABLEHLO=1)
   target_link_libraries(obj.WaferCompiler PRIVATE StablehloRegister)
-  target_link_libraries(WaferCompiler PRIVATE StablehloRegister)
+  target_link_libraries(obj.WaferCompiler PRIVATE WaferStableHLOProgram)
+  target_link_libraries(WaferCompiler PRIVATE StablehloRegister
+                                              WaferStableHLOProgram)
 endif()
 
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)

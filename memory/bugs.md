@@ -1147,3 +1147,13 @@
 - 防复发：用16-Tile decode-shaped insert/expand/collapse→batch_matmul regression同时调用edge和grouped query并检查16 destination；完整
   FP16 decode search必须在bounded profile内完成package/no-card。不得用shape阈值、wall timeout或失败后fallback generic relation掩盖缺失的
   primitive rectangle contract。
+
+## Program source IR authority不能受include顺序或双reader影响
+
+- 现象：source directory同时保留text和generic bytecode时，compiler只读text、测试把bytecode当辅助；不同producer可以提交互相矛盾的IR。
+  同批profile header中的未限定`LaunchSlotId`还曾随include顺序解析成target或package type，fresh full build才暴露ODR/API错位。
+- 根因：外部format authority、内部TensorProgram text和package typed ID没有按owner显式限定，增量构建掩盖了header重编译事实。
+- 修复模式：外部source只读StableHLO portable artifact，retired成员fail closed；post-SPMD text使用不同internal API。跨namespace schema字段
+  include其owner并解析成唯一强类型，public header fresh全构建。advisory verifier和compiler复用同一ingestion但不共享verified-path state。
+- 防复发：installed product adapter→verifier→compiler→no-card、feature-off absence、portable corrupt/retired/mismatch负例和public full rebuild同批执行；
+  不能因某个增量target链接成功就跳过完整header consumer构建。

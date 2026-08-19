@@ -1,0 +1,14 @@
+# REQUIRES: stablehlo, shardy, pytorch-xla-importer, xla-spmd-helper
+
+# RUN: rm -rf %t
+# RUN: %importer_python %wafer_src_root/test/Tools/wafer_frontend_product_test.py --output-root %t | FileCheck %s --check-prefix=EXPORT
+# RUN: wafer-verify-program --program-dir %t/program | FileCheck %s --check-prefix=VERIFY
+# RUN: wafer-verify-program --program-dir %t/branched | FileCheck %s --check-prefix=BRANCHED
+# RUN: wafer-compile --input-program-dir %t/program --output-dir %t/package --num-partitions=1 --optimization-policy=none
+# RUN: wafer-run --package-dir %t/package --no-card | FileCheck %s --check-prefix=NO-CARD
+
+# EXPORT: wafer_frontend_product: portable=true repeat_equal=true graph_break=rejected
+# VERIFY: wafer-verify-program: verified portable StableHLO program parameters=1 constants=0
+# BRANCHED: wafer-verify-program: verified portable StableHLO program parameters=0 constants=0
+# NO-CARD: invocation_tiles: 16
+# NO-CARD: board_execution: false

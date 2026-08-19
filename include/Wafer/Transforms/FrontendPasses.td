@@ -3,6 +3,11 @@
 #ifndef WAFER_TRANSFORMS_FRONTENDPASSES_TD
 #define WAFER_TRANSFORMS_FRONTENDPASSES_TD
 
+def VerifyFrontendProgramPass
+    : Pass<"wafer-verify-frontend-program", "mlir::ModuleOp"> {
+  let summary = "Verify imported frontend IR markers and bounded boundaries";
+}
+
 def NormalizeStablehloCollectivesPass
     : Pass<"wafer-normalize-stablehlo-collectives", "mlir::ModuleOp"> {
   let summary =

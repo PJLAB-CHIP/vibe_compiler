@@ -1,0 +1,51 @@
+# REQUIRES: stablehlo
+
+# RUN: wafer-verify-program --help | FileCheck %s --check-prefix=HELP
+
+# IR-local development verification remains a named wafer-opt pipeline.
+# RUN: printf '%b' 'module {\n  func.func @ok(%%arg0: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    return %%arg0 : tensor<2x4xf32>\n  }\n}\n' > %t.ok.mlir
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-frontend-verification)' %t.ok.mlir -o /dev/null
+# RUN: printf '%b' 'module attributes {"wafer.import.graph_break" = "python control flow escaped capture"} {}\n' > %t.graph-break.mlir
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-frontend-verification)' %t.graph-break.mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=GRAPH
+# RUN: printf '%b' 'module {\n  func.func @unbounded(%%arg0: tensor<?x4xf32>) -> tensor<?x4xf32> {\n    return %%arg0 : tensor<?x4xf32>\n  }\n}\n' > %t.dynamic.mlir
+# RUN: not wafer-opt --pass-pipeline='builtin.module(wafer-frontend-verification)' %t.dynamic.mlir -o /dev/null 2>&1 | FileCheck %s --check-prefix=DYNAMIC
+# RUN: printf '%b' 'module {\n  func.func @bounded(%%arg0: tensor<?x4xf32> {wafer.frontend.dynamic_bounds = [8, 4]}) -> (tensor<?x4xf32> {wafer.frontend.dynamic_bounds = [8, 4]}) {\n    return %%arg0 : tensor<?x4xf32>\n  }\n}\n' > %t.bounded.mlir
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-frontend-verification)' %t.bounded.mlir -o /dev/null
+
+# One pre-exported portable artifact is the only program IR authority.
+# RUN: rm -rf %t.program && mkdir -p %t.program/functions %t.program/data
+# RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<2x4xf32>) -> tensor<2x4xf32> {\n    return %%arg0 : tensor<2x4xf32>\n  }\n}\n' > %t.source.mlir
+# RUN: %stablehlo_translate --serialize --target=1.7.1 %t.source.mlir -o %t.program/functions/forward.stablehlo.bc
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"1.7.1","input_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[2,4],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.program/functions/forward.meta
+# RUN: %python -c 'import numpy as np; from pathlib import Path; f=Path("%t.program/data/weight").open("wb"); np.save(f,np.zeros((2,4),dtype=np.float32)); f.close()'
+# RUN: wafer-verify-program --program-dir %t.program | FileCheck %s --check-prefix=PROGRAM
+
+# RUN: rm -rf %t.retired && cp -R %t.program %t.retired && cp %t.source.mlir %t.retired/functions/forward.mlir
+# RUN: not wafer-verify-program --program-dir %t.retired 2>&1 | FileCheck %s --check-prefix=RETIRED
+# RUN: rm -rf %t.corrupt && cp -R %t.program %t.corrupt && printf 'not portable' > %t.corrupt/functions/forward.stablehlo.bc
+# RUN: not wafer-verify-program --program-dir %t.corrupt 2>&1 | FileCheck %s --check-prefix=CORRUPT
+# RUN: rm -rf %t.shape && cp -R %t.program %t.shape
+# RUN: %python -c 'import json,pathlib; p=pathlib.Path("%t.shape/functions/forward.meta"); d=json.loads(p.read_text()); d["input_signature"][0]["shape"]=[4,2]; p.write_text(json.dumps(d))'
+# RUN: not wafer-verify-program --program-dir %t.shape 2>&1 | FileCheck %s --check-prefix=SHAPE
+# RUN: rm -rf %t.unsafe && cp -R %t.program %t.unsafe
+# RUN: %python -c 'import json,pathlib; p=pathlib.Path("%t.unsafe/functions/forward.meta"); d=json.loads(p.read_text()); d["input_locations"][0]["name"]="../weight"; p.write_text(json.dumps(d))'
+# RUN: not wafer-verify-program --program-dir %t.unsafe 2>&1 | FileCheck %s --check-prefix=UNSAFE
+# RUN: rm -rf %t.missing && cp -R %t.program %t.missing && rm %t.missing/data/weight
+# RUN: not wafer-verify-program --program-dir %t.missing 2>&1 | FileCheck %s --check-prefix=MISSING
+
+# Production ingestion rejects dynamic boundaries even when IR-local bounds exist.
+# RUN: rm -rf %t.dynamic-program && mkdir -p %t.dynamic-program/functions
+# RUN: %stablehlo_translate --serialize --target=1.7.1 %t.bounded.mlir -o %t.dynamic-program/functions/forward.stablehlo.bc
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"1.7.1","input_signature":[{"shape":[8,4],"dtype":"float32","dynamic_dims":[0]}],"output_signature":[{"shape":[8,4],"dtype":"float32","dynamic_dims":[0]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.dynamic-program/functions/forward.meta
+# RUN: not wafer-verify-program --program-dir %t.dynamic-program 2>&1 | FileCheck %s --check-prefix=PRODUCTION-DYNAMIC
+
+# HELP: usage: wafer-verify-program --program-dir
+# GRAPH: graph break rejected
+# DYNAMIC: unbounded dynamic shape rejected
+# PROGRAM: wafer-verify-program: verified portable StableHLO program parameters=1 constants=0
+# RETIRED: retired source IR member remains: functions/forward.mlir
+# CORRUPT: artifact is not compatible with the pinned StableHLO reader
+# SHAPE: shape mismatch for function argument 0
+# UNSAFE: parameter location name must be a safe single path component
+# MISSING: parameter data file is missing: weight
+# PRODUCTION-DYNAMIC: dynamic input boundary is unsupported

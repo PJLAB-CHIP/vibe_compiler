@@ -152,10 +152,28 @@ add_subdirectory(include/Wafer/Transforms)
 add_subdirectory(lib/Wafer)
 add_subdirectory(tools/wafer-opt)
 add_subdirectory(tools/wafer-compile)
-add_subdirectory(tools/wafer-compile-stablehlo)
+add_subdirectory(tools/wafer-verify-program)
 add_subdirectory(tools/wafer-run)
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_subdirectory(tools/wafer-cmodel-qualify-bulk)
+endif()
+
+if(WAFER_ENABLE_PYTORCH_XLA_IMPORTER)
+  include(GNUInstallDirs)
+  set(_wafer_python_build_dir "${CMAKE_BINARY_DIR}/python")
+  add_custom_command(
+    OUTPUT "${_wafer_python_build_dir}/wafer/frontend/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_wafer_python_build_dir}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${CMAKE_SOURCE_DIR}/python/wafer" "${_wafer_python_build_dir}/wafer"
+    DEPENDS
+      "${CMAKE_SOURCE_DIR}/python/wafer/__init__.py"
+      "${CMAKE_SOURCE_DIR}/python/wafer/frontend/__init__.py"
+    VERBATIM)
+  add_custom_target(wafer-python ALL
+    DEPENDS "${_wafer_python_build_dir}/wafer/frontend/__init__.py")
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/python/wafer"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/python")
 endif()
 
 enable_testing()

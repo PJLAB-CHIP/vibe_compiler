@@ -110,6 +110,7 @@ class FakeStableHLO(types.ModuleType):
         class StableHLOExportOptions:
             def __init__(self):
                 self.export_weights = True
+                self.save_weights = True
                 self.inline_all_constant = True
                 self.include_human_readable_text = True
 
@@ -151,7 +152,9 @@ class FakeStableHLOProgram:
             '{"type_":"parameter","position":-1,"name":"weight"},'
             '{"type_":"input_arg","position":0,"name":""}]}\n'
         )
-        (functions / "forward.bytecode").write_bytes(b"bytecode")
+        (functions / "forward.bytecode").write_bytes(
+            b"ML\xefR\rStableHLO_v1.7.1\x00test"
+        )
         (data / "weight").write_bytes(b"0" * 16)
         (data / "bias").write_bytes(b"0" * 16)
 
@@ -209,7 +212,12 @@ class WaferPyTorchXlaCaptureContractTest(unittest.TestCase):
             self.assertTrue(self.fake_stablehlo.last_options.save_weights)
             self.assertTrue(self.fake_stablehlo.last_options.include_human_readable_text)
             self.assertTrue(self.fake_torch.no_grad_entered)
-            self.assertTrue((program_dir / "functions" / "forward.mlir").is_file())
+            self.assertTrue(
+                (program_dir / "functions" / "forward.stablehlo.bc").is_file()
+            )
+            self.assertFalse(
+                (program_dir / "functions" / "forward.mlir").exists()
+            )
             self.assertTrue((program_dir / "functions" / "forward.meta").is_file())
             self.assertTrue((program_dir / "data" / "weight").is_file())
 

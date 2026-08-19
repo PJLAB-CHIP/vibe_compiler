@@ -3,6 +3,7 @@
 # RUN: rm -rf %t.input %t.package
 # RUN: mkdir -p %t.input/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<4x8xf16>) -> tensor<8x4xf16> {\n    %%0 = "stablehlo.transpose"(%%arg0) {permutation = array<i64: 1, 0>} : (tensor<4x8xf16>) -> tensor<8x4xf16>\n    return %%0 : tensor<8x4xf16>\n  }\n}\n' > %t.input/functions/forward.mlir
+# RUN: %stablehlo_translate --serialize --target=1.7.1 %t.input/functions/forward.mlir -o %t.input/functions/forward.stablehlo.bc && rm %t.input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[4,8],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[8,4],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
 # RUN: wafer-compile --input-program-dir %t.input --output-dir %t.package --num-partitions=1 --optimization-policy=none --compile-timing 2>&1 | FileCheck %s
 # RUN: test -s %t.package/modules/module_00000.so

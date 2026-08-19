@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import pathlib
 import re
+import subprocess
 import sys
 import tempfile
 import types
@@ -17,6 +19,25 @@ import torch
 
 import wafer_board_pytorch_test as board_runner
 import wafer_pytorch_board_cases as cases
+
+
+def read_portable_stablehlo(program: pathlib.Path) -> str:
+    translator = os.environ.get("WAFER_STABLEHLO_TRANSLATE")
+    if not translator:
+        raise RuntimeError("WAFER_STABLEHLO_TRANSLATE is not configured")
+    with tempfile.TemporaryDirectory() as directory:
+        text = pathlib.Path(directory) / "program.mlir"
+        subprocess.run(
+            [
+                translator,
+                "--deserialize",
+                str(program / "functions" / "forward.stablehlo.bc"),
+                "-o",
+                str(text),
+            ],
+            check=True,
+        )
+        return text.read_text()
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
@@ -474,7 +495,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             program = pathlib.Path(directory) / "heterogeneous-program"
             case.export_program(program)
-            stablehlo = (program / "functions" / "forward.mlir").read_text()
+            stablehlo = read_portable_stablehlo(program)
         self.assertIn("stablehlo.dot_general", stablehlo)
         self.assertIn("stablehlo.maximum", stablehlo)
         self.assertIn("stablehlo.reduce", stablehlo)
@@ -602,12 +623,8 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             step_two_program = pathlib.Path(directory) / "decode-step-two"
             case.export_program(step_one_program)
             continuation.export_program(step_two_program)
-            step_one_stablehlo = (
-                step_one_program / "functions" / "forward.mlir"
-            ).read_text()
-            step_two_stablehlo = (
-                step_two_program / "functions" / "forward.mlir"
-            ).read_text()
+            step_one_stablehlo = read_portable_stablehlo(step_one_program)
+            step_two_stablehlo = read_portable_stablehlo(step_two_program)
         for stablehlo in (step_one_stablehlo, step_two_stablehlo):
             self.assertGreaterEqual(
                 stablehlo.count("stablehlo.concatenate"), 2

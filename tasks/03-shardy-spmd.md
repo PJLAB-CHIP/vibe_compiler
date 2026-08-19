@@ -161,7 +161,7 @@ snapshot；原source不被原地补topology、改MLIR或写shards。helper和loc
 - typed orchestration：`Wafer/Driver/Compilation.h`、`lib/Wafer/Driver/Compilation.cpp`；
 - frontend program verifier：`Wafer/Frontend/Program.h`、`lib/Wafer/Frontend/Program.cpp`；
 - user driver：`wafer-compile`；
-- frontend-only verifier：`wafer-compile-stablehlo`；
+- source program advisory verifier：`wafer-verify-program`；
 - IR debug：`wafer-opt`和IR-local sharding pipelines；
 - pinned helper build：`tools/build_xla_spmd_partitioner_helper.py`；
 - real program generator：`test/Tools/Inputs/wafer_pytorch_xla_capture.py`。

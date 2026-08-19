@@ -250,6 +250,31 @@ Pipeline position:
    pre-exported portable bytecode、metadata/shape/dtype/role、安全路径、graph break/fallback/side effect和dynamic负例；证明
    adapter output未经重写直接进入Q59 library/CLI并完成package readback/no-card。Q60不声称Q53规模、板端或性能完成。
 
+### 2026-08-19 Q60 implementation closure
+
+- 产品Python包提供唯一API
+  `wafer.frontend.export_pytorch_program(module, example_inputs, output_directory)`；
+  API无target、Tile、search、runtime、oracle、seed、case或模型参数，使用strict
+  `torch.export`和pinned PyTorch/XLA exporter。BF16 parameter/buffer bytes由同一产品
+  helper按little-endian `|V2`保存，测试generator不再拥有第二份workaround。
+- source program的唯一IR成员是`functions/forward.stablehlo.bc`。它直接采用
+  PyTorch/XLA产生的`StableHLO_v1.7.1` portable artifact；旧`forward.mlir`和
+  `forward.bytecode`在source中fail closed。post-SPMD tensor program text是compiler-owned
+  internal stage，由不同的parser API消费，不构成production双reader。
+- `WaferStableHLOProgram`拥有portable deserialize、production static/single-entry/custom-call
+  gate和program metadata/payload verification。`wafer-verify-program`与compiler transaction
+  复用该owner；advisory成功不会跳过transaction snapshot、owned payload resolver与fresh
+  verification。旧`wafer-compile-stablehlo` tool/source/target无alias残留。
+- `wafer-opt`的`wafer-frontend-verification` named pipeline只验证显式开发IR，保留
+  bounded-dynamic IR-local正例；production portable ingestion仍拒绝任意dynamic boundary。
+- adapter和verifier只在真实依赖启用时构建/安装。relocated install tree中的
+  `lib/python/wafer`、`wafer-verify-program`、`wafer-compile`和`wafer-run`完成同一产品source的
+  export→advisory verify→package→no-card。feature-off install不包含不能运行的stub。
+- fresh产品测试覆盖one-output static parameter model、branched static model、重复export
+  byte-identical、data-dependent graph break拒绝、pre-exported portable、corrupt/retired IR、
+  metadata shape、unsafe locator、missing payload与dynamic负例。全lit为251/251 supported
+  通过、4项按feature配置unsupported；source/dependency/IR organization检查通过。
+
 ## 4. 共享约束与收尾顺序
 
 1. 生产链始终只有：framework adapter或pre-exported source → current source program directory →

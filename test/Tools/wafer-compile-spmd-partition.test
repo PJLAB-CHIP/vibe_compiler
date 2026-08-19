@@ -3,7 +3,7 @@
 # RUN: rm -rf %t.input.program %t.outputs
 # RUN: mkdir -p %t.outputs
 # RUN: env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-reference-program --size 32 --output-program-dir %t.input.program
-# RUN: printf 'bytecode sentinel from exporter program\n' > %t.input.program/functions/forward.bytecode
+# RUN: printf 'exporter auxiliary sentinel\n' > %t.input.program/functions/exporter.aux
 # RUN: printf 'auxiliary data sentinel from exporter program\n' > %t.input.program/data/aux.payload
 # RUN: wafer-compile --input-program-dir %t.input.program --output-dir %t.outputs/package --num-partitions=1 --optimization-policy=none | FileCheck %s --check-prefix=PIPELINE
 # The executable package carries manifest/modules/program data only; the

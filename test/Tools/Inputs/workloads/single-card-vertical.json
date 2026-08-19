@@ -46,7 +46,7 @@
         "parameters": "sha256:9f7b1dafc4b0def2ecc6f2b949a4c76839408a9881c55d4807bf2ffcc3019182",
         "reference_output": "sha256:5df7b540e3156218ae841ff471009c56ac60542d517206fe847bf41a8d04cb6b",
         "reference_output_quantized": "sha256:cc799117f5bb3ad8f4e37c6c0fae2f411fbe8044e9a988cb2807426e6d579b0c",
-        "exported_program": "sha256:b6eae1be4607b0e44c4bd66aa95101efc6e3471b743e4b19a67d90a1d3622287"
+        "exported_program": "sha256:2b4a63277d8e699caa98759df367a907e5b440dfda65317530cda0050d4f1f51"
       },
       "reference": {
         "implementation": "independent NumPy matmul/bias/tanh/residual",
@@ -83,7 +83,7 @@
         "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "reference_output": "sha256:f2ec78248a995ffc4edc20f9e32d8f2ab8448f722d6bfb84d768a901527e996a",
         "reference_output_quantized": "sha256:f2ec78248a995ffc4edc20f9e32d8f2ab8448f722d6bfb84d768a901527e996a",
-        "exported_program": "sha256:1df3553f5dc093aceb16b815b64af668ebf21416372eb1fc2a140d40d12e3f00"
+        "exported_program": "sha256:d838c660a65291b31efc5de1d3235d6c58f156f895a6bc0f6cfd37856a8fece1"
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation with f16 destination rounding",
@@ -109,7 +109,7 @@
         "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "reference_output": "sha256:cc0d527e19452f4482162a0777b05706245c5cabf6d9946ed28b6a276b958b4d",
         "reference_output_quantized": "sha256:cc0d527e19452f4482162a0777b05706245c5cabf6d9946ed28b6a276b958b4d",
-        "exported_program": "sha256:9358fa13f718d458ae40a2e2f72b7022c86900b6710374300d5c4c46a6b1e8df"
+        "exported_program": "sha256:2c75bc511fa45cdfcace0426e9ed895f8e7d84ab9004e56dde8cab1d87ba5c24"
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation with bf16 destination rounding",
@@ -146,7 +146,7 @@
         "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "reference_output": "sha256:2bb5ec1b51a6fb3ec7aa6dde5998ec1886e060f7e5df471a5ef40f0e3fd6ba9b",
         "reference_output_quantized": "sha256:2bb5ec1b51a6fb3ec7aa6dde5998ec1886e060f7e5df471a5ef40f0e3fd6ba9b",
-        "exported_program": "sha256:4450fa975d145eeff5687b12f73457a8b299d4d63c9d7d13c45474de4f39932c"
+        "exported_program": "sha256:5ec9567a0a7853bca196bcd15158d1c48feadfef24f98cc94634e96c1ac92585"
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation",
@@ -183,7 +183,7 @@
         "parameters": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "reference_output": "sha256:f1b1847347be627eca4de3bda4f8ad0f5bfc4316a083187548afa83bc464fcc4",
         "reference_output_quantized": "sha256:f1b1847347be627eca4de3bda4f8ad0f5bfc4316a083187548afa83bc464fcc4",
-        "exported_program": "sha256:e285118a229fa8f27ce8104ba3f51e650549ae088d4c5ae123659291885a458d"
+        "exported_program": "sha256:f8719785d03957fea0e6f45acaada4d5482f48f6c7ed6055620c8c45f387d1a4"
       },
       "reference": {
         "implementation": "independent increasing-K float32 accumulation with f16 destination rounding",
@@ -216,7 +216,7 @@
         "parameters": "sha256:e933bda2600971a96a3fc99cc47c0923a76feab3eacbd250dbdbff6336035a4d",
         "reference_output": "sha256:592f22d431a60152bf0551a408e86190a33113b80a4e45b04ca405ae371afc77",
         "reference_output_quantized": "sha256:57efccb598f00c76ddb1230f3596f1e64561602f61683f8355075f8a66cbb1cb",
-        "exported_program": "sha256:51efa9d95cbf82c615690cea22fa80fb340b2220b9dcaddb66809962daecbd9c"
+        "exported_program": "sha256:0c950457043205134f933410ab1ba7bac543b71b72c0462cd8b9643db3032b74"
       },
       "reference": {
         "implementation": "independent NumPy RMSNorm/RoPE/attention/SiLU/MLP/residual",

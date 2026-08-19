@@ -179,6 +179,8 @@ bool mergeMissingProgramMembers(llvm::StringRef sourceDirectory,
       return reject(diagnostics, "failed to derive source program member path");
     if (relative.starts_with(llvm::sys::path::get_separator()))
       relative = relative.drop_front();
+    if (relative == "functions/forward.stablehlo.bc")
+      continue;
 
     llvm::SmallString<256> destination(destinationDirectory);
     llvm::sys::path::append(destination, relative);

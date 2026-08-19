@@ -1,0 +1,10 @@
+# REQUIRES: stablehlo
+
+# RUN: wafer-verify-program --help | FileCheck %s --check-prefix=HELP
+# RUN: not wafer-verify-program --partition-stablehlo-program %t 2>&1 | FileCheck %s --check-prefix=UNKNOWN
+# RUN: not wafer-verify-program --output-package-dir %t 2>&1 | FileCheck %s --check-prefix=UNKNOWN
+
+# HELP: usage: wafer-verify-program --program-dir
+# HELP-NOT: partition
+# HELP-NOT: output
+# UNKNOWN: wafer-verify-program: expected exactly --program-dir

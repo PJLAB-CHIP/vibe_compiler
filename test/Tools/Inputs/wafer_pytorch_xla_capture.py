@@ -779,15 +779,31 @@ def apply_hf_card_partition_marks(
 
 def _verify_program_dir_layout(program_dir: pathlib.Path) -> None:
     for relative in [
-        pathlib.Path("functions") / "forward.mlir",
+        pathlib.Path("functions") / "forward.stablehlo.bc",
         pathlib.Path("functions") / "forward.meta",
-        pathlib.Path("functions") / "forward.bytecode",
     ]:
         path = program_dir / relative
         if not path.is_file():
             raise RuntimeError(f"missing StableHLO program directory file: {relative}")
     if not (program_dir / "data").is_dir():
         raise RuntimeError("missing StableHLO program data directory: data")
+    for retired in ("forward.mlir", "forward.bytecode"):
+        if (program_dir / "functions" / retired).exists():
+            raise RuntimeError(f"retired source IR member remains: functions/{retired}")
+
+
+def _save_program(program: Any, program_dir: pathlib.Path, options: Any = None) -> None:
+    from wafer.frontend import _finish_program_directory
+
+    if program_dir.exists():
+        shutil.rmtree(program_dir)
+    program_dir.parent.mkdir(parents=True, exist_ok=True)
+    if options is None:
+        program.save(str(program_dir))
+    else:
+        program.save(str(program_dir), options)
+    _finish_program_directory(program_dir)
+    _verify_program_dir_layout(program_dir)
 
 
 def _make_reference_matmul_module(torch_module: Any, size: int) -> Any:
@@ -1706,26 +1722,6 @@ def _state_dict_numpy(
     }
 
 
-def _exported_state_dict_numpy(
-    torch_module: Any, exported_program: Any
-) -> dict[str, Any]:
-    """Convert an ExportedProgram state dict to canonical NPY payload arrays."""
-    state_dict = getattr(exported_program, "state_dict", None)
-    if not isinstance(state_dict, dict):
-        raise RuntimeError("PyTorch ExportedProgram state_dict must be a mapping")
-    converted = {}
-    for name, value in state_dict.items():
-        if not isinstance(name, str):
-            raise RuntimeError("PyTorch ExportedProgram state names must be strings")
-        if not isinstance(value, torch_module.Tensor):
-            converted[name] = value
-            continue
-        converted[name] = _torch_tensor_to_workload_storage(
-            torch_module, value
-        )
-    return converted
-
-
 def exported_program_to_stablehlo(
     torch_module: Any,
     stablehlo_module: Any,
@@ -1733,49 +1729,25 @@ def exported_program_to_stablehlo(
     *,
     options: Any | None = None,
 ) -> Any:
-    """Export StableHLO while preserving BF16 parameter and buffer payloads.
+    from wafer.frontend import _export_stablehlo
 
-    PyTorch 2.5 intentionally has no public NumPy BF16 scalar type, while the
-    pinned PyTorch/XLA exporter serializes every ExportedProgram state tensor
-    through ``Tensor.numpy()``.  Keep the upstream path for ordinary state.  If
-    BF16 state is present, let PyTorch/XLA build the same graph and parameter
-    locations without serializing weights, then attach canonical little-endian
-    ``|V2`` payload arrays to its returned model.  This applies uniformly to
-    parameters and persistent buffers; callers do not need model-specific dtype
-    handling.
-    """
-    resolved_options = options
-    if resolved_options is None:
-        resolved_options = stablehlo_module.StableHLOExportOptions()
-    state_dict = getattr(exported_program, "state_dict", None)
-    has_bfloat16_state = isinstance(state_dict, dict) and any(
-        isinstance(value, torch_module.Tensor)
-        and value.dtype == torch_module.bfloat16
-        for value in state_dict.values()
-    )
-    if not resolved_options.export_weights or not has_bfloat16_state:
-        return stablehlo_module.exported_program_to_stablehlo(
-            exported_program, options=resolved_options
-        )
-
-    graph_options = copy.copy(resolved_options)
-    graph_options.export_weights = False
-    program = stablehlo_module.exported_program_to_stablehlo(
-        exported_program, options=graph_options
-    )
-    model_state = getattr(program, "_bundle", None)
-    if model_state is None or not hasattr(model_state, "state_dict"):
-        raise RuntimeError(
-            "pinned PyTorch/XLA StableHLO result omitted its exported state"
-        )
-    if model_state.state_dict:
-        raise RuntimeError(
-            "PyTorch/XLA exported weights despite export_weights=False"
-        )
-    model_state.state_dict = _exported_state_dict_numpy(
-        torch_module, exported_program
-    )
-    return program
+    if options is not None:
+        # The product helper owns the current closed option set. Test callers
+        # may construct that same set but cannot add a second export policy.
+        expected = stablehlo_module.StableHLOExportOptions()
+        expected.export_weights = True
+        expected.save_weights = True
+        expected.inline_all_constant = True
+        expected.include_human_readable_text = True
+        for field in (
+            "export_weights",
+            "save_weights",
+            "inline_all_constant",
+            "include_human_readable_text",
+        ):
+            if getattr(options, field) != getattr(expected, field):
+                raise RuntimeError("test export options diverge from product policy")
+    return _export_stablehlo(torch_module, stablehlo_module, exported_program)
 
 
 def _move_to_device(value: Any, device: Any) -> Any:
@@ -1884,11 +1856,7 @@ def emit_reference_stablehlo_program(
             options=options,
         )
 
-    if program_dir.exists():
-        shutil.rmtree(program_dir)
-    program_dir.parent.mkdir(parents=True, exist_ok=True)
-    stablehlo_program.save(str(program_dir))
-    _verify_program_dir_layout(program_dir)
+    _save_program(stablehlo_program, program_dir)
 
 
 def emit_simple_gemm_program(
@@ -1937,11 +1905,7 @@ def emit_simple_gemm_program(
             exported,
             options=options,
         )
-    if program_dir.exists():
-        shutil.rmtree(program_dir)
-    program_dir.parent.mkdir(parents=True, exist_ok=True)
-    stablehlo_program.save(str(program_dir))
-    _verify_program_dir_layout(program_dir)
+    _save_program(stablehlo_program, program_dir)
 
 
 def emit_linear_residual_mlp_program(
@@ -1982,11 +1946,7 @@ def emit_linear_residual_mlp_program(
             options=options,
         )
 
-    if program_dir.exists():
-        shutil.rmtree(program_dir)
-    program_dir.parent.mkdir(parents=True, exist_ok=True)
-    stablehlo_program.save(str(program_dir))
-    _verify_program_dir_layout(program_dir)
+    _save_program(stablehlo_program, program_dir)
 
 
 def _verify_exported_parameter_payloads(
@@ -2028,9 +1988,9 @@ def _canonical_program_digest(
         digest.update(len(payload).to_bytes(8, "little"))
         digest.update(payload)
 
-    mlir_path = program_dir / "functions" / "forward.mlir"
+    mlir_path = program_dir / "functions" / "forward.stablehlo.bc"
     meta_path = program_dir / "functions" / "forward.meta"
-    add_record("functions/forward.mlir", mlir_path.read_bytes())
+    add_record("functions/forward.stablehlo.bc", mlir_path.read_bytes())
     with meta_path.open("r", encoding="utf-8") as file:
         add_record("functions/forward.meta", _canonical_json_bytes(json.load(file)))
 
@@ -2230,8 +2190,8 @@ def emit_workload_corpus(
             },
             "reference": case["reference"],
             "canonical_export_digest_algorithm": (
-                "forward.mlir bytes + canonical forward.meta + canonical "
-                "typed data/constants; redundant bytecode excluded"
+                "forward.stablehlo.bc bytes + canonical forward.meta + "
+                "canonical typed data/constants"
             ),
             "repeat_export_digest": repeat_program_digest,
             "repeat_export_canonical_equivalent": (
@@ -2486,13 +2446,8 @@ def emit_sharded_stablehlo_program(
     report_timing("xla-graph-capture", graph_start_ns)
 
     save_start_ns = time.monotonic_ns()
-    if program_dir.exists():
-        shutil.rmtree(program_dir)
-    program_dir.parent.mkdir(parents=True, exist_ok=True)
-    stablehlo_module.StableHLOGraphModule(stablehlo_graph).save(
-        str(program_dir), options
-    )
-    _verify_program_dir_layout(program_dir)
+    _save_program(stablehlo_module.StableHLOGraphModule(stablehlo_graph),
+                  program_dir, options)
     report_timing("program-save", save_start_ns)
 
 
@@ -2641,13 +2596,8 @@ def emit_hf_llama_block_program(
             state_dict=state_dict,
         )
 
-    if program_dir.exists():
-        shutil.rmtree(program_dir)
-    program_dir.parent.mkdir(parents=True, exist_ok=True)
-    stablehlo_module.StableHLOGraphModule(stablehlo_graph).save(
-        str(program_dir), options
-    )
-    _verify_program_dir_layout(program_dir)
+    _save_program(stablehlo_module.StableHLOGraphModule(stablehlo_graph),
+                  program_dir, options)
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:

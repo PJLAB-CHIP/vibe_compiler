@@ -3,6 +3,7 @@
 # RUN: rm -rf %t.input %t.default %t.timed %t.removed-preset %t.default.log %t.timed.log
 # RUN: mkdir -p %t.input/functions
 # RUN: printf '%b' 'module @timing {\n  func.func @main(%%arg0: tensor<32x32xf16>) -> tensor<32x32xf16> {\n    %%0 = stablehlo.add %%arg0, %%arg0 : tensor<32x32xf16>\n    return %%0 : tensor<32x32xf16>\n  }\n}\n' > %t.input/functions/forward.mlir
+# RUN: %stablehlo_translate --serialize --target=1.7.1 %t.input/functions/forward.mlir -o %t.input/functions/forward.stablehlo.bc && rm %t.input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":""}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
 
 # Detailed timing is opt-in. The ordinary production transaction remains free

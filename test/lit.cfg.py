@@ -17,6 +17,11 @@ path = os.pathsep.join(
     ]
 )
 config.environment["PATH"] = path
+config.environment["PYTHONPATH"] = os.pathsep.join(
+    value
+    for value in [config.wafer_python_dir, config.environment.get("PYTHONPATH", "")]
+    if value
+)
 if os.path.isdir(config.tx8_deps_root):
     config.environment["TX8_DEPS_ROOT"] = config.tx8_deps_root
 config.substitutions.append(("%python", config.python_executable))
@@ -24,6 +29,8 @@ config.substitutions.append(("%wafer_obj_root", config.wafer_obj_root))
 config.substitutions.append(("%wafer_compile_test", config.wafer_compile_test))
 config.substitutions.append(("%wafer_bulk_qualify", config.wafer_bulk_qualify))
 config.substitutions.append(("%cmake", config.cmake_command))
+config.substitutions.append(("%stablehlo_translate", config.stablehlo_translate))
+config.environment["WAFER_STABLEHLO_TRANSLATE"] = config.stablehlo_translate
 config.importer_python_executable = getattr(
     config, "importer_python_executable", config.python_executable
 )

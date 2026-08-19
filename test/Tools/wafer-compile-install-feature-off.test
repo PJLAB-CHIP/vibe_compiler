@@ -8,4 +8,6 @@
 # RUN: rm -rf %t.install
 # RUN: %cmake --install %wafer_obj_root --prefix %t.install
 # RUN: test ! -e %t.install/bin/wafer-compile
+# RUN: test ! -e %t.install/bin/wafer-verify-program
+# RUN: test ! -e %t.install/lib/python/wafer
 # RUN: test ! -e %t.install/libexec/wafer/wafer_xla_spmd_partitioner

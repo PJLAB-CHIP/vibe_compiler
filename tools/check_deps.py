@@ -74,10 +74,11 @@ STABLEHLO_API_NEEDLES = [
 STABLEHLO_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
     "include/Wafer/Conversion/StableHLOToLinalg",
+    "lib/Wafer/Frontend",
     "lib/Wafer/Driver",
     "lib/Wafer/Conversion/StableHLOToLinalg",
     "tools/wafer-opt",
-    "tools/wafer-compile-stablehlo",
+    "tools/wafer-verify-program",
 ]
 
 SHARDY_API_NEEDLES = [
@@ -91,7 +92,7 @@ SHARDY_API_ALLOWED_PREFIXES = [
     "lib/Wafer/Driver",
     "lib/Wafer/Transforms/SPMD",
     "tools/wafer-opt",
-    "tools/wafer-compile-stablehlo",
+    "tools/wafer-verify-program",
 ]
 
 RUNTIME_DRIVER_NEEDLES = [
@@ -477,11 +478,11 @@ def check_cmake_target_visibility() -> None:
             )
 
     check_text_contains(
-        REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt",
+        REPO_ROOT / "tools" / "wafer-verify-program" / "CMakeLists.txt",
         "StablehloRegister",
     )
     stablehlo_tool_cmake = (
-        REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt"
+        REPO_ROOT / "tools" / "wafer-verify-program" / "CMakeLists.txt"
     ).read_text(encoding="utf-8")
     for needle in [
         "WaferCompiler",
@@ -491,14 +492,14 @@ def check_cmake_target_visibility() -> None:
     ]:
         if needle in stablehlo_tool_cmake:
             raise RuntimeError(
-                "wafer-compile-stablehlo is a frontend verifier tool and must not "
+                "wafer-verify-program is a frontend verifier tool and must not "
                 f"link {needle}"
             )
     stablehlo_tool_source = (
         REPO_ROOT
         / "tools"
-        / "wafer-compile-stablehlo"
-        / "wafer-compile-stablehlo.cpp"
+        / "wafer-verify-program"
+        / "wafer-verify-program.cpp"
     ).read_text(encoding="utf-8")
     for needle in [
         "Wafer/Driver",
@@ -507,16 +508,9 @@ def check_cmake_target_visibility() -> None:
     ]:
         if needle in stablehlo_tool_source:
             raise RuntimeError(
-                "wafer-compile-stablehlo must remain a frontend verifier, but "
+                "wafer-verify-program must remain a frontend verifier, but "
                 f"its source includes {needle!r}"
             )
-    for needle in [
-        "WAFER_ENABLE_SHARDY=1",
-        "target_link_libraries(wafer-compile-stablehlo PRIVATE ShardySdyRegister)",
-    ]:
-        check_text_contains(
-            REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt", needle
-        )
     pipelines_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt"
     for needle in [
         "target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)",
@@ -544,7 +538,7 @@ def check_dependency_layering() -> None:
         REPO_ROOT / "lib" / "Wafer",
         REPO_ROOT / "tools" / "wafer-compile",
         REPO_ROOT / "tools" / "wafer-opt",
-        REPO_ROOT / "tools" / "wafer-compile-stablehlo",
+        REPO_ROOT / "tools" / "wafer-verify-program",
     ]
     compiler_library_roots = [
         REPO_ROOT / "include" / "Wafer",

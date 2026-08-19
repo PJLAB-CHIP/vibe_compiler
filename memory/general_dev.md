@@ -514,3 +514,14 @@ source program
   明确profile/production gate运行；定向调试优先抽取同一IR关系的large transpose、multi-stage或interleaved-component unit。
 - 16 Tile实际conversion、lifetime、packing只并发处理current Tile IR；不得为复用而缓存、clone或replay materialized IR。只有从
   TensorProgram和immutable target facts可完整键控、且Tile-local offsets/tails/endpoints在apply时重新绑定的analysis才能跨Tile共享。
+
+## Portable StableHLO product source（stable，2026-08-19）
+
+- 外部source program只使用`functions/forward.stablehlo.bc`；PyTorch/XLA保存的`forward.bytecode`本身是pinned StableHLO portable
+  artifact，产品adapter原子改为current成员名并删除diagnostic text。`forward.mlir`与旧`forward.bytecode`留在source会被拒绝。
+- `wafer.frontend.export_pytorch_program`只接受module、example inputs和不存在的output directory。测试case、seed、CPU oracle、dtype
+  comparator、target/search/runtime选项不得进入该API；测试generator可以调用产品helper，但产品代码不得import test。
+- `wafer-verify-program --program-dir`是advisory；compiler仍复制结构snapshot、建立payload owner并调用同一portable deserialize/verifier。
+  post-SPMD `forward.mlir`是compiler-owned内部TensorProgram格式，只由internal parser消费，不是source fallback。
+- 显式text IR检查使用`wafer-opt --pass-pipeline='builtin.module(wafer-frontend-verification)'`。StableHLO portable测试fixture用pinned
+  `stablehlo-translate --serialize --target=<external-version>`生成，text放在program directory外。

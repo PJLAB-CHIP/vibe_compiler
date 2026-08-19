@@ -1,6 +1,6 @@
 // REQUIRES: shardy
 // RUN: wafer-opt %s | FileCheck %s --check-prefix=PARSE
-// RUN: wafer-compile-stablehlo --verify-frontend-program %s | FileCheck %s --check-prefix=VERIFY
+// RUN: wafer-opt --pass-pipeline='builtin.module(wafer-frontend-verification)' %s -o /dev/null
 
 sdy.mesh @mesh = <["tp"=2]>
 
@@ -17,5 +17,3 @@ func.func @partitioned_all_gather(
 // PARSE: sdy.mesh @mesh = <["tp"=2]>
 // PARSE: func.func @partitioned_all_gather
 // PARSE-SAME: sdy.sharding
-
-// VERIFY: wafer-compile-stablehlo: verified frontend program

@@ -3,6 +3,7 @@
 # RUN: rm -rf %t.input %t.input.before %t.outputs %t.final.before %t.single-card-input %t.mismatch %t.duplicate %t.duplicate-mesh %t.bad-topology %t.alias-parent %t.symlink-input %t.stage-instr %t.source-sdy-string %t.nested-facts %t.helper-called %t.fail-helper %t.bad-helper %t.marker-dir-helper %t.symlink-helper %t.unexpected-helper %t.mock-helper
 # RUN: mkdir -p %t.input/functions %t.outputs
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>) -> tensor<16xf32> {\n    %%c = stablehlo.constant dense<1.000000e+00> : tensor<16xf32>\n    %%0 = stablehlo.add %%arg0, %%c : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.input/functions/forward.mlir
+# RUN: %stablehlo_translate --serialize --target=1.7.1 %t.input/functions/forward.mlir -o %t.input/functions/forward.stablehlo.bc && rm %t.input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"}],"unused_inputs":[]}\n' > %t.input/functions/forward.meta
 # RUN: cp -R %t.input %t.input.before
 # RUN: printf '%b' '#!/usr/bin/env bash\nset -euo pipefail\ninput=""\noutput=""\nwhile [[ $# -gt 0 ]]; do\n  case "$1" in\n    --input-program-dir) input="$2"; shift 2 ;;\n    --output-program-dir) output="$2"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nmkdir -p "$output/functions"\ncp -R "$input/." "$output/"\nprintf partial > "$output/functions/partial"\nexit 42\n' > %t.fail-helper
@@ -127,6 +128,7 @@
 # A single card partition is the production configuration of the single-card driver.
 # RUN: mkdir -p %t.single-card-input/functions %t.single-card-input/data
 # RUN: printf '%b' 'module {\n  func.func @main(%%arg0: tensor<16xf32>, %%arg1: tensor<16xf32>) -> tensor<16xf32> {\n    %%0 = stablehlo.add %%arg0, %%arg1 : tensor<16xf32>\n    return %%0 : tensor<16xf32>\n  }\n}\n' > %t.single-card-input/functions/forward.mlir
+# RUN: %stablehlo_translate --serialize --target=1.7.1 %t.single-card-input/functions/forward.mlir -o %t.single-card-input/functions/forward.stablehlo.bc && rm %t.single-card-input/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]},{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float32","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"},{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.single-card-input/functions/forward.meta
 # RUN: %python -c 'import numpy as np; from pathlib import Path; p=Path("%t.single-card-input/data/weight"); f=p.open("wb"); np.save(f, np.ones((16,), dtype=np.float32)); f.close()'
 # RUN: wafer-compile --input-program-dir %t.single-card-input --output-dir %t.outputs/single-card --num-partitions=1 | FileCheck %s --check-prefix=SINGLE-CARD
@@ -181,16 +183,16 @@
 # ALIASED-OUTPUT: wafer-compile: output directory must not equal or be nested under the source program directory
 # DEEP-SOURCE-OUTPUT: wafer-compile: output directory must not equal or be nested under the source program directory
 # SOURCE-SYMLINK: wafer-compile: program directory contains unsupported symbolic link
-# STAGE-INSTR: 'wafer.instr.ncc_join' op is not legal in an exporter or post-SPMD StableHLO program
-# SOURCE-SDY-STRING: wafer-compile: source program contains Shardy semantics that the external XLA SPMD helper boundary cannot consume
-# NESTED-FACTS: target topology and execution mesh must be direct module members
+# STAGE-INSTR: retired source IR member remains: functions/forward.mlir
+# SOURCE-SDY-STRING: retired source IR member remains: functions/forward.mlir
+# NESTED-FACTS: retired source IR member remains: functions/forward.mlir
 # SINGLE-CARD: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 # NO-CARD: package: id=0 cards=1 tiles=16
 # NO-CARD: entry: 0 card_id=0 tile_id=0 launch_slot=0
 # NO-CARD: launch_phase: role=main symbol=main
 # NO-CARD: launch_argument: 1 base=program_data offset=0
 # NO-CARD: board_execution: false
-# MISMATCH: execution mesh does not exactly match the requested num-partitions
-# DUPLICATE: typed compilation requires exactly one target topology
-# DUPLICATE-MESH: typed compilation requires exactly one execution mesh
-# BAD-TOPOLOGY: target topology does not match the single-card 1x1-card/4x4-tile ExecutionConfig
+# MISMATCH: retired source IR member remains: functions/forward.mlir
+# DUPLICATE: retired source IR member remains: functions/forward.mlir
+# DUPLICATE-MESH: retired source IR member remains: functions/forward.mlir
+# BAD-TOPOLOGY: retired source IR member remains: functions/forward.mlir

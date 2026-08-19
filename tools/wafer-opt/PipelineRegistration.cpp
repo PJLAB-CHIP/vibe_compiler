@@ -5,11 +5,18 @@
 #include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/Pipelines.h"
 #include "Wafer/Transforms/MemoryPlanningPipelines.h"
+#include "Wafer/Transforms/FrontendVerification.h"
 #include "Wafer/Transforms/SpmdPipelines.h"
 
 #include "mlir/Pass/PassRegistry.h"
 
 void registerWaferOptPipelines() {
+  mlir::PassPipelineRegistration<>(
+      "wafer-frontend-verification",
+      "Verify imported frontend IR without producing a program directory",
+      [](mlir::OpPassManager &pm) {
+        wafer::buildFrontendVerificationPipeline(pm);
+      });
   mlir::PassPipelineRegistration<>(
       "wafer-normalize-imported-stablehlo",
       "Normalize imported StableHLO without crossing its legality boundary",

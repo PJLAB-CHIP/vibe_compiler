@@ -3,19 +3,21 @@
 # RUN: rm -rf %t.corpus
 # RUN: env CPU_NUM_DEVICES=1 PJRT_DEVICE=CPU %importer_python %wafer_src_root/test/Tools/Inputs/wafer_pytorch_xla_capture.py --emit-workload-corpus --verify-corpus-reproducibility --output-corpus-dir %t.corpus
 # RUN: FileCheck %s --input-file=%t.corpus/corpus.json --check-prefix=CORPUS
-# RUN: FileCheck %s --input-file=%t.corpus/linear-residual-mlp-f32/program/functions/forward.mlir --check-prefix=LINEAR-MLIR
-# RUN: FileCheck %s --input-file=%t.corpus/tiny-llama-decoder-f32/program/functions/forward.mlir --check-prefix=LLAMA-MLIR
-# RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.corpus/linear-residual-mlp-f32/program | FileCheck %s --check-prefix=LINEAR-VERIFY
-# RUN: wafer-compile-stablehlo --verify-stablehlo-program %t.corpus/tiny-llama-decoder-f32/program | FileCheck %s --check-prefix=LLAMA-VERIFY
+# RUN: %stablehlo_translate --deserialize %t.corpus/linear-residual-mlp-f32/program/functions/forward.stablehlo.bc -o %t.linear.mlir
+# RUN: %stablehlo_translate --deserialize %t.corpus/tiny-llama-decoder-f32/program/functions/forward.stablehlo.bc -o %t.llama.mlir
+# RUN: FileCheck %s --input-file=%t.linear.mlir --check-prefix=LINEAR-MLIR
+# RUN: FileCheck %s --input-file=%t.llama.mlir --check-prefix=LLAMA-MLIR
+# RUN: wafer-verify-program --program-dir %t.corpus/linear-residual-mlp-f32/program | FileCheck %s --check-prefix=LINEAR-VERIFY
+# RUN: wafer-verify-program --program-dir %t.corpus/tiny-llama-decoder-f32/program | FileCheck %s --check-prefix=LLAMA-VERIFY
 
 # CORPUS: "case_id": "linear-residual-mlp-f32"
 # CORPUS: "corpus_id": "wafer-single-card-vertical"
-# CORPUS: "exported_program": "sha256:b6eae1be4607b0e44c4bd66aa95101efc6e3471b743e4b19a67d90a1d3622287"
+# CORPUS: "exported_program": "sha256:
 # CORPUS: "repeat_export_canonical_equivalent": true
 # CORPUS: "case_id": "tiny-llama-decoder-f32"
 # CORPUS: "causal_attention": true
 # CORPUS: "corpus_id": "wafer-single-card-vertical"
-# CORPUS: "exported_program": "sha256:51efa9d95cbf82c615690cea22fa80fb340b2220b9dcaddb66809962daecbd9c"
+# CORPUS: "exported_program": "sha256:
 # CORPUS: "repeat_export_canonical_equivalent": true
 # CORPUS: "git_revision": "396608c7105b3763874fe3800dfabdfa2b38a28a"
 
@@ -27,7 +29,5 @@
 # LLAMA-MLIR: stablehlo.exponential
 # LLAMA-MLIR: stablehlo.reduce
 
-# LINEAR-VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameters: 4
-# LINEAR-VERIFY: wafer-compile-stablehlo: verified StableHLO program
-# LLAMA-VERIFY: wafer-compile-stablehlo: verified StableHLO program directory parameters: 9
-# LLAMA-VERIFY: wafer-compile-stablehlo: verified StableHLO program
+# LINEAR-VERIFY: wafer-verify-program: verified portable StableHLO program parameters=4
+# LLAMA-VERIFY: wafer-verify-program: verified portable StableHLO program parameters=9

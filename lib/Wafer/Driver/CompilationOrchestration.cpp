@@ -2,6 +2,7 @@
 
 #include "Wafer/Package/Writer/PackageInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Frontend/StableHLO/ProgramIngestion.h"
 #include "Wafer/Driver/CompilationStatistics.h"
 
 #include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
@@ -260,10 +261,11 @@ mlir::LogicalResult runCompilationTransaction(
         return mlir::success();
       });
 
-  mlir::OwningOpRef<mlir::ModuleOp> sourceModule =
-      parseProgramDirectoryModule(sourceSnapshot, context);
-  if (!sourceModule)
+  auto sourceArtifact = frontend::deserializeStableHLOProgramDirectory(
+      sourceSnapshot, context, diagnostics);
+  if (mlir::failed(sourceArtifact))
     return mlir::failure();
+  mlir::OwningOpRef<mlir::ModuleOp> sourceModule = std::move(*sourceArtifact);
   if (hasPostSpmdMarker(*sourceModule, sourceSnapshot)) {
     reject(diagnostics,
            "source program is already SPMD-partitioned; typed compilation "
@@ -276,7 +278,8 @@ mlir::LogicalResult runCompilationTransaction(
            "SPMD helper boundary cannot consume");
     return mlir::failure();
   }
-  if (mlir::failed(verifyStablehloStageOperations(*sourceModule)))
+  if (mlir::failed(
+          frontend::verifyStableHLOSourceModule(*sourceModule, diagnostics)))
     return mlir::failure();
   if (mlir::failed(materializeOrVerifyExactExecutionConfig(
           *sourceModule, request.getExecutionConfig())))
@@ -349,6 +352,15 @@ mlir::LogicalResult runCompilationTransaction(
     return mlir::failure();
   if (writeProgramModule(*helperModule, helperInput, diagnostics))
     return mlir::failure();
+  if (std::error_code error = llvm::sys::fs::remove(programFile(
+          helperInput,
+          {llvm::StringRef("functions"),
+           llvm::StringRef("forward.stablehlo.bc")}))) {
+    reject(diagnostics,
+           "failed to remove portable source artifact from helper input: " +
+               error.message());
+    return mlir::failure();
+  }
   for (const auto &entry : resolver.resolved) {
     ProgramDataFailure materializationFailure;
     if (llvm::Error error = programData.materializeSourceToFile(
