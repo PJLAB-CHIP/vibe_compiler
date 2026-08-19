@@ -24,6 +24,7 @@ enum class TileMemoryPlanningFailureKind : uint8_t {
   Verification,
   InstrMemoryPlanningPreparation,
   SelectedBufferMaterialization,
+  InstructionScheduling,
   SPMAllocation,
 };
 
@@ -78,7 +79,8 @@ mlir::FailureOr<mlir::OwningOpRef<mlir::ModuleOp>> planTileMemory(
     llvm::ArrayRef<SelectedBufferingScope> selectedBufferingScopes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr,
     unsigned *materializedSlotAllocationCount = nullptr,
-    SelectedBufferMaterializationFailure *selectedBufferFailure = nullptr);
+    SelectedBufferMaterializationFailure *selectedBufferFailure = nullptr,
+    bool applySelectedInstructionSchedule = false);
 
 } // namespace wafer::compiler::detail
 

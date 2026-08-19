@@ -41,6 +41,7 @@ add_executable(WaferUnitTests
   Planning/Search/SpatialPlacementTest.cpp
   Planning/Search/StagePipelineTest.cpp
   Planning/Search/TensorProgramAlternativeTest.cpp
+  Planning/Search/UnifiedPhysicalDataflowTest.cpp
   Planning/Search/TemporalTilingTest.cpp
   Program/ProgramDataTest.cpp
   Conversion/BidirectionalTilingTest.cpp

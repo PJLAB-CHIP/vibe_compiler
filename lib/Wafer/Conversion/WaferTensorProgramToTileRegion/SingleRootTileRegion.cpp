@@ -41,6 +41,161 @@ void cloneModuleTopology(mlir::ModuleOp source, mlir::ModuleOp destination) {
       builder.clone(operation, mapping);
 }
 
+struct TileEntryStage {
+  mlir::func::FuncOp function;
+  llvm::SmallVector<RootValueKey, 8> boundaries;
+  llvm::SmallVector<RootValueKey, 4> results;
+};
+
+mlir::Value createEmptyTensor(mlir::Type type, mlir::Location loc,
+                              mlir::OpBuilder &builder) {
+  auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(type);
+  if (!tensor || !tensor.hasStaticShape())
+    return {};
+  return builder
+      .create<mlir::tensor::EmptyOp>(loc, tensor.getShape(),
+                                     tensor.getElementType())
+      .getResult();
+}
+
+mlir::LogicalResult composeTileEntry(
+    TileModuleOp tile, mlir::func::FuncOp sourceProgram,
+    llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
+    llvm::ArrayRef<TileEntryStage> stages, std::string *failureReason) {
+  if (!tile || !sourceProgram || sourceProgram.isExternal() ||
+      !sourceProgram.getBody().hasOneBlock())
+    return failResult(failureReason,
+                      "Tile entry composition requires one source function");
+  mlir::OpBuilder builder(&tile.getBody().front(),
+                          tile.getBody().front().begin());
+  auto entry = builder.create<mlir::func::FuncOp>(
+      sourceProgram.getLoc(), sourceProgram.getSymName(),
+      sourceProgram.getFunctionType());
+  mlir::Block *body = entry.addEntryBlock();
+  builder.setInsertionPointToStart(body);
+  std::map<RootValueKey, mlir::Value> values;
+  std::map<RootValueKey, llvm::SmallVector<mlir::Value, 2>> destinations;
+  for (auto [index, argument] : llvm::enumerate(body->getArguments()))
+    values[{RootValueKind::SourceArgument, static_cast<uint32_t>(index), 0}] =
+        argument;
+
+  llvm::SmallVector<const TileEntryStage *, 8> pending;
+  for (const TileEntryStage &stage : stages)
+    pending.push_back(&stage);
+  while (!pending.empty()) {
+    auto ready = llvm::find_if(pending, [&](const TileEntryStage *stage) {
+      return llvm::all_of(stage->boundaries, [&](const RootValueKey &key) {
+        return key.kind == RootValueKind::SourceArgument ||
+               values.count(key) != 0;
+      });
+    });
+    if (ready == pending.end())
+      ready = pending.begin();
+    const TileEntryStage &stage = **ready;
+    mlir::func::FuncOp function = stage.function;
+    pending.erase(ready);
+    if (!function || function.getNumResults() != stage.results.size() ||
+        function.getNumArguments() < stage.boundaries.size())
+      return failResult(failureReason,
+                        "Tile entry stage relation is structurally invalid");
+    llvm::SmallVector<mlir::Value, 8> operands;
+    for (auto [index, key] : llvm::enumerate(stage.boundaries)) {
+      auto value = values.find(key);
+      mlir::Value operand =
+          value == values.end()
+              ? createEmptyTensor(function.getArgumentTypes()[index],
+                                  function.getLoc(), builder)
+              : value->second;
+      if (!operand || operand.getType() != function.getArgumentTypes()[index])
+        return failResult(failureReason,
+                          "Tile entry cannot resolve one stage boundary");
+      operands.push_back(operand);
+    }
+    for (unsigned index = stage.boundaries.size();
+         index < function.getNumArguments(); ++index) {
+      mlir::Value destination = createEmptyTensor(
+          function.getArgumentTypes()[index], function.getLoc(), builder);
+      if (!destination)
+        return failResult(failureReason,
+                          "Tile entry stage destination is not static tensor");
+      operands.push_back(destination);
+    }
+    for (const RootValueKey &key : stage.results)
+      for (size_t operandIndex = stage.boundaries.size();
+           operandIndex < operands.size(); ++operandIndex)
+        destinations[key].push_back(operands[operandIndex]);
+    if (!function.getBody().hasOneBlock())
+      return failResult(failureReason,
+                        "Tile entry stage function is not one block");
+    mlir::Block &stageBody = function.getBody().front();
+    if (stageBody.getNumArguments() != operands.size())
+      return failResult(failureReason,
+                        "Tile entry stage operand count changed");
+    for (auto [argument, operand] :
+         llvm::zip_equal(stageBody.getArguments(), operands))
+      argument.replaceAllUsesWith(operand);
+    auto stageReturn =
+        mlir::dyn_cast<mlir::func::ReturnOp>(stageBody.getTerminator());
+    if (!stageReturn || stageReturn.getNumOperands() != stage.results.size())
+      return failResult(failureReason,
+                        "Tile entry stage has no exact functional return");
+    llvm::SmallVector<mlir::Value, 4> stageResults(
+        stageReturn.getOperands().begin(), stageReturn.getOperands().end());
+    llvm::SmallVector<mlir::Operation *, 16> stageOperations;
+    for (mlir::Operation &operation : stageBody.without_terminator())
+      stageOperations.push_back(&operation);
+    for (mlir::Operation *operation : stageOperations)
+      operation->moveBefore(body, body->end());
+    stageReturn.erase();
+    function.erase();
+    builder.setInsertionPointToEnd(body);
+    for (auto [key, value] : llvm::zip_equal(stage.results, stageResults))
+      values[key] = value;
+  }
+
+  auto sourceReturn = mlir::cast<mlir::func::ReturnOp>(
+      sourceProgram.getBody().front().getTerminator());
+  llvm::SmallVector<mlir::Value, 4> outputs;
+  for (auto [resultIndex, sourceValue, resultType] : llvm::enumerate(
+           sourceReturn.getOperands(), sourceProgram.getResultTypes())) {
+    mlir::Value output;
+    if (auto result = mlir::dyn_cast<mlir::OpResult>(sourceValue)) {
+      auto owner =
+          llvm::find_if(sourceOperationNodes,
+                        [&](const StructuredOperationNodeMapping &candidate) {
+                          return candidate.operation == result.getOwner();
+                        });
+      if (owner != sourceOperationNodes.end()) {
+        auto found =
+            values.find({RootValueKind::StructuredResult,
+                         owner->structuredNodeId, result.getResultNumber()});
+        if (found != values.end())
+          output = found->second;
+        if ((!output || output.getType() != resultType)) {
+          auto destination = destinations.find(
+              {RootValueKind::StructuredResult, owner->structuredNodeId,
+               result.getResultNumber()});
+          if (destination != destinations.end())
+            for (mlir::Value candidate : destination->second)
+              if (candidate.getType() == resultType) {
+                output = candidate;
+                break;
+              }
+        }
+      }
+    }
+    if (!output || output.getType() != resultType)
+      output = createEmptyTensor(resultType, sourceProgram.getLoc(), builder);
+    if (!output || output.getType() != resultType)
+      return failResult(failureReason,
+                        "Tile entry cannot construct one program output");
+    outputs.push_back(output);
+    (void)resultIndex;
+  }
+  builder.create<mlir::func::ReturnOp>(sourceProgram.getLoc(), outputs);
+  return mlir::verify(entry);
+}
+
 void appendRelations(StructuredMaterializationRelations &destination,
                      StructuredMaterializationRelations source) {
   destination.operationEmissions.append(source.operationEmissions.begin(),
@@ -80,9 +235,16 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
         "node-group CardModule requires source, Tiles and structured roots");
   llvm::DenseSet<mlir::Operation *> seenOperations;
   llvm::DenseSet<uint32_t> seenNodeIds;
+  mlir::func::FuncOp sourceProgram =
+      operationNodes.front().operation
+          ? operationNodes.front()
+                .operation->getParentOfType<mlir::func::FuncOp>()
+          : mlir::func::FuncOp{};
   for (const StructuredOperationNodeMapping &mapping : operationNodes)
     if (!mapping.operation ||
         !sourceModule->isProperAncestor(mapping.operation) ||
+        mapping.operation->getParentOfType<mlir::func::FuncOp>() !=
+            sourceProgram ||
         !seenOperations.insert(mapping.operation).second ||
         !seenNodeIds.insert(mapping.structuredNodeId).second)
       return failResult(
@@ -245,6 +407,7 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
   }
 
   StructuredMaterializationRelations relations;
+  std::map<int64_t, llvm::SmallVector<TileEntryStage, 8>> entryStages;
   struct PartialGroup {
     TileId mergeTile{0};
     llvm::SmallVector<const StructuredNodeIterationShard *, 8> shards;
@@ -275,6 +438,8 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
                                              failureReason);
     if (mlir::failed(fragment))
       return mlir::failure();
+    entryStages[firstShard.tile.getValue()].push_back(
+        {fragment->function, fragment->boundaries, fragment->results});
     if (firstShard.role ==
         StructuredNodeIterationShardRole::PartialReductionContribution) {
       PartialGroup &partial = partialGroups[firstShard.structuredNodeId];
@@ -302,7 +467,17 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
         group.mergeRepresentation, failureReason);
     if (mlir::failed(merge))
       return mlir::failure();
+    entryStages[group.mergeTile.getValue()].push_back(
+        {merge->function, merge->boundaries, merge->results});
     appendRelations(relations, std::move(merge->relations));
+  }
+
+  for (TileId tileId : sortedTiles) {
+    TileModuleOp tile = tiles.lookup(tileId.getValue());
+    if (!tile || mlir::failed(composeTileEntry(
+                     tile, sourceProgram, operationNodes,
+                     entryStages[tileId.getValue()], failureReason)))
+      return mlir::failure();
   }
 
   if (mlir::failed(mlir::verify(*result)))

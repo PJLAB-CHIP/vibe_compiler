@@ -51,10 +51,11 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
   RootFragment result;
   llvm::SmallVector<StructuredOperationNodeMapping, 8> operationNodes;
   unsigned functionalArgumentCount = 0;
-  mlir::FailureOr<mlir::func::FuncOp> function =
-      buildRootFunction(tileOwner.getBody().front(), requested->operation,
-                        structuredNodeId, structuredOperations, failureReason,
-                        operationNodes, functionalArgumentCount);
+  mlir::FailureOr<mlir::func::FuncOp> function = buildRootFunction(
+      tileOwner.getBody().front(), requested->operation, structuredNodeId,
+      sourceOperationNodes, structuredOperations, failureReason,
+      operationNodes, functionalArgumentCount, result.boundaries,
+      result.results);
   if (mlir::failed(function))
     return mlir::failure();
   function->setName(

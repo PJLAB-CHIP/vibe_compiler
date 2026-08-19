@@ -31,4 +31,5 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/TemporalTiling.cpp
   Planning/Search/SingleRootRegion.cpp
   Planning/Search/TensorProgramAlternative.cpp
+  Planning/Search/UnifiedPhysicalDataflow.cpp
   PARENT_SCOPE)

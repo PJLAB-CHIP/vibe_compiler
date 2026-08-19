@@ -8,8 +8,7 @@
 namespace {
 using namespace wafer::compiler::testing;
 
-TEST(CardExecutableSearchTest,
-     PartialMechanismsReturnAcceptedBaselineWithoutRematerialization) {
+TEST(CardExecutableSearchTest, CompleteCandidateRunsThroughTheSharedExactGate) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
 
@@ -23,20 +22,25 @@ TEST(CardExecutableSearchTest,
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(baseline)) << diagnosticsText;
   ASSERT_EQ(baseline->executable.tiles.size(), 16u);
-  mlir::Operation *firstTileOwner =
-      baseline->executable.tiles.front().getModule().getOperation();
-
+  wafer::compiler::detail::CardExecutableSearchSummary summary;
   auto selected = wafer::compiler::detail::runCardExecutableSearch(
       *parsed.module, *baseline->programAnalysis,
-      std::move(baseline->executable));
+      std::move(baseline->executable), programMetadata(), executionConfig(),
+      diagnostics, programData,
+      wafer::compiler::detail::SearchWorkBudget::bounded(1, 1),
+      wafer::TargetMemoryPolicy{}, &summary);
 
   ASSERT_TRUE(mlir::succeeded(selected));
   ASSERT_EQ(selected->tiles.size(), 16u);
-  EXPECT_EQ(selected->tiles.front().getModule().getOperation(), firstTileOwner);
+  EXPECT_EQ(summary.work.evaluated, 1u);
+  EXPECT_EQ(summary.work.accepted + summary.work.exactRejected +
+                summary.work.indeterminate,
+            1u);
+  EXPECT_EQ(
+      summary.coverage,
+      wafer::compiler::detail::CardExecutableSearchCoverage::BudgetLimited);
   EXPECT_EQ(statistics.baselineCardModuleMaterializations, 1u);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
-  EXPECT_EQ(diagnosticsText.find("card-executable-selection"),
-            std::string::npos);
 }
 
 } // namespace

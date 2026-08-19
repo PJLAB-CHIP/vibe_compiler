@@ -2141,6 +2141,33 @@ Q51在small-oracle mode完整展开有限域。真实workload从正确性闭合�
 correctness mode在真实负载上无限运行。Q52基于fresh profile选择production budget并改善同一预算下的
 time-to-first和incumbent质量。
 
+### 2026-08-19 完成结果
+
+`UnifiedPhysicalDataflowDomain`以一个immutable TensorProgram root和explicit target memory facts为owner，惰性组合Q50.B spatial、Q50.D
+coupled groups、Q50.E temporal、current per-node implementation、Q50.G representation、Q50.H movement和Q50.I buffering。每次推进只重建
+受上游choice影响的下游domain；trial、exact demand、reuse、footprint和domain objects均不进入assignment identity。logical trial未
+satisfied的spatial point只跳过该具体point，siblings继续可达。query不clone、不lower；selected assignment一次性构造CardModule并生成
+per-Tile buffer scopes。
+
+施工首次把该CardModule送入Q50.0时发现Q50.C–H只留下private root functions，没有唯一public Tile entry。现root construction同时返回
+typed source-argument/structured-node-result keys；Card assembly按这些keys拓扑组合每Tile entry并直接move stage bodies，不靠symbol name、
+definition ordinal或call/replay。无work Tile生成同signature empty result；partial contribution Tile在非owner结果上返回empty，merge/output
+side effect仍由actual merge region承担。local chain的entry现把producer tensor SSA直接交给consumer，Q50.0不再因multi-function DDR call
+scope失败。
+
+`CardExecutableSearch`以Q49.P accepted baseline为纯incumbent，按显式`SearchWorkBudget`逐个materialize complete assignment并调用同一Q50.0；
+typed结果区分accepted/exact rejection/indeterminate，只有accepted且全部比较metric known时按DDR read/write、NoC transmit、instruction、
+Tile SPM/DDR high-water lexicographic替换incumbent。attention graph alternatives逐个materialize一个isolated root并重新分析后进入同一physical
+closure；不存在算法专用physical selector。Q50.0 search candidate在stage结构完成后显式进入Q50.J canonical query/apply；baseline不创建
+schedule domain，修复了误接入后scalar baseline从约2秒退化到45秒的问题。
+
+current public `search`由typed policy显式限制一个complete evaluation，coverage返回`BudgetLimited`；这准确表示尚未展开的合法completion，
+不声称最优。Q52继续扩展同一controller的budget、proposal order、profile和coverage对外呈现，不改变Q51合法域。fresh unit证明complete
+assignment source不变、产生16-Tile entry并通过Q50.0；public FP16 search source→package→no-card tool lit 1/1通过。旧search/controller、
+axis-local winner、clone/replay和默认统计零残留。
+fresh Q50/Q51/baseline定向unit 57/57、core lit 216/216、source/IR organization和主构建通过；baseline scalar保持约2.1秒且不构造
+schedule domain。未运行重型LLaMA search。
+
 ## Q52：Profile-Driven Anytime Search and LNS
 
 Q52开始前必须先拆掉`TargetScheduleCostPolicy`/`WaferTargetPolicy`这类跨owner aggregate：exact accepted Instr只产生可重算的

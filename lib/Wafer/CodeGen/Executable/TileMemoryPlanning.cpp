@@ -3,6 +3,7 @@
 #include "Wafer/CodeGen/Executable/TileMemoryPlanning.h"
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Planning/Search/InstructionSchedule.h"
 #include "Wafer/Planning/Search/StagePipeline.h"
 #include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 
@@ -158,7 +159,8 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
                llvm::ArrayRef<SelectedBufferingScope> selectedBufferingScopes,
                StructuredMaterializationRelations *materializationRelations,
                unsigned *materializedSlotAllocationCount,
-               SelectedBufferMaterializationFailure *selectedBufferFailure) {
+               SelectedBufferMaterializationFailure *selectedBufferFailure,
+               bool applySelectedInstructionSchedule) {
   if (failure)
     *failure = {};
   if (materializedSlotAllocationCount)
@@ -272,6 +274,37 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
           requireCurrentBufferRelations("selected buffer materialization"))) {
     recordFailure(TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
     return mlir::failure();
+  }
+
+  // Every complete candidate enters the Q50.J query/apply boundary after its
+  // final stage structure exists and before physical offsets are assigned.
+  // The complete search owner may supply another assignment through the same
+  // mechanism; this low-level exact gate consumes the canonical first point.
+  if (applySelectedInstructionSchedule) {
+    auto scheduleDomain = CardInstructionScheduleDomain::create(
+        llvm::ArrayRef<TileInstructionModule>{
+            TileInstructionModule{TileId(0), *module}});
+    if (mlir::failed(scheduleDomain)) {
+      recordFailure(TileMemoryPlanningFailureKind::InstructionScheduling);
+      return mlir::failure();
+    }
+    CardInstructionScheduleAssignment schedule =
+        scheduleDomain->getFirstAssignment();
+    std::vector<mlir::OwningOpRef<mlir::ModuleOp>> scheduledModules;
+    scheduledModules.push_back(std::move(module));
+    auto scheduled = applyInstructionSchedule(std::move(scheduledModules),
+                                              llvm::ArrayRef<TileId>{TileId(0)},
+                                              *scheduleDomain, schedule);
+    if (mlir::failed(scheduled) || scheduled->modules.size() != 1) {
+      recordFailure(TileMemoryPlanningFailureKind::InstructionScheduling);
+      return mlir::failure();
+    }
+    module = std::move(scheduled->modules.front());
+    if (mlir::failed(
+            requireCurrentBufferRelations("instruction schedule apply"))) {
+      recordFailure(TileMemoryPlanningFailureKind::InstructionScheduling);
+      return mlir::failure();
+    }
   }
 
   const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;

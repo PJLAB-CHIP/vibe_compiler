@@ -129,7 +129,8 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
     const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
     ProgramDataHandoff &programData,
     CardExecutableLoweringStatistics *statistics,
-    unsigned tilePipelineParallelism, bool captureTileIRTrace) {
+    unsigned tilePipelineParallelism, bool captureTileIRTrace,
+    bool applySelectedInstructionSchedule) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "stage", "card-module-to-executable", "card-executable-compilation");
   if (statistics)
@@ -224,7 +225,8 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
         planTileMemory(std::move(result.module), &result.memoryPlanning,
                        bufferingScopes, &result.materializationRelations,
                        &result.rotatingSlotAllocationCount,
-                       &result.selectedBuffer);
+                       &result.selectedBuffer,
+                       applySelectedInstructionSchedule);
     if (mlir::failed(memoryPlanned)) {
       result.memoryPlanningFailed = true;
       result.detail = result.selectedBuffer.detail;
@@ -265,6 +267,9 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
           : result.memoryPlanning.kind ==
                   TileMemoryPlanningFailureKind::SelectedBufferMaterialization
               ? "selected-buffer-materialization"
+          : result.memoryPlanning.kind ==
+                  TileMemoryPlanningFailureKind::InstructionScheduling
+              ? "instruction-scheduling"
               : "tile-memory-planning";
       failure.detail = std::move(result.detail);
       failure.memoryPlanning = std::move(result.memoryPlanning);

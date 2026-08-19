@@ -11,20 +11,40 @@
 
 #include "llvm/ADT/DenseSet.h"
 
+#include <tuple>
+
 namespace wafer::tensor_program_to_tile_region {
+
+enum class RootValueKind : uint8_t { SourceArgument, StructuredResult };
+
+struct RootValueKey {
+  RootValueKind kind = RootValueKind::SourceArgument;
+  uint32_t owner = 0;
+  unsigned resultIndex = 0;
+
+  friend bool operator<(const RootValueKey &lhs, const RootValueKey &rhs) {
+    return std::tie(lhs.kind, lhs.owner, lhs.resultIndex) <
+           std::tie(rhs.kind, rhs.owner, rhs.resultIndex);
+  }
+};
 
 struct RootFragment {
   mlir::func::FuncOp function;
   StructuredMaterializationRelations relations;
+  llvm::SmallVector<RootValueKey, 8> boundaries;
+  llvm::SmallVector<RootValueKey, 4> results;
 };
 
 mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
     mlir::Block &destination, mlir::Operation *sourceRoot,
     uint32_t structuredNodeId,
+    llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const llvm::DenseSet<mlir::Operation *> &structuredOperations,
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
-    unsigned &functionalArgumentCount);
+    unsigned &functionalArgumentCount,
+    llvm::SmallVectorImpl<RootValueKey> &boundaries,
+    llvm::SmallVectorImpl<RootValueKey> &results);
 
 mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
     mlir::Block &destination, llvm::ArrayRef<mlir::Operation *> sourceRoots,
@@ -32,7 +52,9 @@ mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
     llvm::ArrayRef<uint32_t> coupledNodeIds,
     llvm::ArrayRef<uint32_t> recomputedNodeIds, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
-    unsigned &functionalArgumentCount);
+    unsigned &functionalArgumentCount,
+    llvm::SmallVectorImpl<RootValueKey> &boundaries,
+    llvm::SmallVectorImpl<RootValueKey> &results);
 
 void retainLiveOperationNodes(
     mlir::func::FuncOp function,

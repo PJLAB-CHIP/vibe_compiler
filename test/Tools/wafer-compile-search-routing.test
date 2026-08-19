@@ -1,9 +1,9 @@
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
-# Public search currently has no production physical mechanism. This small
-# source-to-package gate proves that it accepts the already compiled baseline
-# incumbent without reviving the retired controller or running a model-scale
-# search workload.
+# Public search evaluates a bounded complete Q50 physical assignment through
+# the shared executable gate while retaining the accepted baseline incumbent.
+# This stays a small source-to-package/no-card routing gate; model-scale policy
+# and performance profiling belong to Q52.
 
 # RUN: rm -rf %t.source %t.package
 # RUN: mkdir -p %t.source/functions

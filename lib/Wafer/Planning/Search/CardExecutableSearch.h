@@ -5,21 +5,38 @@
 
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/CodeGen/Executable/CardExecutableLowering.h"
+#include "Wafer/Planning/Search/SearchControl.h"
+#include "Wafer/Support/TargetPolicy.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 
 namespace wafer::compiler::detail {
 
-/// Starts the current search session from an immutable TensorProgram and an
-/// already accepted move-only baseline. Q50.S and Q50.B contribute typed
-/// semantic-root and spatial-placement domains, but the remaining physical
-/// coordinates are incomplete, so the exact same executable owner is returned
-/// without enumerating, cloning, lowering, or recompiling partial states.
-mlir::FailureOr<CardExecutableLoweringResult>
-runCardExecutableSearch(mlir::ModuleOp tensorProgram,
-                        const CardProgramAnalysis &programAnalysis,
-                        CardExecutableLoweringResult baseline);
+enum class CardExecutableSearchCoverage : uint8_t {
+  Exhausted,
+  BudgetLimited,
+};
+
+struct CardExecutableSearchSummary {
+  SearchWorkCounts work;
+  CardExecutableSearchCoverage coverage =
+      CardExecutableSearchCoverage::BudgetLimited;
+};
+
+/// Evaluates complete original-root physical assignments through the shared
+/// Q50.0 exact gate. The accepted baseline is an incumbent only. The explicit
+/// budget controls complete candidate evaluations; no partial state is lowered
+/// or cloned. Semantic graph alternatives join this same closure before Q51 is
+/// marked complete.
+mlir::FailureOr<CardExecutableLoweringResult> runCardExecutableSearch(
+    mlir::ModuleOp tensorProgram, const CardProgramAnalysis &programAnalysis,
+    CardExecutableLoweringResult baseline,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData, SearchWorkBudget budget,
+    const TargetMemoryPolicy &memory,
+    CardExecutableSearchSummary *summary = nullptr);
 
 } // namespace wafer::compiler::detail
 

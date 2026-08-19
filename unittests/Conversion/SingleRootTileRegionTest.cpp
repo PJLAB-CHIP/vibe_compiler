@@ -113,7 +113,7 @@ TEST(SingleRootTileRegionTest, MaterializesExactNodeShardsAndEmptyTiles) {
       << failureReason;
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized)));
   EXPECT_EQ(countOps<wafer::TileModuleOp>(materialized->getOperation()), 4u);
-  EXPECT_EQ(countOps<mlir::func::FuncOp>(materialized->getOperation()), 2u);
+  EXPECT_EQ(countOps<mlir::func::FuncOp>(materialized->getOperation()), 4u);
   EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->getOperation()), 2u);
   materialized->walk([&](mlir::func::FuncOp function) {
     EXPECT_TRUE(function->getParentOfType<wafer::TileModuleOp>());
@@ -621,7 +621,7 @@ TEST(SingleRootTileRegionTest,
   EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
             5u);
   EXPECT_EQ(countOps<mlir::func::FuncOp>(materialized->module->getOperation()),
-            5u);
+            4u);
   llvm::SmallVector<unsigned, 4> regionsByTile(4, 0);
   materialized->module->walk([&](wafer::TileModuleOp tile) {
     tile.walk([&](wafer::TileRegionOp) {

@@ -260,7 +260,11 @@ compileTensorProgramModuleToCardExecutable(
       optimizations.isSearch()
           ? detail::runCardExecutableSearch(
                 tensorModule, *baseline->programAnalysis,
-                std::move(baseline->executable))
+                std::move(baseline->executable), program, executionConfig,
+                diagnostics, programData,
+                detail::SearchWorkBudget::bounded(
+                    /*evaluations=*/1, /*expansions=*/1),
+                getDefaultWaferTargetPolicy().memory)
           : mlir::FailureOr<detail::CardExecutableLoweringResult>(
                 std::move(baseline->executable));
   if (mlir::failed(selected))

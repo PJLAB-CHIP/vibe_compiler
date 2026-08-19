@@ -1089,3 +1089,25 @@
   是serialized。Q50.J schedule在mutation后重建，SPM offset在stage完成后分配。
 - 防复发：删除old public API/source/test，搜索确保fixed-slot candidate零残留；stage正例必须核对2+ stages、selected slots、额外phase Instr和
   schedule epoch invalidation，负例复用同一active alias/DTE/trip/tail gates，不复制第二套planner。
+
+## Per-root TileRegion不等于可执行Tile entry
+
+- 现象：Q50.C–H的CardModule包含正确private root/relay functions和TileRegions，局部tests全绿；首次由Q51送入Q50.0时却因每Tile没有
+  唯一public entry失败，临时用`func.call`组合又被DDR planner的跨call scope合同拒绝。
+- 根因：把“每个root已物化”误当成“每Tile program已闭合”，root function的source boundary/result对应关系没有作为同次construction
+  typed结果保留，导致后续只能猜名字/顺序或遗漏entry。
+- 修复模式：root construction返回source-argument/structured-node-result keys；Card assembly按keys拓扑选择ready stages，把single-block
+  stage body直接move进唯一public entry并用current SSA传递local intermediates。无work Tile构造同signature empty entry；不引入call、
+  replay、ordinal或跨passside table。
+- 防复发：Q50.C actual test不仅数TileRegion，还必须检查每Tile恰一public entry；Q51 complete candidate必须进入Q50.0并通过DDR/call-closure/
+  program-resource gate。private functions存在或局部verifier通过不能代签executable boundary。
+
+## Baseline不能无条件构造search schedule domain
+
+- 现象：把Q50.J canonical query/apply直接放入共同`planTileMemory`后，baseline scalar case从约2秒退化到45秒；大block会承担O(n²)
+  dependency DAG构造，即使用户选择`none`。
+- 根因：共享exact gate与共享search policy混淆；baseline的canonical source order/worker0已经确定，不需要枚举或建立schedule domain。
+- 修复模式：Tile memory planning用显式`applySelectedInstructionSchedule`控制Q50.J；search complete candidate传true，baseline/default传false。
+  两者仍共享stage、SPM/DDR和最终verification，但baseline不产生search work。
+- 防复发：baseline定向wall-time与work count必须检查schedule query为零；任何新search axis接入共同lowering时都需要显式selected入口，
+  不能在无assignment路径中构造domain后再取first。

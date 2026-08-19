@@ -156,7 +156,7 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
   mlir::FailureOr<mlir::func::FuncOp> function = buildCoupledRootFunction(
       tileOwner.getBody().front(), sourceSinks, sourceOperationNodes,
       orderedNodeIds, recomputedNodeIds, failureReason, operationNodes,
-      functionalArgumentCount);
+      functionalArgumentCount, result.boundaries, result.results);
   if (mlir::failed(function) ||
       mlir::failed(appendTileOutputDestinations(*function, failureReason)))
     return mlir::failure();

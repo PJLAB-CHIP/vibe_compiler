@@ -118,7 +118,9 @@ mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
     const llvm::DenseSet<mlir::Operation *> &emittedOperations,
     llvm::StringRef functionName, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
-    unsigned &functionalArgumentCount) {
+    unsigned &functionalArgumentCount,
+    llvm::SmallVectorImpl<RootValueKey> &boundaryKeys,
+    llvm::SmallVectorImpl<RootValueKey> &resultKeys) {
   mlir::func::FuncOp sourceFunction =
       sourceRoot ? sourceRoot->getParentOfType<mlir::func::FuncOp>()
                  : mlir::func::FuncOp{};
@@ -133,6 +135,40 @@ mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
                          coupledOperations, failureReason);
   if (mlir::failed(closure))
     return mlir::failure();
+
+  for (mlir::Value boundary : closure->boundaries) {
+    if (auto argument = mlir::dyn_cast<mlir::BlockArgument>(boundary)) {
+      boundaryKeys.push_back({RootValueKind::SourceArgument,
+                              static_cast<uint32_t>(argument.getArgNumber()),
+                              0});
+      continue;
+    }
+    auto result = mlir::dyn_cast<mlir::OpResult>(boundary);
+    auto owner =
+        result ? llvm::find_if(sourceOperationNodes,
+                               [&](const StructuredOperationNodeMapping &node) {
+                                 return node.operation == result.getOwner();
+                               })
+               : sourceOperationNodes.end();
+    if (!result || owner == sourceOperationNodes.end())
+      return fail<mlir::func::FuncOp>(
+          failureReason,
+          "region boundary has no source argument or structured result key");
+    boundaryKeys.push_back({RootValueKind::StructuredResult,
+                            owner->structuredNodeId, result.getResultNumber()});
+  }
+  for (mlir::Operation *root : sourceRoots) {
+    auto owner = llvm::find_if(sourceOperationNodes,
+                               [&](const StructuredOperationNodeMapping &node) {
+                                 return node.operation == root;
+                               });
+    if (owner == sourceOperationNodes.end())
+      return fail<mlir::func::FuncOp>(
+          failureReason, "region result has no structured node key");
+    for (unsigned result = 0; result < root->getNumResults(); ++result)
+      resultKeys.push_back(
+          {RootValueKind::StructuredResult, owner->structuredNodeId, result});
+  }
 
   llvm::SmallVector<mlir::Type, 8> inputTypes;
   inputTypes.reserve(closure->boundaries.size());
@@ -193,19 +229,21 @@ mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
 mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
     mlir::Block &destination, mlir::Operation *sourceRoot,
     uint32_t structuredNodeId,
+    llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const llvm::DenseSet<mlir::Operation *> &structuredOperations,
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
-    unsigned &functionalArgumentCount) {
+    unsigned &functionalArgumentCount,
+    llvm::SmallVectorImpl<RootValueKey> &boundaries,
+    llvm::SmallVectorImpl<RootValueKey> &results) {
   llvm::DenseSet<mlir::Operation *> coupledOperations{sourceRoot};
-  llvm::SmallVector<StructuredOperationNodeMapping, 1> sourceNodes{
-      {sourceRoot, structuredNodeId}};
   std::string name =
       (llvm::Twine("execute_node_") + llvm::Twine(structuredNodeId)).str();
-  return buildRegionFunction(destination, sourceRoot, {sourceRoot}, sourceNodes,
-                             structuredOperations, coupledOperations,
-                             coupledOperations, name, failureReason,
-                             operationNodes, functionalArgumentCount);
+  return buildRegionFunction(destination, sourceRoot, {sourceRoot},
+                             sourceOperationNodes, structuredOperations,
+                             coupledOperations, coupledOperations, name,
+                             failureReason, operationNodes,
+                             functionalArgumentCount, boundaries, results);
 }
 
 mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
@@ -214,7 +252,9 @@ mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
     llvm::ArrayRef<uint32_t> coupledNodeIds,
     llvm::ArrayRef<uint32_t> recomputedNodeIds, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
-    unsigned &functionalArgumentCount) {
+    unsigned &functionalArgumentCount,
+    llvm::SmallVectorImpl<RootValueKey> &boundaries,
+    llvm::SmallVectorImpl<RootValueKey> &results) {
   if (sourceRoots.empty() ||
       (coupledNodeIds.size() < 2 && recomputedNodeIds.empty()))
     return fail<mlir::func::FuncOp>(
@@ -242,10 +282,11 @@ mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
   const uint32_t firstNode = *llvm::min_element(coupledNodeIds);
   std::string name =
       (llvm::Twine("execute_group_") + llvm::Twine(firstNode)).str();
-  return buildRegionFunction(
-      destination, sourceRoots.front(), sourceRoots, sourceOperationNodes,
-      structuredOperations, coupledOperations, emittedOperations, name,
-      failureReason, operationNodes, functionalArgumentCount);
+  return buildRegionFunction(destination, sourceRoots.front(), sourceRoots,
+                             sourceOperationNodes, structuredOperations,
+                             coupledOperations, emittedOperations, name,
+                             failureReason, operationNodes,
+                             functionalArgumentCount, boundaries, results);
 }
 
 mlir::LogicalResult materializeRootIteratorShard(
@@ -521,10 +562,10 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
   RootFragment result;
   llvm::SmallVector<StructuredOperationNodeMapping, 4> operationNodes;
   unsigned functionalArgumentCount = 0;
-  mlir::FailureOr<mlir::func::FuncOp> function =
-      buildRootFunction(tileOwner.getBody().front(), requested->operation,
-                        shard.structuredNodeId, structuredOperations,
-                        failureReason, operationNodes, functionalArgumentCount);
+  mlir::FailureOr<mlir::func::FuncOp> function = buildRootFunction(
+      tileOwner.getBody().front(), requested->operation, shard.structuredNodeId,
+      sourceOperationNodes, structuredOperations, failureReason, operationNodes,
+      functionalArgumentCount, result.boundaries, result.results);
   if (mlir::failed(function))
     return mlir::failure();
   const bool hasTemporalWaves =
