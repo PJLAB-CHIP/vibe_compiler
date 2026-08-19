@@ -297,7 +297,7 @@ source program
   最后一个canonical range；`modules/`所需目录祖先从declared module paths推导，额外空目录也属于closure违规。
 - 每个TargetTensor创建一个move-only `ProgramDataRangeMaterialization` reader；reader创建计一次materialization，其bounded window
   read数量单独进入read ledger。同一ProgramTensor的不同target descriptor必须各有一个reader，16-Tile共享只复用TargetTensor。
-- `WaferPackageSupport`拥有profile instrumentation共享model/filename常量；Compiler/Package不仅不能链接`WaferRuntime`，源码和public
+- `WaferPackageSupport`拥有profile instrumentation共享model/filename常量；`Package/Writer`与`Driver`不仅不能链接`WaferRuntime`，源码和public
   header也不能include`Wafer/Runtime/*`，该双边界由source-organization检查。
 
 ## Q59外部工具facts、commit合同与安装（stable）
@@ -386,7 +386,7 @@ source program
 
 ## baseline 定向验证边界
 
-- baseline回归已经从旧search suite迁到`Compiler/Baseline/CardBaselineCompilationTest.cpp`；使用
+- baseline回归已经从旧search suite迁到`Planning/Baseline/CardBaselineCompilationTest.cpp`；使用
   `CardBaselineCompilationTest.*`。current `CardExecutableSearchTest.*`只验证Q51.Core空domain路由，不覆盖baseline功能，也不会进入
   已删除的placement枚举。再显式列出
   `WaferTensorProgramToCardModuleTest.*`、`StructuredBufferRelationsTest.*`、`TileMemoryPlanningTest.*`和`PipelinesTest.*`；测试总数随current suite变化，

@@ -1,8 +1,7 @@
 # Q64 Source registration truth闭合实施计划
 
-状态：`doing`。用户当前要求优先关闭全仓source ownership与目录边界；稳定library依赖由18号设计文档拥有，动态状态只看
-`tasks/progress.md`。Q62/Q63仍分别拥有numeric与NCC语义重构，但不能再阻止无语义变化的owner归位、重复顶层目录清理和
-repo-wide registration inventory。
+状态：`done`。全仓source ownership、重复顶层目录清理和repo-wide registration mirror已闭合；稳定library依赖由18号设计文档
+拥有，动态任务状态只看`tasks/progress.md`。Q62/Q63仍分别拥有numeric与NCC语义重构，并在当前Target/Model owner内继续。
 
 当前`tools/check_source_organization.py`只对少数目录执行active/dormant集合闭包，仓库其余C++ translation unit和test可能既未进入
 CMake，也未在18号dormant owner表出现而仍获得green结果。旧optimization comparison “source contract”又反向读取源码marker，
@@ -82,8 +81,9 @@ Analysis也按其实际子域归类。`TargetCallFrontend`因不执行frontend�
 
 顶层`WaferPipelines` library已删除：StableHLO→structured和TileRegion→Instr builder回到对应conversion owner，Instr memory与
 SPMD builder回到Transforms；`wafer-opt`只拥有named registration。只包一层`pm.addPass`的helper已删除，production直接添加atomic
-pass。当前主构建、IR/source organization和dependency layering已在新路径通过；完整unit/lit/link/source-to-package验证仍按本计划
-完成门禁执行。
+pass。fresh验证为主构建通过、729/729 C++ unit、250/250 supported lit（5项按feature配置unsupported）、4/4 public
+header/link、IR/source organization、dependency layering以及轻量public search source-to-package/no-card通过。Q64不替代
+Q50/Q62/Q63各自语义能力迁移门禁；明确dormant表继续使这些文件不能被误认为active coverage。
 
 ## 验证
 
