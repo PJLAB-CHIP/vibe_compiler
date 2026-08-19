@@ -256,10 +256,15 @@ compileTensorProgramModuleToCardExecutable(
                 << '\n';
   }
 
-  detail::CardExecutableLoweringResult accepted =
+  mlir::FailureOr<detail::CardExecutableLoweringResult> selected =
       optimizations.isSearch()
-          ? detail::runCardExecutableSearch(std::move(baseline->executable))
-          : std::move(baseline->executable);
+          ? detail::runCardExecutableSearch(
+                tensorModule, std::move(baseline->executable))
+          : mlir::FailureOr<detail::CardExecutableLoweringResult>(
+                std::move(baseline->executable));
+  if (mlir::failed(selected))
+    return fail("card executable search initialization failed");
+  detail::CardExecutableLoweringResult accepted = std::move(*selected);
   assert((optimizations.isNone() || optimizations.isSearch()) &&
          "card executable compilation requires a typed optimization policy");
 

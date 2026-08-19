@@ -30,6 +30,7 @@ add_executable(WaferUnitTests
   Compiler/Executable/ProgramResourceVerificationTest.cpp
   Compiler/Search/CardExecutableSearchTest.cpp
   Compiler/Search/SearchControlTest.cpp
+  Compiler/Search/TensorProgramAlternativeTest.cpp
   Compiler/Program/ProgramDataTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp

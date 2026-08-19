@@ -177,10 +177,10 @@ physical-dataflow selection直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer Op
 6. selected CardModule投影为all-and-only Tile Instr programs，fresh重建completion并经过SPM/DDR/transport/ABI
    exact gates；最低estimated makespan的hard-legal candidate原子形成CardExecutable。
 
-Attention/decode的online recurrence、split-K/V等选择属于TensorProgram alternative。现有
-`MaterializeFlashAttention` / `MaterializeFlashDecoding`若复用，只是Q50.S统一builder seam内的实现索引：资格证明和
-算法族、K/V window、split count枚举都在physical-dataflow展开前完成，每个点必须先编码成真实loop/partition/merge SSA，
-形成actual TensorProgram root。Q51只选择root并展开physical mapping；Q48未来也只能扩展同一builder seam。
+Attention/decode的online recurrence、split-K/V等选择属于TensorProgram alternative。Q50.S current builder从Linalg
+indexing map、iterator、scalar region、use-def、view和returned cache append证明资格；算法族、K/V block和partition count的
+每个typed点都在physical-dataflow展开前按需编码成真实loop/partition/merge SSA，形成actual TensorProgram root。
+Q51只选择root并展开physical mapping；Q48未来也只能扩展同一builder seam，不能恢复独立algorithm pass/provider。
 K/V window和split count不是SPM容量、offset或Tile数，
 最终capacity只由该alternative后续的layout、buffer、lifetime和fixed-capacity packing决定。
 

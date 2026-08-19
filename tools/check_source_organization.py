@@ -25,10 +25,7 @@ NUMERIC_SEMANTICS_SOURCES = (
     "NumericSemanticsInternal.cpp",
 )
 TENSOR_PROGRAM_TO_TILE_REGION_DORMANT_SOURCES = (
-    "AttentionSemantics.cpp",
     "CompleteTraversal.cpp",
-    "MaterializeFlashAttention.cpp",
-    "MaterializeFlashDecoding.cpp",
 )
 RETIRED_TASK_LOCAL_SELECTION_PATHS = (
     "CandidateAnalysis.cpp",

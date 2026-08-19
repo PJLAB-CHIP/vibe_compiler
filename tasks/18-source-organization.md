@@ -145,8 +145,11 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 | --- | --- | --- |
 | `CollectiveTopologyAnalysis.{h,cpp}`、`CollectiveTopologyTest.cpp` | bounded participant集合上的deterministic ring/tree topology推导与exact负例 | `extract-then-delete`：Q50.H迁入physical communication candidate domain，使用typed participant/topology relation并补active test后删除旧API/test |
 | `WaferTileRegionToInstr/CollectiveLowering.cpp`及旧`Comm*` tests | collective拆成typed message、DTE issue/wait、局部reduce/copy的materialization mechanics | `extract-then-delete`：旧Tile collective op已退出current ODS，文件不得原样进CMake；Q50.H迁移mechanics与正负proof后删除 |
-| `AttentionSemantics.cpp`、`MaterializeFlashAttention.cpp`、`MaterializeFlashDecoding.cpp`及对应未注册tests | 从current SSA证明attention/decode语义并物化online/split recurrence | `extract-then-delete`：Q50.S接入统一structured semantic-alternative builder，不恢复独立Flash pass/selector；actual TensorProgram与替代test闭合后删除 |
-| `CompleteTraversal.cpp`及依赖它的optional attention implementation source | complete structured traversal和partition/local-reduction/merge materialization | `extract-then-delete`：Q50.S/Q50.D迁到active traversal/materializer seam，chain/fanout/fanin/diamond witness受测后删除旧实现 |
+| `CompleteTraversal.cpp` | complete structured traversal和跨producer coupled materialization | `extract-then-delete`：Q50.D迁到active traversal/region-fusion seam，chain/fanout/fanin/diamond witness受测后删除旧实现 |
+
+Q50.S已完成attention能力迁移：SSA attention/decode proof、online recurrence和split-K/V partition/merge actual-root builder均进入
+active `Compiler/Search` owner并由真实TensorProgram测试覆盖；旧`AttentionSemantics.cpp`、`MaterializeFlashAttention.cpp`、
+`MaterializeFlashDecoding.cpp`及未注册旧测试已删除，未恢复独立pass、provider或source-marker gate。
 
 `tools/check_source_organization.py`当前只对少数目录闭合active/dormant集合；2026-08-17 follow-up review确认其余目录仍可能存在
 既未进入CMake、也未进入本表却获得green结果的source/test island。Q64

@@ -1,8 +1,8 @@
 # Physical Dataflow Synthesis 实施计划
 
 状态：Q50.0无策略CardExecutable编译/准入边界、Q54 MLIR infrastructure、Q59 compiler entry transaction、Q50.A
-production demand boundary、Q49.P deterministic baseline与Q51.Core search control均已闭合；当前从Q50.S开始让
-structured semantic alternative及Q50.B–Q50.K各physical axis逐项接入同一个owner，最后闭合Q51。
+production demand boundary、Q49.P deterministic baseline、Q51.Core search control与Q50.S structured semantic
+alternative均已闭合；当前从Q50.B开始让各physical axis逐项接入同一个owner，最后闭合Q51。
 算法、IR和长期pipeline contract仍只由
 `tasks/06-physical-dataflow-synthesis.md` 拥有；本文件只规定施工依赖、现有代码处置和独立 checkpoint。
 
@@ -1233,19 +1233,69 @@ assignment和tiny reference oracle重建完整域。读取旧源码marker的注�
 binding、旧selection stderr和14个旧长链search CTest同步退出；只保留一个小型FP16 public `search` source-to-package/no-card路由门禁。
 
 fresh验证包括Core/placement/exact-demand相关unit、全部724个C++ unit、source organization、PyTorch/board host contract及轻量
-`wafer-compile-search-routing` lit。Q51完整production链尚未闭合，因此没有运行LLaMA `search`；Q50.S和Q50.B–K仍必须分别迁移
-独有mechanism、建立真实axis oracle并删除对应旧local owner。
+`wafer-compile-search-routing` lit。Q51完整production链尚未闭合，因此没有运行LLaMA `search`；该Core checkpoint之后由
+Q50.S和Q50.B–K分别迁移独有mechanism、建立真实axis oracle并删除对应旧local owner。
 
 ## Q50.S：Structured Semantic Alternatives
 
-Q50.S只从typed SSA、structured semantics、effect和loop-carried dataflow证明可用算法族，并在isolated clone中物化真实
-TensorProgram alternative。普通DAG、online recurrence和partition/local-reduction/merge DAG共享同一builder contract；
-near-miss必须保持原图。
+```text
+Pipeline position:
+- Upstream IR / input:
+  一个immutable、card-local、single-function TensorProgram；函数体仍是target-independent tensor/Linalg SSA，尚未出现TileRegion、
+  memory space、movement、buffer、worker或physical schedule。
+- Current stage responsibility:
+  从current SSA的Linalg indexing map、iterator、DPS relation、scalar region、use-def、view relation和function result可观测性证明
+  可用的attention算法族；惰性给出typed graph-alternative参数域。只有调用者请求一个具体点时，才clone最近的isolated Module，
+  在该clone中重新证明并物化ordinary、online recurrence或split-K/V partition/merge TensorProgram root。
+- Output IR / files:
+  query只返回不拥有IR的typed finite domain；materialization返回一个move-only verifier-legal TensorProgram Module。函数签名、
+  result arity和functional K/V cache append保持不变，不产生文件、TileRegion或physical事实。
+- Downstream consumer:
+  Q51 partial assignment把该typed root choice作为第一轴；Q50.B–Q50.K继续为同一root补齐physical coordinates。只有完整assignment
+  才构造CardModule并调用Q50.0，Q50.S自身不lower、不估价、不选择winner。
+- User-level driver / named pipeline:
+  只由既有public `search` session内部使用，不新增pass、CLI、registry或独立selector。其余physical轴尚未闭合时，public入口只
+  query当前domain并返回accepted baseline，不枚举partial roots、不clone，也不创建默认统计或日志。
+- Explicit non-goals:
+  不把普通output/reduction temporal tiling、SPM fit、Tile count、layout、movement或schedule塞进graph choice；不按op/name、
+  Q length、参数位置或单个模型恢复语义；不缓存、replay或重物化actual root。
+- Done criteria:
+  tiny functional decode的production domain与独立reference枚举完全一致且顺序稳定；original、online和split-K/V点分别构造
+  actual verifier-legal root，source保持byte-identical；precomputed-score near-miss只保留original；query clone/work为零，
+  每次actual materialization最多拥有一个isolated clone；旧attention local pass/selector/source和source-marker test全部退出；
+  current build、Q51/Q50.S unit、轻量public search source-to-package/no-card及source organization通过。
+```
 
-若K/V window或split count改变recurrence/partition拓扑，它就是root transition参数，每一点都先成为actual TensorProgram；
-若只是已有recurrence上的普通temporal tile，则归Q50.E。`128`等常数只能排序合法参数点，不能定义合法域；SPM capacity、
-Tile count或KV length都不能提前替代该选择。Q50.S不暴露public Flash selector/pass，也不按名字、Q length或shape恢复语义。
-所有actual roots都交给Q51同一physical-dataflow candidate set，不能在这里选winner。
+### Typed domain与算法边界
+
+对已证明的attention reduction extent `R`，domain不预建point vector，而由typed successor常数工作地产生：
+
+- `Original`恰好一个；
+- `OnlineAttention(block)`覆盖`1 <= block <= R`；
+- 只有functional decode证明成立时，`SplitKeyValueAttention(block, partitions)`覆盖
+  `2 <= partitions <= R`且`1 <= block <= ceil(R / partitions)`。
+
+`block`在这里决定online recurrence图中每个K/V片段及loop-carried `(maximum, sum, unnormalized-output)` 状态，因此是graph
+parameter；已经形成该图之后，structured op的普通temporal tile和wave order仍归Q50.E。`partitions`决定独立partial
+log-sum-exp/output sibling及显式merge拓扑。SPM capacity、Tile数和某个常见block常数都不缩小合法域，只能在后续physical
+assignment与cost中发挥作用。
+
+资格证明要求score producer是可tile的current SSA producer，并且score结果只流向已证明的row-max与shift路径；预计算score、
+多重observable attention、非functional cache update或不一致的K/V append relation均不广告对应算法。物化直接建立纯tensor/
+Linalg/SCF图，保留函数类型和returned cache values；它不建立output tile循环，不把graph block混同Q50.E temporal choice。
+
+### 2026-08-19 完成结果
+
+active实现已经按职责归入`Compiler/Search`：ordinary attention proof、functional decode proof、tensor graph op construction、typed
+domain/materialization和public search routing彼此分离。producer slice materialization只通过窄的`ProducerTileFusion`内部接口复用
+current TilingInterface机制；`TensorProgramScope`也从单体`Internal.h`拆出。旧`AttentionSemantics`、
+`MaterializeFlashAttention`和`MaterializeFlashDecoding` source已在独有SSA proof及online/split actual-root能力迁入并受测后删除，
+没有恢复旧pass、provider、cost prior或字符串key。
+
+fresh验证覆盖12个Q51 Core/Q50.S定向unit、全部729个C++ unit、轻量FP16 public `search` source-to-16-Tile package/no-card、
+source organization和主构建。
+本checkpoint没有运行重型LLaMA `search`，也没有把Q50.S partial domain提前枚举进普通编译路径；重型search仍等Q50.B–Q50.K与
+Q51完整链闭合后再运行。
 
 ## Q50.B：Spatial Partition + Physical Placement
 

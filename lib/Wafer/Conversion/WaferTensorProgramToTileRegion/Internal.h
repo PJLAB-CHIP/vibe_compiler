@@ -1,6 +1,8 @@
 //===- Internal.h - Tensor program to tile-region internals -*- C++ -*-===//
 #pragma once
 
+#include "ProducerTileFusion.h"
+#include "TensorProgramScope.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TopologyIds.h"
@@ -46,49 +48,6 @@ enum class StructuredRootCapability {
 
 StructuredRootCapability classifyStructuredRoot(mlir::Operation *operation);
 
-/// A verified private tensor-program scheduling scope. Its entry arguments are
-/// the unchanged source inputs followed by compiler-created scheduling
-/// destinations; func.return yields one root per destination. The appended
-/// destinations never cross the CardModule conversion boundary.
-class TensorProgramScope {
-public:
-  TensorProgramScope(mlir::func::FuncOp function,
-                     unsigned functionalArgumentCount)
-      : function(function), functionalArgumentCount(functionalArgumentCount) {}
-
-  mlir::func::FuncOp getFunction() { return function; }
-  mlir::Block &getBody() { return function.getBody().front(); }
-  mlir::func::ReturnOp getReturn() {
-    return mlir::cast<mlir::func::ReturnOp>(getBody().getTerminator());
-  }
-  unsigned getOutputCount() { return function.getNumResults(); }
-  unsigned getInputCount() { return functionalArgumentCount; }
-  /// Narrow per-root construction contract: extra tensor entry arguments
-  /// appended after the scheduling destinations, one per consumer-side
-  /// boundary supply. They never reach a sibling structured root.
-  unsigned getBoundaryArgumentCount() {
-    return function.getNumArguments() - getInputCount() - getOutputCount();
-  }
-  mlir::ValueRange getInputs() {
-    return mlir::ValueRange(function.getArguments())
-        .take_front(getInputCount());
-  }
-  mlir::ValueRange getOutputs() {
-    return mlir::ValueRange(function.getArguments())
-        .slice(getInputCount(), getOutputCount());
-  }
-  mlir::ValueRange getBoundaryArguments() {
-    return mlir::ValueRange(function.getArguments())
-        .take_back(getBoundaryArgumentCount());
-  }
-  mlir::TypeRange getResultTypes() { return function.getResultTypes(); }
-  mlir::Location getLoc() { return function.getLoc(); }
-  mlir::MLIRContext *getContext() { return function.getContext(); }
-
-private:
-  mlir::func::FuncOp function;
-  unsigned functionalArgumentCount;
-};
 
 struct BufferVersions {
   mlir::Value tensor;
@@ -300,16 +259,6 @@ mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     std::string *failureReason);
 
-/// Recursively tiles current-SSA producers of slices created for one actual
-/// candidate tile. It never recovers correspondence from names.
-mlir::LogicalResult fuseCandidateProducerSlices(
-    mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
-    TensorProgramScope scope,
-    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
-    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
-    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
-    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
-        nullptr);
 
 mlir::FailureOr<mlir::Value>
 getCandidateOutputBoundary(TensorProgramScope scope, unsigned outputIndex,
@@ -352,12 +301,6 @@ mlir::LogicalResult materializeCandidateOutputTileSlices(
         nullptr,
     llvm::ArrayRef<mlir::Operation *> preservedOperations = {});
 
-/// Erases only the dead pure tensor producer/view closure left after candidate
-/// tiling. Spatial shard materialization uses this cleanup so an untiled source
-/// producer cannot become a hidden SPM demand.
-void eraseDeadCandidateSupportClosure(
-    TensorProgramScope scope,
-    llvm::ArrayRef<mlir::Operation *> preservedOperations = {});
 
 void setFailureReason(std::string *failureReason, llvm::StringRef reason);
 

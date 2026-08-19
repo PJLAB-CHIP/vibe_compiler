@@ -502,7 +502,9 @@
 - 现象：source或test没有进入active CMake/lit/CTest执行图，但一个已注册测试逐文件读取其文本并断言旧symbol marker存在，整体仍显示green。
 - 根因：把“仓库里还有某段源码”当成“能力已被编译并经过行为验证”，source inventory又只检查已知子集，形成互相放行的假闭环。
 - 修复模式：组织检查以filesystem、CMake source、unit/lit/CTest registration和明确的current-task dormant owner做双向集合闭合；
-  能力测试只验证编译后的接口和行为。退役实现独有能力先迁入active owner并受测，再删除源码和marker断言。
+  能力测试只验证编译后的接口和行为。退役实现独有能力先逐项列出proof、materializer、diagnostic和negative witness，迁入active
+  owner并受测，再删除源码和marker断言；“未注册”只能证明当前没有执行，不能证明源码没有独有能力。Q50.S曾发现未注册的
+  attention alternative仍独有current-SSA资格证明和online/split actual-root构造，正确顺序是迁入`Compiler/Search`后再删除旧源。
 - 防复发：新增源码或测试时，checker fixture分别覆盖unregistered source、unregistered test、stale registration和无owner dormant
   四类negative；禁止用源码文本marker作为build/behavior contract。
 

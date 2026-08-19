@@ -1,4 +1,4 @@
-//===- AttentionSemantics.h - Query-local attention semantics -*- C++ -*-===//
+//===- AttentionAnalysis.h - Query-local attention semantics -*- C++ -*-===//
 #pragma once
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -6,7 +6,7 @@
 
 #include <string>
 
-namespace wafer::tensor_program_to_tile_region {
+namespace wafer::tensor_program_alternatives {
 
 /// Transient facts proven from current structured SSA.  The object is valid
 /// only until that IR is mutated and is never attached to an operation or
@@ -66,4 +66,4 @@ mlir::FailureOr<DecodeAttentionSemantics>
 analyzeDecodeAttentionSemantics(mlir::ModuleOp module,
                                 std::string *failureReason = nullptr);
 
-} // namespace wafer::tensor_program_to_tile_region
+} // namespace wafer::tensor_program_alternatives

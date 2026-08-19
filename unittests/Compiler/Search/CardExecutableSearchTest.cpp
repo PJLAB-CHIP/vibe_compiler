@@ -9,7 +9,7 @@ namespace {
 using namespace wafer::compiler::testing;
 
 TEST(CardExecutableSearchTest,
-     EmptyMechanismSetReturnsAcceptedBaselineWithoutRematerialization) {
+     PartialMechanismsReturnAcceptedBaselineWithoutRematerialization) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
 
@@ -26,12 +26,13 @@ TEST(CardExecutableSearchTest,
   mlir::Operation *firstTileOwner =
       baseline->executable.tiles.front().getModule().getOperation();
 
-  wafer::compiler::detail::CardExecutableLoweringResult selected =
+  auto selected =
       wafer::compiler::detail::runCardExecutableSearch(
-          std::move(baseline->executable));
+          *parsed.module, std::move(baseline->executable));
 
-  ASSERT_EQ(selected.tiles.size(), 16u);
-  EXPECT_EQ(selected.tiles.front().getModule().getOperation(), firstTileOwner);
+  ASSERT_TRUE(mlir::succeeded(selected));
+  ASSERT_EQ(selected->tiles.size(), 16u);
+  EXPECT_EQ(selected->tiles.front().getModule().getOperation(), firstTileOwner);
   EXPECT_EQ(statistics.baselineCardModuleMaterializations, 1u);
   EXPECT_EQ(statistics.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_EQ(diagnosticsText.find("card-executable-selection"),

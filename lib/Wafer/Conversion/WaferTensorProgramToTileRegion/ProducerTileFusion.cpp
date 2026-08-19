@@ -311,9 +311,10 @@ static mlir::FailureOr<bool> tryAssembleBoundaryProducerValue(
   return true;
 }
 
-mlir::LogicalResult fuseCandidateProducerSlices(
+static mlir::LogicalResult fuseProducerSlices(
     mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
-    TensorProgramScope scope,
+    TensorProgramBody body,
+    std::optional<TensorProgramScope> schedulingScope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
@@ -324,7 +325,7 @@ mlir::LogicalResult fuseCandidateProducerSlices(
   // of source producers that existed before fusion.  Otherwise slices
   // generated from a newly tiled clone can recursively fuse that clone again.
   llvm::DenseSet<mlir::Operation *> sourceProducers;
-  for (mlir::Operation &operation : scope.getBody().without_terminator())
+  for (mlir::Operation &operation : body.getBody().without_terminator())
     if (&operation != tiledConsumer &&
         mlir::isa<mlir::TilingInterface>(&operation))
       sourceProducers.insert(&operation);
@@ -427,7 +428,7 @@ mlir::LogicalResult fuseCandidateProducerSlices(
   llvm::SmallVector<mlir::Operation *, 1> initialTiledConsumers{tiledConsumer};
   enqueueSlices(initialSlices, sourceConsumer, initialTiledConsumers);
 
-  mlir::IRRewriter rewriter(scope.getContext(), insertionListener);
+  mlir::IRRewriter rewriter(body.getContext(), insertionListener);
   while (!worklist.empty()) {
     PendingProducerSlice pendingSlice = worklist.front();
     worklist.pop_front();
@@ -519,11 +520,14 @@ mlir::LogicalResult fuseCandidateProducerSlices(
     // (once, at the producer's scope-body position) so this and every other
     // leaf window reads the shared assembled value instead of retaining the
     // full untiled producer.
-    if (producerResult &&
+    if (producerResult && !operationTemporalTiles.empty() &&
         (mlir::isa<mlir::tensor::ExpandShapeOp>(producerResult.getOwner()) ||
          mlir::isa<mlir::tensor::CollapseShapeOp>(producerResult.getOwner()))) {
+      assert(schedulingScope &&
+             "temporal producer assembly requires a scheduling scope");
       mlir::FailureOr<bool> assembled = tryAssembleBoundaryProducerValue(
-          rewriter, scope, slice, operationTemporalTiles, failureReason);
+          rewriter, *schedulingScope, slice, operationTemporalTiles,
+          failureReason);
       if (mlir::failed(assembled))
         return mlir::failure();
       if (*assembled)
@@ -536,7 +540,7 @@ mlir::LogicalResult fuseCandidateProducerSlices(
         producerResult &&
         mlir::isa<mlir::tensor::InsertSliceOp>(producerResult.getOwner());
     if (!producerResult ||
-        producerResult.getOwner()->getBlock() != &scope.getBody() ||
+        producerResult.getOwner()->getBlock() != &body.getBody() ||
         (!windowedInsertSlice &&
          !sourceProducers.contains(producerResult.getOwner()))) {
       continue;
@@ -616,6 +620,9 @@ mlir::LogicalResult fuseCandidateProducerSlices(
             return tile.operation == structured.getOperation();
           });
       if (selected != operationTemporalTiles.end()) {
+        assert(schedulingScope &&
+               "temporal producer materialization requires a scheduling "
+               "scope");
         mlir::Type tileType = slice.getType();
         llvm::SmallVector<mlir::OpFoldResult, 4> offsets =
             llvm::to_vector(slice.getMixedOffsets());
@@ -628,7 +635,8 @@ mlir::LogicalResult fuseCandidateProducerSlices(
             mlir::cast<mlir::RankedTensorType>(slice.getType());
         mlir::FailureOr<mlir::Value> tiled =
             materializeConfiguredStructuredTraversal(
-                rewriter, scope, structured.getOperation(), structured,
+                rewriter, *schedulingScope, structured.getOperation(),
+                structured,
                 slice.getMixedOffsets(), requestedType.getShape(), loops,
                 operationTemporalTiles, failureReason,
                 /*outputDestination=*/{}, /*destinationBaseOffsets=*/{},
@@ -670,6 +678,30 @@ mlir::LogicalResult fuseCandidateProducerSlices(
   return mlir::success();
 }
 
+mlir::LogicalResult fuseCandidateProducerSlices(
+    mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
+    TensorProgramScope scope,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
+  return fuseProducerSlices(
+      tiledConsumer, sourceConsumer, scope, scope, loops,
+      operationTemporalTiles, insertionListener, failureReason,
+      operationNodes);
+}
+
+mlir::LogicalResult fuseTensorProgramProducerSlices(
+    mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
+    mlir::func::FuncOp function,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    std::string *failureReason) {
+  return fuseProducerSlices(
+      tiledConsumer, sourceConsumer, TensorProgramBody(function), std::nullopt,
+      loops, /*operationTemporalTiles=*/{}, /*insertionListener=*/nullptr,
+      failureReason, /*operationNodes=*/nullptr);
+}
+
 void eraseDeadCandidateSupportClosure(
     TensorProgramScope scope,
     llvm::ArrayRef<mlir::Operation *> preservedOperations) {
@@ -687,6 +719,16 @@ void eraseDeadCandidateSupportClosure(
     if (!preserved.contains(op) && mlir::isOpTriviallyDead(op))
       op->erase();
   }
+}
+
+void eraseDeadTensorProgramClosure(mlir::func::FuncOp function) {
+  llvm::SmallVector<mlir::Operation *, 8> operations;
+  for (mlir::Operation &operation :
+       function.getBody().front().without_terminator())
+    operations.push_back(&operation);
+  for (mlir::Operation *operation : llvm::reverse(operations))
+    if (mlir::isOpTriviallyDead(operation))
+      operation->erase();
 }
 
 } // namespace wafer::tensor_program_to_tile_region
