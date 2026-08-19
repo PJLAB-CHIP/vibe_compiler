@@ -1,10 +1,10 @@
 add_mlir_library(WaferRuntime
   PARTIAL_SOURCES_INTENDED
 
-  BoardRuntime.cpp
-  ProfileInstrumentation.cpp
-  ProfilerRecord.cpp
-  RuntimeInvocationPlanning.cpp
+  Board/BoardRuntime.cpp
+  Profile/ProfileInstrumentation.cpp
+  Profile/ProfilerRecord.cpp
+  Invocation/RuntimeInvocationPlanning.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

@@ -1170,10 +1170,11 @@ def main() -> int:
         / "lib"
         / "Wafer"
         / "Target"
+        / "Core"
         / "TargetCall.cpp"
     )
     target_format_text = read_text(
-        repo_root / "lib" / "Wafer" / "Target" / "TargetFormat.cpp"
+        repo_root / "lib" / "Wafer" / "Target" / "Core" / "TargetFormat.cpp"
     )
     vendor_header_text = read_text(
         repo_root / "third_party" / "tx8_deps" / "include" / "instr_def.h"

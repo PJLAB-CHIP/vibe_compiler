@@ -3,8 +3,8 @@
 #include "WaferRunBoardIO.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Runtime/BoardRuntime.h"
-#include "Wafer/Package/PackageManifest.h"
+#include "Wafer/Runtime/Board/BoardRuntime.h"
+#include "Wafer/Package/Manifest/PackageManifest.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"

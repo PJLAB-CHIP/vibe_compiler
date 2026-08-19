@@ -2,7 +2,7 @@
 
 #ifdef WAFER_ENABLE_STABLEHLO
 #include "Wafer/Frontend/InitImporterDialects.h"
-#include "Wafer/Frontend/Program.h"
+#include "Wafer/Frontend/Program/Program.h"
 #include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

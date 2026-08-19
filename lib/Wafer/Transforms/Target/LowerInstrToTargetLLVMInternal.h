@@ -3,11 +3,11 @@
 #ifndef WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
 #define WAFER_TRANSFORMS_TARGET_LOWERINSTRTOTARGETLLVMINTERNAL_H
 
-#include "Wafer/Analysis/DirectCallGraphAnalysis.h"
+#include "Wafer/Analysis/CallGraph/DirectCallGraphAnalysis.h"
 #include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/TopologyIds.h"
-#include "Wafer/Target/TargetCall.h"
+#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"

@@ -3,7 +3,7 @@
 #ifndef WAFER_ANALYSIS_SCHEDULECOST_INTERNAL_H
 #define WAFER_ANALYSIS_SCHEDULECOST_INTERNAL_H
 
-#include "Wafer/Analysis/ScheduleCostAnalysis.h"
+#include "Wafer/Analysis/ScheduleCost/ScheduleCostAnalysis.h"
 
 #include "llvm/ADT/STLFunctionalExtras.h"
 

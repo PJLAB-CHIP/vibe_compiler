@@ -1,5 +1,5 @@
-#include "Wafer/Target/PhysicalLayout.h"
-#include "Wafer/Target/TargetSchedulingCapability.h"
+#include "Wafer/Target/Layout/PhysicalLayout.h"
+#include "Wafer/Target/Core/TargetSchedulingCapability.h"
 
 #include "llvm/Support/Error.h"
 

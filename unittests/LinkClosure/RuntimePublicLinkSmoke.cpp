@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Wafer/Package/PackageManifest.h"
+#include "Wafer/Package/Manifest/PackageManifest.h"
 
 #include "llvm/Support/raw_ostream.h"
 

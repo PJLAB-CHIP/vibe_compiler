@@ -1,0 +1,16 @@
+set(WAFER_CODEGEN_SOURCES
+  CodeGen/Executable/CardExecutable.cpp
+  CodeGen/Executable/CardExecutableCompilation.cpp
+  CodeGen/Executable/CardExecutableLowering.cpp
+  CodeGen/Executable/TileMemoryPlanning.cpp
+  CodeGen/Target/CompileCardExecutableLLVMModules.cpp
+  CodeGen/Target/TargetABIPreparation.cpp
+  CodeGen/Target/TargetDeviceLink.cpp
+  CodeGen/Target/TargetInstrumentation.cpp
+  CodeGen/Target/TargetKernelAggregate.cpp
+  CodeGen/Target/TargetLLVMModule.cpp
+  CodeGen/Target/TargetLLVMTranslation.cpp
+  CodeGen/Target/TargetModuleLinking.cpp
+  CodeGen/Target/TargetModuleReadback.cpp
+  CodeGen/Target/TileEntryArgumentCompatibility.cpp
+  PARENT_SCOPE)

@@ -1,0 +1,89 @@
+//===- SystemCTargetModelDTEMismatchTest.cpp - SystemC DTE mismatch gate ===//
+
+#include "SystemCTargetModelTestSupport.h"
+
+#include "Wafer/Model/SystemC/SystemCTargetModel.h"
+#include "Wafer/Target/Core/TargetCall.h"
+
+#include "gtest/gtest.h"
+
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <string>
+#include <utility>
+
+namespace {
+
+using namespace wafer;
+using namespace wafer::compiler;
+using namespace wafer::model;
+
+llvm::CallInst *findSendPrepareCall(llvm::Module &module,
+                                    TargetIdentityId targetIdentity) {
+  const llvm::StringRef symbol =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare).symbol;
+  for (llvm::Function &function : module)
+    for (llvm::BasicBlock &block : function)
+      for (llvm::Instruction &instruction : block)
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&instruction))
+          if (llvm::Function *callee = call->getCalledFunction())
+            if (callee->getName() == symbol)
+              return call;
+  return nullptr;
+}
+
+TEST(SystemCTargetModelDTEMismatchTest,
+     MatchedEndpointMetadataFailsAtomicallyAndWakesPeers) {
+  std::string diagnostics;
+  llvm::Expected<TargetLLVMModules> targetLLVMModules =
+      test::compileDirectDTETargetModules(diagnostics);
+  ASSERT_TRUE(static_cast<bool>(targetLLVMModules))
+      << diagnostics << llvm::toString(targetLLVMModules.takeError());
+
+  llvm::Module &rankZeroModule = const_cast<llvm::Module &>(
+      targetLLVMModules->getModules().front().getModule());
+  llvm::CallInst *send = findSendPrepareCall(
+      rankZeroModule,
+      targetLLVMModules->getExecutionConfig().getTargetIdentityId());
+  ASSERT_NE(send, nullptr);
+  ASSERT_EQ(send->arg_size(), 7u);
+  auto *destination = llvm::dyn_cast<llvm::ConstantInt>(send->getArgOperand(1));
+  ASSERT_NE(destination, nullptr);
+  send->setArgOperand(
+      1, llvm::ConstantInt::get(send->getArgOperand(1)->getType(),
+                                destination->getZExtValue() + 256));
+
+  llvm::Expected<test::DirectDTEInvocationData> invocation =
+      test::buildDirectDTEInvocationData(*targetLLVMModules);
+  ASSERT_TRUE(static_cast<bool>(invocation))
+      << llvm::toString(invocation.takeError());
+  llvm::Expected<TargetCallExecutable> frontend =
+      createTargetCallExecutable(*targetLLVMModules, invocation->arguments);
+  ASSERT_TRUE(static_cast<bool>(frontend))
+      << llvm::toString(frontend.takeError());
+
+  llvm::Expected<TargetModelResult> result = executeSystemCTargetModel(
+      std::move(*frontend), invocation->inputBindings,
+      TargetModelKernelBudget::create(FormalNumericWorkBudget::create(
+                                          /*maximumScalarEvaluations=*/1024,
+                                          /*maximumFusedMultiplyAdds=*/1024),
+                                      /*maximumMovementBytes=*/4096,
+                                      /*maximumMovementSegments=*/1024));
+  ASSERT_FALSE(static_cast<bool>(result));
+  const std::string error = llvm::toString(result.takeError());
+  EXPECT_NE(error.find("stage=dte-match"), std::string::npos) << error;
+  EXPECT_NE(error.find("disagree on bytes or destination"), std::string::npos)
+      << error;
+}
+
+} // namespace
+
+extern "C" int sc_main(int argc, char **argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

@@ -2,17 +2,17 @@
 
 #include "DriverInternal.h"
 
-#include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Compiler/Package.h"
-#include "Wafer/Compiler/TargetCodeGen.h"
+#include "Wafer/Driver/Compilation.h"
+#include "Wafer/Driver/CompilationResult.h"
+#include "Wafer/CodeGen/TargetCodeGen.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
-#include "Wafer/Model/SystemCTargetModel.h"
+#include "Wafer/Model/SystemC/SystemCTargetModel.h"
 #endif
 #ifdef WAFER_ENABLE_TARGET_BULK_MODEL
-#include "Wafer/Model/TargetBulkModel.h"
+#include "Wafer/Model/Qualification/TargetBulkModel.h"
 #endif
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-#include "Wafer/Compiler/Testing.h"
+#include "Wafer/TestSupport/CompilerTesting.h"
 #endif
 
 #include "llvm/ADT/StringRef.h"

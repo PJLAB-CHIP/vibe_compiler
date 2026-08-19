@@ -1,37 +1,37 @@
 wafer_require_gtest()
 
 add_executable(WaferUnitTests
-  Analysis/DirectCallGraphAnalysisTest.cpp
-  Analysis/TheoreticalScheduleCostAnalysisTest.cpp
+  Analysis/CallGraph/DirectCallGraphAnalysisTest.cpp
+  Analysis/ScheduleCost/TheoreticalScheduleCostAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/PhysicalDataflow/ExactDemandTest.cpp
-  Analysis/ScheduleCostAnalysisTest.cpp
-  Analysis/StaticBufferRangeTest.cpp
-  Compiler/Pipeline/CompilationOutputTest.cpp
-  Compiler/Pipeline/CompilationTest.cpp
-  Compiler/TestSupport/CardExecutableTestSupport.cpp
-  Compiler/Baseline/CardBaselineCompilationTest.cpp
-  Compiler/Baseline/CardBaselinePlacementTest.cpp
-  Compiler/Executable/CardExecutableCompilationTest.cpp
-  Compiler/Executable/CardExecutableLoweringTest.cpp
-  Compiler/Executable/SelectedBufferMaterializationTest.cpp
-  Compiler/Transport/DirectDTETransportTest.cpp
-  Compiler/Program/ProgramTensorComparisonTest.cpp
-  Compiler/Executable/TileMemoryPlanningTest.cpp
-  Compiler/Planning/StructuredBufferRelationsTest.cpp
-  Compiler/Target/TargetABIPreparationTest.cpp
-  Compiler/Target/TargetCodeGenTest.cpp
-  Compiler/Target/TargetCallFrontendTest.cpp
-  Compiler/Target/TargetIdentityTest.cpp
-  Compiler/Planning/StructuredDAGEdgeStrategyPlanTest.cpp
-  Compiler/Planning/StructuredDAGExactDemandQueryTest.cpp
-  Compiler/Planning/StructuredOperationTileFootprintTest.cpp
-  Compiler/Planning/TemporalTileShapeTest.cpp
-  Compiler/Executable/ProgramResourceVerificationTest.cpp
-  Compiler/Search/CardExecutableSearchTest.cpp
-  Compiler/Search/SearchControlTest.cpp
-  Compiler/Search/TensorProgramAlternativeTest.cpp
-  Compiler/Program/ProgramDataTest.cpp
+  Analysis/ScheduleCost/ScheduleCostAnalysisTest.cpp
+  Analysis/Memory/StaticBufferRangeTest.cpp
+  Driver/CompilationOutputTest.cpp
+  Driver/CompilationTest.cpp
+  TestSupport/CodeGen/CardExecutableTestSupport.cpp
+  Planning/Baseline/CardBaselineCompilationTest.cpp
+  Planning/Baseline/CardBaselinePlacementTest.cpp
+  CodeGen/Executable/CardExecutableCompilationTest.cpp
+  CodeGen/Executable/CardExecutableLoweringTest.cpp
+  Transforms/Bufferization/SelectedBufferMaterializationTest.cpp
+  Transforms/Transport/DirectDTETransportTest.cpp
+  Program/ProgramTensorComparisonTest.cpp
+  CodeGen/Executable/TileMemoryPlanningTest.cpp
+  Analysis/Structured/StructuredBufferRelationsTest.cpp
+  CodeGen/Target/TargetABIPreparationTest.cpp
+  CodeGen/Target/TargetCodeGenTest.cpp
+  Target/Execution/TargetCallExecutionTest.cpp
+  CodeGen/Target/TargetIdentityTest.cpp
+  Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlanTest.cpp
+  Analysis/PhysicalDataflow/StructuredDAGExactDemandQueryTest.cpp
+  Analysis/Structured/StructuredOperationTileFootprintTest.cpp
+  Planning/PhysicalDataflow/TemporalTileShapeTest.cpp
+  Analysis/Executable/ProgramResourceVerificationTest.cpp
+  Planning/Search/CardExecutableSearchTest.cpp
+  Planning/Search/SearchControlTest.cpp
+  Planning/Search/TensorProgramAlternativeTest.cpp
+  Program/ProgramDataTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
   Conversion/WaferCardModuleToTileModulesTest.cpp
@@ -39,21 +39,21 @@ add_executable(WaferUnitTests
   Dialect/Wafer/WaferDialectTest.cpp
   Dialect/Wafer/WaferInterfacesTest.cpp
   Dialect/Wafer/TargetTopologyTest.cpp
-  Frontend/NpyPayloadTest.cpp
-  Model/TargetModelMemoryTest.cpp
+  Frontend/Program/NpyPayloadTest.cpp
+  Model/Core/TargetModelMemoryTest.cpp
   Pipelines/PipelinesTest.cpp
-  Runtime/BoardRuntimeTest.cpp
-  Runtime/PackageManifestTest.cpp
-  Runtime/ProfileInstrumentationTest.cpp
-  Runtime/ProfilerRecordTest.cpp
-  Target/FormalNumericTest.cpp
-  Target/NumericCodecTest.cpp
-  Target/NumericDependencyConformanceTest.cpp
-  Target/NumericRawRounderTest.cpp
-  Target/NumericSemanticsTest.cpp
-  Target/PhysicalTensorCodecTest.cpp
-  Target/TargetFormatTest.cpp
-  Target/TargetSchedulingCapabilityTest.cpp
+  Runtime/Board/BoardRuntimeTest.cpp
+  Package/Manifest/PackageManifestTest.cpp
+  Runtime/Profile/ProfileInstrumentationTest.cpp
+  Runtime/Profile/ProfilerRecordTest.cpp
+  Target/Numeric/Formal/FormalNumericTest.cpp
+  Target/Numeric/NumericCodecTest.cpp
+  Target/Numeric/Dependency/NumericDependencyConformanceTest.cpp
+  Target/Numeric/NumericRawRounderTest.cpp
+  Target/Numeric/NumericSemanticsTest.cpp
+  Target/Layout/PhysicalTensorCodecTest.cpp
+  Target/Core/TargetFormatTest.cpp
+  Target/Core/TargetSchedulingCapabilityTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
   Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp
@@ -64,6 +64,7 @@ llvm_update_compile_flags(WaferUnitTests)
 target_include_directories(WaferUnitTests PRIVATE
   ${CMAKE_SOURCE_DIR}/lib
   ${CMAKE_SOURCE_DIR}/lib/Wafer/Transforms
+  ${CMAKE_SOURCE_DIR}/unittests
 )
 find_program(WAFER_TEST_LLVM_CLANGXX NAMES clang++ REQUIRED)
 target_compile_definitions(WaferUnitTests PRIVATE
@@ -84,7 +85,8 @@ target_link_libraries(WaferUnitTests
   WaferIR
   WaferTargetModelCore
   WaferRuntime
-  WaferPipelines
+  WaferStableHLOPipelines
+  WaferTileRegionPipelines
   WaferTensorProgramToTileRegion
   WaferCardModuleToTileModules
   WaferTensorProgramToCardModule
@@ -243,12 +245,12 @@ endif()
 
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_executable(WaferNumericModelUnitTests
-    Model/TargetModelKernelTest.cpp
-    Target/FormalTensorNumericTest.cpp
-    Target/MPFRNumericTest.cpp
-    Target/NumericManagedDependencyIntegrationTest.cpp
-    Target/NumericOracleDifferentialTest.cpp
-    Target/SoftFloatOracleTest.cpp
+    Model/Core/TargetModelKernelTest.cpp
+    Target/Numeric/Formal/FormalTensorNumericTest.cpp
+    Target/Numeric/Formal/MPFRNumericTest.cpp
+    Target/Numeric/NumericManagedDependencyIntegrationTest.cpp
+    Target/Numeric/NumericOracleDifferentialTest.cpp
+    Target/Numeric/Formal/SoftFloatOracleTest.cpp
   )
   llvm_update_compile_flags(WaferNumericModelUnitTests)
   target_compile_definitions(WaferNumericModelUnitTests PRIVATE
@@ -280,8 +282,8 @@ endif()
 
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_executable(WaferBulkModelUnitTests
-    Model/ManagedReferenceTargetModelTest.cpp
-    Target/BulkQualificationTest.cpp
+    Model/Reference/ManagedReferenceTargetModelTest.cpp
+    Target/Numeric/Qualification/BulkQualificationTest.cpp
   )
   llvm_update_compile_flags(WaferBulkModelUnitTests)
   target_link_libraries(WaferBulkModelUnitTests
@@ -303,7 +305,7 @@ endif()
 
 if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_executable(WaferSystemCModelIntegrationTest
-    Model/SystemCTargetModelIntegrationTest.cpp
+    Model/SystemC/SystemCTargetModelIntegrationTest.cpp
   )
   llvm_update_compile_flags(WaferSystemCModelIntegrationTest)
   target_include_directories(WaferSystemCModelIntegrationTest PRIVATE
@@ -331,7 +333,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     COMMAND WaferSystemCModelIntegrationTest)
 
   add_executable(WaferSystemCModelBatchedGemmIntegrationTest
-    Model/SystemCTargetModelBatchedGemmIntegrationTest.cpp
+    Model/SystemC/SystemCTargetModelBatchedGemmIntegrationTest.cpp
   )
   llvm_update_compile_flags(WaferSystemCModelBatchedGemmIntegrationTest)
   target_include_directories(WaferSystemCModelBatchedGemmIntegrationTest PRIVATE
@@ -359,7 +361,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     COMMAND WaferSystemCModelBatchedGemmIntegrationTest)
 
   add_executable(WaferSystemCModelOrientedGemmIntegrationTest
-    Model/SystemCTargetModelOrientedGemmIntegrationTest.cpp
+    Model/SystemC/SystemCTargetModelOrientedGemmIntegrationTest.cpp
   )
   llvm_update_compile_flags(WaferSystemCModelOrientedGemmIntegrationTest)
   target_include_directories(WaferSystemCModelOrientedGemmIntegrationTest PRIVATE

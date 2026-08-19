@@ -1,8 +1,11 @@
-add_executable(wafer-opt wafer-opt.cpp)
+add_executable(wafer-opt
+  PipelineRegistration.cpp
+  wafer-opt.cpp)
 target_link_libraries(wafer-opt
   PRIVATE
   WaferIR
-  WaferPipelines
+  WaferStableHLOPipelines
+  WaferTileRegionPipelines
   WaferTransforms
   MLIRAffineDialect
   MLIRArithDialect

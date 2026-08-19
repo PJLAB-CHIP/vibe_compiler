@@ -1,44 +1,48 @@
 add_mlir_library(WaferTarget
   PARTIAL_SOURCES_INTENDED
-  FormalNumericConvert.cpp
-  FormalNumericElementwise.cpp
-  FormalNumericGemm.cpp
-  FormalNumericReduce.cpp
-  FormalNumericSupport.cpp
-  FormalNumericValidation.cpp
-  NumericCapability.cpp
-  NumericCodec.cpp
-  NumericCommand.cpp
-  NumericDependencyBuildConfig.cpp
-  NumericDependencyConformance.cpp
-  NumericDependencyELF.cpp
-  NumericDependencyFilesystem.cpp
-  NumericDependencyGate.cpp
-  NumericDependencyManifest.cpp
-  NumericDependencyProcess.cpp
-  NumericDependencyRuntime.cpp
-  NumericProfiles.cpp
-  NumericSemanticsInternal.cpp
-  PhysicalTensorCodec.cpp
-  RuntimeLaunchContract.cpp
-  TargetCall.cpp
-  TargetCallDecoder.cpp
-  TargetFormat.cpp
-  TargetIdentity.cpp
-  TargetOperation.cpp
-  TargetSchedulingCapability.cpp
+  Numeric/Formal/FormalNumericConvert.cpp
+  Numeric/Formal/FormalNumericElementwise.cpp
+  Numeric/Formal/FormalNumericGemm.cpp
+  Numeric/Formal/FormalNumericReduce.cpp
+  Numeric/Formal/FormalNumericSupport.cpp
+  Numeric/Formal/FormalNumericValidation.cpp
+  Numeric/NumericCapability.cpp
+  Numeric/NumericCodec.cpp
+  Numeric/NumericCommand.cpp
+  Numeric/Dependency/NumericDependencyBuildConfig.cpp
+  Numeric/Dependency/NumericDependencyConformance.cpp
+  Numeric/Dependency/NumericDependencyELF.cpp
+  Numeric/Dependency/NumericDependencyFilesystem.cpp
+  Numeric/Dependency/NumericDependencyGate.cpp
+  Numeric/Dependency/NumericDependencyManifest.cpp
+  Numeric/Dependency/NumericDependencyProcess.cpp
+  Numeric/Dependency/NumericDependencyRuntime.cpp
+  Numeric/NumericProfiles.cpp
+  Numeric/NumericSemanticsInternal.cpp
+  Layout/PhysicalTensorCodec.cpp
+  Core/RuntimeLaunchContract.cpp
+  Core/TargetCall.cpp
+  Core/TargetCallDecoder.cpp
+  Core/TargetFormat.cpp
+  Core/TargetIdentity.cpp
+  Core/TargetOperation.cpp
+  Core/TargetSchedulingCapability.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport
   WaferTargetPhysicalLayout
 )
 
+set(WAFER_TARGET_EXECUTION_SOURCES
+  Target/Execution/TargetCallExecution.cpp
+  PARENT_SCOPE)
+
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_mlir_library(WaferNumericModel
     PARTIAL_SOURCES_INTENDED
-    FormalTensorNumeric.cpp
-    MPFRNumeric.cpp
-    SoftFloatOracle.cpp
+    Numeric/Formal/FormalTensorNumeric.cpp
+    Numeric/Formal/MPFRNumeric.cpp
+    Numeric/Formal/SoftFloatOracle.cpp
 
     LINK_LIBS PUBLIC
     WaferTarget
@@ -59,18 +63,18 @@ endif()
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_mlir_library(WaferBulkModel
     PARTIAL_SOURCES_INTENDED
-    QualifiedBulkExecution.cpp
-    BulkExecutionEnvironment.cpp
-    BulkQualification.cpp
-    BulkQualificationCalibration.cpp
-    BulkQualificationCase.cpp
-    BulkQualificationComparison.cpp
-    BulkQualificationExecution.cpp
-    BulkQualificationPolicy.cpp
-    BulkQualificationValidation.cpp
-    BulkTensorCodec.cpp
-    BulkTensorNumericSupport.cpp
-    OneDNNGemmAdapter.cpp
+    Numeric/Qualification/QualifiedBulkExecution.cpp
+    Numeric/Qualification/BulkExecutionEnvironment.cpp
+    Numeric/Qualification/BulkQualification.cpp
+    Numeric/Qualification/BulkQualificationCalibration.cpp
+    Numeric/Qualification/BulkQualificationCase.cpp
+    Numeric/Qualification/BulkQualificationComparison.cpp
+    Numeric/Qualification/BulkQualificationExecution.cpp
+    Numeric/Qualification/BulkQualificationPolicy.cpp
+    Numeric/Qualification/BulkQualificationValidation.cpp
+    Numeric/Qualification/BulkTensorCodec.cpp
+    Numeric/Qualification/BulkTensorNumericSupport.cpp
+    Numeric/Qualification/OneDNNGemmAdapter.cpp
 
     LINK_LIBS PUBLIC
     WaferIR

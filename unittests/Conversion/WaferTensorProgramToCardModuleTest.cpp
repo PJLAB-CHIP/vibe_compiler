@@ -1,8 +1,8 @@
 //===- WaferTensorProgramToCardModuleTest.cpp - Card baseline tests -----===//
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
-#include "Wafer/Compiler/Planning/StructuredBufferRelations.h"
-#include "Wafer/Compiler/Planning/StructuredDAGEdgeStrategyPlan.h"
+#include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.h"
 #include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 

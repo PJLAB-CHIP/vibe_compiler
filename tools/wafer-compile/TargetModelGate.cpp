@@ -4,12 +4,12 @@
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 
-#include "Wafer/Compiler/ProgramInvocation.h"
-#include "Wafer/Compiler/ProgramTensorComparison.h"
-#include "Wafer/Model/SystemCTargetModel.h"
-#include "Wafer/Model/TargetModelInvocation.h"
+#include "Wafer/Program/ProgramInvocation.h"
+#include "Wafer/Program/ProgramTensorComparison.h"
+#include "Wafer/Model/SystemC/SystemCTargetModel.h"
+#include "Wafer/Model/Core/TargetModelInvocation.h"
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-#include "Wafer/Model/Testing.h"
+#include "Wafer/Model/TestSupport/Testing.h"
 #endif
 
 #include "llvm/ADT/STLExtras.h"

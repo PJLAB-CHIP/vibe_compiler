@@ -2,7 +2,7 @@
 
 #include "Wafer/Transforms/WorkerPlacement.h"
 
-#include "Wafer/Analysis/StaticBufferRange.h"
+#include "Wafer/Analysis/Memory/StaticBufferRange.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"

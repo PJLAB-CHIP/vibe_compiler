@@ -1,22 +1,22 @@
 set(LLVM_OPTIONAL_SOURCES
-  CollectiveTopologyAnalysis.cpp
-  ExecutionTopologyAnalysis.cpp
+  Topology/CollectiveTopologyAnalysis.cpp
+  Topology/ExecutionTopologyAnalysis.cpp
 )
 
 add_mlir_library(WaferAnalysis
-  DirectCallGraphAnalysis.cpp
+  CallGraph/DirectCallGraphAnalysis.cpp
   PhysicalDataflow/IndexRelation.cpp
   PhysicalDataflow/ExactDemand.cpp
   PhysicalDataflow/PhysicalAccessRelation.cpp
   PhysicalDataflow/PhysicalLayoutRelation.cpp
   PhysicalDataflow/TransferRealizability.cpp
-  TheoreticalScheduleCostAnalysis.cpp
+  ScheduleCost/TheoreticalScheduleCostAnalysis.cpp
   ScheduleCost/ExecutionCost.cpp
   ScheduleCost/DDRHighWater.cpp
   ScheduleCost/SPMHighWater.cpp
-  ScheduleCostAnalysis.cpp
-  StaticBufferRange.cpp
-  TargetSchedulingAnalysis.cpp
+  ScheduleCost/ScheduleCostAnalysis.cpp
+  Memory/StaticBufferRange.cpp
+  Scheduling/TargetSchedulingAnalysis.cpp
 
   LINK_LIBS PUBLIC
   WaferIR
@@ -34,3 +34,14 @@ add_mlir_library(WaferAnalysis
   MLIRTensorDialect
   MLIRValueBoundsOpInterface
 )
+
+set(WAFER_COMPILATION_ANALYSIS_SOURCES
+  Analysis/Executable/ExecutableCallClosure.cpp
+  Analysis/Executable/ProgramResourceVerification.cpp
+  Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.cpp
+  Analysis/Structured/CardProgramAnalysis.cpp
+  Analysis/Structured/StructuredBufferRelations.cpp
+  Analysis/Structured/StructuredDAGAnalysis.cpp
+  Analysis/Structured/StructuredNodeUseIndex.cpp
+  Analysis/Structured/StructuredOperationTileFootprint.cpp
+  PARENT_SCOPE)

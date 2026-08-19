@@ -1,8 +1,8 @@
 add_mlir_library(WaferTargetModelCore
   PARTIAL_SOURCES_INTENDED
-  TargetModelInvocation.cpp
-  TargetModelMemory.cpp
-  TargetModelStridedMemory.cpp
+  Core/TargetModelInvocation.cpp
+  Core/TargetModelMemory.cpp
+  Core/TargetModelStridedMemory.cpp
 
   LINK_LIBS PUBLIC
   WaferCompiler
@@ -13,11 +13,11 @@ add_mlir_library(WaferTargetModelCore
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_mlir_library(WaferTargetFunctionalModel
     PARTIAL_SOURCES_INTENDED
-    TargetModelControl.cpp
-    TargetModelKernel.cpp
-    TargetModelMovement.cpp
-    TargetModelTensorNumeric.cpp
-    TargetModelCommandValidation.cpp
+    Core/TargetModelControl.cpp
+    Core/TargetModelKernel.cpp
+    Core/TargetModelMovement.cpp
+    Core/TargetModelTensorNumeric.cpp
+    Core/TargetModelCommandValidation.cpp
 
     LINK_LIBS PUBLIC
     WaferNumericModel
@@ -30,8 +30,8 @@ endif()
 if(WAFER_ENABLE_BULK_MODEL_DEPS)
   add_mlir_library(WaferTargetBulkModel
     PARTIAL_SOURCES_INTENDED
-    ManagedReferenceTargetModel.cpp
-    TargetBulkModel.cpp
+    Reference/ManagedReferenceTargetModel.cpp
+    Qualification/TargetBulkModel.cpp
 
     LINK_LIBS PUBLIC
     WaferBulkModel
@@ -46,7 +46,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   # SystemC C++ ABI in a plain bridge that does not include any LLVM or Wafer
   # public header.  WaferSystemCModel itself retains the repository ABI.
   add_library(WaferSystemCBridge STATIC
-    SystemCBridge.cpp
+    SystemC/SystemCBridge.cpp
   )
   target_compile_features(WaferSystemCBridge PRIVATE cxx_std_17)
   set_target_properties(WaferSystemCBridge PROPERTIES
@@ -61,7 +61,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
 
   add_mlir_library(WaferSystemCModel
     PARTIAL_SOURCES_INTENDED
-    SystemCTargetModel.cpp
+    SystemC/SystemCTargetModel.cpp
 
     LINK_LIBS PUBLIC
     WaferCompiler

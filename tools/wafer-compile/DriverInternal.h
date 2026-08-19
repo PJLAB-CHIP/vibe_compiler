@@ -3,11 +3,11 @@
 #ifndef WAFER_TOOLS_WAFER_COMPILE_DRIVERINTERNAL_H
 #define WAFER_TOOLS_WAFER_COMPILE_DRIVERINTERNAL_H
 
-#include "Wafer/Compiler/Compilation.h"
-#include "Wafer/Compiler/Package.h"
-#include "Wafer/Compiler/TargetCodeGen.h"
+#include "Wafer/Driver/Compilation.h"
+#include "Wafer/Driver/CompilationResult.h"
+#include "Wafer/CodeGen/TargetCodeGen.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
-#include "Wafer/Model/SystemCTargetModel.h"
+#include "Wafer/Model/SystemC/SystemCTargetModel.h"
 #endif
 
 #include "llvm/ADT/ArrayRef.h"

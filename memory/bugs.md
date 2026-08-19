@@ -874,7 +874,8 @@
 
 ## 给 LLVM_OPTIONAL_SOURCES 里的退役源码插桩不产生任何效果
 
-- 现象：往 `lib/Wafer/Compiler/Executable/LowerRankInstrModules.cpp` 加调试打印后 `cmake --build` 报 "ninja: no work to do"，
+- 现象：往一个只列在`LLVM_OPTIONAL_SOURCES`、未进入active target的旧lowering source加调试打印后，`cmake --build`报告
+  "ninja: no work to do"，
   二进制里 grep 不到新字符串，运行输出也没有。
 - 根因：该文件在 CMakeLists 的 `LLVM_OPTIONAL_SOURCES` 列表而非 `add_mlir_library` 主源列表——它是退役源码，不属于
   active build；同名门禁逻辑已由 `CardExecutableLowering.cpp`/`CompileCardExecutableLLVMModules.cpp` 承接。插桩前没核对

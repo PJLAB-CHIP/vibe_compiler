@@ -1,9 +1,9 @@
 //===- wafer-cmodel-qualify-bulk.cpp - Offline bulk qualification -------===//
 
-#include "Wafer/Compiler/ProgramInvocation.h"
-#include "Wafer/Compiler/TargetCodeGen.h"
-#include "Wafer/Model/TargetModelInvocation.h"
-#include "Wafer/Target/BulkQualification.h"
+#include "Wafer/Program/ProgramInvocation.h"
+#include "Wafer/CodeGen/TargetCodeGen.h"
+#include "Wafer/Model/Core/TargetModelInvocation.h"
+#include "Wafer/Target/Numeric/Qualification/BulkQualification.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Errc.h"

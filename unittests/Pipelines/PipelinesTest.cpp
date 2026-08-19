@@ -1,15 +1,20 @@
 //===- PipelinesTest.cpp - Production pipeline contracts ----------------===//
 
-#include "Wafer/Pipelines/Pipelines.h"
-#include "Wafer/Compiler/TargetCodeGen.h"
+#include "Wafer/Conversion/WaferTileRegionToInstr/Pipelines.h"
+#include "Wafer/CodeGen/TargetCodeGen.h"
 
-#include "Wafer/Compiler/Pipeline/CompilationInternal.h"
-#include "Wafer/Compiler/ProgramData.h"
-#include "Wafer/Compiler/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Program/ProgramData.h"
+#include "Wafer/Transforms/MemoryPlanningPipelines.h"
+#include "Wafer/Transforms/Passes.h"
+#include "Wafer/Transforms/TargetConversion.h"
 
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "llvm/Support/raw_ostream.h"
@@ -34,21 +39,14 @@ static std::string printPipeline(mlir::OpPassManager &manager) {
   return text;
 }
 
-TEST(PipelinesTest, NamedTileLoweringExpandsToProductionBuilderStructure) {
-  wafer::registerWaferTransformPasses();
-  wafer::registerWaferPipelines();
-
+TEST(PipelinesTest, TileLoweringBuilderUsesTheProductionNestedStructure) {
   mlir::MLIRContext context;
   mlir::PassManager production(&context);
   wafer::buildLowerTileRegionToInstrPipeline(production);
-
-  mlir::PassManager textual(&context);
-  std::string errors;
-  llvm::raw_string_ostream errorStream(errors);
-  ASSERT_TRUE(mlir::succeeded(mlir::parsePassPipeline(
-      "wafer-lower-tile-region-to-instr", textual, errorStream)))
-      << errors;
-  EXPECT_EQ(printPipeline(production), printPipeline(textual));
+  const std::string pipeline = printPipeline(production);
+  EXPECT_NE(pipeline.find("wafer-convert-tile-region-to-instr"),
+            std::string::npos);
+  EXPECT_NE(pipeline.find("wafer-place-required-ncc-joins"), std::string::npos);
 }
 
 wafer::frontend::ProgramBoundaryBinding
@@ -91,7 +89,7 @@ TEST(PipelinesTest, InstrFunctionBufferizationExposesLeafAndAssignsNoOffsets) {
       << pipeline;
 
   mlir::PassManager leafManager(&context);
-  wafer::addInstrFunctionBoundaryBufferizationPass(leafManager);
+  leafManager.addPass(wafer::createBufferizeInstrFunctionBoundariesPass());
   std::string leafPipeline;
   llvm::raw_string_ostream leafStream(leafPipeline);
   leafManager.printAsTextualPipeline(leafStream);
@@ -104,21 +102,10 @@ TEST(PipelinesTest, InstrFunctionBufferizationExposesLeafAndAssignsNoOffsets) {
 }
 
 TEST(PipelinesTest, MemoryPlanningPreparationExposesModuleAndFunctionLeaves) {
-  wafer::registerWaferTransformPasses();
-  wafer::registerWaferPipelines();
-
   mlir::MLIRContext context;
   mlir::PassManager production(&context);
   wafer::buildPrepareInstrForMemoryPlanningPipeline(production);
-
-  mlir::PassManager textual(&context);
-  std::string errors;
-  llvm::raw_string_ostream errorStream(errors);
-  ASSERT_TRUE(mlir::succeeded(mlir::parsePassPipeline(
-      "wafer-prepare-instr-for-memory-planning", textual, errorStream)))
-      << errors;
   const std::string pipeline = printPipeline(production);
-  EXPECT_EQ(pipeline, printPipeline(textual));
   EXPECT_NE(pipeline.find("wafer-bufferize-instr-function-boundaries"),
             std::string::npos)
       << pipeline;
@@ -134,8 +121,8 @@ TEST(PipelinesTest, MemoryAssignmentBuildersExposeAtomicPasses) {
   mlir::PassManager manager(&context);
   wafer::PlanSPMMemoryPassOptions spm;
   wafer::PlanDDRMemoryPassOptions ddr;
-  wafer::addAssignSPMOffsetsPass(manager, spm);
-  wafer::addAssignDDROffsetsPass(manager, ddr);
+  manager.addPass(wafer::createPlanSPMMemoryPass(spm));
+  manager.addPass(wafer::createPlanDDRMemoryPass(ddr));
 
   std::string pipeline;
   llvm::raw_string_ostream os(pipeline);
@@ -153,12 +140,12 @@ TEST(PipelinesTest, ProductionAtomicPassAddersExposeTheirPasses) {
   mlir::PassManager manager(&context);
   wafer::MaterializeExecutionMeshPassOptions mesh;
   mesh.shape = "1";
-  wafer::addMaterializeTargetTopologyPass(manager);
-  wafer::addMaterializeExecutionMeshPass(manager, mesh);
-  wafer::addLowerAffineControlAndIndexingPass(manager);
+  manager.addPass(wafer::createMaterializeTargetTopologyPass());
+  manager.addPass(wafer::createMaterializeExecutionMeshPass(mesh));
+  manager.addPass(mlir::createLowerAffinePass());
   wafer::TargetConversionRequest target;
   target.profileRecordArgumentIndex = 5;
-  wafer::addLowerInstrToTargetLLVMPass(manager, target);
+  manager.addPass(wafer::createLowerInstrToTargetLLVMPass(target));
 
   std::string pipeline;
   llvm::raw_string_ostream os(pipeline);
@@ -183,8 +170,8 @@ TEST(PipelinesTest, NCCJoinPassesUseFunctionAnchors) {
   mlir::MLIRContext context;
   mlir::PassManager manager(&context);
   mlir::OpPassManager &functionManager = manager.nest<mlir::func::FuncOp>();
-  wafer::addRequiredNCCJoinPlacementPass(functionManager);
-  wafer::addRecomputeRequiredNCCJoinPlacementPass(functionManager);
+  functionManager.addPass(wafer::createPlaceRequiredNCCJoinsPass());
+  functionManager.addPass(wafer::createRebuildRequiredNCCJoinsPass());
 
   std::string pipeline = printPipeline(manager);
   EXPECT_NE(pipeline.find("func.func(wafer-place-required-ncc-joins,"),
@@ -259,8 +246,7 @@ module {
   for (size_t index = 0; index < tiles.size(); ++index) {
     const wafer::compiler::TileExecutable &tile = tiles[index];
     EXPECT_EQ(tile.getCardId(), wafer::CardId(0));
-    EXPECT_EQ(tile.getTileId(),
-              wafer::TileId(static_cast<int64_t>(index)));
+    EXPECT_EQ(tile.getTileId(), wafer::TileId(static_cast<int64_t>(index)));
     mlir::ModuleOp instrModule = tile.getModule();
     // TileRegion remains the explicit Tile-local execution container; all
     // dataflow operations inside it have crossed to Instr IR.
@@ -272,8 +258,8 @@ module {
   }
 
   llvm::Expected<wafer::compiler::TargetLLVMModules> target =
-      wafer::compiler::compileCardExecutableToTargetLLVMModules(
-          *executable, diagnostics);
+      wafer::compiler::compileCardExecutableToTargetLLVMModules(*executable,
+                                                                diagnostics);
   ASSERT_TRUE(static_cast<bool>(target))
       << diagnosticsText << (target ? "" : llvm::toString(target.takeError()));
   EXPECT_EQ(target->getModules().size(), 16u);

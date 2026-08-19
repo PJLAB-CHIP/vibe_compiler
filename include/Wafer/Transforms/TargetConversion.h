@@ -3,7 +3,7 @@
 #ifndef WAFER_TRANSFORMS_TARGETCONVERSION_H
 #define WAFER_TRANSFORMS_TARGETCONVERSION_H
 
-#include "Wafer/Target/TargetIdentity.h"
+#include "Wafer/Target/Core/TargetIdentity.h"
 
 #include <cstdint>
 #include <memory>

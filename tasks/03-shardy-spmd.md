@@ -158,7 +158,7 @@ snapshot；原source不被原地补topology、改MLIR或写shards。helper和loc
 
 ## 5. 实现索引
 
-- typed orchestration：`Wafer/Compiler/Compilation.h`、`lib/Wafer/Compiler/Pipeline/Compilation.cpp`；
+- typed orchestration：`Wafer/Driver/Compilation.h`、`lib/Wafer/Driver/Compilation.cpp`；
 - frontend program verifier：`Wafer/Frontend/Program.h`、`lib/Wafer/Frontend/Program.cpp`；
 - user driver：`wafer-compile`；
 - frontend-only verifier：`wafer-compile-stablehlo`；

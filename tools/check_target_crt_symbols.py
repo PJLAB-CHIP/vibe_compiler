@@ -123,7 +123,7 @@ def production_symbols_from_registry(
     attrs_text: str,
     target_operation_text: str,
 ) -> set[str]:
-    if '"Wafer/Target/TargetCall.h"' not in lowering_text:
+    if '"Wafer/Target/Core/TargetCall.h"' not in lowering_text:
         fail("target lowering does not include the shared target-call registry")
     if "makeTargetSymbol" in lowering_text:
         fail("target lowering retains the old symbol-construction path")
@@ -280,10 +280,10 @@ def main() -> int:
     instruction_ops_dir = repo_root / "lib" / "Wafer" / "IR" / "Instr"
     target_lowering_dir = repo_root / "lib" / "Wafer" / "Transforms" / "Target"
     registry_path = (
-        repo_root / "lib" / "Wafer" / "Target" / "TargetCall.cpp"
+        repo_root / "lib" / "Wafer" / "Target" / "Core" / "TargetCall.cpp"
     )
     target_operation_path = (
-        repo_root / "lib" / "Wafer" / "Target" / "TargetOperation.cpp"
+        repo_root / "lib" / "Wafer" / "Target" / "Core" / "TargetOperation.cpp"
     )
 
     header_text = read_text(header_path)

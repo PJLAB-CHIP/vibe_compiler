@@ -6,7 +6,7 @@
 #include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"

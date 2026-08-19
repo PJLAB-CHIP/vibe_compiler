@@ -1,7 +1,7 @@
 //===- LifetimeAnalysis.cpp - Structured memory lifetime analysis --------===//
 
 #include "MemoryPlanning/LifetimeAnalysis.h"
-#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"

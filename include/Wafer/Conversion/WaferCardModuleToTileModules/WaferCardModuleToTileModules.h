@@ -4,7 +4,7 @@
 #define WAFER_CONVERSION_WAFERCARDMODULETOTILEMODULES_H
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
-#include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/SmallVector.h"

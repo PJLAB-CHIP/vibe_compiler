@@ -5,8 +5,8 @@
 #include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/TargetPolicy.h"
-#include "Wafer/Target/TargetCall.h"
-#include "Wafer/Target/TargetFormat.h"
+#include "Wafer/Target/Core/TargetCall.h"
+#include "Wafer/Target/Core/TargetFormat.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"

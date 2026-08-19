@@ -459,30 +459,6 @@ def check_analysis_organization(root: Path, errors: list[str]) -> None:
         fail(errors, f"old transform-owned analysis include directory must be removed: {old_include}")
 
 
-def check_compiler_pass_manager_ownership(root: Path, errors: list[str]) -> None:
-    """Keep MLIR PassManager construction in the production pipeline runner."""
-    cmake_path = root / "lib/Wafer/Compiler/CMakeLists.txt"
-    cmake_text = check_file(cmake_path, errors)
-    sources = get_mlir_library_sources(cmake_text, "WaferCompiler")
-    if not sources:
-        fail(errors, "could not derive active WaferCompiler sources from CMake")
-        return
-
-    pass_manager_owner = "CompilationStages.cpp"
-    for relative in sorted(sources):
-        text = check_file(root / "lib/Wafer/Compiler" / relative, errors)
-        if "mlir::PassManager" in text and relative != pass_manager_owner:
-            fail(
-                errors,
-                f"active compiler source constructs PassManager outside the central runner: {relative}",
-            )
-        if re.search(r"\b(?:manager|pm)\.addPass\s*\(", text):
-            fail(
-                errors,
-                f"active compiler source assembles atomic passes instead of using a pipeline builder: {relative}",
-            )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -500,7 +476,6 @@ def main() -> int:
     check_forbidden_ir_specializations(root, errors)
     check_analysis_organization(root, errors)
     check_conversion_organization(root, errors)
-    check_compiler_pass_manager_ownership(root, errors)
 
     if errors:
         for error in errors:

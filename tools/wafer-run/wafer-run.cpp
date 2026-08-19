@@ -1,12 +1,12 @@
 //===- wafer-run.cpp - Verified Wafer package execution -----------------===//
 
-#include "Wafer/Runtime/BoardRuntime.h"
-#include "Wafer/Package/PackageManifest.h"
-#include "Wafer/Runtime/ProfileInstrumentation.h"
+#include "Wafer/Runtime/Board/BoardRuntime.h"
+#include "Wafer/Package/Manifest/PackageManifest.h"
+#include "Wafer/Runtime/Profile/ProfileInstrumentation.h"
 #include "WaferProfileCollection.h"
 #include "WaferRunBoardIO.h"
 #if defined(WAFER_ENABLE_BOARD_RUNTIME)
-#include "Wafer/Runtime/TxBoardRuntime.h"
+#include "Wafer/Runtime/Board/TxBoardRuntime.h"
 #endif
 
 #include "llvm/ADT/STLExtras.h"

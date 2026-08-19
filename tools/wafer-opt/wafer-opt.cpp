@@ -1,8 +1,9 @@
 //===- wafer-opt.cpp - Wafer optimizer driver ----------------------------===//
 
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Transforms/Passes.h"
+
+#include "PipelineRegistration.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/ValueBoundsOpInterfaceImpl.h"
@@ -77,7 +78,7 @@ int main(int argc, char **argv) {
   registerWaferOptDialects(registry);
   mlir::registerTransformsPasses();
   wafer::registerWaferTransformPasses();
-  wafer::registerWaferPipelines();
+  registerWaferOptPipelines();
 #ifdef WAFER_ENABLE_SHARDY
   mlir::sdy::registerAllSdyPassesAndPipelines();
 #endif

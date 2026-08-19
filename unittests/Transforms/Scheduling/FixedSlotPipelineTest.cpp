@@ -2,7 +2,7 @@
 
 #include "Wafer/Transforms/SoftwarePipelining.h"
 
-#include "Wafer/Analysis/ScheduleCostAnalysis.h"
+#include "Wafer/Analysis/ScheduleCost/ScheduleCostAnalysis.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Transforms/MemoryPlanning.h"

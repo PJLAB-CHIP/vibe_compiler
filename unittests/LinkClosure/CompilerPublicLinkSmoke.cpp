@@ -1,4 +1,4 @@
-#include "Wafer/Compiler/Compilation.h"
+#include "Wafer/Driver/Compilation.h"
 
 #include "llvm/Support/Error.h"
 

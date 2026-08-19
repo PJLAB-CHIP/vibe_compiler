@@ -1,4 +1,4 @@
-#include "Wafer/Model/TargetModelMemory.h"
+#include "Wafer/Model/Core/TargetModelMemory.h"
 
 int main() {
   return wafer::model::stringifyTargetModelMemoryErrorCode(

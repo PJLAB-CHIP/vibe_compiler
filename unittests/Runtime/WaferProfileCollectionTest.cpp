@@ -3,7 +3,7 @@
 #include "WaferProfileCollection.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Package/PackageManifest.h"
+#include "Wafer/Package/Manifest/PackageManifest.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Errc.h"

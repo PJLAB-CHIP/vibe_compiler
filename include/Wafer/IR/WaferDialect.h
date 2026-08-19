@@ -3,7 +3,7 @@
 #ifndef WAFER_IR_WAFERDIALECT_H
 #define WAFER_IR_WAFERDIALECT_H
 
-#include "Wafer/Target/PhysicalLayout.h"
+#include "Wafer/Target/Layout/PhysicalLayout.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/Dialect/Async/IR/AsyncTypes.h"
 #include "mlir/IR/BuiltinTypes.h"

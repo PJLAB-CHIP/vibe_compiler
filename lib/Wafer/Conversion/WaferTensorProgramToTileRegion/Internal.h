@@ -5,7 +5,7 @@
 #include "TensorProgramScope.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"

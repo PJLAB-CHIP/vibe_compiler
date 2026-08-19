@@ -1,7 +1,7 @@
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/Pipelines/Pipelines.h"
+#include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -2,7 +2,7 @@
 
 #include "MemoryPlanning/StaticIndexRange.h"
 
-#include "Wafer/Analysis/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"

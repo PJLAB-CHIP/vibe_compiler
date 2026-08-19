@@ -4,10 +4,12 @@ add_mlir_library(WaferTransforms
   DDR/PlanDDRMemory.cpp
   MemoryPlanning/LifetimeAnalysis.cpp
   MemoryPlanning/MiniMallocPacking.cpp
+  MemoryPlanning/Pipelines.cpp
   MemoryPlanning/StaticIndexRange.cpp
   MemoryPlanning/StaticMemoryPacking.cpp
   SPM/PlanSPMMemory.cpp
   SPMD/ApplyDefaultSpmdSharding.cpp
+  SPMD/Pipelines.cpp
   Target/MaterializeExecutionMesh.cpp
   Target/MaterializeTargetTopology.cpp
   Target/LowerInstrToTargetLLVM.cpp
@@ -61,6 +63,11 @@ add_mlir_library(WaferTransforms
   MLIRValueBoundsOpInterface
 )
 
+set(WAFER_COMPILATION_TRANSFORM_SOURCES
+  Transforms/Bufferization/SelectedBufferMaterialization.cpp
+  Transforms/Transport/DirectDTETransport.cpp
+  PARENT_SCOPE)
+
 target_include_directories(obj.WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
                                                     ${PROJECT_SOURCE_DIR}/lib)
 target_include_directories(WaferTransforms PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
@@ -72,6 +79,8 @@ target_link_libraries(WaferTransforms PRIVATE WaferThirdPartyMiniMalloc)
 if(WAFER_ENABLE_SPMD_PARTITIONER_DEPS)
   target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)
   target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)
-  target_link_libraries(obj.WaferTransforms PRIVATE ShardySdyDialect)
-  target_link_libraries(WaferTransforms PRIVATE ShardySdyDialect)
+  target_link_libraries(obj.WaferTransforms PRIVATE
+    ShardySdyDialect ShardySdyTransforms)
+  target_link_libraries(WaferTransforms PRIVATE
+    ShardySdyDialect ShardySdyTransforms)
 endif()

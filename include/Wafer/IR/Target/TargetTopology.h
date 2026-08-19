@@ -4,7 +4,7 @@
 #ifndef WAFER_IR_TARGET_TARGETTOPOLOGY_H
 #define WAFER_IR_TARGET_TARGETTOPOLOGY_H
 
-#include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/ArrayRef.h"

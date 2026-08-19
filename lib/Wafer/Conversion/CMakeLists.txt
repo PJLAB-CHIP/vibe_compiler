@@ -147,3 +147,22 @@ if(WAFER_ENABLE_IMPORTER_DEPS)
   target_link_libraries(WaferStableHLOToLinalg PRIVATE StablehloOps)
   target_link_libraries(WaferStableHLOToLinalg PRIVATE StablehloLinalgTransforms)
 endif()
+
+add_mlir_library(WaferStableHLOPipelines
+  StableHLOToLinalg/Pipelines.cpp
+
+  LINK_LIBS PUBLIC
+  WaferTransforms
+  MLIRPass
+  MLIRTransforms
+)
+
+add_mlir_library(WaferTileRegionPipelines
+  WaferTileRegionToInstr/Pipelines.cpp
+
+  LINK_LIBS PUBLIC
+  WaferIR
+  WaferTransforms
+  MLIRFuncDialect
+  MLIRPass
+)

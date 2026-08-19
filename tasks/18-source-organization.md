@@ -79,7 +79,8 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
 
 ### 3.2 Physical-dataflow selection 与 materialization
 
-`Compiler`是整图physical-dataflow决策唯一owner，源码按下列output动作组织：
+`Planning`是整图physical-dataflow决策唯一owner；项目本身已经是compiler，不再建立包罗万象的`Compiler`中间目录。源码按
+下列output动作组织：
 
 - semantic-alternative builder：从current TensorProgram typed SSA证明资格，并把每个算法/参数点构造成isolated actual
   TensorProgram alternative；proof、算法名和参数向量不越过actual IR边界；
@@ -146,9 +147,17 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 | `CollectiveTopologyAnalysis.{h,cpp}`、`CollectiveTopologyTest.cpp` | bounded participant集合上的deterministic ring/tree topology推导与exact负例 | `extract-then-delete`：Q50.H迁入physical communication candidate domain，使用typed participant/topology relation并补active test后删除旧API/test |
 | `WaferTileRegionToInstr/CollectiveLowering.cpp`及旧`Comm*` tests | collective拆成typed message、DTE issue/wait、局部reduce/copy的materialization mechanics | `extract-then-delete`：旧Tile collective op已退出current ODS，文件不得原样进CMake；Q50.H迁移mechanics与正负proof后删除 |
 | `CompleteTraversal.cpp` | complete structured traversal和跨producer coupled materialization | `extract-then-delete`：Q50.D迁到active traversal/region-fusion seam，chain/fanout/fanin/diamond witness受测后删除旧实现 |
+| `Analysis/Topology/ExecutionTopologyAnalysis.cpp`、`Analysis/PhysicalDataflow/GlobalTileRelation.cpp`及对应unit | typed participant topology、global/local exact tile relation与负例 | `extract-then-delete`：Q50.H只迁入current participant/placement/movement仍需的纯query，不能恢复rank candidate owner |
+| `Transforms/PhysicalDataflow/{CompleteRankMaterialization,LayoutMovementOptimization,ReadyOrder,StructuredOpInterfaceModels}.cpp`及对应unit | complete traversal、layout/movement actual rewrite、ready-order与interface mechanics | 分别由Q50.C/D、Q50.G/H、Q50.J迁入current typed mechanism；迁入前保持明确dormant，不进入production target |
+| `Transforms/Scheduling/{FixedSlotPipeline,RankTileMaterialization,WorkerPlacement}.cpp`及对应unit | loop pipeline、rank/local tile materialization和worker placement mechanics | 分别由Q50.K、Q50.C/E、Q50.J迁入current owner；不得恢复fixed-slot selector或rank candidate API |
+| `Transforms/Transport/{CoordinatedCommunicationAction,NoCCommunicationAction,NoCIntermediateRouting,NoCPartialDataflow}.cpp`及对应unit | actual NoC action、intermediate route和partial-reduction transport mechanics | Q50.H迁入explicit movement mechanism后删除旧provider/API；当前只有Direct-DTE fixed verification进入active target |
+| 未注册的SystemC DTE/NCC专项unit | pending/completion/event可观测负例 | Q63把pure completion protocol、MLIR adapter和SystemC scheduling分层后迁入对应active test target，不能靠未注册test声称已覆盖 |
+
+`Transforms/SPMD/XlaSpmd*.cpp`不是dormant host library source：它们由
+`tools/build_xla_spmd_partitioner_helper.py`的exact manifest复制到显式external helper build；不得同时加入host CMake target。
 
 Q50.S已完成attention能力迁移：SSA attention/decode proof、online recurrence和split-K/V partition/merge actual-root builder均进入
-active `Compiler/Search` owner并由真实TensorProgram测试覆盖；旧`AttentionSemantics.cpp`、`MaterializeFlashAttention.cpp`、
+active `Planning/Search` owner并由真实TensorProgram测试覆盖；旧`AttentionSemantics.cpp`、`MaterializeFlashAttention.cpp`、
 `MaterializeFlashDecoding.cpp`及未注册旧测试已删除，未恢复独立pass、provider或source-marker gate。
 
 `tools/check_source_organization.py`当前只对少数目录闭合active/dormant集合；2026-08-17 follow-up review确认其余目录仍可能存在
@@ -164,7 +173,7 @@ Q64完成前，各current任务必须同批删除或注册自己触及的旧sour
 
 ### 4.1 Target conversion/writing
 
-`lib/Wafer/Compiler`中的target职责按以下边界拆分：
+`CodeGen/Target`中的target职责按以下边界拆分：
 
 - target ABI preparation；
 - Instr→Target LLVM conversion；
@@ -189,7 +198,7 @@ current package实现已按Q56依赖方向收敛到中立`Package`目录，compi
 - ProfileInstrumentation的typed model、canonical spelling和共享filename常量由中立package support拥有；strict loader、device
   collection与verified runtime object仍是独立runtime consumer，不反向成为package schema owner。
 
-source-organization gate同时禁止`WaferCompiler`链接`WaferRuntime`和Compiler/Package源码或public header include
+source-organization gate同时禁止`WaferCompiler`链接`WaferRuntime`，并禁止`Driver`/`Package/Writer`源码或public header include
 `Wafer/Runtime/*`；只修link edge而保留runtime header反向依赖不算边界闭合。
 
 ExecutablePackage manifest identity与profile activation format identity分别只在其typed owner定义；profile plan/site map不拥有版本；
@@ -199,14 +208,14 @@ count/trace captures和一个16-Tile site map，不保留output集合shell或重
 
 ### 4.3 TargetCall与model
 
-`Target`拥有closed TargetCall descriptor registry与decoder。`Compiler/TargetCallFrontend`只负责same-invocation LLVM JIT、
+`Target`拥有closed TargetCall descriptor registry与decoder。`Target/Execution`只负责same-invocation LLVM JIT、
 physical identity binding和atomic transaction sink lifecycle。
 
 `Target`中的typed facts进一步按真实职责分开：`TargetOperation`拥有target command enum/parameter，physical tensor descriptor/codec
 拥有format、layout、shape、count与bounded byte mapping，raw scalar codec只拥有encoding。它不得再以一个public numeric umbrella
 聚合model profile、formal policy、compiler emittability、hardware evidence、command key和qualification digest。
 
-Compiler accepted-data preparation拥有显式TargetTensor materialization action并依赖上述physical/scalar primitives；它不能链接或
+CodeGen accepted-data preparation拥有显式TargetTensor materialization action并依赖上述physical/scalar primitives；它不能链接或
 include formal/bulk model来构造静态program data。Package verifier只验证descriptor、exact bytes与file closure，不执行model command。
 
 `Model`进一步拆成：
@@ -232,23 +241,24 @@ bootstrap/qualification/tool test support，不作为always-built`WaferTarget` p
 ```text
 IR / Support / Target typed facts
   -> Analysis
-  -> Conversion / Transforms
-  -> Compiler orchestration and CardExecutable
+  -> Planning
+  -> Conversion / Transforms -> CodeGen/Executable -> CodeGen/Target
+  -> Driver orchestration
 
 Support / Target typed facts
   -> ExecutablePackage contract / parse / serialize / readback
-      -> Compiler package writing
+      -> Package writing -> Driver publication
       -> Runtime validation -> Board provider or Model consumer
 
 Target operation / physical tensor / scalar codec
-  -> Compiler TargetTensor materialization
+  -> CodeGen TargetTensor materialization
   -> Formal model -> managed/bulk model -> SystemC consumer
 
-Compiler package writing / Runtime / Model
+Driver / Runtime / Model
   -> Tools
 ```
 
-禁止runtime/model反向依赖compiler private search，禁止analysis依赖writing，禁止conversion调用tool/runner。CMake target
+禁止runtime/model反向依赖planning/driver private state，禁止analysis依赖writing，禁止conversion调用tool/runner。CMake target
 明确列出受控source，不依赖glob保住已经删除的文件；删除source时同批删除target/source list和only-for-it test。
 source-organization gate还必须禁止Compiler search/Analysis/Conversion include formal/bulk model header，并确认退役numeric
 umbrella/profile/pattern/resolver没有compatibility header、typedef或旧source残留。
@@ -258,7 +268,7 @@ repo-wide source/test registration一起纳入实际CMake graph检查。
 独立host build/test按 `nproc`并行。若一个聚合library使无关功能被可选依赖拖住，应拆分target或用明确feature boundary，
 但不能复制接口实现。
 
-### 5.1 Compiler library、产品工具与安装
+### 5.1 Driver library、产品工具与安装
 
 request/result/commit语义由01和15拥有，failure taxonomy由19拥有，frontend输入由02拥有；本节只规定它们如何落到library、
 tool与CMake依赖边界。Q59的完成状态和验证证据只看`tasks/progress.md`及其实施计划；这里记录稳定library拓扑：

@@ -4,7 +4,7 @@
 #define WAFER_ANALYSIS_PHYSICALDATAFLOW_EXACTDEMAND_H
 
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
-#include "Wafer/Target/TopologyIds.h"
+#include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/Analysis/Presburger/IntegerRelation.h"
 

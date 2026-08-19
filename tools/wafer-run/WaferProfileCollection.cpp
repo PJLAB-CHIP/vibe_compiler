@@ -3,7 +3,7 @@
 #include "WaferProfileCollection.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Runtime/ProfilerRecord.h"
+#include "Wafer/Runtime/Profile/ProfilerRecord.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"

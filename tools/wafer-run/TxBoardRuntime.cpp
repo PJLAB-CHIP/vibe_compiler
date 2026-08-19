@@ -1,6 +1,6 @@
 //===- TxBoardRuntime.cpp - TX public-runtime board provider ------------===//
 
-#include "Wafer/Runtime/TxBoardRuntime.h"
+#include "Wafer/Runtime/Board/TxBoardRuntime.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"

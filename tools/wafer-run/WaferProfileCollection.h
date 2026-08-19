@@ -3,7 +3,7 @@
 #ifndef WAFER_TOOLS_WAFER_RUN_WAFERPROFILECOLLECTION_H
 #define WAFER_TOOLS_WAFER_RUN_WAFERPROFILECOLLECTION_H
 
-#include "Wafer/Runtime/ProfileInstrumentation.h"
+#include "Wafer/Runtime/Profile/ProfileInstrumentation.h"
 #include "WaferRunBoardIO.h"
 
 #include "llvm/ADT/STLFunctionalExtras.h"

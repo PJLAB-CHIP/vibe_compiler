@@ -73,7 +73,8 @@ STABLEHLO_API_NEEDLES = [
 
 STABLEHLO_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
-    "lib/Wafer/Compiler",
+    "include/Wafer/Conversion/StableHLOToLinalg",
+    "lib/Wafer/Driver",
     "lib/Wafer/Conversion/StableHLOToLinalg",
     "tools/wafer-opt",
     "tools/wafer-compile-stablehlo",
@@ -86,9 +87,8 @@ SHARDY_API_NEEDLES = [
 
 SHARDY_API_ALLOWED_PREFIXES = [
     "include/Wafer/Frontend",
-    "include/Wafer/Pipelines",
-    "lib/Wafer/Compiler",
-    "lib/Wafer/Pipelines",
+    "include/Wafer/Transforms/SpmdPipelines.h",
+    "lib/Wafer/Driver",
     "lib/Wafer/Transforms/SPMD",
     "tools/wafer-opt",
     "tools/wafer-compile-stablehlo",
@@ -340,7 +340,7 @@ def check_cmake_target_visibility() -> None:
         raise RuntimeError("WaferTransforms must not link StablehloOps")
     for needle in [
         "target_compile_definitions(WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)",
-        "target_link_libraries(WaferTransforms PRIVATE ShardySdyDialect)",
+        "ShardySdyDialect ShardySdyTransforms",
     ]:
         check_text_contains(transforms_cmake_path, needle)
 
@@ -381,8 +381,8 @@ def check_cmake_target_visibility() -> None:
 
     for cmake_path in [
         REPO_ROOT / "lib" / "Wafer" / "CMakeLists.txt",
-        REPO_ROOT / "lib" / "Wafer" / "Compiler" / "CMakeLists.txt",
-        REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Conversion" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt",
         REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
     ]:
         text = cmake_path.read_text(encoding="utf-8")
@@ -434,13 +434,12 @@ def check_cmake_target_visibility() -> None:
                 f"tools/wafer-opt/CMakeLists.txt owns program orchestration via {needle!r}"
             )
 
-    compiler_cmake_path = (
-        REPO_ROOT / "lib" / "Wafer" / "Compiler" / "CMakeLists.txt"
-    )
+    compiler_cmake_path = REPO_ROOT / "lib" / "Wafer" / "CMakeLists.txt"
     for needle in [
         "WaferCompiler",
         "WaferFrontend",
-        "WaferPipelines",
+        "WaferStableHLOPipelines",
+        "WaferTileRegionPipelines",
         "WaferTransforms",
         "WAFER_ENABLE_IMPORTER_DEPS",
         "StablehloRegister",
@@ -452,7 +451,7 @@ def check_cmake_target_visibility() -> None:
     for needle in [*RUNTIME_DRIVER_NEEDLES, *TEST_TOOLING_NEEDLES]:
         if needle in compiler_cmake:
             raise RuntimeError(
-                f"lib/Wafer/Compiler/CMakeLists.txt leaks {needle!r}"
+                f"lib/Wafer/CMakeLists.txt compiler target leaks {needle!r}"
             )
 
     compiler_tool_cmake_path = (
@@ -463,7 +462,8 @@ def check_cmake_target_visibility() -> None:
     compiler_tool_cmake = compiler_tool_cmake_path.read_text(encoding="utf-8")
     for needle in [
         "WaferFrontend",
-        "WaferPipelines",
+        "WaferStableHLOPipelines",
+        "WaferTileRegionPipelines",
         "WaferTransforms",
         "Stablehlo",
         "Shardy",
@@ -483,7 +483,12 @@ def check_cmake_target_visibility() -> None:
     stablehlo_tool_cmake = (
         REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt"
     ).read_text(encoding="utf-8")
-    for needle in ["WaferCompiler", "WaferPipelines", "WaferTransforms"]:
+    for needle in [
+        "WaferCompiler",
+        "WaferStableHLOPipelines",
+        "WaferTileRegionPipelines",
+        "WaferTransforms",
+    ]:
         if needle in stablehlo_tool_cmake:
             raise RuntimeError(
                 "wafer-compile-stablehlo is a frontend verifier tool and must not "
@@ -495,7 +500,11 @@ def check_cmake_target_visibility() -> None:
         / "wafer-compile-stablehlo"
         / "wafer-compile-stablehlo.cpp"
     ).read_text(encoding="utf-8")
-    for needle in ["Wafer/Compiler", "Wafer/Pipelines", "Wafer/Transforms"]:
+    for needle in [
+        "Wafer/Driver",
+        "Wafer/Conversion/StableHLOToLinalg/Pipelines.h",
+        "Wafer/Transforms",
+    ]:
         if needle in stablehlo_tool_source:
             raise RuntimeError(
                 "wafer-compile-stablehlo must remain a frontend verifier, but "
@@ -508,10 +517,10 @@ def check_cmake_target_visibility() -> None:
         check_text_contains(
             REPO_ROOT / "tools" / "wafer-compile-stablehlo" / "CMakeLists.txt", needle
         )
-    pipelines_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt"
+    pipelines_cmake_path = REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt"
     for needle in [
-        "target_compile_definitions(obj.WaferPipelines PRIVATE WAFER_ENABLE_SHARDY=1)",
-        "target_link_libraries(WaferPipelines PUBLIC ShardySdyTransforms)",
+        "target_compile_definitions(obj.WaferTransforms PRIVATE WAFER_ENABLE_SHARDY=1)",
+        "ShardySdyDialect ShardySdyTransforms",
     ]:
         check_text_contains(pipelines_cmake_path, needle)
     for needle in [
@@ -572,9 +581,9 @@ def check_dependency_layering() -> None:
     )
     for cmake_path in [
         REPO_ROOT / "lib" / "Wafer" / "Analysis" / "CMakeLists.txt",
-        REPO_ROOT / "lib" / "Wafer" / "Compiler" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "CMakeLists.txt",
         REPO_ROOT / "lib" / "Wafer" / "IR" / "CMakeLists.txt",
-        REPO_ROOT / "lib" / "Wafer" / "Pipelines" / "CMakeLists.txt",
+        REPO_ROOT / "lib" / "Wafer" / "Conversion" / "CMakeLists.txt",
         REPO_ROOT / "lib" / "Wafer" / "Transforms" / "CMakeLists.txt",
         REPO_ROOT / "tools" / "wafer-compile" / "CMakeLists.txt",
         REPO_ROOT / "tools" / "wafer-opt" / "CMakeLists.txt",
