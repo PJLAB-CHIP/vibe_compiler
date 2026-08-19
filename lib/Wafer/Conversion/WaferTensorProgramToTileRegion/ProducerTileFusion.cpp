@@ -311,14 +311,31 @@ static mlir::FailureOr<bool> tryAssembleBoundaryProducerValue(
   return true;
 }
 
+static bool haveEquivalentFoldResults(llvm::ArrayRef<mlir::OpFoldResult> lhs,
+                                      llvm::ArrayRef<mlir::OpFoldResult> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::all_of(llvm::zip_equal(lhs, rhs), [](auto values) {
+           auto [left, right] = values;
+           if (left == right)
+             return true;
+           std::optional<int64_t> leftConstant =
+               mlir::getConstantIntValue(left);
+           std::optional<int64_t> rightConstant =
+               mlir::getConstantIntValue(right);
+           return leftConstant && rightConstant &&
+                  *leftConstant == *rightConstant;
+         });
+}
+
 static mlir::LogicalResult fuseProducerSlices(
     mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
-    TensorProgramBody body,
-    std::optional<TensorProgramScope> schedulingScope,
+    TensorProgramBody body, std::optional<TensorProgramScope> schedulingScope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
-    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
+    llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
+        *sharedMaterializedProducerTiles) {
   // With a structured loop nest, a fused tile is created in a nested block and
   // therefore cannot be mistaken for another untiled scope producer.  The
   // direct untiled API has no enclosing loop, so remember the finite set
@@ -339,8 +356,11 @@ static mlir::LogicalResult fuseProducerSlices(
   std::deque<PendingProducerSlice> worklist;
   llvm::SmallVector<PendingProducerSlice, 8> seenRelations;
   llvm::SmallVector<PendingProducerSlice, 4> pendingSlices;
-  llvm::SmallVector<MaterializedCoupledProducerTile, 4>
-      materializedCoupledTiles;
+  llvm::SmallVector<MaterializedCoupledProducerTile, 4> localProducerTiles;
+  llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
+      &materializedCoupledTiles =
+          sharedMaterializedProducerTiles ? *sharedMaterializedProducerTiles
+                                          : localProducerTiles;
   auto enqueueSlices = [&](llvm::ArrayRef<mlir::Operation *> operations,
                            mlir::Operation *downstreamProducer,
                            llvm::ArrayRef<mlir::Operation *> tiledConsumers) {
@@ -602,9 +622,12 @@ static mlir::LogicalResult fuseProducerSlices(
                  tiledOwner->getBlock() == slice->getBlock() &&
                  tiledOwner->isBeforeInBlock(slice) &&
                  materialized.tileType == slice.getType() &&
-                 llvm::equal(materialized.offsets, slice.getMixedOffsets()) &&
-                 llvm::equal(materialized.sizes, slice.getMixedSizes()) &&
-                 llvm::equal(materialized.strides, slice.getMixedStrides());
+                 haveEquivalentFoldResults(materialized.offsets,
+                                           slice.getMixedOffsets()) &&
+                 haveEquivalentFoldResults(materialized.sizes,
+                                           slice.getMixedSizes()) &&
+                 haveEquivalentFoldResults(materialized.strides,
+                                           slice.getMixedStrides());
         });
     if (reusable != materializedCoupledTiles.end()) {
       slice.getResult().replaceAllUsesWith(reusable->tiledValue);
@@ -636,9 +659,8 @@ static mlir::LogicalResult fuseProducerSlices(
         mlir::FailureOr<mlir::Value> tiled =
             materializeConfiguredStructuredTraversal(
                 rewriter, *schedulingScope, structured.getOperation(),
-                structured,
-                slice.getMixedOffsets(), requestedType.getShape(), loops,
-                operationTemporalTiles, failureReason,
+                structured, slice.getMixedOffsets(), requestedType.getShape(),
+                loops, operationTemporalTiles, failureReason,
                 /*outputDestination=*/{}, /*destinationBaseOffsets=*/{},
                 operationNodes);
         if (mlir::failed(tiled))
@@ -685,10 +707,60 @@ mlir::LogicalResult fuseCandidateProducerSlices(
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
-  return fuseProducerSlices(
-      tiledConsumer, sourceConsumer, scope, scope, loops,
-      operationTemporalTiles, insertionListener, failureReason,
-      operationNodes);
+  return fuseProducerSlices(tiledConsumer, sourceConsumer, scope, scope, loops,
+                            operationTemporalTiles, insertionListener,
+                            failureReason, operationNodes,
+                            /*sharedMaterializedProducerTiles=*/nullptr);
+}
+
+mlir::LogicalResult fuseCandidateProducerSlicesWithCache(
+    mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
+    TensorProgramScope scope,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
+    llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
+        &materializedProducerTiles) {
+  return fuseProducerSlices(tiledConsumer, sourceConsumer, scope, scope, loops,
+                            operationTemporalTiles, insertionListener,
+                            failureReason, operationNodes,
+                            &materializedProducerTiles);
+}
+
+void reuseMaterializedProducerTiles(
+    llvm::ArrayRef<mlir::Operation *> generatedSlices,
+    llvm::ArrayRef<MaterializedCoupledProducerTile> materializedProducerTiles) {
+  for (mlir::Operation *operation : generatedSlices) {
+    auto slice =
+        mlir::dyn_cast_or_null<mlir::tensor::ExtractSliceOp>(operation);
+    auto producerResult =
+        slice ? mlir::dyn_cast<mlir::OpResult>(slice.getSource())
+              : mlir::OpResult{};
+    if (!slice || !producerResult)
+      continue;
+    auto reusable = llvm::find_if(
+        materializedProducerTiles,
+        [&](const MaterializedCoupledProducerTile &materialized) {
+          mlir::Operation *tiledOwner = materialized.tiledValue.getDefiningOp();
+          return materialized.producerResult == producerResult &&
+                 materialized.block == slice->getBlock() && tiledOwner &&
+                 tiledOwner->getBlock() == slice->getBlock() &&
+                 tiledOwner->isBeforeInBlock(slice) &&
+                 materialized.tileType == slice.getType() &&
+                 haveEquivalentFoldResults(materialized.offsets,
+                                           slice.getMixedOffsets()) &&
+                 haveEquivalentFoldResults(materialized.sizes,
+                                           slice.getMixedSizes()) &&
+                 haveEquivalentFoldResults(materialized.strides,
+                                           slice.getMixedStrides());
+        });
+    if (reusable == materializedProducerTiles.end())
+      continue;
+    slice.getResult().replaceAllUsesWith(reusable->tiledValue);
+    if (slice->use_empty())
+      slice.erase();
+  }
 }
 
 mlir::LogicalResult fuseTensorProgramProducerSlices(
@@ -699,7 +771,8 @@ mlir::LogicalResult fuseTensorProgramProducerSlices(
   return fuseProducerSlices(
       tiledConsumer, sourceConsumer, TensorProgramBody(function), std::nullopt,
       loops, /*operationTemporalTiles=*/{}, /*insertionListener=*/nullptr,
-      failureReason, /*operationNodes=*/nullptr);
+      failureReason, /*operationNodes=*/nullptr,
+      /*sharedMaterializedProducerTiles=*/nullptr);
 }
 
 void eraseDeadCandidateSupportClosure(

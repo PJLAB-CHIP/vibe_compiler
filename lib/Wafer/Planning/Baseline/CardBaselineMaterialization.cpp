@@ -70,9 +70,9 @@ mlir::LogicalResult verifyCardBaselineMaterialization(
   if (llvm::any_of(assignment.mapping.edgeStrategies,
                    [](const SpatialEdgeStrategy &strategy) {
                      return strategy.action ==
-                            SpatialEdgeAction::CoupledFusion;
+                            SpatialEdgeAction::RecursiveProducerTiling;
                    })) {
-    failureReason = "baseline assignment contains coupled fusion";
+    failureReason = "baseline assignment contains recursive producer tiling";
     return mlir::failure();
   }
 

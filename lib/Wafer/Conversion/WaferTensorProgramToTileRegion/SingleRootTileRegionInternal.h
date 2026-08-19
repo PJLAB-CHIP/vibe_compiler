@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -26,6 +26,13 @@ mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
     unsigned &functionalArgumentCount);
 
+mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
+    mlir::Block &destination, llvm::ArrayRef<mlir::Operation *> sourceRoots,
+    llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
+    llvm::ArrayRef<uint32_t> coupledNodeIds, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
+    unsigned &functionalArgumentCount);
+
 void retainLiveOperationNodes(
     mlir::func::FuncOp function,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes);
@@ -34,6 +41,11 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const StructuredNodeIterationShard &shard, std::string *failureReason);
+
+mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
+    TileModuleOp tileOwner,
+    llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
+    const StructuredNodeShardGroup &group, std::string *failureReason);
 
 mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
     TileModuleOp tileOwner,

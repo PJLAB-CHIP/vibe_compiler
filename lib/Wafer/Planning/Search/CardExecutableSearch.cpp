@@ -20,9 +20,10 @@ runCardExecutableSearch(mlir::ModuleOp tensorProgram,
                                          programAnalysis.availableTileIds);
   if (mlir::failed(spatialPlacements))
     return mlir::failure();
-  // Q50.S/B assignments remain partial until Q50.C-K supply all physical axes.
-  // Querying establishes the typed mechanism boundary; enumerating or cloning
-  // these roots now would perform work that no complete candidate can consume.
+  // Semantic and spatial assignments remain partial until every physical axis
+  // has a current mechanism. Querying establishes the typed boundary;
+  // enumerating or materializing these roots now would perform work that no
+  // complete candidate can consume.
   return baseline;
 }
 

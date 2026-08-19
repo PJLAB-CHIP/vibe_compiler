@@ -34,13 +34,16 @@ enum class SpatialDataflowMaterializationMode : uint8_t {
 
 /// One query-local physical treatment of a structured SSA dependency. A
 /// dependency may be direct or may cross a statically provable unary pure
-/// producer-to-consumer tensor chain such as expand/collapse shape. This is the only carrier
-/// between structured-DAG selection and actual CardModule materialization: it
-/// is never persisted, serialized, or recovered from an operation name/ordinal.
+/// producer-to-consumer tensor chain such as expand/collapse shape. This is the
+/// only carrier between structured-DAG selection and actual CardModule
+/// materialization: it is never persisted, serialized, or recovered from an
+/// operation name/ordinal.
 enum class SpatialEdgeAction : uint8_t {
-  /// Consumer-driven traversal recursively materializes the producer in the
-  /// same TileRegion and keeps the exact producer value resident.
-  CoupledFusion,
+  /// Low-level consumer-driven recursive producer tiling used while building
+  /// an already-selected region. Search grouping is represented by actual
+  /// node groups/TileRegions, never by this edge action. The producer value
+  /// remains inside that region through ordinary SSA.
+  RecursiveProducerTiling,
   /// Producer and consumer use independent traversals in one TileRegion.  An
   /// explicit tile-local staging copy separates their SPM versions. This is
   /// local edge residency, not an op-fusion claim.
@@ -129,16 +132,17 @@ struct SpatialEdgeMaterializationFacts {
   uint64_t consumerScheduleOrdinal = 0;
 };
 
-/// Returns the topologically ordered pure producer-to-consumer tensor chain connecting one selected
-/// structured producer result to one selected structured consumer operand. A
-/// direct dependency returns an empty path. Support operations may join other
-/// structured results; those are separate explicit edge strategies and must
-/// all be rebound before materialization. The selected producer itself must
-/// reach the operand through exactly one path.
+/// Returns the topologically ordered pure producer-to-consumer tensor chain
+/// connecting one selected structured producer result to one selected
+/// structured consumer operand. A direct dependency returns an empty path.
+/// Support operations may join other structured results; those are separate
+/// explicit edge strategies and must all be rebound before materialization. The
+/// selected producer itself must reach the operand through exactly one path.
 mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
 traceProducerToConsumerChain(mlir::Operation *producer, unsigned producerResult,
-                            mlir::Operation *consumer, unsigned consumerOperand,
-                            std::string *failureReason = nullptr);
+                             mlir::Operation *consumer,
+                             unsigned consumerOperand,
+                             std::string *failureReason = nullptr);
 
 /// Maps one exact producer result tile through the current direct/support SSA
 /// relation and the consumer's TilingInterface to one exact consumer result

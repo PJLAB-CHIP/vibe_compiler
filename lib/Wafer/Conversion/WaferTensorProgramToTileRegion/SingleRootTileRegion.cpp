@@ -1,6 +1,6 @@
 //===- SingleRootTileRegion.cpp - Selected shard Card assembly --------===//
 
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 
 #include "Internal.h"
 #include "SingleRootTileRegionInternal.h"
@@ -57,11 +57,11 @@ void appendRelations(StructuredMaterializationRelations &destination,
 } // namespace
 } // namespace wafer::tensor_program_to_tile_region
 
-mlir::LogicalResult wafer::lowerStructuredNodeShardsToCardModule(
+mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
     mlir::ModuleOp sourceModule, CardId cardId,
     llvm::ArrayRef<TileId> availableTiles,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
-    llvm::ArrayRef<StructuredNodeIterationShard> shards,
+    llvm::ArrayRef<StructuredNodeShardGroup> groups,
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
     StructuredMaterializationRelations *materializationRelations,
     std::string *failureReason) {
@@ -71,7 +71,7 @@ mlir::LogicalResult wafer::lowerStructuredNodeShardsToCardModule(
   if (!sourceModule || availableTiles.empty() || operationNodes.empty())
     return failResult(
         failureReason,
-        "single-root CardModule requires source, Tiles and structured roots");
+        "node-group CardModule requires source, Tiles and structured roots");
   llvm::DenseSet<mlir::Operation *> seenOperations;
   llvm::DenseSet<uint32_t> seenNodeIds;
   for (const StructuredOperationNodeMapping &mapping : operationNodes)
@@ -91,46 +91,60 @@ mlir::LogicalResult wafer::lowerStructuredNodeShardsToCardModule(
   if (std::adjacent_find(sortedTiles.begin(), sortedTiles.end()) !=
       sortedTiles.end())
     return failResult(failureReason,
-                      "single-root CardModule has duplicate available Tiles");
+                      "node-group CardModule has duplicate available Tiles");
 
   std::set<std::pair<int64_t, uint32_t>> seenShards;
   std::map<uint32_t, StructuredNodeIterationShardRole> nodeRoles;
   std::map<uint32_t, TileId> reductionMergeTiles;
-  llvm::SmallVector<const StructuredNodeIterationShard *, 32> orderedShards;
-  for (const StructuredNodeIterationShard &shard : shards) {
-    if (!llvm::is_contained(sortedTiles, shard.tile) ||
-        !seenShards.emplace(shard.tile.getValue(), shard.structuredNodeId)
-             .second)
-      return failResult(
-          failureReason,
-          "node shards contain an unavailable Tile or duplicate node/Tile");
-    auto [role, inserted] =
-        nodeRoles.try_emplace(shard.structuredNodeId, shard.role);
-    if (!inserted && role->second != shard.role)
-      return failResult(
-          failureReason,
-          "one structured node mixes complete and partial shards");
-    if (shard.role ==
-        StructuredNodeIterationShardRole::PartialReductionContribution) {
-      if (!shard.reductionMergeTile ||
-          !llvm::is_contained(sortedTiles, *shard.reductionMergeTile))
+  llvm::SmallVector<const StructuredNodeShardGroup *, 32> orderedGroups;
+  for (const StructuredNodeShardGroup &group : groups) {
+    if (group.shards.empty())
+      return failResult(failureReason, "node-shard group is empty");
+    const TileId groupTile = group.shards.front().tile;
+    uint32_t previousNode = 0;
+    bool firstNode = true;
+    for (const StructuredNodeIterationShard &shard : group.shards) {
+      if (shard.tile != groupTile ||
+          !llvm::is_contained(sortedTiles, shard.tile) ||
+          (!firstNode && shard.structuredNodeId <= previousNode) ||
+          !seenShards.emplace(shard.tile.getValue(), shard.structuredNodeId)
+               .second)
         return failResult(
             failureReason,
-            "partial-reduction shard has no available merge Tile");
-      auto [merge, mergeInserted] = reductionMergeTiles.try_emplace(
-          shard.structuredNodeId, *shard.reductionMergeTile);
-      if (!mergeInserted && merge->second != *shard.reductionMergeTile)
+            "node group has mixed Tiles, unstable order, or duplicate shard");
+      firstNode = false;
+      previousNode = shard.structuredNodeId;
+      auto [role, inserted] =
+          nodeRoles.try_emplace(shard.structuredNodeId, shard.role);
+      if (!inserted && role->second != shard.role)
+        return failResult(
+            failureReason,
+            "one structured node mixes complete and partial shards");
+      if (shard.role ==
+          StructuredNodeIterationShardRole::PartialReductionContribution) {
+        if (group.shards.size() != 1 || !shard.reductionMergeTile ||
+            !llvm::is_contained(sortedTiles, *shard.reductionMergeTile))
+          return failResult(
+              failureReason,
+              "partial-reduction contribution must be one singleton group");
+        auto [merge, mergeInserted] = reductionMergeTiles.try_emplace(
+            shard.structuredNodeId, *shard.reductionMergeTile);
+        if (!mergeInserted && merge->second != *shard.reductionMergeTile)
+          return failResult(
+              failureReason,
+              "one partial reduction selects several merge Tiles");
+      } else if (shard.reductionMergeTile) {
         return failResult(failureReason,
-                          "one partial reduction selects several merge Tiles");
-    } else if (shard.reductionMergeTile) {
-      return failResult(failureReason,
-                        "complete node shard unexpectedly has a merge Tile");
+                          "complete node shard unexpectedly has a merge Tile");
+      }
     }
-    orderedShards.push_back(&shard);
+    orderedGroups.push_back(&group);
   }
-  llvm::sort(orderedShards, [](const auto *lhs, const auto *rhs) {
-    return std::tuple(lhs->tile.getValue(), lhs->structuredNodeId) <
-           std::tuple(rhs->tile.getValue(), rhs->structuredNodeId);
+  llvm::sort(orderedGroups, [](const auto *lhs, const auto *rhs) {
+    return std::tuple(lhs->shards.front().tile.getValue(),
+                      lhs->shards.front().structuredNodeId) <
+           std::tuple(rhs->shards.front().tile.getValue(),
+                      rhs->shards.front().structuredNodeId);
   });
 
   mlir::OwningOpRef<mlir::ModuleOp> result =
@@ -167,21 +181,26 @@ mlir::LogicalResult wafer::lowerStructuredNodeShardsToCardModule(
     llvm::SmallVector<mlir::func::FuncOp, 8> functions;
   };
   std::map<uint32_t, PartialGroup> partialGroups;
-  for (const StructuredNodeIterationShard *shard : orderedShards) {
-    TileModuleOp tile = tiles.lookup(shard->tile.getValue());
+  for (const StructuredNodeShardGroup *group : orderedGroups) {
+    const StructuredNodeIterationShard &firstShard = group->shards.front();
+    TileModuleOp tile = tiles.lookup(firstShard.tile.getValue());
     if (!tile)
       return failResult(failureReason,
-                        "single-root fragment lost its Tile owner");
+                        "node-group fragment lost its Tile owner");
     mlir::FailureOr<RootFragment> fragment =
-        materializeRootFragment(tile, operationNodes, *shard, failureReason);
+        group->shards.size() == 1
+            ? materializeRootFragment(tile, operationNodes, firstShard,
+                                      failureReason)
+            : materializeCoupledRootFragment(tile, operationNodes, *group,
+                                             failureReason);
     if (mlir::failed(fragment))
       return mlir::failure();
-    if (shard->role ==
+    if (firstShard.role ==
         StructuredNodeIterationShardRole::PartialReductionContribution) {
-      PartialGroup &group = partialGroups[shard->structuredNodeId];
-      group.mergeTile = *shard->reductionMergeTile;
-      group.shards.push_back(shard);
-      group.functions.push_back(fragment->function);
+      PartialGroup &partial = partialGroups[firstShard.structuredNodeId];
+      partial.mergeTile = *firstShard.reductionMergeTile;
+      partial.shards.push_back(&firstShard);
+      partial.functions.push_back(fragment->function);
     }
     appendRelations(relations, std::move(fragment->relations));
   }
@@ -204,11 +223,27 @@ mlir::LogicalResult wafer::lowerStructuredNodeShardsToCardModule(
   }
 
   if (mlir::failed(mlir::verify(*result)))
-    return failResult(
-        failureReason,
-        "single-root CardModule is not verifier-legal after assembly");
+    return failResult(failureReason,
+                      "node-group CardModule is not verifier-legal");
   if (materializationRelations)
     *materializationRelations = std::move(relations);
   cardModule = std::move(result);
   return mlir::success();
+}
+
+mlir::LogicalResult wafer::lowerStructuredNodeShardsToCardModule(
+    mlir::ModuleOp sourceModule, CardId cardId,
+    llvm::ArrayRef<TileId> availableTiles,
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    llvm::ArrayRef<StructuredNodeIterationShard> shards,
+    mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
+    StructuredMaterializationRelations *materializationRelations,
+    std::string *failureReason) {
+  llvm::SmallVector<StructuredNodeShardGroup, 32> groups;
+  groups.reserve(shards.size());
+  for (const StructuredNodeIterationShard &shard : shards)
+    groups.push_back(StructuredNodeShardGroup{{shard}});
+  return lowerStructuredNodeGroupsToCardModule(
+      sourceModule, cardId, availableTiles, operationNodes, groups, cardModule,
+      materializationRelations, failureReason);
 }

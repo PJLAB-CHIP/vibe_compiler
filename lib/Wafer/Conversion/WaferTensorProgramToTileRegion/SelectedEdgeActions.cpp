@@ -30,7 +30,7 @@ materializeSelectedDirectActions(SelectedEdgeLoweringState &state) {
     if (strategy.destinationTile != currentTile)
       continue;
     switch (strategy.action) {
-    case SpatialEdgeAction::CoupledFusion: {
+    case SpatialEdgeAction::RecursiveProducerTiling: {
       // A full-domain consumer does not manufacture an extract_slice, so the
       // ordinary producer-fusion walk has no trigger.  When the common state
       // selected a finer iterator traversal for this producer, materialize
@@ -292,10 +292,10 @@ materializeSelectedConsumerStages(SelectedEdgeLoweringState &state) {
     // consumers in an observable output closure. Materializing only internal
     // consumers would leave the final output traversal free to fuse and
     // recompute the original functional closure across explicit edge actions.
-    // Search-policy CoupledFusion/LocalShardResidency candidates deliberately
+    // Recursive producer tiling/local residency mechanics deliberately
     // do not enter this baseline-only path. Their ordinary output traversal
-    // remains the materialization owner; only CoupledFusion is later accepted
-    // as an actual producer-fusion witness.
+    // remains the materialization owner; only recursive tiling is later
+    // accepted as an actual producer-fusion witness.
     llvm::SmallVector<MappedStrategy *, 16> consumerOrder;
     for (MappedStrategy &mapped : mappedStrategies)
       if (mapped.strategy.destinationTile == currentTile)

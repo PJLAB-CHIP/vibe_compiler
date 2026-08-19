@@ -1449,6 +1449,36 @@ complete-rank/coupled traversal仍只作为Q50.D能力donor，未重新注册为
 
 ## Q50.D：Maximal Coupled Traversal
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  Q50.S selected/original immutable TensorProgram、current StructuredDAG、Q50.B satisfied logical shard trial，以及Q50.C已经证明可
+  singleton物化的每个node/Tile iterator shard。Q51只提供一个explicit group partition；本层不得自行选择winner。
+- Current stage responsibility:
+  在同一Tile上惰性枚举所有合法connected node-shard partitions，并对调用方已选partition一次性构造actual regions。singleton
+  group复用Q50.C；multi-node group以group sink为驱动递归tile/fuse内部producer，跨group structured producer仍是DDR function
+  boundary。共享producer的同一exact tile/version在同一block复用，不能为fanout重复物化或经DDR round-trip。
+- Output IR / files:
+  typed `CoupledRegionAssignment`只包含稳定Tile与node group partition；actual apply输出完整available-Tile CardModule，每个group
+  对应一个outer TileRegion，`StructuredMaterializationRelations`中的emitted node集合与group成员exact相等。group identity、source
+  pointers、scores和derived traversal cache不写入IR或磁盘。
+- Downstream consumer:
+  Q50.E在已选actual group traversal上展开完整temporal vector/wave-loop order；Q50.F–K继续处理feasibility、representation、
+  movement、buffer和schedule。只有complete assignment才进入Q50.0。
+- User-level driver / named pipeline:
+  只由public `search` session静态组合，不新增pass、CLI、单独fusion provider或旧rank selector；Q50.D–K未闭合时public search仍
+  不枚举完整domain或运行重型LLaMA search。
+- Explicit non-goals:
+  不用per-edge `fused` bool、action recipe、group attr、symbol名或operation ordinal表示selected fusion；不选择temporal、layout、
+  movement、buffer、cost或winner；不把只有same Tile但exact demand依赖remote owner的edge广告为coupled；不在Q50.C actual IR上
+  事后拼region或clone/replay body。
+- Done criteria:
+  per-Tile typed partition domain与independent restricted-growth reference在chain、fanin、fanout、diamond和disconnected图上集合相同；
+  nonlocal demand、partial reduction、effect或不支持的tensor relation保持cut；singleton、maximal和中间cut均能actual物化；每个
+  multi-node group恰一region、emitted node集合exact，内部producer→consumer SSA不出现DDR store/load，fanout相同producer tile只
+  有一个actual version；旧CompleteTraversal的仍需mechanics与测试迁入后删除旧入口/selector。
+
 ### 机制
 
 Q51 可以对一个 SSA-connected multi-op group 选择 coupled traversal。对一个**已经选择的 group boundary**，materializer 必须
@@ -1468,6 +1498,27 @@ movement由Q50.H显式选择，不能退化成单条edge的`fused=true`或`Coupl
 
 maximal与较小cut都能在本checkpoint物化；“maximal group因SPM/parallelism不优而由较小cut获胜”放在
 Q51 closure，不在temporal/layout/buffer/schedule尚未接入时使用旧owner证明。
+
+### 2026-08-19 完成结果
+
+current `CoupledRegionDomain`只从Q50.B satisfied trial、StructuredDAG和typed producer-to-consumer relation构造。一个edge只有在
+consumer destination demand非空、全部ownership intersection都由同一physical Tile拥有、tensor chain受current reconstruction
+contract支持且两个endpoint都不是spatial partial reduction时才连入fusable graph；其它情况保持显式cut。每个Tile先拆fusable
+connected components，再把assignment自身解码成canonical restricted-growth labels逐点推进，不保存partition列表。完全不相干的
+8-node图因此直接得到singleton终点，不扫描Bell数量的跨component非法partition；多Tile independent components形成普通Cartesian
+product。
+
+actual apply不消费edge bool/action：caller给出的node group partition直接从immutable source SSA构造最终CardModule。singleton走
+Q50.C，multi-node group按一个或多个sink materialize exact iterator tile，并在同一function/TileRegion中递归tile/fuse全部内部producer。
+共享producer tile cache只活在该function和current IR epoch，fanout/diamond的相同producer slice只生成一个actual version；跨group
+structured producer仍是DDR function boundary。producer同时observable并供下游使用时，等值attr/SSA-constant `OpFoldResult`按
+folded integer比较并复用同一actual tile，不会生成第二个producer。测试证明chain maximal与中间cut分别产生1/2个region和1/2个output boundary store，
+direct fanin、两个producer经`tensor.insert_slice`汇合、fanout和diamond均为一个actual region，emitted-node集合与group exact相等。
+
+旧`CompleteTraversal.cpp`及其undefined rank/connection action owner已删除；`CoupledFusion`不再是current edge identity或test default，
+低层temporal donor按实际动作改名`RecursiveProducerTiling`，public search/group domain不消费它。fresh host unit 752/752；随后
+observable-cache修正相关Q50/Baseline/CardModule conversion 71/71，source/IR/dependency organization和轻量public search routing通过；本checkpoint未运行
+重型LLaMA search。
 
 ## Q50.E：Complete Temporal Tiling
 

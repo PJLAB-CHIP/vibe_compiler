@@ -35,6 +35,7 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/CandidateMaterialization.cpp
   WaferTensorProgramToTileRegion/CandidateSupport.cpp
   WaferTensorProgramToTileRegion/CollectiveLowering.cpp
+  WaferTensorProgramToTileRegion/CoupledRegionFunction.cpp
   WaferTensorProgramToTileRegion/ConfiguredStructuredTraversal.cpp
   WaferTensorProgramToTileRegion/DependentDataflow.cpp
   WaferTensorProgramToTileRegion/EdgeDomain.cpp

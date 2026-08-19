@@ -15,6 +15,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/AttentionAnalysis.cpp
   Planning/Search/AttentionTensorOps.cpp
   Planning/Search/CardExecutableSearch.cpp
+  Planning/Search/CoupledRegion.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp
   Planning/Search/SpatialPlacement.cpp
   Planning/Search/SingleRootRegion.cpp

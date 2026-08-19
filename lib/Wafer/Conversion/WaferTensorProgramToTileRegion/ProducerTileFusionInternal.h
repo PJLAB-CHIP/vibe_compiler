@@ -19,6 +19,25 @@ struct MaterializedCoupledProducerTile {
   mlir::Value tiledValue;
 };
 
+/// Producer fusion with a caller-owned function-local cache shared by several
+/// sink tiles of one selected coupled group. The cache never crosses a block,
+/// function, mutation epoch, or actual CardModule owner.
+mlir::LogicalResult fuseCandidateProducerSlicesWithCache(
+    mlir::Operation *tiledConsumer, mlir::Operation *sourceConsumer,
+    TensorProgramScope scope,
+    llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
+    llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
+        &materializedProducerTiles);
+
+/// Reuses exact producer tiles already materialized for an earlier sink of the
+/// same coupled function before recursive fusion sees the new sink slices.
+void reuseMaterializedProducerTiles(
+    llvm::ArrayRef<mlir::Operation *> generatedSlices,
+    llvm::ArrayRef<MaterializedCoupledProducerTile> materializedProducerTiles);
+
 using EnqueueProducerSlices = llvm::function_ref<void(
     llvm::ArrayRef<mlir::Operation *>, mlir::Operation *,
     llvm::ArrayRef<mlir::Operation *>)>;

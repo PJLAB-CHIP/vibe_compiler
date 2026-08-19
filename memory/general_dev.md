@@ -411,3 +411,18 @@ source program
 - spatial partial reduction的每个contribution用`PartialReductionOpInterface`的neutral initial tensor产生partial value；所有partial
   rectangle在selected merge Tile的独立single-root region中all-and-only assembly后再merge，原始DPS init只在这里消费一次。
   contribution若各自先merge init，再做跨Tile combine，会重复累计任意非identity init，禁止采用。
+
+## Coupled TileRegion domain与actual apply（stable，2026-08-19）
+
+- search identity是每个Tile上的canonical connected node-shard partition，不是per-edge fusion bool/action。edge只有在exact
+  destination demand全部由同Tile owner覆盖、tensor chain受支持且不跨partial-reduction boundary时才可连接；assignment必须同时
+  保留maximal、singleton和中间cut。
+- partition domain先拆fusable undirected connected components，再对每个component惰性推进restricted-growth labels；否则N个
+  disconnected节点为了找到singleton或证明end会扫描Bell(N)个必然非法partition。Card domain只是这些component domain的普通
+  Cartesian product，不预存point vector。
+- actual multi-node group从immutable source SSA一次性构造最终region，不先建singletons再合并。多个sink共享一个
+  function-local producer-tile cache；cache只允许同block、同source result、同offset/size/stride且定义支配use的actual value复用，
+  不跨function、candidate、mutation epoch或CardModule owner。
+- correctness witness是一个outer TileRegion内的exact emitted-node集合和内部SSA：group内部没有额外DDR store/load，fanout/diamond
+  相同producer slice只有一个actual version。`RecursiveProducerTiling`只是已选region内部的temporal lowering donor，不能重新成为
+  search assignment或默认edge recipe。

@@ -365,7 +365,8 @@
   logical relation legality；edge planner和materializer还各自重建一份indexing-map判断。
 - 修复模式：从producer/consumer共享structured iteration domain只导出一次query-local `IndexRelation`，对consumer shard用
   relation image求all-and-only producer demand；一对多relation保持合法。矩形、strided或多片传输只在后续target realizability
-  分层判断。同Tile独立traversal使用`LocalShardResidency`，只有实际consumer-driven递归traversal使用`CoupledFusion`。
+  分层判断。同Tile独立traversal使用`LocalShardResidency`；search的coupling identity是actual connected node group和共同
+  TileRegion，旧per-edge fusion recipe不再作为selection state。`RecursiveProducerTiling`只保留为已选region内部的低层temporal donor。
 - 防复发：same-numbered transpose必须产生resident加peer fragments并下沉到DTE recv/send/wait；同Tile和disjoint reduction均覆盖
   exact demand，window覆盖一对多稠密像集，stride覆盖“不可用bounding box冒充exact fragment”，baseline继续断言零fusion。
 
@@ -379,16 +380,16 @@
 - 防复发：多源fanin测试同时检查最大live recv为1、send/recv/wait exact配对和Direct-DTE binding；source-to-package transpose及
   attention baseline必须产生fresh no-card package，不能只检查Tile IR文本。
 
-## Baseline显式op边界不能无条件作用于search-policy融合
+## Baseline显式op边界不能无条件作用于search coupled region
 
-- 现象：为了让`none`逐op独立tiling而给每个consumer补DDR seal/reload后，`search`的`CoupledFusion`候选也被同一逻辑
+- 现象：为了让`none`逐op独立tiling而给每个consumer补DDR seal/reload后，search已选的coupled region也被同一逻辑
   强制切断，导致full weight reload、SPM溢出或最终零融合。
-- 根因：candidate materialization没有按typed edge action区分`IndependentEdgeBaseline`与`search`的
-  `CoupledFusion`/local shard residency，把baseline策略写成了所有policy共享的结构改写。
-- 修复模式：显式consumer boundary只在independent baseline action生效；search-policy fusion仍由output traversal物化，并以
-  actual in-region SPM use-def witness计数，不以proposal标记代签。
-- 防复发：none source-to-package测试断言`actual_fused_edges=0`和中间DDR movement；search-policy三阶段/layout-buffering测试断言
-  actual fusion candidate被接受且selected actual fused edges非零。
+- 根因：candidate materialization没有区分independent baseline boundary与search selected actual group，把baseline策略写成了
+  所有policy共享的结构改写。
+- 修复模式：显式consumer boundary只在independent baseline生效；search从source SSA按selected node group直接构造共同region，
+  以actual in-region use-def和emitted-node relation证明，不以edge action/proposal代签。
+- 防复发：none source-to-package检查中间DDR boundary和single-root cardinality；search定向测试检查maximal/中间cut产生不同actual
+  region、内部无DDR round-trip且fanout shared producer只有一个actual version。
 
 ## 零actual fusion不能证明baseline已与search policy和region资源解耦
 
@@ -995,4 +996,15 @@
   selected merge Tile按完整iteration rectangle无重叠assembly全部partial，再调用一次`mergeReductions`，其interface root只在这一步
   消费原始DPS init。
 - 防复发：测试同时partition parallel和reduction iterator，merge Tile与至少一个contribution Tile重合，并检查region分布为
-  “每个contribution一个 + merge一个”；numeric legality仍与Q50.B共享combiner proof，不能用常见zero fill作为协议前提。
+  “每个contribution一个 + merge一个”；numeric legality仍与spatial domain共享combiner proof，不能用常见zero fill作为协议前提。
+
+## OpFoldResult表示不同不能阻止同一actual producer tile复用
+
+- 现象：fanout或observable producer同时作为下游输入时，offset/size/stride都打印为同一常量，function-local cache仍miss，实际
+  TileRegion重复物化producer和boundary load。
+- 根因：一侧coordinate是`IntegerAttr`，另一侧是等值`arith.constant` SSA；直接用`OpFoldResult::operator==`或`llvm::equal`
+  比较的是表示identity，不是current foldable integer value。
+- 修复模式：先接受同一attr/SSA identity；否则两侧都用`getConstantIntValue`解析并比较整数。任一动态侧无法证明相等时保持不同，
+  不能按打印文本或shape猜测复用。
+- 防复发：coupled fanout、diamond和“producer既observable又被consumer使用”都检查同一source/result/window只有一个actual emitted
+  version；cache仍限制同block、type、完整offset/size/stride和definition-before-use，不跨IR epoch。

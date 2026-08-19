@@ -41,16 +41,22 @@ struct RootClosure {
 };
 
 mlir::FailureOr<RootClosure> collectRootClosure(
-    mlir::Operation *root, mlir::Block &sourceBody,
+    llvm::ArrayRef<mlir::Operation *> roots, mlir::Block &sourceBody,
     const llvm::DenseSet<mlir::Operation *> &structuredOperations,
+    const llvm::DenseSet<mlir::Operation *> &coupledOperations,
     std::string *failureReason) {
-  if (!root || root->getBlock() != &sourceBody ||
-      !mlir::isa<mlir::TilingInterface>(root) ||
-      !mlir::isa<mlir::DestinationStyleOpInterface>(root) ||
-      root->getNumResults() == 0 || !mlir::isMemoryEffectFree(root))
-    return fail<RootClosure>(
-        failureReason,
-        "single-root region requires one pure top-level tiled DPS operation");
+  if (roots.empty())
+    return fail<RootClosure>(failureReason,
+                             "region construction requires a sink root");
+  for (mlir::Operation *root : roots)
+    if (!root || root->getBlock() != &sourceBody ||
+        !coupledOperations.contains(root) ||
+        !mlir::isa<mlir::TilingInterface>(root) ||
+        !mlir::isa<mlir::DestinationStyleOpInterface>(root) ||
+        root->getNumResults() == 0 || !mlir::isMemoryEffectFree(root))
+      return fail<RootClosure>(
+          failureReason,
+          "region construction requires pure top-level tiled DPS roots");
 
   RootClosure result;
   llvm::DenseSet<mlir::Value> seenBoundaries;
@@ -74,7 +80,8 @@ mlir::FailureOr<RootClosure> collectRootClosure(
       return failResult(
           failureReason,
           "single-root dependency has no top-level source definition");
-    if (definition != root && structuredOperations.contains(definition)) {
+    if (structuredOperations.contains(definition) &&
+        !coupledOperations.contains(definition)) {
       if (seenBoundaries.insert(value).second)
         result.boundaries.push_back(value);
       return mlir::success();
@@ -91,18 +98,22 @@ mlir::FailureOr<RootClosure> collectRootClosure(
     return mlir::success();
   };
 
-  result.operations.insert(root);
-  for (mlir::Value operand : root->getOperands())
-    if (mlir::failed(collectValue(operand)))
-      return mlir::failure();
+  for (mlir::Operation *root : roots) {
+    result.operations.insert(root);
+    for (mlir::Value operand : root->getOperands())
+      if (mlir::failed(collectValue(operand)))
+        return mlir::failure();
+  }
   return result;
 }
 
-mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
+mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
     mlir::Block &destination, mlir::Operation *sourceRoot,
-    uint32_t structuredNodeId,
+    llvm::ArrayRef<mlir::Operation *> sourceRoots,
+    llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const llvm::DenseSet<mlir::Operation *> &structuredOperations,
-    std::string *failureReason,
+    const llvm::DenseSet<mlir::Operation *> &coupledOperations,
+    llvm::StringRef functionName, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
     unsigned &functionalArgumentCount) {
   mlir::func::FuncOp sourceFunction =
@@ -114,8 +125,9 @@ mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
         failureReason,
         "single-root region requires one defined single-block source function");
   mlir::Block &sourceBody = sourceFunction.getBody().front();
-  mlir::FailureOr<RootClosure> closure = collectRootClosure(
-      sourceRoot, sourceBody, structuredOperations, failureReason);
+  mlir::FailureOr<RootClosure> closure =
+      collectRootClosure(sourceRoots, sourceBody, structuredOperations,
+                         coupledOperations, failureReason);
   if (mlir::failed(closure))
     return mlir::failure();
 
@@ -123,21 +135,21 @@ mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
   inputTypes.reserve(closure->boundaries.size());
   for (mlir::Value boundary : closure->boundaries)
     inputTypes.push_back(boundary.getType());
-  llvm::SmallVector<mlir::Type, 2> resultTypes(
-      sourceRoot->getResultTypes().begin(), sourceRoot->getResultTypes().end());
+  llvm::SmallVector<mlir::Type, 4> resultTypes;
+  for (mlir::Operation *root : sourceRoots)
+    resultTypes.append(root->getResultTypes().begin(),
+                       root->getResultTypes().end());
   if (llvm::any_of(resultTypes, [](mlir::Type type) {
         auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(type);
         return !tensor || !tensor.hasStaticShape();
       }))
     return fail<mlir::func::FuncOp>(
         failureReason,
-        "single-root region requires static ranked tensor results");
+        "region construction requires static ranked tensor results");
 
   mlir::OpBuilder builder(&destination, destination.end());
-  std::string name =
-      (llvm::Twine("execute_node_") + llvm::Twine(structuredNodeId)).str();
   auto function = mlir::func::FuncOp::create(
-      sourceRoot->getLoc(), name,
+      sourceRoot->getLoc(), functionName,
       builder.getFunctionType(inputTypes, resultTypes));
   function.setPrivate();
   destination.push_back(function.getOperation());
@@ -152,17 +164,75 @@ mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
     if (!closure->operations.contains(&operation))
       continue;
     mlir::Operation *cloned = builder.clone(operation, mapping);
-    if (&operation == sourceRoot)
-      operationNodes.push_back({cloned, structuredNodeId});
+    auto node =
+        llvm::find_if(sourceOperationNodes,
+                      [&](const StructuredOperationNodeMapping &candidate) {
+                        return candidate.operation == &operation;
+                      });
+    if (node != sourceOperationNodes.end())
+      operationNodes.push_back({cloned, node->structuredNodeId});
   }
-  mlir::Operation *root = mapping.lookupOrNull(sourceRoot);
-  if (!root || root->getNumResults() != sourceRoot->getNumResults())
-    return fail<mlir::func::FuncOp>(failureReason,
-                                    "single-root clone omitted the root");
-  builder.create<mlir::func::ReturnOp>(sourceRoot->getLoc(),
-                                       root->getResults());
+  llvm::SmallVector<mlir::Value, 4> returnedValues;
+  for (mlir::Operation *root : sourceRoots) {
+    mlir::Operation *mapped = mapping.lookupOrNull(root);
+    if (!mapped || mapped->getNumResults() != root->getNumResults())
+      return fail<mlir::func::FuncOp>(failureReason,
+                                      "region construction omitted a root");
+    returnedValues.append(mapped->getResults().begin(),
+                          mapped->getResults().end());
+  }
+  builder.create<mlir::func::ReturnOp>(sourceRoot->getLoc(), returnedValues);
   functionalArgumentCount = body->getNumArguments();
   return function;
+}
+
+mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
+    mlir::Block &destination, mlir::Operation *sourceRoot,
+    uint32_t structuredNodeId,
+    const llvm::DenseSet<mlir::Operation *> &structuredOperations,
+    std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
+    unsigned &functionalArgumentCount) {
+  llvm::DenseSet<mlir::Operation *> coupledOperations{sourceRoot};
+  llvm::SmallVector<StructuredOperationNodeMapping, 1> sourceNodes{
+      {sourceRoot, structuredNodeId}};
+  std::string name =
+      (llvm::Twine("execute_node_") + llvm::Twine(structuredNodeId)).str();
+  return buildRegionFunction(destination, sourceRoot, {sourceRoot}, sourceNodes,
+                             structuredOperations, coupledOperations, name,
+                             failureReason, operationNodes,
+                             functionalArgumentCount);
+}
+
+mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
+    mlir::Block &destination, llvm::ArrayRef<mlir::Operation *> sourceRoots,
+    llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
+    llvm::ArrayRef<uint32_t> coupledNodeIds, std::string *failureReason,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
+    unsigned &functionalArgumentCount) {
+  if (sourceRoots.empty() || coupledNodeIds.size() < 2)
+    return fail<mlir::func::FuncOp>(
+        failureReason, "coupled region requires several nodes and one sink");
+  llvm::DenseSet<mlir::Operation *> structuredOperations;
+  llvm::DenseSet<mlir::Operation *> coupledOperations;
+  for (const StructuredOperationNodeMapping &mapping : sourceOperationNodes) {
+    if (!mapping.operation ||
+        !structuredOperations.insert(mapping.operation).second)
+      return fail<mlir::func::FuncOp>(
+          failureReason, "coupled region has a malformed node mapping");
+    if (llvm::is_contained(coupledNodeIds, mapping.structuredNodeId))
+      coupledOperations.insert(mapping.operation);
+  }
+  if (coupledOperations.size() != coupledNodeIds.size())
+    return fail<mlir::func::FuncOp>(
+        failureReason, "coupled region omitted one selected structured node");
+  const uint32_t firstNode = *llvm::min_element(coupledNodeIds);
+  std::string name =
+      (llvm::Twine("execute_group_") + llvm::Twine(firstNode)).str();
+  return buildRegionFunction(destination, sourceRoots.front(), sourceRoots,
+                             sourceOperationNodes, structuredOperations,
+                             coupledOperations, name, failureReason,
+                             operationNodes, functionalArgumentCount);
 }
 
 mlir::LogicalResult materializeRootIteratorShard(

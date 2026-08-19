@@ -225,8 +225,8 @@ static wafer::TileMapping completeTemporalMapping(mlir::ModuleOp source,
     }
 
     // Test mappings spell only the dimension under test. Complete every
-    // direct structured data edge with the ordinary fused action so fixtures
-    // exercise the production all-edge contract without a compatibility API.
+    // direct structured data edge with explicit local residency so fixtures
+    // exercise the all-edge contract without selecting coupled traversal.
     for (mlir::Operation &operation :
          function.getBody().front().without_terminator()) {
       auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(&operation);
@@ -257,13 +257,13 @@ static wafer::TileMapping completeTemporalMapping(mlir::ModuleOp source,
           continue;
         }
         llvm::SmallVector<int64_t, 4> offsets(producerType.getRank(), 0);
-        wafer::SpatialEdgeStrategy fused = edgeStrategy(
+        wafer::SpatialEdgeStrategy resident = edgeStrategy(
             producer, &operation, mapping.outputs.front().activeTileIds.front(),
-            wafer::SpatialEdgeAction::CoupledFusion, offsets,
+            wafer::SpatialEdgeAction::LocalShardResidency, offsets,
             producerType.getShape());
-        fused.producerResult = producerResult.getResultNumber();
-        fused.consumerOperand = operand->getOperandNumber();
-        mapping.edgeStrategies.push_back(std::move(fused));
+        resident.producerResult = producerResult.getResultNumber();
+        resident.consumerOperand = operand->getOperandNumber();
+        mapping.edgeStrategies.push_back(std::move(resident));
       }
     }
   }
@@ -923,12 +923,23 @@ module {
   ASSERT_TRUE(source);
 
   mlir::linalg::MatmulOp sourceMatmul;
-  source->walk(
-      [&](mlir::linalg::MatmulOp operation) { sourceMatmul = operation; });
-  ASSERT_TRUE(sourceMatmul);
+  mlir::linalg::MapOp sourceMap;
+  source->walk([&](mlir::Operation *operation) {
+    if (auto matmul = mlir::dyn_cast<mlir::linalg::MatmulOp>(operation))
+      sourceMatmul = matmul;
+    if (auto map = mlir::dyn_cast<mlir::linalg::MapOp>(operation))
+      sourceMap = map;
+  });
+  ASSERT_TRUE(sourceMatmul && sourceMap);
   wafer::TileMapping selected = mapping(/*shardDimension=*/1, {0}, {5, 3});
   selected.operationTemporalTiles.push_back(
       wafer::StructuredOpTemporalTile{sourceMatmul.getOperation(), {5, 3, 4}});
+  selected.edgeStrategies.push_back(edgeStrategy(
+      sourceMatmul.getOperation(), sourceMap.getOperation(), wafer::TileId(0),
+      wafer::SpatialEdgeAction::RecursiveProducerTiling,
+      /*producerOffsets=*/{0, 0},
+      /*producerSizes=*/{5, 3}));
+  selected.edgeStrategies.back().consumerOperand = 0;
 
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
@@ -977,6 +988,12 @@ module {
       mapping(/*shardDimension=*/1, {0}, {5, 3});
   mixedParallelReduction.operationTemporalTiles.push_back(
       wafer::StructuredOpTemporalTile{sourceMatmul.getOperation(), {2, 3, 4}});
+  mixedParallelReduction.edgeStrategies.push_back(edgeStrategy(
+      sourceMatmul.getOperation(), sourceMap.getOperation(), wafer::TileId(0),
+      wafer::SpatialEdgeAction::RecursiveProducerTiling,
+      /*producerOffsets=*/{0, 0},
+      /*producerSizes=*/{5, 3}));
+  mixedParallelReduction.edgeStrategies.back().consumerOperand = 0;
   mlir::OwningOpRef<mlir::ModuleOp> mixedModule;
   failureReason.clear();
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
@@ -2628,7 +2645,7 @@ module {
   };
 
   mlir::OwningOpRef<mlir::ModuleOp> fused =
-      lowerAction(wafer::SpatialEdgeAction::CoupledFusion);
+      lowerAction(wafer::SpatialEdgeAction::RecursiveProducerTiling);
   mlir::OwningOpRef<mlir::ModuleOp> retained =
       lowerAction(wafer::SpatialEdgeAction::LocalShardResidency);
   mlir::OwningOpRef<mlir::ModuleOp> spilled =
@@ -2711,7 +2728,8 @@ module {
       {structured[1].getOperation(), {4}});
   selected.edgeStrategies.push_back(
       edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
-                   wafer::TileId(0), wafer::SpatialEdgeAction::CoupledFusion,
+                   wafer::TileId(0),
+                   wafer::SpatialEdgeAction::RecursiveProducerTiling,
                    /*producerOffsets=*/{0}, /*producerSizes=*/{8},
                    /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
 
@@ -2872,7 +2890,7 @@ module {
     return result;
   };
   mlir::OwningOpRef<mlir::ModuleOp> fused =
-      lowerAction(wafer::SpatialEdgeAction::CoupledFusion);
+      lowerAction(wafer::SpatialEdgeAction::RecursiveProducerTiling);
   mlir::OwningOpRef<mlir::ModuleOp> recomputed =
       lowerAction(wafer::SpatialEdgeAction::Recompute);
   ASSERT_TRUE(fused && recomputed);
