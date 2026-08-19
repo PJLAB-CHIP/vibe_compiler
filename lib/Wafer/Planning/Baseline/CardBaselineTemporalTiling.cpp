@@ -5,7 +5,7 @@
 #include "Wafer/Analysis/Structured/StructuredOperationTileFootprint.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "llvm/ADT/STLExtras.h"
@@ -26,7 +26,7 @@ setCardBaselineTemporalTiles(CardBaselineAssignment &assignment,
   assignment.mapping.operationTemporalTiles.clear();
   llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 16> nodeTemporalTiles;
   nodeTemporalTiles.resize(program.dag.getNodes().size());
-  const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
+  const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   for (const StructuredDAGNode &node : program.dag.getNodes()) {
     if (node.id >= assignment.nodePlacements.size()) {
       if (failureReason)

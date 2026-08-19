@@ -9,9 +9,12 @@
 
 namespace {
 
+using wafer::analysis::CardInstructionProgramCost;
 using wafer::analysis::InstructionProgramCost;
+using wafer::analysis::ProgramDurationEstimate;
 using wafer::analysis::ScheduleCostKnowledge;
 using wafer::analysis::ScheduleCostReason;
+using wafer::analysis::ScheduleEstimatePolicy;
 using wafer::analysis::StaticBufferedPipeline;
 using wafer::analysis::StaticDurationAssumption;
 using wafer::analysis::staticDurationAssumptionMask;
@@ -25,9 +28,6 @@ using wafer::analysis::staticScheduleResourceMask;
 using wafer::analysis::StaticScheduleStage;
 using wafer::analysis::StaticScheduleStep;
 using wafer::analysis::StaticScheduleWork;
-using wafer::analysis::TargetScheduleCostPolicy;
-using wafer::analysis::CardInstructionProgramCost;
-using wafer::analysis::ProgramDurationEstimate;
 
 static CardInstructionProgramCost
 makeCost(uint64_t ddrReadBytes, uint64_t ddrWriteBytes,
@@ -54,13 +54,13 @@ makeCost(uint64_t ddrReadBytes, uint64_t ddrWriteBytes,
   return cost;
 }
 
-static TargetScheduleCostPolicy defaultPolicy() {
-  return TargetScheduleCostPolicy{};
+static ScheduleEstimatePolicy defaultPolicy() {
+  return ScheduleEstimatePolicy{};
 }
 
 static ProgramDurationEstimate
 estimateCost(const CardInstructionProgramCost &cost,
-             const TargetScheduleCostPolicy &policy) {
+             const ScheduleEstimatePolicy &policy) {
   StaticSchedulePlan plan = StaticSchedulePlan::getConservative(cost);
   const StaticSchedulePlan *plans[] = {&plan};
   auto estimates =
@@ -73,7 +73,7 @@ estimateCost(const CardInstructionProgramCost &cost,
 
 static ProgramDurationEstimate
 estimatePlan(const StaticSchedulePlan &plan,
-             const TargetScheduleCostPolicy &policy) {
+             const ScheduleEstimatePolicy &policy) {
   const StaticSchedulePlan *plans[] = {&plan};
   auto estimates =
       wafer::analysis::estimateStaticSchedulePlanDurations(plans, policy);
@@ -182,7 +182,7 @@ TEST(TheoreticalScheduleCostAnalysisTest,
                /*nocReceiveBytes=*/128'000,
                /*transmitMessages=*/1, /*receiveMessages=*/1,
                /*peakLinkBytes=*/128'000);
-  TargetScheduleCostPolicy policy = defaultPolicy();
+  ScheduleEstimatePolicy policy = defaultPolicy();
   policy.dteMessageStartupPicosecondsEstimate = 0;
 
   auto estimate = estimateCost(cost, policy);
@@ -306,7 +306,7 @@ TEST(TheoreticalScheduleCostAnalysisTest,
   CardInstructionProgramCost cost = makeCost(0, 0);
   cost.tileCosts.front().compute.npuF16Bf16LogicalOps.value =
       std::numeric_limits<uint64_t>::max();
-  TargetScheduleCostPolicy policy = defaultPolicy();
+  ScheduleEstimatePolicy policy = defaultPolicy();
   policy.f16Bf16NPULogicalOpsPerSecondPerTile = 1;
 
   StaticBufferedPipeline pipeline;

@@ -80,6 +80,10 @@ public:
          std::string *failureReason = nullptr);
 
   CoupledRegionAssignment getFirstAssignment() const;
+  /// Deterministic repair for a whole connected-component neighborhood. It
+  /// greedily merges legal adjacent groups until no further merge is legal;
+  /// the exact domain and its enumeration remain unchanged.
+  CoupledRegionAssignment getFusionOrientedAssignment() const;
   mlir::FailureOr<std::optional<CoupledRegionAssignment>>
   getNextAssignment(const CoupledRegionAssignment &assignment) const;
   bool contains(const CoupledRegionAssignment &assignment) const;

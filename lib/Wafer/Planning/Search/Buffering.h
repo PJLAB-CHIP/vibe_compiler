@@ -4,7 +4,7 @@
 
 #include "Wafer/Planning/Search/DataMovement.h"
 
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 namespace wafer::compiler::detail {
 

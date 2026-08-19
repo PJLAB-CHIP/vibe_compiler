@@ -4,9 +4,9 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -135,11 +135,12 @@ resolveDirectDTEContractParticipantCount(const TargetTopology &topology,
 }
 } // namespace
 
-mlir::LogicalResult
-lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
-                   int64_t defaultDDRArenaArgumentIndex, int64_t cardId,
-                   int64_t tileId, int64_t transportStatusArgumentIndex,
-                   int64_t profileRecordArgumentIndex) {
+mlir::LogicalResult lowerModuleInPlace(mlir::ModuleOp moduleOp,
+                                       bool transportPreparedBeforeEntry,
+                                       int64_t defaultDDRArenaArgumentIndex,
+                                       int64_t cardId, int64_t tileId,
+                                       int64_t transportStatusArgumentIndex,
+                                       int64_t profileRecordArgumentIndex) {
   if (mlir::failed(flattenTileRegions(moduleOp)))
     return mlir::failure();
 
@@ -170,8 +171,8 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
   std::optional<int64_t> dteParticipantCount;
   if (hasDirectDTEContract) {
     mlir::FailureOr<int64_t> resolved =
-        resolveDirectDTEContractParticipantCount(
-            *targetTopology, moduleOp, CardId(cardId));
+        resolveDirectDTEContractParticipantCount(*targetTopology, moduleOp,
+                                                 CardId(cardId));
     if (mlir::failed(resolved))
       return mlir::failure();
     dteParticipantCount = *resolved;
@@ -181,8 +182,7 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
   if (hasDirectDTEOps) {
     mlir::FailureOr<DirectDTEEndpointDomain> resolved =
         resolveDirectDTEEndpointDomain(*targetTopology, moduleOp,
-                                       CardId(cardId),
-                                       TileId(tileId));
+                                       CardId(cardId), TileId(tileId));
     if (mlir::failed(resolved))
       return mlir::failure();
     dteDomain = std::move(*resolved);
@@ -195,8 +195,8 @@ lowerModuleInPlace(mlir::ModuleOp moduleOp, bool transportPreparedBeforeEntry,
 
   analysis::DirectCallGraphAnalysis callGraph(moduleOp.getOperation());
   if (mlir::failed(validateDirectCallsForTarget(
-          callGraph, defaultDDRArenaArgumentIndex,
-          transportStatusArgumentIndex, profileRecordArgumentIndex)))
+          callGraph, defaultDDRArenaArgumentIndex, transportStatusArgumentIndex,
+          profileRecordArgumentIndex)))
     return mlir::failure();
   std::string dteEntrySymbol;
   if (hasDirectDTEContract) {

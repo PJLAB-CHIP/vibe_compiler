@@ -1,10 +1,11 @@
-//===- CompileCardExecutableLLVMModules.cpp - Compile Tile LLVM modules ----===//
+//===- CompileCardExecutableLLVMModules.cpp - Compile Tile LLVM modules
+//----===//
 
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 
 #include "Wafer/CodeGen/Executable/BoundedTileExecutor.h"
 
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/IR/Diagnostics.h"
 
@@ -32,10 +33,8 @@ llvm::Expected<TargetLLVMModules> compileCardExecutableToTargetLLVMModulesImpl(
     *statistics = {};
   const std::vector<TileExecutable> &tiles =
       cardExecutable.getTileExecutables();
-  const ExecutionConfig &executionConfig =
-      cardExecutable.getExecutionConfig();
-  if (tiles.size() !=
-      static_cast<size_t>(executionConfig.getTileCount()))
+  const ExecutionConfig &executionConfig = cardExecutable.getExecutionConfig();
+  if (tiles.size() != static_cast<size_t>(executionConfig.getTileCount()))
     return fail(diagnostics, "target LLVM Tile domain is incomplete");
   if (profileCapture != ProfileCaptureKind::None &&
       executionConfig.getTileCount() != WAFER_TX81_PROFILER_TILE_COUNT)

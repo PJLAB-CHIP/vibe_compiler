@@ -122,6 +122,34 @@ llvm::SmallVector<uint32_t, 16> getFirstLabels(const TileDomain &domain) {
   return labels;
 }
 
+llvm::SmallVector<uint32_t, 16>
+getFusionOrientedLabels(const TileDomain &domain) {
+  llvm::SmallVector<uint32_t, 16> labels = getFirstLabels(domain);
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    const uint32_t groupCount =
+        labels.empty() ? 0 : *llvm::max_element(labels) + 1;
+    for (uint32_t source = 1; source < groupCount && !changed; ++source) {
+      for (uint32_t destination = 0; destination < source; ++destination) {
+        llvm::SmallVector<uint32_t, 16> candidate(labels.begin(), labels.end());
+        for (uint32_t &label : candidate) {
+          if (label == source)
+            label = destination;
+          else if (label > source)
+            --label;
+        }
+        if (!isLegalPartition(domain, candidate))
+          continue;
+        labels = std::move(candidate);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return labels;
+}
+
 std::optional<llvm::SmallVector<uint32_t, 16>>
 getNextLabels(const TileDomain &domain, llvm::ArrayRef<uint32_t> current) {
   llvm::SmallVector<uint32_t, 16> labels(current.begin(), current.end());
@@ -340,6 +368,17 @@ CoupledRegionAssignment CoupledRegionDomain::getFirstAssignment() const {
   CoupledRegionAssignment assignment;
   for (const TileDomain &tile : tiles)
     appendGroups(tile, getFirstLabels(tile), assignment);
+  llvm::sort(assignment.groups);
+  return assignment;
+}
+
+CoupledRegionAssignment
+CoupledRegionDomain::getFusionOrientedAssignment() const {
+  CoupledRegionAssignment assignment;
+  for (const TileDomain &tile : tiles)
+    appendGroups(tile, getFusionOrientedLabels(tile), assignment);
+  llvm::sort(assignment.groups);
+  assert(contains(assignment) && "fusion repair must stay in coupled domain");
   return assignment;
 }
 
@@ -363,6 +402,7 @@ CoupledRegionDomain::getNextAssignment(
     CoupledRegionAssignment result;
     for (size_t tile = 0; tile < tiles.size(); ++tile)
       appendGroups(tiles[tile], labels[tile], result);
+    llvm::sort(result.groups);
     return std::optional<CoupledRegionAssignment>(std::move(result));
   }
   return std::optional<CoupledRegionAssignment>{};

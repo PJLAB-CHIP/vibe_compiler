@@ -503,3 +503,14 @@ source program
   owner，不clone module。mutation后旧instruction schedule domain必然失效，Q50.J从新IR重建。
 - memory planning只在stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone和专属大套件不能恢复；普通负例复用
   selected-buffer的Direct-DTE、alias、trip/tail gate。
+
+## Bounded physical search profile（stable，2026-08-19）
+
+- 普通编译不收集search统计。显式profile使用`--compile-timing --optimization-policy search`，需要扩大actual candidate数时再加
+  `--search-max-candidate-evaluations <positive-count>`；`none`不接受该参数。
+- profile至少核对`stage=physical-search`的budget/generated/evaluated/accepted/exact_rejected/indeterminate/coverage与
+  proposal/actual detail，并以同轮生成的package执行`wafer-run --no-card`。历史package和历史winner不作当前输入。
+- LLaMA这类source program的手动build-tree入口必须显式设置`TX8_DEPS_ROOT=<repo>/third_party/tx8_deps`。长case只在Q52/Q53等
+  明确profile/production gate运行；定向调试优先抽取同一IR关系的large transpose、multi-stage或interleaved-component unit。
+- 16 Tile实际conversion、lifetime、packing只并发处理current Tile IR；不得为复用而缓存、clone或replay materialized IR。只有从
+  TensorProgram和immutable target facts可完整键控、且Tile-local offsets/tails/endpoints在apply时重新绑定的analysis才能跨Tile共享。

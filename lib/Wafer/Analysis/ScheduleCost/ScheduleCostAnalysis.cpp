@@ -118,10 +118,6 @@ void add(ScheduleCostMetric &metric, Quantity quantity) {
 
 } // namespace detail
 
-TargetScheduleCostPolicy getTargetScheduleCostPolicy() {
-  return TargetScheduleCostPolicy{};
-}
-
 const ScheduleCostMetric &
 ScheduleNoCCost::directional(NoCDirection direction) const {
   return directionalTransmitBytes[static_cast<size_t>(direction)];
@@ -129,7 +125,7 @@ ScheduleNoCCost::directional(NoCDirection direction) const {
 
 InstructionProgramCost
 analyzeInstructionProgramCost(mlir::Operation *root,
-                              const TargetScheduleCostPolicy &policy) {
+                              const TargetMemoryPolicy &policy) {
   InstructionProgramCost cost;
   if (!root)
     return cost;
@@ -140,7 +136,7 @@ analyzeInstructionProgramCost(mlir::Operation *root,
 }
 
 static InstructionProgramCost analyzeInstructionProgramCostSlice(
-    mlir::Operation *root, const TargetScheduleCostPolicy &policy,
+    mlir::Operation *root, const TargetMemoryPolicy &policy,
     const llvm::DenseSet<mlir::Operation *> &includedOperations) {
   InstructionProgramCost cost;
   if (!root)
@@ -520,7 +516,7 @@ static void collectMinimumHopLinkByteDemand(
 
 static CardInstructionProgramCost analyzeCardInstructionProgramCostImpl(
     llvm::ArrayRef<TileInstructionProgram> tileModules,
-    const TargetScheduleCostPolicy &policy,
+    const TargetMemoryPolicy &policy,
     llvm::ArrayRef<llvm::DenseSet<mlir::Operation *>> includedOperations) {
   CardInstructionProgramCost result;
   std::vector<InstructionProgramCost> tileCosts(tileModules.size());
@@ -598,13 +594,13 @@ static CardInstructionProgramCost analyzeCardInstructionProgramCostImpl(
 
 CardInstructionProgramCost analyzeCardInstructionProgramCost(
     llvm::ArrayRef<TileInstructionProgram> tileModules,
-    const TargetScheduleCostPolicy &policy) {
+    const TargetMemoryPolicy &policy) {
   return analyzeCardInstructionProgramCostImpl(tileModules, policy, {});
 }
 
 CardInstructionProgramCost analyzeCardInstructionProgramCostSlice(
     llvm::ArrayRef<TileInstructionProgramSlice> tileModules,
-    const TargetScheduleCostPolicy &policy) {
+    const TargetMemoryPolicy &policy) {
   llvm::SmallVector<TileInstructionProgram, 16> programs;
   std::vector<llvm::DenseSet<mlir::Operation *>> includedOperations;
   programs.reserve(tileModules.size());

@@ -4,9 +4,9 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -97,11 +97,11 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
   switch (binding.getRemoteAddressMode()) {
   case DTERemoteAddressMode::Absolute: {
     int64_t remoteEnd = 0;
-    WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy();
+    const TargetMemoryPolicy targetMemory = getTargetMemoryPolicy();
     if (!checkedAdd(binding.getRemoteReceiverAddress(),
                     op.getBytesAttr().getInt(), remoteEnd) ||
-        binding.getRemoteReceiverAddress() < targetPolicy.memory.spmBase ||
-        remoteEnd > targetPolicy.memory.spmLimit)
+        binding.getRemoteReceiverAddress() < targetMemory.spmBase ||
+        remoteEnd > targetMemory.spmLimit)
       return op.emitError()
              << "unsupported_target_transport: Direct DTE absolute remote "
                 "receiver range is outside target SPM";
@@ -130,13 +130,13 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
       return op.emitError(
           "unsupported_target_transport: Direct DTE route binding "
           "table is malformed");
-    WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy();
+    const TargetMemoryPolicy targetMemory = getTargetMemoryPolicy();
     auto setFallback = [&](size_t index) -> mlir::LogicalResult {
       int64_t remoteEnd = 0;
       if (!checkedAdd(table[index + 1], op.getBytesAttr().getInt(),
                       remoteEnd) ||
-          table[index + 1] < targetPolicy.memory.spmBase ||
-          remoteEnd > targetPolicy.memory.spmLimit || table[index + 2] < 0 ||
+          table[index + 1] < targetMemory.spmBase ||
+          remoteEnd > targetMemory.spmLimit || table[index + 2] < 0 ||
           table[index + 2] > 3)
         return op.emitError(
             "unsupported_target_transport: Direct DTE route binding "
@@ -156,8 +156,8 @@ FunctionLowering::lowerDTESend(InstrDTESendOp op,
       int64_t remoteEnd = 0;
       if (!checkedAdd(table[index + 1], op.getBytesAttr().getInt(),
                       remoteEnd) ||
-          table[index + 1] < targetPolicy.memory.spmBase ||
-          remoteEnd > targetPolicy.memory.spmLimit || table[index + 2] < 0 ||
+          table[index + 1] < targetMemory.spmBase ||
+          remoteEnd > targetMemory.spmLimit || table[index + 2] < 0 ||
           table[index + 2] > 3)
         return op.emitError(
             "unsupported_target_transport: Direct DTE route binding "

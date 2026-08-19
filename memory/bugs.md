@@ -1111,3 +1111,39 @@
   两者仍共享stage、SPM/DDR和最终verification，但baseline不产生search work。
 - 防复发：baseline定向wall-time与work count必须检查schedule query为零；任何新search axis接入共同lowering时都需要显式selected入口，
   不能在无assignment路径中构造domain后再取first。
+
+## Search constructive proposal不能静默退回exact域第一点
+
+- 现象：LLaMA的显式search一直只报告同一个90,177,536-byte SPM overflow；看似capacity-guided temporal无效，实际proposal在进入
+  actual gate前失败，controller随后用budget 1评估了“全部node单Tile、full temporal”的exact first point。
+- 根因：constructive各node独立取最大spatial factor后没有先闭合整卡exact demand；随后coupled domain按connected component追加group，
+  node id交错时产生未排序assignment并被自己的`contains`拒绝。proposal failure又没有独立诊断字段。
+- 修复模式：在公共participant ceiling上由大到小重建完整Card spatial assignment，每点先过exact demand；capacity-guided temporal和
+  dependent domains只从该合法点建立。coupled first/repair assignment在可观察边界按Tile/node semantic key排序。显式profile summary分别
+  返回proposal与actual failure；预算仍只计actual evaluation。
+- 防复发：测试同时覆盖interleaved disconnected components、large transposed weight和完整LLaMA；exact enumeration去重必须比较完整
+  assignment，不能只比较spatial前缀。启发式proposal只能改变访问顺序，不能删除exact sibling或在失败时冒充已评估candidate。
+
+## Temporal accumulator read-before-write要用SSA/DPS证明
+
+- 现象：转置权重接matmul的capacity-guided wave在dynamic `tensor.insert_slice`处被拒绝，diagnostic显示同一destination另有
+  `tensor.extract_slice -> linalg.matmul`使用。
+- 根因：旧检查把任意destination read都视为in-place hazard，没有区分“先提取当前accumulator slice作为产生本次insert source的DPS init”
+  与真正的并行观察者；退回full wave后又把11008x4096权重错误提升为整块SPM。
+- 修复模式：只有当extract的全部用户都是DPS init，且insert source的SSA backward closure包含这些owner时，才允许复用private
+  destination；其它observer仍fail closed。structured region capture也必须通过MLIR region utility纳入root closure，不能只遍历显式operands。
+- 防复发：large transpose→matmul actual test必须通过完整search gate并保持weight window化；large logical stage检查full boundary为DDR、
+  SPM只含selected shard/wave。不得按op名、shape或workload放宽alias检查。
+
+## Typed tensor-transform链不能退回无界generic Presburger image
+
+- 现象：functional KV-cache decode在edge 55（`matmul -> expand -> insert_slice -> collapse -> batch_matmul`）的
+  `image-complete-demand`单次超过323秒；complete edge改快后，grouped consumer-input和carrier decomposition仍分别在同一链重复卡住。
+- 根因：per-edge、per-destination、grouped reconstruction和carrier虽然已有同一typed transform contract，却在不同入口把组合relation或
+  primitive relation重新交给generic Presburger image/rectangle recovery；static insert/extract的piece/remainder事实被丢失。
+- 修复模式：矩形consumer domain逐段通过consumer indexing map和每个typed support relation；reshape保留row-major pieces，unit-stride
+  insert按交集/坐标平移或矩形差的至多2×rank slabs计算，extract直接平移，最后只union明确矩形。per-edge demand、grouped recipe和carrier
+  decomposition复用这一条算法；empty image显式构造typed empty set。
+- 防复发：用16-Tile decode-shaped insert/expand/collapse→batch_matmul regression同时调用edge和grouped query并检查16 destination；完整
+  FP16 decode search必须在bounded profile内完成package/no-card。不得用shape阈值、wall timeout或失败后fallback generic relation掩盖缺失的
+  primitive rectangle contract。

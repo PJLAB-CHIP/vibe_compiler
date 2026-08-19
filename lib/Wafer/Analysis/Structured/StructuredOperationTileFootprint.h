@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_STRUCTUREDOPERATIONTILEFOOTPRINT_H
 #define WAFER_COMPILER_PLANNING_STRUCTUREDOPERATIONTILEFOOTPRINT_H
 
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
@@ -43,8 +43,7 @@ deriveStructuredOperationTemporalTileShape(
     const TargetMemoryPolicy &memory);
 
 std::optional<llvm::SmallVector<int64_t, 4>>
-getStructuredResultTileShape(mlir::Operation *operation,
-                             unsigned resultNumber,
+getStructuredResultTileShape(mlir::Operation *operation, unsigned resultNumber,
                              llvm::ArrayRef<int64_t> iteratorTileShape);
 
 std::optional<llvm::SmallVector<int64_t, 4>>

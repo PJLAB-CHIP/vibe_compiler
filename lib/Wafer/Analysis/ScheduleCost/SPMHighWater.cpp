@@ -153,7 +153,7 @@ static SPMRootResolution resolveSPMRoots(mlir::Value initialValue) {
 class SPMHighWaterAnalysis {
 public:
   SPMHighWaterAnalysis(
-      InstructionProgramCost &cost, const TargetScheduleCostPolicy &policy,
+      InstructionProgramCost &cost, const TargetMemoryPolicy &policy,
       llvm::function_ref<bool(mlir::Operation *)> includeOperation)
       : metric(cost.spmHighWaterBytes),
         bufferCount(cost.compilerOwnedSPMBufferCount), policy(policy),
@@ -223,8 +223,7 @@ private:
               ScheduleCostReason::MissingAcceptedSPMOffset);
       return;
     }
-    if (offset.getOffset() < 0 ||
-        static_cast<uint64_t>(offset.getOffset()) < policy.spmAddressBase) {
+    if (offset.getOffset() < 0 || offset.getOffset() < policy.spmBase) {
       degrade(metric, ScheduleCostKnowledge::Unsupported,
               ScheduleCostReason::InvalidAcceptedSPMOffset);
       return;
@@ -244,12 +243,13 @@ private:
       return;
     }
     if (metric.isKnown())
-      metric.value = std::max(metric.value, end - policy.spmAddressBase);
+      metric.value =
+          std::max(metric.value, end - static_cast<uint64_t>(policy.spmBase));
   }
 
   ScheduleCostMetric &metric;
   ScheduleCostMetric &bufferCount;
-  const TargetScheduleCostPolicy &policy;
+  const TargetMemoryPolicy &policy;
   llvm::function_ref<bool(mlir::Operation *)> includeOperation;
   llvm::DenseSet<mlir::Operation *> seenAllocs;
 };
@@ -257,14 +257,14 @@ private:
 } // namespace
 
 void collectSPMHighWater(mlir::Operation *root, InstructionProgramCost &cost,
-                         const TargetScheduleCostPolicy &policy) {
+                         const TargetMemoryPolicy &policy) {
   collectSPMHighWater(root, cost, policy,
                       [](mlir::Operation *) { return true; });
 }
 
 void collectSPMHighWater(
     mlir::Operation *root, InstructionProgramCost &cost,
-    const TargetScheduleCostPolicy &policy,
+    const TargetMemoryPolicy &policy,
     llvm::function_ref<bool(mlir::Operation *)> includeOperation) {
   SPMHighWaterAnalysis(cost, policy, includeOperation).run(root);
 }

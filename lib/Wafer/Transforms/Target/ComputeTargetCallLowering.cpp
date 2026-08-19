@@ -4,9 +4,9 @@
 #include "Target/TargetCallIRAdapter.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -85,8 +85,7 @@ mlir::LogicalResult FunctionLowering::lowerFill(InstrFillOp op) {
   appendI32(op.getLoc(), args, *scalar);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(),
-              getTargetCallDescriptor(TargetCallBuiltin::Memset),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Memset),
               args, op.getWorker());
   return mlir::success();
 }
@@ -115,8 +114,8 @@ mlir::LogicalResult FunctionLowering::lowerElementwise(InstrElementwiseOp op) {
   args.push_back(*dest);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
-              args, op.getWorker());
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
+              op.getWorker());
   return mlir::success();
 }
 
@@ -138,8 +137,7 @@ mlir::LogicalResult FunctionLowering::lowerBit2Fp(InstrBit2FpOp op) {
   args.push_back(*dest);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(),
-              getTargetCallDescriptor(TargetCallBuiltin::Bit2FP),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Bit2FP),
               args, op.getWorker());
   return mlir::success();
 }
@@ -165,10 +163,8 @@ mlir::LogicalResult FunctionLowering::lowerMaskMove(InstrMaskMoveOp op) {
   args.push_back(*dest);
   appendI32(op.getLoc(), args, *elements);
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(
-      op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::MaskMove), args,
-      op.getWorker());
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::MaskMove),
+              args, op.getWorker());
   return mlir::success();
 }
 
@@ -191,8 +187,8 @@ mlir::LogicalResult FunctionLowering::lowerReduce(InstrReduceOp op) {
   appendI32(op.getLoc(), args, getIntegerAttrValue(op.getDimAttr()));
   appendArrayI32(op.getLoc(), args, *shape);
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
-              args, op.getWorker());
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
+              op.getWorker());
   return mlir::success();
 }
 
@@ -214,8 +210,8 @@ mlir::LogicalResult FunctionLowering::lowerConvert(InstrConvertOp op) {
             getOptionalIntegerAttrValue(op.getZeroPointAttr(), -1));
   appendI32(op.getLoc(), args,
             getOptionalIntegerAttrValue(op.getRoundingModeAttr(), -1));
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
-              args, op.getWorker());
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
+              op.getWorker());
   return mlir::success();
 }
 
@@ -245,11 +241,10 @@ mlir::LogicalResult FunctionLowering::lowerGemm(InstrGemmOp op) {
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getLhsOrientation()));
     appendI32(op.getLoc(), args, static_cast<int64_t>(*op.getRhsOrientation()));
     emitNCCCall(op.getLoc(),
-                getTargetCallDescriptor(TargetCallBuiltin::GemmOriented),
-                args, op.getWorker());
+                getTargetCallDescriptor(TargetCallBuiltin::GemmOriented), args,
+                op.getWorker());
   } else {
-    emitNCCCall(op.getLoc(),
-                getTargetCallDescriptor(TargetCallBuiltin::Gemm),
+    emitNCCCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::Gemm),
                 args, op.getWorker());
   }
   return mlir::success();
@@ -280,8 +275,8 @@ mlir::LogicalResult FunctionLowering::lowerConv(InstrConvOp op) {
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendArrayI32(op.getLoc(), args, op.getDilations());
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
-              args, op.getWorker());
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
+              op.getWorker());
   return mlir::success();
 }
 
@@ -307,8 +302,8 @@ mlir::LogicalResult FunctionLowering::lowerPool(InstrPoolOp op) {
   appendArrayI32(op.getLoc(), args, op.getPads());
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
-              args, op.getWorker());
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
+              op.getWorker());
   return mlir::success();
 }
 
@@ -338,8 +333,8 @@ mlir::LogicalResult FunctionLowering::lowerUnpool(InstrUnpoolOp op) {
   appendArrayI32(op.getLoc(), args, op.getDestShape());
   appendArrayI32(op.getLoc(), args, op.getKernelStrides());
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()),
-              args, op.getWorker());
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(op.getKind()), args,
+              op.getWorker());
   return mlir::success();
 }
 

@@ -3,8 +3,9 @@
 // The typed profile instrumentation contract shared by the compiler-side
 // instrumentation writer and the runtime-side strict reader: site kinds,
 // static cost model, canonical spelling and JSON emission. The runtime
-// collection/loading machinery lives in Wafer/Runtime/Profile/ProfileInstrumentation.h
-// and consumes this owner through the neutral package support library.
+// collection/loading machinery lives in
+// Wafer/Runtime/Profile/ProfileInstrumentation.h and consumes this owner
+// through the neutral package support library.
 //
 //===----------------------------------------------------------------------===//
 
@@ -12,7 +13,7 @@
 #define WAFER_PACKAGE_PROFILEINSTRUMENTATIONMODEL_H
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Package/Manifest/PackageManifest.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -91,6 +92,10 @@ struct ProfileStaticCostRates {
   /// The current target has no calibrated SPM rate.
   std::optional<uint64_t> spmMovementBytesPerSecond;
 };
+
+/// Reporting reference rates written into a profile package. They are not
+/// legality limits or search estimates.
+ProfileStaticCostRates getTargetProfileStaticCostRates();
 
 struct ProfileStaticDirectionalNoCWork {
   ProfileStaticCostMetric north;

@@ -4,6 +4,7 @@
 #include "Wafer/Planning/Baseline/CardBaselineDataMovement.h"
 #include "Wafer/Planning/Baseline/CardBaselinePlacement.h"
 #include "Wafer/Planning/Baseline/CardBaselineTemporalTiling.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Interfaces/TilingInterface.h"
 #include "llvm/ADT/STLExtras.h"
@@ -52,10 +53,10 @@ makeInitialPlacements(const CardProgramAnalysis &program,
   return placements;
 }
 
-mlir::FailureOr<CardBaselinePlacementClosure> closePlacements(
-    const CardProgramAnalysis &program,
-    llvm::SmallVector<StructuredDAGNodePlacement, 16> placements,
-    BaselineStatistics *statistics, std::string *failureReason) {
+mlir::FailureOr<CardBaselinePlacementClosure>
+closePlacements(const CardProgramAnalysis &program,
+                llvm::SmallVector<StructuredDAGNodePlacement, 16> placements,
+                BaselineStatistics *statistics, std::string *failureReason) {
   while (true) {
     if (statistics)
       ++statistics->spatialCoordinateQueries;
@@ -65,8 +66,7 @@ mlir::FailureOr<CardBaselinePlacementClosure> closePlacements(
                                    failureReason, &legality);
     if (mlir::succeeded(closure))
       return std::move(*closure);
-    if (legality.status !=
-        analysis::ExactDemandStatus::ProvenLogicalInfeasible)
+    if (legality.status != analysis::ExactDemandStatus::ProvenLogicalInfeasible)
       return mlir::failure();
     mlir::FailureOr<DeterministicSpatialAdvance> advance =
         advanceDeterministicSpatialCoordinate(placements, failureReason);
@@ -100,19 +100,28 @@ CardBaselineAssignment buildAssignment(CardBaselinePlacementClosure closure) {
 
 } // namespace
 
-mlir::FailureOr<CardBaselineAssignment> computeCardBaselineAssignment(
-    const CardProgramAnalysis &program, CardId cardId,
-    BaselineStatistics *statistics, llvm::raw_ostream &diagnostics) {
+mlir::FailureOr<CardBaselineAssignment>
+computeCardBaselineAssignment(const CardProgramAnalysis &program, CardId cardId,
+                              BaselineStatistics *statistics,
+                              llvm::raw_ostream &diagnostics) {
   std::string failureReason;
-  mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>> placements =
-      makeInitialPlacements(program, &failureReason);
+  mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>>
+      placements = [&]() {
+        wafer::support::ScopedCompileTimingSpan timing(
+            "query", "deterministic-baseline", "initial-spatial-placement");
+        return makeInitialPlacements(program, &failureReason);
+      }();
   if (mlir::failed(placements)) {
-    diagnostics << "wafer-compile: baseline placement failed: "
-                << failureReason << '\n';
+    diagnostics << "wafer-compile: baseline placement failed: " << failureReason
+                << '\n';
     return mlir::failure();
   }
-  mlir::FailureOr<CardBaselinePlacementClosure> closure = closePlacements(
-      program, std::move(*placements), statistics, &failureReason);
+  mlir::FailureOr<CardBaselinePlacementClosure> closure = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "deterministic-baseline", "close-spatial-placement");
+    return closePlacements(program, std::move(*placements), statistics,
+                           &failureReason);
+  }();
   if (mlir::failed(closure)) {
     diagnostics << "wafer-compile: baseline placement closure failed: "
                 << failureReason << '\n';
@@ -124,10 +133,19 @@ mlir::FailureOr<CardBaselineAssignment> computeCardBaselineAssignment(
   // Temporal wave shapes are part of physical carrier construction: remote
   // producer demand is fragmented at those exact wave boundaries so no peer
   // endpoint materializes a whole logical shard in SPM.
-  if (mlir::failed(setCardBaselineTemporalTiles(assignment, program,
-                                                &failureReason)) ||
-      mlir::failed(addCardBaselineDataMovement(
-          assignment, program.dag, program.epoch, &failureReason))) {
+  mlir::LogicalResult temporal = [&]() {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "deterministic-baseline", "select-temporal-waves");
+    return setCardBaselineTemporalTiles(assignment, program, &failureReason);
+  }();
+  mlir::LogicalResult movement = mlir::failure();
+  if (mlir::succeeded(temporal)) {
+    wafer::support::ScopedCompileTimingSpan timing(
+        "query", "deterministic-baseline", "construct-data-movement");
+    movement = addCardBaselineDataMovement(assignment, program.dag,
+                                           program.epoch, &failureReason);
+  }
+  if (mlir::failed(temporal) || mlir::failed(movement)) {
     diagnostics << "wafer-compile: baseline assignment failed: "
                 << failureReason << '\n';
     return mlir::failure();

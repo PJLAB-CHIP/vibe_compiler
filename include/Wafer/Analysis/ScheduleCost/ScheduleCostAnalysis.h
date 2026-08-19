@@ -3,7 +3,7 @@
 #ifndef WAFER_ANALYSIS_SCHEDULECOSTANALYSIS_H
 #define WAFER_ANALYSIS_SCHEDULECOSTANALYSIS_H
 
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Target/Core/TopologyIds.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -58,54 +58,6 @@ struct ScheduleCostMetric {
 };
 
 enum class NoCDirection : uint8_t { North, South, East, West };
-
-/// Hardware facts used to interpret the logical cost dimensions. Peak,
-/// nominal, and conservative-bound fields are deliberately distinct:
-/// reporting references must not silently become production bounds.
-struct TargetScheduleCostPolicy {
-  /// Card peak/reference bandwidth. This remains the profiler's
-  /// theoretical traffic-floor rate.
-  uint64_t cardDDRBytesPerSecond = 200'000'000'000ULL;
-  /// Card observed operating point shared by all 16 tiles. It is a
-  /// nominal estimate, not 16 independent per-tile rates and not a guaranteed
-  /// throughput lower bound.
-  uint64_t cardDDRNominalBytesPerSecond = 150'000'000'000ULL;
-  /// Single-direction payload serialization reference. It is not a fabric
-  /// aggregate, endpoint sustained rate, route estimate, or latency.
-  uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
-  /// Point estimates used by the numeric card schedule model. These are
-  /// compiler policy priors, not measured lower/upper bounds.
-  ///
-  /// The endpoint prior starts from one documented directional link. The
-  /// startup prior is deliberately conservative for the current uncalibrated
-  /// Direct-DTE software/handshake path; later matched board calibration may
-  /// replace the value without changing the analytical formula.
-  uint64_t dteEndpointBytesPerSecondEstimate = 128'000'000'000ULL;
-  uint64_t dteMessageStartupPicosecondsEstimate = 10'000'000ULL;
-  /// One model quantum per hop on the maximum modeled route. It is charged
-  /// once as the route-fill/dilation term after link-congestion and endpoint
-  /// service, not once per physical packet traversal.
-  uint64_t noCHopPicosecondsEstimate = 1'000ULL;
-  /// Fixed issue/release priors. Blocking resource service is accounted by the
-  /// DDR/NoC/compute terms and is not charged again here.
-  uint64_t instructionFixedPicosecondsEstimate = 1'000ULL;
-  uint64_t dteWaitedEventPicosecondsEstimate = 1'000ULL;
-  uint64_t nccParticipantWaitPicosecondsEstimate = 1'000ULL;
-  uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
-  uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 64'000'000'000ULL;
-  uint64_t f32VectorLogicalOpsPerSecondPerTile = 32'000'000'000ULL;
-  /// Nominal service point for explicit SPM1 movement accounted by the
-  /// instruction cost model. It comes from one 2048-bit bank at 1 GHz
-  /// (256 GB/s per tile); it is a planning prior, not a sustained lower bound.
-  uint64_t spmExplicitMovementBytesPerSecondPerTileEstimate =
-      256'000'000'000ULL;
-
-  uint64_t spmAddressBase = static_cast<uint64_t>(TargetMemoryPolicy{}.spmBase);
-  uint64_t spmAddressLimit =
-      static_cast<uint64_t>(TargetMemoryPolicy{}.spmLimit);
-};
-
-TargetScheduleCostPolicy getTargetScheduleCostPolicy();
 
 struct ScheduleComputeCost {
   ScheduleCostMetric npuF16Bf16LogicalOps;
@@ -336,7 +288,7 @@ struct CardInstructionProgramCost {
 /// instead of being guessed or saturated.
 InstructionProgramCost
 analyzeInstructionProgramCost(mlir::Operation *root,
-                              const TargetScheduleCostPolicy &policy);
+                              const TargetMemoryPolicy &memory);
 
 /// One explicitly identified Tile instruction program. The Tile ID
 /// is supplied by the caller and is never recovered from vector order,
@@ -364,7 +316,7 @@ struct TileInstructionProgramSlice {
 /// estimates.
 CardInstructionProgramCost analyzeCardInstructionProgramCost(
     llvm::ArrayRef<TileInstructionProgram> tileModules,
-    const TargetScheduleCostPolicy &policy);
+    const TargetMemoryPolicy &memory);
 
 /// Recompute one exact operation partition of the complete Tile
 /// domain. Operations not listed in a Tile slice contribute no work, but the
@@ -374,7 +326,7 @@ CardInstructionProgramCost analyzeCardInstructionProgramCost(
 /// to claim schedule overlap.
 CardInstructionProgramCost analyzeCardInstructionProgramCostSlice(
     llvm::ArrayRef<TileInstructionProgramSlice> tileModules,
-    const TargetScheduleCostPolicy &policy);
+    const TargetMemoryPolicy &memory);
 
 llvm::StringRef stringifyScheduleCostKnowledge(ScheduleCostKnowledge knowledge);
 llvm::StringRef stringifyScheduleCostReason(ScheduleCostReason reason);

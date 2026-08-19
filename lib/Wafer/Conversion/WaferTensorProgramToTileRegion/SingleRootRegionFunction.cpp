@@ -13,9 +13,11 @@
 #include "mlir/Interfaces/DestinationStyleOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/Twine.h"
 
 #include <functional>
@@ -97,6 +99,11 @@ mlir::FailureOr<RootClosure> collectRootClosure(
     for (mlir::Value operand : definition->getOperands())
       if (mlir::failed(collectValue(operand)))
         return mlir::failure();
+    llvm::SetVector<mlir::Value> captured;
+    mlir::getUsedValuesDefinedAbove(definition->getRegions(), captured);
+    for (mlir::Value value : captured)
+      if (mlir::failed(collectValue(value)))
+        return mlir::failure();
     return mlir::success();
   };
 
@@ -104,6 +111,11 @@ mlir::FailureOr<RootClosure> collectRootClosure(
     result.operations.insert(root);
     for (mlir::Value operand : root->getOperands())
       if (mlir::failed(collectValue(operand)))
+        return mlir::failure();
+    llvm::SetVector<mlir::Value> captured;
+    mlir::getUsedValuesDefinedAbove(root->getRegions(), captured);
+    for (mlir::Value value : captured)
+      if (mlir::failed(collectValue(value)))
         return mlir::failure();
   }
   return result;
@@ -630,6 +642,13 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
   for (const StructuredOperationEmissionRelation &relation :
        emissionRelations.materializedBuffers.operationEmissions)
     if (relation.operation)
+      emittedNodes.insert(relation.structuredNodeId);
+  // A verifier-legal structured passthrough may materialize only its selected
+  // result buffer and no target compute op. The current result relation is the
+  // exact ownership witness in that case; it is not a name/shape fallback.
+  for (const StructuredOperationBufferRelation &relation :
+       emissionRelations.materializedBuffers.operationResultBuffers)
+    if (relation.buffer)
       emittedNodes.insert(relation.structuredNodeId);
   if (emittedNodes.size() != 1 ||
       !emittedNodes.contains(shard.structuredNodeId)) {

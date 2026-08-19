@@ -8,7 +8,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -26,8 +26,8 @@
 
 namespace wafer::compiler::detail {
 
-PreparedTile::PreparedTile(
-    const ExecutionConfig &executionConfig, bool transportPreparedBeforeEntry)
+PreparedTile::PreparedTile(const ExecutionConfig &executionConfig,
+                           bool transportPreparedBeforeEntry)
     : targetIdentity(executionConfig.getTargetIdentityId()),
       transportPreparedBeforeEntry(transportPreparedBeforeEntry),
       kernelRuntimeABI(KernelRuntimeABIId::waferTx81Kernel()),
@@ -145,8 +145,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   prepared.module = tileExecutable.getModule().clone();
   if (tileExecutable.getCardId() != CardId(0) ||
       tileExecutable.getTileId().getValue() < 0 ||
-      tileExecutable.getTileId().getValue() >=
-          executionConfig.getTileCount() ||
+      tileExecutable.getTileId().getValue() >= executionConfig.getTileCount() ||
       tileExecutable.getLaunchSlotId().getValue() < 0 ||
       tileExecutable.getLaunchSlotId().getValue() >=
           executionConfig.getTileCount()) {
@@ -159,8 +158,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
   prepared.tileId = tileExecutable.getTileId();
   prepared.launchSlotId = tileExecutable.getLaunchSlotId();
   prepared.profileCapture = profileCapture;
-  const int64_t defaultDDRAlignment =
-      getDefaultWaferTargetPolicy().memory.ddrAlignmentBytes;
+  const int64_t defaultDDRAlignment = getTargetMemoryPolicy().ddrAlignmentBytes;
 
   llvm::Expected<ExecutableCallClosure> closure = analyzeExecutableCallClosure(
       *prepared.module, tileExecutable.getEntrySymbol());
@@ -343,17 +341,17 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     function.insertArgument(prepared.defaultDDRArenaArgumentIndex,
                             mlir::IntegerType::get(function.getContext(), 64),
                             mlir::DictionaryAttr{}, function.getLoc());
-    prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
-                              TileEntryArgumentKind::Workspace,
-                              0,
-                              "default_ddr_arena",
-                              "u8",
-                              MemLayout::Tensor,
-                              {arenaBytes},
-                              arenaBytes,
-                              arenaAlignment,
-                              getTileEntryArgumentAccess(
-                                  TileEntryArgumentKind::Workspace)});
+    prepared.slots.push_back(
+        {static_cast<int64_t>(prepared.slots.size()),
+         TileEntryArgumentKind::Workspace,
+         0,
+         "default_ddr_arena",
+         "u8",
+         MemLayout::Tensor,
+         {arenaBytes},
+         arenaBytes,
+         arenaAlignment,
+         getTileEntryArgumentAccess(TileEntryArgumentKind::Workspace)});
   }
 
   if (tileExecutable.getTransportContract() == TransportContract::DirectDTE) {
@@ -361,17 +359,17 @@ prepareTargetABI(const TileExecutable &tileExecutable,
     function.insertArgument(prepared.transportStatusArgumentIndex,
                             mlir::IntegerType::get(function.getContext(), 64),
                             mlir::DictionaryAttr{}, function.getLoc());
-    prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()),
-                              TileEntryArgumentKind::TransportStatus,
-                              0,
-                              "direct_dte_status",
-                              "u32",
-                              MemLayout::Tensor,
-                              {1},
-                              WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
-                              WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT,
-                              getTileEntryArgumentAccess(
-                                  TileEntryArgumentKind::TransportStatus)});
+    prepared.slots.push_back(
+        {static_cast<int64_t>(prepared.slots.size()),
+         TileEntryArgumentKind::TransportStatus,
+         0,
+         "direct_dte_status",
+         "u32",
+         MemLayout::Tensor,
+         {1},
+         WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
+         WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT,
+         getTileEntryArgumentAccess(TileEntryArgumentKind::TransportStatus)});
   }
 
   if (profileRecordBytes) {

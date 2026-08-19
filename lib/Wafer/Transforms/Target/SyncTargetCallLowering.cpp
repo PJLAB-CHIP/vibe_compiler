@@ -3,9 +3,9 @@
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -54,8 +54,7 @@ mlir::LogicalResult FunctionLowering::lowerNCCJoin(SyncNCCJoinOp op) {
   if (participantMask == 0)
     return op.emitError()
            << "target_completion_failure: NCC participant set is empty";
-  emitCall(op.getLoc(),
-           getTargetCallDescriptor(TargetCallBuiltin::NCCJoin),
+  emitCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::NCCJoin),
            {constantI32(op.getLoc(), participantMask)});
   return mlir::success();
 }

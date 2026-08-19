@@ -4,7 +4,7 @@
 
 #include "Wafer/Planning/Search/CoupledRegion.h"
 
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include <optional>
 

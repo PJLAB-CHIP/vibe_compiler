@@ -20,6 +20,7 @@ void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
                   "--output-dir <dir> --num-partitions <1> "
                   "[--optimization-policy <search|none>] "
+                  "[--search-max-candidate-evaluations <count>] "
                   "[--compile-timing] "
                   "[--profile]\n";
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
@@ -108,22 +109,22 @@ llvm::Error requireExecutableFile(llvm::StringRef path,
                                    "no " + factName + " configured");
   llvm::SmallString<256> canonical;
   if (std::error_code error = llvm::sys::fs::real_path(path, canonical))
-    return llvm::createStringError(
-        error, factName + " cannot be resolved: '" + path + "'");
+    return llvm::createStringError(error, factName + " cannot be resolved: '" +
+                                              path + "'");
   if (!isRegularFile(canonical))
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        factName + " is not a regular file: '" + path + "'");
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   factName + " is not a regular file: '" +
+                                       path + "'");
   if (!llvm::sys::fs::can_execute(canonical))
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        factName + " is not executable: '" + path + "'");
+    return llvm::createStringError(llvm::errc::invalid_argument,
+                                   factName + " is not executable: '" + path +
+                                       "'");
   return llvm::Error::success();
 }
 
 llvm::Expected<std::string>
 findExecutableRelativeResource(llvm::StringRef relativePath,
-                              llvm::StringRef factName) {
+                               llvm::StringRef factName) {
   static int executableAnchor = 0;
   std::string executable =
       llvm::sys::fs::getMainExecutable(/*argv0=*/nullptr, &executableAnchor);
@@ -135,9 +136,9 @@ findExecutableRelativeResource(llvm::StringRef relativePath,
   llvm::sys::path::append(resource, relativePath);
   llvm::SmallString<256> canonical;
   if (std::error_code error = llvm::sys::fs::real_path(resource, canonical))
-    return llvm::createStringError(
-        error, "failed to resolve installed " + factName + ": '" +
-                   resource.str().str() + "'");
+    return llvm::createStringError(error, "failed to resolve installed " +
+                                              factName + ": '" +
+                                              resource.str().str() + "'");
   return canonical.str().str();
 }
 
@@ -157,8 +158,7 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         return false;
       continue;
     }
-    if (arg == "--output-dir" ||
-        arg.starts_with("--output-dir=")) {
+    if (arg == "--output-dir" || arg.starts_with("--output-dir=")) {
       if (parseValueOption(argc, argv, index, arg, "--output-dir",
                            options.outputDirectory))
         return false;
@@ -174,6 +174,14 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         arg.starts_with("--optimization-policy=")) {
       if (parseValueOption(argc, argv, index, arg, "--optimization-policy",
                            options.optimizationPolicy))
+        return false;
+      continue;
+    }
+    if (arg == "--search-max-candidate-evaluations" ||
+        arg.starts_with("--search-max-candidate-evaluations=")) {
+      if (parseValueOption(argc, argv, index, arg,
+                           "--search-max-candidate-evaluations",
+                           options.searchMaximumCandidateEvaluations))
         return false;
       continue;
     }
@@ -194,8 +202,7 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
       continue;
     }
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
-    if (arg == "--dump-compiler-ir" ||
-        arg.starts_with("--dump-compiler-ir=")) {
+    if (arg == "--dump-compiler-ir" || arg.starts_with("--dump-compiler-ir=")) {
       if (parseValueOption(argc, argv, index, arg, "--dump-compiler-ir",
                            options.compilerIRDumpDirectory))
         return false;
@@ -383,9 +390,9 @@ llvm::Expected<DriverToolFacts> resolveDriverToolFacts() {
       llvm::SmallString<256> canonical;
       if (std::error_code error =
               llvm::sys::fs::real_path(facts.tx8DepsRoot, canonical))
-        return llvm::createStringError(
-            error, "failed to resolve TX8_DEPS_ROOT: '" +
-                       facts.tx8DepsRoot + "'");
+        return llvm::createStringError(error,
+                                       "failed to resolve TX8_DEPS_ROOT: '" +
+                                           facts.tx8DepsRoot + "'");
       facts.tx8DepsRoot = canonical.str().str();
     }
   }
@@ -414,10 +421,9 @@ llvm::Expected<DriverToolFacts> resolveDriverToolFacts() {
                                        facts.waferIncludeDir + "'");
   llvm::SmallString<256> crtSourceRelative;
   llvm::sys::path::append(crtSourceRelative, "..", "share", "wafer");
-  llvm::sys::path::append(crtSourceRelative, "crt", "src",
-                          "wafer_tx81_crt.c");
-  llvm::Expected<std::string> crtSource = findExecutableRelativeResource(
-      crtSourceRelative, "Wafer CRT source");
+  llvm::sys::path::append(crtSourceRelative, "crt", "src", "wafer_tx81_crt.c");
+  llvm::Expected<std::string> crtSource =
+      findExecutableRelativeResource(crtSourceRelative, "Wafer CRT source");
   if (!crtSource)
     return crtSource.takeError();
   facts.waferCrtSource = std::move(*crtSource);
@@ -440,37 +446,32 @@ llvm::Expected<DriverToolFacts> resolveDriverToolFacts() {
                                    "not a directory: '" +
                                        facts.waferCrtIncludeDir + "'");
 
-  llvm::ErrorOr<std::string> python =
-      llvm::sys::findProgramByName("python3");
+  llvm::ErrorOr<std::string> python = llvm::sys::findProgramByName("python3");
   if (!python)
-    return llvm::createStringError(
-        python.getError(), "failed to resolve python3 on PATH");
+    return llvm::createStringError(python.getError(),
+                                   "failed to resolve python3 on PATH");
   facts.pythonExecutable = *python;
-  llvm::ErrorOr<std::string> clangXX =
-      llvm::sys::findProgramByName("clang++");
+  llvm::ErrorOr<std::string> clangXX = llvm::sys::findProgramByName("clang++");
   if (!clangXX)
-    return llvm::createStringError(
-        clangXX.getError(), "failed to resolve clang++ on PATH");
+    return llvm::createStringError(clangXX.getError(),
+                                   "failed to resolve clang++ on PATH");
   facts.llvmClangXX = *clangXX;
 
-  if (llvm::Error error = requireExecutableFile(
-          facts.spmdPartitionerHelper, "XLA SPMD partitioner helper"))
+  if (llvm::Error error = requireExecutableFile(facts.spmdPartitionerHelper,
+                                                "XLA SPMD partitioner helper"))
     return std::move(error);
   if (llvm::Error error =
           requireExecutableFile(facts.pythonExecutable, "python3"))
     return std::move(error);
-  if (llvm::Error error =
-          requireExecutableFile(facts.llvmClangXX, "clang++"))
+  if (llvm::Error error = requireExecutableFile(facts.llvmClangXX, "clang++"))
     return std::move(error);
   // Store canonical paths: downstream consumers validate the exact file
   // facts and must never re-resolve through symlinks or PATH.
   llvm::SmallString<256> canonical;
-  for (std::string *fact :
-       {&facts.pythonExecutable, &facts.llvmClangXX}) {
+  for (std::string *fact : {&facts.pythonExecutable, &facts.llvmClangXX}) {
     if (std::error_code error = llvm::sys::fs::real_path(*fact, canonical))
-      return llvm::createStringError(error,
-                                     "failed to resolve toolchain path: '" +
-                                         *fact + "'");
+      return llvm::createStringError(
+          error, "failed to resolve toolchain path: '" + *fact + "'");
     *fact = canonical.str().str();
   }
   return facts;
@@ -519,13 +520,28 @@ std::optional<double> parseTolerance(const std::optional<std::string> &value,
 
 std::optional<OptimizationConfig>
 parseOptimizationConfig(const CommandLineOptions &options) {
-  OptimizationConfig config = OptimizationConfig::search();
+  std::optional<uint64_t> searchEvaluations;
+  if (options.searchMaximumCandidateEvaluations) {
+    searchEvaluations =
+        parsePositiveCount(options.searchMaximumCandidateEvaluations,
+                           "--search-max-candidate-evaluations");
+    if (!searchEvaluations)
+      return std::nullopt;
+  }
+  const uint64_t budget = searchEvaluations.value_or(
+      OptimizationConfig::kDefaultSearchCandidateEvaluations);
+  OptimizationConfig config = OptimizationConfig::search(budget);
   if (options.optimizationPolicy) {
     if (*options.optimizationPolicy == "search")
-      config = OptimizationConfig::search();
-    else if (*options.optimizationPolicy == "none")
+      config = OptimizationConfig::search(budget);
+    else if (*options.optimizationPolicy == "none") {
+      if (options.searchMaximumCandidateEvaluations) {
+        llvm::errs() << "wafer-compile: --search-max-candidate-evaluations "
+                        "requires --optimization-policy=search\n";
+        return std::nullopt;
+      }
       config = OptimizationConfig::none();
-    else {
+    } else {
       llvm::errs() << "wafer-compile: invalid --optimization-policy value: "
                    << *options.optimizationPolicy
                    << " (expected search or none)\n";

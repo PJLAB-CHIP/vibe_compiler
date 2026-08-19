@@ -1,11 +1,11 @@
 //===- WriteExecutablePackage.cpp - Write target modules and package ----===//
 
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
 #include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
-#include "Wafer/Package/Writer/PackageInternal.h"
+#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Driver/CompilationStatistics.h"
-#include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
+#include "Wafer/Package/Writer/PackageInternal.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
 #include "Wafer/Analysis/ScheduleCost/ScheduleCostAnalysis.h"
@@ -244,10 +244,9 @@ collectProfileStaticCostModel(const CardExecutable &cardExecutable) {
     tileModules.push_back({tile->getTileId(), closure->entry.getOperation()});
   }
 
-  const analysis::TargetScheduleCostPolicy policy =
-      analysis::getTargetScheduleCostPolicy();
+  const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   analysis::CardInstructionProgramCost cost =
-      analysis::analyzeCardInstructionProgramCost(tileModules, policy);
+      analysis::analyzeCardInstructionProgramCost(tileModules, memory);
   if (cost.tileCosts.size() != tiles.size())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
@@ -256,16 +255,7 @@ collectProfileStaticCostModel(const CardExecutable &cardExecutable) {
   runtime::ProfileStaticCostModel model;
   model.model = runtime::kProfileStaticCostModelName.str();
   model.scope = runtime::kProfileStaticCostModelScope.str();
-  model.rates.cardDDRBytesPerSecond = policy.cardDDRBytesPerSecond;
-  model.rates.directionalNoCBytesPerSecond =
-      policy.directionalNoCBytesPerSecond;
-  model.rates.f16Bf16NPULogicalOpsPerSecondPerTile =
-      policy.f16Bf16NPULogicalOpsPerSecondPerTile;
-  model.rates.f16Bf16VectorLogicalOpsPerSecondPerTile =
-      policy.f16Bf16VectorLogicalOpsPerSecondPerTile;
-  model.rates.f32VectorLogicalOpsPerSecondPerTile =
-      policy.f32VectorLogicalOpsPerSecondPerTile;
-  model.rates.spmMovementBytesPerSecond = std::nullopt;
+  model.rates = runtime::getTargetProfileStaticCostRates();
   model.tiles.reserve(cost.tileCosts.size());
   for (auto [launchSlot, tileCost] : llvm::enumerate(cost.tileCosts)) {
     const TileExecutable &tile = *tilesByLaunchSlot[launchSlot];

@@ -88,10 +88,12 @@ CardPhysicalRepresentationDomain::create(
       *failureReason = message.str();
     return mlir::failure();
   };
-  if (trial.epoch != program.epoch ||
-      !coupledDomain.contains(coupledAssignment) ||
-      !temporalDomain.contains(temporalAssignment))
-    return fail("physical representation received a stale assignment");
+  if (trial.epoch != program.epoch)
+    return fail("physical representation received a stale logical trial");
+  if (!coupledDomain.contains(coupledAssignment))
+    return fail("physical representation received a stale coupled assignment");
+  if (!temporalDomain.contains(temporalAssignment))
+    return fail("physical representation received a stale temporal assignment");
 
   llvm::SmallVector<ValueDomain, 32> values;
   for (const CoupledRegionGroup &group : coupledAssignment.groups) {

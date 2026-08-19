@@ -22,8 +22,7 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> inputModules,
           static_cast<size_t>(executionConfig.getTileCount()))
     return mlir::ModuleOp(inputModules.front()).emitOpError()
            << "program_resource_verification: Tile domain has "
-           << inputModules.size()
-           << " modules but ExecutionConfig requires "
+           << inputModules.size() << " modules but ExecutionConfig requires "
            << executionConfig.getTileCount();
 
   llvm::SmallVector<int64_t, 16> sortedTileIds;
@@ -41,17 +40,15 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> inputModules,
            << " at sorted position " << expected;
   }
 
-  const analysis::TargetScheduleCostPolicy policy =
-      analysis::getTargetScheduleCostPolicy();
+  const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   mlir::ModuleOp diagnosticAnchor = inputModules.front();
-  if (policy.spmAddressLimit < policy.spmAddressBase)
+  if (memory.spmLimit < memory.spmBase)
     return diagnosticAnchor.emitOpError(
         "program_resource_verification: target SPM range is invalid");
 
   llvm::SmallVector<analysis::TileInstructionProgram, 16> programs;
   programs.reserve(inputModules.size());
-  for (auto [module, tileId] :
-       llvm::zip_equal(inputModules, tileIds)) {
+  for (auto [module, tileId] : llvm::zip_equal(inputModules, tileIds)) {
     mlir::ModuleOp diagnosticModule = module;
     llvm::Expected<ExecutableCallClosure> closure =
         analyzeExecutableCallClosure(module);
@@ -63,10 +60,10 @@ verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> inputModules,
     programs.push_back({tileId, closure->entry.getOperation()});
   }
   analysis::CardInstructionProgramCost cost =
-      analysis::analyzeCardInstructionProgramCost(programs, policy);
+      analysis::analyzeCardInstructionProgramCost(programs, memory);
 
   const uint64_t perTileSPMCapacity =
-      policy.spmAddressLimit - policy.spmAddressBase;
+      static_cast<uint64_t>(memory.spmLimit - memory.spmBase);
   for (auto &&[tile, tileCost] : llvm::enumerate(cost.tileCosts)) {
     mlir::ModuleOp tileModule = inputModules[tile];
     const int64_t tileId = tileIds[tile].getValue();
@@ -105,10 +102,9 @@ namespace wafer::compiler::testing {
 
 mlir::FailureOr<analysis::CardInstructionProgramCost>
 verifyProgramResources(llvm::ArrayRef<mlir::ModuleOp> tileModules,
-                         llvm::ArrayRef<TileId> tileIds,
-                         const ExecutionConfig &executionConfig) {
-  return detail::verifyProgramResources(tileModules, tileIds,
-                                          executionConfig);
+                       llvm::ArrayRef<TileId> tileIds,
+                       const ExecutionConfig &executionConfig) {
+  return detail::verifyProgramResources(tileModules, tileIds, executionConfig);
 }
 
 } // namespace wafer::compiler::testing

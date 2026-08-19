@@ -1,6 +1,7 @@
 //===- TemporalTilingTest.cpp -----------------------------------------===//
 
 #include "Wafer/Planning/Search/TemporalTiling.h"
+#include "Wafer/InitWaferDialects.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -28,6 +29,7 @@ protected:
   TemporalTilingTest() {
     registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
                     mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
+    wafer::registerWaferCoreDialects(registry);
     mlir::linalg::registerTilingInterfaceExternalModels(registry);
     context = std::make_unique<mlir::MLIRContext>(registry);
     context->loadAllAvailableDialects();
@@ -126,6 +128,38 @@ module {
     current = *next;
   }
   EXPECT_EQ(count, 3u);
+}
+
+TEST_F(TemporalTilingTest, CapacityGuidedProposalRemainsInExactDomain) {
+  auto module = parse(R"mlir(
+module {
+  func.func @map(%input: tensor<1024x1024xf16>)
+      -> tensor<1024x1024xf16> {
+    %empty = tensor.empty() : tensor<1024x1024xf16>
+    %result = linalg.map ins(%input : tensor<1024x1024xf16>)
+        outs(%empty : tensor<1024x1024xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %result : tensor<1024x1024xf16>
+  }
+})mlir");
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  StructuredDAGNodePlacement placement{0, {1, 1}, {TileId(0)}, std::nullopt};
+  auto domain = TemporalNodeDomain::create(dag->getNodes().front(), placement,
+                                           &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+  wafer::TargetMemoryPolicy memory;
+  memory.spmBase = 0;
+  memory.spmLimit = 4096;
+  auto proposal = domain->getCapacityGuidedAssignment(memory);
+  ASSERT_TRUE(mlir::succeeded(proposal));
+  EXPECT_TRUE(domain->contains(*proposal));
+  EXPECT_NE(proposal->iteratorTileSizes,
+            domain->getFirstAssignment().iteratorTileSizes);
 }
 
 } // namespace

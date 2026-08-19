@@ -26,6 +26,19 @@
 
 namespace {
 
+TEST(ProfileInstrumentationModelTest, OwnsTargetReportingReferenceRates) {
+  wafer::runtime::ProfileStaticCostRates rates =
+      wafer::runtime::getTargetProfileStaticCostRates();
+  EXPECT_EQ(rates.cardDDRBytesPerSecond, UINT64_C(200000000000));
+  EXPECT_EQ(rates.directionalNoCBytesPerSecond, UINT64_C(128000000000));
+  EXPECT_EQ(rates.f16Bf16NPULogicalOpsPerSecondPerTile,
+            UINT64_C(8000000000000));
+  EXPECT_EQ(rates.f16Bf16VectorLogicalOpsPerSecondPerTile,
+            UINT64_C(64000000000));
+  EXPECT_EQ(rates.f32VectorLogicalOpsPerSecondPerTile, UINT64_C(32000000000));
+  EXPECT_FALSE(rates.spmMovementBytesPerSecond);
+}
+
 wafer::RuntimeLaunchContract makeGridLaunch() {
   return llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
       wafer::KernelLaunchForm::Grid,

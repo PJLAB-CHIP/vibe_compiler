@@ -73,7 +73,7 @@ static bool isKnownNoCFree(const CardInstructionProgramCost &cost) {
 }
 
 static StaticDurationTermMask
-getParameterEnabledTerms(const TargetScheduleCostPolicy &policy) {
+getParameterEnabledTerms(const ScheduleEstimatePolicy &policy) {
   StaticDurationTermMask terms = 0;
   auto addWhen = [&](bool condition, StaticDurationTerm term) {
     if (condition)
@@ -197,7 +197,7 @@ disableUnavailableControlTerms(StaticDurationTermMask &terms,
 }
 
 static uint64_t estimateCompute(const CardInstructionProgramCost &cost,
-                                const TargetScheduleCostPolicy &policy,
+                                const ScheduleEstimatePolicy &policy,
                                 StaticDurationTermMask terms) {
   auto estimateTile = [&](const ScheduleComputeCost &compute) {
     uint64_t duration = 0;
@@ -226,7 +226,7 @@ static uint64_t estimateCompute(const CardInstructionProgramCost &cost,
 }
 
 static uint64_t estimateControl(const CardInstructionProgramCost &cost,
-                                const TargetScheduleCostPolicy &policy,
+                                const ScheduleEstimatePolicy &policy,
                                 StaticDurationTermMask terms) {
   auto estimateTile = [&](const ScheduleCostMetric &instructions,
                           const ScheduleCostMetric &dteWaits,
@@ -282,8 +282,7 @@ static StaticDurationEstimate &
 getResourceEstimate(ProgramDurationEstimate &estimate,
                     StaticScheduleResource resource) {
   return const_cast<StaticDurationEstimate &>(getResourceEstimate(
-      static_cast<const ProgramDurationEstimate &>(estimate),
-      resource));
+      static_cast<const ProgramDurationEstimate &>(estimate), resource));
 }
 
 static constexpr std::array<StaticScheduleResource, 4> kScheduleResources = {
@@ -291,8 +290,7 @@ static constexpr std::array<StaticScheduleResource, 4> kScheduleResources = {
     StaticScheduleResource::NoC, StaticScheduleResource::SPMMovement};
 
 using ResourceEstimateMap =
-    llvm::DenseMap<const CardInstructionProgramCost *,
-                   ProgramDurationEstimate>;
+    llvm::DenseMap<const CardInstructionProgramCost *, ProgramDurationEstimate>;
 
 static uint64_t estimateSequentialWork(const StaticScheduleWork &work,
                                        const ResourceEstimateMap &estimates) {
@@ -369,7 +367,7 @@ static bool hasBufferedPipeline(const StaticSchedulePlan &plan) {
 
 static ProgramDurationEstimate
 estimateResourceDurations(const CardInstructionProgramCost &cost,
-                          const TargetScheduleCostPolicy &policy,
+                          const ScheduleEstimatePolicy &policy,
                           StaticDurationTermMask terms) {
   ProgramDurationEstimate result;
   result.enabledTerms = terms;
@@ -627,8 +625,8 @@ StaticSchedulePlan::create(const CardInstructionProgramCost &controlCost,
       llvm::SmallVector<StaticScheduleStep, 8>(steps.begin(), steps.end()));
 }
 
-StaticSchedulePlan StaticSchedulePlan::getConservative(
-    const CardInstructionProgramCost &cost) {
+StaticSchedulePlan
+StaticSchedulePlan::getConservative(const CardInstructionProgramCost &cost) {
   llvm::SmallVector<StaticScheduleStep, 8> steps;
   for (StaticScheduleResource resource : kScheduleResources) {
     StaticScheduleBranch branch;
@@ -644,7 +642,7 @@ StaticSchedulePlan StaticSchedulePlan::getConservative(
 llvm::SmallVector<ProgramDurationEstimate, 16>
 estimateStaticSchedulePlanDurations(
     llvm::ArrayRef<const StaticSchedulePlan *> plans,
-    const TargetScheduleCostPolicy &policy) {
+    const ScheduleEstimatePolicy &policy) {
   StaticDurationTermMask terms = getParameterEnabledTerms(policy);
   for (const StaticSchedulePlan *plan : plans) {
     if (!plan)

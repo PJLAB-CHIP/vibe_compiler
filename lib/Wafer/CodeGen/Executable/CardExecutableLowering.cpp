@@ -12,7 +12,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/IR/Target/TargetTopology.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
@@ -637,8 +637,7 @@ static mlir::FailureOr<InstrModuleLoweringResult> lowerTileInstructionModules(
     return mlir::failure();
   }
 
-  const TargetMemoryPolicy memory =
-      getDefaultWaferTargetPolicy(TileSearchEffort::Default).memory;
+  const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering", "tile-modules-to-card-executable", "ddr-planning");

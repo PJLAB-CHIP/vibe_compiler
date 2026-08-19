@@ -48,9 +48,8 @@ mlir::func::FuncOp findSingleStandaloneTensorProgram(mlir::ModuleOp module) {
   return multiple ? mlir::func::FuncOp{} : found;
 }
 
-mlir::LogicalResult
-appendTileOutputDestinations(mlir::func::FuncOp program,
-                             std::string *failureReason) {
+mlir::LogicalResult appendTileOutputDestinations(mlir::func::FuncOp program,
+                                                 std::string *failureReason) {
   for (mlir::Type resultType : program.getResultTypes()) {
     auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(resultType);
     if (!tensorType || !tensorType.hasStaticShape()) {
@@ -63,8 +62,29 @@ appendTileOutputDestinations(mlir::func::FuncOp program,
                            mlir::DictionaryAttr{}, program.getLoc());
   }
   if (mlir::failed(mlir::verify(program))) {
-    setFailureReason(failureReason,
-                     "private Tile output boundary is not verifier-legal");
+    std::string detail = "private Tile output boundary is not verifier-legal";
+    program.walk([&](mlir::Operation *operation) {
+      if (detail != "private Tile output boundary is not verifier-legal")
+        return;
+      for (auto [index, operand] : llvm::enumerate(operation->getOperands())) {
+        mlir::Operation *definition = operand.getDefiningOp();
+        if (definition && !program->isProperAncestor(definition)) {
+          llvm::raw_string_ostream stream(detail);
+          stream << ": " << operation->getName() << " operand " << index
+                 << " is defined by external " << definition->getName();
+          return;
+        }
+        auto argument = mlir::dyn_cast<mlir::BlockArgument>(operand);
+        if (argument &&
+            !program->isProperAncestor(argument.getOwner()->getParentOp())) {
+          llvm::raw_string_ostream stream(detail);
+          stream << ": " << operation->getName() << " operand " << index
+                 << " is an external block argument";
+          return;
+        }
+      }
+    });
+    setFailureReason(failureReason, detail);
     return mlir::failure();
   }
   return mlir::success();
@@ -170,8 +190,7 @@ bool isProjectedPermutationWithUnitConstants(
       map.getNumResults() != static_cast<unsigned>(indexedType.getRank()))
     return false;
   llvm::DenseSet<unsigned> projectedDimensions;
-  for (auto [resultDimension, expression] :
-       llvm::enumerate(map.getResults())) {
+  for (auto [resultDimension, expression] : llvm::enumerate(map.getResults())) {
     if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
       if (dimension.getPosition() >= map.getNumDims() ||
           !projectedDimensions.insert(dimension.getPosition()).second)
@@ -186,15 +205,14 @@ bool isProjectedPermutationWithUnitConstants(
   return true;
 }
 
-mlir::LogicalResult
-buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
-                       mlir::linalg::LinalgOp op, mlir::AffineMap outputMap,
-                       llvm::ArrayRef<mlir::OpFoldResult> candidateOffsets,
-                       llvm::ArrayRef<int64_t> candidateSizes,
-                       llvm::ArrayRef<mlir::OpFoldResult>
-                           candidateReductionOffsets,
-                       llvm::ArrayRef<int64_t> candidateReductionSizes,
-                       CandidateLoopTile &tile, std::string *failureReason) {
+mlir::LogicalResult buildCandidateLoopTile(
+    mlir::OpBuilder &builder, mlir::Location loc, mlir::linalg::LinalgOp op,
+    mlir::AffineMap outputMap,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateOffsets,
+    llvm::ArrayRef<int64_t> candidateSizes,
+    llvm::ArrayRef<mlir::OpFoldResult> candidateReductionOffsets,
+    llvm::ArrayRef<int64_t> candidateReductionSizes, CandidateLoopTile &tile,
+    std::string *failureReason) {
   llvm::SmallVector<int64_t, 4> loopRanges = op.getStaticLoopRanges();
   if (llvm::any_of(loopRanges, [](int64_t value) {
         return mlir::ShapedType::isDynamic(value);
@@ -222,10 +240,9 @@ buildCandidateLoopTile(mlir::OpBuilder &builder, mlir::Location loc,
   auto outputType = mlir::dyn_cast<mlir::RankedTensorType>(
       op.getDpsInits().front().getType());
   if (!isProjectedPermutationWithUnitConstants(outputMap, outputType)) {
-    setFailureReason(
-        failureReason,
-        "candidate tile requires a projected output map with only "
-        "constant-zero extent-one positions");
+    setFailureReason(failureReason,
+                     "candidate tile requires a projected output map with only "
+                     "constant-zero extent-one positions");
     return mlir::failure();
   }
 

@@ -2,8 +2,8 @@
 
 #include "Wafer/Model/Core/TargetModelMemory.h"
 
-#include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/Core/TargetIdentity.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -63,7 +63,8 @@ bool permitsWrite(compiler::TileEntryArgumentKind kind) {
   llvm_unreachable("unknown tile entry argument kind");
 }
 
-bool permitsAccess(compiler::TileEntryArgumentKind kind, TargetModelAccess access) {
+bool permitsAccess(compiler::TileEntryArgumentKind kind,
+                   TargetModelAccess access) {
   switch (access) {
   case TargetModelAccess::Read:
     return permitsRead(kind);
@@ -91,10 +92,10 @@ bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
 
 } // namespace
 
-TargetModelResourceId getTargetModelResourceId(CardId cardId,
-                                               TileId tileId,
-                                               compiler::TileEntryArgumentKind kind,
-                                               int64_t resourceIndex) {
+TargetModelResourceId
+getTargetModelResourceId(CardId cardId, TileId tileId,
+                         compiler::TileEntryArgumentKind kind,
+                         int64_t resourceIndex) {
   std::optional<TileId> ownerTile;
   if (kind == compiler::TileEntryArgumentKind::Workspace ||
       kind == compiler::TileEntryArgumentKind::ProfileRecord ||
@@ -166,11 +167,8 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
       return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
                          llvm::Twine("duplicate launch slot ") +
                              llvm::Twine(launchSlot));
-    if (tile.cardId != CardId(0) ||
-        tile.tileId.getValue() < 0 ||
-        !tileEndpoints
-             .emplace(tile.cardId.getValue(),
-                      tile.tileId.getValue())
+    if (tile.cardId != CardId(0) || tile.tileId.getValue() < 0 ||
+        !tileEndpoints.emplace(tile.cardId.getValue(), tile.tileId.getValue())
              .second)
       return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
                          "Tile identity is invalid or duplicate");
@@ -192,7 +190,7 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
         return memoryError(TargetModelMemoryErrorCode::InvalidInputBinding,
                            "duplicate input resource identity");
 
-  const TargetMemoryPolicy memoryPolicy = getDefaultWaferTargetPolicy().memory;
+  const TargetMemoryPolicy memoryPolicy = getTargetMemoryPolicy();
   if (memoryPolicy.spmBase < 0 || memoryPolicy.spmLimit <= memoryPolicy.spmBase)
     return memoryError(TargetModelMemoryErrorCode::InvalidInvocation,
                        "target policy has an invalid SPM planned window");
@@ -224,7 +222,8 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
               " ABI slot metadata and values have different lengths");
     for (size_t slotIndex = 0; slotIndex < tile.tileEntryArguments.size();
          ++slotIndex) {
-      const compiler::TileEntryArgument &slot = tile.tileEntryArguments[slotIndex];
+      const compiler::TileEntryArgument &slot =
+          tile.tileEntryArguments[slotIndex];
       if (slot.ordinal != static_cast<int64_t>(slotIndex) ||
           slot.resourceIndex < 0)
         return memoryError(TargetModelMemoryErrorCode::InvalidSlot,
@@ -248,9 +247,8 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
                            tileSlot(launchSlot, slot.ordinal) +
                                " base does not satisfy ABI alignment");
 
-      const TargetModelResourceId resource =
-          getTargetModelResourceId(tile.cardId, tile.tileId,
-                                   slot.kind, slot.resourceIndex);
+      const TargetModelResourceId resource = getTargetModelResourceId(
+          tile.cardId, tile.tileId, slot.kind, slot.resourceIndex);
       ResourceFacts *facts = nullptr;
       for (ResourceFacts &candidate : resources)
         if (candidate.id == resource) {

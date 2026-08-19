@@ -1,6 +1,9 @@
 //===- CardBaselineConsumerInputs.cpp --------------------------------===//
 
 #include "Wafer/Planning/Baseline/CardBaselineConsumerInputs.h"
+#include "Wafer/Support/CompileTiming.h"
+
+#include "llvm/ADT/Twine.h"
 
 #include <set>
 
@@ -17,8 +20,17 @@ mlir::LogicalResult addCardBaselineConsumerInputs(
     inputs.emplace(edge.consumer, edge.consumerOperand);
 
   for (const auto &[consumer, operand] : inputs) {
-    analysis::ConsumerInputDemand demand =
-        query.queryOperand(consumer, operand, trial);
+    std::string detail;
+    if (wafer::support::getActiveCompileTimingSession())
+      detail = (llvm::Twine("consumer=") + llvm::Twine(consumer) +
+                " operand=" + llvm::Twine(operand))
+                   .str();
+    analysis::ConsumerInputDemand demand = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "deterministic-baseline", "construct-consumer-input",
+          detail);
+      return query.queryOperand(consumer, operand, trial);
+    }();
     if (demand.status != analysis::ExactDemandStatus::Satisfied) {
       if (failureReason)
         *failureReason = "consumer input demand failed: " + demand.detail;

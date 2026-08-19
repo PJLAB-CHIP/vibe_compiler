@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <vector>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -181,6 +182,84 @@ SpatialPlacementAssignment SpatialPlacementDomain::getFirstAssignment() const {
   return assignment;
 }
 
+SpatialPlacementAssignment
+SpatialPlacementDomain::getMaximumParticipantAssignment() const {
+  return getMaximumParticipantAssignment(availableTiles.size());
+}
+
+SpatialPlacementAssignment
+SpatialPlacementDomain::getMaximumParticipantAssignment(
+    uint64_t maximumParticipants) const {
+  struct FactorChoice {
+    llvm::SmallVector<uint32_t, 4> factors;
+    unsigned reductionSplits = 0;
+    unsigned partitionedDimensions = 0;
+    uint64_t extentScore = 0;
+  };
+  const size_t capacity = static_cast<size_t>(std::min<uint64_t>(
+      availableTiles.size(), std::max<uint64_t>(maximumParticipants, 1)));
+  std::vector<std::optional<FactorChoice>> current(capacity + 1);
+  current[1] = FactorChoice{};
+  for (size_t dimension = 0; dimension < maximumFactors.size(); ++dimension) {
+    std::vector<std::optional<FactorChoice>> next(capacity + 1);
+    for (size_t product = 1; product <= capacity; ++product) {
+      if (!current[product])
+        continue;
+      const uint64_t maximum =
+          std::min<uint64_t>(maximumFactors[dimension], capacity / product);
+      for (uint32_t factor = 1; factor <= maximum; ++factor) {
+        const size_t nextProduct = product * factor;
+        FactorChoice candidate = *current[product];
+        candidate.factors.push_back(factor);
+        candidate.reductionSplits +=
+            factor > 1 && reductionIterators[dimension] != 0;
+        candidate.partitionedDimensions += factor > 1;
+        const uint64_t extent =
+            static_cast<uint64_t>(iteratorExtents[dimension]);
+        const uint64_t weight = static_cast<uint64_t>(factor - 1);
+        if (weight != 0)
+          candidate.extentScore =
+              extent > (std::numeric_limits<uint64_t>::max() -
+                        candidate.extentScore) /
+                           weight
+                  ? std::numeric_limits<uint64_t>::max()
+                  : candidate.extentScore + extent * weight;
+        auto &incumbent = next[nextProduct];
+        if (!incumbent ||
+            candidate.reductionSplits < incumbent->reductionSplits ||
+            (candidate.reductionSplits == incumbent->reductionSplits &&
+             candidate.partitionedDimensions <
+                 incumbent->partitionedDimensions) ||
+            (candidate.reductionSplits == incumbent->reductionSplits &&
+             candidate.partitionedDimensions ==
+                 incumbent->partitionedDimensions &&
+             candidate.extentScore > incumbent->extentScore) ||
+            (candidate.reductionSplits == incumbent->reductionSplits &&
+             candidate.partitionedDimensions ==
+                 incumbent->partitionedDimensions &&
+             candidate.extentScore == incumbent->extentScore &&
+             std::lexicographical_compare(
+                 incumbent->factors.begin(), incumbent->factors.end(),
+                 candidate.factors.begin(), candidate.factors.end())))
+          incumbent = std::move(candidate);
+      }
+    }
+    current = std::move(next);
+  }
+
+  size_t participants = capacity;
+  while (participants > 1 && !current[participants])
+    --participants;
+  SpatialPlacementAssignment assignment;
+  assignment.node = node;
+  assignment.iteratorFactors = current[participants]->factors;
+  assignment.tiles.assign(availableTiles.begin(),
+                          availableTiles.begin() + participants);
+  if (requiresReductionMerge(assignment.iteratorFactors, reductionIterators))
+    assignment.reductionMergeTile = availableTiles.front();
+  return assignment;
+}
+
 bool SpatialPlacementDomain::contains(
     const SpatialPlacementAssignment &assignment) const {
   if (assignment.node != node ||
@@ -274,6 +353,45 @@ CardSpatialPlacementDomain::getFirstAssignment() const {
   for (const SpatialPlacementDomain &domain : nodeDomains)
     assignment.nodes.push_back(domain.getFirstAssignment());
   return assignment;
+}
+
+CardSpatialPlacementAssignment
+CardSpatialPlacementDomain::getMaximumParticipantAssignment() const {
+  CardSpatialPlacementAssignment assignment;
+  assignment.nodes.reserve(nodeDomains.size());
+  for (const SpatialPlacementDomain &domain : nodeDomains)
+    assignment.nodes.push_back(domain.getMaximumParticipantAssignment());
+  return assignment;
+}
+
+mlir::FailureOr<CardSpatialPlacementAssignment>
+CardSpatialPlacementDomain::getConstructiveAssignment(
+    const StructuredDAGAnalysis &dag, analysis::IREpoch epoch,
+    std::string *failureReason) const {
+  if (nodeDomains.empty())
+    return mlir::failure();
+  const size_t maximumParticipants =
+      nodeDomains.front().getAvailableTiles().size();
+  for (size_t limit = maximumParticipants; limit > 0; --limit) {
+    CardSpatialPlacementAssignment assignment;
+    assignment.nodes.reserve(nodeDomains.size());
+    for (const SpatialPlacementDomain &domain : nodeDomains)
+      assignment.nodes.push_back(domain.getMaximumParticipantAssignment(limit));
+    CardSpatialPlacementEvaluation evaluation =
+        evaluate(dag, epoch, assignment);
+    if (evaluation.status == analysis::ExactDemandStatus::Satisfied)
+      return assignment;
+    if (evaluation.status !=
+        analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
+      if (failureReason)
+        *failureReason = evaluation.detail;
+      return mlir::failure();
+    }
+  }
+  if (failureReason)
+    *failureReason =
+        "no capacity-oriented spatial coordinate satisfies exact demand";
+  return mlir::failure();
 }
 
 bool CardSpatialPlacementDomain::contains(

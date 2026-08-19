@@ -430,4 +430,43 @@ TEST_F(CoupledRegionTest, DisconnectedComponentsDoNotScanBellPartitions) {
   EXPECT_FALSE(*end);
 }
 
+TEST_F(CoupledRegionTest,
+       InterleavedDisconnectedComponentsKeepCanonicalGroupOrder) {
+  auto module = parse(R"mlir(
+module {
+  func.func @interleaved(%lhs: tensor<2xf16>, %rhs: tensor<2xf16>)
+      -> (tensor<2xf16>, tensor<2xf16>) {
+    %e0 = tensor.empty() : tensor<2xf16>
+    %a0 = linalg.map ins(%lhs : tensor<2xf16>) outs(%e0 : tensor<2xf16>)
+        (%v: f16) { linalg.yield %v : f16 }
+    %e1 = tensor.empty() : tensor<2xf16>
+    %b0 = linalg.map ins(%rhs : tensor<2xf16>) outs(%e1 : tensor<2xf16>)
+        (%v: f16) { linalg.yield %v : f16 }
+    %e2 = tensor.empty() : tensor<2xf16>
+    %a1 = linalg.map ins(%a0 : tensor<2xf16>) outs(%e2 : tensor<2xf16>)
+        (%v: f16) { linalg.yield %v : f16 }
+    %e3 = tensor.empty() : tensor<2xf16>
+    %b1 = linalg.map ins(%b0 : tensor<2xf16>) outs(%e3 : tensor<2xf16>)
+        (%v: f16) { linalg.yield %v : f16 }
+    return %a1, %b1 : tensor<2xf16>, tensor<2xf16>
+  }
+})mlir");
+  ASSERT_TRUE(module);
+  auto function = *module->getOps<mlir::func::FuncOp>().begin();
+  std::string failureReason;
+  auto dag = StructuredDAGAnalysis::create(function, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto placements = makeSingleTilePlacements(*dag);
+  auto trial = wafer::compiler::detail::buildLogicalShardTrial(
+      *dag, placements, wafer::analysis::IREpoch::mint(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
+  auto domain = CoupledRegionDomain::create(*dag, *trial, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
+
+  CoupledRegionAssignment first = domain->getFirstAssignment();
+  EXPECT_TRUE(llvm::is_sorted(first.groups));
+  EXPECT_TRUE(domain->contains(first));
+  EXPECT_EQ(enumerateDomain(*domain).size(), 4u);
+}
+
 } // namespace

@@ -6,7 +6,7 @@
 #include "Wafer/Support/CompileWorkStatistics.h"
 
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/Passes.h"
 #include "Wafer/Transforms/TargetConversion.h"
 

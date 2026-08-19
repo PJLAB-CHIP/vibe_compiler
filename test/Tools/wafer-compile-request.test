@@ -7,6 +7,7 @@
 # RUN: not wafer-compile --input-program-dir %t.input --input-program-dir %t.input --output-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-INPUT
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --compile-timing --compile-timing 2>&1 | FileCheck %s --check-prefix=DUPLICATE-TIMING
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=production 2>&1 | FileCheck %s --check-prefix=RETIRED-POLICY
+# RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --optimization-policy=none --search-max-candidate-evaluations=2 2>&1 | FileCheck %s --check-prefix=SEARCH-BUDGET-WITH-NONE
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --output-dir %t.output --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-OUTPUT
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --num-partitions=1 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PARTITIONS
 # RUN: not wafer-compile --input-program-dir %t.input --output-dir %t.output --num-partitions=1 --profile --profile 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PROFILE-PRODUCT
@@ -30,6 +31,7 @@
 # DUPLICATE-INPUT: wafer-compile: duplicate option: --input-program-dir
 # DUPLICATE-TIMING: wafer-compile: duplicate option: --compile-timing
 # RETIRED-POLICY: wafer-compile: invalid --optimization-policy value: production (expected search or none)
+# SEARCH-BUDGET-WITH-NONE: wafer-compile: --search-max-candidate-evaluations requires --optimization-policy=search
 # DUPLICATE-OUTPUT: wafer-compile: duplicate option: --output-dir
 # DUPLICATE-PARTITIONS: wafer-compile: duplicate option: --num-partitions
 # DUPLICATE-PROFILE-PRODUCT: wafer-compile: duplicate option: --profile

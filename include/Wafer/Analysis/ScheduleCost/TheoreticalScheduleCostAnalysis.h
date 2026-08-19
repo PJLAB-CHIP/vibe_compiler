@@ -14,6 +14,27 @@
 
 namespace wafer::analysis {
 
+/// Performance-only point estimates used to rank already legal instruction
+/// programs. These values are not address/capacity facts and cannot reject a
+/// candidate.
+struct ScheduleEstimatePolicy {
+  uint64_t cardDDRNominalBytesPerSecond = 150'000'000'000ULL;
+  uint64_t directionalNoCBytesPerSecond = 128'000'000'000ULL;
+  uint64_t dteEndpointBytesPerSecondEstimate = 128'000'000'000ULL;
+  uint64_t dteMessageStartupPicosecondsEstimate = 10'000'000ULL;
+  uint64_t noCHopPicosecondsEstimate = 1'000ULL;
+  uint64_t instructionFixedPicosecondsEstimate = 1'000ULL;
+  uint64_t dteWaitedEventPicosecondsEstimate = 1'000ULL;
+  uint64_t nccParticipantWaitPicosecondsEstimate = 1'000ULL;
+  uint64_t f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
+  uint64_t f16Bf16VectorLogicalOpsPerSecondPerTile = 64'000'000'000ULL;
+  uint64_t f32VectorLogicalOpsPerSecondPerTile = 32'000'000'000ULL;
+  uint64_t spmExplicitMovementBytesPerSecondPerTileEstimate =
+      256'000'000'000ULL;
+};
+
+inline ScheduleEstimatePolicy getScheduleEstimatePolicy() { return {}; }
+
 /// Explicit point-model inputs used by the theoretical duration estimate.
 /// These flags are diagnostic only; they never establish a performance proof.
 enum class StaticDurationAssumption : uint32_t {
@@ -196,7 +217,7 @@ private:
 llvm::SmallVector<ProgramDurationEstimate, 16>
 estimateStaticSchedulePlanDurations(
     llvm::ArrayRef<const StaticSchedulePlan *> plans,
-    const TargetScheduleCostPolicy &policy);
+    const ScheduleEstimatePolicy &policy);
 
 } // namespace wafer::analysis
 

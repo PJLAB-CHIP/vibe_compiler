@@ -4,7 +4,7 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/IRMapping.h"
@@ -784,6 +784,38 @@ bool TileRegionBodyEmitter::hasNoObservableDestUseExceptInsert(
       llvm::DenseSet<mlir::Value> visited;
       if (onlyFeedsTensorInsertDestinations(extractSlice.getResult(), visited))
         continue;
+      // Temporal reduction waves read the current accumulator slice as the
+      // DPS init of the operation that computes this insert's source, then
+      // write the updated slice back. That read is ordered before the write
+      // by SSA and may share the same private destination buffer.
+      llvm::DenseSet<mlir::Value> dependencyVisited;
+      std::function<bool(mlir::Value, mlir::Operation *)> dependsOn =
+          [&](mlir::Value value, mlir::Operation *operation) {
+            if (!value || !dependencyVisited.insert(value).second)
+              return false;
+            mlir::Operation *definition = value.getDefiningOp();
+            if (!definition)
+              return false;
+            if (definition == operation)
+              return true;
+            return llvm::any_of(definition->getOperands(),
+                                [&](mlir::Value operand) {
+                                  return dependsOn(operand, operation);
+                                });
+          };
+      bool orderedAccumulatorRead = !extractSlice.getResult().use_empty();
+      for (mlir::OpOperand &extractUse : extractSlice.getResult().getUses()) {
+        auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(
+            extractUse.getOwner());
+        dependencyVisited.clear();
+        if (!dps || !dps.isDpsInit(&extractUse) ||
+            !dependsOn(insertSlice.getSource(), extractUse.getOwner())) {
+          orderedAccumulatorRead = false;
+          break;
+        }
+      }
+      if (orderedAccumulatorRead)
+        continue;
     }
     return false;
   }
@@ -1022,21 +1054,17 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
         return fail(
             "external tensor copy element width is not byte-addressable");
       const uint64_t elementBytes = elementBitWidth / 8;
-      const WaferTargetPolicy targetPolicy = getDefaultWaferTargetPolicy();
-      const uint64_t spmWindowBytes = static_cast<uint64_t>(
-          targetPolicy.memory.spmLimit - targetPolicy.memory.spmBase);
+      const TargetMemoryPolicy targetMemory = getTargetMemoryPolicy();
+      const uint64_t spmWindowBytes =
+          static_cast<uint64_t>(targetMemory.spmLimit - targetMemory.spmBase);
       const uint64_t spmTileBudgetBytes =
           spmWindowBytes / kExternalTensorCopyWorkingSetSlots;
       if (spmTileBudgetBytes == 0)
         return fail("target SPM is too small for external tensor copy");
-      int64_t preferredExtent =
-          targetPolicy.tileSearch.preferredTileSizes.empty()
-              ? 1
-              : targetPolicy.tileSearch.preferredTileSizes.front();
       llvm::SmallVector<int64_t, 4> tileShape;
       tileShape.reserve(sourceTensorType.getRank());
       for (int64_t extent : sourceTensorType.getShape())
-        tileShape.push_back(std::min(extent, preferredExtent));
+        tileShape.push_back(extent);
 
       auto getTileBytes = [&]() -> std::optional<uint64_t> {
         uint64_t elements = 1;
@@ -1235,9 +1263,26 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
   }
 
   if (!allStatic(insertSlice.getStaticOffsets())) {
-    if (!hasNoObservableDestUseExceptInsert(insertSlice))
-      return fail("dynamic tile-local tensor.insert_slice requires an "
-                  "unobserved destination version");
+    if (!hasNoObservableDestUseExceptInsert(insertSlice)) {
+      std::string detail =
+          "dynamic tile-local tensor.insert_slice requires an unobserved "
+          "destination version; other uses=[";
+      llvm::raw_string_ostream stream(detail);
+      for (mlir::OpOperand &use : insertSlice.getDest().getUses())
+        if (&use != &insertSlice->getOpOperand(1)) {
+          stream << use.getOwner()->getName() << ':' << use.getOperandNumber()
+                 << ',';
+          if (auto extract = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(
+                  use.getOwner())) {
+            stream << "extract-users=";
+            for (mlir::OpOperand &extractUse : extract.getResult().getUses())
+              stream << extractUse.getOwner()->getName() << ':'
+                     << extractUse.getOperandNumber() << ',';
+          }
+        }
+      stream << ']';
+      return fail(detail);
+    }
     mlir::FailureOr<mlir::Value> source =
         getOrMaterialize(insertSlice.getSource(), MemLayout::Tensor, builder);
     mlir::FailureOr<mlir::Value> dest =

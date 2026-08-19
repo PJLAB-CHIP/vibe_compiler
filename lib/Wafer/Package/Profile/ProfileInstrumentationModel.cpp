@@ -14,6 +14,16 @@
 
 namespace wafer::runtime {
 
+ProfileStaticCostRates getTargetProfileStaticCostRates() {
+  ProfileStaticCostRates rates;
+  rates.cardDDRBytesPerSecond = 200'000'000'000ULL;
+  rates.directionalNoCBytesPerSecond = 128'000'000'000ULL;
+  rates.f16Bf16NPULogicalOpsPerSecondPerTile = 8'000'000'000'000ULL;
+  rates.f16Bf16VectorLogicalOpsPerSecondPerTile = 64'000'000'000ULL;
+  rates.f32VectorLogicalOpsPerSecondPerTile = 32'000'000'000ULL;
+  return rates;
+}
+
 void emitStaticCostMetric(llvm::json::OStream &json,
                           const ProfileStaticCostMetric &metric) {
   json.object([&] {
@@ -25,7 +35,6 @@ void emitStaticCostMetric(llvm::json::OStream &json,
     json.attribute("reason", metric.reason);
   });
 }
-
 
 void emitStaticTileWork(llvm::json::OStream &json,
                         const ProfileStaticTileWork &work) {
@@ -54,7 +63,6 @@ void emitStaticTileWork(llvm::json::OStream &json,
     });
   });
 }
-
 
 void emitStaticCostModel(llvm::json::OStream &json,
                          const ProfileStaticCostModel &model) {
@@ -99,7 +107,6 @@ void emitStaticCostModel(llvm::json::OStream &json,
     });
   });
 }
-
 
 llvm::StringRef stringifyProfileCaptureKind(ProfileCaptureKind capture) {
   switch (capture) {

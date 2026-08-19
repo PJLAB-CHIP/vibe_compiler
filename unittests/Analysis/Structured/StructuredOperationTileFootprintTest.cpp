@@ -3,7 +3,7 @@
 #include "Wafer/Analysis/Structured/StructuredOperationTileFootprint.h"
 
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -35,14 +35,13 @@ module {
   }
 }
 )mlir",
-                                                         &context);
+                                                        &context);
   ASSERT_TRUE(module);
   mlir::linalg::MatmulOp matmul;
   module->walk([&](mlir::linalg::MatmulOp operation) { matmul = operation; });
   ASSERT_TRUE(matmul);
 
-  const wafer::TargetMemoryPolicy memory =
-      wafer::getDefaultWaferTargetPolicy().memory;
+  const wafer::TargetMemoryPolicy memory = wafer::getTargetMemoryPolicy();
   const uint64_t capacity =
       static_cast<uint64_t>(memory.spmLimit - memory.spmBase);
   const llvm::SmallVector<int64_t, 3> localWave{16, 256, 4096};
@@ -50,22 +49,21 @@ module {
       wafer::compiler::detail::estimateStructuredOperationTileResidencyBytes(
           matmul, localWave, memory);
   std::optional<uint64_t> physicalUpperBound =
-      wafer::compiler::detail::
-          getStructuredOperationLoweringSPMUpperBoundBytes(
-              matmul, localWave, localWave, memory);
+      wafer::compiler::detail::getStructuredOperationLoweringSPMUpperBoundBytes(
+          matmul, localWave, localWave, memory);
   ASSERT_TRUE(logical);
   ASSERT_TRUE(physicalUpperBound);
   EXPECT_LE(*logical, capacity);
   EXPECT_GT(*physicalUpperBound, capacity);
 
-  auto legalized = wafer::compiler::detail::
-      deriveStructuredOperationTemporalTileShape(matmul, localWave, memory);
+  auto legalized =
+      wafer::compiler::detail::deriveStructuredOperationTemporalTileShape(
+          matmul, localWave, memory);
   ASSERT_TRUE(mlir::succeeded(legalized));
   EXPECT_NE(*legalized, localWave);
   std::optional<uint64_t> legalizedUpperBound =
-      wafer::compiler::detail::
-          getStructuredOperationLoweringSPMUpperBoundBytes(
-              matmul, localWave, *legalized, memory);
+      wafer::compiler::detail::getStructuredOperationLoweringSPMUpperBoundBytes(
+          matmul, localWave, *legalized, memory);
   ASSERT_TRUE(legalizedUpperBound);
   EXPECT_LE(*legalizedUpperBound, capacity);
 }

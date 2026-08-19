@@ -45,6 +45,13 @@ public:
   create(const StructuredDAGNode &node, llvm::ArrayRef<TileId> availableTiles);
 
   SpatialPlacementAssignment getFirstAssignment() const;
+  /// Deterministic constructive proposal with the largest participant count
+  /// representable by this exact domain. Ties avoid reduction partitioning
+  /// first and then prefer earlier iterator dimensions. This changes only
+  /// visitation order; `getNextAssignment` remains the complete enumeration.
+  SpatialPlacementAssignment getMaximumParticipantAssignment() const;
+  SpatialPlacementAssignment
+  getMaximumParticipantAssignment(uint64_t maximumParticipants) const;
   mlir::FailureOr<std::optional<SpatialPlacementAssignment>>
   getNextAssignment(const SpatialPlacementAssignment &assignment) const;
   bool contains(const SpatialPlacementAssignment &assignment) const;
@@ -109,6 +116,11 @@ public:
          llvm::ArrayRef<TileId> availableTiles);
 
   CardSpatialPlacementAssignment getFirstAssignment() const;
+  CardSpatialPlacementAssignment getMaximumParticipantAssignment() const;
+  mlir::FailureOr<CardSpatialPlacementAssignment>
+  getConstructiveAssignment(const StructuredDAGAnalysis &dag,
+                            analysis::IREpoch epoch,
+                            std::string *failureReason = nullptr) const;
   mlir::FailureOr<std::optional<CardSpatialPlacementAssignment>>
   getNextAssignment(const CardSpatialPlacementAssignment &assignment) const;
   bool contains(const CardSpatialPlacementAssignment &assignment) const;

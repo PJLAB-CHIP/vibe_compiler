@@ -1,19 +1,20 @@
-//===- CardExecutableTestSupport.h - Compiler executable fixtures -*- C++ -*-===//
+//===- CardExecutableTestSupport.h - Compiler executable fixtures -*- C++
+//-*-===//
 
 #ifndef WAFER_UNITTESTS_COMPILER_CARDEXECUTABLETESTSUPPORT_H
 #define WAFER_UNITTESTS_COMPILER_CARDEXECUTABLETESTSUPPORT_H
 
+#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
 #include "Wafer/Planning/Baseline/CardBaselinePlacement.h"
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
-#include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
-#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 #include "Wafer/Program/ProgramData.h"
+#include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Support/OptimizationConfig.h"
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -35,15 +36,16 @@ namespace wafer::compiler::testing {
 
 frontend::ProgramPartitionSlice
 singlePartitionSlice(llvm::ArrayRef<int64_t> shape);
-frontend::ProgramBoundaryBinding
-boundary(int64_t index, llvm::ArrayRef<int64_t> shape);
+frontend::ProgramBoundaryBinding boundary(int64_t index,
+                                          llvm::ArrayRef<int64_t> shape);
 
 frontend::FrontendProgramVerificationResult programMetadata();
 frontend::FrontendProgramVerificationResult branchMetadata();
 frontend::FrontendProgramVerificationResult dependentProgramMetadata();
 frontend::FrontendProgramVerificationResult largeTemporalProgramMetadata();
+frontend::FrontendProgramVerificationResult largeProducerStageProgramMetadata();
 frontend::FrontendProgramVerificationResult
-largeProducerStageProgramMetadata();
+largeTransposedWeightProgramMetadata();
 frontend::FrontendProgramVerificationResult layoutPipelineProgramMetadata();
 frontend::FrontendProgramVerificationResult twoReductionAxisProgramMetadata();
 frontend::FrontendProgramVerificationResult broadcastProgramMetadata();
@@ -64,6 +66,7 @@ ParsedProgram parseDependentProgram();
 ParsedProgram parseThreeStageDependentProgram();
 ParsedProgram parseLargeTemporalProgram();
 ParsedProgram parseLargeProducerStageProgram();
+ParsedProgram parseLargeTransposedWeightProgram();
 ParsedProgram parseLayoutPipelineProgram();
 ParsedProgram parseTwoReductionAxisProgram();
 ParsedProgram parseBroadcastProgram();

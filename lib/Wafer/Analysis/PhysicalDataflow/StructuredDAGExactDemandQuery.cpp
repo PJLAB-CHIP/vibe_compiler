@@ -1034,8 +1034,8 @@ public:
       if (!shard->executionDomain)
         return failOperand(ExactDemandStatus::IndeterminateFailure,
                            "consumer execution shard has no exact domain");
-      IndexSetResult operandSet =
-          operandRelation.get()->image(*shard->executionDomain);
+      IndexSetResult operandSet = imagePrimitiveRectangularDemand(
+          *operandRelation.get(), *shard->executionDomain);
       if (!operandSet.isExact())
         return failOperand(mapIndexRelationStatus(operandSet.status),
                            operandSet.reason);
@@ -1173,10 +1173,15 @@ public:
                 propagationDetail = relation.reason;
                 return mlir::failure();
               }
-              IndexSetResult operandRead = relation.get()->image(delta);
+              IndexSetResult operandRead = imageTensorTransformDemand(
+                  operation, operandNumber, *relation.get(), delta);
               if (!operandRead.isExact()) {
                 propagationStatus = mapIndexRelationStatus(operandRead.status);
-                propagationDetail = operandRead.reason;
+                propagationDetail =
+                    (llvm::Twine("tensor transform ") +
+                     operation->getName().getStringRef() + " operand " +
+                     llvm::Twine(operandNumber) + ": " + operandRead.reason)
+                        .str();
                 return mlir::failure();
               }
               auto read = llvm::find_if(
@@ -1286,18 +1291,15 @@ public:
                             ? IndexRelationStatus::Unsupported
                             : IndexRelationStatus::Invalid,
                         resolution.detail);
-    IndexRelationResult relation =
-        deriveEdgeRelation(*edge, producerType, operandType, *resolution.path);
-    if (!relation.isExact())
-      return failPieces(relation.status, relation.reason);
+    chainCache[edge->id] = *resolution.path;
     analysis::StaticRectangularIndexSetResult destination = IndexSetResult{
         IndexRelationStatus::Exact,
         consumerExecutionDomain,
         {}}.getExactStaticRectangularDomain();
     if (!destination.isExact())
       return failPieces(destination.status, destination.reason);
-    return relation.get()->getExactStaticRectangularImagePieces(
-        destination.domain->offsets, destination.domain->sizes);
+    return imageRectangularDemandPiecesThroughChain(
+        edge->id, destination.domain->offsets, destination.domain->sizes);
   }
 
 private:
@@ -1363,6 +1365,7 @@ private:
       return demandResult(
           ExactDemandStatus::IndeterminateFailure, edge.id,
           "producer-to-consumer tensor chain resolution produced no path");
+    chainCache[edge.id] = *resolution.path;
 
     // Placement-independent relation proof, derived once per edge.
     IndexRelationResult relation = [&]() {
@@ -1382,9 +1385,15 @@ private:
       return demandResult(ExactDemandStatus::IndeterminateFailure, edge.id,
                           "exact demand relation ranks do not meet the trial");
 
+    const std::string edgeDetail =
+        (llvm::Twine("edge=") + llvm::Twine(edge.id) +
+         " producer=" + producer->getName().getStringRef() +
+         " consumer=" + consumer->getName().getStringRef() +
+         " operand=" + llvm::Twine(edge.consumerOperand))
+            .str();
     IndexSetResult demandSet = [&]() {
-      wafer::support::ScopedCompileTimingSpan timing("query", "exact-demand",
-                                                     "image-complete-demand");
+      wafer::support::ScopedCompileTimingSpan timing(
+          "query", "exact-demand", "image-complete-demand", edgeDetail);
       return imageDemand(edge.id, *relation.get(),
                          *consumerTrial.completeIterationDomain);
     }();
@@ -1406,6 +1415,271 @@ private:
   /// immutable per edge during this query's lifetime, and the key is the
   /// domain content itself. The memo never enters legality decisions beyond
   /// the exact image it names.
+  analysis::StaticRectangularIndexSetPiecesResult
+  imageRectangularDemandPiecesThroughChain(
+      StructuredDAGEdgeID edgeId, llvm::ArrayRef<int64_t> destinationOffsets,
+      llvm::ArrayRef<int64_t> destinationSizes) {
+    auto failPieces = [](IndexRelationStatus status, llvm::StringRef reason) {
+      return analysis::StaticRectangularIndexSetPiecesResult{
+          status, {}, reason.str()};
+    };
+    const StructuredDAGEdge *edge = dag.getEdge(edgeId);
+    auto chain = chainCache.find(edgeId);
+    const StructuredDAGNode *consumerNode =
+        edge ? dag.getNode(edge->consumer) : nullptr;
+    auto consumer =
+        consumerNode
+            ? mlir::dyn_cast<mlir::linalg::LinalgOp>(consumerNode->operation)
+            : mlir::linalg::LinalgOp{};
+    if (!edge || chain == chainCache.end() || !consumer ||
+        edge->consumerOperand >= consumer.getIndexingMapsArray().size())
+      return failPieces(IndexRelationStatus::Invalid,
+                        "rectangular chain image has no typed edge");
+
+    auto operandType = mlir::dyn_cast<mlir::RankedTensorType>(
+        consumer->getOperand(edge->consumerOperand).getType());
+    llvm::SmallVector<int64_t, 4> loopShape = consumer.getStaticLoopRanges();
+    if (!operandType || !operandType.hasStaticShape())
+      return failPieces(IndexRelationStatus::Unsupported,
+                        "rectangular chain operand is not static");
+    IndexRelationResult first = IndexRelation::fromAffineMap(
+        consumer.getIndexingMapsArray()[edge->consumerOperand], loopShape,
+        operandType.getShape());
+    if (!first.isExact())
+      return failPieces(first.status, first.reason);
+
+    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> pieces;
+    pieces.push_back(
+        analysis::StaticRectangularIndexSet{llvm::to_vector(destinationOffsets),
+                                            llvm::to_vector(destinationSizes)});
+    {
+      llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> next;
+      for (const analysis::StaticRectangularIndexSet &piece : pieces) {
+        analysis::StaticRectangularIndexSetPiecesResult image =
+            first.get()->getExactStaticRectangularImagePieces(piece.offsets,
+                                                              piece.sizes);
+        if (!image.isExact())
+          return image;
+        next.append(std::move(image.domains));
+      }
+      pieces = std::move(next);
+    }
+    for (auto [operation, sourceOperand] :
+         llvm::zip(llvm::reverse(chain->second.ops),
+                   llvm::reverse(chain->second.sourceOperands))) {
+      IndexRelationResult support =
+          deriveTensorTransformRelation(operation, sourceOperand);
+      if (!support.isExact())
+        return failPieces(support.status, support.reason);
+      llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> next;
+      for (const analysis::StaticRectangularIndexSet &piece : pieces) {
+        analysis::StaticRectangularIndexSetPiecesResult rectangles =
+            imageTensorTransformRectanglePieces(operation, sourceOperand,
+                                                *support.get(), piece);
+        if (!rectangles.isExact())
+          return rectangles;
+        next.append(std::move(rectangles.domains));
+      }
+      pieces = std::move(next);
+    }
+    return analysis::StaticRectangularIndexSetPiecesResult{
+        IndexRelationStatus::Exact, std::move(pieces), {}};
+  }
+
+  IndexSetResult imagePrimitiveRectangularDemand(
+      const IndexRelation &relation,
+      const mlir::presburger::PresburgerSet &domain) {
+    auto emptyImage = [&]() {
+      return IndexSetResult{IndexRelationStatus::Exact,
+                            mlir::presburger::PresburgerSet::getEmpty(
+                                mlir::presburger::PresburgerSpace::getSetSpace(
+                                    relation.getSourceRank())),
+                            {}};
+    };
+    if (domain.isIntegerEmpty())
+      return emptyImage();
+    analysis::StaticRectangularIndexSetResult rectangle = IndexSetResult{
+        IndexRelationStatus::Exact,
+        domain,
+        {}}.getExactStaticRectangularDomain();
+    if (!rectangle.isExact())
+      return IndexSetResult{rectangle.status, std::nullopt, rectangle.reason};
+    analysis::StaticRectangularIndexSetPiecesResult pieces =
+        relation.getExactStaticRectangularImagePieces(rectangle.domain->offsets,
+                                                      rectangle.domain->sizes);
+    if (!pieces.isExact())
+      return IndexSetResult{pieces.status, std::nullopt, pieces.reason};
+    if (pieces.domains.empty())
+      return emptyImage();
+    std::optional<mlir::presburger::PresburgerSet> result;
+    for (const analysis::StaticRectangularIndexSet &piece : pieces.domains) {
+      IndexSetResult set =
+          IndexRelation::staticRectangularDomain(piece.offsets, piece.sizes);
+      if (!set.isExact())
+        return set;
+      result = result ? result->unionSet(*set.set) : *set.set;
+    }
+    if (!result)
+      return IndexSetResult{IndexRelationStatus::Invalid, std::nullopt,
+                            "primitive rectangular image produced no pieces"};
+    return IndexSetResult{IndexRelationStatus::Exact, std::move(result), {}};
+  }
+
+  analysis::StaticRectangularIndexSetPiecesResult
+  imageTensorTransformRectanglePieces(
+      mlir::Operation *operation, unsigned operandNumber,
+      const IndexRelation &relation,
+      const analysis::StaticRectangularIndexSet &rectangle) {
+    auto failPieces = [](IndexRelationStatus status, llvm::StringRef reason) {
+      return analysis::StaticRectangularIndexSetPiecesResult{
+          status, {}, reason.str()};
+    };
+    auto insert = mlir::dyn_cast<mlir::tensor::InsertSliceOp>(operation);
+    auto extract = mlir::dyn_cast<mlir::tensor::ExtractSliceOp>(operation);
+    if (extract && operandNumber == 0 && extract.hasUnitStride()) {
+      auto offsets = resolveConstantIndexes(extract.getMixedOffsets());
+      if (!offsets || offsets->size() != rectangle.offsets.size())
+        return relation.getExactStaticRectangularImagePieces(rectangle.offsets,
+                                                             rectangle.sizes);
+      analysis::StaticRectangularIndexSet result = rectangle;
+      for (size_t dimension = 0; dimension < offsets->size(); ++dimension)
+        if (llvm::AddOverflow(result.offsets[dimension], (*offsets)[dimension],
+                              result.offsets[dimension]))
+          return failPieces(IndexRelationStatus::Invalid,
+                            "extract_slice rectangle bounds overflow");
+      return analysis::StaticRectangularIndexSetPiecesResult{
+          IndexRelationStatus::Exact, {std::move(result)}, {}};
+    }
+    if (!insert || operandNumber > 1)
+      return relation.getExactStaticRectangularImagePieces(rectangle.offsets,
+                                                           rectangle.sizes);
+
+    auto offsets = resolveConstantIndexes(insert.getMixedOffsets());
+    auto sourceType =
+        mlir::dyn_cast<mlir::RankedTensorType>(insert.getSourceType());
+    if (!offsets || !sourceType || !sourceType.hasStaticShape() ||
+        !insert.hasUnitStride())
+      return relation.getExactStaticRectangularImagePieces(rectangle.offsets,
+                                                           rectangle.sizes);
+
+    analysis::StaticRectangularIndexSet overlap;
+    bool hasOverlap = true;
+    for (auto [demandOffset, demandSize, pieceOffset, pieceSize] :
+         llvm::zip_equal(rectangle.offsets, rectangle.sizes, *offsets,
+                         sourceType.getShape())) {
+      int64_t demandLimit = 0;
+      int64_t pieceLimit = 0;
+      if (llvm::AddOverflow(demandOffset, demandSize, demandLimit) ||
+          llvm::AddOverflow(pieceOffset, pieceSize, pieceLimit))
+        return failPieces(IndexRelationStatus::Invalid,
+                          "insert_slice rectangle bounds overflow");
+      const int64_t begin = std::max(demandOffset, pieceOffset);
+      const int64_t end = std::min(demandLimit, pieceLimit);
+      if (begin >= end)
+        hasOverlap = false;
+      overlap.offsets.push_back(begin);
+      overlap.sizes.push_back(std::max<int64_t>(0, end - begin));
+    }
+
+    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> pieces;
+    if (operandNumber == 0) {
+      if (hasOverlap) {
+        for (size_t dimension = 0; dimension < overlap.offsets.size();
+             ++dimension)
+          overlap.offsets[dimension] -= (*offsets)[dimension];
+        pieces.push_back(std::move(overlap));
+      }
+    } else if (!hasOverlap) {
+      pieces.push_back(rectangle);
+    } else {
+      analysis::StaticRectangularIndexSet core = rectangle;
+      for (size_t dimension = 0; dimension < core.offsets.size(); ++dimension) {
+        const int64_t coreBegin = core.offsets[dimension];
+        const int64_t coreEnd = coreBegin + core.sizes[dimension];
+        const int64_t overlapBegin = overlap.offsets[dimension];
+        const int64_t overlapEnd = overlapBegin + overlap.sizes[dimension];
+        if (coreBegin < overlapBegin) {
+          analysis::StaticRectangularIndexSet lower = core;
+          lower.sizes[dimension] = overlapBegin - coreBegin;
+          pieces.push_back(std::move(lower));
+          core.offsets[dimension] = overlapBegin;
+          core.sizes[dimension] = coreEnd - overlapBegin;
+        }
+        if (overlapEnd < coreEnd) {
+          analysis::StaticRectangularIndexSet upper = core;
+          upper.offsets[dimension] = overlapEnd;
+          upper.sizes[dimension] = coreEnd - overlapEnd;
+          pieces.push_back(std::move(upper));
+          core.sizes[dimension] = overlapEnd - core.offsets[dimension];
+        }
+      }
+    }
+
+    return analysis::StaticRectangularIndexSetPiecesResult{
+        IndexRelationStatus::Exact, std::move(pieces), {}};
+  }
+
+  IndexSetResult
+  imageTensorTransformDemand(mlir::Operation *operation, unsigned operandNumber,
+                             const IndexRelation &relation,
+                             const mlir::presburger::PresburgerSet &domain) {
+    if (domain.isIntegerEmpty())
+      return IndexSetResult{IndexRelationStatus::Exact,
+                            mlir::presburger::PresburgerSet::getEmpty(
+                                mlir::presburger::PresburgerSpace::getSetSpace(
+                                    relation.getSourceRank())),
+                            {}};
+    analysis::StaticRectangularIndexSetResult rectangle = IndexSetResult{
+        IndexRelationStatus::Exact,
+        domain,
+        {}}.getExactStaticRectangularDomain();
+    if (!rectangle.isExact())
+      return IndexSetResult{rectangle.status, std::nullopt, rectangle.reason};
+    analysis::StaticRectangularIndexSetPiecesResult pieces =
+        imageTensorTransformRectanglePieces(operation, operandNumber, relation,
+                                            *rectangle.domain);
+    if (!pieces.isExact())
+      return IndexSetResult{pieces.status, std::nullopt, pieces.reason};
+
+    std::optional<mlir::presburger::PresburgerSet> result;
+    for (const analysis::StaticRectangularIndexSet &piece : pieces.domains) {
+      IndexSetResult set =
+          IndexRelation::staticRectangularDomain(piece.offsets, piece.sizes);
+      if (!set.isExact())
+        return set;
+      result = result ? result->unionSet(*set.set) : *set.set;
+    }
+    if (!result)
+      result = mlir::presburger::PresburgerSet::getEmpty(
+          mlir::presburger::PresburgerSpace::getSetSpace(
+              relation.getSourceRank()));
+    return IndexSetResult{IndexRelationStatus::Exact, std::move(result), {}};
+  }
+
+  IndexSetResult
+  imageRectangularDemandThroughChain(StructuredDAGEdgeID edgeId,
+                                     llvm::ArrayRef<int64_t> destinationOffsets,
+                                     llvm::ArrayRef<int64_t> destinationSizes) {
+    analysis::StaticRectangularIndexSetPiecesResult pieces =
+        imageRectangularDemandPiecesThroughChain(edgeId, destinationOffsets,
+                                                 destinationSizes);
+    if (!pieces.isExact())
+      return IndexSetResult{pieces.status, std::nullopt, pieces.reason};
+
+    std::optional<mlir::presburger::PresburgerSet> result;
+    for (const analysis::StaticRectangularIndexSet &piece : pieces.domains) {
+      IndexSetResult set =
+          IndexRelation::staticRectangularDomain(piece.offsets, piece.sizes);
+      if (!set.isExact())
+        return set;
+      result = result ? result->unionSet(*set.set) : *set.set;
+    }
+    if (!result)
+      return IndexSetResult{IndexRelationStatus::Invalid, std::nullopt,
+                            "rectangular chain image produced no pieces"};
+    return IndexSetResult{IndexRelationStatus::Exact, std::move(result), {}};
+  }
+
   IndexSetResult imageDemand(StructuredDAGEdgeID edgeId,
                              const IndexRelation &relation,
                              const mlir::presburger::PresburgerSet &domain) {
@@ -1423,6 +1697,12 @@ private:
       auto cached = rectangularDemandMemo.find(key);
       if (cached != rectangularDemandMemo.end())
         return IndexSetResult{IndexRelationStatus::Exact, cached->second, {}};
+      IndexSetResult chainImage = imageRectangularDemandThroughChain(
+          edgeId, rectangle.domain->offsets, rectangle.domain->sizes);
+      if (chainImage.isExact()) {
+        rectangularDemandMemo.emplace(std::move(key), *chainImage.set);
+        return chainImage;
+      }
       analysis::StaticRectangularIndexSetResult exactImage =
           relation.getExactStaticRectangularImage(rectangle.domain->offsets,
                                                   rectangle.domain->sizes);
@@ -1875,6 +2155,7 @@ private:
   /// Placement-independent relation proofs per edge; the query instance is
   /// bound to one IR epoch and the DAG is immutable during its lifetime.
   std::map<StructuredDAGEdgeID, IndexRelation> relationCache;
+  std::map<StructuredDAGEdgeID, ProducerToConsumerChain> chainCache;
   /// Rectangular demand images by (edge, rectangle content); typed-content
   /// keyed, deterministic, epoch-scoped with the query instance.
   std::map<RectangularDemandKey, mlir::presburger::PresburgerSet>

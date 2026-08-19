@@ -1,8 +1,8 @@
 //===- CompilationTest.cpp - Typed compiler request tests ----------------===//
 
 #include "Wafer/Driver/Compilation.h"
-#include "Wafer/Driver/CompilationResult.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
+#include "Wafer/Driver/CompilationResult.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
 #include "Wafer/Support/CompileTiming.h"
 #include "Wafer/Target/Core/RuntimeLaunchContract.h"
@@ -38,8 +38,8 @@ TEST(CompilationTest, ExecutionConfigSeparatesPartitionsFromTiles) {
        {std::numeric_limits<int64_t>::min(), int64_t{-1}, int64_t{0},
         int64_t{2}, int64_t{8}, int64_t{15}, int64_t{16}, int64_t{17},
         std::numeric_limits<int64_t>::max()}) {
-    auto rejectedConfig = wafer::compiler::ExecutionConfig::createForSingleCard(
-        rejected);
+    auto rejectedConfig =
+        wafer::compiler::ExecutionConfig::createForSingleCard(rejected);
     ASSERT_FALSE(static_cast<bool>(rejectedConfig));
     EXPECT_FALSE(llvm::toString(rejectedConfig.takeError()).empty());
   }
@@ -64,18 +64,14 @@ TEST(CompilationTest, CompilationRequestOwnsSourceAndHasNoImplicitDefaults) {
       !std::is_copy_constructible_v<wafer::compiler::CompilationRequest>);
   static_assert(
       std::is_move_constructible_v<wafer::compiler::CompilationRequest>);
-  static_assert(!std::is_default_constructible_v<
-                wafer::compiler::TileExecutable>);
   static_assert(
-      !std::is_copy_constructible_v<wafer::compiler::TileExecutable>);
+      !std::is_default_constructible_v<wafer::compiler::TileExecutable>);
+  static_assert(!std::is_copy_constructible_v<wafer::compiler::TileExecutable>);
+  static_assert(std::is_move_constructible_v<wafer::compiler::TileExecutable>);
   static_assert(
-      std::is_move_constructible_v<wafer::compiler::TileExecutable>);
-  static_assert(!std::is_default_constructible_v<
-                wafer::compiler::CardExecutable>);
-  static_assert(
-      !std::is_copy_constructible_v<wafer::compiler::CardExecutable>);
-  static_assert(
-      std::is_move_constructible_v<wafer::compiler::CardExecutable>);
+      !std::is_default_constructible_v<wafer::compiler::CardExecutable>);
+  static_assert(!std::is_copy_constructible_v<wafer::compiler::CardExecutable>);
+  static_assert(std::is_move_constructible_v<wafer::compiler::CardExecutable>);
   static_assert(
       !std::is_default_constructible_v<wafer::compiler::TargetLLVMModule>);
   static_assert(
@@ -164,6 +160,7 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteTileKernelDomain) {
 
 TEST(CompilationTest, OptimizationConfigHasExactlySearchAndNonePolicies) {
   wafer::OptimizationConfig search = wafer::OptimizationConfig::search();
+  wafer::OptimizationConfig widerSearch = wafer::OptimizationConfig::search(3);
   wafer::OptimizationConfig none = wafer::OptimizationConfig::none();
 
   EXPECT_TRUE(search.isSearch());
@@ -171,6 +168,10 @@ TEST(CompilationTest, OptimizationConfigHasExactlySearchAndNonePolicies) {
   EXPECT_FALSE(none.isSearch());
   EXPECT_TRUE(none.isNone());
   EXPECT_NE(search, none);
+  EXPECT_NE(search, widerSearch);
+  EXPECT_EQ(search.getMaximumSearchCandidateEvaluations(), 1u);
+  EXPECT_EQ(widerSearch.getMaximumSearchCandidateEvaluations(), 3u);
+  EXPECT_EQ(none.getMaximumSearchCandidateEvaluations(), 0u);
 
   wafer::compiler::CompilationOptions options =
       wafer::compiler::CompilationOptions::standard(none);
@@ -275,8 +276,8 @@ TEST(CompilationTest, CompilationFailureClassifiesStageAndRendersLog) {
 
 TEST(CompilationTest, ExecutablePackageOwnsExactMemberSnapshots) {
   llvm::SmallString<256> temporaryDirectory;
-  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory(
-      "wafer-package-members", temporaryDirectory));
+  ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory("wafer-package-members",
+                                                    temporaryDirectory));
   auto cleanup = llvm::make_scope_exit(
       [&]() { (void)llvm::sys::fs::remove_directories(temporaryDirectory); });
 
@@ -284,7 +285,8 @@ TEST(CompilationTest, ExecutablePackageOwnsExactMemberSnapshots) {
   llvm::SmallString<256> modulesDirectory(temporaryDirectory);
   llvm::sys::path::append(modulesDirectory, "modules");
   ASSERT_FALSE(llvm::sys::fs::create_directories(modulesDirectory));
-  std::string moduleBytes = "\x7f" "ELF-wafer-test-module";
+  std::string moduleBytes = "\x7f"
+                            "ELF-wafer-test-module";
   moduleBytes.resize(32 * 1024, 'm');
   llvm::SmallString<256> modulePath(modulesDirectory);
   llvm::sys::path::append(modulePath, "tile_00000.so");
@@ -311,8 +313,8 @@ TEST(CompilationTest, ExecutablePackageOwnsExactMemberSnapshots) {
   std::string moduleDigest =
       "sha256:" + llvm::toHex(hasher.final(), /*LowerCase=*/true);
 
-  wafer::RuntimeLaunchContract launch = llvm::cantFail(
-      wafer::RuntimeLaunchContract::createKernel(
+  wafer::RuntimeLaunchContract launch =
+      llvm::cantFail(wafer::RuntimeLaunchContract::createKernel(
           wafer::KernelLaunchForm::Grid,
           wafer::KernelEntryABI::TileMajorPointerTable,
           {wafer::RuntimeLaunchPhaseRole::Main}));
@@ -324,9 +326,12 @@ TEST(CompilationTest, ExecutablePackageOwnsExactMemberSnapshots) {
   manifest.tileCount = 16;
   manifest.programData = {
       "data/program-data.bin", 0, 1,
-      "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"};
+      "sha256:"
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"};
   manifest.modules = {
-      {wafer::runtime::ModuleId(0), "modules/tile_00000.so", moduleDigest,
+      {wafer::runtime::ModuleId(0),
+       "modules/tile_00000.so",
+       moduleDigest,
        wafer::kCurrentTargetModuleFormat.str(),
        {{wafer::runtime::PackageModuleExportRole::Main, "main"}}},
   };
@@ -339,9 +344,8 @@ TEST(CompilationTest, ExecutablePackageOwnsExactMemberSnapshots) {
     entry.module = wafer::runtime::ModuleId(0);
     entry.completion =
         wafer::runtime::PackageEntryCompletionKind::ReturnAfterLocalDrain;
-    entry.arguments.push_back(
-        {0, wafer::runtime::WorkspaceArgument{512, 256},
-         wafer::runtime::PackageAccessMode::ReadWrite});
+    entry.arguments.push_back({0, wafer::runtime::WorkspaceArgument{512, 256},
+                               wafer::runtime::PackageAccessMode::ReadWrite});
     entry.transport = wafer::runtime::NoTransportRequirements{};
     manifest.entries.push_back(std::move(entry));
   }
@@ -376,8 +380,7 @@ TEST(CompilationTest, ExecutablePackageOwnsExactMemberSnapshots) {
   const size_t descriptorsBefore = countOpenDescriptors();
   llvm::Expected<wafer::runtime::ExecutablePackage> loaded =
       wafer::runtime::loadExecutablePackage(temporaryDirectory);
-  ASSERT_TRUE(static_cast<bool>(loaded))
-      << llvm::toString(loaded.takeError());
+  ASSERT_TRUE(static_cast<bool>(loaded)) << llvm::toString(loaded.takeError());
   wafer::compiler::ExecutablePackage package = std::move(*loaded);
   EXPECT_EQ(countOpenDescriptors(), descriptorsBefore);
 
@@ -390,13 +393,11 @@ TEST(CompilationTest, ExecutablePackageOwnsExactMemberSnapshots) {
   const std::string mutatedModule(moduleBytes.size(), 'x');
   for (const auto &mutation :
        std::vector<std::pair<llvm::StringRef, llvm::StringRef>>{
-           {modulePath, mutatedModule},
-           {dataPath, "mutated-program-data"}}) {
+           {modulePath, mutatedModule}, {dataPath, "mutated-program-data"}}) {
     std::error_code error;
-    llvm::raw_fd_ostream output(mutation.first, error,
-                                llvm::sys::fs::CD_OpenExisting,
-                                llvm::sys::fs::FA_Write,
-                                llvm::sys::fs::OF_None);
+    llvm::raw_fd_ostream output(
+        mutation.first, error, llvm::sys::fs::CD_OpenExisting,
+        llvm::sys::fs::FA_Write, llvm::sys::fs::OF_None);
     ASSERT_FALSE(error);
     output << mutation.second;
     output.close();

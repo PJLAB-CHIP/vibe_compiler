@@ -2,8 +2,8 @@
 
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
 
-#include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
 #include "Wafer/Driver/CompilationStatistics.h"
+#include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
 #include "Wafer/Planning/Search/CardExecutableSearch.h"
 
 #include "Wafer/Support/CompileTiming.h"
@@ -222,40 +222,39 @@ compileTensorProgramModuleToCardExecutable(
   if (statistics) {
     const detail::CardExecutableLoweringStatistics &exactGates =
         statistics->exactGates;
-    diagnostics << "wafer-compile: compile-stats "
-                   "stage=deterministic-card-executable-baseline"
-                << " wall_ms="
-                << detail::elapsedCompileMilliseconds(compilationStart)
-                << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
-                << " tile_count=" << baseline->executable.tiles.size()
-                << " source_preparations="
-                << statistics->baselineSourcePreparations
-                << " materialization_preparations="
-                << statistics->baselineMaterializationPreparations
-                << " card_program_materializations="
-                << statistics->baselineCardModuleMaterializations
-                << " tile_entry_materializations="
-                << statistics->baselineTileEntryMaterializations
-                << " tile_materialization_workers="
-                << statistics->baselineMaximumTileMaterializationWorkers
-                << " spatial_legalization_transitions="
-                << statistics->spatialLegalizationTransitions
-                << " spatial_coordinate_queries="
-                << statistics->spatialCoordinateQueries
-                << " exact_demand_edges="
-                << statistics->exactDemandSatisfiedEdges
-                << " indeterminate_compilation_failures="
-                << statistics->indeterminateCompilationFailures
-                << " materialization_rejections="
-                << statistics->materializationRejections
-                << " card_executable_compilations="
-                << exactGates.cardModuleCompilationInvocations
-                << " tile_pipeline_workers="
-                << exactGates.maximumTilePipelineWorkers
-                << " tile_ir_prints=" << statistics->baselineTileIRPrints
-                << '\n';
+    diagnostics
+        << "wafer-compile: compile-stats "
+           "stage=deterministic-card-executable-baseline"
+        << " wall_ms=" << detail::elapsedCompileMilliseconds(compilationStart)
+        << " peak_rss_kib=" << detail::getCompilePeakRSSKiB()
+        << " tile_count=" << baseline->executable.tiles.size()
+        << " source_preparations=" << statistics->baselineSourcePreparations
+        << " materialization_preparations="
+        << statistics->baselineMaterializationPreparations
+        << " card_program_materializations="
+        << statistics->baselineCardModuleMaterializations
+        << " tile_entry_materializations="
+        << statistics->baselineTileEntryMaterializations
+        << " tile_materialization_workers="
+        << statistics->baselineMaximumTileMaterializationWorkers
+        << " spatial_legalization_transitions="
+        << statistics->spatialLegalizationTransitions
+        << " spatial_coordinate_queries="
+        << statistics->spatialCoordinateQueries
+        << " exact_demand_edges=" << statistics->exactDemandSatisfiedEdges
+        << " indeterminate_compilation_failures="
+        << statistics->indeterminateCompilationFailures
+        << " materialization_rejections="
+        << statistics->materializationRejections
+        << " card_executable_compilations="
+        << exactGates.cardModuleCompilationInvocations
+        << " tile_pipeline_workers=" << exactGates.maximumTilePipelineWorkers
+        << " tile_ir_prints=" << statistics->baselineTileIRPrints << '\n';
   }
 
+  std::optional<detail::CardExecutableSearchSummary> searchSummary;
+  if (reportDetailedStatistics && optimizations.isSearch())
+    searchSummary.emplace();
   mlir::FailureOr<detail::CardExecutableLoweringResult> selected =
       optimizations.isSearch()
           ? detail::runCardExecutableSearch(
@@ -263,12 +262,34 @@ compileTensorProgramModuleToCardExecutable(
                 std::move(baseline->executable), program, executionConfig,
                 diagnostics, programData,
                 detail::SearchWorkBudget::bounded(
-                    /*evaluations=*/1, /*expansions=*/1),
-                getDefaultWaferTargetPolicy().memory)
+                    optimizations.getMaximumSearchCandidateEvaluations(),
+                    optimizations.getMaximumSearchCandidateEvaluations()),
+                getTargetMemoryPolicy(),
+                searchSummary ? &*searchSummary : nullptr)
           : mlir::FailureOr<detail::CardExecutableLoweringResult>(
                 std::move(baseline->executable));
   if (mlir::failed(selected))
     return fail("card executable search initialization failed");
+  if (searchSummary)
+    diagnostics
+        << "wafer-compile: compile-stats stage=physical-search"
+        << " evaluation_budget="
+        << optimizations.getMaximumSearchCandidateEvaluations()
+        << " generated=" << searchSummary->work.generated
+        << " evaluated=" << searchSummary->work.evaluated
+        << " accepted=" << searchSummary->work.accepted
+        << " exact_rejected=" << searchSummary->work.exactRejected
+        << " indeterminate=" << searchSummary->work.indeterminate
+        << " coverage="
+        << (searchSummary->coverage ==
+                    detail::CardExecutableSearchCoverage::OptimalCertified
+                ? "optimal-certified"
+            : searchSummary->coverage ==
+                    detail::CardExecutableSearchCoverage::FeasibleWithBound
+                ? "feasible-with-bound"
+                : "budgeted-feasible")
+        << " proposal_detail=" << searchSummary->proposalDetail
+        << " last_detail=" << searchSummary->lastDetail << '\n';
   detail::CardExecutableLoweringResult accepted = std::move(*selected);
   assert((optimizations.isNone() || optimizations.isSearch()) &&
          "card executable compilation requires a typed optimization policy");
@@ -276,17 +297,16 @@ compileTensorProgramModuleToCardExecutable(
   if (reportDetailedStatistics)
     printAcceptedInstructionWork(diagnostics, accepted);
 
-  if (requestTileIRTrace &&
-      accepted.tiles.size() != tileDataflowIRTrace.size())
+  if (requestTileIRTrace && accepted.tiles.size() != tileDataflowIRTrace.size())
     return fail("compiler IR trace does not cover the accepted Tile "
                 "domain");
   if (requestTileIRTrace) {
     irTrace.tiles.clear();
     irTrace.tiles.reserve(accepted.tiles.size());
     for (auto [index, tile] : llvm::enumerate(accepted.tiles))
-      irTrace.tiles.push_back(
-          {tile.getCardId(), tile.getTileId(), tile.getLaunchSlotId(),
-           std::move(tileDataflowIRTrace[index])});
+      irTrace.tiles.push_back({tile.getCardId(), tile.getTileId(),
+                               tile.getLaunchSlotId(),
+                               std::move(tileDataflowIRTrace[index])});
   }
 
   std::vector<TileExecutable> tiles = std::move(accepted.tiles);

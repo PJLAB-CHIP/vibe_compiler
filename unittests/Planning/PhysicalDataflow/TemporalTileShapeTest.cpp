@@ -7,10 +7,8 @@
 namespace {
 using namespace wafer::compiler::testing;
 
-TEST(TemporalTileShapeTest,
-     DerivationMakesStrictProgressAcrossAlignedClasses) {
-  const wafer::TargetMemoryPolicy memory =
-      wafer::getDefaultWaferTargetPolicy().memory;
+TEST(TemporalTileShapeTest, DerivationMakesStrictProgressAcrossAlignedClasses) {
+  const wafer::TargetMemoryPolicy memory = wafer::getTargetMemoryPolicy();
 
   // This is the conv-mixed-DAG reduction boundary: 16-way spatial mapping
   // leaves a 1x2 output tile, while the component's large convolution inputs
@@ -31,6 +29,5 @@ TEST(TemporalTileShapeTest,
                 /*additionalWaveRefinements=*/0),
             (llvm::SmallVector<int64_t, 4>{1, 1}));
 }
-
 
 } // namespace

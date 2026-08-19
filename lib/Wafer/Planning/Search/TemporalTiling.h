@@ -4,6 +4,7 @@
 
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/Support/LogicalResult.h"
 
@@ -41,16 +42,21 @@ public:
          std::string *failureReason = nullptr);
 
   TemporalNodeAssignment getFirstAssignment() const;
+  mlir::FailureOr<TemporalNodeAssignment>
+  getCapacityGuidedAssignment(const TargetMemoryPolicy &memory,
+                              std::string *failureReason = nullptr) const;
   mlir::FailureOr<std::optional<TemporalNodeAssignment>>
   getNextAssignment(const TemporalNodeAssignment &assignment) const;
   bool contains(const TemporalNodeAssignment &assignment) const;
 
 private:
-  TemporalNodeDomain(StructuredDAGNodeID node,
+  TemporalNodeDomain(StructuredDAGNodeID node, mlir::Operation *operation,
                      llvm::SmallVector<int64_t, 4> localExtents)
-      : node(node), localExtents(std::move(localExtents)) {}
+      : node(node), operation(operation),
+        localExtents(std::move(localExtents)) {}
 
   StructuredDAGNodeID node;
+  mlir::Operation *operation = nullptr;
   llvm::SmallVector<int64_t, 4> localExtents;
 };
 
@@ -71,6 +77,9 @@ public:
          std::string *failureReason = nullptr);
 
   CardTemporalAssignment getFirstAssignment() const;
+  mlir::FailureOr<CardTemporalAssignment>
+  getCapacityGuidedAssignment(const TargetMemoryPolicy &memory,
+                              std::string *failureReason = nullptr) const;
   mlir::FailureOr<std::optional<CardTemporalAssignment>>
   getNextAssignment(const CardTemporalAssignment &assignment) const;
   bool contains(const CardTemporalAssignment &assignment) const;

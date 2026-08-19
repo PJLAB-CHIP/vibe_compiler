@@ -3,9 +3,9 @@
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -72,10 +72,10 @@ getAddressPreservingShapeViewDeltaBytes(mlir::Operation *op,
   llvm::SmallVector<int64_t, 4> resultStrides;
   int64_t sourceOffset = 0;
   int64_t resultOffset = 0;
-  if (mlir::failed(mlir::getStridesAndOffset(sourceType, sourceStrides,
-                                             sourceOffset)) ||
-      mlir::failed(mlir::getStridesAndOffset(resultType, resultStrides,
-                                             resultOffset)))
+  if (mlir::failed(
+          mlir::getStridesAndOffset(sourceType, sourceStrides, sourceOffset)) ||
+      mlir::failed(
+          mlir::getStridesAndOffset(resultType, resultStrides, resultOffset)))
     return op->emitError()
            << "unsupported_target_address: shape view requires strided "
               "source and result memrefs";
@@ -436,9 +436,8 @@ struct TargetCollapseShapeOpLowering
              << "unsupported_target_address: collapse_shape must preserve "
                 "element count and physical footprint";
 
-    mlir::FailureOr<int64_t> delta =
-        getAddressPreservingShapeViewDeltaBytes(collapseOp, sourceType,
-                                                resultType);
+    mlir::FailureOr<int64_t> delta = getAddressPreservingShapeViewDeltaBytes(
+        collapseOp, sourceType, resultType);
     if (mlir::failed(delta))
       return mlir::failure();
     rewriter.replaceOp(collapseOp,
@@ -492,9 +491,8 @@ struct TargetExpandShapeOpLowering
              << "unsupported_target_address: expand_shape must preserve "
                 "element count and physical footprint";
 
-    mlir::FailureOr<int64_t> delta =
-        getAddressPreservingShapeViewDeltaBytes(expandOp, sourceType,
-                                                resultType);
+    mlir::FailureOr<int64_t> delta = getAddressPreservingShapeViewDeltaBytes(
+        expandOp, sourceType, resultType);
     if (mlir::failed(delta))
       return mlir::failure();
     rewriter.replaceOp(expandOp,

@@ -12,8 +12,8 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileWorkStatistics.h"
-#include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/Core/TargetIdentity.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Passes.h"
 
@@ -276,7 +276,8 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
     return mlir::failure();
   }
 
-  // Every complete candidate enters the Q50.J query/apply boundary after its
+  // Every complete candidate enters the selected instruction-schedule
+  // query/apply boundary after its
   // final stage structure exists and before physical offsets are assigned.
   // The complete search owner may supply another assignment through the same
   // mechanism; this low-level exact gate consumes the canonical first point.
@@ -307,7 +308,7 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
     }
   }
 
-  const TargetMemoryPolicy memory = getDefaultWaferTargetPolicy().memory;
+  const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   SPMMemoryPlanningFailure spmFailure;
   PlanSPMMemoryPassOptions spmOptions;
   spmOptions.spmBase = memory.spmBase;

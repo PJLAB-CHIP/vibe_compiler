@@ -124,6 +124,102 @@ TEST(SingleRootTileRegionTest, MaterializesExactNodeShardsAndEmptyTiles) {
     EXPECT_EQ(relation.structuredNodeId, 7u);
 }
 
+TEST(SingleRootTileRegionTest, CarriesValuesCapturedByStructuredRegions) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
+  func.func @map(%input: tensor<4xf16>) -> tensor<4xf16> {
+    %bias = arith.constant 1.0 : f16
+    %empty = tensor.empty() : tensor<4xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%input : tensor<4xf16>) outs(%empty : tensor<4xf16>) {
+      ^bb0(%value: f16, %unused: f16):
+        %next = arith.addf %value, %bias : f16
+        linalg.yield %next : f16
+    } -> tensor<4xf16>
+    return %result : tensor<4xf16>
+  }
+})mlir")
+                               .str();
+  auto source = parse(*context, sourceText);
+  ASSERT_TRUE(source);
+  mlir::linalg::GenericOp root;
+  source->walk([&](mlir::linalg::GenericOp operation) { root = operation; });
+  ASSERT_TRUE(root);
+  std::array<wafer::StructuredOperationNodeMapping, 1> operationNodes = {
+      wafer::StructuredOperationNodeMapping{root.getOperation(), 1}};
+  std::array<wafer::StructuredNodeIterationShard, 1> shards = {
+      wafer::StructuredNodeIterationShard{1, wafer::TileId(0), {0}, {4}}};
+  std::array<wafer::TileId, 4> tiles = {wafer::TileId(0), wafer::TileId(1),
+                                        wafer::TileId(2), wafer::TileId(3)};
+  mlir::OwningOpRef<mlir::ModuleOp> materialized;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeShardsToCardModule(
+      *source, wafer::CardId(0), tiles, operationNodes, shards, materialized,
+      nullptr, &failureReason)))
+      << failureReason;
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized)));
+  EXPECT_EQ(countOps<mlir::arith::ConstantOp>(materialized->getOperation()),
+            1u);
+}
+
+TEST(SingleRootTileRegionTest,
+     LargeLogicalResultKeepsOnlySelectedWaveBuffersInSPM) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
+  func.func @map(%input: tensor<4096x4096xf16>)
+      -> tensor<4096x4096xf16> {
+    %empty = tensor.empty() : tensor<4096x4096xf16>
+    %result = linalg.map ins(%input : tensor<4096x4096xf16>)
+        outs(%empty : tensor<4096x4096xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    return %result : tensor<4096x4096xf16>
+  }
+})mlir")
+                               .str();
+  auto source = parse(*context, sourceText);
+  ASSERT_TRUE(source);
+  mlir::linalg::MapOp root;
+  source->walk([&](mlir::linalg::MapOp operation) { root = operation; });
+  std::array<wafer::StructuredOperationNodeMapping, 1> operationNodes = {
+      wafer::StructuredOperationNodeMapping{root.getOperation(), 0}};
+  wafer::StructuredNodeShardGroup group;
+  group.shards.push_back(wafer::StructuredNodeIterationShard{
+      0, wafer::TileId(0), {0, 0}, {1024, 4096}});
+  group.temporalTiles.push_back(
+      wafer::StructuredNodeTemporalTile{0, {32, 32}, {0, 1}});
+  std::array<wafer::TileId, 4> tiles = {wafer::TileId(0), wafer::TileId(1),
+                                        wafer::TileId(2), wafer::TileId(3)};
+  mlir::OwningOpRef<mlir::ModuleOp> materialized;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(wafer::lowerStructuredNodeGroupsToCardModule(
+      *source, wafer::CardId(0), tiles, operationNodes,
+      llvm::ArrayRef<wafer::StructuredNodeShardGroup>(group), materialized,
+      nullptr, &failureReason)))
+      << failureReason;
+  llvm::SmallVector<mlir::MemRefType, 4> oversizedSPM;
+  materialized->walk([&](mlir::memref::AllocOp allocation) {
+    auto type = mlir::cast<mlir::MemRefType>(allocation.getType());
+    if (wafer::getWaferMemoryAttr(type).getSpace() != wafer::MemorySpace::SPM)
+      return;
+    uint64_t elements = 1;
+    for (int64_t extent : type.getShape())
+      elements *= static_cast<uint64_t>(extent);
+    if (elements * 2 > 3'000'000)
+      oversizedSPM.push_back(type);
+  });
+  std::string oversizedText;
+  if (!oversizedSPM.empty()) {
+    llvm::raw_string_ostream stream(oversizedText);
+    stream << oversizedSPM.front();
+  }
+  EXPECT_TRUE(oversizedSPM.empty())
+      << "unexpected full logical SPM allocation: " << oversizedText;
+}
+
 TEST(SingleRootTileRegionTest, AppliesClosedMultiAxisPlacement) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
@@ -629,8 +725,9 @@ TEST(SingleRootTileRegionTest,
     });
   });
   EXPECT_EQ(regionsByTile, (llvm::SmallVector<unsigned, 4>{1, 1, 2, 1}));
-  EXPECT_EQ(countOps<wafer::StorageStoreOp>(materialized->module->getOperation()),
-            5u);
+  EXPECT_EQ(
+      countOps<wafer::StorageStoreOp>(materialized->module->getOperation()),
+      5u);
 }
 
 TEST(SingleRootTileRegionTest,

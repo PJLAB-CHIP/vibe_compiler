@@ -10,7 +10,7 @@
 #include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Frontend/Program/Program.h"
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"

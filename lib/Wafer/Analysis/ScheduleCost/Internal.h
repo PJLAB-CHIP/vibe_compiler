@@ -90,10 +90,10 @@ void collectExecutionCost(
     mlir::Operation *root, InstructionProgramCost &cost,
     llvm::function_ref<bool(mlir::Operation *)> includeOperation);
 void collectSPMHighWater(mlir::Operation *root, InstructionProgramCost &cost,
-                         const TargetScheduleCostPolicy &policy);
+                         const TargetMemoryPolicy &policy);
 void collectSPMHighWater(
     mlir::Operation *root, InstructionProgramCost &cost,
-    const TargetScheduleCostPolicy &policy,
+    const TargetMemoryPolicy &policy,
     llvm::function_ref<bool(mlir::Operation *)> includeOperation);
 void collectDDRHighWater(mlir::Operation *root, InstructionProgramCost &cost);
 void collectDDRHighWater(

@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_TEMPORALTILESHAPE_H
 #define WAFER_COMPILER_PLANNING_TEMPORALTILESHAPE_H
 
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"

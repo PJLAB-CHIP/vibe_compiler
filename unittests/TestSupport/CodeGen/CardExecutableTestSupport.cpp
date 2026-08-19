@@ -16,7 +16,6 @@
 #include <limits>
 #include <utility>
 
-
 namespace wafer::compiler::testing {
 
 wafer::frontend::ProgramPartitionSlice
@@ -61,8 +60,7 @@ wafer::frontend::FrontendProgramVerificationResult branchMetadata() {
   return program;
 }
 
-wafer::frontend::FrontendProgramVerificationResult
-dependentProgramMetadata() {
+wafer::frontend::FrontendProgramVerificationResult dependentProgramMetadata() {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 1;
@@ -93,6 +91,17 @@ largeProducerStageProgramMetadata() {
 }
 
 wafer::frontend::FrontendProgramVerificationResult
+largeTransposedWeightProgramMetadata() {
+  wafer::frontend::FrontendProgramVerificationResult program;
+  program.numPartitions = 1;
+  program.programUserInputCount = 2;
+  program.distributedInputs = {boundary(0, {16, 4096}),
+                               boundary(1, {11008, 4096})};
+  program.distributedOutputs = {boundary(0, {16, 11008})};
+  return program;
+}
+
+wafer::frontend::FrontendProgramVerificationResult
 layoutPipelineProgramMetadata() {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
@@ -113,8 +122,7 @@ twoReductionAxisProgramMetadata() {
   return program;
 }
 
-wafer::frontend::FrontendProgramVerificationResult
-broadcastProgramMetadata() {
+wafer::frontend::FrontendProgramVerificationResult broadcastProgramMetadata() {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 1;
@@ -417,6 +425,49 @@ module {
         linalg.yield %next : f16
     } -> tensor<4096x4096xf16>
     return %result : tensor<4096x4096xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(context.get()));
+  return ParsedProgram{std::move(context), std::move(module)};
+}
+
+ParsedProgram parseLargeTransposedWeightProgram() {
+  mlir::DialectRegistry registry;
+  wafer::compiler::detail::registerCompilationDialects(registry);
+  auto context = std::make_shared<mlir::MLIRContext>(registry);
+  context->loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  wafer.target.topology @default
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @default_mesh
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @main(%activation: tensor<16x4096xf16>,
+                  %weight: tensor<11008x4096xf16>)
+      -> tensor<16x11008xf16> {
+    %weight_out = tensor.empty() : tensor<4096x11008xf16>
+    %transposed = linalg.generic {
+        indexing_maps = [affine_map<(d0, d1) -> (d1, d0)>,
+                         affine_map<(d0, d1) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel"]
+      } ins(%weight : tensor<11008x4096xf16>)
+        outs(%weight_out : tensor<4096x11008xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        linalg.yield %value : f16
+    } -> tensor<4096x11008xf16>
+    %zero = arith.constant 0.0 : f16
+    %result_out = tensor.empty() : tensor<16x11008xf16>
+    %init = linalg.fill ins(%zero : f16)
+        outs(%result_out : tensor<16x11008xf16>) -> tensor<16x11008xf16>
+    %result = linalg.matmul
+        ins(%activation, %transposed : tensor<16x4096xf16>,
+             tensor<4096x11008xf16>)
+        outs(%init : tensor<16x11008xf16>) -> tensor<16x11008xf16>
+    return %result : tensor<16x11008xf16>
   }
 }
 )mlir",
@@ -754,19 +805,16 @@ wafer::compiler::ExecutionConfig executionConfig() {
   return *config;
 }
 
-
 void expectCompleteTileDomain(
     const wafer::compiler::detail::CardExecutableLoweringResult &executable,
     llvm::ArrayRef<std::string> tileDataflowIRTrace) {
   ASSERT_EQ(executable.tiles.size(), 16u);
   ASSERT_EQ(tileDataflowIRTrace.size(), executable.tiles.size());
   for (size_t index = 0; index < executable.tiles.size(); ++index) {
-    const wafer::compiler::TileExecutable &tile =
-        executable.tiles[index];
+    const wafer::compiler::TileExecutable &tile = executable.tiles[index];
     llvm::StringRef tileDataflowIR = tileDataflowIRTrace[index];
     EXPECT_EQ(tile.getCardId(), wafer::CardId(0));
-    EXPECT_EQ(tile.getTileId(),
-              wafer::TileId(static_cast<int64_t>(index)));
+    EXPECT_EQ(tile.getTileId(), wafer::TileId(static_cast<int64_t>(index)));
     EXPECT_FALSE(tileDataflowIR.empty());
     EXPECT_NE(tileDataflowIR.find("wafer.tile.region"), llvm::StringRef::npos);
     EXPECT_NE(tileDataflowIR.find("wafer.tile.load"), llvm::StringRef::npos);
@@ -784,11 +832,9 @@ void expectDemandProgramCompletesExecutableGate(
   wafer::compiler::detail::BaselineStatistics baselineStatistics;
   wafer::compiler::ProgramDataHandoff programData;
   std::vector<std::string> tileDataflowIRTrace;
-  auto executable =
-      wafer::compiler::detail::compileCardBaseline(
-          *parsed.module, metadata, executionConfig(), diagnostics, programData,
-          &baselineStatistics, /*tilePipelineParallelism=*/0,
-          &tileDataflowIRTrace);
+  auto executable = wafer::compiler::detail::compileCardBaseline(
+      *parsed.module, metadata, executionConfig(), diagnostics, programData,
+      &baselineStatistics, /*tilePipelineParallelism=*/0, &tileDataflowIRTrace);
   diagnostics.flush();
 
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
@@ -802,6 +848,5 @@ void expectDemandProgramCompletesExecutableGate(
             std::string::npos)
       << diagnosticsText;
 }
-
 
 } // namespace wafer::compiler::testing

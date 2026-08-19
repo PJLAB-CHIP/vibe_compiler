@@ -5,6 +5,8 @@
 #include "Internal.h"
 #include "SingleRootTileRegionInternal.h"
 
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 
@@ -58,6 +60,24 @@ mlir::Value createEmptyTensor(mlir::Type type, mlir::Location loc,
       .getResult();
 }
 
+mlir::Value createDDRTensorDestination(mlir::Type type, mlir::Location loc,
+                                       mlir::OpBuilder &builder) {
+  auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(type);
+  if (!tensor || !tensor.hasStaticShape())
+    return {};
+  auto bufferType = mlir::MemRefType::get(
+      tensor.getShape(), tensor.getElementType(),
+      mlir::MemRefLayoutAttrInterface{},
+      MemoryAttr::get(builder.getContext(), MemorySpace::DDR,
+                      MemLayout::Tensor));
+  auto buffer = builder.create<mlir::memref::AllocOp>(loc, bufferType);
+  return builder
+      .create<mlir::bufferization::ToTensorOp>(loc, buffer.getResult(),
+                                               /*restrict=*/true,
+                                               /*writable=*/true)
+      .getResult();
+}
+
 mlir::LogicalResult composeTileEntry(
     TileModuleOp tile, mlir::func::FuncOp sourceProgram,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
@@ -103,8 +123,12 @@ mlir::LogicalResult composeTileEntry(
       auto value = values.find(key);
       mlir::Value operand =
           value == values.end()
-              ? createEmptyTensor(function.getArgumentTypes()[index],
-                                  function.getLoc(), builder)
+              ? (key.kind == RootValueKind::StructuredResult
+                     ? createDDRTensorDestination(
+                           function.getArgumentTypes()[index],
+                           function.getLoc(), builder)
+                     : createEmptyTensor(function.getArgumentTypes()[index],
+                                         function.getLoc(), builder))
               : value->second;
       if (!operand || operand.getType() != function.getArgumentTypes()[index])
         return failResult(failureReason,
@@ -113,7 +137,11 @@ mlir::LogicalResult composeTileEntry(
     }
     for (unsigned index = stage.boundaries.size();
          index < function.getNumArguments(); ++index) {
-      mlir::Value destination = createEmptyTensor(
+      // A stage result crosses this private fragment boundary. The first
+      // movement assignment is an explicit DDR cut, so its full logical
+      // destination must not become a full-size Tile-local SPM allocation.
+      // Actual wave/shard buffers remain inside the moved TileRegion body.
+      mlir::Value destination = createDDRTensorDestination(
           function.getArgumentTypes()[index], function.getLoc(), builder);
       if (!destination)
         return failResult(failureReason,
@@ -172,9 +200,9 @@ mlir::LogicalResult composeTileEntry(
         if (found != values.end())
           output = found->second;
         if ((!output || output.getType() != resultType)) {
-          auto destination = destinations.find(
-              {RootValueKind::StructuredResult, owner->structuredNodeId,
-               result.getResultNumber()});
+          auto destination = destinations.find({RootValueKind::StructuredResult,
+                                                owner->structuredNodeId,
+                                                result.getResultNumber()});
           if (destination != destinations.end())
             for (mlir::Value candidate : destination->second)
               if (candidate.getType() == resultType) {
@@ -185,7 +213,8 @@ mlir::LogicalResult composeTileEntry(
       }
     }
     if (!output || output.getType() != resultType)
-      output = createEmptyTensor(resultType, sourceProgram.getLoc(), builder);
+      output = createDDRTensorDestination(resultType, sourceProgram.getLoc(),
+                                          builder);
     if (!output || output.getType() != resultType)
       return failResult(failureReason,
                         "Tile entry cannot construct one program output");

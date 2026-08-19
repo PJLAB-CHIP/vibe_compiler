@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/Structured/StructuredOperationTileFootprint.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
+#include "Wafer/Support/CompileTiming.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
@@ -27,8 +28,7 @@ uint64_t saturatingMultiply(uint64_t lhs, uint64_t rhs) {
 bool getStaticRectangle(const mlir::presburger::PresburgerSet &set,
                         llvm::SmallVectorImpl<int64_t> &offsets,
                         llvm::SmallVectorImpl<int64_t> &sizes) {
-  analysis::IndexSetResult exact{analysis::IndexRelationStatus::Exact, set,
-                                 {}};
+  analysis::IndexSetResult exact{analysis::IndexRelationStatus::Exact, set, {}};
   analysis::StaticRectangularIndexSetResult rectangle =
       exact.getExactStaticRectangularDomain();
   if (!rectangle.isExact())
@@ -39,9 +39,10 @@ bool getStaticRectangle(const mlir::presburger::PresburgerSet &set,
   return true;
 }
 
-std::optional<analysis::StaticRectangularIndexSet> intersectRectangles(
-    const analysis::StaticRectangularIndexSet &lhs,
-    llvm::ArrayRef<int64_t> rhsOffsets, llvm::ArrayRef<int64_t> rhsSizes) {
+std::optional<analysis::StaticRectangularIndexSet>
+intersectRectangles(const analysis::StaticRectangularIndexSet &lhs,
+                    llvm::ArrayRef<int64_t> rhsOffsets,
+                    llvm::ArrayRef<int64_t> rhsSizes) {
   if (lhs.offsets.size() != rhsOffsets.size() ||
       lhs.sizes.size() != rhsSizes.size())
     return std::nullopt;
@@ -64,16 +65,19 @@ std::optional<analysis::StaticRectangularIndexSet> intersectRectangles(
   return result;
 }
 
-const analysis::LogicalNodeTrial *findNodeTrial(
-    const analysis::LogicalShardTrial &trial, StructuredDAGNodeID node) {
-  auto found = llvm::find_if(
-      trial.nodes,
-      [&](const analysis::LogicalNodeTrial &entry) { return entry.node == node; });
+const analysis::LogicalNodeTrial *
+findNodeTrial(const analysis::LogicalShardTrial &trial,
+              StructuredDAGNodeID node) {
+  auto found =
+      llvm::find_if(trial.nodes, [&](const analysis::LogicalNodeTrial &entry) {
+        return entry.node == node;
+      });
   return found == trial.nodes.end() ? nullptr : &*found;
 }
 
-const analysis::LogicalTileBinding *findBinding(
-    const analysis::LogicalNodeTrial &trial, TileId tile, unsigned result) {
+const analysis::LogicalTileBinding *
+findBinding(const analysis::LogicalNodeTrial &trial, TileId tile,
+            unsigned result) {
   auto found = llvm::find_if(
       trial.bindings, [&](const analysis::LogicalTileBinding &binding) {
         return binding.tile == tile && binding.resultIndex == result &&
@@ -85,14 +89,14 @@ const analysis::LogicalTileBinding *findBinding(
 bool hasCarrier(const TileMapping &mapping, const StructuredDAGEdge &edge,
                 mlir::Operation *producer, mlir::Operation *consumer,
                 TileId destination) {
-  return llvm::any_of(mapping.edgeStrategies,
-                      [&](const SpatialEdgeStrategy &strategy) {
-                        return strategy.producer == producer &&
-                               strategy.producerResult == edge.producerResult &&
-                               strategy.consumer == consumer &&
-                               strategy.consumerOperand == edge.consumerOperand &&
-                               strategy.destinationTile == destination;
-                      });
+  return llvm::any_of(
+      mapping.edgeStrategies, [&](const SpatialEdgeStrategy &strategy) {
+        return strategy.producer == producer &&
+               strategy.producerResult == edge.producerResult &&
+               strategy.consumer == consumer &&
+               strategy.consumerOperand == edge.consumerOperand &&
+               strategy.destinationTile == destination;
+      });
 }
 
 bool appendOwnedFragments(
@@ -103,47 +107,48 @@ bool appendOwnedFragments(
     const StructuredDAGEdge &edge, unsigned elementBits,
     llvm::ArrayRef<int64_t> producerWaveSizes, int64_t &nextPayloadSlice,
     std::string *failureReason) {
-  auto splitAtWaveBoundaries = [&](
-                                   const analysis::StaticRectangularIndexSet &box) {
-    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> fragments{box};
-    if (box.offsets.size() != producerWaveSizes.size() ||
-        box.sizes.size() != producerWaveSizes.size()) {
-      fragments.clear();
-      return fragments;
-    }
-    for (size_t dimension = 0; dimension < producerWaveSizes.size();
-         ++dimension) {
-      const int64_t wave = producerWaveSizes[dimension];
-      if (wave <= 0) {
-        fragments.clear();
-        return fragments;
-      }
-      llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> next;
-      for (const analysis::StaticRectangularIndexSet &fragment : fragments) {
-        int64_t remaining = fragment.sizes[dimension];
-        int64_t offset = fragment.offsets[dimension];
-        while (remaining > 0) {
-          analysis::StaticRectangularIndexSet part = fragment;
-          const int64_t withinWave = offset % wave;
-          const int64_t size =
-              std::min(remaining, wave - withinWave);
-          part.offsets[dimension] = offset;
-          part.sizes[dimension] = size;
-          next.push_back(std::move(part));
-          if (next.size() > 100000) {
-            next.clear();
-            return next;
-          }
-          offset += size;
-          remaining -= size;
+  auto splitAtWaveBoundaries =
+      [&](const analysis::StaticRectangularIndexSet &box) {
+        llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> fragments{
+            box};
+        if (box.offsets.size() != producerWaveSizes.size() ||
+            box.sizes.size() != producerWaveSizes.size()) {
+          fragments.clear();
+          return fragments;
         }
-      }
-      fragments = std::move(next);
-      if (fragments.empty())
+        for (size_t dimension = 0; dimension < producerWaveSizes.size();
+             ++dimension) {
+          const int64_t wave = producerWaveSizes[dimension];
+          if (wave <= 0) {
+            fragments.clear();
+            return fragments;
+          }
+          llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> next;
+          for (const analysis::StaticRectangularIndexSet &fragment :
+               fragments) {
+            int64_t remaining = fragment.sizes[dimension];
+            int64_t offset = fragment.offsets[dimension];
+            while (remaining > 0) {
+              analysis::StaticRectangularIndexSet part = fragment;
+              const int64_t withinWave = offset % wave;
+              const int64_t size = std::min(remaining, wave - withinWave);
+              part.offsets[dimension] = offset;
+              part.sizes[dimension] = size;
+              next.push_back(std::move(part));
+              if (next.size() > 100000) {
+                next.clear();
+                return next;
+              }
+              offset += size;
+              remaining -= size;
+            }
+          }
+          fragments = std::move(next);
+          if (fragments.empty())
+            return fragments;
+        }
         return fragments;
-    }
-    return fragments;
-  };
+      };
 
   for (const analysis::ExactOwnershipIntersection &intersection :
        destination.ownershipIntersections) {
@@ -158,8 +163,8 @@ bool appendOwnedFragments(
         findBinding(producerTrial, intersection.tile, edge.producerResult);
     llvm::SmallVector<int64_t, 4> ownerOffsets;
     llvm::SmallVector<int64_t, 4> ownerSizes;
-    if (!owner || !getStaticRectangle(*owner->ownedDomain, ownerOffsets,
-                                      ownerSizes)) {
+    if (!owner ||
+        !getStaticRectangle(*owner->ownedDomain, ownerOffsets, ownerSizes)) {
       if (failureReason)
         *failureReason = "producer owner has no finite rectangular domain";
       return false;
@@ -188,8 +193,7 @@ bool appendOwnedFragments(
         }
         uint64_t elements = 1;
         for (int64_t size : waveFragment.sizes)
-          elements =
-              saturatingMultiply(elements, static_cast<uint64_t>(size));
+          elements = saturatingMultiply(elements, static_cast<uint64_t>(size));
         const uint64_t bytes = saturatingMultiply(elements, elementBits / 8);
         if (bytes == 0 || bytes > std::numeric_limits<uint32_t>::max()) {
           if (failureReason)
@@ -238,8 +242,9 @@ bool appendDestinationCarrier(
                                          *destination.consumerExecutionDomain);
   if (!pieces.isExact() || pieces.domains.empty()) {
     if (failureReason)
-      *failureReason = "producer demand has no finite rectangle decomposition: " +
-                       pieces.reason;
+      *failureReason =
+          "producer demand has no finite rectangle decomposition: " +
+          pieces.reason;
     return false;
   }
 
@@ -267,8 +272,8 @@ bool appendDestinationCarrier(
           *failureReason = "producer carrier bounds overflow";
         return false;
       }
-      const int64_t offset =
-          std::min(strategy.producerOffsets[dimension], piece.offsets[dimension]);
+      const int64_t offset = std::min(strategy.producerOffsets[dimension],
+                                      piece.offsets[dimension]);
       const int64_t limit = std::max(currentLimit, pieceLimit);
       strategy.producerOffsets[dimension] = offset;
       strategy.producerSizes[dimension] = limit - offset;
@@ -308,8 +313,8 @@ bool appendEdgeCarriers(TileMapping &mapping,
     return false;
   }
   if (mlir::failed(traceProducerToConsumerChain(
-          producerNode->operation, edge.producerResult,
-          consumerNode->operation, edge.consumerOperand, failureReason)))
+          producerNode->operation, edge.producerResult, consumerNode->operation,
+          edge.consumerOperand, failureReason)))
     return false;
   const analysis::LogicalNodeTrial *producerTrial =
       findNodeTrial(trial, edge.producer);
@@ -329,7 +334,8 @@ bool appendEdgeCarriers(TileMapping &mapping,
   if (!producerType || !producerType.hasStaticShape() || elementBits == 0 ||
       elementBits % 8 != 0) {
     if (failureReason)
-      *failureReason = "producer result is not a static byte-addressable tensor";
+      *failureReason =
+          "producer result is not a static byte-addressable tensor";
     return false;
   }
   analysis::ExactDemandResult demand = query.query(edge.id, trial);
@@ -338,17 +344,19 @@ bool appendEdgeCarriers(TileMapping &mapping,
       *failureReason = "exact producer demand failed: " + demand.detail;
     return false;
   }
-  auto temporal = llvm::find_if(
-      mapping.operationTemporalTiles, [&](const StructuredOpTemporalTile &tile) {
-        return tile.operation == producerNode->operation;
-      });
+  auto temporal =
+      llvm::find_if(mapping.operationTemporalTiles,
+                    [&](const StructuredOpTemporalTile &tile) {
+                      return tile.operation == producerNode->operation;
+                    });
   std::optional<llvm::SmallVector<int64_t, 4>> producerWaveSizes =
       temporal != mapping.operationTemporalTiles.end()
           ? getStructuredResultTileShape(producerNode->operation,
                                          edge.producerResult,
                                          temporal->iteratorTileSizes)
           : std::nullopt;
-  if (!producerWaveSizes || producerWaveSizes->size() != producerType.getRank()) {
+  if (!producerWaveSizes ||
+      producerWaveSizes->size() != producerType.getRank()) {
     if (failureReason)
       *failureReason = "producer edge has no temporal result wave";
     return false;
@@ -356,21 +364,43 @@ bool appendEdgeCarriers(TileMapping &mapping,
   int64_t nextPayloadSlice = 0;
   for (const analysis::ExactDestinationDemand &destination :
        demand.perDestination)
-    if (!appendDestinationCarrier(mapping, edge, producerNode->operation,
-                                  consumerNode->operation, destination,
-                                  *producerTrial, *consumerTrial, query,
-                                  elementBits, *producerWaveSizes,
-                                  nextPayloadSlice, failureReason))
+    if (!appendDestinationCarrier(
+            mapping, edge, producerNode->operation, consumerNode->operation,
+            destination, *producerTrial, *consumerTrial, query, elementBits,
+            *producerWaveSizes, nextPayloadSlice, failureReason))
       return false;
   return true;
 }
 
-mlir::LogicalResult addEdgeCarriers(
-    TileMapping &mapping, const analysis::LogicalShardTrial &trial,
-    const StructuredDAGAnalysis &dag, StructuredDAGExactDemandQuery &query,
-    std::string *failureReason) {
+mlir::LogicalResult addEdgeCarriers(TileMapping &mapping,
+                                    const analysis::LogicalShardTrial &trial,
+                                    const StructuredDAGAnalysis &dag,
+                                    StructuredDAGExactDemandQuery &query,
+                                    std::string *failureReason) {
   for (const StructuredDAGEdge &edge : dag.getEdges())
-    if (!appendEdgeCarriers(mapping, trial, dag, query, edge, failureReason))
+    if ([&]() {
+          const StructuredDAGNode *producer = dag.getNode(edge.producer);
+          const StructuredDAGNode *consumer = dag.getNode(edge.consumer);
+          std::string detail;
+          if (wafer::support::getActiveCompileTimingSession()) {
+            llvm::raw_string_ostream stream(detail);
+            stream << "edge=" << edge.id << " producer=";
+            if (producer && producer->operation)
+              stream << producer->operation->getName();
+            else
+              stream << "missing";
+            stream << " consumer=";
+            if (consumer && consumer->operation)
+              stream << consumer->operation->getName();
+            else
+              stream << "missing";
+          }
+          wafer::support::ScopedCompileTimingSpan timing(
+              "query", "deterministic-baseline", "construct-edge-carrier",
+              detail);
+          return appendEdgeCarriers(mapping, trial, dag, query, edge,
+                                    failureReason);
+        }() == false)
       return mlir::failure();
   return mlir::success();
 }

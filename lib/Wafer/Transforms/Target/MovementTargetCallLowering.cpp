@@ -3,9 +3,9 @@
 #include "Target/LowerInstrToTargetLLVMInternal.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/TargetPolicy.h"
 #include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/TargetConversion.h"
 
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -66,8 +66,7 @@ mlir::LogicalResult FunctionLowering::lowerRDMA(InstrRDMAOp op) {
   appendArrayI32(op.getLoc(), args, op.getSrcStrides());
   appendArrayI32(op.getLoc(), args, op.getSrcIterations());
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(),
-              getTargetCallDescriptor(TargetCallBuiltin::RDMA),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::RDMA),
               args, op.getWorker());
   return mlir::success();
 }
@@ -95,8 +94,7 @@ mlir::LogicalResult FunctionLowering::lowerWDMA(InstrWDMAOp op) {
   appendArrayI32(op.getLoc(), args, op.getDstStrides());
   appendArrayI32(op.getLoc(), args, op.getDstIterations());
   appendI32(op.getLoc(), args, *fmt);
-  emitNCCCall(op.getLoc(),
-              getTargetCallDescriptor(TargetCallBuiltin::WDMA),
+  emitNCCCall(op.getLoc(), getTargetCallDescriptor(TargetCallBuiltin::WDMA),
               args, op.getWorker());
   return mlir::success();
 }
@@ -125,10 +123,9 @@ FunctionLowering::lowerGatherScatter(InstrGatherScatterOp op) {
   appendArrayI32(op.getLoc(), args, op.getSrcIterations());
   appendArrayI32(op.getLoc(), args, op.getDstStrides());
   appendArrayI32(op.getLoc(), args, op.getDstIterations());
-  emitNCCCall(
-      op.getLoc(),
-      getTargetCallDescriptor(TargetCallBuiltin::GatherScatter),
-      args, op.getWorker());
+  emitNCCCall(op.getLoc(),
+              getTargetCallDescriptor(TargetCallBuiltin::GatherScatter), args,
+              op.getWorker());
   return mlir::success();
 }
 
@@ -177,17 +174,15 @@ FunctionLowering::lowerTDMADataMove(InstrTDMADataMoveOp op) {
   appendI32(op.getLoc(), args, *fmt);
 
   if (op.getKind() == InstrDataMoveKind::Pad) {
-    emitNCCCall(
-        op.getLoc(),
-        getTargetCallDescriptor(TargetCallBuiltin::TDMAPad),
-        args, op.getWorker());
+    emitNCCCall(op.getLoc(),
+                getTargetCallDescriptor(TargetCallBuiltin::TDMAPad), args,
+                op.getWorker());
     return mlir::success();
   }
   if (op.getKind() == InstrDataMoveKind::Img2Col) {
-    emitNCCCall(
-        op.getLoc(),
-        getTargetCallDescriptor(TargetCallBuiltin::TDMAImg2Col),
-        args, op.getWorker());
+    emitNCCCall(op.getLoc(),
+                getTargetCallDescriptor(TargetCallBuiltin::TDMAImg2Col), args,
+                op.getWorker());
     return mlir::success();
   }
   llvm_unreachable("transform-like TDMA kinds handled above");

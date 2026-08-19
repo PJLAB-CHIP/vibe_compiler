@@ -2,7 +2,7 @@
 
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
 
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
@@ -22,7 +22,6 @@
 
 namespace wafer::compiler::detail {
 namespace {
-
 
 llvm::Error verifyExportedFunction(const llvm::object::ObjectFile &object,
                                    llvm::StringRef expectedSymbol) {

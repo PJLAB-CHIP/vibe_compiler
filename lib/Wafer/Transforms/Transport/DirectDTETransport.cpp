@@ -2,10 +2,10 @@
 
 #include "Wafer/Transforms/Transport/DirectDTETransport.h"
 
-#include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
+#include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
 #include "Wafer/IR/WaferDialect.h"
-#include "Wafer/Support/TargetPolicy.h"
+#include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/MemoryPlanning/StaticIndexRange.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -361,7 +361,7 @@ resolveSPMRanges(mlir::Operation *op, mlir::Value buffer, int64_t bytes) {
       roots.empty())
     return mlir::failure();
 
-  WaferTargetPolicy policy = getDefaultWaferTargetPolicy();
+  const TargetMemoryPolicy memory = getTargetMemoryPolicy();
   llvm::SmallVector<PhysicalRange, 4> ranges;
   for (mlir::memref::AllocOp allocation : roots) {
     auto rootType = mlir::dyn_cast<mlir::MemRefType>(allocation.getType());
@@ -388,8 +388,7 @@ resolveSPMRanges(mlir::Operation *op, mlir::Value buffer, int64_t bytes) {
         !checkedAdd(spmOffset.getOffset(), rootInfo->physicalBytes, rootEnd))
       return op->emitError(
           "direct_dte_binding: planned SPM range overflows int64");
-    if (start < policy.memory.spmBase || end > policy.memory.spmLimit ||
-        end > rootEnd)
+    if (start < memory.spmBase || end > memory.spmLimit || end > rootEnd)
       return op->emitError(
           "direct_dte_binding: issue range is outside its planned SPM "
           "allocation");
@@ -590,11 +589,9 @@ getStructuredLoopSite(mlir::Operation *issue) {
   return reversedLoops;
 }
 
-static MessageBaseKey makeMessageBaseKey(int64_t tileIndex,
-                                         int64_t peer, DTEMessageAttr message,
-                                         bool isSend) {
-  return std::make_tuple(isSend ? tileIndex : peer,
-                         isSend ? peer : tileIndex,
+static MessageBaseKey makeMessageBaseKey(int64_t tileIndex, int64_t peer,
+                                         DTEMessageAttr message, bool isSend) {
+  return std::make_tuple(isSend ? tileIndex : peer, isSend ? peer : tileIndex,
                          message.getCommunicationId(), message.getRound(),
                          message.getPayloadSlice());
 }
@@ -602,8 +599,7 @@ static MessageBaseKey makeMessageBaseKey(int64_t tileIndex,
 static mlir::LogicalResult
 collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
               llvm::SmallVectorImpl<IssueRecord> &issues) {
-  for (size_t tileIndex = 0;
-       tileIndex < tileModules.size(); ++tileIndex) {
+  for (size_t tileIndex = 0; tileIndex < tileModules.size(); ++tileIndex) {
     mlir::ModuleOp module = tileModules[tileIndex];
     llvm::DenseMap<mlir::Operation *, unsigned> operationIndices;
     module.walk([&](mlir::Block *block) {
@@ -640,8 +636,7 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
       mlir::Value token = send ? send.getToken() : recv.getToken();
       int64_t peer =
           send ? send.getPeerAttr().getInt() : recv.getPeerAttr().getInt();
-      if (peer < 0 ||
-          peer >= static_cast<int64_t>(tileModules.size())) {
+      if (peer < 0 || peer >= static_cast<int64_t>(tileModules.size())) {
         operation->emitError(
             "direct_dte_binding: peer is outside the supplied physical "
             "Tile domain");
@@ -653,8 +648,8 @@ collectIssues(llvm::ArrayRef<mlir::ModuleOp> tileModules,
       DTEMessageAttr message =
           send ? send.getMessageAttr() : recv.getMessageAttr();
       MessageBaseKey messageBase =
-          makeMessageBaseKey(static_cast<int64_t>(tileIndex), peer,
-                             message, static_cast<bool>(send));
+          makeMessageBaseKey(static_cast<int64_t>(tileIndex), peer, message,
+                             static_cast<bool>(send));
       mlir::FailureOr<llvm::SmallVector<StructuredLoopSite, 4>> loopSite =
           getStructuredLoopSite(operation);
       mlir::FailureOr<SPMRangePattern> rangePattern =
@@ -1402,8 +1397,7 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
   for (IssueRecord &issue : issues)
     issueByOperation[issue.operation] = &issue;
 
-  for (size_t tileIndex = 0;
-       tileIndex < tileModules.size(); ++tileIndex) {
+  for (size_t tileIndex = 0; tileIndex < tileModules.size(); ++tileIndex) {
     mlir::ModuleOp module = tileModules[tileIndex];
     llvm::Expected<ExecutableCallClosure> closure =
         analyzeExecutableCallClosure(module);
@@ -1417,8 +1411,8 @@ static mlir::LogicalResult verifyStructuredTransportWaitGraph(
     }
     llvm::DenseSet<mlir::Operation *> transportFunctions =
         findTransportFunctions(*closure, module);
-    StructuredTraceBuilder builder(static_cast<int64_t>(tileIndex),
-                                   module, *closure, transportFunctions,
+    StructuredTraceBuilder builder(static_cast<int64_t>(tileIndex), module,
+                                   *closure, transportFunctions,
                                    issueByOperation, trace);
     if (mlir::failed(builder.build()))
       return mlir::failure();
@@ -1612,8 +1606,8 @@ analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules,
   if (issues.empty())
     return mlir::success();
   if (mlir::failed(verifySenderResources(issues)) ||
-      mlir::failed(verifyStructuredTransportWaitGraph(
-          tileModules, issues, messages, trace)) ||
+      mlir::failed(verifyStructuredTransportWaitGraph(tileModules, issues,
+                                                      messages, trace)) ||
       mlir::failed(allocateReceiverFSMs(issues, trace.receiverConflicts)))
     return mlir::failure();
   return mlir::success();
@@ -1621,13 +1615,12 @@ analyzeDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules,
 
 } // namespace
 
-mlir::LogicalResult verifyDirectDTETransportSchedule(
-    llvm::ArrayRef<mlir::ModuleOp> tileModules) {
+mlir::LogicalResult
+verifyDirectDTETransportSchedule(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
   llvm::SmallVector<IssueRecord, 32> issues;
   llvm::SmallVector<MatchedMessage, 32> messages;
   StructuredTransportTrace trace;
-  return analyzeDirectDTETransport(tileModules, issues, messages,
-                                   trace);
+  return analyzeDirectDTETransport(tileModules, issues, messages, trace);
 }
 
 mlir::FailureOr<TransportContract>
@@ -1635,16 +1628,15 @@ bindDirectDTETransport(llvm::ArrayRef<mlir::ModuleOp> tileModules) {
   llvm::SmallVector<IssueRecord, 32> issues;
   llvm::SmallVector<MatchedMessage, 32> messages;
   StructuredTransportTrace trace;
-  if (mlir::failed(analyzeDirectDTETransport(tileModules, issues,
-                                             messages, trace)))
+  if (mlir::failed(
+          analyzeDirectDTETransport(tileModules, issues, messages, trace)))
     return mlir::failure();
   if (issues.empty())
     return TransportContract::None;
 
   std::map<MessageBaseKey, DynamicMessageStream> streams;
   if (!buildInvariantMessageRepresentatives(issues, streams) &&
-      mlir::failed(
-          buildDynamicMessageStreams(tileModules, issues, streams)))
+      mlir::failed(buildDynamicMessageStreams(tileModules, issues, streams)))
     return mlir::failure();
 
   llvm::SmallVector<std::pair<mlir::Operation *, DirectDTEBindingAttr>, 32>

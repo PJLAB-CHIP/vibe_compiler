@@ -17,6 +17,15 @@ struct UnifiedPhysicalDataflowAssignment {
   CardPhysicalRepresentationAssignment representation;
   CardDataMovementAssignment movement;
   CardBufferingAssignment buffering;
+
+  friend bool operator==(const UnifiedPhysicalDataflowAssignment &lhs,
+                         const UnifiedPhysicalDataflowAssignment &rhs) {
+    return lhs.spatial == rhs.spatial && lhs.coupled == rhs.coupled &&
+           lhs.temporal == rhs.temporal &&
+           lhs.implementation == rhs.implementation &&
+           lhs.representation == rhs.representation &&
+           lhs.movement == rhs.movement && lhs.buffering == rhs.buffering;
+  }
 };
 
 /// Complete dependent Cartesian domain for one immutable TensorProgram root.
@@ -32,6 +41,16 @@ public:
 
   mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
   getFirstAssignment(std::string *failureReason = nullptr) const;
+  /// A deterministic, fully legal proposal that distributes every node over
+  /// the largest participant set admitted by its spatial domain, then uses
+  /// the first assignment of each dependent axis.
+  mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
+  getConstructiveAssignment(std::string *failureReason = nullptr) const;
+  /// Rebuilds the complete dependent suffix after repairing every coupled
+  /// connected component toward legal fusion. This is a proposal only and
+  /// never removes the corresponding exact-domain states.
+  mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
+  getFusionOrientedAssignment(std::string *failureReason = nullptr) const;
   mlir::FailureOr<std::optional<UnifiedPhysicalDataflowAssignment>>
   getNextAssignment(const UnifiedPhysicalDataflowAssignment &assignment,
                     std::string *failureReason = nullptr) const;
@@ -60,7 +79,9 @@ private:
            std::string *failureReason) const;
   mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
   getFirstForSpatial(const CardSpatialPlacementAssignment &assignment,
-                     std::string *failureReason) const;
+                     std::string *failureReason,
+                     bool capacityGuidedTemporal = false,
+                     bool fusionOriented = false) const;
 
   const CardProgramAnalysis &program;
   CardId cardId{0};

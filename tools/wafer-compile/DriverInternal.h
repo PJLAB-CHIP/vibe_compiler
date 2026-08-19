@@ -3,9 +3,9 @@
 #ifndef WAFER_TOOLS_WAFER_COMPILE_DRIVERINTERNAL_H
 #define WAFER_TOOLS_WAFER_COMPILE_DRIVERINTERNAL_H
 
+#include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Driver/CompilationResult.h"
-#include "Wafer/CodeGen/TargetCodeGen.h"
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 #include "Wafer/Model/SystemC/SystemCTargetModel.h"
 #endif
@@ -27,6 +27,7 @@ struct CommandLineOptions {
   std::optional<std::string> numPartitions;
   std::optional<std::string> compilerIRDumpDirectory;
   std::optional<std::string> optimizationPolicy;
+  std::optional<std::string> searchMaximumCandidateEvaluations;
   bool compileTiming = false;
   bool profile = false;
   // The following fields belong to the internal qualification/debug entry

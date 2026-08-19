@@ -222,6 +222,15 @@ TEST_F(SpatialPlacementTest,
   SpatialPlacementAssignment remainder{
       matmul.id, {2, 1, 1}, {TileId(5), TileId(0)}};
   EXPECT_TRUE(domain->contains(remainder));
+
+  SpatialPlacementAssignment constructive =
+      domain->getMaximumParticipantAssignment();
+  EXPECT_TRUE(domain->contains(constructive));
+  EXPECT_EQ(constructive.iteratorFactors,
+            (llvm::SmallVector<uint32_t, 4>{3, 1, 1}));
+  EXPECT_EQ(constructive.tiles,
+            (llvm::SmallVector<TileId, 4>{TileId(0), TileId(2), TileId(5)}));
+  EXPECT_FALSE(constructive.reductionMergeTile);
 }
 
 TEST_F(SpatialPlacementTest, RejectsDuplicateOrOutOfDomainPhysicalEmbeddings) {
@@ -426,14 +435,19 @@ module {
     llvm::SmallVector<TileId, 2> available{TileId(0), TileId(2)};
     auto domain = CardSpatialPlacementDomain::create(*dag, available);
     ASSERT_TRUE(mlir::succeeded(domain));
+    wafer::analysis::IREpoch epoch = wafer::analysis::IREpoch::mint();
+    auto constructive =
+        domain->getConstructiveAssignment(*dag, epoch, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(constructive)) << failureReason;
+    EXPECT_EQ(domain->evaluate(*dag, epoch, *constructive).status,
+              wafer::analysis::ExactDemandStatus::Satisfied);
 
     std::vector<CardSpatialPlacementAssignment> actual;
     std::optional<CardSpatialPlacementAssignment> current =
         domain->getFirstAssignment();
     while (current) {
       actual.push_back(*current);
-      auto evaluation =
-          domain->evaluate(*dag, wafer::analysis::IREpoch::mint(), *current);
+      auto evaluation = domain->evaluate(*dag, epoch, *current);
       EXPECT_EQ(evaluation.status,
                 wafer::analysis::ExactDemandStatus::Satisfied)
           << evaluation.detail;

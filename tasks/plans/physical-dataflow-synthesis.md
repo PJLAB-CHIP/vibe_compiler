@@ -2161,7 +2161,7 @@ Tile SPM/DDR high-water lexicographic替换incumbent。attention graph alternati
 closure；不存在算法专用physical selector。Q50.0 search candidate在stage结构完成后显式进入Q50.J canonical query/apply；baseline不创建
 schedule domain，修复了误接入后scalar baseline从约2秒退化到45秒的问题。
 
-current public `search`由typed policy显式限制一个complete evaluation，coverage返回`BudgetLimited`；这准确表示尚未展开的合法completion，
+current public `search`由typed policy显式限制一个complete evaluation，coverage返回`budgeted-feasible`；这准确表示尚未展开的合法completion，
 不声称最优。Q52继续扩展同一controller的budget、proposal order、profile和coverage对外呈现，不改变Q51合法域。fresh unit证明complete
 assignment source不变、产生16-Tile entry并通过Q50.0；public FP16 search source→package→no-card tool lit 1/1通过。旧search/controller、
 axis-local winner、clone/replay和默认统计零残留。
@@ -2284,6 +2284,68 @@ size、选择策略和 repair budget 必须由 profile 与 small oracle regret �
 - 关闭暂时不改善 incumbent、但需要两步以上协同变换才能进入的 basin。
 
 ### Q52 gate
+
+### 2026-08-19 implementation closure
+
+- hard memory facts now live only in `Target/Core/TargetMemory.h`; exact Instr
+  work analysis consumes those facts only for SPM address-relative high water.
+  Package profile reference rates live with the profile model, while
+  `ScheduleEstimatePolicy` is confined to theoretical ranking. The old
+  `WaferTargetPolicy`, `TargetScheduleCostPolicy`,
+  `TileSearchEffort::{Quick,Default,Deep}`, preferred-size table and
+  candidate/beam caps have no active-code residue.
+- `OptimizationConfig` owns the invocation-local actual-candidate evaluation
+  budget. The production default is one evaluation because the fresh LLaMA
+  profile below shows that one accepted actual candidate already adds about
+  75 seconds of CardModule-to-executable work; the CLI can explicitly request
+  another positive count. `none` neither constructs a search domain nor
+  accepts a search budget. Work/coverage/diagnostic output remains available
+  only with explicit compile timing.
+- the constructive lane first computes the maximum-participant spatial point,
+  reduces the common participant ceiling until exact edge demand is satisfied,
+  then derives capacity-guided temporal waves and rebuilds every dependent
+  domain. It does not silently fall back to the all-single-Tile exact-domain
+  first point. The second proposal destroys one complete connected-component
+  grouping and greedily repairs legal fusion together with representation,
+  movement and buffering. A two-candidate dependent-DAG test proves that this
+  coordinated neighborhood selects an accepted result with lower DDR work
+  than the singleton/baseline path; neither proposal removes its exact-domain
+  sibling.
+- root construction now includes values captured by structured regions.
+  Interleaved disconnected coupled components sort groups at the assignment
+  boundary. Temporal reduction accumulator extracts are allowed to share a
+  private destination only when SSA proves they are DPS-init reads of the op
+  producing the corresponding insert source. Full logical stage destinations
+  are DDR-backed, while only selected shard/wave values occupy SPM. These are
+  general IR/SSA conditions; no model, op-name or shape branch was added.
+- fresh FP16 LLaMA block profile from the same source program recorded a
+  101.35 s accepted baseline, one generated/evaluated/accepted actual search
+  candidate, zero exact/indeterminate failures, and a 212.90 s complete
+  source-to-package transaction with about 3.91 GiB peak RSS. The resulting
+  16-Tile package passed current no-card validation. Coverage is
+  `budgeted-feasible`; this run does not claim a global optimum.
+- current FP16 representative coverage also completed with one accepted
+  actual candidate and no-card for attention prefill (10.99 s), functional
+  KV-cache decode (98.22 s), and convolutional mixed DAG (72.99 s). Decode
+  initially exposed an unbounded generic Presburger image on
+  `matmul -> expand -> insert_slice -> collapse -> batch_matmul`: complete,
+  per-Tile and grouped consumer demand now apply each typed primitive relation
+  to explicit rectangular pieces, with direct exact insert/extract arithmetic.
+  The 16-Tile decode-shaped regression completes in about 80 ms and no
+  workload/shape threshold participates in legality.
+- fresh source build completed; all 795 unit tests passed, lit reported
+  250/250 supported tests passed with the same 5 configured unsupported tests,
+  all four public-link smoke tests passed, and source/IR organization checks
+  passed.
+- the same profile records 24,664 actual TileRegion-to-Instr conversions and
+  32 Tile-local SPM plus 32 Tile-local DDR lifetime analyses across baseline
+  and candidate. Those consumers depend on distinct Tile offsets, tails,
+  endpoints and current operation identity, so Q52 does not cache or replay
+  one Tile's materialized IR into the other 15. Immutable TensorProgram,
+  topology, exact-demand and relation analysis is shared before materializing
+  candidates; Tile-local conversion/planning remains bounded parallel work.
+  A future reduction must first split another future-visible immutable
+  descriptor from Tile-local apply and prove semantic-key completeness.
 
 - small exhaustive oracle 上 exact mode 的 optimum/digest 与 Q51 相同；
 - 每种启发式分别报告 small-oracle regret、真实 workload incumbent 曲线、work、wall 和 RSS；

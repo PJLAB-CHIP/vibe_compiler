@@ -40,7 +40,8 @@ UnifiedPhysicalDataflowDomain::getTrial(
 mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
 UnifiedPhysicalDataflowDomain::getFirstForSpatial(
     const CardSpatialPlacementAssignment &spatialAssignment,
-    std::string *failureReason) const {
+    std::string *failureReason, bool capacityGuidedTemporal,
+    bool fusionOriented) const {
   auto trial = getTrial(spatialAssignment, failureReason);
   if (mlir::failed(trial))
     return mlir::failure();
@@ -52,20 +53,28 @@ UnifiedPhysicalDataflowDomain::getFirstForSpatial(
       CardTemporalDomain::create(program.dag, placements, failureReason);
   if (mlir::failed(coupled) || mlir::failed(temporal))
     return mlir::failure();
-  CoupledRegionAssignment coupledAssignment = coupled->getFirstAssignment();
-  CardTemporalAssignment temporalAssignment = temporal->getFirstAssignment();
+  CoupledRegionAssignment coupledAssignment =
+      fusionOriented ? coupled->getFusionOrientedAssignment()
+                     : coupled->getFirstAssignment();
+  mlir::FailureOr<CardTemporalAssignment> temporalAssignment =
+      capacityGuidedTemporal
+          ? temporal->getCapacityGuidedAssignment(memory, failureReason)
+          : mlir::FailureOr<CardTemporalAssignment>(
+                temporal->getFirstAssignment());
+  if (mlir::failed(temporalAssignment))
+    return mlir::failure();
   CardComputeImplementationAssignment implementationAssignment =
       implementation.getFirstAssignment();
   auto representation = CardPhysicalRepresentationDomain::create(
       program, *trial, *coupled, coupledAssignment, *temporal,
-      temporalAssignment, failureReason);
+      *temporalAssignment, failureReason);
   if (mlir::failed(representation))
     return mlir::failure();
   CardPhysicalRepresentationAssignment representationAssignment =
       representation->getFirstAssignment();
   auto movement = CardDataMovementDomain::create(
       program, cardId, *trial, *coupled, coupledAssignment, *temporal,
-      temporalAssignment, *representation, representationAssignment,
+      *temporalAssignment, *representation, representationAssignment,
       failureReason);
   if (mlir::failed(movement))
     return mlir::failure();
@@ -73,13 +82,13 @@ UnifiedPhysicalDataflowDomain::getFirstForSpatial(
       movement->getFirstAssignment();
   auto buffering = CardBufferingDomain::create(
       program, *trial, *coupled, coupledAssignment, *temporal,
-      temporalAssignment, *representation, representationAssignment, *movement,
+      *temporalAssignment, *representation, representationAssignment, *movement,
       movementAssignment, memory, failureReason);
   if (mlir::failed(buffering))
     return mlir::failure();
   return UnifiedPhysicalDataflowAssignment{spatialAssignment,
                                            std::move(coupledAssignment),
-                                           std::move(temporalAssignment),
+                                           std::move(*temporalAssignment),
                                            std::move(implementationAssignment),
                                            std::move(representationAssignment),
                                            std::move(movementAssignment),
@@ -99,6 +108,29 @@ UnifiedPhysicalDataflowDomain::getFirstAssignment(
       return mlir::failure();
     current = std::move(**next);
   }
+}
+
+mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
+UnifiedPhysicalDataflowDomain::getConstructiveAssignment(
+    std::string *failureReason) const {
+  auto proposal = spatial.getConstructiveAssignment(program.dag, program.epoch,
+                                                    failureReason);
+  if (mlir::failed(proposal))
+    return mlir::failure();
+  return getFirstForSpatial(*proposal, failureReason,
+                            /*capacityGuidedTemporal=*/true);
+}
+
+mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
+UnifiedPhysicalDataflowDomain::getFusionOrientedAssignment(
+    std::string *failureReason) const {
+  auto proposal = spatial.getConstructiveAssignment(program.dag, program.epoch,
+                                                    failureReason);
+  if (mlir::failed(proposal))
+    return mlir::failure();
+  return getFirstForSpatial(*proposal, failureReason,
+                            /*capacityGuidedTemporal=*/true,
+                            /*fusionOriented=*/true);
 }
 
 bool UnifiedPhysicalDataflowDomain::contains(

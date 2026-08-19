@@ -583,6 +583,72 @@ TEST_F(StructuredDAGExactDemandQueryTest,
 }
 
 TEST_F(StructuredDAGExactDemandQueryTest,
+       DecodeCacheInsertAndReshapeUseBoundedRectangularChainImage) {
+  auto module = parse(R"mlir(
+module {
+  func.func @decode(%source: tensor<1x4096xf16>,
+                    %cache: tensor<1x32x1023x128xf16>,
+                    %lhs: tensor<32x1x1024xf16>,
+                    %init: tensor<32x1x128xf16>) -> tensor<32x1x128xf16> {
+    %producer_empty = tensor.empty() : tensor<1x4096xf16>
+    %producer = linalg.map ins(%source : tensor<1x4096xf16>)
+        outs(%producer_empty : tensor<1x4096xf16>) (%value: f16) {
+      linalg.yield %value : f16
+    }
+    %expanded = tensor.expand_shape %producer [[0], [1, 2, 3]]
+        output_shape [1, 32, 1, 128]
+        : tensor<1x4096xf16> into tensor<1x32x1x128xf16>
+    %assembled_empty = tensor.empty() : tensor<1x32x1024x128xf16>
+    %old = tensor.insert_slice %cache into %assembled_empty[0, 0, 0, 0]
+        [1, 32, 1023, 128] [1, 1, 1, 1]
+        : tensor<1x32x1023x128xf16> into tensor<1x32x1024x128xf16>
+    %assembled = tensor.insert_slice %expanded into %old[0, 0, 1023, 0]
+        [1, 32, 1, 128] [1, 1, 1, 1]
+        : tensor<1x32x1x128xf16> into tensor<1x32x1024x128xf16>
+    %rhs = tensor.collapse_shape %assembled [[0, 1], [2], [3]]
+        : tensor<1x32x1024x128xf16> into tensor<32x1024x128xf16>
+    %result = linalg.batch_matmul
+        ins(%lhs, %rhs : tensor<32x1x1024xf16>, tensor<32x1024x128xf16>)
+        outs(%init : tensor<32x1x128xf16>) -> tensor<32x1x128xf16>
+    return %result : tensor<32x1x128xf16>
+  }
+})mlir");
+  ASSERT_TRUE(module);
+  StructuredDAGAnalysis dag = buildDAG(*module);
+  ASSERT_EQ(dag.getNodes().size(), 2u);
+  StructuredDAGEdgeID edge = findEdge(dag, 0, 1);
+  analysis::LogicalShardTrial trial =
+      buildTrial(dag, fullPlacements(dag, 0, {0}));
+
+  StructuredDAGExactDemandQuery query(dag, trial.epoch);
+  analysis::ExactDemandResult result = query.query(edge, trial);
+
+  EXPECT_EQ(result.status, analysis::ExactDemandStatus::Satisfied)
+      << result.detail;
+  expectDemandPoints(result, {{0, 0}, {0, 4095}}, {});
+  analysis::ConsumerInputDemand grouped =
+      query.queryOperand(/*consumer=*/1, /*consumerOperand=*/1, trial);
+  EXPECT_EQ(grouped.status, analysis::ExactDemandStatus::Satisfied)
+      << grouped.detail;
+  ASSERT_EQ(grouped.perDestination.size(), 1u);
+  EXPECT_FALSE(grouped.perDestination.front().steps.empty());
+
+  llvm::SmallVector<TileId, 16> tiles;
+  for (int64_t tile = 0; tile < 16; ++tile)
+    tiles.push_back(TileId(tile));
+  llvm::SmallVector<StructuredDAGNodePlacement, 2> sharded{
+      StructuredDAGNodePlacement{0, {1, 16}, tiles, std::nullopt},
+      StructuredDAGNodePlacement{1, {1, 1, 16, 1}, tiles, std::nullopt}};
+  analysis::LogicalShardTrial shardedTrial = buildTrial(dag, sharded);
+  StructuredDAGExactDemandQuery shardedQuery(dag, shardedTrial.epoch);
+  analysis::ExactDemandResult shardedResult =
+      shardedQuery.query(edge, shardedTrial);
+  EXPECT_EQ(shardedResult.status, analysis::ExactDemandStatus::Satisfied)
+      << shardedResult.detail;
+  EXPECT_EQ(shardedResult.perDestination.size(), 16u);
+}
+
+TEST_F(StructuredDAGExactDemandQueryTest,
        GroupedOperandRecipeRetainsExactEmptyInsertBranches) {
   auto module = parse(kCompleteInsertAssembly);
   StructuredDAGAnalysis dag = buildDAG(*module);
