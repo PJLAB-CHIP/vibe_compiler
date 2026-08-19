@@ -1292,6 +1292,12 @@ current TilingInterface机制；`TensorProgramScope`也从单体`Internal.h`拆�
 `MaterializeFlashAttention`和`MaterializeFlashDecoding` source已在独有SSA proof及online/split actual-root能力迁入并受测后删除，
 没有恢复旧pass、provider、cost prior或字符串key。
 
+Q50.J清理dormant source时发现旧implementation interface仍独有exact pointwise `1/x` reciprocal sibling，已按能力先迁移再删除补入
+current `CardComputeImplementationDomain`：每个structured node默认保留Natural，只有all-parallel、static、identity-output且每个input
+`IndexRelation` exact、scalar body恰有一个`arith.divf 1.0, x`时才增加Reciprocal。query不clone；selected choice随node-shard group进入
+同一次CardModule actual apply，Natural生成Div，Reciprocal生成Recip，apply再次验证exact `1/x`。旧target-capability bool、外部interface
+materializer和dormant source/test已删除；该typed implementation assignment由Q51与其它轴联合选择。
+
 fresh验证覆盖12个Q51 Core/Q50.S定向unit、全部729个C++ unit、轻量FP16 public `search` source-to-16-Tile package/no-card、
 source organization和主构建。
 本checkpoint没有运行重型LLaMA `search`，也没有把Q50.S partial domain提前枚举进普通编译路径；重型search仍等Q50.B–Q50.K与
@@ -1923,6 +1929,32 @@ fresh Q50.C–I/baseline/executable定向unit 87/87、lit 216/216、source/IR or
 
 ## Q50.J：Ready/Order/Worker/Resource Schedule
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  one complete selected physical candidate after Q50.H movement and Q50.I slot materialization, represented as owned canonical unplaced Instr modules
+  for all available Tiles；Q63 completion interface/analysis与current target topology是immutable facts。SPM/DDR offset、DTE binding和stage
+  pipeline尚未物化。
+- Current stage responsibility:
+  对每个current Instr block建立SSA/effect/alias/token/completion hard dependency DAG，惰性枚举全部topological ready order与typed NCC worker
+  assignments；从一个assignment重建query-local pending-event/resource calendar，并把selected order/worker原位应用到同一owned complete
+  candidate，随后fresh重建participant joins。
+- Output IR / files:
+  query输出只在当前unchanged Instr epoch内有效的typed `CardInstructionScheduleAssignment`；apply输出actual operation order、worker attrs及
+  completion joins。event/resource calendar是可销毁analysis result，不写IR attr、sidecar、score或默认统计。
+- Downstream consumer:
+  Q50.K在改变event structure后重新建立本域；Q51 complete-candidate inner closure枚举并选择schedule后调用Q50.0剩余SPM/DDR、transport、
+  resource和ABI gate；Q52才使用calendar work/contension estimate排序。
+- User-level driver / named pipeline:
+  Q51 closure后的public `search` session；baseline保持其canonical worker0/source order，不枚举本域。
+- Explicit non-goals:
+  不clone module、不按priority选local winner、不枚举时间戳/idle、不用nominal bandwidth签发legality，不跨IR epoch保留operation handle，
+  不恢复static capability/profitability registry。
+- Done criteria:
+  tiny independent reference逐点匹配order×worker域；selected apply、mutation失效、Direct-DTE issue/wait、multi-worker join、alias/effect、
+  shared DDR及directed peer-link资源正负例闭合；旧ready-order/worker selector与`TargetSchedulingCapabilityRegistry`整岛删除。
+
 ### 机制
 
 共同state只保存ready choice、resource order、worker、issue/wait和completion等typed assignments。ready/running/completed
@@ -1948,6 +1980,30 @@ current `TargetSchedulingCapabilityRegistry`以稀疏静态row同时表达pair/g
 成为Q50.J的新事实源。hard issue/completion/resource相容性必须来自typed target operation facts、Instr interface/effect及Q63拆层后的
 completion adapter；profitability只属于Q52 profile/estimate。Q50.J接入新event calendar时删除该registry、row table和只验证
 registry closure的专属tests，不增加第二份capability matrix。
+
+### 2026-08-19 完成结果
+
+`CardInstructionScheduleDomain`借用一个complete canonical unplaced Card Instr epoch，按Tile和block建立有限event windows。window只含
+typed Instr event；derived NCC join不进入候选identity，synchronous-writeback、region/call和有effect的非Instr operation形成明确边界。
+hard DAG从transitive SSA、view-root buffer RAW/WAR/WAW、Direct-DTE token/wait及synchronous completion构造。每个window使用惰性的
+lexicographic topological-successor算法枚举全部ready orders，不预存permutation，也不按movement-first priority选winner；每个typed
+NCC issue独立枚举closed ODS worker域，Card assignment是普通order×worker Cartesian product。
+
+domain保存current operation/attr/operand/result-type snapshot；插入、删除、重排、worker/attr或operand/type mutation都会使assignment失效。
+apply消费完整owned Tile module集合，确认同一IR epoch后原位移动operation、设置worker，删除旧derived joins并从current
+SSA/effect/range/completion fresh重建minimum participant joins；失败时owned modules整体销毁，不clone source或暴露部分mutation。
+
+`CardInstructionResourceAnalysis`从selected actual IR重算engine、NCC worker、Tile SPM、card-shared DDR和directed peer-link resource uses；
+Direct-DTE/NCC issue到exact wait/join之间出现disjoint engine work时记录structural overlap witness。shared DDR/link只作为Q52 contention输入，
+不签发legality/profitability，不生成时间戳或shadow calendar。
+
+tiny independent case逐点得到`2! × 3² = 18`个order/worker assignments；fanout得到`2! × 3³ = 54`，same-buffer WAW只保留
+`3² = 9`。actual tests另覆盖epoch invalidation、selected in-place order/worker/join、Direct-DTE issue→independent compute→wait、
+shared DDR和双端同一directed link。旧greedy ReadyOrder、clone-based WorkerPlacement、dormant implementation model及其专属tests删除；
+`TargetSchedulingCapabilityRegistry`、静态row/profitability、IR query adapter和专属tests整岛删除。无默认统计；Q50.K改变event structure后
+必须新建domain。
+fresh Q50.S/H–J/Q63/baseline/lifetime/cost/lowering定向unit 156/156、lit 216/216、target public link、source/IR organization及主构建通过；
+未运行重型LLaMA search。feature-on SystemC transport target已注册，但当前build未启用该feature，未计入通过数。
 
 ### Gate
 

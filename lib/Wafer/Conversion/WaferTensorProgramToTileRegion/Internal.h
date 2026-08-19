@@ -34,6 +34,7 @@
 namespace wafer {
 struct SpatialEdgeFragment;
 struct StructuredNodePhysicalRepresentation;
+struct StructuredNodeComputeImplementation;
 struct SpatialEdgeStrategy;
 } // namespace wafer
 
@@ -316,6 +317,8 @@ public:
       TileRegionEmissionRelations *emissionRelations = nullptr,
       llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
       llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations =
+          {},
+      llvm::ArrayRef<StructuredNodeComputeImplementation> implementations =
           {});
 
   mlir::FailureOr<TileRegionOp> emit(TensorProgramScope scope,
@@ -338,6 +341,11 @@ private:
       structuredNodeIds;
   llvm::DenseMap<uint32_t, SelectedNodeRepresentation> selectedRepresentations;
   bool malformedRepresentations = false;
+  llvm::DenseMap<uint32_t, StructuredComputeImplementation>
+      selectedImplementations;
+  bool malformedImplementations = false;
+  StructuredComputeImplementation activeImplementation =
+      StructuredComputeImplementation::Natural;
   llvm::SmallVector<uint32_t, 2> activeStructuredNodes;
   llvm::DenseMap<mlir::Value, BufferVersions> buffers;
   llvm::DenseMap<mlir::Value, mlir::Value> scalarValues;
@@ -685,7 +693,8 @@ mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     TileRegionEmissionRelations *emissionRelations = nullptr,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     bool requireOneStructuredRootPerRegion = false,
-    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {});
+    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {},
+    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {});
 
 /// In-place form for a function already owned by its final isolated
 /// Card/Tile construction. This avoids manufacturing a synthetic builtin
@@ -700,6 +709,7 @@ mlir::LogicalResult convertTensorProgramToTileRegionFunctionInPlace(
     TileRegionEmissionRelations *emissionRelations = nullptr,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     bool requireOneStructuredRootPerRegion = false,
-    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {});
+    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {},
+    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {});
 
 } // namespace wafer::tensor_program_to_tile_region

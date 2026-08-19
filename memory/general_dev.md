@@ -476,3 +476,21 @@ source program
   switch、op name或target opcode判断。
 - cross-op pending事实由`Analysis/Scheduling/NCCCompletionAnalysis`从current Module重算；结果携per-operation before/after mask，
   只在未变化IR epoch内有效。structured if/for/TileRegion和defined direct call受支持，递归/indirect/unsupported CFG fail closed。
+
+## Instr event/order/worker domain（stable，2026-08-19）
+
+- Q50.J只接受complete canonical unplaced worker0 Instr modules。每个event window的hard DAG来自transitive SSA、view-root buffer
+  RAW/WAR/WAW、DTE token/wait和synchronous completion；topological order与typed worker是完整惰性Cartesian域，不用priority/row表选winner。
+- assignment中的operation handle只在同一query→apply IR epoch有效；domain保存operation order、attrs、operands和result types snapshot，
+  任一mutation后fail closed。apply必须消费owned complete modules，原位设置order/worker并fresh rebuild joins，不clone候选。
+- resource analysis只重算actual engine/worker/SPM/DDR/directed link uses与issue→completion structural overlap。共享资源是Q52 estimate输入，
+  不是legality/profitability表；event structure改变后丢弃domain和analysis全部重建。
+
+## Structured compute implementation choice（stable，2026-08-19）
+
+- implementation是per-structured-node typed assignment，不是target capability bool、external model local winner或BodyEmitter猜测。
+  Natural始终保留；特殊实现只有current structured semantics能完整证明时才进入domain。
+- reciprocal sibling要求all-parallel static generic、identity output map、每个input exact `IndexRelation`且scalar body恰有一个
+  `arith.divf 1.0, x`。selected apply仍在scalar lowering处复验1.0常量，Natural生成Div、Reciprocal生成Recip。
+- node assignment随shard group进入同一次CardModule materialization；recomputed/unowned support node默认Natural。旧implementation donor
+  只有在domain、actual IR和negative proof迁入active source并受测后才能删除。

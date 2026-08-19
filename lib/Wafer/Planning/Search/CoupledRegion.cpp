@@ -2,6 +2,8 @@
 
 #include "Wafer/Planning/Search/CoupledRegion.h"
 
+#include "Wafer/Planning/Search/ComputeImplementation.h"
+
 #include "Wafer/Planning/Search/DataMovement.h"
 #include "Wafer/Planning/Search/DataMovementApply.h"
 #include "Wafer/Planning/Search/PhysicalRepresentation.h"
@@ -393,6 +395,34 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     const CardDataMovementDomain &movementDomain,
     const CardDataMovementAssignment &movementAssignment,
     std::string *failureReason) {
+  auto implementationDomain =
+      CardComputeImplementationDomain::create(program, failureReason);
+  if (mlir::failed(implementationDomain))
+    return mlir::failure();
+  CardComputeImplementationAssignment implementationAssignment =
+      implementationDomain->getFirstAssignment();
+  return materializeCardCoupledRegionsWithImplementations(
+      tensorProgram, program, cardId, trial, domain, assignment, temporalDomain,
+      temporalAssignment, representationDomain, representationAssignment,
+      *implementationDomain, implementationAssignment, movementDomain,
+      movementAssignment, failureReason);
+}
+
+mlir::FailureOr<CardCoupledRegionMaterialization>
+materializeCardCoupledRegionsWithImplementations(
+    mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
+    CardId cardId, const analysis::LogicalShardTrial &trial,
+    const CoupledRegionDomain &domain,
+    const CoupledRegionAssignment &assignment,
+    const CardTemporalDomain &temporalDomain,
+    const CardTemporalAssignment &temporalAssignment,
+    const CardPhysicalRepresentationDomain &representationDomain,
+    const CardPhysicalRepresentationAssignment &representationAssignment,
+    const CardComputeImplementationDomain &implementationDomain,
+    const CardComputeImplementationAssignment &implementationAssignment,
+    const CardDataMovementDomain &movementDomain,
+    const CardDataMovementAssignment &movementAssignment,
+    std::string *failureReason) {
   auto fail = [&](llvm::StringRef message)
       -> mlir::FailureOr<CardCoupledRegionMaterialization> {
     if (failureReason)
@@ -403,6 +433,7 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
       !domain.contains(assignment) ||
       !temporalDomain.contains(temporalAssignment) ||
       !representationDomain.contains(representationAssignment) ||
+      !implementationDomain.contains(implementationAssignment) ||
       !movementDomain.contains(movementAssignment))
     return fail("coupled-region apply received a stale or unknown assignment");
 
@@ -519,6 +550,15 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
             layout.has_value())
           return fail("physical result assignment is incomplete");
       group.representations.push_back(std::move(representation));
+      auto implementation =
+          llvm::find_if(implementationAssignment.nodes,
+                        [&](const ComputeImplementationChoice &candidate) {
+                          return candidate.node == node;
+                        });
+      if (implementation == implementationAssignment.nodes.end())
+        return fail("coupled-region apply lost one compute implementation");
+      group.implementations.push_back(StructuredNodeComputeImplementation{
+          node, implementation->implementation});
     }
     groups.push_back(std::move(group));
   }

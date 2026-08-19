@@ -102,6 +102,7 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
   std::set<std::pair<int64_t, uint32_t>> seenShards;
   std::map<uint32_t, StructuredNodeIterationShardRole> nodeRoles;
   std::map<uint32_t, TileId> reductionMergeTiles;
+  std::map<uint32_t, StructuredComputeImplementation> nodeImplementations;
   std::map<uint32_t, std::pair<llvm::SmallVector<int64_t, 4>,
                                llvm::SmallVector<uint32_t, 4>>>
       nodeTemporalTiles;
@@ -119,6 +120,11 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
       return failResult(
           failureReason,
           "selected representation group does not cover every node shard");
+    if (!group.implementations.empty() &&
+        group.implementations.size() != group.shards.size())
+      return failResult(
+          failureReason,
+          "selected implementation group does not cover every node shard");
     const TileId groupTile = group.shards.front().tile;
     uint32_t previousNode = 0;
     bool firstNode = true;
@@ -187,6 +193,20 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
         return failResult(
             failureReason,
             "selected representation node identity is inconsistent");
+      if (!group.implementations.empty()) {
+        const StructuredNodeComputeImplementation &implementation =
+            group.implementations[index];
+        if (implementation.structuredNodeId != shard.structuredNodeId)
+          return failResult(
+              failureReason,
+              "selected implementation node identity is inconsistent");
+        auto [stored, inserted] = nodeImplementations.try_emplace(
+            shard.structuredNodeId, implementation.implementation);
+        if (!inserted && stored->second != implementation.implementation)
+          return failResult(
+              failureReason,
+              "one structured node has inconsistent implementations");
+      }
     }
     orderedGroups.push_back(&group);
   }
@@ -247,6 +267,9 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
                                       group->representations.empty()
                                           ? nullptr
                                           : &group->representations.front(),
+                                      group->implementations.empty()
+                                          ? nullptr
+                                          : &group->implementations.front(),
                                       failureReason)
             : materializeCoupledRootFragment(tile, operationNodes, *group,
                                              failureReason);

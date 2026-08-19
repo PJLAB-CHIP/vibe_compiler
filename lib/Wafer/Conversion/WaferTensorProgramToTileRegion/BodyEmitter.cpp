@@ -93,7 +93,8 @@ TileRegionBodyEmitter::TileRegionBodyEmitter(
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
     TileRegionEmissionRelations *emissionRelations,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
-    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations)
+    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations,
+    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations)
     : failureReason(failureReason),
       currentLogicalPartition(currentLogicalPartition),
       peerEndpoints(peerEndpoints.begin(), peerEndpoints.end()),
@@ -108,6 +109,13 @@ TileRegionBodyEmitter::TileRegionBodyEmitter(
              .second)
       malformedRepresentations = true;
   }
+  for (const StructuredNodeComputeImplementation &implementation :
+       implementations)
+    if (!selectedImplementations
+             .try_emplace(implementation.structuredNodeId,
+                          implementation.implementation)
+             .second)
+      malformedImplementations = true;
   for (const StructuredOperationNodeMapping &mapping : operationNodes) {
     if (!mapping.operation)
       continue;
@@ -837,6 +845,29 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
       }
     }
 
+    StructuredComputeImplementation implementation =
+        StructuredComputeImplementation::Natural;
+    if (!selectedImplementations.empty()) {
+      if (malformedImplementations) {
+        activeStructuredNodes = std::move(previous);
+        return fail("selected compute implementation has duplicate owners");
+      }
+      bool foundImplementation = false;
+      for (uint32_t current : activeStructuredNodes) {
+        auto selected = selectedImplementations.find(current);
+        StructuredComputeImplementation currentImplementation =
+            selected == selectedImplementations.end()
+                ? StructuredComputeImplementation::Natural
+                : selected->second;
+        if (foundImplementation && implementation != currentImplementation) {
+          activeStructuredNodes = std::move(previous);
+          return fail("structured nodes disagree on compute implementation");
+        }
+        implementation = currentImplementation;
+        foundImplementation = true;
+      }
+    }
+
     struct SavedVersions {
       mlir::Value value;
       std::optional<BufferVersions> versions;
@@ -892,7 +923,11 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
         buffers[operand] = primary;
       }
     }
+    StructuredComputeImplementation previousImplementation =
+        activeImplementation;
+    activeImplementation = implementation;
     mlir::LogicalResult result = convert();
+    activeImplementation = previousImplementation;
     for (const SavedVersions &saved : savedOperands) {
       if (saved.versions)
         buffers[saved.value] = *saved.versions;

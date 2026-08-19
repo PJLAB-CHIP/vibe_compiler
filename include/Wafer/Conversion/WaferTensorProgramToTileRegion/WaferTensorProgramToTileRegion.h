@@ -22,6 +22,11 @@ class Value;
 
 namespace wafer {
 
+enum class StructuredComputeImplementation : uint8_t {
+  Natural,
+  Reciprocal,
+};
+
 /// Query-local relation between a current structured operation and its DAG
 /// node.  Callers remap `operation` with IRMapping whenever they clone an IR
 /// scope; the relation is never encoded in Location or persisted in IR.

@@ -24,6 +24,12 @@ struct StructuredNodePhysicalRepresentation {
   llvm::SmallVector<std::optional<MemLayout>, 2> resultLayouts;
 };
 
+struct StructuredNodeComputeImplementation {
+  uint32_t structuredNodeId = 0;
+  StructuredComputeImplementation implementation =
+      StructuredComputeImplementation::Natural;
+};
+
 /// One already-selected group of node shards that must share one TileRegion.
 /// Every shard names the same physical Tile and a distinct structured node.
 /// Singleton groups are the ordinary single-root representation.
@@ -35,6 +41,9 @@ struct StructuredNodeShardGroup {
   /// Empty before physical-representation selection. A complete selected
   /// group carries exactly one entry for every shard/node.
   llvm::SmallVector<StructuredNodePhysicalRepresentation, 4> representations;
+  /// Empty uses the conservative natural lowering. A complete selected group
+  /// carries exactly one implementation entry for every shard/node.
+  llvm::SmallVector<StructuredNodeComputeImplementation, 4> implementations;
   /// Pure structured producers selected for consumer-local recomputation.
   /// They enter the closure but are not scheduled-node/emission identities.
   llvm::SmallVector<uint32_t, 2> recomputedProducerNodes;

@@ -32,7 +32,9 @@ add_executable(WaferUnitTests
   Planning/Search/CardExecutableSearchTest.cpp
   Planning/Search/BufferingTest.cpp
   Planning/Search/CoupledRegionTest.cpp
+  Planning/Search/ComputeImplementationTest.cpp
   Planning/Search/DataMovementTest.cpp
+  Planning/Search/InstructionScheduleTest.cpp
   Planning/Search/PhysicalRepresentationTest.cpp
   Planning/Search/ScopedFeasibilityTest.cpp
   Planning/Search/SearchControlTest.cpp
@@ -63,7 +65,6 @@ add_executable(WaferUnitTests
   Target/Numeric/NumericSemanticsTest.cpp
   Target/Layout/PhysicalTensorCodecTest.cpp
   Target/Core/TargetFormatTest.cpp
-  Target/Core/TargetSchedulingCapabilityTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
   Transforms/MemoryPlanning/StaticMemoryPackingTest.cpp
@@ -342,6 +343,44 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME WaferSystemCModelIntegrationTest
     COMMAND WaferSystemCModelIntegrationTest)
 
+  add_executable(WaferSystemCModelTransportTest
+    Model/SystemC/SystemCTargetModelTestSupport.cpp
+    Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp
+    Model/SystemC/SystemCTargetModelDTEIntegrationTest.cpp
+    Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp
+    Model/SystemC/SystemCTargetModelDTEMismatchTest.cpp
+    Model/SystemC/SystemCTargetModelDTEPreIssueTest.cpp
+    Model/SystemC/SystemCTargetModelDTEReadinessTest.cpp
+    Model/SystemC/SystemCTargetModelEventFailureTest.cpp
+    Model/SystemC/SystemCTargetModelNCCVisibilityTest.cpp
+    Model/SystemC/SystemCTargetModelNoProgressTest.cpp
+  )
+  llvm_update_compile_flags(WaferSystemCModelTransportTest)
+  target_include_directories(WaferSystemCModelTransportTest PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib
+    ${CMAKE_SOURCE_DIR}/unittests/Model/SystemC
+  )
+  target_link_libraries(WaferSystemCModelTransportTest
+    PRIVATE
+    WaferSystemCModel
+    WaferCompiler
+    WaferIR
+    MLIRArithDialect
+    MLIRBufferizationDialect
+    MLIRControlFlowDialect
+    MLIRFuncDialect
+    MLIRLinalgDialect
+    MLIRLLVMDialect
+    MLIRMathDialect
+    MLIRMemRefDialect
+    MLIRSCFDialect
+    MLIRTensorDialect
+    SystemC::systemc
+    GTest::gtest_main
+  )
+  add_test(NAME WaferSystemCModelTransportTest
+    COMMAND WaferSystemCModelTransportTest)
+
   add_executable(WaferSystemCModelBatchedGemmIntegrationTest
     Model/SystemC/SystemCTargetModelBatchedGemmIntegrationTest.cpp
   )
@@ -400,6 +439,7 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
 
   set_tests_properties(
     WaferSystemCModelIntegrationTest
+    WaferSystemCModelTransportTest
     WaferSystemCModelBatchedGemmIntegrationTest
     WaferSystemCModelOrientedGemmIntegrationTest
     PROPERTIES
@@ -413,12 +453,16 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
       $<TARGET_FILE:WaferSystemCModelIntegrationTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
+      $<TARGET_FILE:WaferSystemCModelTransportTest>
+    COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelBatchedGemmIntegrationTest>
     COMMAND ${CMAKE_COMMAND} -E env
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
       $<TARGET_FILE:WaferSystemCModelOrientedGemmIntegrationTest>
     DEPENDS
       WaferSystemCModelIntegrationTest
+      WaferSystemCModelTransportTest
       WaferSystemCModelBatchedGemmIntegrationTest
       WaferSystemCModelOrientedGemmIntegrationTest
     USES_TERMINAL

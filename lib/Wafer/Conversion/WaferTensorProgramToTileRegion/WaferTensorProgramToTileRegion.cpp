@@ -69,7 +69,8 @@ static mlir::LogicalResult rewriteTensorProgramFunctionInPlace(
     TileRegionEmissionRelations *emissionRelations,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     bool requireOneStructuredRootPerRegion,
-    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations) {
+    llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations,
+    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "conversion-phase", "rewriteTensorProgramInPlace", "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -94,9 +95,10 @@ static mlir::LogicalResult rewriteTensorProgramFunctionInPlace(
   mlir::func::ReturnOp oldReturn = scope.getReturn();
   mlir::IRRewriter rewriter(function.getContext());
   rewriter.setInsertionPoint(oldReturn);
-  TileRegionBodyEmitter emitter(
-      failureReason, currentLogicalPartition, peerEndpoints, selectedDDRStages,
-      emissionRelations, normalizedOperationNodes, representations);
+  TileRegionBodyEmitter emitter(failureReason, currentLogicalPartition,
+                                peerEndpoints, selectedDDRStages,
+                                emissionRelations, normalizedOperationNodes,
+                                representations, implementations);
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "conversion-phase", "rewriteTensorProgramInPlace",
       "TileRegionBodyEmitter::emit");
@@ -167,7 +169,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         TileRegionEmissionRelations *emissionRelations,
         llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
         bool requireOneStructuredRootPerRegion,
-        llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations) {
+        llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations,
+        llvm::ArrayRef<StructuredNodeComputeImplementation> implementations) {
   if (emissionRelations) {
     emissionRelations->selectedDDRStages.clear();
     emissionRelations->materializedBuffers.clear();
@@ -182,12 +185,14 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
     conversionResult = rewriteTensorProgramFunctionInPlace(
         function, functionalArgumentCount, currentLogicalPartition,
         failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
-        operationNodes, requireOneStructuredRootPerRegion, representations);
+        operationNodes, requireOneStructuredRootPerRegion, representations,
+        implementations);
   } else {
     conversionResult = rewriteTensorProgramFunctionInPlace(
         function, functionalArgumentCount, currentLogicalPartition,
         failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
-        operationNodes, requireOneStructuredRootPerRegion, representations);
+        operationNodes, requireOneStructuredRootPerRegion, representations,
+        implementations);
   }
   if (mlir::failed(conversionResult)) {
     if (populateFallbackFailureReason &&
@@ -215,7 +220,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         TileRegionEmissionRelations *emissionRelations,
         llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
         bool requireOneStructuredRootPerRegion,
-        llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations) {
+        llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations,
+        llvm::ArrayRef<StructuredNodeComputeImplementation> implementations) {
   wafer::support::ScopedCompileTimingSpan timing(
       "conversion", "convertTensorProgramToTileRegionModuleInPlace", "total");
   if (!module || context != module.getContext()) {
@@ -239,7 +245,7 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
           failureReason, suppressDiagnostics,
           /*verifyResult=*/false, populateFallbackFailureReason, peerEndpoints,
           selectedDDRStages, emissionRelations, operationNodes,
-          requireOneStructuredRootPerRegion, representations)))
+          requireOneStructuredRootPerRegion, representations, implementations)))
     return mlir::failure();
 
   if (verifyResult) {

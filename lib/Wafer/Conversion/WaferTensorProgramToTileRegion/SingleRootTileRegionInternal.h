@@ -49,6 +49,7 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
     const StructuredNodeIterationShard &shard,
     const StructuredNodeTemporalTile *temporal,
     const StructuredNodePhysicalRepresentation *representation,
+    const StructuredNodeComputeImplementation *implementation,
     std::string *failureReason);
 
 mlir::FailureOr<RootFragment> materializeCoupledRootFragment(

@@ -12,7 +12,6 @@ add_mlir_library(WaferAnalysis
   ScheduleCost/ScheduleCostAnalysis.cpp
   Memory/StaticBufferRange.cpp
   Scheduling/NCCCompletionAnalysis.cpp
-  Scheduling/TargetSchedulingAnalysis.cpp
   Structured/ReductionSemantics.cpp
 
   LINK_LIBS PUBLIC

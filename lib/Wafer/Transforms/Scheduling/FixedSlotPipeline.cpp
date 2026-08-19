@@ -5,7 +5,6 @@
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
-#include "Wafer/Transforms/PhysicalDataflow.h"
 
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -1824,17 +1823,6 @@ deriveStaticFixedSlotPipelineCandidate(mlir::ModuleOp sourceModule,
           failureReason,
           "fixed-slot candidate failed kernel-bound canonicalization");
     eraseSynthesizedPointerPermutations(*candidate);
-  }
-  bool containsDirectDTE = false;
-  candidate->walk([&](mlir::Operation *operation) {
-    containsDirectDTE |=
-        mlir::isa<InstrDTESendOp, InstrDTERecvOp, InstrDTEWaitOp>(operation);
-  });
-  if (containsDirectDTE) {
-    wafer::support::ScopedCompileTimingSpan readyOrderTiming(
-        "optimization-phase", "deriveStaticFixedSlotPipelineCandidate",
-        "scheduleIndependentInstructionsByReadyOrder");
-    scheduleIndependentInstructionsByReadyOrder(candidate->getOperation());
   }
   {
     wafer::support::ScopedCompileTimingSpan normalizeTiming(

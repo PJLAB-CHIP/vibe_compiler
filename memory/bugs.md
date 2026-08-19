@@ -1069,3 +1069,13 @@
 - 防复发：IR/Analysis header不得include TX81 NCC ABI，runtime/model不得include IR completion；新增NCC op必须有interface正例，
   mutation后重建analysis，并用源码搜索保证旧free classifier/switch零残留。Model→Compiler的其它宽link必须按其真实invocation/numeric
   owner拆除，不能为completion复用保留。
+
+## Ready order和worker不能由clone selector或静态capability row决定
+
+- 现象：旧ready-order用固定engine priority直接产出一个顺序，worker placement克隆整个Module后只产出一个lane映射，target registry再用
+  稀疏pair/group row把hard legality与旧profile profitability混在一起；缺row返回Unknown，合法域与实验数据共同决定候选是否存在。
+- 根因：order、worker、completion和resource analysis各有独立owner/winner，且通过clone隔离而不是typed assignment+owned apply表达事务。
+- 修复模式：在complete unplaced Instr epoch上从SSA/effect/alias/token/completion构造hard DAG，惰性枚举全部topological orders与closed worker
+  Cartesian product；apply消费owned modules原位改写并fresh rebuild joins。resource交集与overlap只返回query-local事实，不签发收益或legality。
+- 防复发：tiny DAG与独立reference比较精确assignment数，mutation必须使domain失效；源码中不得恢复priority selector、worker clone、
+  capability/profitability row或默认calendar日志。Q50.K改变event structure后必须重新query Q50.J。

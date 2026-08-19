@@ -26,7 +26,6 @@ add_mlir_library(WaferTarget
   Core/TargetFormat.cpp
   Core/TargetIdentity.cpp
   Core/TargetOperation.cpp
-  Core/TargetSchedulingCapability.cpp
 
   LINK_LIBS PUBLIC
   LLVMSupport

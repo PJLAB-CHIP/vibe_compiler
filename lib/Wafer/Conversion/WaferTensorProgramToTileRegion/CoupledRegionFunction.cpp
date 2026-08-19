@@ -374,7 +374,7 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
           /*populateFallbackFailureReason=*/true,
           /*peerEndpoints=*/{}, /*selectedDDRStages=*/{}, &emissionRelations,
           operationNodes, /*requireOneStructuredRootPerRegion=*/false,
-          group.representations)))
+          group.representations, group.implementations)))
     return mlir::failure();
   result.function = *function;
 

@@ -80,7 +80,7 @@ Pipeline position:
 | M17 / P1 | `PhysicalTensorCodec`为复用IR布局计算会在每次调用创建`MLIRContext`、加载Wafer dialect并构造MemRef/MemoryAttr；pure target codec因此反向依赖MLIR且有重复context成本 | H：抽取pure checked physical-layout calculator作为target事实源，MLIR MemoryAttr/MemRef adapter与codec共同调用；禁止复制布局公式 |
 | M18 / P1 | public compiler/host边界混用`FailureOr + raw_ostream`、`Expected/ErrorInfo`、`LogicalResult + nullable output`和反向`bool`错误约定，调用者难以稳定分类 | G/H：IR pass/verifier使用LogicalResult/FailureOr，host/filesystem/public compiler使用Expected/ErrorInfo或named result；不解析diagnostic字符串控制流程 |
 | M19 / P1 | dialect/extension registry存在`registerAllDialects`只注册Async+Wafer的误导命名，full compiler、wafer-opt、importer和codec各自维护注册组合 | D/G/H：建立Wafer core、importer、compiler external-interface model、target translation等明确registry profile，并由named pipeline/driver复用 |
-| M20 / P1 | `TargetSchedulingCapability` public header、implementation和unit test同时存在，但source/test均未进CMake，也未被18当前dormant表或organization checker覆盖；Execution/Collective topology public surface也存在类似active/dormant错位 | A/H：依18逐项分类并恢复build+test或删除public surface；public declaration不得处于“可include但无link symbol”状态 |
+| M20 / P1 | 历史`TargetSchedulingCapability`曾用静态row混合legality/profitability；旧ready/worker/interface source长期dormant | Q50.J已用current Instr event/resource domain迁移hard dependency/worker/order能力并整岛删除旧registry和dormant source/test |
 | M21 / P1 | source checker虽读取部分CMake，仍维护大规模手写source policy；IR checker的op-family清单缺少execution mesh、多项Move/Compute和主Instruction family，可在ODS/test漂移时假绿 | A/H：active truth从CMake/compile database和TD/generated declarations推导，手写部分只保留policy；用故意缺项fixture验证checker会失败 |
 | M22 / P1 | 单个`WaferUnitTests`链接Compiler、IR、Runtime、Model、Target和大部分conversion/transform，掩盖组件public-header自包含、独立link closure和反向依赖；若干源码树测试从未注册执行 | H：增加按library的header/link smoke target和测试registration mirror；保留聚合测试但不让它代替组件门禁 |
 | M23 / P2 | active自研native pattern数量有限、DRR只有简单Fill、没有PDLL/Transform；这本身不是缺陷，复杂layout/index/resource/region lowering也不适合声明式表达 | F：只迁移确实简单的一对一typed rewrite；为保留C++的复杂pattern记录理由，不设DRR/PDLL/Transform使用配额 |
@@ -130,7 +130,7 @@ plan-then-apply、SystemC ABI bridge和Q42默认快速测试边界均不得因�
 - 依18修正 `check_source_organization.py`：active source必须从CMake事实推导，checker只维护退役/例外政策，不能手抄第二份
   source manifest；CMake source、ODS op、public declaration、test mirror 的增删必须一致；
 - 首先处理M20暴露的public-header/implementation/test三者存在但build/test均未注册的能力；对
-  `TargetSchedulingCapability`、Execution/Collective topology及同类surface逐项决定active或dormant owner，不能只把它们
+  scheduling、Execution/Collective topology及同类surface逐项决定active或dormant owner，不能只把它们
   加进checker allowlist；
 - 依TD/generated declaration补齐IR organization checker的op family推导，至少覆盖execution mesh、完整Move/Compute与Instr
   family；添加缺失CMake source、缺失test registration和遗漏ODS op都会使checker失败的自测；
@@ -564,7 +564,7 @@ baseline package/no-card工具测试3/3，public/feature-off link closure 7/7。
 actual materialization只复制final region所需局部operation，Card→Tile fan-out直接move大型body。region/function probe已经删除，
 selected-buffer apply不再嵌套clone，
 active普通pass不再用root `takeBody`提交。rank/coordinated旧search已经在迁移current-SSA DAG facts、baseline placement closure和
-negative witness后整岛删除；未注册的`Transforms/PhysicalDataflow`、`Scheduling/FixedSlotPipeline`、`WorkerPlacement`仍是明确的
+negative witness后整岛删除；`Scheduling/FixedSlotPipeline`仍是明确的
 旧能力输入，由Q50各axis extract-then-delete，Q64最终核对registration；它们不能被描述成current production，也不能因未链接
 直接当作无能力垃圾删除。
 

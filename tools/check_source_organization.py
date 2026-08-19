@@ -14,10 +14,7 @@ from pathlib import Path
 # The design and deletion gates live in tasks/18-source-organization.md; this
 # list only makes the filesystem/CMake distinction fail closed.
 DORMANT_LIBRARY_SOURCES = {
-    "lib/Wafer/Transforms/PhysicalDataflow/ReadyOrder.cpp": "Q50.J",
-    "lib/Wafer/Transforms/PhysicalDataflow/StructuredOpInterfaceModels.cpp": "Q50.J",
     "lib/Wafer/Transforms/Scheduling/FixedSlotPipeline.cpp": "Q50.K",
-    "lib/Wafer/Transforms/Scheduling/WorkerPlacement.cpp": "Q50.J",
 }
 
 # These translation units are inputs to the explicitly invoked XLA helper
@@ -38,20 +35,7 @@ EXTERNAL_HELPER_SOURCES = {
 }
 
 DORMANT_UNIT_SOURCES = {
-    "unittests/Conversion/CollectiveCompletionTest.cpp": "Q50.H/Q63",
-    "unittests/Transforms/PhysicalDataflow/ReadyOrderTest.cpp": "Q50.J",
     "unittests/Transforms/Scheduling/FixedSlotPipelineTest.cpp": "Q50.K",
-    "unittests/Transforms/Scheduling/WorkerPlacementTest.cpp": "Q50.J",
-    "unittests/Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelDTEIntegrationTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelDTEMismatchTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelDTEPreIssueTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelDTEReadinessTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelEventFailureTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelNCCVisibilityTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelNoProgressTest.cpp": "Q63",
-    "unittests/Model/SystemC/SystemCTargetModelTestSupport.cpp": "Q63",
 }
 
 RETIRED_PATHS = (

@@ -23,6 +23,8 @@ namespace wafer::compiler::detail {
 
 class CardPhysicalRepresentationDomain;
 struct CardPhysicalRepresentationAssignment;
+class CardComputeImplementationDomain;
+struct CardComputeImplementationAssignment;
 class CardDataMovementDomain;
 struct CardDataMovementAssignment;
 
@@ -106,6 +108,22 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     const CardTemporalAssignment &temporalAssignment,
     const CardPhysicalRepresentationDomain &representationDomain,
     const CardPhysicalRepresentationAssignment &representationAssignment,
+    const CardDataMovementDomain &movementDomain,
+    const CardDataMovementAssignment &movementAssignment,
+    std::string *failureReason = nullptr);
+
+mlir::FailureOr<CardCoupledRegionMaterialization>
+materializeCardCoupledRegionsWithImplementations(
+    mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
+    CardId cardId, const analysis::LogicalShardTrial &trial,
+    const CoupledRegionDomain &domain,
+    const CoupledRegionAssignment &assignment,
+    const CardTemporalDomain &temporalDomain,
+    const CardTemporalAssignment &temporalAssignment,
+    const CardPhysicalRepresentationDomain &representationDomain,
+    const CardPhysicalRepresentationAssignment &representationAssignment,
+    const CardComputeImplementationDomain &implementationDomain,
+    const CardComputeImplementationAssignment &implementationAssignment,
     const CardDataMovementDomain &movementDomain,
     const CardDataMovementAssignment &movementAssignment,
     std::string *failureReason = nullptr);

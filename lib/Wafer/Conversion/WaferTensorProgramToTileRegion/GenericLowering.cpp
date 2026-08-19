@@ -355,6 +355,11 @@ mlir::LogicalResult TileRegionBodyEmitter::convertElementwiseScalarOp(
     return createBinary(muli.getLhs(), muli.getRhs(),
                         ComputeElementwiseKind::Mul);
   if (auto divf = mlir::dyn_cast<mlir::arith::DivFOp>(op)) {
+    if (activeImplementation == StructuredComputeImplementation::Reciprocal) {
+      if (!isScalarLikeConstant(generic, divf.getLhs(), 1.0))
+        return fail("selected reciprocal implementation requires exact 1/x");
+      return createUnary(divf.getRhs(), ComputeElementwiseKind::Recip);
+    }
     return createBinary(divf.getLhs(), divf.getRhs(),
                         ComputeElementwiseKind::Div);
   }

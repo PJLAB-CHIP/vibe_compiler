@@ -81,3 +81,5 @@ Pipeline position:
 fresh completion/lifetime/cost/lowering/target定向unit 185/185、lit 216/216、target public-link smoke、主构建及source/IR organization通过。
 `WaferTargetModelCore -> WaferCompiler`的宽link来自model invocation/target JIT与numeric owner，不是completion classification；按
 `tasks/progress.md`由Q62统一拆除，Q63没有为它保留IR completion依赖或复制协议。
+feature-on SystemC DTE/NCC completion/event tests现已注册为`WaferSystemCModelTransportTest`；当前fresh build未启用SystemC，因此不把它们
+计入本轮执行通过数，后续Q53对应feature/board-ready gate负责实际运行。

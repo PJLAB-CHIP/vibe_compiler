@@ -501,6 +501,7 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
     const StructuredNodeIterationShard &shard,
     const StructuredNodeTemporalTile *temporal,
     const StructuredNodePhysicalRepresentation *representation,
+    const StructuredNodeComputeImplementation *implementation,
     std::string *failureReason) {
   auto requested = llvm::find_if(
       sourceOperationNodes, [&](const StructuredOperationNodeMapping &mapping) {
@@ -567,7 +568,11 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
           representation
               ? llvm::ArrayRef<StructuredNodePhysicalRepresentation>(
                     representation, 1)
-              : llvm::ArrayRef<StructuredNodePhysicalRepresentation>{})))
+              : llvm::ArrayRef<StructuredNodePhysicalRepresentation>{},
+          implementation
+              ? llvm::ArrayRef<StructuredNodeComputeImplementation>(
+                    implementation, 1)
+              : llvm::ArrayRef<StructuredNodeComputeImplementation>{})))
     return mlir::failure();
   result.function = *function;
 
