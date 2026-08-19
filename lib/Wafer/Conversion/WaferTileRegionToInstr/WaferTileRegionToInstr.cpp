@@ -793,8 +793,8 @@ private:
     if (mlir::isa<TileYieldOp, mlir::scf::YieldOp>(operation))
       return mlir::success();
 
-    NCCSynchronizationContract contract =
-        getNCCSynchronizationContract(operation);
+    NCCOperationCompletion contract =
+        getNCCOperationCompletion(operation);
     if (contract.issueWorker) {
       uint32_t worker = static_cast<uint32_t>(*contract.issueWorker);
       if (worker >= kNCCWorkerCount)
@@ -825,7 +825,7 @@ private:
         insertNCCJoinAfter(operation, workerMask, state);
     }
 
-    if (contract.behavior == NCCSynchronizationBehavior::ParticipantJoin) {
+    if (contract.kind == NCCCompletionKind::ParticipantJoin) {
       uint32_t requested = contract.participantMask & kAllNCCWorkersMask;
       if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
         uint32_t effective = requested & state.workers;
@@ -841,12 +841,12 @@ private:
       clearSynchronizedWorkers(state, requested);
       return mlir::success();
     }
-    if (contract.behavior == NCCSynchronizationBehavior::SynchronousWriteback) {
+    if (contract.kind == NCCCompletionKind::SynchronousWriteback) {
       clearSynchronizedWorkers(state, contract.participantMask);
       return mlir::success();
     }
-    if (contract.behavior ==
-        NCCSynchronizationBehavior::OrderedAsynchronousIssue)
+    if (contract.kind ==
+        NCCCompletionKind::OrderedAsynchronousIssue)
       return mlir::success();
 
     // A Direct DTE wait observes only its own typed event. It neither consumes

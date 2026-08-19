@@ -5,7 +5,10 @@
 
 def Wafer_SyncNCCJoinOp
     : Wafer_Op<
-          "instr.ncc_join", [MemoryEffects<[MemWrite<Wafer_SyncResource>]>]> {
+          "instr.ncc_join", [
+            DeclareOpInterfaceMethods<WaferNCCCompletionOpInterface>,
+            MemoryEffects<[MemWrite<Wafer_SyncResource>]>
+          ]> {
   let summary = "typed NCC worker-participant completion join";
   let description = [{
     Completes the outstanding NCC issue stream for exactly the canonical,

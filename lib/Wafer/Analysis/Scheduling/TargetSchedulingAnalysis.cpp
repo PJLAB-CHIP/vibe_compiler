@@ -1,6 +1,7 @@
 //===- TargetSchedulingAnalysis.cpp - Scheduling query from Wafer IR ----===//
 
 #include "Wafer/Analysis/Scheduling/TargetSchedulingAnalysis.h"
+#include "Wafer/Analysis/Scheduling/NCCCompletionAnalysis.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"
@@ -93,9 +94,8 @@ analyzeTargetSchedulingWindow(mlir::ModuleOp module,
       }
     }
 
-    NCCSynchronizationContract completion =
-        getNCCSynchronizationContract(operation);
-    if (completion.behavior == NCCSynchronizationBehavior::SynchronousWriteback)
+    NCCOperationCompletion completion = getNCCOperationCompletion(operation);
+    if (completion.kind == NCCCompletionKind::SynchronousWriteback)
       query.observer = TargetSchedulingObserverKind::SynchronousHostWriteback;
 
     for (mlir::Value operand : operation->getOperands())
@@ -111,7 +111,12 @@ analyzeTargetSchedulingWindow(mlir::ModuleOp module,
   if (query.engines == 0)
     return invalid("target scheduling analysis found no typed instruction "
                    "engine");
-  NCCWorkerWindowSummary workerWindows = analyzeNCCWorkerWindows(module);
+  auto completionAnalysis = NCCCompletionAnalysis::create(module);
+  if (mlir::failed(completionAnalysis))
+    return invalid("target scheduling analysis could not derive NCC "
+                   "completion windows");
+  const NCCPendingWorkerSummary &workerWindows =
+      completionAnalysis->getSummary();
 
   if (hasDTE && hasNCC) {
     query.workerRelation = TargetSchedulingWorkerRelation::MixedNCCAndDTE;

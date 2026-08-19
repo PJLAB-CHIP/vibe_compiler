@@ -1056,3 +1056,16 @@
   exact endpoint共享static loop，再原位生成slot family/SSA rotation/phase/release并立即执行fresh SPM planning；不同scope顺序处理。
 - 防复发：删除logical carrier字段和无edge overload；测试必须同时覆盖2/3/4+、tail/capacity、external-write alias hazard、Direct-DTE
   issue/wait、不同loop拒绝与同Tile多scope。query不得clone/lower，统计只在caller显式请求时启用，overlap winner只能由完整search选择。
+
+## NCC completion不能把target ABI、concrete op分类和跨op analysis放在一个IR helper
+
+- 现象：IR public interface header直接include TX81 NCC ABI，一个free concrete-op switch同时特判join、ArgMax/ArgMin和普通issue，
+  pending-worker control-flow分析也住在IR实现文件；target/runtime/model与lifetime/scheduling看似共享合同，实际形成跨层事实源。
+- 根因：把单op语义、target command协议和current-IR派生关系都叫“synchronization contract”，没有让operation interface和analysis
+  lifetime决定owner；新增op只能继续往central switch加case，硬件worker常量也反向进入IR。
+- 修复模式：target worker/mask/kind放pure Target/Core协议；IR worker count从closed ODS enum推导，ordinary issue与特殊completion分别由
+  typed op interface暴露；adapter只组合interface。跨if/for/TileRegion/direct call的pending before/after由Analysis/Scheduling按current
+  Module重算，递归/indirect/unsupported CFG fail closed。
+- 防复发：IR/Analysis header不得include TX81 NCC ABI，runtime/model不得include IR completion；新增NCC op必须有interface正例，
+  mutation后重建analysis，并用源码搜索保证旧free classifier/switch零残留。Model→Compiler的其它宽link必须按其真实invocation/numeric
+  owner拆除，不能为completion复用保留。

@@ -35,8 +35,8 @@ static bool isReadyOrderOperation(mlir::Operation *operation) {
 }
 
 static bool isFailClosedCompletionBoundary(mlir::Operation *operation) {
-  return classifyNCCSynchronizationBehavior(operation) ==
-         NCCSynchronizationBehavior::SynchronousWriteback;
+  return getNCCOperationCompletion(operation).kind ==
+         NCCCompletionKind::SynchronousWriteback;
 }
 
 static bool waitMayReleaseDTESender(mlir::Operation *operation) {
@@ -58,21 +58,21 @@ static bool canReorderCompletionDomains(mlir::Operation *lhs,
       (mlir::isa<InstrDTESendOp>(lhs) && waitMayReleaseDTESender(rhs)))
     return false;
 
-  NCCSynchronizationContract lhsContract = getNCCSynchronizationContract(lhs);
-  NCCSynchronizationContract rhsContract = getNCCSynchronizationContract(rhs);
-  if (lhsContract.behavior ==
-          NCCSynchronizationBehavior::SynchronousWriteback ||
-      rhsContract.behavior == NCCSynchronizationBehavior::SynchronousWriteback)
+  NCCOperationCompletion lhsContract = getNCCOperationCompletion(lhs);
+  NCCOperationCompletion rhsContract = getNCCOperationCompletion(rhs);
+  if (lhsContract.kind ==
+          NCCCompletionKind::SynchronousWriteback ||
+      rhsContract.kind == NCCCompletionKind::SynchronousWriteback)
     return false;
 
-  auto joinAllowsIssue = [](const NCCSynchronizationContract &join,
-                            const NCCSynchronizationContract &issue) {
-    if (join.behavior != NCCSynchronizationBehavior::ParticipantJoin)
+  auto joinAllowsIssue = [](const NCCOperationCompletion &join,
+                            const NCCOperationCompletion &issue) {
+    if (join.kind != NCCCompletionKind::ParticipantJoin)
       return true;
     if (join.participantMask == 0 ||
         (join.participantMask & ~kAllNCCWorkersMask) != 0)
       return false;
-    if (issue.behavior != NCCSynchronizationBehavior::OrderedAsynchronousIssue)
+    if (issue.kind != NCCCompletionKind::OrderedAsynchronousIssue)
       return true;
     if (!issue.issueWorker)
       return false;
@@ -238,7 +238,7 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
       }
     }
 
-    NCCSynchronizationContract contract = getNCCSynchronizationContract(operation);
+    NCCOperationCompletion contract = getNCCOperationCompletion(operation);
     std::optional<unsigned> issueWorker;
     if (contract.issueWorker) {
       unsigned worker = static_cast<unsigned>(*contract.issueWorker);
@@ -250,8 +250,8 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
     }
 
     bool isCompletion =
-        contract.behavior == NCCSynchronizationBehavior::ParticipantJoin ||
-        contract.behavior == NCCSynchronizationBehavior::SynchronousWriteback;
+        contract.kind == NCCCompletionKind::ParticipantJoin ||
+        contract.kind == NCCCompletionKind::SynchronousWriteback;
     if (isCompletion) {
       if (contract.participantMask == 0 ||
           (contract.participantMask & ~kAllNCCWorkersMask) != 0)
@@ -265,7 +265,7 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
         lastWorkerCompletions[worker] = index;
       }
     }
-    if (contract.behavior == NCCSynchronizationBehavior::SynchronousWriteback) {
+    if (contract.kind == NCCCompletionKind::SynchronousWriteback) {
       for (unsigned predecessor = 0; predecessor < index; ++predecessor)
         addEdge(predecessor, index);
       lastFailClosedCompletion = index;
@@ -290,7 +290,7 @@ static unsigned scheduleRun(llvm::ArrayRef<mlir::Operation *> operations) {
       lastWriters[access.value] = index;
     }
 
-    if (contract.behavior == NCCSynchronizationBehavior::OrderedAsynchronousIssue) {
+    if (contract.kind == NCCCompletionKind::OrderedAsynchronousIssue) {
       if (!issueWorker)
         return 0;
       pendingWorkerIssues[*issueWorker].push_back(index);

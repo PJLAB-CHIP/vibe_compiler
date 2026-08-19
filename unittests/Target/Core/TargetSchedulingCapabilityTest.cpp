@@ -1,6 +1,7 @@
 //===- TargetSchedulingCapabilityTest.cpp - Scheduling contract tests ---===//
 
 #include "Wafer/Target/Core/TargetSchedulingCapability.h"
+#include "Wafer/Analysis/Scheduling/NCCCompletionAnalysis.h"
 #include "Wafer/Analysis/Scheduling/TargetSchedulingAnalysis.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -438,8 +439,11 @@ module {
       &context);
   ASSERT_TRUE(module);
 
-  wafer::NCCWorkerWindowSummary windows =
-      wafer::analyzeNCCWorkerWindows(*module);
+  auto completionAnalysis =
+      wafer::analysis::NCCCompletionAnalysis::create(*module);
+  ASSERT_TRUE(mlir::succeeded(completionAnalysis));
+  const wafer::analysis::NCCPendingWorkerSummary &windows =
+      completionAnalysis->getSummary();
   EXPECT_EQ(windows.issuedWorkerMask, UINT32_C(0x3));
   EXPECT_FALSE(windows.hasCrossWorkerWindow);
 

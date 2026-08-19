@@ -577,8 +577,8 @@ module {
       mlir::dyn_cast<wafer::WaferInstructionOpInterface>(fill.getOperation());
   ASSERT_TRUE(fillInstruction);
   EXPECT_EQ(fillInstruction.getInstructionFamily(), wafer::InstrFamily::TDMA);
-  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(fill),
-            wafer::NCCSynchronizationBehavior::OrderedAsynchronousIssue);
+  EXPECT_EQ(wafer::getNCCOperationCompletion(fill).kind,
+            wafer::NCCCompletionKind::OrderedAsynchronousIssue);
   auto fillIssue =
       mlir::dyn_cast<wafer::WaferNCCIssueOpInterface>(fill.getOperation());
   ASSERT_TRUE(fillIssue);
@@ -601,8 +601,8 @@ module {
       maskMove.getOperation());
   ASSERT_TRUE(maskMoveInstruction);
   EXPECT_EQ(maskMoveInstruction.getInstructionFamily(), wafer::InstrFamily::CT);
-  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(maskMove),
-            wafer::NCCSynchronizationBehavior::OrderedAsynchronousIssue);
+  EXPECT_EQ(wafer::getNCCOperationCompletion(maskMove).kind,
+            wafer::NCCCompletionKind::OrderedAsynchronousIssue);
   auto maskMoveIssue =
       mlir::dyn_cast<wafer::WaferNCCIssueOpInterface>(maskMove.getOperation());
   ASSERT_TRUE(maskMoveIssue);
@@ -648,7 +648,7 @@ module {
 }
 
 TEST(WaferInterfacesTest,
-     TypedNCCSynchronizationContractsSeparateIssueAndJoin) {
+     TypedNCCOperationCompletionsSeparateIssueAndJoin) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
@@ -717,31 +717,40 @@ module {
   wafer::SyncNCCJoinOp multiWorkerJoin = joins[0];
   wafer::SyncNCCJoinOp workerZeroJoin = joins[1];
 
-  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(argmax),
-            wafer::NCCSynchronizationBehavior::SynchronousWriteback);
-  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(argmin),
-            wafer::NCCSynchronizationBehavior::SynchronousWriteback);
-  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(bilinear),
-            wafer::NCCSynchronizationBehavior::OrderedAsynchronousIssue);
-  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(multiWorkerJoin),
-            wafer::NCCSynchronizationBehavior::ParticipantJoin);
-  EXPECT_EQ(wafer::classifyNCCSynchronizationBehavior(workerZeroJoin),
-            wafer::NCCSynchronizationBehavior::ParticipantJoin);
+  EXPECT_TRUE(mlir::isa<wafer::WaferNCCCompletionOpInterface>(
+      argmax.getOperation()));
+  EXPECT_TRUE(mlir::isa<wafer::WaferNCCCompletionOpInterface>(
+      argmin.getOperation()));
+  EXPECT_TRUE(mlir::isa<wafer::WaferNCCCompletionOpInterface>(
+      bilinear.getOperation()));
+  EXPECT_TRUE(mlir::isa<wafer::WaferNCCCompletionOpInterface>(
+      multiWorkerJoin.getOperation()));
 
-  wafer::NCCSynchronizationContract argmaxContract =
-      wafer::getNCCSynchronizationContract(argmax);
+  EXPECT_EQ(wafer::getNCCOperationCompletion(argmax).kind,
+            wafer::NCCCompletionKind::SynchronousWriteback);
+  EXPECT_EQ(wafer::getNCCOperationCompletion(argmin).kind,
+            wafer::NCCCompletionKind::SynchronousWriteback);
+  EXPECT_EQ(wafer::getNCCOperationCompletion(bilinear).kind,
+            wafer::NCCCompletionKind::OrderedAsynchronousIssue);
+  EXPECT_EQ(wafer::getNCCOperationCompletion(multiWorkerJoin).kind,
+            wafer::NCCCompletionKind::ParticipantJoin);
+  EXPECT_EQ(wafer::getNCCOperationCompletion(workerZeroJoin).kind,
+            wafer::NCCCompletionKind::ParticipantJoin);
+
+  wafer::NCCOperationCompletion argmaxContract =
+      wafer::getNCCOperationCompletion(argmax);
   ASSERT_TRUE(argmaxContract.issueWorker);
   EXPECT_EQ(*argmaxContract.issueWorker, wafer::NCCWorker::Worker0);
   EXPECT_EQ(argmaxContract.participantMask, uint32_t{1});
 
-  wafer::NCCSynchronizationContract joinContract =
-      wafer::getNCCSynchronizationContract(multiWorkerJoin);
+  wafer::NCCOperationCompletion joinContract =
+      wafer::getNCCOperationCompletion(multiWorkerJoin);
   EXPECT_FALSE(joinContract.issueWorker);
   EXPECT_EQ(joinContract.participantMask,
             (uint32_t{1} << 0) | (uint32_t{1} << 2));
 
-  wafer::NCCSynchronizationContract workerZeroContract =
-      wafer::getNCCSynchronizationContract(workerZeroJoin);
+  wafer::NCCOperationCompletion workerZeroContract =
+      wafer::getNCCOperationCompletion(workerZeroJoin);
   EXPECT_FALSE(workerZeroContract.issueWorker);
   EXPECT_EQ(workerZeroContract.participantMask, uint32_t{1});
 }

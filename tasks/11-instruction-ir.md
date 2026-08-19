@@ -56,6 +56,9 @@ event wait直接推导endpoint/resource/completion输入。它不是另一层buf
   `wafer.instr.peripheral`。Direct DTE的`wafer.instr.dte_send` / `dte_recv` / `dte_wait`属于独立
   token/event completion domain，不是普通NCC issue；两类op都有ODS、verifier、MemoryEffects、
   `WaferInstructionOpInterface`和lit/unit覆盖。
+  NCC completion由`WaferNCCIssueOpInterface`与`WaferNCCCompletionOpInterface`共同表达：普通issue统一返回worker，participant join和
+  synchronous-writeback peripheral由concrete op实现完整completion。IR adapter不含target ABI或concrete-op switch；
+  `Analysis/Scheduling/NCCCompletionAnalysis`从current structured control/direct-call IR重算pending worker，不写shadow attr。
   `wafer.instr.elementwise` 当前承载有 CT elementwise wrapper 证据的 unary/binary arithmetic、
   relation、logic、activation 和 transcendental target kind；`select` 不存在于
   `#wafer.instr_elementwise_kind`。instruction lowering 会把 floating select 改写成 false-copy

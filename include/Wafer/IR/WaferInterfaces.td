@@ -71,4 +71,21 @@ def WaferNCCIssueOpInterface : OpInterface<"WaferNCCIssueOpInterface"> {
   ];
 }
 
+def WaferNCCCompletionOpInterface
+    : OpInterface<"WaferNCCCompletionOpInterface"> {
+  let cppNamespace = "::wafer";
+  let description = [{
+    Interface for an instruction whose typed fields determine its complete
+    NCC behavior instead of the generic ordered-issue rule. Current
+    implementations are participant joins and the peripheral op, whose kind
+    distinguishes synchronous writeback from ordinary issue. Other ordinary
+    issues continue to use WaferNCCIssueOpInterface generically.
+  }];
+  let methods = [
+    InterfaceMethod<
+      "Return this operation's complete typed NCC completion semantics.",
+      "::wafer::NCCOperationCompletion", "getNCCCompletion", (ins)>
+  ];
+}
+
 #endif // WAFER_IR_WAFERINTERFACES_TD

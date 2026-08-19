@@ -466,3 +466,13 @@ source program
   合法。apply合并共同tree edge，destination可以消费后继续forward。
 - same-group retained与refetch、group-cut DDR/recompute属于不同typed choices；partial ownership可混合local subview load和remote peer
   fragments。任何movement变化都要求Q50.F/lifetime/calendar重算，actual packing仍只在Q50.0。
+
+## NCC completion分层（stable，2026-08-19）
+
+- target command completion只使用`Target/Core/NCCCompletion.h`的pure worker/mask/kind；MLIR IR不得include TX81 NCC ABI或target
+  completion enum。IR worker count从closed ODS `NCCWorker` enum推导。
+- ordinary Instr issue通过`WaferNCCIssueOpInterface`暴露worker；participant join和synchronous-writeback op通过
+  `WaferNCCCompletionOpInterface`返回完整`NCCOperationCompletion`。新增NCC op必须实现对应interface，不能回到central concrete-op
+  switch、op name或target opcode判断。
+- cross-op pending事实由`Analysis/Scheduling/NCCCompletionAnalysis`从current Module重算；结果携per-operation before/after mask，
+  只在未变化IR epoch内有效。structured if/for/TileRegion和defined direct call受支持，递归/indirect/unsupported CFG fail closed。

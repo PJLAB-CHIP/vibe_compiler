@@ -336,6 +336,7 @@ def Wafer_InstrTDMADataMoveOp : Wafer_NCCInstrOp<"instr.tdma_data_move", [
 
 def Wafer_InstrPeripheralOp : Wafer_NCCInstrOp<"instr.peripheral", [
     AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<WaferNCCCompletionOpInterface>,
     MemoryEffects<[MemRead<Wafer_SPMResource>,
                    MemWrite<Wafer_SPMResource>,
                    MemWrite<Wafer_ComputeResource>]>

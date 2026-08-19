@@ -210,3 +210,16 @@ InstrFamily InstrPeripheralOp::getInstructionFamily() {
 }
 
 NCCWorker InstrPeripheralOp::getIssueWorker() { return getWorker(); }
+
+NCCOperationCompletion InstrPeripheralOp::getNCCCompletion() {
+  switch (getKindAttr().getValue()) {
+  case InstrPeripheralKind::ArgMax:
+  case InstrPeripheralKind::ArgMin: {
+    const NCCWorker worker = getIssueWorker();
+    return {NCCCompletionKind::SynchronousWriteback, worker,
+            uint32_t{1} << static_cast<uint32_t>(worker)};
+  }
+  default:
+    return {NCCCompletionKind::OrderedAsynchronousIssue, getIssueWorker(), 0};
+  }
+}

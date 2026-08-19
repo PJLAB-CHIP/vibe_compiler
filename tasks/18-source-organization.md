@@ -257,8 +257,9 @@ Driver / Runtime / Model
 明确列出受控source，不依赖glob保住已经删除的文件；删除source时同批删除target/source list和only-for-it test。
 source-organization gate还必须禁止Compiler search/Analysis/Conversion include formal/bulk model header，并确认退役numeric
 umbrella/profile/pattern/resolver没有compatibility header、typedef或旧source残留。
-Q63进一步禁止runtime/model为复用NCC completion classification依赖WaferIR/WaferCompiler；Q64把这些link/include规则与
-repo-wide source/test registration一起纳入实际CMake graph检查。
+Q63禁止runtime/model为复用NCC completion classification依赖WaferIR：current model只消费pure target command completion，
+IR adapter与analysis留在WaferIR/WaferAnalysis。既有Model→Compiler宽link由model invocation/JIT与numeric层造成，按Q62统一拆除；
+Q64把这些link/include规则与repo-wide source/test registration一起纳入实际CMake graph检查。
 
 独立host build/test按 `nproc`并行。若一个聚合library使无关功能被可选依赖拖住，应拆分target或用明确feature boundary，
 但不能复制接口实现。

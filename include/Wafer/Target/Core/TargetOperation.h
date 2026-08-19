@@ -3,7 +3,7 @@
 #ifndef WAFER_TARGET_TARGETOPERATION_H
 #define WAFER_TARGET_TARGETOPERATION_H
 
-#include "Wafer/ABI/Tx81NCCABI.h"
+#include "Wafer/Target/Core/NCCCompletion.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -91,24 +91,6 @@ llvm::Expected<TargetUnpoolingOperation>
 parseTargetUnpoolingOperation(uint32_t opcode);
 llvm::Expected<TargetPeripheralOperation>
 parseTargetPeripheralOperation(uint32_t opcode);
-
-/// Pure target worker identity used by target calls, runtime, and models.
-/// MLIR's NCCWorker attribute maps to this protocol type in the lowering
-/// adapter; neither type is an alias of the other.
-enum class TargetNCCWorker : uint8_t { Worker0 = 0, Worker1 = 1, Worker2 = 2 };
-
-inline constexpr uint32_t kTargetNCCWorkerCount =
-    WAFER_TX81_NCC_WORKER_COUNT;
-inline constexpr uint32_t kAllTargetNCCWorkersMask =
-    WAFER_TX81_NCC_ALL_WORKERS_MASK;
-
-/// Completion behavior of one target command in an NCC worker domain.
-enum class TargetNCCCompletionBehavior : uint8_t {
-  None,
-  OrderedAsynchronousIssue,
-  ParticipantJoin,
-  SynchronousWriteback,
-};
 
 } // namespace wafer
 

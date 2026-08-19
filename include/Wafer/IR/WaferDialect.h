@@ -23,7 +23,7 @@
 #include <optional>
 #include <utility>
 
-#include "Wafer/IR/WaferEnums.h.inc"
+#include "Wafer/IR/WaferEnums.h"
 #include "Wafer/IR/WaferPhysicalEncodingInterfaces.h"
 
 #define GET_ATTRDEF_CLASSES

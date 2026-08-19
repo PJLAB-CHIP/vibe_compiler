@@ -84,9 +84,9 @@ Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。
 current seam后由Q51继续施工，避免把semantic Location、whole-module local wrapper和手工analysis lifecycle固化进
 baseline probe或新的candidate/search实现。
 
-Q63 NCC completion合同分层计划见`tasks/plans/ncc-synchronization-contract-layering.md`。它显式承接Q54 contract map中后续review
-确认尚未实际闭合的`NCCSynchronizationContract`：pure target completion protocol、MLIR op adapter和query-local analysis分层，
-删除IR header到TX81 ABI的反向include与free TypeSwitch特殊case；Q50.J不得在Q63前把该混合接口固化进新schedule。
+Q63 NCC completion合同分层计划见`tasks/plans/ncc-synchronization-contract-layering.md`。pure target completion protocol、
+MLIR op interface/adapter和query-local analysis已经分层，IR header到TX81 ABI的反向include与旧free concrete-op switch已删除；
+Q50.J直接消费current typed completion与pending-worker facts。
 
 Q55接口版本收敛计划见`tasks/plans/interface-version-consolidation.md`。20只定义版本owner和兼容边界；02、11、14-17
 继续拥有具体frontend、target、package、runtime、profiler与verification字段语义。Q55不建立compatibility mode，

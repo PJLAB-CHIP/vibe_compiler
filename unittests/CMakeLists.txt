@@ -3,6 +3,7 @@ wafer_require_gtest()
 add_executable(WaferUnitTests
   Analysis/CallGraph/DirectCallGraphAnalysisTest.cpp
   Analysis/ScheduleCost/TheoreticalScheduleCostAnalysisTest.cpp
+  Analysis/Scheduling/NCCCompletionAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/PhysicalDataflow/ExactDemandTest.cpp
   Analysis/ScheduleCost/ScheduleCostAnalysisTest.cpp

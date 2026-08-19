@@ -350,7 +350,7 @@ private:
                                    LifetimeDataflow &dataflow) const;
   mlir::LogicalResult
   verifyPendingObservers(mlir::Operation *op, ProgramPoint point,
-                         const NCCSynchronizationContract &contract,
+                         const NCCOperationCompletion &contract,
                          const AccessCollection &current,
                          LifetimeFailure *failure) const;
   bool provesLoopBackedgeOrder(const PendingIssue &issue, mlir::Operation *loop,

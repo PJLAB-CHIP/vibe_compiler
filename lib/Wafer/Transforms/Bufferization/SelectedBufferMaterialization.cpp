@@ -736,7 +736,7 @@ static mlir::LogicalResult validateLeadingBackedgeJoins(
     }
 
     uint32_t participants =
-        getNCCSynchronizationContract(join).participantMask &
+        getNCCOperationCompletion(join).participantMask &
         kAllNCCWorkersMask;
     if (conflictParticipants != participants)
       return fail(
@@ -807,8 +807,8 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
     plan.operationIndices.try_emplace(&operation, index);
     plan.operations.push_back(&operation);
 
-    NCCSynchronizationContract contract =
-        getNCCSynchronizationContract(&operation);
+    NCCOperationCompletion contract =
+        getNCCOperationCompletion(&operation);
     if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
       llvm::SmallVector<mlir::Operation *, 4> producers;
       bool missingParticipantProducer = false;
@@ -873,8 +873,8 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
       sawInstructionOrJoin = true;
       continue;
     }
-    if (contract.behavior !=
-            NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
+    if (contract.kind !=
+            NCCCompletionKind::OrderedAsynchronousIssue ||
         !contract.issueWorker)
       return failPlan(
           failureReason,
@@ -951,10 +951,10 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
   std::array<llvm::SmallVector<unsigned, 4>, kNCCWorkerCount>
       pendingWorkerIssues;
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
-    NCCSynchronizationContract contract =
-        getNCCSynchronizationContract(operation);
-    if (contract.behavior ==
-        NCCSynchronizationBehavior::OrderedAsynchronousIssue) {
+    NCCOperationCompletion contract =
+        getNCCOperationCompletion(operation);
+    if (contract.kind ==
+        NCCCompletionKind::OrderedAsynchronousIssue) {
       if (!contract.issueWorker)
         return failPlan(failureReason,
                         "selected-buffer NCC issue has no typed worker");
@@ -966,7 +966,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
       pendingWorkerIssues[worker].push_back(static_cast<unsigned>(index));
       continue;
     }
-    if (contract.behavior != NCCSynchronizationBehavior::ParticipantJoin)
+    if (contract.kind != NCCCompletionKind::ParticipantJoin)
       continue;
     if (contract.participantMask == 0 ||
         (contract.participantMask & ~kAllNCCWorkersMask) != 0)

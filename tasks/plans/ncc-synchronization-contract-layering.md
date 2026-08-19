@@ -1,13 +1,11 @@
 # Q63 NCC completion合同分层实施计划
 
-状态：`queued`。稳定Instr、communication、target model和MLIR工程合同分别由11、13、17、19号设计文档拥有；动态状态只看
+状态：`done`。稳定Instr、communication、target model和MLIR工程合同分别由11、13、17、19号设计文档拥有；动态状态只看
 `tasks/progress.md`。
 
 本任务不重新设计NCC schedule，也不创建新的capability registry。它只修复一个current跨层事实源：
-`NCCSynchronizationContract`目前位于IR public header，直接include TX81 ABI常量，又由free `TypeSwitch`同时识别MLIR op、
-target command完成行为和model/runtime需要的worker语义。Lifetime、schedule cost、target scheduling、TileRegion lowering及旧
-scheduling source都依赖该混合入口。Q54原计划已把它列为待拆层，但实现仍在且完成记录误称pure target/MLIR adapter已经闭合；
-Q63显式承接该未完成项。
+旧`NCCSynchronizationContract`曾位于IR public header，直接include TX81 ABI常量，又由free concrete-op switch同时识别MLIR op、
+target command完成行为和model/runtime需要的worker语义。Q63已将该入口原位替换为下述三层current合同。
 
 ## Pipeline Contract
 
@@ -64,3 +62,22 @@ Pipeline position:
 - if/for/call、跨region pending window、multi-worker join和required-join placement在mutation后fresh重算；
 - target public-header self-contained、runtime/model最小link smoke证明不依赖WaferIR/WaferCompiler；
 - 只运行受影响的completion/lifetime/cost/lowering定向测试，不运行Q49.P/Q51长搜索、历史board raw或旧registry回归。
+
+## 2026-08-19 完成结果
+
+- pure target层新增`Target/Core/NCCCompletion.h`，只拥有`TargetNCCWorker`、worker count/mask和target command completion kind；
+  `TargetOperation.h`消费该协议，不再直接include TX81 NCC ABI。target-call descriptor仍是target语义到decoded command的唯一映射，
+  runtime/model不引用MLIR completion类型。
+- IR层新增不含target ABI的`IR/NCCCompletion.h`。worker count从ODS `NCCWorker` closed enum推导，不复制硬件常量；
+  `WaferNCCCompletionOpInterface`由`wafer.instr.ncc_join`和`wafer.instr.peripheral`实现，join自己构造participant mask，ArgMax/ArgMin
+  自己声明synchronous writeback，其它ordinary issue继续由`WaferNCCIssueOpInterface`统一映射。adapter不含concrete-op switch、名字匹配
+  或target enum。
+- `Analysis/Scheduling/NCCCompletionAnalysis`在current Module上重算每个operation前后的pending-worker mask和全局summary；
+  structured `if`/`for`、TileRegion及defined direct call受支持，递归、indirect/unknown call和非structured CFG fail closed。
+  结果只引用当前IR epoch，不写attr或长期cache；mutation后测试重新构造analysis并观察worker mask变化。
+- Lifetime、ScheduleCost、TargetScheduling、TileRegion-to-Instr、ReadyOrder、WorkerPlacement、selected-buffer materializer及保留给Q50.K
+  的fixed-slot source均已迁到`NCCOperationCompletion`。旧contract、classifier、worker-window API和IR→TX81 include零残留。
+
+fresh completion/lifetime/cost/lowering/target定向unit 185/185、lit 216/216、target public-link smoke、主构建及source/IR organization通过。
+`WaferTargetModelCore -> WaferCompiler`的宽link来自model invocation/target JIT与numeric owner，不是completion classification；按
+`tasks/progress.md`由Q62统一拆除，Q63没有为它保留IR completion依赖或复制协议。

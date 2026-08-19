@@ -237,7 +237,7 @@ semantic Location删除而消失，不能只改名。后续清单以本节为唯
 | `TileExecutionCandidate` | 同时装 assignment、派生 cost/resource、allocator feedback history、controller flags与裸指针 | 拆分 | B0/E/G：immutable selected assignment、current-IR analysis结果和controller transition history分开；派生事实不进入candidate identity |
 | 已退役的TileRegion/function capacity probe | 曾在私有clone上执行Instr lowering与packing，再把结果用于baseline refinement；它并非只读analysis，也无法代表完整CardModule candidate | 删除 | Q49已迁移到一次actual CardModule/Q50.0 exact gate：只有完整typed SPM overflow witness允许greedy temporal refinement；其它exact/indeterminate结果按合同失败，不保留probe API或scratch IR |
 | placement candidate枚举器 | 实际枚举/评估完整placement candidate set，并不维护通用live candidate set抽象 | rename并拆文件职责 | G：domain、evaluator、enumeration分别命名；public动作使用`derive...Domain`、`evaluate...Assignment`、`enumerate...Candidates` |
-| `NCCSynchronizationContract` free TypeSwitch | 同时混合MLIR op分类、target command完成行为和runtime/model enum，特殊case仍写在free switch | 拆层 | C/G/H：target transaction语义下沉到不依赖MLIR的typed target协议；MLIR op通过窄interface映射；runtime/model不include IR interface header |
+| NCC completion旧free concrete-op switch | 曾混合MLIR op分类、target command完成行为和runtime/model enum | 已拆层 | Q63：pure target protocol、MLIR op interface/adapter与current-IR pending analysis分别拥有；旧入口和IR→TX81 include已删除 |
 | frontend/compiler `bool`-means-failure helpers与nullable多输出 | 文件/JSON/编译事务把错误方向、诊断和多个产物分散在调用约定中 | typed result/error | G：IR validation保留`LogicalResult`；host/filesystem/API边界使用`Error`/`Expected`和named result，predicate才返回bool |
 | `WaferTarget`/`WaferTargetModel*` 对IR/Compiler的宽依赖 | pure target protocol、MLIR target analysis、JIT frontend和model invocation混在库依赖中 | 分层 | H，具体source/CMake cutover依18：拆pure target protocol、MLIR adapter、host execution；runtime/model不因一个transaction enum链接整个compiler/IR |
 | `TileRegionEmissionRelations` wrapper | 同一次 conversion 内 `SpatialEdgeStrategy` 到新 DDR allocation 的显式返回关系 | 简化后保留关系 | B：收窄为直接返回的 materialized-stage列表；不得跨 mutation/pass，也不得写回 IR |
@@ -250,11 +250,9 @@ semantic Location删除而消失，不能只改名。后续清单以本节为唯
 本表只列影响 accepted decision、跨 IR epoch/clone 或容易成为长期协议的对象；函数栈内 descriptor、loop worklist、builder
 validation plan 等局部值仍按同一规则检查，但不因含有 `state`、`plan`、`mapping` 字样机械迁移。
 
-2026-08-17 follow-up review确认本表的`NCCSynchronizationContract`项并未实际完成：IR public header仍include TX81 NCC ABI，
-free `TypeSwitch`仍混合join、CT peripheral和interface特殊case，Lifetime/ScheduleCost/TargetScheduling/lowering继续共同消费。
-该缺口不再被Q54的“pure target/MLIR adapter已闭合”措辞掩盖；独立current owner为Q63
-`tasks/plans/ncc-synchronization-contract-layering.md`，并作为Q50.J前置完成迁移与删除。Q54其余已交付的pass/scope/
-transaction整改保持历史完成状态。
+2026-08-19 Q63已完成该follow-up：IR public header不再include TX81 NCC ABI，join与peripheral差异由ODS op interface实现，普通issue
+由generic issue interface适配，pending-worker分析迁入Analysis并覆盖structured control/direct call。旧contract/switch/classifier零残留；
+Q50.J只消费新typed事实。Q54其余已交付的pass/scope/transaction整改保持历史完成状态。
 
 ## Checkpoint B：IR 自包含与 ODS schema
 

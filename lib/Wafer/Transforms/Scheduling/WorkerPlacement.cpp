@@ -3,6 +3,7 @@
 #include "Wafer/Transforms/WorkerPlacement.h"
 
 #include "Wafer/Analysis/Memory/StaticBufferRange.h"
+#include "Wafer/Analysis/Scheduling/NCCCompletionAnalysis.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/IR/WaferInterfaces.h"
@@ -300,10 +301,10 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
     auto instruction = mlir::dyn_cast<WaferInstructionOpInterface>(operation);
     hasDTE |=
         instruction && instruction.getInstructionFamily() == InstrFamily::DTE;
-    NCCSynchronizationContract completion =
-        getNCCSynchronizationContract(operation);
+    NCCOperationCompletion completion =
+        getNCCOperationCompletion(operation);
     hasUnsupportedObserver |=
-        completion.behavior == NCCSynchronizationBehavior::SynchronousWriteback;
+        completion.kind == NCCCompletionKind::SynchronousWriteback;
     hasNonzeroWorker |=
         completion.issueWorker && *completion.issueWorker != NCCWorker::Worker0;
   });
@@ -465,7 +466,14 @@ deriveDisjointNCCWorkerPlacementCandidate(mlir::ModuleOp sourceModule,
          "worker placement failed exact completion or IR verification");
     return mlir::failure();
   }
-  NCCWorkerWindowSummary workerWindows = analyzeNCCWorkerWindows(*candidate);
+  auto completionAnalysis = analysis::NCCCompletionAnalysis::create(*candidate);
+  if (mlir::failed(completionAnalysis)) {
+    fail(failureReason,
+         "worker placement could not derive current NCC completion windows");
+    return mlir::failure();
+  }
+  const analysis::NCCPendingWorkerSummary &workerWindows =
+      completionAnalysis->getSummary();
   if (!workerWindows.hasCrossWorkerWindow ||
       workerWindows.issuedWorkerMask != participantMask) {
     fail(failureReason,

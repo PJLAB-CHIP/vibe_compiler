@@ -146,7 +146,7 @@ static bool isUnconditionallyNestedInStaticFor(mlir::Operation *operation,
 }
 
 static uint32_t
-getNCCIssueWorkerMask(const NCCSynchronizationContract &completion) {
+getNCCIssueWorkerMask(const NCCOperationCompletion &completion) {
   if (!completion.issueWorker)
     return 0;
   uint32_t worker = static_cast<uint32_t>(*completion.issueWorker);
@@ -2338,7 +2338,7 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
 
 mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
     mlir::Operation *op, ProgramPoint point,
-    const NCCSynchronizationContract &contract, const AccessCollection &current,
+    const NCCOperationCompletion &contract, const AccessCollection &current,
     LifetimeFailure *failure) const {
   auto reachablePending =
       llvm::find_if(pendingAccesses, [&](const PendingAccess &pending) {
@@ -2368,8 +2368,8 @@ mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
   // pairwise path below for mixed workers or unresolved address domains, but
   // avoid rescanning a long linear instruction chain when all pairs satisfy
   // the same proof.
-  if (contract.behavior ==
-          NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
+  if (contract.kind ==
+          NCCCompletionKind::OrderedAsynchronousIssue &&
       commonPendingWorkerMask != 0 && pendingWorkerMasksAgree &&
       commonPendingWorkerMask == getNCCIssueWorkerMask(contract) &&
       ((pendingAllHaveResolvedRoots && currentAllHaveResolvedRoots) ||
@@ -2410,8 +2410,8 @@ mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
           (pending.logicalRoot && access.logicalRoot);
       bool sameWorkerOrdered =
           hasKnownAddressDomain &&
-          contract.behavior ==
-              NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
+          contract.kind ==
+              NCCCompletionKind::OrderedAsynchronousIssue &&
           pending.workerMask != 0 && pending.workerMask == access.workerMask;
       if (sameWorkerOrdered)
         continue;
@@ -2503,8 +2503,8 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
   if (!point)
     return mlir::success();
 
-  NCCSynchronizationContract contract = getNCCSynchronizationContract(op);
-  if (contract.behavior == NCCSynchronizationBehavior::ParticipantJoin) {
+  NCCOperationCompletion contract = getNCCOperationCompletion(op);
+  if (contract.kind == NCCCompletionKind::ParticipantJoin) {
     ProgramPoint completionPoint =
         getGuaranteedCompletionPoint(op, dataflow.timeline, *point);
     processFence(completionPoint, contract.participantMask, dataflow);
@@ -2514,7 +2514,7 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
     // incorrectly require every partial join to serialize all NCC workers.
     return mlir::success();
   }
-  if (contract.behavior == NCCSynchronizationBehavior::SynchronousWriteback) {
+  if (contract.kind == NCCCompletionKind::SynchronousWriteback) {
     ProgramPoint completionPoint =
         getGuaranteedCompletionPoint(op, dataflow.timeline, *point);
     processFence(completionPoint, contract.participantMask, dataflow);
@@ -2525,8 +2525,8 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
   if (mlir::failed(
           verifyPendingObservers(op, *point, contract, current, failure)))
     return mlir::failure();
-  if (contract.behavior !=
-          NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
+  if (contract.kind !=
+          NCCCompletionKind::OrderedAsynchronousIssue ||
       !current.hasTrackedEffect)
     return mlir::success();
 
@@ -2627,15 +2627,15 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
       if (!hasOnlyWitnessedRootlessStorageEffects(&candidate))
         return false;
 
-      NCCSynchronizationContract candidateContract =
-          getNCCSynchronizationContract(&candidate);
+      NCCOperationCompletion candidateContract =
+          getNCCOperationCompletion(&candidate);
       uint32_t candidateWorkerMask = getNCCIssueWorkerMask(candidateContract);
       AccessCollection current = collectAccesses(&candidate, *candidatePoint,
                                                  candidateWorkerMask, dataflow);
       if (!candidatePoint->path.implies(bodyPoint->path) ||
           !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
-          candidateContract.behavior !=
-              NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
+          candidateContract.kind !=
+              NCCCompletionKind::OrderedAsynchronousIssue ||
           candidateWorkerMask == 0)
         return false;
       if (!current.hasTrackedEffect) {
@@ -2690,13 +2690,13 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
     bool unconditionalInBody =
         candidatePoint->path.implies(bodyPoint->path) &&
         isUnconditionallyNestedInStaticFor(candidate, forOp);
-    NCCSynchronizationContract candidateContract =
-        getNCCSynchronizationContract(candidate);
+    NCCOperationCompletion candidateContract =
+        getNCCOperationCompletion(candidate);
     bool coversIssue =
-        (candidateContract.behavior ==
-             NCCSynchronizationBehavior::ParticipantJoin ||
-         candidateContract.behavior ==
-             NCCSynchronizationBehavior::SynchronousWriteback) &&
+        (candidateContract.kind ==
+             NCCCompletionKind::ParticipantJoin ||
+         candidateContract.kind ==
+             NCCCompletionKind::SynchronousWriteback) &&
         (candidateContract.participantMask & issue.workerMask) != 0;
     if (coversIssue) {
       if (unconditionalInBody)
@@ -2751,8 +2751,8 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
         // fail closed at the first conflicting access.
         bool sameWorkerOrderedSuccessor =
             mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
-            candidateContract.behavior ==
-                NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
+            candidateContract.kind ==
+                NCCCompletionKind::OrderedAsynchronousIssue &&
             candidateWorkerMask == issue.workerMask && current.allResolved &&
             !current.accesses.empty();
         if (!sameWorkerOrderedSuccessor)
@@ -2818,11 +2818,11 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
     std::function<bool(mlir::Block &)> guaranteesUniformIssueOnEveryPath;
     guaranteesUniformIssueOnEveryPath = [&](mlir::Block &block) {
       for (mlir::Operation &candidate : block.without_terminator()) {
-        NCCSynchronizationContract contract =
-            getNCCSynchronizationContract(&candidate);
+        NCCOperationCompletion contract =
+            getNCCOperationCompletion(&candidate);
         if (mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
-            contract.behavior ==
-                NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
+            contract.kind ==
+                NCCCompletionKind::OrderedAsynchronousIssue &&
             getNCCIssueWorkerMask(contract) == uniformWorkerMask)
           return true;
         if (auto nestedFor = mlir::dyn_cast<mlir::scf::ForOp>(candidate)) {
@@ -2888,15 +2888,15 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
         if (!hasOnlyWitnessedRootlessStorageEffects(&candidate))
           return false;
 
-        NCCSynchronizationContract contract =
-            getNCCSynchronizationContract(&candidate);
+        NCCOperationCompletion contract =
+            getNCCOperationCompletion(&candidate);
         uint32_t candidateWorkerMask = getNCCIssueWorkerMask(contract);
         AccessCollection current = collectAccesses(
             &candidate, *candidatePoint, candidateWorkerMask, dataflow);
         if (!candidatePoint->path.implies(bodyPoint->path) ||
             !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
-            contract.behavior !=
-                NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
+            contract.kind !=
+                NCCCompletionKind::OrderedAsynchronousIssue ||
             candidateWorkerMask == 0)
           return false;
         if (!current.hasTrackedEffect)
@@ -3030,15 +3030,15 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
           return;
         }
 
-        NCCSynchronizationContract candidateContract =
-            getNCCSynchronizationContract(&candidate);
+        NCCOperationCompletion candidateContract =
+            getNCCOperationCompletion(&candidate);
         uint32_t candidateWorkerMask = getNCCIssueWorkerMask(candidateContract);
         AccessCollection current = collectAccesses(
             &candidate, *candidatePoint, candidateWorkerMask, dataflow);
         if (!candidatePoint->path.implies(bodyPoint->path) ||
             !mlir::isa<WaferNCCIssueOpInterface>(&candidate) ||
-            candidateContract.behavior !=
-                NCCSynchronizationBehavior::OrderedAsynchronousIssue ||
+            candidateContract.kind !=
+                NCCCompletionKind::OrderedAsynchronousIssue ||
             candidateWorkerMask == 0) {
           invalidateStructured();
           return;
@@ -3092,18 +3092,18 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
         bool unconditionalInBody =
             candidatePoint->path.implies(bodyPoint->path) &&
             isUnconditionallyNestedInStaticFor(candidate, forOp);
-        NCCSynchronizationContract candidateContract =
-            getNCCSynchronizationContract(candidate);
+        NCCOperationCompletion candidateContract =
+            getNCCOperationCompletion(candidate);
 
         llvm::SmallVector<unsigned, 16> activeStates;
         for (auto [stateIndex, state] : llvm::enumerate(batchedIssues)) {
           if (!state.fallbackAlive || state.fallbackCompleted)
             continue;
           bool coversIssue =
-              (candidateContract.behavior ==
-                   NCCSynchronizationBehavior::ParticipantJoin ||
-               candidateContract.behavior ==
-                   NCCSynchronizationBehavior::SynchronousWriteback) &&
+              (candidateContract.kind ==
+                   NCCCompletionKind::ParticipantJoin ||
+               candidateContract.kind ==
+                   NCCCompletionKind::SynchronousWriteback) &&
               (candidateContract.participantMask & state.issue->workerMask) !=
                   0;
           if (coversIssue) {
@@ -3161,8 +3161,8 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
             continue;
           bool sameWorkerOrderedSuccessor =
               mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
-              candidateContract.behavior ==
-                  NCCSynchronizationBehavior::OrderedAsynchronousIssue &&
+              candidateContract.kind ==
+                  NCCCompletionKind::OrderedAsynchronousIssue &&
               candidateWorkerMask == state.issue->workerMask &&
               current.allResolved && !current.accesses.empty();
           if (!sameWorkerOrderedSuccessor)

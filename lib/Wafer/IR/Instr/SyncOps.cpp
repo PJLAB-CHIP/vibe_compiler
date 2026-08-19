@@ -29,3 +29,13 @@ mlir::LogicalResult SyncNCCJoinOp::verify() {
   }
   return mlir::success();
 }
+
+NCCOperationCompletion SyncNCCJoinOp::getNCCCompletion() {
+  uint32_t participantMask = 0;
+  for (int64_t worker : getParticipants()) {
+    if (worker < 0 || worker >= static_cast<int64_t>(kNCCWorkerCount))
+      return {NCCCompletionKind::ParticipantJoin, std::nullopt, 0};
+    participantMask |= uint32_t{1} << static_cast<uint32_t>(worker);
+  }
+  return {NCCCompletionKind::ParticipantJoin, std::nullopt, participantMask};
+}
