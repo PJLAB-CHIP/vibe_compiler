@@ -14,7 +14,6 @@ from pathlib import Path
 # The design and deletion gates live in tasks/18-source-organization.md; this
 # list only makes the filesystem/CMake distinction fail closed.
 DORMANT_LIBRARY_SOURCES = {
-    "lib/Wafer/Transforms/Scheduling/FixedSlotPipeline.cpp": "Q50.K",
 }
 
 # These translation units are inputs to the explicitly invoked XLA helper
@@ -35,7 +34,6 @@ EXTERNAL_HELPER_SOURCES = {
 }
 
 DORMANT_UNIT_SOURCES = {
-    "unittests/Transforms/Scheduling/FixedSlotPipelineTest.cpp": "Q50.K",
 }
 
 RETIRED_PATHS = (

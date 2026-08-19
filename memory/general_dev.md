@@ -494,3 +494,12 @@ source program
   `arith.divf 1.0, x`。selected apply仍在scalar lowering处复验1.0常量，Natural生成Div、Reciprocal生成Recip。
 - node assignment随shard group进入同一次CardModule materialization；recomputed/unowned support node默认Natural。旧implementation donor
   只有在domain、actual IR和negative proof迁入active source并受测后才能删除。
+
+## Selected stage pipeline（stable，2026-08-19）
+
+- multi-slot buffering scope的exact edge集合就是stage cut identity；不要另建pipeline bool/recipe。empty scope是serialized identity，
+  nonempty scope必须在actual common static loop上产生2+ stages且slot multiplicity与selection完全一致。
+- stage materializer消费owned prepared Instr和current relations，原位构造SCF prologue/steady/epilogue并返回typed stage/slot facts；失败销毁
+  owner，不clone module。mutation后旧instruction schedule domain必然失效，Q50.J从新IR重建。
+- memory planning只在stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone和专属大套件不能恢复；普通负例复用
+  selected-buffer的Direct-DTE、alias、trip/tail gate。

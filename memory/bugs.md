@@ -1079,3 +1079,13 @@
   Cartesian product；apply消费owned modules原位改写并fresh rebuild joins。resource交集与overlap只返回query-local事实，不签发收益或legality。
 - 防复发：tiny DAG与独立reference比较精确assignment数，mutation必须使domain失效；源码中不得恢复priority selector、worker clone、
   capability/profitability row或默认calendar日志。Q50.K改变event structure后必须重新query Q50.J。
+
+## Stage pipeline不能再拥有一套whole-Module candidate/clone入口
+
+- 现象：旧fixed-slot实现扫描任意loop、clone完整Module、自行推导slot/stage并返回一个local candidate；buffer count、logical edge、
+  ready order和pipeline identity分散，后续只能靠ordinal/clone对应关系拼回search。
+- 根因：slot lifetime与stage event structure没有以同一selected edge scope为边界，rollback又被误写成每个mechanism各clone一次。
+- 修复模式：Q50.I scope携exact edges/count，Q50.K消费owned prepared Instr原位构造stages/rotation/SCF phases并返回actual facts；empty scope
+  是serialized。Q50.J schedule在mutation后重建，SPM offset在stage完成后分配。
+- 防复发：删除old public API/source/test，搜索确保fixed-slot candidate零残留；stage正例必须核对2+ stages、selected slots、额外phase Instr和
+  schedule epoch invalidation，负例复用同一active alias/DTE/trip/tail gates，不复制第二套planner。

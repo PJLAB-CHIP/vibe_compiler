@@ -39,6 +39,7 @@ add_executable(WaferUnitTests
   Planning/Search/ScopedFeasibilityTest.cpp
   Planning/Search/SearchControlTest.cpp
   Planning/Search/SpatialPlacementTest.cpp
+  Planning/Search/StagePipelineTest.cpp
   Planning/Search/TensorProgramAlternativeTest.cpp
   Planning/Search/TemporalTilingTest.cpp
   Program/ProgramDataTest.cpp

@@ -736,8 +736,7 @@ static mlir::LogicalResult validateLeadingBackedgeJoins(
     }
 
     uint32_t participants =
-        getNCCOperationCompletion(join).participantMask &
-        kAllNCCWorkersMask;
+        getNCCOperationCompletion(join).participantMask & kAllNCCWorkersMask;
     if (conflictParticipants != participants)
       return fail(
           "selected-buffer leading NCC join has a participant without an exact "
@@ -807,8 +806,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
     plan.operationIndices.try_emplace(&operation, index);
     plan.operations.push_back(&operation);
 
-    NCCOperationCompletion contract =
-        getNCCOperationCompletion(&operation);
+    NCCOperationCompletion contract = getNCCOperationCompletion(&operation);
     if (auto join = mlir::dyn_cast<SyncNCCJoinOp>(operation)) {
       llvm::SmallVector<mlir::Operation *, 4> producers;
       bool missingParticipantProducer = false;
@@ -873,8 +871,7 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
       sawInstructionOrJoin = true;
       continue;
     }
-    if (contract.kind !=
-            NCCCompletionKind::OrderedAsynchronousIssue ||
+    if (contract.kind != NCCCompletionKind::OrderedAsynchronousIssue ||
         !contract.issueWorker)
       return failPlan(
           failureReason,
@@ -951,10 +948,8 @@ static mlir::FailureOr<SelectedBufferPlan> buildSelectedBufferPlan(
   std::array<llvm::SmallVector<unsigned, 4>, kNCCWorkerCount>
       pendingWorkerIssues;
   for (auto [index, operation] : llvm::enumerate(plan.operations)) {
-    NCCOperationCompletion contract =
-        getNCCOperationCompletion(operation);
-    if (contract.kind ==
-        NCCCompletionKind::OrderedAsynchronousIssue) {
+    NCCOperationCompletion contract = getNCCOperationCompletion(operation);
+    if (contract.kind == NCCCompletionKind::OrderedAsynchronousIssue) {
       if (!contract.issueWorker)
         return failPlan(failureReason,
                         "selected-buffer NCC issue has no typed worker");
@@ -1935,7 +1930,9 @@ mlir::FailureOr<SelectedBufferingResult> materializeSelectedBuffering(
     result.module = std::move(module);
     result.materializationRelations =
         std::move(materialized->materializationRelations);
+    result.stageCount = materialized->stageCount;
     result.slotAllocationCount = materialized->slotAllocationCount;
+    result.maximumSlotCount = materialized->maximumSlotCount;
     return result;
   }
   if (failure)

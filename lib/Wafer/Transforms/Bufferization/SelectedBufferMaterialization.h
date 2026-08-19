@@ -77,7 +77,9 @@ struct SelectedBufferMaterializationFailure {
 struct SelectedBufferingResult {
   mlir::OwningOpRef<mlir::ModuleOp> module;
   StructuredMaterializationRelations materializationRelations;
+  unsigned stageCount = 0;
   unsigned slotAllocationCount = 0;
+  unsigned maximumSlotCount = 0;
 };
 
 /// Selected logical-edge gate. The materialized stage dependency must belong

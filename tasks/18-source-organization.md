@@ -144,11 +144,11 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 
 | 当前dormant source/test | 仍需保留的能力 | 处置与删除门禁 |
 | --- | --- | --- |
-| `Transforms/Scheduling/FixedSlotPipeline.cpp`及对应unit | loop pipeline mechanics | worker placement与ready order已由Q50.J迁入typed domain并删除旧selector；剩余loop pipeline能力由Q50.K迁入，不能恢复fixed-slot clone candidate API |
-
 Q50.J已删除旧`ReadyOrder`、`WorkerPlacement`及专属tests；`StructuredOpInterfaceModels`中独有的exact reciprocal implementation
 先迁入current `Planning/Search/ComputeImplementation`并接入CardModule actual apply，随后旧interface source删除。SystemC DTE/NCC专项tests
 已注册到feature-on `WaferSystemCModelTransportTest`，不再以dormant source充当覆盖。
+Q50.K把旧`FixedSlotPipeline`中仍需的stage/slot/Direct-DTE/alias机制迁入selected-buffer materializer与current stage-pipeline owner后，
+旧whole-Module clone candidate、public header和专属tests已删除；当前Q50 dormant表为空。
 
 `Transforms/SPMD/XlaSpmd*.cpp`不是dormant host library source：它们由
 `tools/build_xla_spmd_partitioner_helper.py`的exact manifest复制到显式external helper build；不得同时加入host CMake target。

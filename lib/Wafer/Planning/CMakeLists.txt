@@ -27,6 +27,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/ScopedFeasibility.cpp
   Planning/Search/SimpleRoute.cpp
   Planning/Search/SpatialPlacement.cpp
+  Planning/Search/StagePipeline.cpp
   Planning/Search/TemporalTiling.cpp
   Planning/Search/SingleRootRegion.cpp
   Planning/Search/TensorProgramAlternative.cpp

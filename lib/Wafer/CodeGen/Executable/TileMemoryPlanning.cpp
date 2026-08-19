@@ -3,6 +3,7 @@
 #include "Wafer/CodeGen/Executable/TileMemoryPlanning.h"
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Planning/Search/StagePipeline.h"
 #include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"
 
 #include "Wafer/Support/CompileTiming.h"
@@ -17,8 +18,6 @@
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
-
-#include "llvm/ADT/STLExtras.h"
 
 namespace wafer::compiler::detail {
 namespace {
@@ -255,36 +254,19 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
           TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
       return mlir::failure();
     }
-    for (auto [scopeIndex, scope] : llvm::enumerate(selectedBufferingScopes)) {
-      if (scope.requests.empty()) {
-        if (selectedBufferFailure) {
-          selectedBufferFailure->kind =
-              SelectedBufferMaterializationFailureKind::InvalidRequest;
-          selectedBufferFailure->scopeIndex = scopeIndex;
-          selectedBufferFailure->detail =
-              "selected buffering scope has no exact logical edge";
-        }
-        recordFailure(
-            TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
-        return mlir::failure();
-      }
-      mlir::FailureOr<SelectedBufferingResult> materialized =
-          materializeSelectedBuffering(std::move(module), scope.requests,
-                                       std::move(*materializationRelations),
-                                       selectedBufferFailure);
-      if (mlir::failed(materialized)) {
-        if (selectedBufferFailure)
-          selectedBufferFailure->scopeIndex = scopeIndex;
-        recordFailure(
-            TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
-        return mlir::failure();
-      }
-      module = std::move(materialized->module);
-      *materializationRelations =
-          std::move(materialized->materializationRelations);
-      if (materializedSlotAllocationCount)
-        *materializedSlotAllocationCount += materialized->slotAllocationCount;
+    auto materialized = materializeStagePipelines(
+        std::move(module), selectedBufferingScopes,
+        std::move(*materializationRelations), selectedBufferFailure);
+    if (mlir::failed(materialized)) {
+      recordFailure(
+          TileMemoryPlanningFailureKind::SelectedBufferMaterialization);
+      return mlir::failure();
     }
+    module = std::move(materialized->module);
+    *materializationRelations =
+        std::move(materialized->materializationRelations);
+    if (materializedSlotAllocationCount)
+      *materializedSlotAllocationCount = materialized->slotAllocationCount;
   }
   if (mlir::failed(
           requireCurrentBufferRelations("selected buffer materialization"))) {

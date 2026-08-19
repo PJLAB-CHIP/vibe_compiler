@@ -2014,6 +2014,29 @@ enumerator一致。删除ready-order、worker和overlap的独立selector及静�
 
 ## Q50.K：Conditional Stage Pipeline
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  one owned prepared canonical Instr module、Q50.I selected independent buffering scopes/current buffer relations及尚未物化的Q50.J schedule；
+  input无SPM/DDR offsets或DTE binding。
+- Current stage responsibility:
+  empty scope保持serialized identity；每个selected multi-slot scope在其exact common static loop上构造dependency stages、slot rotation及SCF
+  prologue/steady/epilogue，返回actual stage/slot facts。任何stage mutation使旧Q50.J domain失效，调用方必须从新IR重建order/worker/resource域。
+- Output IR / files:
+  move-only `StagePipelineMaterialization`拥有同一mutated Instr module、current relations及per-scope stage/slot facts；不产生pipeline attr、
+  side plan、clone、文件、winner或默认统计。
+- Downstream consumer:
+  Q50.J从新event structure重建schedule assignment；随后Tile memory planning分配全部rotating slots，Q50.0继续transport/resource/ABI gate。
+- User-level driver / named pipeline:
+  Q51 complete-candidate inner closure；baseline和single-buffer candidate走empty-scope serialized identity。
+- Explicit non-goals:
+  不把每条dependent edge默认pipeline，不自行选buffer count/order/worker，不从estimated overlap接受candidate，不恢复whole-Module
+  fixed-slot clone API。
+- Done criteria:
+  serialized identity、2+ actual stages、selected multiplicity、prologue/steady/epilogue、Direct-DTE issue/wait、alias/external-write/tail负例和
+  Q50.J epoch invalidation/re-entry受测；旧FixedSlotPipeline source/header/test零残留。
+
 ### 机制
 
 operator stage pipeline不是每条dependent edge的默认模式。Q50.K builder先从以下typed facts生成有限的
@@ -2035,6 +2058,23 @@ cross-Tile staged pipeline分别生成schedule alternatives并从新assignment�
 actual serialized、pipeline event structure、可重入schedule、resource-conflicting pipeline rejection和tail hazard witness齐全；
 通过后移除multi-stage placement recipe和late overlap repair。“某case由pipeline获胜，另一case因buffer/
 movement/parallelism成本由serialized或fused region获胜”放在Q51 closure。
+
+### 2026-08-19 完成结果
+
+Q50.I的`SelectedBufferingScope`同时是stage cut的exact edge集合，不再复制另一份pipeline recipe。低层materializer现返回actual
+`stageCount`、`maximumSlotCount`和allocation count；Q50.K `materializeStagePipelines`消费owned prepared Instr及current relations，
+按scope顺序原位构造stage pipeline并要求每项`stageCount >= 2`且actual slot multiplicity等于selected count。empty scopes直接move返回
+原module，是serialized/single-buffer identity。
+
+Tile memory planning改为调用该唯一composition owner，之后才为全部slot分配SPM。测试证明selected 3-slot scope产生2+ stages及额外
+prologue/epilogue Instr，旧Q50.J domain在mutation后拒绝，基于新IR重建的schedule domain有效；两个独立scope继续由Q50.I memory test
+证明顺序物化。Direct-DTE issue/direct wait/release、external-write alias、trip-count和tail hazard继续由同一active selected-buffer tests
+覆盖，不复制旧大套件。
+
+旧`FixedSlotPipeline`整Module clone、无logical-edge loop扫描、local stage candidate、public `SoftwarePipelining` header及2118行专属test
+均在能力迁入Q50.I/J/K后删除，source checker dormant表归零。Q50.K不宣称任一pipeline获益；serialized/pipeline/fused的global winner
+只由Q51完整physical candidate比较。
+fresh Q50.I–K/Q50.S/baseline定向unit 36/36、lit 216/216、source/IR organization及主构建通过；未运行重型LLaMA search。
 
 ## Q51 Closure：全轴联合正确性
 
