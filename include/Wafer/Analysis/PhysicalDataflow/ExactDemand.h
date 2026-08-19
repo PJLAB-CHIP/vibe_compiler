@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace mlir {
 class Operation;
@@ -122,10 +123,10 @@ enum class DemandEdgeKind : uint8_t {
 };
 
 /// Typed dependency descriptor: one producer result feeding one consumer
-/// operand. `supportChain` holds pure support operations (view/reshape/
+/// operand. `producerToConsumerChain` holds pure tensor transforms (view/reshape/
 /// slice/pad/insert_slice/concat-piece/transpose/cast) between the producer
 /// result and the consumer operand, in producer-to-consumer order. Each
-/// data-carrying predecessor of a multi-operand support operation forms its
+/// data-carrying predecessor of a multi-operand tensor transform forms its
 /// own dependency; a unary chain is never assumed.
 struct DemandDependency {
   uint32_t producerNode = 0;
@@ -133,7 +134,7 @@ struct DemandDependency {
   uint32_t consumerNode = 0;
   uint32_t consumerOperand = 0;
   DemandEdgeKind kind = DemandEdgeKind::DataInput;
-  llvm::SmallVector<mlir::Operation *, 4> supportChain;
+  llvm::SmallVector<mlir::Operation *, 4> producerToConsumerChain;
 };
 
 /// Verdict of one exact-demand query. Only ProvenLogicalInfeasible may delete
@@ -206,6 +207,77 @@ struct ExactDemandResult {
   std::optional<mlir::presburger::PresburgerSet> uncoveredWitness;
   TileRole role = TileRole::UniquePartition;
   bool mergeObligation = false;
+  std::string detail;
+};
+
+/// Reconstruction action admitted by the exact tensor-operand query.  The
+/// enum is deliberately closed: adding a tensor transform requires an exact
+/// transfer relation and a matching reconstruction law test in the same
+/// change.  Materialization consumes this value instead of rediscovering
+/// semantics from operation names or a second matcher.
+enum class TensorTransformKind : uint8_t {
+  ExpandShape,
+  CollapseShape,
+  ExtractSlice,
+  InsertSlice,
+  Pad,
+  Cast,
+};
+
+/// Exact read of one tensor operand of a tensor transform for one semantic
+/// destination Tile.  `demand` is expressed in that operand's index space.
+struct TensorTransformInputDemand {
+  uint32_t operand = 0;
+  std::optional<mlir::presburger::PresburgerSet> demand;
+};
+
+/// One local induction step of consumer input reconstruction. `outputDemand` is in
+/// the selected result's index space and `operandDemands` are the exact reads
+/// sufficient to reconstruct that result on the requested domain. Operation
+/// pointers are non-owning references into the immutable query epoch.
+struct TensorTransform {
+  mlir::Operation *operation = nullptr;
+  uint32_t result = 0;
+  TensorTransformKind kind = TensorTransformKind::Cast;
+  std::optional<mlir::presburger::PresburgerSet> outputDemand;
+  llvm::SmallVector<TensorTransformInputDemand, 2> operandDemands;
+};
+
+/// Structured-producer stop boundary reached by exact backward propagation.
+/// Empty `requiredDomain` is a first-class proof that this producer contributes
+/// nothing to this destination. It never becomes a physical edge action.
+struct ProducerValueRequirement {
+  uint32_t edge = 0;
+  uint32_t producerNode = 0;
+  uint32_t producerResult = 0;
+  mlir::Operation *producer = nullptr;
+  std::optional<mlir::presburger::PresburgerSet> requiredDomain;
+  llvm::SmallVector<ExactOwnershipIntersection, 8> ownershipIntersections;
+};
+
+/// Exact reconstruction recipe for one consumer operand on one destination
+/// Tile. Steps are in source block order, hence every preceding tensor value is
+/// available before its consumer. The object is query-local and carries no
+/// physical representation or route decision.
+struct ConsumerInputReconstruction {
+  TileId destinationTile{0};
+  std::optional<mlir::presburger::PresburgerSet> consumerExecutionDomain;
+  std::optional<mlir::presburger::PresburgerSet> operandDemand;
+  std::vector<TensorTransform> steps;
+  std::vector<ProducerValueRequirement> boundaries;
+};
+
+/// Grouped exact-demand verdict for one structured consumer operand. Unlike
+/// the per-edge query, this result retains the complete multi-producer tensor operand
+/// reconstruction and therefore makes exact-empty branches observable to the
+/// single apply without fabricating empty carriers.
+struct ConsumerInputDemand {
+  ExactDemandStatus status = ExactDemandStatus::IndeterminateFailure;
+  uint32_t consumerNode = 0;
+  uint32_t consumerOperand = 0;
+  mlir::Operation *consumer = nullptr;
+  DemandEdgeKind dependencyKind = DemandEdgeKind::DataInput;
+  std::vector<ConsumerInputReconstruction> perDestination;
   std::string detail;
 };
 

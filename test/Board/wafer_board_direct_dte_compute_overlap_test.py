@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the current source contract for Direct-DTE/compute overlap.
-
-The source and host oracle remain useful.  Executable matched comparison waits
-for the current global candidate selector to expose serialized and overlap
-schedules through the normal ``none`` and ``search`` policies; retired test-only
-selection environment variables are intentionally not supported.
-"""
+"""Validate the current source contract for Direct-DTE/compute overlap."""
 
 from __future__ import annotations
 
@@ -16,7 +10,7 @@ import shutil
 
 import torch
 
-import wafer_board_compiler_optimization_comparison_test as comparison
+import wafer_source_program_fixture as source_fixture
 
 
 ELEMENT_COUNT = 524288
@@ -42,28 +36,28 @@ def overlap_module() -> str:
 """
 
 
-def overlap_payloads() -> comparison.SourcePayloads:
-    lhs = comparison.random_f16((ELEMENT_COUNT,), 400)
-    rhs = comparison.random_f16((ELEMENT_COUNT,), 401)
-    return comparison.SourcePayloads((lhs, rhs), (((lhs + lhs) + (rhs * rhs)),))
+def overlap_payloads() -> source_fixture.SourcePayloads:
+    lhs = source_fixture.random_f16((ELEMENT_COUNT,), 400)
+    rhs = source_fixture.random_f16((ELEMENT_COUNT,), 401)
+    return source_fixture.SourcePayloads(
+        (lhs, rhs), (((lhs + lhs) + (rhs * rhs)),)
+    )
 
 
-CASE = comparison.OptimizationComparisonCase(
+CASE = source_fixture.SourceProgramCase(
     "direct-dte-compute-overlap",
-    "transport-compute-overlap",
     (
-        comparison.TensorSpec((ELEMENT_COUNT,), "f16", "float16"),
-        comparison.TensorSpec((ELEMENT_COUNT,), "f16", "float16"),
+        source_fixture.TensorSpec((ELEMENT_COUNT,), "f16", "float16"),
+        source_fixture.TensorSpec((ELEMENT_COUNT,), "f16", "float16"),
     ),
-    (comparison.TensorSpec((ELEMENT_COUNT,), "f16", "float16"),),
+    (source_fixture.TensorSpec((ELEMENT_COUNT,), "f16", "float16"),),
     overlap_module,
     overlap_payloads,
-    STRUCTURAL_CHECKS,
 )
 
 
 def validate_source_contract() -> None:
-    comparison.validate_source(CASE)
+    source_fixture.validate_source(CASE)
     module = CASE.module_factory()
     if any(
         marker in module
@@ -77,7 +71,7 @@ def validate_source_contract() -> None:
     ):
         if operation not in module:
             raise RuntimeError("overlap source dataflow is incomplete")
-    comparison.validate_payloads(CASE, CASE.payload_factory())
+    source_fixture.validate_payloads(CASE, CASE.payload_factory())
 
 
 def write_source(work_dir: pathlib.Path) -> pathlib.Path:
@@ -88,7 +82,8 @@ def write_source(work_dir: pathlib.Path) -> pathlib.Path:
     (source / "data").mkdir()
     (source / "functions" / "forward.mlir").write_text(CASE.module_factory())
     (source / "functions" / "forward.meta").write_text(
-        json.dumps(comparison.metadata(CASE), separators=(",", ":")) + "\n"
+        json.dumps(source_fixture.metadata(CASE), separators=(",", ":"))
+        + "\n"
     )
     return source
 
@@ -105,7 +100,7 @@ def main() -> int:
     write_source(args.work_dir)
     print(
         "direct_dte_compute_overlap_source_contract: "
-        "policies=none,search executable=false"
+        "executable=false"
     )
     return 0
 

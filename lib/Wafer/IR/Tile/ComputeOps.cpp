@@ -170,6 +170,11 @@ mlir::LogicalResult ComputeElementwiseOp::verify() {
                                        getIndexingMapsAttr());
 }
 
+mlir::LogicalResult ComputeElementwiseIntoOp::verify() {
+  return verifyElementwiseTileContract(getOperation(), getKindAttr().getValue(),
+                                       getInputs(), getDest().getType());
+}
+
 mlir::LogicalResult ComputeReduceOp::verify() {
   return verifyReduceTileContract(getOperation(), getInput(),
                                   getResult().getType());

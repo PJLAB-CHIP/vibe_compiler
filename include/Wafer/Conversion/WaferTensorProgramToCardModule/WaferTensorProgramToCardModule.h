@@ -4,6 +4,7 @@
 #ifndef WAFER_CONVERSION_WAFERTENSORPROGRAMTOCARDMODULE_H
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOCARDMODULE_H
 
+#include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 #include "Wafer/Target/TopologyIds.h"
 
@@ -15,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace wafer {
 
@@ -56,6 +58,11 @@ struct TileMapping {
   /// Demand, locality and remote fragments intentionally share this single
   /// carrier so CardModule materialization cannot observe a partial plan.
   llvm::SmallVector<SpatialEdgeStrategy, 16> edgeStrategies;
+  /// Exact grouped operand-demand recipes produced on the same immutable IR
+  /// epoch as the selected placement. These are the only authority for
+  /// rebuilding pure support values; exact-empty boundary demands deliberately
+  /// have no physical edge strategy.
+  std::vector<analysis::ConsumerInputDemand> operandDemands;
 };
 
 /// Invocation-local work performed while constructing one actual CardModule.
@@ -63,8 +70,6 @@ struct TileMapping {
 /// and are never serialized into IR or package metadata.
 struct CardModuleMaterializationStatistics {
   uint64_t tileEntryMaterializations = 0;
-  uint64_t regionClosureAnalyses = 0;
-  uint64_t regionClosureAnalysisOperations = 0;
   uint64_t maximumTileMaterializationWorkers = 1;
 };
 
@@ -97,9 +102,7 @@ mlir::LogicalResult lowerTensorProgramToCardModule(
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
     std::string *failureReason = nullptr,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-    StructuredMaterializationRelations *materializationRelations = nullptr,
-    llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>> observableOutputRootNodes =
-        {});
+    StructuredMaterializationRelations *materializationRelations = nullptr);
 
 class TileMaterializationSourceSession;
 
@@ -115,9 +118,7 @@ public:
   /// identity are not revalidated.
   static mlir::FailureOr<std::unique_ptr<TileMaterializationSession>> create(
       const TileMaterializationSourceSession &sourceSession,
-      const TileMapping &mapping, std::string *failureReason = nullptr,
-      llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>>
-          observableOutputRootNodes = {});
+      const TileMapping &mapping, std::string *failureReason = nullptr);
 
   /// Convenience boundary for callers that own only one mapping. Multi-trial
   /// controllers should create a TileMaterializationSourceSession once and
@@ -125,9 +126,7 @@ public:
   static mlir::FailureOr<std::unique_ptr<TileMaterializationSession>> create(
       mlir::ModuleOp sourceModule, CardId cardId, const TileMapping &mapping,
       std::string *failureReason = nullptr,
-      llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-      llvm::ArrayRef<llvm::SmallVector<uint32_t, 2>>
-          observableOutputRootNodes = {});
+      llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {});
 
   ~TileMaterializationSession();
   TileMaterializationSession(TileMaterializationSession &&) noexcept;

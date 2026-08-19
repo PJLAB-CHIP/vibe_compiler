@@ -53,19 +53,6 @@ def _binding(
     return CatalogBinding(asset, symbol, identifiers, identifier_field)
 
 
-COMPILER_OPTIMIZATION_CASES = (
-    "reciprocal-implementation",
-    "f16-common-factor",
-    "resident-fanout-share",
-    "consumer-local-recompute",
-    "long-steady-elementwise-add",
-    "ready-order-movement-first",
-    "gemm-aligned-physical-route",
-    "gemm-tail-physical-route",
-    "tree-all-reduce",
-    "noc-resident-large-gemm",
-    "noc-resident-m-tiled-gemm",
-)
 COLLECTIVE_CHARACTERIZATION_CASES = (
     "all-gather-direct-vs-ring-256b",
     "all-gather-direct-vs-ring-4096b",
@@ -194,33 +181,6 @@ UNREPRESENTABLE_BEHAVIOR_KEYS = tuple(
 
 
 FAMILIES = (
-    PendingCalibrationFamily(
-        key="production-optimizer-paired-qualification",
-        disposition=BLOCKED_EXTERNAL,
-        execution_scope="current-global-source-contract",
-        bindings=(
-            _binding(
-                "test/Board/wafer_compiler_optimization_comparison_cases.py",
-                "OPTIMIZATION_COMPARISON_CASES",
-                COMPILER_OPTIMIZATION_CASES,
-                "key",
-            ),
-        ),
-        board_ctests=(),
-        no_card_ctests=(),
-        runner_batch=None,
-        oracle=(
-            "same-current-global-source",
-            "deterministic-host-oracle",
-            "none-and-search-policy-intent",
-        ),
-        activation_gate=("current-global-lowering",),
-        host_ctests=("wafer-compiler-optimization-source-contract",),
-        blocker=(
-            "current global search must compile both none and search "
-            "policies before package or board comparison is valid"
-        ),
-    ),
     PendingCalibrationFamily(
         key="collective-algorithm-characterization",
         disposition=BLOCKED_EXTERNAL,

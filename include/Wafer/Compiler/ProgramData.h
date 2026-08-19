@@ -358,7 +358,8 @@ public:
   /// `storageParent` is a stable parent under which the handoff lazily creates
   /// a unique private directory. The handoff, not the compilation staging
   /// scope, removes that directory after all source handles are closed.
-  explicit ProgramDataHandoff(std::string storageParent = {});
+  explicit ProgramDataHandoff(std::string storageParent = {},
+                              bool collectIOStatistics = false);
   ProgramDataHandoff(ProgramDataHandoff &&other) noexcept;
   ProgramDataHandoff &operator=(ProgramDataHandoff &&other) noexcept;
   ~ProgramDataHandoff();
@@ -437,13 +438,14 @@ public:
       ProgramDataFailure *failure = nullptr);
 
   const ProgramDataIOStatistics &getIOStatistics() const {
-    assert(ioStatistics && "moved-from program data handoff has no ledger");
+    assert(ioStatistics && "program data I/O statistics were not requested");
     return *ioStatistics;
   }
   ProgramDataIOStatistics &getIOStatistics() {
-    assert(ioStatistics && "moved-from program data handoff has no ledger");
+    assert(ioStatistics && "program data I/O statistics were not requested");
     return *ioStatistics;
   }
+  bool hasIOStatistics() const { return static_cast<bool>(ioStatistics); }
 
 private:
   friend class ProgramDataRangeMaterialization;

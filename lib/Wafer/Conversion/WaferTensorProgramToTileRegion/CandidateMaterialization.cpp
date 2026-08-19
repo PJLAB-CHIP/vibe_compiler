@@ -12,7 +12,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
     int64_t currentLogicalPartition,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
-    StructuredMaterializationRelations *materializationRelations) {
+    StructuredMaterializationRelations *materializationRelations,
+    bool requireOneStructuredRootPerRegion) {
   if (failureReason)
     failureReason->clear();
   if (!sourceModule) {
@@ -41,6 +42,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
         "program function");
     return mlir::failure();
   }
+  if (mlir::failed(appendTileOutputDestinations(function, failureReason)))
+    return mlir::failure();
   if (mlir::failed(verifyTensorProgramScope(function, functionalArgumentCount,
                                             failureReason)))
     return mlir::failure();
@@ -102,7 +105,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
           /*verifyResult=*/true,
           /*populateFallbackFailureReason=*/true,
           /*peerEndpoints=*/{}, /*selectedDDRStages=*/{},
-          &emissionRelations, mappedOperationNodes)))
+          &emissionRelations, mappedOperationNodes,
+          requireOneStructuredRootPerRegion)))
     return mlir::failure();
 
   if (materializationRelations)

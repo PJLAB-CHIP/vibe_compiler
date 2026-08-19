@@ -378,17 +378,22 @@ source program
 - Q51完整new-search链闭合前不执行LLaMA `search`；Q49.P完成门禁中的单次fresh FP16 LLaMA只验证`none`功能链和work closure，
   不作候选质量profile。Q52再执行显式bounded LLaMA search scalability profile，Q53生成正式模型package/oracle/no-card；
   旧输出不回放为current证据。
+- Q49.P official no-card gate：
+  `timeout 240s ctest --test-dir build/q55-current-fresh -R '^wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card$' --output-on-failure`。
+  该测试必须从本轮source重新编译完整package；不得复用历史package。runner从source program读取`functions/forward.meta`，从
+  current package读取manifest/module/program-data，不读取或要求`package/functions`。2026-08-19 fresh结果为1/1、181.70秒。
 
 
 ## baseline 定向验证边界
 
-- 不使用 `CardExecutableSynthesisTest.*` 作为 baseline filter：该 wildcard 同时匹配 `Search*` case，会把旧搜索链和
-  长时间 placement 枚举带进本应有界的功能验证。使用 `CardExecutableSynthesisTest.None*`，再显式列出
+- baseline回归已经从旧search suite迁到`Compiler/Baseline/CardBaselineCompilationTest.cpp`；使用
+  `CardBaselineCompilationTest.*`。current `CardExecutableSearchTest.*`只验证Q51.Core空domain路由，不覆盖baseline功能，也不会进入
+  已删除的placement枚举。再显式列出
   `WaferTensorProgramToCardModuleTest.*`、`StructuredBufferRelationsTest.*`、`TileMemoryPlanningTest.*`和`PipelinesTest.*`；测试总数随current suite变化，
   不把固定数字写成合同。
 - baseline 工具链用 `wafer-compile-card-baseline` 的 CHAIN/CROSS/GEMM/no-card 定向 lit；Q51完整search链闭合前不运行重型
   LLaMA block。需要定位relation热路径时，用同结构小图和明确work count，
   不用大模型wall-time代替算法证据。
 - CardModule构造、各Tile lowering、DDR/index及target ABI阶段都按独立Tile使用bounded executor；真实板端launch仍串行。
-  “16 Tile并发”不能掩盖重复整图分析：ledger同时记录Tile entry数、公共region闭包分析数/operation数、CardModule/Q50.0一一对应和
+  “16 Tile并发”不能掩盖重复整图分析：显式timing/测试计数同时记录Tile entry数、公共analysis构造数、CardModule/Q50.0一一对应和
   两段maximum workers。相同descriptor复用analysis，不同tail/offset/communication仍构造各自actual IR。

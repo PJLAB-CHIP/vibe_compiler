@@ -7,25 +7,30 @@ add_executable(WaferUnitTests
   Analysis/PhysicalDataflow/ExactDemandTest.cpp
   Analysis/ScheduleCostAnalysisTest.cpp
   Analysis/StaticBufferRangeTest.cpp
-  Compiler/CompilationOutputTest.cpp
-  Compiler/CompilationTest.cpp
-  Compiler/CardExecutableCompilationTest.cpp
-  Compiler/CardExecutableLoweringTest.cpp
-  Compiler/DirectDTETransportTest.cpp
-  Compiler/ProgramTensorComparisonTest.cpp
-  Compiler/TileMemoryPlanningTest.cpp
-  Compiler/StructuredBufferRelationsTest.cpp
-  Compiler/TargetABIPreparationTest.cpp
-  Compiler/TargetCodeGenTest.cpp
-  Compiler/TargetCallFrontendTest.cpp
-  Compiler/TargetIdentityTest.cpp
-  Compiler/StructuredDAGScheduleTest.cpp
-  Compiler/StructuredDAGEdgeStrategyPlanTest.cpp
-  Compiler/StructuredDAGExactDemandQueryTest.cpp
-  Compiler/StructuredDAGPlacementEnumerationTest.cpp
-  Compiler/ProgramResourceVerificationTest.cpp
-  Compiler/CardExecutableSynthesisTest.cpp
-  Compiler/ProgramDataTest.cpp
+  Compiler/Pipeline/CompilationOutputTest.cpp
+  Compiler/Pipeline/CompilationTest.cpp
+  Compiler/TestSupport/CardExecutableTestSupport.cpp
+  Compiler/Baseline/CardBaselineCompilationTest.cpp
+  Compiler/Baseline/CardBaselinePlacementTest.cpp
+  Compiler/Executable/CardExecutableCompilationTest.cpp
+  Compiler/Executable/CardExecutableLoweringTest.cpp
+  Compiler/Executable/SelectedBufferMaterializationTest.cpp
+  Compiler/Transport/DirectDTETransportTest.cpp
+  Compiler/Program/ProgramTensorComparisonTest.cpp
+  Compiler/Executable/TileMemoryPlanningTest.cpp
+  Compiler/Planning/StructuredBufferRelationsTest.cpp
+  Compiler/Target/TargetABIPreparationTest.cpp
+  Compiler/Target/TargetCodeGenTest.cpp
+  Compiler/Target/TargetCallFrontendTest.cpp
+  Compiler/Target/TargetIdentityTest.cpp
+  Compiler/Planning/StructuredDAGEdgeStrategyPlanTest.cpp
+  Compiler/Planning/StructuredDAGExactDemandQueryTest.cpp
+  Compiler/Planning/StructuredOperationTileFootprintTest.cpp
+  Compiler/Planning/TemporalTileShapeTest.cpp
+  Compiler/Executable/ProgramResourceVerificationTest.cpp
+  Compiler/Search/CardExecutableSearchTest.cpp
+  Compiler/Search/SearchControlTest.cpp
+  Compiler/Program/ProgramDataTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp
   Conversion/WaferCardModuleToTileModulesTest.cpp

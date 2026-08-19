@@ -106,7 +106,7 @@ TEST(ExactDemandTest, TrialCarriesExplicitDomainsRolesAndEpoch) {
   dependency.consumerNode = 7;
   dependency.consumerOperand = 1;
   dependency.kind = DemandEdgeKind::InitInput;
-  EXPECT_TRUE(dependency.supportChain.empty());
+  EXPECT_TRUE(dependency.producerToConsumerChain.empty());
 
   ExactDemandResult result;
   EXPECT_EQ(result.status, ExactDemandStatus::IndeterminateFailure);

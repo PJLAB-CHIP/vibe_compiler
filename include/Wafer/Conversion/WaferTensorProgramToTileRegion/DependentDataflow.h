@@ -3,6 +3,7 @@
 #ifndef WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_DEPENDENTDATAFLOW_H
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_DEPENDENTDATAFLOW_H
 
+#include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Target/TopologyIds.h"
@@ -19,11 +20,13 @@
 
 namespace wafer {
 
-/// Query-local lowering contract selected by the owning controller.  Search
-/// candidates use JointDataflow.  The deterministic no-fusion baseline uses
-/// IndependentDDRStages so every structured op is separated by an explicit
-/// compiler-owned DDR/TileRegion boundary.  Lowering must never infer this
-/// choice from a coincidental combination of edge actions.
+/// Query-local lowering contract selected by the owning controller. Search
+/// candidates use JointDataflow. The deterministic no-fusion baseline uses
+/// IndependentDDRStages so every structured data dependency is separated by
+/// an explicit compiler-owned DDR/TileRegion boundary. Consumer-owned DPS
+/// initialization, such as a scalar fill directly absorbed by a reduction,
+/// stays in that consumer root and does not invent a data carrier. Lowering
+/// must never infer this choice from a coincidental combination of actions.
 enum class SpatialDataflowMaterializationMode : uint8_t {
   JointDataflow,
   IndependentDDRStages,
@@ -31,7 +34,7 @@ enum class SpatialDataflowMaterializationMode : uint8_t {
 
 /// One query-local physical treatment of a structured SSA dependency. A
 /// dependency may be direct or may cross a statically provable unary pure
-/// support chain such as expand/collapse shape. This is the only carrier
+/// producer-to-consumer tensor chain such as expand/collapse shape. This is the only carrier
 /// between structured-DAG selection and actual CardModule materialization: it
 /// is never persisted, serialized, or recovered from an operation name/ordinal.
 enum class SpatialEdgeAction : uint8_t {
@@ -122,18 +125,18 @@ struct SpatialEdgeStrategy {
 /// scheduling TensorProgram.  The array is positionally paired with the
 /// caller's edge-strategy array and never enters IR or candidate identity.
 struct SpatialEdgeMaterializationFacts {
-  bool hasSupportPath = false;
+  bool hasProducerToConsumerChain = false;
   uint64_t consumerScheduleOrdinal = 0;
 };
 
-/// Returns the topologically ordered pure support path connecting one selected
+/// Returns the topologically ordered pure producer-to-consumer tensor chain connecting one selected
 /// structured producer result to one selected structured consumer operand. A
 /// direct dependency returns an empty path. Support operations may join other
 /// structured results; those are separate explicit edge strategies and must
 /// all be rebound before materialization. The selected producer itself must
 /// reach the operand through exactly one path.
 mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
-deriveUnaryPureSupportChain(mlir::Operation *producer, unsigned producerResult,
+traceProducerToConsumerChain(mlir::Operation *producer, unsigned producerResult,
                             mlir::Operation *consumer, unsigned consumerOperand,
                             std::string *failureReason = nullptr);
 
@@ -169,7 +172,9 @@ mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles = {},
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr,
-    llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts = {});
+    llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts = {},
+    llvm::ArrayRef<analysis::ConsumerInputDemand> operandDemands = {},
+    bool requireOneStructuredRootPerRegion = false);
 
 } // namespace wafer
 

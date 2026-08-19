@@ -16,8 +16,8 @@ import sys
 import torch
 
 import wafer_board_complete_tile_add_test as profile_support
-import wafer_board_compiler_optimization_comparison_test as source_contract
 import wafer_runtime_launch_contract as runtime_launch
+import wafer_source_program_fixture as source_fixture
 
 
 PYTORCH_BOARD_DIR = pathlib.Path(__file__).resolve().parent / "PyTorch"
@@ -27,12 +27,51 @@ if str(PYTORCH_BOARD_DIR) not in sys.path:
 import wafer_pytorch_board_common as torch_reference  # noqa: E402
 
 
-CASE_KEY = "noc-resident-m-tiled-gemm"
-CASE = source_contract.CASES[CASE_KEY]
-TILE_COUNT = source_contract.TILE_COUNT
+TILE_COUNT = 16
+GEMM_M = 4096
+GEMM_K = 1024
+GEMM_N = 4096
 TARGET_IDENTITY = "wafer-tx81-single-card"
 STATUS_ABI = "wafer-direct-dte-status"
 PROCESS_TIMEOUT_MARGIN_SECONDS = 60
+
+
+def gemm_module() -> str:
+    return f"""module {{
+  func.func @main(%lhs: tensor<{GEMM_M}x{GEMM_K}xf16>,
+                  %rhs: tensor<{GEMM_K}x{GEMM_N}xf16>)
+      -> tensor<{GEMM_M}x{GEMM_N}xf16> {{
+    %result = "stablehlo.dot_general"(%lhs, %rhs) {{
+      dot_dimension_numbers = #stablehlo.dot<
+        lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>,
+      precision_config = [#stablehlo<precision DEFAULT>,
+                          #stablehlo<precision DEFAULT>]
+    }} : (tensor<{GEMM_M}x{GEMM_K}xf16>, tensor<{GEMM_K}x{GEMM_N}xf16>)
+      -> tensor<{GEMM_M}x{GEMM_N}xf16>
+    return %result : tensor<{GEMM_M}x{GEMM_N}xf16>
+  }}
+}}
+"""
+
+
+def gemm_payloads() -> source_fixture.SourcePayloads:
+    lhs = source_fixture.random_f16((GEMM_M, GEMM_K), 300)
+    rhs = source_fixture.random_f16((GEMM_K, GEMM_N), 301)
+    return source_fixture.SourcePayloads(
+        (lhs, rhs), (torch.matmul(lhs, rhs),)
+    )
+
+
+CASE = source_fixture.SourceProgramCase(
+    "m-tiled-gemm",
+    (
+        source_fixture.TensorSpec((GEMM_M, GEMM_K), "f16", "float16"),
+        source_fixture.TensorSpec((GEMM_K, GEMM_N), "f16", "float16"),
+    ),
+    (source_fixture.TensorSpec((GEMM_M, GEMM_N), "f16", "float16"),),
+    gemm_module,
+    gemm_payloads,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -103,8 +142,8 @@ def write_source_program(work_dir: pathlib.Path) -> pathlib.Path:
             child.unlink()
         elif child.is_dir():
             shutil.rmtree(child)
-    source_contract.validate_source(CASE)
-    return source_contract.write_source(work_dir, CASE)
+    source_fixture.validate_source(CASE)
+    return source_fixture.write_source(work_dir, CASE)
 
 
 def compile_package(
@@ -256,7 +295,7 @@ def write_payloads(
     bindings: dict[tuple[str, int], int],
 ) -> tuple[list[str], pathlib.Path, torch.Tensor]:
     values = CASE.payload_factory()
-    source_contract.validate_payloads(CASE, values)
+    source_fixture.validate_payloads(CASE, values)
     raw = work_dir / "raw"
     raw.mkdir()
     arguments: list[str] = []

@@ -61,7 +61,7 @@ Wafer对应实现是必要隔离、最终output构造、可测量trade-off，还
 | pipeline | active compiler 只由统一 runner 构造 production PassManager；16 个 atomic pass 组成 7 条常驻 named semantic pipeline，另有 1 条 Shardy 条件 pipeline；textual pipeline、production builder、nested anchor 与 statistics 共享事实源 |
 | rewrite/conversion | active pattern 不持有 rollback 外 mutable failure state；validation 先于 mutation，greedy rewrite 限定 affected roots，Tile dataflow marker 使新增 source op fail closed，简单 Fill rewrite 使用 DRR，复杂 layout/index/resource lowering保留 C++ |
 | transaction/error | pattern callback保持局部mutation纪律；普通pass、显式事务API和compiler output transaction分别说明失败后的IR是否仍可使用。required-join的validate/replay、StableHLO与target的root snapshot逐项按caller ownership复核，不能从“失败原子”直接推出必须clone或必须删除；IR侧继续使用MLIR result/diagnostic，host/output侧使用typed result/error，不解析诊断字符串控制流程 |
-| search/materialization relation | assignment/query/apply分离；是否同时保留多个actual candidate、是否以trace/config重物化，取决于analytic search、compile-and-measure autotuning、持久化tuning database和明确RSS/work预算。Q51.Core仍删除旧string gate与旧controller，但未来设计不能把“单一live materialization”写成成熟compiler通则 |
+| search/materialization relation | assignment/query/apply分离；是否同时保留多个actual candidate、是否以trace/config重物化，取决于analytic search、compile-and-measure autotuning、持久化tuning database和明确RSS/work预算。Q51.Core已删除旧string gate、旧controller和无合同winner replay；未来设计仍不能把“单一live materialization”写成成熟compiler通则 |
 | target/runtime/model layering | pure physical layout、target operation/transaction 与 numeric protocol不依赖 MLIR；MLIR adapter、host frontend和model consumer按 output 单向分层，public-header/link-closure在 feature on/off 均受测 |
 | source/build/test truth | active/dormant source由18号CMake政策和organization checker唯一判定；fresh generated/build、public link smoke、unit/lit、IR/source checker和受影响模型测试共同防止 stale build 假通过 |
 
@@ -82,7 +82,7 @@ Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆�
 | Frontend | parse schema、metadata、typed compile result和IR验证边界分离 | 外部字符串只允许停在解析边界 |
 | StableHLO/Linalg | normalization、legalization、bounded simplification保持语义stage与bounded work | 核对普通pass caller是否会继续使用失败IR；若不会，删除root snapshot；若API明确承诺保留输入，则将transaction放在该API边界而不是机械套在每个pass上 |
 | SPMD/Sharding | TableGen声明、全量validation、module级mesh/signature边界和feature-off gate闭合 | 外部 XLA helper保持其原生 pass/status 边界 |
-| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次clone以`IRMapping`维护关系 | Q49.P继续闭合baseline deterministic feasibility legalization、single-root region、最窄合法probe scope、direct typed witness和唯一完整card materialization |
+| Card/Tile materialization | semantic Location和synthetic wrapper移除；同次局部复制以`IRMapping`维护关系；Tile body在Card→Tile fan-out中直接move | Q49.P已闭合deterministic legalization、single-root region、direct typed witness和唯一actual CardModule；不保留region/function capacity probe |
 | TileRegion→Instr | region-anchored conversion、frozen patterns、marker fail-closed legality、DRR和function NCC join pipeline闭合 | function outstanding access保持 Func scope |
 | Memory planning | SPM/DDR plan-then-apply、timeline/call analysis与preservation闭合 | shared arena与DDR仍是 function/module 合同 |
 | Search/scheduling | assignment/evaluation/transition拆分，current-IR relation替代pointer/print identity，enumeration名称说明真实动作 | Q50/Q51拥有候选域和选择语义，不由Q54另建selector |
@@ -310,40 +310,39 @@ verifier，不能把unknown全legal的`applyFullConversion`当作闭合证明。
 
 | 现有位置 | 当前owner与产物命运 | 判定与处置 |
 | --- | --- | --- |
-| CardModule→16个Tile module、I/O declaration/topology复制 | 每个clone进入独立最终Tile output | 保留output fan-out；核对稳定Tile/launch identity和最终并发汇合 |
+| CardModule→16个Tile module | 每个Tile body直接move进入唯一最终Tile output；只有每个output都需要的小型card-shared declaration按`IRMapping`复制 | 保留output fan-out；不复制大型Tile body，并按稳定Tile/launch identity并发汇合 |
 | `prepareTargetABI` | 从可复用`CardExecutable`构造一个target/profile variant的私有Module，随后翻译为保留的LLVM output | 保留表示边界；每个被请求的真实variant只执行一次，不在CardExecutable构造时提前推导并丢弃同一变换计划 |
-| TensorProgram→Card/TileRegion candidate materialization | source需保持可重用；clone是一个actual candidate的工作IR，结果或其子树进入Card/Tile output | 不是pass rollback。先记录每candidate次数、峰值RSS和所需symbol closure，再决定是否缩scope；Q52不能预设只能保留一个actual candidate |
+| TensorProgram→Card/TileRegion materialization | source保持只读；一次mapping session只复制最终single-root TileRegion实际需要的局部operation，结果直接进入该actual Card/Tile output | 不是pass rollback，也不允许先复制完整DAG再裁剪；Q52只共享current IR可重算的immutable analysis，不缓存或重放materialized IR |
 | Shardy helper输入 | source继续供compiler使用，clone经删减后序列化给外部helper | 保留显式外部output projection |
-| TileRegion/Func SPM capacity evaluation | query必须观察Instr lowering与packing后的事实，scratch结束即销毁 | 保留显式destructive query scratch；删除scratch内部再次clone同一region的NCC rebuild |
+| 已退役的TileRegion/Func SPM capacity evaluation | 旧query为观察Instr lowering与packing构造scratch，随后actual候选又重复相同工作 | Q49已删除这条baseline probe；容量只由actual CardModule进入Q50.0后的真实Instr lowering与memory planning判定 |
 | StableHLO folding/normalization和target lowering pass的Module snapshot | caller通过compiler output owner或pass manager处理失败；成功只`takeBody`回同一root | 按普通pass复核并移除没有外部preserve-input承诺的snapshot；保留DialectConversion自身事务 |
 | required-NCC pass的validate-transform-replay | clone Func运行完整变换后又在原Func运行同一变换 | 普通pass内重复工作，改为一次in-place apply；若public API明确承诺失败保留输入，可在该API边界保留一次显式transaction |
 | selected-buffer materialization | `planTileMemory`及定向机制调用都把owned Module交给actualization；失败后该IR不再有consumer | API按值消费`OwningOpRef`并只在成功时返回同一Module；in-place apply失败直接随owner销毁，不提供会迫使production额外clone的preserve-input旁路 |
 | CardExecutable与target output | CardExecutable曾为每个Tile推导target ABI计划并丢弃，最终output又推导、应用、lower和translate | 删除前一调用；CardExecutable只验证自身IR边界，最终output对每个被保留variant完整执行一次，16 Tile按稳定index并发汇合 |
-| 旧search accepted cohort/winner replay | actual Instr被清空，只保留assignment、cost和schedule summary，winner重跑完整exact gate | 与TVM trace replay不同：当前没有持久化trace/base版本合同，且重复target gate；Q51.Core仍按既定cutover删除旧controller。未来是否重放由new search的representation与实测预算重新决定 |
-| dormant rank/coordinated/physical-dataflow sources | 不在active CMake，但仍含whole-module clone和可能独有proof/mechanism | 依18先做能力迁移分类；不能因clone关键词直接删除，也不能未经复核重新激活 |
+| 旧search accepted cohort/winner replay | actual Instr被清空，只保留assignment、cost和schedule summary，winner重跑完整exact gate | Q51.Core已删除；当前没有持久化trace/base版本合同。未来是否重放由new search的representation与实测预算重新决定，不能恢复旧controller |
+| dormant physical-dataflow axis sources | 不在active CMake，仍可能含whole-module clone和独有mechanism | 依18先做能力迁移分类；由对应Q50 axis逐项extract-then-delete，不能因clone关键词直接删除，也不能未经复核重新激活 |
 
-本轮对current source registration逐调用点复核后的root/materialization账本如下。这里列全root clone、完整target lowering和
+本轮对current source registration逐调用点复核后的root/materialization清单如下。这里列全root clone、完整target lowering和
 output fan-out；`PatternRewriter::clone`形成最终loop/body/resource语义的局部clone不与root transaction混算，但仍必须遵守
 rewriter与`IRMapping`合同。
 
 | current调用点 | registration与每次compile次数 | owner、失败与artifact命运 | 处置 |
 | --- | --- | --- | --- |
 | `CompilationOrchestration`的Shardy helper Module | active条件路径；每次外部helper调用一次 | transaction拥有；删去target topology后序列化为helper input，失败随transaction销毁 | 保留外部output projection |
-| `prepareTileMaterialization`的TensorProgram scheduling Module | active；每个actual Card/Tile materialization一次 | materializer拥有；通过`IRMapping`携带node/temporal关系，结果继续形成Card/Tile IR | 保留actual candidate，Q52只按实测work/RSS决定是否缩scope |
-| `lowerSpatialOutputShardsToTileRegionModule`与`lowerSpatialEdgeStrategiesToTileRegionModule` | active；每个被请求的actual Tile candidate各一次 | 输出参数获得完整candidate Module；失败candidate销毁，source保持可复用 | 保留actual candidate；禁止把post-hoc repair或第二selector塞入该边界 |
-| CardModule→Tile modules中的declaration、topology、mesh和body复制 | active；每个最终Tile output一次 | fan-out owner构造16个独立下游Module，全部被CardExecutable消费 | 保留output fan-out并按Tile/LaunchSlot identity汇合 |
+| `TileMaterializationSourceSession`与mapping-local `TileMaterializationSession` | active；immutable source facts每次baseline invocation建立一次，每个actual coordinate建立一次mapping session | source保持只读；最终single-root region只复制typed demand recipe要求的局部operation，不存在完整DAG scratch或post-hoc rebuild | 保留一次query/一次apply边界；Q52只按实测work/RSS决定共享哪些可重算analysis |
+| `lowerSpatialOutputShardsToTileRegionModule`与`lowerSpatialEdgeStrategiesToTileRegionModule` | active；每个被请求的actual Tile candidate各一次 | 输出参数获得直接消费的candidate Module；失败candidate销毁，source保持可复用 | 保留actual candidate；禁止把post-hoc repair、replay或第二selector塞入该边界 |
+| CardModule→Tile modules中的declaration、topology、mesh和Tile body fan-out | active；每个最终Tile output一次 | Tile body从CardModule直接move到唯一owner；每个Tile都需要的小型shared declaration按`IRMapping`复制 | 保留output fan-out并按Tile/LaunchSlot identity汇合；禁止复制大型Tile body |
 | Q49已删除的TileRegion/function capacity probe | 不再属于active baseline；旧实现曾为每个root/Tile构造并销毁scratch IR | 实际CardModule直接进入一次Q50.0 exact gate，accepted owner继续成为`CardExecutable` | probe API、实现、测试和CMake registration已同批删除；容量证据只由实际候选的Instr lowering与memory planning产生 |
-| function SPM probe | active baseline query；每次scope escalation一次 | 调用方直接move detached单entry Module和current relations，probe内不clone Func/Module | 保留query，失败后整个owner销毁 |
-| `prepareTargetABI`的per-Tile Module | active retained output；ordinary/profile每个被请求variant、每Tile一次 | target output owner拥有，成功继续lower、ABI readback和LLVM translation | 保留表示边界；真实work ledger计数 |
+| `prepareTargetABI`的per-Tile Module | active retained output；ordinary/profile每个被请求variant、每Tile一次 | target output owner拥有，成功继续lower、ABI readback和LLVM translation | 保留表示边界；只在显式timing/diagnostic请求中记录次数 |
 | `SelectedBufferMaterialization` | active actualization；每次selected request最多一次 | `planTileMemory`按值移交独占Module，成功返回同一owner，失败销毁；没有root clone | 已改为single in-place apply |
-| `LLVM_OPTIONAL_SOURCES`中的rank/coordinated旧search（含`LowerRankInstrModules` target gate） | CMake明确不链接；production不可达 | 仍含candidate root clone和完整但被丢弃的target验证，只有旧source/test资产消费 | Q51.Core先迁移独有proof/negative witness，再整岛删除，不重新激活 |
+| 已退役rank/coordinated旧search（含`LowerRankInstrModules` target gate） | production不可达，源码、测试与CMake清单均已删除 | 独有current-SSA DAG facts、baseline placement closure和negative witness已迁入active typed owner并受测 | Q51.Core完成，不恢复adapter、旧target gate或source-marker合同 |
 | 未注册的`Transforms/PhysicalDataflow`、`Scheduling/FixedSlotPipeline`、`WorkerPlacement` | dormant；production不可达 | 含旧whole-Module candidate clone/`takeBody`及局部mechanism实现 | 由Q50对应axis逐项extract-then-delete；Q64核对最终registration mirror |
 
 复核后active pass中不存在whole-root `takeBody`提交或validate-transform-replay；active完整target lowering只在最终保留output中
 执行。dormant/optional代码不是“已经没问题”，而是有明确迁移/删除owner且在完成迁移前不得重启的旧能力输入。
 
-真实执行点要记录clone/materialize/lower次数，而不是只统计外层API。Q54完成门禁扫描active source；dormant source则由
-18/Q51/Q50明确承接或删除，不能用“未编译”代替设计判断。
+性能或整改验证显式开启时，真实执行点记录clone/materialize/lower次数，而不是只统计外层API；普通编译不创建统计对象、
+不打印这些数据。Q54完成门禁扫描active source；dormant source则由18/Q51/Q50明确承接或删除，不能用“未编译”代替设计判断。
 
 ### 7.3 历史形成路径与仍需验证的解释
 
@@ -357,7 +356,7 @@ rewriter与`IRMapping`合同。
 
 共同薄弱点是这些变更没有同时记录decision representation、失败后谁继续持有IR、clone是否成为output、每次compile实际执行
 多少次以及memory/work的量化取舍。因此测试很容易把一个API的preserve-input需求扩散成所有pass的习惯，或把一次RSS优化
-扩散成无版本合同的通用replay。本轮先通过逐调用点ledger和fresh work统计验证这个解释；验证前不把它写成全仓永久原则。
+扩散成无版本合同的通用replay。本轮先通过逐调用点清单和显式开启的fresh work统计验证这个解释；验证前不把它写成全仓永久原则。
 
 ### 7.4 本轮review字段
 

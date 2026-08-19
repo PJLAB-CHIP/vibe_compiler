@@ -14,10 +14,15 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <utility>
+
+namespace wafer::analysis {
+struct SingleExecutionRegionFlow;
+}
 
 namespace wafer::memory_planning::detail {
 
@@ -235,9 +240,19 @@ private:
   void mapIfResults(mlir::Operation *op);
   void mapForRegionIterArgs(mlir::Operation *op);
   mlir::LogicalResult mapForResultsAndBackedge(mlir::Operation *op,
+                                               size_t refWriteBegin,
+                                               size_t originWriteBegin,
+                                               size_t demandUseBegin,
                                                LifetimeFailure *failure);
-  void mapSingleExecutionRegionBlockArgs(mlir::Operation *op);
-  void mapSingleExecutionRegionResults(mlir::Operation *op);
+  void mapSingleExecutionRegionBlockArgs(
+      mlir::Operation *op, const analysis::SingleExecutionRegionFlow &flow);
+  void mapSingleExecutionRegionResults(
+      mlir::Operation *op, const analysis::SingleExecutionRegionFlow &flow);
+  void markValueRefCacheCurrent(mlir::Value value);
+  void markValueOriginCacheCurrent(mlir::Value value);
+  void invalidateLoopLocalValueCaches(mlir::Operation *loop,
+                                      size_t refWriteBegin,
+                                      size_t originWriteBegin);
   mlir::Value normalize(mlir::Value value) const;
   void recordUse(RootRef ref, int64_t event);
   llvm::SmallVector<AsyncTaskRef, 2> asyncTasksAt(mlir::Value handle,
@@ -255,16 +270,34 @@ private:
   TrackedTypePredicate isTrackedType;
   ValueResolver resolveValue;
   ExplicitRootPredicate isExplicitRoot;
+  // The resolver follows immutable SSA alias/container edges during one
+  // dataflow run. Memoize and path-compress those walks so a sequential chain
+  // of region boundaries is traversed once rather than once per downstream
+  // use. The cache is invocation-local and is cleared before every run.
+  mutable llvm::DenseMap<mlir::Value, mlir::Value> normalizedValues;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> valueRefs;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<ValueOriginRef, 2>>
       valueOrigins;
-  // A loop backedge is discovered after its body has been visited. Cache
-  // entries produced in that body must be recomputed against the completed
-  // recurrence union, while entries created afterwards can stop recursive
-  // alias walks immediately.
+  // Forward mappings can prove that an SSA value has no tracked root. Keep
+  // that path coverage separately from the (therefore empty) root vectors so
+  // long chains of region boundaries do not repeatedly reopen their complete
+  // producer prefix.
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<PathCondition, 2>>
+      valueRefCacheCoverage;
+  llvm::DenseMap<mlir::Value, llvm::SmallVector<PathCondition, 2>>
+      valueOriginCacheCoverage;
+  // A loop backedge is discovered after its body has been visited. Only cache
+  // entries defined inside that loop may depend on the incomplete recurrence;
+  // sibling and enclosing SSA mappings remain valid.
   uint64_t valueCacheRevision = 1;
   llvm::DenseMap<mlir::Value, uint64_t> valueRefCacheRevisions;
   llvm::DenseMap<mlir::Value, uint64_t> valueOriginCacheRevisions;
+  // Cache writes are recorded in traversal order. A loop invalidates only
+  // mappings written while visiting its body, rather than scanning every
+  // value seen earlier in the containing function.
+  llvm::SmallVector<mlir::Value, 16> valueRefCacheWrites;
+  llvm::SmallVector<mlir::Value, 16> valueOriginCacheWrites;
+  llvm::SmallVector<unsigned, 16> demandUseWrites;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<RootRef, 2>> asyncRefs;
   llvm::DenseMap<mlir::Value, llvm::SmallVector<AsyncTaskRef, 2>> asyncTaskRefs;
   llvm::SmallVector<AsyncTaskState, 4> asyncTasks;

@@ -1,0 +1,10 @@
+set(WAFER_COMPILER_EXECUTABLE_SOURCES
+  Executable/ExecutableCallClosure.cpp
+  Executable/CardExecutableCompilation.cpp
+  Executable/CardExecutableLowering.cpp
+  Executable/CardExecutable.cpp
+  Executable/TileMemoryPlanning.cpp
+  Executable/SpmdCompilationBridge.cpp
+  Executable/SelectedBufferMaterialization.cpp
+  Executable/ProgramResourceVerification.cpp
+  PARENT_SCOPE)

@@ -4,6 +4,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/Verifier.h"
 #include <algorithm>
 #include <limits>
 
@@ -45,6 +46,28 @@ mlir::func::FuncOp findSingleStandaloneTensorProgram(mlir::ModuleOp module) {
     found = function;
   });
   return multiple ? mlir::func::FuncOp{} : found;
+}
+
+mlir::LogicalResult
+appendTileOutputDestinations(mlir::func::FuncOp program,
+                             std::string *failureReason) {
+  for (mlir::Type resultType : program.getResultTypes()) {
+    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(resultType);
+    if (!tensorType || !tensorType.hasStaticShape()) {
+      setFailureReason(
+          failureReason,
+          "Tile output destinations require static ranked results");
+      return mlir::failure();
+    }
+    program.insertArgument(program.getNumArguments(), resultType,
+                           mlir::DictionaryAttr{}, program.getLoc());
+  }
+  if (mlir::failed(mlir::verify(program))) {
+    setFailureReason(failureReason,
+                     "private Tile output boundary is not verifier-legal");
+    return mlir::failure();
+  }
+  return mlir::success();
 }
 
 mlir::LogicalResult verifyTensorProgramScope(mlir::func::FuncOp function,

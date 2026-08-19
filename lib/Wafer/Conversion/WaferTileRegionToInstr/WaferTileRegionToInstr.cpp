@@ -86,14 +86,15 @@ populateTileRegionToInstrPatterns(mlir::RewritePatternSet &patterns) {
 /// after the tile body has already materialized its splat.  Keeping that
 /// write would turn a dead i1 value into a real target TDMA command, where the
 /// hardware profile correctly rejects the unproven BOOL encoding.
-static void eraseDeadPrivateFills(mlir::Operation *root) {
+static void eraseDeadPrivateFills(mlir::Operation *root,
+                                  mlir::RewriterBase::Listener *listener) {
   llvm::SmallVector<InstrFillOp, 4> deadFills;
   root->walk([&](InstrFillOp fill) {
     mlir::Value dest = fill.getDest();
     if (dest.hasOneUse() && dest.getDefiningOp<mlir::memref::AllocOp>())
       deadFills.push_back(fill);
   });
-  mlir::IRRewriter rewriter(root->getContext());
+  mlir::IRRewriter rewriter(root->getContext(), listener);
   for (InstrFillOp fill : deadFills) {
     mlir::Value dest = fill.getDest();
     mlir::Value scalar = fill.getValue();
@@ -1108,7 +1109,7 @@ wafer::convertTileRegionToInstr(TileRegionOp region,
   {
     wafer::support::ScopedCompileTimingSpan timing(
         "lowering-phase", "tile-region-to-instr", "dead-private-fill-erasure");
-    eraseDeadPrivateFills(region.getOperation());
+    eraseDeadPrivateFills(region.getOperation(), listener);
   }
   return mlir::success();
 }

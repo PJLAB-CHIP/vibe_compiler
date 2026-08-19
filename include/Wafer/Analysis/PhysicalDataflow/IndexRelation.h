@@ -270,6 +270,15 @@ struct IndexSetResult {
   /// equal to the complete set; a bounding box is never accepted as demand.
   StaticRectangularIndexSetResult getExactStaticRectangularDomain(
       const IndexRelationLimits &limits = IndexRelationLimits()) const;
+
+  /// Recover every stored disjunct as one dense static rectangle without
+  /// invoking Presburger subtraction, subset, lexicographic optimization, or
+  /// coalescing. This is the bounded path for sets that are deliberately
+  /// assembled as unions of rectangular execution/ownership pieces. If any
+  /// disjunct is not already a direct rectangular conjunction, the query
+  /// fails closed instead of asking the generic solver to rediscover it.
+  StaticRectangularIndexSetPiecesResult getExactStaticRectangularDisjuncts(
+      const IndexRelationLimits &limits = IndexRelationLimits()) const;
 };
 
 struct StaticRectangularIndexSet {

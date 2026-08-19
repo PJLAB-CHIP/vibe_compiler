@@ -519,6 +519,28 @@ public:
   }
 };
 
+class ElementwiseIntoLowering
+    : public mlir::OpRewritePattern<ComputeElementwiseIntoOp> {
+public:
+  ElementwiseIntoLowering(mlir::MLIRContext *context)
+      : mlir::OpRewritePattern<ComputeElementwiseIntoOp>(context) {}
+
+  mlir::LogicalResult
+  matchAndRewrite(ComputeElementwiseIntoOp op,
+                  mlir::PatternRewriter &rewriter) const final {
+    ScopedLoweringPatternTiming timing(op.getOperation());
+    mlir::FailureOr<InstrElementwiseKindAttr> instrKind =
+        getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr());
+    if (mlir::failed(instrKind))
+      return mlir::failure();
+    rewriter.create<InstrElementwiseOp>(
+        op.getLoc(), *instrKind, op.getInputs(), op.getDest(),
+        getDefaultNCCWorkerAttr(rewriter));
+    rewriter.eraseOp(op);
+    return mlir::success();
+  }
+};
+
 class ReduceLowering : public mlir::OpRewritePattern<ComputeReduceOp> {
 public:
   ReduceLowering(mlir::MLIRContext *context)
@@ -1074,8 +1096,8 @@ void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
     mlir::RewritePatternSet &patterns) {
   mlir::MLIRContext *context = patterns.getContext();
   patterns
-      .add<ConvertLowering, ElementwiseLowering, GemmLowering, ConvLowering>(
-          context);
+      .add<ConvertLowering, ElementwiseLowering, ElementwiseIntoLowering,
+           GemmLowering, ConvLowering>(context);
   patterns.add<ReduceLowering>(context);
 }
 

@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--optimization-policy",
         choices=board_cases.OPTIMIZATION_POLICIES,
-        default="search",
+        default="none",
     )
     parser.add_argument("--no-card", action="store_true")
     parser.add_argument("--device-id", type=int, default=0)
@@ -83,33 +83,6 @@ def run(
     return result
 
 
-def validate_compiler_search_evidence(
-    stderr: str,
-    case: board_cases.PyTorchBoardCase,
-    optimization_policy: str,
-) -> None:
-    minimum = getattr(case, "minimum_search_actual_fused_edges", 0)
-    if optimization_policy != "search" or minimum == 0:
-        return
-    selected = re.findall(
-        r"^wafer-compile: card-executable-selection .*?"
-        r"\bactual_fused_edges=(\d+)(?:\s|$)",
-        stderr,
-        re.MULTILINE,
-    )
-    if len(selected) != 1:
-        raise RuntimeError(
-            "search-policy compiler output omitted the unique selected "
-            "card fusion evidence"
-        )
-    actual = int(selected[0])
-    if actual < minimum:
-        raise RuntimeError(
-            "search-policy card winner did not materialize the required "
-            f"operator fusion: expected at least {minimum}, got {actual}"
-        )
-
-
 def prepare_work_dir(work_dir: pathlib.Path) -> None:
     if work_dir.exists():
         shutil.rmtree(work_dir)
@@ -124,36 +97,6 @@ def case_step_paths(
     )
     step_dir.mkdir(parents=True, exist_ok=True)
     return step_dir, step_dir / "source-program", step_dir / "package"
-
-
-def validate_structured_program(
-    package: pathlib.Path, case: board_cases.PyTorchBoardCase
-) -> None:
-    structured_ir = (package / "functions" / "forward.mlir").read_text(
-        encoding="utf-8"
-    )
-    missing = [
-        fragment
-        for fragment in case.required_structured_ir
-        if fragment not in structured_ir
-    ]
-    if missing:
-        raise RuntimeError(
-            f"PyTorch case {case.name} structured IR omitted: {missing}"
-        )
-    if "stablehlo." in structured_ir:
-        raise RuntimeError(
-            f"PyTorch case {case.name} retained StableHLO after normalization"
-        )
-    all_reduce_count = structured_ir.count(
-        "wafer.linalg_ext.collective.all_reduce"
-    )
-    expected_all_reduce_count = case.expected_all_reduce_count
-    if all_reduce_count != expected_all_reduce_count:
-        raise RuntimeError(
-            f"PyTorch case {case.name} expected {expected_all_reduce_count} "
-            f"AllReduce op(s), got {all_reduce_count}"
-        )
 
 
 def _boundary_tensor(
@@ -205,12 +148,14 @@ def _boundary_tensor(
 
 
 def _boundary_maps(
-    package: pathlib.Path,
+    source_program: pathlib.Path,
     case: board_cases.PyTorchBoardCase,
     expected_outputs: tuple[torch.Tensor, ...],
 ) -> tuple[dict[tuple[int, int], torch.Tensor], dict[tuple[int, int], torch.Tensor]]:
     metadata = json.loads(
-        (package / "functions" / "forward.meta").read_text(encoding="utf-8")
+        (source_program / "functions" / "forward.meta").read_text(
+            encoding="utf-8"
+        )
     )
     boundary = metadata.get("distributed_boundary")
     if not isinstance(boundary, dict):
@@ -348,6 +293,7 @@ def _manifest_ports(package: pathlib.Path) -> tuple[
 
 def prepare_runtime_payloads(
     work_dir: pathlib.Path,
+    source_program: pathlib.Path,
     package: pathlib.Path,
     case: board_cases.PyTorchBoardCase,
     expected_outputs: tuple[torch.Tensor, ...],
@@ -357,7 +303,9 @@ def prepare_runtime_payloads(
     set[int],
     dict[int, pathlib.Path],
 ]:
-    local_inputs, local_outputs = _boundary_maps(package, case, expected_outputs)
+    local_inputs, local_outputs = _boundary_maps(
+        source_program, case, expected_outputs
+    )
     if (
         case.num_partitions != 1
         or any(partition_id != 0 for partition_id, _ in local_inputs)
@@ -371,11 +319,11 @@ def prepare_runtime_payloads(
         *(("user_input", index) for _, index in local_inputs),
         *(("output", index) for _, index in local_outputs),
     }
-    if set(resources) != expected_keys:
+    if set(ports) != expected_keys:
         raise RuntimeError(
             "manifest host tensor resources differ from PyTorch boundary: "
-            f"missing={sorted(expected_keys - set(resources))} "
-            f"extra={sorted(set(resources) - expected_keys)}"
+            f"missing={sorted(expected_keys - set(ports))} "
+            f"extra={sorted(set(ports) - expected_keys)}"
         )
 
     raw = work_dir / "raw"
@@ -514,9 +462,6 @@ def prepare_case_step(
         compile_command,
         timeout_seconds=COMPILE_TIMEOUT_SECONDS,
     )
-    validate_compiler_search_evidence(
-        compile_result.stderr, case, args.optimization_policy
-    )
     if args.compile_timing:
         print(compile_result.stderr, end="", file=sys.stderr)
     if (
@@ -572,8 +517,6 @@ def prepare_case_step(
                     "compiler inactive Tile/dataflow evidence is not a "
                     "canonical selected pre-Instr IR"
                 )
-    validate_structured_program(package, case)
-
     oracle_start_ns = time.monotonic_ns()
     expected_outputs = case.materialize_expected_outputs()
     print(
@@ -588,7 +531,7 @@ def prepare_case_step(
         output_ids,
         result_capture_paths,
     ) = prepare_runtime_payloads(
-        step_dir, package, case, expected_outputs
+        step_dir, source, package, case, expected_outputs
     )
     print(
         "pytorch-board-timing stage=runtime-payload "

@@ -1,55 +1,61 @@
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
 # The conservative policy is a real source-to-package baseline, not a second
-# lowering path.  Keep three small, independently attributable graphs here:
+# lowering path.  Keep four small, independently attributable graphs here:
 # an ordinary multi-op chain with explicit op boundaries, a 16-Tile spatial
 # compute, and an exact cross-Tile transpose that must materialize peer
-# communication.  The none policy must not report coupled operator fusion.
+# communication, plus a multi-producer insert assembly whose opposite branch
+# is exact-empty on each half of the Tile domain. The none policy must not
+# report coupled operator fusion.
 
-# RUN: rm -rf %t.chain %t.chain-package %t.gemm %t.gemm-package %t.cross %t.cross-package %t.cross-ir
+# RUN: rm -rf %t.chain %t.chain-package %t.gemm %t.gemm-package %t.cross %t.cross-package %t.cross-ir %t.insert %t.insert-package
 
 # RUN: mkdir -p %t.chain/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x32xf16>, %%rhs: tensor<32x32xf16>) -> tensor<32x32xf16> {\n    %%sum = stablehlo.add %%lhs, %%rhs : tensor<32x32xf16>\n    %%result = stablehlo.multiply %%sum, %%rhs : tensor<32x32xf16>\n    return %%result : tensor<32x32xf16>\n  }\n}\n' > %t.chain/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.chain/functions/forward.meta
-# RUN: wafer-compile --input-program-dir %t.chain --output-dir %t.chain-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=CHAIN
+# RUN: wafer-compile --input-program-dir %t.chain --output-dir %t.chain-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=CHAIN --implicit-check-not=compile-stats --implicit-check-not=compile-work --implicit-check-not=instruction-work --implicit-check-not=program-data-io
 # RUN: wafer-run --package-dir %t.chain-package --no-card | FileCheck %s --check-prefix=NO-CARD
 
 # RUN: mkdir -p %t.gemm/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x32xf16>, %%rhs: tensor<32x32xf16>) -> tensor<32x32xf16> {\n    %%result = "stablehlo.dot_general"(%%lhs, %%rhs) {dot_dimension_numbers = #stablehlo.dot<lhs_contracting_dimensions = [1], rhs_contracting_dimensions = [0]>, precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]} : (tensor<32x32xf16>, tensor<32x32xf16>) -> tensor<32x32xf16>\n    return %%result : tensor<32x32xf16>\n  }\n}\n' > %t.gemm/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.gemm/functions/forward.meta
-# RUN: wafer-compile --input-program-dir %t.gemm --output-dir %t.gemm-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=SPATIAL
+# RUN: wafer-compile --input-program-dir %t.gemm --output-dir %t.gemm-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=SPATIAL --implicit-check-not=compile-stats --implicit-check-not=compile-work --implicit-check-not=instruction-work --implicit-check-not=program-data-io
 # RUN: wafer-run --package-dir %t.gemm-package --no-card | FileCheck %s --check-prefix=NO-CARD
+
+# RUN: mkdir -p %t.insert/functions
+# RUN: printf '%b' 'module {\n  func.func @main(%%left: tensor<16x32xf16>, %%right: tensor<16x32xf16>) -> tensor<32x32xf16> {\n    %%a = stablehlo.negate %%left : tensor<16x32xf16>\n    %%b = stablehlo.negate %%right : tensor<16x32xf16>\n    %%assembled = stablehlo.concatenate %%a, %%b, dim = 0 : (tensor<16x32xf16>, tensor<16x32xf16>) -> tensor<32x32xf16>\n    %%result = stablehlo.add %%assembled, %%assembled : tensor<32x32xf16>\n    return %%result : tensor<32x32xf16>\n  }\n}\n' > %t.insert/functions/forward.mlir
+# RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16,32],"dtype":"float16","dynamic_dims":[]},{"shape":[16,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"left"},{"type_":"input_arg","position":1,"name":"right"}],"unused_inputs":[]}\n' > %t.insert/functions/forward.meta
+# RUN: wafer-compile --input-program-dir %t.insert --output-dir %t.insert-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=INSERT --implicit-check-not=compile-stats --implicit-check-not=compile-work --implicit-check-not=instruction-work --implicit-check-not=program-data-io
+# RUN: wafer-run --package-dir %t.insert-package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
 
 # RUN: mkdir -p %t.cross/functions
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x32xf16>, %%rhs: tensor<32x32xf16>) -> (tensor<32x32xf16>, tensor<32x32xf16>) {\n    %%sum = stablehlo.add %%lhs, %%rhs : tensor<32x32xf16>\n    %%transposed = "stablehlo.transpose"(%%sum) {permutation = array<i64: 1, 0>} : (tensor<32x32xf16>) -> tensor<32x32xf16>\n    %%result = stablehlo.multiply %%transposed, %%transposed : tensor<32x32xf16>\n    return %%sum, %%result : tensor<32x32xf16>, tensor<32x32xf16>\n  }\n}\n' > %t.cross/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.cross/functions/forward.meta
-# RUN: %wafer_compile_test --input-program-dir %t.cross --output-dir %t.cross-package --num-partitions=1 --optimization-policy=none --dump-compiler-ir %t.cross-ir 2>&1 | FileCheck %s --check-prefix=CROSS
+# RUN: %wafer_compile_test --input-program-dir %t.cross --output-dir %t.cross-package --num-partitions=1 --optimization-policy=none --dump-compiler-ir %t.cross-ir 2>&1 | FileCheck %s --check-prefix=CROSS --implicit-check-not=compile-stats --implicit-check-not=compile-work --implicit-check-not=instruction-work --implicit-check-not=program-data-io
 # RUN: FileCheck %s --input-file=%t.cross-ir/instruction/tile_00000.mlir --check-prefix=CROSS-INSTR
 # RUN: wafer-run --package-dir %t.cross-package --no-card --direct-dte-status-abi wafer-direct-dte-status --supports-host-watchdog | FileCheck %s --check-prefix=NO-CARD
 
 # CHAIN-NOT: card-executable-search policy=none
-# CHAIN: wafer-compile: card-executable-baseline-controller
-# CHAIN-SAME: full_compilations=1
-# CHAIN: wafer-compile: card-executable-baseline-admission
-# CHAIN-SAME: active_tiles=16
-# CHAIN-SAME: peer_transfers=0
-# CHAIN-SAME: actual_fused_edges=0
+# CHAIN-NOT: compile-stats
+# CHAIN-NOT: instruction-work
+# CHAIN: wafer-compile: card-executable-compilation outcome=accepted physical_tiles=16
 # CHAIN: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 
-# SPATIAL: wafer-compile: card-executable-baseline-admission
-# SPATIAL-SAME: active_tiles=16
-# SPATIAL-SAME: peer_transfers=0
-# SPATIAL-SAME: actual_fused_edges=0
+# SPATIAL-NOT: compile-stats
+# SPATIAL-NOT: instruction-work
+# SPATIAL: wafer-compile: card-executable-compilation outcome=accepted physical_tiles=16
 # SPATIAL: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 
+# INSERT-NOT: card-executable-search policy=none
+# INSERT-NOT: compile-stats
+# INSERT-NOT: instruction-work
+# INSERT: wafer-compile: card-executable-compilation outcome=accepted physical_tiles=16
+# INSERT: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
+
 # CROSS-NOT: card-executable-search policy=none
-# CROSS: wafer-compile: card-executable-baseline-controller
-# CROSS-SAME: full_compilations=1
-# CROSS: wafer-compile: card-executable-baseline-admission
-# CROSS-SAME: active_tiles=16
-# CROSS-SAME: peer_transfers={{[1-9][0-9]*}}
-# CROSS-SAME: peer_bytes={{[1-9][0-9]*}}
-# CROSS-SAME: actual_fused_edges=0
+# CROSS-NOT: compile-stats
+# CROSS-NOT: instruction-work
+# CROSS: wafer-compile: card-executable-compilation outcome=accepted physical_tiles=16
 # CROSS: wafer-compile: wrote verified package with num-partitions=1 tiles=16:
 
 # CROSS-INSTR: wafer.instr.dte_recv

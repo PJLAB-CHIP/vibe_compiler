@@ -1,0 +1,11 @@
+set(WAFER_COMPILER_BASELINE_SOURCES
+  Baseline/CardBaselineCompilation.cpp
+  Baseline/CardBaselinePlacement.cpp
+  Baseline/CardBaselinePlacementClosure.cpp
+  Baseline/CardBaselineAssignment.cpp
+  Baseline/CardBaselineDataMovement.cpp
+  Baseline/CardBaselineConsumerInputs.cpp
+  Baseline/CardBaselineEdgeCarriers.cpp
+  Baseline/CardBaselineTemporalTiling.cpp
+  Baseline/CardBaselineMaterialization.cpp
+  PARENT_SCOPE)

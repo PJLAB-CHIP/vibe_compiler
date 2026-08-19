@@ -1,0 +1,13 @@
+set(WAFER_COMPILER_TARGET_SOURCES
+  Target/TileEntryArgumentCompatibility.cpp
+  Target/TargetABIPreparation.cpp
+  Target/TargetLLVMModule.cpp
+  Target/TargetModuleLinking.cpp
+  Target/TargetKernelAggregate.cpp
+  Target/TargetDeviceLink.cpp
+  Target/TargetLLVMTranslation.cpp
+  Target/TargetModuleReadback.cpp
+  Target/TargetInstrumentation.cpp
+  Target/CompileCardExecutableLLVMModules.cpp
+  Target/TargetCallFrontend.cpp
+  PARENT_SCOPE)

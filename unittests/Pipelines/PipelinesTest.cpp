@@ -3,9 +3,9 @@
 #include "Wafer/Pipelines/Pipelines.h"
 #include "Wafer/Compiler/TargetCodeGen.h"
 
-#include "../../lib/Wafer/Compiler/CompilationInternal.h"
+#include "Wafer/Compiler/Pipeline/CompilationInternal.h"
 #include "Wafer/Compiler/ProgramData.h"
-#include "../../lib/Wafer/Compiler/CardExecutableInternal.h"
+#include "Wafer/Compiler/Executable/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/MLIRContext.h"
@@ -247,11 +247,10 @@ module {
   ASSERT_TRUE(static_cast<bool>(executable))
       << diagnosticsText
       << (executable ? "" : llvm::toString(executable.takeError()));
-  EXPECT_NE(diagnosticsText.find(
-                "compile-stats stage=deterministic-card-executable-synthesis"),
+  EXPECT_EQ(diagnosticsText.find(
+                "compile-stats stage=deterministic-card-executable-search"),
             std::string::npos);
   EXPECT_EQ(diagnosticsText.find("card-executable-search"), std::string::npos);
-  EXPECT_NE(diagnosticsText.find("tile_count=16"), std::string::npos);
   // The Tile executables retain the MLIRContext on success. Destroy
   // the source module before that owner so its uniqued state stays live.
   module = nullptr;

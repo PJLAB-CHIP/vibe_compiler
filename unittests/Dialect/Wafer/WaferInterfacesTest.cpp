@@ -59,23 +59,22 @@ TEST(WaferInterfacesTest,
   mlir::Block *entry = function.addEntryBlock();
   builder.setInsertionPointToEnd(entry);
 
-  // Explicit DDR stage splitting produces this topology: every later region
-  // receives the original function boundary plus all prior spill results.
-  // Storage dependencies form a DAG, so verification must reuse each derived
-  // value instead of recursively rewalking every path through the chain.
-  llvm::SmallVector<mlir::Value, 32> priorDDRValues{entry->getArgument(0)};
-  for (unsigned index = 0; index < 32; ++index) {
+  // Explicit DDR stage splitting produces long sequential chains. Each
+  // TileRegion verifies its own yield; a later sibling must consume that
+  // verified DDR boundary without reopening the complete producer prefix.
+  mlir::Value current = entry->getArgument(0);
+  for (unsigned index = 0; index < 1024; ++index) {
     auto region = builder.create<wafer::TileRegionOp>(
-        loc, mlir::TypeRange{ddrType}, priorDDRValues);
+        loc, mlir::TypeRange{ddrType}, mlir::ValueRange{current});
     region.getBody().push_back(new mlir::Block());
     mlir::Block &body = region.getBody().front();
     for (mlir::Value input : region.getInputs())
       body.addArgument(input.getType(), loc);
     mlir::OpBuilder bodyBuilder = mlir::OpBuilder::atBlockEnd(&body);
-    bodyBuilder.create<wafer::TileYieldOp>(loc, body.getArguments().back());
-    priorDDRValues.push_back(region.getResult(0));
+    bodyBuilder.create<wafer::TileYieldOp>(loc, body.getArgument(0));
+    current = region.getResult(0);
   }
-  builder.create<mlir::func::ReturnOp>(loc, priorDDRValues.back());
+  builder.create<mlir::func::ReturnOp>(loc, current);
 
   EXPECT_TRUE(mlir::succeeded(mlir::verify(module)));
 }

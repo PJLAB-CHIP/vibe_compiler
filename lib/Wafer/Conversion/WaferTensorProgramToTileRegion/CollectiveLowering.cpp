@@ -83,6 +83,7 @@ TileRegionBodyEmitter::materializeCollectiveInputInResultType(
       mlir::RankedTensorType::get(inputType.getShape(), resultElementType);
   auto converted = builder.create<ComputeConvertOp>(
       loc, makeSPMMemRefType(convertedTensorType, MemLayout::Tensor), input);
+  recordStructuredComputeOperation(converted);
   return converted.getResult();
 }
 

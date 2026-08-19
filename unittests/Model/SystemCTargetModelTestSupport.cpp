@@ -6,7 +6,7 @@
 #include "Wafer/Target/PhysicalTensorCodec.h"
 #include "Wafer/Target/TargetFormat.h"
 
-#include "Wafer/Compiler/CardExecutableInternal.h"
+#include "Wafer/Compiler/Executable/CardExecutableInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"

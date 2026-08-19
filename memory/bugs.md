@@ -22,7 +22,7 @@
 ## Optimization policy被接收但没有进入search owner
 
 - 现象：`search`与`none`在所有workload上产生相同IR/package，新增搜索代码从未影响winner。
-- 根因：driver解析了optimization policy，却在executable synthesis边界丢弃或绕过它；测试反而把相同结果锁成合同。
+- 根因：driver解析了optimization policy，却在executable search边界丢弃或绕过它；测试反而把相同结果锁成合同。
 - 修复模式：`search`调用唯一physical-dataflow selection，`none`只materialize conservative baseline；两者从同一source进入同一
   actual/exact pipeline。
 - 防复发：测试验证两种policy都真正进入synthesis统计，并允许结果不同；不能要求它们永远产生相同digest。
@@ -872,7 +872,7 @@
 
 ## 给 LLVM_OPTIONAL_SOURCES 里的退役源码插桩不产生任何效果
 
-- 现象：往 `lib/Wafer/Compiler/LowerRankInstrModules.cpp` 加调试打印后 `cmake --build` 报 "ninja: no work to do"，
+- 现象：往 `lib/Wafer/Compiler/Executable/LowerRankInstrModules.cpp` 加调试打印后 `cmake --build` 报 "ninja: no work to do"，
   二进制里 grep 不到新字符串，运行输出也没有。
 - 根因：该文件在 CMakeLists 的 `LLVM_OPTIONAL_SOURCES` 列表而非 `add_mlir_library` 主源列表——它是退役源码，不属于
   active build；同名门禁逻辑已由 `CardExecutableLowering.cpp`/`CompileCardExecutableLLVMModules.cpp` 承接。插桩前没核对
@@ -915,7 +915,7 @@
 - **complete reduction必须证明source coverage**：constant destination map只表示所有iteration落到同一destination，不能证明
   iteration-to-source覆盖整个source。shortcut还要检查constant坐标值、对应extent、维度唯一性和完整source image；用非零
   constant、duplicate dim和只访问source一条slice的反例防复发。
-- **成功路径不得遗留debug stderr**：fast path/fallback命中计数进入显式ledger或测试hook，不能用无条件`llvm::errs()`作为
+- **成功路径不得遗留debug stderr**：fast path/fallback命中计数进入显式诊断计数或测试hook，不能用无条件`llvm::errs()`作为
   长期观测；全绿测试仍打印debug不是完成状态。
 
 ## scratch IR 的 SSA handle 不能逃出 transformation lifetime
@@ -970,3 +970,14 @@
   structured node mapping，否则BodyEmitter无法形成result-buffer relation。
 - 防复发：用多输出transpose→consumer的16-Tile source-to-package/no-card gate，同时由内部postcondition拒绝zero-root/multi-root；
   单纯的小型single-output fixture不足以覆盖remote endpoint裁剪和outgoing cache复用。
+
+## current package不是compiler IR归档
+
+- 现象：FP16 LLaMA `optimization-none`已经完成编译并生成current package，PyTorch no-card runner却继续读取
+  `package/functions/forward.mlir`，因此在真正runtime payload准备前报文件不存在。
+- 根因：runner混淆了两个边界：source program拥有frontend MLIR和`functions/forward.meta`，executable package只拥有manifest、
+  target modules和program data。旧测试把曾经存在的package内IR dump当成runtime合同，迫使普通编译保留无consumer的调试产物。
+- 修复模式：boundary input locator和shape/dtype元数据从source program读取；runtime port、module和resource只从current package
+  manifest读取。删除依赖package内structured IR的validator和case字段，不把IR dump重新塞回package。
+- 防复发：普通source-to-package测试断言package没有`functions`目录；runner unit分别传入source与package并检查各自消费边界。
+  compiler IR、计时和work统计只能由显式diagnostic选项或caller-owned sink请求，不能成为默认编译路径或package成员。

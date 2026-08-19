@@ -1,13 +1,14 @@
 //===- WaferTensorProgramToCardModuleTest.cpp - Card baseline tests -----===//
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
-#include "../../lib/Wafer/Compiler/StructuredBufferRelations.h"
-#include "../../lib/Wafer/Compiler/StructuredDAGEdgeStrategyPlan.h"
+#include "Wafer/Compiler/Planning/StructuredBufferRelations.h"
+#include "Wafer/Compiler/Planning/StructuredDAGEdgeStrategyPlan.h"
 #include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Transforms/MemoryPlanning.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -160,8 +161,8 @@ outputMapping(unsigned outputIndex, unsigned shardDimension,
   return output;
 }
 
-static wafer::TileMapping multiOutputMapping(
-    std::initializer_list<wafer::OutputTileMapping> outputs) {
+static wafer::TileMapping
+multiOutputMapping(std::initializer_list<wafer::OutputTileMapping> outputs) {
   wafer::TileMapping result;
   result.outputs.append(outputs.begin(), outputs.end());
   return result;
@@ -187,9 +188,8 @@ edgeStrategy(mlir::Operation *producer, mlir::Operation *consumer,
   return result;
 }
 
-static wafer::TileMapping
-completeTemporalMapping(mlir::ModuleOp source,
-                        wafer::TileMapping mapping) {
+static wafer::TileMapping completeTemporalMapping(mlir::ModuleOp source,
+                                                  wafer::TileMapping mapping) {
   llvm::DenseSet<mlir::Operation *> configured;
   for (const wafer::StructuredOpTemporalTile &tile :
        mapping.operationTemporalTiles)
@@ -271,40 +271,32 @@ completeTemporalMapping(mlir::ModuleOp source,
 }
 
 static mlir::LogicalResult lowerCompleteTensorProgramToCardModule(
-    mlir::ModuleOp source, wafer::CardId cardId,
-    wafer::TileMapping mapping,
+    mlir::ModuleOp source, wafer::CardId cardId, wafer::TileMapping mapping,
     mlir::OwningOpRef<mlir::ModuleOp> &cardModule,
     std::string *failureReason = nullptr,
     llvm::ArrayRef<wafer::StructuredOperationNodeMapping> operationNodes = {},
     wafer::StructuredMaterializationRelations *materializationRelations =
         nullptr) {
-  mlir::func::FuncOp function =
-      *source.getOps<mlir::func::FuncOp>().begin();
+  mlir::func::FuncOp function = *source.getOps<mlir::func::FuncOp>().begin();
   std::string dagFailure;
   auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(
       function, &dagFailure);
   llvm::SmallVector<wafer::StructuredOperationNodeMapping, 16> derivedNodes;
-  llvm::SmallVector<llvm::SmallVector<uint32_t, 2>, 4> observableRoots;
   if (mlir::succeeded(dag) && operationNodes.empty()) {
     derivedNodes.reserve(dag->getNodes().size());
     for (const auto &node : dag->getNodes())
       derivedNodes.push_back({node.operation, node.id});
     operationNodes = derivedNodes;
   }
-  if (mlir::succeeded(dag))
-    observableRoots.assign(dag->getObservableOutputRootNodes().begin(),
-                           dag->getObservableOutputRootNodes().end());
   return wafer::lowerTensorProgramToCardModule(
       source, cardId, completeTemporalMapping(source, std::move(mapping)),
-      cardModule, failureReason, operationNodes, materializationRelations,
-      observableRoots);
+      cardModule, failureReason, operationNodes, materializationRelations);
 }
 
 static wafer::TileMapping
 mixedLocalRemoteFaninMapping(mlir::Operation *producer,
                              mlir::Operation *consumer) {
-  wafer::TileMapping result =
-      mapping(/*shardDimension=*/1, {1, 2}, {4, 2});
+  wafer::TileMapping result = mapping(/*shardDimension=*/1, {1, 2}, {4, 2});
   result.materializationMode =
       wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
   wafer::SpatialEdgeStrategy first =
@@ -401,8 +393,7 @@ module attributes {test.card_baseline = "preserved"} {
   EXPECT_EQ(countOps<mlir::func::FuncOp>(cardModule->getOperation()), 16u);
   EXPECT_EQ(countOps<wafer::TileRegionOp>(cardModule->getOperation()), 16u);
 
-  wafer::CardModuleOp card =
-      *cardModule->getOps<wafer::CardModuleOp>().begin();
+  wafer::CardModuleOp card = *cardModule->getOps<wafer::CardModuleOp>().begin();
   llvm::SmallVector<StoreShard, 16> shards =
       collectSecondDimensionStoreShards(card);
   ASSERT_EQ(shards.size(), 16u);
@@ -546,7 +537,7 @@ module {
   // same pre-insert destination version, and must remain representable all the
   // way through Tile instruction lowering.
   auto tileModules = wafer::splitCardModuleIntoTileModules(
-      *cardModule, &failureReason, &relations);
+      std::move(cardModule), &failureReason, &relations);
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   for (wafer::TileModule &tile : *tileModules) {
     EXPECT_EQ(tile.materializationRelations.outputBuffers.empty(),
@@ -708,8 +699,8 @@ module {
     peer.sourceTile = wafer::TileId(1);
     peer.fragments.push_back(wafer::SpatialEdgeFragment{
         wafer::SpatialEdgeFragmentKind::Peer,
-        /*offsets=*/{0, 0, 0, 0}, /*sizes=*/{1, 2, 1, 4},
-        wafer::TileId(1), /*bytes=*/16, communicationId,
+        /*offsets=*/{0, 0, 0, 0}, /*sizes=*/{1, 2, 1, 4}, wafer::TileId(1),
+        /*bytes=*/16, communicationId,
         /*payloadSlice=*/0});
     selected.edgeStrategies.push_back(std::move(peer));
   }
@@ -779,8 +770,8 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0),
-      mapping(/*shardDimension=*/1, {0}, {2, 3}), cardModule, &failureReason)))
+      *source, wafer::CardId(0), mapping(/*shardDimension=*/1, {0}, {2, 3}),
+      cardModule, &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
   EXPECT_EQ(countOps<wafer::ComputeGemmOp>(cardModule->getOperation()), 1u);
@@ -869,9 +860,8 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0),
-      mapping(/*shardDimension=*/2, {0}, {1, 2, 1}), cardModule,
-      &failureReason)))
+      *source, wafer::CardId(0), mapping(/*shardDimension=*/2, {0}, {1, 2, 1}),
+      cardModule, &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
 
@@ -936,8 +926,7 @@ module {
   source->walk(
       [&](mlir::linalg::MatmulOp operation) { sourceMatmul = operation; });
   ASSERT_TRUE(sourceMatmul);
-  wafer::TileMapping selected =
-      mapping(/*shardDimension=*/1, {0}, {5, 3});
+  wafer::TileMapping selected = mapping(/*shardDimension=*/1, {0}, {5, 3});
   selected.operationTemporalTiles.push_back(
       wafer::StructuredOpTemporalTile{sourceMatmul.getOperation(), {5, 3, 4}});
 
@@ -967,6 +956,22 @@ module {
   EXPECT_FALSE(sawFullRhs);
   EXPECT_EQ(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 1u);
   EXPECT_EQ(countOps<wafer::ComputeGemmOp>(cardModule->getOperation()), 3u);
+  unsigned accumulatorUpdates = 0;
+  cardModule->walk([&](wafer::ComputeElementwiseIntoOp update) {
+    ++accumulatorUpdates;
+    ASSERT_EQ(update.getInputs().size(), 2u);
+    EXPECT_EQ(update.getDest(), update.getInputs().front());
+  });
+  EXPECT_EQ(accumulatorUpdates, 2u);
+  bool sawStableLoopCarriedAccumulator = false;
+  cardModule->walk([&](mlir::scf::ForOp loop) {
+    mlir::scf::YieldOp yield =
+        mlir::cast<mlir::scf::YieldOp>(loop.getBody()->getTerminator());
+    for (auto [argument, yielded] :
+         llvm::zip_equal(loop.getRegionIterArgs(), yield.getOperands()))
+      sawStableLoopCarriedAccumulator |= argument == yielded;
+  });
+  EXPECT_TRUE(sawStableLoopCarriedAccumulator);
 
   wafer::TileMapping mixedParallelReduction =
       mapping(/*shardDimension=*/1, {0}, {5, 3});
@@ -986,6 +991,29 @@ module {
     sawParallelTail |= resultType.getShape() == llvm::ArrayRef<int64_t>({1, 3});
   });
   EXPECT_TRUE(sawParallelTail);
+
+  auto tileModules =
+      wafer::splitCardModuleIntoTileModules(std::move(cardModule),
+                                            &failureReason);
+  ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
+  ASSERT_EQ(tileModules->size(), 1u);
+  mlir::OwningOpRef<mlir::ModuleOp> tileModule =
+      std::move(tileModules->front().module);
+  ASSERT_TRUE(
+      mlir::succeeded(wafer::convertTileRegionToInstrModule(*tileModule)));
+  EXPECT_EQ(countOps<wafer::ComputeElementwiseIntoOp>(tileModule->getOperation()),
+            0u);
+  unsigned inPlaceAccumulatorUpdates = 0;
+  tileModule->walk([&](wafer::InstrElementwiseOp operation) {
+    if (!operation.getInputs().empty() &&
+        operation.getInputs().front() == operation.getDest())
+      ++inPlaceAccumulatorUpdates;
+  });
+  EXPECT_EQ(inPlaceAccumulatorUpdates, 2u);
+  ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+      *tileModule, /*spmBase=*/65536, /*spmLimit=*/3080192,
+      /*spmAlignment=*/256)));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(*tileModule)));
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
@@ -1182,8 +1210,8 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   EXPECT_TRUE(mlir::failed(wafer::lowerTensorProgramToCardModule(
-      *source, wafer::CardId(0),
-      mapping(/*shardDimension=*/0, {0}, {4}), cardModule, &failureReason)));
+      *source, wafer::CardId(0), mapping(/*shardDimension=*/0, {0}, {4}),
+      cardModule, &failureReason)));
   EXPECT_EQ(failureReason,
             "card structured temporal mapping must cover every scheduled "
             "operation exactly once");
@@ -1226,8 +1254,7 @@ module {
   source->walk(
       [&](mlir::linalg::MatmulOp operation) { sourceMatmul = operation; });
   ASSERT_TRUE(sourceMatmul);
-  wafer::TileMapping selected =
-      mapping(/*shardDimension=*/1, {0}, {1, 64});
+  wafer::TileMapping selected = mapping(/*shardDimension=*/1, {0}, {1, 64});
   selected.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
       sourceMatmul.getOperation(), {1, 4096, 256}});
 
@@ -1293,8 +1320,7 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0), selected, cardModule,
-      &failureReason)));
+      *source, wafer::CardId(0), selected, cardModule, &failureReason)));
   EXPECT_EQ(failureReason,
             "candidate reduction split cannot preserve unsigned min/max "
             "semantics with the current reduce kind");
@@ -1332,8 +1358,8 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0),
-      mapping(/*shardDimension=*/0, {0}, {8}), cardModule, &failureReason)))
+      *source, wafer::CardId(0), mapping(/*shardDimension=*/0, {0}, {8}),
+      cardModule, &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
   EXPECT_EQ(countOps<wafer::ComputeGemmOp>(cardModule->getOperation()), 0u);
@@ -1398,11 +1424,11 @@ module {
   wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
   selected.materializationMode =
       wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
-  wafer::SpatialEdgeStrategy cut = edgeStrategy(
-      producer.getOperation(), consumer.getOperation(), wafer::TileId(0),
-      wafer::SpatialEdgeAction::RegionCut,
-      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
-      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8});
+  wafer::SpatialEdgeStrategy cut =
+      edgeStrategy(producer.getOperation(), consumer.getOperation(),
+                   wafer::TileId(0), wafer::SpatialEdgeAction::RegionCut,
+                   /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+                   /*consumerOffsets=*/{0}, /*consumerSizes=*/{8});
   cut.producerResult = 0;
   cut.consumerOperand = 0;
   selected.edgeStrategies.push_back(std::move(cut));
@@ -1417,10 +1443,8 @@ module {
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(wafer::lowerTensorProgramToCardModule(
       *source, wafer::CardId(0), selected, cardModule, &failureReason,
-      operationNodes, &relations,
-      /*observableOutputRootNodes=*/{{1}})))
+      operationNodes, &relations)))
       << failureReason;
-
   // Structure: the two roots form separate regions; every compute region
   // carries exactly one structured root.
   llvm::SmallVector<wafer::TileRegionOp, 4> regions;
@@ -1433,31 +1457,34 @@ module {
   ASSERT_EQ(regions.size(), 2u);
   EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(cardModule->getOperation()),
             2u);
-  EXPECT_EQ(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 4u);
-  EXPECT_GE(countOps<wafer::StorageLoadOp>(cardModule->getOperation()), 4u);
+  // The direct construction writes the producer stage and final output once
+  // each. It does not recreate the former intermediate DDR assemblies.
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 2u);
+  EXPECT_EQ(countOps<wafer::StorageLoadOp>(cardModule->getOperation()), 2u);
   // Both roots retain current-SSA operand evidence after the split. The
   // consumer relation names the explicit reload allocation rather than the
   // erased pre-cut value.
   ASSERT_EQ(relations.operandBuffers.size(), 2u);
-  auto producerRelation = llvm::find_if(
-      relations.operandBuffers,
-      [](const auto &relation) { return relation.structuredNodeId == 0; });
-  auto consumerRelation = llvm::find_if(
-      relations.operandBuffers,
-      [](const auto &relation) { return relation.structuredNodeId == 1; });
+  auto producerRelation =
+      llvm::find_if(relations.operandBuffers, [](const auto &relation) {
+        return relation.structuredNodeId == 0;
+      });
+  auto consumerRelation =
+      llvm::find_if(relations.operandBuffers, [](const auto &relation) {
+        return relation.structuredNodeId == 1;
+      });
   ASSERT_NE(producerRelation, relations.operandBuffers.end());
   ASSERT_NE(consumerRelation, relations.operandBuffers.end());
   mlir::Value consumerOperand = consumerRelation->buffer;
   ASSERT_TRUE(consumerOperand);
-  auto reloadAlloc =
-      consumerOperand.getDefiningOp<mlir::memref::AllocOp>();
+  auto reloadAlloc = consumerOperand.getDefiningOp<mlir::memref::AllocOp>();
   ASSERT_TRUE(reloadAlloc);
   auto reloadType = mlir::dyn_cast<mlir::MemRefType>(reloadAlloc.getType());
   ASSERT_TRUE(reloadType);
   EXPECT_TRUE(mlir::isa<wafer::MemoryAttr>(reloadType.getMemorySpace()));
-  EXPECT_EQ(mlir::cast<wafer::MemoryAttr>(reloadType.getMemorySpace())
-                .getSpace(),
-            wafer::MemorySpace::SPM);
+  EXPECT_EQ(
+      mlir::cast<wafer::MemoryAttr>(reloadType.getMemorySpace()).getSpace(),
+      wafer::MemorySpace::SPM);
 
   // The structural postcondition is relation-backed, not inferred from a
   // single visible compute op. Dropping the structured-node mapping must
@@ -1467,11 +1494,90 @@ module {
   EXPECT_TRUE(mlir::failed(wafer::lowerTensorProgramToCardModule(
       *source, wafer::CardId(0), selected, missingRelationModule,
       &failureReason,
-      /*operationNodes=*/{}, /*materializationRelations=*/nullptr,
-      /*observableOutputRootNodes=*/{{1}})));
+      /*operationNodes=*/{}, /*materializationRelations=*/nullptr)));
   EXPECT_FALSE(missingRelationModule);
-  EXPECT_NE(failureReason.find("with 0 structured roots"), std::string::npos)
+  EXPECT_NE(failureReason.find("no structured node identity"),
+            std::string::npos)
       << failureReason;
+}
+
+TEST(WaferTensorProgramToCardModuleTest,
+     IndependentRootsMaterializeTheirCapturedScalarConstantsLocally) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @cut_chain() -> tensor<8xf16> {
+    %one = arith.constant 1.0 : f16
+    %producer_empty = tensor.empty() : tensor<8xf16>
+    %producer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } outs(%producer_empty : tensor<8xf16>) {
+      ^bb0(%old: f16):
+        %sum = arith.addf %one, %one : f16
+        linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    %consumer_empty = tensor.empty() : tensor<8xf16>
+    %consumer = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%producer : tensor<8xf16>)
+        outs(%consumer_empty : tensor<8xf16>) {
+      ^bb0(%value: f16, %old: f16):
+        %sum = arith.addf %value, %one : f16
+        linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    return %consumer : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  mlir::linalg::GenericOp producer;
+  mlir::linalg::GenericOp consumer;
+  source->walk([&](mlir::linalg::GenericOp operation) {
+    if (!producer)
+      producer = operation;
+    else
+      consumer = operation;
+  });
+  ASSERT_TRUE(producer);
+  ASSERT_TRUE(consumer);
+
+  wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
+  selected.materializationMode =
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
+  wafer::SpatialEdgeStrategy cut =
+      edgeStrategy(producer.getOperation(), consumer.getOperation(),
+                   wafer::TileId(0), wafer::SpatialEdgeAction::RegionCut,
+                   /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+                   /*consumerOffsets=*/{0}, /*consumerSizes=*/{8});
+  cut.producerResult = 0;
+  cut.consumerOperand = 0;
+  selected.edgeStrategies.push_back(std::move(cut));
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
+      *source, wafer::CardId(0), std::move(selected), cardModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+
+  unsigned rootCount = 0;
+  cardModule->walk([&](wafer::TileRegionOp region) {
+    if (region->getParentOfType<wafer::TileRegionOp>())
+      return;
+    ++rootCount;
+    EXPECT_EQ(countOps<mlir::arith::ConstantOp>(region.getOperation()), 1u)
+        << printOperation(region.getOperation());
+  });
+  EXPECT_EQ(rootCount, 2u);
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
@@ -1507,8 +1613,7 @@ module {
       mapping(/*shardDimension=*/1, {0, 2, 3}, {2, 2}), cardModule,
       &failureReason)))
       << failureReason;
-  wafer::CardModuleOp card =
-      *cardModule->getOps<wafer::CardModuleOp>().begin();
+  wafer::CardModuleOp card = *cardModule->getOps<wafer::CardModuleOp>().begin();
   llvm::SmallVector<StoreShard, 16> shards =
       collectSecondDimensionStoreShards(card);
   ASSERT_EQ(shards.size(), 3u);
@@ -1545,8 +1650,7 @@ module {
       mapping(/*shardDimension=*/1, {0, 1, 2}, {2, 1}), cardModule,
       &failureReason)))
       << failureReason;
-  wafer::CardModuleOp card =
-      *cardModule->getOps<wafer::CardModuleOp>().begin();
+  wafer::CardModuleOp card = *cardModule->getOps<wafer::CardModuleOp>().begin();
   unsigned active = 0;
   unsigned noWork = 0;
   for (wafer::TileModuleOp tile :
@@ -1609,8 +1713,7 @@ module {
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
 
-  wafer::CardModuleOp card =
-      *cardModule->getOps<wafer::CardModuleOp>().begin();
+  wafer::CardModuleOp card = *cardModule->getOps<wafer::CardModuleOp>().begin();
   for (wafer::TileModuleOp tile :
        card.getBody().front().getOps<wafer::TileModuleOp>()) {
     const int64_t tileId = tile.getTileIdAttr().getInt();
@@ -1713,9 +1816,8 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0),
-      mapping(/*shardDimension=*/2, {0}, {1, 1, 4}), cardModule,
-      &failureReason)))
+      *source, wafer::CardId(0), mapping(/*shardDimension=*/2, {0}, {1, 1, 4}),
+      cardModule, &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
   EXPECT_EQ(countOps<wafer::ComputeElementwiseOp>(cardModule->getOperation()),
@@ -1832,8 +1934,7 @@ module {
   EXPECT_EQ(printOperation(source->getOperation()), sourceBefore);
 }
 
-TEST(WaferTensorProgramToCardModuleTest,
-     IsDeterministicThroughTileProjection) {
+TEST(WaferTensorProgramToCardModuleTest, IsDeterministicThroughTileProjection) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
 module {
@@ -1869,9 +1970,9 @@ module {
             printOperation(second->getOperation()));
 
   auto firstTileModules =
-      wafer::splitCardModuleIntoTileModules(*first, &failureReason);
+      wafer::splitCardModuleIntoTileModules(std::move(first), &failureReason);
   auto secondTileModules =
-      wafer::splitCardModuleIntoTileModules(*second, &failureReason);
+      wafer::splitCardModuleIntoTileModules(std::move(second), &failureReason);
   ASSERT_TRUE(mlir::succeeded(firstTileModules)) << failureReason;
   ASSERT_TRUE(mlir::succeeded(secondTileModules)) << failureReason;
   ASSERT_EQ(firstTileModules->size(), 3u);
@@ -1929,11 +2030,11 @@ module {
 
   wafer::TileMapping selected =
       mapping(/*shardDimension=*/0, {0, 1, 4, 5}, {8});
-  wafer::SpatialEdgeStrategy first = edgeStrategy(
-      structured[0].getOperation(), structured[1].getOperation(),
-      wafer::TileId(4), wafer::SpatialEdgeAction::PeerFragments,
-      /*producerOffsets=*/{4}, /*producerSizes=*/{2},
-      /*consumerOffsets=*/{4}, /*consumerSizes=*/{2});
+  wafer::SpatialEdgeStrategy first =
+      edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
+                   wafer::TileId(4), wafer::SpatialEdgeAction::PeerFragments,
+                   /*producerOffsets=*/{4}, /*producerSizes=*/{2},
+                   /*consumerOffsets=*/{4}, /*consumerSizes=*/{2});
   first.fragments.push_back(
       wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Peer,
                                  {4},
@@ -1943,11 +2044,11 @@ module {
                                  /*communicationId=*/0,
                                  /*payloadSlice=*/0});
   selected.edgeStrategies.push_back(std::move(first));
-  wafer::SpatialEdgeStrategy second = edgeStrategy(
-      structured[0].getOperation(), structured[1].getOperation(),
-      wafer::TileId(5), wafer::SpatialEdgeAction::PeerFragments,
-      /*producerOffsets=*/{6}, /*producerSizes=*/{2},
-      /*consumerOffsets=*/{6}, /*consumerSizes=*/{2});
+  wafer::SpatialEdgeStrategy second =
+      edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
+                   wafer::TileId(5), wafer::SpatialEdgeAction::PeerFragments,
+                   /*producerOffsets=*/{6}, /*producerSizes=*/{2},
+                   /*consumerOffsets=*/{6}, /*consumerSizes=*/{2});
   second.fragments.push_back(
       wafer::SpatialEdgeFragment{wafer::SpatialEdgeFragmentKind::Peer,
                                  {6},
@@ -1968,8 +2069,9 @@ module {
   EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 2u);
   EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 4u);
 
-  auto tileModules = wafer::splitCardModuleIntoTileModules(
-      *cardModule, &failureReason);
+  auto tileModules =
+      wafer::splitCardModuleIntoTileModules(std::move(cardModule),
+                                            &failureReason);
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 6u);
   unsigned sends = 0;
@@ -2043,6 +2145,8 @@ module {
   // baseline also completes one globally ordered endpoint before issuing the
   // next, so the number of live receiver FSMs is independent of fan-in.
   selected.outputs.front().temporalTileSizes = {1, 2};
+  selected.operationTemporalTiles.push_back(
+      {structured[1].getOperation(), {1, 2}});
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
       *source, wafer::CardId(0), selected, cardModule, &failureReason)))
       << failureReason;
@@ -2053,8 +2157,7 @@ module {
   EXPECT_EQ(countOps<mlir::async::AwaitOp>(cardModule->getOperation()), 6u);
   EXPECT_EQ(countUnreadDirectPrivateLoads(cardModule->getOperation()), 0u);
 
-  wafer::CardModuleOp card =
-      *cardModule->getOps<wafer::CardModuleOp>().begin();
+  wafer::CardModuleOp card = *cardModule->getOps<wafer::CardModuleOp>().begin();
   for (wafer::TileModuleOp tile :
        card.getBody().front().getOps<wafer::TileModuleOp>()) {
     const int64_t tileId = tile.getTileIdAttr().getInt();
@@ -2106,8 +2209,9 @@ module {
     }
   }
 
-  auto tileModules = wafer::splitCardModuleIntoTileModules(
-      *cardModule, &failureReason);
+  auto tileModules =
+      wafer::splitCardModuleIntoTileModules(std::move(cardModule),
+                                            &failureReason);
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   unsigned sends = 0;
   unsigned receives = 0;
@@ -2123,6 +2227,108 @@ module {
   EXPECT_EQ(sends, 3u);
   EXPECT_EQ(receives, 3u);
   EXPECT_EQ(waits, 6u);
+}
+
+TEST(WaferTensorProgramToCardModuleTest,
+     MaterializesPeerAndRegionCutInputsForOneStructuredConsumer) {
+  std::unique_ptr<mlir::MLIRContext> context = createContext();
+  auto source = parseModule(*context, R"mlir(
+module {
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 1, 2>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+  func.func @two_inputs(%left: tensor<8xf16>, %right: tensor<8xf16>)
+      -> tensor<8xf16> {
+    %left_empty = tensor.empty() : tensor<8xf16>
+    %left_value = linalg.map ins(%left : tensor<8xf16>)
+        outs(%left_empty : tensor<8xf16>) (%value: f16) {
+      %next = arith.addf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %right_empty = tensor.empty() : tensor<8xf16>
+    %right_value = linalg.map ins(%right : tensor<8xf16>)
+        outs(%right_empty : tensor<8xf16>) (%value: f16) {
+      %next = arith.mulf %value, %value : f16
+      linalg.yield %next : f16
+    }
+    %result_empty = tensor.empty() : tensor<8xf16>
+    %result = linalg.generic {
+        indexing_maps = [affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>,
+                         affine_map<(d0) -> (d0)>],
+        iterator_types = ["parallel"]
+      } ins(%left_value, %right_value : tensor<8xf16>, tensor<8xf16>)
+        outs(%result_empty : tensor<8xf16>) {
+      ^bb0(%lhs: f16, %rhs: f16, %old: f16):
+        %sum = arith.addf %lhs, %rhs : f16
+        linalg.yield %sum : f16
+    } -> tensor<8xf16>
+    return %result : tensor<8xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(source);
+
+  llvm::SmallVector<mlir::Operation *, 3> structured;
+  source->walk([&](mlir::Operation *operation) {
+    if (mlir::isa<mlir::linalg::LinalgOp>(operation) &&
+        operation->getNumResults() == 1)
+      structured.push_back(operation);
+  });
+  ASSERT_EQ(structured.size(), 3u);
+
+  wafer::TileMapping selected = mapping(/*shardDimension=*/0, {1}, {8});
+  selected.materializationMode =
+      wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
+
+  wafer::SpatialEdgeStrategy remote = edgeStrategy(
+      structured[0], structured[2], wafer::TileId(1),
+      wafer::SpatialEdgeAction::PeerFragments, /*producerOffsets=*/{0},
+      /*producerSizes=*/{8}, /*consumerOffsets=*/{0},
+      /*consumerSizes=*/{8});
+  remote.consumerOperand = 0;
+  remote.fragments.push_back(wafer::SpatialEdgeFragment{
+      wafer::SpatialEdgeFragmentKind::Peer, {0}, {8}, wafer::TileId(0),
+      /*bytes=*/16, /*communicationId=*/0, /*payloadSlice=*/0});
+  selected.edgeStrategies.push_back(std::move(remote));
+
+  wafer::SpatialEdgeStrategy local = edgeStrategy(
+      structured[1], structured[2], wafer::TileId(1),
+      wafer::SpatialEdgeAction::RegionCut, /*producerOffsets=*/{0},
+      /*producerSizes=*/{8}, /*consumerOffsets=*/{0},
+      /*consumerSizes=*/{8});
+  local.consumerOperand = 1;
+  selected.edgeStrategies.push_back(std::move(local));
+
+  mlir::OwningOpRef<mlir::ModuleOp> cardModule;
+  std::string failureReason;
+  ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
+      *source, wafer::CardId(0), std::move(selected), cardModule,
+      &failureReason)))
+      << failureReason;
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
+  EXPECT_EQ(countOps<wafer::CommPeerSendOp>(cardModule->getOperation()), 1u);
+  EXPECT_EQ(countOps<wafer::CommPeerRecvOp>(cardModule->getOperation()), 1u);
+  EXPECT_GT(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 0u);
+  EXPECT_GT(countOps<wafer::StorageLoadOp>(cardModule->getOperation()), 0u);
+
+  wafer::CardModuleOp card = *cardModule->getOps<wafer::CardModuleOp>().begin();
+  for (wafer::TileModuleOp tile :
+       card.getBody().front().getOps<wafer::TileModuleOp>()) {
+    unsigned consumerRoots = 0;
+    tile.walk([&](wafer::TileRegionOp region) {
+      unsigned structuredRoots = 0;
+      region.walk([&](mlir::Operation *operation) {
+        structuredRoots += mlir::isa<wafer::ComputeElementwiseOp>(operation);
+      });
+      consumerRoots += structuredRoots == 1;
+      EXPECT_LE(structuredRoots, 1u);
+    });
+    if (tile.getTileIdAttr().getInt() == 1)
+      EXPECT_GT(consumerRoots, 0u);
+  }
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
@@ -2177,8 +2383,7 @@ module {
   selected.materializationMode =
       wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
   auto appendPeer = [&](mlir::Operation *producer, mlir::Operation *consumer,
-                        wafer::TileId sourceTile,
-                        int64_t communicationId) {
+                        wafer::TileId sourceTile, int64_t communicationId) {
     wafer::SpatialEdgeStrategy strategy =
         edgeStrategy(producer, consumer, wafer::TileId(2),
                      wafer::SpatialEdgeAction::PeerFragments,
@@ -2205,8 +2410,7 @@ module {
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
 
   llvm::SmallVector<int64_t, 2> destinationReceiveOrder;
-  wafer::CardModuleOp card =
-      *cardModule->getOps<wafer::CardModuleOp>().begin();
+  wafer::CardModuleOp card = *cardModule->getOps<wafer::CardModuleOp>().begin();
   for (wafer::TileModuleOp tile :
        card.getBody().front().getOps<wafer::TileModuleOp>()) {
     if (tile.getTileIdAttr().getInt() != 2)
@@ -2222,7 +2426,7 @@ module {
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
-     AcceptsExactBroadcastOperandDemandForOneConsumerShard) {
+     AcceptsExactBroadcastConsumerInputDemandForOneConsumerShard) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
 module {
@@ -2277,8 +2481,8 @@ module {
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0), makeSelected(/*producerSize=*/8),
-      cardModule, &failureReason)))
+      *source, wafer::CardId(0), makeSelected(/*producerSize=*/8), cardModule,
+      &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
 
@@ -2329,8 +2533,8 @@ module {
   ASSERT_TRUE(source);
   auto function = *source->getOps<mlir::func::FuncOp>().begin();
   std::string failureReason;
-  auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(function,
-                                                              &failureReason);
+  auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(
+      function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
 
   auto placement = [](wafer::compiler::detail::StructuredDAGNodeID node,
@@ -2352,8 +2556,7 @@ module {
   ASSERT_EQ(edgePlan->strategies.size(), 2u);
   ASSERT_EQ(edgePlan->totalPeerBytes, 64u);
 
-  wafer::TileMapping selected =
-      mapping(/*shardDimension=*/0, {2, 3}, {4});
+  wafer::TileMapping selected = mapping(/*shardDimension=*/0, {2, 3}, {4});
   selected.materializationMode =
       wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
   selected.edgeStrategies.append(edgePlan->strategies.begin(),
@@ -2403,8 +2606,7 @@ module {
   ASSERT_EQ(structured.size(), 2u);
 
   auto lowerAction = [&](wafer::SpatialEdgeAction action) {
-    wafer::TileMapping selected =
-        mapping(/*shardDimension=*/0, {0}, {8});
+    wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
     selected.edgeStrategies.push_back(
         edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
                      wafer::TileId(0), action, /*producerOffsets=*/{0},
@@ -2444,9 +2646,10 @@ module {
             countOps<wafer::StorageLoadOp>(fused->getOperation()));
 
   std::string failureReason;
-  for (mlir::ModuleOp actual : {spilled.get(), cut.get()}) {
+  for (mlir::OwningOpRef<mlir::ModuleOp> *actual : {&spilled, &cut}) {
     auto tileModules =
-        wafer::splitCardModuleIntoTileModules(actual, &failureReason);
+        wafer::splitCardModuleIntoTileModules(std::move(*actual),
+                                              &failureReason);
     ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
     ASSERT_EQ(tileModules->size(), 1u);
     ASSERT_TRUE(mlir::succeeded(
@@ -2501,17 +2704,17 @@ module {
       {structured[0].getOperation(), {4}});
   selected.operationTemporalTiles.push_back(
       {structured[1].getOperation(), {4}});
-  selected.edgeStrategies.push_back(edgeStrategy(
-      structured[0].getOperation(), structured[1].getOperation(),
-      wafer::TileId(0), wafer::SpatialEdgeAction::CoupledFusion,
-      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
-      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
+  selected.edgeStrategies.push_back(
+      edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
+                   wafer::TileId(0), wafer::SpatialEdgeAction::CoupledFusion,
+                   /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+                   /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
 
   mlir::OwningOpRef<mlir::ModuleOp> fused;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0), std::move(selected), fused,
-      &failureReason, operationNodes, &relations)))
+      *source, wafer::CardId(0), std::move(selected), fused, &failureReason,
+      operationNodes, &relations)))
       << failureReason;
 
   EXPECT_FALSE(relations.operationResultBuffers.empty());
@@ -2528,8 +2731,9 @@ module {
   EXPECT_TRUE(sawSharedProducerConsumerBuffer)
       << "coupled producer/consumer work must remain related by current SSA";
 
-  auto tileModules = wafer::splitCardModuleIntoTileModules(
-      *fused, &failureReason, &relations);
+  auto tileModules =
+      wafer::splitCardModuleIntoTileModules(std::move(fused), &failureReason,
+                                            &relations);
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 1u);
   ASSERT_TRUE(mlir::succeeded(
@@ -2708,11 +2912,11 @@ module {
 
   wafer::TileMapping selected = multiOutputMapping(
       {outputMapping(0, 0, {0}, {8}), outputMapping(1, 0, {1}, {8})});
-  selected.edgeStrategies.push_back(edgeStrategy(
-      structured[0].getOperation(), structured[1].getOperation(),
-      wafer::TileId(1), wafer::SpatialEdgeAction::SpillReload,
-      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
-      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
+  selected.edgeStrategies.push_back(
+      edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
+                   wafer::TileId(1), wafer::SpatialEdgeAction::SpillReload,
+                   /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+                   /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
 
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
@@ -2722,8 +2926,7 @@ module {
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
 
-  wafer::CardModuleOp card =
-      *cardModule->getOps<wafer::CardModuleOp>().begin();
+  wafer::CardModuleOp card = *cardModule->getOps<wafer::CardModuleOp>().begin();
   for (wafer::TileModuleOp tile :
        card.getBody().front().getOps<wafer::TileModuleOp>()) {
     if (tile.getTileIdAttr().getInt() != 1)
@@ -2820,12 +3023,11 @@ module {
       [&](mlir::linalg::MapOp operation) { structured.push_back(operation); });
   ASSERT_EQ(structured.size(), 2u);
   wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {8});
-  selected.edgeStrategies.push_back(
-      edgeStrategy(structured[0].getOperation(), structured[1].getOperation(),
-                   wafer::TileId(0),
-                   wafer::SpatialEdgeAction::LocalPhysicalConversion,
-                   /*producerOffsets=*/{0}, /*producerSizes=*/{8},
-                   /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
+  selected.edgeStrategies.push_back(edgeStrategy(
+      structured[0].getOperation(), structured[1].getOperation(),
+      wafer::TileId(0), wafer::SpatialEdgeAction::LocalPhysicalConversion,
+      /*producerOffsets=*/{0}, /*producerSizes=*/{8},
+      /*consumerOffsets=*/{0}, /*consumerSizes=*/{8}));
   mlir::OwningOpRef<mlir::ModuleOp> unchanged =
       mlir::ModuleOp::create(mlir::UnknownLoc::get(context.get()));
   mlir::ModuleOp unchangedPointer = *unchanged;
@@ -2934,8 +3136,8 @@ module {
 )mlir");
   ASSERT_TRUE(dynamic);
   EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(
-      *dynamic, wafer::CardId(0),
-      mapping(/*shardDimension=*/0, {0}, {1, 8}), unchanged, &failureReason)));
+      *dynamic, wafer::CardId(0), mapping(/*shardDimension=*/0, {0}, {1, 8}),
+      unchanged, &failureReason)));
   EXPECT_EQ(failureReason,
             "card spatial mapping requires static tensor-program "
             "output shapes");

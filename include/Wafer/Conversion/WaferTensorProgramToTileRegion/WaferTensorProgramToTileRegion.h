@@ -35,6 +35,14 @@ struct StructuredOperationBufferRelation {
   mlir::Value buffer;
 };
 
+/// One physical compute operation emitted for a structured DAG node.  The
+/// operation is current-IR SSA ownership evidence used while constructing
+/// root-scoped TileRegions; it is never serialized or recovered from buffers.
+struct StructuredOperationEmissionRelation {
+  uint32_t structuredNodeId = 0;
+  mlir::Operation *operation = nullptr;
+};
+
 /// One materialized buffer associated with an observable function result.
 struct SpatialOutputBufferRelation {
   unsigned outputIndex = 0;
@@ -46,12 +54,15 @@ struct SpatialOutputBufferRelation {
 /// an input demand refines the consumer node, while a result buffer describes
 /// the producing node. No entry outlives or identifies a different IR epoch.
 struct StructuredMaterializationRelations {
+  llvm::SmallVector<StructuredOperationEmissionRelation, 16>
+      operationEmissions;
   llvm::SmallVector<StructuredOperationBufferRelation, 16>
       operationResultBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 16> operandBuffers;
   llvm::SmallVector<SpatialOutputBufferRelation, 4> outputBuffers;
 
   void clear() {
+    operationEmissions.clear();
     operationResultBuffers.clear();
     operandBuffers.clear();
     outputBuffers.clear();
@@ -159,7 +170,7 @@ materializePartialReductionTile(
 /// unchanged on failure.
 ///
 /// `functionalArgumentCount` is the exact argument count before the owning
-/// CardModule conversion appended one private destination per result. This
+/// Tile materialization appended one private destination per result. This
 /// helper verifies that relation instead of recovering it from argument
 /// positions or types.
 ///
@@ -172,7 +183,8 @@ mlir::LogicalResult lowerSpatialOutputShardsToTileRegionModule(
     int64_t currentLogicalPartition,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles = {},
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
-    StructuredMaterializationRelations *materializationRelations = nullptr);
+    StructuredMaterializationRelations *materializationRelations = nullptr,
+    bool requireOneStructuredRootPerRegion = false);
 
 } // namespace wafer
 

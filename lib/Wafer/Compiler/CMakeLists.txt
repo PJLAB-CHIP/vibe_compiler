@@ -10,64 +10,30 @@ foreach(_wafer_native_jit_lib IN LISTS WAFER_NATIVE_JIT_LIBS)
   endif()
 endforeach()
 
+add_subdirectory(Baseline)
+add_subdirectory(Search)
+add_subdirectory(Planning)
+add_subdirectory(Executable)
+add_subdirectory(Pipeline)
+add_subdirectory(Transport)
+add_subdirectory(Target)
+add_subdirectory(Package)
+add_subdirectory(Program)
+
 set(LLVM_OPTIONAL_SOURCES
-  AttentionImplementationAlternative.cpp
-  CoordinatedCommunicationAction.cpp
-  RankCandidateSearch.cpp
-  LowerRankInstrModules.cpp
-  RankCandidateEvaluation.cpp
-  StructuredCandidateDerivation.cpp
-  StructuredCandidateCost.cpp
-  RankCandidateSelection.cpp
-  GlobalTileRelation.cpp
-  NoCCommunicationAction.cpp
-  NoCIntermediateRouting.cpp
-  NoCPartialDataflow.cpp
-  StaticFixedSlotQualification.cpp
-  StructuredImplementationAlternative.cpp
-  RankResourceCostValidation.cpp
-)
+  ${WAFER_COMPILER_PLANNING_OPTIONAL_SOURCES}
+  ${WAFER_COMPILER_TRANSPORT_OPTIONAL_SOURCES})
 
 add_mlir_library(WaferCompiler
-  ExecutableCallClosure.cpp
-  Compilation.cpp
-  CompilationOrchestration.cpp
-  CompilationStages.cpp
-  CardExecutableCompilation.cpp
-  CardExecutableLowering.cpp
-  DirectDTETransport.cpp
-  CardExecutable.cpp
-  TensorProgramCompilation.cpp
-  Package.cpp
-  ProgramData.cpp
-  ProgramDirectoryTransaction.cpp
-  ProgramInvocation.cpp
-  ProgramTensorComparison.cpp
-  TileMemoryPlanning.cpp
-  SpmdCompilationBridge.cpp
-  StructuredBufferRelations.cpp
-  TargetABIPreparation.cpp
-  TargetLLVMModule.cpp
-  TargetModuleLinking.cpp
-  TargetKernelAggregate.cpp
-  TargetDeviceLink.cpp
-  TargetLLVMTranslation.cpp
-  TargetModuleReadback.cpp
-  WriteExecutablePackage.cpp
-  TargetInstrumentation.cpp
-  CompileCardExecutableLLVMModules.cpp
-  SelectedBufferMaterialization.cpp
-  StructuredDAGExactDemandQuery.cpp
-  TargetCallFrontend.cpp
-  StructuredDAGCandidateSchedule.cpp
-  StructuredDAGPlacementEnumeration.cpp
-  StructuredDAGEdgeDemandPlan.cpp
-  StructuredDAGEdgeStrategyPlan.cpp
-  StructuredDAGSchedule.cpp
-  StructuredDAGSchedulePlan.cpp
-  CardExecutableSynthesis.cpp
-  DeterministicCardExecutableSynthesis.cpp
-  ProgramResourceVerification.cpp
+  ${WAFER_COMPILER_PIPELINE_SOURCES}
+  ${WAFER_COMPILER_BASELINE_SOURCES}
+  ${WAFER_COMPILER_SEARCH_SOURCES}
+  ${WAFER_COMPILER_PLANNING_SOURCES}
+  ${WAFER_COMPILER_EXECUTABLE_SOURCES}
+  ${WAFER_COMPILER_TRANSPORT_SOURCES}
+  ${WAFER_COMPILER_TARGET_SOURCES}
+  ${WAFER_COMPILER_PACKAGE_SOURCES}
+  ${WAFER_COMPILER_PROGRAM_SOURCES}
 
   LINK_LIBS PUBLIC
   LLVMSupport

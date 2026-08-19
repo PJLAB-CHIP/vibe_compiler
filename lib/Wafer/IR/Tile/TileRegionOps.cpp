@@ -116,6 +116,17 @@ traceSPMStorage(mlir::Value value, TileRegionOp owner,
                                /*hasSPMRoot=*/false});
   mlir::Operation *producer = result.getOwner();
 
+  // A preceding TileRegion is already the verified ownership boundary for
+  // its result. Do not reopen that region and recursively retrace all of its
+  // inputs when verifying a later sibling. The producer's own verifier checks
+  // its yield locally, while this consumer checks the typed DDR boundary.
+  // Keeping these contracts compositional makes a sequential region chain
+  // linear instead of repeatedly expanding the complete prefix DAG.
+  if (mlir::isa<TileRegionOp>(producer)) {
+    trace.valid = isDDRDataType(value.getType());
+    return finish(trace);
+  }
+
   if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(producer)) {
     trace.hasSPMRoot = isSPMBuffer(allocation.getType());
     trace.valid = !trace.hasSPMRoot || isAllocationOwnedBy(allocation, owner);

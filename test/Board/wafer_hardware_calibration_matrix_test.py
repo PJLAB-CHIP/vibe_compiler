@@ -216,24 +216,6 @@ def validate_operator_payload_dtypes(
         f"{invalid_instruction_i8}"
     )
 
-    optimization = load_asset_module(
-        repo,
-        "test/Board/wafer_board_compiler_optimization_comparison_test.py",
-        cache,
-    )
-    invalid_optimization_i8 = tuple(
-        case.key
-        for case in optimization.CASES.values()
-        if any(
-            spec.mlir_dtype.lower() in {"i8", "int8"}
-            for spec in (*case.inputs, *case.outputs)
-        )
-    )
-    assert not invalid_optimization_i8, (
-        "production optimization comparison contains i8 operator payloads: "
-        f"{invalid_optimization_i8}"
-    )
-
 def resolve_binding(
     repo: pathlib.Path,
     binding: matrix.CatalogBinding,

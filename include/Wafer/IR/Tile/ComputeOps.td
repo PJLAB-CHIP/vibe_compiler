@@ -135,6 +135,32 @@ def Wafer_ComputeElementwiseOp : Wafer_Op<"tile.elementwise", [
       "$kind $inputs attr-dict `:` functional-type(operands, results)";
 }
 
+def Wafer_ComputeElementwiseIntoOp : Wafer_Op<"tile.elementwise_into", [
+    WaferTileDataflowOpInterface,
+    MemoryEffects<[MemRead<Wafer_SPMResource>,
+                   MemWrite<Wafer_SPMResource>,
+                   MemWrite<Wafer_ComputeResource>]>
+  ]> {
+  let summary = "target-abstract in-place tile elementwise compute";
+  let description = [{
+    `wafer.tile.elementwise_into` applies one map-free elementwise operation
+    to already materialized SPM values and writes the result into an explicit
+    destination. The destination may be one of the inputs. This form owns
+    reduction accumulator updates whose storage must remain stable across a
+    temporal loop backedge; ordinary functional elementwise values continue
+    to use `wafer.tile.elementwise`.
+  }];
+
+  let arguments = (ins
+    Wafer_ComputeElementwiseKindAttr:$kind,
+    Arg<Variadic<Wafer_AnySPMMemRef>, "", [MemRead]>:$inputs,
+    Arg<Wafer_AnySPMMemRef, "", [MemRead, MemWrite]>:$dest
+  );
+  let hasVerifier = 1;
+  let assemblyFormat =
+      "$kind $inputs `into` $dest attr-dict `:` type($inputs) `into` type($dest)";
+}
+
 def Wafer_ComputeReduceOp : Wafer_Op<"tile.reduce", [
     WaferTileDataflowOpInterface,
     MemoryEffects<[MemRead<Wafer_SPMResource>,

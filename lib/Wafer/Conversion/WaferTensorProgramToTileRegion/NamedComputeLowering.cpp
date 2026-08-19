@@ -338,7 +338,8 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
   if (mlir::failed(verifyExactFillPayload(fill)))
     return mlir::failure();
 
-  mlir::FailureOr<mlir::Value> value = getScalarValue(op.getDpsInputs()[0]);
+  mlir::FailureOr<mlir::Value> value =
+      getScalarValue(op.getDpsInputs()[0], builder);
   if (mlir::failed(value))
     return mlir::failure();
 
@@ -381,8 +382,10 @@ TileRegionBodyEmitter::convertFill(mlir::linalg::FillOp fill,
     return fail("linalg.fill result is not a ranked tensor");
   auto result = builder.create<mlir::memref::AllocOp>(
       fill.getLoc(), makeSPMMemRefType(resultTensorType, MemLayout::Tensor));
-  builder.create<ComputeFillOp>(fill.getLoc(), result.getResult(), *value,
-                                /*fill_domain=*/FillDomainAttr{});
+  auto compute =
+      builder.create<ComputeFillOp>(fill.getLoc(), result.getResult(), *value,
+                                    /*fill_domain=*/FillDomainAttr{});
+  recordStructuredComputeOperation(compute);
   record(fill.getResult(0), MemLayout::Tensor, result.getResult());
   return mlir::success();
 }
@@ -489,10 +492,10 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::createAccumulatorCombine(
 
   auto kindAttr =
       ComputeElementwiseKindAttr::get(builder.getContext(), elementwiseKind);
-  auto combined = builder.create<ComputeElementwiseOp>(
-      loc, tensorBufferType, kindAttr,
-      mlir::ValueRange{*previous, partialTensor}, mlir::ArrayAttr{});
-  return combined.getResult();
+  auto combined = builder.create<ComputeElementwiseIntoOp>(
+      loc, kindAttr, mlir::ValueRange{*previous, partialTensor}, *previous);
+  recordStructuredComputeOperation(combined);
+  return *previous;
 }
 
 mlir::LogicalResult
@@ -536,6 +539,7 @@ TileRegionBodyEmitter::convertMatmul(mlir::linalg::LinalgOp op,
       mlir::DenseI64ArrayAttr{}, mlir::IntegerAttr{}, mlir::IntegerAttr{},
       mlir::DenseI64ArrayAttr{}, mlir::IntegerAttr{}, mlir::IntegerAttr{},
       mlir::DenseI64ArrayAttr{}, mlir::IntegerAttr{}, mlir::IntegerAttr{});
+  recordStructuredComputeOperation(gemm);
   if (!overwriteInit) {
     mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
@@ -729,6 +733,7 @@ TileRegionBodyEmitter::convertBatchMatmul(mlir::linalg::LinalgOp op,
       builder.getDenseI64ArrayAttr(attrs->resultBatchDims),
       builder.getI64IntegerAttr(attrs->resultMDim),
       builder.getI64IntegerAttr(attrs->resultNDim));
+  recordStructuredComputeOperation(gemm);
   if (!overwriteInit) {
     mlir::FailureOr<mlir::Value> combined = createAccumulatorCombine(
         op->getLoc(), ComputeReduceKind::Sum, op.getDpsInits().front(),
@@ -801,6 +806,7 @@ TileRegionBodyEmitter::convertConvolution(mlir::linalg::LinalgOp op,
       builder.getDenseI64ArrayAttr(geometry->unpads),
       builder.getDenseI64ArrayAttr(geometry->stridesHW),
       builder.getDenseI64ArrayAttr(geometry->dilationsHW));
+  recordStructuredComputeOperation(convolution);
 
   mlir::FailureOr<mlir::Value> sourceOrderedResult = transpose(
       convolution.getResult(), canonicalResultTensor, geometry->outputFromNHWC);
@@ -991,6 +997,7 @@ mlir::LogicalResult TileRegionBodyEmitter::createReduceOp(
   auto reduce = builder.create<ComputeReduceOp>(
       loc, resultType, kindAttr, input, init,
       builder.getDenseI64ArrayAttr(dims), typedInit);
+  recordStructuredComputeOperation(reduce);
   result = reduce.getResult();
   return mlir::success();
 }

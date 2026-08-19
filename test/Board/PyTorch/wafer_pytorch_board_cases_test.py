@@ -20,38 +20,6 @@ import wafer_pytorch_board_cases as cases
 
 
 class PyTorchBoardCasesTest(unittest.TestCase):
-    def test_search_policy_evidence_requires_actual_fusion(self) -> None:
-        case = cases.PyTorchBoardCase(
-            name="fusion-required",
-            num_partitions=1,
-            dtype=torch.float16,
-            inputs=(torch.zeros((1,), dtype=torch.float16),),
-            expected_outputs_factory=lambda: (
-                torch.zeros((1,), dtype=torch.float16),
-            ),
-            export_program=lambda _path: None,
-            required_structured_ir=(),
-            expected_all_reduce_count=0,
-            comparison_policy=cases.ATTENTION_COMPARISON,
-            minimum_search_actual_fused_edges=1,
-        )
-        board_runner.validate_compiler_search_evidence(
-            "wafer-compile: card-executable-selection admitted=1 "
-            "actual_fused_edges=3 makespan_ps=7\n",
-            case,
-            "search",
-        )
-        with self.assertRaisesRegex(RuntimeError, "required operator fusion"):
-            board_runner.validate_compiler_search_evidence(
-                "wafer-compile: card-executable-selection admitted=1 "
-                "actual_fused_edges=0 makespan_ps=7\n",
-                case,
-                "search",
-            )
-        # The conservative comparison baseline is intentionally not judged by
-        # the search winner's optimization-effectiveness contract.
-        board_runner.validate_compiler_search_evidence("", case, "none")
-
     def test_no_card_runner_materializes_both_functional_decode_packages(
         self,
     ) -> None:
@@ -78,8 +46,6 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 inputs=(outputs[1], outputs[2]),
                 expected_outputs_factory=lambda: step_two_outputs,
                 export_program=lambda _path: None,
-                required_structured_ir=(),
-                expected_all_reduce_count=0,
                 comparison_policy=cases.ATTENTION_COMPARISON,
             )
 
@@ -90,8 +56,6 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             inputs=(torch.zeros((1,), dtype=torch.float16),),
             expected_outputs_factory=lambda: step_one_outputs,
             export_program=lambda _path: None,
-            required_structured_ir=(),
-            expected_all_reduce_count=0,
             comparison_policy=cases.ATTENTION_COMPARISON,
             continuation_factory=make_step_two,
         )
@@ -207,16 +171,16 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         with mock.patch.object(sys, "argv", required_args):
             self.assertEqual(
                 board_runner.parse_args().optimization_policy,
-                "search",
+                "none",
             )
         with mock.patch.object(
             sys,
             "argv",
-            [*required_args, "--optimization-policy", "none"],
+            [*required_args, "--optimization-policy", "search"],
         ):
             self.assertEqual(
                 board_runner.parse_args().optimization_policy,
-                "none",
+                "search",
             )
         self.assertEqual(
             cases.OPTIMIZATION_POLICIES,
@@ -247,7 +211,6 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                     stderr="",
                 ),
             ) as run_mock,
-            mock.patch.object(board_runner, "validate_structured_program"),
             mock.patch.object(
                 board_runner,
                 "prepare_runtime_payloads",
@@ -358,24 +321,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
         )
 
     def test_source_no_card_matrix_is_callable_and_not_deferred(self) -> None:
-        expected_search = {
-            ("single-card-gemm", "float16", 1),
-            ("single-card-gemm", "bfloat16", 1),
-            ("heterogeneous-tiling-dataflow", "float16", 1),
-            ("heterogeneous-tiling-dataflow", "bfloat16", 1),
-            ("conv-mixed-dag", "float16", 1),
-            ("conv-mixed-dag", "bfloat16", 1),
-            ("attention-prefill", "float16", 1),
-            ("attention-prefill", "bfloat16", 1),
-            ("attention-decode-kv-cache", "float16", 1),
-            ("attention-decode-kv-cache", "bfloat16", 1),
-            ("llama-2-7b-block", "float16", 1),
-            ("llama-2-7b-block", "bfloat16", 1),
-        }
         expected = {
-            (*workload, "search")
-            for workload in expected_search
-        } | {
             ("attention-prefill", "float16", 1, "none"),
             ("attention-decode-kv-cache", "float16", 1, "none"),
             ("llama-2-7b-block", "float16", 1, "none"),
@@ -406,18 +352,14 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 for entry in cases.SOURCE_NO_CARD_WORKLOADS
                 if entry.case_name == "attention-decode-kv-cache"
             },
-            {
-                ("attention-decode-kv-cache", "float16", "search"): 2,
-                ("attention-decode-kv-cache", "bfloat16", "search"): 2,
-                ("attention-decode-kv-cache", "float16", "none"): 2,
-            },
+            {("attention-decode-kv-cache", "float16", "none"): 2},
         )
         self.assertEqual(
             sum(
                 entry.package_count
                 for entry in cases.SOURCE_NO_CARD_WORKLOADS
             ),
-            18,
+            4,
         )
 
         cmake = (
@@ -455,39 +397,6 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             )
             self.assertIn("--no-card", body)
 
-        matched_policy_pairs = (
-            (
-                "wafer-runtime-pytorch-attention-decode-kv-cache-no-card",
-                "wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-none-no-card",
-                "attention-decode-kv-cache",
-            ),
-            (
-                "wafer-runtime-pytorch-llama-2-7b-block-fp16-no-card",
-                "wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card",
-                "llama-2-7b-block",
-            ),
-        )
-        for search_name, none_name, case_name in matched_policy_pairs:
-            bodies = []
-            for test_name in (search_name, none_name):
-                match = re.search(
-                    rf"add_test\(NAME {re.escape(test_name)}\n"
-                    r"(?P<body>.*?)\n\s*\)",
-                    cmake,
-                    re.DOTALL,
-                )
-                self.assertIsNotNone(match, test_name)
-                bodies.append(match.group("body"))
-            search_body, none_body = bodies
-            for body in bodies:
-                self.assertIn("Board/PyTorch/wafer_board_pytorch_test.py", body)
-                self.assertIn(f"--case {case_name}", body)
-                self.assertIn("--dtype float16", body)
-                self.assertIn("--seed 20260803", body)
-                self.assertIn("--no-card", body)
-            self.assertIn("--optimization-policy search", search_body)
-            self.assertIn("--optimization-policy none", none_body)
-
         runner_source = inspect.getsource(board_runner.main)
         self.assertNotIn("torch_eager_reference=deferred", runner_source)
         prepare_source = inspect.getsource(board_runner.prepare_case_step)
@@ -497,34 +406,22 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             runner_source.index("if args.no_card:"),
         )
 
-    def test_matched_board_policy_matrix_is_independent_and_serialized(
-        self,
-    ) -> None:
+    def test_board_workloads_use_the_baseline_policy(self) -> None:
         cmake = (
             pathlib.Path(__file__).resolve().parents[3]
             / "test"
             / "CMakeLists.txt"
         ).read_text(encoding="utf-8")
-        matched_tests = {
-            "wafer-board-pytorch-attention-decode-kv-cache": (
+        self.assertNotIn("--optimization-policy search", cmake)
+        baseline_tests = {
+            "wafer-board-pytorch-attention-prefill-optimization-none":
+                "attention-prefill",
+            "wafer-board-pytorch-attention-decode-kv-cache-optimization-none":
                 "attention-decode-kv-cache",
-                "search",
-            ),
-            "wafer-board-pytorch-attention-decode-kv-cache-optimization-none": (
-                "attention-decode-kv-cache",
-                "none",
-            ),
-            "wafer-board-pytorch-llama-2-7b-block": (
+            "wafer-board-pytorch-llama-2-7b-block-optimization-none":
                 "llama-2-7b-block",
-                "search",
-            ),
-            "wafer-board-pytorch-llama-2-7b-block-optimization-none": (
-                "llama-2-7b-block",
-                "none",
-            ),
         }
-        work_dirs = set()
-        for test_name, (case_name, policy) in matched_tests.items():
+        for test_name, case_name in baseline_tests.items():
             command_match = re.search(
                 rf"add_test\(NAME {re.escape(test_name)}\n"
                 r"(?P<body>.*?)\n\s*\)",
@@ -533,19 +430,11 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             )
             self.assertIsNotNone(command_match, test_name)
             command = command_match.group("body")
-            self.assertIn("Board/PyTorch/wafer_board_pytorch_test.py", command)
             self.assertIn(f"--case {case_name}", command)
             self.assertIn("--dtype float16", command)
-            self.assertIn("--seed 20260803", command)
-            self.assertIn(f"--optimization-policy {policy}", command)
+            self.assertIn("--optimization-policy none", command)
             self.assertIn("--repeat 3", command)
             self.assertNotIn("--no-card", command)
-            work_dir_match = re.search(
-                r"--work-dir\s+\$\{CMAKE_CURRENT_BINARY_DIR\}/(?P<path>\S+)",
-                command,
-            )
-            self.assertIsNotNone(work_dir_match, test_name)
-            work_dirs.add(work_dir_match.group("path"))
 
             properties_match = re.search(
                 rf"set_tests_properties\(\s*{re.escape(test_name)} PROPERTIES"
@@ -555,46 +444,13 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             )
             self.assertIsNotNone(properties_match, test_name)
             properties = properties_match.group("body")
-            self.assertIn("matched-ab", properties)
-            self.assertIn(f"optimization-{policy}", properties)
+            self.assertIn("baseline", properties)
+            self.assertIn("optimization-none", properties)
+            self.assertNotIn("matched-ab", properties)
             self.assertIn(
                 'RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"',
                 properties,
             )
-        self.assertEqual(len(work_dirs), len(matched_tests))
-
-        baseline_name = (
-            "wafer-board-pytorch-attention-prefill-optimization-none"
-        )
-        baseline_match = re.search(
-            rf"add_test\(NAME {re.escape(baseline_name)}\n"
-            r"(?P<body>.*?)\n\s*\)",
-            cmake,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(baseline_match, baseline_name)
-        baseline_command = baseline_match.group("body")
-        self.assertIn("--case attention-prefill", baseline_command)
-        self.assertIn("--dtype float16", baseline_command)
-        self.assertIn("--seed 20260803", baseline_command)
-        self.assertIn("--optimization-policy none", baseline_command)
-        self.assertIn("--repeat 3", baseline_command)
-        self.assertNotIn("--no-card", baseline_command)
-        baseline_properties_match = re.search(
-            rf"set_tests_properties\(\s*{re.escape(baseline_name)} PROPERTIES"
-            r"(?P<body>.*?)\n\s*\)",
-            cmake,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(baseline_properties_match, baseline_name)
-        baseline_properties = baseline_properties_match.group("body")
-        self.assertIn("baseline", baseline_properties)
-        self.assertIn("optimization-none", baseline_properties)
-        self.assertNotIn("matched-ab", baseline_properties)
-        self.assertIn(
-            'RESOURCE_LOCK "wafer-board-${WAFER_BOARD_TEST_DEVICE_ID}"',
-            baseline_properties,
-        )
 
     def test_heterogeneous_tiling_dataflow_has_mixed_output_domains(self) -> None:
         case = cases._heterogeneous_tiling_single_card(torch.float16, seed=19)

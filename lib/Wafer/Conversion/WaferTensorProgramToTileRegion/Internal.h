@@ -170,6 +170,10 @@ struct CandidatePeerEndpoint {
   /// separate from the logical Direct-DTE message identity.
   uint64_t consumerScheduleOrdinal = 0;
   unsigned consumerOperand = 0;
+  /// Exact structured root that owns this endpoint: producer for send,
+  /// consumer for receive. This is required because an explicit DDR boundary
+  /// intentionally severs the ordinary tensor SSA path.
+  uint32_t structuredNodeId = 0;
   /// Query-local identity of the selected exact fragment.  It is used only in
   /// C++ planning/diagnostics; the relation is never encoded in IR.
   const SpatialEdgeFragment *selectedFragment = nullptr;
@@ -180,13 +184,13 @@ struct CandidatePeerEndpoint {
 /// TileRegion lowering; it is never encoded in Location or serialized in IR.
 struct CandidateSelectedDDRStage {
   mlir::Value buffer;
-  const SpatialEdgeStrategy *strategy = nullptr;
+  uint32_t producerNode = 0;
 };
 
 /// Concrete TileRegion allocation produced for one selected DDR stage.
 struct MaterializedSelectedDDRStage {
   mlir::memref::AllocOp allocation;
-  const SpatialEdgeStrategy *strategy = nullptr;
+  uint32_t producerNode = 0;
 };
 
 struct TileRegionEmissionRelations {
@@ -208,10 +212,14 @@ struct CandidateLoopTile {
 
 mlir::func::FuncOp findSingleStandaloneTensorProgram(mlir::ModuleOp module);
 
-mlir::LogicalResult verifyTensorProgramScope(mlir::func::FuncOp function,
-                                             unsigned functionalArgumentCount,
-                                             std::string *failureReason,
-                                             unsigned boundaryArgumentCount = 0);
+/// Extends one private Tile materialization instance with one caller-owned
+/// output destination per functional result.
+mlir::LogicalResult appendTileOutputDestinations(mlir::func::FuncOp program,
+                                                 std::string *failureReason);
+
+mlir::LogicalResult verifyTensorProgramScope(
+    mlir::func::FuncOp function, unsigned functionalArgumentCount,
+    std::string *failureReason, unsigned boundaryArgumentCount = 0);
 
 bool isTensorProgramOutputBoundary(TensorProgramScope scope, mlir::Value value,
                                    unsigned outputIndex);
@@ -243,6 +251,26 @@ mlir::LogicalResult
 verifyReductionSplitNumericLegality(mlir::linalg::LinalgOp root,
                                     bool preservesSequentialReductionOrder,
                                     std::string *failureReason);
+
+/// Records that `materialized` is the current-IR realization of every
+/// structured node represented by `source`.
+void recordStructuredOperationNodeMaterialization(
+    mlir::Operation *source, mlir::Operation *materialized,
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes);
+
+/// Builds the selected temporal traversal for one structured result domain.
+/// This is the only implementation used by root and producer materialization.
+mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
+    mlir::OpBuilder &builder, TensorProgramScope scope, mlir::Operation *root,
+    mlir::linalg::LinalgOp sourceCompute,
+    llvm::ArrayRef<mlir::OpFoldResult> requestedOutputOffsets,
+    llvm::ArrayRef<int64_t> requestedOutputSizes,
+    llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
+    llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    std::string *failureReason, mlir::Value outputDestination = {},
+    llvm::ArrayRef<mlir::OpFoldResult> destinationBaseOffsets = {},
+    llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
+        nullptr);
 
 mlir::FailureOr<mlir::Value> materializeCandidateRootTileValue(
     TensorProgramScope scope, mlir::Operation *root, unsigned outputIndex,
@@ -350,6 +378,13 @@ public:
   mlir::FailureOr<TileRegionOp> emit(TensorProgramScope scope,
                                      mlir::RewriterBase &rewriter);
 
+  /// Emits the final TileRegion sequence directly from structured stages.
+  /// Roots connected through current tensor SSA stay in one stage; explicit
+  /// selected DDR allocations cut that graph. The baseline separately checks
+  /// that every resulting stage contains exactly one structured root.
+  mlir::FailureOr<TileRegionOp>
+  emitStructuredStages(TensorProgramScope scope, mlir::RewriterBase &rewriter);
+
 private:
   std::string *failureReason;
   int64_t currentLogicalPartition = -1;
@@ -443,6 +478,7 @@ private:
                                   mlir::OpBuilder &builder);
   void recordOperationResultBuffer(uint32_t structuredNodeId,
                                    mlir::Value buffer);
+  void recordStructuredComputeOperation(mlir::Operation *operation);
   void recordOperandBuffer(uint32_t structuredNodeId, mlir::Value buffer);
   void recordOutputBuffer(unsigned outputIndex, mlir::Value buffer);
 
@@ -542,7 +578,8 @@ private:
                                            mlir::Value resultValue,
                                            mlir::OpBuilder &builder);
 
-  mlir::FailureOr<mlir::Value> getScalarValue(mlir::Value original);
+  mlir::FailureOr<mlir::Value> getScalarValue(mlir::Value original,
+                                              mlir::OpBuilder &builder);
 
   bool isUnreadDpsInitUse(mlir::OpOperand &use) const;
 
@@ -701,6 +738,7 @@ mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints = {},
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages = {},
     TileRegionEmissionRelations *emissionRelations = nullptr,
-    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {});
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
+    bool requireOneStructuredRootPerRegion = false);
 
 } // namespace wafer::tensor_program_to_tile_region

@@ -9,7 +9,7 @@
 # RUN: printf '%b' 'module {\n  func.func @main(%%input: tensor<16xf16>, %%weight: tensor<16xf16>) -> tensor<16xf16> {\n    %%result = stablehlo.add %%input, %%weight : tensor<16xf16>\n    return %%result : tensor<16xf16>\n  }\n}\n' > %t.source/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[16],"dtype":"float16","dynamic_dims":[]},{"shape":[16],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[16],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"input"},{"type_":"parameter","position":-1,"name":"weight"}],"unused_inputs":[]}\n' > %t.source/functions/forward.meta
 # RUN: %python -c 'import numpy as np; f=open("%t.source/data/weight","wb"); np.save(f,np.ones((16,),dtype=np.float16)); f.close()'
-# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.output/package --num-partitions=1 --optimization-policy=none 2>&1 | tee %t.log | FileCheck %s
+# RUN: wafer-compile --input-program-dir %t.source --output-dir %t.output/package --num-partitions=1 --optimization-policy=none --compile-timing 2>&1 | tee %t.log | FileCheck %s
 # RUN: wafer-run --package-dir %t.output/package --no-card | FileCheck %s --check-prefix=NO-CARD
 # RUN: bash -c 'test -z "$(find "%t.output" -maxdepth 1 -name ".wafer-program-data-*" -print -quit)"'
 

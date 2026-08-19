@@ -11,6 +11,11 @@ add_mlir_conversion_library(WaferCardModuleToTileModules
 )
 
 add_mlir_conversion_library(WaferTensorProgramToCardModule
+  WaferTensorProgramToCardModule/CardModuleAssembly.cpp
+  WaferTensorProgramToCardModule/CardModuleCommon.cpp
+  WaferTensorProgramToCardModule/MappingValidation.cpp
+  WaferTensorProgramToCardModule/SourceValidation.cpp
+  WaferTensorProgramToCardModule/TileEntryMaterialization.cpp
   WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -30,12 +35,26 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/CandidateMaterialization.cpp
   WaferTensorProgramToTileRegion/CandidateSupport.cpp
   WaferTensorProgramToTileRegion/CollectiveLowering.cpp
+  WaferTensorProgramToTileRegion/ConfiguredStructuredTraversal.cpp
   WaferTensorProgramToTileRegion/DependentDataflow.cpp
+  WaferTensorProgramToTileRegion/EdgeDomain.cpp
+  WaferTensorProgramToTileRegion/EdgeFragmentPlanning.cpp
   WaferTensorProgramToTileRegion/GenericLowering.cpp
   WaferTensorProgramToTileRegion/NamedComputeLowering.cpp
+  WaferTensorProgramToTileRegion/ProducerTileFusion.cpp
+  WaferTensorProgramToTileRegion/ConsumerInputReconstruction.cpp
+  WaferTensorProgramToTileRegion/RootRegionEmitter.cpp
+  WaferTensorProgramToTileRegion/SelectedEdgeActions.cpp
+  WaferTensorProgramToTileRegion/SelectedEdgeFinalization.cpp
+  WaferTensorProgramToTileRegion/SelectedEdgeMaterialization.cpp
+  WaferTensorProgramToTileRegion/SelectedEdgeMapping.cpp
+  WaferTensorProgramToTileRegion/SelectedPeerMaterialization.cpp
   WaferTensorProgramToTileRegion/TensorControlFlowLowering.cpp
+  WaferTensorProgramToTileRegion/TemporalTileMaterialization.cpp
+  WaferTensorProgramToTileRegion/TensorDependencyChain.cpp
   WaferTensorProgramToTileRegion/TileMaterialization.cpp
   WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp
+  WaferTensorProgramToTileRegion/WindowedInsertSlice.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/Wafer/Conversion/WaferTensorProgramToTileRegion

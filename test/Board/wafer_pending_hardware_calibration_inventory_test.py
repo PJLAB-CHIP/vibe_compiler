@@ -92,10 +92,6 @@ def main() -> int:
 
     for key, expected_host_test in (
         (
-            "production-optimizer-paired-qualification",
-            "wafer-compiler-optimization-source-contract",
-        ),
-        (
             "collective-algorithm-characterization",
             "wafer-collective-algorithm-source-contract",
         ),

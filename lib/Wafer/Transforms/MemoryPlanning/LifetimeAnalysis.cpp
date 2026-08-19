@@ -52,6 +52,11 @@ static bool hasAsyncDependencyType(mlir::Value value) {
                    mlir::async::GroupType>(value.getType());
 }
 
+static bool canCarryStorageAlias(mlir::Value value) {
+  return value &&
+         mlir::isa<mlir::TensorType, mlir::BaseMemRefType>(value.getType());
+}
+
 static bool isSupportedAsyncTaskProducer(mlir::Operation *op) {
   if (mlir::isa<InstrDTESendOp, InstrDTERecvOp>(op))
     return true;
@@ -336,6 +341,20 @@ static bool pathsCoverQuery(PathCondition query,
     llvm::SmallVector<PathCondition, 2> next;
     for (PathCondition path : uncovered)
       path.subtract(ref.path, next);
+    uncovered = std::move(next);
+    if (uncovered.empty())
+      return true;
+  }
+  return false;
+}
+
+static bool pathsCoverQuery(PathCondition query,
+                            llvm::ArrayRef<PathCondition> mappedPaths) {
+  llvm::SmallVector<PathCondition, 2> uncovered{query};
+  for (const PathCondition &mappedPath : mappedPaths) {
+    llvm::SmallVector<PathCondition, 2> next;
+    for (PathCondition path : uncovered)
+      path.subtract(mappedPath, next);
     uncovered = std::move(next);
     if (uncovered.empty())
       return true;
@@ -762,23 +781,41 @@ LifetimeDataflow::LifetimeDataflow(
 mlir::Value LifetimeDataflow::normalize(mlir::Value value) const {
   if (!value || !resolveValue)
     return value;
+  if (auto cached = normalizedValues.find(value);
+      cached != normalizedValues.end())
+    return cached->second;
 
-  llvm::DenseSet<mlir::Value> seen;
-  while (seen.insert(value).second) {
+  llvm::SmallVector<mlir::Value, 8> path;
+  llvm::SmallDenseSet<mlir::Value, 8> seen;
+  while (value && seen.insert(value).second) {
+    if (auto cached = normalizedValues.find(value);
+        cached != normalizedValues.end()) {
+      value = cached->second;
+      break;
+    }
+    path.push_back(value);
     mlir::Value resolved = resolveValue(value);
     if (!resolved || resolved == value)
-      return value;
+      break;
     value = resolved;
   }
+  for (mlir::Value traversed : path)
+    normalizedValues.try_emplace(traversed, value);
   return value;
 }
 
 mlir::LogicalResult LifetimeDataflow::initialize(LifetimeFailure *failure) {
+  normalizedValues.clear();
   valueRefs.clear();
   valueOrigins.clear();
   valueCacheRevision = 1;
   valueRefCacheRevisions.clear();
   valueOriginCacheRevisions.clear();
+  valueRefCacheWrites.clear();
+  valueOriginCacheWrites.clear();
+  demandUseWrites.clear();
+  valueRefCacheCoverage.clear();
+  valueOriginCacheCoverage.clear();
   asyncRefs.clear();
   asyncTaskRefs.clear();
   asyncTasks.clear();
@@ -800,16 +837,45 @@ mlir::LogicalResult LifetimeDataflow::initialize(LifetimeFailure *failure) {
     mlir::Value normalized = normalize(demand.allocation.getMemref());
     valueRefs[normalized] = llvm::SmallVector<RootRef, 2>{
         RootRef{static_cast<unsigned>(index), point->path}};
-    valueRefCacheRevisions[normalized] = valueCacheRevision;
+    markValueRefCacheCurrent(normalized);
     valueOrigins[normalized] = llvm::SmallVector<ValueOriginRef, 2>{
         ValueOriginRef{demand.allocation.getMemref(), point->path}};
-    valueOriginCacheRevisions[normalized] = valueCacheRevision;
+    markValueOriginCacheCurrent(normalized);
   }
   return mlir::success();
 }
 
+void LifetimeDataflow::markValueRefCacheCurrent(mlir::Value value) {
+  valueRefCacheRevisions[value] = valueCacheRevision;
+  valueRefCacheWrites.push_back(value);
+}
+
+void LifetimeDataflow::markValueOriginCacheCurrent(mlir::Value value) {
+  valueOriginCacheRevisions[value] = valueCacheRevision;
+  valueOriginCacheWrites.push_back(value);
+}
+
 llvm::SmallVector<RootRef, 2>
 LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
+  if (!canCarryStorageAlias(value))
+    return {};
+  value = normalize(value);
+  llvm::SmallVector<RootRef, 2> cachedRefs;
+  if (auto mapped = valueRefs.find(value); mapped != valueRefs.end()) {
+    for (RootRef ref : mapped->second)
+      if (std::optional<PathCondition> path = ref.path.intersect(usePath))
+        appendUniqueRootRefs(cachedRefs, llvm::ArrayRef<RootRef>{
+                                             RootRef{ref.demandIndex, *path}});
+    if (valueRefCacheRevisions.lookup(value) == valueCacheRevision) {
+      auto coverage = valueRefCacheCoverage.find(value);
+      if ((coverage != valueRefCacheCoverage.end() &&
+           pathsCoverQuery(
+               usePath, llvm::ArrayRef<PathCondition>(coverage->second))) ||
+          pathsCoverQuery(usePath,
+                          llvm::ArrayRef<RootRef>(mapped->second)))
+        return cachedRefs;
+    }
+  }
   llvm::DenseSet<mlir::Value> active;
   std::function<llvm::SmallVector<RootRef, 2>(mlir::Value, PathCondition)>
       collect = [&](mlir::Value current,
@@ -829,9 +895,16 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
       // path-qualified entries cover the complete query, recursively walking
       // the same loop/region alias chain cannot discover another reachable
       // root and turns long structured programs quadratic.
-      if (valueRefCacheRevisions.lookup(current) == valueCacheRevision &&
-          pathsCoverQuery(queryPath, llvm::ArrayRef<RootRef>(mapped->second)))
-        return refs;
+      if (valueRefCacheRevisions.lookup(current) == valueCacheRevision) {
+        auto coverage = valueRefCacheCoverage.find(current);
+        if ((coverage != valueRefCacheCoverage.end() &&
+             pathsCoverQuery(
+                 queryPath,
+                 llvm::ArrayRef<PathCondition>(coverage->second))) ||
+            pathsCoverQuery(queryPath,
+                            llvm::ArrayRef<RootRef>(mapped->second)))
+          return refs;
+      }
     }
     if (!active.insert(current).second)
       return refs;
@@ -912,6 +985,25 @@ LifetimeDataflow::rootsAt(mlir::Value value, PathCondition usePath) const {
 
 llvm::SmallVector<ValueOriginRef, 2>
 LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
+  if (!canCarryStorageAlias(value))
+    return {};
+  value = normalize(value);
+  llvm::SmallVector<ValueOriginRef, 2> cachedRefs;
+  if (auto mapped = valueOrigins.find(value); mapped != valueOrigins.end()) {
+    for (ValueOriginRef ref : mapped->second)
+      if (std::optional<PathCondition> path = ref.path.intersect(usePath))
+        appendUniqueOriginRefs(cachedRefs, llvm::ArrayRef<ValueOriginRef>{
+                                             ValueOriginRef{ref.root, *path}});
+    if (valueOriginCacheRevisions.lookup(value) == valueCacheRevision) {
+      auto coverage = valueOriginCacheCoverage.find(value);
+      if ((coverage != valueOriginCacheCoverage.end() &&
+           pathsCoverQuery(
+               usePath, llvm::ArrayRef<PathCondition>(coverage->second))) ||
+          pathsCoverQuery(
+              usePath, llvm::ArrayRef<ValueOriginRef>(mapped->second)))
+        return cachedRefs;
+    }
+  }
   llvm::DenseSet<mlir::Value> active;
   std::function<llvm::SmallVector<ValueOriginRef, 2>(mlir::Value,
                                                      PathCondition)>
@@ -929,10 +1021,17 @@ LifetimeDataflow::originsAt(mlir::Value value, PathCondition usePath) const {
         if (std::optional<PathCondition> path = ref.path.intersect(queryPath))
           appendUniqueOriginRefs(refs, llvm::ArrayRef<ValueOriginRef>{
                                            ValueOriginRef{ref.root, *path}});
-      if (valueOriginCacheRevisions.lookup(current) == valueCacheRevision &&
-          pathsCoverQuery(queryPath,
-                          llvm::ArrayRef<ValueOriginRef>(mapped->second)))
-        return refs;
+      if (valueOriginCacheRevisions.lookup(current) == valueCacheRevision) {
+        auto coverage = valueOriginCacheCoverage.find(current);
+        if ((coverage != valueOriginCacheCoverage.end() &&
+             pathsCoverQuery(
+                 queryPath,
+                 llvm::ArrayRef<PathCondition>(coverage->second))) ||
+            pathsCoverQuery(
+                queryPath,
+                llvm::ArrayRef<ValueOriginRef>(mapped->second)))
+          return refs;
+      }
     }
     if (!active.insert(current).second)
       return refs;
@@ -1097,6 +1196,7 @@ void LifetimeDataflow::recordUse(RootRef ref, int64_t event) {
   LifetimeDemand &demand = demands[ref.demandIndex];
   if (event < demand.allocationPoint.event)
     return;
+  demandUseWrites.push_back(ref.demandIndex);
   // Every segment for an allocation starts at the same allocation event.
   // Repeated instruction uses on the same structured path therefore only
   // extend that path's live interval; retaining one segment per use makes
@@ -1142,14 +1242,12 @@ void LifetimeDataflow::mapViewLikeResults(mlir::Operation *op) {
   llvm::SmallVector<ValueOriginRef, 2> origins = originsAt(source, point->path);
   for (mlir::Value result : op->getResults()) {
     mlir::Value normalized = normalize(result);
-    if (!refs.empty()) {
-      valueRefs[normalized] = refs;
-      valueRefCacheRevisions[normalized] = valueCacheRevision;
-    }
-    if (!origins.empty()) {
-      valueOrigins[normalized] = origins;
-      valueOriginCacheRevisions[normalized] = valueCacheRevision;
-    }
+    valueRefs[normalized] = refs;
+    markValueRefCacheCurrent(normalized);
+    valueRefCacheCoverage[normalized] = {point->path};
+    valueOrigins[normalized] = origins;
+    markValueOriginCacheCurrent(normalized);
+    valueOriginCacheCoverage[normalized] = {point->path};
   }
 }
 
@@ -1163,6 +1261,8 @@ LifetimeDataflow::mapSelectLikeResult(mlir::Operation *op,
 
   mlir::Value result = op->getResult(0);
   if (!hasAsyncDependencyType(result)) {
+    if (!canCarryStorageAlias(result))
+      return mlir::success();
     llvm::SmallVector<RootRef, 2> refs;
     llvm::SmallVector<ValueOriginRef, 2> origins;
     for (mlir::Value selected :
@@ -1175,14 +1275,12 @@ LifetimeDataflow::mapSelectLikeResult(mlir::Operation *op,
       origins.append(selectedOrigins.begin(), selectedOrigins.end());
     }
     mlir::Value normalized = normalize(result);
-    if (!refs.empty()) {
-      valueRefs[normalized] = std::move(refs);
-      valueRefCacheRevisions[normalized] = valueCacheRevision;
-    }
-    if (!origins.empty()) {
-      valueOrigins[normalized] = std::move(origins);
-      valueOriginCacheRevisions[normalized] = valueCacheRevision;
-    }
+    valueRefs[normalized] = std::move(refs);
+    markValueRefCacheCurrent(normalized);
+    valueRefCacheCoverage[normalized] = {point->path};
+    valueOrigins[normalized] = std::move(origins);
+    markValueOriginCacheCurrent(normalized);
+    valueOriginCacheCoverage[normalized] = {point->path};
     return mlir::success();
   }
 
@@ -1225,6 +1323,8 @@ LifetimeDataflow::mapDirectCallResults(mlir::Operation *op,
     return mlir::success();
 
   for (auto [index, result] : llvm::enumerate(call.getResults())) {
+    if (!canCarryStorageAlias(result))
+      continue;
     llvm::SmallVector<unsigned, 2> formalIndices;
     if (!getDirectCallResultFormalAliases(call, index, formalIndices)) {
       if (!isTrackedType(result.getType()))
@@ -1247,14 +1347,12 @@ LifetimeDataflow::mapDirectCallResults(mlir::Operation *op,
       appendUniqueOriginRefs(origins, originsAt(actual, point->path));
     }
     mlir::Value normalized = normalize(result);
-    if (!roots.empty()) {
-      valueRefs[normalized] = std::move(roots);
-      valueRefCacheRevisions[normalized] = valueCacheRevision;
-    }
-    if (!origins.empty()) {
-      valueOrigins[normalized] = std::move(origins);
-      valueOriginCacheRevisions[normalized] = valueCacheRevision;
-    }
+    valueRefs[normalized] = std::move(roots);
+    markValueRefCacheCurrent(normalized);
+    valueRefCacheCoverage[normalized] = {point->path};
+    valueOrigins[normalized] = std::move(origins);
+    markValueOriginCacheCurrent(normalized);
+    valueOriginCacheCoverage[normalized] = {point->path};
   }
   return mlir::success();
 }
@@ -1446,6 +1544,7 @@ LifetimeDataflow::finishAsyncTasks(LifetimeFailure *failure) const {
 
 void LifetimeDataflow::mapIfResults(mlir::Operation *op) {
   auto ifOp = mlir::cast<mlir::scf::IfOp>(op);
+  std::optional<ProgramPoint> ifPoint = timeline.lookup(op);
   mlir::scf::YieldOp thenYield = getSingleBlockYield(ifOp.getThenRegion());
   mlir::scf::YieldOp elseYield = getSingleBlockYield(ifOp.getElseRegion());
   if (!thenYield || !elseYield)
@@ -1453,6 +1552,8 @@ void LifetimeDataflow::mapIfResults(mlir::Operation *op) {
 
   for (auto [index, result] : llvm::enumerate(ifOp.getResults())) {
     if (!hasAsyncDependencyType(result)) {
+      if (!canCarryStorageAlias(result))
+        continue;
       llvm::SmallVector<RootRef, 2> refs;
       llvm::SmallVector<ValueOriginRef, 2> origins;
       for (mlir::scf::YieldOp yield : {thenYield, elseYield}) {
@@ -1469,14 +1570,14 @@ void LifetimeDataflow::mapIfResults(mlir::Operation *op) {
         origins.append(yieldedOrigins.begin(), yieldedOrigins.end());
       }
       mlir::Value normalized = normalize(result);
-      if (!refs.empty()) {
-        valueRefs[normalized] = std::move(refs);
-        valueRefCacheRevisions[normalized] = valueCacheRevision;
-      }
-      if (!origins.empty()) {
-        valueOrigins[normalized] = std::move(origins);
-        valueOriginCacheRevisions[normalized] = valueCacheRevision;
-      }
+      valueRefs[normalized] = std::move(refs);
+      markValueRefCacheCurrent(normalized);
+      if (ifPoint)
+        valueRefCacheCoverage[normalized] = {ifPoint->path};
+      valueOrigins[normalized] = std::move(origins);
+      markValueOriginCacheCurrent(normalized);
+      if (ifPoint)
+        valueOriginCacheCoverage[normalized] = {ifPoint->path};
       continue;
     }
     if (!hasAsyncDependencyType(result))
@@ -1521,29 +1622,28 @@ void LifetimeDataflow::mapForRegionIterArgs(mlir::Operation *op) {
         asyncTaskRefs[iterArg] = std::move(tasks);
       continue;
     }
+    if (!canCarryStorageAlias(init))
+      continue;
     llvm::SmallVector<RootRef, 2> refs = rootsAt(init, point->path);
     mlir::Value normalized = normalize(iterArg);
-    if (!refs.empty()) {
-      valueRefs[normalized] = std::move(refs);
-      valueRefCacheRevisions[normalized] = valueCacheRevision;
-    }
+    valueRefs[normalized] = std::move(refs);
+    markValueRefCacheCurrent(normalized);
+    valueRefCacheCoverage[normalized] = {point->path};
     llvm::SmallVector<ValueOriginRef, 2> origins = originsAt(init, point->path);
-    if (!origins.empty()) {
-      valueOrigins[normalized] = std::move(origins);
-      valueOriginCacheRevisions[normalized] = valueCacheRevision;
-    }
+    valueOrigins[normalized] = std::move(origins);
+    markValueOriginCacheCurrent(normalized);
+    valueOriginCacheCoverage[normalized] = {point->path};
   }
 }
 
-void LifetimeDataflow::mapSingleExecutionRegionBlockArgs(mlir::Operation *op) {
-  std::optional<analysis::SingleExecutionRegionFlow> flow =
-      getSingleExecutionRegionFlow(op);
+void LifetimeDataflow::mapSingleExecutionRegionBlockArgs(
+    mlir::Operation *op, const analysis::SingleExecutionRegionFlow &flow) {
   std::optional<ProgramPoint> point = timeline.lookup(op);
-  if (!flow || !point)
+  if (!point)
     return;
 
   for (auto [input, blockArg] :
-       llvm::zip_equal(flow->entryOperands, flow->entryArguments)) {
+       llvm::zip_equal(flow.entryOperands, flow.entryArguments)) {
     if (hasAsyncDependencyType(input)) {
       llvm::SmallVector<RootRef, 2> roots = asyncRootsAt(input, point->path);
       if (!roots.empty())
@@ -1554,34 +1654,32 @@ void LifetimeDataflow::mapSingleExecutionRegionBlockArgs(mlir::Operation *op) {
         asyncTaskRefs[blockArg] = std::move(tasks);
       continue;
     }
+    if (!canCarryStorageAlias(input))
+      continue;
 
     llvm::SmallVector<RootRef, 2> roots = rootsAt(input, point->path);
-    mlir::Value normalized = normalize(blockArg);
-    if (!roots.empty()) {
-      valueRefs[normalized] = std::move(roots);
-      valueRefCacheRevisions[normalized] = valueCacheRevision;
-    }
+    mlir::Value normalized = normalize(input);
+    normalizedValues[blockArg] = normalized;
+    valueRefs[normalized] = std::move(roots);
+    markValueRefCacheCurrent(normalized);
+    valueRefCacheCoverage[normalized] = {point->path};
     llvm::SmallVector<ValueOriginRef, 2> origins =
         originsAt(input, point->path);
-    if (!origins.empty()) {
-      valueOrigins[normalized] = std::move(origins);
-      valueOriginCacheRevisions[normalized] = valueCacheRevision;
-    }
+    valueOrigins[normalized] = std::move(origins);
+    markValueOriginCacheCurrent(normalized);
+    valueOriginCacheCoverage[normalized] = {point->path};
   }
 }
 
-void LifetimeDataflow::mapSingleExecutionRegionResults(mlir::Operation *op) {
-  std::optional<analysis::SingleExecutionRegionFlow> flow =
-      getSingleExecutionRegionFlow(op);
-  if (!flow)
-    return;
+void LifetimeDataflow::mapSingleExecutionRegionResults(
+    mlir::Operation *op, const analysis::SingleExecutionRegionFlow &flow) {
   std::optional<ProgramPoint> point =
-      timeline.lookup(flow->region->front().getTerminator());
+      timeline.lookup(flow.region->front().getTerminator());
   if (!point)
     return;
 
   for (auto [yielded, result] :
-       llvm::zip_equal(flow->exitOperands, flow->results)) {
+       llvm::zip_equal(flow.exitOperands, flow.results)) {
     if (hasAsyncDependencyType(result)) {
       llvm::SmallVector<RootRef, 2> roots = asyncRootsAt(yielded, point->path);
       if (!roots.empty())
@@ -1592,24 +1690,28 @@ void LifetimeDataflow::mapSingleExecutionRegionResults(mlir::Operation *op) {
         asyncTaskRefs[result] = std::move(tasks);
       continue;
     }
+    if (!canCarryStorageAlias(result))
+      continue;
 
     llvm::SmallVector<RootRef, 2> roots = rootsAt(yielded, point->path);
-    mlir::Value normalized = normalize(result);
-    if (!roots.empty()) {
-      valueRefs[normalized] = std::move(roots);
-      valueRefCacheRevisions[normalized] = valueCacheRevision;
-    }
+    mlir::Value normalized = normalize(yielded);
+    normalizedValues[result] = normalized;
+    valueRefs[normalized] = std::move(roots);
+    markValueRefCacheCurrent(normalized);
+    valueRefCacheCoverage[normalized] = {point->path};
     llvm::SmallVector<ValueOriginRef, 2> origins =
         originsAt(yielded, point->path);
-    if (!origins.empty()) {
-      valueOrigins[normalized] = std::move(origins);
-      valueOriginCacheRevisions[normalized] = valueCacheRevision;
-    }
+    valueOrigins[normalized] = std::move(origins);
+    markValueOriginCacheCurrent(normalized);
+    valueOriginCacheCoverage[normalized] = {point->path};
   }
 }
 
 mlir::LogicalResult
 LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
+                                           size_t refWriteBegin,
+                                           size_t originWriteBegin,
+                                           size_t demandUseBegin,
                                            LifetimeFailure *failure) {
   auto forOp = mlir::cast<mlir::scf::ForOp>(op);
   auto yield =
@@ -1620,15 +1722,9 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
     return mlir::success();
 
   // The loop body was visited using only the initial recurrence mapping.
-  // Invalidate descendant value-flow caches before resolving the backedge and
-  // storing the fixed-point union.
-  if (valueCacheRevision == std::numeric_limits<uint64_t>::max()) {
-    valueRefCacheRevisions.clear();
-    valueOriginCacheRevisions.clear();
-    valueCacheRevision = 1;
-  } else {
-    ++valueCacheRevision;
-  }
+  // Recompute only loop-local mappings written during that visit. Earlier
+  // function and TileRegion mappings are unrelated to this backedge.
+  invalidateLoopLocalValueCaches(op, refWriteBegin, originWriteBegin);
 
   std::optional<ProgramPoint> yieldPoint = timeline.lookup(yield);
   for (auto [index, result] : llvm::enumerate(forOp.getResults())) {
@@ -1730,6 +1826,8 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
         asyncTaskRefs[result] = std::move(resultTasks);
       continue;
     }
+    if (!canCarryStorageAlias(result))
+      continue;
     llvm::SmallVector<RootRef, 2> initialRefs;
     llvm::SmallVector<ValueOriginRef, 2> initialOrigins;
     if (index < forOp.getInitArgs().size()) {
@@ -1776,26 +1874,25 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
       if (ref.demandIndex < demands.size())
         demands[ref.demandIndex].segments.push_back(
             LiveSegment{loopPoint->event, *loopEnd, ref.path});
-    if (!recurrenceRefs.empty() && index < forOp.getRegionIterArgs().size()) {
+    if (index < forOp.getRegionIterArgs().size()) {
       mlir::Value iterArg = normalize(forOp.getRegionIterArgs()[index]);
       valueRefs[iterArg] = recurrenceRefs;
-      valueRefCacheRevisions[iterArg] = valueCacheRevision;
+      markValueRefCacheCurrent(iterArg);
+      valueRefCacheCoverage[iterArg] = {loopPoint->path};
     }
     mlir::Value normalizedResult = normalize(result);
-    if (!resultRefs.empty()) {
-      valueRefs[normalizedResult] = std::move(resultRefs);
-      valueRefCacheRevisions[normalizedResult] = valueCacheRevision;
-    }
-    if (!recurrenceOrigins.empty() &&
-        index < forOp.getRegionIterArgs().size()) {
+    valueRefs[normalizedResult] = std::move(resultRefs);
+    markValueRefCacheCurrent(normalizedResult);
+    valueRefCacheCoverage[normalizedResult] = {loopPoint->path};
+    if (index < forOp.getRegionIterArgs().size()) {
       mlir::Value iterArg = normalize(forOp.getRegionIterArgs()[index]);
       valueOrigins[iterArg] = recurrenceOrigins;
-      valueOriginCacheRevisions[iterArg] = valueCacheRevision;
+      markValueOriginCacheCurrent(iterArg);
+      valueOriginCacheCoverage[iterArg] = {loopPoint->path};
     }
-    if (!resultOrigins.empty()) {
-      valueOrigins[normalizedResult] = std::move(resultOrigins);
-      valueOriginCacheRevisions[normalizedResult] = valueCacheRevision;
-    }
+    valueOrigins[normalizedResult] = std::move(resultOrigins);
+    markValueOriginCacheCurrent(normalizedResult);
+    valueOriginCacheCoverage[normalizedResult] = {loopPoint->path};
   }
 
   // A root defined outside the loop and referenced from its body may be read
@@ -1805,20 +1902,48 @@ LifetimeDataflow::mapForResultsAndBackedge(mlir::Operation *op,
   // complete loop subtree. Body-local roots are recreated each iteration and
   // remain governed by the backedge completion proof; loop-carried ones were
   // handled above (including the dynamic-allocation rejection).
-  for (LifetimeDemand &demand : demands) {
-    mlir::Operation *allocation = demand.allocation.getOperation();
-    if (isNestedIn(allocation, op))
-      continue;
-    bool referencedInBody =
-        llvm::any_of(demand.segments, [&](const LiveSegment &segment) {
-          return segment.endEvent > loopPoint->event &&
-                 segment.endEvent <= *loopEnd;
-        });
-    if (referencedInBody)
-      demand.segments.push_back(
-          LiveSegment{loopPoint->event, *loopEnd, loopPoint->path});
+  assert(demandUseBegin <= demandUseWrites.size());
+  llvm::DenseSet<unsigned> capturedDemands;
+  for (size_t index = demandUseBegin; index < demandUseWrites.size(); ++index) {
+    unsigned demandIndex = demandUseWrites[index];
+    if (demandIndex < demands.size() &&
+        !isNestedIn(demands[demandIndex].allocation.getOperation(), op))
+      capturedDemands.insert(demandIndex);
   }
+  for (unsigned demandIndex : capturedDemands)
+    recordUse(RootRef{demandIndex, loopPoint->path}, *loopEnd);
   return mlir::success();
+}
+
+void LifetimeDataflow::invalidateLoopLocalValueCaches(
+    mlir::Operation *loop, size_t refWriteBegin, size_t originWriteBegin) {
+  auto isDefinedInsideLoop = [&](mlir::Value value) {
+    if (auto result = mlir::dyn_cast<mlir::OpResult>(value))
+      return isNestedIn(result.getOwner(), loop);
+    auto argument = mlir::dyn_cast<mlir::BlockArgument>(value);
+    mlir::Operation *owner =
+        argument && argument.getOwner() ? argument.getOwner()->getParentOp()
+                                        : nullptr;
+    return isNestedIn(owner, loop);
+  };
+
+  assert(refWriteBegin <= valueRefCacheWrites.size());
+  for (size_t index = refWriteBegin; index < valueRefCacheWrites.size();
+       ++index) {
+    mlir::Value value = valueRefCacheWrites[index];
+    if (isDefinedInsideLoop(value))
+      valueRefCacheRevisions.erase(value);
+  }
+  valueRefCacheWrites.resize(refWriteBegin);
+
+  assert(originWriteBegin <= valueOriginCacheWrites.size());
+  for (size_t index = originWriteBegin; index < valueOriginCacheWrites.size();
+       ++index) {
+    mlir::Value value = valueOriginCacheWrites[index];
+    if (isDefinedInsideLoop(value))
+      valueOriginCacheRevisions.erase(value);
+  }
+  valueOriginCacheWrites.resize(originWriteBegin);
 }
 
 mlir::LogicalResult
@@ -1836,6 +1961,8 @@ LifetimeDataflow::processBlock(mlir::Block &block,
                                LocalCompletionTracker *localCompletion,
                                LifetimeFailure *failure) {
   for (mlir::Operation &op : block) {
+    std::optional<analysis::SingleExecutionRegionFlow> singleExecutionFlow =
+        getSingleExecutionRegionFlow(&op);
     {
       wafer::support::ScopedCompileTimingSpan timing(
           "analysis-algorithm", "lifetime-dataflow", "record-operands");
@@ -1843,6 +1970,9 @@ LifetimeDataflow::processBlock(mlir::Block &block,
     }
 
     if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(op)) {
+      const size_t refWriteBegin = valueRefCacheWrites.size();
+      const size_t originWriteBegin = valueOriginCacheWrites.size();
+      const size_t demandUseBegin = demandUseWrites.size();
       mapForRegionIterArgs(&op);
       if (mlir::failed(
               processRegion(forOp.getRegion(), localCompletion, failure)))
@@ -1857,7 +1987,9 @@ LifetimeDataflow::processBlock(mlir::Block &block,
       {
         wafer::support::ScopedCompileTimingSpan timing(
             "analysis-algorithm", "lifetime-dataflow", "map-loop-results");
-        if (mlir::failed(mapForResultsAndBackedge(&op, failure)))
+        if (mlir::failed(mapForResultsAndBackedge(
+                &op, refWriteBegin, originWriteBegin, demandUseBegin,
+                failure)))
           return mlir::failure();
       }
     } else if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(op)) {
@@ -1867,12 +1999,12 @@ LifetimeDataflow::processBlock(mlir::Block &block,
               processRegion(ifOp.getElseRegion(), localCompletion, failure)))
         return mlir::failure();
       mapIfResults(&op);
-    } else if (std::optional<analysis::SingleExecutionRegionFlow> flow =
-                   getSingleExecutionRegionFlow(&op)) {
-      mapSingleExecutionRegionBlockArgs(&op);
-      if (mlir::failed(processRegion(*flow->region, localCompletion, failure)))
+    } else if (singleExecutionFlow) {
+      mapSingleExecutionRegionBlockArgs(&op, *singleExecutionFlow);
+      if (mlir::failed(processRegion(*singleExecutionFlow->region,
+                                     localCompletion, failure)))
         return mlir::failure();
-      mapSingleExecutionRegionResults(&op);
+      mapSingleExecutionRegionResults(&op, *singleExecutionFlow);
     } else {
       for (mlir::Region &region : op.getRegions())
         if (mlir::failed(processRegion(region, localCompletion, failure)))
@@ -1885,17 +2017,6 @@ LifetimeDataflow::processBlock(mlir::Block &block,
     }
 
     std::optional<ProgramPoint> point = timeline.lookup(&op);
-    bool hasTrackedOperand = false;
-    {
-      wafer::support::ScopedCompileTimingSpan timing(
-          "analysis-algorithm", "lifetime-dataflow",
-          "classify-tracked-operands");
-      hasTrackedOperand =
-          point && llvm::any_of(op.getOperands(), [&](mlir::Value operand) {
-            return !hasAsyncDependencyType(operand) &&
-                   !originsAt(operand, point->path).empty();
-          });
-    }
     bool exposesRawMetadata =
         mlir::isa<mlir::memref::ExtractAlignedPointerAsIndexOp,
                   mlir::memref::ExtractStridedMetadataOp>(op);
@@ -1909,11 +2030,27 @@ LifetimeDataflow::processBlock(mlir::Block &block,
             mlir::scf::IfOp, mlir::scf::ForOp>(op) ||
         mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface,
                   mlir::MemoryEffectOpInterface>(op) ||
-        getSingleExecutionRegionFlow(&op).has_value() ||
+        singleExecutionFlow.has_value() ||
         op.hasTrait<mlir::OpTrait::IsTerminator>();
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
       hasSupportedTrackedUse = hasSupportedTrackedUse ||
                                isSupportedDirectAliasCall(call, isTrackedType);
+
+    // Known memory/control-flow operations already have an explicit lifetime
+    // rule above. Only an unsupported consumer (or raw address exposure) needs
+    // the comparatively expensive origin query that decides whether it
+    // actually touches tracked storage.
+    bool hasTrackedOperand = false;
+    if (point && (exposesRawMetadata || !hasSupportedTrackedUse)) {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "analysis-algorithm", "lifetime-dataflow",
+          "classify-unsupported-operands");
+      hasTrackedOperand =
+          llvm::any_of(op.getOperands(), [&](mlir::Value operand) {
+            return !hasAsyncDependencyType(operand) &&
+                   !originsAt(operand, point->path).empty();
+          });
+    }
 
     bool hasUnsupportedScopeEscape = false;
     if (point && mlir::isa<mlir::func::ReturnOp, mlir::async::ReturnOp>(op)) {
@@ -1932,7 +2069,7 @@ LifetimeDataflow::processBlock(mlir::Block &block,
         }
       }
     }
-    if (hasTrackedOperand && (exposesRawMetadata || !hasSupportedTrackedUse)) {
+    if (hasTrackedOperand) {
       setLifetimeFailure(
           failure, LifetimeFailureKind::UnsupportedTrackedValueEscape, &op);
       return mlir::failure();
@@ -1950,7 +2087,7 @@ LifetimeDataflow::processBlock(mlir::Block &block,
         mlir::isa<mlir::scf::IfOp, mlir::scf::ForOp,
                   mlir::bufferization::ToMemrefOp>(op) ||
         mlir::isa<mlir::ViewLikeOpInterface, mlir::SelectLikeOpInterface>(op) ||
-        getSingleExecutionRegionFlow(&op).has_value();
+        singleExecutionFlow.has_value();
     if (auto call = mlir::dyn_cast<mlir::func::CallOp>(op))
       hasAliasProducerSemantics =
           hasAliasProducerSemantics ||
@@ -1999,6 +2136,22 @@ LifetimeDataflow::run(mlir::Operation *scope,
                       LifetimeFailure *failure) {
   if (!scope || !isTrackedType || mlir::failed(initialize(failure)))
     return mlir::failure();
+  for (mlir::Region &region : scope->getRegions()) {
+    for (mlir::Block &block : region) {
+      for (mlir::BlockArgument argument : block.getArguments()) {
+        if (!canCarryStorageAlias(argument) ||
+            !isTrackedType(argument.getType()))
+          continue;
+        valueRefs[argument] = {};
+        markValueRefCacheCurrent(argument);
+        valueRefCacheCoverage[argument] = {PathCondition::root()};
+        valueOrigins[argument] = {ValueOriginRef{argument,
+                                                 PathCondition::root()}};
+        markValueOriginCacheCurrent(argument);
+        valueOriginCacheCoverage[argument] = {PathCondition::root()};
+      }
+    }
+  }
   for (mlir::Region &region : scope->getRegions())
     if (mlir::failed(processRegion(region, localCompletion, failure)))
       return mlir::failure();
@@ -2654,6 +2807,8 @@ LocalCompletionTracker::verifyLoopBackedge(mlir::Operation *loop,
         }
       }
     }
+    if (!hasNestedIssue)
+      return mlir::success();
 
     // Prove a homogeneous ordered loop stream once for all of its pending
     // issues. The per-issue proof below remains necessary for mixed workers or

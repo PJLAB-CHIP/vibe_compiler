@@ -67,7 +67,8 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
     llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints,
     llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
     TileRegionEmissionRelations *emissionRelations,
-    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes) {
+    llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+    bool requireOneStructuredRootPerRegion) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "conversion-phase", "rewriteTensorProgramInPlace", "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -103,7 +104,10 @@ static mlir::LogicalResult rewriteTensorProgramInPlace(
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "conversion-phase", "rewriteTensorProgramInPlace",
       "TileRegionBodyEmitter::emit");
-  mlir::FailureOr<TileRegionOp> tileRegion = emitter.emit(scope, rewriter);
+  mlir::FailureOr<TileRegionOp> tileRegion =
+      requireOneStructuredRootPerRegion || !selectedDDRStages.empty()
+          ? emitter.emitStructuredStages(scope, rewriter)
+          : emitter.emit(scope, rewriter);
   if (mlir::failed(tileRegion))
     return mlir::failure();
 
@@ -165,7 +169,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         llvm::ArrayRef<CandidatePeerEndpoint> peerEndpoints,
         llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages,
         TileRegionEmissionRelations *emissionRelations,
-        llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes) {
+        llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
+        bool requireOneStructuredRootPerRegion) {
   wafer::support::ScopedCompileTimingSpan timing(
       "conversion", "convertTensorProgramToTileRegionModuleInPlace", "total");
   // The caller owns the already-private candidate and is the sole rollback
@@ -189,12 +194,12 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
       conversionResult = rewriteTensorProgramInPlace(
           module, functionalArgumentCount, currentLogicalPartition,
           failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
-          operationNodes);
+          operationNodes, requireOneStructuredRootPerRegion);
     } else {
       conversionResult = rewriteTensorProgramInPlace(
           module, functionalArgumentCount, currentLogicalPartition,
           failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
-          operationNodes);
+          operationNodes, requireOneStructuredRootPerRegion);
     }
   }
 

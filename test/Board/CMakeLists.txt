@@ -19,7 +19,6 @@ set(_wafer_board_python_contracts
   wafer-cache-coherence-catalog=wafer_cache_coherence_calibration_catalog_test.py
   wafer-collective-algorithm-source-contract=wafer_collective_hardware_characterization_catalog_test.py
   wafer-collective-traffic-source-contract=wafer_collective_traffic_behavior_catalog_test.py
-  wafer-compiler-optimization-source-contract=wafer_compiler_optimization_comparison_cases_test.py
   wafer-ct-convert-catalog=wafer_ct_convert_calibration_catalog_test.py
   wafer-ct-opcode-disposition-catalog=wafer_ct_opcode_disposition_catalog_test.py
   wafer-ct-reduce-pool-capability-catalog=wafer_ct_reduce_pool_capability_catalog_test.py

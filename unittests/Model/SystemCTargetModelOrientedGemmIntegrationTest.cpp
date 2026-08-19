@@ -6,8 +6,8 @@
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Target/PhysicalTensorCodec.h"
 
-#include "Wafer/Compiler/CardExecutableInternal.h"
-#include "Wafer/Compiler/CompilationInternal.h"
+#include "Wafer/Compiler/Executable/CardExecutableInternal.h"
+#include "Wafer/Compiler/Pipeline/CompilationInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"

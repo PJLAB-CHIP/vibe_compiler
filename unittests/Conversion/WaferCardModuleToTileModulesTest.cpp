@@ -63,7 +63,7 @@ collectIntegerConstants(mlir::ModuleOp module) {
 }
 
 TEST(WaferCardModuleToTileModulesTest,
-     SplitsStableTypedTileModulesWithoutMutatingSource) {
+     MovesStableTypedTileBodiesIntoStandaloneModules) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {test.module_attribute = "preserved"} {
@@ -89,11 +89,21 @@ module attributes {test.module_attribute = "preserved"} {
                                                         context.get());
   ASSERT_TRUE(source);
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
-  const std::string sourceBefore = printModule(*source);
+  mlir::Operation *constantTen = nullptr;
+  mlir::Operation *constantTwenty = nullptr;
+  source->walk([&](mlir::arith::ConstantOp constant) {
+    auto value = mlir::dyn_cast<mlir::IntegerAttr>(constant.getValue());
+    if (value && value.getInt() == 10)
+      constantTen = constant.getOperation();
+    if (value && value.getInt() == 20)
+      constantTwenty = constant.getOperation();
+  });
+  ASSERT_NE(constantTen, nullptr);
+  ASSERT_NE(constantTwenty, nullptr);
 
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(*source, &failureReason);
+      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
 
   ASSERT_TRUE(mlir::succeeded(tileModules)) << failureReason;
   ASSERT_EQ(tileModules->size(), 2u);
@@ -103,7 +113,6 @@ module attributes {test.module_attribute = "preserved"} {
   EXPECT_EQ((*tileModules)[1].tileId.getValue(), 1);
   EXPECT_TRUE((*tileModules)[0].cardId == wafer::CardId(0));
   EXPECT_TRUE((*tileModules)[0].tileId != wafer::TileId(1));
-  EXPECT_EQ(printModule(*source), sourceBefore);
 
   for (auto &tile : *tileModules) {
     ASSERT_TRUE(tile.module);
@@ -124,6 +133,10 @@ module attributes {test.module_attribute = "preserved"} {
   ASSERT_EQ(tileOneConstants.size(), 1u);
   EXPECT_EQ(tileZeroConstants.front(), 10);
   EXPECT_EQ(tileOneConstants.front(), 20);
+  EXPECT_TRUE((*tileModules)[0].module->getOperation()->isProperAncestor(
+      constantTen));
+  EXPECT_TRUE((*tileModules)[1].module->getOperation()->isProperAncestor(
+      constantTwenty));
 }
 
 TEST(WaferCardModuleToTileModulesTest, RequiresExactlyOneCardModule) {
@@ -149,7 +162,7 @@ module {
 
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(*source, &failureReason);
+      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
 
   EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason,
@@ -189,7 +202,7 @@ module {
 
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(*source, &failureReason);
+      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
 
   EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason, "source module is not verifier-legal");
@@ -220,7 +233,7 @@ module {
 
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(*source, &failureReason);
+      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
 
   EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason, "source module is not verifier-legal");
@@ -255,7 +268,7 @@ module {
 
   std::string failureReason;
   auto tileModules =
-      wafer::splitCardModuleIntoTileModules(*source, &failureReason);
+      wafer::splitCardModuleIntoTileModules(std::move(source), &failureReason);
 
   EXPECT_TRUE(mlir::failed(tileModules));
   EXPECT_EQ(failureReason, "source module is not verifier-legal");

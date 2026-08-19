@@ -30,6 +30,11 @@ static StaticRectangularIndexSetResult failRectangle(IndexRelationStatus status,
   return StaticRectangularIndexSetResult{status, std::nullopt, reason.str()};
 }
 
+static StaticRectangularIndexSetPiecesResult
+failRectanglePieces(IndexRelationStatus status, llvm::StringRef reason) {
+  return StaticRectangularIndexSetPiecesResult{status, {}, reason.str()};
+}
+
 static IndexRelationQueryResult failQuery(IndexRelationStatus status,
                                           llvm::StringRef reason) {
   return IndexRelationQueryResult{status, std::nullopt, reason.str()};
@@ -97,6 +102,76 @@ static bool isCompatibleSet(const PresburgerSet &set, unsigned rank) {
   const PresburgerSpace &space = set.getSpace();
   return space.getNumDomainVars() == 0 && space.getNumSetDimVars() == rank &&
          space.getNumSymbolVars() == 0;
+}
+
+/// Recognize the exact representation produced by staticRectangularDomain:
+/// a conjunction of independent unit-coefficient inclusive bounds. This is a
+/// structural proof and deliberately performs no Presburger optimization.
+static StaticRectangularIndexSetResult
+recoverDirectStaticRectangle(const IntegerRelation &box, unsigned rank) {
+  if (box.getNumSymbolVars() != 0 || box.getNumLocalVars() != 0 ||
+      box.getNumEqualities() != 0)
+    return failRectangle(IndexRelationStatus::Unsupported,
+                         "index-set disjunct is not a direct static rectangle");
+
+  llvm::SmallVector<std::optional<int64_t>, 4> lowerBounds(rank);
+  llvm::SmallVector<std::optional<int64_t>, 4> upperBounds(rank);
+  for (unsigned row = 0; row < box.getNumInequalities(); ++row) {
+    llvm::SmallVector<int64_t, 8> inequality = box.getInequality64(row);
+    std::optional<unsigned> dimension;
+    int64_t coefficient = 0;
+    for (unsigned index = 0; index < rank; ++index) {
+      if (inequality[index] == 0)
+        continue;
+      if (dimension || (inequality[index] != 1 && inequality[index] != -1))
+        return failRectangle(
+            IndexRelationStatus::Unsupported,
+            "index-set disjunct is not a direct static rectangle");
+      dimension = index;
+      coefficient = inequality[index];
+    }
+    if (!dimension)
+      return failRectangle(
+          IndexRelationStatus::Unsupported,
+          "index-set disjunct is not a direct static rectangle");
+    const int64_t constant = inequality.back();
+    if (coefficient == 1) {
+      if (constant == std::numeric_limits<int64_t>::min())
+        return failRectangle(IndexRelationStatus::Invalid,
+                             "index-set rectangle lower bound overflows");
+      const int64_t lower = -constant;
+      lowerBounds[*dimension] = lowerBounds[*dimension]
+                                    ? std::max(*lowerBounds[*dimension], lower)
+                                    : lower;
+    } else {
+      upperBounds[*dimension] =
+          upperBounds[*dimension] ? std::min(*upperBounds[*dimension], constant)
+                                  : constant;
+    }
+  }
+  if (!llvm::all_of(lowerBounds,
+                    [](const auto &bound) { return bound.has_value(); }) ||
+      !llvm::all_of(upperBounds,
+                    [](const auto &bound) { return bound.has_value(); }))
+    return failRectangle(IndexRelationStatus::Unsupported,
+                         "index-set rectangle has an unbounded dimension");
+
+  StaticRectangularIndexSet rectangle;
+  rectangle.offsets.reserve(rank);
+  rectangle.sizes.reserve(rank);
+  for (unsigned dimension = 0; dimension < rank; ++dimension) {
+    int64_t size = 0;
+    if (*upperBounds[dimension] < *lowerBounds[dimension] ||
+        llvm::SubOverflow(*upperBounds[dimension], *lowerBounds[dimension],
+                          size) ||
+        llvm::AddOverflow(size, int64_t{1}, size))
+      return failRectangle(IndexRelationStatus::Invalid,
+                           "index-set rectangle is empty or overflows");
+    rectangle.offsets.push_back(*lowerBounds[dimension]);
+    rectangle.sizes.push_back(size);
+  }
+  return StaticRectangularIndexSetResult{
+      IndexRelationStatus::Exact, std::move(rectangle), {}};
 }
 
 static PresburgerRelation getUnboundedIdentityRelation(unsigned rank) {
@@ -841,78 +916,14 @@ StaticRectangularIndexSetResult IndexSetResult::getExactStaticRectangularDomain(
   // rebuilding a many-piece union and asking a generic solver to rediscover
   // the same box proof is not bounded by the structural limits above.
   if (set->getNumDisjuncts() == 1) {
-    const IntegerRelation &box = set->getDisjunct(0);
     const unsigned rank = set->getSpace().getNumSetDimVars();
-    if (box.getNumSymbolVars() == 0 && box.getNumLocalVars() == 0 &&
-        box.getNumEqualities() == 0) {
-      llvm::SmallVector<std::optional<int64_t>, 4> lowerBounds(rank);
-      llvm::SmallVector<std::optional<int64_t>, 4> upperBounds(rank);
-      bool isUnitBox = true;
-      for (unsigned row = 0; row < box.getNumInequalities(); ++row) {
-        llvm::SmallVector<int64_t, 8> inequality = box.getInequality64(row);
-        std::optional<unsigned> dimension;
-        int64_t coefficient = 0;
-        for (unsigned index = 0; index < rank; ++index) {
-          if (inequality[index] == 0)
-            continue;
-          if (dimension ||
-              (inequality[index] != 1 && inequality[index] != -1)) {
-            isUnitBox = false;
-            break;
-          }
-          dimension = index;
-          coefficient = inequality[index];
-        }
-        if (!isUnitBox || !dimension) {
-          isUnitBox = false;
-          break;
-        }
-        const int64_t constant = inequality.back();
-        if (coefficient == 1) {
-          if (constant == std::numeric_limits<int64_t>::min()) {
-            isUnitBox = false;
-            break;
-          }
-          const int64_t lower = -constant;
-          lowerBounds[*dimension] =
-              lowerBounds[*dimension]
-                  ? std::max(*lowerBounds[*dimension], lower)
-                  : lower;
-        } else {
-          upperBounds[*dimension] =
-              upperBounds[*dimension]
-                  ? std::min(*upperBounds[*dimension], constant)
-                  : constant;
-        }
-      }
-      if (isUnitBox &&
-          llvm::all_of(lowerBounds,
-                       [](const auto &bound) { return bound.has_value(); }) &&
-          llvm::all_of(upperBounds,
-                       [](const auto &bound) { return bound.has_value(); })) {
-        StaticRectangularIndexSet rectangle;
-        rectangle.offsets.reserve(rank);
-        rectangle.sizes.reserve(rank);
-        for (unsigned dimension = 0; dimension < rank; ++dimension) {
-          int64_t size = 0;
-          if (*upperBounds[dimension] < *lowerBounds[dimension] ||
-              llvm::SubOverflow(*upperBounds[dimension],
-                                *lowerBounds[dimension], size) ||
-              llvm::AddOverflow(size, int64_t{1}, size)) {
-            isUnitBox = false;
-            break;
-          }
-          rectangle.offsets.push_back(*lowerBounds[dimension]);
-          rectangle.sizes.push_back(size);
-        }
-        if (isUnitBox)
-          return StaticRectangularIndexSetResult{
-              IndexRelationStatus::Exact, std::move(rectangle), {}};
-      }
-      if (isUnitBox && rank == 0 && box.getNumInequalities() == 0)
-        return StaticRectangularIndexSetResult{
-            IndexRelationStatus::Exact, StaticRectangularIndexSet{{}, {}}, {}};
-    }
+    if (rank == 0 && set->getDisjunct(0).getNumConstraints() == 0)
+      return StaticRectangularIndexSetResult{
+          IndexRelationStatus::Exact, StaticRectangularIndexSet{{}, {}}, {}};
+    StaticRectangularIndexSetResult direct =
+        recoverDirectStaticRectangle(set->getDisjunct(0), rank);
+    if (direct.isExact())
+      return direct;
   }
   if (set->isIntegerEmpty())
     return failRectangle(IndexRelationStatus::Unsupported,
@@ -975,6 +986,37 @@ StaticRectangularIndexSetResult IndexSetResult::getExactStaticRectangularDomain(
       IndexRelationStatus::Exact,
       StaticRectangularIndexSet{std::move(offsets), std::move(sizes)},
       {}};
+}
+
+StaticRectangularIndexSetPiecesResult
+IndexSetResult::getExactStaticRectangularDisjuncts(
+    const IndexRelationLimits &limits) const {
+  if (status != IndexRelationStatus::Exact || !set)
+    return failRectanglePieces(
+        status, reason.empty()
+                    ? "rectangular disjunct recovery requires an exact set"
+                    : reason);
+  if (exceedsSetLimits(*set, limits))
+    return failRectanglePieces(
+        IndexRelationStatus::ResourceExhausted,
+        "rectangular disjunct recovery exceeds index-set budget");
+
+  const unsigned rank = set->getSpace().getNumSetDimVars();
+  llvm::SmallVector<StaticRectangularIndexSet, 8> rectangles;
+  rectangles.reserve(set->getNumDisjuncts());
+  for (const IntegerRelation &disjunct : set->getAllDisjuncts()) {
+    if (rank == 0 && disjunct.getNumConstraints() == 0) {
+      rectangles.push_back(StaticRectangularIndexSet{{}, {}});
+      continue;
+    }
+    StaticRectangularIndexSetResult rectangle =
+        recoverDirectStaticRectangle(disjunct, rank);
+    if (!rectangle.isExact())
+      return failRectanglePieces(rectangle.status, rectangle.reason);
+    rectangles.push_back(std::move(*rectangle.domain));
+  }
+  return StaticRectangularIndexSetPiecesResult{
+      IndexRelationStatus::Exact, std::move(rectangles), {}};
 }
 
 IndexRelationResult

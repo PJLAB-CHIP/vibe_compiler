@@ -162,14 +162,18 @@ BULK_QUALIFICATION_SOURCES = (
     "BulkQualificationPolicy.cpp",
     "BulkQualificationValidation.cpp",
 )
-COMPILATION_SOURCES = (
+PIPELINE_COMPILATION_SOURCES = (
     "Compilation.cpp",
     "CompilationOrchestration.cpp",
     "CompilationStages.cpp",
     "TensorProgramCompilation.cpp",
+)
+PACKAGE_COMPILATION_SOURCES = (
     "ProgramDirectoryTransaction.cpp",
-    "SpmdCompilationBridge.cpp",
     "WriteExecutablePackage.cpp",
+)
+EXECUTABLE_COMPILATION_SOURCES = (
+    "SpmdCompilationBridge.cpp",
 )
 TARGET_CODE_GENERATION_SOURCES = (
     "TargetABIPreparation.cpp",
@@ -861,7 +865,7 @@ def check_retired_profile_surfaces_removed(root: Path, errors: list[str]) -> Non
         root / "include/Wafer/IR/WaferAttrs.td",
         root / "include/Wafer/Runtime/ProfileInstrumentation.h",
         root / "lib/Wafer/Runtime/ProfileInstrumentation.cpp",
-        root / "lib/Wafer/Compiler/WriteExecutablePackage.cpp",
+        root / "lib/Wafer/Compiler/Package/WriteExecutablePackage.cpp",
         root / "tools/wafer-run/WaferProfileCollection.cpp",
         root / "tools/wafer-run/wafer-run.cpp",
     )
@@ -995,24 +999,27 @@ def check_retired_rank_candidate_sources_removed(
         if path.exists():
             fail(errors, f"retired rank-candidate path must be removed: {path}")
 
-    cmake_path = root / "lib/Wafer/Compiler/CMakeLists.txt"
-    cmake_text = read_required(cmake_path, errors)
-    target_body = cmake_target_body(
-        cmake_text, "add_mlir_library", "WaferCompiler", cmake_path, errors
+    compiler_root = root / "lib/Wafer/Compiler"
+    cmake_paths = (compiler_root / "CMakeLists.txt",) + tuple(
+        sorted(compiler_root.glob("*/CMakeLists.txt"))
     )
     for filename in ("NoCResidentDataflow.cpp", "WholeVariantAttemptPlan.cpp"):
-        if filename in target_body:
-            fail(
-                errors,
-                f"WaferCompiler still lists retired rank-candidate source: {filename}",
-            )
+        for cmake_path in cmake_paths:
+            if filename in read_required(cmake_path, errors):
+                fail(
+                    errors,
+                    f"{cmake_path} still lists retired rank-candidate source: "
+                    f"{filename}",
+                )
 
 
 def check_deterministic_baseline_owner(root: Path, errors: list[str]) -> None:
     compiler_root = root / "lib/Wafer/Compiler"
-    public_header_path = compiler_root / "DeterministicCardExecutableSynthesis.h"
-    implementation_path = compiler_root / "DeterministicCardExecutableSynthesis.cpp"
-    search_header_path = compiler_root / "CardExecutableSynthesis.h"
+    baseline_root = compiler_root / "Baseline"
+    search_root = compiler_root / "Search"
+    public_header_path = baseline_root / "CardBaselineCompilation.h"
+    implementation_path = baseline_root / "CardBaselineCompilation.cpp"
+    search_header_path = search_root / "CardExecutableSearch.h"
     card_materialization_path = (
         root
         / "lib/Wafer/Conversion/WaferTensorProgramToCardModule/"
@@ -1026,7 +1033,7 @@ def check_deterministic_baseline_owner(root: Path, errors: list[str]) -> None:
     )
 
     forbidden_search_symbols = (
-        "CardExecutableSynthesisStatistics",
+        "CardExecutableSearchStatistics",
         "TileExecutionCandidate",
         "deriveShortlist",
         "StructuredDAGPlacementSearchDomain",
@@ -1045,12 +1052,12 @@ def check_deterministic_baseline_owner(root: Path, errors: list[str]) -> None:
         )
     for symbol in (
         "DeterministicBaselineLedger",
-        "synthesizeDeterministicCardExecutable",
+        "compileCardBaseline",
     ):
         if symbol in search_header:
             fail(
                 errors,
-                f"search synthesis header still owns deterministic baseline symbol {symbol}",
+                f"search header still owns deterministic baseline symbol {symbol}",
             )
     if "splitStructuredRootBoundaries" in card_materialization:
         fail(
@@ -1058,13 +1065,23 @@ def check_deterministic_baseline_owner(root: Path, errors: list[str]) -> None:
             "deterministic baseline still calls post-hoc structured-root split",
         )
 
-    cmake_path = compiler_root / "CMakeLists.txt"
+    cmake_path = baseline_root / "CMakeLists.txt"
     cmake_text = read_required(cmake_path, errors)
-    target_body = cmake_target_body(
-        cmake_text, "add_mlir_library", "WaferCompiler", cmake_path, errors
+    source_body = cmake_target_body(
+        cmake_text,
+        "set",
+        "WAFER_COMPILER_BASELINE_SOURCES",
+        cmake_path,
+        errors,
     )
-    if "DeterministicCardExecutableSynthesis.cpp" not in target_body:
-        fail(errors, "WaferCompiler does not build deterministic baseline owner")
+    check_cmake_sources(
+        body=source_body,
+        required=("CardBaselineCompilation.cpp",),
+        prefix="Baseline/",
+        cmake_path=cmake_path,
+        target="WAFER_COMPILER_BASELINE_SOURCES",
+        errors=errors,
+    )
 
 
 def check_memory_planning_owners(root: Path, errors: list[str]) -> None:
@@ -1780,35 +1797,90 @@ def check_compiler_target_module_and_package_sources(
     compiler_root = root / "lib/Wafer/Compiler"
     compiler_cmake = compiler_root / "CMakeLists.txt"
     compiler_text = read_required(compiler_cmake, errors)
-    compiler_sources = (*COMPILATION_SOURCES, *TARGET_CODE_GENERATION_SOURCES)
-    check_required_sources(
-        compiler_root, compiler_sources, "compiler target module", errors
+    source_groups = (
+        (
+            "Pipeline",
+            "WAFER_COMPILER_PIPELINE_SOURCES",
+            PIPELINE_COMPILATION_SOURCES,
+        ),
+        (
+            "Package",
+            "WAFER_COMPILER_PACKAGE_SOURCES",
+            PACKAGE_COMPILATION_SOURCES,
+        ),
+        (
+            "Executable",
+            "WAFER_COMPILER_EXECUTABLE_SOURCES",
+            EXECUTABLE_COMPILATION_SOURCES,
+        ),
+        (
+            "Target",
+            "WAFER_COMPILER_TARGET_SOURCES",
+            TARGET_CODE_GENERATION_SOURCES,
+        ),
     )
-    for private_name in ("CompilationInternal.h", "TargetCodeGenInternal.h"):
+    compiler_source_paths: list[Path] = []
+    for directory, variable, sources in source_groups:
+        source_root = compiler_root / directory
+        cmake_path = source_root / "CMakeLists.txt"
+        cmake_text = read_required(cmake_path, errors)
+        check_required_sources(
+            source_root, sources, f"compiler {directory.lower()}", errors
+        )
+        source_body = cmake_target_body(
+            cmake_text, "set", variable, cmake_path, errors
+        )
+        check_cmake_sources(
+            body=source_body,
+            required=sources,
+            prefix=f"{directory}/",
+            cmake_path=cmake_path,
+            target=variable,
+            errors=errors,
+        )
+        check_cmake_source_ownership(
+            text=cmake_text,
+            required=sources,
+            prefix=f"{directory}/",
+            cmake_path=cmake_path,
+            target=variable,
+            errors=errors,
+        )
+        for source in sources:
+            check_repository_cmake_source_ownership(
+                root=root,
+                source=source,
+                expected_cmake_path=cmake_path,
+                label=f"compiler {directory.lower()}",
+                errors=errors,
+            )
+            compiler_source_paths.append(source_root / source)
+
+    private_headers = (
+        compiler_root / "Pipeline/CompilationInternal.h",
+        compiler_root / "Target/TargetCodeGenInternal.h",
+    )
+    for private_path in private_headers:
         check_private_header(
-            compiler_root / private_name,
-            root / "include/Wafer/Compiler" / private_name,
-            private_name,
+            private_path,
+            root / "include/Wafer/Compiler" / private_path.name,
+            private_path.name,
             errors,
         )
     compiler_body = cmake_target_body(
         compiler_text, "add_mlir_library", "WaferCompiler", compiler_cmake, errors
     )
-    check_cmake_sources(
-        body=compiler_body,
-        required=compiler_sources,
-        cmake_path=compiler_cmake,
-        target="WaferCompiler",
-        errors=errors,
+    for _, variable, _ in source_groups:
+        if compiler_body.split().count(f"${{{variable}}}") != 1:
+            fail(
+                errors,
+                f"{compiler_cmake}: WaferCompiler must consume ${{{variable}}} "
+                "exactly once",
+            )
+
+    compilation_facade = read_required(
+        compiler_root / "Pipeline/Compilation.cpp", errors
     )
-    check_cmake_source_ownership(
-        text=compiler_text,
-        required=compiler_sources,
-        cmake_path=compiler_cmake,
-        target="WaferCompiler",
-        errors=errors,
-    )
-    compilation_facade = read_required(compiler_root / "Compilation.cpp", errors)
     compilation_includes = set(source_includes(compilation_facade))
     if (
         "mlir/Parser/Parser.h" in compilation_includes
@@ -1816,7 +1888,7 @@ def check_compiler_target_module_and_package_sources(
     ):
         fail(errors, "compilation facade still owns stage or filesystem implementation")
     target_module_facade = read_required(
-        compiler_root / "TargetLLVMModule.cpp", errors
+        compiler_root / "Target/TargetLLVMModule.cpp", errors
     )
     target_module_includes = source_includes(target_module_facade)
     for implementation in ("llvm/Object/", "llvm/Linker/", "mlir/Target/"):
@@ -1936,11 +2008,8 @@ def check_compiler_target_module_and_package_sources(
                     f"through runtime include(s): {', '.join(runtime_includes)}",
                 )
     check_no_textual_source_includes(
-        [compiler_root / name for name in compiler_sources]
-        + [
-            compiler_root / "CompilationInternal.h",
-            compiler_root / "TargetCodeGenInternal.h",
-        ]
+        compiler_source_paths
+        + list(private_headers)
         + [package_root / name for name in PACKAGE_SUPPORT_SOURCES]
         + [package_root / "PackageManifestInternal.h"]
         + [runtime_root / name for name in RUNTIME_SOURCES],

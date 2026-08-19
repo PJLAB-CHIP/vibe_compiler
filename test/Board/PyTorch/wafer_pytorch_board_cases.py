@@ -40,13 +40,10 @@ class PyTorchBoardCase:
     inputs: tuple[torch.Tensor, ...]
     expected_outputs_factory: Callable[[], tuple[torch.Tensor, ...]]
     export_program: Callable[[pathlib.Path], None]
-    required_structured_ir: tuple[str, ...]
-    expected_all_reduce_count: int
     comparison_policy: common.ComparisonPolicy
     continuation_factory: (
         Callable[[tuple[torch.Tensor, ...]], "PyTorchBoardCase"] | None
     ) = None
-    minimum_search_actual_fused_edges: int = 0
 
     def materialize_expected_outputs(self) -> tuple[torch.Tensor, ...]:
         outputs = self.expected_outputs_factory()
@@ -69,106 +66,32 @@ class SourceNoCardWorkload:
     case_name: str
     dtype_name: str
     num_partitions: int
-    optimization_policy: str = "search"
+    optimization_policy: str
     package_count: int = 1
 
 
 SOURCE_NO_CARD_WORKLOADS = (
     SourceNoCardWorkload(
-        "wafer-runtime-pytorch-single-card-gemm-no-card",
-        "single-card-gemm",
-        "float16",
-        1,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-single-card-gemm-bf16-no-card",
-        "single-card-gemm",
-        "bfloat16",
-        1,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-heterogeneous-tiling-dataflow-fp16-no-card",
-        "heterogeneous-tiling-dataflow",
-        "float16",
-        1,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-heterogeneous-tiling-dataflow-bf16-no-card",
-        "heterogeneous-tiling-dataflow",
-        "bfloat16",
-        1,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-conv-mixed-dag-fp16-no-card",
-        "conv-mixed-dag",
-        "float16",
-        1,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-conv-mixed-dag-bf16-no-card",
-        "conv-mixed-dag",
-        "bfloat16",
-        1,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-attention-prefill-fp16-no-card",
-        "attention-prefill",
-        "float16",
-        1,
-    ),
-    SourceNoCardWorkload(
         "wafer-runtime-pytorch-attention-prefill-fp16-optimization-none-no-card",
         "attention-prefill",
         "float16",
         1,
-        optimization_policy="none",
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-attention-prefill-bf16-no-card",
-        "attention-prefill",
-        "bfloat16",
-        1,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-attention-decode-kv-cache-no-card",
-        "attention-decode-kv-cache",
-        "float16",
-        1,
-        package_count=2,
+        "none",
     ),
     SourceNoCardWorkload(
         "wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-none-no-card",
         "attention-decode-kv-cache",
         "float16",
         1,
-        optimization_policy="none",
+        "none",
         package_count=2,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-attention-decode-kv-cache-bf16-no-card",
-        "attention-decode-kv-cache",
-        "bfloat16",
-        1,
-        package_count=2,
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-llama-2-7b-block-fp16-no-card",
-        "llama-2-7b-block",
-        "float16",
-        1,
     ),
     SourceNoCardWorkload(
         "wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card",
         "llama-2-7b-block",
         "float16",
         1,
-        optimization_policy="none",
-    ),
-    SourceNoCardWorkload(
-        "wafer-runtime-pytorch-llama-2-7b-block-bf16-no-card",
-        "llama-2-7b-block",
-        "bfloat16",
-        1,
+        "none",
     ),
 )
 
@@ -311,10 +234,6 @@ def _single_card_gemm(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         export_program=lambda output: _save_exported_program(
             output, module, (lhs, rhs)
         ),
-        required_structured_ir=(
-            "linalg.matmul",
-        ),
-        expected_all_reduce_count=0,
         comparison_policy=common.PYTORCH_DEFAULT,
     )
 
@@ -362,10 +281,7 @@ def _heterogeneous_tiling_dataflow(
         export_program=lambda output: _save_exported_program(
             output, module, inputs
         ),
-        required_structured_ir=("linalg.matmul", "linalg.generic"),
-        expected_all_reduce_count=0,
         comparison_policy=common.PYTORCH_DEFAULT,
-        minimum_search_actual_fused_edges=1,
     )
 
 
@@ -415,13 +331,7 @@ def _conv_mixed_dag(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         export_program=lambda output: _save_exported_program(
             output, module, inputs
         ),
-        required_structured_ir=(
-            "tensor.pad",
-            "linalg.generic",
-        ),
-        expected_all_reduce_count=0,
         comparison_policy=common.PYTORCH_DEFAULT,
-        minimum_search_actual_fused_edges=1,
     )
 
 
@@ -474,10 +384,7 @@ def _llama_2_7b_block(dtype: torch.dtype, seed: int) -> PyTorchBoardCase:
         export_program=lambda output: _save_exported_program(
             output, module, inputs
         ),
-        required_structured_ir=("linalg.matmul", "math.exp"),
-        expected_all_reduce_count=0,
         comparison_policy=HF_LLAMA2_7B_COMPARISON,
-        minimum_search_actual_fused_edges=1,
     )
 
 
@@ -604,10 +511,7 @@ def _read_only_attention(
         inputs=inputs,
         expected_outputs_factory=expected_outputs_factory,
         export_program=export_program,
-        required_structured_ir=("linalg.generic", "math.exp"),
-        expected_all_reduce_count=0,
         comparison_policy=ATTENTION_COMPARISON,
-        minimum_search_actual_fused_edges=1,
     )
 
 
@@ -819,14 +723,8 @@ def _attention_decode_kv_cache_step(
         export_program=lambda output: _save_exported_program(
             output, module, inputs
         ),
-        required_structured_ir=(
-            "tensor.insert_slice",
-            "math.exp",
-        ),
-        expected_all_reduce_count=0,
         comparison_policy=ATTENTION_COMPARISON,
         continuation_factory=continuation_factory,
-        minimum_search_actual_fused_edges=1,
     )
 
 

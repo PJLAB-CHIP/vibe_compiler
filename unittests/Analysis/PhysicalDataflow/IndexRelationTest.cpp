@@ -73,6 +73,31 @@ TEST(IndexRelationTest, RepresentsIdentityPermutationAndBroadcastExactly) {
 }
 
 TEST(IndexRelationTest,
+     RecoversRectangularUnionDisjunctsWithoutGenericSetEquality) {
+  IndexSetResult first =
+      IndexRelation::staticRectangularDomain(/*offsets=*/{0, 0},
+                                             /*sizes=*/{16, 64});
+  IndexSetResult second =
+      IndexRelation::staticRectangularDomain(/*offsets=*/{0, 64},
+                                             /*sizes=*/{16, 64});
+  ASSERT_TRUE(first.isExact());
+  ASSERT_TRUE(second.isExact());
+  IndexSetResult combined{wafer::analysis::IndexRelationStatus::Exact,
+                          first.set->unionSet(*second.set),
+                          {}};
+
+  StaticRectangularIndexSetPiecesResult pieces =
+      combined.getExactStaticRectangularDisjuncts();
+
+  ASSERT_TRUE(pieces.isExact()) << pieces.reason;
+  ASSERT_EQ(pieces.domains.size(), 2u);
+  EXPECT_EQ(pieces.domains[0].offsets, llvm::SmallVector<int64_t>({0, 0}));
+  EXPECT_EQ(pieces.domains[0].sizes, llvm::SmallVector<int64_t>({16, 64}));
+  EXPECT_EQ(pieces.domains[1].offsets, llvm::SmallVector<int64_t>({0, 64}));
+  EXPECT_EQ(pieces.domains[1].sizes, llvm::SmallVector<int64_t>({16, 64}));
+}
+
+TEST(IndexRelationTest,
      SingletonReshapeCompositionKeepsProjectedRectangleImage) {
   mlir::MLIRContext context;
   mlir::AffineExpr d0 = mlir::getAffineDimExpr(0, &context);

@@ -526,9 +526,10 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeTensorConstant(
   auto scalar = builder.create<mlir::arith::ConstantOp>(loc, scalarAttr);
   auto tensorBuffer = builder.create<mlir::memref::AllocOp>(
       loc, makeSPMMemRefType(tensorType, MemLayout::Tensor));
-  builder.create<ComputeFillOp>(loc, tensorBuffer.getResult(),
-                                scalar.getResult(),
-                                /*fill_domain=*/FillDomainAttr{});
+  auto fill = builder.create<ComputeFillOp>(
+      loc, tensorBuffer.getResult(), scalar.getResult(),
+      /*fill_domain=*/FillDomainAttr{});
+  recordStructuredComputeOperation(fill);
   record(original, MemLayout::Tensor, tensorBuffer.getResult());
   if (targetLayout == MemLayout::Tensor)
     return tensorBuffer.getResult();
@@ -690,6 +691,20 @@ void TileRegionBodyEmitter::recordOperationResultBuffer(
                relation.buffer == buffer;
       }))
     relations.push_back({structuredNodeId, buffer});
+}
+
+void TileRegionBodyEmitter::recordStructuredComputeOperation(
+    mlir::Operation *operation) {
+  if (!emissionRelations || !operation)
+    return;
+  auto &relations =
+      emissionRelations->materializedBuffers.operationEmissions;
+  for (uint32_t node : activeStructuredNodes)
+    if (!llvm::any_of(relations, [&](const auto &relation) {
+          return relation.structuredNodeId == node &&
+                 relation.operation == operation;
+        }))
+      relations.push_back({node, operation});
 }
 
 void TileRegionBodyEmitter::recordOperandBuffer(uint32_t structuredNodeId,

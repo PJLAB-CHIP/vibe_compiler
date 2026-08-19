@@ -7,6 +7,7 @@
 #include "Wafer/Support/TargetPolicy.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -67,7 +68,7 @@ TileRegionBodyEmitter::materializeControlFlowValue(mlir::Value original,
   if (mlir::isa<mlir::RankedTensorType>(original.getType()))
     return getOrMaterialize(original, MemLayout::Tensor, builder);
   if (isScalarType(original.getType()))
-    return getScalarValue(original);
+    return getScalarValue(original, builder);
   return failValue("control-flow yield is not a ranked tensor or scalar");
 }
 
@@ -99,7 +100,8 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
       if (emissionRelations)
         emissionRelations->selectedDDRStages.push_back(
             MaterializedSelectedDDRStage{
-                mlir::cast<mlir::memref::AllocOp>(cloned), selected->strategy});
+                mlir::cast<mlir::memref::AllocOp>(cloned),
+                selected->producerNode});
     }
     return mlir::success();
   }
@@ -211,7 +213,7 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
     llvm::SmallVector<mlir::Value, 4> operands;
     operands.reserve(apply.getMapOperands().size());
     for (mlir::Value operand : apply.getMapOperands()) {
-      mlir::FailureOr<mlir::Value> converted = getScalarValue(operand);
+      mlir::FailureOr<mlir::Value> converted = getScalarValue(operand, builder);
       if (mlir::failed(converted))
         return mlir::failure();
       operands.push_back(*converted);
@@ -282,7 +284,7 @@ TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
                    [&](mlir::Type type) { return isScalarType(type); })) {
     mlir::IRMapping mapping;
     for (mlir::Value operand : op->getOperands()) {
-      mlir::FailureOr<mlir::Value> converted = getScalarValue(operand);
+      mlir::FailureOr<mlir::Value> converted = getScalarValue(operand, builder);
       if (mlir::failed(converted))
         return mlir::failure();
       mapping.map(operand, *converted);
@@ -374,7 +376,8 @@ void TileRegionBodyEmitter::eraseImplicitYield(mlir::Block *block) {
 mlir::LogicalResult
 TileRegionBodyEmitter::convertScfIf(mlir::scf::IfOp ifOp,
                                     mlir::OpBuilder &builder) {
-  mlir::FailureOr<mlir::Value> condition = getScalarValue(ifOp.getCondition());
+  mlir::FailureOr<mlir::Value> condition =
+      getScalarValue(ifOp.getCondition(), builder);
   if (mlir::failed(condition))
     return mlir::failure();
 
@@ -422,10 +425,10 @@ mlir::LogicalResult
 TileRegionBodyEmitter::convertScfFor(mlir::scf::ForOp forOp,
                                      mlir::OpBuilder &builder) {
   mlir::FailureOr<mlir::Value> lowerBound =
-      getScalarValue(forOp.getLowerBound());
+      getScalarValue(forOp.getLowerBound(), builder);
   mlir::FailureOr<mlir::Value> upperBound =
-      getScalarValue(forOp.getUpperBound());
-  mlir::FailureOr<mlir::Value> step = getScalarValue(forOp.getStep());
+      getScalarValue(forOp.getUpperBound(), builder);
+  mlir::FailureOr<mlir::Value> step = getScalarValue(forOp.getStep(), builder);
   if (mlir::failed(lowerBound) || mlir::failed(upperBound) ||
       mlir::failed(step))
     return mlir::failure();
@@ -483,8 +486,8 @@ TileRegionBodyEmitter::convertScfFor(mlir::scf::ForOp forOp,
     // existing exact destination-chain proof; a read-only carry is admitted
     // only for the literal identity yield and cannot hide an update.
     const bool readOnlyIdentityCarry =
-        !writable && sourceYield.getResults()[index] ==
-                         forOp.getRegionIterArgs()[index];
+        !writable &&
+        sourceYield.getResults()[index] == forOp.getRegionIterArgs()[index];
     if (external != externalBuffers.end() &&
         ((writable && tracesDestination) || readOnlyIdentityCarry)) {
       initArgs.push_back(external->second);
@@ -618,7 +621,7 @@ TileRegionBodyEmitter::convertTensorPad(mlir::tensor::PadOp pad,
   } else {
     // A position-independent value captured from outside the pad region has
     // already been converted with the surrounding scalar SSA graph.
-    scalar = getScalarValue(paddingValue);
+    scalar = getScalarValue(paddingValue, builder);
   }
   if (mlir::failed(scalar))
     return mlir::failure();
@@ -639,8 +642,9 @@ TileRegionBodyEmitter::convertTensorPad(mlir::tensor::PadOp pad,
       makeSPMMemRefType(resultType, MemLayout::Tensor);
   mlir::Value destination =
       builder.create<mlir::memref::AllocOp>(pad.getLoc(), resultBufferType);
-  builder.create<ComputeFillOp>(pad.getLoc(), destination, *scalar,
-                                /*fill_domain=*/FillDomainAttr{});
+  auto fill = builder.create<ComputeFillOp>(pad.getLoc(), destination, *scalar,
+                                            /*fill_domain=*/FillDomainAttr{});
+  recordStructuredComputeOperation(fill);
   llvm::SmallVector<int64_t, 4> strides(sourceType.getRank(), 1);
   builder.create<MoveInsertSliceOp>(
       pad.getLoc(), *source, destination, builder.getDenseI64ArrayAttr(low),
@@ -677,7 +681,7 @@ mlir::FailureOr<mlir::Value> TileRegionBodyEmitter::materializeMemRefSubview(
   convertedOffsets.reserve(offsets.size());
   for (mlir::OpFoldResult offset : offsets) {
     if (auto value = mlir::dyn_cast<mlir::Value>(offset)) {
-      mlir::FailureOr<mlir::Value> converted = getScalarValue(value);
+      mlir::FailureOr<mlir::Value> converted = getScalarValue(value, builder);
       if (mlir::failed(converted))
         return mlir::failure();
       convertedOffsets.push_back(*converted);
@@ -744,6 +748,11 @@ bool TileRegionBodyEmitter::hasNoObservableDestUseExceptInsert(
     // the functional tensor destination.
     if (auto toMemref =
             mlir::dyn_cast<mlir::bufferization::ToMemrefOp>(use.getOwner())) {
+      // Output boundaries acquire their TileRegion memref binding after the
+      // source-operation worklist is captured.  This conversion exposes the
+      // caller-owned buffer; it is not a read of the old tensor version.
+      if (externalOutputIndices.contains(dest))
+        continue;
       auto external = externalBuffers.find(dest);
       auto tileArgument =
           external == externalBuffers.end()
@@ -927,9 +936,6 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
   if (auto outputIndexIt = externalOutputIndices.find(insertSlice.getDest());
       outputIndexIt != externalOutputIndices.end())
     outputIndex = outputIndexIt->second;
-  bool isLoopYield = insertSlice.getResult().hasOneUse() &&
-                     mlir::isa<mlir::scf::YieldOp>(
-                         insertSlice.getResult().use_begin()->getOwner());
   bool selectedDDRStageDestination = false;
   if (externalIt != externalBuffers.end()) {
     mlir::Value root = externalIt->second;
@@ -1059,7 +1065,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       baseOffsets.reserve(insertSlice.getMixedOffsets().size());
       for (mlir::OpFoldResult offset : insertSlice.getMixedOffsets()) {
         if (auto value = mlir::dyn_cast<mlir::Value>(offset)) {
-          mlir::FailureOr<mlir::Value> converted = getScalarValue(value);
+          mlir::FailureOr<mlir::Value> converted =
+              getScalarValue(value, builder);
           if (mlir::failed(converted))
             return mlir::failure();
           baseOffsets.push_back(*converted);
@@ -1377,12 +1384,43 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorReshape(
 }
 
 mlir::FailureOr<mlir::Value>
-TileRegionBodyEmitter::getScalarValue(mlir::Value original) {
+TileRegionBodyEmitter::getScalarValue(mlir::Value original,
+                                      mlir::OpBuilder &builder) {
   auto it = scalarValues.find(original);
-  if (it == scalarValues.end()) {
+  if (it != scalarValues.end())
+    return it->second;
+  if (!original || !isScalarType(original.getType()))
+    return failValue("tile compute requires one scalar value");
+
+  // A structured root may capture a position-independent scalar expression
+  // whose definition is outside the new TileRegion. Rebuild only that pure,
+  // regionless scalar SSA expression in the current region. Tensor producers
+  // remain owned by root/edge materialization and are never cloned here.
+  mlir::Operation *definition = original.getDefiningOp();
+  if (!definition || definition->getNumRegions() != 0 ||
+      definition->getNumSuccessors() != 0 ||
+      !mlir::isMemoryEffectFree(definition) ||
+      !llvm::all_of(definition->getOperandTypes(),
+                    [&](mlir::Type type) { return isScalarType(type); }) ||
+      !llvm::all_of(definition->getResultTypes(),
+                    [&](mlir::Type type) { return isScalarType(type); }))
     return failValue("missing scalar value for tile compute");
+
+  mlir::IRMapping mapping;
+  for (mlir::Value operand : definition->getOperands()) {
+    mlir::FailureOr<mlir::Value> converted = getScalarValue(operand, builder);
+    if (mlir::failed(converted))
+      return mlir::failure();
+    mapping.map(operand, *converted);
   }
-  return it->second;
+  mlir::Operation *converted = builder.clone(*definition, mapping);
+  for (auto [source, target] :
+       llvm::zip_equal(definition->getResults(), converted->getResults()))
+    scalarValues[source] = target;
+  if (auto constant = mlir::dyn_cast<mlir::arith::ConstantOp>(definition))
+    for (mlir::Value result : definition->getResults())
+      scalarAttrs[result] = constant.getValue();
+  return scalarValues.lookup(original);
 }
 
 bool TileRegionBodyEmitter::isUnreadDpsInitUse(mlir::OpOperand &use) const {

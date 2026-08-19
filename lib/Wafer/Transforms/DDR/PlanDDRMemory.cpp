@@ -117,25 +117,27 @@ combinePhysicalAlignment(mlir::MemRefType type, int64_t requestedAlignment,
   return *combined;
 }
 
-static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
-  while (true) {
-    if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-      mlir::Value entry =
-          analysis::getSingleExecutionRegionEntryOperand(blockArg);
-      if (!entry)
-        return value;
-      value = entry;
-      continue;
-    }
-
-    auto result = mlir::dyn_cast<mlir::OpResult>(value);
-    mlir::Value exit = result ? analysis::getSingleExecutionRegionExitOperand(
-                                    result)
-                              : mlir::Value{};
-    if (!exit)
-      return value;
-    value = exit;
+static mlir::Value resolveOneTileRegionBoundary(mlir::Value value) {
+  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
+    mlir::Value entry = analysis::getSingleExecutionRegionEntryOperand(blockArg);
+    return entry ? entry : value;
   }
+  auto result = mlir::dyn_cast<mlir::OpResult>(value);
+  mlir::Value exit = result
+                         ? analysis::getSingleExecutionRegionExitOperand(result)
+                         : mlir::Value{};
+  return exit ? exit : value;
+}
+
+static mlir::Value resolveTileRegionBoundaryValue(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> seen;
+  while (value && seen.insert(value).second) {
+    mlir::Value resolved = resolveOneTileRegionBoundary(value);
+    if (!resolved || resolved == value)
+      break;
+    value = resolved;
+  }
+  return value;
 }
 
 static bool isExplicitDDRRoot(mlir::Value value) {
@@ -1293,7 +1295,7 @@ static mlir::LogicalResult planScopeDDRMemory(
   memory_planning::LifetimeDataflow dataflow(
       *timeline, demands,
       [](mlir::Type type) { return isWaferDDRMemRefType(type); },
-      resolveTileRegionBoundaryValue, isExplicitDDRRoot);
+      resolveOneTileRegionBoundary, isExplicitDDRRoot);
   memory_planning::LifetimeFailure lifetimeFailure;
   if (mlir::failed(dataflow.run(scope, &localCompletion, &lifetimeFailure)))
     return emitLifetimeFailure(scope, lifetimeFailure);

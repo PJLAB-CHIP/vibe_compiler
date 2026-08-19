@@ -52,21 +52,11 @@ createTileModule(mlir::ModuleOp sourceModule, CardModuleOp cardModule,
   for (mlir::Operation &operation : cardModule.getBody().front()) {
     if (mlir::isa<TileModuleOp>(operation))
       continue;
-    if (!isCardSharedDeclaration(operation)) {
-      if (failureReason)
-        *failureReason =
-            "wafer.card.module contains a non-declaration operation outside "
-            "a wafer.tile.module";
-      return mlir::failure();
-    }
     builder.clone(operation, mapping);
   }
 
-  for (mlir::Operation &operation : sourceTileModule.getBody().front())
-    builder.clone(operation, mapping);
-
   if (sourceRelations) {
-    auto remap = [&](const auto &source, auto &destination) {
+    auto retain = [&](const auto &source, auto &destination) {
       for (const auto &relation : source) {
         mlir::Value buffer = relation.buffer;
         mlir::Operation *parent =
@@ -74,24 +64,23 @@ createTileModule(mlir::ModuleOp sourceModule, CardModuleOp cardModule,
         const bool belongsToTile =
             parent && (parent == sourceTileModule.getOperation() ||
                        sourceTileModule->isProperAncestor(parent));
-        if (mlir::Value mapped = mapping.lookupOrNull(buffer)) {
-          auto copy = relation;
-          copy.buffer = mapped;
-          destination.push_back(copy);
-          continue;
-        }
-        if (belongsToTile && failureReason)
-          *failureReason = "Tile module failed to remap a current-IR buffer "
-                           "relation";
+        if (belongsToTile)
+          destination.push_back(relation);
       }
     };
-    remap(sourceRelations->operationResultBuffers,
-          tileRelations.operationResultBuffers);
-    remap(sourceRelations->operandBuffers, tileRelations.operandBuffers);
-    remap(sourceRelations->outputBuffers, tileRelations.outputBuffers);
-    if (failureReason && !failureReason->empty())
-      return mlir::failure();
+    retain(sourceRelations->operationResultBuffers,
+           tileRelations.operationResultBuffers);
+    retain(sourceRelations->operandBuffers, tileRelations.operandBuffers);
+    retain(sourceRelations->outputBuffers, tileRelations.outputBuffers);
   }
+
+  // TileModuleOp is IsolatedFromAbove, so its body owns a closed SSA graph.
+  // Move that graph into the standalone module instead of cloning it. The
+  // current-IR relation values above therefore remain the same SSA values.
+  mlir::Block &sourceBody = sourceTileModule.getBody().front();
+  mlir::Block *destinationBody = resultModule->getBody();
+  while (!sourceBody.empty())
+    sourceBody.front().moveBefore(destinationBody, destinationBody->end());
 
   if (mlir::failed(mlir::verify(*resultModule))) {
     if (failureReason)
@@ -105,12 +94,14 @@ createTileModule(mlir::ModuleOp sourceModule, CardModuleOp cardModule,
 
 mlir::FailureOr<llvm::SmallVector<TileModule, 16>>
 splitCardModuleIntoTileModules(
-    mlir::ModuleOp sourceModule, std::string *failureReason,
+    mlir::OwningOpRef<mlir::ModuleOp> sourceModuleOwner,
+    std::string *failureReason,
     const StructuredMaterializationRelations *materializationRelations) {
   if (failureReason)
     failureReason->clear();
-  if (!sourceModule)
+  if (!sourceModuleOwner)
     return failSplit(failureReason, "source module is null");
+  mlir::ModuleOp sourceModule = *sourceModuleOwner;
   if (mlir::failed(mlir::verify(sourceModule)))
     return failSplit(failureReason, "source module is not verifier-legal");
 
@@ -121,6 +112,16 @@ splitCardModuleIntoTileModules(
         failureReason,
         "expected exactly one direct wafer.card.module in source module");
   CardModuleOp cardModule = cardModules.front();
+
+  for (mlir::Operation &operation : cardModule.getBody().front()) {
+    if (mlir::isa<TileModuleOp>(operation) ||
+        isCardSharedDeclaration(operation))
+      continue;
+    return failSplit(
+        failureReason,
+        "wafer.card.module contains a non-declaration operation outside a "
+        "wafer.tile.module");
+  }
 
   llvm::SmallVector<TileModuleOp, 16> sourceTileModules(
       cardModule.getBody().front().getOps<TileModuleOp>());

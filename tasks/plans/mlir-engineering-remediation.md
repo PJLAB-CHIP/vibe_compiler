@@ -73,7 +73,7 @@ Pipeline position:
 | M10 / P1 | Program/TileRegion/LinalgExt verifier使用“拒绝全部未知attr”或手写allowed-name表，阻断合法discardable instrumentation attr；SPM/DDR/binding等部分typed value仍通过raw key访问 | B：区分inherent semantic attr与namespaced discardable attr，stable field进入ODS/generated accessor或统一typed wrapper；新增unknown semantic attr负例和instrumentation attr正例 |
 | M11 / P1 | Tile conversion pattern仍携带可写`failureReason`指针；failed match能改变conversion rollback之外的C++状态，最终原因依赖pattern尝试顺序，同时driver diagnostic被统一压掉 | F：pattern只使用`notifyMatchFailure`/conversion diagnostic callback或typed validation outcome；删除pattern object外部可变状态，验证诊断稳定性与pattern-set重复调用 |
 | M12 / P1 | StableHLO normalization同时承担collective lowering、partition/replica ID folding、cast cleanup和constant folding，pipeline中又重复运行normalize三次、canonicalizer两次，stage result condition不清楚 | F/G：按legality/result condition拆stage，收窄affected roots；canonicalizer只优化，测试在去掉generic canonicalizer后仍满足correctness |
-| M13 / P0 | TensorProgram→CardModule、selected-buffer、SPM probe、Card→Tile output、target variant和search replay使用了不同目的的clone；CardExecutable还对同一target variant先完整lower并丢弃、package再重做 | D/G/I/J：先逐点分类。保留actual candidate/output fan-out与显式probe；production selected-buffer避免在已独占owner内再clone；同一variant无测量理由的target重复lower清理并让最终16 Tile按index并发；旧search随Q51.Core删除，但未来trace/autotuning replay由其显式合同和测量决定，不设全局“只物化一次”规则 |
+| M13 / P0 | TensorProgram→CardModule、selected-buffer、旧SPM probe、Card→Tile output、target variant和search replay使用了不同目的的clone；CardExecutable还对同一target variant先完整lower并丢弃、package再重做 | D/G/I/J：actual TensorProgram materialization只复制final single-root region需要的局部operation；旧SPM probe删除；selected-buffer按值消费owner；Card→Tile直接move大型body、只复制shared declaration；同一target variant无测量理由的重复lower清理。旧search随Q51.Core删除；未来trace/autotuning replay必须有显式合同、consumer和测量，不能成为普通编译默认路径 |
 | M14 / P1 | `TileExecutionCandidate`混合assignment、派生cost/resource、controller flags、failure history、`Operation *`和`const void *`；`selectedTileIR`把实际IR打印字符串保存在核心output并被测试消费 | B0/E/G：拆immutable assignment、current-IR analysis和controller transition；地址不作跨epoch identity；打印IR只作可选diagnostic trace，测试读取实际typed IR |
 | M15 / P1 | Tile lowering先拒绝premature DDR/DTE facts，随后又无条件清除SPM/DDR/DTE，形成“从较低stage删除事实回退到较高stage”的含糊入口合同 | D/I：memory planning入口只接受canonical unplaced parent，dirty input fail closed；每个候选从immutable pre-placement IR单向派生，不靠scrub恢复stage |
 | M16 / P1 | `WaferTarget`公开protocol/codec依赖WaferIR，`WaferRuntime`经Target传递获得IR依赖，`WaferTargetModelCore`又公开依赖整个Compiler；Target public type仍落在`wafer::compiler` namespace | H（具体source/CMake cutover依18）：拆pure target protocol/layout/numeric、MLIR adapter、host JIT/output和model consumer，建立单向library link closure |
@@ -520,7 +520,7 @@ fresh 验证：
 5. FP16/BF16普通多 op、sharded compute及轻量prefill/decode代表source-to-package，比较semantic oracle、
    CardModule/CardExecutable/package digest和no-card plan；重型LLaMA不是本底层remediation的常规重跑门禁。Q49.P只执行一次
    有界FP16 baseline时限门禁；重型search仍须等待Q51完整new-search链，由Q52显式profile和Q53正式package/no-card执行；
-6. 记录 pass/analysis/clone/materialization count与wall time，证明TileRegion query、nested pass和analysis scope真实生效；
+6. 仅在显式timing/诊断运行中记录pass/analysis/clone/materialization count与wall time，证明nested pass和analysis scope真实生效；
    Q54不得保留synthetic local wrapper或每region完整Tile pipeline。`none`的deterministic functional fallback、search-policy、
    region结构、scope/witness和card重复工作由Q49.P负责，
    不能反向要求Q54重建search或用并行clone遮蔽。
@@ -529,7 +529,7 @@ Q54 的A–I首轮证据只作为整改输入，不能替代Checkpoint J。本�
 required-NCC validate/replay、selected-buffer nested Module clone或CardExecutable阶段的discarded target gate；保留的root clone和
 materialization均在第19号合同7.2有owner与consumer。fresh验证为：main、board-check和feature-on model三棵构建树通过；
 非搜索定向unit 67/67，target/profile unit 18/18，Frontend/Pipelines/Transforms lit 93/93，source-organization、instruction-work、
-baseline package/no-card工具测试3/3，public/feature-off link closure 7/7。instruction work ledger为16次target ABI Module clone、
+baseline package/no-card工具测试3/3，public/feature-off link closure 7/7。显式instruction work统计为16次target ABI Module clone、
 16次target lowering和16次translation，最终output按LaunchSlot稳定归并且bounded worker大于1；`git diff --check`与current源码
 `preflight`残留检查通过。旧search unit和重型LLaMA不属于本完成证据。NCC target/MLIR completion分层缺口仍由Q63承接。
 
@@ -553,39 +553,40 @@ baseline package/no-card工具测试3/3，public/feature-off link closure 7/7。
    materialize并只在成功时返回同一owner。CardExecutable构造只验证current Instr、binding、resource、launch与
    transport合同，不提前推导并丢弃target ABI变换计划；最终per-Tile target output对每个被请求的真实variant只完整构造一次，
    并以bounded workers并发、稳定Tile/launch index汇合。
-5. TensorProgram→Card/TileRegion actual candidate、Card→Tile output、target/profile variant、Shardy helper projection和SPM query
-   scratch先保留并加真实work计数。只有fresh wall/RSS与symbol-closure审计证明scope过宽，才进一步缩窄；不能为了满足静态
-   clone数量删除必要output或alternative。
-6. 旧search的string gate、accepted cohort和winner replay仍由Q51.Core整体删除，不做兼容adapter。Q51/Q52设计同步第19号合同
+5. TensorProgram→Card/TileRegion actual materialization保留只读source和mapping-local `IRMapping`，只复制final region需要的局部
+   operation；Card→Tile大型body直接move，只有shared declaration按output复制。target/profile variant与Shardy helper projection
+   保留真实output owner。旧SPM query scratch已经删除；普通编译不默认创建work统计，只有显式timing/诊断运行才记录次数。
+6. 旧search的string gate、accepted cohort和winner replay已由Q51.Core整体删除，没有兼容adapter。Q51/Q52设计同步第19号合同
    的分类：analytic plan、actual alternative、compile-and-measure和trace/database replay分别建模；是否保留多个live IR或重放
-   由explicit budget与测量决定。Q51.Core cutover前禁止在旧controller上继续增加机制。
+   由explicit budget与测量决定，后续机制只接入new control owner。
 7. 复用`AGENTS.md`现有ownership、pass和最小scratch规则，不新增通用clone wrapper、调用点registry或自动扫描基础设施；
    后续Q50/Q51只在确实需要clone的具体设计中说明source、scope、次数和最终consumer。
 
-本轮registration复核同时确认：active root clone只有Shardy helper projection、TensorProgram/Card/Tile actual materialization、
-Card→Tile output fan-out、isolated region probe和retained target variant；function probe与selected-buffer apply不再嵌套clone，
-active普通pass不再用root `takeBody`提交。`LLVM_OPTIONAL_SOURCES`中的rank/coordinated旧search以及未注册的
-`Transforms/PhysicalDataflow`、`Scheduling/FixedSlotPipeline`、`WorkerPlacement`仍是明确的旧能力输入：前者由Q51.Core迁移
-proof/negative witness后删除，后者由Q50各axis extract-then-delete，Q64最终核对registration；它们不能被描述成current
-production，也不能因未链接直接当作无能力垃圾删除。
+本轮registration复核同时确认：active root clone只有Shardy helper projection和retained target variant；TensorProgram/Card/Tile
+actual materialization只复制final region所需局部operation，Card→Tile fan-out直接move大型body。region/function probe已经删除，
+selected-buffer apply不再嵌套clone，
+active普通pass不再用root `takeBody`提交。rank/coordinated旧search已经在迁移current-SSA DAG facts、baseline placement closure和
+negative witness后整岛删除；未注册的`Transforms/PhysicalDataflow`、`Scheduling/FixedSlotPipeline`、`WorkerPlacement`仍是明确的
+旧能力输入，由Q50各axis extract-then-delete，Q64最终核对registration；它们不能被描述成current production，也不能因未链接
+直接当作无能力垃圾删除。
 
 验证：不运行旧search或重型LLaMA；使用fresh source/build、受影响unit/lit、named/production failure语义、deterministic
 baseline source-to-package/no-card，记录每个真实clone/materialize/target-lower执行点及16-Tile bounded parallelism。若最终target
 output或package字节有变化，扩大到14–17对应readback；若只有执行次数变化，仍比较semantic IR/package digest和oracle。
 
-完成门禁：逐调用点ledger与代码一致；普通pass、显式事务、probe、alternative/replay和output fan-out没有混用测试合同；
+完成门禁：逐调用点清单与代码一致；普通pass、显式事务、probe、alternative/replay和output fan-out没有混用测试合同；
 确认重复工作已消除，确认保留的clone有真实consumer；Q51/Q52未来设计不预设单一live materialization；最终稳定规则经过
 上游反例和本项目fresh证据复核后才进入`AGENTS.md`。
 
 ## 与后续任务的关系
 
-- Q54优先闭合；Q49.P随后消费这些接口，其scoped probe不得把TileRegion包装成synthetic module后重跑完整Tile pipeline；
-  需要call/function lifetime时提升到最近合法isolated ancestor，不能跳过或回退card-shaped wrapper。
+- Q54优先闭合；Q49.P随后消费这些接口，但不建立scoped capacity probe或synthetic wrapper。每个closed coordinate只构造一个
+  actual CardModule并交给Q50.0；需要call/function lifetime时由actual nested pipeline在最近合法anchor处理。
 - Q54完成后先闭合Q50.A demand boundary，Q49.P再消费两者的当前接口，之后才进入Q51.Core及后续mechanism/search，
   避免把Location side channel、shadow identity和全module pipeline继续固化进baseline或新candidate state。
-- Q49.P的deterministic feasibility controller以逐trial closed coordinates消费Q54的region-local
-  conversion/lifetime/packing接口并自行推进功能fallback；selected assignment是该过程的输出，不是入口前置条件。Q50.F在
-  同一probe实现上增加deferred coordinates和common-state反馈，不另建probe pipeline。
+- Q49.P的deterministic baseline以单调、无分支的temporal refinement推进closed coordinate；每个coordinate的actual CardModule
+  与Q50.0一一对应，accepted owner直接下传。Q50.F只从current IR和partial assignment重算lower bound/deferred facts，不复活
+  probe pipeline，也不clone或lower actual IR。
 - Q52只优化在 Q54 scope/analysis整改后的真实热点；不得用并行 clone掩盖错误的 transaction边界。
 - Q63承接Q54 contract map中未实际闭合的NCC completion分层；Q50.J必须等待Q63 typed target protocol/MLIR adapter完成，
   不能继续把free TypeSwitch或runtime/model enum带入新event/resource schedule。
