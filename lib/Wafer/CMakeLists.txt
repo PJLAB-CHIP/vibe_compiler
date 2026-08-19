@@ -24,13 +24,6 @@ foreach(_wafer_native_jit_lib IN LISTS WAFER_NATIVE_JIT_LIBS)
   endif()
 endforeach()
 
-set(LLVM_OPTIONAL_SOURCES
-  Analysis/PhysicalDataflow/GlobalTileRelation.cpp
-  Transforms/Transport/CoordinatedCommunicationAction.cpp
-  Transforms/Transport/NoCCommunicationAction.cpp
-  Transforms/Transport/NoCIntermediateRouting.cpp
-  Transforms/Transport/NoCPartialDataflow.cpp)
-
 add_mlir_library(WaferCompiler
   ${WAFER_COMPILATION_ANALYSIS_SOURCES}
   ${WAFER_PLANNING_SOURCES}

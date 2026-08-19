@@ -2,9 +2,12 @@
 
 #include "Wafer/Planning/Search/CoupledRegion.h"
 
+#include "Wafer/Planning/Search/DataMovement.h"
+#include "Wafer/Planning/Search/DataMovementApply.h"
 #include "Wafer/Planning/Search/PhysicalRepresentation.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/IR/Verifier.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
@@ -387,6 +390,8 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     const CardTemporalAssignment &temporalAssignment,
     const CardPhysicalRepresentationDomain &representationDomain,
     const CardPhysicalRepresentationAssignment &representationAssignment,
+    const CardDataMovementDomain &movementDomain,
+    const CardDataMovementAssignment &movementAssignment,
     std::string *failureReason) {
   auto fail = [&](llvm::StringRef message)
       -> mlir::FailureOr<CardCoupledRegionMaterialization> {
@@ -397,8 +402,43 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
   if (!tensorProgram || trial.epoch != program.epoch ||
       !domain.contains(assignment) ||
       !temporalDomain.contains(temporalAssignment) ||
-      !representationDomain.contains(representationAssignment))
+      !representationDomain.contains(representationAssignment) ||
+      !movementDomain.contains(movementAssignment))
     return fail("coupled-region apply received a stale or unknown assignment");
+
+  for (const DataMovementChoice &movement : movementAssignment.edges) {
+    const StructuredDAGEdge *edge = program.dag.getEdge(movement.edge);
+    auto producerGroup =
+        edge ? llvm::find_if(assignment.groups,
+                             [&](const auto &group) {
+                               return group.tile == movement.destinationTile &&
+                                      llvm::is_contained(group.nodes,
+                                                         edge->producer);
+                             })
+             : assignment.groups.end();
+    auto consumerGroup =
+        edge ? llvm::find_if(assignment.groups,
+                             [&](const auto &group) {
+                               return group.tile == movement.destinationTile &&
+                                      llvm::is_contained(group.nodes,
+                                                         edge->consumer);
+                             })
+             : assignment.groups.end();
+    const bool sameGroup = producerGroup != assignment.groups.end() &&
+                           consumerGroup != assignment.groups.end() &&
+                           producerGroup == consumerGroup;
+    if (((movement.kind == DataMovementKind::Retained ||
+          movement.kind == DataMovementKind::Refetch) &&
+         !sameGroup) ||
+        (movement.kind == DataMovementKind::DDR && sameGroup))
+      return fail("movement choice disagrees with selected group boundary");
+    if (movement.kind != DataMovementKind::Retained &&
+        movement.kind != DataMovementKind::Refetch &&
+        movement.kind != DataMovementKind::DDR &&
+        movement.kind != DataMovementKind::Recompute &&
+        movement.kind != DataMovementKind::Peer)
+      return fail("selected movement kind has no current actual apply");
+  }
 
   llvm::SmallVector<StructuredNodeShardGroup, 32> groups;
   for (const CoupledRegionGroup &selected : assignment.groups) {
@@ -483,11 +523,42 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     groups.push_back(std::move(group));
   }
 
+  for (const DataMovementChoice &movement : movementAssignment.edges) {
+    if (movement.kind != DataMovementKind::Recompute)
+      continue;
+    const StructuredDAGEdge *edge = program.dag.getEdge(movement.edge);
+    auto destination =
+        edge ? llvm::find_if(
+                   groups,
+                   [&](const auto &group) {
+                     return group.shards.front().tile ==
+                                movement.destinationTile &&
+                            llvm::any_of(group.shards, [&](const auto &shard) {
+                              return shard.structuredNodeId == edge->consumer;
+                            });
+                   })
+             : groups.end();
+    if (!edge || destination == groups.end() ||
+        llvm::any_of(destination->shards, [&](const auto &shard) {
+          return shard.structuredNodeId == edge->producer;
+        }))
+      return fail("recompute movement has no separate consumer group");
+    if (!llvm::is_contained(destination->recomputedProducerNodes,
+                            edge->producer))
+      destination->recomputedProducerNodes.push_back(edge->producer);
+    llvm::sort(destination->recomputedProducerNodes);
+  }
+
   CardCoupledRegionMaterialization result;
   if (mlir::failed(lowerStructuredNodeGroupsToCardModule(
           tensorProgram, cardId, program.availableTileIds,
           program.operationNodes, groups, result.module, &result.relations,
           failureReason)))
+    return mlir::failure();
+  if (mlir::failed(
+          applySelectedDataMovement(*result.module, program, movementAssignment,
+                                    result.relations, failureReason)) ||
+      mlir::failed(mlir::verify(*result.module)))
     return mlir::failure();
   return result;
 }

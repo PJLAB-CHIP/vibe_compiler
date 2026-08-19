@@ -17,8 +17,11 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/CardExecutableSearch.cpp
   Planning/Search/CoupledRegion.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp
+  Planning/Search/DataMovement.cpp
+  Planning/Search/DataMovementApply.cpp
   Planning/Search/PhysicalRepresentation.cpp
   Planning/Search/ScopedFeasibility.cpp
+  Planning/Search/SimpleRoute.cpp
   Planning/Search/SpatialPlacement.cpp
   Planning/Search/TemporalTiling.cpp
   Planning/Search/SingleRootRegion.cpp

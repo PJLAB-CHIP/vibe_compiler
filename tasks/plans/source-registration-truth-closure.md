@@ -49,7 +49,7 @@ Pipeline position:
 
 | 当前文件职责 | 唯一目标owner | 文件组 |
 | --- | --- | --- |
-| current-IR/query-local事实 | `Analysis` | 原`Compiler/Planning`中的DAG、node-use、footprint、buffer relation、exact-demand query；`GlobalTileRelation`；executable call/resource analysis |
+| current-IR/query-local事实 | `Analysis` | DAG、node-use、footprint、buffer relation、exact-demand/index/physical-layout relation及executable call/resource analysis；旧rank-global `GlobalTileRelation`已由current typed relation承接并删除 |
 | physical assignment、baseline与search | `Planning` | 原`Compiler/Baseline`、`Compiler/Search`及placement/edge/temporal assignment；attention/decode纯proof单独进入`Analysis/Structured` |
 | actual CardExecutable与Tile lowering | `CodeGen/Executable` | CardExecutable ownership、CardModule→Tile/Instr exact compile、fixed memory planning和bounded Tile execution |
 | target LLVM/ABI/link/readback | `CodeGen/Target` | 原`Compiler/Target`除host TargetCall execution外的全部target code generation |

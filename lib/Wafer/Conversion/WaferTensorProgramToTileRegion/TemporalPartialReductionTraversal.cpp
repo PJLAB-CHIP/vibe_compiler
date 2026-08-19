@@ -261,7 +261,10 @@ mlir::LogicalResult materializeTemporalPartialReductionShard(
   eraseDeadCandidateSupportClosure(
       TensorProgramScope(function, functionalArgumentCount));
   retainLiveOperationNodes(function, operationNodes);
-  return appendTileOutputDestinations(function, failureReason);
+  if (mlir::failed(appendTileOutputDestinations(function, failureReason)))
+    return mlir::failure();
+  return bindFullResultsToOutputDestinations(function, functionalArgumentCount,
+                                             failureReason);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

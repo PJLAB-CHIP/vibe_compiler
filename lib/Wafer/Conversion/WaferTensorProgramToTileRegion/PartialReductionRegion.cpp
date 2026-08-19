@@ -215,6 +215,9 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
   retainLiveOperationNodes(*function, operationNodes);
   if (mlir::failed(appendTileOutputDestinations(*function, failureReason)))
     return mlir::failure();
+  if (mlir::failed(bindFullResultsToOutputDestinations(
+          *function, functionalArgumentCount, failureReason)))
+    return mlir::failure();
 
   TileRegionEmissionRelations emissionRelations;
   if (mlir::failed(convertTensorProgramToTileRegionFunctionInPlace(
@@ -245,6 +248,43 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
     return fail<RootFragment>(
         failureReason, "partial merge did not produce one single-root region");
   result.relations = std::move(emissionRelations.materializedBuffers);
+  TileRegionOp mergeRegion;
+  result.function.walk([&](TileRegionOp region) {
+    if (!region->getParentOfType<TileRegionOp>())
+      mergeRegion = region;
+  });
+  if (!mergeRegion)
+    return fail<RootFragment>(failureReason,
+                              "partial merge has no materialized region");
+  auto stripSubviews = [](mlir::Value value) {
+    while (auto subview = value.getDefiningOp<mlir::memref::SubViewOp>())
+      value = subview.getSource();
+    return value;
+  };
+  for (auto [shard, arguments] :
+       llvm::zip_equal(contributionShards, contributionArguments)) {
+    for (auto [resultIndex, argument] : llvm::enumerate(arguments)) {
+      if (argument.getArgNumber() >=
+          mergeRegion.getBody().front().getNumArguments())
+        return fail<RootFragment>(
+            failureReason,
+            "partial merge contribution argument left region boundary");
+      mlir::BlockArgument regionArgument =
+          mergeRegion.getBody().front().getArgument(argument.getArgNumber());
+      mlir::Value buffer;
+      mergeRegion.walk([&](StorageLoadOp load) {
+        if (!buffer && stripSubviews(load.getSource()) == regionArgument)
+          buffer = load.getDest();
+      });
+      if (!buffer)
+        return fail<RootFragment>(
+            failureReason,
+            "partial merge contribution has no exact input buffer");
+      result.relations.partialReductionMergeInputs.push_back(
+          {structuredNodeId, static_cast<unsigned>(resultIndex), shard->tile,
+           buffer});
+    }
+  }
   return result;
 }
 

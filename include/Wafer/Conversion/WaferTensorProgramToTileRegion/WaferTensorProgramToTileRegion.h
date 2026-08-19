@@ -4,6 +4,8 @@
 #ifndef WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_H
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_H
 
+#include "Wafer/Target/Core/TopologyIds.h"
+
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -49,6 +51,20 @@ struct SpatialOutputBufferRelation {
   mlir::Value buffer;
 };
 
+struct PartialReductionContributionBufferRelation {
+  uint32_t structuredNodeId = 0;
+  unsigned resultIndex = 0;
+  TileId sourceTile{0};
+  mlir::Value buffer;
+};
+
+struct PartialReductionMergeInputBufferRelation {
+  uint32_t structuredNodeId = 0;
+  unsigned resultIndex = 0;
+  TileId sourceTile{0};
+  mlir::Value buffer;
+};
+
 /// Exact current-IR relations emitted while lowering one or more TileRegions.
 /// Result and operand buffers remain separate because allocation feedback for
 /// an input demand refines the consumer node, while a result buffer describes
@@ -59,12 +75,18 @@ struct StructuredMaterializationRelations {
       operationResultBuffers;
   llvm::SmallVector<StructuredOperationBufferRelation, 16> operandBuffers;
   llvm::SmallVector<SpatialOutputBufferRelation, 4> outputBuffers;
+  llvm::SmallVector<PartialReductionContributionBufferRelation, 8>
+      partialReductionContributions;
+  llvm::SmallVector<PartialReductionMergeInputBufferRelation, 8>
+      partialReductionMergeInputs;
 
   void clear() {
     operationEmissions.clear();
     operationResultBuffers.clear();
     operandBuffers.clear();
     outputBuffers.clear();
+    partialReductionContributions.clear();
+    partialReductionMergeInputs.clear();
   }
 };
 

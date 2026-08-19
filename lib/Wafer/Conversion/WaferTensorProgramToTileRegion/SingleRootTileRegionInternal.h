@@ -29,13 +29,19 @@ mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
 mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
     mlir::Block &destination, llvm::ArrayRef<mlir::Operation *> sourceRoots,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
-    llvm::ArrayRef<uint32_t> coupledNodeIds, std::string *failureReason,
+    llvm::ArrayRef<uint32_t> coupledNodeIds,
+    llvm::ArrayRef<uint32_t> recomputedNodeIds, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
     unsigned &functionalArgumentCount);
 
 void retainLiveOperationNodes(
     mlir::func::FuncOp function,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes);
+
+mlir::LogicalResult
+bindFullResultsToOutputDestinations(mlir::func::FuncOp function,
+                                    unsigned functionalArgumentCount,
+                                    std::string *failureReason);
 
 mlir::FailureOr<RootFragment> materializeRootFragment(
     TileModuleOp tileOwner,

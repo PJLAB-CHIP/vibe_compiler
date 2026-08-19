@@ -808,9 +808,14 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
       activeStructuredNodes.append(node->second.begin(), node->second.end());
     const SelectedNodeRepresentation *representation = nullptr;
     if (!selectedRepresentations.empty()) {
-      if (malformedRepresentations || activeStructuredNodes.empty()) {
+      if (malformedRepresentations) {
         activeStructuredNodes = std::move(previous);
         return fail("selected physical representation has no node owner");
+      }
+      if (activeStructuredNodes.empty()) {
+        mlir::LogicalResult unowned = convert();
+        activeStructuredNodes = std::move(previous);
+        return unowned;
       }
       for (uint32_t current : activeStructuredNodes) {
         auto selected = selectedRepresentations.find(current);
@@ -867,6 +872,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
           activeStructuredNodes = std::move(previous);
           return mlir::failure();
         }
+        for (uint32_t current : activeStructuredNodes)
+          recordOperandBuffer(current, *selected);
         BufferVersions primary;
         switch (*layout) {
         case MemLayout::Tensor:

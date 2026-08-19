@@ -35,6 +35,9 @@ struct StructuredNodeShardGroup {
   /// Empty before physical-representation selection. A complete selected
   /// group carries exactly one entry for every shard/node.
   llvm::SmallVector<StructuredNodePhysicalRepresentation, 4> representations;
+  /// Pure structured producers selected for consumer-local recomputation.
+  /// They enter the closure but are not scheduled-node/emission identities.
+  llvm::SmallVector<uint32_t, 2> recomputedProducerNodes;
 };
 
 /// Materializes a complete explicit node-shard partition. Multi-node groups

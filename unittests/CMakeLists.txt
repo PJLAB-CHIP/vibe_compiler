@@ -30,6 +30,7 @@ add_executable(WaferUnitTests
   Analysis/Executable/ProgramResourceVerificationTest.cpp
   Planning/Search/CardExecutableSearchTest.cpp
   Planning/Search/CoupledRegionTest.cpp
+  Planning/Search/DataMovementTest.cpp
   Planning/Search/PhysicalRepresentationTest.cpp
   Planning/Search/ScopedFeasibilityTest.cpp
   Planning/Search/SearchControlTest.cpp

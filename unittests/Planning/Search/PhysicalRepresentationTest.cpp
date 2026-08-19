@@ -1,6 +1,7 @@
 //===- PhysicalRepresentationTest.cpp --------------------------------===//
 
 #include "Wafer/Planning/Search/PhysicalRepresentation.h"
+#include "Wafer/Planning/Search/DataMovement.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
 #include "Wafer/InitWaferDialects.h"
@@ -183,11 +184,20 @@ TEST(PhysicalRepresentationTest,
   resultChoice->layout = MemLayout::Cx;
   ASSERT_TRUE(prepared->representationDomain.contains(assignment));
 
+  auto movementDomain = CardDataMovementDomain::create(
+      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
+      prepared->coupledAssignment, prepared->temporalDomain,
+      prepared->temporalAssignment, prepared->representationDomain, assignment,
+      &failureReason);
+  ASSERT_TRUE(mlir::succeeded(movementDomain)) << failureReason;
+  CardDataMovementAssignment movement = movementDomain->getFirstAssignment();
+
   auto materialized = materializeCardCoupledRegions(
       *module, *prepared->program, CardId(0), prepared->trial,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
-      prepared->representationDomain, assignment, &failureReason);
+      prepared->representationDomain, assignment, *movementDomain, movement,
+      &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized->module)));
   EXPECT_EQ(
@@ -220,7 +230,8 @@ TEST(PhysicalRepresentationTest,
       *module, *prepared->program, CardId(0), prepared->trial,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
-      prepared->representationDomain, malformed, &failureReason);
+      prepared->representationDomain, malformed, *movementDomain, movement,
+      &failureReason);
   EXPECT_TRUE(mlir::failed(rejected));
   std::string sourceAfter;
   llvm::raw_string_ostream stream(sourceAfter);

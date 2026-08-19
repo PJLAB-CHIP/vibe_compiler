@@ -629,6 +629,8 @@ TEST(SingleRootTileRegionTest,
     });
   });
   EXPECT_EQ(regionsByTile, (llvm::SmallVector<unsigned, 4>{1, 1, 2, 1}));
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(materialized->module->getOperation()),
+            5u);
 }
 
 TEST(SingleRootTileRegionTest,
@@ -682,6 +684,7 @@ TEST(SingleRootTileRegionTest,
       << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->getOperation()), 5u);
   EXPECT_GT(countOps<mlir::scf::ForOp>(materialized->getOperation()), 0u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(materialized->getOperation()), 5u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized)));
 }
 

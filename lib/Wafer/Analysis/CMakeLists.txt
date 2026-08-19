@@ -1,8 +1,3 @@
-set(LLVM_OPTIONAL_SOURCES
-  Topology/CollectiveTopologyAnalysis.cpp
-  Topology/ExecutionTopologyAnalysis.cpp
-)
-
 add_mlir_library(WaferAnalysis
   CallGraph/DirectCallGraphAnalysis.cpp
   PhysicalDataflow/IndexRelation.cpp

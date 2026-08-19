@@ -455,3 +455,14 @@ source program
   Cx/NCx与外部Tensor writeback是selected primary之外的显式derived versions，不能反写logical edge assignment。
 - apply期间consumer operand可暂时暴露selected use version；compute完成后必须恢复producer primary map。result selection则替换后续
   consumer看到的primary map，确保同layout fanout只物化一个producer version。
+
+## Explicit movement domain/apply（stable，2026-08-19）
+
+- movement identity绑定exact edge/destination或partial-reduction node/result/merge Tile；fragment携source shard base、global rectangle、
+  destination-relative offset、source/transport layout、element type及logical/physical bytes。不能只存edge action bool。
+- route域在current assignment上惰性DFS全部simple paths；selected path用source/destination及intermediate relay ops实际表达，每hop独立
+  message round并立即await。不得把canonical shortest path当合法域，也不得把route留在跨stage C++ side table。
+- identical payload destinations以set partition形成unicast/partial/maximal multicast siblings；只有route union为single-parent rooted tree时
+  合法。apply合并共同tree edge，destination可以消费后继续forward。
+- same-group retained与refetch、group-cut DDR/recompute属于不同typed choices；partial ownership可混合local subview load和remote peer
+  fragments。任何movement变化都要求Q50.F/lifetime/calendar重算，actual packing仍只在Q50.0。

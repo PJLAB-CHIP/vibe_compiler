@@ -23,6 +23,8 @@ namespace wafer::compiler::detail {
 
 class CardPhysicalRepresentationDomain;
 struct CardPhysicalRepresentationAssignment;
+class CardDataMovementDomain;
+struct CardDataMovementAssignment;
 
 /// One selected connected group of structured node shards on one Tile. Node
 /// IDs are strictly increasing. The object carries no edge action, traversal
@@ -104,6 +106,8 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     const CardTemporalAssignment &temporalAssignment,
     const CardPhysicalRepresentationDomain &representationDomain,
     const CardPhysicalRepresentationAssignment &representationAssignment,
+    const CardDataMovementDomain &movementDomain,
+    const CardDataMovementAssignment &movementAssignment,
     std::string *failureReason = nullptr);
 
 } // namespace wafer::compiler::detail

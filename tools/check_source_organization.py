@@ -14,20 +14,10 @@ from pathlib import Path
 # The design and deletion gates live in tasks/18-source-organization.md; this
 # list only makes the filesystem/CMake distinction fail closed.
 DORMANT_LIBRARY_SOURCES = {
-    "lib/Wafer/Analysis/PhysicalDataflow/GlobalTileRelation.cpp": "Q50.H",
-    "lib/Wafer/Analysis/Topology/CollectiveTopologyAnalysis.cpp": "Q50.H",
-    "lib/Wafer/Analysis/Topology/ExecutionTopologyAnalysis.cpp": "Q50.H",
-    "lib/Wafer/Conversion/WaferTileRegionToInstr/CollectiveLowering.cpp": "Q50.H",
-    "lib/Wafer/Transforms/PhysicalDataflow/CompleteRankMaterialization.cpp": "Q50.H",
     "lib/Wafer/Transforms/PhysicalDataflow/ReadyOrder.cpp": "Q50.J",
     "lib/Wafer/Transforms/PhysicalDataflow/StructuredOpInterfaceModels.cpp": "Q50.J",
     "lib/Wafer/Transforms/Scheduling/FixedSlotPipeline.cpp": "Q50.K",
-    "lib/Wafer/Transforms/Scheduling/RankTileMaterialization.cpp": "Q50.H",
     "lib/Wafer/Transforms/Scheduling/WorkerPlacement.cpp": "Q50.J",
-    "lib/Wafer/Transforms/Transport/CoordinatedCommunicationAction.cpp": "Q50.H",
-    "lib/Wafer/Transforms/Transport/NoCCommunicationAction.cpp": "Q50.H",
-    "lib/Wafer/Transforms/Transport/NoCIntermediateRouting.cpp": "Q50.H",
-    "lib/Wafer/Transforms/Transport/NoCPartialDataflow.cpp": "Q50.H",
 }
 
 # These translation units are inputs to the explicitly invoked XLA helper
@@ -48,19 +38,10 @@ EXTERNAL_HELPER_SOURCES = {
 }
 
 DORMANT_UNIT_SOURCES = {
-    "unittests/Analysis/PhysicalDataflow/GlobalTileRelationTest.cpp": "Q50.H",
-    "unittests/Analysis/Topology/ExecutionTopologyAnalysisTest.cpp": "Q50.H",
     "unittests/Conversion/CollectiveCompletionTest.cpp": "Q50.H/Q63",
-    "unittests/Conversion/CollectiveTopologyTest.cpp": "Q50.H",
-    "unittests/Conversion/CommunicationAlternativesTest.cpp": "Q50.H",
-    "unittests/Transforms/PhysicalDataflow/CompleteRankMaterializationTest.cpp": "Q50.H",
     "unittests/Transforms/PhysicalDataflow/ReadyOrderTest.cpp": "Q50.J",
     "unittests/Transforms/Scheduling/FixedSlotPipelineTest.cpp": "Q50.K",
-    "unittests/Transforms/Scheduling/RankTileMaterializationTest.cpp": "Q50.H",
     "unittests/Transforms/Scheduling/WorkerPlacementTest.cpp": "Q50.J",
-    "unittests/Transforms/Transport/NoCCommunicationActionTest.cpp": "Q50.H",
-    "unittests/Transforms/Transport/NoCIntermediateRoutingTest.cpp": "Q50.H",
-    "unittests/Transforms/Transport/NoCPartialDataflowTest.cpp": "Q50.H",
     "unittests/Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp": "Q63",
     "unittests/Model/SystemC/SystemCTargetModelDTEIntegrationTest.cpp": "Q63",
     "unittests/Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp": "Q63",

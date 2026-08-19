@@ -413,6 +413,17 @@
   rewrite覆盖。logical edge plan不再携layout。
 - 防复发：domain与independent Cartesian reference比较；actual测试同时检查selected relation、layout materialize与fanout version数；
   任何proposal ordinal、local cost winner、未消费layout字段或clone-then-apply owner都不得重新进入current pipeline。
+
+## Partial reduction计算结果必须显式写回destination
+
+- 现象：spatial partial contribution和最终merge的compute均存在，但TileRegion直接yield原output argument，partial SSA成为死值；只数
+  region/emitted node的测试仍会通过。
+- 根因：partial路径修改function result type后只调用`appendTileOutputDestinations`，误以为追加argument会自动建立store；complete
+  root路径原本另有insert-slice，partial路径没有对应binding。
+- 修复模式：所有full-result partial/merge路径在append后统一把returned tensor以全shape insert绑定到destination，再进入
+  TensorProgram→TileRegion；movement relation从actual contribution writeback和merge input load建立，不从node名或参数序号猜。
+- 防复发：partial gate必须直接检查每个contribution与merge output的actual `wafer.tile.store`，peer gather还要证明remote store/load被
+  matched send/recv/await替代；region count、compute count和emission relation不能单独作为功能证明。
 - 防复发：none source-to-package检查中间DDR boundary和single-root cardinality；search定向测试检查maximal/中间cut产生不同actual
   region、内部无DDR round-trip且fanout shared producer只有一个actual version。
 

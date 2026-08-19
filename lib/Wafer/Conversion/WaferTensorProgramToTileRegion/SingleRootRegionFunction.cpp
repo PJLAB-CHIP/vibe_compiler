@@ -115,6 +115,7 @@ mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const llvm::DenseSet<mlir::Operation *> &structuredOperations,
     const llvm::DenseSet<mlir::Operation *> &coupledOperations,
+    const llvm::DenseSet<mlir::Operation *> &emittedOperations,
     llvm::StringRef functionName, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
     unsigned &functionalArgumentCount) {
@@ -171,7 +172,8 @@ mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
                       [&](const StructuredOperationNodeMapping &candidate) {
                         return candidate.operation == &operation;
                       });
-    if (node != sourceOperationNodes.end())
+    if (node != sourceOperationNodes.end() &&
+        emittedOperations.contains(&operation))
       operationNodes.push_back({cloned, node->structuredNodeId});
   }
   llvm::SmallVector<mlir::Value, 4> returnedValues;
@@ -201,40 +203,49 @@ mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
   std::string name =
       (llvm::Twine("execute_node_") + llvm::Twine(structuredNodeId)).str();
   return buildRegionFunction(destination, sourceRoot, {sourceRoot}, sourceNodes,
-                             structuredOperations, coupledOperations, name,
-                             failureReason, operationNodes,
-                             functionalArgumentCount);
+                             structuredOperations, coupledOperations,
+                             coupledOperations, name, failureReason,
+                             operationNodes, functionalArgumentCount);
 }
 
 mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
     mlir::Block &destination, llvm::ArrayRef<mlir::Operation *> sourceRoots,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
-    llvm::ArrayRef<uint32_t> coupledNodeIds, std::string *failureReason,
+    llvm::ArrayRef<uint32_t> coupledNodeIds,
+    llvm::ArrayRef<uint32_t> recomputedNodeIds, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
     unsigned &functionalArgumentCount) {
-  if (sourceRoots.empty() || coupledNodeIds.size() < 2)
+  if (sourceRoots.empty() ||
+      (coupledNodeIds.size() < 2 && recomputedNodeIds.empty()))
     return fail<mlir::func::FuncOp>(
         failureReason, "coupled region requires several nodes and one sink");
   llvm::DenseSet<mlir::Operation *> structuredOperations;
   llvm::DenseSet<mlir::Operation *> coupledOperations;
+  llvm::DenseSet<mlir::Operation *> emittedOperations;
   for (const StructuredOperationNodeMapping &mapping : sourceOperationNodes) {
     if (!mapping.operation ||
         !structuredOperations.insert(mapping.operation).second)
       return fail<mlir::func::FuncOp>(
           failureReason, "coupled region has a malformed node mapping");
-    if (llvm::is_contained(coupledNodeIds, mapping.structuredNodeId))
+    if (llvm::is_contained(coupledNodeIds, mapping.structuredNodeId)) {
+      coupledOperations.insert(mapping.operation);
+      emittedOperations.insert(mapping.operation);
+    }
+    if (llvm::is_contained(recomputedNodeIds, mapping.structuredNodeId))
       coupledOperations.insert(mapping.operation);
   }
-  if (coupledOperations.size() != coupledNodeIds.size())
+  if (emittedOperations.size() != coupledNodeIds.size() ||
+      coupledOperations.size() !=
+          coupledNodeIds.size() + recomputedNodeIds.size())
     return fail<mlir::func::FuncOp>(
         failureReason, "coupled region omitted one selected structured node");
   const uint32_t firstNode = *llvm::min_element(coupledNodeIds);
   std::string name =
       (llvm::Twine("execute_group_") + llvm::Twine(firstNode)).str();
-  return buildRegionFunction(destination, sourceRoots.front(), sourceRoots,
-                             sourceOperationNodes, structuredOperations,
-                             coupledOperations, name, failureReason,
-                             operationNodes, functionalArgumentCount);
+  return buildRegionFunction(
+      destination, sourceRoots.front(), sourceRoots, sourceOperationNodes,
+      structuredOperations, coupledOperations, emittedOperations, name,
+      failureReason, operationNodes, functionalArgumentCount);
 }
 
 mlir::LogicalResult materializeRootIteratorShard(
@@ -379,6 +390,40 @@ void retainLiveOperationNodes(
   });
 }
 
+mlir::LogicalResult
+bindFullResultsToOutputDestinations(mlir::func::FuncOp function,
+                                    unsigned functionalArgumentCount,
+                                    std::string *failureReason) {
+  TensorProgramScope scope(function, functionalArgumentCount);
+  mlir::func::ReturnOp returnOp = scope.getReturn();
+  if (returnOp.getNumOperands() != function.getNumResults())
+    return failResult(failureReason,
+                      "full result binding has inconsistent result arity");
+  mlir::OpBuilder builder(returnOp);
+  for (unsigned result = 0; result < returnOp.getNumOperands(); ++result) {
+    mlir::FailureOr<mlir::Value> destination =
+        getCandidateOutputBoundary(scope, result, failureReason);
+    auto type = mlir::dyn_cast<mlir::RankedTensorType>(
+        returnOp.getOperand(result).getType());
+    if (mlir::failed(destination) || !type || destination->getType() != type ||
+        !type.hasStaticShape())
+      return failResult(failureReason,
+                        "full result binding requires matching static tensors");
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets(type.getRank(),
+                                                     builder.getIndexAttr(0));
+    llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+    llvm::SmallVector<mlir::OpFoldResult, 4> strides(type.getRank(),
+                                                     builder.getIndexAttr(1));
+    for (int64_t size : type.getShape())
+      sizes.push_back(builder.getIndexAttr(size));
+    auto inserted = builder.create<mlir::tensor::InsertSliceOp>(
+        returnOp.getLoc(), returnOp.getOperand(result), *destination, offsets,
+        sizes, strides);
+    returnOp->setOperand(result, inserted.getResult());
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult materializePartialReductionShard(
     mlir::func::FuncOp function, uint32_t structuredNodeId,
     llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,
@@ -446,7 +491,8 @@ mlir::LogicalResult materializePartialReductionShard(
   retainLiveOperationNodes(function, operationNodes);
   if (mlir::failed(appendTileOutputDestinations(function, failureReason)))
     return mlir::failure();
-  return mlir::success();
+  return bindFullResultsToOutputDestinations(function, functionalArgumentCount,
+                                             failureReason);
 }
 
 mlir::FailureOr<RootFragment> materializeRootFragment(
@@ -550,6 +596,24 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
     return fail<RootFragment>(failureReason, diagnostic.str());
   }
   result.relations = std::move(emissionRelations.materializedBuffers);
+  if (shard.role ==
+      StructuredNodeIterationShardRole::PartialReductionContribution) {
+    llvm::SmallVector<StorageStoreOp, 2> stores;
+    result.function.walk(
+        [&](StorageStoreOp store) { stores.push_back(store); });
+    if (stores.size() != result.function.getNumResults()) {
+      return fail<RootFragment>(
+          failureReason,
+          (llvm::Twine("partial contribution has ") +
+           llvm::Twine(stores.size()) + " result writeback buffers for " +
+           llvm::Twine(result.function.getNumResults()) + " results")
+              .str());
+    }
+    for (auto [resultIndex, store] : llvm::enumerate(stores))
+      result.relations.partialReductionContributions.push_back(
+          {shard.structuredNodeId, static_cast<unsigned>(resultIndex),
+           shard.tile, store.getSource()});
+  }
   return result;
 }
 

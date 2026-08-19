@@ -52,6 +52,12 @@ void appendRelations(StructuredMaterializationRelations &destination,
                                     source.operandBuffers.end());
   destination.outputBuffers.append(source.outputBuffers.begin(),
                                    source.outputBuffers.end());
+  destination.partialReductionContributions.append(
+      source.partialReductionContributions.begin(),
+      source.partialReductionContributions.end());
+  destination.partialReductionMergeInputs.append(
+      source.partialReductionMergeInputs.begin(),
+      source.partialReductionMergeInputs.end());
 }
 
 } // namespace
@@ -233,7 +239,7 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
       return failResult(failureReason,
                         "node-group fragment lost its Tile owner");
     mlir::FailureOr<RootFragment> fragment =
-        group->shards.size() == 1
+        group->shards.size() == 1 && group->recomputedProducerNodes.empty()
             ? materializeRootFragment(tile, operationNodes, firstShard,
                                       group->temporalTiles.empty()
                                           ? nullptr

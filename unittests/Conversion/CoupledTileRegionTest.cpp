@@ -1,6 +1,7 @@
 //===- CoupledTileRegionTest.cpp --------------------------------------===//
 
 #include "Wafer/Planning/Search/CoupledRegion.h"
+#include "Wafer/Planning/Search/DataMovement.h"
 #include "Wafer/Planning/Search/PhysicalRepresentation.h"
 
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
@@ -179,6 +180,28 @@ getMaximalAssignment(const CoupledRegionDomain &domain) {
   }
 }
 
+mlir::FailureOr<wafer::compiler::detail::CardCoupledRegionMaterialization>
+materializePrepared(
+    mlir::ModuleOp module, const PreparedCase &prepared,
+    const CoupledRegionAssignment &coupled,
+    const CardTemporalDomain &temporalDomain,
+    const CardTemporalAssignment &temporal,
+    const CardPhysicalRepresentationDomain &representationDomain,
+    const CardPhysicalRepresentationAssignment &representation,
+    std::string *failureReason) {
+  auto movementDomain = wafer::compiler::detail::CardDataMovementDomain::create(
+      *prepared.program, wafer::CardId(0), prepared.trial, prepared.domain,
+      coupled, temporalDomain, temporal, representationDomain, representation,
+      failureReason);
+  if (mlir::failed(movementDomain))
+    return mlir::failure();
+  auto movement = movementDomain->getFirstAssignment();
+  return wafer::compiler::detail::materializeCardCoupledRegions(
+      module, *prepared.program, wafer::CardId(0), prepared.trial,
+      prepared.domain, coupled, temporalDomain, temporal, representationDomain,
+      representation, *movementDomain, movement, failureReason);
+}
+
 constexpr llvm::StringLiteral chain = R"mlir(
 module {
   wafer.target.topology @target
@@ -213,9 +236,8 @@ TEST(CoupledTileRegionTest, MaterializesMaximalAndIntermediateChainCuts) {
   ASSERT_EQ(maximal.groups.size(), 1u);
   ASSERT_EQ(maximal.groups.front().nodes,
             (llvm::SmallVector<uint32_t, 4>{0, 1, 2}));
-  auto maximalIR = wafer::compiler::detail::materializeCardCoupledRegions(
-      *module, *prepared->program, wafer::CardId(0), prepared->trial,
-      prepared->domain, maximal, prepared->temporalDomain,
+  auto maximalIR = materializePrepared(
+      *module, *prepared, maximal, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       prepared->representationAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(maximalIR)) << failureReason;
@@ -231,9 +253,8 @@ TEST(CoupledTileRegionTest, MaterializesMaximalAndIntermediateChainCuts) {
       CoupledRegionGroup{TileId(0), {2}},
   }};
   ASSERT_TRUE(prepared->domain.contains(cut));
-  auto cutIR = wafer::compiler::detail::materializeCardCoupledRegions(
-      *module, *prepared->program, wafer::CardId(0), prepared->trial,
-      prepared->domain, cut, prepared->temporalDomain,
+  auto cutIR = materializePrepared(
+      *module, *prepared, cut, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       prepared->representationAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(cutIR)) << failureReason;
@@ -276,11 +297,10 @@ TEST(CoupledTileRegionTest,
   ASSERT_TRUE(mlir::succeeded(representationDomain)) << failureReason;
   CardPhysicalRepresentationAssignment representationAssignment =
       representationDomain->getFirstAssignment();
-  auto materialized = wafer::compiler::detail::materializeCardCoupledRegions(
-      *module, *prepared->program, wafer::CardId(0), prepared->trial,
-      prepared->domain, maximal, prepared->temporalDomain,
-      prepared->temporalAssignment, *representationDomain,
-      representationAssignment, &failureReason);
+  auto materialized =
+      materializePrepared(*module, *prepared, maximal, prepared->temporalDomain,
+                          prepared->temporalAssignment, *representationDomain,
+                          representationAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
             1u);
@@ -412,9 +432,8 @@ module {
       choice.layout = wafer::MemLayout::Cx;
   }
   ASSERT_TRUE(prepared->representationDomain.contains(representation));
-  auto materialized = materializeCardCoupledRegions(
-      *module, *prepared->program, wafer::CardId(0), prepared->trial,
-      prepared->domain, maximal, prepared->temporalDomain,
+  auto materialized = materializePrepared(
+      *module, *prepared, maximal, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       representation, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
@@ -587,9 +606,8 @@ module {
     ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
     CoupledRegionAssignment maximal = getMaximalAssignment(prepared->domain);
     ASSERT_EQ(maximal.groups.size(), 1u);
-    auto materialized = wafer::compiler::detail::materializeCardCoupledRegions(
-        *module, *prepared->program, wafer::CardId(0), prepared->trial,
-        prepared->domain, maximal, prepared->temporalDomain,
+    auto materialized = materializePrepared(
+        *module, *prepared, maximal, prepared->temporalDomain,
         prepared->temporalAssignment, prepared->representationDomain,
         prepared->representationAssignment, &failureReason);
     ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;

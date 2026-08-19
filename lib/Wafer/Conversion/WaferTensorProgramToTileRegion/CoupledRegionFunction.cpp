@@ -70,7 +70,7 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const StructuredNodeShardGroup &group, std::string *failureReason) {
-  if (group.shards.size() < 2)
+  if (group.shards.size() < 2 && group.recomputedProducerNodes.empty())
     return fail<RootFragment>(failureReason,
                               "coupled region requires several node shards");
   const TileId tile = group.shards.front().tile;
@@ -89,6 +89,18 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     shardsByNode.try_emplace(shard.structuredNodeId, &shard);
   }
   llvm::sort(orderedNodeIds);
+  llvm::SmallVector<uint32_t, 4> recomputedNodeIds(
+      group.recomputedProducerNodes.begin(),
+      group.recomputedProducerNodes.end());
+  llvm::sort(recomputedNodeIds);
+  if (std::adjacent_find(recomputedNodeIds.begin(), recomputedNodeIds.end()) !=
+          recomputedNodeIds.end() ||
+      llvm::any_of(recomputedNodeIds, [&](uint32_t node) {
+        return selectedNodeIds.contains(node);
+      }))
+    return fail<RootFragment>(
+        failureReason,
+        "recomputed producer identities are duplicated or already selected");
 
   llvm::DenseMap<uint32_t, mlir::Operation *> sourceByNode;
   llvm::DenseSet<mlir::Operation *> seenOperations;
@@ -108,6 +120,10 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
                                 "coupled group references an unknown node");
     selectedOperations.push_back(operation);
   }
+  for (uint32_t node : recomputedNodeIds)
+    if (!sourceByNode.lookup(node))
+      return fail<RootFragment>(failureReason,
+                                "recompute references an unknown producer");
   llvm::sort(selectedOperations,
              [](mlir::Operation *lhs, mlir::Operation *rhs) {
                return lhs->isBeforeInBlock(rhs);
@@ -139,7 +155,8 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
   unsigned functionalArgumentCount = 0;
   mlir::FailureOr<mlir::func::FuncOp> function = buildCoupledRootFunction(
       tileOwner.getBody().front(), sourceSinks, sourceOperationNodes,
-      orderedNodeIds, failureReason, operationNodes, functionalArgumentCount);
+      orderedNodeIds, recomputedNodeIds, failureReason, operationNodes,
+      functionalArgumentCount);
   if (mlir::failed(function) ||
       mlir::failed(appendTileOutputDestinations(*function, failureReason)))
     return mlir::failure();

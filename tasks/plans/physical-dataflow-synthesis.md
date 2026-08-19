@@ -1756,6 +1756,32 @@ fresh Q50.G/Q50.C–E/legacy conversion定向unit 69/69、source/IR organization
 
 ## Q50.H：Explicit Data Movement
 
+### Pipeline contract
+
+Pipeline position:
+- Upstream IR / input:
+  immutable selected TensorProgram、Q50.A exact per-destination demand/ownership、Q50.B placement、Q50.D group boundary、Q50.E temporal
+  order、Q50.G source/destination primary physical versions及current card topology；尚未选择buffer slots或event schedule。
+- Current stage responsibility:
+  生成每个exact data use的retained、same-region refetch、DDR、recompute、peer fragment、multicast及partial-reduction gather完整有限域；
+  每个peer选择携带logical/physical payload和simple route。selected apply直接生成layout conversion、load/store、send/recv/await及
+  intermediate relay TileRegions。
+- Output IR / files:
+  query输出typed movement assignment与可重算reuse facts；apply输出current CardModule中的explicit movement/event-producing ops，
+  不写sidecar、route attr bag、cost或winner。route通过逐hop ops存在于IR，不靠C++ assignment跨stage保活。
+- Downstream consumer:
+  Q50.I从actual waves/movement completion推导slot domain，Q50.J从send/recv/await、compute与resource effects构造calendar；complete
+  candidate最终由Q50.0做message matching、completion、SPM/DDR和runtime gate。
+- User-level driver / named pipeline:
+  Q51 closure后的public `search` session；baseline继续使用其确定性DDR/peer functional carrier，不进入本域枚举。
+- Explicit non-goals:
+  不选择buffer count、worker、issue order、pipeline或winner；不按bytes/hops冻结最大broadcast，不缓存actual IR，不保留旧rank/provider
+  proposal或implicit cross-region SPM residency。
+- Done criteria:
+  local/refetch/DDR/recompute、multi-piece partial overlap、all-simple routes、layout-changing peer、unicast/partial/maximal multicast、fanout及
+  partial-reduction gather均有actual witness；coverage/route/message/completion负例受typed validation；reuse facts不进入identity；旧
+  complete-rank/global-relation/NoC provider与未注册tests在能力迁移后删除。
+
 ### 机制
 
 从Q50.A exact logical demand、Q50.G representation、current placement/topology，以及已选retention/release与boundary
@@ -1795,6 +1821,33 @@ participant、route、join、premature completion、非finite route和跨region�
 保留。carrier尚未可构造时返回`deferred(required coordinates)`；在已赋值representation/movement下表达失败只能
 拒绝该physical action assignment，不能拒绝Q50.A logical demand或Q50.B spatial placement。“局部movement较贵但允许
 后续fusion/overlap而成为global winner”是Q51 closure gate。
+
+### 2026-08-19 完成结果
+
+`CardDataMovementDomain`从Q50.A satisfied demand与producer ownership直接建立stable `(edge,destination Tile)`项；每项保留Q50.G
+consumer version和按owner区分的source/transport layout、logical bytes、encoding-owned physical bytes与rectangle。local exact demand在
+同一Q50.D group中只有retained；同region解除retention形成显式SPM→DDR→SPM refetch；group cut提供DDR或pure producer recompute。
+remote/mixed ownership提供Peer，每个remote fragment的route由`SimpleRoute`在assignment上惰性推进全部available-Tile simple path，
+不预存path vector或只保留shortest route。
+
+相同edge/payload的peer destinations再惰性枚举全部set partitions：singleton保持unicast，任意size≥2 group形成partial/maximal
+multicast。只有selected routes的union形成单parent rooted tree时该point合法；apply在source、intermediate relay和可同时消费/forward的
+destination上各收发一次共同payload，因此maximal multicast actual send数少于同route unicast。不同source/destination layout先显式
+materialize transport version；local+remote overlap保留local subview load并只接收missing fragments。每个hop使用独立round，所有
+send/recv后立即`async.await`，cycle、重复parent、payload/coverage/route不一致均被assignment membership拒绝。
+
+spatial partial reduction另有typed gather项：每个contribution result/source Tile与merge input relation在actual conversion时显式记录，
+Peer gather用独立communication identity把remote partial送到merge Tile并保留local contribution。施工时由此发现Q50.C旧partial
+contribution和merge只append output argument却未写回destination；现三个partial路径统一用full-result destination binding，fresh
+测试直接证明4个contribution store加1个merge output store，peer gather再删除被替代的remote DDR边界。
+
+query-local `DataReuseFact`从current consumer indexing map给出temporal-invariant iterators，并按exact producer set列出spatially
+equivalent destinations；它只供proposal/构造复用，不删除unicast/refetch/recompute siblings。fanout primary version继续由Q50.G共享。
+
+旧`GlobalTileRelation`、duplicate execution/collective topology、complete-rank/rank-tile residency、old collective lowering、
+coordinated/NoC/intermediate/partial providers及其未注册tests均在对应relation、route、multicast、relay、partial gather和negative proof
+进入active owner后删除，source checker allowlist同步收缩。fresh Q50.C–H/legacy conversion定向unit 64/64、lit 216/216、source/IR
+organization和主构建通过；没有运行LLaMA search。contention下broadcast/route/global winner仍由Q51共同轴证明。
 
 ## Q50.I：Buffer and Rotating Slots
 
