@@ -2,12 +2,12 @@
 
 #include "Wafer/Model/SystemC/SystemCTargetModel.h"
 
-#include "Wafer/Target/Execution/TargetCallExecution.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Target/Execution/TargetCallExecution.h"
 #include "Wafer/Target/Layout/PhysicalTensorCodec.h"
 
-#include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
+#include "Wafer/Driver/CompilationInternal.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -60,7 +60,7 @@ singlePartitionBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
   binding.distribution = frontend::ProgramDistributionKind::Replicated;
   binding.globalShape.assign(shape.begin(), shape.end());
   binding.localShape.assign(shape.begin(), shape.end());
-  binding.dtype = "f16";
+  binding.dtype = ProgramElementType::F16;
   frontend::ProgramPartitionSlice slice;
   slice.partitionId = 0;
   slice.replicaId = 0;
@@ -123,8 +123,7 @@ module {
   if (!executable)
     return executable.takeError();
   tensorProgram = nullptr;
-  return compileCardExecutableToTargetLLVMModules(*executable,
-                                                           diagnostics);
+  return compileCardExecutableToTargetLLVMModules(*executable, diagnostics);
 }
 
 class RecordingTargetSink final : public TargetCommandSink {
@@ -139,8 +138,7 @@ public:
     return nextEvent++;
   }
 
-  llvm::Error completeTile(CardId, TileId,
-                           LaunchSlotId) override {
+  llvm::Error completeTile(CardId, TileId, LaunchSlotId) override {
     return llvm::Error::success();
   }
   llvm::Error completeInvocation() override {
@@ -167,12 +165,15 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
 
   std::vector<TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
-  NumericTensorKey lhsKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 1, 128}));
-  NumericTensorKey rhsKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 128, 16}));
-  NumericTensorKey outputKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 1, 16}));
+  PhysicalTensorDescriptor lhsKey =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 1, 128}));
+  PhysicalTensorDescriptor rhsKey =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 128, 16}));
+  PhysicalTensorDescriptor outputKey =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 1, 16}));
 
   std::vector<RawLogicalValue> lhs(2 * 128, {LogicalFormat::F16, UINT64_C(0)});
   for (size_t k = 0; k < 128; ++k) {
@@ -181,19 +182,19 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
   }
   std::vector<RawLogicalValue> rhs(2 * 128 * 16,
                                    {LogicalFormat::F16, UINT64_C(0x3c00)});
-  const std::array<const NumericTensorKey *, 2> inputKeys{&lhsKey, &rhsKey};
+  const std::array<const PhysicalTensorDescriptor *, 2> inputKeys{&lhsKey,
+                                                                  &rhsKey};
   const std::array<llvm::ArrayRef<RawLogicalValue>, 2> logicalInputs{lhs, rhs};
   for (const TargetLLVMModule &module : targetLLVMModules->getModules()) {
     const int64_t launchSlot = module.getLaunchSlotId().getValue();
-    arguments.push_back({module.getCardId(),
-                         module.getTileId(),
-                         module.getLaunchSlotId(),
-                         {}});
+    arguments.push_back(
+        {module.getCardId(), module.getTileId(), module.getLaunchSlotId(), {}});
     size_t inputCount = 0;
     size_t outputCount = 0;
     for (const TileEntryArgument &slot : module.getTileEntryArguments()) {
-      const bool tileOwned = slot.kind == TileEntryArgumentKind::Workspace ||
-                             slot.kind == TileEntryArgumentKind::TransportStatus;
+      const bool tileOwned =
+          slot.kind == TileEntryArgumentKind::Workspace ||
+          slot.kind == TileEntryArgumentKind::TransportStatus;
       const uint64_t base =
           tileOwned
               ? UINT64_C(0x10000000) +
@@ -223,9 +224,8 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
       ASSERT_EQ(bytes.size(), static_cast<uint64_t>(slot.byteSize));
       if (launchSlot == 0)
         inputs.push_back(
-            {getTargetModelResourceId(module.getCardId(),
-                                      module.getTileId(), slot.kind,
-                                      slot.resourceIndex),
+            {getTargetModelResourceId(module.getCardId(), module.getTileId(),
+                                      slot.kind, slot.resourceIndex),
              std::move(bytes)});
       ++inputCount;
     }

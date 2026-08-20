@@ -17,7 +17,7 @@
 
 namespace wafer {
 
-/// Caller-owned allocation limits for one bulk command. Every byte category
+/// Caller-owned allocation limits for one bulk operation. Every byte category
 /// must be selected explicitly before target storage is decoded or allocated.
 class BulkNumericWorkBudget {
 public:
@@ -53,17 +53,17 @@ class BulkTensorStorage {
 public:
   BulkTensorStorage() = delete;
 
-  static llvm::Expected<BulkTensorStorage> create(NumericTensorKey key,
+  static llvm::Expected<BulkTensorStorage> create(PhysicalTensorDescriptor key,
                                                   std::vector<uint8_t> storage);
 
-  const NumericTensorKey &getKey() const { return key; }
+  const PhysicalTensorDescriptor &getKey() const { return key; }
   llvm::ArrayRef<uint8_t> getStorage() const { return storage; }
 
 private:
-  BulkTensorStorage(NumericTensorKey key, std::vector<uint8_t> storage)
+  BulkTensorStorage(PhysicalTensorDescriptor key, std::vector<uint8_t> storage)
       : key(std::move(key)), storage(std::move(storage)) {}
 
-  NumericTensorKey key;
+  PhysicalTensorDescriptor key;
   std::vector<uint8_t> storage;
 };
 
@@ -164,10 +164,7 @@ public:
 
   llvm::StringRef getRecordDigest() const { return recordDigest; }
   llvm::StringRef getAdapterDigest() const { return adapterDigest; }
-  llvm::StringRef getSemanticProfileDigest() const {
-    return semanticProfileDigest;
-  }
-  llvm::StringRef getResolutionDigest() const { return resolutionDigest; }
+  llvm::StringRef getProblemDigest() const { return problemDigest; }
   llvm::StringRef getInputPayloadDigest() const { return inputPayloadDigest; }
   llvm::StringRef getDestinationTemplateDigest() const {
     return destinationTemplateDigest;
@@ -188,18 +185,19 @@ public:
 private:
   friend class VerifiedBulkQualificationRecord;
 
-  QualifiedBulkExecution(
-      std::string recordDigest, std::string adapterDigest,
-      std::string semanticProfileDigest, std::string resolutionDigest,
-      std::string inputPayloadDigest, std::string destinationTemplateDigest,
-      std::string environmentDigest, std::string expectedBackendOutputDigest,
-      std::string expectedImplementation,
-      std::string expectedResolvedDescriptorDigest, BulkQualificationKind kind,
-      FormalNumericExceptionFlags formalFlags)
+  QualifiedBulkExecution(std::string recordDigest, std::string adapterDigest,
+                         std::string problemDigest,
+                         std::string inputPayloadDigest,
+                         std::string destinationTemplateDigest,
+                         std::string environmentDigest,
+                         std::string expectedBackendOutputDigest,
+                         std::string expectedImplementation,
+                         std::string expectedResolvedDescriptorDigest,
+                         BulkQualificationKind kind,
+                         FormalNumericExceptionFlags formalFlags)
       : recordDigest(std::move(recordDigest)),
         adapterDigest(std::move(adapterDigest)),
-        semanticProfileDigest(std::move(semanticProfileDigest)),
-        resolutionDigest(std::move(resolutionDigest)),
+        problemDigest(std::move(problemDigest)),
         inputPayloadDigest(std::move(inputPayloadDigest)),
         destinationTemplateDigest(std::move(destinationTemplateDigest)),
         environmentDigest(std::move(environmentDigest)),
@@ -211,8 +209,7 @@ private:
 
   std::string recordDigest;
   std::string adapterDigest;
-  std::string semanticProfileDigest;
-  std::string resolutionDigest;
+  std::string problemDigest;
   std::string inputPayloadDigest;
   std::string destinationTemplateDigest;
   std::string environmentDigest;
@@ -240,7 +237,7 @@ struct BulkTensorNumericResult {
 };
 
 enum class BulkTensorNumericErrorCode : uint8_t {
-  UnsupportedResolvedCommand,
+  UnsupportedOperation,
   UnsupportedFormat,
   InvalidPhysicalLayout,
   InvalidPhysicalStorage,
@@ -287,14 +284,14 @@ createManagedBulkExecutionEnvironment();
 
 /// Computes the exact physical footprint using the shared Wafer layout helper.
 llvm::Expected<uint64_t>
-getBulkTensorPhysicalBytes(const NumericTensorKey &key);
+getBulkTensorPhysicalBytes(const PhysicalTensorDescriptor &key);
 
 /// Target-owned codec/layout adapters. Packing starts from the supplied fill
 /// byte so padding and tail preservation can be tested explicitly.
 llvm::Expected<std::vector<RawLogicalValue>>
 unpackBulkTensorLogicalValues(const BulkTensorStorage &tensor);
 llvm::Expected<BulkTensorStorage>
-packBulkTensorLogicalValues(const NumericTensorKey &key,
+packBulkTensorLogicalValues(const PhysicalTensorDescriptor &key,
                             llvm::ArrayRef<RawLogicalValue> values,
                             uint8_t paddingFill);
 
@@ -303,8 +300,10 @@ packBulkTensorLogicalValues(const NumericTensorKey &key,
 std::string
 computeBulkTensorPayloadDigest(llvm::ArrayRef<BulkTensorStorage> tensors);
 std::string computeBulkTensorStorageDigest(const BulkTensorStorage &tensor);
+llvm::Expected<std::string>
+computeBulkGemmProblemDigest(const FormalGemmOperation &operation);
 
-/// Executes exactly one qualified MatMul. The command, qualification record,
+/// Executes exactly one qualified MatMul. The operation, qualification record,
 /// environment, physical layout, encoding and byte budgets are checked before
 /// backend
 /// execution. The caller's inputs remain immutable; the destination is returned
@@ -312,13 +311,13 @@ std::string computeBulkTensorStorageDigest(const BulkTensorStorage &tensor);
 llvm::Expected<BulkTensorNumericResult>
 executeQualifiedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
                                   const QualifiedBulkExecution &execution,
-                                  const ResolvedNumericCommand &command,
+                                  const FormalGemmOperation &operation,
                                   llvm::ArrayRef<BulkTensorStorage> inputs,
                                   const BulkTensorStorage &destinationTemplate,
                                   BulkNumericWorkBudget budget);
 
 /// Executes one deterministic managed-reference MatMul for a structurally
-/// supported f16/bf16/f32 command whose physical inputs contain only finite
+/// supported f16/bf16/f32 operation whose physical inputs contain only finite
 /// values. Unlike record-qualified execution, this scalable path is a
 /// model-reference acceleration policy: it is not a claim of raw-exact
 /// target arithmetic or hardware correlation. The caller must validate the
@@ -326,7 +325,7 @@ executeQualifiedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
 llvm::Expected<BulkTensorNumericResult>
 executeManagedReferenceBulkTensorNumeric(
     const BulkExecutionEnvironment &environment,
-    const ResolvedNumericCommand &command,
+    const FormalGemmOperation &operation,
     llvm::ArrayRef<BulkTensorStorage> inputs,
     const BulkTensorStorage &destinationTemplate, BulkNumericWorkBudget budget);
 

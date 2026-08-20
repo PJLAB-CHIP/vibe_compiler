@@ -38,10 +38,10 @@ QualifiedTargetModelBulkBackend::create(llvm::ArrayRef<std::string> recordPaths,
 
 llvm::Expected<std::optional<TargetModelBulkResult>>
 QualifiedTargetModelBulkBackend::tryExecute(
-    const TargetModelNumericRequest &request) const {
+    const TargetModelGemmRequest &request) const {
   std::vector<BulkTensorStorage> inputs;
-  inputs.reserve(request.inputs.size());
-  for (const TargetModelNumericTensor &input : request.inputs) {
+  inputs.reserve(request.tensors.inputs.size());
+  for (const TargetModelNumericTensor &input : request.tensors.inputs) {
     llvm::Expected<BulkTensorStorage> storage =
         BulkTensorStorage::create(input.key, input.storage);
     if (!storage)
@@ -49,14 +49,14 @@ QualifiedTargetModelBulkBackend::tryExecute(
     inputs.push_back(std::move(*storage));
   }
   llvm::Expected<BulkTensorStorage> destinationTemplate =
-      BulkTensorStorage::create(request.destinationTemplate.key,
-                                request.destinationTemplate.storage);
+      BulkTensorStorage::create(request.tensors.destinationTemplate.key,
+                                request.tensors.destinationTemplate.storage);
   if (!destinationTemplate)
     return destinationTemplate.takeError();
 
   for (const VerifiedBulkQualificationRecord &record : records) {
     llvm::Expected<QualifiedBulkExecution> qualifiedExecution =
-        record.qualifyExecution(environment, request.command, inputs,
+        record.qualifyExecution(environment, request.operation, inputs,
                                 *destinationTemplate);
     if (!qualifiedExecution) {
       llvm::consumeError(qualifiedExecution.takeError());
@@ -64,7 +64,7 @@ QualifiedTargetModelBulkBackend::tryExecute(
     }
     llvm::Expected<BulkTensorNumericResult> result =
         executeQualifiedBulkTensorNumeric(environment, *qualifiedExecution,
-                                          request.command, inputs,
+                                          request.operation, inputs,
                                           *destinationTemplate, budget);
     if (!result)
       return result.takeError();
@@ -96,10 +96,10 @@ ManagedReferenceTargetModelBackend::create(BulkNumericWorkBudget budget) {
 
 llvm::Expected<std::optional<TargetModelBulkResult>>
 ManagedReferenceTargetModelBackend::tryExecute(
-    const TargetModelNumericRequest &request) const {
+    const TargetModelGemmRequest &request) const {
   std::vector<BulkTensorStorage> inputs;
-  inputs.reserve(request.inputs.size());
-  for (const TargetModelNumericTensor &input : request.inputs) {
+  inputs.reserve(request.tensors.inputs.size());
+  for (const TargetModelNumericTensor &input : request.tensors.inputs) {
     llvm::Expected<BulkTensorStorage> storage =
         BulkTensorStorage::create(input.key, input.storage);
     if (!storage)
@@ -107,13 +107,13 @@ ManagedReferenceTargetModelBackend::tryExecute(
     inputs.push_back(std::move(*storage));
   }
   llvm::Expected<BulkTensorStorage> destinationTemplate =
-      BulkTensorStorage::create(request.destinationTemplate.key,
-                                request.destinationTemplate.storage);
+      BulkTensorStorage::create(request.tensors.destinationTemplate.key,
+                                request.tensors.destinationTemplate.storage);
   if (!destinationTemplate)
     return destinationTemplate.takeError();
   llvm::Expected<BulkTensorNumericResult> result =
       executeManagedReferenceBulkTensorNumeric(
-          environment, request.command, inputs, *destinationTemplate, budget);
+          environment, request.operation, inputs, *destinationTemplate, budget);
   if (!result)
     return result.takeError();
   TargetModelBulkResult modelResult{

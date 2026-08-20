@@ -37,7 +37,6 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
   if (llvm::Error error = requireFields(*object,
                                         {"schema",
                                          "adapter_digest",
-                                         "semantic_profile_digest",
                                          "value_domain",
                                          "target_comparator",
                                          "backend_comparator",
@@ -51,7 +50,7 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
                                          "backend_digest",
                                          "environment_digest",
                                          "environment_record_digest",
-                                         "resolution_digest",
+                                         "problem_digest",
                                          "qualification_kind",
                                          "maximum_absolute_error",
                                          "maximum_relative_error",
@@ -66,8 +65,6 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
     return invalid("bulk frozen policy schema mismatch");
   llvm::Expected<std::string> adapterDigest =
       requireDigest(*object, "adapter_digest", "bulk frozen policy");
-  llvm::Expected<std::string> semanticDigest =
-      requireDigest(*object, "semantic_profile_digest", "bulk frozen policy");
   llvm::Expected<std::string> frozenInputDigest = requireDigest(
       *object, "held_out_input_payload_digest", "bulk frozen policy");
   llvm::Expected<std::string> frozenDestinationDigest = requireDigest(
@@ -83,9 +80,9 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
   llvm::Expected<llvm::StringRef> proofBasis =
       requireString(*object, "proof_basis", "bulk frozen policy");
   if (llvm::Error error = takeExpectedErrors(
-          adapterDigest, semanticDigest, frozenInputDigest,
-          frozenDestinationDigest, calibrationSpecDigest, valueDomain,
-          targetComparator, backendComparator, proofBasis))
+          adapterDigest, frozenInputDigest, frozenDestinationDigest,
+          calibrationSpecDigest, valueDomain, targetComparator,
+          backendComparator, proofBasis))
     return error;
   if (*adapterDigest != getBulkAdapterContractDigest() ||
       *valueDomain != kValueDomain || *targetComparator != kTargetComparator ||
@@ -118,8 +115,8 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
     return spec.takeError();
   llvm::Expected<std::string> specDigest =
       requireDigest(*object, "held_out_spec_digest", "bulk frozen policy");
-  llvm::Expected<std::string> resolutionDigest =
-      requireDigest(*object, "resolution_digest", "bulk frozen policy");
+  llvm::Expected<std::string> problemDigest =
+      requireDigest(*object, "problem_digest", "bulk frozen policy");
   llvm::Expected<llvm::StringRef> kindText =
       requireString(*object, "qualification_kind", "bulk frozen policy");
   llvm::Expected<double> maximumAbsolute = requireFiniteNonnegative(
@@ -127,7 +124,7 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
   llvm::Expected<double> maximumRelative = requireFiniteNonnegative(
       *object, "maximum_relative_error", "bulk frozen policy");
   if (llvm::Error error =
-          takeExpectedErrors(specDigest, resolutionDigest, kindText,
+          takeExpectedErrors(specDigest, problemDigest, kindText,
                              maximumAbsolute, maximumRelative))
     return error;
   if (*specDigest != spec->getDigest())
@@ -142,20 +139,26 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
       materializeBulkQualificationCase(std::move(*spec), bulkBudget);
   if (!testCase)
     return testCase.takeError();
-  if (testCase->getCommand().getDigest() != *resolutionDigest ||
-      !testCase->getCommand().getSemantics() ||
-      testCase->getCommand().getSemantics()->getDigest() != *semanticDigest ||
+  llvm::Expected<std::string> materializedProblemDigest =
+      computeBulkGemmProblemDigest(testCase->getOperation());
+  if (!materializedProblemDigest)
+    return materializedProblemDigest.takeError();
+  if (*materializedProblemDigest != *problemDigest ||
       computeBulkTensorPayloadDigest(testCase->getInputs()) !=
           *frozenInputDigest ||
       computeBulkTensorStorageDigest(testCase->getDestinationTemplate()) !=
           *frozenDestinationDigest)
-    return invalid("held-out command/payload changed from the frozen policy");
+    return invalid("held-out operation/payload changed from the frozen policy");
   llvm::Expected<QualificationRun> run = runQualification(
       environment, std::move(*testCase), formalBudget, bulkBudget);
   if (!run)
     return run.takeError();
-  if (run->testCase.getCommand().getDigest() != *resolutionDigest)
-    return invalid("held-out command changed from the frozen resolution");
+  llvm::Expected<std::string> executedProblemDigest =
+      computeBulkGemmProblemDigest(run->testCase.getOperation());
+  if (!executedProblemDigest)
+    return executedProblemDigest.takeError();
+  if (*executedProblemDigest != *problemDigest)
+    return invalid("held-out GEMM problem changed from the frozen policy");
   if (run->comparison.maximumAbsoluteError > *maximumAbsolute ||
       run->comparison.maximumRelativeError > *maximumRelative ||
       (*kind == BulkQualificationKind::BitExact && !run->comparison.rawExact))
@@ -167,7 +170,6 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
   llvm::json::Object finalRecord{
       {"schema", kFinalSchema},
       {"adapter_digest", *adapterDigest},
-      {"semantic_profile_digest", *semanticDigest},
       {"value_domain", *valueDomain},
       {"target_comparator", *targetComparator},
       {"backend_comparator", *backendComparator},
@@ -179,7 +181,7 @@ llvm::Error validateBulkBackend(const BulkExecutionEnvironment &environment,
       {"environment_digest", environment.getDigest()},
       {"environment", environmentJSON(environment)},
       {"environment_record_digest", environmentRecordDigest(environment)},
-      {"resolution_digest", run->testCase.getCommand().getDigest()},
+      {"problem_digest", *executedProblemDigest},
       {"input_payload_digest",
        computeBulkTensorPayloadDigest(run->testCase.getInputs())},
       {"destination_template_digest",
@@ -218,7 +220,6 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
   if (llvm::Error error = requireFields(*object,
                                         {"schema",
                                          "adapter_digest",
-                                         "semantic_profile_digest",
                                          "value_domain",
                                          "target_comparator",
                                          "backend_comparator",
@@ -230,7 +231,7 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
                                          "environment_digest",
                                          "environment",
                                          "environment_record_digest",
-                                         "resolution_digest",
+                                         "problem_digest",
                                          "input_payload_digest",
                                          "destination_template_digest",
                                          "formal_output_digest",
@@ -259,8 +260,6 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
       requireDigest(*object, "policy_digest", "bulk qualification record");
   llvm::Expected<std::string> adapterDigest =
       requireDigest(*object, "adapter_digest", "bulk qualification record");
-  llvm::Expected<std::string> semanticDigest = requireDigest(
-      *object, "semantic_profile_digest", "bulk qualification record");
   llvm::Expected<std::string> calibrationDigest =
       requireDigest(*object, "calibration_digest", "bulk qualification record");
   llvm::Expected<std::string> backendDigest =
@@ -273,8 +272,8 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
       requireDigest(*object, "environment_digest", "bulk qualification record");
   llvm::Expected<std::string> environmentRecordJSONDigest = requireDigest(
       *object, "environment_record_digest", "bulk qualification record");
-  llvm::Expected<std::string> resolutionDigest =
-      requireDigest(*object, "resolution_digest", "bulk qualification record");
+  llvm::Expected<std::string> problemDigest =
+      requireDigest(*object, "problem_digest", "bulk qualification record");
   llvm::Expected<std::string> inputPayloadDigest = requireDigest(
       *object, "input_payload_digest", "bulk qualification record");
   llvm::Expected<std::string> destinationTemplateDigest = requireDigest(
@@ -306,9 +305,9 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
   std::optional<bool> rawExact = object->getBoolean("raw_exact");
   const llvm::json::Object *flagsObject = object->getObject("formal_flags");
   if (llvm::Error error = takeExpectedErrors(
-          policyDigest, adapterDigest, semanticDigest, calibrationDigest,
-          backendDigest, formalOutputDigest, specDigest, environmentDigest,
-          environmentRecordJSONDigest, resolutionDigest, inputPayloadDigest,
+          policyDigest, adapterDigest, calibrationDigest, backendDigest,
+          formalOutputDigest, specDigest, environmentDigest,
+          environmentRecordJSONDigest, problemDigest, inputPayloadDigest,
           destinationTemplateDigest, backendOutputDigest, kindText,
           implementation, descriptorDigest, valueDomain, targetComparator,
           backendComparator, proofBasis, maximumAbsolute, maximumRelative,
@@ -352,33 +351,34 @@ loadVerifiedBulkQualificationRecord(llvm::StringRef path) {
                    "zero backend formal FMAs");
   return VerifiedBulkQualificationRecord(
       parsed->digest, std::move(*policyDigest), std::move(*adapterDigest),
-      std::move(*semanticDigest), std::move(*specDigest),
-      std::move(*environmentDigest), std::move(*resolutionDigest),
-      std::move(*inputPayloadDigest), std::move(*destinationTemplateDigest),
-      std::move(*backendOutputDigest), implementation->str(),
-      std::move(*descriptorDigest), *kind, *flags);
+      std::move(*specDigest), std::move(*environmentDigest),
+      std::move(*problemDigest), std::move(*inputPayloadDigest),
+      std::move(*destinationTemplateDigest), std::move(*backendOutputDigest),
+      implementation->str(), std::move(*descriptorDigest), *kind, *flags);
 }
 
 llvm::Expected<QualifiedBulkExecution>
 VerifiedBulkQualificationRecord::qualifyExecution(
     const BulkExecutionEnvironment &environment,
-    const ResolvedNumericCommand &command,
+    const FormalGemmOperation &operation,
     llvm::ArrayRef<BulkTensorStorage> inputs,
     const BulkTensorStorage &destinationTemplate) const {
+  llvm::Expected<std::string> actualProblemDigest =
+      computeBulkGemmProblemDigest(operation);
+  if (!actualProblemDigest)
+    return actualProblemDigest.takeError();
   if (getBulkAdapterContractDigest() != adapterDigest ||
-      environment.getDigest() != environmentDigest || !command.getSemantics() ||
-      command.getSemantics()->getDigest() != semanticProfileDigest ||
-      command.getDigest() != resolutionDigest ||
+      environment.getDigest() != environmentDigest ||
+      *actualProblemDigest != problemDigest ||
       computeBulkTensorPayloadDigest(inputs) != inputPayloadDigest ||
       computeBulkTensorStorageDigest(destinationTemplate) !=
           destinationTemplateDigest)
     return invalid("bulk qualification record does not exact-match the "
-                   "environment, command, payload or destination template");
+                   "environment, operation, payload or destination template");
   return QualifiedBulkExecution(
-      recordDigest, adapterDigest, semanticProfileDigest, resolutionDigest,
-      inputPayloadDigest, destinationTemplateDigest, environmentDigest,
-      expectedBackendOutputDigest, implementation, resolvedDescriptorDigest,
-      kind, formalFlags);
+      recordDigest, adapterDigest, problemDigest, inputPayloadDigest,
+      destinationTemplateDigest, environmentDigest, expectedBackendOutputDigest,
+      implementation, resolvedDescriptorDigest, kind, formalFlags);
 }
 
 } // namespace wafer

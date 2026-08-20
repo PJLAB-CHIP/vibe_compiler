@@ -75,23 +75,22 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   addVoid("direct_dte_finish", {}, TargetCallBuiltin::DirectDTEFinish);
 
   auto addEnumSelectedCalls = [&] {
-    for (NumericElementwiseOperation operation :
-         getNumericElementwiseOperations())
-      addVoid(("elementwise_" +
-               stringifyNumericElementwiseOperation(operation))
+    for (TargetElementwiseOperation operation :
+         getTargetElementwiseOperations())
+      addVoid(("elementwise_" + stringifyTargetElementwiseOperation(operation))
                   .str(),
-              signature(getNumericElementwiseArity(operation) == 1 ? 2 : 3, 2),
+              signature(getTargetElementwiseArity(operation) == 1 ? 2 : 3, 2),
               operation);
 
-    for (NumericReduceOperation operation : getNumericReduceOperations())
-      addVoid(("reduce_" + stringifyNumericReduceOperation(operation)).str(),
+    for (TargetReduceOperation operation : getTargetReduceOperations())
+      addVoid(("reduce_" + stringifyTargetReduceOperation(operation)).str(),
               signature(2, 6), operation);
 
     for (const TargetConvertRoute &route : getTargetConvertRoutes()) {
       TargetConvertOperation operation =
           llvm::cantFail(TargetConvertOperation::create(route.opcode));
-      addVoid(("convert_" + route.canonicalSpelling).str(),
-              signature(2, 3), operation);
+      addVoid(("convert_" + route.canonicalSpelling).str(), signature(2, 3),
+              operation);
     }
 
     for (TargetConvolutionOperation operation :
@@ -102,21 +101,18 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
     for (TargetPoolingOperation operation : getTargetPoolingOperations()) {
       bool indexed = operation == TargetPoolingOperation::IndexedMaximum ||
                      operation == TargetPoolingOperation::IndexedMinimum;
-      addVoid(
-          ("pool_" + stringifyTargetPoolingOperation(operation)).str(),
-          signature(indexed ? 3 : 2, 18), operation);
+      addVoid(("pool_" + stringifyTargetPoolingOperation(operation)).str(),
+              signature(indexed ? 3 : 2, 18), operation);
     }
 
     for (TargetUnpoolingOperation operation : getTargetUnpoolingOperations())
-      addVoid(
-          ("unpool_" + stringifyTargetUnpoolingOperation(operation)).str(),
-          signature(2, 15), operation);
+      addVoid(("unpool_" + stringifyTargetUnpoolingOperation(operation)).str(),
+              signature(2, 15), operation);
 
     auto addPeripheral = [&](TargetPeripheralOperation kind, unsigned i64Count,
                              unsigned i32Count) {
-      addVoid(
-          ("peripheral_" + stringifyTargetPeripheralOperation(kind)).str(),
-          signature(i64Count, i32Count), kind);
+      addVoid(("peripheral_" + stringifyTargetPeripheralOperation(kind)).str(),
+              signature(i64Count, i32Count), kind);
     };
     addPeripheral(TargetPeripheralOperation::ArgMaximum, 3, 7);
     addPeripheral(TargetPeripheralOperation::ArgMinimum, 3, 7);
@@ -129,8 +125,7 @@ static std::vector<TargetCallDescriptor> buildDescriptors() {
   // The current ordinary instruction ABI carries an explicit trailing worker.
   addVoid("rdma", signature(2, 9), TargetCallBuiltin::RDMA);
   addVoid("wdma", signature(2, 9), TargetCallBuiltin::WDMA);
-  addVoid("gather_scatter", signature(2, 14),
-          TargetCallBuiltin::GatherScatter);
+  addVoid("gather_scatter", signature(2, 14), TargetCallBuiltin::GatherScatter);
   addVoid("memset", signature(1, 3), TargetCallBuiltin::Memset);
   addVoid("bit2fp", signature(2, 2), TargetCallBuiltin::Bit2FP);
   addVoid("mask_move",
@@ -249,8 +244,8 @@ getTargetCallTSMEngine(const TargetCallSemantic &semantic) {
   }
   if (std::holds_alternative<TargetConvolutionOperation>(semantic))
     return TargetCallTSMEngine::NE;
-  if (std::holds_alternative<NumericElementwiseOperation>(semantic) ||
-      std::holds_alternative<NumericReduceOperation>(semantic) ||
+  if (std::holds_alternative<TargetElementwiseOperation>(semantic) ||
+      std::holds_alternative<TargetReduceOperation>(semantic) ||
       std::holds_alternative<TargetConvertOperation>(semantic) ||
       std::holds_alternative<TargetPoolingOperation>(semantic) ||
       std::holds_alternative<TargetUnpoolingOperation>(semantic) ||
@@ -289,12 +284,12 @@ const TargetCallDescriptor &getTargetCallDescriptor(TargetCallBuiltin call) {
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(NumericElementwiseOperation kind) {
+getTargetCallDescriptor(TargetElementwiseOperation kind) {
   return getDescriptor(kind);
 }
 
 const TargetCallDescriptor &
-getTargetCallDescriptor(NumericReduceOperation kind) {
+getTargetCallDescriptor(TargetReduceOperation kind) {
   return getDescriptor(kind);
 }
 

@@ -4,6 +4,7 @@
 #define WAFER_PROGRAM_PROGRAMINVOCATION_H
 
 #include "Wafer/Driver/Compilation.h"
+#include "Wafer/Program/ProgramElementType.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -21,13 +22,13 @@ namespace wafer::compiler {
 /// are not currently admitted because their source NPY byte representation is
 /// distinct from the target bitpacked representation.
 std::optional<int64_t>
-computeProgramTensorByteCount(llvm::StringRef dtype,
+computeProgramTensorByteCount(ProgramElementType dtype,
                               llvm::ArrayRef<int64_t> shape);
 
 /// Returns whether one admitted ProgramTensor dtype has floating-point
 /// semantics. Keeping this classification with byte geometry prevents output
 /// consumers from silently treating a newly admitted float as raw storage.
-bool isFloatingProgramTensorDType(llvm::StringRef dtype);
+bool isFloatingProgramTensorDType(ProgramElementType dtype);
 
 /// Owner-backed compact row-major tensor at a typed program boundary.
 /// Multi-byte elements use canonical little-endian storage. This is source
@@ -36,7 +37,7 @@ bool isFloatingProgramTensorDType(llvm::StringRef dtype);
 /// Tile bindings then never duplicate payload bytes.
 class ProgramTensor {
 public:
-  static llvm::Expected<ProgramTensor> create(llvm::StringRef dtype,
+  static llvm::Expected<ProgramTensor> create(ProgramElementType dtype,
                                               llvm::ArrayRef<int64_t> shape,
                                               llvm::ArrayRef<uint8_t> bytes);
   static llvm::Expected<ProgramTensor> loadNpy(llvm::StringRef path);
@@ -45,20 +46,19 @@ public:
   /// [offset, offset + byteCount) of `storage`; the shared owner keeps the
   /// bytes alive for the lifetime of every view.
   static llvm::Expected<ProgramTensor>
-  share(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
+  share(ProgramElementType dtype, llvm::ArrayRef<int64_t> shape,
         std::shared_ptr<const std::vector<uint8_t>> storage, size_t offset);
 
-  llvm::StringRef getDType() const { return dtype; }
+  ProgramElementType getDType() const { return dtype; }
   llvm::ArrayRef<int64_t> getShape() const { return shape; }
   llvm::ArrayRef<uint8_t> getBytes() const;
 
 private:
-  ProgramTensor(std::string dtype, std::vector<int64_t> shape,
+  ProgramTensor(ProgramElementType dtype, std::vector<int64_t> shape,
                 std::vector<uint8_t> bytes)
-      : dtype(std::move(dtype)), shape(std::move(shape)),
-        bytes(std::move(bytes)) {}
+      : dtype(dtype), shape(std::move(shape)), bytes(std::move(bytes)) {}
 
-  std::string dtype;
+  ProgramElementType dtype;
   std::vector<int64_t> shape;
   std::vector<uint8_t> bytes;
   std::shared_ptr<const std::vector<uint8_t>> sharedStorage;

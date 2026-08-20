@@ -4,10 +4,10 @@
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
 
-#include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Program/ProgramData.h"
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
 #include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
+#include "Wafer/Driver/CompilationInternal.h"
+#include "Wafer/Program/ProgramData.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -59,7 +59,7 @@ shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
   binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   binding.globalShape.assign(shape.begin(), shape.end());
   binding.localShape.assign(shape.begin(), shape.end());
-  binding.dtype = "f32";
+  binding.dtype = wafer::ProgramElementType::F32;
   binding.partitionSlices.push_back(singleCardPartitionSlice(shape));
   return binding;
 }
@@ -126,15 +126,12 @@ module {
       wafer::OptimizationConfig::none(), diagnostics, std::nullopt,
       programData);
   if (!cardExecutable)
-    FAIL() << diagnosticsText
-           << llvm::toString(cardExecutable.takeError());
+    FAIL() << diagnosticsText << llvm::toString(cardExecutable.takeError());
   tensorProgram = nullptr;
   ASSERT_EQ(cardExecutable->getTileExecutables().size(), 16u);
   for (size_t tileIndex = 0;
-       tileIndex < cardExecutable->getTileExecutables().size();
-       ++tileIndex)
-    EXPECT_EQ(cardExecutable->getTileExecutables()[tileIndex]
-                  .getTileId(),
+       tileIndex < cardExecutable->getTileExecutables().size(); ++tileIndex)
+    EXPECT_EQ(cardExecutable->getTileExecutables()[tileIndex].getTileId(),
               wafer::TileId(static_cast<int64_t>(tileIndex)));
 
   const wafer::compiler::TileExecutable &tile =

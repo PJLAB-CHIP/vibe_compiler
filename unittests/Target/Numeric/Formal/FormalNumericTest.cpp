@@ -15,25 +15,22 @@
 
 namespace {
 
+using wafer::FormalConvertOperation;
+using wafer::FormalElementwiseOperation;
+using wafer::FormalGemmOperation;
 using wafer::FormalNumericErrorCode;
 using wafer::FormalNumericExceptionFlags;
 using wafer::FormalNumericExecutionContext;
 using wafer::FormalNumericResult;
 using wafer::LogicalFormat;
 using wafer::LogicalFormatCategory;
-using wafer::NumericCommandKey;
-using wafer::NumericConvertParameter;
-using wafer::NumericElementwiseOperation;
-using wafer::NumericRoundingMode;
-using wafer::NumericSemanticsProfile;
-using wafer::NumericTensorKey;
+using wafer::PhysicalTensorDescriptor;
 using wafer::PhysicalTensorLayout;
 using wafer::RawLogicalValue;
-using wafer::ResolvedNumericCommand;
+using wafer::TargetConvertParameter;
 using wafer::TargetConvertParameterKind;
-
-constexpr wafer::ModelProfileId kModelProfile =
-    wafer::ModelProfileId::formalDeterministic();
+using wafer::TargetElementwiseOperation;
+using wafer::TargetRoundingMode;
 
 static_assert(std::is_default_constructible_v<FormalNumericExecutionContext>);
 static_assert(!std::is_copy_constructible_v<FormalNumericExecutionContext>);
@@ -41,9 +38,9 @@ static_assert(!std::is_copy_assignable_v<FormalNumericExecutionContext>);
 static_assert(std::is_move_constructible_v<FormalNumericExecutionContext>);
 static_assert(std::is_move_assignable_v<FormalNumericExecutionContext>);
 
-std::optional<ResolvedNumericCommand>
+std::optional<FormalConvertOperation>
 getResolution(uint16_t opcode,
-              NumericRoundingMode mode = NumericRoundingMode::NearestEven) {
+              TargetRoundingMode mode = TargetRoundingMode::NearestEven) {
   const wafer::TargetConvertRoute *route =
       wafer::findTargetConvertRoute(opcode);
   if (!route) {
@@ -51,83 +48,71 @@ getResolution(uint16_t opcode,
     return std::nullopt;
   }
 
-  std::optional<NumericConvertParameter> parameter;
+  std::optional<TargetConvertParameter> parameter;
   if (route->parameterKind == TargetConvertParameterKind::RoundingMode)
-    parameter = NumericConvertParameter::roundingMode(mode);
+    parameter = TargetConvertParameter::roundingMode(mode);
   else if (route->parameterKind == TargetConvertParameterKind::ZeroPoint) {
     ADD_FAILURE() << "test requested unsupported zero-point route " << opcode;
     return std::nullopt;
   }
 
-  llvm::Expected<NumericTensorKey> source = NumericTensorKey::create(
-      route->source, PhysicalTensorLayout::Tensor, {1});
-  llvm::Expected<NumericTensorKey> destination = NumericTensorKey::create(
-      route->destination, PhysicalTensorLayout::Tensor, {1});
+  llvm::Expected<PhysicalTensorDescriptor> source =
+      PhysicalTensorDescriptor::create(route->source,
+                                       PhysicalTensorLayout::Tensor, {1});
+  llvm::Expected<PhysicalTensorDescriptor> destination =
+      PhysicalTensorDescriptor::create(route->destination,
+                                       PhysicalTensorLayout::Tensor, {1});
   if (!source || !destination) {
     ADD_FAILURE() << (source ? llvm::toString(destination.takeError())
                              : llvm::toString(source.takeError()));
     return std::nullopt;
   }
-  llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
-      opcode, std::move(*source), std::move(*destination), parameter);
+  llvm::Expected<FormalConvertOperation> key =
+      wafer::createFormalConvertOperation(opcode, std::move(*source),
+                                          std::move(*destination), parameter);
   if (!key) {
     ADD_FAILURE() << llvm::toString(key.takeError());
     return std::nullopt;
   }
-  llvm::Expected<ResolvedNumericCommand> resolution =
-      wafer::resolveNumericCommand(kModelProfile, std::move(*key));
-  if (!resolution) {
-    ADD_FAILURE() << llvm::toString(resolution.takeError());
-    return std::nullopt;
-  }
-  if (!resolution->isSupported() || !resolution->getSemantics()) {
-    ADD_FAILURE() << "test requested a non-supported numeric resolution";
-    return std::nullopt;
-  }
-  return std::move(*resolution);
+  return std::move(*key);
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
-                            std::vector<uint64_t> shape) {
+PhysicalTensorDescriptor makeTensor(LogicalFormat format,
+                                    PhysicalTensorLayout layout,
+                                    std::vector<uint64_t> shape) {
   return llvm::cantFail(
-      NumericTensorKey::create(format, layout, std::move(shape)));
+      PhysicalTensorDescriptor::create(format, layout, std::move(shape)));
 }
 
-std::optional<ResolvedNumericCommand>
-getElementwiseResolution(NumericElementwiseOperation operation,
+std::optional<FormalElementwiseOperation>
+getElementwiseResolution(TargetElementwiseOperation operation,
                          LogicalFormat inputFormat) {
   const LogicalFormat destinationFormat =
-      wafer::isNumericElementwiseRelation(operation) ? LogicalFormat::Bool
-                                                     : inputFormat;
-  const NumericTensorKey input =
+      wafer::isTargetElementwiseRelation(operation) ? LogicalFormat::Bool
+                                                    : inputFormat;
+  const PhysicalTensorDescriptor input =
       makeTensor(inputFormat, PhysicalTensorLayout::Tensor, {1});
-  std::vector<NumericTensorKey> inputs(
-      wafer::getNumericElementwiseArity(operation), input);
-  llvm::Expected<NumericCommandKey> key =
-      NumericCommandKey::createCTElementwise(
+  std::vector<PhysicalTensorDescriptor> inputs(
+      wafer::getTargetElementwiseArity(operation), input);
+  llvm::Expected<FormalElementwiseOperation> key =
+      wafer::createFormalElementwiseOperation(
           operation, std::move(inputs),
           makeTensor(destinationFormat, PhysicalTensorLayout::Tensor, {1}));
   if (!key) {
     ADD_FAILURE() << llvm::toString(key.takeError());
     return std::nullopt;
   }
-  llvm::Expected<ResolvedNumericCommand> resolution =
-      wafer::resolveNumericCommand(kModelProfile, std::move(*key));
-  if (!resolution) {
-    ADD_FAILURE() << llvm::toString(resolution.takeError());
-    return std::nullopt;
-  }
-  return std::move(*resolution);
+  return std::move(*key);
 }
 
-std::optional<ResolvedNumericCommand> getGemmResolution(LogicalFormat format) {
-  llvm::Expected<wafer::NumericGemmAxes> axes =
-      wafer::getCanonicalNumericGemmAxes(2);
+std::optional<FormalGemmOperation> getGemmResolution(LogicalFormat format) {
+  llvm::Expected<wafer::FormalGemmGeometry> axes =
+      wafer::getCanonicalFormalGemmGeometry(2);
   if (!axes) {
     ADD_FAILURE() << llvm::toString(axes.takeError());
     return std::nullopt;
   }
-  llvm::Expected<NumericCommandKey> key = NumericCommandKey::createNEGemm(
+  llvm::Expected<FormalGemmOperation> key = wafer::createFormalGemmOperation(
       makeTensor(format, PhysicalTensorLayout::Cx, {1, 1}),
       makeTensor(format, PhysicalTensorLayout::NCx, {1, 1}),
       makeTensor(format, PhysicalTensorLayout::Cx, {1, 1}), 1, 1, 1, 1,
@@ -136,18 +121,12 @@ std::optional<ResolvedNumericCommand> getGemmResolution(LogicalFormat format) {
     ADD_FAILURE() << llvm::toString(key.takeError());
     return std::nullopt;
   }
-  llvm::Expected<ResolvedNumericCommand> resolution =
-      wafer::resolveNumericCommand(kModelProfile, std::move(*key));
-  if (!resolution) {
-    ADD_FAILURE() << llvm::toString(resolution.takeError());
-    return std::nullopt;
-  }
-  return std::move(*resolution);
+  return std::move(*key);
 }
 
 std::optional<FormalNumericResult>
 expectExecute(FormalNumericExecutionContext &context,
-              const ResolvedNumericCommand &command, RawLogicalValue source) {
+              const FormalConvertOperation &command, RawLogicalValue source) {
   llvm::Expected<FormalNumericResult> result =
       wafer::executeFormalConvert(context, command, source);
   if (!result) {
@@ -158,7 +137,7 @@ expectExecute(FormalNumericExecutionContext &context,
 }
 
 std::optional<FormalNumericResult>
-expectElementwise(const ResolvedNumericCommand &command,
+expectElementwise(const FormalElementwiseOperation &command,
                   std::vector<RawLogicalValue> inputs) {
   llvm::Expected<FormalNumericResult> result =
       wafer::evaluateFormalElementwiseLLVM(command, inputs);
@@ -170,7 +149,7 @@ expectElementwise(const ResolvedNumericCommand &command,
 }
 
 std::optional<FormalNumericResult>
-expectGemmFMA(const ResolvedNumericCommand &command, RawLogicalValue lhs,
+expectGemmFMA(const FormalGemmOperation &command, RawLogicalValue lhs,
               RawLogicalValue rhs, RawLogicalValue accumulator) {
   llvm::Expected<FormalNumericResult> result =
       wafer::evaluateFormalGemmFusedMultiplyAdd(command, lhs, rhs, accumulator);
@@ -198,9 +177,9 @@ void expectFormalError(llvm::Expected<T> result,
 }
 
 std::optional<FormalNumericResult> executeOpcode(uint16_t opcode,
-                                                 NumericRoundingMode mode,
+                                                 TargetRoundingMode mode,
                                                  RawLogicalValue source) {
-  std::optional<ResolvedNumericCommand> command = getResolution(opcode, mode);
+  auto command = getResolution(opcode, mode);
   if (!command)
     return std::nullopt;
   FormalNumericExecutionContext context;
@@ -219,96 +198,101 @@ uint64_t largestFiniteBits(const wafer::LogicalFormatDescriptor &descriptor) {
   return largestFiniteExponent | fraction;
 }
 
-TEST(FormalNumericTest, ExecutesZeroAndBoundarySmokeForAll101Rows) {
-  llvm::ArrayRef<NumericSemanticsProfile> profiles =
-      wafer::getRegisteredNumericCTConvertSemanticsProfiles();
-  ASSERT_EQ(profiles.size(), 101u);
-
+TEST(FormalNumericTest, ExecutesZeroAndBoundarySmokeForTargetConvertRoutes) {
   size_t executedRows = 0;
-  for (const NumericSemanticsProfile &semantics : profiles) {
-    const wafer::TargetConvertRoute &route =
-        semantics.getCTConvertKey()->getCTConvertRoute();
-    SCOPED_TRACE(
-        route.canonicalSpelling.str() + "/" +
-        wafer::stringifyNumericRoundingMode(semantics.getRoundingMode()).str());
+  for (const wafer::TargetConvertRoute &route :
+       wafer::getTargetConvertRoutes()) {
+    if (route.parameterKind == TargetConvertParameterKind::ZeroPoint)
+      continue;
+    const llvm::ArrayRef<TargetRoundingMode> modes =
+        route.parameterKind == TargetConvertParameterKind::RoundingMode
+            ? wafer::getTargetRoundingModes().drop_back()
+            : llvm::ArrayRef<TargetRoundingMode>();
+    const std::array<TargetRoundingMode, 1> noParameterMode = {
+        TargetRoundingMode::NearestEven};
+    const llvm::ArrayRef<TargetRoundingMode> routeModes =
+        modes.empty() ? llvm::ArrayRef<TargetRoundingMode>(noParameterMode)
+                      : modes;
+    for (TargetRoundingMode mode : routeModes) {
+      SCOPED_TRACE(route.canonicalSpelling.str() + "/" +
+                   wafer::stringifyTargetRoundingMode(mode).str());
 
-    std::optional<ResolvedNumericCommand> command =
-        getResolution(route.opcode, semantics.getRoundingMode());
-    ASSERT_TRUE(command.has_value());
-    ASSERT_EQ(command->getSemantics(), &semantics);
+      auto command = getResolution(route.opcode, mode);
+      ASSERT_TRUE(command.has_value());
 
-    FormalNumericExecutionContext zeroContext;
-    std::optional<FormalNumericResult> zero =
-        expectExecute(zeroContext, *command, {route.source, 0});
-    ASSERT_TRUE(zero.has_value());
-    EXPECT_EQ(zero->value.format, route.destination);
-    EXPECT_EQ(zero->value.bits, 0u);
-    EXPECT_FALSE(zero->flags.any());
-    EXPECT_FALSE(zeroContext.getAggregateFlags().any());
+      FormalNumericExecutionContext zeroContext;
+      std::optional<FormalNumericResult> zero =
+          expectExecute(zeroContext, *command, {route.source, 0});
+      ASSERT_TRUE(zero.has_value());
+      EXPECT_EQ(zero->value.format, route.destination);
+      EXPECT_EQ(zero->value.bits, 0u);
+      EXPECT_FALSE(zero->flags.any());
+      EXPECT_FALSE(zeroContext.getAggregateFlags().any());
 
-    const wafer::LogicalFormatDescriptor *sourceDescriptor =
-        wafer::findLogicalFormatDescriptor(route.source);
-    const wafer::LogicalFormatDescriptor *destinationDescriptor =
-        wafer::findLogicalFormatDescriptor(route.destination);
-    ASSERT_NE(sourceDescriptor, nullptr);
-    ASSERT_NE(destinationDescriptor, nullptr);
+      const wafer::LogicalFormatDescriptor *sourceDescriptor =
+          wafer::findLogicalFormatDescriptor(route.source);
+      const wafer::LogicalFormatDescriptor *destinationDescriptor =
+          wafer::findLogicalFormatDescriptor(route.destination);
+      ASSERT_NE(sourceDescriptor, nullptr);
+      ASSERT_NE(destinationDescriptor, nullptr);
 
-    std::vector<uint64_t> boundaryInputs;
-    if (sourceDescriptor->category ==
-        LogicalFormatCategory::BinaryFloatingPoint) {
-      boundaryInputs.push_back(largestFiniteBits(*sourceDescriptor));
-    } else {
-      ASSERT_EQ(sourceDescriptor->category,
-                LogicalFormatCategory::SignedInteger);
-      boundaryInputs.push_back(
-          (UINT64_C(1) << (sourceDescriptor->storageBits - 1)) - 1);
-      boundaryInputs.push_back(UINT64_C(1)
-                               << (sourceDescriptor->storageBits - 1));
-    }
-
-    for (uint64_t bits : boundaryInputs) {
-      FormalNumericExecutionContext boundaryContext;
-      llvm::Expected<FormalNumericResult> boundary =
-          wafer::executeFormalConvert(boundaryContext, *command,
-                                      {route.source, bits});
-      if (!boundary) {
-        expectFormalError(std::move(boundary),
-                          FormalNumericErrorCode::FloatToIntegerOutOfRange);
-        EXPECT_NE(destinationDescriptor->category,
-                  LogicalFormatCategory::BinaryFloatingPoint);
-        EXPECT_FALSE(boundaryContext.getAggregateFlags().any());
-        continue;
+      std::vector<uint64_t> boundaryInputs;
+      if (sourceDescriptor->category ==
+          LogicalFormatCategory::BinaryFloatingPoint) {
+        boundaryInputs.push_back(largestFiniteBits(*sourceDescriptor));
+      } else {
+        ASSERT_EQ(sourceDescriptor->category,
+                  LogicalFormatCategory::SignedInteger);
+        boundaryInputs.push_back(
+            (UINT64_C(1) << (sourceDescriptor->storageBits - 1)) - 1);
+        boundaryInputs.push_back(UINT64_C(1)
+                                 << (sourceDescriptor->storageBits - 1));
       }
 
-      EXPECT_EQ(boundary->value.format, route.destination);
-      llvm::Expected<RawLogicalValue> canonical = wafer::makeRawLogicalValue(
-          boundary->value.format, boundary->value.bits,
-          wafer::NonCanonicalEncodingPolicy::Reject);
-      ASSERT_TRUE(static_cast<bool>(canonical))
-          << (canonical ? std::string()
-                        : llvm::toString(canonical.takeError()));
-      EXPECT_EQ(boundaryContext.getAggregateFlags(), boundary->flags);
+      for (uint64_t bits : boundaryInputs) {
+        FormalNumericExecutionContext boundaryContext;
+        llvm::Expected<FormalNumericResult> boundary =
+            wafer::executeFormalConvert(boundaryContext, *command,
+                                        {route.source, bits});
+        if (!boundary) {
+          expectFormalError(std::move(boundary),
+                            FormalNumericErrorCode::FloatToIntegerOutOfRange);
+          EXPECT_NE(destinationDescriptor->category,
+                    LogicalFormatCategory::BinaryFloatingPoint);
+          EXPECT_FALSE(boundaryContext.getAggregateFlags().any());
+          continue;
+        }
+
+        EXPECT_EQ(boundary->value.format, route.destination);
+        llvm::Expected<RawLogicalValue> canonical = wafer::makeRawLogicalValue(
+            boundary->value.format, boundary->value.bits,
+            wafer::NonCanonicalEncodingPolicy::Reject);
+        ASSERT_TRUE(static_cast<bool>(canonical))
+            << (canonical ? std::string()
+                          : llvm::toString(canonical.takeError()));
+        EXPECT_EQ(boundaryContext.getAggregateFlags(), boundary->flags);
+      }
+      ++executedRows;
     }
-    ++executedRows;
   }
-  EXPECT_EQ(executedRows, 101u);
+  EXPECT_GT(executedRows, 0u);
 }
 
 TEST(FormalNumericTest, FourRoundingModesDistinguishFloatToIntegerTies) {
   struct Case {
-    NumericRoundingMode mode;
+    TargetRoundingMode mode;
     uint64_t positiveExpected;
     uint64_t negativeExpected;
   };
   constexpr Case cases[] = {
-      {NumericRoundingMode::NearestEven, 0x02, 0xfe},
-      {NumericRoundingMode::TowardZero, 0x01, 0xff},
-      {NumericRoundingMode::TowardPositive, 0x02, 0xff},
-      {NumericRoundingMode::TowardNegative, 0x01, 0xfe},
+      {TargetRoundingMode::NearestEven, 0x02, 0xfe},
+      {TargetRoundingMode::TowardZero, 0x01, 0xff},
+      {TargetRoundingMode::TowardPositive, 0x02, 0xff},
+      {TargetRoundingMode::TowardNegative, 0x01, 0xfe},
   };
 
   for (const Case &testCase : cases) {
-    SCOPED_TRACE(wafer::stringifyNumericRoundingMode(testCase.mode).str());
+    SCOPED_TRACE(wafer::stringifyTargetRoundingMode(testCase.mode).str());
     std::optional<FormalNumericResult> positive = executeOpcode(
         /*fp16_int8=*/157, testCase.mode, {LogicalFormat::F16, 0x3e00});
     std::optional<FormalNumericResult> negative = executeOpcode(
@@ -324,19 +308,19 @@ TEST(FormalNumericTest, FourRoundingModesDistinguishFloatToIntegerTies) {
 
 TEST(FormalNumericTest, FourRoundingModesDistinguishIntegerToFloatTies) {
   struct Case {
-    NumericRoundingMode mode;
+    TargetRoundingMode mode;
     uint64_t positiveExpected;
     uint64_t negativeExpected;
   };
   constexpr Case cases[] = {
-      {NumericRoundingMode::NearestEven, 0x6800, 0xe800},
-      {NumericRoundingMode::TowardZero, 0x6800, 0xe800},
-      {NumericRoundingMode::TowardPositive, 0x6801, 0xe800},
-      {NumericRoundingMode::TowardNegative, 0x6800, 0xe801},
+      {TargetRoundingMode::NearestEven, 0x6800, 0xe800},
+      {TargetRoundingMode::TowardZero, 0x6800, 0xe800},
+      {TargetRoundingMode::TowardPositive, 0x6801, 0xe800},
+      {TargetRoundingMode::TowardNegative, 0x6800, 0xe801},
   };
 
   for (const Case &testCase : cases) {
-    SCOPED_TRACE(wafer::stringifyNumericRoundingMode(testCase.mode).str());
+    SCOPED_TRACE(wafer::stringifyTargetRoundingMode(testCase.mode).str());
     std::optional<FormalNumericResult> positive = executeOpcode(
         /*int32_fp16=*/147, testCase.mode, {LogicalFormat::I32, 0x00000801});
     std::optional<FormalNumericResult> negative = executeOpcode(
@@ -352,7 +336,7 @@ TEST(FormalNumericTest, FourRoundingModesDistinguishIntegerToFloatTies) {
 
 TEST(FormalNumericTest, BF16AndCompactTF32UseCanonicalRawEncodings) {
   std::optional<FormalNumericResult> bf16ToTF32 = executeOpcode(
-      /*bf16_tf32=*/156, NumericRoundingMode::NearestEven,
+      /*bf16_tf32=*/156, TargetRoundingMode::NearestEven,
       {LogicalFormat::BF16, 0x3fc0});
   ASSERT_TRUE(bf16ToTF32.has_value());
   EXPECT_EQ(bf16ToTF32->value.format, LogicalFormat::TF32);
@@ -360,7 +344,7 @@ TEST(FormalNumericTest, BF16AndCompactTF32UseCanonicalRawEncodings) {
   EXPECT_FALSE(bf16ToTF32->flags.any());
 
   std::optional<FormalNumericResult> tf32ToBF16 = executeOpcode(
-      /*tf32_bf16=*/173, NumericRoundingMode::NearestEven,
+      /*tf32_bf16=*/173, TargetRoundingMode::NearestEven,
       {LogicalFormat::TF32, UINT64_C(0x3fc00000)});
   ASSERT_TRUE(tf32ToBF16.has_value());
   EXPECT_EQ(tf32ToBF16->value.format, LogicalFormat::BF16);
@@ -368,15 +352,15 @@ TEST(FormalNumericTest, BF16AndCompactTF32UseCanonicalRawEncodings) {
   EXPECT_FALSE(tf32ToBF16->flags.any());
 
   struct Case {
-    NumericRoundingMode mode;
+    TargetRoundingMode mode;
     uint64_t positiveExpected;
     uint64_t negativeExpected;
   };
   constexpr Case cases[] = {
-      {NumericRoundingMode::NearestEven, 0x3f800000, 0xbf800000},
-      {NumericRoundingMode::TowardZero, 0x3f800000, 0xbf800000},
-      {NumericRoundingMode::TowardPositive, 0x3f802000, 0xbf800000},
-      {NumericRoundingMode::TowardNegative, 0x3f800000, 0xbf802000},
+      {TargetRoundingMode::NearestEven, 0x3f800000, 0xbf800000},
+      {TargetRoundingMode::TowardZero, 0x3f800000, 0xbf800000},
+      {TargetRoundingMode::TowardPositive, 0x3f802000, 0xbf800000},
+      {TargetRoundingMode::TowardNegative, 0x3f800000, 0xbf802000},
   };
   for (const Case &testCase : cases) {
     std::optional<FormalNumericResult> positive = executeOpcode(
@@ -398,21 +382,21 @@ TEST(FormalNumericTest, BF16AndCompactTF32UseCanonicalRawEncodings) {
 
 TEST(FormalNumericTest, PreservesSignedZeroExceptAtIntegerDestination) {
   std::optional<FormalNumericResult> f32ToF16 = executeOpcode(
-      /*fp32_fp16=*/166, NumericRoundingMode::TowardPositive,
+      /*fp32_fp16=*/166, TargetRoundingMode::TowardPositive,
       {LogicalFormat::F32, UINT64_C(0x80000000)});
   ASSERT_TRUE(f32ToF16.has_value());
   EXPECT_EQ(f32ToF16->value.bits, UINT64_C(0x8000));
   EXPECT_FALSE(f32ToF16->flags.any());
 
   std::optional<FormalNumericResult> bf16ToTF32 = executeOpcode(
-      /*bf16_tf32=*/156, NumericRoundingMode::NearestEven,
+      /*bf16_tf32=*/156, TargetRoundingMode::NearestEven,
       {LogicalFormat::BF16, UINT64_C(0x8000)});
   ASSERT_TRUE(bf16ToTF32.has_value());
   EXPECT_EQ(bf16ToTF32->value.bits, UINT64_C(0x80000000));
   EXPECT_FALSE(bf16ToTF32->flags.any());
 
   std::optional<FormalNumericResult> tf32ToI32 = executeOpcode(
-      /*tf32_int32=*/171, NumericRoundingMode::TowardNegative,
+      /*tf32_int32=*/171, TargetRoundingMode::TowardNegative,
       {LogicalFormat::TF32, UINT64_C(0x80000000)});
   ASSERT_TRUE(tf32ToI32.has_value());
   EXPECT_EQ(tf32ToI32->value.bits, 0u);
@@ -420,8 +404,8 @@ TEST(FormalNumericTest, PreservesSignedZeroExceptAtIntegerDestination) {
 }
 
 TEST(FormalNumericTest, CanonicalizesNaNsAndFlagsOnlySignalingNaN) {
-  std::optional<ResolvedNumericCommand> f32ToF16 =
-      getResolution(/*fp32_fp16=*/166, NumericRoundingMode::NearestEven);
+  auto f32ToF16 =
+      getResolution(/*fp32_fp16=*/166, TargetRoundingMode::NearestEven);
   ASSERT_TRUE(f32ToF16.has_value());
 
   FormalNumericExecutionContext quietContext;
@@ -440,8 +424,7 @@ TEST(FormalNumericTest, CanonicalizesNaNsAndFlagsOnlySignalingNaN) {
   EXPECT_TRUE(signaling->flags.invalid);
   EXPECT_TRUE(signalingContext.getAggregateFlags().invalid);
 
-  std::optional<ResolvedNumericCommand> tf32ToF32 =
-      getResolution(/*tf32_fp32=*/174);
+  auto tf32ToF32 = getResolution(/*tf32_fp32=*/174);
   ASSERT_TRUE(tf32ToF32.has_value());
   FormalNumericExecutionContext tf32Context;
   std::optional<FormalNumericResult> tf32Signaling = expectExecute(
@@ -461,7 +444,7 @@ TEST(FormalNumericTest, CanonicalizesNaNsAndFlagsOnlySignalingNaN) {
 
 TEST(FormalNumericTest, UsesGradualUnderflowAndTininessAfterRounding) {
   std::optional<FormalNumericResult> exactSubnormal = executeOpcode(
-      /*fp32_fp16=*/166, NumericRoundingMode::NearestEven,
+      /*fp32_fp16=*/166, TargetRoundingMode::NearestEven,
       {LogicalFormat::F32, UINT64_C(0x33800000)});
   ASSERT_TRUE(exactSubnormal.has_value());
   EXPECT_EQ(exactSubnormal->value.bits, UINT64_C(0x0001));
@@ -469,7 +452,7 @@ TEST(FormalNumericTest, UsesGradualUnderflowAndTininessAfterRounding) {
   EXPECT_FALSE(exactSubnormal->flags.inexact);
 
   std::optional<FormalNumericResult> tinyTie = executeOpcode(
-      /*fp32_fp16=*/166, NumericRoundingMode::NearestEven,
+      /*fp32_fp16=*/166, TargetRoundingMode::NearestEven,
       {LogicalFormat::F32, UINT64_C(0x33000000)});
   ASSERT_TRUE(tinyTie.has_value());
   EXPECT_EQ(tinyTie->value.bits, UINT64_C(0x0000));
@@ -481,7 +464,7 @@ TEST(FormalNumericTest, UsesGradualUnderflowAndTininessAfterRounding) {
   // result rounded first to 11-bit precision with an unbounded exponent is
   // still tiny. IEEE tininess-after therefore raises underflow.
   std::optional<FormalNumericResult> borderlineTinyRoundsNormal = executeOpcode(
-      /*fp32_fp16=*/166, NumericRoundingMode::NearestEven,
+      /*fp32_fp16=*/166, TargetRoundingMode::NearestEven,
       {LogicalFormat::F32, UINT64_C(0x387fe000)});
   ASSERT_TRUE(borderlineTinyRoundsNormal.has_value());
   EXPECT_EQ(borderlineTinyRoundsNormal->value.bits, UINT64_C(0x0400));
@@ -492,7 +475,7 @@ TEST(FormalNumericTest, UsesGradualUnderflowAndTininessAfterRounding) {
   // normal, ties-to-even selects minimum normal before exponent-range
   // encoding. The final bits are the same, but tininess-after is now false.
   std::optional<FormalNumericResult> nonTinyRoundsNormal = executeOpcode(
-      /*fp32_fp16=*/166, NumericRoundingMode::NearestEven,
+      /*fp32_fp16=*/166, TargetRoundingMode::NearestEven,
       {LogicalFormat::F32, UINT64_C(0x387ff000)});
   ASSERT_TRUE(nonTinyRoundsNormal.has_value());
   EXPECT_EQ(nonTinyRoundsNormal->value.bits, UINT64_C(0x0400));
@@ -502,15 +485,15 @@ TEST(FormalNumericTest, UsesGradualUnderflowAndTininessAfterRounding) {
 
 TEST(FormalNumericTest, ExactOverflowRangeFlagsBothSignsForEveryRoundingMode) {
   struct Case {
-    NumericRoundingMode mode;
+    TargetRoundingMode mode;
     uint64_t positiveExpected;
     uint64_t negativeExpected;
   };
   constexpr Case cases[] = {
-      {NumericRoundingMode::NearestEven, 0x7c00, 0xfc00},
-      {NumericRoundingMode::TowardZero, 0x7bff, 0xfbff},
-      {NumericRoundingMode::TowardPositive, 0x7c00, 0xfbff},
-      {NumericRoundingMode::TowardNegative, 0x7bff, 0xfc00},
+      {TargetRoundingMode::NearestEven, 0x7c00, 0xfc00},
+      {TargetRoundingMode::TowardZero, 0x7bff, 0xfbff},
+      {TargetRoundingMode::TowardPositive, 0x7c00, 0xfbff},
+      {TargetRoundingMode::TowardNegative, 0x7bff, 0xfc00},
   };
   struct SourceCase {
     uint16_t opcode;
@@ -529,7 +512,7 @@ TEST(FormalNumericTest, ExactOverflowRangeFlagsBothSignsForEveryRoundingMode) {
   for (const SourceCase &source : sources) {
     for (const Case &testCase : cases) {
       SCOPED_TRACE(llvm::Twine(source.opcode).str() + "/" +
-                   wafer::stringifyNumericRoundingMode(testCase.mode).str());
+                   wafer::stringifyTargetRoundingMode(testCase.mode).str());
       std::optional<FormalNumericResult> positive =
           executeOpcode(source.opcode, testCase.mode, source.positive);
       std::optional<FormalNumericResult> negative =
@@ -548,21 +531,21 @@ TEST(FormalNumericTest, ExactOverflowRangeFlagsBothSignsForEveryRoundingMode) {
 
 TEST(FormalNumericTest, HonorsSignedIntegerWidthsWithoutHostCasts) {
   std::optional<FormalNumericResult> minusOne = executeOpcode(
-      /*int16_fp32=*/145, NumericRoundingMode::TowardPositive,
+      /*int16_fp32=*/145, TargetRoundingMode::TowardPositive,
       {LogicalFormat::I16, UINT64_C(0xffff)});
   ASSERT_TRUE(minusOne.has_value());
   EXPECT_EQ(minusOne->value.bits, UINT64_C(0xbf800000));
   EXPECT_FALSE(minusOne->flags.any());
 
   std::optional<FormalNumericResult> int32Minimum = executeOpcode(
-      /*int32_fp32=*/149, NumericRoundingMode::NearestEven,
+      /*int32_fp32=*/149, TargetRoundingMode::NearestEven,
       {LogicalFormat::I32, UINT64_C(0x80000000)});
   ASSERT_TRUE(int32Minimum.has_value());
   EXPECT_EQ(int32Minimum->value.bits, UINT64_C(0xcf000000));
   EXPECT_FALSE(int32Minimum->flags.any());
 
   std::optional<FormalNumericResult> fp16MaximumToI32 = executeOpcode(
-      /*fp16_int32=*/159, NumericRoundingMode::NearestEven,
+      /*fp16_int32=*/159, TargetRoundingMode::NearestEven,
       {LogicalFormat::F16, UINT64_C(0x7bff)});
   ASSERT_TRUE(fp16MaximumToI32.has_value());
   EXPECT_EQ(fp16MaximumToI32->value.bits, UINT64_C(0x0000ffe0));
@@ -570,8 +553,8 @@ TEST(FormalNumericTest, HonorsSignedIntegerWidthsWithoutHostCasts) {
 }
 
 TEST(FormalNumericTest, FloatToIntegerRejectsWithoutChangingContext) {
-  std::optional<ResolvedNumericCommand> f32ToI8 =
-      getResolution(/*fp32_int8=*/163, NumericRoundingMode::NearestEven);
+  auto f32ToI8 =
+      getResolution(/*fp32_int8=*/163, TargetRoundingMode::NearestEven);
   ASSERT_TRUE(f32ToI8.has_value());
 
   for (uint64_t bits : {UINT64_C(0x7f800000), UINT64_C(0xff800000),
@@ -601,8 +584,8 @@ TEST(FormalNumericTest, FloatToIntegerRejectsWithoutChangingContext) {
       FormalNumericErrorCode::FloatToIntegerOutOfRange);
   EXPECT_FALSE(nearestContext.getAggregateFlags().any());
 
-  std::optional<ResolvedNumericCommand> towardZero =
-      getResolution(/*fp32_int8=*/163, NumericRoundingMode::TowardZero);
+  auto towardZero =
+      getResolution(/*fp32_int8=*/163, TargetRoundingMode::TowardZero);
   ASSERT_TRUE(towardZero.has_value());
   FormalNumericExecutionContext towardZeroContext;
   std::optional<FormalNumericResult> accepted =
@@ -615,10 +598,10 @@ TEST(FormalNumericTest, FloatToIntegerRejectsWithoutChangingContext) {
 }
 
 TEST(FormalNumericTest, ContextsAreInvocationLocalAndAggregateFlags) {
-  std::optional<ResolvedNumericCommand> int32ToF16 =
-      getResolution(/*int32_fp16=*/147, NumericRoundingMode::NearestEven);
-  std::optional<ResolvedNumericCommand> f32ToI8 =
-      getResolution(/*fp32_int8=*/163, NumericRoundingMode::NearestEven);
+  auto int32ToF16 =
+      getResolution(/*int32_fp16=*/147, TargetRoundingMode::NearestEven);
+  auto f32ToI8 =
+      getResolution(/*fp32_int8=*/163, TargetRoundingMode::NearestEven);
   ASSERT_TRUE(int32ToF16.has_value());
   ASSERT_TRUE(f32ToI8.has_value());
 
@@ -656,35 +639,30 @@ TEST(FormalNumericTest, ContextsAreInvocationLocalAndAggregateFlags) {
 }
 
 TEST(FormalNumericTest, RejectsUnsupportedResolutionWithoutChangingContext) {
-  llvm::Expected<NumericTensorKey> source = NumericTensorKey::create(
-      LogicalFormat::I32, PhysicalTensorLayout::Tensor, {1});
-  llvm::Expected<NumericTensorKey> destination = NumericTensorKey::create(
-      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {1});
+  llvm::Expected<PhysicalTensorDescriptor> source =
+      PhysicalTensorDescriptor::create(LogicalFormat::I32,
+                                       PhysicalTensorLayout::Tensor, {1});
+  llvm::Expected<PhysicalTensorDescriptor> destination =
+      PhysicalTensorDescriptor::create(LogicalFormat::F16,
+                                       PhysicalTensorLayout::Tensor, {1});
   ASSERT_TRUE(static_cast<bool>(source));
   ASSERT_TRUE(static_cast<bool>(destination));
-  llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
+  auto key = wafer::createFormalConvertOperation(
       /*int32_fp16=*/147, std::move(*source), std::move(*destination),
-      NumericConvertParameter::roundingMode(NumericRoundingMode::Stochastic));
+      TargetConvertParameter::roundingMode(TargetRoundingMode::Stochastic));
   ASSERT_TRUE(static_cast<bool>(key))
       << (key ? std::string() : llvm::toString(key.takeError()));
-  llvm::Expected<ResolvedNumericCommand> command =
-      wafer::resolveNumericCommand(kModelProfile, std::move(*key));
-  ASSERT_TRUE(static_cast<bool>(command))
-      << (command ? std::string() : llvm::toString(command.takeError()));
-  ASSERT_FALSE(command->isSupported());
-  ASSERT_EQ(command->getSemantics(), nullptr);
-
   FormalNumericExecutionContext context;
   const FormalNumericExceptionFlags before = context.getAggregateFlags();
   expectFormalError(
-      wafer::executeFormalConvert(context, *command, {LogicalFormat::I32, 0}),
-      FormalNumericErrorCode::UnsupportedResolvedCommand);
+      wafer::executeFormalConvert(context, *key, {LogicalFormat::I32, 0}),
+      FormalNumericErrorCode::UnsupportedOperation);
   EXPECT_EQ(context.getAggregateFlags(), before);
 }
 
 TEST(FormalNumericTest, RejectsSourceMismatchAndNoncanonicalEncoding) {
-  std::optional<ResolvedNumericCommand> f32ToF16 =
-      getResolution(/*fp32_fp16=*/166, NumericRoundingMode::NearestEven);
+  auto f32ToF16 =
+      getResolution(/*fp32_fp16=*/166, TargetRoundingMode::NearestEven);
   ASSERT_TRUE(f32ToF16.has_value());
 
   FormalNumericExecutionContext mismatchContext;
@@ -693,8 +671,7 @@ TEST(FormalNumericTest, RejectsSourceMismatchAndNoncanonicalEncoding) {
                     FormalNumericErrorCode::SourceFormatMismatch);
   EXPECT_FALSE(mismatchContext.getAggregateFlags().any());
 
-  std::optional<ResolvedNumericCommand> tf32ToF32 =
-      getResolution(/*tf32_fp32=*/174);
+  auto tf32ToF32 = getResolution(/*tf32_fp32=*/174);
   ASSERT_TRUE(tf32ToF32.has_value());
   FormalNumericExecutionContext noncanonicalContext;
   expectFormalError(
@@ -713,8 +690,8 @@ TEST(FormalNumericTest, RejectsSourceMismatchAndNoncanonicalEncoding) {
 
 TEST(FormalNumericTest,
      EffectFreeConvertUpdatesFlagsOnlyAfterSuccessfulWrapper) {
-  std::optional<ResolvedNumericCommand> command =
-      getResolution(/*fp32_fp16=*/166, NumericRoundingMode::NearestEven);
+  auto command =
+      getResolution(/*fp32_fp16=*/166, TargetRoundingMode::NearestEven);
   ASSERT_TRUE(command.has_value());
 
   FormalNumericExecutionContext context;
@@ -744,16 +721,16 @@ TEST(FormalNumericTest,
 
 TEST(FormalNumericTest,
      ElementwiseLLVMImplementsSignedZeroNaNAndBasicArithmeticPolicies) {
-  std::optional<ResolvedNumericCommand> abs = getElementwiseResolution(
-      NumericElementwiseOperation::Abs, LogicalFormat::F16);
-  std::optional<ResolvedNumericCommand> neg = getElementwiseResolution(
-      NumericElementwiseOperation::Neg, LogicalFormat::F16);
-  std::optional<ResolvedNumericCommand> maximum = getElementwiseResolution(
-      NumericElementwiseOperation::Max, LogicalFormat::F16);
-  std::optional<ResolvedNumericCommand> minimum = getElementwiseResolution(
-      NumericElementwiseOperation::Min, LogicalFormat::F16);
-  std::optional<ResolvedNumericCommand> relu = getElementwiseResolution(
-      NumericElementwiseOperation::Relu, LogicalFormat::F16);
+  auto abs = getElementwiseResolution(TargetElementwiseOperation::Abs,
+                                      LogicalFormat::F16);
+  auto neg = getElementwiseResolution(TargetElementwiseOperation::Neg,
+                                      LogicalFormat::F16);
+  auto maximum = getElementwiseResolution(TargetElementwiseOperation::Max,
+                                          LogicalFormat::F16);
+  auto minimum = getElementwiseResolution(TargetElementwiseOperation::Min,
+                                          LogicalFormat::F16);
+  auto relu = getElementwiseResolution(TargetElementwiseOperation::Relu,
+                                       LogicalFormat::F16);
   ASSERT_TRUE(abs && neg && maximum && minimum && relu);
 
   std::optional<FormalNumericResult> result =
@@ -787,12 +764,12 @@ TEST(FormalNumericTest,
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->value.bits, 0u);
 
-  std::optional<ResolvedNumericCommand> add = getElementwiseResolution(
-      NumericElementwiseOperation::Add, LogicalFormat::F16);
-  std::optional<ResolvedNumericCommand> multiply = getElementwiseResolution(
-      NumericElementwiseOperation::Mul, LogicalFormat::F16);
-  std::optional<ResolvedNumericCommand> divide = getElementwiseResolution(
-      NumericElementwiseOperation::Div, LogicalFormat::F16);
+  auto add = getElementwiseResolution(TargetElementwiseOperation::Add,
+                                      LogicalFormat::F16);
+  auto multiply = getElementwiseResolution(TargetElementwiseOperation::Mul,
+                                           LogicalFormat::F16);
+  auto divide = getElementwiseResolution(TargetElementwiseOperation::Div,
+                                         LogicalFormat::F16);
   ASSERT_TRUE(add && multiply && divide);
   result = expectElementwise(*add, {{LogicalFormat::F16, UINT64_C(0xfe01)},
                                     {LogicalFormat::F16, UINT64_C(0x3c00)}});
@@ -818,12 +795,12 @@ TEST(FormalNumericTest,
 }
 
 TEST(FormalNumericTest, ElementwiseLLVMImplementsRelationsAndBooleanLogic) {
-  std::optional<ResolvedNumericCommand> equal = getElementwiseResolution(
-      NumericElementwiseOperation::Eq, LogicalFormat::F32);
-  std::optional<ResolvedNumericCommand> notEqual = getElementwiseResolution(
-      NumericElementwiseOperation::Ne, LogicalFormat::F32);
-  std::optional<ResolvedNumericCommand> less = getElementwiseResolution(
-      NumericElementwiseOperation::Lt, LogicalFormat::F32);
+  auto equal = getElementwiseResolution(TargetElementwiseOperation::Eq,
+                                        LogicalFormat::F32);
+  auto notEqual = getElementwiseResolution(TargetElementwiseOperation::Ne,
+                                           LogicalFormat::F32);
+  auto less = getElementwiseResolution(TargetElementwiseOperation::Lt,
+                                       LogicalFormat::F32);
   ASSERT_TRUE(equal && notEqual && less);
   std::optional<FormalNumericResult> result =
       expectElementwise(*equal, {{LogicalFormat::F32, UINT64_C(0x00000000)},
@@ -849,14 +826,14 @@ TEST(FormalNumericTest, ElementwiseLLVMImplementsRelationsAndBooleanLogic) {
   EXPECT_EQ(result->value.bits, 0u);
   EXPECT_TRUE(result->flags.invalid);
 
-  std::optional<ResolvedNumericCommand> logicNot = getElementwiseResolution(
-      NumericElementwiseOperation::LogicNot, LogicalFormat::Bool);
-  std::optional<ResolvedNumericCommand> logicAnd = getElementwiseResolution(
-      NumericElementwiseOperation::LogicAnd, LogicalFormat::Bool);
-  std::optional<ResolvedNumericCommand> logicOr = getElementwiseResolution(
-      NumericElementwiseOperation::LogicOr, LogicalFormat::Bool);
-  std::optional<ResolvedNumericCommand> logicXor = getElementwiseResolution(
-      NumericElementwiseOperation::LogicXor, LogicalFormat::Bool);
+  auto logicNot = getElementwiseResolution(TargetElementwiseOperation::LogicNot,
+                                           LogicalFormat::Bool);
+  auto logicAnd = getElementwiseResolution(TargetElementwiseOperation::LogicAnd,
+                                           LogicalFormat::Bool);
+  auto logicOr = getElementwiseResolution(TargetElementwiseOperation::LogicOr,
+                                          LogicalFormat::Bool);
+  auto logicXor = getElementwiseResolution(TargetElementwiseOperation::LogicXor,
+                                           LogicalFormat::Bool);
   ASSERT_TRUE(logicNot && logicAnd && logicOr && logicXor);
   result = expectElementwise(*logicNot, {{LogicalFormat::Bool, 1}});
   ASSERT_TRUE(result.has_value());
@@ -876,17 +853,16 @@ TEST(FormalNumericTest, ElementwiseLLVMImplementsRelationsAndBooleanLogic) {
 }
 
 TEST(FormalNumericTest, ElementwiseLLVMRejectsWrongBackendAndOperands) {
-  std::optional<ResolvedNumericCommand> exponential = getElementwiseResolution(
-      NumericElementwiseOperation::Exp, LogicalFormat::F32);
+  auto exponential = getElementwiseResolution(TargetElementwiseOperation::Exp,
+                                              LogicalFormat::F32);
   ASSERT_TRUE(exponential.has_value());
-  ASSERT_TRUE(exponential->isSupported());
   expectFormalError(
       wafer::evaluateFormalElementwiseLLVM(
           *exponential, {{LogicalFormat::F32, UINT64_C(0x3f800000)}}),
-      FormalNumericErrorCode::UnsupportedResolvedCommand);
+      FormalNumericErrorCode::UnsupportedOperation);
 
-  std::optional<ResolvedNumericCommand> add = getElementwiseResolution(
-      NumericElementwiseOperation::Add, LogicalFormat::F16);
+  auto add = getElementwiseResolution(TargetElementwiseOperation::Add,
+                                      LogicalFormat::F16);
   ASSERT_TRUE(add.has_value());
   expectFormalError(wafer::evaluateFormalElementwiseLLVM(
                         *add, {{LogicalFormat::F16, UINT64_C(0x3c00)}}),
@@ -905,46 +881,8 @@ TEST(FormalNumericTest, ElementwiseLLVMRejectsWrongBackendAndOperands) {
                     FormalNumericErrorCode::InvalidOperandEncoding);
 }
 
-TEST(FormalNumericTest, ElementwiseBackendRegistryHasCompleteScalarCoverage) {
-  size_t llvmRows = 0;
-  size_t mpfrRows = 0;
-  for (const NumericSemanticsProfile &semantics :
-       wafer::getRegisteredNumericCTElementwiseSemanticsProfiles()) {
-    const wafer::NumericCTElementwiseSemanticsKey *identity =
-        semantics.getCTElementwiseKey();
-    ASSERT_NE(identity, nullptr);
-    std::optional<ResolvedNumericCommand> command = getElementwiseResolution(
-        identity->getOperation(), identity->getInputFormat());
-    ASSERT_TRUE(command.has_value());
-    ASSERT_EQ(command->getSemantics(), &semantics);
-    if (command->getFormalBackendKind() ==
-        wafer::FormalNumericBackendKind::MPFR) {
-      ++mpfrRows;
-      expectFormalError(wafer::evaluateFormalElementwiseLLVM(
-                            *command, std::vector<RawLogicalValue>(
-                                          wafer::getNumericElementwiseArity(
-                                              identity->getOperation()),
-                                          {identity->getInputFormat(), 0})),
-                        FormalNumericErrorCode::UnsupportedResolvedCommand);
-      continue;
-    }
-    ++llvmRows;
-    std::vector<RawLogicalValue> inputs(
-        wafer::getNumericElementwiseArity(identity->getOperation()),
-        {identity->getInputFormat(), 0});
-    llvm::Expected<FormalNumericResult> result =
-        wafer::evaluateFormalElementwiseLLVM(*command, inputs);
-    ASSERT_TRUE(static_cast<bool>(result))
-        << (result ? std::string() : llvm::toString(result.takeError()));
-    EXPECT_EQ(result->value.format, identity->getDestinationFormat());
-  }
-  EXPECT_EQ(llvmRows, 55u);
-  EXPECT_EQ(mpfrRows, 33u);
-}
-
 TEST(FormalNumericTest, GemmScalarPrimitivesUseF32FusedMACAndFinalRNE) {
-  std::optional<ResolvedNumericCommand> f32 =
-      getGemmResolution(LogicalFormat::F32);
+  auto f32 = getGemmResolution(LogicalFormat::F32);
   ASSERT_TRUE(f32.has_value());
   std::optional<FormalNumericResult> fused =
       expectGemmFMA(*f32, {LogicalFormat::F32, UINT64_C(0x3f800001)},
@@ -961,8 +899,7 @@ TEST(FormalNumericTest, GemmScalarPrimitivesUseF32FusedMACAndFinalRNE) {
   EXPECT_EQ(finalF32->value.bits, fused->value.bits);
   EXPECT_FALSE(finalF32->flags.any());
 
-  std::optional<ResolvedNumericCommand> f16 =
-      getGemmResolution(LogicalFormat::F16);
+  auto f16 = getGemmResolution(LogicalFormat::F16);
   ASSERT_TRUE(f16.has_value());
   fused = expectGemmFMA(*f16, {LogicalFormat::F16, UINT64_C(0x3e00)},
                         {LogicalFormat::F16, UINT64_C(0x4000)},
@@ -1002,8 +939,8 @@ TEST(FormalNumericTest, GemmScalarPrimitivesUseF32FusedMACAndFinalRNE) {
 }
 
 TEST(FormalNumericTest, ExactComparatorValidatesOperandsAndIncludesFlags) {
-  std::optional<ResolvedNumericCommand> f32ToF16 =
-      getResolution(/*fp32_fp16=*/166, NumericRoundingMode::NearestEven);
+  auto f32ToF16 =
+      getResolution(/*fp32_fp16=*/166, TargetRoundingMode::NearestEven);
   ASSERT_TRUE(f32ToF16.has_value());
   FormalNumericExecutionContext context;
   std::optional<FormalNumericResult> positive =

@@ -22,39 +22,32 @@ namespace {
 
 using namespace wafer;
 
-constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
-
-ResolvedNumericCommand resolveConvert(uint16_t opcode,
-                                      NumericRoundingMode rounding) {
+FormalConvertOperation resolveConvert(uint16_t opcode,
+                                      TargetRoundingMode rounding) {
   const TargetConvertRoute *route = findTargetConvertRoute(opcode);
   EXPECT_NE(route, nullptr);
-  std::optional<NumericConvertParameter> parameter;
+  std::optional<TargetConvertParameter> parameter;
   if (route && route->parameterKind == TargetConvertParameterKind::RoundingMode)
-    parameter = NumericConvertParameter::roundingMode(rounding);
+    parameter = TargetConvertParameter::roundingMode(rounding);
   if (!route)
     llvm::report_fatal_error("test failed to find a convert route");
-  NumericTensorKey source = llvm::cantFail(NumericTensorKey::create(
-      route->source, PhysicalTensorLayout::Tensor, {1}));
-  NumericTensorKey destination = llvm::cantFail(NumericTensorKey::create(
-      route->destination, PhysicalTensorLayout::Tensor, {1}));
-  llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
+  PhysicalTensorDescriptor source =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          route->source, PhysicalTensorLayout::Tensor, {1}));
+  PhysicalTensorDescriptor destination =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          route->destination, PhysicalTensorLayout::Tensor, {1}));
+  llvm::Expected<FormalConvertOperation> key = createFormalConvertOperation(
       opcode, std::move(source), std::move(destination), parameter);
   EXPECT_TRUE(static_cast<bool>(key))
       << (key ? std::string() : llvm::toString(key.takeError()));
   if (!key)
     llvm::report_fatal_error("test failed to construct a convert key");
-  llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumericCommand(kModelProfile, std::move(*key));
-  EXPECT_TRUE(static_cast<bool>(resolved))
-      << (resolved ? std::string() : llvm::toString(resolved.takeError()));
-  if (!resolved)
-    llvm::report_fatal_error("test failed to resolve a convert key");
-  EXPECT_TRUE(resolved->isSupported());
-  return std::move(*resolved);
+  return std::move(*key);
 }
 
-void compareOne(const ResolvedNumericCommand &command,
-                NumericRoundingMode rounding, RawLogicalValue source,
+void compareOne(const FormalConvertOperation &command,
+                TargetRoundingMode rounding, RawLogicalValue source,
                 LogicalFormat destination) {
   FormalNumericExecutionContext context;
   llvm::Expected<FormalNumericResult> production =
@@ -116,17 +109,17 @@ uint64_t encodeAPFloat(const llvm::APFloat &value) {
 }
 
 llvm::APFloat::roundingMode
-getAPFloatRoundingMode(NumericRoundingMode rounding) {
+getAPFloatRoundingMode(TargetRoundingMode rounding) {
   switch (rounding) {
-  case NumericRoundingMode::NearestEven:
+  case TargetRoundingMode::NearestEven:
     return llvm::APFloat::rmNearestTiesToEven;
-  case NumericRoundingMode::TowardZero:
+  case TargetRoundingMode::TowardZero:
     return llvm::APFloat::rmTowardZero;
-  case NumericRoundingMode::TowardPositive:
+  case TargetRoundingMode::TowardPositive:
     return llvm::APFloat::rmTowardPositive;
-  case NumericRoundingMode::TowardNegative:
+  case TargetRoundingMode::TowardNegative:
     return llvm::APFloat::rmTowardNegative;
-  case NumericRoundingMode::Stochastic:
+  case TargetRoundingMode::Stochastic:
     llvm_unreachable("stochastic mode reached deterministic differential");
   }
   llvm_unreachable("unknown numeric rounding mode");
@@ -221,7 +214,7 @@ APFloatEvaluation squareRootWithAPFloat(llvm::APFloat input,
 
 FormalNumericResult
 executeAPFloatArithmetic(SoftFloatOracleOperation operation,
-                         NumericRoundingMode rounding, LogicalFormat format,
+                         TargetRoundingMode rounding, LogicalFormat format,
                          uint64_t lhsBits,
                          std::optional<uint64_t> rhsBits = std::nullopt,
                          std::optional<uint64_t> addendBits = std::nullopt) {
@@ -269,7 +262,7 @@ struct APFloatStatusGapCounts {
 };
 
 void compareArithmeticOne(SoftFloatOracleOperation operation,
-                          LogicalFormat format, NumericRoundingMode rounding,
+                          LogicalFormat format, TargetRoundingMode rounding,
                           uint64_t lhs, std::optional<uint64_t> rhs,
                           std::optional<uint64_t> addend,
                           APFloatStatusGapCounts &statusGaps) {
@@ -352,18 +345,18 @@ std::vector<uint64_t> arithmeticBoundaryValues(LogicalFormat format) {
 }
 
 TEST(NumericOracleDifferentialTest, ExhaustiveF16ToF32MatchesSoftFloat) {
-  const ResolvedNumericCommand command = resolveConvert(
-      /*fp16_fp32=*/161, NumericRoundingMode::NearestEven);
+  const FormalConvertOperation command = resolveConvert(
+      /*fp16_fp32=*/161, TargetRoundingMode::NearestEven);
   for (uint32_t bits = 0; bits <= UINT16_MAX; ++bits)
-    compareOne(command, NumericRoundingMode::NearestEven,
+    compareOne(command, TargetRoundingMode::NearestEven,
                {LogicalFormat::F16, bits}, LogicalFormat::F32);
 }
 
 TEST(NumericOracleDifferentialTest,
      StratifiedF32ToF16AllDeterministicModesMatchSoftFloat) {
-  constexpr std::array<NumericRoundingMode, 4> modes = {
-      NumericRoundingMode::NearestEven, NumericRoundingMode::TowardZero,
-      NumericRoundingMode::TowardPositive, NumericRoundingMode::TowardNegative};
+  constexpr std::array<TargetRoundingMode, 4> modes = {
+      TargetRoundingMode::NearestEven, TargetRoundingMode::TowardZero,
+      TargetRoundingMode::TowardPositive, TargetRoundingMode::TowardNegative};
   constexpr std::array<uint32_t, 24> boundary = {
       UINT32_C(0x00000000), UINT32_C(0x80000000), UINT32_C(0x00000001),
       UINT32_C(0x80000001), UINT32_C(0x007fffff), UINT32_C(0x807fffff),
@@ -374,8 +367,8 @@ TEST(NumericOracleDifferentialTest,
       UINT32_C(0x7f7fffff), UINT32_C(0xff7fffff), UINT32_C(0x7f800000),
       UINT32_C(0xff800000), UINT32_C(0x7fc00000), UINT32_C(0x7f800001)};
 
-  for (NumericRoundingMode mode : modes) {
-    const ResolvedNumericCommand command =
+  for (TargetRoundingMode mode : modes) {
+    const FormalConvertOperation command =
         resolveConvert(/*fp32_fp16=*/166, mode);
     for (uint32_t bits : boundary)
       compareOne(command, mode, {LogicalFormat::F32, bits}, LogicalFormat::F16);
@@ -395,9 +388,9 @@ TEST(NumericOracleDifferentialTest,
      BoundaryF16F32ArithmeticAllModesMatchesSoftFloat) {
   constexpr std::array<LogicalFormat, 2> formats = {LogicalFormat::F16,
                                                     LogicalFormat::F32};
-  constexpr std::array<NumericRoundingMode, 4> modes = {
-      NumericRoundingMode::NearestEven, NumericRoundingMode::TowardZero,
-      NumericRoundingMode::TowardPositive, NumericRoundingMode::TowardNegative};
+  constexpr std::array<TargetRoundingMode, 4> modes = {
+      TargetRoundingMode::NearestEven, TargetRoundingMode::TowardZero,
+      TargetRoundingMode::TowardPositive, TargetRoundingMode::TowardNegative};
   constexpr std::array<SoftFloatOracleOperation, 4> binaryOperations = {
       SoftFloatOracleOperation::Add, SoftFloatOracleOperation::Subtract,
       SoftFloatOracleOperation::Multiply, SoftFloatOracleOperation::Divide};
@@ -405,7 +398,7 @@ TEST(NumericOracleDifferentialTest,
 
   for (LogicalFormat format : formats) {
     const std::vector<uint64_t> values = arithmeticBoundaryValues(format);
-    for (NumericRoundingMode mode : modes) {
+    for (TargetRoundingMode mode : modes) {
       for (SoftFloatOracleOperation operation : binaryOperations) {
         for (uint64_t lhs : values) {
           for (uint64_t rhs : values)
@@ -455,11 +448,11 @@ TEST(NumericOracleDifferentialTest,
   for (const Case &testCase : cases) {
     const FormalNumericResult production = executeAPFloatArithmetic(
         SoftFloatOracleOperation::FusedMultiplyAdd,
-        NumericRoundingMode::NearestEven, testCase.format, testCase.lhs,
+        TargetRoundingMode::NearestEven, testCase.format, testCase.lhs,
         testCase.rhs, testCase.addend);
     EXPECT_EQ(production.value.bits, testCase.expected);
     compareArithmeticOne(SoftFloatOracleOperation::FusedMultiplyAdd,
-                         testCase.format, NumericRoundingMode::NearestEven,
+                         testCase.format, TargetRoundingMode::NearestEven,
                          testCase.lhs, testCase.rhs, testCase.addend,
                          statusGaps);
   }
@@ -469,9 +462,9 @@ TEST(NumericOracleDifferentialTest,
      FixedStratifiedF16F32ArithmeticMatchesSoftFloat) {
   constexpr std::array<LogicalFormat, 2> formats = {LogicalFormat::F16,
                                                     LogicalFormat::F32};
-  constexpr std::array<NumericRoundingMode, 4> modes = {
-      NumericRoundingMode::NearestEven, NumericRoundingMode::TowardZero,
-      NumericRoundingMode::TowardPositive, NumericRoundingMode::TowardNegative};
+  constexpr std::array<TargetRoundingMode, 4> modes = {
+      TargetRoundingMode::NearestEven, TargetRoundingMode::TowardZero,
+      TargetRoundingMode::TowardPositive, TargetRoundingMode::TowardNegative};
   constexpr std::array<SoftFloatOracleOperation, 4> binaryOperations = {
       SoftFloatOracleOperation::Add, SoftFloatOracleOperation::Subtract,
       SoftFloatOracleOperation::Multiply, SoftFloatOracleOperation::Divide};
@@ -492,7 +485,7 @@ TEST(NumericOracleDifferentialTest,
       const uint64_t lhs = next() & mask;
       const uint64_t rhs = next() & mask;
       const uint64_t addend = next() & mask;
-      for (NumericRoundingMode mode : modes) {
+      for (TargetRoundingMode mode : modes) {
         for (SoftFloatOracleOperation operation : binaryOperations)
           compareArithmeticOne(operation, format, mode, lhs, rhs, std::nullopt,
                                statusGaps);

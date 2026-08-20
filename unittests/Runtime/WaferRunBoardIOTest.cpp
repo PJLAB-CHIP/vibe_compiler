@@ -3,8 +3,8 @@
 #include "WaferRunBoardIO.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Runtime/Board/BoardRuntime.h"
 #include "Wafer/Package/Manifest/PackageManifest.h"
+#include "Wafer/Runtime/Board/BoardRuntime.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
@@ -32,8 +32,8 @@ using wafer::runtime::LaunchSlotId;
 class WaferRunBoardIOTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory("wafer-run-board-io-test",
-                                                      root));
+    ASSERT_FALSE(
+        llvm::sys::fs::createUniqueDirectory("wafer-run-board-io-test", root));
   }
 
   void TearDown() override { llvm::sys::fs::remove_directories(root); }
@@ -41,11 +41,12 @@ protected:
   static ExternalPortRecord port(uint64_t id, int64_t roleIndex,
                                  llvm::StringRef dtype = "u8",
                                  std::vector<int64_t> shape = {4},
-                                 uint64_t bytes = 4,
-                                 uint64_t alignment = 1) {
-    return ExternalPortRecord{PortId(id), roleIndex, dtype.str(), shape,
-                              dtype.str(), PackageMemLayout::Tensor, shape,
-                              bytes, alignment};
+                                 uint64_t bytes = 4, uint64_t alignment = 1) {
+    auto programType = llvm::cantFail(wafer::parseProgramElementType(dtype));
+    auto targetType = llvm::cantFail(wafer::parseLogicalFormat(dtype));
+    return ExternalPortRecord{PortId(id), roleIndex,  programType,
+                              shape,      targetType, PackageMemLayout::Tensor,
+                              shape,      bytes,      alignment};
   }
 
   PackageManifest manifest(std::vector<ExternalPortRecord> inputs,
@@ -61,7 +62,9 @@ protected:
     manifest.inputs = std::move(inputs);
     manifest.outputs = std::move(outputs);
     manifest.modules = {
-        {ModuleId(0), "modules/tile_00000.so", moduleDigest(),
+        {ModuleId(0),
+         "modules/tile_00000.so",
+         moduleDigest(),
          wafer::kCurrentTargetModuleFormat.str(),
          {{PackageModuleExportRole::Main, "main"}}},
     };
@@ -99,8 +102,8 @@ protected:
     return path;
   }
 
-  llvm::Expected<std::vector<uint8_t>> readFileBytes(
-      llvm::StringRef path) const {
+  llvm::Expected<std::vector<uint8_t>>
+  readFileBytes(llvm::StringRef path) const {
     llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
         llvm::MemoryBuffer::getFile(path, /*IsText=*/false,
                                     /*RequiresNullTerminator=*/false);
@@ -140,8 +143,7 @@ protected:
 };
 
 TEST_F(WaferRunBoardIOTest, CaptureOnlyWritesExactRawBytes) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   llvm::SmallString<256> capturePath = writeFile("capture.raw", {});
   llvm::Expected<BoardInvocationFilePlan> plan = prepareBoardInvocationFiles(
@@ -164,7 +166,8 @@ TEST_F(WaferRunBoardIOTest, CaptureOnlyWritesExactRawBytes) {
   EXPECT_FALSE(error) << llvm::toString(std::move(error));
   llvm::Expected<std::vector<uint8_t>> written =
       readFileBytes(capturePath.str());
-  ASSERT_TRUE(static_cast<bool>(written)) << llvm::toString(written.takeError());
+  ASSERT_TRUE(static_cast<bool>(written))
+      << llvm::toString(written.takeError());
   EXPECT_EQ(*written, bytes(0x5A));
 }
 
@@ -174,23 +177,22 @@ TEST_F(WaferRunBoardIOTest,
   // The stable identity is the role index, so the prepared bytes carry over.
   // Plan keys index the source manifest's output vector, so the source
   // output domain must be dense 0..n-1.
-  PackageManifest source =
-      manifest({port(0, 0)}, {port(0, 0), port(1, 1)});
+  PackageManifest source = manifest({port(0, 0)}, {port(0, 0), port(1, 1)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0x11));
   llvm::SmallString<256> expected = writeFile("expected.raw", bytes(0x22));
   llvm::SmallString<256> captureZero = writeFile("capture-0.raw", {});
   llvm::SmallString<256> captureOne = writeFile("capture-1.raw", {});
   llvm::Expected<BoardInvocationFilePlan> sourcePlan =
-      prepareBoardInvocationFiles(source, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{{1, expected.str().str()}},
-                                  /*outputFiles=*/{{0, captureZero.str().str()},
-                                                   {1, captureOne.str().str()}});
+      prepareBoardInvocationFiles(
+          source, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{{1, expected.str().str()}},
+          /*outputFiles=*/
+          {{0, captureZero.str().str()}, {1, captureOne.str().str()}});
   ASSERT_TRUE(static_cast<bool>(sourcePlan))
       << llvm::toString(sourcePlan.takeError());
 
-  PackageManifest target =
-      manifest({port(20, 0)}, {port(20, 0), port(21, 1)});
+  PackageManifest target = manifest({port(20, 0)}, {port(20, 0), port(21, 1)});
   llvm::Expected<BoardInvocationFilePlan> targetPlan =
       remapBoardInvocationFilePlan(*sourcePlan, source, target);
   ASSERT_TRUE(static_cast<bool>(targetPlan))
@@ -215,21 +217,21 @@ TEST_F(WaferRunBoardIOTest,
   EXPECT_FALSE(error) << llvm::toString(std::move(error));
   llvm::Expected<std::vector<uint8_t>> written =
       readFileBytes(captureOne.str());
-  ASSERT_TRUE(static_cast<bool>(written)) << llvm::toString(written.takeError());
+  ASSERT_TRUE(static_cast<bool>(written))
+      << llvm::toString(written.takeError());
   EXPECT_EQ(*written, bytes(0x22));
 }
 
 TEST_F(WaferRunBoardIOTest, SemanticRemapRejectsPortDomainDrift) {
-  PackageManifest source =
-      manifest({port(0, 0)}, {port(0, 0), port(1, 1)});
+  PackageManifest source = manifest({port(0, 0)}, {port(0, 0), port(1, 1)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0x11));
   llvm::SmallString<256> expected = writeFile("expected.raw", bytes(0x22));
   llvm::Expected<BoardInvocationFilePlan> sourcePlan =
-      prepareBoardInvocationFiles(source, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{{1, expected.str().str()}},
-                                  /*outputFiles=*/{{0, "capture-0.raw"},
-                                                   {1, "capture-1.raw"}});
+      prepareBoardInvocationFiles(
+          source, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{{1, expected.str().str()}},
+          /*outputFiles=*/{{0, "capture-0.raw"}, {1, "capture-1.raw"}});
   ASSERT_TRUE(static_cast<bool>(sourcePlan))
       << llvm::toString(sourcePlan.takeError());
 
@@ -250,8 +252,7 @@ TEST_F(WaferRunBoardIOTest, SemanticRemapRejectsPortDomainDrift) {
       llvm::toString(rejected.takeError()).find("output port domain differs"),
       std::string::npos);
 
-  PackageManifest extraOutput =
-      manifest({port(10, 0)}, {port(11, 0)});
+  PackageManifest extraOutput = manifest({port(10, 0)}, {port(11, 0)});
   rejected = remapBoardInvocationFilePlan(*sourcePlan, source, extraOutput);
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(
@@ -268,8 +269,7 @@ TEST_F(WaferRunBoardIOTest, SemanticRemapRejectsPortDomainDrift) {
 }
 
 TEST_F(WaferRunBoardIOTest, SemanticRemapRejectsExistingProfilerRecords) {
-  PackageManifest source =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest source = manifest({port(0, 0)}, {port(1, 0)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0x11));
   llvm::SmallString<256> expected = writeFile("expected.raw", bytes(0x22));
   llvm::Expected<BoardInvocationFilePlan> sourcePlan =
@@ -282,8 +282,7 @@ TEST_F(WaferRunBoardIOTest, SemanticRemapRejectsExistingProfilerRecords) {
   sourcePlan->request.profilerRecordBytes =
       std::vector<std::vector<uint8_t>>(16, std::vector<uint8_t>(64));
 
-  PackageManifest target =
-      manifest({port(20, 0)}, {port(21, 0)});
+  PackageManifest target = manifest({port(20, 0)}, {port(21, 0)});
   llvm::Expected<BoardInvocationFilePlan> rejected =
       remapBoardInvocationFilePlan(*sourcePlan, source, target);
   ASSERT_FALSE(static_cast<bool>(rejected));
@@ -293,57 +292,53 @@ TEST_F(WaferRunBoardIOTest, SemanticRemapRejectsExistingProfilerRecords) {
 }
 
 TEST_F(WaferRunBoardIOTest, DuplicateOutputPortIsRejected) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{},
-                                  /*outputFiles=*/{{1, "first.raw"},
-                                                   {1, "second.raw"}});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{},
+          /*outputFiles=*/{{1, "first.raw"}, {1, "second.raw"}});
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError()).find("duplicate port id"),
             std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, MultiplePortsCannotShareAnOutputPath) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{},
-                                  /*outputFiles=*/{{1, "output.raw"},
-                                                   {2, "output.raw"}});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{},
+          /*outputFiles=*/{{1, "output.raw"}, {2, "output.raw"}});
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError())
-                .find("use the same raw file path"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("use the same raw file path"),
+      std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, LexicalOutputAliasesAreRejected) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   std::string lexicallyAliased = (root.str() + "/./output.raw").str();
   std::string direct = (root.str() + "/output.raw").str();
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{},
-                                  /*outputFiles=*/{{1, lexicallyAliased},
-                                                   {2, direct}});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{},
+          /*outputFiles=*/{{1, lexicallyAliased}, {2, direct}});
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError())
-                .find("use the same raw file path"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("use the same raw file path"),
+      std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, ParentSymlinkOutputAliasesAreRejected) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   ASSERT_FALSE(llvm::sys::fs::create_directory(root + "/real"));
   ASSERT_FALSE(llvm::sys::fs::create_link(root + "/real", root + "/link"));
@@ -355,86 +350,83 @@ TEST_F(WaferRunBoardIOTest, ParentSymlinkOutputAliasesAreRejected) {
                                   /*expectedFiles=*/{},
                                   /*outputFiles=*/{{1, aliased}, {2, direct}});
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError())
-                .find("use the same raw file path"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("use the same raw file path"),
+      std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, DotDotAfterParentSymlinkUsesFilesystemResolution) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   ASSERT_FALSE(llvm::sys::fs::create_directory(root + "/real"));
   ASSERT_FALSE(llvm::sys::fs::create_link(root + "/real", root + "/link"));
   std::string throughDotDot = (root.str() + "/link/../output.raw").str();
   std::string direct = (root.str() + "/output.raw").str();
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{},
-                                  /*outputFiles=*/{{1, throughDotDot},
-                                                   {2, direct}});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{},
+          /*outputFiles=*/{{1, throughDotDot}, {2, direct}});
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError())
-                .find("use the same raw file path"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("use the same raw file path"),
+      std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, ExistingDirectoryOutputIsRejectedBeforeExecution) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   ASSERT_FALSE(llvm::sys::fs::create_directory(root + "/output.raw"));
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{},
-                                  /*outputFiles=*/{{1, (root.str() + "/output.raw").str()}});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{},
+          /*outputFiles=*/{{1, (root.str() + "/output.raw").str()}});
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError()).find("names an existing "
-                                                      "directory"),
+  EXPECT_NE(llvm::toString(rejected.takeError())
+                .find("names an existing "
+                      "directory"),
             std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, UnknownAndReadOnlyOutputPortsAreRejected) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{},
-                                  /*outputFiles=*/{{1, "output.raw"},
-                                                   {0, "input.raw"},
-                                                   {99, "other.raw"}});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{},
+          /*outputFiles=*/
+          {{1, "output.raw"}, {0, "input.raw"}, {99, "other.raw"}});
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError())
-                .find("port ids outside the package"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("port ids outside the package"),
+      std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, ReadableInputsAndWriteOnlyOutputsStayDistinct) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   // A raw file supplied for the write-only output port is not a readable
   // input and cannot be bound: every declared input is still consumed and
   // the leftover file is rejected.
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()},
-                                                  {1, "output.raw"}},
-                                  /*expectedFiles=*/{},
-                                  /*outputFiles=*/{{1, "provider.raw"}});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}, {1, "output.raw"}},
+          /*expectedFiles=*/{},
+          /*outputFiles=*/{{1, "provider.raw"}});
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError())
-                .find("port ids outside the package"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(rejected.takeError()).find("port ids outside the package"),
+      std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, ExpectedAndOutputCompareBeforeCapture) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   std::vector<uint8_t> expectedBytes = {0, 1, 2, 3};
   llvm::SmallString<256> expectedFile =
@@ -465,10 +457,11 @@ TEST_F(WaferRunBoardIOTest, ExpectedAndOutputCompareBeforeCapture) {
 
   // The compare-only variant passes without writing anything.
   llvm::Expected<BoardInvocationFilePlan> compareOnly =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{{1, expectedFile.str().str()}},
-                                  /*outputFiles=*/{});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{{1, expectedFile.str().str()}},
+          /*outputFiles=*/{});
   ASSERT_TRUE(static_cast<bool>(compareOnly))
       << llvm::toString(compareOnly.takeError());
   std::vector<BoardRuntimeOutput> matching = {
@@ -521,8 +514,7 @@ TEST_F(WaferRunBoardIOTest,
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   std::vector<uint8_t> finite = {0x00, 0x3C, 0x00, 0x3C,
                                  0x00, 0x3C, 0x00, 0x3C};
-  llvm::SmallString<256> expectedFile =
-      writeFile("expected.raw", finite);
+  llvm::SmallString<256> expectedFile = writeFile("expected.raw", finite);
   llvm::Expected<BoardInvocationFilePlan> plan = prepareBoardInvocationFiles(
       package, BoardRuntimeInvocationRequest{},
       /*inputFiles=*/{{0, input.str().str()}},
@@ -536,20 +528,20 @@ TEST_F(WaferRunBoardIOTest,
                                    0x00, 0x3C, 0x00, 0x3C};
   llvm::Error error = validateBoardOutputs({{PortId(1), infinite}}, *plan);
   ASSERT_TRUE(static_cast<bool>(error));
-  EXPECT_NE(
-      llvm::toString(std::move(error)).find("contains NaN or infinity for "
-                                            "port 1 at element 0"),
-      std::string::npos);
+  EXPECT_NE(llvm::toString(std::move(error))
+                .find("contains NaN or infinity for "
+                      "port 1 at element 0"),
+            std::string::npos);
 
   // The relaxed policy is only valid for f16 output ports.
-  PackageManifest u8Package =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest u8Package = manifest({port(0, 0)}, {port(1, 0)});
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(u8Package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{},
-                                  /*outputFiles=*/{},
-                                  /*relaxedF16ExpectedFiles=*/{{1, expectedFile.str().str()}});
+      prepareBoardInvocationFiles(
+          u8Package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{},
+          /*outputFiles=*/{},
+          /*relaxedF16ExpectedFiles=*/{{1, expectedFile.str().str()}});
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(
       llvm::toString(rejected.takeError()).find("requires an f16 output port"),
@@ -566,11 +558,12 @@ TEST_F(WaferRunBoardIOTest,
   llvm::SmallString<256> exactFile = writeFile("exact.raw", finite);
   llvm::SmallString<256> relaxedFile = writeFile("relaxed.raw", finite);
   llvm::Expected<BoardInvocationFilePlan> rejected =
-      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
-                                  /*inputFiles=*/{{0, input.str().str()}},
-                                  /*expectedFiles=*/{{1, exactFile.str().str()}},
-                                  /*outputFiles=*/{},
-                                  /*relaxedF16ExpectedFiles=*/{{1, relaxedFile.str().str()}});
+      prepareBoardInvocationFiles(
+          package, BoardRuntimeInvocationRequest{},
+          /*inputFiles=*/{{0, input.str().str()}},
+          /*expectedFiles=*/{{1, exactFile.str().str()}},
+          /*outputFiles=*/{},
+          /*relaxedF16ExpectedFiles=*/{{1, relaxedFile.str().str()}});
   ASSERT_FALSE(static_cast<bool>(rejected));
   EXPECT_NE(llvm::toString(rejected.takeError())
                 .find("duplicate port id across --expected and "
@@ -579,14 +572,13 @@ TEST_F(WaferRunBoardIOTest,
 }
 
 TEST_F(WaferRunBoardIOTest, DuplicateAndUnexpectedProviderOutputsAreRejected) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
-  llvm::Expected<BoardInvocationFilePlan> plan = prepareBoardInvocationFiles(
-      package, BoardRuntimeInvocationRequest{},
-      /*inputFiles=*/{{0, input.str().str()}},
-      /*expectedFiles=*/{},
-      /*outputFiles=*/{{1, "provider.raw"}});
+  llvm::Expected<BoardInvocationFilePlan> plan =
+      prepareBoardInvocationFiles(package, BoardRuntimeInvocationRequest{},
+                                  /*inputFiles=*/{{0, input.str().str()}},
+                                  /*expectedFiles=*/{},
+                                  /*outputFiles=*/{{1, "provider.raw"}});
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
 
   llvm::Error error = validateBoardOutputs(
@@ -605,8 +597,7 @@ TEST_F(WaferRunBoardIOTest, DuplicateAndUnexpectedProviderOutputsAreRejected) {
 }
 
 TEST_F(WaferRunBoardIOTest, MissingAndWrongSizedProviderOutputsAreRejected) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   llvm::Expected<BoardInvocationFilePlan> plan = prepareBoardInvocationFiles(
       package, BoardRuntimeInvocationRequest{},
@@ -617,21 +608,18 @@ TEST_F(WaferRunBoardIOTest, MissingAndWrongSizedProviderOutputsAreRejected) {
 
   llvm::Error error = validateBoardOutputs({{PortId(1), bytes(0x00)}}, *plan);
   ASSERT_TRUE(static_cast<bool>(error));
-  EXPECT_NE(llvm::toString(std::move(error))
-                .find("all-and-only output ports"),
+  EXPECT_NE(llvm::toString(std::move(error)).find("all-and-only output ports"),
             std::string::npos);
 
   error = validateBoardOutputs(
       {{PortId(1), bytes(0x00)}, {PortId(2), bytes(0x00, 3)}}, *plan);
   ASSERT_TRUE(static_cast<bool>(error));
-  EXPECT_NE(llvm::toString(std::move(error))
-                .find("wrong-sized output port 2"),
+  EXPECT_NE(llvm::toString(std::move(error)).find("wrong-sized output port 2"),
             std::string::npos);
 }
 
 TEST_F(WaferRunBoardIOTest, StagingFailurePreservesEveryDestination) {
-  PackageManifest package =
-      manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
+  PackageManifest package = manifest({port(0, 0)}, {port(1, 0), port(2, 1)});
   llvm::SmallString<256> input = writeFile("input.raw", bytes(0xAB));
   ASSERT_FALSE(llvm::sys::fs::create_directory(root + "/out"));
   std::string shortPath = (root.str() + "/out/short.raw").str();
@@ -649,12 +637,14 @@ TEST_F(WaferRunBoardIOTest, StagingFailurePreservesEveryDestination) {
   };
   llvm::Error error = validateAndWriteBoardOutputs(outputs, *plan);
   ASSERT_TRUE(static_cast<bool>(error));
-  EXPECT_NE(llvm::toString(std::move(error)).find("failed to stage raw output "
-                                                  "file"),
+  EXPECT_NE(llvm::toString(std::move(error))
+                .find("failed to stage raw output "
+                      "file"),
             std::string::npos);
   // Neither destination was replaced: no raw file exists in the output dir.
   std::error_code directoryError;
-  for (llvm::sys::fs::directory_iterator iterator(root + "/out", directoryError),
+  for (llvm::sys::fs::directory_iterator
+           iterator(root + "/out", directoryError),
        end;
        iterator != end && !directoryError; iterator.increment(directoryError))
     ADD_FAILURE() << "unexpected file created: " << iterator->path();

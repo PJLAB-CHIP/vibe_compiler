@@ -2,8 +2,9 @@
 
 #include "Wafer/Model/Core/TargetModelInvocation.h"
 
-#include "Wafer/Target/Numeric/NumericSemantics.h"
 #include "Wafer/Target/Layout/PhysicalTensorCodec.h"
+#include "Wafer/Target/Layout/TargetTensorMaterialization.h"
+#include "Wafer/Target/Numeric/Formal/FormalOperations.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -22,25 +23,6 @@ namespace {
 llvm::Error invocationError(TargetModelInvocationErrorCode code,
                             const llvm::Twine &detail) {
   return llvm::make_error<TargetModelInvocationError>(code, detail.str());
-}
-
-std::optional<LogicalFormat> getLogicalFormat(llvm::StringRef dtype) {
-  if (dtype == "i1")
-    return LogicalFormat::Bool;
-  if (dtype == "ui8")
-    return LogicalFormat::U8;
-  if (dtype == "ui16")
-    return LogicalFormat::U16;
-  if (dtype == "ui32")
-    return LogicalFormat::U32;
-  if (dtype == "ui64")
-    return LogicalFormat::U64;
-  llvm::Expected<LogicalFormat> parsed = parseLogicalFormat(dtype);
-  if (!parsed) {
-    llvm::consumeError(parsed.takeError());
-    return std::nullopt;
-  }
-  return *parsed;
 }
 
 std::optional<compiler::TileEntryArgumentKind>
@@ -62,13 +44,9 @@ bool isReadOnly(compiler::TileEntryArgumentKind kind) {
          kind == compiler::TileEntryArgumentKind::TargetTensor;
 }
 
-llvm::Expected<NumericTensorKey>
+llvm::Expected<PhysicalTensorDescriptor>
 makeTensorKey(const compiler::TileEntryArgument &slot) {
-  std::optional<LogicalFormat> format = getLogicalFormat(slot.dtype);
-  if (!format)
-    return invocationError(
-        TargetModelInvocationErrorCode::UnsupportedProgramTensor,
-        "tile entry argument has no logical format: " + slot.dtype);
+  const LogicalFormat format = slot.dtype;
   std::vector<uint64_t> shape;
   shape.reserve(slot.shape.size());
   for (int64_t dimension : slot.shape) {
@@ -93,11 +71,12 @@ makeTensorKey(const compiler::TileEntryArgument &slot) {
     layout = PhysicalTensorLayout::NCx;
     break;
   }
-  llvm::Expected<NumericTensorKey> key =
-      NumericTensorKey::create(*format, layout, std::move(shape));
+  llvm::Expected<PhysicalTensorDescriptor> key =
+      PhysicalTensorDescriptor::create(format, layout, std::move(shape));
   if (!key)
-    return invocationError(TargetModelInvocationErrorCode::InvalidTileEntryArgument,
-                           llvm::toString(key.takeError()));
+    return invocationError(
+        TargetModelInvocationErrorCode::InvalidTileEntryArgument,
+        llvm::toString(key.takeError()));
   return key;
 }
 
@@ -121,9 +100,7 @@ decodeCompactProgramTensor(const compiler::ProgramTensor &tensor,
     return invocationError(
         TargetModelInvocationErrorCode::InvalidProgramInvocation,
         "program tensor storage width is inconsistent");
-  const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministic())
-          .numericDecodePolicy;
+  const LogicalScalarCodecPolicy policy = getTargetTensorScalarCodecPolicy();
   std::vector<RawLogicalValue> values;
   values.reserve(tensor.getBytes().size() / elementBytes);
   for (uint64_t offset = 0; offset < tensor.getBytes().size();
@@ -141,7 +118,7 @@ decodeCompactProgramTensor(const compiler::ProgramTensor &tensor,
 
 llvm::Expected<std::vector<uint8_t>>
 encodeCompactProgramTensor(llvm::ArrayRef<RawLogicalValue> values,
-                           llvm::StringRef dtype, LogicalFormat format) {
+                           LogicalFormat format) {
   const LogicalFormatDescriptor *descriptor =
       findLogicalFormatDescriptor(format);
   if (!descriptor || descriptor->bitpacked)
@@ -154,9 +131,7 @@ encodeCompactProgramTensor(llvm::ArrayRef<RawLogicalValue> values,
     return invocationError(TargetModelInvocationErrorCode::AddressOverflow,
                            "compact target output byte count overflows");
   std::vector<uint8_t> bytes(values.size() * elementBytes, 0);
-  const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministic())
-          .numericEncodePolicy;
+  const LogicalScalarCodecPolicy policy = getTargetTensorScalarCodecPolicy();
   for (auto [index, value] : llvm::enumerate(values)) {
     if (value.format != format)
       return invocationError(
@@ -169,7 +144,6 @@ encodeCompactProgramTensor(llvm::ArrayRef<RawLogicalValue> values,
           TargetModelInvocationErrorCode::InvalidTileEntryArgument,
           llvm::toString(std::move(error)));
   }
-  (void)dtype;
   return bytes;
 }
 
@@ -189,7 +163,8 @@ bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
   return lhs.kind == rhs.kind && lhs.resourceIndex == rhs.resourceIndex &&
          lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
          lhs.shape == rhs.shape && lhs.byteSize == rhs.byteSize &&
-         lhs.alignment == rhs.alignment && lhs.access == rhs.access;
+         lhs.alignment == rhs.alignment && lhs.access == rhs.access &&
+         lhs.targetTensorMaterialization == rhs.targetTensorMaterialization;
 }
 
 bool haveSameBytesView(llvm::ArrayRef<uint8_t> lhs,
@@ -242,12 +217,12 @@ std::error_code TargetModelInvocationError::convertToErrorCode() const {
 llvm::Expected<std::vector<uint8_t>>
 encodeTargetModelProgramTensor(const compiler::ProgramTensor &tensor,
                                const compiler::TileEntryArgument &slot) {
-  if (tensor.getDType() != slot.dtype ||
+  if (getTargetLogicalFormat(tensor.getDType()) != slot.dtype ||
       tensor.getShape() != llvm::ArrayRef<int64_t>(slot.shape))
     return invocationError(
         TargetModelInvocationErrorCode::InvalidProgramInvocation,
         "program tensor dtype/shape disagrees with tile entry argument");
-  llvm::Expected<NumericTensorKey> key = makeTensorKey(slot);
+  llvm::Expected<PhysicalTensorDescriptor> key = makeTensorKey(slot);
   if (!key)
     return key.takeError();
   llvm::Expected<std::vector<RawLogicalValue>> values =
@@ -262,8 +237,9 @@ encodeTargetModelProgramTensor(const compiler::ProgramTensor &tensor,
         llvm::toString(physical.takeError()));
   if (slot.byteSize < 0 ||
       physical->size() != static_cast<uint64_t>(slot.byteSize))
-    return invocationError(TargetModelInvocationErrorCode::InvalidTileEntryArgument,
-                           "physical tensor bytes disagree with Kernel ABI");
+    return invocationError(
+        TargetModelInvocationErrorCode::InvalidTileEntryArgument,
+        "physical tensor bytes disagree with Kernel ABI");
   return physical;
 }
 
@@ -275,23 +251,26 @@ decodeTargetModelProgramTensor(const compiler::TileEntryArgument &slot,
     return invocationError(
         TargetModelInvocationErrorCode::InvalidTileEntryArgument,
         "target output byte count disagrees with Kernel ABI");
-  llvm::Expected<NumericTensorKey> key = makeTensorKey(slot);
+  llvm::Expected<PhysicalTensorDescriptor> key = makeTensorKey(slot);
   if (!key)
     return key.takeError();
   llvm::Expected<std::vector<RawLogicalValue>> values =
       unpackPhysicalTensorLogicalValues(*key, physicalBytes);
   if (!values)
-    return invocationError(TargetModelInvocationErrorCode::InvalidTileEntryArgument,
-                           llvm::toString(values.takeError()));
+    return invocationError(
+        TargetModelInvocationErrorCode::InvalidTileEntryArgument,
+        llvm::toString(values.takeError()));
   llvm::Expected<std::vector<uint8_t>> compact =
-      encodeCompactProgramTensor(*values, slot.dtype, key->getFormat());
+      encodeCompactProgramTensor(*values, key->getFormat());
   if (!compact)
     return compact.takeError();
   llvm::Expected<compiler::ProgramTensor> tensor =
-      compiler::ProgramTensor::create(slot.dtype, slot.shape, *compact);
+      compiler::ProgramTensor::create(getProgramElementType(slot.dtype),
+                                      slot.shape, *compact);
   if (!tensor)
-    return invocationError(TargetModelInvocationErrorCode::InvalidTileEntryArgument,
-                           llvm::toString(tensor.takeError()));
+    return invocationError(
+        TargetModelInvocationErrorCode::InvalidTileEntryArgument,
+        llvm::toString(tensor.takeError()));
   return tensor;
 }
 
@@ -424,8 +403,7 @@ llvm::Expected<PreparedTargetModelInvocation> prepareTargetModelInvocation(
         // Shared transaction materialization views agree by storage
         // identity; independently sliced inputs agree by byte comparison.
         // The target codec runs exactly once per card-shared resource.
-        if (!haveSameBytesView(existing->sourceView,
-                               input->tensor.getBytes()))
+        if (!haveSameBytesView(existing->sourceView, input->tensor.getBytes()))
           return invocationError(
               TargetModelInvocationErrorCode::InvalidProgramInvocation,
               "Tile invocations disagree on one card-shared input resource");

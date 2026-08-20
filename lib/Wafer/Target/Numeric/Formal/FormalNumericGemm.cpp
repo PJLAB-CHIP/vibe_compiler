@@ -21,13 +21,12 @@ namespace wafer {
 using namespace formal_detail;
 
 llvm::Expected<FormalNumericResult>
-evaluateFormalGemmFusedMultiplyAdd(const ResolvedNumericCommand &command,
+evaluateFormalGemmFusedMultiplyAdd(const FormalGemmOperation &operation,
                                    RawLogicalValue lhs, RawLogicalValue rhs,
                                    RawLogicalValue accumulator) {
-  if (llvm::Error error = validateGemmResolvedCommand(command))
+  if (llvm::Error error = validateFormalGemmOperation(operation))
     return std::move(error);
-  const LogicalFormat operandFormat =
-      command.getSemantics()->getNEGemmKey()->getFormat();
+  const LogicalFormat operandFormat = operation.lhs.getFormat();
   llvm::Expected<RawLogicalValue> canonicalLhs =
       validateOperand(lhs, operandFormat, "GEMM lhs");
   if (!canonicalLhs)
@@ -114,9 +113,9 @@ evaluateFormalGemmFusedMultiplyAdd(const ResolvedNumericCommand &command,
 }
 
 llvm::Expected<FormalNumericResult>
-evaluateFormalGemmFinalize(const ResolvedNumericCommand &command,
+evaluateFormalGemmFinalize(const FormalGemmOperation &operation,
                            RawLogicalValue accumulator) {
-  if (llvm::Error error = validateGemmResolvedCommand(command))
+  if (llvm::Error error = validateFormalGemmOperation(operation))
     return std::move(error);
   llvm::Expected<RawLogicalValue> canonicalAccumulator =
       validateOperand(accumulator, LogicalFormat::F32, "GEMM accumulator");
@@ -127,8 +126,7 @@ evaluateFormalGemmFinalize(const ResolvedNumericCommand &command,
   if (!classification)
     return classification.takeError();
 
-  const LogicalFormat destinationFormat =
-      command.getSemantics()->getNEGemmKey()->getFormat();
+  const LogicalFormat destinationFormat = operation.destination.getFormat();
   const LogicalFormatDescriptor &destinationDescriptor =
       *findLogicalFormatDescriptor(destinationFormat);
   FormalNumericExceptionFlags flags;
@@ -146,12 +144,11 @@ evaluateFormalGemmFinalize(const ResolvedNumericCommand &command,
       result.convert(*getFloatSemantics(destinationFormat),
                      llvm::APFloat::rmNearestTiesToEven, &ignoredLosesInfo);
   flags = flagsFromStatus(status);
-  flags.underflow =
-      flags.inexact &&
-      isTinyAfterUnboundedPrecisionRounding(
-          *canonicalAccumulator,
-          *findLogicalFormatDescriptor(LogicalFormat::F32),
-          destinationDescriptor, NumericRoundingMode::NearestEven);
+  flags.underflow = flags.inexact &&
+                    isTinyAfterUnboundedPrecisionRounding(
+                        *canonicalAccumulator,
+                        *findLogicalFormatDescriptor(LogicalFormat::F32),
+                        destinationDescriptor, TargetRoundingMode::NearestEven);
   std::optional<uint64_t> bits = encodeFloat(result, destinationFormat);
   if (!bits)
     return formalError(FormalNumericErrorCode::InvalidResultEncoding,

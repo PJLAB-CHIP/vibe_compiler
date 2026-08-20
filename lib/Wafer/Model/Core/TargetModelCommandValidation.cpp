@@ -130,27 +130,18 @@ llvm::Error validateConvert(const target::TargetConvertCommand &value) {
                        "convert kind has no exact target route");
   switch (route->parameterKind) {
   case TargetConvertParameterKind::None:
-    if (value.zeroPoint || value.roundingMode)
+    if (value.parameter)
       return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                          "parameterless convert carries an optional field");
     break;
   case TargetConvertParameterKind::RoundingMode:
-    if (value.zeroPoint || !value.roundingMode ||
-        *value.roundingMode > std::numeric_limits<uint8_t>::max())
+    if (!value.parameter || !value.parameter->getRoundingMode())
       return kernelError(
           TargetModelKernelErrorCode::InvalidCommandField,
           "rounding convert requires exactly one known rounding mode");
-    if (llvm::Expected<NumericRoundingMode> mode =
-            parseNumericRoundingMode(static_cast<uint8_t>(*value.roundingMode));
-        !mode) {
-      llvm::consumeError(mode.takeError());
-      return kernelError(
-          TargetModelKernelErrorCode::InvalidCommandField,
-          "rounding convert requires exactly one known rounding mode");
-    }
     break;
   case TargetConvertParameterKind::ZeroPoint:
-    if (!value.zeroPoint || value.roundingMode)
+    if (!value.parameter || !value.parameter->getZeroPoint())
       return kernelError(
           TargetModelKernelErrorCode::InvalidCommandField,
           "zero-point convert requires exactly one uint32 zero point");
@@ -164,18 +155,18 @@ llvm::Error validateElementwise(const target::TargetElementwiseCommand &value) {
     return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "elementwise element_count must be positive");
   if (llvm::Error error = requireRegisteredOperation(
-          value.operation, getNumericElementwiseOperations(),
+          value.operation, getTargetElementwiseOperations(),
           "elementwise operation"))
     return error;
   if (llvm::Error error = requireEngineFormat(
           value.format, TargetFormatEngine::CT, "elementwise"))
     return error;
-  const bool binary = getNumericElementwiseArity(value.operation) == 2;
+  const bool binary = getTargetElementwiseArity(value.operation) == 2;
   if (value.rhs.has_value() != binary)
     return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "elementwise rhs presence differs from operation arity");
-  const bool logic = isNumericElementwiseLogic(value.operation);
-  const bool relation = isNumericElementwiseRelation(value.operation);
+  const bool logic = isTargetElementwiseLogic(value.operation);
+  const bool relation = isTargetElementwiseRelation(value.operation);
   if (logic != (value.format == LogicalFormat::Bool) ||
       (relation && value.format == LogicalFormat::Bool))
     return kernelError(
@@ -342,11 +333,11 @@ llvm::Error validatePayload(const target::TargetCommandPayload &payload) {
           return validateElementwise(value);
         } else if constexpr (std::is_same_v<T, target::TargetReduceCommand>) {
           if (llvm::Error error = requireRegisteredOperation(
-                  value.operation, getNumericReduceOperations(),
+                  value.operation, getTargetReduceOperations(),
                   "reduce operation"))
             return error;
           if (value.dimension >
-              static_cast<uint32_t>(NativeCTReduceDimension::Trailing2And1And0))
+              static_cast<uint32_t>(TargetReduceDimension::Trailing2And1And0))
             return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                                "reduce dimension has an unknown selector");
           if (llvm::Error error = validateDataShape(value.nhwc, "reduce shape"))
@@ -555,8 +546,8 @@ stringifyTargetModelKernelErrorCode(TargetModelKernelErrorCode code) {
     return "unsupported-command";
   case TargetModelKernelErrorCode::MemoryReadFailure:
     return "memory-read-failure";
-  case TargetModelKernelErrorCode::NumericResolutionFailure:
-    return "numeric-resolution-failure";
+  case TargetModelKernelErrorCode::FormalNumericFailure:
+    return "formal-numeric-failure";
   case TargetModelKernelErrorCode::PhysicalCodecFailure:
     return "physical-codec-failure";
   case TargetModelKernelErrorCode::ManagedReferenceBackendUnavailable:
@@ -584,8 +575,7 @@ std::error_code TargetModelKernelError::convertToErrorCode() const {
 
 llvm::Error
 validateTargetModelCommandFields(const compiler::TargetCommand &command) {
-  if (command.cardId.getValue() < 0 ||
-      command.tileId.getValue() < 0 ||
+  if (command.cardId.getValue() < 0 || command.tileId.getValue() < 0 ||
       command.launchSlotId.getValue() < 0)
     return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "command physical identity and launch slot must be "

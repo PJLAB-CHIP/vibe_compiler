@@ -8,7 +8,7 @@ using namespace wafer::bulk_detail;
 
 llvm::Expected<UnqualifiedBulkExecutionResult>
 executeBulkTensorForQualification(const BulkExecutionEnvironment &environment,
-                                  const ResolvedNumericCommand &command,
+                                  const FormalGemmOperation &operation,
                                   llvm::ArrayRef<BulkTensorStorage> inputs,
                                   const BulkTensorStorage &destinationTemplate,
                                   BulkNumericWorkBudget budget) {
@@ -19,7 +19,7 @@ executeBulkTensorForQualification(const BulkExecutionEnvironment &environment,
   if (current->getDigest() != environment.getDigest())
     return bulkError(BulkTensorNumericErrorCode::EnvironmentMismatch,
                      "requested bulk environment is not current");
-  return executeOneDNN(environment, command, inputs, destinationTemplate,
+  return executeOneDNN(environment, operation, inputs, destinationTemplate,
                        budget);
 }
 

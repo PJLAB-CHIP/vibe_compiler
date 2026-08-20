@@ -6,6 +6,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 
+#include "Wafer/Program/ProgramElementType.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -40,7 +42,7 @@ struct ProgramBoundaryBinding {
   ProgramDistributionKind distribution = ProgramDistributionKind::Replicated;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
-  std::string dtype;
+  ProgramElementType dtype = ProgramElementType::F32;
   std::vector<ProgramPartitionSlice> partitionSlices;
 };
 
@@ -50,7 +52,7 @@ struct ProgramParameterBinding {
   ProgramDistributionKind distribution = ProgramDistributionKind::Replicated;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
-  std::string dtype;
+  ProgramElementType dtype = ProgramElementType::F32;
   std::vector<ProgramPartitionSlice> partitionSlices;
 };
 
@@ -58,7 +60,7 @@ struct ProgramConstantBinding {
   int64_t argumentIndex = -1;
   int64_t position = -1;
   std::vector<int64_t> shape;
-  std::string dtype;
+  ProgramElementType dtype = ProgramElementType::F32;
   std::string payloadPath;
 };
 
@@ -93,7 +95,7 @@ readProgramInputLocators(llvm::StringRef metaPath);
 /// by program-directory verification. Multi-byte elements use canonical
 /// little-endian storage, independent of the host byte order.
 struct NpyTensorPayload {
-  std::string dtype;
+  ProgramElementType dtype = ProgramElementType::F32;
   std::vector<int64_t> shape;
   std::vector<uint8_t> bytes;
 };
@@ -113,9 +115,9 @@ public:
 
   /// Bounded in-bounds read of [offset, offset + out.size()). Returning an
   /// Error describes an invalid or out-of-range read, not payload semantics.
-  virtual llvm::Error readPayloadBytes(uint64_t offset,
-                                       llvm::MutableArrayRef<uint8_t> out)
-      const = 0;
+  virtual llvm::Error
+  readPayloadBytes(uint64_t offset,
+                   llvm::MutableArrayRef<uint8_t> out) const = 0;
 
   /// Whole-content SHA-256 digest (lowercase hex) when the source already
   /// owns a verified digest fact; std::nullopt when it does not. Verifiers
@@ -132,8 +134,8 @@ public:
 class ProgramPayloadResolver {
 public:
   virtual ~ProgramPayloadResolver() = default;
-  virtual const ProgramPayloadSource *resolve(llvm::StringRef locator)
-      const = 0;
+  virtual const ProgramPayloadSource *
+  resolve(llvm::StringRef locator) const = 0;
 };
 
 /// Raw NPY header facts read from an owned payload source. Policy decisions
@@ -155,7 +157,7 @@ parseNpyPayloadHeader(const ProgramPayloadSource &source,
 
 /// Decodes an NPY descr into the canonical program dtype and its element
 /// width. Rejects unsupported encodings and non-canonical byte orders.
-std::optional<std::pair<llvm::StringRef, uint64_t>>
+std::optional<std::pair<ProgramElementType, uint64_t>>
 decodeProgramNpyDescr(llvm::StringRef descr);
 
 mlir::LogicalResult

@@ -561,12 +561,13 @@ BulkQualificationSpec::createWithPhysicalPayload(
   lhsShape.insert(lhsShape.end(), {m, k});
   rhsShape.insert(rhsShape.end(), {k, n});
   destinationShape.insert(destinationShape.end(), {m, n});
-  llvm::Expected<NumericTensorKey> lhs =
-      NumericTensorKey::create(format, lhsLayout, lhsShape);
-  llvm::Expected<NumericTensorKey> rhs =
-      NumericTensorKey::create(format, rhsLayout, rhsShape);
-  llvm::Expected<NumericTensorKey> destination =
-      NumericTensorKey::create(format, destinationLayout, destinationShape);
+  llvm::Expected<PhysicalTensorDescriptor> lhs =
+      PhysicalTensorDescriptor::create(format, lhsLayout, lhsShape);
+  llvm::Expected<PhysicalTensorDescriptor> rhs =
+      PhysicalTensorDescriptor::create(format, rhsLayout, rhsShape);
+  llvm::Expected<PhysicalTensorDescriptor> destination =
+      PhysicalTensorDescriptor::create(format, destinationLayout,
+                                       destinationShape);
   if (llvm::Error error = takeExpectedErrors(lhs, rhs, destination))
     return error;
   llvm::Expected<uint64_t> lhsBytes = getBulkTensorPhysicalBytes(*lhs);

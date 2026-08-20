@@ -260,7 +260,7 @@ uint64_t getProfileCaptureRecordBytes(ProfileCaptureKind capture) {
 
 llvm::Error
 verifyProfileCaptureTileEntryArguments(llvm::ArrayRef<TileEntryArgument> slots,
-                                   ProfileCaptureKind capture) {
+                                       ProfileCaptureKind capture) {
   auto isProfilerSlot = [](const TileEntryArgument &slot) {
     return slot.kind == TileEntryArgumentKind::ProfileRecord;
   };
@@ -279,7 +279,7 @@ verifyProfileCaptureTileEntryArguments(llvm::ArrayRef<TileEntryArgument> slots,
   const TileEntryArgument &slot = slots.back();
   const uint64_t recordBytes = getProfileCaptureRecordBytes(capture);
   if (slot.ordinal != static_cast<int64_t>(slots.size() - 1) ||
-      slot.dtype != "u8" || slot.layout != MemLayout::Tensor ||
+      slot.dtype != LogicalFormat::U8 || slot.layout != MemLayout::Tensor ||
       slot.shape != std::vector<int64_t>{static_cast<int64_t>(recordBytes)} ||
       slot.byteSize != static_cast<int64_t>(recordBytes) ||
       slot.alignment != WAFER_TX81_PROFILER_BUFFER_ALIGNMENT)

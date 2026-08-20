@@ -11,7 +11,7 @@ using namespace bulk_detail;
 llvm::Expected<BulkTensorNumericResult>
 executeQualifiedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
                                   const QualifiedBulkExecution &execution,
-                                  const ResolvedNumericCommand &command,
+                                  const FormalGemmOperation &operation,
                                   llvm::ArrayRef<BulkTensorStorage> inputs,
                                   const BulkTensorStorage &destinationTemplate,
                                   BulkNumericWorkBudget budget) {
@@ -19,20 +19,21 @@ executeQualifiedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
     return bulkError(
         BulkTensorNumericErrorCode::EnvironmentMismatch,
         "bulk qualification does not match the current environment");
+  llvm::Expected<std::string> problemDigest =
+      computeBulkGemmProblemDigest(operation);
+  if (!problemDigest)
+    return problemDigest.takeError();
   if (execution.getAdapterDigest() != getBulkAdapterContractDigest() ||
-      !command.getSemantics() ||
-      execution.getSemanticProfileDigest() !=
-          command.getSemantics()->getDigest() ||
-      execution.getResolutionDigest() != command.getDigest() ||
+      execution.getProblemDigest() != *problemDigest ||
       execution.getInputPayloadDigest() !=
           computeBulkTensorPayloadDigest(inputs) ||
       execution.getDestinationTemplateDigest() !=
           computeBulkTensorStorageDigest(destinationTemplate))
     return bulkError(BulkTensorNumericErrorCode::QualificationMismatch,
-                     "bulk command, payload or destination template is not "
+                     "bulk operation, payload or destination template is not "
                      "the frozen qualified row");
   llvm::Expected<detail::UnqualifiedBulkExecutionResult> result =
-      detail::executeBulkTensorForQualification(environment, command, inputs,
+      detail::executeBulkTensorForQualification(environment, operation, inputs,
                                                 destinationTemplate, budget);
   if (!result)
     return result.takeError();
@@ -55,16 +56,10 @@ executeQualifiedBulkTensorNumeric(const BulkExecutionEnvironment &environment,
 llvm::Expected<BulkTensorNumericResult>
 executeManagedReferenceBulkTensorNumeric(
     const BulkExecutionEnvironment &environment,
-    const ResolvedNumericCommand &command,
+    const FormalGemmOperation &operation,
     llvm::ArrayRef<BulkTensorStorage> inputs,
     const BulkTensorStorage &destinationTemplate,
     BulkNumericWorkBudget budget) {
-  if (!command.isSupported() ||
-      command.getFamily() != NumericCommandFamily::NEGemm ||
-      !command.getSemantics())
-    return bulkError(BulkTensorNumericErrorCode::UnsupportedResolvedCommand,
-                     "managed-reference bulk execution requires a supported "
-                     "NE GEMM semantic identity");
   for (const BulkTensorStorage &input : inputs) {
     llvm::Expected<std::vector<RawLogicalValue>> values =
         unpackBulkTensorLogicalValues(input);
@@ -85,7 +80,7 @@ executeManagedReferenceBulkTensorNumeric(
     }
   }
   llvm::Expected<detail::UnqualifiedBulkExecutionResult> result =
-      detail::executeBulkTensorForQualification(environment, command, inputs,
+      detail::executeBulkTensorForQualification(environment, operation, inputs,
                                                 destinationTemplate, budget);
   if (!result)
     return result.takeError();

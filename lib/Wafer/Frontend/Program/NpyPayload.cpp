@@ -174,7 +174,6 @@ readNpyPayloadMetadata(llvm::StringRef path, llvm::StringRef displayName,
   return metadata;
 }
 
-
 std::optional<std::pair<llvm::StringRef, uint64_t>>
 decodeNpyDescr(llvm::StringRef descr) {
   // ProgramTensor owns canonical little-endian compact bytes. NumPy '=' means
@@ -224,8 +223,8 @@ readNpyPayloadMetadataFromSource(const ProgramPayloadSource &source,
   auto readBytes = [&](uint64_t offset,
                        llvm::MutableArrayRef<uint8_t> out) -> bool {
     if (offset > fileSize || out.size() > fileSize - offset) {
-      rejectProgramDirectory(
-          ("truncated npy payload: " + displayName).str(), diagnostics);
+      rejectProgramDirectory(("truncated npy payload: " + displayName).str(),
+                             diagnostics);
       return true;
     }
     if (llvm::Error error = source.readPayloadBytes(offset, out)) {
@@ -242,8 +241,8 @@ readNpyPayloadMetadataFromSource(const ProgramPayloadSource &source,
   if (readBytes(0, prefix))
     return failure();
   if (llvm::ArrayRef<uint8_t>(prefix).take_front(6) !=
-      llvm::ArrayRef<uint8_t>(
-          reinterpret_cast<const uint8_t *>("\x93NUMPY"), 6)) {
+      llvm::ArrayRef<uint8_t>(reinterpret_cast<const uint8_t *>("\x93NUMPY"),
+                              6)) {
     rejectProgramDirectory(
         ("npy payload is missing magic: " + displayName).str(), diagnostics);
     return failure();
@@ -430,7 +429,11 @@ llvm::Expected<NpyTensorPayload> loadNpyTensorPayload(llvm::StringRef path) {
       reinterpret_cast<const uint8_t *>(fileBytes.data()) +
           metadata->dataOffset,
       static_cast<size_t>(rawBytes));
-  return NpyTensorPayload{decoded->first.str(), metadata->shape,
+  llvm::Expected<ProgramElementType> elementType =
+      parseProgramElementType(decoded->first);
+  if (!elementType)
+    return elementType.takeError();
+  return NpyTensorPayload{*elementType, metadata->shape,
                           std::vector<uint8_t>(payload.begin(), payload.end())};
 }
 
@@ -449,9 +452,18 @@ parseNpyPayloadHeader(const ProgramPayloadSource &source,
                           std::move(metadata->shape)};
 }
 
-std::optional<std::pair<llvm::StringRef, uint64_t>>
+std::optional<std::pair<ProgramElementType, uint64_t>>
 decodeProgramNpyDescr(llvm::StringRef descr) {
-  return decodeNpyDescr(descr);
+  auto decoded = decodeNpyDescr(descr);
+  if (!decoded)
+    return std::nullopt;
+  llvm::Expected<ProgramElementType> type =
+      parseProgramElementType(decoded->first);
+  if (!type) {
+    llvm::consumeError(type.takeError());
+    return std::nullopt;
+  }
+  return std::pair<ProgramElementType, uint64_t>{*type, decoded->second};
 }
 
 } // namespace wafer::frontend

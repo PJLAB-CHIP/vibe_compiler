@@ -5,8 +5,8 @@
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
 
+#include "../Core/TargetModelTileCommandTracker.h"
 #include "SystemCBridge.h"
-#include "TargetModelTileCommandTracker.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -209,9 +209,9 @@ public:
         return currentFailureOrLifecycle("applying command effect failed");
       }
       if (numericBackend == TargetModelNumericBackend::Formal)
-        ++formalNumericCommandCount;
+        ++formalNumericOperationCount;
       if (numericBackend == TargetModelNumericBackend::ManagedReference) {
-        ++managedReferenceNumericCommandCount;
+        ++managedReferenceNumericOperationCount;
         managedReferenceScalarEvaluationCount +=
             managedReferenceEvidence.scalarEvaluations;
         if (!llvm::is_contained(managedReferenceTensorEnvironmentDigests,
@@ -224,7 +224,7 @@ public:
               std::move(managedReferenceEvidence.implementation));
       }
       if (numericBackend == TargetModelNumericBackend::Bulk) {
-        ++bulkNumericCommandCount;
+        ++bulkNumericOperationCount;
         bulkMatmulInvocationCount += bulkEvidence.matmulInvocations;
         bulkReorderInvocationCount += bulkEvidence.reorderInvocations;
         bulkFormalFusedMultiplyAddCount += bulkEvidence.formalFusedMultiplyAdds;
@@ -360,16 +360,15 @@ public:
     }
     completedResult.emplace(
         TargetModelResult{memory.getAddressPlan().getTargetIdentity(),
-                          ModelProfileId::formalDeterministic(),
                           static_cast<int64_t>(completedLaunchSlots.size()),
                           issuedCommandCount,
                           detail::getSystemCThreadProcessCount(runner),
                           detail::getSystemCDeltaCount(),
                           numericContext.getAggregateFlags(),
-                          formalNumericCommandCount,
-                          managedReferenceNumericCommandCount,
+                          formalNumericOperationCount,
+                          managedReferenceNumericOperationCount,
                           managedReferenceScalarEvaluationCount,
-                          bulkNumericCommandCount,
+                          bulkNumericOperationCount,
                           bulkMatmulInvocationCount,
                           bulkReorderInvocationCount,
                           bulkFormalFusedMultiplyAddCount,
@@ -1107,10 +1106,10 @@ private:
   std::string initializationDiagnostic;
   uint64_t nextEvent = 1;
   uint64_t issuedCommandCount = 0;
-  uint64_t formalNumericCommandCount = 0;
-  uint64_t managedReferenceNumericCommandCount = 0;
+  uint64_t formalNumericOperationCount = 0;
+  uint64_t managedReferenceNumericOperationCount = 0;
   uint64_t managedReferenceScalarEvaluationCount = 0;
-  uint64_t bulkNumericCommandCount = 0;
+  uint64_t bulkNumericOperationCount = 0;
   uint64_t bulkMatmulInvocationCount = 0;
   uint64_t bulkReorderInvocationCount = 0;
   uint64_t bulkFormalFusedMultiplyAddCount = 0;

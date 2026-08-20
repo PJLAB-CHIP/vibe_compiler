@@ -17,8 +17,6 @@ namespace {
 
 using namespace wafer;
 
-constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
-
 struct IndependentRoundResult {
   uint64_t bits;
   FormalNumericExceptionFlags flags;
@@ -26,7 +24,7 @@ struct IndependentRoundResult {
 
 IndependentRoundResult roundF32ToReduced(uint32_t source,
                                          LogicalFormat destination,
-                                         NumericRoundingMode mode) {
+                                         TargetRoundingMode mode) {
   const unsigned discardedBits = destination == LogicalFormat::BF16 ? 16U : 13U;
   const uint32_t destinationMask = ~((UINT32_C(1) << discardedBits) - 1U);
   const uint32_t discardedMask = ~destinationMask;
@@ -52,22 +50,22 @@ IndependentRoundResult roundF32ToReduced(uint32_t source,
   bool increment = false;
   if (discarded != 0) {
     switch (mode) {
-    case NumericRoundingMode::NearestEven: {
+    case TargetRoundingMode::NearestEven: {
       const uint32_t halfway = UINT32_C(1) << (discardedBits - 1);
       increment = discarded > halfway ||
                   (discarded == halfway &&
                    ((rounded >> discardedBits) & UINT32_C(1)) != 0);
       break;
     }
-    case NumericRoundingMode::TowardZero:
+    case TargetRoundingMode::TowardZero:
       break;
-    case NumericRoundingMode::TowardPositive:
+    case TargetRoundingMode::TowardPositive:
       increment = !negative;
       break;
-    case NumericRoundingMode::TowardNegative:
+    case TargetRoundingMode::TowardNegative:
       increment = negative;
       break;
-    case NumericRoundingMode::Stochastic:
+    case TargetRoundingMode::Stochastic:
       llvm_unreachable("independent oracle accepts deterministic modes only");
     }
   }
@@ -94,24 +92,24 @@ IndependentRoundResult roundF32ToReduced(uint32_t source,
     const uint32_t greatestTinyAtDestinationPrecision =
         minimumNormal - (UINT32_C(1) << (23U - destinationPrecision));
     switch (mode) {
-    case NumericRoundingMode::NearestEven: {
+    case TargetRoundingMode::NearestEven: {
       const uint32_t midpointToMinimumNormal =
           minimumNormal - (UINT32_C(1) << (22U - destinationPrecision));
       tinyAfterPrecisionRounding = fraction < midpointToMinimumNormal;
       break;
     }
-    case NumericRoundingMode::TowardZero:
+    case TargetRoundingMode::TowardZero:
       tinyAfterPrecisionRounding = true;
       break;
-    case NumericRoundingMode::TowardPositive:
+    case TargetRoundingMode::TowardPositive:
       tinyAfterPrecisionRounding =
           negative || fraction <= greatestTinyAtDestinationPrecision;
       break;
-    case NumericRoundingMode::TowardNegative:
+    case TargetRoundingMode::TowardNegative:
       tinyAfterPrecisionRounding =
           !negative || fraction <= greatestTinyAtDestinationPrecision;
       break;
-    case NumericRoundingMode::Stochastic:
+    case TargetRoundingMode::Stochastic:
       llvm_unreachable("independent oracle accepts deterministic modes only");
     }
   }
@@ -119,55 +117,48 @@ IndependentRoundResult roundF32ToReduced(uint32_t source,
   return {destination == LogicalFormat::BF16 ? rounded >> 16 : rounded, flags};
 }
 
-ResolvedNumericCommand resolve(uint16_t opcode, LogicalFormat sourceFormat,
+FormalConvertOperation resolve(uint16_t opcode, LogicalFormat sourceFormat,
                                LogicalFormat destinationFormat,
-                               NumericRoundingMode mode) {
-  NumericTensorKey source = llvm::cantFail(NumericTensorKey::create(
-      sourceFormat, PhysicalTensorLayout::Tensor, {1}));
-  NumericTensorKey destination = llvm::cantFail(NumericTensorKey::create(
-      destinationFormat, PhysicalTensorLayout::Tensor, {1}));
-  llvm::Expected<NumericCommandKey> key = NumericCommandKey::createCTConvert(
+                               TargetRoundingMode mode) {
+  PhysicalTensorDescriptor source =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          sourceFormat, PhysicalTensorLayout::Tensor, {1}));
+  PhysicalTensorDescriptor destination =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          destinationFormat, PhysicalTensorLayout::Tensor, {1}));
+  llvm::Expected<FormalConvertOperation> key = createFormalConvertOperation(
       opcode, std::move(source), std::move(destination),
-      NumericConvertParameter::roundingMode(mode));
-  NumericCommandKey exact = llvm::cantFail(std::move(key));
-  llvm::Expected<ResolvedNumericCommand> command =
-      resolveNumericCommand(kModelProfile, std::move(exact));
-  ResolvedNumericCommand resolved = llvm::cantFail(std::move(command));
-  EXPECT_TRUE(resolved.isSupported());
-  return resolved;
+      TargetConvertParameter::roundingMode(mode));
+  return llvm::cantFail(std::move(key));
 }
 
-ResolvedNumericCommand resolveMultiply(LogicalFormat format) {
-  NumericTensorKey input = llvm::cantFail(
-      NumericTensorKey::create(format, PhysicalTensorLayout::Tensor, {1}));
-  llvm::Expected<NumericCommandKey> key =
-      NumericCommandKey::createCTElementwise(NumericElementwiseOperation::Mul,
-                                             {input, input}, input);
-  NumericCommandKey exact = llvm::cantFail(std::move(key));
-  ResolvedNumericCommand resolved =
-      llvm::cantFail(resolveNumericCommand(kModelProfile, std::move(exact)));
-  EXPECT_TRUE(resolved.isSupported());
-  return resolved;
+FormalElementwiseOperation resolveMultiply(LogicalFormat format) {
+  PhysicalTensorDescriptor input =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          format, PhysicalTensorLayout::Tensor, {1}));
+  llvm::Expected<FormalElementwiseOperation> key =
+      createFormalElementwiseOperation(TargetElementwiseOperation::Mul,
+                                       {input, input}, input);
+  return llvm::cantFail(std::move(key));
 }
 
-ResolvedNumericCommand resolveGemm(LogicalFormat format) {
-  NumericTensorKey lhs = llvm::cantFail(
-      NumericTensorKey::create(format, PhysicalTensorLayout::Cx, {1, 1}));
-  NumericTensorKey rhs = llvm::cantFail(
-      NumericTensorKey::create(format, PhysicalTensorLayout::NCx, {1, 1}));
-  NumericTensorKey destination = llvm::cantFail(
-      NumericTensorKey::create(format, PhysicalTensorLayout::Cx, {1, 1}));
-  NumericGemmAxes axes = llvm::cantFail(getCanonicalNumericGemmAxes(2));
-  NumericCommandKey key = llvm::cantFail(NumericCommandKey::createNEGemm(
+FormalGemmOperation resolveGemm(LogicalFormat format) {
+  PhysicalTensorDescriptor lhs =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          format, PhysicalTensorLayout::Cx, {1, 1}));
+  PhysicalTensorDescriptor rhs =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          format, PhysicalTensorLayout::NCx, {1, 1}));
+  PhysicalTensorDescriptor destination =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          format, PhysicalTensorLayout::Cx, {1, 1}));
+  FormalGemmGeometry axes = llvm::cantFail(getCanonicalFormalGemmGeometry(2));
+  return llvm::cantFail(createFormalGemmOperation(
       std::move(lhs), std::move(rhs), std::move(destination), 1, 1, 1, 1,
       std::move(axes)));
-  ResolvedNumericCommand resolved =
-      llvm::cantFail(resolveNumericCommand(kModelProfile, std::move(key)));
-  EXPECT_TRUE(resolved.isSupported());
-  return resolved;
 }
 
-void compareOne(const ResolvedNumericCommand &command, NumericRoundingMode mode,
+void compareOne(const FormalConvertOperation &command, TargetRoundingMode mode,
                 LogicalFormat destination, uint32_t source) {
   const IndependentRoundResult expected =
       roundF32ToReduced(source, destination, mode);
@@ -185,9 +176,9 @@ void compareOne(const ResolvedNumericCommand &command, NumericRoundingMode mode,
 
 TEST(NumericRawRounderTest,
      BF16AndTF32MatchIndependentIntegerOracleForFourModes) {
-  constexpr std::array<NumericRoundingMode, 4> modes = {
-      NumericRoundingMode::NearestEven, NumericRoundingMode::TowardZero,
-      NumericRoundingMode::TowardPositive, NumericRoundingMode::TowardNegative};
+  constexpr std::array<TargetRoundingMode, 4> modes = {
+      TargetRoundingMode::NearestEven, TargetRoundingMode::TowardZero,
+      TargetRoundingMode::TowardPositive, TargetRoundingMode::TowardNegative};
   constexpr std::array<uint32_t, 24> boundary = {
       UINT32_C(0x00000000), UINT32_C(0x80000000), UINT32_C(0x00000001),
       UINT32_C(0x80000001), UINT32_C(0x007fffff), UINT32_C(0x807fffff),
@@ -207,8 +198,8 @@ TEST(NumericRawRounderTest,
   };
 
   for (const Destination &destination : destinations) {
-    for (NumericRoundingMode mode : modes) {
-      const ResolvedNumericCommand command = resolve(
+    for (TargetRoundingMode mode : modes) {
+      const FormalConvertOperation command = resolve(
           destination.opcode, LogicalFormat::F32, destination.format, mode);
       for (uint32_t source : boundary)
         compareOne(command, mode, destination.format, source);
@@ -226,7 +217,7 @@ TEST(NumericRawRounderTest,
 
 TEST(NumericRawRounderTest,
      ExactDyadicProofCompletesMulAndFMAUnderflowThresholds) {
-  const ResolvedNumericCommand f16Multiply =
+  const FormalElementwiseOperation f16Multiply =
       resolveMultiply(LogicalFormat::F16);
   llvm::Expected<FormalNumericResult> f16Threshold =
       evaluateFormalElementwiseLLVM(f16Multiply,
@@ -252,7 +243,7 @@ TEST(NumericRawRounderTest,
   EXPECT_FALSE(f16ExactSubnormal->flags.inexact);
   EXPECT_FALSE(f16ExactSubnormal->flags.underflow);
 
-  const ResolvedNumericCommand f32Gemm = resolveGemm(LogicalFormat::F32);
+  const FormalGemmOperation f32Gemm = resolveGemm(LogicalFormat::F32);
   llvm::Expected<FormalNumericResult> f32Threshold =
       evaluateFormalGemmFusedMultiplyAdd(
           f32Gemm, {LogicalFormat::F32, UINT64_C(0x00800000)},

@@ -96,12 +96,12 @@ llvm::Expected<QualificationRun> runQualification(
   std::vector<llvm::ArrayRef<RawLogicalValue>> views{*lhs, *rhs};
   FormalNumericExecutionContext context;
   llvm::Expected<FormalTensorNumericResult> formal = executeFormalTensorNumeric(
-      context, testCase.getCommand(), views, formalBudget);
+      context, testCase.getOperation(), views, formalBudget);
   if (!formal)
     return formal.takeError();
   llvm::Expected<detail::UnqualifiedBulkExecutionResult> backend =
       detail::executeBulkTensorForQualification(
-          environment, testCase.getCommand(), testCase.getInputs(),
+          environment, testCase.getOperation(), testCase.getInputs(),
           testCase.getDestinationTemplate(), bulkBudget);
   if (!backend)
     return backend.takeError();

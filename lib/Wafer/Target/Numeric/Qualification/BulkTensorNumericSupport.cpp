@@ -57,8 +57,8 @@ llvm::StringRef stringifyBulkQualificationKind(BulkQualificationKind kind) {
 llvm::StringRef
 stringifyBulkTensorNumericErrorCode(BulkTensorNumericErrorCode code) {
   switch (code) {
-  case BulkTensorNumericErrorCode::UnsupportedResolvedCommand:
-    return "unsupported-resolved-command";
+  case BulkTensorNumericErrorCode::UnsupportedOperation:
+    return "unsupported-operation";
   case BulkTensorNumericErrorCode::UnsupportedFormat:
     return "unsupported-format";
   case BulkTensorNumericErrorCode::InvalidPhysicalLayout:

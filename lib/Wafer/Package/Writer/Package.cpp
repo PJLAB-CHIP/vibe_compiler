@@ -3,13 +3,12 @@
 #include "Wafer/Package/Writer/PackageInternal.h"
 
 #include "Wafer/ABI/Tx81ProfilerABI.h"
-#include "Wafer/Program/ProgramData.h"
 #include "Wafer/Package/Profile/ProfileInstrumentationModel.h"
-#include "Wafer/Target/Numeric/Formal/FormalNumeric.h"
-#include "Wafer/Target/Numeric/NumericCodec.h"
-#include "Wafer/Target/Numeric/NumericSemantics.h"
-#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
+#include "Wafer/Program/ProgramData.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
+#include "Wafer/Target/Layout/TargetTensorMaterialization.h"
+#include "Wafer/Target/Numeric/NumericCodec.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -142,6 +141,7 @@ struct ProgramTensorJoin {
 struct TargetTensorJoin {
   compiler::ProgramTensorId programTensor;
   runtime::TargetTensorRecord record;
+  std::optional<TargetTensorMaterializationAction> materialization;
   // One (card, tile, launch slot, argument ordinal) consumer per reference.
   std::vector<std::tuple<CardId, TileId, LaunchSlotId, uint64_t>> consumers;
 };
@@ -158,64 +158,6 @@ llvm::Error checkedAlignUp(uint64_t value, uint64_t alignment,
                                    "package placement offset overflows");
   result = value + padding;
   return llvm::Error::success();
-}
-
-/// Resolves the exact current-target scalar conversion used while producing a
-/// selected package representation. A different logical format never falls
-/// back to storage-bit reinterpretation. Rounding-mode routes use the model's
-/// deterministic nearest-even policy; routes needing a semantic zero-point
-/// fail closed because a package descriptor carries no such parameter.
-llvm::Expected<std::optional<ResolvedNumericCommand>>
-resolvePackageScalarConversion(LogicalFormat source,
-                               LogicalFormat destination) {
-  if (source == destination)
-    return std::optional<ResolvedNumericCommand>{};
-  const TargetConvertRoute *route = findTargetConvertRoute(source, destination);
-  if (!route)
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "current target has no numeric conversion route from %s to %s",
-        stringifyLogicalFormat(source).str().c_str(),
-        stringifyLogicalFormat(destination).str().c_str());
-  std::optional<NumericConvertParameter> parameter;
-  switch (route->parameterKind) {
-  case TargetConvertParameterKind::None:
-    break;
-  case TargetConvertParameterKind::RoundingMode:
-    parameter =
-        NumericConvertParameter::roundingMode(NumericRoundingMode::NearestEven);
-    break;
-  case TargetConvertParameterKind::ZeroPoint:
-    return llvm::createStringError(
-        llvm::errc::invalid_argument,
-        "target numeric conversion route '%s' requires a zero-point that is "
-        "not present in the package tensor descriptor",
-        route->canonicalSpelling.str().c_str());
-  }
-  llvm::Expected<NumericTensorKey> sourceKey =
-      NumericTensorKey::create(source, PhysicalTensorLayout::Tensor, {1});
-  if (!sourceKey)
-    return sourceKey.takeError();
-  llvm::Expected<NumericTensorKey> destinationKey =
-      NumericTensorKey::create(destination, PhysicalTensorLayout::Tensor, {1});
-  if (!destinationKey)
-    return destinationKey.takeError();
-  llvm::Expected<NumericCommandKey> command =
-      NumericCommandKey::createCTConvert(route->opcode, std::move(*sourceKey),
-                                         std::move(*destinationKey), parameter);
-  if (!command)
-    return command.takeError();
-  llvm::Expected<ResolvedNumericCommand> resolved = resolveNumericCommand(
-      ModelProfileId::formalDeterministic(), std::move(*command));
-  if (!resolved)
-    return resolved.takeError();
-  if (!resolved->isSupported())
-    return llvm::createStringError(
-        llvm::errc::not_supported,
-        "target numeric conversion route '%s' has no implemented formal "
-        "semantics",
-        route->canonicalSpelling.str().c_str());
-  return std::optional<ResolvedNumericCommand>(std::move(*resolved));
 }
 
 struct PackageAssembly {
@@ -437,6 +379,11 @@ buildManifest(const CardExecutable &cardExecutable,
           slot.byteSize <= 0 || slot.alignment <= 0)
         return fail(diagnostics,
                     "package input tile entry arguments are not canonical");
+      if (slot.kind != TileEntryArgumentKind::TargetTensor &&
+          slot.targetTensorMaterialization)
+        return fail(diagnostics,
+                    "non-TargetTensor package slot carries a static-data "
+                    "materialization action");
 
       if (slot.kind == TileEntryArgumentKind::ExternalInput ||
           slot.kind == TileEntryArgumentKind::ExternalOutput) {
@@ -496,6 +443,19 @@ buildManifest(const CardExecutable &cardExecutable,
           return fail(diagnostics,
                       "package tile entry argument does not match executable "
                       "resource binding");
+        if (!slot.targetTensorMaterialization)
+          return fail(diagnostics, "package TargetTensor slot has no explicit "
+                                   "materialization action");
+        std::optional<LogicalFormat> sourceFormat =
+            getTargetLogicalFormat(binding->dtype);
+        if (!sourceFormat ||
+            slot.targetTensorMaterialization->getSourceFormat() !=
+                *sourceFormat ||
+            slot.targetTensorMaterialization->getDestinationFormat() !=
+                slot.dtype)
+          return fail(diagnostics,
+                      "package TargetTensor materialization disagrees with "
+                      "the source and target formats");
         ProgramTensorJoin *programTensor = nullptr;
         auto programExisting =
             programTensorJoins.find(binding->programTensorId);
@@ -551,7 +511,9 @@ buildManifest(const CardExecutable &cardExecutable,
                  join.record.layout == layout &&
                  join.record.shape == slot.shape &&
                  join.record.bytes == static_cast<uint64_t>(slot.byteSize) &&
-                 join.record.alignment == static_cast<uint64_t>(slot.alignment);
+                 join.record.alignment ==
+                     static_cast<uint64_t>(slot.alignment) &&
+                 join.materialization == slot.targetTensorMaterialization;
         };
         auto targetMatch = llvm::find_if(
             targetTensorJoins, [&](const auto &join) { return match(*join); });
@@ -568,6 +530,7 @@ buildManifest(const CardExecutable &cardExecutable,
           join->record.bytes = static_cast<uint64_t>(slot.byteSize);
           join->record.alignment = static_cast<uint64_t>(slot.alignment);
           join->record.fileOffset = 0;
+          join->materialization = slot.targetTensorMaterialization;
           targetTensor = join.get();
           targetTensorJoins.push_back(std::move(join));
         } else {
@@ -795,14 +758,16 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
     return llvm::Error::success();
   };
 
-  const ModelProfileRecord &model =
-      getModelProfileRecord(ModelProfileId::formalDeterministic());
-  const LogicalScalarCodecPolicy decodePolicy = model.numericDecodePolicy;
-  const LogicalScalarCodecPolicy encodePolicy = model.numericEncodePolicy;
+  const LogicalScalarCodecPolicy codecPolicy =
+      getTargetTensorScalarCodecPolicy();
 
   uint64_t cursor = 0;
   for (TargetTensorJoin *join : assembly.placement) {
     const runtime::TargetTensorRecord &record = join->record;
+    if (!join->materialization)
+      return fail(diagnostics,
+                  "package TargetTensor lost its materialization action");
+    const TargetTensorMaterializationAction &action = *join->materialization;
     if (record.fileOffset > cursor) {
       if (llvm::Error paddingError = writeZeros(record.fileOffset - cursor))
         return paddingError;
@@ -815,20 +780,17 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
           "package TargetTensor has no owned data range (role=" +
               std::to_string(static_cast<int>(join->programTensor.role)) +
               " index=" + std::to_string(join->programTensor.roleIndex) + ")");
-    llvm::Expected<LogicalFormat> targetFormat =
-        parseLogicalFormat(record.dtype);
-    if (!targetFormat)
-      return fail(diagnostics, "package TargetTensor has an unknown target "
-                               "dtype '" +
-                                   record.dtype + "'");
-    llvm::Expected<LogicalFormat> sourceFormat =
-        parseLogicalFormat(range->getDType());
+    const LogicalFormat targetFormat = record.dtype;
+    std::optional<LogicalFormat> sourceFormat =
+        getTargetLogicalFormat(range->getDType());
     if (!sourceFormat)
-      return fail(diagnostics, "package TargetTensor has an unknown source "
-                               "dtype '" +
-                                   range->getDType().str() + "'");
+      return fail(diagnostics,
+                  "package TargetTensor has an unknown source "
+                  "dtype '" +
+                      stringifyProgramElementType(range->getDType()).str() +
+                      "'");
     const LogicalFormatDescriptor *targetDescriptor =
-        findLogicalFormatDescriptor(*targetFormat);
+        findLogicalFormatDescriptor(targetFormat);
     const LogicalFormatDescriptor *sourceDescriptor =
         findLogicalFormatDescriptor(*sourceFormat);
     if (!targetDescriptor || !sourceDescriptor)
@@ -837,8 +799,9 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
     const PhysicalTensorLayout physicalLayout =
         runtime::getPhysicalTensorLayout(record.layout);
     std::vector<uint64_t> targetShape(record.shape.begin(), record.shape.end());
-    llvm::Expected<NumericTensorKey> targetKey =
-        NumericTensorKey::create(*targetFormat, physicalLayout, targetShape);
+    llvm::Expected<PhysicalTensorDescriptor> targetKey =
+        PhysicalTensorDescriptor::create(targetFormat, physicalLayout,
+                                         targetShape);
     if (!targetKey)
       return fail(diagnostics, "package TargetTensor physical layout is "
                                "invalid: " +
@@ -871,7 +834,7 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
     const bool identityLayout =
         record.layout == runtime::PackageMemLayout::Tensor ||
         record.layout == runtime::PackageMemLayout::NTensor;
-    if (*targetFormat == *sourceFormat && identityLayout &&
+    if (targetFormat == *sourceFormat && identityLayout &&
         record.bytes == range->getRegionLength()) {
       // Identity representation: the target bytes are the source region
       // bytes; stream them with bounded windows and no host copy.
@@ -904,12 +867,6 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
       return fail(diagnostics,
                   "package TargetTensor element count disagrees with the "
                   "source program tensor region");
-    llvm::Expected<std::optional<ResolvedNumericCommand>> conversion =
-        resolvePackageScalarConversion(*sourceFormat, *targetFormat);
-    if (!conversion)
-      return fail(diagnostics, "package TargetTensor numeric conversion is "
-                               "unsupported: " +
-                                   llvm::toString(conversion.takeError()));
     llvm::Expected<PhysicalTensorWindowPlan> physicalPlan =
         PhysicalTensorWindowPlan::create(*targetKey);
     if (!physicalPlan)
@@ -964,24 +921,25 @@ llvm::Expected<std::string> writeProgramData(llvm::StringRef programDataPath,
           llvm::Expected<RawLogicalValue> value = readRawLogicalValue(
               *sourceFormat, sourceWindow,
               runIndex * static_cast<uint64_t>(sourceDescriptor->storageBits),
-              decodePolicy);
+              codecPolicy);
           if (!value)
             return fail(diagnostics,
                         "package TargetTensor source value read failed: " +
                             llvm::toString(value.takeError()));
           RawLogicalValue targetValue = *value;
-          if (*conversion) {
-            llvm::Expected<FormalNumericResult> converted =
-                evaluateFormalConvert(**conversion, *value);
+          if (action.getKind() ==
+              TargetTensorMaterializationKind::ValueConversion) {
+            llvm::Expected<RawLogicalValue> converted =
+                materializeTargetTensorValue(action, *value);
             if (!converted)
               return fail(diagnostics,
                           "package TargetTensor numeric conversion failed: " +
                               llvm::toString(converted.takeError()));
-            targetValue = converted->value;
+            targetValue = *converted;
           }
           if (llvm::Error encodeError =
                   writeRawLogicalValue(targetValue, window->bytes,
-                                       element.windowBitOffset, encodePolicy))
+                                       element.windowBitOffset, codecPolicy))
             return fail(diagnostics,
                         "package TargetTensor target value write failed: " +
                             llvm::toString(std::move(encodeError)));
@@ -1223,25 +1181,25 @@ bool detail::doesPackageSlotMatchProgramBinding(
   case TileEntryArgumentKind::TransportStatus:
     return false;
   }
-  return binding.index == slot.resourceIndex && binding.dtype == slot.dtype &&
+  return binding.index == slot.resourceIndex &&
          binding.localShape == slot.shape;
 }
 
 bool detail::isValidPackageCompilerManagedSlot(const TileEntryArgument &slot) {
   if (slot.layout != MemLayout::Tensor || slot.byteSize <= 0 ||
-      slot.alignment <= 0)
+      slot.alignment <= 0 || slot.targetTensorMaterialization)
     return false;
   if (slot.kind == TileEntryArgumentKind::Workspace)
-    return slot.resourceIndex == 0 && slot.dtype == "u8" &&
+    return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U8 &&
            slot.shape.size() == 1 && slot.shape.front() == slot.byteSize;
   if (slot.kind == TileEntryArgumentKind::ProfileRecord)
-    return slot.resourceIndex == 0 && slot.dtype == "u8" &&
+    return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U8 &&
            slot.shape.size() == 1 && slot.shape.front() == slot.byteSize &&
            slot.alignment == WAFER_TX81_PROFILER_BUFFER_ALIGNMENT &&
            (slot.byteSize == WAFER_TX81_PROFILER_MIN_BUFFER_BYTES ||
             slot.byteSize == WAFER_TX81_PROFILER_TRACE_BUFFER_BYTES);
   if (slot.kind == TileEntryArgumentKind::TransportStatus)
-    return slot.resourceIndex == 0 && slot.dtype == "u32" &&
+    return slot.resourceIndex == 0 && slot.dtype == LogicalFormat::U32 &&
            slot.shape == std::vector<int64_t>{1} &&
            slot.byteSize == runtime::kDirectDTEStatusStorageBytes &&
            slot.alignment == runtime::kDirectDTEStatusStorageAlignment;

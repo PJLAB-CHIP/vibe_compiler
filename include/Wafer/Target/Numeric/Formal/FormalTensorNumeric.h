@@ -56,7 +56,7 @@ struct FormalTensorNumericResult {
 };
 
 enum class FormalTensorNumericErrorCode : uint8_t {
-  UnsupportedResolvedCommand,
+  UnsupportedOperation,
   InputArityMismatch,
   InputElementCountMismatch,
   InputFormatMismatch,
@@ -90,15 +90,30 @@ private:
   std::string detail;
 };
 
-/// Executes one already-resolved supported convert, elementwise, or GEMM
-/// command over logical-dense raw values. Complete command/profile, input size,
+/// Executes one checked family operation over logical-dense raw values.
+/// Complete operation, input size,
 /// input encoding, and checked work-budget validation happens before output
 /// allocation. Native reduction and every static unsupported capability fail
 /// closed. On every error the caller context is unchanged and no result is
 /// returned; flags are recorded only after the complete tensor succeeds.
 llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
     FormalNumericExecutionContext &context,
-    const ResolvedNumericCommand &command,
+    const FormalConvertOperation &operation,
+    llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+    FormalNumericWorkBudget budget);
+llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
+    FormalNumericExecutionContext &context,
+    const FormalElementwiseOperation &operation,
+    llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+    FormalNumericWorkBudget budget);
+llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
+    FormalNumericExecutionContext &context,
+    const FormalGemmOperation &operation,
+    llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+    FormalNumericWorkBudget budget);
+llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
+    FormalNumericExecutionContext &context,
+    const FormalReduceOperation &operation,
     llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
     FormalNumericWorkBudget budget);
 

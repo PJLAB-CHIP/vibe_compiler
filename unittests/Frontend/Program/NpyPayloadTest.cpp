@@ -81,7 +81,7 @@ TEST_F(NpyPayloadTest, LoadsLittleEndianF16WithCanonicalBytes) {
       wafer::frontend::loadNpyTensorPayload(payloadPath);
   ASSERT_TRUE(static_cast<bool>(payload))
       << llvm::toString(payload.takeError());
-  EXPECT_EQ(payload->dtype, "f16");
+  EXPECT_EQ(payload->dtype, wafer::ProgramElementType::F16);
   EXPECT_EQ(payload->shape, std::vector<int64_t>({2}));
   EXPECT_EQ(payload->bytes, bytes);
 }
@@ -95,7 +95,7 @@ TEST_F(NpyPayloadTest, LoadsOpaqueTwoByteElementsAsBf16WithoutChangingBytes) {
       wafer::frontend::loadNpyTensorPayload(payloadPath);
   ASSERT_TRUE(static_cast<bool>(payload))
       << llvm::toString(payload.takeError());
-  EXPECT_EQ(payload->dtype, "bf16");
+  EXPECT_EQ(payload->dtype, wafer::ProgramElementType::BF16);
   EXPECT_EQ(payload->shape, std::vector<int64_t>({2}));
   EXPECT_EQ(payload->bytes, bytes);
 }
@@ -121,7 +121,7 @@ TEST_F(NpyPayloadTest, NativeEndianF16FollowsHostEndianness) {
   if (llvm::endianness::native == llvm::endianness::little) {
     ASSERT_TRUE(static_cast<bool>(payload))
         << llvm::toString(payload.takeError());
-    EXPECT_EQ(payload->dtype, "f16");
+    EXPECT_EQ(payload->dtype, wafer::ProgramElementType::F16);
     EXPECT_EQ(payload->bytes, bytes);
   } else {
     ASSERT_FALSE(static_cast<bool>(payload));

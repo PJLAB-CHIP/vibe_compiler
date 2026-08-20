@@ -1,14 +1,28 @@
 add_mlir_library(WaferTargetModelCore
   PARTIAL_SOURCES_INTENDED
-  Core/TargetModelInvocation.cpp
   Core/TargetModelMemory.cpp
   Core/TargetModelStridedMemory.cpp
 
   LINK_LIBS PUBLIC
-  WaferCompiler
   WaferTarget
   LLVMSupport
+  MLIRIR
 )
+
+# Compiler/model integration is a leaf adapter: the reusable model core does
+# not link the compiler or own compiler-stage types.
+add_mlir_library(WaferTargetModelInvocation
+  PARTIAL_SOURCES_INTENDED
+  Core/TargetModelInvocation.cpp
+
+  LINK_LIBS PUBLIC
+  WaferTargetModelCore
+  WaferTarget
+  WaferTargetTensorMaterialization
+  LLVMSupport
+)
+target_link_libraries(obj.WaferTargetModelInvocation PRIVATE WaferCompiler)
+target_link_libraries(WaferTargetModelInvocation PRIVATE WaferCompiler)
 
 if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
   add_mlir_library(WaferTargetFunctionalModel
@@ -20,9 +34,11 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     Core/TargetModelCommandValidation.cpp
 
     LINK_LIBS PUBLIC
+    WaferFormalNumeric
     WaferNumericModel
     WaferTargetModelCore
     WaferTarget
+    WaferTargetTensorMaterialization
     LLVMSupport
   )
 endif()
@@ -64,8 +80,8 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     SystemC/SystemCTargetModel.cpp
 
     LINK_LIBS PUBLIC
-    WaferCompiler
     WaferTargetFunctionalModel
+    WaferTargetModelInvocation
     WaferTargetModelCore
     WaferSystemCBridge
     LLVMSupport

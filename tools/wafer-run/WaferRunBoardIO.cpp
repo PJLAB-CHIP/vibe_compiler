@@ -40,8 +40,7 @@ llvm::Expected<std::vector<uint8_t>> readRawFile(llvm::StringRef path,
   if (bytes.size() != expectedBytes)
     return llvm::createStringError(
         llvm::errc::invalid_argument,
-        "raw tensor file byte count does not match " + portLabel + ": " +
-            path);
+        "raw tensor file byte count does not match " + portLabel + ": " + path);
   return std::vector<uint8_t>(reinterpret_cast<const uint8_t *>(bytes.data()),
                               reinterpret_cast<const uint8_t *>(bytes.data()) +
                                   bytes.size());
@@ -255,10 +254,9 @@ llvm::Expected<BoardInvocationFilePlan> prepareBoardInvocationFiles(
   for (const ExternalPortRecord &port : manifest.inputs) {
     auto source = inputs->find(port.id.getValue());
     if (source == inputs->end())
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "--resource omits input port " +
-              std::to_string(port.id.getValue()));
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "--resource omits input port " +
+                                         std::to_string(port.id.getValue()));
     llvm::Expected<std::vector<uint8_t>> loaded = readRawFile(
         source->second, port.bytes,
         (llvm::Twine("input port ") + llvm::Twine(port.id.getValue())).str());
@@ -276,11 +274,12 @@ llvm::Expected<BoardInvocationFilePlan> prepareBoardInvocationFiles(
     if (reference == expected->end() &&
         relaxedReference == relaxedF16Expected->end() &&
         capture == outputs->end())
-      return llvm::createStringError(
-          llvm::errc::invalid_argument,
-          "--expected/--output omit output port " + std::to_string(portId));
+      return llvm::createStringError(llvm::errc::invalid_argument,
+                                     "--expected/--output omit output port " +
+                                         std::to_string(portId));
     const bool useRelaxedF16 = relaxedReference != relaxedF16Expected->end();
-    if (useRelaxedF16 && (port.dtype != "f16" || port.bytes % 2 != 0))
+    if (useRelaxedF16 &&
+        (port.dtype != LogicalFormat::F16 || port.bytes % 2 != 0))
       return llvm::createStringError(
           llvm::errc::invalid_argument,
           "--expected-f16-relaxed requires an f16 output port");
@@ -304,8 +303,8 @@ llvm::Expected<BoardInvocationFilePlan> prepareBoardInvocationFiles(
     if (capture != outputs->end())
       outputs->erase(capture);
   }
-  if (!inputs->empty() || !expected->empty() ||
-      !relaxedF16Expected->empty() || !outputs->empty())
+  if (!inputs->empty() || !expected->empty() || !relaxedF16Expected->empty() ||
+      !outputs->empty())
     return llvm::createStringError(
         llvm::errc::invalid_argument,
         "board invocation contains port ids outside the package");
@@ -326,8 +325,7 @@ llvm::Error validateBoardOutputs(llvm::ArrayRef<BoardRuntimeOutput> outputs,
     if (output.bytes.size() != plan.outputBytes.lookup(portId))
       return llvm::createStringError(
           llvm::errc::result_out_of_range,
-          "board returned a wrong-sized output port " +
-              std::to_string(portId));
+          "board returned a wrong-sized output port " + std::to_string(portId));
     auto reference = plan.expectedBytes.find(portId);
     if (reference == plan.expectedBytes.end())
       continue;

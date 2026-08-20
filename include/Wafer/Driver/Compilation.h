@@ -4,6 +4,7 @@
 #define WAFER_DRIVER_COMPILATION_H
 
 #include "Wafer/Frontend/Program/Program.h"
+#include "Wafer/Program/ProgramElementType.h"
 #include "Wafer/Support/OptimizationConfig.h"
 #include "Wafer/Target/Core/RuntimeLaunchContract.h"
 #include "Wafer/Target/Core/TargetIdentity.h"
@@ -184,7 +185,7 @@ struct ProgramResourceBinding {
   /// User-visible index within the resource role's program-boundary domain.
   int64_t programIndex;
   std::string name;
-  std::string dtype;
+  ProgramElementType dtype = ProgramElementType::F32;
   frontend::ProgramDistributionKind distribution;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
@@ -327,8 +328,8 @@ public:
   CompilationStage getStage() const { return stage; }
 
   void log(llvm::raw_ostream &stream) const override {
-    stream << "compilation failed at the "
-           << stringifyCompilationStage(stage) << " stage";
+    stream << "compilation failed at the " << stringifyCompilationStage(stage)
+           << " stage";
   }
 
   std::error_code convertToErrorCode() const override {

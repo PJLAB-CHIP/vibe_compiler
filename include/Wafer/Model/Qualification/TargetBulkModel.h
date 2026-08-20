@@ -30,7 +30,7 @@ public:
   create(llvm::ArrayRef<std::string> recordPaths, BulkNumericWorkBudget budget);
 
   llvm::Expected<std::optional<TargetModelBulkResult>>
-  tryExecute(const TargetModelNumericRequest &request) const override;
+  tryExecute(const TargetModelGemmRequest &request) const override;
 
 private:
   QualifiedTargetModelBulkBackend(
@@ -63,10 +63,16 @@ public:
   create(BulkNumericWorkBudget budget);
 
   llvm::Expected<std::optional<TargetModelBulkResult>>
-  tryExecute(const TargetModelNumericRequest &request) const override;
+  tryExecute(const TargetModelGemmRequest &request) const override;
 
   llvm::Expected<TargetModelManagedReferenceResult>
-  execute(const TargetModelNumericRequest &request,
+  execute(const TargetModelConvertRequest &request,
+          FormalNumericWorkBudget scalarBudget) const override;
+  llvm::Expected<TargetModelManagedReferenceResult>
+  execute(const TargetModelElementwiseRequest &request,
+          FormalNumericWorkBudget scalarBudget) const override;
+  llvm::Expected<TargetModelManagedReferenceResult>
+  execute(const TargetModelReduceRequest &request,
           FormalNumericWorkBudget scalarBudget) const override;
 
 private:

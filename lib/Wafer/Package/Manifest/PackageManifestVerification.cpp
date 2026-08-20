@@ -76,13 +76,9 @@ bool isValidShape(llvm::ArrayRef<int64_t> shape,
          llvm::all_of(shape, [](int64_t dimension) { return dimension >= 0; });
 }
 
-llvm::Expected<NumericTensorKey>
-makePackageTensorKey(llvm::StringRef dtype, PackageMemLayout layout,
+llvm::Expected<PhysicalTensorDescriptor>
+makePackageTensorKey(LogicalFormat dtype, PackageMemLayout layout,
                      llvm::ArrayRef<int64_t> shape, llvm::StringRef owner) {
-  llvm::Expected<LogicalFormat> format = parseLogicalFormat(dtype);
-  if (!format)
-    return invalid(llvm::Twine(owner) + " has an unknown logical dtype '" +
-                   dtype + "'");
   std::vector<uint64_t> unsignedShape;
   unsignedShape.reserve(shape.size());
   for (int64_t dimension : shape) {
@@ -90,8 +86,9 @@ makePackageTensorKey(llvm::StringRef dtype, PackageMemLayout layout,
       return invalid(llvm::Twine(owner) + " has a negative tensor dimension");
     unsignedShape.push_back(static_cast<uint64_t>(dimension));
   }
-  llvm::Expected<NumericTensorKey> key = NumericTensorKey::create(
-      *format, getPhysicalTensorLayout(layout), std::move(unsignedShape));
+  llvm::Expected<PhysicalTensorDescriptor> key =
+      PhysicalTensorDescriptor::create(dtype, getPhysicalTensorLayout(layout),
+                                       std::move(unsignedShape));
   if (!key)
     return invalid(llvm::Twine(owner) +
                    " is rejected by the physical tensor codec: " +
@@ -100,10 +97,10 @@ makePackageTensorKey(llvm::StringRef dtype, PackageMemLayout layout,
 }
 
 llvm::Expected<uint64_t>
-verifyPhysicalTensorDescriptor(llvm::StringRef dtype, PackageMemLayout layout,
+verifyPhysicalTensorDescriptor(LogicalFormat dtype, PackageMemLayout layout,
                                llvm::ArrayRef<int64_t> shape, uint64_t bytes,
                                llvm::StringRef owner) {
-  llvm::Expected<NumericTensorKey> key =
+  llvm::Expected<PhysicalTensorDescriptor> key =
       makePackageTensorKey(dtype, layout, shape, owner);
   if (!key)
     return key.takeError();
@@ -118,6 +115,20 @@ verifyPhysicalTensorDescriptor(llvm::StringRef dtype, PackageMemLayout layout,
                    llvm::Twine(*expectedBytes) + ", got " + llvm::Twine(bytes) +
                    ")");
   return key->getElementCount();
+}
+
+llvm::Expected<uint64_t> getLogicalElementCount(llvm::ArrayRef<int64_t> shape,
+                                                llvm::StringRef owner) {
+  uint64_t count = 1;
+  for (int64_t dimension : shape) {
+    if (dimension < 0 ||
+        (dimension != 0 && count > std::numeric_limits<uint64_t>::max() /
+                                       static_cast<uint64_t>(dimension)))
+      return invalid(llvm::Twine(owner) +
+                     " has an invalid or overflowing logical shape");
+    count *= static_cast<uint64_t>(dimension);
+  }
+  return count;
 }
 
 llvm::Expected<std::string> digestFile(llvm::StringRef path) {
@@ -555,7 +566,6 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
   for (const ProgramTensorRecord &tensor : manifest.programTensors) {
     if (tensor.roleIndex < 0 ||
         tensor.roleIndex > std::numeric_limits<uint32_t>::max() ||
-        tensor.dtype.empty() || tensor.dtype.size() > limits.maxStringBytes ||
         !isValidShape(tensor.globalShape, limits) ||
         !isValidShape(tensor.localShape, limits) ||
         !isValidShape(tensor.sliceOffsets, limits) ||
@@ -566,29 +576,25 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
       return invalid("package program tensor has invalid identity or shape");
     if (!programTensorRoles.insert({tensor.role, tensor.roleIndex}).second)
       return invalid("package program tensor role/index is duplicated");
-    llvm::Expected<NumericTensorKey> localKey = makePackageTensorKey(
-        tensor.dtype, PackageMemLayout::Tensor, tensor.localShape,
-        "package program tensor local descriptor");
+    llvm::Expected<uint64_t> localKey = getLogicalElementCount(
+        tensor.localShape, "package program tensor local descriptor");
     if (!localKey)
       return localKey.takeError();
-    llvm::Expected<NumericTensorKey> globalKey = makePackageTensorKey(
-        tensor.dtype, PackageMemLayout::Tensor, tensor.globalShape,
-        "package program tensor global descriptor");
+    llvm::Expected<uint64_t> globalKey = getLogicalElementCount(
+        tensor.globalShape, "package program tensor global descriptor");
     if (!globalKey)
       return globalKey.takeError();
-    programTensorElementCounts[tensor.id.getValue()] =
-        localKey->getElementCount();
+    programTensorElementCounts[tensor.id.getValue()] = *localKey;
   }
 
-  std::set<std::tuple<ProgramTensorId, std::string, PackageMemLayout,
+  std::set<std::tuple<ProgramTensorId, LogicalFormat, PackageMemLayout,
                       std::vector<int64_t>, uint64_t, uint64_t>>
       targetTensorDescriptors;
   for (const TargetTensorRecord &tensor : manifest.targetTensors) {
     if (!findProgramTensor(manifest.programTensors, tensor.programTensor))
       return invalid("package target tensor references a missing program "
                      "tensor");
-    if (tensor.dtype.empty() || tensor.dtype.size() > limits.maxStringBytes ||
-        !isValidShape(tensor.shape, limits) || tensor.bytes == 0 ||
+    if (!isValidShape(tensor.shape, limits) || tensor.bytes == 0 ||
         tensor.bytes >
             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
         tensor.alignment == 0 || !isPowerOfTwo(tensor.alignment) ||
@@ -618,18 +624,14 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
   for (const ExternalPortRecord &port : manifest.inputs) {
     if (port.roleIndex < 0 ||
         port.roleIndex > std::numeric_limits<uint32_t>::max() ||
-        port.logicalDtype.empty() ||
-        port.logicalDtype.size() > limits.maxStringBytes ||
-        !isValidShape(port.logicalShape, limits) || port.dtype.empty() ||
-        port.dtype.size() > limits.maxStringBytes ||
+        !isValidShape(port.logicalShape, limits) ||
         !isValidShape(port.shape, limits) || port.bytes == 0 ||
         port.bytes >
             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
         port.alignment == 0 || !isPowerOfTwo(port.alignment))
       return invalid("package input port has invalid descriptor");
-    llvm::Expected<NumericTensorKey> logicalKey = makePackageTensorKey(
-        port.logicalDtype, PackageMemLayout::Tensor, port.logicalShape,
-        "package input logical descriptor");
+    llvm::Expected<uint64_t> logicalKey = getLogicalElementCount(
+        port.logicalShape, "package input logical descriptor");
     if (!logicalKey)
       return logicalKey.takeError();
     llvm::Expected<uint64_t> physicalElementCount =
@@ -638,7 +640,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
                                        "package input target descriptor");
     if (!physicalElementCount)
       return physicalElementCount.takeError();
-    if (*physicalElementCount != logicalKey->getElementCount())
+    if (*physicalElementCount != *logicalKey)
       return invalid("package input logical and target element counts "
                      "disagree");
     if (!inputRoleIndices.insert(port.roleIndex).second)
@@ -648,18 +650,14 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
   for (const ExternalPortRecord &port : manifest.outputs) {
     if (port.roleIndex < 0 ||
         port.roleIndex > std::numeric_limits<uint32_t>::max() ||
-        port.logicalDtype.empty() ||
-        port.logicalDtype.size() > limits.maxStringBytes ||
-        !isValidShape(port.logicalShape, limits) || port.dtype.empty() ||
-        port.dtype.size() > limits.maxStringBytes ||
+        !isValidShape(port.logicalShape, limits) ||
         !isValidShape(port.shape, limits) || port.bytes == 0 ||
         port.bytes >
             static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
         port.alignment == 0 || !isPowerOfTwo(port.alignment))
       return invalid("package output port has invalid descriptor");
-    llvm::Expected<NumericTensorKey> logicalKey = makePackageTensorKey(
-        port.logicalDtype, PackageMemLayout::Tensor, port.logicalShape,
-        "package output logical descriptor");
+    llvm::Expected<uint64_t> logicalKey = getLogicalElementCount(
+        port.logicalShape, "package output logical descriptor");
     if (!logicalKey)
       return logicalKey.takeError();
     llvm::Expected<uint64_t> physicalElementCount =
@@ -668,7 +666,7 @@ verifyPackageManifest(PackageManifest manifest, llvm::StringRef packageRoot,
                                        "package output target descriptor");
     if (!physicalElementCount)
       return physicalElementCount.takeError();
-    if (*physicalElementCount != logicalKey->getElementCount())
+    if (*physicalElementCount != *logicalKey)
       return invalid("package output logical and target element counts "
                      "disagree");
     if (!outputRoleIndices.insert(port.roleIndex).second)

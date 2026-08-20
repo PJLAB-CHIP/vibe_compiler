@@ -87,7 +87,8 @@ bool haveSameResourceGeometry(const compiler::TileEntryArgument &lhs,
   return lhs.kind == rhs.kind && lhs.resourceIndex == rhs.resourceIndex &&
          lhs.dtype == rhs.dtype && lhs.layout == rhs.layout &&
          lhs.shape == rhs.shape && lhs.byteSize == rhs.byteSize &&
-         lhs.alignment == rhs.alignment;
+         lhs.alignment == rhs.alignment &&
+         lhs.targetTensorMaterialization == rhs.targetTensorMaterialization;
 }
 
 } // namespace
@@ -229,6 +230,12 @@ llvm::Expected<InvocationAddressPlan> InvocationAddressPlan::create(
         return memoryError(TargetModelMemoryErrorCode::InvalidSlot,
                            tileSlot(launchSlot, slot.ordinal) +
                                " has invalid ordinal or resource index");
+      if ((slot.kind == compiler::TileEntryArgumentKind::TargetTensor) !=
+          slot.targetTensorMaterialization.has_value())
+        return memoryError(
+            TargetModelMemoryErrorCode::InvalidSlot,
+            tileSlot(launchSlot, slot.ordinal) +
+                " has inconsistent TargetTensor materialization metadata");
       if (slot.byteSize <= 0 || slot.alignment <= 0 ||
           !isPowerOfTwo(static_cast<uint64_t>(slot.alignment)))
         return memoryError(TargetModelMemoryErrorCode::InvalidSlot,

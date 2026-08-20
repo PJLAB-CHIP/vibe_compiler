@@ -110,7 +110,7 @@ TEST(SystemCTargetModelDTEReadinessTest,
                                       /*maximumMovementBytes=*/8192,
                                       /*maximumMovementSegments=*/2048));
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
-  EXPECT_EQ(result->completedRankCount, 16);
+  EXPECT_EQ(result->completedTileCount, 16);
   EXPECT_GT(result->finalDeltaCount, 0u);
 }
 

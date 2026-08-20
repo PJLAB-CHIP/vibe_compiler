@@ -5,5 +5,5 @@ target_link_libraries(wafer-cmodel-qualify-bulk
   LLVMSupport
   WaferBulkModel
   WaferCompiler
-  WaferTargetModelCore
+  WaferTargetModelInvocation
 )

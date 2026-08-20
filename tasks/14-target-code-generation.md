@@ -106,6 +106,8 @@ ABI preparation只消费final accepted Instr IR和program boundary bindings，�
 的一个有序参数：ordinal、closed kind、恰一个typed reference（ProgramTensor/TargetTensor、external port或entry-local
 requirement）、closed typed target element value、`MemLayout`、shape、physical bytes、alignment与access；它不拥有bytes、file
 range或device address。字符串dtype只允许在外部format parser/printer边界出现，不是`TileEntryArgument`合同。
+TargetTensor slot另携带一个same-invocation materialization action；其它kind必须没有该字段。该action不改变pointer-row ABI，
+不进入package manifest，target/module/package join完成后即失效。
 
 稳定规则：
 
@@ -130,6 +132,9 @@ materialization input；转换器以bounded source window产生target-ready byte
 materialization input必须显式表达identity或具体value conversion，并携带rounding、zero-point等该转换实际需要的typed参数。
 writer不能仅比较source/destination dtype后默选转换策略，不能为静态数据伪造TargetCall/CT command，也不能查询formal model
 profile或capability registry。缺少必要参数的selected representation在产生文件effect前拒绝。
+
+具体算术由无selection、无model identity的target scalar-conversion primitive实现；accepted-data preparation和formal convert wrapper
+共同调用这一实现。CodeGen不链接formal model，formal wrapper只把同一conversion result/error/flags映射到model API。
 
 这一阶段不决定device base或provider allocation；它给15号package owner提供确定的ProgramDataRange、TargetTensor descriptor、
 exact byte count和可流式写入的转换动作。Q56为这些TargetTensor预排`program-data.bin` offset并计算whole-file digest。

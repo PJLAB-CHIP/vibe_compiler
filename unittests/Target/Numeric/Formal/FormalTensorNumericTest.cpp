@@ -19,8 +19,6 @@ namespace {
 
 using namespace wafer;
 
-constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
-
 static_assert(!std::is_default_constructible_v<FormalNumericWorkBudget>);
 
 template <typename T> std::string expectError(llvm::Expected<T> value) {
@@ -31,24 +29,16 @@ template <typename T> std::string expectError(llvm::Expected<T> value) {
   return llvm::toString(value.takeError());
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
-                            std::vector<uint64_t> shape) {
-  llvm::Expected<NumericTensorKey> key =
-      NumericTensorKey::create(format, layout, std::move(shape));
+PhysicalTensorDescriptor makeTensor(LogicalFormat format,
+                                    PhysicalTensorLayout layout,
+                                    std::vector<uint64_t> shape) {
+  llvm::Expected<PhysicalTensorDescriptor> key =
+      PhysicalTensorDescriptor::create(format, layout, std::move(shape));
   if (key)
     return std::move(*key);
   ADD_FAILURE() << llvm::toString(key.takeError());
-  return llvm::cantFail(NumericTensorKey::create(
+  return llvm::cantFail(PhysicalTensorDescriptor::create(
       LogicalFormat::F32, PhysicalTensorLayout::Tensor, {1}));
-}
-
-ResolvedNumericCommand resolve(NumericCommandKey key) {
-  llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumericCommand(kModelProfile, std::move(key));
-  if (resolved)
-    return std::move(*resolved);
-  ADD_FAILURE() << llvm::toString(resolved.takeError());
-  llvm_unreachable("test command must resolve");
 }
 
 uint16_t findConvertOpcode(LogicalFormat source, LogicalFormat destination,
@@ -61,66 +51,64 @@ uint16_t findConvertOpcode(LogicalFormat source, LogicalFormat destination,
   return 0;
 }
 
-ResolvedNumericCommand makeConvert(LogicalFormat source,
+FormalConvertOperation makeConvert(LogicalFormat source,
                                    LogicalFormat destination,
                                    std::vector<uint64_t> shape) {
   const uint16_t opcode = findConvertOpcode(
       source, destination, TargetConvertParameterKind::RoundingMode);
-  NumericTensorKey sourceKey =
+  PhysicalTensorDescriptor sourceKey =
       makeTensor(source, PhysicalTensorLayout::Tensor, shape);
-  NumericTensorKey destinationKey =
+  PhysicalTensorDescriptor destinationKey =
       makeTensor(destination, PhysicalTensorLayout::Tensor, std::move(shape));
-  return resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
+  return llvm::cantFail(createFormalConvertOperation(
       opcode, std::move(sourceKey), std::move(destinationKey),
-      NumericConvertParameter::roundingMode(
-          NumericRoundingMode::NearestEven))));
+      TargetConvertParameter::roundingMode(TargetRoundingMode::NearestEven)));
 }
 
-ResolvedNumericCommand makePlainConvert(LogicalFormat source,
+FormalConvertOperation makePlainConvert(LogicalFormat source,
                                         LogicalFormat destination,
                                         std::vector<uint64_t> shape) {
   const uint16_t opcode =
       findConvertOpcode(source, destination, TargetConvertParameterKind::None);
-  NumericTensorKey sourceKey =
+  PhysicalTensorDescriptor sourceKey =
       makeTensor(source, PhysicalTensorLayout::Tensor, shape);
-  NumericTensorKey destinationKey =
+  PhysicalTensorDescriptor destinationKey =
       makeTensor(destination, PhysicalTensorLayout::Tensor, std::move(shape));
-  return resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
-      opcode, std::move(sourceKey), std::move(destinationKey), std::nullopt)));
+  return llvm::cantFail(createFormalConvertOperation(
+      opcode, std::move(sourceKey), std::move(destinationKey), std::nullopt));
 }
 
-ResolvedNumericCommand makeElementwise(NumericElementwiseOperation operation,
-                                       LogicalFormat input,
-                                       LogicalFormat destination,
-                                       std::vector<uint64_t> shape) {
-  const unsigned arity = getNumericElementwiseArity(operation);
-  std::vector<NumericTensorKey> inputs;
+FormalElementwiseOperation makeElementwise(TargetElementwiseOperation operation,
+                                           LogicalFormat input,
+                                           LogicalFormat destination,
+                                           std::vector<uint64_t> shape) {
+  const unsigned arity = getTargetElementwiseArity(operation);
+  std::vector<PhysicalTensorDescriptor> inputs;
   for (unsigned index = 0; index < arity; ++index)
     inputs.push_back(makeTensor(input, PhysicalTensorLayout::Tensor, shape));
-  return resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
+  return llvm::cantFail(createFormalElementwiseOperation(
       operation, std::move(inputs),
-      makeTensor(destination, PhysicalTensorLayout::Tensor,
-                 std::move(shape)))));
+      makeTensor(destination, PhysicalTensorLayout::Tensor, std::move(shape))));
 }
 
-ResolvedNumericCommand makeGemm(LogicalFormat format, uint32_t batch,
-                                uint32_t m, uint32_t k, uint32_t n) {
+FormalGemmOperation makeGemm(LogicalFormat format, uint32_t batch, uint32_t m,
+                             uint32_t k, uint32_t n) {
   std::vector<uint64_t> lhsShape{batch, m, k};
   std::vector<uint64_t> rhsShape{batch, k, n};
   std::vector<uint64_t> destinationShape{batch, m, n};
-  return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
+  return llvm::cantFail(createFormalGemmOperation(
       makeTensor(format, PhysicalTensorLayout::NCx, std::move(lhsShape)),
       makeTensor(format, PhysicalTensorLayout::NCx, std::move(rhsShape)),
       makeTensor(format, PhysicalTensorLayout::NCx,
                  std::move(destinationShape)),
       m, k, n, batch,
-      llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/3)))));
+      llvm::cantFail(getCanonicalFormalGemmGeometry(/*rank=*/3))));
 }
 
-ResolvedNumericCommand makeOrientedGemm(LogicalFormat format, uint32_t m,
-                                        uint32_t k, uint32_t n,
-                                        TargetGemmOrientation lhsOrientation,
-                                        TargetGemmOrientation rhsOrientation) {
+FormalGemmOperation makeOrientedGemm(LogicalFormat format, uint32_t m,
+                                     uint32_t k, uint32_t n,
+                                     TargetGemmOrientation lhsOrientation,
+                                     TargetGemmOrientation rhsOrientation) {
   std::vector<uint64_t> lhsShape =
       lhsOrientation == TargetGemmOrientation::Normal
           ? std::vector<uint64_t>{m, k}
@@ -129,12 +117,13 @@ ResolvedNumericCommand makeOrientedGemm(LogicalFormat format, uint32_t m,
       rhsOrientation == TargetGemmOrientation::Normal
           ? std::vector<uint64_t>{k, n}
           : std::vector<uint64_t>{n, k};
-  return resolve(llvm::cantFail(NumericCommandKey::createNEGemm(
+  return llvm::cantFail(createFormalGemmOperation(
       makeTensor(format, PhysicalTensorLayout::Cx, std::move(lhsShape)),
       makeTensor(format, PhysicalTensorLayout::Cx, std::move(rhsShape)),
       makeTensor(format, PhysicalTensorLayout::Cx, {m, n}), m, k, n,
-      /*batchCount=*/1, llvm::cantFail(getCanonicalNumericGemmAxes(/*rank=*/2)),
-      lhsOrientation, rhsOrientation)));
+      /*batchCount=*/1,
+      llvm::cantFail(getCanonicalFormalGemmGeometry(/*rank=*/2)),
+      lhsOrientation, rhsOrientation));
 }
 
 std::vector<llvm::ArrayRef<RawLogicalValue>>
@@ -146,16 +135,16 @@ views(const std::vector<std::vector<RawLogicalValue>> &storage) {
   return result;
 }
 
+template <typename Operation>
 FormalTensorNumericResult
-execute(FormalNumericExecutionContext &context,
-        const ResolvedNumericCommand &command,
+execute(FormalNumericExecutionContext &context, const Operation &operation,
         const std::vector<std::vector<RawLogicalValue>> &storage,
         FormalNumericWorkBudget budget = FormalNumericWorkBudget::create(
             /*maximumScalarEvaluations=*/1024,
             /*maximumFusedMultiplyAdds=*/1024)) {
   std::vector<llvm::ArrayRef<RawLogicalValue>> inputViews = views(storage);
   llvm::Expected<FormalTensorNumericResult> result =
-      executeFormalTensorNumeric(context, command, inputViews, budget);
+      executeFormalTensorNumeric(context, operation, inputViews, budget);
   if (result)
     return std::move(*result);
   ADD_FAILURE() << llvm::toString(result.takeError());
@@ -163,8 +152,7 @@ execute(FormalNumericExecutionContext &context,
 }
 
 TEST(FormalTensorNumericTest, ConvertReturnsOnlyCompleteTensorAndFlags) {
-  ResolvedNumericCommand command =
-      makeConvert(LogicalFormat::F32, LogicalFormat::F16, {3});
+  auto command = makeConvert(LogicalFormat::F32, LogicalFormat::F16, {3});
   std::vector<std::vector<RawLogicalValue>> inputs{{
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
       {LogicalFormat::F32, UINT64_C(0x3f801000)},
@@ -183,8 +171,7 @@ TEST(FormalTensorNumericTest, ConvertReturnsOnlyCompleteTensorAndFlags) {
 
 TEST(FormalTensorNumericTest,
      FloatToIntegerLateRejectLeavesInvocationContextUnchanged) {
-  ResolvedNumericCommand command =
-      makeConvert(LogicalFormat::F32, LogicalFormat::I32, {2});
+  auto command = makeConvert(LogicalFormat::F32, LogicalFormat::I32, {2});
   std::vector<std::vector<RawLogicalValue>> inputs{{
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
       {LogicalFormat::F32, UINT64_C(0x7fc00000)},
@@ -203,9 +190,8 @@ TEST(FormalTensorNumericTest,
      BasicRelationLogicAndMPFRFamiliesUseResolvedBackend) {
   FormalNumericExecutionContext context;
   {
-    ResolvedNumericCommand add =
-        makeElementwise(NumericElementwiseOperation::Add, LogicalFormat::F32,
-                        LogicalFormat::F32, {2});
+    auto add = makeElementwise(TargetElementwiseOperation::Add,
+                               LogicalFormat::F32, LogicalFormat::F32, {2});
     FormalTensorNumericResult result =
         execute(context, add,
                 {{{LogicalFormat::F32, UINT64_C(0x3f800000)},
@@ -217,8 +203,8 @@ TEST(FormalTensorNumericTest,
     EXPECT_EQ(result.values[1].bits, UINT64_C(0x40c00000));
   }
   {
-    ResolvedNumericCommand notEqual =
-        makeElementwise(NumericElementwiseOperation::Ne, LogicalFormat::F16,
+    auto notEqual =
+        makeElementwise(TargetElementwiseOperation::Ne, LogicalFormat::F16,
                         LogicalFormat::Bool, {2});
     FormalTensorNumericResult result =
         execute(context, notEqual,
@@ -232,8 +218,8 @@ TEST(FormalTensorNumericTest,
     EXPECT_EQ(result.values[1].bits, UINT64_C(0));
   }
   {
-    ResolvedNumericCommand logical =
-        makeElementwise(NumericElementwiseOperation::LogicXor,
+    auto logical =
+        makeElementwise(TargetElementwiseOperation::LogicXor,
                         LogicalFormat::Bool, LogicalFormat::Bool, {3});
     FormalTensorNumericResult result = execute(context, logical,
                                                {{{LogicalFormat::Bool, 0},
@@ -248,8 +234,8 @@ TEST(FormalTensorNumericTest,
     EXPECT_EQ(result.values[2].bits, UINT64_C(0));
   }
   {
-    ResolvedNumericCommand exponential =
-        makeElementwise(NumericElementwiseOperation::Exp, LogicalFormat::BF16,
+    auto exponential =
+        makeElementwise(TargetElementwiseOperation::Exp, LogicalFormat::BF16,
                         LogicalFormat::BF16, {2});
     FormalTensorNumericResult result =
         execute(context, exponential,
@@ -264,7 +250,7 @@ TEST(FormalTensorNumericTest,
 
 TEST(FormalTensorNumericTest,
      GemmUsesBatchRowMajorIncreasingKAndOriginalDestinationFormat) {
-  ResolvedNumericCommand command =
+  auto command =
       makeGemm(LogicalFormat::F16, /*batch=*/2, /*m=*/2, /*k=*/2, /*n=*/2);
   std::vector<std::vector<RawLogicalValue>> inputs{
       {
@@ -338,9 +324,8 @@ TEST(FormalTensorNumericTest,
        {TargetGemmOrientation::Normal, TargetGemmOrientation::Transpose}) {
     for (TargetGemmOrientation rhsOrientation :
          {TargetGemmOrientation::Normal, TargetGemmOrientation::Transpose}) {
-      ResolvedNumericCommand command =
-          makeOrientedGemm(LogicalFormat::F32, /*m=*/2, /*k=*/3, /*n=*/4,
-                           lhsOrientation, rhsOrientation);
+      auto command = makeOrientedGemm(LogicalFormat::F32, /*m=*/2, /*k=*/3,
+                                      /*n=*/4, lhsOrientation, rhsOrientation);
       const std::vector<RawLogicalValue> &lhs =
           lhsOrientation == TargetGemmOrientation::Normal ? normalLhs
                                                           : transposedLhs;
@@ -361,7 +346,7 @@ TEST(FormalTensorNumericTest,
 
 TEST(FormalTensorNumericTest,
      BudgetAndInputValidationPrecedeEvaluationAndLeaveContextUnchanged) {
-  ResolvedNumericCommand command =
+  auto command =
       makeGemm(LogicalFormat::F32, /*batch=*/1, /*m=*/2, /*k=*/3, /*n=*/2);
   std::vector<std::vector<RawLogicalValue>> wrongSizedInputs{
       {{LogicalFormat::F32, 0}}, {{LogicalFormat::F32, 0}}};
@@ -394,8 +379,7 @@ TEST(FormalTensorNumericTest,
 TEST(FormalTensorNumericTest,
      InvalidTF32FailsAndNativeF32SumReturnsOnlyCompleteResult) {
   FormalNumericExecutionContext context;
-  ResolvedNumericCommand convert =
-      makePlainConvert(LogicalFormat::TF32, LogicalFormat::F32, {1});
+  auto convert = makePlainConvert(LogicalFormat::TF32, LogicalFormat::F32, {1});
   std::vector<std::vector<RawLogicalValue>> noncanonicalTF32{
       {{LogicalFormat::TF32, UINT64_C(0x3f801001)}}};
   std::vector<llvm::ArrayRef<RawLogicalValue>> inputViews =
@@ -407,9 +391,8 @@ TEST(FormalTensorNumericTest,
   EXPECT_NE(error.find("invalid-input-encoding"), std::string::npos);
   EXPECT_FALSE(context.getAggregateFlags().any());
 
-  ResolvedNumericCommand relation =
-      makeElementwise(NumericElementwiseOperation::Eq, LogicalFormat::F32,
-                      LogicalFormat::Bool, {1});
+  auto relation = makeElementwise(TargetElementwiseOperation::Eq,
+                                  LogicalFormat::F32, LogicalFormat::Bool, {1});
   std::vector<std::vector<RawLogicalValue>> wrongFormat{
       {{LogicalFormat::TF32, UINT64_C(0x3f801000)}},
       {{LogicalFormat::F32, UINT64_C(0x3f800000)}}};
@@ -421,14 +404,13 @@ TEST(FormalTensorNumericTest,
   EXPECT_NE(error.find("input-format-mismatch"), std::string::npos);
   EXPECT_FALSE(context.getAggregateFlags().any());
 
-  NumericTensorKey reduceInput =
+  PhysicalTensorDescriptor reduceInput =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 2});
-  NumericTensorKey reduceDestination =
+  PhysicalTensorDescriptor reduceDestination =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2});
-  ResolvedNumericCommand reduce =
-      resolve(llvm::cantFail(NumericCommandKey::createNativeCTReduce(
-          NumericReduceOperation::Sum, std::move(reduceInput),
-          std::move(reduceDestination), NativeCTReduceDimension::Trailing0)));
+  auto reduce = llvm::cantFail(createFormalReduceOperation(
+      TargetReduceOperation::Sum, std::move(reduceInput),
+      std::move(reduceDestination), TargetReduceDimension::Trailing0));
   std::array<RawLogicalValue, 4> values{
       RawLogicalValue{LogicalFormat::F32, UINT64_C(0x3f800000)},
       RawLogicalValue{LogicalFormat::F32, UINT64_C(0x40000000)},

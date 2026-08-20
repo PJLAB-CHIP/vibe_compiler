@@ -14,6 +14,7 @@
 
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Frontend/Program/Program.h"
+#include "Wafer/Program/ProgramElementType.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -95,7 +96,7 @@ llvm::StringRef stringifyProgramDataFailureKind(ProgramDataFailureKind kind);
 /// This is the admission table for program tensors and ranges. NPY source
 /// decoding is a separate concern (frontend `decodeProgramNpyDescr`); a source
 /// whose decoded dtype is not admitted here fails establishment.
-std::optional<int64_t> getProgramDTypeElementBytes(llvm::StringRef dtype);
+std::optional<int64_t> getProgramDTypeElementBytes(ProgramElementType dtype);
 
 /// Where a range's source content comes from. The proof a range must carry
 /// depends on this origin.
@@ -136,7 +137,7 @@ public:
   /// Program-relative locator used for diagnostics, provenance, and resolver
   /// lookup; it is never a data key for range identity.
   llvm::StringRef getLocator() const { return locator; }
-  llvm::StringRef getDType() const { return dtype; }
+  ProgramElementType getDType() const { return dtype; }
   llvm::ArrayRef<int64_t> getShape() const { return shape; }
   uint64_t getPayloadOffset() const { return payloadOffset; }
   llvm::StringRef getContentDigest() const { return digest; }
@@ -170,20 +171,20 @@ private:
             std::shared_ptr<ProgramDataIOStatistics> statistics);
 
   ProgramDataSource(std::string ownedFilePath, std::string locator,
-                    std::string dtype, std::vector<int64_t> shape,
+                    ProgramElementType dtype, std::vector<int64_t> shape,
                     uint64_t payloadOffset, uint64_t size, std::string digest,
                     llvm::sys::fs::file_t ownedFile,
                     std::shared_ptr<ProgramDataIOStatistics> statistics)
       : ownedFilePath(std::move(ownedFilePath)), locator(std::move(locator)),
-        dtype(std::move(dtype)), shape(std::move(shape)),
-        payloadOffset(payloadOffset), size(size), digest(std::move(digest)),
-        ownedFile(ownedFile), statistics(std::move(statistics)) {}
+        dtype(dtype), shape(std::move(shape)), payloadOffset(payloadOffset),
+        size(size), digest(std::move(digest)), ownedFile(ownedFile),
+        statistics(std::move(statistics)) {}
 
   void releaseOwnedFile() noexcept;
 
   std::string ownedFilePath;
   std::string locator;
-  std::string dtype;
+  ProgramElementType dtype;
   std::vector<int64_t> shape;
   uint64_t payloadOffset;
   uint64_t size;
@@ -207,7 +208,7 @@ public:
   /// global shape, a `MaterializedShard` range proves the source shape equals
   /// the local shape and is covered exactly from the origin.
   static llvm::Expected<ProgramDataRange>
-  create(ProgramTensorId tensorId, llvm::StringRef dtype,
+  create(ProgramTensorId tensorId, ProgramElementType dtype,
          llvm::ArrayRef<int64_t> globalShape,
          llvm::ArrayRef<int64_t> localShape,
          frontend::ProgramDistributionKind distribution,
@@ -217,7 +218,7 @@ public:
          const ProgramDataSource &source, ProgramDataFailure *failure);
 
   ProgramTensorId getTensorId() const { return tensorId; }
-  llvm::StringRef getDType() const { return dtype; }
+  ProgramElementType getDType() const { return dtype; }
   llvm::ArrayRef<int64_t> getGlobalShape() const { return globalShape; }
   llvm::ArrayRef<int64_t> getLocalShape() const { return localShape; }
   frontend::ProgramDistributionKind getDistribution() const {
@@ -244,7 +245,7 @@ public:
                                 llvm::MutableArrayRef<uint8_t> out) const;
 
 private:
-  ProgramDataRange(ProgramTensorId tensorId, std::string dtype,
+  ProgramDataRange(ProgramTensorId tensorId, ProgramElementType dtype,
                    std::vector<int64_t> globalShape,
                    std::vector<int64_t> localShape,
                    frontend::ProgramDistributionKind distribution,
@@ -252,15 +253,15 @@ private:
                    std::vector<int64_t> sliceSizes, SourceDataId sourceId,
                    uint64_t regionOffset, uint64_t regionLength,
                    std::vector<int64_t> payloadShape, bool contiguous)
-      : tensorId(tensorId), dtype(std::move(dtype)),
-        globalShape(std::move(globalShape)), localShape(std::move(localShape)),
-        distribution(distribution), sliceOffsets(std::move(sliceOffsets)),
+      : tensorId(tensorId), dtype(dtype), globalShape(std::move(globalShape)),
+        localShape(std::move(localShape)), distribution(distribution),
+        sliceOffsets(std::move(sliceOffsets)),
         sliceSizes(std::move(sliceSizes)), sourceId(sourceId),
         regionOffset(regionOffset), regionLength(regionLength),
         payloadShape(std::move(payloadShape)), contiguous(contiguous) {}
 
   ProgramTensorId tensorId;
-  std::string dtype;
+  ProgramElementType dtype;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
   frontend::ProgramDistributionKind distribution;

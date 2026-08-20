@@ -248,8 +248,8 @@ Support / Target typed facts
       -> Runtime validation -> Board provider or Model consumer
 
 Target operation / physical tensor / scalar codec
-  -> CodeGen TargetTensor materialization
-  -> Formal model -> managed/bulk model -> SystemC consumer
+  -> target scalar conversion -> CodeGen TargetTensor materialization
+                           \-> Formal model -> managed/bulk model -> SystemC consumer
 
 Driver / Runtime / Model
   -> Tools

@@ -1,9 +1,9 @@
 //===- ProgramDataTest.cpp - Transaction-owned program data tests --------===//
 
 #include "Wafer/Program/ProgramData.h"
-#include "Wafer/Program/ProgramInvocation.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Program/ProgramInvocation.h"
 
 #include "Wafer/Frontend/Program/Program.h"
 
@@ -113,7 +113,7 @@ TEST_F(ProgramDataTest, EstablishmentVerifiesHeaderExtentAndDigest) {
   auto source = ProgramDataSource::establish(
       path("valid.npy"), ownedPath("valid"), "data/weight", nullptr);
   ASSERT_TRUE(static_cast<bool>(source));
-  EXPECT_EQ(source->getDType(), "f32");
+  EXPECT_EQ(source->getDType(), wafer::ProgramElementType::F32);
   EXPECT_TRUE(source->getShape() == llvm::ArrayRef<int64_t>({2, 2}));
   EXPECT_EQ(source->getSize(),
             static_cast<uint64_t>(source->getPayloadOffset()) + payload.size());
@@ -279,7 +279,7 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
           llvm::ArrayRef<int64_t> strides, ProgramDataFailureKind expected) {
         ProgramDataFailure failure;
         auto range = ProgramDataRange::create(
-            tensorId, "f32", {4, 2}, sizes,
+            tensorId, wafer::ProgramElementType::F32, {4, 2}, sizes,
             wafer::frontend::ProgramDistributionKind::Partitioned,
             ProgramDataRangeOrigin::OriginalSource, offsets, sizes, strides,
             SourceDataId{0}, *source, &failure);
@@ -292,7 +292,7 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
   {
     ProgramDataFailure failure;
     auto range = ProgramDataRange::create(
-        tensorId, "f32", {4, 2}, {4, 2},
+        tensorId, wafer::ProgramElementType::F32, {4, 2}, {4, 2},
         wafer::frontend::ProgramDistributionKind::Replicated,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 0},
         std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
@@ -308,7 +308,7 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
   {
     ProgramDataFailure failure;
     auto range = ProgramDataRange::create(
-        tensorId, "f32", {4, 2}, {2, 2},
+        tensorId, wafer::ProgramElementType::F32, {4, 2}, {2, 2},
         wafer::frontend::ProgramDistributionKind::Partitioned,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{1, 0},
         std::vector<int64_t>{2, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
@@ -324,7 +324,7 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
   {
     ProgramDataFailure failure;
     auto range = ProgramDataRange::create(
-        tensorId, "f32", {4, 2}, {4, 1},
+        tensorId, wafer::ProgramElementType::F32, {4, 2}, {4, 1},
         wafer::frontend::ProgramDistributionKind::Partitioned,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 1},
         std::vector<int64_t>{4, 1}, std::vector<int64_t>{1, 1}, SourceDataId{0},
@@ -343,7 +343,7 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
     // dtype disagreement with the payload source.
     ProgramDataFailure failure;
     auto range = ProgramDataRange::create(
-        tensorId, "f16", {4, 2}, {4, 2},
+        tensorId, wafer::ProgramElementType::F16, {4, 2}, {4, 2},
         wafer::frontend::ProgramDistributionKind::Replicated,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 0},
         std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
@@ -361,7 +361,7 @@ TEST_F(ProgramDataTest, RangeCreationChecksGeometryAndMaterializes) {
     ASSERT_TRUE(static_cast<bool>(small));
     ProgramDataFailure failure;
     auto range = ProgramDataRange::create(
-        tensorId, "f32", {4, 2}, {4, 2},
+        tensorId, wafer::ProgramElementType::F32, {4, 2}, {4, 2},
         wafer::frontend::ProgramDistributionKind::Replicated,
         ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 0},
         std::vector<int64_t>{4, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
@@ -386,7 +386,7 @@ TEST_F(ProgramDataTest, RangeCreationProvesSourceShapeByOrigin) {
           ProgramDataRangeOrigin origin, llvm::ArrayRef<int64_t> offsets,
           llvm::ArrayRef<int64_t> sizes, ProgramDataFailure *failure) {
         return ProgramDataRange::create(
-            tensorId, "f32", global, local,
+            tensorId, wafer::ProgramElementType::F32, global, local,
             wafer::frontend::ProgramDistributionKind::Partitioned, origin,
             offsets, sizes, std::vector<int64_t>(offsets.size(), 1),
             SourceDataId{0}, *source, failure);
@@ -451,7 +451,7 @@ TEST_F(ProgramDataTest, RangeCreationProvesSourceShapeByOrigin) {
     ASSERT_TRUE(static_cast<bool>(shard));
     ProgramDataFailure failure;
     auto range = ProgramDataRange::create(
-        tensorId, "f32", {4, 2}, {2, 2},
+        tensorId, wafer::ProgramElementType::F32, {4, 2}, {2, 2},
         wafer::frontend::ProgramDistributionKind::Partitioned,
         ProgramDataRangeOrigin::MaterializedShard, std::vector<int64_t>{0, 0},
         std::vector<int64_t>{2, 2}, std::vector<int64_t>{1, 1}, SourceDataId{0},
@@ -483,8 +483,8 @@ TEST_F(ProgramDataTest, HandoffOwnsSourcesAndResolvesRanges) {
 
   ProgramDataFailure rangeFailure;
   auto range = ProgramDataRange::create(
-      {ProgramResourceRole::Parameter, 0}, "f32", {2, 2}, {2, 2},
-      wafer::frontend::ProgramDistributionKind::Replicated,
+      {ProgramResourceRole::Parameter, 0}, wafer::ProgramElementType::F32,
+      {2, 2}, {2, 2}, wafer::frontend::ProgramDistributionKind::Replicated,
       ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 0},
       std::vector<int64_t>{2, 2}, std::vector<int64_t>{1, 1}, *id,
       handoff.getSource(*id), &rangeFailure);
@@ -500,8 +500,8 @@ TEST_F(ProgramDataTest, HandoffOwnsSourcesAndResolvesRanges) {
 
   // Duplicate tensor identity is rejected.
   auto duplicate = ProgramDataRange::create(
-      {ProgramResourceRole::Parameter, 0}, "f32", {2, 2}, {2, 2},
-      wafer::frontend::ProgramDistributionKind::Replicated,
+      {ProgramResourceRole::Parameter, 0}, wafer::ProgramElementType::F32,
+      {2, 2}, {2, 2}, wafer::frontend::ProgramDistributionKind::Replicated,
       ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0, 0},
       std::vector<int64_t>{2, 2}, std::vector<int64_t>{1, 1}, *id,
       handoff.getSource(*id), nullptr);
@@ -570,7 +570,7 @@ TEST_F(ProgramDataTest, LargeRangeUsesBoundedAccountedReadWindows) {
                                           "data/large-range", &failure);
   ASSERT_TRUE(static_cast<bool>(sourceId));
   auto range = ProgramDataRange::create(
-      {ProgramResourceRole::Parameter, 0}, "f32",
+      {ProgramResourceRole::Parameter, 0}, wafer::ProgramElementType::F32,
       {static_cast<int64_t>(kElementCount)},
       {static_cast<int64_t>(kElementCount)},
       wafer::frontend::ProgramDistributionKind::Replicated,
@@ -759,7 +759,8 @@ TEST_F(ProgramDataTest, MaterializationFailuresCarryTypedClassification) {
 TEST_F(ProgramDataTest, SharedProgramTensorViewsNeverDuplicatePayload) {
   std::vector<uint8_t> payload = f32Bytes({1.0f, 2.0f, 3.0f, 4.0f});
   auto storage = std::make_shared<const std::vector<uint8_t>>(payload);
-  auto tensor = ProgramTensor::share("f32", {2, 2}, storage, 0);
+  auto tensor =
+      ProgramTensor::share(wafer::ProgramElementType::F32, {2, 2}, storage, 0);
   ASSERT_TRUE(static_cast<bool>(tensor));
   EXPECT_EQ(tensor->getBytes().size(), payload.size());
   EXPECT_EQ(tensor->getBytes().data(), storage->data());
@@ -767,21 +768,25 @@ TEST_F(ProgramDataTest, SharedProgramTensorViewsNeverDuplicatePayload) {
             llvm::ArrayRef<uint8_t>(payload));
 
   // Out-of-bounds views are rejected.
-  auto invalid = ProgramTensor::share("f32", {2, 2}, storage, 2);
+  auto invalid =
+      ProgramTensor::share(wafer::ProgramElementType::F32, {2, 2}, storage, 2);
   EXPECT_FALSE(static_cast<bool>(invalid));
   llvm::consumeError(invalid.takeError());
 }
 
 TEST_F(ProgramDataTest, DTypeWidthTableAdmitsProgramBoundaryDtypes) {
-  EXPECT_EQ(getProgramDTypeElementBytes("f16"), 2);
-  EXPECT_EQ(getProgramDTypeElementBytes("bf16"), 2);
-  EXPECT_EQ(getProgramDTypeElementBytes("f32"), 4);
-  EXPECT_EQ(getProgramDTypeElementBytes("i64"), 8);
-  EXPECT_EQ(getProgramDTypeElementBytes("i8"), 1);
+  EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::F16), 2);
+  EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::BF16), 2);
+  EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::F32), 4);
+  EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::I64), 8);
+  EXPECT_EQ(getProgramDTypeElementBytes(wafer::ProgramElementType::I8), 1);
   // Boolean has no target representation yet: not admitted at the program
   // boundary even though the NPY source layer can decode it.
-  EXPECT_FALSE(getProgramDTypeElementBytes("i1").has_value());
-  EXPECT_FALSE(getProgramDTypeElementBytes("f128").has_value());
+  EXPECT_FALSE(
+      getProgramDTypeElementBytes(wafer::ProgramElementType::Bool).has_value());
+  auto unknown = wafer::parseProgramElementType("f128");
+  EXPECT_FALSE(static_cast<bool>(unknown));
+  llvm::consumeError(unknown.takeError());
 }
 
 namespace {
@@ -805,7 +810,7 @@ shapedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
   binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   binding.globalShape.assign(shape.begin(), shape.end());
   binding.localShape.assign(shape.begin(), shape.end());
-  binding.dtype = "f32";
+  binding.dtype = wafer::ProgramElementType::F32;
   binding.partitionSlices.push_back(singleCardPartitionSlice(shape));
   return binding;
 }
@@ -860,7 +865,7 @@ module {
   parameter.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   parameter.globalShape = {4};
   parameter.localShape = {4};
-  parameter.dtype = "f32";
+  parameter.dtype = wafer::ProgramElementType::F32;
   parameter.partitionSlices.push_back(singleCardPartitionSlice({4}));
   program.parameters.push_back(std::move(parameter));
 
@@ -880,8 +885,8 @@ module {
   EXPECT_EQ(handoff.getCandidateCount(), 1u);
   ProgramDataFailure rangeFailure;
   auto range = ProgramDataRange::create(
-      {ProgramResourceRole::Parameter, 1}, "f32", {4}, {4},
-      wafer::frontend::ProgramDistributionKind::Replicated,
+      {ProgramResourceRole::Parameter, 1}, wafer::ProgramElementType::F32, {4},
+      {4}, wafer::frontend::ProgramDistributionKind::Replicated,
       ProgramDataRangeOrigin::OriginalSource, std::vector<int64_t>{0},
       std::vector<int64_t>{4}, std::vector<int64_t>{1}, *sourceId,
       handoff.getSource(*sourceId), &rangeFailure);
@@ -899,8 +904,8 @@ module {
   EXPECT_EQ(cardExecutable->getProgramDataHandoff().getCandidateCount(), 0u)
       << "CardExecutable must retain only adopted live sources";
 
-  auto inputTensor =
-      ProgramTensor::create("f32", {4}, f32Bytes({9.0f, 9.0f, 9.0f, 9.0f}));
+  auto inputTensor = ProgramTensor::create(wafer::ProgramElementType::F32, {4},
+                                           f32Bytes({9.0f, 9.0f, 9.0f, 9.0f}));
   ASSERT_TRUE(static_cast<bool>(inputTensor));
   ProgramGlobalInputBinding input{0, std::move(*inputTensor)};
   llvm::Expected<std::vector<ProgramTileInvocation>> invocations =
@@ -919,7 +924,7 @@ module {
     for (const ProgramInputBinding &binding : invocation.inputs) {
       if (binding.role != ProgramResourceRole::Parameter)
         continue;
-      EXPECT_EQ(binding.tensor.getDType(), "f32");
+      EXPECT_EQ(binding.tensor.getDType(), wafer::ProgramElementType::F32);
       EXPECT_EQ(binding.tensor.getShape(), llvm::ArrayRef<int64_t>({4}));
       EXPECT_EQ(binding.tensor.getBytes(), llvm::ArrayRef<uint8_t>(payload));
       weight = &binding.tensor;

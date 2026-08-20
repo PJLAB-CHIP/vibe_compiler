@@ -225,7 +225,15 @@ protected:
     manifest.cardCount = 1;
     manifest.tileCount = 16;
     manifest.inputs = {
-        {PortId(0), 0, "f32", {1}, "f32", PackageMemLayout::Tensor, {1}, 4, 4},
+        {PortId(0),
+         0,
+         wafer::ProgramElementType::F32,
+         {1},
+         wafer::LogicalFormat::F32,
+         PackageMemLayout::Tensor,
+         {1},
+         4,
+         4},
     };
     ASSERT_NE(outputBytes, 0u);
     ASSERT_EQ(outputBytes % 4, 0u);
@@ -233,9 +241,9 @@ protected:
     manifest.outputs = {
         {PortId(0),
          0,
-         "f32",
+         wafer::ProgramElementType::F32,
          {outputElements},
-         "f32",
+         wafer::LogicalFormat::F32,
          PackageMemLayout::Tensor,
          {outputElements},
          outputBytes,
@@ -254,7 +262,7 @@ protected:
           {ProgramTensorId(0),
            ProgramTensorRole::Parameter,
            0,
-           "f32",
+           wafer::ProgramElementType::F32,
            {4},
            {4},
            {0},
@@ -263,7 +271,7 @@ protected:
       manifest.targetTensors = {
           {TargetTensorId(0),
            ProgramTensorId(0),
-           "f32",
+           wafer::LogicalFormat::F32,
            PackageMemLayout::Tensor,
            {4},
            16,

@@ -23,18 +23,37 @@ bool rejectProgramDirectory(llvm::StringRef reason,
   return true;
 }
 
-std::string dtypeString(Type elementType) {
+std::optional<ProgramElementType> getProgramElementType(Type elementType) {
   if (isa<Float32Type>(elementType))
-    return "f32";
+    return ProgramElementType::F32;
   if (isa<Float16Type>(elementType))
-    return "f16";
+    return ProgramElementType::F16;
   if (isa<BFloat16Type>(elementType))
-    return "bf16";
+    return ProgramElementType::BF16;
   if (isa<Float64Type>(elementType))
-    return "f64";
-  if (auto integer = dyn_cast<IntegerType>(elementType))
-    return ("i" + Twine(integer.getWidth())).str();
-  return "";
+    return ProgramElementType::F64;
+  if (auto integer = dyn_cast<IntegerType>(elementType)) {
+    switch (integer.getWidth()) {
+    case 1:
+      return ProgramElementType::Bool;
+    case 8:
+      return ProgramElementType::I8;
+    case 16:
+      return ProgramElementType::I16;
+    case 32:
+      return ProgramElementType::I32;
+    case 64:
+      return ProgramElementType::I64;
+    default:
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+
+std::string dtypeString(Type elementType) {
+  std::optional<ProgramElementType> type = getProgramElementType(elementType);
+  return type ? stringifyProgramElementType(*type).str() : std::string();
 }
 
 std::string normalizeProgramDtype(llvm::StringRef dtype) {

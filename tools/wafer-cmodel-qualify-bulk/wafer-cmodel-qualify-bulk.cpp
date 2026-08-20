@@ -1,8 +1,9 @@
 //===- wafer-cmodel-qualify-bulk.cpp - Offline bulk qualification -------===//
 
-#include "Wafer/Program/ProgramInvocation.h"
 #include "Wafer/CodeGen/TargetCodeGen.h"
 #include "Wafer/Model/Core/TargetModelInvocation.h"
+#include "Wafer/Program/ProgramInvocation.h"
+#include "Wafer/Target/Layout/TargetTensorMaterialization.h"
 #include "Wafer/Target/Numeric/Qualification/BulkQualification.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -334,12 +335,12 @@ llvm::Error writeSourceSpec(const Options &options) {
     dimensions.reserve(shape.size());
     for (int64_t dimension : shape)
       dimensions.push_back(static_cast<uint64_t>(dimension));
-    return wafer::NumericTensorKey::create(*format, layout,
-                                           std::move(dimensions));
+    return wafer::PhysicalTensorDescriptor::create(*format, layout,
+                                                   std::move(dimensions));
   };
-  llvm::Expected<wafer::NumericTensorKey> lhsKey = makeKey(lhsShape);
-  llvm::Expected<wafer::NumericTensorKey> rhsKey = makeKey(rhsShape);
-  llvm::Expected<wafer::NumericTensorKey> destinationKey =
+  llvm::Expected<wafer::PhysicalTensorDescriptor> lhsKey = makeKey(lhsShape);
+  llvm::Expected<wafer::PhysicalTensorDescriptor> rhsKey = makeKey(rhsShape);
+  llvm::Expected<wafer::PhysicalTensorDescriptor> destinationKey =
       makeKey(destinationShape);
   if (!lhsKey)
     return lhsKey.takeError();
@@ -389,7 +390,7 @@ llvm::Error writeSourceSpec(const Options &options) {
       0);
   llvm::Expected<wafer::compiler::ProgramTensor> destination =
       wafer::compiler::ProgramTensor::create(
-          wafer::stringifyLogicalFormat(*format), destinationShape,
+          wafer::getProgramElementType(*format), destinationShape,
           destinationCompact);
   if (!destination)
     return destination.takeError();
@@ -399,7 +400,7 @@ llvm::Error writeSourceSpec(const Options &options) {
         wafer::compiler::TileEntryArgumentKind::ExternalInput,
         0,
         "tensor",
-        wafer::stringifyLogicalFormat(*format).str(),
+        *format,
         abiLayout,
         std::vector<int64_t>(shape.begin(), shape.end()),
         static_cast<int64_t>(physicalBytes),

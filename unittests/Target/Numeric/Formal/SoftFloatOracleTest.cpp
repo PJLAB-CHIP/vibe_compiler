@@ -23,7 +23,7 @@ using namespace wafer;
 SoftFloatOracleRequest
 unaryRequest(SoftFloatOracleOperation operation, LogicalFormat resultFormat,
              RawLogicalValue lhs,
-             NumericRoundingMode rounding = NumericRoundingMode::NearestEven) {
+             TargetRoundingMode rounding = TargetRoundingMode::NearestEven) {
   return {operation,    rounding, SoftFloatOracleTininess::AfterRounding,
           resultFormat, lhs,      std::nullopt,
           std::nullopt};
@@ -31,8 +31,7 @@ unaryRequest(SoftFloatOracleOperation operation, LogicalFormat resultFormat,
 
 SoftFloatOracleRequest binaryRequest(
     SoftFloatOracleOperation operation, LogicalFormat format, uint64_t lhs,
-    uint64_t rhs,
-    NumericRoundingMode rounding = NumericRoundingMode::NearestEven,
+    uint64_t rhs, TargetRoundingMode rounding = TargetRoundingMode::NearestEven,
     SoftFloatOracleTininess tininess = SoftFloatOracleTininess::AfterRounding) {
   return {operation,   rounding,      tininess,
           format,      {format, lhs}, RawLogicalValue{format, rhs},
@@ -66,7 +65,7 @@ TEST(SoftFloatOracleTest, F32ToF16TieHonorsDirectedRounding) {
 
   llvm::Expected<FormalNumericResult> upward = executeSoftFloatOracle(
       unaryRequest(SoftFloatOracleOperation::Convert, LogicalFormat::F16, tie,
-                   NumericRoundingMode::TowardPositive));
+                   TargetRoundingMode::TowardPositive));
   ASSERT_TRUE(static_cast<bool>(upward)) << llvm::toString(upward.takeError());
   EXPECT_EQ(upward->value.format, LogicalFormat::F16);
   EXPECT_EQ(upward->value.bits, UINT64_C(0x3c01));
@@ -76,7 +75,7 @@ TEST(SoftFloatOracleTest, F32ToF16TieHonorsDirectedRounding) {
 TEST(SoftFloatOracleTest, F32DivisionMapsSoftFloatInfiniteFlag) {
   SoftFloatOracleRequest request{
       SoftFloatOracleOperation::Divide,
-      NumericRoundingMode::NearestEven,
+      TargetRoundingMode::NearestEven,
       SoftFloatOracleTininess::AfterRounding,
       LogicalFormat::F32,
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
@@ -131,7 +130,7 @@ TEST(SoftFloatOracleTest, ExplicitNaNSignedZeroAndArithmeticFlags) {
   llvm::Expected<FormalNumericResult> negativeZero = executeSoftFloatOracle(
       binaryRequest(SoftFloatOracleOperation::Add, LogicalFormat::F32,
                     UINT64_C(0x3f800000), UINT64_C(0xbf800000),
-                    NumericRoundingMode::TowardNegative));
+                    TargetRoundingMode::TowardNegative));
   ASSERT_TRUE(static_cast<bool>(negativeZero))
       << llvm::toString(negativeZero.takeError());
   EXPECT_EQ(negativeZero->value.bits, UINT64_C(0x80000000));

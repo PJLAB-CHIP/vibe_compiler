@@ -51,7 +51,7 @@ TEST(PipelinesTest, TileLoweringBuilderUsesTheProductionNestedStructure) {
 
 wafer::frontend::ProgramBoundaryBinding
 replicatedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape,
-                   llvm::StringRef dtype) {
+                   wafer::ProgramElementType dtype) {
   wafer::frontend::ProgramPartitionSlice slice;
   slice.partitionId = 0;
   slice.replicaId = 0;
@@ -65,7 +65,7 @@ replicatedBoundary(int64_t index, llvm::ArrayRef<int64_t> shape,
   binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   binding.globalShape.assign(shape.begin(), shape.end());
   binding.localShape.assign(shape.begin(), shape.end());
-  binding.dtype = dtype.str();
+  binding.dtype = dtype;
   binding.partitionSlices.push_back(std::move(slice));
   return binding;
 }
@@ -215,9 +215,10 @@ module {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 1;
-  program.distributedInputs = {replicatedBoundary(/*index=*/0, {16, 4}, "f16")};
+  program.distributedInputs = {replicatedBoundary(
+      /*index=*/0, {16, 4}, wafer::ProgramElementType::F16)};
   program.distributedOutputs = {
-      replicatedBoundary(/*index=*/0, {16, 4}, "f32")};
+      replicatedBoundary(/*index=*/0, {16, 4}, wafer::ProgramElementType::F32)};
   llvm::Expected<wafer::compiler::ExecutionConfig> executionConfig =
       wafer::compiler::ExecutionConfig::createForSingleCard(
           /*numPartitions=*/1);

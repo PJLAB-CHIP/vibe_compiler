@@ -76,28 +76,26 @@ materializeBulkQualificationCase(BulkQualificationSpec spec,
   lhsShape.insert(lhsShape.end(), {spec.getM(), spec.getK()});
   rhsShape.insert(rhsShape.end(), {spec.getK(), spec.getN()});
   destinationShape.insert(destinationShape.end(), {spec.getM(), spec.getN()});
-  llvm::Expected<NumericTensorKey> lhs =
-      NumericTensorKey::create(spec.getFormat(), spec.getLHSLayout(), lhsShape);
-  llvm::Expected<NumericTensorKey> rhs =
-      NumericTensorKey::create(spec.getFormat(), spec.getRHSLayout(), rhsShape);
-  llvm::Expected<NumericTensorKey> destination = NumericTensorKey::create(
-      spec.getFormat(), spec.getDestinationLayout(), destinationShape);
+  llvm::Expected<PhysicalTensorDescriptor> lhs =
+      PhysicalTensorDescriptor::create(spec.getFormat(), spec.getLHSLayout(),
+                                       lhsShape);
+  llvm::Expected<PhysicalTensorDescriptor> rhs =
+      PhysicalTensorDescriptor::create(spec.getFormat(), spec.getRHSLayout(),
+                                       rhsShape);
+  llvm::Expected<PhysicalTensorDescriptor> destination =
+      PhysicalTensorDescriptor::create(
+          spec.getFormat(), spec.getDestinationLayout(), destinationShape);
   if (llvm::Error error = takeExpectedErrors(lhs, rhs, destination))
     return error;
-  llvm::Expected<NumericGemmAxes> axes = getCanonicalNumericGemmAxes(rank);
+  llvm::Expected<FormalGemmGeometry> axes =
+      getCanonicalFormalGemmGeometry(rank);
   if (!axes)
     return axes.takeError();
-  llvm::Expected<NumericCommandKey> key = NumericCommandKey::createNEGemm(
+  llvm::Expected<FormalGemmOperation> operation = createFormalGemmOperation(
       *lhs, *rhs, *destination, spec.getM(), spec.getK(), spec.getN(),
       spec.getBatchCount(), *axes);
-  if (!key)
-    return key.takeError();
-  llvm::Expected<ResolvedNumericCommand> command = resolveNumericCommand(
-      ModelProfileId::formalDeterministic(), std::move(*key));
-  if (!command)
-    return command.takeError();
-  if (!command->isSupported())
-    return invalid("qualification spec resolves to an unsupported command");
+  if (!operation)
+    return operation.takeError();
 
   llvm::Expected<uint64_t> lhsBytes = getBulkTensorPhysicalBytes(*lhs);
   llvm::Expected<uint64_t> rhsBytes = getBulkTensorPhysicalBytes(*rhs);
@@ -153,7 +151,7 @@ materializeBulkQualificationCase(BulkQualificationSpec spec,
   std::vector<BulkTensorStorage> inputs;
   inputs.push_back(std::move(*lhsStorage));
   inputs.push_back(std::move(*rhsStorage));
-  return BulkQualificationCase(std::move(spec), std::move(*command),
+  return BulkQualificationCase(std::move(spec), std::move(*operation),
                                std::move(inputs),
                                std::move(*destinationTemplate));
 }

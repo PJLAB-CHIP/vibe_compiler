@@ -248,9 +248,9 @@ parseDistributedBoundary(const llvm::json::Object &object,
   for (const auto &field : object) {
     llvm::StringRef fieldName = field.first;
     if (!llvm::is_contained(expectedFields, fieldName)) {
-      rejectProgramDirectory(
-          "unexpected distributed_boundary field '" + fieldName.str() + "'",
-          diagnostics);
+      rejectProgramDirectory("unexpected distributed_boundary field '" +
+                                 fieldName.str() + "'",
+                             diagnostics);
       return failure();
     }
   }
@@ -421,9 +421,8 @@ bool verifyParameterDataFile(llvm::StringRef programDir,
         "parameter data path is not a regular file: " + location.name,
         diagnostics);
 
-  return verifyNpyTensorPayloadFile(
-      path, relativePath, tensorType.getShape(), tensorType.getElementType(),
-      diagnostics);
+  return verifyNpyTensorPayloadFile(path, relativePath, tensorType.getShape(),
+                                    tensorType.getElementType(), diagnostics);
 }
 
 bool verifyConstantDataFile(llvm::StringRef programDir,
@@ -444,8 +443,7 @@ bool verifyConstantDataFile(llvm::StringRef programDir,
     const ProgramPayloadSource *source = resolver->resolve(relativePath);
     if (!source)
       return rejectProgramDirectory(
-          "constant payload is unavailable in the transaction: " +
-              relativePath,
+          "constant payload is unavailable in the transaction: " + relativePath,
           diagnostics);
     return verifyNpyTensorPayloadFromSource(
         *source, relativePath, tensorType.getShape(),
@@ -525,7 +523,7 @@ bool verifyProgramMetadata(
           constant.position = location.position;
           constant.shape.assign(tensorType.getShape().begin(),
                                 tensorType.getShape().end());
-          constant.dtype = dtypeString(tensorType.getElementType());
+          constant.dtype = *getProgramElementType(tensorType.getElementType());
           constant.payloadPath =
               (Twine("constants/") + Twine(location.position)).str();
           result->constants.push_back(std::move(constant));
@@ -589,8 +587,7 @@ readProgramInputLocators(llvm::StringRef metaPath) {
   locators.reserve(meta->inputLocations.size());
   for (const program_detail::ProgramInputLocation &location :
        meta->inputLocations)
-    locators.push_back(
-        {location.type, location.position, location.name});
+    locators.push_back({location.type, location.position, location.name});
   return locators;
 }
 

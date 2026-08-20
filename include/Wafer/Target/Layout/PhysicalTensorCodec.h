@@ -3,7 +3,8 @@
 #ifndef WAFER_TARGET_PHYSICALTENSORCODEC_H
 #define WAFER_TARGET_PHYSICALTENSORCODEC_H
 
-#include "Wafer/Target/Numeric/NumericSemantics.h"
+#include "Wafer/Target/Layout/PhysicalTensorDescriptor.h"
+#include "Wafer/Target/Numeric/NumericCodec.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -49,25 +50,25 @@ private:
 /// Uses the single Wafer physical-layout calculator. No target-call consumer
 /// may reproduce Cx/NCx/tail/BOOL geometry from a format name.
 llvm::Expected<uint64_t>
-getPhysicalTensorStorageBytes(const NumericTensorKey &key);
+getPhysicalTensorStorageBytes(const PhysicalTensorDescriptor &key);
 
 /// Converts target-physical storage to logical row-major values using the
-/// selected model profile's scalar decode policy.
+/// the target codec's explicit scalar decode policy.
 llvm::Expected<std::vector<RawLogicalValue>>
-unpackPhysicalTensorLogicalValues(const NumericTensorKey &key,
+unpackPhysicalTensorLogicalValues(const PhysicalTensorDescriptor &key,
                                   llvm::ArrayRef<uint8_t> storage);
 
 /// Writes logical row-major values into an exact physical template. Bytes not
 /// owned by a logical element are preserved from the template.
 llvm::Expected<std::vector<uint8_t>>
-packPhysicalTensorLogicalValues(const NumericTensorKey &key,
+packPhysicalTensorLogicalValues(const PhysicalTensorDescriptor &key,
                                 llvm::ArrayRef<RawLogicalValue> values,
                                 llvm::ArrayRef<uint8_t> storageTemplate);
 
 /// Convenience for a newly allocated physical destination with one explicit
 /// padding fill byte.
 llvm::Expected<std::vector<uint8_t>>
-packPhysicalTensorLogicalValues(const NumericTensorKey &key,
+packPhysicalTensorLogicalValues(const PhysicalTensorDescriptor &key,
                                 llvm::ArrayRef<RawLogicalValue> values,
                                 uint8_t paddingFill);
 
@@ -96,7 +97,7 @@ public:
   };
 
   static llvm::Expected<PhysicalTensorWindowPlan>
-  create(const NumericTensorKey &key);
+  create(const PhysicalTensorDescriptor &key);
 
   PhysicalTensorWindowPlan();
   PhysicalTensorWindowPlan(PhysicalTensorWindowPlan &&) noexcept;

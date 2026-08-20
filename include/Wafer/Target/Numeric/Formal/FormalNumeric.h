@@ -3,7 +3,7 @@
 #ifndef WAFER_TARGET_FORMALNUMERIC_H
 #define WAFER_TARGET_FORMALNUMERIC_H
 
-#include "Wafer/Target/Numeric/NumericSemantics.h"
+#include "Wafer/Target/Numeric/Formal/FormalOperations.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -50,7 +50,7 @@ struct FormalNumericResult {
 
 /// Stable typed reasons for a formal operation that cannot produce a result.
 enum class FormalNumericErrorCode : uint8_t {
-  UnsupportedResolvedCommand,
+  UnsupportedOperation,
   OperandCountMismatch,
   OperandFormatMismatch,
   InvalidOperandEncoding,
@@ -115,7 +115,7 @@ private:
 /// Effect-free core for one supported CT-convert scalar. Every validation or
 /// arithmetic failure returns an Error and has no external state to roll back.
 llvm::Expected<FormalNumericResult>
-evaluateFormalConvert(const ResolvedNumericCommand &command,
+evaluateFormalConvert(const FormalConvertOperation &operation,
                       RawLogicalValue source);
 
 /// Executes one supported resolved CT-convert command. Inputs and outputs are
@@ -125,28 +125,28 @@ evaluateFormalConvert(const ResolvedNumericCommand &command,
 /// unchanged and returns no result.
 llvm::Expected<FormalNumericResult>
 executeFormalConvert(FormalNumericExecutionContext &context,
-                     const ResolvedNumericCommand &command,
+                     const FormalConvertOperation &operation,
                      RawLogicalValue source);
 
 /// Effect-free scalar evaluator for the LLVM APFloat/APInt subset of the
 /// supported CT-elementwise registry. MPFR-classified operations are rejected
 /// before arithmetic. `inputs` follows the exact command's typed arity.
 llvm::Expected<FormalNumericResult>
-evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
+evaluateFormalElementwiseLLVM(const FormalElementwiseOperation &operation,
                               llvm::ArrayRef<RawLogicalValue> inputs);
 
 /// Effect-free single fused MAC for one supported NE GEMM row. LHS/RHS use
 /// the command's F16/BF16/F32 format, while `accumulator` and the returned
 /// value are canonical F32. The operation is one F32 fusedMultiplyAdd at RNE.
 llvm::Expected<FormalNumericResult>
-evaluateFormalGemmFusedMultiplyAdd(const ResolvedNumericCommand &command,
+evaluateFormalGemmFusedMultiplyAdd(const FormalGemmOperation &operation,
                                    RawLogicalValue lhs, RawLogicalValue rhs,
                                    RawLogicalValue accumulator);
 
 /// Effect-free final RNE write of a canonical F32 GEMM accumulator to the
 /// command's original F16/BF16/F32 destination format.
 llvm::Expected<FormalNumericResult>
-evaluateFormalGemmFinalize(const ResolvedNumericCommand &command,
+evaluateFormalGemmFinalize(const FormalGemmOperation &operation,
                            RawLogicalValue accumulator);
 
 /// Effect-free single addition for the supported native F32 sum reduction.
@@ -154,7 +154,7 @@ evaluateFormalGemmFinalize(const ResolvedNumericCommand &command,
 /// rounded to nearest-even; tensor traversal order belongs to the tensor
 /// dispatcher and is part of the resolved reduction policy.
 llvm::Expected<FormalNumericResult>
-evaluateFormalReduceStep(const ResolvedNumericCommand &command,
+evaluateFormalReduceStep(const FormalReduceOperation &operation,
                          RawLogicalValue accumulator, RawLogicalValue input);
 
 /// Raw-exact comparator selected by the first model profile. Both the logical

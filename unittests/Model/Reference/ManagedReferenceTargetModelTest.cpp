@@ -2,8 +2,8 @@
 
 #include "Wafer/Model/Qualification/TargetBulkModel.h"
 
-#include "Wafer/Target/Numeric/Formal/FormalTensorNumeric.h"
 #include "Wafer/Target/Layout/PhysicalTensorCodec.h"
+#include "Wafer/Target/Numeric/Formal/FormalTensorNumeric.h"
 
 #include "gtest/gtest.h"
 
@@ -21,26 +21,20 @@ namespace {
 using namespace wafer;
 using namespace wafer::model;
 
-constexpr ModelProfileId kModelProfile = ModelProfileId::formalDeterministic();
-
-NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
-                            std::vector<uint64_t> shape) {
+PhysicalTensorDescriptor makeTensor(LogicalFormat format,
+                                    PhysicalTensorLayout layout,
+                                    std::vector<uint64_t> shape) {
   return llvm::cantFail(
-      NumericTensorKey::create(format, layout, std::move(shape)));
+      PhysicalTensorDescriptor::create(format, layout, std::move(shape)));
 }
 
-ResolvedNumericCommand resolve(NumericCommandKey command) {
-  return llvm::cantFail(
-      resolveNumericCommand(kModelProfile, std::move(command)));
-}
-
-TargetModelNumericTensor makeStorage(const NumericTensorKey &key,
+TargetModelNumericTensor makeStorage(const PhysicalTensorDescriptor &key,
                                      llvm::ArrayRef<RawLogicalValue> values) {
   return {key, llvm::cantFail(packPhysicalTensorLogicalValues(key, values,
                                                               UINT8_C(0xa5)))};
 }
 
-TargetModelNumericTensor makeTemplate(const NumericTensorKey &key) {
+TargetModelNumericTensor makeTemplate(const PhysicalTensorDescriptor &key) {
   const uint64_t bytes = llvm::cantFail(getPhysicalTensorStorageBytes(key));
   return {key, std::vector<uint8_t>(static_cast<size_t>(bytes), UINT8_C(0xa5))};
 }
@@ -69,11 +63,11 @@ std::unique_ptr<ManagedReferenceTargetModelBackend> makeBackend() {
 
 TEST(ManagedReferenceTargetModelTest,
      FiniteF16ElementwiseMatchesFormalValuesWithoutScalarFallback) {
-  NumericTensorKey key =
+  PhysicalTensorDescriptor key =
       makeTensor(LogicalFormat::F16, PhysicalTensorLayout::Tensor, {6});
-  ResolvedNumericCommand command =
-      resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
-          NumericElementwiseOperation::Add, {key, key}, key)));
+  FormalElementwiseOperation operation =
+      llvm::cantFail(createFormalElementwiseOperation(
+          TargetElementwiseOperation::Add, {key, key}, key));
   const std::vector<RawLogicalValue> lhs{
       {LogicalFormat::F16, UINT64_C(0x0000)},
       {LogicalFormat::F16, UINT64_C(0x8000)},
@@ -88,10 +82,9 @@ TEST(ManagedReferenceTargetModelTest,
       {LogicalFormat::F16, UINT64_C(0x4000)},
       {LogicalFormat::F16, UINT64_C(0x0001)},
       {LogicalFormat::F16, UINT64_C(0xfbff)}};
-  TargetModelNumericRequest request{
-      command,
-      {makeStorage(key, lhs), makeStorage(key, rhs)},
-      makeTemplate(key)};
+  TargetModelElementwiseRequest request{
+      operation,
+      {{makeStorage(key, lhs), makeStorage(key, rhs)}, makeTemplate(key)}};
   std::unique_ptr<ManagedReferenceTargetModelBackend> backend = makeBackend();
   TargetModelManagedReferenceResult managed = llvm::cantFail(
       backend->execute(request, FormalNumericWorkBudget::create(
@@ -101,7 +94,7 @@ TEST(ManagedReferenceTargetModelTest,
   std::vector<llvm::ArrayRef<RawLogicalValue>> formalInputs{lhs, rhs};
   FormalNumericExecutionContext context;
   FormalTensorNumericResult formal = llvm::cantFail(executeFormalTensorNumeric(
-      context, command, formalInputs,
+      context, operation, formalInputs,
       FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/6,
                                       /*maximumFusedMultiplyAdds=*/0)));
   std::vector<RawLogicalValue> values = unpack(managed);
@@ -118,9 +111,9 @@ TEST(ManagedReferenceTargetModelTest,
 TEST(ManagedReferenceTargetModelTest,
      F32ToF16ConvertAndF32SumReduceMatchFormalValues) {
   std::unique_ptr<ManagedReferenceTargetModelBackend> backend = makeBackend();
-  NumericTensorKey f32 =
+  PhysicalTensorDescriptor f32 =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Tensor, {6});
-  NumericTensorKey f16 =
+  PhysicalTensorDescriptor f16 =
       makeTensor(LogicalFormat::F16, PhysicalTensorLayout::Tensor, {6});
   const std::vector<RawLogicalValue> convertInput{
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
@@ -129,13 +122,11 @@ TEST(ManagedReferenceTargetModelTest,
       {LogicalFormat::F32, UINT64_C(0x33800000)},
       {LogicalFormat::F32, UINT64_C(0x477ff000)},
       {LogicalFormat::F32, UINT64_C(0xc77ff000)}};
-  ResolvedNumericCommand convert =
-      resolve(llvm::cantFail(NumericCommandKey::createCTConvert(
-          /*fp32_fp16=*/166, f32, f16,
-          NumericConvertParameter::roundingMode(
-              NumericRoundingMode::NearestEven))));
-  TargetModelNumericRequest convertRequest{
-      convert, {makeStorage(f32, convertInput)}, makeTemplate(f16)};
+  FormalConvertOperation convert = llvm::cantFail(createFormalConvertOperation(
+      /*fp32_fp16=*/166, f32, f16,
+      TargetConvertParameter::roundingMode(TargetRoundingMode::NearestEven)));
+  TargetModelConvertRequest convertRequest{
+      convert, {{makeStorage(f32, convertInput)}, makeTemplate(f16)}};
   TargetModelManagedReferenceResult converted = llvm::cantFail(backend->execute(
       convertRequest,
       FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/6,
@@ -152,23 +143,21 @@ TEST(ManagedReferenceTargetModelTest,
   for (size_t index = 0; index < convertedValues.size(); ++index)
     EXPECT_EQ(convertedValues[index].bits, formalConvert.values[index].bits);
 
-  NumericTensorKey reduceInput =
+  PhysicalTensorDescriptor reduceInput =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2, 2});
-  NumericTensorKey reduceOutput =
+  PhysicalTensorDescriptor reduceOutput =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2});
   const std::vector<RawLogicalValue> reduceValues{
       {LogicalFormat::F32, UINT64_C(0x3f800000)},
       {LogicalFormat::F32, UINT64_C(0x40000000)},
       {LogicalFormat::F32, UINT64_C(0x40400000)},
       {LogicalFormat::F32, UINT64_C(0x40800000)}};
-  ResolvedNumericCommand reduce =
-      resolve(llvm::cantFail(NumericCommandKey::createNativeCTReduce(
-          NumericReduceOperation::Sum, reduceInput, reduceOutput,
-          NativeCTReduceDimension::Trailing0)));
-  TargetModelNumericRequest reduceRequest{
+  FormalReduceOperation reduce = llvm::cantFail(createFormalReduceOperation(
+      TargetReduceOperation::Sum, reduceInput, reduceOutput,
+      TargetReduceDimension::Trailing0));
+  TargetModelReduceRequest reduceRequest{
       reduce,
-      {makeStorage(reduceInput, reduceValues)},
-      makeTemplate(reduceOutput)};
+      {{makeStorage(reduceInput, reduceValues)}, makeTemplate(reduceOutput)}};
   TargetModelManagedReferenceResult reduced = llvm::cantFail(backend->execute(
       reduceRequest,
       FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/4,
@@ -188,15 +177,15 @@ TEST(ManagedReferenceTargetModelTest,
 
 TEST(ManagedReferenceTargetModelTest,
      SupportsMaskInfinityButRejectsNaNAndScalarBudget) {
-  NumericTensorKey key =
+  PhysicalTensorDescriptor key =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Tensor, {1});
-  ResolvedNumericCommand command =
-      resolve(llvm::cantFail(NumericCommandKey::createCTElementwise(
-          NumericElementwiseOperation::Exp, {key}, key)));
-  TargetModelNumericRequest request{
-      command,
-      {makeStorage(key, {{LogicalFormat::F32, UINT64_C(0xff800000)}})},
-      makeTemplate(key)};
+  FormalElementwiseOperation operation =
+      llvm::cantFail(createFormalElementwiseOperation(
+          TargetElementwiseOperation::Exp, {key}, key));
+  TargetModelElementwiseRequest request{
+      operation,
+      {{makeStorage(key, {{LogicalFormat::F32, UINT64_C(0xff800000)}})},
+       makeTemplate(key)}};
   std::unique_ptr<ManagedReferenceTargetModelBackend> backend = makeBackend();
   TargetModelManagedReferenceResult infinity = llvm::cantFail(backend->execute(
       request,
@@ -206,7 +195,7 @@ TEST(ManagedReferenceTargetModelTest,
   ASSERT_EQ(infinityValues.size(), 1u);
   EXPECT_EQ(infinityValues.front().bits, UINT64_C(0));
 
-  request.inputs[0] =
+  request.tensors.inputs[0] =
       makeStorage(key, {{LogicalFormat::F32, UINT64_C(0x7fc00000)}});
   std::string error = expectError(
       backend->execute(request, FormalNumericWorkBudget::create(
@@ -214,7 +203,7 @@ TEST(ManagedReferenceTargetModelTest,
                                     /*maximumFusedMultiplyAdds=*/0)));
   EXPECT_NE(error.find("non-NaN domain"), std::string::npos);
 
-  request.inputs[0] =
+  request.tensors.inputs[0] =
       makeStorage(key, {{LogicalFormat::F32, UINT64_C(0x3f800000)}});
   error = expectError(
       backend->execute(request, FormalNumericWorkBudget::create(

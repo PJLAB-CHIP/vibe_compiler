@@ -65,7 +65,7 @@ uint64_t positiveInfinity(const FormatCase &format) {
 
 MPFRFormalRequest
 request(MPFRFormalOperation operation, const FormatCase &format, uint64_t bits,
-        NumericRoundingMode rounding = NumericRoundingMode::NearestEven) {
+        TargetRoundingMode rounding = TargetRoundingMode::NearestEven) {
   return {operation, rounding, format.format, {format.format, bits}};
 }
 
@@ -421,10 +421,10 @@ TEST(MPFRNumericTest, F32UnderflowAndDirectedRoundingAreObservable) {
 
   llvm::Expected<FormalNumericResult> downward =
       executeMPFRFormal(request(MPFRFormalOperation::Exp, format, format.one,
-                                NumericRoundingMode::TowardNegative));
+                                TargetRoundingMode::TowardNegative));
   llvm::Expected<FormalNumericResult> upward =
       executeMPFRFormal(request(MPFRFormalOperation::Exp, format, format.one,
-                                NumericRoundingMode::TowardPositive));
+                                TargetRoundingMode::TowardPositive));
   ASSERT_TRUE(static_cast<bool>(downward))
       << llvm::toString(downward.takeError());
   ASSERT_TRUE(static_cast<bool>(upward)) << llvm::toString(upward.takeError());
@@ -765,19 +765,19 @@ TEST(MPFRNumericTest, ManagedTLSIsIndependentAcrossOSThreads) {
 TEST(MPFRNumericTest, RejectsStochasticAndCrossFormatBeforeExecution) {
   MPFRFormalRequest stochastic =
       request(MPFRFormalOperation::Exp, kFormatCases[2], kFormatCases[2].one,
-              NumericRoundingMode::Stochastic);
+              TargetRoundingMode::Stochastic);
   expectNumericError(executeMPFRFormal(stochastic),
                      MPFRNumericErrorCode::UnsupportedRoundingMode);
 
   MPFRFormalRequest crossFormat = stochastic;
-  crossFormat.roundingMode = NumericRoundingMode::NearestEven;
+  crossFormat.roundingMode = TargetRoundingMode::NearestEven;
   crossFormat.resultFormat = LogicalFormat::BF16;
   expectNumericError(executeMPFRFormal(crossFormat),
                      MPFRNumericErrorCode::FormatMismatch);
 
   MPFRFormalRequest directedComposite =
       request(MPFRFormalOperation::Sigmoid, kFormatCases[2],
-              kFormatCases[2].one, NumericRoundingMode::TowardPositive);
+              kFormatCases[2].one, TargetRoundingMode::TowardPositive);
   expectNumericError(executeMPFRFormal(directedComposite),
                      MPFRNumericErrorCode::UnsupportedRoundingMode);
 }

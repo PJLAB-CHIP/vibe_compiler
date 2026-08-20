@@ -32,7 +32,7 @@ enum class MPFRFormalOperation : uint8_t {
 
 struct MPFRFormalRequest {
   MPFRFormalOperation operation;
-  NumericRoundingMode roundingMode;
+  TargetRoundingMode roundingMode;
   LogicalFormat resultFormat;
   RawLogicalValue input;
 };

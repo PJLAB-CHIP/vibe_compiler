@@ -7,12 +7,11 @@
 namespace wafer::compiler::detail {
 
 std::optional<TileEntryArgumentOrderDifference>
-findTileEntryArgumentOrderDifference(
-    llvm::ArrayRef<TileEntryArgument> lhs,
-    llvm::ArrayRef<TileEntryArgument> rhs) {
+findTileEntryArgumentOrderDifference(llvm::ArrayRef<TileEntryArgument> lhs,
+                                     llvm::ArrayRef<TileEntryArgument> rhs) {
   if (lhs.size() != rhs.size())
-    return TileEntryArgumentOrderDifference{
-        std::min(lhs.size(), rhs.size()), "slot-count"};
+    return TileEntryArgumentOrderDifference{std::min(lhs.size(), rhs.size()),
+                                            "slot-count"};
   for (auto [index, slots] : llvm::enumerate(llvm::zip(lhs, rhs))) {
     const TileEntryArgument &left = std::get<0>(slots);
     const TileEntryArgument &right = std::get<1>(slots);
@@ -24,6 +23,9 @@ findTileEntryArgumentOrderDifference(
       return TileEntryArgumentOrderDifference{index, "resource-index"};
     if (left.access != right.access)
       return TileEntryArgumentOrderDifference{index, "access"};
+    if (left.targetTensorMaterialization != right.targetTensorMaterialization)
+      return TileEntryArgumentOrderDifference{index,
+                                              "target-tensor-materialization"};
 
     // Workspace capacity is a Tile-local resource fact. Runtime manifests
     // retain it per entry and invocation planning allocates it per launch

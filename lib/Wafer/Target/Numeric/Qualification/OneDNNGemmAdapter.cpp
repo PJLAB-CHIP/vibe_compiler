@@ -169,34 +169,23 @@ dnnl::memory::dims getDenseStrides(const dnnl::memory::dims &dims) {
 }
 
 struct ValidatedGemm {
-  const NumericNEGemmCommand *gemm = nullptr;
+  const FormalGemmOperation *gemm = nullptr;
   LogicalFormat format = LogicalFormat::F32;
   uint64_t fusedMultiplyAdds = 0;
 };
 
 llvm::Expected<ValidatedGemm>
-validateGemm(const ResolvedNumericCommand &command,
+validateGemm(const FormalGemmOperation &operation,
              llvm::ArrayRef<BulkTensorStorage> inputs,
              const BulkTensorStorage &destinationTemplate) {
-  if (!command.isSupported() ||
-      command.getFamily() != NumericCommandFamily::NEGemm ||
-      command.getFormalKernelKind() != FormalKernelKind::Gemm ||
-      command.getFormalBackendKind() !=
-          FormalNumericBackendKind::LLVMAPFloatAPInt ||
-      !command.getSemantics())
-    return bulkError(BulkTensorNumericErrorCode::UnsupportedResolvedCommand,
-                     "bulk backend requires a complete supported NE GEMM");
-  const NumericNEGemmCommand *gemm = command.getCommandKey().getNEGemm();
-  if (!gemm)
-    return bulkError(BulkTensorNumericErrorCode::UnsupportedResolvedCommand,
-                     "resolved NE GEMM lost its command payload");
+  const FormalGemmOperation *gemm = &operation;
   if (inputs.size() != 2)
     return bulkError(BulkTensorNumericErrorCode::InputArityMismatch,
                      "NE GEMM bulk execution requires two inputs");
   if (inputs[0].getKey() != gemm->lhs || inputs[1].getKey() != gemm->rhs ||
       destinationTemplate.getKey() != gemm->destination)
     return bulkError(BulkTensorNumericErrorCode::InvalidPhysicalStorage,
-                     "bulk tensor keys do not exactly match the command");
+                     "bulk tensor keys do not exactly match the operation");
   if (gemm->lhs.getFormat() != gemm->rhs.getFormat() ||
       gemm->lhs.getFormat() != gemm->destination.getFormat() ||
       !getDNNLAdapterDataType(gemm->lhs.getFormat()))
@@ -205,7 +194,7 @@ validateGemm(const ResolvedNumericCommand &command,
   if (gemm->lhs.getShape().size() < 2 || gemm->lhs.getShape().size() > 12 ||
       gemm->rhs.getShape().size() != gemm->lhs.getShape().size() ||
       gemm->destination.getShape().size() != gemm->lhs.getShape().size())
-    return bulkError(BulkTensorNumericErrorCode::UnsupportedResolvedCommand,
+    return bulkError(BulkTensorNumericErrorCode::UnsupportedOperation,
                      "oneDNN MatMul requires a common rank in [2, 12]");
   uint64_t outputCount = 0;
   uint64_t fusedMultiplyAdds = 0;
@@ -256,19 +245,21 @@ computeTensorBufferBytes(llvm::ArrayRef<BulkTensorStorage> inputs,
   return total;
 }
 
-std::string descriptorDigest(dnnl::memory::desc descriptor,
-                             llvm::StringRef implementation,
-                             uint64_t scratchpadBytes,
-                             const BulkExecutionEnvironment &environment,
-                             const ResolvedNumericCommand &command,
-                             LogicalFormat targetFormat) {
+llvm::Expected<std::string> descriptorDigest(
+    dnnl::memory::desc descriptor, llvm::StringRef implementation,
+    uint64_t scratchpadBytes, const BulkExecutionEnvironment &environment,
+    const FormalGemmOperation &operation, LogicalFormat targetFormat) {
   std::vector<uint8_t> blob = descriptor.get_blob();
   llvm::SmallString<512> identity;
   llvm::raw_svector_ostream stream(identity);
   appendField(stream, "schema", "wafer-bulk-descriptor");
   appendField(stream, "environment", environment.getDigest());
   appendField(stream, "adapter", getBulkAdapterContractDigest());
-  appendField(stream, "resolution", command.getDigest());
+  llvm::Expected<std::string> problemDigest =
+      computeBulkGemmProblemDigest(operation);
+  if (!problemDigest)
+    return problemDigest.takeError();
+  appendField(stream, "problem", *problemDigest);
   appendField(stream, "backend_dense_format", "f32");
   appendField(stream, "target_format", stringifyLogicalFormat(targetFormat));
   appendField(stream, "implementation", implementation);
@@ -282,12 +273,12 @@ std::string descriptorDigest(dnnl::memory::desc descriptor,
 
 llvm::Expected<detail::UnqualifiedBulkExecutionResult>
 executeOneDNN(const BulkExecutionEnvironment &environment,
-              const ResolvedNumericCommand &command,
+              const FormalGemmOperation &operation,
               llvm::ArrayRef<BulkTensorStorage> inputs,
               const BulkTensorStorage &destinationTemplate,
               BulkNumericWorkBudget budget) {
   llvm::Expected<ValidatedGemm> validatedGemm =
-      validateGemm(command, inputs, destinationTemplate);
+      validateGemm(operation, inputs, destinationTemplate);
   if (!validatedGemm)
     return validatedGemm.takeError();
   llvm::Expected<uint64_t> tensorBufferBytes =
@@ -425,7 +416,7 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
     destinationValues.reserve(accumulators->size());
     for (RawLogicalValue accumulator : *accumulators) {
       llvm::Expected<FormalNumericResult> finalized =
-          evaluateFormalGemmFinalize(command, accumulator);
+          evaluateFormalGemmFinalize(operation, accumulator);
       if (!finalized)
         return bulkError(BulkTensorNumericErrorCode::BackendExecutionFailure,
                          llvm::toString(finalized.takeError()));
@@ -442,15 +433,18 @@ executeOneDNN(const BulkExecutionEnvironment &environment,
     if (implementation.empty())
       return bulkError(BulkTensorNumericErrorCode::BackendDescriptorFailure,
                        "oneDNN returned an empty implementation identity");
-    BulkDispatchEvidence evidence{
-        /*matmulInvocations=*/1,
-        reorderInvocations,
-        /*formalFusedMultiplyAdds=*/0,
-        totalBytes,
-        scratchpadBytes,
-        implementation,
+    llvm::Expected<std::string> resolvedDescriptorDigest =
         descriptorDigest(resolvedWeights, implementation, scratchpadBytes,
-                         environment, command, validatedGemm->format)};
+                         environment, operation, validatedGemm->format);
+    if (!resolvedDescriptorDigest)
+      return resolvedDescriptorDigest.takeError();
+    BulkDispatchEvidence evidence{/*matmulInvocations=*/1,
+                                  reorderInvocations,
+                                  /*formalFusedMultiplyAdds=*/0,
+                                  totalBytes,
+                                  scratchpadBytes,
+                                  implementation,
+                                  std::move(*resolvedDescriptorDigest)};
     return detail::UnqualifiedBulkExecutionResult{std::move(*packed),
                                                   std::move(evidence)};
   } catch (const dnnl::error &error) {

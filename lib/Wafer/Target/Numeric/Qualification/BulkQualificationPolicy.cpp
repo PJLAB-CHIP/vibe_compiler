@@ -45,7 +45,6 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
                                          "adapter_digest",
                                          "spec",
                                          "spec_digest",
-                                         "semantic_profile_digest",
                                          "value_domain",
                                          "target_comparator",
                                          "backend_comparator",
@@ -53,7 +52,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
                                          "environment_digest",
                                          "environment",
                                          "environment_record_digest",
-                                         "resolution_digest",
+                                         "problem_digest",
                                          "input_payload_digest",
                                          "destination_template_digest",
                                          "formal_output_digest",
@@ -86,8 +85,6 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
       requireDigest(*object, "spec_digest", "bulk calibration");
   llvm::Expected<std::string> adapterDigest =
       requireDigest(*object, "adapter_digest", "bulk calibration");
-  llvm::Expected<std::string> semanticDigest =
-      requireDigest(*object, "semantic_profile_digest", "bulk calibration");
   llvm::Expected<std::string> inputPayloadDigest =
       requireDigest(*object, "input_payload_digest", "bulk calibration");
   llvm::Expected<std::string> destinationTemplateDigest =
@@ -119,11 +116,11 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
   llvm::Expected<uint64_t> backendFormalFMA =
       requireUnsigned(*object, "backend_formal_fma", "bulk calibration");
   if (llvm::Error error = takeExpectedErrors(
-          calibrationSpecDigest, adapterDigest, semanticDigest,
-          inputPayloadDigest, destinationTemplateDigest, formalOutputDigest,
-          backendOutputDigest, descriptorDigest, valueDomain, targetComparator,
-          backendComparator, implementation, observedAbsolute, observedRelative,
-          matmul, reorder, backendFormalFMA))
+          calibrationSpecDigest, adapterDigest, inputPayloadDigest,
+          destinationTemplateDigest, formalOutputDigest, backendOutputDigest,
+          descriptorDigest, valueDomain, targetComparator, backendComparator,
+          implementation, observedAbsolute, observedRelative, matmul, reorder,
+          backendFormalFMA))
     return error;
   if (!rawExact || !flagsObject)
     return invalid("bulk calibration comparison identity is incomplete");
@@ -171,11 +168,11 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
       requireDigest(*object, "environment_digest", "bulk calibration");
   llvm::Expected<std::string> environmentRecordJSONDigest =
       requireDigest(*object, "environment_record_digest", "bulk calibration");
-  llvm::Expected<std::string> resolutionDigest =
-      requireDigest(*object, "resolution_digest", "bulk calibration");
+  llvm::Expected<std::string> problemDigest =
+      requireDigest(*object, "problem_digest", "bulk calibration");
   if (llvm::Error error =
           takeExpectedErrors(backendDigest, environmentDigest,
-                             environmentRecordJSONDigest, resolutionDigest))
+                             environmentRecordJSONDigest, problemDigest))
     return error;
   const llvm::json::Value *environmentValue = object->get("environment");
   const llvm::json::Object *environmentObject =
@@ -187,14 +184,15 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
     return error;
   if (sha256(canonicalJSON(*environmentValue)) != *environmentRecordJSONDigest)
     return invalid("bulk calibration environment record digest mismatch");
-  if (heldOutCase->getCommand().getDigest() != *resolutionDigest ||
-      !heldOutCase->getCommand().getSemantics() ||
-      heldOutCase->getCommand().getSemantics()->getDigest() != *semanticDigest)
-    return invalid("held-out command changed from calibration semantics");
+  llvm::Expected<std::string> heldOutProblemDigest =
+      computeBulkGemmProblemDigest(heldOutCase->getOperation());
+  if (!heldOutProblemDigest)
+    return heldOutProblemDigest.takeError();
+  if (*heldOutProblemDigest != *problemDigest)
+    return invalid("held-out GEMM problem changed from calibration");
   llvm::json::Object policy{
       {"schema", kPolicySchema},
       {"adapter_digest", *adapterDigest},
-      {"semantic_profile_digest", *semanticDigest},
       {"value_domain", *valueDomain},
       {"target_comparator", *targetComparator},
       {"backend_comparator", *backendComparator},
@@ -209,7 +207,7 @@ llvm::Error freezeBulkBackendPolicy(llvm::StringRef calibrationPath,
       {"backend_digest", *backendDigest},
       {"environment_digest", *environmentDigest},
       {"environment_record_digest", *environmentRecordJSONDigest},
-      {"resolution_digest", *resolutionDigest},
+      {"problem_digest", *problemDigest},
       {"qualification_kind",
        stringifyBulkQualificationKind(BulkQualificationKind::ProfileBounded)},
       {"maximum_absolute_error", tolerance.maximumAbsoluteError},

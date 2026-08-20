@@ -21,7 +21,8 @@ using wafer::compiler::ProgramTensorComparisonErrorCode;
 ProgramTensor makeTensor(llvm::StringRef dtype,
                          std::initializer_list<int64_t> shape,
                          std::initializer_list<uint8_t> bytes) {
-  auto tensor = ProgramTensor::create(dtype, shape, bytes);
+  auto tensor = ProgramTensor::create(
+      llvm::cantFail(wafer::parseProgramElementType(dtype)), shape, bytes);
   EXPECT_TRUE(static_cast<bool>(tensor));
   return std::move(*tensor);
 }
@@ -153,35 +154,36 @@ TEST(ProgramTensorComparisonTest, FloatingDTypeWithoutPolicyFailsClosed) {
 
 TEST(ProgramTensorComparisonTest, DTypeClassificationCoversAdmittedSurface) {
   struct DTypeCase {
-    llvm::StringLiteral dtype;
+    wafer::ProgramElementType dtype;
     int64_t elementBytes;
     bool floating;
   };
   constexpr std::array<DTypeCase, 13> cases{{
-      {"i8", 1, false},
-      {"ui8", 1, false},
-      {"i16", 2, false},
-      {"ui16", 2, false},
-      {"f16", 2, true},
-      {"bf16", 2, true},
-      {"i32", 4, false},
-      {"ui32", 4, false},
-      {"f32", 4, true},
-      {"tf32", 4, true},
-      {"i64", 8, false},
-      {"ui64", 8, false},
-      {"f64", 8, true},
+      {wafer::ProgramElementType::I8, 1, false},
+      {wafer::ProgramElementType::U8, 1, false},
+      {wafer::ProgramElementType::I16, 2, false},
+      {wafer::ProgramElementType::U16, 2, false},
+      {wafer::ProgramElementType::F16, 2, true},
+      {wafer::ProgramElementType::BF16, 2, true},
+      {wafer::ProgramElementType::I32, 4, false},
+      {wafer::ProgramElementType::U32, 4, false},
+      {wafer::ProgramElementType::F32, 4, true},
+      {wafer::ProgramElementType::TF32, 4, true},
+      {wafer::ProgramElementType::I64, 8, false},
+      {wafer::ProgramElementType::U64, 8, false},
+      {wafer::ProgramElementType::F64, 8, true},
   }};
   for (const DTypeCase &testCase : cases) {
-    SCOPED_TRACE(testCase.dtype.str());
+    SCOPED_TRACE(wafer::stringifyProgramElementType(testCase.dtype).str());
     EXPECT_EQ(
         wafer::compiler::computeProgramTensorByteCount(testCase.dtype, {2}),
         testCase.elementBytes * 2);
     EXPECT_EQ(wafer::compiler::isFloatingProgramTensorDType(testCase.dtype),
               testCase.floating);
   }
-  EXPECT_FALSE(wafer::compiler::computeProgramTensorByteCount("unknown", {1}));
-  EXPECT_FALSE(wafer::compiler::isFloatingProgramTensorDType("unknown"));
+  auto unknown = wafer::parseProgramElementType("unknown");
+  EXPECT_FALSE(static_cast<bool>(unknown));
+  llvm::consumeError(unknown.takeError());
 }
 
 TEST(ProgramTensorComparisonTest,
@@ -198,10 +200,10 @@ TEST(ProgramTensorComparisonTest,
     actualBytes[index * 2] = static_cast<uint8_t>(actual);
     actualBytes[index * 2 + 1] = static_cast<uint8_t>(actual >> 8);
   }
-  ProgramTensor expected =
-      llvm::cantFail(ProgramTensor::create("f16", {1000}, expectedBytes));
-  ProgramTensor actual =
-      llvm::cantFail(ProgramTensor::create("f16", {1000}, actualBytes));
+  ProgramTensor expected = llvm::cantFail(ProgramTensor::create(
+      wafer::ProgramElementType::F16, {1000}, expectedBytes));
+  ProgramTensor actual = llvm::cantFail(ProgramTensor::create(
+      wafer::ProgramElementType::F16, {1000}, actualBytes));
   auto statistics = wafer::compiler::computeProgramTensorComparisonStatistics(
       actual, expected);
   ASSERT_TRUE(static_cast<bool>(statistics));

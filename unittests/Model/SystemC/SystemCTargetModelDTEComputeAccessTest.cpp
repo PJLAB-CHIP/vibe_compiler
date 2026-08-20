@@ -90,14 +90,9 @@ TEST(SystemCTargetModelDTEComputeAccessTest,
   }
 
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
-  EXPECT_EQ(result->completedRankCount, 16);
-  ASSERT_EQ(result->outputs.size(), 16u);
-  for (const TargetModelOutput &output : result->outputs) {
-    ASSERT_GE(output.logicalRank, 0);
-    ASSERT_LT(output.logicalRank, 16);
-    EXPECT_EQ(output.bytes, invocation->inputBytesByRank[static_cast<size_t>(
-                                output.logicalRank ^ INT64_C(1))]);
-  }
+  EXPECT_EQ(result->completedTileCount, 16);
+  ASSERT_EQ(result->outputs.size(), 1u);
+  EXPECT_EQ(result->outputs.front().bytes, invocation->expectedOutputBytes);
 }
 
 } // namespace

@@ -100,6 +100,38 @@ getPhysicalInfo(mlir::Type type, mlir::Operation *anchor) {
   return *info;
 }
 
+mlir::FailureOr<LogicalFormat>
+getPhysicalFormat(const WaferPhysicalTensorInfo &physical,
+                  mlir::Operation *anchor) {
+  mlir::Type type = physical.logicalTensorType.getElementType();
+  if (mlir::isa<mlir::Float16Type>(type))
+    return LogicalFormat::F16;
+  if (mlir::isa<mlir::BFloat16Type>(type))
+    return LogicalFormat::BF16;
+  if (mlir::isa<mlir::Float32Type>(type))
+    return LogicalFormat::F32;
+  if (auto integer = mlir::dyn_cast<mlir::IntegerType>(type)) {
+    const bool isUnsigned = integer.isUnsigned();
+    switch (integer.getWidth()) {
+    case 1:
+      return LogicalFormat::Bool;
+    case 8:
+      return isUnsigned ? LogicalFormat::U8 : LogicalFormat::I8;
+    case 16:
+      return isUnsigned ? LogicalFormat::U16 : LogicalFormat::I16;
+    case 32:
+      return isUnsigned ? LogicalFormat::U32 : LogicalFormat::I32;
+    case 64:
+      return isUnsigned ? LogicalFormat::U64 : LogicalFormat::I64;
+    default:
+      break;
+    }
+  }
+  anchor->emitError()
+      << "target_abi_mismatch: physical tensor has no target format";
+  return mlir::failure();
+}
+
 mlir::Value resolveOutputAllocation(mlir::Value value) {
   llvm::SmallPtrSet<mlir::Operation *, 8> visited;
   while (value) {
@@ -212,11 +244,40 @@ prepareTargetABI(const TileExecutable &tileExecutable,
                    : mlir::FailureOr<int64_t>(mlir::failure());
     if (mlir::failed(physical) || mlir::failed(alignment))
       return mlir::failure();
+    mlir::FailureOr<LogicalFormat> format =
+        getPhysicalFormat(*physical, function);
+    if (mlir::failed(format))
+      return mlir::failure();
     prepared.slots.push_back({static_cast<int64_t>(prepared.slots.size()), kind,
-                              binding.index, binding.name, binding.dtype,
+                              binding.index, binding.name, *format,
                               physical->layout, binding.localShape,
                               physical->physicalBytes, *alignment,
                               getTileEntryArgumentAccess(kind)});
+    if (kind == TileEntryArgumentKind::TargetTensor) {
+      std::optional<LogicalFormat> sourceFormat =
+          getTargetLogicalFormat(binding.dtype);
+      if (!sourceFormat) {
+        function.emitError()
+            << "target_abi_mismatch: TargetTensor source element type has no "
+               "target logical format";
+        return mlir::failure();
+      }
+      // The current compiler only creates an implicit action when no numeric
+      // conversion is needed. A future dtype-changing selection must carry
+      // its rounding/zero-point parameter into this boundary explicitly.
+      llvm::Expected<TargetTensorMaterializationAction> materialization =
+          TargetTensorMaterializationAction::create(*sourceFormat, *format,
+                                                    /*parameter=*/std::nullopt);
+      if (!materialization) {
+        function.emitError()
+            << "target_abi_mismatch: TargetTensor materialization is not "
+               "explicit: "
+            << llvm::toString(materialization.takeError());
+        return mlir::failure();
+      }
+      prepared.slots.back().targetTensorMaterialization =
+          std::move(*materialization);
+    }
     return mlir::success();
   };
 
@@ -346,7 +407,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
          TileEntryArgumentKind::Workspace,
          0,
          "default_ddr_arena",
-         "u8",
+         LogicalFormat::U8,
          MemLayout::Tensor,
          {arenaBytes},
          arenaBytes,
@@ -364,7 +425,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
          TileEntryArgumentKind::TransportStatus,
          0,
          "direct_dte_status",
-         "u32",
+         LogicalFormat::U32,
          MemLayout::Tensor,
          {1},
          WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
@@ -382,7 +443,7 @@ prepareTargetABI(const TileExecutable &tileExecutable,
          TileEntryArgumentKind::ProfileRecord,
          0,
          "tx81_profiler_record",
-         "u8",
+         LogicalFormat::U8,
          MemLayout::Tensor,
          {static_cast<int64_t>(*profileRecordBytes)},
          static_cast<int64_t>(*profileRecordBytes),

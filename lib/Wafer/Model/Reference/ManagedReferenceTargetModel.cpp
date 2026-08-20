@@ -173,121 +173,114 @@ unpackInput(const TargetModelNumericTensor &tensor) {
   return values;
 }
 
-llvm::Error validateRequestIdentity(const TargetModelNumericRequest &request) {
-  if (request.command.getFamily() == NumericCommandFamily::NEGemm)
-    return referenceError("GEMM belongs to the oneDNN bulk lane");
-  const NumericTensorKey *expectedDestination = nullptr;
-  llvm::SmallVector<const NumericTensorKey *, 2> expectedInputs;
-  switch (request.command.getFamily()) {
-  case NumericCommandFamily::CTConvert: {
-    const NumericCTConvertCommand *command =
-        request.command.getCommandKey().getCTConvert();
-    expectedInputs.push_back(&command->source);
-    expectedDestination = &command->destination;
-    break;
-  }
-  case NumericCommandFamily::CTElementwise: {
-    const NumericCTElementwiseCommand *command =
-        request.command.getCommandKey().getCTElementwise();
-    for (const NumericTensorKey &input : command->inputs)
-      expectedInputs.push_back(&input);
-    expectedDestination = &command->destination;
-    break;
-  }
-  case NumericCommandFamily::NativeCTReduce: {
-    const NumericNativeCTReduceCommand *command =
-        request.command.getCommandKey().getNativeCTReduce();
-    expectedInputs.push_back(&command->input);
-    expectedDestination = &command->destination;
-    break;
-  }
-  case NumericCommandFamily::NEGemm:
-    llvm_unreachable("GEMM returned before request key dispatch");
-  }
-  if (!expectedDestination ||
-      request.destinationTemplate.key != *expectedDestination ||
-      request.inputs.size() != expectedInputs.size())
-    return referenceError("request tensor key does not match command");
-  for (auto [input, expected] : llvm::zip_equal(request.inputs, expectedInputs))
+llvm::Error validateTensorIdentity(
+    const TargetModelNumericOperands &tensors,
+    llvm::ArrayRef<const PhysicalTensorDescriptor *> expectedInputs,
+    const PhysicalTensorDescriptor &expectedDestination) {
+  if (tensors.destinationTemplate.key != expectedDestination ||
+      tensors.inputs.size() != expectedInputs.size())
+    return referenceError("request tensor key does not match operation");
+  for (auto [input, expected] : llvm::zip_equal(tensors.inputs, expectedInputs))
     if (input.key != *expected)
-      return referenceError("request input key does not match command");
+      return referenceError("request input key does not match operation");
   return llvm::Error::success();
 }
 
-llvm::Expected<float> evaluateElementwise(NumericElementwiseOperation operation,
+llvm::Error validateRequestIdentity(const TargetModelConvertRequest &request) {
+  const PhysicalTensorDescriptor *inputs[] = {&request.operation.source};
+  return validateTensorIdentity(request.tensors, inputs,
+                                request.operation.destination);
+}
+
+llvm::Error
+validateRequestIdentity(const TargetModelElementwiseRequest &request) {
+  llvm::SmallVector<const PhysicalTensorDescriptor *, 2> inputs;
+  for (const PhysicalTensorDescriptor &input : request.operation.inputs)
+    inputs.push_back(&input);
+  return validateTensorIdentity(request.tensors, inputs,
+                                request.operation.destination);
+}
+
+llvm::Error validateRequestIdentity(const TargetModelReduceRequest &request) {
+  const PhysicalTensorDescriptor *inputs[] = {&request.operation.input};
+  return validateTensorIdentity(request.tensors, inputs,
+                                request.operation.destination);
+}
+
+llvm::Expected<float> evaluateElementwise(TargetElementwiseOperation operation,
                                           llvm::ArrayRef<float> operands) {
   switch (operation) {
-  case NumericElementwiseOperation::Abs:
+  case TargetElementwiseOperation::Abs:
     return std::fabs(operands[0]);
-  case NumericElementwiseOperation::Neg:
+  case TargetElementwiseOperation::Neg:
     return -operands[0];
-  case NumericElementwiseOperation::Recip:
+  case TargetElementwiseOperation::Recip:
     return 1.0F / operands[0];
-  case NumericElementwiseOperation::Square:
+  case TargetElementwiseOperation::Square:
     return operands[0] * operands[0];
-  case NumericElementwiseOperation::Max:
+  case TargetElementwiseOperation::Max:
     return std::fmax(operands[0], operands[1]);
-  case NumericElementwiseOperation::Min:
+  case TargetElementwiseOperation::Min:
     return std::fmin(operands[0], operands[1]);
-  case NumericElementwiseOperation::Add:
+  case TargetElementwiseOperation::Add:
     return operands[0] + operands[1];
-  case NumericElementwiseOperation::Sub:
+  case TargetElementwiseOperation::Sub:
     return operands[0] - operands[1];
-  case NumericElementwiseOperation::Mul:
+  case TargetElementwiseOperation::Mul:
     return operands[0] * operands[1];
-  case NumericElementwiseOperation::Div:
+  case TargetElementwiseOperation::Div:
     return operands[0] / operands[1];
-  case NumericElementwiseOperation::Relu:
+  case TargetElementwiseOperation::Relu:
     return operands[0] < 0.0F ? 0.0F : operands[0];
-  case NumericElementwiseOperation::Sqrt:
+  case TargetElementwiseOperation::Sqrt:
     return std::sqrt(operands[0]);
-  case NumericElementwiseOperation::Rsqrt:
+  case TargetElementwiseOperation::Rsqrt:
     return 1.0F / std::sqrt(operands[0]);
-  case NumericElementwiseOperation::Log2:
+  case TargetElementwiseOperation::Log2:
     return std::log2(operands[0]);
-  case NumericElementwiseOperation::Ln:
+  case TargetElementwiseOperation::Ln:
     return std::log(operands[0]);
-  case NumericElementwiseOperation::Pow2:
+  case TargetElementwiseOperation::Pow2:
     return std::exp2(operands[0]);
-  case NumericElementwiseOperation::Exp:
+  case TargetElementwiseOperation::Exp:
     return std::exp(operands[0]);
-  case NumericElementwiseOperation::Sin:
+  case TargetElementwiseOperation::Sin:
     return std::sin(operands[0]);
-  case NumericElementwiseOperation::Cos:
+  case TargetElementwiseOperation::Cos:
     return std::cos(operands[0]);
-  case NumericElementwiseOperation::Tanh:
+  case TargetElementwiseOperation::Tanh:
     return std::tanh(operands[0]);
-  case NumericElementwiseOperation::Sigmoid:
+  case TargetElementwiseOperation::Sigmoid:
     if (operands[0] >= 0.0F)
       return 1.0F / (1.0F + std::exp(-operands[0]));
     return std::exp(operands[0]) / (1.0F + std::exp(operands[0]));
-  case NumericElementwiseOperation::Softplus:
+  case TargetElementwiseOperation::Softplus:
     return std::fmax(operands[0], 0.0F) +
            std::log1p(std::exp(-std::fabs(operands[0])));
-  case NumericElementwiseOperation::Eq:
-  case NumericElementwiseOperation::Ne:
-  case NumericElementwiseOperation::Ge:
-  case NumericElementwiseOperation::Gt:
-  case NumericElementwiseOperation::Le:
-  case NumericElementwiseOperation::Lt:
-  case NumericElementwiseOperation::LogicNot:
-  case NumericElementwiseOperation::LogicAnd:
-  case NumericElementwiseOperation::LogicOr:
-  case NumericElementwiseOperation::LogicXor:
-  case NumericElementwiseOperation::ExpLp:
-  case NumericElementwiseOperation::SatRelu:
-  case NumericElementwiseOperation::LeakyRelu:
+  case TargetElementwiseOperation::Eq:
+  case TargetElementwiseOperation::Ne:
+  case TargetElementwiseOperation::Ge:
+  case TargetElementwiseOperation::Gt:
+  case TargetElementwiseOperation::Le:
+  case TargetElementwiseOperation::Lt:
+  case TargetElementwiseOperation::LogicNot:
+  case TargetElementwiseOperation::LogicAnd:
+  case TargetElementwiseOperation::LogicOr:
+  case TargetElementwiseOperation::LogicXor:
+  case TargetElementwiseOperation::ExpLp:
+  case TargetElementwiseOperation::SatRelu:
+  case TargetElementwiseOperation::LeakyRelu:
     return referenceError("elementwise operation is not in the managed domain");
   }
   llvm_unreachable("unknown numeric elementwise operation");
 }
 
 llvm::Expected<std::vector<RawLogicalValue>>
-executeElementwise(const NumericCTElementwiseCommand &command,
+executeElementwise(const FormalElementwiseOperation &command,
                    llvm::ArrayRef<std::vector<RawLogicalValue>> inputs) {
   const uint64_t outputCount = command.destination.getElementCount();
   if (inputs.size() != command.inputs.size() ||
-      inputs.size() != getNumericElementwiseArity(command.operation))
+      inputs.size() != getTargetElementwiseArity(command.operation))
     return referenceError("elementwise input arity does not match semantics");
   for (auto [input, key] : llvm::zip_equal(inputs, command.inputs)) {
     if (input.size() != outputCount ||
@@ -325,13 +318,12 @@ executeElementwise(const NumericCTElementwiseCommand &command,
 }
 
 llvm::Expected<std::vector<RawLogicalValue>>
-executeConvert(const ResolvedNumericCommand &resolved,
-               const NumericCTConvertCommand &command,
+executeConvert(const FormalConvertOperation &command,
                llvm::ArrayRef<std::vector<RawLogicalValue>> inputs) {
-  const NumericCTConvertSemanticsKey *key =
-      resolved.getSemantics()->getCTConvertKey();
-  if (!key ||
-      key->getEffectiveRoundingMode() != NumericRoundingMode::NearestEven)
+  if (!findTargetConvertRoute(command.opcode))
+    return referenceError("convert opcode is not a target route");
+  if (command.parameter &&
+      command.parameter->getRoundingMode() != TargetRoundingMode::NearestEven)
     return referenceError("convert is not nearest-even");
   const LogicalFormat sourceFormat = command.source.getFormat();
   const LogicalFormat destinationFormat = command.destination.getFormat();
@@ -361,9 +353,9 @@ executeConvert(const ResolvedNumericCommand &resolved,
 }
 
 llvm::Expected<std::vector<RawLogicalValue>>
-executeReduce(const NumericNativeCTReduceCommand &command,
+executeReduce(const FormalReduceOperation &command,
               llvm::ArrayRef<std::vector<RawLogicalValue>> inputs) {
-  if (command.operation != NumericReduceOperation::Sum ||
+  if (command.operation != TargetReduceOperation::Sum ||
       command.input.getFormat() != LogicalFormat::F32 ||
       command.destination.getFormat() != LogicalFormat::F32 ||
       inputs.size() != 1 ||
@@ -371,7 +363,7 @@ executeReduce(const NumericNativeCTReduceCommand &command,
     return referenceError("reduce is outside the native F32 sum domain");
   const llvm::ArrayRef<uint64_t> inputShape = command.input.getShape();
   const std::vector<size_t> reducedDimensions =
-      getNativeCTReduceLogicalDimensions(command.dimension, inputShape.size());
+      getTargetReduceLogicalDimensions(command.dimension, inputShape.size());
   if (reducedDimensions.empty())
     return referenceError("reduce has no logical dimensions");
 
@@ -412,34 +404,25 @@ executeReduce(const NumericNativeCTReduceCommand &command,
   return result;
 }
 
-llvm::Expected<uint64_t>
-getScalarEvaluations(const ResolvedNumericCommand &command) {
-  switch (command.getFamily()) {
-  case NumericCommandFamily::CTConvert:
-    return command.getCommandKey()
-        .getCTConvert()
-        ->destination.getElementCount();
-  case NumericCommandFamily::CTElementwise:
-    return command.getCommandKey()
-        .getCTElementwise()
-        ->destination.getElementCount();
-  case NumericCommandFamily::NativeCTReduce:
-    return command.getCommandKey().getNativeCTReduce()->input.getElementCount();
-  case NumericCommandFamily::NEGemm:
-    return referenceError("GEMM belongs to the oneDNN bulk lane");
-  }
-  llvm_unreachable("unknown numeric command family");
+uint64_t getScalarEvaluations(const FormalConvertOperation &operation) {
+  return operation.destination.getElementCount();
+}
+uint64_t getScalarEvaluations(const FormalElementwiseOperation &operation) {
+  return operation.destination.getElementCount();
+}
+uint64_t getScalarEvaluations(const FormalReduceOperation &operation) {
+  return operation.input.getElementCount();
 }
 
-llvm::Error validateBudget(const TargetModelNumericRequest &request,
+llvm::Error validateBudget(const TargetModelNumericOperands &tensors,
                            FormalNumericWorkBudget scalarBudget,
                            BulkNumericWorkBudget byteBudget,
                            uint64_t scalarEvaluations) {
   if (scalarEvaluations > scalarBudget.getMaximumScalarEvaluations())
     return referenceError("scalar evaluation budget exceeded");
-  uint64_t totalBytes = request.destinationTemplate.storage.size();
-  uint64_t logicalValues = request.destinationTemplate.key.getElementCount();
-  for (const TargetModelNumericTensor &input : request.inputs) {
+  uint64_t totalBytes = tensors.destinationTemplate.storage.size();
+  uint64_t logicalValues = tensors.destinationTemplate.key.getElementCount();
+  for (const TargetModelNumericTensor &input : tensors.inputs) {
     if (!checkedAdd(totalBytes, input.storage.size(), totalBytes) ||
         !checkedAdd(logicalValues, input.key.getElementCount(), logicalValues))
       return referenceError("work count overflows uint64_t");
@@ -453,27 +436,40 @@ llvm::Error validateBudget(const TargetModelNumericRequest &request,
   return llvm::Error::success();
 }
 
-} // namespace
+llvm::Expected<std::vector<RawLogicalValue>>
+executeReferenceOperation(const FormalConvertOperation &operation,
+                          llvm::ArrayRef<std::vector<RawLogicalValue>> inputs) {
+  return executeConvert(operation, inputs);
+}
 
+llvm::Expected<std::vector<RawLogicalValue>>
+executeReferenceOperation(const FormalElementwiseOperation &operation,
+                          llvm::ArrayRef<std::vector<RawLogicalValue>> inputs) {
+  return executeElementwise(operation, inputs);
+}
+
+llvm::Expected<std::vector<RawLogicalValue>>
+executeReferenceOperation(const FormalReduceOperation &operation,
+                          llvm::ArrayRef<std::vector<RawLogicalValue>> inputs) {
+  return executeReduce(operation, inputs);
+}
+
+template <typename Request>
 llvm::Expected<TargetModelManagedReferenceResult>
-ManagedReferenceTargetModelBackend::execute(
-    const TargetModelNumericRequest &request,
-    FormalNumericWorkBudget scalarBudget) const {
-  if (!request.command.isSupported() || !request.command.getSemantics())
-    return referenceError("command has no supported resolved semantics");
+executeManagedReference(const Request &request,
+                        FormalNumericWorkBudget scalarBudget,
+                        BulkNumericWorkBudget byteBudget,
+                        const BulkExecutionEnvironment &environment) {
   if (llvm::Error error = validateRequestIdentity(request))
     return std::move(error);
-  llvm::Expected<uint64_t> scalarEvaluations =
-      getScalarEvaluations(request.command);
-  if (!scalarEvaluations)
-    return scalarEvaluations.takeError();
-  if (llvm::Error error =
-          validateBudget(request, scalarBudget, budget, *scalarEvaluations))
+  const uint64_t scalarEvaluations = getScalarEvaluations(request.operation);
+  if (llvm::Error error = validateBudget(request.tensors, scalarBudget,
+                                         byteBudget, scalarEvaluations))
     return std::move(error);
 
   std::vector<std::vector<RawLogicalValue>> inputs;
-  inputs.reserve(request.inputs.size());
-  for (const TargetModelNumericTensor &input : request.inputs) {
+  inputs.reserve(request.tensors.inputs.size());
+  for (const TargetModelNumericTensor &input : request.tensors.inputs) {
     llvm::Expected<std::vector<RawLogicalValue>> values = unpackInput(input);
     if (!values)
       return values.takeError();
@@ -481,37 +477,46 @@ ManagedReferenceTargetModelBackend::execute(
   }
 
   llvm::Expected<std::vector<RawLogicalValue>> output =
-      [&]() -> llvm::Expected<std::vector<RawLogicalValue>> {
-    switch (request.command.getFamily()) {
-    case NumericCommandFamily::CTConvert:
-      return executeConvert(request.command,
-                            *request.command.getCommandKey().getCTConvert(),
-                            inputs);
-    case NumericCommandFamily::CTElementwise:
-      return executeElementwise(
-          *request.command.getCommandKey().getCTElementwise(), inputs);
-    case NumericCommandFamily::NativeCTReduce:
-      return executeReduce(*request.command.getCommandKey().getNativeCTReduce(),
-                           inputs);
-    case NumericCommandFamily::NEGemm:
-      return referenceError("GEMM belongs to the oneDNN bulk lane");
-    }
-    llvm_unreachable("unknown numeric command family");
-  }();
+      executeReferenceOperation(request.operation, inputs);
   if (!output)
     return output.takeError();
-  if (output->size() != request.destinationTemplate.key.getElementCount())
+  if (output->size() !=
+      request.tensors.destinationTemplate.key.getElementCount())
     return referenceError("kernel produced the wrong element count");
   llvm::Expected<std::vector<uint8_t>> storage =
-      packPhysicalTensorLogicalValues(request.destinationTemplate.key, *output,
-                                      request.destinationTemplate.storage);
+      packPhysicalTensorLogicalValues(
+          request.tensors.destinationTemplate.key, *output,
+          request.tensors.destinationTemplate.storage);
   if (!storage)
     return referenceError(llvm::toString(storage.takeError()));
   return TargetModelManagedReferenceResult{
-      {request.destinationTemplate.key, std::move(*storage)},
+      {request.tensors.destinationTemplate.key, std::move(*storage)},
       {},
-      {*scalarEvaluations, environment.getDigest().str(),
+      {scalarEvaluations, environment.getDigest().str(),
        kImplementation.str()}};
+}
+
+} // namespace
+
+llvm::Expected<TargetModelManagedReferenceResult>
+ManagedReferenceTargetModelBackend::execute(
+    const TargetModelConvertRequest &request,
+    FormalNumericWorkBudget scalarBudget) const {
+  return executeManagedReference(request, scalarBudget, budget, environment);
+}
+
+llvm::Expected<TargetModelManagedReferenceResult>
+ManagedReferenceTargetModelBackend::execute(
+    const TargetModelElementwiseRequest &request,
+    FormalNumericWorkBudget scalarBudget) const {
+  return executeManagedReference(request, scalarBudget, budget, environment);
+}
+
+llvm::Expected<TargetModelManagedReferenceResult>
+ManagedReferenceTargetModelBackend::execute(
+    const TargetModelReduceRequest &request,
+    FormalNumericWorkBudget scalarBudget) const {
+  return executeManagedReference(request, scalarBudget, budget, environment);
 }
 
 } // namespace wafer::model

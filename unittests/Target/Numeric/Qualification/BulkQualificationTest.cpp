@@ -142,8 +142,8 @@ qualify(const BulkExecutionEnvironment &environment, TemporaryDirectory &files,
   if (!row)
     return row.takeError();
   llvm::Expected<QualifiedBulkExecution> execution =
-      record->qualifyExecution(environment, row->getCommand(), row->getInputs(),
-                               row->getDestinationTemplate());
+      record->qualifyExecution(environment, row->getOperation(),
+                               row->getInputs(), row->getDestinationTemplate());
   if (!execution)
     return execution.takeError();
   return QualifiedRow{std::move(*record), std::move(*row),
@@ -192,7 +192,7 @@ TEST(BulkQualificationTest,
   const int before = std::fetestexcept(FE_ALL_EXCEPT);
   llvm::Expected<BulkTensorNumericResult> result =
       executeQualifiedBulkTensorNumeric(
-          environment, qualified.execution, qualified.row.getCommand(),
+          environment, qualified.execution, qualified.row.getOperation(),
           qualified.row.getInputs(), qualified.row.getDestinationTemplate(),
           kBulkBudget);
   ASSERT_TRUE(static_cast<bool>(result))
@@ -201,8 +201,9 @@ TEST(BulkQualificationTest,
 }
 
 TEST(BulkQualificationTest, PhysicalCodecPreservesCxTailAndRejectsWrongSize) {
-  llvm::Expected<NumericTensorKey> key = NumericTensorKey::create(
-      LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 3});
+  llvm::Expected<PhysicalTensorDescriptor> key =
+      PhysicalTensorDescriptor::create(LogicalFormat::F16,
+                                       PhysicalTensorLayout::Cx, {2, 3});
   ASSERT_TRUE(static_cast<bool>(key))
       << (key ? std::string() : llvm::toString(key.takeError()));
   llvm::Expected<uint64_t> physicalBytes = getBulkTensorPhysicalBytes(*key);
@@ -254,7 +255,7 @@ TEST_P(BulkFormatQualificationTest,
 
   llvm::Expected<BulkTensorNumericResult> result =
       executeQualifiedBulkTensorNumeric(
-          environment, qualified.execution, qualified.row.getCommand(),
+          environment, qualified.execution, qualified.row.getOperation(),
           qualified.row.getInputs(), qualified.row.getDestinationTemplate(),
           kBulkBudget);
   ASSERT_TRUE(static_cast<bool>(result))
@@ -313,7 +314,7 @@ TEST(BulkQualificationTest,
   std::vector<llvm::ArrayRef<RawLogicalValue>> views{*lhs, *rhs};
   FormalNumericExecutionContext formalContext;
   std::string formalError = expectError(executeFormalTensorNumeric(
-      formalContext, qualified.row.getCommand(), views,
+      formalContext, qualified.row.getOperation(), views,
       FormalNumericWorkBudget::create(/*maximumScalarEvaluations=*/1000000,
                                       /*maximumFusedMultiplyAdds=*/1024)));
   EXPECT_NE(formalError.find("multiply-accumulate-work-budget-exceeded"),
@@ -322,7 +323,7 @@ TEST(BulkQualificationTest,
 
   llvm::Expected<BulkTensorNumericResult> result =
       executeQualifiedBulkTensorNumeric(
-          environment, qualified.execution, qualified.row.getCommand(),
+          environment, qualified.execution, qualified.row.getOperation(),
           qualified.row.getInputs(), qualified.row.getDestinationTemplate(),
           kBulkBudget);
   ASSERT_TRUE(static_cast<bool>(result))
@@ -344,7 +345,7 @@ TEST(BulkQualificationTest,
       materializeBulkQualificationCase(std::move(spec), kBulkBudget));
   llvm::Expected<BulkTensorNumericResult> result =
       executeManagedReferenceBulkTensorNumeric(
-          environment, row.getCommand(), row.getInputs(),
+          environment, row.getOperation(), row.getInputs(),
           row.getDestinationTemplate(), kBulkBudget);
   ASSERT_TRUE(static_cast<bool>(result))
       << (result ? std::string() : llvm::toString(result.takeError()));
@@ -360,7 +361,7 @@ TEST(BulkQualificationTest,
   nonfiniteInputs.front() = llvm::cantFail(packBulkTensorLogicalValues(
       nonfiniteInputs.front().getKey(), lhs, UINT8_C(0)));
   EXPECT_NE(expectError(executeManagedReferenceBulkTensorNumeric(
-                            environment, row.getCommand(), nonfiniteInputs,
+                            environment, row.getOperation(), nonfiniteInputs,
                             row.getDestinationTemplate(), kBulkBudget))
                 .find("admits only finite inputs"),
             std::string::npos);
@@ -376,7 +377,7 @@ TEST(BulkQualificationTest, BatchedNCxRowUsesOneQualifiedMatmul) {
             PhysicalTensorLayout::NCx);
   llvm::Expected<BulkTensorNumericResult> result =
       executeQualifiedBulkTensorNumeric(
-          environment, qualified.execution, qualified.row.getCommand(),
+          environment, qualified.execution, qualified.row.getOperation(),
           qualified.row.getInputs(), qualified.row.getDestinationTemplate(),
           kBulkBudget);
   ASSERT_TRUE(static_cast<bool>(result))
@@ -401,21 +402,21 @@ TEST(BulkQualificationTest,
       tamperedInputs[0].getKey(), std::move(changed)));
   EXPECT_NE(
       expectError(qualified.record.qualifyExecution(
-                      environment, qualified.row.getCommand(), tamperedInputs,
+                      environment, qualified.row.getOperation(), tamperedInputs,
                       qualified.row.getDestinationTemplate()))
           .find("does not exact-match"),
       std::string::npos);
   EXPECT_NE(
       expectError(executeQualifiedBulkTensorNumeric(
                       environment, qualified.execution,
-                      qualified.row.getCommand(), tamperedInputs,
+                      qualified.row.getOperation(), tamperedInputs,
                       qualified.row.getDestinationTemplate(), kBulkBudget))
           .find("qualification-mismatch"),
       std::string::npos);
   EXPECT_NE(
       expectError(executeQualifiedBulkTensorNumeric(
                       environment, qualified.execution,
-                      qualified.row.getCommand(), qualified.row.getInputs(),
+                      qualified.row.getOperation(), qualified.row.getInputs(),
                       qualified.row.getDestinationTemplate(),
                       BulkNumericWorkBudget::create(1, 1, 1)))
           .find("total-byte-budget-exceeded"),
@@ -598,10 +599,10 @@ TEST(BulkQualificationTest,
     VerifiedBulkQualificationRecord tampered =
         llvm::cantFail(loadVerifiedBulkQualificationRecord(tamperedPath));
     QualifiedBulkExecution execution = llvm::cantFail(tampered.qualifyExecution(
-        environment, qualified.row.getCommand(), qualified.row.getInputs(),
+        environment, qualified.row.getOperation(), qualified.row.getInputs(),
         qualified.row.getDestinationTemplate()));
     std::string error = expectError(executeQualifiedBulkTensorNumeric(
-        environment, execution, qualified.row.getCommand(),
+        environment, execution, qualified.row.getOperation(),
         qualified.row.getInputs(), qualified.row.getDestinationTemplate(),
         kBulkBudget));
     EXPECT_NE(error.find("implementation or resolved descriptor changed"),

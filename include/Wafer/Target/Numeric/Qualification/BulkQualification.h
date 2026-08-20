@@ -18,7 +18,7 @@ namespace wafer {
 
 /// Exact deterministic GEMM corpus identity used by the offline three-stage
 /// qualification producer. Shapes and layouts remain example/domain fields;
-/// runtime qualification still binds the resolved command and payload digests.
+/// runtime qualification still binds the operation and payload digests.
 class BulkQualificationSpec {
 public:
   BulkQualificationSpec() = delete;
@@ -92,7 +92,7 @@ private:
   std::string digest;
 };
 
-/// Deterministically materialized command and physical payload for one
+/// Deterministically materialized operation and physical payload for one
 /// qualification row. This is also the only supported way for tests and
 /// runtime callers to reconstruct the exact held-out row named by a record.
 class BulkQualificationCase {
@@ -100,7 +100,7 @@ public:
   BulkQualificationCase() = delete;
 
   const BulkQualificationSpec &getSpec() const { return spec; }
-  const ResolvedNumericCommand &getCommand() const { return command; }
+  const FormalGemmOperation &getOperation() const { return operation; }
   llvm::ArrayRef<BulkTensorStorage> getInputs() const { return inputs; }
   const BulkTensorStorage &getDestinationTemplate() const {
     return destinationTemplate;
@@ -112,15 +112,15 @@ private:
                                    BulkNumericWorkBudget bulkBudget);
 
   BulkQualificationCase(BulkQualificationSpec spec,
-                        ResolvedNumericCommand command,
+                        FormalGemmOperation operation,
                         std::vector<BulkTensorStorage> inputs,
                         BulkTensorStorage destinationTemplate)
-      : spec(std::move(spec)), command(std::move(command)),
+      : spec(std::move(spec)), operation(std::move(operation)),
         inputs(std::move(inputs)),
         destinationTemplate(std::move(destinationTemplate)) {}
 
   BulkQualificationSpec spec;
-  ResolvedNumericCommand command;
+  FormalGemmOperation operation;
   std::vector<BulkTensorStorage> inputs;
   BulkTensorStorage destinationTemplate;
 };
@@ -135,7 +135,7 @@ struct BulkQualificationTolerance {
 };
 
 /// Fully parsed and canonical validation record. It produces a qualified
-/// execution only for the exact environment, resolved command, payload and
+/// execution only for the exact environment, operation, payload and
 /// destination template recorded by the validation run.
 class VerifiedBulkQualificationRecord {
 public:
@@ -144,12 +144,9 @@ public:
   llvm::StringRef getRecordDigest() const { return recordDigest; }
   llvm::StringRef getPolicyDigest() const { return policyDigest; }
   llvm::StringRef getAdapterDigest() const { return adapterDigest; }
-  llvm::StringRef getSemanticProfileDigest() const {
-    return semanticProfileDigest;
-  }
   llvm::StringRef getSpecDigest() const { return specDigest; }
   llvm::StringRef getEnvironmentDigest() const { return environmentDigest; }
-  llvm::StringRef getResolutionDigest() const { return resolutionDigest; }
+  llvm::StringRef getProblemDigest() const { return problemDigest; }
   llvm::StringRef getImplementation() const { return implementation; }
   llvm::StringRef getResolvedDescriptorDigest() const {
     return resolvedDescriptorDigest;
@@ -158,7 +155,7 @@ public:
 
   llvm::Expected<QualifiedBulkExecution>
   qualifyExecution(const BulkExecutionEnvironment &environment,
-                   const ResolvedNumericCommand &command,
+                   const FormalGemmOperation &operation,
                    llvm::ArrayRef<BulkTensorStorage> inputs,
                    const BulkTensorStorage &destinationTemplate) const;
 
@@ -168,20 +165,18 @@ private:
 
   VerifiedBulkQualificationRecord(
       std::string recordDigest, std::string policyDigest,
-      std::string adapterDigest, std::string semanticProfileDigest,
-      std::string specDigest, std::string environmentDigest,
-      std::string resolutionDigest, std::string inputPayloadDigest,
-      std::string destinationTemplateDigest,
+      std::string adapterDigest, std::string specDigest,
+      std::string environmentDigest, std::string problemDigest,
+      std::string inputPayloadDigest, std::string destinationTemplateDigest,
       std::string expectedBackendOutputDigest, std::string implementation,
       std::string resolvedDescriptorDigest, BulkQualificationKind kind,
       FormalNumericExceptionFlags formalFlags)
       : recordDigest(std::move(recordDigest)),
         policyDigest(std::move(policyDigest)),
         adapterDigest(std::move(adapterDigest)),
-        semanticProfileDigest(std::move(semanticProfileDigest)),
         specDigest(std::move(specDigest)),
         environmentDigest(std::move(environmentDigest)),
-        resolutionDigest(std::move(resolutionDigest)),
+        problemDigest(std::move(problemDigest)),
         inputPayloadDigest(std::move(inputPayloadDigest)),
         destinationTemplateDigest(std::move(destinationTemplateDigest)),
         expectedBackendOutputDigest(std::move(expectedBackendOutputDigest)),
@@ -192,10 +187,9 @@ private:
   std::string recordDigest;
   std::string policyDigest;
   std::string adapterDigest;
-  std::string semanticProfileDigest;
   std::string specDigest;
   std::string environmentDigest;
-  std::string resolutionDigest;
+  std::string problemDigest;
   std::string inputPayloadDigest;
   std::string destinationTemplateDigest;
   std::string expectedBackendOutputDigest;
@@ -206,7 +200,7 @@ private:
 };
 
 /// Reads a canonical qualification spec. Unknown, missing, duplicate or
-/// noncanonical fields fail before a command or tensor is constructed.
+/// noncanonical fields fail before a operation or tensor is constructed.
 llvm::Error writeBulkQualificationSpec(const BulkQualificationSpec &spec,
                                        llvm::StringRef path);
 llvm::Expected<BulkQualificationSpec>

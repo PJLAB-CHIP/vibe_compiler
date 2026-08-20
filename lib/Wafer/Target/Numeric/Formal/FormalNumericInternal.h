@@ -4,6 +4,7 @@
 #define WAFER_TARGET_FORMALNUMERICINTERNAL_H
 
 #include "Wafer/Target/Numeric/Formal/FormalNumeric.h"
+#include "Wafer/Target/Numeric/TargetFloatArithmetic.h"
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
@@ -16,18 +17,13 @@ namespace wafer::formal_detail {
 
 llvm::Error formalError(FormalNumericErrorCode code, const llvm::Twine &detail);
 
-const llvm::fltSemantics *getFloatSemantics(LogicalFormat format);
 FormalNumericExceptionFlags flagsFromStatus(llvm::APFloat::opStatus status);
-llvm::APFloat decodeFloat(RawLogicalValue value);
-std::optional<uint64_t> encodeFloat(const llvm::APFloat &value,
-                                    LogicalFormat format);
-uint64_t
-canonicalPositiveQuietNaNBits(const LogicalFormatDescriptor &descriptor);
-bool isNaNClass(LogicalValueClass valueClass);
-bool isTinyAfterUnboundedPrecisionRounding(
-    RawLogicalValue source, const LogicalFormatDescriptor &sourceDescriptor,
-    const LogicalFormatDescriptor &destinationDescriptor,
-    NumericRoundingMode mode);
+using target_numeric_detail::canonicalPositiveQuietNaNBits;
+using target_numeric_detail::decodeFloat;
+using target_numeric_detail::encodeFloat;
+using target_numeric_detail::getFloatSemantics;
+using target_numeric_detail::isNaNClass;
+using target_numeric_detail::isTinyAfterUnboundedPrecisionRounding;
 void mergeFlags(FormalNumericExceptionFlags &destination,
                 FormalNumericExceptionFlags source);
 llvm::Expected<FormalNumericResult>
@@ -52,10 +48,10 @@ bool isTinyAfterRNE(const ExactDyadic &exact,
                     const LogicalFormatDescriptor &destinationDescriptor);
 
 llvm::Error
-validateElementwiseResolvedCommand(const ResolvedNumericCommand &command);
-llvm::Error validateGemmResolvedCommand(const ResolvedNumericCommand &command);
+validateFormalElementwiseOperation(const FormalElementwiseOperation &operation);
+llvm::Error validateFormalGemmOperation(const FormalGemmOperation &operation);
 llvm::Error
-validateReduceResolvedCommand(const ResolvedNumericCommand &command);
+validateFormalReduceOperation(const FormalReduceOperation &operation);
 
 } // namespace wafer::formal_detail
 

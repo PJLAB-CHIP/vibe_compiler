@@ -4,10 +4,12 @@
 #define WAFER_PACKAGE_PACKAGEMANIFEST_H
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
-#include "Wafer/Target/Layout/PhysicalLayout.h"
+#include "Wafer/Program/ProgramElementType.h"
 #include "Wafer/Target/Core/RuntimeLaunchContract.h"
+#include "Wafer/Target/Core/TargetFormat.h"
 #include "Wafer/Target/Core/TargetIdentity.h"
 #include "Wafer/Target/Core/TopologyIds.h"
+#include "Wafer/Target/Layout/PhysicalLayout.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -100,11 +102,6 @@ enum class PackageMemLayout : uint32_t {
   NCx = 3,
 };
 
-struct PackageTensorType {
-  std::string dtype;
-  std::vector<int64_t> shape;
-};
-
 /// Logical identity of one package-owned parameter/constant. Identity is the
 /// program tensor's role/index and its verified partition slice; it is never
 /// recovered from name, path, shape, or digest. The record does not carry a
@@ -115,7 +112,7 @@ struct ProgramTensorRecord {
   /// User-visible index within the program-boundary role domain.
   int64_t roleIndex = -1;
   /// Logical (source) dtype.
-  std::string dtype;
+  ProgramElementType dtype = ProgramElementType::F32;
   std::vector<int64_t> globalShape;
   std::vector<int64_t> localShape;
   /// Partition/slice identity over the global tensor.
@@ -140,7 +137,7 @@ struct TargetTensorRecord {
   TargetTensorId id;
   ProgramTensorId programTensor;
   /// Selected target dtype.
-  std::string dtype;
+  LogicalFormat dtype = LogicalFormat::F32;
   PackageMemLayout layout = PackageMemLayout::Tensor;
   /// Logical target shape.
   std::vector<int64_t> shape;
@@ -179,10 +176,10 @@ struct ExternalPortRecord {
   /// User-visible index within the port's program-boundary domain.
   int64_t roleIndex = -1;
   /// Logical (source) descriptor.
-  std::string logicalDtype;
+  ProgramElementType logicalDtype = ProgramElementType::F32;
   std::vector<int64_t> logicalShape;
   /// Selected target descriptor.
-  std::string dtype;
+  LogicalFormat dtype = LogicalFormat::F32;
   PackageMemLayout layout = PackageMemLayout::Tensor;
   std::vector<int64_t> shape;
   uint64_t bytes = 0;

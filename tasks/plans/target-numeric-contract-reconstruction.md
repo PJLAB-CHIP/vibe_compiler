@@ -1,6 +1,6 @@
 # Q62 Target 数值合同重建实施计划
 
-状态：`next`。动态状态只看`tasks/progress.md`；稳定语义由01、11、14、16、17、18号设计文档共同拥有。
+状态：实施已闭合。动态状态只看`tasks/progress.md`；稳定语义由01、11、14、16、17、18号设计文档共同拥有。
 
 本任务不是给`NumericSemantics`换名，也不是继续维护Q22.N时期的profile/registry框架。终态是保留真实需要的
 target operation、physical codec、formal arithmetic与bulk qualification能力，同时删除把这些能力捆成一套全局
@@ -107,6 +107,10 @@ model selection或qualification。
 accepted immutable data preparation必须在写package前形成typed materialization action，至少区分identity与明确的value
 conversion，并显式携带rounding/quantization所需参数。writer不能只看source/destination dtype再默选nearest-even，不能构造
 CT command，也不能查询formal model registry。
+
+current实现把该action作为`TileEntryArgument`的同次编译metadata携带：普通Target ABI只可自动形成无参数identity；dtype-changing
+fixture或后续selection必须显式提供与convert route一致的rounding/zero-point，缺失或错误kind直接拒绝。该字段不进入runtime pointer-row
+ABI或package manifest，package assembly只消费并交叉核对它，不从dtype重新推断。
 
 同一bounded materialization实现由package writer与model input preparation复用；package verifier只重算physical descriptor和
 exact bytes，不运行model arithmetic。若某种转换缺少显式参数，当前target representation在effect前拒绝，不增加fallback。
@@ -296,3 +300,35 @@ case意外进入search，应使用已接受的最小`none`路径定位调用错�
 - current docs、CMake、source checker、tools、fixtures和tests同步；
 - fresh定向验证实际执行且通过，未用旧长链或旧测试给新合同背书；
 - 本轮若没有产生可复用的新workflow经验，则不为完成任务强写memory。
+
+## 8. 完成记录
+
+六个checkpoint已经闭合：target operation字段、physical descriptor和explicit TargetTensor materialization各有唯一owner；formal与
+model按四个operation family的具体类型直连；bulk qualification只保留concrete GEMM problem/payload/backend/environment证据；
+旧umbrella、profile/pattern/resolver、generic command、semantic/resolution digest及其专属测试均已删除。program logical element、
+Tile ABI target format和package record在外部parser之后均为closed typed value，serializer才生成canonical spelling。
+`WaferTarget`现在只拥有target facts、physical descriptor/codec与raw logical codec；确定的scalar conversion primitive位于
+`WaferTargetScalarConversion`，static-data conversion位于`WaferTargetTensorMaterialization`，formal wrapper位于
+`WaferFormalNumeric`。后两者共同依赖scalar primitive，CodeGen不反向链接formal。非identity action必须显式携带parameter，
+package writer不再选择默认rounding。
+
+依赖边界同批收口：managed dependency conformance由`numeric_deps.py`、`bulk_deps.py`、`systemc_deps.py`及其configured gate承接，
+不再进入always-built Target C++ API；`WaferTargetModelCore`只保留memory/core，compiler integration位于独立
+`WaferTargetModelInvocation` leaf library。bulk link closure改为验证真正消费oneDNN的qualification tool，production compiler不为
+可选qualification backend付默认链接成本。
+
+fresh验证如下：
+
+- feature-off全目标并行构建通过；`WaferUnitTests`、Board IO unit、四个public-link smoke、numeric configured gate与feature-off
+  link closure共9/9通过；
+- feature-on target/formal/bulk/model/SystemC libraries与qualification tool并行构建通过；numeric、bulk、dependency、CLI、
+  public-link及16项current SystemC gate通过。旧的单一SystemC transport聚合目标原本同时包含多个`sc_main`且遗漏必需的scenario
+  compile definition；现已拆成共享fixture library与逐scenario executable，Direct-DTE/NCC成功、hazard和failure能力没有随旧API退役；
+- `WaferUnitTests` 756项通过；selected-representation package test覆盖F16→BF16显式RNE value conversion、Cx padding、canonical bytes和
+  strict read-back；FP16 parameter产品入口以`optimization-policy=none`完成fresh source→package→no-card；
+- active source/test对旧numeric symbol与semantic/resolution digest零残留；本任务未运行search、LLaMA或真实板端。
+
+验证过程中另定位到baseline分stage构造没有对新纳入的compiler-owned DDR依赖继续做闭包扩展，导致计算写入临时DDR后，
+从同一DDR读取并写入`ExternalOutput`的最终链被漏掉；formal GEMM、layout conversion、accumulator merge和最终WDMA源数据本身均正确，
+但WDMA目标仍停在workspace。该问题属于Q53 current production board-readiness的actual compiler output链路，不回灌numeric合同；
+Q53必须以闭包fixed-point修复及batched/oriented GEMM SystemC gate收口后再推进模型级与板端证据。

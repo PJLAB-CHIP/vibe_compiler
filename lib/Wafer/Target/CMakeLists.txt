@@ -1,24 +1,7 @@
 add_mlir_library(WaferTarget
   PARTIAL_SOURCES_INTENDED
-  Numeric/Formal/FormalNumericConvert.cpp
-  Numeric/Formal/FormalNumericElementwise.cpp
-  Numeric/Formal/FormalNumericGemm.cpp
-  Numeric/Formal/FormalNumericReduce.cpp
-  Numeric/Formal/FormalNumericSupport.cpp
-  Numeric/Formal/FormalNumericValidation.cpp
-  Numeric/NumericCapability.cpp
   Numeric/NumericCodec.cpp
-  Numeric/NumericCommand.cpp
-  Numeric/Dependency/NumericDependencyBuildConfig.cpp
-  Numeric/Dependency/NumericDependencyConformance.cpp
-  Numeric/Dependency/NumericDependencyELF.cpp
-  Numeric/Dependency/NumericDependencyFilesystem.cpp
-  Numeric/Dependency/NumericDependencyGate.cpp
-  Numeric/Dependency/NumericDependencyManifest.cpp
-  Numeric/Dependency/NumericDependencyProcess.cpp
-  Numeric/Dependency/NumericDependencyRuntime.cpp
-  Numeric/NumericProfiles.cpp
-  Numeric/NumericSemanticsInternal.cpp
+  Layout/PhysicalTensorDescriptor.cpp
   Layout/PhysicalTensorCodec.cpp
   Core/RuntimeLaunchContract.cpp
   Core/TargetCall.cpp
@@ -30,6 +13,42 @@ add_mlir_library(WaferTarget
   LINK_LIBS PUBLIC
   LLVMSupport
   WaferTargetPhysicalLayout
+)
+
+add_mlir_library(WaferTargetScalarConversion
+  PARTIAL_SOURCES_INTENDED
+  Numeric/TargetFloatArithmetic.cpp
+  Numeric/TargetScalarConversion.cpp
+
+  LINK_LIBS PUBLIC
+  WaferTarget
+  LLVMSupport
+)
+
+add_mlir_library(WaferFormalNumeric
+  PARTIAL_SOURCES_INTENDED
+  Numeric/Formal/FormalNumericConvert.cpp
+  Numeric/Formal/FormalNumericElementwise.cpp
+  Numeric/Formal/FormalNumericGemm.cpp
+  Numeric/Formal/FormalNumericReduce.cpp
+  Numeric/Formal/FormalNumericSupport.cpp
+  Numeric/Formal/FormalNumericValidation.cpp
+  Numeric/Formal/FormalOperations.cpp
+
+  LINK_LIBS PUBLIC
+  WaferTargetScalarConversion
+  WaferTarget
+  LLVMSupport
+)
+
+add_mlir_library(WaferTargetTensorMaterialization
+  PARTIAL_SOURCES_INTENDED
+  Layout/TargetTensorMaterialization.cpp
+
+  LINK_LIBS PUBLIC
+  WaferTargetScalarConversion
+  WaferTarget
+  LLVMSupport
 )
 
 set(WAFER_TARGET_EXECUTION_SOURCES
@@ -44,6 +63,7 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     Numeric/Formal/SoftFloatOracle.cpp
 
     LINK_LIBS PUBLIC
+    WaferFormalNumeric
     WaferTarget
     WaferNumeric::GMP
     WaferNumeric::MPFR

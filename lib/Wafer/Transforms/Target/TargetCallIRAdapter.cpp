@@ -7,11 +7,11 @@
 namespace wafer {
 namespace {
 
-NumericElementwiseOperation
+TargetElementwiseOperation
 mapElementwiseOperation(InstrElementwiseKind operation) {
-#define WAFER_MAP_ELEMENTWISE(NAME)                                           \
-  case InstrElementwiseKind::NAME:                                            \
-    return NumericElementwiseOperation::NAME
+#define WAFER_MAP_ELEMENTWISE(NAME)                                            \
+  case InstrElementwiseKind::NAME:                                             \
+    return TargetElementwiseOperation::NAME
   switch (operation) {
     WAFER_MAP_ELEMENTWISE(Abs);
     WAFER_MAP_ELEMENTWISE(Recip);
@@ -53,16 +53,16 @@ mapElementwiseOperation(InstrElementwiseKind operation) {
   llvm_unreachable("unknown Instr elementwise operation");
 }
 
-NumericReduceOperation mapReduceOperation(InstrReduceKind operation) {
+TargetReduceOperation mapReduceOperation(InstrReduceKind operation) {
   switch (operation) {
   case InstrReduceKind::Sum:
-    return NumericReduceOperation::Sum;
+    return TargetReduceOperation::Sum;
   case InstrReduceKind::Max:
-    return NumericReduceOperation::Max;
+    return TargetReduceOperation::Max;
   case InstrReduceKind::Min:
-    return NumericReduceOperation::Min;
+    return TargetReduceOperation::Min;
   case InstrReduceKind::Avg:
-    return NumericReduceOperation::Avg;
+    return TargetReduceOperation::Avg;
   }
   llvm_unreachable("unknown Instr reduction operation");
 }
@@ -109,7 +109,8 @@ TargetUnpoolingOperation mapUnpoolingOperation(InstrUnpoolKind operation) {
   llvm_unreachable("unknown Instr unpooling operation");
 }
 
-TargetPeripheralOperation mapPeripheralOperation(InstrPeripheralKind operation) {
+TargetPeripheralOperation
+mapPeripheralOperation(InstrPeripheralKind operation) {
   switch (operation) {
   case InstrPeripheralKind::Count:
     return TargetPeripheralOperation::Count;
@@ -146,8 +147,8 @@ const TargetCallDescriptor &getTargetCallDescriptor(InstrReduceKind operation) {
 
 const TargetCallDescriptor &
 getTargetCallDescriptor(InstrConvertKind operation) {
-  auto targetOperation = TargetConvertOperation::create(
-      static_cast<uint16_t>(operation));
+  auto targetOperation =
+      TargetConvertOperation::create(static_cast<uint16_t>(operation));
   if (!targetOperation) {
     std::string diagnostic = llvm::toString(targetOperation.takeError());
     llvm::report_fatal_error(llvm::StringRef(diagnostic));

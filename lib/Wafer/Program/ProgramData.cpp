@@ -162,7 +162,7 @@ std::optional<uint64_t> elementCount(llvm::ArrayRef<int64_t> shape) {
 }
 
 struct ValidatedPayload {
-  std::string dtype;
+  ProgramElementType dtype;
   std::vector<int64_t> shape;
   uint64_t dataOffset = 0;
 };
@@ -216,7 +216,7 @@ validatePayloadHeader(const frontend::ProgramPayloadSource &source,
                 "npy payload file is larger than the exact tensor payload",
                 failure);
 
-  return ValidatedPayload{decoded->first.str(), std::move(header->shape),
+  return ValidatedPayload{decoded->first, std::move(header->shape),
                           header->dataOffset};
 }
 
@@ -250,25 +250,10 @@ llvm::StringRef stringifyProgramDataFailureKind(ProgramDataFailureKind kind) {
   llvm_unreachable("unknown program data failure kind");
 }
 
-std::optional<int64_t> getProgramDTypeElementBytes(llvm::StringRef dtype) {
-  if (dtype == "i8" || dtype == "ui8")
-    return 1;
-  if (dtype == "i16" || dtype == "ui16")
-    return 2;
-  if (dtype == "f16" || dtype == "bf16")
-    return 2;
-  if (dtype == "i32" || dtype == "ui32")
-    return 4;
-  if (dtype == "f32" || dtype == "tf32")
-    return 4;
-  if (dtype == "i64" || dtype == "ui64")
-    return 8;
-  if (dtype == "f64")
-    return 8;
-  // i1 is not admitted at the program boundary: there is no boolean target
-  // representation and conversion yet. NPY files carrying it still parse at
-  // the source layer but fail establishment here.
-  return std::nullopt;
+std::optional<int64_t> getProgramDTypeElementBytes(ProgramElementType dtype) {
+  if (dtype == ProgramElementType::Bool)
+    return std::nullopt;
+  return getProgramElementByteCount(dtype);
 }
 
 llvm::Expected<ProgramDataSource> ProgramDataSource::establish(
@@ -511,7 +496,7 @@ ProgramDataSource::readRange(uint64_t offset,
 }
 
 llvm::Expected<ProgramDataRange> ProgramDataRange::create(
-    ProgramTensorId tensorId, llvm::StringRef dtype,
+    ProgramTensorId tensorId, ProgramElementType dtype,
     llvm::ArrayRef<int64_t> globalShape, llvm::ArrayRef<int64_t> localShape,
     frontend::ProgramDistributionKind distribution,
     ProgramDataRangeOrigin origin, llvm::ArrayRef<int64_t> sliceOffsets,
@@ -630,12 +615,12 @@ llvm::Expected<ProgramDataRange> ProgramDataRange::create(
     return fail(ProgramDataFailureKind::TruncatedPayload, locator,
                 "program tensor region is outside the payload source", failure);
 
-  return ProgramDataRange(
-      tensorId, dtype.str(), std::vector<int64_t>(globalShape),
-      std::vector<int64_t>(localShape), distribution,
-      std::vector<int64_t>(sliceOffsets), std::vector<int64_t>(sliceSizes),
-      sourceId, regionOffsetBytes, regionLength, std::move(payloadShape),
-      contiguous);
+  return ProgramDataRange(tensorId, dtype, std::vector<int64_t>(globalShape),
+                          std::vector<int64_t>(localShape), distribution,
+                          std::vector<int64_t>(sliceOffsets),
+                          std::vector<int64_t>(sliceSizes), sourceId,
+                          regionOffsetBytes, regionLength,
+                          std::move(payloadShape), contiguous);
 }
 
 llvm::Error

@@ -24,23 +24,25 @@ template <typename T> std::string expectError(llvm::Expected<T> value) {
   return llvm::toString(value.takeError());
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
-                            std::vector<uint64_t> shape) {
+PhysicalTensorDescriptor makeTensor(LogicalFormat format,
+                                    PhysicalTensorLayout layout,
+                                    std::vector<uint64_t> shape) {
   return llvm::cantFail(
-      NumericTensorKey::create(format, layout, std::move(shape)));
+      PhysicalTensorDescriptor::create(format, layout, std::move(shape)));
 }
 
 llvm::Expected<std::vector<uint8_t>>
-packWithWindows(const NumericTensorKey &key,
+packWithWindows(const PhysicalTensorDescriptor &key,
                 llvm::ArrayRef<RawLogicalValue> values, uint64_t maxBytes,
                 uint64_t maxValues, uint8_t paddingFill) {
   llvm::Expected<PhysicalTensorWindowPlan> plan =
       PhysicalTensorWindowPlan::create(key);
   if (!plan)
     return plan.takeError();
-  const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministic())
-          .numericEncodePolicy;
+  const LogicalScalarCodecPolicy policy{
+      LogicalByteOrder::LittleEndian,
+      LogicalBitOrder::LeastSignificantBitFirstWithinByte,
+      NonCanonicalEncodingPolicy::Reject};
   std::vector<uint8_t> result;
   while (!plan->done()) {
     llvm::Expected<PhysicalTensorWindowPlan::WriteWindow> window =
@@ -74,7 +76,7 @@ packWithWindows(const NumericTensorKey &key,
 }
 
 TEST(PhysicalTensorCodecTest, CxRoundTripPreservesTemplatePadding) {
-  NumericTensorKey key =
+  PhysicalTensorDescriptor key =
       makeTensor(LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 3});
   std::vector<RawLogicalValue> values{
       {LogicalFormat::F16, UINT64_C(0x3c00)},
@@ -113,7 +115,7 @@ TEST(PhysicalTensorCodecTest, CxRoundTripPreservesTemplatePadding) {
 }
 
 TEST(PhysicalTensorCodecTest, BitpackedBoolUsesSharedPhysicalGeometry) {
-  NumericTensorKey key =
+  PhysicalTensorDescriptor key =
       makeTensor(LogicalFormat::Bool, PhysicalTensorLayout::Tensor, {2, 5});
   std::vector<RawLogicalValue> values;
   for (uint64_t index = 0; index < key.getElementCount(); ++index)
@@ -131,7 +133,7 @@ TEST(PhysicalTensorCodecTest, BitpackedBoolUsesSharedPhysicalGeometry) {
     EXPECT_EQ((*unpacked)[index].bits, values[index].bits);
   }
 
-  for (NumericTensorKey blocked :
+  for (PhysicalTensorDescriptor blocked :
        {makeTensor(LogicalFormat::Bool, PhysicalTensorLayout::Cx, {2, 5}),
         makeTensor(LogicalFormat::Bool, PhysicalTensorLayout::NCx,
                    {1, 2, 5})}) {
@@ -154,7 +156,7 @@ TEST(PhysicalTensorCodecTest, BitpackedBoolUsesSharedPhysicalGeometry) {
 }
 
 TEST(PhysicalTensorCodecTest, RejectsSizeCountAndEncodingMismatch) {
-  NumericTensorKey key =
+  PhysicalTensorDescriptor key =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 2, 3});
   uint64_t bytes = llvm::cantFail(getPhysicalTensorStorageBytes(key));
   ASSERT_GT(bytes, 0u);
@@ -192,7 +194,7 @@ TEST(PhysicalTensorCodecTest,
       {LogicalFormat::Bool, PhysicalTensorLayout::NCx, {2, 3, 5}, 9, 72},
   };
   for (const Case &testCase : cases) {
-    NumericTensorKey key =
+    PhysicalTensorDescriptor key =
         makeTensor(testCase.format, testCase.layout, testCase.shape);
     std::vector<RawLogicalValue> values;
     values.reserve(static_cast<size_t>(key.getElementCount()));

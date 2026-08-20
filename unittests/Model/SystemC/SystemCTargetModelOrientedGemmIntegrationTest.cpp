@@ -2,8 +2,8 @@
 
 #include "Wafer/Model/SystemC/SystemCTargetModel.h"
 
-#include "Wafer/Target/Execution/TargetCallExecution.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Target/Execution/TargetCallExecution.h"
 #include "Wafer/Target/Layout/PhysicalTensorCodec.h"
 
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
@@ -64,7 +64,7 @@ frontend::ProgramBoundaryBinding boundary(int64_t index) {
   binding.distribution = frontend::ProgramDistributionKind::Replicated;
   binding.globalShape = {16, 2, 2};
   binding.localShape = {16, 2, 2};
-  binding.dtype = "f16";
+  binding.dtype = ProgramElementType::F16;
   frontend::ProgramPartitionSlice slice;
   slice.partitionId = 0;
   slice.replicaId = 0;
@@ -231,8 +231,9 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
       << diagnostics << llvm::toString(targetLLVMModules.takeError());
   ASSERT_EQ(targetLLVMModules->getModules().size(), 16u);
 
-  NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F16, PhysicalTensorLayout::Tensor, {16, 2, 2}));
+  PhysicalTensorDescriptor tensorKey =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          LogicalFormat::F16, PhysicalTensorLayout::Tensor, {16, 2, 2}));
   const std::array<RawLogicalValue, 4> lhsMatrix{
       {{LogicalFormat::F16, UINT64_C(0x3c00)},
        {LogicalFormat::F16, UINT64_C(0x4000)},
@@ -259,8 +260,9 @@ TEST(SystemCTargetModelOrientedGemmIntegrationTest,
     size_t inputCount = 0;
     size_t outputCount = 0;
     for (const TileEntryArgument &slot : module.getTileEntryArguments()) {
-      const bool tileOwned = slot.kind == TileEntryArgumentKind::Workspace ||
-                             slot.kind == TileEntryArgumentKind::TransportStatus;
+      const bool tileOwned =
+          slot.kind == TileEntryArgumentKind::Workspace ||
+          slot.kind == TileEntryArgumentKind::TransportStatus;
       arguments.back().slots.push_back(
           tileOwned
               ? UINT64_C(0x10000000) +

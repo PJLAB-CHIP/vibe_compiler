@@ -1,9 +1,9 @@
 //===- CompilationOrchestration.cpp - Compiler transaction orchestration ===//
 
-#include "Wafer/Package/Writer/PackageInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
-#include "Wafer/Frontend/StableHLO/ProgramIngestion.h"
 #include "Wafer/Driver/CompilationStatistics.h"
+#include "Wafer/Frontend/StableHLO/ProgramIngestion.h"
+#include "Wafer/Package/Writer/PackageInternal.h"
 
 #include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -353,9 +353,8 @@ mlir::LogicalResult runCompilationTransaction(
   if (writeProgramModule(*helperModule, helperInput, diagnostics))
     return mlir::failure();
   if (std::error_code error = llvm::sys::fs::remove(programFile(
-          helperInput,
-          {llvm::StringRef("functions"),
-           llvm::StringRef("forward.stablehlo.bc")}))) {
+          helperInput, {llvm::StringRef("functions"),
+                        llvm::StringRef("forward.stablehlo.bc")}))) {
     reject(diagnostics,
            "failed to remove portable source artifact from helper input: " +
                error.message());
@@ -530,7 +529,7 @@ mlir::LogicalResult runCompilationTransaction(
   };
   constexpr int64_t kSingleCardPartitionId = 0;
   auto establishRange =
-      [&](ProgramTensorId tensorId, llvm::StringRef dtype,
+      [&](ProgramTensorId tensorId, ProgramElementType dtype,
           llvm::ArrayRef<int64_t> globalShape,
           llvm::ArrayRef<int64_t> localShape,
           frontend::ProgramDistributionKind distribution,

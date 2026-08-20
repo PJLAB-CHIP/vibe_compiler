@@ -62,16 +62,15 @@ struct TargetModelOutput {
 /// by this value.
 struct TargetModelResult {
   TargetIdentityId targetIdentity;
-  ModelProfileId modelProfile;
   int64_t completedTileCount = 0;
   uint64_t issuedCommandCount = 0;
   uint64_t systemCThreadProcessCount = 0;
   uint64_t finalDeltaCount = 0;
   FormalNumericExceptionFlags numericFlags;
-  uint64_t formalNumericCommandCount = 0;
-  uint64_t managedReferenceNumericCommandCount = 0;
+  uint64_t formalNumericOperationCount = 0;
+  uint64_t managedReferenceNumericOperationCount = 0;
   uint64_t managedReferenceScalarEvaluationCount = 0;
-  uint64_t bulkNumericCommandCount = 0;
+  uint64_t bulkNumericOperationCount = 0;
   uint64_t bulkMatmulInvocationCount = 0;
   uint64_t bulkReorderInvocationCount = 0;
   uint64_t bulkFormalFusedMultiplyAddCount = 0;

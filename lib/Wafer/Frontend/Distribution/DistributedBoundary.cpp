@@ -323,7 +323,8 @@ bool verifyDistributedBoundary(
         typed.distribution = getVerifiedDistributionKind(binding.distribution);
         typed.globalShape = binding.globalShape;
         typed.localShape = binding.localShape;
-        typed.dtype = normalizeProgramDtype(binding.dtype);
+        typed.dtype = llvm::cantFail(
+            parseProgramElementType(normalizeProgramDtype(binding.dtype)));
         typed.partitionSlices.reserve(binding.partitions.size());
         for (const DistributedBoundaryPartition &partition : binding.partitions)
           typed.partitionSlices.push_back(getVerifiedPartitionSlice(partition));

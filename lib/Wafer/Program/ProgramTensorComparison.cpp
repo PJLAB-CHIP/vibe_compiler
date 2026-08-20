@@ -79,37 +79,38 @@ DecodedFloat decodeBinaryFloat(uint32_t bits, unsigned exponentBits,
   return {true, value};
 }
 
-DecodedFloat decodeFloatAt(llvm::StringRef dtype, llvm::ArrayRef<uint8_t> bytes,
-                           size_t offset) {
-  if (dtype == "f16")
+DecodedFloat decodeFloatAt(ProgramElementType dtype,
+                           llvm::ArrayRef<uint8_t> bytes, size_t offset) {
+  if (dtype == ProgramElementType::F16)
     return decodeBinaryFloat(readLittleEndian16(bytes.data() + offset), 5, 10,
                              15);
-  if (dtype == "bf16")
+  if (dtype == ProgramElementType::BF16)
     return decodeBinaryFloat(readLittleEndian16(bytes.data() + offset), 8, 7,
                              127);
-  if (dtype == "f32")
+  if (dtype == ProgramElementType::F32)
     return decodeBinaryFloat(readLittleEndian32(bytes.data() + offset), 8, 23,
                              127);
   llvm_unreachable("unsupported floating dtype reached tolerant comparator");
 }
 
-size_t getElementByteWidth(llvm::StringRef dtype) {
-  if (dtype == "f16" || dtype == "bf16")
+size_t getElementByteWidth(ProgramElementType dtype) {
+  if (dtype == ProgramElementType::F16 || dtype == ProgramElementType::BF16)
     return 2;
-  if (dtype == "f32")
+  if (dtype == ProgramElementType::F32)
     return 4;
   llvm_unreachable("unsupported floating dtype reached tolerant comparator");
 }
 
-bool isSupportedToleranceDType(llvm::StringRef dtype) {
-  return dtype == "f16" || dtype == "bf16" || dtype == "f32";
+bool isSupportedToleranceDType(ProgramElementType dtype) {
+  return dtype == ProgramElementType::F16 ||
+         dtype == ProgramElementType::BF16 || dtype == ProgramElementType::F32;
 }
 
-uint32_t readFloatBitsAt(llvm::StringRef dtype, llvm::ArrayRef<uint8_t> bytes,
-                         size_t offset) {
-  if (dtype == "f16" || dtype == "bf16")
+uint32_t readFloatBitsAt(ProgramElementType dtype,
+                         llvm::ArrayRef<uint8_t> bytes, size_t offset) {
+  if (dtype == ProgramElementType::F16 || dtype == ProgramElementType::BF16)
     return readLittleEndian16(bytes.data() + offset);
-  if (dtype == "f32")
+  if (dtype == ProgramElementType::F32)
     return readLittleEndian32(bytes.data() + offset);
   llvm_unreachable("unsupported floating dtype reached raw bit decoder");
 }
@@ -121,11 +122,11 @@ uint64_t getUlpOrderKey(uint32_t bits, unsigned width) {
                                                        : signMask + magnitude;
 }
 
-uint64_t getUlpDistance(llvm::StringRef dtype, uint32_t actualBits,
+uint64_t getUlpDistance(ProgramElementType dtype, uint32_t actualBits,
                         uint32_t expectedBits, double actual, double expected) {
   if (actual == expected)
     return 0;
-  const unsigned width = dtype == "f32" ? 32 : 16;
+  const unsigned width = dtype == ProgramElementType::F32 ? 32 : 16;
   const uint64_t actualKey = getUlpOrderKey(actualBits, width);
   const uint64_t expectedKey = getUlpOrderKey(expectedBits, width);
   return actualKey >= expectedKey ? actualKey - expectedKey
@@ -233,9 +234,11 @@ llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
         ProgramTensorComparisonErrorCode::InvalidTolerance,
         "absolute and relative tolerances must be finite and nonnegative");
   if (actual.getDType() != expected.getDType())
-    return comparisonError(ProgramTensorComparisonErrorCode::DTypeMismatch,
-                           "actual=" + actual.getDType().str() +
-                               " expected=" + expected.getDType().str());
+    return comparisonError(
+        ProgramTensorComparisonErrorCode::DTypeMismatch,
+        "actual=" + stringifyProgramElementType(actual.getDType()).str() +
+            " expected=" +
+            stringifyProgramElementType(expected.getDType()).str());
   if (actual.getShape() != expected.getShape())
     return comparisonError(ProgramTensorComparisonErrorCode::ShapeMismatch,
                            "actual=" + formatShape(actual.getShape()) +
@@ -249,11 +252,12 @@ llvm::Error compareProgramTensorExpectedOutput(const ProgramTensor &actual,
                            detail);
   }
 
-  const llvm::StringRef dtype = actual.getDType();
+  const ProgramElementType dtype = actual.getDType();
   if (isFloatingProgramTensorDType(dtype) && !isSupportedToleranceDType(dtype))
     return comparisonError(
         ProgramTensorComparisonErrorCode::UnsupportedFloatingDType,
-        "dtype=" + dtype.str() + " has no expected-output policy");
+        "dtype=" + stringifyProgramElementType(dtype).str() +
+            " has no expected-output policy");
 
   if (!isSupportedToleranceDType(dtype)) {
     const llvm::ArrayRef<uint8_t> actualBytes = actual.getBytes();
@@ -340,9 +344,11 @@ llvm::Expected<ProgramTensorComparisonStatistics>
 computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
                                          const ProgramTensor &expected) {
   if (actual.getDType() != expected.getDType())
-    return comparisonError(ProgramTensorComparisonErrorCode::DTypeMismatch,
-                           "actual=" + actual.getDType().str() +
-                               " expected=" + expected.getDType().str());
+    return comparisonError(
+        ProgramTensorComparisonErrorCode::DTypeMismatch,
+        "actual=" + stringifyProgramElementType(actual.getDType()).str() +
+            " expected=" +
+            stringifyProgramElementType(expected.getDType()).str());
   if (actual.getShape() != expected.getShape())
     return comparisonError(ProgramTensorComparisonErrorCode::ShapeMismatch,
                            "actual=" + formatShape(actual.getShape()) +
@@ -356,11 +362,11 @@ computeProgramTensorComparisonStatistics(const ProgramTensor &actual,
                            detail);
   }
 
-  const llvm::StringRef dtype = actual.getDType();
+  const ProgramElementType dtype = actual.getDType();
   if (!isSupportedToleranceDType(dtype))
     return comparisonError(
         ProgramTensorComparisonErrorCode::UnsupportedStatisticsDType,
-        "dtype=" + dtype.str() +
+        "dtype=" + stringifyProgramElementType(dtype).str() +
             " has no source/model numeric statistics policy");
 
   const size_t elementBytes = getElementByteWidth(dtype);

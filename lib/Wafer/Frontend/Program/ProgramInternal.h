@@ -82,6 +82,7 @@ parseProgramMetadata(llvm::StringRef metaPath, llvm::raw_ostream &diagnostics);
 
 std::string dtypeString(mlir::Type elementType);
 std::string normalizeProgramDtype(llvm::StringRef dtype);
+std::optional<ProgramElementType> getProgramElementType(mlir::Type elementType);
 bool checkedMulUint64(uint64_t lhs, uint64_t rhs, uint64_t &result);
 std::optional<uint64_t> checkedRawByteSize(llvm::ArrayRef<int64_t> shape,
                                            mlir::Type elementType);

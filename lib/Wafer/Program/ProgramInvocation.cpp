@@ -43,14 +43,12 @@ struct ProgramTensorDTypeInfo {
 };
 
 std::optional<ProgramTensorDTypeInfo>
-getProgramTensorDTypeInfo(llvm::StringRef dtype) {
+getProgramTensorDTypeInfo(ProgramElementType dtype) {
   std::optional<int64_t> elementBytes = getProgramDTypeElementBytes(dtype);
   if (!elementBytes)
     return std::nullopt;
-  const bool floating = dtype == "f16" || dtype == "bf16" ||
-                        dtype == "f32" || dtype == "tf32" ||
-                        dtype == "f64";
-  return ProgramTensorDTypeInfo{*elementBytes, floating};
+  return ProgramTensorDTypeInfo{*elementBytes,
+                                isFloatingProgramElementType(dtype)};
 }
 
 llvm::Expected<ProgramTensor>
@@ -117,7 +115,7 @@ sliceProgramTensor(const ProgramTensor &global,
 } // namespace
 
 std::optional<int64_t>
-computeProgramTensorByteCount(llvm::StringRef dtype,
+computeProgramTensorByteCount(ProgramElementType dtype,
                               llvm::ArrayRef<int64_t> shape) {
   std::optional<ProgramTensorDTypeInfo> info = getProgramTensorDTypeInfo(dtype);
   if (!info)
@@ -133,35 +131,34 @@ computeProgramTensorByteCount(llvm::StringRef dtype,
   return bytes;
 }
 
-bool isFloatingProgramTensorDType(llvm::StringRef dtype) {
+bool isFloatingProgramTensorDType(ProgramElementType dtype) {
   std::optional<ProgramTensorDTypeInfo> info = getProgramTensorDTypeInfo(dtype);
   return info && info->floating;
 }
 
 llvm::Expected<ProgramTensor>
-ProgramTensor::create(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
+ProgramTensor::create(ProgramElementType dtype, llvm::ArrayRef<int64_t> shape,
                       llvm::ArrayRef<uint8_t> bytes) {
   std::optional<int64_t> expected = computeProgramTensorByteCount(dtype, shape);
   if (!expected)
     return invalid("program tensor has unsupported dtype or shape");
   if (*expected != static_cast<int64_t>(bytes.size()))
     return invalid("program tensor byte count disagrees with dtype and shape");
-  return ProgramTensor(dtype.str(), std::vector<int64_t>(shape),
+  return ProgramTensor(dtype, std::vector<int64_t>(shape),
                        std::vector<uint8_t>(bytes));
 }
 
 llvm::Expected<ProgramTensor>
-ProgramTensor::share(llvm::StringRef dtype, llvm::ArrayRef<int64_t> shape,
+ProgramTensor::share(ProgramElementType dtype, llvm::ArrayRef<int64_t> shape,
                      std::shared_ptr<const std::vector<uint8_t>> storage,
                      size_t offset) {
   std::optional<int64_t> expected = computeProgramTensorByteCount(dtype, shape);
   if (!expected)
     return invalid("program tensor has unsupported dtype or shape");
-  if (!storage || *expected < 0 ||
-      offset > storage->size() ||
+  if (!storage || *expected < 0 || offset > storage->size() ||
       static_cast<size_t>(*expected) > storage->size() - offset)
     return invalid("program tensor view is outside its shared storage");
-  ProgramTensor tensor(dtype.str(), std::vector<int64_t>(shape), {});
+  ProgramTensor tensor(dtype, std::vector<int64_t>(shape), {});
   tensor.sharedStorage = std::move(storage);
   tensor.sharedOffset = offset;
   tensor.sharedSize = static_cast<size_t>(*expected);
@@ -196,15 +193,12 @@ llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
       materializedRanges;
   std::vector<ProgramTileInvocation> invocations;
   invocations.reserve(cardExecutable.getTileExecutables().size());
-  for (const TileExecutable &tile :
-       cardExecutable.getTileExecutables()) {
+  for (const TileExecutable &tile : cardExecutable.getTileExecutables()) {
     if (tile.getCardId() != CardId(0))
       return invalid(
           "program invocation supports only the current single-card domain");
-    ProgramTileInvocation invocation{tile.getCardId(),
-                                     tile.getTileId(),
-                                     tile.getLaunchSlotId(),
-                                     {}};
+    ProgramTileInvocation invocation{
+        tile.getCardId(), tile.getTileId(), tile.getLaunchSlotId(), {}};
     for (const ProgramResourceBinding &binding : tile.getProgramBindings()) {
       if (binding.role == ProgramResourceRole::Output)
         continue;
@@ -255,9 +249,7 @@ llvm::Expected<std::vector<ProgramTileInvocation>> prepareProgramInvocations(
     invocations.push_back(std::move(invocation));
   }
   const auto &firstBindings =
-      cardExecutable.getTileExecutables()
-          .front()
-          .getProgramBindings();
+      cardExecutable.getTileExecutables().front().getProgramBindings();
   if (globalInputs.size() !=
       llvm::count_if(firstBindings, [](const ProgramResourceBinding &binding) {
         return binding.role == ProgramResourceRole::UserInput;

@@ -3,11 +3,11 @@
 #include "Wafer/Model/Core/TargetModelKernel.h"
 
 #include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
-#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
 #include "Wafer/Target/Core/TargetCall.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
 
-#include "../../lib/Wafer/Model/TargetModelTileCommandTracker.h"
+#include "../../../lib/Wafer/Model/Core/TargetModelTileCommandTracker.h"
 
 #include "gtest/gtest.h"
 
@@ -68,7 +68,7 @@ TargetCallInvocationDescriptor makeInvocation(size_t tileCount = 1) {
           TileEntryArgumentKind::ExternalInput,
           0,
           "input-name-is-not-semantic",
-          "u8",
+          LogicalFormat::U8,
           MemLayout::Tensor,
           {256},
           256,
@@ -78,7 +78,7 @@ TargetCallInvocationDescriptor makeInvocation(size_t tileCount = 1) {
           TileEntryArgumentKind::ExternalOutput,
           0,
           "output-name-is-not-semantic",
-          "u8",
+          LogicalFormat::U8,
           MemLayout::Tensor,
           {256},
           256,
@@ -88,7 +88,7 @@ TargetCallInvocationDescriptor makeInvocation(size_t tileCount = 1) {
           TileEntryArgumentKind::TransportStatus,
           0,
           "status-name-is-not-semantic",
-          "u32",
+          LogicalFormat::U32,
           MemLayout::Tensor,
           {1},
           WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
@@ -115,14 +115,15 @@ InvocationMemoryRegistry makeRegistry(size_t tileCount = 1) {
       InvocationAddressPlan::create(makeInvocation(tileCount), inputs))));
 }
 
-NumericTensorKey makeTensor(LogicalFormat format, PhysicalTensorLayout layout,
-                            std::vector<uint64_t> shape) {
+PhysicalTensorDescriptor makeTensor(LogicalFormat format,
+                                    PhysicalTensorLayout layout,
+                                    std::vector<uint64_t> shape) {
   return llvm::cantFail(
-      NumericTensorKey::create(format, layout, std::move(shape)));
+      PhysicalTensorDescriptor::create(format, layout, std::move(shape)));
 }
 
 void writeTensor(InvocationMemoryRegistry &memory, int64_t launchSlot,
-                 uint64_t address, const NumericTensorKey &key,
+                 uint64_t address, const PhysicalTensorDescriptor &key,
                  llvm::ArrayRef<RawLogicalValue> values) {
   std::vector<uint8_t> bytes =
       llvm::cantFail(packPhysicalTensorLogicalValues(key, values, UINT8_C(0)));
@@ -133,7 +134,7 @@ void writeTensor(InvocationMemoryRegistry &memory, int64_t launchSlot,
 
 std::vector<RawLogicalValue> readTensor(const InvocationMemoryRegistry &memory,
                                         int64_t launchSlot, uint64_t address,
-                                        const NumericTensorKey &key) {
+                                        const PhysicalTensorDescriptor &key) {
   uint64_t bytes = llvm::cantFail(getPhysicalTensorStorageBytes(key));
   return llvm::cantFail(unpackPhysicalTensorLogicalValues(
       key,
@@ -158,12 +159,12 @@ public:
       : hasMatchingExecution(hasMatchingExecution) {}
 
   llvm::Expected<std::optional<TargetModelBulkResult>>
-  tryExecute(const TargetModelNumericRequest &request) const override {
+  tryExecute(const TargetModelGemmRequest &request) const override {
     ++invocations;
     if (!hasMatchingExecution)
       return std::optional<TargetModelBulkResult>();
     TargetModelBulkResult result{
-        request.destinationTemplate,
+        request.tensors.destinationTemplate,
         {},
         {1, 1, 0, TargetModelBulkEvidenceKind::ExactQualificationRecord,
          "sha256:fake-qualification-record", "fake-bulk"}};
@@ -248,8 +249,8 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
     return arguments;
   }
   if (const auto *operation =
-          std::get_if<NumericElementwiseOperation>(&descriptor.semantic)) {
-    const bool logic = isNumericElementwiseLogic(*operation);
+          std::get_if<TargetElementwiseOperation>(&descriptor.semantic)) {
+    const bool logic = isTargetElementwiseLogic(*operation);
     const size_t formatArgument =
         arguments.size() - 1 -
         static_cast<size_t>(descriptor.issueDomain &&
@@ -259,7 +260,7 @@ makeFieldValidArguments(const TargetCallDescriptor &descriptor) {
                             logic ? LogicalFormat::Bool : LogicalFormat::F32);
     return arguments;
   }
-  if (std::holds_alternative<NumericReduceOperation>(descriptor.semantic)) {
+  if (std::holds_alternative<TargetReduceOperation>(descriptor.semantic)) {
     arguments[2] = 0;
     arguments[7] = supportedF32Code(TargetFormatEngine::CT);
     return arguments;
@@ -320,9 +321,8 @@ TEST(TargetModelKernelTest, EveryTypedCallPayloadHasClosedFieldValidation) {
         descriptor, config, makeFieldValidArguments(descriptor));
     ASSERT_TRUE(static_cast<bool>(payload))
         << descriptor.symbol << ": " << llvm::toString(payload.takeError());
-    llvm::Error error = validateTargetModelCommandFields(
-        TargetCommand{CardId(0), TileId(0), LaunchSlotId(0),
-                      validated, std::move(*payload)});
+    llvm::Error error = validateTargetModelCommandFields(TargetCommand{
+        CardId(0), TileId(0), LaunchSlotId(0), validated, std::move(*payload)});
     ASSERT_FALSE(static_cast<bool>(error))
         << descriptor.symbol << ": " << llvm::toString(std::move(error));
     ++validated;
@@ -424,25 +424,25 @@ TEST(TargetModelKernelTest, TargetRegisterBoundsFailClosedAtModelEntry) {
                 "GEMM batch_count must be in [1, 4096]");
 
   expectValid(TargetReduceCommand{
-      NumericReduceOperation::Sum,
+      TargetReduceOperation::Sum,
       0,
       0,
-      static_cast<uint32_t>(NativeCTReduceDimension::Trailing0),
+      static_cast<uint32_t>(TargetReduceDimension::Trailing0),
       {4096, 4096, 4096, 16384},
       LogicalFormat::F32});
-  expectInvalid(TargetReduceCommand{NumericReduceOperation::Sum,
+  expectInvalid(TargetReduceCommand{TargetReduceOperation::Sum,
                                     0,
                                     0,
                                     static_cast<uint32_t>(
-                                        NativeCTReduceDimension::Trailing0),
+                                        TargetReduceDimension::Trailing0),
                                     {4097, 1, 1, 1},
                                     LogicalFormat::F32},
                 "reduce shape N dimension must be in [1, 4096]");
-  expectInvalid(TargetReduceCommand{NumericReduceOperation::Sum,
+  expectInvalid(TargetReduceCommand{TargetReduceOperation::Sum,
                                     0,
                                     0,
                                     static_cast<uint32_t>(
-                                        NativeCTReduceDimension::Trailing0),
+                                        TargetReduceDimension::Trailing0),
                                     {1, 1, 1, 16385},
                                     LogicalFormat::F32},
                 "reduce shape C dimension must be in [1, 16384]");
@@ -490,9 +490,8 @@ TEST(TargetModelKernelTest, ConvolutionWeightShapeIsNotADataShape) {
                          {1, 1, 1, 1},
                          {1, 1},
                          LogicalFormat::F16};
-  llvm::Error error = validateTargetModelCommandFields(
-      TargetCommand{CardId(0), TileId(0), LaunchSlotId(0), 0,
-                    TargetCommandPayload{conv}});
+  llvm::Error error = validateTargetModelCommandFields(TargetCommand{
+      CardId(0), TileId(0), LaunchSlotId(0), 0, TargetCommandPayload{conv}});
   EXPECT_FALSE(static_cast<bool>(error)) << llvm::toString(std::move(error));
 
   conv.weightShape[2] =
@@ -775,7 +774,7 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey key =
+  PhysicalTensorDescriptor key =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {4});
   writeTensor(memory, 0, spm, key,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
@@ -788,7 +787,7 @@ TEST(TargetModelKernelTest, ElementwiseUsesPhysicalCodecAndFormalNumeric) {
                {LogicalFormat::F32, UINT64_C(0x40000000)},
                {LogicalFormat::F32, UINT64_C(0x3f800000)}});
   TargetCommand add{CardId(0), TileId(0), LaunchSlotId(0), 0,
-                    TargetElementwiseCommand{NumericElementwiseOperation::Add,
+                    TargetElementwiseCommand{TargetElementwiseOperation::Add,
                                              spm, spm + UINT64_C(0x1000),
                                              spm + UINT64_C(0x2000), 4,
                                              LogicalFormat::F32}};
@@ -812,9 +811,9 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey input =
+  PhysicalTensorDescriptor input =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2, 2});
-  NumericTensorKey destination =
+  PhysicalTensorDescriptor destination =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {1, 1, 2});
   writeTensor(memory, 0, spm, input,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
@@ -824,10 +823,10 @@ TEST(TargetModelKernelTest, NativeF32SumUsesFixedShapeABIAndFormalNumeric) {
   TargetCommand reduce{
       CardId(0), TileId(0), LaunchSlotId(0), 0,
       TargetReduceCommand{
-          NumericReduceOperation::Sum,
+          TargetReduceOperation::Sum,
           spm,
           spm + UINT64_C(0x1000),
-          static_cast<uint32_t>(NativeCTReduceDimension::Trailing0),
+          static_cast<uint32_t>(TargetReduceDimension::Trailing0),
           {1, 1, 2, 2},
           LogicalFormat::F32}};
   TargetModelCommandEffect effect =
@@ -846,9 +845,9 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey f32 =
+  PhysicalTensorDescriptor f32 =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {2});
-  NumericTensorKey f16 =
+  PhysicalTensorDescriptor f16 =
       makeTensor(LogicalFormat::F16, PhysicalTensorLayout::Cx, {2});
   writeTensor(memory, 0, spm, f32,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
@@ -861,7 +860,9 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
           llvm::cantFail(TargetConvertOperation::create(
               findTargetConvertRoute(LogicalFormat::F32, LogicalFormat::F16)
                   ->opcode)),
-          spm, spm + UINT64_C(0x1000), 2, std::nullopt, 0}};
+          spm, spm + UINT64_C(0x1000), 2,
+          TargetConvertParameter::roundingMode(
+              TargetRoundingMode::NearestEven)}};
   TargetModelCommandEffect convertEffect =
       llvm::cantFail(executeTargetModelCommand(convert, memory, makeBudget()));
   llvm::cantFail(
@@ -871,7 +872,7 @@ TEST(TargetModelKernelTest, ConvertAndGemmUseResolvedFormalCommands) {
   EXPECT_EQ(converted[0].bits, UINT64_C(0x3c00));
   EXPECT_EQ(converted[1].bits, UINT64_C(0x4000));
 
-  NumericTensorKey matrix =
+  PhysicalTensorDescriptor matrix =
       makeTensor(LogicalFormat::F16, PhysicalTensorLayout::Cx, {2, 2});
   writeTensor(memory, 0, spm + UINT64_C(0x3000), matrix,
               {{LogicalFormat::F16, UINT64_C(0x3c00)},
@@ -930,10 +931,10 @@ TEST(TargetModelKernelTest,
     EXPECT_EQ(cxBytes[index + 1], UINT8_C(0x35));
   }
 
-  TargetCommand boolFill{
-      CardId(0), TileId(0), LaunchSlotId(0), 1,
-      TargetMemsetCommand{boolDestination, UINT32_C(1),
-                          /*elementCount=*/16, LogicalFormat::Bool}};
+  TargetCommand boolFill{CardId(0), TileId(0), LaunchSlotId(0), 1,
+                         TargetMemsetCommand{boolDestination, UINT32_C(1),
+                                             /*elementCount=*/16,
+                                             LogicalFormat::Bool}};
   TargetModelCommandEffect boolEffect =
       llvm::cantFail(executeTargetModelCommand(boolFill, memory, makeBudget()));
   llvm::cantFail(
@@ -947,7 +948,7 @@ TEST(TargetModelKernelTest, BatchedGemmUsesImplicitNCxStorageContract) {
   InvocationMemoryRegistry memory = makeRegistry();
   FormalNumericExecutionContext config;
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey batchMatrices =
+  PhysicalTensorDescriptor batchMatrices =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::NCx, {2, 2, 2});
   writeTensor(memory, 0, spm, batchMatrices,
               {{LogicalFormat::F32, UINT64_C(0x3f800000)},
@@ -991,7 +992,7 @@ TEST(TargetModelKernelTest,
      BulkThenFormalUsesMatchingBackendOrFailsBeyondFormalBudget) {
   InvocationMemoryRegistry memory = makeRegistry();
   const uint64_t spm = memory.getAddressPlan().getSPMBase();
-  NumericTensorKey matrix =
+  PhysicalTensorDescriptor matrix =
       makeTensor(LogicalFormat::F32, PhysicalTensorLayout::Cx, {4, 4});
   std::vector<RawLogicalValue> values(
       16, {LogicalFormat::F32, UINT64_C(0x3f800000)});
@@ -1063,8 +1064,8 @@ TEST(TargetModelKernelTest, ControlCommandsValidateTypedEndpoints) {
       llvm::cantFail(executeTargetModelCommand(send, memory, makeBudget()))
           .controlAction,
       TargetModelControlAction::DirectDTESendPrepare);
-  TargetCommand sendIssue{CardId(0), TileId(0), LaunchSlotId(0),
-                          2, TargetDirectDTESendIssueCommand{UINT64_C(0x100)}};
+  TargetCommand sendIssue{CardId(0), TileId(0), LaunchSlotId(0), 2,
+                          TargetDirectDTESendIssueCommand{UINT64_C(0x100)}};
   EXPECT_EQ(
       llvm::cantFail(executeTargetModelCommand(sendIssue, memory, makeBudget()))
           .controlAction,

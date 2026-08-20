@@ -51,19 +51,13 @@ TEST(SystemCTargetModelDTEIntegrationTest,
                                       /*maximumMovementBytes=*/4096,
                                       /*maximumMovementSegments=*/1024));
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
-  EXPECT_EQ(result->completedRankCount, 16);
+  EXPECT_EQ(result->completedTileCount, 16);
   EXPECT_GE(result->issuedCommandCount, 16u * 8u);
   EXPECT_GE(result->systemCThreadProcessCount, 17u);
   EXPECT_GT(result->finalDeltaCount, 0u);
   EXPECT_EQ(result->schedulerIdentity, "untimed-delta-worker-aware-ncc");
-  ASSERT_EQ(result->outputs.size(), 16u);
-  for (const TargetModelOutput &output : result->outputs) {
-    ASSERT_GE(output.logicalRank, 0);
-    ASSERT_LT(output.logicalRank, 16);
-    const int64_t peer = output.logicalRank ^ 1;
-    EXPECT_EQ(output.bytes,
-              invocation->inputBytesByRank[static_cast<size_t>(peer)]);
-  }
+  ASSERT_EQ(result->outputs.size(), 1u);
+  EXPECT_EQ(result->outputs.front().bytes, invocation->expectedOutputBytes);
 }
 
 } // namespace

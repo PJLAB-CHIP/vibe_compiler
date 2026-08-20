@@ -29,17 +29,17 @@ bool isAdaptiveComposite(MPFRFormalOperation operation) {
          operation == MPFRFormalOperation::Softplus;
 }
 
-std::optional<mpfr_rnd_t> toMPFRRoundingMode(NumericRoundingMode mode) {
+std::optional<mpfr_rnd_t> toMPFRRoundingMode(TargetRoundingMode mode) {
   switch (mode) {
-  case NumericRoundingMode::NearestEven:
+  case TargetRoundingMode::NearestEven:
     return MPFR_RNDN;
-  case NumericRoundingMode::TowardZero:
+  case TargetRoundingMode::TowardZero:
     return MPFR_RNDZ;
-  case NumericRoundingMode::TowardPositive:
+  case TargetRoundingMode::TowardPositive:
     return MPFR_RNDU;
-  case NumericRoundingMode::TowardNegative:
+  case TargetRoundingMode::TowardNegative:
     return MPFR_RNDD;
-  case NumericRoundingMode::Stochastic:
+  case TargetRoundingMode::Stochastic:
     return std::nullopt;
   }
   return std::nullopt;

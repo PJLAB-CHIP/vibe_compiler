@@ -2,8 +2,9 @@
 
 #include "TargetModelKernelInternal.h"
 
-#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
 #include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
+#include "Wafer/Target/Layout/TargetTensorMaterialization.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -19,18 +20,19 @@ PhysicalTensorLayout getCountLayout(LogicalFormat format) {
                                        : PhysicalTensorLayout::Cx;
 }
 
-llvm::Expected<NumericTensorKey> makeTensor(LogicalFormat format,
-                                            std::vector<uint64_t> shape) {
-  llvm::Expected<NumericTensorKey> key = NumericTensorKey::create(
-      format, getCountLayout(format), std::move(shape));
+llvm::Expected<PhysicalTensorDescriptor>
+makeTensor(LogicalFormat format, std::vector<uint64_t> shape) {
+  llvm::Expected<PhysicalTensorDescriptor> key =
+      PhysicalTensorDescriptor::create(format, getCountLayout(format),
+                                       std::move(shape));
   if (!key)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(key.takeError()));
   return key;
 }
 
 TargetModelByteRead makeTensorRead(int64_t launchSlot, uint64_t address,
-                                   const NumericTensorKey &key) {
+                                   const PhysicalTensorDescriptor &key) {
   return TargetModelByteRead{
       launchSlot, TargetModelAddressSpace::TileSPM, address,
       llvm::cantFail(getPhysicalTensorStorageBytes(key)), std::nullopt};
@@ -45,7 +47,7 @@ withReads(TargetModelCommandEffect effect,
 
 llvm::Expected<std::vector<RawLogicalValue>>
 readTensor(const InvocationMemoryRegistry &memory, int64_t launchSlot,
-           uint64_t address, const NumericTensorKey &key) {
+           uint64_t address, const PhysicalTensorDescriptor &key) {
   llvm::Expected<uint64_t> bytes = getPhysicalTensorStorageBytes(key);
   if (!bytes)
     return kernelError(TargetModelKernelErrorCode::PhysicalCodecFailure,
@@ -64,7 +66,7 @@ readTensor(const InvocationMemoryRegistry &memory, int64_t launchSlot,
 
 llvm::Expected<std::vector<uint8_t>>
 readTensorStorage(const InvocationMemoryRegistry &memory, int64_t launchSlot,
-                  uint64_t address, const NumericTensorKey &key) {
+                  uint64_t address, const PhysicalTensorDescriptor &key) {
   llvm::Expected<uint64_t> bytes = getPhysicalTensorStorageBytes(key);
   if (!bytes)
     return kernelError(TargetModelKernelErrorCode::PhysicalCodecFailure,
@@ -75,7 +77,7 @@ readTensorStorage(const InvocationMemoryRegistry &memory, int64_t launchSlot,
 
 llvm::Expected<std::vector<uint8_t>>
 packTensor(const InvocationMemoryRegistry &memory, int64_t launchSlot,
-           uint64_t address, const NumericTensorKey &key,
+           uint64_t address, const PhysicalTensorDescriptor &key,
            llvm::ArrayRef<RawLogicalValue> values) {
   llvm::Expected<uint64_t> bytes = getPhysicalTensorStorageBytes(key);
   if (!bytes)
@@ -93,28 +95,44 @@ packTensor(const InvocationMemoryRegistry &memory, int64_t launchSlot,
   return packed;
 }
 
-llvm::Expected<ResolvedNumericCommand>
-resolveNumeric(NumericCommandKey command) {
-  llvm::Expected<ResolvedNumericCommand> resolved = resolveNumericCommand(
-      ModelProfileId::formalDeterministic(), std::move(command));
-  if (!resolved)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(resolved.takeError()));
-  return resolved;
-}
-
 struct ManagedReferenceInput {
   uint64_t address;
-  const NumericTensorKey *key;
+  const PhysicalTensorDescriptor *key;
 };
 
+uint64_t getScalarEvaluations(const FormalConvertOperation &operation) {
+  return operation.destination.getElementCount();
+}
+uint64_t getScalarEvaluations(const FormalElementwiseOperation &operation) {
+  return operation.destination.getElementCount();
+}
+uint64_t getScalarEvaluations(const FormalReduceOperation &operation) {
+  return operation.input.getElementCount();
+}
+
+TargetModelConvertRequest
+makeManagedRequest(const FormalConvertOperation &operation,
+                   TargetModelNumericOperands tensors) {
+  return {operation, std::move(tensors)};
+}
+TargetModelElementwiseRequest
+makeManagedRequest(const FormalElementwiseOperation &operation,
+                   TargetModelNumericOperands tensors) {
+  return {operation, std::move(tensors)};
+}
+TargetModelReduceRequest
+makeManagedRequest(const FormalReduceOperation &operation,
+                   TargetModelNumericOperands tensors) {
+  return {operation, std::move(tensors)};
+}
+
+template <typename Operation>
 llvm::Expected<std::optional<TargetModelCommandEffect>>
 tryExecuteManagedReference(
     const compiler::TargetCommand &command,
-    const InvocationMemoryRegistry &memory,
-    const ResolvedNumericCommand &resolved,
+    const InvocationMemoryRegistry &memory, const Operation &operation,
     llvm::ArrayRef<ManagedReferenceInput> inputDescriptors,
-    uint64_t destinationAddress, const NumericTensorKey &destinationKey,
+    uint64_t destinationAddress, const PhysicalTensorDescriptor &destinationKey,
     TargetModelKernelBudget budget, TargetModelExecutionPolicy policy) {
   if (policy.getTensorDispatchPolicy() ==
       TargetModelTensorDispatchPolicy::FormalOnly)
@@ -145,10 +163,10 @@ tryExecuteManagedReference(
   if (!destinationStorage)
     return destinationStorage.takeError();
   const size_t expectedStorageSize = destinationStorage->size();
-  TargetModelNumericRequest request{
-      resolved,
-      std::move(inputs),
-      {destinationKey, std::move(*destinationStorage)}};
+  auto request = makeManagedRequest(
+      operation,
+      TargetModelNumericOperands{
+          std::move(inputs), {destinationKey, std::move(*destinationStorage)}});
   llvm::Expected<TargetModelManagedReferenceResult> result =
       backend->execute(request, budget.getNumericBudget());
   if (!result)
@@ -156,23 +174,7 @@ tryExecuteManagedReference(
         TargetModelKernelErrorCode::ManagedReferenceBackendFailure,
         llvm::toString(result.takeError()));
 
-  uint64_t expectedScalarEvaluations = 0;
-  switch (resolved.getFamily()) {
-  case NumericCommandFamily::CTConvert:
-    expectedScalarEvaluations = destinationKey.getElementCount();
-    break;
-  case NumericCommandFamily::CTElementwise:
-    expectedScalarEvaluations = destinationKey.getElementCount();
-    break;
-  case NumericCommandFamily::NativeCTReduce:
-    expectedScalarEvaluations =
-        resolved.getCommandKey().getNativeCTReduce()->input.getElementCount();
-    break;
-  case NumericCommandFamily::NEGemm:
-    return kernelError(
-        TargetModelKernelErrorCode::ManagedReferenceBackendFailure,
-        "GEMM reached the non-GEMM managed-reference dispatch seam");
-  }
+  const uint64_t expectedScalarEvaluations = getScalarEvaluations(operation);
   if (result->destination.key != destinationKey ||
       result->destination.storage.size() != expectedStorageSize ||
       result->evidence.scalarEvaluations != expectedScalarEvaluations ||
@@ -203,36 +205,32 @@ executeElementwise(const compiler::TargetCommand &command,
                    TargetModelKernelBudget budget,
                    TargetModelExecutionPolicy policy) {
   const LogicalFormat destinationFormat =
-      isNumericElementwiseRelation(value.operation) ? LogicalFormat::Bool
-                                                    : value.format;
-  llvm::Expected<NumericTensorKey> inputKey =
+      isTargetElementwiseRelation(value.operation) ? LogicalFormat::Bool
+                                                   : value.format;
+  llvm::Expected<PhysicalTensorDescriptor> inputKey =
       makeTensor(value.format, {value.elementCount});
-  llvm::Expected<NumericTensorKey> destinationKey =
+  llvm::Expected<PhysicalTensorDescriptor> destinationKey =
       makeTensor(destinationFormat, {value.elementCount});
   if (!inputKey)
     return inputKey.takeError();
   if (!destinationKey)
     return destinationKey.takeError();
-  std::vector<NumericTensorKey> inputKeys;
+  std::vector<PhysicalTensorDescriptor> inputKeys;
   inputKeys.push_back(*inputKey);
   if (value.rhs)
     inputKeys.push_back(*inputKey);
-  llvm::Expected<NumericCommandKey> numericCommandKey =
-      NumericCommandKey::createCTElementwise(
-          value.operation, std::move(inputKeys), *destinationKey);
-  if (!numericCommandKey)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(numericCommandKey.takeError()));
-  llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumeric(std::move(*numericCommandKey));
-  if (!resolved)
-    return resolved.takeError();
+  llvm::Expected<FormalElementwiseOperation> operation =
+      createFormalElementwiseOperation(value.operation, std::move(inputKeys),
+                                       *destinationKey);
+  if (!operation)
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
+                       llvm::toString(operation.takeError()));
 
   std::vector<ManagedReferenceInput> managedInputs{{value.lhs, &*inputKey}};
   if (value.rhs)
     managedInputs.push_back({*value.rhs, &*inputKey});
   llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
-      tryExecuteManagedReference(command, memory, *resolved, managedInputs,
+      tryExecuteManagedReference(command, memory, *operation, managedInputs,
                                  value.destination, *destinationKey, budget,
                                  policy);
   if (!managed)
@@ -258,9 +256,9 @@ executeElementwise(const compiler::TargetCommand &command,
     views.push_back(input);
   FormalNumericExecutionContext localContext;
   llvm::Expected<FormalTensorNumericResult> result = executeFormalTensorNumeric(
-      localContext, *resolved, views, budget.getNumericBudget());
+      localContext, *operation, views, budget.getNumericBudget());
   if (!result)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(result.takeError()));
   llvm::Expected<std::vector<uint8_t>> packed =
       packTensor(memory, command.launchSlotId.getValue(), value.destination,
@@ -293,40 +291,25 @@ executeConvert(const compiler::TargetCommand &command,
   const TargetConvertRoute *route = findTargetConvertRoute(opcode);
   if (!route)
     return kernelError(
-        TargetModelKernelErrorCode::NumericResolutionFailure,
+        TargetModelKernelErrorCode::FormalNumericFailure,
         "convert route is not registered for the current target");
-  llvm::Expected<NumericTensorKey> sourceKey =
+  llvm::Expected<PhysicalTensorDescriptor> sourceKey =
       makeTensor(route->source, {value.elementCount});
-  llvm::Expected<NumericTensorKey> destinationKey =
+  llvm::Expected<PhysicalTensorDescriptor> destinationKey =
       makeTensor(route->destination, {value.elementCount});
   if (!sourceKey)
     return sourceKey.takeError();
   if (!destinationKey)
     return destinationKey.takeError();
-  std::optional<NumericConvertParameter> parameter;
-  if (value.zeroPoint)
-    parameter = NumericConvertParameter::zeroPoint(*value.zeroPoint);
-  if (value.roundingMode) {
-    llvm::Expected<NumericRoundingMode> mode =
-        parseNumericRoundingMode(static_cast<uint8_t>(*value.roundingMode));
-    if (!mode)
-      return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                         llvm::toString(mode.takeError()));
-    parameter = NumericConvertParameter::roundingMode(*mode);
-  }
-  llvm::Expected<NumericCommandKey> numericCommandKey =
-      NumericCommandKey::createCTConvert(opcode, *sourceKey, *destinationKey,
-                                         parameter);
-  if (!numericCommandKey)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(numericCommandKey.takeError()));
-  llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumeric(std::move(*numericCommandKey));
-  if (!resolved)
-    return resolved.takeError();
+  llvm::Expected<FormalConvertOperation> operation =
+      createFormalConvertOperation(opcode, *sourceKey, *destinationKey,
+                                   value.parameter);
+  if (!operation)
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
+                       llvm::toString(operation.takeError()));
   const ManagedReferenceInput managedInput{value.source, &*sourceKey};
   llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
-      tryExecuteManagedReference(command, memory, *resolved, managedInput,
+      tryExecuteManagedReference(command, memory, *operation, managedInput,
                                  value.destination, *destinationKey, budget,
                                  policy);
   if (!managed)
@@ -340,9 +323,9 @@ executeConvert(const compiler::TargetCommand &command,
   std::vector<llvm::ArrayRef<RawLogicalValue>> views{*source};
   FormalNumericExecutionContext localContext;
   llvm::Expected<FormalTensorNumericResult> result = executeFormalTensorNumeric(
-      localContext, *resolved, views, budget.getNumericBudget());
+      localContext, *operation, views, budget.getNumericBudget());
   if (!result)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(result.takeError()));
   llvm::Expected<std::vector<uint8_t>> packed =
       packTensor(memory, command.launchSlotId.getValue(), value.destination,
@@ -367,10 +350,10 @@ executeReduce(const compiler::TargetCommand &command,
               const InvocationMemoryRegistry &memory,
               TargetModelKernelBudget budget,
               TargetModelExecutionPolicy policy) {
-  const auto dimension = static_cast<NativeCTReduceDimension>(value.dimension);
+  const auto dimension = static_cast<TargetReduceDimension>(value.dimension);
   std::vector<uint64_t> inputShape(value.nhwc.begin(), value.nhwc.end());
   const std::vector<size_t> reducedDimensions =
-      getNativeCTReduceLogicalDimensions(dimension, inputShape.size());
+      getTargetReduceLogicalDimensions(dimension, inputShape.size());
   if (reducedDimensions.empty())
     return kernelError(TargetModelKernelErrorCode::InvalidCommandField,
                        "reduce dimension is invalid for the fixed ABI shape");
@@ -381,32 +364,29 @@ executeReduce(const compiler::TargetCommand &command,
   const PhysicalTensorLayout destinationLayout = destinationShape.size() > 2
                                                      ? PhysicalTensorLayout::NCx
                                                      : PhysicalTensorLayout::Cx;
-  llvm::Expected<NumericTensorKey> inputKey = NumericTensorKey::create(
-      value.format, PhysicalTensorLayout::NCx, std::move(inputShape));
-  llvm::Expected<NumericTensorKey> destinationKey = NumericTensorKey::create(
-      value.format, destinationLayout, std::move(destinationShape));
+  llvm::Expected<PhysicalTensorDescriptor> inputKey =
+      PhysicalTensorDescriptor::create(value.format, PhysicalTensorLayout::NCx,
+                                       std::move(inputShape));
+  llvm::Expected<PhysicalTensorDescriptor> destinationKey =
+      PhysicalTensorDescriptor::create(value.format, destinationLayout,
+                                       std::move(destinationShape));
   if (!inputKey || !destinationKey) {
     llvm::Error errors = llvm::Error::success();
     if (!inputKey)
       errors = llvm::joinErrors(std::move(errors), inputKey.takeError());
     if (!destinationKey)
       errors = llvm::joinErrors(std::move(errors), destinationKey.takeError());
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(std::move(errors)));
   }
-  llvm::Expected<NumericCommandKey> numericCommandKey =
-      NumericCommandKey::createNativeCTReduce(value.operation, *inputKey,
-                                              *destinationKey, dimension);
-  if (!numericCommandKey)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(numericCommandKey.takeError()));
-  llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumeric(std::move(*numericCommandKey));
-  if (!resolved)
-    return resolved.takeError();
+  llvm::Expected<FormalReduceOperation> operation = createFormalReduceOperation(
+      value.operation, *inputKey, *destinationKey, dimension);
+  if (!operation)
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
+                       llvm::toString(operation.takeError()));
   const ManagedReferenceInput managedInput{value.source, &*inputKey};
   llvm::Expected<std::optional<TargetModelCommandEffect>> managed =
-      tryExecuteManagedReference(command, memory, *resolved, managedInput,
+      tryExecuteManagedReference(command, memory, *operation, managedInput,
                                  value.destination, *destinationKey, budget,
                                  policy);
   if (!managed)
@@ -420,9 +400,9 @@ executeReduce(const compiler::TargetCommand &command,
   std::vector<llvm::ArrayRef<RawLogicalValue>> views{*input};
   FormalNumericExecutionContext localContext;
   llvm::Expected<FormalTensorNumericResult> result = executeFormalTensorNumeric(
-      localContext, *resolved, views, budget.getNumericBudget());
+      localContext, *operation, views, budget.getNumericBudget());
   if (!result)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(result.takeError()));
   llvm::Expected<std::vector<uint8_t>> packed =
       packTensor(memory, command.launchSlotId.getValue(), value.destination,
@@ -470,12 +450,15 @@ executeGemm(const compiler::TargetCommand &command,
   std::vector<uint64_t> destinationShape =
       batched ? std::vector<uint64_t>{value.batchCount, value.m, value.n}
               : std::vector<uint64_t>{value.m, value.n};
-  llvm::Expected<NumericTensorKey> lhsKey =
-      NumericTensorKey::create(value.format, layout, std::move(lhsShape));
-  llvm::Expected<NumericTensorKey> rhsKey =
-      NumericTensorKey::create(value.format, layout, std::move(rhsShape));
-  llvm::Expected<NumericTensorKey> destinationKey = NumericTensorKey::create(
-      value.format, layout, std::move(destinationShape));
+  llvm::Expected<PhysicalTensorDescriptor> lhsKey =
+      PhysicalTensorDescriptor::create(value.format, layout,
+                                       std::move(lhsShape));
+  llvm::Expected<PhysicalTensorDescriptor> rhsKey =
+      PhysicalTensorDescriptor::create(value.format, layout,
+                                       std::move(rhsShape));
+  llvm::Expected<PhysicalTensorDescriptor> destinationKey =
+      PhysicalTensorDescriptor::create(value.format, layout,
+                                       std::move(destinationShape));
   if (!lhsKey || !rhsKey || !destinationKey) {
     llvm::Error errors = llvm::Error::success();
     if (!lhsKey)
@@ -484,25 +467,21 @@ executeGemm(const compiler::TargetCommand &command,
       errors = llvm::joinErrors(std::move(errors), rhsKey.takeError());
     if (!destinationKey)
       errors = llvm::joinErrors(std::move(errors), destinationKey.takeError());
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(std::move(errors)));
   }
   const uint64_t rank = lhsKey->getShape().size();
-  llvm::Expected<NumericGemmAxes> axes = getCanonicalNumericGemmAxes(rank);
+  llvm::Expected<FormalGemmGeometry> axes =
+      getCanonicalFormalGemmGeometry(rank);
   if (!axes)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(axes.takeError()));
-  llvm::Expected<NumericCommandKey> numericCommandKey =
-      NumericCommandKey::createNEGemm(
-          *lhsKey, *rhsKey, *destinationKey, value.m, value.k, value.n,
-          value.batchCount, *axes, value.lhsOrientation, value.rhsOrientation);
-  if (!numericCommandKey)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
-                       llvm::toString(numericCommandKey.takeError()));
-  llvm::Expected<ResolvedNumericCommand> resolved =
-      resolveNumeric(std::move(*numericCommandKey));
-  if (!resolved)
-    return resolved.takeError();
+  llvm::Expected<FormalGemmOperation> operation = createFormalGemmOperation(
+      *lhsKey, *rhsKey, *destinationKey, value.m, value.k, value.n,
+      value.batchCount, *axes, value.lhsOrientation, value.rhsOrientation);
+  if (!operation)
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
+                       llvm::toString(operation.takeError()));
 
   if (policy.getGemmDispatchPolicy() ==
           TargetModelGemmDispatchPolicy::BulkThenFormal &&
@@ -525,10 +504,10 @@ executeGemm(const compiler::TargetCommand &command,
       return rhsStorage.takeError();
     if (!destinationStorage)
       return destinationStorage.takeError();
-    TargetModelNumericRequest request{
-        *resolved,
-        {{*lhsKey, std::move(*lhsStorage)}, {*rhsKey, std::move(*rhsStorage)}},
-        {*destinationKey, std::move(*destinationStorage)}};
+    TargetModelGemmRequest request{
+        *operation,
+        {{{*lhsKey, std::move(*lhsStorage)}, {*rhsKey, std::move(*rhsStorage)}},
+         {*destinationKey, std::move(*destinationStorage)}}};
     llvm::Expected<std::optional<TargetModelBulkResult>> bulk =
         backend->tryExecute(request);
     if (!bulk)
@@ -538,7 +517,7 @@ executeGemm(const compiler::TargetCommand &command,
       TargetModelBulkResult result = std::move(**bulk);
       if (result.destination.key != *destinationKey ||
           result.destination.storage.size() !=
-              request.destinationTemplate.storage.size())
+              request.tensors.destinationTemplate.storage.size())
         return kernelError(TargetModelKernelErrorCode::BulkBackendFailure,
                            "bulk backend returned a mismatched destination");
       if (result.evidence.matmulInvocations != 1 ||
@@ -593,9 +572,9 @@ executeGemm(const compiler::TargetCommand &command,
   std::vector<llvm::ArrayRef<RawLogicalValue>> views{*lhs, *rhs};
   FormalNumericExecutionContext localContext;
   llvm::Expected<FormalTensorNumericResult> result = executeFormalTensorNumeric(
-      localContext, *resolved, views, budget.getNumericBudget());
+      localContext, *operation, views, budget.getNumericBudget());
   if (!result)
-    return kernelError(TargetModelKernelErrorCode::NumericResolutionFailure,
+    return kernelError(TargetModelKernelErrorCode::FormalNumericFailure,
                        llvm::toString(result.takeError()));
   llvm::Expected<std::vector<uint8_t>> packed =
       packTensor(memory, command.launchSlotId.getValue(), value.destination,
@@ -618,13 +597,11 @@ llvm::Expected<TargetModelCommandEffect>
 executeMemset(const compiler::TargetCommand &command,
               const target::TargetMemsetCommand &value,
               const InvocationMemoryRegistry &memory) {
-  llvm::Expected<NumericTensorKey> key =
+  llvm::Expected<PhysicalTensorDescriptor> key =
       makeTensor(value.format, {value.elementCount});
   if (!key)
     return key.takeError();
-  const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministic())
-          .numericEncodePolicy;
+  const LogicalScalarCodecPolicy policy = getTargetTensorScalarCodecPolicy();
   llvm::Expected<RawLogicalValue> scalar = makeRawLogicalValue(
       value.format, value.value, policy.nonCanonicalEncoding);
   if (!scalar)

@@ -37,7 +37,7 @@ boundary(int64_t index, llvm::ArrayRef<int64_t> shape) {
   binding.distribution = wafer::frontend::ProgramDistributionKind::Replicated;
   binding.globalShape.assign(shape.begin(), shape.end());
   binding.localShape.assign(shape.begin(), shape.end());
-  binding.dtype = "f16";
+  binding.dtype = ProgramElementType::F16;
   binding.partitionSlices.push_back(singlePartitionSlice(shape));
   return binding;
 }

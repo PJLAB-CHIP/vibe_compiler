@@ -20,7 +20,7 @@ struct UnqualifiedBulkExecutionResult {
 
 llvm::Expected<UnqualifiedBulkExecutionResult>
 executeBulkTensorForQualification(const BulkExecutionEnvironment &environment,
-                                  const ResolvedNumericCommand &command,
+                                  const FormalGemmOperation &operation,
                                   llvm::ArrayRef<BulkTensorStorage> inputs,
                                   const BulkTensorStorage &destinationTemplate,
                                   BulkNumericWorkBudget budget);
@@ -40,13 +40,13 @@ void appendField(llvm::raw_ostream &stream, llvm::StringRef name,
 uint32_t readMXCSR();
 
 llvm::Expected<BulkTensorStorage>
-packIntoTemplate(const NumericTensorKey &key,
+packIntoTemplate(const PhysicalTensorDescriptor &key,
                  llvm::ArrayRef<RawLogicalValue> values,
                  std::vector<uint8_t> storage);
 
 llvm::Expected<detail::UnqualifiedBulkExecutionResult>
 executeOneDNN(const BulkExecutionEnvironment &environment,
-              const ResolvedNumericCommand &command,
+              const FormalGemmOperation &operation,
               llvm::ArrayRef<BulkTensorStorage> inputs,
               const BulkTensorStorage &destinationTemplate,
               BulkNumericWorkBudget budget);

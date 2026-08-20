@@ -4,6 +4,8 @@
 
 #include "Wafer/Target/Numeric/Formal/MPFRNumeric.h"
 
+#include "FormalNumericInternal.h"
+
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
@@ -45,125 +47,108 @@ bool checkedMultiply(uint64_t lhs, uint64_t rhs, uint64_t &result) {
   return true;
 }
 
-struct ValidatedFormalCommand {
-  llvm::SmallVector<const NumericTensorKey *, 2> inputKeys;
-  const NumericTensorKey *destinationKey = nullptr;
+struct ValidatedFormalOperation {
+  llvm::SmallVector<const PhysicalTensorDescriptor *, 2> inputKeys;
+  const PhysicalTensorDescriptor *destinationKey = nullptr;
   uint64_t scalarEvaluations = 0;
   uint64_t fusedMultiplyAdds = 0;
 };
 
-llvm::Expected<ValidatedFormalCommand>
-validateFormalCommand(const ResolvedNumericCommand &command,
-                      FormalNumericWorkBudget budget) {
-  if (!command.isSupported() || !command.getSemantics() ||
-      command.getComparatorKind() != NumericComparatorKind::RawExact)
-    return tensorError(
-        FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-        "the resolved command has no complete formal execution identity");
-
-  ValidatedFormalCommand result;
-  switch (command.getFamily()) {
-  case NumericCommandFamily::CTConvert: {
-    const NumericCTConvertCommand *convert =
-        command.getCommandKey().getCTConvert();
-    if (!convert ||
-        command.getFormalKernelKind() != FormalKernelKind::Convert ||
-        command.getFormalBackendKind() !=
-            FormalNumericBackendKind::LLVMAPFloatAPInt)
-      return tensorError(
-          FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-          "the resolved CT convert command lost its formal kernel identity");
-    result.inputKeys.push_back(&convert->source);
-    result.destinationKey = &convert->destination;
-    result.scalarEvaluations = convert->destination.getElementCount();
-    break;
-  }
-  case NumericCommandFamily::CTElementwise: {
-    const NumericCTElementwiseCommand *elementwise =
-        command.getCommandKey().getCTElementwise();
-    if (!elementwise ||
-        command.getFormalKernelKind() != FormalKernelKind::Elementwise ||
-        !command.getFormalBackendKind())
-      return tensorError(
-          FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-          "the resolved CT elementwise command lost its formal kernel "
-          "identity");
-    for (const NumericTensorKey &input : elementwise->inputs)
-      result.inputKeys.push_back(&input);
-    result.destinationKey = &elementwise->destination;
-    result.scalarEvaluations = elementwise->destination.getElementCount();
-    break;
-  }
-  case NumericCommandFamily::NEGemm: {
-    const NumericNEGemmCommand *gemm = command.getCommandKey().getNEGemm();
-    if (!gemm || command.getFormalKernelKind() != FormalKernelKind::Gemm ||
-        command.getFormalBackendKind() !=
-            FormalNumericBackendKind::LLVMAPFloatAPInt)
-      return tensorError(
-          FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-          "the resolved NE GEMM command lost its formal kernel identity");
-    result.inputKeys.push_back(&gemm->lhs);
-    result.inputKeys.push_back(&gemm->rhs);
-    result.destinationKey = &gemm->destination;
-    uint64_t outputCount = 0;
-    if (!checkedMultiply(gemm->batchCount, gemm->m, outputCount) ||
-        !checkedMultiply(outputCount, gemm->n, outputCount) ||
-        outputCount != gemm->destination.getElementCount() ||
-        !checkedMultiply(outputCount, gemm->k, result.fusedMultiplyAdds) ||
-        !checkedAdd(result.fusedMultiplyAdds, outputCount,
-                    result.scalarEvaluations))
-      return tensorError(FormalTensorNumericErrorCode::WorkCountOverflow,
-                         "NE GEMM formal work count is inconsistent or "
-                         "overflows uint64_t");
-    break;
-  }
-  case NumericCommandFamily::NativeCTReduce: {
-    const NumericNativeCTReduceCommand *reduce =
-        command.getCommandKey().getNativeCTReduce();
-    if (!reduce || command.getFormalKernelKind() != FormalKernelKind::Reduce ||
-        command.getFormalBackendKind() !=
-            FormalNumericBackendKind::LLVMAPFloatAPInt)
-      return tensorError(
-          FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-          "the resolved native reduction lost its formal kernel identity");
-    result.inputKeys.push_back(&reduce->input);
-    result.destinationKey = &reduce->destination;
-    result.scalarEvaluations = reduce->input.getElementCount();
-    break;
-  }
-  }
-
-  if (!result.destinationKey)
-    return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
-                       "formal command validation found no destination tensor");
-  if (result.scalarEvaluations > budget.getMaximumScalarEvaluations())
+llvm::Error validateBudget(const ValidatedFormalOperation &operation,
+                           FormalNumericWorkBudget budget) {
+  if (operation.scalarEvaluations > budget.getMaximumScalarEvaluations())
     return tensorError(
         FormalTensorNumericErrorCode::ScalarWorkBudgetExceeded,
-        llvm::Twine("formal command requires ") +
-            llvm::Twine(result.scalarEvaluations) +
+        llvm::Twine("formal operation requires ") +
+            llvm::Twine(operation.scalarEvaluations) +
             " scalar evaluations but the invocation budget allows " +
             llvm::Twine(budget.getMaximumScalarEvaluations()));
-  if (result.fusedMultiplyAdds > budget.getMaximumFusedMultiplyAdds())
+  if (operation.fusedMultiplyAdds > budget.getMaximumFusedMultiplyAdds())
     return tensorError(
         FormalTensorNumericErrorCode::MultiplyAccumulateWorkBudgetExceeded,
-        llvm::Twine("formal command requires ") +
-            llvm::Twine(result.fusedMultiplyAdds) +
+        llvm::Twine("formal operation requires ") +
+            llvm::Twine(operation.fusedMultiplyAdds) +
             " fused multiply-adds but the invocation budget allows " +
             llvm::Twine(budget.getMaximumFusedMultiplyAdds()));
+  return llvm::Error::success();
+}
+
+llvm::Expected<ValidatedFormalOperation>
+validateFormalOperation(const FormalConvertOperation &operation,
+                        FormalNumericWorkBudget budget) {
+  ValidatedFormalOperation result;
+  result.inputKeys.push_back(&operation.source);
+  result.destinationKey = &operation.destination;
+  result.scalarEvaluations = operation.destination.getElementCount();
+  if (llvm::Error error = validateBudget(result, budget))
+    return std::move(error);
+  return result;
+}
+
+llvm::Expected<ValidatedFormalOperation>
+validateFormalOperation(const FormalElementwiseOperation &operation,
+                        FormalNumericWorkBudget budget) {
+  ValidatedFormalOperation result;
+  for (const PhysicalTensorDescriptor &input : operation.inputs)
+    result.inputKeys.push_back(&input);
+  result.destinationKey = &operation.destination;
+  result.scalarEvaluations = operation.destination.getElementCount();
+  if (llvm::Error error = validateBudget(result, budget))
+    return std::move(error);
+  return result;
+}
+
+llvm::Expected<ValidatedFormalOperation>
+validateFormalOperation(const FormalGemmOperation &operation,
+                        FormalNumericWorkBudget budget) {
+  if (llvm::Error error = formal_detail::validateFormalGemmOperation(operation))
+    return std::move(error);
+  ValidatedFormalOperation result;
+  result.inputKeys.push_back(&operation.lhs);
+  result.inputKeys.push_back(&operation.rhs);
+  result.destinationKey = &operation.destination;
+  uint64_t outputCount = 0;
+  if (!checkedMultiply(operation.batchCount, operation.m, outputCount) ||
+      !checkedMultiply(outputCount, operation.n, outputCount) ||
+      outputCount != operation.destination.getElementCount() ||
+      !checkedMultiply(outputCount, operation.k, result.fusedMultiplyAdds) ||
+      !checkedAdd(result.fusedMultiplyAdds, outputCount,
+                  result.scalarEvaluations))
+    return tensorError(FormalTensorNumericErrorCode::WorkCountOverflow,
+                       "NE GEMM formal work count is inconsistent or "
+                       "overflows uint64_t");
+  if (llvm::Error error = validateBudget(result, budget))
+    return std::move(error);
+  return result;
+}
+
+llvm::Expected<ValidatedFormalOperation>
+validateFormalOperation(const FormalReduceOperation &operation,
+                        FormalNumericWorkBudget budget) {
+  if (llvm::Error error =
+          formal_detail::validateFormalReduceOperation(operation))
+    return std::move(error);
+  ValidatedFormalOperation result;
+  result.inputKeys.push_back(&operation.input);
+  result.destinationKey = &operation.destination;
+  result.scalarEvaluations = operation.input.getElementCount();
+  if (llvm::Error error = validateBudget(result, budget))
+    return std::move(error);
   return result;
 }
 
 llvm::Error
-validateInputs(const ValidatedFormalCommand &validatedCommand,
+validateInputs(const ValidatedFormalOperation &validatedOperation,
                llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs) {
-  if (inputs.size() != validatedCommand.inputKeys.size())
+  if (inputs.size() != validatedOperation.inputKeys.size())
     return tensorError(FormalTensorNumericErrorCode::InputArityMismatch,
                        llvm::Twine("expected ") +
-                           llvm::Twine(validatedCommand.inputKeys.size()) +
+                           llvm::Twine(validatedOperation.inputKeys.size()) +
                            " input tensors, got " + llvm::Twine(inputs.size()));
 
   for (size_t inputIndex = 0; inputIndex < inputs.size(); ++inputIndex) {
-    const NumericTensorKey &key = *validatedCommand.inputKeys[inputIndex];
+    const PhysicalTensorDescriptor &key =
+        *validatedOperation.inputKeys[inputIndex];
     llvm::ArrayRef<RawLogicalValue> values = inputs[inputIndex];
     if (values.size() != key.getElementCount())
       return tensorError(
@@ -195,29 +180,29 @@ validateInputs(const ValidatedFormalCommand &validatedCommand,
 }
 
 std::optional<MPFRFormalOperation>
-getMPFROperation(NumericElementwiseOperation operation) {
+getMPFROperation(TargetElementwiseOperation operation) {
   switch (operation) {
-  case NumericElementwiseOperation::Sqrt:
+  case TargetElementwiseOperation::Sqrt:
     return MPFRFormalOperation::Sqrt;
-  case NumericElementwiseOperation::Rsqrt:
+  case TargetElementwiseOperation::Rsqrt:
     return MPFRFormalOperation::Rsqrt;
-  case NumericElementwiseOperation::Log2:
+  case TargetElementwiseOperation::Log2:
     return MPFRFormalOperation::Log2;
-  case NumericElementwiseOperation::Ln:
+  case TargetElementwiseOperation::Ln:
     return MPFRFormalOperation::Ln;
-  case NumericElementwiseOperation::Pow2:
+  case TargetElementwiseOperation::Pow2:
     return MPFRFormalOperation::Pow2;
-  case NumericElementwiseOperation::Exp:
+  case TargetElementwiseOperation::Exp:
     return MPFRFormalOperation::Exp;
-  case NumericElementwiseOperation::Sin:
+  case TargetElementwiseOperation::Sin:
     return MPFRFormalOperation::Sin;
-  case NumericElementwiseOperation::Cos:
+  case TargetElementwiseOperation::Cos:
     return MPFRFormalOperation::Cos;
-  case NumericElementwiseOperation::Tanh:
+  case TargetElementwiseOperation::Tanh:
     return MPFRFormalOperation::Tanh;
-  case NumericElementwiseOperation::Sigmoid:
+  case TargetElementwiseOperation::Sigmoid:
     return MPFRFormalOperation::Sigmoid;
-  case NumericElementwiseOperation::Softplus:
+  case TargetElementwiseOperation::Softplus:
     return MPFRFormalOperation::Softplus;
   default:
     return std::nullopt;
@@ -225,45 +210,28 @@ getMPFROperation(NumericElementwiseOperation operation) {
 }
 
 llvm::Expected<FormalNumericResult>
-evaluateElementwise(const ResolvedNumericCommand &command,
+evaluateElementwise(const FormalElementwiseOperation &operation,
                     llvm::ArrayRef<RawLogicalValue> inputs) {
-  if (command.getFormalBackendKind() ==
-      FormalNumericBackendKind::LLVMAPFloatAPInt)
-    return evaluateFormalElementwiseLLVM(command, inputs);
-  if (command.getFormalBackendKind() != FormalNumericBackendKind::MPFR)
-    return tensorError(FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-                       "elementwise command has an unknown formal backend");
-
-  const NumericCTElementwiseCommand *elementwise =
-      command.getCommandKey().getCTElementwise();
-  const NumericSemanticsProfile *semantics = command.getSemantics();
-  if (!elementwise || !semantics || inputs.size() != 1 ||
-      semantics->getTranscendentalEvaluationPolicy() !=
-          NumericTranscendentalEvaluationPolicy::
-              CorrectlyRoundedMathematicalResultAdaptiveMPFRFinalRNE ||
-      semantics->getRoundingModePolicy() != NumericRoundingMode::NearestEven)
-    return tensorError(
-        FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-        "MPFR elementwise command has an incomplete adaptive-RNE policy");
-  std::optional<MPFRFormalOperation> operation =
-      getMPFROperation(elementwise->operation);
-  if (!operation)
-    return tensorError(FormalTensorNumericErrorCode::UnsupportedResolvedCommand,
-                       "elementwise operation is not an MPFR formal function");
-  return executeMPFRFormal({*operation, NumericRoundingMode::NearestEven,
-                            elementwise->destination.getFormat(),
-                            inputs.front()});
+  std::optional<MPFRFormalOperation> mpfrOperation =
+      getMPFROperation(operation.operation);
+  if (!mpfrOperation)
+    return evaluateFormalElementwiseLLVM(operation, inputs);
+  if (inputs.size() != 1)
+    return tensorError(FormalTensorNumericErrorCode::InputArityMismatch,
+                       "MPFR elementwise operation requires one input");
+  return executeMPFRFormal({*mpfrOperation, TargetRoundingMode::NearestEven,
+                            operation.destination.getFormat(), inputs.front()});
 }
 
 llvm::Expected<FormalTensorNumericResult>
-executeConvert(const ResolvedNumericCommand &command,
+executeConvert(const FormalConvertOperation &operation,
                llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
                uint64_t outputCount) {
   FormalTensorNumericResult result;
   result.values.reserve(static_cast<size_t>(outputCount));
   for (RawLogicalValue source : inputs.front()) {
     llvm::Expected<FormalNumericResult> scalar =
-        evaluateFormalConvert(command, source);
+        evaluateFormalConvert(operation, source);
     if (!scalar)
       return scalar.takeError();
     result.values.push_back(scalar->value);
@@ -273,7 +241,7 @@ executeConvert(const ResolvedNumericCommand &command,
 }
 
 llvm::Expected<FormalTensorNumericResult>
-executeElementwise(const ResolvedNumericCommand &command,
+executeElementwise(const FormalElementwiseOperation &operation,
                    llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
                    uint64_t outputCount) {
   FormalTensorNumericResult result;
@@ -284,7 +252,7 @@ executeElementwise(const ResolvedNumericCommand &command,
     for (llvm::ArrayRef<RawLogicalValue> input : inputs)
       scalarInputs.push_back(input[static_cast<size_t>(elementIndex)]);
     llvm::Expected<FormalNumericResult> scalar =
-        evaluateElementwise(command, scalarInputs);
+        evaluateElementwise(operation, scalarInputs);
     if (!scalar)
       return scalar.takeError();
     result.values.push_back(scalar->value);
@@ -294,9 +262,8 @@ executeElementwise(const ResolvedNumericCommand &command,
 }
 
 llvm::Expected<FormalTensorNumericResult>
-executeGemm(const ResolvedNumericCommand &command,
-            llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
-            const NumericNEGemmCommand &gemm) {
+executeGemm(const FormalGemmOperation &gemm,
+            llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs, uint64_t) {
   FormalTensorNumericResult result;
   const uint64_t outputCount = gemm.destination.getElementCount();
   result.values.reserve(static_cast<size_t>(outputCount));
@@ -322,7 +289,7 @@ executeGemm(const ResolvedNumericCommand &command,
                    : n * gemm.k + k);
           llvm::Expected<FormalNumericResult> step =
               evaluateFormalGemmFusedMultiplyAdd(
-                  command, lhs[static_cast<size_t>(lhsIndex)],
+                  gemm, lhs[static_cast<size_t>(lhsIndex)],
                   rhs[static_cast<size_t>(rhsIndex)], accumulator);
           if (!step)
             return step.takeError();
@@ -330,7 +297,7 @@ executeGemm(const ResolvedNumericCommand &command,
           mergeFlags(result.flags, step->flags);
         }
         llvm::Expected<FormalNumericResult> destination =
-            evaluateFormalGemmFinalize(command, accumulator);
+            evaluateFormalGemmFinalize(gemm, accumulator);
         if (!destination)
           return destination.takeError();
         result.values.push_back(destination->value);
@@ -342,12 +309,12 @@ executeGemm(const ResolvedNumericCommand &command,
 }
 
 llvm::Expected<FormalTensorNumericResult>
-executeReduce(const ResolvedNumericCommand &command,
+executeReduce(const FormalReduceOperation &reduce,
               llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
-              const NumericNativeCTReduceCommand &reduce) {
+              uint64_t) {
   const llvm::ArrayRef<uint64_t> inputShape = reduce.input.getShape();
   const std::vector<size_t> reducedDimensions =
-      getNativeCTReduceLogicalDimensions(reduce.dimension, inputShape.size());
+      getTargetReduceLogicalDimensions(reduce.dimension, inputShape.size());
   if (reducedDimensions.empty())
     return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
                        "native reduction has no logical dimensions");
@@ -381,7 +348,7 @@ executeReduce(const ResolvedNumericCommand &command,
           FormalTensorNumericErrorCode::ResultInvariantViolation,
           "native reduction mapped an input outside the destination tensor");
     llvm::Expected<FormalNumericResult> step = evaluateFormalReduceStep(
-        command, result.values[static_cast<size_t>(destinationIndex)],
+        reduce, result.values[static_cast<size_t>(destinationIndex)],
         inputs.front()[static_cast<size_t>(inputIndex)]);
     if (!step)
       return step.takeError();
@@ -391,13 +358,87 @@ executeReduce(const ResolvedNumericCommand &command,
   return result;
 }
 
+llvm::Expected<FormalTensorNumericResult>
+executeOperation(const FormalConvertOperation &operation,
+                 llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                 uint64_t outputCount);
+llvm::Expected<FormalTensorNumericResult>
+executeOperation(const FormalElementwiseOperation &operation,
+                 llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                 uint64_t outputCount);
+llvm::Expected<FormalTensorNumericResult>
+executeOperation(const FormalGemmOperation &operation,
+                 llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                 uint64_t outputCount);
+llvm::Expected<FormalTensorNumericResult>
+executeOperation(const FormalReduceOperation &operation,
+                 llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                 uint64_t outputCount);
+
+template <typename Operation>
+llvm::Expected<FormalTensorNumericResult>
+executeCheckedOperation(FormalNumericExecutionContext &context,
+                        const Operation &operation,
+                        llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                        FormalNumericWorkBudget budget) {
+  llvm::Expected<ValidatedFormalOperation> validated =
+      validateFormalOperation(operation, budget);
+  if (!validated)
+    return validated.takeError();
+  if (llvm::Error error = validateInputs(*validated, inputs))
+    return std::move(error);
+
+  const uint64_t outputCount = validated->destinationKey->getElementCount();
+  if (outputCount > std::numeric_limits<size_t>::max())
+    return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
+                       "destination element count does not fit host size_t");
+  llvm::Expected<FormalTensorNumericResult> result =
+      executeOperation(operation, inputs, outputCount);
+  if (!result)
+    return result.takeError();
+  if (result->values.size() != outputCount)
+    return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
+                       "formal operation produced the wrong output element "
+                       "count");
+  context.mergeExceptionFlags(result->flags);
+  return result;
+}
+
+llvm::Expected<FormalTensorNumericResult>
+executeOperation(const FormalConvertOperation &operation,
+                 llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                 uint64_t outputCount) {
+  return executeConvert(operation, inputs, outputCount);
+}
+
+llvm::Expected<FormalTensorNumericResult>
+executeOperation(const FormalElementwiseOperation &operation,
+                 llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                 uint64_t outputCount) {
+  return executeElementwise(operation, inputs, outputCount);
+}
+
+llvm::Expected<FormalTensorNumericResult>
+executeOperation(const FormalGemmOperation &operation,
+                 llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                 uint64_t outputCount) {
+  return executeGemm(operation, inputs, outputCount);
+}
+
+llvm::Expected<FormalTensorNumericResult>
+executeOperation(const FormalReduceOperation &operation,
+                 llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+                 uint64_t outputCount) {
+  return executeReduce(operation, inputs, outputCount);
+}
+
 } // namespace
 
 llvm::StringRef
 stringifyFormalTensorNumericErrorCode(FormalTensorNumericErrorCode code) {
   switch (code) {
-  case FormalTensorNumericErrorCode::UnsupportedResolvedCommand:
-    return "unsupported-resolved-command";
+  case FormalTensorNumericErrorCode::UnsupportedOperation:
+    return "unsupported-operation";
   case FormalTensorNumericErrorCode::InputArityMismatch:
     return "input-arity-mismatch";
   case FormalTensorNumericErrorCode::InputElementCountMismatch:
@@ -431,44 +472,34 @@ std::error_code FormalTensorNumericError::convertToErrorCode() const {
 
 llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
     FormalNumericExecutionContext &context,
-    const ResolvedNumericCommand &command,
+    const FormalConvertOperation &operation,
     llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
     FormalNumericWorkBudget budget) {
-  llvm::Expected<ValidatedFormalCommand> validatedCommand =
-      validateFormalCommand(command, budget);
-  if (!validatedCommand)
-    return validatedCommand.takeError();
-  if (llvm::Error error = validateInputs(*validatedCommand, inputs))
-    return std::move(error);
+  return executeCheckedOperation(context, operation, inputs, budget);
+}
 
-  const uint64_t outputCount =
-      validatedCommand->destinationKey->getElementCount();
-  if (outputCount > std::numeric_limits<size_t>::max())
-    return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
-                       "destination element count does not fit host size_t");
+llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
+    FormalNumericExecutionContext &context,
+    const FormalElementwiseOperation &operation,
+    llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+    FormalNumericWorkBudget budget) {
+  return executeCheckedOperation(context, operation, inputs, budget);
+}
 
-  llvm::Expected<FormalTensorNumericResult> result =
-      [&]() -> llvm::Expected<FormalTensorNumericResult> {
-    switch (command.getFamily()) {
-    case NumericCommandFamily::CTConvert:
-      return executeConvert(command, inputs, outputCount);
-    case NumericCommandFamily::CTElementwise:
-      return executeElementwise(command, inputs, outputCount);
-    case NumericCommandFamily::NEGemm:
-      return executeGemm(command, inputs, *command.getCommandKey().getNEGemm());
-    case NumericCommandFamily::NativeCTReduce:
-      return executeReduce(command, inputs,
-                           *command.getCommandKey().getNativeCTReduce());
-    }
-    llvm_unreachable("numeric command family is not registered");
-  }();
-  if (!result)
-    return result.takeError();
-  if (result->values.size() != outputCount)
-    return tensorError(FormalTensorNumericErrorCode::ResultInvariantViolation,
-                       "formal kernel produced the wrong output element count");
-  context.mergeExceptionFlags(result->flags);
-  return result;
+llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
+    FormalNumericExecutionContext &context,
+    const FormalGemmOperation &operation,
+    llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+    FormalNumericWorkBudget budget) {
+  return executeCheckedOperation(context, operation, inputs, budget);
+}
+
+llvm::Expected<FormalTensorNumericResult> executeFormalTensorNumeric(
+    FormalNumericExecutionContext &context,
+    const FormalReduceOperation &operation,
+    llvm::ArrayRef<llvm::ArrayRef<RawLogicalValue>> inputs,
+    FormalNumericWorkBudget budget) {
+  return executeCheckedOperation(context, operation, inputs, budget);
 }
 
 llvm::Expected<bool>

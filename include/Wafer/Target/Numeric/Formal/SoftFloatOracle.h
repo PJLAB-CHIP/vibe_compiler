@@ -40,7 +40,7 @@ enum class SoftFloatOracleTininess : uint8_t {
 /// invalid requests fail before any SoftFloat ambient state is modified.
 struct SoftFloatOracleRequest {
   SoftFloatOracleOperation operation;
-  NumericRoundingMode roundingMode;
+  TargetRoundingMode roundingMode;
   SoftFloatOracleTininess tininess;
   LogicalFormat resultFormat;
   RawLogicalValue lhs;

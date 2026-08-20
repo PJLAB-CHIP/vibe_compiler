@@ -123,7 +123,7 @@ void attachTargetLLVMMetadata(llvm::Module &module,
         llvm::MDString::get(context, stringifyTileEntryArgumentKind(slot.kind)),
         signedMetadata(context, slot.resourceIndex),
         llvm::MDString::get(context, slot.name),
-        llvm::MDString::get(context, slot.dtype),
+        llvm::MDString::get(context, stringifyLogicalFormat(slot.dtype)),
         llvm::MDString::get(context, stringifyMemLayout(slot.layout)),
         signedMetadata(context, slot.byteSize),
         signedMetadata(context, slot.alignment),
@@ -264,7 +264,7 @@ verifyTargetLLVMSlotMetadata(const llvm::Module &module,
     if (*ordinal != expected.ordinal ||
         *kind != stringifyTileEntryArgumentKind(expected.kind) ||
         *resource != expected.resourceIndex || *name != expected.name ||
-        *dtype != expected.dtype ||
+        *dtype != stringifyLogicalFormat(expected.dtype) ||
         *layout != stringifyMemLayout(expected.layout) ||
         *byteSize != expected.byteSize || *alignment != expected.alignment ||
         *access != stringifyTileEntryArgumentAccess(expected.access))

@@ -2,31 +2,11 @@
 
 #include "SystemCTargetModelTestSupport.h"
 
-#include "Wafer/InitWaferDialects.h"
-#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
+#include "Wafer/ABI/Tx81DirectDTEStatusABI.h"
+#include "Wafer/CodeGen/Target/TargetCodeGenInternal.h"
+#include "Wafer/Target/Core/RuntimeLaunchContract.h"
 #include "Wafer/Target/Core/TargetFormat.h"
-
-#include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
-
-#include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
-#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
-#include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
-#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
-#include "mlir/Dialect/Math/IR/Math.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.h"
-#include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Dialect/Tensor/Transforms/BufferizableOpInterfaceImpl.h"
-#include "mlir/IR/MLIRContext.h"
-#include "mlir/Parser/Parser.h"
-#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
-#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "Wafer/Target/Layout/PhysicalTensorCodec.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -39,6 +19,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -48,58 +29,66 @@
 namespace wafer::model::test {
 namespace {
 
-frontend::ProgramBoundaryBinding partitionedBoundary(int64_t index) {
-  frontend::ProgramBoundaryBinding binding;
-  binding.index = index;
-  binding.programIndex = index;
-  binding.distribution = frontend::ProgramDistributionKind::Partitioned;
-  binding.globalShape = {64};
-  binding.localShape = {4};
-  binding.dtype = "f32";
-  for (int64_t rank = 0; rank < 16; ++rank) {
-    frontend::ProgramRankSlice slice;
-    slice.logicalRank = rank;
-    slice.replicaId = 0;
-    slice.offsets = {rank * 4};
-    slice.sizes = {4};
-    slice.strides = {1};
-    binding.rankSlices.push_back(std::move(slice));
-  }
-  return binding;
-}
-
-std::shared_ptr<mlir::MLIRContext> createCompilerContext() {
-  mlir::DialectRegistry registry;
-  registry.insert<mlir::arith::ArithDialect,
-                  mlir::bufferization::BufferizationDialect,
-                  mlir::cf::ControlFlowDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::linalg::LinalgDialect,
-                  mlir::math::MathDialect, mlir::memref::MemRefDialect,
-                  mlir::scf::SCFDialect, mlir::tensor::TensorDialect>();
-  registerWaferCoreDialects(registry);
-  mlir::registerBuiltinDialectTranslation(registry);
-  mlir::registerLLVMDialectTranslation(registry);
-  mlir::arith::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
-      registry);
-  mlir::linalg::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::scf::registerBufferizableOpInterfaceExternalModels(registry);
-  mlir::tensor::registerBufferizableOpInterfaceExternalModels(registry);
-  auto context = std::make_shared<mlir::MLIRContext>(registry);
-  context->loadAllAvailableDialects();
-  return context;
-}
-
-std::vector<RawLogicalValue> makeRankValues(int64_t logicalRank) {
+std::vector<RawLogicalValue> makeTileValues(int64_t tileId) {
   std::vector<RawLogicalValue> values;
   values.reserve(4);
   for (uint64_t index = 0; index < 4; ++index) {
     // Exact finite f32 values in [1, 1.5), unique across the 64 elements.
-    const uint64_t element = static_cast<uint64_t>(logicalRank) * 4 + index;
+    const uint64_t element = static_cast<uint64_t>(tileId) * 4 + index;
     values.push_back(
         {LogicalFormat::F32, UINT64_C(0x3f800000) + (element << 15)});
   }
   return values;
+}
+
+llvm::Function *getOrDeclareTargetCall(llvm::Module &module,
+                                       const TargetCallDescriptor &descriptor) {
+  if (llvm::Function *function = module.getFunction(descriptor.symbol))
+    return function;
+  llvm::SmallVector<llvm::Type *, 16> arguments;
+  for (TargetCallScalarType scalar : descriptor.arguments)
+    arguments.push_back(scalar == TargetCallScalarType::I64
+                            ? llvm::Type::getInt64Ty(module.getContext())
+                            : llvm::Type::getInt32Ty(module.getContext()));
+  llvm::Type *result = descriptor.result == TargetCallResultType::Void
+                           ? llvm::Type::getVoidTy(module.getContext())
+                           : llvm::Type::getInt64Ty(module.getContext());
+  llvm::Function *function = llvm::Function::Create(
+      llvm::FunctionType::get(result, arguments, /*isVarArg=*/false),
+      llvm::GlobalValue::ExternalLinkage, descriptor.symbol, module);
+  function->setCallingConv(llvm::CallingConv::C);
+  return function;
+}
+
+llvm::CallInst *emitTargetCall(llvm::IRBuilder<> &builder,
+                               const TargetCallDescriptor &descriptor,
+                               llvm::ArrayRef<llvm::Value *> arguments) {
+  llvm::CallInst *call = builder.CreateCall(
+      getOrDeclareTargetCall(*builder.GetInsertBlock()->getModule(),
+                             descriptor),
+      arguments);
+  call->setCallingConv(llvm::CallingConv::C);
+  return call;
+}
+
+compiler::TileEntryArgument
+makeTensorSlot(int64_t ordinal, compiler::TileEntryArgumentKind kind,
+               compiler::TileEntryArgumentAccess access, llvm::StringRef name) {
+  return {ordinal,           kind, 0,      name.str(), LogicalFormat::F32,
+          MemLayout::Tensor, {64}, 64 * 4, 64,         access};
+}
+
+compiler::TileEntryArgument makeTransportStatusSlot(int64_t ordinal) {
+  return {ordinal,
+          compiler::TileEntryArgumentKind::TransportStatus,
+          0,
+          "direct_dte_status",
+          LogicalFormat::U32,
+          MemLayout::Tensor,
+          {1},
+          WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_BYTES,
+          WAFER_TX81_DIRECT_DTE_STATUS_STORAGE_ALIGNMENT,
+          compiler::TileEntryArgumentAccess::ReadWrite};
 }
 
 } // namespace
@@ -107,48 +96,127 @@ std::vector<RawLogicalValue> makeRankValues(int64_t logicalRank) {
 llvm::Expected<compiler::TargetLLVMModules>
 compileDirectDTETargetModules(std::string &diagnosticText,
                               TargetIdentityId targetIdentity) {
-  auto context = createCompilerContext();
-  auto tensorProgram = mlir::parseSourceString<mlir::ModuleOp>(
-      R"mlir(
-module {
-  wafer.target.topology @default {card_grid = array<i64: 1, 1>, card_interconnect = "mesh", tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
-  wafer.execution.mesh @default_mesh {axes = ["rank"], endpoints = array<i64>, policy = "all_available", shape = array<i64: 16>, topology = @default}
-  func.func @main(%input: tensor<4xf32>) -> tensor<4xf32> {
-    %out = tensor.empty() : tensor<4xf32>
-    %permuted = wafer.linalg_ext.collective.collective_permute
-        ins(%input : tensor<4xf32>) outs(%out : tensor<4xf32>)
-        {source_target_pairs = array<i64: 0, 1, 1, 0, 2, 3, 3, 2,
-                                          4, 5, 5, 4, 6, 7, 7, 6,
-                                          8, 9, 9, 8, 10, 11, 11, 10,
-                                          12, 13, 13, 12, 14, 15, 15, 14>,
-         channel_id = 91 : i64} -> tensor<4xf32>
-    return %permuted : tensor<4xf32>
-  }
-}
-)mlir",
-      mlir::ParserConfig(context.get()));
-  if (!tensorProgram)
-    return llvm::createStringError("failed to parse Direct-DTE model module");
-
-  frontend::FrontendProgramVerificationResult program;
-  program.logicalRankCount = 16;
-  program.programUserInputCount = 1;
-  program.distributedInputs = {partitionedBoundary(0)};
-  program.distributedOutputs = {partitionedBoundary(0)};
+  diagnosticText.clear();
   llvm::Expected<compiler::ExecutionConfig> config =
-      compiler::ExecutionConfig::createForSingleCard(16);
+      compiler::ExecutionConfig::createForSingleCard(1);
   if (!config)
     return config.takeError();
-  llvm::raw_string_ostream diagnostics(diagnosticText);
-  llvm::Expected<compiler::CardExecutable> executable =
-      compiler::detail::buildCardExecutable(context, *tensorProgram,
-                                            std::move(program), *config,
-                                            diagnostics, std::nullopt);
-  if (!executable)
-    return executable.takeError();
-  tensorProgram = nullptr;
-  return compiler::compileCardExecutableToTargetLLVMModules(*executable,
-                                                            diagnostics);
+  if (config->getTargetIdentityId() != targetIdentity)
+    return llvm::createStringError(
+        "Direct-DTE model fixture target identity is not current");
+  constexpr std::array phases{RuntimeLaunchPhaseRole::Main};
+  llvm::Expected<RuntimeLaunchContract> launch =
+      RuntimeLaunchContract::createKernel(KernelLaunchForm::Grid,
+                                          KernelEntryABI::TileMajorPointerTable,
+                                          phases);
+  if (!launch)
+    return launch.takeError();
+  const TargetDataFormatCodeRecord *format =
+      findTargetDataFormatCode(LogicalFormat::F32);
+  if (!format)
+    return llvm::createStringError("current target has no F32 format code");
+
+  const TargetCallDescriptor &begin =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEBegin);
+  const TargetCallDescriptor &rdma =
+      getTargetCallDescriptor(TargetCallBuiltin::RDMA);
+  const TargetCallDescriptor &receive =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare);
+  const TargetCallDescriptor &send =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendPrepare);
+  const TargetCallDescriptor &join =
+      getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
+  const TargetCallDescriptor &issue =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTESendIssue);
+  const TargetCallDescriptor &wait =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEWait);
+  const TargetCallDescriptor &wdma =
+      getTargetCallDescriptor(TargetCallBuiltin::WDMA);
+  const TargetCallDescriptor &finish =
+      getTargetCallDescriptor(TargetCallBuiltin::DirectDTEFinish);
+
+  constexpr int64_t tileCount = 16;
+  constexpr uint64_t tileBytes = 16;
+  constexpr uint64_t sendAddress = UINT64_C(0x10000);
+  constexpr uint64_t receiveAddress = UINT64_C(0x11000);
+  constexpr uint32_t worker = static_cast<uint32_t>(TargetNCCWorker::Worker0);
+  constexpr uint32_t workerMask = uint32_t{1} << worker;
+  std::vector<compiler::TargetLLVMModule> modules;
+  modules.reserve(tileCount);
+  for (int64_t tile = 0; tile < tileCount; ++tile) {
+    std::vector<compiler::TileEntryArgument> slots;
+    slots.push_back(
+        makeTensorSlot(0, compiler::TileEntryArgumentKind::ExternalInput,
+                       compiler::TileEntryArgumentAccess::ReadOnly, "input"));
+    slots.push_back(
+        makeTensorSlot(1, compiler::TileEntryArgumentKind::ExternalOutput,
+                       compiler::TileEntryArgumentAccess::WriteOnly, "output"));
+    slots.push_back(makeTransportStatusSlot(2));
+
+    auto context = std::make_unique<llvm::LLVMContext>();
+    auto module = std::make_unique<llvm::Module>("direct-dte-model", *context);
+    llvm::Type *i64 = llvm::Type::getInt64Ty(*context);
+    llvm::SmallVector<llvm::Type *, 3> entryArguments(slots.size(), i64);
+    llvm::Function *entry = llvm::Function::Create(
+        llvm::FunctionType::get(llvm::Type::getVoidTy(*context), entryArguments,
+                                /*isVarArg=*/false),
+        llvm::GlobalValue::ExternalLinkage, "main", *module);
+    entry->setCallingConv(llvm::CallingConv::C);
+    llvm::IRBuilder<> builder(
+        llvm::BasicBlock::Create(*context, "entry", entry));
+    llvm::Value *inputAddress = builder.CreateAdd(
+        entry->getArg(0),
+        builder.getInt64(static_cast<uint64_t>(tile) * tileBytes));
+    llvm::Value *outputAddress = builder.CreateAdd(
+        entry->getArg(1),
+        builder.getInt64(static_cast<uint64_t>(tile) * tileBytes));
+    emitTargetCall(builder, begin,
+                   {entry->getArg(2), builder.getInt32(tileCount)});
+    emitTargetCall(
+        builder, rdma,
+        {inputAddress, builder.getInt64(sendAddress),
+         builder.getInt32(tileBytes), builder.getInt32(tileBytes),
+         builder.getInt32(0), builder.getInt32(0), builder.getInt32(0),
+         builder.getInt32(1), builder.getInt32(1), builder.getInt32(1),
+         builder.getInt32(format->dataFormatCode), builder.getInt32(worker)});
+    llvm::CallInst *receiveEvent =
+        emitTargetCall(builder, receive,
+                       {builder.getInt64(receiveAddress),
+                        builder.getInt32(tileBytes), builder.getInt32(tile),
+                        builder.getInt32(tile ^ 1), builder.getInt32(0)});
+    llvm::CallInst *sendEvent = emitTargetCall(
+        builder, send,
+        {builder.getInt64(sendAddress), builder.getInt64(receiveAddress),
+         builder.getInt32(tileBytes), builder.getInt32(tile),
+         builder.getInt32(tile ^ 1), builder.getInt32(0), builder.getInt32(0)});
+    emitTargetCall(builder, join, {builder.getInt32(workerMask)});
+    emitTargetCall(builder, issue, {sendEvent});
+    emitTargetCall(builder, wait, {sendEvent});
+    emitTargetCall(builder, wait, {receiveEvent});
+    emitTargetCall(
+        builder, wdma,
+        {builder.getInt64(receiveAddress), outputAddress,
+         builder.getInt32(tileBytes), builder.getInt32(tileBytes),
+         builder.getInt32(0), builder.getInt32(0), builder.getInt32(0),
+         builder.getInt32(1), builder.getInt32(1), builder.getInt32(1),
+         builder.getInt32(format->dataFormatCode), builder.getInt32(worker)});
+    emitTargetCall(builder, join, {builder.getInt32(workerMask)});
+    emitTargetCall(builder, finish, {});
+    builder.CreateRetVoid();
+
+    std::string verification;
+    llvm::raw_string_ostream verificationStream(verification);
+    if (llvm::verifyModule(*module, &verificationStream))
+      return llvm::createStringError(
+          "Direct-DTE model fixture produced invalid LLVM IR: " +
+          verificationStream.str());
+    modules.push_back(compiler::TargetLLVMModulesBuilder::makeModule(
+        CardId(0), TileId(tile), LaunchSlotId(tile), "main", targetIdentity,
+        kCurrentKernelRuntimeABI, kCurrentTargetModuleFormat, std::move(slots),
+        std::move(context), std::move(module)));
+  }
+  return compiler::TargetLLVMModulesBuilder::makeModules(
+      *config, std::move(*launch), std::move(modules));
 }
 
 llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
@@ -159,47 +227,80 @@ llvm::Expected<DirectDTEInvocationData> buildDirectDTEInvocationData(
 
   DirectDTEInvocationData result;
   result.arguments.reserve(16);
-  result.inputBytesByRank.resize(16);
-  NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F32, PhysicalTensorLayout::Tensor, {4}));
+  PhysicalTensorDescriptor tensorKey =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          LogicalFormat::F32, PhysicalTensorLayout::Tensor, {64}));
+  std::vector<RawLogicalValue> inputValues;
+  std::vector<RawLogicalValue> expectedValues;
+  inputValues.reserve(64);
+  expectedValues.reserve(64);
+  for (int64_t tile = 0; tile < 16; ++tile) {
+    std::vector<RawLogicalValue> values = makeTileValues(tile);
+    inputValues.insert(inputValues.end(), values.begin(), values.end());
+    values = makeTileValues(tile ^ 1);
+    expectedValues.insert(expectedValues.end(), values.begin(), values.end());
+  }
+  llvm::Expected<std::vector<uint8_t>> inputBytes =
+      packPhysicalTensorLogicalValues(tensorKey, inputValues, UINT8_C(0));
+  llvm::Expected<std::vector<uint8_t>> expectedBytes =
+      packPhysicalTensorLogicalValues(tensorKey, expectedValues, UINT8_C(0));
+  if (!inputBytes || !expectedBytes) {
+    llvm::Error errors = llvm::Error::success();
+    if (!inputBytes)
+      errors = llvm::joinErrors(std::move(errors), inputBytes.takeError());
+    if (!expectedBytes)
+      errors = llvm::joinErrors(std::move(errors), expectedBytes.takeError());
+    return std::move(errors);
+  }
+  result.expectedOutputBytes = std::move(*expectedBytes);
   for (const compiler::TargetLLVMModule &module :
        targetLLVMModules.getModules()) {
-    const int64_t rank = module.getLogicalRank();
-    if (rank < 0 || rank >= 16)
-      return llvm::createStringError("Direct-DTE test targetLLVMModules rank "
+    const int64_t tile = module.getTileId().getValue();
+    if (tile < 0 || tile >= 16)
+      return llvm::createStringError("Direct-DTE test target LLVM Tile "
                                      "is outside the canonical domain");
-    compiler::TargetCallRankArguments arguments{rank, {}};
+    compiler::TargetCallTileArguments arguments{
+        module.getCardId(), module.getTileId(), module.getLaunchSlotId(), {}};
     size_t userInputCount = 0;
-    for (const compiler::TileEntryArgument &slot : module.getTileEntryArguments()) {
+    for (const compiler::TileEntryArgument &slot :
+         module.getTileEntryArguments()) {
       if (slot.ordinal < 0 || slot.byteSize <= 0 || slot.byteSize >= 0x10000)
         return llvm::createStringError(
             "Direct-DTE test slot is outside its synthetic DDR stride");
-      const uint64_t base =
-          UINT64_C(0x10000000) +
-          static_cast<uint64_t>(rank) * UINT64_C(0x100000) +
-          static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x10000);
+      uint64_t base = 0;
+      switch (slot.kind) {
+      case compiler::TileEntryArgumentKind::ExternalInput:
+        base = UINT64_C(0x10000000);
+        break;
+      case compiler::TileEntryArgumentKind::ExternalOutput:
+        base = UINT64_C(0x10010000);
+        break;
+      case compiler::TileEntryArgumentKind::TransportStatus:
+        base = UINT64_C(0x20000000) +
+               static_cast<uint64_t>(tile) * UINT64_C(0x10000);
+        break;
+      case compiler::TileEntryArgumentKind::TargetTensor:
+      case compiler::TileEntryArgumentKind::Workspace:
+      case compiler::TileEntryArgumentKind::ProfileRecord:
+        return llvm::createStringError(
+            "Direct-DTE model fixture has an unexpected ABI slot");
+      }
       arguments.slots.push_back(base);
       if (slot.kind == compiler::TileEntryArgumentKind::ExternalInput) {
         ++userInputCount;
-        llvm::Expected<std::vector<uint8_t>> bytes =
-            packPhysicalTensorLogicalValues(tensorKey, makeRankValues(rank),
-                                            UINT8_C(0));
-        if (!bytes)
-          return bytes.takeError();
-        if (bytes->size() != static_cast<uint64_t>(slot.byteSize))
+        if (inputBytes->size() != static_cast<uint64_t>(slot.byteSize))
           return llvm::createStringError(
               "Direct-DTE test input bytes disagree with the typed ABI slot");
-        result.inputBytesByRank[static_cast<size_t>(rank)] = *bytes;
-        result.inputBindings.push_back({rank, slot.ordinal, std::move(*bytes)});
-      } else if (slot.kind == compiler::TileEntryArgumentKind::TargetTensor ||
-                 slot.kind == compiler::TileEntryArgumentKind::TargetTensor) {
-        return llvm::createStringError(
-            "Direct-DTE source vertical unexpectedly gained a read-only slot");
+        if (tile == 0)
+          result.inputBindings.push_back(
+              {getTargetModelResourceId(module.getCardId(), module.getTileId(),
+                                        slot.kind, slot.resourceIndex),
+               *inputBytes});
       }
     }
     if (userInputCount != 1)
       return llvm::createStringError(
-          "Direct-DTE source vertical must have one user input per rank");
+          "Direct-DTE model fixture must have one input per Tile ABI");
     result.arguments.push_back(std::move(arguments));
   }
   return result;
@@ -279,29 +380,6 @@ rewriteNCCJoinsAfter(compiler::TargetLLVMModules &targetLLVMModules,
   return result;
 }
 
-namespace {
-
-llvm::Function *getOrDeclareTargetCall(llvm::Module &module,
-                                       const TargetCallDescriptor &descriptor) {
-  if (llvm::Function *function = module.getFunction(descriptor.symbol))
-    return function;
-  llvm::SmallVector<llvm::Type *, 8> arguments;
-  for (TargetCallScalarType scalar : descriptor.arguments)
-    arguments.push_back(scalar == TargetCallScalarType::I64
-                            ? llvm::Type::getInt64Ty(module.getContext())
-                            : llvm::Type::getInt32Ty(module.getContext()));
-  llvm::Type *result = descriptor.result == TargetCallResultType::Void
-                           ? llvm::Type::getVoidTy(module.getContext())
-                           : llvm::Type::getInt64Ty(module.getContext());
-  llvm::Function *function = llvm::Function::Create(
-      llvm::FunctionType::get(result, arguments, /*isVarArg=*/false),
-      llvm::GlobalValue::ExternalLinkage, descriptor.symbol, module);
-  function->setCallingConv(llvm::CallingConv::C);
-  return function;
-}
-
-} // namespace
-
 llvm::Expected<PendingComputeDTERewriteResult>
 insertPendingComputeBeforeDTEReceive(
     compiler::TargetLLVMModules &targetLLVMModules,
@@ -311,7 +389,7 @@ insertPendingComputeBeforeDTEReceive(
   const TargetCallDescriptor &receiveDescriptor =
       getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare);
   const TargetCallDescriptor &elementwiseDescriptor =
-      getTargetCallDescriptor(NumericElementwiseOperation::Add);
+      getTargetCallDescriptor(TargetElementwiseOperation::Add);
   const TargetCallDescriptor &gemmDescriptor =
       getTargetCallDescriptor(TargetCallBuiltin::Gemm);
   const TargetCallDescriptor &joinDescriptor =
@@ -357,7 +435,7 @@ insertPendingComputeBeforeDTEReceive(
 
       llvm::IRBuilder<> builder(receive);
       llvm::CallInst *compute = nullptr;
-      if ((targetModule.getLogicalRank() & 1) == 0) {
+      if ((targetModule.getTileId().getValue() & 1) == 0) {
         llvm::Function *elementwise =
             getOrDeclareTargetCall(module, elementwiseDescriptor);
         compute = builder.CreateCall(
@@ -443,7 +521,7 @@ insertPendingComputeWithLateJoin(compiler::TargetLLVMModules &targetLLVMModules,
   const TargetCallDescriptor &receiveDescriptor =
       getTargetCallDescriptor(TargetCallBuiltin::DirectDTERecvPrepare);
   const TargetCallDescriptor &elementwiseDescriptor =
-      getTargetCallDescriptor(NumericElementwiseOperation::Add);
+      getTargetCallDescriptor(TargetElementwiseOperation::Add);
   const TargetCallDescriptor &joinDescriptor =
       getTargetCallDescriptor(TargetCallBuiltin::NCCJoin);
   const TargetDataFormatCodeRecord *format =

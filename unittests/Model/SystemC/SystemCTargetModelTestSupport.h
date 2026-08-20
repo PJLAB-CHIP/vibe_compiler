@@ -17,9 +17,9 @@
 namespace wafer::model::test {
 
 struct DirectDTEInvocationData {
-  std::vector<compiler::TargetCallRankArguments> arguments;
+  std::vector<compiler::TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputBindings;
-  std::vector<std::vector<uint8_t>> inputBytesByRank;
+  std::vector<uint8_t> expectedOutputBytes;
 };
 
 llvm::Expected<compiler::TargetLLVMModules> compileDirectDTETargetModules(

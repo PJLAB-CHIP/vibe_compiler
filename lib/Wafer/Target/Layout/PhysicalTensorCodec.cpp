@@ -14,6 +14,11 @@
 namespace wafer {
 namespace {
 
+constexpr LogicalScalarCodecPolicy kTargetPhysicalCodecPolicy{
+    LogicalByteOrder::LittleEndian,
+    LogicalBitOrder::LeastSignificantBitFirstWithinByte,
+    NonCanonicalEncodingPolicy::Reject};
+
 llvm::Error codecError(PhysicalTensorCodecErrorCode code,
                        const llvm::Twine &detail) {
   return llvm::make_error<PhysicalTensorCodecError>(code, detail.str());
@@ -25,7 +30,7 @@ struct OwnedPhysicalLayout {
 };
 
 llvm::Expected<OwnedPhysicalLayout>
-makePhysicalLayout(const NumericTensorKey &key) {
+makePhysicalLayout(const PhysicalTensorDescriptor &key) {
   const LogicalFormatDescriptor *format =
       findLogicalFormatDescriptor(key.getFormat());
   if (!format)
@@ -97,7 +102,7 @@ llvm::Error forEachCoordinate(llvm::ArrayRef<uint64_t> shape,
 }
 
 template <typename Callback>
-llvm::Error forEachPhysicalBitOffset(const NumericTensorKey &key,
+llvm::Error forEachPhysicalBitOffset(const PhysicalTensorDescriptor &key,
                                      const OwnedPhysicalLayout &layout,
                                      Callback callback) {
   return forEachCoordinate(
@@ -141,7 +146,7 @@ std::error_code PhysicalTensorCodecError::convertToErrorCode() const {
 }
 
 llvm::Expected<uint64_t>
-getPhysicalTensorStorageBytes(const NumericTensorKey &key) {
+getPhysicalTensorStorageBytes(const PhysicalTensorDescriptor &key) {
   llvm::Expected<OwnedPhysicalLayout> layout = makePhysicalLayout(key);
   if (!layout)
     return layout.takeError();
@@ -149,7 +154,7 @@ getPhysicalTensorStorageBytes(const NumericTensorKey &key) {
 }
 
 llvm::Expected<std::vector<RawLogicalValue>>
-unpackPhysicalTensorLogicalValues(const NumericTensorKey &key,
+unpackPhysicalTensorLogicalValues(const PhysicalTensorDescriptor &key,
                                   llvm::ArrayRef<uint8_t> storage) {
   llvm::Expected<OwnedPhysicalLayout> layout = makePhysicalLayout(key);
   if (!layout)
@@ -163,9 +168,7 @@ unpackPhysicalTensorLogicalValues(const NumericTensorKey &key,
   if (key.getElementCount() > std::numeric_limits<size_t>::max())
     return codecError(PhysicalTensorCodecErrorCode::InvalidLayout,
                       "tensor element count exceeds host size_t");
-  const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministic())
-          .numericDecodePolicy;
+  const LogicalScalarCodecPolicy policy = kTargetPhysicalCodecPolicy;
   std::vector<RawLogicalValue> result;
   result.reserve(static_cast<size_t>(key.getElementCount()));
   if (llvm::Error error = forEachPhysicalBitOffset(
@@ -184,7 +187,7 @@ unpackPhysicalTensorLogicalValues(const NumericTensorKey &key,
 }
 
 llvm::Expected<std::vector<uint8_t>>
-packPhysicalTensorLogicalValues(const NumericTensorKey &key,
+packPhysicalTensorLogicalValues(const PhysicalTensorDescriptor &key,
                                 llvm::ArrayRef<RawLogicalValue> values,
                                 llvm::ArrayRef<uint8_t> storageTemplate) {
   llvm::Expected<OwnedPhysicalLayout> layout = makePhysicalLayout(key);
@@ -200,9 +203,7 @@ packPhysicalTensorLogicalValues(const NumericTensorKey &key,
   if (values.size() != key.getElementCount())
     return codecError(PhysicalTensorCodecErrorCode::InvalidLogicalValueCount,
                       "logical value count does not match the tensor key");
-  const LogicalScalarCodecPolicy policy =
-      getModelProfileRecord(ModelProfileId::formalDeterministic())
-          .numericEncodePolicy;
+  const LogicalScalarCodecPolicy policy = kTargetPhysicalCodecPolicy;
   std::vector<uint8_t> result(storageTemplate.begin(), storageTemplate.end());
   size_t valueIndex = 0;
   if (llvm::Error error = forEachPhysicalBitOffset(
@@ -224,7 +225,7 @@ packPhysicalTensorLogicalValues(const NumericTensorKey &key,
 }
 
 llvm::Expected<std::vector<uint8_t>>
-packPhysicalTensorLogicalValues(const NumericTensorKey &key,
+packPhysicalTensorLogicalValues(const PhysicalTensorDescriptor &key,
                                 llvm::ArrayRef<RawLogicalValue> values,
                                 uint8_t paddingFill) {
   llvm::Expected<uint64_t> bytes = getPhysicalTensorStorageBytes(key);
@@ -313,7 +314,7 @@ PhysicalTensorWindowPlan &PhysicalTensorWindowPlan::operator=(
 PhysicalTensorWindowPlan::~PhysicalTensorWindowPlan() = default;
 
 llvm::Expected<PhysicalTensorWindowPlan>
-PhysicalTensorWindowPlan::create(const NumericTensorKey &key) {
+PhysicalTensorWindowPlan::create(const PhysicalTensorDescriptor &key) {
   llvm::Expected<OwnedPhysicalLayout> layout = makePhysicalLayout(key);
   if (!layout)
     return layout.takeError();

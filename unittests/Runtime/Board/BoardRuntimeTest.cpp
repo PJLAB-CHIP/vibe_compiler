@@ -124,11 +124,10 @@ public:
     info.runtimeLibraryDigest = runtimeLibraryDigest;
     for (uint16_t launchSlot = 0; launchSlot < 16; ++launchSlot) {
       const int64_t tileId = tileForLaunchSlot(launchSlot);
-      info.tiles.push_back({wafer::TileId(tileId),
-                            wafer::runtime::LaunchSlotId(launchSlot),
-                            tileId != unavailableTileId,
-                            static_cast<uint32_t>(tileId % 4),
-                            static_cast<uint32_t>(tileId / 4)});
+      info.tiles.push_back(
+          {wafer::TileId(tileId), wafer::runtime::LaunchSlotId(launchSlot),
+           tileId != unavailableTileId, static_cast<uint32_t>(tileId % 4),
+           static_cast<uint32_t>(tileId / 4)});
     }
     return info;
   }
@@ -151,11 +150,10 @@ public:
     calls.push_back("free:" + std::to_string(memory.value));
     if (shouldFail("free"))
       return injectedFailure();
-    auto iterator =
-        std::find_if(allocations.begin(), allocations.end(),
-                     [&](const Allocation &allocation) {
-                       return allocation.address == memory.value;
-                     });
+    auto iterator = std::find_if(allocations.begin(), allocations.end(),
+                                 [&](const Allocation &allocation) {
+                                   return allocation.address == memory.value;
+                                 });
     if (iterator == allocations.end())
       return injected("unknown-free");
     freedAddresses.push_back(memory.value);
@@ -276,26 +274,22 @@ public:
           launch.function.value != sharedFunction)
         return injected("invalid-canonical-kernel-phase");
       const std::vector<uint8_t> *input = findH2DPayload(arguments[0]);
-      if (!input || input->empty() ||
-          !covers(arguments[1], input->size()))
+      if (!input || input->empty() || !covers(arguments[1], input->size()))
         return injected("invalid-kernel-phase-buffers");
       if (phaseRole != wafer::RuntimeLaunchPhaseRole::Main)
         continue;
       std::vector<uint8_t> outputBytes(input->size());
       for (size_t byte = 0; byte < input->size(); ++byte)
-        outputBytes[byte] =
-            (*input)[byte] ^ static_cast<uint8_t>(launchSlot);
+        outputBytes[byte] = (*input)[byte] ^ static_cast<uint8_t>(launchSlot);
       if (!writeDevice(arguments[1], outputBytes))
         return injected("invalid-kernel-phase-buffers");
-      const std::vector<uint8_t> *status =
-          findH2DPayload(arguments.back());
+      const std::vector<uint8_t> *status = findH2DPayload(arguments.back());
       if (arguments.size() >= 4 && status &&
-          status->size() ==
-              wafer::runtime::kDirectDTEStatusStorageBytes) {
+          status->size() == wafer::runtime::kDirectDTEStatusStorageBytes) {
         std::vector<uint8_t> statusBytes(
             wafer::runtime::kDirectDTEStatusStorageBytes, 0xff);
-        const uint32_t terminalStatus = transportStatusOverride.value_or(
-            static_cast<uint32_t>(
+        const uint32_t terminalStatus =
+            transportStatusOverride.value_or(static_cast<uint32_t>(
                 wafer::runtime::DirectDTEStatusValue::Success));
         std::memcpy(statusBytes.data() +
                         wafer::runtime::kDirectDTEStatusValueOffset,
@@ -407,8 +401,8 @@ private:
     wafer::runtime::RuntimeEnvironment environment{
         wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
         wafer::kCurrentTargetModuleFormat};
-    environment.supportedKernelLaunchForms = {
-        wafer::KernelLaunchForm::Grid, wafer::KernelLaunchForm::Cluster};
+    environment.supportedKernelLaunchForms = {wafer::KernelLaunchForm::Grid,
+                                              wafer::KernelLaunchForm::Cluster};
     environment.supportedKernelEntryABIs = {
         wafer::KernelEntryABI::TileMajorPointerTable,
         wafer::KernelEntryABI::TileRowPointerTable};
@@ -438,13 +432,12 @@ private:
   /// Device addresses may point at child ranges inside one allocation; the
   /// executor resolves every argument to base + planned offset.
   Allocation *containing(uintptr_t address) {
-    auto iterator = std::find_if(
-        allocations.begin(), allocations.end(),
-        [&](const Allocation &allocation) {
-          return address >= allocation.address &&
-                 address <
-                     allocation.address + allocation.bytes.size();
-        });
+    auto iterator = std::find_if(allocations.begin(), allocations.end(),
+                                 [&](const Allocation &allocation) {
+                                   return address >= allocation.address &&
+                                          address < allocation.address +
+                                                        allocation.bytes.size();
+                                 });
     return iterator == allocations.end() ? nullptr : &*iterator;
   }
 
@@ -465,8 +458,7 @@ private:
     if (offset > allocation->bytes.size() ||
         bytes.size() > allocation->bytes.size() - offset)
       return false;
-    std::copy(bytes.begin(), bytes.end(),
-              allocation->bytes.begin() + offset);
+    std::copy(bytes.begin(), bytes.end(), allocation->bytes.begin() + offset);
     return true;
   }
 
@@ -593,22 +585,38 @@ protected:
     const bool cluster = launchCase == TestLaunchContractCase::Cluster;
     const bool directDTE = directDTEOverride.value_or(cluster);
 
-    manifest.inputs = {{PortId(0), /*roleIndex=*/0, "f32", {16}, "f32",
-                        PackageMemLayout::Tensor, {16}, 64, 256}};
-    manifest.outputs = {{PortId(0), /*roleIndex=*/0, "f32", {16}, "f32",
-                         PackageMemLayout::Tensor, {16}, 64, 256}};
+    manifest.inputs = {{PortId(0),
+                        /*roleIndex=*/0,
+                        wafer::ProgramElementType::F32,
+                        {16},
+                        wafer::LogicalFormat::F32,
+                        PackageMemLayout::Tensor,
+                        {16},
+                        64,
+                        256}};
+    manifest.outputs = {{PortId(0),
+                         /*roleIndex=*/0,
+                         wafer::ProgramElementType::F32,
+                         {16},
+                         wafer::LogicalFormat::F32,
+                         PackageMemLayout::Tensor,
+                         {16},
+                         64,
+                         256}};
     manifest.programData = {kPackageProgramDataRelativePath.str(),
                             /*totalBytes=*/0, /*baseAlignment=*/1,
                             kEmptyProgramDataDigest.str()};
-    manifest.modules = {{ModuleId(0), "modules/tile_00000.so", moduleDigest(),
-                         wafer::kCurrentTargetModuleFormat.str(),
-                         cluster
-                             ? std::vector<PackageModuleExportRecord>{
-                                   {PackageModuleExportRole::Prepare,
-                                    "prepare"},
-                                   {PackageModuleExportRole::Main, "main"}}
-                             : std::vector<PackageModuleExportRecord>{
-                                   {PackageModuleExportRole::Main, "main"}}}};
+    manifest.modules = {
+        {ModuleId(0), "modules/tile_00000.so", moduleDigest(),
+         wafer::kCurrentTargetModuleFormat.str(),
+         cluster
+             ? std::vector<
+                   PackageModuleExportRecord>{{PackageModuleExportRole::Prepare,
+                                               "prepare"},
+                                              {PackageModuleExportRole::Main,
+                                               "main"}}
+             : std::vector<PackageModuleExportRecord>{
+                   {PackageModuleExportRole::Main, "main"}}}};
 
     for (int64_t tile = 0; tile < 16; ++tile) {
       std::vector<TileEntryArgumentRecord> arguments = {
@@ -630,8 +638,9 @@ protected:
                                      kDirectDTEStatusStorageBytes,
                                      kDirectDTEStatusStorageAlignment},
              PackageAccessMode::ReadWrite});
-        transport = DirectDTETransportRequirements{kDirectDTEStatusABI.str(),
-                                                   /*hostWatchdogRequired=*/true};
+        transport =
+            DirectDTETransportRequirements{kDirectDTEStatusABI.str(),
+                                           /*hostWatchdogRequired=*/true};
       }
       manifest.entries.push_back(
           {EntryId(static_cast<uint64_t>((tile * 5 + 3) % 16)),
@@ -655,38 +664,59 @@ protected:
   /// file offset.
   wafer::runtime::PackageManifest makeOwnedTensorTile16Manifest() const {
     using namespace wafer::runtime;
-    PackageManifest manifest(
-        wafer::kCurrentTargetIdentity, wafer::kCurrentKernelRuntimeABI,
-        makeLaunchContract(TestLaunchContractCase::Grid),
-        wafer::kCurrentTargetModuleFormat);
+    PackageManifest manifest(wafer::kCurrentTargetIdentity,
+                             wafer::kCurrentKernelRuntimeABI,
+                             makeLaunchContract(TestLaunchContractCase::Grid),
+                             wafer::kCurrentTargetModuleFormat);
     manifest.program = ProgramId(0);
     manifest.cardCount = 1;
     manifest.tileCount = 16;
-    manifest.inputs = {{PortId(0), /*roleIndex=*/0, "f32", {16}, "f32",
-                        PackageMemLayout::Tensor, {16}, 64, 256}};
-    manifest.outputs = {{PortId(0), /*roleIndex=*/0, "f32", {16}, "f32",
-                         PackageMemLayout::Tensor, {16}, 64, 256}};
+    manifest.inputs = {{PortId(0),
+                        /*roleIndex=*/0,
+                        wafer::ProgramElementType::F32,
+                        {16},
+                        wafer::LogicalFormat::F32,
+                        PackageMemLayout::Tensor,
+                        {16},
+                        64,
+                        256}};
+    manifest.outputs = {{PortId(0),
+                         /*roleIndex=*/0,
+                         wafer::ProgramElementType::F32,
+                         {16},
+                         wafer::LogicalFormat::F32,
+                         PackageMemLayout::Tensor,
+                         {16},
+                         64,
+                         256}};
     const std::vector<uint8_t> programData = ownedTensorProgramDataBytes();
     manifest.programData = {kPackageProgramDataRelativePath.str(),
                             programData.size(), kOwnedTensorAlignment,
                             digestBytes(programData)};
-    manifest.programTensors = {
-        {ProgramTensorId(0), ProgramTensorRole::Parameter, /*roleIndex=*/0,
-         "f32", /*globalShape=*/{64}, /*localShape=*/{64},
-         /*sliceOffsets=*/{0}, /*sliceSizes=*/{64}}};
+    manifest.programTensors = {{ProgramTensorId(0),
+                                ProgramTensorRole::Parameter, /*roleIndex=*/0,
+                                wafer::ProgramElementType::F32,
+                                /*globalShape=*/{64}, /*localShape=*/{64},
+                                /*sliceOffsets=*/{0}, /*sliceSizes=*/{64}}};
     manifest.targetTensors = {
-        {TargetTensorId(0), ProgramTensorId(0), "f32",
+        {TargetTensorId(0), ProgramTensorId(0), wafer::LogicalFormat::F32,
          PackageMemLayout::Tensor, /*shape=*/{64}, kOwnedTensorBytes,
          kOwnedTensorAlignment, /*fileOffset=*/kOwnedTensorFileOffset}};
-    manifest.modules = {{ModuleId(0), "modules/tile_00000.so", moduleDigest(),
+    manifest.modules = {{ModuleId(0),
+                         "modules/tile_00000.so",
+                         moduleDigest(),
                          wafer::kCurrentTargetModuleFormat.str(),
                          {{PackageModuleExportRole::Main, "main"}}}};
     for (int64_t tile = 0; tile < 16; ++tile) {
       manifest.entries.push_back(
-          {EntryId(tile), wafer::CardId(0), wafer::TileId(tile),
-           LaunchSlotId(tile), ModuleId(0),
+          {EntryId(tile),
+           wafer::CardId(0),
+           wafer::TileId(tile),
+           LaunchSlotId(tile),
+           ModuleId(0),
            {{0, ExternalInputArgument{PortId(0)}, PackageAccessMode::ReadOnly},
-            {1, ExternalOutputArgument{PortId(0)}, PackageAccessMode::WriteOnly},
+            {1, ExternalOutputArgument{PortId(0)},
+             PackageAccessMode::WriteOnly},
             {2, TargetTensorArgument{TargetTensorId(0)},
              PackageAccessMode::ReadOnly},
             {3, WorkspaceArgument{512, 256}, PackageAccessMode::ReadWrite}},
@@ -705,22 +735,42 @@ protected:
     manifest.program = ProgramId(0);
     manifest.cardCount = 1;
     manifest.tileCount = 16;
-    manifest.inputs = {{PortId(0), /*roleIndex=*/0, "f32", {16}, "f32",
-                        PackageMemLayout::Tensor, {16}, 64, 256}};
-    manifest.outputs = {{PortId(0), /*roleIndex=*/0, "f32", {16}, "f32",
-                         PackageMemLayout::Tensor, {16}, 64, 256}};
+    manifest.inputs = {{PortId(0),
+                        /*roleIndex=*/0,
+                        wafer::ProgramElementType::F32,
+                        {16},
+                        wafer::LogicalFormat::F32,
+                        PackageMemLayout::Tensor,
+                        {16},
+                        64,
+                        256}};
+    manifest.outputs = {{PortId(0),
+                         /*roleIndex=*/0,
+                         wafer::ProgramElementType::F32,
+                         {16},
+                         wafer::LogicalFormat::F32,
+                         PackageMemLayout::Tensor,
+                         {16},
+                         64,
+                         256}};
     manifest.programData = {kPackageProgramDataRelativePath.str(),
                             /*totalBytes=*/0, /*baseAlignment=*/1,
                             kEmptyProgramDataDigest.str()};
-    manifest.modules = {{ModuleId(0), "modules/tile_00000.so", moduleDigest(),
+    manifest.modules = {{ModuleId(0),
+                         "modules/tile_00000.so",
+                         moduleDigest(),
                          wafer::kCurrentTargetModuleFormat.str(),
                          {{PackageModuleExportRole::Main, "main"}}}};
     for (int64_t tile = 0; tile < 16; ++tile) {
       manifest.entries.push_back(
-          {EntryId(tile), wafer::CardId(0), wafer::TileId(tile),
-           LaunchSlotId(tile), ModuleId(0),
+          {EntryId(tile),
+           wafer::CardId(0),
+           wafer::TileId(tile),
+           LaunchSlotId(tile),
+           ModuleId(0),
            {{0, ExternalInputArgument{PortId(0)}, PackageAccessMode::ReadOnly},
-            {1, ExternalOutputArgument{PortId(0)}, PackageAccessMode::WriteOnly},
+            {1, ExternalOutputArgument{PortId(0)},
+             PackageAccessMode::WriteOnly},
             {2, WorkspaceArgument{512, 256}, PackageAccessMode::ReadWrite}},
            PackageEntryCompletionKind::ReturnAfterLocalDrain,
            NoTransportRequirements{}});
@@ -728,8 +778,7 @@ protected:
     return manifest;
   }
 
-  static void
-  permuteTileBindings(wafer::runtime::PackageManifest &manifest) {
+  static void permuteTileBindings(wafer::runtime::PackageManifest &manifest) {
     auto swapTile = [](wafer::TileId tileId) {
       if (tileId == wafer::TileId(0))
         return wafer::TileId(1);
@@ -751,23 +800,22 @@ protected:
     llvm::sys::path::append(manifestPath,
                             wafer::runtime::kPackageManifestFileName);
     std::error_code error;
-    llvm::raw_fd_ostream output(manifestPath, error,
-                                llvm::sys::fs::OF_Text);
+    llvm::raw_fd_ostream output(manifestPath, error, llvm::sys::fs::OF_Text);
     if (error)
       return llvm::createStringError(error,
                                      "failed to write test package manifest");
     output << wafer::runtime::serializeCanonicalPackageJson(*verified);
     output.close();
     if (output.has_error())
-      return llvm::createStringError(
-          llvm::errc::io_error, "failed to close test package manifest");
+      return llvm::createStringError(llvm::errc::io_error,
+                                     "failed to close test package manifest");
     return wafer::runtime::loadExecutablePackage(root);
   }
 
-  llvm::Expected<wafer::runtime::ExecutablePackage> verifyTile16(
-      TestLaunchContractCase launchCase = TestLaunchContractCase::Grid,
-      bool withProfiler = false,
-      std::optional<bool> directDTEOverride = std::nullopt) const {
+  llvm::Expected<wafer::runtime::ExecutablePackage>
+  verifyTile16(TestLaunchContractCase launchCase = TestLaunchContractCase::Grid,
+               bool withProfiler = false,
+               std::optional<bool> directDTEOverride = std::nullopt) const {
     const bool sharedModule =
         launchCase == TestLaunchContractCase::Grid ||
         launchCase == TestLaunchContractCase::GridTileRows ||
@@ -837,8 +885,7 @@ protected:
 TEST_F(BoardRuntimeTest,
        ExecutesCanonicalTile16InvocationWithOneProviderSubmission) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::ExecutablePackage> package =
-      verifyTile16();
+  llvm::Expected<wafer::runtime::ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   const wafer::runtime::PackageManifest &manifest = package->getManifest();
@@ -858,8 +905,7 @@ TEST_F(BoardRuntimeTest,
     EXPECT_EQ(result->tiles[tile].launchSlot,
               wafer::runtime::LaunchSlotId(tile));
     EXPECT_EQ(result->tiles[tile].entry, entry.id);
-    EXPECT_EQ(driver.submittedLaunches[tile].tileId,
-              wafer::TileId(tile));
+    EXPECT_EQ(driver.submittedLaunches[tile].tileId, wafer::TileId(tile));
     EXPECT_EQ(driver.submittedLaunches[tile].launchSlot,
               wafer::runtime::LaunchSlotId(tile));
     EXPECT_EQ(driver.submittedLaunches[tile].entry, entry.id);
@@ -867,10 +913,9 @@ TEST_F(BoardRuntimeTest,
 
   ASSERT_EQ(result->outputs.size(), 1u);
   for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
-    auto port =
-        llvm::find_if(manifest.outputs, [&](const auto &candidate) {
-          return candidate.id == output.port;
-        });
+    auto port = llvm::find_if(manifest.outputs, [&](const auto &candidate) {
+      return candidate.id == output.port;
+    });
     ASSERT_NE(port, manifest.outputs.end());
     ASSERT_EQ(output.bytes.size(), 64u);
     for (size_t byte = 0; byte < output.bytes.size(); ++byte)
@@ -879,8 +924,7 @@ TEST_F(BoardRuntimeTest,
   }
   // The output port child range is the second invocation child (inputs first,
   // then outputs), so its D2H source is invocation base + 256.
-  EXPECT_EQ(driver.d2hSources.back(),
-            driver.allocatedAddresses.front() + 256);
+  EXPECT_EQ(driver.d2hSources.back(), driver.allocatedAddresses.front() + 256);
   EXPECT_EQ(result->completedStages.back(),
             wafer::runtime::BoardRuntimeStage::Cleanup);
   ASSERT_EQ(driver.observedDeadlines.size(), 1u);
@@ -940,9 +984,8 @@ TEST_F(BoardRuntimeTest, ExecutesExplicitNonIdentityTileLaunchBinding) {
 
   FakeBoardDriver driver;
   driver.permuteTileBindings = true;
-  llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package,
-                             makeTile16Request(package->getManifest()), driver);
+  llvm::Expected<BoardRuntimeInvocationResult> result = executeBoardInvocation(
+      *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
   ASSERT_EQ(result->tiles.size(), 16u);
   ASSERT_EQ(driver.submittedLaunches.size(), 16u);
@@ -977,8 +1020,7 @@ TEST_F(BoardRuntimeTest, RejectsPackageBindingAbsentFromDeviceInventory) {
 
 TEST_F(BoardRuntimeTest,
        RejectsQualificationLargerThanCompletePackageDomainBeforeProviderCall) {
-  llvm::Expected<wafer::runtime::ExecutablePackage> package =
-      verifyTile16();
+  llvm::Expected<wafer::runtime::ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
 
@@ -987,11 +1029,10 @@ TEST_F(BoardRuntimeTest,
   request.qualification.tileCount = 32;
   FakeBoardDriver driver;
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> rejected =
-      wafer::runtime::executeBoardInvocation(*package,
-                                             std::move(request), driver);
+      wafer::runtime::executeBoardInvocation(*package, std::move(request),
+                                             driver);
   ASSERT_FALSE(static_cast<bool>(rejected));
-  EXPECT_NE(llvm::toString(rejected.takeError())
-                .find("does not exactly match"),
+  EXPECT_NE(llvm::toString(rejected.takeError()).find("does not exactly match"),
             std::string::npos);
   EXPECT_TRUE(driver.calls.empty());
 }
@@ -1031,10 +1072,9 @@ TEST_F(BoardRuntimeTest,
 
   ASSERT_EQ(result->outputs.size(), 1u);
   for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
-    auto port =
-        llvm::find_if(manifest.outputs, [&](const auto &candidate) {
-          return candidate.id == output.port;
-        });
+    auto port = llvm::find_if(manifest.outputs, [&](const auto &candidate) {
+      return candidate.id == output.port;
+    });
     ASSERT_NE(port, manifest.outputs.end());
     for (size_t byte = 0; byte < output.bytes.size(); ++byte)
       EXPECT_EQ(output.bytes[byte],
@@ -1055,9 +1095,9 @@ TEST_F(BoardRuntimeTest,
   for (const wafer::runtime::ExternalPortRecord &port : manifest.inputs)
     planBindings.push_back({port.id, port.bytes, port.alignment});
   llvm::Expected<wafer::runtime::RuntimeInvocationPlan> plan =
-      wafer::runtime::planRuntimeInvocation(
-          package->getVerifiedManifest(), planBindings,
-          driver.getProviderEnvironment());
+      wafer::runtime::planRuntimeInvocation(package->getVerifiedManifest(),
+                                            planBindings,
+                                            driver.getProviderEnvironment());
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   llvm::Expected<wafer::runtime::BoardRuntimeInvocationResult> result =
       wafer::runtime::executeBoardInvocation(
@@ -1075,8 +1115,7 @@ TEST_F(BoardRuntimeTest,
   for (size_t tile = 0; tile < 16; ++tile) {
     const auto &launch = driver.submittedLaunches[tile];
     ASSERT_EQ(launch.arguments.size(), 1u);
-    const uint64_t rowAddress =
-        invocationBase + plan->pointerRows[tile].offset;
+    const uint64_t rowAddress = invocationBase + plan->pointerRows[tile].offset;
     EXPECT_EQ(launch.arguments.front(), rowAddress);
     EXPECT_EQ(driver.h2dDestinations[1 + tile], rowAddress);
 
@@ -1115,8 +1154,7 @@ TEST_F(BoardRuntimeTest,
                             driver.getProviderEnvironment());
   ASSERT_TRUE(static_cast<bool>(plan)) << llvm::toString(plan.takeError());
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package, makeTile16Request(manifest),
-                             driver);
+      executeBoardInvocation(*package, makeTile16Request(manifest), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   // One invocation allocation: the 16 pointer rows are H2D'd into their
@@ -1130,8 +1168,7 @@ TEST_F(BoardRuntimeTest,
   for (size_t tile = 0; tile < 16; ++tile) {
     const auto &launch = driver.submittedLaunches[tile];
     ASSERT_EQ(launch.arguments.size(), 1u);
-    const uint64_t rowAddress =
-        invocationBase + plan->pointerRows[tile].offset;
+    const uint64_t rowAddress = invocationBase + plan->pointerRows[tile].offset;
     EXPECT_EQ(launch.arguments.front(), rowAddress);
     EXPECT_EQ(driver.h2dDestinations[1 + tile], rowAddress);
 
@@ -1252,13 +1289,14 @@ TEST_F(BoardRuntimeTest, ProfilerWorkspaceRejectsUnregisteredAlignedSize) {
                                      WAFER_TX81_PROFILER_BUFFER_ALIGNMENT;
   for (PackageEntrypointRecord &entry : manifest.entries)
     for (TileEntryArgumentRecord &argument : entry.arguments)
-      if (auto *profile = std::get_if<ProfileRecordArgument>(&argument.reference))
+      if (auto *profile =
+              std::get_if<ProfileRecordArgument>(&argument.reference))
         profile->bytes = unregisteredBytes;
   llvm::Expected<ExecutablePackage> package = loadPackage(std::move(manifest));
   ASSERT_FALSE(static_cast<bool>(package));
-  EXPECT_NE(llvm::toString(package.takeError())
-                .find("profile record requirement"),
-            std::string::npos);
+  EXPECT_NE(
+      llvm::toString(package.takeError()).find("profile record requirement"),
+      std::string::npos);
 }
 
 TEST_F(BoardRuntimeTest,
@@ -1287,8 +1325,7 @@ TEST_F(BoardRuntimeTest,
   EXPECT_TRUE(driver.calls.empty());
 }
 
-TEST_F(BoardRuntimeTest,
-       CompleteFirstInvocationStartsReusableCardSession) {
+TEST_F(BoardRuntimeTest, CompleteFirstInvocationStartsReusableCardSession) {
   using namespace wafer::runtime;
   llvm::Expected<ExecutablePackage> package =
       verifyTile16(TestLaunchContractCase::Grid);
@@ -1301,8 +1338,8 @@ TEST_F(BoardRuntimeTest,
   driver.waitDelay = std::chrono::milliseconds(1);
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
-      started = executeBoardInvocationAndStartSession(
-          *package, std::move(seed), driver);
+      started = executeBoardInvocationAndStartSession(*package, std::move(seed),
+                                                      driver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   EXPECT_EQ(
@@ -1353,9 +1390,8 @@ TEST_F(BoardRuntimeTest,
 
   FakeBoardDriver ordinaryDriver;
   llvm::Expected<BoardRuntimeInvocationResult> ordinary =
-      executeBoardInvocation(*package,
-                             makeTile16Request(package->getManifest()),
-                             ordinaryDriver);
+      executeBoardInvocation(
+          *package, makeTile16Request(package->getManifest()), ordinaryDriver);
   ASSERT_TRUE(static_cast<bool>(ordinary))
       << llvm::toString(ordinary.takeError());
 
@@ -1363,8 +1399,7 @@ TEST_F(BoardRuntimeTest,
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
       started = executeBoardInvocationAndStartSession(
-          *package, makeTile16Request(package->getManifest()),
-          sessionDriver);
+          *package, makeTile16Request(package->getManifest()), sessionDriver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   EXPECT_TRUE(started->second.isUsable());
@@ -1622,8 +1657,8 @@ TEST_F(BoardRuntimeTest,
   FakeBoardDriver driver;
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
-      started = executeBoardInvocationAndStartSession(
-          *package, std::move(seed), driver);
+      started = executeBoardInvocationAndStartSession(*package, std::move(seed),
+                                                      driver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   QualifiedBoardRuntimeSession session = std::move(started->second);
@@ -1634,8 +1669,7 @@ TEST_F(BoardRuntimeTest,
   mismatched.qualification.runtimeLibraryDigest =
       "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
   llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocationInSession(*package, std::move(mismatched),
-                                      session);
+      executeBoardInvocationInSession(*package, std::move(mismatched), session);
   ASSERT_FALSE(static_cast<bool>(result));
   EXPECT_NE(llvm::toString(result.takeError()).find("session identity"),
             std::string::npos);
@@ -1654,8 +1688,8 @@ TEST_F(BoardRuntimeTest,
   FakeBoardDriver driver;
   llvm::Expected<
       std::pair<BoardRuntimeInvocationResult, QualifiedBoardRuntimeSession>>
-      started = executeBoardInvocationAndStartSession(
-          *package, std::move(seed), driver);
+      started = executeBoardInvocationAndStartSession(*package, std::move(seed),
+                                                      driver);
   ASSERT_TRUE(static_cast<bool>(started))
       << llvm::toString(started.takeError());
   QualifiedBoardRuntimeSession session = std::move(started->second);
@@ -1762,10 +1796,9 @@ TEST_F(BoardRuntimeTest,
       16);
   ASSERT_EQ(result->outputs.size(), 1u);
   for (const wafer::runtime::BoardRuntimeOutput &output : result->outputs) {
-    auto port =
-        llvm::find_if(manifest.outputs, [&](const auto &candidate) {
-          return candidate.id == output.port;
-        });
+    auto port = llvm::find_if(manifest.outputs, [&](const auto &candidate) {
+      return candidate.id == output.port;
+    });
     ASSERT_NE(port, manifest.outputs.end());
     for (size_t byte = 0; byte < output.bytes.size(); ++byte)
       EXPECT_EQ(output.bytes[byte],
@@ -1958,8 +1991,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, Tile16RequiresCompleteUniqueTileInventory) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::ExecutablePackage> package =
-      verifyTile16();
+  llvm::Expected<wafer::runtime::ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
@@ -2101,8 +2133,7 @@ TEST_F(BoardRuntimeTest,
 TEST_F(BoardRuntimeTest,
        WholeDomainSubmitAndWaitFailuresNeverReturnPartialResults) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::ExecutablePackage> package =
-      verifyTile16();
+  llvm::Expected<wafer::runtime::ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   struct Scenario {
@@ -2145,8 +2176,7 @@ TEST_F(BoardRuntimeTest,
 
 TEST_F(BoardRuntimeTest, Tile16PoisonedWaitIsTheFinalProviderCall) {
   createTileModules(16);
-  llvm::Expected<wafer::runtime::ExecutablePackage> package =
-      verifyTile16();
+  llvm::Expected<wafer::runtime::ExecutablePackage> package = verifyTile16();
   ASSERT_TRUE(static_cast<bool>(package))
       << llvm::toString(package.takeError());
   FakeBoardDriver driver;
@@ -2168,8 +2198,9 @@ TEST_F(BoardRuntimeTest, Tile16PoisonedWaitIsTheFinalProviderCall) {
   EXPECT_TRUE(driver.unloadedHandles.empty());
 }
 
-TEST_F(BoardRuntimeTest,
-       PackageOwnedTargetTensorUsesOneProgramDataAllocationAndBasePlusOffsetAddressing) {
+TEST_F(
+    BoardRuntimeTest,
+    PackageOwnedTargetTensorUsesOneProgramDataAllocationAndBasePlusOffsetAddressing) {
   using namespace wafer::runtime;
   const std::vector<uint8_t> programData = ownedTensorProgramDataBytes();
   writeProgramDataFile(programData);
@@ -2179,9 +2210,8 @@ TEST_F(BoardRuntimeTest,
       << llvm::toString(package.takeError());
 
   FakeBoardDriver driver;
-  llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package,
-                             makeTile16Request(package->getManifest()), driver);
+  llvm::Expected<BoardRuntimeInvocationResult> result = executeBoardInvocation(
+      *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   // Exactly one program-data allocation (with one whole-file H2D) precedes
@@ -2224,9 +2254,8 @@ TEST_F(BoardRuntimeTest, EmptyProgramDataIssuesNoProgramDataProviderCall) {
       << llvm::toString(package.takeError());
 
   FakeBoardDriver driver;
-  llvm::Expected<BoardRuntimeInvocationResult> result =
-      executeBoardInvocation(*package,
-                             makeTile16Request(package->getManifest()), driver);
+  llvm::Expected<BoardRuntimeInvocationResult> result = executeBoardInvocation(
+      *package, makeTile16Request(package->getManifest()), driver);
   ASSERT_TRUE(static_cast<bool>(result)) << llvm::toString(result.takeError());
 
   // No program-data allocation and no program-data H2D: the single

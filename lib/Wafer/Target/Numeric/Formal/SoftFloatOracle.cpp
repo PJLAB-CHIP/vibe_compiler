@@ -21,17 +21,17 @@ llvm::Error oracleError(SoftFloatOracleErrorCode code,
   return llvm::make_error<SoftFloatOracleError>(code, detail.str());
 }
 
-std::optional<uint_fast8_t> toSoftFloatRoundingMode(NumericRoundingMode mode) {
+std::optional<uint_fast8_t> toSoftFloatRoundingMode(TargetRoundingMode mode) {
   switch (mode) {
-  case NumericRoundingMode::NearestEven:
+  case TargetRoundingMode::NearestEven:
     return softfloat_round_near_even;
-  case NumericRoundingMode::TowardZero:
+  case TargetRoundingMode::TowardZero:
     return softfloat_round_minMag;
-  case NumericRoundingMode::TowardPositive:
+  case TargetRoundingMode::TowardPositive:
     return softfloat_round_max;
-  case NumericRoundingMode::TowardNegative:
+  case TargetRoundingMode::TowardNegative:
     return softfloat_round_min;
-  case NumericRoundingMode::Stochastic:
+  case TargetRoundingMode::Stochastic:
     return std::nullopt;
   }
   return std::nullopt;

@@ -27,13 +27,15 @@ llvm::Error calibrateBulkBackend(const BulkExecutionEnvironment &environment,
       environment, std::move(*testCase), formalBudget, bulkBudget);
   if (!run)
     return run.takeError();
+  llvm::Expected<std::string> problemDigest =
+      computeBulkGemmProblemDigest(run->testCase.getOperation());
+  if (!problemDigest)
+    return problemDigest.takeError();
   llvm::json::Object record{
       {"schema", kCalibrationSchema},
       {"adapter_digest", getBulkAdapterContractDigest()},
       {"spec", specJSON(run->testCase.getSpec())},
       {"spec_digest", run->testCase.getSpec().getDigest()},
-      {"semantic_profile_digest",
-       run->testCase.getCommand().getSemantics()->getDigest()},
       {"value_domain", kValueDomain},
       {"target_comparator", kTargetComparator},
       {"backend_comparator", kBackendComparator},
@@ -41,7 +43,7 @@ llvm::Error calibrateBulkBackend(const BulkExecutionEnvironment &environment,
       {"environment_digest", environment.getDigest()},
       {"environment", environmentJSON(environment)},
       {"environment_record_digest", environmentRecordDigest(environment)},
-      {"resolution_digest", run->testCase.getCommand().getDigest()},
+      {"problem_digest", *problemDigest},
       {"input_payload_digest",
        computeBulkTensorPayloadDigest(run->testCase.getInputs())},
       {"destination_template_digest",

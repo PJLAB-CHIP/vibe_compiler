@@ -4,10 +4,10 @@
 
 #ifdef WAFER_ENABLE_SYSTEMC_MODEL
 
+#include "Wafer/Model/Core/TargetModelInvocation.h"
+#include "Wafer/Model/SystemC/SystemCTargetModel.h"
 #include "Wafer/Program/ProgramInvocation.h"
 #include "Wafer/Program/ProgramTensorComparison.h"
-#include "Wafer/Model/SystemC/SystemCTargetModel.h"
-#include "Wafer/Model/Core/TargetModelInvocation.h"
 #ifdef WAFER_ENABLE_TEST_HELPER_OVERRIDE
 #include "Wafer/Model/TestSupport/Testing.h"
 #endif
@@ -101,7 +101,8 @@ bool runTargetModelGate(
       compiledProgram.getTargetLLVMModules().getModules();
   const size_t expectedOutputCount = llvm::count_if(
       targetModules.front().getTileEntryArguments(), [](const auto &slot) {
-        return slot.kind == wafer::compiler::TileEntryArgumentKind::ExternalOutput;
+        return slot.kind ==
+               wafer::compiler::TileEntryArgumentKind::ExternalOutput;
       });
   if (result->completedTileCount !=
           static_cast<int64_t>(cardExecutable.size()) ||
@@ -140,9 +141,8 @@ bool runTargetModelGate(
         slot->kind != wafer::compiler::TileEntryArgumentKind::ExternalOutput ||
         slot->resourceIndex != output.resourceIndex ||
         output.resource != wafer::model::getTargetModelResourceId(
-                               module.getCardId(),
-                               module.getTileId(), slot->kind,
-                               slot->resourceIndex)) {
+                               module.getCardId(), module.getTileId(),
+                               slot->kind, slot->resourceIndex)) {
       llvm::errs() << "wafer-compile: target model output disagrees with the "
                       "Kernel ABI\n";
       return true;
@@ -195,7 +195,7 @@ bool runTargetModelGate(
       llvm::outs()
           << "wafer-compile: target model numeric statistics index="
           << binding->programIndex << " launch_slot=" << launchSlot
-          << " dtype=" << actual->getDType()
+          << " dtype=" << stringifyProgramElementType(actual->getDType())
           << " elements=" << statistics->elementCount
           << " exact=" << statistics->exactElementCount << " exact_fraction="
           << llvm::format("%.17g", statistics->exactFraction) << " mean_abs="
@@ -223,12 +223,12 @@ bool runTargetModelGate(
                << " commands=" << result->issuedCommandCount
                << " systemc_threads=" << result->systemCThreadProcessCount
                << " final_delta=" << result->finalDeltaCount
-               << " formal_commands=" << result->formalNumericCommandCount
+               << " formal_operations=" << result->formalNumericOperationCount
                << " managed_reference_commands="
-               << result->managedReferenceNumericCommandCount
+               << result->managedReferenceNumericOperationCount
                << " managed_reference_scalars="
                << result->managedReferenceScalarEvaluationCount
-               << " bulk_commands=" << result->bulkNumericCommandCount
+               << " bulk_operations=" << result->bulkNumericOperationCount
                << " bulk_matmuls=" << result->bulkMatmulInvocationCount
                << " bulk_reorders=" << result->bulkReorderInvocationCount
                << " bulk_formal_fmas="

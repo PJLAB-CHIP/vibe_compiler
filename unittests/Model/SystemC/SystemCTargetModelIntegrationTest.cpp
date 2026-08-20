@@ -59,7 +59,7 @@ frontend::ProgramBoundaryBinding boundary(int64_t index) {
   binding.distribution = frontend::ProgramDistributionKind::Replicated;
   binding.globalShape = {8};
   binding.localShape = {8};
-  binding.dtype = "f32";
+  binding.dtype = ProgramElementType::F32;
   frontend::ProgramPartitionSlice slice;
   slice.partitionId = 0;
   slice.replicaId = 0;
@@ -157,8 +157,8 @@ std::vector<RawLogicalValue> makeSequentialF32Values(int64_t globalOffset,
   return values;
 }
 
-const ProgramResourceBinding *findProgramBinding(const TileExecutable &tile,
-                                                 const TileEntryArgument &slot) {
+const ProgramResourceBinding *
+findProgramBinding(const TileExecutable &tile, const TileEntryArgument &slot) {
   const auto matchesRole = [&](const ProgramResourceBinding &binding) {
     switch (slot.kind) {
     case TileEntryArgumentKind::ExternalInput:
@@ -183,7 +183,7 @@ const ProgramResourceBinding *findProgramBinding(const TileExecutable &tile,
 }
 
 TEST(SystemCTargetModelIntegrationTest,
-     ExecutesSourceProducedNumericCommandsAcrossDeltaCycles) {
+     ExecutesSourceProducedNumericOperationsAcrossDeltaCycles) {
   std::string diagnostics;
   llvm::Expected<CompiledElementwiseProgram> compiled =
       compileElementwiseTargetModules(diagnostics);
@@ -196,8 +196,9 @@ TEST(SystemCTargetModelIntegrationTest,
 
   std::vector<TargetCallTileArguments> arguments;
   std::vector<TargetModelInputBinding> inputs;
-  NumericTensorKey tensorKey = llvm::cantFail(NumericTensorKey::create(
-      LogicalFormat::F32, PhysicalTensorLayout::Tensor, {8}));
+  PhysicalTensorDescriptor tensorKey =
+      llvm::cantFail(PhysicalTensorDescriptor::create(
+          LogicalFormat::F32, PhysicalTensorLayout::Tensor, {8}));
   const std::vector<RawLogicalValue> lhs =
       makeSequentialF32Values(/*globalOffset=*/0, /*elementCount=*/8, 0.0f);
   std::vector<RawLogicalValue> rhs(8,
@@ -214,8 +215,9 @@ TEST(SystemCTargetModelIntegrationTest,
     size_t userInputCount = 0;
     size_t outputCount = 0;
     for (const TileEntryArgument &slot : module.getTileEntryArguments()) {
-      const bool tileOwned = slot.kind == TileEntryArgumentKind::Workspace ||
-                             slot.kind == TileEntryArgumentKind::TransportStatus;
+      const bool tileOwned =
+          slot.kind == TileEntryArgumentKind::Workspace ||
+          slot.kind == TileEntryArgumentKind::TransportStatus;
       const uint64_t base =
           tileOwned
               ? UINT64_C(0x10000000) +

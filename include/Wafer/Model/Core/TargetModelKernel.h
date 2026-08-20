@@ -23,7 +23,7 @@ enum class TargetModelKernelErrorCode : uint8_t {
   WorkBudgetExceeded,
   UnsupportedCommand,
   MemoryReadFailure,
-  NumericResolutionFailure,
+  FormalNumericFailure,
   PhysicalCodecFailure,
   ManagedReferenceBackendUnavailable,
   ManagedReferenceBackendFailure,
@@ -102,14 +102,33 @@ enum class TargetModelNumericBackend : uint8_t {
 };
 
 struct TargetModelNumericTensor {
-  NumericTensorKey key;
+  PhysicalTensorDescriptor key;
   std::vector<uint8_t> storage;
 };
 
-struct TargetModelNumericRequest {
-  ResolvedNumericCommand command;
+struct TargetModelNumericOperands {
   std::vector<TargetModelNumericTensor> inputs;
   TargetModelNumericTensor destinationTemplate;
+};
+
+struct TargetModelConvertRequest {
+  FormalConvertOperation operation;
+  TargetModelNumericOperands tensors;
+};
+
+struct TargetModelElementwiseRequest {
+  FormalElementwiseOperation operation;
+  TargetModelNumericOperands tensors;
+};
+
+struct TargetModelReduceRequest {
+  FormalReduceOperation operation;
+  TargetModelNumericOperands tensors;
+};
+
+struct TargetModelGemmRequest {
+  FormalGemmOperation operation;
+  TargetModelNumericOperands tensors;
 };
 
 enum class TargetModelBulkEvidenceKind : uint8_t {
@@ -142,7 +161,7 @@ public:
   virtual ~TargetModelBulkBackend() = default;
 
   virtual llvm::Expected<std::optional<TargetModelBulkResult>>
-  tryExecute(const TargetModelNumericRequest &request) const = 0;
+  tryExecute(const TargetModelGemmRequest &request) const = 0;
 };
 
 struct TargetModelManagedReferenceEvidence {
@@ -165,7 +184,13 @@ public:
   virtual ~TargetModelManagedReferenceBackend() = default;
 
   virtual llvm::Expected<TargetModelManagedReferenceResult>
-  execute(const TargetModelNumericRequest &request,
+  execute(const TargetModelConvertRequest &request,
+          FormalNumericWorkBudget scalarBudget) const = 0;
+  virtual llvm::Expected<TargetModelManagedReferenceResult>
+  execute(const TargetModelElementwiseRequest &request,
+          FormalNumericWorkBudget scalarBudget) const = 0;
+  virtual llvm::Expected<TargetModelManagedReferenceResult>
+  execute(const TargetModelReduceRequest &request,
           FormalNumericWorkBudget scalarBudget) const = 0;
 };
 

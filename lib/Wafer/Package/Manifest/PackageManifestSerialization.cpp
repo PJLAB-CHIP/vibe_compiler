@@ -52,7 +52,7 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
           json.attribute("id", int64_t(record.id.getValue()));
           json.attribute("role", stringifyProgramTensorRole(record.role));
           json.attribute("role_index", record.roleIndex);
-          json.attribute("dtype", record.dtype);
+          json.attribute("dtype", stringifyProgramElementType(record.dtype));
           json.attributeArray("global_shape", [&] {
             for (int64_t dimension : record.globalShape)
               json.value(dimension);
@@ -77,7 +77,7 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
           json.attribute("id", int64_t(record.id.getValue()));
           json.attribute("program_tensor",
                          int64_t(record.programTensor.getValue()));
-          json.attribute("dtype", record.dtype);
+          json.attribute("dtype", stringifyLogicalFormat(record.dtype));
           json.attribute("layout", stringifyPackageMemLayout(record.layout));
           json.attributeArray("shape", [&] {
             for (int64_t dimension : record.shape)
@@ -95,12 +95,13 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
           json.object([&] {
             json.attribute("id", int64_t(port.id.getValue()));
             json.attribute("role_index", port.roleIndex);
-            json.attribute("logical_dtype", port.logicalDtype);
+            json.attribute("logical_dtype",
+                           stringifyProgramElementType(port.logicalDtype));
             json.attributeArray("logical_shape", [&] {
               for (int64_t dimension : port.logicalShape)
                 json.value(dimension);
             });
-            json.attribute("dtype", port.dtype);
+            json.attribute("dtype", stringifyLogicalFormat(port.dtype));
             json.attribute("layout", stringifyPackageMemLayout(port.layout));
             json.attributeArray("shape", [&] {
               for (int64_t dimension : port.shape)
@@ -136,15 +137,14 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
           json.attribute("id", int64_t(entry.id.getValue()));
           json.attribute("card_id", entry.cardId.getValue());
           json.attribute("tile_id", entry.tileId.getValue());
-          json.attribute("launch_slot",
-                         int64_t(entry.launchSlot.getValue()));
+          json.attribute("launch_slot", int64_t(entry.launchSlot.getValue()));
           json.attribute("module", int64_t(entry.module.getValue()));
           json.attributeArray("arguments", [&] {
             for (const TileEntryArgumentRecord &argument : entry.arguments)
               json.object([&] {
                 json.attribute("ordinal", int64_t(argument.ordinal));
-                if (const auto *reference =
-                        std::get_if<ExternalInputArgument>(&argument.reference)) {
+                if (const auto *reference = std::get_if<ExternalInputArgument>(
+                        &argument.reference)) {
                   json.attribute("kind", "external_input");
                   json.attribute("port", int64_t(reference->port.getValue()));
                 } else if (const auto *reference =
@@ -177,15 +177,15 @@ serializeCanonicalPackageJson(const VerifiedPackageManifest &verified) {
                   json.attribute("kind", "transport_status");
                   json.attribute("status_abi", statusReference.statusABI);
                   json.attribute("bytes", int64_t(statusReference.bytes));
-                  json.attribute("alignment", int64_t(statusReference.alignment));
+                  json.attribute("alignment",
+                                 int64_t(statusReference.alignment));
                 }
                 json.attribute("access",
                                stringifyPackageAccessMode(argument.access));
               });
           });
           json.attribute("completion",
-                         stringifyPackageEntryCompletionKind(
-                             entry.completion));
+                         stringifyPackageEntryCompletionKind(entry.completion));
           json.attributeObject("transport", [&] {
             if (std::holds_alternative<NoTransportRequirements>(
                     entry.transport)) {

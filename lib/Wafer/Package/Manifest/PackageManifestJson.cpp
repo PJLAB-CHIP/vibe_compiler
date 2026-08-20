@@ -212,8 +212,7 @@ parseRuntimeLaunchContract(const llvm::json::Object &object,
       requireString(object, "form", context, limits);
   if (!formSpelling)
     return formSpelling.takeError();
-  llvm::Expected<KernelLaunchForm> form =
-      parseKernelLaunchForm(*formSpelling);
+  llvm::Expected<KernelLaunchForm> form = parseKernelLaunchForm(*formSpelling);
   if (!form)
     return form.takeError();
   llvm::Expected<std::string> entryABISpelling =
@@ -288,7 +287,11 @@ parseProgramTensorRecord(const llvm::json::Value &value, uint64_t index,
       requireString(*object, "dtype", context, limits);
   if (!dtype)
     return dtype.takeError();
-  record.dtype = std::move(*dtype);
+  llvm::Expected<ProgramElementType> elementType =
+      parseProgramElementType(*dtype);
+  if (!elementType)
+    return elementType.takeError();
+  record.dtype = *elementType;
   llvm::Expected<std::vector<int64_t>> globalShape =
       parseShape(*object, "global_shape", context, limits);
   if (!globalShape)
@@ -319,11 +322,11 @@ parseTargetTensorRecord(const llvm::json::Value &value, uint64_t index,
   std::string context = "target_tensors[" + std::to_string(index) + "]";
   if (!object)
     return invalid(context + " must be an object");
-  if (llvm::Error error = requireExactFields(
-          *object,
-          {"id", "program_tensor", "dtype", "layout", "shape", "bytes",
-           "alignment", "file_offset"},
-          context))
+  if (llvm::Error error =
+          requireExactFields(*object,
+                             {"id", "program_tensor", "dtype", "layout",
+                              "shape", "bytes", "alignment", "file_offset"},
+                             context))
     return std::move(error);
 
   TargetTensorRecord record;
@@ -340,7 +343,10 @@ parseTargetTensorRecord(const llvm::json::Value &value, uint64_t index,
       requireString(*object, "dtype", context, limits);
   if (!dtype)
     return dtype.takeError();
-  record.dtype = std::move(*dtype);
+  llvm::Expected<LogicalFormat> targetFormat = parseLogicalFormat(*dtype);
+  if (!targetFormat)
+    return targetFormat.takeError();
+  record.dtype = *targetFormat;
   llvm::Expected<std::string> layoutText =
       requireString(*object, "layout", context, limits);
   if (!layoutText)
@@ -375,8 +381,7 @@ llvm::Expected<ProgramDataRecord>
 parseProgramDataRecord(const llvm::json::Object &object,
                        const PackageParseLimits &limits) {
   if (llvm::Error error = requireExactFields(
-          object,
-          {"relative_path", "total_bytes", "base_alignment", "digest"},
+          object, {"relative_path", "total_bytes", "base_alignment", "digest"},
           "manifest.program_data"))
     return std::move(error);
   ProgramDataRecord record;
@@ -432,7 +437,11 @@ parseExternalPortRecord(const llvm::json::Value &value, uint64_t index,
       requireString(*object, "logical_dtype", context, limits);
   if (!logicalDtype)
     return logicalDtype.takeError();
-  record.logicalDtype = std::move(*logicalDtype);
+  llvm::Expected<ProgramElementType> logicalElementType =
+      parseProgramElementType(*logicalDtype);
+  if (!logicalElementType)
+    return logicalElementType.takeError();
+  record.logicalDtype = *logicalElementType;
   llvm::Expected<std::vector<int64_t>> logicalShape =
       parseShape(*object, "logical_shape", context, limits);
   if (!logicalShape)
@@ -442,7 +451,10 @@ parseExternalPortRecord(const llvm::json::Value &value, uint64_t index,
       requireString(*object, "dtype", context, limits);
   if (!dtype)
     return dtype.takeError();
-  record.dtype = std::move(*dtype);
+  llvm::Expected<LogicalFormat> targetFormat = parseLogicalFormat(*dtype);
+  if (!targetFormat)
+    return targetFormat.takeError();
+  record.dtype = *targetFormat;
   llvm::Expected<std::string> layoutText =
       requireString(*object, "layout", context, limits);
   if (!layoutText)
@@ -557,8 +569,8 @@ parseTransportRequirements(const llvm::json::Object &object,
       requireBoolean(object, "host_watchdog_required", context);
   if (!watchdog)
     return watchdog.takeError();
-  return TransportRequirements{DirectDTETransportRequirements{
-      std::move(*statusABI), *watchdog}};
+  return TransportRequirements{
+      DirectDTETransportRequirements{std::move(*statusABI), *watchdog}};
 }
 
 llvm::Expected<TileEntryArgumentReference>
@@ -600,8 +612,8 @@ parseTileEntryArgumentReference(const llvm::json::Object &object,
   }
   if (*kind == "workspace") {
     if (llvm::Error error = requireExactFields(
-            object,
-            {"kind", "ordinal", "bytes", "alignment", "access"}, context))
+            object, {"kind", "ordinal", "bytes", "alignment", "access"},
+            context))
       return std::move(error);
     llvm::Expected<uint64_t> bytes = requireUnsigned(object, "bytes", context);
     if (!bytes)
@@ -629,8 +641,8 @@ parseTileEntryArgumentReference(const llvm::json::Object &object,
         requireUnsigned(object, "alignment", context);
     if (!alignment)
       return alignment.takeError();
-    return TileEntryArgumentReference{ProfileRecordArgument{
-        std::move(*recordABI), *bytes, *alignment}};
+    return TileEntryArgumentReference{
+        ProfileRecordArgument{std::move(*recordABI), *bytes, *alignment}};
   }
   if (*kind == "transport_status") {
     if (llvm::Error error = requireExactFields(
@@ -649,8 +661,8 @@ parseTileEntryArgumentReference(const llvm::json::Object &object,
         requireUnsigned(object, "alignment", context);
     if (!alignment)
       return alignment.takeError();
-    return TileEntryArgumentReference{TransportStatusArgument{
-        std::move(*statusABI), *bytes, *alignment}};
+    return TileEntryArgumentReference{
+        TransportStatusArgument{std::move(*statusABI), *bytes, *alignment}};
   }
   return invalid(context + " has unsupported argument kind '" + *kind + "'");
 }
@@ -691,11 +703,11 @@ parseEntrypointRecord(const llvm::json::Value &value, uint64_t index,
   std::string context = "entries[" + std::to_string(index) + "]";
   if (!object)
     return invalid(context + " must be an object");
-  if (llvm::Error error = requireExactFields(
-          *object,
-          {"id", "card_id", "tile_id", "launch_slot", "module", "arguments",
-           "completion", "transport"},
-          context))
+  if (llvm::Error error =
+          requireExactFields(*object,
+                             {"id", "card_id", "tile_id", "launch_slot",
+                              "module", "arguments", "completion", "transport"},
+                             context))
     return std::move(error);
   llvm::Expected<uint64_t> id = requireUnsigned(*object, "id", context);
   if (!id)
@@ -871,10 +883,9 @@ detail::parseManifest(llvm::StringRef json, const PackageParseLimits &limits) {
     return parsedProgramData.takeError();
   manifest.programData = std::move(*parsedProgramData);
 
-  uint64_t totalRecords =
-      (*programTensors)->size() + (*targetTensors)->size() +
-      (*inputs)->size() + (*outputs)->size() + (*modules)->size() +
-      (*entries)->size();
+  uint64_t totalRecords = (*programTensors)->size() + (*targetTensors)->size() +
+                          (*inputs)->size() + (*outputs)->size() +
+                          (*modules)->size() + (*entries)->size();
   if (totalRecords > limits.maxRecords)
     return invalid("package manifest exceeds record limit");
   for (auto [index, value] : llvm::enumerate(**programTensors)) {

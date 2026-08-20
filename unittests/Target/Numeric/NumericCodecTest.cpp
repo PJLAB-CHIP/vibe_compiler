@@ -3,7 +3,7 @@
 #include "Wafer/Target/Numeric/NumericCodec.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/Target/Numeric/NumericSemantics.h"
+#include "Wafer/Target/Numeric/Formal/FormalOperations.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -202,9 +202,6 @@ TEST(NumericCodecTest, LayoutBitOffsetsDriveBooleanCodecWithoutGeometryCopy) {
                                        wafer::MemLayout::Tensor);
   auto type = mlir::MemRefType::get({2, 9}, mlir::IntegerType::get(&context, 1),
                                     mlir::MemRefLayoutAttrInterface{}, memory);
-  const wafer::ModelProfileRecord &profile = wafer::getModelProfileRecord(
-      wafer::ModelProfileId::formalDeterministic());
-
   std::array<uint8_t, 3> storage{};
   std::array<uint8_t, 3> expected{};
   for (int64_t row = 0; row < 2; ++row) {
@@ -217,7 +214,7 @@ TEST(NumericCodecTest, LayoutBitOffsetsDriveBooleanCodecWithoutGeometryCopy) {
       const bool value = (linear % 3) == 1;
       ASSERT_FALSE(static_cast<bool>(wafer::writeRawLogicalValue(
           {LogicalFormat::Bool, value ? UINT64_C(1) : UINT64_C(0)}, storage,
-          static_cast<uint64_t>(*bitOffset), profile.numericEncodePolicy)));
+          static_cast<uint64_t>(*bitOffset), kLittleLSBReject)));
       if (value)
         expected[linear / 8] |=
             static_cast<uint8_t>(UINT8_C(1) << (linear % 8));
@@ -228,7 +225,7 @@ TEST(NumericCodecTest, LayoutBitOffsetsDriveBooleanCodecWithoutGeometryCopy) {
   for (int64_t linear = 0; linear < 18; ++linear) {
     llvm::Expected<RawLogicalValue> decoded = wafer::readRawLogicalValue(
         LogicalFormat::Bool, storage, static_cast<uint64_t>(linear),
-        profile.numericDecodePolicy);
+        kLittleLSBReject);
     ASSERT_TRUE(static_cast<bool>(decoded))
         << (decoded ? std::string() : llvm::toString(decoded.takeError()));
     EXPECT_EQ(decoded->bits, (linear % 3) == 1 ? UINT64_C(1) : UINT64_C(0));

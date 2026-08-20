@@ -5,6 +5,8 @@
 
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Target/Core/TargetFormat.h"
+#include "Wafer/Target/Layout/TargetTensorMaterialization.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -61,12 +63,16 @@ struct TileEntryArgument {
   TileEntryArgumentKind kind = TileEntryArgumentKind::ExternalInput;
   int64_t resourceIndex = -1;
   std::string name;
-  std::string dtype;
+  LogicalFormat dtype = LogicalFormat::F32;
   MemLayout layout;
   std::vector<int64_t> shape;
   int64_t byteSize = -1;
   int64_t alignment = -1;
   TileEntryArgumentAccess access = TileEntryArgumentAccess::ReadOnly;
+  /// Same-invocation source-to-target conversion selected before package
+  /// writing. Present exactly for TargetTensor slots; it is compiler metadata,
+  /// not part of the runtime pointer-row ABI or package manifest.
+  std::optional<TargetTensorMaterializationAction> targetTensorMaterialization;
 };
 
 /// One fully translated target LLVM module and the context that owns all of
@@ -98,9 +104,8 @@ public:
 private:
   friend struct TargetLLVMModulesBuilder;
 
-  TargetLLVMModule(CardId cardId, TileId tileId,
-                   LaunchSlotId launchSlotId, llvm::StringRef entrySymbol,
-                   TargetIdentityId targetIdentity,
+  TargetLLVMModule(CardId cardId, TileId tileId, LaunchSlotId launchSlotId,
+                   llvm::StringRef entrySymbol, TargetIdentityId targetIdentity,
                    KernelRuntimeABIId kernelRuntimeABI,
                    llvm::StringRef moduleFormat,
                    std::vector<TileEntryArgument> tileEntryArguments,
@@ -174,8 +179,9 @@ public:
 
 private:
   TargetToolchain(llvm::StringRef pythonExecutable,
-                  llvm::StringRef deviceLinkerScript, llvm::StringRef llvmClangXX,
-                  llvm::StringRef tx8DepsRoot, llvm::StringRef waferIncludeDir,
+                  llvm::StringRef deviceLinkerScript,
+                  llvm::StringRef llvmClangXX, llvm::StringRef tx8DepsRoot,
+                  llvm::StringRef waferIncludeDir,
                   llvm::StringRef waferCrtSource,
                   llvm::StringRef waferCrtIncludeDir)
       : pythonExecutable(pythonExecutable.str()),
@@ -207,9 +213,7 @@ public:
   CompiledProgram(const CompiledProgram &) = delete;
   CompiledProgram &operator=(const CompiledProgram &) = delete;
 
-  const CardExecutable &getCardExecutable() const {
-    return cardExecutable;
-  }
+  const CardExecutable &getCardExecutable() const { return cardExecutable; }
   const TargetLLVMModules &getTargetLLVMModules() const {
     return targetLLVMModules;
   }
@@ -250,9 +254,8 @@ llvm::Expected<CompiledProgram> compileProgramWithTargetLLVMModules(
 /// LLVM modules. This function does not write target modules or a
 /// package.
 llvm::Expected<TargetLLVMModules>
-compileCardExecutableToTargetLLVMModules(
-    const CardExecutable &cardExecutable,
-    llvm::raw_ostream &diagnostics);
+compileCardExecutableToTargetLLVMModules(const CardExecutable &cardExecutable,
+                                         llvm::raw_ostream &diagnostics);
 
 /// Identifier for one linked target module. Physical
 /// Tile to payload coverage is represented only by VerifiedTargetTileInterface;
@@ -346,14 +349,12 @@ public:
 private:
   friend struct LinkedTargetModulesBuilder;
 
-  VerifiedTargetTileInterface(CardId cardId,
-                              TileId tileId,
+  VerifiedTargetTileInterface(CardId cardId, TileId tileId,
                               LaunchSlotId launchSlotId,
                               TargetModuleId moduleId,
                               std::vector<TileEntryArgument> tileEntryArguments)
-      : cardId(cardId), tileId(tileId),
-        launchSlotId(launchSlotId), moduleId(moduleId),
-        tileEntryArguments(std::move(tileEntryArguments)) {}
+      : cardId(cardId), tileId(tileId), launchSlotId(launchSlotId),
+        moduleId(moduleId), tileEntryArguments(std::move(tileEntryArguments)) {}
 
   CardId cardId;
   TileId tileId;

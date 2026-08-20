@@ -184,7 +184,7 @@ buildBuiltinCommand(const TargetCallDecodeConfig &config,
 
 static llvm::Expected<TargetCommandPayload>
 buildElementwiseCommand(const TargetCallDecodeConfig &config,
-                        NumericElementwiseOperation kind,
+                        TargetElementwiseOperation kind,
                         llvm::ArrayRef<uint64_t> arguments) {
   bool unary = arguments.size() == 4;
   size_t destinationIndex = unary ? 1 : 2;
@@ -202,7 +202,7 @@ buildElementwiseCommand(const TargetCallDecodeConfig &config,
 
 static llvm::Expected<TargetCommandPayload>
 buildReduceCommand(const TargetCallDecodeConfig &config,
-                   NumericReduceOperation kind,
+                   TargetReduceOperation kind,
                    llvm::ArrayRef<uint64_t> arguments) {
   llvm::Expected<LogicalFormat> format =
       decodeFormat(TargetFormatEngine::CT, arguments[7]);
@@ -216,23 +216,28 @@ buildReduceCommand(const TargetCallDecodeConfig &config,
 static llvm::Expected<TargetCommandPayload>
 buildConvertCommand(TargetConvertOperation kind,
                     llvm::ArrayRef<uint64_t> arguments) {
-  std::optional<uint32_t> zeroPoint;
-  std::optional<uint32_t> roundingMode;
+  std::optional<TargetConvertParameter> parameter;
   const TargetConvertRoute *route = findTargetConvertRoute(kind.getOpcode());
   assert(route && "target-call descriptor must carry a registered convert");
   switch (route->parameterKind) {
   case TargetConvertParameterKind::ZeroPoint:
-    zeroPoint = argument32(arguments, 3);
+    parameter = TargetConvertParameter::zeroPoint(argument32(arguments, 3));
     break;
-  case TargetConvertParameterKind::RoundingMode:
-    roundingMode = argument32(arguments, 4);
+  case TargetConvertParameterKind::RoundingMode: {
+    uint32_t raw = argument32(arguments, 4);
+    if (raw > std::numeric_limits<uint8_t>::max())
+      return llvm::createStringError("convert rounding mode is out of range");
+    auto mode = parseTargetRoundingMode(static_cast<uint8_t>(raw));
+    if (!mode)
+      return mode.takeError();
+    parameter = TargetConvertParameter::roundingMode(*mode);
     break;
+  }
   case TargetConvertParameterKind::None:
     break;
   }
-  return TargetCommandPayload{
-      TargetConvertCommand{kind, arguments[0], arguments[1],
-                           argument32(arguments, 2), zeroPoint, roundingMode}};
+  return TargetCommandPayload{TargetConvertCommand{
+      kind, arguments[0], arguments[1], argument32(arguments, 2), parameter}};
 }
 
 static llvm::Expected<TargetCommandPayload>
@@ -396,10 +401,10 @@ decodeTargetCallPayload(const TargetCallDescriptor &descriptor,
           std::get_if<TargetCallBuiltin>(&descriptor.semantic))
     return buildBuiltinCommand(config, *builtin, payloadArguments);
   if (const auto *kind =
-          std::get_if<NumericElementwiseOperation>(&descriptor.semantic))
+          std::get_if<TargetElementwiseOperation>(&descriptor.semantic))
     return buildElementwiseCommand(config, *kind, payloadArguments);
   if (const auto *kind =
-          std::get_if<NumericReduceOperation>(&descriptor.semantic))
+          std::get_if<TargetReduceOperation>(&descriptor.semantic))
     return buildReduceCommand(config, *kind, payloadArguments);
   if (const auto *kind =
           std::get_if<TargetConvertOperation>(&descriptor.semantic))

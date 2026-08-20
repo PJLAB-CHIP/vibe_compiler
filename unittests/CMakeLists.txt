@@ -62,10 +62,9 @@ add_executable(WaferUnitTests
   Runtime/Profile/ProfilerRecordTest.cpp
   Target/Numeric/Formal/FormalNumericTest.cpp
   Target/Numeric/NumericCodecTest.cpp
-  Target/Numeric/Dependency/NumericDependencyConformanceTest.cpp
   Target/Numeric/NumericRawRounderTest.cpp
-  Target/Numeric/NumericSemanticsTest.cpp
   Target/Layout/PhysicalTensorCodecTest.cpp
+  Target/Layout/TargetTensorMaterializationTest.cpp
   Target/Core/TargetFormatTest.cpp
   Transforms/MemoryPlanning/LifetimeAnalysisTest.cpp
   Transforms/MemoryPlanning/MiniMallocPackingTest.cpp
@@ -96,7 +95,9 @@ target_link_libraries(WaferUnitTests
   WaferAnalysis
   WaferCompiler
   WaferIR
+  WaferFormalNumeric
   WaferTargetModelCore
+  WaferTargetTensorMaterialization
   WaferRuntime
   WaferStableHLOPipelines
   WaferTileRegionPipelines
@@ -261,7 +262,6 @@ if(WAFER_ENABLE_NUMERIC_MODEL_DEPS)
     Model/Core/TargetModelKernelTest.cpp
     Target/Numeric/Formal/FormalTensorNumericTest.cpp
     Target/Numeric/Formal/MPFRNumericTest.cpp
-    Target/Numeric/NumericManagedDependencyIntegrationTest.cpp
     Target/Numeric/NumericOracleDifferentialTest.cpp
     Target/Numeric/Formal/SoftFloatOracleTest.cpp
   )
@@ -345,25 +345,16 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME WaferSystemCModelIntegrationTest
     COMMAND WaferSystemCModelIntegrationTest)
 
-  add_executable(WaferSystemCModelTransportTest
+  add_library(WaferSystemCModelTestSupport STATIC
     Model/SystemC/SystemCTargetModelTestSupport.cpp
-    Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp
-    Model/SystemC/SystemCTargetModelDTEIntegrationTest.cpp
-    Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp
-    Model/SystemC/SystemCTargetModelDTEMismatchTest.cpp
-    Model/SystemC/SystemCTargetModelDTEPreIssueTest.cpp
-    Model/SystemC/SystemCTargetModelDTEReadinessTest.cpp
-    Model/SystemC/SystemCTargetModelEventFailureTest.cpp
-    Model/SystemC/SystemCTargetModelNCCVisibilityTest.cpp
-    Model/SystemC/SystemCTargetModelNoProgressTest.cpp
   )
-  llvm_update_compile_flags(WaferSystemCModelTransportTest)
-  target_include_directories(WaferSystemCModelTransportTest PRIVATE
+  llvm_update_compile_flags(WaferSystemCModelTestSupport)
+  target_include_directories(WaferSystemCModelTestSupport PUBLIC
     ${CMAKE_SOURCE_DIR}/lib
     ${CMAKE_SOURCE_DIR}/unittests/Model/SystemC
   )
-  target_link_libraries(WaferSystemCModelTransportTest
-    PRIVATE
+  target_link_libraries(WaferSystemCModelTestSupport
+    PUBLIC
     WaferSystemCModel
     WaferCompiler
     WaferIR
@@ -378,10 +369,74 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
     MLIRSCFDialect
     MLIRTensorDialect
     SystemC::systemc
-    GTest::gtest_main
   )
-  add_test(NAME WaferSystemCModelTransportTest
-    COMMAND WaferSystemCModelTransportTest)
+
+  set(WAFER_SYSTEMC_MODEL_TEST_TARGETS WaferSystemCModelIntegrationTest)
+  function(add_wafer_systemc_transport_test target source)
+    add_executable(${target} ${source})
+    llvm_update_compile_flags(${target})
+    target_link_libraries(${target} PRIVATE
+      WaferSystemCModelTestSupport
+      GTest::gtest
+    )
+    add_test(NAME ${target} COMMAND ${target})
+    set(WAFER_SYSTEMC_MODEL_TEST_TARGETS
+      ${WAFER_SYSTEMC_MODEL_TEST_TARGETS} ${target}
+      PARENT_SCOPE)
+  endfunction()
+
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTEIntegrationTest
+    Model/SystemC/SystemCTargetModelDTEIntegrationTest.cpp)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTEComputeDisjointTest
+    Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
+  target_compile_definitions(WaferSystemCModelDTEComputeDisjointTest PRIVATE
+    WAFER_TEST_DTE_COMPUTE_ACCESS_MODE=0)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTEComputeOverlapWithoutJoinTest
+    Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
+  target_compile_definitions(
+    WaferSystemCModelDTEComputeOverlapWithoutJoinTest PRIVATE
+    WAFER_TEST_DTE_COMPUTE_ACCESS_MODE=1)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTEComputeOverlapWithJoinTest
+    Model/SystemC/SystemCTargetModelDTEComputeAccessTest.cpp)
+  target_compile_definitions(WaferSystemCModelDTEComputeOverlapWithJoinTest
+    PRIVATE WAFER_TEST_DTE_COMPUTE_ACCESS_MODE=2)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTELateSourceWriteTest
+    Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
+  target_compile_definitions(WaferSystemCModelDTELateSourceWriteTest PRIVATE
+    WAFER_TEST_DTE_LATE_JOIN_ACCESS_MODE=0)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTELateDestinationReadTest
+    Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
+  target_compile_definitions(WaferSystemCModelDTELateDestinationReadTest PRIVATE
+    WAFER_TEST_DTE_LATE_JOIN_ACCESS_MODE=1)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTELateDestinationWriteTest
+    Model/SystemC/SystemCTargetModelDTELateJoinTest.cpp)
+  target_compile_definitions(WaferSystemCModelDTELateDestinationWriteTest
+    PRIVATE WAFER_TEST_DTE_LATE_JOIN_ACCESS_MODE=2)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTEMismatchTest
+    Model/SystemC/SystemCTargetModelDTEMismatchTest.cpp)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTEPreIssueTest
+    Model/SystemC/SystemCTargetModelDTEPreIssueTest.cpp)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelDTEReadinessTest
+    Model/SystemC/SystemCTargetModelDTEReadinessTest.cpp)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelEventFailureTest
+    Model/SystemC/SystemCTargetModelEventFailureTest.cpp)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelNCCVisibilityTest
+    Model/SystemC/SystemCTargetModelNCCVisibilityTest.cpp)
+  add_wafer_systemc_transport_test(
+    WaferSystemCModelNoProgressTest
+    Model/SystemC/SystemCTargetModelNoProgressTest.cpp)
 
   add_executable(WaferSystemCModelBatchedGemmIntegrationTest
     Model/SystemC/SystemCTargetModelBatchedGemmIntegrationTest.cpp
@@ -439,34 +494,21 @@ if(WAFER_ENABLE_SYSTEMC_MODEL)
   add_test(NAME WaferSystemCModelOrientedGemmIntegrationTest
     COMMAND WaferSystemCModelOrientedGemmIntegrationTest)
 
-  set_tests_properties(
-    WaferSystemCModelIntegrationTest
-    WaferSystemCModelTransportTest
+  list(APPEND WAFER_SYSTEMC_MODEL_TEST_TARGETS
     WaferSystemCModelBatchedGemmIntegrationTest
-    WaferSystemCModelOrientedGemmIntegrationTest
+    WaferSystemCModelOrientedGemmIntegrationTest)
+  set_tests_properties(
+    ${WAFER_SYSTEMC_MODEL_TEST_TARGETS}
     PROPERTIES
     LABELS "systemc-model;managed-dependencies;component"
     ENVIRONMENT
       "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
   )
   add_custom_target(check-wafer-systemc-model
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelIntegrationTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelTransportTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelBatchedGemmIntegrationTest>
-    COMMAND ${CMAKE_COMMAND} -E env
-      "LD_LIBRARY_PATH=${WAFER_NUMERIC_MODEL_MPFR_LIBRARY_DIR}:${WAFER_NUMERIC_MODEL_GMP_LIBRARY_DIR}"
-      $<TARGET_FILE:WaferSystemCModelOrientedGemmIntegrationTest>
-    DEPENDS
-      WaferSystemCModelIntegrationTest
-      WaferSystemCModelTransportTest
-      WaferSystemCModelBatchedGemmIntegrationTest
-      WaferSystemCModelOrientedGemmIntegrationTest
+    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+      -R "^WaferSystemCModel"
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DEPENDS ${WAFER_SYSTEMC_MODEL_TEST_TARGETS}
     USES_TERMINAL
   )
 endif()

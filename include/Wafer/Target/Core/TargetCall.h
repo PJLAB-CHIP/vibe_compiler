@@ -3,7 +3,6 @@
 #ifndef WAFER_TARGET_TARGETCALL_H
 #define WAFER_TARGET_TARGETCALL_H
 
-#include "Wafer/Target/Numeric/NumericSemantics.h"
 #include "Wafer/Target/Core/TargetFormat.h"
 #include "Wafer/Target/Core/TargetIdentity.h"
 #include "Wafer/Target/Core/TargetOperation.h"
@@ -84,7 +83,7 @@ struct TargetGemmCommand {
 };
 
 struct TargetElementwiseCommand {
-  NumericElementwiseOperation operation;
+  TargetElementwiseOperation operation;
   uint64_t lhs;
   std::optional<uint64_t> rhs;
   uint64_t destination;
@@ -93,7 +92,7 @@ struct TargetElementwiseCommand {
 };
 
 struct TargetReduceCommand {
-  NumericReduceOperation operation;
+  TargetReduceOperation operation;
   uint64_t source;
   uint64_t destination;
   uint32_t dimension;
@@ -106,8 +105,7 @@ struct TargetConvertCommand {
   uint64_t source;
   uint64_t destination;
   uint32_t elementCount;
-  std::optional<uint32_t> zeroPoint;
-  std::optional<uint32_t> roundingMode;
+  std::optional<TargetConvertParameter> parameter;
 };
 
 struct TargetConvCommand {
@@ -304,8 +302,8 @@ struct TargetCallIssueDomain {
 /// Semantic classification encoded by typed compiler enums, never
 /// reconstructed from a symbol spelling by a consumer.
 using TargetCallSemantic =
-    std::variant<TargetCallBuiltin, NumericElementwiseOperation,
-                 NumericReduceOperation, TargetConvertOperation,
+    std::variant<TargetCallBuiltin, TargetElementwiseOperation,
+                 TargetReduceOperation, TargetConvertOperation,
                  TargetConvolutionOperation, TargetPoolingOperation,
                  TargetUnpoolingOperation, TargetPeripheralOperation>;
 
@@ -339,9 +337,9 @@ llvm::StringRef stringifyTargetCallTSMEngine(TargetCallTSMEngine engine);
 
 const TargetCallDescriptor &getTargetCallDescriptor(TargetCallBuiltin call);
 const TargetCallDescriptor &
-getTargetCallDescriptor(NumericElementwiseOperation operation);
+getTargetCallDescriptor(TargetElementwiseOperation operation);
 const TargetCallDescriptor &
-getTargetCallDescriptor(NumericReduceOperation operation);
+getTargetCallDescriptor(TargetReduceOperation operation);
 
 const TargetCallDescriptor &
 getTargetCallDescriptor(TargetConvertOperation operation);

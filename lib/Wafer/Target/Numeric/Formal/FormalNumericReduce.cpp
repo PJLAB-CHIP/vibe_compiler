@@ -10,9 +10,9 @@ namespace wafer {
 using namespace formal_detail;
 
 llvm::Expected<FormalNumericResult>
-evaluateFormalReduceStep(const ResolvedNumericCommand &command,
+evaluateFormalReduceStep(const FormalReduceOperation &operation,
                          RawLogicalValue accumulator, RawLogicalValue input) {
-  if (llvm::Error error = validateReduceResolvedCommand(command))
+  if (llvm::Error error = validateFormalReduceOperation(operation))
     return std::move(error);
   llvm::Expected<RawLogicalValue> canonicalAccumulator = validateOperand(
       accumulator, LogicalFormat::F32, "native reduction accumulator");

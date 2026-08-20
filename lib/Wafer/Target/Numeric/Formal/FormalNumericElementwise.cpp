@@ -21,14 +21,11 @@ namespace wafer {
 using namespace formal_detail;
 
 llvm::Expected<FormalNumericResult>
-evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
+evaluateFormalElementwiseLLVM(const FormalElementwiseOperation &elementwise,
                               llvm::ArrayRef<RawLogicalValue> inputs) {
-  if (llvm::Error error = validateElementwiseResolvedCommand(command))
+  if (llvm::Error error = validateFormalElementwiseOperation(elementwise))
     return std::move(error);
-  const NumericCTElementwiseCommand &elementwise =
-      *command.getCommandKey().getCTElementwise();
-  const NumericCTElementwiseSemanticsKey &key =
-      *command.getSemantics()->getCTElementwiseKey();
+  const LogicalFormat inputFormat = elementwise.inputs.front().getFormat();
   if (inputs.size() != elementwise.inputs.size())
     return formalError(FormalNumericErrorCode::OperandCountMismatch,
                        llvm::Twine("elementwise operation expects ") +
@@ -40,28 +37,28 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
   canonicalInputs.reserve(inputs.size());
   for (auto [index, input] : llvm::enumerate(inputs)) {
     llvm::Expected<RawLogicalValue> canonical = validateOperand(
-        input, key.getInputFormat(),
+        input, inputFormat,
         llvm::Twine("elementwise operand ") + llvm::Twine(index));
     if (!canonical)
       return canonical.takeError();
     canonicalInputs.push_back(*canonical);
   }
 
-  const NumericElementwiseOperation operation = elementwise.operation;
-  if (isNumericElementwiseLogic(operation)) {
+  const TargetElementwiseOperation operation = elementwise.operation;
+  if (isTargetElementwiseLogic(operation)) {
     const bool lhs = canonicalInputs[0].bits != 0;
     bool result = false;
     switch (operation) {
-    case NumericElementwiseOperation::LogicNot:
+    case TargetElementwiseOperation::LogicNot:
       result = !lhs;
       break;
-    case NumericElementwiseOperation::LogicAnd:
+    case TargetElementwiseOperation::LogicAnd:
       result = lhs && canonicalInputs[1].bits != 0;
       break;
-    case NumericElementwiseOperation::LogicOr:
+    case TargetElementwiseOperation::LogicOr:
       result = lhs || canonicalInputs[1].bits != 0;
       break;
-    case NumericElementwiseOperation::LogicXor:
+    case TargetElementwiseOperation::LogicXor:
       result = lhs != (canonicalInputs[1].bits != 0);
       break;
     default:
@@ -87,7 +84,7 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
     classifications.push_back(*classification);
     floatingInputs.push_back(decodeFloat(input));
   }
-  const LogicalFormat resultFormat = key.getDestinationFormat();
+  const LogicalFormat resultFormat = elementwise.destination.getFormat();
   const LogicalFormatDescriptor &resultDescriptor =
       *findLogicalFormatDescriptor(resultFormat);
   auto finishNaN = [&]() -> llvm::Expected<FormalNumericResult> {
@@ -95,32 +92,32 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
         resultFormat, canonicalPositiveQuietNaNBits(resultDescriptor), flags);
   };
 
-  if (isNumericElementwiseRelation(operation)) {
+  if (isTargetElementwiseRelation(operation)) {
     bool result = false;
     if (hasNaN) {
-      result = operation == NumericElementwiseOperation::Ne;
+      result = operation == TargetElementwiseOperation::Ne;
     } else {
       const llvm::APFloat::cmpResult comparison =
           floatingInputs[0].compare(floatingInputs[1]);
       switch (operation) {
-      case NumericElementwiseOperation::Eq:
+      case TargetElementwiseOperation::Eq:
         result = comparison == llvm::APFloat::cmpEqual;
         break;
-      case NumericElementwiseOperation::Ne:
+      case TargetElementwiseOperation::Ne:
         result = comparison != llvm::APFloat::cmpEqual;
         break;
-      case NumericElementwiseOperation::Ge:
+      case TargetElementwiseOperation::Ge:
         result = comparison == llvm::APFloat::cmpGreaterThan ||
                  comparison == llvm::APFloat::cmpEqual;
         break;
-      case NumericElementwiseOperation::Gt:
+      case TargetElementwiseOperation::Gt:
         result = comparison == llvm::APFloat::cmpGreaterThan;
         break;
-      case NumericElementwiseOperation::Le:
+      case TargetElementwiseOperation::Le:
         result = comparison == llvm::APFloat::cmpLessThan ||
                  comparison == llvm::APFloat::cmpEqual;
         break;
-      case NumericElementwiseOperation::Lt:
+      case TargetElementwiseOperation::Lt:
         result = comparison == llvm::APFloat::cmpLessThan;
         break;
       default:
@@ -130,106 +127,106 @@ evaluateFormalElementwiseLLVM(const ResolvedNumericCommand &command,
     return finishRawResult(LogicalFormat::Bool, result, flags);
   }
 
-  if ((operation == NumericElementwiseOperation::Abs ||
-       operation == NumericElementwiseOperation::Neg ||
-       operation == NumericElementwiseOperation::Max ||
-       operation == NumericElementwiseOperation::Min ||
-       operation == NumericElementwiseOperation::Relu) &&
+  if ((operation == TargetElementwiseOperation::Abs ||
+       operation == TargetElementwiseOperation::Neg ||
+       operation == TargetElementwiseOperation::Max ||
+       operation == TargetElementwiseOperation::Min ||
+       operation == TargetElementwiseOperation::Relu) &&
       hasNaN)
     return finishNaN();
 
   llvm::APFloat result = floatingInputs[0];
   llvm::APFloat::opStatus status = llvm::APFloat::opOK;
   switch (operation) {
-  case NumericElementwiseOperation::Abs:
+  case TargetElementwiseOperation::Abs:
     result.clearSign();
     break;
-  case NumericElementwiseOperation::Neg:
+  case TargetElementwiseOperation::Neg:
     result.changeSign();
     break;
-  case NumericElementwiseOperation::Recip:
-    result = llvm::APFloat::getOne(*getFloatSemantics(key.getInputFormat()));
+  case TargetElementwiseOperation::Recip:
+    result = llvm::APFloat::getOne(*getFloatSemantics(inputFormat));
     status =
         result.divide(floatingInputs[0], llvm::APFloat::rmNearestTiesToEven);
     break;
-  case NumericElementwiseOperation::Square:
+  case TargetElementwiseOperation::Square:
     status =
         result.multiply(floatingInputs[0], llvm::APFloat::rmNearestTiesToEven);
     break;
-  case NumericElementwiseOperation::Max:
-  case NumericElementwiseOperation::Min: {
+  case TargetElementwiseOperation::Max:
+  case TargetElementwiseOperation::Min: {
     if (floatingInputs[0].isZero() && floatingInputs[1].isZero()) {
       const bool negative =
-          operation == NumericElementwiseOperation::Max
+          operation == TargetElementwiseOperation::Max
               ? classifications[0].negative && classifications[1].negative
               : classifications[0].negative || classifications[1].negative;
-      result = llvm::APFloat::getZero(*getFloatSemantics(key.getInputFormat()),
-                                      negative);
+      result =
+          llvm::APFloat::getZero(*getFloatSemantics(inputFormat), negative);
       break;
     }
     const llvm::APFloat::cmpResult comparison =
         floatingInputs[0].compare(floatingInputs[1]);
-    const bool chooseRhs = operation == NumericElementwiseOperation::Max
+    const bool chooseRhs = operation == TargetElementwiseOperation::Max
                                ? comparison == llvm::APFloat::cmpLessThan
                                : comparison == llvm::APFloat::cmpGreaterThan;
     if (chooseRhs)
       result = floatingInputs[1];
     break;
   }
-  case NumericElementwiseOperation::Add:
+  case TargetElementwiseOperation::Add:
     status = result.add(floatingInputs[1], llvm::APFloat::rmNearestTiesToEven);
     break;
-  case NumericElementwiseOperation::Sub:
+  case TargetElementwiseOperation::Sub:
     status =
         result.subtract(floatingInputs[1], llvm::APFloat::rmNearestTiesToEven);
     break;
-  case NumericElementwiseOperation::Mul:
+  case TargetElementwiseOperation::Mul:
     status =
         result.multiply(floatingInputs[1], llvm::APFloat::rmNearestTiesToEven);
     break;
-  case NumericElementwiseOperation::Div:
+  case TargetElementwiseOperation::Div:
     status =
         result.divide(floatingInputs[1], llvm::APFloat::rmNearestTiesToEven);
     break;
-  case NumericElementwiseOperation::Relu:
+  case TargetElementwiseOperation::Relu:
     if (classifications[0].negative && !floatingInputs[0].isZero())
-      result = llvm::APFloat::getZero(*getFloatSemantics(key.getInputFormat()));
+      result = llvm::APFloat::getZero(*getFloatSemantics(inputFormat));
     break;
-  case NumericElementwiseOperation::Eq:
-  case NumericElementwiseOperation::Ne:
-  case NumericElementwiseOperation::Ge:
-  case NumericElementwiseOperation::Gt:
-  case NumericElementwiseOperation::Le:
-  case NumericElementwiseOperation::Lt:
-  case NumericElementwiseOperation::LogicNot:
-  case NumericElementwiseOperation::LogicAnd:
-  case NumericElementwiseOperation::LogicOr:
-  case NumericElementwiseOperation::LogicXor:
-  case NumericElementwiseOperation::Sqrt:
-  case NumericElementwiseOperation::Rsqrt:
-  case NumericElementwiseOperation::Log2:
-  case NumericElementwiseOperation::Ln:
-  case NumericElementwiseOperation::Pow2:
-  case NumericElementwiseOperation::Exp:
-  case NumericElementwiseOperation::ExpLp:
-  case NumericElementwiseOperation::Sin:
-  case NumericElementwiseOperation::Cos:
-  case NumericElementwiseOperation::Tanh:
-  case NumericElementwiseOperation::Sigmoid:
-  case NumericElementwiseOperation::SatRelu:
-  case NumericElementwiseOperation::LeakyRelu:
-  case NumericElementwiseOperation::Softplus:
+  case TargetElementwiseOperation::Eq:
+  case TargetElementwiseOperation::Ne:
+  case TargetElementwiseOperation::Ge:
+  case TargetElementwiseOperation::Gt:
+  case TargetElementwiseOperation::Le:
+  case TargetElementwiseOperation::Lt:
+  case TargetElementwiseOperation::LogicNot:
+  case TargetElementwiseOperation::LogicAnd:
+  case TargetElementwiseOperation::LogicOr:
+  case TargetElementwiseOperation::LogicXor:
+  case TargetElementwiseOperation::Sqrt:
+  case TargetElementwiseOperation::Rsqrt:
+  case TargetElementwiseOperation::Log2:
+  case TargetElementwiseOperation::Ln:
+  case TargetElementwiseOperation::Pow2:
+  case TargetElementwiseOperation::Exp:
+  case TargetElementwiseOperation::ExpLp:
+  case TargetElementwiseOperation::Sin:
+  case TargetElementwiseOperation::Cos:
+  case TargetElementwiseOperation::Tanh:
+  case TargetElementwiseOperation::Sigmoid:
+  case TargetElementwiseOperation::SatRelu:
+  case TargetElementwiseOperation::LeakyRelu:
+  case TargetElementwiseOperation::Softplus:
     llvm_unreachable("operation escaped the LLVM elementwise validator");
   }
   mergeFlags(flags, flagsFromStatus(status));
 
-  if ((operation == NumericElementwiseOperation::Mul ||
-       operation == NumericElementwiseOperation::Square) &&
+  if ((operation == TargetElementwiseOperation::Mul ||
+       operation == TargetElementwiseOperation::Square) &&
       flags.inexact) {
     std::optional<ExactDyadic> lhs = decodeFiniteDyadic(canonicalInputs[0]);
     const RawLogicalValue rhsValue =
-        operation == NumericElementwiseOperation::Square ? canonicalInputs[0]
-                                                         : canonicalInputs[1];
+        operation == TargetElementwiseOperation::Square ? canonicalInputs[0]
+                                                        : canonicalInputs[1];
     std::optional<ExactDyadic> rhs = decodeFiniteDyadic(rhsValue);
     if (lhs && rhs)
       flags.underflow |=

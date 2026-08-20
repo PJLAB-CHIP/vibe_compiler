@@ -176,7 +176,7 @@ bool verifyShardEntry(const llvm::json::Object &object, int64_t numPartitions,
                                          diagnostics))
       return true;
   } else if (verifyNpyTensorPayloadFile(path, file, sizes, elementType,
-                                       diagnostics)) {
+                                        diagnostics)) {
     return true;
   }
   verifiedSlices.push_back(ParameterShardSlice{
@@ -205,7 +205,8 @@ bool verifyParameterShardCoverage(llvm::ArrayRef<ParameterShardSlice> slices,
       // digest fact and never re-reads content.
       std::optional<std::string> canonicalDigest;
       for (const ParameterShardSlice &slice : slices) {
-        const ProgramPayloadSource *source = resolver->resolve(slice.relativePath);
+        const ProgramPayloadSource *source =
+            resolver->resolve(slice.relativePath);
         if (!source)
           return rejectProgramDirectory(
               "replicated parameter shard payload is unavailable in the "
@@ -383,8 +384,8 @@ bool verifyParameterShardMetadata(
                                     diagnostics);
     if (verifyShardEntry(*shardObject, numPartitions, globalShape, localShape,
                          tensorType.getElementType(), name, programDir,
-                         distribution, resolver, seenPartitions,
-                         seenReplicaIds, verifiedSlices, diagnostics))
+                         distribution, resolver, seenPartitions, seenReplicaIds,
+                         verifiedSlices, diagnostics))
       return true;
   }
   if (distribution == "replicated" &&
@@ -403,7 +404,8 @@ bool verifyParameterShardMetadata(
     verifiedBinding->distribution = getVerifiedDistributionKind(distribution);
     verifiedBinding->globalShape = std::move(globalShape);
     verifiedBinding->localShape = std::move(localShape);
-    verifiedBinding->dtype = normalizeProgramDtype(dtype);
+    verifiedBinding->dtype =
+        *getProgramElementType(tensorType.getElementType());
     verifiedBinding->partitionSlices.reserve(verifiedSlices.size());
     for (const ParameterShardSlice &slice : verifiedSlices)
       verifiedBinding->partitionSlices.push_back(
@@ -482,8 +484,8 @@ bool verifyParameterShards(
     wafer::frontend::ProgramParameterBinding verifiedBinding;
     if (verifyParameterShardMetadata(*object, meta, functionType, numPartitions,
                                      seenParameterArgs, programDir, diagnostics,
-                                     resolver, result ? &verifiedBinding
-                                                      : nullptr))
+                                     resolver,
+                                     result ? &verifiedBinding : nullptr))
       return true;
     if (result)
       result->parameters.push_back(std::move(verifiedBinding));
