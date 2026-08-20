@@ -428,7 +428,7 @@ def _test_program(module: object) -> None:
         "Host submit",
         "Host launch → trusted completion",
         "Timing domains · not additive",
-        "Trace-run Kcore ledger",
+        "Trace-run Kcore accounting",
         "Trace-run cost overlay",
         "capture-boundary residual",
         "inside-site-outside-operation",

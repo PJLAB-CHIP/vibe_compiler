@@ -33,7 +33,7 @@ inline unsigned getBoundedParallelWorkerCount(
 
 /// Runs independent shared-context work in stable contiguous shards.  The
 /// caller owns indexed result slots and performs any cross-item merge only
-/// after this function returns.  Invocation timing and work ledgers are
+/// after this function returns.  Invocation timing and optional work observers are
 /// propagated explicitly to the bounded worker threads.
 template <typename FunctionT>
 unsigned runBoundedParallelWork(

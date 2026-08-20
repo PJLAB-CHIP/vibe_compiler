@@ -1,7 +1,7 @@
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
 # Increasing one FP16 parameter from 0.5 MiB through 8 MiB must increase the
-# byte/read-window ledger without increasing source identity/open counts or
+# byte/read-window accounting without increasing source identity/open counts or
 # exceeding the 1 MiB read bound.
 
 # RUN: rm -rf %t.small %t.medium %t.large %t.small-output %t.medium-output %t.large-output %t.small.log %t.medium.log %t.large.log

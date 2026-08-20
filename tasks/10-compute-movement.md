@@ -10,25 +10,26 @@ physical-dataflow placement、fusion或winner。Q49.P、Q50、Q51–Q53动态状
 Pipeline position:
 - Upstream IR / input:
   GSPMD与normalization产生的card-local Linalg/Tensor/SCF DAG；source op通过current operation、region、
-  indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。Q50.S已在physical mapping前把合格语义形态物化成
-  verifier-legal actual TensorProgram roots，Q51为本次candidate选中其中一个root及typed physical assignments。
+  indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。search路径中Q50.S已把合格softmax-attention子图
+  一次性归一为verifier-legal semantic op；Q51为每个semantic root选中typed algorithm及physical assignments，algorithm
+  property只在winner commit时写入IR。
 - Current stage responsibility:
   调用方给出本次placement、temporal tile、encoding、TileRegion、retain/recompute/spill/cut/release boundary、buffer/slot与
   event order选择后，从selected actual TensorProgram root的current concrete Linalg/Tensor语义
   确定性创建对应TileModule/TileRegion中的typed compute、view、movement、temporary和event；再把每个
   Tile module合法化为canonical/unplaced wafer.instr.*。
 - Output IR / files:
-  selected complete CardModule candidate中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
-  compute form、numeric、geometry、movement和effect事实全部在actual IR中，不保留候选side channel。
+  selected complete CardModule中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
+  compute form、geometry、movement和effect事实全部在actual IR中，不保留候选side channel。
 - Downstream consumer:
   fresh worker/order/completion reconstruction、fixed-capacity SPM/DDR planning、CardExecutable communication/resource
   verification、target conversion、explicit `(card_id, tile_id, launch_slot)` output/package writing。
 - User-level driver / named pipeline:
-  wafer-compile production pipeline；局部wafer-opt conversion只用于focused replay/test。
+  wafer-compile production pipeline；局部wafer-opt conversion只用于focused leaf testing。
 - Explicit non-goals:
   不决定spatial placement、ready-op concurrency、fusion、TileRegion、retain/recompute/spill/cut/release boundary、buffer/event order、
   communication或global cost；lifetime、live set和cost只由上游/下游analysis从current assignments与actual IR派生；不按workload、shape、
-  parameter/symbol/op名字选择lowering；不分配physical offsets、runtime handles或launch slots；lowering失败直接拒绝当前candidate。
+  parameter/symbol/op名字选择lowering；不分配physical offsets、runtime handles或launch slots；selected lowering失败终止compile。
 - Completion gate:
   fill、named GEMM/batched GEMM、ordinary static 2-D convolution和generic由current op class、region、indexing maps与
   DPS/Tiling semantics确定性物化；exact generic GEMM与convolution只由标准Linalg maps、iterator和multiply-accumulate
@@ -44,12 +45,12 @@ source数学语义只有一个owner：current MLIR op、region、SSA、type、at
 - DestinationStyleOpInterface inputs/inits/tied results；
 - TilingInterface iteration domain、tiled implementation和producer/consumer tile relation；
 - MemoryEffectOpInterface及recursive effects；
-- RankedTensorType、dtype、shape和typed numeric attrs；
+- RankedTensorType、dtype和shape；
 - standard tensor/view/subset semantics及current-IR-derived `IndexRelation`。
 
-Q50.S先通过统一semantic-alternative builder把每个合格语义点物化成actual TensorProgram root；Q51只选择root并展开
-physical-dataflow spatial/temporal/fusion/representation/communication等调度维度，不在这里生成或改写semantic root。
-它也不生成local target-implementation菜单。本文在actual clone中对selected root的current structured op执行唯一typed lowering：
+Q50.S不预建每个算法/参数的TensorProgram graph。它把source语义归一为显式`wafer.linalg_ext.softmax_weighted_sum` op，Q51只保存per-root closed algorithm
+enum并展开physical-dataflow spatial/temporal/fusion/representation/communication等调度维度；K/V block和partition分别归
+temporal与spatial assignment。winner进入最终CardModule transaction后，本文直接消费typed root assignment执行唯一lowering：
 
 ```text
 lower current structured op(current_op, selected_physical_values, rewriter)
@@ -60,14 +61,14 @@ iterator、三张indexing map和scalar region共同证明exact rank-2 GEMM，或
 symbol-free affine window maps和scalar region共同证明ordinary static 2-D convolution时，才归一到对应typed compute；
 否则保持generic baseline并按其actual scalar body物化。显式`tensor.pad`只在static low/high与position-independent fill value
 可从current op精确读取时物化为fill加insert-slice；不得按source名字、shape或常见zero-padding恢复语义。这里没有public
-target-implementation OpInterface、external-model registry、candidate kind、
+target-implementation OpInterface、external-model registry、plan kind、
 capability menu、selected/forced参数或hidden fallback。rewrite改变source region/type/SSA/effect后，lowering只重新读取current IR。
 
 physical-dataflow selection仍是唯一组合owner：它联合选择Tile set、per-Tile work domain、temporal tile、encoding、
 TileRegion partition、retain/recompute/spill/cut/release boundary、movement、buffer/slot和event order；lifetime、live set与cost
 从这些typed assignments及物化后的current IR重算。direct lowering不能为某个op自行决定全局mapping，也不能因为当前route失败而
-改写source数学语义。Q48未来只能扩展Q50.S同一semantic-alternative builder seam，生成的每个alternative仍必须是完整
-actual TensorProgram root，再由Q51选择并分别走本合同；不能恢复local selector。
+改写source数学语义。Q48未来生成的alternative必须进入Q51唯一selection owner；若某类source op需要多个实现，先由该语义
+自己的显式IR/interface表达，不建立local selector、字符串registry或opaque graph descriptor。
 
 ## 3. Selected Tile IR
 
@@ -97,7 +98,7 @@ peer/collective communication与destination staging表达。TileRegion boundary�
 
 多stage流水不是一个target-abstract mode。Tile IR必须显式包含每个chunk/temporal iteration、相应load/store/local/peer
 movement、独立或rotating buffer roots及slot relation、数据依赖和event；Instr IR继续物化实际issue order与completion。
-缺少其中任一项时，本层只能拒绝该pipeline candidate，不能让后续lowering按估算补全。
+缺少其中任一项时，planning必须拒绝对应typed plan；若selected lowering才发现则终止为合同缺口，不能按估算补全。
 
 ## 4. Compute Contracts
 
@@ -107,8 +108,7 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 shape。它不隐含bias、activation、scale、quant或requant。physical layout与tail由operand/result memref encoding解释；
 accumulator/partial sum若跨op或wave存在，必须是SSA value或loop-carried state。
 
-floating reduction/split可能改变rounding、NaN、infinity和signed-zero；只有current numeric policy允许并由end-to-end
-comparator验证的candidate才能采用。integer变换必须证明exact/modular语义。operand名字或常见Transformer shape都不构成GEMM语义。
+operand名字或常见Transformer shape都不构成GEMM语义。本任务只处理current op、既有dtype支持和structural compute/movement合同。
 
 ### Ordinary 2-D convolution
 
@@ -127,8 +127,8 @@ low/high/value保持原始语义。Tile-to-Instr conversion只把已验证的can
 transcendental。没有indexing relation时shape一致；存在broadcast/permutation时必须由current indexing/relation proof
 支持。relation result保持logical i1，bitpacking只由encoding与Instr lowering决定。
 
-`wafer.tile.compute.convert`显式改变dtype。rounding、zero-point或其它会改变numeric semantics的参数若存在，必须成为
-typed field或独立op；不能由target call名字恢复。不同dtype block geometry无法direct traversal时保留显式movement。
+`wafer.tile.compute.convert`显式改变dtype，其参数由既有target operation合同拥有，不能由target call名字恢复。不同dtype block
+geometry无法direct traversal时保留显式movement。
 
 ### Reduce 与 fill
 
@@ -153,10 +153,10 @@ movement不是type cast。是否能成为metadata view由08的IndexRelation与co
 - explicit Tile peer/collective communication。
 
 source、destination、logical relation、direction、range和effect从operands、types、view chain和typed fields重建。
-两条路线若产生不同commands、temporary或completion，就必须是不同actual candidates，而不是一个movement op在late
-lowering时自行选择。连续/strided/mapped descriptor cover由08证明；SPM/DDR offsets由09/12的late planners决定。
+两条路线若产生不同commands、temporary或completion，就必须是不同typed plan alternatives，而不是一个movement op在late
+lowering时自行选择；只有winner形成actual IR。连续/strided/mapped descriptor cover由08证明；SPM/DDR offsets由09/12的late planners决定。
 
-同一source经多段view/broadcast/materialize组成的relation可以在isolated clone中合成一次direct movement，前提是
+同一source经多段view/broadcast/materialize组成的relation可以在selected新Card subtree中合成一次direct movement，前提是
 relation exact、其它uses/effects/alias闭合且final destination cover可证明。cleanup只能删除fully proven same-root/same-map
 冗余，不能移动fusion cut、改变route或创造spill/recompute。
 
@@ -182,7 +182,7 @@ latest-necessary completion。DTE wait、NCC participant join和group barrier是
 
 ## 7. Exact Verification
 
-每个complete CardModule candidate统一经过：
+selected complete CardModule统一经过：
 
 ```text
 selected CardModule
@@ -196,12 +196,12 @@ selected CardModule
   -> atomic CardExecutable
 ```
 
-Target-abstract verifier至少检查shape/dtype/numeric fields、GEMM orientation、convolution canonical geometry、
+Target-abstract verifier至少检查shape/dtype与existing operation fields、GEMM orientation、convolution canonical geometry、
 stride/dilation/pad/unpad、reduce/init、elementwise relation、
 memory space/encoding、valid lanes、temporary和movement effects。Instr verifier至少检查engine domains、descriptor
 bytes/stride/iterations/range/alignment/narrowing、effect-associated actual roots及token/wait closure。
 
-任何Tile失败都拒绝整个complete CardModule candidate；不能发布partial Tile set，也不能在exact gate中retile、spill、换layout或
+任何Tile失败都拒绝整个selected complete CardModule；不能发布partial Tile set，也不能在actual gate中retile、spill、换layout或
 换transport。`none`与`search`走相同的materialization和late gates，区别只在上游候选生成/选择策略。
 
 ## 8. Verification 与当前physical-dataflow边界

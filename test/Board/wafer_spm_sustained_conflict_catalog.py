@@ -15,7 +15,7 @@ Pipeline position:
   resource addresses, instruction counts, completion state, pair-only NCC
   PMU, and stable raw SPM port-counter snapshots with restored enable scope.
 - Downstream consumer:
-  The hardware-calibration evidence ledger and, only after a stable non-zero
+  The hardware-calibration evidence record and, only after a stable non-zero
   held-out signal, a narrow current-target cost feature.
 - User-level driver / named pipeline:
   ``wafer_board_spm_sustained_conflict_probe_test.py``.

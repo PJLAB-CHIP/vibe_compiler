@@ -71,19 +71,24 @@ root/alias或携带该alias的control token作为region I/O。
 
 ### 3.2 Physical-dataflow communication materialization
 
-current Tile IR不保留abstract collective request、algorithm selector或late topology shortcut。06的physical-dataflow selection在同一个
-complete CardModule candidate中联合选择Tile placement、per-Tile domain、temporal tile、fusion、TileRegion、
-retain/recompute/spill/cut/release boundary、encoding/staging、buffer/slot、communication edge和issue/event order，并直接产生每个
-sender/receiver的`peer_send`、`peer_recv`、local movement/compute和matching wait。partial state只保存这些typed assignments；
-message-ready/live set、root lifetime、resource calendar与numeric cost均从current assignments和actual IR重算。候选必须在同一
-complete CardModule candidate中通过message matching、range、resource、completion和numeric cost gate。
+current Tile IR不保留abstract collective request、algorithm selector或late topology shortcut。06的physical-dataflow planner在immutable
+TensorProgram和typed state上联合选择Tile placement、per-Tile work、TileRegion/execution、temporal scope、physical versions、explicit
+movement、buffer/slot和event order；loser plans不构造IR。完整winner在一次CardModule transaction中直接产生每个sender/receiver的
+`peer_send`、`peer_recv`、local movement/compute和selected wait，不先造DDR版本再post-hoc替换。message-ready/live set、root lifetime、
+resource calendar与cost从current assignments重算，最终message/range/resource/completion从winner actual IR重证。
+
+planner中的通信对象是exact chunk初始/目标state和transfer/combine action DAG，不是`Ring/Tree`算法attr。经典ring、tree、recursive
+exchange、row/column及aggregate/pairwise方案只负责提出checked DAG；actual Tile/Instr IR最终只保留这些DAG展开后的local work、
+send/recv/token/wait。`TargetTopology`的Tile邻接可用于minimum-hop、cut bound与software relay proposal，但current Direct DTE内部route
+不透明，不能把canonical shortest path写成route、逐link resource或deadlock证明。future target若暴露programmable route，须先扩同一
+typed target/IR合同，再由route verifier和event scheduler消费。
 
 card-level LinalgExt collective只描述card partition语义；singleton group在CardModule materialization时成为identity，
 non-singleton group在cross-card transport尚未实现时fail closed。单卡16个Tiles之间的数据重排不能把card partition
 ordinal当作Tile ID，也不能通过恢复旧的Tile collective op绕过physical-dataflow mapping。
 
-fanout必须显式产生多个send，fanin必须显式产生每个receive、local reduction和发布顺序；reduction combiner、dtype及numeric
-order由typed local compute表达，DTE不暗含算术。padding lane不得当作logical payload。NoC/compute/DDR overlap只有actual
+fanout必须显式产生多个send，fanin必须显式产生每个receive、local combine和发布顺序；combiner与运算顺序由typed local compute
+表达，DTE不暗含算术。padding lane不得当作logical payload。NoC/compute/DDR overlap只有actual
 chunk control flow、independent或rotating buffers、movement issue、compute issue order和matching completion存在时才进入理论cost；
 stage数量、pipeline flag、估算window或IR外resource plan都不能证明流水。unknown性能项不参与比较，但message/range/resource legality
 仍必须证明。
@@ -129,7 +134,7 @@ FSM以及absolute、source-relative或bounded selector-table remote address。ph
 拥有；local address仍来自receiver planned buffer。binding不是通信plan或route fallback。
 
 verification不能retile、insert staging、改worker/order、换algorithm或修补missing wait。失败只返回typed reason并丢弃
-当前actual clone；本文不创建candidate set、repair recipe或可重放transport plan。
+本次未提交Card subtree；本文不创建candidate set、repair recipe或可重放transport plan，也不把失败返回planner重选。
 
 ## 6. Target、Package 与 Runtime Boundary
 
@@ -150,11 +155,11 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 
 | gate | failure | result |
 | --- | --- | --- |
-| Tile IR verifier | invalid physical peer、bytes、shape、token或effect | reject actual candidate |
-| dataflow materialization | communication edge、encoding、cover或local compute非法 | discard complete CardModule candidate |
-| memory/completion | staging capacity、range、lifetime或wait不闭合 | reject candidate, no repair |
-| CardExecutable verification | missing/duplicate peer、message/range/resource conflict | write no bindings |
-| target/package | typed call、status、identity或resource readback mismatch | write no partial output/package |
+| planning H/J/F query | endpoint、payload cover、resource或completion被exact proof拒绝 | 只拒绝对应typed assignment；不构造IR |
+| selected Tile IR/materialization | physical peer、encoding、cover、local compute或token与plan不一致 | compiler bug；擦除未提交Card subtree并终止 |
+| selected memory/completion | staging capacity、range、lifetime或wait与full proof不一致 | compiler bug；不repair、不重选 |
+| CardExecutable verification | missing/duplicate peer、message/range/resource conflict | 不写binding，终止compile |
+| target/package | typed call、status、identity或resource readback mismatch | 不发布部分output/package，终止compile |
 
 直接验证至少覆盖：
 
@@ -166,6 +171,6 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 - package card/Tile resource scope、transport status和atomic readback；
 - source-to-CardModule-to-package真实链，而非只验证手写Instr fixture。
 
-CardExecutable integration gate还必须证明general chain、branch、fanout/fanin和mapping-changing DAG的complete CardModule candidate确实生成
+CardExecutable integration gate还必须证明general chain、branch、fanout/fanin和mapping-changing DAG的selected CardModule确实生成
 这些communication ops，并在最终Instr中具备chunk、buffer、order和completion witness。当前已有lowering/verification能力
 不得被写成搜索已经完成；cross-card collective也继续是明确非目标，不能恢复partition-to-Tile旧接口绕过。

@@ -20,7 +20,7 @@ Pipeline position:
   每个logical card partition一个verified card-local structured tensor program，以及对应parameter payload/metadata；
   输出尚未绑定card_id、target tile_id、launch slot或runtime endpoint。
 - Downstream consumer:
-  fixed target-independent structured optimization；随后physical-dataflow synthesis对每个card-local DAG
+  fixed target-independent structured optimization；随后physical-dataflow planning对每个card-local DAG
   构造CardModule，并选择target tile_id。Tile module splitting只发生在selected CardModule之后。
 - User-level driver / named pipeline:
   正式入口为
@@ -46,7 +46,7 @@ Pipeline position:
 | --- | --- | --- |
 | `partition_id in [0, num_partitions)` | Shardy/XLA SPMD | global tensor到card-local tensor的逻辑partition、boundary和parameter shard |
 | `card_id` | target topology / deployment | 本层不选择；下游把一个card-local module放到某个target card时才出现 |
-| `tile_id` | physical-dataflow synthesis | 本层不产生；标识card内Tile及其MPMD program |
+| `tile_id` | physical-dataflow planning | 本层不产生；标识card内Tile及其MPMD program |
 
 `num_partitions`因此只能表示logical card partition数量。single-card production当前使用
 `num_partitions=1`；单卡有16个available Tile并不把该值改成16。未来`num_partitions>1`表示多卡global-to-local
@@ -119,7 +119,7 @@ tensor DAG。它不携带：
 - SPM/DDR allocation和offset；
 - target packet、runtime resource handle或launch slot。
 
-本stage按`partition_id=0..N-1`发布card-local structured programs。每个program在进入physical-dataflow synthesis
+本stage按`partition_id=0..N-1`发布card-local structured programs。每个program在进入physical-dataflow planning
 时仍是一张完整DAG；不能先按单卡Tile数clone、不能只取partition 0作为代表、也不能去重字节相同的logical card
 partitions。`tasks/06-physical-dataflow-synthesis.md`随后为每个card-local DAG选择CardModule；其
 `wafer.tile.module`数量由selected physical mapping与available Tile domain决定，与`num_partitions`无等式关系。

@@ -33,7 +33,7 @@
 - 不建立shadow schedule、opaque payload、side table、名字约定或通过文件名恢复语义的协议。
 - transformation读取current IR和本次局部analysis，直接改写当前IR或构造下一层IR；late stage不修复上游选择。
 - allocator、completion、ABI preparation、target conversion和runtime verifier只做自己边界的legality/materialization，
-  失败返回候选owner，不原地retile、spill、reorder或切换算法。
+  selected path失败返回当前compile owner并终止，不原地retile、spill、reorder、切换算法或返回planner重选。
 - 创建dialect op/type/attr的pass声明dependent dialect；协议错误尽量在ODS、C++ type、verifier、conversion legality暴露。
 
 ## Card与Tile双域
@@ -46,6 +46,7 @@
 source program
   -> card-level GSPMD
   -> card-local structured DAG
+  -> closed PhysicalDataflowPlan
   -> selected wafer.card.module
   -> all-and-only wafer.tile.module
   -> TileRegion
@@ -60,7 +61,7 @@ source program
 - no-work Tile仍需合法entry并进入target/runtime domain。module count不拥有Tile domain；Grid/Cluster可以低层聚合module，
   但必须保留16个显式Tile interfaces和每Tile不同body。
 
-## Physical-dataflow时空综合
+## Physical-dataflow planning与selected execution
 
 - `search`策略的优化对象是card-local完整structured DAG，不是单op、单consumer chain或预切好的Tile副本。
 - 同一个候选共同决定不同op的Tile集合、intra-op spatial work、temporal tile、loop order、TileRegion/融合、
@@ -87,25 +88,26 @@ source program
 - spatial/temporal reuse从exact `IndexRelation`、selected placement、TileRegion/traversal与wave-loop order按IR epoch派生，保留
   per-axis/per-wave equivalence和invariance；不要压成aggregate bool attr或另建metadata事实源。它可以优先regular mapping、
   unicast/multicast与retain/hoist proposal，但不能选择winner或删除合法补集。
-- cheap typed legality、coverage、topology symmetry、SPM lower bound和raw-work dominance在clone前剪枝。
+- cheap typed legality、coverage、topology symmetry、SPM lower bound和raw-work dominance在state expansion或winner commit前应用。
 - analytic footprint只有证明must-coexist的lower bound超过capacity时才是exact rejection；普通footprint/resource estimate与
   approximate/unverified solver结果只可排序。Boundary-faithful exact局部solver可以返回proof/proposal，但selected choice/offset
   仍须物化并由typed IR复验；timeout/resource exhaustion保持indeterminate。
-- 只有需要exact legality/cost的状态才按需物化complete CardModule candidate；任一时刻最多一个live actual clone，避免RSS随
-  候选笛卡尔积增长。固定shortlist、beam或candidate cap会丢合法状态，只能在Q52以profile和质量回归证明后作为显式trade-off。
-- global work ledger使用deterministic work units，不用wall-clock timeout决定搜索语义。wall/RSS只做回归诊断。
-- host worker可以并行互不共享可写IR的proposal/Tile-local evaluation；candidate result合并、tie-break和最终顺序保持稳定。
+- production exact legality/cost由Q50 pure typed queries与full-coordinate proof完成，planning CardModule/Instr/Q50.0均为零。固定
+  shortlist、beam或candidate cap会丢合法状态，只能在profile和质量回归后作为显式budgeted trade-off。
+- planning allowance使用deterministic successor/query/solver work units，不用candidate compilation count或wall-clock timeout决定搜索
+  语义。wall/RSS只做外层安全与回归诊断。
+- host worker可以并行互不共享可写IR的proposal/query；state result合并、tie-break和最终顺序保持稳定。
 - regular factorized mapping、reuse-guided movement与分层resource cost应作为现有typed domain上的proposal/order机制；不为它们
   clone-per-mapping、不以function name/JSON/opaque sidecar关联状态，也不新增第二套hardware graph或winner owner。
 - 已选择CardModule只经过一个无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
-  caller只能消费结果，不能让lowering枚举、retile、spill、rebuffer或修候选。
-- proven exact failure消耗明确work unit并销毁clone，不建立late repair selector或candidate-local quota；allocator/solver
-  resource exhaustion、timeout或internal failure属于indeterminate，不能形成no-good或删除合法state。
+  production caller只能消费一次selected result，不能让lowering枚举、retile、spill、rebuffer、修plan或返回planner重选。
+- planning ExactRejection消耗明确work unit且不创建IR；actual selected failure终止compile。allocator/solver resource exhaustion、
+  timeout或internal failure属于Indeterminate/CompilerBug，不能形成no-good或删除合法state。
 - public optimization policy只使用`search`与`none`：`none`只materialize deterministic conservative baseline；
   `search`启用compiler-owned搜索，但二者经过相同lowering和exact verification。
-- `none`的SPM反馈循环从完整per-Tile iterator tile开始；每次只消费fresh allocator返回的causal demand，按有限breakpoint
-  缩小对应parallel/reduction坐标并重新跑actual packing。多个tied demand可以提升已存在的exact child顺序，但不得生成
+- `none`的SPM legalization从完整per-Tile iterator tile开始；每次只消费Q50.F plan-level causal witness，按有限breakpoint
+  缩小对应parallel/reduction坐标并重建typed resource problem。FullFeasibilityProof后才做一次actual packing。多个tied demand可以提升已存在的exact child顺序，但不得生成
   search-policy speculative sibling或用byte projection签发capacity合法。
 
 ## Spatial、fusion、SPM与communication
@@ -124,7 +126,7 @@ source program
 
 ## Completion与resource lifetime
 
-- 每个actual candidate在Tile→Instr及selected worker/order已经物化后清除旧completion，再从final effects/tokens/control flow/reuse fresh重建；不要恢复独立worker/fixed-slot selector。
+- selected actual IR在Tile→Instr及worker/order已经物化后清除旧completion，再从final effects/tokens/control flow/reuse fresh重建；不要恢复独立worker/fixed-slot selector。
 - loop backedge、branch merge、entry return、Direct-DTE exact event/wait和async resource reuse都必须闭合。
 - `ReturnAfterLocalDrain`表示该Tile entry返回前，本地发起且影响结果/reuse/status的work已收敛；它不是card-scoped barrier。
 - CardExecutable成功要求16个Tile entries和全部transport obligations完成。runtime不能用统一尾等待掩盖compiler缺失的local completion。
@@ -135,8 +137,8 @@ source program
 - hard legality/capacity与性能估计分离。hard failure拒绝candidate；性能参数缺失不改变legality。
 - 每个comparison cohort先统一确定enabled terms：有target/profile实值用实值，否则用明确理论值，完全不知道的项从
   全部candidate删除。不能candidate-local按零、无穷大或不可比较状态处理。
-- 基础数值项包括per-Tile physical compute work、card DDR bytes、directed-link NoC bytes、per-Tile explicit SPM movement
-  和有参数的control work。
+- 基础work项包括per-Tile physical compute、card DDR bytes、endpoint/minimum-hop/cut NoC facts、per-Tile explicit SPM movement和
+  有参数的control work；只有target提供qualified exact route时才有directed-link load。
 - dependency phase相加；independent branch或disjoint Tile group取并发最大值；只有actual buffering/dataflow证明存在时才用
   prologue/II/epilogue overlap。
 - raw work、enabled term和参数来源保留为diagnostic，不写入selected IR或package。
@@ -296,7 +298,7 @@ source program
 - strict loader从package dtype/layout/shape经shared physical codec重算TargetTensor和external port bytes，并要求program-data精确结束于
   最后一个canonical range；`modules/`所需目录祖先从declared module paths推导，额外空目录也属于closure违规。
 - 每个TargetTensor创建一个move-only `ProgramDataRangeMaterialization` reader；reader创建计一次materialization，其bounded window
-  read数量单独进入read ledger。同一ProgramTensor的不同target descriptor必须各有一个reader，16-Tile共享只复用TargetTensor。
+  read数量单独进入read accounting。同一ProgramTensor的不同target descriptor必须各有一个reader，16-Tile共享只复用TargetTensor。
 - `WaferPackageSupport`拥有profile instrumentation共享model/filename常量；`Package/Writer`与`Driver`不仅不能链接`WaferRuntime`，源码和public
   header也不能include`Wafer/Runtime/*`，该双边界由source-organization检查。
 
@@ -338,34 +340,33 @@ source program
   无硬件时exit 77；真实板测通过前Q56不标done。
 - Tools测试的python断言先脱离lit验证：把`%t.outputs/...`替换为真实package路径后用`python3 -c`跑一遍，再交给lit。
 
-## Deterministic baseline 的直接链路约束（stable，2026-08-18）
+## Deterministic baseline 的直接链路约束（stable，2026-08-20）
 
-- baseline不建立region/function capacity probe。每个closed coordinate只构造一个actual CardModule并立即交给Q50.0；Q50.0
-  accepted executable直接下传，exact SPM rejection销毁该owner并用同一份current relation certificate驱动下一次确定性
-  temporal refinement，indeterminate或其它exact failure fail closed。不得在同一coordinate上依次构造root shard、Tile entry、
-  CardModule，也不得为accepted winner重建IR。
+- baseline不建立region/function/per-coordinate capacity IR。每个closed coordinate只从current typed facts构造Q50.F resource problem；
+  ExactRejection驱动下一次确定性temporal refinement，FullFeasibilityProof关闭plan，Indeterminate/Unsupported/CompilerBug fail closed。
+  只有final plan构造一个CardModule并调用一次Q50.0；actual parity failure终止，不得为下一coordinate或accepted result重建IR。
 - 一 root 一 region：IndependentDDRStages从observable output shard与actual selected edge endpoint推导该Tile的真实
   root集合；独立component逐root/closure构造后按canonical node order拼接，connected root由selected RegionCut在物化时直接
   形成DDR store/reload边界。baseline不再先形成multi-root region再调用post-hoc root splitter；通用
   `splitRegionAfterPrefix`只服务已选择的RegionCut/resource crossing。
 - `StorageRootMemo`（StructuredBufferRelations.h）：query-local per-value 存储根 memo，内层 set 用
   `unique_ptr` 持有（map rehash 不悬空引用）；只读同一 IR epoch 内共享。
-- baseline controller只消费typed iterator/topology facts、当前coordinate的一次性materialization和Q50.0 exact verdict；按typed
-  rejection推进下一项必要coordinate。任一helper只要接收option列表/domain并通过propagation、recursive CSP、backtracking或
+- baseline controller只消费typed iterator/topology facts、当前coordinate的pure query与Q50.F verdict；按typed rejection推进下一项
+  必要coordinate。任一helper只要接收option列表/domain并通过propagation、recursive CSP、backtracking或
   assignment solve返回一个结果，即使确定、只取第一个或标为`policy-free`，本质上仍是search，不能留在baseline transitive
   closure。baseline只保留一个live coordinate；functional legalization transition必须预定义、单调、不分支且不回溯。
 - exact relation的变量/分段数量限制不等于wall-time有界。支持的projected/permuted/static-rectangle语义应沿
   `IndexRelation` builder/composition保留closed-form witness，避免在baseline热路径用generic
   `PresburgerSet::isEqual/isSubsetOf/subtract`恢复矩形；generic fallback在任何emptiness/extremum/equality调用前检查变量、分段、
   每段constraint、local variable和绝对系数上限，资源耗尽返回indeterminate，不能当logical rejection推进coordinate。
-- 一个baseline invocation先建立一次immutable `TileMaterializationSourceSession`，只做source verifier、topology/logical mesh、
-  static output domain和structured-node identity；每个deterministic legalization coordinate只建立mapping-local
-  `TileMaterializationSession`并调用一次`lowerCardModule`。同一coordinate的全部Tile从root execution domain共同反向传播exact
+- 一个baseline invocation先建立一次immutable source analysis owner，只做source verifier、topology/logical mesh、static output domain
+  和structured-node identity；每个deterministic legalization coordinate只建立query-local typed facts，不调用`lowerCardModule`。同一
+  coordinate的全部Tile从root execution domain共同反向传播exact
   operand demand；relation按operation/result/operand建立一次，structured producer形成停止边界。验证carrier all-and-only覆盖后，
   每个final single-root region只一次性物化typed recipe要求的operation和endpoint，不先建立SSA closure或scratch module再rebuild。
   16个Tile entry用共享MLIR线程池bounded并发构造并按Tile ID稳定归并；cache只保存同一IR epoch的analysis facts，不保存materialized IR。
-- 每个closed coordinate的CardModule和Q50.0 invocation严格一一对应；已经exact accepted的executable直接move到输出，不再为winner protocol重物化，
-  也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR trace
+- 显式test work counts证明planning CardModule/Instr/Q50.0为零、selected CardModule/Q50.0各一次；accepted executable直接move到输出，
+  也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR inspection
   写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。
 - baseline迭代验证只走显式`none`的direct unit、定向lit和轻量source-to-package/no-card case；不运行旧search、旧winner对照或
   paired optimization回归。模型级materialization任务在定向门禁闭合后只运行一次fresh FP16 LLaMA `optimization-none`

@@ -9,13 +9,13 @@
 ```text
 Pipeline position:
 - Upstream IR / input:
-  card-local structured TensorProgram，或physical-dataflow selection准备物化的isolated CardModule candidate；current op、
+  immutable card-local structured TensorProgram与typed planning state，或winner commit中新建的selected Card subtree；current op、
   indexing maps、Tiling/DPS interfaces、SSA/view/control flow、dtype/shape/effect与target topology均可验证，
-  selected Tile work domain尚可处于query-local proposal或actual CardModule clone中。
+  selected Tile work domain由closed plan表达。
 - Current stage responsibility:
   从当前IR派生logical IndexRelation、alias/root和shape bounds；由memref encoding解释footprint、alignment、
   valid/padding domain与logical-to-physical bit mapping；证明metadata view或selected DDR/SPM/NoC movement是否exact
-  可实现，并在actual clone中物化typed view、allocation、movement、temporary、staging、token与wait。
+  可实现；planning query不写IR，selected emitter在新Card subtree中物化typed view、allocation、movement、temporary、staging、token与wait。
 - Output IR / files:
   query-local且随rewrite失效的analysis proof，或自包含的selected wafer.card.module / wafer.tile.module body；
   accepted事实只存在于typed memref、SSA/view、wafer.tile.region、movement/event和必要typed attrs中。
@@ -23,7 +23,7 @@ Pipeline position:
   per-Tile Tile-to-Instr conversion、fresh completion reconstruction、fixed-capacity SPM/DDR planning、
   CardExecutable communication/resource verification、target conversion与package writing。
 - User-level driver / named pipeline:
-  wafer-compile production pipeline；wafer-opt入口只用于parser/verifier/conversion replay，不能组成第二条production路径。
+  wafer-compile production pipeline；wafer-opt入口只用于parser/verifier/conversion leaf testing，不能组成第二条production路径。
 - Explicit non-goals:
   不选择全局placement、tile size、fusion、TileRegion、retention/release或route；lifetime只从actual IR重算；不保存relation/descriptor/search side table；
   不分配runtime handle或launch slot；不从op/value/symbol/workload名字恢复语义；lowering失败不隐式换路线。
@@ -40,7 +40,8 @@ Pipeline position:
 - encoding行为属于承载它的attr/type interface；consumer不能各自复制block/tail/padding公式。
 - transfer realizability同时读取source、destination、relation、encoding、alias/effect和current target limits，
   因而是跨对象analysis/helper，不是某个op上的隐藏plan。
-- proposal只有物化成isolated actual IR后才可进入exact gate。未选路线、score、失败历史和descriptor列表不持久化。
+- proposal先以typed relation、encoding、alias/effect和target facts进入planning proof；未选路线不构造IR。selected route在新Card subtree
+  中物化后由actual verifier重证parity。score、失败历史和descriptor列表不持久化。
 - lowering可以重证legality，不能重新规划、静默换encoding、插fallback或读取search state。
 
 | 事实 | owner | 生命周期 |
@@ -49,7 +50,7 @@ Pipeline position:
 | logical index relation与shape bounds | `IndexRelation`、Affine/Presburger/ValueBounds | current IR epoch |
 | physical footprint、valid/padding和bit mapping | Wafer physical encoding attr/type interface | typed IR |
 | metadata view / transfer feasibility | source+destination+relation+encoding helper | 单次proof |
-| selected route、temporary与event | actual typed view/movement/SSA IR | CardModule candidate |
+| selected route、temporary与event | actual typed view/movement/SSA IR | selected CardModule |
 | actual SPM residency | 单Tile actual roots、SSA/view、effect、order与completion | finalized CardModule IR epoch |
 | SPM/DDR accepted offset | memory planning attr及fresh validator | accepted Instr IR |
 | cross-Tile sender/receiver和message | Tile communication ops | selected CardModule IR |
@@ -104,7 +105,7 @@ metadata view只有在以下条件全部成立时合法：
 4. alias、lifetime、alignment和effect保持；
 5. standard view/subset op的type与verifier能表达结果。
 
-否则必须由selected actual candidate物化真实movement。路线以不同IR表达：
+否则必须由不同typed plan alternatives表达真实movement；只有selected plan物化对应IR：
 
 - compact direct DDR↔SPM load/store；
 - relation-mapped DMA/WDMA；
@@ -113,8 +114,8 @@ metadata view只有在以下条件全部成立时合法：
 - Tile peer send/recv及destination staging。
 
 一个movement op的operands、types、view chain和typed fields必须唯一决定direction、logical relation、physical
-span和effect。descriptor可以从current IR重建，不作为attr列表保存。direct route不可实现时只拒绝该candidate；
-另一路线必须从未修改parent产生另一份actual clone。
+span和effect。descriptor可以从current IR重建，不作为attr列表保存。direct route不可实现时由planning query只拒绝对应typed
+assignment；另一plan alternative仍从immutable source可达，但production不会为两者构造actual clones。
 
 ### Boundary 与 local movement
 
@@ -182,12 +183,12 @@ IR中显式fill/mask/segmented movement。host-visible output不得把padding发
 
 调用方本次选择按以下transaction物化；本文不拥有shortlist或candidate set：
 
-1. clone未放置的CardModule parent或构造isolated complete CardModule candidate；
-2. 从current clone建立relation、bounds、alias、physical-map和effect snapshot；
-3. 用PatternRewriter/IRMapping/DialectConversion创建typed views、roots、movement、temporary和events；
-4. rewrite后销毁旧analysis；
-5. 对新IR运行verifier、descriptor、invalid-lane、range、lifetime与completion gate；
-6. 失败销毁整个candidate并返回typed rejection，成功交还physical-dataflow selection。
+1. 在mutation前用current source与closed plan重验relation、bounds、alias、physical-map和effect；
+2. 由outer Card transaction提供新subtree，本文不clone source/parent；
+3. 用PatternRewriter/IRMapping/DialectConversion创建selected typed views、roots、movement、temporary和events；
+4. rewrite后销毁旧analysis并从current IR重建；
+5. 对新IR运行verifier、descriptor、invalid-lane、range、lifetime与completion parity；
+6. 失败由outer transaction擦除整个新subtree并终止compile，成功继续selected downstream pipeline。
 
 cleanup只删除可由exact proof确认的冗余：same-root/same-map metadata view、dead无effect movement、完整等价
 same-space copy和不延长lifetime的duplicate materialization。它不能移动fusion cut、改变encoding/route、创造spill、
@@ -196,8 +197,8 @@ same-space copy和不延长lifetime的duplicate materialization。它不能移�
 ## 9. Failure 与 Verification
 
 失败至少区分invalid IR、unsupported representation、unsupported target、infeasible physical realization和
-compile-time proof resource limit。分类只用于diagnostic与search control，不进入IR/package；任何失败都不得返回半份
-可继续lower的proof或留下partial clone。
+compile-time proof resource limit。planning query的typed结果可控制state；selected apply后的failure只用于diagnostic并终止compile，
+不进入IR/package，也不得返回半份proof或留下partial subtree。
 
 验证必须覆盖：
 

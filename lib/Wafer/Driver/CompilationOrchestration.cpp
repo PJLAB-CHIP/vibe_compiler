@@ -467,7 +467,7 @@ mlir::LogicalResult runCompilationTransaction(
     return mlir::failure();
   // The helper output does not carry constant payloads; restore them from
   // owned content so the tensor program directory stays complete. These
-  // writes are counted in the ledger with digest readback.
+  // writes are counted by optional I/O statistics with digest readback.
   for (const auto &entry : resolver.resolved) {
     if (!entry.getKey().starts_with("constants/"))
       continue;

@@ -210,7 +210,7 @@ pipeline contract内的阻断项，不转移到Q56或Q61。全部六项已在同
    准确typed kind、locator与detail。
 6. `ProgramDataTest`当前只直接比较region digest和单个shared view，没有调用`verifyShardAgainstSource`证明dedup/reuse，
    也没有通过`prepareProgramInvocations`证明16 Tile按range一次materialize。重新完成时必须补齐这些集成断言、同内容不同
-   `ProgramTensorId`不合并负例、source-shape错配负例、`i1`拒绝和完整I/O ledger断言。
+   `ProgramTensorId`不合并负例、source-shape错配负例、`i1`拒绝和显式I/O statistics断言。
 
 此前`wafer-compile-card-baseline.test`、定向unit以及三档byte-volume运行结果仍可作为未触发缺陷路径的回归/性能背景，
 但不能证明上述合同。修复后必须使用本轮新构建和新输出重跑相关unit、source-to-package、no-card及三档规模账本，再将Q58
@@ -236,7 +236,7 @@ pipeline contract内的阻断项，不转移到Q56或Q61。全部六项已在同
 6. 规模测试账本中的`range_materializations=0`没有覆盖大range consumer。需要增加大payload materialization回归，证明
    单次逻辑materialization会拆成多个不超过1MiB的底层read window，且计数随bytes而不是Tile引用增长。
 
-完成门禁已满足：returned executable lifetime、candidate purge、owned self-verification、bounded reads和真实ledger均有直接
+完成门禁已满足：returned executable lifetime、helper-payload purge、owned self-verification、bounded reads和显式I/O statistics均有直接
 回归；fresh build、15/15 semantic unit、52/52受影响filtered unit、两条source-to-package/no-card lit和三档规模账本通过。
 feature-on target-model case因当前managed dependency record缺失而unsupported，未被计入上述通过数，也不替代直接lifetime证明。
 
@@ -299,7 +299,7 @@ Pipeline position:
 ### 7.2 Qualification requirements
 
 - `none`证明无search也不存在重复whole-program读取/转换；`search`沿用Q51/Q52的candidate/result合同；
-- 每个stage记录IR walk/clone、candidate generated/admitted/pruned、target compile次数、ProgramData I/O和package write/readback；
+- 每个stage显式记录IR walk/selected duplication、planning states generated/admitted/pruned、target compile次数、ProgramData I/O和package write/readback；
 - 完整payload实际read/hash/convert/write，不以sparse或metadata count冒充；
 - 至少两次fresh compile比较winner、module digest、program-data digest、package tree和关键work counts；
 - hotspot修复回到唯一owner：source/data归02/Q58，search归06/Q51/Q52，target layout/codec归14，package/runtime归15；

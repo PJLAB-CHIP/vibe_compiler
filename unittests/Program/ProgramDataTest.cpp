@@ -665,7 +665,7 @@ TEST_F(ProgramDataTest, VerifyShardAgainstSourceDeduplicatesAndAdopts) {
   EXPECT_EQ(handoff.getCandidateCount(), 0u);
   EXPECT_FALSE(llvm::sys::fs::exists(unusedCandidatePath));
 
-  // The I/O ledger covers every establishment and digest pass: two helper
+  // The optional I/O statistics cover every establishment and digest pass: two helper
   // outputs, one canonical source, source-copy and owned-content digests for
   // all three, two shard region-digest pairs, plus the failed-rank attempt is
   // classified before any I/O.

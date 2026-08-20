@@ -89,7 +89,7 @@ struct SpatialEdgeFragment {
 /// consumer result domain from the exact producer demand; lowering resolves
 /// and validates that relation before changing IR. For PeerFragments,
 /// `fragments` must cover the producer demand all-and-only; every other action
-/// has no fragments. A finite non-rectangular support demand uses the
+/// has no fragments. A finite non-rectangular required producer region uses the
 /// rectangle-union form: `producerOffsets`/`producerSizes` are its carrier
 /// bounds and `fragmentsDefineProducerDemand` states that the disjoint
 /// fragment union, rather than those bounds, is the exact demand.

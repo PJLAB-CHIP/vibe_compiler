@@ -20,7 +20,7 @@ Pipeline position:
   `wafer.target.topology @default`表达target card/Tile topology；`wafer.execution.mesh @default_mesh`只表达
   logical card-partition domain。两者都不是sharding strategy、selected Tile mapping、per-Tile executable或runtime placement。
 - Downstream consumer:
-  Shardy/XLA SPMD只消费logical card-partition mesh；physical-dataflow synthesis独立消费每个card-local DAG
+  Shardy/XLA SPMD只消费logical card-partition mesh；physical-dataflow planning独立消费每个card-local DAG
   和target topology的available tile_id domain，产生CardModule；target/package lowering再把selected
   `(card_id, tile_id)`投影为当前ABI launch slot。
 - User-level driver / named pipeline:

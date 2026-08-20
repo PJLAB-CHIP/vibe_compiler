@@ -45,13 +45,13 @@ mechanics迁到新owner并由新边界测试。
 
 ### 2.2 Public与internal边界
 
-`include/Wafer/`只放跨library稳定typed API、IR declarations和真正用户/consumer可调用入口。query-local state、candidate
+`include/Wafer/`只放跨library稳定typed API、IR declarations和真正用户/consumer可调用入口。query-local state、plan
 recipe、staging builder、failure bookkeeping和单library协作helper放在 `lib/Wafer/.../*Internal.h` 或同目录private header。
 
 禁止：
 
 - 为迁移保留同义old/new方法、enum、field或wrapper；
-- 用opaque bag、side table、名字约定或serialized candidate plan穿越stage；
+- 用opaque bag、side table、名字约定或serialized shadow plan穿越stage；
 - 把一个internal bridge的symbol提升为runtime/public ABI；
 - 从test helper、Markdown marker或output filename恢复协议事实。
 
@@ -60,7 +60,7 @@ recipe、staging builder、failure bookkeeping和单library协作helper放在 `l
 一个实现文件只承担一个可命名动作。需要“并且”连接两个独立stage时拆分：
 
 - analysis与mutation分开；
-- candidate generation、actual materialization、exact verification与selection分开；
+- planning proposal/transition、selected materialization、actual verification与controller分开；
 - ABI preparation、LLVM translation、device link、readback与package writing分开；
 - package parse、serialize、semantic verify、runtime validation和board execution分开；
 - TargetCall decode、functional kernel、SystemC scheduling和numeric codec分开。
@@ -133,9 +133,9 @@ candidate owner，不在内部反复缩tile或切换算法。
 `Analysis`拥有current-IR schedule work、theoretical cohort cost、physical relation、lifetime/conflict和topology facts。
 performance estimator只计算enabled numeric terms；完全未知项不进入比较。
 
-`Transforms`/planning libraries materialize fresh completion、SPM offsets、DDR offsets、worker/order和communication。allocator
-只解fixed problem，不能生成spill/retile/reorder repair。任何会影响search的事实都必须从current actual IR重算并返回
-physical-dataflow owner。
+planning libraries从immutable IR与typed state构造proof；selected transforms物化completion、SPM/DDR offsets、worker/order和
+communication。allocator只解fixed problem，不能生成spill/retile/reorder repair。planning facts由对应Q50 query拥有，actual IR只做
+selected parity，不能把late result返回search形成第二控制线。
 
 ### 3.5 Dormant mechanism迁移边界
 
@@ -144,18 +144,16 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 
 | 当前dormant source/test | 仍需保留的能力 | 处置与删除门禁 |
 | --- | --- | --- |
-Q50.J已删除旧`ReadyOrder`、`WorkerPlacement`及专属tests；`StructuredOpInterfaceModels`中独有的exact reciprocal implementation
-先迁入current `Planning/Search/ComputeImplementation`并接入CardModule actual apply，随后旧interface source删除。SystemC DTE/NCC专项tests
-已注册到feature-on `WaferSystemCModelTransportTest`，不再以dormant source充当覆盖。
-Q50.K把旧`FixedSlotPipeline`中仍需的stage/slot/Direct-DTE/alias机制迁入selected-buffer materializer与current stage-pipeline owner后，
-旧whole-Module clone candidate、public header和专属tests已删除；当前Q50 dormant表为空。
+旧`ReadyOrder`、`WorkerPlacement`、`FixedSlotPipeline`、attention/decode sources及专属tests已从active registration删除，但Q50.J/K/S
+重审已经确认多项算法/proof/witness尚未由current owner承接。`current dormant表为空`只说明CMake truth，不是能力迁移证明；缺失能力
+由`tasks/plans/physical-dataflow-synthesis.md`的donor矩阵逐项迁入Q50.S/J/K后，旧删除才算合理。不得因source已不存在而把任务标完成，
+也不得整体恢复旧public pass/selector。
 
 `Transforms/SPMD/XlaSpmd*.cpp`不是dormant host library source：它们由
 `tools/build_xla_spmd_partitioner_helper.py`的exact manifest复制到显式external helper build；不得同时加入host CMake target。
 
-Q50.S已完成attention能力迁移：SSA attention/decode proof、online recurrence和split-K/V partition/merge actual-root builder均进入
-active `Planning/Search` owner并由真实TensorProgram测试覆盖；旧`AttentionSemantics.cpp`、`MaterializeFlashAttention.cpp`、
-`MaterializeFlashDecoding.cpp`及未注册旧测试已删除，未恢复独立pass、provider或source-marker gate。
+Q50.S current有部分attention/decode proof和builder可作donor，但semantic op、algorithm domain、winner-only emitter与全部旧witness
+仍按Q50.S gate重新证明；旧source删除不能代签，current owner也不得保留whole-program alternative clone或decode-only gate。
 
 `tools/check_source_organization.py`当前只对少数目录闭合active/dormant集合；2026-08-17 follow-up review确认其余目录仍可能存在
 既未进入CMake、也未进入本表却获得green结果的source/test island。Q64

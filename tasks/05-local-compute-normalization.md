@@ -2,7 +2,7 @@
 
 状态：2026-08-13按card-level GSPMD与card-local physical-dataflow主线同步。本文只拥有post-SPMD
 StableHLO到target-independent structured tensor IR的normalization合同；current主线已拆为Q49.P、Q50、Q51–Q53，本层不把Q49.P
-保守baseline误写成Q51完整physical-dataflow综合。动态状态只看`tasks/progress.md`。
+保守baseline误写成Q51完整physical-dataflow planning。动态状态只看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
@@ -19,7 +19,7 @@ Pipeline position:
   一个尚未绑定Tile的card-local structured tensor DAG。数学语义由op、region、indexing map、
   iterator、DPS ties、type、SSA/control flow和effect表达；card-partition collective仍是typed tensor semantics。
 - Downstream consumer:
-  physical-dataflow synthesis读取该DAG和target topology，选择Tile placement、temporal tile、
+  physical-dataflow planning读取该DAG和target topology，选择Tile placement、temporal tile、
   TileRegion/融合与显式communication，并物化wafer.card.module / wafer.tile.module。
 - User-level driver / named pipeline:
   wafer-compile是唯一source-to-package production入口；wafer-lower-stablehlo-to-linalg只用于IR replay和focused test。
@@ -114,7 +114,7 @@ symbol或常见mask shape猜结果。最终输出不得残留SDY或raw StableHLO
 - 五类collective的DPS、shape、axis、group/channel、source-target pairs和combiner verifier；
 - card-partition ID越mesh范围、invalid group、shape mismatch和unsupported collective fail closed；
 - 输出中不存在Tile、layout/memory、DTE、packet、launch slot或runtime事实；
-- wafer-compile真实frontend/GSPMD输出能继续进入physical-dataflow synthesis，而非只通过手写FileCheck。
+- wafer-compile真实frontend/GSPMD输出能继续进入physical-dataflow planning，而非只通过手写FileCheck。
 
 Q51负责实现dependent-op remap、mapping差异产生的NoC communication和完整physical-dataflow event search。
 这些缺口属于06/07/13，不能通过扩大normalization职责、恢复logical-partition到Tile映射或新增模型特判规避。

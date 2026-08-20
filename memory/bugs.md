@@ -23,26 +23,28 @@
 
 - 现象：`search`与`none`在所有workload上产生相同IR/package，新增搜索代码从未影响winner。
 - 根因：driver解析了optimization policy，却在executable search边界丢弃或绕过它；测试反而把相同结果锁成合同。
-- 修复模式：`search`调用唯一physical-dataflow selection，`none`只materialize conservative baseline；两者从同一source进入同一
-  actual/exact pipeline。
-- 防复发：测试验证两种policy都真正进入synthesis统计，并允许结果不同；不能要求它们永远产生相同digest。
+- 修复模式：`search`与`none`是独立plan producer，只共享policy-free facts、closed plan schema和selected-plan
+  materializer/lowering；两者从同一source分别启动独立transaction，互不调用或fallback。
+- 防复发：test-only call/work witness分别证明None的search-session为零、Search的baseline-controller为零，两者planning IR为零且
+  selected commit/Q50.0各一次；普通compile不创建统计对象。不能要求两者永远产生相同digest。
 
-## 全候选actual clone导致编译时间与RSS失控
+## 用actual IR评估planning state会导致编译时间与RSS失控
 
 - 现象：model-scale图在candidate笛卡尔积上重复clone、Tile→Instr、completion和packing，编译时间远超单算子合理范围。
-- 根因：把actual materialization当作candidate enumeration，或给不同Tile/mechanism各建局部shortlist再组合。
-- 修复模式：先用query-local typed legality、topology symmetry、exact equivalence、admissible lower bound与future-compatible
-  dominance安全剪枝；其余状态惰性保留，只有需要exact结论时才按需materialize，且peak live actual clone为1。有损shortlist/
-  beam/cap只能在实际profile后作为显式budgeted trade-off。
-- 防复发：统计generated/rejected/deduplicated/expanded/actual-probed/exact-failure/peak-live；scale gate同时看deterministic work、wall和RSS，
-  不设任意固定秒数替代复杂度分析。
+- 根因：把lowering、packing或actual materialization当作planning query，或给不同Tile/mechanism各建局部shortlist再组合。
+- 修复模式：production只在immutable IR与typed state上运行domain、legality、resource proof、cost/bound和successor；未选plan不构造
+  CardModule/Instr。只有selected full-proof plan进入一次新Card subtree transaction与一次Q50.0。test-only tiny oracle若需逐plan
+  actualize，每个plan使用独立fresh source，且production entry不可达该runner。
+- 防复发：显式测试计数证明planning CardModule/Instr/Q50.0均为零、selected commit/Q50.0各一次；scale gate看deterministic
+  planning work、time-to-first-full-proof、wall和RSS，不用candidate compilation count或任意固定秒数替代复杂度分析。
 
 ## Late exact failure不能触发隐藏repair
 
 - 现象：SPM packing或ABI failure后，late pass自行缩tile、spill、改worker或切communication，selected IR与search cost不一致。
 - 根因：allocator/finalizer被赋予了搜索职责，产生第二winner owner。
-- 修复模式：late stage只返回validated result或candidate failure；failure回到同一physical-dataflow search选择其它已表示候选。
-- 防复发：negative test锁定packing/ABI failure不改写candidate；repo scan禁止late retile/spill/replan selector。
+- 修复模式：planning必须在commit前用typed proof关闭资源与lowering前置条件；late stage只实现selected plan并重建actual problem做parity。
+  failure终止compile并按真实owner分类，不能回到search、baseline或另一policy。
+- 防复发：failure injection锁定packing/ABI/target失败不改写IR、不重选plan、不fallback；repo scan禁止late retile/spill/replan selector。
 
 ## 性能未知项不能阻塞或污染比较
 
@@ -83,7 +85,8 @@
 
 - 现象：先固定Tile分配再选temporal tile/fusion，或先尽量融合再事后安排NoC，导致SPM放不下、Tile空闲或通信爆炸。
 - 根因：将互相决定resource和critical path的变量交给独立selector。
-- 修复模式：同一complete CardModule candidate共同表达Tile集合/work domain、temporal tile、TileRegion/融合、communication、buffering和overlap。
+- 修复模式：同一complete typed plan共同表达Tile集合/work domain、temporal tile、TileRegion/融合、communication、buffering和overlap；
+  winner才构造CardModule。
 - 防复发：测试同时保留maximal local residency与cross-Tile operator pipeline、large-tile cut与small-tile overlap等对立候选。
 
 ## Tile region不要求所有op使用相同tile shape
@@ -99,7 +102,7 @@
 - 根因：completion被当成持久plan而不是current effects/tokens/control flow的派生语义。
 - 修复模式：Instr verification先清除旧required joins，再从current actual Instr fresh构造loop backedge、branch merge、entry return、
   engine join和Direct-DTE exact wait。
-- 防复发：每个actual candidate都执行fresh completion；missing/wrong worker/event/participant/reuse分别有负例。
+- 防复发：selected actual IR执行fresh completion并与plan event proof做parity；missing/wrong worker/event/participant/reuse分别有负例。
 
 ## `ReturnAfterLocalDrain`不是card-scoped barrier
 
@@ -112,8 +115,10 @@
 
 - 现象：allocator在capacity失败时自行缩tile或spill，或只按sum(bytes)估计而忽略lifetime/conflict/alignment。
 - 根因：把allocation quality与schedule search混合，且没有从final roots/effects形成exact conflict problem。
-- 修复模式：search-time用safe lower/upper bound剪枝；final actual IR形成fixed roots、lifetimes、alignment和conflict，MiniMalloc只返回offsets或失败。
-- 防复发：验证overlap clique、alias、loop-carried lifetime、async use、padding与high-water；packing失败不产生IR mutation。
+- 修复模式：partial planning只用sound lower/certificate；closed plan由Q50.F构造完整roots/lifetimes/alignment/conflict problem并取得
+  validated placement或完整infeasibility proof，但不把offset写入plan。selected actual IR重建同一problem，allocator只分配offset。
+- 防复发：验证overlap clique、alias、loop-carried lifetime、async use、padding与high-water；planning/actual problem不一致或selected
+  packing失败是compiler bug，不产生IR mutation也不返回planner重选。
 
 ## 资源耗尽不能伪装成exact infeasible
 
@@ -326,7 +331,7 @@
   per-buffer allocation事实。
 - 修复模式：对每个Linalg operand从当前iterator tile和symbol-free affine indexing map求常量包围盒，按真实element width和
   per-buffer alignment累计理论驻留；symbolic或无法证明的项直接不计，不能引入`unknown`哨兵、猜测倍率或阻塞排序。最终
-  legality仍由actual clone的fresh SPM packing拥有。
+  legality由Q50.F typed storage/interference proof拥有；selected actual packing只做problem parity与offset assignment。
 - 防复发：用一个operand footprints能放入SPM、但iteration-volume模型必然超限的GEMM检查none baseline不产生虚假K wave；
   affine-window conv同时覆盖stride/dilation map。
 
@@ -451,11 +456,11 @@
 - 修复模式：baseline controller直接从typed structured/relation/target facts构造唯一方案；每个TileRegion只拥有一个structured
   compute root及exact operand demand证明必要的non-root support operations，root cardinality由materialization relation证明；同一Tile上的其它root进入独立
   顺序region，跨root shaped dependency显式DDR。只与search
-  共享single-coordinate的policy-free materialization和Q50.0 lowering/verification，不共享state/candidate/grouping/
+  共享policy-free query、closed plan schema和selected-plan materialization/Q50.0，不共享state/candidate/grouping/
   ordering，也不调用option-domain、propagation、recursive CSP/backtracking或“只取第一个”的assignment solver。
 - 防复发：除零actual fusion和DDR movement外，测试还要检查每个baseline region的structured-root数、同Tile multi-root的region
-  数及search-policy调用计数；每个closed coordinate的CardModule与Q50.0严格一一对应，accepted owner不重建。SPM失败只沿直接
-  typed causal witness refinement，不能猜测或跳过scope。
+  数及search-policy调用计数；每个closed coordinate只运行pure typed query，planning CardModule/Q50.0为零，selected plan各一次。
+  SPM拒绝只沿Q50.F direct typed witness refinement，actual failure不能推进coordinate。
 
 ## 去search耦合不能把baseline退化成fixed-assignment validator
 
@@ -463,9 +468,9 @@
   完整tile超出SPM时，反而没有owner继续缩tile并产出可执行结果。
 - 根因：混淆了“禁止性能候选选择”和“禁止确定性功能合法化”，把resolved assignment误当成baseline输入；只设计了单次
   closed-coordinate query，没有定义谁遍历合法breakpoint、何时终止以及支持域内的完成保证。
-- 修复模式：`none`从未绑定物理选择的正常IR进入，由controller按semantic全序维护一个current coordinate；每次只构造当前
-  coordinate、重新推导operand/halo/result/temporary/movement/alignment/bank/lifetime并运行一次Q50.0，再按typed
-  rejection推进下一项必要coordinate，第一个fit形成resolved assignment。不得预先生成完整placement/temporal option domain；
+- 修复模式：`none`从未绑定物理选择的正常IR进入，由controller按semantic全序维护一个current coordinate；每次重新推导
+  operand/halo/result/temporary/movement/alignment/bank/lifetime并调用Q50.F typed feasibility，不构造IR。ExactRejection推进下一项
+  必要coordinate，FullFeasibilityProof形成resolved plan，随后只commit/Q50.0一次。不得预先生成完整placement/temporal option domain；
   trial是query-local feasibility状态，不进入candidate、score、incumbent或proposal统计；任一transition必须预定义、单调、
   不分支且不回溯，旧coordinate立即销毁，避免把deterministic search换名为functional fallback。
 - 防复发：至少一个初始完整tile超SPM而较小合法tile可放下的source-to-package/no-card正例，以及最小合法tile仍超限的typed
@@ -481,7 +486,7 @@
   work，外层placement option-pair/CSP又会乘法放大同一查询。
 - 修复模式：builder/composition在typed proof成立时保留或直接重建closed-form rectangular-image witness，single-coordinate
   baseline优先消费该witness；generic recovery在solver调用前检查constraint/local/coefficients等完整结构复杂度并记录
-  query-local ledger。超限是`ResourceExhausted`/indeterminate，不能当logical infeasible、不能推进fallback。
+  query-local work accounting。超限是`ResourceExhausted`/indeterminate，不能当logical infeasible、不能推进fallback。
 - 防复发：用轻量synthetic relation复现相同composition形态，断言supported路径generic equality调用数为零且pair-query数只随
   actual DAG edge和deterministic legalization step增长；重型模型只归后续显式scalability profile，不作为功能bug的常规复现器。
 
@@ -514,13 +519,13 @@
 - 根因：把Tile差异（offset/tail/peer endpoint）和root不变量（support relation、consumer access和structured identity）放在同一个
   per-Tile materializer里；materializer从output/edge endpoint无条件回溯SSA closure并clone scratch function，而不是从全部root
   execution domain一次性求exact operand demand。并发只缩短wall time，没有消除重复分析或过宽物化。
-- 修复模式：每个coordinate在immutable source上同时seed全部`(root, Tile)`，以`(value, Tile)`合并exact domain并按反向SSA拓扑传播；
+- 修复模式：每个planning coordinate在immutable source上同时seed全部`(root, Tile)`，以`(value, Tile)`合并exact domain并按反向SSA拓扑传播；
   relation按operation/result/operand建立一次，structured producer立即形成boundary demand。carrier coverage验证后，final region只
-  一次性物化typed demand recipe要求的operation和endpoint，不建立公共SSA closure或materialized-IR cache。16个Tile实际构造可
+  对selected plan一次性物化typed demand recipe要求的operation和endpoint，不建立公共SSA closure或materialized-IR cache。16个Tile实际构造可
   bounded并发并按Tile ID稳定归并，但并发不是work消重机制。
-- 防复发：ledger检查relation construction、非空value/Tile demand、physical fragment、Tile entry和CardModule/Q50.0一一对应；
-  测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。Q51 partial state只共享immutable analysis，不能按
-  candidate/Tile缓存actual clone。
+- 防复发：显式test work counts检查relation construction、非空value/Tile demand、physical fragment和selected Tile entry；planning
+  CardModule/Q50.0为零、selected各一次。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。Q51 partial
+  state只共享immutable analysis，不能按candidate/Tile缓存actual IR。
 
 ## exact-empty producer不能被support graph重建重新拉入
 
@@ -826,12 +831,12 @@
   最终Q50.0却在函数级packing失败。relation remap还可能在两次构造间省略或保留不同owner，使同一allocation得到不同归因。
 - 根因：把“调用相同pass/checker”误当成消费同一actual IR和同一current relation certificate。只要第一次IR被销毁、第二次重建，
   operation lifetime、buffer relation、region boundary和packing scope就已经是两个事实源；继续增加scope escalation只会扩张平行链。
-- 修复模式：删除baseline的root/Tile/function capacity materialization。每个closed coordinate只构造一个CardModule并由Q50.0消费；
-  accepted owner直接下传，exact SPM certificate复制成不含scratch SSA handle的typed witness后销毁rejected owner。缺direct relation
-  attribution即indeterminate，不能按region恰有一个root猜owner。
-- 防复发：work ledger必须证明CardModule materialization与Q50.0 invocation一一对应、accepted rematerialization为零；partial
-  assignment只允许immutable analysis，构造actual IR后必须继续进入complete evaluation。测试使用非空result/operand/output
-  relations检查certificate，不以空relation或diagnostic字符串证明一致性。
+- 修复模式：删除baseline的root/Tile/function及per-coordinate CardModule capacity materialization。每个closed coordinate从typed
+  facts构造Q50.F resource problem；只有FullFeasibilityProof plan产生一个CardModule/Q50.0。exact certificate不含scratch SSA，缺direct
+  relation attribution即indeterminate，不能按region恰有一个root猜owner。
+- 防复发：显式test work counts必须证明planning CardModule/Q50.0为零、selected各一次、accepted rematerialization为零；actual
+  normalized problem与plan proof做parity。测试使用非空result/operand/output relations检查certificate，不以空relation或diagnostic
+  字符串证明一致性。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
 
@@ -991,8 +996,8 @@
 - 修复模式：先分配最终DDR stage destination，把它作为wave loop carry，逐leaf调用
   `materializeCandidateRootTileIntoDestination`直接写DDR；完成后seal为read-only并缓存exact slice。SPM只保留当前leaf/staging，
   不再出现full-shard assembly。
-- 防复发：overfull-to-fit case检查收缩后的actual Tile entry与Q50.0 certificate，不只看temporal shape或region-local leaf；
-  compiler work应在秒级完成，且每个closed coordinate的CardModule/Q50.0严格一一对应。
+- 防复发：overfull-to-fit case先检查Q50.F witness和最终closed plan，再检查唯一actual Tile entry/Q50.0 parity；compiler work按
+  deterministic query steps计数，planning CardModule/Q50.0必须为零。
 
 ## 扩展 FuncOp 参数必须同步 argument attrs
 

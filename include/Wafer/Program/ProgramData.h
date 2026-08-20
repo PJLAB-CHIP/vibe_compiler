@@ -277,7 +277,7 @@ private:
   bool contiguous;
 };
 
-/// Explainable payload I/O ledger for one transaction. Counts are per-category
+/// Optional payload I/O statistics for one transaction. Counts are per-category
 /// facts, not resource-identity counts.
 struct ProgramDataIOStatistics {
   /// User payload files opened at establishment (canonical payloads and
@@ -315,7 +315,7 @@ struct ProgramDataIOStatistics {
 };
 
 /// Move-only reader for one consumer-declared range materialization. Creation
-/// accounts exactly one ledger event; any number of bounded reads through the
+/// accounts exactly one materialization event; any number of bounded reads through the
 /// reader remain part of that same materialization. The reader is valid only
 /// while its ProgramDataHandoff remains alive and unmoved.
 class ProgramDataRangeMaterialization {
@@ -412,7 +412,7 @@ public:
 
   /// Begins one consumer-owned materialization of the identified range and
   /// accounts it exactly once. An unknown identity is rejected without
-  /// changing the ledger. The package writer creates one reader per selected
+  /// changing the optional statistics. The package writer creates one reader per selected
   /// TargetTensor representation.
   llvm::Expected<ProgramDataRangeMaterialization>
   beginRangeMaterialization(ProgramTensorId tensorId) const;
@@ -432,7 +432,7 @@ public:
   /// Proves whether one established helper shard's payload bytes equal the
   /// referenced owned source region. Both region digests are computed over
   /// owned content with bounded windows. Accounts the digest passes in the
-  /// I/O ledger.
+  /// optional I/O statistics.
   llvm::Expected<bool> verifyShardAgainstSource(
       const ProgramDataSource &shard, SourceDataId originalSourceId,
       llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,

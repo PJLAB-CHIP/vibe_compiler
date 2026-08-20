@@ -2,7 +2,7 @@
 
 状态：2026-08-19已完成portable StableHLO与产品frontend current cutover。本文只拥有StableHLO program directory、
 metadata/payload和frontend verification合同；`num_partitions`描述card partition，不描述单卡16个Tile。
-typed model/state/resource graph与Tile级时空综合属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
+typed model/state/resource graph与Tile级physical-dataflow planning属于下游，不是frontend事实。实现状态看`tasks/progress.md`。
 
 ## 1. Pipeline Contract
 
@@ -292,7 +292,7 @@ parse/verify过的card-partition-local structured tensor program directory；fix
 physical-dataflow synthesis从单卡partition output构造一个`CardModule`，其中all-and-only available Tiles
 各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；Q51唯一search owner联合决定
 placement、tiling、TileRegion/融合和显式NoC/DDR movement，exact gates通过后形成`CardExecutable`，再由target与
-package阶段发布`ExecutablePackage`。`TensorProgram`是该综合阶段的唯一输入output；已删除的`wafer.group`
+package阶段发布`ExecutablePackage`。`TensorProgram`是该planning阶段的唯一输入output；已删除的`wafer.group`
 formation/selector没有兼容、debug或发布旁路。
 
 这种最小owner边界有意不保留历史讨论中的复合frontend/executable owner和model-interface registry链。若未来

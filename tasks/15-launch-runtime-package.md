@@ -276,6 +276,27 @@ workspace内部的compiler-managed地址仍是compiled `workspaceBase + wafer.dd
 - known pre-submit failure可正常cleanup；partial/unknown accepted subset、timeout或不可信provider状态使session poisoned，
   禁止继续provider call，不自动retry/reset/power。
 
+### 6.4 Qualified device session
+
+同一重启会话内连续执行多个完整package时，device qualification由move-only
+`QualifiedBoardRuntimeSession`拥有。第一次**真实完整invocation**通过普通one-shot路径确认device count、selection、inventory、
+runtime identity和exact Tile domain，并同时返回session capability；不为取得session另跑heartbeat、空kernel或无关probe。
+后续`executeBoardInvocationInSession`要求相同device与qualification，并继续对每个package执行完整pre-effect validation，但不重复
+device enumeration、selection或inventory查询。
+
+session只拥有已确认的device/driver identity和sticky usable/poisoned状态，不等于Q57 `PreparedExecution`：不同package仍分别完成
+自己的allocation、H2D、module load、submission、D2H和cleanup，不共享program data、module handle、pointer row或output buffer。
+一个owner在host侧串行调用session；任何timeout、不可信terminal或provider poison使其永久不可继续，destructor不执行reset、power或
+恢复。
+
+每个phase仍由一次`submitKernelPhase`提交all-and-only Tile launch domain。`launch_slot`只定义稳定entry binding和submission order，
+不定义Tile间串行语义；provider可用多个queues，实际并发由compiler生成的data/effect/resource/completion关系决定。host测试串行
+不应退化成16个per-Tile进程或per-Tile invocation。
+
+Q53 matched runner复用这一current session API，在同一qualified device上交错执行独立`none`/`search` package。A/B order、重复次数和
+结果比较属于显式test harness，不进入普通`wafer-run`、package或runtime default；runtime只返回每次invocation的typed lifecycle、
+outputs、launch-to-completion、host-submit、optional device timing和completion observation resolution。
+
 ## 7. Q57 PreparedExecution
 
 Q57只延长Q56已经验证的对象lifetime：

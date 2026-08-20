@@ -16,7 +16,7 @@
 | 03 | `tasks/03-shardy-spmd.md` | Shardy/XLA的card-level GSPMD output与`num_partitions`；不绑定片内Tile |
 | 04 | `tasks/04-topology-execution-mesh.md` | logical card partition mesh与独立target card/Tile topology |
 | 05 | `tasks/05-local-compute-normalization.md` | card-partition-local structured compute normalization与tensor collective boundary |
-| 06 | `tasks/06-physical-dataflow-synthesis.md` | card-local `TensorProgram -> CardModule/TileRegion/Instr -> CardExecutable`综合：统一决定spatial、temporal、fusion、physical representation、movement、buffering与调度；预算限制搜索工作而不预先截断合法域 |
+| 06 | `tasks/06-physical-dataflow-synthesis.md` | card-local `TensorProgram -> PhysicalDataflowPlan -> CardModule/TileRegion/Instr -> CardExecutable`规划与selected execution构造：统一决定spatial、temporal、fusion、physical representation、movement、buffering与调度；预算限制planning工作而不预先截断合法域 |
 | 07 | `tasks/07-tile-region.md` | selected tile/dataflow actual IR物化；一个或多个non-nested `tile.region`表达SPM residency domains，data边variadic DDR、SPM root不跨界，boundary不自动产生movement或join |
 | 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/coexistence、fixed-capacity MiniMalloc legality、all-root coverage、validated placement/headroom和accepted offsets；candidate choice仍由06拥有 |
@@ -42,7 +42,7 @@
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD card-partition output | 03 |
 | card-partition-local compute normalization与collective boundary | 05；跨stage正确性证据由16约束 |
-| card-local multi-Tile physical-dataflow综合、selected Card/Tile MPMD materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
+| card-local multi-Tile physical-dataflow planning、selected Card/Tile MPMD materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
 | policy-free physical-dataflow rewrites | 06、07、08；upstream structured utility由05提供，source/direct typed lowering合同由10提供，源码ownership由18约束 |
 | source implementation interface、target-abstract compute/movement和instruction legality | 10、11；transfer realizability/descriptor cover只由08拥有 |
 | accepted SPM/DDR allocation、lifetime和offset | 09、12；shared lifetime analysis的源码ownership和测试镜像由18约束 |
@@ -61,12 +61,13 @@
 旧layout与ABI施工记录已移入`tasks/archive/`。current layout、target ABI、package和runtime合同只由06、08、
 11、14-17编号设计文档拥有，状态只看`tasks/progress.md`；不得从旧计划恢复接口。
 
-Q49.P、Q50、Q51–Q53共用card-local multi-Tile综合计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
-Q50.0建立selected CardModule compilation/verification seam；Q50.A先收口IndexRelation demand边界；Q49.P闭合从正常上游IR产生
-accepted executable的baseline deterministic feasibility legalization、single-root TileRegion、
-最窄scope probe、typed causal witness、direct canonical placement、唯一整图物化与search-policy隔离；baseline不展开完整
-placement domain、不在accepted后建立shadow schedule/cost，也不在普通编译无条件打印IR。随后只先收敛Q51 planning contract；
-Q50.S/B–K按依赖恢复semantic-root、spatial、TileRegion/temporal/fusion、representation/movement、buffer、execution structure和
+Q49.P、Q50、Q51–Q53共用card-local multi-Tile planning与selected execution计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
+Q50.0建立selected CardModule compilation/verification seam；Q50.A先收口IndexRelation demand边界；Q50.S/B–K与F/J closure建立
+完整typed planning facts和resource proof。Q49.P随后闭合从正常上游IR产生accepted executable的baseline deterministic feasibility
+legalization、single-root TileRegion、plan-level scoped resource proof、typed causal witness、direct canonical placement、唯一整图物化与
+search-policy隔离；baseline不展开完整
+placement domain、不在accepted后建立shadow schedule/cost，也不在普通编译无条件打印IR。Q50.A重审后，Q50.S/B–K按依赖恢复
+semantic-root、spatial、TileRegion/temporal/fusion、representation/movement、buffer、execution structure和
 schedule算法，其中F/J分别经过foundation与full closure。旧candidate/generator/feedback/selector接口不保留，但删除其source/test前
 必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。全部axis query具备真实production contract后才实现Q51.Core；它从
 immutable TensorProgram建立planning session，只管理typed assignment/transition、deterministic frontier、work/budget、cost/bound和
@@ -78,9 +79,9 @@ fusion、buffering、communication或worker selector。动态状态、依赖和�
 
 Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。19是横向工程合同owner：让现有operation/region
 层级成为真实pass与analysis层级，收口typed ODS、standard interface、named nested pipeline和transactional rewrite，并
-通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54优先于Q50.A，Q49.P再消费Q50.A与Q54的
-current seam后由Q51继续施工，避免把semantic Location、whole-module local wrapper和手工analysis lifecycle固化进
-baseline probe或新的candidate/search实现。
+通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54优先于Q50.A；Q49.P保留Q50.A/Q54 current能力，
+但须等Q50.F full proof接管per-coordinate resource query后重新收口，再由Q51继续施工，避免把semantic Location、whole-module
+local wrapper、actual compile probe和手工analysis lifecycle固化进baseline或新的candidate/search实现。
 
 Q63 NCC completion合同分层计划见`tasks/plans/ncc-synchronization-contract-layering.md`。pure target completion protocol、
 MLIR op interface/adapter和query-local analysis已经分层，IR header到TX81 ABI的反向include与旧free concrete-op switch已删除；
