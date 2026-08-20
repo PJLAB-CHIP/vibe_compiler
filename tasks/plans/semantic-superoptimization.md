@@ -25,25 +25,25 @@ Pipeline position:
   TileRegion、SPM/DDR、NoC、worker或launch slot。
 - Current stage responsibility:
   从current typed IR识别可证明的pure/effect-safe replacement window；按通用typed grammar生成语义alternative；
-  用query-local solver证明外部可观察value、memory与effect等价；把每个通过证明的alternative立即物化、
-  canonicalize并verify为完整actual TensorProgram。
+  用query-local solver证明外部可观察value、memory与effect等价；返回typed semantic-root assignment和proof verdict，
+  不在production planning中逐个物化TensorProgram。
 - Output IR / files:
-  baseline TensorProgram与零个或多个actual TensorProgram alternatives。输出不携带proof、score、搜索历史、
-  physical mapping或solver residue。
+  query不产生IR或文件；selected winner commit才将一个semantic-root assignment物化、canonicalize并verify为actual TensorProgram。
+  输出不携带proof、score、搜索历史、physical mapping或solver residue。
 - Downstream consumer:
   Q51唯一physical-dataflow search owner。它对每个TensorProgram alternative联合决定spatial mapping、TileRegion、
   temporal tiling、fusion、physical representation、movement、buffering、order、worker和completion，并只提交通过
-  complete CardExecutable compilation/verification的winner。
+  planning选择的一个winner进入一次CardExecutable compilation/verification。
 - User-level driver / named pipeline:
   wafer-compile source-to-package pipeline；public optimization policy只有`search|none`。`search`可启用本生成器，
-  `none`只保留同一pipeline中的deterministic baseline。
+  `none`不进入Q48/Q51并独立走deterministic baseline。
 - Explicit non-goals:
   不决定Tile、layout、memory、route、buffer、worker、completion或ABI；不在Instr形成后启动第二个候选
   selector；不按workload、shape、symbol、operand位置、attention/decode名称或文件名选择rewrite；不发布proof sidecar。
 - Completion gate:
-  每个accepted alternative都是可独立parser/printer/verifier roundtrip的actual TensorProgram；baseline与所有通过证明
-  的alternative进入同一Q51 owner；SAT、unknown、timeout、资源耗尽或任一verifier失败只淘汰当前proposal；
-  source-to-package与fresh no-card gate通过且没有独立shortlist、固定候选cap或第二winner路径。
+  test-only oracle逐点materialize时，每个accepted alternative都可独立parser/printer/verifier roundtrip；production只有winner
+  actualize一次。SAT、unknown、timeout或资源耗尽只影响当前planning proposal；source-to-package与fresh no-card gate通过且没有
+  独立shortlist、固定候选cap或第二winner路径。
 ```
 
 ## 2. 单一候选边界
@@ -72,7 +72,8 @@ online attention、split-KV reduction或其它算法变换都必须先形成actu
 root alternative，但builder不比较physical cost，也不在图外返回algorithm recipe。
 
 输入KV长度是source事实，不是选择。online/partition-merge算法族、split count，以及任何会改变recurrence、partition或
-merge拓扑的K/V window都属于semantic-root参数；每个参数点先物化为完整actual TensorProgram。只有不改变算法DAG的
+merge拓扑的K/V window都属于semantic-root参数；每个参数点以typed assignment进入planning，只有selected点物化完整actual
+TensorProgram。只有不改变算法DAG的
 query/head/KV temporal block、Tile集合、layout、buffer数和pipeline depth才属于随后Q51的physical choices。
 示例中的128或二分序列只能排序其所在合法域，不能成为固定参数、候选cap或legality条件。
 
@@ -81,7 +82,7 @@ query/head/KV temporal block、Tile集合、layout、buffer数和pipeline depth�
 Q48不在`CardModule`或Instr形成后运行独立superoptimizer。能由structured semantics表达的等价变换必须先成为
 TensorProgram alternative；只与target Instr encoding有关的canonicalization由对应Instr/lowering owner处理，不能产生
 另一个winner或绕过Q51重新选择physical plan。若未来存在无法上提且确有独立收益的Instr等价变换，必须另行收敛
-pipeline contract，并证明它如何回到同一Q51 candidate compilation，而不是在本计划中预留隐藏入口。
+pipeline contract，并证明它如何回到同一Q51 planning state，而不是在本计划中预留隐藏入口。
 
 ## 3. Typed grammar 与惰性枚举
 
@@ -98,7 +99,7 @@ witness，不是按case维护的rewrite表。solver只过滤已生成proposal，
 
 合法grammar按结构复杂度分层、稳定遍历并惰性展开。设计不预先声明“只取前N个alternative”、固定window-op数、
 固定expression-node数或per-program expansion cap。一次真实编译仍受Q51/Q52同一个query-local work/time/memory budget
-约束；预算耗尽时停止访问更多state并返回best accepted incumbent，但未访问部分仍属于可表达合法域，不能据此声称
+约束；预算耗尽时停止访问更多state并返回best accepted search winner，但未访问部分仍属于可表达合法域，不能据此声称
 global optimal。小图complete mode必须能枚举有限闭包并与oracle一致。
 
 只允许以下不改变合法最优解集合的早期消除：
@@ -149,34 +150,35 @@ source前fail closed。Q48不增加public solver mode。
 完整流向固定为：
 
 ```text
-baseline TensorProgram
-  + query-local proven actual TensorProgram alternatives
+current TensorProgram
+  + query-local proven TensorProgram alternative assignments
   -> Q51 PhysicalDataflowSearch session:
-       typed assignment/frontier + session-level incumbent/global work ledger
-  -> CardModule / TileRegion / Instr candidate compilation
+       typed assignment/frontier + search-local winner/work accounting
+  -> winner TensorProgram/CardModule一次性materialization
+  -> TileRegion / Instr compilation
   -> fresh completion / SPM / DDR / communication / resource / ABI verification
   -> best accepted CardExecutable
   -> target conversion / ExecutablePackage / no-card / runtime
 ```
 
-Q48不拥有winner、shortlist或physical cost。proposal generation、proof、actual TensorProgram materialization和后续
-candidate compilation都计入Q51/Q52同一global work ledger。SMT结果只回答semantic eligibility，不提供cost、placement、
+Q48不拥有winner、shortlist或physical cost。proposal generation与proof计入Q51/Q52同一次search work accounting；actual
+TensorProgram只为最终winner物化一次。SMT结果只回答semantic eligibility，不提供cost、placement、
 tile shape或排序分数。
 
-任一late stage只返回accepted result或typed failure。failure回到Q51 candidate set并只约束其可证明的causal choices；下游
-不得在原clone上retile、spill、改placement、解除fusion、切换TensorProgram alternative或插入fallback。`none` baseline
-能被同一CardExecutable compilation seam exact-admit时才形成incumbent；若baseline本身失败，必须返回明确失败而不是伪造fallback。
+winner commit后的late stage只返回accepted result或typed compiler/unsupported failure；不得回到Q51反复物化，不得在原owner上
+retile、spill、改placement、解除fusion、切换TensorProgram alternative或插入fallback。`none`不进入Q48/Q51 search session；
+预算内没有完整合法plan时返回typed search failure。
 
 ## 6. 实施顺序
 
 1. **Boundary closure**：复用Q50.S的actual TensorProgram alternative接口，删除recipe/sidecar、post-Instr selector与
-   重复winner入口；确认Q51 new-search session是唯一consumer和work-ledger owner。
+   重复winner入口；确认Q51 new-search session是唯一consumer和work-accounting owner。
 2. **Proof core**：接入managed solver，实现BV/Bool/floating-point/UF、partial-operation定义域、observable
    memory/effect与`IndexRelation` precondition bridge；所有对象保持query-local。
 3. **Typed semantic coverage**：对可进入grammar的structured op、region和numeric category建立exhaustive分类；缺少权威
    semantics时先修复对应IR/interface owner，不通过名字matcher补齐。
 4. **Lazy generator**：实现connected-window与按复杂度分层的grammar iterator、canonical key、isolated actual MLIR
-   materialization和baseline preservation；预算只由Q51 ledger消费，不在生成器内设置固定候选cap。
+   materialization和original-root preservation；预算只由Q51 search owner消费，不在生成器内设置固定候选cap。
 5. **Algorithm alternatives**：把已证明的online/reduction类算法族及会改变其DAG的window/split参数逐点物化为actual
    TensorProgram；不改变DAG的temporal块大小与physical资源选择留给Q51。
 6. **Pipeline integration**：所有alternative进入同一CardExecutable compilation/verification；删除旧独立selector、shortlist、
@@ -195,16 +197,16 @@ tile shape或排序分数。
 - observable result、memory alias/state、effect order正负例；
 - structured chain/diamond/fanout/fanin/reduction/control boundary，以及reassociation、distribution、factorization、
   contraction、reduction-tree和online-recurrence witnesses；
-- lazy grammar层级、canonical key、serial/parallel deterministic order与baseline preservation；
+- lazy grammar层级、canonical key、serial/parallel deterministic order与original-root preservation；
 - 每个accepted proposal都是actual TensorProgram，parser/printer/verifier roundtrip后不含proof/search residue。
 
 ### Integration
 
-- source alternatives只在card-local TensorProgram上生成一次，不按Tile重复运行solver；
-- 不同TensorProgram alternatives全部进入同一Q51 spatial/temporal/fusion/representation/communication search；
+- source alternative assignments只在card-local TensorProgram上生成一次，不按Tile重复运行solver；
+- 不同TensorProgram alternative assignments全部进入同一Q51 spatial/temporal/fusion/representation/communication planning；
 - 没有post-Instr candidate owner、独立shortlist、固定candidate cap或per-Tile winner；
-- 每个materialized physical candidate重放fresh worker/order/completion、SPM/DDR、communication/resource、target与final
-  cost gates；SAT/unknown/timeout/budget exhaustion和任一late failure稳定保留baseline；
+- production只对selected physical winner执行一次fresh worker/order/completion、SPM/DDR、communication/resource、target与final
+  verification；SAT/unknown/timeout/budget exhaustion保留planning state，不返回baseline；
 - `ExecutablePackage`只包含current explicit target/module IDs、resources、completion和module files，不含proof/search residue。
 
 ### End to end

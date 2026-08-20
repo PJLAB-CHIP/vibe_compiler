@@ -445,9 +445,20 @@ source program
 - query输入必须显式携带current epoch、spatial/group/temporal assignment、target memory facts和missing-coordinate集合；输出typed
   lower bound/deferred/rejection/indeterminate与causal key，不clone/lower IR，不调用packer，不写回state。
 - exact witness key只包含结论实际依赖的assignment字段。full-tile rejection不能缓存成node级“最大可放下tile”，更小temporal、
-  不同group/layout/movement/buffer sibling必须重新query并保持可达；actual packing结果仍只来自complete Q50.0。
+  不同group/layout/movement/buffer sibling必须重新query并保持可达；actual packing只验证selected winner的一次Q50.0。
 
-## Physical version选择（stable，2026-08-19）
+## Physical planning与一次性commit
+
+- `none`与`search`是并列driver：分别从TensorProgram建立deterministic或optimizing plan，只共享policy-free analysis、typed plan schema、
+  materializer和lowering；任一模式不得调用或返回另一模式的结果。
+- production search只在immutable IR与typed planning state上生成、约束、估价和选择；不能用完整CardModule/Instr反复物化作为候选
+  evaluator，也不能用candidate evaluation count作为长期search budget。
+- 只有selected winner assignment进入一次CardModule materialization和Q50.0。late verification失败说明planning/lowering合同缺口，
+  不得回到search重试下一个materialized candidate。test-only tiny oracle可以逐点actualize，用于验证planning域和cost，不进入产品调用链。
+- 每个Q50 mechanism完成必须同时有算法、production consumer、query/apply测试和donor能力映射；定义typed domain或direct apply不足以
+  证明任务完成。
+
+## Physical version表示边界（mechanism可复用，算法重审中）
 
 - physical representation identity按node/Tile的operand use与result value区分；producer result是fanout共享primary version，consumer
   operand是use-local要求。未读取DPS init和scalar不制造layout state。
@@ -455,8 +466,10 @@ source program
   Cx/NCx与外部Tensor writeback是selected primary之外的显式derived versions，不能反写logical edge assignment。
 - apply期间consumer operand可暂时暴露selected use version；compute完成后必须恢复producer primary map。result selection则替换后续
   consumer看到的primary map，确保同layout fanout只物化一个producer version。
+- 上述只说明current typed identity/apply边界可复用，不说明layout规划完成。PBQP/Top-4 constraint/cost solver在未迁能力时被删除，
+  Q50.G必须重新承接算法并接入production search后才能恢复完成状态。
 
-## Explicit movement domain/apply（stable，2026-08-19）
+## Explicit movement domain/apply（mechanism可复用，proof重审中）
 
 - movement identity绑定exact edge/destination或partial-reduction node/result/merge Tile；fragment携source shard base、global rectangle、
   destination-relative offset、source/transport layout、element type及logical/physical bytes。不能只存edge action bool。
@@ -466,6 +479,8 @@ source program
   合法。apply合并共同tree edge，destination可以消费后继续forward。
 - same-group retained与refetch、group-cut DDR/recompute属于不同typed choices；partial ownership可混合local subview load和remote peer
   fragments。任何movement变化都要求Q50.F/lifetime/calendar重算，actual packing仍只在Q50.0。
+- 旧NoC intermediate/partial-dataflow中的alias、lifetime、slice和tree/ring proof尚未逐项映射到current owner；不得仅凭上述domain/apply
+  存在或direct tests通过声明Q50.H完整。
 
 ## NCC completion分层（stable，2026-08-19）
 
@@ -477,7 +492,7 @@ source program
 - cross-op pending事实由`Analysis/Scheduling/NCCCompletionAnalysis`从current Module重算；结果携per-operation before/after mask，
   只在未变化IR epoch内有效。structured if/for/TileRegion和defined direct call受支持，递归/indirect/unsupported CFG fail closed。
 
-## Instr event/order/worker domain（stable，2026-08-19）
+## Instr event/order/worker domain（mechanism可复用，尚未接入联合search）
 
 - Q50.J只接受complete canonical unplaced worker0 Instr modules。每个event window的hard DAG来自transitive SSA、view-root buffer
   RAW/WAR/WAW、DTE token/wait和synchronous completion；topological order与typed worker是完整惰性Cartesian域，不用priority/row表选winner。
@@ -485,6 +500,8 @@ source program
   任一mutation后fail closed。apply必须消费owned complete modules，原位设置order/worker并fresh rebuild joins，不clone候选。
 - resource analysis只重算actual engine/worker/SPM/DDR/directed link uses与issue→completion structural overlap。共享资源是Q52 estimate输入，
   不是legality/profitability表；event structure改变后丢弃domain和analysis全部重建。
+- current Tile lowering只应用该domain的first assignment，`UnifiedPhysicalDataflowAssignment`没有schedule field；因此这些规则尚未形成
+  production search能力，旧ready-order/worker tests也需逐项迁移。
 
 ## Structured compute implementation choice（stable，2026-08-19）
 
@@ -495,25 +512,23 @@ source program
 - node assignment随shard group进入同一次CardModule materialization；recomputed/unowned support node默认Natural。旧implementation donor
   只有在domain、actual IR和negative proof迁入active source并受测后才能删除。
 
-## Selected stage pipeline（stable，2026-08-19）
+## Selected stage pipeline（目标边界，当前实现未闭合）
 
 - multi-slot buffering scope的exact edge集合就是stage cut identity；不要另建pipeline bool/recipe。empty scope是serialized identity，
   nonempty scope必须在actual common static loop上产生2+ stages且slot multiplicity与selection完全一致。
 - stage materializer消费owned prepared Instr和current relations，原位构造SCF prologue/steady/epilogue并返回typed stage/slot facts；失败销毁
   owner，不clone module。mutation后旧instruction schedule domain必然失效，Q50.J从新IR重建。
-- memory planning只在stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone和专属大套件不能恢复；普通负例复用
-  selected-buffer的Direct-DTE、alias、trip/tail gate。
+- memory planning只在stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone不恢复，但其DTE/NCC/alias/periodic/
+  tail semantic witnesses必须迁入current owner。当前stage只是buffering scope触发的wrapper，不是联合search transition，不能标完成。
 
-## Bounded physical search profile（stable，2026-08-19）
+## Physical search profile资格（Q51+重审期间暂停）
 
-- 普通编译不收集search统计。显式profile使用`--compile-timing --optimization-policy search`，需要扩大actual candidate数时再加
-  `--search-max-candidate-evaluations <positive-count>`；`none`不接受该参数。
-- profile至少核对`stage=physical-search`的budget/generated/evaluated/accepted/exact_rejected/indeterminate/coverage与
-  proposal/actual detail，并以同轮生成的package执行`wafer-run --no-card`。历史package和历史winner不作当前输入。
-- LLaMA这类source program的手动build-tree入口必须显式设置`TX8_DEPS_ROOT=<repo>/third_party/tx8_deps`。长case只在Q52/Q53等
-  明确profile/production gate运行；定向调试优先抽取同一IR关系的large transpose、multi-stage或interleaved-component unit。
-- 16 Tile实际conversion、lifetime、packing只并发处理current Tile IR；不得为复用而缓存、clone或replay materialized IR。只有从
-  TensorProgram和immutable target facts可完整键控、且Tile-local offsets/tails/endpoints在apply时重新绑定的analysis才能跨Tile共享。
+- 普通编译不收集search统计。Q51+重审闭合前不执行重型search profile；旧`--search-max-candidate-evaluations`控制的是complete
+  materialization/lowering次数，不能作为长期planning budget或scalability证据。
+- 恢复profile前必须先证明public search不调用baseline、所有计划轴有production consumer、候选在typed planning state上展开、winner
+  只commit一次，并有可信的work/coverage定义。no-card只验证package/runtime接口，不证明搜索质量或性能。
+- 16 Tile实际conversion、lifetime、packing不得靠缓存、clone或replay materialized IR伪复用；共享只允许current immutable IR与target
+  facts可完整键控的analysis。是否跨Tile共享必须由semantic key和fresh apply证明。
 
 ## Portable StableHLO product source（stable，2026-08-19）
 

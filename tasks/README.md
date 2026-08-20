@@ -62,19 +62,17 @@
 11、14-17编号设计文档拥有，状态只看`tasks/progress.md`；不得从旧计划恢复接口。
 
 Q49.P、Q50、Q51–Q53共用card-local multi-Tile综合计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
-Q50.0建立candidate compilation/verification seam；Q50.A先收口IndexRelation demand边界；Q49.P闭合从正常上游IR产生
+Q50.0建立selected CardModule compilation/verification seam；Q50.A先收口IndexRelation demand边界；Q49.P闭合从正常上游IR产生
 accepted executable的baseline deterministic feasibility legalization、single-root TileRegion、
 最窄scope probe、typed causal witness、direct canonical placement、唯一整图物化与search-policy隔离；baseline不展开完整
 placement domain、不在accepted后建立shadow schedule/cost，也不在普通编译无条件打印IR；Q50.S把算法等价改写物化为actual `TensorProgram`；
 Q50.B–Q50.K逐项接入
 spatial、TileRegion/temporal/fusion、physical representation/movement、buffer/order/completion和条件式stage pipeline选择；
-Q51.Core直接复用Q49.P accepted baseline作为session-level incumbent后，只建立typed assignment/transition、deterministic
-frontier、ledger/budget和evaluation/result evidence的new-search control kernel。Core不适配旧candidate/generator/feedback/
-selector，同批让public `search`只进入新Core并删除旧search控制链、Rank/coordinated source island、源码marker CTest、paired
-optimization catalog/driver、旧stderr/statistics合同；未接入production mechanism时直接返回Q49.P accepted
-incumbent。Core不预声明未来轴、不拥有Q50.F actual probe，也不以fixture签发真实domain完整性。Q50.S/B–K只向新链逐轴补齐
-mechanism与独立reference oracle，并同批删除对应旧实现和测试；Q51以full actual oracle和new source-to-package链闭合联合选择。
-旧candidate set、winner、统计、digest和异常长integration不是验证对象或对照基准。Q52按实际负载优化scalability，Q53形成production
+Q51.Core直接从immutable TensorProgram建立独立planning session，只管理typed assignment/transition、deterministic
+frontier、work/budget、cost/bound和winner plan。它不调用Q49.P或接收baseline executable，也不在planning阶段物化CardModule。
+旧candidate/generator/feedback/selector接口不保留，但删除其source/test前必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。
+Q50.S/B–K逐轴补齐mechanism、算法和独立reference oracle；Q51以test-only full actual oracle验证plan，并让production只commit一个winner、
+调用一次Q50.0。旧输出格式无兼容义务，但旧semantic能力不能因接口退役直接判废。Q52按实际负载优化scalability，Q53形成production
 `board-ready`与真实板端证据。06仍是唯一联合决策设计owner；任务拆分只提供可验证接入checkpoint，不产生独立layout、
 fusion、buffering、communication或worker selector。动态状态、依赖和完成门禁只看`tasks/progress.md`。
 

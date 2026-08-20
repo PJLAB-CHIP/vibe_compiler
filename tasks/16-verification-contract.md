@@ -286,7 +286,7 @@ special pass option、shape shortcut或手写替代graph。
 
 每次compiler scale run至少记录source logical bytes、target physical bytes、package data bytes、ProgramTensor/ProgramDataSource/
 ProgramDataRange/TargetTensor/file range计数，transform/write/read次数、bytes read/written、peak RSS、peak disk、最大live window、
-alignment overhead，以及IR op、candidate/work ledger、stage wall time和typed failure分类。Q56 fake-provider/board runtime另记录H2D；
+alignment overhead，以及IR op、candidate/work counts、stage wall time和typed failure分类。Q56 fake-provider/board runtime另记录H2D；
 H2D不是Q58/Q61完成前置。完成不变量为：
 
 ```text
@@ -328,7 +328,7 @@ current target容量、target-model能力或host预算不足，必须按stage报
    lattice重新推导workset并缩小到第一个fit，随后通过完整CardExecutable、package和no-card；multi-axis/tail/minimum-granularity
    受测，最小合法tile仍失败才返回direct typed capacity failure，indeterminate作为compiler failure而非unsupported。
    fresh有界小图、五类relation、overfull-to-fit与轻量source-to-package/no-card还需证明CardModule、CardExecutable与package
-   digest稳定、oracle通过；single-coordinate exact-demand ledger必须证明supported rectangular-image relation不落入无界generic
+   digest稳定、oracle通过；single-coordinate exact-demand work evidence必须证明supported rectangular-image relation不落入无界generic
    Presburger equality recovery。Q51完整new-search链闭合前，不运行重型LLaMA block的`none`或`search`，也不回放或重跑旧长耗时
    输出。Q49.P完成后
    不再建立独立baseline板端任务；Q53只把该accepted baseline作为current matched A/B的一侧。
@@ -341,24 +341,25 @@ current target容量、target-model能力或host预算不足，必须按stage报
    均物化成真实TensorProgram alternatives。
 3. Q50.B–Q50.K依次闭合spatial placement、single-root TileRegion、coupled traversal/region fusion、complete temporal tile与
    wave-loop order、
-   scoped actual probe、layout/representation、movement、rotating buffers、event/resource schedule与conditional stage pipeline。
+   scoped planning feasibility、layout/representation、movement、rotating buffers、event/resource schedule与conditional stage pipeline。
    Q50.B必须新增current尚不存在的reduction spatial factor、partial ownership与显式merge；Q50.E复用已经能物化的reduction
    temporal tile，但须以多reduction轴property/reference enumerator证明完整breakpoint与wave-loop domain。两项证据不得互相代签。
    probe缺少因果坐标时必须deferred，资源耗尽不得当作不可行；pipeline event structure形成后必须使旧calendar失效并
    重入event/resource schedule，由新assignment证明实际overlap。
-   每项都需current接入点、actual-IR witness和实际执行的正负测试；旧owner删除不能代替能力迁移。
-4. Q51.Core：直接复用Q49.P accepted baseline executable/actual cost作为session-level incumbent，不经search carrier重建，
-   也不把baseline choices当未来轴default；Core只以独立finite state-graph model闭合typed transition apply、deterministic
-   frontier、stable dedup、global ledger/budget、evaluation routing和coverage/bound evidence。每轴independent reference
-   enumerator随Q50.S/B–K交付，通用actual-region probe归Q50.F。Core从零建立new-search控制并同批接管public `search`，不适配旧
-   candidate/generator/feedback/selector；旧控制链、旧输出测试和长耗时integration同批删除。production flat exhaustive runner、
-   全部联合维度、exact domain和new source-to-package链由Q51闭合；各Q50机制交付时同步删除对应旧实现。late exact
-   failure回到同一new candidate set，selected IR必须有共享TileRegion，并以
+   每项都需current接入点、production consumer、actual-IR witness和实际执行的正负测试；删除旧owner前还必须逐项映射其中独有
+   algorithm/proof/diagnostic/test witness，旧owner删除和新domain存在都不能代替能力迁移。
+4. Q51.Core：直接从immutable TensorProgram建立search session，不调用Q49.P、不接收baseline executable/actual cost，也不把
+   baseline choices当未来轴default；Core闭合typed transition、deterministic frontier、stable dedup、global work/budget、
+   evaluation routing和coverage/bound evidence。每轴independent reference
+   enumerator随Q50.S/B–K交付，通用pure planning feasibility归Q50.F。Core从零建立new-search控制并接管public `search`，不适配旧
+   candidate/generator/feedback/selector；旧控制链只能在能力迁移完成后删除。test-only flat exhaustive runner、全部联合维度、
+   exact planning domain和new source-to-package链由Q51闭合。production search在typed state上选出一个winner，只允许该winner
+   materialize并调用一次Q50.0；Q50.0失败是planning/lowering合同缺口，不得回到candidate set反复物化。selected IR必须有共享TileRegion，并以
    coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。
 5. Q52：它是Q51完整new-search链闭合后首个允许执行重型LLaMA `search`和质量profile的任务；Q49.P的单次fresh FP16 LLaMA
    `optimization-none`只证明baseline功能/materialization。generic/HF/LLaMA representative load只在显式、bounded profile批次
-   记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在小图oracle上不改变最优结果，代表负载不劣于
-   同源`none`，没有固定shape/tile/fusion/buffer shortcut。
+   记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在小图oracle上不改变最优结果；search与同源`none`的
+   质量差异只由独立matched A/B报告，没有固定shape/tile/fusion/buffer shortcut。
 6. Q60先把framework adapter与pre-exported portable StableHLO接入同一product source contract；Q53的generic DAG与
    HF/Llama matrix全部由该产品入口fresh生成完整ExecutablePackage并fresh no-card；每个package包含all-and-only 16 Tile
    entries、current TileEntryArgument/program-data/completion闭包，runner与oracle完整；融合有效性证据闭合后

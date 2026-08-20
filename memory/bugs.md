@@ -401,18 +401,33 @@
 - 防复发：测试必须比较同vector不同order的actual nesting，覆盖internal producer、multi-reduction、tail、partial contribution和
   clone/remap后的order；不能只比较domain key或loop数量。任何block conversion前先验证terminator与use-def，而不是等下游assert。
 
-## Physical representation不能藏在edge字段或late layout winner中
+## Typed representation迁移不能删除layout求解算法
 
-- 现象：logical edge planner按op kind直接写`producerLayout/consumerLayout`，但所谓`LocalPhysicalConversion` materializer完全不消费
-  这些字段；另一个dormant PBQP在actual Tile IR上固定最多4个proposal并clone/apply local winner。两条路径都不能表达fanout共享的
-  primary version，也会让layout变化绕过search共同parent。
-- 根因：把consumer use representation、producer value version、target compute internal layout和movement conversion混成一个edge-local
-  hint；late selector只能看到已经默认lower的layout，反过来重写结果并重复事实源。
-- 修复模式：identity按`(Tile,node,operand|result,index)`建typed domain，合法性只来自current physical encoding interface；result选中
-  primary version，compute/output所需layout是显式derived version。consumer转换后恢复producer primary map，使fanout共享不被use-local
-  rewrite覆盖。logical edge plan不再携layout。
-- 防复发：domain与independent Cartesian reference比较；actual测试同时检查selected relation、layout materialize与fanout version数；
-  任何proposal ordinal、local cost winner、未消费layout字段或clone-then-apply owner都不得重新进入current pipeline。
+- 现象：logical edge上的`producerLayout/consumerLayout`确实是错误identity，但修复时把仍由production candidate调用、已有package/no-card
+  证据的PBQP/Top-4 layout solver误写成“dormant”，用per-value合法layout Cartesian domain替换。新domain能表达选择，却没有旧solver的
+  跨value约束、movement/footprint cost、dominance、shared secondary、fixed-point view elimination或proposal构造能力。
+- 根因：把“旧owner和local winner必须退出”错误扩大成“owner中的算法也无需迁移”；完成门禁只检查typed field、domain enumeration和
+  direct apply，没有建立donor capability到current query/production consumer的逐项对照。
+- 修复模式：保留`(Tile,node,operand|result,index)`typed identity和primary/derived version边界；从旧实现提取仍需要的constraint graph、
+  legality、cost和deterministic solver算法，使其只返回current typed assignments/bounds，不clone/apply IR也不签发全局winner。全局选择仍归
+  Q51，selected assignment只在最终commit中apply一次。
+- 防复发：退役任何solver、planner或transform前必须列出其算法、proof、diagnostic和test witness的current owner及production caller；
+  “新domain与Cartesian reference一致”只证明表示完整，不能代替候选构造质量。旧接口可以删除，未迁算法不能靠“dormant”“local
+  winner”或测试改名直接判废。
+
+## Typed外壳存在不能证明旧算法已经迁移
+
+- 现象：Q51.Core以后多项任务以`Assignment`、`Domain::create/getFirst/getNext/contains`和direct apply为完成证据，同时删除旧
+  search、placement、layout、NoC、schedule和pipeline owner及大批semantic tests。轻量package仍能靠baseline fallback或first proposal
+  通过，掩盖Q50.F/J/K未接入、layout solver丢失和Q52无LNS等事实。
+- 根因：施工计划把“禁止旧local winner/clone owner”错误解释成“旧owner中的算法无需迁移”；checkpoint按新type、文件组织和局部unit
+  验收，没有建立旧能力到current owner、production caller和test witness的完整映射。source从CMake退出又被误当成能力已淘汰。
+- 修复模式：每次替换旧owner先列出其中独有的candidate construction、solver、proof、diagnostic和test witness；逐项标为迁移、经current
+  IR明确淘汰或仍待处理。迁移项必须有current typed API、真实production caller和下游验证；只在全部完成后删除donor。旧接口、sidecar和
+  clone路径不恢复，但算法可以重写为pure query、typed transition或一次性apply。
+- 防复发：任务完成审查同时检查定义、直接consumer、production call graph、负例与端到端输出；“有domain”“测试绿”“package生成”
+  均不能单独完成任务。任何大规模删除必须附donor-to-current能力对照；fallback、默认first point和未执行轴必须有反向测试，不能让
+  未完成路径伪装成成功。
 
 ## Partial reduction计算结果必须显式写回destination
 
@@ -1085,10 +1100,12 @@
 - 现象：旧fixed-slot实现扫描任意loop、clone完整Module、自行推导slot/stage并返回一个local candidate；buffer count、logical edge、
   ready order和pipeline identity分散，后续只能靠ordinal/clone对应关系拼回search。
 - 根因：slot lifetime与stage event structure没有以同一selected edge scope为边界，rollback又被误写成每个mechanism各clone一次。
-- 修复模式：Q50.I scope携exact edges/count，Q50.K消费owned prepared Instr原位构造stages/rotation/SCF phases并返回actual facts；empty scope
-  是serialized。Q50.J schedule在mutation后重建，SPM offset在stage完成后分配。
-- 防复发：删除old public API/source/test，搜索确保fixed-slot candidate零残留；stage正例必须核对2+ stages、selected slots、额外phase Instr和
-  schedule epoch invalidation，负例复用同一active alias/DTE/trip/tail gates，不复制第二套planner。
+- 修复模式：Q50.I scope应携exact edges/count，Q50.K消费owned prepared Instr原位构造stages/rotation/SCF phases并返回actual facts；
+  empty scope是serialized。Q50.J schedule在mutation后重建，SPM offset在stage完成后分配。但这只是目标边界，不能用一个wrapper证明旧
+  fixed-slot算法与protocol proof已经迁移。
+- 防复发：旧public API和whole-Module clone可以删除；旧source/test中的periodic DTE、NCC backedge、endpoint reuse、alias/external root、
+  odd tail和atomic failure能力必须逐项迁入current owner并受测后才能删除。stage还必须成为search typed transition，而不是由nonempty
+  buffering scope自动触发。2个wrapper test和少量selected-buffer test不能代签旧40项semantic witness。
 
 ## Per-root TileRegion不等于可执行Tile entry
 
@@ -1099,8 +1116,8 @@
 - 修复模式：root construction返回source-argument/structured-node-result keys；Card assembly按keys拓扑选择ready stages，把single-block
   stage body直接move进唯一public entry并用current SSA传递local intermediates。无work Tile构造同signature empty entry；不引入call、
   replay、ordinal或跨passside table。
-- 防复发：Q50.C actual test不仅数TileRegion，还必须检查每Tile恰一public entry；Q51 complete candidate必须进入Q50.0并通过DDR/call-closure/
-  program-resource gate。private functions存在或局部verifier通过不能代签executable boundary。
+- 防复发：Q50.C test-only actual oracle不仅数TileRegion，还必须检查每Tile恰一public entry；production Q51只让selected winner进入
+  Q50.0并通过DDR/call-closure/program-resource gate。private functions存在或局部verifier通过不能代签executable boundary。
 
 ## Baseline不能无条件构造search schedule domain
 

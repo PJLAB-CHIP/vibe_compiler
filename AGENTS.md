@@ -233,6 +233,13 @@ Pipeline position:
 - **pipeline 只有一个实现。** 一个pass只做一个可命名的IR变换，声明dependent dialect、typed option和analysis
   preservation；production driver与`wafer-opt` named pipeline复用同一query/apply和pipeline builder，不维护direct
   mutation平行实现，也不长期手工拼pass。
+- **用户级策略并列，不互相调用或兜底。** baseline、search或其它public policy可以共享policy-free analysis、typed plan schema、
+  materializer和lowering，但一个policy不得先完整执行另一个policy、接收其executable作为初始结果，或在失败时静默返回另一个
+  policy的产物。matched比较由外层测试分别启动独立编译事务，不进入任一policy控制流。
+- **planning与commit分离。** production planner在immutable IR和typed planning state上生成、约束、估价和选择，不通过反复
+  materialize/lower完整IR再丢弃loser完成普通候选比较；只有selected winner进入一次actual materialization、lowering和verification。
+  winner commit失败表示planning/lowering合同缺口或typed unsupported，不能作为正常控制流回到planner继续物化下一个候选。
+  test-only有限oracle可以逐点actualize以验证planning域，但不得进入产品调用链。
 - **区分pass、subpipeline与driver。** atomic pass/kernel在最窄合法anchor只完成一个可验证IR变换；semantic
   subpipeline组合一个稳定且verifier-legal的IR边界并可打印、独立重放；compiler driver执行搜索、一对多module拆分、
   外部工具调用和原子目录替换，只调用前两层。顶层composite可以较长，但必须暴露可测试leaf stage；不得机械拆出非法
@@ -262,7 +269,8 @@ Pipeline position:
   build能编译，都不能代替fresh source/build和下游IR/file验证。
 - **退役实现前先迁移能力。** source未进入CMake只说明它不属于active build，不能据此推断其中算法、proof、diagnostic或
   测试资产已经无用。先逐项确定承接实现；仍被当前或后续合同需要的能力必须迁入active source并受测，之后才能删除旧
-  实现。只有已被现行IR/API明确淘汰且没有独有能力的源码可以直接清理。
+  实现。大规模替换必须留下donor能力到current owner、production caller和test witness的逐项对照；新type、domain、文件组织或
+  局部unit存在不能代替该对照。只有已被现行IR/API明确淘汰且没有独有能力的源码可以直接清理。
 
 ### 协议和语义恢复
 
