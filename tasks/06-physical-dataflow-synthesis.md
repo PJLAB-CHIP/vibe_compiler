@@ -44,7 +44,8 @@ IR，transformation 靠近被修改的 IR，conversion、memory planning 和 ver
 
 真实 SPM、fanout、重复计算、通信或并行性出现问题时，再按因果缩 temporal tile、解除 coupled edge、切 region、改变
 layout/buffer、回退 spatial，或构造带 multi-buffer 的 stage pipeline。这里的“尽可能大”是候选生成和排序方向，
-不是 legality shortcut；最终 winner 只由完整实际 IR、fixed-capacity planning 和统一 cost 比较决定。
+不是 legality shortcut；最终 winner由完整typed plan、legality、cost/bound比较决定，随后actual IR与fixed-capacity lowering只验证并
+实现该winner，不反向参与普通候选选择。
 
 ## 2. Pipeline Contract
 
@@ -52,13 +53,13 @@ layout/buffer、回退 spatial，或构造带 multi-buffer 的 stage pipeline。
 Pipeline position:
 - Upstream IR / input:
   GSPMD完成card级分区、target-independent normalization完成后的card-local TensorProgram；若存在算法级等价
-  alternative，每个alternative已经在isolated clone中物化为真实structured DAG。SSA、structured iterator、
+  alternative，Q50.S提供typed semantic-root assignment/planning view，只有winner在isolated owner中物化真实structured DAG。SSA、structured iterator、
   indexing relation、effect、type、shape和dtype均可验证，尚未绑定Tile。
 - Current stage responsibility:
   `none`从正常TensorProgram沿canonical feasibility fallback确定可执行的iteration partition、Tile placement、single-root
   TileRegion、temporal tile、representation/movement、single buffering、order和completion；`search`在同一可回溯选择过程中
   联合决定iteration partition、Tile placement、reduction distribution、TileRegion、traversal connection、temporal tile、
-  physical representation、movement、buffering、stage pipeline、order、worker和completion。两者的完整选择都进入正常
+  physical representation、movement、buffering、stage pipeline、order、worker和completion。每次invocation只有各自selected result进入正常
   Card/TileRegion/Instr lowering和exact resource verification。
 - Output IR / files:
   被选中的CardModule及其all-and-only Tile modules；其中TileRegion、loop、movement、Instr、SPM/DDR
@@ -558,14 +559,10 @@ search kernel本身不生成spatial、region、temporal、layout、movement、bu
 placeholder schema。每个mechanism进行pure domain/query并返回named typed transition、legality、cost或bound；kernel只维护
 deterministic frontier、stable dedup、typed outcome和search-local best plan。planning阶段不apply mutable IR。
 
-Q51.Core只先闭合上述control kernel。它不拥有Q49.P的single-root capacity probe；Q50.F在完整causal coordinates闭合后加入
-通用scoped feasibility query。Core也不靠mock domain签发真实physical domain完整性：它只用独立finite state-graph model检查
-frontier mechanics；每个Q50轴再加入本轴的independent reference enumerator，全部真实轴的test-only flat exhaustive oracle
-与actual digest/winner comparison由Q51 closure签发。Core从零建立新search链，不包装、调用或兼容current
-`deriveShortlist`/candidate family/feedback/selector路径；本checkpoint同批让public `search`只进入新Core并删除旧search控制链。
-此时production mechanism set为空，`search`返回typed failure，不启动baseline或候选物化。Q50.S与Q50.B–Q50.K只向这条
-新链增加机制，并在各自变更中清理对应的旧算法入口、selector、repair、统计和测试；Q51只闭合全部真实轴和新链自身的
-source-to-package结果，public routing已由Core完成。
+先收敛上述control contract，但不实现只靠mock domain运行的空Core。Q50.S与Q50.B–K按依赖建立真实typed query/algorithm/apply，
+Q50.F/J分别经过foundation与full closure；每轴加入independent reference enumerator并迁移donor能力。全部真实轴具备后才实现
+Q51.Core，首次落地即由production planner消费完整state；随后Q51以test-only flat exhaustive oracle、actual digest/winner
+correspondence和single-winner source-to-package闭合。旧control branch在这些能力完成后切除，不能提前删除并让public search经过空壳。
 
 终态调用关系固定为：
 
@@ -817,15 +814,15 @@ storage-root memo、DDR boundary kernel和reduction temporal materialization只�
    baseline/search提供不携带representation/movement policy的proof；闭合reduction、broadcast、window/stride、multi-piece、
    DPS init与support relation，删除carrier失败和字符串失败对spatial legality的反写；
 3. 以Q49.P从current输入闭合baseline功能合法化、结构、policy、probe、causal witness和materialization解耦；
-4. 从immutable TensorProgram建立只管理frontier/evaluation/result的新search control core，以独立finite
-   state-graph model证明kernel不会漏state、吞sibling或把indeterminate改成rejection；同批切换public入口并删除旧search控制链；
-5. 依次闭合structured alternatives、spatial partition/placement、TileRegion/temporal/fusion、representation/movement、
-   Instr pipeline机制，每项只接入新common state，加入本轴独立reference domain oracle和定向actual-IR gate，并删除对应旧
-   mechanism/selector/repair/test；
-6. 完成所有维度的test-only flat exhaustive oracle、完整source-to-CardExecutable单winner链和实际fusion验证，确认public `search`
-   始终只经过新链且不存在旧search残留；
-7. 从第一版保留条件式stage-pipeline transition；Q52只在profile后优化其proposal顺序，并加入或加强memo、typed no-good与LNS；
-8. fresh workload/package/no-card/board closure。
+4. 只先收敛Q51 planning state、transition、cost/bound、coverage和single-winner commit合同，不写空Core或切换public入口；
+5. 依次闭合structured alternatives、graph-level spatial placement、single/coupled region、temporal、feasibility foundation、layout solver、
+   movement、buffering、event/resource foundation、execution structure、schedule和full-coordinate feasibility；每项迁移donor能力、加入
+   production query与独立oracle，完成承接后才删除旧owner/test；
+6. 全部真实轴具备后实现Q51.Core，首次落地即消费完整typed state并由production planner调用；不调用baseline、不物化candidate；
+7. 完成所有维度的test-only flat exhaustive oracle、完整source-to-CardExecutable单winner链和实际fusion验证，确认public `search`
+   只经过new planning→one commit链；
+8. Q52根据planning state-growth profile加入safe memo/DP/bound与必要LNS，不以complete materialization次数作预算；
+9. fresh workload/package/no-card/board closure。
 
 ## 14. Completion Gate
 

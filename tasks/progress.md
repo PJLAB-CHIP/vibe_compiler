@@ -40,30 +40,32 @@ Q56 board-ready -> Q59 compiler entry transaction closure     [done]
 Q55 + Q56 board-ready + current TargetCall/model
   -> Q62 target numeric contract reconstruction                [done]
 Q54 + current Instr/NCC target ABI
-  -> Q63 NCC completion contract layering                     [queued]
+  -> Q63 NCC completion contract layering                       [done]
 Q50.0 + Q54 -> Q50.A exact placement-demand boundary           [done]
 Q59 + Q50.A + Q45
   -> Q49.P deterministic baseline functional closure          [done]
-Q49.P + Q50.0 -> Q51.Core search control kernel               [doing]
-Q51.Core -> Q50.S structured semantic alternatives           [doing]
-Q51.Core + Q50.A + Q64 -> Q50.B spatial partition and placement [doing]
-Q50.B -> Q50.C maximal single-root TileRegion                [doing]
-Q50.C -> Q50.D coupled traversal and region fusion           [doing]
-Q50.D -> Q50.E complete temporal tiling                      [doing]
-Q50.E -> Q50.F scoped feasibility analysis                   [doing]
-Q50.F -> Q50.G layout and physical representation            [doing]
-Q50.G -> Q50.H explicit data movement                        [doing]
-Q50.H -> Q50.I rotating buffers                              [doing]
-Q50.I -> Q63 NCC completion contract layering                 [done]
-Q50.I + Q63 -> Q50.J event and resource scheduling           [doing]
-Q50.J -> Q50.K conditional stage pipeline                    [doing]
-Q50.S + Q50.B–Q50.K -> Q51 unified search correctness       [doing]
-  -> Q52 workload-driven search scalability                  [doing]
-Q51.Core -> Q64 source registration and library ownership     [done]
-Q52 + current PyTorch/XLA capture/oracle mechanics + Q59
-  -> Q60 frontend production entry                              [done]
-Q60 + Q55 current-interface closure + Q56 board-ready
-  -> Q53 current production board readiness                  [doing]
+Q51 planning contract reset                                  [doing]
+Q51 planning contract -> Q50.S semantic-root query/algorithm  [queued]
+Q50.S + Q50.A + Q64 -> Q50.B graph-level spatial placement   [queued]
+Q50.B -> Q50.C single-root winner apply                       [queued]
+Q50.C -> Q50.D coupled-region domain/algorithm                [queued]
+Q50.D -> Q50.E temporal domain/algorithm                      [queued]
+Q50.E -> Q50.F feasibility foundation                        [queued]
+Q50.F foundation -> Q50.G layout constraint solver           [queued]
+Q50.G -> Q50.H movement topology/proof                        [queued]
+Q50.H -> Q50.I buffering domain/algorithm                     [queued]
+Q50.I + Q63 -> Q50.J event/resource analysis foundation      [queued]
+Q50.J foundation -> Q50.K execution-structure alternatives   [queued]
+Q50.K -> Q50.J schedule closure                               [queued]
+Q50.J closure -> Q50.F full-coordinate feasibility closure   [queued]
+Q50.F closure + Q50.S–K -> Q51.Core actual planner           [queued]
+Q51.Core -> Q51 tiny oracle and single-winner commit          [queued]
+Q51 -> Q52 workload-driven planning scalability              [queued]
+Q64 source registration and library ownership                     [done]
+current PyTorch/XLA capture/oracle mechanics + Q59
+  -> Q60 frontend production entry                            [done]
+Q51 + Q52 + Q60 + Q55 current-interface closure + Q56 board-ready
+  -> Q53 current production board readiness                 [queued]
 Q53 board-ready + Q56 board-ready
   -> Q57 resident static execution                             [later]
 Q53 board-ready + Q58 + Q60
@@ -88,23 +90,23 @@ Q53 board-ready -> Q48 semantic superoptimization             [later]
 | Q63 | `ncc-completion-contract-layering` | `done` | Q54、current Instr/NCC target ABI | pure target `NCCCompletion`只拥有target worker/mask/completion kind；IR worker count从closed ODS enum推导且public header不再include TX81 ABI。join和peripheral通过`WaferNCCCompletionOpInterface`各自声明participant join或synchronous writeback，ordinary issue由现有issue interface统一适配，旧free concrete-op switch/classifier零残留。query-local `NCCCompletionAnalysis`从current if/for/TileRegion/direct-call IR重算per-op pending before/after和summary，递归/indirect/unsupported CFG fail closed；全部lifetime/cost/scheduling/lowering/buffering consumer迁移。runtime/model不include IR completion；剩余Model→Compiler宽link由Q62的invocation/numeric owner拆除。fresh相关unit、target public link、主构建及组织检查通过。 | 11、13、17-19；`tasks/plans/ncc-synchronization-contract-layering.md` |
 | Q49.P | `deterministic-baseline-functional-closure` | `done` | Q54；Q59；Q50.A；Q50.0、Q45 | `none`只保留一个live canonical coordinate，不枚举placement候选或调用recursive CSP/search；temporal fallback是确定性贪心，reduction temporal tiling已闭合，reduction spatial partition/partial merge仍归Q50.B，完整temporal搜索域归Q50.E。current materializer按consumer operand exact demand在structured producer处截断，先证明local/peer/DDR coverage再一次性构造final single-root TileRegion；旧root/function SPM probe、完整DAG closure、post-hoc support rebuild/replay、accepted重物化和默认统计均退出。Card→Tile直接move大型body，16 Tile bounded并发且只共享current IR可重算analysis。compiler实现、私有头、unit与fixture已按Baseline/Planning/Executable/Pipeline/Search/Target/Transport等职责归位，baseline测试不再寄居旧search suite。fresh职责化unit 134/134、source organization、runner unit与构建通过；official FP16 LLaMA `optimization-none`已从fresh source完成16-Tile package、payload和no-card，CTest 1/1在181.70秒通过。显式timing发现的约22,968次TileRegion→Instr重复work转交Q52，禁止以actual IR cache/replay处理。 | 06、14、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
 | Q50.A | `exact-placement-demand-boundary` | `done` | Q50.0、Q54 | policy-free trial、typed four-state verdict、nested IR snapshot invalidation、structural relation limits与typed resource exhaustion、all-and-only execution/ownership coverage、stable per-Tile payload、partial-reduction merge obligation和multi-result production carrier均已闭合。baseline support carrier直接消费同一per-destination exact demand/ownership intersections，empty destination不再被伪造为矩形或carrier失败。reduction、broadcast、affine window、strided view和multi-piece overwrite五类正常TensorProgram均经canonical baseline carrier完成一次完整Q50.0 CardModule compile并产出accepted CardExecutable；fresh relation/query/carrier回归62/62、五类production gate 5/5、Q50.0 baseline/稳定性/reduction 3/3、source-to-package 1/1和主构建通过。follow-up确认结构limit不能单独保证generic Presburger equality的wall-time；这不改变本项logical proof/outcome，supported rectangle热路径的closed-form witness与single-coordinate work closure归Q49.P P6。约163秒的旧placement枚举不是本logical boundary门禁：baseline调用由Q49.P删除，旧search测试随Q51.Core清理，Q50.B只以新惰性domain/tiny oracle重新建立需要的轴。 | 05-07、09-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q51.Core | `physical-dataflow-search-kernel` | `doing` | Q49.P；复用Q50.0 | 重审计确认原提交只提供baseline passthrough和一个始终仅由unit调用的通用control模板，同时删除大量旧search/cost/placement/schedule owner；production从未消费该Core。工作树中的baseline/search拆分只修正一项错误，不构成Core完成。 | 06、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.S | `structured-semantic-alternatives` | `doing` | Q51.Core | attention/decode proof与actual alternative materializer有实质实现，可作为迁移基础；但旧能力测试未逐项承接，current production顺序和默认预算先耗尽original root，alternative实际饥饿。需复核旧算法/proof/test并接入真实search state。 | 05-06、08、10、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.B | `spatial-partition-and-placement` | `doing` | Q51.Core、Q50.A、Q64 | per-node all-iterator legality domain和exact-demand trial可保留；旧compact-topology、independent-component、nondominated state、chain DP/general-DAG search算法未迁，current constructive assignment只是按共同participant上限逐node取局部点。 | 05-08、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.C | `maximal-single-root-tile-region` | `doing` | Q50.B | single-root actual apply和多结果/reduction/support/effect测试较完整；但真实模型继续暴露multi-producer closure与最终output writeback缺口，完成声明撤回。需按旧materializer能力和current downstream逐项复核。 | 05-08、10、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.D | `coupled-traversal-region-fusion` | `doing` | Q50.C | connected partition domain和coupled apply可保留；production只提供singleton与greedy fusion proposal，旧connection coupling/DP/beam和质量算法未承接。 | 05-10、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.E | `complete-temporal-tiling` | `doing` | Q50.D | temporal apply与完整整数size/permutation枚举存在；capacity proposal复用per-node贪心，未实现factorized breakpoint、跨node/region联合质量算法或可扩展search。 | 05-10、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.F | `scoped-feasibility-analysis` | `doing` | Q50.E | pure analysis和unit存在，但`analyzeScopedFeasibility`没有任何production caller，未进入Q51状态展开、剪枝或排序。 | 06-11、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.G | `layout-and-physical-representation` | `doing` | Q50.F | current仅有per-value合法layout Cartesian domain。原deterministic PBQP/Top-4、movement cost、fixed-point relation、shared secondary、transactional apply及其测试被删除而未迁，核心算法能力丢失。 | 06-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.H | `explicit-data-movement` | `doing` | Q50.G | exact fragments、basic route/multicast/reduction apply可保留；大量NoC topology/intermediate/partial-dataflow、alias/lifetime/slice proof和对应测试没有完整承接记录，first choice仍固定retained或DDR。 | 06、08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.I | `rotating-buffer-materialization` | `doing` | Q50.H | slot-count domain与rotating allocation mechanism可保留；first choice固定single buffer，缺少与movement/schedule/pipeline联合决定slot和收益的算法。 | 08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.J | `event-resource-scheduling` | `doing` | Q50.I、Q63 | dependency/order/worker domain有实质代码，但不在`UnifiedPhysicalDataflowAssignment`；Tile lowering只构造domain并应用first assignment。旧ready-order/worker能力由22项测试缩到6项，需逐项复核。 | 08、11、13-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.K | `conditional-stage-pipeline` | `doing` | Q50.J | current只是按nonempty buffering scope自动调用的67行materialization wrapper，没有stage-pipeline domain或search transition；旧fixed-slot实现及40项DTE/NCC/alias/periodic/hazard测试未被等价承接。 | 06、08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q51 | `physical-dataflow-unified-search` | `doing` | Q50.S、Q50.B–Q50.K | current assignment缺Q50.F/J/K；controller无production Core/frontier/bound/no-good，只按complete Cartesian successor反复materialize/lower并以raw metric字典序保留结果。旧完成结论无效。 | 06-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q52 | `physical-dataflow-search-scalability` | `doing` | Q51；复用现有显式计时/RSS/work计数 | current只有constructive与greedy-fusion proposal以及complete-evaluation count cap；无LNS、partial frontier、admissible lower bound或`feasible-with-bound`路径。旧baseline+candidate profile和完成声明均失效。 | 06、14-18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q64 | `source-registration-truth-closure` | `done` | Q51.Core；Q62/Q63继续拥有各自语义清理 | 目录、CMake注册和library ownership重组本身保留；重审明确source organization只能证明文件归属与active build，不能证明被删算法/proof/test已迁移。Q51+相关“dormant/可删除”分类全部以当前donor-to-current审计重新判定，Q64不为Q50.S–K/Q51完成状态背书。 | 18；`tasks/plans/source-registration-truth-closure.md` |
-| Q60 | `frontend-production-entry` | `done` | Q52、current PyTorch/XLA capture/export资产、Q59 | 产品`wafer.frontend.export_pytorch_program(module, example_inputs, output_directory)`只拥有strict framework export、BF16 state保存与current source写入，无case/seed/oracle/target/search/model-name入口。`functions/forward.stablehlo.bc`是唯一source IR authority；旧text/generic bytecode在source中拒绝，post-SPMD text仅属compiler internal parser。`WaferStableHLOProgram`由installed `wafer-verify-program`与compiler transaction共同消费，后者仍独立snapshot并以owned payload fresh验证；显式text只进`wafer-opt`的`wafer-frontend-verification`。旧`wafer-compile-stablehlo`零alias；feature-off无stub，relocated install的adapter→verifier→compiler→no-card通过。fresh ordinary/branched/repeat/graph-break/pre-exported/corrupt/metadata/path/dynamic门禁及251/251 supported lit通过（4 configured unsupported）。 | 01-02、18-20；`tasks/plans/compiler-entry-productization.md` |
-| Q53 | `physical-dataflow-production-readiness` | `doing` | Q60、Q55 current-interface closure、Q56达到`board-ready` | source/oracle/runner、FP16/BF16 case matrix和独立`none`证据可继续复用；旧search package可能由baseline fallback产生，旧winner TileDataflow trace可能错配，且runner只验证dump完整性，不证明融合/movement/schedule质量，因此全部search/no-card/profile结论撤回。Q51/Q52重建完成前不再运行重型model search；之后逐case重新证明selected plan、一次性commit、actual IR effectiveness和真实板端matched A/B。 | 02、06-16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q51.Core | `physical-dataflow-search-kernel` | `doing` | Q50.0、Q50.A、Q49.P；actual implementation等待Q50.S–K | 当前只收敛planning state、transition、cost/bound、coverage和single-winner commit合同，不写generic Core或接public search。真正controller移到Q50算法、Q50.F full-coordinate closure及Q50.J/K循环闭合之后，首次实现即消费全部真实轴。 | 06、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.S | `structured-semantic-alternatives` | `queued` | Q51 planning contract | 恢复attention/decode旧算法/proof/test，query只返回typed semantic-root assignments与cost facts；production只为最终winner物化一个TensorProgram alternative。 | 05-06、08、10、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.B | `spatial-partition-and-placement` | `queued` | Q50.S、Q50.A、Q64 | 保留all-iterator legality domain，恢复compact topology、independent-component、nondominated state及chain/general-DAG placement算法，输出plan-level assignments/bounds。 | 05-08、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.C | `maximal-single-root-tile-region` | `queued` | Q50.B | 闭合single-root winner apply、multi-producer closure和最终output writeback；只在test oracle或selected winner路径构造actual IR。 | 05-08、10、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.D | `coupled-traversal-region-fusion` | `queued` | Q50.C | 保留connected partition/apply，恢复connection coupling/DP及非greedy region proposal算法，形成typed region-plan transitions。 | 05-10、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.E | `complete-temporal-tiling` | `queued` | Q50.D | 以factorized breakpoints和跨node/region算法替换全整数Cartesian与per-node贪心；保留完整iterator/order和winner apply。 | 05-10、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.F | `scoped-feasibility-analysis` | `queued` | foundation依赖Q50.E；full closure依赖Q50.J/K | 先建立placement/region/temporal prefix上的pure feasibility foundation；G–K逐项扩展其输入，最后证明full-coordinate legality/cost/bound并接入Q51。 | 06-11、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.G | `layout-and-physical-representation` | `queued` | Q50.F foundation | 保留typed primary/derived version边界，恢复跨value PBQP或等价constraint solver、movement/footprint cost、fixed-point relation及shared-secondary proof。 | 06-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.H | `explicit-data-movement` | `queued` | Q50.G | 保留exact fragment/basic apply，恢复NoC topology/intermediate/partial-dataflow、alias/lifetime/slice proof和route/reuse算法。 | 06、08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.I | `rotating-buffer-materialization` | `queued` | Q50.H | 建立与movement、execution structure和schedule联合的slot proposal/cost；winner apply保持rotating allocation与exact lifetime验证。 | 08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.J | `event-resource-scheduling` | `queued` | foundation依赖Q50.I、Q63；closure依赖Q50.K | 先提供plan-level event/resource analysis；Q50.K改变execution structure后重新query，最后闭合order/worker/completion schedule domain与winner apply。 | 08、11、13-19；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.K | `conditional-stage-pipeline` | `queued` | Q50.J event/resource foundation | 建立serialized/pipeline typed execution-structure domain，迁移旧DTE/NCC/alias/periodic/tail proofs；不能由nonempty buffer自动触发。 | 06、08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q51 | `physical-dataflow-unified-search` | `queued` | Q50.S–K、Q50.F full closure、Q50.J schedule closure、Q51.Core | actual planner只操作typed states并选择一个winner；tiny exhaustive oracle证明全轴组合，production计数证明planning零物化、winner一次Q50.0。 | 06-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q52 | `physical-dataflow-search-scalability` | `queued` | Q51 | 在correct planning基础上profile state growth，再引入safe memo/DP/bound和必要LNS；预算限制planning work，不限制complete materialization次数。 | 06、14-18；`tasks/plans/physical-dataflow-synthesis.md` |
+| Q64 | `source-registration-truth-closure` | `done` | source registration与library ownership；Q62/Q63继续拥有各自语义清理 | 目录、CMake注册和library ownership重组本身保留；重审明确source organization只能证明文件归属与active build，不能证明被删算法/proof/test已迁移。Q51+相关“dormant/可删除”分类全部以当前donor-to-current审计重新判定，Q64不为Q50.S–K/Q51完成状态背书。 | 18；`tasks/plans/source-registration-truth-closure.md` |
+| Q60 | `frontend-production-entry` | `done` | current PyTorch/XLA capture/export资产、Q59 | 产品`wafer.frontend.export_pytorch_program(module, example_inputs, output_directory)`只拥有strict framework export、BF16 state保存与current source写入，无case/seed/oracle/target/search/model-name入口。`functions/forward.stablehlo.bc`是唯一source IR authority；旧text/generic bytecode在source中拒绝，post-SPMD text仅属compiler internal parser。`WaferStableHLOProgram`由installed `wafer-verify-program`与compiler transaction共同消费，后者仍独立snapshot并以owned payload fresh验证；显式text只进`wafer-opt`的`wafer-frontend-verification`。旧`wafer-compile-stablehlo`零alias；feature-off无stub，relocated install的adapter→verifier→compiler→no-card通过。fresh ordinary/branched/repeat/graph-break/pre-exported/corrupt/metadata/path/dynamic门禁及251/251 supported lit通过（4 configured unsupported）。 | 01-02、18-20；`tasks/plans/compiler-entry-productization.md` |
+| Q53 | `physical-dataflow-production-readiness` | `queued` | Q51、Q52、Q60、Q55 current-interface closure、Q56达到`board-ready` | source/oracle/runner、FP16/BF16 case matrix和独立`none`证据可继续复用；Q51/Q52重建完成后逐case重新证明selected plan、一次性commit、actual IR effectiveness、package/no-card和真实板端matched A/B。 | 02、06-16、18；`tasks/plans/physical-dataflow-synthesis.md` |
 
 ## Later / External Gates
 
