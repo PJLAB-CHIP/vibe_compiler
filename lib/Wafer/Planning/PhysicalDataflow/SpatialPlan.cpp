@@ -83,20 +83,18 @@ bool tileArrayLess(llvm::ArrayRef<TileId> lhs, llvm::ArrayRef<TileId> rhs) {
 mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>>
 buildIntervals(int64_t extent, const IteratorPartition &partition,
                size_t maximumIntervals, std::string *failureReason) {
-  if (extent <= 0)
+  mlir::FailureOr<int64_t> intervalCount =
+      getIteratorPartitionIntervalCount(extent, partition, failureReason);
+  if (mlir::failed(intervalCount))
+    return mlir::failure();
+  if (static_cast<uint64_t>(*intervalCount) > maximumIntervals)
     return failValue<llvm::SmallVector<IteratorInterval, 4>>(
-        failureReason, "iterator extent must be positive");
-  if (partition.parameter <= 0 || partition.parameter > extent)
-    return failValue<llvm::SmallVector<IteratorInterval, 4>>(
-        failureReason, "partition parameter is outside iterator extent");
+        failureReason, "partition interval count exceeds available Tiles");
 
   llvm::SmallVector<IteratorInterval, 4> intervals;
   switch (partition.scheme) {
   case IteratorPartitionScheme::BalancedParts: {
     const int64_t parts = partition.parameter;
-    if (static_cast<uint64_t>(parts) > maximumIntervals)
-      return failValue<llvm::SmallVector<IteratorInterval, 4>>(
-          failureReason, "partition interval count exceeds available Tiles");
     const int64_t quotient = extent / parts;
     const int64_t remainder = extent % parts;
     int64_t offset = 0;
@@ -110,11 +108,6 @@ buildIntervals(int64_t extent, const IteratorPartition &partition,
   }
   case IteratorPartitionScheme::UniformExtent: {
     const int64_t tileSize = partition.parameter;
-    const uint64_t intervalCount =
-        1 + static_cast<uint64_t>(extent - 1) / tileSize;
-    if (intervalCount > maximumIntervals)
-      return failValue<llvm::SmallVector<IteratorInterval, 4>>(
-          failureReason, "partition interval count exceeds available Tiles");
     for (int64_t offset = 0; offset < extent; offset += tileSize)
       intervals.push_back({offset, std::min(tileSize, extent - offset)});
     break;
@@ -260,6 +253,25 @@ bool operator<(const NodeSpatialPlan &lhs, const NodeSpatialPlan &rhs) {
 
 bool operator<(const SpatialPlan &lhs, const SpatialPlan &rhs) {
   return lexicographicalLess<NodeSpatialPlan>(lhs.nodes, rhs.nodes);
+}
+
+mlir::FailureOr<int64_t>
+getIteratorPartitionIntervalCount(int64_t extent,
+                                  const IteratorPartition &partition,
+                                  std::string *failureReason) {
+  if (extent <= 0)
+    return failValue<int64_t>(failureReason,
+                              "iterator extent must be positive");
+  if (partition.parameter <= 0 || partition.parameter > extent)
+    return failValue<int64_t>(failureReason,
+                              "partition parameter is outside iterator extent");
+  switch (partition.scheme) {
+  case IteratorPartitionScheme::BalancedParts:
+    return partition.parameter;
+  case IteratorPartitionScheme::UniformExtent:
+    return 1 + (extent - 1) / partition.parameter;
+  }
+  return failValue<int64_t>(failureReason, "partition uses unknown scheme");
 }
 
 mlir::FailureOr<SpatialPlanningProblem>

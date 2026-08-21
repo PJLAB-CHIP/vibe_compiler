@@ -1777,6 +1777,49 @@ state和FD spatial contribution。implementation不得用一个generic reduction
 
 ### S-4：Pure planning description与A--K接入
 
+#### attention-spatial-integration contract
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  verifier-valid `wafer.linalg_ext.attention`、其generated algorithm/indexing-map accessors、
+  `AttentionIterationRoles`，以及spatial-plan-schema定义的iterator extents与`IteratorPartition`。
+- Current stage responsibility:
+  从同一个attention op派生query-local `AttentionSpatialConstraints`：K1 iterator IDs、K2 iterator IDs，以及K2必须保持
+  一个logical interval（FA）或必须形成多个logical intervals（FD）。用一个typed predicate同时约束后续canonical constructor与
+  full spatial domain；K1和其它iterator不增加attention-specific限制。
+- Output IR / files:
+  不修改IR、不写attr或文件；只返回可重算的typed constraint value与typed violation。
+- Downstream consumer:
+  `canonical-spatial-assignment`构造满足约束的deterministic plan；`spatial-domain`只枚举满足同一约束的全部plans。
+- User-level driver / named pipeline:
+  无独立pass、pipeline或CLI；由baseline/search planning problem builder静态调用同一query。
+- Explicit non-goals:
+  不选择具体partition scheme、Tile subset/embedding、merge placement、temporal block或winner；不推导operand demand或
+  reduction groups；不把algorithm/K1/K2复制进`SpatialPlan`。
+- Done criteria:
+  rank-independent role与constraint query独立受测；对K2所有axes的interval-count product，FA只接受1，FD只接受大于1；
+  malformed iterator domain与algorithm constraint violation可区分；BalancedParts/UniformExtent、multi-K2、tail及physical
+  embedding变化不产生第二套mode判断。
+```
+
+```text
+AttentionSpatialConstraints
+  queryKeyReductionIterators: unsigned[]
+  keyValueReductionIterators: unsigned[]
+  keyValuePartition: SingleInterval | MultipleIntervals
+
+checkAttentionSpatialConstraints(constraints, iteratorExtents, partitions)
+  -> None
+   | IteratorDomainMismatch
+   | FlashAttentionPartitionsKeyValue
+   | FlashDecodingLeavesKeyValueUnpartitioned
+```
+
+`keyValuePartition`只比较K2 axes形成的logical interval-count product；它不等于总participant count。FA仍可沿B/M/N或在通用
+partial mechanics闭合后沿K1做spatial work；FD至少一个K2 axis形成多个intervals。available Tile不足、embedding或merge不合法由B
+schema/canonical/domain的既有validator处理，不在本constraint中伪装成algorithm不支持。
+
 planning不通过decompose/lower actual IR取得cost或resource。由attention owner提供：
 
 ```text
@@ -1807,9 +1850,9 @@ contribution和closed action kind形成，不含pointer、walk/order、Tile ordi
 | J/K | compute/movement/combine events、completion、serialized/pipelined structure及K后I/J重闭 |
 | F | every described state/scratch/message/event/field进入full resource problem；winner hidden resource为compiler bug |
 
-`none`与`search`读取同一mode约束。B canonical producer对FA使用K2 factor 1；对FD从B domain中最小合法非平凡K2 partition和
+`none`与`search`读取同一mode约束。B canonical producer对FA保持K2单一logical interval；对FD从B domain中最小合法非平凡K2 partition和
 stable embedding/merge owner开始，只有F exact causal rejection要求更多contributors时才沿canonical B successor单调增加，
-取得第一个full-proof plan。search枚举全部合法K2 factors/embeddings/per-output merge placements。baseline不能把FD改回FA，
+取得第一个full-proof plan。search枚举全部合法K2 partitions/embeddings/per-output merge placements。baseline不能把FD改回FA，
 search也不能把FA当成FD空间切分。
 
 Q50.B/A完成attention read-only接入后，Q51.Core的首个真实state是`SpatialState`，不是`RootAlgorithmState`。Q51 problem借用固定
@@ -1897,8 +1940,8 @@ Pipeline position:
   spatial-plan-schema定义`SpatialPlan`、`SpatialAssignment`及structural close/validation；canonical-spatial-assignment只实现
   canonical constructor，不枚举domain；spatial-domain为每个structured node惰性产生覆盖全部iterator的typed partition scheme、canonical logical coordinate mesh、到
   distinct available Tiles的embedding，以及每个spatial-reduction output group的merge placement；把compact plan按需关闭为
-  all-and-only exact execution shards并调用Q50.A派生demand/final availability。FA attention的K2 factor必须为1；FD的K2 factor必须
-  大于1；K1和其它iterator仍按各自standard/coupled contracts处理。
+  all-and-only exact execution shards并调用Q50.A派生demand/final availability。FA attention的K2 logical interval-count product必须
+  为1；FD必须大于1；K1和其它iterator仍按各自standard/coupled contracts处理。
 - Output IR / files:
   不产生新IR或文件。Q51 state只保存typed `SpatialPlan`；query返回ephemeral `SpatialAssignment`与Q50.A
   `ExactDemandProof`/typed failure。assignment携带exact execution domains和per-output merge groups，不携带derived ownership、

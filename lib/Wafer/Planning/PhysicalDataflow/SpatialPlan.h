@@ -36,6 +36,11 @@ struct IteratorPartition {
                         const IteratorPartition &rhs);
 };
 
+mlir::FailureOr<int64_t>
+getIteratorPartitionIntervalCount(int64_t extent,
+                                  const IteratorPartition &partition,
+                                  std::string *failureReason = nullptr);
+
 struct ReductionGroupId {
   SemanticRootKey root;
   uint32_t resultGroup = 0;

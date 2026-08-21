@@ -347,7 +347,7 @@ observable SSA path合同，不含operation pointer、block/operation ordinal、
 
 | Owner | AttentionWorkDescription投影 |
 | --- | --- |
-| Q50.B | FA禁止K2 spatial factor大于1；FD要求K2 spatial factor大于1；其它parallel/K1 axes仍按通用domain处理 |
+| Q50.B | FA要求K2 logical interval-count product为1；FD要求该product大于1；其它parallel/K1 axes仍按通用domain处理 |
 | Q50.A | Q/K/V/mask exact operand demand、per-output final owner、FD coupled contributions与merge requirement |
 | Q50.C | root-local execution、contribution/merge work、support/boundary和selected leaf action closure |
 | Q50.D | attention root与producer/consumer的stored、nested或boundary use；内部attention actions不变成独立semantic roots |
@@ -359,7 +359,7 @@ observable SSA path合同，不含operation pointer、block/operation ordinal、
 | Q50.K | selected serialized或pipelined block/contribution structure；K改变occurrence后重闭I/J |
 | Q50.F | all state/scratch/message/event/field resource description、full proof和plan/actual parity |
 
-两条policy都必须满足mode约束：`none`的B canonical producer对FA使用K2 factor 1；对FD从B domain中最小合法非平凡
+两条policy都必须满足mode约束：`none`的B canonical producer对FA保持K2单一logical interval；对FD从B domain中最小合法非平凡
 K2 partition及stable embedding/merge owner开始，只有F的exact causal rejection要求更多contributors时才沿canonical B successor
 单调增加，取得第一个full-proof plan。`search`枚举同一B domain中的全部合法factor、embedding和per-output merge placements。
 这只是physical policy差异，不改变attention op或算法，也不允许`none`把FD降回FA。
