@@ -1095,18 +1095,20 @@
 - 现象：旧ready-order用固定engine priority直接产出一个顺序，worker placement克隆整个Module后只产出一个lane映射，target registry再用
   稀疏pair/group row把hard legality与旧profile profitability混在一起；缺row返回Unknown，合法域与实验数据共同决定候选是否存在。
 - 根因：order、worker、completion和resource analysis各有独立owner/winner，且通过clone隔离而不是typed assignment+owned apply表达事务。
-- 修复模式：在complete unplaced Instr epoch上从SSA/effect/alias/token/completion构造hard DAG，惰性枚举全部topological orders与closed worker
-  Cartesian product；apply消费owned modules原位改写并fresh rebuild joins。resource交集与overlap只返回query-local事实，不签发收益或legality。
+- 修复模式：Q50.J foundation从typed S–I plan构造EventGraph/hard/disjunctive dependencies；固定K并由I重闭structure-specific
+  occurrences/storage后，J closure再惰性枚举order/worker/resource/completion。selected emitter一次写actual order/joins；resource
+  overlap只返回query-local facts，不成为local winner。
 - 防复发：tiny DAG与独立reference比较精确assignment数，mutation必须使domain失效；源码中不得恢复priority selector、worker clone、
-  capability/profitability row或默认calendar日志。Q50.K改变event structure后必须重新query Q50.J。
+  capability/profitability row或默认calendar日志。Q50.K改变event structure后必须先重闭Q50.I，再重新query Q50.J。
 
 ## Stage pipeline不能再拥有一套whole-Module candidate/clone入口
 
 - 现象：旧fixed-slot实现扫描任意loop、clone完整Module、自行推导slot/stage并返回一个local candidate；buffer count、logical edge、
   ready order和pipeline identity分散，后续只能靠ordinal/clone对应关系拼回search。
 - 根因：slot lifetime与stage event structure没有以同一selected edge scope为边界，rollback又被误写成每个mechanism各clone一次。
-- 修复模式：Q50.I scope应携exact edges/count，Q50.K消费owned prepared Instr原位构造stages/rotation/SCF phases并返回actual facts；
-  empty scope是serialized。Q50.J schedule在mutation后重建，SPM offset在stage完成后分配。但这只是目标边界，不能用一个wrapper证明旧
+- 修复模式：Q50.I-initial提供storage/slot possibilities，Q50.J-foundation提供EventGraph，Q50.K只选择Serialized/Pipelined structure；
+  K改变occurrence/live distance后必须经过I-post-K重闭slot/rotation/reuse，再由J closure选择schedule。winner才构造SCF phases并
+  分配SPM offset。但这只是目标边界，不能用一个wrapper证明旧
   fixed-slot算法与protocol proof已经迁移。
 - 防复发：旧public API和whole-Module clone可以删除；旧source/test中的periodic DTE、NCC backedge、endpoint reuse、alias/external root、
   odd tail和atomic failure能力必须逐项迁入current owner并受测后才能删除。stage还必须成为search typed transition，而不是由nonempty

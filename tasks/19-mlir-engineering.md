@@ -67,8 +67,8 @@ Wafer对应实现是必要隔离、最终output构造、可测量trade-off，还
 
 Q54 不把性能搜索本身改写成 PassManager。Q49.P消费这些作用域和pipeline接口，让`none`从正常上游IR完成确定性功能
 合法化，同时删除其对search-policy对象的依赖，并闭合single-root TileRegion、plan-level scoped proof、typed causal witness和
-selected Card构造；其per-coordinate actual Q50.0仍须由Q50.F pure proof替换。rotating buffer必须先有真实共同
-wave/stage loop的要求由Q50.I实现；全仓更广的术语润色由Q45继续，但Q54引入或迁移的active API已无semantic Location
+selected Card构造；其per-coordinate actual Q50.0应先由Q50.F closed-plan core替换，不等待完整search domains。rotating buffer
+先由I-initial提供可能性，K选择structure后必须由I-post-K重闭，再交J schedule closure；全仓更广的术语润色由Q45继续，但Q54引入或迁移的active API已无semantic Location
 pointer payload、synthetic local wrapper和旧的通用candidate容器。
 
 ### 2.1 全工程覆盖矩阵

@@ -493,16 +493,14 @@ source program
 - cross-op pending事实由`Analysis/Scheduling/NCCCompletionAnalysis`从current Module重算；结果携per-operation before/after mask，
   只在未变化IR epoch内有效。structured if/for/TileRegion和defined direct call受支持，递归/indirect/unsupported CFG fail closed。
 
-## Instr event/order/worker domain（mechanism可复用，尚未接入联合search）
+## Event/order/worker planning（目标边界，当前实现未闭合）
 
-- Q50.J只接受complete canonical unplaced worker0 Instr modules。每个event window的hard DAG来自transitive SSA、view-root buffer
-  RAW/WAR/WAW、DTE token/wait和synchronous completion；topological order与typed worker是完整惰性Cartesian域，不用priority/row表选winner。
-- assignment中的operation handle只在同一query→apply IR epoch有效；domain保存operation order、attrs、operands和result types snapshot，
-  任一mutation后fail closed。apply必须消费owned complete modules，原位设置order/worker并fresh rebuild joins，不clone候选。
-- resource analysis只重算actual engine/worker/SPM/DDR/directed link uses与issue→completion structural overlap。共享资源是Q52 estimate输入，
-  不是legality/profitability表；event structure改变后丢弃domain和analysis全部重建。
-- current Tile lowering只应用该domain的first assignment，`UnifiedPhysicalDataflowAssignment`没有schedule field；因此这些规则尚未形成
-  production search能力，旧ready-order/worker tests也需逐项迁移。
+- Q50.J foundation从S–I-initial typed plan构造EventGraph；hard DAG来自SSA/value-version、buffer RAW/WAR/WAW、DTE token/wait、
+  synchronous completion和typed resource uses，不借用actual Instr pointer/snapshot。
+- Q50.K只选择execution structure并改变occurrences；必须先由Q50.I post-K重闭slot/lifetime/reuse edges，随后J closure才枚举
+  topological/resource order、typed worker和completion。顺序是`J-foundation → K → I-post-K → J-closure`。
+- calendar/timestamps保持query-local；selected emitter一次写order/worker并fresh构造wait/join，actual Instr只做plan parity。共享资源
+  estimate不能签发legality/profitability，opaque NoC不伪造directed-link uses。
 
 ## Structured compute implementation choice（stable，2026-08-19）
 
@@ -515,11 +513,10 @@ source program
 
 ## Selected stage pipeline（目标边界，当前实现未闭合）
 
-- multi-slot buffering scope的exact edge集合就是stage cut identity；不要另建pipeline bool/recipe。empty scope是serialized identity，
-  nonempty scope必须在actual common static loop上产生2+ stages且slot multiplicity与selection完全一致。
-- stage materializer消费owned prepared Instr和current relations，原位构造SCF prologue/steady/epilogue并返回typed stage/slot facts；失败销毁
-  owner，不clone module。mutation后旧instruction schedule domain必然失效，Q50.J从新IR重建。
-- memory planning只在stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone不恢复，但其DTE/NCC/alias/periodic/
+- 每个scope无条件有Serialized；Pipelined由typed stage partition、launch distance和dependence distance表示，multi-slot本身不触发pipeline。
+- K选择后先重建I的structure-specific occurrences/slot rotation，再由J关闭schedule；winner construction才在新Card subtree构造SCF
+  prologue/steady/epilogue。failure擦除subtree并终止，不在actual IR上寻找另一个structure。
+- memory planning只在selected stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone不恢复，但其DTE/NCC/alias/periodic/
   tail semantic witnesses必须迁入current owner。当前stage只是buffering scope触发的wrapper，不是联合search transition，不能标完成。
 
 ## Physical search profile资格（Q51+重审期间暂停）

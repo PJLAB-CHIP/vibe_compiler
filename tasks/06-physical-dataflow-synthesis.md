@@ -760,7 +760,7 @@ root/Tile/function scratch IR，也不调用Q50.0。capacity witness可以包含
 两者都不能按相同type/shape猜测producer、解析diagnostic字符串或同时缩减多个歧义match。只有完整proof产生的exact rejection允许
 controller推进确定性fallback；heuristic no-fit、solver耗尽与indeterminate必须终止，不能伪装成输入unsupported或“none没有方案”。
 
-全部root及canonical G--K事实获得resolved baseline plan并通过Q50.F full proof后，baseline只物化一次完整CardModule，并只进行一次
+全部root及baseline真实使用的canonical G--K component facts获得resolved plan并通过Q50.F closed-plan core proof后，baseline只物化一次完整CardModule，并只进行一次
 complete CardExecutable compilation。Q50.0从actual IR重建normalized resource problems并分配offset；与plan proof不一致或此时
 出现capacity failure属于compiler bug，不能继续fallback。局部成功的安全性建立在“一root一TileRegion、跨root shaped dependency显式DDR、无fusion、sequential
 single-buffer execution”结构不变量上；改变任一项后局部成功不能继续当作完整证明。只有target允许的最小合法temporal
@@ -819,8 +819,8 @@ partial-result owner、node-wide merge及manual epoch等问题重新打开；其
 
 Q49.P已经保留consumer-operand exact demand、structured-producer截断、single-root final construction、typed carrier和search-policy
 隔离等能力；但它仍用每个closed temporal coordinate的一次CardModule/Q50.0来查询capacity，因此重新打开。current旧probe、
-post-hoc support rebuild和default statistics不恢复；剩余迁移是让Q50.F pure feasibility接管所有coordinate，并只让最终plan进入一次
-actual commit。
+post-hoc support rebuild和default statistics不恢复；剩余迁移先把canonical component facts迁入最终plan types，并让Q50.F closed-plan
+core接管所有coordinate，只让最终plan进入一次actual commit。它不等待完整search domains。
 主线仍有下列设计差距：
 
 - baseline的coordinate loop仍执行actual TileRegion→Instr与memory planning；这些工作必须改成Q50.F typed problem/proof，planning IR为零；
@@ -840,10 +840,11 @@ actual commit。
 2. 修复placement与layout-independent exact demand边界，以完整logical shard domain、typed dependency role和四态outcome给
    baseline/search提供不携带representation/movement policy的proof；闭合reduction、broadcast、window/stride、multi-piece、
    DPS init与support relation，删除carrier失败和字符串失败对spatial legality的反写；
-3. 以Q49.P从current输入闭合baseline功能合法化、结构、policy、probe、causal witness和materialization解耦；
+3. 提取baseline canonical plan components和Q50.F closed-plan core，随后以Q49.P从current输入闭合功能合法化、结构、policy、
+   causal witness和winner-only materialization；
 4. 只先收敛Q51 planning state、transition、cost/bound、coverage和single-winner commit合同，不写空Core或切换public入口；
-5. 依次闭合structured alternatives、graph-level spatial placement、single/coupled region、temporal、feasibility foundation、layout solver、
-   movement、buffering、event/resource foundation、execution structure、schedule和full-coordinate feasibility；每项迁移donor能力、加入
+5. 依次闭合structured alternatives、graph-level spatial placement、single/coupled region、temporal、partial feasibility、layout solver、
+   movement、I-initial、J-event foundation、execution structure、I-post-K、J-schedule和F-full feasibility；每项迁移donor能力、加入
    production query与独立oracle，完成承接后才删除旧owner/test；
 6. 全部真实轴具备后实现Q51.Core，首次落地即消费完整typed state并由production planner调用；不调用baseline、不物化candidate；
 7. 完成所有维度的test-only flat exhaustive oracle、完整source-to-CardExecutable单winner链和实际fusion验证，确认public `search`
