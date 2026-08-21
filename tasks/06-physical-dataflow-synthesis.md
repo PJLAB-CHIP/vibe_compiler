@@ -847,8 +847,9 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 主线仍有下列设计差距：
 
 - baseline的coordinate loop仍执行actual TileRegion→Instr与memory planning；这些工作必须改成Q50.F typed problem/proof，planning IR为零；
-- Q50.B foundation须先建立`SpatialPlan/SpatialAssignment`与canonical producer；Q50.A随后以该assignment和operand-level SSA
-  worklist重建exact demand/final owner/reduction merge proof，并供baseline及B-full/G--J消费；
+- Q50.B当前foundation必须拆成B0 schema/structural validation与B1 canonical producer；05/Q50.S S1-S2先产生normalized
+  semantic roots和fixed FA/FD fact，B1才对这些roots签发canonical assignment；Q50.A随后重建exact demand/final owner/reduction
+  merge proof，Q50.S S3再关闭attention B/A integration；
 - placement production transition仍过早消费physical edge strategy；Q50.B尚未从all-iterator semantics生成完整multi-axis、
   remainder、reduction/merge和非矩形physical placement域；
 - current旧search仍含candidate、shortlist、repair与完整编译耦合；只能在Q50能力逐项迁移并由Q51 planning取代后删除；
@@ -859,23 +860,23 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 
 任务按以下output闭环推进，具体状态以`tasks/progress.md`为准：
 
-1. 提取无repair的CardExecutable compilation/verification边界；
-2. 先从Q50.B拆出policy-free spatial representation foundation与baseline canonical producer，再修复Q50.A exact-demand边界；以完整
-   logical shard domain、typed dependency role和四态outcome提供不携带representation/movement policy的proof，删除旧trial adapter；
-3. 提取baseline canonical plan components和Q50.F closed-plan core，随后以Q49.P从current输入闭合功能合法化、结构、policy、
-   causal witness和winner-only materialization；
-4. 只先收敛Q51 planning state、transition、cost/bound、coverage和single-winner commit合同，不写空Core或切换public入口；
-5. 先闭合Q50.S共同attention graph normalization、coupled-state description和winner selected decomposition，再依次闭合graph-level
-   spatial placement、single/coupled region、temporal、partial feasibility、layout solver、
-   movement、I-initial、J-event foundation、execution structure、I-post-K、J-schedule和F-full feasibility；每项迁移donor能力、加入
-   production query与独立oracle，完成承接后才删除旧owner/test；
-6. Q50.S semantic foundation与B-full/A后实现从SpatialState消费真实axis的Q51.Core foundation并切explicit `search`到new owner；
-   后续C–K/F/J每项同批扩Core，F-full后闭合
-   full-plan/cost/coverage controller；全程不调用baseline、不物化candidate；
-7. 完成所有维度的test-only flat exhaustive oracle、完整source-to-CardExecutable单winner链和实际fusion验证，确认public `search`
-   只经过new planning→one commit链；
-8. Q52根据planning state-growth profile加入safe memo/DP/bound与必要LNS，不以complete materialization次数作预算；
-9. fresh workload/package/no-card/board closure。
+1. 保持已经闭合的无repair CardExecutable compilation/verification边界；
+2. Q50.B只先交付B0：`SpatialPlan/SpatialAssignment` schema、structural close和validation，不读取未归一化attention graph；
+3. Q50.S交付S1-S2：单一attention op、graph proof、FA/FD classifier、standard/coupled interfaces及两条policy共同normalization；
+4. Q50.B B1对normalized roots建立canonical producer，Q50.A只消费closed assignment形成exact-demand proof，随后Q50.S S3关闭
+   K1/K2 role、FA/FD spatial constraint及coupled contribution/merge integration；
+5. 按`C-canonical → D-singleton → E-canonical → G-canonical → H-canonical → K-Serialized → I-single-slot → J-canonical`
+   建立baseline plan components；Q50.S S4投影attention work/resource，Q50.F closed-plan core签发proof，Q50.S S5提供winner selected
+   decomposition；
+6. Q49.P只编排上述policy-free components，以pure query合法化并对唯一selected plan执行一次materialization/Q50.0；它不成为
+   search problem、state或controller的前置输入；
+7. Q50.B full和Q50.A形成首批真实search domain后建立Q51.Core foundation；它只依赖Q50.S S3和B/A，不依赖或调用Q49.P。
+   后续按`C-full → D-full → E-full → F-partial → G-full → H-full → I-initial → J-foundation → K-full → I-post-K →
+   J-full → F-full`逐项扩Core和S4/F observed dependencies；
+8. F-full后闭合Q51.Core control，再以test-only flat exhaustive oracle、actual digest/winner correspondence和single-winner
+   source-to-package闭合Q51；Q49.P与Q51的独立纵向共同关闭Q50.S S6；
+9. Q52根据planning state-growth profile加入safe memo/DP/bound与必要LNS，不以complete materialization次数作预算；
+10. Q53从Q60产品入口完成fresh workload/package/no-card/board closure。
 
 ## 14. Verification and Done Criteria
 

@@ -314,8 +314,9 @@ current target容量、target-model能力或host预算不足，必须按stage报
 
 1. Q49.P从current TensorProgram构造一个live canonical plan，调用闭包不包含search state/candidate、search-oriented domain/ranking
    evaluator、proposal order/group materializer或candidate统计，也不包含完整placement-option生成、domain propagation、recursive
-   CSP/backtracking或任何“从option列表返回一个assignment”的helper。Q50.B-foundation先提供closed SpatialAssignment与canonical
-   baseline producer，Q50.A只推导demand；随后迁其余baseline components并交付Q50.F closed-plan core，不等待完整search domain；
+   CSP/backtracking或任何“从option列表返回一个assignment”的helper。B0只提供schema/validator，S1-S2先归一化attention roots，
+   B1再提供closed canonical assignment，Q50.A/S3关闭demand与attention integration；C/D/E/G/H/K/I/J canonical components、S4、
+   Q50.F closed-plan core和S5全部mechanism-ready后，Q49.P才编排baseline，且不等待完整search domain；
    每个coordinate只运行A/F等pure typed query，planning
    CardModule/Instr/Q50.0均为零；direct ExactRejection只能触发预定义、单调、不分支且不回溯的functional legalization transition，
    旧coordinate不作为alternative保留。FullFeasibilityProof关闭plan后，才沿TensorProgram→一个CardModule→TileRegion/Instr→fresh
@@ -333,15 +334,17 @@ current target容量、target-model能力或host预算不足，必须按stage报
    与indeterminate不能冒充unsupported。fresh小图、五类relation、overfull-to-fit、轻量source-to-package/no-card及一轮FP16 LLaMA
    必须重新证明plan-only work count、actual/package/oracle；旧181.70秒LLaMA只作旧功能证据。Q49.P重新完成前不运行LLaMA search；
    完成后不再建立独立baseline板端任务，Q53只把current accepted baseline作为matched A/B一侧。
-2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair；Q50.A：
-   每份closed `SpatialAssignment`只携带exact execution shards、Tile embedding和per-output-piece reduction merge placement；
+2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair。Q50.B B0先只
+   定义`SpatialPlan/SpatialAssignment` schema与validator；Q50.S S1-S2在policy分叉前产生normalized attention root与fixed FA/FD fact；
+   B1再构造canonical assignment，Q50.A只消费该closed assignment。每份`SpatialAssignment`只携带exact execution shards、Tile
+   embedding和per-output-piece reduction merge placement；
    func-scoped relation analysis以唯一operand-level SSA worklist派生program/constant/structured boundaries、final result owners、
    reconstruction和reduction merge requirements。M/N/K mixed、多reduction轴、multi-result/coupled reduction及init exactly-once由
    typed tests证明；partial contribution不得作为下游result owner。supported relation保持construction normal form并在操作前
    受work bound约束，不进入无界generic Presburger equality/subtraction；MLIR analysis invalidation替代manual epoch/fingerprint。
    outcome区分satisfied、unsupported semantics、indeterminate resource exhaustion和compiler contract error；cross-op demand不作
    普通placement no-good，carrier/layout/route失败不反写spatial legality。Q49.P canonical carrier与Q50.B、Q50.G/H/J消费同一
-   proof。Q50.S：完整Q/K/V attention在policy分叉前归一为一个自包含semantic op，FA/FD由functional graph relation确定，
+   proof。Q50.S S3-S5：完整Q/K/V attention在policy分叉前归一为一个自包含semantic op，FA/FD由functional graph relation确定，
    不形成Q51 algorithm domain。K/V block与partition分别由temporal/spatial轴证明；planning不物化attention IR，winner在
    新Card subtree中只展开一次selected Linalg/Tensor/SCF并转换到wafer.tile。normalization、coupled-state query、FA temporal
    recurrence、FD partial/merge、plan/actual resource parity和failure atomicity各有direct witness。
@@ -355,7 +358,7 @@ current target容量、target-model能力或host预算不足，必须按stage报
    每项都需current接入点、production consumer、actual-IR witness和实际执行的正负测试；删除旧owner前还必须逐项映射其中独有
    algorithm/proof/diagnostic/test witness，旧owner删除和新domain存在都不能代替能力迁移。
 4. Q51.Core：直接从Q50.S-normalized immutable TensorProgram建立search session，不调用Q49.P、不接收baseline executable/actual cost，
-   也不把baseline choices当未来轴default。B-full/A后Core foundation从SpatialState真实遍历首批axes并接管explicit public `search`；缺后续axis返回typed
+   也不把baseline choices当未来轴default。S3与B-full/A后Core foundation从SpatialState真实遍历首批axes并接管explicit public `search`；缺后续axis返回typed
    `IncompletePlanningDomain`且planning零IR，不fallback。此后每轴independent reference、closed state/transition/invalidation和production
    caller随Q50.C–K交付，通用pure feasibility归F；不得预声明nullable future field或先交付无consumer mechanism。F-full后Core才闭合
    full-plan admission、cost/bound、causal rejection和coverage。旧candidate/generator/feedback/selector控制链在foundation切换时删除，
@@ -363,7 +366,7 @@ current target容量、target-model能力或host预算不足，必须按stage报
    exact planning domain和new source-to-package链由Q51闭合。production search在typed state上选出一个winner，只允许该winner
    materialize并调用一次Q50.0；Q50.0失败是planning/lowering合同缺口，不得回到candidate set反复物化。selected IR必须有共享TileRegion，并以
    coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。
-5. Q52：它是Q51完整new-search链闭合后首个允许执行重型LLaMA `search`和质量profile的任务；Q49.P的单次fresh FP16 LLaMA
+5. Q52：它是Q51完整new-search链及Q50.S S6两policy production gate闭合后首个允许执行重型LLaMA `search`和质量profile的任务；Q49.P的单次fresh FP16 LLaMA
    `optimization-none`只证明baseline功能/materialization。generic/HF/LLaMA representative load只在显式、bounded profile批次
    记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在小图oracle上不改变最优结果；search与同源`none`的
    质量差异只由独立matched A/B报告，没有固定shape/tile/fusion/buffer shortcut。

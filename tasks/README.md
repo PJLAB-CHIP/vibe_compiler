@@ -62,27 +62,28 @@
 11、14-17编号设计文档拥有，状态只看`tasks/progress.md`；不得从旧计划恢复接口。
 
 Q49.P、Q50、Q51–Q53共用card-local multi-Tile planning与selected execution计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
-Q50.0建立selected CardModule compilation/verification seam；Q50.B先拆出`SpatialPlan/SpatialAssignment` representation foundation及
-baseline canonical producer，Q50.A再收口只消费closed assignment的IndexRelation demand。随后立即做Q49.P baseline纵向：把
-current其余canonical region/temporal/representation/movement/single-slot/Serialized/order事实迁入最终plan component，Q50.F先交付
-closed-plan problem/proof/parity core；baseline每coordinate零IR、selected只commit一次。它不等待完整search domains，也不在accepted后建立
-shadow schedule/cost或默认打印IR。baseline清理完成后，Q50.S先交付none/search共用的attention graph normalization、fixed FA/FD
-semantic op和planning description；Q50.B–K再按依赖恢复spatial、TileRegion/fusion、temporal、
-representation/movement、buffer、execution structure和schedule完整domain/算法。F分closed-plan core、partial foundation、full closure；
-I分pre-K initial和post-K structure-specific closure；J分foundation和schedule closure，严格顺序为`...H→I→J-foundation→K→I→J→F-full`。
+Q50.0建立selected CardModule compilation/verification seam；Q50.B当前只完成B0 `SpatialPlan/SpatialAssignment` schema与validator。
+Q50.S S1-S2随后在policy分叉前产生attention semantic op、FA/FD fixed fact和共同normalization；B1再对normalized roots建立canonical
+assignment，Q50.A与S3关闭exact demand和attention integration。baseline components严格按
+`C→D→E→G→H→K-Serialized→I-single-slot→J-canonical→S4→F-core→S5`形成，Q49.P最后只编排pure query与一次selected commit，
+不生产这些component，也不成为search输入。之后Q50.B-full及Q51.Core foundation启动真实search，Q50.B–K再按依赖恢复spatial、
+TileRegion/fusion、temporal、representation/movement、buffer、execution structure和schedule完整domain/算法。F分closed-plan core、
+partial foundation、full closure；I分canonical single-slot、full initial和post-K closure；J分canonical schedule、event/resource foundation和
+full schedule closure，严格顺序为`...H→I-initial→J-foundation→K→I-post-K→J-full→F-full`。
 旧candidate/generator/feedback/selector接口不保留，但删除其source/test前
-必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。Q50.B-full/A形成首批真实domain后建立Q51.Core foundation并切explicit
+必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。Q50.S S3与Q50.B-full/A形成首批真实domain后建立Q51.Core foundation并切explicit
 `search`到new owner；缺后续axis时typed incomplete且不commit。此后C–K/F/J每项同批扩closed state/transition和production caller，
 F-full后才闭合cost/bound/coverage与winner plan。Core不调用Q49.P、不接收baseline executable，也不在planning阶段物化CardModule。
 Q51以test-only full actual oracle验证plan，并让production只commit一个winner、
-调用一次Q50.0。旧输出格式无兼容义务，但旧semantic能力不能因接口退役直接判废。Q52按实际负载优化scalability，Q53形成production
+调用一次Q50.0；它与Q49.P的独立纵向共同关闭Q50.S S6，之后Q52才按实际负载优化scalability。旧输出格式无兼容义务，
+但旧semantic能力不能因接口退役直接判废。Q53形成production
 `board-ready`与真实板端证据。06仍是唯一联合决策设计owner；任务拆分只提供可验证接入checkpoint，不产生独立layout、
 fusion、buffering、communication或worker selector。动态状态、依赖和完成门禁只看`tasks/progress.md`。
 
 Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。19是横向工程合同owner：让现有operation/region
 层级成为真实pass与analysis层级，收口typed ODS、standard interface、named nested pipeline和transactional rewrite，并
-通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54之后先做Q50.B representation foundation，再做Q50.A；Q49.P保留A/Q54 current能力，
-并在Q50.F closed-plan core接管per-coordinate resource query后立即重新收口，不等待完整search mechanisms；之后再由Q50/Q51继续施工，避免把semantic Location、whole-module
+通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54之后只先做Q50.B B0，随后按S1-S2→B1→A→S3
+建立真实semantic/spatial/demand输入；canonical components、S4/F-core/S5齐备后Q49.P才重新收口。之后再由B-full/Q50/Q51继续施工，避免把semantic Location、whole-module
 local wrapper、actual compile probe和手工analysis lifecycle固化进baseline或新的candidate/search实现。
 
 Q63 NCC completion合同分层计划见`tasks/plans/ncc-synchronization-contract-layering.md`。pure target completion protocol、
