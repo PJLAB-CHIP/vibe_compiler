@@ -2847,6 +2847,31 @@ Pipeline position:
   replica显式可数，direct nested SSA无中间DDR，stored value有独立producer traversal，fanout共享version只生成一次；旧
   CompleteTraversal/ProducerTileFusion能力逐项迁移后退役。
 
+### Q50.D work-item分界
+
+Q50.D按两个work items交付：
+
+- `canonical-region-plan`只把canonical `RootRegionWork`关闭为deterministic singleton `RegionPlan`。每个nonempty work独占一个group；
+  每个execution piece和merge requirement各有一个top-level required execution；每个boundary use按source/consumer/eligible owner形成
+  external `DemandFragmentId`。本项没有multi-root group、nested execution、replica、local stored/direct binding或search successor。
+- `region-execution-domain`在`root-work-domain`之后枚举完整connected partitions、execution placements、sharing/replica和local use
+  bindings，接入Core并提供selected group emitter。旧`CoupledRegionDomain`、movement反向决定region行为及whole-Module apply只在后一个
+  work item迁移/退役，不能因singleton plan存在提前报完成。
+
+当前`canonical-region-plan`覆盖矩阵如下。真实shape只用于覆盖完整fragment和tail，不进入group/execution/binding identity；
+tiny graph只用于独立组合oracle或单一故障负例。
+
+| 覆盖类 | 代表输入 | canonical plan exact断言 | 直接下游witness |
+| --- | --- | --- | --- |
+| aligned/ragged single root | rank>=3、主要维度1024/1025、all-16 Tile | 每个nonempty work恰有一个singleton group和一个required execution；tail不改变group identity/order | canonical-temporal-plan能逐execution读取完整iterator scope；planning前后IR不变 |
+| chain与跨root boundary | 1024级producer→consumer，same/different Tile映射 | 两个roots永不在本项自动合组；每个nonempty structured boundary use按eligible owner形成all-and-only external fragments | H后续可从fragment直接派生movement，D不写DDR/peer选择 |
+| fanin/fanout/diamond与multi-path | 1025/1031级multi-root DAG | 一个boundary source用于多个operands/uses时fragment identity不按node pair折叠；input/root/shard顺序扰动后plan逐字段相同 | region-execution-domain以同一fragments枚举sharing/split siblings |
+| multi-result与DPS init | rank>=3 multi-result producer/consumer | producer result、consumer operand、owner shard/group均进入fragment identity；init boundary不被当普通data edge丢失 | 后续representation/movement能按result/use区分版本 |
+| ordinary spatial reduction | 整除/非整除、多output merge group且多个group可同Tile | execution instance覆盖每个contribution shard一次；每个merge group另有一个merge execution，partial不签发final version | canonical-temporal只给execution scope建temporal plan，merge保持typed merge scope |
+| FD coupled state | rank-5/6、K2为1024/1031或multi-K2 | Maximum/Sum/Accumulator仍由一个merge execution引用同一requirement，不能拆成三个region executions | attention-work-projection后续从同一group/merge ID投影actions/resources |
+| invariant与empty work | program input/constant/scalar capture、merge-only Tile、empty Tile、rank-zero | invariant boundary形成无owner external fragment；merge-only work仍有group/merge execution；empty Tile无group；rank-zero execution ID合法 | leaf/temporal query不依赖shape rank或虚构shard |
+| typed failure | duplicate work ID、boundary use缺required domain/owner、execution/merge不属于work | 返回compiler-contract failure且不产生partial plan，不压成unsupported或空domain | 修正后的同一输入可重新query，source IR byte-identical |
+
 ### D-1 专项调研：region、execution instance与use binding边界
 
 MLIR structured fusion把consumer tile的operand slice经indexing relation反推到producer iteration tile，再在consumer loop中

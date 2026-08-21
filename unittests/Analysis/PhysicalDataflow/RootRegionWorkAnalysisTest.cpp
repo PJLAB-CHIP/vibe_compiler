@@ -235,6 +235,10 @@ module {
       }
       EXPECT_EQ(boundary.id.kind, RootBoundaryKind::StructuredResult);
       ASSERT_EQ(boundary.consumerUses.size(), 1u);
+      ASSERT_TRUE(boundary.consumerUses.front().requiredDomain.has_value());
+      if (!boundary.consumerUses.front().requiredDomain->isEmpty())
+        EXPECT_FALSE(
+            boundary.consumerUses.front().eligibleFinalOwners.empty());
     }
     EXPECT_GE(nonempty, 1u);
   }
@@ -399,6 +403,9 @@ module {
                              }),
               1u);
     ASSERT_TRUE(structured->requiredDomain.has_value());
+    ASSERT_EQ(structured->consumerUses.size(), 1u);
+    ASSERT_TRUE(structured->consumerUses.front().requiredDomain.has_value());
+    EXPECT_FALSE(structured->consumerUses.front().eligibleFinalOwners.empty());
     if (structured->requiredDomain->getPresburgerSet().containsPoint(
             {0, 499, 0}) &&
         structured->requiredDomain->getPresburgerSet().containsPoint(

@@ -104,10 +104,10 @@ ExactSetMerge mergeExactSets(const ExactIndexSet &lhs, const ExactIndexSet &rhs,
       lhs.getPresburgerSet().unionSet(rhs.getPresburgerSet());
   if (lhs.getForm() != ExactIndexSetForm::BoxUnion ||
       rhs.getForm() != ExactIndexSetForm::BoxUnion)
-    return ExactIndexSet(
-        std::move(set),
-        lhs.getForm() == rhs.getForm() ? lhs.getForm()
-                                       : ExactIndexSetForm::GeneralPresburger);
+    return ExactIndexSet(std::move(set),
+                         lhs.getForm() == rhs.getForm()
+                             ? lhs.getForm()
+                             : ExactIndexSetForm::GeneralPresburger);
 
   llvm::SmallVector<StaticRectangularIndexSet, 8> boxes;
   boxes.append(lhs.getBoxes().begin(), lhs.getBoxes().end());
@@ -361,8 +361,38 @@ private:
           !mergeInto(*boundary.requiredDomain, source.requiredDomain))
         return false;
     }
-    if (!llvm::is_contained(boundary.consumerUses, use))
-      boundary.consumerUses.push_back(use);
+    auto boundaryUse =
+        llvm::find_if(boundary.consumerUses,
+                      [&](const analysis::RootBoundaryUseWork &candidate) {
+                        return candidate.id == use;
+    });
+    if (boundaryUse == boundary.consumerUses.end()) {
+      analysis::RootBoundaryUseWork added;
+      added.id = use;
+      added.requiredDomain = source.requiredDomain;
+      added.eligibleFinalOwners.append(source.eligibleFinalOwners.begin(),
+                                       source.eligibleFinalOwners.end());
+      boundary.consumerUses.push_back(std::move(added));
+    } else {
+      if (!boundaryUse->requiredDomain ||
+          !mergeInto(*boundaryUse->requiredDomain, source.requiredDomain))
+        return false;
+      for (const analysis::OwnerIntersection &owner :
+           source.eligibleFinalOwners) {
+        auto existingOwner = llvm::find_if(
+            boundaryUse->eligibleFinalOwners,
+            [&](const analysis::OwnerIntersection &candidate) {
+              return candidate.ownerShard == owner.ownerShard &&
+                     candidate.reductionGroup == owner.reductionGroup &&
+                     candidate.tile == owner.tile;
+            });
+        if (existingOwner == boundaryUse->eligibleFinalOwners.end()) {
+          boundaryUse->eligibleFinalOwners.push_back(owner);
+        } else if (!mergeInto(existingOwner->domain, owner.domain)) {
+          return false;
+        }
+      }
+    }
     auto existing = boundaryIdsByValue.find(described->value);
     if (existing != boundaryIdsByValue.end() &&
         existing->second != described->id) {
@@ -387,8 +417,11 @@ private:
                         "invariant boundary identity changed source value"));
       return false;
     }
-    if (!llvm::is_contained(boundary.consumerUses, use))
-      boundary.consumerUses.push_back(use);
+    if (!llvm::any_of(boundary.consumerUses,
+                      [&](const analysis::RootBoundaryUseWork &candidate) {
+                        return candidate.id == use;
+                      }))
+      boundary.consumerUses.push_back({use, std::nullopt, {}});
     boundaryIdsByValue[described.value] = described.id;
     return true;
   }
@@ -718,7 +751,21 @@ private:
   void finalizeStableOrder() {
     for (auto &[id, boundary] : boundaries) {
       (void)id;
-      llvm::sort(boundary.consumerUses);
+      llvm::sort(boundary.consumerUses,
+                 [](const analysis::RootBoundaryUseWork &lhs,
+                    const analysis::RootBoundaryUseWork &rhs) {
+                   return lhs.id < rhs.id;
+                 });
+      for (analysis::RootBoundaryUseWork &use : boundary.consumerUses)
+        llvm::sort(use.eligibleFinalOwners,
+                   [](const analysis::OwnerIntersection &lhs,
+                      const analysis::OwnerIntersection &rhs) {
+                     if (lhs.reductionGroup != rhs.reductionGroup)
+                       return lhs.reductionGroup < rhs.reductionGroup;
+                     if (lhs.ownerShard != rhs.ownerShard)
+                       return lhs.ownerShard < rhs.ownerShard;
+                     return lhs.tile.getValue() < rhs.tile.getValue();
+                   });
       work.boundaries.push_back(std::move(boundary));
     }
     for (RootOperandWork &operand : work.operands)

@@ -8,7 +8,9 @@ set(WAFER_PLANNING_SOURCES
   Planning/Baseline/CardBaselineTemporalTiling.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
+  Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
+  Planning/PhysicalDataflow/RegionPlan.cpp
   Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp

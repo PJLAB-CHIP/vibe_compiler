@@ -110,12 +110,18 @@ struct RootOperandWork {
   std::vector<RootOperandUseWork> uses;
 };
 
+struct RootBoundaryUseWork {
+  RootUseId id;
+  std::optional<ExactIndexSet> requiredDomain;
+  llvm::SmallVector<OwnerIntersection, 4> eligibleFinalOwners;
+};
+
 struct RootBoundaryWork {
   RootBoundaryId id;
   /// Current-IR-epoch lookup handle. It is not part of identity or ordering.
   mlir::Value sourceValue;
   std::optional<ExactIndexSet> requiredDomain;
-  std::vector<RootUseId> consumerUses;
+  std::vector<RootBoundaryUseWork> consumerUses;
 };
 
 enum class RootSupportInputKind : uint8_t {

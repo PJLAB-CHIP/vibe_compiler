@@ -393,6 +393,11 @@ source identity，topological order由SSA dependency与semantic tie-break产生�
 singleton execution leaf；merge-only Tile不伪造execution shard。完整root domain、multi-root group和旧Module-return emitter退役仍由
 后续`root-work-domain`与winner transaction完成。
 
+canonical region coordinate把每个nonempty work放入独立group：execution shard和per-output merge group各形成一个required top-level
+execution；`RootBoundaryUseWork`保留每个use的exact source domain与eligible final owners，`DemandFragmentId`只由source、use和owner
+identity组成，不复制exact set。所有fragments在canonical plan中都是external bindings；local stored/direct、nested、sharing和replica
+只有`region-execution-domain`才加入current合同。
+
 随后region grouping在每个Tile的local DAG上形成connected root partitions；完全无依赖的components合并不会减少movement且
 只会扩大lifetime/capacity约束，因此由严格dominance保持分离。region membership、producer execution instance和consumer-use
 binding是三个不同对象：mandatory或显式replica producer work分别选择top-level或consumer-nested execution，每个nonempty exact

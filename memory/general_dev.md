@@ -380,6 +380,10 @@ source program
   value path标识，同一result的多个use只做bounded exact-domain union并拓扑输出一次。operation/value handle只在当前immutable IR epoch
   内查找，不能进入identity。singleton leaf只关闭execution request；full root domain、region group和selected Card transaction继续由
   各自owner完成，不能让leaf helper顺带选择movement/layout/schedule。
+- canonical region planning保持最小：一个nonempty root work对应一个singleton group；execution shard和merge group分别形成required
+  top-level execution，boundary use按source/use/eligible-owner形成external `DemandFragmentId`。fragment identity不复制exact set，也不按
+  node pair折叠multi-result、multi-operand或fanout。不要为canonical点预留single-value delivery enum、nested/replica nullable字段；
+  local stored/direct、nested、sharing和replica在真实domain consumer到位时原位扩current RegionPlan。
 - 显式test work counts证明planning CardModule/Instr/Q50.0为零、selected CardModule/Q50.0各一次；accepted executable直接move到输出，
   也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR inspection
   写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。
