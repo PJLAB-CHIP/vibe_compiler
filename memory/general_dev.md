@@ -392,6 +392,10 @@ source program
   support result、execution result、ordinary partial和coupled component必须使用typed variant identity；empty/scalar不造假version。
   exact domain/type留在query-local resource description并用`PhysicalLayoutRelation`检查finite boxes，不能只写layout enum。
   derived conversion、alias/shared secondary与use-binding solver在真实layout domain consumer到位后再扩current contract。
+- canonical movement correctness carrier显式区分external load、cross-region DDR transfer、remote reduction gather和terminal publication。
+  structured fragment必须由D fragment owner映到G source/destination versions并校验finite-domain containment；ordinary/FD remote
+  contribution逐result/component移动，同merge Tile local contribution无action，empty/scalar不造movement。canonical H不选peer/relay/
+  reuse/buffer/order；这些在movement domain到位后扩同一current plan。
 - 显式test work counts证明planning CardModule/Instr/Q50.0为零、selected CardModule/Q50.0各一次；accepted executable直接move到输出，
   也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR inspection
   写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。

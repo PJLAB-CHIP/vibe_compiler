@@ -4105,6 +4105,30 @@ Pipeline position:
   validation；opaque target routing不伪造per-link load。旧complete-rank/global-relation/NoC provider中的topology、owner rotation、
   tree/ring、alias/lifetime/slice proof和tests逐项迁入current query/apply后，旧owner才能退役。
 
+### Q50.H work-item分界
+
+Q50.H由两个work items完成：
+
+- `canonical-movement-plan`只关闭deterministic correctness carrier：每个nonempty program/constant shaped boundary使用external load；
+  每个structured cross-region fragment使用Tensor→Tensor DDR transfer；ordinary/FD contribution若source Tile不是merge Tile则逐result/
+  component使用DDR gather，同Tile同group不伪造movement；final root result沿pure non-structured SSA path可达function return时显式DDR
+  publication。plan引用G physical versions和D execution/fragment IDs，不选择route、relay、reuse、buffer或order。
+- `movement-domain`在layout-domain后扩同一current合同，加入DDR/direct peer/relay/multicast/collective/reuse/occurrence完整域、proof、
+  Core consumer和selected apply，并迁移/退役旧edge/action与post-hoc surgery。canonical DDR点是baseline correctness sibling，不是
+  preferred transport或global winner。
+
+当前`canonical-movement-plan`覆盖矩阵如下。shape用于覆盖exact payload与tail，不进入movement kind判断；tiny只用于单一故障负例。
+
+| 覆盖类 | 代表输入 | canonical MovementPlan exact断言 | resource/downstream witness |
+| --- | --- | --- | --- |
+| program/constant input | rank>=3、1024/1025、all-16 Tile | 每个nonempty shaped external fragment恰有一个load到G destination version；scalar/exact-empty无action | payload resource逐action保留exact domain/type/source-destination Tile |
+| chain/fanin/fanout/diamond | 1025级same/cross-Tile owners、multiple sinks | 每个structured `DemandFragmentId`恰有一个DDR transfer，source/destination physical version存在且domain与G fragment resource相同；共享source不按first use覆盖 | I/J可从action IDs推导stage lifetime与store-before-load依赖 |
+| multi-result/view/multi-piece | result index不同、slice/reshape/pad output path | fragments不按node pair/bytes合并；publication沿pure support path覆盖terminal result且不发布unused result | output/stage descriptor保持typed source/result identity，不靠名字 |
+| ordinary reduction | 整除/非整除、多group同merge Tile | 每个remote partial result一个DDR gather；merge-Tile local contribution无action；group/result身份完整 | merge execution可枚举all-and-only remote inputs，partial不变final owner |
+| FD coupled state | rank-5/6、single/multi-K2 | 每个remote Maximum/Sum/Accumulator各一个gather，三component共享group但不合并成opaque payload；local contribution零movement | component type/domain与G resource及A requirement逐字段一致 |
+| rank-zero/empty/merge-only | nonempty rank-zero tensor、exact-empty fragment、merge-only Tile | rank-zero可有0-rank load/transfer；empty无action；merge-only只接remote gathers | storage plan不为empty创建slot，也不因无root scope漏merge payload |
+| typed failure | missing/duplicate physical version、fragment/resource domain不一致、owner/execution不存在、effectful output path | unsupported或compiler-contract failure且无partial plan，不fallback到peer/另一个owner | 修正输入可重新query，source IR byte-identical |
+
 ### H-1 专项调研：transport topology、movement boundary与payload合同
 
 MLIR async合同要求所有依赖显式进入token/value，且“可并发”不保证实际并发；因此send/recv token、consumer visibility和buffer release

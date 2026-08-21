@@ -484,6 +484,12 @@ exact demand和producer ownership求交，保留init/contribution/replication ro
 必要contribution不丢失且非显式replica不重叠，再生成实际staging、send/recv/wait或DDR store/load。任何densify、bounding-box
 或descriptor分段都必须回证union等于原exact set。
 
+canonical movement coordinate为singleton regions建立显式correctness carrier：program/constant shaped fragments load到G destination
+version，structured fragments用owner primary→consumer boundary primary的DDR transfer；remote ordinary/coupled contributions按result/
+component逐项gather，同merge Tile的local contribution无action；沿pure non-structured SSA path到function return的final result显式
+publication。plan只保存typed action/version/execution IDs，exact domain/type进入resource description；peer/relay/reuse/collective仍由
+后续`movement-domain`扩展。
+
 Movement proposal可以消费一个query-local、可失效的relation-derived reuse analysis：它从Q50.A exact demand、selected
 placement、TileRegion/traversal、wave-loop order和representation推导spatial-demand equivalence/invariance classes、
 temporal-wave invariance classes与exact payload/coverage。结果不压成几个boolean attr，不写回候选IR，也不选择broadcast、

@@ -118,6 +118,10 @@ struct PhysicalVersionId {
                          const PhysicalVersionId &rhs) {
     return lhs.logicalValue == rhs.logicalValue;
   }
+  friend bool operator!=(const PhysicalVersionId &lhs,
+                         const PhysicalVersionId &rhs) {
+    return !(lhs == rhs);
+  }
   friend bool operator<(const PhysicalVersionId &lhs,
                         const PhysicalVersionId &rhs) {
     if (lhs.logicalValue.index() != rhs.logicalValue.index())
