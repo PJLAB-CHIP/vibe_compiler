@@ -183,11 +183,15 @@ Q22.N+Q22.H已经在Q22.S SystemC event model汇合，Q22.B与Q22.S再由Q22.V s
 实现背景或复盘材料，但不作为当前主线架构合同；如果归档内容和 numbered docs 冲突，以当前 numbered
 docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 
+`tasks/archive/completed-task-index.md`集中保存从current progress移出的已完成任务边界和证据入口；它不是动态状态表，
+未完成、`doing`、`queued`、`later`和`board-ready`任务仍只在`tasks/progress.md`维护。
+
 归档正文中的编号文档basename、章节号、line range和命令按当时提交快照解释，不保证仍是当前可解析路径；当前owner路径
 只从上面的“当前设计文档”表读取。重命名current owner时不机械改写archive，以免篡改历史审计证据。
 
 | 文档 | 原性质 |
 | --- | --- |
+| `tasks/archive/completed-task-index.md` | 已完成任务的历史边界与证据入口索引；不参与current调度 |
 | `tasks/archive/whole-card-tile-dataflow-synthesis.md` | 2026-08-11至08-13的旧Q49/Q50完整施工计划；旧任务拆法、shortlist和owner合同不再有效 |
 | `tasks/archive/whole-rank-tile-dataflow-synthesis.md` | 2026-08-08的structured-DAG/card历史施工计划；已由current physical-dataflow计划替代，旧public policy与bounded candidate set不再有效 |
 | `tasks/archive/whole-variant-search-throughput.md` | 已完成Q32.C的passing-ordinal early stop、bounded persistent candidate executor、accepted-module owner import、exact attempt-plan selective parse和fully-gated Pareto前置late ABI/LLVM，并记录优化后Release单次实测 |
