@@ -17,6 +17,7 @@ add_executable(WaferUnitTests
   TestSupport/Planning/SpatialDemandTestSupport.cpp
   TestSupport/Planning/CanonicalPlanningTestSupport.cpp
   Planning/Baseline/CardBaselineCompilationTest.cpp
+  Planning/Baseline/CanonicalBaselinePlanTest.cpp
   CodeGen/Executable/CardExecutableCompilationTest.cpp
   CodeGen/Executable/CardExecutableLoweringTest.cpp
   Transforms/Bufferization/SelectedBufferMaterializationTest.cpp

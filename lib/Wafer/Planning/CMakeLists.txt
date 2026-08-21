@@ -6,6 +6,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/Baseline/CardBaselineEdgeCarriers.cpp
   Planning/Baseline/CardBaselineMaterialization.cpp
   Planning/Baseline/CardBaselineTemporalTiling.cpp
+  Planning/Baseline/CanonicalBaselinePlan.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
   Planning/PhysicalDataflow/AttentionLinalgOps.cpp
   Planning/PhysicalDataflow/AttentionWorkDescription.cpp
