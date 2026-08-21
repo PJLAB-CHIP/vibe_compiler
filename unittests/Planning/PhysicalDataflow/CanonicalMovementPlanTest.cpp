@@ -113,11 +113,175 @@ module {
     auto prefix = wafer::test::buildCanonicalPlanningPrefix(*dag, allTiles(),
                                                             &failureReason);
     ASSERT_TRUE(mlir::succeeded(prefix)) << failureReason;
+
+    // This pair is the cross-boundary coverage witness for the completed
+    // canonical B--H prefix. Check every intermediate contract instead of
+    // treating successful construction of the final movement plan as proof.
+    ASSERT_EQ(prefix->spatial.nodes.size(), 1u);
+    const NodeExecutionPartition &partition = prefix->spatial.nodes.front();
+    ASSERT_EQ(partition.shards.size(), 16u);
+    EXPECT_TRUE(partition.reductionGroups.empty());
+    std::array<bool, 16> observedTiles{};
+    uint64_t coveredIterations = 0;
+    llvm::SmallVector<int64_t, 16> shardQuerySizes;
+    const std::array<int64_t, 3> logicalShape = {2, extent, 128};
+    for (const ExecutionShard &shard : partition.shards) {
+      ASSERT_GE(shard.tile.getValue(), 0);
+      ASSERT_LT(shard.tile.getValue(), 16);
+      EXPECT_FALSE(observedTiles[shard.tile.getValue()]);
+      observedTiles[shard.tile.getValue()] = true;
+      ASSERT_EQ(shard.iterationDomain.size(), logicalShape.size());
+      uint64_t shardVolume = 1;
+      for (auto [interval, dimension] :
+           llvm::zip_equal(shard.iterationDomain, logicalShape)) {
+        EXPECT_GE(interval.offset, 0);
+        EXPECT_GT(interval.size, 0);
+        EXPECT_LE(interval.getEnd(), dimension);
+        shardVolume *= static_cast<uint64_t>(interval.size);
+      }
+      coveredIterations += shardVolume;
+      shardQuerySizes.push_back(shard.iterationDomain[1].size);
+    }
+    EXPECT_TRUE(
+        llvm::all_of(observedTiles, [](bool observed) { return observed; }));
+    EXPECT_EQ(coveredIterations, static_cast<uint64_t>(2) * extent * 128);
+    for (size_t lhs = 0; lhs < partition.shards.size(); ++lhs)
+      for (size_t rhs = lhs + 1; rhs < partition.shards.size(); ++rhs) {
+        bool disjoint = false;
+        for (auto [lhsInterval, rhsInterval] :
+             llvm::zip_equal(partition.shards[lhs].iterationDomain,
+                             partition.shards[rhs].iterationDomain))
+          disjoint |= lhsInterval.getEnd() <= rhsInterval.offset ||
+                      rhsInterval.getEnd() <= lhsInterval.offset;
+        EXPECT_TRUE(disjoint) << "spatial shards must not overlap";
+      }
+    if (extent == 1024)
+      EXPECT_EQ(*llvm::min_element(shardQuerySizes),
+                *llvm::max_element(shardQuerySizes));
+    else
+      EXPECT_LT(*llvm::min_element(shardQuerySizes),
+                *llvm::max_element(shardQuerySizes));
+
+    ASSERT_EQ(prefix->demand.finalOwners.size(), 16u);
+    ASSERT_EQ(prefix->demand.dependencyDemands.size(), 1u);
+    EXPECT_TRUE(prefix->demand.reductionMerges.empty());
+    ASSERT_EQ(prefix->demand.dependencyDemands.front().perDestination.size(),
+              16u);
+    uint64_t ownedIterations = 0;
+    for (const FinalResultOwner &owner : prefix->demand.finalOwners) {
+      ASSERT_TRUE(owner.shard.has_value());
+      EXPECT_FALSE(owner.reductionGroup.has_value());
+      ASSERT_EQ(owner.domain.getBoxes().size(), 1u);
+      const StaticRectangularIndexSet &ownerBox =
+          owner.domain.getBoxes().front();
+      ASSERT_EQ(ownerBox.sizes.size(), logicalShape.size());
+      uint64_t ownerVolume = 1;
+      for (int64_t size : ownerBox.sizes) {
+        EXPECT_GT(size, 0);
+        ownerVolume *= static_cast<uint64_t>(size);
+      }
+      ownedIterations += ownerVolume;
+      auto shard =
+          llvm::find_if(partition.shards, [&](const ExecutionShard &s) {
+            return s.shard == *owner.shard;
+          });
+      ASSERT_NE(shard, partition.shards.end());
+      EXPECT_EQ(owner.tile, shard->tile);
+      for (size_t axis = 0; axis < logicalShape.size(); ++axis) {
+        EXPECT_EQ(ownerBox.offsets[axis], shard->iterationDomain[axis].offset);
+        EXPECT_EQ(ownerBox.sizes[axis], shard->iterationDomain[axis].size);
+      }
+    }
+    EXPECT_EQ(ownedIterations, static_cast<uint64_t>(2) * extent * 128);
+    for (const DestinationDemand &destination :
+         prefix->demand.dependencyDemands.front().perDestination) {
+      ASSERT_EQ(destination.consumerExecutionDomain.getBoxes().size(), 1u);
+      ASSERT_EQ(destination.operandDemand.getBoxes().size(), 1u);
+      ASSERT_EQ(destination.sources.size(), 1u);
+      EXPECT_TRUE(std::holds_alternative<ProgramInputSource>(
+          destination.sources.front().source));
+      ASSERT_EQ(destination.sources.front().requiredDomain.getBoxes().size(),
+                1u);
+      const auto &executionBox =
+          destination.consumerExecutionDomain.getBoxes().front();
+      const auto &demandBox = destination.operandDemand.getBoxes().front();
+      const auto &sourceBox =
+          destination.sources.front().requiredDomain.getBoxes().front();
+      EXPECT_EQ(demandBox.offsets, executionBox.offsets);
+      EXPECT_EQ(demandBox.sizes, executionBox.sizes);
+      EXPECT_EQ(sourceBox.offsets, demandBox.offsets);
+      EXPECT_EQ(sourceBox.sizes, demandBox.sizes);
+    }
+
+    ASSERT_EQ(prefix->rootWorks.size(), 16u);
+    for (const RootRegionWork &work : prefix->rootWorks) {
+      ASSERT_EQ(work.execution.size(), 1u);
+      EXPECT_TRUE(work.contributions.empty());
+      EXPECT_TRUE(work.merges.empty());
+      ASSERT_EQ(work.operands.size(), 1u);
+      ASSERT_EQ(work.operands.front().uses.size(), 1u);
+      ASSERT_EQ(work.boundaries.size(), 1u);
+      EXPECT_EQ(work.boundaries.front().id.kind,
+                RootBoundaryKind::ProgramInput);
+      ASSERT_TRUE(work.boundaries.front().requiredDomain.has_value());
+      ASSERT_EQ(work.boundaries.front().consumerUses.size(), 1u);
+      ASSERT_EQ(work.results.size(), 1u);
+      ASSERT_TRUE(work.results.front().ownerShard.has_value());
+      EXPECT_EQ(*work.results.front().ownerShard, work.execution.front().shard);
+      EXPECT_FALSE(work.results.front().reductionGroup.has_value());
+    }
+
+    ASSERT_EQ(prefix->regions.groups.size(), 16u);
+    for (const RegionGroupPlan &group : prefix->regions.groups) {
+      ASSERT_EQ(group.mandatoryRoots.size(), 1u);
+      ASSERT_EQ(group.executions.size(), 1u);
+      ASSERT_EQ(group.externalBindings.size(), 1u);
+      EXPECT_EQ(group.tile, group.mandatoryRoots.front().tile);
+      EXPECT_TRUE(std::holds_alternative<RequiredRootExecution>(
+          group.executions.front().id.source));
+      EXPECT_EQ(group.externalBindings.front().fragment.source.kind,
+                RootBoundaryKind::ProgramInput);
+    }
+    ASSERT_EQ(prefix->temporal.scopes.size(), 16u);
+    for (const TemporalScopePlan &scope : prefix->temporal.scopes) {
+      EXPECT_TRUE(scope.waveLoopOrder.empty());
+      const auto *required =
+          std::get_if<RequiredRootExecution>(&scope.execution.source);
+      ASSERT_NE(required, nullptr);
+      auto work =
+          llvm::find_if(prefix->rootWorks, [&](const RootRegionWork &w) {
+            return w.id == required->work;
+          });
+      ASSERT_NE(work, prefix->rootWorks.end());
+      ASSERT_EQ(work->execution.size(), 1u);
+      ASSERT_EQ(scope.iteratorTileSizes,
+                llvm::map_to_vector(work->execution.front().iterationDomain,
+                                    [](const IteratorInterval &interval) {
+                                      return interval.size;
+                                    }));
+    }
+
     auto representation = buildCanonicalRepresentationPlan(
         prefix->regions, prefix->temporal, prefix->rootWorks);
     const CanonicalRepresentationCoordinate *representations =
         getCanonicalRepresentationCoordinate(representation);
     ASSERT_NE(representations, nullptr);
+    ASSERT_EQ(representations->plan.primaryVersions.size(), 32u);
+    ASSERT_EQ(representations->resources.size(), 32u);
+    EXPECT_EQ(
+        llvm::count_if(representations->plan.primaryVersions,
+                       [](const PhysicalVersionPlan &version) {
+                         return std::holds_alternative<BoundaryRegionValueId>(
+                             version.id.logicalValue);
+                       }),
+        16u);
+    EXPECT_EQ(
+        llvm::count_if(representations->plan.primaryVersions,
+                       [](const PhysicalVersionPlan &version) {
+                         return std::holds_alternative<ExecutionResultValueId>(
+                             version.id.logicalValue);
+                       }),
+        16u);
     CanonicalMovementPlanOutcome outcome = buildCanonicalMovementPlan(
         prefix->regions, *representations, prefix->rootWorks);
     const CanonicalMovementCoordinate *coordinate =
@@ -234,152 +398,148 @@ module {
 
 TEST_F(CanonicalMovementPlanTest,
        FlashDecodingMovesEveryRemoteComponentAndSkipsLocalContributions) {
-  auto module = parse(R"mlir(
-#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
-#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
-#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
-#s = affine_map<(b, m, k1, k2, n) -> ()>
-#mask = affine_map<(b, m, k1, k2, n) -> (m, k2)>
-#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
-module {
-  func.func @decode(
-      %query: tensor<2x1025x128xf16>, %key: tensor<2x1031x128xf16>,
-      %value: tensor<2x1031x64xf16>, %scale: f32,
-      %mask: tensor<1025x1031xf16>) -> tensor<2x1025x64xf16> {
-    %out = tensor.empty() : tensor<2x1025x64xf16>
-    %result = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale, %mask :
-            tensor<2x1025x128xf16>, tensor<2x1031x128xf16>,
-            tensor<2x1031x64xf16>, f32, tensor<1025x1031xf16>)
-        outs(%out : tensor<2x1025x64xf16>)
-        algorithm(<flash_decoding>)
-        indexing_maps = [#q, #k, #v, #s, #mask, #o]
-        -> tensor<2x1025x64xf16>
-    return %result : tensor<2x1025x64xf16>
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-  std::string failureReason;
-  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
-  auto prefix = wafer::test::buildCanonicalPlanningPrefix(*dag, allTiles(),
-                                                          &failureReason);
-  ASSERT_TRUE(mlir::succeeded(prefix)) << failureReason;
-  auto representation = buildCanonicalRepresentationPlan(
-      prefix->regions, prefix->temporal, prefix->rootWorks);
-  const CanonicalRepresentationCoordinate *representations =
-      getCanonicalRepresentationCoordinate(representation);
-  ASSERT_NE(representations, nullptr);
-  CanonicalMovementPlanOutcome outcome = buildCanonicalMovementPlan(
-      prefix->regions, *representations, prefix->rootWorks);
-  const CanonicalMovementCoordinate *coordinate =
-      getCanonicalMovementCoordinate(outcome);
-  ASSERT_NE(coordinate, nullptr);
-  unsigned expectedGathers = 0;
-  for (const ReductionMergeRequirement &merge : prefix->demand.reductionMerges)
-    for (const ReductionContribution &contribution : merge.contributions)
-      if (contribution.tile != merge.mergeTile)
-        expectedGathers += contribution.components.size();
-  EXPECT_EQ(coordinate->plan.reductionGathers.size(), expectedGathers);
-  EXPECT_EQ(coordinate->plan.externalLoads.size(), 64u);
-  EXPECT_TRUE(coordinate->plan.ddrTransfers.empty());
-  EXPECT_EQ(coordinate->plan.publications.size(),
-            prefix->demand.reductionMerges.size());
-  for (const ReductionGatherPlan &gather : coordinate->plan.reductionGathers) {
-    const auto *component =
-        std::get_if<CoupledComponentValueId>(&gather.id.value);
-    ASSERT_NE(component, nullptr);
-    const auto *source =
-        std::get_if<RequiredRootExecution>(&component->execution.source);
-    const auto *merge =
-        std::get_if<RequiredMergeExecution>(&gather.mergeExecution.source);
-    ASSERT_NE(source, nullptr);
-    ASSERT_NE(merge, nullptr);
-    EXPECT_NE(source->work.tile, merge->work.tile);
+  for (const auto &[queryExtent, keyValueExtent] :
+       {std::pair<int64_t, int64_t>{1024, 1024}, {1025, 1031}}) {
+    SCOPED_TRACE(queryExtent);
+    auto module = parse(wafer::test::buildFlashDecodingPlanningFixture(
+        queryExtent, keyValueExtent));
+    ASSERT_TRUE(module);
+    std::string failureReason;
+    auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+    auto prefix = wafer::test::buildCanonicalPlanningPrefix(*dag, allTiles(),
+                                                            &failureReason);
+    ASSERT_TRUE(mlir::succeeded(prefix)) << failureReason;
+    auto representation = buildCanonicalRepresentationPlan(
+        prefix->regions, prefix->temporal, prefix->rootWorks);
+    const CanonicalRepresentationCoordinate *representations =
+        getCanonicalRepresentationCoordinate(representation);
+    ASSERT_NE(representations, nullptr);
+    CanonicalMovementPlanOutcome outcome = buildCanonicalMovementPlan(
+        prefix->regions, *representations, prefix->rootWorks);
+    const CanonicalMovementCoordinate *coordinate =
+        getCanonicalMovementCoordinate(outcome);
+    ASSERT_NE(coordinate, nullptr);
+    unsigned expectedGathers = 0;
+    for (const ReductionMergeRequirement &merge :
+         prefix->demand.reductionMerges)
+      for (const ReductionContribution &contribution : merge.contributions)
+        if (contribution.tile != merge.mergeTile)
+          expectedGathers += contribution.components.size();
+    EXPECT_EQ(coordinate->plan.reductionGathers.size(), expectedGathers);
+    EXPECT_EQ(coordinate->plan.externalLoads.size(), 64u);
+    EXPECT_TRUE(coordinate->plan.ddrTransfers.empty());
+    EXPECT_EQ(coordinate->plan.publications.size(),
+              prefix->demand.reductionMerges.size());
+    for (const ReductionGatherPlan &gather :
+         coordinate->plan.reductionGathers) {
+      const auto *component =
+          std::get_if<CoupledComponentValueId>(&gather.id.value);
+      ASSERT_NE(component, nullptr);
+      const auto *source =
+          std::get_if<RequiredRootExecution>(&component->execution.source);
+      const auto *merge =
+          std::get_if<RequiredMergeExecution>(&gather.mergeExecution.source);
+      ASSERT_NE(source, nullptr);
+      ASSERT_NE(merge, nullptr);
+      EXPECT_NE(source->work.tile, merge->work.tile);
+    }
   }
 }
 
 TEST_F(CanonicalMovementPlanTest,
        OrdinaryReductionGathersOnlyTheRemotePartialResult) {
-  auto module = parse(R"mlir(
-module {
-  func.func @holder() -> tensor<2x1025xf16> {
-    %result = tensor.empty() : tensor<2x1025xf16>
-    return %result : tensor<2x1025xf16>
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    std::string source;
+    llvm::raw_string_ostream stream(source);
+    stream << "module {\n"
+           << "  func.func @holder() -> tensor<2x" << extent << "x128xf16> {\n"
+           << "    %result = tensor.empty() : tensor<2x" << extent
+           << "x128xf16>\n"
+           << "    return %result : tensor<2x" << extent << "x128xf16>\n"
+           << "  }\n"
+           << "}\n";
+    auto module = parse(source);
+    ASSERT_TRUE(module);
+    mlir::tensor::EmptyOp root;
+    module->walk([&](mlir::tensor::EmptyOp empty) { root = empty; });
+    ASSERT_TRUE(root);
+    SemanticRootKey rootKey;
+    LogicalShardId remoteShard{rootKey, {0}};
+    LogicalShardId localShard{rootKey, {1}};
+    ReductionGroupId group{rootKey, 0, {0}};
+    ExactIndexSet resultDomain = box({0, 0, 0}, {2, extent, 128});
+
+    ReductionContribution remoteContribution;
+    remoteContribution.shard = remoteShard;
+    remoteContribution.tile = TileId(0);
+    remoteContribution.results.push_back({0, resultDomain});
+    ReductionContribution localContribution;
+    localContribution.shard = localShard;
+    localContribution.tile = TileId(1);
+    localContribution.results.push_back({0, resultDomain});
+    ReductionMergeRequirement merge;
+    merge.group = group;
+    merge.mergeTile = TileId(1);
+    merge.results.push_back({0, resultDomain});
+    merge.contributions = {remoteContribution, localContribution};
+
+    RootRegionWork remote;
+    remote.id = {rootKey, TileId(0)};
+    remote.rootOperation = root;
+    remote.execution.push_back({remoteShard, {{0, 1}, {0, extent}, {0, 128}}});
+    remote.contributions.push_back(
+        {group, TileId(1),
+         ReductionInitialization::IdentityPerContributionInitOnceAtMerge,
+         ReductionAlgebraKind::StandardPartialReduction, std::nullopt,
+         remoteContribution});
+
+    RootRegionWork local;
+    local.id = {rootKey, TileId(1)};
+    local.rootOperation = root;
+    local.execution.push_back({localShard, {{1, 1}, {0, extent}, {0, 128}}});
+    local.contributions.push_back(
+        {group, TileId(1),
+         ReductionInitialization::IdentityPerContributionInitOnceAtMerge,
+         ReductionAlgebraKind::StandardPartialReduction, std::nullopt,
+         localContribution});
+    local.merges.push_back(merge);
+    local.results.push_back({0, std::nullopt, group, resultDomain});
+
+    std::array<RootRegionWork, 2> works{remote, local};
+    CanonicalRegionPlanOutcome regionOutcome = buildCanonicalRegionPlan(works);
+    const RegionPlan *regions = getRegionPlan(regionOutcome);
+    ASSERT_NE(regions, nullptr);
+    CanonicalTemporalPlanOutcome temporalOutcome =
+        buildCanonicalTemporalPlan(*regions, works);
+    const TemporalPlan *temporal = getTemporalPlan(temporalOutcome);
+    ASSERT_NE(temporal, nullptr);
+    auto representation =
+        buildCanonicalRepresentationPlan(*regions, *temporal, works);
+    const CanonicalRepresentationCoordinate *representations =
+        getCanonicalRepresentationCoordinate(representation);
+    ASSERT_NE(representations, nullptr);
+    CanonicalMovementPlanOutcome outcome =
+        buildCanonicalMovementPlan(*regions, *representations, works);
+    const CanonicalMovementCoordinate *coordinate =
+        getCanonicalMovementCoordinate(outcome);
+    ASSERT_NE(coordinate, nullptr);
+    ASSERT_EQ(coordinate->plan.reductionGathers.size(), 1u);
+    const ReductionGatherPlan &gather =
+        coordinate->plan.reductionGathers.front();
+    EXPECT_TRUE(
+        std::holds_alternative<ReductionPartialValueId>(gather.id.value));
+    EXPECT_EQ(gather.id.contribution, remoteShard);
+    EXPECT_EQ(gather.id.group, group);
+    EXPECT_EQ(coordinate->plan.publications.size(), 1u);
+    ASSERT_EQ(coordinate->resources.size(), 2u);
+    for (const MovementResourceDescription &resource : coordinate->resources) {
+      ASSERT_EQ(resource.exactDomain.getBoxes().size(), 1u);
+      EXPECT_EQ(resource.exactDomain.getBoxes().front().sizes,
+                (llvm::SmallVector<int64_t, 3>{2, extent, 128}));
+    }
   }
-}
-)mlir");
-  ASSERT_TRUE(module);
-  mlir::tensor::EmptyOp root;
-  module->walk([&](mlir::tensor::EmptyOp empty) { root = empty; });
-  ASSERT_TRUE(root);
-  SemanticRootKey rootKey;
-  LogicalShardId remoteShard{rootKey, {0}};
-  LogicalShardId localShard{rootKey, {1}};
-  ReductionGroupId group{rootKey, 0, {0}};
-  ExactIndexSet resultDomain = box({0, 0}, {2, 1025});
-
-  ReductionContribution remoteContribution;
-  remoteContribution.shard = remoteShard;
-  remoteContribution.tile = TileId(0);
-  remoteContribution.results.push_back({0, resultDomain});
-  ReductionContribution localContribution;
-  localContribution.shard = localShard;
-  localContribution.tile = TileId(1);
-  localContribution.results.push_back({0, resultDomain});
-  ReductionMergeRequirement merge;
-  merge.group = group;
-  merge.mergeTile = TileId(1);
-  merge.results.push_back({0, resultDomain});
-  merge.contributions = {remoteContribution, localContribution};
-
-  RootRegionWork remote;
-  remote.id = {rootKey, TileId(0)};
-  remote.rootOperation = root;
-  remote.execution.push_back({remoteShard, {{0, 1}}});
-  remote.contributions.push_back(
-      {group, TileId(1),
-       ReductionInitialization::IdentityPerContributionInitOnceAtMerge,
-       ReductionAlgebraKind::StandardPartialReduction, std::nullopt,
-       remoteContribution});
-
-  RootRegionWork local;
-  local.id = {rootKey, TileId(1)};
-  local.rootOperation = root;
-  local.execution.push_back({localShard, {{1, 1}}});
-  local.contributions.push_back(
-      {group, TileId(1),
-       ReductionInitialization::IdentityPerContributionInitOnceAtMerge,
-       ReductionAlgebraKind::StandardPartialReduction, std::nullopt,
-       localContribution});
-  local.merges.push_back(merge);
-  local.results.push_back({0, std::nullopt, group, resultDomain});
-
-  std::array<RootRegionWork, 2> works{remote, local};
-  CanonicalRegionPlanOutcome regionOutcome = buildCanonicalRegionPlan(works);
-  const RegionPlan *regions = getRegionPlan(regionOutcome);
-  ASSERT_NE(regions, nullptr);
-  CanonicalTemporalPlanOutcome temporalOutcome =
-      buildCanonicalTemporalPlan(*regions, works);
-  const TemporalPlan *temporal = getTemporalPlan(temporalOutcome);
-  ASSERT_NE(temporal, nullptr);
-  auto representation =
-      buildCanonicalRepresentationPlan(*regions, *temporal, works);
-  const CanonicalRepresentationCoordinate *representations =
-      getCanonicalRepresentationCoordinate(representation);
-  ASSERT_NE(representations, nullptr);
-  CanonicalMovementPlanOutcome outcome =
-      buildCanonicalMovementPlan(*regions, *representations, works);
-  const CanonicalMovementCoordinate *coordinate =
-      getCanonicalMovementCoordinate(outcome);
-  ASSERT_NE(coordinate, nullptr);
-  ASSERT_EQ(coordinate->plan.reductionGathers.size(), 1u);
-  const ReductionGatherPlan &gather = coordinate->plan.reductionGathers.front();
-  EXPECT_TRUE(std::holds_alternative<ReductionPartialValueId>(gather.id.value));
-  EXPECT_EQ(gather.id.contribution, remoteShard);
-  EXPECT_EQ(gather.id.group, group);
-  EXPECT_EQ(coordinate->plan.publications.size(), 1u);
 }
 
 TEST_F(CanonicalMovementPlanTest,

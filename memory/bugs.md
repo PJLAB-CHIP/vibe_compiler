@@ -1194,6 +1194,19 @@
 - 防复发：installed product adapter→verifier→compiler→no-card、feature-off absence、portable corrupt/retired/mismatch负例和public full rebuild同批执行；
   不能因某个增量target链接成功就跳过完整header consumer构建。
 
+## 上游shape覆盖不能代签下游语义分支
+
+- 现象：canonical普通load/publication已经有rank-3的1024/1025纵向case，attention demand也有FD整除/非整除case，但coupled
+  representation/movement仍只有1025/1031；ordinary reduction gather又只用rank-2的单个1025 fixture。suite全绿仍无法证明这些
+  下游分支在aligned/ragged和真实rank下都消费正确的domain/type/owner。
+- 根因：把“同一shape在别的stage出现过”或“同一action kind在普通value上受测”当成当前artifact的覆盖。测试没有按
+  `artifact × semantic branch × shape class × exact assertion × downstream witness`建立ledger，最终只剩case数量而没有合同对应。
+- 修复模式：每个work item在写代码前列本地覆盖矩阵；规则建立前的输出通过独立coverage closure逐项核对。共享fixture只复用输入
+  构造，不共享完成结论；coupled component、ordinary partial、tail和local-skip等分支分别用1024与1025/1031配对，并断言本层typed ID、
+  exact domain、owner/action以及直接consumer。
+- 防复发：完成评审逐行检查设计矩阵是否绑定实际case；上游case、普通分支、完整suite通过或单个纵向success都不能代签本项分支。
+  小shape只保留给明确的bounded oracle、rank-zero或单一故障负例，且同机制仍有真实规模正例。
+
 ## 大shape会暴露construction proof丢失和ordered lowering的IR规模问题
 
 - 现象：rank-3 `2x1024x128` scalar reduction在host unit中持续100秒以上；个位数/32x32 case一直把它掩盖成普通慢测试。

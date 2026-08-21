@@ -11,6 +11,7 @@
 
 #include "mlir/Support/LogicalResult.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,11 @@ mlir::FailureOr<CanonicalPlanningPrefix>
 buildCanonicalPlanningPrefix(const compiler::detail::StructuredDAGAnalysis &dag,
                              llvm::ArrayRef<TileId> tiles,
                              std::string *failureReason = nullptr);
+
+/// Builds the shared rank-5 aligned/ragged flash-decoding fixture used to
+/// verify coupled planning artifacts across canonical boundaries.
+std::string buildFlashDecodingPlanningFixture(int64_t queryExtent,
+                                              int64_t keyValueExtent);
 
 } // namespace wafer::test
 

@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"
 
+#include "TestSupport/Planning/CanonicalPlanningTestSupport.h"
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
 #include "Wafer/InitWaferDialects.h"
@@ -237,8 +238,7 @@ module {
       ASSERT_EQ(boundary.consumerUses.size(), 1u);
       ASSERT_TRUE(boundary.consumerUses.front().requiredDomain.has_value());
       if (!boundary.consumerUses.front().requiredDomain->isEmpty())
-        EXPECT_FALSE(
-            boundary.consumerUses.front().eligibleFinalOwners.empty());
+        EXPECT_FALSE(boundary.consumerUses.front().eligibleFinalOwners.empty());
     }
     EXPECT_GE(nonempty, 1u);
   }
@@ -495,7 +495,7 @@ module {
 
 TEST_F(RootRegionWorkAnalysisTest,
        SpatialReductionContributionAndMergeWorkMatchAlignedAndRaggedProofs) {
-  for (int64_t reductionExtent : {32, 33}) {
+  for (int64_t reductionExtent : {1024, 1025}) {
     SCOPED_TRACE(reductionExtent);
     std::string source;
     llvm::raw_string_ostream stream(source);
@@ -677,79 +677,61 @@ module {
 
 TEST_F(RootRegionWorkAnalysisTest,
        FlashDecodingKeepsThreeComponentsInOneRootContributionAndMergeWork) {
-  auto module = parse(R"mlir(
-#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
-#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
-#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
-#s = affine_map<(b, m, k1, k2, n) -> ()>
-#mask = affine_map<(b, m, k1, k2, n) -> (m, k2)>
-#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
-module {
-  func.func @decode(
-      %query: tensor<2x1025x128xf16>, %key: tensor<2x1031x128xf16>,
-      %value: tensor<2x1031x64xf16>, %scale: f32,
-      %mask: tensor<1025x1031xf16>) -> tensor<2x1025x64xf16> {
-    %out = tensor.empty() : tensor<2x1025x64xf16>
-    %result = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale, %mask :
-            tensor<2x1025x128xf16>, tensor<2x1031x128xf16>,
-            tensor<2x1031x64xf16>, f32, tensor<1025x1031xf16>)
-        outs(%out : tensor<2x1025x64xf16>)
-        algorithm(<flash_decoding>)
-        indexing_maps = [#q, #k, #v, #s, #mask, #o]
-        -> tensor<2x1025x64xf16>
-    return %result : tensor<2x1025x64xf16>
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
-  std::string failureReason;
-  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
-  auto coordinate =
-      buildCanonicalSpatialAssignment(*dag, allTiles(), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(coordinate)) << failureReason;
-  auto proof = deriveDemand(*dag, coordinate->assignment, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(proof)) << failureReason;
-  auto analysis = RootRegionWorkAnalysis::create(*dag, coordinate->assignment,
-                                                 *proof, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(analysis)) << failureReason;
-  const SemanticRootKey root = coordinate->semanticRoots.getRoots().front().key;
+  for (const auto &[queryExtent, keyValueExtent] :
+       {std::pair<int64_t, int64_t>{1024, 1024}, {1025, 1031}}) {
+    SCOPED_TRACE(queryExtent);
+    auto module = parse(wafer::test::buildFlashDecodingPlanningFixture(
+        queryExtent, keyValueExtent));
+    ASSERT_TRUE(module);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+    std::string failureReason;
+    auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+    auto coordinate =
+        buildCanonicalSpatialAssignment(*dag, allTiles(), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(coordinate)) << failureReason;
+    auto proof = deriveDemand(*dag, coordinate->assignment, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(proof)) << failureReason;
+    auto analysis = RootRegionWorkAnalysis::create(*dag, coordinate->assignment,
+                                                   *proof, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(analysis)) << failureReason;
+    const SemanticRootKey root =
+        coordinate->semanticRoots.getRoots().front().key;
 
-  unsigned contributions = 0;
-  unsigned merges = 0;
-  unsigned results = 0;
-  for (TileId tile : allTiles()) {
-    RootRegionWorkOutcome outcome = analysis->query(root, tile);
-    const RootRegionWork *work = getRootRegionWork(outcome);
-    ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
-    ASSERT_EQ(work->execution.size(), 1u);
-    ASSERT_EQ(work->operands.size(), 4u);
-    ASSERT_EQ(work->invariantInputs.size(), 1u);
-    EXPECT_EQ(work->invariantInputs.front().kind,
-              RootInvariantUseKind::Operand);
-    contributions += work->contributions.size();
-    merges += work->merges.size();
-    results += work->results.size();
-    ASSERT_EQ(work->contributions.size(), 1u);
-    const RootContributionWork &contribution = work->contributions.front();
-    EXPECT_EQ(contribution.algebra, ReductionAlgebraKind::CoupledReduction);
-    EXPECT_TRUE(contribution.coupledRule.has_value());
-    EXPECT_TRUE(contribution.contribution.results.empty());
-    EXPECT_EQ(contribution.contribution.components.size(), 3u);
-    for (const ReductionMergeRequirement &merge : work->merges) {
-      EXPECT_EQ(merge.algebra, ReductionAlgebraKind::CoupledReduction);
-      EXPECT_EQ(merge.components.size(), 3u);
-      EXPECT_EQ(merge.mergeTile, tile);
+    unsigned contributions = 0;
+    unsigned merges = 0;
+    unsigned results = 0;
+    for (TileId tile : allTiles()) {
+      RootRegionWorkOutcome outcome = analysis->query(root, tile);
+      const RootRegionWork *work = getRootRegionWork(outcome);
+      ASSERT_NE(work, nullptr) << outcomeDetail(outcome);
+      ASSERT_EQ(work->execution.size(), 1u);
+      ASSERT_EQ(work->operands.size(), 4u);
+      ASSERT_EQ(work->invariantInputs.size(), 1u);
+      EXPECT_EQ(work->invariantInputs.front().kind,
+                RootInvariantUseKind::Operand);
+      contributions += work->contributions.size();
+      merges += work->merges.size();
+      results += work->results.size();
+      ASSERT_EQ(work->contributions.size(), 1u);
+      const RootContributionWork &contribution = work->contributions.front();
+      EXPECT_EQ(contribution.algebra, ReductionAlgebraKind::CoupledReduction);
+      EXPECT_TRUE(contribution.coupledRule.has_value());
+      EXPECT_TRUE(contribution.contribution.results.empty());
+      EXPECT_EQ(contribution.contribution.components.size(), 3u);
+      for (const ReductionMergeRequirement &merge : work->merges) {
+        EXPECT_EQ(merge.algebra, ReductionAlgebraKind::CoupledReduction);
+        EXPECT_EQ(merge.components.size(), 3u);
+        EXPECT_EQ(merge.mergeTile, tile);
+      }
     }
+    unsigned expectedContributions = 0;
+    for (const ReductionMergeRequirement &merge : proof->reductionMerges)
+      expectedContributions += merge.contributions.size();
+    EXPECT_EQ(contributions, expectedContributions);
+    EXPECT_EQ(merges, proof->reductionMerges.size());
+    EXPECT_EQ(results, proof->reductionMerges.size());
   }
-  unsigned expectedContributions = 0;
-  for (const ReductionMergeRequirement &merge : proof->reductionMerges)
-    expectedContributions += merge.contributions.size();
-  EXPECT_EQ(contributions, expectedContributions);
-  EXPECT_EQ(merges, proof->reductionMerges.size());
-  EXPECT_EQ(results, proof->reductionMerges.size());
 }
 
 TEST_F(RootRegionWorkAnalysisTest,

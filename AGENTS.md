@@ -50,6 +50,10 @@ Wafer compiler和runtime的设计、IR、pass、工具和测试会一起演进�
   故障定位，并在测试中写明缩小理由。同一机制仍须有上述真实规模覆盖矩阵。正例不能只断言成功，
   必须检查该stage承诺的exact coverage、无重叠、owner、demand、merge、tail或下游可消费结果。shape选择是
   测试覆盖要求，不能进入IR legality、workload识别或compiler策略。
+- 每个非小修work item在写代码前，必须在对应编号设计或实施计划的本项小节写出自己的覆盖矩阵：输入等价类、
+  整除/非整除、相关结构路径、typed failure、需要精确断言的输出和直接下游witness。全局测试原则不能替代本项矩阵；
+  实现完成后逐行核对实际case。规则建立前已经完成、但没有这种逐项证据的work item，必须先安排独立coverage
+  closure补齐，不能依靠历史`done`、测试总数或单个成功case继续向下游签发可信前置。
 - 真实设备测试始终单进程、逐case运行。
 
 ### 板端测试

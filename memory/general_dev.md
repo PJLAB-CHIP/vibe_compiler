@@ -21,6 +21,9 @@
   static shape；partition/tiling成对覆盖`1024`等整除长度与`1025`、`1031`等非整除长度。按相关语义等价类建立矩阵并
   检查exact结果，不能只断言一个case成功。只有逐点穷举oracle、最小verifier负例、scalar/zero-rank或单一故障定位才
   缩小shape并说明理由；同一机制仍保留真实规模矩阵。不要把该测试规模写成IR合法性或策略。
+- 每个work item在production修改前把自己的输入等价类、shape对、结构分支、typed failure、exact输出和直接下游witness写入
+  对应设计矩阵；完成时逐行绑定实际case。上游已经覆盖某个shape、或普通分支已经覆盖某种action，不能代签下游新增的
+  coupled/reduction/communication分支。规则建立前的current-plan输出先做独立coverage closure，再作为后续可信前置。
 - 仓库同时存在多个LLVM/MLIR源码、解压或安装树时，API可用性以当前configured build的compile include路径和TableGen include
   路径为准；不能因旁置`.deps`树含某个header就声称pinned toolchain可用该interface。
 - 查看实际执行、skip与unsupported清单；`ctest passed`不证明关键source vertical被配置和执行。

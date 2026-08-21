@@ -239,72 +239,54 @@ module {
 
 TEST_F(CanonicalRepresentationPlanTest,
        FlashDecodingComponentsKeepRequirementTypesAndDomains) {
-  auto module = parse(R"mlir(
-#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
-#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
-#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
-#s = affine_map<(b, m, k1, k2, n) -> ()>
-#mask = affine_map<(b, m, k1, k2, n) -> (m, k2)>
-#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
-module {
-  func.func @decode(
-      %query: tensor<2x1025x128xf16>, %key: tensor<2x1031x128xf16>,
-      %value: tensor<2x1031x64xf16>, %scale: f32,
-      %mask: tensor<1025x1031xf16>) -> tensor<2x1025x64xf16> {
-    %out = tensor.empty() : tensor<2x1025x64xf16>
-    %result = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale, %mask :
-            tensor<2x1025x128xf16>, tensor<2x1031x128xf16>,
-            tensor<2x1031x64xf16>, f32, tensor<1025x1031xf16>)
-        outs(%out : tensor<2x1025x64xf16>)
-        algorithm(<flash_decoding>)
-        indexing_maps = [#q, #k, #v, #s, #mask, #o]
-        -> tensor<2x1025x64xf16>
-    return %result : tensor<2x1025x64xf16>
-  }
-}
-)mlir");
-  ASSERT_TRUE(module);
-  std::string failureReason;
-  auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
-  auto prefix = wafer::test::buildCanonicalPlanningPrefix(*dag, allTiles(),
-                                                          &failureReason);
-  ASSERT_TRUE(mlir::succeeded(prefix)) << failureReason;
-  CanonicalRepresentationPlanOutcome outcome = buildCanonicalRepresentationPlan(
-      prefix->regions, prefix->temporal, prefix->rootWorks);
-  const CanonicalRepresentationCoordinate *coordinate =
-      getCanonicalRepresentationCoordinate(outcome);
-  ASSERT_NE(coordinate, nullptr);
+  for (const auto &[queryExtent, keyValueExtent] :
+       {std::pair<int64_t, int64_t>{1024, 1024}, {1025, 1031}}) {
+    SCOPED_TRACE(queryExtent);
+    auto module = parse(wafer::test::buildFlashDecodingPlanningFixture(
+        queryExtent, keyValueExtent));
+    ASSERT_TRUE(module);
+    std::string failureReason;
+    auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+    auto prefix = wafer::test::buildCanonicalPlanningPrefix(*dag, allTiles(),
+                                                            &failureReason);
+    ASSERT_TRUE(mlir::succeeded(prefix)) << failureReason;
+    CanonicalRepresentationPlanOutcome outcome =
+        buildCanonicalRepresentationPlan(prefix->regions, prefix->temporal,
+                                         prefix->rootWorks);
+    const CanonicalRepresentationCoordinate *coordinate =
+        getCanonicalRepresentationCoordinate(outcome);
+    ASSERT_NE(coordinate, nullptr);
 
-  unsigned expectedComponents = 0;
-  for (const RootRegionWork &work : prefix->rootWorks) {
-    for (const RootContributionWork &contribution : work.contributions)
-      expectedComponents += contribution.contribution.components.size();
-    for (const ReductionMergeRequirement &merge : work.merges)
-      expectedComponents += merge.components.size();
+    unsigned expectedComponents = 0;
+    for (const RootRegionWork &work : prefix->rootWorks) {
+      for (const RootContributionWork &contribution : work.contributions)
+        expectedComponents += contribution.contribution.components.size();
+      for (const ReductionMergeRequirement &merge : work.merges)
+        expectedComponents += merge.components.size();
+    }
+    unsigned actualComponents = 0;
+    unsigned maximumF32 = 0;
+    unsigned accumulatorF16 = 0;
+    for (const RepresentationResourceDescription &resource :
+         coordinate->resources) {
+      const auto *component =
+          std::get_if<CoupledComponentValueId>(&resource.version.logicalValue);
+      if (!component)
+        continue;
+      ++actualComponents;
+      maximumF32 += component->component ==
+                        wafer::CoupledReductionComponentKind::Maximum &&
+                    resource.elementType.isF32();
+      accumulatorF16 += component->component ==
+                            wafer::CoupledReductionComponentKind::Accumulator &&
+                        resource.elementType.isF16();
+      EXPECT_FALSE(resource.exactDomain.isEmpty());
+    }
+    EXPECT_EQ(actualComponents, expectedComponents);
+    EXPECT_GT(maximumF32, 0u);
+    EXPECT_GT(accumulatorF16, 0u);
   }
-  unsigned actualComponents = 0;
-  unsigned maximumF32 = 0;
-  unsigned accumulatorF16 = 0;
-  for (const RepresentationResourceDescription &resource :
-       coordinate->resources) {
-    const auto *component =
-        std::get_if<CoupledComponentValueId>(&resource.version.logicalValue);
-    if (!component)
-      continue;
-    ++actualComponents;
-    maximumF32 +=
-        component->component == wafer::CoupledReductionComponentKind::Maximum &&
-        resource.elementType.isF32();
-    accumulatorF16 += component->component ==
-                          wafer::CoupledReductionComponentKind::Accumulator &&
-                      resource.elementType.isF16();
-    EXPECT_FALSE(resource.exactDomain.isEmpty());
-  }
-  EXPECT_EQ(actualComponents, expectedComponents);
-  EXPECT_GT(maximumF32, 0u);
-  EXPECT_GT(accumulatorF16, 0u);
 }
 
 TEST_F(CanonicalRepresentationPlanTest,

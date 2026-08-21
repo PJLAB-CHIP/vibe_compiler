@@ -30,7 +30,7 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `serialized-execution` | `doing` | Q50.K | canonical-temporal-plan | unique Serialized execution identity |
+| 1 | `serialized-execution` | `doing` | Q50.K | canonical-temporal-plan、completed-case-coverage-closure | unique Serialized execution identity |
 | 2 | `canonical-storage-plan` | `queued` | Q50.I | canonical-movement-plan、serialized-execution | single-slot `BufferPlan`及lifetime facts |
 | 3 | `canonical-schedule` | `queued` | Q50.J | canonical-storage-plan、serialized-execution、Q63 | source-order/worker0 `ClosedSchedulePlan` |
 | 4 | `attention-work-projection` | `queued` | Q50.S | attention-normalization、canonical-root-work至canonical-schedule | `AttentionWorkDescription`及C–K/F resource projections |

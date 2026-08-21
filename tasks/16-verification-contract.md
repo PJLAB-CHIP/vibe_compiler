@@ -72,6 +72,11 @@ verifier负例、scalar/zero-rank合同或单一故障定位可以使用小shape
 view/slice类别；不能以任意一个case成功代签。断言必须落到该边界的exact coverage、无重叠、owner、demand、merge、tail和
 下游可消费结果，而不只是`success`。本条是测试覆盖合同，不是IR合法shape、workload matcher或优化策略。
 
+该矩阵必须写在当前work item对应的编号设计或实施计划小节中，并在任何production代码修改前完成。矩阵逐行说明输入
+等价类、代表shape、预期的exact结果、typed failure和直接下游witness；不适用的维度必须写明原因，不能只引用本节的
+全局规则。work item关闭时逐行绑定实际test case和fresh结果。规则建立前已经完成但没有逐项coverage ledger的current-plan
+work item，先通过独立coverage closure补齐；历史`done`、累计test数量和未绑定语义断言的既有case均不能代签。
+
 稳定host入口遵循当前CMake/lit配置，例如：
 
 ```text
