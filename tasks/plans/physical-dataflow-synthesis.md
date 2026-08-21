@@ -4705,6 +4705,60 @@ Pipeline position:
   orderings；independent oracle一致。actual double/triple/multi-slot、tail、Direct-DTE issue/wait、alias和common-occurrence正负例通过；
   旧edge `bufferCount`、actual-loop discovery、local winner和fixed `[2,3]`上限删除；K/J invalidation与联合proposal有production consumer。
 
+### Q50.I work-item分界
+
+Q50.I由三个work items闭合：
+
+- `canonical-storage-plan`为canonical G/H及Serialized point建立correctness-first single-slot storage。每个nonempty physical version各有一个
+  fresh object；external load和DDR destination直接定义对应version object，remote reduction gather另有一个destination staging object，
+  publication只读取source object。derived lifetime只记录typed execution/action definition与uses，不保存order、timestamp或offset。
+- `storage-domain`在movement-domain后扩展同一current合同，枚举fresh/alias/reuse、exact view、`1..U` slot family/rotation、order
+  requirements、Core consumer及selected construction；canonical fresh/single点只是一个合法成员。
+- `structure-specific-storage`在K选择后从新的occurrence/live distance重闭I；Serialized收敛回single slot，Pipelined重新证明multiplicity、
+  rotation和reuse。它复用storage-domain算法，不建立第二套buffer schema。
+
+当前work item不引入`SlotFamilyId`或值恒为1的multiplicity字段：一个`StorageObjectPlan`就是一个独立single slot。后续只有出现真实
+multi-occurrence consumer时才扩slot-family合同。`StorageObjectId`在canonical点由`PhysicalVersionId`或`ReductionGatherId`派生，不能使用
+ordinal、pointer、operation name或输入顺序。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  canonical RepresentationPlan/resource descriptions、MovementPlan/resource descriptions及SerializedExecutionPlan；全部physical version、
+  root/merge execution和movement action已有stable typed identity，尚无event/order、alias/reuse、rotation、offset或actual IR。
+- Current stage responsibility:
+  为每个physical version建立一个fresh single-slot object，为每个remote reduction gather建立一个destination staging object；验证所有
+  producer/consumer execution与movement action闭合，并派生每个object的typed definition/use lifetime。
+- Output IR / files:
+  query-local BufferPlan及StorageResourceDescription/StorageLifetimeDescription；不修改IR、不写attr或文件，不保存timestamp/offset。
+- Downstream consumer:
+  canonical-schedule从definition/use关系建立source-order、worker0依赖；attention-work-projection和canonical feasibility读取object
+  resource/domain。后续storage-domain原位扩current schema，structure-specific-storage在固定K后重闭。
+- User-level driver / named pipeline:
+  无独立pass、pipeline或CLI；none与search canonical planning prefix静态调用同一constructor。
+- Explicit non-goals:
+  不选择alias/reuse/in-place、slot multiplicity/rotation、event/order/worker、SPM/DDR offset、route或winner；不扫描actual loop，不调用
+  allocator、SelectedBufferMaterialization或StagePipeline，不把external program output伪造成Tile-local object。
+- Done criteria:
+  1024/1025 all-16、diamond/fanout、ordinary/FD local与remote merge、rank-zero、exact-empty/scalar和输入顺序扰动均得到all-and-only
+  objects/bindings/lifetimes；每个remote gather恰有一个staging、local contribution没有staging；missing/duplicate version/action/execution、
+  resource mismatch和unclosed lifetime为typed failure；source IR不变，canonical-schedule可直接消费，fresh build/unit与organization通过。
+```
+
+| 覆盖类 | 代表输入 | 必须断言的BufferPlan/lifetime | 直接下游witness |
+| --- | --- | --- | --- |
+| external load/publication | rank-3、1024/1025、all-16 Tile | 每个boundary/result physical version一个fresh object；load定义boundary，execution读取；execution定义result，publication读取；无output staging | schedule建立load→execution→publication，resource保留exact tail/type/encoding |
+| structured diamond/fanout | 1025级multi-root/multi-sink | source result object由producer execution定义并被每个DDR action读取；每个destination version object由对应DDR action定义并只交给destination execution | shared source lifetime覆盖全部transfers，destination lifetime不按node pair或first use折叠 |
+| ordinary reduction | rank>=3、1024/1025，local+remote contributions | 每个partial version一个object；remote gather读取source并定义唯一staging，merge读取staging；merge-Tile local partial直接由merge读取且无staging | schedule可生成producer→gather→merge及local producer→merge两类依赖 |
+| FD coupled state | rank-5、1024及1025/1031 K2 | Maximum/Sum/Accumulator每个physical version独立；remote component各有staging，local component直接进同一merge；merge component object在merge内定义/消费 | attention projection按typed component/group/execution读取，不合并opaque payload |
+| support/multi-result/rank-zero | pad/support、multiple result、nonempty rank-zero、exact-empty/scalar | support/result各自一object并绑定正确execution；rank-zero resource保留0-rank；未进入G的empty/scalar不造object | schedule/later feasibility看到exact object集合，不从IR名字补回缺失value |
+| typed failure | duplicate/missing representation resource、unknown serialized execution、action/version binding mismatch、duplicate/missing movement resource、未定义boundary或无use object | `BrokenStoragePlan`准确区分version/action/execution/resource/lifetime合同错误；不返回partial plan | 修正输入可重新query，source IR byte-identical |
+
+实现闭合：canonical `BufferPlan`为每个physical version建立一个独立fresh object，并只为remote reduction gather增加一个typed staging
+object；`StorageLifetimeDescription`仅保存execution/action definition与uses。没有alias/reuse、multiplicity字段、slot family、event/order、
+worker、offset、actual loop scan或IR mutation。fresh定向6/6、完整`WaferUnitTests` 785/785、default configured lit 224/224、compiler
+public link、完整configured build及IR/source organization通过。
+
 ### I-1 专项调研：storage binding、lifetime requirements与slot-family domain
 
 MLIR One-Shot Bufferize先分析完整SSA alias/read-write conflict，再统一rewrite；它不会在每个use处临时决定buffer。XLA HeapSimulator则在
