@@ -3757,6 +3757,31 @@ Pipeline position:
   secondary sharing及atomic failure有actual证据。旧PBQP donor的constraint、cost、reduction、shared-secondary和tests逐项迁入后，
   fixed Top-4/local winner/clone apply保持删除。
 
+### Q50.G work-item分界
+
+Q50.G由两个work items完成：
+
+- `canonical-representation-plan`只为canonical B--E已经显式产生的shaped logical versions建立一对一primary physical version，
+  使用current `MemLayout::Tensor` correctness encoding。boundary fragment、support result、execution result、ordinary partial和coupled
+  component各有typed `RegionValueVersionId`；exact domain/type只进入query-local resource description，不复制进plan identity。
+  exact-empty与scalar不伪造physical version。本项没有derived conversion、alias version、shared secondary或layout solver。
+- `layout-domain`在partial-feasibility后扩同一current合同，加入全部legal primary/derived encodings、conversion/alias producer、use
+  bindings、constraint solver、Core consumer和selected apply，并迁移/退役旧fixed-slot/current apply。Tensor canonical点只是独立
+  correctness carrier，不是preferred layout、operation tuple default或global winner。
+
+当前`canonical-representation-plan`覆盖矩阵如下。shape用于证明exact logical versions和physical footprint描述覆盖真实规模，
+不进入encoding选择；小shape只用于单一合同负例。
+
+| 覆盖类 | 代表输入 | canonical RepresentationPlan exact断言 | resource/downstream witness |
+| --- | --- | --- | --- |
+| aligned/ragged all-Tile | rank>=3、主要维度1024/1025、all-16 Tile | 每个nonempty boundary fragment、support value和execution final result各有且仅有一个primary Tensor version；输入顺序扰动后ID/plan稳定 | resource description逐version保留exact domain、element type和Tensor encoding，canonical-movement直接消费 |
+| chain/fanin/fanout/diamond | 1025级multi-root/multi-path | 同一producer的不同consumer fragments是不同boundary logical versions；同一support result只一个version；不按node pair、first use或layout slot合并 | H可逐fragment生成movement，同时同support version在region内只物化一次 |
+| multi-result/DPS init/view | rank>=3 multi-result与slice/reshape/pad | result index、support semantic ID和boundary source/use/owner均进入typed version identity；scalar init/capture无physical version | resource exact domain与source type逐项对应，不从operand位置恢复 |
+| ordinary reduction | 整除/非整除contribution及多个merge group | 每个partial result、merge final result分别一个version；partial不是final primary的alias | H/I/F按group/version区分payload、footprint和lifetime |
+| FD coupled state | rank-5/6、single/multi-K2 | 每个contribution及merge的Maximum/Sum/Accumulator各自有component version，但同一component不按use重复；final output另有result version | component resource type/domain与attention-ready requirement逐字段一致，不隐藏scratch/state |
+| empty/scalar/rank-zero | exact-empty boundary、scalar scale/capture、rank-zero tensor | empty/scalar不建version；nonempty rank-zero tensor仍建Tensor version | movement对empty无action，rank-zero resource保持0-rank exact set |
+| typed failure | duplicate logical/version ID、missing work/execution/fragment、dynamic/non-shaped descriptor或plan/resource不一致 | compiler-contract/typed unsupported且无partial plan，不默选其它layout | 修正输入可重新query，source IR byte-identical |
+
 ### 机制
 
 representation identity基于Q50.A/C/D/E产生的`RegionValueVersionId`与exact domain，不基于`(node,operand)`位置：required/replica

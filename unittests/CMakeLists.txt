@@ -15,6 +15,7 @@ add_executable(WaferUnitTests
   Driver/CompilationTest.cpp
   TestSupport/CodeGen/CardExecutableTestSupport.cpp
   TestSupport/Planning/SpatialDemandTestSupport.cpp
+  TestSupport/Planning/CanonicalPlanningTestSupport.cpp
   Planning/Baseline/CardBaselineCompilationTest.cpp
   CodeGen/Executable/CardExecutableCompilationTest.cpp
   CodeGen/Executable/CardExecutableLoweringTest.cpp
@@ -31,6 +32,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
   Planning/PhysicalDataflow/CanonicalTemporalPlanTest.cpp
+  Planning/PhysicalDataflow/CanonicalRepresentationPlanTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Analysis/Structured/StructuredOperationTileFootprintTest.cpp
   Planning/PhysicalDataflow/TemporalTileShapeTest.cpp

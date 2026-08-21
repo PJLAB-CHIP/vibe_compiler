@@ -9,9 +9,11 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
+  Planning/PhysicalDataflow/CanonicalRepresentationPlan.cpp
   Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp
+  Planning/PhysicalDataflow/RepresentationPlan.cpp
   Planning/PhysicalDataflow/TemporalPlan.cpp
   Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp

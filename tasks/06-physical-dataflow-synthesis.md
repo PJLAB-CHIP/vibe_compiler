@@ -474,6 +474,11 @@ legal仍保留在domain，但会因低compute利用率、更多waves/messages/in
 boundary obligation编码为typed assignment；lifetime和completion再从实际region、movement、buffer、order与IR epoch重算。
 Lowering只能消费并验证selected choice，不能提供隐藏canonical winner。
 
+canonical representation coordinate先为B--E已经显式产生的nonempty shaped boundary/support/execution-result/partial/coupled-component
+logical versions各建立一个Tensor-encoded primary version；empty/scalar不伪造version。plan identity只保存typed logical/physical IDs与
+encoding，exact domain/type进入query-local resource description，并对finite boxes调用`PhysicalLayoutRelation`验证。derived conversion、
+alias/shared secondary和完整use binding由后续`layout-domain`扩同一current合同。
+
 Logical demand先于physical fragment。Movement materialization必须对reduction、broadcast、window/stride与multi-piece在内的
 exact demand和producer ownership求交，保留init/contribution/replication role，证明local和remote fragments all-and-only覆盖、
 必要contribution不丢失且非显式replica不重叠，再生成实际staging、send/recv/wait或DDR store/load。任何densify、bounding-box

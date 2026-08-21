@@ -388,6 +388,10 @@ source program
   不读取target geometry、capacity、allocator feedback，也不把不同Tile的remainder提升成shared maximum。merge execution没有root
   iterator，不创建假scope。完整`1..L` interval、active-order和nested invocation classes等真实domain consumer到位后再扩同一
   `TemporalPlan`，full-local只是一项合法初始坐标，不是default winner。
+- canonical representation只给已经显式存在的nonempty shaped logical versions建立一对一Tensor primary version。boundary fragment、
+  support result、execution result、ordinary partial和coupled component必须使用typed variant identity；empty/scalar不造假version。
+  exact domain/type留在query-local resource description并用`PhysicalLayoutRelation`检查finite boxes，不能只写layout enum。
+  derived conversion、alias/shared secondary与use-binding solver在真实layout domain consumer到位后再扩current contract。
 - 显式test work counts证明planning CardModule/Instr/Q50.0为零、selected CardModule/Q50.0各一次；accepted executable直接move到输出，
   也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR inspection
   写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。
