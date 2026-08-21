@@ -306,6 +306,10 @@ winner materializer调用的typed partial-building mechanics：普通reduction�
 source-owned coupled description与selected Linalg/SCF builder；同Tile保持原顺序的temporal reduction tiling不使用partial owners，
 由temporal层单独证明。
 
+coupled attention的`ReductionMergeRequirement`保留source interface给出的component kind、indexing map、element type、merge和
+finalization rule，并为每个output group及每个contribution分别给出Maximum/Sum/Accumulator的exact domain。三个components属于
+同一requirement；contribution不伪造source op result，只有merge后的attention result进入`FinalResultOwner`。
+
 一个all-and-only覆盖原iteration domain的合法assignment最终产生完整logical results，所以不同producer/consumer Tile sets不会
 因为cross-op demand产生placement no-good；exact demand只决定后续redistribution。assignment不覆盖或merge group不完整是
 compiler contract error。physical descriptor、route、SPM或schedule失败属于后续physical coordinate，不能反写

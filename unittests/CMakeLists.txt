@@ -7,6 +7,7 @@ add_executable(WaferUnitTests
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/PhysicalDataflow/ExactDemandTest.cpp
   Analysis/PhysicalDataflow/StructuredDemandAnalysisTest.cpp
+  Analysis/PhysicalDataflow/AttentionDemandIntegrationTest.cpp
   Analysis/ScheduleCost/ScheduleCostAnalysisTest.cpp
   Analysis/Memory/StaticBufferRangeTest.cpp
   Driver/CompilationOutputTest.cpp

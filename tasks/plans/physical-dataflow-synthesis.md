@@ -681,9 +681,9 @@ Pipeline position:
   `SpatialAssignment`、`ExactDemandProof`、per-output-piece merge和typed failure API替换旧trial/role/epoch/merge-bool接口；唯一
   operand-level反向传播覆盖reduction、broadcast、affine window及stride/dilation、strided slice/view、multi-piece、multi-result、
   DPS init、program input和multi-operand pure tensor graph；production supported relation不进入无界generic Presburger proof；
-  baseline、physical consumers、analysis invalidation、fresh source-to-package witness和donor能力矩阵闭合。coupled attention在本项
-  通过同一typed extension seam稳定返回unsupported，由后继attention-demand-integration补齐Q/K/V/mask contribution/merge，
-  不反向阻塞ordinary exact-demand边界完成。
+  baseline、physical consumers、analysis invalidation、fresh source-to-package witness和donor能力矩阵闭合。ordinary exact-demand
+  边界先完成后，attention-demand-integration沿同一typed extension seam补齐Q/K/V/mask demand及coupled contribution/merge；
+  两项共同形成attention-ready ExactDemandProof，不建立第二套query或side table。
 ```
 
 ### A-1 专项调研与现状审计
@@ -1824,6 +1824,46 @@ K1是QK contraction reduction，K2是online normalization/value reduction；二�
 state和FD spatial contribution。implementation不得用一个generic reduction flag混淆两类iterator。
 
 ### S-4：Pure planning description与A--K接入
+
+#### attention-demand-integration contract
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  verifier-valid且algorithm已固定的wafer.linalg_ext.attention、closed SpatialAssignment、function-local structured relation facts，
+  以及同一op的WaferCoupledReductionOpInterface描述；输入尚未选择temporal block、layout、movement、storage或schedule。
+- Current stage responsibility:
+  按attention indexing maps为每个destination shard派生Q/K/V/optional mask的exact demand；FA保持普通final owner且不产生K2
+  spatial merge；FD按每个output-domain piece证明all-and-only K2 contributions，产生一个包含Maximum/Sum/Accumulator的coupled
+  ReductionMergeRequirement，并只把selected merge Tile暴露为final output owner。
+- Output IR / files:
+  attention-ready ExactDemandProof中的DependencyDemand、FinalResultOwner和ReductionMergeRequirement；不修改IR、不写attr或文件，
+  不创建attention decomposition、CardModule或physical movement action。
+- Downstream consumer:
+  canonical-root-work、spatial-domain、representation/movement/feasibility owner通过同一proof读取operand slice、coupled state、
+  contribution和final owner；后续attention-work-projection再把这些事实投影为action/value/resource对象。
+- User-level driver / named pipeline:
+  无独立pass、pipeline或CLI；none与search planning session静态调用同一exact-demand query。
+- Explicit non-goals:
+  不选择K2 partition、merge Tile、transfer/combine tree、temporal block或winner；不逐component发布独立merge，不物化online
+  recurrence，也不增加attention-specific demand side table。
+- Done criteria:
+  FA/FD、mask/no-mask、single/multi-K2、整除/非整除和multi-axis/all-16-Tile矩阵均返回exact proof；FD每组K2 fiber无hole、
+  overlap或重复，三个component的map/type/domain与source interface一致，partial不是final owner；mode-violating或缺merge的
+  assignment得到typed compiler-contract failure，StructuredDemandView可直接消费proof且query前后source IR不变。
+```
+
+本work item的覆盖矩阵如下。表中shape只用于确保production路径真正经过多Tile、remainder和coupled merge，不进入IR legality、
+algorithm分类或workload协议；小shape仅允许给单一故障负例，且不能替代对应真实规模正例。
+
+| 覆盖类 | 代表输入 | 必须断言的exact结果 | 直接下游witness |
+| --- | --- | --- | --- |
+| FA整除、无mask | rank-5，M/K2为1024，B/M/N沿16 Tile多轴划分，K2保持一个interval | Q/K/V per-destination demand，16个普通final owners，零coupled merge，source IR byte-identical | `StructuredDemandView`接受且报告该root无spatial reduction |
+| FA非整除、broadcast mask | M=1025、K2=1031，parallel轴含remainder，K2仍不空间切 | Q与mask projection/broadcast exact，owner boxes覆盖output且无hole/overlap，零coupled merge | 同一view与后续root lookup得到稳定owner顺序 |
+| FD整除、single K2 | rank-5，M/K2为1024，B/M与K2共同使用全部16 Tile | 每个output group恰收齐K2 contributions；Q slice跨contribution相同，K/V/mask按K2切分；Maximum/Sum/Accumulator同组，只有merge Tile是final owner | view接受proof并报告spatial reduction；proof可被后续C/G/H/F按group读取 |
+| FD非整除、single K2 | M=1025、K2=1031，K2产生不均匀pieces | contribution intervals连续覆盖0..1031且大小含tail；component domain、type、init/merge/finalization和final owner逐字段精确 | 同一assignment改变shard枚举顺序后proof保持semantic order |
+| FD非整除、multi-K2 | rank-6，K2为33x31且至少一个其它主要维度>=1024，两个K2轴共同分片 | contribution数等于两个K2 interval count之积；二维fiber all-and-only覆盖，row与accumulator component domains分别正确 | downstream view按一个coupled group消费，不拆成三个独立reduction |
+| typed failure | 在上述真实规模assignment上删除merge group，或让FA切K2/FD不切K2 | `InvalidSpatialAssignment`准确归因到reduction group/mode；不返回unsupported、普通candidate rejection或部分proof | session仍可查询未损坏assignment，source IR不变 |
 
 #### attention-spatial-integration contract
 

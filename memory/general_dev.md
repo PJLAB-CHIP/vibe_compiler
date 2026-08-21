@@ -371,6 +371,10 @@ source program
   operand demand；relation按operation/result/operand建立一次，structured producer形成停止边界。验证carrier all-and-only覆盖后，
   每个final single-root region只一次性物化typed recipe要求的operation和endpoint，不先建立SSA closure或scratch module再rebuild。
   16个Tile entry用共享MLIR线程池bounded并发构造并按Tile ID稳定归并；cache只保存同一IR epoch的analysis facts，不保存materialized IR。
+- 一个只有final result、但partial state由多个coupled components组成的structured op，不能把internal components伪造成额外op results。
+  exact-demand proof分别保存final result slice和coupled component的source-owned map/type及group/contribution domain；contribution只携带
+  component slices，merge完成后才产生唯一final owner。普通result movement在专门work projection闭合前必须fail closed，不能逐component
+  独立发布或复用普通multi-result reduction路径。
 - 显式test work counts证明planning CardModule/Instr/Q50.0为零、selected CardModule/Q50.0各一次；accepted executable直接move到输出，
   也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR inspection
   写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。

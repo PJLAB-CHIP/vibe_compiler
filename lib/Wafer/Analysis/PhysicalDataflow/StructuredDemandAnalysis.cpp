@@ -33,6 +33,9 @@ namespace {
 using analysis::BrokenDemandContract;
 using analysis::BrokenDemandContractReason;
 using analysis::ConstantSource;
+using analysis::CoupledReductionComponentRequirement;
+using analysis::CoupledReductionComponentSlice;
+using analysis::CoupledReductionRule;
 using analysis::DemandFailureSite;
 using analysis::DemandOperandKind;
 using analysis::DemandSource;
@@ -56,6 +59,7 @@ using analysis::OwnerIntersection;
 using analysis::ProgramInputSource;
 using analysis::ReductionAlgebraKind;
 using analysis::ReductionContribution;
+using analysis::ReductionInitialization;
 using analysis::ReductionMergeRequirement;
 using analysis::ReductionResultSlice;
 using analysis::RelationOperationKind;
@@ -365,6 +369,20 @@ struct StructuredResultFact {
   llvm::SmallVector<int64_t, 4> shape;
 };
 
+struct CoupledReductionComponentFact {
+  wafer::CoupledReductionComponentKind kind =
+      wafer::CoupledReductionComponentKind::Maximum;
+  mlir::AffineMap map;
+  mlir::Type elementType;
+  IndexRelation iterationToComponent;
+};
+
+struct CoupledReductionFact {
+  llvm::SmallVector<unsigned, 2> reductionIterators;
+  llvm::SmallVector<CoupledReductionComponentFact, 3> components;
+  CoupledReductionRule rule;
+};
+
 struct StructuredOperationFact {
   SemanticRootKey root;
   mlir::Operation *operation = nullptr;
@@ -372,6 +390,7 @@ struct StructuredOperationFact {
   llvm::SmallVector<mlir::utils::IteratorType, 8> iteratorTypes;
   llvm::SmallVector<StructuredOperandFact, 8> operands;
   llvm::SmallVector<StructuredResultFact, 3> results;
+  std::optional<CoupledReductionFact> coupledReduction;
 };
 
 DemandResult<StructuredOperationFact>
@@ -480,6 +499,80 @@ deriveStructuredOperationFact(const SemanticRootBinding &binding,
     fact.results.push_back({static_cast<uint32_t>(result.getResultNumber()),
                             map, std::move(*relation.relation),
                             llvm::to_vector(type.getShape())});
+  }
+
+  if (auto coupled = mlir::dyn_cast<wafer::WaferCoupledReductionOpInterface>(
+          binding.operation)) {
+    wafer::CoupledReductionDescription description =
+        coupled.getCoupledReductionDescription();
+    if (description.reductionIterators.empty() ||
+        description.components.empty())
+      return asResult<StructuredOperationFact>(
+          broken(BrokenDemandContractReason::InterfaceContradiction,
+                 RelationOperationKind::BuildRelationGraph,
+                 "coupled reduction interface returned an empty description",
+                 fact.root));
+
+    CoupledReductionFact coupledFact;
+    llvm::SmallBitVector seenIterators(fact.iterationShape.size(), false);
+    for (unsigned iterator : description.reductionIterators) {
+      if (iterator >= fact.iterationShape.size() ||
+          seenIterators.test(iterator) ||
+          fact.iteratorTypes[iterator] != mlir::utils::IteratorType::reduction)
+        return asResult<StructuredOperationFact>(
+            broken(BrokenDemandContractReason::InterfaceContradiction,
+                   RelationOperationKind::BuildRelationGraph,
+                   "coupled reduction interface returned invalid reduction "
+                   "iterators",
+                   fact.root));
+      seenIterators.set(iterator);
+      coupledFact.reductionIterators.push_back(iterator);
+    }
+
+    std::set<uint8_t> seenComponents;
+    for (const wafer::CoupledReductionComponent &component :
+         description.components) {
+      const uint8_t componentKey = static_cast<uint8_t>(component.kind);
+      if (!seenComponents.insert(componentKey).second ||
+          !component.indexingMap || !component.elementType ||
+          component.indexingMap.getNumDims() != fact.iterationShape.size() ||
+          component.indexingMap.getNumSymbols() != 0 ||
+          !component.indexingMap.isProjectedPermutation())
+        return asResult<StructuredOperationFact>(
+            broken(BrokenDemandContractReason::InterfaceContradiction,
+                   RelationOperationKind::BuildRelationGraph,
+                   "coupled reduction interface returned an invalid component",
+                   fact.root));
+
+      llvm::SmallVector<int64_t, 4> componentShape;
+      for (mlir::AffineExpr expression : component.indexingMap.getResults()) {
+        auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
+        if (!dimension || dimension.getPosition() >= fact.iterationShape.size())
+          return asResult<StructuredOperationFact>(broken(
+              BrokenDemandContractReason::InterfaceContradiction,
+              RelationOperationKind::BuildRelationGraph,
+              "coupled reduction component map is not a static projection",
+              fact.root));
+        componentShape.push_back(fact.iterationShape[dimension.getPosition()]);
+      }
+      IndexRelationResult relation = IndexRelation::fromAffineMap(
+          component.indexingMap, fact.iterationShape, componentShape, limits);
+      if (!relation.isExact()) {
+        if (relation.status == IndexRelationStatus::ResourceExhausted)
+          return asResult<StructuredOperationFact>(workLimit(
+              RelationOperationKind::ConstructRelation, limits.maxDisjuncts + 1,
+              limits.maxDisjuncts, relation.reason, fact.root));
+        return asResult<StructuredOperationFact>(broken(
+            BrokenDemandContractReason::InterfaceContradiction,
+            RelationOperationKind::ConstructRelation,
+            "coupled reduction component relation is not exact", fact.root));
+      }
+      coupledFact.components.push_back({component.kind, component.indexingMap,
+                                        component.elementType,
+                                        std::move(*relation.relation)});
+    }
+    coupledFact.rule = {description.mergeKind, description.finalizationKind};
+    fact.coupledReduction = std::move(coupledFact);
   }
   return fact;
 }
@@ -864,6 +957,13 @@ std::vector<int64_t> boxKey(const ExactIndexSet &set) {
   return key;
 }
 
+bool haveSameBoxUnion(const ExactIndexSet &lhs, const ExactIndexSet &rhs) {
+  return lhs.getRank() == rhs.getRank() &&
+         lhs.getForm() == ExactIndexSetForm::BoxUnion &&
+         rhs.getForm() == ExactIndexSetForm::BoxUnion &&
+         boxKey(lhs) == boxKey(rhs);
+}
+
 bool finalOwnerLess(const FinalResultOwner &lhs, const FinalResultOwner &rhs) {
   if (lhs.root != rhs.root)
     return lhs.root < rhs.root;
@@ -919,6 +1019,45 @@ deriveResultAvailability(llvm::ArrayRef<StructuredOperationFact> facts,
                  std::get<1>(values) == mlir::utils::IteratorType::reduction;
         });
 
+    if (auto attention =
+            mlir::dyn_cast<wafer::LinalgExtAttentionOp>(fact.operation)) {
+      if (!fact.coupledReduction)
+        return asResult<AvailabilityResult>(
+            broken(BrokenDemandContractReason::InterfaceContradiction,
+                   RelationOperationKind::ReductionCompletion,
+                   "attention root has no coupled reduction facts", fact.root));
+      const bool partitionsKeyValue = llvm::any_of(
+          fact.coupledReduction->reductionIterators,
+          [&](unsigned iterator) { return intervalCounts[iterator] > 1; });
+      if (attention.getAlgorithm() == wafer::AttentionAlgorithm::FlashAttention
+              ? partitionsKeyValue
+              : !partitionsKeyValue)
+        return asResult<AvailabilityResult>(invalidAssignment(
+            InvalidSpatialAssignmentReason::ReductionGroup,
+            attention.getAlgorithm() ==
+                    wafer::AttentionAlgorithm::FlashAttention
+                ? "flash attention assignment partitions K2"
+                : "flash decoding assignment leaves K2 unpartitioned",
+            fact.root));
+    }
+
+    if (hasSpatialReduction && fact.coupledReduction) {
+      const bool hasUnmodeledReduction =
+          llvm::any_of(llvm::enumerate(fact.iteratorTypes), [&](auto entry) {
+            const unsigned iterator = entry.index();
+            return entry.value() == mlir::utils::IteratorType::reduction &&
+                   intervalCounts[iterator] > 1 &&
+                   !llvm::is_contained(
+                       fact.coupledReduction->reductionIterators, iterator);
+          });
+      if (hasUnmodeledReduction)
+        return asResult<AvailabilityResult>(unsupported(
+            UnsupportedDemandReason::MissingReductionAlgebra,
+            RelationOperationKind::ReductionCompletion,
+            "spatial reduction is outside the coupled component algebra",
+            fact.root));
+    }
+
     for (const StructuredResultFact &resultFact : fact.results) {
       struct ShardImage {
         const ExecutionShard *shard = nullptr;
@@ -967,11 +1106,12 @@ deriveResultAvailability(llvm::ArrayRef<StructuredOperationFact> facts,
             UnsupportedDemandReason::MissingReductionAlgebra,
             RelationOperationKind::ReductionCompletion,
             "spatial reduction lacks typed partial mechanics", fact.root));
-      if (coupled)
-        return asResult<AvailabilityResult>(unsupported(
-            UnsupportedDemandReason::MissingReductionAlgebra,
+      if (coupled && (!fact.coupledReduction || fact.results.size() != 1))
+        return asResult<AvailabilityResult>(broken(
+            BrokenDemandContractReason::InterfaceContradiction,
             RelationOperationKind::ReductionCompletion,
-            "coupled reduction demand is completed by attention integration",
+            "coupled reduction requires one final result and complete source "
+            "facts",
             fact.root));
 
       std::map<std::vector<int64_t>, llvm::SmallVector<ShardImage *, 8>> groups;
@@ -1008,15 +1148,63 @@ deriveResultAvailability(llvm::ArrayRef<StructuredOperationFact> facts,
         ReductionMergeRequirement requirement;
         requirement.group = group;
         requirement.mergeTile = placement->mergeTile;
-        requirement.algebra = ReductionAlgebraKind::StandardPartialReduction;
         requirement.results.push_back(
             {resultFact.result, representative.result});
-        for (ShardImage *contribution : contributions) {
+        if (coupled) {
+          if (contributions.size() < 2)
+            return asResult<AvailabilityResult>(invalidAssignment(
+                InvalidSpatialAssignmentReason::ReductionGroup,
+                "coupled reduction group has fewer than two contributions",
+                fact.root));
+          requirement.initialization =
+              ReductionInitialization::CoupledIdentityPerContribution;
+          requirement.algebra = ReductionAlgebraKind::CoupledReduction;
+          requirement.coupledRule = fact.coupledReduction->rule;
+        } else {
+          requirement.algebra = ReductionAlgebraKind::StandardPartialReduction;
+        }
+        for (auto [contributionIndex, contribution] :
+             llvm::enumerate(contributions)) {
           ReductionContribution item;
           item.shard = contribution->shard->shard;
           item.tile = contribution->shard->tile;
           item.iterationDomain = contribution->iteration;
-          item.results.push_back({resultFact.result, contribution->result});
+          if (!coupled) {
+            item.results.push_back({resultFact.result, contribution->result});
+          } else {
+            for (auto [componentIndex, component] :
+                 llvm::enumerate(fact.coupledReduction->components)) {
+              DemandResult<ExactIndexSet> componentDomain = imageExactSet(
+                  component.iterationToComponent, contribution->iteration,
+                  limits, RelationOperationKind::ReductionCompletion,
+                  fact.root);
+              if (!getValue(componentDomain))
+                return asResult<AvailabilityResult>(
+                    getFailure(std::move(componentDomain)));
+              if (getValue(componentDomain)->getForm() !=
+                  ExactIndexSetForm::BoxUnion)
+                return asResult<AvailabilityResult>(unsupported(
+                    UnsupportedDemandReason::MissingReductionAlgebra,
+                    RelationOperationKind::ReductionCompletion,
+                    "coupled reduction component requires finite output "
+                    "boxes",
+                    fact.root));
+              if (contributionIndex == 0) {
+                requirement.components.push_back({component.kind, component.map,
+                                                  component.elementType,
+                                                  *getValue(componentDomain)});
+              } else if (!haveSameBoxUnion(
+                             requirement.components[componentIndex].domain,
+                             *getValue(componentDomain))) {
+                return asResult<AvailabilityResult>(invalidAssignment(
+                    InvalidSpatialAssignmentReason::ReductionGroup,
+                    "coupled contributions disagree on component domain",
+                    fact.root));
+              }
+              item.components.push_back(
+                  {component.kind, std::move(*getValue(componentDomain))});
+            }
+          }
           requirement.contributions.push_back(std::move(item));
         }
         result.finalOwners.push_back({fact.root, resultFact.result,
@@ -1025,6 +1213,16 @@ deriveResultAvailability(llvm::ArrayRef<StructuredOperationFact> facts,
         result.reductionMerges.push_back(std::move(requirement));
       }
     }
+    const size_t derivedMergeCount =
+        llvm::count_if(result.reductionMerges,
+                       [&](const ReductionMergeRequirement &requirement) {
+                         return requirement.group.root == fact.root;
+                       });
+    if (derivedMergeCount != node->reductionGroups.size())
+      return asResult<AvailabilityResult>(invalidAssignment(
+          InvalidSpatialAssignmentReason::ReductionGroup,
+          "spatial assignment has missing or unused reduction groups",
+          fact.root));
   }
   for (ReductionMergeRequirement &requirement : result.reductionMerges) {
     llvm::sort(requirement.contributions, [](const ReductionContribution &lhs,

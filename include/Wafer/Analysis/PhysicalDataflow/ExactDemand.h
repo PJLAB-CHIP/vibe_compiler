@@ -5,6 +5,7 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "Wafer/Analysis/PhysicalDataflow/SpatialAssignment.h"
+#include "Wafer/IR/WaferInterfaces.h"
 
 #include "mlir/Analysis/Presburger/PresburgerRelation.h"
 
@@ -149,6 +150,7 @@ struct DependencyDemand {
 
 enum class ReductionInitialization : uint8_t {
   IdentityPerContributionInitOnceAtMerge,
+  CoupledIdentityPerContribution,
 };
 
 enum class ReductionAlgebraKind : uint8_t {
@@ -161,11 +163,33 @@ struct ReductionResultSlice {
   ExactIndexSet domain;
 };
 
+struct CoupledReductionComponentRequirement {
+  wafer::CoupledReductionComponentKind kind =
+      wafer::CoupledReductionComponentKind::Maximum;
+  mlir::AffineMap indexingMap;
+  mlir::Type elementType;
+  ExactIndexSet domain;
+};
+
+struct CoupledReductionComponentSlice {
+  wafer::CoupledReductionComponentKind kind =
+      wafer::CoupledReductionComponentKind::Maximum;
+  ExactIndexSet domain;
+};
+
+struct CoupledReductionRule {
+  wafer::CoupledReductionMergeKind mergeKind =
+      wafer::CoupledReductionMergeKind::OnlineAttention;
+  wafer::CoupledReductionFinalizationKind finalizationKind =
+      wafer::CoupledReductionFinalizationKind::NormalizeAccumulator;
+};
+
 struct ReductionContribution {
   LogicalShardId shard;
   TileId tile{0};
   ExactIndexSet iterationDomain;
   llvm::SmallVector<ReductionResultSlice, 3> results;
+  llvm::SmallVector<CoupledReductionComponentSlice, 3> components;
 };
 
 struct ReductionMergeRequirement {
@@ -176,6 +200,8 @@ struct ReductionMergeRequirement {
   ReductionAlgebraKind algebra =
       ReductionAlgebraKind::StandardPartialReduction;
   llvm::SmallVector<ReductionResultSlice, 3> results;
+  std::optional<CoupledReductionRule> coupledRule;
+  llvm::SmallVector<CoupledReductionComponentRequirement, 3> components;
   std::vector<ReductionContribution> contributions;
 };
 

@@ -310,6 +310,9 @@ mlir::FailureOr<CardDataMovementDomain> CardDataMovementDomain::create(
   llvm::SmallVector<ReductionDomain, 4> reductions;
   for (const analysis::ReductionMergeRequirement &merge :
        demand.reductionMerges) {
+    if (merge.algebra == analysis::ReductionAlgebraKind::CoupledReduction)
+      return fail(
+          "coupled reduction movement requires attention work projection");
     std::optional<StructuredDAGNodeID> nodeId;
     for (const StructuredDAGNode &candidate : program.dag.getNodes()) {
       const SemanticRootKey *root = view->getRoot(candidate.id);
