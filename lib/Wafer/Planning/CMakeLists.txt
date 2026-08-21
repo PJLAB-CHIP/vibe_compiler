@@ -9,6 +9,8 @@ set(WAFER_PLANNING_SOURCES
   Planning/Baseline/CardBaselinePlacementClosure.cpp
   Planning/Baseline/CardBaselineTemporalTiling.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
+  Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
+  Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp
   Planning/PhysicalDataflow/StructuredDAGEdgeDemandPlan.cpp
   Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.cpp

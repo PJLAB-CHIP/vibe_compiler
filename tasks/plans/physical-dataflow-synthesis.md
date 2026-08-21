@@ -1698,7 +1698,8 @@ op实现：
 custom coupled interface只返回K2 reduction iterators、Maximum/Sum/Accumulator component maps/types、initialization、coupled merge和final
 owner；它不include Planning类型，也不返回Tile、layout、buffer或event。pinned PartialReduction interface的generic driver要求
 partial init与source DPS results同构，因此一个final-result attention op不实现该接口；K2 partial由winner内selected Linalg/SCF builder
-物化。indexing maps当前使用ODS accessors；不假设pinned版本不存在的`IndexingMapOpInterface`。
+物化。当前configured pinned MLIR没有`IndexingMapOpInterface`的header/TableGen定义；Linalg consumer使用pinned
+`mlir::linalg::LinalgOp`，attention consumer使用同一op的typed ODS map/static-range accessors，不新增Wafer indexing interface。
 
 ### S-2：Graph proof与algorithm分类
 
@@ -2105,6 +2106,32 @@ owner同样从actual result availability与Q50.H selected store推导，不再�
 partition legality来自current op interfaces：普通parallel iterator只要result tile relation无未授权overlap即可切；reduction
 iterator只有source-owned partial-reduction/coupled algebra interface完整时可空间切。TilingInterface说明如何
 materialize选定tile，不负责profitability；Q50.B query只读iteration/indexing/result-tile facts，不调用其IR-building methods。
+
+### Canonical spatial constructor
+
+`canonical-spatial-assignment`是baseline所需的单值构造器，不是完整spatial domain的首点接口。它按下面规则直接构造一份
+`SpatialPlan`并调用同一个structural close得到`SpatialAssignment`：
+
+1. 从每个函数结果按SSA use-def反向到全部structured roots。`SemanticRootKey`以函数结果index为anchor，并记录沿途每条
+   producer-result/consumer-operand relation；一个root有多条observable path时取typed path字典序最小值。没有observable path、
+   key重复或跨越effectful/unsupported relation时fail closed。block ordinal、op名字、location和pointer不进入key。
+2. 普通Linalg root通过pinned `mlir::linalg::LinalgOp`读取indexing maps和static loop ranges；attention通过自身typed ODS
+   map/static-range accessors读取同类事实。`TilingInterface`提供iterator kinds，`DestinationStyleOpInterface`定位result maps。
+   只有映射到result的parallel iterator进入canonical spatial
+   participation；普通reduction iterator保持一个interval。FA的K2保持一个interval；FD的K2 interval-count product必须大于1。
+3. 在available Tile count内，以bounded participant-count dynamic program直接求唯一factor vector：先最大化非空logical cell
+   数；相同cell数时按structured iterator顺序选择字典序较大的interval-count vector。该过程只保存每个participant count的一个
+   prefix，不建立option list、domain、proposal、score、backtracking或cross-op legality query。每个axis使用
+   `BalancedParts(intervalCount)`；scalar/没有result-mapped parallel axis的普通root得到singleton cell。
+4. available Tiles按typed `TileId`排序，canonical embedding把logical cells依次映到前`cellCount`个Tile。FD coupled reduction按
+   result-mapped parallel coordinate形成一个stable group，每组选择该coordinate下字典序第一个contributor Tile作为merge Tile；
+   final owners和partial contribution仍由Q50.A派生。
+5. attention constraint query和spatial structural validator必须同时接受结果；任何失败都是source/interface或compiler contract
+   failure，不在本work item内换另一个placement。返回值不含layout、movement、resource、cost或IR mutation。
+
+定向验证覆盖：semantic root key不受无关op插入及operation pointer变化影响；chain、diamond、multiple outputs和support fanin不碰撞；
+multi-axis/non-divisible/scalar取得确定的最大参与数；Tile输入顺序扰动不改变结果；FA保持K2单interval；FD形成K2多interval、
+per-output-coordinate merge group及closed exact shards。测试同时断言source IR在query前后byte-identical。
 
 ### B-2 专项调研：lazy successor、global symmetry与proposal算法
 

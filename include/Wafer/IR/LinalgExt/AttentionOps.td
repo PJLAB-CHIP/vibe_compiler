@@ -59,6 +59,7 @@ def Wafer_LinalgExtAttentionOp
     }
 
     ::llvm::SmallVector<::mlir::AffineMap, 6> getIndexingMapsArray();
+    ::llvm::SmallVector<int64_t> getStaticLoopRanges();
     ::mlir::FailureOr<::wafer::AttentionIterationRoles>
     getIterationRoles();
 

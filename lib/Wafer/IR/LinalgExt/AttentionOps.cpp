@@ -214,6 +214,15 @@ LinalgExtAttentionOp::getIndexingMapsArray() {
   return maps;
 }
 
+llvm::SmallVector<int64_t> LinalgExtAttentionOp::getStaticLoopRanges() {
+  mlir::FailureOr<llvm::SmallVector<int64_t, 8>> extents =
+      getStaticIterationExtents(*this);
+  if (mlir::failed(extents))
+    return llvm::SmallVector<int64_t>(getIterationDomainRank(),
+                                      mlir::ShapedType::kDynamic);
+  return llvm::SmallVector<int64_t>(extents->begin(), extents->end());
+}
+
 mlir::FailureOr<AttentionIterationRoles>
 LinalgExtAttentionOp::getIterationRoles() {
   return inferAttentionIterationRoles(getIndexingMapsArray(),

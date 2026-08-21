@@ -188,9 +188,9 @@ affine relation的图保持普通Linalg，直到同一current合同扩展verifie
 - algorithm attr是closed值；`flash_decoding`具有normalization K2 domain且可形成至少两个nonempty pieces；
 - effects、regions、result type和shape reification一致。
 
-`indexing_maps`是ODS inherent field并通过generated accessor读取。仓库pinned MLIR没有
-`IndexingMapOpInterface`；本设计不假设newer upstream API已经存在。未来若整体LLVM升级提供该standard interface，必须在同一
-current合同变更中切换producer/consumer，不保留双接口。
+`indexing_maps`是ODS inherent field并通过generated accessor读取。当前configured pinned MLIR没有
+`IndexingMapOpInterface`的header/TableGen定义；attention直接提供与current consumer所需范围一致的typed map/static-range
+accessors。未来若整体LLVM升级提供该standard interface，必须在同一current合同变更中切换producer/consumer，不保留双接口。
 
 ### 4.3 Operation interfaces
 

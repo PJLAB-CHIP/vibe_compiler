@@ -17,6 +17,8 @@
 - host构建、unit、CTest、lit、catalog和no-card默认使用机器可用逻辑CPU并行；CMake/CTest优先
   `-j$(nproc)`。只有证实内存、共享可写目录、resource lock或工具限制时才降并发。
 - 先做直接受影响target的增量构建/测试，再做完整configured build与相关CTest/lit。不要用编译单个object代替link或integration。
+- 仓库同时存在多个LLVM/MLIR源码、解压或安装树时，API可用性以当前configured build的compile include路径和TableGen include
+  路径为准；不能因旁置`.deps`树含某个header就声称pinned toolchain可用该interface。
 - 查看实际执行、skip与unsupported清单；`ctest passed`不证明关键source vertical被配置和执行。
 - 单个lit case要从configured build tree对应路径启动，使`lit.site.cfg.py`先注入tool/dependency配置；直接把source-tree
   `.test`交给lit会缺少`wafer_src_root`等site字段。整套验证优先使用`check-wafer-lit`或registered `wafer-lit` CTest。
