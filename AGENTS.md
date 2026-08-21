@@ -285,6 +285,9 @@ Pipeline position:
 ### 通用性和目标层级
 
 - 设计可以 case-driven，但 case 只用于展示 IR 流经 pipeline；协议以通用职责为准。
+- 当前任务不以数值语义为目标时，算术 op 的 dtype 和语义作为既有输入原样保留；只设计本任务涉及的 IR 结构、
+  legality、planning、lowering 和 verifier，不讨论或改写浮点结合/交换、舍入、special value、comparator 等数值行为。
+  只有用户明确要求数值合同任务时才展开这些问题。
 - 不把 workload、shape、参数顺序、单个 kernel、某个 op 的 tile 选择或某条 runtime 路径固化成协议。
 - case 后必须说明哪些是示例参数，哪些来自通用 IR / interface / verifier，哪些只是 cost model /
   planner 候选，泛化情况如何处理。
