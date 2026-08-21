@@ -10,6 +10,7 @@ Q56当前仍是`board-ready`而非`done`，因此不进入本索引；其当前�
 | Work item | 状态 | 设计owner | 完成边界 | 证据入口 |
 | --- | --- | --- | --- | --- |
 | `spatial-plan-schema` | `done` | Q50.B | `SemanticRootKey`、compact `SpatialPlan`、ephemeral `SpatialAssignment`、regular Cartesian partition structural close及fail-closed validator闭合；不选择canonical plan、不枚举search domain、不携带attention或其它下游选择。 | `lib/Wafer/Planning/PhysicalDataflow/{SemanticRoot,SpatialPlan}.*`、`SpatialPlanTest`；fresh `WaferUnitTests`、相关spatial测试与source organization检查通过。 |
+| `attention-normalization` | `done` | Q50.S | policy分叉前的official StableHLO→Linalg输出可从current SSA/maps/effects归一为一个self-contained `wafer.linalg_ext.attention`；ODS algorithm为fixed `flash_attention`或`flash_decoding` graph fact，standard DPS/tiling/effect/shape合同与只读coupled-state接口闭合，不包含physical choice或algorithm search axis。 | `LinalgExt/AttentionOps.*`、`StableHLOToLinalg/{AttentionMatching,NormalizeAttention}.*`、`AttentionNormalizationTest`及Dialect/Frontend/Pipeline tests；fresh FP16/BF16 HF prefill/decode与native PyTorch SDPA exporter artifacts均形成唯一预期op，完整`WaferUnitTests`、153项相关lit、source/IR/dependency检查通过。 |
 
 ## 已闭合的当前主线前置
 

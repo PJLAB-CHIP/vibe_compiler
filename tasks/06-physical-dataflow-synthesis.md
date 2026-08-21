@@ -301,9 +301,10 @@ support matcher。
 普通parallel partition产生互不相交并覆盖完整result的final owners。显式replication保留全部等价owners供movement选择source。
 空间reduction则把具有相同output-domain piece、不同reduction coordinates的shards组成一组：每组必须收齐完整reduction
 fiber、具有一个显式merge Tile和typed algebra/init rule，merge后只有该Tile是下游final owner。M/N与K同时切分时可以有多个
-output groups，禁止用一个node-wide merge Tile或把partial contributions冒充完整result replicas。空间partial/merge需要
-`PartialReductionOpInterface` mechanics；同Tile保持原顺序的temporal reduction tiling不使用
-partial owners，由temporal层单独证明。
+output groups，禁止用一个node-wide merge Tile或把partial contributions冒充完整result replicas。空间partial/merge需要可由
+winner materializer调用的typed partial-building mechanics：普通reduction使用`PartialReductionOpInterface`，coupled attention使用
+source-owned coupled description与selected Linalg/SCF builder；同Tile保持原顺序的temporal reduction tiling不使用partial owners，
+由temporal层单独证明。
 
 一个all-and-only覆盖原iteration domain的合法assignment最终产生完整logical results，所以不同producer/consumer Tile sets不会
 因为cross-op demand产生placement no-good；exact demand只决定后续redistribution。assignment不覆盖或merge group不完整是

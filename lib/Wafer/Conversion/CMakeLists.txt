@@ -129,9 +129,11 @@ target_include_directories(obj.WaferTileRegionToInstr PRIVATE
   ${CMAKE_CURRENT_BINARY_DIR})
 
 add_mlir_conversion_library(WaferStableHLOToLinalg
+  StableHLOToLinalg/AttentionMatching.cpp
   StableHLOToLinalg/ConstantTensorFolding.cpp
   StableHLOToLinalg/LegalizeStablehloToLinalg.cpp
   StableHLOToLinalg/LowerStaticStablehloConcatenate.cpp
+  StableHLOToLinalg/NormalizeAttention.cpp
   StableHLOToLinalg/NormalizeStablehloCollectives.cpp
 
   DEPENDS
@@ -140,8 +142,12 @@ add_mlir_conversion_library(WaferStableHLOToLinalg
   LINK_LIBS PUBLIC
   WaferIR
   MLIRArithDialect
+  MLIRFuncDialect
   MLIRIR
+  MLIRLinalgDialect
+  MLIRMathDialect
   MLIRPass
+  MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTensorDialect
 )

@@ -29,6 +29,24 @@ def WaferLinalgExtCollectiveOpInterface
   ];
 }
 
+def WaferCoupledReductionOpInterface
+    : OpInterface<"WaferCoupledReductionOpInterface"> {
+  let cppNamespace = "::wafer";
+  let description = [{
+    Exposes the source-owned grouping of reduction components when they must
+    be initialized, combined, and finalized as one semantic state. The result
+    contains only iterator identities, affine component maps, and element
+    types; it never
+    returns physical planning or target objects and does not build IR.
+  }];
+  let methods = [
+    InterfaceMethod<
+      "Return the verifier-closed coupled reduction description.",
+      "::wafer::CoupledReductionDescription",
+      "getCoupledReductionDescription", (ins)>
+  ];
+}
+
 def WaferTileDataflowOpInterface
     : OpInterface<"WaferTileDataflowOpInterface"> {
   let cppNamespace = "::wafer";

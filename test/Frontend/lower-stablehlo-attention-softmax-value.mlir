@@ -44,6 +44,7 @@ module {
 }
 
 // CHECK-LABEL: func.func @attention_softmax_value
+// CHECK-NOT: wafer.linalg_ext.attention
 // CHECK-NOT: stablehlo.
 // CHECK: linalg.generic
 // CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "reduction"]

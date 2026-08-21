@@ -238,6 +238,7 @@ namespace {
 
 bool isTensorProgramStageWaferOperation(mlir::Operation *operation) {
   return mlir::isa<wafer::TargetTopologyOp, wafer::ExecutionMeshOp,
+                   wafer::LinalgExtAttentionOp,
                    wafer::LinalgExtCollectiveYieldOp>(operation) ||
          mlir::isa<wafer::WaferLinalgExtCollectiveOpInterface>(operation);
 }

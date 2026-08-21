@@ -45,6 +45,7 @@ add_executable(WaferUnitTests
   Planning/Search/UnifiedPhysicalDataflowTest.cpp
   Planning/Search/TemporalTilingTest.cpp
   Program/ProgramDataTest.cpp
+  Conversion/AttentionNormalizationTest.cpp
   Conversion/BidirectionalTilingTest.cpp
   Conversion/CoupledTileRegionTest.cpp
   Conversion/RequiredNCCJoinPlacementTest.cpp

@@ -1,7 +1,7 @@
+#include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 #include "Wafer/Frontend/InitImporterDialects.h"
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
-#include "Wafer/Conversion/StableHLOToLinalg/Pipelines.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -647,8 +647,7 @@ module {
   EXPECT_EQ(wdmaInstruction.getInstructionFamily(), wafer::InstrFamily::WDMA);
 }
 
-TEST(WaferInterfacesTest,
-     TypedNCCOperationCompletionsSeparateIssueAndJoin) {
+TEST(WaferInterfacesTest, TypedNCCOperationCompletionsSeparateIssueAndJoin) {
   mlir::DialectRegistry registry;
   wafer::registerWaferCoreDialects(registry);
   mlir::MLIRContext context(registry);
@@ -717,12 +716,12 @@ module {
   wafer::SyncNCCJoinOp multiWorkerJoin = joins[0];
   wafer::SyncNCCJoinOp workerZeroJoin = joins[1];
 
-  EXPECT_TRUE(mlir::isa<wafer::WaferNCCCompletionOpInterface>(
-      argmax.getOperation()));
-  EXPECT_TRUE(mlir::isa<wafer::WaferNCCCompletionOpInterface>(
-      argmin.getOperation()));
-  EXPECT_TRUE(mlir::isa<wafer::WaferNCCCompletionOpInterface>(
-      bilinear.getOperation()));
+  EXPECT_TRUE(
+      mlir::isa<wafer::WaferNCCCompletionOpInterface>(argmax.getOperation()));
+  EXPECT_TRUE(
+      mlir::isa<wafer::WaferNCCCompletionOpInterface>(argmin.getOperation()));
+  EXPECT_TRUE(
+      mlir::isa<wafer::WaferNCCCompletionOpInterface>(bilinear.getOperation()));
   EXPECT_TRUE(mlir::isa<wafer::WaferNCCCompletionOpInterface>(
       multiWorkerJoin.getOperation()));
 
@@ -753,6 +752,217 @@ module {
       wafer::getNCCOperationCompletion(workerZeroJoin);
   EXPECT_FALSE(workerZeroContract.issueWorker);
   EXPECT_EQ(workerZeroContract.participantMask, uint32_t{1});
+}
+
+TEST(WaferInterfacesTest, AttentionExposesStructuredAndCoupledContracts) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::func::FuncDialect, mlir::tensor::TensorDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
+#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
+#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
+#s = affine_map<(b, m, k1, k2, n) -> ()>
+#mask = affine_map<(b, m, k1, k2, n) -> (b, m, k2)>
+#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
+module {
+  func.func @attention(
+      %query: tensor<2x3x4xf16>, %key: tensor<2x5x4xf16>,
+      %value: tensor<2x5x6xf16>, %scale: f32,
+      %mask_value: tensor<2x3x5xf16>) -> tensor<2x3x6xf16> {
+    %out = tensor.empty() : tensor<2x3x6xf16>
+    %result = wafer.linalg_ext.attention
+        ins(%query, %key, %value, %scale, %mask_value :
+            tensor<2x3x4xf16>, tensor<2x5x4xf16>, tensor<2x5x6xf16>, f32,
+            tensor<2x3x5xf16>)
+        outs(%out : tensor<2x3x6xf16>)
+        algorithm(<flash_attention>)
+        indexing_maps = [#q, #k, #v, #s, #mask, #o]
+        -> tensor<2x3x6xf16>
+    return %result : tensor<2x3x6xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  auto attention = findSingleOp<wafer::LinalgExtAttentionOp>(*module);
+  ASSERT_TRUE(attention);
+  auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(
+      attention.getOperation());
+  ASSERT_TRUE(dps);
+  EXPECT_TRUE(dps.hasPureTensorSemantics());
+  ASSERT_EQ(dps.getNumDpsInputs(), 5);
+  ASSERT_EQ(dps.getNumDpsInits(), 1);
+  EXPECT_EQ(dps.getDpsInits().front(), attention.getOutput());
+
+  auto tiling = mlir::dyn_cast<mlir::TilingInterface>(attention.getOperation());
+  ASSERT_TRUE(tiling);
+  mlir::OpBuilder builder(attention);
+  llvm::SmallVector<mlir::Range> domain = tiling.getIterationDomain(builder);
+  ASSERT_EQ(domain.size(), 5u);
+  EXPECT_TRUE(hasConstantIntValues(
+      llvm::map_to_vector(domain, [](mlir::Range range) { return range.size; }),
+      {2, 3, 4, 5, 6}));
+  llvm::SmallVector<mlir::utils::IteratorType> iterators =
+      tiling.getLoopIteratorTypes();
+  ASSERT_EQ(iterators.size(), 5u);
+  EXPECT_EQ(iterators[0], mlir::utils::IteratorType::parallel);
+  EXPECT_EQ(iterators[1], mlir::utils::IteratorType::parallel);
+  EXPECT_EQ(iterators[2], mlir::utils::IteratorType::reduction);
+  EXPECT_EQ(iterators[3], mlir::utils::IteratorType::reduction);
+  EXPECT_EQ(iterators[4], mlir::utils::IteratorType::parallel);
+
+  auto coupled = mlir::dyn_cast<wafer::WaferCoupledReductionOpInterface>(
+      attention.getOperation());
+  ASSERT_TRUE(coupled);
+  wafer::CoupledReductionDescription description =
+      coupled.getCoupledReductionDescription();
+  EXPECT_TRUE(
+      llvm::equal(description.reductionIterators, llvm::ArrayRef<unsigned>{3}));
+  ASSERT_EQ(description.components.size(), 3u);
+  EXPECT_EQ(description.components[0].kind,
+            wafer::CoupledReductionComponentKind::Maximum);
+  EXPECT_EQ(description.components[1].kind,
+            wafer::CoupledReductionComponentKind::Sum);
+  EXPECT_EQ(description.components[2].kind,
+            wafer::CoupledReductionComponentKind::Accumulator);
+  EXPECT_EQ(description.components[0].elementType, builder.getF32Type());
+  EXPECT_EQ(description.components[1].elementType, builder.getF32Type());
+  EXPECT_EQ(description.components[2].elementType, builder.getF16Type());
+  EXPECT_EQ(description.components[0].indexingMap,
+            mlir::AffineMap::get(
+                5, 0,
+                {builder.getAffineDimExpr(0), builder.getAffineDimExpr(1)},
+                &context));
+  EXPECT_EQ(description.components[2].indexingMap, attention.getOutputMap());
+
+  auto reify = mlir::cast<mlir::ReifyRankedShapedTypeOpInterface>(
+      attention.getOperation());
+  mlir::ReifiedRankedShapedTypeDims reifiedShapes;
+  ASSERT_TRUE(mlir::succeeded(reify.reifyResultShapes(builder, reifiedShapes)));
+  ASSERT_EQ(reifiedShapes.size(), 1u);
+  EXPECT_TRUE(hasConstantIntValues(reifiedShapes.front(), {2, 3, 6}));
+
+  llvm::SmallVector<mlir::OpFoldResult> offsets =
+      getIndexOpFoldResults(context, {1, 1, 0, 0, 2});
+  llvm::SmallVector<mlir::OpFoldResult> sizes =
+      getIndexOpFoldResults(context, {1, 2, 4, 5, 3});
+  mlir::FailureOr<mlir::TilingResult> tiled =
+      tiling.getTiledImplementation(builder, offsets, sizes);
+  ASSERT_TRUE(mlir::succeeded(tiled));
+  ASSERT_EQ(tiled->tiledOps.size(), 1u);
+  auto tiledAttention =
+      mlir::dyn_cast<wafer::LinalgExtAttentionOp>(tiled->tiledOps.front());
+  ASSERT_TRUE(tiledAttention);
+  EXPECT_EQ(mlir::cast<mlir::ShapedType>(tiledAttention.getQuery().getType())
+                .getShape(),
+            llvm::ArrayRef<int64_t>({1, 2, 4}));
+  EXPECT_EQ(mlir::cast<mlir::ShapedType>(tiledAttention.getKey().getType())
+                .getShape(),
+            llvm::ArrayRef<int64_t>({1, 5, 4}));
+  EXPECT_EQ(mlir::cast<mlir::ShapedType>(tiledAttention.getValue().getType())
+                .getShape(),
+            llvm::ArrayRef<int64_t>({1, 5, 3}));
+  EXPECT_EQ(mlir::cast<mlir::ShapedType>(tiledAttention.getResult(0).getType())
+                .getShape(),
+            llvm::ArrayRef<int64_t>({1, 2, 3}));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(tiledAttention)));
+
+  sizes[3] = builder.getIndexAttr(2);
+  EXPECT_TRUE(
+      mlir::failed(tiling.getTiledImplementation(builder, offsets, sizes)));
+
+  llvm::SmallVector<mlir::OpFoldResult> resultOffsets =
+      getIndexOpFoldResults(context, {0, 1, 2});
+  llvm::SmallVector<mlir::OpFoldResult> resultSizes =
+      getIndexOpFoldResults(context, {2, 2, 3});
+  mlir::FailureOr<mlir::TilingResult> generated =
+      tiling.generateResultTileValue(builder, 0, resultOffsets, resultSizes);
+  ASSERT_TRUE(mlir::succeeded(generated));
+  ASSERT_EQ(generated->tiledValues.size(), 1u);
+  EXPECT_EQ(mlir::cast<mlir::RankedTensorType>(
+                generated->tiledValues.front().getType())
+                .getShape(),
+            llvm::ArrayRef<int64_t>({2, 2, 3}));
+
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance> effects;
+  mlir::cast<mlir::MemoryEffectOpInterface>(attention.getOperation())
+      .getEffects(effects);
+  EXPECT_TRUE(effects.empty());
+}
+
+TEST(WaferInterfacesTest, AttentionBufferEffectsNameExactOperands) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  registry.insert<mlir::func::FuncDialect, mlir::memref::MemRefDialect>();
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
+#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
+#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
+#s = affine_map<(b, m, k1, k2, n) -> ()>
+#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
+module {
+  func.func @attention(
+      %query: memref<2x3x4xf16>, %key: memref<2x5x4xf16>,
+      %value: memref<2x5x6xf16>, %scale: f16,
+      %out: memref<2x3x6xf16>) {
+    wafer.linalg_ext.attention
+        ins(%query, %key, %value, %scale :
+            memref<2x3x4xf16>, memref<2x5x4xf16>, memref<2x5x6xf16>, f16)
+        outs(%out : memref<2x3x6xf16>)
+        algorithm(<flash_attention>)
+        indexing_maps = [#q, #k, #v, #s, #o]
+    return
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+  auto attention = findSingleOp<wafer::LinalgExtAttentionOp>(*module);
+  ASSERT_TRUE(attention);
+
+  llvm::SmallVector<mlir::MemoryEffects::EffectInstance> effects;
+  mlir::cast<mlir::MemoryEffectOpInterface>(attention.getOperation())
+      .getEffects(effects);
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      effects, attention.getQuery()));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      effects, attention.getKey()));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      effects, attention.getValue()));
+  EXPECT_TRUE(hasValueMemoryEffect<mlir::MemoryEffects::Write>(
+      effects, attention.getOutput()));
+  EXPECT_FALSE(hasValueMemoryEffect<mlir::MemoryEffects::Read>(
+      effects, attention.getOutput()));
+
+  auto tiling = mlir::cast<mlir::TilingInterface>(attention.getOperation());
+  mlir::OpBuilder builder(attention);
+  llvm::SmallVector<mlir::OpFoldResult> offsets =
+      getIndexOpFoldResults(context, {0, 1, 0, 0, 2});
+  llvm::SmallVector<mlir::OpFoldResult> sizes =
+      getIndexOpFoldResults(context, {2, 2, 4, 5, 3});
+  mlir::FailureOr<mlir::TilingResult> tiled =
+      tiling.getTiledImplementation(builder, offsets, sizes);
+  ASSERT_TRUE(mlir::succeeded(tiled));
+  ASSERT_EQ(tiled->tiledOps.size(), 1u);
+  auto tiledAttention =
+      mlir::dyn_cast<wafer::LinalgExtAttentionOp>(tiled->tiledOps.front());
+  ASSERT_TRUE(tiledAttention);
+  EXPECT_EQ(tiledAttention.getNumResults(), 0u);
+  EXPECT_TRUE(
+      mlir::isa<mlir::MemRefType>(tiledAttention.getOutput().getType()));
+  EXPECT_TRUE(mlir::succeeded(mlir::verify(tiledAttention)));
 }
 
 TEST(WaferInterfacesTest, LinalgExtCollectivesExposeLinalgExtStyleContracts) {

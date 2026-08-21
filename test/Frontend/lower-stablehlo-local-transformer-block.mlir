@@ -124,11 +124,9 @@ module {
 // CHECK-LABEL: func.func @local_transformer_block
 // CHECK-NOT: stablehlo.
 // CHECK: math.rsqrt
-// CHECK: linalg.generic
-// CHECK: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]
-// CHECK: math.exp
-// CHECK: linalg.generic
-// CHECK: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]
+// CHECK: wafer.linalg_ext.attention
+// CHECK-SAME: algorithm(<flash_attention>)
+// CHECK-NOT: math.exp
 // CHECK: tensor.collapse_shape
 // CHECK: linalg.matmul
 // CHECK: math.tanh

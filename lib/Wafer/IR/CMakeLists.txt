@@ -9,6 +9,7 @@ add_mlir_dialect_library(WaferIR
   Instr/MovementOps.cpp
   Instr/PeripheralOps.cpp
   Instr/SyncOps.cpp
+  LinalgExt/AttentionOps.cpp
   LinalgExt/CollectiveOps.cpp
   Program/ModuleOps.cpp
   Resource/SPMOps.cpp
@@ -37,6 +38,7 @@ add_mlir_dialect_library(WaferIR
   MLIRDestinationStyleOpInterface
   MLIRFuncDialect
   MLIRIR
+  MLIRInferTypeOpInterface
   MLIRMemRefDialect
   MLIRSCFDialect
   MLIRSideEffectInterfaces

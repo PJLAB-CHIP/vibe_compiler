@@ -20,6 +20,26 @@ def Wafer_TargetAttr : EnumAttr<Wafer_Dialect, Wafer_Target, "target"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Wafer_AttentionAlgorithmFlashAttention
+    : I32EnumAttrCase<"FlashAttention", 0, "flash_attention">;
+def Wafer_AttentionAlgorithmFlashDecoding
+    : I32EnumAttrCase<"FlashDecoding", 1, "flash_decoding">;
+def Wafer_AttentionAlgorithm
+    : I32EnumAttr<"AttentionAlgorithm",
+                  "normalized attention algorithm", [
+  Wafer_AttentionAlgorithmFlashAttention,
+  Wafer_AttentionAlgorithmFlashDecoding
+]> {
+  let cppNamespace = "::wafer";
+  let genSpecializedAttr = 0;
+}
+
+def Wafer_AttentionAlgorithmAttr
+    : EnumAttr<Wafer_Dialect, Wafer_AttentionAlgorithm,
+               "attention_algorithm"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def Wafer_MemorySpaceSPM : I32EnumAttrCase<"SPM", 0, "spm">;
 def Wafer_MemorySpaceDDR : I32EnumAttrCase<"DDR", 1, "ddr">;
 def Wafer_MemorySpace : I32EnumAttr<"MemorySpace", "Wafer addressable storage space", [

@@ -100,7 +100,7 @@ production matcher的输入是Q60产品入口经GSPMD和official conversion产�
 | --- | --- |
 | QK/PV contraction | named matmul/batch-matmul，或scalar region与maps证明同一contraction的`linalg.generic` |
 | transpose/reshape/cast | exact static tensor/view链；role仍由composed indexing relation推出 |
-| scale | QK result上的scalar multiply，或已由contraction input/current scalar SSA等价表达的同一scale |
+| scale | QK result上的scalar multiply；若scale已由contraction operands的current SSA显式完成，op原样消费这些operands并使用identity scale |
 | mask | additive score adjustment，或可精确归一为同element type adjustment的compare/select+broadcast |
 | softmax | max reduction、broadcast/subtract、exp、sum reduction、broadcast/divide的SSA等价形式 |
 | KV state | concat、insert-slice或其它current exact prefix-append relation，且updated values和function results闭合 |
@@ -125,8 +125,7 @@ matcher先构造全部proof并在首次mutation前验证overlap：
 
 ```text
 normalizeAttention(function):
-  facts = buildStructuredValueFacts(function)
-  matches = proveAttentionRoots(facts, observable results)
+  matches = proveAttentionRoots(current structured SSA, observable results)
   reject conflicting ownership before mutation
   classify each match as flash_attention or flash_decoding
   create one wafer.linalg_ext.attention per match
@@ -154,6 +153,10 @@ planning/cost看见。两个matches共享Q/K/V或mask并不冲突；只有它们
 tensor form返回一个与output同type的result；buffer form写入tied destination。op不公开block size、partition count、Tile、layout、
 state buffer、merge owner或schedule字段。
 
+Q/K/V/output使用同一floating storage element type；scale保持source scalar floating type，并作为Maximum/Sum online state的
+element type，optional additive mask保持自己的显式floating type，selected decomposition按current SSA所表达的转换边界使用它们。
+Accumulator component使用output storage element type。这些都是op operand/type事实，不形成algorithm或physical candidate轴。
+
 current semantic subset是forward scaled dot-product attention和optional additive/broadcast mask。dropout或其它random effect、backward、
 sparse/block-sparse attention、runtime paged-cache lookup及未能由下面maps完整证明的variant不进入该op；它们保持原IR或由未来独立
 semantic extension处理，不能通过增加字符串mode绕过verifier。
@@ -175,7 +178,8 @@ output : (B, M, N)
 scale  : scalar
 ```
 
-每组可包含多个iterator；map可以表达verifier支持的projected permutation、broadcast及明确affine relation。verifier证明：
+每组可包含多个iterator；current op接受projected-permutation operand maps，省略iterator即表达broadcast/projection。需要非投影
+affine relation的图保持普通Linalg，直到同一current合同扩展verifier、tiling和下游consumer。verifier证明：
 
 - Q/K共享同一K1 domain；K/V共享同一K2 domain；Q/output共享M；V/output共享N；
 - output投影全部K1/K2 reduction coordinates；
@@ -193,8 +197,8 @@ current合同变更中切换producer/consumer，不保留双接口。
 attention op实现：
 
 - `DestinationStyleOpInterface`：output destination及tensor/buffer tie；
-- `TilingInterface`：iteration domain、iterator kinds、output tile position及Q/K/V/mask exact slices；
-- `PartialReductionOpInterface`：为K2 partial创建state、物化partial tile并合并partial；
+- `TilingInterface`：iteration domain、iterator kinds、output tile position及Q/K/V/mask exact slices；semantic op只允许保持
+  K1/K2完整的output/parallel tiling，K2 coupled partial由selected decomposition物化；
 - `MemoryEffectOpInterface`：tensor form pure，buffer form读取inputs并写destination；
 - `ReifyRankedShapedTypeOpInterface`：从output map/type重建result shape；
 - `WaferCoupledReductionOpInterface`：为planning提供不创建IR的coupled-state描述。
@@ -205,19 +209,19 @@ attention op实现：
 CoupledReductionDescription
   reductionIterators: K2 iterator IDs
   components:
-    Maximum     with row indexing map (B, M)
-    Sum         with row indexing map (B, M)
-    Accumulator with output indexing map (B, M, N)
+    Maximum     with row indexing map (B, M) and scale element type
+    Sum         with row indexing map (B, M) and scale element type
+    Accumulator with output indexing map (B, M, N) and output element type
   initialization: one neutral state per contribution
   merge: all components are consumed by one coupled combine
   finalization: output is produced once after complete K2 coverage
 ```
 
-因此attention的partial tiling可以返回三个internal partial values，而`mergeReductions`最终只替换attention的一个output result；
-不能用source op result count假设partial component count，也不能把三个components注册成三个独立reduction results。
-
-需要该接口是因为pinned `PartialReductionOpInterface`只提供IR-building mechanics，没有planning所需的完整partial-result position、
-coupled grouping和init/final owner query。Q50.A/F不得为取得这些事实materialize scratch IR，也不得逐component假设它们独立。
+仓库pinned `PartialReductionOpInterface`的通用driver要求partial init range与source DPS results同构；它不能在一个final-result
+semantic op上安全承载三个internal partial values。因而本op不伪装实现该standard interface，也不把三个components注册成三个
+source results。winner内selected Linalg/SCF decomposition负责创建、携带和合并三个state values；
+`WaferCoupledReductionOpInterface`只提供planning所需的component maps、coupled grouping和init/final owner query。
+Q50.A/F不得为取得这些事实materialize scratch IR，也不得逐component假设它们独立。
 
 ## 5. Attention Algorithms
 
@@ -427,7 +431,7 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 
 - attention near-miss不是错误，保持普通verified Linalg DAG；
 - conflicting matches、malformed existing attention op或rewrite后verifier failure终止normalization；
-- normalization在首次mutation前收集完整proof，所有create/replace/erase通过PatternRewriter；不clone Module/Func/DAG；
+- normalization在首次mutation前收集完整proof，所有create/replace/erase通过同一个`IRRewriter`；不clone Module/Func/DAG；
 - algorithm classification缺decode proof只产生FA，不记录失败历史或候选；
 - op/interface无法描述selected A/E work返回typed unsupported；planning description与B--K plan矛盾是compiler contract error；
 - winner Linalg expansion、wafer.tile conversion或resource parity失败擦除完整新Card subtree并终止compile，不返回planner换算法或plan；
@@ -443,7 +447,8 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
    intermediate、shared inputs、multiple attention roots、precomputed-score near-miss和effectful conflict；
 4. functional KV prefix append/return的FD正负例；改变symbol、argument order或model name不改变分类，无法证明时稳定得到FA；
 5. small reference逐block比较FA state update，并逐partition/tree比较FD contribution/merge/finalize；tail与多个output pieces完整；
-6. standard Tiling、PartialReduction及Wafer coupled-state query的shape/map/init/final owner一致，planning query前后IR byte-identical；
+6. standard Tiling、Wafer coupled-state query及selected partial decomposition的shape/map/init/final owner一致，planning query前后IR
+   byte-identical；
 7. `AttentionWorkDescription`的actions/values/occurrences与A--K typed objects all-and-only对应，F无hidden scratch/state/message；
 8. winner transaction中selected Linalg/Tensor/SCF只构造一次，随后全部成为existing wafer.tile compute；失败注入保持source和parent原样；
 9. `none`和`search`从同一normalized TensorProgram各自产生一个plan并走共同commit；不存在Q51 attention algorithm axis或whole-program clone；
@@ -486,7 +491,7 @@ semantic对象及A--K consumer，不能仅因某篇实现使用另一个op名就
 - [IREE LinalgExt attention ops](https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/Dialect/LinalgExt/IR/LinalgExtOps.td)、
   [tiling/partial reduction](https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/Dialect/LinalgExt/IR/TilingInterfaceImpl.cpp)和
   [decomposition](https://github.com/iree-org/iree/blob/main/compiler/src/iree/compiler/Dialect/LinalgExt/IR/AggregatedOpInterfaceImpl.cpp)
-  证明Q/K/V semantic op、online state、Tiling/PartialReduction及late Linalg decomposition可以分层。Wafer采用这些MLIR mechanics，
+  证明Q/K/V semantic op、online state、tiling、partial mechanics及late Linalg decomposition可以分层。Wafer采用这些MLIR mechanics，
   但不照搬IREE的两个attention ops、Transform-dialect调度或backend pipeline；Wafer只保留一个op，并由A--K pure planning与
   single-winner Card transaction消费。
 

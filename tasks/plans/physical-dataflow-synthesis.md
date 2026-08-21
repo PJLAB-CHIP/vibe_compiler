@@ -960,7 +960,7 @@ deriveResultAvailability(node, executionShards, reductionPlacement):
     return one final owner (shard.tile, outputImage[shard]) per nonempty image
 
   algebra = queryReductionAlgebra(node)
-  require PartialReductionOpInterface and algebra.allowsSpatialPartition
+  require algebra.allowsSpatialPartition and an actual typed partial builder
   group result images by their exact output-domain key
   require images from different groups are disjoint
   for each group:
@@ -980,9 +980,11 @@ Tile，每组包含`P_K0 * P_K1 * ...`个必要contributions。若future structu
 
 `queryReductionAlgebra`返回typed `ReductionAlgebra`，至少说明result components是independent还是coupled、partial identity、
 原DPS init的唯一应用位置、实际merge operation由谁物化，以及planning所需的partial component maps/positions。仓库pinned
-`PartialReductionOpInterface`只提供identity tensor、partial tile和merge三项IR-building mechanics；普通Linalg由现有external model
-补充只读algebra，attention由Q50.S的`WaferCoupledReductionOpInterface`提供coupled component maps、group和init/final owner。
-Q50.B只在read-only algebra与actual partial interface共同完整表达selected result group时生成reduction factor大于1的assignment；
+`PartialReductionOpInterface`只提供identity tensor、partial tile和merge三项IR-building mechanics；其pinned通用driver要求partial
+init与source DPS result同构。普通Linalg由该standard interface和现有external model补充只读algebra；只有一个final result但拥有
+Maximum/Sum/Accumulator三个internal states的attention，由Q50.S的`WaferCoupledReductionOpInterface`提供component maps、group和
+init/final owner，并由selected Linalg/SCF builder提供actual partial mechanics。Q50.B只在read-only algebra与actual typed builder
+共同完整表达selected result group时生成reduction factor大于1的assignment；
 不能只支持single-result/single-init后把该限制伪装成通用reduction合同。
 
 independent multi-result reduction可以形成多个result groups；coupled state必须由source op的同一个typed algebra和同一次merge
@@ -1651,8 +1653,8 @@ Pipeline position:
   softmax与value contraction仍由current structured SSA、indexing maps、DPS、types和effects表达，尚未绑定Tile。
 - Current stage responsibility:
   一次性证明完整attention语义及functional KV-cache decode relation，创建一个self-contained
-  wafer.linalg_ext.attention并设置closed algorithm attr；实现standard tiling/partial-reduction/effect/shape contracts及
-  planning只读coupled-state合同；提供query-local AttentionWorkDescription和selected Linalg decomposition。
+  wafer.linalg_ext.attention并设置closed algorithm attr；实现standard tiling/effect/shape contracts及planning只读coupled-state合同；
+  selected decomposition再提供K2 partial mechanics；提供query-local AttentionWorkDescription和selected Linalg decomposition。
 - Output IR / files:
   同一normalized TensorProgram，matched root由wafer.linalg_ext.attention表达；FA/FD是op上的current graph fact。
   不产生algorithm domain、candidate graph、CardModule、physical plan、IR sidecar或文件。
@@ -1689,19 +1691,18 @@ op实现：
 
 - `DestinationStyleOpInterface`；
 - `TilingInterface`；
-- `PartialReductionOpInterface`；
 - `MemoryEffectOpInterface`；
 - `ReifyRankedShapedTypeOpInterface`；
 - 一个窄`WaferCoupledReductionOpInterface`。
 
-custom coupled interface只返回K2 reduction iterators、Maximum/Sum/Accumulator component maps、initialization、coupled merge和final
-owner；它不include Planning类型，也不返回Tile、layout、buffer或event。pinned PartialReduction interface继续拥有actual IR-building
-mechanics，但不能被文档误写成已经提供partial-result-position/coupled planning query。indexing maps当前使用ODS accessors；不假设
-pinned版本不存在的`IndexingMapOpInterface`。
+custom coupled interface只返回K2 reduction iterators、Maximum/Sum/Accumulator component maps/types、initialization、coupled merge和final
+owner；它不include Planning类型，也不返回Tile、layout、buffer或event。pinned PartialReduction interface的generic driver要求
+partial init与source DPS results同构，因此一个final-result attention op不实现该接口；K2 partial由winner内selected Linalg/SCF builder
+物化。indexing maps当前使用ODS accessors；不假设pinned版本不存在的`IndexingMapOpInterface`。
 
 ### S-2：Graph proof与algorithm分类
 
-normalizer在official Linalg conversion后建立一次memoized SSA/indexing facts，从observable value contraction反向证明QK、scale、
+normalizer在official Linalg conversion后建立一次function-local SSA/indexing proof session，从observable value contraction反向证明QK、scale、
 optional score mask、softmax和PV。它的production输入必须来自Q60产品入口的fresh post-Linalg IR。常见PyTorch/HF差异只按05定义的
 有限结构族处理：named/generic contraction、transparent transpose/reshape/cast、scale位置、additive或compare/select mask、
 softmax SSA等价形式及exact KV prefix append；不为模型、rank或参数位置注册pattern。precomputed scores、普通softmax、缺Q/K/V
@@ -1735,7 +1736,7 @@ else:
 decode state仍是ordinary function input/output；op和runtime不拥有KV-cache policy。无法证明decode得到FA，不按Q长度、模型名或argument
 位置猜测。FD后续physical closure失败是typed compile failure，不静默改回FA。
 
-normalization先收集全部proof再用PatternRewriter create/replace/erase；不clone Module/Func/DAG。near-miss无mutation；true conflict或
+normalization先收集全部proof再用同一个`IRRewriter` create/replace/erase；不clone Module/Func/DAG。near-miss无mutation；true conflict或
 postverify failure终止。创建op的pass声明全部dependent dialects。
 
 输入覆盖采用两层证据：从fresh PyTorch/HF export最小化得到的typed IR覆盖用于matcher unit；Q60产品入口每轮重新导出的portable
@@ -1874,7 +1875,7 @@ Q50.S通过六个独立work items交付，不作为一个跨阶段task调度：
   extra use/precomputed score near-miss；手写fixture只作补充；
 - classifier只由functional state relation决定，symbol/argument/model名字扰动不改变结果；
 - small independent reference覆盖FA temporal blocks、FD partitions/merge trees、tail和多个output pieces；
-- coupled query与standard partial materialization的component maps/types/init/final owner一致；
+- coupled query与selected partial decomposition的component maps/types/init/final owner一致；
 - planning source byte-identical、Module/Func/CardModule/Q50.0计数为零；
 - B/A/C/E/F direct queries证明无逐component独立merge、无hidden state/scratch和init/final重复；
 - winner selected Linalg只构造一次，随后只剩existing wafer.tile compute/movement；failure injection保持source/parent一致；

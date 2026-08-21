@@ -40,6 +40,18 @@ def FoldStaticTensorOpsPass
                            "mlir::tensor::TensorDialect"];
 }
 
+def FormAttentionOpsPass
+    : Pass<"wafer-form-attention-ops", "mlir::func::FuncOp"> {
+  let summary =
+      "Form self-contained attention ops from proven structured tensor graphs";
+  let dependentDialects = ["mlir::arith::ArithDialect",
+                           "mlir::func::FuncDialect",
+                           "mlir::linalg::LinalgDialect",
+                           "mlir::math::MathDialect",
+                           "mlir::tensor::TensorDialect",
+                           "wafer::WaferDialect"];
+}
+
 def LowerStaticStablehloConcatenatePass
     : Pass<"wafer-lower-static-stablehlo-concatenate", "mlir::ModuleOp"> {
   let summary =

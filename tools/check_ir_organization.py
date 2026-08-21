@@ -23,6 +23,10 @@ OP_FAMILY_LAYOUT = {
         "cpp": ("LinalgExt/CollectiveOps.cpp",),
         "tests": "LinalgExt/Collective",
     },
+    "LinalgExt/AttentionOps.td": {
+        "cpp": ("LinalgExt/AttentionOps.cpp",),
+        "tests": "LinalgExt/Attention",
+    },
     "Tile/TileRegionOps.td": {
         "cpp": ("Tile/TileRegionOps.cpp",),
         "tests": "Tile/TileRegion",
@@ -98,7 +102,9 @@ CONVERSION_LIBRARIES = {
     },
 }
 STABLEHLO_CONVERSION_SOURCES = [
+    "lib/Wafer/Conversion/StableHLOToLinalg/AttentionMatching.cpp",
     "lib/Wafer/Conversion/StableHLOToLinalg/LegalizeStablehloToLinalg.cpp",
+    "lib/Wafer/Conversion/StableHLOToLinalg/NormalizeAttention.cpp",
     "lib/Wafer/Conversion/StableHLOToLinalg/NormalizeStablehloCollectives.cpp",
 ]
 FORBIDDEN_IR_STRINGS = (

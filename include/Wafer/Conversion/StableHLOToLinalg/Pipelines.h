@@ -11,6 +11,7 @@ void buildNormalizeImportedStablehloPipeline(mlir::OpPassManager &pm);
 void buildLegalizeStablehloToStructuredTensorPipeline(
     mlir::OpPassManager &pm);
 void buildSimplifyStructuredTensorPipeline(mlir::OpPassManager &pm);
+void buildNormalizeAttentionPipeline(mlir::OpPassManager &pm);
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm);
 
 } // namespace wafer

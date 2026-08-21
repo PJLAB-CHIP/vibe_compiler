@@ -4,6 +4,7 @@
 
 #include "Wafer/Transforms/Passes.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -24,11 +25,16 @@ void buildSimplifyStructuredTensorPipeline(mlir::OpPassManager &pm) {
   pm.addPass(createFoldStaticTensorOpsPass());
 }
 
+void buildNormalizeAttentionPipeline(mlir::OpPassManager &pm) {
+  pm.addNestedPass<mlir::func::FuncOp>(createFormAttentionOpsPass());
+}
+
 void buildStablehloToLinalgPipeline(mlir::OpPassManager &pm) {
   buildNormalizeImportedStablehloPipeline(pm);
   buildLegalizeStablehloToStructuredTensorPipeline(pm);
   buildSimplifyStructuredTensorPipeline(pm);
   pm.addPass(mlir::createCanonicalizerPass());
+  buildNormalizeAttentionPipeline(pm);
 }
 
 } // namespace wafer

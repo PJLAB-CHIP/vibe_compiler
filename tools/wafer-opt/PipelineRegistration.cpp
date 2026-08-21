@@ -36,6 +36,12 @@ void registerWaferOptPipelines() {
         wafer::buildSimplifyStructuredTensorPipeline(pm);
       });
   mlir::PassPipelineRegistration<>(
+      "wafer-normalize-attention",
+      "Form self-contained attention semantics in structured tensor IR",
+      [](mlir::OpPassManager &pm) {
+        wafer::buildNormalizeAttentionPipeline(pm);
+      });
+  mlir::PassPipelineRegistration<>(
       "wafer-lower-stablehlo-to-linalg",
       "Lower StableHLO tensor IR to structured Linalg/Tensor IR",
       [](mlir::OpPassManager &pm) {

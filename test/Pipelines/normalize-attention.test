@@ -1,0 +1,10 @@
+# RUN: wafer-opt --pass-pipeline='builtin.module(wafer-normalize-attention)' %wafer_src_root/unittests/Planning/Search/Inputs/functional-decode.mlir | FileCheck %s --check-prefix=DECODE
+# RUN: wafer-opt --pass-pipeline='builtin.module(func.func(wafer-form-attention-ops))' %wafer_src_root/unittests/Planning/Search/Inputs/functional-decode.mlir | FileCheck %s --check-prefix=DECODE
+# RUN: wafer-opt --verify-each=true --pass-pipeline='builtin.module(wafer-normalize-attention)' %wafer_src_root/unittests/Planning/Search/Inputs/functional-decode.mlir | FileCheck %s --check-prefix=DECODE
+
+# DECODE-LABEL: func.func @functional_decode
+# DECODE: wafer.linalg_ext.attention
+# DECODE-SAME: algorithm(<flash_decoding>)
+# DECODE: return %{{.+}}, %{{.+}}, %{{.+}}
+# DECODE-NOT: linalg.matmul
+# DECODE-NOT: math.exp

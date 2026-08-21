@@ -5,10 +5,12 @@
 
 #include "Wafer/IR/NCCCompletion.h"
 
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -21,6 +23,48 @@ enum class WaferLinalgExtCollectiveKind {
   AllReduce,
   AllToAll,
   CollectivePermute,
+};
+
+/// Iterator groups inferred from the four attention indexing maps. The groups
+/// are pairwise disjoint and cover the complete iteration domain for a
+/// verifier-valid attention operation.
+struct AttentionIterationRoles {
+  llvm::SmallVector<unsigned, 4> batch;
+  llvm::SmallVector<unsigned, 2> query;
+  llvm::SmallVector<unsigned, 2> queryKeyReduction;
+  llvm::SmallVector<unsigned, 2> keyValueReduction;
+  llvm::SmallVector<unsigned, 2> valueOutput;
+};
+
+enum class CoupledReductionComponentKind : uint8_t {
+  Maximum,
+  Sum,
+  Accumulator,
+};
+
+struct CoupledReductionComponent {
+  CoupledReductionComponentKind kind;
+  mlir::AffineMap indexingMap;
+  mlir::Type elementType;
+};
+
+enum class CoupledReductionMergeKind : uint8_t {
+  OnlineAttention,
+};
+
+enum class CoupledReductionFinalizationKind : uint8_t {
+  NormalizeAccumulator,
+};
+
+/// Read-only source semantics for a coupled reduction. It intentionally owns
+/// no planning, placement, storage, event, or target object.
+struct CoupledReductionDescription {
+  llvm::SmallVector<unsigned, 2> reductionIterators;
+  llvm::SmallVector<CoupledReductionComponent, 3> components;
+  CoupledReductionMergeKind mergeKind =
+      CoupledReductionMergeKind::OnlineAttention;
+  CoupledReductionFinalizationKind finalizationKind =
+      CoupledReductionFinalizationKind::NormalizeAccumulator;
 };
 
 struct WaferSPMResource
