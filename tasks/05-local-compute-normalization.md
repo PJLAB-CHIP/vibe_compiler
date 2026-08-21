@@ -439,6 +439,13 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 
 ## 10. Verification
 
+attention正例直接采用真实规模的rank-3或更高Q/K/V/output shape，至少一个sequence或其它主要迭代维度不小于1024；
+block与partition验证必须包含整除矩阵，例如Q/K/V sequence为`1024`；同时包含非整除矩阵，例如
+Q=`2x1025x128`、K=`2x1031x128`、V=`2x1031x64`、output=`2x1025x64`，检查remainder、tail及不均匀pieces。
+这些只是覆盖参数，不进入op schema、matcher或algorithm分类。只有逐点穷举的独立reference和最小verifier负例可以缩小
+shape；同一normalization、interface或decomposition机制仍必须有整除/非整除真实规模矩阵，并检查maps、owners、state和
+selected pieces，而不是只检查op或pass成功。
+
 直接验证至少覆盖：
 
 1. `wafer.linalg_ext.attention` custom/generic form roundtrip、parser/printer、dependent dialect及verifier正负例；
@@ -446,7 +453,8 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 3. named/generic QK/PV contraction、scale位置、additive/select mask、softmax SSA等价形式、view/cast组合、extra observable
    intermediate、shared inputs、multiple attention roots、precomputed-score near-miss和effectful conflict；
 4. functional KV prefix append/return的FD正负例；改变symbol、argument order或model name不改变分类，无法证明时稳定得到FA；
-5. small reference逐block比较FA state update，并逐partition/tree比较FD contribution/merge/finalize；tail与多个output pieces完整；
+5. 有界独立reference逐block比较FA state update，并逐partition/tree比较FD contribution/merge/finalize；reference可为逐点
+   穷举缩小domain，但同一算法另以真实规模shape覆盖tail、多个output pieces和多block/partition；
 6. standard Tiling、Wafer coupled-state query及selected partial decomposition的shape/map/init/final owner一致，planning query前后IR
    byte-identical；
 7. `AttentionWorkDescription`的actions/values/occurrences与A--K typed objects all-and-only对应，F无hidden scratch/state/message；

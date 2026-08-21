@@ -5,6 +5,10 @@
 
 Q56当前仍是`board-ready`而非`done`，因此不进入本索引；其当前状态继续保留在`tasks/progress.md`。
 
+下列前四个current work item的实现边界和历史提交保持`done`，但其原测试使用了过多个位数shape，不能满足后来明确的
+真实规模覆盖合同。随后闭合的`foundational-coverage-matrix`补齐rank>=3、主要维度>=1024、整除/非整除及结构语义
+矩阵；以下原始证据需要与该补测项的fresh证据共同使用。
+
 ## 已闭合的current execution work items
 
 | Work item | 状态 | 设计owner | 完成边界 | 证据入口 |
@@ -13,6 +17,7 @@ Q56当前仍是`board-ready`而非`done`，因此不进入本索引；其当前�
 | `attention-normalization` | `done` | Q50.S | policy分叉前的official StableHLO→Linalg输出可从current SSA/maps/effects归一为一个self-contained `wafer.linalg_ext.attention`；ODS algorithm为fixed `flash_attention`或`flash_decoding` graph fact，standard DPS/tiling/effect/shape合同与只读coupled-state接口闭合，不包含physical choice或algorithm search axis。 | `LinalgExt/AttentionOps.*`、`StableHLOToLinalg/{AttentionMatching,NormalizeAttention}.*`、`AttentionNormalizationTest`及Dialect/Frontend/Pipeline tests；fresh FP16/BF16 HF prefill/decode与native PyTorch SDPA exporter artifacts均形成唯一预期op，完整`WaferUnitTests`、153项相关lit、source/IR/dependency检查通过。 |
 | `attention-spatial-integration` | `done` | Q50.S | 从verifier-valid attention op派生query-local K1/K2 iterator IDs和K2 single/multiple-interval requirement；同一typed predicate约束canonical/full spatial consumers并区分mode violation与malformed iterator domain，不修改IR、不复制algorithm到`SpatialPlan`、不选择partition/Tile/merge。 | `Planning/PhysicalDataflow/AttentionSpatialConstraints.*`、`AttentionSpatialConstraintsTest`及共享`IteratorPartition` interval-count query；fresh定向10项与完整`WaferUnitTests`、source/IR organization检查通过。 |
 | `canonical-spatial-assignment` | `done` | Q50.B | 从observable typed SSA paths为all structured roots派生稳定`SemanticRootKey`，直接构造最大非空regular Cartesian canonical plan并structural close；ordinary reduction保持unpartitioned，FA保持K2单interval，FD形成K2多interval及per-output-coordinate merge placement。结果不枚举domain、不查询cross-op demand、不改IR，也不携layout/movement/resource/cost。 | `Planning/PhysicalDataflow/{SemanticRootAnalysis,CanonicalSpatialAssignment}.*`、attention typed static-range accessor及`CanonicalSpatialAssignmentTest`；fresh定向5项、完整774项`WaferUnitTests`和IR/source organization检查通过。 |
+| `foundational-coverage-matrix` | `done` | 16（Q50.B/Q50.S） | 不改变前四项IR/API语义，补齐真实规模测试合同：rank>=3、主要维度>=1024，整除/非整除shape对，all-16 Tile、单轴/多轴、fan-in/fan-out、reduction、FA/FD及multi-K2；小shape只保留给明确的有界oracle或最小负例。 | `SpatialPlanTest`、`AttentionNormalizationTest`、`AttentionSpatialConstraintsTest`、`CanonicalSpatialAssignmentTest`和`functional-decode-representative.mlir`；fresh定向25/25、完整`WaferUnitTests` 738/738、lit 224/224及IR/source organization通过。 |
 
 ## 已闭合的当前主线前置
 

@@ -30,7 +30,7 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `exact-demand-boundary` | `doing` | Q50.A | canonical-spatial-assignment | operand demand、final owners及per-output reduction requirements |
+| 1 | `exact-demand-boundary` | `doing` | Q50.A | canonical-spatial-assignment、foundational-coverage-matrix | operand demand、final owners及per-output reduction requirements |
 | 2 | `attention-demand-integration` | `queued` | Q50.S | attention-normalization、exact-demand-boundary | Q/K/V/mask demand及coupled contribution/merge |
 | 3 | `canonical-root-work` | `queued` | Q50.C | canonical-spatial-assignment、attention-demand-integration | canonical `RootRegionWork`与single-root leaf primitive |
 | 4 | `canonical-region-plan` | `queued` | Q50.D | canonical-root-work、exact-demand-boundary | singleton `RegionPlan`、execution instance及use binding |
@@ -59,7 +59,7 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | 27 | `schedule-domain` | `queued` | Q50.J | structure-specific-storage、event-resource-foundation | fixed-K/I order、worker、resource与completion domain |
 | 28 | `full-feasibility` | `queued` | Q50.F | schedule-domain及完整B–K→I→J plan | full resource proof、oracle及Core admission input |
 | 29 | `search-control-closure` | `queued` | Q51.Core | full-feasibility、全部domain work items | full-plan admission、cost/bound、causal rejection、coverage及controller oracle |
-| 30 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | tiny exhaustive oracle、single winner及一次production commit |
+| 30 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | bounded exhaustive oracle、single winner及一次production commit |
 | 31 | `attention-production-closure` | `queued` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card |
 | 32 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy及有限预算LLaMA一次commit |
 | 33 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` |

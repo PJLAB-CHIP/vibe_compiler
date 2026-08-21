@@ -17,6 +17,7 @@
 
 #include "gtest/gtest.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -52,52 +53,61 @@ protected:
     return text;
   }
 
+  static llvm::SmallVector<TileId, 16> allTiles() {
+    llvm::SmallVector<TileId, 16> tiles;
+    for (int64_t tile = 0; tile < 16; ++tile)
+      tiles.push_back(TileId(tile));
+    return tiles;
+  }
+
   mlir::DialectRegistry registry;
   std::unique_ptr<mlir::MLIRContext> context;
 };
 
 constexpr llvm::StringLiteral kFaninProgram = R"mlir(
-#id = affine_map<(d0, d1) -> (d0, d1)>
+#id = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module {
-  func.func @diamond(%input: tensor<5x7xf16>) -> tensor<5x7xf16> {
-    %empty0 = tensor.empty() : tensor<5x7xf16>
+  func.func @diamond(%input: tensor<2x1024x128xf16>)
+      -> tensor<2x1024x128xf16> {
+    %empty0 = tensor.empty() : tensor<2x1024x128xf16>
     %left = linalg.generic {
         indexing_maps = [#id, #id],
-        iterator_types = ["parallel", "parallel"]}
-        ins(%input : tensor<5x7xf16>)
-        outs(%empty0 : tensor<5x7xf16>) {
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%input : tensor<2x1024x128xf16>)
+        outs(%empty0 : tensor<2x1024x128xf16>) {
       ^bb0(%element0: f16, %output0: f16):
         linalg.yield %element0 : f16
-    } -> tensor<5x7xf16>
-    %empty1 = tensor.empty() : tensor<5x7xf16>
+    } -> tensor<2x1024x128xf16>
+    %empty1 = tensor.empty() : tensor<2x1024x128xf16>
     %right = linalg.generic {
         indexing_maps = [#id, #id],
-        iterator_types = ["parallel", "parallel"]}
-        ins(%left : tensor<5x7xf16>)
-        outs(%empty1 : tensor<5x7xf16>) {
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%left : tensor<2x1024x128xf16>)
+        outs(%empty1 : tensor<2x1024x128xf16>) {
       ^bb0(%element1: f16, %output1: f16):
         linalg.yield %element1 : f16
-    } -> tensor<5x7xf16>
-    %empty2 = tensor.empty() : tensor<5x7xf16>
+    } -> tensor<2x1024x128xf16>
+    %empty2 = tensor.empty() : tensor<2x1024x128xf16>
     %branch = linalg.generic {
         indexing_maps = [#id, #id],
-        iterator_types = ["parallel", "parallel"]}
-        ins(%left : tensor<5x7xf16>)
-        outs(%empty2 : tensor<5x7xf16>) {
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%left : tensor<2x1024x128xf16>)
+        outs(%empty2 : tensor<2x1024x128xf16>) {
       ^bb0(%element2: f16, %output2: f16):
         linalg.yield %element2 : f16
-    } -> tensor<5x7xf16>
-    %empty3 = tensor.empty() : tensor<5x7xf16>
+    } -> tensor<2x1024x128xf16>
+    %empty3 = tensor.empty() : tensor<2x1024x128xf16>
     %sum = linalg.generic {
         indexing_maps = [#id, #id, #id],
-        iterator_types = ["parallel", "parallel"]}
-        ins(%right, %branch : tensor<5x7xf16>, tensor<5x7xf16>)
-        outs(%empty3 : tensor<5x7xf16>) {
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%right, %branch : tensor<2x1024x128xf16>,
+                              tensor<2x1024x128xf16>)
+        outs(%empty3 : tensor<2x1024x128xf16>) {
       ^bb0(%a: f16, %b: f16, %output: f16):
         %value = arith.addf %a, %b : f16
         linalg.yield %value : f16
-    } -> tensor<5x7xf16>
-    return %sum : tensor<5x7xf16>
+    } -> tensor<2x1024x128xf16>
+    return %sum : tensor<2x1024x128xf16>
   }
 }
 )mlir";
@@ -140,6 +150,8 @@ TEST_F(CanonicalSpatialAssignmentTest,
 
 TEST_F(CanonicalSpatialAssignmentTest,
        RejectsStructuredRootsWithoutAnObservableTypedPath) {
+  // A small shape is intentional: this is a single-fault negative and does
+  // not claim transformation or planning coverage.
   auto module = parse(R"mlir(
 #id = affine_map<(d0) -> (d0)>
 module {
@@ -183,48 +195,94 @@ TEST_F(CanonicalSpatialAssignmentTest,
       StructuredDAGAnalysis::create(getFunction(*module), &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
 
-  auto coordinate = buildCanonicalSpatialAssignment(
-      *dag, {TileId(9), TileId(1), TileId(7), TileId(3), TileId(5), TileId(0)},
-      &failureReason);
+  auto coordinate =
+      buildCanonicalSpatialAssignment(*dag, allTiles(), &failureReason);
   ASSERT_TRUE(mlir::succeeded(coordinate)) << failureReason;
   ASSERT_EQ(coordinate->plan.nodes.size(), 4u);
   for (const NodeSpatialPlan &node : coordinate->plan.nodes) {
-    ASSERT_EQ(node.axes.size(), 2u);
-    EXPECT_EQ(node.axes[0].parameter, 3);
-    EXPECT_EQ(node.axes[1].parameter, 2);
-    EXPECT_TRUE(
-        llvm::equal(node.embedding,
-                    llvm::ArrayRef<TileId>{TileId(0), TileId(1), TileId(3),
-                                           TileId(5), TileId(7), TileId(9)}));
+    ASSERT_EQ(node.axes.size(), 3u);
+    EXPECT_EQ(node.axes[0].parameter, 2);
+    EXPECT_EQ(node.axes[1].parameter, 8);
+    EXPECT_EQ(node.axes[2].parameter, 1);
+    EXPECT_TRUE(llvm::equal(node.embedding, allTiles()));
     EXPECT_TRUE(node.reductionMerges.empty());
   }
   for (const NodeExecutionPartition &node : coordinate->assignment.nodes) {
-    ASSERT_EQ(node.shards.size(), 6u);
-    EXPECT_EQ(node.shards[0].iterationDomain[0], (IteratorInterval{0, 2}));
-    EXPECT_EQ(node.shards[4].iterationDomain[0], (IteratorInterval{4, 1}));
-    EXPECT_EQ(node.shards[0].iterationDomain[1], (IteratorInterval{0, 4}));
-    EXPECT_EQ(node.shards[1].iterationDomain[1], (IteratorInterval{4, 3}));
+    ASSERT_EQ(node.shards.size(), 16u);
+    EXPECT_EQ(node.shards[0].iterationDomain[0], (IteratorInterval{0, 1}));
+    EXPECT_EQ(node.shards[8].iterationDomain[0], (IteratorInterval{1, 1}));
+    EXPECT_EQ(node.shards[0].iterationDomain[1], (IteratorInterval{0, 128}));
+    EXPECT_EQ(node.shards[7].iterationDomain[1], (IteratorInterval{896, 128}));
+    EXPECT_EQ(node.shards[0].iterationDomain[2], (IteratorInterval{0, 128}));
   }
 
-  auto reordered = buildCanonicalSpatialAssignment(
-      *dag, {TileId(0), TileId(5), TileId(3), TileId(9), TileId(1), TileId(7)},
-      &failureReason);
+  llvm::SmallVector<TileId, 16> reorderedTiles = allTiles();
+  std::rotate(reorderedTiles.begin(), reorderedTiles.begin() + 5,
+              reorderedTiles.end());
+  auto reordered =
+      buildCanonicalSpatialAssignment(*dag, reorderedTiles, &failureReason);
   ASSERT_TRUE(mlir::succeeded(reordered)) << failureReason;
   EXPECT_EQ(reordered->plan, coordinate->plan);
   EXPECT_EQ(print(module->getOperation()), before);
 }
 
 TEST_F(CanonicalSpatialAssignmentTest,
+       BuildsRaggedAllTileAssignmentWithExactTailCoverage) {
+  auto module = parse(R"mlir(
+#id = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+module {
+  func.func @ragged(%input: tensor<2x1025x127xf16>)
+      -> tensor<2x1025x127xf16> {
+    %empty = tensor.empty() : tensor<2x1025x127xf16>
+    %result = linalg.generic {
+        indexing_maps = [#id, #id],
+        iterator_types = ["parallel", "parallel", "parallel"]}
+        ins(%input : tensor<2x1025x127xf16>)
+        outs(%empty : tensor<2x1025x127xf16>) {
+      ^bb0(%value: f16, %output: f16):
+        linalg.yield %value : f16
+    } -> tensor<2x1025x127xf16>
+    return %result : tensor<2x1025x127xf16>
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  std::string failureReason;
+  auto dag =
+      StructuredDAGAnalysis::create(getFunction(*module), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+  auto coordinate =
+      buildCanonicalSpatialAssignment(*dag, allTiles(), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(coordinate)) << failureReason;
+  ASSERT_EQ(coordinate->assignment.nodes.size(), 1u);
+  const NodeExecutionPartition &node = coordinate->assignment.nodes.front();
+  ASSERT_EQ(node.shards.size(), 16u);
+  EXPECT_EQ(node.shards[0].iterationDomain[1], (IteratorInterval{0, 129}));
+  EXPECT_EQ(node.shards[1].iterationDomain[1], (IteratorInterval{129, 128}));
+  EXPECT_EQ(node.shards[7].iterationDomain[1], (IteratorInterval{897, 128}));
+  EXPECT_EQ(node.shards[15].iterationDomain[0], (IteratorInterval{1, 1}));
+  int64_t coveredElements = 0;
+  for (const ExecutionShard &shard : node.shards) {
+    int64_t elements = 1;
+    for (const IteratorInterval &interval : shard.iterationDomain)
+      elements *= interval.size;
+    coveredElements += elements;
+  }
+  EXPECT_EQ(coveredElements, int64_t{2} * 1025 * 127);
+}
+
+TEST_F(CanonicalSpatialAssignmentTest,
        LeavesPureReductionAsOneUnpartitionedLogicalCell) {
   auto module = parse(R"mlir(
-#input = affine_map<(k) -> (k)>
-#output = affine_map<(k) -> ()>
+#input = affine_map<(b, m, k) -> (b, m, k)>
+#output = affine_map<(b, m, k) -> ()>
 module {
-  func.func @reduce(%input: tensor<5xf16>) -> tensor<f16> {
+  func.func @reduce(%input: tensor<2x1024x128xf16>) -> tensor<f16> {
     %empty = tensor.empty() : tensor<f16>
     %result = linalg.generic {
-        indexing_maps = [#input, #output], iterator_types = ["reduction"]}
-        ins(%input : tensor<5xf16>) outs(%empty : tensor<f16>) {
+        indexing_maps = [#input, #output],
+        iterator_types = ["reduction", "reduction", "reduction"]}
+        ins(%input : tensor<2x1024x128xf16>) outs(%empty : tensor<f16>) {
       ^bb0(%value: f16, %accumulator: f16):
         %sum = arith.addf %value, %accumulator : f16
         linalg.yield %sum : f16
@@ -242,12 +300,16 @@ module {
       *dag, {TileId(8), TileId(2), TileId(4), TileId(6)}, &failureReason);
   ASSERT_TRUE(mlir::succeeded(coordinate)) << failureReason;
   ASSERT_EQ(coordinate->plan.nodes.size(), 1u);
-  EXPECT_EQ(coordinate->plan.nodes[0].axes[0].parameter, 1);
+  ASSERT_EQ(coordinate->plan.nodes[0].axes.size(), 3u);
+  EXPECT_TRUE(llvm::all_of(
+      coordinate->plan.nodes[0].axes,
+      [](const IteratorPartition &axis) { return axis.parameter == 1; }));
   EXPECT_TRUE(llvm::equal(coordinate->plan.nodes[0].embedding,
                           llvm::ArrayRef<TileId>{TileId(2)}));
   ASSERT_EQ(coordinate->assignment.nodes[0].shards.size(), 1u);
-  EXPECT_EQ(coordinate->assignment.nodes[0].shards[0].iterationDomain[0],
-            (IteratorInterval{0, 5}));
+  EXPECT_TRUE(llvm::equal(
+      coordinate->assignment.nodes[0].shards[0].iterationDomain,
+      llvm::ArrayRef<IteratorInterval>{{0, 2}, {0, 1024}, {0, 128}}));
 }
 
 TEST_F(CanonicalSpatialAssignmentTest,
@@ -260,26 +322,26 @@ TEST_F(CanonicalSpatialAssignmentTest,
 #o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
 module {
   func.func @attention_modes(
-      %query: tensor<2x3x4xf16>, %key: tensor<2x5x4xf16>,
-      %value: tensor<2x5x6xf16>, %scale: f32)
-      -> (tensor<2x3x6xf16>, tensor<2x3x6xf16>) {
-    %out0 = tensor.empty() : tensor<2x3x6xf16>
+      %query: tensor<2x1025x128xf16>, %key: tensor<2x1031x128xf16>,
+      %value: tensor<2x1031x64xf16>, %scale: f32)
+      -> (tensor<2x1025x64xf16>, tensor<2x1025x64xf16>) {
+    %out0 = tensor.empty() : tensor<2x1025x64xf16>
     %fa = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale : tensor<2x3x4xf16>,
-            tensor<2x5x4xf16>, tensor<2x5x6xf16>, f32)
-        outs(%out0 : tensor<2x3x6xf16>)
+        ins(%query, %key, %value, %scale : tensor<2x1025x128xf16>,
+            tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
+        outs(%out0 : tensor<2x1025x64xf16>)
         algorithm(<flash_attention>)
         indexing_maps = [#q, #k, #v, #s, #o]
-        -> tensor<2x3x6xf16>
-    %out1 = tensor.empty() : tensor<2x3x6xf16>
+        -> tensor<2x1025x64xf16>
+    %out1 = tensor.empty() : tensor<2x1025x64xf16>
     %fd = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale : tensor<2x3x4xf16>,
-            tensor<2x5x4xf16>, tensor<2x5x6xf16>, f32)
-        outs(%out1 : tensor<2x3x6xf16>)
+        ins(%query, %key, %value, %scale : tensor<2x1025x128xf16>,
+            tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
+        outs(%out1 : tensor<2x1025x64xf16>)
         algorithm(<flash_decoding>)
         indexing_maps = [#q, #k, #v, #s, #o]
-        -> tensor<2x3x6xf16>
-    return %fa, %fd : tensor<2x3x6xf16>, tensor<2x3x6xf16>
+        -> tensor<2x1025x64xf16>
+    return %fa, %fd : tensor<2x1025x64xf16>, tensor<2x1025x64xf16>
   }
 }
 )mlir");
@@ -321,6 +383,14 @@ module {
   ASSERT_EQ(coordinate->assignment.nodes[0].shards.size(), 4u);
   ASSERT_EQ(coordinate->assignment.nodes[1].shards.size(), 4u);
   ASSERT_EQ(coordinate->assignment.nodes[1].reductionGroups.size(), 2u);
+  EXPECT_EQ(coordinate->assignment.nodes[0].shards[0].iterationDomain[1],
+            (IteratorInterval{0, 513}));
+  EXPECT_EQ(coordinate->assignment.nodes[0].shards[1].iterationDomain[1],
+            (IteratorInterval{513, 512}));
+  EXPECT_EQ(coordinate->assignment.nodes[1].shards[0].iterationDomain[3],
+            (IteratorInterval{0, 516}));
+  EXPECT_EQ(coordinate->assignment.nodes[1].shards[1].iterationDomain[3],
+            (IteratorInterval{516, 515}));
   EXPECT_EQ(print(module->getOperation()), before);
 }
 

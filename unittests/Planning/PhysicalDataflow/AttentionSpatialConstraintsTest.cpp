@@ -45,41 +45,43 @@ protected:
 #multi_o = affine_map<(b, m, k1, k2a, k2b, n) -> (b, m, n)>
 module {
   func.func @attention_modes(
-      %query: tensor<2x3x4xf16>, %key: tensor<2x5x4xf16>,
-      %value: tensor<2x5x6xf16>, %scale: f32)
-      -> (tensor<2x3x6xf16>, tensor<2x3x6xf16>) {
-    %out0 = tensor.empty() : tensor<2x3x6xf16>
+      %query: tensor<2x1024x128xf16>, %key: tensor<2x1024x128xf16>,
+      %value: tensor<2x1024x64xf16>, %scale: f32)
+      -> (tensor<2x1024x64xf16>, tensor<2x1024x64xf16>) {
+    %out0 = tensor.empty() : tensor<2x1024x64xf16>
     %fa = wafer.linalg_ext.attention
         ins(%query, %key, %value, %scale :
-            tensor<2x3x4xf16>, tensor<2x5x4xf16>, tensor<2x5x6xf16>, f32)
-        outs(%out0 : tensor<2x3x6xf16>)
+            tensor<2x1024x128xf16>, tensor<2x1024x128xf16>,
+            tensor<2x1024x64xf16>, f32)
+        outs(%out0 : tensor<2x1024x64xf16>)
         algorithm(<flash_attention>)
         indexing_maps = [#q, #k, #v, #s, #o]
-        -> tensor<2x3x6xf16>
-    %out1 = tensor.empty() : tensor<2x3x6xf16>
+        -> tensor<2x1024x64xf16>
+    %out1 = tensor.empty() : tensor<2x1024x64xf16>
     %fd = wafer.linalg_ext.attention
         ins(%query, %key, %value, %scale :
-            tensor<2x3x4xf16>, tensor<2x5x4xf16>, tensor<2x5x6xf16>, f32)
-        outs(%out1 : tensor<2x3x6xf16>)
+            tensor<2x1024x128xf16>, tensor<2x1024x128xf16>,
+            tensor<2x1024x64xf16>, f32)
+        outs(%out1 : tensor<2x1024x64xf16>)
         algorithm(<flash_decoding>)
         indexing_maps = [#q, #k, #v, #s, #o]
-        -> tensor<2x3x6xf16>
-    return %fa, %fd : tensor<2x3x6xf16>, tensor<2x3x6xf16>
+        -> tensor<2x1024x64xf16>
+    return %fa, %fd : tensor<2x1024x64xf16>, tensor<2x1024x64xf16>
   }
 
   func.func @multi_k2(
-      %query: tensor<2x3x4xf16>, %key: tensor<2x5x7x4xf16>,
-      %value: tensor<2x5x7x6xf16>, %scale: f32)
-      -> tensor<2x3x6xf16> {
-    %out = tensor.empty() : tensor<2x3x6xf16>
+      %query: tensor<2x1025x128xf16>, %key: tensor<2x33x31x128xf16>,
+      %value: tensor<2x33x31x64xf16>, %scale: f32)
+      -> tensor<2x1025x64xf16> {
+    %out = tensor.empty() : tensor<2x1025x64xf16>
     %result = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale : tensor<2x3x4xf16>,
-            tensor<2x5x7x4xf16>, tensor<2x5x7x6xf16>, f32)
-        outs(%out : tensor<2x3x6xf16>)
+        ins(%query, %key, %value, %scale : tensor<2x1025x128xf16>,
+            tensor<2x33x31x128xf16>, tensor<2x33x31x64xf16>, f32)
+        outs(%out : tensor<2x1025x64xf16>)
         algorithm(<flash_decoding>)
         indexing_maps = [#multi_q, #multi_k, #multi_v, #multi_s, #multi_o]
-        -> tensor<2x3x6xf16>
-    return %result : tensor<2x3x6xf16>
+        -> tensor<2x1025x64xf16>
+    return %result : tensor<2x1025x64xf16>
   }
 }
 )mlir",
@@ -151,7 +153,7 @@ TEST_F(AttentionSpatialConstraintsTest,
   auto fd = deriveAttentionSpatialConstraints(attentionOps[1]);
   ASSERT_TRUE(mlir::succeeded(fa));
   ASSERT_TRUE(mlir::succeeded(fd));
-  llvm::SmallVector<int64_t, 8> extents{2, 3, 4, 5, 6};
+  llvm::SmallVector<int64_t, 8> extents{2, 1024, 128, 1024, 64};
   llvm::SmallVector<IteratorPartition, 8> partitions = unitPartitions(5);
 
   EXPECT_EQ(checkAttentionSpatialConstraints(*fa, extents, partitions),
@@ -160,7 +162,7 @@ TEST_F(AttentionSpatialConstraintsTest,
             AttentionSpatialConstraintViolation::
                 FlashDecodingLeavesKeyValueUnpartitioned);
 
-  partitions[3] = {3, IteratorPartitionScheme::UniformExtent, 5};
+  partitions[3] = {3, IteratorPartitionScheme::UniformExtent, 1024};
   EXPECT_EQ(checkAttentionSpatialConstraints(*fa, extents, partitions),
             AttentionSpatialConstraintViolation::None);
   EXPECT_EQ(checkAttentionSpatialConstraints(*fd, extents, partitions),
@@ -172,20 +174,29 @@ TEST_F(AttentionSpatialConstraintsTest,
   EXPECT_EQ(checkAttentionSpatialConstraints(*fa, extents, partitions),
             AttentionSpatialConstraintViolation::None)
       << "K1 remains governed by the general spatial domain";
-  partitions[1] = {1, IteratorPartitionScheme::UniformExtent, 2};
+  partitions[1] = {1, IteratorPartitionScheme::UniformExtent, 128};
   EXPECT_EQ(checkAttentionSpatialConstraints(*fa, extents, partitions),
             AttentionSpatialConstraintViolation::None)
       << "parallel partitioning does not change the attention mode";
 
-  partitions[3] = {3, IteratorPartitionScheme::BalancedParts, 2};
+  partitions[3] = {3, IteratorPartitionScheme::BalancedParts, 16};
   EXPECT_EQ(
       checkAttentionSpatialConstraints(*fa, extents, partitions),
       AttentionSpatialConstraintViolation::FlashAttentionPartitionsKeyValue);
   EXPECT_EQ(checkAttentionSpatialConstraints(*fd, extents, partitions),
             AttentionSpatialConstraintViolation::None);
 
-  partitions[3] = {3, IteratorPartitionScheme::UniformExtent, 3};
+  partitions[3] = {3, IteratorPartitionScheme::UniformExtent, 128};
   EXPECT_EQ(checkAttentionSpatialConstraints(*fd, extents, partitions),
+            AttentionSpatialConstraintViolation::None);
+
+  llvm::SmallVector<int64_t, 8> raggedExtents{2, 1025, 128, 1031, 64};
+  partitions = unitPartitions(5);
+  partitions[3] = {3, IteratorPartitionScheme::BalancedParts, 16};
+  EXPECT_EQ(
+      checkAttentionSpatialConstraints(*fa, raggedExtents, partitions),
+      AttentionSpatialConstraintViolation::FlashAttentionPartitionsKeyValue);
+  EXPECT_EQ(checkAttentionSpatialConstraints(*fd, raggedExtents, partitions),
             AttentionSpatialConstraintViolation::None);
 }
 
@@ -200,12 +211,12 @@ TEST_F(AttentionSpatialConstraintsTest, SupportsMultipleKeyValueIterators) {
   ASSERT_TRUE(multi);
   auto constraints = deriveAttentionSpatialConstraints(multi);
   ASSERT_TRUE(mlir::succeeded(constraints));
-  llvm::SmallVector<int64_t, 8> extents{2, 3, 4, 5, 7, 6};
+  llvm::SmallVector<int64_t, 8> extents{2, 1025, 128, 33, 31, 64};
   llvm::SmallVector<IteratorPartition, 8> partitions = unitPartitions(6);
   EXPECT_EQ(checkAttentionSpatialConstraints(*constraints, extents, partitions),
             AttentionSpatialConstraintViolation::
                 FlashDecodingLeavesKeyValueUnpartitioned);
-  partitions[4] = {4, IteratorPartitionScheme::UniformExtent, 4};
+  partitions[4] = {4, IteratorPartitionScheme::UniformExtent, 8};
   EXPECT_EQ(checkAttentionSpatialConstraints(*constraints, extents, partitions),
             AttentionSpatialConstraintViolation::None);
 }
@@ -220,7 +231,7 @@ TEST_F(AttentionSpatialConstraintsTest, FailsClosedOnMalformedIteratorDomains) {
   });
   auto constraints = deriveAttentionSpatialConstraints(attention);
   ASSERT_TRUE(mlir::succeeded(constraints));
-  llvm::SmallVector<int64_t, 8> extents{2, 3, 4, 5, 6};
+  llvm::SmallVector<int64_t, 8> extents{2, 1024, 128, 1024, 64};
   llvm::SmallVector<IteratorPartition, 8> partitions = unitPartitions(5);
 
   partitions.pop_back();
@@ -244,16 +255,24 @@ TEST_F(AttentionSpatialConstraintsTest, FailsClosedOnMalformedIteratorDomains) {
 }
 
 TEST(IteratorPartitionTest, ReportsExactIntervalCounts) {
-  auto balanced = getIteratorPartitionIntervalCount(
-      5, {0, IteratorPartitionScheme::BalancedParts, 3});
-  auto uniform = getIteratorPartitionIntervalCount(
-      5, {0, IteratorPartitionScheme::UniformExtent, 2});
-  ASSERT_TRUE(mlir::succeeded(balanced));
-  ASSERT_TRUE(mlir::succeeded(uniform));
-  EXPECT_EQ(*balanced, 3);
-  EXPECT_EQ(*uniform, 3);
+  auto alignedBalanced = getIteratorPartitionIntervalCount(
+      1024, {0, IteratorPartitionScheme::BalancedParts, 16});
+  auto alignedUniform = getIteratorPartitionIntervalCount(
+      1024, {0, IteratorPartitionScheme::UniformExtent, 128});
+  auto raggedBalanced = getIteratorPartitionIntervalCount(
+      1025, {0, IteratorPartitionScheme::BalancedParts, 16});
+  auto raggedUniform = getIteratorPartitionIntervalCount(
+      1025, {0, IteratorPartitionScheme::UniformExtent, 128});
+  ASSERT_TRUE(mlir::succeeded(alignedBalanced));
+  ASSERT_TRUE(mlir::succeeded(alignedUniform));
+  ASSERT_TRUE(mlir::succeeded(raggedBalanced));
+  ASSERT_TRUE(mlir::succeeded(raggedUniform));
+  EXPECT_EQ(*alignedBalanced, 16);
+  EXPECT_EQ(*alignedUniform, 8);
+  EXPECT_EQ(*raggedBalanced, 16);
+  EXPECT_EQ(*raggedUniform, 9);
   EXPECT_TRUE(mlir::failed(getIteratorPartitionIntervalCount(
-      5, {0, IteratorPartitionScheme::BalancedParts, 0})));
+      1024, {0, IteratorPartitionScheme::BalancedParts, 0})));
 }
 
 } // namespace

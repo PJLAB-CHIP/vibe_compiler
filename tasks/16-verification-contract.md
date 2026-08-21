@@ -63,6 +63,15 @@ package并fresh no-card；职责已由后继接管时直接从current queue移�
 - 默认板端数据类型为FP16/BF16；只有格式/ABI/转换/数值边界本身或真实source要求F32时才使用F32并记录理由。
 - 测试报告必须核对实际执行数量、skip/unsupported清单和feature配置；`ctest passed`本身不证明关键lit或source vertical执行。
 
+编译器IR、analysis、planning、rewrite、conversion和lowering的主线正例直接使用真实规模的多维shape，而不是用个位数
+shape代签：默认rank至少为3，至少一个主要迭代维度不小于1024；partition、tiling和loop必须成对覆盖`1024`等整除
+长度与`1025`、`1031`等非整除长度，并让空间case实际跨越可用Tile数、temporal case实际形成多个block/wave。只解析或改写
+static IR不会因logical shape变大而按元素分配内存，因此这类case没有缩成个位数的理由。只有有界逐点穷举oracle、最小
+verifier负例、scalar/zero-rank合同或单一故障定位可以使用小shape，并写明原因；同一被测机制仍必须有真实规模正例。
+每项完成证明按语义等价类建立矩阵，至少检查整除/非整除、单轴/多轴以及相关fan-in/fan-out、broadcast、reduction、
+view/slice类别；不能以任意一个case成功代签。断言必须落到该边界的exact coverage、无重叠、owner、demand、merge、tail和
+下游可消费结果，而不只是`success`。本条是测试覆盖合同，不是IR合法shape、workload matcher或优化策略。
+
 稳定host入口遵循当前CMake/lit配置，例如：
 
 ```text
@@ -115,7 +124,8 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - temporal域同时覆盖完整all-iterator tile vector与Q50.D已选traversal内会改变reuse/lifetime/tail的有限
   wave-loop order；regular
   mapping、relation-derived reuse和coarse resource estimate只改变proposal顺序，开关后tiny accepted domain与winner不变；
-- independent tiny reference domain enumerator不调用production domain builder，证明complete finite小图合法域完整；
+- independent有界穷举reference domain enumerator不调用production domain builder，证明有限小图合法域完整；同一机制另有
+  真实规模整除/非整除正例；
 - test-only flat reference composer先证明plan set/legality/cost；独立actualization runner才可从fresh source逐plan调用真实materializer与exact
   gates，且production search entry不可达该runner；
 - cheap legality、exact coverage、topology symmetry、canonical dedup、已证明SPM lower bound和raw-work dominance只有在不删除合法最优解时才能在state expansion前剪枝；
@@ -277,13 +287,13 @@ special pass option、shape shortcut或手写替代graph。
 
 数据链和整图规模是两类证据，不能用单block互相代签：
 
-1. tiny multi-binding golden验证ProgramDataSource→ProgramDataRange→TargetTensor→program-data offset、padding和digest；
+1. 有界multi-binding golden验证ProgramDataSource→ProgramDataRange→TargetTensor→program-data offset、padding和digest；
    内容相同但identity不同的ProgramTensor不得自动合并，同一ProgramTensor的不同TargetTensor保持独立；
 2. 最大单tensor验证checked大范围算术、bounded source/target window与无全tensor element-object materialization；
 3. 完整大型parameter/external captured-constant inventory验证每个ProgramDataSource的bounded read/hash次数可解释、每次compile的
    package-owned TargetTensor只transform一次并占据一个deterministic file range；external input/output的compile-time transform和
    package byte计数为零，但不声明完整graph已编译；Q56 fake-provider/board另验证whole program data非空时只H2D一次、为空时零次；
-4. 完整小模型graph验证embedding/多层或等价完整结构、final transform、output head及其all-and-only data bindings都进入同一public path；
+4. 完整代表性模型graph验证embedding/多层或等价完整结构、final transform、output head及其all-and-only data bindings都进入同一public path；
 5. Q61在Q53之后再以至少一个完整大图验证frontend、IR、search、target和package的共同规模行为。
 
 每次compiler scale run至少记录source logical bytes、target physical bytes、package data bytes、ProgramTensor/ProgramDataSource/

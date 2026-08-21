@@ -870,6 +870,13 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 
 ## 14. Verification and Done Criteria
 
+physical-dataflow的IR、analysis、planning、materialization和lowering正例默认使用rank至少为3、至少一个主要迭代维度
+不小于1024的shape；空间和时间划分必须成对覆盖`1024`等整除长度与`1025`、`1031`等非整除长度，确保测试实际形成
+均匀块、多Tile、多个block/wave、remainder和tail。矩阵还要覆盖单轴/多轴及相关fan-in/fan-out、broadcast、reduction、
+view/slice语义，并逐项断言exact coverage、无重叠、owner、demand、merge、tail和下游表示。个位数shape只允许用于可穷举
+的独立oracle、最小负例或单一故障定位；它和任意单个成功case都不能证明axis、exact-demand、resource、schedule或
+selected lowering完成。shape只是case输入，不进入合法域、candidate选择或workload协议。
+
 ### IR / verifier
 
 - distinct Tile modules可以包含不同op、loop、shape和长度；
@@ -881,10 +888,11 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 
 ### Baseline与search correctness
 
-- tiny chain、diamond、fanout、reduction、mixed compute/movement和stage+buffer case先由独立reference enumerator证明domain
-  coverage，再由test-only flat exhaustive oracle证明planning set/剪枝/winner；
+- chain、diamond、fanout、reduction、mixed compute/movement和stage+buffer先由真实规模IR case证明production路径；另用明确标注
+  的小domain独立reference enumerator和test-only flat exhaustive oracle证明planning set、剪枝和winner，不能让oracle规模
+  替代production shape覆盖；
 - 构造必须联合改变spatial/region/temporal等多个choice才改善的陷阱，anytime策略能找到更优plan且production只commit一次；
-- estimate、memo、no-good或dominance逐项开启不改变small-oracle winner；
+- estimate、memo、no-good或dominance逐项开启不改变有界穷举oracle的winner；同一机制的真实规模矩阵另行证明production路径；
 - `none`和`search`只共享policy-free analysis、typed plan schema、materializer和selected-result compilation/verification，互不调用；
 - Q51.Core起旧接口不进入current控制流，但旧source/test中的独有算法、proof和witness必须先迁移；每个checkpoint同时验证typed
   mechanism、production consumer和donor capability，Q51比较new planning与独立oracle、winner actual IR和一次Q50.0结果；

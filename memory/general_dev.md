@@ -17,6 +17,10 @@
 - host构建、unit、CTest、lit、catalog和no-card默认使用机器可用逻辑CPU并行；CMake/CTest优先
   `-j$(nproc)`。只有证实内存、共享可写目录、resource lock或工具限制时才降并发。
 - 先做直接受影响target的增量构建/测试，再做完整configured build与相关CTest/lit。不要用编译单个object代替link或integration。
+- IR、analysis、planning、rewrite、conversion和lowering正例默认用rank至少为3、至少一个主要迭代维度不小于1024的
+  static shape；partition/tiling成对覆盖`1024`等整除长度与`1025`、`1031`等非整除长度。按相关语义等价类建立矩阵并
+  检查exact结果，不能只断言一个case成功。只有逐点穷举oracle、最小verifier负例、scalar/zero-rank或单一故障定位才
+  缩小shape并说明理由；同一机制仍保留真实规模矩阵。不要把该测试规模写成IR合法性或策略。
 - 仓库同时存在多个LLVM/MLIR源码、解压或安装树时，API可用性以当前configured build的compile include路径和TableGen include
   路径为准；不能因旁置`.deps`树含某个header就声称pinned toolchain可用该interface。
 - 查看实际执行、skip与unsupported清单；`ctest passed`不证明关键source vertical被配置和执行。
@@ -462,7 +466,8 @@ source program
 - Q51.Core不能等所有axis完成后才一次性接线，否则search-only mechanism交付时没有production consumer；也不能先落mock/nullable
   空壳。S/B-full形成首批真实domain后建立Core foundation，缺轴返回typed incomplete；后续每个Q50提交同批扩closed variant和caller。
 - 只有selected winner assignment进入一次CardModule materialization和Q50.0。late verification失败说明planning/lowering合同缺口，
-  不得回到search重试下一个materialized candidate。test-only tiny oracle可以逐点actualize，用于验证planning域和cost，不进入产品调用链。
+  不得回到search重试下一个materialized candidate。test-only有界穷举oracle可以逐点actualize，用于验证planning域和cost，
+  不进入产品调用链，也不替代真实规模正例。
 - 每个Q50 mechanism完成必须同时有算法、production consumer、query/apply测试和donor能力映射；定义typed domain或direct apply不足以
   证明任务完成。
 

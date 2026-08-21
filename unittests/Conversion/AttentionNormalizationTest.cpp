@@ -13,6 +13,8 @@
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
@@ -33,12 +35,30 @@ protected:
     context->loadAllAvailableDialects();
   }
 
-  mlir::OwningOpRef<mlir::ModuleOp> parseDecodeProgram() {
-    std::string path =
-        std::string(WAFER_TEST_SOURCE_DIR) +
-        "/unittests/Planning/Search/Inputs/functional-decode.mlir";
-    return mlir::parseSourceFile<mlir::ModuleOp>(
-        path, mlir::ParserConfig(context.get()));
+  static void replaceAll(std::string &text, llvm::StringRef from,
+                         llvm::StringRef to) {
+    size_t position = 0;
+    while ((position = text.find(from.str(), position)) != std::string::npos) {
+      text.replace(position, from.size(), to.str());
+      position += to.size();
+    }
+  }
+
+  mlir::OwningOpRef<mlir::ModuleOp>
+  parseRepresentativeDecodeProgram(bool aligned) {
+    std::string path = std::string(WAFER_TEST_SOURCE_DIR) +
+                       "/unittests/Planning/Search/Inputs/"
+                       "functional-decode-representative.mlir";
+    auto buffer = llvm::MemoryBuffer::getFile(path);
+    if (!buffer)
+      return {};
+    std::string source = (*buffer)->getBuffer().str();
+    if (aligned) {
+      replaceAll(source, "1031", "1024");
+      replaceAll(source, "1030", "1023");
+    }
+    return mlir::parseSourceString<mlir::ModuleOp>(
+        source, mlir::ParserConfig(context.get()));
   }
 
   mlir::LogicalResult normalize(mlir::ModuleOp module) {
@@ -63,6 +83,26 @@ protected:
     return found;
   }
 
+  static mlir::linalg::LinalgOp findScoreContraction(mlir::Operation *root,
+                                                     int64_t keyLength) {
+    mlir::linalg::LinalgOp found;
+    root->walk([&](mlir::linalg::LinalgOp operation) {
+      if (operation->getNumResults() != 1 || operation.getNumDpsInputs() != 2 ||
+          !llvm::any_of(operation.getIteratorTypesArray(), [](auto iterator) {
+            return iterator == mlir::utils::IteratorType::reduction;
+          }))
+        return;
+      auto type = mlir::dyn_cast<mlir::RankedTensorType>(
+          operation->getResult(0).getType());
+      if (type &&
+          type.getShape() == llvm::ArrayRef<int64_t>({2, 1024, keyLength})) {
+        EXPECT_FALSE(found);
+        found = operation;
+      }
+    });
+    return found;
+  }
+
   static std::string print(mlir::Operation *root) {
     std::string text;
     llvm::raw_string_ostream stream(text);
@@ -75,18 +115,36 @@ protected:
 };
 
 TEST_F(AttentionNormalizationTest,
-       FunctionalDecodeFormsOneFixedFlashDecodingRoot) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = parseDecodeProgram();
+       AlignedFunctionalDecodeFormsOneFixedFlashDecodingRoot) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseRepresentativeDecodeProgram(/*aligned=*/true);
   ASSERT_TRUE(module);
   ASSERT_TRUE(mlir::succeeded(normalize(*module)));
   auto attention = findSingle<wafer::LinalgExtAttentionOp>(*module);
   ASSERT_TRUE(attention);
   EXPECT_EQ(attention.getAlgorithm(), wafer::AttentionAlgorithm::FlashDecoding);
+  EXPECT_TRUE(llvm::equal(attention.getStaticLoopRanges(),
+                          llvm::ArrayRef<int64_t>{2, 1024, 128, 1024, 64}));
+  EXPECT_EQ(count<mlir::math::ExpOp>(*module), 0u);
+}
+
+TEST_F(AttentionNormalizationTest,
+       RaggedFunctionalDecodeFormsOneFixedFlashDecodingRoot) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseRepresentativeDecodeProgram(/*aligned=*/false);
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(normalize(*module)));
+  auto attention = findSingle<wafer::LinalgExtAttentionOp>(*module);
+  ASSERT_TRUE(attention);
+  EXPECT_EQ(attention.getAlgorithm(), wafer::AttentionAlgorithm::FlashDecoding);
+  EXPECT_TRUE(llvm::equal(attention.getStaticLoopRanges(),
+                          llvm::ArrayRef<int64_t>{2, 1024, 128, 1031, 64}));
   EXPECT_EQ(count<mlir::math::ExpOp>(*module), 0u);
 }
 
 TEST_F(AttentionNormalizationTest, SymbolSpellingDoesNotAffectClassification) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = parseDecodeProgram();
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseRepresentativeDecodeProgram(/*aligned=*/false);
   ASSERT_TRUE(module);
   auto function = module->lookupSymbol<mlir::func::FuncOp>("functional_decode");
   ASSERT_TRUE(function);
@@ -98,8 +156,9 @@ TEST_F(AttentionNormalizationTest, SymbolSpellingDoesNotAffectClassification) {
 }
 
 TEST_F(AttentionNormalizationTest,
-       UnreturnedCacheUpdatesClassifyAsFlashAttention) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = parseDecodeProgram();
+       AlignedUnreturnedCacheUpdatesClassifyAsFlashAttention) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseRepresentativeDecodeProgram(/*aligned=*/true);
   ASSERT_TRUE(module);
   auto function = module->lookupSymbol<mlir::func::FuncOp>("functional_decode");
   ASSERT_TRUE(function);
@@ -114,10 +173,35 @@ TEST_F(AttentionNormalizationTest,
   ASSERT_TRUE(attention);
   EXPECT_EQ(attention.getAlgorithm(),
             wafer::AttentionAlgorithm::FlashAttention);
+  EXPECT_TRUE(llvm::equal(attention.getStaticLoopRanges(),
+                          llvm::ArrayRef<int64_t>{2, 1024, 128, 1024, 64}));
+}
+
+TEST_F(AttentionNormalizationTest,
+       RaggedUnreturnedCacheUpdatesClassifyAsFlashAttention) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseRepresentativeDecodeProgram(/*aligned=*/false);
+  ASSERT_TRUE(module);
+  auto function = module->lookupSymbol<mlir::func::FuncOp>("functional_decode");
+  ASSERT_TRUE(function);
+  auto returnOp = mlir::cast<mlir::func::ReturnOp>(
+      function.getBody().front().getTerminator());
+  returnOp->setOperand(1, function.getArgument(5));
+  returnOp->setOperand(2, function.getArgument(6));
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  ASSERT_TRUE(mlir::succeeded(normalize(*module)));
+  auto attention = findSingle<wafer::LinalgExtAttentionOp>(*module);
+  ASSERT_TRUE(attention);
+  EXPECT_EQ(attention.getAlgorithm(),
+            wafer::AttentionAlgorithm::FlashAttention);
+  EXPECT_TRUE(llvm::equal(attention.getStaticLoopRanges(),
+                          llvm::ArrayRef<int64_t>{2, 1024, 128, 1031, 64}));
 }
 
 TEST_F(AttentionNormalizationTest, NormalizesEveryIndependentValueRoot) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = parseDecodeProgram();
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseRepresentativeDecodeProgram(/*aligned=*/false);
   ASSERT_TRUE(module);
   mlir::linalg::LinalgOp valueContraction;
   module->walk([&](mlir::linalg::LinalgOp operation) {
@@ -127,7 +211,7 @@ TEST_F(AttentionNormalizationTest, NormalizesEveryIndependentValueRoot) {
                           : mlir::RankedTensorType{};
     if (mlir::isa<mlir::linalg::GenericOp>(operation.getOperation()) &&
         operation.getNumDpsInputs() == 2 && resultType &&
-        resultType.getShape() == llvm::ArrayRef<int64_t>({2, 3}))
+        resultType.getShape() == llvm::ArrayRef<int64_t>({2, 1024, 64}))
       valueContraction = operation;
   });
   ASSERT_TRUE(valueContraction);
@@ -156,27 +240,29 @@ TEST_F(AttentionNormalizationTest, NormalizesEveryIndependentValueRoot) {
 }
 
 TEST_F(AttentionNormalizationTest, ExtraScoreUseKeepsItsOriginalProducerChain) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = parseDecodeProgram();
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseRepresentativeDecodeProgram(/*aligned=*/false);
   ASSERT_TRUE(module);
-  auto score = findSingle<mlir::linalg::MatmulOp>(*module);
+  auto score = findScoreContraction(*module, 1031);
   ASSERT_TRUE(score);
   mlir::OpBuilder builder(score);
   builder.setInsertionPointAfter(score);
   builder.create<mlir::tensor::CastOp>(
-      score.getLoc(), score.getResult(0).getType(), score.getResult(0));
+      score.getLoc(), score->getResult(0).getType(), score->getResult(0));
 
   ASSERT_TRUE(mlir::succeeded(normalize(*module)));
   EXPECT_EQ(count<wafer::LinalgExtAttentionOp>(*module), 1u);
-  EXPECT_EQ(count<mlir::linalg::MatmulOp>(*module), 1u);
+  EXPECT_TRUE(findScoreContraction(*module, 1031));
   EXPECT_EQ(count<mlir::tensor::CastOp>(*module), 1u);
 }
 
 TEST_F(AttentionNormalizationTest, PrecomputedScoresRemainOrdinaryLinalg) {
-  mlir::OwningOpRef<mlir::ModuleOp> module = parseDecodeProgram();
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      parseRepresentativeDecodeProgram(/*aligned=*/false);
   ASSERT_TRUE(module);
-  auto score = findSingle<mlir::linalg::MatmulOp>(*module);
+  auto score = findScoreContraction(*module, 1031);
   ASSERT_TRUE(score);
-  score.getResult(0).replaceAllUsesWith(score.getDpsInits().front());
+  score->getResult(0).replaceAllUsesWith(score.getDpsInits().front());
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
   std::string before = print(module->getOperation());
 

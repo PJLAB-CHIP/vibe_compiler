@@ -395,6 +395,14 @@ transaction enum或invocation descriptor依赖整个`WaferCompiler`，`WaferRunt
 - Performance：统计 clone/materialization/pass invocation 数和各 stage wall time，证明 local probe work随受影响 scope增长，
   不再是 region 数乘完整 module pipeline。
 
+上述IR/analysis/rewrite/conversion/pipeline正例默认使用rank至少为3、至少一个主要迭代维度不小于1024的static shape；
+partition、tiling和loop测试成对覆盖`1024`等整除维度与`1025`、`1031`等非整除维度，确保真实经过均匀块、多Tile、
+多block/wave、remainder和tail路径。static
+IR的logical shape不会使parser、analysis或rewrite按元素执行，因此个位数shape不能证明这些路径。小shape只留给有界逐点
+oracle、最小verifier负例、scalar/zero-rank或单一故障定位，并必须由同一机制的真实规模矩阵补足。矩阵还要覆盖对应的
+单轴/多轴及fan-in/fan-out、broadcast、reduction、view/slice语义类别；每个case检查该边界的精确结果，不能只检查pass成功。
+该约束只属于测试coverage，不得成为IR legality或shape特判。
+
 Q54不得回退Q42已经闭合的默认测试减负边界：默认lit继续只覆盖直接IR合同，Runtime由直接CTest/unit覆盖，Tools中的完整
 source-to-package、qualification和model case由对应任务点名。Q54自己的完成证据必须显式运行IR/source organization、受影响的
 Runtime/Tools case、analysis unit和parser/verifier gate；“不进入默认lit”不等于可以跳过本任务直接合同。

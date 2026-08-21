@@ -42,6 +42,14 @@ Wafer compiler和runtime的设计、IR、pass、工具和测试会一起演进�
   CMake build和CTest默认使用`nproc`给出的并发度。
 - 只有内存限制、共享写目录、资源锁或工具限制要求串行时才降低并发度。使用当前环境允许的最大安全
   并发度，并说明限制。
+- 编译器IR、analysis、planning、rewrite、conversion和lowering的正例默认使用接近真实workload的static shape：
+  rank至少为3，并且至少一个主要迭代维度不小于1024。涉及分块、空间划分或循环生成时，必须成对覆盖
+  `1024`等整除长度与`1025`、`1031`等非整除长度，实际经过均匀块、多个Tile、多个block/wave、
+  remainder和tail；仅把一个case或个位数shape跑通不能作为主线功能完成证据。
+- 小shape只用于确实需要有界逐元素穷举的独立oracle、最小verifier负例、scalar/zero-rank语义或单一边界
+  故障定位，并在测试中写明缩小理由。同一机制仍须有上述真实规模覆盖矩阵。正例不能只断言成功，
+  必须检查该stage承诺的exact coverage、无重叠、owner、demand、merge、tail或下游可消费结果。shape选择是
+  测试覆盖要求，不能进入IR legality、workload识别或compiler策略。
 - 真实设备测试始终单进程、逐case运行。
 
 ### 板端测试
