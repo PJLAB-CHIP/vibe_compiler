@@ -924,8 +924,9 @@ intersect/union:
 compiler本轮无法完成精确证明。默认编译路径不采集或打印统计。只有显式timing/profile选项启用时，query才通过可空observer
 报告relation composition、piece count和work count；observer不进入返回值、cache key或控制流。
 
-structured consumer优先消费标准`IndexingMapOpInterface`、`DestinationStyleOpInterface`和`TilingInterface`提供的iteration、
-operand和DPS角色。pinned MLIR的`TilingInterface`描述tile materialization机制和result/operand tile映射，但明确不判断
+Linalg consumer优先从仓库pinned `mlir::linalg::LinalgOp`的`getIndexingMapsArray()`和
+`getIteratorTypesArray()`读取indexing maps与iterator types，并使用`DestinationStyleOpInterface`和`TilingInterface`
+读取operand、DPS与tile relation。pinned MLIR的`TilingInterface`描述tile materialization机制和result/operand tile映射，但明确不判断
 profitability，也不能为所有pure tensor op返回任意exact set relation；因此它不能被当作Q50.A的完整relation接口。对标准
 `ViewLike`/`Subset`等接口仍无法表达的multi-operand tensor transform，新增的唯一Wafer扩展必须是窄
 `TensorIndexingOpInterface`：按具体result和operand返回exact result-to-operand relation，并列出该result的data-carrying
@@ -2056,9 +2057,10 @@ types、init结构和memory effects。rank、batch/head/query/channel的位置�
 维也由iterator roles表达，不能沿用current“最后两维”约定。
 
 该私有op的必要性由三个actual consumer共同成立：Q50.A需要coupled reduction algebra，Q50.E需要normalization iterator的完整
-temporal tiling，Q50.C需要按selected algorithm生成一次actual work。标准interface能表达的部分全部复用
-`DestinationStyleOpInterface`、`IndexingMapOpInterface`、`TilingInterface`、`MemoryEffectOpInterface`和shape reification；只有
-`(maximum,sum,unnormalized output)` partial state使用窄Wafer-specific interface。若这些consumer未实现，不能只
+temporal tiling，Q50.C需要按selected algorithm生成一次actual work。`indexing_maps`与`iterator_types`定义为ODS inherent
+fields并使用generated accessors；其它标准部分复用`DestinationStyleOpInterface`、`TilingInterface`、
+`MemoryEffectOpInterface`和shape reification。只有`(maximum,sum,unnormalized output)` partial state使用窄
+Wafer-specific interface。若这些consumer未实现，不能只
 因matcher存在就新增op。
 
 current/donor审计同时确认以下偏差：current domain以整个Module为一个`Original/Online/Split(block,partition)`坐标，R=7时就生成22
@@ -2153,8 +2155,9 @@ payload进入本domain。
 `wafer.linalg_ext.softmax_weighted_sum`表示上述logical semantics。它至少显式携带scores、values、output init、
 result、operand/result indexing maps、reduction iterator、element types和memory effects；mask/scale若已进入scores SSA就不重复编码。
 verifier证明rank/map/domain、DPS tie、reduction extent和dtype
-及region/effect合同。标准`DestinationStyleOpInterface`、`IndexingMapOpInterface`、`TilingInterface`优先复用；空间online
-reduction所需的coupled `(maximum, sum, unnormalizedOutput)` algebra由该op的窄typed interface提供，因为pinned标准
+及region/effect合同。operand/result indexing maps和iterator roles通过ODS generated accessors读取；
+`DestinationStyleOpInterface`与`TilingInterface`继续用于DPS和tiling。空间online reduction所需的coupled
+`(maximum, sum, unnormalizedOutput)` algebra由该op的窄typed interface提供，因为pinned标准
 `PartialReductionOpInterface`不能从单result softmax-weighted-sum语义自动恢复这组三状态。
 
 每个softmax-weighted-sum root的domain只有两个semantic algorithm points：

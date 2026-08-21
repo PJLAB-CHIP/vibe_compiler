@@ -264,8 +264,9 @@ shards、logical shard-to-Tile embedding，以及空间reduction时按output-dom
 ownership、partial contributions和dependency demand均从assignment与current structured IR派生，不能作为另一份可矛盾输入，也
 不能从result axis、单个`shardDimension`、participant count或balanced一维矩形反推。
 
-analysis先在最近的`func.func`上从SSA、`IndexingMapOpInterface`、DPS/Tiling/reduction interface和pure tensor transform
-semantics建立可失效、可重算的relation graph。主查询以consumer operand为单位，对每个destination shard执行：
+analysis先在最近的`func.func`上从SSA、仓库pinned `mlir::linalg::LinalgOp`的
+`getIndexingMapsArray()`/`getIteratorTypesArray()`、DPS/Tiling/reduction interface和pure tensor transform semantics
+建立可失效、可重算的relation graph。主查询以consumer operand为单位，对每个destination shard执行：
 
 ```text
 consumer exact iteration domain
