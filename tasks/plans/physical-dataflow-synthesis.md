@@ -3657,6 +3657,62 @@ F-core规范化并组合它们，运行与F full closure相同的problem validat
 coordinate零IR、FullFeasibilityProof后CardModule/Q50.0各一次、actual normalized problems逐semantic ID相等、Q50.0 failure不返回first-fit循环。
 F整个任务仍保持`queued`，直到partial foundation、K→I→J后的F full closure和独立oracle全部完成；F-core通过不冒充Q50.F完成。
 
+#### canonical-feasibility-proof contract
+
+本work item建立F的唯一normalized resource schema和canonical query，不提前实现partial/full search controller。canonical storage object与
+attention execution-local scratch统一映射到typed `FeasibilityResourceId`；owner-private adapter才为existing `StaticPackingProblem`分配
+solver index。SPM lifetime来自J order中的definition/last use；attention scratch在parent execution内按action DAG和mandatory simultaneous
+groups形成精确local conflict。layout footprint/alignment由`PhysicalLayoutRelation`计算，multi-piece object按同一encoding做checked
+aligned concatenation。
+
+每个Tile形成一个SPM packing problem。validated placement只在query栈内证明存在性并立即丢弃offset；proof只保留problem identity、
+resource IDs和`ValidatedPlacement/ExactSolverProof/DirectCapacityProof`方法。canonical H仍是DDR carrier而非peer route，故本项逐action验证
+exact payload与current DDR hard range；DTE/FSM/message occupancy为零，不能伪造后续H/J资源。schedule node/worker、attention action/value和
+storage/resource coverage做typed all-and-only direct proof。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  完整canonical B--K coordinates、AttentionWorkDescription及immutable TargetMemoryPolicy；storage lifetime、worker0 order和全部scratch/
+  state resources已显式，尚无actual CardModule/Instr或offset。
+- Current stage responsibility:
+  规范化per-Tile SPM、canonical DDR payload及plan coverage problems；验证problem结构，运行existing deterministic packing/status mapper，
+  返回FullFeasibilityProof、typed exact rejection、unsupported、indeterminate或compiler-contract failure。
+- Output IR / files:
+  query-local CanonicalFeasibilityCoordinate {normalized problems, FullFeasibilityProof}或typed failure；proof无offset、pointer、solver stack、
+  digest或日志，不修改IR/文件。
+- Downstream consumer:
+  attention-selected-decomposition只接受full proof并准备winner builder；deterministic-baseline-closure消费同一canonical problem，随后一次
+  actual construction/Q50.0重建problem做parity和真实offset assignment。partial/full feasibility原位复用schema/status mapping。
+- User-level driver / named pipeline:
+  无独立pass、pipeline或CLI；none/search canonical planning静态调用同一query，test-only可显式限制solver work。
+- Explicit non-goals:
+  不选择tile/layout/movement/storage/order，不写offset，不调用Q50.0、allocator pass、CardModule或baseline/search controller，不把
+  heuristic no-fit/solver exhaustion当infeasible，不预声明后续peer/event/resource axes。
+- Done criteria:
+  ordinary/attention、1024/1025/1031、multi-root、local/remote merge、rank-zero和multi-piece资源均形成stable normalized problems；
+  fit取得validated proof，single/clique/DDR hard overflow为exact rejection，zero/exhausted work为indeterminate，unsupported encoding与broken
+  plan/solver result分开；input order不改problem/proof，planning IR/Q50.0计数为零，并为后续actual parity保留typed identity。
+```
+
+| 覆盖类 | 代表输入/条件 | 必须断言的problem/result | 下游/parity witness |
+| --- | --- | --- | --- |
+| ordinary aligned/ragged | rank-3 1024/1025 all-16 load→execute→publish | storage objects逐Tile进入SPM，lifetimes形成exact conflicts，movement payload逐action闭合；validated placements不写回plan | proof覆盖全部storage/action/schedule IDs，source IR不变 |
+| diamond/fanout | 1025 multi-root/shared source | producer object活到全部DDR uses，destination objects按各consumer lifetime；同arena可复用不重叠对象 | normalized IDs稳定，不能按peak sum或first use误判 |
+| FA/FD | FA mask/no-mask、FD 1024/1031 local+remote、multi-K2 | execution-local score/prob/state scratch进入对应Tile problem；FD physical components不重复计，gather staging和simultaneous groups完整 | Full proof中的attention coverage与work description逐ID相同，无hidden scratch |
+| exact rejection | 单object或必要conflict clique超过SPM，单DDR payload超过hard contiguous limit | `CanonicalResourceRejection`携causal resource IDs/capacity；不返回unsupported/indeterminate | baseline以后只沿typed causal temporal coordinate推进，不提交IR探测 |
+| indeterminate/unsupported | zero packing work、solver exhaustion、无finite box或unsupported element/encoding | work停止只返回Indeterminate；表示不能解释返回Unsupported，不生成no-good | 增加work可收敛，不fallback baseline/另一个candidate |
+| determinism/broken | 反转所有component输入；duplicate/missing IDs、cycle/order mismatch、arithmetic或invalid solver result | 正常problem/proof逐semantic ID相同；malformed输入为Broken，不解析diagnostic | Q50.0 parity可用同一problem schema比较plan/actual |
+
+实现闭合：plan-side `CanonicalResourceProblem`统一storage objects、attention execution-local scratch、movement payload、schedule nodes和
+attention actions；per-Tile SPM通过existing private `StaticPackingProblem`及placement validator签发无offset proof，DDR/coverage走direct
+hard checks。`FullFeasibilityProof`携全部observed target/semantic IDs和`EveryPlannedResourceClosed`，不携placement。fresh定向8/8、完整
+`WaferUnitTests` 804/804、default configured lit 224/224、compiler public link、完整configured build及IR/source organization通过。
+
+本work item关闭plan-side schema、status mapping和parity seam；actual normalized problem尚不存在，不能在此虚报plan/actual equality。
+`attention-selected-decomposition`建立winner builder后，`deterministic-baseline-closure`必须从新Card subtree重建同一schema并逐ID比较，随后
+才进入一次Q50.0实际offset assignment。该下游witness未通过前不代表Q49.P或Q50.F owner整体完成。
+
 ### F-foundation-1 专项调研：结果分类、依赖坐标与scope
 
 MLIR One-Shot Bufferize采用analysis→rewrite两阶段，并通过interface区分exact alias/equivalence与unknown；unknown不能被当成must-alias或

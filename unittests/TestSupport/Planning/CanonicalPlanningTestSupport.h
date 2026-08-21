@@ -35,6 +35,12 @@ buildCanonicalPlanningPrefix(const compiler::detail::StructuredDAGAnalysis &dag,
 std::string buildFlashDecodingPlanningFixture(int64_t queryExtent,
                                               int64_t keyValueExtent);
 
+/// Builds the shared rank-5 flash-attention fixture. The optional mask keeps
+/// aligned/no-mask and ragged/mask coverage on the same semantic op contract.
+std::string buildFlashAttentionPlanningFixture(int64_t queryExtent,
+                                               int64_t keyValueExtent,
+                                               bool withMask);
+
 } // namespace wafer::test
 
 #endif // WAFER_UNITTESTS_TESTSUPPORT_PLANNING_CANONICALPLANNINGTESTSUPPORT_H

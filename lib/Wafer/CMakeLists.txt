@@ -94,6 +94,12 @@ add_mlir_library(WaferCompiler
 
 target_include_directories(obj.WaferCompiler PRIVATE ${PROJECT_SOURCE_DIR}/lib)
 target_include_directories(WaferCompiler PRIVATE ${PROJECT_SOURCE_DIR}/lib)
+# Canonical/full feasibility reuses the current private static-packing
+# contract; it does not expose Transforms headers through WaferCompiler.
+target_include_directories(obj.WaferCompiler PRIVATE
+  ${PROJECT_SOURCE_DIR}/lib/Wafer/Transforms)
+target_include_directories(WaferCompiler PRIVATE
+  ${PROJECT_SOURCE_DIR}/lib/Wafer/Transforms)
 
 if(WAFER_ENABLE_IMPORTER_DEPS)
   target_compile_definitions(obj.WaferCompiler PRIVATE WAFER_ENABLE_STABLEHLO=1)

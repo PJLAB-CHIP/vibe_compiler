@@ -10,6 +10,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/AttentionWorkDescription.cpp
   Planning/PhysicalDataflow/BufferPlan.cpp
   Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.cpp
+  Planning/PhysicalDataflow/CanonicalFeasibilityProof.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
   Planning/PhysicalDataflow/CanonicalRepresentationPlan.cpp
@@ -18,6 +19,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CanonicalSchedulePlan.cpp
   Planning/PhysicalDataflow/CanonicalStoragePlan.cpp
   Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
+  Planning/PhysicalDataflow/FeasibilityProof.cpp
   Planning/PhysicalDataflow/SerializedExecutionPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp
