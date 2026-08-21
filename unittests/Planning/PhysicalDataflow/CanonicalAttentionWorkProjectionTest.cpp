@@ -78,120 +78,6 @@ protected:
     return text;
   }
 
-  static std::string attentionSource(wafer::AttentionAlgorithm algorithm,
-                                     int64_t queryExtent,
-                                     int64_t keyValueExtent, bool withMask) {
-    std::string source;
-    llvm::raw_string_ostream stream(source);
-    stream << R"mlir(
-#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
-#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
-#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
-#s = affine_map<(b, m, k1, k2, n) -> ()>
-#mask = affine_map<(b, m, k1, k2, n) -> (m, k2)>
-#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
-module {
-  func.func @attention(
-      %query: tensor<2x)mlir"
-           << queryExtent << "x128xf16>, %key: tensor<2x" << keyValueExtent
-           << "x128xf16>,\n"
-           << "      %value: tensor<2x" << keyValueExtent
-           << "x64xf16>, %scale: f32";
-    if (withMask)
-      stream << ", %mask: tensor<" << queryExtent << "x" << keyValueExtent
-             << "xf16>";
-    stream << ") -> tensor<2x" << queryExtent << "x64xf16> {\n"
-           << "    %out = tensor.empty() : tensor<2x" << queryExtent
-           << "x64xf16>\n"
-           << "    %result = wafer.linalg_ext.attention\n"
-           << "        ins(%query, %key, %value, %scale";
-    if (withMask)
-      stream << ", %mask";
-    stream << " : tensor<2x" << queryExtent << "x128xf16>, tensor<2x"
-           << keyValueExtent << "x128xf16>, tensor<2x" << keyValueExtent
-           << "x64xf16>, f32";
-    if (withMask)
-      stream << ", tensor<" << queryExtent << "x" << keyValueExtent << "xf16>";
-    stream << ")\n"
-           << "        outs(%out : tensor<2x" << queryExtent << "x64xf16>)\n"
-           << "        algorithm(<"
-           << (algorithm == wafer::AttentionAlgorithm::FlashAttention
-                   ? "flash_attention"
-                   : "flash_decoding")
-           << ">)\n"
-           << "        indexing_maps = [#q, #k, #v, #s";
-    if (withMask)
-      stream << ", #mask";
-    stream << ", #o]\n"
-           << "        -> tensor<2x" << queryExtent << "x64xf16>\n"
-           << "    return %result : tensor<2x" << queryExtent << "x64xf16>\n"
-           << "  }\n"
-           << "}\n";
-    return source;
-  }
-
-  static std::string multiK2Source() {
-    return R"mlir(
-#q = affine_map<(b, m, k1, k20, k21, n) -> (b, m, k1)>
-#k = affine_map<(b, m, k1, k20, k21, n) -> (b, k20, k21, k1)>
-#v = affine_map<(b, m, k1, k20, k21, n) -> (b, k20, k21, n)>
-#s = affine_map<(b, m, k1, k20, k21, n) -> ()>
-#mask = affine_map<(b, m, k1, k20, k21, n) -> (m, k20, k21)>
-#o = affine_map<(b, m, k1, k20, k21, n) -> (b, m, n)>
-module {
-  func.func @decode(
-      %query: tensor<2x1025x128xf16>, %key: tensor<2x33x31x128xf16>,
-      %value: tensor<2x33x31x64xf16>, %scale: f32,
-      %mask: tensor<1025x33x31xf16>) -> tensor<2x1025x64xf16> {
-    %out = tensor.empty() : tensor<2x1025x64xf16>
-    %result = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale, %mask :
-            tensor<2x1025x128xf16>, tensor<2x33x31x128xf16>,
-            tensor<2x33x31x64xf16>, f32, tensor<1025x33x31xf16>)
-        outs(%out : tensor<2x1025x64xf16>)
-        algorithm(<flash_decoding>)
-        indexing_maps = [#q, #k, #v, #s, #mask, #o]
-        -> tensor<2x1025x64xf16>
-    return %result : tensor<2x1025x64xf16>
-  }
-}
-)mlir";
-  }
-
-  static std::string multiRootSource() {
-    return R"mlir(
-#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
-#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
-#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
-#s = affine_map<(b, m, k1, k2, n) -> ()>
-#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
-module {
-  func.func @two_roots(
-      %query: tensor<2x1025x128xf16>, %key: tensor<2x1031x128xf16>,
-      %value: tensor<2x1031x64xf16>, %scale: f32)
-      -> (tensor<2x1025x64xf16>, tensor<2x1025x64xf16>) {
-    %left_out = tensor.empty() : tensor<2x1025x64xf16>
-    %left = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale : tensor<2x1025x128xf16>,
-            tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
-        outs(%left_out : tensor<2x1025x64xf16>)
-        algorithm(<flash_attention>)
-        indexing_maps = [#q, #k, #v, #s, #o]
-        -> tensor<2x1025x64xf16>
-    %right_out = tensor.empty() : tensor<2x1025x64xf16>
-    %right = wafer.linalg_ext.attention
-        ins(%query, %key, %value, %scale : tensor<2x1025x128xf16>,
-            tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
-        outs(%right_out : tensor<2x1025x64xf16>)
-        algorithm(<flash_attention>)
-        indexing_maps = [#q, #k, #v, #s, #o]
-        -> tensor<2x1025x64xf16>
-    return %left, %right : tensor<2x1025x64xf16>, tensor<2x1025x64xf16>
-  }
-}
-)mlir";
-  }
-
   mlir::FailureOr<AttentionProjectionInputs>
   buildInputs(const StructuredDAGAnalysis &dag, std::string *failureReason) {
     auto prefix = wafer::test::buildCanonicalPlanningPrefix(dag, allTiles(),
@@ -257,9 +143,8 @@ TEST_F(CanonicalAttentionWorkProjectionTest,
   for (const Case testCase :
        {Case{1024, 1024, false}, Case{1025, 1031, true}}) {
     SCOPED_TRACE(testCase.queryExtent);
-    auto module = parse(attentionSource(
-        wafer::AttentionAlgorithm::FlashAttention, testCase.queryExtent,
-        testCase.keyValueExtent, testCase.withMask));
+    auto module = parse(wafer::test::buildFlashAttentionPlanningFixture(
+        testCase.queryExtent, testCase.keyValueExtent, testCase.withMask));
     ASSERT_TRUE(module);
     const std::string before = print(module->getOperation());
     std::string failureReason;
@@ -406,7 +291,7 @@ TEST_F(CanonicalAttentionWorkProjectionTest,
 
 TEST_F(CanonicalAttentionWorkProjectionTest,
        MultiKeyValueAxesRemainAProjectedCartesianDomain) {
-  auto module = parse(multiK2Source());
+  auto module = parse(wafer::test::buildMultiK2FlashDecodingPlanningFixture());
   ASSERT_TRUE(module);
   std::string failureReason;
   auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);
@@ -431,7 +316,7 @@ TEST_F(CanonicalAttentionWorkProjectionTest,
 
 TEST_F(CanonicalAttentionWorkProjectionTest,
        MultipleRootsAndInputOrderProduceTheSameStableIdentities) {
-  auto module = parse(multiRootSource());
+  auto module = parse(wafer::test::buildTwoFlashAttentionPlanningFixture());
   ASSERT_TRUE(module);
   std::string failureReason;
   auto dag = StructuredDAGAnalysis::create(function(*module), &failureReason);

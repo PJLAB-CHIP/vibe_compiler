@@ -260,7 +260,7 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 16 | `canonical-schedule` | Q50.J | source-order/worker0 ClosedSchedulePlan | attention-work-projection |
 | 17 | `attention-work-projection` | Q50.S | AttentionWorkDescription及C–K/F resource projections | canonical-feasibility-proof |
 | 18 | `canonical-feasibility-proof` | Q50.F | canonical problem/parity及FullFeasibilityProof | attention-selected-decomposition |
-| 19 | `attention-selected-decomposition` | Q50.S | winner-only selected Linalg/Tensor/SCF→wafer.tile builder | deterministic-baseline-closure |
+| 19 | `attention-selected-decomposition` | Q50.S | winner-only selected Linalg/Tensor/SCF builder及tile mapping seam | deterministic-baseline-closure |
 | 20 | `deterministic-baseline-closure` | Q49.P | pure legalization、一次commit/Q50.0及fresh none纵向 | spatial-domain |
 | 21 | `spatial-domain` | Q50.B | complete spatial successors、reference enumerator及proposal | search-control-foundation |
 | 22 | `search-control-foundation` | Q51.Core | SpatialState frontier/continuation及public search routing | root-work-domain |
@@ -2120,6 +2120,63 @@ plan/actual resource problem相同。失败擦除整个新Card subtree，不回f
 
 禁止新增`wafer.tile.attention`、`wafer.instr.attention`、attention TargetCall、package algorithm字段或runtime cache branch。
 
+#### attention-selected-decomposition contract
+
+本work item由pure prepare和caller-owned selected-subtree emitter组成。prepare要求`FullFeasibilityProof`的attention action dependency key与
+`AttentionWorkDescription` all-and-only相同，并验证所有value/action引用；不读取source op pointer、不改IR。emitter由caller用semantic
+root选择新subtree中的一个`wafer.linalg_ext.attention`，只消费description已有scope、exact operand pieces、state group和action顺序。
+
+每个root scope生成一个block-sized QK contraction、scale/mask、row max、shift/exp、row sum、PV和state update。FA scope随后finalize并把
+output slice插回DPS destination；FD contribution只发布Maximum/Sum/Accumulator SSA，merge scope按S-3 combine逐component合并后只finalize
+一次。multi-K2保持Cartesian operand/score shapes。score/probability最大shape等于description的scope block，禁止创建完整global score。
+
+emitter返回`AttentionActionId -> actual Operation[]`和`AttentionValueId -> actual Value`的current-subtree映射；pointer只在该mutation epoch
+内使用。所有创建/replace通过`RewriterBase`；prepare之后的emit failure要求C outer guard丢弃新subtree，不在原source rollback或换plan。
+这些actual ops仅为existing Linalg/Tensor/可选SCF，现有structured-to-tile converter是直接consumer；本work item建立typed mapping seam，
+`deterministic-baseline-closure`负责把它接入new Card subtree并给出actual wafer.tile/Q50.0 witness，不能在本项尚无Card owner时虚报纵向。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  selected canonical AttentionWorkDescription、FullFeasibilityProof及caller-owned新subtree中的matching normalized attention op；B--K choices已
+  固定且只存在一个winner transaction。
+- Current stage responsibility:
+  pure prepare验证action/value/resource coverage；winner-only emitter按exact scope构造online Linalg/Tensor/SCF、替换attention op并返回
+  typed actual mapping。
+- Output IR / files:
+  caller-owned selected subtree中的standard Linalg/Tensor/SCF及SelectedAttentionRootMaterialization；不修改source、不写attr/sidecar/file。
+- Downstream consumer:
+  deterministic-baseline-closure和unified-search-closure把mapping交给existing structured-to-wafer.tile construction，再由Q50.0验证/降低；
+  actual parity从同一mapping重建F problem。
+- User-level driver / named pipeline:
+  无独立pass/CLI；只有none或search选出的唯一winner transaction静态调用。
+- Explicit non-goals:
+  不重新匹配graph、选择FA/FD/block/partition/merge，不物化loser/whole function alternative，不clone source Module，不做movement/storage/
+  schedule或fallback，不新增attention tile/instr/target/runtime op。
+- Done criteria:
+  FA/FD、mask/no-mask、1024/1025/1031、multi-K2、local/remote merge和multi-root prepare均all-and-only映射；selected clone verifier通过且
+  attention为零、无global score；proof/action mismatch在mutation前失败，emit failure只污染caller-owned disposable subtree；tile mapping
+  seam有直接consumer，actual Card/wafer.tile witness明确留给下一work item。
+```
+
+| 覆盖类 | 代表输入 | 必须断言的selected IR/mapping | 下一stage witness |
+| --- | --- | --- | --- |
+| FA aligned/no-mask | rank-5、M/K2=1024、all-16 scopes | 每scope八类action和十类value all-and-only映射；score小于global score，final slices覆盖output，attention op为零 | mapped Generic/Fill/Tensor ops进入structured-to-tile converter |
+| FA ragged/mask | 1025/1031、broadcast mask | operand exact pieces、tail score/output shapes及mask map正确；source byte-identical | tail不靠shape/name恢复，Card builder按mapping绑定physical values |
+| FD aligned/ragged | K2 1024/1031、local+remote contributions | contribution无finalize、每merge一个StateMerge+Finalize，三component SSA与description一一对应 | H/I/J按已有IDs接movement/staging/order，不由emitter重选 |
+| FD multi-K2 | rank-6、33x31 K2且query=1025 | score/value contraction保留二维K2 Cartesian shape，merge输入数等于全部contribution states | tile conversion不接收一维split-count旁路 |
+| prepare/determinism | full proof、两个roots/输入顺序扰动 | proof action set必须exact相等，prepared roots按semantic ID；无IR/pointer | none/search各自winner可复用同一prepare，无共享actual owner |
+| failure atomicity | missing proof action、mode/op mismatch、malformed piece或emit中途failure | prepare mutation前typed failure；emit failure后source不变且selected subtree由caller整体丢弃 | 不fallback另一个algorithm/plan，不调用Q50.0 |
+
+实现闭合：pure prepare验证FullProof action coverage；selected emitter按description exact pieces构造block-sized QK、scale/mask、row
+max/exp/sum、PV、state update/merge/finalize，并返回all-and-only action/value actual映射。FA/FD的1024/1025/1031、rank-6 multi-K2和
+两个roots均在caller-owned clone中替换为verifier-legal Linalg/Tensor IR且attention为零；中途failure只污染disposable clone。旧Search
+`AttentionTensorOps`已迁为policy-free `PhysicalDataflow/AttentionLinalgOps`，donor与new builder共用一份实现。fresh定向7/7、完整
+`WaferUnitTests` 811/811、default configured lit 224/224、compiler public link、完整configured build及IR/source organization通过。
+
+actual Card/wafer.tile/Q50.0 witness尚未由本项虚报：下一`deterministic-baseline-closure`必须把mapping交给existing structured-to-tile
+consumer、重建F plan/actual parity并只commit一次；该纵向失败不能回到本emitter换algorithm或plan。
+
 ### S-6：Current/donor能力迁移
 
 | Current / donor能力 | 终态owner | 必须迁移的witness | 退役条件 |
@@ -2130,7 +2187,7 @@ plan/actual resource problem相同。失败擦除整个新Card subtree，不回f
 | `AttentionAlternative` online recurrence | coupled interface + selected Linalg decomposition | block/tail、state update/finalize、arbitrary output piece | 不创建whole-function alternative或hidden full scores |
 | old FlashAttention donor | FA selected decomposition + C/E/D producer coupling | QK/PV tile、mask、tail、producer exact slice | current caller与actual Tile witness闭合 |
 | old FlashDecoding donor | FD B/A/H/J integration | K2 partition/tail、all partial states、merge/output、two-step decode | 无decode-only physical search gate或split algorithm op |
-| `AttentionTensorOps::cloneLinalg` | selected Linalg builders / local IRMapping | exact regions/maps/SSA in one winner | Module/Func/DAG clone和replay cache为零 |
+| old Search `AttentionTensorOps::cloneLinalg` | policy-free `AttentionLinalgOps` + selected Linalg builder / local mapping | exact regions/maps/SSA in one winner | old Search helper path已删除；Module/Func/DAG alternative clone和replay cache仍由production closure退役 |
 
 source是否active或已删除不证明能力迁移。每行必须同时有current production caller、direct test和downstream actual witness，之后才能删除
 旧source/test。Q50.S completion不依赖保留旧symbol或compat wrapper。

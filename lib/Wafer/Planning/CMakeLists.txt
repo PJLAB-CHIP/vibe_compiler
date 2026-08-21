@@ -7,6 +7,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/Baseline/CardBaselineMaterialization.cpp
   Planning/Baseline/CardBaselineTemporalTiling.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
+  Planning/PhysicalDataflow/AttentionLinalgOps.cpp
   Planning/PhysicalDataflow/AttentionWorkDescription.cpp
   Planning/PhysicalDataflow/BufferPlan.cpp
   Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.cpp
@@ -25,6 +26,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/RegionPlan.cpp
   Planning/PhysicalDataflow/RepresentationPlan.cpp
   Planning/PhysicalDataflow/SchedulePlan.cpp
+  Planning/PhysicalDataflow/SelectedAttentionDecomposition.cpp
   Planning/PhysicalDataflow/MovementPlan.cpp
   Planning/PhysicalDataflow/TemporalPlan.cpp
   Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
@@ -33,7 +35,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/TemporalTileShape.cpp
   Planning/Search/AttentionAlternative.cpp
   Planning/Search/AttentionAnalysis.cpp
-  Planning/Search/AttentionTensorOps.cpp
   Planning/Search/Buffering.cpp
   Planning/Search/BufferingApply.cpp
   Planning/Search/CardExecutableSearch.cpp

@@ -2,8 +2,8 @@
 
 #include "AttentionAlternative.h"
 #include "AttentionAnalysis.h"
-#include "AttentionTensorOps.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/ProducerTileFusion.h"
+#include "Wafer/Planning/PhysicalDataflow/AttentionLinalgOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -20,7 +20,7 @@ namespace wafer::tensor_program_alternatives {
 
 using tensor_program_to_tile_region::eraseDeadTensorProgramClosure;
 using tensor_program_to_tile_region::fuseTensorProgramProducerSlices;
-using namespace attention_tensor_ops;
+using namespace wafer::compiler::detail::attention_linalg;
 namespace {
 
 static void setFailureReason(std::string *failureReason,
@@ -29,11 +29,9 @@ static void setFailureReason(std::string *failureReason,
     *failureReason = reason.str();
 }
 
-
 } // namespace
 
-mlir::FailureOr<mlir::Value>
-materializeAttentionTile(
+mlir::FailureOr<mlir::Value> materializeAttentionTile(
     mlir::OpBuilder &builder, mlir::func::FuncOp function,
     mlir::Operation *root,
     llvm::ArrayRef<mlir::OpFoldResult> candidateTileOffsets,
@@ -122,8 +120,7 @@ materializeAttentionTile(
           int64_t kSize, std::optional<OnlineAttentionState> previousState,
           llvm::MutableArrayRef<mlir::LoopLikeOpInterface> activeLoops)
       -> mlir::FailureOr<OnlineAttentionState> {
-    OnlineAttentionState state =
-        previousState.value_or(OnlineAttentionState{});
+    OnlineAttentionState state = previousState.value_or(OnlineAttentionState{});
     llvm::SmallVector<mlir::OpFoldResult, 6> scoreOffsets;
     llvm::SmallVector<int64_t, 6> scoreShape;
     for (unsigned dim = 0; dim < prefixRank + 1; ++dim) {
@@ -469,8 +466,8 @@ mlir::LogicalResult materializeAttentionProgramAlternative(
   if (implementation == AttentionProgramAlgorithm::SplitKeyValue)
     reductionTileSizes.push_back(keyValuePartitionCount);
   mlir::OpBuilder builder(root);
-  llvm::SmallVector<mlir::OpFoldResult, 4> offsets(
-      resultType.getRank(), builder.getIndexAttr(0));
+  llvm::SmallVector<mlir::OpFoldResult, 4> offsets(resultType.getRank(),
+                                                   builder.getIndexAttr(0));
   llvm::SmallVector<int64_t, 4> sizes(resultType.getShape().begin(),
                                       resultType.getShape().end());
   llvm::SmallVector<mlir::LoopLikeOpInterface, 4> loops;

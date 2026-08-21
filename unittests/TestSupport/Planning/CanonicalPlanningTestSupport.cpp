@@ -183,4 +183,66 @@ module {
   return source;
 }
 
+std::string buildMultiK2FlashDecodingPlanningFixture() {
+  return R"mlir(
+#q = affine_map<(b, m, k1, k20, k21, n) -> (b, m, k1)>
+#k = affine_map<(b, m, k1, k20, k21, n) -> (b, k20, k21, k1)>
+#v = affine_map<(b, m, k1, k20, k21, n) -> (b, k20, k21, n)>
+#s = affine_map<(b, m, k1, k20, k21, n) -> ()>
+#mask = affine_map<(b, m, k1, k20, k21, n) -> (m, k20, k21)>
+#o = affine_map<(b, m, k1, k20, k21, n) -> (b, m, n)>
+module {
+  func.func @decode(
+      %query: tensor<2x1025x128xf16>, %key: tensor<2x33x31x128xf16>,
+      %value: tensor<2x33x31x64xf16>, %scale: f32,
+      %mask: tensor<1025x33x31xf16>) -> tensor<2x1025x64xf16> {
+    %out = tensor.empty() : tensor<2x1025x64xf16>
+    %result = wafer.linalg_ext.attention
+        ins(%query, %key, %value, %scale, %mask :
+            tensor<2x1025x128xf16>, tensor<2x33x31x128xf16>,
+            tensor<2x33x31x64xf16>, f32, tensor<1025x33x31xf16>)
+        outs(%out : tensor<2x1025x64xf16>)
+        algorithm(<flash_decoding>)
+        indexing_maps = [#q, #k, #v, #s, #mask, #o]
+        -> tensor<2x1025x64xf16>
+    return %result : tensor<2x1025x64xf16>
+  }
+}
+)mlir";
+}
+
+std::string buildTwoFlashAttentionPlanningFixture() {
+  return R"mlir(
+#q = affine_map<(b, m, k1, k2, n) -> (b, m, k1)>
+#k = affine_map<(b, m, k1, k2, n) -> (b, k2, k1)>
+#v = affine_map<(b, m, k1, k2, n) -> (b, k2, n)>
+#s = affine_map<(b, m, k1, k2, n) -> ()>
+#o = affine_map<(b, m, k1, k2, n) -> (b, m, n)>
+module {
+  func.func @two_roots(
+      %query: tensor<2x1025x128xf16>, %key: tensor<2x1031x128xf16>,
+      %value: tensor<2x1031x64xf16>, %scale: f32)
+      -> (tensor<2x1025x64xf16>, tensor<2x1025x64xf16>) {
+    %left_out = tensor.empty() : tensor<2x1025x64xf16>
+    %left = wafer.linalg_ext.attention
+        ins(%query, %key, %value, %scale : tensor<2x1025x128xf16>,
+            tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
+        outs(%left_out : tensor<2x1025x64xf16>)
+        algorithm(<flash_attention>)
+        indexing_maps = [#q, #k, #v, #s, #o]
+        -> tensor<2x1025x64xf16>
+    %right_out = tensor.empty() : tensor<2x1025x64xf16>
+    %right = wafer.linalg_ext.attention
+        ins(%query, %key, %value, %scale : tensor<2x1025x128xf16>,
+            tensor<2x1031x128xf16>, tensor<2x1031x64xf16>, f32)
+        outs(%right_out : tensor<2x1025x64xf16>)
+        algorithm(<flash_attention>)
+        indexing_maps = [#q, #k, #v, #s, #o]
+        -> tensor<2x1025x64xf16>
+    return %left, %right : tensor<2x1025x64xf16>, tensor<2x1025x64xf16>
+  }
+}
+)mlir";
+}
+
 } // namespace wafer::test

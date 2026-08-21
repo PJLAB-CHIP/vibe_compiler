@@ -1,6 +1,6 @@
-//===- AttentionTensorOps.cpp - Attention tensor graph construction -----===//
+//===- AttentionLinalgOps.cpp - Attention Linalg construction ---------===//
 
-#include "AttentionTensorOps.h"
+#include "Wafer/Planning/PhysicalDataflow/AttentionLinalgOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -10,10 +10,10 @@
 #include <limits>
 #include <optional>
 
-namespace wafer::tensor_program_alternatives::attention_tensor_ops {
+namespace wafer::compiler::detail::attention_linalg {
 
 mlir::AffineMap mapForDims(mlir::MLIRContext *context, unsigned loopRank,
-                                  llvm::ArrayRef<unsigned> dims) {
+                           llvm::ArrayRef<unsigned> dims) {
   llvm::SmallVector<mlir::AffineExpr, 6> expressions;
   for (unsigned dim : dims)
     expressions.push_back(mlir::getAffineDimExpr(dim, context));
@@ -28,8 +28,7 @@ llvm::SmallVector<unsigned, 6> sequence(unsigned count) {
 }
 
 mlir::Value createEmpty(mlir::OpBuilder &builder, mlir::Location loc,
-                               llvm::ArrayRef<int64_t> shape,
-                               mlir::Type elementType) {
+                        llvm::ArrayRef<int64_t> shape, mlir::Type elementType) {
   return builder.create<mlir::tensor::EmptyOp>(loc, shape, elementType)
       .getResult();
 }
@@ -62,17 +61,16 @@ createExactStaticReshape(mlir::OpBuilder &builder, mlir::Location loc,
 }
 
 mlir::Value createFill(mlir::OpBuilder &builder, mlir::Location loc,
-                              llvm::ArrayRef<int64_t> shape,
-                              mlir::Type elementType, mlir::Value scalar) {
+                       llvm::ArrayRef<int64_t> shape, mlir::Type elementType,
+                       mlir::Value scalar) {
   return builder
       .create<mlir::linalg::FillOp>(
           loc, scalar, createEmpty(builder, loc, shape, elementType))
       .getResult(0);
 }
 
-mlir::Value cloneLinalg(mlir::OpBuilder &builder,
-                               mlir::linalg::LinalgOp source,
-                               mlir::ValueRange inputs, mlir::Value init) {
+mlir::Value cloneLinalg(mlir::OpBuilder &builder, mlir::linalg::LinalgOp source,
+                        mlir::ValueRange inputs, mlir::Value init) {
   auto resultType = mlir::cast<mlir::RankedTensorType>(init.getType());
   llvm::SmallVector<mlir::Value, 6> operands(inputs.begin(), inputs.end());
   operands.push_back(init);
@@ -215,12 +213,11 @@ createLogicalValueContraction(mlir::OpBuilder &builder, mlir::Location loc,
       .getResult();
 }
 
-
 mlir::Value createPointwise(mlir::OpBuilder &builder, mlir::Location loc,
-                                   llvm::ArrayRef<mlir::Value> inputs,
-                                   llvm::ArrayRef<mlir::AffineMap> maps,
-                                   llvm::ArrayRef<int64_t> outputShape,
-                                   mlir::Type elementType, PointwiseKind kind) {
+                            llvm::ArrayRef<mlir::Value> inputs,
+                            llvm::ArrayRef<mlir::AffineMap> maps,
+                            llvm::ArrayRef<int64_t> outputShape,
+                            mlir::Type elementType, PointwiseKind kind) {
   mlir::Value init = createEmpty(builder, loc, outputShape, elementType);
   llvm::SmallVector<mlir::AffineMap, 6> allMaps(maps.begin(), maps.end());
   allMaps.push_back(mapForDims(builder.getContext(), outputShape.size(),
@@ -285,9 +282,9 @@ mlir::Value createPointwise(mlir::OpBuilder &builder, mlir::Location loc,
 }
 
 mlir::Value createSlice(mlir::OpBuilder &builder, mlir::Location loc,
-                               mlir::Value source,
-                               llvm::ArrayRef<mlir::OpFoldResult> offsets,
-                               llvm::ArrayRef<int64_t> sizes) {
+                        mlir::Value source,
+                        llvm::ArrayRef<mlir::OpFoldResult> offsets,
+                        llvm::ArrayRef<int64_t> sizes) {
   llvm::SmallVector<mlir::OpFoldResult, 6> mixedSizes;
   llvm::SmallVector<mlir::OpFoldResult, 6> strides;
   for (int64_t size : sizes) {
@@ -303,5 +300,4 @@ mlir::Value createSlice(mlir::OpBuilder &builder, mlir::Location loc,
       .getResult();
 }
 
-
-} // namespace wafer::tensor_program_alternatives::attention_tensor_ops
+} // namespace wafer::compiler::detail::attention_linalg

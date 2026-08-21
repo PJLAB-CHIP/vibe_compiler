@@ -1,11 +1,11 @@
-//===- AttentionTensorOps.h - Attention tensor graph construction -------===//
+//===- AttentionLinalgOps.h - Attention Linalg construction -*- C++ -*-===//
 #pragma once
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Support/LogicalResult.h"
 
-namespace wafer::tensor_program_alternatives::attention_tensor_ops {
+namespace wafer::compiler::detail::attention_linalg {
 
 enum class PointwiseKind {
   Identity,
@@ -24,17 +24,14 @@ mlir::AffineMap mapForDims(mlir::MLIRContext *context, unsigned loopRank,
                            llvm::ArrayRef<unsigned> dims);
 llvm::SmallVector<unsigned, 6> sequence(unsigned count);
 mlir::Value createEmpty(mlir::OpBuilder &builder, mlir::Location loc,
-                        llvm::ArrayRef<int64_t> shape,
-                        mlir::Type elementType);
+                        llvm::ArrayRef<int64_t> shape, mlir::Type elementType);
 mlir::FailureOr<mlir::Value>
 createExactStaticReshape(mlir::OpBuilder &builder, mlir::Location loc,
-                         mlir::Value source,
-                         mlir::RankedTensorType targetType);
+                         mlir::Value source, mlir::RankedTensorType targetType);
 mlir::Value createFill(mlir::OpBuilder &builder, mlir::Location loc,
                        llvm::ArrayRef<int64_t> shape, mlir::Type elementType,
                        mlir::Value scalar);
-mlir::Value cloneLinalg(mlir::OpBuilder &builder,
-                        mlir::linalg::LinalgOp source,
+mlir::Value cloneLinalg(mlir::OpBuilder &builder, mlir::linalg::LinalgOp source,
                         mlir::ValueRange inputs, mlir::Value init);
 mlir::FailureOr<mlir::Value>
 createFloatConvert(mlir::OpBuilder &builder, mlir::Location loc,
@@ -53,4 +50,4 @@ mlir::Value createSlice(mlir::OpBuilder &builder, mlir::Location loc,
                         llvm::ArrayRef<mlir::OpFoldResult> offsets,
                         llvm::ArrayRef<int64_t> sizes);
 
-} // namespace wafer::tensor_program_alternatives::attention_tensor_ops
+} // namespace wafer::compiler::detail::attention_linalg

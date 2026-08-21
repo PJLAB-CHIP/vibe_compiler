@@ -41,6 +41,13 @@ std::string buildFlashAttentionPlanningFixture(int64_t queryExtent,
                                                int64_t keyValueExtent,
                                                bool withMask);
 
+/// Builds a rank-6 flash-decoding fixture with a 33x31 K2 Cartesian domain
+/// and a separate 1025 query dimension.
+std::string buildMultiK2FlashDecodingPlanningFixture();
+
+/// Builds two independent ragged flash-attention roots in one function.
+std::string buildTwoFlashAttentionPlanningFixture();
+
 } // namespace wafer::test
 
 #endif // WAFER_UNITTESTS_TESTSUPPORT_PLANNING_CANONICALPLANNINGTESTSUPPORT_H
