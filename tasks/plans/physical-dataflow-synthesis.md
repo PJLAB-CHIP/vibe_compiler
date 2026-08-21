@@ -1697,8 +1697,10 @@ pinned版本不存在的`IndexingMapOpInterface`。
 ### S-2：Graph proof与algorithm分类
 
 normalizer在official Linalg conversion后建立一次memoized SSA/indexing facts，从observable value contraction反向证明QK、scale、
-optional score mask、softmax和PV。named/generic contraction、static view/cast/broadcast均通过current op/interface判断；precomputed
-scores、普通softmax、缺Q/K/V relation或effectful conflict保持原Linalg DAG。
+optional score mask、softmax和PV。它的production输入必须来自Q60产品入口的fresh post-Linalg IR。常见PyTorch/HF差异只按05定义的
+有限结构族处理：named/generic contraction、transparent transpose/reshape/cast、scale位置、additive或compare/select mask、
+softmax SSA等价形式及exact KV prefix append；不为模型、rank或参数位置注册pattern。precomputed scores、普通softmax、缺Q/K/V
+relation或effectful conflict保持原Linalg DAG。
 
 ```text
 normalizeAttention(function):
@@ -1730,6 +1732,10 @@ decode state仍是ordinary function input/output；op和runtime不拥有KV-cache
 
 normalization先收集全部proof再用PatternRewriter create/replace/erase；不clone Module/Func/DAG。near-miss无mutation；true conflict或
 postverify failure终止。创建op的pass声明全部dependent dialects。
+
+输入覆盖采用两层证据：从fresh PyTorch/HF export最小化得到的typed IR覆盖用于matcher unit；Q60产品入口每轮重新导出的portable
+StableHLO与post-Linalg IR用于integration。前者便于定位canonical rule，后者防止exporter/GSPMD/conversion变化使fixture脱离真实输入。
+只有手写理想matmul/softmax fixture不能关闭S-2。
 
 ### S-3：FA与FD算法mechanics
 
@@ -1859,7 +1865,8 @@ source是否active或已删除不证明能力迁移。每行必须同时有curre
 完成验证至少包括：
 
 - custom/generic op roundtrip、map/shape/effect/verifier正负例及dependent dialect；
-- matcher覆盖named/generic QK/PV、mask/broadcast/view/shared inputs/multiple roots/extra use/precomputed score near-miss；
+- matcher覆盖fresh PyTorch-derived named/generic QK/PV、scale位置、additive/select mask、view/cast/shared inputs/multiple roots/
+  extra use/precomputed score near-miss；手写fixture只作补充；
 - classifier只由functional state relation决定，symbol/argument/model名字扰动不改变结果；
 - small independent reference覆盖FA temporal blocks、FD partitions/merge trees、tail和多个output pieces；
 - coupled query与standard partial materialization的component maps/types/init/final owner一致；

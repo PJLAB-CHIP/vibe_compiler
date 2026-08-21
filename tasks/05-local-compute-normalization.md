@@ -93,8 +93,20 @@ prob    = softmax(masked, normalization iterators)
 result  = contraction(prob, V)
 ```
 
-实际source可以使用named Linalg op或`linalg.generic`，并可穿过exact static reshape、transpose、slice、cast和broadcast。
-proof只读取：
+production matcher的输入是Q60产品入口经GSPMD和official conversion产生的实际post-Linalg IR，不是手写的理想attention图。
+常见PyTorch/HF前向attention在这一边界共享同一QK--softmax--PV骨架，允许的差异收敛为有限结构族：
+
+| 差异位置 | matcher接受的current IR事实 |
+| --- | --- |
+| QK/PV contraction | named matmul/batch-matmul，或scalar region与maps证明同一contraction的`linalg.generic` |
+| transpose/reshape/cast | exact static tensor/view链；role仍由composed indexing relation推出 |
+| scale | QK result上的scalar multiply，或已由contraction input/current scalar SSA等价表达的同一scale |
+| mask | additive score adjustment，或可精确归一为同element type adjustment的compare/select+broadcast |
+| softmax | max reduction、broadcast/subtract、exp、sum reduction、broadcast/divide的SSA等价形式 |
+| KV state | concat、insert-slice或其它current exact prefix-append relation，且updated values和function results闭合 |
+
+matcher不要求这些operation使用一种固定文本顺序，也不把每个组合预写成workload pattern。它先组合view/indexing facts，再检查
+contraction、softmax和state dataflow；只有无法从current interfaces证明的结构才保持普通Linalg DAG。proof只读取：
 
 - current SSA def-use与function results；
 - Linalg contraction payload和DPS relation；
@@ -105,6 +117,9 @@ proof只读取：
 mask是optional shaped operand，其map必须精确表达对score domain的identity、projection或broadcast；boolean/select形式只有在current
 SSA能先归一成同score element type的显式score adjustment时才进入op，否则保留原图。normalization不比较`attention`、`decode`、
 `q_proj`等名字，不按参数位置或常见Transformer rank识别。
+
+PyTorch/HF capture只用于建立和维护上述输入覆盖矩阵，不进入matcher控制流。新增capture若仍可由同一SSA/maps/effect关系证明，
+扩canonical analysis或现有typed rule；若需要模型名、固定rank或参数位置才能通过，则该形态不进入current attention合同。
 
 matcher先构造全部proof并在首次mutation前验证overlap：
 
@@ -423,16 +438,18 @@ GSPMD输出可能含由constants和static tensor views完全决定的partition/m
 
 1. `wafer.linalg_ext.attention` custom/generic form roundtrip、parser/printer、dependent dialect及verifier正负例；
 2. Q/K/V/mask/output maps的rank-independent role inference，覆盖batch/head、multi-axis、broadcast mask、static view和invalid relation；
-3. named/generic QK/PV contraction、scale、additive/normalized mask、softmax chain、extra observable intermediate、shared inputs、
-   multiple attention roots、precomputed-score near-miss和effectful conflict；
+3. named/generic QK/PV contraction、scale位置、additive/select mask、softmax SSA等价形式、view/cast组合、extra observable
+   intermediate、shared inputs、multiple attention roots、precomputed-score near-miss和effectful conflict；
 4. functional KV prefix append/return的FD正负例；改变symbol、argument order或model name不改变分类，无法证明时稳定得到FA；
 5. small reference逐block比较FA state update，并逐partition/tree比较FD contribution/merge/finalize；tail与多个output pieces完整；
 6. standard Tiling、PartialReduction及Wafer coupled-state query的shape/map/init/final owner一致，planning query前后IR byte-identical；
 7. `AttentionWorkDescription`的actions/values/occurrences与A--K typed objects all-and-only对应，F无hidden scratch/state/message；
 8. winner transaction中selected Linalg/Tensor/SCF只构造一次，随后全部成为existing wafer.tile compute；失败注入保持source和parent原样；
 9. `none`和`search`从同一normalized TensorProgram各自产生一个plan并走共同commit；不存在Q51 attention algorithm axis或whole-program clone；
-10. FP16/BF16 official prefill与functional two-step decode从产品入口形成accepted Tile dataflow、Instr、Target LLVM、package和fresh no-card；
-    KV cache是显式external state ports，第二步由第一步output绑定，不依赖runtime-owned cache policy。
+10. fresh运行Q60 PyTorch产品入口，至少覆盖native SDPA causal prefill、当前HF attention prefill和functional two-step decode；
+    保存/检查本轮portable StableHLO与post-Linalg typed witness，再形成accepted Tile dataflow、Instr、Target LLVM、package和fresh
+    no-card。KV cache是显式external state ports，第二步由第一步output绑定，不依赖runtime-owned cache policy。手写MLIR只补
+    op/matcher unit，不能代签这一项。
 
 局部op/interface测试不能代替第8--10项。真实板端matched A/B仍由Q53串行执行，不属于本任务的host完成声明。
 
