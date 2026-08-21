@@ -8,127 +8,89 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 
 ## 队列规则
 
-- `Q*`是稳定tracking ID，不表示pipeline层级。
-- 全局至多一个`doing`；`next`表示前置已满足但尚未开始，`queued`表示已经进入当前主线但仍等待直接前置闭合，
+- `Q*`只标识稳定设计/能力owner，不表示pipeline层级，也不直接充当可反复进入的施工任务。
+- current execution work item使用稳定semantic key；每个work item只有一个输入边界、一个输出边界，在当前调度中只出现一次。
+- 全局至多一个work item为`doing`；`next`表示前置已满足但尚未开始，`queued`表示已经进入当前主线但仍等待直接前置闭合，
   `later`表示不进入当前主线。
-- `done`只表示对应设计文档的Done criteria已经满足；详细证据只链接owner，不复制到本文件。
-- 一个tracking item跨多个非连续checkpoint时，完成当前checkpoint但尚未满足整项done criteria后，row回到`queued`并写明下一直接
-  前置；随后只把线性顺序中的下一个checkpoint owner改为`doing`。B0/B1、S1-S6、F/I/J分段只是本表内施工checkpoint，
-  不是新tracking ID，也不允许两个row同时保持`doing`。
+- work item的`done`只表示该行输出合同已经满足；Q owner的整体完成只由owner map列出的全部work item及production gate汇总，
+  不让owner row在`doing/queued`之间往返。
 - current职责被后继吸收时，旧任务直接移出当前调度和状态表；可复用的source、oracle、mechanics与验证要求写入
   current owner，历史只由Git和`tasks/archive/`保留，不新增旧任务过渡状态或旧任务索引。
 - `blocked`必须写明尚缺的外部条件或上游任务，不能用工作过程代替阻塞原因。
-- 新任务先进入本表并绑定编号设计owner；非小修再建立`tasks/plans/`实施计划。
+- 新work item先进入本表并绑定编号设计owner；非小修再更新`tasks/plans/`实施计划。
 - 状态变化只更新对应row；不得追加按日期、轮次或测试批次展开的worklog。
 - 后续任务gate只验证直接影响面；除非任务本身改动相关ABI/runtime/firmware，否则禁止全量审计和无关回归。
 - 包含板端验证的任务必须把`board-ready`写为无卡阶段门禁；`board-ready`不得标记为`done`。
 
 ## 当前调度
 
-```text
-Q32 + Q6.B -> Q9 profiler foundation                         [done]
-Q32 + Q6.B + Q37 -> Q38 multi-engine software pipelining    [done]
-Q38 -> Q39 NoC-resident tile dataflow                        [done]
-Q43 Vibe Compiler collaboration review materials             [done]
-Q42 test gate scope reduction                                [done]
-accepted deterministic CardModule baseline
-  -> Q50.0 actual executable compilation boundary             [done]
-Q50.0 -> Q54 MLIR infrastructure conformance                  [done]
-Q45 compiler terminology and naming                           [done]
-Q9 + Q45 + current target/package/runtime interfaces
-  -> Q55 current-interface consolidation                      [done]
-Q50.0 + Q54 + Q55 -> Q58 program data ownership                [done]
-Q58 -> Q56 executable-package data closure               [board-ready]
-Q56 board-ready -> Q59 compiler entry transaction closure     [done]
-Q55 + Q56 board-ready + current TargetCall/model
-  -> Q62 target numeric contract reconstruction                [done]
-Q54 + current Instr/NCC target ABI
-  -> Q63 NCC completion contract layering                       [done]
-Q64 source registration and library ownership                     [done]
-current PyTorch/XLA capture/oracle mechanics + Q59
-  -> Q60 frontend production entry                            [done]
-Q50.0 + Q54 -> Q50.B B0 SpatialPlan/SpatialAssignment schema + validation
-                                                               [doing]
-Q50.B B0 -> Q50.S S1-S2 attention semantic IR + graph normalization
-                                                               [queued]
-Q50.S S1-S2 -> Q50.B B1 canonical spatial producer           [queued]
-Q50.B B1 -> Q50.A exact placement-demand core                [queued]
-Q50.S S1-S2 + Q50.A -> Q50.S S3 B/A attention integration   [queued]
-Q50.S S3 + Q50.B B1/A -> Q50.C canonical root-work foundation
-                                                               [queued]
-Q50.C canonical -> Q50.D singleton region/execution foundation
-                                                               [queued]
-Q50.D canonical -> Q50.E canonical temporal plan             [queued]
-Q50.E canonical -> Q50.G canonical representation plan      [queued]
-Q50.G canonical -> Q50.H canonical movement plan             [queued]
-Q50.H canonical -> Q50.K Serialized execution foundation     [queued]
-Q50.K Serialized + Q50.H canonical -> Q50.I single-slot foundation
-                                                               [queued]
-Q50.I single-slot + Q50.K Serialized + Q63 -> Q50.J canonical schedule
-                                                               [queued]
-Q50.J canonical -> Q50.S S4 canonical work/resource projections
-                                                               [queued]
-Q50.S S4 -> Q50.F closed-plan core                           [queued]
-Q50.F core -> Q50.S S5 selected decomposition                [queued]
-Q50.S S5 -> Q49.P deterministic baseline plan-only closure  [queued]
-Q50.S S3 + Q50.A + Q64 -> Q50.B full graph-level spatial domain
-                                                               [queued]
-Q50.B full + Q50.A + Q50.S S3 -> Q51.Core real-axis foundation
-                                                               [queued]
-Q51.Core foundation -> Q50.C full root-work domain/emitter   [queued]
-Q50.C full -> Q50.D full coupled-region domain               [queued]
-Q50.D full -> Q50.E full temporal domain                     [queued]
-Q50.E full -> Q50.F partial-state feasibility foundation     [queued]
-Q50.F partial -> Q50.G full layout constraint solver        [queued]
-Q50.G full -> Q50.H full movement topology/proof             [queued]
-Q50.H full -> Q50.I initial storage/slot domain              [queued]
-Q50.I initial + Q63 -> Q50.J event/resource foundation       [queued]
-Q50.J foundation -> Q50.K full execution-structure alternatives
-                                                               [queued]
-Q50.K full -> Q50.I post-structure storage closure           [queued]
-Q50.I post-K -> Q50.J full schedule closure                  [queued]
-Q50.J full -> Q50.F full-coordinate feasibility closure      [queued]
-Q50.F full + Q50.B–K + Q50.I post-K -> Q51.Core control closure
-                                                               [queued]
-Q51.Core closure -> Q51 tiny oracle and single-winner commit [queued]
-Q49.P + Q51 -> Q50.S S6 donor-retirement/production gate    [queued]
-Q50.S S6 -> Q52 workload-driven planning scalability         [queued]
-Q51 + Q52 + Q60 + Q55 current-interface closure + Q56 board-ready
-  -> Q53 current production board readiness                 [queued]
-Q53 board-ready + Q56 board-ready
-  -> Q57 resident static execution                             [later]
-Q53 board-ready + Q58 + Q60
-  -> Q61 whole-program scale readiness                         [later]
-Q53 board-ready -> Q48 semantic superoptimization             [later]
-```
+当前执行队列只列一次性work item；顺序已经按artifact producer/consumer关系拓扑排序。Q50.0、Q54、Q55、Q56、Q59、Q60、Q62、
+Q63和Q64等前置已满足，不在当前队列中重复展开。
 
-上图是唯一施工顺序；箭头表示“下一个施工checkpoint”，不是让后一个public policy消费前一个policy的结果。Q49.P按施工顺序
-先于search闭合，但Q51.Core的problem、state、cost、winner和调用图都不引用baseline plan/executable/controller。
+| 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `spatial-plan-schema` | `doing` | Q50.B | Q50.0、Q54 | `SpatialPlan/SpatialAssignment` schema、close与validator；不含root assignment或search domain |
+| 2 | `attention-normalization` | `queued` | Q50.S | 05 normalizer、Q60产品输入 | self-contained attention op、FA/FD fixed facts及共同normalization |
+| 3 | `attention-spatial-integration` | `queued` | Q50.S | spatial-plan-schema、attention-normalization | K1/K2 role及FA/FD canonical/full spatial constraints |
+| 4 | `canonical-spatial-assignment` | `queued` | Q50.B | spatial-plan-schema、attention-normalization、attention-spatial-integration、topology | all normalized roots的deterministic closed assignment |
+| 5 | `exact-demand-boundary` | `queued` | Q50.A | canonical-spatial-assignment | operand demand、final owners及per-output reduction requirements |
+| 6 | `attention-demand-integration` | `queued` | Q50.S | attention-normalization、exact-demand-boundary | Q/K/V/mask demand及coupled contribution/merge |
+| 7 | `canonical-root-work` | `queued` | Q50.C | canonical-spatial-assignment、attention-demand-integration | canonical `RootRegionWork`与single-root leaf primitive |
+| 8 | `canonical-region-plan` | `queued` | Q50.D | canonical-root-work、exact-demand-boundary | singleton `RegionPlan`、execution instance及use binding |
+| 9 | `canonical-temporal-plan` | `queued` | Q50.E | canonical-region-plan | canonical `TemporalPlan`、tail及loop order |
+| 10 | `canonical-representation-plan` | `queued` | Q50.G | canonical-temporal-plan、attention-demand-integration | canonical `RepresentationPlan`与resource description |
+| 11 | `canonical-movement-plan` | `queued` | Q50.H | canonical-region-plan、canonical-representation-plan | canonical local/DDR/peer correctness carrier |
+| 12 | `serialized-execution` | `queued` | Q50.K | canonical-temporal-plan | unique Serialized execution identity |
+| 13 | `canonical-storage-plan` | `queued` | Q50.I | canonical-movement-plan、serialized-execution | single-slot `BufferPlan`及lifetime facts |
+| 14 | `canonical-schedule` | `queued` | Q50.J | canonical-storage-plan、serialized-execution、Q63 | source-order/worker0 `ClosedSchedulePlan` |
+| 15 | `attention-work-projection` | `queued` | Q50.S | attention-normalization、canonical-root-work至canonical-schedule | `AttentionWorkDescription`及C–K/F resource projections |
+| 16 | `canonical-feasibility-proof` | `queued` | Q50.F | canonical-spatial-assignment至canonical-schedule、attention-work-projection、Q50.0 | canonical problem/parity及`FullFeasibilityProof` |
+| 17 | `attention-selected-decomposition` | `queued` | Q50.S | attention-work-projection、canonical-feasibility-proof | winner-only selected Linalg/Tensor/SCF→wafer.tile builder |
+| 18 | `deterministic-baseline-closure` | `queued` | Q49.P | canonical-spatial-assignment至attention-selected-decomposition、Q59 | pure legalization、一次commit/Q50.0及fresh `none`纵向 |
+| 19 | `spatial-domain` | `queued` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal |
+| 20 | `search-control-foundation` | `queued` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete |
+| 21 | `root-work-domain` | `queued` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及selected emitter |
+| 22 | `region-execution-domain` | `queued` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |
+| 23 | `temporal-domain` | `queued` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails及Core consumer |
+| 24 | `partial-feasibility` | `queued` | Q50.F | temporal-domain、exact-demand-boundary | A–E minimum/interference、Deferred及causal query |
+| 25 | `layout-domain` | `queued` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |
+| 26 | `movement-domain` | `queued` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/DTE/relay/collective domain、proof及Core consumer |
+| 27 | `storage-domain` | `queued` | Q50.I | movement-domain、canonical-storage-plan | fresh/alias/reuse与`1..U` slot domain及Core consumer |
+| 28 | `event-resource-foundation` | `queued` | Q50.J | storage-domain、Q63 | EventGraph、resource/recurrence facts及Core consumer |
+| 29 | `execution-structure-domain` | `queued` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |
+| 30 | `structure-specific-storage` | `queued` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence、slot multiplicity、rotation及lifetime closure |
+| 31 | `schedule-domain` | `queued` | Q50.J | structure-specific-storage、event-resource-foundation | fixed-K/I order、worker、resource与completion domain |
+| 32 | `full-feasibility` | `queued` | Q50.F | schedule-domain及完整B–K→I→J plan | full resource proof、oracle及Core admission input |
+| 33 | `search-control-closure` | `queued` | Q51.Core | full-feasibility、全部domain work items | full-plan admission、cost/bound、causal rejection、coverage及controller oracle |
+| 34 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | tiny exhaustive oracle、single winner及一次production commit |
+| 35 | `attention-production-closure` | `queued` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card |
+| 36 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy及有限预算LLaMA一次commit |
+| 37 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` |
+失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
-Q50.B foundation拆成B0与B1：当前`doing`只完成`SpatialPlan/SpatialAssignment` schema、structural close和validation；Q50.S S1-S2
-先产生policy分叉前的attention op、FA/FD fixed fact和graph normalization，B1才对全部normalized roots签发canonical spatial
-assignment。Q50.A随后消费B1；S3再关闭B/A对attention的read-only integration。这样Q50.S位于physical planning上游，同时不把
-FA/FD变成B之前的search coordinate。
+### 设计owner映射
 
-baseline canonical foundation按`C → D → E → G → H → K-Serialized → I-single-slot → J-canonical → S4 → F-core → S5`
-逐项施工，不能再折叠成一个“Q49.P remaining foundations”节点。S4把attention work投影到这些current plan/resource owners；
-S5只提供winner selected decomposition。Q49.P最后只编排pure queries、FullFeasibilityProof和一次commit。
+| 设计owner | 当前work items | Owner整体完成边界 |
+| --- | --- | --- |
+| Q50.B | spatial-plan-schema、canonical-spatial-assignment、spatial-domain | 三项均通过且spatial-domain在unified search中取得production witness |
+| Q50.S | attention-normalization、attention-spatial-integration、attention-demand-integration、attention-work-projection、attention-selected-decomposition、attention-production-closure | 最后一项通过 |
+| Q50.A | exact-demand-boundary | work item通过且所有physical consumers迁移 |
+| Q50.C | canonical-root-work、root-work-domain | 两项通过且unified search取得selected witness |
+| Q50.D | canonical-region-plan、region-execution-domain | 两项通过且unified search取得selected witness |
+| Q50.E | canonical-temporal-plan、temporal-domain | 两项通过且unified search取得selected witness |
+| Q50.F | canonical-feasibility-proof、partial-feasibility、full-feasibility | 三项及独立oracle通过 |
+| Q50.G | canonical-representation-plan、layout-domain | 两项通过且unified search取得selected witness |
+| Q50.H | canonical-movement-plan、movement-domain | 两项通过且unified search取得selected witness |
+| Q50.I | canonical-storage-plan、storage-domain、structure-specific-storage | 三项通过且K re-entry witness闭合 |
+| Q50.J | canonical-schedule、event-resource-foundation、schedule-domain | 三项通过且completion/resource witness闭合 |
+| Q50.K | serialized-execution、execution-structure-domain | 两项通过且I/J re-entry闭合 |
+| Q49.P | deterministic-baseline-closure | 对应work item通过 |
+| Q51.Core | search-control-foundation、search-control-closure | 两项通过 |
+| Q51 | unified-search-closure | 对应work item通过 |
+| Q52 | search-scalability | 对应work item通过 |
+| Q53 | production-host-readiness | 对应work item通过即为`board-ready`；真实板端不在当前目标 |
 
-Q50.S是跨阶段tracking item：S1-S2提供上游semantic IR，S3接B/A，S4随canonical/full axes补work/resource projection，S5提供
-selected decomposition，S6在Q49.P `none`与Q51 `search`都产生fresh package/no-card witness后才允许整项`done`。下游依赖具体
-S checkpoint的mechanism-ready artifact，不依赖Q50.S整项提前`done`。
-
-Q51.Core也分两次：B-full/A/S3后从`SpatialState`用真实domain建立foundation并让explicit `search`进入new owner；后续每个Q50
-checkpoint同批扩Core。F-full后只做control/coverage closure。Q51.Core不依赖、不调用Q49.P；两种policy只在policy-free plan
-schema、materializer和winner-only Q50.0边界汇合。
-
-Q50.B–K任何row不能仅凭domain/direct apply标`done`：必须同时有对应Core state/transition、public search production caller和direct
-witness。反过来Core不得为attention建立algorithm state，也不得预声明尚无Q50 producer/consumer的nullable axis field。
-F也只能对current Core中已经存在的coordinate返回Deferred；尚未实现的next axis由`IncompletePlanningDomain`负责。新axis提交必须
-同批扩F observed dependency，禁止一次性预声明G–K missing列表。
-上图Q50 checkpoint到Q51的箭头表示“query/domain/emitter已mechanism-ready”，不表示Q50 tracking row已经`done`。search-only
-selected emitter的production consumer要到Q51 single-winner commit才真实可达；届时有source-to-package witness和donor迁移门禁的Q50 row
-才能同批转`done`。因此Q51依赖mechanism-ready artifacts，不与Q50最终状态形成循环。
+### 已满足前置
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |
 | --- | --- | --- | --- | --- | --- |
@@ -145,25 +107,8 @@ selected emitter的production consumer要到Q51 single-winner commit才真实可
 | Q59 | `compiler-entry-transaction-closure` | `done` | Q56达到`board-ready` | 2026-08-16 follow-up review缺口已闭合：package层只定义一个compiler/runtime共享的move-only `runtime::ExecutablePackage`；shared strict binder在publication前以read-backed immutable snapshots拥有canonical manifest、manifest顺序modules和program data，核对exact size/digest并关闭全部descriptor，同inode改写、删除或替换path不改变owner内容，board runtime不再按root reopen。profile transaction同样绑定exact activation/plan/site-map和两份capture package，runtime profile identity只对owned manifest bytes计算digest；唯一outer transaction在所有fallible验证完成后执行一次no-replace rename，committed public type只在rename成功后构造。全部test-only failure经public typed facade返回`CompilationFailure`；commit测试直接篡改staged program data/profile plan并证明package-commit分类、输出不可见和无staging残留。CLI current cutover为`--output-dir`，旧`--output-package-dir`无alias；profile输出仍是共同delivery root。fresh验证：受影响unit 120/120；request/internal-options/atomicity/commit-transaction/install-relocate lit 5/5；complete-Tile profile contract 1/1与fresh ordinary+profile source→package→no-card 1/1；public link smoke 3/3；main、board-runtime、SystemC/model三棵构建树及source/deps/IR/diff检查通过。既有32x32 dot被pinned helper拒绝与search长耗时仍分别归外部helper/Q52。 | 01、15、18-20；`tasks/plans/compiler-entry-productization.md` |
 | Q62 | `target-numeric-contract-reconstruction` | `done` | Q55、Q56达到`board-ready`、current TargetCall/SystemC/model mechanics | `NumericSemantics` umbrella、profile/pattern/resolver及其digest已删除；rounding/elementwise/reduce字段归`TargetOperation`，convert只有一个typed optional parameter，physical descriptor无model identity。formal scalar/tensor与model backend按convert/elementwise/GEMM/reduce concrete type直连，不再有generic command/family switch；bulk record以concrete GEMM problem、payload、backend和environment绑定。NPY/JSON之后的program logical dtype、Tile ABI target dtype和package record均为closed typed value，字符串只在parse/serialize边界；TargetTensor action随同次Tile ABI metadata显式携带，非identity必须提供rounding/zero-point，package writer不再按dtype默选。`WaferTarget`、`WaferTargetScalarConversion`、`WaferTargetTensorMaterialization`与`WaferFormalNumeric`为单向library owner，CodeGen不链接formal。managed dependency验证由optional Python bootstrap/qualification owner及direct tests承接，always-built Target C++ API退出；`WaferTargetModelCore`不再链接Compiler，compiler integration位于独立leaf adapter。旧SystemC transport聚合目标没有被删除掩盖，而是迁为共享fixture与逐scenario executable；fresh feature-off全构建及9/9 direct/link gate、feature-on target/formal/bulk/model构建、16项current SystemC gate、756项unit、bulk CLI/readback和FP16 source→package/no-card通过；未运行search、LLaMA或板端。Q53继续处理baseline staged output writeback，不属于numeric registry合同。 | 01、11、14、16-18；`tasks/plans/target-numeric-contract-reconstruction.md` |
 | Q63 | `ncc-completion-contract-layering` | `done` | Q54、current Instr/NCC target ABI | pure target `NCCCompletion`只拥有target worker/mask/completion kind；IR worker count从closed ODS enum推导且public header不再include TX81 ABI。join和peripheral通过`WaferNCCCompletionOpInterface`各自声明participant join或synchronous writeback，ordinary issue由现有issue interface统一适配，旧free concrete-op switch/classifier零残留。query-local `NCCCompletionAnalysis`从current if/for/TileRegion/direct-call IR重算per-op pending before/after和summary，递归/indirect/unsupported CFG fail closed；全部lifetime/cost/scheduling/lowering/buffering consumer迁移。runtime/model不include IR completion；剩余Model→Compiler宽link由Q62的invocation/numeric owner拆除。fresh相关unit、target public link、主构建及组织检查通过。 | 11、13、17-19；`tasks/plans/ncc-synchronization-contract-layering.md` |
-| Q50.B | `spatial-partition-and-placement` | `doing` | B0 schema/validation依赖Q50.0/Q54；B1 canonical producer依赖Q50.S S1-S2；full domain依赖Q50.S S3、Q50.A、Q64，施工handoff排在Q49.P后但不消费其output | 当前只推进B0：定义compact `SpatialPlan`、closed `SpatialAssignment`及structural close/validation，不读取未归一化attention graph，也不枚举search domain。S1-S2产生fixed semantic roots后，B1为全部normalized roots建立baseline canonical producer；A和S3闭合后，full stage覆盖全部regular partitions、available subsets/embeddings及per-output merge placements。attention mode只约束K2 spatial domain，不成为search coordinate。B-full在Core取得production caller前不标完成。 | 05-08、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.A | `exact-placement-demand-boundary` | `queued` | Q50.B B1 canonical producer、Q50.S S1-S2、Q50.0、Q54 | 只消费B1定义并structurally closed的`SpatialAssignment`，以operand-level SSA worklist派生`ExactDemandProof`、final owners和per-output-piece reduction requirements；它不定义或选择spatial assignment。基础query闭合后由Q50.S S3加入attention exact operands、coupled contributions及merge requirement，S3前A不签发attention-ready完成结论。B-full逐plan调用同一query；旧`LogicalShardTrial`、partial-as-owner、node-wide merge、per-edge重复walk和manual epoch退出。 | 05-07、09-13、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q49.P | `deterministic-baseline-functional-closure` | `queued` | Q54、Q59、Q50.0、Q45；Q50.S S1-S5、Q50.B B1/Q50.A、C/D/E/G/H/K/I/J canonical foundations及Q50.F closed-plan core均mechanism-ready | Q49.P不生产上述component，只按唯一施工顺序编排它们：canonical assignment与exact demand，C→D→E→G→H→K-Serialized→I-single-slot→J schedule，S4 attention work/resource projection、F proof及S5 selected decomposition。controller只用pure query和ExactRejection推进coordinate，FullFeasibilityProof后一次materialize/Q50.0；不进入search，不成为Q51 prerequisite。定向oracle、轻量package/no-card和一轮fresh FP16 LLaMA `none`闭合后才`done`。 | 06、14、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.S | `attention-algorithm-normalization` | `queued` | S1-S2的semantic input依赖05 normalizer及Q60 current产品输入，当前施工handoff等待B0；S3依赖B1/A；S4随C–K/F owners闭合；S5依赖complete plan builders；S6依赖Q49.P与Q51纵向 | 在policy分叉前从typed SSA证明完整Q/K/V attention，创建一个`wafer.linalg_ext.attention`并确定FA/FD。S1-S2先交付op/interface、matcher/classifier和共同normalization；S3接B/A；S4向C–K/F投影query-local work/resource；S5只为winner展开selected Linalg/Tensor/SCF并转换到existing wafer.tile。donor能力随S1-S5逐项迁移，S6只确认旧owner/test可退役，并以none/search各自prefill与two-step decode package/no-card收尾。下游按具体checkpoint消费，不能把Q49.P放在S1-S2之前，也不能等整项done才启动B/A/Core。 | 05-07、10、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q51.Core | `physical-dataflow-search-kernel` | `queued` | foundation依赖Q50.S S3和B-full/A；control closure依赖C–K→I→J→F-full；不依赖Q49.P | 两次交付同一controller：foundation首次落地从`SpatialState`真实遍历B/A physical states、frontier和typed continuations，explicit public `search`切到new owner；Q50.S fixed graph facts只进入immutable problem，不形成state。source-only facts由与MLIR analysis wrapper共用的policy-free builder形成session-owned typed result，root/candidate key使用`SemanticRootKey`等typed identity。缺后续axis时返回`IncompletePlanningDomain`，不调用baseline、不commit；每个后续Q50 checkpoint同批扩closed variant/successor/invalidation与production caller。F-full后补齐full-plan admission、cost/bound、causal rejection、coverage与controller oracle。 | 06、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.C | `maximal-single-root-tile-region` | `queued` | canonical foundation依赖Q50.S S3及B1/A；full mechanism依赖B-full/Core foundation | 先迁`RootRegionWork` canonical query和single-root leaf primitive，并让S4接入attention work；任务不因此完成。B-full后扩全部root/merge work、multi-producer exact boundary和atomic emitter，同批接Core derived prefix；selected commit最终提供production apply witness。旧trial/second walker/implicit fallback和Module/Func/DAG clone退出。 | 05-08、10、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.D | `region-formation-and-producer-execution` | `queued` | singleton foundation依赖C-foundation/A；full domain依赖C-full/Core | canonical checkpoint产生真实singleton `RegionPlan`、execution instance和use binding；Q49.P稍后只消费。full stage枚举connected root partitions、top-level/nested execution、stored/direct/boundary use和recompute count，同批扩Core Region state。D不拥有temporal/layout/movement选择；旧greedy repair和whole-module apply退出。 | 05-10、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.E | `complete-temporal-tiling` | `queued` | canonical foundation依赖D-singleton；full domain依赖D-full/Core | canonical checkpoint把baseline first-fit迁成真实`TemporalPlan`；Q49.P稍后只消费。full stage覆盖每个execution scope所有合法iterator sizes、tail与全部structural loop orders，同批扩Core Temporal state和F-partial consumer。旧node-wide/global-max、preferred-size legality和allocation feedback退出。 | 05-10、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.F | `scoped-feasibility-analysis` | `queued` | closed-plan core依赖B1/A、C/D/E/G/H/K/I/J canonical foundations、Q50.S S4与Q50.0；partial foundation依赖E-full；full closure依赖K-full→I-post-K→J-full | 三次接入同一实现：先让canonical plan取得FullFeasibilityProof；E-full后以closed sum返回A–E可证明的minimum-storage/interference facts，但不预声明未来G–K coordinates；每个G/H/I/K/J checkpoint同批扩F对该真实axis的Deferred/observed dependency；最后对Q50.S fixed semantic facts与B–K→I→J完整plan闭合全部state/scratch/message/event resource proof与oracle。Q49.P只消费core proof，不是F的producer或owner。 | 06-11、16、18-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.G | `layout-and-physical-representation` | `queued` | canonical foundation依赖A/D/E canonical；full solver依赖F-partial/Core | canonical checkpoint产生`RepresentationPlan`和resource description；Q49.P稍后只消费。full stage以`RegionValueVersionId/PhysicalVersionId` constraint graph覆盖primary/derived versions及per-use binding，同批扩Core和F。winner由`PhysicalVersionBuilder`一次构造；旧lookup-any、map save/restore和hidden allocation退出。 | 06-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.H | `explicit-data-movement` | `queued` | canonical foundation依赖A/D/G canonical；full domain依赖G-full/Core | canonical checkpoint产生correctness carrier；Q49.P稍后只消费。full stage统一`TileCommunicationProblem`的local、DDR、Direct-DTE、Tile接收后转发及transfer/combine plans，同批扩Core/F/I/J。Ring/tree/Bruck等只作topology-aware proposals；opaque routing不伪造link，H不拥有retention/recompute/layout。 | 06、08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.I | `storage-binding-and-rotating-slots` | `queued` | canonical single-slot依赖E/H/K-Serialized；initial full domain依赖H-full/Core；post-K依赖K-full | canonical checkpoint产生single-slot `BufferPlan`；Q49.P稍后只消费。I-initial定义fresh/alias/reuse与`1..U` slots供J-foundation/K，K后必须I-post-K重闭multiplicity/rotation/ReuseAfterCompletion并扩Core/F。winner construction扩E/K loops；旧actual-loop scan、clone/reorder和wait/NCC混装退出。 | 08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.J | `event-resource-scheduling` | `queued` | canonical schedule依赖K-Serialized/I-single/Q63；foundation依赖I-initial；closure依赖K-full/I-post-K | canonical checkpoint产生source-order/worker0 `ClosedSchedulePlan`；Q49.P稍后只消费。full J-foundation建立EventGraph供K，J-closure在K/I重闭后枚举order/worker/resource/completion并扩Core/F。winner `ScheduleEmitter`创建order/waits/joins/releases；calendar不进state。 | 08、11、13-19；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q50.K | `conditional-execution-structure` | `queued` | Serialized foundation依赖E canonical；full domain依赖J-foundation/I-initial/Core | canonical checkpoint定义唯一Serialized identity供I/J；Q49.P稍后只消费。full stage枚举Pipelined stage partition、launch distance和inter-iteration dependences，同批扩Core并强制I/J re-entry。selected builder只在新Card subtree机械构造SCF/periodic phases；multi-slot本身不触发pipeline，旧whole-Module fixed-slot路径退出。 | 06、08-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q51 | `physical-dataflow-unified-search` | `queued` | Q50.S S1-S5、Q50.B–K、Q50.I post-K、Q50.J full closure、Q50.F full closure、Q51.Core；不依赖Q49.P output | independent reference composer按B→D→E→G→H→I→K→I→J parent/full plan证明全部physical axes、F与cost；Q50.S fixed attention facts作为immutable input，不形成axis。test-only fresh actualization验证plan→selected Linalg→wafer.tile→Q50.0，不进入production。production planning对任意proposal/no-good/bound/parallel开关保持exact winner，CardModule/Instr/Q50.0均为零；selected `PhysicalDataflowPlan`经一个Card subtree transaction和一次Q50.0形成winner。public search不调用/fallback baseline；Q51完成后与Q49.P共同提供Q50.S S6的两条独立纵向证据。 | 06-13、16、18；`tasks/plans/physical-dataflow-synthesis.md` |
-| Q52 | `physical-dataflow-search-scalability` | `queued` | Q51、Q50.S S6 production gate | 在完整Q51链和attention两policy纵向闭合后显式profile state/continuation/query/solver work、16-Tile等价问题、time-to-first-full-proof和RSS；基于完整`FutureBoundaryKey`加入session-local memo、separator/component DP和stronger admissible bounds，只共享pure result不强迫assignment。constructive lane先取得full-proof plan，typed LNS再联合释放耦合coordinates并复用同一transitions/F gate；永久丢state的policy最多BudgetedFeasible。production allowance/deadline由fresh曲线选择，无candidate-count/LNS CLI；代表LLaMA须在最终有限policy内返回plan并一次commit/package/no-card。 | 06、14-18；`tasks/plans/physical-dataflow-synthesis.md` |
 | Q64 | `source-registration-truth-closure` | `done` | source registration与library ownership；Q62/Q63继续拥有各自语义清理 | 目录、CMake注册和library ownership重组本身保留；重审明确source organization只能证明文件归属与active build，不能证明被删算法/proof/test已迁移。Q51+相关“dormant/可删除”分类全部以当前donor-to-current审计重新判定，Q64不为Q50.S attention vertical、Q50.B–K或Q51完成状态背书。 | 18；`tasks/plans/source-registration-truth-closure.md` |
 | Q60 | `frontend-production-entry` | `done` | current PyTorch/XLA capture/export资产、Q59 | 产品`wafer.frontend.export_pytorch_program(module, example_inputs, output_directory)`只拥有strict framework export、BF16 state保存与current source写入，无case/seed/oracle/target/search/model-name入口。`functions/forward.stablehlo.bc`是唯一source IR authority；旧text/generic bytecode在source中拒绝，post-SPMD text仅属compiler internal parser。`WaferStableHLOProgram`由installed `wafer-verify-program`与compiler transaction共同消费，后者仍独立snapshot并以owned payload fresh验证；显式text只进`wafer-opt`的`wafer-frontend-verification`。旧`wafer-compile-stablehlo`零alias；feature-off无stub，relocated install的adapter→verifier→compiler→no-card通过。fresh ordinary/branched/repeat/graph-break/pre-exported/corrupt/metadata/path/dynamic门禁及251/251 supported lit通过（4 configured unsupported）。 | 01-02、18-20；`tasks/plans/compiler-entry-productization.md` |
-| Q53 | `physical-dataflow-production-readiness` | `queued` | Q51、Q52、Q60、Q55 current-interface closure、Q56达到`board-ready` | Q53-1以同一只读source的两份fresh transaction分别证明`none`/`search`单plan commit、accepted Tile dataflow→Instr→Target LLVM、typed effectiveness、package和no-card；small structured/communication/tail-storage与HF prefill、functional decode、Llama使用FP16/BF16，heavy只进显式campaign。Q53-2复用current `QualifiedBoardRuntimeSession`，第一次真实case确认一次device qualification，后续case串行而每phase完整16-Tile提交；small communication correctness后，Llama 3 pairs与prefill/decode代表5 pairs交替matched A/B，逐sample校验output/guard并按completion resolution分类。无板矩阵与runner完整才`board-ready`；两项matched均Improved才`done`。 | 02、06-16、18；`tasks/plans/physical-dataflow-synthesis.md` |
 
 ## Later / External Gates
 
