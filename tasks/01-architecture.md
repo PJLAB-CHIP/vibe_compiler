@@ -15,8 +15,8 @@
 2. **analysis、choice、selected IR和exact gate分离。** analysis从当前IR与immutable target facts重算；candidate只保存typed
    planning assignments，不克隆或物化loser IR；winning choice必须一次性物化为typed IR；SPM、DDR、completion、transport和
    target ABI只验证完整winner是否合法。
-3. **physical-dataflow selection是唯一整图decision owner。** Q50.S先把已证明的attention形态一次性归一为自包含semantic op，
-   Q51为每个semantic root选择closed algorithm并展开Tile placement、不同op/branch/wave并行、
+3. **graph algorithm与physical-dataflow decision分层。** 05/Q50.S在policy分叉前把已证明的完整Q/K/V attention一次性归一为
+   一个自包含semantic op并确定FA或FD；Q51不重新选择graph algorithm，只展开Tile placement、不同op/branch/wave并行、
    traversal fusion与separation、temporal tile/loop order、physical encoding、storage、communication、
    movement和buffered overlap联合决定。下游不得另做layout assignment、route fallback、communication reselection或
    late repair。合法域在immutable IR与typed state上惰性展开；只有最终winner进入一次CardModule materialization并通过共同exact gates。
@@ -59,8 +59,8 @@ Pipeline position:
   input/output/parameter/constant metadata和payload一致，target topology由compiler内部materialize/verify。
 - Current stage responsibility:
   在transaction-owned source snapshot上完成frontend verification；调用pinned XLA helper完成card级Shardy/XLA SPMD并重新验证；
-  normalization形成`TensorProgram`。search路径中Q50.S从typed SSA证明attention语义并一次性归一为verifier-legal semantic op；
-  Q51 physical-dataflow selection为每个semantic root选择algorithm并联合展开Tile
+  normalization形成`TensorProgram`。05/Q50.S从typed SSA证明attention语义并一次性归一为一个带fixed FA/FD algorithm的
+  verifier-legal semantic op，`none`与`search`消费同一结果；Q51 physical-dataflow selection联合展开Tile
   placement、不同op并行、TileRegion/fusion、temporal tile、layout、DDR/NoC movement和overlap。选择被物化为
   `CardModule`及其中的TileModule/TileRegion，随后投影并lower成per-Tile `Instr`，派生worker/slot/completion，
   闭合SPM/DDR/transport/target legality后原子形成`CardExecutable`。同一次target conversion产生owner-backed target
@@ -83,8 +83,8 @@ Pipeline position:
   compiler的bounded source reading与target-ready data materialization不属于这里的执行期streaming。
 - Completion gate:
   card-level partition与Tile launch domain分离；CardModule、CardExecutable、atomic writing、typed package/no-card、
-  repo-owned CModel和configured board RuntimeProvider链保持有效。semantic algorithm、spatial mapping、op-wave并行、temporal
-  tile、encoding/view/route、TileRegion/movement、buffering/order和collective relation先存在typed planning state中，只有winner
+  repo-owned CModel和configured board RuntimeProvider链保持有效。semantic algorithm先存在normalized TensorProgram中；spatial mapping、
+  op-wave并行、temporal tile、encoding/view/route、TileRegion/movement、buffering/order和collective relation存在typed planning state中，只有winner
   在pre-Instr actual CardModule中一次表达；finalized per-Tile Instr在worker/order确定后fresh重建completion，经过card-scoped
   exact gates提交。
   winner capability projection只在真实package/runtime consumer需要时派生，model/board verification不参与candidate选择。
@@ -107,7 +107,7 @@ verified source snapshot
 Shardy/XLA SPMD -> verified card-local optimizer-ready TensorProgram
         |
         v
-query-local semantic alternatives + physical-dataflow selection
+fixed semantic roots + query-local physical-dataflow selection
         |
         v
 selected CardModule -> TileModule / TileRegion
@@ -143,8 +143,8 @@ output的实现索引，不能提升为额外架构层。
 | Verified program | StableHLO、function boundary metadata、`ProgramDataSource`与checked `ProgramDataRange`/shard | model语义、static shape/dtype、parameter/external captured-constant identity、source bytes lifetime与payload verification | Tile placement、temporal tile、target layout、package file offset、runtime address |
 | Execution configuration | factory-only `ExecutionConfig` | card-level `num_partitions`与current target identity | Tile work assignment、planner policy |
 | Topology/SPMD | `wafer.target.topology`、card-level logical partition mesh、post-SPMD StableHLO | global-to-card-local tensor partition | Tile mapping、SPM/DDR、physical transport |
-| TensorProgram | Linalg/Tensor/SCF/Arith/Math与typed logical collective | card-local数学DAG、iterator/indexing relation及effect/control；每个semantic alternative仍是完整actual TensorProgram | target compute/movement lowering、Tile、offset、算法名sidecar |
-| Physical-dataflow selection | query-local typed assignment state；独立、可失效且可重算的op-wave/ready/live/calendar、`IndexRelation`与liveness/lifetime analysis | semantic-root、spatial、TileRegion、temporal/fusion、layout/movement、buffer/event-order选择及惰性actual evaluation；partial state只保存typed assignments，不保存任一派生analysis | accepted事实、package字段、shadow schedule、长期side table |
+| TensorProgram | Linalg/Tensor/SCF/Arith/Math、typed logical collective与`wafer.linalg_ext.attention` | card-local数学DAG、iterator/indexing relation及effect/control；matched attention显式携带fixed FA/FD algorithm | target compute/movement lowering、Tile、offset、算法sidecar |
+| Physical-dataflow selection | query-local typed assignment state；独立、可失效且可重算的op-wave/ready/live/calendar、`IndexRelation`与liveness/lifetime analysis | spatial、TileRegion、temporal/fusion、layout/movement、buffer/event-order选择及惰性actual evaluation；partial state只保存typed physical assignments，不保存派生analysis或graph algorithm choice | accepted事实、package字段、shadow schedule、长期side table |
 | CardModule / TileRegion | `wafer.card.module`、per-`tile_id` `wafer.tile.module`、non-nested `wafer.tile.region`、SCF/SSA、typed movement/event | selected MPMD、work coverage、Tile-local SPM ownership/lifetime、cross-Tile NoC和实际执行依赖 | rejected candidates、search score、runtime launch |
 | Instruction/memory program | `wafer.instr.*`、accepted SPM/DDR offsets、completion/Direct DTE | target-abstract invocation、physical geometry、range/lifetime/effect | raw host handle、package schedule |
 | CardExecutable | all-and-only Tile executable records | Tile modules、entry、program bindings、completion、transport和resource的card-scoped atomic acceptance | target object、runtime session、rejected choice |
@@ -163,13 +163,14 @@ physical-dataflow selection直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer Op
 
 责任严格分层：
 
-1. Q50.S normalization只从typed SSA证明softmax-weighted-sum语义并产生显式semantic op；per-root domain只保存closed algorithm enum，K/V
-   block与partition分别归temporal/spatial轴。winner commit由最终TileRegion materializer直接消费typed assignment并构造selected
-   implementation；Q48未来进入同一selection owner，不建立第二个selector；
+1. 05/Q50.S normalization只从typed SSA证明完整Q/K/V attention并产生一个`wafer.linalg_ext.attention`；FA/FD是op上的
+   fixed graph fact，不进入Q51 domain。K/V block与partition分别归temporal/spatial轴；winner commit先构造selected
+   Linalg/Tensor/SCF implementation，再确定性转换为existing wafer.tile compute。Q48未来若引入其它semantic optimization，
+   必须由自己的设计定义表示与selection owner，不能复用attention attr充当registry；
 2. query-local analysis从current IR与typed assignments形成symbolic op-wave DAG、ready/running/completed、per-Tile live set、
    `IndexRelation`、liveness/lifetime、resource calendar和finite temporal breakpoints；这些结果可失效、可重算，不进入partial state、
    不跨pass或进入accepted output；
-3. Q51 event-driven physical-dataflow selection的partial state只保存semantic root、ready-op dispatch、Tile/work assignment、
+3. Q51 event-driven physical-dataflow selection的partial state只保存ready-op dispatch、Tile/work assignment、
    temporal tile/order、TileRegion partition、retain/recompute/spill/cut/release boundary、layout/movement/transport、buffer/slot与
    issue/event order等typed choices；所有ready/live/lifetime/calendar/cost事实均从current assignments重算。它允许不同op与branch在不同Tile并发；
 4. current theoretical cost只聚合本轮enabled numeric terms；有实际参数用实际值，其次用已有理论值，完全未知的term对
@@ -179,11 +180,11 @@ physical-dataflow selection直接通过Linalg/DPS/Tiling/MemoryEffect、Wafer Op
 6. selected CardModule投影为all-and-only Tile Instr programs，fresh重建completion并经过SPM/DDR/transport/ABI
    exact gates；最低estimated makespan的hard-legal candidate原子形成CardExecutable。
 
-Attention的materialized-softmax与online recurrence是同一explicit semantic op的typed algorithm choices。Q50.S从Linalg
-indexing map、iterator、scalar region、use-def、view和observable semantics证明并归一化；Q50.E选择K/V temporal block，Q50.B
-选择空间partition，Q50.A证明coupled partial/merge。Q51在一个state中联合这些坐标，但不为每个组合构造TensorProgram graph；
-winner才由semantic op interface直接物化actual work。functional decode cache append保持普通tensor SSA/function-result语义，不是
-online/split资格的名字或参数matcher。
+Attention由一个explicit `wafer.linalg_ext.attention`表示。Q50.S从Linalg indexing map、iterator、scalar region、use-def、view和
+observable semantics证明完整Q/K/V关系，并从functional KV-cache append/return SSA确定FA或FD。Q50.E选择K/V temporal block，
+Q50.B选择physical partition，Q50.A证明coupled partial/merge；Q51只联合这些physical坐标，不构造algorithm alternatives。
+winner根据query-local work description一次展开selected Linalg actions并转换到wafer.tile。KV cache继续是普通tensor
+SSA/function-result语义，不进入runtime-owned cache或名字/参数matcher。
 
 合法候选域使用event dispatch和finite semantic breakpoints惰性生成。exact coverage、topology symmetry、canonical
 dedup、已证明的SPM lower bound和raw-work dominance可以在不删除合法最优解时剪枝；beam、候选cap、随机启发式或其它
@@ -278,7 +279,7 @@ target-model是独立qualification consumer，其mismatch不改变已经验证�
 | source boundary | product adapter与pre-exported input都形成唯一static-ranked StableHLO program directory；card-level num_partitions显式 | Q60切换portable StableHLO与产品adapter；dynamic shape、cross-card transport |
 | source data | logical parameter/external captured-constant identity、`ProgramDataSource`、checked `ProgramDataRange`/shard与transaction lifetime分离；大payload bounded读取 | Q58消除整树与original/shard重复复制、闭合SPMD helper交接并建立完整大型参数inventory证据 |
 | compiler entry | typed request/environment/options到readback-verified、已提交ExecutablePackage；CLI成功与commit一一对应 | Q59上提package primary result、移出post-commit qualification并闭合installed tool |
-| decision owner | physical-dataflow planning从semantic root alternatives出发，在immutable IR与typed state上联合评估placement、op/branch/wave并行、temporal、region、representation、movement、buffering和schedule；planning零IR，selected plan一次commit | Q50.A与Q49.P正在重闭exact demand和plan-only baseline；Q50.S/B–K/F/J迁移机制与donor witness；Q51.Core建立typed frontier、incumbent与work accounting并删除旧actual-candidate控制链。不得把旧winner、baseline early-exit或Core fixture写成终态完成 |
+| decision owner | graph normalization产生fixed semantic roots；physical-dataflow planning从B spatial axis出发，在immutable IR与typed state上联合评估placement、op/branch/wave并行、temporal、region、representation、movement、buffering和schedule；planning零IR，selected plan一次commit | Q50.A与Q49.P正在重闭exact demand和plan-only baseline；Q50.S迁attention graph/decomposition witness，Q50.B–K/F/J迁physical mechanisms；Q51.Core建立typed frontier、incumbent与work accounting并删除旧actual-candidate控制链。不得把旧winner、baseline early-exit或Core fixture写成终态完成 |
 | operation value semantics | 由既有op/dtype与专项数值合同拥有；physical-dataflow只消费这些事实，不新增数值policy、legality或search axis | 数值合同变化由独立编号任务处理，不混入Q50/Q51 physical-dataflow设计 |
 | physical realization | CardModule、per-`tile_id` TileModule/TileRegion、typed Tensor/Cx/NCx movement、Instr与liveness-derived fixed-capacity packing | Q50.B–Q50.J逐轴迁移并接入dependent mapping的physical realization；Q51统一选择，bank phase不改变hard feasible set或反向产生spill/region/join |
 | communication | card-local topology-derived Tile peer/collective expansion、显式p2p/local work/completion和card-scoped Direct DTE acceptance | mapping-changing NoC joint generation、cross-card transport |
@@ -296,7 +297,7 @@ target-model是独立qualification consumer，其mismatch不改变已经验证�
 | frontend program directory与verification | 02 |
 | Shardy/XLA SPMD与card-level partition | 03 |
 | target topology、card partition与Tile domain | 04 |
-| local structured tensor normalization与collective boundary | 05 |
+| local structured tensor normalization、attention graph algorithm与collective boundary | 05 |
 | physical-dataflow selection、candidate materialization与CardExecutable构造 | 06 |
 | selected CardModule/TileRegion materialization与SPM ownership/lifetime containment | 07 |
 | physical encoding attr/type语义、view、transfer realizability analysis与descriptor cover | 08 |

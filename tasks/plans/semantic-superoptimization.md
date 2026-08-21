@@ -1,8 +1,9 @@
 # Semantic Superoptimization 实施计划
 
-状态：`later`。动态状态与依赖只看`tasks/progress.md`。本任务不在当前Q49.P、Q50、Q51–Q53施工中实现；Q50.S先建立
-“算法/语义alternative必须成为actual `TensorProgram`”的接入边界，Q48只在Q53重新达到`board-ready`后扩展该边界，
-不建立第二条优化管线或第二个winner owner。
+状态：`later`。动态状态与依赖只看`tasks/progress.md`。本任务不在当前Q49.P、Q50、Q51–Q53施工中实现；Q50.S只拥有
+fixed FA/FD attention normalization，不提供通用semantic-alternative接口或Q51 axis。Q48只有在Q53重新达到`board-ready`后，
+先更新自己的TensorProgram表示、proof与Q51 closed state/consumer合同，才能生成其它semantic alternatives；不建立第二条优化管线
+或第二个winner owner，也不复用attention attr充当registry。
 
 本文只拆解语义候选生成与证明的施工步骤。physical-dataflow的合法域、搜索算法、资源准入和winner合同由
 `tasks/06-physical-dataflow-synthesis.md`拥有；稳定主线为：
@@ -171,8 +172,8 @@ retile、spill、改placement、解除fusion、切换TensorProgram alternative�
 
 ## 6. 实施顺序
 
-1. **Boundary closure**：复用Q50.S的actual TensorProgram alternative接口，删除recipe/sidecar、post-Instr selector与
-   重复winner入口；确认Q51 new-search session是唯一consumer和work-accounting owner。
+1. **Boundary closure**：定义Q48自有的typed semantic-program assignment及其Q51 closed state extension，删除recipe/sidecar、
+   post-Instr selector与重复winner入口；确认Q51 new-search session是唯一consumer和work-accounting owner，Q50.S不进入该API。
 2. **Proof core**：接入managed solver，实现BV/Bool/floating-point/UF、partial-operation定义域、observable
    memory/effect与`IndexRelation` precondition bridge；所有对象保持query-local。
 3. **Typed semantic coverage**：对可进入grammar的structured op、region和numeric category建立exhaustive分类；缺少权威

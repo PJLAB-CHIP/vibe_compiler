@@ -341,9 +341,10 @@ current target容量、target-model能力或host预算不足，必须按stage报
    受work bound约束，不进入无界generic Presburger equality/subtraction；MLIR analysis invalidation替代manual epoch/fingerprint。
    outcome区分satisfied、unsupported semantics、indeterminate resource exhaustion和compiler contract error；cross-op demand不作
    普通placement no-good，carrier/layout/route失败不反写spatial legality。Q49.P canonical carrier与Q50.B、Q50.G/H/J消费同一
-   proof。Q50.S：softmax-weighted-sum先归一为自包含semantic op；per-root domain只选择materialized-softmax或online recurrence，
-   K/V block与partition分别由temporal/spatial轴证明。planning不物化算法point，winner由最终TileRegion
-   materializer构造一次selected work；normalization、online recurrence、partial merge和failure atomicity各有direct witness。
+   proof。Q50.S：完整Q/K/V attention在policy分叉前归一为一个自包含semantic op，FA/FD由functional graph relation确定，
+   不形成Q51 algorithm domain。K/V block与partition分别由temporal/spatial轴证明；planning不物化attention IR，winner在
+   新Card subtree中只展开一次selected Linalg/Tensor/SCF并转换到wafer.tile。normalization、coupled-state query、FA temporal
+   recurrence、FD partial/merge、plan/actual resource parity和failure atomicity各有direct witness。
 3. Q50.B–Q50.K依次闭合spatial placement、single-root TileRegion、coupled traversal/region fusion、complete temporal tile与
    wave-loop order、
    scoped planning feasibility、layout/representation、movement、rotating buffers、event/resource schedule与conditional stage pipeline。
@@ -353,8 +354,8 @@ current target容量、target-model能力或host预算不足，必须按stage报
    重入event/resource schedule，由新assignment证明实际overlap。
    每项都需current接入点、production consumer、actual-IR witness和实际执行的正负测试；删除旧owner前还必须逐项映射其中独有
    algorithm/proof/diagnostic/test witness，旧owner删除和新domain存在都不能代替能力迁移。
-4. Q51.Core：直接从immutable TensorProgram建立search session，不调用Q49.P、不接收baseline executable/actual cost，也不把
-   baseline choices当未来轴default。S/B-full后Core foundation真实遍历首批axes并接管explicit public `search`；缺后续axis返回typed
+4. Q51.Core：直接从Q50.S-normalized immutable TensorProgram建立search session，不调用Q49.P、不接收baseline executable/actual cost，
+   也不把baseline choices当未来轴default。B-full/A后Core foundation从SpatialState真实遍历首批axes并接管explicit public `search`；缺后续axis返回typed
    `IncompletePlanningDomain`且planning零IR，不fallback。此后每轴independent reference、closed state/transition/invalidation和production
    caller随Q50.C–K交付，通用pure feasibility归F；不得预声明nullable future field或先交付无consumer mechanism。F-full后Core才闭合
    full-plan admission、cost/bound、causal rejection和coverage。旧candidate/generator/feedback/selector控制链在foundation切换时删除，

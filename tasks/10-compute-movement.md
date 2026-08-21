@@ -9,14 +9,13 @@ physical-dataflow placement、fusion或winner。Q49.P、Q50、Q51–Q53动态状
 ```text
 Pipeline position:
 - Upstream IR / input:
-  GSPMD与normalization产生的card-local Linalg/Tensor/SCF DAG；source op通过current operation、region、
-  indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。search路径中Q50.S已把合格softmax-attention子图
-  一次性归一为verifier-legal semantic op；Q51为每个semantic root选中typed algorithm及physical assignments，algorithm
-  property只在winner commit时写入IR。
+  GSPMD与normalization产生的card-local structured TensorProgram；普通source op通过current Linalg/Tensor/SCF operation、region、
+  indexing map、DPS/Tiling/MemoryEffect interfaces、type和SSA完整表达。05/Q50.S已在policy分叉前把完整Q/K/V attention
+  一次性归一为verifier-legal `wafer.linalg_ext.attention`，FA/FD是op上的固定graph fact；Q51只选择physical assignments。
 - Current stage responsibility:
   调用方给出本次placement、temporal tile、encoding、TileRegion、retain/recompute/spill/cut/release boundary、buffer/slot与
-  event order选择后，从selected actual TensorProgram root的current concrete Linalg/Tensor语义
-  确定性创建对应TileModule/TileRegion中的typed compute、view、movement、temporary和event；再把每个
+  event order选择后，读取selected actual TensorProgram root的current concrete structured语义；attention先展开selected
+  Linalg/Tensor/SCF，然后确定性创建对应TileModule/TileRegion中的typed compute、view、movement、temporary和event；再把每个
   Tile module合法化为canonical/unplaced wafer.instr.*。
 - Output IR / files:
   selected complete CardModule中的typed wafer.tile.*与Wafer-tagged memref，或projected per-Tile wafer.instr.*；
@@ -48,9 +47,10 @@ source数学语义只有一个owner：current MLIR op、region、SSA、type、at
 - RankedTensorType、dtype和shape；
 - standard tensor/view/subset semantics及current-IR-derived `IndexRelation`。
 
-Q50.S不预建每个算法/参数的TensorProgram graph。它把source语义归一为显式`wafer.linalg_ext.softmax_weighted_sum` op，Q51只保存per-root closed algorithm
-enum并展开physical-dataflow spatial/temporal/fusion/representation/communication等调度维度；K/V block和partition分别归
-temporal与spatial assignment。winner进入最终CardModule transaction后，本文直接消费typed root assignment执行唯一lowering：
+Q50.S不预建每个算法/参数的TensorProgram graph。它把完整attention归一为一个带fixed `flash_attention`或
+`flash_decoding`的semantic op；Q51从spatial axis开始展开physical-dataflow spatial/temporal/fusion/representation/
+communication等调度维度，K/V block和partition分别归temporal与spatial assignment。winner进入最终CardModule transaction后，
+本文消费prepared root work和physical bindings执行唯一lowering：
 
 ```text
 lower current structured op(current_op, selected_physical_values, rewriter)
@@ -67,8 +67,9 @@ capability menu、selected/forced参数或hidden fallback。rewrite改变source 
 physical-dataflow selection仍是唯一组合owner：它联合选择Tile set、per-Tile work domain、temporal tile、encoding、
 TileRegion partition、retain/recompute/spill/cut/release boundary、movement、buffer/slot和event order；lifetime、live set与cost
 从这些typed assignments及物化后的current IR重算。direct lowering不能为某个op自行决定全局mapping，也不能因为当前route失败而
-改写source数学语义。Q48未来生成的alternative必须进入Q51唯一selection owner；若某类source op需要多个实现，先由该语义
-自己的显式IR/interface表达，不建立local selector、字符串registry或opaque graph descriptor。
+改写source数学语义。Q48未来若生成semantic alternative，必须先由其自身设计选择并形成一个current TensorProgram，再进入
+physical planning；当前Q51不为其预留generic algorithm axis。若某类source op需要多个实现，先由该语义自己的显式IR/interface
+和production owner表达，不建立local selector、字符串registry或opaque graph descriptor。
 
 ## 3. Selected Tile IR
 
@@ -101,6 +102,30 @@ movement、独立或rotating buffer roots及slot relation、数据依赖和event
 缺少其中任一项时，planning必须拒绝对应typed plan；若selected lowering才发现则终止为合同缺口，不能按估算补全。
 
 ## 4. Compute Contracts
+
+### Attention selected decomposition
+
+`wafer.linalg_ext.attention`只存在于normalized TensorProgram。planning从其interfaces和query-local
+`AttentionWorkDescription`读取Q/K/V/mask slices、coupled state、internal actions和resource facts，不创建IR。唯一winner在新Card
+subtree中先生成selected `tensor.extract_slice`、compact `scf.for`和Linalg compute：
+
+```text
+QK contraction
+  -> scale / optional mask
+  -> row maximum / exponential / row sum
+  -> PV contraction
+  -> running-state update or spatial-state merge
+  -> final divide
+```
+
+这些Linalg ops使用B/E已经关闭的output piece、K1/K2 tile、tail和FD contribution；它们不得重新选择block、partition、merge
+owner或loop order。G/I/H/J/K prepared builders分别提供physical versions、storage、movement、event sites和execution structure。
+随后同一transaction调用普通structured-to-tile lowering，把compute确定性变成existing `wafer.tile.gemm`、
+`wafer.tile.reduce`和`wafer.tile.elementwise`。Linalg中间态不是公开IR层、candidate cache或第二production pipeline。
+
+进入Tile-to-Instr前，attention op和可执行Linalg source必须全部消失。任何未在plan resource description中的scratch、state、
+conversion、movement或event都是plan/actual parity failure；不能由lowering临时补齐。本文不定义`wafer.tile.attention`或
+`wafer.instr.attention`。
 
 ### GEMM
 
@@ -140,7 +165,8 @@ geometry无法direct traversal时保留显式movement。
 
 新增compute form必须同批闭合source semantic recognition、direct Tile op builder/verifier、Instr conversion/verifier、target call/CRT、
 TargetCall/SystemC和正负验证。只注册builder、增加symbol或通过单op fixture不进入production。attention、decode、mask、
-KV-cache parameter位置和model shape不能成为特殊lowering类别；它们只能作为普通DAG/state/effect语义流经相同pipeline。
+KV-cache parameter位置和model shape不能成为Tile/Instr特殊compute类别；attention只在TensorProgram层保留semantic identity，
+winner展开后作为普通GEMM/reduce/elementwise/state/effect流经相同pipeline。
 
 ## 5. Movement Contracts
 

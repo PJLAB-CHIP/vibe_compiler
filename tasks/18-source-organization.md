@@ -79,16 +79,17 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
 
 ### 3.2 Physical-dataflow selection 与 materialization
 
-`Planning`是整图physical-dataflow决策唯一owner；项目本身已经是compiler，不再建立包罗万象的`Compiler`中间目录。源码按
+05 normalization拥有attention graph proof与fixed FA/FD semantic op；`Planning`是后续整图physical-dataflow决策唯一owner。
+项目本身已经是compiler，不再建立包罗万象的`Compiler`中间目录。源码按
 下列output动作组织：
 
-- semantic-alternative builder：从current TensorProgram typed SSA证明资格，并把每个算法/参数点构造成isolated actual
-  TensorProgram alternative；proof、算法名和参数向量不越过actual IR边界；
-- physical-dataflow selection：从actual TensorProgram alternatives构造query-local DAG、component/event facts和typed
+- graph normalization：从current TensorProgram typed SSA证明完整attention并创建一个fixed-algorithm semantic op；不构造
+  algorithm points或isolated alternative；
+- physical-dataflow selection：从fixed TensorProgram roots构造query-local DAG、component/event facts和typed
   partial choices，惰性生成spatial/temporal/TileRegion/fusion/layout/movement/communication/buffering候选；
-- CardModule/TileRegion materialization：只把当前choice写入isolated actual IR并运行对应verifier；
-- Tile-local evaluation executor：只并行互不共享可写IR的evaluation work，并维持deterministic output order；
-- Instr construction and physical verification：对selected Tile module物化worker/slot/order，fresh重建required joins并执行memory、transport和ABI验证；
+- CardModule/TileRegion materialization：只消费最终plan；attention先展开selected Linalg/Tensor/SCF，再确定性转换到wafer.tile；
+- bounded Tile output executor：winner后只并行互不共享可写IR的per-Tile lowering/output work，并维持deterministic output order；
+- Instr construction and physical verification：对selected Tile module消费已经物化的worker/slot/order/completion，执行memory、transport和ABI验证；
 - CardExecutable verification：只验证card-scoped actual结果，不生成repair。
 
 现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → selected CardModule/TileRegion → all-and-only
@@ -99,8 +100,8 @@ Tile Instr → CardExecutable。实现索引不得升级为output名或要求其
 - GSPMD partition直接绑定Tile；
 - 每Tile独立winner再拼CardExecutable；
 - complete execution domain clone N、late NoC profitability或第二selector；
-- algorithm/model/shape/name matcher和拥有独立selection/public控制面的Flash/Decode pass；typed SSA proof驱动的
-  internal semantic-alternative builder属于current TensorProgram候选生成，不在此禁止；
+- algorithm/model/shape/name matcher和拥有独立selection/public控制面的Flash/Decode pass；attention只允许05定义的typed SSA
+  graph proof与单一current op，Q48 future semantic alternatives必须由自己的设计和consumer闭合；
 - performance Unknown promotion/fallback。
 
 ### 3.3 Conversion chain
@@ -152,8 +153,9 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 `Transforms/SPMD/XlaSpmd*.cpp`不是dormant host library source：它们由
 `tools/build_xla_spmd_partitioner_helper.py`的exact manifest复制到显式external helper build；不得同时加入host CMake target。
 
-Q50.S current有部分attention/decode proof和builder可作donor，但semantic op、algorithm domain、winner-only emitter与全部旧witness
-仍按Q50.S gate重新证明；旧source删除不能代签，current owner也不得保留whole-program alternative clone或decode-only gate。
+Q50.S current有部分attention/decode proof和builder可作donor，但单一attention op、graph-level FA/FD classifier、coupled-state query、
+planning description、winner-only Linalg decomposition与全部旧witness仍按Q50.S gate重新证明；旧source删除不能代签，current owner也
+不得保留whole-program alternative clone、attention algorithm search axis或decode-only physical gate。
 
 `tools/check_source_organization.py`当前只对少数目录闭合active/dormant集合；2026-08-17 follow-up review确认其余目录仍可能存在
 既未进入CMake、也未进入本表却获得green结果的source/test island。Q64

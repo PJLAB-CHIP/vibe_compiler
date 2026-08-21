@@ -5,7 +5,7 @@
 representation、movement、buffering、instruction scheduling 与候选选择的唯一设计 owner。动态状态和施工顺序只看
 `tasks/progress.md` 与 `tasks/plans/physical-dataflow-synthesis.md`。
 
-2026-08-20重审计已撤回Q51.Core、Q50.S/B–K、Q51、Q52及Q53 search部分的完成声明：current实现存在baseline/search
+2026-08-20重审计已撤回Q51.Core、Q50.S attention vertical、Q50.B–K、Q51、Q52及Q53 search部分的完成声明：current实现存在baseline/search
 混接、完整candidate反复物化、旧算法退役早于能力迁移、Q50.F/J/K未进入联合state、layout solver与多项NoC/pipeline proof
 丢失等问题。本文以下目标语义继续作为设计方向，但任何“已接入”“已完成”事实须以实施计划中的逐项审计矩阵和
 `tasks/progress.md`为准，不能由旧commit标题、旧profile或独立domain test代签。
@@ -56,11 +56,11 @@ layout/buffer、回退 spatial，或构造带 multi-buffer 的 stage pipeline。
 ```text
 Pipeline position:
 - Upstream IR / input:
-  GSPMD完成card级分区、target-independent normalization完成后的card-local TensorProgram；若存在算法级等价
-  alternative，Q50.S先把已证明的materialized-softmax weighted-sum子图一次性归一为显式
-  `wafer.linalg_ext.softmax_weighted_sum` semantic op，再提供per-root typed
-  algorithm assignment；block与partition仍由temporal/spatial轴选择，只有winner由最终TileRegion
-  materializer构造selected work。SSA、structured iterator、indexing relation、effect、type、shape和dtype均可验证，尚未绑定Tile。
+  GSPMD完成card级分区、05/Q50.S target-independent normalization完成后的card-local TensorProgram；已证明的完整Q/K/V
+  attention由一个`wafer.linalg_ext.attention` op表达，`flash_attention`或`flash_decoding`已经是固定graph fact，
+  不是本stage候选。block与partition仍由temporal/spatial轴选择，只有winner在Card subtree transaction中展开selected
+  Linalg/Tensor/SCF并转换为wafer.tile work。SSA、structured iterator、indexing relation、effect、type、shape和dtype均可验证，
+  尚未绑定Tile。
 - Current stage responsibility:
   `none`由独立canonical controller从正常TensorProgram构造一个live plan，并只用Q50的pure typed query沿预定义单调
   legalization顺序关闭iteration partition、Tile placement、single-root TileRegion、temporal tile、canonical
@@ -141,13 +141,14 @@ verification 的执行对象。`ExecutablePackage` 是 target lowering、link �
 
 一次 candidate-selection invocation 可读取：
 
-- current normalized TensorProgram、per-root semantic algorithm domain与稳定DAG node/edge identity；
+- current normalized TensorProgram、fixed semantic root facts与稳定DAG node/edge identity；
 - physical topology 与 available Tiles；
 - structured iterator、indexing relation与effect；
 - 各层合法选择枚举和实际 materialization 能力；
 - target geometry、capacity 和 cost 参数。
 
-它不保存 winner，不保存 accepted offset，也不把算法名或 opaque parameter bag 传入 physical legality。
+它不保存 winner或accepted offset。attention FA/FD通过current op的closed attr进入B/A legality与derived work；
+不另传算法字符串、opaque parameter bag或search coordinate。
 
 ### 4.2 Search session、winner 与 candidate assignment
 
@@ -176,7 +177,6 @@ Q51终态的candidate assignment包含下列typed choices；Q51.Core不预声明
 失效关系，不能使用`any`、字符串tag、opaque payload、通用provider registry或placeholder optional field提前占位：
 
 ```text
-SemanticRootId -> SoftmaxWeightedSumAlgorithm or another root-owned closed algorithm enum
 StageId  -> members / Tile group
 NodeId   -> iteration partition / physical placement / reduction role
 RegionId -> mandatory root-work members
@@ -197,6 +197,9 @@ calendar、makespan、actual offsets 或repair history。winner commit后以 IR 
 不同机制不互相调用或维护局部 winner；跨层耦合只通过明确依赖失效表达：
 
 ```text
+normalized semantic root或FA/FD fact改变
+  -> complete physical planning problem失效并从SpatialState重建
+
 spatial改变
   -> local DAG / TileRegion / exact edge demand及所有下游选择失效
 
@@ -596,9 +599,10 @@ search kernel本身不生成spatial、region、temporal、layout、movement、bu
 placeholder schema。每个mechanism进行pure domain/query并返回named typed transition、legality、cost或bound；kernel只维护
 deterministic frontier、stable dedup、typed outcome和search-local best plan。planning阶段不apply mutable IR。
 
-先收敛上述control contract，但不实现只靠mock domain运行的空Core。Q50.S与Q50.B–K按依赖建立真实typed query/algorithm/apply，
-Q50.F/J分别经过foundation与full closure；每轴加入independent reference enumerator并迁移donor能力。S/B-full形成首批真实domain后
-实现Q51.Core foundation并让explicit public `search`进入new owner；缺后续axis时返回typed incomplete，不调用baseline或commit。
+先收敛上述control contract，但不实现只靠mock domain运行的空Core。Q50.S先交付两条policy共用的attention semantic IR、
+algorithm normalization和read-only planning description；Q50.B–K再按依赖建立真实typed domain/query/apply，Q50.F/J分别经过
+foundation与full closure；每轴加入independent reference enumerator并迁移donor能力。B-full/A形成首批真实domain后实现
+Q51.Core foundation并让explicit public `search`进入new owner；缺后续axis时返回typed incomplete，不调用baseline或commit。
 此后每个Q50 checkpoint同批扩state/transition与production consumer，F-full后闭合control/coverage，随后Q51以test-only flat
 exhaustive oracle、actual digest/winner correspondence和single-winner source-to-package闭合。旧control branch在new owner接管时切除，
 不能保留第二controller，也不能让foundation伪装完整search。
@@ -608,7 +612,8 @@ exhaustive oracle、actual digest/winner correspondence和single-winner source-t
 ```text
 CompilationOptions::search
   -> new PhysicalDataflowSearch session
-  -> Q50.S and Q50.B–Q50.K typed domain/query/transition
+  -> consume Q50.S-normalized fixed semantic roots
+  -> Q50.B–Q50.K typed domain/query/transition
   -> Q50.F and per-axis planning legality/cost/bound queries
   -> search-local winner assignment
   -> winner一次性actual CardModule materialization
@@ -783,8 +788,9 @@ store/completion/load和search-policy调用闭包的结构检查。
 1. **直接复用的独立边界**：Q50.0 move-only CardExecutable compilation result、Q50.A `IndexRelation` exact demand、
    `StructuredDAGAnalysis`与target topology facts，以及Card/Tile/Instr lowering、SPM/DDR packing、transport/resource/ABI verifier。
    这些对象必须能在不include或构造旧candidate/search owner的前提下单独调用。
-2. **仅作算法与proof素材**：placement option推导、event/resource scheduling、edge carrier、selected-buffer、movement、layout、
-   NoC/collective和software-pipeline实现。Q50.S/B–K按终态typed mechanism重新定义输入输出后，可迁入仍正确的局部算法、
+2. **仅作算法与proof素材**：attention/decode graph proof与recurrence、placement option推导、event/resource scheduling、edge carrier、
+   selected-buffer、movement、layout、NoC/collective和software-pipeline实现。Q50.S graph normalization及B–K终态typed mechanism
+   重新定义输入输出后，可迁入仍正确的局部算法、
    verifier和negative case；不迁移旧API、状态布局、调用顺序或winner行为。
 3. **Q51.Core同批删除的旧search owner**：`TileExecutionCandidate`/metrics/transition bag、`deriveShortlist`、coordinate descent、witness
    shortlist、candidate-local schedule/evaluator、allocator/buffer feedback、beam/budget closure、equivalence cache、accepted cohort、
@@ -846,10 +852,12 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 3. 提取baseline canonical plan components和Q50.F closed-plan core，随后以Q49.P从current输入闭合功能合法化、结构、policy、
    causal witness和winner-only materialization；
 4. 只先收敛Q51 planning state、transition、cost/bound、coverage和single-winner commit合同，不写空Core或切换public入口；
-5. 依次闭合structured alternatives、graph-level spatial placement、single/coupled region、temporal、partial feasibility、layout solver、
+5. 先闭合Q50.S共同attention graph normalization、coupled-state description和winner selected decomposition，再依次闭合graph-level
+   spatial placement、single/coupled region、temporal、partial feasibility、layout solver、
    movement、I-initial、J-event foundation、execution structure、I-post-K、J-schedule和F-full feasibility；每项迁移donor能力、加入
    production query与独立oracle，完成承接后才删除旧owner/test；
-6. S/B-full后实现消费真实axis的Q51.Core foundation并切explicit `search`到new owner；后续C–K/F/J每项同批扩Core，F-full后闭合
+6. Q50.S semantic foundation与B-full/A后实现从SpatialState消费真实axis的Q51.Core foundation并切explicit `search`到new owner；
+   后续C–K/F/J每项同批扩Core，F-full后闭合
    full-plan/cost/coverage controller；全程不调用baseline、不物化candidate；
 7. 完成所有维度的test-only flat exhaustive oracle、完整source-to-CardExecutable单winner链和实际fusion验证，确认public `search`
    只经过new planning→one commit链；

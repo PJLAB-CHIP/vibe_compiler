@@ -15,12 +15,12 @@
 | 02 | `tasks/02-frontend-stablehlo-program.md` | StableHLO program directory、产品adapter边界、ProgramDataSource/ProgramDataRange lifetime与frontend验证 |
 | 03 | `tasks/03-shardy-spmd.md` | Shardy/XLA的card-level GSPMD output与`num_partitions`；不绑定片内Tile |
 | 04 | `tasks/04-topology-execution-mesh.md` | logical card partition mesh与独立target card/Tile topology |
-| 05 | `tasks/05-local-compute-normalization.md` | card-partition-local structured compute normalization与tensor collective boundary |
+| 05 | `tasks/05-local-compute-normalization.md` | card-partition-local structured compute normalization、single attention op、graph-level FA/FD算法与tensor collective boundary |
 | 06 | `tasks/06-physical-dataflow-synthesis.md` | card-local `TensorProgram -> PhysicalDataflowPlan -> CardModule/TileRegion/Instr -> CardExecutable`规划与selected execution构造：统一决定spatial、temporal、fusion、physical representation、movement、buffering与调度；预算限制planning工作而不预先截断合法域 |
 | 07 | `tasks/07-tile-region.md` | selected tile/dataflow actual IR物化；一个或多个non-nested `tile.region`表达SPM residency domains，data边variadic DDR、SPM root不跨界，boundary不自动产生movement或join |
 | 08 | `tasks/08-physical-realization.md` | physical encoding attr/type语义、valid domain、view、transfer realizability analysis、descriptor cover和selected physical realization |
 | 09 | `tasks/09-spm-memory-planning.md` | SPM lifetime/coexistence、fixed-capacity MiniMalloc legality、all-root coverage、validated placement/headroom和accepted offsets；candidate choice仍由06拥有 |
-| 10 | `tasks/10-compute-movement.md` | 窄source implementation OpInterface/external model、typed target-abstract compute/movement、standard MLIR effects/interface reuse和issue/token/fence/wait |
+| 10 | `tasks/10-compute-movement.md` | selected Linalg/Tensor/SCF到typed target-abstract compute/movement的确定性lowering、standard MLIR effects/interface reuse和issue/token/fence/wait |
 | 11 | `tasks/11-instruction-ir.md` | complete static Tile instruction program、current descriptor/geometry/range/narrowing legality及mapped/physical-fill/oriented typed extension |
 | 12 | `tasks/12-ddr-memory-planning.md` | 当前DDR demand/accepted offsets；多DDR分区、state和streaming延后 |
 | 13 | `tasks/13-communication.md` | selected Tile edge到typed p2p/staging/token/wait IR、Direct DTE card-scoped verification和completion；multi-card延后 |
@@ -41,7 +41,7 @@
 | verified frontend program、产品adapter、program data ownership和当前program directory | 02 |
 | pre-SPMD topology和execution mesh | 04 |
 | Shardy/SPMD card-partition output | 03 |
-| card-partition-local compute normalization与collective boundary | 05；跨stage正确性证据由16约束 |
+| card-partition-local compute normalization、attention graph algorithm与collective boundary | 05；physical planning和selected decomposition分别由06、07、10消费，跨stage正确性证据由16约束 |
 | card-local multi-Tile physical-dataflow planning、selected Card/Tile MPMD materialization和physical encoding/transfer | 06、07、08；source implementation interface由10提供，instruction legality由11提供，exact resource/transport gate由09、12、13提供 |
 | policy-free physical-dataflow rewrites | 06、07、08；upstream structured utility由05提供，source/direct typed lowering合同由10提供，源码ownership由18约束 |
 | source implementation interface、target-abstract compute/movement和instruction legality | 10、11；transfer realizability/descriptor cover只由08拥有 |
@@ -66,11 +66,12 @@ Q50.0建立selected CardModule compilation/verification seam；Q50.B先拆出`Sp
 baseline canonical producer，Q50.A再收口只消费closed assignment的IndexRelation demand。随后立即做Q49.P baseline纵向：把
 current其余canonical region/temporal/representation/movement/single-slot/Serialized/order事实迁入最终plan component，Q50.F先交付
 closed-plan problem/proof/parity core；baseline每coordinate零IR、selected只commit一次。它不等待完整search domains，也不在accepted后建立
-shadow schedule/cost或默认打印IR。baseline清理完成后，Q50.S/B–K再按依赖恢复semantic-root、spatial、TileRegion/fusion、temporal、
+shadow schedule/cost或默认打印IR。baseline清理完成后，Q50.S先交付none/search共用的attention graph normalization、fixed FA/FD
+semantic op和planning description；Q50.B–K再按依赖恢复spatial、TileRegion/fusion、temporal、
 representation/movement、buffer、execution structure和schedule完整domain/算法。F分closed-plan core、partial foundation、full closure；
 I分pre-K initial和post-K structure-specific closure；J分foundation和schedule closure，严格顺序为`...H→I→J-foundation→K→I→J→F-full`。
 旧candidate/generator/feedback/selector接口不保留，但删除其source/test前
-必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。Q50.S/B-full形成首批真实domain后建立Q51.Core foundation并切explicit
+必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。Q50.B-full/A形成首批真实domain后建立Q51.Core foundation并切explicit
 `search`到new owner；缺后续axis时typed incomplete且不commit。此后C–K/F/J每项同批扩closed state/transition和production caller，
 F-full后才闭合cost/bound/coverage与winner plan。Core不调用Q49.P、不接收baseline executable，也不在planning阶段物化CardModule。
 Q51以test-only full actual oracle验证plan，并让production只commit一个winner、
