@@ -13,15 +13,6 @@
 namespace wafer::compiler::detail {
 namespace {
 
-const analysis::LogicalNodeTrial *
-findNodeTrial(const analysis::LogicalShardTrial &trial,
-              StructuredDAGNodeID node) {
-  auto found = llvm::find_if(trial.nodes, [&](const auto &candidate) {
-    return candidate.node == node;
-  });
-  return found == trial.nodes.end() ? nullptr : &*found;
-}
-
 const TemporalNodeAssignment *
 findTemporal(const CardTemporalAssignment &assignment,
              StructuredDAGNodeID node) {
@@ -32,30 +23,27 @@ findTemporal(const CardTemporalAssignment &assignment,
 }
 
 std::optional<analysis::StaticRectangularIndexSet>
-findShard(const analysis::LogicalNodeTrial &trial, TileId tile) {
-  auto found = llvm::find_if(trial.executionShards, [&](const auto &shard) {
-    return shard.tile == tile;
-  });
-  if (found == trial.executionShards.end() || !found->executionDomain)
+findShard(const ExecutionShard *shard) {
+  if (!shard)
     return std::nullopt;
-  analysis::StaticRectangularIndexSetResult rectangle =
-      analysis::IndexSetResult{
-          analysis::IndexRelationStatus::Exact, *found->executionDomain, {}}
-          .getExactStaticRectangularDomain();
-  return rectangle.isExact() ? rectangle.domain : std::nullopt;
+  analysis::StaticRectangularIndexSet rectangle;
+  for (const IteratorInterval &interval : shard->iterationDomain) {
+    rectangle.offsets.push_back(interval.offset);
+    rectangle.sizes.push_back(interval.size);
+  }
+  return rectangle;
 }
 
 uint64_t
 getMaximumSteadyTripCount(const CoupledRegionGroup &group,
-                          const analysis::LogicalShardTrial &trial,
+                          const StructuredDemandView &view,
                           const CardTemporalAssignment &temporalAssignment) {
   uint64_t result = 0;
   for (StructuredDAGNodeID node : group.nodes) {
-    const analysis::LogicalNodeTrial *nodeTrial = findNodeTrial(trial, node);
     const TemporalNodeAssignment *temporal =
         findTemporal(temporalAssignment, node);
     std::optional<analysis::StaticRectangularIndexSet> shard =
-        nodeTrial ? findShard(*nodeTrial, group.tile) : std::nullopt;
+        findShard(view.getShard(node, group.tile));
     if (!temporal || !shard ||
         shard->sizes.size() != temporal->iteratorTileSizes.size())
       return 0;
@@ -96,14 +84,13 @@ findLayout(const CardPhysicalRepresentationAssignment &assignment, TileId tile,
 }
 
 std::optional<llvm::SmallVector<int64_t, 4>>
-getLeafSizes(const analysis::LogicalShardTrial &trial,
+getLeafSizes(const StructuredDemandView &view,
              const CardTemporalAssignment &temporalAssignment,
              StructuredDAGNodeID node, TileId tile) {
-  const analysis::LogicalNodeTrial *nodeTrial = findNodeTrial(trial, node);
   const TemporalNodeAssignment *temporal =
       findTemporal(temporalAssignment, node);
   std::optional<analysis::StaticRectangularIndexSet> shard =
-      nodeTrial ? findShard(*nodeTrial, tile) : std::nullopt;
+      findShard(view.getShard(node, tile));
   if (!temporal || !shard ||
       shard->sizes.size() != temporal->iteratorTileSizes.size())
     return std::nullopt;
@@ -119,16 +106,16 @@ getLeafSizes(const analysis::LogicalShardTrial &trial,
 
 std::optional<uint64_t> getSingleSlotPhysicalLowerBound(
     const CardProgramAnalysis &program,
-    const analysis::LogicalShardTrial &trial,
+    const StructuredDemandView &view,
     const CardTemporalAssignment &temporalAssignment,
     const CardPhysicalRepresentationAssignment &representationAssignment,
     const StructuredDAGEdge &edge, TileId tile) {
   const StructuredDAGNode *producer = program.dag.getNode(edge.producer);
   const StructuredDAGNode *consumer = program.dag.getNode(edge.consumer);
   auto producerLeaf =
-      getLeafSizes(trial, temporalAssignment, edge.producer, tile);
+      getLeafSizes(view, temporalAssignment, edge.producer, tile);
   auto consumerLeaf =
-      getLeafSizes(trial, temporalAssignment, edge.consumer, tile);
+      getLeafSizes(view, temporalAssignment, edge.consumer, tile);
   std::optional<MemLayout> producerLayout =
       findLayout(representationAssignment, tile, edge.producer,
                  PhysicalValueRole::Result, edge.producerResult);
@@ -172,7 +159,8 @@ std::optional<uint64_t> getSingleSlotPhysicalLowerBound(
 
 mlir::FailureOr<CardBufferingDomain> CardBufferingDomain::create(
     const CardProgramAnalysis &program,
-    const analysis::LogicalShardTrial &trial,
+    const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
     const CoupledRegionDomain &coupledDomain,
     const CoupledRegionAssignment &coupledAssignment,
     const CardTemporalDomain &temporalDomain,
@@ -188,8 +176,9 @@ mlir::FailureOr<CardBufferingDomain> CardBufferingDomain::create(
       *failureReason = message.str();
     return mlir::failure();
   };
-  if (trial.epoch != program.epoch ||
-      !coupledDomain.contains(coupledAssignment) ||
+  mlir::FailureOr<StructuredDemandView> view = StructuredDemandView::create(
+      program.dag, spatial, demand, failureReason);
+  if (mlir::failed(view) || !coupledDomain.contains(coupledAssignment) ||
       !temporalDomain.contains(temporalAssignment) ||
       !representationDomain.contains(representationAssignment) ||
       !movementDomain.contains(movementAssignment) || memory.spmBase < 0 ||
@@ -206,7 +195,7 @@ mlir::FailureOr<CardBufferingDomain> CardBufferingDomain::create(
     group.tile = selected.tile;
     group.nodes = selected.nodes;
     const uint64_t steadyTripCount =
-        getMaximumSteadyTripCount(selected, trial, temporalAssignment);
+        getMaximumSteadyTripCount(selected, *view, temporalAssignment);
     for (const StructuredDAGEdge &edge : program.dag.getEdges()) {
       if (!llvm::is_contained(selected.nodes, edge.producer) ||
           !llvm::is_contained(selected.nodes, edge.consumer))
@@ -216,7 +205,7 @@ mlir::FailureOr<CardBufferingDomain> CardBufferingDomain::create(
       if (!movement || movement->kind != DataMovementKind::Retained)
         continue;
       std::optional<uint64_t> singleSlotBytes = getSingleSlotPhysicalLowerBound(
-          program, trial, temporalAssignment, representationAssignment, edge,
+          program, *view, temporalAssignment, representationAssignment, edge,
           selected.tile);
       if (!singleSlotBytes || *singleSlotBytes == 0)
         return fail("retained buffering edge has no physical leaf payload");

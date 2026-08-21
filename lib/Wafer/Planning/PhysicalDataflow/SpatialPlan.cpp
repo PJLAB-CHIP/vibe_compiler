@@ -225,15 +225,6 @@ bool operator<(const IteratorPartition &lhs, const IteratorPartition &rhs) {
          std::tie(rhs.iterator, rhs.scheme, rhs.parameter);
 }
 
-bool operator<(const ReductionGroupId &lhs, const ReductionGroupId &rhs) {
-  if (lhs.root != rhs.root)
-    return lhs.root < rhs.root;
-  if (lhs.resultGroup != rhs.resultGroup)
-    return lhs.resultGroup < rhs.resultGroup;
-  return lexicographicalLess<uint32_t>(lhs.parallelCoordinate,
-                                       rhs.parallelCoordinate);
-}
-
 bool operator<(const MergePlacement &lhs, const MergePlacement &rhs) {
   if (lhs.group != rhs.group)
     return lhs.group < rhs.group;

@@ -1,10 +1,13 @@
 //===- WaferTensorProgramToCardModuleTest.cpp - Card baseline tests -----===//
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
-#include "Wafer/Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.h"
+#include "Wafer/Planning/Baseline/CardBaselineConsumerInputs.h"
+#include "Wafer/Planning/Baseline/CardBaselineEdgeCarriers.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/InitWaferDialects.h"
@@ -43,8 +46,10 @@
 #include <initializer_list>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
+#include <type_traits>
 
 namespace {
 
@@ -138,11 +143,23 @@ mapping(unsigned shardDimension, std::initializer_list<int64_t> tileIds,
   wafer::TileMapping result;
   wafer::OutputTileMapping output;
   output.outputIndex = 0;
-  output.shardDimension = shardDimension;
-  for (int64_t tileId : tileIds)
-    output.activeTileIds.push_back(wafer::TileId(tileId));
   output.temporalTileSizes.append(temporalTileSizes.begin(),
                                   temporalTileSizes.end());
+  const int64_t extent = output.temporalTileSizes[shardDimension];
+  const int64_t parts = tileIds.size();
+  int64_t offset = 0;
+  for (auto [part, tileId] : llvm::enumerate(tileIds)) {
+    const int64_t size =
+        extent / parts + (static_cast<int64_t>(part) < extent % parts);
+    wafer::OutputTileShard shard;
+    shard.tile = wafer::TileId(tileId);
+    shard.offsets.assign(output.temporalTileSizes.size(), 0);
+    shard.sizes = output.temporalTileSizes;
+    shard.offsets[shardDimension] = offset;
+    shard.sizes[shardDimension] = size;
+    output.shards.push_back(std::move(shard));
+    offset += size;
+  }
   result.outputs.push_back(std::move(output));
   return result;
 }
@@ -153,11 +170,23 @@ outputMapping(unsigned outputIndex, unsigned shardDimension,
               std::initializer_list<int64_t> temporalTileSizes) {
   wafer::OutputTileMapping output;
   output.outputIndex = outputIndex;
-  output.shardDimension = shardDimension;
-  for (int64_t tileId : tileIds)
-    output.activeTileIds.push_back(wafer::TileId(tileId));
   output.temporalTileSizes.append(temporalTileSizes.begin(),
                                   temporalTileSizes.end());
+  const int64_t extent = output.temporalTileSizes[shardDimension];
+  const int64_t parts = tileIds.size();
+  int64_t offset = 0;
+  for (auto [part, tileId] : llvm::enumerate(tileIds)) {
+    const int64_t size =
+        extent / parts + (static_cast<int64_t>(part) < extent % parts);
+    wafer::OutputTileShard shard;
+    shard.tile = wafer::TileId(tileId);
+    shard.offsets.assign(output.temporalTileSizes.size(), 0);
+    shard.sizes = output.temporalTileSizes;
+    shard.offsets[shardDimension] = offset;
+    shard.sizes[shardDimension] = size;
+    output.shards.push_back(std::move(shard));
+    offset += size;
+  }
   return output;
 }
 
@@ -190,6 +219,51 @@ edgeStrategy(mlir::Operation *producer, mlir::Operation *consumer,
 
 static wafer::TileMapping completeTemporalMapping(mlir::ModuleOp source,
                                                   wafer::TileMapping mapping) {
+  mlir::func::FuncOp defined;
+  for (mlir::func::FuncOp function : source.getOps<mlir::func::FuncOp>())
+    if (!function.isExternal()) {
+      defined = function;
+      break;
+    }
+  if (defined) {
+    for (wafer::OutputTileMapping &output : mapping.outputs) {
+      if (output.outputIndex >= defined.getNumResults() ||
+          output.shards.empty())
+        continue;
+      auto type = mlir::dyn_cast<mlir::RankedTensorType>(
+          defined.getResultTypes()[output.outputIndex]);
+      if (!type || !type.hasStaticShape())
+        continue;
+      unsigned axis = 0;
+      if (output.shards.size() > 1) {
+        bool found = false;
+        for (unsigned dimension = 0; dimension < type.getRank(); ++dimension) {
+          for (const wafer::OutputTileShard &shard : output.shards)
+            if (shard.offsets[dimension] != 0 ||
+                shard.sizes[dimension] !=
+                    output.shards.front().sizes[dimension]) {
+              axis = dimension;
+              found = true;
+              break;
+            }
+          if (found)
+            break;
+        }
+      }
+      const int64_t extent = type.getDimSize(axis);
+      const int64_t parts = output.shards.size();
+      int64_t offset = 0;
+      for (auto [part, shard] : llvm::enumerate(output.shards)) {
+        shard.offsets.assign(type.getRank(), 0);
+        shard.sizes.assign(type.getShape().begin(), type.getShape().end());
+        const int64_t size =
+            extent / parts + (static_cast<int64_t>(part) < extent % parts);
+        shard.offsets[axis] = offset;
+        shard.sizes[axis] = size;
+        offset += size;
+      }
+    }
+  }
   llvm::DenseSet<mlir::Operation *> configured;
   for (const wafer::StructuredOpTemporalTile &tile :
        mapping.operationTemporalTiles)
@@ -223,49 +297,226 @@ static wafer::TileMapping completeTemporalMapping(mlir::ModuleOp source,
           wafer::StructuredOpTemporalTile{&operation, std::move(ranges)});
       configured.insert(&operation);
     }
+  }
 
-    // Test mappings spell only the dimension under test. Complete every
-    // direct structured data edge with explicit local residency so fixtures
-    // exercise the all-edge contract without selecting coupled traversal.
-    for (mlir::Operation &operation :
-         function.getBody().front().without_terminator()) {
-      auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(&operation);
-      if (!dps || !mlir::isa<mlir::TilingInterface>(&operation) ||
-          mapping.outputs.empty() ||
-          mapping.outputs.front().activeTileIds.empty())
+  if (defined) {
+    if (!mapping.operandDemands.empty())
+      return mapping;
+    std::string failureReason;
+    auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(
+        defined, &failureReason);
+    if (mlir::failed(dag)) {
+      if (mapping.edgeStrategies.empty())
+        return mapping;
+      ADD_FAILURE() << "test fixture cannot construct current spatial input: "
+                    << failureReason;
+      return mapping;
+    }
+    llvm::SmallVector<llvm::SmallVector<wafer::TileId, 4>, 16> nodeTiles(
+        dag->getNodes().size());
+    auto addNodeTile = [&](wafer::compiler::detail::StructuredDAGNodeID node,
+                           wafer::TileId tile) {
+      if (node < nodeTiles.size() && !llvm::is_contained(nodeTiles[node], tile))
+        nodeTiles[node].push_back(tile);
+    };
+    auto findNode = [&](mlir::Operation *operation)
+        -> std::optional<wafer::compiler::detail::StructuredDAGNodeID> {
+      auto node = llvm::find_if(dag->getNodes(), [&](const auto &candidate) {
+        return candidate.operation == operation;
+      });
+      return node == dag->getNodes().end()
+                 ? std::nullopt
+                 : std::optional<wafer::compiler::detail::StructuredDAGNodeID>(
+                       node->id);
+    };
+    llvm::SmallVector<wafer::TileId, 16> fallbackTiles;
+    for (const wafer::OutputTileMapping &output : mapping.outputs) {
+      if (output.outputIndex >= dag->getObservableOutputRootNodes().size())
         continue;
-      for (mlir::OpOperand *operand : dps.getDpsInputOperands()) {
-        auto producerResult = mlir::dyn_cast<mlir::OpResult>(operand->get());
-        mlir::Operation *producer =
-            producerResult ? producerResult.getOwner() : nullptr;
-        if (!producer || producer->getBlock() != operation.getBlock() ||
-            !mlir::isa<mlir::TilingInterface>(producer) ||
-            !mlir::isa<mlir::DestinationStyleOpInterface>(producer))
-          continue;
-        bool configuredEdge = llvm::any_of(
-            mapping.edgeStrategies,
-            [&](const wafer::SpatialEdgeStrategy &edge) {
-              return edge.producer == producer && edge.consumer == &operation &&
-                     edge.consumerOperand == operand->getOperandNumber();
-            });
-        if (configuredEdge)
-          continue;
-        auto producerType =
-            mlir::dyn_cast<mlir::RankedTensorType>(producerResult.getType());
-        if (!producerType || !producerType.hasStaticShape()) {
-          ADD_FAILURE() << "test fixture cannot derive a static edge demand";
-          continue;
-        }
-        llvm::SmallVector<int64_t, 4> offsets(producerType.getRank(), 0);
-        wafer::SpatialEdgeStrategy resident = edgeStrategy(
-            producer, &operation, mapping.outputs.front().activeTileIds.front(),
-            wafer::SpatialEdgeAction::LocalShardResidency, offsets,
-            producerType.getShape());
-        resident.producerResult = producerResult.getResultNumber();
-        resident.consumerOperand = operand->getOperandNumber();
-        mapping.edgeStrategies.push_back(std::move(resident));
+      for (const wafer::OutputTileShard &shard : output.shards) {
+        if (!llvm::is_contained(fallbackTiles, shard.tile))
+          fallbackTiles.push_back(shard.tile);
+        for (wafer::compiler::detail::StructuredDAGNodeID root :
+             dag->getObservableOutputRootNodes()[output.outputIndex])
+          addNodeTile(root, shard.tile);
       }
     }
+    for (const wafer::SpatialEdgeStrategy &strategy : mapping.edgeStrategies) {
+      std::optional<wafer::compiler::detail::StructuredDAGNodeID> producer =
+          findNode(strategy.producer);
+      std::optional<wafer::compiler::detail::StructuredDAGNodeID> consumer =
+          findNode(strategy.consumer);
+      if (consumer)
+        addNodeTile(*consumer, strategy.destinationTile);
+      if (producer) {
+        if (strategy.fragments.empty()) {
+          addNodeTile(*producer, strategy.sourceTile);
+        } else {
+          for (const wafer::SpatialEdgeFragment &fragment : strategy.fragments)
+            addNodeTile(*producer, fragment.sourceTile);
+        }
+      }
+    }
+    for (const auto &edge : llvm::reverse(dag->getEdges())) {
+      const auto *producer = dag->getNode(edge.producer);
+      const auto *consumer = dag->getNode(edge.consumer);
+      if (!producer || !consumer)
+        continue;
+      for (wafer::TileId destination : nodeTiles[consumer->id]) {
+        const bool hasExplicitStrategy = llvm::any_of(
+            mapping.edgeStrategies,
+            [&](const wafer::SpatialEdgeStrategy &strategy) {
+              return strategy.producer == producer->operation &&
+                     strategy.producerResult == edge.producerResult &&
+                     strategy.consumer == consumer->operation &&
+                     strategy.consumerOperand == edge.consumerOperand &&
+                     strategy.destinationTile == destination;
+            });
+        if (!hasExplicitStrategy)
+          addNodeTile(producer->id, destination);
+      }
+    }
+    if (fallbackTiles.empty()) {
+      ADD_FAILURE() << "test fixture has no output Tile";
+      return mapping;
+    }
+    wafer::compiler::detail::SpatialAssignment spatial;
+    for (const auto &node : dag->getNodes()) {
+      if (nodeTiles[node.id].empty())
+        nodeTiles[node.id].push_back(fallbackTiles.front());
+      auto coordinate =
+          wafer::compiler::detail::buildCanonicalSpatialAssignment(
+              *dag, nodeTiles[node.id], &failureReason);
+      if (mlir::failed(coordinate)) {
+        ADD_FAILURE()
+            << "test fixture cannot close current node spatial input: "
+            << failureReason;
+        return mapping;
+      }
+      const auto *root = coordinate->semanticRoots.find(node.operation);
+      auto partition = root
+                           ? llvm::find_if(coordinate->assignment.nodes,
+                                           [&](const auto &candidate) {
+                                             return candidate.root == root->key;
+                                           })
+                           : coordinate->assignment.nodes.end();
+      if (!root || partition == coordinate->assignment.nodes.end()) {
+        ADD_FAILURE() << "test fixture cannot map one semantic root";
+        return mapping;
+      }
+      spatial.nodes.push_back(*partition);
+    }
+    llvm::sort(spatial.nodes, [](const auto &lhs, const auto &rhs) {
+      return lhs.root < rhs.root;
+    });
+    auto session = wafer::compiler::detail::DemandPlanningSession::create(
+        *dag, wafer::analysis::IndexRelationLimits(), &failureReason);
+    if (mlir::failed(session)) {
+      ADD_FAILURE() << "test fixture cannot build current demand facts: "
+                    << failureReason;
+      return mapping;
+    }
+    wafer::analysis::ExactDemandOutcome outcome = session->query(spatial);
+    const wafer::analysis::ExactDemandProof *proof =
+        wafer::analysis::getExactDemandProof(outcome);
+    if (!proof) {
+      ADD_FAILURE()
+          << "test fixture cannot derive current exact demand: "
+          << std::visit(
+                 [](const auto &value) -> std::string {
+                   using T = std::decay_t<decltype(value)>;
+                   if constexpr (std::is_same_v<
+                                     T, wafer::analysis::ExactDemandProof>)
+                     return {};
+                   else
+                     return value.detail;
+                 },
+                 outcome);
+      return mapping;
+    }
+    mapping.operandDemands = proof->dependencyDemands;
+    auto requiresReconstruction = [&](const wafer::SpatialEdgeStrategy &edge) {
+      auto dependency = llvm::find_if(
+          mapping.operandDemands,
+          [&](const wafer::analysis::DependencyDemand &candidate) {
+            return candidate.consumerOperation == edge.consumer &&
+                   candidate.consumerOperand == edge.consumerOperand;
+          });
+      if (dependency == mapping.operandDemands.end())
+        return false;
+      auto destination = llvm::find_if(
+          dependency->perDestination,
+          [&](const wafer::analysis::DestinationDemand &candidate) {
+            return candidate.destinationTile == edge.destinationTile;
+          });
+      return destination != dependency->perDestination.end() &&
+             !destination->reconstruction.steps.empty();
+    };
+    for (wafer::SpatialEdgeStrategy &strategy : mapping.edgeStrategies) {
+      if (!requiresReconstruction(strategy) ||
+          strategy.action == wafer::SpatialEdgeAction::RegionCut ||
+          strategy.action == wafer::SpatialEdgeAction::PeerFragments)
+        continue;
+      strategy.action = wafer::SpatialEdgeAction::PeerFragments;
+      strategy.sourceTile = strategy.destinationTile;
+      strategy.fragmentsDefineProducerDemand = false;
+      strategy.fragments.clear();
+      strategy.fragments.push_back(wafer::SpatialEdgeFragment{
+          wafer::SpatialEdgeFragmentKind::Resident, strategy.producerOffsets,
+          strategy.producerSizes, strategy.destinationTile});
+    }
+    wafer::TileMapping generated = mapping;
+    if (mlir::failed(wafer::compiler::detail::addCardBaselineEdgeCarriers(
+            generated, spatial, *proof, *dag, &failureReason))) {
+      ADD_FAILURE() << "test fixture cannot derive current carriers: "
+                    << failureReason;
+      return mapping;
+    }
+    int64_t nextCommunicationId = 0;
+    for (const wafer::SpatialEdgeStrategy &strategy : mapping.edgeStrategies)
+      for (const wafer::SpatialEdgeFragment &fragment : strategy.fragments)
+        if (fragment.kind == wafer::SpatialEdgeFragmentKind::Peer)
+          nextCommunicationId =
+              std::max(nextCommunicationId, fragment.communicationId + 1);
+    for (wafer::SpatialEdgeStrategy &strategy : generated.edgeStrategies) {
+      auto configuredStrategy = llvm::find_if(
+          mapping.edgeStrategies, [&](const wafer::SpatialEdgeStrategy &edge) {
+            return edge.producer == strategy.producer &&
+                   edge.producerResult == strategy.producerResult &&
+                   edge.consumer == strategy.consumer &&
+                   edge.consumerOperand == strategy.consumerOperand &&
+                   edge.destinationTile == strategy.destinationTile;
+          });
+      if (configuredStrategy != mapping.edgeStrategies.end()) {
+        if (configuredStrategy->consumerOffsets.empty() &&
+            configuredStrategy->consumerSizes.empty()) {
+          configuredStrategy->consumerOffsets = strategy.consumerOffsets;
+          configuredStrategy->consumerSizes = strategy.consumerSizes;
+        }
+        continue;
+      }
+      bool hasPeerFragment = false;
+      for (wafer::SpatialEdgeFragment &fragment : strategy.fragments) {
+        if (fragment.kind != wafer::SpatialEdgeFragmentKind::Peer)
+          continue;
+        hasPeerFragment = true;
+        fragment.communicationId = nextCommunicationId;
+      }
+      nextCommunicationId += hasPeerFragment;
+      if (mapping.materializationMode !=
+              wafer::SpatialDataflowMaterializationMode::IndependentDDRStages &&
+          !requiresReconstruction(strategy) &&
+          llvm::all_of(strategy.fragments, [](const auto &fragment) {
+            return fragment.kind == wafer::SpatialEdgeFragmentKind::Resident;
+          })) {
+        strategy.action = wafer::SpatialEdgeAction::LocalShardResidency;
+        strategy.sourceTile = strategy.destinationTile;
+        strategy.fragments.clear();
+        strategy.fragmentsDefineProducerDemand = false;
+      }
+      mapping.edgeStrategies.push_back(std::move(strategy));
+    }
+    session->close();
   }
   return mapping;
 }
@@ -342,6 +593,30 @@ mixedLocalRemoteFaninMapping(mlir::Operation *producer,
                                  /*payloadSlice=*/2});
   result.edgeStrategies.push_back(std::move(second));
   return result;
+}
+
+static mlir::LogicalResult addMixedFaninDemand(mlir::ModuleOp source,
+                                               wafer::TileMapping &mapping,
+                                               std::string *failureReason) {
+  mlir::func::FuncOp function = *source.getOps<mlir::func::FuncOp>().begin();
+  auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(
+      function, failureReason);
+  if (mlir::failed(dag) || dag->getNodes().size() != 2)
+    return mlir::failure();
+  llvm::SmallVector<wafer::compiler::detail::StructuredDAGNodePlacement, 2>
+      placements;
+  placements.push_back({dag->getNodes()[0].id,
+                        /*iteratorPartitionFactors=*/{2, 1},
+                        /*tiles=*/{wafer::TileId(0), wafer::TileId(1)}});
+  placements.push_back({dag->getNodes()[1].id,
+                        /*iteratorPartitionFactors=*/{1, 2},
+                        /*tiles=*/{wafer::TileId(1), wafer::TileId(2)}});
+  auto demand =
+      wafer::test::buildTestSpatialDemand(*dag, placements, failureReason);
+  if (mlir::failed(demand))
+    return mlir::failure();
+  mapping.operandDemands = demand->demand.dependencyDemands;
+  return mlir::success();
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
@@ -708,6 +983,8 @@ module {
   ASSERT_EQ(selected.operationTemporalTiles.size(), 6u);
   selected.operationTemporalTiles[0].iteratorTileSizes = {8, 2};
   selected.operationTemporalTiles[1].iteratorTileSizes = {1, 2, 4};
+  selected.edgeStrategies.resize(2);
+  selected.operandDemands.clear();
 
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
@@ -857,11 +1134,41 @@ module {
 )mlir");
   ASSERT_TRUE(source);
 
+  mlir::linalg::GenericOp transpose;
+  mlir::linalg::MatmulOp matmul;
+  source->walk([&](mlir::linalg::GenericOp generic) {
+    auto type =
+        mlir::dyn_cast<mlir::RankedTensorType>(generic.getResult(0).getType());
+    if (type && type.getShape() == llvm::ArrayRef<int64_t>({4, 3}))
+      transpose = generic;
+  });
+  source->walk([&](mlir::linalg::MatmulOp operation) { matmul = operation; });
+  ASSERT_TRUE(transpose);
+  ASSERT_TRUE(matmul);
+  wafer::TileMapping selected = completeTemporalMapping(
+      *source, mapping(/*shardDimension=*/2, {0}, {1, 2, 1}));
+  auto transposeTile =
+      llvm::find_if(selected.operationTemporalTiles,
+                    [&](const wafer::StructuredOpTemporalTile &tile) {
+                      return tile.operation == transpose.getOperation();
+                    });
+  ASSERT_NE(transposeTile, selected.operationTemporalTiles.end());
+  transposeTile->iteratorTileSizes = {4, 1};
+  auto matmulTile =
+      llvm::find_if(selected.operationTemporalTiles,
+                    [&](const wafer::StructuredOpTemporalTile &tile) {
+                      return tile.operation == matmul.getOperation();
+                    });
+  ASSERT_NE(matmulTile, selected.operationTemporalTiles.end());
+  matmulTile->iteratorTileSizes = {2, 1, 4};
+  selected.edgeStrategies.clear();
+  selected.operandDemands.clear();
+
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
-      *source, wafer::CardId(0), mapping(/*shardDimension=*/2, {0}, {1, 2, 1}),
-      cardModule, &failureReason)))
+      *source, wafer::CardId(0), std::move(selected), cardModule,
+      &failureReason)))
       << failureReason;
   ASSERT_TRUE(mlir::succeeded(mlir::verify(*cardModule)));
 
@@ -887,7 +1194,8 @@ module {
   });
   EXPECT_TRUE(sawExactStoredRhsWindow);
   EXPECT_FALSE(sawFullStoredRhs);
-  EXPECT_FALSE(sawFullTransposedRhs);
+  EXPECT_FALSE(sawFullTransposedRhs)
+      << printOperation(cardModule->getOperation());
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
@@ -1432,12 +1740,13 @@ module {
         %sum = arith.addf %value, %value : f16
         linalg.yield %sum : f16
     } -> tensor<8xf16>
-    %final = tensor.empty() : tensor<8xf16>
+    %final_init = arith.constant dense<0.0> : tensor<8xf16>
     %consumer = linalg.generic {
         indexing_maps = [affine_map<(d0) -> (d0)>,
                          affine_map<(d0) -> (d0)>],
         iterator_types = ["parallel"]
-      } ins(%producer : tensor<8xf16>) outs(%final : tensor<8xf16>) {
+      } ins(%producer : tensor<8xf16>)
+        outs(%final_init : tensor<8xf16>) {
       ^bb0(%value: f16, %old: f16):
         %sum = arith.addf %value, %old : f16
         linalg.yield %sum : f16
@@ -2175,6 +2484,9 @@ module {
   std::string failureReason;
   wafer::TileMapping selected =
       mixedLocalRemoteFaninMapping(structured[0], structured[1]);
+  ASSERT_TRUE(
+      mlir::succeeded(addMixedFaninDemand(*source, selected, &failureReason)))
+      << failureReason;
   // Each remote fragment spans more than one temporal consumer wave. The
   // selected peer receive is one stable SPM endpoint outside those waves;
   // prologue/steady/tail traversal must not clone the message endpoint. The
@@ -2477,7 +2789,7 @@ module {
       {axes = ["card"], shape = array<i64: 1>}
   func.func @broadcast(%input: tensor<8xf16>) -> tensor<1x2x8xf16> {
     %producer_empty = tensor.empty() : tensor<8xf16>
-    %consumer_empty = tensor.empty() : tensor<1x2x8xf16>
+    %consumer_init = arith.constant dense<0.0> : tensor<1x2x8xf16>
     %producer = linalg.map ins(%input : tensor<8xf16>)
         outs(%producer_empty : tensor<8xf16>) (%value: f16) {
       %sum = arith.addf %value, %value : f16
@@ -2488,7 +2800,7 @@ module {
                          affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
         iterator_types = ["parallel", "parallel", "parallel"]
       } ins(%producer : tensor<8xf16>)
-        outs(%consumer_empty : tensor<1x2x8xf16>) {
+        outs(%consumer_init : tensor<1x2x8xf16>) {
       ^bb0(%value: f16, %old: f16):
         %sum = arith.addf %value, %old : f16
         linalg.yield %sum : f16
@@ -2593,17 +2905,28 @@ module {
   llvm::SmallVector<wafer::compiler::detail::StructuredDAGNodePlacement, 3>
       placements = {placement(0, {0, 1}), placement(1, {2, 3}),
                     placement(2, {2, 3})};
-  auto edgePlan = wafer::compiler::detail::deriveStructuredDAGEdgeStrategyPlan(
-      *dag, placements, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(edgePlan)) << failureReason;
-  ASSERT_EQ(edgePlan->strategies.size(), 2u);
-  ASSERT_EQ(edgePlan->totalPeerBytes, 64u);
+  auto spatialDemand =
+      wafer::test::buildTestSpatialDemand(*dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(spatialDemand)) << failureReason;
 
   wafer::TileMapping selected = mapping(/*shardDimension=*/0, {2, 3}, {4});
   selected.materializationMode =
       wafer::SpatialDataflowMaterializationMode::IndependentDDRStages;
-  selected.edgeStrategies.append(edgePlan->strategies.begin(),
-                                 edgePlan->strategies.end());
+  for (const wafer::compiler::detail::StructuredDAGNode &node :
+       dag->getNodes()) {
+    auto linalg = mlir::cast<mlir::linalg::LinalgOp>(node.operation);
+    selected.operationTemporalTiles.push_back(
+        {node.operation, linalg.getStaticLoopRanges(), {}});
+  }
+  ASSERT_TRUE(
+      mlir::succeeded(wafer::compiler::detail::addCardBaselineConsumerInputs(
+          selected, spatialDemand->demand, &failureReason)));
+  ASSERT_TRUE(
+      mlir::succeeded(wafer::compiler::detail::addCardBaselineEdgeCarriers(
+          selected, spatialDemand->spatial, spatialDemand->demand, *dag,
+          &failureReason)))
+      << failureReason;
+  ASSERT_EQ(selected.edgeStrategies.size(), 4u);
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
       *source, wafer::CardId(0), std::move(selected), cardModule,
@@ -3073,8 +3396,13 @@ module {
   mlir::ModuleOp unchangedPointer = *unchanged;
   std::string failureReason;
 
-  wafer::TileMapping hole =
+  wafer::TileMapping valid =
       mixedLocalRemoteFaninMapping(structured[0], structured[1]);
+  ASSERT_TRUE(
+      mlir::succeeded(addMixedFaninDemand(*source, valid, &failureReason)))
+      << failureReason;
+
+  wafer::TileMapping hole = valid;
   hole.edgeStrategies.front().fragments.pop_back();
   EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(
       *source, wafer::CardId(0), hole, unchanged, &failureReason)));
@@ -3082,8 +3410,7 @@ module {
             "dependent fragments do not exactly cover the consumer demand");
   EXPECT_EQ(*unchanged, unchangedPointer);
 
-  wafer::TileMapping overlap =
-      mixedLocalRemoteFaninMapping(structured[0], structured[1]);
+  wafer::TileMapping overlap = valid;
   overlap.edgeStrategies.front().fragments.back().offsets = {0, 0};
   EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(
       *source, wafer::CardId(0), overlap, unchanged, &failureReason)));
@@ -3091,8 +3418,7 @@ module {
             "dependent fragments overlap within one consumer demand");
   EXPECT_EQ(*unchanged, unchangedPointer);
 
-  wafer::TileMapping overflow =
-      mixedLocalRemoteFaninMapping(structured[0], structured[1]);
+  wafer::TileMapping overflow = valid;
   overflow.edgeStrategies.front().fragments.back().offsets = {
       std::numeric_limits<int64_t>::max(), 0};
   EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(

@@ -61,7 +61,7 @@ module {
   std::string failureReason;
   auto dag = StructuredDAGAnalysis::create(function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
-  StructuredDAGNodePlacement placement{0, {1, 1}, {TileId(0)}, std::nullopt};
+  StructuredDAGNodePlacement placement{0, {1, 1}, {TileId(0)}};
   auto domain = TemporalNodeDomain::create(dag->getNodes().front(), placement,
                                            &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
@@ -112,8 +112,7 @@ module {
   std::string failureReason;
   auto dag = StructuredDAGAnalysis::create(function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
-  StructuredDAGNodePlacement placement{
-      0, {2}, {TileId(0), TileId(1)}, std::nullopt};
+  StructuredDAGNodePlacement placement{0, {2}, {TileId(0), TileId(1)}};
   auto domain = TemporalNodeDomain::create(dag->getNodes().front(), placement,
                                            &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
@@ -148,7 +147,7 @@ module {
   std::string failureReason;
   auto dag = StructuredDAGAnalysis::create(function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
-  StructuredDAGNodePlacement placement{0, {1, 1}, {TileId(0)}, std::nullopt};
+  StructuredDAGNodePlacement placement{0, {1, 1}, {TileId(0)}};
   auto domain = TemporalNodeDomain::create(dag->getNodes().front(), placement,
                                            &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;

@@ -113,30 +113,17 @@ struct SpatialEdgeStrategy {
 /// scheduling TensorProgram.  The array is positionally paired with the
 /// caller's edge-strategy array and never enters IR or candidate identity.
 struct SpatialEdgeMaterializationFacts {
-  bool hasProducerToConsumerChain = false;
+  bool requiresConsumerInputReconstruction = false;
   uint64_t consumerScheduleOrdinal = 0;
 };
 
-/// Returns the topologically ordered pure producer-to-consumer tensor chain
-/// connecting one selected structured producer result to one selected
-/// structured consumer operand. A direct dependency returns an empty path.
-/// Support operations may join other structured results; those are separate
-/// explicit edge strategies and must all be rebound before materialization. The
-/// selected producer itself must reach the operand through exactly one path.
-mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
-traceProducerToConsumerChain(mlir::Operation *producer, unsigned producerResult,
-                             mlir::Operation *consumer,
-                             unsigned consumerOperand,
-                             std::string *failureReason = nullptr);
-
-/// Maps one exact producer result tile through the current direct/support SSA
-/// relation and the consumer's TilingInterface to one exact consumer result
-/// tile. This is a legality query over current IR; it does not select or
-/// mutate a placement.
-mlir::LogicalResult deriveSpatialEdgeConsumerResultDomain(
-    const SpatialEdgeStrategy &strategy,
-    llvm::SmallVectorImpl<int64_t> &consumerOffsets,
-    llvm::SmallVectorImpl<int64_t> &consumerSizes,
+/// Derive selected-edge materialization facts exclusively from the grouped
+/// exact-demand proof and stable source-block order. This query does not walk
+/// producer chains or recover logical demand from a physical strategy.
+mlir::FailureOr<llvm::SmallVector<SpatialEdgeMaterializationFacts, 16>>
+deriveSpatialEdgeMaterializationFacts(
+    mlir::Block &sourceBody, llvm::ArrayRef<SpatialEdgeStrategy> edgeStrategies,
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
     std::string *failureReason = nullptr);
 
 /// Returns whether an edge strategy has actual work on `tile`.  Destination
@@ -162,7 +149,7 @@ mlir::LogicalResult lowerSpatialEdgeStrategiesToTileRegionModule(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     StructuredMaterializationRelations *materializationRelations = nullptr,
     llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts = {},
-    llvm::ArrayRef<analysis::ConsumerInputDemand> operandDemands = {},
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands = {},
     bool requireOneStructuredRootPerRegion = false);
 
 } // namespace wafer

@@ -9,7 +9,6 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
-#include <optional>
 
 namespace wafer::compiler::detail {
 
@@ -24,9 +23,6 @@ struct StructuredDAGNodePlacement {
   /// Canonical row-major logical partition coordinate to physical Tile. Every
   /// entry is distinct; Tile order is semantic because it is the embedding.
   llvm::SmallVector<TileId, 16> tiles;
-  /// Present exactly for a spatial reduction partition and names the Tile
-  /// selected to merge its required partial contributions.
-  std::optional<TileId> reductionMergeTile;
 };
 
 } // namespace wafer::compiler::detail

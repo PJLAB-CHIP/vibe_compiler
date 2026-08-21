@@ -3,7 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SPATIALPLAN_H
 
-#include "Wafer/Planning/PhysicalDataflow/SemanticRoot.h"
+#include "Wafer/Analysis/PhysicalDataflow/SpatialAssignment.h"
 #include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -40,24 +40,6 @@ mlir::FailureOr<int64_t>
 getIteratorPartitionIntervalCount(int64_t extent,
                                   const IteratorPartition &partition,
                                   std::string *failureReason = nullptr);
-
-struct ReductionGroupId {
-  SemanticRootKey root;
-  uint32_t resultGroup = 0;
-  llvm::SmallVector<uint32_t, 4> parallelCoordinate;
-
-  friend bool operator==(const ReductionGroupId &lhs,
-                         const ReductionGroupId &rhs) {
-    return lhs.root == rhs.root && lhs.resultGroup == rhs.resultGroup &&
-           lhs.parallelCoordinate == rhs.parallelCoordinate;
-  }
-  friend bool operator!=(const ReductionGroupId &lhs,
-                         const ReductionGroupId &rhs) {
-    return !(lhs == rhs);
-  }
-  friend bool operator<(const ReductionGroupId &lhs,
-                        const ReductionGroupId &rhs);
-};
 
 struct MergePlacement {
   ReductionGroupId group;
@@ -121,51 +103,6 @@ private:
 
   llvm::SmallVector<NodeIterationSpace, 16> nodes;
   llvm::SmallVector<TileId, 16> availableTiles;
-};
-
-struct IteratorInterval {
-  int64_t offset = 0;
-  int64_t size = 0;
-
-  int64_t getEnd() const { return offset + size; }
-
-  friend bool operator==(const IteratorInterval &lhs,
-                         const IteratorInterval &rhs) {
-    return lhs.offset == rhs.offset && lhs.size == rhs.size;
-  }
-};
-
-struct LogicalShardId {
-  SemanticRootKey root;
-  llvm::SmallVector<uint32_t, 4> coordinate;
-
-  friend bool operator==(const LogicalShardId &lhs, const LogicalShardId &rhs) {
-    return lhs.root == rhs.root && lhs.coordinate == rhs.coordinate;
-  }
-};
-
-struct ExecutionShard {
-  LogicalShardId shard;
-  TileId tile{0};
-  llvm::SmallVector<IteratorInterval, 4> iterationDomain;
-};
-
-struct ReductionGroupPlacement {
-  ReductionGroupId group;
-  TileId mergeTile{0};
-};
-
-struct NodeExecutionPartition {
-  SemanticRootKey root;
-  llvm::SmallVector<ExecutionShard, 16> shards;
-  llvm::SmallVector<ReductionGroupPlacement, 4> reductionGroups;
-};
-
-/// Ephemeral exact Cartesian execution assignment. It contains no final result
-/// ownership, exact operand demand, physical representation, movement, buffer,
-/// schedule, or cost facts.
-struct SpatialAssignment {
-  llvm::SmallVector<NodeExecutionPartition, 16> nodes;
 };
 
 mlir::LogicalResult

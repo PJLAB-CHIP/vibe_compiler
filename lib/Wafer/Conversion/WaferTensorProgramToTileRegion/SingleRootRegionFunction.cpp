@@ -588,7 +588,7 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
                      return tile < extent;
                    });
   mlir::LogicalResult materialized = mlir::failure();
-  if (shard.role == StructuredNodeIterationShardRole::Complete) {
+  if (shard.reductionGroups.empty()) {
     materialized =
         hasTemporalWaves
             ? materializeTemporalRootIteratorShard(
@@ -661,8 +661,7 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
     return fail<RootFragment>(failureReason, diagnostic.str());
   }
   result.relations = std::move(emissionRelations.materializedBuffers);
-  if (shard.role ==
-      StructuredNodeIterationShardRole::PartialReductionContribution) {
+  if (!shard.reductionGroups.empty()) {
     llvm::SmallVector<StorageStoreOp, 2> stores;
     result.function.walk(
         [&](StorageStoreOp store) { stores.push_back(store); });
@@ -676,8 +675,8 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
     }
     for (auto [resultIndex, store] : llvm::enumerate(stores))
       result.relations.partialReductionContributions.push_back(
-          {shard.structuredNodeId, static_cast<unsigned>(resultIndex),
-           shard.tile, store.getSource()});
+          {shard.structuredNodeId, shard.reductionGroups.front().group,
+           static_cast<unsigned>(resultIndex), shard.tile, store.getSource()});
   }
   return result;
 }

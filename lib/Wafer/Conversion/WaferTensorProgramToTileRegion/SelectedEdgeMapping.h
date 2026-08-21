@@ -14,7 +14,7 @@ namespace wafer::tensor_program_to_tile_region {
 struct SelectedEdgeProgramMapping {
   llvm::SmallVector<StructuredOpTemporalTile, 16> operationTemporalTiles;
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
-  std::vector<analysis::ConsumerInputDemand> consumerInputDemands;
+  std::vector<analysis::DependencyDemand> consumerInputDemands;
   llvm::SmallVector<MappedStrategy, 16> strategies;
   bool independentDDRStages = false;
 };
@@ -27,7 +27,7 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts,
-    llvm::ArrayRef<analysis::ConsumerInputDemand> operandDemands,
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
     std::string *failureReason);
 
 } // namespace wafer::tensor_program_to_tile_region

@@ -180,6 +180,7 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
       return llvm::is_contained(stage.nodes, node);
     };
     llvm::DenseSet<mlir::Operation *> closure;
+    llvm::SmallVector<mlir::Operation *, 16> forwardWorklist;
     std::function<mlir::LogicalResult(mlir::Operation *)> addDependencies;
     addDependencies = [&](mlir::Operation *operation) -> mlir::LogicalResult {
       mlir::Operation *topLevel = getTopLevelOperation(operation);
@@ -198,6 +199,7 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
           return fail(diagnostic.str());
         }
       closure.insert(topLevel);
+      forwardWorklist.push_back(topLevel);
       for (mlir::Value operand : topLevel->getOperands()) {
         mlir::Operation *definition = operand.getDefiningOp();
         if (definition && mlir::failed(addDependencies(definition)))
@@ -211,9 +213,6 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
           mlir::failed(addDependencies(topLevel)))
         return mlir::failure();
 
-    llvm::SmallVector<mlir::Operation *, 16> forwardWorklist;
-    for (mlir::Operation *operation : closure)
-      forwardWorklist.push_back(operation);
     while (!forwardWorklist.empty()) {
       mlir::Operation *operation = forwardWorklist.pop_back_val();
       for (mlir::Value result : operation->getResults()) {
@@ -229,7 +228,6 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
             continue;
           if (mlir::failed(addDependencies(user)))
             return mlir::failure();
-          forwardWorklist.push_back(user);
         }
       }
     }

@@ -4,6 +4,7 @@
 #include "Wafer/Planning/Search/BufferingApply.h"
 
 #include "Wafer/InitWaferDialects.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -93,7 +94,8 @@ mlir::OwningOpRef<mlir::ModuleOp> parseChain(mlir::MLIRContext &context,
 
 struct Prepared {
   std::unique_ptr<CardProgramAnalysis> program;
-  analysis::LogicalShardTrial trial;
+  SpatialAssignment spatial;
+  analysis::ExactDemandProof demand;
   CoupledRegionDomain coupledDomain;
   CoupledRegionAssignment coupledAssignment;
   CardTemporalDomain temporalDomain;
@@ -111,16 +113,17 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module, int64_t extent,
   if (mlir::failed(dag) || dag->getNodes().size() != 2)
     return mlir::failure();
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements{
-      StructuredDAGNodePlacement{0, {1}, {TileId(0)}, std::nullopt},
-      StructuredDAGNodePlacement{1, {1}, {TileId(0)}, std::nullopt}};
-  analysis::IREpoch epoch = analysis::IREpoch::mint();
-  auto trial = buildLogicalShardTrial(*dag, placements, epoch, failureReason);
-  if (mlir::failed(trial))
+      StructuredDAGNodePlacement{0, {1}, {TileId(0)}},
+      StructuredDAGNodePlacement{1, {1}, {TileId(0)}}};
+  auto spatialDemand =
+      wafer::test::buildTestSpatialDemand(*dag, placements, failureReason);
+  if (mlir::failed(spatialDemand))
     return mlir::failure();
-  auto coupled = CoupledRegionDomain::create(*dag, *trial, failureReason);
+  auto coupled = CoupledRegionDomain::create(
+      *dag, spatialDemand->spatial, spatialDemand->demand, failureReason);
   auto temporal = CardTemporalDomain::create(*dag, placements, failureReason);
   auto topology = TargetTopology::create(module, failureReason);
-  if (mlir::failed(trial) || mlir::failed(coupled) || mlir::failed(temporal) ||
+  if (mlir::failed(coupled) || mlir::failed(temporal) ||
       mlir::failed(topology))
     return mlir::failure();
   CoupledRegionAssignment coupledAssignment = coupled->getFirstAssignment();
@@ -145,19 +148,18 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module, int64_t extent,
   StaticOutputDomains outputDomains{{extent}};
   auto program = std::make_unique<CardProgramAnalysis>(
       std::move(*topology), llvm::SmallVector<TileId, 16>{TileId(0)},
-      std::move(*dag), std::move(outputDomains), std::move(operationNodes),
-      epoch);
+      std::move(*dag), std::move(outputDomains), std::move(operationNodes));
   auto representation = CardPhysicalRepresentationDomain::create(
-      *program, *trial, *coupled, coupledAssignment, *temporal,
-      temporalAssignment, failureReason);
+      *program, spatialDemand->spatial, spatialDemand->demand, *coupled,
+      coupledAssignment, *temporal, temporalAssignment, failureReason);
   if (mlir::failed(representation))
     return mlir::failure();
   CardPhysicalRepresentationAssignment representationAssignment =
       representation->getFirstAssignment();
   auto movement = CardDataMovementDomain::create(
-      *program, CardId(0), *trial, *coupled, coupledAssignment, *temporal,
-      temporalAssignment, *representation, representationAssignment,
-      failureReason);
+      *program, CardId(0), spatialDemand->spatial, spatialDemand->demand,
+      *coupled, coupledAssignment, *temporal, temporalAssignment,
+      *representation, representationAssignment, failureReason);
   if (mlir::failed(movement))
     return mlir::failure();
   CardDataMovementAssignment movementAssignment =
@@ -165,19 +167,24 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module, int64_t extent,
   if (movementAssignment.edges.size() != 1 ||
       movementAssignment.edges.front().kind != DataMovementKind::Retained)
     return mlir::failure();
-  return Prepared{
-      std::move(program),         std::move(*trial),
-      std::move(*coupled),        std::move(coupledAssignment),
-      std::move(*temporal),       std::move(temporalAssignment),
-      std::move(*representation), std::move(representationAssignment),
-      std::move(*movement),       std::move(movementAssignment)};
+  return Prepared{std::move(program),
+                  std::move(spatialDemand->spatial),
+                  std::move(spatialDemand->demand),
+                  std::move(*coupled),
+                  std::move(coupledAssignment),
+                  std::move(*temporal),
+                  std::move(temporalAssignment),
+                  std::move(*representation),
+                  std::move(representationAssignment),
+                  std::move(*movement),
+                  std::move(movementAssignment)};
 }
 
 CardBufferingDomain makeDomain(const Prepared &prepared,
                                const TargetMemoryPolicy &memory) {
   auto domain = CardBufferingDomain::create(
-      *prepared.program, prepared.trial, prepared.coupledDomain,
-      prepared.coupledAssignment, prepared.temporalDomain,
+      *prepared.program, prepared.spatial, prepared.demand,
+      prepared.coupledDomain, prepared.coupledAssignment, prepared.temporalDomain,
       prepared.temporalAssignment, prepared.representationDomain,
       prepared.representationAssignment, prepared.movementDomain,
       prepared.movementAssignment, memory);

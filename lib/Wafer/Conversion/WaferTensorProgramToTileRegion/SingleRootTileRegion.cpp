@@ -22,6 +22,9 @@
 namespace wafer::tensor_program_to_tile_region {
 namespace {
 
+using compiler::detail::ReductionGroupId;
+using compiler::detail::ReductionGroupPlacement;
+
 mlir::LogicalResult failResult(std::string *failureReason,
                                llvm::StringRef message) {
   setFailureReason(failureReason, message);
@@ -291,8 +294,7 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
                       "node-group CardModule has duplicate available Tiles");
 
   std::set<std::pair<int64_t, uint32_t>> seenShards;
-  std::map<uint32_t, StructuredNodeIterationShardRole> nodeRoles;
-  std::map<uint32_t, TileId> reductionMergeTiles;
+  std::map<uint32_t, bool> nodePartialStates;
   std::map<uint32_t, StructuredComputeImplementation> nodeImplementations;
   std::map<uint32_t, std::pair<llvm::SmallVector<int64_t, 4>,
                                llvm::SmallVector<uint32_t, 4>>>
@@ -330,28 +332,20 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
             "node group has mixed Tiles, unstable order, or duplicate shard");
       firstNode = false;
       previousNode = shard.structuredNodeId;
-      auto [role, inserted] =
-          nodeRoles.try_emplace(shard.structuredNodeId, shard.role);
-      if (!inserted && role->second != shard.role)
+      const bool partial = !shard.reductionGroups.empty();
+      auto [state, inserted] =
+          nodePartialStates.try_emplace(shard.structuredNodeId, partial);
+      if (!inserted && state->second != partial)
         return failResult(
             failureReason,
             "one structured node mixes complete and partial shards");
-      if (shard.role ==
-          StructuredNodeIterationShardRole::PartialReductionContribution) {
-        if (group.shards.size() != 1 || !shard.reductionMergeTile ||
-            !llvm::is_contained(sortedTiles, *shard.reductionMergeTile))
+      if (partial) {
+        if (group.shards.size() != 1 || shard.reductionGroups.size() != 1 ||
+            !llvm::is_contained(sortedTiles,
+                                shard.reductionGroups.front().mergeTile))
           return failResult(
               failureReason,
-              "partial-reduction contribution must be one singleton group");
-        auto [merge, mergeInserted] = reductionMergeTiles.try_emplace(
-            shard.structuredNodeId, *shard.reductionMergeTile);
-        if (!mergeInserted && merge->second != *shard.reductionMergeTile)
-          return failResult(
-              failureReason,
-              "one partial reduction selects several merge Tiles");
-      } else if (shard.reductionMergeTile) {
-        return failResult(failureReason,
-                          "complete node shard unexpectedly has a merge Tile");
+              "current partial contribution apply requires one output group");
       }
       if (!group.temporalTiles.empty()) {
         const StructuredNodeTemporalTile &temporal = group.temporalTiles[index];
@@ -438,12 +432,14 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
   StructuredMaterializationRelations relations;
   std::map<int64_t, llvm::SmallVector<TileEntryStage, 8>> entryStages;
   struct PartialGroup {
+    uint32_t node = 0;
+    ReductionGroupId group;
     TileId mergeTile{0};
     llvm::SmallVector<const StructuredNodeIterationShard *, 8> shards;
     llvm::SmallVector<mlir::func::FuncOp, 8> functions;
     const StructuredNodePhysicalRepresentation *mergeRepresentation = nullptr;
   };
-  std::map<uint32_t, PartialGroup> partialGroups;
+  std::map<ReductionGroupId, PartialGroup> partialGroups;
   for (const StructuredNodeShardGroup *group : orderedGroups) {
     const StructuredNodeIterationShard &firstShard = group->shards.front();
     TileModuleOp tile = tiles.lookup(firstShard.tile.getValue());
@@ -469,20 +465,24 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
       return mlir::failure();
     entryStages[firstShard.tile.getValue()].push_back(
         {fragment->function, fragment->boundaries, fragment->results});
-    if (firstShard.role ==
-        StructuredNodeIterationShardRole::PartialReductionContribution) {
-      PartialGroup &partial = partialGroups[firstShard.structuredNodeId];
-      partial.mergeTile = *firstShard.reductionMergeTile;
+    if (!firstShard.reductionGroups.empty()) {
+      const ReductionGroupPlacement &placement =
+          firstShard.reductionGroups.front();
+      PartialGroup &partial = partialGroups[placement.group];
+      partial.node = firstShard.structuredNodeId;
+      partial.group = placement.group;
+      partial.mergeTile = placement.mergeTile;
       partial.shards.push_back(&firstShard);
       partial.functions.push_back(fragment->function);
       if (!group->representations.empty() &&
-          firstShard.tile == *firstShard.reductionMergeTile)
+          firstShard.tile == placement.mergeTile)
         partial.mergeRepresentation = &group->representations.front();
     }
     appendRelations(relations, std::move(fragment->relations));
   }
 
-  for (auto &[node, group] : partialGroups) {
+  for (auto &[groupId, group] : partialGroups) {
+    (void)groupId;
     if (group.shards.size() < 2)
       return failResult(
           failureReason,
@@ -492,8 +492,8 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
       return failResult(failureReason,
                         "partial merge lost its selected Tile owner");
     mlir::FailureOr<RootFragment> merge = materializeReductionMergeFragment(
-        tile, operationNodes, node, group.shards, group.functions,
-        group.mergeRepresentation, failureReason);
+        tile, operationNodes, group.node, group.group, group.shards,
+        group.functions, group.mergeRepresentation, failureReason);
     if (mlir::failed(merge))
       return mlir::failure();
     entryStages[group.mergeTile.getValue()].push_back(

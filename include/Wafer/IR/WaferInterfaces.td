@@ -47,6 +47,23 @@ def WaferCoupledReductionOpInterface
   ];
 }
 
+def WaferTensorIndexingOpInterface
+    : OpInterface<"WaferTensorIndexingOpInterface"> {
+  let cppNamespace = "::wafer";
+  let description = [{
+    Exposes the exact data-carrying operands and static indexing parameters of
+    one pure tensor support result. Consumers construct their own bounded
+    relation representation from this source-owned description. The interface
+    never returns planning, placement, target, or materialized-IR objects.
+  }];
+  let methods = [
+    InterfaceMethod<
+      "Return the typed indexing description for one operation result.",
+      "::mlir::FailureOr<::wafer::TensorIndexingDescription>",
+      "getTensorIndexingDescription", (ins "unsigned":$result)>
+  ];
+}
+
 def WaferTileDataflowOpInterface
     : OpInterface<"WaferTileDataflowOpInterface"> {
   let cppNamespace = "::wafer";

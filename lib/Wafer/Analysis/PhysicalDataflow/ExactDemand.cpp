@@ -1,31 +1,36 @@
-//===- ExactDemand.cpp - Policy-free logical placement demand -------------===//
+//===- ExactDemand.cpp - Exact logical dependency proof ----------------===//
 
 #include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 
 namespace wafer::analysis {
 
-IREpoch IREpoch::mint() {
-  // Allocation identity is owned by this value and its copies. It provides a
-  // borrow-lifetime token without process-global mutable compiler state.
-  return IREpoch(std::make_shared<const Token>());
+ExactIndexSet::ExactIndexSet()
+    : set(mlir::presburger::PresburgerSet::getEmpty(
+          mlir::presburger::PresburgerSpace::getSetSpace(0))) {}
+
+ExactIndexSet::ExactIndexSet(
+    mlir::presburger::PresburgerSet set, ExactIndexSetForm form,
+    llvm::ArrayRef<StaticRectangularIndexSet> boxes)
+    : set(std::move(set)), form(form), boxes(boxes.begin(), boxes.end()) {}
+
+ExactDemandOutcomeCategory
+classifyExactDemandOutcome(const ExactDemandOutcome &outcome) {
+  return std::visit(
+      [](const auto &value) -> ExactDemandOutcomeCategory {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, ExactDemandProof>)
+          return ExactDemandOutcomeCategory::Satisfied;
+        if constexpr (std::is_same_v<T, UnsupportedDemandSemantics>)
+          return ExactDemandOutcomeCategory::UnsupportedSemantics;
+        if constexpr (std::is_same_v<T, DemandWorkLimitReached>)
+          return ExactDemandOutcomeCategory::IndeterminateResourceExhaustion;
+        return ExactDemandOutcomeCategory::CompilerContractError;
+      },
+      outcome);
 }
 
-ExactDemandStatus mapIndexRelationStatus(IndexRelationStatus status) {
-  switch (status) {
-  case IndexRelationStatus::Unsupported:
-    return ExactDemandStatus::UnsupportedSemanticRelation;
-  case IndexRelationStatus::Exact:
-  case IndexRelationStatus::SoundBound:
-  case IndexRelationStatus::Invalid:
-  case IndexRelationStatus::ResourceExhausted:
-    // An exact relation is not a failure (the caller continues the query).
-    // SoundBound is an over-approximation that cannot form an exact proof,
-    // and Invalid/ResourceExhausted are machinery failures; all of them stop
-    // the owning legalization path as indeterminate instead of deleting a
-    // placement trial.
-    return ExactDemandStatus::IndeterminateFailure;
-  }
-  return ExactDemandStatus::IndeterminateFailure;
+const ExactDemandProof *getExactDemandProof(const ExactDemandOutcome &outcome) {
+  return std::get_if<ExactDemandProof>(&outcome);
 }
 
 } // namespace wafer::analysis

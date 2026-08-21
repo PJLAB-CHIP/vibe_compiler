@@ -4,6 +4,7 @@
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_SINGLEROOTTILEREGION_H
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "Wafer/Analysis/PhysicalDataflow/SpatialAssignment.h"
 #include "Wafer/IR/Target/TargetTopology.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -18,11 +19,6 @@
 
 namespace wafer {
 
-enum class StructuredNodeIterationShardRole : uint8_t {
-  Complete,
-  PartialReductionContribution,
-};
-
 /// One already-selected, nonempty rectangular shard of a structured node's
 /// iteration domain. The rectangle is expressed in TilingInterface iterator
 /// order. It contains no temporal, fusion, representation, movement, buffer,
@@ -32,12 +28,11 @@ struct StructuredNodeIterationShard {
   TileId tile{0};
   llvm::SmallVector<int64_t, 4> offsets;
   llvm::SmallVector<int64_t, 4> sizes;
-  StructuredNodeIterationShardRole role =
-      StructuredNodeIterationShardRole::Complete;
-  /// Required exactly for a partial-reduction contribution. The Card apply
-  /// materializes one additional single-root merge region on this Tile and
-  /// feeds it through explicit DDR function boundaries.
-  std::optional<TileId> reductionMergeTile;
+  /// Per-output groups for which this shard is a partial contribution. Empty
+  /// means the shard directly produces complete results. Each group carries
+  /// its own merge Tile; there is no node-wide merge endpoint.
+  llvm::SmallVector<compiler::detail::ReductionGroupPlacement, 2>
+      reductionGroups;
 };
 
 /// Materializes selected structured-node shards as actual single-root

@@ -4,6 +4,7 @@
 
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -139,7 +140,8 @@ module {
 
 struct Prepared {
   std::unique_ptr<CardProgramAnalysis> program;
-  analysis::LogicalShardTrial trial;
+  SpatialAssignment spatial;
+  analysis::ExactDemandProof demand;
   CoupledRegionDomain coupledDomain;
   CoupledRegionAssignment coupledAssignment;
   CardTemporalDomain temporalDomain;
@@ -162,11 +164,12 @@ prepare(mlir::ModuleOp module,
   auto dag = StructuredDAGAnalysis::create(function, failureReason);
   if (mlir::failed(dag) || dag->getNodes().size() != placements.size())
     return mlir::failure();
-  analysis::IREpoch epoch = analysis::IREpoch::mint();
-  auto trial = buildLogicalShardTrial(*dag, placements, epoch, failureReason);
-  if (mlir::failed(trial))
+  auto spatialDemand =
+      wafer::test::buildTestSpatialDemand(*dag, placements, failureReason);
+  if (mlir::failed(spatialDemand))
     return mlir::failure();
-  auto coupled = CoupledRegionDomain::create(*dag, *trial, failureReason);
+  auto coupled = CoupledRegionDomain::create(
+      *dag, spatialDemand->spatial, spatialDemand->demand, failureReason);
   auto temporal = CardTemporalDomain::create(*dag, placements, failureReason);
   auto topology = TargetTopology::create(module, failureReason);
   if (mlir::failed(coupled) || mlir::failed(temporal) || mlir::failed(topology))
@@ -192,20 +195,23 @@ prepare(mlir::ModuleOp module,
   auto program = std::make_unique<CardProgramAnalysis>(
       std::move(*topology),
       llvm::SmallVector<TileId, 16>{TileId(0), TileId(1), TileId(2), TileId(3)},
-      std::move(*dag), std::move(outputDomains), std::move(operationNodes),
-      epoch);
+      std::move(*dag), std::move(outputDomains), std::move(operationNodes));
   auto representation = CardPhysicalRepresentationDomain::create(
-      *program, *trial, *coupled, coupledAssignment, *temporal,
-      temporalAssignment, failureReason);
+      *program, spatialDemand->spatial, spatialDemand->demand, *coupled,
+      coupledAssignment, *temporal, temporalAssignment, failureReason);
   if (mlir::failed(representation))
     return mlir::failure();
   CardPhysicalRepresentationAssignment representationAssignment =
       representation->getFirstAssignment();
-  return Prepared{
-      std::move(program),         std::move(*trial),
-      std::move(*coupled),        std::move(coupledAssignment),
-      std::move(*temporal),       std::move(temporalAssignment),
-      std::move(*representation), std::move(representationAssignment)};
+  return Prepared{std::move(program),
+                  std::move(spatialDemand->spatial),
+                  std::move(spatialDemand->demand),
+                  std::move(*coupled),
+                  std::move(coupledAssignment),
+                  std::move(*temporal),
+                  std::move(temporalAssignment),
+                  std::move(*representation),
+                  std::move(representationAssignment)};
 }
 
 TEST(DataMovementTest, EnumeratesDDRRecomputeAndEverySimplePeerRoute) {
@@ -214,13 +220,14 @@ TEST(DataMovementTest, EnumeratesDDRRecomputeAndEverySimplePeerRoute) {
   ASSERT_TRUE(module);
   std::string failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements{
-      StructuredDAGNodePlacement{0, {2}, {TileId(0), TileId(1)}, std::nullopt},
-      StructuredDAGNodePlacement{1, {2}, {TileId(2), TileId(3)}, std::nullopt}};
+      StructuredDAGNodePlacement{0, {2}, {TileId(0), TileId(1)}},
+      StructuredDAGNodePlacement{1, {2}, {TileId(2), TileId(3)}}};
   auto prepared =
       prepare(*module, placements, /*maximalGroups=*/true, &failureReason);
   ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
   auto domain = CardDataMovementDomain::create(
-      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
+      *prepared->program, CardId(0), prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       prepared->representationAssignment, &failureReason);
@@ -279,7 +286,8 @@ TEST(DataMovementTest, EnumeratesDDRRecomputeAndEverySimplePeerRoute) {
   EXPECT_FALSE(domain->contains(cyclic));
 
   auto materialized = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -294,7 +302,8 @@ TEST(DataMovementTest, EnumeratesDDRRecomputeAndEverySimplePeerRoute) {
     choice.kind = DataMovementKind::Recompute;
   ASSERT_TRUE(domain->contains(recompute));
   auto recomputed = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -304,7 +313,8 @@ TEST(DataMovementTest, EnumeratesDDRRecomputeAndEverySimplePeerRoute) {
             6u);
 
   auto peer = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -331,7 +341,8 @@ TEST(DataMovementTest, EnumeratesDDRRecomputeAndEverySimplePeerRoute) {
   ASSERT_TRUE(
       prepared->representationDomain.contains(convertedRepresentations));
   auto convertedDomain = CardDataMovementDomain::create(
-      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
+      *prepared->program, CardId(0), prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       convertedRepresentations, &failureReason);
@@ -353,7 +364,8 @@ TEST(DataMovementTest, EnumeratesDDRRecomputeAndEverySimplePeerRoute) {
   }
   ASSERT_TRUE(convertedPeer);
   auto convertedIR = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, convertedRepresentations,
@@ -369,13 +381,14 @@ TEST(DataMovementTest, RetainedBelongsOnlyToTheSelectedCoupledGroup) {
   ASSERT_TRUE(module);
   std::string failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements{
-      StructuredDAGNodePlacement{0, {1}, {TileId(0)}, std::nullopt},
-      StructuredDAGNodePlacement{1, {1}, {TileId(0)}, std::nullopt}};
+      StructuredDAGNodePlacement{0, {1}, {TileId(0)}},
+      StructuredDAGNodePlacement{1, {1}, {TileId(0)}}};
   auto prepared =
       prepare(*module, placements, /*maximalGroups=*/true, &failureReason);
   ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
   auto domain = CardDataMovementDomain::create(
-      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
+      *prepared->program, CardId(0), prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       prepared->representationAssignment, &failureReason);
@@ -391,7 +404,8 @@ TEST(DataMovementTest, RetainedBelongsOnlyToTheSelectedCoupledGroup) {
   ASSERT_TRUE(mlir::succeeded(end));
   EXPECT_FALSE(*end);
   auto materialized = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -399,7 +413,8 @@ TEST(DataMovementTest, RetainedBelongsOnlyToTheSelectedCoupledGroup) {
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_EQ(countOps<TileRegionOp>(materialized->module->getOperation()), 1u);
   auto refetched = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -417,13 +432,14 @@ TEST(DataMovementTest, AssemblesSeveralRemoteOwnershipFragmentsWithoutDDR) {
   ASSERT_TRUE(module);
   std::string failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements{
-      StructuredDAGNodePlacement{0, {2}, {TileId(0), TileId(1)}, std::nullopt},
-      StructuredDAGNodePlacement{1, {1}, {TileId(2)}, std::nullopt}};
+      StructuredDAGNodePlacement{0, {2}, {TileId(0), TileId(1)}},
+      StructuredDAGNodePlacement{1, {1}, {TileId(2)}}};
   auto prepared =
       prepare(*module, placements, /*maximalGroups=*/true, &failureReason);
   ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
   auto domain = CardDataMovementDomain::create(
-      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
+      *prepared->program, CardId(0), prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       prepared->representationAssignment, &failureReason);
@@ -449,7 +465,8 @@ TEST(DataMovementTest, AssemblesSeveralRemoteOwnershipFragmentsWithoutDDR) {
   EXPECT_EQ(peer->edges.front().fragments[1].destinationOffsets,
             (llvm::SmallVector<int64_t, 4>{2}));
   auto materialized = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -467,13 +484,14 @@ TEST(DataMovementTest, CombinesLocalAndRemoteFragmentsExactly) {
   ASSERT_TRUE(module);
   std::string failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements{
-      StructuredDAGNodePlacement{0, {2}, {TileId(0), TileId(1)}, std::nullopt},
-      StructuredDAGNodePlacement{1, {1}, {TileId(0)}, std::nullopt}};
+      StructuredDAGNodePlacement{0, {2}, {TileId(0), TileId(1)}},
+      StructuredDAGNodePlacement{1, {1}, {TileId(0)}}};
   auto prepared =
       prepare(*module, placements, /*maximalGroups=*/false, &failureReason);
   ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
   auto domain = CardDataMovementDomain::create(
-      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
+      *prepared->program, CardId(0), prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       prepared->representationAssignment, &failureReason);
@@ -499,7 +517,8 @@ TEST(DataMovementTest, CombinesLocalAndRemoteFragmentsExactly) {
                              return fragment.route.empty();
                            }));
   auto materialized = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -516,14 +535,15 @@ TEST(DataMovementTest, EnumeratesPartialAndMaximalMulticastPartitions) {
   ASSERT_TRUE(module);
   std::string failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements{
-      StructuredDAGNodePlacement{0, {1}, {TileId(0)}, std::nullopt},
+      StructuredDAGNodePlacement{0, {1}, {TileId(0)}},
       StructuredDAGNodePlacement{
-          1, {3, 1}, {TileId(1), TileId(2), TileId(3)}, std::nullopt}};
+          1, {3, 1}, {TileId(1), TileId(2), TileId(3)}}};
   auto prepared =
       prepare(*module, placements, /*maximalGroups=*/true, &failureReason);
   ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
   auto domain = CardDataMovementDomain::create(
-      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
+      *prepared->program, CardId(0), prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       prepared->representationAssignment, &failureReason);
@@ -574,21 +594,24 @@ TEST(DataMovementTest, EnumeratesPartialAndMaximalMulticastPartitions) {
     choice.multicastGroup = -1;
   ASSERT_TRUE(domain->contains(unicast));
   auto unicastIR = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
       *domain, unicast, &failureReason);
   ASSERT_TRUE(mlir::succeeded(unicastIR)) << failureReason;
   auto multicastIR = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
       *domain, *maximal, &failureReason);
   ASSERT_TRUE(mlir::succeeded(multicastIR)) << failureReason;
   auto partialIR = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -609,33 +632,40 @@ TEST(DataMovementTest, MaterializesPartialReductionPeerGather) {
   std::string failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 1> placements{
       StructuredDAGNodePlacement{
-          0, {2, 2}, {TileId(0), TileId(1), TileId(2), TileId(3)}, TileId(2)}};
+          0, {2, 2}, {TileId(0), TileId(1), TileId(2), TileId(3)}}};
   auto prepared =
       prepare(*module, placements, /*maximalGroups=*/true, &failureReason);
   ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
   auto domain = CardDataMovementDomain::create(
-      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
+      *prepared->program, CardId(0), prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, prepared->representationDomain,
       prepared->representationAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
   CardDataMovementAssignment ddr = domain->getFirstAssignment();
-  ASSERT_EQ(ddr.reductions.size(), 1u);
-  EXPECT_EQ(ddr.reductions.front().kind, ReductionGatherKind::DDR);
+  ASSERT_EQ(ddr.reductions.size(), 2u);
+  EXPECT_TRUE(llvm::all_of(ddr.reductions, [](const auto &reduction) {
+    return reduction.kind == ReductionGatherKind::DDR;
+  }));
   auto ddrIR = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
       *domain, ddr, &failureReason);
   ASSERT_TRUE(mlir::succeeded(ddrIR)) << failureReason;
-  EXPECT_EQ(countOps<StorageStoreOp>(ddrIR->module->getOperation()), 5u);
+  EXPECT_EQ(countOps<StorageStoreOp>(ddrIR->module->getOperation()), 6u);
   auto next = domain->getNextAssignment(ddr);
   ASSERT_TRUE(mlir::succeeded(next));
   ASSERT_TRUE(*next);
-  ASSERT_EQ((**next).reductions.front().kind, ReductionGatherKind::Peer);
+  ASSERT_TRUE(llvm::any_of((**next).reductions, [](const auto &reduction) {
+    return reduction.kind == ReductionGatherKind::Peer;
+  }));
   auto peer = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand,
       prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, prepared->representationAssignment,
@@ -644,8 +674,8 @@ TEST(DataMovementTest, MaterializesPartialReductionPeerGather) {
   EXPECT_GT(countOps<CommPeerSendOp>(peer->module->getOperation()), 0u);
   EXPECT_EQ(countOps<CommPeerSendOp>(peer->module->getOperation()),
             countOps<CommPeerRecvOp>(peer->module->getOperation()));
-  EXPECT_GT(countOps<TileRegionOp>(peer->module->getOperation()), 5u);
-  EXPECT_LT(countOps<StorageStoreOp>(peer->module->getOperation()), 5u);
+  EXPECT_GT(countOps<TileRegionOp>(peer->module->getOperation()), 6u);
+  EXPECT_LT(countOps<StorageStoreOp>(peer->module->getOperation()), 6u);
 }
 
 } // namespace

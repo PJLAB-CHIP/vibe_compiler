@@ -2,8 +2,6 @@
 
 #include "Wafer/Planning/Search/SpatialPlacement.h"
 
-#include "Wafer/Analysis/Structured/ReductionSemantics.h"
-
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -33,13 +31,6 @@ getParticipantCount(llvm::ArrayRef<uint32_t> factors) {
     count *= factor;
   }
   return count;
-}
-
-static bool requiresReductionMerge(llvm::ArrayRef<uint32_t> factors,
-                                   llvm::ArrayRef<uint8_t> reductions) {
-  return llvm::any_of(llvm::zip_equal(factors, reductions), [](auto values) {
-    return std::get<0>(values) > 1 && std::get<1>(values) != 0;
-  });
 }
 
 static bool containsTile(llvm::ArrayRef<TileId> tiles, TileId target) {
@@ -100,6 +91,59 @@ static bool nextFactorVector(llvm::ArrayRef<int64_t> extents,
   return false;
 }
 
+mlir::LogicalResult addCanonicalReductionMerges(
+    const StructuredDAGNode &node, const SemanticRootKey &root,
+    const SpatialPlacementAssignment &assignment, NodeSpatialPlan &plan,
+    std::string *failureReason) {
+  auto linalg = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(node.operation);
+  if (!linalg)
+    return mlir::failure();
+  llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes =
+      linalg.getIteratorTypesArray();
+  const bool partitionsReduction = llvm::any_of(
+      llvm::zip_equal(assignment.iteratorFactors, iteratorTypes),
+      [](auto values) {
+        return std::get<0>(values) > 1 &&
+               std::get<1>(values) ==
+                   mlir::utils::IteratorType::reduction;
+      });
+  if (!partitionsReduction)
+    return mlir::success();
+  if (!mlir::isa<mlir::PartialReductionOpInterface>(node.operation)) {
+    if (failureReason)
+      *failureReason = "spatial reduction lacks partial-reduction mechanics";
+    return mlir::failure();
+  }
+
+  for (mlir::OpResult result : node.operation->getResults()) {
+    std::set<std::vector<uint32_t>> groups;
+    for (size_t cell = 0; cell < assignment.tiles.size(); ++cell) {
+      size_t remainder = cell;
+      llvm::SmallVector<uint32_t, 4> coordinate(iteratorTypes.size());
+      for (size_t reverse = 0; reverse < iteratorTypes.size(); ++reverse) {
+        const size_t iterator = iteratorTypes.size() - reverse - 1;
+        coordinate[iterator] =
+            remainder % assignment.iteratorFactors[iterator];
+        remainder /= assignment.iteratorFactors[iterator];
+      }
+      std::vector<uint32_t> parallelCoordinate;
+      for (auto [iterator, type] : llvm::enumerate(iteratorTypes))
+        if (type == mlir::utils::IteratorType::parallel)
+          parallelCoordinate.push_back(coordinate[iterator]);
+      if (!groups.insert(parallelCoordinate).second)
+        continue;
+      ReductionGroupId group;
+      group.root = root;
+      group.resultGroup = result.getResultNumber();
+      group.parallelCoordinate.assign(parallelCoordinate.begin(),
+                                      parallelCoordinate.end());
+      plan.reductionMerges.push_back(
+          {std::move(group), assignment.tiles[cell]});
+    }
+  }
+  return mlir::success();
+}
+
 } // namespace
 
 bool operator<(const SpatialPlacementAssignment &lhs,
@@ -110,14 +154,7 @@ bool operator<(const SpatialPlacementAssignment &lhs,
     return std::lexicographical_compare(
         lhs.iteratorFactors.begin(), lhs.iteratorFactors.end(),
         rhs.iteratorFactors.begin(), rhs.iteratorFactors.end());
-  if (lhs.tiles != rhs.tiles)
-    return tileSequenceLess(lhs.tiles, rhs.tiles);
-  if (lhs.reductionMergeTile.has_value() != rhs.reductionMergeTile.has_value())
-    return !lhs.reductionMergeTile.has_value();
-  if (!lhs.reductionMergeTile)
-    return false;
-  return lhs.reductionMergeTile->getValue() <
-         rhs.reductionMergeTile->getValue();
+  return tileSequenceLess(lhs.tiles, rhs.tiles);
 }
 
 StructuredDAGNodePlacement
@@ -126,7 +163,6 @@ SpatialPlacementAssignment::getNodePlacement() const {
   placement.node = node;
   placement.iteratorPartitionFactors = iteratorFactors;
   placement.tiles = tiles;
-  placement.reductionMergeTile = reductionMergeTile;
   return placement;
 }
 
@@ -161,9 +197,7 @@ SpatialPlacementDomain::create(const StructuredDAGNode &node,
   const bool hasReduction = llvm::is_contained(reductions, uint8_t{1});
   const bool supportsReductionPartitioning =
       !hasReduction ||
-      (mlir::isa<mlir::PartialReductionOpInterface>(node.operation) &&
-       mlir::succeeded(analysis::verifyReductionPartitionLegality(
-           linalg, /*preservesSequentialReductionOrder=*/false)));
+      mlir::isa<mlir::PartialReductionOpInterface>(node.operation);
   llvm::SmallVector<int64_t, 4> maximumFactors(extents.begin(), extents.end());
   if (!supportsReductionPartitioning)
     for (auto [dimension, reduction] : llvm::enumerate(reductions))
@@ -255,8 +289,6 @@ SpatialPlacementDomain::getMaximumParticipantAssignment(
   assignment.iteratorFactors = current[participants]->factors;
   assignment.tiles.assign(availableTiles.begin(),
                           availableTiles.begin() + participants);
-  if (requiresReductionMerge(assignment.iteratorFactors, reductionIterators))
-    assignment.reductionMergeTile = availableTiles.front();
   return assignment;
 }
 
@@ -281,13 +313,6 @@ bool SpatialPlacementDomain::contains(
       return false;
     seen.push_back(tile);
   }
-  const bool needsMerge =
-      requiresReductionMerge(assignment.iteratorFactors, reductionIterators);
-  if (needsMerge != assignment.reductionMergeTile.has_value())
-    return false;
-  if (assignment.reductionMergeTile &&
-      !containsTile(availableTiles, *assignment.reductionMergeTile))
-    return false;
   return true;
 }
 
@@ -297,22 +322,8 @@ SpatialPlacementDomain::getNextAssignment(
   if (!contains(assignment))
     return mlir::failure();
   SpatialPlacementAssignment next = assignment;
-  if (next.reductionMergeTile) {
-    auto current = llvm::find(availableTiles, *next.reductionMergeTile);
-    if (current == availableTiles.end())
-      return mlir::failure();
-    if (++current != availableTiles.end()) {
-      next.reductionMergeTile = *current;
-      return std::optional<SpatialPlacementAssignment>(std::move(next));
-    }
-  }
-  if (nextDistinctTileSequence(availableTiles, next.tiles)) {
-    if (requiresReductionMerge(next.iteratorFactors, reductionIterators))
-      next.reductionMergeTile = availableTiles.front();
-    else
-      next.reductionMergeTile.reset();
+  if (nextDistinctTileSequence(availableTiles, next.tiles))
     return std::optional<SpatialPlacementAssignment>(std::move(next));
-  }
   if (!nextFactorVector(maximumFactors, availableTiles.size(),
                         next.iteratorFactors))
     return std::optional<SpatialPlacementAssignment>{};
@@ -322,10 +333,6 @@ SpatialPlacementDomain::getNextAssignment(
     return mlir::failure();
   next.tiles.assign(availableTiles.begin(),
                     availableTiles.begin() + *participants);
-  if (requiresReductionMerge(next.iteratorFactors, reductionIterators))
-    next.reductionMergeTile = availableTiles.front();
-  else
-    next.reductionMergeTile.reset();
   return std::optional<SpatialPlacementAssignment>(std::move(next));
 }
 
@@ -366,31 +373,16 @@ CardSpatialPlacementDomain::getMaximumParticipantAssignment() const {
 
 mlir::FailureOr<CardSpatialPlacementAssignment>
 CardSpatialPlacementDomain::getConstructiveAssignment(
-    const StructuredDAGAnalysis &dag, analysis::IREpoch epoch,
-    std::string *failureReason) const {
+    const StructuredDAGAnalysis &dag, std::string *failureReason) const {
   if (nodeDomains.empty())
     return mlir::failure();
-  const size_t maximumParticipants =
-      nodeDomains.front().getAvailableTiles().size();
-  for (size_t limit = maximumParticipants; limit > 0; --limit) {
-    CardSpatialPlacementAssignment assignment;
-    assignment.nodes.reserve(nodeDomains.size());
-    for (const SpatialPlacementDomain &domain : nodeDomains)
-      assignment.nodes.push_back(domain.getMaximumParticipantAssignment(limit));
-    CardSpatialPlacementEvaluation evaluation =
-        evaluate(dag, epoch, assignment);
-    if (evaluation.status == analysis::ExactDemandStatus::Satisfied)
-      return assignment;
-    if (evaluation.status !=
-        analysis::ExactDemandStatus::ProvenLogicalInfeasible) {
-      if (failureReason)
-        *failureReason = evaluation.detail;
-      return mlir::failure();
-    }
-  }
+  CardSpatialPlacementAssignment assignment =
+      getMaximumParticipantAssignment();
+  CardSpatialPlacementEvaluation evaluation = evaluate(dag, assignment);
+  if (evaluation.isSatisfied())
+    return assignment;
   if (failureReason)
-    *failureReason =
-        "no capacity-oriented spatial coordinate satisfies exact demand";
+    *failureReason = evaluation.detail;
   return mlir::failure();
 }
 
@@ -438,35 +430,99 @@ CardSpatialPlacementDomain::getNodePlacements(
   return placements;
 }
 
+mlir::FailureOr<SpatialAssignment> CardSpatialPlacementDomain::close(
+    const StructuredDAGAnalysis &dag,
+    const CardSpatialPlacementAssignment &assignment,
+    std::string *failureReason) const {
+  if (!contains(assignment)) {
+    if (failureReason)
+      *failureReason = "spatial assignment is outside its typed domain";
+    return mlir::failure();
+  }
+  mlir::FailureOr<SemanticRootAnalysis> roots =
+      SemanticRootAnalysis::create(dag, failureReason);
+  if (mlir::failed(roots))
+    return mlir::failure();
+
+  llvm::SmallVector<NodeIterationSpace, 16> iterationSpaces;
+  SpatialPlan plan;
+  for (auto [domain, selected] :
+       llvm::zip_equal(nodeDomains, assignment.nodes)) {
+    const StructuredDAGNode *dagNode = dag.getNode(selected.node);
+    const SemanticRootBinding *root =
+        dagNode ? roots->find(dagNode->operation) : nullptr;
+    if (!dagNode || !root) {
+      if (failureReason)
+        *failureReason = "spatial node has no semantic root binding";
+      return mlir::failure();
+    }
+    NodeIterationSpace space;
+    space.root = root->key;
+    space.iteratorExtents.assign(domain.getIteratorExtents().begin(),
+                                 domain.getIteratorExtents().end());
+    iterationSpaces.push_back(std::move(space));
+
+    NodeSpatialPlan nodePlan;
+    nodePlan.root = root->key;
+    for (auto [iterator, factor] :
+         llvm::enumerate(selected.iteratorFactors))
+      nodePlan.axes.push_back(
+          {static_cast<uint32_t>(iterator),
+           IteratorPartitionScheme::BalancedParts,
+           static_cast<int64_t>(factor)});
+    nodePlan.embedding = selected.tiles;
+    if (mlir::failed(addCanonicalReductionMerges(
+            *dagNode, root->key, selected, nodePlan, failureReason)))
+      return mlir::failure();
+    plan.nodes.push_back(std::move(nodePlan));
+  }
+  llvm::sort(plan.nodes, [](const NodeSpatialPlan &lhs,
+                            const NodeSpatialPlan &rhs) {
+    return lhs.root < rhs.root;
+  });
+  mlir::FailureOr<SpatialPlanningProblem> problem =
+      SpatialPlanningProblem::create(
+          iterationSpaces, nodeDomains.front().getAvailableTiles(),
+          failureReason);
+  if (mlir::failed(problem))
+    return mlir::failure();
+  return closeSpatialPlanStructure(*problem, plan, failureReason);
+}
+
 CardSpatialPlacementEvaluation CardSpatialPlacementDomain::evaluate(
-    const StructuredDAGAnalysis &dag, analysis::IREpoch epoch,
+    const StructuredDAGAnalysis &dag,
     const CardSpatialPlacementAssignment &assignment) const {
   CardSpatialPlacementEvaluation evaluation;
   if (!contains(assignment)) {
     evaluation.detail = "spatial assignment is outside its typed domain";
     return evaluation;
   }
-  llvm::SmallVector<StructuredDAGNodePlacement, 16> placements =
-      getNodePlacements(assignment);
   std::string failureReason;
-  mlir::FailureOr<analysis::LogicalShardTrial> trial =
-      buildLogicalShardTrial(dag, placements, epoch, &failureReason);
-  if (mlir::failed(trial)) {
+  mlir::FailureOr<SpatialAssignment> closed =
+      close(dag, assignment, &failureReason);
+  if (mlir::failed(closed)) {
     evaluation.detail = std::move(failureReason);
     return evaluation;
   }
-
-  StructuredDAGExactDemandQuery query(dag, epoch);
-  for (const StructuredDAGEdge &edge : dag.getEdges()) {
-    analysis::ExactDemandResult demand = query.query(edge.id, *trial);
-    if (demand.status == analysis::ExactDemandStatus::Satisfied)
-      continue;
-    evaluation.status = demand.status;
-    evaluation.detail = std::move(demand.detail);
+  mlir::FailureOr<DemandPlanningSession> session =
+      DemandPlanningSession::create(dag, analysis::IndexRelationLimits(),
+                                    &failureReason);
+  if (mlir::failed(session)) {
+    evaluation.detail = std::move(failureReason);
     return evaluation;
   }
-  evaluation.status = analysis::ExactDemandStatus::Satisfied;
-  evaluation.trial = std::move(*trial);
+  evaluation.assignment = std::move(*closed);
+  evaluation.demand = session->query(*evaluation.assignment);
+  if (!evaluation.isSatisfied())
+    evaluation.detail = std::visit(
+        [](const auto &value) -> std::string {
+          using T = std::decay_t<decltype(value)>;
+          if constexpr (std::is_same_v<T, analysis::ExactDemandProof>)
+            return {};
+          else
+            return value.detail;
+        },
+        *evaluation.demand);
   return evaluation;
 }
 

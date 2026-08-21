@@ -26,16 +26,6 @@ namespace {
 
 using TileDomain = CoupledRegionDomain::TileDomain;
 
-const analysis::LogicalNodeTrial *
-findNodeTrial(const analysis::LogicalShardTrial &trial,
-              StructuredDAGNodeID node) {
-  auto found =
-      llvm::find_if(trial.nodes, [&](const analysis::LogicalNodeTrial &entry) {
-        return entry.node == node;
-      });
-  return found == trial.nodes.end() ? nullptr : &*found;
-}
-
 bool retreatRestrictedGrowth(llvm::MutableArrayRef<uint32_t> labels) {
   if (labels.size() < 2)
     return false;
@@ -216,7 +206,8 @@ getLabels(const TileDomain &domain, const CoupledRegionAssignment &assignment) {
 
 mlir::FailureOr<CoupledRegionDomain>
 CoupledRegionDomain::create(const StructuredDAGAnalysis &dag,
-                            const analysis::LogicalShardTrial &trial,
+                            const SpatialAssignment &spatial,
+                            const analysis::ExactDemandProof &demand,
                             std::string *failureReason) {
   auto fail =
       [&](llvm::StringRef message) -> mlir::FailureOr<CoupledRegionDomain> {
@@ -224,20 +215,20 @@ CoupledRegionDomain::create(const StructuredDAGAnalysis &dag,
       *failureReason = message.str();
     return mlir::failure();
   };
-  if (!trial.epoch.isValid() || trial.nodes.size() != dag.getNodes().size())
-    return fail("coupled-region domain requires one closed logical trial");
+  mlir::FailureOr<StructuredDemandView> view =
+      StructuredDemandView::create(dag, spatial, demand, failureReason);
+  if (mlir::failed(view))
+    return mlir::failure();
 
   std::map<int64_t, TileDomain> byTile;
   for (const StructuredDAGNode &node : dag.getNodes()) {
-    const analysis::LogicalNodeTrial *nodeTrial = findNodeTrial(trial, node.id);
-    if (!nodeTrial || nodeTrial->executionShards.empty())
-      return fail("coupled-region trial omitted one structured node");
+    const NodeExecutionPartition *partition = view->getNode(node.id);
+    if (!partition || partition->shards.empty())
+      return fail("coupled-region assignment omitted one structured node");
     llvm::DenseSet<int64_t> seenTiles;
-    for (const analysis::LogicalExecutionShard &shard :
-         nodeTrial->executionShards) {
-      if (!shard.executionDomain ||
-          !seenTiles.insert(shard.tile.getValue()).second)
-        return fail("coupled-region trial has a malformed node shard");
+    for (const ExecutionShard &shard : partition->shards) {
+      if (!seenTiles.insert(shard.tile.getValue()).second)
+        return fail("coupled-region assignment has a malformed node shard");
       TileDomain &tile = byTile[shard.tile.getValue()];
       tile.tile = shard.tile;
       tile.nodes.push_back(node.id);
@@ -254,26 +245,17 @@ CoupledRegionDomain::create(const StructuredDAGAnalysis &dag,
     wholeTiles.push_back(std::move(domain));
   }
 
-  StructuredDAGExactDemandQuery query(dag, trial.epoch);
   for (const StructuredDAGEdge &edge : dag.getEdges()) {
-    analysis::ExactDemandResult demand = query.query(edge.id, trial);
-    if (demand.status != analysis::ExactDemandStatus::Satisfied)
-      return fail("coupled-region input trial is not exact-demand satisfied");
     const StructuredDAGNode *producer = dag.getNode(edge.producer);
     const StructuredDAGNode *consumer = dag.getNode(edge.consumer);
     if (!producer || !consumer || !producer->operation || !consumer->operation)
       return fail("coupled-region edge references an unknown node");
 
-    std::string relationFailure;
-    const bool supportedChain = mlir::succeeded(traceProducerToConsumerChain(
-        producer->operation, edge.producerResult, consumer->operation,
-        edge.consumerOperand, &relationFailure));
-    const analysis::LogicalNodeTrial *producerTrial =
-        findNodeTrial(trial, edge.producer);
-    const analysis::LogicalNodeTrial *consumerTrial =
-        findNodeTrial(trial, edge.consumer);
-    if (!producerTrial || !consumerTrial)
-      return fail("coupled-region edge lost its endpoint trial");
+    const analysis::DependencyDemand *dependency =
+        view->getDependency(edge.consumer, edge.consumerOperand);
+    const SemanticRootKey *producerRoot = view->getRoot(edge.producer);
+    if (!dependency || !producerRoot)
+      return fail("coupled-region edge has no exact dependency proof");
 
     for (TileDomain &tile : wholeTiles) {
       auto producerPosition = llvm::find(tile.nodes, edge.producer);
@@ -281,25 +263,29 @@ CoupledRegionDomain::create(const StructuredDAGAnalysis &dag,
       if (producerPosition == tile.nodes.end() ||
           consumerPosition == tile.nodes.end())
         continue;
-      auto destination =
-          llvm::find_if(demand.perDestination,
-                        [&](const analysis::ExactDestinationDemand &entry) {
-                          return entry.destinationTile == tile.tile;
-                        });
-      if (destination == demand.perDestination.end() ||
-          !destination->producerDemand)
+      auto destination = llvm::find_if(
+          dependency->perDestination,
+          [&](const analysis::DestinationDemand &entry) {
+            return entry.destinationTile == tile.tile;
+          });
+      if (destination == dependency->perDestination.end())
         return fail("coupled-region edge omitted one destination demand");
-      if (destination->producerDemand->isIntegerEmpty())
+      auto source = llvm::find_if(
+          destination->sources, [&](const analysis::SourceDemand &entry) {
+            const auto *structured =
+                std::get_if<analysis::StructuredResultSource>(&entry.source);
+            return structured && structured->root == *producerRoot &&
+                   structured->result == edge.producerResult;
+          });
+      if (source == destination->sources.end())
+        return fail("coupled-region edge omitted its structured source");
+      if (source->requiredDomain.isEmpty())
         continue;
 
       bool hasOwner = false;
       bool localOnly = true;
-      for (const analysis::ExactOwnershipIntersection &intersection :
-           destination->ownershipIntersections) {
-        if (!intersection.set)
-          return fail("coupled-region ownership intersection is unavailable");
-        if (intersection.set->isIntegerEmpty())
-          continue;
+      for (const analysis::OwnerIntersection &intersection :
+           source->eligibleFinalOwners) {
         hasOwner = true;
         localOnly &= intersection.tile == tile.tile;
       }
@@ -308,9 +294,9 @@ CoupledRegionDomain::create(const StructuredDAGAnalysis &dag,
       const size_t consumerIndex =
           static_cast<size_t>(consumerPosition - tile.nodes.begin());
       const size_t index = producerIndex * tile.nodes.size() + consumerIndex;
-      const bool partialEndpoint = producerTrial->reductionMergeTile ||
-                                   consumerTrial->reductionMergeTile;
-      if (supportedChain && hasOwner && localOnly && !partialEndpoint)
+      const bool partialEndpoint = view->hasSpatialReduction(edge.producer) ||
+                                   view->hasSpatialReduction(edge.consumer);
+      if (hasOwner && localOnly && !partialEndpoint)
         tile.fusableEdges[index] = 1;
       else
         tile.forbiddenInternalEdges[index] = 1;
@@ -425,7 +411,8 @@ bool CoupledRegionDomain::contains(
 
 mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
-    CardId cardId, const analysis::LogicalShardTrial &trial,
+    CardId cardId, const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
     const CoupledRegionDomain &domain,
     const CoupledRegionAssignment &assignment,
     const CardTemporalDomain &temporalDomain,
@@ -442,16 +429,18 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
   CardComputeImplementationAssignment implementationAssignment =
       implementationDomain->getFirstAssignment();
   return materializeCardCoupledRegionsWithImplementations(
-      tensorProgram, program, cardId, trial, domain, assignment, temporalDomain,
-      temporalAssignment, representationDomain, representationAssignment,
-      *implementationDomain, implementationAssignment, movementDomain,
-      movementAssignment, failureReason);
+      tensorProgram, program, cardId, spatial, demand, domain, assignment,
+      temporalDomain, temporalAssignment, representationDomain,
+      representationAssignment, *implementationDomain,
+      implementationAssignment, movementDomain, movementAssignment,
+      failureReason);
 }
 
 mlir::FailureOr<CardCoupledRegionMaterialization>
 materializeCardCoupledRegionsWithImplementations(
     mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
-    CardId cardId, const analysis::LogicalShardTrial &trial,
+    CardId cardId, const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
     const CoupledRegionDomain &domain,
     const CoupledRegionAssignment &assignment,
     const CardTemporalDomain &temporalDomain,
@@ -469,8 +458,9 @@ materializeCardCoupledRegionsWithImplementations(
       *failureReason = message.str();
     return mlir::failure();
   };
-  if (!tensorProgram || trial.epoch != program.epoch ||
-      !domain.contains(assignment) ||
+  mlir::FailureOr<StructuredDemandView> view = StructuredDemandView::create(
+      program.dag, spatial, demand, failureReason);
+  if (!tensorProgram || mlir::failed(view) || !domain.contains(assignment) ||
       !temporalDomain.contains(temporalAssignment) ||
       !representationDomain.contains(representationAssignment) ||
       !implementationDomain.contains(implementationAssignment) ||
@@ -515,36 +505,29 @@ materializeCardCoupledRegionsWithImplementations(
   for (const CoupledRegionGroup &selected : assignment.groups) {
     StructuredNodeShardGroup group;
     for (StructuredDAGNodeID node : selected.nodes) {
-      const analysis::LogicalNodeTrial *nodeTrial = findNodeTrial(trial, node);
-      if (!nodeTrial)
-        return fail("coupled-region apply lost one node trial");
-      auto execution =
-          llvm::find_if(nodeTrial->executionShards,
-                        [&](const analysis::LogicalExecutionShard &shard) {
-                          return shard.tile == selected.tile;
-                        });
-      if (execution == nodeTrial->executionShards.end() ||
-          !execution->executionDomain)
+      const ExecutionShard *execution = view->getShard(node, selected.tile);
+      const SemanticRootKey *root = view->getRoot(node);
+      if (!execution || !root)
         return fail("coupled-region apply lost one selected node shard");
-      analysis::StaticRectangularIndexSetResult rectangle =
-          analysis::IndexSetResult{analysis::IndexRelationStatus::Exact,
-                                   *execution->executionDomain,
-                                   {}}
-              .getExactStaticRectangularDomain();
-      if (!rectangle.isExact() || !rectangle.domain)
-        return fail("coupled-region shard is not one exact rectangle");
-      const bool partial = llvm::any_of(
-          nodeTrial->bindings, [](const analysis::LogicalTileBinding &binding) {
-            return binding.role ==
-                   analysis::TileRole::PartialReductionContribution;
-          });
-      group.shards.push_back(StructuredNodeIterationShard{
-          node, selected.tile, std::move(rectangle.domain->offsets),
-          std::move(rectangle.domain->sizes),
-          partial
-              ? StructuredNodeIterationShardRole::PartialReductionContribution
-              : StructuredNodeIterationShardRole::Complete,
-          nodeTrial->reductionMergeTile});
+      StructuredNodeIterationShard materialized;
+      materialized.structuredNodeId = node;
+      materialized.tile = selected.tile;
+      for (const IteratorInterval &interval : execution->iterationDomain) {
+        materialized.offsets.push_back(interval.offset);
+        materialized.sizes.push_back(interval.size);
+      }
+      for (const analysis::ReductionMergeRequirement &merge :
+           demand.reductionMerges) {
+        if (merge.group.root != *root ||
+            !llvm::any_of(merge.contributions,
+                          [&](const analysis::ReductionContribution &entry) {
+                            return entry.shard == execution->shard;
+                          }))
+          continue;
+        materialized.reductionGroups.push_back(
+            {merge.group, merge.mergeTile});
+      }
+      group.shards.push_back(std::move(materialized));
       auto temporal =
           llvm::find_if(temporalAssignment.nodes,
                         [&](const TemporalNodeAssignment &candidate) {

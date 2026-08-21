@@ -533,9 +533,9 @@ public:
         getInstrElementwiseKindAttr(rewriter, op, op.getKindAttr());
     if (mlir::failed(instrKind))
       return mlir::failure();
-    rewriter.create<InstrElementwiseOp>(
-        op.getLoc(), *instrKind, op.getInputs(), op.getDest(),
-        getDefaultNCCWorkerAttr(rewriter));
+    rewriter.create<InstrElementwiseOp>(op.getLoc(), *instrKind, op.getInputs(),
+                                        op.getDest(),
+                                        getDefaultNCCWorkerAttr(rewriter));
     rewriter.eraseOp(op);
     return mlir::success();
   }
@@ -799,6 +799,13 @@ public:
         return mlir::success();
       }
     }
+
+    if (resultType.getRank() == 0 &&
+        tupleCount > preferredMaximumOrderedReductionOperations)
+      return failPattern(
+          rewriter, op,
+          "tile.reduce ordered scalar lowering exceeds the current 4096-tuple "
+          "compiler work limit and has no legal native rank-zero route");
 
     auto tensorType = mlir::MemRefType::get(
         resultType.getShape(), elementType, mlir::MemRefLayoutAttrInterface{},
@@ -1095,9 +1102,8 @@ wafer::tile_region_to_instr::getAccumulationElementwiseKind(
 void wafer::tile_region_to_instr::populateComputeLoweringPatterns(
     mlir::RewritePatternSet &patterns) {
   mlir::MLIRContext *context = patterns.getContext();
-  patterns
-      .add<ConvertLowering, ElementwiseLowering, ElementwiseIntoLowering,
-           GemmLowering, ConvLowering>(context);
+  patterns.add<ConvertLowering, ElementwiseLowering, ElementwiseIntoLowering,
+               GemmLowering, ConvLowering>(context);
   patterns.add<ReduceLowering>(context);
 }
 

@@ -28,6 +28,11 @@ struct UnifiedPhysicalDataflowAssignment {
   }
 };
 
+struct ClosedSpatialDemand {
+  SpatialAssignment spatial;
+  analysis::ExactDemandProof demand;
+};
+
 /// Complete dependent Cartesian domain for one immutable TensorProgram root.
 /// Downstream domains are rebuilt from the current parent assignment and never
 /// cached as semantic state. Spatial points that do not produce an exact
@@ -74,9 +79,9 @@ private:
         spatial(std::move(spatial)), implementation(std::move(implementation)) {
   }
 
-  mlir::FailureOr<analysis::LogicalShardTrial>
-  getTrial(const CardSpatialPlacementAssignment &assignment,
-           std::string *failureReason) const;
+  mlir::FailureOr<ClosedSpatialDemand>
+  getSpatialDemand(const CardSpatialPlacementAssignment &assignment,
+                   std::string *failureReason) const;
   mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
   getFirstForSpatial(const CardSpatialPlacementAssignment &assignment,
                      std::string *failureReason,

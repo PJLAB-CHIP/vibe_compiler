@@ -27,6 +27,7 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     uint32_t structuredNodeId,
+    const compiler::detail::ReductionGroupId &group,
     llvm::ArrayRef<const StructuredNodeIterationShard *> contributionShards,
     llvm::ArrayRef<mlir::func::FuncOp> contributionFunctions,
     const StructuredNodePhysicalRepresentation *representation,
@@ -282,8 +283,8 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
             failureReason,
             "partial merge contribution has no exact input buffer");
       result.relations.partialReductionMergeInputs.push_back(
-          {structuredNodeId, static_cast<unsigned>(resultIndex), shard->tile,
-           buffer});
+          {structuredNodeId, group, static_cast<unsigned>(resultIndex),
+           shard->tile, buffer});
     }
   }
   return result;

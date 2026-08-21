@@ -2,11 +2,11 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.h"
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 #include "Wafer/Planning/Search/SingleRootRegion.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -241,15 +241,14 @@ TEST(SingleRootTileRegionTest, AppliesClosedMultiAxisPlacement) {
   auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(
       function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
-  wafer::analysis::IREpoch epoch = wafer::analysis::IREpoch::mint();
   wafer::compiler::detail::StructuredDAGNodePlacement placement{
       dag->getNodes().front().id,
       /*iteratorPartitionFactors=*/{2, 2},
       /*tiles=*/
       {wafer::TileId(3), wafer::TileId(0), wafer::TileId(2), wafer::TileId(1)}};
-  auto trial = wafer::compiler::detail::buildLogicalShardTrial(
-      *dag, llvm::ArrayRef(&placement, 1), epoch, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
+  auto spatialDemand = wafer::test::buildTestSpatialDemand(
+      *dag, llvm::ArrayRef(&placement, 1), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(spatialDemand)) << failureReason;
   auto target = wafer::TargetTopology::create(*source, &failureReason);
   ASSERT_TRUE(mlir::succeeded(target)) << failureReason;
   llvm::SmallVector<wafer::TileId, 16> available{
@@ -258,10 +257,10 @@ TEST(SingleRootTileRegionTest, AppliesClosedMultiAxisPlacement) {
       {dag->getNodes().front().operation, dag->getNodes().front().id}};
   wafer::compiler::detail::CardProgramAnalysis program(
       std::move(*target), available, std::move(*dag),
-      wafer::compiler::detail::StaticOutputDomains{{5, 7}}, operationNodes,
-      epoch);
+      wafer::compiler::detail::StaticOutputDomains{{5, 7}}, operationNodes);
   auto materialized = wafer::compiler::detail::materializeCardSingleRootRegions(
-      *source, program, wafer::CardId(0), *trial, &failureReason);
+      *source, program, wafer::CardId(0), spatialDemand->spatial,
+      spatialDemand->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
             4u);
@@ -692,16 +691,14 @@ TEST(SingleRootTileRegionTest,
   auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(
       function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
-  wafer::analysis::IREpoch epoch = wafer::analysis::IREpoch::mint();
   wafer::compiler::detail::StructuredDAGNodePlacement placement{
       dag->getNodes().front().id,
       /*iteratorPartitionFactors=*/{2, 2},
       /*tiles=*/
-      {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2), wafer::TileId(3)},
-      /*reductionMergeTile=*/wafer::TileId(2)};
-  auto trial = wafer::compiler::detail::buildLogicalShardTrial(
-      *dag, llvm::ArrayRef(&placement, 1), epoch, &failureReason);
-  ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
+      {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2), wafer::TileId(3)}};
+  auto spatialDemand = wafer::test::buildTestSpatialDemand(
+      *dag, llvm::ArrayRef(&placement, 1), &failureReason);
+  ASSERT_TRUE(mlir::succeeded(spatialDemand)) << failureReason;
   auto target = wafer::TargetTopology::create(*source, &failureReason);
   ASSERT_TRUE(mlir::succeeded(target)) << failureReason;
   llvm::SmallVector<wafer::TileId, 16> available{
@@ -710,12 +707,13 @@ TEST(SingleRootTileRegionTest,
       {dag->getNodes().front().operation, dag->getNodes().front().id}};
   wafer::compiler::detail::CardProgramAnalysis program(
       std::move(*target), available, std::move(*dag),
-      wafer::compiler::detail::StaticOutputDomains{{4}}, operationNodes, epoch);
+      wafer::compiler::detail::StaticOutputDomains{{4}}, operationNodes);
   auto materialized = wafer::compiler::detail::materializeCardSingleRootRegions(
-      *source, program, wafer::CardId(0), *trial, &failureReason);
+      *source, program, wafer::CardId(0), spatialDemand->spatial,
+      spatialDemand->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
   EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
-            5u);
+            6u);
   EXPECT_EQ(countOps<mlir::func::FuncOp>(materialized->module->getOperation()),
             4u);
   llvm::SmallVector<unsigned, 4> regionsByTile(4, 0);
@@ -724,10 +722,10 @@ TEST(SingleRootTileRegionTest,
       ++regionsByTile[tile.getTileIdAttr().getInt()];
     });
   });
-  EXPECT_EQ(regionsByTile, (llvm::SmallVector<unsigned, 4>{1, 1, 2, 1}));
+  EXPECT_EQ(regionsByTile, (llvm::SmallVector<unsigned, 4>{2, 1, 2, 1}));
   EXPECT_EQ(
       countOps<wafer::StorageStoreOp>(materialized->module->getOperation()),
-      5u);
+      6u);
 }
 
 TEST(SingleRootTileRegionTest,
@@ -760,15 +758,17 @@ TEST(SingleRootTileRegionTest,
   std::array<std::array<int64_t, 2>, 4> offsets = {
       std::array<int64_t, 2>{0, 0}, {0, 4}, {2, 0}, {2, 4}};
   llvm::SmallVector<wafer::StructuredNodeShardGroup, 4> groups;
+  wafer::compiler::detail::SemanticRootKey reductionRoot;
   for (unsigned tile = 0; tile < 4; ++tile) {
     wafer::StructuredNodeShardGroup group;
+    wafer::compiler::detail::ReductionGroupId reductionGroup{
+        reductionRoot, 0, {tile / 2}};
     group.shards.push_back(wafer::StructuredNodeIterationShard{
         0,
         wafer::TileId(tile),
         {offsets[tile][0], offsets[tile][1]},
         {2, 4},
-        wafer::StructuredNodeIterationShardRole::PartialReductionContribution,
-        wafer::TileId(2)});
+        {{reductionGroup, wafer::TileId(2)}}});
     group.temporalTiles.push_back(
         wafer::StructuredNodeTemporalTile{0, {1, 2}, {0, 1}});
     groups.push_back(std::move(group));
@@ -779,9 +779,9 @@ TEST(SingleRootTileRegionTest,
       *source, wafer::CardId(0), tiles, operationNodes, groups, materialized,
       nullptr, &failureReason)))
       << failureReason;
-  EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->getOperation()), 5u);
+  EXPECT_EQ(countOps<wafer::TileRegionOp>(materialized->getOperation()), 6u);
   EXPECT_GT(countOps<mlir::scf::ForOp>(materialized->getOperation()), 0u);
-  EXPECT_EQ(countOps<wafer::StorageStoreOp>(materialized->getOperation()), 5u);
+  EXPECT_EQ(countOps<wafer::StorageStoreOp>(materialized->getOperation()), 6u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*materialized)));
 }
 

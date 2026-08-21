@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -60,7 +61,8 @@ std::string print(mlir::Operation *operation) {
 
 struct Prepared {
   std::unique_ptr<CardProgramAnalysis> program;
-  analysis::LogicalShardTrial trial;
+  SpatialAssignment spatial;
+  analysis::ExactDemandProof demand;
   CoupledRegionDomain coupledDomain;
   CoupledRegionAssignment coupledAssignment;
   CardTemporalDomain temporalDomain;
@@ -80,14 +82,13 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module,
   StructuredDAGNodePlacement placement{
       node.id,
       llvm::SmallVector<uint32_t, 4>(tiling.getLoopIteratorTypes().size(), 1),
-      {TileId(0)},
-      std::nullopt};
-  analysis::IREpoch epoch = analysis::IREpoch::mint();
-  auto trial = buildLogicalShardTrial(*dag, llvm::ArrayRef(&placement, 1),
-                                      epoch, failureReason);
-  if (mlir::failed(trial))
+      {TileId(0)}};
+  auto spatialDemand = wafer::test::buildTestSpatialDemand(
+      *dag, llvm::ArrayRef(&placement, 1), failureReason);
+  if (mlir::failed(spatialDemand))
     return mlir::failure();
-  auto coupled = CoupledRegionDomain::create(*dag, *trial, failureReason);
+  auto coupled = CoupledRegionDomain::create(
+      *dag, spatialDemand->spatial, spatialDemand->demand, failureReason);
   auto temporal = CardTemporalDomain::create(
       *dag, llvm::ArrayRef(&placement, 1), failureReason);
   if (mlir::failed(coupled) || mlir::failed(temporal))
@@ -106,13 +107,16 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module,
       std::move(*topology), llvm::SmallVector<TileId, 16>{TileId(0)},
       std::move(*dag), std::move(outputDomains),
       llvm::SmallVector<StructuredOperationNodeMapping, 16>{
-          {nodeOperation, nodeId}},
-      epoch);
+          {nodeOperation, nodeId}});
   CoupledRegionAssignment coupledAssignment = coupled->getFirstAssignment();
   CardTemporalAssignment temporalAssignment = temporal->getFirstAssignment();
-  return Prepared{std::move(program),   std::move(*trial),
-                  std::move(*coupled),  std::move(coupledAssignment),
-                  std::move(*temporal), std::move(temporalAssignment)};
+  return Prepared{std::move(program),
+                  std::move(spatialDemand->spatial),
+                  std::move(spatialDemand->demand),
+                  std::move(*coupled),
+                  std::move(coupledAssignment),
+                  std::move(*temporal),
+                  std::move(temporalAssignment)};
 }
 
 constexpr llvm::StringLiteral map64 = R"mlir(
@@ -145,7 +149,8 @@ TEST(ScopedFeasibilityTest,
       FeasibilityCoordinate::PhysicalRepresentation,
       FeasibilityCoordinate::Buffering, FeasibilityCoordinate::DataMovement};
   auto result = analyzeScopedFeasibility(
-      *prepared->program, prepared->trial, prepared->coupledDomain,
+      *prepared->program, prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, memory, unresolved);
   ASSERT_TRUE(mlir::succeeded(result));
@@ -176,7 +181,8 @@ TEST(ScopedFeasibilityTest, NonBindingOverfullEstimateCannotReject) {
   std::array<FeasibilityCoordinate, 1> unresolved = {
       FeasibilityCoordinate::PhysicalRepresentation};
   auto result = analyzeScopedFeasibility(
-      *prepared->program, prepared->trial, prepared->coupledDomain,
+      *prepared->program, prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, memory, unresolved);
   ASSERT_TRUE(mlir::succeeded(result));
@@ -206,7 +212,8 @@ TEST(ScopedFeasibilityTest, RejectsOnlyAProvenSingleBufferOverflow) {
       FeasibilityCoordinate::DataMovement, FeasibilityCoordinate::Buffering,
       FeasibilityCoordinate::EventSchedule};
   auto result = analyzeScopedFeasibility(
-      *prepared->program, prepared->trial, prepared->coupledDomain,
+      *prepared->program, prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, memory, unresolved);
   ASSERT_TRUE(mlir::succeeded(result));
@@ -226,7 +233,8 @@ TEST(ScopedFeasibilityTest, RejectsOnlyAProvenSingleBufferOverflow) {
   smaller.nodes.front().waveLoopOrder = {0};
   ASSERT_TRUE(prepared->temporalDomain.contains(smaller));
   auto sibling = analyzeScopedFeasibility(
-      *prepared->program, prepared->trial, prepared->coupledDomain,
+      *prepared->program, prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain, smaller, memory,
       unresolved);
   ASSERT_TRUE(mlir::succeeded(sibling));
@@ -255,7 +263,8 @@ TEST(ScopedFeasibilityTest,
   ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
   TargetMemoryPolicy memory;
   auto result = analyzeScopedFeasibility(
-      *prepared->program, prepared->trial, prepared->coupledDomain,
+      *prepared->program, prepared->spatial, prepared->demand,
+      prepared->coupledDomain,
       prepared->coupledAssignment, prepared->temporalDomain,
       prepared->temporalAssignment, memory,
       llvm::ArrayRef<FeasibilityCoordinate>{});

@@ -139,7 +139,14 @@ SemanticRootAnalysis::create(const StructuredDAGAnalysis &dag,
       return fail<SemanticRootAnalysis>(
           failureReason, "structured roots have duplicate semantic keys");
   }
-  return SemanticRootAnalysis(std::move(bindings));
+  llvm::SmallVector<SemanticValueBinding, 32> valueBindings;
+  valueBindings.reserve(bestValuePaths.size());
+  for (const auto &[value, key] : bestValuePaths)
+    valueBindings.push_back({key, value});
+  llvm::sort(valueBindings,
+             [](const SemanticValueBinding &lhs,
+                const SemanticValueBinding &rhs) { return lhs.key < rhs.key; });
+  return SemanticRootAnalysis(std::move(bindings), std::move(valueBindings));
 }
 
 const SemanticRootBinding *
@@ -159,6 +166,14 @@ SemanticRootAnalysis::find(const SemanticRootKey &key) const {
         return value.key < candidate;
       });
   return binding == roots.end() || binding->key != key ? nullptr : &*binding;
+}
+
+const SemanticValueBinding *SemanticRootAnalysis::find(mlir::Value value) const {
+  auto binding =
+      llvm::find_if(values, [value](const SemanticValueBinding &candidate) {
+        return candidate.value == value;
+      });
+  return binding == values.end() ? nullptr : &*binding;
 }
 
 } // namespace wafer::compiler::detail

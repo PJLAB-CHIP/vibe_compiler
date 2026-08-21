@@ -1,8 +1,9 @@
 //===- SpatialPlacement.h - Structured iterator placement -----*- C++ -*-===//
 #pragma once
 
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.h"
+#include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/IR/Target/TargetTopology.h"
+#include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -22,13 +23,11 @@ struct SpatialPlacementAssignment {
   StructuredDAGNodeID node = 0;
   llvm::SmallVector<uint32_t, 4> iteratorFactors;
   llvm::SmallVector<TileId, 16> tiles;
-  std::optional<TileId> reductionMergeTile;
 
   friend bool operator==(const SpatialPlacementAssignment &lhs,
                          const SpatialPlacementAssignment &rhs) {
     return lhs.node == rhs.node && lhs.iteratorFactors == rhs.iteratorFactors &&
-           lhs.tiles == rhs.tiles &&
-           lhs.reductionMergeTile == rhs.reductionMergeTile;
+           lhs.tiles == rhs.tiles;
   }
   friend bool operator<(const SpatialPlacementAssignment &lhs,
                         const SpatialPlacementAssignment &rhs);
@@ -100,10 +99,14 @@ struct CardSpatialPlacementAssignment {
 };
 
 struct CardSpatialPlacementEvaluation {
-  analysis::ExactDemandStatus status =
-      analysis::ExactDemandStatus::IndeterminateFailure;
-  std::optional<analysis::LogicalShardTrial> trial;
+  std::optional<SpatialAssignment> assignment;
+  std::optional<analysis::ExactDemandOutcome> demand;
   std::string detail;
+
+  bool isSatisfied() const {
+    return demand && analysis::classifyExactDemandOutcome(*demand) ==
+                         analysis::ExactDemandOutcomeCategory::Satisfied;
+  }
 };
 
 /// Lazy Cartesian product of the per-node domains. It holds only the compact
@@ -119,15 +122,18 @@ public:
   CardSpatialPlacementAssignment getMaximumParticipantAssignment() const;
   mlir::FailureOr<CardSpatialPlacementAssignment>
   getConstructiveAssignment(const StructuredDAGAnalysis &dag,
-                            analysis::IREpoch epoch,
                             std::string *failureReason = nullptr) const;
   mlir::FailureOr<std::optional<CardSpatialPlacementAssignment>>
   getNextAssignment(const CardSpatialPlacementAssignment &assignment) const;
   bool contains(const CardSpatialPlacementAssignment &assignment) const;
   llvm::SmallVector<StructuredDAGNodePlacement, 16>
   getNodePlacements(const CardSpatialPlacementAssignment &assignment) const;
+  mlir::FailureOr<SpatialAssignment>
+  close(const StructuredDAGAnalysis &dag,
+        const CardSpatialPlacementAssignment &assignment,
+        std::string *failureReason = nullptr) const;
   CardSpatialPlacementEvaluation
-  evaluate(const StructuredDAGAnalysis &dag, analysis::IREpoch epoch,
+  evaluate(const StructuredDAGAnalysis &dag,
            const CardSpatialPlacementAssignment &assignment) const;
 
 private:

@@ -110,16 +110,16 @@ module {
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @main(%input: tensor<32x32xf16>) -> tensor<f16> {
+  func.func @main(%input: tensor<2x1024x1xf16>) -> tensor<f16> {
     %resultOut = tensor.empty() : tensor<f16>
     %zero = arith.constant 0.0 : f16
     %init = linalg.fill ins(%zero : f16)
         outs(%resultOut : tensor<f16>) -> tensor<f16>
     %result = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> ()>],
-        iterator_types = ["reduction", "reduction"]
-      } ins(%input : tensor<32x32xf16>) outs(%init : tensor<f16>) {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> ()>],
+        iterator_types = ["reduction", "reduction", "reduction"]
+      } ins(%input : tensor<2x1024x1xf16>) outs(%init : tensor<f16>) {
       ^bb0(%value: f16, %acc: f16):
         %next = arith.addf %value, %acc : f16
         linalg.yield %next : f16
@@ -134,7 +134,7 @@ module {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 1;
-  program.distributedInputs = {boundary(0, {32, 32})};
+  program.distributedInputs = {boundary(0, {2, 1024, 1})};
   program.distributedOutputs = {boundary(0, {})};
 
   // The root has no parallel result axis. The canonical coordinate is the
@@ -272,48 +272,6 @@ TEST(CardBaselineCompilationTest, ProducesStableCardModuleAndCardExecutableIR) {
             secondStatistics.baselineMaterializationPreparations);
   EXPECT_EQ(firstStatistics.exactGates.cardModuleCompilationInvocations, 1u);
   EXPECT_EQ(secondStatistics.exactGates.cardModuleCompilationInvocations, 1u);
-}
-
-TEST(CardBaselineCompilationTest,
-     DeterministicSpatialCoordinateAdvancesOneMonotoneState) {
-  using wafer::compiler::detail::DeterministicSpatialAdvance;
-  using wafer::compiler::detail::StructuredDAGNodePlacement;
-  llvm::SmallVector<StructuredDAGNodePlacement, 3> placements;
-  placements.push_back({0,
-                        {5, 1},
-                        {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2),
-                         wafer::TileId(3), wafer::TileId(4)}});
-  placements.push_back(
-      {1, {1, 3}, {wafer::TileId(0), wafer::TileId(1), wafer::TileId(2)}});
-  placements.push_back({2, {1, 1}, {wafer::TileId(0)}});
-
-  unsigned transitions = 0;
-  while (true) {
-    std::string failureReason;
-    auto result =
-        wafer::compiler::detail::advanceDeterministicSpatialCoordinate(
-            placements, &failureReason);
-    ASSERT_TRUE(mlir::succeeded(result)) << failureReason;
-    if (*result == DeterministicSpatialAdvance::Exhausted)
-      break;
-    ++transitions;
-  }
-  EXPECT_EQ(transitions, 4u);
-  for (const StructuredDAGNodePlacement &placement : placements) {
-    EXPECT_EQ(placement.tiles.size(), 1u);
-    EXPECT_EQ(placement.iteratorPartitionFactors,
-              (llvm::SmallVector<uint32_t, 4>{1, 1}));
-  }
-
-  placements.front().iteratorPartitionFactors[0] = 2;
-  const size_t originalTileCount = placements.front().tiles.size();
-  std::string failureReason;
-  auto malformed =
-      wafer::compiler::detail::advanceDeterministicSpatialCoordinate(
-          placements, &failureReason);
-  EXPECT_TRUE(mlir::failed(malformed));
-  EXPECT_EQ(placements.front().tiles.size(), originalTileCount);
-  EXPECT_FALSE(failureReason.empty());
 }
 
 TEST(CardBaselineCompilationTest,

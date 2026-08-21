@@ -13,6 +13,7 @@ add_mlir_library(WaferAnalysis
   Memory/StaticBufferRange.cpp
   Scheduling/NCCCompletionAnalysis.cpp
   Structured/ReductionSemantics.cpp
+  Structured/StructuredDAGAnalysis.cpp
 
   LINK_LIBS PUBLIC
   WaferIR
@@ -20,24 +21,26 @@ add_mlir_library(WaferAnalysis
   MLIRArithDialect
   MLIRAffineAnalysis
   MLIRAsyncDialect
+  MLIRDestinationStyleOpInterface
   MLIRFuncDialect
   MLIRIR
   MLIRLinalgDialect
   MLIRMemRefDialect
   MLIRPresburger
   MLIRSCFDialect
+  MLIRSideEffectInterfaces
   MLIRSupport
   MLIRTensorDialect
+  MLIRTilingInterface
   MLIRValueBoundsOpInterface
 )
 
 set(WAFER_COMPILATION_ANALYSIS_SOURCES
   Analysis/Executable/ExecutableCallClosure.cpp
   Analysis/Executable/ProgramResourceVerification.cpp
-  Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.cpp
+  Analysis/PhysicalDataflow/StructuredDemandAnalysis.cpp
   Analysis/Structured/CardProgramAnalysis.cpp
   Analysis/Structured/StructuredBufferRelations.cpp
-  Analysis/Structured/StructuredDAGAnalysis.cpp
   Analysis/Structured/StructuredNodeUseIndex.cpp
   Analysis/Structured/StructuredOperationTileFootprint.cpp
   PARENT_SCOPE)

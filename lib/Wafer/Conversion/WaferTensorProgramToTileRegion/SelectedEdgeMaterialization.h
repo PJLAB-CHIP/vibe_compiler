@@ -15,7 +15,7 @@ struct MappedStrategy {
   mlir::Operation *sourceProducer = nullptr;
   mlir::Operation *sourceConsumer = nullptr;
   uint64_t consumerScheduleOrdinal = 0;
-  bool hasProducerToConsumerChain = false;
+  bool requiresConsumerInputReconstruction = false;
 };
 
 struct MaterializedSource {
@@ -52,6 +52,7 @@ bool isInBackwardClosure(mlir::Value value, mlir::Operation *needle,
                          llvm::DenseSet<mlir::Value> &visited);
 
 bool isInSelectedOutputClosure(TensorProgramScope scope,
+                               llvm::ArrayRef<SpatialOutputShard> outputShards,
                                mlir::Operation *operation);
 
 bool hasSplitSelectedOutputTraversal(

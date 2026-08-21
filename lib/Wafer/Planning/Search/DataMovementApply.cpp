@@ -399,6 +399,7 @@ mlir::LogicalResult applySelectedDataMovement(
            relations.partialReductionContributions) {
         auto type = mlir::dyn_cast<mlir::MemRefType>(relation.buffer.getType());
         if (relation.structuredNodeId == reduction.node &&
+            relation.group == reduction.group &&
             relation.resultIndex == reduction.resultIndex &&
             relation.sourceTile == fragment.sourceTile && type &&
             llvm::equal(type.getShape(), fragment.sourceShape) &&
@@ -412,6 +413,7 @@ mlir::LogicalResult applySelectedDataMovement(
            relations.partialReductionMergeInputs) {
         auto type = mlir::dyn_cast<mlir::MemRefType>(relation.buffer.getType());
         if (relation.structuredNodeId == reduction.node &&
+            relation.group == reduction.group &&
             relation.resultIndex == reduction.resultIndex &&
             relation.sourceTile == fragment.sourceTile && type &&
             llvm::equal(type.getShape(), fragment.sizes) &&

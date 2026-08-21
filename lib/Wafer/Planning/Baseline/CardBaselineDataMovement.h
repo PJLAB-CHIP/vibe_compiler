@@ -8,6 +8,6 @@ namespace wafer::compiler::detail {
 
 mlir::LogicalResult addCardBaselineDataMovement(
     CardBaselineAssignment &assignment, const StructuredDAGAnalysis &dag,
-    analysis::IREpoch epoch, std::string *failureReason);
+    std::string *failureReason);
 
 } // namespace wafer::compiler::detail

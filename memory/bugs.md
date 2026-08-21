@@ -1193,3 +1193,17 @@
   include其owner并解析成唯一强类型，public header fresh全构建。advisory verifier和compiler复用同一ingestion但不共享verified-path state。
 - 防复发：installed product adapter→verifier→compiler→no-card、feature-off absence、portable corrupt/retired/mismatch负例和public full rebuild同批执行；
   不能因某个增量target链接成功就跳过完整header consumer构建。
+
+## 大shape会暴露construction proof丢失和ordered lowering的IR规模问题
+
+- 现象：rank-3 `2x1024x128` scalar reduction在host unit中持续100秒以上；个位数/32x32 case一直把它掩盖成普通慢测试。
+- 根因：ordered reduction为每个source tuple建立constant affine map，`PhysicalAccessRelation`没有识别非零in-bounds constant map的
+  total/bounded construction fact，因而每个tuple都调用Presburger `isEqual -> subtract -> simplex`；消除该重复证明后，rank-zero
+  result仍会按tuple生成实际gather/elementwise指令，而current native reduce verifier要求rank>2 source和destination均为NCx，不能合法
+  接受scalar destination。
+- 修复模式：`IndexRelation::fromAffineMap`对all-constant且逐维in-bounds的map记录total-bounded construction proof，越界常量仍走
+  fail-closed验证；scalar ordered route在4096 tuples前设置compiler work limit，超过时在创建IR前失败。代表性positive使用rank-3、
+  主维1024且2048 tuples的case；其它ragged vertical继续使用`2x1025x8192`，不通过缩小全部workload规避问题。
+- 防复发：IR/analysis/lowering正例必须含1024级整除/非整除shape，并记录wall/work；构造时已知的domain/coverage不得再交给generic
+  Presburger equality。未来支持更大scalar reduction必须新增compact loop或typed target route并直接测试，不得解除work limit后恢复
+  逐元素IR，也不得把该限制扩写成numeric policy或reassociation合同。

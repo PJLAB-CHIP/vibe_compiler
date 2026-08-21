@@ -43,7 +43,8 @@ class CardBufferingDomain {
 public:
   static mlir::FailureOr<CardBufferingDomain>
   create(const CardProgramAnalysis &program,
-         const analysis::LogicalShardTrial &trial,
+         const SpatialAssignment &spatial,
+         const analysis::ExactDemandProof &demand,
          const CoupledRegionDomain &coupledDomain,
          const CoupledRegionAssignment &coupledAssignment,
          const CardTemporalDomain &temporalDomain,

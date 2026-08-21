@@ -123,7 +123,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - semantic、spatial、temporal、TileRegion/融合、layout、movement、buffer、communication和order合法域从current IR惰性生成；
 - temporal域同时覆盖完整all-iterator tile vector与Q50.D已选traversal内会改变reuse/lifetime/tail的有限
   wave-loop order；regular
-  mapping、relation-derived reuse和coarse resource estimate只改变proposal顺序，开关后tiny accepted domain与winner不变；
+  mapping、relation-derived reuse和coarse resource estimate只改变proposal顺序，开关后有界穷举oracle的accepted domain与winner不变；
 - independent有界穷举reference domain enumerator不调用production domain builder，证明有限小图合法域完整；同一机制另有
   真实规模整除/非整除正例；
 - test-only flat reference composer先证明plan set/legality/cost；独立actualization runner才可从fresh source逐plan调用真实materializer与exact
@@ -147,7 +147,7 @@ position、Attention/decode/mask专用matcher或公共pass残留。
 - serial/parallel proposal evaluation得到相同admitted set、winner和package identity；
 - wall/RSS是回归证据，不设任意60秒硬gate；
 - beam、candidate cap、随机启发式或其它会损失完整性/最优性的策略，只能在实际负载profiling后作为显式trade-off启用，
-  并持续报告相对小图oracle和`none`的质量差异。
+  并持续报告相对有界图oracle和`none`的质量差异。
 - top-k还必须报告`best-found@k`、winner recall@k、regret@k和estimate-vs-final recost误差；永久丢弃合法completion时结果只可
   标`budgeted-feasible`，外部系统的固定`k`不得成为本项目默认值。
 
@@ -343,7 +343,7 @@ current target容量、target-model能力或host预算不足，必须按stage报
    从没有selected assignment的正常TensorProgram开始，初始temporal tile超SPM时沿完整合法breakpoint lattice以pure query重建
    operand/halo/result/temporary/movement/alignment/bank/lifetime problem，缩到第一个full-proof fit后再生成package/no-card；
    multi-axis/tail/minimum-granularity受测，最小合法tile仍被完整proof拒绝才返回typed capacity failure，heuristic no-fit、solver耗尽
-   与indeterminate不能冒充unsupported。fresh小图、五类relation、overfull-to-fit、轻量source-to-package/no-card及一轮FP16 LLaMA
+   与indeterminate不能冒充unsupported。fresh有界图oracle、五类relation、overfull-to-fit、轻量source-to-package/no-card及一轮FP16 LLaMA
    必须重新证明plan-only work count、actual/package/oracle；旧181.70秒LLaMA只作旧功能证据。Q49.P重新完成前不运行LLaMA search；
    完成后不再建立独立baseline板端任务，Q53只把current accepted baseline作为matched A/B一侧。
 2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair。
@@ -385,7 +385,7 @@ current target容量、target-model能力或host预算不足，必须按stage报
    coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。
 5. search-scalability是unified-search-closure及attention-production-closure通过后首个允许执行重型LLaMA `search`和质量profile的work item；baseline的单次fresh FP16 LLaMA
    `optimization-none`只证明baseline功能/materialization。generic/HF/LLaMA representative load只在显式、bounded profile批次
-   记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在小图oracle上不改变最优结果；search与同源`none`的
+   记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在有界图oracle上不改变最优结果；search与同源`none`的
    质量差异只由独立matched A/B报告，没有固定shape/tile/fusion/buffer shortcut。
 6. Q60先把framework adapter与pre-exported portable StableHLO接入同一product source contract。Q53从同一只读source bytes为
    `none`与`search`分别启动全新parse/import、ProgramData、output和package transaction；两条policy各自提交一个plan，绝不共享

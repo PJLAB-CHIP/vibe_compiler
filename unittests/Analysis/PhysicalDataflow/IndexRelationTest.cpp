@@ -660,6 +660,48 @@ TEST(PhysicalAccessRelationTest, RejectsAffineMapClippedByEndpointBounds) {
       /*requireInjective=*/true)));
 }
 
+TEST(PhysicalAccessRelationTest,
+     AcceptsLargeInBoundsConstantTupleByConstruction) {
+  mlir::DialectRegistry registry;
+  wafer::registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadDialect<wafer::WaferDialect>();
+
+  mlir::AffineMap tuple = mlir::AffineMap::get(
+      /*dimCount=*/0, /*symbolCount=*/0,
+      {mlir::getAffineConstantExpr(1, &context),
+       mlir::getAffineConstantExpr(1023, &context),
+       mlir::getAffineConstantExpr(127, &context)},
+      &context);
+  IndexRelationResult relation = IndexRelation::fromAffineMap(
+      tuple, /*destinationShape=*/{}, /*sourceShape=*/{2, 1024, 128});
+  ASSERT_TRUE(relation.isExact());
+  EXPECT_TRUE(relation.get()->hasTotalBoundedAffineMapConstruction());
+
+  auto memory = wafer::MemoryAttr::get(&context, wafer::MemorySpace::SPM,
+                                       wafer::MemLayout::Tensor);
+  mlir::MemRefType endpoint =
+      mlir::MemRefType::get({2, 1024, 128}, mlir::Float16Type::get(&context),
+                            mlir::MemRefLayoutAttrInterface{}, memory);
+  EXPECT_TRUE(mlir::succeeded(PhysicalAccessRelation::create(
+      endpoint, /*iterationShape=*/{}, *relation.get(),
+      /*requireInjective=*/false)));
+
+  mlir::AffineMap outside = mlir::AffineMap::get(
+      /*dimCount=*/0, /*symbolCount=*/0,
+      {mlir::getAffineConstantExpr(2, &context),
+       mlir::getAffineConstantExpr(0, &context),
+       mlir::getAffineConstantExpr(0, &context)},
+      &context);
+  IndexRelationResult clipped = IndexRelation::fromAffineMap(
+      outside, /*destinationShape=*/{}, /*sourceShape=*/{2, 1024, 128});
+  ASSERT_TRUE(clipped.isExact());
+  EXPECT_FALSE(clipped.get()->hasTotalBoundedAffineMapConstruction());
+  EXPECT_TRUE(mlir::failed(PhysicalAccessRelation::create(
+      endpoint, /*iterationShape=*/{}, *clipped.get(),
+      /*requireInjective=*/false)));
+}
+
 TEST(IndexRelationTest, RecoversNonemptyZeroDimensionalRectangleWithoutSolver) {
   IndexSetResult scalarDomain = IndexRelation::staticDomain({});
   ASSERT_TRUE(scalarDomain.isExact());

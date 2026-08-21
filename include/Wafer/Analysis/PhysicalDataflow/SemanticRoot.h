@@ -1,7 +1,7 @@
 //===- SemanticRoot.h - Query-local semantic root identity ----*- C++ -*-===//
 
-#ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEMANTICROOT_H
-#define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEMANTICROOT_H
+#ifndef WAFER_ANALYSIS_PHYSICALDATAFLOW_SEMANTICROOT_H
+#define WAFER_ANALYSIS_PHYSICALDATAFLOW_SEMANTICROOT_H
 
 #include "llvm/ADT/SmallVector.h"
 
@@ -10,17 +10,11 @@
 
 namespace wafer::compiler::detail {
 
-/// Typed observable boundary anchoring one semantic root path. Function result
-/// indices are ABI-semantic. Effect-boundary indices are supplied by the
-/// typed effect/control analysis, never by raw operation order.
 enum class SemanticRootAnchorKind : uint8_t {
   FunctionResult,
   EffectBoundary,
 };
 
-/// Typed relation crossed by one step from an observable boundary toward a
-/// semantic root. The step contains no operation address, symbol spelling, or
-/// walk ordinal.
 enum class SemanticRootPathRelation : uint8_t {
   SSAUseDef,
   RegionBranch,
@@ -49,9 +43,8 @@ struct SemanticRootPathStep {
 };
 
 /// Canonical root identity valid for one immutable TensorProgram borrow. The
-/// path is ordered from the observable boundary toward the root. Derivation is
-/// owned by the normalized-IR analysis; planning schemas only store and
-/// compare the typed value.
+/// path is ordered from the observable boundary toward the root and contains
+/// no operation address, symbol spelling, location, or walk ordinal.
 struct SemanticRootKey {
   SemanticRootAnchorKind anchorKind = SemanticRootAnchorKind::FunctionResult;
   uint32_t anchorIndex = 0;
@@ -79,4 +72,4 @@ struct SemanticRootKey {
 
 } // namespace wafer::compiler::detail
 
-#endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEMANTICROOT_H
+#endif // WAFER_ANALYSIS_PHYSICALDATAFLOW_SEMANTICROOT_H

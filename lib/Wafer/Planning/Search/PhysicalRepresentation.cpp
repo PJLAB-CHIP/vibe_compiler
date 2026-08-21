@@ -14,15 +14,6 @@
 namespace wafer::compiler::detail {
 namespace {
 
-const analysis::LogicalNodeTrial *
-findNodeTrial(const analysis::LogicalShardTrial &trial,
-              StructuredDAGNodeID node) {
-  auto found = llvm::find_if(trial.nodes, [&](const auto &candidate) {
-    return candidate.node == node;
-  });
-  return found == trial.nodes.end() ? nullptr : &*found;
-}
-
 const TemporalNodeAssignment *
 findTemporal(const CardTemporalAssignment &assignment,
              StructuredDAGNodeID node) {
@@ -33,17 +24,15 @@ findTemporal(const CardTemporalAssignment &assignment,
 }
 
 std::optional<analysis::StaticRectangularIndexSet>
-findShard(const analysis::LogicalNodeTrial &trial, TileId tile) {
-  auto found = llvm::find_if(trial.executionShards, [&](const auto &shard) {
-    return shard.tile == tile;
-  });
-  if (found == trial.executionShards.end() || !found->executionDomain)
+findShard(const ExecutionShard *shard) {
+  if (!shard)
     return std::nullopt;
-  analysis::StaticRectangularIndexSetResult rectangle =
-      analysis::IndexSetResult{
-          analysis::IndexRelationStatus::Exact, *found->executionDomain, {}}
-          .getExactStaticRectangularDomain();
-  return rectangle.isExact() ? rectangle.domain : std::nullopt;
+  analysis::StaticRectangularIndexSet rectangle;
+  for (const IteratorInterval &interval : shard->iterationDomain) {
+    rectangle.offsets.push_back(interval.offset);
+    rectangle.sizes.push_back(interval.size);
+  }
+  return rectangle;
 }
 
 llvm::SmallVector<MemLayout, 4>
@@ -76,7 +65,8 @@ void intersectLayouts(llvm::SmallVectorImpl<MemLayout> &layouts,
 mlir::FailureOr<CardPhysicalRepresentationDomain>
 CardPhysicalRepresentationDomain::create(
     const CardProgramAnalysis &program,
-    const analysis::LogicalShardTrial &trial,
+    const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
     const CoupledRegionDomain &coupledDomain,
     const CoupledRegionAssignment &coupledAssignment,
     const CardTemporalDomain &temporalDomain,
@@ -88,8 +78,10 @@ CardPhysicalRepresentationDomain::create(
       *failureReason = message.str();
     return mlir::failure();
   };
-  if (trial.epoch != program.epoch)
-    return fail("physical representation received a stale logical trial");
+  mlir::FailureOr<StructuredDemandView> view = StructuredDemandView::create(
+      program.dag, spatial, demand, failureReason);
+  if (mlir::failed(view))
+    return mlir::failure();
   if (!coupledDomain.contains(coupledAssignment))
     return fail("physical representation received a stale coupled assignment");
   if (!temporalDomain.contains(temporalAssignment))
@@ -99,13 +91,12 @@ CardPhysicalRepresentationDomain::create(
   for (const CoupledRegionGroup &group : coupledAssignment.groups) {
     for (StructuredDAGNodeID node : group.nodes) {
       const StructuredDAGNode *dagNode = program.dag.getNode(node);
-      const analysis::LogicalNodeTrial *nodeTrial = findNodeTrial(trial, node);
       const TemporalNodeAssignment *temporal =
           findTemporal(temporalAssignment, node);
       std::optional<analysis::StaticRectangularIndexSet> shard =
-          nodeTrial ? findShard(*nodeTrial, group.tile) : std::nullopt;
-      if (!dagNode || !dagNode->operation || !nodeTrial || !temporal ||
-          !shard || shard->sizes.size() != temporal->iteratorTileSizes.size())
+          findShard(view->getShard(node, group.tile));
+      if (!dagNode || !dagNode->operation || !temporal || !shard ||
+          shard->sizes.size() != temporal->iteratorTileSizes.size())
         return fail("physical representation lost one node shard");
       llvm::SmallVector<int64_t, 4> leafSizes;
       for (auto [extent, tile] :
@@ -150,11 +141,18 @@ CardPhysicalRepresentationDomain::create(
           return fail("physical result layout has no exact tile shape");
         llvm::SmallVector<MemLayout, 4> layouts =
             getLegalLayouts(tensor, *shape);
-        if (nodeTrial->reductionMergeTile) {
+        if (view->hasSpatialReduction(node)) {
           llvm::SmallVector<MemLayout, 4> partialLayouts =
               getLegalLayouts(tensor, shard->sizes);
           intersectLayouts(layouts, partialLayouts);
-          if (group.tile == *nodeTrial->reductionMergeTile) {
+          const SemanticRootKey *root = view->getRoot(node);
+          const bool isMergeTile = root && llvm::any_of(
+              demand.reductionMerges,
+              [&](const analysis::ReductionMergeRequirement &merge) {
+                return merge.group.root == *root &&
+                       merge.mergeTile == group.tile;
+              });
+          if (isMergeTile) {
             llvm::SmallVector<MemLayout, 4> mergedLayouts =
                 getLegalLayouts(tensor, tensor.getShape());
             intersectLayouts(layouts, mergedLayouts);

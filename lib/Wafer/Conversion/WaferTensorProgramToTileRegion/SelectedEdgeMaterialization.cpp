@@ -281,7 +281,7 @@ mlir::LogicalResult materializeSpill(
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   auto wireStoredProducerToConsumer = [&](mlir::Value storedProducer) {
-    if (mapped.hasProducerToConsumerChain) {
+    if (mapped.requiresConsumerInputReconstruction) {
       // A support DAG may join several independently spilled structured
       // producers (for example tensor.insert_slice assembly). Rebind the
       // complete consumer operand once every selected producer spill exists;

@@ -69,8 +69,7 @@ std::unique_ptr<CardProgramAnalysis> analyze(mlir::ModuleOp module,
     operationNodes.push_back({node.operation, node.id});
   return std::make_unique<CardProgramAnalysis>(
       std::move(*topology), llvm::SmallVector<TileId, 16>{TileId(0)},
-      std::move(*dag), StaticOutputDomains{{4}}, std::move(operationNodes),
-      analysis::IREpoch::mint());
+      std::move(*dag), StaticOutputDomains{{4}}, std::move(operationNodes));
 }
 
 unsigned countKind(mlir::Operation *root, ComputeElementwiseKind kind) {
@@ -112,8 +111,7 @@ TEST(ComputeImplementationTest,
                                    TileId(0),
                                    {0},
                                    {4},
-                                   StructuredNodeIterationShardRole::Complete,
-                                   std::nullopt});
+                                   {}});
   naturalGroup.implementations.push_back(
       {0, StructuredComputeImplementation::Natural});
   StructuredNodeShardGroup reciprocalGroup = naturalGroup;
@@ -191,8 +189,7 @@ module {
                                    TileId(0),
                                    {0},
                                    {4},
-                                   StructuredNodeIterationShardRole::Complete,
-                                   std::nullopt});
+                                   {}});
   group.implementations.push_back(
       {0, StructuredComputeImplementation::Reciprocal});
   mlir::OwningOpRef<mlir::ModuleOp> card;

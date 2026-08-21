@@ -57,7 +57,8 @@ class CardPhysicalRepresentationDomain {
 public:
   static mlir::FailureOr<CardPhysicalRepresentationDomain>
   create(const CardProgramAnalysis &program,
-         const analysis::LogicalShardTrial &trial,
+         const SpatialAssignment &spatial,
+         const analysis::ExactDemandProof &demand,
          const CoupledRegionDomain &coupledDomain,
          const CoupledRegionAssignment &coupledAssignment,
          const CardTemporalDomain &temporalDomain,

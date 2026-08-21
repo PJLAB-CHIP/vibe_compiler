@@ -70,19 +70,19 @@ setCardBaselineTemporalTiles(CardBaselineAssignment &assignment,
     if (output.outputIndex >= program.outputDomains.size() ||
         output.outputIndex >= outputRoots.size() ||
         output.outputIndex >= returnOp.getNumOperands() ||
-        (output.shardDimension &&
-         *output.shardDimension >=
-             program.outputDomains[output.outputIndex].size()) ||
-        output.activeTileIds.empty()) {
+        output.shards.empty()) {
       if (failureReason)
         *failureReason = "output spatial shard is incomplete";
       return mlir::failure();
     }
-    output.temporalTileSizes = program.outputDomains[output.outputIndex];
-    if (output.shardDimension) {
-      int64_t &extent = output.temporalTileSizes[*output.shardDimension];
-      extent = static_cast<int64_t>(ceilDivide(static_cast<uint64_t>(extent),
-                                               output.activeTileIds.size()));
+    output.temporalTileSizes.assign(
+        program.outputDomains[output.outputIndex].size(), 0);
+    for (const OutputTileShard &shard : output.shards) {
+      if (shard.sizes.size() != output.temporalTileSizes.size())
+        return mlir::failure();
+      for (auto [dimension, size] : llvm::enumerate(shard.sizes))
+        output.temporalTileSizes[dimension] =
+            std::max(output.temporalTileSizes[dimension], size);
     }
 
     if (outputRoots[output.outputIndex].size() != 1)

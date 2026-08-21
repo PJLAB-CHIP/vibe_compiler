@@ -71,7 +71,8 @@ mlir::LogicalResult rebindSelectedReceiveEndpoints(
             << " -> " << consumer->getName() << " operand "
             << mapped.strategy.consumerOperand << ':'
             << consumer->getOperand(mapped.strategy.consumerOperand).getType();
-        diagnostic << ", support=" << mapped.hasProducerToConsumerChain
+        diagnostic << ", reconstruct_input="
+                   << mapped.requiresConsumerInputReconstruction
                    << ", producer_demand_offsets=[";
         llvm::interleaveComma(mapped.strategy.producerOffsets, diagnostic);
         diagnostic << "], producer_demand_sizes=[";

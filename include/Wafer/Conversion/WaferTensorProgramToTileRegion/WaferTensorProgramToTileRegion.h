@@ -4,6 +4,7 @@
 #ifndef WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_H
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_H
 
+#include "Wafer/Analysis/PhysicalDataflow/SpatialAssignment.h"
 #include "Wafer/Target/Core/TopologyIds.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -58,6 +59,7 @@ struct SpatialOutputBufferRelation {
 
 struct PartialReductionContributionBufferRelation {
   uint32_t structuredNodeId = 0;
+  compiler::detail::ReductionGroupId group;
   unsigned resultIndex = 0;
   TileId sourceTile{0};
   mlir::Value buffer;
@@ -65,6 +67,7 @@ struct PartialReductionContributionBufferRelation {
 
 struct PartialReductionMergeInputBufferRelation {
   uint32_t structuredNodeId = 0;
+  compiler::detail::ReductionGroupId group;
   unsigned resultIndex = 0;
   TileId sourceTile{0};
   mlir::Value buffer;

@@ -1,118 +1,50 @@
-//===- ExactDemandTest.cpp - Policy-free logical demand types -------------===//
+//===- ExactDemandTest.cpp --------------------------------------------===//
 
 #include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
-#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
-
-#include "mlir/IR/MLIRContext.h"
 
 #include "gtest/gtest.h"
 
 namespace {
 
-using wafer::TileId;
-using wafer::analysis::DemandDependency;
-using wafer::analysis::DemandEdgeKind;
-using wafer::analysis::ExactDemandResult;
-using wafer::analysis::ExactDemandStatus;
-using wafer::analysis::IndexRelation;
-using wafer::analysis::IndexRelationStatus;
-using wafer::analysis::IREpoch;
-using wafer::analysis::LogicalNodeTrial;
-using wafer::analysis::LogicalShardTrial;
-using wafer::analysis::LogicalTileBinding;
-using wafer::analysis::TileRole;
+using namespace wafer::analysis;
 
-TEST(IREpochTest, MintsDistinctTokensAndDefaultIsInvalid) {
-  IREpoch first = IREpoch::mint();
-  ASSERT_TRUE(first.isValid());
-  EXPECT_EQ(first, first);
-  IREpoch copied = first;
-  EXPECT_EQ(first, copied);
+TEST(ExactDemandOutcomeTest, ClassifiesEveryTypedOutcomeWithoutDiagnostics) {
+  ExactDemandOutcome satisfied = ExactDemandProof{};
+  ExactDemandOutcome unsupported = UnsupportedDemandSemantics{};
+  ExactDemandOutcome exhausted = DemandWorkLimitReached{};
+  ExactDemandOutcome invalid = InvalidSpatialAssignment{};
+  ExactDemandOutcome broken = BrokenDemandContract{};
 
-  IREpoch second = IREpoch::mint();
-  EXPECT_NE(first, second);
+  EXPECT_EQ(classifyExactDemandOutcome(satisfied),
+            ExactDemandOutcomeCategory::Satisfied);
+  EXPECT_EQ(classifyExactDemandOutcome(unsupported),
+            ExactDemandOutcomeCategory::UnsupportedSemantics);
+  EXPECT_EQ(classifyExactDemandOutcome(exhausted),
+            ExactDemandOutcomeCategory::IndeterminateResourceExhaustion);
+  EXPECT_EQ(classifyExactDemandOutcome(invalid),
+            ExactDemandOutcomeCategory::CompilerContractError);
+  EXPECT_EQ(classifyExactDemandOutcome(broken),
+            ExactDemandOutcomeCategory::CompilerContractError);
+  EXPECT_NE(getExactDemandProof(satisfied), nullptr);
+  EXPECT_EQ(getExactDemandProof(unsupported), nullptr);
 
-  IREpoch invalid;
-  EXPECT_FALSE(invalid.isValid());
-  EXPECT_NE(invalid, second);
+  std::get<UnsupportedDemandSemantics>(unsupported).detail = "changed text";
+  EXPECT_EQ(classifyExactDemandOutcome(unsupported),
+            ExactDemandOutcomeCategory::UnsupportedSemantics);
 }
 
-TEST(ExactDemandTest, MapsRelationFailuresToTypedVerdicts) {
-  EXPECT_EQ(
-      wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::Unsupported),
-      ExactDemandStatus::UnsupportedSemanticRelation);
-  EXPECT_EQ(
-      wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::SoundBound),
-      ExactDemandStatus::IndeterminateFailure);
-  EXPECT_EQ(
-      wafer::analysis::mapIndexRelationStatus(IndexRelationStatus::Invalid),
-      ExactDemandStatus::IndeterminateFailure);
-  EXPECT_EQ(wafer::analysis::mapIndexRelationStatus(
-                IndexRelationStatus::ResourceExhausted),
-            ExactDemandStatus::IndeterminateFailure);
-}
-
-TEST(ExactDemandTest, OnlyProvenConclusionsAreCacheableAsLegality) {
-  EXPECT_TRUE(wafer::analysis::isCacheableLegalityConclusion(
-      ExactDemandStatus::Satisfied));
-  EXPECT_TRUE(wafer::analysis::isCacheableLegalityConclusion(
-      ExactDemandStatus::ProvenLogicalInfeasible));
-  EXPECT_FALSE(wafer::analysis::isCacheableLegalityConclusion(
-      ExactDemandStatus::UnsupportedSemanticRelation));
-  EXPECT_FALSE(wafer::analysis::isCacheableLegalityConclusion(
-      ExactDemandStatus::IndeterminateFailure));
-}
-
-TEST(ExactDemandTest, TrialCarriesExplicitDomainsRolesAndEpoch) {
-  mlir::MLIRContext context;
-  auto iteration = IndexRelation::staticRectangularDomain({0, 0}, {8, 4});
-  ASSERT_TRUE(iteration.isExact());
-  auto firstOwner = IndexRelation::staticRectangularDomain({0, 0}, {4, 4});
-  ASSERT_TRUE(firstOwner.isExact());
-  auto secondOwner = IndexRelation::staticRectangularDomain({4, 0}, {4, 4});
-  ASSERT_TRUE(secondOwner.isExact());
-
-  LogicalNodeTrial node;
-  node.node = 3;
-  node.completeIterationDomain = *iteration.set;
-  node.bindings.push_back(
-      LogicalTileBinding{TileId(2), /*resultIndex=*/0, *firstOwner.set,
-                         TileRole::PartialReductionContribution});
-  node.bindings.push_back(LogicalTileBinding{TileId(5), /*resultIndex=*/0,
-                                             *secondOwner.set,
-                                             TileRole::UniquePartition});
-
-  IREpoch epoch = IREpoch::mint();
-  LogicalShardTrial trial;
-  trial.epoch = epoch;
-  trial.nodes.push_back(std::move(node));
-
-  ASSERT_EQ(trial.nodes.size(), 1u);
-  EXPECT_EQ(trial.nodes[0].node, 3u);
-  EXPECT_EQ(trial.nodes[0].bindings.size(), 2u);
-  EXPECT_EQ(trial.nodes[0].bindings[0].tile, TileId(2));
-  EXPECT_EQ(trial.nodes[0].bindings[0].role,
-            TileRole::PartialReductionContribution);
-  EXPECT_EQ(trial.nodes[0].bindings[1].tile, TileId(5));
-  EXPECT_EQ(trial.nodes[0].bindings[1].role, TileRole::UniquePartition);
-  EXPECT_FALSE(trial.nodes[0].bindings[0].ownedDomain->isEqual(
-      trial.nodes[0].bindings[1].ownedDomain.value()));
-  EXPECT_EQ(trial.epoch, epoch);
-  EXPECT_NE(trial.epoch, IREpoch::mint());
-
-  DemandDependency dependency;
-  dependency.producerNode = 3;
-  dependency.producerResult = 0;
-  dependency.consumerNode = 7;
-  dependency.consumerOperand = 1;
-  dependency.kind = DemandEdgeKind::InitInput;
-  EXPECT_TRUE(dependency.producerToConsumerChain.empty());
-
-  ExactDemandResult result;
-  EXPECT_EQ(result.status, ExactDemandStatus::IndeterminateFailure);
-  EXPECT_FALSE(result.mergeObligation);
-  EXPECT_EQ(result.role, TileRole::UniquePartition);
-  EXPECT_FALSE(result.uncoveredWitness);
+TEST(ExactDemandOutcomeTest, ExactSetKeepsItsConstructionForm) {
+  IndexSetResult set =
+      IndexRelation::staticRectangularDomain({2, 3}, {4, 5});
+  ASSERT_TRUE(set.isExact());
+  StaticRectangularIndexSet box{{2, 3}, {4, 5}};
+  ExactIndexSet exact(std::move(*set.set), ExactIndexSetForm::BoxUnion, {box});
+  EXPECT_EQ(exact.getRank(), 2u);
+  EXPECT_FALSE(exact.isEmpty());
+  EXPECT_EQ(exact.getForm(), ExactIndexSetForm::BoxUnion);
+  ASSERT_EQ(exact.getBoxes().size(), 1u);
+  EXPECT_EQ(exact.getBoxes().front().offsets,
+            (llvm::SmallVector<int64_t, 4>{2, 3}));
 }
 
 } // namespace

@@ -1,101 +1,103 @@
 //===- CardBaselineAssignment.cpp ------------------------------------===//
 
 #include "Wafer/Planning/Baseline/CardBaselineAssignment.h"
-#include "Wafer/Planning/Baseline/CardBaselineDataMovement.h"
-#include "Wafer/Planning/Baseline/CardBaselinePlacement.h"
-#include "Wafer/Planning/Baseline/CardBaselineTemporalTiling.h"
-#include "Wafer/Support/CompileTiming.h"
 
-#include "mlir/Interfaces/TilingInterface.h"
+#include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
+#include "Wafer/Planning/Baseline/CardBaselineDataMovement.h"
+#include "Wafer/Planning/Baseline/CardBaselineTemporalTiling.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
+
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace wafer::compiler::detail {
 namespace {
 
+std::string getOutcomeDetail(const analysis::ExactDemandOutcome &outcome) {
+  return std::visit(
+      [](const auto &value) -> std::string {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, analysis::ExactDemandProof>)
+          return {};
+        else
+          return value.detail;
+      },
+      outcome);
+}
+
 mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>>
-makeInitialPlacements(const CardProgramAnalysis &program,
-                      std::string *failureReason) {
-  if (program.availableTileIds.empty()) {
-    if (failureReason)
-      *failureReason = "card has no available Tile";
+getNodePlacements(const StructuredDAGAnalysis &dag,
+                  const SpatialAssignment &spatial,
+                  const analysis::ExactDemandProof &demand,
+                  std::string *failureReason) {
+  mlir::FailureOr<StructuredDemandView> view =
+      StructuredDemandView::create(dag, spatial, demand, failureReason);
+  if (mlir::failed(view))
     return mlir::failure();
-  }
   llvm::SmallVector<StructuredDAGNodePlacement, 16> placements;
-  for (const StructuredDAGNode &node : program.dag.getNodes()) {
+  for (const StructuredDAGNode &node : dag.getNodes()) {
+    const NodeExecutionPartition *partition = view->getNode(node.id);
+    if (!partition || partition->shards.empty())
+      return mlir::failure();
     StructuredDAGNodePlacement placement;
     placement.node = node.id;
-    std::optional<llvm::SmallVector<CardBaselineSpatialAxis, 4>> axes =
-        getCardBaselineSpatialAxes(node);
-    if (!axes || axes->empty()) {
-      auto tiling = mlir::dyn_cast<mlir::TilingInterface>(node.operation);
-      if (!tiling) {
-        if (failureReason)
-          *failureReason = "structured node has no typed iterator domain";
-        return mlir::failure();
-      }
-      placement.iteratorPartitionFactors.assign(
-          tiling.getLoopIteratorTypes().size(), 1);
-      placement.tiles = {program.availableTileIds.front()};
-      placements.push_back(std::move(placement));
-      continue;
+    placement.iteratorPartitionFactors.assign(
+        partition->shards.front().shard.coordinate.size(), 0);
+    for (const ExecutionShard &shard : partition->shards) {
+      placement.tiles.push_back(shard.tile);
+      for (auto [iterator, coordinate] :
+           llvm::enumerate(shard.shard.coordinate))
+        placement.iteratorPartitionFactors[iterator] =
+            std::max<uint32_t>(placement.iteratorPartitionFactors[iterator],
+                               coordinate + 1);
     }
-    const CardBaselineSpatialAxis &axis = axes->front();
-    const uint64_t participants = std::min<uint64_t>(
-        program.availableTileIds.size(), std::max<uint64_t>(1, axis.extent));
-    placement.iteratorPartitionFactors = axis.unitPartitionFactors;
-    placement.iteratorPartitionFactors[axis.iteratorDimension] =
-        static_cast<uint32_t>(participants);
-    placement.tiles.assign(program.availableTileIds.begin(),
-                           program.availableTileIds.begin() + participants);
     placements.push_back(std::move(placement));
   }
   return placements;
 }
 
-mlir::FailureOr<CardBaselinePlacementClosure>
-closePlacements(const CardProgramAnalysis &program,
-                llvm::SmallVector<StructuredDAGNodePlacement, 16> placements,
-                BaselineStatistics *statistics, std::string *failureReason) {
-  while (true) {
-    if (statistics)
-      ++statistics->spatialCoordinateQueries;
-    CardBaselinePlacementVerdict legality;
-    mlir::FailureOr<CardBaselinePlacementClosure> closure =
-        closeCardBaselinePlacement(program.dag, placements, program.epoch,
-                                   failureReason, &legality);
-    if (mlir::succeeded(closure))
-      return std::move(*closure);
-    if (legality.status != analysis::ExactDemandStatus::ProvenLogicalInfeasible)
+mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> getOutputMappings(
+    const CardProgramAnalysis &program,
+    const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
+    std::string *failureReason) {
+  mlir::FailureOr<StructuredDemandView> view = StructuredDemandView::create(
+      program.dag, spatial, demand, failureReason);
+  if (mlir::failed(view))
+    return mlir::failure();
+  llvm::SmallVector<OutputTileMapping, 4> outputs;
+  for (auto [output, roots] :
+       llvm::enumerate(program.dag.getObservableOutputRootNodes())) {
+    if (roots.size() != 1) {
+      if (failureReason)
+        *failureReason =
+            "baseline output requires one structured semantic root";
       return mlir::failure();
-    mlir::FailureOr<DeterministicSpatialAdvance> advance =
-        advanceDeterministicSpatialCoordinate(placements, failureReason);
-    if (mlir::failed(advance) ||
-        *advance == DeterministicSpatialAdvance::Exhausted)
+    }
+    OutputTileMapping mapping;
+    mapping.outputIndex = output;
+    llvm::SmallVector<const analysis::FinalResultOwner *, 4> owners =
+        view->getFinalOwners(roots.front(), 0);
+    if (owners.empty())
       return mlir::failure();
-    if (statistics)
-      ++statistics->spatialLegalizationTransitions;
+    for (const analysis::FinalResultOwner *owner : owners) {
+      if (owner->domain.getForm() != analysis::ExactIndexSetForm::BoxUnion ||
+          owner->domain.getBoxes().size() != 1) {
+        if (failureReason)
+          *failureReason =
+              "baseline output owner is not one finite rectangle";
+        return mlir::failure();
+      }
+      const analysis::StaticRectangularIndexSet &box =
+          owner->domain.getBoxes().front();
+      mapping.shards.push_back({owner->tile, box.offsets, box.sizes});
+    }
+    outputs.push_back(std::move(mapping));
   }
-}
-
-CardBaselineAssignment buildAssignment(CardBaselinePlacementClosure closure) {
-  CardBaselineAssignment assignment;
-  assignment.nodePlacements = std::move(closure.nodePlacements);
-  for (const CardBaselineObservablePlacement &selected :
-       closure.outputPlacements) {
-    OutputTileMapping output;
-    output.outputIndex = selected.outputIndex;
-    output.shardDimension = selected.shardDimension;
-    output.activeTileIds = selected.tiles;
-    assignment.mapping.outputs.push_back(std::move(output));
-  }
-  llvm::sort(assignment.mapping.outputs,
-             [](const OutputTileMapping &lhs, const OutputTileMapping &rhs) {
-               return lhs.outputIndex < rhs.outputIndex;
-             });
-  assignment.mapping.materializationMode =
-      SpatialDataflowMaterializationMode::IndependentDDRStages;
-  return assignment;
+  return outputs;
 }
 
 } // namespace
@@ -104,48 +106,62 @@ mlir::FailureOr<CardBaselineAssignment>
 computeCardBaselineAssignment(const CardProgramAnalysis &program, CardId cardId,
                               BaselineStatistics *statistics,
                               llvm::raw_ostream &diagnostics) {
+  (void)cardId;
   std::string failureReason;
-  mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>>
-      placements = [&]() {
-        wafer::support::ScopedCompileTimingSpan timing(
-            "query", "deterministic-baseline", "initial-spatial-placement");
-        return makeInitialPlacements(program, &failureReason);
-      }();
-  if (mlir::failed(placements)) {
-    diagnostics << "wafer-compile: baseline placement failed: " << failureReason
-                << '\n';
-    return mlir::failure();
-  }
-  mlir::FailureOr<CardBaselinePlacementClosure> closure = [&]() {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "query", "deterministic-baseline", "close-spatial-placement");
-    return closePlacements(program, std::move(*placements), statistics,
-                           &failureReason);
-  }();
-  if (mlir::failed(closure)) {
-    diagnostics << "wafer-compile: baseline placement closure failed: "
+  mlir::FailureOr<CanonicalSpatialCoordinate> coordinate =
+      buildCanonicalSpatialAssignment(program.dag, program.availableTileIds,
+                                      &failureReason);
+  if (mlir::failed(coordinate)) {
+    diagnostics << "wafer-compile: canonical spatial assignment failed: "
                 << failureReason << '\n';
     return mlir::failure();
   }
-  if (statistics)
-    statistics->exactDemandSatisfiedEdges = program.dag.getEdges().size();
-  CardBaselineAssignment assignment = buildAssignment(std::move(*closure));
-  // Temporal wave shapes are part of physical carrier construction: remote
-  // producer demand is fragmented at those exact wave boundaries so no peer
-  // endpoint materializes a whole logical shard in SPM.
-  mlir::LogicalResult temporal = [&]() {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "query", "deterministic-baseline", "select-temporal-waves");
-    return setCardBaselineTemporalTiles(assignment, program, &failureReason);
-  }();
-  mlir::LogicalResult movement = mlir::failure();
-  if (mlir::succeeded(temporal)) {
-    wafer::support::ScopedCompileTimingSpan timing(
-        "query", "deterministic-baseline", "construct-data-movement");
-    movement = addCardBaselineDataMovement(assignment, program.dag,
-                                           program.epoch, &failureReason);
+  mlir::FailureOr<DemandPlanningSession> session =
+      DemandPlanningSession::create(program.dag, analysis::IndexRelationLimits(),
+                                    &failureReason);
+  if (mlir::failed(session)) {
+    diagnostics << "wafer-compile: exact demand facts failed: " << failureReason
+                << '\n';
+    return mlir::failure();
   }
-  if (mlir::failed(temporal) || mlir::failed(movement)) {
+  analysis::ExactDemandOutcome outcome = session->query(coordinate->assignment);
+  const analysis::ExactDemandProof *proof =
+      analysis::getExactDemandProof(outcome);
+  if (!proof) {
+    diagnostics << "wafer-compile: exact demand failed: "
+                << getOutcomeDetail(outcome) << '\n';
+    return mlir::failure();
+  }
+  session->close();
+
+  CardBaselineAssignment assignment;
+  assignment.spatial = std::move(coordinate->assignment);
+  assignment.demand = *proof;
+  mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>> placements =
+      getNodePlacements(program.dag, assignment.spatial, assignment.demand,
+                        &failureReason);
+  if (mlir::failed(placements))
+    return mlir::failure();
+  assignment.nodePlacements = std::move(*placements);
+  mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> outputs =
+      getOutputMappings(program, assignment.spatial, assignment.demand,
+                        &failureReason);
+  if (mlir::failed(outputs)) {
+    diagnostics << "wafer-compile: baseline output mapping failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+  assignment.mapping.outputs = std::move(*outputs);
+  assignment.mapping.materializationMode =
+      SpatialDataflowMaterializationMode::IndependentDDRStages;
+  if (statistics) {
+    ++statistics->spatialCoordinateQueries;
+    statistics->exactDemandSatisfiedEdges = program.dag.getEdges().size();
+  }
+  if (mlir::failed(setCardBaselineTemporalTiles(assignment, program,
+                                                &failureReason)) ||
+      mlir::failed(addCardBaselineDataMovement(
+          assignment, program.dag, &failureReason))) {
     diagnostics << "wafer-compile: baseline assignment failed: "
                 << failureReason << '\n';
     return mlir::failure();

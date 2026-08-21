@@ -6,13 +6,14 @@ add_executable(WaferUnitTests
   Analysis/Scheduling/NCCCompletionAnalysisTest.cpp
   Analysis/PhysicalDataflow/IndexRelationTest.cpp
   Analysis/PhysicalDataflow/ExactDemandTest.cpp
+  Analysis/PhysicalDataflow/StructuredDemandAnalysisTest.cpp
   Analysis/ScheduleCost/ScheduleCostAnalysisTest.cpp
   Analysis/Memory/StaticBufferRangeTest.cpp
   Driver/CompilationOutputTest.cpp
   Driver/CompilationTest.cpp
   TestSupport/CodeGen/CardExecutableTestSupport.cpp
+  TestSupport/Planning/SpatialDemandTestSupport.cpp
   Planning/Baseline/CardBaselineCompilationTest.cpp
-  Planning/Baseline/CardBaselinePlacementTest.cpp
   CodeGen/Executable/CardExecutableCompilationTest.cpp
   CodeGen/Executable/CardExecutableLoweringTest.cpp
   Transforms/Bufferization/SelectedBufferMaterializationTest.cpp
@@ -27,8 +28,6 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
-  Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlanTest.cpp
-  Analysis/PhysicalDataflow/StructuredDAGExactDemandQueryTest.cpp
   Analysis/Structured/StructuredOperationTileFootprintTest.cpp
   Planning/PhysicalDataflow/TemporalTileShapeTest.cpp
   Analysis/Executable/ProgramResourceVerificationTest.cpp

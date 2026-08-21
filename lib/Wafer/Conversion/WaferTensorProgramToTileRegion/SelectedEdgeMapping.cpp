@@ -37,7 +37,7 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts,
-    llvm::ArrayRef<analysis::ConsumerInputDemand> operandDemands,
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
     std::string *failureReason) {
   SelectedEdgeProgramMapping result;
   llvm::DenseSet<mlir::Operation *> seenTemporalOperations;
@@ -75,30 +75,41 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
   }
 
   result.consumerInputDemands.reserve(operandDemands.size());
-  for (const analysis::ConsumerInputDemand &demand : operandDemands) {
-    if (demand.status != analysis::ExactDemandStatus::Satisfied ||
-        !demand.consumer)
+  for (const analysis::DependencyDemand &demand : operandDemands) {
+    if (!demand.consumerOperation)
       return failResult(
           failureReason,
-          "operand materialization requires a satisfied typed demand recipe");
-    analysis::ConsumerInputDemand mapped = demand;
-    mapped.consumer = cloneMapping.lookupOrNull(demand.consumer);
-    if (!mapped.consumer)
+          "operand materialization requires a typed demand recipe");
+    analysis::DependencyDemand mapped = demand;
+    mapped.consumerOperation =
+        cloneMapping.lookupOrNull(demand.consumerOperation);
+    if (!mapped.consumerOperation)
       return failResult(failureReason,
                         "operand demand consumer is outside source module");
-    for (analysis::ConsumerInputReconstruction &recipe :
-         mapped.perDestination) {
-      for (analysis::TensorTransform &step : recipe.steps) {
+    for (analysis::DestinationDemand &recipe : mapped.perDestination) {
+      for (analysis::TensorTransform &step : recipe.reconstruction.steps) {
         step.operation = cloneMapping.lookupOrNull(step.operation);
         if (!step.operation)
           return failResult(failureReason,
                             "tensor-operand step is outside source module");
       }
-      for (analysis::ProducerValueRequirement &boundary : recipe.boundaries) {
-        boundary.producer = cloneMapping.lookupOrNull(boundary.producer);
-        if (!boundary.producer)
-          return failResult(failureReason,
-                            "tensor-operand boundary is outside source module");
+      for (analysis::SourceDemand &source : recipe.sources) {
+        if (auto *structured =
+                std::get_if<analysis::StructuredResultSource>(&source.source)) {
+          structured->operation =
+              cloneMapping.lookupOrNull(structured->operation);
+          if (!structured->operation)
+            return failResult(
+                failureReason,
+                "tensor-operand boundary is outside source module");
+        } else if (auto *constant =
+                       std::get_if<analysis::ConstantSource>(&source.source)) {
+          constant->operation = cloneMapping.lookupOrNull(constant->operation);
+          if (!constant->operation)
+            return failResult(
+                failureReason,
+                "tensor constant boundary is outside source module");
+        }
       }
     }
     result.consumerInputDemands.push_back(std::move(mapped));
@@ -114,6 +125,23 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
           normalizedEdgeStrategies, operationTemporalTiles, failureReason)))
     return mlir::failure();
 
+  llvm::SmallVector<SpatialEdgeMaterializationFacts, 16> effectiveEdgeFacts;
+  if (edgeFacts.empty()) {
+    mlir::FailureOr<llvm::SmallVector<SpatialEdgeMaterializationFacts, 16>>
+        derived = deriveSpatialEdgeMaterializationFacts(
+            sourceBody, normalizedEdgeStrategies, operandDemands,
+            failureReason);
+    if (mlir::failed(derived))
+      return mlir::failure();
+    effectiveEdgeFacts = std::move(*derived);
+  } else {
+    if (edgeFacts.size() != normalizedEdgeStrategies.size())
+      return failResult(
+          failureReason,
+          "edge materialization facts do not cover normalized strategies");
+    effectiveEdgeFacts.assign(edgeFacts.begin(), edgeFacts.end());
+  }
+
   result.strategies.reserve(normalizedEdgeStrategies.size());
   for (auto [strategyIndex, strategy] :
        llvm::enumerate(normalizedEdgeStrategies)) {
@@ -125,42 +153,17 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
     mapped.sourceConsumer = strategy.consumer;
     mapped.producer = cloneMapping.lookupOrNull(strategy.producer);
     mapped.consumer = cloneMapping.lookupOrNull(strategy.consumer);
-    if (edgeFacts.empty()) {
-      auto consumerPosition =
-          llvm::find_if(sourceBody, [&](mlir::Operation &operation) {
-            return &operation == mapped.sourceConsumer;
-          });
-      if (consumerPosition == sourceBody.end())
-        return failResult(
-            failureReason,
-            "edge strategy consumer is outside the pristine program body");
-      mapped.consumerScheduleOrdinal = static_cast<uint64_t>(
-          std::distance(sourceBody.begin(), consumerPosition));
-    } else {
-      mapped.consumerScheduleOrdinal =
-          edgeFacts[strategyIndex].consumerScheduleOrdinal;
-    }
+    mapped.consumerScheduleOrdinal =
+        effectiveEdgeFacts[strategyIndex].consumerScheduleOrdinal;
     mapped.strategy.producer = mapped.producer;
     mapped.strategy.consumer = mapped.consumer;
     if (mlir::failed(validateEdge(mapped.producer, strategy.producerResult,
                                   mapped.consumer, strategy.consumerOperand,
-                                  scope.getBody(), failureReason,
-                                  /*dependencyAlreadyValidated=*/
-                                  !edgeFacts.empty())))
+                                  scope.getBody(), failureReason)))
       return mlir::failure();
-    if (edgeFacts.empty()) {
-      mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
-          producerToConsumerChain = traceProducerToConsumerChain(
-              mapped.producer, strategy.producerResult, mapped.consumer,
-              strategy.consumerOperand, failureReason);
-      if (mlir::failed(producerToConsumerChain))
-        return mlir::failure();
-      mapped.hasProducerToConsumerChain = !producerToConsumerChain->empty();
-    } else {
-      mapped.hasProducerToConsumerChain =
-          edgeFacts[strategyIndex].hasProducerToConsumerChain;
-    }
-    if (mapped.hasProducerToConsumerChain &&
+    mapped.requiresConsumerInputReconstruction =
+        effectiveEdgeFacts[strategyIndex].requiresConsumerInputReconstruction;
+    if (mapped.requiresConsumerInputReconstruction &&
         strategy.action != SpatialEdgeAction::RegionCut &&
         strategy.action != SpatialEdgeAction::PeerFragments)
       return failResult(failureReason, "pure tensor input-chain dependencies "
@@ -170,29 +173,27 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
         mapped.producer->getResult(strategy.producerResult).getType());
     auto consumerType = mlir::dyn_cast<mlir::RankedTensorType>(
         mapped.consumer->getResult(0).getType());
-    if (strategy.consumerOffsets.empty() || strategy.consumerSizes.empty()) {
-      if (!strategy.consumerOffsets.empty() ||
-          !strategy.consumerSizes.empty() ||
-          mlir::failed(deriveConsumerDomainFromProducerDemand(
-              mapped.producer, strategy.producerResult, mapped.consumer,
-              strategy.consumerOperand, strategy.producerOffsets,
-              strategy.producerSizes, mapped.strategy.consumerOffsets,
-              mapped.strategy.consumerSizes, failureReason)))
-        return mlir::failure();
-    }
+    auto selectedConsumerResultType =
+        mapped.consumer->getNumResults() == 1
+            ? mlir::dyn_cast<mlir::RankedTensorType>(
+                  mapped.consumer->getResult(0).getType())
+            : mlir::RankedTensorType{};
+    const bool validZeroRankDomain =
+        selectedConsumerResultType &&
+        selectedConsumerResultType.getRank() == 0 &&
+        strategy.consumerOffsets.empty() && strategy.consumerSizes.empty();
+    if (!validZeroRankDomain &&
+        (strategy.consumerOffsets.empty() || strategy.consumerSizes.empty()))
+      return failResult(
+          failureReason,
+          "selected edge has no proof-derived consumer result domain");
     const SpatialEdgeStrategy &validated = mapped.strategy;
     if (mlir::failed(validateStaticDomain(
             producerType, validated.producerOffsets, validated.producerSizes,
             failureReason, "edge producer demand")) ||
         mlir::failed(validateStaticDomain(
             consumerType, validated.consumerOffsets, validated.consumerSizes,
-            failureReason, "edge consumer demand")) ||
-        (!mapped.hasProducerToConsumerChain &&
-         mlir::failed(validateDemandIndexRelation(
-             mapped.consumer, validated.consumerOperand,
-             validated.consumerOffsets, validated.consumerSizes,
-             validated.producerOffsets, validated.producerSizes,
-             failureReason))))
+            failureReason, "edge consumer demand")))
       return mlir::failure();
     if (llvm::any_of(result.strategies, [&](const MappedStrategy &other) {
           return sameEdge(mapped, other) && mapped.strategy.destinationTile ==
@@ -206,10 +207,10 @@ mlir::FailureOr<SelectedEdgeProgramMapping> mapSelectedEdgesToCandidate(
       return failResult(failureReason,
                         "non-peer edge strategy cannot carry fragments");
     if (strategy.fragmentsDefineProducerDemand &&
-        !mapped.hasProducerToConsumerChain)
+        !mapped.requiresConsumerInputReconstruction)
       return failResult(failureReason,
                         "fragment-union producer demand requires a typed "
-                        "producer-to-consumer tensor chain");
+                        "consumer-input reconstruction recipe");
     if (strategy.action != SpatialEdgeAction::PeerFragments &&
         strategy.sourceTile != strategy.destinationTile)
       return failResult(failureReason,

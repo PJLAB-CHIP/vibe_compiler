@@ -7,6 +7,7 @@
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -85,7 +86,8 @@ template <typename OpT> unsigned countOps(mlir::Operation *operation) {
 
 struct PreparedCase {
   std::unique_ptr<CardProgramAnalysis> program;
-  wafer::analysis::LogicalShardTrial trial;
+  wafer::compiler::detail::SpatialAssignment spatial;
+  wafer::analysis::ExactDemandProof demand;
   CoupledRegionDomain domain;
   CardTemporalDomain temporalDomain;
   CardTemporalAssignment temporalAssignment;
@@ -107,18 +109,16 @@ mlir::FailureOr<PreparedCase> prepare(mlir::ModuleOp module,
     placements.push_back(StructuredDAGNodePlacement{
         node.id,
         llvm::SmallVector<uint32_t, 4>(tiling.getLoopIteratorTypes().size(), 1),
-        {TileId(0)},
-        std::nullopt});
+        {TileId(0)}});
     operationNodes.push_back({node.operation, node.id});
   }
-  wafer::analysis::IREpoch epoch = wafer::analysis::IREpoch::mint();
-  mlir::FailureOr<wafer::analysis::LogicalShardTrial> trial =
-      wafer::compiler::detail::buildLogicalShardTrial(*dag, placements, epoch,
-                                                      failureReason);
-  if (mlir::failed(trial))
+  auto spatialDemand =
+      wafer::test::buildTestSpatialDemand(*dag, placements, failureReason);
+  if (mlir::failed(spatialDemand))
     return mlir::failure();
   mlir::FailureOr<CoupledRegionDomain> domain =
-      CoupledRegionDomain::create(*dag, *trial, failureReason);
+      CoupledRegionDomain::create(*dag, spatialDemand->spatial,
+                                  spatialDemand->demand, failureReason);
   if (mlir::failed(domain))
     return mlir::failure();
   mlir::FailureOr<CardTemporalDomain> temporalDomain =
@@ -140,17 +140,18 @@ mlir::FailureOr<PreparedCase> prepare(mlir::ModuleOp module,
   }
   auto program = std::make_unique<CardProgramAnalysis>(
       std::move(*topology), available, std::move(*dag),
-      std::move(outputDomains), std::move(operationNodes), epoch);
+      std::move(outputDomains), std::move(operationNodes));
   CoupledRegionAssignment coupledAssignment = domain->getFirstAssignment();
   auto representationDomain = CardPhysicalRepresentationDomain::create(
-      *program, *trial, *domain, coupledAssignment, *temporalDomain,
-      temporalAssignment, failureReason);
+      *program, spatialDemand->spatial, spatialDemand->demand, *domain,
+      coupledAssignment, *temporalDomain, temporalAssignment, failureReason);
   if (mlir::failed(representationDomain))
     return mlir::failure();
   CardPhysicalRepresentationAssignment representationAssignment =
       representationDomain->getFirstAssignment();
   return PreparedCase{std::move(program),
-                      std::move(*trial),
+                      std::move(spatialDemand->spatial),
+                      std::move(spatialDemand->demand),
                       std::move(*domain),
                       std::move(*temporalDomain),
                       std::move(temporalAssignment),
@@ -190,16 +191,20 @@ materializePrepared(
     const CardPhysicalRepresentationAssignment &representation,
     std::string *failureReason) {
   auto movementDomain = wafer::compiler::detail::CardDataMovementDomain::create(
-      *prepared.program, wafer::CardId(0), prepared.trial, prepared.domain,
-      coupled, temporalDomain, temporal, representationDomain, representation,
-      failureReason);
+      *prepared.program, wafer::CardId(0), prepared.spatial, prepared.demand,
+      prepared.domain, coupled, temporalDomain, temporal,
+      representationDomain, representation, failureReason);
+  if (mlir::failed(movementDomain))
+    if (failureReason && failureReason->empty())
+      *failureReason = "movement domain construction failed";
   if (mlir::failed(movementDomain))
     return mlir::failure();
   auto movement = movementDomain->getFirstAssignment();
   return wafer::compiler::detail::materializeCardCoupledRegions(
-      module, *prepared.program, wafer::CardId(0), prepared.trial,
-      prepared.domain, coupled, temporalDomain, temporal, representationDomain,
-      representation, *movementDomain, movement, failureReason);
+      module, *prepared.program, wafer::CardId(0), prepared.spatial,
+      prepared.demand, prepared.domain, coupled, temporalDomain, temporal,
+      representationDomain, representation, *movementDomain, movement,
+      failureReason);
 }
 
 constexpr llvm::StringLiteral chain = R"mlir(
@@ -292,8 +297,9 @@ TEST(CoupledTileRegionTest,
   }
   ASSERT_TRUE(prepared->temporalDomain.contains(prepared->temporalAssignment));
   auto representationDomain = CardPhysicalRepresentationDomain::create(
-      *prepared->program, prepared->trial, prepared->domain, maximal,
-      prepared->temporalDomain, prepared->temporalAssignment, &failureReason);
+      *prepared->program, prepared->spatial, prepared->demand,
+      prepared->domain, maximal, prepared->temporalDomain,
+      prepared->temporalAssignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(representationDomain)) << failureReason;
   CardPhysicalRepresentationAssignment representationAssignment =
       representationDomain->getFirstAssignment();

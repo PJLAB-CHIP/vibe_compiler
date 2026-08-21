@@ -4,9 +4,10 @@
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEMANTICROOTANALYSIS_H
 
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
-#include "Wafer/Planning/PhysicalDataflow/SemanticRoot.h"
+#include "Wafer/Analysis/PhysicalDataflow/SemanticRoot.h"
 
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/IR/Value.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -24,6 +25,11 @@ struct SemanticRootBinding {
   mlir::Operation *operation = nullptr;
 };
 
+struct SemanticValueBinding {
+  SemanticRootKey key;
+  mlir::Value value;
+};
+
 /// Derives one stable key for every structured DAG node from typed observable
 /// SSA paths. Any IR mutation invalidates both the bindings and their operation
 /// handles.
@@ -34,15 +40,19 @@ public:
          std::string *failureReason = nullptr);
 
   llvm::ArrayRef<SemanticRootBinding> getRoots() const { return roots; }
+  llvm::ArrayRef<SemanticValueBinding> getValues() const { return values; }
   const SemanticRootBinding *find(mlir::Operation *operation) const;
   const SemanticRootBinding *find(const SemanticRootKey &key) const;
+  const SemanticValueBinding *find(mlir::Value value) const;
 
 private:
   explicit SemanticRootAnalysis(
-      llvm::SmallVector<SemanticRootBinding, 16> roots)
-      : roots(std::move(roots)) {}
+      llvm::SmallVector<SemanticRootBinding, 16> roots,
+      llvm::SmallVector<SemanticValueBinding, 32> values)
+      : roots(std::move(roots)), values(std::move(values)) {}
 
   llvm::SmallVector<SemanticRootBinding, 16> roots;
+  llvm::SmallVector<SemanticValueBinding, 32> values;
 };
 
 } // namespace wafer::compiler::detail

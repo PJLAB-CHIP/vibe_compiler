@@ -18,47 +18,25 @@ void collectTileOutputShards(
     llvm::SmallVectorImpl<int64_t> &coveredShardExtents) {
   for (auto [outputIndex, output] :
        llvm::enumerate(preparation.outputMappings)) {
-    auto active = llvm::find(output->activeTileIds, tileId);
-    if (active == output->activeTileIds.end())
+    auto selected = llvm::find_if(
+        output->shards,
+        [tileId](const OutputTileShard &shard) { return shard.tile == tileId; });
+    if (selected == output->shards.end())
       continue;
-    const size_t activeOrdinal = static_cast<size_t>(
-        std::distance(output->activeTileIds.begin(), active));
-    const size_t activeShardCount = output->activeTileIds.size();
     const llvm::SmallVector<int64_t, 4> &domain =
         preparation.outputDomains[outputIndex];
-    if (!output->shardDimension) {
-      SpatialOutputShard shard;
-      shard.outputIndex = static_cast<unsigned>(outputIndex);
-      shard.offsets.assign(domain.size(), 0);
-      shard.sizes = domain;
-      shard.temporalTileSizes = output->temporalTileSizes;
-      ++coveredShardExtents[outputIndex];
-      tileShards.push_back(std::move(shard));
-      continue;
-    }
-    const unsigned shardDimension = *output->shardDimension;
-    const int64_t shardExtent = domain[shardDimension];
-    const int64_t baseShardSize =
-        shardExtent / static_cast<int64_t>(activeShardCount);
-    const int64_t largerShardCount =
-        shardExtent % static_cast<int64_t>(activeShardCount);
-    const int64_t size = baseShardSize + (static_cast<int64_t>(activeOrdinal) <
-                                          largerShardCount);
-    const int64_t offset =
-        static_cast<int64_t>(activeOrdinal) * baseShardSize +
-        std::min<int64_t>(static_cast<int64_t>(activeOrdinal),
-                          largerShardCount);
     SpatialOutputShard shard;
     shard.outputIndex = static_cast<unsigned>(outputIndex);
-    shard.offsets.assign(domain.size(), 0);
-    shard.sizes = domain;
-    shard.offsets[shardDimension] = offset;
-    shard.sizes[shardDimension] = size;
+    shard.offsets = selected->offsets;
+    shard.sizes = selected->sizes;
     shard.temporalTileSizes.reserve(domain.size());
     for (auto [temporalSize, shardSize] :
          llvm::zip_equal(output->temporalTileSizes, shard.sizes))
       shard.temporalTileSizes.push_back(std::min(temporalSize, shardSize));
-    coveredShardExtents[outputIndex] += size;
+    int64_t elements = 1;
+    for (int64_t size : shard.sizes)
+      elements *= size;
+    coveredShardExtents[outputIndex] += elements;
     tileShards.push_back(std::move(shard));
   }
 }
@@ -72,7 +50,7 @@ static mlir::FailureOr<mlir::func::FuncOp> lowerTileEntryFromSource(
     llvm::ArrayRef<SpatialOutputShard> tileShards, bool materializeTile,
     llvm::ArrayRef<SpatialEdgeStrategy> edgeStrategies,
     llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts,
-    llvm::ArrayRef<analysis::ConsumerInputDemand> operandDemands,
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
     std::string *failureReason,
     StructuredMaterializationRelations *tileRelations) {
   mlir::func::FuncOp entry;
@@ -146,8 +124,8 @@ mlir::FailureOr<mlir::func::FuncOp> lowerTileEntry(
       narrowedEdgeStrategies ? llvm::ArrayRef<SpatialEdgeMaterializationFacts>{}
                              : llvm::ArrayRef<SpatialEdgeMaterializationFacts>(
                                    preparation.edgeFacts),
-      narrowedEdgeStrategies ? llvm::ArrayRef<analysis::ConsumerInputDemand>{}
-                             : llvm::ArrayRef<analysis::ConsumerInputDemand>(
+      narrowedEdgeStrategies ? llvm::ArrayRef<analysis::DependencyDemand>{}
+                             : llvm::ArrayRef<analysis::DependencyDemand>(
                                    preparation.consumerInputDemands),
       failureReason, tileRelations);
 }

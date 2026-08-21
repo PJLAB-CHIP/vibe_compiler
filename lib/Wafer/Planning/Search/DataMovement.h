@@ -66,6 +66,7 @@ enum class ReductionGatherKind : uint8_t { DDR, Peer };
 
 struct ReductionGatherChoice {
   StructuredDAGNodeID node = 0;
+  ReductionGroupId group;
   unsigned resultIndex = 0;
   TileId mergeTile{0};
   ReductionGatherKind kind = ReductionGatherKind::DDR;
@@ -74,7 +75,8 @@ struct ReductionGatherChoice {
 
   friend bool operator==(const ReductionGatherChoice &lhs,
                          const ReductionGatherChoice &rhs) {
-    return lhs.node == rhs.node && lhs.resultIndex == rhs.resultIndex &&
+    return lhs.node == rhs.node && lhs.group == rhs.group &&
+           lhs.resultIndex == rhs.resultIndex &&
            lhs.mergeTile == rhs.mergeTile && lhs.kind == rhs.kind &&
            lhs.mergeLayout == rhs.mergeLayout && lhs.fragments == rhs.fragments;
   }
@@ -105,7 +107,8 @@ class CardDataMovementDomain {
 public:
   static mlir::FailureOr<CardDataMovementDomain>
   create(const CardProgramAnalysis &program, CardId cardId,
-         const analysis::LogicalShardTrial &trial,
+         const SpatialAssignment &spatial,
+         const analysis::ExactDemandProof &demand,
          const CoupledRegionDomain &coupledDomain,
          const CoupledRegionAssignment &coupledAssignment,
          const CardTemporalDomain &temporalDomain,
@@ -135,6 +138,7 @@ private:
 
   struct ReductionDomain {
     StructuredDAGNodeID node = 0;
+    ReductionGroupId group;
     unsigned resultIndex = 0;
     TileId mergeTile{0};
     MemLayout mergeLayout = MemLayout::Tensor;
@@ -148,6 +152,7 @@ private:
         demands(std::move(demands)), reductions(std::move(reductions)) {}
 
   DataMovementChoice getFirstChoice(const DemandDomain &domain) const;
+  DataMovementChoice getFirstPeerChoice(const DemandDomain &domain) const;
   mlir::FailureOr<std::optional<DataMovementChoice>>
   getNextChoice(const DemandDomain &domain,
                 const DataMovementChoice &choice) const;

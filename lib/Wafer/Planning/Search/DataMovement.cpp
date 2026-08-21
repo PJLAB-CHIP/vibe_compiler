@@ -5,8 +5,6 @@
 #include "Wafer/Planning/Search/SimpleRoute.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.h"
-#include "Wafer/Planning/PhysicalDataflow/StructuredDAGEdgeDemandPlan.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -31,15 +29,6 @@ uint64_t saturatingMultiply(uint64_t lhs, uint64_t rhs) {
              : static_cast<uint64_t>(product);
 }
 
-const analysis::LogicalNodeTrial *
-findNodeTrial(const analysis::LogicalShardTrial &trial,
-              StructuredDAGNodeID node) {
-  auto found = llvm::find_if(trial.nodes, [&](const auto &candidate) {
-    return candidate.node == node;
-  });
-  return found == trial.nodes.end() ? nullptr : &*found;
-}
-
 const CoupledRegionGroup *findGroup(const CoupledRegionAssignment &assignment,
                                     StructuredDAGNodeID node, TileId tile) {
   auto found = llvm::find_if(assignment.groups, [&](const auto &group) {
@@ -60,83 +49,72 @@ findLayout(const CardPhysicalRepresentationAssignment &assignment, TileId tile,
              : std::optional<MemLayout>(found->layout);
 }
 
-llvm::SmallVector<TileId, 16>
-getNodeTiles(const analysis::LogicalNodeTrial &trial) {
-  llvm::SmallVector<TileId, 16> result;
-  for (const analysis::LogicalExecutionShard &shard : trial.executionShards)
-    result.push_back(shard.tile);
-  llvm::sort(result, [](TileId lhs, TileId rhs) {
-    return lhs.getValue() < rhs.getValue();
-  });
-  return result;
-}
-
-mlir::FailureOr<StructuredDAGEdgeDemandPlan>
-getDemandPlan(const CardProgramAnalysis &program,
-              const analysis::LogicalShardTrial &trial,
-              std::string *failureReason) {
-  StructuredDAGEdgeDemandPlan result;
-  StructuredDAGExactDemandQuery query(program.dag, program.epoch);
-  for (const StructuredDAGEdge &edge : program.dag.getEdges()) {
-    const analysis::LogicalNodeTrial *producer =
-        findNodeTrial(trial, edge.producer);
-    const analysis::LogicalNodeTrial *consumer =
-        findNodeTrial(trial, edge.consumer);
-    if (!producer || !consumer)
-      return mlir::failure();
-    StructuredDAGNodePlacement producerPlacement{edge.producer,
-                                                 {},
-                                                 getNodeTiles(*producer),
-                                                 producer->reductionMergeTile};
-    StructuredDAGNodePlacement consumerPlacement{edge.consumer,
-                                                 {},
-                                                 getNodeTiles(*consumer),
-                                                 consumer->reductionMergeTile};
-    analysis::ExactDemandResult demand = query.query(edge.id, trial);
-    if (demand.status == analysis::ExactDemandStatus::Satisfied) {
-      if (mlir::failed(assembleStructuredDAGEdgeDemandPlan(
-              program.dag, edge, producerPlacement, consumerPlacement, trial,
-              demand, &result, failureReason)))
-        return mlir::failure();
-      continue;
-    }
-    if (demand.status != analysis::ExactDemandStatus::Satisfied &&
-        !demand.perDestination.empty()) {
-      if (failureReason)
-        *failureReason = demand.detail;
-      return mlir::failure();
-    }
-  }
-  return result;
-}
-
 mlir::FailureOr<llvm::SmallVector<DataMovementFragment, 4>>
-getFragments(const StructuredDAGEdgeDemand &demand,
+getFragments(const analysis::SourceDemand &demand,
+             const analysis::ExactDemandProof &proof,
              mlir::RankedTensorType tensorType, const StructuredDAGEdge &edge,
              MemLayout consumerLayout,
-             const CardPhysicalRepresentationAssignment &representations) {
+             const CardPhysicalRepresentationAssignment &representations,
+             std::string *failureReason) {
   llvm::SmallVector<DataMovementFragment, 4> result;
-  for (const StructuredDAGEdgeProducerShardOwnership &ownership :
-       demand.producerShardOwnership) {
+  const auto *source =
+      std::get_if<analysis::StructuredResultSource>(&demand.source);
+  if (!source) {
+    if (failureReason)
+      *failureReason = "movement source is not a structured result";
+    return mlir::failure();
+  }
+  for (const analysis::OwnerIntersection &ownership :
+       demand.eligibleFinalOwners) {
     std::optional<MemLayout> layout =
         findLayout(representations, ownership.tile, edge.producer,
                    PhysicalValueRole::Result, edge.producerResult);
-    if (!layout)
+    if (!layout) {
+      if (failureReason)
+        *failureReason = "movement owner has no selected result layout";
       return mlir::failure();
-    analysis::IndexSetResult ownerSet{
-        analysis::IndexRelationStatus::Exact, ownership.logicalDomain, {}};
-    auto ownerRectangle = ownerSet.getExactStaticRectangularDomain();
-    if (!ownerRectangle.isExact())
+    }
+    auto finalOwner = llvm::find_if(
+        proof.finalOwners, [&](const analysis::FinalResultOwner &candidate) {
+          return candidate.root == source->root &&
+                 candidate.result == source->result &&
+                 candidate.tile == ownership.tile &&
+                 candidate.shard == ownership.ownerShard &&
+                 candidate.reductionGroup == ownership.reductionGroup;
+        });
+    if (finalOwner == proof.finalOwners.end()) {
+      if (failureReason)
+        *failureReason = "movement intersection has no matching final owner";
       return mlir::failure();
-    mlir::presburger::PresburgerSet intersection =
-        demand.producerDemand.intersect(ownership.logicalDomain);
-    analysis::IndexSetResult exact{
-        analysis::IndexRelationStatus::Exact, intersection, {}};
-    auto rectangles = exact.getExactStaticRectangularDisjuncts();
-    if (!rectangles.isExact())
+    }
+    std::optional<analysis::StaticRectangularIndexSet> ownerRectangle;
+    if (finalOwner->domain.getForm() == analysis::ExactIndexSetForm::BoxUnion &&
+        finalOwner->domain.getBoxes().size() == 1)
+      ownerRectangle = finalOwner->domain.getBoxes().front();
+    if (!ownerRectangle) {
+      if (failureReason)
+        *failureReason = "movement final owner is not one rectangle";
       return mlir::failure();
-    for (const analysis::StaticRectangularIndexSet &rectangle :
-         rectangles.domains) {
+    }
+    llvm::SmallVector<analysis::StaticRectangularIndexSet, 8> rectangles;
+    if (ownership.domain.getForm() == analysis::ExactIndexSetForm::BoxUnion)
+      rectangles.append(ownership.domain.getBoxes().begin(),
+                        ownership.domain.getBoxes().end());
+    if (rectangles.empty() && !ownership.domain.isEmpty()) {
+      analysis::IndexSetResult exact{
+          analysis::IndexRelationStatus::Exact,
+          ownership.domain.getPresburgerSet(), {}};
+      analysis::StaticRectangularIndexSetResult rectangle =
+          exact.getExactStaticRectangularDomain();
+      if (rectangle.isExact())
+        rectangles.push_back(std::move(*rectangle.domain));
+    }
+    if (rectangles.empty() && !ownership.domain.isEmpty()) {
+      if (failureReason)
+        *failureReason = "movement owner intersection is not finite boxes";
+      return mlir::failure();
+    }
+    for (const analysis::StaticRectangularIndexSet &rectangle : rectangles) {
       uint64_t elements = 1;
       for (int64_t size : rectangle.sizes)
         elements = saturatingMultiply(elements, size);
@@ -148,7 +126,11 @@ getFragments(const StructuredDAGEdgeDemand &demand,
                    mlir::dyn_cast<mlir::FloatType>(tensorType.getElementType()))
         elementBits = floating.getWidth();
       else
-        return mlir::failure();
+        {
+          if (failureReason)
+            *failureReason = "movement tensor element type is unsupported";
+          return mlir::failure();
+        }
       uint64_t logicalBits = saturatingMultiply(elements, elementBits);
       auto type = mlir::MemRefType::get(
           rectangle.sizes, tensorType.getElementType(),
@@ -156,8 +138,11 @@ getFragments(const StructuredDAGEdgeDemand &demand,
           MemoryAttr::get(tensorType.getContext(), MemorySpace::SPM,
                           consumerLayout));
       auto physical = analysis::PhysicalLayoutRelation::create(type);
-      if (mlir::failed(physical))
+      if (mlir::failed(physical)) {
+        if (failureReason)
+          *failureReason = "movement fragment has no physical layout";
         return mlir::failure();
+      }
       result.push_back(DataMovementFragment{
           ownership.tile,
           *layout,
@@ -165,8 +150,8 @@ getFragments(const StructuredDAGEdgeDemand &demand,
           tensorType.getElementType(),
           rectangle.offsets,
           rectangle.sizes,
-          ownerRectangle.domain->offsets,
-          ownerRectangle.domain->sizes,
+          ownerRectangle->offsets,
+          ownerRectangle->sizes,
           {},
           logicalBits / 8 + (logicalBits % 8 != 0),
           static_cast<uint64_t>(physical->getPhysicalFootprintBytes()),
@@ -193,7 +178,8 @@ getFragments(const StructuredDAGEdgeDemand &demand,
 
 mlir::FailureOr<CardDataMovementDomain> CardDataMovementDomain::create(
     const CardProgramAnalysis &program, CardId cardId,
-    const analysis::LogicalShardTrial &trial,
+    const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
     const CoupledRegionDomain &coupledDomain,
     const CoupledRegionAssignment &coupledAssignment,
     const CardTemporalDomain &temporalDomain,
@@ -201,122 +187,170 @@ mlir::FailureOr<CardDataMovementDomain> CardDataMovementDomain::create(
     const CardPhysicalRepresentationDomain &representationDomain,
     const CardPhysicalRepresentationAssignment &representationAssignment,
     std::string *failureReason) {
-  if (trial.epoch != program.epoch ||
-      !coupledDomain.contains(coupledAssignment) ||
+  auto fail = [&](llvm::StringRef message)
+      -> mlir::FailureOr<CardDataMovementDomain> {
+    if (failureReason)
+      *failureReason = message.str();
+    return mlir::failure();
+  };
+  mlir::FailureOr<StructuredDemandView> view = StructuredDemandView::create(
+      program.dag, spatial, demand, failureReason);
+  if (mlir::failed(view) || !coupledDomain.contains(coupledAssignment) ||
       !temporalDomain.contains(temporalAssignment) ||
       !representationDomain.contains(representationAssignment))
-    return mlir::failure();
-  auto plan = getDemandPlan(program, trial, failureReason);
-  if (mlir::failed(plan))
-    return mlir::failure();
+    return fail("movement domain received an inconsistent upstream plan");
   llvm::SmallVector<DemandDomain, 32> demands;
-  for (const StructuredDAGEdgeDemand &demand : plan->demands) {
-    const StructuredDAGEdge *edge = program.dag.getEdge(demand.edge);
+  for (const StructuredDAGEdge &edgeValue : program.dag.getEdges()) {
+    const StructuredDAGEdge *edge = &edgeValue;
     const StructuredDAGNode *producer =
-        edge ? program.dag.getNode(edge->producer) : nullptr;
-    if (!edge || !producer || !producer->operation)
-      return mlir::failure();
-    std::optional<MemLayout> consumerLayout = findLayout(
-        representationAssignment, demand.destinationTile, edge->consumer,
-        PhysicalValueRole::Operand, edge->consumerOperand);
+        program.dag.getNode(edge->producer);
+    const SemanticRootKey *producerRoot = view->getRoot(edge->producer);
+    const analysis::DependencyDemand *dependency =
+        view->getDependency(edge->consumer, edge->consumerOperand);
+    if (!producer || !producer->operation || !producerRoot || !dependency)
+      return fail("movement edge has no structured demand identity");
     auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(
         producer->operation->getResult(edge->producerResult).getType());
-    if (!consumerLayout || !tensor)
-      return mlir::failure();
-    auto fragments = getFragments(demand, tensor, *edge, *consumerLayout,
-                                  representationAssignment);
-    if (mlir::failed(fragments) || fragments->empty())
-      return mlir::failure();
-    const CoupledRegionGroup *producerGroup =
-        findGroup(coupledAssignment, edge->producer, demand.destinationTile);
-    const CoupledRegionGroup *consumerGroup =
-        findGroup(coupledAssignment, edge->consumer, demand.destinationTile);
-    bool allLocal = llvm::all_of(*fragments, [&](const auto &fragment) {
-      return fragment.sourceTile == demand.destinationTile;
-    });
-    bool retained = allLocal && producerGroup && consumerGroup &&
-                    producerGroup == consumerGroup;
-    bool peer = llvm::any_of(*fragments, [&](const auto &fragment) {
-      return fragment.sourceTile != demand.destinationTile;
-    });
-    if (peer)
-      for (const DataMovementFragment &fragment : *fragments)
-        if (fragment.sourceTile != demand.destinationTile &&
-            !getFirstSimpleRoute(program.topology, cardId, fragment.sourceTile,
-                                 demand.destinationTile))
-          return mlir::failure();
-    llvm::SmallVector<TileId, 4> equivalentDestinations;
-    for (const StructuredDAGEdgeDemand &other : plan->demands)
-      if (other.edge == demand.edge &&
-          other.producerDemand.isEqual(demand.producerDemand))
-        equivalentDestinations.push_back(other.destinationTile);
-    llvm::sort(equivalentDestinations, [](TileId lhs, TileId rhs) {
-      return lhs.getValue() < rhs.getValue();
-    });
-    llvm::SmallVector<uint32_t, 4> invariantIterators;
-    const StructuredDAGNode *consumer = program.dag.getNode(edge->consumer);
-    auto linalg =
-        consumer ? mlir::dyn_cast<mlir::linalg::LinalgOp>(consumer->operation)
-                 : mlir::linalg::LinalgOp{};
-    if (linalg && edge->consumerOperand < linalg->getNumOperands()) {
-      mlir::AffineMap map = linalg.getMatchingIndexingMap(
-          &linalg->getOpOperand(edge->consumerOperand));
-      llvm::DenseSet<unsigned> used;
-      for (mlir::AffineExpr expression : map.getResults())
-        expression.walk([&](mlir::AffineExpr nested) {
-          if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(nested))
-            used.insert(dimension.getPosition());
-        });
-      for (unsigned dimension = 0; dimension < map.getNumDims(); ++dimension)
-        if (!used.contains(dimension))
-          invariantIterators.push_back(dimension);
+    if (!tensor)
+      return fail("movement edge producer result is not a tensor");
+    for (const analysis::DestinationDemand &destination :
+         dependency->perDestination) {
+      auto source = llvm::find_if(
+          destination.sources, [&](const analysis::SourceDemand &candidate) {
+            const auto *structured =
+                std::get_if<analysis::StructuredResultSource>(
+                    &candidate.source);
+            return structured && structured->root == *producerRoot &&
+                   structured->result == edge->producerResult;
+          });
+      if (source == destination.sources.end() ||
+          source->requiredDomain.isEmpty())
+        continue;
+      std::optional<MemLayout> consumerLayout = findLayout(
+          representationAssignment, destination.destinationTile,
+          edge->consumer, PhysicalValueRole::Operand, edge->consumerOperand);
+      if (!consumerLayout)
+        return fail("movement destination has no selected operand layout");
+      auto fragments = getFragments(*source, demand, tensor, *edge,
+                                    *consumerLayout,
+                                    representationAssignment, failureReason);
+      if (mlir::failed(fragments) || fragments->empty()) {
+        if (failureReason && failureReason->empty())
+          *failureReason = "movement source demand has no physical fragments";
+        return mlir::failure();
+      }
+      const CoupledRegionGroup *producerGroup = findGroup(
+          coupledAssignment, edge->producer, destination.destinationTile);
+      const CoupledRegionGroup *consumerGroup = findGroup(
+          coupledAssignment, edge->consumer, destination.destinationTile);
+      bool allLocal = llvm::all_of(*fragments, [&](const auto &fragment) {
+        return fragment.sourceTile == destination.destinationTile;
+      });
+      bool retained = allLocal && producerGroup && consumerGroup &&
+                      producerGroup == consumerGroup;
+      bool peer = llvm::any_of(*fragments, [&](const auto &fragment) {
+        return fragment.sourceTile != destination.destinationTile;
+      });
+      if (peer)
+        for (const DataMovementFragment &fragment : *fragments)
+          if (fragment.sourceTile != destination.destinationTile &&
+              !getFirstSimpleRoute(program.topology, cardId,
+                                   fragment.sourceTile,
+                                   destination.destinationTile))
+            return fail("movement source and destination have no route");
+      llvm::SmallVector<TileId, 4> equivalentDestinations;
+      for (const analysis::DestinationDemand &other :
+           dependency->perDestination) {
+        auto otherSource = llvm::find_if(
+            other.sources, [&](const analysis::SourceDemand &candidate) {
+              const auto *structured =
+                  std::get_if<analysis::StructuredResultSource>(
+                      &candidate.source);
+              return structured && structured->root == *producerRoot &&
+                     structured->result == edge->producerResult;
+            });
+        if (otherSource != other.sources.end() &&
+            otherSource->requiredDomain.getPresburgerSet().isObviouslyEqual(
+                source->requiredDomain.getPresburgerSet()))
+          equivalentDestinations.push_back(other.destinationTile);
+      }
+      llvm::sort(equivalentDestinations, [](TileId lhs, TileId rhs) {
+        return lhs.getValue() < rhs.getValue();
+      });
+      llvm::SmallVector<uint32_t, 4> invariantIterators;
+      const StructuredDAGNode *consumer =
+          program.dag.getNode(edge->consumer);
+      auto linalg = consumer ? mlir::dyn_cast<mlir::linalg::LinalgOp>(
+                                   consumer->operation)
+                             : mlir::linalg::LinalgOp{};
+      if (linalg && edge->consumerOperand < linalg->getNumOperands()) {
+        mlir::AffineMap map = linalg.getMatchingIndexingMap(
+            &linalg->getOpOperand(edge->consumerOperand));
+        llvm::DenseSet<unsigned> used;
+        for (mlir::AffineExpr expression : map.getResults())
+          expression.walk([&](mlir::AffineExpr nested) {
+            if (auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(nested))
+              used.insert(dimension.getPosition());
+          });
+        for (unsigned dimension = 0; dimension < map.getNumDims(); ++dimension)
+          if (!used.contains(dimension))
+            invariantIterators.push_back(dimension);
+      }
+      demands.push_back(DemandDomain{
+          edge->id, destination.destinationTile, *consumerLayout, retained,
+          mlir::isMemoryEffectFree(producer->operation), peer,
+          std::move(*fragments), std::move(equivalentDestinations),
+          std::move(invariantIterators)});
     }
-    demands.push_back(DemandDomain{
-        demand.edge, demand.destinationTile, *consumerLayout, retained,
-        mlir::isMemoryEffectFree(producer->operation), peer,
-        std::move(*fragments), std::move(equivalentDestinations),
-        std::move(invariantIterators)});
   }
   llvm::sort(demands, [](const auto &lhs, const auto &rhs) {
     return std::tuple(lhs.edge, lhs.destinationTile.getValue()) <
            std::tuple(rhs.edge, rhs.destinationTile.getValue());
   });
   llvm::SmallVector<ReductionDomain, 4> reductions;
-  for (const analysis::LogicalNodeTrial &nodeTrial : trial.nodes) {
-    if (!nodeTrial.reductionMergeTile)
-      continue;
-    const StructuredDAGNode *node = program.dag.getNode(nodeTrial.node);
+  for (const analysis::ReductionMergeRequirement &merge :
+       demand.reductionMerges) {
+    std::optional<StructuredDAGNodeID> nodeId;
+    for (const StructuredDAGNode &candidate : program.dag.getNodes()) {
+      const SemanticRootKey *root = view->getRoot(candidate.id);
+      if (root && *root == merge.group.root) {
+        nodeId = candidate.id;
+        break;
+      }
+    }
+    const StructuredDAGNode *node =
+        nodeId ? program.dag.getNode(*nodeId) : nullptr;
     if (!node || !node->operation)
       return mlir::failure();
-    for (unsigned resultIndex = 0;
-         resultIndex < node->operation->getNumResults(); ++resultIndex) {
+    for (const analysis::ReductionResultSlice &mergedResult : merge.results) {
+      const unsigned resultIndex = mergedResult.result;
       auto tensor = mlir::dyn_cast<mlir::RankedTensorType>(
           node->operation->getResult(resultIndex).getType());
       std::optional<MemLayout> selectedMergeLayout =
-          findLayout(representationAssignment, *nodeTrial.reductionMergeTile,
-                     nodeTrial.node, PhysicalValueRole::Result, resultIndex);
-      if (!tensor || !selectedMergeLayout ||
-          nodeTrial.executionShards.empty() ||
-          !nodeTrial.executionShards.front().executionDomain)
+          findLayout(representationAssignment, merge.mergeTile, *nodeId,
+                     PhysicalValueRole::Result, resultIndex);
+      if (!tensor || !selectedMergeLayout || merge.contributions.empty())
         return mlir::failure();
       const MemLayout mergeLayout = *selectedMergeLayout;
       llvm::SmallVector<DataMovementFragment, 8> fragments;
-      for (const analysis::LogicalExecutionShard &execution :
-           nodeTrial.executionShards) {
-        if (!execution.executionDomain)
+      for (const analysis::ReductionContribution &contribution :
+           merge.contributions) {
+        auto partial = llvm::find_if(
+            contribution.results,
+            [&](const analysis::ReductionResultSlice &candidate) {
+              return candidate.result == resultIndex;
+            });
+        if (partial == contribution.results.end())
           return mlir::failure();
-        analysis::IndexSetResult exact{analysis::IndexRelationStatus::Exact,
-                                       *execution.executionDomain,
-                                       {}};
-        auto rectangle = exact.getExactStaticRectangularDomain();
+        analysis::IndexSetResult exact{
+            analysis::IndexRelationStatus::Exact,
+            contribution.iterationDomain.getPresburgerSet(), {}};
+        auto rectangles = exact.getExactStaticRectangularDisjuncts();
         std::optional<MemLayout> sourceLayout =
-            findLayout(representationAssignment, execution.tile, nodeTrial.node,
+            findLayout(representationAssignment, contribution.tile, *nodeId,
                        PhysicalValueRole::Result, resultIndex);
-        if (!rectangle.isExact() || !sourceLayout)
+        if (!rectangles.isExact() || !sourceLayout)
           return mlir::failure();
-        uint64_t elements = 1;
-        for (int64_t size : rectangle.domain->sizes)
-          elements = saturatingMultiply(elements, size);
         unsigned elementBits = 0;
         if (auto integer =
                 mlir::dyn_cast<mlir::IntegerType>(tensor.getElementType()))
@@ -326,43 +360,50 @@ mlir::FailureOr<CardDataMovementDomain> CardDataMovementDomain::create(
           elementBits = floating.getWidth();
         else
           return mlir::failure();
-        auto transportType = mlir::MemRefType::get(
-            rectangle.domain->sizes, tensor.getElementType(),
-            mlir::MemRefLayoutAttrInterface{},
-            MemoryAttr::get(tensor.getContext(), MemorySpace::SPM,
-                            mergeLayout));
-        auto physical = analysis::PhysicalLayoutRelation::create(transportType);
-        if (mlir::failed(physical))
-          return mlir::failure();
-        DataMovementFragment fragment{
-            execution.tile,
-            *sourceLayout,
-            mergeLayout,
-            tensor.getElementType(),
-            rectangle.domain->offsets,
-            rectangle.domain->sizes,
-            rectangle.domain->offsets,
-            rectangle.domain->sizes,
-            llvm::SmallVector<int64_t, 4>(rectangle.domain->sizes.size(), 0),
-            (saturatingMultiply(elements, elementBits) + 7) / 8,
-            static_cast<uint64_t>(physical->getPhysicalFootprintBytes()),
-            {}};
-        if (execution.tile != *nodeTrial.reductionMergeTile) {
-          auto route =
-              getFirstSimpleRoute(program.topology, cardId, execution.tile,
-                                  *nodeTrial.reductionMergeTile);
-          if (!route)
+        for (const analysis::StaticRectangularIndexSet &rectangle :
+             rectangles.domains) {
+          uint64_t elements = 1;
+          for (int64_t size : rectangle.sizes)
+            elements = saturatingMultiply(elements, size);
+          auto transportType = mlir::MemRefType::get(
+              rectangle.sizes, tensor.getElementType(),
+              mlir::MemRefLayoutAttrInterface{},
+              MemoryAttr::get(tensor.getContext(), MemorySpace::SPM,
+                              mergeLayout));
+          auto physical =
+              analysis::PhysicalLayoutRelation::create(transportType);
+          if (mlir::failed(physical))
             return mlir::failure();
-          fragment.route = std::move(*route);
+          DataMovementFragment fragment{
+              contribution.tile,
+              *sourceLayout,
+              mergeLayout,
+              tensor.getElementType(),
+              rectangle.offsets,
+              rectangle.sizes,
+              rectangle.offsets,
+              rectangle.sizes,
+              llvm::SmallVector<int64_t, 4>(rectangle.sizes.size(), 0),
+              (saturatingMultiply(elements, elementBits) + 7) / 8,
+              static_cast<uint64_t>(physical->getPhysicalFootprintBytes()),
+              {}};
+          if (contribution.tile != merge.mergeTile) {
+            auto route = getFirstSimpleRoute(program.topology, cardId,
+                                             contribution.tile,
+                                             merge.mergeTile);
+            if (!route)
+              return mlir::failure();
+            fragment.route = std::move(*route);
+          }
+          fragments.push_back(std::move(fragment));
         }
-        fragments.push_back(std::move(fragment));
       }
       llvm::sort(fragments, [](const auto &lhs, const auto &rhs) {
         return lhs.sourceTile.getValue() < rhs.sourceTile.getValue();
       });
-      reductions.push_back(ReductionDomain{nodeTrial.node, resultIndex,
-                                           *nodeTrial.reductionMergeTile,
-                                           mergeLayout, std::move(fragments)});
+      reductions.push_back(ReductionDomain{
+          *nodeId, merge.group, resultIndex, merge.mergeTile, mergeLayout,
+          std::move(fragments)});
     }
   }
   return CardDataMovementDomain(program.topology, cardId, std::move(demands),
@@ -375,6 +416,20 @@ CardDataMovementDomain::getFirstChoice(const DemandDomain &domain) const {
       domain.retained ? DataMovementKind::Retained : DataMovementKind::DDR;
   return DataMovementChoice{
       domain.edge, domain.destinationTile, kind, domain.consumerLayout, {}};
+}
+
+DataMovementChoice
+CardDataMovementDomain::getFirstPeerChoice(const DemandDomain &domain) const {
+  DataMovementChoice result{domain.edge, domain.destinationTile,
+                            DataMovementKind::Peer, domain.consumerLayout,
+                            domain.fragments};
+  for (DataMovementFragment &fragment : result.fragments) {
+    if (fragment.sourceTile == domain.destinationTile)
+      continue;
+    fragment.route = *getFirstSimpleRoute(topology, cardId, fragment.sourceTile,
+                                          domain.destinationTile);
+  }
+  return result;
 }
 
 bool CardDataMovementDomain::contains(const DemandDomain &domain,
@@ -419,18 +474,6 @@ CardDataMovementDomain::getNextChoice(const DemandDomain &domain,
                                       const DataMovementChoice &choice) const {
   if (!contains(domain, choice))
     return mlir::failure();
-  auto firstPeer = [&]() -> DataMovementChoice {
-    DataMovementChoice result{domain.edge, domain.destinationTile,
-                              DataMovementKind::Peer, domain.consumerLayout,
-                              domain.fragments};
-    for (DataMovementFragment &fragment : result.fragments) {
-      if (fragment.sourceTile == domain.destinationTile)
-        continue;
-      fragment.route = *getFirstSimpleRoute(
-          topology, cardId, fragment.sourceTile, domain.destinationTile);
-    }
-    return result;
-  };
   switch (choice.kind) {
   case DataMovementKind::Retained:
     return std::optional<DataMovementChoice>(DataMovementChoice{
@@ -447,11 +490,11 @@ CardDataMovementDomain::getNextChoice(const DemandDomain &domain,
                              domain.consumerLayout,
                              {}});
     if (domain.peer)
-      return std::optional<DataMovementChoice>(firstPeer());
+      return std::optional<DataMovementChoice>(getFirstPeerChoice(domain));
     return std::optional<DataMovementChoice>{};
   case DataMovementKind::Recompute:
     if (domain.peer)
-      return std::optional<DataMovementChoice>(firstPeer());
+      return std::optional<DataMovementChoice>(getFirstPeerChoice(domain));
     return std::optional<DataMovementChoice>{};
   case DataMovementKind::Peer: {
     DataMovementChoice next = choice;
@@ -489,6 +532,7 @@ CardDataMovementAssignment CardDataMovementDomain::getFirstAssignment() const {
     result.edges.push_back(getFirstChoice(demand));
   for (const ReductionDomain &reduction : reductions)
     result.reductions.push_back(ReductionGatherChoice{reduction.node,
+                                                      reduction.group,
                                                       reduction.resultIndex,
                                                       reduction.mergeTile,
                                                       ReductionGatherKind::DDR,
@@ -518,7 +562,7 @@ bool CardDataMovementDomain::contains(
       return false;
   for (auto [domain, choice] :
        llvm::zip_equal(reductions, assignment.reductions)) {
-    if (choice.node != domain.node ||
+    if (choice.node != domain.node || choice.group != domain.group ||
         choice.resultIndex != domain.resultIndex ||
         choice.mergeTile != domain.mergeTile ||
         choice.mergeLayout != domain.mergeLayout)

@@ -10,7 +10,8 @@ mlir::FailureOr<CardSingleRootRegionMaterialization>
 materializeCardSingleRootRegions(mlir::ModuleOp tensorProgram,
                                  const CardProgramAnalysis &program,
                                  CardId cardId,
-                                 const analysis::LogicalShardTrial &trial,
+                                 const SpatialAssignment &spatial,
+                                 const analysis::ExactDemandProof &demand,
                                  std::string *failureReason) {
   auto fail = [&](llvm::StringRef message)
       -> mlir::FailureOr<CardSingleRootRegionMaterialization> {
@@ -18,44 +19,36 @@ materializeCardSingleRootRegions(mlir::ModuleOp tensorProgram,
       *failureReason = message.str();
     return mlir::failure();
   };
-  if (!tensorProgram || trial.epoch != program.epoch)
-    return fail("single-root region trial belongs to another IR epoch");
-  if (trial.nodes.size() != program.dag.getNodes().size())
-    return fail("single-root region trial does not cover every DAG node");
+  mlir::FailureOr<StructuredDemandView> view = StructuredDemandView::create(
+      program.dag, spatial, demand, failureReason);
+  if (!tensorProgram || mlir::failed(view))
+    return fail("single-root region requires closed spatial demand");
 
   llvm::SmallVector<StructuredNodeIterationShard, 32> shards;
   for (const StructuredDAGNode &node : program.dag.getNodes()) {
-    auto nodeTrial = llvm::find_if(
-        trial.nodes, [&](const analysis::LogicalNodeTrial &candidate) {
-          return candidate.node == node.id;
-        });
-    if (nodeTrial == trial.nodes.end() || nodeTrial->executionShards.empty())
-      return fail("single-root region trial omitted one node execution domain");
-    const bool partialReduction = llvm::any_of(
-        nodeTrial->bindings, [](const analysis::LogicalTileBinding &binding) {
-          return binding.role ==
-                 analysis::TileRole::PartialReductionContribution;
-        });
-    if (partialReduction != nodeTrial->reductionMergeTile.has_value())
-      return fail("single-root reduction merge ownership is inconsistent");
-    for (const analysis::LogicalExecutionShard &execution :
-         nodeTrial->executionShards) {
-      if (!execution.executionDomain)
-        return fail("single-root region shard has no exact execution domain");
-      analysis::StaticRectangularIndexSetResult rectangle =
-          analysis::IndexSetResult{analysis::IndexRelationStatus::Exact,
-                                   *execution.executionDomain,
-                                   {}}
-              .getExactStaticRectangularDomain();
-      if (!rectangle.isExact() || !rectangle.domain)
-        return fail("single-root execution domain is not one exact rectangle");
-      shards.push_back(StructuredNodeIterationShard{
-          node.id, execution.tile, std::move(rectangle.domain->offsets),
-          std::move(rectangle.domain->sizes),
-          partialReduction
-              ? StructuredNodeIterationShardRole::PartialReductionContribution
-              : StructuredNodeIterationShardRole::Complete,
-          nodeTrial->reductionMergeTile});
+    const NodeExecutionPartition *partition = view->getNode(node.id);
+    const SemanticRootKey *root = view->getRoot(node.id);
+    if (!partition || !root || partition->shards.empty())
+      return fail("single-root region omitted one node execution domain");
+    for (const ExecutionShard &execution : partition->shards) {
+      StructuredNodeIterationShard shard;
+      shard.structuredNodeId = node.id;
+      shard.tile = execution.tile;
+      for (const IteratorInterval &interval : execution.iterationDomain) {
+        shard.offsets.push_back(interval.offset);
+        shard.sizes.push_back(interval.size);
+      }
+      for (const analysis::ReductionMergeRequirement &merge :
+           demand.reductionMerges) {
+        if (merge.group.root != *root ||
+            !llvm::any_of(merge.contributions,
+                          [&](const analysis::ReductionContribution &entry) {
+                            return entry.shard == execution.shard;
+                          }))
+          continue;
+        shard.reductionGroups.push_back({merge.group, merge.mergeTile});
+      }
+      shards.push_back(std::move(shard));
     }
   }
 

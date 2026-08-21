@@ -4,6 +4,7 @@
 
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
 
 namespace wafer::compiler::detail {
 
@@ -12,14 +13,15 @@ struct CardSingleRootRegionMaterialization {
   StructuredMaterializationRelations relations;
 };
 
-/// Applies one exact-demand-satisfied logical shard trial to actual
+/// Applies one exact-demand-satisfied spatial assignment to actual
 /// single-root Card/Tile IR. This function performs no enumeration or
 /// selection.
 mlir::FailureOr<CardSingleRootRegionMaterialization>
 materializeCardSingleRootRegions(mlir::ModuleOp tensorProgram,
                                  const CardProgramAnalysis &program,
                                  CardId cardId,
-                                 const analysis::LogicalShardTrial &trial,
+                                 const SpatialAssignment &spatial,
+                                 const analysis::ExactDemandProof &demand,
                                  std::string *failureReason = nullptr);
 
 } // namespace wafer::compiler::detail

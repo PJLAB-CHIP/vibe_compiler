@@ -681,7 +681,9 @@ Pipeline position:
   `SpatialAssignment`、`ExactDemandProof`、per-output-piece merge和typed failure API替换旧trial/role/epoch/merge-bool接口；唯一
   operand-level反向传播覆盖reduction、broadcast、affine window及stride/dilation、strided slice/view、multi-piece、multi-result、
   DPS init、program input和multi-operand pure tensor graph；production supported relation不进入无界generic Presburger proof；
-  attention-demand-integration、baseline、physical consumers、analysis invalidation、fresh source-to-package witness和donor能力矩阵闭合。
+  baseline、physical consumers、analysis invalidation、fresh source-to-package witness和donor能力矩阵闭合。coupled attention在本项
+  通过同一typed extension seam稳定返回unsupported，由后继attention-demand-integration补齐Q/K/V/mask contribution/merge，
+  不反向阻塞ordinary exact-demand边界完成。
 ```
 
 ### A-1 专项调研与现状审计
@@ -697,7 +699,7 @@ donor提交。调研结论不是照搬其它编译器的数据结构，而是用
   producer处停止”的结构；它没有为每条edge先做一遍chain walk、再做第二遍operand reconstruction。
 - MLIR Presburger relation能够表达union/intersection/subtraction和存在量化，但接口可表达不等于任意大关系操作都适合作为production
   hot path。current rectangular fast path及finite-piece constructors属于应保留能力；无法在操作前给出work上界的generic equality、
-  subset或subtraction只能作小域oracle或返回typed resource exhaustion。
+  subset或subtraction只能作明确有界的穷举oracle或返回typed resource exhaustion。
 - 两个成熟实现都把unsupported indexing作为明确结果，不用默认identity、bounding box或空集合继续；known-empty则是有效的精确结果。
   因此current exact-empty branch测试必须迁移，`unsupported`与empty不得合并。
 
@@ -924,7 +926,7 @@ RelationForm
   BoundedAffineImage     // bounded iterator box经affine map所得集合
   RowMajorReshape        // collapse/expand的row-major interval correspondence
   Piecewise              // pad/insert/slice/tail的有限互斥pieces
-  GeneralPresburger      // 仅作tiny oracle或显式unsupported/indeterminate出口
+  GeneralPresburger      // 仅作有界穷举oracle或显式unsupported/indeterminate出口
 
 SetForm
   BoxUnion
@@ -937,7 +939,7 @@ SetForm
 normal form不是第二份语义或跨pass side table；它与Presburger对象同属一个query-local typed value，并说明该对象是通过哪个
 exact constructor得到的。构造、composition、image、union和intersection只有在能证明新normal form时才传播它；否则降为
 `GeneralPresburger`。production `none`与`search`对声明支持的source semantics必须始终留在前四类，不允许降级后无界调用
-generic equality来碰运气。`GeneralPresburger`只用于small independent oracle核对前四类结果，或在source真正超出current
+generic equality来碰运气。`GeneralPresburger`只用于有界independent oracle核对前四类结果，或在source真正超出current
 typed relation语言时返回`unsupported`；若是piece/work增长超过统一compiler resource limit，则返回typed
 `indeterminate(resource exhaustion)`，不能删placement。
 
@@ -974,9 +976,10 @@ Linalg consumer优先从仓库pinned `mlir::linalg::LinalgOp`的`getIndexingMaps
 读取operand、DPS与tile relation。pinned MLIR的`TilingInterface`描述tile materialization机制和result/operand tile映射，但明确不判断
 profitability，也不能为所有pure tensor op返回任意exact set relation；因此它不能被当作Q50.A的完整relation接口。对标准
 `ViewLike`/`Subset`等接口仍无法表达的multi-operand tensor transform，新增的唯一Wafer扩展必须是窄
-`TensorIndexingOpInterface`：按具体result和operand返回exact result-to-operand relation，并列出该result的data-carrying
-operands。`tensor.expand_shape`、`collapse_shape`、`extract_slice`、`insert_slice`、`pad`和`cast`通过external model实现；
-query和winner materializer都消费同一typed result，不再各自维护`TypeSwitch`或operation-name matcher。
+`TensorIndexingOpInterface`：按具体result列出transform kind、data-carrying operands、source/destination role及static
+offset/stride参数；analysis从这份source-owned description构造有界exact relation。`tensor.expand_shape`、`collapse_shape`、
+`extract_slice`、`insert_slice`、`pad`和`cast`通过external model实现；query和winner reconstruction都消费同一typed
+description，不再各自维护concrete-op `TypeSwitch`、operation-name matcher或第二次support-chain walk。
 
 relation graph构造本身为`O(V+E)`次interface查询，加上每条edge一次normal-form relation construction；assignment-specific复杂度
 使用上节`L/U_e/P/O`表达。所有piece乘积在执行前受统一work limit约束；算法不逐tensor元素枚举，也不随16个Tile重复构造relation
@@ -1278,17 +1281,17 @@ donor witness逐项处置：
 | ownership hole/unique overlap返回`ProvenLogicalInfeasible` | 改为`InvalidSpatialAssignment` contract negative；production Q49.P/Q50.B domain test证明不会生成这些值 |
 | ambiguous producer chain unsupported | 删除旧预期；同producer多路径应exact union。真正缺interface/effect crossing才是`UnsupportedDemandSemantics` |
 | cross-borrow epoch与in-place fingerprint mutation | 替换为真实AnalysisManager preserve/invalidate tests及compile-time session-close API test |
-| Presburger exhaustion、16 large rectangles、balanced remainder | 保留并扩展为pre-operation work-limit分类、normal-form observer和tiny generic oracle；默认instrumentation关闭 |
+| Presburger exhaustion、16 large rectangles、balanced remainder | 保留并扩展为pre-operation work-limit分类、normal-form observer和有界generic oracle；默认instrumentation关闭 |
 | carrier failure metamorphic、equivalent placement determinism、fanout | 保留；再加入hash insertion、Tile input order和parallel completion扰动，proof逐字段一致 |
 | edge strategy partial overlap/different shard axes/transpose/reduction/strided/broadcast | logical部分迁到A query tests，physical fragment/action部分迁到H；旧混合fixture不能继续作为一个test owner |
 | old init/support “no spatial action” | 改为A始终保留logical requirement，H/baseline依据exact-empty/local/DDR事实决定是否生成physical action |
 
 验证按由内到外的六层执行；任何一层失败都不能用更外层偶然成功覆盖：
 
-1. **Relation unit/property**：每个normal-form constructor、composition、image、union/intersection在2–4维小域与independent generic
+1. **Relation unit/property**：每个normal-form constructor、composition、image、union/intersection在2–4维明确有界的oracle域与independent generic
    Presburger逐点oracle等价；unsupported和work limit有typed negative。
 2. **Analysis/query unit**：labeled multi-seed逆拓扑、exact-empty、多路径、program boundary、multi-result/reduction groups与stable order；
-   reference实现独立逐`DemandKey`枚举小图，和共享算法比较完整proof而非只比aggregate demand。
+   reference实现独立逐`DemandKey`枚举有界图，和共享算法比较完整proof而非只比aggregate demand。
 3. **Pass lifetime/API**：read-only preserve复用、mutation后重建、session close后不可query；generic/custom IR parser roundtrip和
    `verify-diagnostics`覆盖新增interface/verifier负例。
 4. **Direct consumers**：Q49.P、Q50.B、C、G、H、F、I、J分别有一个test证明实际读取新field；mock/observer断言旧edge query、
@@ -1307,18 +1310,18 @@ source清理门禁是active tree中下列旧identity零残留（archive文字不
 
 | Current / donor能力 | 终态owner | 必须保留或改正的witness | 退役条件 |
 | --- | --- | --- | --- |
-| `IndexRelation`的affine、broadcast、slice、reshape、insert/pad和finite-piece exact constructors | Q50.A relation analysis | constructor与tiny Presburger oracle extensional equality；大shape不走generic proof | normal-form API和全部直接consumer迁移后删除旧optional pattern/late fallback |
+| `IndexRelation`的affine、broadcast、slice、reshape、insert/pad和finite-piece exact constructors | Q50.A relation analysis | constructor与有界Presburger oracle extensional equality；真实规模shape不走generic proof | normal-form API和全部直接consumer迁移后删除旧optional pattern/late fallback |
 | `StructuredDAGExactDemandQuery::query` per-edge relation/image | Q50.A operand-level `deriveExactDemand` | direct/permuted/reduction/broadcast/init/multi-result/per-destination tests改接唯一operand query | 不再有per-edge chain resolver、edge-local demand cache或第二份coverage结果 |
 | `queryOperand` multi-producer reconstruction | Q50.A operand-level SSA worklist | insert/pad/reshape、多operand、同producer多路径、exact-empty branch、program input/constant | materializer只消费`OperandReconstruction`，不再TypeSwitch或按“是否到达”比较 |
 | `LogicalShardTrial`、`LogicalNodeTrial`、`TileRole`、`IREpoch` | Q50.B `SpatialAssignment` + Q50.A derived proof | multi-axis/tail、replication、analysis invalidation和stable ordering | 所有baseline/search/G–J caller同批迁移；零wrapper、零fingerprint/epoch协议 |
 | node-wide `reductionMergeTile`、`mergeObligation`、partial contribution result owner | Q50.A `ReductionMergeRequirement` + Q50.B per-group placement | M/N/K mixed、two reduction axes、multi-result/coupled、init exactly-once、每组final owner | Q50.C/H/J materializer与cost/schedule消费新要求后删除旧字段和对应测试 |
-| `ReductionSemantics` scalar matcher与`PartialReductionOpInterface` materialization | typed reduction-algebra analysis与winner materializer | supported/unsupported combiner、integer overflow、FP policy、identity/init、interface failure atomicity | query返回typed result；planning不调用materialization，winner不为改destination clone op |
+| `PartialReductionOpInterface`的source-owned partial mechanics | Q50.A per-output contribution requirement与winner materializer | multi-reduction-axis、identity/init exactly-once、interface failure atomicity | Q50.A不增加numeric legality/reassociation gate；planning不调用materialization，winner不为改destination clone op |
 | baseline `CardBaselineConsumerInputs`/`EdgeCarriers`的exact boundary消费 | Q49.P canonical assignment consumer | 五类normal relation、empty destination、support multi-producer、完整Q50.0/source-to-package | baseline无direct-only `StructuredDAGEdgeDemandPlan`、无support rebuild或physical→logical反推 |
 | old direct-only `StructuredDAGEdgeDemandPlan`和更早balanced single-axis demand planner | 无；能力并入上述owners | direct SSA、stable per-Tile demand和relation reuse保留为新API测试 | current callers与独有test witness均迁移后删除source/header/test，不以未进CMake判废 |
 
 实现按下面顺序原位替换，不建立新旧双reader或compatibility wrapper：
 
-1. 在analysis library内先补`TensorIndexingOpInterface` external models、typed reduction algebra及construction-aware
+1. 在analysis library内先补`TensorIndexingOpInterface` external models、typed partial-reduction mechanics及construction-aware
    `IndexRelation`；现有API在这一提交内只增加可复用能力，不切换pipeline。
 2. 一个协调提交同时替换`LogicalShardTrial`/`TileRole`/`IREpoch`与所有baseline、Q50.B及G–J direct consumers，建立
    func-scoped relation analysis、`SpatialAssignment`和`ExactDemandProof`；编译树中间不能同时存在两套current合同。
@@ -1333,8 +1336,8 @@ source清理门禁是active tree中下列旧identity零残留（archive文字不
 
 #### 输入、结果与不变量
 
-算法只读同一immutable TensorProgram epoch、Q50.A logical shard trial、structured node/result identity、每个node在每个Tile上的
-exact execution domain、每个producer result的exact ownership和已经关闭的temporal coordinate。查询产生三类短生命周期typed
+算法只读同一immutable TensorProgram、Q50.B `SpatialAssignment`、Q50.A `ExactDemandProof`、structured node/result identity和
+已经关闭的temporal coordinate；execution domain、final ownership和operand demand不再由Q49.P复制或恢复。查询产生三类短生命周期typed
 结果：
 
 - `TileRootDemand`：一个structured root、semantic Tile及其exact execution domain；
@@ -1475,8 +1478,9 @@ lowering当资源query。
    保留baseline-only修补分支。
 4. 同批删除`buildBaselineRegionSource`、两套support rebuild、empty/destination补丁、post-hoc root closure/splitter及只覆盖这些
    路径的statistics/tests；旧SPM capacity probe API不恢复。
-5. 每种admitted consumer input reconstruction用tiny static shape穷举需求子集，比较full evaluation与partial reconstruction；组合测试覆盖
-   chain、diamond、fanout、multi-producer `insert_slice`、Peer/RegionCut混合、multi-result、empty branch、nonrectangular pieces、
+5. 每种admitted consumer input reconstruction用明确标注的有界static shape穷举需求子集，比较full evaluation与partial reconstruction；
+   同一reconstruction另有真实规模整除/非整除正例。组合测试覆盖chain、diamond、fanout、multi-producer `insert_slice`、
+   Peer/RegionCut混合、multi-result、empty branch、nonrectangular pieces、
    reduction temporal wave和unsupported atomic failure。
 6. 显式测试计数证明relation construction按semantic support edge计数、每个非空`(value, Tile)`只处理一次、16 Tile没有完整DAG
    重复walk、planning CardModule/Q50.0均为零、selected CardModule/Q50.0各一次。这些计数只在显式测试sink建立，普通编译不创建
@@ -2515,10 +2519,10 @@ exact domain、structured-result stop boundary、exact-empty path或partial merg
 slice求producer tile，是actual transformation mechanism；其公开合同也说明multiple uses当前可能多次tile/clone同一producer。因此
 Q50.C不能把通用backward slice或greedy tile-and-fuse当成correctness owner，只能把它们作为A proof已经决定边界后的actual builder。
 
-current实现的责任混装进一步证明必须拆分：`SingleRootRegion`仍接`LogicalShardTrial`并返回一整个cloned Module；
-`RootRegionEmitter`扫描完整function、给roots做union-find、递归抓operand/forward closure、创建implicit DDR stages、peer movement event
-DAG和region order；`ConsumerInputReconstruction`再次TypeSwitch检查support kind、逐step `builder.clone`并原位改consumer operand。
-这些动作分别属于A、C、D、H、J和outer transaction，不能继续留在一个“root emitter”里。
+Q50.A迁移已经让single/coupled/current materializers消费`SpatialAssignment + ExactDemandProof`，删除`LogicalShardTrial`、第二次
+support-chain walk和concrete-op `TypeSwitch`；`ConsumerInputReconstruction`按同一`TensorIndexingOpInterface` description验证并clone
+selected steps。仍待Q50.C收口的是`RootRegionEmitter`扫描完整function、root union/closure、implicit DDR stage、peer event与region order等
+跨层职责；这些动作分别属于C、D、H、J和outer transaction，不能继续由一个root emitter长期拥有。
 
 `RootRegionWork`是纯derived value，不是Q51坐标：
 
@@ -2788,12 +2792,12 @@ builder，不能替planning决定duplicate/share。MLIR One-Shot Bufferize也先
 stored value与direct nested value要先成为typed plan，而不能等buffer lowering按当前use临时决定。XLA把fusion限制在独立fusion
 pipeline，IREE也把dispatch formation作为明确phase；二者都没有把fusion作为任意movement action的一个枚举标签。
 
-current实现恰好违反这些边界：`CoupledRegionDomain`只保存group和`fusableEdges/forbiddenInternalEdges`二值矩阵，逐edge重新
-`traceProducerToConsumerChain`并一律排除non-local/partial；`CardDataMovementDomain`再以Retained/Refetch/Recompute反向决定group
-内部行为；`materializeCardCoupledRegions`同时接temporal、representation、implementation和movement assignment并返回整个cloned
-Module；`ProducerTileFusion`则递归处理所有遇到的slice，以operation pointer、block、type和offset近似共享，并在部分reshape路径
-隐式assemble full producer。需要迁移的是exact slice composition、DPS init rebasing、insert-slice window、fanout reuse和observable
-result mechanics，不是这套跨层API和默认递归策略。
+Q50.A迁移已经删除逐edge `traceProducerToConsumerChain`；current coupled materializer用共享`StructuredDAGAnalysis`的typed edge
+adjacency判断group sinks，input reconstruction读取同一proof。仍待D收口的是`CoupledRegionDomain`只保存group及
+`fusableEdges/forbiddenInternalEdges`二值矩阵、`CardDataMovementDomain`以Retained/Refetch/Recompute反向决定group内部行为，以及
+`materializeCardCoupledRegions`同时接temporal、representation、implementation和movement assignment并返回整个cloned Module；
+`ProducerTileFusion`仍递归处理slice并可能隐式assemble full producer。需要迁移的是exact slice composition、DPS init rebasing、
+insert-slice window、fanout reuse和observable result mechanics，不是这套跨层API和默认递归策略。
 
 `Retained / Coupled / Recompute`也不是同一维度的三个互斥action：前两者混合描述execution nesting与value delivery，recompute描述
 额外执行次数。终态把region membership、execution instance和use binding拆成三个正交对象：

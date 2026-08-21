@@ -166,9 +166,6 @@ materializeSelectedSourceStages(SelectedEdgeLoweringState &state) {
           if (fragment.sourceTile == currentTile)
             appendSourceDomain(mapped.producer, fragment.offsets,
                                fragment.sizes);
-      } else if (mapped.strategy.sourceTile == currentTile) {
-        appendSourceDomain(mapped.producer, mapped.strategy.producerOffsets,
-                           mapped.strategy.producerSizes);
       }
     }
     llvm::sort(sourceOnlyDomains,
@@ -335,6 +332,25 @@ materializeSelectedConsumerStages(SelectedEdgeLoweringState &state) {
           return mlir::failure();
         deferredRegionCuts.push_back(&incoming);
       }
+      const bool hasSelectedOutgoing =
+          llvm::any_of(mappedStrategies, [&](const MappedStrategy &outgoing) {
+            if (outgoing.producer != mapped.consumer)
+              return false;
+            if (outgoing.strategy.action == SpatialEdgeAction::PeerFragments)
+              return llvm::any_of(outgoing.strategy.fragments,
+                                  [&](const SpatialEdgeFragment &fragment) {
+                                    return fragment.sourceTile == currentTile;
+                                  });
+            return outgoing.strategy.sourceTile == currentTile;
+          });
+      // A terminal selected consumer is already owned by the ordinary output
+      // traversal after all incoming DDR cuts have rebound its operands. Let
+      // that traversal write the caller-visible destination directly. A
+      // private consumer stage here would immediately reload the same value
+      // only to copy it to the output boundary.
+      if (!hasSelectedOutgoing &&
+          isInSelectedOutputClosure(scope, outputShards, mapped.consumer))
+        continue;
       // Materialize the independent op-wave directly into its compiler-owned
       // DDR stage. Building a compact traversal value first would still need
       // to assemble the complete spatial shard in a tensor.empty, then copy

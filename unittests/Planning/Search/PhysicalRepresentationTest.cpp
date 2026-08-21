@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/PhysicalDataflow/PhysicalLayoutRelation.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
@@ -60,7 +61,8 @@ module {
 
 struct Prepared {
   std::unique_ptr<CardProgramAnalysis> program;
-  analysis::LogicalShardTrial trial;
+  SpatialAssignment spatial;
+  analysis::ExactDemandProof demand;
   CoupledRegionDomain coupledDomain;
   CoupledRegionAssignment coupledAssignment;
   CardTemporalDomain temporalDomain;
@@ -79,14 +81,13 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module,
   StructuredDAGNodePlacement placement{
       node.id,
       llvm::SmallVector<uint32_t, 4>(tiling.getLoopIteratorTypes().size(), 1),
-      {TileId(0)},
-      std::nullopt};
-  analysis::IREpoch epoch = analysis::IREpoch::mint();
-  auto trial = buildLogicalShardTrial(*dag, llvm::ArrayRef(&placement, 1),
-                                      epoch, failureReason);
-  if (mlir::failed(trial))
+      {TileId(0)}};
+  auto spatialDemand = wafer::test::buildTestSpatialDemand(
+      *dag, llvm::ArrayRef(&placement, 1), failureReason);
+  if (mlir::failed(spatialDemand))
     return mlir::failure();
-  auto coupled = CoupledRegionDomain::create(*dag, *trial, failureReason);
+  auto coupled = CoupledRegionDomain::create(
+      *dag, spatialDemand->spatial, spatialDemand->demand, failureReason);
   auto temporal = CardTemporalDomain::create(
       *dag, llvm::ArrayRef(&placement, 1), failureReason);
   auto topology = TargetTopology::create(module, failureReason);
@@ -104,16 +105,19 @@ mlir::FailureOr<Prepared> prepare(mlir::ModuleOp module,
       std::move(*topology), llvm::SmallVector<TileId, 16>{TileId(0)},
       std::move(*dag), std::move(outputDomains),
       llvm::SmallVector<StructuredOperationNodeMapping, 16>{
-          {operation, nodeId}},
-      epoch);
+          {operation, nodeId}});
   auto representation = CardPhysicalRepresentationDomain::create(
-      *program, *trial, *coupled, coupledAssignment, *temporal,
-      temporalAssignment, failureReason);
+      *program, spatialDemand->spatial, spatialDemand->demand, *coupled,
+      coupledAssignment, *temporal, temporalAssignment, failureReason);
   if (mlir::failed(representation))
     return mlir::failure();
-  return Prepared{std::move(program),        std::move(*trial),
-                  std::move(*coupled),       std::move(coupledAssignment),
-                  std::move(*temporal),      std::move(temporalAssignment),
+  return Prepared{std::move(program),
+                  std::move(spatialDemand->spatial),
+                  std::move(spatialDemand->demand),
+                  std::move(*coupled),
+                  std::move(coupledAssignment),
+                  std::move(*temporal),
+                  std::move(temporalAssignment),
                   std::move(*representation)};
 }
 
@@ -185,16 +189,16 @@ TEST(PhysicalRepresentationTest,
   ASSERT_TRUE(prepared->representationDomain.contains(assignment));
 
   auto movementDomain = CardDataMovementDomain::create(
-      *prepared->program, CardId(0), prepared->trial, prepared->coupledDomain,
-      prepared->coupledAssignment, prepared->temporalDomain,
-      prepared->temporalAssignment, prepared->representationDomain, assignment,
-      &failureReason);
+      *prepared->program, CardId(0), prepared->spatial, prepared->demand,
+      prepared->coupledDomain, prepared->coupledAssignment,
+      prepared->temporalDomain, prepared->temporalAssignment,
+      prepared->representationDomain, assignment, &failureReason);
   ASSERT_TRUE(mlir::succeeded(movementDomain)) << failureReason;
   CardDataMovementAssignment movement = movementDomain->getFirstAssignment();
 
   auto materialized = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
-      prepared->coupledDomain, prepared->coupledAssignment,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand, prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, assignment, *movementDomain, movement,
       &failureReason);
@@ -227,8 +231,8 @@ TEST(PhysicalRepresentationTest,
     return text;
   }();
   auto rejected = materializeCardCoupledRegions(
-      *module, *prepared->program, CardId(0), prepared->trial,
-      prepared->coupledDomain, prepared->coupledAssignment,
+      *module, *prepared->program, CardId(0), prepared->spatial,
+      prepared->demand, prepared->coupledDomain, prepared->coupledAssignment,
       prepared->temporalDomain, prepared->temporalAssignment,
       prepared->representationDomain, malformed, *movementDomain, movement,
       &failureReason);

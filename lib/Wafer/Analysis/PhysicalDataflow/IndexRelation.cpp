@@ -380,6 +380,21 @@ IndexRelationResult IndexRelation::fromAffineMap(
   // An affine map is single-valued by construction; the flattened relation
   // preserves that property.
   result.relation->functionalByConstruction = true;
+  // A fully constant map is also total and in-bounds by construction when
+  // every constant lies inside its corresponding source dimension. This is
+  // especially important for an ordered reduction slice: its rank-zero
+  // iteration domain maps to one source tuple, and re-proving that singleton
+  // fact with generic Presburger subtraction would make compile work scale
+  // with the logical tensor extent.
+  if (llvm::all_of(llvm::zip_equal(map.getResults(), sourceShape),
+                   [](auto values) {
+                     auto [expression, extent] = values;
+                     auto constant =
+                         mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+                     return constant && constant.getValue() >= 0 &&
+                            constant.getValue() < extent;
+                   }))
+    result.relation->totalBoundedAffineMapByConstruction = true;
   // A projected permutation map is a rectangle pattern by construction: the
   // relation is exactly the map, so no equivalence proof is required. The
   // pattern enables the arithmetic rectangular image/preimage fast paths.

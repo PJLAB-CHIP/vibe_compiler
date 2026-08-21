@@ -60,7 +60,6 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/TemporalRegionTraversal.cpp
   WaferTensorProgramToTileRegion/TemporalPartialReductionTraversal.cpp
   WaferTensorProgramToTileRegion/TemporalWaveLoop.cpp
-  WaferTensorProgramToTileRegion/TensorDependencyChain.cpp
   WaferTensorProgramToTileRegion/TileMaterialization.cpp
   WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.cpp
   WaferTensorProgramToTileRegion/WindowedInsertSlice.cpp

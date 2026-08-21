@@ -3,6 +3,8 @@
 #include "ConsumerInputReconstruction.h"
 #include "Internal.h"
 
+#include "Wafer/IR/WaferInterfaces.h"
+
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/STLExtras.h"
@@ -16,61 +18,71 @@ mlir::LogicalResult fail(std::string *failureReason, llvm::StringRef message) {
 }
 
 bool matchesOperationKind(const analysis::TensorTransform &step) {
-  switch (step.kind) {
-  case analysis::TensorTransformKind::ExpandShape:
-    return mlir::isa<mlir::tensor::ExpandShapeOp>(step.operation);
-  case analysis::TensorTransformKind::CollapseShape:
-    return mlir::isa<mlir::tensor::CollapseShapeOp>(step.operation);
-  case analysis::TensorTransformKind::ExtractSlice:
-    return mlir::isa<mlir::tensor::ExtractSliceOp>(step.operation);
-  case analysis::TensorTransformKind::InsertSlice:
-    return mlir::isa<mlir::tensor::InsertSliceOp>(step.operation);
-  case analysis::TensorTransformKind::Pad:
-    return mlir::isa<mlir::tensor::PadOp>(step.operation);
-  case analysis::TensorTransformKind::Cast:
-    return mlir::isa<mlir::tensor::CastOp>(step.operation);
+  auto indexing = mlir::dyn_cast_or_null<wafer::WaferTensorIndexingOpInterface>(
+      step.operation);
+  if (!indexing)
+    return false;
+  mlir::FailureOr<wafer::TensorIndexingDescription> description =
+      indexing.getTensorIndexingDescription(step.result);
+  if (mlir::failed(description))
+    return false;
+  switch (description->kind) {
+  case wafer::TensorIndexingTransformKind::ExpandShape:
+    return step.kind == analysis::TensorTransformKind::ExpandShape;
+  case wafer::TensorIndexingTransformKind::CollapseShape:
+    return step.kind == analysis::TensorTransformKind::CollapseShape;
+  case wafer::TensorIndexingTransformKind::ExtractSlice:
+    return step.kind == analysis::TensorTransformKind::ExtractSlice;
+  case wafer::TensorIndexingTransformKind::InsertSlice:
+    return step.kind == analysis::TensorTransformKind::InsertSlice;
+  case wafer::TensorIndexingTransformKind::Pad:
+    return step.kind == analysis::TensorTransformKind::Pad;
+  case wafer::TensorIndexingTransformKind::Cast:
+    return step.kind == analysis::TensorTransformKind::Cast;
   }
-  llvm_unreachable("unknown tensor-operand operation kind");
+  return false;
 }
 
 } // namespace
 
 mlir::LogicalResult reconstructConsumerInput(
     mlir::Operation *consumer, unsigned consumerOperand, TileId currentTile,
-    llvm::ArrayRef<analysis::ConsumerInputDemand> operandDemands,
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
     llvm::ArrayRef<ProducerValue> producerValues, std::string *failureReason) {
   auto grouped = llvm::find_if(
-      operandDemands, [&](const analysis::ConsumerInputDemand &demand) {
-        return demand.consumer == consumer &&
+      operandDemands, [&](const analysis::DependencyDemand &demand) {
+        return demand.consumerOperation == consumer &&
                demand.consumerOperand == consumerOperand;
       });
   if (grouped == operandDemands.end())
     return fail(failureReason,
                 "consumer input dependency has no grouped exact-demand recipe");
-  auto recipe = llvm::find_if(
-      grouped->perDestination,
-      [&](const analysis::ConsumerInputReconstruction &candidate) {
-        return candidate.destinationTile == currentTile;
-      });
-  if (recipe == grouped->perDestination.end() || !recipe->operandDemand)
+  auto recipe =
+      llvm::find_if(grouped->perDestination,
+                    [&](const analysis::DestinationDemand &candidate) {
+                      return candidate.destinationTile == currentTile;
+                    });
+  if (recipe == grouped->perDestination.end())
     return fail(failureReason, "consumer input dependency recipe omitted the "
                                "current destination Tile");
-  if (recipe->steps.empty())
-    return fail(failureReason,
-                "consumer input dependency recipe has no reconstruction step");
 
   mlir::IRMapping mapping;
   mlir::OpBuilder builder(consumer);
-  for (const analysis::ProducerValueRequirement &boundary :
-       recipe->boundaries) {
-    if (!boundary.producer || !boundary.requiredDomain ||
-        boundary.producerResult >= boundary.producer->getNumResults())
+  bool hasStructuredBoundary = false;
+  for (const analysis::SourceDemand &boundary : recipe->sources) {
+    const auto *structured =
+        std::get_if<analysis::StructuredResultSource>(&boundary.source);
+    if (!structured)
+      continue;
+    hasStructuredBoundary = true;
+    if (!structured->operation ||
+        structured->result >= structured->operation->getNumResults())
       return fail(
           failureReason,
           "consumer input reconstruction has a malformed producer boundary");
-    mlir::Value source = boundary.producer->getResult(boundary.producerResult);
+    mlir::Value source = structured->operation->getResult(structured->result);
     mlir::Value replacement;
-    if (boundary.requiredDomain->isIntegerEmpty()) {
+    if (boundary.requiredDomain.isEmpty()) {
       auto type = mlir::dyn_cast<mlir::RankedTensorType>(source.getType());
       if (!type || !type.hasStaticShape())
         return fail(failureReason, "empty producer value requirement requires "
@@ -84,8 +96,8 @@ mlir::LogicalResult reconstructConsumerInput(
     } else {
       auto materialized =
           llvm::find_if(producerValues, [&](const ProducerValue &candidate) {
-            return candidate.producer == boundary.producer &&
-                   candidate.producerResult == boundary.producerResult &&
+            return candidate.producer == structured->operation &&
+                   candidate.producerResult == structured->result &&
                    candidate.consumer == consumer &&
                    candidate.consumerOperand == consumerOperand &&
                    candidate.destinationTile == currentTile;
@@ -107,9 +119,8 @@ mlir::LogicalResult reconstructConsumerInput(
   }
 
   mlir::Operation *previousStep = nullptr;
-  for (const analysis::TensorTransform &step : recipe->steps) {
-    if (!step.operation || !step.outputDemand ||
-        step.result >= step.operation->getNumResults() ||
+  for (const analysis::TensorTransform &step : recipe->reconstruction.steps) {
+    if (!step.operation || step.result >= step.operation->getNumResults() ||
         (previousStep && !previousStep->isBeforeInBlock(step.operation)))
       return fail(failureReason,
                   "consumer input reconstruction is not in stable SSA order");
@@ -125,6 +136,9 @@ mlir::LogicalResult reconstructConsumerInput(
                   "consumer input reconstruction step did not map its result");
     previousStep = step.operation;
   }
+
+  if (!hasStructuredBoundary && recipe->reconstruction.steps.empty())
+    return mlir::success();
 
   mlir::Value replacement =
       mapping.lookupOrNull(consumer->getOperand(consumerOperand));

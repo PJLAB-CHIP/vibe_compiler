@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
 
@@ -76,7 +76,8 @@ public:
 
   static mlir::FailureOr<CoupledRegionDomain>
   create(const StructuredDAGAnalysis &dag,
-         const analysis::LogicalShardTrial &trial,
+         const SpatialAssignment &spatial,
+         const analysis::ExactDemandProof &demand,
          std::string *failureReason = nullptr);
 
   CoupledRegionAssignment getFirstAssignment() const;
@@ -105,7 +106,8 @@ struct CardCoupledRegionMaterialization {
 /// second grouping domain.
 mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
-    CardId cardId, const analysis::LogicalShardTrial &trial,
+    CardId cardId, const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
     const CoupledRegionDomain &domain,
     const CoupledRegionAssignment &assignment,
     const CardTemporalDomain &temporalDomain,
@@ -119,7 +121,8 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
 mlir::FailureOr<CardCoupledRegionMaterialization>
 materializeCardCoupledRegionsWithImplementations(
     mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
-    CardId cardId, const analysis::LogicalShardTrial &trial,
+    CardId cardId, const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
     const CoupledRegionDomain &domain,
     const CoupledRegionAssignment &assignment,
     const CardTemporalDomain &temporalDomain,

@@ -314,7 +314,7 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
                   .getResult();
           preserved.insert(assembled.getDefiningOp());
         }
-        if (mapped.hasProducerToConsumerChain)
+        if (mapped.requiresConsumerInputReconstruction)
           producerValues.push_back(ProducerValue{
               mapped.producer, strategy.producerResult, mapped.consumer,
               strategy.consumerOperand, strategy.destinationTile, assembled});
@@ -325,7 +325,7 @@ materializeSelectedPeerReceives(SelectedEdgeLoweringState &state) {
     llvm::ArrayRef<MappedStrategy *> group(peerOrder.data() + groupBegin,
                                            groupEnd - groupBegin);
     auto supportAnchor = llvm::find_if(group, [&](MappedStrategy *mapped) {
-      return mapped->hasProducerToConsumerChain &&
+      return mapped->requiresConsumerInputReconstruction &&
              mapped->strategy.destinationTile == currentTile;
     });
     if (supportAnchor != group.end() &&

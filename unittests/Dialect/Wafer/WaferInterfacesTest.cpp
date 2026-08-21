@@ -243,6 +243,120 @@ bool hasConstantIntValues(llvm::ArrayRef<mlir::OpFoldResult> values,
   return constants && llvm::equal(*constants, expected);
 }
 
+TEST(WaferInterfacesTest,
+     TensorIndexingExternalModelsExposeStaticSourceSemantics) {
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+                  mlir::tensor::TensorDialect>();
+  wafer::registerWaferCoreDialects(registry);
+  mlir::MLIRContext context(registry);
+  context.loadAllAvailableDialects();
+
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(
+      R"mlir(
+module {
+  func.func @tensor_indexing(%input: tensor<2x1025x128xf16>, %offset: index)
+      -> tensor<2x1025x128xf16> {
+    %zero = arith.constant 0.0 : f16
+    %dest = tensor.empty() : tensor<2x1025x128xf16>
+    %slice = tensor.extract_slice %input[0, 1, 0] [2, 1024, 128]
+        [1, 1, 1] : tensor<2x1025x128xf16> to tensor<2x1024x128xf16>
+    %inserted = tensor.insert_slice %slice into %dest[0, 1, 0]
+        [2, 1024, 128] [1, 1, 1]
+        : tensor<2x1024x128xf16> into tensor<2x1025x128xf16>
+    %collapsed = tensor.collapse_shape %slice [[0, 1], [2]]
+        : tensor<2x1024x128xf16> into tensor<2048x128xf16>
+    %expanded = tensor.expand_shape %collapsed [[0, 1], [2]]
+        output_shape [2, 1024, 128]
+        : tensor<2048x128xf16> into tensor<2x1024x128xf16>
+    %padded = tensor.pad %expanded low[0, 1, 0] high[0, 0, 0] {
+      ^bb0(%batch: index, %sequence: index, %feature: index):
+        tensor.yield %zero : f16
+    } : tensor<2x1024x128xf16> to tensor<2x1025x128xf16>
+    %cast = tensor.cast %padded
+        : tensor<2x1025x128xf16> to tensor<?x1025x128xf16>
+    %dynamic = tensor.extract_slice %input[0, %offset, 0]
+        [2, 1024, 128] [1, 1, 1]
+        : tensor<2x1025x128xf16> to tensor<2x1024x128xf16>
+    return %inserted : tensor<2x1025x128xf16>
+  }
+}
+)mlir",
+      mlir::ParserConfig(&context));
+  ASSERT_TRUE(module);
+  ASSERT_TRUE(mlir::succeeded(mlir::verify(*module)));
+
+  auto describe = [](mlir::Operation *operation) {
+    auto indexing =
+        mlir::dyn_cast<wafer::WaferTensorIndexingOpInterface>(operation);
+    if (!indexing)
+      return mlir::FailureOr<wafer::TensorIndexingDescription>(mlir::failure());
+    return indexing.getTensorIndexingDescription(0);
+  };
+
+  auto insert = findSingleOp<mlir::tensor::InsertSliceOp>(*module);
+  auto insertDescription = describe(insert);
+  ASSERT_TRUE(mlir::succeeded(insertDescription));
+  EXPECT_EQ(insertDescription->kind,
+            wafer::TensorIndexingTransformKind::InsertSlice);
+  ASSERT_EQ(insertDescription->operands.size(), 2u);
+  EXPECT_EQ(insertDescription->operands[0].role,
+            wafer::TensorIndexingOperandRole::Source);
+  EXPECT_EQ(insertDescription->operands[1].role,
+            wafer::TensorIndexingOperandRole::Destination);
+  EXPECT_TRUE(llvm::equal(insertDescription->operands[0].offsets,
+                          llvm::ArrayRef<int64_t>{0, 1, 0}));
+  EXPECT_TRUE(llvm::equal(insertDescription->operands[0].strides,
+                          llvm::ArrayRef<int64_t>{1, 1, 1}));
+
+  auto collapse = findSingleOp<mlir::tensor::CollapseShapeOp>(*module);
+  auto expand = findSingleOp<mlir::tensor::ExpandShapeOp>(*module);
+  auto pad = findSingleOp<mlir::tensor::PadOp>(*module);
+  auto cast = findSingleOp<mlir::tensor::CastOp>(*module);
+  auto collapseDescription = describe(collapse);
+  auto expandDescription = describe(expand);
+  auto castDescription = describe(cast);
+  ASSERT_TRUE(mlir::succeeded(collapseDescription));
+  ASSERT_TRUE(mlir::succeeded(expandDescription));
+  ASSERT_TRUE(mlir::succeeded(castDescription));
+  EXPECT_EQ(collapseDescription->kind,
+            wafer::TensorIndexingTransformKind::CollapseShape);
+  EXPECT_EQ(expandDescription->kind,
+            wafer::TensorIndexingTransformKind::ExpandShape);
+  auto padDescription = describe(pad);
+  ASSERT_TRUE(mlir::succeeded(padDescription));
+  EXPECT_EQ(padDescription->kind, wafer::TensorIndexingTransformKind::Pad);
+  EXPECT_TRUE(llvm::equal(padDescription->operands.front().offsets,
+                          llvm::ArrayRef<int64_t>{0, 1, 0}));
+  EXPECT_EQ(castDescription->kind, wafer::TensorIndexingTransformKind::Cast);
+
+  llvm::SmallVector<mlir::tensor::ExtractSliceOp, 2> extracts;
+  module->walk([&](mlir::tensor::ExtractSliceOp extract) {
+    extracts.push_back(extract);
+  });
+  ASSERT_EQ(extracts.size(), 2u);
+  unsigned exactDescriptions = 0;
+  unsigned rejectedDynamicDescriptions = 0;
+  for (mlir::tensor::ExtractSliceOp extract : extracts) {
+    auto description = describe(extract);
+    if (mlir::succeeded(description)) {
+      ++exactDescriptions;
+      EXPECT_EQ(description->kind,
+                wafer::TensorIndexingTransformKind::ExtractSlice);
+      EXPECT_TRUE(llvm::equal(description->operands.front().offsets,
+                              llvm::ArrayRef<int64_t>{0, 1, 0}));
+    } else {
+      ++rejectedDynamicDescriptions;
+    }
+  }
+  EXPECT_EQ(exactDescriptions, 1u);
+  EXPECT_EQ(rejectedDynamicDescriptions, 1u);
+
+  auto empty = findSingleOp<mlir::tensor::EmptyOp>(*module);
+  EXPECT_FALSE(
+      mlir::isa<wafer::WaferTensorIndexingOpInterface>(empty.getOperation()));
+}
+
 struct ExpectedExtractSlice {
   mlir::Value source;
   llvm::SmallVector<int64_t> offsets;

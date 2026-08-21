@@ -131,11 +131,9 @@ mlir::LogicalResult lowerPreparedTensorProgramToCardModule(
         "current IR");
 
   for (auto [outputIndex, covered] : llvm::enumerate(coveredShardExtents)) {
-    const OutputTileMapping *output = preparation.outputMappings[outputIndex];
-    const int64_t expected =
-        output->shardDimension
-            ? preparation.outputDomains[outputIndex][*output->shardDimension]
-            : 1;
+    int64_t expected = 1;
+    for (int64_t extent : preparation.outputDomains[outputIndex])
+      expected *= extent;
     if (covered != expected)
       return failCardModule(failureReason,
                             "card spatial shards do not cover output "

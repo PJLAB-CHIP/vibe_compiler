@@ -174,6 +174,9 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
   PhysicalTensorDescriptor outputKey =
       llvm::cantFail(PhysicalTensorDescriptor::create(
           LogicalFormat::F16, PhysicalTensorLayout::Tensor, {2, 1, 16}));
+  constexpr uint64_t outputBase = UINT64_C(0x400000);
+  const uint64_t outputBytes =
+      llvm::cantFail(getPhysicalTensorStorageBytes(outputKey));
 
   std::vector<RawLogicalValue> lhs(2 * 128, {LogicalFormat::F16, UINT64_C(0)});
   for (size_t k = 0; k < 128; ++k) {
@@ -201,7 +204,7 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
                     static_cast<uint64_t>(launchSlot) * UINT64_C(0x100000) +
                     static_cast<uint64_t>(slot.ordinal) * UINT64_C(0x10000)
               : (slot.kind == TileEntryArgumentKind::ExternalOutput
-                     ? UINT64_C(0x400000)
+                     ? outputBase
                      : UINT64_C(0x100000) +
                            static_cast<uint64_t>(slot.resourceIndex) *
                                UINT64_C(0x100000));
@@ -246,10 +249,20 @@ TEST(SystemCTargetModelBatchedGemmIntegrationTest,
   EXPECT_TRUE(recordingSink.invocationCompleted);
   EXPECT_FALSE(recordingSink.aborted);
   std::vector<const TargetGemmCommand *> gemms;
-  for (const TargetCommand &command : recordingSink.commands)
+  size_t externalOutputWrites = 0;
+  for (const TargetCommand &command : recordingSink.commands) {
     if (const auto *gemm = std::get_if<TargetGemmCommand>(&command.payload))
       gemms.push_back(gemm);
+    const auto *dma = std::get_if<TargetStridedDMACommand>(&command.payload);
+    if (dma && dma->direction == TargetDMADirection::Write &&
+        dma->destination >= outputBase &&
+        dma->destination < outputBase + outputBytes) {
+      EXPECT_EQ(dma->byteCount, 4u);
+      ++externalOutputWrites;
+    }
+  }
   ASSERT_EQ(gemms.size(), 16u);
+  EXPECT_EQ(externalOutputWrites, 16u);
   for (const TargetGemmCommand *gemm : gemms) {
     EXPECT_EQ(gemm->batchCount, 2u);
     EXPECT_EQ(gemm->m, 1u);

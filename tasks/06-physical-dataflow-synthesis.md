@@ -470,7 +470,7 @@ multicast/broadcast、合法的same-region load/receive外提与retain/release�
 通信方案不以`Ring/Tree/Direct`枚举为核心。每个explicit boundary从exact chunks的初始Tile、目标Tile和可用local combine关系建立
 有限`TileCommunicationProblem`，候选是transfer/combine action DAG；每个terminal payload必须有all-and-only origin/domain证明。
 Ring、binomial/double-tree、recursive exchange、二维row/column、Bruck/pairwise和tree-packing只是构造该通用DAG的
-topology-aware proposals。关闭或改变proposal顺序不能改变tiny exact domain；大负载允许在统一budget内返回best-known plan。
+topology-aware proposals。关闭或改变proposal顺序不能改变有界穷举oracle覆盖的exact domain；真实规模负载允许在统一budget内返回best-known plan。
 
 片内topology事实分三层：physical directed NoC adjacency、available endpoints间的Direct DTE capability，以及compiler选择的
 software relay/action graph。current Direct DTE只公开end-to-end target-routed unicast，内部route不透明；因此physical mesh可以产生
@@ -640,7 +640,8 @@ CompilationOptions::search
 
 同一choice domain支持：
 
-- small-DAG exact strategy：独立tiny reference domain enumerator不调用production domain builder，证明合法typed域完整；
+- bounded-DAG exact strategy：独立有界穷举reference domain enumerator不调用production domain builder，证明合法typed域完整；
+  同一机制另由真实规模整除/非整除矩阵证明production路径；
   test-only flat exhaustive runner可以逐点调用真实materializer/exact gate作为oracle，但不得成为production编译路径；
 - real-workload anytime strategy：尽快建立首个合法search plan，在预算内持续改善typed winner assignment，预算结束只commit一次。
 

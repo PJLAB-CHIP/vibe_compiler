@@ -29,7 +29,6 @@
 #include <functional>
 #include <iterator>
 #include <limits>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -151,41 +150,6 @@ getStaticOutputDomains(mlir::func::FuncOp program, std::string *failureReason) {
     domains.emplace_back(tensorType.getShape());
   }
   return domains;
-}
-
-mlir::FailureOr<mlir::presburger::PresburgerSet>
-getExactStrategyDemand(const SpatialEdgeStrategy &strategy,
-                       std::string *failureReason) {
-  std::optional<mlir::presburger::PresburgerSet> covered;
-  auto addRectangle = [&](llvm::ArrayRef<int64_t> offsets,
-                          llvm::ArrayRef<int64_t> sizes) {
-    analysis::IndexSetResult rectangle =
-        analysis::IndexRelation::staticRectangularDomain(offsets, sizes);
-    if (!rectangle.isExact()) {
-      if (failureReason)
-        *failureReason = rectangle.reason;
-      return mlir::failure();
-    }
-    if (covered && !covered->intersect(*rectangle.set).isIntegerEmpty()) {
-      if (failureReason)
-        *failureReason = "physical carrier fragments overlap";
-      return mlir::failure();
-    }
-    covered = covered ? covered->unionSet(*rectangle.set) : *rectangle.set;
-    return mlir::success();
-  };
-  if (strategy.action == SpatialEdgeAction::PeerFragments) {
-    for (const SpatialEdgeFragment &fragment : strategy.fragments)
-      if (mlir::failed(addRectangle(fragment.offsets, fragment.sizes)))
-        return mlir::failure();
-  } else if (mlir::failed(addRectangle(strategy.producerOffsets,
-                                       strategy.producerSizes))) {
-    return mlir::failure();
-  }
-  if (!covered)
-    return failCardModuleValue<mlir::presburger::PresburgerSet>(
-        failureReason, "physical carrier has no exact demand fragment");
-  return std::move(*covered);
 }
 
 mlir::FailureOr<mlir::func::FuncOp>

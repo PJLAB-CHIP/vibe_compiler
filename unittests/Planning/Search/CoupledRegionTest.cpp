@@ -3,6 +3,7 @@
 #include "Wafer/Planning/Search/CoupledRegion.h"
 
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -137,8 +138,7 @@ makeSingleTilePlacements(const StructuredDAGAnalysis &dag) {
     placements.push_back(StructuredDAGNodePlacement{
         node.id,
         llvm::SmallVector<uint32_t, 4>(tiling.getLoopIteratorTypes().size(), 1),
-        {TileId(0)},
-        std::nullopt});
+        {TileId(0)}});
   }
   return placements;
 }
@@ -248,10 +248,11 @@ module {
     auto dag = StructuredDAGAnalysis::create(function, &failureReason);
     ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
     auto placements = makeSingleTilePlacements(*dag);
-    auto trial = wafer::compiler::detail::buildLogicalShardTrial(
-        *dag, placements, wafer::analysis::IREpoch::mint(), &failureReason);
-    ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
-    auto domain = CoupledRegionDomain::create(*dag, *trial, &failureReason);
+    auto closed =
+        wafer::test::buildTestSpatialDemand(*dag, placements, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(closed)) << failureReason;
+    auto domain = CoupledRegionDomain::create(
+        *dag, closed->spatial, closed->demand, &failureReason);
     ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
     EXPECT_EQ(enumerateDomain(*domain), getReference(*dag));
   }
@@ -276,12 +277,13 @@ module {
   auto dag = StructuredDAGAnalysis::create(function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements{
-      {0, {2}, {TileId(0), TileId(1)}, std::nullopt},
-      {1, {2}, {TileId(1), TileId(0)}, std::nullopt}};
-  auto trial = wafer::compiler::detail::buildLogicalShardTrial(
-      *dag, placements, wafer::analysis::IREpoch::mint(), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
-  auto domain = CoupledRegionDomain::create(*dag, *trial, &failureReason);
+      {0, {2}, {TileId(0), TileId(1)}},
+      {1, {2}, {TileId(1), TileId(0)}}};
+  auto closed =
+      wafer::test::buildTestSpatialDemand(*dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(closed)) << failureReason;
+  auto domain = CoupledRegionDomain::create(
+      *dag, closed->spatial, closed->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
   std::set<CoupledRegionAssignment> assignments = enumerateDomain(*domain);
   ASSERT_EQ(assignments.size(), 1u);
@@ -318,12 +320,13 @@ module {
   auto dag = StructuredDAGAnalysis::create(function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 2> placements{
-      {0, {1, 2}, {TileId(0), TileId(1)}, TileId(0)},
-      {1, {2}, {TileId(0), TileId(1)}, std::nullopt}};
-  auto trial = wafer::compiler::detail::buildLogicalShardTrial(
-      *dag, placements, wafer::analysis::IREpoch::mint(), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
-  auto domain = CoupledRegionDomain::create(*dag, *trial, &failureReason);
+      {0, {1, 2}, {TileId(0), TileId(1)}},
+      {1, {2}, {TileId(0), TileId(1)}}};
+  auto closed =
+      wafer::test::buildTestSpatialDemand(*dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(closed)) << failureReason;
+  auto domain = CoupledRegionDomain::create(
+      *dag, closed->spatial, closed->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
   std::set<CoupledRegionAssignment> assignments = enumerateDomain(*domain);
   ASSERT_EQ(assignments.size(), 1u);
@@ -356,14 +359,15 @@ module {
   auto dag = StructuredDAGAnalysis::create(function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
   llvm::SmallVector<StructuredDAGNodePlacement, 4> placements{
-      {0, {1}, {TileId(0)}, std::nullopt},
-      {1, {1}, {TileId(0)}, std::nullopt},
-      {2, {1}, {TileId(1)}, std::nullopt},
-      {3, {1}, {TileId(1)}, std::nullopt}};
-  auto trial = wafer::compiler::detail::buildLogicalShardTrial(
-      *dag, placements, wafer::analysis::IREpoch::mint(), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
-  auto domain = CoupledRegionDomain::create(*dag, *trial, &failureReason);
+      {0, {1}, {TileId(0)}},
+      {1, {1}, {TileId(0)}},
+      {2, {1}, {TileId(1)}},
+      {3, {1}, {TileId(1)}}};
+  auto closed =
+      wafer::test::buildTestSpatialDemand(*dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(closed)) << failureReason;
+  auto domain = CoupledRegionDomain::create(
+      *dag, closed->spatial, closed->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
   std::set<CoupledRegionAssignment> assignments = enumerateDomain(*domain);
   EXPECT_EQ(assignments.size(), 4u);
@@ -418,10 +422,11 @@ TEST_F(CoupledRegionTest, DisconnectedComponentsDoNotScanBellPartitions) {
   auto dag = StructuredDAGAnalysis::create(function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
   auto placements = makeSingleTilePlacements(*dag);
-  auto trial = wafer::compiler::detail::buildLogicalShardTrial(
-      *dag, placements, wafer::analysis::IREpoch::mint(), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
-  auto domain = CoupledRegionDomain::create(*dag, *trial, &failureReason);
+  auto closed =
+      wafer::test::buildTestSpatialDemand(*dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(closed)) << failureReason;
+  auto domain = CoupledRegionDomain::create(
+      *dag, closed->spatial, closed->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
   CoupledRegionAssignment first = domain->getFirstAssignment();
   EXPECT_EQ(first.groups.size(), nodeCount);
@@ -457,10 +462,11 @@ module {
   auto dag = StructuredDAGAnalysis::create(function, &failureReason);
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
   auto placements = makeSingleTilePlacements(*dag);
-  auto trial = wafer::compiler::detail::buildLogicalShardTrial(
-      *dag, placements, wafer::analysis::IREpoch::mint(), &failureReason);
-  ASSERT_TRUE(mlir::succeeded(trial)) << failureReason;
-  auto domain = CoupledRegionDomain::create(*dag, *trial, &failureReason);
+  auto closed =
+      wafer::test::buildTestSpatialDemand(*dag, placements, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(closed)) << failureReason;
+  auto domain = CoupledRegionDomain::create(
+      *dag, closed->spatial, closed->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(domain)) << failureReason;
 
   CoupledRegionAssignment first = domain->getFirstAssignment();

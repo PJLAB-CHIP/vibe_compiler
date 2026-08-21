@@ -5,15 +5,12 @@ set(WAFER_PLANNING_SOURCES
   Planning/Baseline/CardBaselineDataMovement.cpp
   Planning/Baseline/CardBaselineEdgeCarriers.cpp
   Planning/Baseline/CardBaselineMaterialization.cpp
-  Planning/Baseline/CardBaselinePlacement.cpp
-  Planning/Baseline/CardBaselinePlacementClosure.cpp
   Planning/Baseline/CardBaselineTemporalTiling.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
   Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp
-  Planning/PhysicalDataflow/StructuredDAGEdgeDemandPlan.cpp
-  Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.cpp
+  Planning/PhysicalDataflow/StructuredDemandView.cpp
   Planning/PhysicalDataflow/TemporalTileShape.cpp
   Planning/Search/AttentionAlternative.cpp
   Planning/Search/AttentionAnalysis.cpp

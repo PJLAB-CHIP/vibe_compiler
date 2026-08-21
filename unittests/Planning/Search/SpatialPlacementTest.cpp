@@ -2,8 +2,6 @@
 
 #include "Wafer/Planning/Search/SpatialPlacement.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDAGExactDemandQuery.h"
-
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -25,7 +23,6 @@ using wafer::compiler::detail::CardSpatialPlacementDomain;
 using wafer::compiler::detail::SpatialPlacementAssignment;
 using wafer::compiler::detail::SpatialPlacementDomain;
 using wafer::compiler::detail::StructuredDAGAnalysis;
-using wafer::compiler::detail::StructuredDAGExactDemandQuery;
 
 class SpatialPlacementTest : public ::testing::Test {
 protected:
@@ -116,23 +113,11 @@ enumerateReference(wafer::compiler::detail::StructuredDAGNodeID node,
   llvm::SmallVector<TileId, 4> current;
   enumerateTileSequences(available, participants, current, embeddings);
   for (llvm::ArrayRef<TileId> embedding : embeddings) {
-    const bool needsMerge =
-        llvm::any_of(llvm::zip_equal(factors, reductions), [](auto values) {
-          return std::get<0>(values) > 1 && std::get<1>(values) != 0;
-        });
-    for (std::optional<TileId> merge :
-         needsMerge
-             ? llvm::to_vector<4>(llvm::map_range(
-                   available,
-                   [](TileId tile) { return std::optional<TileId>(tile); }))
-             : llvm::SmallVector<std::optional<TileId>, 4>{std::nullopt}) {
-      SpatialPlacementAssignment assignment;
-      assignment.node = node;
-      assignment.iteratorFactors.assign(factors.begin(), factors.end());
-      assignment.tiles.assign(embedding.begin(), embedding.end());
-      assignment.reductionMergeTile = merge;
-      result.insert(std::move(assignment));
-    }
+    SpatialPlacementAssignment assignment;
+    assignment.node = node;
+    assignment.iteratorFactors.assign(factors.begin(), factors.end());
+    assignment.tiles.assign(embedding.begin(), embedding.end());
+    result.insert(std::move(assignment));
   }
 }
 
@@ -206,7 +191,7 @@ TEST_F(SpatialPlacementTest,
     current = *next;
   }
   EXPECT_TRUE(std::is_sorted(actual.begin(), actual.end()));
-  EXPECT_EQ(actual.size(), 39u);
+  EXPECT_EQ(actual.size(), 27u);
 
   std::set<SpatialPlacementAssignment> reference;
   llvm::SmallVector<uint32_t, 4> factors;
@@ -217,7 +202,7 @@ TEST_F(SpatialPlacementTest,
             reference);
 
   SpatialPlacementAssignment reduction{
-      matmul.id, {1, 1, 2}, {TileId(0), TileId(5)}, TileId(2)};
+      matmul.id, {1, 1, 2}, {TileId(0), TileId(5)}};
   EXPECT_TRUE(domain->contains(reduction));
   SpatialPlacementAssignment remainder{
       matmul.id, {2, 1, 1}, {TileId(5), TileId(0)}};
@@ -230,7 +215,6 @@ TEST_F(SpatialPlacementTest,
             (llvm::SmallVector<uint32_t, 4>{3, 1, 1}));
   EXPECT_EQ(constructive.tiles,
             (llvm::SmallVector<TileId, 4>{TileId(0), TileId(2), TileId(5)}));
-  EXPECT_FALSE(constructive.reductionMergeTile);
 }
 
 TEST_F(SpatialPlacementTest, RejectsDuplicateOrOutOfDomainPhysicalEmbeddings) {
@@ -266,16 +250,14 @@ TEST_F(SpatialPlacementTest,
 
   EXPECT_TRUE(domain->contains({dag->getNodes()[1].id,
                                 {2, 2, 1},
-                                {TileId(7), TileId(0), TileId(5), TileId(2)},
-                                std::nullopt}));
+                                {TileId(7), TileId(0), TileId(5), TileId(2)}}));
   EXPECT_TRUE(domain->contains({dag->getNodes()[1].id,
                                 {1, 2, 2},
-                                {TileId(0), TileId(7), TileId(2), TileId(5)},
-                                TileId(7)}));
+                                {TileId(0), TileId(7), TileId(2), TileId(5)}}));
 }
 
 TEST_F(SpatialPlacementTest,
-       UnsupportedReductionCombinerKeepsOnlyUnitReductionFactor) {
+       TypedPartialMechanicsAdmitReductionPartitionWithoutAnotherGate) {
   mlir::OwningOpRef<mlir::ModuleOp> module = parse(R"mlir(
 module {
   func.func @product(%input: tensor<2xf16>, %init: tensor<f16>)
@@ -303,16 +285,19 @@ module {
                                                {TileId(0), TileId(2)});
   ASSERT_TRUE(mlir::succeeded(domain));
   EXPECT_EQ(domain->getReductionIterators(), (llvm::ArrayRef<uint8_t>{1}));
-  EXPECT_EQ(domain->getMaximumFactors(), (llvm::ArrayRef<int64_t>{1}));
-  EXPECT_FALSE(domain->contains(
+  EXPECT_EQ(domain->getMaximumFactors(), (llvm::ArrayRef<int64_t>{2}));
+  EXPECT_TRUE(domain->contains(
       {dag->getNodes().front().id, {2}, {TileId(0), TileId(2)}}));
-  auto first = domain->getFirstAssignment();
-  auto second = domain->getNextAssignment(first);
-  ASSERT_TRUE(mlir::succeeded(second));
-  ASSERT_TRUE(*second);
-  auto end = domain->getNextAssignment(**second);
-  ASSERT_TRUE(mlir::succeeded(end));
-  EXPECT_FALSE(*end);
+  unsigned count = 0;
+  std::optional<SpatialPlacementAssignment> current =
+      domain->getFirstAssignment();
+  while (current) {
+    ++count;
+    auto next = domain->getNextAssignment(*current);
+    ASSERT_TRUE(mlir::succeeded(next));
+    current = *next;
+  }
+  EXPECT_EQ(count, 4u);
 }
 
 TEST_F(SpatialPlacementTest,
@@ -435,22 +420,18 @@ module {
     llvm::SmallVector<TileId, 2> available{TileId(0), TileId(2)};
     auto domain = CardSpatialPlacementDomain::create(*dag, available);
     ASSERT_TRUE(mlir::succeeded(domain));
-    wafer::analysis::IREpoch epoch = wafer::analysis::IREpoch::mint();
     auto constructive =
-        domain->getConstructiveAssignment(*dag, epoch, &failureReason);
+        domain->getConstructiveAssignment(*dag, &failureReason);
     ASSERT_TRUE(mlir::succeeded(constructive)) << failureReason;
-    EXPECT_EQ(domain->evaluate(*dag, epoch, *constructive).status,
-              wafer::analysis::ExactDemandStatus::Satisfied);
+    EXPECT_TRUE(domain->evaluate(*dag, *constructive).isSatisfied());
 
     std::vector<CardSpatialPlacementAssignment> actual;
     std::optional<CardSpatialPlacementAssignment> current =
         domain->getFirstAssignment();
     while (current) {
       actual.push_back(*current);
-      auto evaluation = domain->evaluate(*dag, epoch, *current);
-      EXPECT_EQ(evaluation.status,
-                wafer::analysis::ExactDemandStatus::Satisfied)
-          << evaluation.detail;
+      auto evaluation = domain->evaluate(*dag, *current);
+      EXPECT_TRUE(evaluation.isSatisfied()) << evaluation.detail;
       auto next = domain->getNextAssignment(*current);
       ASSERT_TRUE(mlir::succeeded(next));
       current = *next;
@@ -472,50 +453,28 @@ TEST_F(SpatialPlacementTest,
   ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
   ASSERT_EQ(dag->getNodes().size(), 3u);
 
-  wafer::analysis::IREpoch epoch = wafer::analysis::IREpoch::mint();
   auto cardDomain = CardSpatialPlacementDomain::create(
       *dag, {TileId(0), TileId(2), TileId(5)});
   ASSERT_TRUE(mlir::succeeded(cardDomain));
   CardSpatialPlacementAssignment assignment{{
       {dag->getNodes()[0].id, {1, 1}, {TileId(0)}},
-      {dag->getNodes()[1].id, {1, 1, 2}, {TileId(0), TileId(5)}, TileId(2)},
+      {dag->getNodes()[1].id, {1, 1, 2}, {TileId(0), TileId(5)}},
       {dag->getNodes()[2].id, {1, 1}, {TileId(2)}},
   }};
-  auto evaluation = cardDomain->evaluate(*dag, epoch, assignment);
-  ASSERT_EQ(evaluation.status, wafer::analysis::ExactDemandStatus::Satisfied)
-      << evaluation.detail;
-  ASSERT_TRUE(evaluation.trial);
-
-  wafer::analysis::LogicalShardTrial trial = std::move(*evaluation.trial);
-  const wafer::analysis::LogicalNodeTrial &partial = trial.nodes[1];
-  ASSERT_EQ(partial.executionShards.size(), 2u);
-  EXPECT_TRUE(partial.executionShards[0].executionDomain->containsPoint(
-      llvm::SmallVector<int64_t, 3>{0, 0, 0}));
-  EXPECT_FALSE(partial.executionShards[0].executionDomain->containsPoint(
-      llvm::SmallVector<int64_t, 3>{0, 0, 1}));
-  EXPECT_TRUE(partial.executionShards[1].executionDomain->containsPoint(
-      llvm::SmallVector<int64_t, 3>{0, 0, 1}));
-  ASSERT_EQ(partial.bindings.size(), 2u);
-  EXPECT_EQ(partial.reductionMergeTile, TileId(2));
-  EXPECT_EQ(partial.bindings[0].role,
-            wafer::analysis::TileRole::PartialReductionContribution);
-  EXPECT_EQ(partial.bindings[1].role,
-            wafer::analysis::TileRole::PartialReductionContribution);
-
-  auto edge = llvm::find_if(dag->getEdges(), [&](const auto &candidate) {
-    return candidate.producer == dag->getNodes()[1].id &&
-           candidate.consumer == dag->getNodes()[2].id;
-  });
-  ASSERT_NE(edge, dag->getEdges().end());
-  StructuredDAGExactDemandQuery query(*dag, epoch);
-  wafer::analysis::ExactDemandResult demand = query.query(edge->id, trial);
-  EXPECT_EQ(demand.status, wafer::analysis::ExactDemandStatus::Satisfied)
-      << demand.detail;
-  EXPECT_EQ(demand.role,
-            wafer::analysis::TileRole::PartialReductionContribution);
-  EXPECT_TRUE(demand.mergeObligation);
-  EXPECT_EQ(demand.reductionMergeTile, TileId(2));
-  EXPECT_EQ(demand.ownershipIntersections.size(), 2u);
+  auto evaluation = cardDomain->evaluate(*dag, assignment);
+  ASSERT_TRUE(evaluation.isSatisfied()) << evaluation.detail;
+  ASSERT_TRUE(evaluation.assignment);
+  ASSERT_TRUE(evaluation.demand);
+  const wafer::analysis::ExactDemandProof *proof =
+      wafer::analysis::getExactDemandProof(*evaluation.demand);
+  ASSERT_NE(proof, nullptr);
+  ASSERT_EQ(evaluation.assignment->nodes[1].shards.size(), 2u);
+  ASSERT_EQ(proof->reductionMerges.size(), 1u);
+  EXPECT_EQ(proof->reductionMerges.front().mergeTile, TileId(0));
+  EXPECT_EQ(proof->reductionMerges.front().contributions.size(), 2u);
+  EXPECT_TRUE(llvm::any_of(proof->finalOwners, [](const auto &owner) {
+    return owner.reductionGroup.has_value() && owner.tile == TileId(0);
+  }));
 }
 
 } // namespace

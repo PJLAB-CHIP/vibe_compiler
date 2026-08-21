@@ -357,6 +357,9 @@ staging的lifetime必须保守覆盖到显式event wait或下游重建的partici
    indexing maps和scalar payload共同证明exact GEMM或ordinary static 2-D convolution时才归一到对应typed compute，
    其余走generic baseline。convolution window的stride/dilation从current affine maps推导；上游`tensor.pad`的low/high和
    fill value从该op本身精确物化，不能从输出shape反推或默认成零。
+   current scalar ordered-reduction lowering对不超过4096个static tuples生成有限指令序列；更大的rank-zero result在当前
+   `wafer.instr.reduce` rank/layout合同下没有合法native route，必须在创建逐tuple IR前以compiler-work-limit失败。它不是source
+   numeric legality，也不授权修改reassociation语义；未来扩展必须提供compact loop lowering或新的typed target route及对应验证。
 5. **物化movement和events**：在selected CardModule中创建boundary/local/staged movement、跨Tile NoC send/recv、spill/reload、tokens和typed
    dependency；若选择多stage流水，同时创建actual chunk循环/切片、每stage movement、buffer/slot relation和执行顺序；
    region/task return不物化terminal drain。所有新value立即接入SSA，不能用pipeline attr替代这些结构。

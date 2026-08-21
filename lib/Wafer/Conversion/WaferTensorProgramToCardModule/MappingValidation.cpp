@@ -41,26 +41,30 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
   }
 
   preparation.consumerInputDemands.reserve(mapping.operandDemands.size());
-  for (const analysis::ConsumerInputDemand &demand : mapping.operandDemands) {
-    if (demand.status != analysis::ExactDemandStatus::Satisfied ||
-        !demand.consumer)
+  for (const analysis::DependencyDemand &demand : mapping.operandDemands) {
+    if (!demand.consumerOperation)
       return failCardModuleValue<TileMaterializationPreparation>(
-          failureReason,
-          "card operand demand must be one satisfied current-IR recipe");
-    if (!belongsToSource(demand.consumer))
+          failureReason, "card operand demand must be one current-IR recipe");
+    if (!belongsToSource(demand.consumerOperation))
       return failCardModuleValue<TileMaterializationPreparation>(
           failureReason, "card operand demand consumer is outside the program");
-    for (const analysis::ConsumerInputReconstruction &recipe :
-         demand.perDestination) {
-      for (const analysis::TensorTransform &step : recipe.steps) {
+    for (const analysis::DestinationDemand &recipe : demand.perDestination) {
+      for (const analysis::TensorTransform &step :
+           recipe.reconstruction.steps) {
         if (!belongsToSource(step.operation))
           return failCardModuleValue<TileMaterializationPreparation>(
               failureReason,
               "card tensor-operand step is outside the tensor program");
       }
-      for (const analysis::ProducerValueRequirement &boundary :
-           recipe.boundaries) {
-        if (!belongsToSource(boundary.producer))
+      for (const analysis::SourceDemand &boundary : recipe.sources) {
+        const auto *structured =
+            std::get_if<analysis::StructuredResultSource>(&boundary.source);
+        const auto *constant =
+            std::get_if<analysis::ConstantSource>(&boundary.source);
+        mlir::Operation *operation = structured ? structured->operation
+                                     : constant ? constant->operation
+                                                : nullptr;
+        if (operation && !belongsToSource(operation))
           return failCardModuleValue<TileMaterializationPreparation>(
               failureReason,
               "card tensor-operand boundary is outside the tensor program");
@@ -148,18 +152,19 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
     preparation.edgeStrategies.push_back(strategy);
   }
 
-  // Every selected structured producer/data-input dependency is an exact
-  // direct SSA edge or a statically provable unary pure producer-to-consumer
-  // tensor chain. DPS init operands are initialization state rather than data
-  // edges and remain governed by the consumer's typed lowering.
+  // Every selected structured producer/data-input dependency must be present
+  // in the grouped exact-demand proof. OperandReconstruction is the sole
+  // authority for pure support transforms; this boundary never walks the SSA
+  // chain again. DPS init operands remain governed by typed lowering.
   llvm::DenseSet<std::pair<mlir::Operation *, unsigned>>
       coveredStructuredInputs;
-  llvm::DenseMap<mlir::Operation *, uint64_t> schedulingOrdinals;
-  uint64_t schedulingOrdinal = 0;
-  for (mlir::Operation &operation :
-       preparation.sourceProgram.getBody().front().without_terminator())
-    schedulingOrdinals.try_emplace(&operation, schedulingOrdinal++);
-  preparation.edgeFacts.reserve(mapping.edgeStrategies.size());
+  mlir::FailureOr<llvm::SmallVector<SpatialEdgeMaterializationFacts, 16>>
+      edgeFacts = deriveSpatialEdgeMaterializationFacts(
+          preparation.sourceProgram.getBody().front(), mapping.edgeStrategies,
+          mapping.operandDemands, failureReason);
+  if (mlir::failed(edgeFacts))
+    return mlir::failure();
+  preparation.edgeFacts = std::move(*edgeFacts);
   for (auto [edgeIndex, strategy] : llvm::enumerate(mapping.edgeStrategies)) {
     SpatialEdgeStrategy &mapped = preparation.edgeStrategies[edgeIndex];
     if (!strategy.producer || !strategy.consumer ||
@@ -168,29 +173,18 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
       return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
           "card edge strategy must name an exact structured SSA dependency");
-    mlir::FailureOr<llvm::SmallVector<mlir::Operation *, 4>>
-        producerToConsumerChain =
-            traceProducerToConsumerChain(mapped.producer, mapped.producerResult,
-                                         mapped.consumer,
-                                         mapped.consumerOperand, failureReason);
-    auto ordinal = schedulingOrdinals.find(mapped.consumer);
-    if (mlir::failed(producerToConsumerChain) ||
-        ordinal == schedulingOrdinals.end())
+    auto consumerResultType = mapped.consumer->getNumResults() == 1
+                                  ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                        mapped.consumer->getResult(0).getType())
+                                  : mlir::RankedTensorType{};
+    const bool validZeroRankDomain =
+        consumerResultType && consumerResultType.getRank() == 0 &&
+        mapped.consumerOffsets.empty() && mapped.consumerSizes.empty();
+    if (!validZeroRankDomain &&
+        (mapped.consumerOffsets.empty() || mapped.consumerSizes.empty()))
       return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
-          "card edge strategy must name an exact structured SSA dependency");
-    if (mapped.consumerOffsets.empty() || mapped.consumerSizes.empty()) {
-      if (!mapped.consumerOffsets.empty() || !mapped.consumerSizes.empty() ||
-          mlir::failed(deriveSpatialEdgeConsumerResultDomain(
-              mapped, mapped.consumerOffsets, mapped.consumerSizes,
-              failureReason)))
-        return failCardModuleValue<TileMaterializationPreparation>(
-            failureReason,
-            "card edge strategy has no exact consumer result domain");
-    }
-    preparation.edgeFacts.push_back(
-        {/*hasProducerToConsumerChain=*/!producerToConsumerChain->empty(),
-         /*consumerScheduleOrdinal=*/ordinal->second});
+          "card edge strategy has no exact consumer result domain");
     auto dps =
         mlir::dyn_cast<mlir::DestinationStyleOpInterface>(strategy.consumer);
     const bool isDataInput =
@@ -213,22 +207,21 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
   }
   if (!preparation.consumerInputDemands.empty()) {
     llvm::BitVector matchedStrategies(preparation.edgeStrategies.size());
-    for (const analysis::ConsumerInputDemand &operandDemand :
+    for (const analysis::DependencyDemand &operandDemand :
          preparation.consumerInputDemands) {
-      for (const analysis::ConsumerInputReconstruction &recipe :
+      for (const analysis::DestinationDemand &recipe :
            operandDemand.perDestination) {
-        for (const analysis::ProducerValueRequirement &boundary :
-             recipe.boundaries) {
-          if (!boundary.requiredDomain)
-            return failCardModuleValue<TileMaterializationPreparation>(
-                failureReason,
-                "card producer value requirement has no exact required domain");
+        for (const analysis::SourceDemand &boundary : recipe.sources) {
+          const auto *structured =
+              std::get_if<analysis::StructuredResultSource>(&boundary.source);
+          if (!structured)
+            continue;
           std::optional<size_t> matchingStrategy;
           for (auto [strategyIndex, strategy] :
                llvm::enumerate(preparation.edgeStrategies)) {
-            if (strategy.producer != boundary.producer ||
-                strategy.producerResult != boundary.producerResult ||
-                strategy.consumer != operandDemand.consumer ||
+            if (strategy.producer != structured->operation ||
+                strategy.producerResult != structured->result ||
+                strategy.consumer != operandDemand.consumerOperation ||
                 strategy.consumerOperand != operandDemand.consumerOperand ||
                 strategy.destinationTile != recipe.destinationTile)
               continue;
@@ -238,7 +231,7 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
                                  "duplicate physical carriers");
             matchingStrategy = strategyIndex;
           }
-          if (boundary.requiredDomain->isIntegerEmpty()) {
+          if (boundary.requiredDomain.isEmpty()) {
             if (matchingStrategy)
               return failCardModuleValue<TileMaterializationPreparation>(
                   failureReason, "exact-empty producer value requirement has a "
@@ -249,14 +242,6 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
             return failCardModuleValue<TileMaterializationPreparation>(
                 failureReason,
                 "nonempty producer value requirement has no physical carrier");
-          mlir::FailureOr<mlir::presburger::PresburgerSet> carrierDemand =
-              getExactStrategyDemand(
-                  preparation.edgeStrategies[*matchingStrategy], failureReason);
-          if (mlir::failed(carrierDemand) ||
-              !carrierDemand->isEqual(*boundary.requiredDomain))
-            return failCardModuleValue<TileMaterializationPreparation>(
-                failureReason,
-                "physical carrier does not all-and-only cover tensor input");
           matchedStrategies.set(*matchingStrategy);
         }
       }
@@ -321,13 +306,7 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
     if (preparation.outputMappings[output.outputIndex])
       return failCardModuleValue<TileMaterializationPreparation>(
           failureReason, "card spatial mapping output index is duplicated");
-    if (output.shardDimension &&
-        *output.shardDimension >=
-            preparation.outputDomains[output.outputIndex].size())
-      return failCardModuleValue<TileMaterializationPreparation>(
-          failureReason,
-          "card spatial mapping shard dimension is outside output domain");
-    if (output.activeTileIds.empty())
+    if (output.shards.empty())
       return failCardModuleValue<TileMaterializationPreparation>(
           failureReason, "card spatial mapping output has no active Tiles");
     if (output.temporalTileSizes.size() !=
@@ -344,29 +323,49 @@ prepareTileMaterialization(const TileMaterializationSourcePreparation &source,
             "card spatial mapping temporal tile is outside output domain");
 
     llvm::DenseSet<int64_t> outputTiles;
-    for (TileId tileId : output.activeTileIds) {
-      if (!availableTileValues.contains(tileId.getValue()))
+    int64_t coveredElements = 0;
+    for (auto [shardIndex, shard] : llvm::enumerate(output.shards)) {
+      if (!availableTileValues.contains(shard.tile.getValue()))
         return failCardModuleValue<TileMaterializationPreparation>(
             failureReason, "card spatial mapping names an unavailable Tile");
-      if (!outputTiles.insert(tileId.getValue()).second)
+      if (!outputTiles.insert(shard.tile.getValue()).second)
         return failCardModuleValue<TileMaterializationPreparation>(
             failureReason,
             "card spatial mapping output contains a duplicate Tile");
+      const auto &domain = preparation.outputDomains[output.outputIndex];
+      if (shard.offsets.size() != domain.size() ||
+          shard.sizes.size() != domain.size())
+        return failCardModuleValue<TileMaterializationPreparation>(
+            failureReason, "card output shard rank differs from output");
+      int64_t elements = 1;
+      for (auto [offset, size, extent] :
+           llvm::zip_equal(shard.offsets, shard.sizes, domain)) {
+        if (offset < 0 || size <= 0 || offset > extent - size)
+          return failCardModuleValue<TileMaterializationPreparation>(
+              failureReason, "card output shard is outside output domain");
+        elements *= size;
+      }
+      coveredElements += elements;
+      for (const OutputTileShard &prior :
+           llvm::ArrayRef(output.shards).take_front(shardIndex)) {
+        bool overlaps = true;
+        for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] : llvm::zip_equal(
+                 prior.offsets, prior.sizes, shard.offsets, shard.sizes))
+          if (lhsOffset >= rhsOffset + rhsSize ||
+              rhsOffset >= lhsOffset + lhsSize)
+            overlaps = false;
+        if (overlaps)
+          return failCardModuleValue<TileMaterializationPreparation>(
+              failureReason, "card output shards overlap");
+      }
     }
-    if (!output.shardDimension && output.activeTileIds.size() != 1)
+    int64_t outputElements = 1;
+    for (int64_t extent : preparation.outputDomains[output.outputIndex])
+      outputElements *= extent;
+    if (coveredElements != outputElements)
       return failCardModuleValue<TileMaterializationPreparation>(
           failureReason,
-          "unpartitioned card output requires exactly one active Tile");
-    const int64_t extent =
-        output.shardDimension
-            ? preparation
-                  .outputDomains[output.outputIndex][*output.shardDimension]
-            : 1;
-    if (output.activeTileIds.size() > static_cast<size_t>(extent))
-      return failCardModuleValue<TileMaterializationPreparation>(
-          failureReason,
-          "card spatial mapping output has more active Tiles than nonempty "
-          "shards");
+          "card output shards do not cover the complete output domain");
     preparation.outputMappings[output.outputIndex] = &output;
   }
   if (llvm::is_contained(preparation.outputMappings, nullptr))

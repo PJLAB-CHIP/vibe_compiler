@@ -112,8 +112,7 @@ mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>> analyzeCardProgram(
                                               availableTileIds->end());
   return std::make_unique<CardProgramAnalysis>(
       std::move(*topology), std::move(copiedTileIds), std::move(*dag),
-      std::move(*outputDomains), std::move(operationNodes),
-      analysis::IREpoch::mint());
+      std::move(*outputDomains), std::move(operationNodes));
 }
 
 } // namespace wafer::compiler::detail

@@ -40,15 +40,6 @@ std::optional<uint64_t> getLogicalPayloadBytes(mlir::ShapedType type,
   return bits / 8 + (bits % 8 != 0);
 }
 
-const analysis::LogicalNodeTrial *
-findNodeTrial(const analysis::LogicalShardTrial &trial,
-              StructuredDAGNodeID node) {
-  auto found = llvm::find_if(trial.nodes, [&](const auto &candidate) {
-    return candidate.node == node;
-  });
-  return found == trial.nodes.end() ? nullptr : &*found;
-}
-
 const TemporalNodeAssignment *
 findTemporal(const CardTemporalAssignment &assignment,
              StructuredDAGNodeID node) {
@@ -59,17 +50,15 @@ findTemporal(const CardTemporalAssignment &assignment,
 }
 
 std::optional<analysis::StaticRectangularIndexSet>
-findShard(const analysis::LogicalNodeTrial &trial, TileId tile) {
-  auto found = llvm::find_if(trial.executionShards, [&](const auto &shard) {
-    return shard.tile == tile;
-  });
-  if (found == trial.executionShards.end() || !found->executionDomain)
+findShard(const ExecutionShard *shard) {
+  if (!shard)
     return std::nullopt;
-  analysis::StaticRectangularIndexSetResult rectangle =
-      analysis::IndexSetResult{
-          analysis::IndexRelationStatus::Exact, *found->executionDomain, {}}
-          .getExactStaticRectangularDomain();
-  return rectangle.isExact() ? rectangle.domain : std::nullopt;
+  analysis::StaticRectangularIndexSet rectangle;
+  for (const IteratorInterval &interval : shard->iterationDomain) {
+    rectangle.offsets.push_back(interval.offset);
+    rectangle.sizes.push_back(interval.size);
+  }
+  return rectangle;
 }
 
 struct NodeLowerBound {
@@ -124,15 +113,17 @@ NodeLowerBound getNodeLowerBound(mlir::Operation *operation,
 
 mlir::FailureOr<ScopedFeasibilityResult> analyzeScopedFeasibility(
     const CardProgramAnalysis &program,
-    const analysis::LogicalShardTrial &trial,
+    const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand,
     const CoupledRegionDomain &coupledDomain,
     const CoupledRegionAssignment &coupledAssignment,
     const CardTemporalDomain &temporalDomain,
     const CardTemporalAssignment &temporalAssignment,
     const TargetMemoryPolicy &memory,
     llvm::ArrayRef<FeasibilityCoordinate> unresolvedCoordinates) {
-  if (trial.epoch != program.epoch ||
-      !coupledDomain.contains(coupledAssignment) ||
+  mlir::FailureOr<StructuredDemandView> view =
+      StructuredDemandView::create(program.dag, spatial, demand);
+  if (mlir::failed(view) || !coupledDomain.contains(coupledAssignment) ||
       !temporalDomain.contains(temporalAssignment) || memory.spmBase < 0 ||
       memory.spmLimit <= memory.spmBase)
     return mlir::failure();
@@ -157,11 +148,10 @@ mlir::FailureOr<ScopedFeasibilityResult> analyzeScopedFeasibility(
   for (const CoupledRegionGroup &group : coupledAssignment.groups) {
     for (StructuredDAGNodeID node : group.nodes) {
       const StructuredDAGNode *dagNode = program.dag.getNode(node);
-      const analysis::LogicalNodeTrial *nodeTrial = findNodeTrial(trial, node);
       const TemporalNodeAssignment *temporal =
           findTemporal(temporalAssignment, node);
       std::optional<analysis::StaticRectangularIndexSet> shard =
-          nodeTrial ? findShard(*nodeTrial, group.tile) : std::nullopt;
+          findShard(view->getShard(node, group.tile));
       if (!dagNode || !dagNode->operation || !temporal || !shard ||
           shard->sizes.size() != temporal->iteratorTileSizes.size())
         return mlir::failure();

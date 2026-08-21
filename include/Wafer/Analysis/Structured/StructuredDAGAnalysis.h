@@ -1,6 +1,8 @@
-//===- StructuredDAGAnalysis.h - Structured SSA dependency facts -*- C++ -*-===//
+//===- StructuredDAGAnalysis.h - Structured SSA dependency facts -*- C++
+//-*-===//
 
-#pragma once
+#ifndef WAFER_ANALYSIS_STRUCTURED_STRUCTUREDDAGANALYSIS_H
+#define WAFER_ANALYSIS_STRUCTURED_STRUCTUREDDAGANALYSIS_H
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -81,3 +83,5 @@ private:
 };
 
 } // namespace wafer::compiler::detail
+
+#endif // WAFER_ANALYSIS_STRUCTURED_STRUCTUREDDAGANALYSIS_H

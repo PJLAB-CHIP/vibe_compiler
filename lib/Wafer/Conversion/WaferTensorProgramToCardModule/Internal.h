@@ -60,7 +60,7 @@ struct TileMaterializationPreparation {
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
   llvm::SmallVector<SpatialEdgeStrategy, 16> edgeStrategies;
   llvm::SmallVector<SpatialEdgeMaterializationFacts, 16> edgeFacts;
-  std::vector<analysis::ConsumerInputDemand> consumerInputDemands;
+  std::vector<analysis::DependencyDemand> consumerInputDemands;
 };
 
 bool isCardSharedDeclaration(mlir::Operation &operation);
@@ -72,9 +72,6 @@ mlir::LogicalResult verifyLogicalMesh(mlir::ModuleOp module,
                                       std::string *failureReason);
 mlir::FailureOr<llvm::SmallVector<llvm::SmallVector<int64_t, 4>, 4>>
 getStaticOutputDomains(mlir::func::FuncOp program, std::string *failureReason);
-mlir::FailureOr<mlir::presburger::PresburgerSet>
-getExactStrategyDemand(const SpatialEdgeStrategy &strategy,
-                       std::string *failureReason);
 mlir::FailureOr<mlir::func::FuncOp>
 takeLoweredTensorProgram(mlir::ModuleOp shardModule,
                          std::string *failureReason);

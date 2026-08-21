@@ -28,7 +28,7 @@ struct ProducerValue {
 /// this boundary.
 mlir::LogicalResult reconstructConsumerInput(
     mlir::Operation *consumer, unsigned consumerOperand, TileId currentTile,
-    llvm::ArrayRef<analysis::ConsumerInputDemand> operandDemands,
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
     llvm::ArrayRef<ProducerValue> producerValues, std::string *failureReason);
 
 } // namespace wafer::tensor_program_to_tile_region

@@ -46,8 +46,9 @@ wafer::frontend::FrontendProgramVerificationResult programMetadata() {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 2;
-  program.distributedInputs = {boundary(0, {1, 32}), boundary(1, {1, 32})};
-  program.distributedOutputs = {boundary(0, {1, 32})};
+  program.distributedInputs = {boundary(0, {2, 1024, 128}),
+                               boundary(1, {2, 1024, 128})};
+  program.distributedOutputs = {boundary(0, {2, 1024, 128})};
   return program;
 }
 
@@ -74,9 +75,9 @@ largeTemporalProgramMetadata() {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 2;
-  program.distributedInputs = {boundary(0, {64, 64, 64, 64}),
-                               boundary(1, {64, 64, 64, 64})};
-  program.distributedOutputs = {boundary(0, {64, 64, 64, 64})};
+  program.distributedInputs = {boundary(0, {2, 1025, 8192}),
+                               boundary(1, {2, 1025, 8192})};
+  program.distributedOutputs = {boundary(0, {2, 1025, 8192})};
   return program;
 }
 
@@ -85,8 +86,8 @@ largeProducerStageProgramMetadata() {
   wafer::frontend::FrontendProgramVerificationResult program;
   program.numPartitions = 1;
   program.programUserInputCount = 1;
-  program.distributedInputs = {boundary(0, {4096, 4096})};
-  program.distributedOutputs = {boundary(0, {4096, 4096})};
+  program.distributedInputs = {boundary(0, {2, 1025, 8192})};
+  program.distributedOutputs = {boundary(0, {2, 1025, 8192})};
   return program;
 }
 
@@ -196,21 +197,23 @@ module {
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @main(%lhs: tensor<1x32xf16>, %rhs: tensor<1x32xf16>)
-      -> tensor<1x32xf16> {
-    %out = tensor.empty() : tensor<1x32xf16>
+  func.func @main(%lhs: tensor<2x1024x128xf16>,
+                  %rhs: tensor<2x1024x128xf16>)
+      -> tensor<2x1024x128xf16> {
+    %out = tensor.empty() : tensor<2x1024x128xf16>
     %sum = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> (d0, d1)>],
-        iterator_types = ["parallel", "parallel"]
-      } ins(%lhs, %rhs : tensor<1x32xf16>, tensor<1x32xf16>)
-        outs(%out : tensor<1x32xf16>) {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%lhs, %rhs : tensor<2x1024x128xf16>,
+                            tensor<2x1024x128xf16>)
+        outs(%out : tensor<2x1024x128xf16>) {
       ^bb0(%a: f16, %b: f16, %old: f16):
         %value = arith.addf %a, %b : f16
         linalg.yield %value : f16
-    } -> tensor<1x32xf16>
-    return %sum : tensor<1x32xf16>
+    } -> tensor<2x1024x128xf16>
+    return %sum : tensor<2x1024x128xf16>
   }
 }
 )mlir",
@@ -362,23 +365,23 @@ module {
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @main(%lhs: tensor<64x64x64x64xf16>,
-                  %rhs: tensor<64x64x64x64xf16>)
-      -> tensor<64x64x64x64xf16> {
-    %out = tensor.empty() : tensor<64x64x64x64xf16>
+  func.func @main(%lhs: tensor<2x1025x8192xf16>,
+                  %rhs: tensor<2x1025x8192xf16>)
+      -> tensor<2x1025x8192xf16> {
+    %out = tensor.empty() : tensor<2x1025x8192xf16>
     %sum = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>,
-                         affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>,
-                         affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>],
-        iterator_types = ["parallel", "parallel", "parallel", "parallel"]
-      } ins(%lhs, %rhs : tensor<64x64x64x64xf16>,
-                         tensor<64x64x64x64xf16>)
-        outs(%out : tensor<64x64x64x64xf16>) {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%lhs, %rhs : tensor<2x1025x8192xf16>,
+                            tensor<2x1025x8192xf16>)
+        outs(%out : tensor<2x1025x8192xf16>) {
       ^bb0(%a: f16, %b: f16, %old: f16):
         %value = arith.addf %a, %b : f16
         linalg.yield %value : f16
-    } -> tensor<64x64x64x64xf16>
-    return %sum : tensor<64x64x64x64xf16>
+    } -> tensor<2x1025x8192xf16>
+    return %sum : tensor<2x1025x8192xf16>
   }
 }
 )mlir",
@@ -400,31 +403,31 @@ module {
        tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @default_mesh
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @main(%input: tensor<4096x4096xf16>)
-      -> tensor<4096x4096xf16> {
-    %producer_init = tensor.empty() : tensor<4096x4096xf16>
+  func.func @main(%input: tensor<2x1025x8192xf16>)
+      -> tensor<2x1025x8192xf16> {
+    %producer_init = tensor.empty() : tensor<2x1025x8192xf16>
     %producer = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> (d0, d1)>],
-        iterator_types = ["parallel", "parallel"]
-      } ins(%input : tensor<4096x4096xf16>)
-        outs(%producer_init : tensor<4096x4096xf16>) {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%input : tensor<2x1025x8192xf16>)
+        outs(%producer_init : tensor<2x1025x8192xf16>) {
       ^bb0(%value: f16, %old: f16):
         %next = arith.addf %value, %value : f16
         linalg.yield %next : f16
-    } -> tensor<4096x4096xf16>
-    %result_init = tensor.empty() : tensor<4096x4096xf16>
+    } -> tensor<2x1025x8192xf16>
+    %result_init = tensor.empty() : tensor<2x1025x8192xf16>
     %result = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> (d0, d1)>],
-        iterator_types = ["parallel", "parallel"]
-      } ins(%producer : tensor<4096x4096xf16>)
-        outs(%result_init : tensor<4096x4096xf16>) {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1, d2)>],
+        iterator_types = ["parallel", "parallel", "parallel"]
+      } ins(%producer : tensor<2x1025x8192xf16>)
+        outs(%result_init : tensor<2x1025x8192xf16>) {
       ^bb0(%value: f16, %old: f16):
         %next = arith.addf %value, %value : f16
         linalg.yield %next : f16
-    } -> tensor<4096x4096xf16>
-    return %result : tensor<4096x4096xf16>
+    } -> tensor<2x1025x8192xf16>
+    return %result : tensor<2x1025x8192xf16>
   }
 }
 )mlir",
@@ -572,12 +575,15 @@ module {
       linalg.yield %next : f16
     }
     %resultOut = tensor.empty() : tensor<16x8xf16>
+    %zero = arith.constant 0.0 : f16
+    %init = linalg.fill ins(%zero : f16)
+        outs(%resultOut : tensor<16x8xf16>) -> tensor<16x8xf16>
     %result = linalg.generic {
         indexing_maps = [affine_map<(d0, d1) -> (d0)>,
                          affine_map<(d0, d1) -> (d0, d1)>],
         iterator_types = ["parallel", "parallel"]
       } ins(%producer : tensor<16xf16>)
-        outs(%resultOut : tensor<16x8xf16>) {
+        outs(%init : tensor<16x8xf16>) {
       ^bb0(%value: f16, %old: f16):
         %next = arith.addf %value, %old : f16
         linalg.yield %next : f16

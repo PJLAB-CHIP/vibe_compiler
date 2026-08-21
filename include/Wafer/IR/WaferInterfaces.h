@@ -7,6 +7,7 @@
 
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -16,6 +17,41 @@
 
 #include <cstdint>
 namespace wafer {
+
+enum class TensorIndexingTransformKind : uint8_t {
+  ExpandShape,
+  CollapseShape,
+  ExtractSlice,
+  InsertSlice,
+  Pad,
+  Cast,
+};
+
+enum class TensorIndexingOperandRole : uint8_t {
+  Source,
+  Destination,
+};
+
+struct TensorIndexingOperandDescription {
+  uint32_t operand = 0;
+  TensorIndexingOperandRole role = TensorIndexingOperandRole::Source;
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> strides;
+};
+
+/// Pure source-owned indexing description for one result of a tensor support
+/// operation. It contains no planning, placement, target, or materialization
+/// object and is valid only for the current immutable operation.
+struct TensorIndexingDescription {
+  TensorIndexingTransformKind kind = TensorIndexingTransformKind::Cast;
+  uint32_t result = 0;
+  llvm::SmallVector<TensorIndexingOperandDescription, 2> operands;
+};
+
+/// Attach WaferTensorIndexingOpInterface external models to the standard
+/// tensor operations whose exact static indexing semantics are consumed by
+/// structured demand analysis.
+void registerWaferTensorIndexingExternalModels(mlir::DialectRegistry &registry);
 
 enum class WaferLinalgExtCollectiveKind {
   AllGather,

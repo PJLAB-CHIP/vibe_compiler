@@ -20,14 +20,18 @@
 
 namespace wafer {
 
-/// Query-local spatial placement of one observable result. A present
-/// `shardDimension` divides the result in `activeTileIds` order. A missing
-/// dimension is the typed unpartitioned coordinate and requires exactly one
-/// active Tile, which owns the complete result domain (including rank zero).
+struct OutputTileShard {
+  TileId tile{0};
+  llvm::SmallVector<int64_t, 4> offsets;
+  llvm::SmallVector<int64_t, 4> sizes;
+};
+
+/// Query-local exact placement of one observable result. `shards` is an
+/// all-and-only rectangular partition of the output domain and directly names
+/// each physical Tile; no shard axis or participant count is recovered later.
 struct OutputTileMapping {
   unsigned outputIndex = 0;
-  std::optional<unsigned> shardDimension;
-  llvm::SmallVector<TileId, 16> activeTileIds;
+  llvm::SmallVector<OutputTileShard, 16> shards;
   /// Static per-dimension temporal tile selected for this output.  Card
   /// materialization intersects it with each balanced spatial shard, so a
   /// smaller boundary shard becomes an ordinary finite tail class.  This is
@@ -62,7 +66,7 @@ struct TileMapping {
   /// epoch as the selected placement. These are the only authority for
   /// rebuilding pure support values; exact-empty boundary demands deliberately
   /// have no physical edge strategy.
-  std::vector<analysis::ConsumerInputDemand> operandDemands;
+  std::vector<analysis::DependencyDemand> operandDemands;
 };
 
 /// Invocation-local work performed while constructing one actual CardModule.

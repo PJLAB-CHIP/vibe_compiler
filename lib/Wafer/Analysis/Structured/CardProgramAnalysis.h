@@ -4,7 +4,6 @@
 
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Driver/Compilation.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/Frontend/Program/Program.h"
@@ -31,19 +30,17 @@ struct CardProgramAnalysis {
   CardProgramAnalysis(
       TargetTopology topology, llvm::SmallVector<TileId, 16> availableTileIds,
       StructuredDAGAnalysis dag, StaticOutputDomains outputDomains,
-      llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes,
-      analysis::IREpoch epoch)
+      llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes)
       : topology(std::move(topology)),
         availableTileIds(std::move(availableTileIds)), dag(std::move(dag)),
         outputDomains(std::move(outputDomains)),
-        operationNodes(std::move(operationNodes)), epoch(epoch) {}
+        operationNodes(std::move(operationNodes)) {}
 
   TargetTopology topology;
   llvm::SmallVector<TileId, 16> availableTileIds;
   StructuredDAGAnalysis dag;
   StaticOutputDomains outputDomains;
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
-  analysis::IREpoch epoch;
 };
 
 mlir::FailureOr<std::unique_ptr<CardProgramAnalysis>> analyzeCardProgram(

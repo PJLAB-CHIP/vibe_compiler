@@ -7,7 +7,6 @@
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
 #include "Wafer/Driver/CompilationInternal.h"
 #include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
-#include "Wafer/Planning/Baseline/CardBaselinePlacement.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 #include "Wafer/Program/ProgramData.h"
 #include "Wafer/Transforms/Bufferization/SelectedBufferMaterialization.h"

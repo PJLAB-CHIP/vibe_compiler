@@ -83,6 +83,7 @@ mlir::FailureOr<RootFragment> materializeReductionMergeFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     uint32_t structuredNodeId,
+    const compiler::detail::ReductionGroupId &group,
     llvm::ArrayRef<const StructuredNodeIterationShard *> contributionShards,
     llvm::ArrayRef<mlir::func::FuncOp> contributionFunctions,
     const StructuredNodePhysicalRepresentation *representation,

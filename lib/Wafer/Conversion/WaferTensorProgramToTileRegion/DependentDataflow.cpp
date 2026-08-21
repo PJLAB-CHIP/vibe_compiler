@@ -1,35 +1,122 @@
 //===- DependentDataflow.cpp - Selected edge-action lowering ------------===//
 
-#include "EdgeDomain.h"
 #include "SelectedEdgeLoweringInternal.h"
 
+#include "Wafer/Analysis/PhysicalDataflow/IndexRelation.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/IRMapping.h"
 
+#include "llvm/ADT/STLExtras.h"
+
+#include <iterator>
 #include <utility>
 
 using namespace wafer;
 using namespace wafer::tensor_program_to_tile_region;
+
+namespace {
+
+mlir::FailureOr<mlir::presburger::PresburgerSet>
+getRectangleSet(llvm::ArrayRef<int64_t> offsets, llvm::ArrayRef<int64_t> sizes,
+                std::string *failureReason) {
+  analysis::IndexSetResult rectangle =
+      analysis::IndexRelation::staticRectangularDomain(offsets, sizes);
+  if (!rectangle.isExact()) {
+    setFailureReason(failureReason, rectangle.reason);
+    return mlir::failure();
+  }
+  return std::move(*rectangle.set);
+}
+
+mlir::LogicalResult
+validateStrategyDemand(const SpatialEdgeStrategy &strategy,
+                       const analysis::ExactIndexSet &requiredDomain,
+                       std::string *failureReason) {
+  const analysis::IndexRelationLimits limits;
+  const auto &required = requiredDomain.getPresburgerSet();
+  if (required.getNumDisjuncts() > limits.maxDisjuncts) {
+    setFailureReason(failureReason,
+                     "selected carrier demand exceeds comparison work limit");
+    return mlir::failure();
+  }
+
+  std::optional<mlir::presburger::PresburgerSet> covered;
+  auto addPiece = [&](llvm::ArrayRef<int64_t> offsets,
+                      llvm::ArrayRef<int64_t> sizes,
+                      bool peerFragment) -> mlir::LogicalResult {
+    mlir::FailureOr<mlir::presburger::PresburgerSet> piece =
+        getRectangleSet(offsets, sizes, failureReason);
+    if (mlir::failed(piece)) {
+      if (peerFragment)
+        setFailureReason(
+            failureReason,
+            "dependent fragment extends outside its consumer demand");
+      return mlir::failure();
+    }
+    if (piece->getNumDisjuncts() + required.getNumDisjuncts() >
+        limits.maxDisjuncts) {
+      setFailureReason(failureReason,
+                       "selected carrier demand exceeds comparison work limit");
+      return mlir::failure();
+    }
+    if (peerFragment && !piece->intersect(required).isEqual(*piece)) {
+      setFailureReason(
+          failureReason,
+          "dependent fragment extends outside its consumer demand");
+      return mlir::failure();
+    }
+    if (covered && !covered->intersect(*piece).isIntegerEmpty()) {
+      setFailureReason(failureReason,
+                       peerFragment
+                           ? "dependent fragments overlap within one consumer "
+                             "demand"
+                           : "selected producer domain overlaps itself");
+      return mlir::failure();
+    }
+    covered = covered ? covered->unionSet(*piece) : std::move(*piece);
+    return mlir::success();
+  };
+
+  if (strategy.action == SpatialEdgeAction::PeerFragments) {
+    if (strategy.fragments.size() > limits.maxRectangularPieces) {
+      setFailureReason(failureReason,
+                       "selected carrier fragment count exceeds work limit");
+      return mlir::failure();
+    }
+    for (const SpatialEdgeFragment &fragment : strategy.fragments)
+      if (mlir::failed(addPiece(fragment.offsets, fragment.sizes,
+                                /*peerFragment=*/true)))
+        return mlir::failure();
+  } else if (mlir::failed(addPiece(strategy.producerOffsets,
+                                   strategy.producerSizes,
+                                   /*peerFragment=*/false))) {
+    return mlir::failure();
+  }
+  if (!covered) {
+    setFailureReason(failureReason,
+                     "selected physical carrier has no demand domain");
+    return mlir::failure();
+  }
+  if (!covered->isEqual(required)) {
+    setFailureReason(
+        failureReason,
+        strategy.action == SpatialEdgeAction::PeerFragments
+            ? "dependent fragments do not exactly cover the consumer demand"
+            : "selected producer domain differs from the exact relation image");
+    return mlir::failure();
+  }
+  return mlir::success();
+}
+
+} // namespace
 
 mlir::LogicalResult
 wafer::tensor_program_to_tile_region::reportSelectedEdgeFailure(
     std::string *failureReason, llvm::StringRef message) {
   setFailureReason(failureReason, message);
   return mlir::failure();
-}
-
-mlir::LogicalResult wafer::deriveSpatialEdgeConsumerResultDomain(
-    const SpatialEdgeStrategy &strategy,
-    llvm::SmallVectorImpl<int64_t> &consumerOffsets,
-    llvm::SmallVectorImpl<int64_t> &consumerSizes, std::string *failureReason) {
-  consumerOffsets.clear();
-  consumerSizes.clear();
-  return deriveConsumerDomainFromProducerDemand(
-      strategy.producer, strategy.producerResult, strategy.consumer,
-      strategy.consumerOperand, strategy.producerOffsets,
-      strategy.producerSizes, consumerOffsets, consumerSizes, failureReason);
 }
 
 bool wafer::isSpatialEdgeStrategyIncidentOnTile(
@@ -44,6 +131,70 @@ bool wafer::isSpatialEdgeStrategyIncidentOnTile(
   });
 }
 
+mlir::FailureOr<llvm::SmallVector<SpatialEdgeMaterializationFacts, 16>>
+wafer::deriveSpatialEdgeMaterializationFacts(
+    mlir::Block &sourceBody, llvm::ArrayRef<SpatialEdgeStrategy> edgeStrategies,
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
+    std::string *failureReason) {
+  llvm::SmallVector<SpatialEdgeMaterializationFacts, 16> facts;
+  facts.reserve(edgeStrategies.size());
+  for (const SpatialEdgeStrategy &strategy : edgeStrategies) {
+    auto consumerPosition =
+        llvm::find_if(sourceBody, [&](mlir::Operation &operation) {
+          return &operation == strategy.consumer;
+        });
+    if (consumerPosition == sourceBody.end()) {
+      setFailureReason(failureReason,
+                       "selected edge consumer is outside source body");
+      return mlir::failure();
+    }
+    auto dependency = llvm::find_if(
+        operandDemands, [&](const analysis::DependencyDemand &candidate) {
+          return candidate.consumerOperation == strategy.consumer &&
+                 candidate.consumerOperand == strategy.consumerOperand;
+        });
+    if (dependency == operandDemands.end()) {
+      setFailureReason(failureReason,
+                       "selected edge has no grouped exact-demand dependency");
+      return mlir::failure();
+    }
+    auto destination = llvm::find_if(
+        dependency->perDestination,
+        [&](const analysis::DestinationDemand &candidate) {
+          return candidate.destinationTile == strategy.destinationTile;
+        });
+    if (destination == dependency->perDestination.end()) {
+      setFailureReason(failureReason,
+                       "selected edge has no destination demand recipe");
+      return mlir::failure();
+    }
+    auto source = llvm::find_if(
+        destination->sources, [&](const analysis::SourceDemand &candidate) {
+          const auto *structured =
+              std::get_if<analysis::StructuredResultSource>(&candidate.source);
+          return structured && structured->operation == strategy.producer &&
+                 structured->result == strategy.producerResult;
+        });
+    if (source == destination->sources.end() ||
+        source->requiredDomain.isEmpty()) {
+      setFailureReason(
+          failureReason,
+          "selected edge has no nonempty structured source demand");
+      return mlir::failure();
+    }
+    if (mlir::failed(validateStrategyDemand(strategy, source->requiredDomain,
+                                            failureReason)))
+      return mlir::failure();
+    facts.push_back(SpatialEdgeMaterializationFacts{
+        /*requiresConsumerInputReconstruction=*/
+        !destination->reconstruction.steps.empty(),
+        /*consumerScheduleOrdinal=*/
+        static_cast<uint64_t>(
+            std::distance(sourceBody.begin(), consumerPosition))});
+  }
+  return facts;
+}
+
 mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     mlir::ModuleOp sourceModule, unsigned functionalArgumentCount,
     llvm::ArrayRef<SpatialOutputShard> outputShards, TileId currentTile,
@@ -55,7 +206,7 @@ mlir::LogicalResult wafer::lowerSpatialEdgeStrategiesToTileRegionModule(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     StructuredMaterializationRelations *materializationRelations,
     llvm::ArrayRef<SpatialEdgeMaterializationFacts> edgeFacts,
-    llvm::ArrayRef<analysis::ConsumerInputDemand> operandDemands,
+    llvm::ArrayRef<analysis::DependencyDemand> operandDemands,
     bool requireOneStructuredRootPerRegion) {
   if (failureReason)
     failureReason->clear();

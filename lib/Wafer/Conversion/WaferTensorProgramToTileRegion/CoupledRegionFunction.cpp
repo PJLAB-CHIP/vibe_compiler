@@ -7,7 +7,7 @@
 #include "StructuredIterationTile.h"
 #include "TemporalRegionTraversal.h"
 
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
+#include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 
@@ -22,23 +22,6 @@ template <typename T>
 mlir::FailureOr<T> fail(std::string *failureReason, llvm::StringRef message) {
   setFailureReason(failureReason, message);
   return mlir::failure();
-}
-
-bool hasStructuredDependency(mlir::Operation *producer,
-                             mlir::Operation *consumer) {
-  if (!producer || !consumer || producer == consumer ||
-      producer->getBlock() != consumer->getBlock() ||
-      !producer->isBeforeInBlock(consumer))
-    return false;
-  for (unsigned result = 0; result < producer->getNumResults(); ++result)
-    for (unsigned operand = 0; operand < consumer->getNumOperands();
-         ++operand) {
-      std::string ignored;
-      if (mlir::succeeded(traceProducerToConsumerChain(
-              producer, result, consumer, operand, &ignored)))
-        return true;
-    }
-  return false;
 }
 
 bool reachesObservableBoundary(
@@ -78,9 +61,7 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
   llvm::SmallVector<uint32_t, 8> orderedNodeIds;
   llvm::DenseMap<uint32_t, const StructuredNodeIterationShard *> shardsByNode;
   for (const StructuredNodeIterationShard &shard : group.shards) {
-    if (shard.tile != tile ||
-        shard.role != StructuredNodeIterationShardRole::Complete ||
-        shard.reductionMergeTile ||
+    if (shard.tile != tile || !shard.reductionGroups.empty() ||
         !selectedNodeIds.insert(shard.structuredNodeId).second)
       return fail<RootFragment>(
           failureReason,
@@ -130,12 +111,30 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
              });
   llvm::DenseSet<mlir::Operation *> selectedOperationSet(
       selectedOperations.begin(), selectedOperations.end());
+  auto sourceFunction =
+      selectedOperations.front()->getParentOfType<mlir::func::FuncOp>();
+  mlir::FailureOr<compiler::detail::StructuredDAGAnalysis> sourceDAG =
+      compiler::detail::StructuredDAGAnalysis::create(sourceFunction,
+                                                      failureReason);
+  if (mlir::failed(sourceDAG))
+    return mlir::failure();
+  llvm::DenseSet<std::pair<mlir::Operation *, mlir::Operation *>>
+      structuredDependencies;
+  for (const compiler::detail::StructuredDAGEdge &edge :
+       sourceDAG->getEdges()) {
+    const compiler::detail::StructuredDAGNode *producer =
+        sourceDAG->getNode(edge.producer);
+    const compiler::detail::StructuredDAGNode *consumer =
+        sourceDAG->getNode(edge.consumer);
+    if (producer && consumer)
+      structuredDependencies.insert({producer->operation, consumer->operation});
+  }
 
   llvm::SmallVector<mlir::Operation *, 4> sourceSinks;
   for (mlir::Operation *candidate : selectedOperations) {
     bool hasOutgoing =
         llvm::any_of(selectedOperations, [&](mlir::Operation *consumer) {
-          return hasStructuredDependency(candidate, consumer);
+          return structuredDependencies.contains({candidate, consumer});
         });
     bool observable =
         llvm::any_of(candidate->getResults(), [&](mlir::Value result) {
