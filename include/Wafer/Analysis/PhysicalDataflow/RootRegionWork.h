@@ -25,6 +25,10 @@ struct RootRegionWorkId {
                          const RootRegionWorkId &rhs) {
     return lhs.root == rhs.root && lhs.tile == rhs.tile;
   }
+  friend bool operator!=(const RootRegionWorkId &lhs,
+                         const RootRegionWorkId &rhs) {
+    return !(lhs == rhs);
+  }
   friend bool operator<(const RootRegionWorkId &lhs,
                         const RootRegionWorkId &rhs) {
     if (lhs.root != rhs.root)

@@ -3185,6 +3185,29 @@ Pipeline position:
   baseline复用同一domain query但只走deterministic greedy；selected plan在singleton/group actual region形成compact loops/tails；旧
   per-node/global-max Cartesian、fixed seed和allocation-feedback owner在能力迁移后删除。
 
+### Q50.E work-item分界
+
+Q50.E由两个work items完成：
+
+- `canonical-temporal-plan`只为canonical `RegionPlan`中的每个required root execution建立一个top-level traversal scope，tile-size
+  vector等于该execution piece自己的完整local extents，因此是single wave且`waveLoopOrder`为空。merge execution没有root iterator，
+  不伪造temporal scope。该点不读取target preference、capacity或allocator结果。
+- `temporal-domain`在`region-execution-domain`后补齐每个scope的`1..L_i`interval successors、active-order全部linear extensions、
+  nested main/tail/halo invocation classes、proposal和Core consumer，并迁移/退役旧node-wide domain。canonical full-extent点只是
+  domain member和baseline初始坐标，不是default winner或legality shortcut。
+
+当前`canonical-temporal-plan`覆盖矩阵如下。shape用于覆盖per-Tile exact extents与remainder，不进入scope identity或tile-size分支；
+rank-zero是明确的结构合同例外。
+
+| 覆盖类 | 代表输入 | canonical TemporalPlan exact断言 | 直接下游witness |
+| --- | --- | --- | --- |
+| aligned/ragged all-Tile | rank>=3、主要维度1024/1025、all-16 Tile | 每个required root execution恰有一个scope；size vector逐轴等于自己的local interval size，1025 remainder Tiles不共享ceil maximum；order为空 | canonical-representation-plan按scope读取真实local shape；planning前后IR不变 |
+| multi-axis与input-order扰动 | 两个以上spatial axes、不同Tile/root work顺序 | scope ID只由`ExecutionInstanceId`决定，逐字段stable sort；同descriptor可重算但不合并不同Tile assignment | 后续temporal-domain可在每个scope独立展开siblings |
+| ordinary reduction/contribution | single/multi-reduction、整除/非整除spatial contribution | root execution保持完整local reduction extents；spatial contribution不新增temporal owner；merge execution无scope | F/E后续能区分local sequential waves与A/B spatial merge |
+| FD coupled state | rank-5/6、K2为1024/1031或multi-K2 | 每个FD contribution root execution有一个full-local K2 scope；Maximum/Sum/Accumulator merge仍无三个伪scope | attention-work-projection从同一execution/merge identity派生actions |
+| rank-zero与merge-only | rank-zero root、只有merge的Tile、empty Tile | rank-zero产生唯一empty size/order scope；merge-only与empty Tile均不产生scope，但前者仍由RegionPlan保留execution | serialized/storage/schedule阶段不会用假iterator表示merge |
+| typed failure | duplicate/missing execution、scope引用错误work/shard、非正local extent | compiler-contract failure且无partial plan，不fallback到node-wide extent或size=1 | 修正输入可重新query，source IR byte-identical |
+
 ### E-1 专项调研：temporal scope、完整size域与order合同
 
 MLIR `TilingInterface`明确把“生成loop结构”与“operation如何生成一个iteration tile”分离，并说明tile-and-fuse只提供mechanism、

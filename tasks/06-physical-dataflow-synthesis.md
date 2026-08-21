@@ -434,6 +434,10 @@ Temporal state锚定Q50.D产生的`ExecutionInstancePlan`而不是node-wide defa
 继续temporal切分。不同Tile实例可选不同vector，extensionally相同的scope只共享domain query，不强迫assignment相同。每个state覆盖
 该scope全部iterator，并选择语义合法的wave-loop nesting/order：
 
+canonical temporal coordinate先为每个required root execution取自己的完整local interval sizes，形成one-wave空order plan；
+remainder Tile直接保留较小extent，不使用node-wide ceil maximum。merge execution没有root iterator，因此不生成伪temporal scope。
+完整positive-size/order/nested-class domain在后续`temporal-domain`原位扩展同一`TemporalPlan`合同。
+
 ```text
 [parallel tiles..., reduction tiles..., batch/head/channel/window tiles...]
 + wave-loop nesting / order within selected traversal

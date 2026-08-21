@@ -384,6 +384,10 @@ source program
   top-level execution，boundary use按source/use/eligible-owner形成external `DemandFragmentId`。fragment identity不复制exact set，也不按
   node pair折叠multi-result、multi-operand或fanout。不要为canonical点预留single-value delivery enum、nested/replica nullable字段；
   local stored/direct、nested、sharing和replica在真实domain consumer到位时原位扩current RegionPlan。
+- canonical temporal point同样保持最小：每个required root execution使用自己的完整local interval sizes，因此是one wave且order为空；
+  不读取target geometry、capacity、allocator feedback，也不把不同Tile的remainder提升成shared maximum。merge execution没有root
+  iterator，不创建假scope。完整`1..L` interval、active-order和nested invocation classes等真实domain consumer到位后再扩同一
+  `TemporalPlan`，full-local只是一项合法初始坐标，不是default winner。
 - 显式test work counts证明planning CardModule/Instr/Q50.0为零、selected CardModule/Q50.0各一次；accepted executable直接move到输出，
   也不再运行未被输出消费的schedule/duration分析。baseline public header/result与旧search statistics/result分离；可选IR inspection
   写入显式caller-owned sink，普通compile的`tile_ir_prints=0`且accepted result不携trace。
