@@ -29,7 +29,7 @@ Pipeline position:
   不把card-partition ID解释成Tile；不实现cross-card transport；不从op顺序、symbol、buffer名或shape匹配message；
   不在transport verification中改变placement、tile、fusion、layout、spill、buffer、order或completion；不从pipeline flag
   推断overlap，不保存route/schedule/lane side plan，不把raw packet/register写进Tile IR。
-- Completion gate:
+- Done criteria:
   selected cross-Tile edge具有显式physical endpoints、payload cover、staging、local work和completion；all-and-only
   Tile modules经CardExecutable message/range/resource verification原子通过；package以
   `(card_id, tile_id, launch_slot)`发布，不依赖任何旧logical-execution-to-Tile映射。

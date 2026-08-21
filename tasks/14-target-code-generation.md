@@ -32,7 +32,7 @@ Pipeline position:
   不重新做physical-dataflow mapping；不从symbol、文件名、vector ordinal、pid或launch position恢复物理身份；
   不把低层module dispatch提升为公开ABI；不提供target metadata或entry ABI兼容读取路径；不把target-ready bytes、
   package file offset或device address写回Instr IR。
-- Completion gate:
+- Done criteria:
   16 个 Tile interfaces all-and-only、物理三元组唯一且关系一致；每个 target module 的 current
   metadata/ABI/exports/digest fresh readback；任一 Tile 失败时无部分 output 可见；Q53 source→package/no-card
   重放通过，并在真实板端gate完成前保持`board-ready`而非`done`。
@@ -42,8 +42,7 @@ Pipeline position:
 
 ### 2.1 CardExecutable 的 Tile entry
 
-`CardExecutable`原子拥有当前卡all-and-only 16个Tile entries；当前实现中的
-`TileExecutable`只是单个entry的C++类型索引。每个entry包含：
+`CardExecutable`原子拥有当前卡all-and-only 16个Tile entries；每个entry包含：
 
 - `CardId`：当前单卡为 `card_id=0`；
 - `TileId`：来自 verified physical topology；
@@ -57,8 +56,8 @@ Pipeline position:
 materializer、JIT bridge、runtime 或 diagnostic 都必须转发 typed fields，而不是使用容器位置重建它们。
 
 没有单Tile production output，也没有把`num_partitions`当作Tile count的入口；`num_partitions`仍属于
-GSPMD的card-level domain。当前实现类`CardExecutable`必须收敛为`CardExecutable`的实现或迁移索引，不能继续定义
-一层长期output。
+GSPMD的card-level domain。`CardExecutable`是唯一card-level accepted executable boundary，不能再由单Tile聚合或
+post-selection wrapper定义第二层长期output。
 
 ### 2.2 Program data 与 TargetTensor
 
@@ -82,8 +81,8 @@ device address。
 ### 2.3 Target LLVM module
 
 每个accepted Tile只翻译一次，结果由`TargetLLVMModule`连同其`LLVMContext`所有。下游target writing、
-TargetCall frontend和model必须共享这组owner-backed modules，不得重新lower accepted IR。当前实现类
-`TargetLLVMModules`只作为该owner set的代码索引，不是稳定output名称。
+TargetCall frontend和model必须共享这组invocation-local owner-backed modules，不得重新lower accepted IR；该owner set是
+`CardExecutable -> ExecutablePackage` lowering内部结果，不是新的稳定output层。
 
 current target LLVM module通过typed metadata精确绑定：
 
@@ -176,7 +175,7 @@ conversion不得新增“最终统一等待”来掩盖缺失的 Tile-local comp
 - 每个interface的显式`(card_id, tile_id, launch_slot)`、module ID与typed Tile entry arguments；
 - card-level ExecutionConfig与RuntimeLaunchContract。
 
-当前实现类`LinkedTargetModules`记录 linker 写出并校验过的 modules，但不能成为`CardExecutable`与
+link/write result记录linker写出并校验过的modules，但只在同一次package transaction内存活，不能成为`CardExecutable`与
 `ExecutablePackage`之间的第二个长期output事实源。
 
 module topology可以按 runtime launch contract使用不同低层表示：Grid/Cluster允许将 16 个不同 Tile body

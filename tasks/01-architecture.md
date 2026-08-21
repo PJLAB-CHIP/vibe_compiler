@@ -81,7 +81,7 @@ Pipeline position:
   runtime不重新做SPMD、candidate、layout、memory或transport planning；package不复制search state；本架构不
   承诺dynamic-shape/online rescheduling、多卡transport、compute-time streamed weight、vendor-exact packet或cycle accuracy；
   compiler的bounded source reading与target-ready data materialization不属于这里的执行期streaming。
-- Completion gate:
+- Done criteria:
   card-level partition与Tile launch domain分离；CardModule、CardExecutable、atomic writing、typed package/no-card、
   repo-owned CModel和configured board RuntimeProvider链保持有效。semantic algorithm先存在normalized TensorProgram中；spatial mapping、
   op-wave并行、temporal tile、encoding/view/route、TileRegion/movement、buffering/order和collective relation存在typed planning state中，只有winner

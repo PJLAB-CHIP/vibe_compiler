@@ -386,7 +386,7 @@ tail `C0`。如果 full-block 段和 tail 段都无法分别表示为 当前支�
 R3.2d 必须失败。
 
 `TsmExecute` 普通 dispatch path 只覆盖 CT/NE/RDMA/WDMA/TDMA。DTE 不走这条 dispatch path，
-但仍属于 `wafer.instr.*` 的硬件通信调用层。当前fixed-size unicast只在Q16.T accepted physical binding、
+但仍属于 `wafer.instr.*` 的硬件通信调用层。当前fixed-size unicast只在Direct-DTE target/package activation的accepted physical binding、
 remote receiver offset、FSM/completion、status ABI与CRT合同闭合后lower到Direct DTE/FSM helper；缺binding、
 不一致或超出accepted profile时明确拒绝，不能直接回退到raw-DTE ABI。SCALAR 当前 reserved/stub；
 CSR/sync helper 不在 current ordinary compute path 中。
@@ -853,7 +853,7 @@ Pipeline position:
   source IR明确表达predicate、独立golden和实际model kernel，机械合同覆盖不绕过该gate；Q3.6 positive机械输入来自
   compiler-owned complete instruction/TargetCall transaction test seam，不冒充source-produced vertical。
 - Explicit non-goals: no host scalar return, raw register IR, guessed Count predicate, model fallback or board claim.
-- Completion gate: later Q3.6的11/14-17 mechanical gate及synchronous-writeback effect原子通过；source/model verification
+- Done criteria: later Q3.6的11/14-17 mechanical gate及synchronous-writeback effect原子通过；source/model verification
   另要求明确predicate、closed format语义、独立golden和实际kernel。该gate独立于Q32/Q32.V，也不改变current Instr
   completion状态。
 ```
@@ -1088,7 +1088,7 @@ R3.2d verifier checks only instruction legality:
   the corresponding instruction/sync family is defined and verified. Direct DTE p2p must use
   `wafer.instr.dte_send` / `dte_recv` / `dte_wait`, not ad hoc tile p2p ops or side tables；在physical
   endpoint/slot binding和target CRT support闭合前，这三类op在production target conversion中必须整体拒绝；
-  Q16.T已对当前single-card fixed-size unicast profile闭合该binding，超出profile的模式继续拒绝。
+  Direct-DTE target/package activation已对当前single-card fixed-size unicast profile闭合该binding，超出profile的模式继续拒绝。
 - 每个issue都有可验证completion relation；内部traversal/loop/separation和region结构不触发completion，pending NCC set可沿
   显式SSA/control flow传播。`wafer.tile.region` exit只要求仍访问其SPM roots的work完成；每条Tile entry在显式
   participant join/exact wait后observable pending-event set为空，CardExecutable verification覆盖每个Tile的全部regions和roots。

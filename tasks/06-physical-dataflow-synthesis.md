@@ -1,22 +1,12 @@
 # Card 内 Physical Dataflow Planning 与执行构造
 
-状态：2026-08-17 按 current `TensorProgram -> CardModule -> TileRegion -> Instr -> CardExecutable`
-主线收敛。本文是 card 内 spatial mapping、TileRegion formation、temporal tiling、融合、physical
-representation、movement、buffering、instruction scheduling 与候选选择的唯一设计 owner。动态状态和施工顺序只看
-`tasks/progress.md` 与 `tasks/plans/physical-dataflow-synthesis.md`。
+本文是`TensorProgram -> CardModule -> TileRegion -> Instr -> CardExecutable`主线内card-level spatial mapping、
+TileRegion formation、temporal tiling、融合、physical representation、movement、buffering、instruction scheduling与候选选择的
+唯一设计owner。动态状态、施工顺序和donor迁移矩阵只看`tasks/progress.md`与
+`tasks/plans/physical-dataflow-synthesis.md`。
 
-2026-08-20重审计已撤回Q51.Core、Q50.S attention vertical、Q50.B–K、Q51、Q52及Q53 search部分的完成声明：current实现存在baseline/search
-混接、完整candidate反复物化、旧算法退役早于能力迁移、Q50.F/J/K未进入联合state、layout solver与多项NoC/pipeline proof
-丢失等问题。本文以下目标语义继续作为设计方向，但任何“已接入”“已完成”事实须以实施计划中的逐项审计矩阵和
-`tasks/progress.md`为准，不能由旧commit标题、旧profile或独立domain test代签。
-
-同轮一致性复核还重新打开Q49.P：其exact-demand与single-root final construction能力保留，但temporal legalization仍以
-per-coordinate CardModule/Q50.0充当capacity query。终态由Q50.F plan-level proof接管所有coordinate，只有selected baseline plan
-进入一次actual commit；旧181.70秒LLaMA只能作为功能链背景，不能维持`done`。
-
-旧 whole-rank、coordinated selector 和当前单体 physical-dataflow 实现只提供可审计的历史机制或迁移素材，不构成本文合同。
-现有实现能直接适配就复用，需要改变边界就改造，只有算法或 verifier 有价值就提取后替换，没有价值或无法适配则删除；
-不为了保留旧文件而扭曲终态架构，也不在 replacement 完成前无证据删除仍需迁移的能力。
+现有或历史physical-dataflow实现只提供可审计的mechanism、proof和test donor，不构成本文合同。能力必须先迁入current owner并
+获得production consumer与direct witness，之后才能删除旧实现；旧commit、profile、独立domain test或源码删除都不能代签完成。
 
 ## 1. 核心结论
 
@@ -77,7 +67,7 @@ Pipeline position:
 - Explicit non-goals:
   不重做跨card GSPMD；不要求真实大workload全局最优证明；不从op/workload/文件/shape名字恢复语义；不建立
   cycle-exact simulator；不让lowering、allocator、communication或completion私自repair候选；不发布search sidecar。
-- Completion gate:
+- Done criteria:
   `none`从未预选physical assignment的输入产生accepted CardExecutable，包含初始tile超SPM后缩至合法breakpoint的正例；
   small DAG由独立reference domain composer证明search合法域完整，再由test-only fresh-plan actualization证明
   plan set、剪枝、winner与actual IR一致；真实workload在约定预算内返回full-proof plan并只对winner完成编译与verification的
@@ -141,7 +131,7 @@ verification 的执行对象。`ExecutablePackage` 是 target lowering、link �
 
 一次 candidate-selection invocation 可读取：
 
-- current normalized TensorProgram、fixed semantic root facts与稳定DAG node/edge identity；
+- current normalized TensorProgram、fixed semantic root facts、`SemanticRootKey`与typed SSA use identity；
 - physical topology 与 available Tiles；
 - structured iterator、indexing relation与effect；
 - 各层合法选择枚举和实际 materialization 能力；
@@ -150,18 +140,41 @@ verification 的执行对象。`ExecutablePackage` 是 target lowering、link �
 它不保存 winner或accepted offset。attention FA/FD通过current op的closed attr进入B/A legality与derived work；
 不另传算法字符串、opaque parameter bag或search coordinate。
 
-### 4.2 Search session、winner 与 candidate assignment
+### 4.2 Semantic root identity
+
+`SemanticRootKey`是一次immutable TensorProgram borrow内的query-local semantic key。它取root到程序可观察边界的
+canonical typed SSA路径：路径以entry function result index等ABI有序边界为锚，逐段记录producer result number、consumer
+operand number及跨越的typed support relation；存在多条路径时取这些字段字典序最小的一条，其余路径仍参与demand/coverage，
+但不复制进identity。显式effect root必须由当前IR中的typed effect/control boundary及其SSA或region relation提供同等路径；
+无法从当前IR得到这种路径的operation不是可规划root，应在normalization/verifier处拒绝或先扩IR，而不是用名字或位置补身份。
+
+该key不包含block/operation ordinal、walk顺序、symbol spelling、打印文本、Tile编号、地址或hash迭代顺序。实现可以在同一
+immutable borrow内用`Operation *`查找key，并为solver建立owner-private dense index；两者都不能进入candidate equality、
+canonical ordering、diagnostic、IR、磁盘格式或跨mutation cache。IR mutation会使整张root-key表失效；clone内对应关系使用
+`IRMapping`，materialization后以新IR自身的SSA/typed identity为准。
+
+### 4.3 Search session、winner 与 candidate assignment
 
 一次 search invocation 内的事实分为四类，不能再合并成一个 candidate bag：
 
 1. **immutable session input**：borrowed normalized TensorProgram root、transaction-owned ProgramData view、target facts、cost comparison cohort，以及本次可用的
    typed mechanism；mechanism顺序由唯一current driver静态组合，不是runtime registry、user option或candidate字段；
-   relation/semantic analyses由MLIR analysis manager按operation scope拥有和失效，不使用manual epoch或fingerprint；
+   source-only relation/semantic facts由policy-free builder建立为session-owned typed problem；同一builder的pass consumer可使用
+   operation-anchored MLIR analysis wrapper，但planning session不持有`Analysis *`，也不使用manual epoch或fingerprint；
 2. **session control**：candidate frontier、已经通过完整gate的move-only search-local winner、global work/budget accounting和coverage/
    lower-bound evidence；这些事实不属于任一candidate；
 3. **candidate assignment**：只保存当前已经实现且不能从current IR与其它选择重算的typed choices；
 4. **derived query-local facts**：exact demand、ready/live set、lifetime、resource calendar、SPM high-water、cost estimate和
-   lower bound，按IR borrow、target facts和相关assignment重算或失效。
+   lower bound，按IR borrow、target facts和相关assignment重算，并以声明all-and-only实际读取字段的
+   `ObservedDependencyKey`在本session内失效。
+
+compiler driver拥有policy routing、planning session、frontier/budget和唯一winner handoff；它不执行leaf rewrite。pass与named
+subpipeline只在winner commit后对actual Card/Tile IR完成既定IR→IR变换，不持有candidate或选择winner。winner materialization
+开始前关闭source borrow及全部planning memo；新Card subtree上的analysis一律从新IR重算，不能复用source `AnalysisManager`结果。
+
+`ObservedDependencyKey`不是通用candidate bag。每类memoized query定义自己的named typed key，只包含该query实际读取的
+`SemanticRootKey`、target fields和assignment fields；cache hit比较完整typed value，hash只作lookup。key缺字段是合同错误，
+多放字段只会降低复用，不能改变query结果。
 
 Q49.P accepted baseline不进入search invocation、candidate frontier或winner，不被重编码为search assignment，也不把其canonical
 functional choices当作未施工轴的默认值。mechanism availability、proposal priority、work accounting、diagnostic statistics和
@@ -192,7 +205,7 @@ typed transition只用于从parent原子构造child；child保存apply后的assi
 allocator feedback history或repair path。状态不保存 raw `Operation *`、estimated SPM、汇总 bytes、fragments、resource
 calendar、makespan、actual offsets 或repair history。winner commit后以 IR 为唯一事实源。
 
-### 4.3 失效依赖
+### 4.4 失效依赖
 
 不同机制不互相调用或维护局部 winner；跨层耦合只通过明确依赖失效表达：
 
@@ -864,7 +877,7 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 8. Q52根据planning state-growth profile加入safe memo/DP/bound与必要LNS，不以complete materialization次数作预算；
 9. fresh workload/package/no-card/board closure。
 
-## 14. Completion Gate
+## 14. Verification and Done Criteria
 
 ### IR / verifier
 

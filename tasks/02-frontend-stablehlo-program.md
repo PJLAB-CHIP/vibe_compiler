@@ -22,7 +22,7 @@ Pipeline position:
   verified StableHLO program directory。它仍由MLIR、`forward.meta`和必要payload共同组成，不是
   `TensorProgram`、`CardModule`、`CardExecutable`、target module或`ExecutablePackage`。
 - Downstream consumer:
-  Q15 typed compiler driver在transaction-owned snapshot上建立card-partition mesh，调用pinned XLA SPMD helper，
+  compiler transaction在owned snapshot上建立card-partition mesh，调用pinned XLA SPMD helper，
   然后做local compute normalization并发布verified card-local structured tensor program；05 structured
   optimization继续在同一IR上建立verified `TensorProgram` boundary。06随后以target physical topology为独立输入，
   形成`CardModule`并联合搜索spatial placement、temporal tiling、TileRegion/融合与communication。
@@ -34,9 +34,9 @@ Pipeline position:
 - Explicit non-goals:
   不定义typed model/state ABI、MPMD member graph、physical endpoint、layout、SPM/DDR allocation、DTE、
   target ABI、manifest或runtime handle；不从parameter/function/file名恢复后端语义。
-- Completion gate:
+- Done criteria:
   当前实现门禁是产品adapter生成的真实PyTorch/XLA exporter产物及pre-exported portable fixtures通过同一program ingestion，metadata、
-  payload、static boundary和post-SPMD shard负例在进入下游前fail closed；Q15直接消费该verified output，而不是重建第二份
+  payload、static boundary和post-SPMD shard负例在进入下游前fail closed；SPMD handoff直接消费该verified output，而不是重建第二份
   frontend对象模型。产品`wafer.frontend.export_pytorch_program`与pre-exported portable StableHLO进入同一ingestion；installed
   `wafer-verify-program`只复用该ingestion做advisory validation，compiler transaction仍独立snapshot、重新验证并构造
   `CompilationRequest`。
@@ -193,7 +193,7 @@ runtime manifest。它的consumer是frontend/program verifier和后续card-parti
 ### 3.4 Post-SPMD distributed boundary
 
 pre-SPMD `forward.meta`不得有`distributed_boundary`。明确post-SPMD marker存在时该object必须存在，反向也成立；
-只写marker、只改local function signature或另加sidecar都不能建立Q15→Q16合同。schema当前为：
+只写marker、只改local function signature或另加sidecar都不能建立post-SPMD distributed handoff。schema当前为：
 
 ```text
 distributed_boundary:
@@ -267,7 +267,7 @@ frontend schema、compiler driver或sharding协议。
 frontend只保存exporter能解释的`mhlo.sharding`等输入事实。没有用户sharding仍是合法StableHLO program；
 frontend不合成`sdy.*`、`wafer.spmd.*`或策略字符串。
 
-Q15把pre-SPMD snapshot交给pinned helper，由helper内部完成Shardy/XLA SPMD并返回local program与parameter
+compiler transaction把pre-SPMD snapshot交给pinned helper，由helper内部完成Shardy/XLA SPMD并返回local program与parameter
 shards。当前无用户sharding的correctness基线允许helper产生replicated结果。IR-local默认Shardy seed实验会留下
 helper不能消费的`sdy.constant`/`sdy.reshard`等语义，因此在完整SDY→StableHLO bridge存在前不进入production
 driver。
@@ -275,7 +275,7 @@ driver。
 helper输出必须重新走本文件的metadata/payload verifier，包含上述distributed boundary，并与
 `ExecutionConfig::numPartitions`建立的logical execution mesh逐项一致；Tile数量只来自target topology，
 不得在此处用partition数推导。
-Q15随后做StableHLO-to-Linalg/collective normalization，再发布verified card-partition-local structured
+SPMD handoff随后进入StableHLO-to-Linalg/collective normalization，并发布verified card-partition-local structured
 tensor program。frontend verifier本身不执行helper、不形成调度单元，也不公开SPMD stop-stage。
 
 ## 6. Ownership 与失败语义
@@ -287,8 +287,8 @@ target context或writing authority。
 source-to-package driver在parse前建立transaction ownership：IR、metadata和目录结构进入私有snapshot，大payload由
 content-stable且完成extent/digest校验的`ProgramDataSource`/`ProgramDataRange`持有；后续frontend verify、helper和IR transforms只消费该transaction
 拥有的事实。当前整目录复制以及propagated/original/shard多份payload是Q58必须删除的实现差距，不能成为长期隔离机制。
-source不得被原地补metadata、topology或shards。Q15最终发布的是重新
-parse/verify过的card-partition-local structured tensor program directory；fixed structured optimization完成后，
+source不得被原地补metadata、topology或shards。compiler transaction最终发布重新parse/verify过的card-partition-local
+structured program state；local compute normalization与fixed structured optimization随后建立`TensorProgram` boundary，之后
 physical-dataflow synthesis从单卡partition output构造一个`CardModule`，其中all-and-only available Tiles
 各有独立`wafer.tile.module`。每个Tile可有不同op、loop和temporal tile shape；Q51唯一search owner联合决定
 placement、tiling、TileRegion/融合和显式NoC/DDR movement，exact gates通过后形成`CardExecutable`，再由target与
@@ -318,6 +318,6 @@ frontend mandatory coverage包括：
 - distributed input/result identity、global/local shape、dtype、partition/replica domain及data/column真实策略；
 - pre-exported StableHLO parse/printer及显式IR-local lowering补充测试。
 
-完成记录必须区分真实exporter gate、program verifier和下游Q15 gate。FileCheck、手写MLIR或CPU oracle单独通过
+完成记录必须区分真实exporter gate、program verifier和下游SPMD handoff/TensorProgram normalization gate。FileCheck、手写MLIR或CPU oracle单独通过
 都不能证明card-local spatial/temporal/fusion/communication scheduling、`CardExecutable`、target modules、`ExecutablePackage`、runtime
 或board正确。

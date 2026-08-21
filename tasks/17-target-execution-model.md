@@ -27,7 +27,7 @@ Pipeline position:
 - Explicit non-goals:
   不重新lower accepted IR；不解释package中的历史格式；不模拟vendor packet/loader；不宣称cycle accuracy、
   bandwidth或board performance；不从symbol、OS thread、ordinal或container position恢复Tile身份。
-- Completion gate:
+- Done criteria:
   current target-call registry、memory/effect/event/numeric正负例通过；同源source的16-Tile完整output与CPU expected
   比较；Q53 matrix fresh重放。真实设备相关结论仍由独立board gate签发。
 ```
@@ -44,7 +44,7 @@ model只接受compiler保留的same-invocation owners：
 - program invocation提供source tensor值，不复制target schema或猜测entry argument；
 - independent CPU expected只用于最终差分，不进入compiler IR/package。
 
-当前实现类`CardExecutable`与`TargetLLVMModules`只作为上述两个owner边界的迁移索引，不定义额外稳定output层。
+model输入边界就是`CardExecutable`及与其绑定的invocation-local target LLVM owner set，不定义额外稳定output层。
 
 `prepareTargetModelInvocation`必须在JIT materialization前all-and-only消费每个非output program tensor和每个
 `TileEntryArgument`。它按显式program tensor identity、entry argument relation和target layout建立model-private memory：

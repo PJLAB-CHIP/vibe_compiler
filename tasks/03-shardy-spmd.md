@@ -30,7 +30,7 @@ Pipeline position:
 - Explicit non-goals:
   不决定target card placement、单卡Tile work assignment、CardModule、SPM/DDR、NoC/DTE、target ABI或
   runtime launch；不从strategy名、parameter名、文件名或side JSON恢复语义。
-- Completion gate:
+- Done criteria:
   helper输出的partition domain、distributed boundary和parameter shards与num_partitions all-and-only一致；
   num_partitions=1的single-card输入只形成一个完整card-local DAG，不按16个Tile预先clone；最终structured
   program重新parse后仍通过同一typed frontend gate。

@@ -29,7 +29,7 @@ Pipeline position:
   不决定spatial placement、ready-op concurrency、fusion、TileRegion、retain/recompute/spill/cut/release boundary、buffer/event order、
   communication或global cost；lifetime、live set和cost只由上游/下游analysis从current assignments与actual IR派生；不按workload、shape、
   parameter/symbol/op名字选择lowering；不分配physical offsets、runtime handles或launch slots；selected lowering失败终止compile。
-- Completion gate:
+- Done criteria:
   fill、named GEMM/batched GEMM、ordinary static 2-D convolution和generic由current op class、region、indexing maps与
   DPS/Tiling semantics确定性物化；exact generic GEMM与convolution只由标准Linalg maps、iterator和multiply-accumulate
   payload识别，其余generic走同一baseline lowering；显式`tensor.pad`严格消费其current low/high/value，不猜测padding；

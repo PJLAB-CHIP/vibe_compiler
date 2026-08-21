@@ -27,7 +27,7 @@ Pipeline position:
 - Explicit non-goals:
   不选择全局placement、tile size、fusion、TileRegion、retention/release或route；lifetime只从actual IR重算；不保存relation/descriptor/search side table；
   不分配runtime handle或launch slot；不从op/value/symbol/workload名字恢复语义；lowering失败不隐式换路线。
-- Completion gate:
+- Done criteria:
   每个accepted view/movement只凭current IR可重建exact logical/physical cover、range、effect、lifetime和completion；
   cross-Tile movement显式指向Tile并经CardExecutable matching；rewrite后旧analysis不再使用，late exact gate
   不需要search proposal即可验证和lower。

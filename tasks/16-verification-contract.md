@@ -25,7 +25,7 @@ Pipeline position:
 - Explicit non-goals:
   不用历史raw输出重签结论；不让fixture、FileCheck或shape dump代替主线source→package；不允许skipped/
   unsupported测试冒充通过；不为旧schema、旧ABI、旧pass或旧board harness保留测试入口。
-- Completion gate:
+- Done criteria:
   受影响边界的unit/lit/integration fresh通过；完整current package fresh no-card；涉及板端的任务达到
   board-ready后，再由当前构建/current case串行真实执行；Q53还要求matched性能改善。
 ```

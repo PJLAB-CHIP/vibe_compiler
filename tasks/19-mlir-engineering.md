@@ -33,7 +33,7 @@ Pipeline position:
   不改变 physical-dataflow 合法域、搜索策略、target ABI 或 runtime schema；不把所有阶段机械地下沉到
   TileRegion；不为使用 DRR、PDLL、Transform dialect 或自定义 interface 设置数量指标；不把 MLIR pass failure
   强行替代 compiler 所需的 typed accepted/exact-rejection/indeterminate 结果。
-- Completion gate:
+- Done criteria:
   semantic Location 和 schema 外 semantic attr 清零；标准 interface 与 alias/effect 合同闭合；local、function、
   module/card scope各自只有一个实现事实源；production与named pipeline复用同一lowering；analysis可重算且
   invalidation 正确；pattern局部mutation安全且compiler失败结果不发布；active与dormant source中的IR duplication/materialization
@@ -57,7 +57,7 @@ Wafer对应实现是必要隔离、最终output构造、可测量trade-off，还
 | IR 自包含性与 ODS | active source 不再用 `OpaqueLoc`、裸指针、结构序号或打印文本恢复编译语义；GEMM batch、elementwise maps、reduce init 等稳定字段进入 ODS/generated accessor，discardable instrumentation attr 可组合 |
 | alias/effect/dataflow | alias-only view 与 materializing reshape 分离；TileRegion 提供 RegionBranch/terminator 合同，通用 flow 使用 RegionBranch、Call、ViewLike、MemoryEffect 与指令语义 interface，目标特有异步约束保留窄分析 |
 | pass hierarchy | TileRegion lowering 运行在真实 `TileRegionOp` anchor，required NCC join 运行在 `func.func`，call/shared arena、DDR、card verification 与 closed target conversion 保持真实全局边界；不再构造 synthetic Module/Func local wrapper |
-| analysis | timeline、direct call graph 与 target scheduling facts进入锚定operation的AnalysisManager接口，并按 mutation 明确 preserve/invalidate；一次性 plan/cost value 仍是 query-local typed value，不机械 analysis 化 |
+| analysis | 只由current anchor IR推导的timeline、direct call graph与relation facts进入operation-anchored AnalysisManager，并按mutation明确preserve/invalidate；外部target配置、candidate assignment、cost与planning memo由invocation-local typed owner持有 |
 | pipeline | active compiler 只由统一 runner 构造 production PassManager；16 个 atomic pass 组成 7 条常驻 named semantic pipeline，另有 1 条 Shardy 条件 pipeline；textual pipeline、production builder、nested anchor 与 statistics 共享事实源 |
 | rewrite/conversion | active pattern 不持有 rollback 外 mutable failure state；validation 先于 mutation，greedy rewrite 限定 affected roots，Tile dataflow marker 使新增 source op fail closed，简单 Fill rewrite 使用 DRR，复杂 layout/index/resource lowering保留 C++ |
 | transaction/error | pattern callback保持局部mutation纪律；普通pass、显式事务API和compiler output transaction分别说明失败后的IR是否仍可使用。required-join重复validation、StableHLO与target root snapshot逐项按caller ownership复核，不能从“失败原子”直接推出必须复制或必须删除；IR侧继续使用MLIR result/diagnostic，host/output侧使用typed result/error，不解析诊断字符串控制流程 |
@@ -88,7 +88,7 @@ Q54的审计与完成门禁覆盖全部active compiler source，而不是只覆�
 | Search/scheduling | assignment/query/transition/selected apply拆分，current-IR relation替代pointer/print identity，enumeration名称说明真实动作 | Q50/Q51拥有plan域和选择语义，不由Q54另建selector |
 | Target LLVM | interface pattern、converted adaptor、closed full conversion和postcheck复用同一production builder | CardExecutable只验证current Instr/binding/resource/launch合同；target ABI变换只在真正保留的ordinary/profile output上执行一次，最终独立Tile output可并发构造并按稳定identity汇合 |
 | Compiler orchestration | 统一pipeline runner；module fan-out、RAII临时目录和atomic rename保持driver边界 | 不把filesystem transaction伪装成MLIR pass |
-| Analysis/cost | 可复用IR事实进入AnalysisManager；一次性cost/query对象保持typed local value | Q52只优化经测量确认的热点 |
+| Analysis/cost | 可复用且只依赖current anchor IR的事实进入AnalysisManager；target/assignment相关query与cost保持planning-session local | Q52只优化经测量确认的热点 |
 | Target/runtime/model | pure target protocol/layout与MLIR adapter分层，SystemC/oneDNN exception/RTTI隔离保留 | runtime/model不机械改造成pass |
 | Tools/build/test | CMake-derived organization checker、fresh build、public link smoke、feature on/off和lit闭合 | 保持Q42快速默认面，长搜索由对应任务点名 |
 | 命名 | Q54迁移对象按scope、property、action和output命名，旧pointer payload、synthetic wrapper和通用candidate容器退出active API | Q45继续全仓非阻塞术语治理，不回滚本合同 |
@@ -215,15 +215,33 @@ outstanding NCC access/required join、function-boundary bufferization、SPM/DDR
 
 满足以下条件的事实进入 operation-anchored MLIR analysis：
 
-- 只读且完全由当前 anchor IR 与 immutable target facts推导；
+- 只读且完全由当前 anchor IR 推导；需要的target事实已经作为该IR的typed op/type/attr存在，而不是来自外部配置、
+  pass option、singleton或隐式context state；
 - 同一 pipeline 被多个 pass 消费，或重算开销显著；
 - mutation 后能按 MLIR preservation/invalidation 规则安全失效。
 
 首批对象包括 topology/symbol/call summary、structured timeline、lifetime/conflict summary 和 region-local physical relation。
-Type-local `IndexRelation`、一次性 pattern validation、candidate assignment 与不可跨 IR epoch 的 cost query 保持普通 value
-object；不要为“使用 AnalysisManager”把所有 helper 变成 analysis。
+Type-local `IndexRelation`、一次性 pattern validation、外部target配置、candidate assignment、cost cohort以及不可跨IR epoch的
+cost query保持普通typed value；不要为“使用 AnalysisManager”把所有helper变成analysis。Analysis result只在创建它的
+PassManager/anchor IR epoch内有效，不能把`Analysis *`或其中的operation/value引用交给driver、异步任务或winner IR。
 
-### 5.2 DataFlow 与 interface-driven traversal
+### 5.2 Planning controller、driver 与 pass 的 owner
+
+四类owner按lifetime分开：
+
+| Owner | 拥有 | 不拥有 |
+| --- | --- | --- |
+| MLIR `AnalysisManager` | pass内当前anchor IR可重算的analysis cache及preserve/invalidate | 外部target配置、candidate state、frontier、winner或跨pass cache |
+| planning session | immutable source borrow、session-owned typed planning facts、target/cost cohort、assignment与按`ObservedDependencyKey`失效的query memo | `Analysis *`、actual IR、filesystem output或package transaction |
+| compiler driver/controller | policy routing、planning session lifetime、frontier/budget、唯一winner handoff、module fan-out和output transaction | leaf IR rewrite、pass analysis cache或candidate-local materialized executable |
+| pass / named subpipeline | 对一个selected actual IR在真实operation anchor上完成唯一IR→IR变换和验证 | candidate枚举、frontier、budget、winner选择、外部工具或目录提交 |
+
+同一IR-derived算法由policy-free typed builder实现：pass consumer可以用薄AnalysisManager wrapper缓存它；driver-level planning
+adapter则直接调用同一builder，建立session-owned结果，不在pass外构造第二个AnalysisManager，也不保留analysis引用。selected
+plan物化Card/Tile subtree后进入新的IR epoch；source IR analysis与planning memo全部关闭，winner lowering在新IR上重新取得所需
+analysis。这样共享的是query实现和typed schema，不是cache或lifetime。
+
+### 5.3 DataFlow 与 interface-driven traversal
 
 RegionBranch、Call、MemoryEffect、ViewLike/alias 和 structured op interface 提供通用 flow edge。MLIR DataFlowSolver 可以
 承担可组合的 SSA/control-flow fixed point；Wafer custom lattice 只保留 path-sensitive异步命令完成条件、target resource 和
@@ -232,7 +250,7 @@ SPM boundary 等标准 interface 无法表达的部分。
 现有 fail-closed verifier/lifetime 行为必须保留：未知 region/control-flow op 不得被静默当成顺序执行。迁移完成后，
 未知 op 由缺失 interface 或显式 legality 产生定向诊断，不再由散落多处的 `isa<>` 白名单产生不同结论。
 
-### 5.3 Verifier 责任
+### 5.4 Verifier 责任
 
 op verifier只验证能从 op 自身及直接 relation判定的局部合同；跨所有 Tile 的 identity/topology/call relation在最近的
 container verifier或显式 validation pass一次验证。verifier 不能访问 AnalysisManager，因此不能在每个 leaf verifier 中
@@ -344,21 +362,7 @@ rewriter与`IRMapping`合同。
 性能或整改验证显式开启时，真实执行点记录clone/materialize/lower次数，而不是只统计外层API；普通编译不创建统计对象、
 不打印这些数据。Q54完成门禁扫描active source；dormant source则由18/Q51/Q50明确承接或删除，不能用“未编译”代替设计判断。
 
-### 7.3 历史形成路径与仍需验证的解释
-
-`git log`/`git blame`能确认下面的引入顺序，但只能说明哪些需求和测试把实现推到今天，不能单凭commit历史断言作者意图或
-证明某种实现必然错误：
-
-1. `bf62676a`为target failure隔离加入Module clone/`takeBody`，测试开始观察失败dump中不存在LLVM op；
-2. `76f68e29d`为降低accepted cohort峰值RSS清空Tile modules，并按selected assignment重新materialize；
-3. `318bba75`将required-join和StableHLO的失败前后generic IR equality写入测试，同时引入validate-transform-replay；
-4. `2f2e8de03`/`d76e39d4`在baseline闭合中增加source/scratch materialization，以获得function/topology和relation scope。
-
-共同薄弱点是这些变更没有同时记录decision representation、失败后谁继续持有IR、clone是否成为output、每次compile实际执行
-多少次以及memory/work的量化取舍。因此测试很容易把一个API的preserve-input需求扩散成所有pass的习惯，或把一次RSS优化
-扩散成无版本合同的通用replay。本轮先通过逐调用点清单和显式开启的fresh work统计验证这个解释；验证前不把它写成全仓永久原则。
-
-### 7.4 本轮review字段
+### 7.3 Clone/materialization review checklist
 
 新增或保留clone/materialization时，设计与review至少回答：owner是谁；decision是IR、plan、trace、config还是measurement；
 最窄正确scope是什么；外部operand/symbol closure如何处理；一次用户compile会执行几次；失败后哪个对象仍有效；artifact是

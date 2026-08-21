@@ -41,7 +41,7 @@ Pipeline position:
 - Explicit non-goals:
   不决定Tile、layout、memory、route、buffer、worker、completion或ABI；不在Instr形成后启动第二个候选
   selector；不按workload、shape、symbol、operand位置、attention/decode名称或文件名选择rewrite；不发布proof sidecar。
-- Completion gate:
+- Done criteria:
   test-only oracle逐点materialize时，每个accepted alternative都可独立parser/printer/verifier roundtrip；production只有winner
   actualize一次。SAT、unknown、timeout或资源耗尽只影响当前planning proposal；source-to-package与fresh no-card gate通过且没有
   独立shortlist、固定候选cap或第二winner路径。

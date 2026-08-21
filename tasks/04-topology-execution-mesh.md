@@ -29,7 +29,7 @@ Pipeline position:
 - Explicit non-goals:
   本层不表达spatial work assignment、temporal tiling、TileRegion/融合、route、DTE binding、cost、target ABI、
   runtime handle或search state；不从axis名恢复dp/tp/pp语义，也不拥有multi-card deployment policy。
-- Completion gate:
+- Done criteria:
   num_partitions与logical mesh exact-match；physical topology独立给出稳定card_id/tile_id与availability；
   single-card num_partitions=1和16个available Tile同时合法且不存在count-equality gate；helper readback仍满足logical
   partition合同；下游selected MPMD与late launch projection分别验证Tile coverage和slot双射。

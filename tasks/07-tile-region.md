@@ -526,7 +526,7 @@ region内只spill某个root、让其它root继续驻留。也要保留“独立l
 证明traversal coupling、region partition和storage action是相关但不等价的选择。最终region数量只描述winner的residency
 结构，不能作为收益依据；offset reuse只由对应Tile的真实lifetime/coexistence决定。
 
-## 13. Completion Gate
+## 13. Verification and Done Criteria
 
 本文边界完成必须同时满足：
 

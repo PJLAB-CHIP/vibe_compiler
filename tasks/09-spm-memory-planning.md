@@ -101,7 +101,7 @@ Pipeline position:
   不选择instruction form、compute/encoding/transfer、TileRegion、retention、spill、buffer、worker/order或completion；不分配DDR；
   不把Tile-local offset独立提交，不从pipeline flag或buffer数量猜lifetime，不用bank phase改变hard feasible set；不拥有objective、
   planning state、proposal、repair或跨invocation solver cache。
-- Completion gate:
+- Done criteria:
   对每个合法CardModule给出deterministic per-Tile memory plan；planned storage的size、alignment、
   range/end、lifetime和alias relation能由Tile-local IR/effect/verifier重算；generic `async.call`
   token/value由identity-preserving handle flow上的`async.await`或direct group的`async.await_all`收口，DTE由
@@ -662,8 +662,8 @@ placed memref、flat backing memref 或 explicit descriptor 事实源。
 `#wafer.memory<space, layout>` 在 accepted instruction IR 中仍是统一语义：`spm` 表示 tile-local
 SRAM，`ddr` 表示 device/global DDR address domain。RDMA/WDMA verifier 用 source/destination
 address space 检查方向；DDR memory planning 用 `ddr` 继续关联 view/range、compiler-managed DDR
-planned range、constant storage/residency 和 declared arena resource。Q16 apply前从同一selected IR验证并补全
-accepted range/arena relation；apply后package/runtime只消费
+planned range、constant storage/residency 和 declared arena resource。selected `CardExecutable` formation前从同一IR验证并补全
+accepted range/arena relation；formation后package/runtime只消费
 该唯一owner，不在launch metadata中再次关联或恢复range。
 
 不要把 `wafer.tile.region` body 已经表达的执行结构复制成全局 allocation plan attr。

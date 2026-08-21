@@ -24,7 +24,7 @@ Pipeline position:
 - Explicit non-goals:
   不改变IR语义、target能力、数值策略、设备记录布局或package字段含义；不删除第三方/release版本、NPY等
   外部格式版本、许可证版本、硬件规范版本、设备runtime版本检查或历史archive/raw evidence。
-- Completion gate:
+- Done criteria:
   active源码中没有Wafer-owned `vN`/`VN`名称、编号schema字段或per-symbol版本；repo内同步producer/consumer没有旧reader、
   dual path或nested版本字段；相关canonical roundtrip、negative parse、build、
   unit、lit和工具测试通过，文档只描述current格式。

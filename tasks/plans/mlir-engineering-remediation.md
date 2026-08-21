@@ -25,7 +25,7 @@ Pipeline position:
 - Explicit non-goals:
   不在本任务增加 search axis、heuristic、board ABI、runtime schema 或第二 compiler driver；不机械替换所有 C++ pattern，
   不机械把所有 module pass 改成 region pass，不引入 Transform dialect sidecar。
-- Completion gate:
+- Done criteria:
   A–I既有checkpoint与J transaction/ownership复核全部闭合；旧side channel/parallel implementation清零；每个root
   scratch、candidate replay和output fan-out均有明确分类，已确认无合同支撑的重复target lowering/rewrite清零；
   active/dormant静态门禁、fresh parallel build、unit/lit/organization、named/production parity、代表source-to-package

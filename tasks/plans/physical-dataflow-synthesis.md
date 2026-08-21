@@ -175,7 +175,7 @@ Pipeline position:
   不重做跨 card GSPMD；不建立第二 search owner、shadow plan、late repair selector 或 workload/name shortcut；
   不把 query-local candidate set、solver state、estimated allocation 或 board 结果写入 IR；不由本计划拥有 Q48 semantic
   superoptimization。
-- Completion gate:
+- Done criteria:
   Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q58/Q56/Q59先闭合
   program data ownership、package data与compile commit；Q50.B-foundation先建立closed SpatialAssignment与baseline producer，Q50.A据此
   修复production exact-demand boundary。随后提取baseline其余canonical plan components和Q50.F closed-plan core，Q49.P立即闭合
@@ -183,8 +183,8 @@ Pipeline position:
   不实现空Core；Q50.S semantic foundation及B-full/A形成首批真实输入/domain后建立Q51.Core foundation并切explicit `search`到new owner，后续
   C→D→E→F-partial→G→H→I-initial→J-foundation→K→I-post-K→J-closure→F-full每项同批扩真实state/consumer。F-full后闭合
   controller与test-only exhaustive oracle，再以production single-winner CardExecutable gate闭合Q51；
-  Q52 在真实 workload 上形成可复现的 10/30 分钟 anytime 质量与吞吐结论；Q60建立产品frontend后，Q53从该入口生成 fresh package、oracle、runner
-  并通过 no-card 达到 board-ready，真实 matched 板端 A/B 后才 done。
+  Q52在真实workload上形成可复现的10/30分钟anytime质量与吞吐结论；已经独立完成的Q60提供产品frontend。Q53把Q51/Q52
+  search结果与Q60入口作为并列输入，从该入口生成fresh package、oracle、runner并通过no-card达到board-ready，真实matched板端A/B后才done。
 ```
 
 Q50.S只把完整attention归一为一个带fixed FA/FD mode的semantic op，不返回graph assignment或algorithm domain。Q50.B/E分别选择
@@ -1070,23 +1070,28 @@ pass后失效，只有明确`markAnalysesPreserved`才继续存在。pinned `Ana
 继续用”，而是必须同时收紧调用结构：
 
 ```text
-func-scoped planning pass / shared planning entry:
+pass-local consumer:
   relation = getAnalysis<StructuredRelationAnalysis>()
-  session = DemandPlanningSession(relation, immutable target facts)
-  ... baseline or search performs every pure query ...
+  result = runPolicyFreeQuery(relation.typedFacts(), localInputs)
+  return before any IR mutation that invalidates relation
+
+driver-owned planning entry:
+  relation = buildStructuredRelationFacts(source)
+  session = DemandPlanningSession(move(relation), immutable target facts)
+  ... baseline or search performs pure queries without a PassManager analysis handle ...
   winner = closePlanningSession(session)     // session becomes unusable
   materializeWinner(winner)                  // first and only IR mutation phase
-  do not mark StructuredRelationAnalysis preserved
 ```
 
-`StructuredRelationAnalysis`锚定包含全部structured/support SSA的最窄current operation；现有表示下是对应`func.func`，若后续有真正
-`IsolatedFromAbove`的TensorProgram container才可进一步下沉。analysis只包含从current IR和immutable interface facts可重算的
-relation DAG、stable semantic node/value编号和normal-form constructors；构造失败作为analysis内的typed construction result保存，
-因为MLIR analysis constructor本身没有失败返回。它不包含`SpatialAssignment`、candidate、cost、合法性结果或winner。
+`StructuredRelationFacts`由policy-free builder从包含全部structured/support SSA的最窄current operation建立；现有表示下是对应
+`func.func`，若后续有真正`IsolatedFromAbove`的TensorProgram container才可进一步下沉。它只包含从current IR和typed interface
+semantics可重算的relation DAG、`SemanticRootKey`/value paths和normal-form constructors；构造失败保存在closed typed result中。
+它不包含`SpatialAssignment`、target配置、candidate、cost、合法性结果或winner。
 
-`DemandPlanningSession`只在当前pass的immutable阶段持有non-owning analysis reference和query-local memo。若其它read-only pass复用
-analysis，必须显式preserve；任何可能修改该func的pass不preserve。不可在pass外自行构造`AnalysisManager`，不可为跨pass复用把
-analysis塞进singleton/global cache，也不可用`IREpoch`、fingerprint或revision integer建立第二套失效协议。
+pass consumer可通过`StructuredRelationAnalysis`薄wrapper让AnalysisManager缓存同一builder结果，并按mutation明确
+preserve/invalidate。driver-owned `DemandPlanningSession`直接拥有builder结果和query-local memo，不持有non-owning analysis引用，
+也不在pass外自行构造`AnalysisManager`。两条入口共享builder和typed schema，不共享cache；任何IR mutation都会关闭session，
+不能用`IREpoch`、fingerprint、revision integer或singleton/global cache建立第二套失效协议。
 
 Q50.A public query返回一个named sum type，不返回`bool`、`FailureOr + string`或可被误解为candidate rejection的四态enum：
 
@@ -1463,7 +1468,7 @@ Q51 search只能复用这些可重算facts，不能缓存actual IR、clone完整
 
 ## Q51.Core：Search Control Kernel
 
-### 2026-08-17 review 结论
+### Current control boundary
 
 原节把Q51终态assignment schema、Q50.F旧式局部actual gate、Q51全轴oracle和Q52 production策略都提前算进Core，和current施工
 顺序不一致，也会诱导实现直接复用正在由Q49.P拆除的`TileExecutionCandidate`。Core现在只拥有**搜索控制**：typed child
@@ -1551,11 +1556,12 @@ Session control:
   deterministic non-dropping frontier + search-local winner + work/budget accounting + coverage/bound evidence
 
 Derived cache:
-  current-IR analysis + exact demand + lifetime/calendar/SPM/cost facts
+  session-owned source facts + exact demand + lifetime/calendar/SPM/cost facts
 ```
 
-- `IREpoch`沿用Q50.A的current合同：它只验证query与trial属于同一immutable borrow，不进入semantic key，也不替代nested IR
-  structural snapshot或MLIR analysis invalidation。Core不得把token地址、`Operation *`、walk ordinal或printed IR当stable key。
+- source-only facts由与MLIR analysis wrapper共用的policy-free builder建立；Core直接拥有typed result，不持有`Analysis *`，也不在
+  pass外构造`AnalysisManager`。session lifetime绑定同一immutable source borrow；Core不得把token地址、`Operation *`、walk ordinal
+  或printed IR当stable key。
 - Core建立的current assignment aggregate起初不含未来轴。每个Q50 checkpoint同批加入本轴named typed field、transition、
   canonical encoding、query/apply和失效关系；Wafer-owned接口原位演进，不保留编号schema、旧wrapper或两套state。
 - mechanism query只读source、target和parent assignment；transition apply先完整验证，再原子构造child。child不保存transition
@@ -2403,7 +2409,7 @@ DAG和region order；`ConsumerInputReconstruction`再次TypeSwitch检查support 
 
 ```text
 RootRegionWork
-  root: SemanticRootId
+  root: SemanticRootKey
   tile: TileId
   executionPieces: ExactIteratorPiece[]
   contributionWork: ReductionContribution[]
@@ -2688,7 +2694,7 @@ RegionGroupPlan
   localBindings: LocalUseBinding[]
 
 ExecutionInstancePlan
-  root: SemanticRootId
+  root: SemanticRootKey
   workSource: RequiredPiece(RootWorkPieceId)
             | ReplicaFor(DemandFragmentId)
   placement: TopLevel
@@ -3314,7 +3320,7 @@ RequiredCoordinate =
   | EventScheduleFor(TileId | RegionGroupId)
 
 FeasibilityDependencyKey
-  algorithms: selected SemanticRootId choices actually read
+  semantics: SemanticRootKey and fixed root facts actually read
   spatial: selected shard/owner/merge choices actually read
   regions: selected execution/version/use-binding choices actually read
   temporal: selected TraversalScopeId points/orders actually read
@@ -3354,7 +3360,8 @@ Deferred，不预判其未来路径。最后required为空才返回Consistent。
 scope使用typed sum而非模糊“node”字段：foundation最窄检查单位为`TraversalScopeId`或`RegionGroupId`，full closure再加入Tile/Card
 resource scope。func-scoped MLIR analyses只提供current SSA、IndexRelation、DPS/Bufferizable/ViewLike/effect事实；assignment-local
 query组合plan。跨scope结论没有闭合时返回精确required coordinate。cache只观察结论实际读取的typed choices和immutable target facts，
-mutation依赖AnalysisManager正常preserve/invalidate，不使用manual epoch/fingerprint。默认路径不记录统计或日志；显式instrumentation
+并由planning session按`ObservedDependencyKey`失效；source-only pass cache才依赖AnalysisManager的preserve/invalidate。两者都不使用
+manual epoch/fingerprint。默认路径不记录统计或日志；显式instrumentation
 可观察query/work count但不进入result或控制流。
 
 ### F-foundation-2 专项调研：minimum storage与interference certificates
@@ -3448,8 +3455,9 @@ D `NestedExecutionRelation`在E concrete scopes下的exact compatibility是另�
 exact producer work/result tile，witness只绑定该D execution/use与E parent/child temporal points；不能把整个D group、其它E siblings
 或boundary alternative设为no-good。
 
-analysis不选择下一tile、不修改state，也不clone/lower/spill/retile/rebuffer IR。Q51只消费typed requirements和exact witness；cache由
-AnalysisManager及observed typed choices正常失效，不保存materialized IR、diagnostic字符串、optional solver state或估算bool。
+analysis不选择下一tile、不修改state，也不clone/lower/spill/retile/rebuffer IR。Q51只消费typed requirements和exact witness；
+source-only pass analysis由AnalysisManager失效，assignment/target相关memo由planning session按observed typed choices失效；两种
+cache都不保存materialized IR、diagnostic字符串、optional solver state或估算bool。
 
 ### Gate
 
@@ -4711,8 +4719,9 @@ choices或J closure，bandwidth只形成estimate。
 #### Analysis scope、failure与invalidation
 
 event graph的最窄完整container是Card plan，因为peer matching和DDR可跨Tiles；构造先按Tile/region分component，再加cross-Tile edges，
-无连接components可独立query。source-only relation/effect facts可进入MLIR AnalysisManager；assignment-dependent event graph保持query-local，
-不伪装成MLIR analysis或跨candidate cache。extensionally相同component可在immutable session memo descriptor，但assignment仍独立。
+无连接components可独立query。source-only relation/effect builder可以有MLIR AnalysisManager薄wrapper；driver planning直接拥有同一
+builder的typed result。assignment-dependent event graph保持query-local，不伪装成MLIR analysis或跨session cache。
+extensionally相同component可在immutable session memo descriptor，但assignment仍独立。
 
 缺plan field返回F-style scoped Deferred；source/target action无event/resource contract为Unsupported；构图work limit为Indeterminate；malformed
 ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observed choice改变时，相关component graph、resource facts和后续J assignment全部失效；
@@ -5624,6 +5633,11 @@ transformation，不适合持有全局frontier、在多个不物化choices间选
 承载winner后的leaf transformations。LLVM MachineScheduler则把ScheduleDAG、ready state和`MachineSchedStrategy`分开：问题/合法依赖
 不因选择策略改变。Q51采用同一分层，但planning对象是card-wide typed plans，controller是compiler driver library，不是假装成一个大pass。
 
+owner按lifetime固定：compiler driver创建并关闭planning session，拥有frontier、budget、winner handoff和output transaction；
+session拥有immutable source borrow、typed problem、target/cost cohort及`ObservedDependencyKey` memo；MLIR pass/analysis只处理当前
+actual IR epoch；winner后的named subpipeline只做selected IR transformation。source analysis、session memo和winner IR三者不共享
+cache或引用，materialization开始即关闭前两者。
+
 current `runCardExecutableSearch`正相反：它物化semantic alternative clone，构造`UnifiedPhysicalDataflowAssignment`，每个complete point都
 生成CardModule、运行Q50.0并把accepted executable放进incumbent；`SearchWorkBudget.maximumEvaluations`直接计完整编译次数。该owner必须
 整体替换，不能在循环外挪一个clone后继续沿用。
@@ -5633,7 +5647,7 @@ current `runCardExecutableSearch`正相反：它物化semantic alternative clone
 ```text
 PhysicalDataflowPlanningProblem
   source: borrowed verified TensorProgram lifetime-bound to outer transaction
-  program: StructuredDAG + stable semantic IDs + fixed attention facts + exact output/effect facts
+  program: StructuredDAG + SemanticRootKey/value-use keys + fixed attention facts + exact output/effect facts
   target: immutable topology/memory/operation/transport/resource facts
   mechanisms: statically composed Q50 query functions
 
@@ -5648,9 +5662,10 @@ PhysicalDataflowPlan
   schedule: ClosedSchedulePlan
 ```
 
-`mechanisms`是编译期直接调用关系，不是runtime registry、字符串factory或用户selector。planning problem可以在内部借用source operation
-用于AnalysisManager query，但任何state/key/result只使用stable semantic IDs；borrow不跨outer source lifetime。ProgramDataHandoff、output
-directory和target/package owner不进入planning problem。
+`mechanisms`是编译期直接调用关系，不是runtime registry、字符串factory或用户selector。planning problem在outer source lifetime内
+借用source operation，并通过与pass analysis wrapper共用的policy-free builder建立session-owned typed facts；它不持有
+`Analysis *`或在pass外构造`AnalysisManager`。任何state/key/result只使用`SemanticRootKey`及其它typed semantic keys。
+ProgramDataHandoff、output directory和target/package owner不进入planning problem。
 
 #### Closed typed state variants
 
@@ -6730,13 +6745,15 @@ current new path；旧search数据和历史日志不能回放。
 
 #### 三类memo owner
 
-1. **IR-derived analysis**继续由MLIR AnalysisManager按operation scope拥有；不另建epoch/fingerprint cache。
+1. **IR-derived facts**由policy-free builder定义；pass内可由MLIR AnalysisManager按operation scope缓存，planning driver在session中
+   直接拥有同一builder的typed result，不保留`Analysis *`或另建epoch/fingerprint cache。
 2. **assignment query memo**只在一个planning session内缓存pure typed result：domain descriptor、exact demand projection、F problem/result、
    J event graph、work/bound/estimate等。每类query声明`ObservedDependencyKey`，key包含它实际读取的axis choices和target facts。
 3. **future-boundary DP memo**只在能证明两个prefix拥有相同completion set和downstream contribution时共享suffix result。
 
-所有memo value不含Operation pointer、IR、offset、mutable solver、diagnostic string或statistics；IR borrow仅由analysis manager内部管理。hash只作
-lookup，hit后比较完整typed key。evict/cache-off只增加work，不改变result；并行miss使用single-flight或按semantic key确定性合并，不能让先
+所有memo value不含Operation pointer、IR、offset、mutable solver、diagnostic string或statistics；source borrow由planning session
+lifetime约束，pass analysis引用只在对应pass内存在。hash只作lookup，hit后比较完整typed key。evict/cache-off只增加work，不改变result；
+并行miss使用single-flight或按semantic key确定性合并，不能让先
 完成的thread成为semantic owner。
 
 #### FutureBoundaryKey

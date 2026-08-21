@@ -160,79 +160,29 @@ invocation memory另成一块，是因为它承载每次更新/回读并可在�
 若真实provider证明单次allocation/copy存在上限，必须先形成typed capability和新的compiler/package block plan；runtime不得静默
 逐tensor回退。
 
-### 3.4 Review闭环项
+### 3.4 Canonical package 与 bounded materialization
 
-首轮review列出的六个缺口已修复，每个缺口都有直接触发原问题的回归测试：
+- `TargetTensor` placement先按完整typed descriptor和semantic tie-break确定canonical顺序，再签发identity并回填all-and-only
+  Tile entry references；发现顺序、pointer、container ordinal或旁路consumer表都不能决定identity。
+- 每个selected `TargetTensor`只通过同一physical geometry/codec合同materialize一次。writer遍历disjoint contiguous
+  physical windows，从optional logical index读取必要source runs并写入exact physical bit/byte position；layout padding写canonical
+  zero，source/output live window受显式byte/work bound约束，不分配整tensor host vector。
+- source与target representation不同时必须消费accepted representation携带的typed materialization action；不得按storage width
+  做bit reinterpret，也不得由writer、model或runtime补默认conversion policy。不同`TargetTensor`即使引用同一
+  `ProgramTensor`也分别形成bounded materialization；多个Tile引用同一`TargetTensor`不重复转换。
+- `ProgramDataRangeMaterialization`作为move-only bounded reader绑定一个`ProgramTensorId`；一次创建可服务多个window read，
+  计数按真实materialization而不是Tile引用增长。
+- manifest writer与strict verifier使用同一physical tensor descriptor、storage-size和canonical placement合同，证明ranges
+  non-overlap、alignment正确、gap/padding全零、entry reference一致，且`program-data.bin`精确结束于最后一个range；
+  logical/target element count、bytes或trailing data不一致均在runtime allocation前拒绝。
+- package root只允许current manifest、all-and-only declared modules及必要的`data/program-data.bin`目录拓扑；额外regular file、
+  directory、symlink、source NPY、IR或exporter临时文件全部拒绝。
+- pointer rows使用3.3已经预排的invocation child ranges；board executor只拥有一块invocation memory和optional non-empty
+  program-data memory，不为每个Tile另行allocation。
+- typed manifest model、canonical spelling、parser/serializer、semantic verifier、readback与profile package model归中立
+  package support library；compiler writer与runtime loader共同依赖该owner，compiler不反向链接board execution实现。
 
-
-1. **TargetTensor identity在确定性排序后失配。** 当前entry argument在TargetTensor首次发现时保存临时ID，placement按完整descriptor
-   排序后又重写record ID，却没有重写已经保存的entry引用。必须先形成canonical TargetTensor顺序再签发稳定ID，或在排序后根据
-   typed consumer关系统一回填；不得依靠发现顺序、pointer或未消费的旁路consumer表。回归必须覆盖同一ProgramTensor被两个不同
-   target descriptor消费且发现顺序与canonical顺序相反，并证明每个Tile entry解析到对应descriptor及file range。
-2. **Selected target representation没有真正materialize。** 当前writer只接受source dtype/shape/bytes完全相同且layout为`Tensor`的
-   identity情况，其它已由final `TileEntryArgument`选择、既有physical tensor codec能够表达的layout、padding或dtype转换会失败；
-   identity路径还先分配完整tensor大小的host vector。writer必须消费既有codec并按bounded window产生target bytes，每个不同
-   TargetTensor只转换一次，additional host heap不随最大tensor线性增长。回归必须覆盖同一source形成不同selected representation、
-   physical padding和大payload RSS/read-window边界。
-3. **Tile-row pointer table绕过单一invocation allocation。** planner已经把每Tile pointer row排入invocation child range，board executor
-   却再次逐Tile申请独立device allocation并把这些额外地址交给launch，导致预排range闲置、provider call数量错误且资格阶段低估
-   实际allocation demand。executor必须把row H2D到`invocation base + planned offset`，TileRow路径只拥有一块invocation memory和
-   optional program-data memory；fake provider测试要断言allocation次数、地址、容量失败和reverse cleanup都与同一个plan一致。
-4. **Program-data strict verification没有证明canonical layout。** 当前verifier只逐项检查TargetTensor对齐/边界，并比较whole-file
-   size/digest，仍会接受overlap、未解释gap、trailing bytes、非canonical offset/base alignment和非零padding。readback必须按同一
-   stable identity/tie-break重建完整non-overlap placement，证明ranges all-and-only覆盖payload、所有padding为零、total bytes/base
-   alignment精确，且entry引用与canonical TargetTensor ID一致；正负测试分别覆盖这些拒绝路径。
-5. **Package root没有all-and-only closure。** 当前文件遍历只关闭`modules/`，package root或`data/`中的额外regular file、directory、
-   symlink及其它未声明member仍可能被接受。strict loader必须从package root验证恰好存在`manifest.json`、all-and-only modules和
-   `data/program-data.bin`所需目录拓扑，拒绝任何额外或非regular payload；source NPY、IR和exporter临时文件继续不得进入package。
-6. **Package support仍反向绑定BoardRuntime。** manifest typed model、canonical spelling、parser/serializer、semantic verifier和readback
-   必须按`tasks/18-source-organization.md`拆到中立package support library；compiler writer和Runtime loader都依赖该owner，Compiler
-   不得为了写package链接包含`BoardRuntime`执行实现的整个Runtime library。CMake依赖检查和public link smoke必须覆盖该边界。
-
-修复落点与回归：
-
-1. canonical TargetTensor id：`buildManifest`在确定性placement后重签发排序id并回填全部entry引用（`TwoSelectedRepresentationsRemapCanonicalIdsAndPadPhysically`覆盖三种重映射类）；
-2. selected representation：`writeProgramData`消费`PhysicalTensorCodec`新增的physical-order bounded window plan按窗口materialize，identity路径直接流式source range不再分配整tensor host vector，Cx块padding为canonical零（同一回归覆盖RSS/read-window路径；8MiB identity流式由program-data scale lit覆盖）；
-3. TileRow单一invocation allocation：executor把16个pointer row H2D到`invocation base + planned offset`，不再逐Tile allocate；fake provider测试断言allocation次数、row地址、每Tile失败注入与reverse cleanup与同一plan一致；
-4. program-data canonical layout：verifier按writer同一tie-break重建non-overlap placement并证明id顺序、offset、全零padding、total bytes与base alignment精确；`PackageManifestTest`新增5个拒绝路径正/负例；
-5. package root closure：strict loader（`loadExecutablePackage`）验证package root恰好`manifest.json`+`modules/`+`data/program-data.bin`，拒绝额外member/symlink/非regular payload（3个负例）；
-6. 中立package support library：`lib/Wafer/Package`/`include/Wafer/Package`拥有typed model、canonical spelling、parser/serializer、verifier、readback与profile instrumentation model；`WaferCompiler`链接`WaferPackageSupport`且不链接`WaferRuntime`，`tools/check_source_organization.py`新增CMake依赖边界检查。
-
-修复后验证：三棵树fresh build；Q56定向单测161/161；WaferRunBoardIOUnitTests 42/42；Runtime/Compiler public link smoke exit 0；默认lit gate 216/216；source organization与board python检查通过；fresh参数add source→package→no-card通过。真实板测仍按本文件原门禁串行执行。
-
-### 3.5 二次review闭环项
-
-二次review发现首轮修复仍把局部case当成了通用physical/data合同。本轮按同一current接口原位收紧：
-
-1. bounded encoding改为遍历disjoint contiguous physical windows，并用shared `PhysicalTensorGeometry`反算每个physical element的
-   optional logical row-major index。Cx/NCx完整block、tail和bank padding都按physical order处理，不再把一个logical C row当成
-   contiguous physical span；`maxBytes`和element budget都是真正硬上限，BOOL使用byte-aligned bitpacked windows。
-2. package writer只按窗口内logical index排序并读取连续source runs；最大source/output live window均有界。同一窗口通过
-   `NumericCodec`写回physical bit offset，测试逐字节对比full codec，覆盖Cx`{2,128}`、NCx`{2,3,128}`、Cx tail及
-   Tensor/Cx/NCx BOOL。
-3. source/target dtype不同时必须执行明确的value conversion，不能做同宽storage-bit reinterpret。Q56完成时的实现通过current
-   `TargetConvertRoute`进入formal conversion并固定nearest-even，缺route或zero-point时fail closed；这只是当时保全bytes正确性的
-   mechanic，不是terminal compiler→model合同。Q62将其原位替换为accepted representation携带的typed materialization action，
-   保留F16 1.0到BF16 `0x3c00 -> 0x3f80`的行为覆盖而不保留fake CT command/profile resolver。
-4. `ProgramDataRangeMaterialization`作为move-only typed reader绑定一个`ProgramTensorId`；创建一次计一次materialization，任意多个
-   bounded reads仍属于同一事件。package为每个TargetTensor创建一个reader，因此同一ProgramTensor的Tensor/Cx等不同表示分别计数，
-   多Tile共享不重复计数。
-5. strict manifest verifier把PackageMemLayout映射集中到package model，并对ProgramTensor logical descriptor、TargetTensor和
-   external port target descriptor调用同一physical tensor descriptor/`getPhysicalTensorStorageBytes`合同；当前实现类
-   `NumericTensorKey`由Q62无compatibility alias地原位替换。bytes或logical/target element count不一致在runtime allocation
-   planning前拒绝。
-6. `program-data.bin`必须精确结束于最后一个canonical TargetTensor range；无论尾随字节是否为零都拒绝。`modules/`递归closure
-   同时验证declared module path所需目录祖先，额外空目录也拒绝。
-7. profile instrumentation的共享filename/model常量归中立`WaferPackageSupport`；Compiler和Package源码/头文件不再include
-   `Wafer/Runtime/*`。source-organization gate同时检查CMake link edge与header include edge，防止只修链接表而保留反向header依赖。
-
-上述都是Q56现有pipeline contract的correctness收紧，不增加新schema、兼容reader、driver mode或runtime fallback。
-
-二次review修复后fresh验证：主构建与启用板端配置的`wafer-run`重编译通过；Q56定向unit 128/128、
-WaferRunBoardIOUnitTests 42/42、Compiler/Runtime public link smoke 2/2、SystemC integration与numeric model 65/65；
-parameter source→package→no-card及program-data scale lit 2/2、source-organization lit 1/1，直接source-organization检查通过。
-本轮没有启动真实设备，状态恢复为`board-ready`而不是`done`。专用runner
-`test/Board/wafer_board_single_op_add_test.py`以CTest `wafer-board-program-data-add`进入current串行板端入口。
+这些要求属于current package/runtime合同；任务状态和fresh验证证据只记录在`tasks/progress.md`。
 
 ## 4. Q57：设备常驻执行
 

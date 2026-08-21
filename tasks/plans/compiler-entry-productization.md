@@ -6,12 +6,11 @@
 Q59/Q60 的施工顺序、checkpoint 和验证门禁，不复制 frontend program、compiler IR、package schema、runtime
 或接口演进合同，也不建立第二条 source-to-package pipeline。
 
-Q59 `compiler-entry-transaction-closure` 在 Q58 完成且 Q56 达到 `board-ready` 后执行；Q60
-`frontend-production-entry` 在 Q52、current PyTorch/XLA capture/export资产和 Q59 完成后执行。Q53 production readiness 增加 Q60 为直接前置，
-并只消费 Q60 交付的产品 frontend output；Q59/Q60 均不以测试 generator 或历史 package 代替完成证据。
+Q59 `compiler-entry-transaction-closure` 在 Q56 达到 `board-ready` 后执行；Q60 `frontend-production-entry`只依赖current
+PyTorch/XLA capture/export资产和Q59，不依赖Q51/Q52 search。Q53 production readiness把Q60产品frontend和Q52 search
+scalability作为两个并列直接输入，只消费Q60交付的产品frontend output；Q59/Q60均不以测试generator或历史package代替完成证据。
 
-当前状态：Q59的2026-08-16 follow-up review缺口已闭合（修复记录见2.1节），任务恢复`done`；
-Q60继续等待其它直接前置闭合。
+当前状态：Q59和Q60均为`done`；动态状态和后续前置只看`tasks/progress.md`。
 
 ## 1. 拆分依据
 
@@ -21,9 +20,9 @@ CardExecutable/target writing、package readback和 no-replace publication。尚
 1. library 的普通返回值仍是 package writing 之前的中间编译对象，CLI 又在 package 发布后执行 debug/qualification
    action；同时产品工具依赖 build/source tree 绝对路径。这是 Q56 current package 固定后即可独立修复的入口事务问题，
    不依赖 Q51/Q52 search 设计。
-2. framework/exporter 到 source program 的真实机制目前由测试 corpus generator 承载，没有可安装的最小产品 adapter；
-   外部 StableHLO 入口也尚未以 portable bytecode 形成单一兼容边界。这不应打断主 compiler search 闭环，因此放在
-   Q52 和current source capture/export mechanics之后、Q53 production readiness之前闭合。
+2. framework/exporter到source program的产品边界与compiler search正交：它把current capture/export mechanics收敛为可安装的
+   最小adapter，并让外部StableHLO以portable bytecode进入同一source contract。该边界在Q59之后独立闭合，不等待Q51/Q52；
+   Q53再同时消费该产品入口和Q52交付的search scalability。
 
 Q59 不修改 frontend source 格式或 search/runtime 语义；Q60 不修改 compiler selection、target、package 或 execution
 合同。两项只把已经存在的语义 pipeline 暴露为一致、可迁移、可验证的产品入口。
@@ -133,60 +132,6 @@ Pipeline position:
    `wafer-compile-structured-tensor-program.test`的32x32 dot输入被pinned XLA helper拒绝（helper调用byte-identical，与Q59无关）；
    `wafer-compile-spmd-partition.test`同一输入上search 45分钟+未收敛（候选序号持续增长，Q52 search cost范围）。）
 
-### 2.1 2026-08-16代码review重新打开与follow-up修复
-
-本轮review确认CLI current cutover、internal/production入口拆分、tool resolver和普通成功路径可以继续复用，但Q59的
-result ownership、commit与profile共同产品合同尚未闭合，因此任务恢复为`doing`。以下问题都属于Q59当前边界，不能转移给
-Q60、Q53或runtime consumer：
-
-1. **`ExecutablePackage`不拥有package成员。** current类型只保存canonical root字符串、`ExecutionConfig`和
-   `VerifiedPackageManifest`；strict loader用于manifest、module与program-data校验的`MemoryBuffer`在返回前已经销毁。
-   move-only和digest identity不能代替resource control，磁盘成员在result lifetime内仍可被删除或替换。这违反15号合同
-   “实际持有opened/mmap module/program-data members；随后按root重新打开不算ownership”的要求。重新完成时唯一current
-   semantic type必须直接RAII持有all-and-only verified成员，runtime/compiler不得再建立第二个verified wrapper。
-   （follow-up已修复：package层唯一`runtime::ExecutablePackage`在发布rename前经shared strict binder取得manifest、
-   manifest.modules顺序的全部module和program-data exact read-backed snapshots；module与program-data的size/digest均对照
-   verified manifest，所有descriptor在返回前关闭。compiler只使用type alias，board runtime不再按root reopen。
-   `CompilationTest.ExecutablePackageOwnsExactMemberSnapshots`覆盖descriptor无泄漏、同inode原地改写和全路径删除后内容稳定。）
-2. **最终发布之后仍存在可失败步骤。** transaction先把staged package（profile模式还包括instrumentation sibling）rename到
-   canonical output，再读取installed manifest/activation；任一readback失败都会返回`CompilationFailure(PackageCommit)`，但scope
-   cleanup只删除transaction staging root，不撤销已经可见的output。I/O错误、并发删除/替换或内部不变量错误因此都会产生
-   “返回失败且本轮目标仍可见”。重新完成必须让所有可能失败的validation在单一visibility point之前闭合；若仍需installed-path
-   binding，必须用明确事务状态和可测试恢复保证任一错误出口不泄漏本轮目标，不能用“只可能是compiler bug”免除合同。
-   （follow-up已修复：commit阶段在staged root上完成fresh canonical manifest load、all-and-only exact member binding，
-   profile请求还绑定exact activation/plan/site-map与两份capture package，然后执行唯一一次no-replace rename；
-   committed public owner只在rename成功后构造，之后无可失败步骤。）
-3. **ordinary/profile不是共同原子commit。** current helper先rename ordinary package，再rename `<output>.profile`；第二次返回失败时
-   可以best-effort把package移回staging，但两个独立rename之间仍存在partial visibility，进程退出或观察者读取时也无法回滚。
-   “两个rename各自原子”不等于“两个产品共同原子”。重新完成必须选择一个可被单次发布的共同owner/root，或形成等价的
-   current事务表示；不得让runtime靠等待、重试或猜测sibling完整性修补。
-   （已修复：profile请求时输出目录是共同delivery root，一次rename发布`<output>/package`与`<output>/package.profile`；
-   runtime sibling规则`<primaryPackageRoot>.profile`保持不变，wafer-run发现逻辑零改动；普通模式布局不变。
-   `renamePackageAndProfileNoReplace`及其rollback已删除，`CompilationOutputTest`改为单rename all-or-nothing测试。）
-4. **profile installed readback被result retention条件化。** `runCompilationTransaction`只有在
-   `retainedProfileProduct != nullptr`时调用`verifyCommittedProfileInstrumentation`；
-   `compileProgramWithTargetLLVMModules`始终传空指针，因此该internal API携带profile options时可以提交instrumentation并成功返回，
-   却没有验证installed activation binding。Validation必须由请求的产品集合决定，不能由caller是否保留某个返回字段决定；
-   不支持的internal组合应在commit前typed拒绝，支持的组合则必须走同一无条件验证。
-   （follow-up已修复：commit阶段的profile binding验证只由`options.shouldProduceProfileInstrumentation()`决定；
-   `compileProgramWithTargetLLVMModules`在进入transaction前对profile options返回typed `invalid_argument`拒绝。）
-5. **committed类型在outer commit前构造。** package writer会为`transactionRoot/package`构造`ExecutablePackage`，
-   `stageExecutablePackage`随即丢弃它，outer transaction最终rename后再构造第二个对象。这样同一类型既表示staged package又表示
-   committed installed result，破坏类注释和public result依赖的类型不变量。Writer应返回窄的staged assembly/readback result，
-   只有唯一outer commit owner能构造committed `ExecutablePackage`。
-   （follow-up已修复：`writePackage`返回窄的`llvm::Expected<runtime::VerifiedPackageManifest>`staged readback；outer commit
-   先持有无committed identity的`BoundExecutablePackage`，唯一publication rename成功后才经package factory构造
-   committed `ExecutablePackage`。）
-6. **新增typed failure没有直接测试。** 当前unit/lit没有消费`CompilationStage`或`CompilationFailure`，也没有注入最终commit后
-   manifest/activation readback失败；已有atomicity测试停在helper、IR、target/package assembly及rename竞争路径。因此常规路径通过
-   不能证明stage分类或“失败不留目标”。
-   （follow-up已修复：`CompilationTest.CompilationFailureClassifiesStageAndRendersLog`逐stage验证accessor/log/error code；
-   所有test-only transaction failure都经public typed facade返回`CompilationFailure`。`wafer-compile-commit-transaction.test`
-   分别篡改staged program data与profile plan，并覆盖verification-complete注入；均报package-commit、目标不可见、无staging残留。）
-
-完成状态与fresh验证结果统一记录在`tasks/progress.md`的Q59 row；本节只保留缺口、修复边界和必须直接触发的回归合同，
-不复制动态测试计数。
-
 ## 3. Q60：Frontend production entry
 
 ```text
@@ -249,31 +194,6 @@ Pipeline position:
 6. **定向验证**：覆盖普通小模型、branched/static模型和一个Q53会继续消费的代表source；覆盖真实export重复等价、
    pre-exported portable bytecode、metadata/shape/dtype/role、安全路径、graph break/fallback/side effect和dynamic负例；证明
    adapter output未经重写直接进入Q59 library/CLI并完成package readback/no-card。Q60不声称Q53规模、板端或性能完成。
-
-### 2026-08-19 Q60 implementation closure
-
-- 产品Python包提供唯一API
-  `wafer.frontend.export_pytorch_program(module, example_inputs, output_directory)`；
-  API无target、Tile、search、runtime、oracle、seed、case或模型参数，使用strict
-  `torch.export`和pinned PyTorch/XLA exporter。BF16 parameter/buffer bytes由同一产品
-  helper按little-endian `|V2`保存，测试generator不再拥有第二份workaround。
-- source program的唯一IR成员是`functions/forward.stablehlo.bc`。它直接采用
-  PyTorch/XLA产生的`StableHLO_v1.7.1` portable artifact；旧`forward.mlir`和
-  `forward.bytecode`在source中fail closed。post-SPMD tensor program text是compiler-owned
-  internal stage，由不同的parser API消费，不构成production双reader。
-- `WaferStableHLOProgram`拥有portable deserialize、production static/single-entry/custom-call
-  gate和program metadata/payload verification。`wafer-verify-program`与compiler transaction
-  复用该owner；advisory成功不会跳过transaction snapshot、owned payload resolver与fresh
-  verification。旧`wafer-compile-stablehlo` tool/source/target无alias残留。
-- `wafer-opt`的`wafer-frontend-verification` named pipeline只验证显式开发IR，保留
-  bounded-dynamic IR-local正例；production portable ingestion仍拒绝任意dynamic boundary。
-- adapter和verifier只在真实依赖启用时构建/安装。relocated install tree中的
-  `lib/python/wafer`、`wafer-verify-program`、`wafer-compile`和`wafer-run`完成同一产品source的
-  export→advisory verify→package→no-card。feature-off install不包含不能运行的stub。
-- fresh产品测试覆盖one-output static parameter model、branched static model、重复export
-  byte-identical、data-dependent graph break拒绝、pre-exported portable、corrupt/retired IR、
-  metadata shape、unsafe locator、missing payload与dynamic负例。全lit为251/251 supported
-  通过、4项按feature配置unsupported；source/dependency/IR organization检查通过。
 
 ## 4. 共享约束与收尾顺序
 

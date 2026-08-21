@@ -24,7 +24,7 @@ Pipeline position:
 - Explicit non-goals:
   不按任务编号/agent/checkpoint建用户级module；不保留deprecated API；不把common helper变成语义恢复黑箱；
   不在test/tool中复制compiler/runtime合同。
-- Completion gate:
+- Done criteria:
   current owner map与CMake一致；public header只暴露稳定typed boundary；repo-wide无旧execution-domain、旧schema/
   ABI reader、late selector或algorithm shortcut source/test；fresh build、unit/lit/CTest和组织检查通过。
 ```

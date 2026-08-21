@@ -183,63 +183,6 @@ Q58不定义TargetTensor。TargetTensor由14号合同根据最终`TileEntryArgum
      正确报告unsupported。现有feature-on build因managed numeric-model conformance record缺失无法fresh reconfigure，故本轮不把
      该skipped case计入完成证明；returned executable lifetime由直接move/staging-cleanup单测、Card边界prepare集成和production
      storage-parent路径共同证明。
-### 4.1 2026-08-16代码review重新打开（同批修复后闭合）
-
-本轮review确认8月15日实现和测试是可继续施工的部分结果，但不足以签发Q58完成。以下问题属于当前
-pipeline contract内的阻断项，不转移到Q56或Q61。全部六项已在同批修复并重新验证（见checkpoint 2-6
-的2026-08-16状态与`ProgramDataTest` 13/13、三档byte-volume fresh证据），本节保留为历史记录：
-
-1. `ProgramDataSource::establish`和file digest路径使用默认`MemoryBuffer::getFile`。大于LLVM mmap阈值且满足映射条件的普通文件
-   会成为对原inode的只读`MAP_PRIVATE`映射；它只阻止当前映射写回，不冻结其它进程对同一inode的原地写入。
-   establish时保存的digest因此可能对应旧bytes，后续range读取却观察到新bytes。现有mutation测试只有小payload，
-   走heap copy分支，不能证明0.5/2/8 MB规模证据的ownership。owner必须持有不再受用户文件变化影响的内容，且新增
-   超过mmap阈值、对同一inode原地改写的回归测试；文件digest也必须按本合同的1 MiB window实现，不得整文件mmap。
-2. source verification之后，helper输出验证、tensor-program readback和`compileTensorProgramToCardExecutable`仍调用
-   未提供`ProgramPayloadResolver`的`verifyProgramDirectoryMetadata`；parameter shard验证也直接从path读取。因此同一
-   shard/constant会在owner establishment前后重复open/read，而这些操作没有进入`program-data-io`。需要让每个payload
-   只在建立对应transaction owner时读取，并让所有后续verifier/consumer消费owned source或已验证typed facts；账本必须
-   覆盖整条source-to-package pipeline，而非只统计`ProgramDataHandoff`内部调用。
-3. `ProgramDataRange::create`只检查source与typed descriptor的rank/dtype，随后按source shape计算stride、按global shape
-   检查slice。相同rank和byte count但不同shape可被接受并按错误layout解释。original source range必须证明source shape等于
-   global shape；materialized shard range必须证明source shape等于local shape，这一来源区别必须由显式合同表达并测试。
-4. `getProgramDTypeElementBytes`把NPY的`i1`一字节存储宽度与`ProgramTensor`允许的target表示合成同一张表，使原本因target
-   bitpack尚未实现而拒绝的`i1`重新被接受。需要分离source encoding width与program-boundary admitted dtype，或完整实现并
-   验证boolean target conversion；不能只修改现有“不支持boolean”的API注释。
-5. helper materialization的目录创建、目标打开/写入/关闭、digest读取，以及shard region digest失败，不会稳定填充
-   `ProgramDataFailure`；调用方可能把它们报告成默认`MissingPayload`和空locator/detail。所有可恢复失败必须在被消费前形成
-   准确typed kind、locator与detail。
-6. `ProgramDataTest`当前只直接比较region digest和单个shared view，没有调用`verifyShardAgainstSource`证明dedup/reuse，
-   也没有通过`prepareProgramInvocations`证明16 Tile按range一次materialize。重新完成时必须补齐这些集成断言、同内容不同
-   `ProgramTensorId`不合并负例、source-shape错配负例、`i1`拒绝和显式I/O statistics断言。
-
-此前`wafer-compile-card-baseline.test`、定向unit以及三档byte-volume运行结果仍可作为未触发缺陷路径的回归/性能背景，
-但不能证明上述合同。修复后必须使用本轮新构建和新输出重跑相关unit、source-to-package、no-card及三档规模账本，再将Q58
-标回`done`。
-
-### 4.2 2026-08-16二次代码review重新打开（同批修复后闭合）
-
-第一次review修复补齐了resolver、typed range与错误分类，但后续检查确认以下合同仍未真正闭合，因此本轮曾把Q58恢复为
-`doing`。这些问题仍属于Q58当前边界，不转移给Q56；以下六项现已按checkpoint 2-6实现并以本轮fresh证据闭合：
-
-1. `compileTensorProgramToCardExecutable`返回时会删除transaction root，而handoff的owned path位于该root下；返回的
-   `CardExecutable`随后通过public `prepareProgramInvocations`读取range时已经没有可用文件。handoff必须用move-only RAII
-   资源覆盖整个`CardExecutable` lifetime，不能只持有会被外部scope cleanup删除的path。
-2. byte-identical helper shard虽然复用原source，但candidate只是不被adopt，并未在最后一次metadata验证后销毁；结果仍保留
-   无consumer的重复文件。candidate必须在Card边界签发前all-and-only收口。
-3. `readRange`、strided materialization与region digest会重复打开owned file；底层`readFileSpan`也允许一次请求超过1MiB。
-   现有`source_opens`只统计establishment，无法解释实际open/read。需要让source本身持有只读handle，最低层强制window，
-   并记录实际file open、read window、read bytes与最大window。
-4. 原地写入回归的8272-byte fixture小于pinned LLVM 16KiB mmap阈值，不能证明旧mmap实现会失败；回归payload必须明确超过
-   该阈值。
-5. establishment只解析复制前source header；最终owned bytes没有重新解析并成为typed facts的事实源。必须从同一open
-   descriptor复制，并以owned descriptor重新做bounded header、exact extent和digest验证后才发布source。
-6. 规模测试账本中的`range_materializations=0`没有覆盖大range consumer。需要增加大payload materialization回归，证明
-   单次逻辑materialization会拆成多个不超过1MiB的底层read window，且计数随bytes而不是Tile引用增长。
-
-完成门禁已满足：returned executable lifetime、helper-payload purge、owned self-verification、bounded reads和显式I/O statistics均有直接
-回归；fresh build、15/15 semantic unit、52/52受影响filtered unit、两条source-to-package/no-card lit和三档规模账本通过。
-feature-on target-model case因当前managed dependency record缺失而unsupported，未被计入上述通过数，也不替代直接lifetime证明。
-
 ## 5. Q58 measurement
 
 | 维度 | 必须记录 | 完成条件 |

@@ -325,7 +325,7 @@ spatial/temporal prefix派生query-local typed result：
 
 ```text
 AttentionWorkDescription
-  root: SemanticRootId
+  root: SemanticRootKey
   outputPiece / contribution / merge identities
   actions: QK, ScaleMask, RowMax, Exponential, RowSum,
            PV, StateUpdate, StateMerge, Finalize
@@ -335,8 +335,9 @@ AttentionWorkDescription
   logical work and mandatory simultaneous-state groups
 ```
 
-action/value ID由semantic root、output piece、contribution和closed action kind形成，不含operation pointer、block ordinal、Tile ordinal、
-printed name或future worker。该description不进入candidate state、IR attr或文件；相关B/E choice变化后重算。
+action/value ID由`SemanticRootKey`、output piece、contribution和closed action kind形成；root key遵守06号文档的
+observable SSA path合同，不含operation pointer、block/operation ordinal、Tile ordinal、printed name或future worker。该description
+不进入candidate state、IR attr或文件；相关B/E choice变化后重算。
 
 ### 6.2 A--K映射
 

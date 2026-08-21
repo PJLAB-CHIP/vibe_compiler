@@ -120,8 +120,9 @@ multi-inflight或persistent device loop并入runtime。15继续是唯一package/
 
 Q59 compiler entry transaction与Q60 frontend production entry共用
 `tasks/plans/compiler-entry-productization.md`。Q59在Q56达到`board-ready`后让compiler library primary result、package commit、CLI status
-与install tree成为同一事务；Q60在Q52 search scalability后将最小framework adapter与portable StableHLO ingestion接入
-同一source contract。Q53必须从Q60产品入口fresh生成证据，不能继续把test generator当成用户frontend。
+与install tree成为同一事务；Q60已经基于current PyTorch/XLA capture/export资产和Q59独立完成最小framework adapter与portable
+StableHLO ingestion，不依赖Q51/Q52 search。Q52只负责Q51后的search scalability；Q53同时消费Q52结果和Q60产品入口，必须从
+该入口fresh生成证据，不能继续把test generator当成用户frontend。
 
 Q48语义驱动superoptimizer计划见`tasks/plans/semantic-superoptimization.md`。它必须在Q53按card-local multi-Tile新合同
 重新达到`board-ready`、Q47 current ABI可消费final Instr/TargetCall后启动，
