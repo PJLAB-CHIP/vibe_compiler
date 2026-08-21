@@ -7,7 +7,9 @@ set(WAFER_PLANNING_SOURCES
   Planning/Baseline/CardBaselineMaterialization.cpp
   Planning/Baseline/CardBaselineTemporalTiling.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraints.cpp
+  Planning/PhysicalDataflow/AttentionWorkDescription.cpp
   Planning/PhysicalDataflow/BufferPlan.cpp
+  Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignment.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
   Planning/PhysicalDataflow/CanonicalRepresentationPlan.cpp

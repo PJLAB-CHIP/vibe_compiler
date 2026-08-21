@@ -29,6 +29,7 @@ add_executable(WaferUnitTests
   Target/Execution/TargetCallExecutionTest.cpp
   CodeGen/Target/TargetIdentityTest.cpp
   Planning/PhysicalDataflow/AttentionSpatialConstraintsTest.cpp
+  Planning/PhysicalDataflow/CanonicalAttentionWorkProjectionTest.cpp
   Planning/PhysicalDataflow/CanonicalSpatialAssignmentTest.cpp
   Planning/PhysicalDataflow/CanonicalRegionPlanTest.cpp
   Planning/PhysicalDataflow/CanonicalTemporalPlanTest.cpp

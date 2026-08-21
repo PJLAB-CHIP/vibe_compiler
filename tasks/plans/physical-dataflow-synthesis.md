@@ -2041,6 +2041,58 @@ search也不能把FA当成FD空间切分。
 Q50.B/A完成attention read-only接入后，Q51.Core的首个真实state是`SpatialState`，不是`RootAlgorithmState`。Q51 problem借用固定
 normalized semantic roots；`PhysicalDataflowPlan`不复制algorithm assignment，FA/FD从source op读取并进入observed dependency key。
 
+#### attention-work-projection contract
+
+`attention-work-projection`只把fixed attention semantics投影到已经闭合的canonical C--K对象，不创建新的physical选择层。每个
+root execution形成一个scope；FD每个coupled merge另有一个merge scope。scope内stable actions为QK contraction、scale/mask、row
+maximum、exponential、row sum、value contraction、state update，以及按mode存在的state merge/finalize。action IDs由scope和closed kind
+组成，不含pointer、ordinal或打印字符串。
+
+typed values区分per-block score/scaled-score/probability、block Maximum/Sum/Accumulator、running Maximum/Sum/Accumulator和final output。
+score/probability只是当前execution block的resource description，不绑定G physical version/storage，也不表示完整attention score tensor；
+FD contribution/merge running components与final output必须逐项绑定A/G/I已经存在的`PhysicalVersionId`、`StorageObjectId`。FA running state
+保持execution-local scratch，final output绑定现有version。每个block/running三component group显式声明mandatory simultaneity，供F计算
+coexistence；不把它们合成opaque bytes。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  verifier-valid fixed-mode wafer.linalg_ext.attention、canonical RootRegionWork，以及G representation、H movement、I storage和J schedule
+  coordinates；全部root/contribution/merge/execution/value/action已有typed identity，尚未selected-decompose或构造CardModule。
+- Current stage responsibility:
+  从op maps/roles与每个execution exact domain派生attention action/value/resource DAG；把operand fragments、FD components、remote gather
+  staging、final output和parent schedule node逐项投影到既有C--K IDs并验证双射。
+- Output IR / files:
+  query-local CanonicalAttentionWorkDescription集合；不修改IR、不写attr或文件，不进入candidate state。
+- Downstream consumer:
+  canonical-feasibility-proof把每个scratch/state/action和simultaneous group纳入resource problem；attention-selected-decomposition只对winner
+  读取同一description准备Linalg/Tensor/SCF builder；后续domain work items重算对应projection。
+- User-level driver / named pipeline:
+  无独立pass、pipeline或CLI；none/search canonical prefix静态调用同一query。
+- Explicit non-goals:
+  不重新识别graph或选择FA/FD，不选择K2 partition/merge/movement/storage/schedule，不物化score/probability tensor、online loop、
+  CardModule或wafer.tile，不增加attention-specific search axis、side table或numeric policy。
+- Done criteria:
+  FA/FD、mask/no-mask、1024/1025/1031、single/multi-K2、local/remote merge、multi-root及输入顺序扰动均得到stable all-and-only
+  action/value/resource/projection；component maps/types/domains与source/A/G一致，每个remote component匹配H/I gather staging，所有parent
+  execution/action存在于J；missing/duplicate/mismatched C--K fact为typed failure，source IR不变且planning零IR。
+```
+
+| 覆盖类 | 代表输入 | 必须断言的AttentionWorkDescription | F/selected-decomposition witness |
+| --- | --- | --- | --- |
+| FA aligned/no-mask | rank-5、M/K2=1024、all-16 Tile | 每root execution有QK→scale→max/exp/sum/PV→state update→finalize；Q/K/V fragments精确，零merge/gather projection | block/running state groups和final output resource完整，score/probability无physical binding |
+| FA ragged/mask | M=1025、K2=1031、broadcast mask | mask fragments纳入对应scope，score/row/output domains保留tail；仍无FD merge action | selected builder可按maps构block scratch，不从shape/name恢复mask |
+| FD aligned/ragged | K2=1024及1031、local+remote contributions | contribution scopes无finalize；每group一个merge scope含state merge→finalize，Maximum/Sum/Accumulator逐component绑定version/storage | remote component各匹配一个gather+staging，local component无伪movement，F看到全部simultaneous state |
+| FD multi-K2 | rank-6、K2=33x31且其它主维>=1024 | 每二维K2 contribution scope独立，group/merge和action/value IDs稳定；score work domain含全部K2 axes | selected decomposition消费同一Cartesian pieces，不压成一维split count |
+| multi-root/determinism | 两个独立attention roots，反转rootWorks/resources/actions/bindings输入 | root/scope/action/value/projection逐semantic ID相同，无pointer/walk顺序 | 下游可分别准备两个roots，不共享scratch/state |
+| typed failure | 删除/复制component version/storage/gather staging/schedule node，或篡改component type/domain | `BrokenAttentionWorkProjection`准确分类且无partial description | 修正输入可重新query，source byte-identical、CardModule/Q50.0计数为零 |
+
+实现闭合：`AttentionWorkDescription`按root/contribution/merge scope提供stable action/value IDs、exact work/value domains、operand maps、
+mandatory block/running state groups及C--K projections。FA block/running scratch无physical binding，FD cross-execution running components和
+final output逐项绑定version/storage，remote components逐项绑定gather staging和schedule node；没有IR mutation、完整score tensor或
+attention search axis。fresh定向5/5、完整`WaferUnitTests` 796/796、default configured lit 224/224、compiler public link、完整configured
+build及IR/source organization通过。
+
 ### S-5：Winner内selected Linalg decomposition
 
 selected decomposition是Q51 Card subtree transaction中的一次actual construction，不是Q50.S planning transformation：
