@@ -1,146 +1,133 @@
 # AGENTS.md
 
-本文件说明本仓库的稳定协作规则和仓库导航。它不记录当前动态任务状态、短期路线图或尚未收敛的
-IR 设计选择。
+本文件规定本仓库长期使用的协作流程和编译器工程规则。当前任务状态记录在
+`tasks/progress.md`，具体设计记录在编号设计文档中。本文件不保存短期计划、临时结论或尚未确定的
+IR 设计。
 
-Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、IR、pass、工具和测试会一起演进，
-但工作标准按真实编译器工程执行：设计边界清楚，IR 语义可验证，文档不能把临时讨论、单个 case、
-未固定假设或其它项目实现路径写成长期架构。
+Wafer AI compiler / runtime仍在设计和实现阶段。文档、IR、pass、工具和测试可以一起演进，但每次
+修改都必须保持明确的输入输出、可验证的IR以及可重现的测试结果。
 
 ## 优先级
 
-1. **用户当前明确、无歧义的要求**。
-2. **本文件规定的工作流程和仓库规范**：用户目标决定“做什么”，本文件流程决定“怎么做”。执行任务按
-   任务类型和规模适用下文流程；文件修改必须读取必要上下文、做匹配验证并提交相关改动，设计同步和
-   pipeline contract只在对应边界受影响时要求。
-3. **任务完成标准**：文档一致、代码能编译、测试能通过、功能真的工作。
-4. **编译器工程原则**：IR 语义显式、pass 边界清楚、analysis 可重算、lowering 可验证。
-5. **项目既有风格和最新设计结论**：通过读当前仓库建立，不从其它项目照搬。
+发生冲突时，按以下顺序处理：
 
-执行已收敛任务时，不反复询问可自行判断的事项；设计、方案、架构边界未收敛时，要说明事实、
-假设、取舍和风险。用户说“先讨论”“别急着改”时，只讨论，不落文件。
+1. 用户当前明确的要求。
+2. 本文件规定的工作流程。
+3. 任务的完成条件，包括文档、构建、测试和实际功能。
+4. 编译器正确性，包括IR语义、pass边界、analysis失效和lowering结果。
+5. 仓库现有风格和已经确定的设计。
+
+执行已经确定的任务时，自行处理可以从仓库得出的细节。设计尚未确定时，说明已知事实、假设和
+风险。用户要求只讨论时，不修改文件。
 
 ## 工作流程
 
-每次进入执行阶段，按下面顺序推进。它是硬约束，不是收尾建议。
+以下步骤适用于修改设计、代码、测试或工具的任务：
 
-1. 看 `git status`，识别已有改动；不得回滚用户或其它工具的无关改动。
-2. 按任务范围读取上下文：`AGENTS.md`、`tasks/progress.md` 任务队列和相关编号设计文档；
-   找不到编号文档或需要确认 archive 边界时再查 `tasks/README.md`，必要时读 `docs/`、`memory/` 和代码。
-3. 设计或实现变更以 `tasks/progress.md` 任务队列作为执行管控入口；当前工作必须能落到一个队列项，
-   或者先更新队列和对应设计文档。小型维护可以直接归属既有设计owner，不为此新增队列项。
-4. 非小修、非纯文本错别字任务必须先确认或补齐对应编号设计文档和 pipeline contract，再写代码。
-5. 按IR和编译输出边界施工：说明消费哪一层上游IR或输入格式，产出哪一层下游可验证IR或输出格式。
-6. 按任务类型运行测试、构建、脚本自检或文本一致性搜索；声称完成前必须有本轮新鲜验证结果。
-7. 如果任务状态、设计边界或稳定经验变化，同步对应文档和 `memory/`；任务收尾提交相关改动。
+1. 运行`git status`，确认工作树中已有的修改。不得撤销与当前任务无关的改动。
+2. 按任务范围阅读`AGENTS.md`、`tasks/progress.md`和相关编号设计文档。只有在查找文档编号或确认
+   归档边界时才阅读`tasks/README.md`。根据需要再阅读`docs/`、`memory/`和代码。
+3. 将设计或实现工作关联到`tasks/progress.md`中的任务。小型维护可以直接归入已有设计文档，不必新增
+   队列项。
+4. 非小修必须先确认编号设计文档中的输入、输出和完成条件。缺少这些内容时，先补文档，再写代码。
+5. 按IR或文件边界实现修改。说明输入是什么、输出是什么，以及下一个直接使用者是谁。
+6. 运行与修改直接相关的构建、测试或文本检查。完成结论必须使用本轮生成的结果。
+7. 只更新实际受影响的设计文档、任务状态和`memory/`。提交当前任务的相关改动。
 
-如果某一步因为环境或外部依赖无法完成，结果中必须说明缺口、已做验证和剩余风险。
+如果环境或外部依赖阻止某一步，报告未完成的部分、已经运行的检查和剩余风险。
 
-### 构建和 Host 测试并发
+### Host构建和测试
 
-- 独立的 host 构建、单元测试、catalog、no-card 和静态检查默认按机器可用逻辑 CPU 并行执行；
-  CMake build / CTest 优先使用 `nproc` 给出的并发度，不得习惯性固定为 `-j2` 等低并发。
-- 只有已确认的内存上限、共享可写目录、显式 resource lock 或工具本身不支持并发时才降低并发度；
-  降低时要使用当前环境下最大的安全并发并说明原因。
-- 本规则不改变下述真实板端测试的串行约束；真实设备 launch 始终单进程、逐 case 执行。
+- 独立的host构建、单元测试、catalog、no-card和静态检查使用机器可用的逻辑CPU并行运行。
+  CMake build和CTest默认使用`nproc`给出的并发度。
+- 只有内存限制、共享写目录、资源锁或工具限制要求串行时才降低并发度。使用当前环境允许的最大安全
+  并发度，并说明限制。
+- 真实设备测试始终单进程、逐case运行。
 
 ### 板端测试
 
-- 任何包含板端验证的任务，无板阶段都必须推进到`board-ready`：case、oracle和runner完整，实际生成完整
-  package并通过no-card；不得留到上板时补。只做当前case的定向验证，禁止重复共享资格或全量审计。
-  `board-ready`不是`done`；真实板测通过后才能完成。
-- 同一重启会话且软硬件身份未变化时，环境资格只确认一次；不为每个 case 重复版本、反汇编、状态、
-  heartbeat 或其它无关 gate。
-- 编译器/runtime功能纵向和qualification板测的默认数据类型使用FP16或BF16；只有测试目标本身是
-  F32格式、ABI、转换或数值边界，或者真实上游workload明确要求F32时才使用F32，并在对应测试合同中
-  写明理由。不得把host unit、no-card或model fixture中的F32机械复制成板测workload；上板前必须单独
-  核对source、program descriptor、payload和expected的dtype一致且符合本条默认规则。
-- 普通 case 走最小路径：增量构建、单进程串行 launch、bounded timeout、结果 / guard 校验和正常生命周期。
-- 禁止读取、重新判定或回放历史板端输出；实现、case和环境都未变化时，不得仅为重签旧结论而重复执行
-  已有结论的case。compiler、runtime、package、case或测试校验逻辑变化并影响该case后，只能以本轮新构建、
-  新启动和新输出产生新的硬件结论。
-- 历史板端 raw、日志和报告只作为原始审计记录，不得作为测试输入，不得更新当前结论，也不得进入
-  待执行批次。
-- `board-ready`所需no-card和host oracle对本轮current package完成一次即可；case、compiler/runtime、package/test
-  合同或环境未变化时不重复。深入 ABI / firmware诊断只在板端异常需要归因时执行。
-- 板端测试不并发；timeout或设备异常后停止当前批次，不自动 retry、reset或power。
+- 包含板端验证的任务必须先达到`board-ready`。在无卡环境中准备完整case、oracle和runner，生成完整
+  package并通过no-card。`board-ready`不是`done`；只有本轮真实板测通过后才能标记`done`。
+- 只运行当前任务指定的板端case。不要重复共享环境检查，也不要顺带运行全量板测。
+- 同一重启会话中，如果软硬件身份没有变化，只确认一次设备环境。不为每个case重复版本、反汇编、
+  heartbeat或其它环境检查。
+- 普通编译器/runtime纵向和qualification板测默认使用FP16或BF16。只有测试目标是F32格式、ABI、转换、
+  数值边界，或者真实输入要求F32时才使用F32，并在测试文档中说明原因。上板前检查source、program
+  descriptor、payload和expected的dtype一致。
+- 普通case只运行必要步骤：增量构建、单进程launch、有限timeout、结果与guard检查以及正常清理。
+- 不读取或回放历史板端输出。实现、case和环境都未变化时，不为重复确认旧结论而重跑case。compiler、
+  runtime、package、case或校验逻辑变化并影响该case后，使用本轮新构建和新输出形成结论。
+- 历史raw、日志和报告只用于审计，不得作为新测试的输入。
+- 每个`board-ready`批次对本轮package运行一次no-card和host oracle。相关代码、合同和环境未变化时不重复。
+  只有板端异常需要定位时才进行深入ABI或firmware诊断。
+- timeout或设备异常后停止当前批次。不要自动retry、reset或power cycle。
 
-## 讨论和推进
+## 处理用户请求
 
-- 先区分请求类型。解释、状态、复盘、意见和澄清类问题默认直接复用当前上下文与已有证据回答，不擅自
-  升级为审计、实验、重新验证、文件修改或并行子任务。
-- 只有用户明确要求查询、审计、验证、运行或修改时，才展开对应执行。现有上下文确实不足以可靠回答时，
-  只做不可替代的最小只读确认；不得因此自动启动多 agent 审计、长时间构建或测试。
-- 调用工具或分派子任务前，先检查该动作是否直接产生用户当前要求的结果；不能直接产生就不执行。已经有
-  本轮 fresh 证据时优先复用，不为解释同一结论重复跑验证。
-- 解释型问题先给直接答案。更深入的审计即使可能有价值，也只能作为可选后续说明，未经用户明确要求不得
-  自动开始。
-- 用户追问、纠正或打断时，立即停止与当前问题无关的后台扩展工作，先响应最新问题。
-- 设计讨论先说明当前理解、关键假设、已确认事实和仍需判断的点。
-- 对真实取舍给出理由、风险和推荐，不把未收敛问题伪装成结论。
-- 只有存在真正歧义且继续工作会产出与用户意图相反的成果时，才停下来问用户。
-- 阶段性状态、部分验证通过或单轮实现闭环不等于任务完成；在用户当前请求范围内没有方向性阻塞时，
-  继续推进到可评审状态。
-- 进度同步用于说明关键判断和下一步动作，不是请求许可，也不是完成证明。
+- 先判断请求是解释、审查、验证还是修改。解释、状态、复盘和澄清问题直接使用已有证据回答，不自动
+  扩展成实验、构建、文件修改或并行任务。
+- 只有用户要求查询、审计、验证、运行或修改时才执行对应操作。上下文不足时，只做回答所需的最小只读
+  检查。
+- 调用工具前确认它会直接产生用户要求的结果。已有本轮结果时不要重复运行相同验证。
+- 用户纠正或打断时，停止无关工作，先处理最新消息。
+- 设计讨论先列出已知事实、假设和未确定的问题。给出建议时说明取舍和风险。
+- 只有继续工作可能产生错误方向的修改时才询问用户。其它可以从仓库确定的细节自行处理。
+- 在用户要求的范围内继续工作到可评审状态。中间结果和局部测试通过不等于任务完成。
+- 只在关键判断或下一步发生变化时同步进度。进度说明不是完成证明。
 
 ## 仓库导航
 
-常用目录：
+- `tasks/progress.md`：任务状态、直接前置和完成条件。
+- `tasks/README.md`：编号设计文档和归档文档的索引，不是设计或状态的主要依据。
+- `tasks/`：当前编号设计文档，按compiler pipeline排列。
+- `tasks/plans/`：当前实施步骤和依赖检查点。任务状态仍以`tasks/progress.md`为准。
+- `tasks/archive/`：历史审计、恢复和已完成任务。只作为背景材料。
+- `docs/`：硬件、runtime、ABI和逆向资料。
+- `docs/tx8-deps-reverse-engineering/`：依赖、runtime、firmware和接口事实。
+- `tools/`：辅助工具和检查脚本。
+- `memory/general_dev.md`：稳定的构建、测试和调试方法。
+- `memory/bugs.md`：问题现象、根因、修复和防复发方法。
 
-- `tasks/README.md`：编号设计文档导航和 archive 边界；不是任务状态或设计合同的主要依据。
-- `tasks/progress.md`：任务队列，记录每步任务的状态、对应设计文档、要做什么、完成要求和不算完成。
-- `tasks/`：当前编号设计文档，按 compiler pipeline 语义顺序排列。
-- `tasks/plans/`：当前实施计划，只拆解施工步骤和依赖 checkpoint；状态仍以 `tasks/progress.md` 为准。
-- `tasks/archive/`：历史审计、恢复和任务记录，只作背景，不作为当前架构合同。
-- `docs/`：硬件、runtime、ABI、反向分析资料。
-- `docs/tx8-deps-reverse-engineering/`：依赖、runtime、firmware、接口约束。
-- `tools/`：辅助脚本。
-- `memory/general_dev.md`：通用开发经验、构建方式、调试入口和稳定 workflow。
-- `memory/bugs.md`：问题、失败现象、根因、修复方式和防复发模式。
-
-优先读取：
+阅读顺序：
 
 1. `AGENTS.md`。
 2. `tasks/progress.md`。
-3. 与当前任务直接相关的编号设计文档。
-4. 找不到相关编号文档、需要确认文档编号或 archive 边界时，查 `tasks/README.md`。
-5. 涉及硬件、runtime、ABI 或 memory hierarchy 时，读对应 `docs/` 资料。
-6. 涉及构建、调试、历史问题或可复用经验时，读 `memory/general_dev.md` 和 `memory/bugs.md`。
-7. 涉及已有代码或脚本时，读代码；不要只看文档。
-8. 涉及 MLIR dialect、pass、interface、verifier、region 或 conversion 设计时，优先查 MLIR 官方文档。
+3. 当前任务的编号设计文档。
+4. 需要查找编号或归档边界时阅读`tasks/README.md`。
+5. 涉及硬件、runtime、ABI或memory hierarchy时阅读对应`docs/`。
+6. 涉及构建、调试或历史问题时阅读相关`memory/`。
+7. 修改已有实现时阅读定义、构造位置、直接使用者和测试。
+8. 涉及MLIR API时，先查官方文档，再以仓库pinned源码和测试确认可用接口。
 
-设计和事实冲突时，优先级为：用户当前要求，本轮已收敛结论，`tasks/progress.md` 和当前编号设计文档，
-`docs/` 事实资料，最后才是 `tasks/README.md`、archive 和历史资料。该冲突优先级
-不降低本文件流程约束。遇到冲突时不要悄悄合并，要在修改中收敛成清晰边界。
+任务状态以`tasks/progress.md`为准，设计以当前编号文档为准，硬件和ABI事实以对应`docs/`及本轮验证为准。
+`tasks/README.md`、archive和历史记录不能覆盖这些来源。发现冲突时明确指出并在同一修改中收敛，不要
+静默合并两套规则。
 
-构建和测试入口以当前 CMake / lit 配置以及 `memory/general_dev.md` 最新记录为准。不要把旧 build
-目录、临时任务名或本地实验路径写成长期约定。
+构建和测试命令以当前CMake、lit配置和`memory/general_dev.md`为准。不要把旧build目录、临时任务名或
+本地路径写入长期文档。
 
-## Memory 经验沉淀
+## Memory
 
-`memory/` 是稳定经验库，不是任务状态板，也不是设计文档替代品。只有本轮产生可复用的稳定经验时才更新；
-没有新经验则不修改，也无需在结果中专门声明。
+`memory/`只保存可复用的稳定经验。没有新经验时不修改，也不需要在结果中专门说明。
 
-- `memory/bugs.md`：记录遇到的问题、误导来源、根因、修复方式和防复发模式。
-- `memory/general_dev.md`：记录可复用开发模式、构建/测试命令、调试入口、仓库约定和稳定 workflow。
-- 发现 `memory/` 与当前编号设计文档、任务队列或代码事实冲突时，同批更新或删除过时 memory。
-- 不把临时任务状态、个人推测、未验证 workaround、单个 case 偶然现象或未收敛 IR 设计写进 `memory/`。
+- 将问题现象、根因、修复和防复发方法写入`memory/bugs.md`。
+- 将稳定的构建命令、测试入口、调试方法和仓库约定写入`memory/general_dev.md`。
+- 如果`memory/`与当前设计或代码冲突，更新或删除过时内容。
+- 不记录临时状态、个人推测、未验证workaround、单个case的偶发现象或尚未确定的IR设计。
 
 ## 版本控制
 
-- 默认直接在当前 checkout 工作。
-- 不主动新建 worktree，除非用户明确要求。
-- Git 操作前先看 `git status`。
-- 本仓库由 Codex 执行并提交的共同工作使用 `Codex <codex@openai.com>` 作为 author，并附加
-  `Co-authored-by: hehesnail <shashen008he@gmail.com>`；推送前检查共同署名。
-- 不使用破坏性 git 命令；不要回滚用户或其它工具做的无关改动。
+- 直接在当前checkout工作。只有用户明确要求时才创建worktree。
+- Git操作前检查`git status`。
+- 不使用破坏性Git命令，不撤销无关修改。
+- Codex提交使用`Codex <codex@openai.com>`作为author，并添加
+  `Co-authored-by: hehesnail <shashen008he@gmail.com>`。
+- 每个提交只包含当前任务的相关文件。推送前检查共同署名。
 
-## 编码和设计规则
+## Pipeline文档
 
-### Pipeline Contract
-
-非小修、非纯文本错别字任务，在设计或实现前必须定位compiler pipeline，说明上游IR或编译结果、当前
-stage 责任、下游消费和用户级入口。任务文档、设计小节或实现说明必须包含：
+非小修必须说明修改位于哪一段compiler pipeline。设计文档或实现说明需要回答以下问题；标题可以使用
+等价措辞，但内容不能缺失：
 
 ```text
 Pipeline position:
@@ -150,209 +137,220 @@ Pipeline position:
 - Downstream consumer:
 - User-level driver / named pipeline:
 - Explicit non-goals:
-- Done criteria:
+- Completion criteria:
 ```
 
-约束：
+- 用IR层或文件格式描述边界。pass名、工具名、测试名和任务号只能作为实现索引。
+- 任务号和临时阶段号只能出现在任务文档、计划和历史记录中。不要把它们写入CMake target、cache变量、
+  输出路径、CLI、pass名、pipeline名、IR名称、diagnostic前缀或golden output。
+- stage关系使用稳定的语义名称，例如`tile-region`、`instr-lowering`、`spm-offsets`和`ddr-offsets`。
+- 单个pass可以实现一个stage，但正式编译入口和集成测试必须使用注册的pipeline或compiler API，不长期
+  手工拼接pass。
+- FileCheck、手写fixture、negative verifier和shape dump只能补充覆盖，不能代替真实输入到下游输出的验证。
+- 如果当前上游语义已经要求某项能力，而下游尚未实现但硬件和ABI可以表达，应在对应设计文档中记录后续
+  工作。不要把下游缺口描述成上游语义不受支持。硬件可以表达某项能力，并不自动扩大当前任务。
 
-- `pass`、tool、test、文件名和任务号只是实现索引，不能替代IR层、输入输出合同或长期架构对象。
-- 任务号、阶段号和临时里程碑编号只能出现在任务文档、历史记录和路线图索引；不能进入 build 目录、
-  CMake target/cache variable、output file/directory名、tool/script/CLI/help/docstring、pass/pipeline名称、
-  IR op/type/attr/interface/verifier 合同、diagnostic/log 前缀、FileCheck/golden output。
-- 需要表达阶段关系时，用稳定语义边界名，如 `tile-region`、`instr-lowering`、`spm-offsets`、
-  `ddr-offsets`、`candidate-selection`。
-- 单个 pass 可以是实现单元，但主线设计必须说明它在 named pipeline / driver mode 中的位置；
-  不能让用户或 integration test 长期手动拼 pass。
-- 局部 FileCheck、fixture、negative verifier 或 shape-only dump 只能补覆盖，不能作为主线完成证明。
-- 当前上游合同或用户目标已经要求某项语义、下游尚未实现且硬件 / ABI 能表达时，应记录后续任务或由
-  对应owner扩 IR；不能把下游缺口反写成上游不支持。仅有硬件可表达性不自动扩张当前任务。
+## IR设计
 
-### IR 边界
+- 每一层IR只保存该层能够解释、修改和验证的信息。低层硬件事实只能作为上层合法性检查或cost model的
+  输入，不能成为上层语义。
+- 新增operation、type或attribute前，先检查现有dialect、trait、interface、canonicalization和conversion是否
+  已经能够表达该语义。只有现有机制无法表示、验证或lowering时才扩展Wafer IR。
+- Analysis可以读取当前IR和显式传入的只读target信息。Analysis结果必须可以重新计算，并在相关IR修改后
+  失效。Analysis不得修改IR。
+- Transformation只能读取输入IR、显式参数和仍然有效的analysis结果。不要依赖隐藏的全局状态。
+- 如果后续pass需要某项信息，而且无法从输入IR重新计算，就把它表示在IR中。优先使用SSA、region、type、
+  effect、operation或明确的attribute。
+- 只在一次函数调用中使用的临时计划可以保存在C++对象中。不要把它序列化为旁路文件，也不要在IR已经表达
+  执行顺序后再保存一份调度表。
 
-- 设计边界写成 IR 层、显式表示对象和 verifier / lowering 合同，不写成某个 pass 名字。
-- 每层只携带自己能稳定解释、变换和验证的信息；低层事实只能作为 legality / cost input，不能提前污染上层语义。
-- 新 IR 前先检查已有 dialect、op interface、trait、type、attr、canonicalization 和 conversion
-  infrastructure 是否能表达；不能稳定表达、验证或 lowering 时才引入私有 dialect/op/type。
-- Analysis 从 current IR 和显式 immutable 输入 / target facts派生可失效、可重算的结果；transformation读取
-  current IR、显式typed输入和生命周期有效的analysis，并在合法scope内改写current IR或构造下一层IR，
-  不读取隐藏全局状态。
-- 需要跨可独立重放的compiler stage持久保留且不能从current IR重算的内容必须进入IR自身，但优先用
-  SSA use-def、region/control-flow、op语义、effect、type或明确op表达，不滥用attr。同一query/apply事务内的
-  临时typed plan或query result可以保持为局部C++ value，但不得序列化或演变成长期旁路。
-- 不维护影子调度计划，不把 body 已表达的执行结构复制成全局计划 attr。
+## 接口修改
 
-### 接口演进
+- Wafer定义的C++ API、IR、磁盘格式、runtime ABI和测试fixture只保留一个受支持的形式。修改时同时更新
+  仓库内的producer、consumer和测试。不要增加`V2`名称、兼容wrapper、双reader或新旧分支。
+- Wafer内部schema、record和symbol使用稳定的语义名称，不使用版本号作为标识。parser通过magic、字段、size、
+  layout、digest和其它明确约束拒绝旧输入。
+- 对仓库控制的接口做破坏性修改时，在同一修改中更新compiler、runtime、CRT、firmware、tools、fixture和文档。
+  无法同步升级的外部consumer通过发布流程协调，不在主仓长期保留兼容分支。
+- NPY、license、vendor规范、设备runtime和外部toolchain的版本是外部事实，保留其原始名称和检查方式。
 
-- **Wafer-owned接口永远只有一套current合同。** C++ API、pass / analysis API、IR、磁盘格式、compiler / runtime / CRT
-  ABI、device record、tool metadata和测试fixture都原位演进；修改时同批更新所有producer、consumer和验证，不增加
-  编号名称、编号schema、兼容wrapper、双reader、旧symbol或新旧实现分支。
-- **稳定identity不携带版本号。** schema、ABI、record和symbol使用说明语义的无编号名称；current parser依靠exact field、
-  magic、size、layout、digest和identity检查输入。旧产物不升级、不翻译、不回退，直接因不符合current合同而拒绝。
-- **破坏性变化必须协调替换完整边界。** compiler、runtime、CRT、firmware、tools、fixtures和文档在同一变更中切换到
-  新current合同；后续更新仍替换这一套接口，不创建第二套并行合同。无法同步升级的外部consumer是发布协调问题，
-  不能据此在主仓长期保留版本分叉。
-- **外部版本只作为输入事实记录。** NPY等第三方文件格式、license、vendor规范、设备runtime和外部toolchain版本保持
-  其原始拼写与检查；不得把它们改名，也不得借外部版本为Wafer内部接口建立版本线。
+## MLIR工程规则
 
-### MLIR 工程规则
+MLIR行为以官方文档为准；具体API以仓库pinned LLVM/MLIR源码和测试为准。不要假设较新upstream的API已经
+可用。
 
-- **先核对版本事实。** MLIR 语义和推荐方式以官方文档为依据，当前可用 API 以仓库 pinned LLVM/MLIR
-  headers、实现和测试为准；不得假设 newer upstream 选项、interface 或 driver 行为已经存在。
-- **IR 必须自包含。** 影响 legality、rewiring、lowering 或 candidate 结果的事实用 SSA、region、type、effect、
-  typed op/attr/interface表达；`Location`只记录source location和诊断位置，不承载指针、稳定语义键或跨pass语义。
-- **名称对应真实compiler语义。** type使用语义名词，function使用说明实际动作的动词短语，conversion明确源和目标表示；
-  同一概念在ODS、C++、pass、文件和diagnostic中保持一致。发现含糊或误导名称时，先看它处理哪层IR、实际做了什么、
-  产出什么，再直接重命名或拆分。
-- **限定词只用于必要消歧。** 范围、层级、阶段或实现状态限定词必须对应同一语义域内真实存在的另一类对象，并且去掉后
-  会使当前API产生歧义；namespace、强类型、parent op、pass anchor或容器已经确定语义时，不在type、function、文件名中
-  重复限定。表示转换边界时明确写出源表示和目标表示，进入目标表示后使用目标对象自身的名称；不得用限定词泛指“更低层”、
-  “最终”、“已选择”或“更重要”，也不得用它掩盖一个对象承担多项职责的问题。
-- **改名前完成语义核对。** 修改名称前必须读完对象定义、字段或region、构造位置、直接消费者以及相关verifier/lowering，
-  并核对仓库pinned LLVM/MLIR中的同类接口；无法用一句话准确说明对象表示什么或函数实际做什么时，禁止改名。一次只收敛
-  一个概念及其直接调用链，新名称确认前不得做整仓同义替换。名称被用户否定后，立即停止该命名方向并重新阅读实现，
-  不得自行换一个近义抽象词继续修改。每批改名完成后先检查完整diff、旧名称残留、构建和相关测试，通过后才能处理下一批。
-- **C++ API 用类型表达合同。** public/跨 stage API 使用窄而强类型的输入；一组字段共同构成一个结果时优先返回 named
-  typed result，MLIR 惯用的非空 caller-owned 输出引用可以保留。`bool` 适合 predicate 和二态 option，但不得与字符串
-  标签、多个 nullable 输出参数或隐式全局状态拼成状态机协议。只读 query 与 IR mutation/apply 分开，使 query 可测试、
-  apply 可原子提交；mutable global、singleton 和无失效边界 cache 禁止进入编译语义。
-- **资源控制与lifetime进入类型和接口。** `OwningOpRef`、`unique_ptr`和move-only具体编译结果表示独占控制权转移；引用和普通
-  裸指针只表示当前IR epoch内的non-owning reference。地址可以作局部查找键，但不能跨clone、erase、会失效的mutation、
-  异步任务或长期cache充当稳定语义键；同次clone对应用`IRMapping`，跨stage语义进入IR自身。
-  listener、insertion point、临时 mutation 和 rollback guard 使用 RAII。
-- **失败必须可分类且保持有效状态。** 本仓库按LLVM惯例不使用C++ exception/RTTI：IR transformation内部使用
-  `LogicalResult`、`FailureOr`和diagnostic，文件/runtime/library边界使用`llvm::Error`/`Expected`，candidate边界使用能区分
-  accepted、exact rejection、indeterminate与compiler bug的typed result。`assert`/`llvm_unreachable`只表示verifier-valid
-  输入下不可能发生的内部错误；用户输入、unsupported、容量和环境失败必须可恢复传播。不得解析diagnostic字符串决定控制流。
-- **确定性和性能都是编译器合同。** DenseMap/DenseSet 和指针键可用于局部 lookup/visited set，但 candidate 顺序、winner、
-  diagnostic、IR和具体编译结果不得依赖地址、hash-table遍历、等价元素的不稳定排序或并行结束顺序；可观察边界使用完整
-  semantic tie-break。性能判断先记录 work count、pass/analysis timing、wall time 和 RSS，优先修正 scope、重复
-  traversal/materialization 和算法复杂度，再做有测量依据的低层优化。
-- **遵守LLVM式库边界。** public header自包含，implementation的main header优先include，`Internal.h`留在`lib/`私有目录，
-  CMake显式声明实际library依赖；不把compiler driver、IR schema、analysis、transform和runtime helper揉成循环依赖，也不在
-  功能改动中夹带全树格式化或无关rename。
-- **ODS 和标准 interface 优先。** 稳定 semantic field 进入 ODS typed argument/property并使用 generated accessor；
-  优先复用 RegionBranch、Call、MemoryEffect、ViewLike、DPS/Bufferizable、Tiling 等标准 interface。只有标准机制
-  无法稳定表达且已有 verifier/lowering consumer 时才新增 Wafer-specific interface。
-- **operation hierarchy 决定 pass/analysis scope。** pass/analysis锚定包含所需事实的最窄合法 operation；可独立处理的
-  `IsolatedFromAbove` op使用 nested pass。call/symbol closure、function-boundary bufferization、跨region outstanding access、
-  card级resource verification等真实全局阶段保留在 func/module/card scope，不机械地下沉。operation pass不得替换自己的root；
-  删除wrapper或重接parent SSA由父operation transformation负责。
-- **pipeline 只有一个实现。** 一个pass只做一个可命名的IR变换，声明dependent dialect、typed option和analysis
-  preservation；production driver与`wafer-opt` named pipeline复用同一query/apply和pipeline builder，不维护direct
-  mutation平行实现，也不长期手工拼pass。
-- **区分pass、subpipeline与driver。** atomic pass/kernel在最窄合法anchor只完成一个可验证IR变换；semantic
-  subpipeline组合一个稳定且verifier-legal的IR边界并可打印、独立重放；compiler driver执行搜索、一对多module拆分、
-  外部工具调用和原子目录替换，只调用前两层。顶层composite可以较长，但必须暴露可测试leaf stage；不得机械拆出非法
-  中间IR或破坏一次性应用语义。
-  仅把一个既有atomic pass加入`OpPassManager`的helper使用`add...Pass`；`build...Pipeline`只用于拥有稳定语义边界和组合合同的
-  builder（即使该边界当前恰由一个pass实现），不能用单pass别名伪装新的pipeline层级。
-- **analysis 可重算、可失效。** 只由current IR和显式immutable target facts派生且会重复消费的事实进入
-  `AnalysisManager`；mutation明确preserve/invalidate。query-local candidate assignment、一次性validation和跨clone memo
-  不硬塞成MLIR analysis，也不写回IR。跨全局关系在最近container一次验证，不在每个leaf verifier重复walk module。
-- **rewrite 必须事务安全。** pattern callback中的IR修改全部通过`PatternRewriter`；尽量在首次mutation前完成validation，
-  failed match使用`notifyMatchFailure`，不得更新rollback之外的`failureReason`、callee set或其它mutable side data。
-  clone对应使用`IRMapping`，不用pointer、walk顺序、ordinal、打印字符串或symbol拼写恢复operation对应关系。
-- **可丢弃的隔离变换事务只clone最小真实scope。** 查询必须消费实际改写后的IR且不得修改原IR时，clone最近的
-  `IsolatedFromAbove` operation；普通lowering直接使用nested pass。带外部operands的operation必须用`IRMapping`
-  映射到scratch-owned SSA，不能让clone交叉引用或新增原IR的use；事务结束只返回typed结果并销毁scratch IR，不为取得
-  module anchor构造synthetic Module/Func。最终output fan-out、外部工具projection、显式reducer或autotuning artifact的
-  clone按各自owner、失败和产物合同审查，不属于上述可丢弃scratch事务。
-- **conversion legality 要 fail closed。** source op类别使用稳定marker interface/trait或等价单一分类；所有source实现者
-  默认illegal，structural/non-executable descriptor/target op显式legal，postcheck复用同一分类。full conversion必须证明source语义全部
-  消失；只lower子集时明确使用partial conversion和独立stage verifier，不能用“unknown全legal”伪装full conversion。
-- **fold、canonicalization 和声明式rewrite各司其职。** `fold`只放便宜、局部、确定的恒等式；canonicalizer只优化，
-  不承担correctness legalization；greedy rewrite限制affected roots和work budget。简单typed op-to-op规则优先DRR，
-  复杂layout/index/resource/region逻辑保留C++ pattern；PDLL或Transform dialect只有出现明确consumer时才引入，不设使用配额。
-- **alias/effect 在lowering前必须确定。** view、new allocation、destination mutation和materializing copy不能由lowering按
-  users临时切换；tensor层用DPS/Bufferizable分析in-place/out-of-place，进入memref/Instr层后alias和memory effect是稳定合同。
-- **按MLIR合同验证。** 对应IR stage的测试总面至少覆盖custom/generic form roundtrip、verifier正负例、conversion
-  failure atomicity、analysis invalidation、named/production pipeline parity和`verify-each`；单次改动只运行直接受影响的
-  门禁和必要的下游IR/file验证，不机械重跑无关类别。局部pass成功、canonicalizer恰好清掉残留或旧generated build能编译，
-  都不能代替fresh source/build和受影响边界验证。
-- **退役实现前先迁移能力。** source未进入CMake只说明它不属于active build，不能据此推断其中算法、proof、diagnostic或
-  测试资产已经无用。先逐项确定承接实现；仍被当前或后续合同需要的能力必须迁入active source并受测，之后才能删除旧
-  实现。大规模替换必须留下donor能力到current owner、production caller和test witness的逐项对照；新type、domain、文件组织或
-  局部unit存在不能代替该对照。只有已被现行IR/API明确淘汰且没有独有能力的源码可以直接清理。
+### IR有效性和verifier
 
-### 协议和语义恢复
+- Pass的输入必须通过verifier，输出也必须通过verifier。verifier-valid输入触发crash或assert是pass bug。
+- Operation verifier只检查operation自身、region结构以及operand/result之间的局部关系。不要在verifier中沿
+  def-use链遍历整个module。需要全局信息时，在最近的共同parent上运行显式检查。
+- 影响合法性、rewiring或lowering的字段应定义为ODS argument、property、type或attribute，并使用生成的
+  accessor。优先使用标准trait和interface。
+- `Location`只表示源码位置和diagnostic位置。不要在`Location`中存放指针、operation标识或跨pass语义。
 
-- 跨模块共享的常量、attr key、enum value、field name 定义在一处，消费侧引用定义。
-- 协议错误尽量在 ODS、C++ type system、verifier、pass legality 或 dialect conversion 中暴露。
-- 创建某个 dialect 的 op/type/attr 的 pass 必须声明 dependent dialects。
-- 不用 buffer、var、op、文件名或示例名恢复语义角色、绑定关系或协议分支；名字只能用于日志、调试和讲解。
-- 语义恢复优先依赖 IR type/rank/shape/dtype/memory space、structured op semantics、indexing maps、
-  SSA def-use、region/control-flow、loop-carried dataflow、op interface、verifier relation 和必要显式 attrs/types。
-- 当前 IR 结构无法稳定区分语义时，扩 IR / DSL / attrs / types，不把名字匹配升级成长期分析。
+### 命名
 
-### 通用性和目标层级
+- type使用名词，函数使用描述动作的动词短语。conversion名称同时说明源表示和目标表示。
+- 只有确实存在歧义时才增加范围或阶段限定词。namespace、强类型、parent operation或pass anchor已经确定
+  含义时，不重复这些限定词。
+- 改名前阅读定义、字段、构造位置、直接使用者、verifier和lowering，并检查pinned MLIR中的同类API。一次
+  只重命名一个概念及其直接调用链。检查完整diff、旧名称残留、构建和相关测试后再继续下一项。
+- 用户否定某个名称时，停止该命名方向并重新阅读实现，不自行换一个近义词继续修改。
 
-- 设计可以 case-driven，但 case 只用于展示 IR 流经 pipeline；协议以通用职责为准。
-- 当前任务不以数值语义为目标时，现有算术op的dtype和语义作为输入事实原样保留；不因浮点结合/交换、
-  舍入、special value或comparator扩展当前任务。只有用户明确要求数值合同任务时才展开这些问题。
-- 不把 workload、shape、参数顺序、单个 kernel、某个 op 的 tile 选择或某条 runtime 路径固化成协议。
-- case 后必须说明哪些是示例参数，哪些来自通用 IR / interface / verifier，哪些只是 cost model /
-  planner 候选，泛化情况如何处理。
-- 目标相关低层对象只在能解释和验证它们的 lowering 层 materialize；不要提前作为上层字符串列表或旁路数据。
-- 一个函数、pass、文件只解决一个问题；描述需要“并且”连接两个不同动作时应拆分。
-- 每个新设计对象、算法结构、pass、typed field 或 validator 都要回答它如何帮助 legality、planning、
-  lowering、diagnostic，或删除旧 matcher / fallback / 旁路通道。
+### Pass和analysis
+
+- 将pass锚定到完成工作所需的最小operation类型。可独立处理的`IsolatedFromAbove` operation使用nested
+  pass。需要call graph、symbol closure、function-boundary bufferization或card级资源检查时，保留func、module或
+  card范围。
+- `OperationPass`不得检查root operation的sibling。pass可以修改root下面的IR，也可以修改root的attribute；
+  不得修改root的operand或parent block。替换或删除root operation必须由parent operation上的transformation完成。
+- Pass不得在多次`runOnOperation`调用之间保留可变状态，也不得使用可变全局状态。
+- 创建新dialect operation、type或attribute的pass必须声明dependent dialect。
+- Analysis不得修改operation。pass修改IR后，默认使已有analysis失效；只有确实保持有效时才调用
+  `markAnalysesPreserved`或`markAllAnalysesPreserved`。
+- 只有会被多个pass重复使用的IR事实才放入`AnalysisManager`。一次性检查、候选赋值和跨clone memo保留为
+  当前函数中的C++数据。
+- 每个IR变换只有一个实现。`wafer-opt`的named pipeline和正式compiler driver调用同一个实现，不维护另一条
+  直接修改IR的路径。
+- atomic pass只完成一个可以验证的变换。subpipeline只组合具有稳定输入输出的pass。搜索、module拆分、外部
+  工具和目录提交由compiler driver负责。
+- `add...Pass`用于向`OpPassManager`加入pass。只有组合出稳定IR边界时才使用`build...Pipeline`名称。
+
+### Rewrite和conversion
+
+- 在`matchAndRewrite`确认匹配成功前不要修改IR。pattern中的所有IR修改都通过给定的
+  `PatternRewriter`完成。返回success时必须已经修改IR。
+- 尽量在第一次修改前检查shape、type、symbol和target限制。匹配失败使用`notifyMatchFailure`。
+- Pattern rollback期间不要修改外部容器、callee集合或其它无法回滚的数据。
+- 同一次clone使用`IRMapping`记录对应关系。不要通过指针、遍历顺序、ordinal、打印文本或symbol名称恢复
+  operation对应关系。
+- 为试运行变换而复制IR时，只复制最近的`IsolatedFromAbove` operation。外部operand通过`IRMapping`映射到
+  scratch IR拥有的value。scratch IR不得引用原IR，也不得给原IR增加use。不要为取得module anchor构造临时
+  ModuleOp或FuncOp。
+- 生成最终输出、外部工具输入、reducer输入或autotuning结果所需的clone不是scratch事务。此类clone必须说明
+  谁持有结果、失败后如何处理以及结果是否交给下游。
+- Full conversion必须使所有输入operation对`ConversionTarget`合法。Partial conversion只转换明确标记为illegal
+  的部分，并在随后运行stage verifier。不要把unknown operation全部标记为legal来模拟full conversion。
+- 用一个trait、interface或等价分类标识该stage的source operation，并在`ConversionTarget`和转换后检查中使用
+  同一分类。新增source operation必须默认转换或报错，不能被unknown-op规则静默放过。
+- `fold`只实现便宜、局部、确定的恒等式。canonicalizer只做优化，不承担正确性所需的legalization。
+- 使用greedy rewrite时，限制允许修改的root以及迭代或工作量，避免无界重写。
+- 简单的operation-to-operation规则优先使用DRR。复杂的layout、index、resource和region变换使用C++ pattern。
+  只有出现明确使用者时才引入PDLL或Transform dialect。
+
+### C++接口、所有权和错误
+
+- Public API和跨stage API使用范围明确的C++类型。一组相关结果返回命名的struct；MLIR惯用的非空输出引用
+  可以保留。不要用`bool`、字符串标签和多个nullable输出参数组合状态机。
+- 将只读计算和IR修改分成两个函数，使只读部分可以单独测试，并在修改前完成所有可能失败的检查。
+- `OwningOpRef`、`unique_ptr`和其它move-only类型表示所有权转移。引用和裸指针只在当前IR未修改且持有IR的对象仍然
+  存活时使用。地址只能作为局部查找键，不得传入异步任务或长期cache。
+- listener、insertion point和临时修改使用RAII恢复。
+- 本仓库不使用C++ exception或C++ RTTI。IR transformation使用`LogicalResult`、`FailureOr`和diagnostic；
+  文件、runtime和library边界使用`llvm::Error`或`Expected`。
+- 规划或候选检查的返回类型必须区分成功、已证明不可行、无法判定和编译器错误。不要把这些结果压缩成
+  `bool`。
+- 用户输入错误、unsupported语义、容量不足和环境错误必须返回可处理的错误。`assert`和
+  `llvm_unreachable`只用于verifier-valid输入下不可能发生的内部状态。不要解析diagnostic文本决定控制流。
+- 不使用可变singleton或没有失效规则的cache参与编译决策。
+
+### 确定性、性能和库边界
+
+- 输出IR、diagnostic和选择结果不得依赖地址、hash table遍历顺序或并行任务完成顺序。所有可观察排序必须有
+  完整的语义tie-break。
+- 优化性能前先记录工作次数、pass/analysis timing、wall time和RSS。先减少重复遍历、重复materialization和
+  不必要的作用范围，再做低层优化。
+- Public header必须自包含。implementation先include自己的main header。`Internal.h`保留在`lib/`中。
+- CMake显式声明library依赖。不要在compiler driver、IR、analysis、transform和runtime之间形成循环依赖。
+- 功能修改不要夹带全树格式化或无关重命名。
+
+### Memory、alias和effect
+
+- View、allocation、destination mutation和materializing copy在lowering前必须有确定语义。lowering不得根据users临时
+  决定一个operation是alias还是allocation。
+- Tensor层使用DPS和`BufferizableOpInterface`分析in-place与out-of-place。进入memref或Instr层后，alias和
+  memory effect必须已经确定。
+- 新operation优先实现标准的RegionBranch、Call、MemoryEffect、ViewLike、DPS、Bufferizable或Tiling interface。
+  只有标准interface不能表达且已有verifier或lowering使用者时才增加Wafer-specific interface。
+
+### 测试和实现迁移
+
+- 每个IR stage的测试集合应覆盖parser/printer roundtrip、verifier正负例、conversion失败、analysis失效、
+  named pipeline与正式编译路径的一致性以及`verify-each`。
+- 单次修改只运行受影响的测试和必要的下游验证，不机械重跑无关测试。旧build目录或旧generated文件不能
+  代替本轮构建。
+- source没有进入CMake只说明它不在当前构建中，不说明其中的算法、diagnostic或测试已经无用。
+- 删除仍有功能的旧实现前，指出新的实现位置和对应测试。
+- 大规模替换要记录旧能力、新实现、正式编译路径中的调用和测试之间的对应关系。只有现行IR和API已经
+  不需要、且没有独有测试资产的代码可以直接删除。
+
+## 语义恢复和通用性
+
+- 跨模块共享的常量、attribute key、enum值和字段名只定义一次，使用者引用该定义。
+- 不根据buffer名、变量名、operation名、文件名或示例名推断语义。名称只用于diagnostic和调试。
+- 优先从type、rank、shape、dtype、memory space、indexing map、SSA use-def、region、control flow、effect和
+  operation interface读取语义。
+- 如果IR无法区分后续必须区分的语义，扩展operation、type、attribute或interface。不要建立名字匹配或隐藏
+  side table。
+- 可以从具体case开始设计，但长期规则必须适用于同类IR。说明哪些数值来自示例，哪些来自IR，哪些只是
+  cost model的选择。
+- 当前任务不修改数值语义时，保持现有算术operation和dtype语义。已有数值测试继续作为回归，不因浮点
+  结合顺序、舍入、special value或comparator扩大当前任务。只有用户明确要求数值语义时才讨论这些问题。
+- 只在能够解释和验证目标细节的lowering层创建低层对象。不要提前把它们表示为字符串或旁路数据。
+- 一个函数、pass或文件只解决一个明确问题。新增对象、算法、pass或字段必须直接服务于合法性检查、
+  transformation、lowering或diagnostic。
 
 ## 文档规则
 
-- 当前文档默认中文。
-- 当前实施计划统一放在 `tasks/plans/`，历史计划移入 `tasks/archive/`；不得按 agent、skill 或临时工具名
-  建立主线文档目录，也不得要求某个 skill 才能解释或执行计划。
-- 先讲边界和通用方法，再给 case；case 后说明哪些只是示例，不是协议。
-- 主线任务文档遵守pipeline contract和长期命名规则；实现入口只能作为索引，不能替代IR、输入格式和输出格式合同。
-- 不把其它项目或本地环境特有的路径、环境变量、测试入口、动态任务状态或runtime实现路线写成当前项目长期合同。
-- 不把尚未收敛的设计选择写进本文件；这类内容留在设计文档讨论和演进。
-- 不把 `TODO` / `TBD` 当结论；未定问题写成“待讨论问题”，并说明为什么未定。
-- 修改一个概念时，顺手检查同文档其它小节是否有同类过度特化、重复事实源或旧字段残留。
+- 当前文档使用中文。真实API、IR名称和命令保留其原始拼写。
+- 当前实施计划放在`tasks/plans/`，历史计划放在`tasks/archive/`。不要按agent、skill或临时工具建立主线
+  文档目录。
+- 先说明输入、输出和通用规则，再给示例。示例不能成为协议。
+- 实现文件、pass和测试只能作为索引，不能代替IR或文件格式的定义。
+- 不把其它项目或本地环境特有的路径、环境变量、测试入口、动态状态或runtime实现写入长期设计。
+- 尚未确定的问题写在设计文档的“待讨论问题”中，并说明未确定的原因。不要用`TODO`或`TBD`代替结论。
+- 修改一个概念时，检查同一文档中的旧名称、重复定义和过度特化描述。
 
 ## 禁止事项
 
-- 不新增第二份总体设计文档，除非用户明确要求；导航索引可以存在，但不能复制或改写架构合同。
-- 不在 IR 外再造长期语义通道：bag、opaque payload sidecar、side table、名字约定、临时 wrapper 都不能成为协议。
-- 不让文档和代码长期协议错位。
-- 不把 analysis pass 写成语义恢复黑箱。
-- 不把单个 case 的调度结果写成通用架构规则。
-- 不把原始硬件文档里的历史命名直接提升为当前 compiler IR 名词。
-- 不把上层 IR 污染成低层执行或运行时封装细节。
+- 不新增第二份总体设计文档，除非用户明确要求。导航文档不能复制总体设计。
+- 不用无类型字段集合、旁路文件、全局side table、名字约定或临时wrapper长期保存IR语义。
+- 不让文档和实现长期使用不同协议。
+- 不把analysis写成从名称和偶然结构恢复语义的黑箱。
+- 不把单个case的shape、调度或runtime路径写成通用规则。
+- 不直接把硬件文档中的历史名称用作compiler IR名称。
+- 不在上层IR中加入只能由低层target或runtime解释的字段。
 
-## 设计检查清单
+## 设计检查
 
-写设计或改设计时至少检查：
+修改设计时检查：
 
-- pipeline contract 是否完整。
-- 当前实现是否推进整条 compile pipeline 的一个边界，而不只是让某个 pass 能跑。
-- 完成证明是否重放产生当前真实输入所需的最小上游链路，并证明当前输出会被直接下游消费。
-- 信息是否能从当前 IR 推出；不能推出时，是否真的需要跨 pass 保留。
-- 保留方式应该是 op、region、type、attr、effect 还是 analysis。
-- 设计是否形成重复事实源，是否绑定单个 case、shape、op 名、路径或历史实现。
-- verifier、canonicalization、parser/printer、lowering 的责任是否清楚。
-- lower 到目标后端时是否真正帮助 legality、planning、lowering 或 diagnostic。
+- 是否写清输入IR、输出IR、直接使用者和完成条件。
+- 是否推进了正式编译pipeline中的一个实际边界，而不只是让单个pass或fixture运行。
+- 是否从最小的真实上游输入重放该边界，并验证直接下游能够使用输出。
+- 每项信息能否从输入IR重新计算；不能时，为什么必须保留。
+- 该信息应该表示为SSA、region、operation、type、attribute、effect还是analysis。
+- 是否产生重复事实、名字依赖或case特化。
+- parser/printer、verifier、canonicalization和lowering分别负责什么。
+- 新对象是否直接帮助合法性检查、transformation、lowering或diagnostic。
 
-## 收尾和完成标准
+## 完成任务
 
-收尾要求：
+收尾时：
 
-1. 按实际影响同步设计文档、任务队列和memory；未受影响的文件不修改。
-2. 按任务类型运行验证；声称端到端或主线 gate 通过时，确认相关测试实际执行而不是
-   `unsupported` / skipped。`ctest passed` 不能替代 lit unsupported 清单、外部依赖 feature 配置和真实输入链路检查。
-3. 沉淀经验：问题、根因和修复模式写 `memory/bugs.md`；可复用命令、入口、检查方式和 workflow 写
-   `memory/general_dev.md`；不稳定经验不要硬写。
-4. 明确未完成项和限制。
-5. 提交本次相关改动。
+1. 只更新实际受影响的设计文档、任务状态和`memory/`。
+2. 运行受影响的构建和测试。声明端到端通过前，确认测试实际执行，没有被标记为unsupported或skipped。
+3. 报告未完成项和限制。
+4. 提交当前任务的相关修改。
 
-一次任务完成至少满足：
+完成任务至少需要满足：
 
-- 用户要求的文件已实际修改，或明确说明无法修改的原因。
-- 非小修任务已有 pipeline contract，且实现、测试和文档没有把单个 pass / fixture 当成主线。
-- 设计边界与当前 MLIR/compiler 工程方向一致。
-- 没有引入其它项目路径、环境、动态任务状态或测试入口作为长期约定。
-- 相关文档没有明显冲突、旧字段残留或重复事实源。
-- 做了匹配验证，并说明验证范围。
-- 未完成项和限制已经明确写出。
+- 用户要求的文件已经修改，或者已经说明无法修改的原因。
+- 非小修已经写明pipeline输入、输出和完成条件。
+- 代码、测试和文档使用同一套IR或文件格式。
+- 没有把本地路径、动态状态或其它项目实现写入长期文档。
+- 受影响的验证使用本轮构建并实际执行。
+- 已知限制已经说明。
 
-“这一批改动已通过验证”只说明当前批次可继续推进，不等于整个任务完成。当前任务边界仍有旧接口、
-旧表示或旧旁路未清理时，不能报完成；主线设计默认按终态原则收口，除非任务文档明确允许过渡例外。
+一次修改通过测试只说明该修改可以继续推进。只要当前任务范围内仍有旧接口、旧表示或旧路径，就不能
+声明任务完成，除非对应设计文档明确允许过渡状态。
