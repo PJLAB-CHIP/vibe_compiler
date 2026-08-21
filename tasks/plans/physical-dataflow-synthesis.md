@@ -5050,6 +5050,62 @@ Pipeline position:
   alias/effect、shared DDR、opaque endpoint与known directed-link资源正负例闭合；production search不构造Instr后取first。旧ready-order/worker算法与测试
   完成能力迁移后才能删除其owner。
 
+### Q50.J work-item分界
+
+Q50.J由三个work items闭合：
+
+- `canonical-schedule`只关闭canonical single-slot/Serialized point。它直接复用I的typed `execution/action` definition/use sites作为
+  `ScheduleNodeId`，为每个object加入definition→use hard edge，按stable semantic ID做Kahn topological order，并把全部高层nodes绑定
+  `NCCWorker::Worker0`。同一execution内部的define/use不造self edge。该点是保守全序，不拆async issue/completion，不建立resource lane、
+  timestamp或wait placement。
+- `event-resource-foundation`在完整storage-domain后把semantic action展开为issue/completion/wait/release等`EventId`，建立hard DAG、
+  resource facts、completion obligations、exact successors及Core consumer；不选择最终schedule。
+- `schedule-domain`在K→I重闭后枚举worker/resource/control order和completion boundary，形成最终`ClosedSchedulePlan`并提供selected apply。
+  它不能把当前canonical全序当作唯一domain或用worker0兜底其它失败。
+
+当前`ClosedSchedulePlan`只保存`order`和`workerBindings`；definition/use dependencies作为可重算的
+`CanonicalScheduleCoordinate.dependencies`返回。`ScheduleNodeId`不是未来`EventId`：一个movement action在event foundation可展开成多个
+endpoint/issue/completion nodes，当前ID不能被后续误当成已关闭completion。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  canonical BufferPlan/resource/lifetime descriptions及SerializedExecutionPlan；每个storage object已有typed definition/use，尚无event、
+  completion、resource instance、pipeline structure或actual IR。
+- Current stage responsibility:
+  验证object/lifetime和execution/action node coverage，建立definition→use dependency DAG，生成stable topological source-semantic order并为
+  每个node绑定worker0。
+- Output IR / files:
+  query-local CanonicalScheduleCoordinate，其中ClosedSchedulePlan只含node order/worker bindings，dependencies为derived proof；不修改IR或
+  写文件。
+- Downstream consumer:
+  attention-work-projection和canonical feasibility消费closed canonical prefix；deterministic baseline后续把同一order投影到selected
+  construction。event-resource-foundation从B--I/K重新建立更细event graph，不把本项当完整search domain。
+- User-level driver / named pipeline:
+  无独立pass、pipeline或CLI；none与search canonical planning prefix静态调用同一constructor。
+- Explicit non-goals:
+  不拆async issue/completion，不放wait/join/release，不枚举worker/resource/order、timestamp/idle或pipeline stage，不读取actual op/block/
+  pointer，不调用InstructionSchedule或修改worker attr。
+- Done criteria:
+  1024/1025 all-16、multi-root/diamond、ordinary/FD local+remote merge、support/rank-zero及输入顺序扰动均形成all-and-only stable nodes、
+  dependencies、order和worker0 bindings；duplicate/missing object/lifetime/execution、unknown site及cycle得到typed failure；source IR不变，
+  attention projection可直接消费，fresh build/unit与organization通过。
+```
+
+| 覆盖类 | 代表输入 | 必须断言的canonical schedule | 直接下游witness |
+| --- | --- | --- | --- |
+| load/execute/publish | rank-3、1024/1025、all-16 Tile | 每个Tile恰有load→root execution→publication，所有node出现一次且worker0；ragged顺序不依赖局部extent大小 | attention/F按相同execution/action IDs读取closed prefix |
+| chain/fanout/diamond | 1025级multi-root/multi-sink | producer execution早于全部DDR uses，每个DDR早于对应consumer；shared source产生多dependency但node不复制 | 后续event foundation可把每个DDR action拆endpoint/completion而不恢复producer |
+| ordinary/FD reduction | rank>=3、1024/1025/1031，local+remote components | root→remote gather→merge、local root→merge、merge→publication全部成立；三个component不增加execution node，只增加各自object evidence | attention projection读取同一merge execution，future completion在gather action内细化 |
+| support/rank-zero/merge-only | pad/support、0-rank root、only-merge Tile | 同execution define/use不造self cycle；rank-zero/merge-only node仍各一次且worker0 | canonical feasibility不因无extent或无movement漏execution |
+| determinism | 反转serialized、objects、lifetimes和uses输入 | nodes/dependencies/order/worker逐字段相同，tie-break只用semantic ID | production none与test query共享一个canonical point |
+| typed failure | empty/duplicate storage object或lifetime、missing resource/lifetime、unknown execution site、dependency cycle | `BrokenSchedulePlan`准确分类且不返回partial order | 修正输入可重新query，source IR byte-identical |
+
+实现闭合：canonical `ClosedSchedulePlan`复用storage的execution/action sites，保存stable Kahn total order和node-level worker0 default；
+`ScheduleDependency`逐object保留definition→use evidence。同execution self-use不造edge，没有EventId、async completion、resource lane、
+timestamp、wait/join、pipeline或actual IR。fresh定向6/6、完整`WaferUnitTests` 791/791、default configured lit 224/224、compiler
+public link、完整configured build及IR/source organization通过。
+
 ### event-resource-foundation-1 专项调研：event DAG、completion与resource-effect boundary
 
 LLVM MachineScheduler先构造ScheduleDAG，再由独立strategy选ready node并可选择是否追踪register pressure；CIRCT scheduling也把problem

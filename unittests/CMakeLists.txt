@@ -36,6 +36,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/CanonicalMovementPlanTest.cpp
   Planning/PhysicalDataflow/CanonicalSerializedExecutionPlanTest.cpp
   Planning/PhysicalDataflow/CanonicalStoragePlanTest.cpp
+  Planning/PhysicalDataflow/CanonicalSchedulePlanTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Analysis/Structured/StructuredOperationTileFootprintTest.cpp
   Planning/PhysicalDataflow/TemporalTileShapeTest.cpp
