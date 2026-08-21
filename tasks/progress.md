@@ -30,37 +30,36 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `canonical-root-work` | `doing` | Q50.C | canonical-spatial-assignment、attention-demand-integration | canonical `RootRegionWork`与single-root leaf primitive |
-| 2 | `canonical-region-plan` | `queued` | Q50.D | canonical-root-work、exact-demand-boundary | singleton `RegionPlan`、execution instance及use binding |
-| 3 | `canonical-temporal-plan` | `queued` | Q50.E | canonical-region-plan | canonical `TemporalPlan`、tail及loop order |
-| 4 | `canonical-representation-plan` | `queued` | Q50.G | canonical-temporal-plan、attention-demand-integration | canonical `RepresentationPlan`与resource description |
-| 5 | `canonical-movement-plan` | `queued` | Q50.H | canonical-region-plan、canonical-representation-plan | canonical local/DDR/peer correctness carrier |
-| 6 | `serialized-execution` | `queued` | Q50.K | canonical-temporal-plan | unique Serialized execution identity |
-| 7 | `canonical-storage-plan` | `queued` | Q50.I | canonical-movement-plan、serialized-execution | single-slot `BufferPlan`及lifetime facts |
-| 8 | `canonical-schedule` | `queued` | Q50.J | canonical-storage-plan、serialized-execution、Q63 | source-order/worker0 `ClosedSchedulePlan` |
-| 9 | `attention-work-projection` | `queued` | Q50.S | attention-normalization、canonical-root-work至canonical-schedule | `AttentionWorkDescription`及C–K/F resource projections |
-| 10 | `canonical-feasibility-proof` | `queued` | Q50.F | canonical-spatial-assignment至canonical-schedule、attention-work-projection、Q50.0 | canonical problem/parity及`FullFeasibilityProof` |
-| 11 | `attention-selected-decomposition` | `queued` | Q50.S | attention-work-projection、canonical-feasibility-proof | winner-only selected Linalg/Tensor/SCF→wafer.tile builder |
-| 12 | `deterministic-baseline-closure` | `queued` | Q49.P | canonical-spatial-assignment至attention-selected-decomposition、Q59 | pure legalization、一次commit/Q50.0及fresh `none`纵向 |
-| 13 | `spatial-domain` | `queued` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal |
-| 14 | `search-control-foundation` | `queued` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete |
-| 15 | `root-work-domain` | `queued` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及selected emitter |
-| 16 | `region-execution-domain` | `queued` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |
-| 17 | `temporal-domain` | `queued` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails及Core consumer |
-| 18 | `partial-feasibility` | `queued` | Q50.F | temporal-domain、exact-demand-boundary | A–E minimum/interference、Deferred及causal query |
-| 19 | `layout-domain` | `queued` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |
-| 20 | `movement-domain` | `queued` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/DTE/relay/collective domain、proof及Core consumer |
-| 21 | `storage-domain` | `queued` | Q50.I | movement-domain、canonical-storage-plan | fresh/alias/reuse与`1..U` slot domain及Core consumer |
-| 22 | `event-resource-foundation` | `queued` | Q50.J | storage-domain、Q63 | EventGraph、resource/recurrence facts及Core consumer |
-| 23 | `execution-structure-domain` | `queued` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |
-| 24 | `structure-specific-storage` | `queued` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence、slot multiplicity、rotation及lifetime closure |
-| 25 | `schedule-domain` | `queued` | Q50.J | structure-specific-storage、event-resource-foundation | fixed-K/I order、worker、resource与completion domain |
-| 26 | `full-feasibility` | `queued` | Q50.F | schedule-domain及完整B–K→I→J plan | full resource proof、oracle及Core admission input |
-| 27 | `search-control-closure` | `queued` | Q51.Core | full-feasibility、全部domain work items | full-plan admission、cost/bound、causal rejection、coverage及controller oracle |
-| 28 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | bounded exhaustive oracle、single winner及一次production commit |
-| 29 | `attention-production-closure` | `queued` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card |
-| 30 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy及有限预算LLaMA一次commit |
-| 31 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` |
+| 1 | `canonical-region-plan` | `doing` | Q50.D | canonical-root-work、exact-demand-boundary | singleton `RegionPlan`、execution instance及use binding |
+| 2 | `canonical-temporal-plan` | `queued` | Q50.E | canonical-region-plan | canonical `TemporalPlan`、tail及loop order |
+| 3 | `canonical-representation-plan` | `queued` | Q50.G | canonical-temporal-plan、attention-demand-integration | canonical `RepresentationPlan`与resource description |
+| 4 | `canonical-movement-plan` | `queued` | Q50.H | canonical-region-plan、canonical-representation-plan | canonical local/DDR/peer correctness carrier |
+| 5 | `serialized-execution` | `queued` | Q50.K | canonical-temporal-plan | unique Serialized execution identity |
+| 6 | `canonical-storage-plan` | `queued` | Q50.I | canonical-movement-plan、serialized-execution | single-slot `BufferPlan`及lifetime facts |
+| 7 | `canonical-schedule` | `queued` | Q50.J | canonical-storage-plan、serialized-execution、Q63 | source-order/worker0 `ClosedSchedulePlan` |
+| 8 | `attention-work-projection` | `queued` | Q50.S | attention-normalization、canonical-root-work至canonical-schedule | `AttentionWorkDescription`及C–K/F resource projections |
+| 9 | `canonical-feasibility-proof` | `queued` | Q50.F | canonical-spatial-assignment至canonical-schedule、attention-work-projection、Q50.0 | canonical problem/parity及`FullFeasibilityProof` |
+| 10 | `attention-selected-decomposition` | `queued` | Q50.S | attention-work-projection、canonical-feasibility-proof | winner-only selected Linalg/Tensor/SCF→wafer.tile builder |
+| 11 | `deterministic-baseline-closure` | `queued` | Q49.P | canonical-spatial-assignment至attention-selected-decomposition、Q59 | pure legalization、一次commit/Q50.0及fresh `none`纵向 |
+| 12 | `spatial-domain` | `queued` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal |
+| 13 | `search-control-foundation` | `queued` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete |
+| 14 | `root-work-domain` | `queued` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及selected emitter |
+| 15 | `region-execution-domain` | `queued` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |
+| 16 | `temporal-domain` | `queued` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails及Core consumer |
+| 17 | `partial-feasibility` | `queued` | Q50.F | temporal-domain、exact-demand-boundary | A–E minimum/interference、Deferred及causal query |
+| 18 | `layout-domain` | `queued` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |
+| 19 | `movement-domain` | `queued` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/DTE/relay/collective domain、proof及Core consumer |
+| 20 | `storage-domain` | `queued` | Q50.I | movement-domain、canonical-storage-plan | fresh/alias/reuse与`1..U` slot domain及Core consumer |
+| 21 | `event-resource-foundation` | `queued` | Q50.J | storage-domain、Q63 | EventGraph、resource/recurrence facts及Core consumer |
+| 22 | `execution-structure-domain` | `queued` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |
+| 23 | `structure-specific-storage` | `queued` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence、slot multiplicity、rotation及lifetime closure |
+| 24 | `schedule-domain` | `queued` | Q50.J | structure-specific-storage、event-resource-foundation | fixed-K/I order、worker、resource与completion domain |
+| 25 | `full-feasibility` | `queued` | Q50.F | schedule-domain及完整B–K→I→J plan | full resource proof、oracle及Core admission input |
+| 26 | `search-control-closure` | `queued` | Q51.Core | full-feasibility、全部domain work items | full-plan admission、cost/bound、causal rejection、coverage及controller oracle |
+| 27 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | bounded exhaustive oracle、single winner及一次production commit |
+| 28 | `attention-production-closure` | `queued` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card |
+| 29 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy及有限预算LLaMA一次commit |
+| 30 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
 ### 设计owner映射

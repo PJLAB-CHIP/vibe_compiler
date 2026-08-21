@@ -19,36 +19,38 @@ materializeCardSingleRootRegions(mlir::ModuleOp tensorProgram,
       *failureReason = message.str();
     return mlir::failure();
   };
-  mlir::FailureOr<StructuredDemandView> view = StructuredDemandView::create(
-      program.dag, spatial, demand, failureReason);
-  if (!tensorProgram || mlir::failed(view))
+  auto rootWork = RootRegionWorkAnalysis::create(program.dag, spatial, demand,
+                                                 failureReason);
+  if (!tensorProgram || mlir::failed(rootWork))
     return fail("single-root region requires closed spatial demand");
 
   llvm::SmallVector<StructuredNodeIterationShard, 32> shards;
   for (const StructuredDAGNode &node : program.dag.getNodes()) {
-    const NodeExecutionPartition *partition = view->getNode(node.id);
-    const SemanticRootKey *root = view->getRoot(node.id);
-    if (!partition || !root || partition->shards.empty())
+    const SemanticRootKey *root = rootWork->getRoot(node.id);
+    if (!root)
       return fail("single-root region omitted one node execution domain");
-    for (const ExecutionShard &execution : partition->shards) {
-      StructuredNodeIterationShard shard;
-      shard.structuredNodeId = node.id;
-      shard.tile = execution.tile;
-      for (const IteratorInterval &interval : execution.iterationDomain) {
-        shard.offsets.push_back(interval.offset);
-        shard.sizes.push_back(interval.size);
-      }
-      for (const analysis::ReductionMergeRequirement &merge :
-           demand.reductionMerges) {
-        if (merge.group.root != *root ||
-            !llvm::any_of(merge.contributions,
-                          [&](const analysis::ReductionContribution &entry) {
-                            return entry.shard == execution.shard;
-                          }))
-          continue;
-        shard.reductionGroups.push_back({merge.group, merge.mergeTile});
-      }
-      shards.push_back(std::move(shard));
+    for (TileId tile : program.availableTileIds) {
+      analysis::RootRegionWorkOutcome outcome = rootWork->query(*root, tile);
+      if (std::holds_alternative<analysis::NoRootRegionWork>(outcome))
+        continue;
+      const analysis::RootRegionWork *work =
+          analysis::getRootRegionWork(outcome);
+      if (!work)
+        return fail(std::visit(
+            [](const auto &value) -> std::string {
+              using T = std::decay_t<decltype(value)>;
+              if constexpr (std::is_same_v<T, analysis::RootRegionWork> ||
+                            std::is_same_v<T, analysis::NoRootRegionWork>)
+                return "single-root work has no materializable leaf";
+              else
+                return value.detail;
+            },
+            outcome));
+      auto leaf = prepareStructuredRootLeaf(node.id, *work, failureReason);
+      if (mlir::failed(leaf))
+        return mlir::failure();
+      if (*leaf)
+        shards.push_back(std::move(**leaf));
     }
   }
 

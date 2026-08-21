@@ -4,7 +4,7 @@
 
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/SingleRootTileRegion.h"
-#include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
+#include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"
 
 namespace wafer::compiler::detail {
 

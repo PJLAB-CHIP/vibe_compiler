@@ -3,8 +3,9 @@
 #ifndef WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_SINGLEROOTTILEREGION_H
 #define WAFER_CONVERSION_WAFERTENSORPROGRAMTOTILEREGION_SINGLEROOTTILEREGION_H
 
-#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
+#include "Wafer/Analysis/PhysicalDataflow/RootRegionWork.h"
 #include "Wafer/Analysis/PhysicalDataflow/SpatialAssignment.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/WaferTensorProgramToTileRegion.h"
 #include "Wafer/IR/Target/TargetTopology.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -34,6 +35,15 @@ struct StructuredNodeIterationShard {
   llvm::SmallVector<compiler::detail::ReductionGroupPlacement, 2>
       reductionGroups;
 };
+
+/// Closes the current singleton leaf request from one RootRegionWork. A
+/// merge-only Tile has no execution leaf and returns std::nullopt. This query
+/// creates no IR and does not choose temporal, representation, movement,
+/// storage, or schedule facts.
+mlir::FailureOr<std::optional<StructuredNodeIterationShard>>
+prepareStructuredRootLeaf(uint32_t structuredNodeId,
+                          const analysis::RootRegionWork &work,
+                          std::string *failureReason = nullptr);
 
 /// Materializes selected structured-node shards as actual single-root
 /// TileRegion functions under a complete Card/Tile ownership hierarchy.

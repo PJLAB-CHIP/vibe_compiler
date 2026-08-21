@@ -136,13 +136,14 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   transport/resource/ABI和actual work parity；
 - proven exact failure只拒绝对应causal assignment并消耗确定work unit，不触发late repair、retile、spill或另一selector；
   `ResourceExhausted`、solver timeout或internal failure属于indeterminate，必须保留合法state，不能形成no-good；
-- logical demand outcome必须区分`satisfied`、带direct uncovered/role witness的`proven logical infeasible`、`unsupported semantic
-  relation`和`indeterminate/compiler failure`；只有第二类可以删除当前placement trial，禁止将`FailureOr + string`压成
-  legality bool或no-good；
+- logical demand outcome必须区分`satisfied`、`unsupported semantic relation`、`indeterminate resource exhaustion`和
+  `compiler contract error`；完整execution assignment产生完整logical result，cross-op demand不形成placement no-good。
+  `InvalidSpatialAssignment`只定位上游未满足closed assignment合同，不能被压成`FailureOr + string`、legality bool或普通search rejection；
 - 对同一logical trial切换dense/strided/multi-piece carrier能力、layout或route可用性，exact demand与logical outcome必须
   extensionally相同；physical分解必须回证pieces union等于原set，carrier失败只拒绝对应representation/movement assignment；
-- exact-demand cache跨immutable borrow、nested structural snapshot变化、consumer domain、producer ownership或
-  partition/reduction/replication role变化时必须失效；`IREpoch`只拒绝跨borrow trial，不作为mutation detector或semantic key。
+- exact-demand relation facts依赖MLIR AnalysisManager/current immutable planning session失效；consumer domain、final ownership或
+  partition/reduction/replication变化必须进入完整`SpatialAssignment` semantic key。首次IR mutation前关闭planning session，
+  不使用manual epoch、fingerprint、pointer或diagnostic text充当mutation detector或stable semantic key。
   任何窄cache key都要有extensional equivalence proof，不能以当前单轴fixture观察结果代签；
 - serial/parallel proposal evaluation得到相同admitted set、winner和package identity；
 - wall/RSS是回归证据，不设任意60秒硬gate；

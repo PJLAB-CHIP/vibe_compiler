@@ -3,7 +3,9 @@
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
+#include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 #include "Wafer/Planning/Search/SingleRootRegion.h"
 #include "TestSupport/Planning/SpatialDemandTestSupport.h"
@@ -78,6 +80,14 @@ constexpr llvm::StringLiteral topology = R"mlir(
       {axes = ["card"], shape = array<i64: 1>}
 )mlir";
 
+constexpr llvm::StringLiteral topology16 = R"mlir(
+  wafer.target.topology @target
+      {card_grid = array<i64: 1, 1>, card_interconnect = "mesh",
+       tile_grid = array<i64: 4, 4>, unavailable_tiles = array<i64>}
+  wafer.execution.mesh @logical
+      {axes = ["card"], shape = array<i64: 1>}
+)mlir";
+
 TEST(SingleRootTileRegionTest, MaterializesExactNodeShardsAndEmptyTiles) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   std::string sourceText = (llvm::Twine("module {") + topology + R"mlir(
@@ -122,6 +132,107 @@ TEST(SingleRootTileRegionTest, MaterializesExactNodeShardsAndEmptyTiles) {
   for (const wafer::StructuredOperationEmissionRelation &relation :
        relations.operationEmissions)
     EXPECT_EQ(relation.structuredNodeId, 7u);
+}
+
+TEST(SingleRootTileRegionTest,
+     CanonicalRootWorkMaterializesAlignedAndRaggedAllTileLeaves) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    std::unique_ptr<mlir::MLIRContext> context = createContext();
+    std::string sourceText;
+    llvm::raw_string_ostream stream(sourceText);
+    stream << R"mlir(
+#id = affine_map<(b, m, n) -> (b, m, n)>
+module {
+)mlir" << topology16
+           << R"mlir(
+  func.func @map(%input: tensor<2x)mlir"
+           << extent << "x128xf16>) -> tensor<2x" << extent << "x128xf16> {\n"
+           << "    %empty = tensor.empty() : tensor<2x" << extent
+           << "x128xf16>\n"
+           << "    %result = linalg.generic {\n"
+           << "        indexing_maps = [#id, #id],\n"
+           << "        iterator_types = [\"parallel\", \"parallel\", "
+              "\"parallel\"]}\n"
+           << "        ins(%input : tensor<2x" << extent << "x128xf16>)\n"
+           << "        outs(%empty : tensor<2x" << extent << "x128xf16>) {\n"
+           << "      ^bb0(%value: f16, %old: f16):\n"
+           << "        %next = arith.addf %value, %value : f16\n"
+           << "        linalg.yield %next : f16\n"
+           << "    } -> tensor<2x" << extent << "x128xf16>\n"
+           << "    return %result : tensor<2x" << extent << "x128xf16>\n"
+           << "  }\n"
+           << "}\n";
+    auto source = parse(*context, sourceText);
+    ASSERT_TRUE(source);
+    ASSERT_TRUE(mlir::succeeded(mlir::verify(*source)));
+    std::string before;
+    llvm::raw_string_ostream beforeStream(before);
+    source->print(beforeStream);
+    beforeStream.flush();
+    std::string failureReason;
+    auto dag = wafer::compiler::detail::StructuredDAGAnalysis::create(
+        *source->getOps<mlir::func::FuncOp>().begin(), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(dag)) << failureReason;
+    llvm::SmallVector<wafer::TileId, 16> available;
+    for (int64_t tile = 0; tile < 16; ++tile)
+      available.push_back(wafer::TileId(tile));
+    auto coordinate = wafer::compiler::detail::buildCanonicalSpatialAssignment(
+        *dag, available, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(coordinate)) << failureReason;
+    llvm::SmallVector<int64_t, 16> queryAxisSizes;
+    for (const wafer::compiler::detail::ExecutionShard &shard :
+         coordinate->assignment.nodes.front().shards)
+      queryAxisSizes.push_back(shard.iterationDomain[1].size);
+    if (extent == 1024) {
+      EXPECT_EQ(*llvm::min_element(queryAxisSizes),
+                *llvm::max_element(queryAxisSizes));
+    } else {
+      EXPECT_LT(*llvm::min_element(queryAxisSizes),
+                *llvm::max_element(queryAxisSizes));
+    }
+    auto session = wafer::compiler::detail::DemandPlanningSession::create(
+        *dag, wafer::analysis::IndexRelationLimits(), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(session)) << failureReason;
+    wafer::analysis::ExactDemandOutcome outcome =
+        session->query(coordinate->assignment);
+    const wafer::analysis::ExactDemandProof *proof =
+        wafer::analysis::getExactDemandProof(outcome);
+    ASSERT_NE(proof, nullptr);
+    auto target = wafer::TargetTopology::create(*source, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(target)) << failureReason;
+    const wafer::compiler::detail::StructuredDAGNode &node =
+        dag->getNodes().front();
+    const uint32_t nodeId = node.id;
+    llvm::SmallVector<wafer::StructuredOperationNodeMapping, 16> operationNodes{
+        {node.operation, nodeId}};
+    wafer::compiler::detail::CardProgramAnalysis program(
+        std::move(*target), available, std::move(*dag),
+        wafer::compiler::detail::StaticOutputDomains{{2, extent, 128}},
+        operationNodes);
+    auto materialized =
+        wafer::compiler::detail::materializeCardSingleRootRegions(
+            *source, program, wafer::CardId(0), coordinate->assignment, *proof,
+            &failureReason);
+    ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+    EXPECT_EQ(
+        countOps<wafer::TileModuleOp>(materialized->module->getOperation()),
+        16u);
+    EXPECT_EQ(
+        countOps<wafer::TileRegionOp>(materialized->module->getOperation()),
+        16u);
+    ASSERT_EQ(materialized->relations.operationEmissions.size(), 16u);
+    EXPECT_TRUE(llvm::all_of(
+        materialized->relations.operationEmissions,
+        [&](const wafer::StructuredOperationEmissionRelation &relation) {
+          return relation.structuredNodeId == nodeId;
+        }));
+    std::string after;
+    llvm::raw_string_ostream afterStream(after);
+    source->print(afterStream);
+    afterStream.flush();
+    EXPECT_EQ(after, before);
+  }
 }
 
 TEST(SingleRootTileRegionTest, CarriesValuesCapturedByStructuredRegions) {

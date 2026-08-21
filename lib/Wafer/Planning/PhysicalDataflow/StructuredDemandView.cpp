@@ -141,6 +141,16 @@ StructuredDemandView::getRoot(StructuredDAGNodeID node) const {
   return binding ? &binding->key : nullptr;
 }
 
+const SemanticRootBinding *
+StructuredDemandView::getRootBinding(const SemanticRootKey &root) const {
+  return roots.find(root);
+}
+
+const SemanticValueBinding *
+StructuredDemandView::getValueBinding(mlir::Value value) const {
+  return roots.find(value);
+}
+
 const NodeExecutionPartition *
 StructuredDemandView::getNode(StructuredDAGNodeID node) const {
   const SemanticRootKey *root = getRoot(node);

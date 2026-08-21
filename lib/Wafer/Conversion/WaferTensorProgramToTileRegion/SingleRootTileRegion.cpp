@@ -250,6 +250,61 @@ void appendRelations(StructuredMaterializationRelations &destination,
 } // namespace
 } // namespace wafer::tensor_program_to_tile_region
 
+mlir::FailureOr<std::optional<wafer::StructuredNodeIterationShard>>
+wafer::prepareStructuredRootLeaf(uint32_t structuredNodeId,
+                                 const analysis::RootRegionWork &work,
+                                 std::string *failureReason) {
+  using namespace tensor_program_to_tile_region;
+  auto failLeaf = [&](llvm::StringRef detail)
+      -> mlir::FailureOr<std::optional<StructuredNodeIterationShard>> {
+    setFailureReason(failureReason, detail);
+    return mlir::failure();
+  };
+  if (!work.rootOperation)
+    return failLeaf("structured root leaf has no current root operation");
+  if (work.execution.empty()) {
+    if (work.contributions.empty() && !work.merges.empty())
+      return std::optional<StructuredNodeIterationShard>{};
+    return failLeaf("structured root leaf has no execution piece");
+  }
+  if (work.execution.size() != 1)
+    return failLeaf(
+        "structured root leaf requires one execution piece per Tile");
+  const analysis::RootExecutionWork &execution = work.execution.front();
+  if (execution.shard.root != work.id.root)
+    return failLeaf("structured root leaf execution belongs to another root");
+
+  StructuredNodeIterationShard result;
+  result.structuredNodeId = structuredNodeId;
+  result.tile = work.id.tile;
+  for (const compiler::detail::IteratorInterval &interval :
+       execution.iterationDomain) {
+    if (interval.size <= 0)
+      return failLeaf("structured root leaf has an empty iterator interval");
+    result.offsets.push_back(interval.offset);
+    result.sizes.push_back(interval.size);
+  }
+  for (const analysis::RootContributionWork &contribution :
+       work.contributions) {
+    if (contribution.contribution.shard != execution.shard ||
+        contribution.contribution.tile != work.id.tile)
+      return failLeaf("structured root contribution does not match its leaf");
+    compiler::detail::ReductionGroupPlacement placement{contribution.group,
+                                                        contribution.mergeTile};
+    if (!llvm::any_of(result.reductionGroups, [&](const auto &existing) {
+          return existing.group == placement.group &&
+                 existing.mergeTile == placement.mergeTile;
+        }))
+      result.reductionGroups.push_back(std::move(placement));
+  }
+  llvm::sort(result.reductionGroups,
+             [](const compiler::detail::ReductionGroupPlacement &lhs,
+                const compiler::detail::ReductionGroupPlacement &rhs) {
+               return lhs.group < rhs.group;
+             });
+  return std::optional<StructuredNodeIterationShard>(std::move(result));
+}
+
 mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
     mlir::ModuleOp sourceModule, CardId cardId,
     llvm::ArrayRef<TileId> availableTiles,

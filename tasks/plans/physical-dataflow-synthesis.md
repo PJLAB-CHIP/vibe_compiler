@@ -214,9 +214,9 @@ current immutable structured IR
   assignment重算，是query-local analysis cache，不进入state identity，也不序列化为output或计划attr；
 - actual transformation不修改原source，也不在scratch IR内修复candidate；只有winner进入该边界。Q50.0失败说明planning
   legality或lowering合同缺口，不能作为正常控制流再物化下一个candidate；
-- analysis cache只在一个immutable borrow内存活；Q50.A `IREpoch`只拒绝跨borrow trial，不进入semantic cache key，也不
-  代替nested structural snapshot。borrow内的key必须包含target facts和会影响结论的全部typed assignments；改变traversal、
-  tile、layout、movement、buffer或schedule后，旧calendar、lifetime、SPM/legality结果全部失效；
+- analysis cache只在一个immutable IR borrow或显式planning session内存活；Q50.A使用MLIR analysis invalidation和session close，
+  不保留manual epoch、fingerprint或nested snapshot协议。query key必须包含target facts和会影响结论的全部typed assignments；
+  改变traversal、Tile、layout、movement、buffer或schedule后，旧calendar、lifetime、SPM/legality结果全部失效；
 - 任意时刻最多一个 live actual owner；host 可并行计算 immutable analysis，但 candidate set insertion 和 tie-break 使用稳定 key；
 - regular mapping、reuse signature和coarse resource estimate只能给普通typed transitions排序；不能clone-per-mapping，不能把
   reuse/cost annotation写进候选IR，也不能用function name、JSON或opaque solver payload跨越compile seam；
@@ -2551,6 +2551,30 @@ Pipeline position:
   reduction、spatial contribution/per-output merge和effect boundary正负例通过；singleton actualization的每个`(root,Tile)`最多一个
   outer region且emission relation只映回该root，其它structured producer均为typed boundary；Q49.P与winner emitter复用同一leaf
   primitive；production planning/materialization计数证明零singleton prebuild、零Module/DAG clone/replay。
+
+### Q50.C work-item分界
+
+Q50.C由两个线性work items完成，不能在`canonical-root-work`中提前混入完整search domain：
+
+- `canonical-root-work`只定义并派生每个canonical `(root, Tile)`的`RootRegionWork`，同时提供一个消费该work的caller-owned
+  singleton leaf prepare/emit primitive。它直接验证work与A proof逐字段一致，并用test-only caller构造actual single-root
+  `wafer.tile.region`；不枚举root alternatives、不建立Core state、不选择multi-root group，也不提交完整CardModule。
+- `root-work-domain`在search-control-foundation之后补齐全部root/contribution/merge work successors、Core transition和selected
+  group emitter，并在outer winner transaction中取代旧Module-return/closure walker。旧`SingleRootRegion`控制入口、whole-Module
+  clone及donor退役属于后一个work item，不能由canonical leaf存在提前代签。
+
+当前`canonical-root-work`的覆盖矩阵如下。shape只用于覆盖真实执行规模，不进入work identity、legality或materializer分支；
+rank-zero和单一故障负例可使用小shape，但同一support/merge机制必须另有真实规模正例。
+
+| 覆盖类 | 代表输入 | `RootRegionWork` exact断言 | leaf/downstream witness |
+| --- | --- | --- | --- |
+| aligned single-root | rank>=3、主要维度1024、all-16 Tile | 每个nonempty `(root,Tile)`恰有一个work；execution pieces与assignment逐字段相同，program input/constant boundaries和result pieces all-and-only | test-only singleton leaf每个work最多一个outer TileRegion，emission只映回该root |
+| ragged multi-axis | rank>=3、主要维度1025/1031、两个以上partition axes | tail offsets/sizes、result domains和stable work order精确；Tile/shard输入顺序扰动不改变semantic work | actual tile/result slice覆盖无hole/overlap，source IR不变 |
+| multi-result与DPS init | 1024级multi-result root及显式structured init producer | 每个result piece独立保留；init producer是typed structured boundary，不被support closure吞入 | leaf返回all-and-only selected root results，init root无emission relation |
+| shared multi-producer support | 1025级insert/reshape/slice/pad或same-producer multi-path | 同一support result只有一个`SupportValueId`，required domain取exact union；每个data-carrying input和exact-empty branch均保留自己的boundary/use | support op只emit一次，两个structured producers都停在boundary |
+| ordinary reduction | rank>=3、整除/非整除spatial contribution与多个per-output merge group | contribution由source Tile work持有，merge由merge Tile work持有；partial不是result owner，多个group同Tile仍合并为一个root work | singleton contribution/merge leaf分别消费同一A requirement；init exactly once由typed relation检查 |
+| attention FD coupled merge | rank-5/6、K2为1024及1031或33x31 | Maximum/Sum/Accumulator仍属于一个merge work，component domains和final owner原样引用attention-ready proof | 本项只证明leaf输入闭合；selected attention action emission仍由attention-selected-decomposition完成 |
+| bounded exceptions/failure | rank-zero contract；effectful support、missing boundary或work/proof mismatch单故障 | rank-zero形成唯一empty-vector piece；错误返回typed unsupported或compiler contract failure，不产生partial work | failure前后source generic text相同，无临时Func/Module/TileRegion残留 |
 
 ### C-1 专项调研与leaf boundary
 

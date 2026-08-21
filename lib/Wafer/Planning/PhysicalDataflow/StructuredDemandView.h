@@ -19,16 +19,17 @@ namespace wafer::compiler::detail {
 class StructuredDemandView {
 public:
   static mlir::FailureOr<StructuredDemandView>
-  create(const StructuredDAGAnalysis &dag,
-         const SpatialAssignment &assignment,
+  create(const StructuredDAGAnalysis &dag, const SpatialAssignment &assignment,
          const analysis::ExactDemandProof &proof,
          std::string *failureReason = nullptr);
 
   const SemanticRootKey *getRoot(StructuredDAGNodeID node) const;
+  const SemanticRootBinding *getRootBinding(const SemanticRootKey &root) const;
+  const SemanticValueBinding *getValueBinding(mlir::Value value) const;
   const NodeExecutionPartition *getNode(StructuredDAGNodeID node) const;
   const ExecutionShard *getShard(StructuredDAGNodeID node, TileId tile) const;
-  const analysis::DependencyDemand *getDependency(
-      StructuredDAGNodeID consumer, uint32_t operand) const;
+  const analysis::DependencyDemand *getDependency(StructuredDAGNodeID consumer,
+                                                  uint32_t operand) const;
   llvm::SmallVector<const analysis::FinalResultOwner *, 4>
   getFinalOwners(StructuredDAGNodeID node, uint32_t result) const;
   bool hasSpatialReduction(StructuredDAGNodeID node) const;

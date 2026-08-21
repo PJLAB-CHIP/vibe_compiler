@@ -2,6 +2,7 @@ add_mlir_library(WaferAnalysis
   CallGraph/DirectCallGraphAnalysis.cpp
   PhysicalDataflow/IndexRelation.cpp
   PhysicalDataflow/ExactDemand.cpp
+  PhysicalDataflow/RootRegionWork.cpp
   PhysicalDataflow/PhysicalAccessRelation.cpp
   PhysicalDataflow/PhysicalLayoutRelation.cpp
   PhysicalDataflow/TransferRealizability.cpp

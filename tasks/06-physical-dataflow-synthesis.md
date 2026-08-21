@@ -387,6 +387,12 @@ Placement后先从Q50.A唯一operand reconstruction为每个`(semantic root, Til
 iterator cells、同root contribution/merge、pure tensor support DAG及在其它structured result/program input/constant处的typed
 boundaries。同一root/Tile的work不任意拆分，shared support只出现一次；不再次递归全operand恢复另一份closure。
 
+`RootRegionWork`以`SemanticRootKey + TileId`标识，support value以observable SSA path和result标识；current operation/value只作同一
+immutable IR epoch内的non-owning lookup handle。boundary exact sets按root use做bounded union，support inputs和captures保持typed
+source identity，topological order由SSA dependency与semantic tie-break产生。`prepareStructuredRootLeaf`只把一个work关闭为当前
+singleton execution leaf；merge-only Tile不伪造execution shard。完整root domain、multi-root group和旧Module-return emitter退役仍由
+后续`root-work-domain`与winner transaction完成。
+
 随后region grouping在每个Tile的local DAG上形成connected root partitions；完全无依赖的components合并不会减少movement且
 只会扩大lifetime/capacity约束，因此由严格dominance保持分离。region membership、producer execution instance和consumer-use
 binding是三个不同对象：mandatory或显式replica producer work分别选择top-level或consumer-nested execution，每个nonempty exact
@@ -901,9 +907,9 @@ selected lowering完成。shape只是case输入，不进入合法域、candidate
 - `none`和`search`只共享policy-free analysis、typed plan schema、materializer和selected-result compilation/verification，互不调用；
 - Q51.Core起旧接口不进入current控制流，但旧source/test中的独有算法、proof和witness必须先迁移；每个checkpoint同时验证typed
   mechanism、production consumer和donor capability，Q51比较new planning与独立oracle、winner actual IR和一次Q50.0结果；
-- baseline与spatial mechanism共用policy-free typed exact-demand query，只有`proven logical infeasible`删除trial；unsupported和
-  indeterminate不会进入legality bool/no-good cache；跨immutable borrow、nested structural snapshot或任一观察到的domain/role
-  变化使cache失效；
+- baseline与spatial mechanism共用policy-free typed exact-demand query；完整closed assignment的cross-op demand不产生placement
+  no-good。unsupported semantics、resource exhaustion和compiler contract error均保持typed outcome，不进入legality bool/no-good
+  cache；IR mutation关闭当前planning session，任一assignment/domain/role变化进入完整semantic key并重算；
 - `none`不构造或调用search state/candidate、search-oriented domain/ranking evaluator、proposal ordering/group materializer
   或candidate统计；每个baseline TileRegion恰有一个structured compute root，跨root shaped dependency均有显式DDR边界，
   同Tile多root表现为多个顺序TileRegion；
