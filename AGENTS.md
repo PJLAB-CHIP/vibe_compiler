@@ -4,8 +4,8 @@
 `tasks/progress.md`，具体设计记录在编号设计文档中。本文件不保存短期计划、临时结论或尚未确定的
 IR 设计。
 
-Wafer AI compiler / runtime仍在设计和实现阶段。文档、IR、pass、工具和测试可以一起演进，但每次
-修改都必须保持明确的输入输出、可验证的IR以及可重现的测试结果。
+Wafer compiler和runtime的设计、IR、pass、工具和测试会一起演进。每次修改都必须保持明确的
+输入输出、可验证的IR以及可重现的测试结果。
 
 ## 优先级
 
@@ -36,9 +36,9 @@ Wafer AI compiler / runtime仍在设计和实现阶段。文档、IR、pass、�
 
 如果环境或外部依赖阻止某一步，报告未完成的部分、已经运行的检查和剩余风险。
 
-### Host构建和测试
+### 主机端构建和测试
 
-- 独立的host构建、单元测试、catalog、no-card和静态检查使用机器可用的逻辑CPU并行运行。
+- 独立的主机端构建、单元测试、`catalog`、`no-card`和静态检查使用机器可用的逻辑CPU并行运行。
   CMake build和CTest默认使用`nproc`给出的并发度。
 - 只有内存限制、共享写目录、资源锁或工具限制要求串行时才降低并发度。使用当前环境允许的最大安全
   并发度，并说明限制。
@@ -46,19 +46,21 @@ Wafer AI compiler / runtime仍在设计和实现阶段。文档、IR、pass、�
 
 ### 板端测试
 
-- 包含板端验证的任务必须先达到`board-ready`。在无卡环境中准备完整case、oracle和runner，生成完整
-  package并通过no-card。`board-ready`不是`done`；只有本轮真实板测通过后才能标记`done`。
-- 只运行当前任务指定的板端case。不要重复共享环境检查，也不要顺带运行全量板测。
-- 同一重启会话中，如果软硬件身份没有变化，只确认一次设备环境。不为每个case重复版本、反汇编、
-  heartbeat或其它环境检查。
-- 普通编译器/runtime纵向和qualification板测默认使用FP16或BF16。只有测试目标是F32格式、ABI、转换、
-  数值边界，或者真实输入要求F32时才使用F32，并在测试文档中说明原因。上板前检查source、program
-  descriptor、payload和expected的dtype一致。
-- 普通case只运行必要步骤：增量构建、单进程launch、有限timeout、结果与guard检查以及正常清理。
-- 不读取或回放历史板端输出。实现、case和环境都未变化时，不为重复确认旧结论而重跑case。compiler、
-  runtime、package、case或校验逻辑变化并影响该case后，使用本轮新构建和新输出形成结论。
-- 历史raw、日志和报告只用于审计，不得作为新测试的输入。
-- 每个`board-ready`批次对本轮package运行一次no-card和host oracle。相关代码、合同和环境未变化时不重复。
+- 包含板端验证的任务必须先达到`board-ready`。在无卡环境中准备完整测试用例、参考结果和执行脚本，
+  生成完整`ExecutablePackage`并通过`no-card`验证。`board-ready`不是`done`；只有本轮真实板测通过后
+  才能标记`done`。
+- 只运行当前任务指定的板端测试用例。不要重复共享环境检查，也不要顺带运行全量板测。
+- 同一重启会话中，如果软硬件身份没有变化，只确认一次设备环境。不为每个测试用例重复版本、反汇编、
+  `heartbeat`或其它环境检查。
+- 普通编译器/runtime纵向和资格验证默认使用FP16或BF16。只有测试目标是F32格式、ABI、转换、数值边界，
+  或者真实输入要求F32时才使用F32，并在测试文档中说明原因。上板前检查输入、program descriptor、
+  payload和expected中的dtype一致。
+- 普通测试用例只运行必要步骤：增量构建、单进程launch、设置timeout、检查结果和guard并正常清理。
+- 不读取或回放历史板端输出。实现、测试用例和环境都未变化时，不为重复确认旧结论而重跑。compiler、
+  runtime、`ExecutablePackage`、测试用例或校验逻辑变化并影响该用例后，使用本轮新构建和新输出形成结论。
+- 历史raw输出、日志和报告只用于审计，不得作为新测试的输入。
+- 每个`board-ready`批次对本轮`ExecutablePackage`运行一次`no-card`和主机端参考结果检查。相关代码、
+  合同和环境未变化时不重复。
   只有板端异常需要定位时才进行深入ABI或firmware诊断。
 - timeout或设备异常后停止当前批次。不要自动retry、reset或power cycle。
 
@@ -106,7 +108,7 @@ Wafer AI compiler / runtime仍在设计和实现阶段。文档、IR、pass、�
 构建和测试命令以当前CMake、lit配置和`memory/general_dev.md`为准。不要把旧build目录、临时任务名或
 本地路径写入长期文档。
 
-## Memory
+## 经验记录
 
 `memory/`只保存可复用的稳定经验。没有新经验时不修改，也不需要在结果中专门说明。
 
@@ -152,13 +154,13 @@ Pipeline position:
 
 ## IR设计
 
-- 每一层IR只保存该层能够解释、修改和验证的信息。低层硬件事实只能作为上层合法性检查或cost model的
+- 每一层IR只保存该层能够解释、修改和验证的信息。低层硬件事实只能作为上层合法性检查或代价模型的
   输入，不能成为上层语义。
 - 新增operation、type或attribute前，先检查现有dialect、trait、interface、canonicalization和conversion是否
   已经能够表达该语义。只有现有机制无法表示、验证或lowering时才扩展Wafer IR。
-- Analysis可以读取当前IR和显式传入的只读target信息。Analysis结果必须可以重新计算，并在相关IR修改后
-  失效。Analysis不得修改IR。
-- Transformation只能读取输入IR、显式参数和仍然有效的analysis结果。不要依赖隐藏的全局状态。
+- 分析可以读取当前IR和显式传入的只读目标配置。分析结果必须可以重新计算，并在相关IR修改后失效。
+  分析不得修改IR。
+- IR变换只能读取输入IR、显式参数和仍然有效的分析结果。不要依赖隐藏的全局状态。
 - 如果后续pass需要某项信息，而且无法从输入IR重新计算，就把它表示在IR中。优先使用SSA、region、type、
   effect、operation或明确的attribute。
 - 只在一次函数调用中使用的临时计划可以保存在C++对象中。不要把它序列化为旁路文件，也不要在IR已经表达
@@ -167,11 +169,11 @@ Pipeline position:
 ## 接口修改
 
 - Wafer定义的C++ API、IR、磁盘格式、runtime ABI和测试fixture只保留一个受支持的形式。修改时同时更新
-  仓库内的producer、consumer和测试。不要增加`V2`名称、兼容wrapper、双reader或新旧分支。
+  仓库内的写入方、读取方和测试。不要增加`V2`名称、兼容wrapper、双reader或新旧分支。
 - Wafer内部schema、record和symbol使用稳定的语义名称，不使用版本号作为标识。parser通过magic、字段、size、
   layout、digest和其它明确约束拒绝旧输入。
 - 对仓库控制的接口做破坏性修改时，在同一修改中更新compiler、runtime、CRT、firmware、tools、fixture和文档。
-  无法同步升级的外部consumer通过发布流程协调，不在主仓长期保留兼容分支。
+  无法同步升级的外部使用者通过发布流程协调，不在主仓长期保留兼容分支。
 - NPY、license、vendor规范、设备runtime和外部toolchain的版本是外部事实，保留其原始名称和检查方式。
 
 ## MLIR工程规则
@@ -292,10 +294,9 @@ MLIR行为以官方文档为准；具体API以仓库pinned LLVM/MLIR源码和测
   operation interface读取语义。
 - 如果IR无法区分后续必须区分的语义，扩展operation、type、attribute或interface。不要建立名字匹配或隐藏
   side table。
-- 可以从具体case开始设计，但长期规则必须适用于同类IR。说明哪些数值来自示例，哪些来自IR，哪些只是
-  cost model的选择。
-- 当前任务不修改数值语义时，保持现有算术operation和dtype语义。已有数值测试继续作为回归，不因浮点
-  结合顺序、舍入、special value或comparator扩大当前任务。只有用户明确要求数值语义时才讨论这些问题。
+- 可以从具体测试用例开始设计，但长期规则必须适用于同类IR。说明哪些shape、参数和选择仅用于示例，
+  哪些由IR决定，哪些由代价模型选择。
+- 当前任务不修改数值语义时，保持现有算术operation和dtype语义。已有数值测试只作为回归。
 - 只在能够解释和验证目标细节的lowering层创建低层对象。不要提前把它们表示为字符串或旁路数据。
 - 一个函数、pass或文件只解决一个明确问题。新增对象、算法、pass或字段必须直接服务于合法性检查、
   transformation、lowering或diagnostic。
@@ -326,8 +327,8 @@ MLIR行为以官方文档为准；具体API以仓库pinned LLVM/MLIR源码和测
 修改设计时检查：
 
 - 是否写清输入IR、输出IR、直接使用者和完成条件。
-- 是否推进了正式编译pipeline中的一个实际边界，而不只是让单个pass或fixture运行。
-- 是否从最小的真实上游输入重放该边界，并验证直接下游能够使用输出。
+- 是否从真实输入IR生成了直接下游实际读取的输出IR或文件，而不只是运行单个pass或fixture。
+- 验证是否只重放了产生该输入所需的最小上游链路。
 - 每项信息能否从输入IR重新计算；不能时，为什么必须保留。
 - 该信息应该表示为SSA、region、operation、type、attribute、effect还是analysis。
 - 是否产生重复事实、名字依赖或case特化。
