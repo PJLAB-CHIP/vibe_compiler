@@ -314,8 +314,9 @@ current target容量、target-model能力或host预算不足，必须按stage报
 
 1. Q49.P从current TensorProgram构造一个live canonical plan，调用闭包不包含search state/candidate、search-oriented domain/ranking
    evaluator、proposal order/group materializer或candidate统计，也不包含完整placement-option生成、domain propagation、recursive
-   CSP/backtracking或任何“从option列表返回一个assignment”的helper。Q50.A后先迁baseline canonical component并交付Q50.F
-   closed-plan core，不等待完整search domain；每个coordinate只运行A/F等pure typed query，planning
+   CSP/backtracking或任何“从option列表返回一个assignment”的helper。Q50.B-foundation先提供closed SpatialAssignment与canonical
+   baseline producer，Q50.A只推导demand；随后迁其余baseline components并交付Q50.F closed-plan core，不等待完整search domain；
+   每个coordinate只运行A/F等pure typed query，planning
    CardModule/Instr/Q50.0均为零；direct ExactRejection只能触发预定义、单调、不分支且不回溯的functional legalization transition，
    旧coordinate不作为alternative保留。FullFeasibilityProof关闭plan后，才沿TensorProgram→一个CardModule→TileRegion/Instr→fresh
    SPM/DDR→CardExecutable→ExecutablePackage执行一次actual链；actual resource problem与proof不一致或Q50.0失败是compiler bug，

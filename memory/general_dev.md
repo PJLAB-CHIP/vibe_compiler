@@ -396,12 +396,12 @@ source program
   LLaMA block。需要定位relation热路径时，用同结构小图和明确work count，
   不用大模型wall-time代替算法证据。
 - CardModule构造、各Tile lowering、DDR/index及target ABI阶段都按独立Tile使用bounded executor；真实板端launch仍串行。
-  “16 Tile并发”不能掩盖重复整图分析：显式timing/测试计数同时记录Tile entry数、公共analysis构造数、CardModule/Q50.0一一对应和
+  “16 Tile并发”不能掩盖重复整图分析：显式timing/测试计数同时记录Tile entry数、公共analysis构造数、planning CardModule/Q50.0为零、selected各一次和
   两段maximum workers。相同descriptor复用analysis，不同tail/offset/communication仍构造各自actual IR。
 
 ## Single-root TileRegion actual apply（stable，2026-08-19）
 
-- Q50.B closed trial先转换为每个node/Tile的exact iterator rectangle；Q50.C直接在最终`TileModule`中创建private root function并
+- Q50.B representation foundation先关闭`SpatialAssignment`，Q50.A派生每个node/Tile的exact iterator demand；Q50.C直接在最终`TileModule`中创建private root function并
   原位lower成一个outer `wafer.tile.region`。function-level conversion是正式窄入口，不为获得module anchor创建synthetic
   module，也不返回scratch SSA、probe verdict或可重放body。
 - root backward closure由current SSA/effect/interface驱动：source input和其它structured node result成为typed DDR function
@@ -450,6 +450,9 @@ source program
 
 ## Physical planning与一次性commit
 
+- query若消费某个plan component，必须先交付该component的policy-free representation foundation、structural validation和至少一个真实
+  producer，再实现query；不能让query暂时消费旧trial/opaque adapter。Q50.B foundation先产生`SpatialAssignment`，Q50.A只推导demand，
+  B-full随后枚举domain并调用A，就是这种producer→query→full-domain分层。
 - `none`与`search`是并列driver：分别从TensorProgram建立deterministic或optimizing plan，只共享policy-free analysis、typed plan schema、
   materializer和lowering；任一模式不得调用或返回另一模式的结果。
 - production search只在immutable IR与typed planning state上生成、约束、估价和选择；不能用完整CardModule/Instr反复物化作为候选

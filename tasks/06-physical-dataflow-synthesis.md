@@ -815,7 +815,8 @@ domain/query/apply、actual-IR witness和下游Q50.0定向准入，同时删除�
 
 Q50.0、Q54与Q59已经闭合无策略selected-executable compilation、MLIR scope/pipeline和compiler transaction。Q50.A旧API已有
 immutable borrow、typed relation/role及部分reduction/broadcast/window/multi-piece witness，但本轮重审已因execution/ownership重复、
-partial-result owner、node-wide merge及manual epoch等问题重新打开；其终态与动态状态只看`tasks/progress.md`。
+partial-result owner、node-wide merge及manual epoch等问题重新打开。A的终态输入`SpatialAssignment`由Q50.B representation foundation先
+定义、关闭并由baseline canonical producer实际产生；A不能临时保留旧trial作为输入。动态状态只看`tasks/progress.md`。
 
 Q49.P已经保留consumer-operand exact demand、structured-producer截断、single-root final construction、typed carrier和search-policy
 隔离等能力；但它仍用每个closed temporal coordinate的一次CardModule/Q50.0来查询capacity，因此重新打开。current旧probe、
@@ -824,8 +825,8 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 主线仍有下列设计差距：
 
 - baseline的coordinate loop仍执行actual TileRegion→Instr与memory planning；这些工作必须改成Q50.F typed problem/proof，planning IR为零；
-- Q50.A须以`SpatialAssignment`和operand-level SSA worklist重建exact demand/final owner/reduction merge proof，并协调迁移baseline及
-  B/G--J consumers；
+- Q50.B foundation须先建立`SpatialPlan/SpatialAssignment`与canonical producer；Q50.A随后以该assignment和operand-level SSA
+  worklist重建exact demand/final owner/reduction merge proof，并供baseline及B-full/G--J消费；
 - placement production transition仍过早消费physical edge strategy；Q50.B尚未从all-iterator semantics生成完整multi-axis、
   remainder、reduction/merge和非矩形physical placement域；
 - current旧search仍含candidate、shortlist、repair与完整编译耦合；只能在Q50能力逐项迁移并由Q51 planning取代后删除；
@@ -837,9 +838,8 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 任务按以下output闭环推进，具体状态以`tasks/progress.md`为准：
 
 1. 提取无repair的CardExecutable compilation/verification边界；
-2. 修复placement与layout-independent exact demand边界，以完整logical shard domain、typed dependency role和四态outcome给
-   baseline/search提供不携带representation/movement policy的proof；闭合reduction、broadcast、window/stride、multi-piece、
-   DPS init与support relation，删除carrier失败和字符串失败对spatial legality的反写；
+2. 先从Q50.B拆出policy-free spatial representation foundation与baseline canonical producer，再修复Q50.A exact-demand边界；以完整
+   logical shard domain、typed dependency role和四态outcome提供不携带representation/movement policy的proof，删除旧trial adapter；
 3. 提取baseline canonical plan components和Q50.F closed-plan core，随后以Q49.P从current输入闭合功能合法化、结构、policy、
    causal witness和winner-only materialization；
 4. 只先收敛Q51 planning state、transition、cost/bound、coverage和single-winner commit合同，不写空Core或切换public入口；

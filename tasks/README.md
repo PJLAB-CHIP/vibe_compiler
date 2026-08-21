@@ -62,8 +62,9 @@
 11、14-17编号设计文档拥有，状态只看`tasks/progress.md`；不得从旧计划恢复接口。
 
 Q49.P、Q50、Q51–Q53共用card-local multi-Tile planning与selected execution计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
-Q50.0建立selected CardModule compilation/verification seam，Q50.A先收口IndexRelation demand。随后立即做Q49.P baseline纵向：把
-current canonical spatial/region/temporal/representation/movement/single-slot/Serialized/order事实迁入最终plan component，Q50.F先交付
+Q50.0建立selected CardModule compilation/verification seam；Q50.B先拆出`SpatialPlan/SpatialAssignment` representation foundation及
+baseline canonical producer，Q50.A再收口只消费closed assignment的IndexRelation demand。随后立即做Q49.P baseline纵向：把
+current其余canonical region/temporal/representation/movement/single-slot/Serialized/order事实迁入最终plan component，Q50.F先交付
 closed-plan problem/proof/parity core；baseline每coordinate零IR、selected只commit一次。它不等待完整search domains，也不在accepted后建立
 shadow schedule/cost或默认打印IR。baseline清理完成后，Q50.S/B–K再按依赖恢复semantic-root、spatial、TileRegion/fusion、temporal、
 representation/movement、buffer、execution structure和schedule完整domain/算法。F分closed-plan core、partial foundation、full closure；
@@ -79,7 +80,7 @@ fusion、buffering、communication或worker selector。动态状态、依赖和�
 
 Q54 MLIR工程化整改计划见`tasks/plans/mlir-engineering-remediation.md`。19是横向工程合同owner：让现有operation/region
 层级成为真实pass与analysis层级，收口typed ODS、standard interface、named nested pipeline和transactional rewrite，并
-通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54优先于Q50.A；Q49.P保留Q50.A/Q54 current能力，
+通过18定义的source truth gate；它不产生新IR stage或第二production driver。Q54之后先做Q50.B representation foundation，再做Q50.A；Q49.P保留A/Q54 current能力，
 并在Q50.F closed-plan core接管per-coordinate resource query后立即重新收口，不等待完整search mechanisms；之后再由Q50/Q51继续施工，避免把semantic Location、whole-module
 local wrapper、actual compile probe和手工analysis lifecycle固化进baseline或新的candidate/search实现。
 

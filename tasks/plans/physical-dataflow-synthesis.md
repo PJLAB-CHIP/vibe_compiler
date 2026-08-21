@@ -122,10 +122,11 @@ source-to-package成功只能证明一个固定构造点能lower，不能证明Q
 
 1. **安全路由**：在Q51重新闭合前，默认产品编译不得隐式进入当前first-proposal路径；`none`保持独立可用，显式`search`只能进入
    new planning owner，未完成时typed failure。删除complete-candidate evaluation count这一用户级语义，不用扩大次数掩盖算法缺失。
-2. **先清baseline现有反模式**：Q50.A闭合后，不等待完整search算法。先把current baseline真正使用的canonical spatial、singleton
-   region、temporal first-fit、canonical representation/movement、single-slot、Serialized和source-order/worker0事实迁入最终plan
-   component types；Q50.F先交付closed-plan problem schema、validated proof/status和actual parity core。随后Q49.P只用pure query推进
-   coordinate并只commit一次。这个纵向有真实`none` consumer，所以不是placeholder schema。
+2. **先补A的真实输入，再清baseline反模式**：先从Q50.B拆出policy-free spatial representation foundation，定义/关闭
+   `SpatialPlan → SpatialAssignment`并迁入baseline canonical producer；Q50.A只消费该assignment形成ExactDemandProof。随后不等待完整
+   search算法，把current baseline其余canonical singleton region、temporal first-fit、representation/movement、single-slot、Serialized和
+   source-order/worker0事实迁入最终plan components；Q50.F交付closed-plan problem/proof/parity core，Q49.P只用pure query推进coordinate并
+   commit一次。B-full稍后再用A枚举完整spatial domain，因此没有A/B循环或placeholder schema。
 3. **冻结planning合同**：Q51 assignment包含semantic root、spatial、region/coupled、temporal、implementation、representation、
    movement、buffering、event/order/worker和stage pipeline；Q50.F与各轴legality/cost query真实参与transition。derived analysis不进入
    identity，F/J/K不能继续作为lowering内自动first/default。这里只冻结类型/依赖，不实现空Core。
@@ -172,8 +173,9 @@ Pipeline position:
   superoptimization。
 - Completion gate:
   Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q58/Q56/Q59先闭合
-  program data ownership、package data与compile commit；Q50.A修复production exact-demand boundary。随后先提取baseline真实消费的
-  canonical plan components和Q50.F closed-plan core，Q49.P立即闭合plan-only baseline，不等待完整search domain。再冻结Q51 contract但
+  program data ownership、package data与compile commit；Q50.B-foundation先建立closed SpatialAssignment与baseline producer，Q50.A据此
+  修复production exact-demand boundary。随后提取baseline其余canonical plan components和Q50.F closed-plan core，Q49.P立即闭合
+  plan-only baseline，不等待完整search domain。再冻结Q51 contract但
   不实现空Core，按S→B→C→D→E→F-partial→G→H→I-initial→J-foundation→K→I-post-K→J-closure→F-full恢复mechanism、
   算法和donor witnesses。全部轴具备pure planning consumer且Q49.P重新通过后才实现Q51.Core，随后以test-only exhaustive oracle和
   production single-winner CardExecutable gate闭合Q51；
@@ -250,12 +252,13 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | --- | --- | --- | --- |
 | 0 | Q50.0 CardExecutable compilation boundary | 抽出无策略的actual compile/verification seam，不允许lowering修候选 | Q54 |
 | 1 | Q54 MLIR infrastructure conformance | typed IR/interface、scoped pass/analysis、named pipeline与rewrite transaction收口 | Q49.P、Q50.A |
-| 2 | Q50.A placement-demand repair | 以`SpatialAssignment`形成typed exact-demand/coverage/final-owner proof；不被carrier/layout/route反写 | baseline planning vertical |
-| 3 | Q49.P canonical-plan foundations + Q50.F closed-plan core | 把现有baseline canonical spatial/region/temporal/representation/movement/single-slot/Serialized/order事实迁入最终policy-free plan component types；F建立resource problem schema、validated witness/status与actual parity，不实现完整search domains | Q49.P plan-only closure |
+| 2a | Q50.B spatial representation foundation | 先定义`SpatialPlan`、closed `SpatialAssignment`、structural close/validation和baseline canonical producer；不枚举full search domain | Q50.A |
+| 2b | Q50.A placement-demand repair | 只消费B-foundation的closed assignment，形成typed exact-demand/coverage/final-owner proof；不定义placement | baseline planning vertical；B-full later consumer |
+| 3 | Q49.P remaining canonical-plan foundations + Q50.F closed-plan core | 把现有baseline canonical region/temporal/representation/movement/single-slot/Serialized/order事实迁入最终policy-free plan component types；复用B-foundation spatial；F建立resource problem schema、validated witness/status与actual parity，不实现完整search domains | Q49.P plan-only closure |
 | 4 | Q49.P baseline plan-only closure | 每个coordinate只运行A/F等pure query；ExactRejection单调推进，FullFeasibilityProof关闭plan；selected CardModule/Q50.0各一次并重跑fresh LLaMA `none` | full search mechanisms |
 | 5 | Q51 planning contract reset | 只冻结typed state、transition、cost/bound、coverage、并列policy和single-winner commit合同；不写Core实现、不接public search | Q50.S |
 | 6 | Q50.S semantic-root query / algorithm | typed semantic alternatives、proof、cost facts及winner-only materialization | Q50.B |
-| 7 | Q50.B graph-level spatial placement | 在已被baseline真实消费的`SpatialPlan`上补完整spatial domain与placement DP/proposals | Q50.C |
+| 7 | Q50.B full graph-level spatial placement | 在foundation及A exact query上补完整spatial domain、reference enumerator与placement DP/proposals | Q50.C |
 | 8 | Q50.C root-work query / selected leaf emitter | single-root work、multi-producer exact boundary和winner-only leaf construction | Q50.D |
 | 9 | Q50.D coupled-region planning | 多op boundary、execution instance、use binding、coupled traversal与connection algorithm | Q50.E |
 | 10 | Q50.E complete temporal planning | factorized breakpoint、全部iterator size、tail和wave-loop order | Q50.F partial foundation |
@@ -274,7 +277,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 23 | Q53 host / board-ready closure | independent `none/search` actual IR、package/no-card、oracle和single-session board runner全部就绪 | Q57、Q61、Q48可独立开始；Q53 board gate |
 | 24 | Q53 board qualification | single-session communication correctness、LLaMA与prefill/decode matched A/B | Q53 done |
 
-Q49.P先作为已有代码清理纵向：checkpoint 3只提取各轴**已真实存在且baseline必需的canonical component**和F closed-plan core，
+Q50.B先拆出representation foundation，保证Q50.A的`SpatialAssignment`有真实producer；A不临时消费旧`LogicalShardTrial`。
+Q49.P随后作为已有代码清理纵向：checkpoint 3只提取其余轴**已真实存在且baseline必需的canonical component**和F closed-plan core，
 不声称Q50.S/B–K完整search domain完成；checkpoint 4随即删除baseline compile-to-query。之后Q50.S与Q50.B–K再扩完整domain/algorithm
 并迁移donor能力。F按closed-plan core、partial foundation、full closure三次接入；I按pre-K initial与post-K closure两次接入；J按
 foundation与closure两次接入。全部轴闭合后才实现Q51.Core。
@@ -563,14 +567,14 @@ workset/lifetime、没有beam/cap/budget截断fallback，且这些trial不进入
 ## Q50.A：Placement-Demand Boundary Repair
 
 “给定placement”只表示调用者交来一份closed `SpatialAssignment`，不表示baseline或search入口已经拥有selected winner。
-Q49.P构造唯一canonical assignment，Q50.B生成search spatial transition；Q50.A只从immutable structured IR和该assignment
+Q50.B-foundation提供representation/close并为Q49.P构造唯一canonical assignment，Q50.B-full生成search spatial transitions；Q50.A只从immutable structured IR和该assignment
 派生exact dependency demand、final result availability及reduction merge requirements，不生成placement、不选择winner，也不
 物化physical carrier。
 
 ```text
 Pipeline position:
 - Upstream IR / input:
-  verified card-local structured TensorProgram、current SSA/structured DAG，以及Q49.P或Q50.B给出的closed
+  verified card-local structured TensorProgram、current SSA/structured DAG，以及Q50.B-foundation关闭的
   `SpatialAssignment`；assignment只含per-node exact execution shards、Tile embedding和已由typed reduction semantics允许的
   per-output-piece merge placement，尚未选择layout、encoding、movement、route、buffer或schedule。
 - Current stage responsibility:
@@ -581,11 +585,11 @@ Pipeline position:
   不修改IR、不产生文件；输出仅在当前immutable planning session有效的`ExactDemandProof`，包含per-operand/per-destination
   boundary demand、final-owner intersections、operand reconstruction和reduction merge requirements。
 - Downstream consumer:
-  Q49.P canonical correctness carrier消费同一proof；Q50.B把proof作为spatial assignment的derived data/cost input而非普通
+  Q49.P canonical correctness carrier消费同一proof；Q50.B-full把proof作为spatial assignment的derived data/cost input而非普通
   placement rejection；Q50.G/H representation/movement与Q50.J schedule消费final-owner和merge requirements；Q50.0仍是完整
   CardExecutable准入边界。
 - User-level driver / named pipeline:
-  wafer-compile source-to-package pipeline中的typed `none`与`search`共同physical-dataflow synthesis路径；不提供独立public pass、
+  wafer-compile source-to-package pipeline中的typed `none`与`search`共同physical-dataflow planning路径；不提供独立public pass、
   selector或磁盘格式。
 - Explicit non-goals:
   不枚举、排序或选择placement；不决定TileRegion/fusion、temporal tile、layout/encoding、local/remote/DDR/peer action、route、
@@ -642,6 +646,10 @@ coverage witnesses是能力donor；`LogicalShardTrial`聚合、两遍传播、ma
 Q50.A 不再把一次检查输入称为含糊的 `trial`，也不接收一份同时复制 execution、result ownership 和 reduction
 状态的聚合结构。唯一输入是 Q50.B 产生的一份只读 `SpatialAssignment`；Q50.A 从该 assignment 和 current
 structured IR 派生其余事实：
+
+这里要求的producer是Q50.B **representation foundation**，不是B full search domain：foundation先定义plan/assignment及structural
+close，并迁入baseline canonical producer；A随后实现query。Q50.S/A完成后B-full才枚举所有spatial plans并逐个调用A。A不得为先施工而
+临时保留`LogicalShardTrial` adapter，也不得自行构造默认assignment。
 
 ```text
 SpatialAssignment
@@ -1150,7 +1158,7 @@ producer替换表：
 
 | Current producer | 终态producer | 协调替换要求 |
 | --- | --- | --- |
-| baseline placement closure逐edge调用`buildEdgeShardTrial` | Q49.P canonical policy直接构造一份closed `SpatialAssignment` | 不再为每条edge复制endpoint trial或用Q50.A status循环过滤；canonical assignment无效即compiler contract error |
+| baseline placement closure逐edge调用`buildEdgeShardTrial` | Q49.P调用Q50.B-foundation canonical constructor取得一份closed `SpatialAssignment` | 不再为每条edge复制endpoint trial或用Q50.A status循环过滤；canonical assignment无效即compiler contract error |
 | search `SpatialPlacementDomain`产出per-node factors/Tile list/node-wide merge Tile，再由`buildLogicalShardTrial`派生 | Q50.B关闭compact `SpatialPlan`为完整`SpatialAssignment` | all-iterator shards、logical shard identity、embedding和per-output merge group一次形成；A不从factor重建placement |
 | test fixtures手工mint `IREpoch`并拼`LogicalNodeTrial` | narrow `SpatialAssignmentBuilder` test utility | builder调用与production同一structural verifier；可以构造显式invalid值测试typed failure，但不能成为第二套domain |
 | `CardProgramAnalysis::epoch`及edge strategy默认epoch | 无 | analysis lifetime由pass manager/current operation决定；program analysis只保留current IR派生的DAG/topology facts |
@@ -2302,10 +2310,12 @@ Q51完整链闭合后再运行。
 ```text
 Pipeline position:
 - Upstream IR / input:
-  Q50.S归一后的immutable TensorProgram、per-root semantic algorithm assignment、current StructuredDAG、verified card-local
-  topology/available Tiles，以及Q50.A exact-demand analysis；尚未选择TileRegion、temporal、layout或movement。
+  foundation只需要immutable TensorProgram/current StructuredDAG、iterator roles和verified card-local topology；用于baseline的
+  canonical producer读取current source roots。full domain阶段再增加Q50.S per-root algorithm assignment和Q50.A exact-demand query。
+  两阶段都尚未选择TileRegion、temporal、layout或movement。
 - Current stage responsibility:
-  为每个structured node惰性产生覆盖全部iterator的typed spatial partition scheme、canonical logical coordinate mesh、到
+  foundation定义`SpatialPlan`、`SpatialAssignment`、structural close/validation及canonical baseline constructor，不枚举domain；
+  full stage为每个structured node惰性产生覆盖全部iterator的typed spatial partition scheme、canonical logical coordinate mesh、到
   distinct available Tiles的embedding，以及每个spatial-reduction output group的merge placement；把compact plan按需关闭为
   all-and-only exact execution shards并调用Q50.A派生demand/final availability。
 - Output IR / files:
@@ -2316,13 +2326,14 @@ Pipeline position:
   Q50.C按选定per-Tile shard物化single-root TileRegion；Q50.D–K继续补region/fusion、temporal、representation、movement、buffer和
   schedule。只有完整assignment才进入Q50.0。
 - User-level driver / named pipeline:
-  只由public `search` session内部静态组合，不新增pass、CLI、provider或独立placement selector。Q50.C–K未闭合时public路径只
-  query compact domain；在Q50.C–K尚未闭合时不物化partial candidate，也不调用baseline。
+  foundation由Q49 baseline canonical plan builder和Q50.A直接消费；full domain只由public `search` session静态组合。不新增pass、
+  CLI、provider或独立placement selector；search不调用baseline constructor。
 - Explicit non-goals:
   不物化TileRegion/CardModule，不选择temporal tile、layout、route、buffer或winner；不把connected/rectangle/all-16、result axis、
   participant count或常见factor当legality；不从cross-op demand制造placement no-good，不把Q50.A unsupported/resource/compiler error
   改写成另一个spatial point。
 - Done criteria:
+  foundation的custom/generic typed roundtrip、close/validation与baseline canonical assignment先受测，A不再include旧trial；随后
   single node、chain、independent branch、diamond、multi-axis remainder、scalar、multi-parallel/multi-reduction merge和partial
   redistribution的production domain与独立reference集合一致；任意verifier-legal participant subset/embedding及per-group merge
   placement可达或由完整topology automorphism proof canonicalize；partial-reduction interface不能表达时对应reduction
@@ -3728,8 +3739,8 @@ Pipeline position:
 
 ### F-core：closed-plan resource problem与baseline纵向
 
-F-core不是缩小版search，也不预埋尚未实现的axis field。Q49.P先把current baseline已经真实产生和消费的canonical事实迁到最终
-policy-free component types；每个component同时提供一个窄的resource description overload：
+F-core不是缩小版search，也不预埋尚未实现的axis field。Q50.B-foundation先提供spatial component与A proof；Q49.P再把current baseline
+其余已经真实产生和消费的canonical事实迁到最终policy-free component types。每个component同时提供一个窄的resource description overload：
 
 ```text
 describeResources(SpatialPlan, ExactDemandProof)
@@ -8009,9 +8020,9 @@ matched executor不是production compiler路径，也不为普通`wafer-run`增�
 
 ## 提交与收尾
 
-1. Q58、Q56、Q50.0、Q54、Q59与Q50.A已达到各自当前门禁；随后Q49.P、Q51 contract、Q50.S/B–K各能力checkpoint、
-   Q51.Core implementation、Q51 closure、Q52、Q60与Q53分别形成独立可评审提交；不得把全部迁移积累成一个dirty diff。
-2. Q50各轴先完成donor能力迁移与direct query/test-only apply；全部轴闭合后Q51.Core建立actual planner，Q51 closure再一次性改接
+1. Q58、Q56、Q50.0、Q54、Q59与Q60等既有前置保持；当前依次形成B-representation-foundation、A、Q49/F-core vertical、Q49 closure、
+   Q51 contract、Q50.S/B-full/C–K及I/J/F closure、Q51.Core、Q51 closure、Q52和Q53的独立可评审提交；不得把迁移积累成一个dirty diff。
+2. Q50各轴先完成donor能力迁移与direct query/test-only apply；全部轴闭合后Q51.Core建立IR-free planning controller，Q51 closure再一次性改接
    public `search`并删除旧控制链。旧mechanism/selector/repair/test只有在current owner和witness就位后才能删除。
 3. 状态转换以 `tasks/progress.md` 为准；本计划不单独维护第二份动态状态表。
 4. 每项提交前运行 fresh 定向 build/test；端到端或主线 gate 还需确认 relevant lit/CTest 实际执行而非 skip/unsupported。
