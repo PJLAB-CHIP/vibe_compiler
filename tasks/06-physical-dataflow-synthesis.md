@@ -596,9 +596,11 @@ placeholder schema。每个mechanism进行pure domain/query并返回named typed 
 deterministic frontier、stable dedup、typed outcome和search-local best plan。planning阶段不apply mutable IR。
 
 先收敛上述control contract，但不实现只靠mock domain运行的空Core。Q50.S与Q50.B–K按依赖建立真实typed query/algorithm/apply，
-Q50.F/J分别经过foundation与full closure；每轴加入independent reference enumerator并迁移donor能力。全部真实轴具备后才实现
-Q51.Core，首次落地即由production planner消费完整state；随后Q51以test-only flat exhaustive oracle、actual digest/winner
-correspondence和single-winner source-to-package闭合。旧control branch在这些能力完成后切除，不能提前删除并让public search经过空壳。
+Q50.F/J分别经过foundation与full closure；每轴加入independent reference enumerator并迁移donor能力。S/B-full形成首批真实domain后
+实现Q51.Core foundation并让explicit public `search`进入new owner；缺后续axis时返回typed incomplete，不调用baseline或commit。
+此后每个Q50 checkpoint同批扩state/transition与production consumer，F-full后闭合control/coverage，随后Q51以test-only flat
+exhaustive oracle、actual digest/winner correspondence和single-winner source-to-package闭合。旧control branch在new owner接管时切除，
+不能保留第二controller，也不能让foundation伪装完整search。
 
 终态调用关系固定为：
 
@@ -846,7 +848,8 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 5. 依次闭合structured alternatives、graph-level spatial placement、single/coupled region、temporal、partial feasibility、layout solver、
    movement、I-initial、J-event foundation、execution structure、I-post-K、J-schedule和F-full feasibility；每项迁移donor能力、加入
    production query与独立oracle，完成承接后才删除旧owner/test；
-6. 全部真实轴具备后实现Q51.Core，首次落地即消费完整typed state并由production planner调用；不调用baseline、不物化candidate；
+6. S/B-full后实现消费真实axis的Q51.Core foundation并切explicit `search`到new owner；后续C–K/F/J每项同批扩Core，F-full后闭合
+   full-plan/cost/coverage controller；全程不调用baseline、不物化candidate；
 7. 完成所有维度的test-only flat exhaustive oracle、完整source-to-CardExecutable单winner链和实际fusion验证，确认public `search`
    只经过new planning→one commit链；
 8. Q52根据planning state-growth profile加入safe memo/DP/bound与必要LNS，不以complete materialization次数作预算；

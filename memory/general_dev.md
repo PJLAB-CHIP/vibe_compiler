@@ -457,6 +457,8 @@ source program
   materializer和lowering；任一模式不得调用或返回另一模式的结果。
 - production search只在immutable IR与typed planning state上生成、约束、估价和选择；不能用完整CardModule/Instr反复物化作为候选
   evaluator，也不能用candidate evaluation count作为长期search budget。
+- Q51.Core不能等所有axis完成后才一次性接线，否则search-only mechanism交付时没有production consumer；也不能先落mock/nullable
+  空壳。S/B-full形成首批真实domain后建立Core foundation，缺轴返回typed incomplete；后续每个Q50提交同批扩closed variant和caller。
 - 只有selected winner assignment进入一次CardModule materialization和Q50.0。late verification失败说明planning/lowering合同缺口，
   不得回到search重试下一个materialized candidate。test-only tiny oracle可以逐点actualize，用于验证planning域和cost，不进入产品调用链。
 - 每个Q50 mechanism完成必须同时有算法、production consumer、query/apply测试和donor能力映射；定义typed domain或direct apply不足以

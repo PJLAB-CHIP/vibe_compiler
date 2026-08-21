@@ -354,10 +354,11 @@ current target容量、target-model能力或host预算不足，必须按stage报
    每项都需current接入点、production consumer、actual-IR witness和实际执行的正负测试；删除旧owner前还必须逐项映射其中独有
    algorithm/proof/diagnostic/test witness，旧owner删除和新domain存在都不能代替能力迁移。
 4. Q51.Core：直接从immutable TensorProgram建立search session，不调用Q49.P、不接收baseline executable/actual cost，也不把
-   baseline choices当未来轴default；Core闭合typed transition、deterministic frontier、stable dedup、global work/budget、
-   dependency expansion和coverage/bound evidence。每轴independent reference
-   enumerator随Q50.S/B–K交付，通用pure planning feasibility归Q50.F。Core从零建立new-search控制并接管public `search`，不适配旧
-   candidate/generator/feedback/selector；旧控制链只能在能力迁移完成后删除。test-only flat exhaustive runner、全部联合维度、
+   baseline choices当未来轴default。S/B-full后Core foundation真实遍历首批axes并接管explicit public `search`；缺后续axis返回typed
+   `IncompletePlanningDomain`且planning零IR，不fallback。此后每轴independent reference、closed state/transition/invalidation和production
+   caller随Q50.C–K交付，通用pure feasibility归F；不得预声明nullable future field或先交付无consumer mechanism。F-full后Core才闭合
+   full-plan admission、cost/bound、causal rejection和coverage。旧candidate/generator/feedback/selector控制链在foundation切换时删除，
+   需要的算法/witness仍按axis迁移。test-only flat exhaustive runner、全部联合维度、
    exact planning domain和new source-to-package链由Q51闭合。production search在typed state上选出一个winner，只允许该winner
    materialize并调用一次Q50.0；Q50.0失败是planning/lowering合同缺口，不得回到candidate set反复物化。selected IR必须有共享TileRegion，并以
    coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。

@@ -70,10 +70,10 @@ shadow schedule/cost或默认打印IR。baseline清理完成后，Q50.S/B–K再
 representation/movement、buffer、execution structure和schedule完整domain/算法。F分closed-plan core、partial foundation、full closure；
 I分pre-K initial和post-K structure-specific closure；J分foundation和schedule closure，严格顺序为`...H→I→J-foundation→K→I→J→F-full`。
 旧candidate/generator/feedback/selector接口不保留，但删除其source/test前
-必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。全部axis query具备真实production contract后才实现Q51.Core；它从
-immutable TensorProgram建立planning session，只管理typed assignment/transition、deterministic frontier、work/budget、cost/bound和
-winner plan，不调用Q49.P、不接收baseline executable，也不在planning阶段物化CardModule。Q51以test-only full actual oracle验证plan，
-并让production只commit一个winner、
+必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。Q50.S/B-full形成首批真实domain后建立Q51.Core foundation并切explicit
+`search`到new owner；缺后续axis时typed incomplete且不commit。此后C–K/F/J每项同批扩closed state/transition和production caller，
+F-full后才闭合cost/bound/coverage与winner plan。Core不调用Q49.P、不接收baseline executable，也不在planning阶段物化CardModule。
+Q51以test-only full actual oracle验证plan，并让production只commit一个winner、
 调用一次Q50.0。旧输出格式无兼容义务，但旧semantic能力不能因接口退役直接判废。Q52按实际负载优化scalability，Q53形成production
 `board-ready`与真实板端证据。06仍是唯一联合决策设计owner；任务拆分只提供可验证接入checkpoint，不产生独立layout、
 fusion、buffering、communication或worker selector。动态状态、依赖和完成门禁只看`tasks/progress.md`。

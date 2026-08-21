@@ -46,6 +46,18 @@
   failure终止compile并按真实owner分类，不能回到search、baseline或另一policy。
 - 防复发：failure injection锁定packing/ABI/target失败不改写IR、不重选plan、不fallback；repo scan禁止late retile/spill/replan selector。
 
+## 任务顺序不能让query输入或mechanism consumer凭空出现
+
+- 现象：设计把Q50.A排在Q50.B之前，却声明A输入是`SpatialAssignment`；或者把Q51.Core拖到全部Q50轴之后，使中间交付的
+  search-only domains没有production consumer。线性任务名看似无环，实际API producer/consumer断裂。
+- 根因：按任务编号或“先mechanism、后统一接线”排期，没有分别列出representation foundation、query、full domain、Core consumer和
+  post-choice invalidation。
+- 修复模式：先交付plan component representation、structural validation和至少一个真实producer，再实现query，最后扩full domain；
+  因此spatial顺序是`B-foundation → A → B-full`。S/B-full形成首批真实domain后建立非mock Core foundation，后续每轴同批扩Core；
+  K改变occurrence后严格`K → I-post-K → J-closure`。
+- 防复发：每个checkpoint表列出输入typed object、唯一producer、输出、首个production consumer和invalidates/re-entry；对该artifact DAG
+  做拓扑检查。没有producer的input、没有consumer的mechanism、或被invalidated后仍直达下游的edge都使计划未收敛。
+
 ## 性能未知项不能阻塞或污染比较
 
 - 现象：大量candidate因某个硬件参数未校准而不可比较，或把缺失参数按零/无穷大后选择出现偏置。
