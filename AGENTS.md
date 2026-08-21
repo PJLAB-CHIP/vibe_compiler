@@ -10,8 +10,9 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 ## 优先级
 
 1. **用户当前明确、无歧义的要求**。
-2. **本文件规定的工作流程和仓库规范**：用户目标决定“做什么”，本文件流程决定“怎么做”。除非用户
-   明确要求只讨论、不落文件，执行任务时不能跳过上下文读取、设计同步、pipeline contract、验证和提交。
+2. **本文件规定的工作流程和仓库规范**：用户目标决定“做什么”，本文件流程决定“怎么做”。执行任务按
+   任务类型和规模适用下文流程；文件修改必须读取必要上下文、做匹配验证并提交相关改动，设计同步和
+   pipeline contract只在对应边界受影响时要求。
 3. **任务完成标准**：文档一致、代码能编译、测试能通过、功能真的工作。
 4. **编译器工程原则**：IR 语义显式、pass 边界清楚、analysis 可重算、lowering 可验证。
 5. **项目既有风格和最新设计结论**：通过读当前仓库建立，不从其它项目照搬。
@@ -26,8 +27,8 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 1. 看 `git status`，识别已有改动；不得回滚用户或其它工具的无关改动。
 2. 按任务范围读取上下文：`AGENTS.md`、`tasks/progress.md` 任务队列和相关编号设计文档；
    找不到编号文档或需要确认 archive 边界时再查 `tasks/README.md`，必要时读 `docs/`、`memory/` 和代码。
-3. 以 `tasks/progress.md` 任务队列作为执行管控入口；当前工作必须能落到一个队列项，或者先更新
-   队列和对应设计文档。
+3. 设计或实现变更以 `tasks/progress.md` 任务队列作为执行管控入口；当前工作必须能落到一个队列项，
+   或者先更新队列和对应设计文档。小型维护可以直接归属既有设计owner，不为此新增队列项。
 4. 非小修、非纯文本错别字任务必须先确认或补齐对应编号设计文档和 pipeline contract，再写代码。
 5. 按IR和编译输出边界施工：说明消费哪一层上游IR或输入格式，产出哪一层下游可验证IR或输出格式。
 6. 按任务类型运行测试、构建、脚本自检或文本一致性搜索；声称完成前必须有本轮新鲜验证结果。
@@ -55,11 +56,13 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
   写明理由。不得把host unit、no-card或model fixture中的F32机械复制成板测workload；上板前必须单独
   核对source、program descriptor、payload和expected的dtype一致且符合本条默认规则。
 - 普通 case 走最小路径：增量构建、单进程串行 launch、bounded timeout、结果 / guard 校验和正常生命周期。
-- 禁止读取、重新判定或回放历史板端输出；禁止重新执行已有结论的 case 来“确认”旧证据。代码或测试
-  校验逻辑修改后，只能由本轮新构建、新启动和新输出产生硬件结论。
+- 禁止读取、重新判定或回放历史板端输出；实现、case和环境都未变化时，不得仅为重签旧结论而重复执行
+  已有结论的case。compiler、runtime、package、case或测试校验逻辑变化并影响该case后，只能以本轮新构建、
+  新启动和新输出产生新的硬件结论。
 - 历史板端 raw、日志和报告只作为原始审计记录，不得作为测试输入，不得更新当前结论，也不得进入
   待执行批次。
-- no-card、host oracle及深入 ABI / firmware诊断只在测试实现变化、环境变化或板端异常需要归因时执行。
+- `board-ready`所需no-card和host oracle对本轮current package完成一次即可；case、compiler/runtime、package/test
+  合同或环境未变化时不重复。深入 ABI / firmware诊断只在板端异常需要归因时执行。
 - 板端测试不并发；timeout或设备异常后停止当前批次，不自动 retry、reset或power。
 
 ## 讨论和推进
@@ -76,7 +79,8 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 - 设计讨论先说明当前理解、关键假设、已确认事实和仍需判断的点。
 - 对真实取舍给出理由、风险和推荐，不把未收敛问题伪装成结论。
 - 只有存在真正歧义且继续工作会产出与用户意图相反的成果时，才停下来问用户。
-- 阶段性状态、部分验证通过或单轮实现闭环不等于任务完成；没有方向性阻塞时继续推进到可评审状态。
+- 阶段性状态、部分验证通过或单轮实现闭环不等于任务完成；在用户当前请求范围内没有方向性阻塞时，
+  继续推进到可评审状态。
 - 进度同步用于说明关键判断和下一步动作，不是请求许可，也不是完成证明。
 
 ## 仓库导航
@@ -114,8 +118,8 @@ Wafer AI compiler / runtime 处在设计收敛和实现推进阶段。文档、I
 
 ## Memory 经验沉淀
 
-`memory/` 是稳定经验库，不是任务状态板，也不是设计文档替代品。每次收尾时判断本轮是否产生可复用
-经验；有就写，没有就说明无需沉淀。
+`memory/` 是稳定经验库，不是任务状态板，也不是设计文档替代品。只有本轮产生可复用的稳定经验时才更新；
+没有新经验则不修改，也无需在结果中专门声明。
 
 - `memory/bugs.md`：记录遇到的问题、误导来源、根因、修复方式和防复发模式。
 - `memory/general_dev.md`：记录可复用开发模式、构建/测试命令、调试入口、仓库约定和稳定 workflow。
@@ -160,7 +164,8 @@ Pipeline position:
 - 单个 pass 可以是实现单元，但主线设计必须说明它在 named pipeline / driver mode 中的位置；
   不能让用户或 integration test 长期手动拼 pass。
 - 局部 FileCheck、fixture、negative verifier 或 shape-only dump 只能补覆盖，不能作为主线完成证明。
-- 如果下游尚未实现但硬件 / ABI 能表达该语义，应记录为后续任务或扩 IR；不能把下游缺口反写成上游不支持。
+- 当前上游合同或用户目标已经要求某项语义、下游尚未实现且硬件 / ABI 能表达时，应记录后续任务或由
+  对应owner扩 IR；不能把下游缺口反写成上游不支持。仅有硬件可表达性不自动扩张当前任务。
 
 ### IR 边界
 
@@ -168,10 +173,12 @@ Pipeline position:
 - 每层只携带自己能稳定解释、变换和验证的信息；低层事实只能作为 legality / cost input，不能提前污染上层语义。
 - 新 IR 前先检查已有 dialect、op interface、trait、type、attr、canonicalization 和 conversion
   infrastructure 是否能表达；不能稳定表达、验证或 lowering 时才引入私有 dialect/op/type。
-- Analysis 只能从当前 IR 派生局部、可失效、可重算的结果；transformation 只能读取当前 IR 和本 pass
-  内局部 analysis，并直接改写当前 IR 或构造下一层 IR。
-- 需要跨阶段保留且不能从当前 IR 重算的内容必须进入 IR 自身，但优先用 SSA use-def、region/control-flow、
-  op 语义、effect、type 或明确 op 表达，不滥用 attr。
+- Analysis 从 current IR 和显式 immutable 输入 / target facts派生可失效、可重算的结果；transformation读取
+  current IR、显式typed输入和生命周期有效的analysis，并在合法scope内改写current IR或构造下一层IR，
+  不读取隐藏全局状态。
+- 需要跨可独立重放的compiler stage持久保留且不能从current IR重算的内容必须进入IR自身，但优先用
+  SSA use-def、region/control-flow、op语义、effect、type或明确op表达，不滥用attr。同一query/apply事务内的
+  临时typed plan或query result可以保持为局部C++ value，但不得序列化或演变成长期旁路。
 - 不维护影子调度计划，不把 body 已表达的执行结构复制成全局计划 attr。
 
 ### 接口演进
@@ -233,13 +240,6 @@ Pipeline position:
 - **pipeline 只有一个实现。** 一个pass只做一个可命名的IR变换，声明dependent dialect、typed option和analysis
   preservation；production driver与`wafer-opt` named pipeline复用同一query/apply和pipeline builder，不维护direct
   mutation平行实现，也不长期手工拼pass。
-- **用户级策略并列，不互相调用或兜底。** baseline、search或其它public policy可以共享policy-free analysis、typed plan schema、
-  materializer和lowering，但一个policy不得先完整执行另一个policy、接收其executable作为初始结果，或在失败时静默返回另一个
-  policy的产物。matched比较由外层测试分别启动独立编译事务，不进入任一policy控制流。
-- **planning与commit分离。** production planner在immutable IR和typed planning state上生成、约束、估价和选择，不通过反复
-  materialize/lower完整IR再丢弃loser完成普通候选比较；只有selected winner进入一次actual materialization、lowering和verification。
-  winner commit失败表示planning/lowering合同缺口或typed unsupported，不能作为正常控制流回到planner继续物化下一个候选。
-  test-only有限oracle可以逐点actualize以验证planning域，但不得进入产品调用链。
 - **区分pass、subpipeline与driver。** atomic pass/kernel在最窄合法anchor只完成一个可验证IR变换；semantic
   subpipeline组合一个稳定且verifier-legal的IR边界并可打印、独立重放；compiler driver执行搜索、一对多module拆分、
   外部工具调用和原子目录替换，只调用前两层。顶层composite可以较长，但必须暴露可测试leaf stage；不得机械拆出非法
@@ -252,10 +252,11 @@ Pipeline position:
 - **rewrite 必须事务安全。** pattern callback中的IR修改全部通过`PatternRewriter`；尽量在首次mutation前完成validation，
   failed match使用`notifyMatchFailure`，不得更新rollback之外的`failureReason`、callee set或其它mutable side data。
   clone对应使用`IRMapping`，不用pointer、walk顺序、ordinal、打印字符串或symbol拼写恢复operation对应关系。
-- **隔离变换事务只clone最小真实scope。** 只有查询必须消费实际改写后的IR且不得修改原IR时，才clone最近的
-  `IsolatedFromAbove` operation；普通lowering直接使用nested pass，不clone。带外部operands的operation必须用`IRMapping`
+- **可丢弃的隔离变换事务只clone最小真实scope。** 查询必须消费实际改写后的IR且不得修改原IR时，clone最近的
+  `IsolatedFromAbove` operation；普通lowering直接使用nested pass。带外部operands的operation必须用`IRMapping`
   映射到scratch-owned SSA，不能让clone交叉引用或新增原IR的use；事务结束只返回typed结果并销毁scratch IR，不为取得
-  module anchor构造synthetic Module/Func。
+  module anchor构造synthetic Module/Func。最终output fan-out、外部工具projection、显式reducer或autotuning artifact的
+  clone按各自owner、失败和产物合同审查，不属于上述可丢弃scratch事务。
 - **conversion legality 要 fail closed。** source op类别使用稳定marker interface/trait或等价单一分类；所有source实现者
   默认illegal，structural/non-executable descriptor/target op显式legal，postcheck复用同一分类。full conversion必须证明source语义全部
   消失；只lower子集时明确使用partial conversion和独立stage verifier，不能用“unknown全legal”伪装full conversion。
@@ -264,9 +265,10 @@ Pipeline position:
   复杂layout/index/resource/region逻辑保留C++ pattern；PDLL或Transform dialect只有出现明确consumer时才引入，不设使用配额。
 - **alias/effect 在lowering前必须确定。** view、new allocation、destination mutation和materializing copy不能由lowering按
   users临时切换；tensor层用DPS/Bufferizable分析in-place/out-of-place，进入memref/Instr层后alias和memory effect是稳定合同。
-- **按MLIR合同验证。** 至少覆盖custom/generic form roundtrip、verifier正负例、conversion failure atomicity、analysis
-  invalidation、named/production pipeline parity和`verify-each`；局部pass成功、canonicalizer恰好清掉残留或旧generated
-  build能编译，都不能代替fresh source/build和下游IR/file验证。
+- **按MLIR合同验证。** 对应IR stage的测试总面至少覆盖custom/generic form roundtrip、verifier正负例、conversion
+  failure atomicity、analysis invalidation、named/production pipeline parity和`verify-each`；单次改动只运行直接受影响的
+  门禁和必要的下游IR/file验证，不机械重跑无关类别。局部pass成功、canonicalizer恰好清掉残留或旧generated build能编译，
+  都不能代替fresh source/build和受影响边界验证。
 - **退役实现前先迁移能力。** source未进入CMake只说明它不属于active build，不能据此推断其中算法、proof、diagnostic或
   测试资产已经无用。先逐项确定承接实现；仍被当前或后续合同需要的能力必须迁入active source并受测，之后才能删除旧
   实现。大规模替换必须留下donor能力到current owner、production caller和test witness的逐项对照；新type、domain、文件组织或
@@ -285,9 +287,8 @@ Pipeline position:
 ### 通用性和目标层级
 
 - 设计可以 case-driven，但 case 只用于展示 IR 流经 pipeline；协议以通用职责为准。
-- 当前任务不以数值语义为目标时，算术 op 的 dtype 和语义作为既有输入原样保留；只设计本任务涉及的 IR 结构、
-  legality、planning、lowering 和 verifier，不讨论或改写浮点结合/交换、舍入、special value、comparator 等数值行为。
-  只有用户明确要求数值合同任务时才展开这些问题。
+- 当前任务不以数值语义为目标时，现有算术op的dtype和语义作为输入事实原样保留；不因浮点结合/交换、
+  舍入、special value或comparator扩展当前任务。只有用户明确要求数值合同任务时才展开这些问题。
 - 不把 workload、shape、参数顺序、单个 kernel、某个 op 的 tile 选择或某条 runtime 路径固化成协议。
 - case 后必须说明哪些是示例参数，哪些来自通用 IR / interface / verifier，哪些只是 cost model /
   planner 候选，泛化情况如何处理。
@@ -303,7 +304,7 @@ Pipeline position:
   建立主线文档目录，也不得要求某个 skill 才能解释或执行计划。
 - 先讲边界和通用方法，再给 case；case 后说明哪些只是示例，不是协议。
 - 主线任务文档遵守pipeline contract和长期命名规则；实现入口只能作为索引，不能替代IR、输入格式和输出格式合同。
-- 不把其它项目路径、环境变量、测试入口、动态任务状态或 runtime 路线写成当前项目主线。
+- 不把其它项目或本地环境特有的路径、环境变量、测试入口、动态任务状态或runtime实现路线写成当前项目长期合同。
 - 不把尚未收敛的设计选择写进本文件；这类内容留在设计文档讨论和演进。
 - 不把 `TODO` / `TBD` 当结论；未定问题写成“待讨论问题”，并说明为什么未定。
 - 修改一个概念时，顺手检查同文档其它小节是否有同类过度特化、重复事实源或旧字段残留。
@@ -324,7 +325,7 @@ Pipeline position:
 
 - pipeline contract 是否完整。
 - 当前实现是否推进整条 compile pipeline 的一个边界，而不只是让某个 pass 能跑。
-- 完成证明是否重放已完成上游链路，并证明当前输出会被下游直接消费。
+- 完成证明是否重放产生当前真实输入所需的最小上游链路，并证明当前输出会被直接下游消费。
 - 信息是否能从当前 IR 推出；不能推出时，是否真的需要跨 pass 保留。
 - 保留方式应该是 op、region、type、attr、effect 还是 analysis。
 - 设计是否形成重复事实源，是否绑定单个 case、shape、op 名、路径或历史实现。
@@ -335,7 +336,7 @@ Pipeline position:
 
 收尾要求：
 
-1. 同步受影响的设计文档、任务队列和 memory。
+1. 按实际影响同步设计文档、任务队列和memory；未受影响的文件不修改。
 2. 按任务类型运行验证；声称端到端或主线 gate 通过时，确认相关测试实际执行而不是
    `unsupported` / skipped。`ctest passed` 不能替代 lit unsupported 清单、外部依赖 feature 配置和真实输入链路检查。
 3. 沉淀经验：问题、根因和修复模式写 `memory/bugs.md`；可复用命令、入口、检查方式和 workflow 写
