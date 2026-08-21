@@ -5,6 +5,12 @@
 
 Q56当前仍是`board-ready`而非`done`，因此不进入本索引；其当前状态继续保留在`tasks/progress.md`。
 
+## 已闭合的current execution work items
+
+| Work item | 状态 | 设计owner | 完成边界 | 证据入口 |
+| --- | --- | --- | --- | --- |
+| `spatial-plan-schema` | `done` | Q50.B | `SemanticRootKey`、compact `SpatialPlan`、ephemeral `SpatialAssignment`、regular Cartesian partition structural close及fail-closed validator闭合；不选择canonical plan、不枚举search domain、不携带attention或其它下游选择。 | `lib/Wafer/Planning/PhysicalDataflow/{SemanticRoot,SpatialPlan}.*`、`SpatialPlanTest`；fresh `WaferUnitTests`、相关spatial测试与source organization检查通过。 |
+
 ## 已闭合的当前主线前置
 
 | Tracking ID | Semantic key | 状态 | 必须满足的前置 | 当前工作与完成门禁 | 设计 / 计划 owner |

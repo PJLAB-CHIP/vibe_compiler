@@ -24,6 +24,7 @@ add_executable(WaferUnitTests
   CodeGen/Target/TargetCodeGenTest.cpp
   Target/Execution/TargetCallExecutionTest.cpp
   CodeGen/Target/TargetIdentityTest.cpp
+  Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlanTest.cpp
   Analysis/PhysicalDataflow/StructuredDAGExactDemandQueryTest.cpp
   Analysis/Structured/StructuredOperationTileFootprintTest.cpp

@@ -290,7 +290,7 @@ superoptimization是三个独立分支，分别服从自己的前置；Q53真实
 
 | Artifact / checkpoint | 唯一producer | 必须消费 | 首个真实consumer | 失效 / re-entry |
 | --- | --- | --- | --- | --- |
-| `SpatialPlan/SpatialAssignment` schema与validator | spatial-plan-schema | typed spatial fields、structured iterators、topology | canonical-spatial-assignment、spatial-domain | schema原位演进；不含root assignment或FA/FD field |
+| `SpatialPlan/SpatialAssignment` schema、close与validator | spatial-plan-schema | typed spatial fields、structured iterators、topology | canonical-spatial-assignment、spatial-domain | schema原位演进；不携canonical选择或FA/FD field |
 | fixed attention semantic facts | attention-normalization | normalized TensorProgram、attention op/interface、FA/FD classifier | attention-spatial-integration、exact-demand-boundary、attention-demand-integration | source normalization改变后重建；不进入candidate state |
 | attention spatial constraints | attention-spatial-integration | spatial schema、fixed attention facts、K1/K2 roles | canonical-spatial-assignment、spatial-domain | semantic mode或iterator relation改变后重建；不进入candidate state |
 | canonical closed `SpatialAssignment` | canonical-spatial-assignment | spatial-plan-schema、attention spatial constraints、topology | exact-demand-boundary、canonical chain | source/topology改变后重建 |
@@ -698,7 +698,7 @@ SpatialAssignment
   nodes: NodeExecutionPartition[]
 
 NodeExecutionPartition
-  node: StructuredNodeId
+  root: SemanticRootKey
   shards: ExecutionShard[]
   reductionGroups: ReductionGroupPlacement[]
 
@@ -1889,7 +1889,7 @@ Q50.S只有owner map列出的六个work items、donor矩阵和production gate全
 ```text
 Pipeline position:
 - Upstream IR / input:
-  spatial-plan-schema只定义typed schema和validator；canonical-spatial-assignment读取attention-normalization后的immutable
+  spatial-plan-schema只定义typed schema、structural close和validator；canonical-spatial-assignment读取attention-normalization后的immutable
   TensorProgram/current StructuredDAG、attention-spatial-integration给出的iterator/mode constraints及topology。spatial-domain再调用attention-ready
   exact-demand query，不接收per-root algorithm assignment。三个work items都尚未选择TileRegion、temporal、layout或movement。
 - Current stage responsibility:
@@ -1913,7 +1913,7 @@ Pipeline position:
   participant count或常见factor当legality；不从cross-op demand制造placement no-good，不把Q50.A unsupported/resource/compiler error
   改写成另一个spatial point。
 - Done criteria:
-  spatial-plan-schema的typed roundtrip、close/validation独立受测且不含root assignment/FA/FD field；attention-spatial-integration后
+  spatial-plan-schema的typed roundtrip、close/validation独立受测且不选择canonical plan或携带FA/FD field；attention-spatial-integration后
   canonical-spatial-assignment对全部roots产生deterministic assignment，exact-demand-boundary不再include旧trial；
   attention-demand-integration后spatial-domain才进入production。随后
   single node、chain、independent branch、diamond、multi-axis remainder、scalar、multi-parallel/multi-reduction merge和partial
@@ -1932,7 +1932,7 @@ XLA tile assignment。成熟表示给出的共同结构是：先用逻辑mesh轴
 
 - `IteratorPartition`只定义一个structured iterator如何形成有序intervals，不含Tile；`embedding`只把完整logical cell coordinate
   映到available Tile，不反向决定partition。
-- `LogicalShardId`由`(StructuredNodeId, canonical logical cell coordinate)`派生，和physical Tile无关；交换两个Tile只改变embedding，
+- `LogicalShardId`由`(SemanticRootKey, canonical logical cell coordinate)`派生，和physical Tile无关；交换两个Tile只改变embedding，
   不改变logical demand identity。
 - spatial reduction的partial/unreduced事实由iterator role与semantic op interface产生，merge placement按output-domain group显式选择；
   它不是普通replication，也不能压成node-wide merge Tile。
@@ -1982,7 +1982,7 @@ for partitions in CartesianProduct(S_0 ... S_d-1):
 ```
 
 `deriveReductionGroupIds`只读selected semantic algorithm、iterator roles、result maps和coupled-result interface；group identity为
-`(node, coupled result group, parallel cell coordinate)`，不含Tile、pointer或printed set。没有spatial reduction时groups为空。
+`(SemanticRootKey, coupled result group, parallel cell coordinate)`，不含Tile、pointer或printed set。没有spatial reduction时groups为空。
 merge Tile可为contributor、下游co-located Tile或其它available Tile；route/cost归H/Q51，不在B-1缩小集合。
 
 完整program domain是所有node exact domains的product，但`SpatialPlan`只保存compact schemes、embedding和merge placements；
@@ -2003,10 +2003,10 @@ Q51 candidate state保存的唯一spatial choice是compact `SpatialPlan`：
 
 ```text
 SpatialPlan
-  nodes: NodeSpatialPlan[]                 // StructuredNodeId稳定顺序
+  nodes: NodeSpatialPlan[]                 // SemanticRootKey稳定顺序
 
 NodeSpatialPlan
-  node: StructuredNodeId
+  root: SemanticRootKey
   axes: IteratorPartition[]                // 每个iterator恰一项
   embedding: TileId[]                      // canonical mesh coordinate -> Tile
   reductionMerges: MergePlacement[]
@@ -2033,7 +2033,7 @@ set constructor与Q50.C materializer，并加入tiny reference domain；不能�
 subset可以是non-rectangular、disconnected或asymmetric，这与logical block是否矩形是两件事。
 
 空间reduction的merge不是node-wide optional Tile。对给定axes和semantic algorithm，Q50.B从op result maps/
-coupled-reduction interface派生stable `ReductionGroupId`：它由node、coupled result group和parallel logical coordinate组成，不含
+coupled-reduction interface派生stable `ReductionGroupId`：它由SemanticRootKey、coupled result group和parallel logical coordinate组成，不含
 pointer、printed set或Tile id。每个group的merge Tile可从所有available Tiles选择，包括contributor、下游co-located或独立Tile；
 route/cost稍后决定。M/N按`P_M/P_N`切、K按`P_K`切时有`P_M*P_N`个merge groups，每组有`P_K`个contributions。
 

@@ -8,6 +8,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/Baseline/CardBaselinePlacement.cpp
   Planning/Baseline/CardBaselinePlacementClosure.cpp
   Planning/Baseline/CardBaselineTemporalTiling.cpp
+  Planning/PhysicalDataflow/SpatialPlan.cpp
   Planning/PhysicalDataflow/StructuredDAGEdgeDemandPlan.cpp
   Planning/PhysicalDataflow/StructuredDAGEdgeStrategyPlan.cpp
   Planning/PhysicalDataflow/TemporalTileShape.cpp

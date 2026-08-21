@@ -191,7 +191,7 @@ Q51终态的candidate assignment包含下列typed choices；Q51.Core不预声明
 
 ```text
 StageId  -> members / Tile group
-NodeId   -> iteration partition / physical placement / reduction role
+SemanticRootKey -> iteration partition / physical placement / reduction role
 RegionId -> mandatory root-work members
 ExecutionInstanceId -> required coverage or explicit replica / top-level or consumer-nested placement
 UseFragmentId -> stored region value / direct nested value / cross-region boundary
@@ -847,7 +847,7 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 主线仍有下列设计差距：
 
 - baseline的coordinate loop仍执行actual TileRegion→Instr与memory planning；这些工作必须改成Q50.F typed problem/proof，planning IR为零；
-- `spatial-plan-schema`只定义schema/validator；`attention-normalization`先产生normalized semantic roots和fixed FA/FD fact，
+- `spatial-plan-schema`只定义schema、structural close与validator；`attention-normalization`先产生normalized semantic roots和fixed FA/FD fact，
   `attention-spatial-integration`关闭K1/K2与spatial constraints后`canonical-spatial-assignment`才签发assignment；
   `exact-demand-boundary`与`attention-demand-integration`随后关闭demand/final owner/
   coupled merge；
