@@ -66,8 +66,9 @@ Q50.0建立selected CardModule compilation/verification seam；current execution
 不把Q50.* owner反复当任务。主线从`spatial-plan-schema`开始，经`attention-normalization`、`attention-spatial-integration`、
 `canonical-spatial-assignment`、`exact-demand-boundary`和`attention-demand-integration`建立真实semantic/spatial/demand输入；canonical root/region/temporal/
 representation/movement/serialized/storage/schedule work items逐项形成baseline plan，再由`attention-work-projection`、
-`canonical-feasibility-proof`和`attention-selected-decomposition`关闭proof与winner builder。`deterministic-baseline-closure`最后只编排
-pure query与一次selected commit，不生产这些component，也不成为search输入。
+`canonical-feasibility-proof`和`attention-selected-decomposition`关闭proof与winner builder。随后由
+`canonical-plan-coverage-closure`补齐并连续重放当前全部canonical B--K/attention artifact的真实规模覆盖，
+`deterministic-baseline-closure`通过该前置后只编排pure query与一次selected commit，不生产这些component，也不成为search输入。
 旧candidate/generator/feedback/selector接口不保留，但删除其source/test前
 必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。`spatial-domain`形成首批真实domain后，
 `search-control-foundation`切explicit `search`到new owner；后续每个domain work item都同批接Core consumer，`full-feasibility`后由

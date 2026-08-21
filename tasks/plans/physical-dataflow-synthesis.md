@@ -159,7 +159,7 @@ Pipeline position:
   superoptimization。
 - Done criteria:
   Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q58/Q56/Q59先闭合
-  program data ownership、package data与compile commit。当前39个execution work items按`tasks/progress.md`唯一顺序逐项闭合：
+  program data ownership、package data与compile commit。当前40个execution work items按`tasks/progress.md`唯一顺序逐项闭合：
   先建立semantic/spatial/demand与canonical plan artifacts，再闭合deterministic baseline；随后建立完整physical domains、search controller、
   unified single-winner commit、attention production evidence和measured scalability。最后production-host-readiness从Q60产品入口生成
   fresh package、oracle、runner并通过no-card达到board-ready；真实matched板端A/B不在当前目标内。
@@ -260,27 +260,28 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 16 | `canonical-schedule` | Q50.J | source-order/worker0 ClosedSchedulePlan | attention-work-projection |
 | 17 | `attention-work-projection` | Q50.S | AttentionWorkDescription及C–K/F resource projections | canonical-feasibility-proof |
 | 18 | `canonical-feasibility-proof` | Q50.F | canonical problem/parity及FullFeasibilityProof | attention-selected-decomposition |
-| 19 | `attention-selected-decomposition` | Q50.S | winner-only selected Linalg/Tensor/SCF builder及tile mapping seam | deterministic-baseline-closure |
-| 20 | `deterministic-baseline-closure` | Q49.P | pure legalization、一次commit/Q50.0及fresh none纵向 | spatial-domain |
-| 21 | `spatial-domain` | Q50.B | complete spatial successors、reference enumerator及proposal | search-control-foundation |
-| 22 | `search-control-foundation` | Q51.Core | SpatialState frontier/continuation及public search routing | root-work-domain |
-| 23 | `root-work-domain` | Q50.C | full root/merge work domain、Core consumer及selected emitter | region-execution-domain |
-| 24 | `region-execution-domain` | Q50.D | region/execution/use-binding domain及Core consumer | temporal-domain |
-| 25 | `temporal-domain` | Q50.E | complete temporal sizes/orders/tails及Core consumer | partial-feasibility |
-| 26 | `partial-feasibility` | Q50.F | A–E minimum/interference、Deferred及causal query | layout-domain |
-| 27 | `layout-domain` | Q50.G | representation constraint solver、Core consumer及apply | movement-domain |
-| 28 | `movement-domain` | Q50.H | local/DDR/DTE/relay/collective domain、proof及Core consumer | storage-domain |
-| 29 | `storage-domain` | Q50.I | fresh/alias/reuse与1..U slot domain及Core consumer | event-resource-foundation |
-| 30 | `event-resource-foundation` | Q50.J | EventGraph、resource/recurrence facts及Core consumer | execution-structure-domain |
-| 31 | `execution-structure-domain` | Q50.K | Serialized/Pipelined structure domain及Core consumer | structure-specific-storage |
-| 32 | `structure-specific-storage` | Q50.I | fixed-K occurrence、slot multiplicity、rotation及lifetime closure | schedule-domain |
-| 33 | `schedule-domain` | Q50.J | fixed-K/I order、worker、resource与completion domain | full-feasibility |
-| 34 | `full-feasibility` | Q50.F | full resource proof、oracle及Core admission input | search-control-closure |
-| 35 | `search-control-closure` | Q51.Core | full-plan admission、cost/bound、causal rejection、coverage及controller oracle | unified-search-closure |
-| 36 | `unified-search-closure` | Q51 | bounded exhaustive oracle、single winner及一次production commit | attention-production-closure |
-| 37 | `attention-production-closure` | Q50.S | donor retirement及prefill/decode none/search package/no-card | search-scalability |
-| 38 | `search-scalability` | Q52 | measured memo/DP/bound/LNS及有限预算LLaMA一次commit | production-host-readiness |
-| 39 | `production-host-readiness` | Q53 | fresh source/IR/package/oracle/runner/no-card矩阵 | Q53 board-ready |
+| 19 | `attention-selected-decomposition` | Q50.S | winner-only selected Linalg/Tensor/SCF builder及tile mapping seam | canonical-plan-coverage-closure |
+| 20 | `canonical-plan-coverage-closure` | 16 | canonical B–K/attention逐artifact ledger、缺失case补全及fresh验证 | deterministic-baseline-closure |
+| 21 | `deterministic-baseline-closure` | Q49.P | pure legalization、一次commit/Q50.0及fresh none纵向 | spatial-domain |
+| 22 | `spatial-domain` | Q50.B | complete spatial successors、reference enumerator及proposal | search-control-foundation |
+| 23 | `search-control-foundation` | Q51.Core | SpatialState frontier/continuation及public search routing | root-work-domain |
+| 24 | `root-work-domain` | Q50.C | full root/merge work domain、Core consumer及selected emitter | region-execution-domain |
+| 25 | `region-execution-domain` | Q50.D | region/execution/use-binding domain及Core consumer | temporal-domain |
+| 26 | `temporal-domain` | Q50.E | complete temporal sizes/orders/tails及Core consumer | partial-feasibility |
+| 27 | `partial-feasibility` | Q50.F | A–E minimum/interference、Deferred及causal query | layout-domain |
+| 28 | `layout-domain` | Q50.G | representation constraint solver、Core consumer及apply | movement-domain |
+| 29 | `movement-domain` | Q50.H | local/DDR/DTE/relay/collective domain、proof及Core consumer | storage-domain |
+| 30 | `storage-domain` | Q50.I | fresh/alias/reuse与1..U slot domain及Core consumer | event-resource-foundation |
+| 31 | `event-resource-foundation` | Q50.J | EventGraph、resource/recurrence facts及Core consumer | execution-structure-domain |
+| 32 | `execution-structure-domain` | Q50.K | Serialized/Pipelined structure domain及Core consumer | structure-specific-storage |
+| 33 | `structure-specific-storage` | Q50.I | fixed-K occurrence、slot multiplicity、rotation及lifetime closure | schedule-domain |
+| 34 | `schedule-domain` | Q50.J | fixed-K/I order、worker、resource与completion domain | full-feasibility |
+| 35 | `full-feasibility` | Q50.F | full resource proof、oracle及Core admission input | search-control-closure |
+| 36 | `search-control-closure` | Q51.Core | full-plan admission、cost/bound、causal rejection、coverage及controller oracle | unified-search-closure |
+| 37 | `unified-search-closure` | Q51 | bounded exhaustive oracle、single winner及一次production commit | attention-production-closure |
+| 38 | `attention-production-closure` | Q50.S | donor retirement及prefill/decode none/search package/no-card | search-scalability |
+| 39 | `search-scalability` | Q52 | measured memo/DP/bound/LNS及有限预算LLaMA一次commit | production-host-readiness |
+| 40 | `production-host-readiness` | Q53 | fresh source/IR/package/oracle/runner/no-card矩阵 | Q53 board-ready |
 
 work item是唯一调度身份，Q50.*只表示设计owner。一个owner可以拥有多个work item，但每个work item只出现一次、只签发一个typed
 artifact或production gate；owner整体完成由`tasks/progress.md`的owner map汇总，不进入施工队列反复切状态。
@@ -387,6 +388,7 @@ IR/source organization和`git diff --check`通过。没有执行真实板测；�
 | `attention-work-projection` | FA/FD、mask/no-mask、1024/1025/1031、single/multi-K2、local/remote coupled merge | Q/K/V/mask、Maximum/Sum/Accumulator的work/value/action/resource ID与A--K owner/domain逐项双射，不生成完整score/probability tensor |
 | `canonical-feasibility-proof` | ordinary与attention canonical plans，fit/overfull、unsupported及plan-contract failure | B--K每个坐标、resource lower bound、capacity和下游Q50.0前提完整；failure taxonomy准确且零actual materialization |
 | `attention-selected-decomposition` | FA/FD aligned/ragged recurrence、mask、multi-K2 merge、tail及中途builder failure | 只对selected plan构造Linalg/Tensor/SCF，K2 coverage和finalize-once精确，失败原子且source byte-identical，输出可直接进入tile materializer |
+| `canonical-plan-coverage-closure` | 同一ordinary/reduction/FA/FD的1024/1025/1031输入重放canonical B--K、attention work、FullProof及selected decomposition；覆盖multi-root、fan-in/fan-out、multi-K2、rank-zero和typed failures | 此前全部current canonical artifact逐项绑定实际case、exact assertion和直接下游witness；identity/domain/lifetime/order/resource/action映射连续一致，pure planning零IR，selected failure保持source不变 |
 | `deterministic-baseline-closure` | ordinary、reduction、prefill/decode的1024级aligned/ragged source，unsupported/capacity失败 | `none`独立构造唯一canonical plan并只commit一次；CardExecutable/package/no-card直接消费，无search调用或fallback |
 | `spatial-domain` | 单/多轴、aligned/ragged、all-16及合法非最大/非矩形/非对称placement，FA/FD constraints，small bounded oracle | successor集合与reference完全相等，coverage/merge/embedding精确、顺序确定；proposal不删除exact siblings |
 | `search-control-foundation` | empty/single/multiple spatial states、diamond convergence、budget边界、missing next axis | frontier/continuation/visited/work计数和typed incomplete精确；public search零CardModule/Q50.0，hash/插入顺序不改reachable prefix |
@@ -414,8 +416,9 @@ constraints，`canonical-spatial-assignment`才签发assignment；其已提交�
 coupled merge。任何实现不得把尚未归一化的
 matmul/softmax外形交给physical owner猜测，也不得把FA/FD做成spatial schema字段。
 
-canonical work items各自产生一个下游真实消费的typed artifact；`deterministic-baseline-closure`只在这些artifact齐备后编排
-baseline。它排在`spatial-domain`与search work items之前只是当前施工顺序，不建立policy依赖；search planning不接收baseline
+canonical work items各自产生一个下游真实消费的typed artifact；`canonical-plan-coverage-closure`先逐项证明这些artifact及其连续
+B--K/attention组合满足覆盖合同，`deterministic-baseline-closure`随后才编排baseline。它排在`spatial-domain`与search work items
+之前只是当前施工顺序，不建立policy依赖；search planning不接收baseline
 plan、executable、controller或statistics。`attention-production-closure`只汇合两条policy的纵向证据，不让policy互相调用。
 
 Q53达到`board-ready`后不是再排一条假线性尾巴：Q57 resident execution、Q61 whole-program scale和Q48 semantic
@@ -434,8 +437,8 @@ superoptimization是三个独立分支，分别服从自己的前置；Q53真实
 | attention-ready `ExactDemandProof` | exact-demand-boundary + attention-demand-integration | closed assignment、current structured IR、coupled attention facts | canonical-root-work、spatial-domain、layout/movement/feasibility | normalized semantic root或spatial改变后重算 |
 | canonical plan components | canonical-root-work至canonical-schedule | closed assignment、attention-ready demand、baseline semantics | attention-work-projection、canonical-feasibility-proof、deterministic-baseline-closure | canonical coordinate改变后重建；无IR |
 | `AttentionWorkDescription` / resource projections | attention-work-projection | fixed semantic facts及canonical plan prefix | canonical-feasibility-proof、attention-selected-decomposition、domain extensions | observed plan choice改变后重算；不进入state |
-| baseline `FullFeasibilityProof` | canonical-feasibility-proof | canonical closed plan及attention resource descriptions | attention-selected-decomposition、deterministic-baseline-closure | ExactRejection推进coordinate；actual failure不re-entry |
-| prepared selected attention decomposition | attention-selected-decomposition | complete canonical plan、work/resource IDs、F proof | baseline winner commit、unified search commit | 只属于selected transaction；不进入planning state/cache |
+| baseline `FullFeasibilityProof` | canonical-feasibility-proof | canonical closed plan及attention resource descriptions | attention-selected-decomposition、canonical-plan-coverage-closure、deterministic-baseline-closure | ExactRejection推进coordinate；actual failure不re-entry |
+| prepared selected attention decomposition | attention-selected-decomposition | complete canonical plan、work/resource IDs、F proof | canonical-plan-coverage-closure、baseline winner commit、unified search commit | 只属于selected transaction；不进入planning state/cache |
 | full spatial successors | spatial-domain | fixed semantic facts、spatial schema、exact-demand query | search-control-foundation、root-work-domain | spatial改变使全部下游失效 |
 | `RootRegionWork` alternatives | root-work-domain | spatial assignment、exact demand、canonical-root-work | region-execution-domain、selected leaf emitter | spatial/root改变后派生重算 |
 | `RegionPlan` / execution/use bindings | region-execution-domain | root work、exact relation、canonical-region-plan | temporal-domain、Core Region state | region改变使全部下游失效 |
@@ -2174,8 +2177,59 @@ max/exp/sum、PV、state update/merge/finalize，并返回all-and-only action/va
 `AttentionTensorOps`已迁为policy-free `PhysicalDataflow/AttentionLinalgOps`，donor与new builder共用一份实现。fresh定向7/7、完整
 `WaferUnitTests` 811/811、default configured lit 224/224、compiler public link、完整configured build及IR/source organization通过。
 
-actual Card/wafer.tile/Q50.0 witness尚未由本项虚报：下一`deterministic-baseline-closure`必须把mapping交给existing structured-to-tile
+actual Card/wafer.tile/Q50.0 witness尚未由本项虚报：后续`deterministic-baseline-closure`必须把mapping交给existing structured-to-tile
 consumer、重建F plan/actual parity并只commit一次；该纵向失败不能回到本emitter换algorithm或plan。
+
+### canonical-plan-coverage-closure
+
+该work item是`deterministic-baseline-closure`之前的独立verification gate，不产生新的production compiler artifact。此前的
+`completed-case-coverage-closure`已经闭合canonical B--H；本项在其ledger上补齐随后完成的Serialized K、canonical I/J、attention
+work、canonical F及selected decomposition，并形成覆盖当前全部canonical artifacts的连续B--K/attention ledger。已有case只有在输入
+规模、语义类别、exact assertion和直接下游witness逐项满足本矩阵时才复用；累计测试数量或各owner曾经单独通过不能代签全链闭合。
+
+执行本项前重新读取`AGENTS.md`、`tasks/progress.md`、本设计以及16号verification contract，先锁定下表的case和预期字段，再修改
+测试或因补测暴露的原owner实现。验证后重新读取这些合同，逐行核对实际case、fresh结果和MLIR工程约束；只有全部矩阵行关闭后，
+`deterministic-baseline-closure`才能从`queued`转为`doing`。
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  completed-case-coverage-closure已经验证的canonical B--H artifacts，以及已完成的SerializedExecutionPlan、BufferPlan、
+  ClosedSchedulePlan、AttentionWorkDescription、FullFeasibilityProof和SelectedAttentionRootMaterialization实现、producer/consumer与测试。
+- Current stage responsibility:
+  对上述后半链逐artifact建立“设计字段 -> producer -> representative input -> exact assertion -> direct consumer”ledger；补齐缺失的
+  真实规模整除/非整除、结构等价类和typed failure case，并用同一代表输入连续重放canonical B--K、attention work、proof和selected
+  decomposition。补测发现缺陷时只修复原语义owner并重放受影响后继。
+- Output IR / files:
+  原owner unit/lit中的缺失case与exact assertions、完整canonical-plan coverage ledger及fresh验证结果；不新增production IR、API、
+  sidecar、pass或test-only production入口。
+- Downstream consumer:
+  deterministic-baseline-closure只消费本项已证明可连续组合的canonical artifacts，随后负责唯一actual Card/Q50.0 commit；本项不代替
+  plan/actual parity、package或no-card纵向。
+- User-level driver / named pipeline:
+  WaferUnitTests、相关configured lit及现有normalization/planning测试入口；不提供新的public driver mode。
+- Explicit non-goals:
+  不重新审计无直接依赖的archive任务，不改变artifact语义或candidate policy，不引入shape特判、numeric policy或第二套fixture协议；
+  不提前构造CardModule、wafer.tile、CardExecutable或package，也不把baseline实现缺口写成补测例外。
+- Done criteria:
+  当前Working Plan中attention-selected-decomposition及其之前的每个已完成artifact均有可审阅ledger；新增后半链每行绑定实际case和
+  exact assertion；至少一组ordinary/reduction 1024/1025及一组FA/FD 1024/1025/1031输入连续重放相关链路，覆盖multi-root、
+  fan-in/fan-out、multi-K2、tail、rank-zero和typed failure；pure planning期间source不变且零IR，selected emission失败只污染caller-owned
+  disposable subtree；fresh定向、完整unit、relevant lit、IR/source organization和diff检查通过。
+```
+
+| 覆盖边界 | 代表输入 | 必须精确断言的结果 | 直接下游witness |
+| --- | --- | --- | --- |
+| Serialized K | ordinary与ordinary reduction的rank>=3 1024/1025 all-16，多root/fanout；FD 1024与1025/1031；rank-zero/merge-only | required root/merge execution各有且仅有一个stable identity，root与temporal scope一一对应；无stage/slot/event/worker | canonical storage按同一execution ID建立definition/use lifetime |
+| canonical I/J | aligned/ragged external load、diamond共享producer、ordinary/FD local与remote gather、publication及support chain | version/action各有唯一storage object；definition/use和live interval完整；schedule覆盖all-and-only action/execution，稳定全序和worker0正确 | attention projection与F按同一storage/schedule IDs消费，不从顺序或名字恢复关系 |
+| attention work | FA mask/no-mask、FD local/remote、1024/1025/1031、rank-6 multi-K2和两个独立roots | action/value/resource、Maximum/Sum/Accumulator、gather staging和schedule projection逐ID双射；无global score/probability tensor | canonical F接收全部scratch/state simultaneous groups和action coverage |
+| canonical F | ordinary/reduction/FA/FD fit与SPM/DDR overfull、bounded indeterminate、unsupported和plan-contract failure | normalized resource problem覆盖全部storage/scratch/movement/schedule/action facts；FullProof dependency key完整，failure taxonomy准确 | selected prepare只接受action/resource coverage完全相同的FullProof |
+| selected decomposition | FA/FD aligned/ragged、mask、multi-K2、两个roots及mid-emission failure | block-sized Linalg/Tensor/SCF与action/value mapping all-and-only；FD merge finalize一次；无global score，source byte-identical | mapping API可由下一baseline Card builder直接消费，但本项不虚报actual wafer.tile/Q50.0 |
+| 连续B--K/attention重放 | 同一ordinary/reduction 1024/1025和FA/FD 1024/1025/1031，从canonical spatial/demand开始 | root、execution、version、movement、storage、schedule、attention action和proof identity/domain/tail连续一致；每层输出与直接上下游双射 | deterministic baseline无需二次语义恢复即可编排pure plan并进入唯一selected commit |
+| failure atomicity | missing/duplicate execution、version、storage、schedule/action、resource、proof action及malformed piece的最小独立故障 | 返回对应typed failure，无partial plan、无source mutation；修正后的输入可重新query | 不fallback、不选择另一plan/algorithm、不调用CardModule/Q50.0 |
+
+本项关闭时把最终ledger和fresh结果写回本节，并在`tasks/archive/completed-task-index.md`追加唯一完成记录；在此之前不得沿用
+`serialized-execution`至`attention-selected-decomposition`各自的历史suite总数把本项标为完成。
 
 ### S-6：Current/donor能力迁移
 
@@ -3739,8 +3793,9 @@ Pipeline position:
   query-local CanonicalFeasibilityCoordinate {normalized problems, FullFeasibilityProof}或typed failure；proof无offset、pointer、solver stack、
   digest或日志，不修改IR/文件。
 - Downstream consumer:
-  attention-selected-decomposition只接受full proof并准备winner builder；deterministic-baseline-closure消费同一canonical problem，随后一次
-  actual construction/Q50.0重建problem做parity和真实offset assignment。partial/full feasibility原位复用schema/status mapping。
+  attention-selected-decomposition只接受full proof并准备winner builder；canonical-plan-coverage-closure验证proof与后半canonical链的
+  连续覆盖；deterministic-baseline-closure随后消费同一canonical problem，并在唯一actual construction/Q50.0中重建problem做parity和
+  真实offset assignment。partial/full feasibility原位复用schema/status mapping。
 - User-level driver / named pipeline:
   无独立pass、pipeline或CLI；none/search canonical planning静态调用同一query，test-only可显式限制solver work。
 - Explicit non-goals:
@@ -3767,8 +3822,9 @@ hard checks。`FullFeasibilityProof`携全部observed target/semantic IDs和`Eve
 `WaferUnitTests` 804/804、default configured lit 224/224、compiler public link、完整configured build及IR/source organization通过。
 
 本work item关闭plan-side schema、status mapping和parity seam；actual normalized problem尚不存在，不能在此虚报plan/actual equality。
-`attention-selected-decomposition`建立winner builder后，`deterministic-baseline-closure`必须从新Card subtree重建同一schema并逐ID比较，随后
-才进入一次Q50.0实际offset assignment。该下游witness未通过前不代表Q49.P或Q50.F owner整体完成。
+`attention-selected-decomposition`建立winner builder后，`canonical-plan-coverage-closure`先关闭全部canonical artifact的测试证据；随后
+`deterministic-baseline-closure`必须从新Card subtree重建同一schema并逐ID比较，才进入一次Q50.0实际offset assignment。该下游witness
+未通过前不代表Q49.P或Q50.F owner整体完成。
 
 ### F-foundation-1 专项调研：结果分类、依赖坐标与scope
 
@@ -8024,7 +8080,7 @@ matched executor不是production compiler路径，也不为普通`wafer-run`增�
 
 ## 提交与收尾
 
-1. Q58、Q56、Q50.0、Q54、Q59与Q60等既有前置保持；当前严格按`tasks/progress.md`列出的39个唯一work items形成独立可评审提交；
+1. Q58、Q56、Q50.0、Q54、Q59与Q60等既有前置保持；当前严格按`tasks/progress.md`列出的40个唯一work items形成独立可评审提交；
    不得倒序，也不得用Q owner内部阶段建立第二份调度。
 2. 每个domain work item完成donor迁移与direct query/test-only apply时，同批扩search controller consumer及feasibility dependencies。
    deterministic-baseline-closure不进入search；full-feasibility之后search-control-closure只闭合controller，unified-search-closure只接
