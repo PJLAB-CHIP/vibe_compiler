@@ -11,7 +11,9 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CanonicalRegionPlan.cpp
   Planning/PhysicalDataflow/CanonicalRepresentationPlan.cpp
   Planning/PhysicalDataflow/CanonicalMovementPlan.cpp
+  Planning/PhysicalDataflow/CanonicalSerializedExecutionPlan.cpp
   Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
+  Planning/PhysicalDataflow/SerializedExecutionPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp
   Planning/PhysicalDataflow/RepresentationPlan.cpp

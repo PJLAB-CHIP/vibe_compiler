@@ -5245,6 +5245,58 @@ Pipeline position:
   Q50.J invalidation/re-entry受测；production assignment与winner apply对应。旧FixedSlotPipeline source/header/test的独有能力全部映射并
   迁移后，旧接口才能保持退役。
 
+### Q50.K work-item分界
+
+Q50.K由两个work items闭合：
+
+- `serialized-execution`只建立canonical B--H point使用的Serialized execution coverage。输入是canonical `RegionPlan`和
+  `TemporalPlan`；输出复用既有`ExecutionInstanceId`，把region中每个required root/merge execution各列一次。root execution必须与
+  一个temporal scope一一对应；merge execution执行一次但不伪造temporal scope。ordinary/FD contribution及Maximum/Sum/Accumulator
+  component仍属于其root execution和merge execution，不新增独立execution。该plan不含recurrence、stage、launch distance、slot、
+  event、worker、resource或actual IR。
+- `execution-structure-domain`在event-resource-foundation和storage-domain之后建立完整Serialized/Pipelined结构域、Core consumer、
+  K→I→J re-entry和selected construction。此时才引入由E/I recurrence及connected J event component定义的`PipelineScopeId`；不得把
+  当前`ExecutionInstanceId`列表事后解释成pipeline scope。
+
+当前work item的pipeline contract为：
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  canonical RegionPlan及Canonical TemporalPlan；root/merge execution identity已由D关闭，root local extent/tail已由E关闭，尚无I/J/K
+  recurrence、storage、event、stage或schedule事实。
+- Current stage responsibility:
+  验证region execution与temporal root scopes的一致性，按ExecutionInstanceId稳定排序，为每个required root/merge execution签发且只
+  签发一个Serialized execution entry。
+- Output IR / files:
+  query-local SerializedExecutionPlan；不修改IR、不写attr或文件，不新增另一套execution/scope identity。
+- Downstream consumer:
+  canonical-storage-plan用该列表建立single-occurrence lifetime；canonical-schedule随后只对这些executions/actions建立source-order/
+  worker0点。后续execution-structure-domain吸收该canonical member并在固定K后触发I/J重闭。
+- User-level driver / named pipeline:
+  无独立pass、pipeline或CLI；none与search的canonical planning prefix静态调用同一constructor。
+- Explicit non-goals:
+  不识别recurrence，不生成Pipelined choice、stage、prologue/steady/epilogue、slot、event、worker或resource，不调用旧StagePipeline/
+  SelectedBufferMaterialization，不把contribution/component拆成execution。
+- Done criteria:
+  aligned/ragged all-16、multi-root、ordinary reduction、FD coupled merge、merge-only、rank-zero和输入顺序扰动均得到all-and-only stable
+  execution集合；duplicate region execution、missing/duplicate root temporal scope及unexpected merge scope得到typed contract failure；
+  source IR不变，canonical-storage-plan可直接消费，fresh unit/build与IR/source organization通过。
+```
+
+| 覆盖类 | 代表输入 | 必须断言的Serialized结果 | 直接下游witness |
+| --- | --- | --- | --- |
+| aligned/ragged root executions | rank-3、1024/1025、all-16 Tile | 16个root execution各一次，集合与region executions及temporal scopes精确相等；输入顺序扰动后逐ID相同 | canonical storage逐execution建立single occurrence，不共享ragged Tile identity |
+| multi-root/fanout | 1025级多个root/region groups | 每个root/Tile execution保留独立ID，stable semantic sort不按输入walk顺序 | 后续storage/schedule可按同一execution ID连接各自versions/actions |
+| ordinary reduction | rank>=3、1024/1025 contributions和merge | contribution仍属于root execution；每个merge group只有一个merge execution且无temporal scope | partial versions与gather在merge execution处收敛，不产生component伪execution |
+| FD coupled state | rank-5、1024及1025/1031 K2 | 每个contribution root execution一次，每个coupled group merge execution一次；三个components不增加entry | canonical storage从G/H component versions/actions引用同一root/merge IDs |
+| rank-zero/merge-only | rank-zero root及只有merge work的Tile | rank-zero root有一个entry并匹配empty temporal scope；merge-only execution保留且没有伪scope | single-occurrence storage不因empty size或无root scope漏掉合法execution |
+| typed failure | empty/duplicate region execution、删除/复制root scope、为merge加入scope | `EmptyExecutionSet`、`DuplicateExecution`、`MissingTemporalScope`、`DuplicateTemporalScope`或`UnexpectedTemporalScope`；不返回partial plan | 修正输入可重新query，source IR不变 |
+
+实现闭合：`SerializedExecutionPlan`直接保存stable `ExecutionInstanceId`集合，canonical constructor只验证region/temporal双射并排序；
+没有新增pipeline scope、stage、slot、event、worker、IR mutation或旧StagePipeline调用。fresh定向5/5、完整`WaferUnitTests` 779/779、
+default configured lit 224/224、compiler public-header/link smoke、完整configured build及IR/source organization通过。
+
 ### K-1 专项调研：serialized/pipelined execution-structure domain
 
 LLVM MachinePipeliner和iterative modulo scheduling把loop-carried dependence distance、resource model和initiation interval作为显式约束；
