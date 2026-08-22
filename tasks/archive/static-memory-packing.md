@@ -1,5 +1,9 @@
 # Static Memory Packing 实施计划
 
+> 历史记录：本文保存Q34当时的施工合同，其中`ResourceExhausted`后的first-fit fallback已经退役，不是current行为。
+> current合同以`tasks/09-spm-memory-planning.md`、`tasks/12-ddr-memory-planning.md`和`AGENTS.md`为准：MiniMalloc是唯一allocator，
+> `ResourceExhausted`原样传播。
+
 本计划拆解Q34的施工顺序和验证checkpoint；长期SPM/DDR语义分别由`tasks/09-spm-memory-planning.md`和
 `tasks/12-ddr-memory-planning.md`拥有，共享源码/依赖ownership由`tasks/18-source-organization.md`拥有。
 动态状态只看`tasks/progress.md`。

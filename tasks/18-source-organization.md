@@ -87,13 +87,13 @@ single-card current path向physical-dataflow stage交付一个完整card-local T
   algorithm points或isolated alternative；
 - physical-dataflow selection：从fixed TensorProgram roots构造query-local DAG、component/event facts和typed
   partial choices，惰性生成spatial/temporal/TileRegion/fusion/layout/movement/communication/buffering候选；
-- CardModule/TileRegion materialization：只消费最终plan；attention先展开selected Linalg/Tensor/SCF，再确定性转换到wafer.tile；
-- bounded Tile output executor：winner后只并行互不共享可写IR的per-Tile lowering/output work，并维持deterministic output order；
-- Instr construction and physical verification：对selected Tile module消费已经物化的worker/slot/order/completion，执行memory、transport和ABI验证；
-- CardExecutable verification：只验证card-scoped actual结果，不生成repair。
+- CardModule/TileRegion materialization：消费每个complete assignment；attention先展开selected Linalg/Tensor/SCF，再确定性转换到wafer.tile；
+- bounded candidate Tile executor：对每个candidate并行互不共享可写IR的per-Tile lowering work，并维持deterministic result order；
+- Instr construction and physical verification：对candidate Tile module消费已经物化的worker/slot/order/completion，执行memory、transport和ABI验证；
+- CardExecutable actual admission：返回Accepted或typed rejection/failure，不生成repair；rejected/loser owner销毁，final winner再进入target output。
 
-现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → selected CardModule/TileRegion → all-and-only
-Tile Instr → CardExecutable。实现索引不得升级为output名或要求其它library读取search对象。
+现有类名或函数名只作为实现索引；长期合同仍是：TensorProgram → complete candidate CardModule/TileRegion → all-and-only
+Tile Instr → actual result → one retained CardExecutable winner。实现索引不得升级为output名或要求其它library读取search对象。
 
 禁止恢复：
 
@@ -154,7 +154,7 @@ source未进入CMake只表示它不属于current build，不能据此把仍被Q5
 `tools/build_xla_spmd_partitioner_helper.py`的exact manifest复制到显式external helper build；不得同时加入host CMake target。
 
 Q50.S current有部分attention/decode proof和builder可作donor，但单一attention op、graph-level FA/FD classifier、coupled-state query、
-planning description、winner-only Linalg decomposition与全部旧witness仍按Q50.S gate重新证明；旧source删除不能代签，current owner也
+planning description、complete-candidate Linalg decomposition与全部旧witness仍按Q50.S gate重新证明；旧source删除不能代签，current owner也
 不得保留whole-program alternative clone、attention algorithm search axis或decode-only physical gate。
 
 `tools/check_source_organization.py`当前只对少数目录闭合active/dormant集合；2026-08-17 follow-up review确认其余目录仍可能存在

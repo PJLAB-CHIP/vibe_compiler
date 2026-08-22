@@ -23,28 +23,29 @@
 
 - 现象：`search`与`none`在所有workload上产生相同IR/package，新增搜索代码从未影响winner。
 - 根因：driver解析了optimization policy，却在executable search边界丢弃或绕过它；测试反而把相同结果锁成合同。
-- 修复模式：`search`与`none`是独立plan producer，只共享policy-free facts、closed plan schema和selected-plan
-  materializer/lowering；两者从同一source分别启动独立transaction，互不调用或fallback。
-- 防复发：test-only call/work witness分别证明None的search-session为零、Search的baseline-controller为零，两者planning IR为零且
-  selected commit/Q50.0各一次；普通compile不创建统计对象。不能要求两者永远产生相同digest。
+- 修复模式：`search`与`none`是独立controller，只共享policy-free facts、complete-assignment schema、candidate materializer和actual
+  admission；两者从同一source分别启动独立transaction，互不调用或fallback。
+- 防复发：test-only call/work witness分别证明None的search-session为零、Search的baseline-controller为零；partial state不构造IR，
+  每个complete candidate Q50.0一次，winner不重建且publication一次。普通compile不创建统计对象。不能要求两者永远产生相同digest。
 
-## 用actual IR评估planning state会导致编译时间与RSS失控
+## 物化partial state或重复物化同一candidate会导致时间与RSS失控
 
-- 现象：model-scale图在candidate笛卡尔积上重复clone、Tile→Instr、completion和packing，编译时间远超单算子合理范围。
-- 根因：把lowering、packing或actual materialization当作planning query，或给不同Tile/mechanism各建局部shortlist再组合。
-- 修复模式：production只在immutable IR与typed state上运行domain、legality、resource proof、cost/bound和successor；未选plan不构造
-  CardModule/Instr。只有selected full-proof plan进入一次新Card subtree transaction与一次Q50.0。test-only tiny oracle若需逐plan
-  actualize，每个plan使用独立fresh source，且production entry不可达该runner。
-- 防复发：显式测试计数证明planning CardModule/Instr/Q50.0均为零、selected commit/Q50.0各一次；scale gate看deterministic
-  planning work、time-to-first-full-proof、wall和RSS，不用candidate compilation count或任意固定秒数替代复杂度分析。
+- 现象：model-scale图对未闭合prefix就clone/lower，或者同一complete assignment先probe、再Q50.0、winner再重建；大量actual owners同时
+  存活，编译时间和RSS失控。
+- 根因：没有区分partial state与complete candidate，也没有候选事务和move-only accepted owner。
+- 修复模式：partial state只运行typed domain/query；每个complete assignment实际化一次并运行Q50.0，因为SPM legality只能由actual IR
+  决定。rejected/loser owner立即销毁，session只保留必要summary和一个retained incumbent，winner原样发布。
+- 防复发：显式计数证明`completeCandidates == CardModules == Q50.0 invocations`、winner rematerialization为零，并记录time-to-first-
+  accepted、wall和RSS；不能用低candidate count掩盖同candidate重建或16 Tile重复整图分析。
 
 ## Late exact failure不能触发隐藏repair
 
 - 现象：SPM packing或ABI failure后，late pass自行缩tile、spill、改worker或切communication，selected IR与search cost不一致。
 - 根因：allocator/finalizer被赋予了搜索职责，产生第二winner owner。
-- 修复模式：planning必须在commit前用typed proof关闭资源与lowering前置条件；late stage只实现selected plan并重建actual problem做parity。
-  failure终止compile并按真实owner分类，不能回到search、baseline或另一policy。
-- 防复发：failure injection锁定packing/ABI/target失败不改写IR、不重选plan、不fallback；repo scan禁止late retile/spill/replan selector。
+- 修复模式：actual gate只实现当前complete assignment并返回typed Accepted/rejection/failure；allocator/finalizer自身不得缩tile、spill、
+  改worker或切communication。带完整witness的rejection可由外层当前policy controller消费，其它状态不得伪装成rejection。
+- 防复发：failure injection锁定packing/ABI/target失败不在candidate IR内repair、不调用另一policy；repo scan禁止late
+  retile/spill/replan selector和allocator fallback。
 
 ## 任务顺序不能让query输入或mechanism consumer凭空出现
 
@@ -97,8 +98,8 @@
 
 - 现象：先固定Tile分配再选temporal tile/fusion，或先尽量融合再事后安排NoC，导致SPM放不下、Tile空闲或通信爆炸。
 - 根因：将互相决定resource和critical path的变量交给独立selector。
-- 修复模式：同一complete typed plan共同表达Tile集合/work domain、temporal tile、TileRegion/融合、communication、buffering和overlap；
-  winner才构造CardModule。
+- 修复模式：同一complete typed assignment共同表达Tile集合/work domain、temporal tile、TileRegion/融合、communication、buffering和overlap；
+  每个complete assignment构造CardModule并跑actual gate，只有Accepted结果参与winner比较。
 - 防复发：测试同时保留maximal local residency与cross-Tile operator pipeline、large-tile cut与small-tile overlap等对立候选。
 
 ## Tile region不要求所有op使用相同tile shape
@@ -335,17 +336,16 @@
 - 防复发：小output/大K matmul与多级projection正例证明full weight不resident；检查accumulator、chunk coverage、tail、actual loop
   cost multiplicity和numeric regrouping legality，不按模型名、shape或operand位置特判。
 
-## Iterator域体积不能冒充operand tile驻留
+## Iterator域体积或operand footprint都不能决定SPM合法性
 
 - 现象：GEMM的cheap model按`M*N*K*元素字节和`估算SPM，把三个二维operand误当成三个三维buffer；合法大tile被过早剪掉，
   搜索倾向大量小wave，优化后的card-scoped执行反而没有性能收益。
 - 根因：只看到iteration domain，没有用每个operand自己的indexing map求实际window；同时用一个整体alignment掩盖了
   per-buffer allocation事实。
-- 修复模式：对每个Linalg operand从当前iterator tile和symbol-free affine indexing map求常量包围盒，按真实element width和
-  per-buffer alignment累计理论驻留；symbolic或无法证明的项直接不计，不能引入`unknown`哨兵、猜测倍率或阻塞排序。最终
-  legality由Q50.F typed storage/interference proof拥有；selected actual packing只做problem parity与offset assignment。
-- 防复发：用一个operand footprints能放入SPM、但iteration-volume模型必然超限的GEMM检查none baseline不产生虚假K wave；
-  affine-window conv同时覆盖stride/dilation map。
+- 修复模式：删除用iteration volume或operand byte sum作capacity/refinement的控制流。indexing map只用于构造当前candidate的exact
+  operand slices；temporary、copy、staging、alias和lifetime必须在actual IR中出现，再由`PlanSPMMemory`/MiniMalloc决定legality。
+- 防复发：用iteration-volume与operand-size模型给出相反预测的GEMM/affine-window conv，证明两者都不影响candidate合法集合；actual
+  overfull/fit结果只随物化IR和MiniMalloc变化。
 
 ## 浮点reduction split不再以源顺序或fastmath为gate
 
@@ -358,8 +358,8 @@
 - 防复发：新增reduction split/树合法化时只按整数overflow语义设barrier，不得以源combiner顺序、`fastmath` attr或
   lexicographic前轴条件拒绝浮点split。纯reduction标量输出没有parallel轴时仍必须先构造all-factor=1、单参与Tile的typed
   unpartitioned functional coordinate；这是该root的无parallel轴退化，不是baseline全局Tile数。current placement domain表达不了是baseline implementation gap，不能用来跳过temporal
-  split或把source判unsupported。已知「最小tile超SPM」反例在current lowering下未形成合法terminal proof时，只保留typed
-  capacity/unsupported出口，不用无关placement失败冒充负例。
+  split或把source判unsupported。已知「最小tile超SPM」反例必须由最小complete candidate的actual SPM rejection证明；没有该结果时
+  保持unknown，不用无关placement失败冒充负例。
 
 ## Affine-window convolution不能退化成projected-permutation generic
 
@@ -468,11 +468,11 @@
 - 修复模式：baseline controller直接从typed structured/relation/target facts构造唯一方案；每个TileRegion只拥有一个structured
   compute root及exact operand demand证明必要的non-root support operations，root cardinality由materialization relation证明；同一Tile上的其它root进入独立
   顺序region，跨root shaped dependency显式DDR。只与search
-  共享policy-free query、closed plan schema和selected-plan materialization/Q50.0，不共享state/candidate/grouping/
+  共享policy-free query、complete-assignment schema和candidate materialization/Q50.0，不共享state/candidate/grouping/
   ordering，也不调用option-domain、propagation、recursive CSP/backtracking或“只取第一个”的assignment solver。
 - 防复发：除零actual fusion和DDR movement外，测试还要检查每个baseline region的structured-root数、同Tile multi-root的region
-  数及search-policy调用计数；每个closed coordinate只运行pure typed query，planning CardModule/Q50.0为零，selected plan各一次。
-  SPM拒绝只沿Q50.F direct typed witness refinement，actual failure不能推进coordinate。
+  数及search-policy调用计数；每个complete candidate CardModule/Q50.0各一次。只有带完整current owner relation的actual SPM
+  capacity rejection推进temporal successor，Accepted owner不重建。
 
 ## 去search耦合不能把baseline退化成fixed-assignment validator
 
@@ -480,10 +480,10 @@
   完整tile超出SPM时，反而没有owner继续缩tile并产出可执行结果。
 - 根因：混淆了“禁止性能候选选择”和“禁止确定性功能合法化”，把resolved assignment误当成baseline输入；只设计了单次
   closed-coordinate query，没有定义谁遍历合法breakpoint、何时终止以及支持域内的完成保证。
-- 修复模式：`none`从未绑定物理选择的正常IR进入，由controller按semantic全序维护一个current coordinate；每次重新推导
-  operand/halo/result/temporary/movement/alignment/bank/lifetime并调用Q50.F typed feasibility，不构造IR。ExactRejection推进下一项
-  必要coordinate，FullFeasibilityProof形成resolved plan，随后只commit/Q50.0一次。不得预先生成完整placement/temporal option domain；
-  trial是query-local feasibility状态，不进入candidate、score、incumbent或proposal统计；任一transition必须预定义、单调、
+- 修复模式：`none`从未绑定物理选择的正常IR进入，由controller按semantic全序维护一个current candidate；每个candidate实际构造
+  operand/halo/result/temporary/movement/allocation/completion/lifetime并调用Q50.0一次。actual SPM rejection推进下一temporal
+  candidate，Accepted owner直接下传。不得预先生成完整placement/temporal option domain；trial不进入score、incumbent或proposal统计；
+  任一transition必须预定义、单调、
   不分支且不回溯，旧coordinate立即销毁，避免把deterministic search换名为functional fallback。
 - 防复发：至少一个初始完整tile超SPM而较小合法tile可放下的source-to-package/no-card正例，以及最小合法tile仍超限的typed
   negative；声明支持且baseline域存在completion时必须得到accepted executable，indeterminate必须作为compiler failure，不能
@@ -531,12 +531,12 @@
 - 根因：把Tile差异（offset/tail/peer endpoint）和root不变量（support relation、consumer access和structured identity）放在同一个
   per-Tile materializer里；materializer从output/edge endpoint无条件回溯SSA closure并clone scratch function，而不是从全部root
   execution domain一次性求exact operand demand。并发只缩短wall time，没有消除重复分析或过宽物化。
-- 修复模式：每个planning coordinate在immutable source上同时seed全部`(root, Tile)`，以`(value, Tile)`合并exact domain并按反向SSA拓扑传播；
+- 修复模式：每个candidate在immutable source上同时seed全部`(root, Tile)`，以`(value, Tile)`合并exact domain并按反向SSA拓扑传播；
   relation按operation/result/operand建立一次，structured producer立即形成boundary demand。carrier coverage验证后，final region只
-  对selected plan一次性物化typed demand recipe要求的operation和endpoint，不建立公共SSA closure或materialized-IR cache。16个Tile实际构造可
+  对当前candidate一次性物化typed demand recipe要求的operation和endpoint，不建立公共SSA closure或materialized-IR cache。16个Tile实际构造可
   bounded并发并按Tile ID稳定归并，但并发不是work消重机制。
-- 防复发：显式test work counts检查relation construction、非空value/Tile demand、physical fragment和selected Tile entry；planning
-  CardModule/Q50.0为零、selected各一次。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。Q51 partial
+- 防复发：显式test work counts检查relation construction、非空value/Tile demand、physical fragment和candidate Tile entry；每个
+  candidate CardModule/Q50.0各一次，winner不重建。测试必须包含16 Tile demand不同的fanin/fanout，证明不是16次完整DAG walk。Q51 partial
   state只共享immutable analysis，不能按candidate/Tile缓存actual IR。
 
 ## exact-empty producer不能被support graph重建重新拉入
@@ -563,7 +563,7 @@
   未被输出合同消费的schedule/duration工作删除，可选trace在请求方惰性生成。未来search同样让accepted executable直接进入incumbent，
   winner只move所有权，不重建或重编译，
   不能反向规定baseline控制流。
-- 防复发：none定向测试断言完整CardModule和CardExecutable各一次、selected executable rematerialization为零、默认trace为零；
+- 防复发：none定向测试断言每个candidate CardModule/Q50.0各一次、accepted executable rematerialization为零、默认trace为零；
   模型规模检查work count和结果返回前的stage计数，不运行旧search或历史winner行为作对照。
 
 ## 读取源码marker的测试会把退役实现伪装成合同
@@ -837,18 +837,17 @@
 - 防复发：owner测试必须在返回后覆盖同inode、删除/替换原path，并继续从owner读取已签发内容；还要检查descriptor不泄漏。
   只断言move trait、root字符串和digest相等不能证明ownership。
 
-## Discarded capacity IR与最终gate会产生不同scope和witness
+## 局部capacity probe与complete-candidate gate会产生不同scope和witness
 
 - 现象：baseline先用root/region/function级scratch IR判断SPM，再重新构造完整CardModule；局部路径可能报告fit或要求扩大scope，
   最终Q50.0却在函数级packing失败。relation remap还可能在两次构造间省略或保留不同owner，使同一allocation得到不同归因。
 - 根因：把“调用相同pass/checker”误当成消费同一actual IR和同一current relation certificate。只要第一次IR被销毁、第二次重建，
   operation lifetime、buffer relation、region boundary和packing scope就已经是两个事实源；继续增加scope escalation只会扩张平行链。
-- 修复模式：删除baseline的root/Tile/function及per-coordinate CardModule capacity materialization。每个closed coordinate从typed
-  facts构造Q50.F resource problem；只有FullFeasibilityProof plan产生一个CardModule/Q50.0。exact certificate不含scratch SSA，缺direct
-  relation attribution即indeterminate，不能按region恰有一个root猜owner。
-- 防复发：显式test work counts必须证明planning CardModule/Q50.0为零、selected各一次、accepted rematerialization为零；actual
-  normalized problem与plan proof做parity。测试使用非空result/operand/output relations检查certificate，不以空relation或diagnostic
-  字符串证明一致性。
+- 修复模式：删除baseline的root/Tile/function局部capacity probe。每个complete candidate只产生一份完整CardModule/Q50.0；actual
+  planner demand通过candidate transaction的result/operand/output/movement/scratch relations归因，缺owner就是contract failure，不能按
+  region恰有一个root猜owner。
+- 防复发：显式test work counts证明`completeCandidates == CardModules == Q50.0 invocations`、accepted rematerialization为零；测试扰动
+  每类relation并检查所有actual SPM demands有owner，不以Location、空relation或diagnostic字符串证明一致性。
 
 ## 发布点之后不能再运行会翻转事务结果的validation
 
@@ -1008,8 +1007,8 @@
 - 修复模式：先分配最终DDR stage destination，把它作为wave loop carry，逐leaf调用
   `materializeCandidateRootTileIntoDestination`直接写DDR；完成后seal为read-only并缓存exact slice。SPM只保留当前leaf/staging，
   不再出现full-shard assembly。
-- 防复发：overfull-to-fit case先检查Q50.F witness和最终closed plan，再检查唯一actual Tile entry/Q50.0 parity；compiler work按
-  deterministic query steps计数，planning CardModule/Q50.0必须为零。
+- 防复发：overfull-to-fit case检查full candidate的actual allocations/lifetimes与typed rejection owner，再检查smaller candidate被
+  actual gate接受；compiler work同时计deterministic successor和candidate CardModule/Q50.0，每个candidate恰一次。
 
 ## 扩展 FuncOp 参数必须同步 argument attrs
 
@@ -1135,8 +1134,9 @@
 - 修复模式：root construction返回source-argument/structured-node-result keys；Card assembly按keys拓扑选择ready stages，把single-block
   stage body直接move进唯一public entry并用current SSA传递local intermediates。无work Tile构造同signature empty entry；不引入call、
   replay、ordinal或跨passside table。
-- 防复发：Q50.C test-only actual oracle不仅数TileRegion，还必须检查每Tile恰一public entry；production Q51只让selected winner进入
-  Q50.0并通过DDR/call-closure/program-resource gate。private functions存在或局部verifier通过不能代签executable boundary。
+- 防复发：Q50.C independent actual oracle不仅数TileRegion，还必须检查每Tile恰一public entry；production Q51让每个complete candidate
+  进入一次Q50.0并通过DDR/call-closure/program-resource gate，最终只保留winner。private functions存在或局部verifier通过不能代签
+  executable boundary。
 
 ## Baseline不能无条件构造search schedule domain
 
@@ -1150,19 +1150,19 @@
 
 ## Search constructive proposal不能静默退回exact域第一点
 
-- 现象：LLaMA的显式search一直只报告同一个90,177,536-byte SPM overflow；看似capacity-guided temporal无效，实际proposal在进入
+- 现象：LLaMA的显式search一直只报告同一个90,177,536-byte SPM overflow；看似actual-feedback temporal无效，实际proposal在进入
   actual gate前失败，controller随后用budget 1评估了“全部node单Tile、full temporal”的exact first point。
 - 根因：constructive各node独立取最大spatial factor后没有先闭合整卡exact demand；随后coupled domain按connected component追加group，
   node id交错时产生未排序assignment并被自己的`contains`拒绝。proposal failure又没有独立诊断字段。
-- 修复模式：在公共participant ceiling上由大到小重建完整Card spatial assignment，每点先过exact demand；capacity-guided temporal和
-  dependent domains只从该合法点建立。coupled first/repair assignment在可观察边界按Tile/node semantic key排序。显式profile summary分别
-  返回proposal与actual failure；预算仍只计actual evaluation。
+- 修复模式：在公共participant ceiling上由大到小重建完整Card spatial assignment，每点先过exact demand；temporal successor只在前一
+  complete candidate得到actual SPM rejection后建立。coupled first/repair assignment在可观察边界按Tile/node semantic key排序。
+  显式profile summary分别返回proposal与actual failure；预算同时计partial work和actual evaluation。
 - 防复发：测试同时覆盖interleaved disconnected components、large transposed weight和完整LLaMA；exact enumeration去重必须比较完整
   assignment，不能只比较spatial前缀。启发式proposal只能改变访问顺序，不能删除exact sibling或在失败时冒充已评估candidate。
 
 ## Temporal accumulator read-before-write要用SSA/DPS证明
 
-- 现象：转置权重接matmul的capacity-guided wave在dynamic `tensor.insert_slice`处被拒绝，diagnostic显示同一destination另有
+- 现象：转置权重接matmul的actual-feedback temporal candidate在dynamic `tensor.insert_slice`处被拒绝，diagnostic显示同一destination另有
   `tensor.extract_slice -> linalg.matmul`使用。
 - 根因：旧检查把任意destination read都视为in-place hazard，没有区分“先提取当前accumulator slice作为产生本次insert source的DPS init”
   与真正的并行观察者；退回full wave后又把11008x4096权重错误提升为整块SPM。

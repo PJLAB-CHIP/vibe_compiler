@@ -65,7 +65,7 @@ Pipeline position:
 | M02 / P0 | `convertTileRegionToInstr`先执行会修改IR的constant-select greedy rewrite，再运行可能失败的full conversion；required-NCC-join又通过clone Func执行实际rewrite作validation并在原Func重放 | D/F/J：普通required-join pass只运行一次；DialectConversion继续使用framework rollback。若public helper明确承诺preserve input，则在helper边界保留显式transaction或改typed plan/apply；测试分别检查pass停止、compiler结果未发布和显式API preserve-input合同 |
 | M03 / P0 | Direct-DTE acceptance按dynamic occurrence path找到了receive，却只记录“已匹配”位，随后仍以send/receive原始vector顺序`zip_equal`建立binding；合法路径的枚举顺序不同时可能绑定错误endpoint | F/G：保存并消费实际`send occurrence -> receive occurrence`映射，使用typed endpoint relation；增加loop/tail、call occurrence重排和serial/parallel确定性测试，禁止ordinal或walk顺序回退 |
 | M04 / P0 | Tile conversion failure会直接计入`ProvenExactRejection`；card verification又把verifier、call closure、runtime launch contract、ABI preparation等不同失败合并为exact rejection，可能错误剪枝 | G：建立`Feasible / ProvenInfeasible / UnsupportedIR / AnalysisFailure / InternalFailure`等typed taxonomy；只有确定resource/legality proof进入candidate no-good，测试覆盖每个gate到分类的映射 |
-| M05 / P1 | Q49施工前的region capacity evaluator会clone TileRegion并运行破坏性Instr lowering/packing，且结果嵌入Tile全函数memory-planning failure，使所谓region query实际依赖下游阶段 | Q49已删除这条baseline probe边界；actual CardModule只运行一次Q50.0 exact gate，容量证据由该候选实际Instr与memory planning产生，accepted owner不重建 |
+| M05 / P1 | Q49施工前的region capacity evaluator会clone不完整TileRegion并运行Instr lowering/packing，随后同一candidate又重建完整Card，且旧归因缺relation时会猜root | Q49删除局部probe；每个complete candidate只构造一份CardModule并运行一次Q50.0，容量结果来自该candidate actual Instr、MiniMalloc和完整current owner relation，accepted owner不重建 |
 | M06 / P1 | pipeline曾以粗粒度module入口和多处短PM为主，缺少稳定semantic subpipeline与真实nested anchor；后续又为失败dump加入Module clone/`takeBody` | D/J：保持atomic pass与named pipeline唯一builder；Target LLVM snapshot按caller ownership复核，不能仅由failure dump决定。以textual parse/print、nested anchor、`verify-each`、pass statistics、production integration和源码零平行业务pipeline检查证明三层边界 |
 | M07 / P1 | SPM与DDR production均已进入pass/AnalysisManager接口，使用child `StructuredTimelineAnalysis`并在只提交offset attr后显式preserve；pass statistics报告managed timeline scope和assigned allocation。其它topology/symbol/call summary仍存在重复构造 | E：继续将满足复用条件的其它事实纳入operation analysis，补container-scoped topology/call summary和构造次数门禁；SPM/DDR timeline接口作为回归基线 |
 | M08 / P1 | accepted call closure、SPM/DDR call/clobber、target structure各自构造函数表、call graph或alias summary，失败假设不一致；CardModule、每个TileModule和多个leaf verifier又重复构造whole-module physical topology | C/E：以SymbolTableCollection、CallOpInterface和container-scoped analysis形成共享事实；leaf verifier只判local invariant，container一次验证跨op关系；测试统计topology/call-summary构造次数 |
@@ -104,8 +104,9 @@ M02/M06/M13把不同transaction/materialization机制混成了同一条规则；
 Checkpoint J完成前Q54保持整改中；Q51.Core及后续search先消费J形成的分类字段，不能继承未经说明的snapshot/replay习惯。
 
 Q49.P仍负责`none`从正常上游IR完成deterministic functional legalization，并闭合search-policy依赖、single-root TileRegion、
-plan-level scoped proof、typed causal witness和winner-only Card materialization；Q50.I仍负责先物化真实共同wave/stage loop再生成
-rotating slots；Q45继续全仓一般术语治理。这三项不恢复Q54已经删除的wrapper、Location关系或旧命名，也不构成Q54
+complete-candidate Card materialization、current buffer relations和actual SPM feedback；Q50.I从typed occurrence relation生成slot choices，
+并在每个candidate construction中与真实wave/stage loop共同物化；Q45继续全仓一般术语治理。这三项不恢复Q54已经删除的wrapper、
+Location关系、局部SPM probe或旧命名，也不构成Q54
 基础设施未闭合。
 
 现有正面事实也进入回归保护：TileRegion显式SSA/`IsolatedFromAbove`/RegionBranch、source marker fail-closed legality、
@@ -231,11 +232,11 @@ semantic Location删除而消失，不能只改名。后续清单以本节为唯
 | spatial-output Location payload | 重复 `SpatialOutputShard::outputIndex`，借 `OpaqueLoc` 把输出序号传播到 allocator feedback | 删除 | B：从 materialization API、Location、failure evidence、strip helper和测试全部移除；输出关系只从 current TileRegion SSA boundary/store/yield 推出 |
 | source-operation / operand-demand Location payload | 用源 `Operation *` 经 Location 跨 clone/lowering 恢复 source node 与 operand-demand attribution | 删除 | B/D/E：同次 materialization 用 `IRMapping`/typed invocation-local relation；capacity 从实际 allocation/use/lifetime IR 归因；accepted cost分析最终 Instr SSA/effect/dependency |
 | downstream-operation Location propagation | listener把 consumer Location 融进所有新 op，兼任 materialization scope 与后续 feedback | 删除 | B：materialization helper显式返回 generated operation/value relation；不得把调度关系写入 Location |
-| `SPMMemoryPlanningFailure::{location,userLocations}` 的语义 consumer | allocator 已有实际 demand/allocation/use，但上游销毁 IR 前只保留 Location再反解planning坐标 | 拆分 | B/E：Location仅留诊断；Q50.F从semantic IDs构造typed rejection，actual failure只做parity诊断，不驱动transition |
+| `SPMMemoryPlanningFailure::{location,userLocations}` 的语义 consumer | allocator 已有实际 demand/allocation/use，但上游销毁 IR 前只保留 Location再反解planning坐标 | 拆分 | B/E：Location仅留诊断；candidate transaction从current buffer relations产生typed owner evidence，actual SPM capacity rejection驱动外层controller，缺relation即contract failure |
 | `SelectedBufferRequest` 的 producer/consumer source指针 | 用旧 source pointer在已 materialized Instr 中寻找 loop/edge witness | 删除字段 | B/D/F：request绑定 current selected edge的 typed message/SSA relation；clone对应只用同一 transformation 的 `IRMapping` |
 | accepted schedule 的 source-node phase attribution | 把最终 Instr反向归到旧 Tensor DAG node，决定 phase cost和选择 | 删除 | B/E/G：从 accepted Instr 的 SSA、effect、call closure与resource dependency直接构造 schedule/cost，不维护逆向source映射 |
 | `TileExecutionCandidate` | 同时装 assignment、派生 cost/resource、allocator feedback history、controller flags与裸指针 | 拆分 | B0/E/G：immutable selected assignment、current-IR analysis结果和controller transition history分开；派生事实不进入candidate identity |
-| 已退役的TileRegion/function capacity probe | 曾在私有IR副本上执行Instr lowering与packing，再把结果用于baseline refinement；它并非只读analysis，也无法代表完整CardModule | 删除 | probe API不恢复；Q50.F承接typed plan problem/proof，Q49每coordinate零IR，selected plan才进入一次CardModule/Q50.0 |
+| 已退役的TileRegion/function capacity probe | 曾在不完整私有IR副本上执行Instr lowering与packing，再重建完整CardModule | 删除 | 局部probe API不恢复；Q49每个complete candidate只构造一次完整CardModule/Q50.0，actual rejection直接反馈controller |
 | placement candidate枚举器 | 实际枚举/评估完整placement candidate set，并不维护通用live candidate set抽象 | rename并拆文件职责 | G：domain、evaluator、enumeration分别命名；public动作使用`derive...Domain`、`evaluate...Assignment`、`enumerate...Candidates` |
 | NCC completion旧free concrete-op switch | 曾混合MLIR op分类、target command完成行为和runtime/model enum | 已拆层 | Q63：pure target protocol、MLIR op interface/adapter与current-IR pending analysis分别拥有；旧入口和IR→TX81 include已删除 |
 | frontend/compiler `bool`-means-failure helpers与nullable多输出 | 文件/JSON/编译事务把错误方向、诊断和多个产物分散在调用约定中 | typed result/error | G：IR validation保留`LogicalResult`；host/filesystem/API边界使用`Error`/`Expected`和named result，predicate才返回bool |
@@ -573,17 +574,18 @@ baseline source-to-package/no-card，显式记录每个真实materialize/target-
 output或package字节有变化，扩大到14–17对应readback；若只有执行次数变化，仍比较semantic IR/package digest和oracle。
 
 完成门禁：逐调用点清单与代码一致；普通pass、显式事务、probe、alternative重复执行和output fan-out没有混用测试合同；
-确认重复工作已消除，确认保留的IR duplication有真实consumer；Wafer analytic planning零IR且selected commit一次；最终稳定规则经过
+确认重复工作已消除，确认保留的IR duplication有真实consumer；partial planning零IR，每个complete candidate actualize/Q50.0一次，
+winner不重建且publication一次；最终稳定规则经过
 上游反例和本项目fresh证据复核后才进入`AGENTS.md`。
 
 ## 与后续任务的关系
 
-- Q54优先闭合；Q49.P随后消费这些接口，但不建立scoped capacity IR或synthetic wrapper。每个closed coordinate只调用Q50.F
-  typed query；需要call/function lifetime时由plan-level relation在最近合法scope建模，selected plan才构造一次CardModule/Q50.0。
+- Q54优先闭合；Q49.P随后消费这些接口，但不建立scoped capacity IR或synthetic wrapper。每个complete candidate在完整Card/Tile/Instr
+  current IR上建立actual call/function lifetime与buffer relations并调用Q50.0一次；不另建plan-side capacity query。
 - Q54完成后先闭合Q50.A demand boundary，Q49.P再消费两者的当前接口，之后才进入Q51.Core及后续mechanism/search，
   避免把Location side channel、shadow identity和全module pipeline继续固化进baseline或新candidate state。
-- Q49.P的deterministic baseline以单调、无分支的temporal refinement推进closed coordinate；planning CardModule/Q50.0为零，
-  FullFeasibilityProof plan的actual owner各一次并直接下传。Q50.F从immutable IR和typed assignment重算proof，不复活probe pipeline。
+- Q49.P的deterministic baseline以单调、无分支的temporal successor推进complete candidates；每个candidate CardModule/Q50.0各一次，
+  actual SPM rejection驱动下一candidate，Accepted owner直接下传。不得复活局部probe、footprint或plan-side capacity proof。
 - Q52只优化在Q54 scope/analysis整改后的真实planning热点；不得用并行IR复制掩盖错误的transaction边界。
 - Q63承接Q54 contract map中未实际闭合的NCC completion分层；Q50.J必须等待Q63 typed target protocol/MLIR adapter完成，
   不能继续把free TypeSwitch或runtime/model enum带入新event/resource schedule。

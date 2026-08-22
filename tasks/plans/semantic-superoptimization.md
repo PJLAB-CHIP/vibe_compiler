@@ -29,12 +29,12 @@ Pipeline position:
   用query-local solver证明外部可观察value、memory与effect等价；返回typed semantic-root assignment和proof verdict，
   不在production planning中逐个物化TensorProgram。
 - Output IR / files:
-  query不产生IR或文件；selected winner commit才将一个semantic-root assignment物化、canonicalize并verify为actual TensorProgram。
-  输出不携带proof、score、搜索历史、physical mapping或solver residue。
+  query不产生IR或文件；每个complete physical candidate transaction将其semantic-root assignment物化、canonicalize并verify为actual
+  TensorProgram。rejected/loser IR销毁，final winner不重建；输出不携带proof、score、搜索历史或solver residue。
 - Downstream consumer:
   Q51唯一physical-dataflow search owner。它对每个TensorProgram alternative联合决定spatial mapping、TileRegion、
-  temporal tiling、fusion、physical representation、movement、buffering、order、worker和completion，并只提交通过
-  planning选择的一个winner进入一次CardExecutable compilation/verification。
+  temporal tiling、fusion、physical representation、movement、buffering、order、worker和completion；每个complete candidate进入一次
+  CardExecutable actual admission，最终只发布一个retained winner。
 - User-level driver / named pipeline:
   wafer-compile source-to-package pipeline；public optimization policy只有`search|none`。`search`可启用本生成器，
   `none`不进入Q48/Q51并独立走deterministic baseline。
@@ -42,8 +42,8 @@ Pipeline position:
   不决定Tile、layout、memory、route、buffer、worker、completion或ABI；不在Instr形成后启动第二个候选
   selector；不按workload、shape、symbol、operand位置、attention/decode名称或文件名选择rewrite；不发布proof sidecar。
 - Done criteria:
-  test-only oracle逐点materialize时，每个accepted alternative都可独立parser/printer/verifier roundtrip；production只有winner
-  actualize一次。SAT、unknown、timeout或资源耗尽只影响当前planning proposal；source-to-package与fresh no-card gate通过且没有
+  independent oracle逐点materialize时，每个accepted alternative都可独立parser/printer/verifier roundtrip；production每个complete
+  physical candidate actualize一次，final winner不重建。SAT、unknown、timeout或资源耗尽只影响当前planning proposal；source-to-package与fresh no-card gate通过且没有
   独立shortlist、固定候选cap或第二winner路径。
 ```
 
@@ -73,8 +73,8 @@ online attention、split-KV reduction或其它算法变换都必须先形成actu
 root alternative，但builder不比较physical cost，也不在图外返回algorithm recipe。
 
 输入KV长度是source事实，不是选择。online/partition-merge算法族、split count，以及任何会改变recurrence、partition或
-merge拓扑的K/V window都属于semantic-root参数；每个参数点以typed assignment进入planning，只有selected点物化完整actual
-TensorProgram。只有不改变算法DAG的
+merge拓扑的K/V window都属于semantic-root参数；每个参数点以typed assignment进入planning，并在其complete physical candidate
+transaction中物化actual TensorProgram。只有不改变算法DAG的
 query/head/KV temporal block、Tile集合、layout、buffer数和pipeline depth才属于随后Q51的physical choices。
 示例中的128或二分序列只能排序其所在合法域，不能成为固定参数、候选cap或legality条件。
 
@@ -154,20 +154,24 @@ source前fail closed。Q48不增加public solver mode。
 current TensorProgram
   + query-local proven TensorProgram alternative assignments
   -> Q51 PhysicalDataflowSearch session:
-       typed assignment/frontier + search-local winner/work accounting
-  -> winner TensorProgram/CardModule一次性materialization
-  -> TileRegion / Instr compilation
-  -> fresh completion / SPM / DDR / communication / resource / ABI verification
-  -> best accepted CardExecutable
+       typed partial assignment/frontier + work accounting
+       each complete assignment:
+         TensorProgram/CardModule materialization once
+         TileRegion / Instr compilation
+         fresh completion / SPM / DDR / communication / resource / ABI verification
+         Accepted or typed rejection/failure
+       compare accepted actual results
+  -> one retained best CardExecutable without rematerialization
   -> target conversion / ExecutablePackage / no-card / runtime
 ```
 
 Q48不拥有winner、shortlist或physical cost。proposal generation与proof计入Q51/Q52同一次search work accounting；actual
-TensorProgram只为最终winner物化一次。SMT结果只回答semantic eligibility，不提供cost、placement、
+TensorProgram为每个complete candidate物化一次，不跨candidate缓存。SMT结果只回答semantic eligibility，不提供cost、placement、
 tile shape或排序分数。
 
-winner commit后的late stage只返回accepted result或typed compiler/unsupported failure；不得回到Q51反复物化，不得在原owner上
-retile、spill、改placement、解除fusion、切换TensorProgram alternative或插入fallback。`none`不进入Q48/Q51 search session；
+candidate actual gate只返回Accepted或typed rejection/failure；不得在原owner上retile、spill、改placement、解除fusion、切换
+TensorProgram alternative或插入fallback。Q51可以在typed rejection后处理其它complete assignment，但同candidate不得重复物化。
+`none`不进入Q48/Q51 search session；
 预算内没有完整合法plan时返回typed search failure。
 
 ## 6. 实施顺序

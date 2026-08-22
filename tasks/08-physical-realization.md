@@ -105,7 +105,7 @@ metadata view只有在以下条件全部成立时合法：
 4. alias、lifetime、alignment和effect保持；
 5. standard view/subset op的type与verifier能表达结果。
 
-否则必须由不同typed plan alternatives表达真实movement；只有selected plan物化对应IR：
+否则必须由不同typed plan alternatives表达真实movement；每个complete candidate物化自己选择的对应IR，rejected/loser owner随后销毁：
 
 - compact direct DDR↔SPM load/store；
 - relation-mapped DMA/WDMA；

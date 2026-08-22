@@ -287,6 +287,25 @@ MLIR行为以官方文档为准；具体API以仓库pinned LLVM/MLIR源码和测
 - 新operation优先实现标准的RegionBranch、Call、MemoryEffect、ViewLike、DPS、Bufferizable或Tiling interface。
   只有标准interface不能表达且已有verifier或lowering使用者时才增加Wafer-specific interface。
 
+### SPM合法性和搜索反馈
+
+- **SPM合法性只能由实际SPM规划结果决定。** 候选必须先具体化为包含实际allocation、layout、SSA alias、effect、
+  completion和lifetime的当前IR，再运行唯一的`PlanSPMMemory`/MiniMalloc路径。只有该路径成功生成并验证offset，才能
+  认定候选SPM合法；只有该路径返回带实际冲突demand的typed capacity rejection，才能认定当前候选SPM不可行。
+- 没有上述实际IR和实际SPM规划结果时，SPM合法性只能是unknown。禁止使用footprint estimate、upper bound、buffer
+  数量倍数、shape公式、synthetic demand、预测lifetime或其它近似模型决定candidate admission、pruning、temporal
+  refinement、fallback或winner。估算结果不得转换成合法性结论或进入合法性控制流。
+- baseline和search都消费同一实际SPM规划结果。实际capacity rejection由外层controller作为当前候选的反馈，决定是否
+  构造下一候选；`ResourceExhausted`、timeout、unsupported和compiler error保持各自typed状态，不得伪装成容量不可行。
+- BodyEmitter和SPM planner不得在失败后自行retile、spill、改layout、换buffer或选择下一候选。成功候选携带本次实际
+  规划结果继续下游，不得另建预测性SPM合同，也不得用重新估算代替实际offset和冲突验证。
+- 当前候选的buffer relation由拥有该候选IR的Tile/Card materialization transaction管理。BodyEmitter只能通过caller-owned
+  recorder报告本次实际创建的operand、result、output、movement和scratch buffer，不得持有、推断或直接维护跨scope relation
+  集合。每个进入实际SPM planner的allocation必须有完整current-IR owner relation；出现无owner demand时按contract failure
+  停止，禁止按shape、type、位置或“同region只有一个root”补归因。
+- 测试必须用1024级整除/非整除实际候选覆盖“具体化→Instr→实际SPM规划→反馈”链路，并断言删除或扰动任何估算代码
+  都不会改变SPM合法集合；只验证估算值、shape或局部pass成功不能作为SPM legality证据。
+
 ### 测试和实现迁移
 
 - 每个IR stage的测试集合应覆盖parser/printer roundtrip、verifier正负例、conversion失败、analysis失效、

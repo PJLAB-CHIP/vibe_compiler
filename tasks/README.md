@@ -62,18 +62,20 @@
 11、14-17编号设计文档拥有，状态只看`tasks/progress.md`；不得从旧计划恢复接口。
 
 Q49.P、Q50、Q51–Q53共用card-local multi-Tile planning与selected execution计划`tasks/plans/physical-dataflow-synthesis.md`。队列按可验证边界拆成：
-Q50.0建立selected CardModule compilation/verification seam；current execution queue随后只使用一次性semantic work item，
+Q50.0建立complete-candidate CardModule actual compilation/verification/admission seam；current execution queue随后只使用一次性semantic work item，
 不把Q50.* owner反复当任务。主线从`spatial-plan-schema`开始，经`attention-normalization`、`attention-spatial-integration`、
 `canonical-spatial-assignment`、`exact-demand-boundary`和`attention-demand-integration`建立真实semantic/spatial/demand输入；canonical root/region/temporal/
-representation/movement/serialized/storage/schedule work items逐项形成baseline plan，再由`attention-work-projection`、
-`canonical-feasibility-proof`和`attention-selected-decomposition`关闭proof与winner builder。随后由
+representation/movement/serialized/storage/schedule work items逐项形成baseline assignment，再由`attention-work-projection`和
+`attention-selected-decomposition`关闭work description与candidate builder。随后由
 `canonical-plan-coverage-closure`补齐并连续重放当前全部canonical B--K/attention artifact的真实规模覆盖，
-`deterministic-baseline-closure`通过该前置后只编排pure query与一次selected commit，不生产这些component，也不成为search输入。
+`deterministic-baseline-closure`通过该前置后编排actual candidate→SPM planning→typed feedback闭环，不生产这些component，也不成为search输入。
 旧candidate/generator/feedback/selector接口不保留，但删除其source/test前
 必须逐项迁移仍需要的algorithm/proof/diagnostic/test witness。`spatial-domain`形成首批真实domain后，
 `search-control-foundation`切explicit `search`到new owner；后续每个domain work item都同批接Core consumer，`full-feasibility`后由
-`search-control-closure`关闭cost/bound/coverage。search不调用Q49.P、不接收baseline executable，也不在planning阶段物化CardModule。
-`unified-search-closure`以test-only actual oracle验证plan并让production只commit一个winner、调用一次Q50.0；它与独立baseline纵向
+`search-control-closure`关闭actual-result admission、cost/bound/coverage。search不调用Q49.P、不接收baseline executable；partial state
+不物化IR，每个complete assignment进入一次Q50.0 actual gate。
+`unified-search-closure`以independent actual oracle核对每个complete assignment，让production销毁rejected/loser owner并只发布一个
+retained winner且不重建；它与独立baseline纵向
 共同供`attention-production-closure`验收，之后`search-scalability`才按实际负载优化。旧输出格式无兼容义务，
 但旧semantic能力不能因接口退役直接判废。Q53形成production
 `board-ready`与真实板端证据。06仍是唯一联合决策设计owner；任务拆分只提供可验证接入checkpoint，不产生独立layout、
@@ -206,7 +208,7 @@ docs、`tasks/progress.md` 和本轮已收敛设计结论为准。
 | `tasks/archive/physical-relation-realization.md` | 已完成Q32.R的rich IndexRelation、physical encoding interface、TransferRealizability、destination-style load、relation-backed resident boundary和fresh 7B TP16数值纵向记录 |
 | `tasks/archive/typed-target-capability-vertical.md` | 已完成Q32.V的mapped DMA双端offset、physical-footprint fill、source/Tile/Instr oriented GEMM及formal/SystemC fresh纵向记录 |
 | `tasks/archive/mlir-native-implementation-relation-foundation.md` | 已完成Q32.I的fresh baseline、source implementation external model、真实reciprocal/division actual-clone纵向、MLIR-backed IndexRelation foundation和custom interface盘点/首轮删除记录 |
-| `tasks/archive/static-memory-packing.md` | 已完成Q34的MiniMalloc默认fixed-capacity packing、精确conflict适配、宽松确定性work budget、typed outcome/fallback和SPM/DDR/7B纵向gate记录 |
+| `tasks/archive/static-memory-packing.md` | Q34历史MiniMalloc施工记录；其中曾有的fallback合同已退役，current只使用MiniMalloc并原样传播`ResourceExhausted` |
 | `tasks/archive/llama-block-numeric-characterization.md` | 已完成Q31的ProgramTensor逐rank abs/ULP统计、非verification多seed 7B重放及source/model comparator gate收紧记录 |
 | `tasks/archive/llama-block-production-performance.md` | 已完成Q30的static movement/physical codec host性能收口、package等价性和完整7B双replay记录 |
 | `tasks/archive/llama-7b-block-vertical.md` | 已完成Q28的标准Llama-2 7B单block TP16 source/package、repo-owned SystemC managed-reference和完整PyTorch eager output differential记录 |

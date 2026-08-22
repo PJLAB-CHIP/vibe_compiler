@@ -73,9 +73,10 @@ root/alias或携带该alias的control token作为region I/O。
 
 current Tile IR不保留abstract collective request、algorithm selector或late topology shortcut。06的physical-dataflow planner在immutable
 TensorProgram和typed state上联合选择Tile placement、per-Tile work、TileRegion/execution、temporal scope、physical versions、explicit
-movement、buffer/slot和event order；loser plans不构造IR。完整winner在一次CardModule transaction中直接产生每个sender/receiver的
+movement、buffer/slot和event order；partial plans不构造IR。每个complete candidate在自己的CardModule transaction中直接产生每个sender/receiver的
 `peer_send`、`peer_recv`、local movement/compute和selected wait，不先造DDR版本再post-hoc替换。message-ready/live set、root lifetime、
-resource calendar与cost从current assignments重算，最终message/range/resource/completion从winner actual IR重证。
+resource calendar与cost从current assignments重算，最终message/range/resource/completion从candidate actual IR重证；rejected/loser
+transaction销毁，final winner不重建。
 
 planner中的通信对象是exact chunk初始/目标state和transfer/combine action DAG，不是`Ring/Tree`算法attr。经典ring、tree、recursive
 exchange、row/column及aggregate/pairwise方案只负责提出checked DAG；actual Tile/Instr IR最终只保留这些DAG展开后的local work、
@@ -155,10 +156,10 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 
 | gate | failure | result |
 | --- | --- | --- |
-| planning H/J/F query | endpoint、payload cover、resource或completion被exact proof拒绝 | 只拒绝对应typed assignment；不构造IR |
-| selected Tile IR/materialization | physical peer、encoding、cover、local compute或token与plan不一致 | compiler bug；擦除未提交Card subtree并终止 |
-| selected memory/completion | staging capacity、range、lifetime或wait与full proof不一致 | compiler bug；不repair、不重选 |
-| CardExecutable verification | missing/duplicate peer、message/range/resource conflict | 不写binding，终止compile |
+| partial H/J query | endpoint、payload cover或completion结构被typed verifier拒绝 | 只拒绝对应partial assignment；不构造IR |
+| candidate Tile IR/materialization | physical peer、encoding、cover、local compute或token与assignment不一致 | compiler bug；擦除未提交Card subtree |
+| candidate memory/completion | actual staging capacity rejection有完整owner witness | 返回当前complete candidate typed rejection；planner不repair |
+| CardExecutable verification | missing/duplicate peer、message/range/resource conflict | 返回verifier-owned typed result；不写partial binding |
 | target/package | typed call、status、identity或resource readback mismatch | 不发布部分output/package，终止compile |
 
 直接验证至少覆盖：

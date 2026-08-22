@@ -1,6 +1,6 @@
 # Wafer Compiler Task Queue
 
-更新时间：2026-08-21
+更新时间：2026-08-22
 
 本文件是任务调度入口，只记录任务状态、前置关系、当前工作、完成门禁和设计/证据owner。具体设计、
 pipeline contract、实验结论、测试数字、失败修复过程和历史复盘不在这里重复；分别进入编号设计文档、
@@ -30,13 +30,13 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 
 | 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `deterministic-baseline-closure` | `doing` | Q49.P | canonical-plan-coverage-closure、Q59 | pure legalization、一次commit/Q50.0及fresh `none`纵向 |
+| 1 | `deterministic-baseline-closure` | `doing` | Q49.P | canonical-plan-coverage-closure、Q59 | actual candidate materialization→SPM planning→typed feedback闭环及fresh `none`纵向 |
 | 2 | `spatial-domain` | `queued` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal |
 | 3 | `search-control-foundation` | `queued` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete |
-| 4 | `root-work-domain` | `queued` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及selected emitter |
+| 4 | `root-work-domain` | `queued` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及complete-candidate emitter |
 | 5 | `region-execution-domain` | `queued` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |
 | 6 | `temporal-domain` | `queued` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails及Core consumer |
-| 7 | `partial-feasibility` | `queued` | Q50.F | temporal-domain、exact-demand-boundary | A–E minimum/interference、Deferred及causal query |
+| 7 | `partial-feasibility` | `queued` | Q50.F | temporal-domain、exact-demand-boundary | 只验证A–E结构完整性和missing coordinates；资源合法性保持unknown |
 | 8 | `layout-domain` | `queued` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |
 | 9 | `movement-domain` | `queued` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/DTE/relay/collective domain、proof及Core consumer |
 | 10 | `storage-domain` | `queued` | Q50.I | movement-domain、canonical-storage-plan | fresh/alias/reuse与`1..U` slot domain及Core consumer |
@@ -44,11 +44,11 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | 12 | `execution-structure-domain` | `queued` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |
 | 13 | `structure-specific-storage` | `queued` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence、slot multiplicity、rotation及lifetime closure |
 | 14 | `schedule-domain` | `queued` | Q50.J | structure-specific-storage、event-resource-foundation | fixed-K/I order、worker、resource与completion domain |
-| 15 | `full-feasibility` | `queued` | Q50.F | schedule-domain及完整B–K→I→J plan | full resource proof、oracle及Core admission input |
-| 16 | `search-control-closure` | `queued` | Q51.Core | full-feasibility、全部domain work items | full-plan admission、cost/bound、causal rejection、coverage及controller oracle |
-| 17 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | bounded exhaustive oracle、single winner及一次production commit |
+| 15 | `full-feasibility` | `queued` | Q50.F | schedule-domain及完整B–K→I→J plan | 完整候选actual materialization、SPM/DDR/transport gate、typed rejection及Core反馈 |
+| 16 | `search-control-closure` | `queued` | Q51.Core | full-feasibility、全部domain work items | actual-result admission、cost/bound、causal feedback、coverage及controller oracle |
+| 17 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | bounded exhaustive oracle、完整候选actual evaluation及唯一winner发布 |
 | 18 | `attention-production-closure` | `queued` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card |
-| 19 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy及有限预算LLaMA一次commit |
+| 19 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy、有限预算LLaMA actual evaluation及唯一winner发布 |
 | 20 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
@@ -62,7 +62,7 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | Q50.C | canonical-root-work、root-work-domain | 两项通过且unified search取得selected witness |
 | Q50.D | canonical-region-plan、region-execution-domain | 两项通过且unified search取得selected witness |
 | Q50.E | canonical-temporal-plan、temporal-domain | 两项通过且unified search取得selected witness |
-| Q50.F | canonical-feasibility-proof、partial-feasibility、full-feasibility | 三项及独立oracle通过 |
+| Q50.F | partial-feasibility、full-feasibility | 两项均通过；前者只签发结构完整性，后者以actual candidate gate签发资源结果 |
 | Q50.G | canonical-representation-plan、layout-domain | 两项通过且unified search取得selected witness |
 | Q50.H | canonical-movement-plan、movement-domain | 两项通过且unified search取得selected witness |
 | Q50.I | canonical-storage-plan、storage-domain、structure-specific-storage | 三项通过且K re-entry witness闭合 |
@@ -80,7 +80,7 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 
 | Owner | 状态 | 当前作用 | 证据入口 |
 | --- | --- | --- | --- |
-| Q50.0 | `done` | winner-only CardModule→CardExecutable compile/verification seam | `tasks/plans/physical-dataflow-synthesis.md` |
+| Q50.0 | `done` | complete-candidate CardModule→CardExecutable actual compile/verification/admission seam | `tasks/plans/physical-dataflow-synthesis.md` |
 | Q54 | `done` | MLIR scope、analysis、pipeline与rewrite infrastructure | `tasks/plans/mlir-engineering-remediation.md` |
 | Q55 | `done` | current target/package/runtime interface closure | `tasks/plans/interface-version-consolidation.md` |
 | Q58 | `done` | program data ownership/handoff | `tasks/plans/program-data-and-whole-program-scale.md` |
@@ -106,7 +106,7 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | Q47 | `target-abi-retirement` | `later` | Q55、Q56、Q59 current interface/package/transaction闭合，且进入configured-board资格窗口 | 编译器侧ABI retirement已经闭合；启动时只用Q59之后的current package定向重签ordinary与Direct-DTE source→package→model/no-card，随后才标`board-ready`。真实板端只验证current ABI correctness、guard和lifecycle，通过后标`done`；不重复Q53性能A/B，也不执行任何历史package批次。 | 11、14-17、20 |
 | Q57 | `resident-static-execution` | `later` | Q56达到`board-ready`且Q53按新package合同达到`board-ready` | 不改变selected `CardExecutable`、`TileEntryArgument`、program-data offset或Tile指令；把Q56的一次执行lifetime延长为`PreparedExecution -> submit* -> close`。PreparedExecution拥有loaded kernel modules、optional non-empty program data `BoardDeviceMemory`、invocation `BoardDeviceMemory`、pointer rows、transport/profile状态和provider failure state；submission/completion携带device generation。TX provider初始只single context、`max_inflight=1`、无cancel；板端证明load-once/run-many、non-empty program data只H2D一次、稳定地址、workspace初始化/覆盖、public terminal和poison quarantine。one-shot只保留同一路径便利封装。request scheduler、runtime-owned KV policy、multi-inflight、persistent device loop、跨卡和external execution-engine policy均不在本项。 | 12、14-17；`tasks/plans/executable-package-and-resident-runtime.md` |
 | Q61 | `whole-program-scale-readiness` | `later` | Q53达到`board-ready`、Q58、Q60 | 在主search、产品frontend和package data链闭合后，使用完整程序而非单算子/单block验证source→TensorProgram→search→`CardExecutable`→`ExecutablePackage`的规模行为；同时覆盖完整小模型语义、大型完整parameter inventory和至少一个完整大图，记录IR/op/candidate/work、wall、RSS、disk/IO、target/package bytes及失败分类。Llama-2 7B可作一个scale witness，但模型名、层数和LLM调度不进入合同；本项不以full-model board execution、resident runtime或serving integration作默认完成门禁。 | 01-02、06、14-18；`tasks/plans/program-data-and-whole-program-scale.md` |
-| Q48 | `semantic-superoptimization` | `later` | Q53按current CardModule/Tile合同达到`board-ready`，且current compiler/runtime closure可消费final Instr/TargetCall；当前前置未满足 | 从actual structured MLIR生成verifier-legal TensorProgram alternatives并以query-local solver证明外部可观察value、memory与effect等价；alternatives进入Q51 planning state，只有最终physical winner进入一次Q50.0。Q48不在Instr层建立第二selector，不预设shortlist或固定候选cap。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
+| Q48 | `semantic-superoptimization` | `later` | Q53按current CardModule/Tile合同达到`board-ready`，且current compiler/runtime closure可消费final Instr/TargetCall；当前前置未满足 | 从actual structured MLIR生成verifier-legal TensorProgram alternatives并以query-local solver证明外部可观察value、memory与effect等价；alternatives进入Q51 planning state，完整physical candidate通过同一actual admission，只有一个accepted winner进入最终发布。Q48不在Instr层建立第二selector，不预设shortlist或固定候选cap。 | 05-08、10-11、16-18；`tasks/plans/semantic-superoptimization.md` |
 | Q38.W | `multi-worker-production-promotion` | `later` | current typed ABI、actual clone和host/model资格已闭合，且出现需要隔离等待域并可能受益的独立命令链 | 以configured-board matched correctness/performance证明非零worker相对worker0流水的明确收益后才允许normal production promotion；不得为使用worker1/2而拆分已能在worker0并行的流水。 | 08、11、14-17 |
 | Q3.6 | `crt-writeback-scalar` | `later` | 明确Count predicate及wrapper/target/model evidence | 独立闭合typed instruction、effect/completion、ABI/CRT、model和必要package readback。 | 11、14-17 |
 

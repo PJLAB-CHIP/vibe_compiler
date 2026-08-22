@@ -131,24 +131,26 @@ position、Attention/decode/mask专用matcher或公共pass残留。
   mapping、relation-derived reuse和coarse resource estimate只改变proposal顺序，开关后有界穷举oracle的accepted domain与winner不变；
 - independent有界穷举reference domain enumerator不调用production domain builder，证明有限小图合法域完整；同一机制另有
   真实规模整除/非整除正例；
-- test-only flat reference composer先证明plan set/legality/cost；独立actualization runner才可从fresh source逐plan调用真实materializer与exact
-  gates，且production search entry不可达该runner；
-- cheap legality、exact coverage、topology symmetry、canonical dedup、已证明SPM lower bound和raw-work dominance只有在不删除合法最优解时才能在state expansion前剪枝；
-- symbolic footprint只有proven must-coexist lower bound超过capacity才能早拒绝；ranking estimate、未经boundary-faithful proof
-  的solver/model结果和nominal bandwidth projection不能签发packing、overlap或legality；exact局部solver的proof/proposal也须
-  由selected typed materialization与正常gate复验；
-- production planning不物化任何choice；只有selected full-proof plan构造一个CardModule并执行一次Tile→Instr、fresh completion、SPM/DDR、
-  transport/resource/ABI和actual work parity；
-- proven exact failure只拒绝对应causal assignment并消耗确定work unit，不触发late repair、retile、spill或另一selector；
+- independent flat reference composer证明complete assignment set；independent runner从fresh source逐assignment调用与production相同的
+  materializer和actual gates，以实际结果形成accepted/rejected truth set；
+- cheap structural legality、exact coverage、topology symmetry、canonical dedup和已证明performance bound只有在不删除合法最优解时才能在
+  state expansion前剪枝；SPM capacity没有plan-side early rejection；
+- footprint、working-set、shape公式、buffer-count、synthetic demand、预测lifetime或nominal bandwidth projection不能签发SPM
+  packing、admission或temporal refinement；
+- production partial state不物化IR；每个complete assignment各构造一个candidate CardModule并执行一次Tile→Instr、fresh completion、
+  actual SPM/DDR、transport/resource/ABI和actual cost，rejected/loser owner销毁，winner不重建；
+- actual proven exact failure只拒绝当前complete assignment；只有verifier直接提供extension-closed typed proof时才能拒绝更宽prefix。
+  allocator/lowering不触发late repair、retile、spill或另一selector；
   `ResourceExhausted`、solver timeout或internal failure属于indeterminate，必须保留合法state，不能形成no-good；
 - logical demand outcome必须区分`satisfied`、`unsupported semantic relation`、`indeterminate resource exhaustion`和
   `compiler contract error`；完整execution assignment产生完整logical result，cross-op demand不形成placement no-good。
   `InvalidSpatialAssignment`只定位上游未满足closed assignment合同，不能被压成`FailureOr + string`、legality bool或普通search rejection；
 - 对同一logical trial切换dense/strided/multi-piece carrier能力、layout或route可用性，exact demand与logical outcome必须
   extensionally相同；physical分解必须回证pieces union等于原set，carrier失败只拒绝对应representation/movement assignment；
-- exact-demand relation facts依赖MLIR AnalysisManager/current immutable planning session失效；consumer domain、final ownership或
-  partition/reduction/replication变化必须进入完整`SpatialAssignment` semantic key。首次IR mutation前关闭planning session，
-  不使用manual epoch、fingerprint、pointer或diagnostic text充当mutation detector或stable semantic key。
+- exact-demand relation facts依赖MLIR AnalysisManager/current immutable source session失效；consumer domain、final ownership或
+  partition/reduction/replication变化必须进入完整`SpatialAssignment` semantic key。candidate mutation只发生在独立transaction；source
+  session保持immutable，candidate analysis/relation/offset不得回流source memo。不使用manual epoch、fingerprint、pointer或diagnostic text
+  充当mutation detector或stable semantic key。
   任何窄cache key都要有extensional equivalence proof，不能以当前单轴fixture观察结果代签；
 - serial/parallel proposal evaluation得到相同admitted set、winner和package identity；
 - wall/RSS是回归证据，不设任意60秒硬gate；
@@ -333,26 +335,24 @@ current target容量、target-model能力或host预算不足，必须按stage报
    CSP/backtracking或任何“从option列表返回一个assignment”的helper。spatial-plan-schema只提供schema/validator，
    attention-normalization先归一化attention roots，attention-spatial-integration关闭K1/K2和FA/FD spatial constraints，
    canonical-spatial-assignment再提供closed assignment；exact-demand-boundary与
-   attention-demand-integration关闭demand/coupled merge。canonical plan、attention-work-projection、canonical-feasibility-proof和
-   attention-selected-decomposition全部通过后，deterministic-baseline-closure才编排baseline，且不等待完整search domain；
-   每个coordinate只运行A/F等pure typed query，planning
-   CardModule/Instr/Q50.0均为零；direct ExactRejection只能触发预定义、单调、不分支且不回溯的functional legalization transition，
-   旧coordinate不作为alternative保留。FullFeasibilityProof关闭plan后，才沿TensorProgram→一个CardModule→TileRegion/Instr→fresh
-   SPM/DDR→CardExecutable→ExecutablePackage执行一次actual链；actual resource problem与proof不一致或Q50.0失败是compiler bug，
-   不继续fallback。
+   attention-demand-integration关闭demand/coupled merge。canonical plan、attention-work-projection和attention-selected-decomposition全部通过后，
+   deterministic-baseline-closure才编排baseline，且不等待完整search domain。baseline从full temporal candidate开始；每个candidate构造
+   一份CardModule并运行一次TileRegion→Instr→fresh completion→actual SPM/DDR→CardExecutable gate。只有带完整current owner relation的
+   actual SPM capacity rejection触发预定义、单调、不分支且不回溯的temporal successor；rejected transaction销毁，Accepted owner直接
+   下传且不重建。
    每个baseline TileRegion恰有一个structured compute root和exact demand证明必要的non-root support，同Tile多root形成多个顺序region，
    跨root shaped dependency显式DDR；root cardinality按materialization relation映回structured DAG node，显式init producer不能伪装成
-   support，一个root lower成多个compute/instruction op也不能误判成多root。plan-level resource query用typed relation表达所需
-   region/function scope，不构造scratch IR；winner construction/bufferization后的relation必须仍指向actual current
-   consumer/result/output buffer，不能以旧value仍live或retain/drop代替语义完整性。capacity witness将all-and-only conflict owner
-   关联到当前single root及temporal assignment，equal-shape fanin不扩大归因。
-   从没有selected assignment的正常TensorProgram开始，初始temporal tile超SPM时沿完整合法breakpoint lattice以pure query重建
-   operand/halo/result/temporary/movement/alignment/bank/lifetime problem，缩到第一个full-proof fit后再生成package/no-card；
-   multi-axis/tail/minimum-granularity受测，最小合法tile仍被完整proof拒绝才返回typed capacity failure，heuristic no-fit、solver耗尽
-   与indeterminate不能冒充unsupported。fresh有界图oracle、五类relation、overfull-to-fit、轻量source-to-package/no-card及一轮FP16 LLaMA
-   必须重新证明plan-only work count、actual/package/oracle；旧181.70秒LLaMA只作旧功能证据。Q49.P重新完成前不运行LLaMA search；
+   support，一个root lower成多个compute/instruction op也不能误判成多root。candidate transaction管理全部actual buffer relations；
+   BodyEmitter只通过caller-owned recorder上报operand/result/output/movement/scratch事实。每个进入SPM planner的allocation必须有typed owner；
+   equal-shape fanin、Location和“同region一个root”都不能扩大归因。
+   从没有selected assignment的正常TensorProgram开始，初始temporal candidate经actual SPM rejection后生成下一合法smaller candidate；
+   不使用footprint、workset、bytes比例或capacity公式。multi-axis/tail/minimum-granularity受测，最小合法candidate仍被actual planner拒绝才
+   返回typed capacity failure，MiniMalloc resource exhaustion、timeout与indeterminate保持原分类。fresh有界图oracle、relation totality、
+   overfull-to-fit、轻量source-to-package/no-card及一轮FP16 LLaMA必须重新证明`candidate materializations == Q50.0 invocations`、
+   accepted owner无重建及package/oracle；旧181.70秒LLaMA只作旧功能证据。Q49.P重新完成前不运行LLaMA search；
    完成后不再建立独立baseline板端任务，Q53只把current accepted baseline作为matched A/B一侧。
-2. Q50.0：baseline与search共用无策略CardExecutable compile/verification boundary，任何lowering失败均不隐式repair。
+2. Q50.0：baseline与search共用无策略complete-candidate CardExecutable compile/verification/admission boundary；每个candidate调用一次，
+   任何lowering或allocator都不隐式repair。
    spatial-plan-schema先定义`SpatialPlan/SpatialAssignment` schema与validator；attention-normalization在policy分叉前产生normalized
    attention root与fixed FA/FD fact；attention-spatial-integration把typed constraints接入spatial owner后，
    canonical-spatial-assignment再构造assignment，exact-demand-boundary只消费该closed value。
@@ -366,35 +366,38 @@ current target容量、target-model能力或host预算不足，必须按stage报
    普通placement no-good，carrier/layout/route失败不反写spatial legality。Q49.P canonical carrier与Q50.B、Q50.G/H/J消费同一
    proof。attention-spatial-integration、attention-demand-integration、attention-work-projection与attention-selected-decomposition：完整Q/K/V attention在policy分叉前
    归一为一个自包含semantic op，FA/FD由functional graph relation确定，
-   不形成Q51 algorithm domain。K/V block与partition分别由temporal/spatial轴证明；planning不物化attention IR，winner在
-   新Card subtree中只展开一次selected Linalg/Tensor/SCF并转换到wafer.tile。normalization、coupled-state query、FA temporal
-   recurrence、FD partial/merge、plan/actual resource parity和failure atomicity各有direct witness。
+   不形成Q51 algorithm domain。K/V block与partition分别由temporal/spatial轴证明；partial planning不物化attention IR，每个complete
+   candidate在自己的Card subtree中只展开一次selected Linalg/Tensor/SCF并转换到wafer.tile，final winner不重建。normalization、
+   coupled-state query、FA temporal recurrence、FD partial/merge、actual buffer relation/SPM result和failure atomicity各有direct witness。
 3. Q50.B–Q50.K依次闭合spatial placement、single-root TileRegion、coupled traversal/region fusion、complete temporal tile与
    wave-loop order、
-   scoped planning feasibility、layout/representation、movement、rotating buffers、event/resource schedule与conditional stage pipeline。
+   partial structural readiness、layout/representation、movement、rotating buffers、event/resource schedule、conditional stage pipeline与
+   complete-candidate actual admission。
    Q50.B必须新增current尚不存在的reduction spatial factor、partial ownership与显式merge；Q50.E复用已经能物化的reduction
    temporal tile，但须以多reduction轴property/reference enumerator证明完整breakpoint与wave-loop domain。两项证据不得互相代签。
-   probe缺少因果坐标时必须deferred，资源耗尽不得当作不可行；pipeline event structure形成后必须使旧calendar失效并
+   尚未形成complete candidate时资源状态必须unknown；actual demand缺owner是contract failure，MiniMalloc资源耗尽不得当作不可行；
+   pipeline event structure形成后必须使旧calendar失效并
    重入event/resource schedule，由新assignment证明实际overlap。
    每项都需current接入点、production consumer、actual-IR witness和实际执行的正负测试；删除旧owner前还必须逐项映射其中独有
    algorithm/proof/diagnostic/test witness，旧owner删除和新domain存在都不能代替能力迁移。
 4. search-control-foundation直接从attention-normalization后的immutable TensorProgram建立search session，不调用Q49.P、不接收baseline executable/actual cost，
    也不把baseline choices当未来轴default。spatial-domain、exact-demand-boundary与attention-demand-integration完成后，从SpatialState
    真实遍历首批axes并接管explicit public `search`；缺后续axis返回typed
-   `IncompletePlanningDomain`且planning零IR，不fallback。此后每轴independent reference、closed state/transition/invalidation和production
-   caller随各domain work item交付，通用pure feasibility归Q50.F；不得预声明nullable future field或先交付无consumer mechanism。
-   full-feasibility后search-control-closure才闭合
-   full-plan admission、cost/bound、causal rejection和coverage。旧candidate/generator/feedback/selector控制链在foundation切换时删除，
-   需要的算法/witness仍按axis迁移。test-only flat exhaustive runner、全部联合维度、
-   exact planning domain和new source-to-package链由Q51闭合。production search在typed state上选出一个winner，只允许该winner
-   materialize并调用一次Q50.0；Q50.0失败是planning/lowering合同缺口，不得回到candidate set反复物化。selected IR必须有共享TileRegion，并以
+   `IncompletePlanningDomain`且没有complete candidate/Q50.0，不fallback。此后每轴independent reference、closed state/transition/
+   invalidation和production caller随各domain work item交付；Q50.F partial只检查结构完整性，不签发资源合法性。full-feasibility接入
+   complete-candidate actual gate后，search-control-closure才闭合actual-result admission、cost/bound、typed rejection和coverage。
+   旧candidate/generator/feedback/selector控制链在foundation切换时删除，
+   需要的算法/witness仍按axis迁移。independent flat exhaustive runner、全部联合维度、exact assignment domain、actual result truth set和
+   new source-to-package链由Q51闭合。production search的partial states不物化；每个complete assignment materialize并调用Q50.0一次，
+   actual Accepted results参与winner比较，rejected/loser销毁，final winner不重建且只发布一次。selected IR必须有共享TileRegion，并以
    coupled traversal或明确retained SSA、tile-sized intermediate及无中间DDR round-trip证明有效融合；group字段不能代签。
 5. search-scalability是unified-search-closure及attention-production-closure通过后首个允许执行重型LLaMA `search`和质量profile的work item；baseline的单次fresh FP16 LLaMA
    `optimization-none`只证明baseline功能/materialization。generic/HF/LLaMA representative load只在显式、bounded profile批次
    记录work、wall、RSS和热点，不进入普通回归。基于实测引入的优化在有界图oracle上不改变最优结果；search与同源`none`的
    质量差异只由独立matched A/B报告，没有固定shape/tile/fusion/buffer shortcut。
 6. Q60先把framework adapter与pre-exported portable StableHLO接入同一product source contract。Q53从同一只读source bytes为
-   `none`与`search`分别启动全新parse/import、ProgramData、output和package transaction；两条policy各自提交一个plan，绝不共享
+   `none`与`search`分别启动全新parse/import、ProgramData、output和package transaction；两条policy各自评估自己的complete candidates并
+   只发布一个retained Accepted result，绝不共享
    Module/analysis/executable或相互fallback。small structured DAG、conv mixed DAG、capacity-forced cross-Tile fanout/reduction、
    temporal-tail/storage、HF prefill、functional two-step decode和Llama block全部由产品入口fresh生成完整ExecutablePackage并
    fresh no-card。accepted Tile dataflow、Instr、Target LLVM、package和runtime plan按typed identity逐层对应；actual effectiveness

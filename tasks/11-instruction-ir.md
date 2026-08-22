@@ -15,8 +15,9 @@ tile-level IR，并在tile→instruction阶段完成movement/materialization、�
 当前ODS对compact RDMA/WDMA继续省略offset pair，对mapped transfer则要求两端root-relative offset同时显式存在（包括0）；
 plain GEMM继续表示implicit normal/normal，oriented GEMM必须显式携带两个closed orientation attrs并进入同一current worker-aware ABI。
 Q32.V已闭合mapped transfer、physical-footprint fill与explicit oriented GEMM的source/Tile/Instr/TargetCall/formal/SystemC纵向；
-Q32.M/S已提供这些typed mechanics；Q49.P与Q51分别产生closed plan，只有selected complete CardModule中的每个Tile module lower一次，
-并在最终worker/effect/range上fresh重建completion。planning不构造Instr，lowering不能复制或猜测字段。实现状态以
+Q32.M/S已提供这些typed mechanics；Q49.P与Q51分别产生complete candidates，每个candidate CardModule中的每个Tile module只lower一次，
+并在该candidate最终worker/effect/range上fresh重建completion。partial planning不构造Instr，lowering不能复制或猜测字段；rejected/
+loser Instr owner销毁，final winner不重新lower。实现状态以
 `tasks/progress.md`为准。
 
 本文定义 instruction-level Wafer IR。核心结论：
@@ -126,12 +127,12 @@ Pipeline position:
 - Downstream consumer:
   Q50.0 SPM/DDR actual placement、transport/resource/ABI verification、target LLVM、package/runtime。
 - User-level driver / named pipeline:
-  wafer-compile selected execution pipeline；wafer-opt复用相同leaf named pipeline做IR tests。
+  wafer-compile complete-candidate execution pipeline；wafer-opt复用相同leaf named pipeline做IR tests。
 - Explicit non-goals:
   不枚举plan，不clone complete CardModule，不在lowering失败后换implementation/worker/buffer，不从layout/name恢复字段。
 - Done criteria:
-  planning Instr为零；selected每Tile lower一次；source op分类full conversion fail closed；completion与Q50.J proof parity；任一failure
-  擦除未提交Card subtree并终止compile。
+  partial planning Instr为零；每个complete candidate的每Tile lower一次；source op分类full conversion fail closed；completion与Q50.J
+  selected assignment all-and-only对应；failure擦除未提交candidate subtree，actual gate返回typed result。
 ```
 
 ## 2. Wafer MemRef Contract

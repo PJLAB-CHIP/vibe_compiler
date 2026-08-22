@@ -49,8 +49,8 @@ source数学语义只有一个owner：current MLIR op、region、SSA、type、at
 
 Q50.S不预建每个算法/参数的TensorProgram graph。它把完整attention归一为一个带fixed `flash_attention`或
 `flash_decoding`的semantic op；Q51从spatial axis开始展开physical-dataflow spatial/temporal/fusion/representation/
-communication等调度维度，K/V block和partition分别归temporal与spatial assignment。winner进入最终CardModule transaction后，
-本文消费prepared root work和physical bindings执行唯一lowering：
+communication等调度维度，K/V block和partition分别归temporal与spatial assignment。每个complete candidate进入自己的CardModule
+transaction后，本文消费prepared root work和physical bindings执行唯一lowering：
 
 ```text
 lower current structured op(current_op, selected_physical_values, rewriter)
@@ -180,9 +180,10 @@ movement不是type cast。是否能成为metadata view由08的IndexRelation与co
 
 source、destination、logical relation、direction、range和effect从operands、types、view chain和typed fields重建。
 两条路线若产生不同commands、temporary或completion，就必须是不同typed plan alternatives，而不是一个movement op在late
-lowering时自行选择；只有winner形成actual IR。连续/strided/mapped descriptor cover由08证明；SPM/DDR offsets由09/12的late planners决定。
+lowering时自行选择；每个complete candidate形成actual IR并进入09/12实际规划，rejected/loser owner销毁，final winner不重建。
+连续/strided/mapped descriptor cover由08证明；SPM/DDR offsets由09/12的actual planners决定。
 
-同一source经多段view/broadcast/materialize组成的relation可以在selected新Card subtree中合成一次direct movement，前提是
+同一source经多段view/broadcast/materialize组成的relation可以在candidate新Card subtree中合成一次direct movement，前提是
 relation exact、其它uses/effects/alias闭合且final destination cover可证明。cleanup只能删除fully proven same-root/same-map
 冗余，不能移动fusion cut、改变route或创造spill/recompute。
 

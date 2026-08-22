@@ -357,22 +357,22 @@ observable SSA path合同，不含operation pointer、block/operation ordinal、
 | Q50.I | running/partial state、score/probability scratch、staging和optional rotating slots的storage binding |
 | Q50.J | QK、reduce/elementwise、PV、transfer、combine、wait/release的EventGraph与closed schedule |
 | Q50.K | selected serialized或pipelined block/contribution structure；K改变occurrence后重闭I/J |
-| Q50.F | all state/scratch/message/event/field resource description、full proof和plan/actual parity |
+| Q50.F | complete candidate materialization后的actual state/scratch/message/event/field、buffer relations及SPM/DDR/transport admission |
 
-两条policy都必须满足mode约束：`none`的B canonical producer对FA保持K2单一logical interval；对FD从B domain中最小合法非平凡
-K2 partition及stable embedding/merge owner开始，只有F的exact causal rejection要求更多contributors时才沿canonical B successor
-单调增加，取得第一个full-proof plan。`search`枚举同一B domain中的全部合法factor、embedding和per-output merge placements。
+两条policy都必须满足mode约束：`none`的B canonical producer对FA保持K2单一logical interval，对FD构造canonical合法非平凡
+K2 partition及stable embedding/merge owner；`search`枚举同一B domain中的全部合法factor、embedding和per-output merge placements。
+每个complete candidate由actual gate判定资源合法性；不得用attention work description、state数量或shape公式预测SPM fit。
 这只是physical policy差异，不改变attention op或算法，也不允许`none`把FD降回FA。
 
 这里不新增attention-specific layout、movement、buffer、schedule或resource interface。每个owner只消费自己的现有typed plan schema；
 `AttentionWorkDescription`只是semantic root到这些schema的派生适配。
 
-### 6.3 Winner内的Linalg展开与wafer.tile conversion
+### 6.3 Complete candidate内的Linalg展开与wafer.tile conversion
 
-planning winner仍是纯`PhysicalDataflowPlan`，不包含IR。唯一winner commit执行：
+partial state仍是纯typed assignment，不包含IR。每个complete candidate transaction执行：
 
 ```text
-PhysicalDataflowPlan
+complete PhysicalDataflowPlan
   -> pure PreparedPhysicalDataflow / AttentionWorkDescription validation
   -> create one new Card subtree
   -> materialize selected tensor.extract_slice + scf.for
@@ -384,7 +384,8 @@ PhysicalDataflowPlan
 ```
 
 compute先到Linalg而不是attention emitter直接创建`wafer.tile`，以复用Linalg indexing/verifier和10号通用structured-to-tile lowering；
-但该Linalg只存在于selected Card subtree transaction内部，不是公开stop stage，也不为loser生成。movement、storage、peer和completion本来
+但该Linalg只存在于candidate Card subtree transaction内部，不是公开stop stage。rejected/loser subtree整体销毁，final winner不重建。
+movement、storage、peer和completion本来
 不属于Linalg，由G--K prepared builders直接创建typed wafer.tile/memref/SCF对象。
 
 进入Q50.0前必须满足：
@@ -392,8 +393,8 @@ compute先到Linalg而不是attention emitter直接创建`wafer.tile`，以复�
 - `wafer.linalg_ext.attention`在selected Card subtree中为零；
 - 可执行Linalg source op为零；
 - all-and-only actions、values、storage、messages和events与prepared IDs对应；
-- actual normalized resource/work problem与F full proof一致；
-- source TensorProgram在commit失败时保持不变。
+- 每个actual allocation都有current typed owner relation，SPM/DDR/transport结果来自该candidate IR；
+- source TensorProgram在candidate失败或落选时保持不变。
 
 本设计不新增`wafer.tile.attention`、`wafer.instr.attention`、attention TargetCall或package/runtime algorithm字段。
 

@@ -24,8 +24,8 @@ logical rank 或所有 op 共用的 tile shape。一个候选必须共同决定�
 9. observable output/effect 全部完成时的整卡 cost。
 
 统一搜索只统一上述决策的 owner、回溯和最终选择，不把各机制实现集中到一个文件或一层目录。analysis 靠近其可解释的
-IR，transformation 靠近被修改的 IR，conversion、memory planning 和 verification 保持独立。selected winner一旦物化，以当前 IR
-为事实；搜索状态不能成为下游 shadow plan。
+IR，transformation 靠近被修改的 IR，conversion、memory planning 和 verification 保持独立。每个complete candidate物化后，以其
+current IR为本次actual gate事实；final winner保留该owner，搜索状态不能成为下游shadow plan。
 
 首选构造是：
 
@@ -36,10 +36,10 @@ IR，transformation 靠近被修改的 IR，conversion、memory planning 和 ver
   + 尽量大的高效 temporal tile
 ```
 
-真实 SPM、fanout、重复计算、通信或并行性出现问题时，再按因果缩 temporal tile、解除 coupled edge、切 region、改变
-layout/buffer、回退 spatial，或构造带 multi-buffer 的 stage pipeline。这里的“尽可能大”是候选生成和排序方向，
-不是 legality shortcut；最终 winner由完整typed plan、legality、cost/bound比较决定，随后actual IR与fixed-capacity lowering只验证并
-实现该winner，不反向参与普通候选选择。
+这里的“尽可能大”只描述candidate生成方向，不是legality shortcut。partial planning可以按结构和performance estimate排序；每个
+complete candidate必须具体化为actual Card/Tile/Instr IR并运行唯一SPM/DDR/transport gate。只有actual `PlanSPMMemory`/MiniMalloc结果
+决定SPM legality；带完整owner relation的actual rejection返回controller生成其它candidate，Accepted结果按actual cost比较。最终只发布一个
+retained winner，winner不得重新物化或重新规划offset。
 
 ## 2. Pipeline Contract
 
@@ -48,15 +48,14 @@ Pipeline position:
 - Upstream IR / input:
   GSPMD完成card级分区、05/Q50.S target-independent normalization完成后的card-local TensorProgram；已证明的完整Q/K/V
   attention由一个`wafer.linalg_ext.attention` op表达，`flash_attention`或`flash_decoding`已经是固定graph fact，
-  不是本stage候选。block与partition仍由temporal/spatial轴选择，只有winner在Card subtree transaction中展开selected
-  Linalg/Tensor/SCF并转换为wafer.tile work。SSA、structured iterator、indexing relation、effect、type、shape和dtype均可验证，
+  不是本stage候选。block与partition仍由temporal/spatial轴选择；每个complete candidate在自己的Card subtree transaction中展开selected
+  Linalg/Tensor/SCF并转换为wafer.tile work，final winner不重建。SSA、structured iterator、indexing relation、effect、type、shape和dtype均可验证，
   尚未绑定Tile。
 - Current stage responsibility:
-  `none`由独立canonical controller从正常TensorProgram构造一个live plan，并只用Q50的pure typed query沿预定义单调
-  legalization顺序关闭iteration partition、Tile placement、single-root TileRegion、temporal tile、canonical
-  representation/movement、single buffering、order和completion；`search`由独立planning session联合枚举完整性能域。两者只在
-  closed `PhysicalDataflowPlan` schema与共同winner commit处汇合；每次invocation只有各自最终plan进入一次
-  Card/TileRegion/Instr lowering和actual resource verification。
+  `none`由独立canonical controller从正常TensorProgram构造一个live candidate；candidate从full temporal extent开始，具体化后由actual
+  SPM planning判定，只有typed capacity rejection才生成确定性的smaller temporal candidate。`search`由独立session联合枚举完整性能域；
+  partial states不构造IR，每个complete assignment进入一次相同actual gate。两者共享complete assignment schema、candidate
+  materializer和Q50.0，但controller绝不互调；最终都只发布一个retained Accepted result。
 - Output IR / files:
   被选中的CardModule及其all-and-only Tile modules；其中TileRegion、loop、movement、Instr、SPM/DDR
   allocation、completion和physical endpoint均是实际IR或accepted resource事实。通过全部gate后形成CardExecutable。
@@ -68,10 +67,10 @@ Pipeline position:
   不重做跨card GSPMD；不要求真实大workload全局最优证明；不从op/workload/文件/shape名字恢复语义；不建立
   cycle-exact simulator；不让lowering、allocator、communication或completion私自repair候选；不发布search sidecar。
 - Done criteria:
-  `none`从未预选physical assignment的输入产生accepted CardExecutable，包含初始tile超SPM后缩至合法breakpoint的正例；
-  small DAG由独立reference domain composer证明search合法域完整，再由test-only fresh-plan actualization证明
-  plan set、剪枝、winner与actual IR一致；真实workload在约定预算内返回full-proof plan并只对winner完成编译与verification的
-  best-known CardExecutable；selected IR证明spatial all-and-only coverage与有效region fusion。至少一个代表case还要证明
+  `none`从未预选physical assignment的输入产生accepted CardExecutable，包含初始candidate经actual SPM rejection后缩至合法candidate的
+  正例；small DAG由独立reference domain composer证明search assignment域完整，再对每个complete assignment运行同一actual gate，证明
+  typed result、winner与actual IR一致；真实workload在约定预算内返回actual Accepted best-known CardExecutable，且每个complete candidate
+  只actualize一次、final winner不重建；selected IR证明spatial all-and-only coverage与有效region fusion。至少一个代表case还要证明
   coupled traversal、tile-sized intermediate和无无意义DDR往返；selected multi-buffer/stage-pipeline仅在对应候选获选时证明。
 ```
 
@@ -80,9 +79,9 @@ single-root region、temporal tiling、canonical representation/movement、singl
 可直接发布的CardExecutable，而不是要求调用方先提供已经合法的fixed assignment。`optimization=search`再由本文唯一
 candidate-selection owner管理多个性能选择。两者可以共享由current IR导出的immutable typed facts、single-root region
 materializer、grouped exact-demand query以及后续lowering、memory planning、verification和package emission，但不能共享会携带
-候选集合、group boundary、proposal order、score、backtracking或repair语义的search state/carrier/evaluator。baseline完成
-唯一确定性可执行结构后才进入共同CardModule materialization和CardExecutable compilation；“提前跳出search loop”本身不构成
-policy解耦，去掉search依赖也不能删掉使程序走通所必需的feasibility legalization。
+候选集合、group boundary、proposal order、score、backtracking或repair语义的search state/carrier/evaluator。baseline通过
+actual-feedback loop得到唯一Accepted可执行结构；“提前跳出search loop”本身不构成policy解耦，去掉search依赖也不能删掉使程序
+走通所必需的deterministic candidate generation和actual admission。
 
 ## 3. 稳定 IR 与 output 边界
 
@@ -161,16 +160,17 @@ canonical ordering、diagnostic、IR、磁盘格式或跨mutation cache。IR mut
    typed mechanism；mechanism顺序由唯一current driver静态组合，不是runtime registry、user option或candidate字段；
    source-only relation/semantic facts由policy-free builder建立为session-owned typed problem；同一builder的pass consumer可使用
    operation-anchored MLIR analysis wrapper，但planning session不持有`Analysis *`，也不使用manual epoch或fingerprint；
-2. **session control**：candidate frontier、已经通过完整gate的move-only search-local winner、global work/budget accounting和coverage/
+2. **session control**：candidate frontier、已经通过actual gate的move-only search-local accepted incumbent、global work/budget accounting和coverage/
    lower-bound evidence；这些事实不属于任一candidate；
 3. **candidate assignment**：只保存当前已经实现且不能从current IR与其它选择重算的typed choices；
-4. **derived query-local facts**：exact demand、ready/live set、lifetime、resource calendar、SPM high-water、cost estimate和
+4. **derived query-local facts**：exact demand、ready/live set、structural lifetime/resource calendar、cost estimate和performance
    lower bound，按IR borrow、target facts和相关assignment重算，并以声明all-and-only实际读取字段的
    `ObservedDependencyKey`在本session内失效。
 
-compiler driver拥有policy routing、planning session、frontier/budget和唯一winner handoff；它不执行leaf rewrite。pass与named
-subpipeline只在winner commit后对actual Card/Tile IR完成既定IR→IR变换，不持有candidate或选择winner。winner materialization
-开始前关闭source borrow及全部planning memo；新Card subtree上的analysis一律从新IR重算，不能复用source `AnalysisManager`结果。
+compiler driver拥有policy routing、planning session、frontier/budget、candidate evaluator连接和唯一winner handoff；它不执行leaf
+rewrite。pass与named subpipeline对每个complete candidate的actual Card/Tile IR完成既定IR→IR变换，不持有frontier或选择winner。
+source在session内保持immutable borrow；candidate subtree上的analysis一律从该current IR重算，不能复用source
+`AnalysisManager`结果、pointer relation或另一个candidate的offset。
 
 `ObservedDependencyKey`不是通用candidate bag。每类memoized query定义自己的named typed key，只包含该query实际读取的
 `SemanticRootKey`、target fields和assignment fields；cache hit比较完整typed value，hash只作lookup。key缺字段是合同错误，
@@ -181,9 +181,9 @@ functional choices当作未施工轴的默认值。mechanism availability、prop
 search-local winner同样不进入candidate identity。预算内没有accepted search candidate时返回typed failure；matched baseline只由
 外层以独立`none`编译事务产生。
 
-`ProgramDataHandoff`继续由外层compiler transaction唯一拥有，不复制进baseline或planning state。planning阶段不存在落选
-actual executable；只有最终plan调用一次Q50.0并引用已验证program identity/range，accepted后才由Q59同一outer transaction把
-handoff随唯一发布结果向下游移动。search不得为任何未选plan构造CardModule、写package或提交目录。
+`ProgramDataHandoff`继续由外层compiler transaction唯一拥有，不复制进baseline或planning state。每个complete assignment可借用已验证
+program identity/range进入actual evaluation，但不得移动handoff、写package或提交目录。rejected/loser actual owner销毁；只有最终retained
+winner由Q59同一outer transaction把handoff随唯一发布结果向下游移动。
 
 Q51终态的candidate assignment包含下列typed choices；Q51.Core不预声明尚未由对应Q50 mechanism实现、验证和消费的字段。
 每个Q50 checkpoint在同一current aggregate中加入本轴的named typed field、ephemeral transition、canonical encoding和精确
@@ -203,7 +203,8 @@ TileId   -> buffer recipe / instruction order / worker / completion choice
 
 typed transition只用于从parent原子构造child；child保存apply后的assignment，不保存transition history、proposal ordinal、
 allocator feedback history或repair path。状态不保存 raw `Operation *`、estimated SPM、汇总 bytes、fragments、resource
-calendar、makespan、actual offsets 或repair history。winner commit后以 IR 为唯一事实源。
+calendar、makespan、actual offsets 或repair history。complete candidate materialization后，以本次current IR和actual result为该transaction
+的唯一事实源；不得跨candidate复用。
 
 ### 4.4 失效依赖
 
@@ -302,7 +303,7 @@ support matcher。
 空间reduction则把具有相同output-domain piece、不同reduction coordinates的shards组成一组：每组必须收齐完整reduction
 fiber、具有一个显式merge Tile和typed algebra/init rule，merge后只有该Tile是下游final owner。M/N与K同时切分时可以有多个
 output groups，禁止用一个node-wide merge Tile或把partial contributions冒充完整result replicas。空间partial/merge需要可由
-winner materializer调用的typed partial-building mechanics：普通reduction使用`PartialReductionOpInterface`，coupled attention使用
+complete-candidate materializer调用的typed partial-building mechanics：普通reduction使用`PartialReductionOpInterface`，coupled attention使用
 source-owned coupled description与selected Linalg/SCF builder；同Tile保持原顺序的temporal reduction tiling不使用partial owners，
 由temporal层单独证明。
 
@@ -411,8 +412,9 @@ Region formation必须处理：
 - unrelated components不能仅为“region大”而获得虚假收益。
 
 Region membership、execution instances、use bindings和temporal shape都是query-local选择；production不先物化singleton
-CardModule再融合。只有完整winner直接构造一次真实`wafer.tile.region`、loop和SSA；test-only可单独actualize singleton leaf。
-outer transaction在winner-owned source Module中建立可整体擦除的CardModule subtree，验证成功后才消费旧TensorProgram，
+CardModule再融合。每个complete candidate直接构造一次真实`wafer.tile.region`、loop和SSA；independent oracle可单独actualize singleton leaf。
+candidate transaction在source owner下建立可整体擦除的CardModule subtree，但不消费旧TensorProgram；rejected/loser subtree销毁，
+只有final winner发布时外层owner才处理source cleanup，
 不clone Module/Func/DAG或replay其它Tile body。
 
 ### 6.3 Coupled closure
@@ -444,8 +446,9 @@ remainder Tile直接保留较小extent，不使用node-wide ceil maximum。merge
 ```
 
 它不是单一block size，也不另设与主向量脱节的reduction字段。对可tile iterator，`1..local extent`每个positive size都属于
-exact-tail语义域；target-efficient、wave-count、alignment、transaction、halo或footprint breakpoints只用于proposal/interval
-split，不能缩小合法域。Q51以integer intervals惰性branch到concrete points，避免预建全整数Cartesian product。
+exact-tail语义域；target-efficient、wave-count、alignment、transaction和exact relation shape-change points只用于proposal/interval
+split，不能缩小合法域。SPM capacity、footprint或working-set估算不得生成temporal proposal。Q51以integer intervals惰性branch到concrete
+points，避免预建全整数Cartesian product。
 只有能证明生成相同actual traversal、exact demand、lifetime和tail的排列才能canonicalize；合法order从SSA loop-carried state、
 effect/control和nested-execution precedence DAG的全部topological sorts惰性生成，默认loop order不能删除会改变reuse、SPM或最终resource
 schedule的合法组合。
@@ -570,39 +573,44 @@ Decode batch=1可能没有足够token waves，通常优先head/channel、K/V par
 
 ## 9. SPM、DDR 与 resource verification
 
-Search-time working set可以形成lower bound和排序信息：
+partial state没有SPM合法性。A--E只检查结构坐标和missing requirements；G--K描述将要物化的layout、movement、storage、execution与
+schedule choices，但不得用logical tensor bytes、buffer数量、shape公式、预测lifetime、synthetic demand、footprint estimate或保守
+upper/lower bound签发SPM admission、pruning、temporal refinement或winner。
+
+完整assignment的唯一资源边界是actual candidate transaction：
 
 ```text
-live inputs + tile-sized intermediates or retained local shards + outputs
-+ representation conversion + communication staging + rotating slots + padding
+complete assignment
+  -> materialize CardModule / all TileRegions
+  -> lower current candidate to Instr
+  -> rebuild completion and current buffer relations
+  -> PlanSPMMemory / MiniMalloc actual placement
+  -> DDR / transport / resource / ABI verification
+  -> Accepted(actual offsets + actual cost) | typed rejection/failure
 ```
 
-只有已证明必然同时live的集合超过capacity时才能安全早拒绝。pure foundation从A–E facts建立minimum storage demands与
-must-coexist graph；single value或任一已证明weighted conflict clique超过capacity才返回causal exact rejection。找不到maximum
-clique、representation/lifetime坐标缺失或work耗尽分别返回sound lower bound、Deferred或Indeterminate，不clone/lower/probe
-TileRegion，也不调用packer。Symbolic footprint必须区分proven lower bound与non-binding estimate：估算可放下不能证明packing
-可行，未证明coexistence的估算超限也不能拒绝候选。
+每个进入`PlanSPMMemory`的allocation都必须通过candidate transaction拥有的typed relation映回operand、result、output、movement或scratch
+owner。BodyEmitter只向caller-owned recorder上报本次实际创建事实；它不持有relation集合，也不按shape、type、Location或“同region只有一个
+root”猜归属。无owner demand是compiler contract failure。
 
-G--K全部关闭后，full feasibility从typed physical versions、communication actions、buffers、execution structure和event/resource
-schedule构造与actual memory planner同形的SPM/DDR packing及DTE/FSM/descriptor/field-limit问题。它先尝试可验证的确定性placement，
-只有完整contender的fast witness失败且调用方已从统一work allowance预留资源时才运行exact packer；validated placement证明存在，
-`ProvenInfeasible`证明该完整causal assignment不可行，`HeuristicNoFit`、`ResourceExhausted`或timeout均为Indeterminate。partial state不
-调用packer，full proof也不把offset写进candidate。
+MiniMalloc是唯一static packing allocator。`Feasible`且placement通过独立range/alignment/conflict validator后才能写actual offset；只有
+MiniMalloc/actual problem给出的typed capacity rejection才能关闭当前candidate。`ResourceExhausted`、timeout、Unsupported或invalid result
+保持各自状态；不运行first-fit/best-fit fallback，也不转换成capacity事实。
 
-winner一次性物化后，SPM/DDR planner从actual roots、control flow、lifetime和coexistence重建同一normalized problems并求真实offset；
-actual问题与planning问题不同、或full proof存在却不能pack，属于planning/emitter/lowering合同错误，不能返回search换candidate。
-Planner不改变tile、region、traversal、spill、buffer、order、worker或completion。
+Q49.P只在actual SPM rejection后生成确定性的下一temporal candidate；Q51继续枚举其它complete assignment。两者都不得按rejected bytes
+比例预测新tile，也不得把一个candidate的allocation/lifetime/offset复用到另一个candidate。Planner和lowering自身不得retile、spill、
+改layout、换buffer、改order/worker/completion或选择下一candidate。
 
 完整CardExecutable verification还必须原子验证message matching、transport range、known-link/card-shared resource、ABI和observable
-completion。任一失败由outer CardModule transaction整体回滚，不允许提交部分Tile、返回planner重选winner或复用失败IR中的offset。
+completion。失败或落选candidate由其owner整体销毁；Accepted incumbent可被更优结果替换并销毁，最终只发布一个retained winner且不重建。
 
 ## 10. Cost 与分层候选编译
 
 ### 10.1 Cost边界
 
 Hard legality/capacity与performance estimate严格分离。Cost model复用current work collectors和target参数；缺失参数按同一
-comparison cohort统一删除该term，不能candidate-local按零或无穷。Estimate只用于排序、diversity和best-known选择；除非
-某lower bound或dominance逐项证明安全，否则不能删除合法候选。
+comparison cohort统一删除该term，不能candidate-local按零或无穷。Estimate只用于partial-state排序和diversity；winner由actual
+Accepted cost与完整semantic tie-break选择。除非某performance lower bound或dominance逐项证明安全，否则不能删除可能改善winner的候选。
 
 至少保留per-Tile issued work、critical path、DDR/SPM/NoC bytes、message/descriptor/instruction/wait、
 Tile idle与pipeline prologue/II/epilogue。SPM high-water只用于capacity/headroom与诊断，不作为Pareto目标；working-set
@@ -613,7 +621,7 @@ NoC内部route不透明时只保留endpoint work、minimum-hop/link-byte与cut l
 后才把directed-link load加入同一cost/resource tuple。Unknown不能按零处理，也不能据此声称两个transfers无contention。
 
 分层resource projection复用现有target facts，把actual或partial typed assignment依次投影到compute unit/worker、相关local
-SPM resource、DTE endpoint、已证明的directed NoC links与DDR channel/engine。资源集合相交只形成contention estimate/排序信号，不相交可优先提出
+SPM service identity、DTE endpoint、已证明的directed NoC links与DDR channel/engine。partial阶段不投影SPM bytes或packing；资源集合相交只形成contention estimate/排序信号，不相交可优先提出
 并行proposal；是否能重叠及其cost仍由actual event/resource semantics判定。Nominal bandwidth split、解析关键路径或其它近似
 模型只能用于ordering；没有actual buffer、issue/wait、event与resource independence时，不能据此签发completion、overlap、
 legality或admissible bound。
@@ -625,13 +633,14 @@ legality或admissible bound。
 | 层次 | 责任 | 能否成为winner |
 | --- | --- | --- |
 | relation/semantic gate | exact coverage、effect、topology symmetry | 否 |
-| analytic ranking | resource lower bound与performance estimate | 否 |
-| planning legality/resource query | 从current IR、target facts和完整typed assignment计算layout/movement/lifetime/resource约束、proof与bound，不构造IR | 否 |
-| selected winner commit | winner assignment一次性CardModule→TileRegion→Instr→SPM/DDR→transport/resource/ABI | 是 |
+| analytic ranking | structural/performance lower bound与estimate；不含SPM admission | 否 |
+| complete-candidate actual admission | assignment→CardModule→TileRegion→Instr→SPM/DDR→transport/resource/ABI | Accepted结果可参与比较 |
+| actual-result comparison | 同cohort actual cost、coverage与semantic tie-break | 选择retained winner |
+| publication | retained winner→target/package transaction | 只发布一次 |
 
-production search不能把winner选择建立在反复complete candidate compilation上。selected winner commit只能形成accepted
-CardExecutable或typed compiler/unsupported failure；它不能修候选、补默认layout、自动换DDR、解除fusion、返回search继续尝试下一个点，
-也不能生成新的搜索选择。若只有lowering后才能判断的legality长期成为正常candidate rejection，说明planning IR/query合同尚未闭合。
+production search必须对每个进入比较的complete candidate运行一次actual admission，因为SPM legality只能从实际allocation/lifetime/packing
+得到。candidate gate不能修候选、补默认layout、自动换DDR或解除fusion；它只返回Accepted或typed rejection/failure。controller按domain
+继续其它candidate，rejected/loser transaction销毁，retained winner不重建。
 
 ## 11. Search algorithm 与质量合同
 
@@ -641,14 +650,14 @@ CardExecutable或typed compiler/unsupported failure；它不能修候选、补�
 analysis取得合法choices，通过transformation/conversion物化selected choices；不存在统一`Providers`框架或局部selector。
 search kernel本身不生成spatial、region、temporal、layout、movement、buffer或schedule choice，也不预先定义这些轴的
 placeholder schema。每个mechanism进行pure domain/query并返回named typed transition、legality、cost或bound；kernel只维护
-deterministic frontier、stable dedup、typed outcome和search-local best plan。planning阶段不apply mutable IR。
+deterministic frontier、stable dedup、typed outcome和search-local accepted incumbent。partial-state阶段不apply mutable IR。
 
 先收敛上述control contract，但不实现只靠mock domain运行的空Core。Q50.S先交付两条policy共用的attention semantic IR、
-algorithm normalization和read-only planning description；Q50.B–K再按依赖建立真实typed domain/query/apply，Q50.F/J分别经过
-foundation与full closure；每轴加入independent reference enumerator并迁移donor能力。`spatial-domain`与`exact-demand-boundary`形成
+algorithm normalization和read-only planning description；Q50.B–K再按依赖建立真实typed domain/query/apply，Q50.F分别提供
+partial structural readiness与complete-candidate actual admission，J提供event/schedule closure；每轴加入independent reference enumerator并迁移donor能力。`spatial-domain`与`exact-demand-boundary`形成
 首批真实domain后，`search-control-foundation`让explicit public `search`进入new owner；缺后续axis时返回typed incomplete，不调用baseline或commit。
-此后每个domain work item同批扩state/transition与production consumer，`full-feasibility`后由`search-control-closure`闭合control/coverage，随后Q51以test-only flat
-exhaustive oracle、actual digest/winner correspondence和single-winner source-to-package闭合。旧control branch在new owner接管时切除，
+此后每个domain work item同批扩state/transition与production consumer，`full-feasibility`接入actual gate后由`search-control-closure`闭合control/coverage，随后Q51以independent flat
+exhaustive oracle、actual-result/winner correspondence和single-publication source-to-package闭合。旧control branch在new owner接管时切除，
 不能保留第二controller，也不能让foundation伪装完整search。
 
 终态调用关系固定为：
@@ -658,12 +667,13 @@ CompilationOptions::search
   -> new PhysicalDataflowSearch session
   -> consume Q50.S-normalized fixed semantic roots
   -> Q50.B–Q50.K typed domain/query/transition
-  -> Q50.F and per-axis planning legality/cost/bound queries
-  -> search-local winner assignment
-  -> winner一次性actual CardModule materialization
-  -> Q50.0 CardExecutable compilation / verification
-  -> one accepted CardExecutable winner
-  -> Q59 target/package transaction
+  -> each complete assignment
+     -> Q50.F candidate materialization
+     -> Q50.0 actual SPM/DDR/transport verification
+     -> Accepted or typed rejection/failure
+  -> compare actual Accepted results
+  -> retain one CardExecutable winner without rematerialization
+  -> Q59 target/package publication once
 ```
 
 旧search与Q49.P baseline都不处于这张search调用图；search没有隐式fallback。
@@ -672,8 +682,8 @@ CompilationOptions::search
 
 - bounded-DAG exact strategy：独立有界穷举reference domain enumerator不调用production domain builder，证明合法typed域完整；
   同一机制另由真实规模整除/非整除矩阵证明production路径；
-  test-only flat exhaustive runner可以逐点调用真实materializer/exact gate作为oracle，但不得成为production编译路径；
-- real-workload anytime strategy：尽快建立首个合法search plan，在预算内持续改善typed winner assignment，预算结束只commit一次。
+  independent flat exhaustive runner逐点调用与production相同的actual gate；只有reference enumerator是test-only；
+- real-workload anytime strategy：尽快取得首个actual Accepted candidate，在预算内持续改善retained actual winner，预算结束只发布一次。
 
 ### 11.2 Anytime构造
 
@@ -684,11 +694,11 @@ CompilationOptions::search
    spatial seeds；
 3. 对每个seed构造最大TileRegion、最大coupled closure和高效大temporal tile，并用relation-derived reuse signature优先
    direct/local、multicast/broadcast与temporal retention alternatives；
-4. exact cheap gates后按cost与结构diversity排序；
-5. scoped planning query计算必要legality、resource bound和cost，不构造CardModule/Instr；
-6. 首个完整合法plan建立search-local winner，后续plan按同一cost cohort与完整semantic tie-break更新winner；只有pure query给出的
-   proven exact failure及future-compatible causal scope才能形成no-good，resource exhaustion或未分类结果保留为unresolved；
-7. budget耗尽选定best search plan，随后只materialize/compile一次；没有完整合法plan则typed failure。
+4. exact structural gates后按performance estimate与结构diversity排序；
+5. partial query计算必要的structural readiness、performance bound和cost estimate，不构造CardModule/Instr，也不判断SPM capacity；
+6. 每个complete assignment进入一次actual admission；首个Accepted建立search-local incumbent，后续Accepted按同一actual-cost cohort与
+   完整semantic tie-break更新winner。typed actual rejection关闭当前complete point；只有verifier直接证明extension-closed时才扩大no-good；
+7. budget耗尽返回retained best Accepted owner并只发布一次；没有Accepted candidate则typed failure。
 
 Q51.Core固定一个确定、不会丢state的typed-continuation best-first机制、direct causal forbidden assignments、admissible
 branch-and-bound和coverage合同，但不固定Q52 production默认allowance或有损策略。Q52依据fresh profile调整priority、memo、safe
@@ -698,7 +708,7 @@ family closure或最终winner。
 
 ### 11.3 剪枝和trade-off
 
-可以预先使用而不损失合法解的优化包括exact legality、canonical memo、真实topology symmetry、typed causal forbidden assignment、
+可以预先使用而不损失合法解的优化包括exact structural legality、canonical memo、真实topology symmetry、typed actual/structural forbidden assignment、
 已证明safe dominance和完全等价的pure-analysis cache。
 
 时间上限、bounded diverse candidate set、beam、LNS或只完整编译部分高分候选可能漏掉全局最优。它们只能作为Q52实测后的显式
@@ -718,8 +728,8 @@ semantic tie-break承载多个独立TileRegion，但一个baseline TileRegion只
 target-local materialization等没有独立structured DAG identity、不能独立调度且被exact operand demand选中的op才属于non-root support；显式
 Fill、Reduce或DPS init producer只要是另一个structured DAG node就仍是第二root，不能借support名义并入。root cardinality按
 typed materialization relation计算，因此一个root lower成多个compute/instruction op仍只算一个root。每个root从其
-local spatial extent开始确定性缩减完整temporal tile vector，逐coordinate重建Q50.F的typed storage/interference/resource problem，
-直到取得经验证的plan-level full proof；relation要求的必要peer fragments只用于correctness，不搜索route或communication方案。
+local spatial extent开始构造完整temporal tile vector并actualize当前candidate。只有actual SPM capacity rejection才确定性生成下一smaller
+temporal candidate；relation要求的必要peer fragments只用于correctness，不搜索route或communication方案。
 
 “最大合法Tile participation”不要求虚构一个spatial axis：root没有映射到result的parallel iterator时，baseline构造
 all-factor=1、单参与Tile、完整result domain的typed unpartitioned coordinate；这只是该root没有parallel轴时的退化，不是
@@ -739,25 +749,25 @@ per-root participant group只描述该root的非空执行Tile；最终CardModule
 
 baseline controller直接从typed structured semantics、exact relation和target facts构造这一条canonical路径。最大非空
 participant count、physical Tile group、iterator/factor choice和独立root顺序均使用完整semantic tie-break，不使用pointer、
-walk ordinal、`stableOrdinal`或search proposal order。它以有限、确定且不会被beam/cap/time budget截断的feasibility
-resolution遍历baseline合同内的合法fallback；每个closed coordinate只运行Q50.A/F及其它必要的pure typed query，不创建IR。
-`FullFeasibilityProof`关闭当前plan，带direct typed witness的exact rejection才推进到下一个canonical coordinate。query-local trial和fit结果
-只是合法化过程，不是Q51 search candidate：controller不评分、不维护incumbent/candidate family、不保留用于比较的备选方案，
+walk ordinal、`stableOrdinal`或search proposal order。它以有限、确定且不会被beam/cap/time budget截断的actual-feedback
+resolution遍历baseline合同内的canonical temporal successors；每个candidate只构造一次完整CardModule并运行Q50.0。
+Accepted关闭baseline；带完整current owner relation的actual SPM capacity rejection才推进到下一个candidate。该过程不是Q51 search：
+controller不评分、不维护incumbent/candidate family、不保留用于比较的备选方案，
 也不得创建或调用search candidate/state、search-oriented domain/ranking evaluator、grouping materializer和feedback repair。
 它只复用typed iterator/topology事实、single-coordinate legality/materialization机制和上述logical demand/coverage query。
 任一接收option列表/domain并通过propagation、recursive CSP、backtracking或其它assignment solve返回一个结果的helper，即使输出
 确定、只取第一个或命名为`policy-free`，仍属于search，禁止出现在`none`的transitive call graph。baseline始终只有一个live
-coordinate：直接构造当前canonical spatial placement，对每条edge只查询这一对已关闭的producer/consumer shard；direct typed
-rejection只能触发预定义、单调、不分支且不回溯的functional legalization transition，旧coordinate随即销毁，不保留alternative、
+coordinate：直接构造当前canonical spatial placement，对每条edge只查询这一对已关闭的producer/consumer shard；只有actual typed SPM
+rejection能触发预定义、单调、不分支且不回溯的temporal successor，旧candidate transaction随即销毁，不保留alternative、
 no-good、score或winner比较。不得先生成每个node全部iterator-axis × connected-rectangle placement options，也不能调用physical
 edge strategy/evaluator来决定logical trial是否合法。Q50.B未来完整placement域由自己的惰性mechanism拥有，baseline不复用整域
 generator。
 
-controller产出的窄immutable selected assignment是feasibility resolution的**输出**，不是baseline入口的前置条件；baseline与
-search可以在这个policy-free已选事实或actual IR边界汇合，而不是共享candidate wrapper。该结果只含materialization所需的
+controller产出的窄immutable assignment是当前candidate actualization的输入，不是baseline入口的前置条件；baseline与
+search可以在这个policy-free complete-assignment schema和actual gate汇合，而不是共享candidate wrapper。assignment只含materialization所需的
 per-root placement、显式singleton region boundary、完整temporal vector以及已经由baseline确定的canonical
 representation/movement/buffer/order/completion事实，不含score、derived metrics、stable ordinal、transition/failure history或
-controller flags；materializer不得自行补grouping/default choice。
+controller flags；materializer不得自行补grouping/default choice。只有Q50.0 Accepted后的move-only actual owner才是baseline输出。
 
 logical query对reduction、broadcast、affine window、stride/view和multi-piece返回`satisfied`后，baseline的canonical
 correctness carrier必须把exact set有限分解为all-and-only DDR/必要peer movement并继续完整编译；dense-only fragment或单条
@@ -798,28 +808,19 @@ single-block functional TensorProgram可按反向SSA拓扑序一次处理，未�
 unsupported。复杂度和work counts按非空value/Tile demand、relation application及carrier fragment计数，不能用线程并发掩盖
 16次完整DAG walk。
 
-temporal feasibility从root的完整local iterator extent开始，在iterator/indexing semantics、tail、target vector/alignment及
-最小合法粒度共同定义的有限breakpoint lattice上按semantic全序推进；parallel与reduction iterator都由同一typed tiling contract
-给出可用尺寸。每次trial
-都重新推导全部operand slice、stride/dilation halo、result/init/accumulator、temporary、materializing copy、movement staging、
-alignment/bank和实际lifetime，不得只按output tensor字节数缩放估算。plan-level exact SPM rejection时只沿direct typed witness影响的
-合法维度进入下一组更小breakpoint，重新构造同一typed resource problem；
-序列必须覆盖到target允许的最小合法temporal vector。第一个fit立即成为该root的resolved assignment，不为了性能继续比较
-其它fit；trial数不得写入candidate proposal/fusion/layout/buffer统计。
+temporal legalization从root的完整local iterator extent开始。每个candidate使用current tiling/indexing semantics构造exact operand/result/
+tail work，再实际生成全部temporary、materializing copy、movement staging、allocation、completion和lifetime。Q50.0对该candidate运行
+`PlanSPMMemory`/MiniMalloc；只有带完整current owner relation的actual SPM capacity rejection，才允许controller沿稳定semantic顺序选择
+一个受影响的temporal axis并生成下一更小candidate。next-point规则只生成合法普通候选，不预测它能否fit；不得用rejected bytes比例、
+footprint、buffer-count或target capacity公式选择大小。
 
-capacity结论来自Q50.F按当前closed coordinate构造的minimum-storage/interference与full-coordinate resource problem，不构造
-root/Tile/function scratch IR，也不调用Q50.0。capacity witness可以包含一个冲突集合，但必须把all-and-only storage/lifetime owner
-直接关联到当前single root的result/operand demand和temporal assignment；unsupported witness必须命名无法表达的typed relation。
-两者都不能按相同type/shape猜测producer、解析diagnostic字符串或同时缩减多个歧义match。只有完整proof产生的exact rejection允许
-controller推进确定性fallback；heuristic no-fit、solver耗尽与indeterminate必须终止，不能伪装成输入unsupported或“none没有方案”。
+每个不同candidate只拥有一份CardModule并只运行一次Q50.0。rejected transaction销毁；Accepted owner原样成为baseline结果，不再物化或
+规划offset。无owner demand、MiniMalloc `ResourceExhausted`、timeout、Unsupported或CompilerBug直接按typed状态停止，不生成下一candidate。
+当所有可缩axis已经到最小合法值且本次actual SPM仍给出capacity rejection时，返回typed capacity failure；没有search candidate绝不能
+成为`none`失败原因。
 
-全部root及baseline真实使用的canonical G--K component facts获得resolved plan并通过Q50.F closed-plan core proof后，baseline只物化一次完整CardModule，并只进行一次
-complete CardExecutable compilation。Q50.0从actual IR重建normalized resource problems并分配offset；与plan proof不一致或此时
-出现capacity failure属于compiler bug，不能继续fallback。局部成功的安全性建立在“一root一TileRegion、跨root shaped dependency显式DDR、无fusion、sequential
-single-buffer execution”结构不变量上；改变任一项后局部成功不能继续当作完整证明。只有target允许的最小合法temporal
-vector连同其它canonical fallback都被exact证明不可行时，才能返回typed capacity/unsupported；声明支持的输入在完整gate才
-暴露可由更早baseline legality query发现的失败，属于compiler contract缺口，不是正常`none`结果。没有search candidate绝不能
-成为失败原因。
+局部安全性仍建立在“一root一TileRegion、跨root shaped dependency显式DDR、无fusion、sequential single-buffer execution”结构不变量上；
+这些事实必须在每个candidate actual IR中验证，而不是由plan-side resource proof代签。
 accepted CardExecutable就是baseline semantic result；不得随后构造未被output消费的`StaticSchedulePlan`/duration estimate，
 也不得让普通compile无条件打印或保存Tile IR snapshot。显式IR inspection只在最终accepted output上按请求执行一次，不参与
 admission或package语义；search不消费该baseline inspection。
@@ -867,25 +868,27 @@ domain/query/apply、actual-IR witness和下游Q50.0定向准入，同时删除�
 
 ## 13. 当前差距与任务闭环
 
-Q50.0、Q54与Q59已经闭合无策略selected-executable compilation、MLIR scope/pipeline和compiler transaction。Q50.A旧API已有
+Q50.0、Q54与Q59已经闭合无策略complete-candidate actual compilation/admission、MLIR scope/pipeline和compiler transaction。Q50.A旧API已有
 immutable borrow、typed relation/role及部分reduction/broadcast/window/multi-piece witness，但本轮重审已因execution/ownership重复、
 partial-result owner、node-wide merge及manual epoch等问题重新打开。A的终态输入`SpatialAssignment`由Q50.B representation foundation先
 定义、关闭并由baseline canonical producer实际产生；A不能临时保留旧trial作为输入。动态状态只看`tasks/progress.md`。
 
 Q49.P已经保留consumer-operand exact demand、structured-producer截断、single-root final construction、typed carrier和search-policy
-隔离等能力；但它仍用每个closed temporal coordinate的一次CardModule/Q50.0来查询capacity，因此重新打开。current旧probe、
-post-hoc support rebuild和default statistics不恢复；剩余迁移先把canonical component facts迁入最终plan types，并让Q50.F closed-plan
-core接管所有coordinate，只让最终plan进入一次actual commit。它不等待完整search domains。
+隔离等能力。每个closed temporal candidate运行一次CardModule/Q50.0是current正确方向；本轮重新打开是因为旧路径仍存在relation缺口、
+owner猜测、footprint/plan-side capacity分支、allocator fallback和同candidate重复构造。current局部probe、post-hoc support rebuild和default
+statistics不恢复；Q49.P直接消费完整actual result并保留Accepted owner。它不等待完整search domains。
 主线仍有下列设计差距：
 
-- baseline的coordinate loop仍执行actual TileRegion→Instr与memory planning；这些工作必须改成Q50.F typed problem/proof，planning IR为零；
+- baseline actual loop必须保证每个candidate只有一份IR、每个allocation都有current typed owner、只有actual SPM capacity rejection推进
+  temporal successor，且Accepted owner不重建；
 - `spatial-plan-schema`只定义schema、structural close与validator；`attention-normalization`先产生normalized semantic roots和fixed FA/FD fact，
   `attention-spatial-integration`关闭K1/K2与spatial constraints后`canonical-spatial-assignment`才签发assignment；
   `exact-demand-boundary`与`attention-demand-integration`随后关闭demand/final owner/
   coupled merge；
 - placement production transition仍过早消费physical edge strategy；Q50.B尚未从all-iterator semantics生成完整multi-axis、
   remainder、reduction/merge和非矩形physical placement域；
-- current旧search仍含candidate、shortlist、repair与完整编译耦合；只能在Q50能力逐项迁移并由Q51 planning取代后删除；
+- current旧search仍把candidate生成、shortlist、repair、字符串failure和actual evaluator耦在一个owner；Q51必须保留共同actual gate，
+  但把partial domain/control、typed result comparison和candidate transaction ownership拆到清晰边界；
 - spatial domain仍主要是单output axis与连通矩形Tile group；
 - region/temporal/fusion/layout/buffer/communication尚未由一个轻量state联合回溯；
 - 多个旧机制文件未进入current production build；
@@ -895,8 +898,10 @@ core接管所有coordinate，只让最终plan进入一次actual commit。它不�
 
 1. 保持已经闭合的无repair CardExecutable compilation/verification边界；
 2. 按`tasks/progress.md`依次建立semantic/spatial/demand与canonical plan work items，再由`deterministic-baseline-closure`完成`none`；
-3. 依次建立全部domain work items、`search-control-foundation`与`search-control-closure`，全程planning零IR且不消费baseline output；
-4. 以`unified-search-closure`关闭single winner，再经`attention-production-closure`和`search-scalability`取得production search证据；
+3. 依次建立全部domain work items、`search-control-foundation`与`search-control-closure`；partial state零IR，complete assignment逐项进入actual
+   gate，且search不消费baseline output；
+4. 以`unified-search-closure`关闭complete-candidate actual evaluation、唯一retained winner和一次publication，再经
+   `attention-production-closure`和`search-scalability`取得production search证据；
 5. `production-host-readiness`从Q60产品入口完成fresh workload/package/no-card/runner矩阵，使Q53达到`board-ready`。
 
 ## 14. Verification and Done Criteria
@@ -920,26 +925,27 @@ selected lowering完成。shape只是case输入，不进入合法域、candidate
 ### Baseline与search correctness
 
 - chain、diamond、fanout、reduction、mixed compute/movement和stage+buffer先由真实规模IR case证明production路径；另用明确标注
-  的小domain独立reference enumerator和test-only flat exhaustive oracle证明planning set、剪枝和winner，不能让oracle规模
+  的小domain独立reference enumerator和flat exhaustive runner证明assignment set、actual result、剪枝和winner，不能让oracle规模
   替代production shape覆盖；
-- 构造必须联合改变spatial/region/temporal等多个choice才改善的陷阱，anytime策略能找到更优plan且production只commit一次；
+- 构造必须联合改变spatial/region/temporal等多个choice才改善的陷阱，anytime策略能找到更优actual result；每个complete candidate
+  actualize一次，winner不重建且publication一次；
 - estimate、memo、no-good或dominance逐项开启不改变有界穷举oracle的winner；同一机制的真实规模矩阵另行证明production路径；
-- `none`和`search`只共享policy-free analysis、typed plan schema、materializer和selected-result compilation/verification，互不调用；
+- `none`和`search`只共享policy-free analysis、typed complete-assignment schema、candidate materializer和actual admission，互不调用；
 - Q51.Core起旧接口不进入current控制流，但旧source/test中的独有算法、proof和witness必须先迁移；每个checkpoint同时验证typed
-  mechanism、production consumer和donor capability，Q51比较new planning与独立oracle、winner actual IR和一次Q50.0结果；
+  mechanism、production consumer和donor capability，Q51比较new controller与独立oracle、每个complete candidate的actual result和最终winner；
 - baseline与spatial mechanism共用policy-free typed exact-demand query；完整closed assignment的cross-op demand不产生placement
   no-good。unsupported semantics、resource exhaustion和compiler contract error均保持typed outcome，不进入legality bool/no-good
   cache；IR mutation关闭当前planning session，任一assignment/domain/role变化进入完整semantic key并重算；
 - `none`不构造或调用search state/candidate、search-oriented domain/ranking evaluator、proposal ordering/group materializer
   或candidate统计；每个baseline TileRegion恰有一个structured compute root，跨root shaped dependency均有显式DDR边界，
   同Tile多root表现为多个顺序TileRegion；
-- `none`从未选择placement/temporal/layout/buffer的正常上游IR自行形成resolved baseline assignment；至少一个初始完整
-  temporal tile因真实operand/halo/temporary/lifetime footprint超出SPM的case必须沿合法breakpoint缩小后通过完整
-  CardExecutable、package与no-card，且multi-axis/tail/alignment变化会重新推导完整workset；
-- deterministic feasibility resolution覆盖到target最小合法temporal vector，不设会丢失fallback的beam/cap/budget；最小
-  vector仍超限的negative case返回direct typed capacity witness，indeterminate按compiler failure而非unsupported处理；
-- baseline plan query覆盖region/Tile/Card resource scopes，exact SPM rejection携带direct causal witness；无region/function clone probe，
-  fresh计数证明完整CardModule materialization和CardExecutable compilation各一次；
+- `none`从未选择placement/temporal/layout/buffer的正常上游IR自行形成baseline candidates；至少一个初始完整temporal candidate
+  因actual operand/halo/temporary/staging allocation与lifetime被`PlanSPMMemory`拒绝，随后确定性smaller candidate通过完整
+  CardExecutable、package与no-card；每次candidate都有独立actual IR和offset结果；
+- deterministic candidate successor覆盖到最小合法temporal vector，不设会丢失functional path的beam/cap/budget；最小vector的actual
+  SPM planning仍超限时返回direct typed capacity witness，indeterminate按其原typed状态处理；
+- exact SPM rejection携带actual allocation/conflict demand与完整current owner relation；无region/function clone probe，fresh计数证明
+  `candidate materializations == Q50.0 invocations`、每个candidate恰一次、accepted owner不重建；
 - 结果明确区分`objective-optimal`、`feasible-with-bound`、`feasible-unranked`与`budgeted-feasible`；work/wall/RSS/incumbent只在显式
   instrumentation中报告，不伪造bound或最优性。
 

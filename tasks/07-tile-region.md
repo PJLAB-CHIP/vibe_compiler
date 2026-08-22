@@ -39,8 +39,8 @@ producer tile交给consumer，且不存在独立producer traversal或中间DDR m
 region内，但同一region并不推出coupled traversal或op fusion。
 
 上层可以选择retain/recompute/spill/cut/release boundary，但不得用独立`resident=true`标签或长期lifetime side table宣告
-residency；winner必须物化成TileRegion、allocation root、SSA、movement、buffer/slot和event-order结构，lifetime随后从current IR重算。
-只有selected actual IR中已经存在明确的SPM
+residency；每个complete candidate必须物化成TileRegion、allocation root、SSA、movement、buffer/slot和event-order结构，lifetime随后从current IR重算。
+只有candidate actual IR中已经存在明确的SPM
 allocation roots、SSA/view/effect、访问顺序和completion，并且没有该edge的DDR round-trip，才能声称实际residency；
 physical offset还必须等09对最终Instr完成fresh lifetime与packing后才成立。所谓多stage流水也不能由一个pipeline
 flag或估算计划代表：每个chunk/temporal iteration、movement issue/wait、physical buffer或rotating slot、执行顺序和
@@ -115,16 +115,17 @@ Pipeline position:
   确定性转换为wafer.tile，physical movement/storage/event直接按prepared plan生成；所有跨region值显式DDR，所有跨Tile值显式communication；一次
   card-scoped verifier检查plan-to-actual totality与无extra work。
 - Output IR / files:
-  verifier-legal selected CardModule/TileRegion IR；attention与可执行Linalg source已经消失；不输出plan文件、IR sidecar或candidate artifact。
+  verifier-legal candidate CardModule/TileRegion IR；attention与可执行Linalg source已经消失；不输出plan文件或IR sidecar。
 - Downstream consumer:
   TileRegion-to-Instr named pipeline、fresh completion、SPM/DDR actual placement、transport/resource/ABI、target/package。
 - User-level driver / named pipeline:
-  wafer-compile `none|search`共同selected-plan commit；wafer-opt只测试相同leaf conversions。
+  wafer-compile `none|search`共同complete-candidate actual gate；wafer-opt只测试相同leaf conversions。
 - Explicit non-goals:
-  不选择或比较plan，不clone source/loser，不在失败后repair/retry，不分配actual offset，不生成数学等价alternative。
+  不选择或比较plan，不clone/replay source或同一candidate，不在失败后repair/retry，不分配actual offset，不生成数学等价alternative。
 - Done criteria:
-  planning IR为零；selected Card subtree一次；plan IDs与actual root/version/action/event all-and-only对应；failure擦除整个新subtree且
-  source不变；selected Linalg只在winner transaction内构造并由structured-to-tile lowering消费；下游named pipeline与package直接消费。
+  partial planning IR为零；每个complete candidate Card subtree一次；plan IDs与actual root/version/action/event all-and-only对应；
+  failure或落选擦除整个新subtree且source不变；selected Linalg只在candidate transaction内构造并由structured-to-tile lowering消费；
+  downstream actual gate消费每个candidate，只有retained winner进入package。
 ```
 
 ## 3. IR 生命周期与唯一事实源
@@ -548,18 +549,18 @@ region内只spill某个root、让其它root继续驻留。也要保留“独立l
 6. every compute/movement通过op verifier、适用的standard interfaces和MemoryEffect/custom resource effects；
    every async issue都有SSA或typed fence completion。
 7. selected Tile IR经per-Tile tile-to-instruction conversion、SPM/DDR、cross-Tile communication、transport和ABI gate直接消费。
-8. 任一selected builder、Tile module或later exact gate失败都不产生partial accepted IR、CardExecutable、module、output或package，
-   且不返回planner重选。
+8. 任一candidate builder或Tile module失败都不产生partial accepted IR、CardExecutable、output或package，且builder自身不repair；
+   later actual gate只有在返回完整typed rejection时才由外层controller处理其它candidate。
 9. generic DAG、HF prefill/decode与LLaMA block最终都以card-level `num_partitions=1`完成source-to-package-to-no-card fresh纵向；
    package必须含all-and-only topology-available Tile launch entries，且允许per-Tile op/loop/shape不同。局部fixture不算完成。
    该矩阵按06的任务阶段执行：Q51完整new-search链闭合前，本层及Q50.C/D checkpoint只使用有界generic/relation与轻量
    attention/decode case，不执行重型LLaMA；重型profile与正式package/no-card分别归Q52、Q53。
 10. Q32.V mapped DMA、physical fill和oriented GEMM通过typed Tile/Instr/TargetCall/ABI/SystemC纵向后由同一
     materializer消费；其它未实现target能力结构化拒绝。
-11. Q50.S attention root在planning阶段不物化；Q50.B--K只选择physical realization。winner对每个selected output piece/
+11. Q50.S attention root在partial planning阶段不物化；Q50.B--K只选择physical realization。每个complete candidate对每个selected output piece/
     contribution/merge恰展开一次Linalg action，并在Q50.0前消除attention与executable Linalg source；FA无完整score/probability
     tensor，FD收齐all-and-only coupled state后只finalize一次。Cx/NCx GEMM与CT relation-guided absorption由Q50.G/H物化，
-    并随Q51 selected assignment按同一physical gate验收。
+    并随Q51 complete assignment按同一actual gate验收；final winner不重建。
 
 ## 14. Graph Algorithm 与 Future Alternative Boundary
 
