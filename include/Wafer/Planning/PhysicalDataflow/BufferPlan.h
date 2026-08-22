@@ -100,6 +100,7 @@ enum class BrokenStoragePlanReason : uint8_t {
   PlanBindingMismatch,
   DuplicateStorageObject,
   DuplicateDefinition,
+  DuplicateResultDiscard,
   ResourceMismatch,
   MissingDefinition,
   MissingUse,

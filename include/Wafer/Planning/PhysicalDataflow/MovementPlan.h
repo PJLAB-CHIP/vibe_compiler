@@ -78,6 +78,19 @@ struct ResultPublicationId {
   }
 };
 
+struct ResultDiscardId {
+  ExecutionResultValueId source;
+
+  friend bool operator==(const ResultDiscardId &lhs,
+                         const ResultDiscardId &rhs) {
+    return lhs.source == rhs.source;
+  }
+  friend bool operator<(const ResultDiscardId &lhs,
+                        const ResultDiscardId &rhs) {
+    return lhs.source < rhs.source;
+  }
+};
+
 struct ExternalLoadPlan {
   ExternalLoadId id;
   PhysicalVersionId destination;
@@ -100,11 +113,20 @@ struct ResultPublicationPlan {
   PhysicalVersionId source;
 };
 
+/// Explicit disposition for an execution result whose exact piece is produced
+/// but has no downstream carrier because a later pure tensor reconstruction
+/// overwrites or otherwise removes that piece. It is not a movement action.
+struct ResultDiscardPlan {
+  ResultDiscardId id;
+  PhysicalVersionId source;
+};
+
 struct MovementPlan {
   std::vector<ExternalLoadPlan> externalLoads;
   std::vector<DDRBoundaryTransferPlan> ddrTransfers;
   std::vector<ReductionGatherPlan> reductionGathers;
   std::vector<ResultPublicationPlan> publications;
+  std::vector<ResultDiscardPlan> discards;
 };
 
 using MovementActionId = std::variant<ExternalLoadId, DDRBoundaryTransferId,

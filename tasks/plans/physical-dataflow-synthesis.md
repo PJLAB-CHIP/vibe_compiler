@@ -365,8 +365,8 @@ Pipeline position:
 | `canonical-root-work` | `RootRegionWorkAnalysisTest`九项及`SingleRootTileRegionTest.CanonicalRootWorkMaterializesAlignedAndRaggedAllTileLeaves` | support DAG、multi-result/init、ordinary reduction 1024/1025、FD components 1024/1025/1031、rank-zero和atomic failure |
 | `canonical-region-plan` | `CanonicalRegionPlanTest`五项 | aligned/ragged singleton、diamond/fanout、ordinary/coupled merge、multi-result fragment及duplicate/missing-owner failure |
 | `canonical-temporal-plan` | `CanonicalTemporalPlanTest`四项 | per-Tile 1024/1025 local tail、merge无伪scope、rank-zero/merge-only及missing/duplicate/invalid failure |
-| `canonical-representation-plan` | `CanonicalRepresentationPlanTest`四项 | aligned/ragged primary versions、pad/multi-result、FD component 1024/1025/1031、rank-zero与typed unsupported/broken result |
-| `canonical-movement-plan` | `CanonicalMovementPlanTest`五项 | 同一1024/1025输入逐层重放B--H；diamond DDR、FD component gather 1024/1025/1031、ordinary rank-3 reduction gather 1024/1025、rank-zero及typed failure |
+| `canonical-representation-plan` | `CanonicalRepresentationPlanTest`五项 | aligned/ragged primary versions、pad/multi-result、FD component 1024/1025/1031、rank-zero、1025级finite GeneralPresburger→disjoint BoxUnion及typed unsupported/broken result |
+| `canonical-movement-plan` | `CanonicalMovementPlanTest`五项及`CanonicalPlanningCoverageTest.MultiPieceAndMultiProducerCarriersCloseAtRepresentativeScale` | 同一1024/1025输入逐层重放B--H；diamond DDR、multi-piece explicit discard、multi-producer carrier、FD component gather、ordinary rank-3 reduction gather、rank-zero及typed failure |
 
 Fresh closure evidence：上述completed-artifact定向82/82、完整`WaferUnitTests` 774/774、default configured lit 224/224、
 IR/source organization和`git diff --check`通过。没有执行真实板测；本项不包含板端门禁。该证据关闭测试coverage缺口，
@@ -2228,8 +2228,23 @@ Pipeline position:
 | 连续B--K/attention重放 | 同一ordinary/reduction 1024/1025和FA/FD 1024/1025/1031，从canonical spatial/demand开始 | root、execution、version、movement、storage、schedule、attention action和proof identity/domain/tail连续一致；每层输出与直接上下游双射 | deterministic baseline无需二次语义恢复即可编排pure plan并进入唯一selected commit |
 | failure atomicity | missing/duplicate execution、version、storage、schedule/action、resource、proof action及malformed piece的最小独立故障 | 返回对应typed failure，无partial plan、无source mutation；修正后的输入可重新query | 不fallback、不选择另一plan/algorithm、不调用CardModule/Q50.0 |
 
-本项关闭时把最终ledger和fresh结果写回本节，并在`tasks/archive/completed-task-index.md`追加唯一完成记录；在此之前不得沿用
-`serialized-execution`至`attention-selected-decomposition`各自的历史suite总数把本项标为完成。
+实际coverage ledger如下；每行都绑定直接case及该artifact的exact字段，不能只按suite总数解释：
+
+| Artifact / 边界 | 实际case witness | 本轮闭合结果 |
+| --- | --- | --- |
+| Serialized K | `CanonicalSerializedExecutionPlanTest`五项；`CanonicalPlanningCoverageTest` ordinary/reduction/attention全链 | 1024/1025 ordinary/multi-root/reduction及1024/1025/1031 FD的root/merge execution identity与temporal scope逐项一致 |
+| canonical G/H | `CanonicalRepresentationPlanTest`五项、`CanonicalMovementPlanTest`五项及全链multi-piece/multi-producer case | finite GeneralPresburger有界规范化为语义等价disjoint BoxUnion；1024/1025 insert overwrite用typed result discard关闭，真实carrier与discard不混淆 |
+| canonical I/J | `CanonicalStoragePlanTest`六项、`CanonicalSchedulePlanTest`六项及全链identity检查 | version/action/object/lifetime/order/worker0逐ID双射；discard仍计入definition-local storage且无伪action/edge；duplicate或carried-and-discarded冲突fail closed |
+| attention work | `CanonicalAttentionWorkProjectionTest`五项及全链FA/FD cases | mask/no-mask、local/remote components、multi-K2和multi-root的action/value/storage/gather/schedule projection逐ID一致 |
+| canonical F | `CanonicalFeasibilityProofTest`八项及全链proof检查 | ordinary/reduction/FA/FD storage/scratch/movement/schedule/action完整进入normalized problem与dependency key；typed rejection/indeterminate/unsupported/broken保持分离 |
+| selected decomposition | `SelectedAttentionDecompositionTest`七项及全链selected mapping | FA/FD 1024/1025/1031、rank-6 multi-K2和两个roots均all-and-only映射；无global score，FD merge finalize once，failure不污染source |
+| 连续B--K/attention | `CanonicalPlanningCoverageTest`五项 | ordinary diamond、reduction、multi-piece、multi-producer、FA/FD/multi-K2/multi-root从spatial/demand连续到FullProof和selected mapping；每层identity/domain/tail与直接上下游双射 |
+| failure atomicity | 各owner negative cases及`BrokenProofDoesNotMutateOrPoisonAValidRaggedChain` | missing/duplicate/mismatch、cycle、capacity、proof/action及emit failure均typed；修正输入可重新query，不fallback、不调用Q50.0 |
+
+实现与验证闭合：新增`CanonicalPlanningCoverageTest`，并在原G/H/I owner修复补测暴露的两处合同缺口：有限exact set只在有界证明后
+规范化为disjoint Tensor pieces；被pure reconstruction完全覆盖的execution result由typed `ResultDiscardPlan`显式关闭，storage仍计入
+该output object，而漏publication/transfer继续失败。本轮fresh定向52/52、完整`WaferUnitTests` 820/820、default configured lit
+224/224、compiler public link、IR/source organization及`git diff --check`通过；未执行真实板测，本verification gate不包含板端门禁。
 
 ### S-6：Current/donor能力迁移
 
@@ -4079,8 +4094,10 @@ Q50.G由两个work items完成：
 
 - `canonical-representation-plan`只为canonical B--E已经显式产生的shaped logical versions建立一对一primary physical version，
   使用current `MemLayout::Tensor` correctness encoding。boundary fragment、support result、execution result、ordinary partial和coupled
-  component各有typed `RegionValueVersionId`；exact domain/type只进入query-local resource description，不复制进plan identity。
-  exact-empty与scalar不伪造physical version。本项没有derived conversion、alias version、shared secondary或layout solver。
+  component各有typed `RegionValueVersionId`；exact domain/type只进入query-local resource description，不复制进plan identity。已经由
+  bounded construction证明为finite disjoint rectangles的其它exact normal form在此规范化为语义等价的`BoxUnion`，使G/H/I/F消费
+  同一可物化resource；无法完成该证明时返回typed unsupported，不用bounding box。exact-empty与scalar不伪造physical version。
+  本项没有derived conversion、alias version、shared secondary或layout solver。
 - `layout-domain`在partial-feasibility后扩同一current合同，加入全部legal primary/derived encodings、conversion/alias producer、use
   bindings、constraint solver、Core consumer和selected apply，并迁移/退役旧fixed-slot/current apply。Tensor canonical点只是独立
   correctness carrier，不是preferred layout、operation tuple default或global winner。
@@ -4092,7 +4109,7 @@ Q50.G由两个work items完成：
 | --- | --- | --- | --- |
 | aligned/ragged all-Tile | rank>=3、主要维度1024/1025、all-16 Tile | 每个nonempty boundary fragment、support value和execution final result各有且仅有一个primary Tensor version；输入顺序扰动后ID/plan稳定 | resource description逐version保留exact domain、element type和Tensor encoding，canonical-movement直接消费 |
 | chain/fanin/fanout/diamond | 1025级multi-root/multi-path | 同一producer的不同consumer fragments是不同boundary logical versions；同一support result只一个version；不按node pair、first use或layout slot合并 | H可逐fragment生成movement，同时同support version在region内只物化一次 |
-| multi-result/DPS init/view | rank>=3 multi-result与slice/reshape/pad | result index、support semantic ID和boundary source/use/owner均进入typed version identity；scalar init/capture无physical version | resource exact domain与source type逐项对应，不从operand位置恢复 |
+| multi-result/DPS init/view | rank>=3 multi-result、slice/reshape/pad及1025级finite GeneralPresburger分片 | result index、support semantic ID和boundary source/use/owner均进入typed version identity；scalar init/capture无physical version；可证明的finite disjoint pieces规范化为等价BoxUnion | resource exact domain与source type逐项对应，不从operand位置恢复；不能矩形化时typed unsupported而非bounding box |
 | ordinary reduction | 整除/非整除contribution及多个merge group | 每个partial result、merge final result分别一个version；partial不是final primary的alias | H/I/F按group/version区分payload、footprint和lifetime |
 | FD coupled state | rank-5/6、single/multi-K2 | 每个contribution及merge的Maximum/Sum/Accumulator各自有component version，但同一component不按use重复；final output另有result version | component resource type/domain与attention-ready requirement逐字段一致，不隐藏scratch/state |
 | empty/scalar/rank-zero | exact-empty boundary、scalar scale/capture、rank-zero tensor | empty/scalar不建version；nonempty rank-zero tensor仍建Tensor version | movement对empty无action，rank-zero resource保持0-rank exact set |
@@ -4428,7 +4445,9 @@ Q50.H由两个work items完成：
 - `canonical-movement-plan`只关闭deterministic correctness carrier：每个nonempty program/constant shaped boundary使用external load；
   每个structured cross-region fragment使用Tensor→Tensor DDR transfer；ordinary/FD contribution若source Tile不是merge Tile则逐result/
   component使用DDR gather，同Tile同group不伪造movement；final root result沿pure non-structured SSA path可达function return时显式DDR
-  publication。plan引用G physical versions和D execution/fragment IDs，不选择route、relay、reuse、buffer或order。
+  publication。若一个execution result piece已经产生、但被后续pure tensor reconstruction完全覆盖且因此没有transfer/publication，plan用
+  typed `ResultDiscardPlan`显式关闭该version disposition；discard不是movement action、没有payload resource，也不能代替缺失的carrier。
+  plan引用G physical versions和D execution/fragment IDs，不选择route、relay、reuse、buffer或order。
 - `movement-domain`在layout-domain后扩同一current合同，加入DDR/direct peer/relay/multicast/collective/reuse/occurrence完整域、proof、
   Core consumer和selected apply，并迁移/退役旧edge/action与post-hoc surgery。canonical DDR点是baseline correctness sibling，不是
   preferred transport或global winner。
@@ -4439,7 +4458,7 @@ Q50.H由两个work items完成：
 | --- | --- | --- | --- |
 | program/constant input | rank>=3、1024/1025、all-16 Tile | 每个nonempty shaped external fragment恰有一个load到G destination version；scalar/exact-empty无action | payload resource逐action保留exact domain/type/source-destination Tile |
 | chain/fanin/fanout/diamond | 1025级same/cross-Tile owners、multiple sinks | 每个structured `DemandFragmentId`恰有一个DDR transfer，source/destination physical version存在且domain与G fragment resource相同；共享source不按first use覆盖 | I/J可从action IDs推导stage lifetime与store-before-load依赖 |
-| multi-result/view/multi-piece | result index不同、slice/reshape/pad output path | fragments不按node pair/bytes合并；publication沿pure support path覆盖terminal result且不发布unused result | output/stage descriptor保持typed source/result identity，不靠名字 |
+| multi-result/view/multi-piece | rank>=3 1024/1025、result index不同、slice/reshape/pad及insert overwrite path | fragments不按node pair/bytes合并；publication沿pure support path覆盖terminal result；被证明完全覆盖的producer piece各有一个typed discard，仍缺carrier的observable result fail closed | output/stage/discard保持typed source/result identity；I只给explicit discard建立definition-local lifetime，不靠名字或空use猜测 |
 | ordinary reduction | 整除/非整除、多group同merge Tile | 每个remote partial result一个DDR gather；merge-Tile local contribution无action；group/result身份完整 | merge execution可枚举all-and-only remote inputs，partial不变final owner |
 | FD coupled state | rank-5/6、single/multi-K2 | 每个remote Maximum/Sum/Accumulator各一个gather，三component共享group但不合并成opaque payload；local contribution零movement | component type/domain与G resource及A requirement逐字段一致 |
 | rank-zero/empty/merge-only | nonempty rank-zero tensor、exact-empty fragment、merge-only Tile | rank-zero可有0-rank load/transfer；empty无action；merge-only只接remote gathers | storage plan不为empty创建slot，也不因无root scope漏merge payload |
@@ -4932,7 +4951,9 @@ Q50.I由三个work items闭合：
 
 - `canonical-storage-plan`为canonical G/H及Serialized point建立correctness-first single-slot storage。每个nonempty physical version各有一个
   fresh object；external load和DDR destination直接定义对应version object，remote reduction gather另有一个destination staging object，
-  publication只读取source object。derived lifetime只记录typed execution/action definition与uses，不保存order、timestamp或offset。
+  publication只读取source object。H中显式`ResultDiscardPlan`对应的execution result仍保留实际output storage，其definition与唯一local
+  disposition均绑定同一execution；除此之外任何缺失carrier/use仍为typed failure。derived lifetime只记录typed execution/action
+  definition与uses，不保存order、timestamp或offset。
 - `storage-domain`在movement-domain后扩展同一current合同，枚举fresh/alias/reuse、exact view、`1..U` slot family/rotation、order
   requirements、Core consumer及selected construction；canonical fresh/single点只是一个合法成员。
 - `structure-specific-storage`在K选择后从新的occurrence/live distance重闭I；Serialized收敛回single slot，Pipelined重新证明multiplicity、
@@ -4949,7 +4970,7 @@ Pipeline position:
   root/merge execution和movement action已有stable typed identity，尚无event/order、alias/reuse、rotation、offset或actual IR。
 - Current stage responsibility:
   为每个physical version建立一个fresh single-slot object，为每个remote reduction gather建立一个destination staging object；验证所有
-  producer/consumer execution与movement action闭合，并派生每个object的typed definition/use lifetime。
+  producer/consumer execution、movement action和result discard disposition闭合，并派生每个object的typed definition/use lifetime。
 - Output IR / files:
   query-local BufferPlan及StorageResourceDescription/StorageLifetimeDescription；不修改IR、不写attr或文件，不保存timestamp/offset。
 - Downstream consumer:
@@ -4962,8 +4983,9 @@ Pipeline position:
   allocator、SelectedBufferMaterialization或StagePipeline，不把external program output伪造成Tile-local object。
 - Done criteria:
   1024/1025 all-16、diamond/fanout、ordinary/FD local与remote merge、rank-zero、exact-empty/scalar和输入顺序扰动均得到all-and-only
-  objects/bindings/lifetimes；每个remote gather恰有一个staging、local contribution没有staging；missing/duplicate version/action/execution、
-  resource mismatch和unclosed lifetime为typed failure；source IR不变，canonical-schedule可直接消费，fresh build/unit与organization通过。
+  objects/bindings/lifetimes；每个remote gather恰有一个staging、local contribution没有staging；每个explicit discard恰有一个
+  definition-local lifetime且不会生成schedule edge；missing/duplicate version/action/discard/execution、carried-and-discarded冲突、resource
+  mismatch和unclosed lifetime为typed failure；source IR不变，canonical-schedule可直接消费，fresh build/unit与organization通过。
 ```
 
 | 覆盖类 | 代表输入 | 必须断言的BufferPlan/lifetime | 直接下游witness |
@@ -4972,13 +4994,14 @@ Pipeline position:
 | structured diamond/fanout | 1025级multi-root/multi-sink | source result object由producer execution定义并被每个DDR action读取；每个destination version object由对应DDR action定义并只交给destination execution | shared source lifetime覆盖全部transfers，destination lifetime不按node pair或first use折叠 |
 | ordinary reduction | rank>=3、1024/1025，local+remote contributions | 每个partial version一个object；remote gather读取source并定义唯一staging，merge读取staging；merge-Tile local partial直接由merge读取且无staging | schedule可生成producer→gather→merge及local producer→merge两类依赖 |
 | FD coupled state | rank-5、1024及1025/1031 K2 | Maximum/Sum/Accumulator每个physical version独立；remote component各有staging，local component直接进同一merge；merge component object在merge内定义/消费 | attention projection按typed component/group/execution读取，不合并opaque payload |
-| support/multi-result/rank-zero | pad/support、multiple result、nonempty rank-zero、exact-empty/scalar | support/result各自一object并绑定正确execution；rank-zero resource保留0-rank；未进入G的empty/scalar不造object | schedule/later feasibility看到exact object集合，不从IR名字补回缺失value |
-| typed failure | duplicate/missing representation resource、unknown serialized execution、action/version binding mismatch、duplicate/missing movement resource、未定义boundary或无use object | `BrokenStoragePlan`准确区分version/action/execution/resource/lifetime合同错误；不返回partial plan | 修正输入可重新query，source IR byte-identical |
+| support/multi-result/rank-zero/discard | pad/support、multiple result、1024/1025 insert overwrite、nonempty rank-zero、exact-empty/scalar | support/result各自一object并绑定正确execution；explicitly discarded result的definition/use为同一execution；rank-zero保留0-rank；empty/scalar不造object | schedule不为discard造伪action/edge，feasibility仍按definition点计入storage footprint |
+| typed failure | duplicate/missing representation resource、unknown serialized execution、action/version binding mismatch、duplicate/missing movement resource、duplicate discard、carried-and-discarded冲突、未定义boundary或无合法disposition object | `BrokenStoragePlan`准确区分version/action/discard/execution/resource/lifetime合同错误；不返回partial plan | 修正输入可重新query，source IR byte-identical |
 
 实现闭合：canonical `BufferPlan`为每个physical version建立一个独立fresh object，并只为remote reduction gather增加一个typed staging
-object；`StorageLifetimeDescription`仅保存execution/action definition与uses。没有alias/reuse、multiplicity字段、slot family、event/order、
-worker、offset、actual loop scan或IR mutation。fresh定向6/6、完整`WaferUnitTests` 785/785、default configured lit 224/224、compiler
-public link、完整configured build及IR/source organization通过。
+object；`StorageLifetimeDescription`仅保存execution/action definition与uses。后续coverage closure补齐了insert overwrite：H显式签发
+`ResultDiscardPlan`，I只给该version建立definition-local self-use，missing publication/transfer仍返回typed failure；duplicate discard与
+carried-and-discarded冲突也fail closed。没有alias/reuse、multiplicity字段、slot family、event/order、worker、offset、actual loop scan或
+IR mutation。原fresh定向6/6证据由`canonical-plan-coverage-closure`的1024/1025 multi-piece/multi-producer全链及完整fresh gate更新。
 
 ### I-1 专项调研：storage binding、lifetime requirements与slot-family domain
 

@@ -1220,3 +1220,27 @@
 - 防复发：IR/analysis/lowering正例必须含1024级整除/非整除shape，并记录wall/work；构造时已知的domain/coverage不得再交给generic
   Presburger equality。未来支持更大scalar reduction必须新增compact loop或typed target route并直接测试，不得解除work limit后恢复
   逐元素IR，也不得把该限制扩写成numeric policy或reassociation合同。
+
+## Exact set的normal form不能代替物理可表示性证明
+
+- 现象：multi-producer `insert_slice` reconstruction产生语义有限且精确的`GeneralPresburger` domain；movement与storage保存的是同一集合，
+  但consumer只看到空box metadata并报告resource mismatch，随后feasibility也无法计算footprint。
+- 根因：representation只在输入已经标成`BoxUnion`时验证physical pieces，把exact set的construction form误当成可物化性结论；下游又比较
+  duplicated domain metadata，而没有在G owner关闭“exact logical set → finite physical pieces”的边界。
+- 修复模式：representation对非empty exact set先走bounded direct-disjunct recovery；只有每个disjunct都是static rectangle且pieces两两
+  disjoint时规范化为语义等价`BoxUnion`。若整体能被bounded exact equality证明为一个dense rectangle，可退化成一个piece；否则typed
+  unsupported，绝不使用bounding box。H/I/F只消费该current resource description。
+- 防复发：同时保留rank-3、主维1024/1025的multi-producer全链和一个1025级GeneralPresburger direct case；后者检查Presburger equality、
+  exact piece offsets/sizes及下游可消费。不能靠`getBoxes().empty()`判语义不支持，也不能在每个consumer重复generic equality。
+
+## Definition-only result必须有显式disposition
+
+- 现象：`insert_slice`覆盖producer输出的一部分后，canonical spatial仍执行对应shard并需要output storage；该result没有transfer/publication，
+  storage把它当成漏use拒绝。若简单允许所有empty-use，又会放过真正漏掉的observable publication。
+- 根因：movement carrier只表达load/transfer/gather/publication，没有区分“已产生但被pure reconstruction完全覆盖”与“应该被消费却漏了
+  carrier”；storage只能从absence猜语义。
+- 修复模式：H为每个没有carrier的`ExecutionResultValueId`签发typed `ResultDiscardPlan`。discard不是movement action且没有payload；I只对
+  该显式version建立definition-local self-use，J不生成伪edge，F仍在definition点计入footprint。没有carrier也没有discard、duplicate
+  discard及carried-and-discarded均fail closed。
+- 防复发：rank-3 1024/1025 multi-piece overwrite检查discard ID、source version、storage object和self-use逐项相等；独立负例删除
+  publication仍必须失败，并覆盖duplicate与carried-and-discarded冲突。不得用名字、shape或“没有use”直接猜discard。

@@ -631,6 +631,33 @@ TEST_F(CanonicalStoragePlanTest,
   EXPECT_EQ(duplicateActionFailure->reason,
             BrokenStoragePlanReason::DuplicateMovementAction);
 
+  ASSERT_FALSE(inputs->movements.plan.publications.empty());
+  const ResultPublicationPlan &published =
+      inputs->movements.plan.publications.front();
+  ResultDiscardPlan discard{ResultDiscardId{published.id.source},
+                            published.source};
+  CanonicalMovementCoordinate duplicateDiscard = inputs->movements;
+  duplicateDiscard.plan.discards = {discard, discard};
+  CanonicalStoragePlanOutcome duplicateDiscardOutcome =
+      buildCanonicalStoragePlan(inputs->representations, duplicateDiscard,
+                                inputs->serialized);
+  const auto *duplicateDiscardFailure =
+      std::get_if<BrokenStoragePlan>(&duplicateDiscardOutcome);
+  ASSERT_NE(duplicateDiscardFailure, nullptr);
+  EXPECT_EQ(duplicateDiscardFailure->reason,
+            BrokenStoragePlanReason::DuplicateResultDiscard);
+
+  CanonicalMovementCoordinate carriedAndDiscarded = inputs->movements;
+  carriedAndDiscarded.plan.discards.push_back(discard);
+  CanonicalStoragePlanOutcome carriedAndDiscardedOutcome =
+      buildCanonicalStoragePlan(inputs->representations, carriedAndDiscarded,
+                                inputs->serialized);
+  const auto *carriedAndDiscardedFailure =
+      std::get_if<BrokenStoragePlan>(&carriedAndDiscardedOutcome);
+  ASSERT_NE(carriedAndDiscardedFailure, nullptr);
+  EXPECT_EQ(carriedAndDiscardedFailure->reason,
+            BrokenStoragePlanReason::PlanBindingMismatch);
+
   CanonicalMovementCoordinate missingResource = inputs->movements;
   missingResource.resources.pop_back();
   CanonicalStoragePlanOutcome missingResourceOutcome =

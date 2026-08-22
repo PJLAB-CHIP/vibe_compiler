@@ -4,7 +4,9 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <type_traits>
@@ -25,6 +27,48 @@ StorageObjectId objectForVersion(const PhysicalVersionId &version) {
 
 StorageObjectId objectForGather(const ReductionGatherId &gather) {
   return StorageObjectId{StorageObjectOrigin{ReductionGatherStagingId{gather}}};
+}
+
+llvm::StringRef objectKind(const StorageObjectId &object) {
+  if (std::holds_alternative<ReductionGatherStagingId>(object.origin))
+    return "reduction-gather-staging";
+  const PhysicalVersionId &version = std::get<PhysicalVersionId>(object.origin);
+  switch (version.logicalValue.index()) {
+  case 0:
+    return "boundary-version";
+  case 1:
+    return "support-version";
+  case 2:
+    return "execution-result-version";
+  case 3:
+    return "reduction-partial-version";
+  case 4:
+    return "coupled-component-version";
+  }
+  return "unknown-version";
+}
+
+analysis::RootRegionWorkId workOf(const ExecutionInstanceId &execution);
+
+std::string objectDescription(const StorageObjectId &object) {
+  std::string description = objectKind(object).str();
+  const auto *version = std::get_if<PhysicalVersionId>(&object.origin);
+  if (!version)
+    return description;
+  std::visit(
+      [&](const auto &logical) {
+        using T = std::decay_t<decltype(logical)>;
+        if constexpr (std::is_same_v<T, ExecutionResultValueId>) {
+          const analysis::RootRegionWorkId work = workOf(logical.execution);
+          description = (llvm::Twine(description) +
+                         "(anchor=" + llvm::Twine(work.root.anchorIndex) +
+                         ",tile=" + llvm::Twine(work.tile.getValue()) +
+                         ",result=" + llvm::Twine(logical.result) + ")")
+                            .str();
+        }
+      },
+      version->logicalValue);
+  return description;
 }
 
 analysis::RootRegionWorkId workOf(const ExecutionInstanceId &execution) {
@@ -52,7 +96,22 @@ bool sameFiniteResource(const analysis::ExactIndexSet &lhs,
     return false;
   if (lhs.getBoxes().empty())
     return false;
-  for (auto [lhsBox, rhsBox] : llvm::zip_equal(lhs.getBoxes(), rhs.getBoxes()))
+  auto boxLess = [](const analysis::StaticRectangularIndexSet &left,
+                    const analysis::StaticRectangularIndexSet &right) {
+    if (left.offsets != right.offsets)
+      return std::lexicographical_compare(
+          left.offsets.begin(), left.offsets.end(), right.offsets.begin(),
+          right.offsets.end());
+    return std::lexicographical_compare(left.sizes.begin(), left.sizes.end(),
+                                        right.sizes.begin(), right.sizes.end());
+  };
+  llvm::SmallVector<analysis::StaticRectangularIndexSet, 4> lhsBoxes(
+      lhs.getBoxes().begin(), lhs.getBoxes().end());
+  llvm::SmallVector<analysis::StaticRectangularIndexSet, 4> rhsBoxes(
+      rhs.getBoxes().begin(), rhs.getBoxes().end());
+  llvm::sort(lhsBoxes, boxLess);
+  llvm::sort(rhsBoxes, boxLess);
+  for (auto [lhsBox, rhsBox] : llvm::zip_equal(lhsBoxes, rhsBoxes))
     if (lhsBox.offsets != rhsBox.offsets || lhsBox.sizes != rhsBox.sizes)
       return false;
   return true;
@@ -215,7 +274,19 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
       return broken(BrokenStoragePlanReason::MissingMovementResource,
                     "movement resource has no planned action");
 
+  std::set<PhysicalVersionId> discardedExecutionResults;
+  for (const ResultDiscardPlan &discard : movements.plan.discards) {
+    PhysicalVersionId expected{discard.id.source};
+    if (discard.source != expected || !versionResources.count(discard.source))
+      return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                    "result discard identity and source version differ");
+    if (!discardedExecutionResults.insert(discard.source).second)
+      return broken(BrokenStoragePlanReason::DuplicateResultDiscard,
+                    "movement plan has a duplicate result discard");
+  }
+
   CoordinateBuilder builder;
+  std::set<PhysicalVersionId> carriedExecutionResults;
   for (const PhysicalVersionPlan &version :
        representations.plan.primaryVersions) {
     const RepresentationResourceDescription &resource =
@@ -284,9 +355,25 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     if (movement.elementType != object.resource.elementType ||
         !sameFiniteResource(movement.exactDomain,
                             object.resource.exactDomain)) {
-      builder.failure =
-          broken(BrokenStoragePlanReason::ResourceMismatch,
-                 "movement and storage resources differ", object.plan.id);
+      builder.failure = broken(
+          BrokenStoragePlanReason::ResourceMismatch,
+          (llvm::Twine("movement and storage resources differ: ") +
+           objectDescription(object.plan.id) + ", element-type-equal=" +
+           llvm::Twine(movement.elementType == object.resource.elementType) +
+           ", movement-rank=" + llvm::Twine(movement.exactDomain.getRank()) +
+           ", storage-rank=" +
+           llvm::Twine(object.resource.exactDomain.getRank()) +
+           ", movement-form=" +
+           llvm::Twine(static_cast<unsigned>(movement.exactDomain.getForm())) +
+           ", storage-form=" +
+           llvm::Twine(
+               static_cast<unsigned>(object.resource.exactDomain.getForm())) +
+           ", movement-boxes=" +
+           llvm::Twine(movement.exactDomain.getBoxes().size()) +
+           ", storage-boxes=" +
+           llvm::Twine(object.resource.exactDomain.getBoxes().size()))
+              .str(),
+          object.plan.id);
       return false;
     }
     return true;
@@ -319,6 +406,9 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     if (!checkResource(*destination, action))
       break;
     builder.use(*source, StorageAccessSite{action});
+    if (std::holds_alternative<ExecutionResultValueId>(
+            transfer.source.logicalValue))
+      carriedExecutionResults.insert(transfer.source);
     builder.define(*destination, StorageAccessSite{std::move(action)});
   }
   if (builder.failure)
@@ -376,6 +466,33 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     if (!checkResource(*source, action))
       break;
     builder.use(*source, StorageAccessSite{std::move(action)});
+    carriedExecutionResults.insert(publication.source);
+  }
+  if (builder.failure)
+    return std::move(*builder.failure);
+
+  for (const PhysicalVersionPlan &version :
+       representations.plan.primaryVersions) {
+    const auto *result =
+        std::get_if<ExecutionResultValueId>(&version.id.logicalValue);
+    if (!result)
+      continue;
+    const bool carried = carriedExecutionResults.count(version.id);
+    const bool discarded = discardedExecutionResults.count(version.id);
+    if (carried && discarded)
+      return broken(BrokenStoragePlanReason::PlanBindingMismatch,
+                    "execution result is both carried and discarded",
+                    objectForVersion(version.id));
+    if (!carried && !discarded)
+      return broken(BrokenStoragePlanReason::MissingUse,
+                    "execution result has no carrier or explicit discard",
+                    objectForVersion(version.id));
+    if (discarded) {
+      PendingObject *object = builder.findVersion(version.id);
+      if (!object)
+        break;
+      builder.use(*object, StorageAccessSite{result->execution});
+    }
   }
   if (builder.failure)
     return std::move(*builder.failure);
@@ -423,8 +540,11 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
       return broken(BrokenStoragePlanReason::MissingDefinition,
                     "storage object has no definition", id);
     if (object.uses.empty())
-      return broken(BrokenStoragePlanReason::MissingUse,
-                    "storage object has no use", id);
+      return broken(
+          BrokenStoragePlanReason::MissingUse,
+          (llvm::Twine("storage object has no use: ") + objectDescription(id))
+              .str(),
+          id);
     builder.coordinate.lifetimes.push_back(
         {id, *object.definition,
          std::vector<StorageAccessSite>(object.uses.begin(),

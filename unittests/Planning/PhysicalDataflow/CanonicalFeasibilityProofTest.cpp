@@ -583,9 +583,12 @@ TEST_F(CanonicalFeasibilityProofTest,
 
   CanonicalStorageCoordinate unsupported = inputs->storage;
   ASSERT_FALSE(unsupported.resources.empty());
-  const ExactIndexSet &original = unsupported.resources.front().exactDomain;
-  unsupported.resources.front().exactDomain = ExactIndexSet(
-      original.getPresburgerSet(), ExactIndexSetForm::GeneralPresburger);
+  StorageResourceDescription &resource = unsupported.resources.front();
+  ExactIndexSet unsupportedDomain(resource.exactDomain.getPresburgerSet(),
+                                  ExactIndexSetForm::GeneralPresburger);
+  resource =
+      StorageResourceDescription{resource.object, std::move(unsupportedDomain),
+                                 resource.elementType, resource.encoding};
   CanonicalFeasibilityOutcome unsupportedOutcome =
       buildCanonicalFeasibilityProof(unsupported, inputs->movements,
                                      inputs->schedule, inputs->attention,

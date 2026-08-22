@@ -156,6 +156,7 @@ CanonicalMovementPlanOutcome buildCanonicalMovementPlan(
                   "canonical representation plan/resource mismatch");
 
   CoordinateBuilder builder;
+  std::set<PhysicalVersionId> carriedExecutionResults;
   for (const RegionGroupPlan &group : regions.groups) {
     if (group.mandatoryRoots.size() != 1)
       return broken(BrokenMovementPlanReason::PlanWorkMismatch,
@@ -225,6 +226,7 @@ CanonicalMovementPlanOutcome buildCanonicalMovementPlan(
         DDRBoundaryTransferPlan transfer{
             {destinationLogical}, source, destination};
         builder.coordinate.plan.ddrTransfers.push_back(transfer);
+        carriedExecutionResults.insert(source);
         builder.addResource(transfer.id, *destinationResource->second,
                             *binding.fragment.ownerTile, workId.tile, workId);
         break;
@@ -347,6 +349,7 @@ CanonicalMovementPlanOutcome buildCanonicalMovementPlan(
         }
         ResultPublicationPlan publication{{logical}, source};
         builder.coordinate.plan.publications.push_back(publication);
+        carriedExecutionResults.insert(source);
         builder.addResource(publication.id, *resource->second, work.id.tile,
                             std::nullopt, work.id);
       }
@@ -355,6 +358,16 @@ CanonicalMovementPlanOutcome buildCanonicalMovementPlan(
     }
   if (builder.failure)
     return std::move(*builder.failure);
+
+  for (const PhysicalVersionPlan &version :
+       representations.plan.primaryVersions) {
+    const auto *result =
+        std::get_if<ExecutionResultValueId>(&version.id.logicalValue);
+    if (!result || carriedExecutionResults.count(version.id))
+      continue;
+    builder.coordinate.plan.discards.push_back(
+        {ResultDiscardId{*result}, version.id});
+  }
 
   llvm::sort(builder.coordinate.plan.externalLoads,
              [](const ExternalLoadPlan &lhs, const ExternalLoadPlan &rhs) {
@@ -370,6 +383,10 @@ CanonicalMovementPlanOutcome buildCanonicalMovementPlan(
   llvm::sort(builder.coordinate.plan.publications,
              [](const ResultPublicationPlan &lhs,
                 const ResultPublicationPlan &rhs) { return lhs.id < rhs.id; });
+  llvm::sort(builder.coordinate.plan.discards,
+             [](const ResultDiscardPlan &lhs, const ResultDiscardPlan &rhs) {
+               return lhs.id < rhs.id;
+             });
   llvm::sort(builder.coordinate.resources,
              [&](const MovementResourceDescription &lhs,
                  const MovementResourceDescription &rhs) {

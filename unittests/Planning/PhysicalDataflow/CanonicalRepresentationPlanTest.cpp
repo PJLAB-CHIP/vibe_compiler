@@ -392,4 +392,68 @@ module {
   EXPECT_TRUE(emptyCoordinate->plan.primaryVersions.empty());
 }
 
+TEST_F(CanonicalRepresentationPlanTest,
+       NormalizesFiniteGeneralDomainIntoDisjointTensorPieces) {
+  auto module = parse(R"mlir(
+module {
+  func.func @holder() {
+    %value = tensor.empty() : tensor<2x1025x128xf16>
+    return
+  }
+}
+)mlir");
+  ASSERT_TRUE(module);
+  mlir::tensor::EmptyOp value;
+  module->walk([&](mlir::tensor::EmptyOp candidate) { value = candidate; });
+  ASSERT_TRUE(value);
+
+  IndexSetResult lower =
+      IndexRelation::staticRectangularDomain({0, 0, 0}, {2, 500, 128});
+  IndexSetResult upper =
+      IndexRelation::staticRectangularDomain({0, 500, 0}, {2, 525, 128});
+  ASSERT_TRUE(lower.isExact() && upper.isExact());
+  ExactIndexSet general(lower.set->unionSet(*upper.set),
+                        ExactIndexSetForm::GeneralPresburger);
+
+  SemanticRootKey root;
+  LogicalShardId shard{root, {}};
+  RootRegionWork work;
+  work.id = {root, TileId(0)};
+  work.rootOperation = &function(*module).getBody().front().back();
+  work.execution.push_back({shard, {{0, 2}, {0, 1025}, {0, 128}}});
+  RootSupportValueWork support;
+  support.id = {{}, 0};
+  support.operation = value;
+  support.result = 0;
+  support.requiredDomain = general;
+  work.supportValues.push_back(support);
+
+  CanonicalRegionPlanOutcome regionOutcome = buildCanonicalRegionPlan({work});
+  const RegionPlan *regions = getRegionPlan(regionOutcome);
+  ASSERT_NE(regions, nullptr);
+  CanonicalTemporalPlanOutcome temporalOutcome =
+      buildCanonicalTemporalPlan(*regions, {work});
+  const TemporalPlan *temporal = getTemporalPlan(temporalOutcome);
+  ASSERT_NE(temporal, nullptr);
+  CanonicalRepresentationPlanOutcome outcome =
+      buildCanonicalRepresentationPlan(*regions, *temporal, {work});
+  const CanonicalRepresentationCoordinate *coordinate =
+      getCanonicalRepresentationCoordinate(outcome);
+  ASSERT_NE(coordinate, nullptr);
+  ASSERT_EQ(coordinate->resources.size(), 1u);
+  const ExactIndexSet &normalized = coordinate->resources.front().exactDomain;
+  EXPECT_EQ(normalized.getForm(), ExactIndexSetForm::BoxUnion);
+  ASSERT_EQ(normalized.getBoxes().size(), 2u);
+  EXPECT_TRUE(
+      normalized.getPresburgerSet().isEqual(general.getPresburgerSet()));
+  EXPECT_EQ(normalized.getBoxes()[0].offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 0, 0}));
+  EXPECT_EQ(normalized.getBoxes()[0].sizes,
+            (llvm::SmallVector<int64_t, 4>{2, 500, 128}));
+  EXPECT_EQ(normalized.getBoxes()[1].offsets,
+            (llvm::SmallVector<int64_t, 4>{0, 500, 0}));
+  EXPECT_EQ(normalized.getBoxes()[1].sizes,
+            (llvm::SmallVector<int64_t, 4>{2, 525, 128}));
+}
+
 } // namespace
