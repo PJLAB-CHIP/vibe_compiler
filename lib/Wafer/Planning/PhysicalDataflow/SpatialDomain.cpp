@@ -919,7 +919,8 @@ SpatialPlanDomain::close(const SpatialPlan &plan,
 
 SpatialDomainEvaluation
 SpatialPlanDomain::evaluate(const StructuredDAGAnalysis &dag,
-                            const SpatialPlan &plan) const {
+                            const SpatialPlan &plan,
+                            const analysis::IndexRelationLimits &limits) const {
   SpatialDomainEvaluation evaluation;
   std::string detail;
   mlir::FailureOr<SpatialAssignment> assignment = close(plan, &detail);
@@ -928,8 +929,7 @@ SpatialPlanDomain::evaluate(const StructuredDAGAnalysis &dag,
     return evaluation;
   }
   mlir::FailureOr<DemandPlanningSession> session =
-      DemandPlanningSession::create(dag, analysis::IndexRelationLimits(),
-                                    &detail);
+      DemandPlanningSession::create(dag, limits, &detail);
   if (mlir::failed(session)) {
     evaluation.failure = fail(SpatialDomainFailureKind::BrokenContract, detail);
     return evaluation;

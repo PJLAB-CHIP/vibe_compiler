@@ -124,7 +124,7 @@ module {
   wafer::compiler::ProgramDataHandoff programData;
   auto executable = wafer::compiler::detail::buildCardExecutable(
       context, *tensorProgram, std::move(program), *executionConfig,
-      wafer::OptimizationConfig::search(), diagnostics, std::nullopt,
+      wafer::OptimizationConfig::none(), diagnostics, std::nullopt,
       programData);
   if (!executable)
     return executable.takeError();

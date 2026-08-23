@@ -24,6 +24,9 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
   Planning/PhysicalDataflow/SerializedExecutionPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
+  Planning/PhysicalDataflow/Search/PlanningProblem.cpp
+  Planning/PhysicalDataflow/Search/PlanningSession.cpp
+  Planning/PhysicalDataflow/Search/PlanningState.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp
   Planning/PhysicalDataflow/RepresentationPlan.cpp
   Planning/PhysicalDataflow/SchedulePlan.cpp
@@ -39,7 +42,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/AttentionAnalysis.cpp
   Planning/Search/Buffering.cpp
   Planning/Search/BufferingApply.cpp
-  Planning/Search/CardExecutableSearch.cpp
   Planning/Search/CoupledRegion.cpp
   Planning/Search/ComputeImplementation.cpp
   Planning/Search/DecodeAttentionAnalysis.cpp

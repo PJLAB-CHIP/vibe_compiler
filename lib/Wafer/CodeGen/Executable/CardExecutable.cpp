@@ -2,9 +2,10 @@
 
 #include "Wafer/CodeGen/Executable/CardExecutableInternal.h"
 
+#include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/Driver/CompilationStatistics.h"
 #include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
-#include "Wafer/Planning/Search/CardExecutableSearch.h"
+#include "Wafer/Planning/PhysicalDataflow/Search/PlanningSession.h"
 
 #include "Wafer/Support/CompileTiming.h"
 
@@ -262,40 +263,40 @@ compileTensorProgramModuleToCardExecutable(
         PolicyCompilationResult{std::move(baseline->executable),
                                 std::move(baseline->tileDataflowIRTrace)});
   } else if (optimizations.isSearch()) {
-    std::optional<detail::CardExecutableSearchSummary> searchSummary;
-    if (reportDetailedStatistics)
-      searchSummary.emplace();
-    mlir::FailureOr<detail::CardExecutableSearchResult> search =
-        detail::runCardExecutableSearch(
-            tensorModule, program, executionConfig, diagnostics, programData,
-            detail::SearchWorkBudget::bounded(
-                optimizations.getMaximumSearchCandidateEvaluations()),
-            searchSummary ? &*searchSummary : nullptr,
-            requestTileIRTrace);
-    if (mlir::failed(search))
-      return fail("card executable search failed");
-    if (searchSummary)
-      diagnostics
-          << "wafer-compile: compile-stats stage=physical-search"
-          << " evaluation_budget="
-          << optimizations.getMaximumSearchCandidateEvaluations()
-          << " generated=" << searchSummary->work.generated
-          << " evaluated=" << searchSummary->work.evaluated
-          << " accepted=" << searchSummary->work.accepted
-          << " exact_rejected=" << searchSummary->work.exactRejected
-          << " indeterminate=" << searchSummary->work.indeterminate
-          << " winner_updates=" << searchSummary->winnerUpdates << " coverage="
-          << (searchSummary->coverage ==
-                      detail::CardExecutableSearchCoverage::OptimalCertified
-                  ? "optimal-certified"
-              : searchSummary->coverage ==
-                      detail::CardExecutableSearchCoverage::FeasibleWithBound
-                  ? "feasible-with-bound"
-                  : "budgeted-feasible")
-          << " proposal_detail=" << searchSummary->proposalDetail
-          << " last_detail=" << searchSummary->lastDetail << '\n';
-    selected.emplace(PolicyCompilationResult{
-        std::move(search->executable), std::move(search->tileDataflowIRTrace)});
+    mlir::FailureOr<std::unique_ptr<detail::CardProgramAnalysis>>
+        programAnalysis = [&]() {
+          wafer::support::ScopedCompileTimingSpan timing(
+              "query", "physical-search", "analyze-card-program");
+          return detail::analyzeCardProgram(tensorModule, program,
+                                            executionConfig, diagnostics);
+        }();
+    if (mlir::failed(programAnalysis))
+      return fail("physical search analysis failed");
+    std::string failureReason;
+    mlir::FailureOr<detail::PhysicalDataflowPlanningProblem> problem =
+        detail::PhysicalDataflowPlanningProblem::create(
+            **programAnalysis, CardId(0), analysis::IndexRelationLimits(),
+            &failureReason);
+    if (mlir::failed(problem))
+      return fail("physical search problem failed: " + failureReason);
+    detail::PhysicalDataflowPlanningSession session(*problem);
+    mlir::FailureOr<detail::IncompletePlanningDomain> incomplete = [&]() {
+      wafer::support::ScopedCompileTimingSpan timing(
+          "planning", "physical-search", "spatial-frontier");
+      return session.getFirstIncompleteState(&failureReason);
+    }();
+    if (mlir::failed(incomplete))
+      return fail("physical search foundation failed: " + failureReason);
+    const detail::PlanningWorkCounts &work = incomplete->getWork();
+    diagnostics << "wafer-compile: physical-search incomplete"
+                << " required_coordinate="
+                << detail::stringifyRequiredPlanningCoordinate(
+                       incomplete->getRequiredCoordinate())
+                << " spatial_successor_steps=" << work.spatialSuccessorSteps
+                << " spatial_demand_queries=" << work.spatialDemandQueries
+                << " spatial_states=" << work.spatialStatesQueued
+                << " candidate_actualizations=0\n";
+    return fail("card executable search has an incomplete planning domain");
   } else {
     return fail("card executable compilation requires an optimization policy");
   }

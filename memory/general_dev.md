@@ -113,6 +113,12 @@ source program
 - host worker可以并行互不共享可写IR的proposal/query；state result合并、tie-break和最终顺序保持稳定。
 - regular factorized mapping、reuse-guided movement与分层resource cost应作为现有typed domain上的proposal/order机制；不为它们
   clone-per-mapping、不以function name/JSON/opaque sidecar关联状态，也不新增第二套hardware graph或winner owner。
+- search control foundation从validated `SpatialPlan`建立`SpatialState`；state只含typed semantic value。session单独拥有checked proposal
+  keys、last canonical choice、paused indeterminate choice和stable frontier。proposal/canonical dedup只记录有限proposal keys；canonical
+  successor已经证明无重复，不能为保险再保存全部canonical plans形成第二份全域集合。
+- planning coordinate未闭合时，显式search取得真实prefix后返回typed missing coordinate，且actual candidate count为0；public default
+  不得指向无法完成的controller。search不能baseline fallback、补default后缀或发布package；每个新轴由其owner原位扩closed state和
+  continuation，直到complete assignment才进入actual admission。
 - 每个complete candidate CardModule只经过一次无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
   actual result返回controller；lowering不能枚举、retile、spill、rebuffer或修candidate。带完整owner relation的actual rejection可关闭当前
@@ -592,8 +598,8 @@ source program
 
 ## Physical search profile资格（Q51+重审期间暂停）
 
-- 普通编译不收集search统计。Q51+重审闭合前不执行重型search profile；旧`--search-max-candidate-evaluations`控制的是complete
-  materialization/lowering次数，不能作为长期planning budget或scalability证据。
+- 普通编译不收集search统计。Q51+重审闭合前不执行重型search profile；旧`--search-max-candidate-evaluations`及对应public API已经退役，
+  complete materialization次数不能作为长期planning allowance或scalability证据。
 - 恢复profile前必须先证明public search不调用baseline、所有计划轴有production consumer、partial state只保存typed assignments、
   每个complete candidate actualize一次、winner不重建且publication一次，并有可信的work/coverage定义。no-card只验证package/runtime
   接口，不证明搜索质量或性能。

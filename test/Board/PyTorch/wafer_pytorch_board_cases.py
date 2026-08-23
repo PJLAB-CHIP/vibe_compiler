@@ -29,6 +29,7 @@ HF_LLAMA2_7B_COMPARISON = common.ComparisonPolicy(rtol=0.002, atol=0.004)
 ATTENTION_COMPARISON = common.ComparisonPolicy(rtol=0.006, atol=0.008)
 ATTENTION_HEAD_DIM = 64
 OPTIMIZATION_POLICIES = ("search", "none")
+SOURCE_NO_CARD_OPTIMIZATION_POLICIES = ("none",)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,7 +96,7 @@ SOURCE_NO_CARD_WORKLOADS = tuple(
     )
     for case_name in PRODUCTION_SOURCE_CASES
     for dtype_name, dtype_label in PRODUCTION_SOURCE_DTYPES
-    for optimization_policy in OPTIMIZATION_POLICIES
+    for optimization_policy in SOURCE_NO_CARD_OPTIMIZATION_POLICIES
 )
 
 

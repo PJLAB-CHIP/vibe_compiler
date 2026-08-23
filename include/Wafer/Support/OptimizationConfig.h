@@ -7,36 +7,24 @@
 
 namespace wafer {
 
-/// Invocation-local public optimization policy. Search exposes the full
-/// compiler-owned candidate domain; none selects the mandatory fully-gated
-/// baseline. Individual internal mechanisms are not user-configurable axes.
+/// Invocation-local public optimization policy. Search selects the
+/// compiler-owned planning controller; none selects the mandatory fully-gated
+/// baseline. Individual mechanisms and work allowances are not public axes.
 class OptimizationConfig {
 public:
-  /// Fresh representative profiles show that one actual candidate already
-  /// adds substantial compile work. Keep the production default explicit and
-  /// let callers request a different invocation-local budget.
-  static constexpr uint64_t kDefaultSearchCandidateEvaluations = 1;
-
-  static constexpr OptimizationConfig
-  search(uint64_t maximumCandidateEvaluations =
-             kDefaultSearchCandidateEvaluations) {
-    return OptimizationConfig(Policy::Search, maximumCandidateEvaluations);
+  static constexpr OptimizationConfig search() {
+    return OptimizationConfig(Policy::Search);
   }
   static constexpr OptimizationConfig none() {
-    return OptimizationConfig(Policy::None, 0);
+    return OptimizationConfig(Policy::None);
   }
 
   constexpr bool isSearch() const { return policy == Policy::Search; }
   constexpr bool isNone() const { return policy == Policy::None; }
-  constexpr uint64_t getMaximumSearchCandidateEvaluations() const {
-    return maximumSearchCandidateEvaluations;
-  }
 
   friend constexpr bool operator==(OptimizationConfig lhs,
                                    OptimizationConfig rhs) {
-    return lhs.policy == rhs.policy &&
-           lhs.maximumSearchCandidateEvaluations ==
-               rhs.maximumSearchCandidateEvaluations;
+    return lhs.policy == rhs.policy;
   }
   friend constexpr bool operator!=(OptimizationConfig lhs,
                                    OptimizationConfig rhs) {
@@ -46,13 +34,9 @@ public:
 private:
   enum class Policy : uint8_t { Search, None };
 
-  explicit constexpr OptimizationConfig(Policy policy,
-                                        uint64_t maximumSearchEvaluations)
-      : policy(policy),
-        maximumSearchCandidateEvaluations(maximumSearchEvaluations) {}
+  explicit constexpr OptimizationConfig(Policy policy) : policy(policy) {}
 
   Policy policy;
-  uint64_t maximumSearchCandidateEvaluations;
 };
 
 } // namespace wafer

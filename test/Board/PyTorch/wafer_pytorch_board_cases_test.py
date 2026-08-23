@@ -346,7 +346,9 @@ class PyTorchBoardCasesTest(unittest.TestCase):
             (case_name, dtype_name, 1, optimization_policy)
             for case_name in cases.PRODUCTION_SOURCE_CASES
             for dtype_name, _ in cases.PRODUCTION_SOURCE_DTYPES
-            for optimization_policy in cases.OPTIMIZATION_POLICIES
+            for optimization_policy in (
+                cases.SOURCE_NO_CARD_OPTIMIZATION_POLICIES
+            )
         }
         actual = {
             (
@@ -381,7 +383,9 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                     optimization_policy,
                 ): 2
                 for dtype_name, _ in cases.PRODUCTION_SOURCE_DTYPES
-                for optimization_policy in cases.OPTIMIZATION_POLICIES
+                for optimization_policy in (
+                    cases.SOURCE_NO_CARD_OPTIMIZATION_POLICIES
+                )
             },
         )
         self.assertEqual(
@@ -389,7 +393,7 @@ class PyTorchBoardCasesTest(unittest.TestCase):
                 entry.package_count
                 for entry in cases.SOURCE_NO_CARD_WORKLOADS
             ),
-            20,
+            10,
         )
 
         cmake = (

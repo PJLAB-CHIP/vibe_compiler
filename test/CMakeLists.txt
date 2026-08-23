@@ -155,50 +155,26 @@ if(WAFER_ENABLE_IMPORTER_DEPS AND
     endfunction()
 
     wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-conv-mixed-dag-fp16-optimization-search-no-card
-      conv-mixed-dag float16 fp16 search)
-    wafer_add_pytorch_source_no_card_test(
       wafer-runtime-pytorch-conv-mixed-dag-fp16-optimization-none-no-card
       conv-mixed-dag float16 fp16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-conv-mixed-dag-bf16-optimization-search-no-card
-      conv-mixed-dag bfloat16 bf16 search)
     wafer_add_pytorch_source_no_card_test(
       wafer-runtime-pytorch-conv-mixed-dag-bf16-optimization-none-no-card
       conv-mixed-dag bfloat16 bf16 none)
     wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-attention-prefill-fp16-optimization-search-no-card
-      attention-prefill float16 fp16 search)
-    wafer_add_pytorch_source_no_card_test(
       wafer-runtime-pytorch-attention-prefill-fp16-optimization-none-no-card
       attention-prefill float16 fp16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-attention-prefill-bf16-optimization-search-no-card
-      attention-prefill bfloat16 bf16 search)
     wafer_add_pytorch_source_no_card_test(
       wafer-runtime-pytorch-attention-prefill-bf16-optimization-none-no-card
       attention-prefill bfloat16 bf16 none)
     wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-search-no-card
-      attention-decode-kv-cache float16 fp16 search)
-    wafer_add_pytorch_source_no_card_test(
       wafer-runtime-pytorch-attention-decode-kv-cache-fp16-optimization-none-no-card
       attention-decode-kv-cache float16 fp16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-attention-decode-kv-cache-bf16-optimization-search-no-card
-      attention-decode-kv-cache bfloat16 bf16 search)
     wafer_add_pytorch_source_no_card_test(
       wafer-runtime-pytorch-attention-decode-kv-cache-bf16-optimization-none-no-card
       attention-decode-kv-cache bfloat16 bf16 none)
     wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-search-no-card
-      llama-2-7b-block float16 fp16 search)
-    wafer_add_pytorch_source_no_card_test(
       wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card
       llama-2-7b-block float16 fp16 none)
-    wafer_add_pytorch_source_no_card_test(
-      wafer-runtime-pytorch-llama-2-7b-block-bf16-optimization-search-no-card
-      llama-2-7b-block bfloat16 bf16 search)
     wafer_add_pytorch_source_no_card_test(
       wafer-runtime-pytorch-llama-2-7b-block-bf16-optimization-none-no-card
       llama-2-7b-block bfloat16 bf16 none)

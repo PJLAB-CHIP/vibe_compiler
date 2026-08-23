@@ -21,6 +21,7 @@ add_executable(WaferUnitTests
   Planning/Baseline/CanonicalBaselinePlanTest.cpp
   CodeGen/Executable/CardExecutableCompilationTest.cpp
   CodeGen/Executable/CardExecutableLoweringTest.cpp
+  CodeGen/Executable/SearchRoutingTest.cpp
   Transforms/Bufferization/SelectedBufferMaterializationTest.cpp
   Transforms/Transport/DirectDTETransportTest.cpp
   Program/ProgramTensorComparisonTest.cpp
@@ -42,10 +43,10 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/CanonicalSchedulePlanTest.cpp
   Planning/PhysicalDataflow/CanonicalPlanningCoverageTest.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecompositionTest.cpp
+  Planning/PhysicalDataflow/Search/PlanningSessionTest.cpp
   Planning/PhysicalDataflow/SpatialDomainTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Analysis/Executable/ProgramResourceVerificationTest.cpp
-  Planning/Search/CardExecutableSearchTest.cpp
   Planning/Search/BufferingTest.cpp
   Planning/Search/CoupledRegionTest.cpp
   Planning/Search/ComputeImplementationTest.cpp

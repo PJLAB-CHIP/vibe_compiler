@@ -131,7 +131,9 @@ public:
   bool contains(const SpatialPlan &plan) const;
 
   SpatialDomainEvaluation evaluate(const StructuredDAGAnalysis &dag,
-                                   const SpatialPlan &plan) const;
+                                   const SpatialPlan &plan,
+                                   const analysis::IndexRelationLimits &limits =
+                                       analysis::IndexRelationLimits()) const;
   mlir::FailureOr<SpatialAssignment>
   close(const SpatialPlan &plan, std::string *failureReason = nullptr) const;
 

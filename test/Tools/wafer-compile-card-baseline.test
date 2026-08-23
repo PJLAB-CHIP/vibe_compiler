@@ -7,6 +7,8 @@
 # communication, plus a multi-producer insert assembly whose opposite branch
 # is exact-empty on each half of the Tile domain. The none policy must not
 # report coupled operator fusion.
+# The chain invocation omits the policy deliberately and proves the current
+# transition default is the independent none controller.
 
 # RUN: rm -rf %t.chain %t.chain-package %t.gemm %t.gemm-package %t.cross %t.cross-package %t.cross-ir %t.insert %t.insert-package
 
@@ -14,7 +16,7 @@
 # RUN: printf '%b' 'module {\n  func.func @main(%%lhs: tensor<32x32xf16>, %%rhs: tensor<32x32xf16>) -> tensor<32x32xf16> {\n    %%sum = stablehlo.add %%lhs, %%rhs : tensor<32x32xf16>\n    %%result = stablehlo.multiply %%sum, %%rhs : tensor<32x32xf16>\n    return %%result : tensor<32x32xf16>\n  }\n}\n' > %t.chain/functions/forward.mlir
 # RUN: %stablehlo_translate --serialize --target=1.7.1 %t.chain/functions/forward.mlir -o %t.chain/functions/forward.stablehlo.bc && rm %t.chain/functions/forward.mlir
 # RUN: printf '%b' '{"name":"forward","stablehlo_version":"0.0.0","input_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]},{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"output_signature":[{"shape":[32,32],"dtype":"float16","dynamic_dims":[]}],"input_locations":[{"type_":"input_arg","position":0,"name":"lhs"},{"type_":"input_arg","position":1,"name":"rhs"}],"unused_inputs":[]}\n' > %t.chain/functions/forward.meta
-# RUN: wafer-compile --input-program-dir %t.chain --output-dir %t.chain-package --num-partitions=1 --optimization-policy=none 2>&1 | FileCheck %s --check-prefix=CHAIN --implicit-check-not=compile-stats --implicit-check-not=compile-work --implicit-check-not=instruction-work --implicit-check-not=program-data-io
+# RUN: wafer-compile --input-program-dir %t.chain --output-dir %t.chain-package --num-partitions=1 2>&1 | FileCheck %s --check-prefix=CHAIN --implicit-check-not=compile-stats --implicit-check-not=compile-work --implicit-check-not=instruction-work --implicit-check-not=program-data-io
 # RUN: wafer-run --package-dir %t.chain-package --no-card | FileCheck %s --check-prefix=NO-CARD
 
 # RUN: mkdir -p %t.gemm/functions

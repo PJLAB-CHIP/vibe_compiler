@@ -132,7 +132,7 @@ private:
 class CompilationOptions {
 public:
   static CompilationOptions
-  standard(OptimizationConfig optimizations = OptimizationConfig::search(),
+  standard(OptimizationConfig optimizations = OptimizationConfig::none(),
            CompilationTimingMode timing = CompilationTimingMode::Disabled) {
     return CompilationOptions(/*profileInstrumentation=*/false, optimizations,
                               timing);
@@ -143,7 +143,7 @@ public:
   /// profile-only captures for that same accepted Tile executable set.
   static llvm::Expected<CompilationOptions>
   profile(const ExecutionConfig &executionConfig,
-          OptimizationConfig optimizations = OptimizationConfig::search(),
+          OptimizationConfig optimizations = OptimizationConfig::none(),
           CompilationTimingMode timing = CompilationTimingMode::Disabled);
 
   bool shouldProduceProfileInstrumentation() const {

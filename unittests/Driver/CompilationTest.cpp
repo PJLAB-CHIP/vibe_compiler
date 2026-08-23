@@ -152,6 +152,9 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteTileKernelDomain) {
                    .shouldProduceProfileInstrumentation());
   EXPECT_FALSE(wafer::compiler::CompilationOptions::standard()
                    .shouldReportDetailedTiming());
+  EXPECT_TRUE(wafer::compiler::CompilationOptions::standard()
+                  .getOptimizationConfig()
+                  .isNone());
   EXPECT_TRUE(wafer::compiler::CompilationOptions::standard(
                   wafer::OptimizationConfig::search(),
                   wafer::compiler::CompilationTimingMode::Detailed)
@@ -160,7 +163,6 @@ TEST(CompilationTest, ProfileOptionsRequireCompleteTileKernelDomain) {
 
 TEST(CompilationTest, OptimizationConfigHasExactlySearchAndNonePolicies) {
   wafer::OptimizationConfig search = wafer::OptimizationConfig::search();
-  wafer::OptimizationConfig widerSearch = wafer::OptimizationConfig::search(3);
   wafer::OptimizationConfig none = wafer::OptimizationConfig::none();
 
   EXPECT_TRUE(search.isSearch());
@@ -168,10 +170,6 @@ TEST(CompilationTest, OptimizationConfigHasExactlySearchAndNonePolicies) {
   EXPECT_FALSE(none.isSearch());
   EXPECT_TRUE(none.isNone());
   EXPECT_NE(search, none);
-  EXPECT_NE(search, widerSearch);
-  EXPECT_EQ(search.getMaximumSearchCandidateEvaluations(), 1u);
-  EXPECT_EQ(widerSearch.getMaximumSearchCandidateEvaluations(), 3u);
-  EXPECT_EQ(none.getMaximumSearchCandidateEvaluations(), 0u);
 
   wafer::compiler::CompilationOptions options =
       wafer::compiler::CompilationOptions::standard(none);

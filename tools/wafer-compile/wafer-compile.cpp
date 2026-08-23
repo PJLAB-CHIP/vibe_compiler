@@ -214,13 +214,6 @@ int main(int argc, char **argv) {
                                    (commitVerificationFailure ? 1u : 0u) +
                                    (packageBindingFailure ? 1u : 0u) +
                                    (profileBindingFailure ? 1u : 0u);
-  if (*optimizationConfig != wafer::OptimizationConfig::search() &&
-      failureInjectionCount != 0) {
-    llvm::errs()
-        << "wafer-compile: explicit optimization configuration cannot be "
-           "combined with test-only compilation controls\n";
-    return 1;
-  }
   if (options.profile &&
       (executableFailureSlot || targetFailureSlot || packageFailureSlot)) {
     llvm::errs() << "wafer-compile: --profile cannot be combined with "

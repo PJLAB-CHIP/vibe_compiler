@@ -20,7 +20,6 @@ void printHelp() {
   llvm::outs() << "usage: wafer-compile --input-program-dir <dir> "
                   "--output-dir <dir> --num-partitions <1> "
                   "[--optimization-policy <search|none>] "
-                  "[--search-max-candidate-evaluations <count>] "
                   "[--compile-timing] "
                   "[--dump-compiler-ir <dir>] "
                   "[--profile]\n";
@@ -174,14 +173,6 @@ bool parseCommandLine(int argc, char **argv, CommandLineOptions &options) {
         arg.starts_with("--optimization-policy=")) {
       if (parseValueOption(argc, argv, index, arg, "--optimization-policy",
                            options.optimizationPolicy))
-        return false;
-      continue;
-    }
-    if (arg == "--search-max-candidate-evaluations" ||
-        arg.starts_with("--search-max-candidate-evaluations=")) {
-      if (parseValueOption(argc, argv, index, arg,
-                           "--search-max-candidate-evaluations",
-                           options.searchMaximumCandidateEvaluations))
         return false;
       continue;
     }
@@ -520,28 +511,13 @@ std::optional<double> parseTolerance(const std::optional<std::string> &value,
 
 std::optional<OptimizationConfig>
 parseOptimizationConfig(const CommandLineOptions &options) {
-  std::optional<uint64_t> searchEvaluations;
-  if (options.searchMaximumCandidateEvaluations) {
-    searchEvaluations =
-        parsePositiveCount(options.searchMaximumCandidateEvaluations,
-                           "--search-max-candidate-evaluations");
-    if (!searchEvaluations)
-      return std::nullopt;
-  }
-  const uint64_t budget = searchEvaluations.value_or(
-      OptimizationConfig::kDefaultSearchCandidateEvaluations);
-  OptimizationConfig config = OptimizationConfig::search(budget);
+  OptimizationConfig config = OptimizationConfig::none();
   if (options.optimizationPolicy) {
     if (*options.optimizationPolicy == "search")
-      config = OptimizationConfig::search(budget);
-    else if (*options.optimizationPolicy == "none") {
-      if (options.searchMaximumCandidateEvaluations) {
-        llvm::errs() << "wafer-compile: --search-max-candidate-evaluations "
-                        "requires --optimization-policy=search\n";
-        return std::nullopt;
-      }
+      config = OptimizationConfig::search();
+    else if (*options.optimizationPolicy == "none")
       config = OptimizationConfig::none();
-    } else {
+    else {
       llvm::errs() << "wafer-compile: invalid --optimization-policy value: "
                    << *options.optimizationPolicy
                    << " (expected search or none)\n";

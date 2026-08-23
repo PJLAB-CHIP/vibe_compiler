@@ -27,7 +27,6 @@ struct CommandLineOptions {
   std::optional<std::string> numPartitions;
   std::optional<std::string> compilerIRDumpDirectory;
   std::optional<std::string> optimizationPolicy;
-  std::optional<std::string> searchMaximumCandidateEvaluations;
   bool compileTiming = false;
   bool profile = false;
   // The following fields belong to the internal qualification/debug entry

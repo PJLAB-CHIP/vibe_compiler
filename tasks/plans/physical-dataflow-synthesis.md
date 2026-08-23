@@ -1,7 +1,8 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
-状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary和Q49.P
-deterministic baseline已经闭合；当前下一项是`spatial-domain`。Q51.Core、Q50.S attention vertical、Q50.B–K、Q51、Q52与Q53的
+状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
+deterministic baseline、Q50.B spatial-domain和Q51.Core search-control-foundation已经闭合；当前下一项是`root-work-domain`。Q50.S
+attention vertical、Q50.C–K、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -18,7 +19,7 @@ physical-dataflow winner owner；Q52只在该正确性基础上改善10–30分�
 donor中的独有算法/proof/diagnostic/test witness、current owner、production consumer、query/apply边界和端到端证据。旧实现不整体
 恢复；仍需要的能力必须迁入current typed边界并由production调用，之后才能确认旧文件删除成立。
 
-已确认的硬事实：
+以下硬事实是search-control-foundation切换前的重建审计快照；后文各work item闭合结果是更新后的current事实：
 
 - Q51.Core提交删除了`CardExecutableSynthesis`、rank search/evaluation/selection、graph placement、schedule、cost和attention等
   多个独有算法owner；新`CardExecutableSearch`当时只是baseline passthrough，通用`runSearchControl`从创建到退役始终只有unit
@@ -849,6 +850,48 @@ Pipeline position:
   board inventory不再读取旧source marker、不要求`none/search` paired package或解析旧selection stderr；与搜索无关的transaction/
   failure-injection test不再被强制走`search`；Q50.S可以增加fixed semantic facts，Q50.B可以加入第一批真实typed axis，均不修改control semantics。
 ```
+
+### Work Item `search-control-foundation`覆盖矩阵
+
+本项只建立真实spatial prefix的control plane并切public routing；Region及后续坐标不存在时必须typed incomplete，不能调用旧complete
+assignment、CardModule materializer或Q50.0。实现和收尾逐项检查：
+
+| 等价类 | 输入 | exact断言 | 直接witness |
+| --- | --- | --- | --- |
+| 真实aligned/ragged spatial prefix | rank-3/4 FP16/BF16，1024与1025/1031，16 Tiles | production `SpatialPlanDomain` proposal与canonical cursor形成validated `SpatialState`；Q50.A satisfied；source byte-identical | first frontier state返回`RequiredPlanningCoordinate::Region`，candidate materialization/Q50.0/workspace offset计数均为0 |
+| tiny完整continuation | 2--4 extent、2--4 Tiles，包含Balanced/Uniform、embedding和reduction merge | session逐次resume至exhausted得到的stable state key集合与独立`SpatialPlanReference`完全相等；proposal/canonical重复只入队一次 | continuation不保存IR/domain object/ordinal，frontier按`SpatialPlan`完整semantic key确定性出队 |
+| graph与scalar | scalar、chain、independent branches、diamond/fanin/fanout、multi-result | zero-rank singleton和program Cartesian states不丢失；相同state由proposal/canonical两条路径到达时dedup | missing Region对每个pop出的state一致，不从baseline/default字段补后缀 |
+| typed outcome | invalid state、unsupported demand、indeterminate demand、domain successor contract failure | unsupported resolved choice不删未访问siblings；indeterminate保留同一choice以便resume；broken contract停止session | failure分类来自typed domain/Q50.A outcome，不解析diagnostic string |
+| public policy routing | 默认/显式`none`与显式`search`，timing on/off | 默认和显式none仍走Q49.P；search只进入new session并稳定失败为incomplete Region；两条policy互不调用 | search diagnostics含required coordinate与spatial work，且无baseline、CardModule/Q50.0、package或winner输出 |
+| interface retirement | CLI/API/CMake/test/catalog/source检查 | `OptimizationConfig`只含closed Search/None；candidate-evaluation count option/API、旧CardExecutableSearch controller/test/source和paired search no-card catalog零残留 | source-organization、public link、driver option及lit正负例fresh通过 |
+
+本项不运行search model/package/no-card成功路径，因为缺Region时成功发布本身就是合同错误；真实规模只验证analysis/state/routing，不构造
+actual candidate。后续每个axis在同一state/continuation合同上原位扩variant，直到`full-feasibility`才允许首个actual admission。
+
+### Work Item `search-control-foundation`闭合结果
+
+- 新owner位于`Planning/PhysicalDataflow/Search`：`PhysicalDataflowPlanningProblem`只借用immutable `CardProgramAnalysis`并拥有current
+  `SpatialPlanDomain`；`SpatialState`只保存validated `SpatialPlan`；`PhysicalDataflowPlanningSession`拥有proposal keys、canonical cursor、
+  paused indeterminate choice和按完整state key排序的frontier。candidate state不含parent、pointer、proposal ordinal、demand proof或统计。
+- continuation先发checked proposal，再沿Q50.B complete canonical successor推进；resolved proposal key只用于proposal/canonical dedup，
+  不保存全部canonical domain。Q50.A satisfied才入队；Unsupported消费当前choice但保留下一sibling，Indeterminate保留同一choice，
+  compiler contract failure停止。
+- public policy switch已经原位改接new session。默认和显式`none`只调用Q49.P；显式`search`取得首个真实spatial state后返回typed
+  `IncompletePlanningDomain(required=Region)`，diagnostic明确`candidate_actualizations=0`，不构造CardModule、不调用Q50.0、不写package，
+  也不调用baseline。
+- `OptimizationConfig`只保留closed Search/None identity；默认改为none。旧candidate evaluation count API/CLI/help、
+  `CardExecutableSearch`/`SearchWork` source和5项old complete-candidate tests删除；test-only commit/transaction fault controls按真实outer owner
+  可在none路径运行。PyTorch public runner仍接受`search|none`，但current source/no-card catalog只注册none，不再用paired search entry伪造资格。
+- `UnifiedPhysicalDataflowDomain`及各D--I donor mechanism暂时保留为后续owner的能力来源，但已不在public search call tree；new Core headers/source
+  不include Baseline或CodeGen，partial expansion不持有或clone IR。
+- old `CardExecutableSearch`中仍正确的“一个完整assignment只经一次materialize→Q50.0”能力继续由
+  `UnifiedPhysicalDataflowTest`和共享`compileCardModuleToExecutable` seam直接见证；public evaluation-count cap、TensorProgram alternative
+  clone、六项raw metric局部winner和summary/trace controller均不满足终态合同，没有作为能力迁入，随旧controller删除。
+
+fresh证据：`PlanningSessionTest` 6/6、`SearchRoutingTest` 2/2，覆盖rank-3 aligned FP16、rank-4 ragged BF16、scalar、chain、tiny
+reference exhaustion、proposal/canonical convergence、stable frontier、跨parse pointer-independent key、Unsupported、Indeterminate和invalid state；
+普通host unit 823/823；四项定向Tools lit 4/4；完整configured lit 262 passed、4 configured unsupported；source organization通过；configured
+PyTorch board/catalog Python CTest 1/1。该结果只签发foundation和public incomplete routing，不签发Q51 complete search或package成功。
 
 ### 四类query-local事实
 
