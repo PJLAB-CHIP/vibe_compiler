@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningSession.h"
 
+#include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 
 #include <type_traits>
@@ -213,6 +214,115 @@ PhysicalDataflowPlanningSession::takeNextSpatialState() {
   return state;
 }
 
+mlir::FailureOr<RegionDomain *>
+PhysicalDataflowPlanningSession::getOrCreateRegionDomain(
+    const SpatialState &spatial, std::string *failureReason) {
+  auto cached = regionDomainCache.find(spatial.getPlan());
+  if (cached != regionDomainCache.end())
+    return &cached->second;
+  SpatialDomainEvaluation evaluation = problem.getSpatialDomain().evaluate(
+      problem.getProgram().dag, spatial.getPlan(), problem.getRelationLimits());
+  if (!evaluation.isSatisfied()) {
+    if (failureReason) {
+      if (evaluation.failure)
+        *failureReason = evaluation.failure->detail;
+      else if (evaluation.demand)
+        *failureReason = getDemandDetail(*evaluation.demand);
+      else
+        *failureReason = "region transition has no spatial demand outcome";
+    }
+    return mlir::failure();
+  }
+  const analysis::ExactDemandProof *proof =
+      analysis::getExactDemandProof(*evaluation.demand);
+  if (!proof) {
+    if (failureReason)
+      *failureReason = "satisfied region transition has no demand proof";
+    return mlir::failure();
+  }
+  std::string detail;
+  auto rootDomain = RootWorkDomain::create(
+      problem.getProgram().dag, *evaluation.assignment, *proof,
+      problem.getProgram().availableTileIds, &detail);
+  if (mlir::failed(rootDomain)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  RootWorkCollectionOutcome collected =
+      collectRootWorks(*rootDomain, problem.getRelationLimits());
+  RootWorkCollection *rootWorks = getRootWorkCollection(collected);
+  if (!rootWorks || rootWorks->works.empty()) {
+    if (failureReason)
+      *failureReason =
+          rootWorks ? "region transition has an empty root-work domain"
+                    : std::visit(
+                          [](const auto &value) -> std::string {
+                            using T = std::decay_t<decltype(value)>;
+                            if constexpr (std::is_same_v<T, RootWorkCollection>)
+                              return {};
+                            else
+                              return value.detail;
+                          },
+                          collected);
+    return mlir::failure();
+  }
+  auto regionDomain = RegionDomain::create(rootWorks->works, &detail);
+  if (mlir::failed(regionDomain)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  auto [stored, inserted] = regionDomainCache.try_emplace(
+      spatial.getPlan(), std::move(*regionDomain));
+  if (!inserted) {
+    if (failureReason)
+      *failureReason = "region domain cache changed during construction";
+    return mlir::failure();
+  }
+  return &stored->second;
+}
+
+mlir::FailureOr<std::optional<RegionState>>
+PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
+                                              std::string *failureReason) {
+  if (continuation.exhausted)
+    return std::optional<RegionState>{};
+  mlir::FailureOr<RegionDomain *> regionDomain =
+      getOrCreateRegionDomain(continuation.parent, failureReason);
+  if (mlir::failed(regionDomain))
+    return mlir::failure();
+  ++work.regionSuccessorSteps;
+  RegionSuccessor next =
+      continuation.started ? (*regionDomain)->getNextPlan(*continuation.cursor)
+                           : (*regionDomain)->getFirstPlan();
+  if (next.getKind() == RegionSuccessorKind::End) {
+    continuation.exhausted = true;
+    continuation.cursor.reset();
+    return std::optional<RegionState>{};
+  }
+  if (next.getKind() != RegionSuccessorKind::Plan || !next.getPlan() ||
+      !next.getCursor()) {
+    if (failureReason)
+      *failureReason = next.getDetail().empty()
+                           ? "region successor omitted its plan or cursor"
+                           : next.getDetail().str();
+    return mlir::failure();
+  }
+  std::string detail;
+  auto state = RegionState::create(**regionDomain, continuation.parent,
+                                   *next.getPlan(), &detail);
+  if (mlir::failed(state)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  continuation.cursor = *next.getCursor();
+  continuation.started = true;
+  ++work.regionStatesQueued;
+  return std::optional<RegionState>(std::move(*state));
+}
+
 mlir::FailureOr<IncompletePlanningDomain>
 PhysicalDataflowPlanningSession::getFirstIncompleteState(
     std::string *failureReason) {
@@ -245,8 +355,13 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
       *failureReason = "spatial frontier lost a queued state";
     return mlir::failure();
   }
-  return IncompletePlanningDomain(std::move(*state), hasRemainingSpatialWork(),
-                                  work);
+  RegionContinuation continuation = createRegionContinuation(std::move(*state));
+  mlir::FailureOr<std::optional<RegionState>> region =
+      resumeRegion(continuation, failureReason);
+  if (mlir::failed(region) || !*region)
+    return mlir::failure();
+  return IncompletePlanningDomain(std::move(**region),
+                                  hasRemainingSpatialWork(), work);
 }
 
 bool PhysicalDataflowPlanningSession::hasRemainingSpatialWork() const {

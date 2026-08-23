@@ -29,6 +29,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/Search/PlanningSession.cpp
   Planning/PhysicalDataflow/Search/PlanningState.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp
+  Planning/PhysicalDataflow/RegionDomain.cpp
   Planning/PhysicalDataflow/RepresentationPlan.cpp
   Planning/PhysicalDataflow/SchedulePlan.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecomposition.cpp

@@ -14,8 +14,8 @@
 # RUN: not wafer-compile --input-program-dir %t.source --output-dir %t.timed-package --num-partitions=1 --optimization-policy=search --compile-timing 2>&1 | FileCheck %s --check-prefix=SEARCH-TIMED --implicit-check-not=deterministic-card-executable-baseline --implicit-check-not=card-executable-compilation\ outcome= --implicit-check-not=wrote\ verified\ package
 # RUN: test ! -e %t.timed-package
 
-# SEARCH: wafer-compile: physical-search incomplete required_coordinate=region
+# SEARCH: wafer-compile: physical-search incomplete required_coordinate=temporal
 # SEARCH-SAME: candidate_actualizations=0
 # SEARCH: wafer-compile: card executable search has an incomplete planning domain
-# SEARCH-TIMED: wafer-compile: physical-search incomplete required_coordinate=region
+# SEARCH-TIMED: wafer-compile: physical-search incomplete required_coordinate=temporal
 # SEARCH-TIMED-SAME: candidate_actualizations=0

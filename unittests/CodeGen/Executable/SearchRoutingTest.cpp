@@ -12,7 +12,7 @@ namespace {
 using namespace wafer::compiler::testing;
 
 TEST(SearchRoutingTest,
-     ExplicitSearchStopsAtMissingRegionWithoutBaselineOrActualCandidate) {
+     ExplicitSearchStopsAtMissingTemporalWithoutBaselineOrActualCandidate) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
   std::string sourceBefore;
@@ -30,13 +30,15 @@ TEST(SearchRoutingTest,
   llvm::consumeError(executable.takeError());
   diagnostics.flush();
   EXPECT_NE(diagnosticsText.find(
-                "physical-search incomplete required_coordinate=region"),
+                "physical-search incomplete required_coordinate=temporal"),
             std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("candidate_actualizations=0"),
             std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("root_works="), std::string::npos)
+      << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("region_states=1"), std::string::npos)
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
             std::string::npos)

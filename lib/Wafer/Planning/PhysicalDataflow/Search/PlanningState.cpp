@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
 
+#include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 
 namespace wafer::compiler::detail {
@@ -11,6 +12,8 @@ stringifyRequiredPlanningCoordinate(RequiredPlanningCoordinate coordinate) {
   switch (coordinate) {
   case RequiredPlanningCoordinate::Region:
     return "region";
+  case RequiredPlanningCoordinate::Temporal:
+    return "temporal";
   }
   return "unknown";
 }
@@ -24,6 +27,18 @@ SpatialState::create(const PhysicalDataflowPlanningProblem &problem,
     return mlir::failure();
   }
   return SpatialState(std::move(plan));
+}
+
+mlir::FailureOr<RegionState> RegionState::create(const RegionDomain &domain,
+                                                 SpatialState spatial,
+                                                 RegionPlan regions,
+                                                 std::string *failureReason) {
+  if (!domain.contains(regions)) {
+    if (failureReason)
+      *failureReason = "RegionState plan is outside the current domain";
+    return mlir::failure();
+  }
+  return RegionState(std::move(spatial), std::move(regions));
 }
 
 } // namespace wafer::compiler::detail

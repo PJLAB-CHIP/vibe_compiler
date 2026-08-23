@@ -124,6 +124,12 @@ source program
   baseline和search消费同一domain/collector，RootRegionWork仍留在query-local derived values。
 - selected root leaf必须同时表达optional execution和owned merge placements。merge-only Tile不是“没有leaf”；outer group emitter必须证明
   每个merge由selected contribution shards承接。Region partition未选择前只能test-only direct actualize，production partial planning保持零IR。
+- region planning把group partition、execution placement和use delivery分开：required execution与explicit replica是不同typed IDs，
+  StoredRegionValue与DirectNestedValue是local binding选择，External由fragment未绑定直接表达。same Tile不自动fusion，movement也不能反向
+  新增replica或改变group。
+- connected partition和fragment choices用opaque continuation lazy推进；candidate只保存`RegionPlan`。pure producer replica可跨group/Tile，
+  required execution只有在same group时可local供给；fanout共享必须由多个bindings显式引用同一execution，split方案必须有多个replica IDs。
+  effectful producer不进入direct/replica choice。Region未闭合时public search不能越过到actual IR。
 - 每个complete candidate CardModule只经过一次无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
   actual result返回controller；lowering不能枚举、retile、spill、rebuffer或修candidate。带完整owner relation的actual rejection可关闭当前

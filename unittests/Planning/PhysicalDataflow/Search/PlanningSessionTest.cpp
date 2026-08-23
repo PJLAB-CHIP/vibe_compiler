@@ -226,15 +226,18 @@ TEST_F(PlanningSessionTest,
   auto incomplete = session.getFirstIncompleteState(&failureReason);
   ASSERT_TRUE(mlir::succeeded(incomplete)) << failureReason;
   EXPECT_EQ(incomplete->getRequiredCoordinate(),
-            RequiredPlanningCoordinate::Region);
-  EXPECT_TRUE(
-      problem->getSpatialDomain().contains(incomplete->getState().getPlan()));
+            RequiredPlanningCoordinate::Temporal);
+  EXPECT_TRUE(problem->getSpatialDomain().contains(
+      incomplete->getState().getSpatialPlan()));
+  EXPECT_FALSE(incomplete->getState().getRegionPlan().groups.empty());
   EXPECT_TRUE(incomplete->hasRemainingSpatialWork());
   EXPECT_EQ(incomplete->getWork().spatialStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().spatialDemandQueries, 1u);
   EXPECT_GT(incomplete->getWork().rootWorksValidated, 0u);
   EXPECT_EQ(incomplete->getWork().rootWorkSuccessorSteps,
             incomplete->getWork().rootWorksValidated + 1);
+  EXPECT_EQ(incomplete->getWork().regionSuccessorSteps, 1u);
+  EXPECT_EQ(incomplete->getWork().regionStatesQueued, 1u);
   EXPECT_EQ(print(module->getOperation()), before);
 
   auto secondModule = parse(kRealSource);
@@ -394,6 +397,29 @@ TEST_F(PlanningSessionTest, ScalarAndChainPrefixesRemainComplete) {
       actual.insert(state.getPlan());
     EXPECT_EQ(actual, expected);
     EXPECT_EQ(states->size(), 16u);
+
+    auto selected = llvm::find_if(*states, [](const SpatialState &state) {
+      return llvm::all_of(state.getPlan().nodes,
+                          [](const NodeSpatialPlan &node) {
+                            return node.embedding.size() == 1 &&
+                                   node.embedding.front() == TileId(0);
+                          });
+    });
+    ASSERT_NE(selected, states->end());
+    RegionContinuation continuation =
+        session.createRegionContinuation(*selected);
+    std::set<RegionPlan> regionPlans;
+    while (true) {
+      auto region = session.resumeRegion(continuation, &failureReason);
+      ASSERT_TRUE(mlir::succeeded(region)) << failureReason;
+      if (!*region)
+        break;
+      EXPECT_EQ((*region)->getRequiredCoordinate(),
+                RequiredPlanningCoordinate::Temporal);
+      regionPlans.insert((*region)->getRegionPlan());
+    }
+    EXPECT_TRUE(continuation.isExhausted());
+    EXPECT_EQ(regionPlans.size(), 7u);
   }
 }
 

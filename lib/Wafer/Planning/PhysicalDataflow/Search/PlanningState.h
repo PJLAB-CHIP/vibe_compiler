@@ -3,6 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 
+#include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -16,11 +17,12 @@
 namespace wafer::compiler::detail {
 
 class PhysicalDataflowPlanningProblem;
+class RegionDomain;
 
-/// The only not-yet-closed coordinate after a SpatialState in the current
-/// planning pipeline. New coordinates extend the closed state sequence in
-/// their owning work item; they are not nullable fields in this state.
-enum class RequiredPlanningCoordinate : uint8_t { Region };
+/// Not-yet-closed coordinate immediately following the deepest current state.
+/// New coordinates extend the closed state sequence in their owning work item;
+/// they are not nullable fields in an earlier state.
+enum class RequiredPlanningCoordinate : uint8_t { Region, Temporal };
 
 llvm::StringRef
 stringifyRequiredPlanningCoordinate(RequiredPlanningCoordinate coordinate);
@@ -50,6 +52,40 @@ private:
   explicit SpatialState(SpatialPlan plan) : plan(std::move(plan)) {}
 
   SpatialPlan plan;
+};
+
+/// A validated region prefix extending one SpatialState. RootRegionWork and
+/// exact demand remain derived session facts and are not copied into identity.
+class RegionState {
+public:
+  static mlir::FailureOr<RegionState>
+  create(const RegionDomain &domain, SpatialState spatial, RegionPlan regions,
+         std::string *failureReason = nullptr);
+
+  const SpatialState &getSpatialState() const { return spatial; }
+  const SpatialPlan &getSpatialPlan() const { return spatial.getPlan(); }
+  const RegionPlan &getRegionPlan() const { return regions; }
+  RequiredPlanningCoordinate getRequiredCoordinate() const {
+    return RequiredPlanningCoordinate::Temporal;
+  }
+
+  friend bool operator==(const RegionState &lhs, const RegionState &rhs) {
+    return lhs.spatial == rhs.spatial && lhs.regions == rhs.regions;
+  }
+  friend bool operator<(const RegionState &lhs, const RegionState &rhs) {
+    if (lhs.spatial < rhs.spatial)
+      return true;
+    if (rhs.spatial < lhs.spatial)
+      return false;
+    return lhs.regions < rhs.regions;
+  }
+
+private:
+  RegionState(SpatialState spatial, RegionPlan regions)
+      : spatial(std::move(spatial)), regions(std::move(regions)) {}
+
+  SpatialState spatial;
+  RegionPlan regions;
 };
 
 } // namespace wafer::compiler::detail

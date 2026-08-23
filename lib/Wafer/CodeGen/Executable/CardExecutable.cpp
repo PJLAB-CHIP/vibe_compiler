@@ -297,6 +297,8 @@ compileTensorProgramModuleToCardExecutable(
                 << " spatial_states=" << work.spatialStatesQueued
                 << " root_work_steps=" << work.rootWorkSuccessorSteps
                 << " root_works=" << work.rootWorksValidated
+                << " region_steps=" << work.regionSuccessorSteps
+                << " region_states=" << work.regionStatesQueued
                 << " candidate_actualizations=0\n";
     return fail("card executable search has an incomplete planning domain");
   } else {

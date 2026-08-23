@@ -1,8 +1,8 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
-deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation和Q50.C root-work-domain已经闭合；当前下一项是
-`region-execution-domain`。Q50.S attention vertical、Q50.D–K、Q51 closure、Q52与Q53的
+deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
+region-execution-domain已经闭合；当前下一项是`temporal-domain`。Q50.S attention vertical、Q50.E–K、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -2376,6 +2376,45 @@ tiny graph只用于独立组合oracle或单一故障负例。
 | FD coupled state | rank-5/6、K2为1024/1031或multi-K2 | Maximum/Sum/Accumulator仍由一个merge execution引用同一requirement，不能拆成三个region executions | attention-work-projection后续从同一group/merge ID投影actions/resources |
 | invariant与empty work | program input/constant/scalar capture、merge-only Tile、empty Tile、rank-zero | invariant boundary形成无owner external fragment；merge-only work仍有group/merge execution；empty Tile无group；rank-zero execution ID合法 | leaf/temporal query不依赖shape rank或虚构shard |
 | typed failure | duplicate work ID、boundary use缺required domain/owner、execution/merge不属于work | 返回compiler-contract failure且不产生partial plan，不压成unsupported或空domain | 修正后的同一输入可重新query，source IR byte-identical |
+
+### Work Item `region-execution-domain`覆盖矩阵
+
+本项只签发`RegionPlan`及RegionState continuation；Temporal及G--K未闭合，因此production仍不得actualize。实现和收尾逐项检查：
+
+| 等价类 | 输入 | exact断言 | 直接witness |
+| --- | --- | --- | --- |
+| connected partition | 2--6 root的chain、fanin、fanout、diamond、multiple sinks与disconnected graph | 每Tile connected partition无重复；不同potential components不合组；root/work输入顺序扰动不改变plan集合 | independent flat RGS×use-choice oracle与production集合/count一致 |
+| use supply正交选择 | same-Tile producer/consumer | External、StoredRequired、DirectRequired、StoredReplica、DirectReplica全部可达；required execution不能同时stored和nested到不兼容consumer | `RegionPlan`显式local/external binding、required/replica execution和TopLevel/Nested placement |
+| mixed local/remote与replica | producer/consumer同Tile、不同Tile、同operand多owner pieces | required local只在same group；pure producer的stored/direct replica可跨group/Tile；effectful producer不产生direct/replica | boundary sibling始终保留；replica数量和consumer group归属逐项可数 |
+| fanout sharing | 一个producer供多个operands/consumers | 同一个required execution可由多个stored bindings共享；split plan显式产生多个`ReplicaExecutionId`；不同nested consumer不能误共享required execution | shared/split plans均为domain member，canonical key不依赖first-use/materialization order |
+| real-scale graph | rank-3/4 FP16/BF16，1024及1025/1031 | RootWork fragments、tail、multi-result/result number与RegionPlan identity完整；query前后source byte-identical | Core穷举Region continuation后形成`RegionState`，public search稳定missing Temporal且actualization=0 |
+| reduction/attention | ordinary contribution/per-group merge、FD coupled state | merge execution可stored/direct但不能伪造root replica；Maximum/Sum/Accumulator保持一个merge identity | C prepared leaf与D plan IDs一致；temporal/attention action仍由后续owner派生 |
+| typed failure | duplicate/missing group work、extra binding/replica、非法placement、domain cursor/plan错配 | `contains` fail closed；successor contract failure不修改source，不删除其它Region siblings | 修正plan可重新验证；无Module/TileRegion/offset/statistics |
+| donor/owner | old `CoupledRegionDomain`与cross-layer apply | public/Core只消费new domain；旧domain/apply仅作为D--I actual能力donor保留，不能进入state或决定movement | capability逐项迁入后续emitter再删；本项不以删除仍有唯一actual能力的source伪装完成 |
+
+本项的complete-candidate emitter输出是typed selected group/execution/use descriptors及existing policy-free leaf builders的直接输入，
+不是提前生成CardModule。真正outer emit只有在Temporal、representation、movement、storage、event和schedule全部关闭后执行一次。
+
+### Work Item `region-execution-domain`闭合结果
+
+- `RegionPlan`原位扩成required execution placement、explicit replica execution、local/external use binding与Stored/Direct delivery的current
+  schema；candidate identity只含typed root/work/fragment/execution IDs，不含exact sets、pointer、proposal history或movement choice。
+- 新`RegionDomain`从canonical RootRegionWork leaf descriptors建立per-Tile potential components；restricted-growth successor只枚举connected
+  partitions。固定partition后对每个structured fragment完整枚举External、StoredRequired、DirectRequired、StoredReplica、DirectReplica；
+  required local只在same group，pure root replica可跨group/Tile，effectful root不产生direct/replica。
+- required execution可由多个stored uses共享；不兼容nested consumers不能共用同一required execution，split sibling通过独立
+  `ReplicaExecutionId`显式表达。selected local bindings必须使multi-root group连通；extra/missing binding、replica或placement使`contains`
+  fail closed。domain/cursor不预建plan vector，root-work输入顺序扰动不改变successor集合。
+- Core增加`RegionContinuation`与session-local `RegionDomain` cache；cursor不进入`RegionState`。同一SpatialState的全部Region siblings可
+  resume至exhausted，public search取得first validated RegionState后稳定返回missing Temporal，仍不构造IR或actual candidate。
+- old `CoupledRegionDomain`及cross-layer apply已退出public/state，但因仍独有selected temporal/layout/movement actual lowering能力而按
+  donor规则暂留；后续E/G/H emitter逐项迁入后再删除，不能为追求零文件提前丢能力。
+
+fresh证据：`RegionDomainTest` 5/5，覆盖same/cross Tile、五类supply、fanout shared/split replica、chain/fanin/fanout/diamond/disconnected
+independent oracle及rank-4 BF16 1031；`PlanningSessionTest` 6/6、`CanonicalRegionPlanTest` 5/5、`CanonicalTemporalPlanTest` 4/4、
+`CoupledRegionTest` 6/6、`DataMovementTest` 6/6和`SingleRootTileRegionTest` 16/16共同通过；普通host unit 832/832；完整configured lit
+262 passed、4 configured unsupported；source organization通过。public search diagnostic为missing Temporal且`candidate_actualizations=0`；
+本项不签发Temporal或完整candidate actualization。
 
 ### D-1 专项调研：region、execution instance与use binding边界
 

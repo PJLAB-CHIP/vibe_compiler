@@ -3,6 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSESSION_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSESSION_H
 
+#include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
 
@@ -11,6 +12,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -24,6 +26,8 @@ struct PlanningWorkCounts {
   uint64_t spatialStatesQueued = 0;
   uint64_t rootWorkSuccessorSteps = 0;
   uint64_t rootWorksValidated = 0;
+  uint64_t regionSuccessorSteps = 0;
+  uint64_t regionStatesQueued = 0;
   uint64_t duplicateSpatialChoices = 0;
   uint64_t unsupportedSpatialChoices = 0;
   uint64_t indeterminateSpatialChoices = 0;
@@ -62,12 +66,12 @@ private:
   friend class PhysicalDataflowPlanningSession;
 };
 
-/// Public-search foundation result while Region is not implemented. This is
-/// evidence about one validated spatial prefix, not a complete candidate and
+/// Public-search result at the first missing planning coordinate. This is
+/// evidence about a validated partial prefix, not a complete candidate and
 /// cannot be materialized or published.
 class IncompletePlanningDomain {
 public:
-  const SpatialState &getState() const { return state; }
+  const RegionState &getState() const { return state; }
   RequiredPlanningCoordinate getRequiredCoordinate() const {
     return state.getRequiredCoordinate();
   }
@@ -75,14 +79,33 @@ public:
   const PlanningWorkCounts &getWork() const { return work; }
 
 private:
-  IncompletePlanningDomain(SpatialState state, bool remainingSpatialWork,
+  IncompletePlanningDomain(RegionState state, bool remainingSpatialWork,
                            PlanningWorkCounts work)
       : state(std::move(state)), remainingSpatialWork(remainingSpatialWork),
         work(work) {}
 
-  SpatialState state;
+  RegionState state;
   bool remainingSpatialWork = false;
   PlanningWorkCounts work;
+
+  friend class PhysicalDataflowPlanningSession;
+};
+
+/// Session-owned continuation for one validated SpatialState. The cursor is
+/// not part of RegionState identity and creates no IR.
+class RegionContinuation {
+public:
+  const SpatialState &getParent() const { return parent; }
+  bool isExhausted() const { return exhausted; }
+
+private:
+  explicit RegionContinuation(SpatialState parent)
+      : parent(std::move(parent)) {}
+
+  SpatialState parent;
+  std::optional<RegionCursor> cursor;
+  bool started = false;
+  bool exhausted = false;
 
   friend class PhysicalDataflowPlanningSession;
 };
@@ -107,9 +130,16 @@ public:
 
   std::optional<SpatialState> takeNextSpatialState();
 
-  /// Drives only far enough to prove that public search reached a valid
-  /// spatial prefix and is missing Region. Unsupported, indeterminate, or
-  /// broken outcomes return without exhausting the preserved continuation.
+  RegionContinuation createRegionContinuation(SpatialState parent) const {
+    return RegionContinuation(std::move(parent));
+  }
+  mlir::FailureOr<std::optional<RegionState>>
+  resumeRegion(RegionContinuation &continuation,
+               std::string *failureReason = nullptr);
+
+  /// Drives only far enough to prove that public search reached the deepest
+  /// current prefix. Unsupported, indeterminate, or broken outcomes return
+  /// without exhausting the preserved continuation.
   mlir::FailureOr<IncompletePlanningDomain>
   getFirstIncompleteState(std::string *failureReason = nullptr);
 
@@ -125,6 +155,9 @@ private:
 
   SpatialExpansionResult evaluateAndQueue(SpatialPlan choice,
                                           bool proposalChoice);
+  mlir::FailureOr<RegionDomain *>
+  getOrCreateRegionDomain(const SpatialState &spatial,
+                          std::string *failureReason = nullptr);
 
   const PhysicalDataflowPlanningProblem &problem;
   CanonicalCursor canonicalCursor = CanonicalCursor::NotStarted;
@@ -133,6 +166,7 @@ private:
   bool pausedChoiceIsProposal = false;
   std::set<SpatialPlan> resolvedProposalChoices;
   std::set<SpatialState> frontier;
+  std::map<SpatialPlan, RegionDomain> regionDomainCache;
   PlanningWorkCounts work;
 };
 
