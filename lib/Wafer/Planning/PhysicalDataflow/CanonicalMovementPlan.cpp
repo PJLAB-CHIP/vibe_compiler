@@ -151,7 +151,7 @@ CanonicalMovementPlanOutcome buildCanonicalMovementPlan(
     if (!resources.try_emplace(resource.version, &resource).second)
       return broken(BrokenMovementPlanReason::MissingPhysicalVersion,
                     "canonical representation has duplicate resources");
-  if (resources.size() != representations.plan.primaryVersions.size())
+  if (resources.size() != representations.plan.physicalVersions.size())
     return broken(BrokenMovementPlanReason::MissingPhysicalVersion,
                   "canonical representation plan/resource mismatch");
 
@@ -360,7 +360,7 @@ CanonicalMovementPlanOutcome buildCanonicalMovementPlan(
     return std::move(*builder.failure);
 
   for (const PhysicalVersionPlan &version :
-       representations.plan.primaryVersions) {
+       representations.plan.physicalVersions) {
     const auto *result =
         std::get_if<ExecutionResultValueId>(&version.id.logicalValue);
     if (!result || carriedExecutionResults.count(version.id))

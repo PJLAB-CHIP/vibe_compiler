@@ -481,7 +481,9 @@ Lowering只能消费并验证selected choice，不能提供隐藏canonical winne
 canonical representation coordinate先为B--E已经显式产生的nonempty shaped boundary/support/execution-result/partial/coupled-component
 logical versions各建立一个Tensor-encoded primary version；empty/scalar不伪造version。plan identity只保存typed logical/physical IDs与
 encoding，exact domain/type进入query-local resource description，并对finite boxes调用`PhysicalLayoutRelation`验证。derived conversion、
-alias/shared secondary和完整use binding由后续`layout-domain`扩同一current合同。
+alias/shared secondary和完整use binding已由current layout domain扩进同一`logicalValues + physicalVersions + uses`合同。conversion path
+显式保存source/target encoding与anchor；exact identity alias零copy，其它未证明view无state。query不选局部winner，selected builder只按
+PhysicalVersionId bind/lookup并显式生成layout materialization。
 
 Logical demand先于physical fragment。Movement materialization必须对reduction、broadcast、window/stride与multi-piece在内的
 exact demand和producer ownership求交，保留init/contribution/replication role，证明local和remote fragments all-and-only覆盖、

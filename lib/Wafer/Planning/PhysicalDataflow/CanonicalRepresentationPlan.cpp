@@ -36,6 +36,7 @@ std::optional<mlir::Type> getElementType(mlir::Type type) {
 struct CoordinateBuilder {
   CanonicalRepresentationCoordinate coordinate;
   std::set<PhysicalVersionId> versions;
+  std::set<RepresentationUseId> uses;
   std::optional<CanonicalRepresentationPlanOutcome> failure;
 
   void add(RegionValueVersionId logicalValue,
@@ -82,7 +83,7 @@ struct CoordinateBuilder {
         return;
       }
     }
-    PhysicalVersionId version{std::move(logicalValue)};
+    PhysicalVersionId version{logicalValue};
     if (!versions.insert(version).second) {
       failure = broken(BrokenRepresentationPlanReason::DuplicateLogicalValue,
                        "canonical representation has a duplicate logical "
@@ -90,7 +91,19 @@ struct CoordinateBuilder {
                        std::move(work));
       return;
     }
-    coordinate.plan.primaryVersions.push_back({version, MemLayout::Tensor});
+    coordinate.plan.logicalValues.push_back({logicalValue, version});
+    coordinate.plan.physicalVersions.push_back({version, MemLayout::Tensor});
+    if (const auto *boundary =
+            std::get_if<BoundaryRegionValueId>(&logicalValue)) {
+      RepresentationUseId use = BoundaryRepresentationUseId{*boundary};
+      if (!uses.insert(use).second) {
+        failure = broken(BrokenRepresentationPlanReason::DuplicateLogicalValue,
+                         "canonical representation has a duplicate use",
+                         std::move(work));
+        return;
+      }
+      coordinate.plan.uses.push_back({std::move(use), version});
+    }
     coordinate.resources.push_back({std::move(version), std::move(*normalized),
                                     elementType, MemLayout::Tensor});
   }
@@ -374,16 +387,20 @@ CanonicalRepresentationPlanOutcome buildCanonicalRepresentationPlan(
   if (builder.failure)
     return std::move(*builder.failure);
 
-  llvm::sort(builder.coordinate.plan.primaryVersions,
+  llvm::sort(builder.coordinate.plan.logicalValues);
+  llvm::sort(builder.coordinate.plan.physicalVersions,
              [](const PhysicalVersionPlan &lhs,
                 const PhysicalVersionPlan &rhs) { return lhs.id < rhs.id; });
+  llvm::sort(builder.coordinate.plan.uses);
   llvm::sort(builder.coordinate.resources,
              [](const RepresentationResourceDescription &lhs,
                 const RepresentationResourceDescription &rhs) {
                return lhs.version < rhs.version;
              });
-  if (builder.coordinate.plan.primaryVersions.size() !=
-      builder.coordinate.resources.size())
+  if (builder.coordinate.plan.logicalValues.size() !=
+          builder.coordinate.resources.size() ||
+      builder.coordinate.plan.physicalVersions.size() !=
+          builder.coordinate.resources.size())
     return broken(BrokenRepresentationPlanReason::PlanWorkMismatch,
                   "representation plan and resources have different versions");
   return std::move(builder.coordinate);

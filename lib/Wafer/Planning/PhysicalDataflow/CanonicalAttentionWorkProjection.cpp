@@ -211,7 +211,7 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
       return broken(BrokenAttentionWorkProjectionReason::DuplicateIdentity,
                     "attention projection received duplicate versions");
   if (facts.versionResources.size() !=
-      representations.plan.primaryVersions.size())
+      representations.plan.physicalVersions.size())
     return broken(BrokenAttentionWorkProjectionReason::MissingPhysicalVersion,
                   "representation plan/resource count differs");
   for (const PhysicalVersionStorageBinding &binding :
@@ -595,7 +595,7 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
       }
 
       for (const PhysicalVersionPlan &version :
-           representations.plan.primaryVersions) {
+           representations.plan.physicalVersions) {
         const auto *boundary =
             std::get_if<BoundaryRegionValueId>(&version.id.logicalValue);
         if (!boundary || boundary->work != scope.work->id ||

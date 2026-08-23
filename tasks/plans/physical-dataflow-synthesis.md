@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain及Q50.F partial-feasibility已经闭合；当前下一项是`layout-domain`。Q50.S attention vertical、Q50.G–K、Q50.F full-feasibility、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility及Q50.G layout-domain已经闭合；当前下一项是`movement-domain`。Q50.S attention vertical、Q50.H–K、Q50.F full-feasibility、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -3149,6 +3149,18 @@ Q50.G由两个work items完成：
 | empty/scalar/rank-zero | exact-empty boundary、scalar scale/capture、rank-zero tensor | empty/scalar不建version；nonempty rank-zero tensor仍建Tensor version | movement对empty无action，rank-zero resource保持0-rank exact set |
 | typed failure | duplicate logical/version ID、missing work/execution/fragment、dynamic/non-shaped descriptor或plan/resource不一致 | compiler-contract/typed unsupported且无partial plan，不默选其它layout | 修正输入可重新query，source IR byte-identical |
 
+`layout-domain`施工前覆盖矩阵如下。小图只用于独立assignment/solver oracle；query与actual witness使用rank至少为3、主要维度
+1024/1025/1031的static tensors，并覆盖整除与非整除physical spans。
+
+| 覆盖类 | 代表输入 | exact断言 | Core / apply witness |
+| --- | --- | --- | --- |
+| primary encoding完整域 | rank-3 1024/1025、rank-6 coupled component、rank-zero | 每个logical value恰一个primary；domain逐exact box枚举current encoding interface接受的全部Tensor/NTensor/Cx/NCx states，无preferred/default剪枝 | `TemporalState -> RepresentationState`；query零IR，public search推进到Movement |
+| use binding与derived version | chain/fanout/diamond，两个compatible uses与两个incompatible uses | use可绑定primary或显式layout-conversion path；shared anchor只产生一个derived definition，per-use anchor产生不同typed IDs；每use恰一binding | `PhysicalVersionBuilder`按dependency order bind一次并直接wire planned ID，不按first use查找source |
+| dependent source/use constraints | tiny fanout shared/per-use图及input-order扰动 | primary与use option依赖完整展开；complete successors与independent flat assignment oracle逐key一致；duplicate/missing source/use fail closed | 无fixed Top-k或local winner；Core continuation穷尽tiny 112点 |
+| view/alias与conversion链 | primary→derived、derived→derived及无exact relation的alias request | conversion path逐step显式source/target encoding与anchor并天然acyclic；没有exact view relation时无alias state，不在apply猜 | actual IR中每个planned conversion ID恰一个`tile.materialize_layout`；preflight失败零残留 |
+| reductions/attention/boundary | ordinary partial/merge、FD Maximum/Sum/Accumulator、external input/output | logical component/result identity与canonical resource一一对应；layout choice不合并components、不把partial当final、不隐式load boundary | H继续从selected physical version读取，不由G生成DDR/peer action |
+| typed failure与资源隔离 | duplicate/missing version/use、wrong source path/layout/domain、cycle、contradictory tuple、unsupported element/encoding | 无partial plan；query不clone/materialize、不计算SPM/DDR capacity或winner；source IR byte-identical | 修正assignment可重试；complete-candidate transaction之外不留下IR |
+
 ### 机制
 
 representation identity基于Q50.A/C/D/E产生的`RegionValueVersionId`与exact domain，不基于`(node,operand)`位置：required/replica
@@ -3440,6 +3452,30 @@ operation-pointer version cache后才算G闭合。
 G-1/G-2 query/solver gate与G-3 oracle/apply/migration gate全部通过；不同RepresentationPlan使F/I/H/J按observed typed dependencies
 失效重算，不存在SPM probe cache。lowering只验证并消费selected physical versions。layout使相同temporal point的SPM legality或global
 winner改变是Q51 closure gate，不能用G局部proposal代签。
+
+### `layout-domain`实现闭合
+
+- `RepresentationPlan`原位收敛成一套`logicalValues + physicalVersions + uses`合同；`PhysicalVersionId`以logical value和typed derivation
+  path表达primary、layout conversion及identity alias，step显式保存source/target encoding、shared/per-use anchor和alias source logical value。
+  canonical producer及movement/storage/attention consumers同批切换，没有parallel schema或旧field reader。
+- `RepresentationDomain`逐logical exact box调用`PhysicalLayoutRelation`建立Tensor/NTensor/Cx/NCx legal states，惰性完整枚举primary与use
+  bindings。use可绑定primary、shared conversion、per-use conversion或已有exact identity proof的alias；tuple constraints只保留显式legal
+  encoding tuples。successor不设Top-k、不比较局部winner，并与independent primary/use/anchor flat oracle逐key一致。
+- shared compatible fanout uses引用同一derived ID并只产生一个definition；per-use anchors产生不同IDs。conversion path是source-prefix DAG，
+  identity alias显式引用另一个logical primary；domain不为domain/type不等的alias建立state。input/resource/use顺序扰动不改变first plan或集合。
+- `prepareRepresentationPlan`在mutation前验证all-and-only versions、source path和encoding；`PhysicalVersionBuilder`只按ID bind/lookup，
+  primary→derived与derived→derived各生成一个`wafer.tile.materialize_layout`，identity alias零copy，duplicate/wrong-layout preflight零IR残留。
+  boundary/movement producer仍由H绑定，G builder不隐式load、clone allocation或选择transport。
+- `RepresentationState`与continuation/cache已经接入production session；readiness之后first canonical Tensor point进入new domain，public search
+  报告missing Movement且actualization仍为0。tiny one-Tile production continuation穷尽112个siblings。旧node/operand role domain与
+  `BufferVersions/lookupAny`只作为旧Unified及尚未迁完H/I emitter donor保留，不进入new state；后续owner迁完实际movement/storage witnesses后删除。
+
+fresh证据：`RepresentationDomainTest` 4/4覆盖1024/1025、rank-6 1031、rank-zero、196点flat oracle、shared/per-use conversions、
+identity alias、matching tuple constraints、input-order与typed failures；`PhysicalVersionBuilderTest` 3/3覆盖shared、derived chain、identity alias、
+duplicate/wrong-layout atomic failure；`PlanningSessionTest` 6/6、`SearchRoutingTest` 2/2及`CanonicalRepresentationPlanTest` 5/5共同证明
+current schema、Core 112 siblings、missing Movement、source不变和zero actualization，direct集合20/20；ordinary host unit 851/851
+（6个独立heavy baseline cases不在本项重复）；core lit 227/227，Tools/Runtime lit 35 passed、4 configured unsupported；compiler public
+link、source organization和diff检查通过。
 
 ## Q50.H：Explicit Data Movement
 

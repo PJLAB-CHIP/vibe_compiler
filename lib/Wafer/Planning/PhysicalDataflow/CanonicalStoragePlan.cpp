@@ -303,7 +303,7 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     const CanonicalRepresentationCoordinate &representations,
     const CanonicalMovementCoordinate &movements,
     const SerializedExecutionPlan &serialized) {
-  if (representations.plan.primaryVersions.empty() ||
+  if (representations.plan.physicalVersions.empty() ||
       serialized.executions.empty())
     return broken(BrokenStoragePlanReason::EmptyStorageInput,
                   "canonical storage requires versions and executions");
@@ -335,11 +335,11 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
       return broken(BrokenStoragePlanReason::DuplicatePhysicalVersion,
                     "representation has duplicate version resources",
                     objectForVersion(resource.version));
-  if (versionResources.size() != representations.plan.primaryVersions.size())
+  if (versionResources.size() != representations.plan.physicalVersions.size())
     return broken(BrokenStoragePlanReason::MissingPhysicalVersion,
                   "representation plan/resource count differs");
   for (const PhysicalVersionPlan &version :
-       representations.plan.primaryVersions) {
+       representations.plan.physicalVersions) {
     auto resource = versionResources.find(version.id);
     if (resource == versionResources.end())
       return broken(BrokenStoragePlanReason::MissingPhysicalVersion,
@@ -404,7 +404,7 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
   CoordinateBuilder builder;
   std::set<PhysicalVersionId> carriedExecutionResults;
   for (const PhysicalVersionPlan &version :
-       representations.plan.primaryVersions) {
+       representations.plan.physicalVersions) {
     const RepresentationResourceDescription &resource =
         *versionResources.at(version.id);
     TileId tile = tileOf(version.id);
@@ -588,7 +588,7 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     return std::move(*builder.failure);
 
   for (const PhysicalVersionPlan &version :
-       representations.plan.primaryVersions) {
+       representations.plan.physicalVersions) {
     const auto *result =
         std::get_if<ExecutionResultValueId>(&version.id.logicalValue);
     if (!result)
@@ -614,7 +614,7 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
     return std::move(*builder.failure);
 
   for (const PhysicalVersionPlan &version :
-       representations.plan.primaryVersions) {
+       representations.plan.physicalVersions) {
     PendingObject *object = builder.findVersion(version.id);
     if (!object)
       break;

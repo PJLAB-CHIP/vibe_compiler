@@ -268,17 +268,17 @@ module {
     const CanonicalRepresentationCoordinate *representations =
         getCanonicalRepresentationCoordinate(representation);
     ASSERT_NE(representations, nullptr);
-    ASSERT_EQ(representations->plan.primaryVersions.size(), 32u);
+    ASSERT_EQ(representations->plan.physicalVersions.size(), 32u);
     ASSERT_EQ(representations->resources.size(), 32u);
     EXPECT_EQ(
-        llvm::count_if(representations->plan.primaryVersions,
+        llvm::count_if(representations->plan.physicalVersions,
                        [](const PhysicalVersionPlan &version) {
                          return std::holds_alternative<BoundaryRegionValueId>(
                              version.id.logicalValue);
                        }),
         16u);
     EXPECT_EQ(
-        llvm::count_if(representations->plan.primaryVersions,
+        llvm::count_if(representations->plan.physicalVersions,
                        [](const PhysicalVersionPlan &version) {
                          return std::holds_alternative<ExecutionResultValueId>(
                              version.id.logicalValue);

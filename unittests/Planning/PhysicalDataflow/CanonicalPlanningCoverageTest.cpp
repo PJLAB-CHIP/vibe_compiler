@@ -201,7 +201,7 @@ protected:
 
     std::set<PhysicalVersionId> plannedVersions;
     for (const PhysicalVersionPlan &version :
-         chain.representations.plan.primaryVersions)
+         chain.representations.plan.physicalVersions)
       EXPECT_TRUE(plannedVersions.insert(version.id).second);
     std::set<PhysicalVersionId> describedVersions;
     for (const RepresentationResourceDescription &resource :

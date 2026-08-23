@@ -217,8 +217,8 @@ TEST_F(CanonicalStoragePlanTest,
     else
       EXPECT_LT(*llvm::min_element(querySizes), *llvm::max_element(querySizes));
 
-    std::reverse(inputs->representations.plan.primaryVersions.begin(),
-                 inputs->representations.plan.primaryVersions.end());
+    std::reverse(inputs->representations.plan.physicalVersions.begin(),
+                 inputs->representations.plan.physicalVersions.end());
     std::reverse(inputs->representations.resources.begin(),
                  inputs->representations.resources.end());
     std::reverse(inputs->movements.plan.externalLoads.begin(),
@@ -290,7 +290,7 @@ module {
       getCanonicalStorageCoordinate(outcome);
   ASSERT_NE(coordinate, nullptr);
   EXPECT_EQ(coordinate->plan.storageObjects.size(),
-            inputs->representations.plan.primaryVersions.size());
+            inputs->representations.plan.physicalVersions.size());
   EXPECT_TRUE(coordinate->plan.gatherStagingBindings.empty());
 
   unsigned sharedSources = 0;
@@ -334,7 +334,7 @@ TEST_F(CanonicalStoragePlanTest,
     ASSERT_EQ(coordinate->plan.gatherStagingBindings.size(),
               inputs->movements.plan.reductionGathers.size());
     EXPECT_EQ(coordinate->plan.storageObjects.size(),
-              inputs->representations.plan.primaryVersions.size() +
+              inputs->representations.plan.physicalVersions.size() +
                   inputs->movements.plan.reductionGathers.size());
 
     std::set<PhysicalVersionId> gatheredSources;
@@ -376,7 +376,7 @@ TEST_F(CanonicalStoragePlanTest,
           resource->elementType.isF16();
     }
     for (const PhysicalVersionPlan &version :
-         inputs->representations.plan.primaryVersions) {
+         inputs->representations.plan.physicalVersions) {
       const auto *component =
           std::get_if<CoupledComponentValueId>(&version.id.logicalValue);
       if (!component ||
@@ -426,7 +426,7 @@ TEST_F(CanonicalStoragePlanTest,
     CanonicalRepresentationCoordinate representations;
     for (const PhysicalVersionId &version :
          {remoteVersion, localVersion, resultVersion}) {
-      representations.plan.primaryVersions.push_back(
+      representations.plan.physicalVersions.push_back(
           {version, wafer::MemLayout::Tensor});
       representations.resources.push_back(
           {version, domain, f16, wafer::MemLayout::Tensor});

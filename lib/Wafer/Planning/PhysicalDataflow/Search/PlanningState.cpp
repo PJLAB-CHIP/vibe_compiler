@@ -3,6 +3,7 @@
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
 
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
@@ -40,6 +41,17 @@ TemporalState::create(const TemporalDomain &domain, RegionState region,
     return mlir::failure();
   }
   return TemporalState(std::move(region), std::move(temporal));
+}
+
+mlir::FailureOr<RepresentationState> RepresentationState::create(
+    const RepresentationDomain &domain, TemporalState temporal,
+    RepresentationPlan representations, std::string *failureReason) {
+  if (!domain.contains(representations)) {
+    if (failureReason)
+      *failureReason = "RepresentationState plan is outside the current domain";
+    return mlir::failure();
+  }
+  return RepresentationState(std::move(temporal), std::move(representations));
 }
 
 } // namespace wafer::compiler::detail

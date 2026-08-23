@@ -5,6 +5,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/PlanningCoordinate.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/RepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalPlan.h"
 
@@ -17,6 +18,7 @@ namespace wafer::compiler::detail {
 
 class PhysicalDataflowPlanningProblem;
 class RegionDomain;
+class RepresentationDomain;
 class TemporalDomain;
 
 /// A validated spatial prefix. It owns only the compact semantic value: no
@@ -117,6 +119,54 @@ private:
 
   RegionState region;
   TemporalPlan temporal;
+};
+
+/// A validated physical-version coordinate extending one TemporalState.
+/// Constraint graph, resources and solver records remain derived domain facts.
+class RepresentationState {
+public:
+  static mlir::FailureOr<RepresentationState>
+  create(const RepresentationDomain &domain, TemporalState temporal,
+         RepresentationPlan representations,
+         std::string *failureReason = nullptr);
+
+  const TemporalState &getTemporalState() const { return temporal; }
+  const SpatialPlan &getSpatialPlan() const {
+    return temporal.getSpatialPlan();
+  }
+  const RegionPlan &getRegionPlan() const { return temporal.getRegionPlan(); }
+  const TemporalPlan &getTemporalPlan() const {
+    return temporal.getTemporalPlan();
+  }
+  const RepresentationPlan &getRepresentationPlan() const {
+    return representations;
+  }
+  RequiredPlanningCoordinate getRequiredCoordinate() const {
+    return RequiredPlanningCoordinate::Movement;
+  }
+
+  friend bool operator==(const RepresentationState &lhs,
+                         const RepresentationState &rhs) {
+    return lhs.temporal == rhs.temporal &&
+           lhs.representations == rhs.representations;
+  }
+  friend bool operator<(const RepresentationState &lhs,
+                        const RepresentationState &rhs) {
+    if (lhs.temporal < rhs.temporal)
+      return true;
+    if (rhs.temporal < lhs.temporal)
+      return false;
+    return lhs.representations < rhs.representations;
+  }
+
+private:
+  RepresentationState(TemporalState temporal,
+                      RepresentationPlan representations)
+      : temporal(std::move(temporal)),
+        representations(std::move(representations)) {}
+
+  TemporalState temporal;
+  RepresentationPlan representations;
 };
 
 } // namespace wafer::compiler::detail

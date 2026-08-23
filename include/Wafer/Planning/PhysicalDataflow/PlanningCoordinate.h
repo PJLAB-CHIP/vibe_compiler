@@ -14,6 +14,7 @@ enum class RequiredPlanningCoordinate : uint8_t {
   Temporal,
   PartialFeasibility,
   Representation,
+  Movement,
 };
 
 llvm::StringRef

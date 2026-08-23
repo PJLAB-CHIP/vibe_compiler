@@ -31,9 +31,11 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/RegionPlan.cpp
   Planning/PhysicalDataflow/RegionDomain.cpp
   Planning/PhysicalDataflow/RepresentationPlan.cpp
+  Planning/PhysicalDataflow/RepresentationDomain.cpp
   Planning/PhysicalDataflow/SchedulePlan.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecomposition.cpp
   Planning/PhysicalDataflow/MovementPlan.cpp
+  Planning/PhysicalDataflow/PhysicalVersionBuilder.cpp
   Planning/PhysicalDataflow/PlanningCoordinate.cpp
   Planning/PhysicalDataflow/TemporalPlan.cpp
   Planning/PhysicalDataflow/TemporalDomain.cpp

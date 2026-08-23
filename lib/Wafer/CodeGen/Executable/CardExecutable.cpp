@@ -306,6 +306,10 @@ compileTensorProgramModuleToCardExecutable(
                 << work.indeterminateTemporalChoices
                 << " structural_readiness_queries="
                 << work.structuralReadinessQueries
+                << " representation_steps=" << work.representationSuccessorSteps
+                << " representation_states=" << work.representationStatesQueued
+                << " representation_unsupported="
+                << work.unsupportedRepresentationChoices
                 << " candidate_actualizations=0\n";
     return fail("card executable search has an incomplete planning domain");
   } else {

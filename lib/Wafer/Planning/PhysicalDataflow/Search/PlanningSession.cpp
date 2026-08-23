@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningSession.h"
 
+#include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuralReadiness.h"
@@ -325,6 +326,57 @@ PhysicalDataflowPlanningSession::getOrCreateTemporalDomain(
   return {&stored->second, {}};
 }
 
+PhysicalDataflowPlanningSession::RepresentationDomainLookup
+PhysicalDataflowPlanningSession::getOrCreateRepresentationDomain(
+    const TemporalState &temporal) {
+  auto cached = representationDomainCache.find(temporal);
+  if (cached != representationDomainCache.end())
+    return {&cached->second, {}};
+  auto rootWorks = rootWorkCache.find(temporal.getSpatialPlan());
+  if (rootWorks == rootWorkCache.end())
+    return {nullptr, RepresentationDomainFailure{
+                         RepresentationDomainFailureKind::BrokenContract,
+                         {},
+                         "representation transition has no derived root work"}};
+  CanonicalRepresentationPlanOutcome canonical =
+      buildCanonicalRepresentationPlan(temporal.getRegionPlan(),
+                                       temporal.getTemporalPlan(),
+                                       rootWorks->second);
+  const CanonicalRepresentationCoordinate *coordinate =
+      getCanonicalRepresentationCoordinate(canonical);
+  if (!coordinate) {
+    if (const auto *unsupported =
+            std::get_if<UnsupportedRepresentationPlan>(&canonical))
+      return {nullptr,
+              RepresentationDomainFailure{
+                  RepresentationDomainFailureKind::UnsupportedSemantics,
+                  {},
+                  unsupported->detail}};
+    return {nullptr, RepresentationDomainFailure{
+                         RepresentationDomainFailureKind::BrokenContract,
+                         {},
+                         std::get<BrokenRepresentationPlan>(canonical).detail}};
+  }
+  RepresentationDomainResult result = buildRepresentationDomain(*coordinate);
+  if (!result.succeeded()) {
+    if (result.failure)
+      return {nullptr, std::move(result.failure)};
+    return {nullptr, RepresentationDomainFailure{
+                         RepresentationDomainFailureKind::BrokenContract,
+                         {},
+                         "representation domain returned no typed outcome"}};
+  }
+  auto [stored, inserted] = representationDomainCache.try_emplace(
+      temporal, std::move(*result.domain));
+  if (!inserted)
+    return {nullptr,
+            RepresentationDomainFailure{
+                RepresentationDomainFailureKind::BrokenContract,
+                {},
+                "representation domain cache changed during construction"}};
+  return {&stored->second, {}};
+}
+
 mlir::FailureOr<std::optional<RegionState>>
 PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
                                               std::string *failureReason) {
@@ -430,6 +482,56 @@ TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
   return {TemporalExpansionKind::State, std::move(*state)};
 }
 
+RepresentationExpansionResult
+PhysicalDataflowPlanningSession::resumeRepresentation(
+    RepresentationContinuation &continuation) {
+  if (continuation.exhausted)
+    return {RepresentationExpansionKind::ParentExhausted};
+  RepresentationDomainLookup lookup =
+      getOrCreateRepresentationDomain(continuation.parent);
+  if (!lookup.domain) {
+    if (!lookup.failure)
+      return {RepresentationExpansionKind::CompilerBug,
+              {},
+              "representation domain lookup returned no typed outcome"};
+    if (lookup.failure->kind ==
+        RepresentationDomainFailureKind::UnsupportedSemantics) {
+      ++work.unsupportedRepresentationChoices;
+      return {RepresentationExpansionKind::Unsupported,
+              {},
+              std::move(lookup.failure->detail)};
+    }
+    return {RepresentationExpansionKind::CompilerBug,
+            {},
+            std::move(lookup.failure->detail)};
+  }
+  ++work.representationSuccessorSteps;
+  RepresentationSuccessor next =
+      continuation.started ? lookup.domain->getNextPlan(*continuation.cursor)
+                           : lookup.domain->getFirstPlan();
+  if (next.getKind() == RepresentationSuccessorKind::End) {
+    continuation.exhausted = true;
+    continuation.cursor.reset();
+    return {RepresentationExpansionKind::ParentExhausted};
+  }
+  if (next.getKind() != RepresentationSuccessorKind::Plan || !next.getPlan() ||
+      !next.getCursor())
+    return {RepresentationExpansionKind::CompilerBug,
+            {},
+            next.getDetail().empty()
+                ? "representation successor omitted its plan or cursor"
+                : next.getDetail().str()};
+  std::string detail;
+  auto state = RepresentationState::create(*lookup.domain, continuation.parent,
+                                           *next.getPlan(), &detail);
+  if (mlir::failed(state))
+    return {RepresentationExpansionKind::CompilerBug, {}, std::move(detail)};
+  continuation.cursor = *next.getCursor();
+  continuation.started = true;
+  ++work.representationStatesQueued;
+  return {RepresentationExpansionKind::State, std::move(*state)};
+}
+
 mlir::FailureOr<IncompletePlanningDomain>
 PhysicalDataflowPlanningSession::getFirstIncompleteState(
     std::string *failureReason) {
@@ -504,8 +606,27 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
                            : readiness.getDetail().str();
     return mlir::failure();
   }
-  return IncompletePlanningDomain(std::move(*temporalState),
-                                  RequiredPlanningCoordinate::Representation,
+  RepresentationContinuation representationContinuation =
+      createRepresentationContinuation(std::move(*temporalState));
+  RepresentationExpansionResult representation =
+      resumeRepresentation(representationContinuation);
+  if (representation.getKind() != RepresentationExpansionKind::State) {
+    if (failureReason)
+      *failureReason =
+          representation.getDetail().empty()
+              ? "representation planning domain has no supported state"
+              : representation.getDetail().str();
+    return mlir::failure();
+  }
+  std::optional<RepresentationState> representationState =
+      representation.takeState();
+  if (!representationState) {
+    if (failureReason)
+      *failureReason = "representation state result lost its value";
+    return mlir::failure();
+  }
+  return IncompletePlanningDomain(std::move(*representationState),
+                                  RequiredPlanningCoordinate::Movement,
                                   hasRemainingSpatialWork(), work);
 }
 

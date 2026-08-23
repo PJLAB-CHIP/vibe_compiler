@@ -15,6 +15,8 @@ stringifyRequiredPlanningCoordinate(RequiredPlanningCoordinate coordinate) {
     return "partial-feasibility";
   case RequiredPlanningCoordinate::Representation:
     return "representation";
+  case RequiredPlanningCoordinate::Movement:
+    return "movement";
   }
   return "unknown";
 }

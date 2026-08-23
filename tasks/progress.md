@@ -37,8 +37,8 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | 5 | `region-execution-domain` | `done` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |
 | 6 | `temporal-domain` | `done` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails及Core consumer |
 | 7 | `partial-feasibility` | `done` | Q50.F | temporal-domain、exact-demand-boundary | 只验证A–E结构完整性和missing coordinates；资源合法性保持unknown |
-| 8 | `layout-domain` | `next` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |
-| 9 | `movement-domain` | `queued` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/DTE/relay/collective domain、proof及Core consumer |
+| 8 | `layout-domain` | `done` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |
+| 9 | `movement-domain` | `next` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/DTE/relay/collective domain、proof及Core consumer |
 | 10 | `storage-domain` | `queued` | Q50.I | movement-domain、canonical-storage-plan | fresh/alias/reuse与`1..U` slot domain及Core consumer |
 | 11 | `event-resource-foundation` | `queued` | Q50.J | storage-domain、Q63 | EventGraph、resource/recurrence facts及Core consumer |
 | 12 | `execution-structure-domain` | `queued` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |

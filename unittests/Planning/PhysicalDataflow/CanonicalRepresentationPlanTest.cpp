@@ -118,22 +118,25 @@ module {
     const CanonicalRepresentationCoordinate *coordinate =
         getCanonicalRepresentationCoordinate(outcome);
     ASSERT_NE(coordinate, nullptr);
-    ASSERT_EQ(coordinate->plan.primaryVersions.size(), 32u);
+    ASSERT_EQ(coordinate->plan.logicalValues.size(), 32u);
+    ASSERT_EQ(coordinate->plan.physicalVersions.size(), 32u);
+    ASSERT_EQ(coordinate->plan.uses.size(), 16u);
     ASSERT_EQ(coordinate->resources.size(), 32u);
-    EXPECT_TRUE(llvm::all_of(coordinate->plan.primaryVersions,
+    EXPECT_TRUE(llvm::all_of(coordinate->plan.physicalVersions,
                              [](const PhysicalVersionPlan &version) {
-                               return version.encoding ==
-                                      wafer::MemLayout::Tensor;
+                               return version.id.derivation.empty() &&
+                                      version.encoding ==
+                                          wafer::MemLayout::Tensor;
                              }));
     EXPECT_EQ(
-        llvm::count_if(coordinate->plan.primaryVersions,
+        llvm::count_if(coordinate->plan.physicalVersions,
                        [](const PhysicalVersionPlan &version) {
                          return std::holds_alternative<BoundaryRegionValueId>(
                              version.id.logicalValue);
                        }),
         16u);
     EXPECT_EQ(
-        llvm::count_if(coordinate->plan.primaryVersions,
+        llvm::count_if(coordinate->plan.physicalVersions,
                        [](const PhysicalVersionPlan &version) {
                          return std::holds_alternative<ExecutionResultValueId>(
                              version.id.logicalValue);
@@ -159,11 +162,11 @@ module {
     const CanonicalRepresentationCoordinate *reversedCoordinate =
         getCanonicalRepresentationCoordinate(reversed);
     ASSERT_NE(reversedCoordinate, nullptr);
-    ASSERT_EQ(reversedCoordinate->plan.primaryVersions.size(),
-              coordinate->plan.primaryVersions.size());
+    ASSERT_EQ(reversedCoordinate->plan.physicalVersions.size(),
+              coordinate->plan.physicalVersions.size());
     for (auto [expected, actual] :
-         llvm::zip_equal(coordinate->plan.primaryVersions,
-                         reversedCoordinate->plan.primaryVersions)) {
+         llvm::zip_equal(coordinate->plan.physicalVersions,
+                         reversedCoordinate->plan.physicalVersions)) {
       EXPECT_EQ(actual.id, expected.id);
       EXPECT_EQ(actual.encoding, expected.encoding);
     }
@@ -214,27 +217,27 @@ module {
       getCanonicalRepresentationCoordinate(outcome);
   ASSERT_NE(coordinate, nullptr);
   EXPECT_EQ(
-      llvm::count_if(coordinate->plan.primaryVersions,
+      llvm::count_if(coordinate->plan.physicalVersions,
                      [](const PhysicalVersionPlan &version) {
                        return std::holds_alternative<SupportRegionValueId>(
                            version.id.logicalValue);
                      }),
       16u);
   EXPECT_EQ(
-      llvm::count_if(coordinate->plan.primaryVersions,
+      llvm::count_if(coordinate->plan.physicalVersions,
                      [](const PhysicalVersionPlan &version) {
                        return std::holds_alternative<ExecutionResultValueId>(
                            version.id.logicalValue);
                      }),
       32u);
   EXPECT_EQ(
-      llvm::count_if(coordinate->plan.primaryVersions,
+      llvm::count_if(coordinate->plan.physicalVersions,
                      [](const PhysicalVersionPlan &version) {
                        return std::holds_alternative<BoundaryRegionValueId>(
                            version.id.logicalValue);
                      }),
       48u);
-  EXPECT_EQ(coordinate->plan.primaryVersions.size(), 96u);
+  EXPECT_EQ(coordinate->plan.physicalVersions.size(), 96u);
 }
 
 TEST_F(CanonicalRepresentationPlanTest,
@@ -389,7 +392,7 @@ module {
   const CanonicalRepresentationCoordinate *emptyCoordinate =
       getCanonicalRepresentationCoordinate(empty);
   ASSERT_NE(emptyCoordinate, nullptr);
-  EXPECT_TRUE(emptyCoordinate->plan.primaryVersions.empty());
+  EXPECT_TRUE(emptyCoordinate->plan.physicalVersions.empty());
 }
 
 TEST_F(CanonicalRepresentationPlanTest,

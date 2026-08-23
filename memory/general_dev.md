@@ -423,6 +423,10 @@ source program
   typed transition验证，不在这里重复query。
   result type不含resource bytes、bound、packing、capacity或rejection。Q50 mechanism只依赖plan/domain与stable coordinate schema，
   不反向依赖Q51 state/frontier；prior axis failure保持原分类，partial query不补suffix、不构造IR也不调用actual gate。
+- physical representation使用`logicalValues + physicalVersions + uses`单一plan合同；PhysicalVersionId的typed path显式编码conversion的
+  source/target layout、shared/per-use anchor及identity-alias source。domain从exact boxes与`PhysicalLayoutRelation`惰性枚举完整primary/use
+  assignments和显式legal tuples，不按node/operand role或fixed Top-k缩域。selected builder先全量preflight，再只按version ID bind/lookup；
+  shared conversion一次定义、per-use conversion分开、identity alias零copy，不允许first-use source查找或隐式boundary load。
 - canonical representation只给已经显式存在的nonempty shaped logical versions建立一对一Tensor primary version。boundary fragment、
   support result、execution result、ordinary partial和coupled component必须使用typed variant identity；empty/scalar不造假version。
   exact domain/type留在query-local resource description并用`PhysicalLayoutRelation`检查finite boxes，不能只写layout enum。

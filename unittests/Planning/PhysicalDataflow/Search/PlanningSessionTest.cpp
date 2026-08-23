@@ -226,7 +226,7 @@ TEST_F(PlanningSessionTest,
   auto incomplete = session.getFirstIncompleteState(&failureReason);
   ASSERT_TRUE(mlir::succeeded(incomplete)) << failureReason;
   EXPECT_EQ(incomplete->getRequiredCoordinate(),
-            RequiredPlanningCoordinate::Representation);
+            RequiredPlanningCoordinate::Movement);
   EXPECT_TRUE(problem->getSpatialDomain().contains(
       incomplete->getState().getSpatialPlan()));
   EXPECT_FALSE(incomplete->getState().getRegionPlan().groups.empty());
@@ -241,12 +241,17 @@ TEST_F(PlanningSessionTest,
   EXPECT_EQ(incomplete->getWork().temporalSuccessorSteps, 1u);
   EXPECT_EQ(incomplete->getWork().temporalStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().structuralReadinessQueries, 1u);
+  EXPECT_EQ(incomplete->getWork().representationSuccessorSteps, 1u);
+  EXPECT_EQ(incomplete->getWork().representationStatesQueued, 1u);
+  EXPECT_EQ(incomplete->getWork().unsupportedRepresentationChoices, 0u);
   EXPECT_FALSE(incomplete->getState().getTemporalPlan().scopes.empty());
   for (const TemporalScopePlan &scope :
        incomplete->getState().getTemporalPlan().scopes) {
     EXPECT_TRUE(isTopLevelScope(scope.id));
     EXPECT_TRUE(scope.waveLoopOrder.empty());
   }
+  EXPECT_FALSE(
+      incomplete->getState().getRepresentationPlan().physicalVersions.empty());
   EXPECT_EQ(print(module->getOperation()), before);
 
   auto secondModule = parse(kRealSource);
@@ -322,6 +327,43 @@ TEST_F(PlanningSessionTest,
     ordered.push_back(std::move(*state));
   ASSERT_EQ(ordered.size(), 3u);
   EXPECT_TRUE(std::is_sorted(ordered.begin(), ordered.end()));
+
+  auto oneTile = llvm::find_if(*firstStates, [](const SpatialState &state) {
+    return state.getPlan().nodes.size() == 1 &&
+           state.getPlan().nodes.front().embedding.size() == 1;
+  });
+  ASSERT_NE(oneTile, firstStates->end());
+  RegionContinuation regionContinuation =
+      first.createRegionContinuation(*oneTile);
+  auto region = first.resumeRegion(regionContinuation, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(region)) << failureReason;
+  ASSERT_TRUE(*region);
+  TemporalContinuation temporalContinuation =
+      first.createTemporalContinuation(**region);
+  TemporalExpansionResult temporal = first.resumeTemporal(temporalContinuation);
+  ASSERT_EQ(temporal.getKind(), TemporalExpansionKind::State)
+      << temporal.getDetail().str();
+  std::optional<TemporalState> temporalState = temporal.takeState();
+  ASSERT_TRUE(temporalState);
+  RepresentationContinuation representationContinuation =
+      first.createRepresentationContinuation(std::move(*temporalState));
+  std::set<RepresentationPlan> representationPlans;
+  while (true) {
+    RepresentationExpansionResult representation =
+        first.resumeRepresentation(representationContinuation);
+    if (representation.getKind() ==
+        RepresentationExpansionKind::ParentExhausted)
+      break;
+    ASSERT_EQ(representation.getKind(), RepresentationExpansionKind::State)
+        << representation.getDetail().str();
+    std::optional<RepresentationState> state = representation.takeState();
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state->getRequiredCoordinate(),
+              RequiredPlanningCoordinate::Movement);
+    representationPlans.insert(state->getRepresentationPlan());
+  }
+  EXPECT_TRUE(representationContinuation.isExhausted());
+  EXPECT_EQ(representationPlans.size(), 4u * 4u * 7u);
 }
 
 TEST_F(PlanningSessionTest,

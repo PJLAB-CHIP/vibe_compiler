@@ -402,8 +402,8 @@ TEST_F(CanonicalAttentionWorkProjectionTest,
 
   std::reverse(inputs->prefix.rootWorks.begin(),
                inputs->prefix.rootWorks.end());
-  std::reverse(inputs->representations.plan.primaryVersions.begin(),
-               inputs->representations.plan.primaryVersions.end());
+  std::reverse(inputs->representations.plan.physicalVersions.begin(),
+               inputs->representations.plan.physicalVersions.end());
   std::reverse(inputs->representations.resources.begin(),
                inputs->representations.resources.end());
   std::reverse(inputs->movements.plan.externalLoads.begin(),
