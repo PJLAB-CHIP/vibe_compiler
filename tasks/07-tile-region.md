@@ -380,10 +380,10 @@ transaction中完成；任一失败终止且不返回planner。materializer不�
 
 | semantic family | 从current MLIR读取的事实 | 物化结果 |
 | --- | --- | --- |
-| contraction | iterator types、indexing maps、DPS init、combiner、type和native numeric semantics/permissions | typed GEMM/batch/accumulator chain |
+| contraction | iterator types、indexing maps、DPS init、combiner和type | typed GEMM/batch/accumulator chain |
 | affine-window convolution | Linalg convolution dimensions、iterator types、symbol-free affine window maps、DPS init、exact multiply-accumulate payload，以及显式`tensor.pad`的static low/high/value | canonical NHWC/XYOI typed convolution；必要permutation显式为movement，padding显式为fill与insert-slice |
 | pointwise/relation/select/convert | elementwise iterators、scalar region、dtype和valid domain | typed compute或明确composite |
-| reduction | reduction iterators、init、combiner、axis/result mapping和typed numeric contract | composite或native op；支持的浮点类型默认允许现有数值合同下的重排，integer保持exact/modular gate |
+| reduction | reduction iterators、init、combiner与axis/result mapping | composite或native op；temporal变换保持source arithmetic op和dtype，不建立numeric policy、comparator或数值search轴 |
 | share-vs-recompute | SSA use-def、exact dependent region、effect/speculation和cost choice | shared multi-use或consumer-local producer execution |
 | loop-invariant hoist | LoopLike、dominance、invariant operands、effect/completion | loop外真实op和body捕获的dominant SSA value |
 | graph-level attention algorithm | `wafer.linalg_ext.attention`、fixed FA/FD mode、Q/K/V/mask maps及coupled-state description | winner内selected Linalg/Tensor/SCF actions，随后转换为existing wafer.tile GEMM/reduce/elementwise；无attention Tile op |
@@ -394,7 +394,7 @@ transaction中完成；任一失败终止且不返回planner。materializer不�
 | communication | Tile operands、typed peer/group facts、bytes和completion | explicit NoC movement/event body；无未展开占位 |
 
 通用测试至少覆盖chain、diamond、fanout/fanin、shared-input contraction、multi-root、residual、collective、
-多个dtype、整tile、非整除tail、f16/bf16无标注正例以及integer modular/no-wrap正负例。新增source op优先通过现有Linalg、
+多个dtype、整tile、非整除tail以及f16/bf16/integer算术回归。新增source op优先通过现有Linalg、
 DPS、Tiling、ViewLike和effect interfaces进入这些family；只有新数学语义不能稳定表达时才扩IR。
 
 每个positive必须从真实source进入production materializer并发生非零IR mutation。negative至少覆盖wrong
@@ -413,7 +413,7 @@ complete traversal可以用compact structured loop表达，不要求静态展开
 - result-driven pull或operand-driven push所覆盖的consumer iteration、boundary tile和peer segment all-and-only；
 - interior和tail不重叠且union完整；
 - branch/yield和multi-result的每条路径类型及effect闭合；
-- reduction split满足numeric contract（浮点自由重结合，typed comparator验收；整数no-wrap/overflow语义保持barrier）；
+- reduction split使用selected structural order并保留source combiner operation与dtype；本层不查询或生成numeric policy/comparator；
 - fanout的每个consumer读取同一版本或显式派生版本；
 - 任一reuse发生在所有相关completion之后。
 
@@ -481,7 +481,7 @@ side attr。
   decision owner并入06的physical-dataflow planning state，本文只物化selected peer/resident Tile IR，13继续拥有typed lowering与
   CardExecutable verification。pre-current-cutover late
   NoC tuple path只作历史资格证据，不再是终态独立pipeline。
-- online/streamed reduction只有在typed running state、combine公式、numeric policy、tail与lowering闭合后才进入同一
+- online/streamed reduction只有在typed running state、combine公式、tail与lowering闭合后才进入同一
   reduction plan domain；未闭合时保留native/partial baseline。没有typed fused semantics的non-GEMM FMA contraction及
   尚未闭合的其它algebraic contraction保持unsupported；
 

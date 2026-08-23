@@ -284,7 +284,7 @@ module {
 }
 
 TEST(BidirectionalTilingTest,
-     RejectsNumericallyUnsupportedPartialReductionBeforeMaterialization) {
+     MaterializesUnsignedReductionWithoutANumericPolicyGate) {
   mlir::DialectRegistry registry;
   registerTilingDialects(registry);
   mlir::MLIRContext context(registry);
@@ -293,21 +293,21 @@ TEST(BidirectionalTilingTest,
   auto module = mlir::parseSourceString<mlir::ModuleOp>(
       R"mlir(
 module {
-  func.func @reduce(%input: tensor<4x8xi32>, %init: tensor<4xi32>)
-      -> tensor<4xi32> {
+  func.func @reduce(%input: tensor<2x1025x1031xi32>,
+                    %init: tensor<2x1025xi32>) -> tensor<2x1025xi32> {
     %result = linalg.generic {
         indexing_maps = [
-          affine_map<(d0, d1) -> (d0, d1)>,
-          affine_map<(d0, d1) -> (d0)>
+          affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+          affine_map<(d0, d1, d2) -> (d0, d1)>
         ],
-        iterator_types = ["parallel", "reduction"]
-      } ins(%input : tensor<4x8xi32>)
-        outs(%init : tensor<4xi32>) {
+        iterator_types = ["parallel", "parallel", "reduction"]
+      } ins(%input : tensor<2x1025x1031xi32>)
+        outs(%init : tensor<2x1025xi32>) {
     ^bb0(%value: i32, %acc: i32):
       %maximum = arith.maxui %value, %acc : i32
       linalg.yield %maximum : i32
-    } -> tensor<4xi32>
-    return %result : tensor<4xi32>
+    } -> tensor<2x1025xi32>
+    return %result : tensor<2x1025xi32>
   }
 }
 )mlir",
@@ -318,18 +318,18 @@ module {
   ASSERT_TRUE(reduction);
 
   mlir::OpBuilder builder(reduction);
-  auto offsets = indexAttrs(builder, {0, 0});
-  auto sizes = indexAttrs(builder, {4, 4});
+  auto offsets = indexAttrs(builder, {0, 0, 0});
+  auto sizes = indexAttrs(builder, {2, 128, 64});
   std::string failureReason;
-  EXPECT_TRUE(mlir::failed(wafer::materializePartialReductionTile(
-      reduction, builder, offsets, sizes, &failureReason)));
-  EXPECT_EQ(failureReason,
-            "reduction partition cannot preserve unsigned min/max "
-            "semantics with the current reduce kind");
-  EXPECT_EQ(findSingleOp<mlir::linalg::GenericOp>(*module), reduction);
-  unsigned fillCount = 0;
-  module->walk([&](mlir::linalg::FillOp) { ++fillCount; });
-  EXPECT_EQ(fillCount, 0u);
+  auto materialized = wafer::materializePartialReductionTile(
+      reduction, builder, offsets, sizes, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
+  EXPECT_EQ(materialized->reductionDimensions, (llvm::SmallVector<int, 2>{2}));
+  EXPECT_FALSE(materialized->partialOperations.empty());
+  EXPECT_FALSE(materialized->mergeOperations.empty());
+  unsigned maximumCount = 0;
+  module->walk([&](mlir::arith::MaxUIOp) { ++maximumCount; });
+  EXPECT_GE(maximumCount, 3u);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*module)));
 }
 

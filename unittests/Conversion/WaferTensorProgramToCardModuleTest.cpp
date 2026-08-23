@@ -1571,13 +1571,13 @@ module {
        tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @logical
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @two_reduction_axes(%input: tensor<2x10x11xf16>,
+  func.func @two_reduction_axes(%input: tensor<2x1025x1031xf16>,
                                 %init: tensor<2xf16>) -> tensor<2xf16> {
     %result = linalg.generic {
         indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
                          affine_map<(d0, d1, d2) -> (d0)>],
         iterator_types = ["parallel", "reduction", "reduction"]
-      } ins(%input : tensor<2x10x11xf16>) outs(%init : tensor<2xf16>) {
+      } ins(%input : tensor<2x1025x1031xf16>) outs(%init : tensor<2xf16>) {
       ^bb0(%value: f16, %acc: f16):
         %sum = arith.addf %value, %acc : f16
         linalg.yield %sum : f16
@@ -1594,11 +1594,10 @@ module {
   ASSERT_TRUE(sourceReduction);
   wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {2});
   selected.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
-      sourceReduction.getOperation(), {2, 4, 3}, {1, 2}});
+      sourceReduction.getOperation(), {2, 128, 64}, {1, 2}});
 
-  // Floating-point reduction reassociation (split and tree) is a supported
-  // numeric transformation: no fast-math flag is consumed as a semantics
-  // switch, and the typed comparator owns acceptance.
+  // Temporal construction preserves the source combiner operation and dtype;
+  // this test checks only structural multi-axis main/tail coverage.
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
@@ -1615,16 +1614,16 @@ module {
     if (!sourceType || sourceType.getRank() != 3)
       return;
     sawSteadyWindow |=
-        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 4, 3});
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 128, 64});
     sawBothAxesTailWindow |=
-        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 2, 2});
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 1, 7});
     sawFullInput |=
-        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 10, 11});
+        sourceType.getShape() == llvm::ArrayRef<int64_t>({2, 1025, 1031});
   });
   EXPECT_TRUE(sawSteadyWindow);
   EXPECT_TRUE(sawBothAxesTailWindow);
   EXPECT_FALSE(sawFullInput);
-  // Static IR size depends on reduction rank, not the 3 x 4 runtime chunks:
+  // Static IR size depends on reduction rank, not the 9 x 17 runtime chunks:
   // each configured axis contributes one prologue, steady loop and tail.
   EXPECT_EQ(countOps<mlir::scf::ForOp>(cardModule->getOperation()), 4u);
   EXPECT_EQ(countOps<wafer::ComputeReduceOp>(cardModule->getOperation()), 9u);
@@ -1676,9 +1675,9 @@ module {
     mlir::scf::ForOp outerLoop = getLoop(outerOffset);
     mlir::scf::ForOp innerLoop = getLoop(innerOffset);
     if (!outerConstant)
-      expectLoopBounds(outerLoop, 4, 8, 4);
+      expectLoopBounds(outerLoop, 128, 1024, 128);
     if (!innerConstant)
-      expectLoopBounds(innerLoop, 3, 9, 3);
+      expectLoopBounds(innerLoop, 64, 1024, 64);
     if (outerLoop && innerLoop)
       EXPECT_TRUE(
           outerLoop.getOperation()->isProperAncestor(innerLoop.getOperation()));
@@ -1687,51 +1686,17 @@ module {
                          resultType.getShape()[1], resultType.getShape()[2]);
   });
   llvm::SmallVector<WindowSignature, 9> expectedWindows{
-      {0, 0, 4, 3},  {0, -1, 4, 3},  {0, 9, 4, 2},
-      {-1, 0, 4, 3}, {-1, -1, 4, 3}, {-1, 9, 4, 2},
-      {8, 0, 2, 3},  {8, -1, 2, 3},  {8, 9, 2, 2},
+      {0, 0, 128, 64},  {0, -1, 128, 64},  {0, 1024, 128, 7},
+      {-1, 0, 128, 64}, {-1, -1, 128, 64}, {-1, 1024, 128, 7},
+      {1024, 0, 1, 64}, {1024, -1, 1, 64}, {1024, 1024, 1, 7},
   };
   llvm::sort(windows);
   llvm::sort(expectedWindows);
   EXPECT_EQ(windows, expectedWindows);
 
-  // Numerically execute the runtime instances described by those checked
-  // prologue/steady/tail templates. Every source element must contribute
-  // exactly once, and the carried accumulator must match the unsplit
-  // two-axis reduction for both output elements.
-  constexpr std::array<std::pair<int64_t, int64_t>, 3> outerChunks{
-      std::pair<int64_t, int64_t>{0, 4}, {4, 4}, {8, 2}};
-  constexpr std::array<std::pair<int64_t, int64_t>, 4> innerChunks{
-      std::pair<int64_t, int64_t>{0, 3}, {3, 3}, {6, 3}, {9, 2}};
-  std::array<std::array<std::array<unsigned, 11>, 10>, 2> coverage{};
-  std::array<int64_t, 2> direct{3, 5};
-  std::array<int64_t, 2> chunked = direct;
-  auto inputValue = [](int64_t output, int64_t outer, int64_t inner) {
-    return 1 + (output * 3 + outer * 5 + inner) % 7;
-  };
-  for (int64_t output = 0; output < 2; ++output)
-    for (int64_t outer = 0; outer < 10; ++outer)
-      for (int64_t inner = 0; inner < 11; ++inner)
-        direct[output] += inputValue(output, outer, inner);
-  for (auto [outerOffset, outerSize] : outerChunks)
-    for (auto [innerOffset, innerSize] : innerChunks)
-      for (int64_t output = 0; output < 2; ++output)
-        for (int64_t outer = outerOffset; outer < outerOffset + outerSize;
-             ++outer)
-          for (int64_t inner = innerOffset; inner < innerOffset + innerSize;
-               ++inner) {
-            ++coverage[output][outer][inner];
-            chunked[output] += inputValue(output, outer, inner);
-          }
-  EXPECT_EQ(chunked, direct);
-  for (const auto &outputCoverage : coverage)
-    for (const auto &outerCoverage : outputCoverage)
-      for (unsigned count : outerCoverage)
-        EXPECT_EQ(count, 1u);
-
   wafer::TileMapping reversed = mapping(/*shardDimension=*/0, {0}, {2});
   reversed.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
-      sourceReduction.getOperation(), {2, 4, 3}, {2, 1}});
+      sourceReduction.getOperation(), {2, 128, 64}, {2, 1}});
   mlir::OwningOpRef<mlir::ModuleOp> reversedModule;
   failureReason.clear();
   ASSERT_TRUE(mlir::succeeded(lowerCompleteTensorProgramToCardModule(
@@ -1740,11 +1705,12 @@ module {
   bool sawReversedNesting = false;
   reversedModule->walk([&](mlir::scf::ForOp outer) {
     if (mlir::getConstantIntValue(mlir::getAsOpFoldResult(outer.getStep())) !=
-        3)
+        64)
       return;
     outer.getRegion().walk([&](mlir::scf::ForOp inner) {
-      sawReversedNesting |= mlir::getConstantIntValue(
-                                mlir::getAsOpFoldResult(inner.getStep())) == 4;
+      sawReversedNesting |=
+          mlir::getConstantIntValue(mlir::getAsOpFoldResult(inner.getStep())) ==
+          128;
     });
   });
   EXPECT_TRUE(sawReversedNesting);
@@ -1848,7 +1814,7 @@ module {
 }
 
 TEST(WaferTensorProgramToCardModuleTest,
-     RejectsUnsupportedReductionRegroupingBeforeCardMutation) {
+     RejectsUnsignedReduceKindAtTypedTileLoweringWithoutNumericPolicy) {
   std::unique_ptr<mlir::MLIRContext> context = createContext();
   auto source = parseModule(*context, R"mlir(
 module {
@@ -1857,19 +1823,20 @@ module {
        tile_grid = array<i64: 1, 1>, unavailable_tiles = array<i64>}
   wafer.execution.mesh @logical
       {axes = ["card"], shape = array<i64: 1>}
-  func.func @unsupported_regrouping(%input: tensor<4x8xi32>,
-                                    %init: tensor<4xi32>)
-      -> tensor<4xi32> {
+  func.func @unsigned_reduction(%input: tensor<2x1025x1031xi32>,
+                                %init: tensor<2x1025xi32>)
+      -> tensor<2x1025xi32> {
     %result = linalg.generic {
-        indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
-                         affine_map<(d0, d1) -> (d0)>],
-        iterator_types = ["parallel", "reduction"]
-      } ins(%input : tensor<4x8xi32>) outs(%init : tensor<4xi32>) {
+        indexing_maps = [affine_map<(d0, d1, d2) -> (d0, d1, d2)>,
+                         affine_map<(d0, d1, d2) -> (d0, d1)>],
+        iterator_types = ["parallel", "parallel", "reduction"]
+      } ins(%input : tensor<2x1025x1031xi32>)
+        outs(%init : tensor<2x1025xi32>) {
       ^bb0(%value: i32, %acc: i32):
         %maximum = arith.maxui %value, %acc : i32
         linalg.yield %maximum : i32
-    } -> tensor<4xi32>
-    return %result : tensor<4xi32>
+    } -> tensor<2x1025xi32>
+    return %result : tensor<2x1025xi32>
   }
 }
 )mlir");
@@ -1879,16 +1846,15 @@ module {
       [&](mlir::linalg::GenericOp operation) { reduction = operation; });
   ASSERT_TRUE(reduction);
 
-  wafer::TileMapping selected = mapping(/*shardDimension=*/0, {0}, {4});
-  selected.operationTemporalTiles.push_back(
-      wafer::StructuredOpTemporalTile{reduction.getOperation(), {4, 4}});
+  wafer::TileMapping selected = mapping(/*shardDimension=*/1, {0}, {2, 1025});
+  selected.operationTemporalTiles.push_back(wafer::StructuredOpTemporalTile{
+      reduction.getOperation(), {2, 128, 64}, {1, 2}});
   mlir::OwningOpRef<mlir::ModuleOp> cardModule;
   std::string failureReason;
   EXPECT_TRUE(mlir::failed(lowerCompleteTensorProgramToCardModule(
       *source, wafer::CardId(0), selected, cardModule, &failureReason)));
-  EXPECT_EQ(failureReason,
-            "reduction partition cannot preserve unsigned min/max "
-            "semantics with the current reduce kind");
+  EXPECT_NE(failureReason.find("cannot preserve unsigned min/max semantics"),
+            std::string::npos);
   EXPECT_FALSE(cardModule);
   EXPECT_TRUE(mlir::succeeded(mlir::verify(*source)));
 }

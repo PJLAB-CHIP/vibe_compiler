@@ -102,12 +102,14 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredParallelTraversal(
     llvm::SmallVectorImpl<int64_t> &tileSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   if (depth == dimensionOrder.size()) {
     mlir::FailureOr<mlir::Value> local = materializeConfiguredComputeTile(
         builder, scope, sourceCompute, sourceOffsets, tileSizes, loops,
-        operationTemporalTiles, failureReason, operationNodes);
+        operationTemporalTiles, nestedTemporalTiles, failureReason,
+        operationNodes);
     if (mlir::failed(local))
       return mlir::failure();
     mlir::FailureOr<mlir::Value> wrapped = materializeConfiguredCollectiveTile(
@@ -161,8 +163,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredParallelTraversal(
             nestedBuilder, scope, root, sourceCompute, requestedOutputOffsets,
             requestedOutputSizes, parallelTileSizes, dimensionOrder, depth + 1,
             destination, destinationBaseOffsets, sourceOffsets, localOffsets,
-            tileSizes, nestedLoops, operationTemporalTiles, failureReason,
-            operationNodes);
+            tileSizes, nestedLoops, operationTemporalTiles, nestedTemporalTiles,
+            failureReason, operationNodes);
     tileSizes[dimension] = oldTileSize;
     localOffsets[dimension] = oldLocalOffset;
     sourceOffsets[dimension] = oldSourceOffset;
@@ -219,6 +221,7 @@ mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
     llvm::ArrayRef<int64_t> requestedOutputSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     std::string *failureReason, mlir::Value outputDestination,
     llvm::ArrayRef<mlir::OpFoldResult> destinationBaseOffsets,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
@@ -314,8 +317,8 @@ mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
   if (!hasParallelSplit) {
     mlir::FailureOr<mlir::Value> local = materializeConfiguredComputeTile(
         builder, scope, sourceCompute, requestedOutputOffsets,
-        requestedOutputSizes, loops, operationTemporalTiles, failureReason,
-        operationNodes);
+        requestedOutputSizes, loops, operationTemporalTiles,
+        nestedTemporalTiles, failureReason, operationNodes);
     if (mlir::failed(local))
       return mlir::failure();
     mlir::FailureOr<mlir::Value> wrapped = materializeConfiguredCollectiveTile(
@@ -385,7 +388,8 @@ mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
       builder, scope, root, sourceCompute, requestedOutputOffsets,
       requestedOutputSizes, parallelTileSizes, dimensionOrder, /*depth=*/0,
       output, destinationBaseOffsets, sourceOffsets, localOffsets, tileSizes,
-      loops, operationTemporalTiles, failureReason, operationNodes);
+      loops, operationTemporalTiles, nestedTemporalTiles, failureReason,
+      operationNodes);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

@@ -14,6 +14,7 @@ materializeTemporalRegionTraversal(
     llvm::ArrayRef<int64_t> spatialOffsets,
     llvm::ArrayRef<int64_t> spatialSizes,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     mlir::ValueRange outputDestinations,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
     std::string *failureReason,

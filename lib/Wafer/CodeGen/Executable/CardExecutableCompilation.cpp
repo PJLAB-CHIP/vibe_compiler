@@ -54,12 +54,18 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
              "current IR";
     return mlir::failure();
   }
-  if (mlir::failed(runPassPipeline(
-          module, "instr-function-boundary-bufferization",
-          wafer::buildBufferizeInstrFunctionsPipeline))) {
+  if (mlir::failed(rebaseStructuredBufferRelationsToStorageRoots(relations))) {
+    detail = "Instr function-boundary bufferization cannot preserve a unique "
+             "storage root for every selected relation";
+    return mlir::failure();
+  }
+  if (mlir::failed(
+          runPassPipeline(module, "instr-function-boundary-bufferization",
+                          wafer::buildBufferizeInstrFunctionsPipeline))) {
     detail = "Instr function-boundary bufferization failed";
     return mlir::failure();
   }
+  retainCurrentStructuredBufferRelations(module.getOperation(), relations);
   if (mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
                                                          relations))) {
     detail = "Instr function-boundary bufferization changed a selected "
@@ -71,7 +77,7 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
   module.walk([&](TileRegionOp region) { regions.push_back(region); });
   StructuredBufferReplacementListener replacementListener(relations);
   TileRegionToInstrLoweringSession loweringSession(*module.getContext(),
-                                                    &replacementListener);
+                                                   &replacementListener);
   for (TileRegionOp region : regions)
     if (mlir::failed(convertTileRegionToInstr(region, loweringSession,
                                               &replacementListener))) {
@@ -241,8 +247,7 @@ CardExecutableCompilationResult compileCardModuleToExecutable(
         planTileMemory(std::move(result.module), &result.memoryPlanning,
                        bufferingScopes, &result.materializationRelations,
                        &result.rotatingSlotAllocationCount,
-                       &result.selectedBuffer,
-                       applySelectedInstructionSchedule,
+                       &result.selectedBuffer, applySelectedInstructionSchedule,
                        /*emitSPMCapacityDiagnostics=*/false);
     if (mlir::failed(memoryPlanned)) {
       result.memoryPlanningFailed = true;

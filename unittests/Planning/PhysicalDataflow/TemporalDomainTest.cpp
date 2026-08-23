@@ -508,7 +508,7 @@ module {
   ASSERT_EQ(completed.getKind(), TemporalSuccessorKind::Plan)
       << completed.getDetail().str();
   ASSERT_NE(completed.getPlan(), nullptr);
-  ASSERT_EQ(completed.getPlan()->scopes.size(), 10u);
+  ASSERT_EQ(completed.getPlan()->scopes.size(), 3u);
   unsigned main = 0;
   unsigned tail = 0;
   for (const TemporalScopePlan &scope :
@@ -524,11 +524,11 @@ module {
       ++main;
     } else {
       EXPECT_EQ(invocation->producerExtents[1], 3);
-      EXPECT_EQ(invocation->producerOffsets[1], 1024);
+      EXPECT_EQ(invocation->producerOffsets[1], 0);
       ++tail;
     }
   }
-  EXPECT_EQ(main, 8u);
+  EXPECT_EQ(main, 1u);
   EXPECT_EQ(tail, 1u);
 
   prefix.scopes.front().iteratorTileSizes[heightAxis] = 256;
@@ -536,9 +536,8 @@ module {
   ASSERT_EQ(changed.getKind(), TemporalSuccessorKind::Plan)
       << changed.getDetail().str();
   ASSERT_NE(changed.getPlan(), nullptr);
-  EXPECT_EQ(changed.getPlan()->scopes.size(), 6u);
-  EXPECT_FALSE(changed.getPlan()->scopes[1].id ==
-               completed.getPlan()->scopes[1].id);
+  EXPECT_EQ(changed.getPlan()->scopes.size(), 3u);
+  EXPECT_FALSE(*changed.getPlan() == *completed.getPlan());
 
   prefix.scopes.front().iteratorTileSizes.assign(consumerRanges.size(), 1);
   prefix.scopes.front().waveLoopOrder.clear();

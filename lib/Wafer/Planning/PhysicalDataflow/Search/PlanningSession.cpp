@@ -847,6 +847,49 @@ TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
   return {TemporalExpansionKind::State, std::move(*state)};
 }
 
+mlir::FailureOr<std::optional<TemporalState>>
+PhysicalDataflowPlanningSession::refineTemporalStateFromActualFeedback(
+    const TemporalState &state, llvm::ArrayRef<SemanticRootKey> causalRoots,
+    std::string *failureReason) {
+  auto works = rootWorkCache.find(state.getSpatialPlan());
+  TemporalDomainLookup domain =
+      getOrCreateTemporalDomain(state.getRegionState());
+  if (works == rootWorkCache.end() || !domain.domain) {
+    if (failureReason)
+      *failureReason = "actual feedback lost temporal domain facts";
+    return mlir::failure();
+  }
+  TemporalPlan refined = state.getTemporalPlan();
+  auto changed = refineTemporalPlanFromActualSPMFeedback(
+      refined, works->second, causalRoots, failureReason);
+  if (mlir::failed(changed))
+    return mlir::failure();
+  if (!*changed)
+    return std::optional<TemporalState>{};
+  auto firstNested = llvm::find_if(refined.scopes, [](const auto &scope) {
+    return !isTopLevelScope(scope.id);
+  });
+  refined.scopes.erase(firstNested, refined.scopes.end());
+  TemporalSuccessor completed = domain.domain->completePrefix(refined);
+  if (completed.getKind() != TemporalSuccessorKind::Plan ||
+      !completed.getPlan()) {
+    if (failureReason)
+      *failureReason = completed.getDetail().empty()
+                           ? "actual temporal feedback cannot close its plan"
+                           : completed.getDetail().str();
+    return mlir::failure();
+  }
+  std::string detail;
+  auto result = TemporalState::create(*domain.domain, state.getRegionState(),
+                                      *completed.getPlan(), &detail);
+  if (mlir::failed(result)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  return std::optional<TemporalState>(std::move(*result));
+}
+
 RepresentationExpansionResult
 PhysicalDataflowPlanningSession::resumeRepresentation(
     RepresentationContinuation &continuation) {

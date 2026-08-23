@@ -17,6 +17,7 @@ mlir::LogicalResult fuseCandidateProducerSlices(
     TensorProgramScope scope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =
         nullptr);

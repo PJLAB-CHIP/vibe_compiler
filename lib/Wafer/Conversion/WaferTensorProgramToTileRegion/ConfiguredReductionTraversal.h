@@ -17,6 +17,7 @@ mlir::FailureOr<mlir::Value> materializeConfiguredComputeTile(
     llvm::ArrayRef<int64_t> outputSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes);
 

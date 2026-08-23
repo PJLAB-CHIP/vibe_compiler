@@ -270,6 +270,7 @@ static mlir::FailureOr<bool> tryAssembleBoundaryProducerValue(
     mlir::IRRewriter &rewriter, TensorProgramScope scope,
     mlir::tensor::ExtractSliceOp slice,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     std::string *failureReason) {
   mlir::Value value = slice.getSource();
   while (mlir::Operation *definition = value.getDefiningOp()) {
@@ -304,7 +305,7 @@ static mlir::FailureOr<bool> tryAssembleBoundaryProducerValue(
       materializeConfiguredStructuredTraversal(
           rewriter, scope, structured.getOperation(), structured, fullOffsets,
           resultType.getShape(), /*loops=*/{}, operationTemporalTiles,
-          failureReason);
+          nestedTemporalTiles, failureReason);
   if (mlir::failed(assembled))
     return mlir::failure();
   value.replaceAllUsesWith(*assembled);
@@ -332,6 +333,7 @@ static mlir::LogicalResult fuseProducerSlices(
     TensorProgramBody body, std::optional<TensorProgramScope> schedulingScope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
     llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
@@ -547,7 +549,7 @@ static mlir::LogicalResult fuseProducerSlices(
              "temporal producer assembly requires a scheduling scope");
       mlir::FailureOr<bool> assembled = tryAssembleBoundaryProducerValue(
           rewriter, *schedulingScope, slice, operationTemporalTiles,
-          failureReason);
+          nestedTemporalTiles, failureReason);
       if (mlir::failed(assembled))
         return mlir::failure();
       if (*assembled)
@@ -638,11 +640,57 @@ static mlir::LogicalResult fuseProducerSlices(
 
     if (auto structured =
             mlir::dyn_cast<mlir::linalg::LinalgOp>(producerResult.getOwner())) {
+      llvm::SmallVector<StructuredOpTemporalTile, 8> configuredTiles(
+          operationTemporalTiles.begin(), operationTemporalTiles.end());
+      const StructuredOpNestedTemporalTile *selectedNested = nullptr;
+      bool hasNestedProducer = false;
+      auto requestedType =
+          mlir::dyn_cast<mlir::RankedTensorType>(slice.getType());
+      for (const StructuredOpNestedTemporalTile &candidate :
+           nestedTemporalTiles) {
+        if (candidate.producer != structured.getOperation())
+          continue;
+        hasNestedProducer = true;
+        if (!requestedType || candidate.parent != pendingSlice.sourceConsumer ||
+            candidate.producerResult != producerResult.getResultNumber() ||
+            !llvm::is_contained(pendingSlice.sourceConsumerOperandNumbers,
+                                candidate.parentOperand) ||
+            !llvm::equal(candidate.requestedResultExtents,
+                         requestedType.getShape()))
+          continue;
+        if (selectedNested) {
+          setFailureReason(
+              failureReason,
+              "nested producer slice matches several temporal classes");
+          return mlir::failure();
+        }
+        selectedNested = &candidate;
+      }
+      if (hasNestedProducer && !selectedNested) {
+        setFailureReason(
+            failureReason,
+            "nested producer slice has no selected temporal class");
+        return mlir::failure();
+      }
+      if (selectedNested) {
+        if (llvm::any_of(configuredTiles,
+                         [&](const StructuredOpTemporalTile &tile) {
+                           return tile.operation == structured.getOperation();
+                         })) {
+          setFailureReason(
+              failureReason,
+              "nested producer also has a top-level temporal assignment");
+          return mlir::failure();
+        }
+        configuredTiles.push_back({structured.getOperation(),
+                                   selectedNested->iteratorTileSizes,
+                                   selectedNested->waveLoopOrder});
+      }
       auto selected = llvm::find_if(
-          operationTemporalTiles, [&](const StructuredOpTemporalTile &tile) {
+          configuredTiles, [&](const StructuredOpTemporalTile &tile) {
             return tile.operation == structured.getOperation();
           });
-      if (selected != operationTemporalTiles.end()) {
+      if (selected != configuredTiles.end()) {
         assert(schedulingScope &&
                "temporal producer materialization requires a scheduling "
                "scope");
@@ -660,7 +708,7 @@ static mlir::LogicalResult fuseProducerSlices(
             materializeConfiguredStructuredTraversal(
                 rewriter, *schedulingScope, structured.getOperation(),
                 structured, slice.getMixedOffsets(), requestedType.getShape(),
-                loops, operationTemporalTiles, failureReason,
+                loops, configuredTiles, nestedTemporalTiles, failureReason,
                 /*outputDestination=*/{}, /*destinationBaseOffsets=*/{},
                 operationNodes);
         if (mlir::failed(tiled))
@@ -705,11 +753,12 @@ mlir::LogicalResult fuseCandidateProducerSlices(
     TensorProgramScope scope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   return fuseProducerSlices(tiledConsumer, sourceConsumer, scope, scope, loops,
-                            operationTemporalTiles, insertionListener,
-                            failureReason, operationNodes,
+                            operationTemporalTiles, nestedTemporalTiles,
+                            insertionListener, failureReason, operationNodes,
                             /*sharedMaterializedProducerTiles=*/nullptr);
 }
 
@@ -718,13 +767,14 @@ mlir::LogicalResult fuseCandidateProducerSlicesWithCache(
     TensorProgramScope scope,
     llvm::MutableArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     mlir::OpBuilder::Listener *insertionListener, std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
     llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
         &materializedProducerTiles) {
   return fuseProducerSlices(tiledConsumer, sourceConsumer, scope, scope, loops,
-                            operationTemporalTiles, insertionListener,
-                            failureReason, operationNodes,
+                            operationTemporalTiles, nestedTemporalTiles,
+                            insertionListener, failureReason, operationNodes,
                             &materializedProducerTiles);
 }
 
@@ -770,8 +820,9 @@ mlir::LogicalResult fuseTensorProgramProducerSlices(
     std::string *failureReason) {
   return fuseProducerSlices(
       tiledConsumer, sourceConsumer, TensorProgramBody(function), std::nullopt,
-      loops, /*operationTemporalTiles=*/{}, /*insertionListener=*/nullptr,
-      failureReason, /*operationNodes=*/nullptr,
+      loops, /*operationTemporalTiles=*/{}, /*nestedTemporalTiles=*/{},
+      /*insertionListener=*/nullptr, failureReason,
+      /*operationNodes=*/nullptr,
       /*sharedMaterializedProducerTiles=*/nullptr);
 }
 

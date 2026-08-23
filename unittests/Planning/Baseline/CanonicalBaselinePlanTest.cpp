@@ -173,10 +173,10 @@ TEST_F(CanonicalBaselinePlanTest,
               ? std::get_if<RequiredRootExecution>(&scopeExecution->source)
               : nullptr;
       ASSERT_NE(root, nullptr);
-      auto work = llvm::find_if(
-          plan->rootWorks, [&](const analysis::RootRegionWork &candidate) {
-            return candidate.id == root->work;
-          });
+      auto work = llvm::find_if(plan->rootWorks,
+                                [&](const analysis::RootRegionWork &candidate) {
+                                  return candidate.id == root->work;
+                                });
       ASSERT_NE(work, plan->rootWorks.end());
       auto execution = llvm::find_if(
           work->execution, [&](const analysis::RootExecutionWork &candidate) {
@@ -184,8 +184,7 @@ TEST_F(CanonicalBaselinePlanTest,
           });
       ASSERT_NE(execution, work->execution.end());
       for (auto [tile, interval] :
-           llvm::zip_equal(scope.iteratorTileSizes,
-                           execution->iterationDomain))
+           llvm::zip_equal(scope.iteratorTileSizes, execution->iterationDomain))
         EXPECT_EQ(tile, interval.size);
     }
     EXPECT_EQ(print(module->getOperation()), before);
@@ -244,11 +243,11 @@ TEST_F(CanonicalBaselinePlanTest,
   TemporalPlan beforeFailure = plan->temporal;
   SemanticRootKey unknown = root;
   unknown.anchorIndex += 1000;
-  EXPECT_TRUE(mlir::failed(refineBaselineTemporalPlan(
+  EXPECT_TRUE(mlir::failed(refineTemporalPlanFromActualSPMFeedback(
       plan->temporal, plan->rootWorks, {unknown}, &failureReason)));
   EXPECT_EQ(plan->temporal, beforeFailure);
-  auto refined = refineBaselineTemporalPlan(plan->temporal, plan->rootWorks,
-                                            {root}, &failureReason);
+  auto refined = refineTemporalPlanFromActualSPMFeedback(
+      plan->temporal, plan->rootWorks, {root}, &failureReason);
   ASSERT_TRUE(mlir::succeeded(refined)) << failureReason;
   ASSERT_TRUE(*refined);
   TemporalDomainResult domain =

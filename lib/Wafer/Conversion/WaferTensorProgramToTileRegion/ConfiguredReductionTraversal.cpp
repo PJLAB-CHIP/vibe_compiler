@@ -4,7 +4,6 @@
 
 #include "Internal.h"
 #include "StructuredIterationTile.h"
-#include "Wafer/Analysis/Structured/ReductionSemantics.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
@@ -62,6 +61,7 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredLeaf(
     llvm::ArrayRef<int64_t> reductionSizes, mlir::Value accumulator,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   unsigned outputMapIndex =
@@ -120,8 +120,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredStructuredLeaf(
                                                                  loops.end());
   if (mlir::failed(fuseCandidateProducerSlices(
           tiledOperation, sourceReduction.getOperation(), scope, enclosingLoops,
-          operationTemporalTiles, builder.getListener(), failureReason,
-          operationNodes)))
+          operationTemporalTiles, nestedTemporalTiles, builder.getListener(),
+          failureReason, operationNodes)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledOperation);
   return tiled->values.front();
@@ -142,6 +142,7 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
     llvm::ArrayRef<int64_t> reductionTileSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   llvm::SmallVector<unsigned, 2> reductionDims =
@@ -241,27 +242,6 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
     }
   }
 
-  // The traversal order is [chunk coordinates..., in-tile coordinates...].
-  // It is identical to the source reduction's lexicographic order only when
-  // every reduction axis preceding the last split axis has a unit in-tile
-  // extent. Floating-point reassociation is a supported numeric
-  // transformation (the typed comparator owns acceptance, no fast-math flag
-  // is consumed); the preserved-order fact still gates integer
-  // overflow-flag combinations below.
-  bool preservesSequentialReductionOrder =
-      splitOrdinals == naturalSplitOrdinals;
-  const unsigned lastSplitOrdinal = naturalSplitOrdinals.back();
-  for (unsigned ordinal = 0; ordinal < lastSplitOrdinal; ++ordinal) {
-    const int64_t range = loopRanges[reductionDims[ordinal]];
-    if (range > 1 && reductionTileSizes[ordinal] != 1) {
-      preservesSequentialReductionOrder = false;
-      break;
-    }
-  }
-  if (mlir::failed(analysis::verifyReductionPartitionLegality(
-          sourceReduction, preservesSequentialReductionOrder, failureReason)))
-    return mlir::failure();
-
   auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(
       sourceReduction->getResult(0).getType());
   if (!resultType ||
@@ -292,8 +272,8 @@ static mlir::FailureOr<mlir::Value> materializeConfiguredReductionProducer(
       return materializeConfiguredStructuredLeaf(
           nestedBuilder, scope, sourceReduction, requestedOutputOffsets,
           requestedOutputSizes, reductionOffsets, chunkSizes, accumulator,
-          enclosingLoops, operationTemporalTiles, failureReason,
-          operationNodes);
+          enclosingLoops, operationTemporalTiles, nestedTemporalTiles,
+          failureReason, operationNodes);
 
     const unsigned ordinal = splitOrdinals[depth];
     const int64_t range = loopRanges[reductionDims[ordinal]];
@@ -363,6 +343,7 @@ mlir::FailureOr<mlir::Value> materializeConfiguredComputeTile(
     llvm::ArrayRef<int64_t> outputSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes) {
   mlir::FailureOr<llvm::SmallVector<int64_t, 2>> reductionTiles =
@@ -385,8 +366,8 @@ mlir::FailureOr<mlir::Value> materializeConfiguredComputeTile(
   if (hasReductionSplit)
     return materializeConfiguredReductionProducer(
         builder, scope, sourceCompute, outputOffsets, outputSizes,
-        *reductionTiles, loops, operationTemporalTiles, failureReason,
-        operationNodes);
+        *reductionTiles, loops, operationTemporalTiles, nestedTemporalTiles,
+        failureReason, operationNodes);
 
   llvm::SmallVector<mlir::OpFoldResult, 2> reductionOffsets(
       reductionDims.size(), builder.getIndexAttr(0));
@@ -397,7 +378,8 @@ mlir::FailureOr<mlir::Value> materializeConfiguredComputeTile(
   return materializeConfiguredStructuredLeaf(
       builder, scope, sourceCompute, outputOffsets, outputSizes,
       reductionOffsets, reductionSizes, /*accumulator=*/{}, loops,
-      operationTemporalTiles, failureReason, operationNodes);
+      operationTemporalTiles, nestedTemporalTiles, failureReason,
+      operationNodes);
 }
 
 } // namespace wafer::tensor_program_to_tile_region

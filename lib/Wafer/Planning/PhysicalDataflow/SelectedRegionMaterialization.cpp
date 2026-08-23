@@ -10,6 +10,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <tuple>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -24,35 +25,25 @@ mlir::FailureOr<T> fail(std::string *failureReason, llvm::StringRef detail) {
 const analysis::RootRegionWork *
 findWork(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
          const analysis::RootRegionWorkId &id) {
-  auto work = llvm::find_if(rootWorks, [&](const auto &candidate) {
-    return candidate.id == id;
-  });
+  auto work = llvm::find_if(
+      rootWorks, [&](const auto &candidate) { return candidate.id == id; });
   return work == rootWorks.end() ? nullptr : &*work;
 }
 
-const TemporalScopePlan *findTemporalScope(const TemporalPlan &temporal,
-                                           const ExecutionInstanceId &id) {
+const TemporalScopePlan *
+findTopLevelTemporalScope(const TemporalPlan &temporal,
+                          const RegionExecutionId &id) {
   auto scope = llvm::find_if(temporal.scopes, [&](const auto &candidate) {
-    const ExecutionInstanceId *execution = getRequiredExecution(candidate.id);
-    return execution && *execution == id;
-  });
-  return scope == temporal.scopes.end() ? nullptr : &*scope;
-}
-
-const TemporalScopePlan *findTemporalScope(const TemporalPlan &temporal,
-                                           const RegionExecutionId &id) {
-  auto scope = llvm::find_if(temporal.scopes, [&](const auto &candidate) {
-    return candidate.id.execution == id;
+    return candidate.id.execution == id && isTopLevelScope(candidate.id);
   });
   return scope == temporal.scopes.end() ? nullptr : &*scope;
 }
 
 const StructuredOperationNodeMapping *
 findNode(const CardProgramAnalysis &program, mlir::Operation *operation) {
-  auto node = llvm::find_if(
-      program.operationNodes, [&](const auto &candidate) {
-        return candidate.operation == operation;
-      });
+  auto node = llvm::find_if(program.operationNodes, [&](const auto &candidate) {
+    return candidate.operation == operation;
+  });
   return node == program.operationNodes.end() ? nullptr : &*node;
 }
 
@@ -93,8 +84,8 @@ prepareSelectedRegionMaterializationSource(
   uint32_t nextNode = 0;
   for (const StructuredOperationNodeMapping &mapping : program.operationNodes) {
     mlir::Operation *cloned = cloneMapping.lookupOrNull(mapping.operation);
-    if (!cloned || mapping.structuredNodeId ==
-                       std::numeric_limits<uint32_t>::max())
+    if (!cloned ||
+        mapping.structuredNodeId == std::numeric_limits<uint32_t>::max())
       return fail<SelectedRegionMaterializationSource>(
           failureReason,
           "selected region source cannot clone one structured node");
@@ -134,7 +125,8 @@ prepareSelectedRegionMaterializationSource(
       const analysis::RootRegionWork *producerWork =
           findWork(rootWorks, replica.id.producer.work);
       const StructuredOperationNodeMapping *producerNode =
-          producerWork ? findNode(program, producerWork->rootOperation) : nullptr;
+          producerWork ? findNode(program, producerWork->rootOperation)
+                       : nullptr;
       if (!producerWork || !producerNode ||
           replica.id.fragment.source.kind !=
               analysis::RootBoundaryKind::StructuredResult ||
@@ -147,8 +139,8 @@ prepareSelectedRegionMaterializationSource(
           group.executions, [&](const ExecutionInstancePlan &execution) {
             const auto *root =
                 std::get_if<RequiredRootExecution>(&execution.id.source);
-            return root && root->shard ==
-                               replica.id.fragment.use.destinationShard;
+            return root &&
+                   root->shard == replica.id.fragment.use.destinationShard;
           });
       if (consumerExecution == group.executions.end())
         return fail<SelectedRegionMaterializationSource>(
@@ -169,8 +161,8 @@ prepareSelectedRegionMaterializationSource(
             "selected replica consumer operand is not representable");
       mlir::Value expectedSource = cloneMapping.lookupOrNull(
           originalProducer->getResult(replica.id.fragment.source.index));
-      mlir::OpOperand &consumerOperand = clonedConsumer->getOpOperand(
-          replica.id.fragment.use.operand);
+      mlir::OpOperand &consumerOperand =
+          clonedConsumer->getOpOperand(replica.id.fragment.use.operand);
       if (!expectedSource || consumerOperand.get() != expectedSource)
         return fail<SelectedRegionMaterializationSource>(
             failureReason,
@@ -189,8 +181,8 @@ prepareSelectedRegionMaterializationSource(
       mlir::OpBuilder builder(clonedConsumer);
       mlir::Operation *clonedProducer =
           builder.clone(*originalProducer, replicaMapping);
-      if (!clonedProducer || replica.id.fragment.source.index >=
-                                 clonedProducer->getNumResults())
+      if (!clonedProducer ||
+          replica.id.fragment.source.index >= clonedProducer->getNumResults())
         return fail<SelectedRegionMaterializationSource>(
             failureReason, "selected replica producer clone is malformed");
       consumerOperand.set(
@@ -201,10 +193,9 @@ prepareSelectedRegionMaterializationSource(
       ++nextNode;
     }
   }
-  llvm::sort(result.executionNodes,
-             [](const auto &lhs, const auto &rhs) {
-               return lhs.execution < rhs.execution;
-             });
+  llvm::sort(result.executionNodes, [](const auto &lhs, const auto &rhs) {
+    return lhs.execution < rhs.execution;
+  });
   if (mlir::failed(mlir::verify(*result.module)))
     return fail<SelectedRegionMaterializationSource>(
         failureReason, "selected region source clone failed verification");
@@ -222,6 +213,7 @@ prepareSelectedRegionGroups(
   result.reserve(regions.groups.size());
   std::set<ExecutionInstanceId> seenRequired;
   std::set<ReplicaExecutionId> seenReplicas;
+  std::set<TraversalScopeId> seenTemporalScopes;
   std::map<RegionExecutionId, const SelectedRegionExecutionNode *>
       selectedNodes;
   for (const SelectedRegionExecutionNode &node : executionNodes)
@@ -235,6 +227,8 @@ prepareSelectedRegionGroups(
     std::map<uint32_t, const ExecutionInstancePlan *> executionsByNode;
     std::map<ExecutionInstanceId, uint32_t> nodesByExecution;
     std::map<ReplicaExecutionId, uint32_t> nodesByReplica;
+    std::map<RegionExecutionId, uint32_t> nodesByRegionExecution;
+    std::set<RegionExecutionId> temporalExecutions;
     for (const ExecutionInstancePlan &execution : group.executions) {
       if (!seenRequired.insert(execution.id).second)
         return fail<std::vector<StructuredNodeShardGroup>>(
@@ -249,8 +243,15 @@ prepareSelectedRegionGroups(
           work ? findExecution(*work, root->shard) : nullptr;
       const StructuredOperationNodeMapping *node =
           work ? findNode(program, work->rootOperation) : nullptr;
-      const TemporalScopePlan *scope = findTemporalScope(temporal, execution.id);
-      if (!work || !piece || !node || !scope || work->id.tile != group.tile)
+      const bool topLevel =
+          std::holds_alternative<ExecutionInstancePlan::TopLevel>(
+              execution.placement);
+      const TemporalScopePlan *scope =
+          topLevel ? findTopLevelTemporalScope(temporal,
+                                               RegionExecutionId(execution.id))
+                   : nullptr;
+      if (!work || !piece || !node || (topLevel && !scope) ||
+          work->id.tile != group.tile)
         return fail<std::vector<StructuredNodeShardGroup>>(
             failureReason,
             "selected region execution has no matching work, node, or "
@@ -273,19 +274,25 @@ prepareSelectedRegionGroups(
           shard.reductionGroups.push_back(
               {contribution.group, contribution.mergeTile});
       selected.shards.push_back(std::move(shard));
-      selected.temporalTiles.push_back(StructuredNodeTemporalTile{
-          structuredNodeId, scope->iteratorTileSizes, scope->waveLoopOrder});
-      if (!executionsByNode
-               .try_emplace(structuredNodeId, &execution)
-               .second ||
+      if (scope) {
+        if (!seenTemporalScopes.insert(scope->id).second)
+          return fail<std::vector<StructuredNodeShardGroup>>(
+              failureReason, "selected top-level temporal scope is duplicated");
+        selected.temporalTiles.push_back(StructuredNodeTemporalTile{
+            structuredNodeId, scope->iteratorTileSizes, scope->waveLoopOrder});
+        temporalExecutions.insert(RegionExecutionId(execution.id));
+      }
+      if (!executionsByNode.try_emplace(structuredNodeId, &execution).second ||
           !nodesByExecution.try_emplace(execution.id, structuredNodeId)
+               .second ||
+          !nodesByRegionExecution
+               .try_emplace(RegionExecutionId(execution.id), structuredNodeId)
                .second)
         return fail<std::vector<StructuredNodeShardGroup>>(
             failureReason,
             "selected region maps one source node to several required "
             "executions in one group");
-      if (std::holds_alternative<ExecutionInstancePlan::TopLevel>(
-              execution.placement) &&
+      if (topLevel &&
           !llvm::is_contained(selected.independentlyMaterializedNodes,
                               structuredNodeId))
         selected.independentlyMaterializedNodes.push_back(structuredNodeId);
@@ -300,12 +307,17 @@ prepareSelectedRegionGroups(
       const analysis::RootExecutionWork *piece =
           work ? findExecution(*work, replica.id.producer.shard) : nullptr;
       auto node = selectedNodes.find(replica.id);
-      const TemporalScopePlan *scope = findTemporalScope(
-          temporal, RegionExecutionId(replica.id));
-      if (!work || !piece || node == selectedNodes.end() || !scope ||
+      const bool topLevel =
+          std::holds_alternative<ExecutionInstancePlan::TopLevel>(
+              replica.placement);
+      const TemporalScopePlan *scope =
+          topLevel ? findTopLevelTemporalScope(temporal,
+                                               RegionExecutionId(replica.id))
+                   : nullptr;
+      if (!work || !piece || node == selectedNodes.end() ||
+          (topLevel && !scope) ||
           llvm::any_of(selected.shards, [&](const auto &shard) {
-            return shard.structuredNodeId ==
-                   node->second->structuredNodeId;
+            return shard.structuredNodeId == node->second->structuredNodeId;
           }))
         return fail<std::vector<StructuredNodeShardGroup>>(
             failureReason,
@@ -319,12 +331,26 @@ prepareSelectedRegionGroups(
         replicaShard.sizes.push_back(interval.size);
       }
       selected.shards.push_back(std::move(replicaShard));
-      selected.temporalTiles.push_back(StructuredNodeTemporalTile{
-          node->second->structuredNodeId, scope->iteratorTileSizes,
-          scope->waveLoopOrder});
-      nodesByReplica.emplace(replica.id, node->second->structuredNodeId);
-      if (std::holds_alternative<ExecutionInstancePlan::TopLevel>(
-              replica.placement))
+      if (scope) {
+        if (!seenTemporalScopes.insert(scope->id).second)
+          return fail<std::vector<StructuredNodeShardGroup>>(
+              failureReason, "selected replica temporal scope is duplicated");
+        selected.temporalTiles.push_back(StructuredNodeTemporalTile{
+            node->second->structuredNodeId, scope->iteratorTileSizes,
+            scope->waveLoopOrder});
+        temporalExecutions.insert(RegionExecutionId(replica.id));
+      }
+      if (!nodesByReplica
+               .try_emplace(replica.id, node->second->structuredNodeId)
+               .second ||
+          !nodesByRegionExecution
+               .try_emplace(RegionExecutionId(replica.id),
+                            node->second->structuredNodeId)
+               .second)
+        return fail<std::vector<StructuredNodeShardGroup>>(
+            failureReason,
+            "selected replica maps to a duplicate execution node");
+      if (topLevel)
         selected.independentlyMaterializedNodes.push_back(
             node->second->structuredNodeId);
     }
@@ -335,8 +361,7 @@ prepareSelectedRegionGroups(
         auto node = nodesByExecution.find(*required);
         if (node == nodesByExecution.end())
           return fail<std::vector<StructuredNodeShardGroup>>(
-              failureReason,
-              "local required binding has no group execution");
+              failureReason, "local required binding has no group execution");
         auto executionPosition = executionsByNode.find(node->second);
         const ExecutionInstancePlan *execution =
             executionPosition == executionsByNode.end()
@@ -363,8 +388,7 @@ prepareSelectedRegionGroups(
             group.replicas, [&](const ReplicaExecutionPlan &candidate) {
               return candidate.id == replica;
             });
-        if (node == nodesByReplica.end() ||
-            replicaPlan == group.replicas.end())
+        if (node == nodesByReplica.end() || replicaPlan == group.replicas.end())
           return fail<std::vector<StructuredNodeShardGroup>>(
               failureReason, "local replica binding has no group execution");
         const bool topLevel =
@@ -390,16 +414,84 @@ prepareSelectedRegionGroups(
             "current selected construction requires same-group external "
             "delivery from the movement stage");
 
+    for (const TemporalScopePlan &scope : temporal.scopes) {
+      const auto *invocation =
+          std::get_if<NestedInvocationClassId>(&scope.id.invocation);
+      if (!invocation)
+        continue;
+      auto producer = nodesByRegionExecution.find(scope.id.execution);
+      auto parent = nodesByRegionExecution.find(invocation->parent);
+      if (producer == nodesByRegionExecution.end() ||
+          parent == nodesByRegionExecution.end())
+        continue;
+      if (!seenTemporalScopes.insert(scope.id).second)
+        return fail<std::vector<StructuredNodeShardGroup>>(
+            failureReason, "selected nested temporal scope is duplicated");
+      temporalExecutions.insert(scope.id.execution);
+      if (scope.iteratorTileSizes.size() !=
+              invocation->producerExtents.size() ||
+          invocation->producerOffsets.size() !=
+              invocation->producerExtents.size())
+        return fail<std::vector<StructuredNodeShardGroup>>(
+            failureReason,
+            "selected nested temporal scope has inconsistent iterator work");
+      for (const NestedUseClassId &use : invocation->uses) {
+        auto binding = llvm::find_if(
+            group.localBindings, [&](const LocalUseBinding &candidate) {
+              return candidate.fragment == use.relation &&
+                     candidate.producer == scope.id.execution &&
+                     candidate.delivery == LocalUseDelivery::DirectNestedValue;
+            });
+        if (binding == group.localBindings.end() ||
+            use.requestedOffsets.size() != use.requestedExtents.size())
+          return fail<std::vector<StructuredNodeShardGroup>>(
+              failureReason,
+              "nested temporal class has no exact direct use binding");
+        selected.nestedTemporalTiles.push_back(
+            {producer->second, parent->second, use.relation.source.index,
+             use.relation.use.operand, use.requestedExtents,
+             invocation->producerExtents, scope.iteratorTileSizes,
+             scope.waveLoopOrder});
+      }
+    }
+
+    for (const ExecutionInstancePlan &execution : group.executions)
+      if (std::holds_alternative<RequiredRootExecution>(execution.id.source) &&
+          !temporalExecutions.count(RegionExecutionId(execution.id)))
+        return fail<std::vector<StructuredNodeShardGroup>>(
+            failureReason,
+            "selected root execution has no temporal traversal scope");
+    for (const ReplicaExecutionPlan &replica : group.replicas)
+      if (!temporalExecutions.count(RegionExecutionId(replica.id)))
+        return fail<std::vector<StructuredNodeShardGroup>>(
+            failureReason,
+            "selected replica execution has no temporal traversal scope");
+
     llvm::sort(selected.shards, [](const auto &lhs, const auto &rhs) {
       return lhs.structuredNodeId < rhs.structuredNodeId;
     });
     llvm::sort(selected.temporalTiles, [](const auto &lhs, const auto &rhs) {
       return lhs.structuredNodeId < rhs.structuredNodeId;
     });
+    llvm::sort(selected.nestedTemporalTiles, [](const auto &lhs,
+                                                const auto &rhs) {
+      return std::tie(lhs.producerNodeId, lhs.parentNodeId, lhs.producerResult,
+                      lhs.parentOperand, lhs.requestedResultExtents,
+                      lhs.producerIterationExtents, lhs.iteratorTileSizes,
+                      lhs.waveLoopOrder) <
+             std::tie(rhs.producerNodeId, rhs.parentNodeId, rhs.producerResult,
+                      rhs.parentOperand, rhs.requestedResultExtents,
+                      rhs.producerIterationExtents, rhs.iteratorTileSizes,
+                      rhs.waveLoopOrder);
+    });
     llvm::sort(selected.independentlyMaterializedNodes);
     if (!selected.shards.empty())
       result.push_back(std::move(selected));
   }
+  if (seenTemporalScopes.size() != temporal.scopes.size())
+    return fail<std::vector<StructuredNodeShardGroup>>(
+        failureReason,
+        "selected temporal plan contains a scope outside its RegionPlan");
   return result;
 }
 

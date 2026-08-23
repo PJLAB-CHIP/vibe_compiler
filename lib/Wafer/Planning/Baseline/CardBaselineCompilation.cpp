@@ -7,6 +7,7 @@
 #include "Wafer/Planning/Baseline/BaselineTemporalPlan.h"
 #include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
+#include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include <algorithm>
@@ -214,10 +215,9 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
   }
 
   while (true) {
-    CompleteCandidatePlan candidatePlan{resolved->spatial, resolved->demand,
-                                        resolved->rootWorks, resolved->regions,
-                                        resolved->temporal,
-                                        resolved->preparedAttention};
+    CompleteCandidatePlan candidatePlan{
+        resolved->spatial, resolved->demand,   resolved->rootWorks,
+        resolved->regions, resolved->temporal, resolved->preparedAttention};
     CandidateMaterializationStatistics candidateStatistics;
     mlir::FailureOr<MaterializedCardCandidate> materialized =
         materializeCardCandidate(
@@ -273,7 +273,7 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
     if (mlir::succeeded(affected)) {
       if (baselineStatistics)
         ++baselineStatistics->actualSPMCapacityRejections;
-      mlir::FailureOr<bool> refined = refineBaselineTemporalPlan(
+      mlir::FailureOr<bool> refined = refineTemporalPlanFromActualSPMFeedback(
           resolved->temporal, resolved->rootWorks, *affected, &feedbackFailure);
       if (mlir::succeeded(refined) && *refined) {
         if (mlir::failed(

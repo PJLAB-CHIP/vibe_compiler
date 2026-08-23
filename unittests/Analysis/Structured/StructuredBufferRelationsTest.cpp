@@ -265,11 +265,17 @@ TEST_F(StructuredBufferRelationsTest,
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
 
-  // The probe/final evidence contract has no silent retain: a relation whose
-  // buffer left the current IR stays a typed failure until the caller
-  // re-derives or remaps it through an explicit mapping.
+  // The check itself has no silent retain: a relation whose buffer left the
+  // current IR stays a typed failure until the caller explicitly completes a
+  // cleanup epoch.
   EXPECT_EQ(relations.operationResultBuffers.size(), 1u);
   EXPECT_TRUE(mlir::failed(
+      wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
+          module->getOperation(), relations)));
+  wafer::compiler::detail::retainCurrentStructuredBufferRelations(
+      module->getOperation(), relations);
+  EXPECT_TRUE(relations.operationResultBuffers.empty());
+  EXPECT_TRUE(mlir::succeeded(
       wafer::compiler::detail::checkStructuredBufferRelationsCurrent(
           module->getOperation(), relations)));
 }

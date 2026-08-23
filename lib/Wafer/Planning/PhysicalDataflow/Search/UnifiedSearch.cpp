@@ -3,6 +3,7 @@
 #include "Wafer/Planning/PhysicalDataflow/Search/UnifiedSearch.h"
 
 #include <utility>
+#include <vector>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -291,6 +292,14 @@ private:
         programData, &actualStatistics, tilePipelineParallelism,
         captureTileDataflowIRTrace);
     work.candidateActualizations += actualStatistics.candidateActualizations;
+    const FullFeasibilityStatus actualStatus = actual.status;
+    std::vector<SemanticRootKey> causalRoots = actual.causalRoots;
+    TemporalState temporal = state.getBufferState()
+                                 .getExecutionStructureState()
+                                 .getInitialBufferState()
+                                 .getMovementState()
+                                 .getRepresentationState()
+                                 .getTemporalState();
     CandidateRecordOutcome recorded =
         controller.record(plan, std::move(actual));
     if (recorded == CandidateRecordOutcome::CompilerBug) {
@@ -299,6 +308,27 @@ private:
     }
     if (recorded == CandidateRecordOutcome::Indeterminate) {
       stopped = true;
+      return;
+    }
+    if (actualStatus == FullFeasibilityStatus::ExactRejection &&
+        !causalRoots.empty()) {
+      if (!reserveStep())
+        return;
+      std::string detail;
+      auto refined = session.refineTemporalStateFromActualFeedback(
+          temporal, causalRoots, &detail);
+      ++work.successorSteps;
+      if (mlir::failed(refined)) {
+        fail(detail);
+        return;
+      }
+      if (!*refined) {
+        pause("actual SPM feedback exhausted its temporal domain");
+        return;
+      }
+      expandRepresentation(std::move(**refined));
+      if (!stopped)
+        pause("actual-feedback proposal completed without an accepted result");
       return;
     }
     if (recorded == CandidateRecordOutcome::Accepted &&

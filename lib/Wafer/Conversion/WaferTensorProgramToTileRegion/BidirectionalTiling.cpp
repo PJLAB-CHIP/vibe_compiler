@@ -1,7 +1,6 @@
 //===- BidirectionalTiling.cpp - Interface-driven tile traversal ----------===//
 
 #include "Internal.h"
-#include "Wafer/Analysis/Structured/ReductionSemantics.h"
 
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/PatternMatch.h"
@@ -178,18 +177,6 @@ wafer::materializePartialReductionTile(
         "partial-reduction tiling requires at least one reduction dimension");
     return mlir::failure();
   }
-
-  auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(reduction);
-  if (!linalg) {
-    tensor_program_to_tile_region::setFailureReason(
-        failureReason,
-        "partial-reduction numeric legality is unavailable for this "
-        "operation");
-    return mlir::failure();
-  }
-  if (mlir::failed(analysis::verifyReductionPartitionLegality(
-          linalg, /*preservesSequentialReductionOrder=*/false, failureReason)))
-    return mlir::failure();
 
   mlir::Location loc = reduction->getLoc();
   auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(reduction);

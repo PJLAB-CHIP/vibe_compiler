@@ -15,14 +15,15 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <string>
 #include <optional>
+#include <string>
 
 namespace wafer::compiler::detail {
 namespace {
 
-static bool collectStoragePredecessors(
-    mlir::Value value, llvm::SmallVectorImpl<mlir::Value> &predecessors) {
+static bool
+collectStoragePredecessors(mlir::Value value,
+                           llvm::SmallVectorImpl<mlir::Value> &predecessors) {
   if (!value)
     return false;
 
@@ -37,8 +38,7 @@ static bool collectStoragePredecessors(
       if (argument.getOwner() == loop.getBody() &&
           argument.getArgNumber() > 0 &&
           argument.getArgNumber() - 1 < loop.getInitArgs().size()) {
-        predecessors.push_back(
-            loop.getInitArgs()[argument.getArgNumber() - 1]);
+        predecessors.push_back(loop.getInitArgs()[argument.getArgNumber() - 1]);
         return true;
       }
     }
@@ -180,10 +180,9 @@ static StructuredBufferOwners collectOwnersInTileDataflowComponent(
 
     for (mlir::Value value : collectOperationBufferValues(operation)) {
       auto enqueue = [&](mlir::Operation *candidate) {
-        if (candidate &&
-            (mlir::isa<WaferTileDataflowOpInterface>(candidate) ||
-             mlir::isa<WaferInstructionOpInterface>(candidate) ||
-             mlir::isa<mlir::ViewLikeOpInterface>(candidate)))
+        if (candidate && (mlir::isa<WaferTileDataflowOpInterface>(candidate) ||
+                          mlir::isa<WaferInstructionOpInterface>(candidate) ||
+                          mlir::isa<mlir::ViewLikeOpInterface>(candidate)))
           worklist.push_back({candidate, item.distance + 1});
       };
       enqueue(value.getDefiningOp());
@@ -228,8 +227,7 @@ StorageRootMemo::getStorageRoots(mlir::Value value) {
       // is memoized in turn, making shared view/region prefixes linear in the
       // number of current SSA values.
       for (mlir::Value predecessor : predecessors) {
-        const llvm::DenseSet<mlir::Value> &roots =
-            getStorageRoots(predecessor);
+        const llvm::DenseSet<mlir::Value> &roots = getStorageRoots(predecessor);
         valueRoots->insert(roots.begin(), roots.end());
       }
     }
@@ -259,9 +257,8 @@ struct StructuredBufferReplacementListener::Impl {
         auto result = mlir::dyn_cast<mlir::OpResult>(entry.buffer);
         if (!result)
           continue;
-        references[result.getOwner()].push_back(
-            RelationReference{kind, static_cast<unsigned>(index),
-                              result.getResultNumber()});
+        references[result.getOwner()].push_back(RelationReference{
+            kind, static_cast<unsigned>(index), result.getResultNumber()});
       }
     };
     record(relations.operationResultBuffers, RelationKind::OperationResult);
@@ -303,8 +300,8 @@ void StructuredBufferReplacementListener::recordScratchAllocation(
   StructuredBufferOwners owners =
       collectBufferOwnersUsedByOperation(sourceOperation, impl->relations);
   if (owners.empty())
-    owners = collectOwnersInTileDataflowComponent(sourceOperation,
-                                                   impl->relations);
+    owners =
+        collectOwnersInTileDataflowComponent(sourceOperation, impl->relations);
   if (owners.empty() || !allocation ||
       !isWaferSPMMemRefType(allocation.getType())) {
     impl->preservedAll = false;
@@ -324,12 +321,11 @@ void StructuredBufferReplacementListener::recordScratchAllocation(
           Impl::RelationReference{kind, index, result.getResultNumber()});
   };
   for (uint32_t node : owners.nodes) {
-    if (!llvm::any_of(
-            impl->relations.scratchBuffers,
-            [&](const StructuredOperationBufferRelation &relation) {
-              return relation.structuredNodeId == node &&
-                     relation.buffer == allocation;
-            })) {
+    if (!llvm::any_of(impl->relations.scratchBuffers,
+                      [&](const StructuredOperationBufferRelation &relation) {
+                        return relation.structuredNodeId == node &&
+                               relation.buffer == allocation;
+                      })) {
       impl->relations.scratchBuffers.push_back({node, allocation});
       registerAllocation(Impl::RelationKind::Scratch,
                          impl->relations.scratchBuffers.size() - 1);
@@ -367,9 +363,8 @@ void StructuredBufferReplacementListener::notifyOperationReplaced(
     // rewrite driver. Re-register the relation under the current defining op
     // so multi-hop legalization never leaves attribution on an erased value.
     if (auto result = mlir::dyn_cast<mlir::OpResult>(replacement))
-      impl->references[result.getOwner()].push_back(
-          Impl::RelationReference{reference.kind, reference.index,
-                                  result.getResultNumber()});
+      impl->references[result.getOwner()].push_back(Impl::RelationReference{
+          reference.kind, reference.index, result.getResultNumber()});
   }
 }
 
@@ -404,8 +399,7 @@ bool StructuredBufferReplacementListener::finalizeAfterRewrite() {
   return impl->preservedAll;
 }
 
-llvm::StringRef
-StructuredBufferReplacementListener::getFailureReason() const {
+llvm::StringRef StructuredBufferReplacementListener::getFailureReason() const {
   return impl->failureReason;
 }
 
@@ -435,6 +429,32 @@ mlir::LogicalResult checkStructuredBufferRelationsCurrent(
                        allCurrent(relations.operandBuffers) &&
                        allCurrent(relations.scratchBuffers) &&
                        allCurrent(relations.outputBuffers));
+}
+
+void retainCurrentStructuredBufferRelations(
+    mlir::Operation *root, StructuredMaterializationRelations &relations) {
+  llvm::DenseSet<const void *> liveValues;
+  if (root)
+    root->walk([&](mlir::Operation *operation) {
+      for (mlir::Value result : operation->getResults())
+        liveValues.insert(result.getAsOpaquePointer());
+      for (mlir::Region &region : operation->getRegions())
+        for (mlir::Block &block : region)
+          for (mlir::BlockArgument argument : block.getArguments())
+            liveValues.insert(argument.getAsOpaquePointer());
+    });
+  auto retain = [&](auto &entries) {
+    llvm::erase_if(entries, [&](const auto &entry) {
+      return !entry.buffer ||
+             !liveValues.contains(entry.buffer.getAsOpaquePointer());
+    });
+  };
+  retain(relations.operationResultBuffers);
+  retain(relations.operandBuffers);
+  retain(relations.scratchBuffers);
+  retain(relations.outputBuffers);
+  retain(relations.partialReductionContributions);
+  retain(relations.partialReductionMergeInputs);
 }
 
 mlir::LogicalResult rebaseStructuredBufferRelationsToStorageRoots(

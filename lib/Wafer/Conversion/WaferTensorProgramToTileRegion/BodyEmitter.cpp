@@ -88,8 +88,7 @@ void TileRegionEmissionRecorder::recordScratchBuffer(
   auto &relations = output.materializedBuffers.scratchBuffers;
   for (uint32_t node : structuredNodeIds)
     if (!llvm::any_of(relations, [&](const auto &relation) {
-          return relation.structuredNodeId == node &&
-                 relation.buffer == buffer;
+          return relation.structuredNodeId == node && relation.buffer == buffer;
         }))
       relations.push_back({node, buffer});
 }
@@ -100,8 +99,7 @@ void TileRegionEmissionRecorder::recordOutputBuffer(unsigned outputIndex,
     return;
   auto &relations = output.materializedBuffers.outputBuffers;
   if (!llvm::any_of(relations, [&](const auto &relation) {
-        return relation.outputIndex == outputIndex &&
-               relation.buffer == buffer;
+        return relation.outputIndex == outputIndex && relation.buffer == buffer;
       }))
     relations.push_back({outputIndex, buffer});
 }
@@ -134,9 +132,9 @@ matchExactReductionKind(llvm::ArrayRef<mlir::BlockArgument> iterCarriedArgs,
             .str());
     return std::nullopt;
   }
-  // This helper only classifies an exact combiner. It does not prove that a
-  // candidate may regroup that combiner: reduction-split materialization has
-  // a separate numeric-legality gate over the current structured IR.
+  // This helper only checks whether the source combiner has an exact typed
+  // Tile reduce representation. It is not a numeric policy or a temporal
+  // reassociation gate.
   if (mlir::isa<mlir::arith::AddFOp>(combiner))
     return ComputeReduceKind::Sum;
   if (auto addi = mlir::dyn_cast<mlir::arith::AddIOp>(combiner)) {
@@ -332,12 +330,12 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
     while (nextEndpoint < endpointSchedule.size()) {
       const CandidatePeerEndpoint *endpoint = endpointSchedule[nextEndpoint];
       MemLayout availableLayout = MemLayout::Tensor;
-      const bool ready = !endpoint->streamTileSizes.empty()
-                             ? compilerOwnedBuffers.contains(
-                                   endpoint->carrierBuffer)
-                             : lookupAny(endpoint->value, availableLayout) ||
-                                   externalBuffers.contains(endpoint->value) ||
-                                   tensorAttrs.contains(endpoint->value);
+      const bool ready =
+          !endpoint->streamTileSizes.empty()
+              ? compilerOwnedBuffers.contains(endpoint->carrierBuffer)
+              : lookupAny(endpoint->value, availableLayout) ||
+                    externalBuffers.contains(endpoint->value) ||
+                    tensorAttrs.contains(endpoint->value);
       if (!ready)
         break;
       if (mlir::failed(emitPeerEndpoint(*endpoint, rewriter)))
@@ -1112,11 +1110,10 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
               relationRecorder->recordOperandBuffer(current, *selected);
               continue;
             }
-            for (mlir::Value buffer :
-                 {materializedVersions->second.tensor,
-                  materializedVersions->second.nTensor,
-                  materializedVersions->second.cx,
-                  materializedVersions->second.nCx})
+            for (mlir::Value buffer : {materializedVersions->second.tensor,
+                                       materializedVersions->second.nTensor,
+                                       materializedVersions->second.cx,
+                                       materializedVersions->second.nCx})
               if (buffer)
                 relationRecorder->recordOperandBuffer(current, buffer);
           }
@@ -1176,8 +1173,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
                  {versions->second.tensor, versions->second.nTensor,
                   versions->second.cx, versions->second.nCx})
               if (buffer)
-                relationRecorder->recordOperationResultBuffer(current,
-                                                              buffer);
+                relationRecorder->recordOperationResultBuffer(current, buffer);
         BufferVersions primary;
         switch (*layout) {
         case MemLayout::Tensor:
@@ -1359,9 +1355,8 @@ TileRegionBodyEmitter::emitPeerEndpoint(const CandidatePeerEndpoint &endpoint,
           llvm::SmallVector<mlir::OpFoldResult, 4> strides;
           uint64_t elements = 1;
           for (int64_t size : sizes) {
-            if (size <= 0 ||
-                elements > std::numeric_limits<uint64_t>::max() /
-                               static_cast<uint64_t>(size))
+            if (size <= 0 || elements > std::numeric_limits<uint64_t>::max() /
+                                            static_cast<uint64_t>(size))
               return mlir::failure();
             elements *= static_cast<uint64_t>(size);
             mixedSizes.push_back(leafBuilder.getIndexAttr(size));
@@ -1372,22 +1367,20 @@ TileRegionBodyEmitter::emitPeerEndpoint(const CandidatePeerEndpoint &endpoint,
                                            ? elementType.getIntOrFloatBitWidth()
                                            : 0;
           if (elementBits == 0 || elementBits % 8 != 0 ||
-              elements > std::numeric_limits<uint64_t>::max() /
-                             (elementBits / 8))
+              elements >
+                  std::numeric_limits<uint64_t>::max() / (elementBits / 8))
             return mlir::failure();
           const uint64_t bytes = elements * (elementBits / 8);
-          if (bytes == 0 ||
-              bytes > static_cast<uint64_t>(
-                          std::numeric_limits<int64_t>::max()))
+          if (bytes == 0 || bytes > static_cast<uint64_t>(
+                                        std::numeric_limits<int64_t>::max()))
             return mlir::failure();
           auto viewType = mlir::cast<mlir::MemRefType>(
               mlir::memref::SubViewOp::inferRankReducedResultType(
                   sizes, stageType, offsets, mixedSizes, strides));
           mlir::Value view =
               leafBuilder
-                  .create<mlir::memref::SubViewOp>(
-                      endpointLoc, viewType, stage, offsets, mixedSizes,
-                      strides)
+                  .create<mlir::memref::SubViewOp>(endpointLoc, viewType, stage,
+                                                   offsets, mixedSizes, strides)
                   .getResult();
           auto tensorType =
               mlir::RankedTensorType::get(sizes, stageType.getElementType());

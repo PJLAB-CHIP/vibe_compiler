@@ -214,6 +214,17 @@ mlir::FailureOr<llvm::SmallVector<IteratorInterval, 8>>
 buildTemporalAxisWaves(IteratorInterval interval, int64_t tileSize,
                        std::string *failureReason = nullptr);
 
+/// Produces a refined top-level TemporalPlan prefix after the actual Instr SPM
+/// planner attributed an exact capacity rejection to `affectedRoots`. The
+/// caller re-closes parent-dependent nested classes through the same
+/// TemporalDomain. Refinement halves one largest legal iterator at a time and
+/// reads no demand bytes, target capacity, footprint, or packing estimate.
+/// Returns false when every implicated scope is already at its minimum.
+mlir::FailureOr<bool> refineTemporalPlanFromActualSPMFeedback(
+    TemporalPlan &temporal, llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
+    llvm::ArrayRef<SemanticRootKey> affectedRoots,
+    std::string *failureReason = nullptr);
+
 } // namespace wafer::compiler::detail
 
 #endif // WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_TEMPORALDOMAIN_H

@@ -13,8 +13,8 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
 
 namespace wafer::tensor_program_to_tile_region {
@@ -60,7 +60,8 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
   auto diagnoseEmptyFailure = llvm::make_scope_exit([&] {
     if (!completed && failureReason && failureReason->empty())
       *failureReason =
-          (llvm::Twine("selected coupled construction failed while trying to ") +
+          (llvm::Twine(
+               "selected coupled construction failed while trying to ") +
            currentStage)
               .str();
   });
@@ -112,8 +113,7 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
       recomputedShardsByNode;
   for (const StructuredNodeIterationShard &shard :
        group.recomputedProducerShards)
-    if (!recomputedShardsByNode
-             .try_emplace(shard.structuredNodeId, &shard)
+    if (!recomputedShardsByNode.try_emplace(shard.structuredNodeId, &shard)
              .second)
       return fail<RootFragment>(
           failureReason,
@@ -231,6 +231,32 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     mappedTemporalTiles.push_back(StructuredOpTemporalTile{
         mapped->operation, temporal.iteratorTileSizes, temporal.waveLoopOrder});
   }
+  llvm::SmallVector<StructuredOpNestedTemporalTile, 8>
+      mappedNestedTemporalTiles;
+  mappedNestedTemporalTiles.reserve(group.nestedTemporalTiles.size());
+  for (const StructuredNodeNestedTemporalTile &nested :
+       group.nestedTemporalTiles) {
+    auto producer = llvm::find_if(
+        operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
+          return mapping.structuredNodeId == nested.producerNodeId;
+        });
+    auto parent = llvm::find_if(
+        operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
+          return mapping.structuredNodeId == nested.parentNodeId;
+        });
+    if (producer == operationNodes.end() || parent == operationNodes.end() ||
+        !producer->operation || !parent->operation ||
+        nested.producerResult >= producer->operation->getNumResults() ||
+        nested.parentOperand >= parent->operation->getNumOperands())
+      return fail<RootFragment>(
+          failureReason,
+          "nested temporal assignment has no current producer/use mapping");
+    mappedNestedTemporalTiles.push_back(
+        {producer->operation, parent->operation, nested.producerResult,
+         nested.parentOperand, nested.requestedResultExtents,
+         nested.producerIterationExtents, nested.iteratorTileSizes,
+         nested.waveLoopOrder});
+  }
   unsigned outputIndex = 0;
   llvm::SmallVector<MaterializedCoupledProducerTile, 8> sharedProducerTiles;
   auto materializeIndependentRoot =
@@ -249,13 +275,13 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
             "independent temporal root has no matching DPS destinations");
         return mlir::failure();
       }
-      llvm::SmallVector<mlir::Value, 2> destinations(
-          dps.getDpsInits().begin(), dps.getDpsInits().end());
+      llvm::SmallVector<mlir::Value, 2> destinations(dps.getDpsInits().begin(),
+                                                     dps.getDpsInits().end());
       mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> traversed =
           materializeTemporalRegionTraversal(
               root, scope, shard.offsets, shard.sizes, mappedTemporalTiles,
-              destinations, operationNodes, failureReason,
-              &sharedProducerTiles);
+              mappedNestedTemporalTiles, destinations, operationNodes,
+              failureReason, &sharedProducerTiles);
       return mlir::succeeded(traversed) ? mlir::success() : mlir::failure();
     }
 
@@ -281,8 +307,8 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
                                                    &operationNodes);
       if (mlir::failed(fuseCandidateProducerSlicesWithCache(
               tiledOperation, root, scope, loops, mappedTemporalTiles,
-              builder.getListener(), failureReason, &operationNodes,
-              sharedProducerTiles))) {
+              mappedNestedTemporalTiles, builder.getListener(), failureReason,
+              &operationNodes, sharedProducerTiles))) {
         if (!failureReason || failureReason->empty())
           setFailureReason(failureReason,
                            "independent producer operand fusion failed");
@@ -328,10 +354,9 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
           "independent materialization has no cloned operation or shard");
     independentRoots.push_back(mapped->operation);
   }
-  llvm::sort(independentRoots,
-             [](mlir::Operation *lhs, mlir::Operation *rhs) {
-               return lhs->isBeforeInBlock(rhs);
-             });
+  llvm::sort(independentRoots, [](mlir::Operation *lhs, mlir::Operation *rhs) {
+    return lhs->isBeforeInBlock(rhs);
+  });
   currentStage = "materialize independent selected producers";
   for (mlir::Operation *root : independentRoots) {
     auto mapping = llvm::find_if(
@@ -401,8 +426,8 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
       mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> traversed =
           materializeTemporalRegionTraversal(
               root, scope, shard->offsets, shard->sizes, mappedTemporalTiles,
-              destinations, operationNodes, failureReason,
-              &sharedProducerTiles);
+              mappedNestedTemporalTiles, destinations, operationNodes,
+              failureReason, &sharedProducerTiles);
       if (mlir::failed(traversed) || traversed->size() != root->getNumResults())
         return mlir::failure();
       for (unsigned resultNumber = 0; resultNumber < traversed->size();
@@ -477,8 +502,8 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
                                                    &operationNodes);
       if (mlir::failed(fuseCandidateProducerSlicesWithCache(
               tiledOperation, root, scope, loops, mappedTemporalTiles,
-              builder.getListener(), failureReason, &operationNodes,
-              sharedProducerTiles)))
+              mappedNestedTemporalTiles, builder.getListener(), failureReason,
+              &operationNodes, sharedProducerTiles)))
         return mlir::failure();
     }
     for (unsigned resultNumber = 0; resultNumber < tile->values.size();
@@ -560,19 +585,19 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
       emittedNodes.insert(relation.structuredNodeId);
   llvm::DenseSet<uint32_t> expectedNodes = selectedNodeIds;
   if (regionCount != 1 || emittedNodes.size() != expectedNodes.size() ||
-      llvm::any_of(selectedNodeIds,
-                   [&](uint32_t node) { return !emittedNodes.contains(node); }))
-    {
-      std::string detail;
-      llvm::raw_string_ostream diagnostic(detail);
-      diagnostic << "coupled function did not emit the exact selected node "
-                    "group; expected=[";
-      llvm::interleaveComma(expectedNodes, diagnostic);
-      diagnostic << "], emitted=[";
-      llvm::interleaveComma(emittedNodes, diagnostic);
-      diagnostic << "], regions=" << regionCount;
-      return fail<RootFragment>(failureReason, diagnostic.str());
-    }
+      llvm::any_of(selectedNodeIds, [&](uint32_t node) {
+        return !emittedNodes.contains(node);
+      })) {
+    std::string detail;
+    llvm::raw_string_ostream diagnostic(detail);
+    diagnostic << "coupled function did not emit the exact selected node "
+                  "group; expected=[";
+    llvm::interleaveComma(expectedNodes, diagnostic);
+    diagnostic << "], emitted=[";
+    llvm::interleaveComma(emittedNodes, diagnostic);
+    diagnostic << "], regions=" << regionCount;
+    return fail<RootFragment>(failureReason, diagnostic.str());
+  }
   result.relations = std::move(emissionRelations.materializedBuffers);
   completed = true;
   return result;

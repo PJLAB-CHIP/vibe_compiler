@@ -202,9 +202,9 @@ public:
                               uint32_t producerNode);
   void recordOperationResultBuffer(uint32_t structuredNodeId,
                                    mlir::Value buffer);
-  void recordStructuredComputeOperation(
-      llvm::ArrayRef<uint32_t> structuredNodeIds,
-      mlir::Operation *operation);
+  void
+  recordStructuredComputeOperation(llvm::ArrayRef<uint32_t> structuredNodeIds,
+                                   mlir::Operation *operation);
   void recordOperandBuffer(uint32_t structuredNodeId, mlir::Value buffer);
   void recordScratchBuffer(llvm::ArrayRef<uint32_t> structuredNodeIds,
                            mlir::Value buffer);
@@ -278,6 +278,7 @@ mlir::FailureOr<mlir::Value> materializeConfiguredStructuredTraversal(
     llvm::ArrayRef<int64_t> requestedOutputSizes,
     llvm::ArrayRef<mlir::LoopLikeOpInterface> loops,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     std::string *failureReason, mlir::Value outputDestination = {},
     llvm::ArrayRef<mlir::OpFoldResult> destinationBaseOffsets = {},
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes =

@@ -7,8 +7,6 @@
 #include "StructuredIterationTile.h"
 #include "TemporalWaveLoop.h"
 
-#include "Wafer/Analysis/Structured/ReductionSemantics.h"
-
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
@@ -27,6 +25,7 @@ public:
       llvm::ArrayRef<int64_t> spatialOffsets,
       llvm::ArrayRef<int64_t> spatialSizes,
       llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+      llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
       llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
       std::string *failureReason,
       llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
@@ -35,6 +34,7 @@ public:
         spatialOffsets(spatialOffsets.begin(), spatialOffsets.end()),
         spatialSizes(spatialSizes.begin(), spatialSizes.end()),
         operationTemporalTiles(operationTemporalTiles),
+        nestedTemporalTiles(nestedTemporalTiles),
         operationNodes(operationNodes), failureReason(failureReason),
         sharedProducerTiles(sharedProducerTiles) {}
 
@@ -82,44 +82,6 @@ public:
     llvm::sort(sortedOrder);
     if (sortedOrder != active)
       return fail("temporal wave-loop order does not cover active iterators");
-
-    if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(root)) {
-      llvm::SmallVector<mlir::utils::IteratorType, 4> iteratorTypes =
-          linalg.getIteratorTypesArray();
-      llvm::SmallVector<uint32_t, 4> splitReductionOrder;
-      llvm::SmallVector<uint32_t, 4> reductionDimensions;
-      for (auto [dimension, iteratorType] : llvm::enumerate(iteratorTypes)) {
-        if (iteratorType != mlir::utils::IteratorType::reduction)
-          continue;
-        reductionDimensions.push_back(static_cast<uint32_t>(dimension));
-      }
-      for (uint32_t dimension : order)
-        if (iteratorTypes[dimension] == mlir::utils::IteratorType::reduction)
-          splitReductionOrder.push_back(dimension);
-      bool preservesSequentialReductionOrder = true;
-      llvm::SmallVector<uint32_t, 4> naturalSplitReductionOrder;
-      for (uint32_t dimension : reductionDimensions)
-        if (llvm::is_contained(splitReductionOrder, dimension))
-          naturalSplitReductionOrder.push_back(dimension);
-      if (splitReductionOrder != naturalSplitReductionOrder)
-        preservesSequentialReductionOrder = false;
-      if (!splitReductionOrder.empty()) {
-        const uint32_t lastSplit = splitReductionOrder.back();
-        for (uint32_t dimension : reductionDimensions) {
-          if (dimension == lastSplit)
-            break;
-          if (spatialSizes[dimension] > 1 &&
-              temporal->iteratorTileSizes[dimension] != 1) {
-            preservesSequentialReductionOrder = false;
-            break;
-          }
-        }
-      }
-      if (!splitReductionOrder.empty() &&
-          mlir::failed(analysis::verifyReductionPartitionLegality(
-              linalg, preservesSequentialReductionOrder, failureReason)))
-        return mlir::failure();
-    }
 
     mlir::OpBuilder builder(root);
     return materializeTemporalWaveLoopNest(
@@ -195,11 +157,12 @@ private:
           sharedProducerTiles
               ? fuseCandidateProducerSlicesWithCache(
                     operation, root, scope, loops, operationTemporalTiles,
-                    builder.getListener(), failureReason, &operationNodes,
-                    *sharedProducerTiles)
+                    nestedTemporalTiles, builder.getListener(), failureReason,
+                    &operationNodes, *sharedProducerTiles)
               : fuseCandidateProducerSlices(
                     operation, root, scope, loops, operationTemporalTiles,
-                    builder.getListener(), failureReason, &operationNodes);
+                    nestedTemporalTiles, builder.getListener(), failureReason,
+                    &operationNodes);
       if (mlir::failed(fused))
         return mlir::failure();
     }
@@ -240,6 +203,7 @@ private:
   llvm::SmallVector<int64_t, 4> spatialOffsets;
   llvm::SmallVector<int64_t, 4> spatialSizes;
   llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles;
+  llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles;
   const StructuredOpTemporalTile *temporal = nullptr;
   llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes;
   std::string *failureReason;
@@ -255,14 +219,16 @@ materializeTemporalRegionTraversal(
     llvm::ArrayRef<int64_t> spatialOffsets,
     llvm::ArrayRef<int64_t> spatialSizes,
     llvm::ArrayRef<StructuredOpTemporalTile> operationTemporalTiles,
+    llvm::ArrayRef<StructuredOpNestedTemporalTile> nestedTemporalTiles,
     mlir::ValueRange outputDestinations,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
     std::string *failureReason,
     llvm::SmallVectorImpl<MaterializedCoupledProducerTile>
         *sharedProducerTiles) {
   return TemporalTraversalBuilder(root, scope, spatialOffsets, spatialSizes,
-                                  operationTemporalTiles, operationNodes,
-                                  failureReason, sharedProducerTiles)
+                                  operationTemporalTiles, nestedTemporalTiles,
+                                  operationNodes, failureReason,
+                                  sharedProducerTiles)
       .materialize(outputDestinations);
 }
 

@@ -178,9 +178,25 @@ struct StructuredOpTemporalTile {
   llvm::SmallVector<uint32_t, 4> waveLoopOrder;
 };
 
+/// One selected temporal plan for a producer invocation nested under an
+/// actual consumer leaf. Absolute offsets are supplied by that leaf's SSA
+/// slices; this descriptor selects only by the typed producer/result/use and
+/// translation-invariant local extents. It is query-local and never persisted
+/// in IR.
+struct StructuredOpNestedTemporalTile {
+  mlir::Operation *producer = nullptr;
+  mlir::Operation *parent = nullptr;
+  unsigned producerResult = 0;
+  unsigned parentOperand = 0;
+  llvm::SmallVector<int64_t, 4> requestedResultExtents;
+  llvm::SmallVector<int64_t, 4> producerIterationExtents;
+  llvm::SmallVector<int64_t, 4> iteratorTileSizes;
+  llvm::SmallVector<uint32_t, 4> waveLoopOrder;
+};
+
 /// Materializes a partial reduction for one iteration-domain tile and merges
-/// it to the corresponding result tile. Numeric regrouping legality is checked
-/// before any IR is created and fails closed when it cannot be established.
+/// it to the corresponding result tile while preserving the source arithmetic
+/// operations and dtype semantics.
 mlir::FailureOr<PartialReductionTileMaterialization>
 materializePartialReductionTile(
     mlir::Operation *reduction, mlir::OpBuilder &builder,

@@ -10,6 +10,8 @@
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
 
@@ -41,10 +43,8 @@ frontend::FrontendProgramVerificationResult metadata(int64_t extent) {
   frontend::FrontendProgramVerificationResult result;
   result.numPartitions = 1;
   result.programUserInputCount = 1;
-  result.distributedInputs = {
-      compiler::testing::boundary(0, {2, extent, 64})};
-  result.distributedOutputs = {
-      compiler::testing::boundary(0, {2, extent, 64})};
+  result.distributedInputs = {compiler::testing::boundary(0, {2, extent, 64})};
+  result.distributedOutputs = {compiler::testing::boundary(0, {2, extent, 64})};
   return result;
 }
 
@@ -60,16 +60,14 @@ module {
       {axes = ["card"], shape = array<i64: 1>}
   func.func @main(%input: tensor<2x)mlir"
          << extent << "x64xf16>) -> tensor<2x" << extent << "x64xf16> {\n"
-         << "    %e0 = tensor.empty() : tensor<2x" << extent
-         << "x64xf16>\n"
+         << "    %e0 = tensor.empty() : tensor<2x" << extent << "x64xf16>\n"
          << "    %producer = linalg.map ins(%input : tensor<2x" << extent
          << "x64xf16>) outs(%e0 : tensor<2x" << extent
          << "x64xf16>) (%value: f16) {\n"
          << "      %next = arith.addf %value, %value : f16\n"
          << "      linalg.yield %next : f16\n"
          << "    }\n"
-         << "    %e1 = tensor.empty() : tensor<2x" << extent
-         << "x64xf16>\n"
+         << "    %e1 = tensor.empty() : tensor<2x" << extent << "x64xf16>\n"
          << "    %consumer = linalg.map ins(%producer : tensor<2x" << extent
          << "x64xf16>) outs(%e1 : tensor<2x" << extent
          << "x64xf16>) (%value: f16) {\n"
@@ -94,24 +92,21 @@ module {
   func.func @main(%input: tensor<2x)mlir"
          << extent << "x64xf16>) -> (tensor<2x" << extent
          << "x64xf16>, tensor<2x" << extent << "x64xf16>) {\n"
-         << "    %e0 = tensor.empty() : tensor<2x" << extent
-         << "x64xf16>\n"
+         << "    %e0 = tensor.empty() : tensor<2x" << extent << "x64xf16>\n"
          << "    %producer = linalg.map ins(%input : tensor<2x" << extent
          << "x64xf16>) outs(%e0 : tensor<2x" << extent
          << "x64xf16>) (%value: f16) {\n"
          << "      %next = arith.addf %value, %value : f16\n"
          << "      linalg.yield %next : f16\n"
          << "    }\n"
-         << "    %e1 = tensor.empty() : tensor<2x" << extent
-         << "x64xf16>\n"
+         << "    %e1 = tensor.empty() : tensor<2x" << extent << "x64xf16>\n"
          << "    %left = linalg.map ins(%producer : tensor<2x" << extent
          << "x64xf16>) outs(%e1 : tensor<2x" << extent
          << "x64xf16>) (%value: f16) {\n"
          << "      %next = arith.mulf %value, %value : f16\n"
          << "      linalg.yield %next : f16\n"
          << "    }\n"
-         << "    %e2 = tensor.empty() : tensor<2x" << extent
-         << "x64xf16>\n"
+         << "    %e2 = tensor.empty() : tensor<2x" << extent << "x64xf16>\n"
          << "    %right = linalg.map ins(%producer : tensor<2x" << extent
          << "x64xf16>) outs(%e2 : tensor<2x" << extent
          << "x64xf16>) (%value: f16) {\n"
@@ -131,10 +126,10 @@ frontend::FrontendProgramVerificationResult fanoutMetadata(int64_t extent) {
   return result;
 }
 
-mlir::FailureOr<PreparedChain> prepare(
-    llvm::StringRef sourceText,
-    const frontend::FrontendProgramVerificationResult &programMetadata,
-    std::string *failureReason) {
+mlir::FailureOr<PreparedChain>
+prepare(llvm::StringRef sourceText,
+        const frontend::FrontendProgramVerificationResult &programMetadata,
+        std::string *failureReason) {
   mlir::DialectRegistry registry;
   compiler::detail::registerCompilationDialects(registry);
   auto context = std::make_shared<mlir::MLIRContext>(registry);
@@ -226,15 +221,15 @@ std::optional<RegionPlan> selectTileZeroChain(const RegionPlan &canonical,
       merged.executions, [&](const ExecutionInstancePlan &execution) {
         const auto *root =
             std::get_if<RequiredRootExecution>(&execution.id.source);
-        return root && root->work.root ==
-                           selectedBoundary.fragment.source.semantic;
+        return root &&
+               root->work.root == selectedBoundary.fragment.source.semantic;
       });
   auto consumer = llvm::find_if(
       merged.executions, [&](const ExecutionInstancePlan &execution) {
         const auto *root =
             std::get_if<RequiredRootExecution>(&execution.id.source);
-        return root && root->shard ==
-                           selectedBoundary.fragment.use.destinationShard;
+        return root &&
+               root->shard == selectedBoundary.fragment.use.destinationShard;
       });
   if (producer == merged.executions.end() ||
       consumer == merged.executions.end())
@@ -254,12 +249,12 @@ std::optional<RegionPlan> selectTileZeroChain(const RegionPlan &canonical,
   result.groups.erase(result.groups.begin() + high);
   result.groups.erase(result.groups.begin() + low);
   result.groups.push_back(std::move(merged));
-  llvm::sort(result.groups, [](const RegionGroupPlan &lhs,
-                               const RegionGroupPlan &rhs) {
-    if (lhs.tile != rhs.tile)
-      return lhs.tile.getValue() < rhs.tile.getValue();
-    return lhs.mandatoryRoots < rhs.mandatoryRoots;
-  });
+  llvm::sort(result.groups,
+             [](const RegionGroupPlan &lhs, const RegionGroupPlan &rhs) {
+               if (lhs.tile != rhs.tile)
+                 return lhs.tile.getValue() < rhs.tile.getValue();
+               return lhs.mandatoryRoots < rhs.mandatoryRoots;
+             });
   return result;
 }
 
@@ -303,8 +298,7 @@ std::optional<RegionPlan> selectTileZeroReplica(const RegionPlan &canonical,
         return root && root->work.root == boundary.fragment.source.semantic;
       });
   auto consumer = llvm::find_if(
-      consumerGroup->executions,
-      [&](const ExecutionInstancePlan &execution) {
+      consumerGroup->executions, [&](const ExecutionInstancePlan &execution) {
         const auto *root =
             std::get_if<RequiredRootExecution>(&execution.id.source);
         return root && root->shard == boundary.fragment.use.destinationShard;
@@ -333,8 +327,9 @@ std::optional<RegionPlan> selectTileZeroReplica(const RegionPlan &canonical,
   return result;
 }
 
-std::optional<RegionPlan> selectTileZeroSplitReplicas(
-    const RegionPlan &canonical, LocalUseDelivery delivery) {
+std::optional<RegionPlan>
+selectTileZeroSplitReplicas(const RegionPlan &canonical,
+                            LocalUseDelivery delivery) {
   RegionPlan result = canonical;
   std::optional<SemanticRootKey> producerRoot;
   llvm::SmallVector<std::pair<size_t, ExternalUseBinding>, 2> consumers;
@@ -379,8 +374,7 @@ std::optional<RegionPlan> selectTileZeroSplitReplicas(
     RegionGroupPlan &consumerGroup = result.groups[groupIndex];
     auto external = llvm::find(consumerGroup.externalBindings, binding);
     auto consumer = llvm::find_if(
-        consumerGroup.executions,
-        [&](const ExecutionInstancePlan &execution) {
+        consumerGroup.executions, [&](const ExecutionInstancePlan &execution) {
           const auto *root =
               std::get_if<RequiredRootExecution>(&execution.id.source);
           return root && root->shard == binding.fragment.use.destinationShard;
@@ -390,8 +384,7 @@ std::optional<RegionPlan> selectTileZeroSplitReplicas(
       return std::nullopt;
     consumerGroup.externalBindings.erase(external);
     ReplicaExecutionPlan replica;
-    replica.id.producer =
-        std::get<RequiredRootExecution>(producer->id.source);
+    replica.id.producer = std::get<RequiredRootExecution>(producer->id.source);
     replica.id.fragment = binding.fragment;
     replica.placement =
         delivery == LocalUseDelivery::StoredRegionValue
@@ -443,11 +436,11 @@ TEST(SelectedRegionMaterializationTest,
       ASSERT_TRUE(mlir::succeeded(selectedSource)) << failureReason;
       auto groups = prepareSelectedRegionGroups(
           *prepared->program, *selected, prepared->prefix.rootWorks,
-          *temporal.getPlan(), selectedSource->executionNodes,
-          &failureReason);
+          *temporal.getPlan(), selectedSource->executionNodes, &failureReason);
       ASSERT_TRUE(mlir::succeeded(groups)) << failureReason;
       auto tileZero = llvm::find_if(*groups, [](const auto &group) {
-        return !group.shards.empty() && group.shards.front().tile == TileId(0) &&
+        return !group.shards.empty() &&
+               group.shards.front().tile == TileId(0) &&
                group.shards.size() == 2;
       });
       ASSERT_NE(tileZero, groups->end());
@@ -483,9 +476,9 @@ TEST(SelectedRegionMaterializationTest,
 
       PreparedAttentionDecomposition noAttention;
       CompleteCandidatePlan candidate{
-          prepared->prefix.spatial, prepared->prefix.demand,
-          prepared->prefix.rootWorks, *selected, *temporal.getPlan(),
-          noAttention};
+          prepared->prefix.spatial,   prepared->prefix.demand,
+          prepared->prefix.rootWorks, *selected,
+          *temporal.getPlan(),        noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics materializationStatistics;
@@ -513,7 +506,225 @@ TEST(SelectedRegionMaterializationTest,
           << compiled.gate << ": " << compiled.detail << '\n'
           << diagnostics.str();
       EXPECT_EQ(print(prepared->module->getOperation()), before);
+    }
+  }
+}
 
+TEST(SelectedRegionMaterializationTest,
+     NestedMainAndTailClassesDriveCompactParentAndChildLoops) {
+  for (int64_t extent : {1024, 1025}) {
+    for (bool replica : {false, true}) {
+      SCOPED_TRACE(extent);
+      SCOPED_TRACE(replica);
+      std::string failureReason;
+      auto prepared = prepare(extent, &failureReason);
+      ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
+      const std::string before = print(prepared->module->getOperation());
+      std::optional<RegionPlan> selected =
+          replica ? selectTileZeroReplica(prepared->prefix.regions,
+                                          LocalUseDelivery::DirectNestedValue)
+                  : selectTileZeroChain(prepared->prefix.regions,
+                                        LocalUseDelivery::DirectNestedValue);
+      ASSERT_TRUE(selected);
+      ASSERT_TRUE(prepared->domain.contains(*selected));
+      auto group =
+          llvm::find_if(selected->groups, [](const RegionGroupPlan &candidate) {
+            return candidate.tile == TileId(0) &&
+                   !candidate.localBindings.empty();
+          });
+      ASSERT_NE(group, selected->groups.end());
+      const LocalUseBinding &binding = group->localBindings.front();
+      const ExecutionInstancePlan::Placement *producerPlacement = nullptr;
+      if (const auto *required =
+              std::get_if<ExecutionInstanceId>(&binding.producer)) {
+        auto plan = llvm::find_if(group->executions,
+                                  [&](const ExecutionInstancePlan &candidate) {
+                                    return candidate.id == *required;
+                                  });
+        ASSERT_NE(plan, group->executions.end());
+        producerPlacement = &plan->placement;
+      } else {
+        const auto &replicaExecution =
+            std::get<ReplicaExecutionId>(binding.producer);
+        auto plan = llvm::find_if(group->replicas,
+                                  [&](const ReplicaExecutionPlan &candidate) {
+                                    return candidate.id == replicaExecution;
+                                  });
+        ASSERT_NE(plan, group->replicas.end());
+        producerPlacement = &plan->placement;
+      }
+      ASSERT_NE(producerPlacement, nullptr);
+      const auto *nested =
+          std::get_if<ExecutionInstancePlan::NestedUnder>(producerPlacement);
+      ASSERT_NE(nested, nullptr);
+      const RegionExecutionId parentExecution =
+          ExecutionInstanceId{nested->consumer};
+
+      TemporalDomainResult temporalDomain =
+          buildTemporalDomain(*selected, prepared->prefix.rootWorks);
+      ASSERT_TRUE(temporalDomain.succeeded());
+      TemporalSuccessor first = temporalDomain.domain->getFirstPlan();
+      ASSERT_EQ(first.getKind(), TemporalSuccessorKind::Plan);
+      ASSERT_NE(first.getPlan(), nullptr);
+      TemporalPlan parentPrefix;
+      bool selectedParent = false;
+      for (const TemporalScopePlan &scope : first.getPlan()->scopes) {
+        if (!isTopLevelScope(scope.id))
+          break;
+        parentPrefix.scopes.push_back(scope);
+        if (!(scope.id.execution == parentExecution))
+          continue;
+        auto majorAxis =
+            llvm::find_if(parentPrefix.scopes.back().iteratorTileSizes,
+                          [](int64_t size) { return size >= 128; });
+        ASSERT_NE(majorAxis,
+                  parentPrefix.scopes.back().iteratorTileSizes.end());
+        const uint32_t majorDimension = static_cast<uint32_t>(std::distance(
+            parentPrefix.scopes.back().iteratorTileSizes.begin(), majorAxis));
+        auto featureAxis = llvm::find(
+            parentPrefix.scopes.back().iteratorTileSizes, int64_t{64});
+        ASSERT_NE(featureAxis,
+                  parentPrefix.scopes.back().iteratorTileSizes.end());
+        const uint32_t featureDimension = static_cast<uint32_t>(std::distance(
+            parentPrefix.scopes.back().iteratorTileSizes.begin(), featureAxis));
+        *majorAxis = 32;
+        *featureAxis = 16;
+        parentPrefix.scopes.back().waveLoopOrder = {featureDimension,
+                                                    majorDimension};
+        selectedParent = true;
+        break;
+      }
+      ASSERT_TRUE(selectedParent);
+      TemporalSuccessor withNested =
+          temporalDomain.domain->completePrefix(parentPrefix);
+      ASSERT_EQ(withNested.getKind(), TemporalSuccessorKind::Plan)
+          << withNested.getDetail().str();
+      ASSERT_NE(withNested.getPlan(), nullptr);
+      TemporalPlan selectedTemporal = *withNested.getPlan();
+      unsigned nestedClasses = 0;
+      for (TemporalScopePlan &scope : selectedTemporal.scopes) {
+        const auto *invocation =
+            std::get_if<NestedInvocationClassId>(&scope.id.invocation);
+        if (!invocation || !(scope.id.execution == binding.producer) ||
+            !(invocation->parent == parentExecution))
+          continue;
+        ++nestedClasses;
+        llvm::SmallVector<uint32_t, 4> active;
+        for (auto [dimension, size] :
+             llvm::enumerate(scope.iteratorTileSizes)) {
+          if (size >= 32)
+            size = 16;
+          else if (size >= 16)
+            size = 8;
+          if (size < invocation->producerExtents[dimension])
+            active.push_back(static_cast<uint32_t>(dimension));
+        }
+        std::reverse(active.begin(), active.end());
+        scope.waveLoopOrder = std::move(active);
+      }
+      EXPECT_EQ(nestedClasses, extent == 1024 ? 1u : 2u);
+      ASSERT_TRUE(temporalDomain.domain->contains(selectedTemporal));
+      TemporalPlan feedbackPrefix = selectedTemporal;
+      const SemanticRootKey parentRoot =
+          std::visit([](const auto &source) { return source.work.root; },
+                     nested->consumer);
+      auto refined = refineTemporalPlanFromActualSPMFeedback(
+          feedbackPrefix, prepared->prefix.rootWorks,
+          llvm::ArrayRef<SemanticRootKey>(&parentRoot, 1), &failureReason);
+      ASSERT_TRUE(mlir::succeeded(refined)) << failureReason;
+      ASSERT_TRUE(*refined);
+      EXPECT_TRUE(llvm::all_of(feedbackPrefix.scopes, [](const auto &scope) {
+        return isTopLevelScope(scope.id);
+      }));
+      TemporalSuccessor reclosed =
+          temporalDomain.domain->completePrefix(feedbackPrefix);
+      ASSERT_EQ(reclosed.getKind(), TemporalSuccessorKind::Plan)
+          << reclosed.getDetail().str();
+      ASSERT_NE(reclosed.getPlan(), nullptr);
+      EXPECT_TRUE(temporalDomain.domain->contains(*reclosed.getPlan()));
+
+      PreparedAttentionDecomposition noAttention;
+      CompleteCandidatePlan candidate{
+          prepared->prefix.spatial,   prepared->prefix.demand,
+          prepared->prefix.rootWorks, *selected,
+          selectedTemporal,           noAttention};
+      std::string diagnosticsText;
+      llvm::raw_string_ostream diagnostics(diagnosticsText);
+      CandidateMaterializationStatistics statistics;
+      auto materialized = materializeCardCandidate(
+          *prepared->module, CardId(0), *prepared->program, candidate,
+          &statistics, diagnostics);
+      ASSERT_TRUE(mlir::succeeded(materialized)) << diagnostics.str();
+      std::string verificationFailure;
+      ASSERT_TRUE(mlir::succeeded(verifyMaterializedCardCandidate(
+          *materialized->module, materialized->assignment,
+          prepared->program->dag, materialized->relations,
+          prepared->program->availableTileIds, verificationFailure)))
+          << verificationFailure;
+      CardMaterializationPlan corrupted = materialized->assignment;
+      auto corruptedGroup = llvm::find_if(
+          corrupted.selectedRegionGroups, [](const auto &candidate) {
+            return !candidate.nestedTemporalTiles.empty();
+          });
+      ASSERT_NE(corruptedGroup, corrupted.selectedRegionGroups.end());
+      auto corruptedSize = llvm::find(
+          corruptedGroup->nestedTemporalTiles.front().iteratorTileSizes,
+          int64_t{8});
+      ASSERT_NE(
+          corruptedSize,
+          corruptedGroup->nestedTemporalTiles.front().iteratorTileSizes.end());
+      *corruptedSize = 4;
+      std::string corruptedFailure;
+      EXPECT_TRUE(mlir::failed(verifyMaterializedCardCandidate(
+          *materialized->module, corrupted, prepared->program->dag,
+          materialized->relations, prepared->program->availableTileIds,
+          corruptedFailure)));
+      EXPECT_NE(corruptedFailure.find("nested temporal loops"),
+                std::string::npos);
+
+      unsigned parentLoops = 0;
+      unsigned childLoops = 0;
+      unsigned nestedChildLoops = 0;
+      materialized->module->walk([&](mlir::scf::ForOp loop) {
+        TileModuleOp tile = loop->getParentOfType<TileModuleOp>();
+        std::optional<int64_t> step = mlir::getConstantIntValue(loop.getStep());
+        if (!tile || tile.getTileIdAttr().getInt() != 0 || !step)
+          return;
+        if (*step == 32)
+          ++parentLoops;
+        if (*step != 8)
+          return;
+        ++childLoops;
+        for (mlir::Operation *owner = loop->getParentOp(); owner;
+             owner = owner->getParentOp()) {
+          auto parent = mlir::dyn_cast<mlir::scf::ForOp>(owner);
+          std::optional<int64_t> parentStep =
+              parent ? mlir::getConstantIntValue(parent.getStep())
+                     : std::nullopt;
+          if (parentStep && *parentStep == 32) {
+            ++nestedChildLoops;
+            break;
+          }
+        }
+      });
+      EXPECT_GE(parentLoops, 1u);
+      EXPECT_GE(childLoops, 2u);
+      EXPECT_GE(nestedChildLoops, 1u);
+
+      compiler::ProgramDataHandoff programData;
+      CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
+          std::move(materialized->module), CardId(0),
+          prepared->program->availableTileIds,
+          /*selectedBufferingScopes=*/{}, materialized->relations,
+          metadata(extent), compiler::testing::executionConfig(), diagnostics,
+          programData, /*statistics=*/nullptr,
+          /*tilePipelineParallelism=*/0,
+          /*captureTileDataflowIRTrace=*/false);
+      ASSERT_TRUE(compiled.isAccepted())
+          << compiled.gate << ": " << compiled.detail << '\n'
+          << diagnostics.str();
+      EXPECT_EQ(statistics.cardModuleMaterializations, 1u);
+      EXPECT_EQ(print(prepared->module->getOperation()), before);
     }
   }
 }
@@ -545,11 +756,11 @@ TEST(SelectedRegionMaterializationTest,
       ASSERT_TRUE(mlir::succeeded(selectedSource)) << failureReason;
       auto groups = prepareSelectedRegionGroups(
           *prepared->program, *selected, prepared->prefix.rootWorks,
-          *temporal.getPlan(), selectedSource->executionNodes,
-          &failureReason);
+          *temporal.getPlan(), selectedSource->executionNodes, &failureReason);
       ASSERT_TRUE(mlir::succeeded(groups)) << failureReason;
       auto replicaGroup = llvm::find_if(*groups, [](const auto &group) {
-        return !group.shards.empty() && group.shards.front().tile == TileId(0) &&
+        return !group.shards.empty() &&
+               group.shards.front().tile == TileId(0) &&
                group.shards.size() == 2;
       });
       ASSERT_NE(replicaGroup, groups->end());
@@ -561,15 +772,14 @@ TEST(SelectedRegionMaterializationTest,
       ASSERT_TRUE(mlir::succeeded(lowerStructuredNodeGroupsToCardModule(
           *selectedSource->module, CardId(0),
           prepared->program->availableTileIds, selectedSource->operationNodes,
-          *groups, directCard,
-          &directRelations, &failureReason)))
+          *groups, directCard, &directRelations, &failureReason)))
           << failureReason;
 
       PreparedAttentionDecomposition noAttention;
       CompleteCandidatePlan candidate{
-          prepared->prefix.spatial, prepared->prefix.demand,
-          prepared->prefix.rootWorks, *selected, *temporal.getPlan(),
-          noAttention};
+          prepared->prefix.spatial,   prepared->prefix.demand,
+          prepared->prefix.rootWorks, *selected,
+          *temporal.getPlan(),        noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;
@@ -639,8 +849,7 @@ TEST(SelectedRegionMaterializationTest,
 
       auto groups = prepareSelectedRegionGroups(
           *prepared->program, *selected, prepared->prefix.rootWorks,
-          *temporal.getPlan(), selectedSource->executionNodes,
-          &failureReason);
+          *temporal.getPlan(), selectedSource->executionNodes, &failureReason);
       ASSERT_TRUE(mlir::succeeded(groups)) << failureReason;
       unsigned replicaGroupCount = 0;
       for (const StructuredNodeShardGroup &group : *groups) {
@@ -655,9 +864,9 @@ TEST(SelectedRegionMaterializationTest,
 
       PreparedAttentionDecomposition noAttention;
       CompleteCandidatePlan candidate{
-          prepared->prefix.spatial, prepared->prefix.demand,
-          prepared->prefix.rootWorks, *selected, *temporal.getPlan(),
-          noAttention};
+          prepared->prefix.spatial,   prepared->prefix.demand,
+          prepared->prefix.rootWorks, *selected,
+          *temporal.getPlan(),        noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;
@@ -709,10 +918,24 @@ TEST(SelectedRegionMaterializationTest,
       prepared->prefix.rootWorks, &failureReason);
   ASSERT_TRUE(mlir::succeeded(selectedSource)) << failureReason;
 
+  TemporalPlan missingNested = *temporal.getPlan();
+  auto nestedScope = llvm::find_if(missingNested.scopes, [](const auto &scope) {
+    return !isTopLevelScope(scope.id);
+  });
+  ASSERT_NE(nestedScope, missingNested.scopes.end());
+  missingNested.scopes.erase(nestedScope);
+  auto missingNestedGroups = prepareSelectedRegionGroups(
+      *prepared->program, *selected, prepared->prefix.rootWorks, missingNested,
+      selectedSource->executionNodes, &failureReason);
+  EXPECT_TRUE(mlir::failed(missingNestedGroups));
+  EXPECT_NE(failureReason.find("temporal traversal scope"), std::string::npos);
+  EXPECT_EQ(print(prepared->module->getOperation()), before);
+
   RegionPlan inconsistent = *selected;
-  auto localGroup = llvm::find_if(
-      inconsistent.groups,
-      [](const RegionGroupPlan &group) { return !group.localBindings.empty(); });
+  auto localGroup =
+      llvm::find_if(inconsistent.groups, [](const RegionGroupPlan &group) {
+        return !group.localBindings.empty();
+      });
   ASSERT_NE(localGroup, inconsistent.groups.end());
   localGroup->localBindings.front().delivery =
       LocalUseDelivery::StoredRegionValue;
@@ -727,17 +950,17 @@ TEST(SelectedRegionMaterializationTest,
       *prepared->program, *selected, prepared->prefix.rootWorks,
       *temporal.getPlan(), selectedSource->executionNodes, &failureReason);
   ASSERT_TRUE(mlir::succeeded(groups)) << failureReason;
-  auto coupled = llvm::find_if(*groups, [](const StructuredNodeShardGroup &group) {
-    return group.shards.size() == 2;
-  });
+  auto coupled =
+      llvm::find_if(*groups, [](const StructuredNodeShardGroup &group) {
+        return group.shards.size() == 2;
+      });
   ASSERT_NE(coupled, groups->end());
   coupled->independentlyMaterializedNodes.push_back(
       std::numeric_limits<uint32_t>::max());
   mlir::OwningOpRef<mlir::ModuleOp> card;
   EXPECT_TRUE(mlir::failed(lowerStructuredNodeGroupsToCardModule(
       *selectedSource->module, CardId(0), prepared->program->availableTileIds,
-      selectedSource->operationNodes, *groups, card, nullptr,
-      &failureReason)));
+      selectedSource->operationNodes, *groups, card, nullptr, &failureReason)));
   EXPECT_FALSE(card);
   EXPECT_EQ(print(prepared->module->getOperation()), before);
 }

@@ -98,6 +98,13 @@ private:
 mlir::LogicalResult checkStructuredBufferRelationsCurrent(
     mlir::Operation *root, const StructuredMaterializationRelations &relations);
 
+/// Drops attribution entries whose SSA value was deleted by a completed
+/// cleanup/bufferization epoch. This compares opaque identities against the
+/// current root and never dereferences a stale value; it does not redirect a
+/// missing required relation to another buffer.
+void retainCurrentStructuredBufferRelations(
+    mlir::Operation *root, StructuredMaterializationRelations &relations);
+
 /// Rebinds attribution-only buffer relations to their unique current-IR
 /// storage root before a pass pipeline may fold intermediate views. A value
 /// with zero or multiple typed roots fails closed.

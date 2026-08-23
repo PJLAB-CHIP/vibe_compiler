@@ -423,7 +423,8 @@ source program
   不同Tile的remainder保持独立变量，rank-zero是唯一empty vector，merge execution没有假scope。interval proposal只决定first singleton，
   midpoint children仍精确覆盖其余integer points；不读取target geometry、capacity、allocator或SPM估算。
 - nested temporal classes必须在parent concrete plan后从consumer operand relation、selected fragment exact domain和producer result preimage
-  派生；main、tail、halo和producer internal iterators保留各自exact rectangles。parent改变即重建children，relation work超限返回
+  派生；absolute parent-wave offset由actual SSA提供，class identity使用translation-normalized local coordinates，使相同extent/relation的
+  steady waves共享一个plan，main、tail、halo和producer internal iterator差异仍保留。parent改变即重建children，relation work超限返回
   indeterminate；不得用full producer、bounding box、wave ordinal或operation pointer补关系。baseline full-local初始点复用同一domain，
   仍只是合法起点而非default winner。
 - A--E闭合后的structural readiness只验证current TemporalPlan domain membership并返回下一representation coordinate；RegionPlan由前一

@@ -10,6 +10,7 @@
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
+#include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 
 #include <cstdint>
 #include <optional>
@@ -58,6 +59,10 @@ struct CardMaterializationPlan {
   /// verify actual groups and attribute replica buffers. It is never persisted
   /// or used as a semantic ordering key.
   std::vector<std::pair<RegionExecutionId, uint32_t>> selectedRegionExecutions;
+  /// Exact query-local construction descriptors retained only until the
+  /// selected actual CardModule has been verified. They are not serialized or
+  /// consumed by later planning stages.
+  std::vector<StructuredNodeShardGroup> selectedRegionGroups;
 };
 
 struct MaterializedCardCandidate {

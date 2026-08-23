@@ -6,6 +6,7 @@
 #include "Wafer/Planning/Baseline/BaselineTemporalPlan.h"
 #include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
+#include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -22,8 +23,8 @@ namespace {
 
 wafer::compiler::detail::CompleteCandidatePlan makeMaterializationPlan(
     const wafer::compiler::detail::CanonicalBaselinePlan &plan) {
-  return {plan.spatial, plan.demand, plan.rootWorks, plan.regions,
-          plan.temporal, plan.preparedAttention};
+  return {plan.spatial, plan.demand,   plan.rootWorks,
+          plan.regions, plan.temporal, plan.preparedAttention};
 }
 using namespace wafer::compiler::testing;
 
@@ -42,8 +43,8 @@ void expectNoAvoidableNCCDrains(
       ++requiredCrossingJoins;
       requiredCrossingParticipants += join.getParticipants().size();
       bool validCrossing =
-          mlir::isa_and_nonnull<wafer::InstrDTESendOp,
-                                wafer::InstrDTERecvOp>(next) &&
+          mlir::isa_and_nonnull<wafer::InstrDTESendOp, wafer::InstrDTERecvOp>(
+              next) &&
           !join->getParentOfType<mlir::scf::ForOp>();
       if (!validCrossing) {
         invalidDrainStream << "tile=" << tile.getTileId().getValue()
@@ -61,8 +62,7 @@ void expectNoAvoidableNCCDrains(
   ASSERT_TRUE(cost.aggregateNonTerminalNCCParticipantWaitCount.isKnown());
   EXPECT_EQ(cost.aggregateSteadyStateNCCJoinCount.value, 0u);
   EXPECT_TRUE(invalidDrainDetails.empty()) << invalidDrainDetails;
-  EXPECT_EQ(cost.aggregateNonTerminalNCCJoinCount.value,
-            requiredCrossingJoins);
+  EXPECT_EQ(cost.aggregateNonTerminalNCCJoinCount.value, requiredCrossingJoins);
   EXPECT_EQ(cost.aggregateSteadyStateNCCParticipantWaitCount.value, 0u);
   EXPECT_EQ(cost.aggregateNonTerminalNCCParticipantWaitCount.value,
             requiredCrossingParticipants);
@@ -283,11 +283,12 @@ module {
       attentionRoot = work.id.root;
     }
   ASSERT_TRUE(attentionRoot);
-  auto refined = wafer::compiler::detail::refineBaselineTemporalPlan(
-      plan->temporal, plan->rootWorks,
-      llvm::ArrayRef<wafer::compiler::detail::SemanticRootKey>{&*attentionRoot,
-                                                               1},
-      &failureReason);
+  auto refined =
+      wafer::compiler::detail::refineTemporalPlanFromActualSPMFeedback(
+          plan->temporal, plan->rootWorks,
+          llvm::ArrayRef<wafer::compiler::detail::SemanticRootKey>{
+              &*attentionRoot, 1},
+          &failureReason);
   ASSERT_TRUE(mlir::succeeded(refined)) << failureReason;
   ASSERT_TRUE(*refined);
   ASSERT_TRUE(

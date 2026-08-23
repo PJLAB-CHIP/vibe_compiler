@@ -218,8 +218,8 @@ mlir::LogicalResult materializeTemporalPartialReductionShard(
                                                            &operationNodes);
               if (mlir::failed(fuseCandidateProducerSlices(
                       operation, root, scope, loops, temporalTiles,
-                      leafBuilder.getListener(), failureReason,
-                      &operationNodes)))
+                      /*nestedTemporalTiles=*/{}, leafBuilder.getListener(),
+                      failureReason, &operationNodes)))
                 return mlir::failure();
             }
             for (mlir::Operation *operation :

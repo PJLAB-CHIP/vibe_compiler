@@ -38,9 +38,10 @@ mlir::LogicalResult failResult(std::string *failureReason,
 }
 
 mlir::FailureOr<llvm::SmallVector<SpatialOutputShard, 2>>
-projectSelectedOutputShards(
-    mlir::Operation *root, const StructuredNodeIterationShard &spatial,
-    const StructuredNodeTemporalTile &temporal, std::string *failureReason) {
+projectSelectedOutputShards(mlir::Operation *root,
+                            const StructuredNodeIterationShard &spatial,
+                            const StructuredNodeTemporalTile &temporal,
+                            std::string *failureReason) {
   auto linalg = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(root);
   if (!linalg || spatial.offsets.size() != spatial.sizes.size() ||
       spatial.sizes.size() != temporal.iteratorTileSizes.size())
@@ -317,12 +318,11 @@ mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
   llvm::DenseSet<mlir::Operation *> coupledOperations{sourceRoot};
   std::string name =
       (llvm::Twine("execute_node_") + llvm::Twine(structuredNodeId)).str();
-  return buildRegionFunction(destination, sourceRoot, {sourceRoot},
-                             {sourceRoot},
-                             sourceOperationNodes, structuredOperations,
-                             coupledOperations, coupledOperations, name,
-                             failureReason, operationNodes,
-                             functionalArgumentCount, boundaries, results);
+  return buildRegionFunction(
+      destination, sourceRoot, {sourceRoot}, {sourceRoot}, sourceOperationNodes,
+      structuredOperations, coupledOperations, coupledOperations, name,
+      failureReason, operationNodes, functionalArgumentCount, boundaries,
+      results);
 }
 
 mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
@@ -370,12 +370,11 @@ mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
                            mapping.structuredNodeId) &&
         !llvm::is_contained(closureRoots, mapping.operation))
       closureRoots.push_back(mapping.operation);
-  return buildRegionFunction(destination, sourceRoots.front(), sourceRoots,
-                             closureRoots,
-                             sourceOperationNodes, structuredOperations,
-                             coupledOperations, emittedOperations, name,
-                             failureReason, operationNodes,
-                             functionalArgumentCount, boundaries, results);
+  return buildRegionFunction(
+      destination, sourceRoots.front(), sourceRoots, closureRoots,
+      sourceOperationNodes, structuredOperations, coupledOperations,
+      emittedOperations, name, failureReason, operationNodes,
+      functionalArgumentCount, boundaries, results);
 }
 
 mlir::LogicalResult materializeRootIteratorShard(
@@ -418,8 +417,8 @@ mlir::LogicalResult materializeRootIteratorShard(
                                                  &operationNodes);
     if (mlir::failed(fuseCandidateProducerSlices(
             tiledOperation, root, scope, loops,
-            /*operationTemporalTiles=*/{}, builder.getListener(), failureReason,
-            &operationNodes)))
+            /*operationTemporalTiles=*/{}, /*nestedTemporalTiles=*/{},
+            builder.getListener(), failureReason, &operationNodes)))
       return mlir::failure();
   }
 
@@ -498,6 +497,7 @@ mlir::LogicalResult materializeTemporalRootIteratorShard(
   }
   mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> traversed =
       materializeTemporalRegionTraversal(root, scope, offsets, sizes, temporal,
+                                         /*nestedTemporalTiles=*/{},
                                          destinations, operationNodes,
                                          failureReason);
   if (mlir::failed(traversed) || traversed->size() != returnOp.getNumOperands())
@@ -594,8 +594,8 @@ mlir::LogicalResult materializePartialReductionShard(
                                                  &operationNodes);
     if (mlir::failed(fuseCandidateProducerSlices(
             partialOperation, root, scope, loops,
-            /*operationTemporalTiles=*/{}, builder.getListener(), failureReason,
-            &operationNodes)))
+            /*operationTemporalTiles=*/{}, /*nestedTemporalTiles=*/{},
+            builder.getListener(), failureReason, &operationNodes)))
       return mlir::failure();
   }
 

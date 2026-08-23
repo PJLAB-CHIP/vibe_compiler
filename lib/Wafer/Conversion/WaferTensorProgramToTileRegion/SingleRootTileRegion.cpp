@@ -18,6 +18,7 @@
 #include <map>
 #include <set>
 #include <tuple>
+#include <vector>
 
 namespace wafer::tensor_program_to_tile_region {
 namespace {
@@ -376,11 +377,6 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
   for (const StructuredNodeShardGroup &group : groups) {
     if (group.shards.empty())
       return failResult(failureReason, "node-shard group is empty");
-    if (!group.temporalTiles.empty() &&
-        group.temporalTiles.size() != group.shards.size())
-      return failResult(
-          failureReason,
-          "selected temporal group does not cover every node shard");
     if (!group.representations.empty() &&
         group.representations.size() != group.shards.size())
       return failResult(
@@ -397,11 +393,12 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
     llvm::sort(independentlyMaterialized);
     if (std::adjacent_find(independentlyMaterialized.begin(),
                            independentlyMaterialized.end()) !=
-        independentlyMaterialized.end() ||
+            independentlyMaterialized.end() ||
         llvm::any_of(independentlyMaterialized, [&](uint32_t node) {
-          return llvm::none_of(group.shards, [&](const auto &shard) {
-                   return shard.structuredNodeId == node;
-                 }) &&
+          return llvm::none_of(group.shards,
+                               [&](const auto &shard) {
+                                 return shard.structuredNodeId == node;
+                               }) &&
                  !llvm::is_contained(group.recomputedProducerNodes, node);
         }))
       return failResult(
@@ -429,20 +426,97 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
     if (std::adjacent_find(recomputedShardNodes.begin(),
                            recomputedShardNodes.end()) !=
             recomputedShardNodes.end() ||
-        llvm::any_of(recomputedShardNodes, [&](uint32_t node) {
-          return !llvm::is_contained(recomputedNodes, node);
-        }) ||
+        llvm::any_of(recomputedShardNodes,
+                     [&](uint32_t node) {
+                       return !llvm::is_contained(recomputedNodes, node);
+                     }) ||
         llvm::any_of(independentlyMaterialized, [&](uint32_t node) {
           return !llvm::any_of(group.shards, [&](const auto &shard) {
-                   return shard.structuredNodeId == node;
-                 }) &&
-                 !llvm::is_contained(recomputedShardNodes, node);
+            return shard.structuredNodeId == node;
+          }) && !llvm::is_contained(recomputedShardNodes, node);
         }))
       return failResult(
           failureReason,
           "recomputed producer work is duplicated, unknown, or missing for "
           "an independent replica");
     const TileId groupTile = group.shards.front().tile;
+    std::map<uint32_t, const StructuredNodeTemporalTile *> temporalByNode;
+    for (const StructuredNodeTemporalTile &temporal : group.temporalTiles) {
+      llvm::SmallVector<uint32_t, 4> sortedOrder = temporal.waveLoopOrder;
+      llvm::sort(sortedOrder);
+      auto shard = llvm::find_if(group.shards, [&](const auto &candidate) {
+        return candidate.structuredNodeId == temporal.structuredNodeId;
+      });
+      if (shard == group.shards.end() ||
+          !temporalByNode.try_emplace(temporal.structuredNodeId, &temporal)
+               .second ||
+          temporal.iteratorTileSizes.size() != shard->sizes.size() ||
+          llvm::any_of(temporal.iteratorTileSizes,
+                       [](int64_t size) { return size <= 0; }) ||
+          std::adjacent_find(sortedOrder.begin(), sortedOrder.end()) !=
+              sortedOrder.end() ||
+          llvm::any_of(sortedOrder, [&](uint32_t dimension) {
+            return dimension >= temporal.iteratorTileSizes.size();
+          }))
+        return failResult(
+            failureReason,
+            "selected top-level temporal assignment is malformed");
+    }
+    std::set<std::tuple<uint32_t, uint32_t, unsigned, unsigned,
+                        std::vector<int64_t>, std::vector<int64_t>>>
+        nestedKeys;
+    std::set<uint32_t> nestedProducerNodes;
+    for (const StructuredNodeNestedTemporalTile &nested :
+         group.nestedTemporalTiles) {
+      auto producer = llvm::find_if(group.shards, [&](const auto &candidate) {
+        return candidate.structuredNodeId == nested.producerNodeId;
+      });
+      auto parent = llvm::find_if(group.shards, [&](const auto &candidate) {
+        return candidate.structuredNodeId == nested.parentNodeId;
+      });
+      llvm::SmallVector<uint32_t, 4> sortedOrder = nested.waveLoopOrder;
+      llvm::sort(sortedOrder);
+      if (producer == group.shards.end() || parent == group.shards.end() ||
+          nested.producerNodeId == nested.parentNodeId ||
+          nested.requestedResultExtents.empty() ||
+          nested.producerIterationExtents.size() !=
+              nested.iteratorTileSizes.size() ||
+          llvm::any_of(nested.requestedResultExtents,
+                       [](int64_t extent) { return extent <= 0; }) ||
+          llvm::any_of(llvm::zip_equal(nested.producerIterationExtents,
+                                       nested.iteratorTileSizes),
+                       [](auto values) {
+                         auto [extent, tile] = values;
+                         return extent <= 0 || tile <= 0 || tile > extent;
+                       }) ||
+          std::adjacent_find(sortedOrder.begin(), sortedOrder.end()) !=
+              sortedOrder.end() ||
+          llvm::any_of(sortedOrder,
+                       [&](uint32_t dimension) {
+                         return dimension >= nested.iteratorTileSizes.size();
+                       }) ||
+          !nestedKeys
+               .emplace(
+                   nested.producerNodeId, nested.parentNodeId,
+                   nested.producerResult, nested.parentOperand,
+                   std::vector<int64_t>(nested.requestedResultExtents.begin(),
+                                        nested.requestedResultExtents.end()),
+                   std::vector<int64_t>(nested.producerIterationExtents.begin(),
+                                        nested.producerIterationExtents.end()))
+               .second)
+        return failResult(failureReason,
+                          "selected nested temporal assignment is malformed");
+      nestedProducerNodes.insert(nested.producerNodeId);
+    }
+    if ((!group.temporalTiles.empty() || !group.nestedTemporalTiles.empty()) &&
+        llvm::any_of(group.shards, [&](const auto &shard) {
+          const bool topLevel = temporalByNode.count(shard.structuredNodeId);
+          const bool nested = nestedProducerNodes.count(shard.structuredNodeId);
+          return topLevel == nested;
+        }))
+      return failResult(
+          failureReason,
+          "selected temporal group must classify every node exactly once");
     uint32_t previousNode = 0;
     bool firstNode = true;
     for (auto [index, shard] : llvm::enumerate(group.shards)) {
@@ -470,22 +544,6 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
           return failResult(
               failureReason,
               "current partial contribution apply requires one output group");
-      }
-      if (!group.temporalTiles.empty()) {
-        const StructuredNodeTemporalTile &temporal = group.temporalTiles[index];
-        llvm::SmallVector<uint32_t, 4> sortedOrder = temporal.waveLoopOrder;
-        llvm::sort(sortedOrder);
-        if (temporal.structuredNodeId != shard.structuredNodeId ||
-            temporal.iteratorTileSizes.size() != shard.sizes.size() ||
-            llvm::any_of(temporal.iteratorTileSizes,
-                         [](int64_t size) { return size <= 0; }) ||
-            std::adjacent_find(sortedOrder.begin(), sortedOrder.end()) !=
-                sortedOrder.end() ||
-            llvm::any_of(sortedOrder, [&](uint32_t dimension) {
-              return dimension >= temporal.iteratorTileSizes.size();
-            }))
-          return failResult(failureReason,
-                            "selected temporal node assignment is malformed");
       }
       if (!group.representations.empty() &&
           group.representations[index].structuredNodeId !=

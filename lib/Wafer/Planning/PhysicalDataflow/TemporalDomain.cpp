@@ -501,14 +501,20 @@ deriveNestedDescriptors(llvm::ArrayRef<RelationT> relations,
                  *producerPieces.value) {
               NestedInvocationClassId invocation;
               invocation.parent = relation.parent;
+              // Invocation classes describe translation-equivalent work, not
+              // one state per parent-wave ordinal. The actual parent leaf
+              // supplies absolute offsets; only local extents and the typed
+              // use relation select the child temporal plan.
               invocation.uses.push_back(
-                  {relation.relation, clipped.offsets, clipped.sizes});
-              invocation.producerOffsets = piece.offsets;
+                  {relation.relation,
+                   llvm::SmallVector<int64_t, 4>(clipped.offsets.size(), 0),
+                   clipped.sizes});
+              invocation.producerOffsets.assign(piece.offsets.size(), 0);
               invocation.producerExtents = piece.sizes;
               TemporalScopeDescriptor child;
               child.id.execution = relation.execution;
               child.id.invocation = std::move(invocation);
-              child.iterationOffsets = piece.offsets;
+              child.iterationOffsets.assign(piece.offsets.size(), 0);
               child.iterationExtents = piece.sizes;
               child.iteratorCapabilities = relation.iteratorCapabilities;
               child.parentScope = parent.id;
@@ -1232,6 +1238,136 @@ buildTemporalAxisWaves(IteratorInterval interval, int64_t tileSize,
     consumed += size;
   }
   return waves;
+}
+
+mlir::FailureOr<bool> refineTemporalPlanFromActualSPMFeedback(
+    TemporalPlan &temporal, llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
+    llvm::ArrayRef<SemanticRootKey> affectedRoots, std::string *failureReason) {
+  if (affectedRoots.empty()) {
+    if (failureReason)
+      *failureReason = "actual SPM rejection has no attributed semantic root";
+    return mlir::failure();
+  }
+  auto workOf = [](const RegionExecutionId &execution)
+      -> std::optional<analysis::RootRegionWorkId> {
+    if (const auto *required = std::get_if<ExecutionInstanceId>(&execution))
+      return std::visit([](const auto &source) { return source.work; },
+                        required->source);
+    return std::get<ReplicaExecutionId>(execution).producer.work;
+  };
+  auto rootExecution =
+      [](const RegionExecutionId &execution) -> const RequiredRootExecution * {
+    if (const auto *required = std::get_if<ExecutionInstanceId>(&execution))
+      return std::get_if<RequiredRootExecution>(&required->source);
+    return &std::get<ReplicaExecutionId>(execution).producer;
+  };
+
+  std::set<SemanticRootKey> uniqueRoots(affectedRoots.begin(),
+                                        affectedRoots.end());
+  std::map<analysis::RootRegionWorkId, const analysis::RootRegionWork *> works;
+  for (const analysis::RootRegionWork &work : rootWorks)
+    works.try_emplace(work.id, &work);
+
+  TemporalPlan candidate = temporal;
+  bool changed = false;
+  for (const SemanticRootKey &root : uniqueRoots) {
+    mlir::Operation *operation = nullptr;
+    for (const analysis::RootRegionWork &work : rootWorks)
+      if (work.id.root == root && work.rootOperation) {
+        operation = work.rootOperation;
+        break;
+      }
+    if (!operation) {
+      if (failureReason)
+        *failureReason = "actual SPM rejection names an unknown root";
+      return mlir::failure();
+    }
+
+    llvm::SmallVector<unsigned, 4> allowedAxes;
+    if (auto attention = mlir::dyn_cast<LinalgExtAttentionOp>(operation)) {
+      mlir::FailureOr<AttentionIterationRoles> roles =
+          attention.getIterationRoles();
+      if (mlir::failed(roles))
+        return mlir::failure();
+      allowedAxes.assign(roles->keyValueReduction.begin(),
+                         roles->keyValueReduction.end());
+    } else {
+      auto tiling = mlir::dyn_cast<mlir::TilingInterface>(operation);
+      if (!tiling) {
+        if (failureReason)
+          *failureReason =
+              "actual SPM rejection root is not temporally tileable";
+        return mlir::failure();
+      }
+      for (unsigned axis = 0; axis < tiling.getLoopIteratorTypes().size();
+           ++axis)
+        allowedAxes.push_back(axis);
+    }
+
+    std::optional<unsigned> selectedAxis;
+    int64_t largestCurrent = 1;
+    for (unsigned axis : allowedAxes)
+      for (const TemporalScopePlan &scope : candidate.scopes) {
+        std::optional<analysis::RootRegionWorkId> work =
+            workOf(scope.id.execution);
+        if (!isTopLevelScope(scope.id) || !work || work->root != root ||
+            axis >= scope.iteratorTileSizes.size())
+          continue;
+        if (scope.iteratorTileSizes[axis] > largestCurrent) {
+          largestCurrent = scope.iteratorTileSizes[axis];
+          selectedAxis = axis;
+        }
+      }
+    if (!selectedAxis)
+      continue;
+
+    for (TemporalScopePlan &scope : candidate.scopes) {
+      if (!isTopLevelScope(scope.id))
+        continue;
+      std::optional<analysis::RootRegionWorkId> workId =
+          workOf(scope.id.execution);
+      const RequiredRootExecution *required = rootExecution(scope.id.execution);
+      if (!workId || !required)
+        return mlir::failure();
+      if (workId->root != root ||
+          *selectedAxis >= scope.iteratorTileSizes.size())
+        continue;
+      auto work = works.find(*workId);
+      if (work == works.end())
+        return mlir::failure();
+      auto execution =
+          llvm::find_if(work->second->execution,
+                        [&](const analysis::RootExecutionWork &entry) {
+                          return entry.shard == required->shard;
+                        });
+      if (execution == work->second->execution.end() ||
+          *selectedAxis >= execution->iterationDomain.size())
+        return mlir::failure();
+      const int64_t current = scope.iteratorTileSizes[*selectedAxis];
+      if (current <= 1)
+        continue;
+      llvm::SmallVector<int64_t, 4> candidateSizes = scope.iteratorTileSizes;
+      candidateSizes[*selectedAxis] = (current + 1) / 2;
+      llvm::SmallVector<int64_t, 4> extents;
+      for (const IteratorInterval &interval : execution->iterationDomain)
+        extents.push_back(interval.size);
+      auto order = buildFirstTemporalWaveLoopOrder(extents, candidateSizes, {},
+                                                   failureReason);
+      if (mlir::failed(order))
+        return mlir::failure();
+      scope.iteratorTileSizes = std::move(candidateSizes);
+      scope.waveLoopOrder = std::move(*order);
+      changed = true;
+    }
+  }
+  if (changed) {
+    auto firstNested = llvm::find_if(candidate.scopes, [](const auto &scope) {
+      return !isTopLevelScope(scope.id);
+    });
+    candidate.scopes.erase(firstNested, candidate.scopes.end());
+    temporal = std::move(candidate);
+  }
+  return changed;
 }
 
 } // namespace wafer::compiler::detail

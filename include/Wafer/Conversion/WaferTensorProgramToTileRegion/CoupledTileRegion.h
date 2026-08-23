@@ -14,6 +14,20 @@ struct StructuredNodeTemporalTile {
   llvm::SmallVector<uint32_t, 4> waveLoopOrder;
 };
 
+/// Candidate-local node form of a parent-dependent nested temporal class.
+/// One class may carry several entries when several exact consumer uses share
+/// the same producer execution and plan.
+struct StructuredNodeNestedTemporalTile {
+  uint32_t producerNodeId = 0;
+  uint32_t parentNodeId = 0;
+  unsigned producerResult = 0;
+  unsigned parentOperand = 0;
+  llvm::SmallVector<int64_t, 4> requestedResultExtents;
+  llvm::SmallVector<int64_t, 4> producerIterationExtents;
+  llvm::SmallVector<int64_t, 4> iteratorTileSizes;
+  llvm::SmallVector<uint32_t, 4> waveLoopOrder;
+};
+
 /// One selected primary physical version for every shaped operand/result of a
 /// structured node in this Tile shard. Scalar entries are std::nullopt. The
 /// conversion may create target-required derived versions explicitly, but
@@ -38,6 +52,9 @@ struct StructuredNodeShardGroup {
   /// Empty before temporal selection. A complete selected group carries
   /// exactly one entry for every shard/node.
   llvm::SmallVector<StructuredNodeTemporalTile, 4> temporalTiles;
+  /// Parent-dependent plans for consumer-nested executions. Absolute wave
+  /// offsets remain actual SSA facts and are not duplicated here.
+  llvm::SmallVector<StructuredNodeNestedTemporalTile, 4> nestedTemporalTiles;
   /// Empty before physical-representation selection. A complete selected
   /// group carries exactly one entry for every shard/node.
   llvm::SmallVector<StructuredNodePhysicalRepresentation, 4> representations;

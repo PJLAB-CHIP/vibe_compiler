@@ -260,8 +260,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 3 | `search-control-foundation` | `done` | Q51.Core | SpatialState frontier/continuation及public search routing | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | root-work-domain |
 | 4 | `root-work-domain` | `done` | Q50.C | full root/merge work domain、Core consumer及complete-candidate emitter输入 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
 | 5 | `region-execution-domain` | `done` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
-| 6 | `temporal-domain` | `doing` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
-| 7 | `partial-feasibility` | `queued` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
+| 6 | `temporal-domain` | `done` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
+| 7 | `partial-feasibility` | `doing` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
 | 8 | `layout-domain` | `queued` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
 | 9 | `movement-domain` | `queued` | Q50.H | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、token-only selected construction/verifier及donor retirement；不在issue后立即await | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
 | 10 | `storage-domain` | `queued` | Q50.I | production alias/reuse/1..U requirements、selected object/rotation construction及first-read/last-release lifetime verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
@@ -3021,8 +3021,9 @@ TemporalScopePlan
 ```
 
 top-level execution的每个maximal rectangular normal-form work piece形成一个scope；multi-piece work不被bounding box稠密化。nested
-execution在parent temporal point关闭后，经D `NestedExecutionRelation`得到实际producer work；offset/extent/relation extensionally相同的
-invocations合并为一个`NestedInvocationClassId`，main、各tail及halo/boundary差异保留不同classes，不按wave ordinal逐个复制state。
+execution在parent temporal point关闭后，经D `NestedExecutionRelation`得到实际producer work；把absolute parent-wave offset正规化为
+class-local zero后，extent/relation/effect scope相同的translation-equivalent invocations合并为一个`NestedInvocationClassId`。main、
+各tail及halo/boundary的不同extent/relation保留不同classes，不按wave ordinal逐个复制state；absolute offset由actual parent leaf SSA提供。
 child scope依赖parent scope，parent变化使全部derived child classes与plans失效重建。
 
 与旧设计不同，nested producer不是“完全没有vector”：parent决定它被请求的result/work domain，但producer内部仍可能有reduction、
@@ -3069,6 +3070,17 @@ evolutionary search处理巨大schedule space；它们也明确承认只探索�
 state，却不能证明Wafer完整temporal合同。E的exact successor因此覆盖全部positive integer points，学习/beam/divisor/native points
 只能作为可关闭的proposal provider。
 
+本项采用的一手资料边界如下：
+
+| 资料 | 可复用事实 | Wafer采用/不采用 |
+| --- | --- | --- |
+| [MLIR SCF `TileUsingInterface.cpp`](https://mlir.llvm.org/doxygen/TileUsingInterface_8cpp_source.html) | caller显式提供tile sizes/interchange，builder通过`TilingInterface`生成loop与tiled body；producer fusion是独立步骤 | 复用TilingInterface/SCF construction mechanics；size/order合法域、nested class与share/replica仍由D/E typed plan决定 |
+| [Halide learned autoscheduler](https://halide-lang.org/papers/halide_autoscheduler_2019.pdf) | hierarchical loop nest同时表示compute/store placement与nested tiling，beam只探索候选子集 | 只借鉴层次state与proposal组织；不采用beam作为exact domain或legality gate |
+| [Ansor](https://www.usenix.org/system/files/osdi20-zheng.pdf) | 从hierarchical representation采样完整program，再用evolutionary search/cost model排序 | proposal可按完整program排序；不让sampling、learned cost或hardware-preferred点删除positive integer siblings |
+
+仓库pinned MLIR确认当前可用的是`TilingInterface::getTiledImplementation`、
+`getIterationDomainTileFromOperandTile`与SCF tile/fuse实现；current nested emitter只调用这些实际存在的接口，不依赖较新upstream API。
+
 #### Dependency-aware interval successor
 
 先为全部top-level work pieces建立scope；nested classes只有在parent size/order关闭后才派生。partial state每次解决stable
@@ -3111,7 +3123,8 @@ deriveNestedInvocationClasses(parentScopePlan, nestedExecution):
   derive finite parent main/tail work classes from exact wave partition
   map each class through NestedExecutionRelation
   normalize producer work to exact rectangular pieces
-  union extensionally identical (offset, extent, relation, effect-scope) classes
+  normalize absolute offsets to class-local coordinates
+  union translation-equivalent (extent, relation, effect-scope) classes
   return stable classes and child scope dependencies
 ```
 
@@ -3209,7 +3222,7 @@ prefix线性，query memo按extensional descriptor共享；性能优化不能改
 | actual SPM feedback | Q49.P controller + Q50.0 | full→smaller candidate、aligned/ragged tail、typed demand owner | 无owner demand失败；无estimate/alternate allocator |
 | current baseline `setCardBaselineTemporalTiles` | shared per-scope query + Q49.P controller | full initial candidate、per-Tile remainder、output correctness | 不读取target capacity或footprint |
 | current TemporalWave/Region/PartialReduction traversal | C/D/E prepared actual emitter | parallel/reduction/multi-axis/tail/init/nested child | apply不更新既有CardModule、不选tile、不递归fuse-all |
-| current actual-only reduction order check | E structural precedence query + same emitter verifier | query/apply parity、multi-reduction all legal structural orders | `ReductionSemantics`或其它late second legality gate不在E调用链 |
+| current actual-only reduction order check | E structural order + same emitter verifier | query/apply parity、multi-reduction all structural orders | 删除独立reassociation/numeric-policy legality helper；E只保留source arithmetic op与dtype |
 | old rank/connection tile sizes、preferred points | E proposal facts | independent/nested execution intent由D/E表达 | action recipe、rank provider、local cap删除 |
 | old allocation feedback bags/binary endpoint | Q49.P/Q51 actual-result controller | current relation、actual conflict demand、siblings preserved | 无feedback history、accepted retile或shortlist |
 
@@ -3239,9 +3252,29 @@ public link、source organization和diff检查通过。下一项只签发A–E�
 
 “小tile使fusion/buffering成为winner”及任何需要actual layout/buffer/resource cost的比较统一放在Q51 closure。
 
-完成状态复核后，TemporalDomain的size/order/tail successor与top-level actual consumption继续作为有效素材，但selected nested/coupled
-RegionPlan尚未构造，因而parent-dependent nested scopes、replica和coupled loops没有形成同一complete-candidate actual/verifier纵向。
-`temporal-domain`重新打开并直接承接这些construction witnesses；proposal或单独loop-builder测试不能代签。
+本轮closure把上述重新打开门禁收口为同一条actual链：
+
+- nested invocation不再按absolute wave ordinal复制state。domain把absolute offsets正规化为class-local zero，以
+  `(execution,parent,use relation,requested extent,producer extent)`合并translation-equivalent steady waves；main、tail、halo的不同
+  extent/relation仍为不同class。absolute offset只来自actual parent leaf的SSA slice。
+- selected group descriptor分别携带top-level与nested temporal class。nested producer resolver按candidate-local producer/parent node、
+  result、operand及actual requested extent选择唯一class，再把该class的size/order交给同一个TilingInterface/SCF traversal；required与
+  replica使用同一实现，缺失/重复class在创建IR前失败。
+- actual verifier从current outer TileRegion、emission/result relation及`scf.for` bounds/step/nesting核对selected top-level/nested
+  compact loops；修改保留的query-local descriptor会被拒绝。1024/1025双轴required与replica case均生成parent/child steady loops、ragged
+  tail并各自通过一次Q50.0 actual SPM gate。
+- actual SPM capacity feedback helper移到TemporalDomain owner，输入只含actual causal roots；它只产生更小的top-level domain prefix，
+  随后由同一domain重建nested classes。baseline与search共享该机制，不读取bytes、footprint、capacity estimate或packing proxy。
+- 删除了独立`ReductionSemantics` reassociation/numeric-policy helper及temporal/partial-reduction调用。E只选择structural iterator
+  size/order并保留source arithmetic op与dtype；typed Tile reduce没有等价target kind时仍由目标表示边界明确拒绝，不反向缩小E domain。
+- function-boundary bufferization在TileRegion listener前先把attribution relation重绑到唯一storage root，cleanup后只删除已消失的dead
+  SSA entry；随后TileRegion-to-Instr仍由唯一listener维护current relation。
+
+本轮fresh验证：完整build通过；`TemporalDomainTest` 11/11、`SelectedRegionMaterializationTest` 5/5、
+`BidirectionalTilingTest` 5/5及temporal/baseline/search/full-feasibility定向回归通过。排除尚未闭合且不属于本项提交的future
+`AttentionProductionClosureTest`后，host unit 909/909通过；configured lit、source/IR organization与4个public-link smoke全部通过。
+future attention case仍在EventGraph错误要求merge execution具有temporal scope处失败；merge按E合同没有假iterator scope，该问题保留给
+event-resource/attention production owner，未被本项伪装为Temporal成功。
 
 ## Q50.F Owner Contract：Structural Readiness and Actual Resource Admission
 

@@ -343,7 +343,7 @@
   reduction iterator用typed accumulator、prologue/steady `scf.for`/tail递归物化，叶子统一调用TilingInterface，再沿每个
   operand indexing map反推exact window。不得把某一个reduction轴另存成旁路chunk合同。
 - 防复发：小output/大K matmul与多级projection正例证明full weight不resident；检查accumulator、chunk coverage、tail、actual loop
-  cost multiplicity和numeric regrouping legality，不按模型名、shape或operand位置特判。
+  cost multiplicity和source arithmetic op/dtype保持不变，不按模型名、shape或operand位置特判，也不引入numeric policy。
 
 ## Iterator域体积或operand footprint都不能决定SPM合法性
 
@@ -356,16 +356,15 @@
 - 防复发：用iteration-volume与operand-size模型给出相反预测的GEMM/affine-window conv，证明两者都不影响candidate合法集合；actual
   overfull/fit结果只随物化IR和MiniMalloc变化。
 
-## 浮点reduction split不再以源顺序或fastmath为gate
+## Temporal reduction变换不建立数值策略
 
-- 现象（历史）：矩形分块两个reduction轴后，chunk坐标被提到in-tile坐标之前，浮点`addf`求和顺序改变；旧实现把没有
-  fastmath的source当成非法候选，还要求前置reduction轴unit-tiled才能split后轴。
-- 收敛结论：上述顺序/fastmath gate与01 numeric policy冲突，已删除。f16/bf16/f32的reassociation、tree、distribution/
-  factorization、reduction/GEMM split是supported numeric transformation，不消费任何fast-math flag作语义开关，验收统一
-  归typed comparator。`verifyReductionSplitNumericLegality`对`addf`直接合法；`preservesSequentialReductionOrder`事实只保留给
-  整数combiner分支——整数no-wrap/overflow语义是唯一剩余barrier。
-- 防复发：新增reduction split/树合法化时只按整数overflow语义设barrier，不得以源combiner顺序、`fastmath` attr或
-  lexicographic前轴条件拒绝浮点split。纯reduction标量输出没有parallel轴时仍必须先构造all-factor=1、单参与Tile的typed
+- 现象（历史）：reduction分块曾引入`fastmath`、源顺序、整数overflow flag和typed comparator等额外gate，使同一个IR结构变换
+  被误写成numeric policy判断，并让domain与actual emitter接受不同的order。
+- 收敛结论：删除独立的reassociation/numeric legality helper及全部temporal调用。temporal domain只决定iterator size/order，
+  materializer保留source combiner operation与dtype并构造对应loop-carried state；本层不判断数值可交换性、不选择comparator，也不
+  建立numeric search axis。
+- 防复发：reduction temporal测试断言all-and-only iterator coverage、main/tail、loop order、DPS init和source arithmetic op/dtype仍在；
+  不得以`fastmath`、combiner类别、overflow flag或外部comparator决定temporal candidate是否存在。纯reduction标量输出没有parallel轴时仍必须先构造all-factor=1、单参与Tile的typed
   unpartitioned functional coordinate；这是该root的无parallel轴退化，不是baseline全局Tile数。current placement domain表达不了是baseline implementation gap，不能用来跳过temporal
   split或把source判unsupported。已知「最小tile超SPM」反例必须由最小complete candidate的actual SPM rejection证明；没有该结果时
   保持unknown，不用无关placement失败冒充负例。
@@ -653,9 +652,10 @@
   单root canonical路径可能因bufferization形状恰好稳定而掩盖问题。
 - 根因：TileRegion-to-Instr先用listener把relation重绑到Instr SSA，随后function-boundary One-Shot Bufferize又改写function参数和
   boundary SSA；后一个pass不使用该listener，已重绑的relation再次失效。
-- 修复模式：在收集TileRegion和安装replacement listener前完成function-boundary bufferization，并立即检查relation仍属于current
-  module；之后TileRegion-to-Instr的所有replacement只由同一个listener跟踪。memory-planning preparation在已有materialization
-  relations的production路径不得再次运行同一bufferization，只重建当前IR要求的completion结构。
+- 修复模式：在收集TileRegion和安装replacement listener前，把relation重绑到唯一current storage root，再完成function-boundary
+  bufferization；cleanup结束显式删除只对应已消失dead SSA的attribution entry并检查其余relation仍属于current module。之后
+  TileRegion-to-Instr的所有replacement只由同一个listener跟踪。memory-planning preparation在已有materialization relations的
+  production路径不得再次运行同一bufferization，只重建当前IR要求的completion结构。
 - 防复发：真实规模selected multi-root stored/direct与replica候选必须走完整CardModule→Instr→actual SPM gate；只验证TileRegion
   或单root路径不能签发relation epoch正确性。
 

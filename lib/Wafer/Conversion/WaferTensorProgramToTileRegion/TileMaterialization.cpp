@@ -103,7 +103,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateOperandConsumerTileValue(
   mlir::Operation *tiledConsumer = materialized->tiledOperations.front();
   if (mlir::failed(fuseCandidateProducerSlices(
           tiledConsumer, root, scope, loops,
-          /*operationTemporalTiles=*/{}, builder.getListener(), failureReason)))
+          /*operationTemporalTiles=*/{}, /*nestedTemporalTiles=*/{},
+          builder.getListener(), failureReason)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledConsumer);
   return materialized->tiledValues.front();
@@ -169,8 +170,8 @@ mlir::FailureOr<mlir::Value> materializeCandidateRootTileIntoDestination(
   llvm::SmallVector<mlir::LoopLikeOpInterface, 0> loops;
   return materializeConfiguredStructuredTraversal(
       builder, scope, root, *computeRoot, mixedOffsets, candidateTileSizes,
-      loops, operationTemporalTiles, failureReason, destination, mixedOffsets,
-      operationNodes);
+      loops, operationTemporalTiles, /*nestedTemporalTiles=*/{}, failureReason,
+      destination, mixedOffsets, operationNodes);
 }
 
 static mlir::FailureOr<mlir::Value>
@@ -188,8 +189,9 @@ materializeConfiguredStructuredRootTileValue(
     return mlir::failure();
   return materializeConfiguredStructuredTraversal(
       builder, scope, root, *computeRoot, candidateTileOffsets,
-      candidateTileSizes, loops, operationTemporalTiles, failureReason,
-      /*outputDestination=*/{}, /*destinationBaseOffsets=*/{}, operationNodes);
+      candidateTileSizes, loops, operationTemporalTiles,
+      /*nestedTemporalTiles=*/{}, failureReason, /*outputDestination=*/{},
+      /*destinationBaseOffsets=*/{}, operationNodes);
 }
 
 static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
@@ -315,7 +317,8 @@ static mlir::FailureOr<mlir::Value> materializeCandidateInterfaceRootTileValue(
   recordStructuredOperationNodeMaterialization(root, tiledRoot, operationNodes);
   if (mlir::failed(fuseCandidateProducerSlices(
           tiledRoot, root, scope, loops, operationTemporalTiles,
-          builder.getListener(), failureReason, operationNodes)))
+          /*nestedTemporalTiles=*/{}, builder.getListener(), failureReason,
+          operationNodes)))
     return mlir::failure();
   builder.setInsertionPointAfter(tiledRoot);
   return tiled->values.front();
