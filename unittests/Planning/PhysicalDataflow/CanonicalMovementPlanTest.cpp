@@ -245,8 +245,10 @@ module {
     ASSERT_EQ(prefix->temporal.scopes.size(), 16u);
     for (const TemporalScopePlan &scope : prefix->temporal.scopes) {
       EXPECT_TRUE(scope.waveLoopOrder.empty());
+      const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
       const auto *required =
-          std::get_if<RequiredRootExecution>(&scope.execution.source);
+          execution ? std::get_if<RequiredRootExecution>(&execution->source)
+                    : nullptr;
       ASSERT_NE(required, nullptr);
       auto work =
           llvm::find_if(prefix->rootWorks, [&](const RootRegionWork &w) {

@@ -756,12 +756,17 @@ prepareBaselineAttentionMaterializationSource(
   std::map<ExecutionInstanceId, llvm::SmallVector<int64_t, 4>>
       sourceTemporalByExecution;
   for (const TemporalScopePlan &scope : plan.temporal.scopes) {
+    const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
+    if (!execution || !isTopLevelScope(scope.id))
+      return fail<BaselineAttentionMaterializationSource>(
+          failureReason,
+          "baseline attention requires top-level required temporal scopes");
     if (!sourceTemporalByExecution
-             .try_emplace(scope.execution, scope.iteratorTileSizes)
+             .try_emplace(*execution, scope.iteratorTileSizes)
              .second)
       return fail<BaselineAttentionMaterializationSource>(
           failureReason, "source temporal execution is duplicated");
-    SemanticRootKey root = workOf(scope.execution).root;
+    SemanticRootKey root = workOf(*execution).root;
     auto [position, inserted] =
         sourceTemporalTiles.try_emplace(root, scope.iteratorTileSizes);
     if (!inserted) {

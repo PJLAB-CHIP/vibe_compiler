@@ -31,6 +31,9 @@
   `.test`交给lit会缺少`wafer_src_root`等site字段。整套验证优先使用`check-wafer-lit`或registered `wafer-lit` CTest。
 - 用`tee`保留长编译日志时必须启用pipeline failure propagation；否则前面的`wafer-compile`失败仍可能被`tee`的零退出码
   掩盖。package目录存在、明确success diagnostic和runner退出码要共同作为结果。
+- GTest参数化case使用展开后的suite identity匹配filter；例如rank-4 baseline prefill注册为
+  `AlignedAndRagged/CardBaselineRankFourPrefillTest.*`，仅排除定义它的普通test名不会排除参数化instances。普通批次与heavy批次
+  必须先用`--gtest_list_tests`核对实际注册名和数量，不能用中途停止的长批次代签通过。
 - 文本/源码一致性检查用 `rg`/`rg --files`。遇到 `rank` 等多义词时逐项区分合法tensor rank、外部ABI spelling和
   旧执行域，禁止机械全局替换。
 - `git diff --check`用于空白/patch自检；提交前重新看 `git status`，只提交任务相关改动。
@@ -408,10 +411,14 @@ source program
   top-level execution，boundary use按source/use/eligible-owner形成external `DemandFragmentId`。fragment identity不复制exact set，也不按
   node pair折叠multi-result、multi-operand或fanout。不要为canonical点预留single-value delivery enum、nested/replica nullable字段；
   local stored/direct、nested、sharing和replica在真实domain consumer到位时原位扩current RegionPlan。
-- canonical temporal point同样保持最小：每个required root execution使用自己的完整local interval sizes，因此是one wave且order为空；
-  不读取target geometry、capacity、allocator feedback，也不把不同Tile的remainder提升成shared maximum。merge execution没有root
-  iterator，不创建假scope。完整`1..L` interval、active-order和nested invocation classes等真实domain consumer到位后再扩同一
-  `TemporalPlan`，full-local只是一项合法初始坐标，不是default winner。
+- temporal planning以`TraversalScopeId=(required/replica execution, top-level piece或nested invocation class)`为identity；每个scope的
+  complete size域是可tile轴的`1..L`、full-extent-only轴的singleton，以及active iterator precedence DAG的全部linear extensions。
+  不同Tile的remainder保持独立变量，rank-zero是唯一empty vector，merge execution没有假scope。interval proposal只决定first singleton，
+  midpoint children仍精确覆盖其余integer points；不读取target geometry、capacity、allocator或SPM估算。
+- nested temporal classes必须在parent concrete plan后从consumer operand relation、selected fragment exact domain和producer result preimage
+  派生；main、tail、halo和producer internal iterators保留各自exact rectangles。parent改变即重建children，relation work超限返回
+  indeterminate；不得用full producer、bounding box、wave ordinal或operation pointer补关系。baseline full-local初始点复用同一domain，
+  仍只是合法起点而非default winner。
 - canonical representation只给已经显式存在的nonempty shaped logical versions建立一对一Tensor primary version。boundary fragment、
   support result、execution result、ordinary partial和coupled component必须使用typed variant identity；empty/scalar不造假version。
   exact domain/type留在query-local resource description并用`PhysicalLayoutRelation`检查finite boxes，不能只写layout enum。

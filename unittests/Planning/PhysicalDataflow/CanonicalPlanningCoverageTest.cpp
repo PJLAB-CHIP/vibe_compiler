@@ -186,8 +186,12 @@ protected:
     EXPECT_EQ(serializedExecutions.size(), chain.serialized.executions.size());
 
     std::set<ExecutionInstanceId> temporalExecutions;
-    for (const TemporalScopePlan &scope : chain.prefix.temporal.scopes)
-      EXPECT_TRUE(temporalExecutions.insert(scope.execution).second);
+    for (const TemporalScopePlan &scope : chain.prefix.temporal.scopes) {
+      const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
+      ASSERT_NE(execution, nullptr);
+      EXPECT_TRUE(isTopLevelScope(scope.id));
+      EXPECT_TRUE(temporalExecutions.insert(*execution).second);
+    }
     for (const ExecutionInstanceId &execution : chain.serialized.executions) {
       if (std::holds_alternative<RequiredRootExecution>(execution.source))
         EXPECT_EQ(temporalExecutions.count(execution), 1u);

@@ -121,9 +121,11 @@ module {
     regions.groups = {firstGroup, secondGroup};
     TemporalPlan temporal;
     TemporalScopePlan firstScope;
-    firstScope.execution = firstExecution;
+    firstScope.id.execution = RegionExecutionId(firstExecution);
+    firstScope.id.invocation = TopLevelWorkPieceId{0};
     TemporalScopePlan secondScope;
-    secondScope.execution = secondExecution;
+    secondScope.id.execution = RegionExecutionId(secondExecution);
+    secondScope.id.invocation = TopLevelWorkPieceId{0};
     if (!rankZero) {
       firstScope.iteratorTileSizes = {1, extent, 128};
       secondScope.iteratorTileSizes = {1, extent, 128};
@@ -353,7 +355,9 @@ TEST_F(CanonicalSerializedExecutionPlanTest,
 
   TemporalPlan unexpectedScope = temporal;
   TemporalScopePlan mergeScope;
-  mergeScope.execution = regions.groups.back().executions.back().id;
+  mergeScope.id.execution =
+      RegionExecutionId(regions.groups.back().executions.back().id);
+  mergeScope.id.invocation = TopLevelWorkPieceId{0};
   unexpectedScope.scopes.push_back(mergeScope);
   CanonicalSerializedExecutionPlanOutcome unexpectedScopeOutcome =
       buildCanonicalSerializedExecutionPlan(regions, unexpectedScope);

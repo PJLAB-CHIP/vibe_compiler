@@ -438,7 +438,8 @@ Temporal state锚定Q50.D产生的`ExecutionInstancePlan`而不是node-wide defa
 
 canonical temporal coordinate先为每个required root execution取自己的完整local interval sizes，形成one-wave空order plan；
 remainder Tile直接保留较小extent，不使用node-wide ceil maximum。merge execution没有root iterator，因此不生成伪temporal scope。
-完整positive-size/order/nested-class domain在后续`temporal-domain`原位扩展同一`TemporalPlan`合同。
+current `TemporalPlan`使用required/replica execution与top-level/nested invocation class组成的typed scope identity；完整domain惰性覆盖
+每个可tile轴的`1..local extent`、active-order全部linear extensions及parent-dependent exact nested classes。full-local仍只是domain首点。
 
 ```text
 [parallel tiles..., reduction tiles..., batch/head/channel/window tiles...]

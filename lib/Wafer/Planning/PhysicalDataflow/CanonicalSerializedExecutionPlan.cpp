@@ -40,17 +40,19 @@ buildCanonicalSerializedExecutionPlan(const RegionPlan &regions,
 
   std::set<ExecutionInstanceId> observedTemporalScopes;
   for (const TemporalScopePlan &scope : temporal.scopes) {
-    if (!std::holds_alternative<RequiredRootExecution>(
-            scope.execution.source) ||
-        !rootExecutions.count(scope.execution))
+    const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
+    if (!execution || !isTopLevelScope(scope.id) ||
+        !std::holds_alternative<RequiredRootExecution>(execution->source) ||
+        !rootExecutions.count(*execution))
       return broken(
           BrokenSerializedExecutionPlanReason::UnexpectedTemporalScope,
           "temporal scope does not name a required root execution",
-          scope.execution);
-    if (!observedTemporalScopes.insert(scope.execution).second)
+          execution ? std::optional<ExecutionInstanceId>(*execution)
+                    : std::nullopt);
+    if (!observedTemporalScopes.insert(*execution).second)
       return broken(BrokenSerializedExecutionPlanReason::DuplicateTemporalScope,
                     "serialized input has a duplicate temporal scope",
-                    scope.execution);
+                    *execution);
   }
 
   if (observedTemporalScopes != rootExecutions) {

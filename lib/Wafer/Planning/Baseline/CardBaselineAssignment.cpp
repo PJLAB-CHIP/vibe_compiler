@@ -198,8 +198,11 @@ buildCardBaselineMaterializationAssignment(const CardProgramAnalysis &program,
 
   std::map<mlir::Operation *, llvm::SmallVector<int64_t, 4>> temporalByRoot;
   for (const TemporalScopePlan &scope : plan.temporal.scopes) {
+    const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
     const auto *root =
-        std::get_if<RequiredRootExecution>(&scope.execution.source);
+        execution && isTopLevelScope(scope.id)
+            ? std::get_if<RequiredRootExecution>(&execution->source)
+            : nullptr;
     if (!root)
       continue;
     auto work = llvm::find_if(plan.rootWorks,

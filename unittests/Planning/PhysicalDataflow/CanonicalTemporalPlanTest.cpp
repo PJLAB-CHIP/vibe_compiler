@@ -173,8 +173,11 @@ module {
       }
     llvm::SmallVector<int64_t, 16> queryAxisSizes;
     for (const TemporalScopePlan &scope : plan->scopes) {
-      ASSERT_TRUE(expected.count(scope.execution));
-      EXPECT_EQ(scope.iteratorTileSizes, expected[scope.execution]);
+      const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
+      ASSERT_NE(execution, nullptr);
+      EXPECT_TRUE(isTopLevelScope(scope.id));
+      ASSERT_TRUE(expected.count(*execution));
+      EXPECT_EQ(scope.iteratorTileSizes, expected[*execution]);
       EXPECT_TRUE(scope.waveLoopOrder.empty());
       queryAxisSizes.push_back(scope.iteratorTileSizes[1]);
     }
@@ -193,7 +196,7 @@ module {
     ASSERT_EQ(reversedPlan->scopes.size(), plan->scopes.size());
     for (auto [expectedScope, actualScope] :
          llvm::zip_equal(plan->scopes, reversedPlan->scopes)) {
-      EXPECT_EQ(actualScope.execution, expectedScope.execution);
+      EXPECT_EQ(actualScope.id, expectedScope.id);
       EXPECT_EQ(actualScope.iteratorTileSizes, expectedScope.iteratorTileSizes);
       EXPECT_EQ(actualScope.waveLoopOrder, expectedScope.waveLoopOrder);
     }
@@ -270,14 +273,16 @@ module {
   ASSERT_EQ(plan->scopes.size(), 2u);
   auto reductionScope =
       llvm::find_if(plan->scopes, [&](const TemporalScopePlan &scope) {
+        const ExecutionInstanceId *id = getRequiredExecution(scope.id);
         const auto *execution =
-            std::get_if<RequiredRootExecution>(&scope.execution.source);
+            id ? std::get_if<RequiredRootExecution>(&id->source) : nullptr;
         return execution && execution->work == reduction.id;
       });
   auto attentionScope =
       llvm::find_if(plan->scopes, [&](const TemporalScopePlan &scope) {
+        const ExecutionInstanceId *id = getRequiredExecution(scope.id);
         const auto *execution =
-            std::get_if<RequiredRootExecution>(&scope.execution.source);
+            id ? std::get_if<RequiredRootExecution>(&id->source) : nullptr;
         return execution && execution->work == attention.id;
       });
   ASSERT_NE(reductionScope, plan->scopes.end());

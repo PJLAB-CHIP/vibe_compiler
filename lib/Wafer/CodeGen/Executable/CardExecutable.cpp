@@ -282,7 +282,7 @@ compileTensorProgramModuleToCardExecutable(
     detail::PhysicalDataflowPlanningSession session(*problem);
     mlir::FailureOr<detail::IncompletePlanningDomain> incomplete = [&]() {
       wafer::support::ScopedCompileTimingSpan timing(
-          "planning", "physical-search", "spatial-frontier");
+          "planning", "physical-search", "planning-frontier");
       return session.getFirstIncompleteState(&failureReason);
     }();
     if (mlir::failed(incomplete))
@@ -299,6 +299,11 @@ compileTensorProgramModuleToCardExecutable(
                 << " root_works=" << work.rootWorksValidated
                 << " region_steps=" << work.regionSuccessorSteps
                 << " region_states=" << work.regionStatesQueued
+                << " temporal_steps=" << work.temporalSuccessorSteps
+                << " temporal_states=" << work.temporalStatesQueued
+                << " temporal_unsupported=" << work.unsupportedTemporalChoices
+                << " temporal_indeterminate="
+                << work.indeterminateTemporalChoices
                 << " candidate_actualizations=0\n";
     return fail("card executable search has an incomplete planning domain");
   } else {

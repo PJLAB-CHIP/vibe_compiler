@@ -891,8 +891,11 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
 
     if (temporal) {
       std::map<ExecutionInstanceId, const TemporalScopePlan *> temporalScopes;
-      for (const TemporalScopePlan &scope : temporal->scopes)
-        temporalScopes.try_emplace(scope.execution, &scope);
+      for (const TemporalScopePlan &scope : temporal->scopes) {
+        const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
+        if (execution && isTopLevelScope(scope.id))
+          temporalScopes.try_emplace(*execution, &scope);
+      }
       std::map<AttentionWorkScopeId, const analysis::RootExecutionWork *>
           executionByScope;
       for (const ScopeContext &scope : rootScopes)

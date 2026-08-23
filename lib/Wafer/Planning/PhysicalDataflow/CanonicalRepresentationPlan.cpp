@@ -154,10 +154,13 @@ CanonicalRepresentationPlanOutcome buildCanonicalRepresentationPlan(
   }
 
   std::set<ExecutionInstanceId> temporalExecutions;
-  for (const TemporalScopePlan &scope : temporal.scopes)
-    if (!temporalExecutions.insert(scope.execution).second)
+  for (const TemporalScopePlan &scope : temporal.scopes) {
+    const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
+    if (!execution || !isTopLevelScope(scope.id) ||
+        !temporalExecutions.insert(*execution).second)
       return broken(BrokenRepresentationPlanReason::PlanWorkMismatch,
                     "canonical temporal plan has duplicate execution scope");
+  }
 
   std::map<analysis::RootRegionWorkId, const RegionGroupPlan *> groups;
   std::set<ExecutionInstanceId> rootExecutions;

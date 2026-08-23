@@ -74,7 +74,8 @@ buildCanonicalTemporalPlan(const RegionPlan &regions,
                         "region root execution has no exact work piece",
                         workId);
         TemporalScopePlan scope;
-        scope.execution = instance.id;
+        scope.id.execution = RegionExecutionId(instance.id);
+        scope.id.invocation = TopLevelWorkPieceId{0};
         for (const IteratorInterval &interval : execution->iterationDomain) {
           if (interval.size <= 0)
             return broken(BrokenTemporalPlanReason::InvalidLocalExtent,
@@ -104,7 +105,7 @@ buildCanonicalTemporalPlan(const RegionPlan &regions,
                   "canonical region plan does not cover every execution");
   llvm::sort(result.scopes,
              [](const TemporalScopePlan &lhs, const TemporalScopePlan &rhs) {
-               return lhs.execution < rhs.execution;
+               return lhs.id < rhs.id;
              });
   return result;
 }

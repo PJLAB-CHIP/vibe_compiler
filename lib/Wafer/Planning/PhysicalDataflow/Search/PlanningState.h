@@ -5,6 +5,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/TemporalPlan.h"
 
 #include "mlir/Support/LogicalResult.h"
 
@@ -18,11 +19,16 @@ namespace wafer::compiler::detail {
 
 class PhysicalDataflowPlanningProblem;
 class RegionDomain;
+class TemporalDomain;
 
 /// Not-yet-closed coordinate immediately following the deepest current state.
 /// New coordinates extend the closed state sequence in their owning work item;
 /// they are not nullable fields in an earlier state.
-enum class RequiredPlanningCoordinate : uint8_t { Region, Temporal };
+enum class RequiredPlanningCoordinate : uint8_t {
+  Region,
+  Temporal,
+  PartialFeasibility,
+};
 
 llvm::StringRef
 stringifyRequiredPlanningCoordinate(RequiredPlanningCoordinate coordinate);
@@ -86,6 +92,45 @@ private:
 
   SpatialState spatial;
   RegionPlan regions;
+};
+
+/// A validated temporal prefix extending one RegionState. Scope descriptors,
+/// exact waves and root work remain derived session facts; identity contains
+/// only the closed TemporalPlan coordinate.
+class TemporalState {
+public:
+  static mlir::FailureOr<TemporalState>
+  create(const TemporalDomain &domain, RegionState region,
+         TemporalPlan temporal, std::string *failureReason = nullptr);
+
+  const RegionState &getRegionState() const { return region; }
+  const SpatialState &getSpatialState() const {
+    return region.getSpatialState();
+  }
+  const SpatialPlan &getSpatialPlan() const { return region.getSpatialPlan(); }
+  const RegionPlan &getRegionPlan() const { return region.getRegionPlan(); }
+  const TemporalPlan &getTemporalPlan() const { return temporal; }
+  RequiredPlanningCoordinate getRequiredCoordinate() const {
+    return RequiredPlanningCoordinate::PartialFeasibility;
+  }
+
+  friend bool operator==(const TemporalState &lhs, const TemporalState &rhs) {
+    return lhs.region == rhs.region && lhs.temporal == rhs.temporal;
+  }
+  friend bool operator<(const TemporalState &lhs, const TemporalState &rhs) {
+    if (lhs.region < rhs.region)
+      return true;
+    if (rhs.region < lhs.region)
+      return false;
+    return lhs.temporal < rhs.temporal;
+  }
+
+private:
+  TemporalState(RegionState region, TemporalPlan temporal)
+      : region(std::move(region)), temporal(std::move(temporal)) {}
+
+  RegionState region;
+  TemporalPlan temporal;
 };
 
 } // namespace wafer::compiler::detail

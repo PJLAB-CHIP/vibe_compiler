@@ -226,7 +226,7 @@ TEST_F(PlanningSessionTest,
   auto incomplete = session.getFirstIncompleteState(&failureReason);
   ASSERT_TRUE(mlir::succeeded(incomplete)) << failureReason;
   EXPECT_EQ(incomplete->getRequiredCoordinate(),
-            RequiredPlanningCoordinate::Temporal);
+            RequiredPlanningCoordinate::PartialFeasibility);
   EXPECT_TRUE(problem->getSpatialDomain().contains(
       incomplete->getState().getSpatialPlan()));
   EXPECT_FALSE(incomplete->getState().getRegionPlan().groups.empty());
@@ -238,6 +238,14 @@ TEST_F(PlanningSessionTest,
             incomplete->getWork().rootWorksValidated + 1);
   EXPECT_EQ(incomplete->getWork().regionSuccessorSteps, 1u);
   EXPECT_EQ(incomplete->getWork().regionStatesQueued, 1u);
+  EXPECT_EQ(incomplete->getWork().temporalSuccessorSteps, 1u);
+  EXPECT_EQ(incomplete->getWork().temporalStatesQueued, 1u);
+  EXPECT_FALSE(incomplete->getState().getTemporalPlan().scopes.empty());
+  for (const TemporalScopePlan &scope :
+       incomplete->getState().getTemporalPlan().scopes) {
+    EXPECT_TRUE(isTopLevelScope(scope.id));
+    EXPECT_TRUE(scope.waveLoopOrder.empty());
+  }
   EXPECT_EQ(print(module->getOperation()), before);
 
   auto secondModule = parse(kRealSource);
@@ -420,6 +428,29 @@ TEST_F(PlanningSessionTest, ScalarAndChainPrefixesRemainComplete) {
     }
     EXPECT_TRUE(continuation.isExhausted());
     EXPECT_EQ(regionPlans.size(), 7u);
+
+    RegionContinuation firstRegionContinuation =
+        session.createRegionContinuation(*selected);
+    auto firstRegion =
+        session.resumeRegion(firstRegionContinuation, &failureReason);
+    ASSERT_TRUE(mlir::succeeded(firstRegion)) << failureReason;
+    ASSERT_TRUE(*firstRegion);
+    TemporalContinuation temporalContinuation =
+        session.createTemporalContinuation(**firstRegion);
+    std::set<TemporalPlan> temporalPlans;
+    while (true) {
+      TemporalExpansionResult temporal =
+          session.resumeTemporal(temporalContinuation);
+      if (temporal.getKind() == TemporalExpansionKind::ParentExhausted)
+        break;
+      ASSERT_EQ(temporal.getKind(), TemporalExpansionKind::State)
+          << temporal.getDetail().str();
+      std::optional<TemporalState> state = temporal.takeState();
+      ASSERT_TRUE(state);
+      temporalPlans.insert(state->getTemporalPlan());
+    }
+    EXPECT_TRUE(temporalContinuation.isExhausted());
+    EXPECT_EQ(temporalPlans.size(), 4u);
   }
 }
 

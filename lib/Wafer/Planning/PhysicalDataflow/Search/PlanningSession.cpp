@@ -218,8 +218,14 @@ mlir::FailureOr<RegionDomain *>
 PhysicalDataflowPlanningSession::getOrCreateRegionDomain(
     const SpatialState &spatial, std::string *failureReason) {
   auto cached = regionDomainCache.find(spatial.getPlan());
-  if (cached != regionDomainCache.end())
+  if (cached != regionDomainCache.end()) {
+    if (!rootWorkCache.count(spatial.getPlan())) {
+      if (failureReason)
+        *failureReason = "region domain cache has no derived root work";
+      return mlir::failure();
+    }
     return &cached->second;
+  }
   SpatialDomainEvaluation evaluation = problem.getSpatialDomain().evaluate(
       problem.getProgram().dag, spatial.getPlan(), problem.getRelationLimits());
   if (!evaluation.isSatisfied()) {
@@ -273,14 +279,49 @@ PhysicalDataflowPlanningSession::getOrCreateRegionDomain(
       *failureReason = std::move(detail);
     return mlir::failure();
   }
+  auto [storedWorks, insertedWorks] =
+      rootWorkCache.try_emplace(spatial.getPlan(), std::move(rootWorks->works));
+  (void)storedWorks;
   auto [stored, inserted] = regionDomainCache.try_emplace(
       spatial.getPlan(), std::move(*regionDomain));
-  if (!inserted) {
+  if (!insertedWorks || !inserted) {
     if (failureReason)
       *failureReason = "region domain cache changed during construction";
     return mlir::failure();
   }
   return &stored->second;
+}
+
+PhysicalDataflowPlanningSession::TemporalDomainLookup
+PhysicalDataflowPlanningSession::getOrCreateTemporalDomain(
+    const RegionState &region) {
+  auto cached = temporalDomainCache.find(region);
+  if (cached != temporalDomainCache.end())
+    return {&cached->second, {}};
+  auto rootWorks = rootWorkCache.find(region.getSpatialPlan());
+  if (rootWorks == rootWorkCache.end())
+    return {nullptr, TemporalDomainFailure{
+                         TemporalDomainFailureKind::BrokenContract,
+                         {},
+                         "temporal transition has no derived root work"}};
+  TemporalDomainResult result =
+      buildTemporalDomain(region.getRegionPlan(), rootWorks->second);
+  if (!result.succeeded()) {
+    if (result.failure)
+      return {nullptr, std::move(result.failure)};
+    return {nullptr, TemporalDomainFailure{
+                         TemporalDomainFailureKind::BrokenContract,
+                         {},
+                         "temporal domain returned no failure detail"}};
+  }
+  auto [stored, inserted] =
+      temporalDomainCache.try_emplace(region, std::move(*result.domain));
+  if (!inserted)
+    return {nullptr, TemporalDomainFailure{
+                         TemporalDomainFailureKind::BrokenContract,
+                         {},
+                         "temporal domain cache changed during construction"}};
+  return {&stored->second, {}};
 }
 
 mlir::FailureOr<std::optional<RegionState>>
@@ -323,6 +364,71 @@ PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
   return std::optional<RegionState>(std::move(*state));
 }
 
+TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(
+    TemporalContinuation &continuation) {
+  if (continuation.exhausted)
+    return {TemporalExpansionKind::ParentExhausted};
+  TemporalDomainLookup lookup = getOrCreateTemporalDomain(continuation.parent);
+  if (!lookup.domain) {
+    if (!lookup.failure)
+      return {TemporalExpansionKind::CompilerBug,
+              {},
+              "temporal domain lookup returned no typed outcome"};
+    switch (lookup.failure->kind) {
+    case TemporalDomainFailureKind::UnsupportedSemantics:
+      ++work.unsupportedTemporalChoices;
+      return {TemporalExpansionKind::Unsupported,
+              {},
+              std::move(lookup.failure->detail)};
+    case TemporalDomainFailureKind::Indeterminate:
+      ++work.indeterminateTemporalChoices;
+      return {TemporalExpansionKind::Indeterminate,
+              {},
+              std::move(lookup.failure->detail)};
+    case TemporalDomainFailureKind::BrokenContract:
+      return {TemporalExpansionKind::CompilerBug,
+              {},
+              std::move(lookup.failure->detail)};
+    }
+    return {TemporalExpansionKind::CompilerBug,
+            {},
+            "temporal domain failure has an invalid category"};
+  }
+  ++work.temporalSuccessorSteps;
+  TemporalSuccessor next =
+      continuation.started ? lookup.domain->getNextPlan(*continuation.cursor)
+                           : lookup.domain->getFirstPlan();
+  if (next.getKind() == TemporalSuccessorKind::End) {
+    continuation.exhausted = true;
+    continuation.cursor.reset();
+    return {TemporalExpansionKind::ParentExhausted};
+  }
+  if (next.getKind() == TemporalSuccessorKind::Unsupported) {
+    ++work.unsupportedTemporalChoices;
+    return {TemporalExpansionKind::Unsupported, {}, next.getDetail().str()};
+  }
+  if (next.getKind() == TemporalSuccessorKind::Indeterminate) {
+    ++work.indeterminateTemporalChoices;
+    return {TemporalExpansionKind::Indeterminate, {}, next.getDetail().str()};
+  }
+  if (next.getKind() != TemporalSuccessorKind::Plan || !next.getPlan() ||
+      !next.getCursor())
+    return {TemporalExpansionKind::CompilerBug,
+            {},
+            next.getDetail().empty()
+                ? "temporal successor omitted its plan or cursor"
+                : next.getDetail().str()};
+  std::string detail;
+  auto state = TemporalState::create(*lookup.domain, continuation.parent,
+                                     *next.getPlan(), &detail);
+  if (mlir::failed(state))
+    return {TemporalExpansionKind::CompilerBug, {}, std::move(detail)};
+  continuation.cursor = *next.getCursor();
+  continuation.started = true;
+  ++work.temporalStatesQueued;
+  return {TemporalExpansionKind::State, std::move(*state)};
+}
+
 mlir::FailureOr<IncompletePlanningDomain>
 PhysicalDataflowPlanningSession::getFirstIncompleteState(
     std::string *failureReason) {
@@ -360,7 +466,23 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
       resumeRegion(continuation, failureReason);
   if (mlir::failed(region) || !*region)
     return mlir::failure();
-  return IncompletePlanningDomain(std::move(**region),
+  TemporalContinuation temporalContinuation =
+      createTemporalContinuation(std::move(**region));
+  TemporalExpansionResult temporal = resumeTemporal(temporalContinuation);
+  if (temporal.getKind() != TemporalExpansionKind::State) {
+    if (failureReason)
+      *failureReason = temporal.getDetail().empty()
+                           ? "temporal planning domain has no supported state"
+                           : temporal.getDetail().str();
+    return mlir::failure();
+  }
+  std::optional<TemporalState> temporalState = temporal.takeState();
+  if (!temporalState) {
+    if (failureReason)
+      *failureReason = "temporal state result lost its value";
+    return mlir::failure();
+  }
+  return IncompletePlanningDomain(std::move(*temporalState),
                                   hasRemainingSpatialWork(), work);
 }
 

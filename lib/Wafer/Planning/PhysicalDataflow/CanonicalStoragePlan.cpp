@@ -698,10 +698,13 @@ CanonicalStoragePlanOutcome recloseCanonicalStorageForTemporal(
     const CanonicalStorageCoordinate &storage, const TemporalPlan &temporal,
     llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
   std::map<ExecutionInstanceId, const TemporalScopePlan *> scopes;
-  for (const TemporalScopePlan &scope : temporal.scopes)
-    if (!scopes.try_emplace(scope.execution, &scope).second)
+  for (const TemporalScopePlan &scope : temporal.scopes) {
+    const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
+    if (!execution || !isTopLevelScope(scope.id) ||
+        !scopes.try_emplace(*execution, &scope).second)
       return broken(BrokenStoragePlanReason::PlanBindingMismatch,
                     "temporal residency has duplicate execution scope");
+  }
   std::map<analysis::RootRegionWorkId, const analysis::RootRegionWork *> works;
   for (const analysis::RootRegionWork &work : rootWorks)
     if (!works.try_emplace(work.id, &work).second)

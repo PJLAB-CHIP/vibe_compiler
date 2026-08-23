@@ -102,6 +102,15 @@
   每个complete assignment构造CardModule并跑actual gate，只有Accepted结果参与winner比较。
 - 防复发：测试同时保留maximal local residency与cross-Tile operator pipeline、large-tile cut与small-tile overlap等对立候选。
 
+## 修改temporal size时必须同时关闭active order
+
+- 现象：full-local plan的order为空；actual SPM反馈缩小某个size后仍保留空order。旧emitter把空order解释成隐式source order，所以case能跑，
+  但同一plan不属于complete temporal domain，query与apply合同分裂。
+- 根因：baseline refinement只改size字段，没有通过共享temporal domain重新关闭由`size < extent`产生的active iterators。
+- 修复模式：先在临时size vector上计算precedence DAG的stable first linear extension，成功后原子提交size与order；full-local和refined point
+  都由同一domain `contains`验证。
+- 防复发：actual-feedback unit必须断言refined `TemporalPlan`仍是shared domain member；不能以lowering对空order的隐式解释代签planning合法性。
+
 ## Tile region不要求所有op使用相同tile shape
 
 - 现象：producer/consumer tile size不同时被迫切region并写DDR，或者错误要求一个region共享统一tile vector。

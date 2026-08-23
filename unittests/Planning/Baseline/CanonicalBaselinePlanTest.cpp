@@ -1,10 +1,12 @@
 //===- CanonicalBaselinePlanTest.cpp ---------------------------------===//
 
 #include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
+#include "Wafer/Planning/Baseline/BaselineTemporalPlan.h"
 
 #include "TestSupport/CodeGen/CardExecutableTestSupport.h"
 #include "TestSupport/Planning/CanonicalPlanningTestSupport.h"
 #include "Wafer/InitWaferDialects.h"
+#include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -164,8 +166,12 @@ TEST_F(CanonicalBaselinePlanTest,
     EXPECT_EQ(plan->attention.roots.front().algorithm, testCase.algorithm);
     EXPECT_EQ(plan->preparedAttention.work.roots.size(), 1u);
     for (const TemporalScopePlan &scope : plan->temporal.scopes) {
+      const ExecutionInstanceId *scopeExecution =
+          getRequiredExecution(scope.id);
       const auto *root =
-          std::get_if<RequiredRootExecution>(&scope.execution.source);
+          scopeExecution
+              ? std::get_if<RequiredRootExecution>(&scopeExecution->source)
+              : nullptr;
       ASSERT_NE(root, nullptr);
       auto work = llvm::find_if(
           plan->rootWorks, [&](const analysis::RootRegionWork &candidate) {
@@ -198,8 +204,11 @@ TEST_F(CanonicalBaselinePlanTest,
   auto plan = buildCanonicalBaselinePlan(**program, &failureReason);
   ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
   for (const TemporalScopePlan &scope : plan->temporal.scopes) {
+    const ExecutionInstanceId *scopeExecution = getRequiredExecution(scope.id);
     const auto *root =
-        std::get_if<RequiredRootExecution>(&scope.execution.source);
+        scopeExecution
+            ? std::get_if<RequiredRootExecution>(&scopeExecution->source)
+            : nullptr;
     ASSERT_NE(root, nullptr);
     auto work = llvm::find_if(plan->rootWorks,
                               [&](const analysis::RootRegionWork &candidate) {
@@ -218,6 +227,46 @@ TEST_F(CanonicalBaselinePlanTest,
       EXPECT_EQ(tile, interval.size);
   }
   EXPECT_EQ(print(parsed.module->getOperation()), before);
+}
+
+TEST_F(CanonicalBaselinePlanTest,
+       ActualFeedbackRefinementRemainsInTheSharedTemporalDomain) {
+  auto module = parse(mapSource(1025));
+  ASSERT_TRUE(module);
+  const std::string before = print(module->getOperation());
+  std::string failureReason;
+  auto program = analyze(*module, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(program)) << failureReason;
+  auto plan = buildCanonicalBaselinePlan(**program, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
+  ASSERT_FALSE(plan->rootWorks.empty());
+  const SemanticRootKey root = plan->rootWorks.front().id.root;
+  TemporalPlan beforeFailure = plan->temporal;
+  SemanticRootKey unknown = root;
+  unknown.anchorIndex += 1000;
+  EXPECT_TRUE(mlir::failed(refineBaselineTemporalPlan(
+      plan->temporal, plan->rootWorks, {unknown}, &failureReason)));
+  EXPECT_EQ(plan->temporal, beforeFailure);
+  auto refined = refineBaselineTemporalPlan(plan->temporal, plan->rootWorks,
+                                            {root}, &failureReason);
+  ASSERT_TRUE(mlir::succeeded(refined)) << failureReason;
+  ASSERT_TRUE(*refined);
+  TemporalDomainResult domain =
+      buildTemporalDomain(plan->regions, plan->rootWorks);
+  ASSERT_TRUE(domain.succeeded())
+      << (domain.failure ? domain.failure->detail : "");
+  EXPECT_TRUE(domain.domain->contains(plan->temporal));
+  bool observedSplit = false;
+  for (const TemporalScopePlan &scope : plan->temporal.scopes) {
+    if (scope.waveLoopOrder.empty())
+      continue;
+    observedSplit = true;
+    llvm::SmallVector<uint32_t, 4> sorted = scope.waveLoopOrder;
+    llvm::sort(sorted);
+    EXPECT_EQ(sorted, scope.waveLoopOrder);
+  }
+  EXPECT_TRUE(observedSplit);
+  EXPECT_EQ(print(module->getOperation()), before);
 }
 
 } // namespace

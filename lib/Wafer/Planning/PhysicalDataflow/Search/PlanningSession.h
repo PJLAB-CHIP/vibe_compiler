@@ -6,6 +6,7 @@
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
+#include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 #include "mlir/Support/LogicalResult.h"
 
@@ -28,6 +29,10 @@ struct PlanningWorkCounts {
   uint64_t rootWorksValidated = 0;
   uint64_t regionSuccessorSteps = 0;
   uint64_t regionStatesQueued = 0;
+  uint64_t temporalSuccessorSteps = 0;
+  uint64_t temporalStatesQueued = 0;
+  uint64_t unsupportedTemporalChoices = 0;
+  uint64_t indeterminateTemporalChoices = 0;
   uint64_t duplicateSpatialChoices = 0;
   uint64_t unsupportedSpatialChoices = 0;
   uint64_t indeterminateSpatialChoices = 0;
@@ -71,7 +76,7 @@ private:
 /// cannot be materialized or published.
 class IncompletePlanningDomain {
 public:
-  const RegionState &getState() const { return state; }
+  const TemporalState &getState() const { return state; }
   RequiredPlanningCoordinate getRequiredCoordinate() const {
     return state.getRequiredCoordinate();
   }
@@ -79,14 +84,65 @@ public:
   const PlanningWorkCounts &getWork() const { return work; }
 
 private:
-  IncompletePlanningDomain(RegionState state, bool remainingSpatialWork,
+  IncompletePlanningDomain(TemporalState state, bool remainingSpatialWork,
                            PlanningWorkCounts work)
       : state(std::move(state)), remainingSpatialWork(remainingSpatialWork),
         work(work) {}
 
-  RegionState state;
+  TemporalState state;
   bool remainingSpatialWork = false;
   PlanningWorkCounts work;
+
+  friend class PhysicalDataflowPlanningSession;
+};
+
+/// Session-owned continuation for one validated RegionState. The cursor and
+/// derived scope descriptors are not part of TemporalState identity.
+class TemporalContinuation {
+public:
+  const RegionState &getParent() const { return parent; }
+  bool isExhausted() const { return exhausted; }
+
+private:
+  explicit TemporalContinuation(RegionState parent)
+      : parent(std::move(parent)) {}
+
+  RegionState parent;
+  std::optional<TemporalCursor> cursor;
+  bool started = false;
+  bool exhausted = false;
+
+  friend class PhysicalDataflowPlanningSession;
+};
+
+enum class TemporalExpansionKind : uint8_t {
+  State,
+  Unsupported,
+  Indeterminate,
+  ParentExhausted,
+  CompilerBug,
+};
+
+class TemporalExpansionResult {
+public:
+  TemporalExpansionKind getKind() const { return kind; }
+  const TemporalState *getState() const { return state ? &*state : nullptr; }
+  std::optional<TemporalState> takeState() {
+    std::optional<TemporalState> result = std::move(state);
+    state.reset();
+    return result;
+  }
+  llvm::StringRef getDetail() const { return detail; }
+
+private:
+  TemporalExpansionResult(TemporalExpansionKind kind,
+                          std::optional<TemporalState> state = {},
+                          std::string detail = {})
+      : kind(kind), state(std::move(state)), detail(std::move(detail)) {}
+
+  TemporalExpansionKind kind;
+  std::optional<TemporalState> state;
+  std::string detail;
 
   friend class PhysicalDataflowPlanningSession;
 };
@@ -137,6 +193,11 @@ public:
   resumeRegion(RegionContinuation &continuation,
                std::string *failureReason = nullptr);
 
+  TemporalContinuation createTemporalContinuation(RegionState parent) const {
+    return TemporalContinuation(std::move(parent));
+  }
+  TemporalExpansionResult resumeTemporal(TemporalContinuation &continuation);
+
   /// Drives only far enough to prove that public search reached the deepest
   /// current prefix. Unsupported, indeterminate, or broken outcomes return
   /// without exhausting the preserved continuation.
@@ -158,6 +219,12 @@ private:
   mlir::FailureOr<RegionDomain *>
   getOrCreateRegionDomain(const SpatialState &spatial,
                           std::string *failureReason = nullptr);
+  struct TemporalDomainLookup {
+    TemporalDomain *domain = nullptr;
+    std::optional<TemporalDomainFailure> failure;
+  };
+
+  TemporalDomainLookup getOrCreateTemporalDomain(const RegionState &region);
 
   const PhysicalDataflowPlanningProblem &problem;
   CanonicalCursor canonicalCursor = CanonicalCursor::NotStarted;
@@ -166,7 +233,9 @@ private:
   bool pausedChoiceIsProposal = false;
   std::set<SpatialPlan> resolvedProposalChoices;
   std::set<SpatialState> frontier;
+  std::map<SpatialPlan, std::vector<analysis::RootRegionWork>> rootWorkCache;
   std::map<SpatialPlan, RegionDomain> regionDomainCache;
+  std::map<RegionState, TemporalDomain> temporalDomainCache;
   PlanningWorkCounts work;
 };
 

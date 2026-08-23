@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain已经闭合；当前下一项是`temporal-domain`。Q50.S attention vertical、Q50.E–K、Q51 closure、Q52与Q53的
+region-execution-domain及Q50.E temporal-domain已经闭合；当前下一项是`partial-feasibility`。Q50.S attention vertical、Q50.F–K、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -2746,11 +2746,24 @@ rank-zero是明确的结构合同例外。
 | 覆盖类 | 代表输入 | canonical TemporalPlan exact断言 | 直接下游witness |
 | --- | --- | --- | --- |
 | aligned/ragged all-Tile | rank>=3、主要维度1024/1025、all-16 Tile | 每个required root execution恰有一个scope；size vector逐轴等于自己的local interval size，1025 remainder Tiles不共享ceil maximum；order为空 | canonical-representation-plan按scope读取真实local shape；planning前后IR不变 |
-| multi-axis与input-order扰动 | 两个以上spatial axes、不同Tile/root work顺序 | scope ID只由`ExecutionInstanceId`决定，逐字段stable sort；同descriptor可重算但不合并不同Tile assignment | 后续temporal-domain可在每个scope独立展开siblings |
+| multi-axis与input-order扰动 | 两个以上spatial axes、不同Tile/root work顺序 | canonical scope ID由required execution与top-level piece组成，逐字段stable sort；同descriptor可重算但不合并不同Tile assignment | temporal-domain在每个scope独立展开siblings |
 | ordinary reduction/contribution | single/multi-reduction、整除/非整除spatial contribution | root execution保持完整local reduction extents；spatial contribution不新增temporal owner；merge execution无scope | F/E后续能区分local sequential waves与A/B spatial merge |
 | FD coupled state | rank-5/6、K2为1024/1031或multi-K2 | 每个FD contribution root execution有一个full-local K2 scope；Maximum/Sum/Accumulator merge仍无三个伪scope | attention-work-projection从同一execution/merge identity派生actions |
 | rank-zero与merge-only | rank-zero root、只有merge的Tile、empty Tile | rank-zero产生唯一empty size/order scope；merge-only与empty Tile均不产生scope，但前者仍由RegionPlan保留execution | serialized/storage/schedule阶段不会用假iterator表示merge |
 | typed failure | duplicate/missing execution、scope引用错误work/shard、非正local extent | compiler-contract failure且无partial plan，不fallback到node-wide extent或size=1 | 修正输入可重新query，source IR byte-identical |
+
+`temporal-domain`施工前覆盖矩阵如下。小extent只用于逐点穷举reference；production witness仍使用rank至少为3、主要维度至少为1024的
+static workload，并成对覆盖整除与非整除边界。
+
+| 覆盖类 | 代表输入 | exact断言 | Core / 直接下游witness |
+| --- | --- | --- | --- |
+| 完整size域 | 独立oracle的`2x3`、production rank-3 `2x1024x128`与`2x1025x128` | 每个`Tileable`轴恰有`1..L`且无重复；`FullExtentOnly`轴只有`L`；full-local canonical点是domain member | `RegionState -> TemporalState`保存同一typed plan，不写IR、不读target/SPM |
+| per-Tile remainder与assignment独立性 | 同一root在两个Tile上的local extent分别为3和2；另有16-Tile 1025 ragged输入 | 两个scope分别有3和2个一维点，joint plan为6种；输入顺序与descriptor memo不改变plan key集合 | temporal改变只失效本scope及其child，不把不同Tile压成一个node-wide vector |
+| active-order | 两个以上active轴、无precedence/chain/diamond DAG；single/multi-reduction作为普通iterator facts | Kahn successor与独立flat permutation+edge filter逐key相同；one-wave轴不进order；cycle typed失败 | query与后续loop builder消费同一order，无late second legality gate |
+| exact wave/tail | rank-3的1024整除、1025/1031非整除，多轴与nonzero offset piece | 每轴wave两两不交且all-and-only覆盖原interval；末wave使用`min(size, remaining)`；Cartesian piece不稠密化 | prepared scope可直接交给唯一temporal loop builder，不需要post-hoc retile |
+| top-level execution类别 | required root、top-level pure replica、rank-zero、merge-only | required/replica使用不同typed execution ID；rank-zero唯一empty plan；merge-only无scope | canonical consumers显式只接收top-level required scope，不能从ordinal或operation pointer恢复 |
+| nested invocation合同 | direct required/replica的main/tail/halo typed classes、shared与split execution version | class identity来自parent、exact requested/producer rectangles和relation class；同class共享一个plan，split version保留独立plan；缺失composed region-use relation typed unsupported | child scope依赖parent concrete plan；parent变化重建classes，不把full producer或bounding box当fallback |
+| typed failure与资源隔离 | duplicate scope/execution、missing work/shard、rank不一致、nonpositive/dynamic extent、precedence cycle、非法plan/order | 无partial `TemporalPlan`；unsupported/indeterminate/compiler bug可区分；source IR byte-identical | 改变target capacity、allocator或SPM结果不改变temporal domain及successor顺序 |
 
 ### E-1 专项调研：temporal scope、完整size域与order合同
 
@@ -2978,6 +2991,30 @@ prefix线性，query memo按extensional descriptor共享；性能优化不能改
 | current actual-only reduction order check | E structural precedence query + same emitter verifier | query/apply parity、multi-reduction all legal structural orders | `ReductionSemantics`或其它late second legality gate不在E调用链 |
 | old rank/connection tile sizes、preferred points | E proposal facts | independent/nested execution intent由D/E表达 | action recipe、rank provider、local cap删除 |
 | old allocation feedback bags/binary endpoint | Q49.P/Q51 actual-result controller | current relation、actual conflict demand、siblings preserved | 无feedback history、accepted retile或shortlist |
+
+### `temporal-domain`实现闭合
+
+- `TemporalScopePlan`原位使用`TraversalScopeId`，required与replica execution、top-level piece与nested invocation class不再共用一个
+  node-wide identity。plan只保存scope、concrete sizes和active order；offset/extent、precedence、wave rectangles和exact relation仍由
+  immutable domain facts重算。
+- `TemporalDomain`不预建size Cartesian vectors：complete successor覆盖每个`Tileable`轴的`1..L`和`FullExtentOnly` singleton，Kahn式
+  successor只枚举precedence DAG的linear extensions。`splitTemporalSizeInterval`把proposal或midpoint分成互斥singleton/above/below，
+  三者union恰为parent；proposal不成为allowed-set。
+- top-level required/replica scopes直接使用各自exact local intervals。direct nested scope在parent concrete point后，经consumer operand
+  `IndexRelation`、selected fragment owner domain和producer result preimage生成main/tail/halo producer rectangles；parent plan变化重建
+  descendants。explicit reconstruction没有D composed relation时typed unsupported，relation work limit为indeterminate，均不使用full-producer
+  或bounding-box fallback。
+- `TemporalState`与`TemporalContinuation`已经接入production planning session；public search取得first complete temporal point后返回
+  missing `partial-feasibility`，`candidate_actualizations=0`。Q49.P baseline的full-local初始point复用同一domain，不进入search frontier。
+- old `TemporalNodeDomain`仍只被未迁完的旧Unified/Coupled/representation/movement donor调用，不进入public search或new state；按能力迁移
+  规则留到G/H及selected emitter接管其实际lowering witnesses后删除，不能提前丢弃donor能力。
+
+fresh证据：`TemporalDomainTest` 11/11，覆盖2x3 independent oracle、1025 interval完整性、precedence diamond、per-Tile 3/2 joint 6点、
+rank-zero、rank-6 coupled vector、1024/1025/1031 exact tails、top-level replica、1025 parent-dependent convolution main/tail/halo和work-limit；
+`PlanningSessionTest` 6/6并穷尽tiny temporal 4点；temporal/Core/baseline直接集合24/24（含shared nested use与actual-feedback refined plan
+domain membership）及balanced actual CardExecutable通过；ordinary host unit 842/842（6个独立heavy baseline cases不在本项重复）；core lit 227/227，
+Tools/Runtime lit 35 passed、4 configured unsupported；compiler
+public link、source organization和diff检查通过。下一项只签发A–E结构ready/missing，不引入任何资源估算。
 
 “小tile使fusion/buffering成为winner”及任何需要actual layout/buffer/resource cost的比较统一放在Q51 closure。
 
