@@ -24,6 +24,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/CanonicalTemporalPlan.cpp
   Planning/PhysicalDataflow/SerializedExecutionPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
+  Planning/PhysicalDataflow/RootWorkDomain.cpp
   Planning/PhysicalDataflow/Search/PlanningProblem.cpp
   Planning/PhysicalDataflow/Search/PlanningSession.cpp
   Planning/PhysicalDataflow/Search/PlanningState.cpp
@@ -52,7 +53,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/SimpleRoute.cpp
   Planning/Search/StagePipeline.cpp
   Planning/Search/TemporalTiling.cpp
-  Planning/Search/SingleRootRegion.cpp
   Planning/Search/TensorProgramAlternative.cpp
   Planning/Search/UnifiedPhysicalDataflow.cpp
   PARENT_SCOPE)

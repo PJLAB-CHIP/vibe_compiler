@@ -36,6 +36,8 @@ TEST(SearchRoutingTest,
   EXPECT_NE(diagnosticsText.find("candidate_actualizations=0"),
             std::string::npos)
       << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("root_works="), std::string::npos)
+      << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
             std::string::npos)
       << diagnosticsText;

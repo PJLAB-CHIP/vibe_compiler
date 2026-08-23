@@ -2,13 +2,13 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 
-#include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
+#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
+#include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/InitWaferDialects.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
-#include "Wafer/Planning/Search/SingleRootRegion.h"
-#include "TestSupport/Planning/SpatialDemandTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
@@ -70,6 +70,77 @@ template <typename OpT> unsigned countOps(mlir::Operation *operation) {
   unsigned count = 0;
   operation->walk([&](OpT) { ++count; });
   return count;
+}
+
+struct TestSingletonMaterialization {
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  wafer::StructuredMaterializationRelations relations;
+};
+
+mlir::FailureOr<TestSingletonMaterialization>
+materializeSingletonRootWorksForTest(
+    mlir::ModuleOp source,
+    const wafer::compiler::detail::CardProgramAnalysis &program,
+    wafer::CardId cardId,
+    const wafer::compiler::detail::SpatialAssignment &spatial,
+    const wafer::analysis::ExactDemandProof &demand,
+    std::string *failureReason) {
+  using namespace wafer::compiler::detail;
+  auto domain = RootWorkDomain::create(program.dag, spatial, demand,
+                                       program.availableTileIds, failureReason);
+  if (mlir::failed(domain))
+    return mlir::failure();
+  llvm::SmallVector<wafer::StructuredNodeIterationShard, 32> shards;
+  llvm::SmallVector<ReductionGroupPlacement, 8> merges;
+  RootWorkSuccessor successor = domain->getFirstWork();
+  while (successor.getKind() == RootWorkSuccessorKind::Work) {
+    const wafer::analysis::RootRegionWork *work = successor.getWork();
+    if (!work)
+      return mlir::failure();
+    auto mapping = llvm::find_if(
+        program.operationNodes,
+        [&](const wafer::StructuredOperationNodeMapping &candidate) {
+          return candidate.operation == work->rootOperation;
+        });
+    if (mapping == program.operationNodes.end())
+      return mlir::failure();
+    auto leaf = wafer::prepareRootWorkLeaf(mapping->structuredNodeId, *work,
+                                           failureReason);
+    if (mlir::failed(leaf))
+      return mlir::failure();
+    merges.append(leaf->merges.begin(), leaf->merges.end());
+    if (leaf->execution)
+      shards.push_back(std::move(*leaf->execution));
+    const RootWorkCursor *cursor = successor.getCursor();
+    if (!cursor)
+      return mlir::failure();
+    successor = domain->getNextWork(*cursor);
+  }
+  if (successor.getKind() != RootWorkSuccessorKind::End) {
+    if (failureReason && successor.getFailure())
+      *failureReason =
+          std::visit([](const auto &failure) { return failure.detail; },
+                     *successor.getFailure());
+    return mlir::failure();
+  }
+  for (const ReductionGroupPlacement &merge : merges)
+    if (!llvm::any_of(shards, [&](const auto &shard) {
+          return llvm::any_of(shard.reductionGroups, [&](const auto &placed) {
+            return placed.group == merge.group &&
+                   placed.mergeTile == merge.mergeTile;
+          });
+        })) {
+      if (failureReason)
+        *failureReason =
+            "test singleton lowering has a merge without contributions";
+      return mlir::failure();
+    }
+  TestSingletonMaterialization result;
+  if (mlir::failed(wafer::lowerStructuredNodeShardsToCardModule(
+          source, cardId, program.availableTileIds, program.operationNodes,
+          shards, result.module, &result.relations, failureReason)))
+    return mlir::failure();
+  return result;
 }
 
 constexpr llvm::StringLiteral topology = R"mlir(
@@ -210,10 +281,9 @@ module {
         std::move(*target), available, std::move(*dag),
         wafer::compiler::detail::StaticOutputDomains{{2, extent, 128}},
         operationNodes);
-    auto materialized =
-        wafer::compiler::detail::materializeCardSingleRootRegions(
-            *source, program, wafer::CardId(0), coordinate->assignment, *proof,
-            &failureReason);
+    auto materialized = materializeSingletonRootWorksForTest(
+        *source, program, wafer::CardId(0), coordinate->assignment, *proof,
+        &failureReason);
     ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
     EXPECT_EQ(
         countOps<wafer::TileModuleOp>(materialized->module->getOperation()),
@@ -369,7 +439,7 @@ TEST(SingleRootTileRegionTest, AppliesClosedMultiAxisPlacement) {
   wafer::compiler::detail::CardProgramAnalysis program(
       std::move(*target), available, std::move(*dag),
       wafer::compiler::detail::StaticOutputDomains{{5, 7}}, operationNodes);
-  auto materialized = wafer::compiler::detail::materializeCardSingleRootRegions(
+  auto materialized = materializeSingletonRootWorksForTest(
       *source, program, wafer::CardId(0), spatialDemand->spatial,
       spatialDemand->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;
@@ -819,7 +889,7 @@ TEST(SingleRootTileRegionTest,
   wafer::compiler::detail::CardProgramAnalysis program(
       std::move(*target), available, std::move(*dag),
       wafer::compiler::detail::StaticOutputDomains{{4}}, operationNodes);
-  auto materialized = wafer::compiler::detail::materializeCardSingleRootRegions(
+  auto materialized = materializeSingletonRootWorksForTest(
       *source, program, wafer::CardId(0), spatialDemand->spatial,
       spatialDemand->demand, &failureReason);
   ASSERT_TRUE(mlir::succeeded(materialized)) << failureReason;

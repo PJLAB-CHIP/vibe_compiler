@@ -1,8 +1,8 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
-deterministic baseline、Q50.B spatial-domain和Q51.Core search-control-foundation已经闭合；当前下一项是`root-work-domain`。Q50.S
-attention vertical、Q50.C–K、Q51 closure、Q52与Q53的
+deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation和Q50.C root-work-domain已经闭合；当前下一项是
+`region-execution-domain`。Q50.S attention vertical、Q50.D–K、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -2042,6 +2042,44 @@ rank-zero和单一故障负例可使用小shape，但同一support/merge机制�
 | ordinary reduction | rank>=3、整除/非整除spatial contribution与多个per-output merge group | contribution由source Tile work持有，merge由merge Tile work持有；partial不是result owner，多个group同Tile仍合并为一个root work | singleton contribution/merge leaf分别消费同一A requirement；init exactly once由typed relation检查 |
 | attention FD coupled merge | rank-5/6、K2为1024及1031或33x31 | Maximum/Sum/Accumulator仍属于一个merge work，component domains和final owner原样引用attention-ready proof | 本项只证明leaf输入闭合；selected attention action emission仍由attention-selected-decomposition完成 |
 | bounded exceptions/failure | rank-zero contract；effectful support、missing boundary或work/proof mismatch单故障 | rank-zero形成唯一empty-vector piece；错误返回typed unsupported或compiler contract failure，不产生partial work | failure前后source generic text相同，无临时Func/Module/TileRegion残留 |
+
+### Work Item `root-work-domain`覆盖矩阵
+
+本项把既有per-site `RootRegionWorkAnalysis`收口成完整root×Tile successor并接入SpatialState；RootRegionWork仍是derived value，不新增
+candidate choice或state field。施工门禁如下：
+
+| 等价类 | 输入 | exact断言 | 直接witness |
+| --- | --- | --- | --- |
+| aligned/ragged完整域 | rank-3/4 FP16/BF16，1024及1025/1031，16 Tiles | successor按`(SemanticRootKey, TileId)`稳定顺序覆盖all-and-only nonempty execution/contribution/merge work；NoRoot被跳过但不是failure | Core只在完整root work域全部validated后入队SpatialState，仍返回missing Region且actualization=0 |
+| support与boundary | 1025级multi-producer insert、same-producer multi-path、slice/reshape/pad、constant/capture、DPS init | support result去重、exact domain union、structured/program/constant boundary及exact-empty use逐项保留 | test caller用work准备singleton leaf；其它structured roots没有emission relation |
+| multi-result/reduction/attention | multi-result 1024、ordinary multi-axis reduction 1025/1031、rank-5/6 FD | per-result final piece、每Tilecontribution、每group merge和Maximum/Sum/Accumulator coupled tuple完整；merge-only Tile仍是domain member | 多group同Tile只出现一个root work ID；leaf preparation不把partial当final owner |
+| scalar/graph | rank-zero、chain、fanin/fanout/diamond、independent outputs | empty-vector execution合法；roots/tiles输入顺序扰动不改变work ID和successor顺序 | tiny/real collection与逐site reference相等，source byte-identical |
+| typed failure | unsupported support、piece limit、proof/assignment mismatch、invalid successor cursor | Unsupported、Indeterminate、CompilerBug分类保持；当前spatial sibling continuation不被误删 | Core work counts区分query/validated work；不解析diagnostic string，不产生partial work或IR |
+| owner迁移 | baseline canonical plan、Core、old `SingleRootRegion` wrapper/CMake/tests | baseline与search消费同一domain/collector；public search call tree无whole-Module root wrapper | old wrapper删除；test-only direct singleton actualization继续覆盖TileRegion/relations，production Region选择前singleton prebuild=0 |
+
+本项不构造outer winner CardModule transaction：D尚未选择region partition，H--K也没有boundary/movement/event闭合。所谓emitter witness是
+caller-owned selected singleton leaf primitive及test-only direct lowering；完整candidate emitter仍按后续work items原位扩展，同一SpatialState
+不能因本项通过而越过missing Region。
+
+### Work Item `root-work-domain`闭合结果
+
+- 新`RootWorkDomain`借用同一immutable DAG、closed `SpatialAssignment`和`ExactDemandProof`，按
+  `(SemanticRootKey, TileId)`字典序lazy跳过`NoRootRegionWork`并返回每个nonempty execution/contribution/merge work。successor携带
+  domain-created `RootWorkCursor`，consumer不能从raw site伪造cursor，也不为验证cursor重复执行昂贵work query；domain不保存point vector。
+- site outcome与domain successor分别typed区分NoWork/End、Unsupported、Indeterminate和CompilerBug；`collectRootWorks`只为需要完整
+  derived set的直接consumer物化values。baseline canonical plan已经改用该collector，删除自己的root×Tile walker。
+- Core对每个Q50.A-satisfied spatial choice完整走完root-work successor后才入队`SpatialState`，记录root-work step/validated counts；
+  Unsupported消费当前choice但保留spatial sibling，Indeterminate保留同一spatial choice，broken contract停止。state identity仍只有
+  `SpatialPlan`，RootRegionWork/proof不进入state。
+- leaf合同原位演进为`PreparedRootWorkLeaf{optional execution, merges}`：merge-only Tile不再返回“空leaf”，多group同Tile显式保留全部
+  merge placements。test-only singleton actualizer逐merge证明至少一个贡献shard承接；Region未选择前production仍不预建singleton IR。
+- old `Planning/Search/SingleRootRegion` whole-Module wrapper和CMake owner删除；Conversion中仍被D--K donor消费的selected group lowering
+  保留到对应owner迁移，不以本项虚报完整outer transaction已完成。
+
+fresh证据：`RootWorkDomainTest` 3/3、`RootWorkOutcomeTest` 1/1，覆盖1024/1025、Tile顺序扰动、remote merge-only、multi-group、typed
+piece-limit和cursor；既有`RootRegionWorkAnalysisTest` 9/9、`SingleRootTileRegionTest` 16/16、`PlanningSessionTest` 6/6、
+`CanonicalBaselinePlanTest` 3/3及`SearchRoutingTest` 2/2共同通过；普通host unit 827/827；完整configured lit 262 passed、4 configured
+unsupported；source organization通过。public search仍稳定停在missing Region且`candidate_actualizations=0`，本项不签发complete search。
 
 ### C-1 专项调研与leaf boundary
 

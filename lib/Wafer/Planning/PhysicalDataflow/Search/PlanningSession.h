@@ -22,6 +22,8 @@ struct PlanningWorkCounts {
   uint64_t spatialSuccessorSteps = 0;
   uint64_t spatialDemandQueries = 0;
   uint64_t spatialStatesQueued = 0;
+  uint64_t rootWorkSuccessorSteps = 0;
+  uint64_t rootWorksValidated = 0;
   uint64_t duplicateSpatialChoices = 0;
   uint64_t unsupportedSpatialChoices = 0;
   uint64_t indeterminateSpatialChoices = 0;

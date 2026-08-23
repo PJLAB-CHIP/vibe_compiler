@@ -119,6 +119,11 @@ source program
 - planning coordinate未闭合时，显式search取得真实prefix后返回typed missing coordinate，且actual candidate count为0；public default
   不得指向无法完成的controller。search不能baseline fallback、补default后缀或发布package；每个新轴由其owner原位扩closed state和
   continuation，直到complete assignment才进入actual admission。
+- root work是从closed spatial assignment与exact-demand proof派生的root×Tile domain，不是candidate axis。successor使用domain-created
+  opaque cursor按semantic root/Tile稳定推进并跳过NoWork；不能为cursor validation重跑刚返回的昂贵work query，也不能保存全部work points。
+  baseline和search消费同一domain/collector，RootRegionWork仍留在query-local derived values。
+- selected root leaf必须同时表达optional execution和owned merge placements。merge-only Tile不是“没有leaf”；outer group emitter必须证明
+  每个merge由selected contribution shards承接。Region partition未选择前只能test-only direct actualize，production partial planning保持零IR。
 - 每个complete candidate CardModule只经过一次无策略CardExecutable compilation函数：Tile module splitting、Tile→Instr、fresh
   completion、SPM/DDR、transport/resource/ABI和final recost。seam返回accepted、proven exact rejection或indeterminate；
   actual result返回controller；lowering不能枚举、retile、spill、rebuffer或修candidate。带完整owner relation的actual rejection可关闭当前

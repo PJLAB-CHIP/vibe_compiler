@@ -36,14 +36,20 @@ struct StructuredNodeIterationShard {
       reductionGroups;
 };
 
-/// Closes the current singleton leaf request from one RootRegionWork. A
-/// merge-only Tile has no execution leaf and returns std::nullopt. This query
-/// creates no IR and does not choose temporal, representation, movement,
-/// storage, or schedule facts.
-mlir::FailureOr<std::optional<StructuredNodeIterationShard>>
-prepareStructuredRootLeaf(uint32_t structuredNodeId,
-                          const analysis::RootRegionWork &work,
-                          std::string *failureReason = nullptr);
+/// Closed selected leaf facts for one RootRegionWork. `execution` is absent on
+/// a merge-only Tile; `merges` still records every group owned by that Tile so
+/// the outer selected-group emitter cannot silently drop merge work.
+struct PreparedRootWorkLeaf {
+  std::optional<StructuredNodeIterationShard> execution;
+  llvm::SmallVector<compiler::detail::ReductionGroupPlacement, 4> merges;
+};
+
+/// Closes the current singleton leaf request without creating IR or choosing
+/// temporal, representation, movement, storage, or schedule facts.
+mlir::FailureOr<PreparedRootWorkLeaf>
+prepareRootWorkLeaf(uint32_t structuredNodeId,
+                    const analysis::RootRegionWork &work,
+                    std::string *failureReason = nullptr);
 
 /// Materializes selected structured-node shards as actual single-root
 /// TileRegion functions under a complete Card/Tile ownership hierarchy.

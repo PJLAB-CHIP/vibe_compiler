@@ -232,6 +232,9 @@ TEST_F(PlanningSessionTest,
   EXPECT_TRUE(incomplete->hasRemainingSpatialWork());
   EXPECT_EQ(incomplete->getWork().spatialStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().spatialDemandQueries, 1u);
+  EXPECT_GT(incomplete->getWork().rootWorksValidated, 0u);
+  EXPECT_EQ(incomplete->getWork().rootWorkSuccessorSteps,
+            incomplete->getWork().rootWorksValidated + 1);
   EXPECT_EQ(print(module->getOperation()), before);
 
   auto secondModule = parse(kRealSource);
@@ -287,6 +290,7 @@ TEST_F(PlanningSessionTest,
   EXPECT_EQ(firstStates->size(), expected.size());
   EXPECT_EQ(first.getWork().spatialStatesQueued, expected.size());
   EXPECT_EQ(first.getWork().spatialDemandQueries, expected.size());
+  EXPECT_GT(first.getWork().rootWorksValidated, expected.size());
   EXPECT_GT(first.getWork().duplicateSpatialChoices, 0u);
   EXPECT_TRUE(first.isSpatialExhausted());
 

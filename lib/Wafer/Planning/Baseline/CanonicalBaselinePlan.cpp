@@ -6,7 +6,7 @@
 #include "Wafer/Planning/Baseline/BaselineTemporalPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
-#include "Wafer/Planning/PhysicalDataflow/RootRegionWorkAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 
 #include <type_traits>
 #include <utility>
@@ -179,29 +179,19 @@ buildCanonicalBaselinePlan(const CardProgramAnalysis &program,
     return fail(failureReason, demandDetail(demandOutcome));
   demandSession->close();
 
-  mlir::FailureOr<RootRegionWorkAnalysis> rootAnalysis =
-      RootRegionWorkAnalysis::create(program.dag, spatial->assignment, *demand,
-                                     failureReason);
-  if (mlir::failed(rootAnalysis))
+  mlir::FailureOr<RootWorkDomain> rootDomain =
+      RootWorkDomain::create(program.dag, spatial->assignment, *demand,
+                             program.availableTileIds, failureReason);
+  if (mlir::failed(rootDomain))
     return mlir::failure();
-  std::vector<analysis::RootRegionWork> rootWorks;
-  for (const StructuredDAGNode &node : program.dag.getNodes()) {
-    const SemanticRootKey *root = rootAnalysis->getRoot(node.id);
-    if (!root)
-      return fail(failureReason, "canonical root has no semantic identity");
-    for (TileId tile : program.availableTileIds) {
-      analysis::RootRegionWorkOutcome outcome =
-          rootAnalysis->query(*root, tile);
-      if (std::holds_alternative<analysis::NoRootRegionWork>(outcome))
-        continue;
-      const analysis::RootRegionWork *work =
-          analysis::getRootRegionWork(outcome);
-      if (!work)
-        return fail(failureReason,
-                    "canonical root work query did not return exact work");
-      rootWorks.push_back(*work);
-    }
-  }
+  RootWorkCollectionOutcome rootOutcome = collectRootWorks(*rootDomain);
+  RootWorkCollection *rootCollection = getRootWorkCollection(rootOutcome);
+  if (!rootCollection || rootCollection->works.empty())
+    return fail(failureReason,
+                outcomeDetail<RootWorkCollection>(
+                    rootOutcome, "canonical root work domain is empty"));
+  std::vector<analysis::RootRegionWork> rootWorks =
+      std::move(rootCollection->works);
 
   CanonicalRegionPlanOutcome regionOutcome =
       buildCanonicalRegionPlan(rootWorks);

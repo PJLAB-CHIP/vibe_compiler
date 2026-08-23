@@ -201,15 +201,15 @@ module {
     ASSERT_EQ(work->operands.size(), 1u);
     ASSERT_EQ(work->supportValues.size(), 2u);
     ASSERT_EQ(work->boundaries.size(), 2u);
-    auto leaf = wafer::prepareStructuredRootLeaf(consumerNode->id, *work,
-                                                 &failureReason);
+    auto leaf =
+        wafer::prepareRootWorkLeaf(consumerNode->id, *work, &failureReason);
     ASSERT_TRUE(mlir::succeeded(leaf)) << failureReason;
-    ASSERT_TRUE(leaf->has_value());
-    EXPECT_EQ((*leaf)->tile, tile);
-    ASSERT_EQ((*leaf)->offsets.size(),
+    ASSERT_TRUE(leaf->execution.has_value());
+    EXPECT_EQ(leaf->execution->tile, tile);
+    ASSERT_EQ(leaf->execution->offsets.size(),
               work->execution.front().iterationDomain.size());
     for (auto [offset, size, interval] :
-         llvm::zip_equal((*leaf)->offsets, (*leaf)->sizes,
+         llvm::zip_equal(leaf->execution->offsets, leaf->execution->sizes,
                          work->execution.front().iterationDomain)) {
       EXPECT_EQ(offset, interval.offset);
       EXPECT_EQ(size, interval.size);
@@ -567,6 +567,11 @@ module {
       if (tile == TileId(0)) {
         ASSERT_EQ(work->merges.size(), 2u);
         ASSERT_EQ(work->results.size(), 2u);
+        auto prepared = wafer::prepareRootWorkLeaf(
+            dag->getNodes().front().id, *work, &failureReason);
+        ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
+        EXPECT_TRUE(prepared->execution.has_value());
+        EXPECT_EQ(prepared->merges.size(), 2u);
         for (auto [result, merge] :
              llvm::zip_equal(work->results, work->merges))
           EXPECT_EQ(result.reductionGroup, merge.group);

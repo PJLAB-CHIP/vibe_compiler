@@ -33,8 +33,8 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | 1 | `deterministic-baseline-closure` | `done` | Q49.P | canonical-plan-coverage-closure、Q59 | actual candidate materialization→SPM planning→typed feedback闭环及fresh `none`纵向 |
 | 2 | `spatial-domain` | `done` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal |
 | 3 | `search-control-foundation` | `done` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete |
-| 4 | `root-work-domain` | `next` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及complete-candidate emitter |
-| 5 | `region-execution-domain` | `queued` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |
+| 4 | `root-work-domain` | `done` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及complete-candidate emitter |
+| 5 | `region-execution-domain` | `next` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |
 | 6 | `temporal-domain` | `queued` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails及Core consumer |
 | 7 | `partial-feasibility` | `queued` | Q50.F | temporal-domain、exact-demand-boundary | 只验证A–E结构完整性和missing coordinates；资源合法性保持unknown |
 | 8 | `layout-domain` | `queued` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |

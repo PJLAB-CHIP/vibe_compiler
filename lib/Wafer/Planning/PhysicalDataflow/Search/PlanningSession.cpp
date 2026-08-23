@@ -2,6 +2,8 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningSession.h"
 
+#include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
+
 #include <type_traits>
 #include <variant>
 
@@ -18,6 +20,10 @@ std::string getDemandDetail(const analysis::ExactDemandOutcome &outcome) {
           return value.detail;
       },
       outcome);
+}
+
+std::string getRootWorkFailureDetail(const RootWorkDomainFailure &failure) {
+  return std::visit([](const auto &value) { return value.detail; }, failure);
 }
 
 } // namespace
@@ -79,9 +85,60 @@ PhysicalDataflowPlanningSession::evaluateAndQueue(SpatialPlan choice,
     return {SpatialExpansionKind::CompilerBug,
             getDemandDetail(*evaluation.demand)};
 
+  const analysis::ExactDemandProof *proof =
+      analysis::getExactDemandProof(*evaluation.demand);
+  if (!evaluation.assignment || !proof)
+    return {SpatialExpansionKind::CompilerBug,
+            "satisfied spatial choice has no assignment or demand proof"};
+  std::string detail;
+  mlir::FailureOr<RootWorkDomain> rootDomain = RootWorkDomain::create(
+      problem.getProgram().dag, *evaluation.assignment, *proof,
+      problem.getProgram().availableTileIds, &detail);
+  if (mlir::failed(rootDomain))
+    return {SpatialExpansionKind::CompilerBug, std::move(detail)};
+  RootWorkSuccessor rootWork =
+      rootDomain->getFirstWork(problem.getRelationLimits());
+  uint64_t validatedRootWorks = 0;
+  while (rootWork.getKind() == RootWorkSuccessorKind::Work) {
+    ++work.rootWorkSuccessorSteps;
+    ++work.rootWorksValidated;
+    ++validatedRootWorks;
+    const analysis::RootRegionWork *value = rootWork.getWork();
+    const RootWorkCursor *cursor = rootWork.getCursor();
+    if (!value || !cursor)
+      return {SpatialExpansionKind::CompilerBug,
+              "root-work successor omitted its work value"};
+    rootWork = rootDomain->getNextWork(*cursor, problem.getRelationLimits());
+  }
+  ++work.rootWorkSuccessorSteps;
+  if (rootWork.getKind() != RootWorkSuccessorKind::End) {
+    const RootWorkDomainFailure *failure = rootWork.getFailure();
+    if (!failure)
+      return {SpatialExpansionKind::CompilerBug,
+              "root-work successor omitted its typed failure"};
+    if (rootWork.getKind() == RootWorkSuccessorKind::Indeterminate) {
+      pausedSpatialChoice = std::move(choice);
+      pausedChoiceIsProposal = proposalChoice;
+      ++work.indeterminateSpatialChoices;
+      return {SpatialExpansionKind::Indeterminate,
+              getRootWorkFailureDetail(*failure)};
+    }
+    if (rootWork.getKind() == RootWorkSuccessorKind::Unsupported) {
+      if (proposalChoice)
+        resolvedProposalChoices.insert(std::move(choice));
+      ++work.unsupportedSpatialChoices;
+      return {SpatialExpansionKind::Unsupported,
+              getRootWorkFailureDetail(*failure)};
+    }
+    return {SpatialExpansionKind::CompilerBug,
+            getRootWorkFailureDetail(*failure)};
+  }
+  if (validatedRootWorks == 0)
+    return {SpatialExpansionKind::CompilerBug,
+            "spatial choice produced an empty root-work domain"};
+
   if (proposalChoice)
     resolvedProposalChoices.insert(choice);
-  std::string detail;
   mlir::FailureOr<SpatialState> state =
       SpatialState::create(problem, std::move(choice), &detail);
   if (mlir::failed(state))

@@ -252,21 +252,39 @@ void appendRelations(StructuredMaterializationRelations &destination,
 } // namespace
 } // namespace wafer::tensor_program_to_tile_region
 
-mlir::FailureOr<std::optional<wafer::StructuredNodeIterationShard>>
-wafer::prepareStructuredRootLeaf(uint32_t structuredNodeId,
-                                 const analysis::RootRegionWork &work,
-                                 std::string *failureReason) {
+mlir::FailureOr<wafer::PreparedRootWorkLeaf>
+wafer::prepareRootWorkLeaf(uint32_t structuredNodeId,
+                           const analysis::RootRegionWork &work,
+                           std::string *failureReason) {
   using namespace tensor_program_to_tile_region;
-  auto failLeaf = [&](llvm::StringRef detail)
-      -> mlir::FailureOr<std::optional<StructuredNodeIterationShard>> {
+  auto failLeaf =
+      [&](llvm::StringRef detail) -> mlir::FailureOr<PreparedRootWorkLeaf> {
     setFailureReason(failureReason, detail);
     return mlir::failure();
   };
   if (!work.rootOperation)
     return failLeaf("structured root leaf has no current root operation");
+  PreparedRootWorkLeaf prepared;
+  for (const analysis::ReductionMergeRequirement &merge : work.merges) {
+    if (merge.group.root != work.id.root || merge.mergeTile != work.id.tile)
+      return failLeaf("structured root merge does not match its leaf");
+    prepared.merges.push_back({merge.group, merge.mergeTile});
+  }
+  llvm::sort(prepared.merges,
+             [](const compiler::detail::ReductionGroupPlacement &lhs,
+                const compiler::detail::ReductionGroupPlacement &rhs) {
+               return lhs.group < rhs.group;
+             });
+  if (std::adjacent_find(
+          prepared.merges.begin(), prepared.merges.end(),
+          [](const compiler::detail::ReductionGroupPlacement &lhs,
+             const compiler::detail::ReductionGroupPlacement &rhs) {
+            return lhs.group == rhs.group;
+          }) != prepared.merges.end())
+    return failLeaf("structured root leaf has duplicate merge groups");
   if (work.execution.empty()) {
-    if (work.contributions.empty() && !work.merges.empty())
-      return std::optional<StructuredNodeIterationShard>{};
+    if (work.contributions.empty() && !prepared.merges.empty())
+      return prepared;
     return failLeaf("structured root leaf has no execution piece");
   }
   if (work.execution.size() != 1)
@@ -304,7 +322,8 @@ wafer::prepareStructuredRootLeaf(uint32_t structuredNodeId,
                 const compiler::detail::ReductionGroupPlacement &rhs) {
                return lhs.group < rhs.group;
              });
-  return std::optional<StructuredNodeIterationShard>(std::move(result));
+  prepared.execution = std::move(result);
+  return prepared;
 }
 
 mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
