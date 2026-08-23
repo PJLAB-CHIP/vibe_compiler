@@ -2,6 +2,7 @@
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
 #include "TestSupport/Planning/SpatialDemandTestSupport.h"
+#include "Wafer/Analysis/ScheduleCost/ScheduleCostAnalysis.h"
 #include "Wafer/Analysis/Structured/StructuredBufferRelations.h"
 #include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
@@ -870,6 +871,7 @@ module {
     wafer::TileMapping selected =
         completeTemporalMapping(*source, mapping(/*shardDimension=*/2, {0},
                                                  {1, 32, sequenceLength, 128}));
+    selected.outputs.front().temporalTileSizes = {1, 32, 1, 128};
     wafer::StructuredMaterializationRelations relations;
 
     mlir::OwningOpRef<mlir::ModuleOp> cardModule;
@@ -885,7 +887,7 @@ module {
     const uint64_t copyTileElementLimit =
         static_cast<uint64_t>(targetMemory.spmLimit - targetMemory.spmBase) /
         4 / sizeof(uint16_t);
-    ASSERT_EQ(relations.outputBuffers.size(), 3u);
+    ASSERT_EQ(relations.outputBuffers.size(), 4u);
     unsigned callerDDRRelations = 0;
     unsigned streamedSPMRelations = 0;
     for (const wafer::SpatialOutputBufferRelation &relation :
@@ -900,17 +902,20 @@ module {
       }
       ASSERT_TRUE(wafer::isWaferSPMMemRefType(type));
       ++streamedSPMRelations;
+      EXPECT_EQ(type.getShape(), llvm::ArrayRef<int64_t>({1, 32, 1, 128}));
       EXPECT_LE(static_cast<uint64_t>(type.getNumElements()),
                 copyTileElementLimit);
       EXPECT_LT(type.getNumElements(), int64_t{1} * 32 * sequenceLength * 128);
     }
     EXPECT_EQ(callerDDRRelations, 1u);
-    EXPECT_EQ(streamedSPMRelations, 2u);
+    EXPECT_EQ(streamedSPMRelations, 3u);
     unsigned boundedTileAllocations = 0;
     cardModule->walk([&](mlir::memref::AllocOp allocation) {
       if (!wafer::isWaferSPMMemRefType(allocation.getType()))
         return;
       ++boundedTileAllocations;
+      EXPECT_EQ(allocation.getType().getShape(),
+                llvm::ArrayRef<int64_t>({1, 32, 1, 128}));
       EXPECT_LE(static_cast<uint64_t>(allocation.getType().getNumElements()),
                 copyTileElementLimit)
           << printOperation(allocation.getOperation());
@@ -918,9 +923,9 @@ module {
                 int64_t{1} * 32 * sequenceLength * 128)
           << printOperation(allocation.getOperation());
     });
-    EXPECT_GT(boundedTileAllocations, 0u);
-    EXPECT_GE(countOps<wafer::StorageLoadOp>(cardModule->getOperation()), 2u);
-    EXPECT_GE(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 2u);
+    EXPECT_EQ(boundedTileAllocations, 3u);
+    EXPECT_EQ(countOps<wafer::StorageLoadOp>(cardModule->getOperation()), 3u);
+    EXPECT_EQ(countOps<wafer::StorageStoreOp>(cardModule->getOperation()), 3u);
     EXPECT_EQ(countOps<wafer::MoveInsertSliceOp>(cardModule->getOperation()),
               0u);
 
@@ -933,7 +938,47 @@ module {
       ASSERT_TRUE(
           mlir::succeeded(wafer::convertTileRegionToInstrModule(*tile.module)))
           << "Tile " << tile.tileId.getValue();
+      wafer::SPMMemoryPlanningFailure spmFailure;
+      ASSERT_TRUE(mlir::succeeded(wafer::planSPMMemoryModule(
+          *tile.module, targetMemory.spmBase, targetMemory.spmLimit,
+          targetMemory.spmAlignment, &spmFailure)));
       ASSERT_TRUE(mlir::succeeded(mlir::verify(*tile.module)));
+      wafer::analysis::InstructionProgramCost work =
+          wafer::analysis::analyzeInstructionProgramCost(
+              tile.module->getOperation(), targetMemory);
+      if (tile.tileId != wafer::TileId(0)) {
+        EXPECT_EQ(work.work.instructions.exactExecutions.value, 0u);
+        continue;
+      }
+      ASSERT_TRUE(work.work.rdmaIssues.exactExecutions.isKnown())
+          << "knowledge="
+          << static_cast<int>(work.work.rdmaIssues.exactExecutions.knowledge)
+          << " reason="
+          << static_cast<int>(work.work.rdmaIssues.exactExecutions.reason)
+          << '\n'
+          << printOperation(tile.module->getOperation());
+      ASSERT_TRUE(work.work.wdmaIssues.exactExecutions.isKnown())
+          << "knowledge="
+          << static_cast<int>(work.work.wdmaIssues.exactExecutions.knowledge)
+          << " reason="
+          << static_cast<int>(work.work.wdmaIssues.exactExecutions.reason)
+          << '\n'
+          << printOperation(tile.module->getOperation());
+      EXPECT_EQ(work.work.rdmaIssues.staticSites.value, 3u)
+          << printOperation(tile.module->getOperation());
+      EXPECT_EQ(work.work.wdmaIssues.staticSites.value, 3u)
+          << printOperation(tile.module->getOperation());
+      EXPECT_EQ(work.work.rdmaIssues.exactExecutions.value,
+                static_cast<uint64_t>(sequenceLength));
+      EXPECT_EQ(work.work.wdmaIssues.exactExecutions.value,
+                static_cast<uint64_t>(sequenceLength));
+      ASSERT_TRUE(work.steadyStateNCCJoinCount.isKnown());
+      ASSERT_TRUE(work.nonTerminalNCCJoinCount.isKnown());
+      EXPECT_EQ(work.steadyStateNCCJoinCount.value, 0u);
+      EXPECT_EQ(work.nonTerminalNCCJoinCount.value, 0u)
+          << printOperation(tile.module->getOperation());
+      EXPECT_LT(work.work.rdmaIssues.exactExecutions.value,
+                static_cast<uint64_t>(int64_t{1} * 32 * sequenceLength * 128));
     }
   }
 }

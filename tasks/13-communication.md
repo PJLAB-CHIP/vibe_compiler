@@ -185,8 +185,11 @@ CardExecutable integration gate还必须证明general chain、branch、fanout/fa
 这些communication ops，并在最终Instr中具备chunk、buffer、order和completion witness。当前已有lowering/verification能力
 不得被写成搜索已经完成；cross-card collective也继续是明确非目标，不能恢复partition-to-Tile旧接口绕过。
 
-2026-08-23 production审计发现，current `TileRegionBodyEmitter`的streamed与non-streamed peer路径仍在每个send/recv后立即创建
-`async.await`，而`MovementTransferBuilder`已经能产生不带wait的matching token但尚未接入production。前者不符合上述边界：
-它在J选择order、storage lifetime和FSM allocation之前就把通信串行化。该缺口归入`movement-domain`的production wiring和
-`schedule-domain`的wait placement；旧`DataMovementApply`/selected-buffer中的immediate-await逻辑只可作为待迁移donor，不能成为
+2026-08-23 production修正后，current `TileRegionBodyEmitter`的non-streamed peer路径保留matching SSA token：receive在对应logical
+value第一次读取、第五个并存receiver或terminal前wait；send在同Tile唯一sender复用或terminal前wait。streamed scratch仍在receive后的
+actual store及send后的actual dealloc前wait，这两个位置分别是该scratch的first read与last release，不是通用issue-after-wait规则。
+若前序NCC地址lifetime已经沿same-worker issue链缩短，Direct DTE issue前必须先完成仍pending的NCC participant；DTE wait不完成该
+worker obligation。这个cross-domain join由actual Instr completion placement产生，不由attention或movement algorithm层写死。
+`movement-domain`仍须把完整direct/relay/fanout/gather selected construction接入同一token-only边界，`schedule-domain`再从post-K
+lifetime/resource facts选择一般wait位置。旧`DataMovementApply`/selected-buffer中的immediate-await逻辑只可作为待迁移donor，不能成为
 current合同或回归期望。

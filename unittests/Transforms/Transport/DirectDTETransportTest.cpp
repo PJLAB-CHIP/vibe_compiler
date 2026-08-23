@@ -81,32 +81,6 @@ module {
   }
 })mlir";
 
-constexpr llvm::StringLiteral kRecvAcrossDisjointLoopTileModule = R"mlir(
-module {
-  func.func @main() {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %c4 = arith.constant 4 : index
-    %one = arith.constant 1.0 : f32
-    %receive = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<65792>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>
-    %other = memref.alloc()
-        {wafer.spm.offset = #wafer.spm_offset<66048>}
-        : memref<4xf32, #wafer.memory<spm, tensor>>
-    %token = wafer.instr.dte_recv %receive
-        {peer = 0 : i64, bytes = 16 : i64,
-         message = #wafer.dte_message<communication = 9, round = 2, slice = 0>}
-        : memref<4xf32, #wafer.memory<spm, tensor>> -> !async.token
-    scf.for %index = %c0 to %c4 step %c1 {
-      memref.store %one, %other[%index]
-          : memref<4xf32, #wafer.memory<spm, tensor>>
-    }
-    wafer.instr.dte_wait %token : !async.token
-    return
-  }
-})mlir";
-
 static std::string makeControlledTileModule(bool isSend, int64_t peer,
                                              int64_t spmOffset,
                                              llvm::StringRef functionArguments,
@@ -784,8 +758,44 @@ TEST_F(DirectDTETransportTest, ReceivePreparationBreaksCrossTileSendWaitCycle) {
 
 TEST_F(DirectDTETransportTest,
        ReceivePreparationMayOverlapDisjointEffectfulLoop) {
-  auto sendModule = parse(kSendTileModule);
-  auto recvModule = parse(kRecvAcrossDisjointLoopTileModule);
+  auto sendModule = parse(R"mlir(
+module {
+  func.func @main() {
+    %buffer = memref.alloc() {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_send %buffer
+        {peer = 1 : i64, bytes = 262400 : i64,
+         message = #wafer.dte_message<communication = 9, round = 2, slice = 0>}
+        : memref<2x1025x64xf16, #wafer.memory<spm, tensor>> -> !async.token
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+})mlir");
+  auto recvModule = parse(R"mlir(
+module {
+  func.func @main() {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c1025 = arith.constant 1025 : index
+    %zero = arith.constant 0.0 : f16
+    %receive = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<65536>}
+        : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+    %other = memref.alloc()
+        {wafer.spm.offset = #wafer.spm_offset<328192>}
+        : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+    %token = wafer.instr.dte_recv %receive
+        {peer = 0 : i64, bytes = 262400 : i64,
+         message = #wafer.dte_message<communication = 9, round = 2, slice = 0>}
+        : memref<2x1025x64xf16, #wafer.memory<spm, tensor>> -> !async.token
+    scf.for %index = %c0 to %c1025 step %c1 {
+      memref.store %zero, %other[%c0, %index, %c0]
+          : memref<2x1025x64xf16, #wafer.memory<spm, tensor>>
+    }
+    wafer.instr.dte_wait %token : !async.token
+    return
+  }
+})mlir");
   ASSERT_TRUE(sendModule);
   ASSERT_TRUE(recvModule);
   llvm::SmallVector<mlir::ModuleOp, 2> tileModules{*sendModule,

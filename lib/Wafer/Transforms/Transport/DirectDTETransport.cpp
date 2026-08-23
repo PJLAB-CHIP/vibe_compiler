@@ -5,6 +5,7 @@
 #include "Wafer/Analysis/ControlFlow/SingleExecutionRegionFlow.h"
 #include "Wafer/Analysis/Executable/ExecutableCallClosure.h"
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Target/Core/DirectDTE.h"
 #include "Wafer/Target/Core/TargetMemory.h"
 #include "Wafer/Transforms/MemoryPlanning/StaticIndexRange.h"
 
@@ -1566,7 +1567,10 @@ static mlir::LogicalResult allocateReceiverFSMs(
   std::function<bool(unsigned)> color = [&](unsigned index) {
     if (index == receivers.size())
       return true;
-    for (int64_t candidate = 0; candidate < 4; ++candidate) {
+    for (int64_t candidate = 0;
+         candidate < static_cast<int64_t>(
+                         TargetDirectDTEResourceLimits::receiverFSMsPerTile);
+         ++candidate) {
       bool available = true;
       for (unsigned other = 0; other < index; ++other)
         if (adjacency[index][other] && colors[other] == candidate) {
@@ -1587,8 +1591,8 @@ static mlir::LogicalResult allocateReceiverFSMs(
         receivers.empty() ? nullptr : receivers.back()->operation;
     if (anchor)
       return anchor->emitError(
-          "direct_dte_binding: more than four receiver FSM live ranges "
-          "overlap in the structured whole-program trace");
+          "direct_dte_binding: receiver FSM live ranges exceed the current "
+          "per-Tile resource limit in the structured whole-program trace");
     return mlir::failure();
   }
   for (auto [index, receiver] : llvm::enumerate(receivers))

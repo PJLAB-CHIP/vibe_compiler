@@ -2170,6 +2170,11 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
   // reject a branch whose every path already completes the pending issue.
   if (op->getNumRegions() != 0)
     return collected;
+  // Tensor/memref adapters preserve one storage identity and do not execute a
+  // memory access. Alias propagation is handled separately by the dataflow.
+  if (mlir::isa<mlir::bufferization::ToMemrefOp,
+                mlir::bufferization::ToTensorOp>(op))
+    return collected;
 
   auto effectInterface = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(op);
   if (!effectInterface) {
@@ -2277,11 +2282,16 @@ LocalCompletionTracker::collectAccesses(mlir::Operation *op, ProgramPoint point,
   llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> effects;
   effectInterface.getEffects(effects);
   for (const mlir::MemoryEffects::EffectInstance &effect : effects) {
+    // Allocation and deallocation delimit compiler-owned storage lifetime but
+    // do not execute a Kcore/host access. Actual reuse is ordered by the next
+    // typed issue; treating memref.free as an observer would force a worker
+    // drain at every loop-local scratch release.
+    if (llvm::isa<mlir::MemoryEffects::Allocate, mlir::MemoryEffects::Free>(
+            effect.getEffect()))
+      continue;
     mlir::Value value = effect.getValue();
     bool reads = llvm::isa<mlir::MemoryEffects::Read>(effect.getEffect());
-    bool writes =
-        llvm::isa<mlir::MemoryEffects::Write, mlir::MemoryEffects::Free>(
-            effect.getEffect());
+    bool writes = llvm::isa<mlir::MemoryEffects::Write>(effect.getEffect());
     if (value && !reads && !writes &&
         !llvm::isa<mlir::MemoryEffects::Allocate>(effect.getEffect()))
       collected.hasUnknownObserverEffect = true;
@@ -2340,6 +2350,22 @@ mlir::LogicalResult LocalCompletionTracker::verifyPendingObservers(
     mlir::Operation *op, ProgramPoint point,
     const NCCOperationCompletion &contract, const AccessCollection &current,
     LifetimeFailure *failure) const {
+  const uint32_t currentWorker = getNCCIssueWorkerMask(contract);
+  for (const PendingIssue &released : orderedReleasedIssues) {
+    if (!released.path.intersect(point.path))
+      continue;
+    const bool continuesResolvedWorkerChain =
+        contract.kind == NCCCompletionKind::OrderedAsynchronousIssue &&
+        currentWorker != 0 && currentWorker == released.workerMask &&
+        current.hasTrackedEffect && current.allResolved &&
+        !current.accesses.empty();
+    if (!continuesResolvedWorkerChain &&
+        (current.hasTrackedEffect || current.hasUnknownObserverEffect)) {
+      setLifetimeFailure(failure, LifetimeFailureKind::MissingLocalCompletion,
+                         released.origin ? released.origin : op);
+      return mlir::failure();
+    }
+  }
   auto reachablePending =
       llvm::find_if(pendingAccesses, [&](const PendingAccess &pending) {
         return pending.root.path.intersect(point.path).has_value();
@@ -2468,6 +2494,22 @@ void LocalCompletionTracker::processFence(ProgramPoint fencePoint,
   }
   pendingIssues = std::move(remainingIssues);
 
+  llvm::SmallVector<PendingIssue, 4> remainingReleased;
+  for (PendingIssue issue : orderedReleasedIssues) {
+    if ((issue.workerMask & participantMask) == 0 ||
+        !issue.path.intersect(fencePoint.path)) {
+      remainingReleased.push_back(issue);
+      continue;
+    }
+    llvm::SmallVector<PathCondition, 2> remainingPaths;
+    issue.path.subtract(fencePoint.path, remainingPaths);
+    for (PathCondition path : remainingPaths)
+      remainingReleased.push_back(
+          PendingIssue{issue.origin, path, issue.workerMask,
+                       issue.accessOrderResolved, issue.hasWrite});
+  }
+  orderedReleasedIssues = std::move(remainingReleased);
+
   llvm::SmallVector<PendingAccess, 8> remainingAccesses;
   for (PendingAccess access : pendingAccesses) {
     if ((access.workerMask & participantMask) == 0) {
@@ -2493,6 +2535,66 @@ void LocalCompletionTracker::processFence(ProgramPoint fencePoint,
                         access.accessIdentity, access.write});
   }
   pendingAccesses = std::move(remainingAccesses);
+
+  refreshPendingAccessSummary();
+}
+
+void LocalCompletionTracker::processOrderedWorkerSuccessor(
+    ProgramPoint successorPoint, uint32_t workerMask,
+    LifetimeDataflow &dataflow) {
+  llvm::SmallVector<PendingAccess, 8> remainingAccesses;
+  for (PendingAccess access : pendingAccesses) {
+    const bool hasKnownAddressDomain =
+        access.root.demandIndex != kUnresolvedRootIndex || access.logicalRoot;
+    std::optional<PathCondition> orderedPath =
+        access.workerMask == workerMask && hasKnownAddressDomain
+            ? access.root.path.intersect(successorPoint.path)
+            : std::nullopt;
+    if (!orderedPath) {
+      remainingAccesses.push_back(access);
+      continue;
+    }
+    if (access.root.demandIndex != kUnresolvedRootIndex)
+      dataflow.extendTo(RootRef{access.root.demandIndex, *orderedPath},
+                        ProgramPoint{successorPoint.event, *orderedPath});
+    if (llvm::none_of(orderedReleasedIssues, [&](const PendingIssue &issue) {
+          return issue.workerMask == workerMask && issue.path == *orderedPath;
+        }))
+      orderedReleasedIssues.push_back(PendingIssue{
+          access.origin, *orderedPath, workerMask,
+          /*accessOrderResolved=*/true, access.write});
+
+    llvm::SmallVector<PathCondition, 2> remainingPaths;
+    access.root.path.subtract(successorPoint.path, remainingPaths);
+    for (PathCondition path : remainingPaths)
+      remainingAccesses.push_back(
+          PendingAccess{access.origin, RootRef{access.root.demandIndex, path},
+                        access.workerMask, access.logicalRoot,
+                        access.accessIdentity, access.write});
+  }
+  pendingAccesses = std::move(remainingAccesses);
+
+  llvm::SmallVector<PendingIssue, 8> remainingIssues;
+  for (PendingIssue issue : pendingIssues) {
+    std::optional<PathCondition> orderedPath =
+        issue.workerMask == workerMask
+            ? issue.path.intersect(successorPoint.path)
+            : std::nullopt;
+    if (!orderedPath || llvm::any_of(pendingAccesses, [&](const auto &access) {
+          return access.origin == issue.origin &&
+                 access.root.path.intersect(*orderedPath).has_value();
+        })) {
+      remainingIssues.push_back(issue);
+      continue;
+    }
+    llvm::SmallVector<PathCondition, 2> remainingPaths;
+    issue.path.subtract(successorPoint.path, remainingPaths);
+    for (PathCondition path : remainingPaths)
+      remainingIssues.push_back(
+          PendingIssue{issue.origin, path, issue.workerMask,
+                       issue.accessOrderResolved, issue.hasWrite});
+  }
+  pendingIssues = std::move(remainingIssues);
   refreshPendingAccessSummary();
 }
 
@@ -2529,6 +2631,9 @@ mlir::LogicalResult LocalCompletionTracker::observe(mlir::Operation *op,
           NCCCompletionKind::OrderedAsynchronousIssue ||
       !current.hasTrackedEffect)
     return mlir::success();
+
+  if (current.allResolved && !current.accesses.empty())
+    processOrderedWorkerSuccessor(*point, workerMask, dataflow);
 
   pendingIssues.push_back(PendingIssue{
       op, point->path, workerMask,
@@ -2747,8 +2852,9 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
         // range, so it is not an observer that forces a host-side completion.
         // Accumulate only exact SSA access identities: one successor may cover
         // one range of a multi-access predecessor and a later successor may
-        // cover another. DTE, cross-worker and conditional successors still
-        // fail closed at the first conflicting access.
+        // cover another. DTE and cross-worker observers still fail closed at
+        // the first conflicting access; a conditional same-worker issue is
+        // ordered on the path where it occurs.
         bool sameWorkerOrderedSuccessor =
             mlir::isa<WaferNCCIssueOpInterface>(candidate) &&
             candidateContract.kind ==
@@ -2757,9 +2863,9 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
             !current.accesses.empty();
         if (!sameWorkerOrderedSuccessor)
           return false;
-        // A conditional same-worker issue is safe on paths where it executes,
-        // but cannot by itself prove the other paths. Only an unconditional
-        // exact identity contributes to full backedge coverage.
+        // An unconditional exact identity closes this access immediately.
+        // Conditional paths that do not execute a successor simply carry the
+        // pending worker state to a later same-worker issue or loop exit.
         if (unconditionalInBody && pending->accessIdentity &&
             access.accessIdentity &&
             pending->accessIdentity == access.accessIdentity)
@@ -2770,7 +2876,11 @@ bool LocalCompletionTracker::provesLoopBackedgeOrder(
                      [](bool ordered) { return ordered; }))
       return true;
   }
-  return false;
+  // No incompatible observer was found before the backedge. A pending issue
+  // may remain live across another iteration: paths with a later overlapping
+  // same-worker access are busytable-ordered, and paths without one carry the
+  // state to the first real observer or the terminal join after the loop.
+  return true;
 }
 
 mlir::LogicalResult
@@ -3214,6 +3324,11 @@ LocalCompletionTracker::finish(mlir::Operation *scope,
   if (!pendingIssues.empty()) {
     setLifetimeFailure(failure, LifetimeFailureKind::MissingLocalCompletion,
                        pendingIssues.front().origin);
+    return mlir::failure();
+  }
+  if (!orderedReleasedIssues.empty()) {
+    setLifetimeFailure(failure, LifetimeFailureKind::MissingLocalCompletion,
+                       orderedReleasedIssues.front().origin);
     return mlir::failure();
   }
   if (!pendingAccesses.empty()) {

@@ -37,6 +37,71 @@ mlir::LogicalResult failResult(std::string *failureReason,
   return mlir::failure();
 }
 
+mlir::FailureOr<llvm::SmallVector<SpatialOutputShard, 2>>
+projectSelectedOutputShards(
+    mlir::Operation *root, const StructuredNodeIterationShard &spatial,
+    const StructuredNodeTemporalTile &temporal, std::string *failureReason) {
+  auto linalg = mlir::dyn_cast_or_null<mlir::linalg::LinalgOp>(root);
+  if (!linalg || spatial.offsets.size() != spatial.sizes.size() ||
+      spatial.sizes.size() != temporal.iteratorTileSizes.size())
+    return fail<llvm::SmallVector<SpatialOutputShard, 2>>(
+        failureReason,
+        "selected output tile requires one matching linalg iterator domain");
+
+  llvm::SmallVector<SpatialOutputShard, 2> outputs;
+  outputs.reserve(root->getNumResults());
+  for (auto [resultNumber, result] : llvm::enumerate(root->getResults())) {
+    auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(result.getType());
+    mlir::AffineMap resultMap = linalg.getIndexingMapMatchingResult(result);
+    if (!resultType || !resultType.hasStaticShape() || !resultMap ||
+        resultMap.getNumResults() !=
+            static_cast<unsigned>(resultType.getRank()))
+      return fail<llvm::SmallVector<SpatialOutputShard, 2>>(
+          failureReason,
+          "selected output tile requires one static ranked result map");
+
+    SpatialOutputShard output;
+    output.outputIndex = static_cast<unsigned>(resultNumber);
+    llvm::SmallDenseSet<unsigned, 4> projectedIterators;
+    for (auto [resultDimension, expression] :
+         llvm::enumerate(resultMap.getResults())) {
+      if (auto iterator = mlir::dyn_cast<mlir::AffineDimExpr>(expression)) {
+        const unsigned dimension = iterator.getPosition();
+        if (dimension >= spatial.sizes.size() ||
+            !projectedIterators.insert(dimension).second)
+          return fail<llvm::SmallVector<SpatialOutputShard, 2>>(
+              failureReason,
+              "selected output relation is not a projected iterator domain");
+        const int64_t offset = spatial.offsets[dimension];
+        const int64_t size = spatial.sizes[dimension];
+        const int64_t tile = temporal.iteratorTileSizes[dimension];
+        const int64_t bound = resultType.getDimSize(resultDimension);
+        if (offset < 0 || size <= 0 || tile <= 0 || offset > bound - size)
+          return fail<llvm::SmallVector<SpatialOutputShard, 2>>(
+              failureReason,
+              "selected output tile is outside its exact result domain");
+        output.offsets.push_back(offset);
+        output.sizes.push_back(size);
+        output.temporalTileSizes.push_back(std::min(tile, size));
+        continue;
+      }
+
+      auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+      if (!constant || constant.getValue() != 0 ||
+          resultType.getDimSize(resultDimension) != 1)
+        return fail<llvm::SmallVector<SpatialOutputShard, 2>>(
+            failureReason,
+            "selected output relation requires projected dimensions or an "
+            "extent-one constant position");
+      output.offsets.push_back(0);
+      output.sizes.push_back(1);
+      output.temporalTileSizes.push_back(1);
+    }
+    outputs.push_back(std::move(output));
+  }
+  return outputs;
+}
+
 } // namespace
 
 struct RootClosure {
@@ -587,6 +652,15 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
                      auto [extent, tile] = values;
                      return tile < extent;
                    });
+  llvm::SmallVector<SpatialOutputShard, 2> outputShards;
+  if (hasTemporalWaves && shard.reductionGroups.empty()) {
+    mlir::FailureOr<llvm::SmallVector<SpatialOutputShard, 2>> projected =
+        projectSelectedOutputShards(requested->operation, shard, *temporal,
+                                    failureReason);
+    if (mlir::failed(projected))
+      return mlir::failure();
+    outputShards = std::move(*projected);
+  }
   mlir::LogicalResult materialized = mlir::failure();
   if (shard.reductionGroups.empty()) {
     materialized =
@@ -625,7 +699,8 @@ mlir::FailureOr<RootFragment> materializeRootFragment(
           implementation
               ? llvm::ArrayRef<StructuredNodeComputeImplementation>(
                     implementation, 1)
-              : llvm::ArrayRef<StructuredNodeComputeImplementation>{})))
+              : llvm::ArrayRef<StructuredNodeComputeImplementation>{},
+          outputShards)))
     return mlir::failure();
   result.function = *function;
 

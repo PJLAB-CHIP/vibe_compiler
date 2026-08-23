@@ -27,10 +27,6 @@ OP_FAMILY_LAYOUT = {
         "cpp": ("LinalgExt/AttentionOps.cpp",),
         "tests": "LinalgExt/Attention",
     },
-    "Tensor/TensorOps.td": {
-        "cpp": ("Tensor/TensorOps.cpp",),
-        "tests": "Tensor/Tensor",
-    },
     "Tile/TileRegionOps.td": {
         "cpp": ("Tile/TileRegionOps.cpp",),
         "tests": "Tile/TileRegion",
@@ -83,7 +79,6 @@ SUPPORT_TEST_DIRS = {"Common/Attrs"}
 IR_LAYERS = {
     "Program",
     "Target",
-    "Tensor",
     "LinalgExt",
     "Tile",
     "Resource",

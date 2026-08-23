@@ -278,6 +278,20 @@ mlir::LogicalResult materializeCandidateOutputTileSlices(
     std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> *operationNodes,
     llvm::ArrayRef<mlir::Operation *> preservedOperations) {
+  auto originalReturn =
+      mlir::cast<mlir::func::ReturnOp>(scope.getBody().getTerminator());
+  llvm::SmallVector<mlir::Value, 4> directAssemblies(
+      originalReturn.getNumOperands());
+  for (auto [index, returned] : llvm::enumerate(originalReturn.getOperands())) {
+    auto analyzed = analyzeCompleteStaticInsertSliceAssembly(returned);
+    if (mlir::failed(analyzed)) {
+      setFailureReason(failureReason,
+                       "tensor output assembly coverage arithmetic overflowed");
+      return mlir::failure();
+    }
+    if (*analyzed)
+      directAssemblies[index] = returned;
+  }
   if (mlir::failed(materializeCandidateOutputAnchors(scope, outputShards,
                                                      failureReason)))
     return mlir::failure();
@@ -355,6 +369,25 @@ mlir::LogicalResult materializeCandidateOutputTileSlices(
       // This Tile does not own any domain of this observable result.  Keep the
       // full-card ABI result but make its actual body a typed no-store path.
       returnOp->setOperand(index, *outputBoundary);
+      continue;
+    }
+    auto resultType = directAssemblies[index]
+                          ? mlir::dyn_cast<mlir::RankedTensorType>(
+                                directAssemblies[index].getType())
+                          : mlir::RankedTensorType{};
+    bool ownsCompleteOutput =
+        resultType && resultType.hasStaticShape() &&
+        shard->offsets.size() == static_cast<size_t>(resultType.getRank()) &&
+        llvm::all_of(shard->offsets,
+                     [](int64_t offset) { return offset == 0; }) &&
+        llvm::ArrayRef<int64_t>(shard->sizes) == resultType.getShape();
+    if (ownsCompleteOutput) {
+      // Keep a complete static insert assembly intact. TileRegion lowering
+      // binds its tensor.empty base to the caller-owned DDR result and streams
+      // each disjoint source with the already selected output temporal tile;
+      // wrapping it in a second output traversal would manufacture conditional
+      // copy IR and duplicate the same work.
+      returnOp->setOperand(index, directAssemblies[index]);
       continue;
     }
     mlir::OpBuilder builder(root);

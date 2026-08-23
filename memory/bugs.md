@@ -1249,8 +1249,9 @@
   独立join。conditional issue case看似正常，导致同一算法在unconditional stream上静默串行化。
 - 根因：fixed-point把loop entry state与第一轮body state送进用于`scf.if`的alternative merge。该helper看到entry尚无worker、body已有
   worker，便把issue标成path-optional；但guaranteed loop backedge是顺序组合，不是二选一控制流。
-- 修复模式：第一轮`bodyState`已经等于entry后执行一次body；下一轮直接以该state重新处理body直到固定点。只有body内部真实branch merge
-  产生path ambiguity，才在backedge完成对应worker。unconditional same-worker stream保持busytable顺序，并在loop外observable return处join。
+- 修复模式：第一轮`bodyState`已经等于entry后执行一次body；下一轮直接以该state重新处理body直到固定点。same-worker issue在实际
+  发生的每条path上都由busytable按issue order推进；未发生issue的path没有需要完成的工作，因此branch ambiguity也不构成backedge
+  join理由。cross-worker conflict仍在下一issue前完成，剩余pending在loop外observable return处join。
 - 防复发：分别覆盖cross-worker backedge、unconditional same-worker、conditional same-worker和dynamic potentially-empty loop；检查join
   的participant与内外位置，不只检查“存在某个join”。
 
@@ -1261,11 +1262,14 @@
   真实shape下join/DMA数量却随block或element数线性增长，异步窗口被静默清空。
 - 根因：algorithm decomposition、BodyEmitter和lowering把operation类别、region/materialization结构及“保守同步”当成硬件completion
   proof，在worker/order/storage/lifetime尚未关闭前选择participant和insertion point。测试只断言存在completion或程序成功，没有检查
-  dynamic work、位置和直接lifetime witness。
+  dynamic work、位置和直接lifetime witness。只把任意后继same-worker issue当成“worker已完成”同样错误：busytable可以在后续
+  同worker物理复用时按实际地址排序，但不能让更晚的不同worker、Kcore或DTE在没有join时复用仍在飞行的地址。
 - 修复模式：先读current硬件校准、target lowering和CRT/runtime，把结论区分为supported、board-observed、unknown、excluded。
   上层只保留SSA/effect/token/lifetime；H发token，I给first-read/last-release与reuse，J foundation消费Q63/H facts，J closure在actual
   selected control flow中生成minimum-participant、latest-unavoidable join/wait。missing contract保持typed unknown，不能默认
-  Synchronous或插全worker drain。same-worker普通链只保持issue order。
+  Synchronous或插全worker drain。same-worker普通链只保持issue order；resolved后继可缩短地址lifetime，但必须另存worker-domain
+  obligation，不同worker/DTE/Kcore observer在exact join前一律失败。output copy消费selected temporal tile并形成有界SCF main/tail
+  traversal，不能退回全1 tile。
 - 防复发：1024/1025/1031级FA/FD与copy case检查steady/nonterminal join、participant wait、DMA/allocation和DTE wait的static site及
   dynamic count；无typed cross-domain cut时前两类join为0，计数不随logical element或K2 block线性增长。正例同时覆盖cross-worker、
   NCC→Kcore/DTE/host、terminal join、DTE first-read/last-release、4-FSM和无环wait graph。测试通过但期望per-block/per-element/

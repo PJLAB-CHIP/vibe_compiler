@@ -43,8 +43,10 @@ func.func @load_compute_store(
 // CHECK: %[[SUM:.+]] = memref.alloc() : memref<4x8xf16, #wafer.memory<spm, tensor>>
 // CHECK: wafer.instr.elementwise <add> %[[LOAD_DST]], %[[LOAD_DST]] into %[[SUM]]
 // CHECK: wafer.instr.wdma %[[SUM]] to %{{.+}}
-// CHECK: wafer.instr.ncc_join [0]
 // CHECK-NEXT: wafer.tile.yield
+// CHECK: }
+// CHECK-NEXT: wafer.instr.ncc_join [0]
+// CHECK-NEXT: return
 
 func.func @strided_ddr_tile_load_store(
     %input: memref<4x8xf16, #wafer.memory<ddr, tensor>>,

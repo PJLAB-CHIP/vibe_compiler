@@ -9,6 +9,7 @@
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "gtest/gtest.h"
 
@@ -25,6 +26,47 @@ wafer::compiler::detail::CompleteCandidatePlan makeMaterializationPlan(
           plan.preparedAttention};
 }
 using namespace wafer::compiler::testing;
+
+void expectNoAvoidableNCCDrains(
+    const wafer::compiler::detail::CardExecutableLoweringResult &executable) {
+  const auto &cost = executable.resourceCost;
+  uint64_t requiredCrossingJoins = 0;
+  uint64_t requiredCrossingParticipants = 0;
+  std::string invalidDrainDetails;
+  llvm::raw_string_ostream invalidDrainStream(invalidDrainDetails);
+  for (const wafer::compiler::TileExecutable &tile : executable.tiles) {
+    tile.getModule().walk([&](wafer::SyncNCCJoinOp join) {
+      mlir::Operation *next = join->getNextNode();
+      if (mlir::isa_and_nonnull<mlir::func::ReturnOp>(next))
+        return;
+      ++requiredCrossingJoins;
+      requiredCrossingParticipants += join.getParticipants().size();
+      bool validCrossing =
+          mlir::isa_and_nonnull<wafer::InstrDTESendOp,
+                                wafer::InstrDTERecvOp>(next) &&
+          !join->getParentOfType<mlir::scf::ForOp>();
+      if (!validCrossing) {
+        invalidDrainStream << "tile=" << tile.getTileId().getValue()
+                           << " join=" << join << " next=";
+        if (next)
+          invalidDrainStream << *next;
+        invalidDrainStream << '\n';
+      }
+    });
+  }
+  invalidDrainStream.flush();
+  ASSERT_TRUE(cost.aggregateSteadyStateNCCJoinCount.isKnown());
+  ASSERT_TRUE(cost.aggregateNonTerminalNCCJoinCount.isKnown());
+  ASSERT_TRUE(cost.aggregateSteadyStateNCCParticipantWaitCount.isKnown());
+  ASSERT_TRUE(cost.aggregateNonTerminalNCCParticipantWaitCount.isKnown());
+  EXPECT_EQ(cost.aggregateSteadyStateNCCJoinCount.value, 0u);
+  EXPECT_TRUE(invalidDrainDetails.empty()) << invalidDrainDetails;
+  EXPECT_EQ(cost.aggregateNonTerminalNCCJoinCount.value,
+            requiredCrossingJoins);
+  EXPECT_EQ(cost.aggregateSteadyStateNCCParticipantWaitCount.value, 0u);
+  EXPECT_EQ(cost.aggregateNonTerminalNCCParticipantWaitCount.value,
+            requiredCrossingParticipants);
+}
 
 TEST(CardBaselineCompilationTest,
      MaterializesOneBalancedBaselineThroughExactGates) {
@@ -45,6 +87,7 @@ TEST(CardBaselineCompilationTest,
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
   expectCompleteTileDomain(executable->executable,
                            executable->tileDataflowIRTrace);
+  expectNoAvoidableNCCDrains(executable->executable);
 
   // The baseline API has no search statistics parameter. Its complete work is
   // recorded in the policy-free baseline statistics.
@@ -287,6 +330,7 @@ module {
       /*captureTileDataflowIRTrace=*/false);
   executableDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << executableDiagnosticsText;
+  expectNoAvoidableNCCDrains(executable->executable);
 }
 
 TEST(CardBaselineCompilationTest,
@@ -343,7 +387,7 @@ TEST(CardBaselineCompilationTest,
         /*captureTileDataflowIRTrace=*/false);
     diagnostics.flush();
     ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
-    EXPECT_GT(statistics.actualSPMCapacityRejections, 0u);
+    expectNoAvoidableNCCDrains(executable->executable);
     EXPECT_EQ(statistics.actualTemporalRefinements,
               statistics.actualSPMCapacityRejections);
     EXPECT_EQ(statistics.baselineCardModuleMaterializations,
@@ -429,8 +473,8 @@ TEST_P(CardBaselineRankFourPrefillTest,
       /*captureTileDataflowIRTrace=*/false);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << diagnosticsText;
+  expectNoAvoidableNCCDrains(executable->executable);
   ASSERT_EQ(executable->executable.tiles.size(), 16u);
-  EXPECT_GT(statistics.actualSPMCapacityRejections, 0u);
   EXPECT_EQ(statistics.actualTemporalRefinements,
             statistics.actualSPMCapacityRejections);
   EXPECT_EQ(statistics.baselineCardModuleMaterializations,

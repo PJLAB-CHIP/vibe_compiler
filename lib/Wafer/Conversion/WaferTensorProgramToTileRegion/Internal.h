@@ -27,6 +27,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <utility>
@@ -159,6 +160,24 @@ struct CandidateSelectedDDRStage {
   mlir::Value buffer;
   uint32_t producerNode = 0;
 };
+
+struct PendingPeerToken {
+  CandidatePeerEndpointKind kind = CandidatePeerEndpointKind::Send;
+  mlir::Value logicalValue;
+  mlir::Value token;
+};
+
+struct StaticInsertSliceAssembly {
+  mlir::Value base;
+  llvm::SmallVector<mlir::tensor::InsertSliceOp, 4> inserts;
+};
+
+/// Recognizes a verifier-valid static insert_slice chain rooted at
+/// tensor.empty whose disjoint inserted boxes cover the complete result.
+/// Non-matching values return an empty optional; arithmetic overflow is a
+/// compiler failure. The query does not inspect uses or modify IR.
+mlir::FailureOr<std::optional<StaticInsertSliceAssembly>>
+analyzeCompleteStaticInsertSliceAssembly(mlir::Value value);
 
 /// Concrete TileRegion allocation produced for one selected DDR stage.
 struct MaterializedSelectedDDRStage {
@@ -349,7 +368,8 @@ public:
       TileRegionEmissionRecorder *relationRecorder = nullptr,
       llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
       llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {},
-      llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {});
+      llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {},
+      llvm::ArrayRef<SpatialOutputShard> outputShards = {});
 
   mlir::FailureOr<TileRegionOp> emit(TensorProgramScope scope,
                                      mlir::RewriterBase &rewriter);
@@ -366,6 +386,8 @@ private:
   int64_t currentLogicalPartition = -1;
   llvm::SmallVector<CandidatePeerEndpoint, 8> peerEndpoints;
   llvm::ArrayRef<CandidateSelectedDDRStage> selectedDDRStages;
+  llvm::SmallVector<SpatialOutputShard, 4> outputShards;
+  llvm::SmallVector<PendingPeerToken, 8> pendingPeerTokens;
   TileRegionEmissionRecorder *relationRecorder = nullptr;
   llvm::DenseMap<mlir::Operation *, llvm::SmallVector<uint32_t, 2>>
       structuredNodeIds;
@@ -503,6 +525,17 @@ private:
 
   mlir::LogicalResult emitPeerEndpoint(const CandidatePeerEndpoint &endpoint,
                                        mlir::OpBuilder &builder);
+
+  mlir::LogicalResult awaitPendingPeerToken(size_t index,
+                                            mlir::OpBuilder &builder);
+
+  mlir::LogicalResult awaitPendingPeerReceive(mlir::Value logicalValue,
+                                              mlir::OpBuilder &builder);
+
+  mlir::LogicalResult makePeerResourceAvailable(CandidatePeerEndpointKind kind,
+                                                mlir::OpBuilder &builder);
+
+  mlir::LogicalResult awaitAllPendingPeerTokens(mlir::OpBuilder &builder);
 
   mlir::LogicalResult convertStructuredOp(mlir::Operation *operation,
                                           mlir::OpBuilder &builder);
@@ -744,7 +777,8 @@ mlir::LogicalResult convertTensorProgramToTileRegionModuleInPlace(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     bool requireOneStructuredRootPerRegion = false,
     llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {},
-    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {});
+    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {},
+    llvm::ArrayRef<SpatialOutputShard> outputShards = {});
 
 /// In-place form for a function already owned by its final isolated
 /// Card/Tile construction. This avoids manufacturing a synthetic builtin
@@ -760,6 +794,7 @@ mlir::LogicalResult convertTensorProgramToTileRegionFunctionInPlace(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes = {},
     bool requireOneStructuredRootPerRegion = false,
     llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations = {},
-    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {});
+    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations = {},
+    llvm::ArrayRef<SpatialOutputShard> outputShards = {});
 
 } // namespace wafer::tensor_program_to_tile_region

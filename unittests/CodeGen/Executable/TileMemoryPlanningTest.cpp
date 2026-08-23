@@ -283,7 +283,7 @@ TEST_F(TileMemoryPlanningTest,
 }
 
 TEST_F(TileMemoryPlanningTest,
-       RebuildsRegionRootJoinAfterBufferizationFromCurrentEffects) {
+       RebuildsTerminalJoinAfterBufferizationFromCurrentEffects) {
   mlir::OwningOpRef<mlir::ModuleOp> module = candidateWithStaleMidRegionJoin();
   ASSERT_TRUE(module);
   auto workSession =
@@ -300,8 +300,9 @@ TEST_F(TileMemoryPlanningTest,
   });
   ASSERT_EQ(joins.size(), 1u);
   EXPECT_EQ(joins.front().getParticipants(), (llvm::ArrayRef<int64_t>{0}));
-  EXPECT_TRUE(mlir::isa<wafer::TileYieldOp>(joins.front()->getNextNode()));
-  EXPECT_TRUE(joins.front()->getParentOfType<wafer::TileRegionOp>());
+  EXPECT_TRUE(
+      mlir::isa<mlir::func::ReturnOp>(joins.front()->getNextNode()));
+  EXPECT_FALSE(joins.front()->getParentOfType<wafer::TileRegionOp>());
   const wafer::support::CompileWorkStatistics work = workSession->snapshot();
   EXPECT_EQ(work.tileMemoryPlanningInvocations, 1u);
   EXPECT_EQ(work.tileToInstructionLowerings, 0u);

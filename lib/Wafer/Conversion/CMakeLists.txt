@@ -54,6 +54,7 @@ add_mlir_conversion_library(WaferTensorProgramToTileRegion
   WaferTensorProgramToTileRegion/SelectedEdgeMaterialization.cpp
   WaferTensorProgramToTileRegion/SelectedEdgeMapping.cpp
   WaferTensorProgramToTileRegion/SelectedPeerMaterialization.cpp
+  WaferTensorProgramToTileRegion/StaticInsertSliceAssembly.cpp
   WaferTensorProgramToTileRegion/StructuredIterationTile.cpp
   WaferTensorProgramToTileRegion/TensorControlFlowLowering.cpp
   WaferTensorProgramToTileRegion/TemporalTileMaterialization.cpp

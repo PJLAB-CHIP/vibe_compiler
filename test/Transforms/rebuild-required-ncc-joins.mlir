@@ -45,5 +45,6 @@ module {
 // CHECK: wafer.instr.fill
 // CHECK: }
 // CHECK: wafer.instr.fill
-// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: }
+// CHECK-NEXT: wafer.instr.ncc_join [0]
+// CHECK-NEXT: return

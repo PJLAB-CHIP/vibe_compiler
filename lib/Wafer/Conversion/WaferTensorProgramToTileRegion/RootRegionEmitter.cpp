@@ -581,6 +581,9 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     for (mlir::Operation *operation : operations) {
       if (selectedStageAllocations.contains(operation))
         continue;
+      for (mlir::Value operand : operation->getOperands())
+        if (mlir::failed(awaitPendingPeerReceive(operand, rewriter)))
+          return mlir::failure();
       if (mlir::failed(convertOp(operation, rewriter)))
         return mlir::failure();
       if (mlir::failed(emitReadyEndpoints()))
@@ -589,6 +592,8 @@ TileRegionBodyEmitter::emitStructuredStages(TensorProgramScope scope,
     if (nextEndpoint != localEndpoints.size())
       return failAndReturn(
           "selected peer endpoint was not materialized in its movement region");
+    if (mlir::failed(awaitAllPendingPeerTokens(rewriter)))
+      return mlir::failure();
 
     llvm::SmallVector<mlir::Value, 4> yieldedOutputs;
     for (mlir::Value output : scope.getOutputs()) {

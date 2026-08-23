@@ -465,9 +465,11 @@ source program
   不作候选质量profile。Q52再执行显式bounded LLaMA search scalability profile，Q53生成正式模型package/oracle/no-card；
   旧输出不回放为current证据。
 - Q49.P official no-card gate：
-  `timeout 240s ctest --test-dir build/q55-current-fresh -R '^wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card$' --output-on-failure`。
+  `ctest --test-dir build/q55-current-fresh -R '^wafer-runtime-pytorch-llama-2-7b-block-fp16-optimization-none-no-card$' --output-on-failure`。
+  使用current CTest配置的模型级timeout，不再叠加历史240秒的临时外层限制；wall/RSS异常作为profile问题单独记录，不能通过放宽
+  correctness断言消失。
   该测试必须从本轮source重新编译完整package；不得复用历史package。runner从source program读取`functions/forward.meta`，从
-  current package读取manifest/module/program-data，不读取或要求`package/functions`。2026-08-19 fresh结果为1/1、181.70秒。
+  current package读取manifest/module/program-data，不读取或要求`package/functions`。
 
 
 ## baseline 定向验证边界
@@ -556,8 +558,12 @@ source program
 - request-local descriptor cache key包含source/destination `MemRefType`、iteration shape、两张projected affine map和engine，只缓存
   total/bounded exact success。低复用query不保留plan；identity physical traversal按type pair复用。work statistics记录实际descriptor
   planning次数，不能用无条件debug stderr观察cache。
-- completion fixed point区分alternative branch merge与sequential loop backedge：后者从上一轮完整body state继续，conditional ambiguity
-  才在body backedge join；unconditional same-worker流在observable exit完成。
+- completion fixed point区分alternative branch merge与sequential loop backedge：后者从上一轮完整body state继续；optional
+  same-worker issue只在实际发生的path上由busytable保序，未发生issue的path无completion，因此不因conditional ambiguity插backedge
+  join。cross-worker conflict在下一issue前完成，剩余same-worker流在observable exit完成。
+- resolved same-worker NCC后继可以界定旧地址lifetime：若packer后来复用该地址，首个同worker issue会由busytable按实际地址排序。
+  但这不等于worker完成；tracker必须保留ordered-release obligation，直到participant join。不同worker、Direct DTE、Kcore/call或其它
+  observer在join前出现时actual lifetime失败。只缩短区间并丢掉pending obligation会允许跨completion-domain错误复用。
 
 ## Physical planning、actual candidate与唯一发布
 

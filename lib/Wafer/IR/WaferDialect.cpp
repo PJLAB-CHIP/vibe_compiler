@@ -1,6 +1,7 @@
 //===- WaferDialect.cpp - Wafer dialect implementation -------------------===//
 
 #include "Wafer/IR/WaferDialect.h"
+#include "Wafer/Target/Core/DirectDTE.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/IR/AffineExpr.h"
@@ -635,9 +636,12 @@ mlir::LogicalResult DirectDTEBindingAttr::verify(
     DTECompletionProfile completionProfile) {
   (void)allocationProfile;
   (void)completionProfile;
-  if (receiverFsmId < 0 || receiverFsmId > 3)
+  constexpr int64_t maximumReceiverFSM =
+      TargetDirectDTEResourceLimits::receiverFSMsPerTile - 1;
+  if (receiverFsmId < 0 || receiverFsmId > maximumReceiverFSM)
     return emitError()
-           << "direct_dte_binding receiver FSM id must be within [0, 3]";
+           << "direct_dte_binding receiver FSM id must be within [0, "
+           << maximumReceiverFSM << "]";
   if (remoteAddressMode == DTERemoteAddressMode::Absolute &&
       remoteReceiverAddress < 0)
     return emitError()
@@ -659,9 +663,10 @@ mlir::LogicalResult DirectDTEBindingAttr::verify(
       return emitError()
              << "direct_dte_binding selector and remote address must be "
                 "non-negative";
-    if (table[index + 2] < 0 || table[index + 2] > 3)
+    if (table[index + 2] < 0 || table[index + 2] > maximumReceiverFSM)
       return emitError() << "direct_dte_binding route receiver FSM id must be "
-                            "within [0, 3]";
+                            "within [0, "
+                         << maximumReceiverFSM << "]";
     if (table[index] != static_cast<int64_t>(index / 3))
       return emitError()
              << "direct_dte_binding route selectors must be contiguous "

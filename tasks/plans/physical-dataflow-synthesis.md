@@ -1,9 +1,8 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
-状态：Q50.0 CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q50.B spatial-domain、Q51.Core
-search-control-foundation和Q50.C root-work-domain的当前输出已经闭合。2026-08-23 completion审计撤回Q49.P
-`deterministic-baseline-closure`及原第5--17项的完成结论；当前下一项先在原Q49.P work item清除per-block/per-element/structural
-NCC join和unproved immediate DTE await，随后按Region、Temporal、partial readiness、layout、movement、storage、event/K/I/J、
+状态：Q50.0 CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
+`deterministic-baseline-closure`、Q50.B spatial-domain、Q51.Core search-control-foundation和Q50.C root-work-domain的当前输出已经闭合。
+Q49.P已删除per-block/per-element/structural NCC join和无依据的immediate DTE await；当前下一项按Region、Temporal、partial readiness、layout、movement、storage、event/K/I/J、
 full-feasibility和Q51的顺序重新闭合selected construction与production consumer。Q50.S attention production、Q52与Q53继续等待这些
 直接前置并按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
@@ -256,11 +255,11 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 
 | 顺序 | Work item | 状态 | 设计owner | 单一输出责任 | 逐项执行门禁 | 下一work item |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `deterministic-baseline-closure` | `next` | Q49.P | 保留actual candidate→SPM→typed feedback闭环；删除per-block/per-element/structural join与unproved immediate await，fresh none满足最小completion及动态work gate | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
+| 1 | `deterministic-baseline-closure` | `done` | Q49.P | 保留actual candidate→SPM→typed feedback闭环；删除per-block/per-element/structural join与unproved immediate await，fresh none满足最小completion及动态work gate | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
 | 2 | `spatial-domain` | `done` | Q50.B | complete spatial successors、reference enumerator及proposal | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-foundation |
 | 3 | `search-control-foundation` | `done` | Q51.Core | SpatialState frontier/continuation及public search routing | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | root-work-domain |
 | 4 | `root-work-domain` | `done` | Q50.C | full root/merge work domain、Core consumer及complete-candidate emitter输入 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
-| 5 | `region-execution-domain` | `queued` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
+| 5 | `region-execution-domain` | `next` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
 | 6 | `temporal-domain` | `queued` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
 | 7 | `partial-feasibility` | `queued` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
 | 8 | `layout-domain` | `queued` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
@@ -286,8 +285,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 
 ### 完成状态复核与重新打开边界
 
-当前状态复核以production call graph、实际candidate carrier和本轮执行的定向测试为依据。第2--4项的当前输出仍成立；第1项的
-actual SPM反馈机制可保留，但其production completion normal form失效并已重新打开。后续局部domain、builder和typed failure测试
+当前状态复核以production call graph、实际candidate carrier和本轮执行的定向测试为依据。第1--4项的当前输出已经闭合；第1项在
+保留actual SPM反馈机制的同时重新建立了hardware-evidence-driven completion normal form。后续局部domain、builder和typed failure测试
 继续保留，但下面事实使原第5--17项不能签发`done`：
 
 - current `CompleteCandidatePlan`只携带spatial assignment、exact demand、root work、TemporalPlan和prepared attention decomposition；
@@ -339,14 +338,14 @@ artifact或production gate；owner整体完成由`tasks/progress.md`的owner map
   observable terminal cut，并只完成真实pending participant；DTE wait必须位于recv first read、send/relay last release或实际FSM/slot
   reuse之前。缺少证据时是unknown并typed defer/reject，不能插一个“保守”drain，也不能把所有token立即await。
 
-#### Current production偏差与owner
+#### 2026-08-23审计偏差与处置
 
-| Current位置 | 已确认行为 | 为什么不符合合同 | 修正owner与必须输出 |
+| 位置 | 审计时行为 | 为什么不符合合同 | 当前处置与后续owner |
 | --- | --- | --- | --- |
-| `SelectedAttentionDecomposition.cpp`、`TensorControlFlowLowering.cpp` | 每个K2 block state update创建带worker0 participant的`TensorCompletionOp`，随后直接lower为`SyncNCCJoinOp` | algorithm decomposition在worker/order/lifetime尚未选择时固定schedule；join动态数随K2 block数增长并清空本可跨block保留的NCC窗口 | Q50.S decomposition只保留SSA running max/sum/accumulator依赖；Q50.J从selected actual effects在真实reuse/domain exit处放置completion。Q49.P与`attention-production-closure`均重验 |
-| `TensorControlFlowLowering.cpp` external/cache copy | copy tile固定为各维1；每个leaf分配1-element SPM，发射load、store、worker0 join并dealloc | 对rank-4 decode cache prefix，DMA/allocation/join按logical element数线性增长；这不是保守正确性，而是把结构化copy退化为逐元素阻塞程序 | Q49.P/E/H产生可循环或descriptor化的canonical actual movement，I拥有buffer lifetime，J在真实release/terminal处完成；actual SPM planner验证具体allocation，不用footprint猜tile |
-| `BodyEmitter.cpp` peer endpoint | streamed和non-streamed send/recv刚产生token就立即`async.await`；`PeerLowering`再lower为`InstrDTEWaitOp` | H在J选择order、first read、last release和FSM allocation前把通信串行化，合法overlap window消失 | `movement-domain`把token-only `MovementTransferBuilder`接入production；I提供source/destination/relay lifetime；J选择满足first-read/last-release、4-FSM与无环约束的wait，必要时可以早等但不能默认立即等 |
-| `WaferTileRegionToInstr.cpp` required-join reconstruction | 每个TileRegion terminator闭合仍访问region-local roots的worker；managed materialization WDMA后和reload前固定闭合same worker | region ownership、WDMA和store/reload类别本身都不是hardware completion event；current规则把结构边界当同步proof | Q50.J/Q50.0从actual root lifetime、crossing、reuse和terminal重建。保留正确的same-worker loop零join、cross-worker conflict和observable return逻辑；删除region/materialization特殊期望 |
+| `SelectedAttentionDecomposition.cpp`、`TensorControlFlowLowering.cpp` | 每个K2 block state update创建带worker0 participant的`TensorCompletionOp`，随后直接lower为`SyncNCCJoinOp` | algorithm decomposition在worker/order/lifetime尚未选择时固定schedule；join动态数随K2 block数增长并清空本可跨block保留的NCC窗口 | Q49.P已删除该op和lowering；Q50.S只保留SSA running max/sum/accumulator，后续Q50.J从selected actual effects放置completion |
+| `TensorControlFlowLowering.cpp` external/cache copy | copy tile固定为各维1；每个leaf分配1-element SPM，发射load、store、worker0 join并dealloc | 对rank-4 decode cache prefix，DMA/allocation/join按logical element数线性增长；这不是保守正确性，而是把结构化copy退化为逐元素阻塞程序 | Q49.P已改为selected output temporal tile的exact SCF main/tail traversal并由actual SPM planner验证；E/H/I/J继续拥有完整search选择、movement、lifetime与completion |
+| `BodyEmitter.cpp` peer endpoint | streamed和non-streamed send/recv刚产生token就立即`async.await`；`PeerLowering`再lower为`InstrDTEWaitOp` | H在J选择order、first read、last release和FSM allocation前把通信串行化，合法overlap window消失 | Q49.P已使non-streamed token延迟到first read、last release、resource reuse或terminal；streamed scratch只在actual store/dealloc前wait。H/I/J继续扩完整selected域 |
+| `WaferTileRegionToInstr.cpp` required-join reconstruction | 每个TileRegion terminator闭合仍访问region-local roots的worker；managed materialization WDMA后和reload前固定闭合same worker | region ownership、WDMA和store/reload类别本身都不是hardware completion event；current规则把结构边界当同步proof | Q49.P已删除region/materialization特殊规则并建立ordered-pending lifetime；Q50.J仍负责selected schedule的完整latest-unavoidable placement |
 | `EventGraph.cpp` | execution contract缺失时默认`CompletionProtocol::Synchronous`；DDR/no-hop movement也默认Synchronous | missing typed fact被静默解释为同步完成，掩盖真实RDMA/WDMA async domain和Q63接线缺口 | `event-resource-foundation`必须从Q63和H typed action取得completion；缺失为typed malformed/deferred，不得default Synchronous |
 | `ScheduleDomain.cpp` | 每个completion obligation固定放在自己的completion event | 没有枚举或推导latest-unavoidable legal boundary，schedule axis实际未关闭 | `schedule-domain`在fixed K/I EventGraph上枚举有限EventBoundaryId，满足hard/lifetime/resource edge后选择最晚最弱合法点并生成actual IR |
 | canonical schedule/attention projection | canonical prefix把全部node绑定worker0，`CanonicalAttentionWorkProjection`也只接受该canonical coordinate | 对canonical `none`这是合法检查，但它证明该helper不能直接充当noncanonical selected-search consumer；worker0不能成为attention语义 | canonical helper继续只服务canonical producer；selected attention construction从worker-independent work facts与closed J plan分别取值，不复用canonical worker0检查缩小J合法域 |
@@ -354,21 +353,23 @@ artifact或production gate；owner整体完成由`tasks/progress.md`的owner map
 | donor/inactive路径 | `DataMovementApply`与selected-buffer donor仍含immediate await或同步surgery | 当前没有production caller不等于可作为后续迁移模板；直接接回会重新引入同类错误 | 迁移时只保留payload/lifetime/negative witness；wait/join placement统一交给J，随后删除donor |
 
 Q63保持`done`：pure target completion protocol、MLIR operation interface和current-IR pending analysis的分层是正确的。本轮不新增
-第二completion interface，也不让Q63选择worker/order；缺口是Q50.J没有完整消费这些facts，以及若干上游builder绕过J直接写同步。
+第二completion interface，也不让Q63选择worker/order；Q49.P已清除审计发现的production绕行，剩余缺口是Q50.J尚未把这些facts扩展成
+完整selected schedule domain。
 
 #### 测试审计与新门禁
 
-本轮fresh定向结果揭示“测试通过但合同错误”：attention decomposition测试通过时仍明确要求每个K2 block一个
+审计时的fresh定向结果揭示“测试通过但合同错误”：attention decomposition测试通过时仍明确要求每个K2 block一个
 `TensorCompletionOp`；movement builder测试正确要求matching send/recv token且零immediate await；TileRegion-to-Instr lit同时包含正确的
-unconditional same-worker loop零join，以及要求每个region/materialization产生join的旧期望。前两组矛盾期望和后者旧期望必须随实现
-一起改，不能把现有绿灯当完成证明。
+unconditional same-worker loop零join，以及要求每个region/materialization产生join的旧期望。Q49.P已经随实现修正这些错误期望；这条
+教训继续作为后续门禁，不能把与合同相反的绿灯当完成证明。
 
 每个受影响work item的覆盖矩阵增加以下exact gate：
 
 1. FA/FD aligned/ragged实际candidate在没有typed cross-domain cut时，`steadyStateNCCJoinCount == 0`且
    `nonTerminalNCCJoinCount == 0`；K2 block数增加不增加join数。真实terminal或cross-worker正例仍保留minimum participant join。
-2. rank>=3、1024/1025/1031 external/cache copy检查DMA、allocation、join的static site和dynamic execution count；任何计数不得与
-   logical element count成正比，actual SPM offsets与tail coverage仍由MiniMalloc和IR witness证明。
+2. rank>=3、1024/1025/1031 external/cache copy检查DMA、allocation、join的static site和dynamic execution count；DMA执行数必须
+   等于selected temporal tile count而不是logical element count，allocation site保持有界，steady/nonterminal join为0；actual SPM
+   offsets与tail coverage仍由MiniMalloc和IR witness证明。
 3. peer direct/relay/fanout/gather分别检查token-only issue window、recv-before-first-read、send/relay-before-last-release、最多4个overlap
    receiver live ranges、全卡无环wait graph和matching dynamic occurrence；即时wait只在这些hard facts迫使时出现。
 4. required-join正负例分别覆盖unconditional/conditional same-worker loop、cross-worker RAW/WAR/WAW、NCC→Kcore、NCC→DTE、
@@ -377,12 +378,12 @@ unconditional same-worker loop零join，以及要求每个region/materialization
 5. `full-feasibility`与Q53 accepted-IR inspection从actual Instr重算total/steady/nonterminal join、participant wait和DTE wait，并与
    `ClosedSchedulePlan`逐项parity；没有plan owner的同步是compiler bug，计划要求的同步缺失则typed reject。
 
-work item责任据此固定：Q49.P先关闭current production regression；D/E不得写同步；H只产生movement/token；I及post-K I拥有
+work item责任据此固定：Q49.P已经关闭current production regression；D/E不得写同步；H只产生movement/token；I及post-K I拥有
 lifetime/reuse；J foundation取得完整typed completion facts，J closure拥有全部worker/order/wait/join placement；F检查actual gate；
 Q51按actual result比较；Q50.S删除attention per-block completion。后续任何本项开始编码前都要重新阅读本节、11/13号合同和对应
 硬件/ABI事实源。
 
-Q49.P先施工不意味着建立baseline-only completion算法。它给唯一policy-free completion constructor传入canonical actual
+Q49.P的实现不建立baseline-only completion算法。它给唯一policy-free completion constructor传入canonical actual
 order/worker、Q63 effects、H token和current lifetime，取得确定性的最小completion；后续J closure向同一constructor传selected
 order/worker/boundary。Q49.P只关闭这条shared primitive及`none`调用点，不签发J domain、worker alternatives或search schedule完成。
 
@@ -544,6 +545,61 @@ legality/materialization机制和Q50.A logical demand/coverage query，不复用
 一次完整CardModule并由Q50.0消费；actual capacity rejection销毁该candidate并驱动下一个coordinate，accepted owner继续下传。
 不得为同一coordinate另建probe、footprint、synthetic demand或第二份CardModule。
 
+### deterministic-baseline-closure同步与copy实现调研
+
+本项采用两条成熟IR实践，但不复制其它项目的dialect或runtime：
+
+| 事实源 | 可复用原则 | Wafer采用边界 |
+| --- | --- | --- |
+| [MLIR Async dialect](https://mlir.llvm.org/docs/Dialects/AsyncDialect/) | async operation用SSA token显式表达完成；consumer依赖必须显式，不能从结构或共享状态隐式推断 | DTE send/recv只产生token，wait消费exact token；NCC仍使用自己的typed pending-worker域，二者不互相完成 |
+| [IREE Stream timepoint propagation](https://iree.dev/reference/mlir-passes/Stream/#iree-stream-propagate-timepoints)与[resource lifetime](https://iree.dev/reference/mlir-dialects/Stream/) | timepoint可穿过call/control flow以避免过早host wait；resource在对应timepoint前保持live，释放/复用发生在completion之后 | wait放在receiver first read、sender/relay last release、实际FSM/resource reuse或terminal之前；不在issue、loop或region边界默认等待。Wafer仍由TX81的1 sender、4 receiver FSM及Q63 participant事实限制 |
+
+实现采用一个actual-IR派生算法，不增加baseline-only completion协议：
+
+1. attention selected decomposition只返回running maximum/sum/accumulator的普通SSA values；删除只为携带worker0 schedule而存在的
+   `wafer.tensor.completion` op、lowering和测试。worker/participant不再出现在algorithm层。
+2. external output copy的tile来自当前`SpatialOutputShard.temporalTileSizes`，即candidate已经选定并由output owner消费的temporal
+   coordinate。materializer把`outputIndex → tile sizes`作为query-local typed input传给TileRegion construction；BodyEmitter只验证
+   rank、正值和`tile <= copy extent`并按该tile构造exact main/tail SCF waves。缺失或冲突plan为contract failure；禁止fallback到全1
+   tile、shape heuristic、target capacity或footprint estimate。每个wave仍进入actual MiniMalloc，capacity rejection只能回到外层controller。
+3. required NCC completion从current Instr effects/ranges/control flow重建。same-worker issue只保持order；region/yield、WDMA、managed
+   store/reload、alloc/free不构成completion。cross-worker alias、NCC→DTE/Kcore/call和observable function terminal仍在最晚必要位置完成
+   actual pending participant。
+4. non-streamed peer token保持pending：recv在对应tensor第一次SSA读取前wait；send在同Tile唯一sender resource复用或terminal前wait；
+   receiver只在第五个并存token前完成最早pending token。streamed scratch的recv wait紧邻store是first read，send wait紧邻dealloc是
+   last release，属于实际lifetime cut而不是默认issue-after-wait规则。所有剩余token在Tile entry terminal前exact闭合。
+
+本项覆盖矩阵如下；static site、dynamic execution和direct downstream witness必须同时断言：
+
+| 输入等价类 | 代表输入 | 结构路径 | typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- | --- |
+| FA/FD state recurrence | rank-4/5 FP16或BF16，K2为1024及1025/1031，single/multi block | selected decomposition→Tile→Instr→completion rebuild | action/value mapping缺失、cross-domain contract缺失 | algorithm IR零`tensor.completion`和固定worker；无cross-domain cut时steady/nonterminal join为0，K2 block增长不增加join | actual cost、SPM plan和terminal join participant从final Instr重算 |
+| external cache/output copy | rank-4 `[1,32,1024/1025,128]`及prefix tail | selected output temporal tile→exact SCF main/tail→RDMA/WDMA→MiniMalloc | missing/duplicate output tile、rank mismatch、nonpositive/oversized tile | scratch tile等于selected output temporal tile（tail按exact size）；DMA dynamic count等于selected tile count而非element count；每element exact覆盖一次；steady/nonterminal join为0 | split Tile module、Instr work count、actual SPM offsets和output relation完整 |
+| NCC same/cross-worker | rank-3 1024/1025/1031，same-worker region/store/reload、cross-worker RAW/WAR/WAW | current effects/ranges→pending fixed point→join reconstruction | unknown effect、unsupported CFG、invalid worker | same-worker结构边界零join；cross-worker只在冲突前完成真实participant；return闭合剩余pending | target lowering只为保留join生成真实`ncc_join` call |
+| Direct DTE token lifetime | rank-3 1024/1025 direct、streamed、two-hop relay及五个overlap receive | token issue→first read/last release/FSM reuse→wait→binding | missing token、第五个无法释放的receiver、cyclic wait graph | non-streamed至少一个合法issue window；wait exact一次；最多4个live recv与1个live sender；streamed adjacency有明确first-read/last-release witness | PeerLowering、DirectDTETransport binding及CardExecutable verifier通过 |
+| full `none` vertical | aligned/ragged prefill、decode cache和ordinary multi-root | source→canonical candidate→Q50.0→target/package→no-card | typed unsupported/indeterminate保持原分类 | candidate/Q50.0各一次、无search、join/wait/DMA work满足上述门禁、16 Tiles all-and-only | fresh package、CPU oracle和no-card消费同一accepted owner |
+
+### deterministic-baseline-closure实现结果
+
+- `wafer.tensor.completion`及其ODS、printer/parser、lowering和测试已经删除；attention online state只通过普通SSA value传递。算法层不再
+  写worker或participant。
+- complete static `tensor.insert_slice` assembly由一个只读query检查exact disjoint/full coverage；candidate output materializer与
+  BodyEmitter消费同一结果。Card mapping直接传入`SpatialOutputShard.temporalTileSizes`；single-root入口通过当前`linalg::LinalgOp`
+  result indexing map把已选iterator tile精确投影到output tile。两条入口都不从source shape、SPM容量或估算值补tile。
+- TileRegion→Instr不再把region terminator、WDMA/reload类别或same-worker loop backedge当作join理由。Lifetime analysis在resolved
+  same-worker NCC链中用后继issue界定旧地址lifetime；任何实际物理复用会在后续同worker issue时由busytable按地址排序。该缩短仍保留
+  worker-domain obligation，不同worker、Direct DTE、Kcore/call或其它observer必须先有覆盖participant join；仅丢弃旧pending状态属于
+  contract bug。observable terminal继续完成真实pending participant。
+- non-streamed Direct DTE保留SSA token窗口；recv在对应logical value第一次读取前wait，send在唯一sender复用或terminal前wait，
+  第五个receiver issue前释放最早pending receiver。1个sender slot与4个receiver FSM由共享target hard fact定义；streamed scratch只在
+  actual store/dealloc边界等待。
+
+2026-08-23 fresh证据：增量构建通过；受影响unit为154/154，current tracked unit suite为904/904；Dialect/Pipelines/Transforms lit为
+198/198；IR/source organization、自检和target/runtime/compiler/model public-link 4/4通过。FP16 attention prefill、two-step KV-cache
+decode及LLaMA-2 7B block均从source重新生成package并通过CPU reference与no-card，分别为14.95秒、309.34秒和697.34秒。LLaMA本轮
+运行中观测RSS约10.6 GiB，功能与dynamic join/copy work门禁已通过，但该wall/RSS样本不是性能完成证据；Q52必须在完整search链上重新profile并
+解释或消除该热点，Q53不得复用本轮package。没有执行真实板端测试。
+
 controller交给共同materializer的是窄immutable resolved baseline assignment。它是上述feasibility resolution的输出而非入口
 前置条件，只含per-root placement、显式singleton region boundary、完整temporal vector和已经确定的canonical
 representation/movement/buffer/order/completion事实，不含evaluation/score、stable ordinal、transition/failure history或
@@ -652,9 +708,9 @@ alignment/lifetime真实占用而溢出、经过多个合法breakpoint后fit并�
 capacity terminal的当前证明；typed capacity/unsupported terminal仍保留为fail-closed防御出口。测试同时断言每次trial重新计算
 workset/lifetime、没有beam/cap/budget截断fallback，且这些trial不进入candidate统计。
 
-### Q49.P此前闭合结果与本轮失效边界
+### Q49.P actual-feedback与completion闭合结果
 
-以下记录保留此前已验证、且本轮仍可复用的actual-feedback机制，不再签发current `done`。`none`从normal TensorProgram建立一个deterministic coordinate，完整candidate
+以下记录汇总仍在current production路径中的actual-feedback机制。`none`从normal TensorProgram建立一个deterministic coordinate，完整candidate
 各自只物化一次CardModule并调用一次Q50.0；actual SPM capacity rejection只有在每个allocation/conflict demand都能沿current
 result、operand、scratch、movement或output relation回到typed structured owner时才推进下一temporal coordinate。rejected owner立即
 销毁，accepted CardExecutable直接保留并进入target/package；baseline调用闭包不构造search state、candidate family、score、winner或
@@ -678,14 +734,14 @@ work-count证明四次相同exact layout query只执行三次descriptor planning
 | rank-4 ragged | FP16，`batch=1, head=2, Q=1025, KV=1031, Dq=64, Dv=128`并带mask；覆盖remainder/tail和actual MiniMalloc，fresh通过 |
 | FA/FD纵向 | direct aligned/ragged prefill与functional decode均从selected decomposition走完整CardExecutable gate；decode cache output不形成whole-tensor SPM residency |
 | ordinary relation矩阵 | broadcast、reduction、affine window、strided、multi-piece、multi-producer、scalar/zero-rank、wave-bounded carrier及finite temporal traversal均通过complete gate |
-| lowering/allocator | custom/generic Tensor completion roundtrip与negative verifier、dynamic gather offset正负例、fresh NCC completion、current owner relation、MiniMalloc/packing和target lowering通过 |
+| lowering/allocator | dynamic gather offset正负例、fresh NCC completion、current owner relation、MiniMalloc/packing和target lowering通过；算法层Tensor completion op已删除 |
 | production | fresh FP16 LLaMA 2 7B block以public `optimization-none`生成完整package并通过no-card；16 Tiles all-and-only，未进入search |
 
 完整增量构建和全部configured lit通过；lit中本项相关case均实际执行。Tensor层scheduled attention recurrence仍由后续
 `region-execution-domain`/`temporal-domain`统一设计，Q49.P不提前建立第二套region recurrence或dynamic-slice exact-demand合同。
-2026-08-23专项审计随后发现per-K2-block completion、逐元素external copy join、peer immediate await及结构化region/materialization
-join仍进入这一production链，因此上述fresh结果只能证明功能链和SPM反馈机制，不能证明completion normal form；current状态以本计划
-专项审计和`tasks/progress.md`的`next`为准。
+2026-08-23专项修正已删除per-K2-block completion、逐元素copy join、non-streamed peer immediate await及结构化
+region/materialization join；具体实现和fresh数字以前述“deterministic-baseline-closure实现结果”为准。Q49.P当前为`done`，后续D/E/H/I/J
+仍须在各自完整domain中建立selected construction，不能把baseline canonical placement当作search完成证据。
 
 ### 已完成输入：Exact-Demand Boundary
 

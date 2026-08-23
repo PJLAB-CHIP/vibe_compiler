@@ -291,7 +291,7 @@ func.func @dynamic_loop_local_dte_token_is_fail_closed(
 
 // -----
 
-func.func @dealloc_cannot_observe_pending_ncc_write(
+func.func @dealloc_is_lifetime_marker_not_pending_ncc_observer(
     %boundary: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %region = wafer.tile.region(%boundary
       : memref<128xf16, #wafer.memory<ddr, tensor>>)
@@ -300,7 +300,6 @@ func.func @dealloc_cannot_observe_pending_ncc_write(
     %zero = arith.constant 0.000000e+00 : f16
     %buffer = memref.alloc()
         : memref<128xf16, #wafer.memory<spm, tensor>>
-    // expected-error @below {{missing_local_completion: local Compute/Movement issue has a reachable path to wafer.tile.region exit without a matching participant in wafer.instr.ncc_join}}
     wafer.instr.fill %buffer, %zero
         : memref<128xf16, #wafer.memory<spm, tensor>>, f16
     memref.dealloc %buffer

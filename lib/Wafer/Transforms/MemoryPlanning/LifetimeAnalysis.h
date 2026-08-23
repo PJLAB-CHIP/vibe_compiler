@@ -306,9 +306,12 @@ private:
 /// Extends tracked local-engine accesses through path-covering completion
 /// barriers. An asynchronous issue is tracked only when its centralized local
 /// completion contract is OrderedAsynchronousIssue and it has a
-/// value-associated storage effect on a tracked root. While such an access is
-/// pending, deallocation and operations without a complete effect contract fail
-/// closed.
+/// value-associated storage effect on a tracked root. A later resolved issue
+/// on the same worker bounds prior address lifetimes because any physical
+/// reuse is ordered by the hardware busytable. This shortened chain remains
+/// pending as a worker-domain obligation: a different worker, Direct DTE or
+/// ordinary observer requires a covering participant join first. Operations
+/// without a complete effect contract fail closed.
 class LocalCompletionTracker {
 public:
   LocalCompletionTracker() = default;
@@ -359,9 +362,13 @@ private:
   void refreshPendingAccessSummary();
   void processFence(ProgramPoint fencePoint, uint32_t participantMask,
                     LifetimeDataflow &dataflow);
+  void processOrderedWorkerSuccessor(ProgramPoint successorPoint,
+                                     uint32_t workerMask,
+                                     LifetimeDataflow &dataflow);
 
   llvm::SmallVector<PendingIssue, 8> pendingIssues;
   llvm::SmallVector<PendingAccess, 8> pendingAccesses;
+  llvm::SmallVector<PendingIssue, 4> orderedReleasedIssues;
   uint32_t commonPendingWorkerMask = 0;
   bool pendingWorkerMasksAgree = true;
   bool pendingAllHaveResolvedRoots = true;

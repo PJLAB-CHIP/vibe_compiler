@@ -206,9 +206,9 @@ func.func @static_loop_bounds_through_residency_inputs(%zero: f32) {
 // CHECK: wafer.instr.fill
 // CHECK: }
 // CHECK-NEXT: wafer.instr.elementwise
-// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: wafer.tile.yield
 // CHECK: }
+// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: return
 
 func.func @cross_worker_backedge(%zero: f32) {
@@ -290,12 +290,11 @@ func.func @conditional_same_worker_backedge(%condition: i1, %zero: f32)
 // CHECK: scf.if
 // CHECK: wafer.instr.fill
 // CHECK: }
-// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: }
-// CHECK-NOT: wafer.instr.ncc_join
+// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: return %{{.*}} : memref<4xf32, #wafer.memory<spm, tensor>>
 
-func.func @region_exit_completes_only_region_local_roots(%zero: f32) {
+func.func @region_exit_preserves_pending_workers_until_terminal(%zero: f32) {
   %outer = memref.alloc()
       : memref<4xf32, #wafer.memory<spm, tensor>>
   wafer.instr.fill %outer, %zero
@@ -337,28 +336,26 @@ func.func @region_exit_completes_only_region_local_roots(%zero: f32) {
   return
 }
 
-// CHECK-LABEL: func.func @region_exit_completes_only_region_local_roots
+// CHECK-LABEL: func.func @region_exit_preserves_pending_workers_until_terminal
 // CHECK: wafer.instr.fill %[[OUTER:[^,]+]],
 // CHECK-SAME: worker = #wafer.ncc_worker<worker1>
 // CHECK: wafer.tile.region
 // CHECK: %[[LOCAL0:[^ ]+]] = memref.alloc()
 // CHECK: wafer.instr.fill %[[LOCAL0]]
 // CHECK: wafer.instr.elementwise <add> %[[LOCAL0]], %[[LOCAL0]] into %[[LOCAL0]]
-// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: wafer.tile.yield
 // CHECK: }
 // CHECK-NEXT: %{{.*}} = wafer.tile.region
 // CHECK: %[[LOCAL1:[^ ]+]] = memref.alloc()
 // CHECK: wafer.instr.fill %[[LOCAL1]]
 // CHECK: wafer.instr.elementwise <add> %[[LOCAL1]], %[[LOCAL1]] into %[[LOCAL1]]
-// CHECK-NEXT: wafer.instr.ncc_join [2]
 // CHECK-NEXT: wafer.tile.yield
 // CHECK: }
 // CHECK-NEXT: wafer.instr.elementwise <add> %[[OUTER]], %[[OUTER]] into %[[OUTER]]
-// CHECK-NEXT: wafer.instr.ncc_join [1]
+// CHECK-NEXT: wafer.instr.ncc_join [0, 1, 2]
 // CHECK-NEXT: return
 
-func.func @managed_materialization_releases_each_spm_root(
+func.func @same_worker_managed_materialization_joins_only_at_terminal(
     %input: memref<128xf16, #wafer.memory<ddr, tensor>>,
     %output: memref<128xf16, #wafer.memory<ddr, tensor>>) {
   %result = wafer.tile.region(%input, %output
@@ -399,17 +396,16 @@ func.func @managed_materialization_releases_each_spm_root(
   return
 }
 
-// CHECK-LABEL: func.func @managed_materialization_releases_each_spm_root
+// CHECK-LABEL: func.func @same_worker_managed_materialization_joins_only_at_terminal
 // CHECK: wafer.instr.rdma %{{.+}} to %[[FIRST:[^ ]+]]
 // CHECK: wafer.instr.wdma %[[FIRST]] to %[[SPILL:[^ ]+]]
-// CHECK-NEXT: wafer.instr.ncc_join [0]
+// CHECK-NOT: wafer.instr.ncc_join
 // CHECK: wafer.instr.rdma %{{.+}} to %[[MIDDLE:[^ ]+]]
 // CHECK-NEXT: wafer.instr.wdma %[[MIDDLE]]
-// CHECK: wafer.instr.ncc_join [0]
 // CHECK-NEXT: %[[RELOADED:[^ ]+]] = memref.alloc()
 // CHECK-NEXT: wafer.instr.rdma %[[SPILL]] to %[[RELOADED]]
 // CHECK-NEXT: wafer.instr.wdma %[[RELOADED]]
-// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: wafer.tile.yield
 // CHECK: }
+// CHECK-NEXT: wafer.instr.ncc_join [0]
 // CHECK-NEXT: return

@@ -105,7 +105,8 @@ mlir::LogicalResult wafer::lowerSpatialOutputShardsToTileRegionModule(
           /*verifyResult=*/true,
           /*populateFallbackFailureReason=*/true,
           /*peerEndpoints=*/{}, /*selectedDDRStages=*/{}, &emissionRelations,
-          mappedOperationNodes, requireOneStructuredRootPerRegion)))
+          mappedOperationNodes, requireOneStructuredRootPerRegion,
+          /*representations=*/{}, /*implementations=*/{}, outputShards)))
     return mlir::failure();
 
   if (materializationRelations)

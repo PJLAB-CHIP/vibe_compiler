@@ -5,7 +5,9 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
+#include "Wafer/Target/Core/DirectDTE.h"
 
+#include <iterator>
 #include <limits>
 
 using namespace wafer;
@@ -182,11 +184,13 @@ TileRegionBodyEmitter::TileRegionBodyEmitter(
     TileRegionEmissionRecorder *relationRecorder,
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations,
-    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations)
+    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations,
+    llvm::ArrayRef<SpatialOutputShard> outputShards)
     : failureReason(failureReason),
       currentLogicalPartition(currentLogicalPartition),
       peerEndpoints(peerEndpoints.begin(), peerEndpoints.end()),
       selectedDDRStages(selectedDDRStages),
+      outputShards(outputShards.begin(), outputShards.end()),
       relationRecorder(relationRecorder) {
   for (const StructuredNodePhysicalRepresentation &representation :
        representations) {
@@ -379,6 +383,8 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
         }
         return failAndReturn(detail);
       }
+      if (mlir::failed(awaitPendingPeerReceive(operand, rewriter)))
+        return mlir::failure();
     }
     if (mlir::failed(convertOp(op, rewriter)))
       return mlir::failure();
@@ -389,6 +395,12 @@ TileRegionBodyEmitter::emit(TensorProgramScope scope,
   if (nextEndpoint != endpointSchedule.size())
     return failAndReturn(
         "selected peer endpoint was not materialized from current SSA");
+
+  // Any receive without an earlier tensor consumer becomes visible at the
+  // Tile result boundary. Sends retain their source through this terminal
+  // wait. Resource-forced waits may have consumed a subset already.
+  if (mlir::failed(awaitAllPendingPeerTokens(rewriter)))
+    return mlir::failure();
 
   if (mlir::failed(finishRegion(scope, tileRegion, rewriter)))
     return mlir::failure();
@@ -931,29 +943,6 @@ TileRegionBodyEmitter::initializeBoundary(TensorProgramScope scope,
 
 mlir::LogicalResult TileRegionBodyEmitter::bindCompleteInsertSliceOutputsToDDR(
     TensorProgramScope scope) {
-  struct SliceBox {
-    llvm::SmallVector<int64_t, 4> offsets;
-    llvm::SmallVector<int64_t, 4> sizes;
-  };
-
-  auto checkedVolume = [](llvm::ArrayRef<int64_t> shape, uint64_t &volume) {
-    volume = 1;
-    for (int64_t extent : shape) {
-      if (extent <= 0 || static_cast<uint64_t>(extent) >
-                             std::numeric_limits<uint64_t>::max() / volume)
-        return false;
-      volume *= static_cast<uint64_t>(extent);
-    }
-    return true;
-  };
-  auto boxesOverlap = [](const SliceBox &lhs, const SliceBox &rhs) {
-    for (auto [lhsOffset, lhsSize, rhsOffset, rhsSize] :
-         llvm::zip_equal(lhs.offsets, lhs.sizes, rhs.offsets, rhs.sizes))
-      if (lhsOffset + lhsSize <= rhsOffset || rhsOffset + rhsSize <= lhsOffset)
-        return false;
-    return true;
-  };
-
   llvm::DenseMap<mlir::Value, unsigned> claimedBases;
   for (auto [outputIndex, returned, outputArgument] :
        llvm::enumerate(scope.getReturn().getOperands(), scope.getOutputs())) {
@@ -992,84 +981,20 @@ mlir::LogicalResult TileRegionBodyEmitter::bindCompleteInsertSliceOutputsToDDR(
       }
     }
 
-    llvm::SmallVector<mlir::tensor::InsertSliceOp, 4> chain;
-    mlir::Value base = assembly;
-    while (auto insert = base.getDefiningOp<mlir::tensor::InsertSliceOp>()) {
-      chain.push_back(insert);
-      base = insert.getDest();
-    }
-    auto empty = base.getDefiningOp<mlir::tensor::EmptyOp>();
-    if (!empty || chain.empty())
+    auto analyzed = analyzeCompleteStaticInsertSliceAssembly(assembly);
+    if (mlir::failed(analyzed))
+      return fail("tensor output assembly coverage arithmetic overflowed");
+    if (!*analyzed)
       continue;
-
     auto resultType =
         mlir::dyn_cast<mlir::RankedTensorType>(returned.getType());
-    auto baseType = mlir::dyn_cast<mlir::RankedTensorType>(base.getType());
-    if (!resultType || !resultType.hasStaticShape() || baseType != resultType ||
-        outputArgument.getType() != resultType ||
-        !empty.getDynamicSizes().empty())
+    if (!resultType || outputArgument.getType() != resultType ||
+        llvm::any_of((*analyzed)->inserts,
+                     [&](mlir::tensor::InsertSliceOp insert) {
+                       return !hasNoObservableDestUseExceptInsert(insert);
+                     }))
       continue;
-
-    uint64_t resultVolume = 0;
-    if (!checkedVolume(resultType.getShape(), resultVolume))
-      continue;
-    uint64_t assembledVolume = 0;
-    llvm::SmallVector<SliceBox, 4> boxes;
-    bool complete = true;
-    for (mlir::tensor::InsertSliceOp insert : llvm::reverse(chain)) {
-      auto sourceType =
-          mlir::dyn_cast<mlir::RankedTensorType>(insert.getSourceType());
-      if (!sourceType || !sourceType.hasStaticShape() ||
-          sourceType.getRank() != resultType.getRank() ||
-          insert.getDestType() != resultType ||
-          insert.getType() != resultType ||
-          !allStatic(insert.getStaticOffsets()) ||
-          !allStatic(insert.getStaticSizes()) ||
-          !allStatic(insert.getStaticStrides()) ||
-          !llvm::all_of(insert.getStaticStrides(),
-                        [](int64_t stride) { return stride == 1; }) ||
-          !hasNoObservableDestUseExceptInsert(insert)) {
-        complete = false;
-        break;
-      }
-
-      SliceBox box;
-      box.offsets.assign(insert.getStaticOffsets().begin(),
-                         insert.getStaticOffsets().end());
-      box.sizes.assign(insert.getStaticSizes().begin(),
-                       insert.getStaticSizes().end());
-      if (box.offsets.size() != static_cast<size_t>(resultType.getRank()) ||
-          box.sizes.size() != static_cast<size_t>(resultType.getRank())) {
-        complete = false;
-        break;
-      }
-      for (auto [offset, size, bound] :
-           llvm::zip_equal(box.offsets, box.sizes, resultType.getShape())) {
-        if (offset < 0 || size <= 0 || size > bound || offset > bound - size) {
-          complete = false;
-          break;
-        }
-      }
-      if (!complete)
-        break;
-      if (llvm::any_of(boxes, [&](const SliceBox &other) {
-            return boxesOverlap(box, other);
-          })) {
-        complete = false;
-        break;
-      }
-      uint64_t boxVolume = 0;
-      if (!checkedVolume(box.sizes, boxVolume) ||
-          boxVolume > std::numeric_limits<uint64_t>::max() - assembledVolume) {
-        complete = false;
-        break;
-      }
-      assembledVolume += boxVolume;
-      boxes.push_back(std::move(box));
-    }
-    if (!complete || assembledVolume != resultVolume)
-      continue;
-
+    mlir::Value base = (*analyzed)->base;
     auto [claimed, inserted] = claimedBases.try_emplace(base, outputIndex);
     if (!inserted && claimed->second != outputIndex)
       return fail("one tensor output assembly targets multiple DDR results");
@@ -1340,16 +1265,73 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
           mlir::tensor::CollapseShapeOp, mlir::scf::IfOp, mlir::scf::ForOp>(op))
     return convertSupportOp(op, builder);
 
-  if (mlir::isa<TensorCompletionOp>(op))
-    return convertSupportOp(op, builder);
-
   return fail("unsupported tensor-program op " +
               op->getName().getStringRef().str());
 }
 
 mlir::LogicalResult
+TileRegionBodyEmitter::awaitPendingPeerToken(size_t index,
+                                             mlir::OpBuilder &builder) {
+  if (index >= pendingPeerTokens.size() || !pendingPeerTokens[index].token)
+    return fail("pending peer completion token is invalid");
+  PendingPeerToken pending = pendingPeerTokens[index];
+  builder.create<mlir::async::AwaitOp>(pending.token.getLoc(), pending.token);
+  pendingPeerTokens.erase(pendingPeerTokens.begin() + index);
+  return mlir::success();
+}
+
+mlir::LogicalResult
+TileRegionBodyEmitter::awaitPendingPeerReceive(mlir::Value logicalValue,
+                                               mlir::OpBuilder &builder) {
+  for (size_t index = 0; index < pendingPeerTokens.size();) {
+    const PendingPeerToken &pending = pendingPeerTokens[index];
+    if (pending.kind != CandidatePeerEndpointKind::Receive ||
+        pending.logicalValue != logicalValue) {
+      ++index;
+      continue;
+    }
+    if (mlir::failed(awaitPendingPeerToken(index, builder)))
+      return mlir::failure();
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult
+TileRegionBodyEmitter::makePeerResourceAvailable(CandidatePeerEndpointKind kind,
+                                                 mlir::OpBuilder &builder) {
+  const size_t limit = kind == CandidatePeerEndpointKind::Send
+                           ? TargetDirectDTEResourceLimits::senderSlotsPerTile
+                           : TargetDirectDTEResourceLimits::receiverFSMsPerTile;
+  size_t live =
+      llvm::count_if(pendingPeerTokens, [&](const PendingPeerToken &pending) {
+        return pending.kind == kind;
+      });
+  if (live < limit)
+    return mlir::success();
+  auto oldest =
+      llvm::find_if(pendingPeerTokens, [&](const PendingPeerToken &pending) {
+        return pending.kind == kind;
+      });
+  if (oldest == pendingPeerTokens.end())
+    return fail("peer resource accounting lost its pending token");
+  return awaitPendingPeerToken(
+      static_cast<size_t>(std::distance(pendingPeerTokens.begin(), oldest)),
+      builder);
+}
+
+mlir::LogicalResult
+TileRegionBodyEmitter::awaitAllPendingPeerTokens(mlir::OpBuilder &builder) {
+  while (!pendingPeerTokens.empty())
+    if (mlir::failed(awaitPendingPeerToken(/*index=*/0, builder)))
+      return mlir::failure();
+  return mlir::success();
+}
+
+mlir::LogicalResult
 TileRegionBodyEmitter::emitPeerEndpoint(const CandidatePeerEndpoint &endpoint,
                                         mlir::OpBuilder &builder) {
+  if (mlir::failed(makePeerResourceAvailable(endpoint.kind, builder)))
+    return mlir::failure();
   if (!endpoint.streamTileSizes.empty()) {
     mlir::Value stage = compilerOwnedBuffers.lookup(endpoint.carrierBuffer);
     if (!stage)
@@ -1493,7 +1475,8 @@ TileRegionBodyEmitter::emitPeerEndpoint(const CandidatePeerEndpoint &endpoint,
                 builder.getI64IntegerAttr(endpoint.bytes), message)
             .getToken();
   }
-  builder.create<mlir::async::AwaitOp>(endpointLoc, token);
+  pendingPeerTokens.push_back(
+      PendingPeerToken{endpoint.kind, endpoint.value, token});
   return mlir::success();
 }
 

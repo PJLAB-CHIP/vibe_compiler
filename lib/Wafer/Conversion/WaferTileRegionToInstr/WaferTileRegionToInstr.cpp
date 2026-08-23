@@ -9,6 +9,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -24,7 +25,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <array>
 #include <cstdint>
 #include <iterator>
 #include <limits>
@@ -123,10 +123,8 @@ static void eraseDeadPrivateFills(mlir::Operation *root,
 
 struct NCCOutstandingAccessSummary {
   uint32_t workers = 0;
-  uint32_t pathAmbiguousWorkers = 0;
   llvm::DenseMap<mlir::Value, uint32_t> readers;
   llvm::DenseMap<mlir::Value, uint32_t> writers;
-  std::array<mlir::Operation *, kNCCWorkerCount> latestIssues{};
 };
 
 static void addMask(llvm::DenseMap<mlir::Value, uint32_t> &masks,
@@ -151,38 +149,13 @@ static void clearMask(llvm::DenseMap<mlir::Value, uint32_t> &masks,
 static void clearSynchronizedWorkers(NCCOutstandingAccessSummary &state,
                                      uint32_t completed) {
   state.workers &= ~completed;
-  state.pathAmbiguousWorkers &= ~completed;
   clearMask(state.readers, completed);
   clearMask(state.writers, completed);
-  for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
-    if ((completed & (uint32_t{1} << worker)) != 0)
-      state.latestIssues[worker] = nullptr;
 }
 
 static void
 mergeOutstandingAccessSummaries(NCCOutstandingAccessSummary &destination,
                                 const NCCOutstandingAccessSummary &source) {
-  uint32_t destinationWorkers = destination.workers;
-  destination.pathAmbiguousWorkers |= source.pathAmbiguousWorkers;
-  for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
-    uint32_t mask = uint32_t{1} << worker;
-    bool destinationHasWorker = (destinationWorkers & mask) != 0;
-    bool sourceHasWorker = (source.workers & mask) != 0;
-    if (destinationHasWorker != sourceHasWorker) {
-      // This is an alternative-path merge: one path can reach the merge
-      // without the issue.  Retaining the other path's operation pointer
-      // would falsely make that issue an unconditional same-worker successor
-      // on a surrounding loop backedge.
-      destination.latestIssues[worker] = nullptr;
-      destination.pathAmbiguousWorkers |= mask;
-      continue;
-    }
-    if (destinationHasWorker && sourceHasWorker &&
-        destination.latestIssues[worker] != source.latestIssues[worker]) {
-      destination.latestIssues[worker] = nullptr;
-      destination.pathAmbiguousWorkers |= mask;
-    }
-  }
   destination.workers |= source.workers;
   for (const auto &entry : source.readers)
     destination.readers[entry.first] |= entry.second;
@@ -204,10 +177,8 @@ static bool
 haveEqualOutstandingAccessSummaries(const NCCOutstandingAccessSummary &lhs,
                                     const NCCOutstandingAccessSummary &rhs) {
   return lhs.workers == rhs.workers &&
-         lhs.pathAmbiguousWorkers == rhs.pathAmbiguousWorkers &&
          haveEqualMasks(lhs.readers, rhs.readers) &&
-         haveEqualMasks(lhs.writers, rhs.writers) &&
-         lhs.latestIssues == rhs.latestIssues;
+         haveEqualMasks(lhs.writers, rhs.writers);
 }
 
 static void collectAccessRoots(mlir::Value value,
@@ -368,109 +339,6 @@ getAliasingMask(mlir::Value value,
   return result;
 }
 
-static bool areManagedRoots(llvm::ArrayRef<mlir::Value> roots,
-                            bool (*isExpectedType)(mlir::Type)) {
-  return !roots.empty() && llvm::all_of(roots, [&](mlir::Value root) {
-    return root.getDefiningOp<mlir::memref::AllocOp>() &&
-           isExpectedType(root.getType());
-  });
-}
-
-static bool hasPriorLocalMaterializationStore(mlir::Value ddrRoot,
-                                              InstrRDMAOp reload) {
-  auto allocation = ddrRoot.getDefiningOp<mlir::memref::AllocOp>();
-  mlir::Block *block = reload->getBlock();
-  if (!allocation || !block || allocation->getBlock() != block)
-    return false;
-
-  for (mlir::Operation &operation : *block) {
-    if (&operation == reload.getOperation())
-      break;
-    auto store = mlir::dyn_cast<InstrWDMAOp>(operation);
-    if (!store)
-      continue;
-    llvm::SmallVector<mlir::Value, 4> sourceRoots =
-        getAccessRoots(store.getSource());
-    llvm::SmallVector<mlir::Value, 4> destinationRoots =
-        getAccessRoots(store.getDest());
-    if (areManagedRoots(sourceRoots, isWaferSPMMemRefType) &&
-        llvm::is_contained(destinationRoots, ddrRoot))
-      return true;
-  }
-  return false;
-}
-
-static bool isLocalManagedMaterializationReload(
-    InstrRDMAOp reload, llvm::ArrayRef<mlir::Value> sourceRoots,
-    llvm::ArrayRef<mlir::Value> destinationRoots) {
-  // A selective spill is represented by one finite local interval: a store
-  // into a fresh DDR allocation and a later reload into a fresh SPM root in
-  // the same block. Ordinary producer/consumer DDR edges across traversal
-  // loops are not lifetime cuts; same-worker busytable ordering is sufficient
-  // for those edges and join placement must not invent loop-local joins.
-  return areManagedRoots(sourceRoots, isWaferDDRMemRefType) &&
-         areManagedRoots(destinationRoots, isWaferSPMMemRefType) &&
-         llvm::all_of(sourceRoots, [&](mlir::Value root) {
-           return hasPriorLocalMaterializationStore(root, reload);
-         });
-}
-
-static bool isManagedMaterializationReload(
-    mlir::Operation *operation,
-    const llvm::DenseSet<mlir::Value> &materializationRoots) {
-  auto rdma = mlir::dyn_cast<InstrRDMAOp>(operation);
-  if (!rdma)
-    return false;
-  llvm::SmallVector<mlir::Value, 4> sourceRoots =
-      getAccessRoots(rdma.getSource());
-  llvm::SmallVector<mlir::Value, 4> destinationRoots =
-      getAccessRoots(rdma.getDest());
-  return areManagedRoots(sourceRoots, isWaferDDRMemRefType) &&
-         areManagedRoots(destinationRoots, isWaferSPMMemRefType) &&
-         llvm::all_of(sourceRoots, [&](mlir::Value root) {
-           return materializationRoots.contains(root);
-         });
-}
-
-static bool isManagedMaterializationStore(
-    mlir::Operation *operation,
-    const llvm::DenseSet<mlir::Value> &materializationRoots) {
-  auto wdma = mlir::dyn_cast<InstrWDMAOp>(operation);
-  if (!wdma)
-    return false;
-  llvm::SmallVector<mlir::Value, 4> destinationRoots =
-      getAccessRoots(wdma.getDest());
-  return areManagedRoots(destinationRoots, isWaferDDRMemRefType) &&
-         llvm::any_of(destinationRoots, [&](mlir::Value root) {
-           return materializationRoots.contains(root);
-         });
-}
-
-static mlir::Operation *
-getManagedReloadJoinAnchor(mlir::Operation *operation,
-                           const NCCOutstandingAccessSummary &state,
-                           uint32_t workerMask) {
-  auto rdma = mlir::dyn_cast<InstrRDMAOp>(operation);
-  if (!rdma || llvm::popcount(workerMask) != 1)
-    return operation;
-  uint32_t worker = llvm::countr_zero(workerMask);
-  mlir::Operation *latestIssue = state.latestIssues[worker];
-  if (!latestIssue || latestIssue->getBlock() != operation->getBlock())
-    return operation;
-
-  mlir::Operation *anchor = nullptr;
-  for (mlir::Value root : getAccessRoots(rdma.getDest())) {
-    auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
-    if (!allocation || allocation->getBlock() != operation->getBlock() ||
-        !latestIssue->isBeforeInBlock(allocation) ||
-        !allocation->isBeforeInBlock(operation))
-      return operation;
-    if (!anchor || allocation->isBeforeInBlock(anchor))
-      anchor = allocation;
-  }
-  return anchor ? anchor : operation;
-}
-
 static llvm::SmallVector<int64_t, kNCCWorkerCount>
 getParticipants(uint32_t mask) {
   llvm::SmallVector<int64_t, kNCCWorkerCount> participants;
@@ -492,24 +360,9 @@ static void insertNCCJoinBefore(mlir::Operation *operation, uint32_t mask,
   clearSynchronizedWorkers(state, mask);
 }
 
-static void insertNCCJoinAfter(mlir::Operation *operation, uint32_t mask,
-                               NCCOutstandingAccessSummary &state) {
-  mask &= state.workers;
-  if (mask == 0)
-    return;
-  mlir::OpBuilder builder(operation);
-  builder.setInsertionPointAfter(operation);
-  builder.create<SyncNCCJoinOp>(operation->getLoc(), getParticipants(mask),
-                                mlir::UnitAttr{});
-  clearSynchronizedWorkers(state, mask);
-}
-
 static void recordNCCIssue(mlir::Operation *operation, uint32_t workerMask,
                            NCCOutstandingAccessSummary &state) {
   state.workers |= workerMask;
-  for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker)
-    if ((workerMask & (uint32_t{1} << worker)) != 0)
-      state.latestIssues[worker] = operation;
   auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
   if (!effects)
     return;
@@ -540,7 +393,14 @@ getExternalConflictMask(mlir::Operation *operation,
   auto effects = mlir::dyn_cast<mlir::MemoryEffectOpInterface>(operation);
   if (!effects)
     return 0;
-  uint32_t conflicts = 0;
+  // Once an NCC address lifetime has advanced through a same-worker issue
+  // chain, static packing may reuse that address for a later NCC allocation.
+  // Direct DTE is a different completion domain and does not participate in
+  // the NCC busytable, so every still-pending NCC worker must be completed
+  // before a DTE issue can become the first access to such a reused address.
+  // The exact DTE wait remains independent and never completes NCC work.
+  uint32_t conflicts =
+      mlir::isa<InstrDTESendOp, InstrDTERecvOp>(operation) ? state.workers : 0;
   llvm::SmallVector<mlir::MemoryEffects::EffectInstance, 8> instances;
   effects.getEffects(instances);
   bool ignoreTypedResources =
@@ -562,11 +422,17 @@ getExternalConflictMask(mlir::Operation *operation,
       if (ignoreTypedResources &&
           instance.getResource() != mlir::SideEffects::DefaultResource::get())
         continue;
-      if (!mlir::isa<mlir::MemoryEffects::Allocate>(instance.getEffect()))
+      if (!mlir::isa<mlir::MemoryEffects::Allocate, mlir::MemoryEffects::Free>(
+              instance.getEffect()))
         conflicts |= state.workers;
       continue;
     }
-    if (mlir::isa<mlir::MemoryEffects::Allocate>(instance.getEffect()))
+    // alloc/free delimit compiler-owned lifetime but do not execute a Kcore or
+    // host memory access. Actual reuse is ordered by the next typed issue:
+    // same-worker ranges use busytable order and cross-worker conflicts join
+    // immediately before that issue.
+    if (mlir::isa<mlir::MemoryEffects::Allocate, mlir::MemoryEffects::Free>(
+            instance.getEffect()))
       continue;
     bool read = mlir::isa<mlir::MemoryEffects::Read>(instance.getEffect());
     conflicts |= getAliasingMask(value, state.writers);
@@ -609,28 +475,9 @@ static mlir::Value resolveTileRegionScalarForwarding(mlir::Value value) {
   return value;
 }
 
-static uint32_t
-getRegionLocalPendingWorkerMask(TileRegionOp region,
-                                const NCCOutstandingAccessSummary &state) {
-  auto isRegionLocalRoot = [&](mlir::Value root) {
-    auto allocation = root.getDefiningOp<mlir::memref::AllocOp>();
-    return allocation && allocation->getParentOfType<TileRegionOp>() == region;
-  };
-  uint32_t workers = 0;
-  for (const auto &entry : state.readers)
-    if (isRegionLocalRoot(entry.first))
-      workers |= entry.second;
-  for (const auto &entry : state.writers)
-    if (isRegionLocalRoot(entry.first))
-      workers |= entry.second;
-  return workers;
-}
-
 class RequiredNCCJoinPlacement {
 public:
   mlir::LogicalResult run(mlir::func::FuncOp function) {
-    collectMaterializationRoots(function.getOperation());
-
     if (function.isExternal())
       return mlir::success();
     if (!function.getBody().hasOneBlock()) {
@@ -647,26 +494,11 @@ public:
   }
 
   mlir::LogicalResult run(TileRegionOp tileRegion) {
-    collectMaterializationRoots(tileRegion.getOperation());
     NCCOutstandingAccessSummary state;
     return processOperation(tileRegion.getOperation(), state);
   }
 
 private:
-  void collectMaterializationRoots(mlir::Operation *root) {
-    materializationRoots.clear();
-    root->walk([&](InstrRDMAOp rdma) {
-      llvm::SmallVector<mlir::Value, 4> sourceRoots =
-          getAccessRoots(rdma.getSource());
-      llvm::SmallVector<mlir::Value, 4> destinationRoots =
-          getAccessRoots(rdma.getDest());
-      if (!isLocalManagedMaterializationReload(rdma, sourceRoots,
-                                               destinationRoots))
-        return;
-      materializationRoots.insert(sourceRoots.begin(), sourceRoots.end());
-    });
-  }
-
   mlir::LogicalResult processBlock(mlir::Block &block,
                                    NCCOutstandingAccessSummary &state) {
     for (auto iterator = block.begin(); iterator != block.end();) {
@@ -686,13 +518,6 @@ private:
                   "placement requires a single-block wafer.tile.region";
       if (mlir::failed(processBlock(tileRegion.getBody().front(), state)))
         return mlir::failure();
-      // Region partitioning is a selected residency cut, but the structural
-      // boundary alone is not a synchronization event. Join exactly those
-      // participant domains that still access roots owned by this region;
-      // unrelated pending work remains live across the boundary.
-      insertNCCJoinBefore(tileRegion.getBody().front().getTerminator(),
-                          getRegionLocalPendingWorkerMask(tileRegion, state),
-                          state);
       return mlir::success();
     }
 
@@ -734,33 +559,14 @@ private:
         return mlir::failure();
       bool guaranteedToExecute =
           lower && upper && step && *step > 0 && *lower < *upper;
-      if (!guaranteedToExecute) {
-        // A potentially empty loop may contain a branch-conditional issue on
-        // a worker that was already pending before the loop.  Presence in the
-        // worker mask alone cannot distinguish that new issue, but the branch
-        // merge deliberately clears latestIssues for exactly such ambiguous
-        // paths.  Complete those workers at the body backedge.  On a zero-trip
-        // path neither the issue nor this join executes; merging the original
-        // state below therefore preserves any incoming pending access.
-        uint32_t ambiguousBackedgeWorkers =
-            bodyState.pathAmbiguousWorkers & bodyState.workers;
-        for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
-          const uint32_t mask = uint32_t{1} << worker;
-          if ((bodyState.workers & mask) != 0 &&
-              bodyState.latestIssues[worker] == nullptr)
-            ambiguousBackedgeWorkers |= mask;
-        }
-        insertNCCJoinBefore(forOp.getBody()->getTerminator(),
-                            ambiguousBackedgeWorkers, bodyState);
-        mergeOutstandingAccessSummaries(state, bodyState);
-        return mlir::success();
+      std::optional<__int128> tripCount;
+      if (guaranteedToExecute) {
+        __int128 span =
+            static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
+        tripCount = (span + static_cast<__int128>(*step) - 1) /
+                    static_cast<__int128>(*step);
       }
-
-      __int128 span =
-          static_cast<__int128>(*upper) - static_cast<__int128>(*lower);
-      __int128 tripCount = (span + static_cast<__int128>(*step) - 1) /
-                           static_cast<__int128>(*step);
-      if (tripCount == 1) {
+      if (tripCount && *tripCount == 1) {
         state = std::move(bodyState);
         return mlir::success();
       }
@@ -779,11 +585,9 @@ private:
       for (unsigned iteration = 0; iteration < convergenceLimit; ++iteration) {
         // This is a sequential backedge, not an alternative control-flow
         // merge. `bodyState` already contains the entry state followed by one
-        // complete iteration; feed that exact pending state into the next
-        // iteration. Using the branch merge helper here would mark every
-        // first-iteration issue as path-optional merely because it was absent
-        // before the loop, forcing an unnecessary join on an unconditional
-        // same-worker stream.
+        // complete iteration; feed that exact pending state into the next.
+        // Optional same-worker issues remain ordered on every path where they
+        // occur, and paths without an issue require no completion.
         NCCOutstandingAccessSummary nextState = bodyState;
         if (mlir::failed(processBlock(*forOp.getBody(), nextState)))
           return mlir::failure();
@@ -798,23 +602,12 @@ private:
         return forOp.emitError()
                << "required_ncc_join_failure: NCC loop backedge "
                   "access state did not reach a finite fixed point";
-      // A pending worker with no unique latest issue came from alternative
-      // paths where an NCC issue is optional or differs by branch.  The next
-      // iteration therefore cannot prove a same-worker successor on every
-      // path.  Complete only those ambiguous workers at the current
-      // backedge; unconditional homogeneous streams remain join-free.
-      uint32_t ambiguousBackedgeWorkers = 0;
-      ambiguousBackedgeWorkers |=
-          bodyState.pathAmbiguousWorkers & bodyState.workers;
-      for (uint32_t worker = 0; worker < kNCCWorkerCount; ++worker) {
-        const uint32_t mask = uint32_t{1} << worker;
-        if ((bodyState.workers & mask) != 0 &&
-            bodyState.latestIssues[worker] == nullptr)
-          ambiguousBackedgeWorkers |= mask;
-      }
-      insertNCCJoinBefore(forOp.getBody()->getTerminator(),
-                          ambiguousBackedgeWorkers, bodyState);
-      state = std::move(bodyState);
+      if (guaranteedToExecute)
+        state = std::move(bodyState);
+      else
+        // Preserve the zero-trip path while carrying every pending access
+        // from one-or-more iterations to the first actual observer/terminal.
+        mergeOutstandingAccessSummaries(state, bodyState);
       return mlir::success();
     }
 
@@ -823,6 +616,13 @@ private:
       return mlir::success();
     }
     if (mlir::isa<TileYieldOp, mlir::scf::YieldOp>(operation))
+      return mlir::success();
+
+    // These operations only change the tensor/memref SSA view of one storage
+    // object. They do not execute a Kcore/host read and therefore cannot turn
+    // a pending NCC issue into a completion boundary.
+    if (mlir::isa<mlir::bufferization::ToMemrefOp,
+                  mlir::bufferization::ToTensorOp>(operation))
       return mlir::success();
 
     NCCOperationCompletion contract = getNCCOperationCompletion(operation);
@@ -834,26 +634,15 @@ private:
                   "outside the typed worker domain";
       uint32_t workerMask = uint32_t{1} << worker;
       // The target busytable orders an NCC worker's own RAW/WAR/WAW chain,
-      // but does not prove visibility across workers. Complete only prior
-      // conflicting workers before issuing the new access; disjoint workers
-      // and ordinary same-worker chains remain in one nonblocking issue
-      // window. An explicit compiler-managed spill/reload additionally owns
-      // a real residency cut. Its store join is emitted immediately
-      // below; before its reload, complete any intervening work on the same
-      // worker so the fresh SPM root can reuse that worker's prior ranges.
+      // including compiler-managed store/reload and offset reuse. Complete
+      // only prior conflicting workers before issuing the new access;
+      // operation kind and residency structure are not completion events.
       uint32_t crossWorkerConflicts =
           getExternalConflictMask(operation, state,
                                   /*ignoreTypedIssueResources=*/true) &
           ~workerMask;
       insertNCCJoinBefore(operation, crossWorkerConflicts, state);
-      if (isManagedMaterializationReload(operation, materializationRoots)) {
-        mlir::Operation *anchor =
-            getManagedReloadJoinAnchor(operation, state, workerMask);
-        insertNCCJoinBefore(anchor, workerMask, state);
-      }
       recordNCCIssue(operation, workerMask, state);
-      if (isManagedMaterializationStore(operation, materializationRoots))
-        insertNCCJoinAfter(operation, workerMask, state);
     }
 
     if (contract.kind == NCCCompletionKind::ParticipantJoin) {
@@ -913,8 +702,6 @@ private:
     insertNCCJoinBefore(operation, conflicts, state);
     return mlir::success();
   }
-
-  llvm::DenseSet<mlir::Value> materializationRoots;
 };
 
 static void eraseDerivedNCCJoins(mlir::Operation *root) {

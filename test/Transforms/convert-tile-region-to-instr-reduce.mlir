@@ -83,8 +83,10 @@ func.func @large_identity_sum_uses_native_reduce() {
 // CHECK-NOT: wafer.instr.fill
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 1 : i64
+// CHECK-NEXT: wafer.tile.yield
+// CHECK: }
 // CHECK-NEXT: wafer.instr.ncc_join [0]
-// CHECK: return
+// CHECK-NEXT: return
 // CHECK-NOT: wafer.instr.ncc_join [0]
 
 func.func @large_f16_identity_sum_uses_native_reduce() {
@@ -105,8 +107,10 @@ func.func @large_f16_identity_sum_uses_native_reduce() {
 // CHECK-NOT: wafer.instr.fill
 // CHECK: wafer.instr.reduce <sum>
 // CHECK-SAME: dim = 1 : i64
+// CHECK-NEXT: wafer.tile.yield
+// CHECK: }
 // CHECK-NEXT: wafer.instr.ncc_join [0]
-// CHECK: return
+// CHECK-NEXT: return
 // CHECK-NOT: wafer.instr.ncc_join [0]
 
 func.func @ordered_max() {

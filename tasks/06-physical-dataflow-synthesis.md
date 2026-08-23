@@ -546,7 +546,8 @@ completion domain、participant scope和target wait语义只能读取11/13号typ
 materialization类别或通用异步编程经验补一个“保守”join/wait。当前TX81的same-worker普通NCC RAW/WAR/WAW链由issue order和
 busytable落实；只有cross-worker hazard、NCC到Kcore/Direct DTE/host crossing、actual release/reuse或observable terminal等
 current IR证明的domain exit才产生minimum-participant、latest-unavoidable join。Direct DTE由token独立闭合，wait位于recv first read、
-send/relay last release或实际FSM/slot reuse之前，而不是默认紧跟issue。
+send/relay last release或实际FSM/slot reuse之前，而不是默认紧跟issue。resolved same-worker后继可以界定旧地址lifetime，但必须保留
+worker-domain obligation；不同worker或其它completion domain在participant join前出现时actual lifetime失败。
 
 职责固定为：B--I/K提供execution、movement、storage、effect和lifetime facts；J foundation建立typed issue/completion event及hard edge，
 J closure选择worker/order和completion boundary；selected emitter在一份candidate transaction中清除旧同步并直接创建actual
@@ -902,17 +903,17 @@ immutable borrow、typed relation/role以及reduction/broadcast/window/multi-pie
 Q49.P的consumer-operand exact demand、structured-producer截断、single-root construction、typed carrier、actual SPM反馈和
 search-policy隔离机制仍成立：每个closed temporal candidate只运行一次CardModule/Q50.0，capacity只来自actual SPM/MiniMalloc且
 每个demand有current typed owner，rejected candidate销毁、Accepted owner直接保留；局部probe、plan-side footprint和allocator
-fallback不回归。但2026-08-23 completion审计发现current baseline/attention materialization仍产生错误同步，所以
-`deterministic-baseline-closure`已经在原work item上重新打开，历史none纵向不能继续签发完成状态。
+fallback不回归。2026-08-23 `deterministic-baseline-closure`又完成了completion/copy修正并重新通过fresh `none`纵向，因此Q49.P当前闭合。
 
-本轮确认的同步缺口是：selected attention decomposition在每个K2 state update后固定创建worker0 completion并下沉为blocking NCC
-join；external/cache output copy使用全1 tile并对每个logical element执行load、store和worker0 join；active peer emitter在每个
-send/recv issue后立即await；required-join reconstruction又把TileRegion/local materialization边界当作join理由。它们分别使join数量按
-attention block或logical element增长、消除DTE异步窗口，或者在没有actual crossing/reuse proof时提前drain。Q63 typed interface与
-analysis分层本身仍然有效，问题属于Q49.P/Q50.H/I/J/S的placement、production wiring和验证门禁。
+本轮修正删除了algorithm层固定worker completion op；external/cache copy使用selected output temporal tile生成exact main/tail loop，
+不再逐element join；non-streamed peer token延迟到first read、last release、实际sender/FSM reuse或terminal；required-join reconstruction
+不再把TileRegion、WDMA/reload类别或same-worker backedge本身当作同步理由。cross-worker alias、真实NCC→DTE/Kcore/call及observable
+terminal继续由Q63 facts和current lifetime产生minimum participant completion；same-worker地址lifetime缩短仍保留worker obligation，
+不能跨domain静默复用。Q50.H/I/J后续扩展完整selected domain时必须复用这些
+hardware-backed边界，不能恢复旧immediate-await或结构化join donor。
 
-当前完成状态复核确认Q50.B spatial raw domain、Q51 control foundation和Q50.C root-work输入仍然闭合；施工先重闭Q49.P的同步
-normal form，之后再从Q50.D继续。后续仍有以下production差距；这些差距已经在`tasks/progress.md`和实施计划中按原work item线性
+当前完成状态复核确认Q49.P、Q50.B spatial raw domain、Q51 control foundation和Q50.C root-work输入闭合；施工从Q50.D继续。
+后续仍有以下production差距；这些差距已经在`tasks/progress.md`和实施计划中按原work item线性
 打开：
 
 - RegionDomain与TemporalDomain的局部successor存在，但selected RegionPlan/nested/replica/coupled construction尚未成为完整candidate
@@ -933,16 +934,14 @@ normal form，之后再从Q50.D继续。后续仍有以下production差距；这
 
 任务按以下output闭环推进，具体状态以`tasks/progress.md`为准：
 
-1. 保持无SPM repair的CardExecutable actual-admission边界，同时重闭其中的hardware-evidence-driven completion normal form；
-2. 先在原`deterministic-baseline-closure`上删除per-block/per-element/structural join和unproved immediate await；canonical actual
-   order/worker、Q63 effects、H token和current lifetime进入一个policy-free completion constructor取得fresh `none`纵向。后续J向同一
-   primitive传selected schedule，不能另建baseline completion算法；search不消费baseline结果；
-3. 从`region-execution-domain`开始按`tasks/progress.md`重新闭合每个domain、selected construction/verifier与直接下游；partial state
+1. 保持已经闭合的无SPM repair actual-admission及hardware-evidence-driven completion normal form；后续J向同一primitive传selected
+   schedule，不能另建baseline completion算法，search不消费baseline结果；
+2. 从`region-execution-domain`开始按`tasks/progress.md`重新闭合每个domain、selected construction/verifier与直接下游；partial state
    零IR，complete assignment全字段进入同一actual gate，且search不消费baseline output；
-4. 以`search-control-closure`和`unified-search-closure`关闭all-axis key、independent oracle、complete-candidate actual evaluation、
+3. 以`search-control-closure`和`unified-search-closure`关闭all-axis key、independent oracle、complete-candidate actual evaluation、
    唯一retained winner和一次publication，再经
    `attention-production-closure`和`search-scalability`取得production search证据；
-5. `production-host-readiness`从Q60产品入口完成fresh workload/package/no-card/runner矩阵，使Q53达到`board-ready`。
+4. `production-host-readiness`从Q60产品入口完成fresh workload/package/no-card/runner矩阵，使Q53达到`board-ready`。
 
 ## 14. Verification and Done Criteria
 
@@ -989,8 +988,9 @@ selected lowering完成。shape只是case输入，不进入合法域、candidate
 - 对没有typed cross-worker/domain-exit cut的baseline、FA/FD和copy case，fresh actual Instr断言
   `steadyStateNCCJoinCount == 0`且`nonTerminalNCCJoinCount == 0`；join participant只包含边界处实际pending worker，terminal/cross-domain
   最小正例保留必要join；
-- external/cache copy的DMA、allocation和join动态数不得与logical element数成正比；attention join数不得与K2 block数成正比。
-  Direct DTE必须同时覆盖合法token-only issue window、recv first-read wait、send/relay last-release wait、4-FSM live-range限制和无环
+- external/cache copy的DMA动态数必须等于selected temporal tile count而不是logical element count，allocation site保持有界，
+  steady/nonterminal join为0；attention join数不得随K2 block数增长。Direct DTE必须同时覆盖合法token-only issue window、recv
+  first-read wait、send/relay last-release wait、4-FSM live-range限制和无环
   wait graph；不能只断言最终结果或“存在wait”；
 - 结果明确区分`objective-optimal`、`feasible-with-bound`、`feasible-unranked`与`budgeted-feasible`；work/wall/RSS/incumbent只在显式
   instrumentation中报告，不伪造bound或最优性。

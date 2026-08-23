@@ -70,7 +70,8 @@ static mlir::LogicalResult rewriteTensorProgramFunctionInPlace(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     bool requireOneStructuredRootPerRegion,
     llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations,
-    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations) {
+    llvm::ArrayRef<StructuredNodeComputeImplementation> implementations,
+    llvm::ArrayRef<SpatialOutputShard> outputShards) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
       "conversion-phase", "rewriteTensorProgramInPlace", "total");
   auto phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
@@ -101,8 +102,8 @@ static mlir::LogicalResult rewriteTensorProgramFunctionInPlace(
   TileRegionBodyEmitter emitter(failureReason, currentLogicalPartition,
                                 peerEndpoints, selectedDDRStages,
                                 relationRecorder ? &*relationRecorder : nullptr,
-                                normalizedOperationNodes,
-                                representations, implementations);
+                                normalizedOperationNodes, representations,
+                                implementations, outputShards);
   phaseTiming = std::make_unique<wafer::support::ScopedCompileTimingSpan>(
       "conversion-phase", "rewriteTensorProgramInPlace",
       "TileRegionBodyEmitter::emit");
@@ -174,7 +175,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
         bool requireOneStructuredRootPerRegion,
         llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations,
-        llvm::ArrayRef<StructuredNodeComputeImplementation> implementations) {
+        llvm::ArrayRef<StructuredNodeComputeImplementation> implementations,
+        llvm::ArrayRef<SpatialOutputShard> outputShards) {
   if (emissionRelations) {
     emissionRelations->selectedDDRStages.clear();
     emissionRelations->materializedBuffers.clear();
@@ -190,13 +192,13 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         function, functionalArgumentCount, currentLogicalPartition,
         failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
         operationNodes, requireOneStructuredRootPerRegion, representations,
-        implementations);
+        implementations, outputShards);
   } else {
     conversionResult = rewriteTensorProgramFunctionInPlace(
         function, functionalArgumentCount, currentLogicalPartition,
         failureReason, mappedEndpoints, selectedDDRStages, emissionRelations,
         operationNodes, requireOneStructuredRootPerRegion, representations,
-        implementations);
+        implementations, outputShards);
   }
   if (mlir::failed(conversionResult)) {
     if (populateFallbackFailureReason &&
@@ -225,7 +227,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
         llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
         bool requireOneStructuredRootPerRegion,
         llvm::ArrayRef<StructuredNodePhysicalRepresentation> representations,
-        llvm::ArrayRef<StructuredNodeComputeImplementation> implementations) {
+        llvm::ArrayRef<StructuredNodeComputeImplementation> implementations,
+        llvm::ArrayRef<SpatialOutputShard> outputShards) {
   wafer::support::ScopedCompileTimingSpan timing(
       "conversion", "convertTensorProgramToTileRegionModuleInPlace", "total");
   if (!module || context != module.getContext()) {
@@ -249,8 +252,8 @@ mlir::LogicalResult wafer::tensor_program_to_tile_region::
           failureReason, suppressDiagnostics,
           /*verifyResult=*/false, populateFallbackFailureReason, peerEndpoints,
           selectedDDRStages, emissionRelations, operationNodes,
-          requireOneStructuredRootPerRegion, representations,
-          implementations)))
+          requireOneStructuredRootPerRegion, representations, implementations,
+          outputShards)))
     return mlir::failure();
 
   if (verifyResult) {

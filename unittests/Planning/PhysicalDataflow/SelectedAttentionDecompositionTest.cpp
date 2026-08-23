@@ -440,7 +440,6 @@ TEST_F(SelectedAttentionDecompositionTest,
     EXPECT_GT(stateUpdates, 0u);
 
     unsigned scoreValueIds = 0;
-    size_t expectedCompletionCount = 0;
     for (const AttentionValueMaterialization &materializedValue :
          materialized->values) {
       if (materializedValue.id.kind != AttentionValueKind::ScoreBlock)
@@ -472,7 +471,6 @@ TEST_F(SelectedAttentionDecompositionTest,
       ASSERT_LT(residentExtent, exactExtent);
       const size_t expectedBlocks =
           (exactExtent + residentExtent - 1) / residentExtent;
-      expectedCompletionCount += expectedBlocks;
       EXPECT_EQ(materializedValue.occurrences.size(), expectedBlocks);
       for (mlir::Value occurrence : materializedValue.occurrences) {
         auto type =
@@ -486,8 +484,7 @@ TEST_F(SelectedAttentionDecompositionTest,
     }
     EXPECT_GT(scoreValueIds, 0u);
     EXPECT_EQ(materialized->scratch.size(), description.scratch.size());
-    EXPECT_EQ(count<wafer::TensorCompletionOp>(*selected),
-              expectedCompletionCount);
+    EXPECT_EQ(count<wafer::SyncNCCJoinOp>(*selected), 0u);
   }
 }
 

@@ -293,7 +293,9 @@ mlir::LogicalResult finishSelectedEdgeLowering(
           // then immediately verifying it again.
           /*verifyResult=*/false, /*populateFallbackFailureReason=*/true,
           endpoints, selectedDDRStages, &emissionRelations,
-          mappedOperationNodes, requireOneStructuredRootPerRegion))) {
+          mappedOperationNodes, requireOneStructuredRootPerRegion,
+          /*representations=*/{}, /*implementations=*/{},
+          state.outputShards))) {
     return mlir::failure();
   }
   // Endpoint identity is not an SSA use. Once carrier construction is final, an

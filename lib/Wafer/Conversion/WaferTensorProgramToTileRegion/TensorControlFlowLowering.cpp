@@ -1,6 +1,7 @@
 //===- TensorControlFlowLowering.cpp - Tensor/control-flow lowering -===//
 
 #include "Internal.h"
+#include "TemporalWaveLoop.h"
 
 #include "Wafer/Analysis/PhysicalDataflow/TransferRealizability.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/DependentDataflow.h"
@@ -77,27 +78,6 @@ TileRegionBodyEmitter::materializeControlFlowValue(mlir::Value original,
 mlir::LogicalResult
 TileRegionBodyEmitter::convertSupportOp(mlir::Operation *op,
                                         mlir::OpBuilder &builder) {
-  if (auto completion =
-          mlir::dyn_cast<TensorCompletionOp>(op)) {
-    if (completion.getStates().size() != completion.getResults().size())
-      return fail("attention block completion state/result count differs");
-    llvm::SmallVector<mlir::Value, 3> stateBuffers;
-    stateBuffers.reserve(completion.getStates().size());
-    for (mlir::Value state : completion.getStates()) {
-      mlir::FailureOr<mlir::Value> buffer =
-          getOrMaterialize(state, MemLayout::Tensor, builder);
-      if (mlir::failed(buffer))
-        return mlir::failure();
-      stateBuffers.push_back(*buffer);
-    }
-    builder.create<SyncNCCJoinOp>(completion.getLoc(),
-                                  completion.getParticipants(),
-                                  builder.getUnitAttr());
-    for (auto [result, buffer] :
-         llvm::zip_equal(completion.getResults(), stateBuffers))
-      record(result, MemLayout::Tensor, buffer);
-    return mlir::success();
-  }
   if (auto allocation = mlir::dyn_cast<mlir::memref::AllocOp>(op)) {
     if ((!isWaferDDRMemRefType(allocation.getType()) &&
          !isWaferSPMMemRefType(allocation.getType())) ||
@@ -1311,7 +1291,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       return mlir::success();
     }
     bool canStreamExternalCopy =
-        sourceExternalIt != externalBuffers.end() &&
+        outputIndex.has_value() && sourceExternalIt != externalBuffers.end() &&
         sourceTensorType.hasStaticShape() &&
         sourceTensorType.getRank() == resultTensorType.getRank() &&
         insertSlice.getMixedOffsets().size() ==
@@ -1326,12 +1306,24 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
       if (elementBitWidth == 0 || elementBitWidth % 8 != 0)
         return fail(
             "external tensor copy element width is not byte-addressable");
-      // The generic correctness path uses the unique minimal static copy
-      // tile. It does not inspect SPM capacity or predict a fit. Wider copy
-      // tiles belong to an explicit movement candidate; the actual SPM planner
-      // validates this concrete allocation like every other candidate buffer.
-      llvm::SmallVector<int64_t, 4> tileShape(
-          static_cast<size_t>(sourceTensorType.getRank()), 1);
+      auto copyPlan =
+          llvm::find_if(outputShards, [&](const SpatialOutputShard &shard) {
+            return shard.outputIndex == *outputIndex;
+          });
+      if (copyPlan == outputShards.end() ||
+          llvm::count_if(outputShards, [&](const SpatialOutputShard &shard) {
+            return shard.outputIndex == *outputIndex;
+          }) != 1)
+        return fail("external output copy requires one selected output tile");
+      llvm::SmallVector<int64_t, 4> tileShape = copyPlan->temporalTileSizes;
+      if (tileShape.size() != static_cast<size_t>(sourceTensorType.getRank()) ||
+          llvm::any_of(llvm::zip_equal(tileShape, sourceTensorType.getShape()),
+                       [](auto entry) {
+                         return std::get<0>(entry) <= 0 ||
+                                std::get<0>(entry) > std::get<1>(entry);
+                       }))
+        return fail("external output copy tile is outside its exact source "
+                    "extent");
 
       llvm::SmallVector<mlir::OpFoldResult, 4> baseOffsets;
       baseOffsets.reserve(insertSlice.getMixedOffsets().size());
@@ -1384,113 +1376,75 @@ mlir::LogicalResult TileRegionBodyEmitter::convertTensorInsertSlice(
             .getResult();
       };
 
-      llvm::SmallVector<mlir::OpFoldResult, 4> localOffsets;
-      llvm::SmallVector<int64_t, 4> localSizes;
-      std::function<mlir::LogicalResult(unsigned, mlir::OpBuilder &)> emitCopy =
-          [&](unsigned dim,
-              mlir::OpBuilder &nestedBuilder) -> mlir::LogicalResult {
-        if (dim == static_cast<unsigned>(sourceTensorType.getRank())) {
-          llvm::SmallVector<mlir::OpFoldResult, 4> destinationOffsets;
-          destinationOffsets.reserve(localOffsets.size());
-          for (auto [base, local, stride] : llvm::zip_equal(
-                   baseOffsets, localOffsets, insertSlice.getStaticStrides())) {
-            std::optional<int64_t> baseConstant =
-                mlir::getConstantIntValue(base);
-            std::optional<int64_t> localConstant =
-                mlir::getConstantIntValue(local);
-            if (baseConstant && localConstant) {
-              destinationOffsets.push_back(nestedBuilder.getIndexAttr(
-                  *baseConstant + *localConstant * stride));
-              continue;
+      llvm::SmallVector<mlir::OpFoldResult, 4> copyOffsets(
+          static_cast<size_t>(sourceTensorType.getRank()),
+          builder.getIndexAttr(0));
+      auto copy = materializeTemporalWaveLoopNest(
+          builder, insertSlice.getLoc(), copyOffsets,
+          sourceTensorType.getShape(), tileShape,
+          /*waveLoopOrder=*/{}, /*initialValues=*/{},
+          [&](mlir::OpBuilder &nestedBuilder,
+              llvm::ArrayRef<mlir::OpFoldResult> localOffsets,
+              llvm::ArrayRef<int64_t> localSizes, mlir::ValueRange,
+              llvm::MutableArrayRef<mlir::LoopLikeOpInterface>)
+              -> mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> {
+            llvm::SmallVector<mlir::OpFoldResult, 4> destinationOffsets;
+            destinationOffsets.reserve(localOffsets.size());
+            for (auto [base, local, stride] :
+                 llvm::zip_equal(baseOffsets, localOffsets,
+                                 insertSlice.getStaticStrides())) {
+              std::optional<int64_t> baseConstant =
+                  mlir::getConstantIntValue(base);
+              std::optional<int64_t> localConstant =
+                  mlir::getConstantIntValue(local);
+              if (baseConstant && localConstant) {
+                destinationOffsets.push_back(nestedBuilder.getIndexAttr(
+                    *baseConstant + *localConstant * stride));
+                continue;
+              }
+              mlir::Value localValue = createIndexValue(nestedBuilder, local);
+              if (stride != 1) {
+                auto strideValue =
+                    nestedBuilder.create<mlir::arith::ConstantIndexOp>(
+                        insertSlice.getLoc(), stride);
+                localValue = nestedBuilder.create<mlir::arith::MulIOp>(
+                    insertSlice.getLoc(), localValue, strideValue);
+              }
+              mlir::Value baseValue = createIndexValue(nestedBuilder, base);
+              destinationOffsets.push_back(
+                  nestedBuilder
+                      .create<mlir::arith::AddIOp>(insertSlice.getLoc(),
+                                                   baseValue, localValue)
+                      .getResult());
             }
-            mlir::Value localValue = createIndexValue(nestedBuilder, local);
-            if (stride != 1) {
-              auto strideValue =
-                  nestedBuilder.create<mlir::arith::ConstantIndexOp>(
-                      insertSlice.getLoc(), stride);
-              localValue = nestedBuilder.create<mlir::arith::MulIOp>(
-                  insertSlice.getLoc(), localValue, strideValue);
-            }
-            mlir::Value baseValue = createIndexValue(nestedBuilder, base);
-            destinationOffsets.push_back(
-                nestedBuilder
-                    .create<mlir::arith::AddIOp>(insertSlice.getLoc(),
-                                                 baseValue, localValue)
-                    .getResult());
-          }
-          llvm::SmallVector<int64_t, 4> unitStrides(localSizes.size(), 1);
-          mlir::FailureOr<mlir::Value> sourceView =
-              createSubview(nestedBuilder, sourceExternalIt->second,
-                            localOffsets, localSizes, unitStrides);
-          mlir::FailureOr<mlir::Value> destinationView =
-              createSubview(nestedBuilder, externalBuffer, destinationOffsets,
-                            localSizes, insertSlice.getStaticStrides());
-          if (mlir::failed(sourceView) || mlir::failed(destinationView))
-            return mlir::failure();
-          auto tileType = mlir::RankedTensorType::get(
-              localSizes, sourceTensorType.getElementType());
-          auto tile = nestedBuilder.create<mlir::memref::AllocOp>(
-              insertSlice.getLoc(),
-              makeSPMMemRefType(tileType, MemLayout::Tensor));
-          recordScratchAllocation(tile);
-          if (outputIndex && relationRecorder)
-            relationRecorder->recordOutputBuffer(*outputIndex,
-                                                 tile.getResult());
-          nestedBuilder.create<StorageLoadOp>(insertSlice.getLoc(), *sourceView,
-                                              tile.getResult());
-          nestedBuilder.create<StorageStoreOp>(
-              insertSlice.getLoc(), tile.getResult(), *destinationView);
-          nestedBuilder.create<SyncNCCJoinOp>(
-              insertSlice.getLoc(),
-              llvm::ArrayRef<int64_t>{
-                  static_cast<int64_t>(NCCWorker::Worker0)},
-              nestedBuilder.getUnitAttr());
-          nestedBuilder.create<mlir::memref::DeallocOp>(insertSlice.getLoc(),
-                                                        tile.getResult());
-          return mlir::success();
-        }
-
-        int64_t extent = sourceTensorType.getDimSize(dim);
-        int64_t tileExtent = tileShape[dim];
-        int64_t tailExtent = extent % tileExtent;
-        int64_t mainEnd = extent - tailExtent;
-        if (mainEnd == tileExtent) {
-          localOffsets.push_back(nestedBuilder.getIndexAttr(0));
-          localSizes.push_back(tileExtent);
-          if (mlir::failed(emitCopy(dim + 1, nestedBuilder)))
-            return mlir::failure();
-          localSizes.pop_back();
-          localOffsets.pop_back();
-        } else if (mainEnd > 0) {
-          auto lower = nestedBuilder.create<mlir::arith::ConstantIndexOp>(
-              insertSlice.getLoc(), 0);
-          auto upper = nestedBuilder.create<mlir::arith::ConstantIndexOp>(
-              insertSlice.getLoc(), mainEnd);
-          auto step = nestedBuilder.create<mlir::arith::ConstantIndexOp>(
-              insertSlice.getLoc(), tileExtent);
-          auto loop = nestedBuilder.create<mlir::scf::ForOp>(
-              insertSlice.getLoc(), lower, upper, step);
-          mlir::OpBuilder bodyBuilder =
-              mlir::OpBuilder::atBlockBegin(loop.getBody());
-          localOffsets.push_back(loop.getInductionVar());
-          localSizes.push_back(tileExtent);
-          if (mlir::failed(emitCopy(dim + 1, bodyBuilder)))
-            return mlir::failure();
-          localSizes.pop_back();
-          localOffsets.pop_back();
-          nestedBuilder.setInsertionPointAfter(loop);
-        }
-        if (tailExtent > 0) {
-          localOffsets.push_back(nestedBuilder.getIndexAttr(mainEnd));
-          localSizes.push_back(tailExtent);
-          if (mlir::failed(emitCopy(dim + 1, nestedBuilder)))
-            return mlir::failure();
-          localSizes.pop_back();
-          localOffsets.pop_back();
-        }
-        return mlir::success();
-      };
-      if (mlir::failed(emitCopy(/*dim=*/0, builder)))
+            llvm::SmallVector<int64_t, 4> unitStrides(localSizes.size(), 1);
+            mlir::FailureOr<mlir::Value> sourceView =
+                createSubview(nestedBuilder, sourceExternalIt->second,
+                              localOffsets, localSizes, unitStrides);
+            mlir::FailureOr<mlir::Value> destinationView =
+                createSubview(nestedBuilder, externalBuffer, destinationOffsets,
+                              localSizes, insertSlice.getStaticStrides());
+            if (mlir::failed(sourceView) || mlir::failed(destinationView))
+              return mlir::failure();
+            auto tileType = mlir::RankedTensorType::get(
+                localSizes, sourceTensorType.getElementType());
+            auto tile = nestedBuilder.create<mlir::memref::AllocOp>(
+                insertSlice.getLoc(),
+                makeSPMMemRefType(tileType, MemLayout::Tensor));
+            recordScratchAllocation(tile);
+            if (outputIndex && relationRecorder)
+              relationRecorder->recordOutputBuffer(*outputIndex,
+                                                   tile.getResult());
+            nestedBuilder.create<StorageLoadOp>(insertSlice.getLoc(),
+                                                *sourceView, tile.getResult());
+            nestedBuilder.create<StorageStoreOp>(
+                insertSlice.getLoc(), tile.getResult(), *destinationView);
+            nestedBuilder.create<mlir::memref::DeallocOp>(insertSlice.getLoc(),
+                                                          tile.getResult());
+            return llvm::SmallVector<mlir::Value, 2>{};
+          },
+          failureReason);
+      if (mlir::failed(copy))
         return fail("external tensor insert_slice streaming failed");
       recordExternalResult();
       return mlir::success();

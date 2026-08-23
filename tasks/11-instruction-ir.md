@@ -1279,15 +1279,14 @@ R3.2d.2 当前 mechanics 与 Q49.P/Q50/Q51 gap：
    Tile entry的current worker/effect/range上erase-all后fresh重建completion；旧standalone task return builder及
    复制既有join的路径不存在。
 
-2026-08-23 implementation审计确认上述终态尚未完全实现：required-join reconstruction仍在每个`TileRegion` terminator
-闭合所有访问该region-local root的pending worker，并在compiler-managed materialization WDMA后及reload前固定闭合same worker。
-前一规则把residency ownership boundary直接当同步边界，后一规则把store/reload类别直接当同步理由；两者都没有证明latest
-consumer、actual reuse、cross-domain visibility或terminal observation，因此不能作为accepted normal form。current loop fixed-point中
-“无条件same-worker backedge零join”、cross-worker conflict和observable return completion可以保留，但region/materialization规则及
-对应lit期望必须由Q50.J selected lifetime/event placement替换。任何`wafer.instr.ncc_join`都会lower为CRT
-`wafer_tx81_ncc_join(participant_mask)`，实际逐participant执行阻塞的`TsmWaitfinish_bywork`，所以这不是无成本的结构标记。
-替换门禁必须在1024/1025/1031级same-worker region/store/reload case断言steady/non-terminal join为0，并用独立cross-worker、
-NCC→Kcore/DTE/host与terminal case证明minimum participant join仍存在；检查dynamic count、位置和pending mask，不能只FileCheck某个join。
+2026-08-23 implementation修正已达到上述normal form：required-join reconstruction不再在`TileRegion` terminator、
+compiler-managed WDMA/reload或same-worker loop backedge按结构闭合worker。resolved same-worker NCC后继可界定旧地址lifetime，
+因为后续物理复用的首个同worker issue会由busytable按实际地址排序；tracker同时保留worker-domain obligation。不同worker、Direct DTE、
+Kcore/call或其它observer若没有先完成该participant则actual lifetime失败。cross-worker range conflict及NCC→Kcore/DTE/call/terminal cut仍按
+current effect/root alias插入minimum participant join。任何`wafer.instr.ncc_join`都会lower为CRT
+`wafer_tx81_ncc_join(participant_mask)`并逐participant执行阻塞的`TsmWaitfinish_bywork`，因此后续Q50.J只能从selected lifetime/event
+产生更完整的latest-unavoidable placement，不能恢复结构化join。fresh 1024/1025/1031级same-worker region/store/reload case断言
+steady/non-terminal join为0；独立cross-worker、NCC→Kcore/DTE/call与terminal case检查了dynamic count、位置和pending mask。
 
 R3.2d.3 当前边界：
 

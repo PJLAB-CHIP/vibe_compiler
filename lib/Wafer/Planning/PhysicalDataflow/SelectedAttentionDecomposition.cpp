@@ -1281,15 +1281,7 @@ emitSelectedAttentionDecomposition(mlir::RewriterBase &rewriter,
                            updated.sum.getDefiningOp(),
                            updated.accumulator.getDefiningOp()}))
           return mlir::failure();
-        llvm::SmallVector<mlir::Type, 3> stateTypes{
-            updated.maximum.getType(), updated.sum.getType(),
-            updated.accumulator.getType()};
-        auto completion = builder.create<TensorCompletionOp>(
-            loc, stateTypes,
-            mlir::ValueRange{updated.maximum, updated.sum, updated.accumulator},
-            llvm::ArrayRef<int64_t>{static_cast<int64_t>(NCCWorker::Worker0)});
-        return State{completion.getResult(0), completion.getResult(1),
-                     completion.getResult(2)};
+        return updated;
       };
 
       std::function<mlir::FailureOr<State>(
