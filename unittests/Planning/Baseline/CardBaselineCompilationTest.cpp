@@ -5,7 +5,7 @@
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/Planning/Baseline/BaselineTemporalPlan.h"
 #include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
-#include "Wafer/Planning/Baseline/CardBaselineAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -18,6 +18,12 @@
 #include <tuple>
 
 namespace {
+
+wafer::compiler::detail::CompleteCandidatePlan makeMaterializationPlan(
+    const wafer::compiler::detail::CanonicalBaselinePlan &plan) {
+  return {plan.spatial, plan.demand, plan.rootWorks, plan.temporal,
+          plan.preparedAttention};
+}
 using namespace wafer::compiler::testing;
 
 TEST(CardBaselineCompilationTest,
@@ -186,9 +192,11 @@ module {
   auto plan = wafer::compiler::detail::buildCanonicalBaselinePlan(
       **program, &failureReason);
   ASSERT_TRUE(mlir::succeeded(plan)) << failureReason;
-  wafer::compiler::detail::BaselineStatistics statistics;
-  auto materialized = wafer::compiler::detail::materializeCardBaseline(
-      *module, wafer::CardId(0), **program, *plan, &statistics, diagnostics);
+  wafer::compiler::detail::CandidateMaterializationStatistics statistics;
+  auto materializationPlan = makeMaterializationPlan(*plan);
+  auto materialized = wafer::compiler::detail::materializeCardCandidate(
+      *module, wafer::CardId(0), **program, materializationPlan, &statistics,
+      diagnostics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(materialized)) << diagnosticsText;
 
@@ -243,10 +251,11 @@ module {
       mlir::succeeded(wafer::compiler::detail::recloseCanonicalBaselinePlan(
           *plan, &failureReason)))
       << failureReason;
-  wafer::compiler::detail::BaselineStatistics refinedStatistics;
-  auto refinedMaterialized = wafer::compiler::detail::materializeCardBaseline(
-      *module, wafer::CardId(0), **program, *plan, &refinedStatistics,
-      diagnostics);
+  wafer::compiler::detail::CandidateMaterializationStatistics refinedStatistics;
+  materializationPlan = makeMaterializationPlan(*plan);
+  auto refinedMaterialized = wafer::compiler::detail::materializeCardCandidate(
+      *module, wafer::CardId(0), **program, materializationPlan,
+      &refinedStatistics, diagnostics);
   diagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(refinedMaterialized)) << diagnosticsText;
   unsigned residentKVAllocations = 0;
@@ -271,9 +280,10 @@ module {
   std::string executableDiagnosticsText;
   llvm::raw_string_ostream executableDiagnostics(executableDiagnosticsText);
   wafer::compiler::ProgramDataHandoff programData;
+  wafer::compiler::detail::BaselineStatistics baselineStatistics;
   auto executable = wafer::compiler::detail::compileCardBaseline(
       *module, metadata, executionConfig(), executableDiagnostics, programData,
-      &statistics, /*tilePipelineParallelism=*/0,
+      &baselineStatistics, /*tilePipelineParallelism=*/0,
       /*captureTileDataflowIRTrace=*/false);
   executableDiagnostics.flush();
   ASSERT_TRUE(mlir::succeeded(executable)) << executableDiagnosticsText;

@@ -662,6 +662,17 @@ source program
   不清NCC，NCC join也不清DTE。actual wait/join/order emission只能在accepted complete-candidate subtree中执行；bounds/proposals属于后续
   search control/scalability，不得成为绕过exact domain的第二入口。
 
+## Complete-candidate actual admission（stable，2026-08-23）
+
+- baseline与search共享的只是policy-free `CompleteCandidatePlan → MaterializedCardCandidate → Q50.0` leaf；search不得调用baseline planner/
+  controller。每个materializable ScheduledState先做typed compatibility和generation复验，再创建一份candidate；Unsupported在零actualization
+  返回，不能静默改成canonical/baseline产物。
+- actualization后只调用一次`compileCardModuleToExecutable`。Accepted保留该次move-only executable和offset；rejected IR随owner销毁。
+  SPM exact rejection只有在每个conflict/oversized demand的result/operand/scratch/output都能映射到SemanticRoot时才能反馈controller；owner
+  缺失是compiler contract bug。其它allocator/resource/unsupported/indeterminate状态不得伪装成capacity rejection。
+- full-feasibility API没有footprint、predicted lifetime、candidate bytes或替代allocator输入。SPM合法性仍只来自actual Instr relations和唯一
+  MiniMalloc路径；重复相同state用于test oracle时必须fresh materialize并得到相同accepted IR或typed witness，不能回放旧输出。
+
 ## Physical search profile资格（Q51+重审期间暂停）
 
 - 普通编译不收集search统计。Q51+重审闭合前不执行重型search profile；旧`--search-max-candidate-evaluations`及对应public API已经退役，

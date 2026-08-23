@@ -44,8 +44,8 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | 12 | `execution-structure-domain` | `done` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |
 | 13 | `structure-specific-storage` | `done` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence、slot multiplicity、rotation及lifetime closure |
 | 14 | `schedule-domain` | `done` | Q50.J | structure-specific-storage、event-resource-foundation | fixed-K/I order、worker、resource与completion domain |
-| 15 | `full-feasibility` | `next` | Q50.F | schedule-domain及完整B–K→I→J plan | 完整候选actual materialization、SPM/DDR/transport gate、typed rejection及Core反馈 |
-| 16 | `search-control-closure` | `queued` | Q51.Core | full-feasibility、全部domain work items | actual-result admission、cost/bound、causal feedback、coverage及controller oracle |
+| 15 | `full-feasibility` | `done` | Q50.F | schedule-domain及完整B–K→I→J plan | 完整候选actual materialization、SPM/DDR/transport gate、typed rejection及Core反馈 |
+| 16 | `search-control-closure` | `next` | Q51.Core | full-feasibility、全部domain work items | actual-result admission、cost/bound、causal feedback、coverage及controller oracle |
 | 17 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | bounded exhaustive oracle、完整候选actual evaluation及唯一winner发布 |
 | 18 | `attention-production-closure` | `queued` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card |
 | 19 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy、有限预算LLaMA actual evaluation及唯一winner发布 |

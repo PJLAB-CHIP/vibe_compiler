@@ -1,12 +1,9 @@
-//===- CardBaselineAssignment.cpp ------------------------------------===//
+//===- CardMaterializationPlan.cpp ------------------------------------===//
 
-#include "Wafer/Planning/Baseline/CardBaselineAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 
-#include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
-#include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
 #include "Wafer/Planning/Baseline/CardBaselineDataMovement.h"
 #include "Wafer/Planning/Baseline/CardBaselineTemporalTiling.h"
-#include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 
@@ -19,18 +16,6 @@
 
 namespace wafer::compiler::detail {
 namespace {
-
-std::string getOutcomeDetail(const analysis::ExactDemandOutcome &outcome) {
-  return std::visit(
-      [](const auto &value) -> std::string {
-        using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, analysis::ExactDemandProof>)
-          return {};
-        else
-          return value.detail;
-      },
-      outcome);
-}
 
 mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>>
 getNodePlacements(const StructuredDAGAnalysis &dag,
@@ -102,80 +87,13 @@ mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> getOutputMappings(
 
 } // namespace
 
-mlir::FailureOr<CardBaselineAssignment>
-computeCardBaselineAssignment(const CardProgramAnalysis &program, CardId cardId,
-                              BaselineStatistics *statistics,
-                              llvm::raw_ostream &diagnostics) {
-  (void)cardId;
+mlir::FailureOr<CardMaterializationPlan>
+buildCardMaterializationPlan(const CardProgramAnalysis &program,
+                             const CompleteCandidatePlan &plan,
+                             CandidateMaterializationStatistics *statistics,
+                             llvm::raw_ostream &diagnostics) {
   std::string failureReason;
-  mlir::FailureOr<CanonicalSpatialCoordinate> coordinate =
-      buildCanonicalSpatialAssignment(program.dag, program.availableTileIds,
-                                      &failureReason);
-  if (mlir::failed(coordinate)) {
-    diagnostics << "wafer-compile: canonical spatial assignment failed: "
-                << failureReason << '\n';
-    return mlir::failure();
-  }
-  mlir::FailureOr<DemandPlanningSession> session =
-      DemandPlanningSession::create(
-          program.dag, analysis::IndexRelationLimits(), &failureReason);
-  if (mlir::failed(session)) {
-    diagnostics << "wafer-compile: exact demand facts failed: " << failureReason
-                << '\n';
-    return mlir::failure();
-  }
-  analysis::ExactDemandOutcome outcome = session->query(coordinate->assignment);
-  const analysis::ExactDemandProof *proof =
-      analysis::getExactDemandProof(outcome);
-  if (!proof) {
-    diagnostics << "wafer-compile: exact demand failed: "
-                << getOutcomeDetail(outcome) << '\n';
-    return mlir::failure();
-  }
-  session->close();
-
-  CardBaselineAssignment assignment;
-  assignment.spatial = std::move(coordinate->assignment);
-  assignment.demand = *proof;
-  mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>>
-      placements = getNodePlacements(program.dag, assignment.spatial,
-                                     assignment.demand, &failureReason);
-  if (mlir::failed(placements))
-    return mlir::failure();
-  assignment.nodePlacements = std::move(*placements);
-  mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> outputs =
-      getOutputMappings(program, assignment.spatial, assignment.demand,
-                        &failureReason);
-  if (mlir::failed(outputs)) {
-    diagnostics << "wafer-compile: baseline output mapping failed: "
-                << failureReason << '\n';
-    return mlir::failure();
-  }
-  assignment.mapping.outputs = std::move(*outputs);
-  assignment.mapping.materializationMode =
-      SpatialDataflowMaterializationMode::IndependentDDRStages;
-  if (statistics) {
-    ++statistics->spatialCoordinateQueries;
-    statistics->exactDemandSatisfiedEdges = program.dag.getEdges().size();
-  }
-  if (mlir::failed(
-          setCardBaselineTemporalTiles(assignment, program, &failureReason)) ||
-      mlir::failed(addCardBaselineDataMovement(assignment, program.dag,
-                                               &failureReason))) {
-    diagnostics << "wafer-compile: baseline assignment failed: "
-                << failureReason << '\n';
-    return mlir::failure();
-  }
-  return assignment;
-}
-
-mlir::FailureOr<CardBaselineAssignment>
-buildCardBaselineMaterializationAssignment(const CardProgramAnalysis &program,
-                                           const CanonicalBaselinePlan &plan,
-                                           BaselineStatistics *statistics,
-                                           llvm::raw_ostream &diagnostics) {
-  std::string failureReason;
-  CardBaselineAssignment assignment;
+  CardMaterializationPlan assignment;
   assignment.spatial = plan.spatial;
   assignment.demand = plan.demand;
   mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 16>>
@@ -188,7 +106,7 @@ buildCardBaselineMaterializationAssignment(const CardProgramAnalysis &program,
       getOutputMappings(program, assignment.spatial, assignment.demand,
                         &failureReason);
   if (mlir::failed(outputs)) {
-    diagnostics << "wafer-compile: baseline output mapping failed: "
+    diagnostics << "wafer-compile: candidate output mapping failed: "
                 << failureReason << '\n';
     return mlir::failure();
   }

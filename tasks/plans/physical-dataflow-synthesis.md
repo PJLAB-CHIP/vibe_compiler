@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J schedule domain及Q50.K execution-structure-domain已经闭合；当前下一项是`full-feasibility`。Q50.S attention vertical、Q50.F full-feasibility、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F full-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J schedule domain及Q50.K execution-structure-domain已经闭合；当前下一项是`search-control-closure`。Q50.S attention vertical、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -5336,6 +5336,9 @@ Q49.P对actual SPM rejection生成确定性的下一temporal candidate；Q51对�
 
 ### Coverage and gate
 
+本work item施工前冻结下面矩阵；每个positive都从完整`ScheduledState`进入一次独立candidate transaction。shape只提供真实规模覆盖，
+任何plan-side bytes/footprint/预测lifetime都不进入结果分类。
+
 | 覆盖类 | 代表输入 | 必须断言 |
 | --- | --- | --- |
 | actual overfull→fit | rank>=3的1024/1025/1031 ordinary、FA和FD | 每次transition前均有actual capacity rejection；accepted candidate有actual offsets；无estimate调用 |
@@ -5345,6 +5348,21 @@ Q49.P对actual SPM rejection生成确定性的下一temporal candidate；Q51对�
 | atomicity | Tile lowering、relation remap、completion、SPM/DDR/transport任一失败 | candidate transaction整体销毁；source与其它candidate不变 |
 
 完成证明必须包含真实规模aligned/ragged full pipeline和actual allocator结果；局部packing unit、shape dump或plan object不能代签。
+
+实现闭合：Card construction入口已从baseline命名/API拆成policy-free `CompleteCandidatePlan`和`materializeCardCandidate`；baseline只把其
+canonical plan投影为同一carrier，search evaluator不调用baseline controller。`evaluateCompleteCandidate`从完整`ScheduledState`重新关闭
+spatial demand、root work、canonical construction facts及fixed schedule generation；兼容性不满足的selected mechanism在零IR/零Q50.0时返回
+typed Unsupported，绝不fallback。可构造candidate在独立owner中materialize一次、验证current relations后调用一次
+`compileCardModuleToExecutable`。Accepted直接保留move-only executable；actual SPM capacity rejection逐conflict/oversized demand验证
+structured-node/output→SemanticRoot owner并返回stable causal roots；其它exact/indeterminate保持原分类。session work count记录evaluation和
+actualization，不修改state或source。
+
+fresh `FullFeasibilityTest` 4/4覆盖FP16 rank-3 1024/1025 accepted、1025×8192 actual overfull owner witness及重复rejection、repeated accepted
+determinism/source identity、noncanonical schedule zero-actualization Unsupported；baseline共享materializerdirect回归2/2。ordinary host unit
+886/886、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source organization通过。
+当前actual constructor只接纳它已逐plan证明对应的canonical region/Tensor/DDR/fresh/Serialized/first-schedule surface；其它domain members的
+selected construction仍由unified-search-closure迁移，Unsupported不会被记成legality no-good。这是materialization capability缺口，不是
+上游IR“不支持”或另一个policy的fallback。
 
 ## Q51 Planning and Search
 

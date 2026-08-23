@@ -9,7 +9,7 @@
 
 namespace wafer::compiler::detail {
 mlir::LogicalResult
-setCardBaselineTemporalTiles(CardBaselineAssignment &assignment,
+setCardBaselineTemporalTiles(CardMaterializationPlan &assignment,
                              const CardProgramAnalysis &program,
                              std::string *failureReason) {
   assignment.mapping.operationTemporalTiles.clear();

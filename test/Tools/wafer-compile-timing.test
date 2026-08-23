@@ -26,7 +26,7 @@
 # TIMING: wafer-compile: | kind | pipeline | item | calls | cumulative wall ms | cumulative CPU ms | average wall ms | max wall ms | failures |
 # TIMING-DAG: wafer-compile: | stage | source-to-package | source-to-tensor-program | 1 |
 # TIMING-DAG: wafer-compile: | stage | tensor-program-to-executable | card-baseline-compilation | 1 |
-# TIMING-DAG: wafer-compile: | conversion | deterministic-baseline | tensor-program-to-card-module | 1 |
+# TIMING-DAG: wafer-compile: | conversion | complete-candidate | tensor-program-to-card-module | 1 |
 # TIMING-DAG: wafer-compile: | conversion | card-module-to-executable | card-module-to-tile-modules | {{[1-9][0-9]*}} |
 # TIMING-DAG: wafer-compile: | lowering-phase | tile-region-to-instr | full-conversion |
 # TIMING-DAG: wafer-compile: | lowering-pattern | tile-region-to-instr | wafer.tile.load |

@@ -1205,4 +1205,43 @@ bool PhysicalDataflowPlanningSession::hasRemainingSpatialWork() const {
          pausedSpatialChoice.has_value() || !frontier.empty();
 }
 
+FullFeasibilityResult PhysicalDataflowPlanningSession::evaluateScheduledState(
+    mlir::ModuleOp tensorProgram, const ScheduledState &state,
+    const frontend::FrontendProgramVerificationResult &program,
+    const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+    ProgramDataHandoff &programData, FullFeasibilityStatistics *statistics,
+    unsigned tilePipelineParallelism, bool captureTileDataflowIRTrace) {
+  const ExecutionStructureState &structure =
+      state.getBufferState().getExecutionStructureState();
+  const InitialBufferState &initial = structure.getInitialBufferState();
+  EventGraphLookup eventGraph = getOrCreateEventGraph(initial);
+  if (!eventGraph.graph)
+    return FullFeasibilityResult{FullFeasibilityStatus::CompilerBug,
+                                 {},
+                                 {},
+                                 eventGraph.failure
+                                     ? eventGraph.failure->detail
+                                     : "full feasibility lost its EventGraph"};
+  StructureSpecificStorageDomainLookup fixedStorage =
+      getOrCreateStructureSpecificStorage(structure, *eventGraph.graph);
+  if (!fixedStorage.domain)
+    return FullFeasibilityResult{
+        FullFeasibilityStatus::CompilerBug,
+        {},
+        {},
+        fixedStorage.failure ? fixedStorage.failure->detail
+                             : "full feasibility lost fixed-structure storage"};
+  ++work.fullFeasibilityEvaluations;
+  FullFeasibilityStatistics localStatistics;
+  FullFeasibilityStatistics *evaluationStatistics =
+      statistics ? statistics : &localStatistics;
+  FullFeasibilityResult evaluated = evaluateCompleteCandidate(
+      tensorProgram, problem, state, *eventGraph.graph,
+      fixedStorage.domain->getLifetimeRequirements(), program, executionConfig,
+      diagnostics, programData, evaluationStatistics, tilePipelineParallelism,
+      captureTileDataflowIRTrace);
+  work.candidateActualizations += evaluationStatistics->candidateActualizations;
+  return evaluated;
+}
+
 } // namespace wafer::compiler::detail

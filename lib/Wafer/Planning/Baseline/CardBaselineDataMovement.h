@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "Wafer/Planning/Baseline/CardBaselineAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 
 namespace wafer::compiler::detail {
 
 mlir::LogicalResult addCardBaselineDataMovement(
-    CardBaselineAssignment &assignment, const StructuredDAGAnalysis &dag,
+    CardMaterializationPlan &assignment, const StructuredDAGAnalysis &dag,
     std::string *failureReason);
 
 } // namespace wafer::compiler::detail

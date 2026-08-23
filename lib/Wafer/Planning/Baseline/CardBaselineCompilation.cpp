@@ -6,9 +6,10 @@
 #include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
 #include "Wafer/Planning/Baseline/BaselineTemporalPlan.h"
 #include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
-#include "Wafer/Planning/Baseline/CardBaselineAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 #include "Wafer/Support/CompileTiming.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 
@@ -19,7 +20,7 @@ mlir::FailureOr<llvm::SmallVector<SemanticRootKey, 8>>
 collectActualSPMRejectedRoots(
     const CardExecutableCompilationResult &compilation,
     const CardProgramAnalysis &program, const CanonicalBaselinePlan &plan,
-    llvm::ArrayRef<BaselineNodeRootRelation> nodeRoots,
+    llvm::ArrayRef<CandidateNodeRootRelation> nodeRoots,
     std::string *failureReason) {
   if (!compilation.isProvenExactRejection() ||
       compilation.tileFailures.empty()) {
@@ -30,9 +31,8 @@ collectActualSPMRejectedRoots(
   }
 
   std::map<uint32_t, SemanticRootKey> rootsByNode;
-  for (const BaselineNodeRootRelation &relation : nodeRoots)
-    if (!rootsByNode
-             .try_emplace(relation.structuredNodeId, relation.root)
+  for (const CandidateNodeRootRelation &relation : nodeRoots)
+    if (!rootsByNode.try_emplace(relation.structuredNodeId, relation.root)
              .second) {
       if (failureReason)
         *failureReason = "candidate node/root relation is duplicated";
@@ -57,8 +57,9 @@ collectActualSPMRejectedRoots(
   }
 
   std::set<SemanticRootKey> affected;
-  auto collectDemand = [&](const TileMemoryPlanningFailure::SPMDemandEvidence
-                               &demand) -> mlir::LogicalResult {
+  auto collectDemand =
+      [&](const TileMemoryPlanningFailure::SPMDemandEvidence &demand)
+      -> mlir::LogicalResult {
     std::set<SemanticRootKey> demandRoots;
     auto collectNode = [&](uint32_t node) {
       auto root = rootsByNode.find(node);
@@ -101,8 +102,7 @@ collectActualSPMRejectedRoots(
             "candidate rejection mixes SPM capacity with another failure";
       return mlir::failure();
     }
-    for (const auto &demand :
-         tile.memoryPlanning.spmCapacityConflictDemands) {
+    for (const auto &demand : tile.memoryPlanning.spmCapacityConflictDemands) {
       sawCapacityDemand = true;
       if (mlir::failed(collectDemand(demand))) {
         if (failureReason)
@@ -124,8 +124,7 @@ collectActualSPMRejectedRoots(
   }
   if (!sawCapacityDemand || affected.empty()) {
     if (failureReason)
-      *failureReason =
-          "actual SPM rejection has no causal conflict demand";
+      *failureReason = "actual SPM rejection has no causal conflict demand";
     return mlir::failure();
   }
   return llvm::SmallVector<SemanticRootKey, 8>(affected.begin(),
@@ -159,6 +158,24 @@ void printSPMFailure(const CardExecutableCompilationResult &compilation,
     diagnostics << "])";
   }
   diagnostics << '\n';
+}
+
+void accumulateMaterializationStatistics(
+    BaselineStatistics &baseline,
+    const CandidateMaterializationStatistics &candidate) {
+  baseline.spatialCoordinateQueries += candidate.spatialCoordinateQueries;
+  baseline.exactDemandSatisfiedEdges = std::max(
+      baseline.exactDemandSatisfiedEdges, candidate.exactDemandSatisfiedEdges);
+  baseline.baselineSourcePreparations += candidate.sourcePreparations;
+  baseline.baselineMaterializationPreparations +=
+      candidate.materializationPreparations;
+  baseline.baselineCardModuleMaterializations +=
+      candidate.cardModuleMaterializations;
+  baseline.baselineTileEntryMaterializations +=
+      candidate.tileEntryMaterializations;
+  baseline.baselineMaximumTileMaterializationWorkers =
+      std::max(baseline.baselineMaximumTileMaterializationWorkers,
+               candidate.maximumTileMaterializationWorkers);
 }
 
 } // namespace
@@ -197,13 +214,21 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
   }
 
   while (true) {
-    mlir::FailureOr<CardBaselineModule> materialized =
-        materializeCardBaseline(tensorProgram, cardId, **analysis, *resolved,
-                                baselineStatistics, diagnostics);
+    CompleteCandidatePlan candidatePlan{resolved->spatial, resolved->demand,
+                                        resolved->rootWorks, resolved->temporal,
+                                        resolved->preparedAttention};
+    CandidateMaterializationStatistics candidateStatistics;
+    mlir::FailureOr<MaterializedCardCandidate> materialized =
+        materializeCardCandidate(
+            tensorProgram, cardId, **analysis, candidatePlan,
+            baselineStatistics ? &candidateStatistics : nullptr, diagnostics);
+    if (baselineStatistics)
+      accumulateMaterializationStatistics(*baselineStatistics,
+                                          candidateStatistics);
     if (mlir::failed(materialized))
       return mlir::failure();
 
-    if (mlir::failed(verifyCardBaselineMaterialization(
+    if (mlir::failed(verifyMaterializedCardCandidate(
             *materialized->module, materialized->assignment, (*analysis)->dag,
             materialized->relations, (*analysis)->availableTileIds,
             failureReason))) {
@@ -212,16 +237,14 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
       return mlir::failure();
     }
 
-    llvm::SmallVector<BaselineNodeRootRelation, 64> nodeRoots =
+    llvm::SmallVector<CandidateNodeRootRelation, 64> nodeRoots =
         materialized->nodeRoots;
-    CardExecutableCompilationResult compilation =
-        compileCardModuleToExecutable(
-            std::move(materialized->module), cardId,
-            (*analysis)->availableTileIds,
-            /*selectedBufferingScopes=*/{}, materialized->relations, program,
-            executionConfig, diagnostics, programData,
-            baselineStatistics ? &baselineStatistics->exactGates : nullptr,
-            tilePipelineParallelism, captureTileDataflowIRTrace);
+    CardExecutableCompilationResult compilation = compileCardModuleToExecutable(
+        std::move(materialized->module), cardId, (*analysis)->availableTileIds,
+        /*selectedBufferingScopes=*/{}, materialized->relations, program,
+        executionConfig, diagnostics, programData,
+        baselineStatistics ? &baselineStatistics->exactGates : nullptr,
+        tilePipelineParallelism, captureTileDataflowIRTrace);
     if (baselineStatistics)
       baselineStatistics->rotatingSlotAllocationsMaterialized +=
           compilation.rotatingSlotAllocationsMaterialized;
@@ -250,8 +273,7 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
       if (baselineStatistics)
         ++baselineStatistics->actualSPMCapacityRejections;
       mlir::FailureOr<bool> refined = refineBaselineTemporalPlan(
-          resolved->temporal, resolved->rootWorks, *affected,
-          &feedbackFailure);
+          resolved->temporal, resolved->rootWorks, *affected, &feedbackFailure);
       if (mlir::succeeded(refined) && *refined) {
         if (mlir::failed(
                 recloseCanonicalBaselinePlan(*resolved, &feedbackFailure))) {

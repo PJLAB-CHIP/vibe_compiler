@@ -25,6 +25,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/EventGraph.cpp
   Planning/PhysicalDataflow/ExecutionStructureDomain.cpp
   Planning/PhysicalDataflow/ExecutionStructurePlan.cpp
+  Planning/PhysicalDataflow/FullFeasibility.cpp
   Planning/PhysicalDataflow/SerializedExecutionPlan.cpp
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RootWorkDomain.cpp

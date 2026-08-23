@@ -5,6 +5,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/EventGraph.h"
 #include "Wafer/Planning/PhysicalDataflow/ExecutionStructureDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/FullFeasibility.h"
 #include "Wafer/Planning/PhysicalDataflow/MovementDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
@@ -58,6 +59,8 @@ struct PlanningWorkCounts {
   uint64_t structureSpecificStorageStatesQueued = 0;
   uint64_t scheduleQueries = 0;
   uint64_t scheduleStatesQueued = 0;
+  uint64_t fullFeasibilityEvaluations = 0;
+  uint64_t candidateActualizations = 0;
   uint64_t duplicateSpatialChoices = 0;
   uint64_t unsupportedSpatialChoices = 0;
   uint64_t indeterminateSpatialChoices = 0;
@@ -393,6 +396,18 @@ public:
   /// without exhausting the preserved continuation.
   mlir::FailureOr<IncompletePlanningDomain>
   getFirstIncompleteState(std::string *failureReason = nullptr);
+
+  /// Actualizes one complete ScheduledState exactly once. The returned
+  /// accepted executable is retained; rejected candidate IR is destroyed
+  /// before return. This method never advances or repairs the planning state.
+  FullFeasibilityResult evaluateScheduledState(
+      mlir::ModuleOp tensorProgram, const ScheduledState &state,
+      const frontend::FrontendProgramVerificationResult &program,
+      const ExecutionConfig &executionConfig, llvm::raw_ostream &diagnostics,
+      ProgramDataHandoff &programData,
+      FullFeasibilityStatistics *statistics = nullptr,
+      unsigned tilePipelineParallelism = 0,
+      bool captureTileDataflowIRTrace = false);
 
   const PlanningWorkCounts &getWork() const { return work; }
   bool hasRemainingSpatialWork() const;

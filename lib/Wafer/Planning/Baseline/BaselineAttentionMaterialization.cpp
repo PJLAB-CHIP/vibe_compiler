@@ -4,11 +4,11 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/StructuredDemandAnalysis.h"
 #include "Wafer/Analysis/Structured/StructuredDAGAnalysis.h"
-#include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 #include "Wafer/Planning/Baseline/CardBaselineDataMovement.h"
 #include "Wafer/Planning/PhysicalDataflow/SemanticRootAnalysis.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDemandView.h"
+#include "Wafer/Planning/PhysicalDataflow/TemporalTileShape.h"
 #include "Wafer/Support/CompileTiming.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -719,19 +719,20 @@ mlir::FailureOr<llvm::SmallVector<OutputTileMapping, 4>> buildOutputMappings(
 
 } // namespace
 
-mlir::FailureOr<BaselineAttentionMaterializationSource>
-prepareBaselineAttentionMaterializationSource(
+mlir::FailureOr<AttentionMaterializationSource>
+prepareAttentionMaterializationSource(
     mlir::ModuleOp source, CardId cardId,
-    const CardProgramAnalysis &sourceProgram, const CanonicalBaselinePlan &plan,
-    llvm::ArrayRef<TileId> availableTiles, BaselineStatistics *statistics,
+    const CardProgramAnalysis &sourceProgram, const CompleteCandidatePlan &plan,
+    llvm::ArrayRef<TileId> availableTiles,
+    CandidateMaterializationStatistics *statistics,
     std::string *failureReason) {
   wafer::support::ScopedCompileTimingSpan totalTiming(
-      "conversion", "deterministic-baseline",
+      "conversion", "complete-candidate",
       "selected-attention-to-materialization-source");
   (void)cardId;
   if (!source || availableTiles.empty() ||
       plan.preparedAttention.work.roots.empty())
-    return fail<BaselineAttentionMaterializationSource>(
+    return fail<AttentionMaterializationSource>(
         failureReason,
         "selected attention materialization input is incomplete");
 
@@ -750,7 +751,7 @@ prepareBaselineAttentionMaterializationSource(
   std::map<SemanticRootKey, const NodeExecutionPartition *> sourcePartitions;
   for (const NodeExecutionPartition &partition : plan.spatial.nodes)
     if (!sourcePartitions.try_emplace(partition.root, &partition).second)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason, "source spatial partition identity is duplicated");
   std::map<SemanticRootKey, llvm::SmallVector<int64_t, 4>> sourceTemporalTiles;
   std::map<ExecutionInstanceId, llvm::SmallVector<int64_t, 4>>
@@ -758,20 +759,20 @@ prepareBaselineAttentionMaterializationSource(
   for (const TemporalScopePlan &scope : plan.temporal.scopes) {
     const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
     if (!execution || !isTopLevelScope(scope.id))
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason,
-          "baseline attention requires top-level required temporal scopes");
+          "selected attention requires top-level temporal scopes");
     if (!sourceTemporalByExecution
              .try_emplace(*execution, scope.iteratorTileSizes)
              .second)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason, "source temporal execution is duplicated");
     SemanticRootKey root = workOf(*execution).root;
     auto [position, inserted] =
         sourceTemporalTiles.try_emplace(root, scope.iteratorTileSizes);
     if (!inserted) {
       if (position->second.size() != scope.iteratorTileSizes.size())
-        return fail<BaselineAttentionMaterializationSource>(
+        return fail<AttentionMaterializationSource>(
             failureReason, "source temporal tile rank is inconsistent");
       for (auto [current, candidate] :
            llvm::zip_equal(position->second, scope.iteratorTileSizes))
@@ -783,21 +784,21 @@ prepareBaselineAttentionMaterializationSource(
     const SemanticRootBinding *root = sourceRoots->find(node.operation);
     mlir::Operation *cloned = cloneMapping.lookupOrNull(node.operation);
     if (!root || !cloned)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason, "source structured operation was not cloned");
     auto spatial = sourcePartitions.find(root->key);
     auto temporal = sourceTemporalTiles.find(root->key);
     if (spatial == sourcePartitions.end() ||
         temporal == sourceTemporalTiles.end())
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason,
           "source structured operation has no resolved physical plan");
     if (!preservedOperations
-             .try_emplace(cloned, PreservedOperationPlan{spatial->second,
-                                                         temporal->second,
-                                                         root->key})
+             .try_emplace(cloned,
+                          PreservedOperationPlan{spatial->second,
+                                                 temporal->second, root->key})
              .second)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason, "source structured clone identity is duplicated");
   }
 
@@ -809,7 +810,7 @@ prepareBaselineAttentionMaterializationSource(
     auto [position, inserted] =
         sourceAttention.try_emplace(work.id.root, work.rootOperation);
     if (!inserted && position->second != work.rootOperation)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason,
           "one selected attention root names several source operations");
   }
@@ -826,13 +827,13 @@ prepareBaselineAttentionMaterializationSource(
                                   : cloneMapping.lookupOrNull(original->second);
     auto attention = mlir::dyn_cast_or_null<LinalgExtAttentionOp>(mapped);
     if (!attention)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason, "selected attention root has no cloned operation");
     mlir::FailureOr<AttentionIterationRoles> roles =
         attention.getIterationRoles();
     if (mlir::failed(roles) ||
         !attentionRoles.try_emplace(description.root, *roles).second)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason, "selected attention iterator roles are invalid");
     mlir::FailureOr<SelectedAttentionRootMaterialization> materialized =
         emitSelectedAttentionDecomposition(rewriter, attention, description,
@@ -846,7 +847,7 @@ prepareBaselineAttentionMaterializationSource(
         auto [position, inserted] =
             selectedOperationTiles.try_emplace(operation, tile);
         if (!inserted && position->second != tile)
-          return fail<BaselineAttentionMaterializationSource>(
+          return fail<AttentionMaterializationSource>(
               failureReason,
               "selected attention operation belongs to several Tiles");
       }
@@ -857,18 +858,18 @@ prepareBaselineAttentionMaterializationSource(
         auto assigned = selectedOperationTiles.find(operation);
         if (assigned == selectedOperationTiles.end() ||
             assigned->second != tile)
-          return fail<BaselineAttentionMaterializationSource>(
+          return fail<AttentionMaterializationSource>(
               failureReason,
               "selected attention action operation has no scope Tile");
         if (!selectedOperationActions.try_emplace(operation, action.id).second)
-          return fail<BaselineAttentionMaterializationSource>(
+          return fail<AttentionMaterializationSource>(
               failureReason,
               "selected structured operation belongs to several actions");
       }
     }
   }
   if (mlir::failed(mlir::verify(*selected)))
-    return fail<BaselineAttentionMaterializationSource>(
+    return fail<AttentionMaterializationSource>(
         failureReason,
         "selected attention TensorProgram is not verifier-legal");
 
@@ -893,16 +894,16 @@ prepareBaselineAttentionMaterializationSource(
     auto preserved = preservedOperations.find(node.operation);
     if (tile == selectedOperationTiles.end() &&
         preserved == preservedOperations.end())
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason, "selected graph has an unowned structured operation");
     if (tile != selectedOperationTiles.end() &&
         preserved != preservedOperations.end())
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason,
           "selected structured operation has two physical owners");
     const SemanticRootBinding *root = semanticRoots->find(node.operation);
     if (!root)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason,
           "selected attention actual op has no semantic identity");
     mlir::FailureOr<llvm::SmallVector<int64_t, 4>> extents =
@@ -922,7 +923,7 @@ prepareBaselineAttentionMaterializationSource(
       nodePlan.embedding.push_back(tile->second);
       auto action = selectedOperationActions.find(node.operation);
       if (action == selectedOperationActions.end())
-        return fail<BaselineAttentionMaterializationSource>(
+        return fail<AttentionMaterializationSource>(
             failureReason,
             "selected attention structured op has no action owner");
       SemanticRootKey attentionRoot =
@@ -930,7 +931,7 @@ prepareBaselineAttentionMaterializationSource(
       plannedRoots.emplace(node.operation, attentionRoot);
       auto roles = attentionRoles.find(attentionRoot);
       if (roles == attentionRoles.end())
-        return fail<BaselineAttentionMaterializationSource>(
+        return fail<AttentionMaterializationSource>(
             failureReason, "selected attention action has no iterator roles");
       llvm::ArrayRef<int64_t> sourceTemporal;
       auto temporal =
@@ -939,7 +940,7 @@ prepareBaselineAttentionMaterializationSource(
         sourceTemporal = temporal->second;
       else if (!std::holds_alternative<RequiredMergeExecution>(
                    action->second.scope.execution.source))
-        return fail<BaselineAttentionMaterializationSource>(
+        return fail<AttentionMaterializationSource>(
             failureReason,
             "selected attention action has no temporal coordinate");
       mlir::FailureOr<llvm::SmallVector<int64_t, 4>> projected =
@@ -957,7 +958,7 @@ prepareBaselineAttentionMaterializationSource(
         return mlir::failure();
       nodePlan = std::move(*rebound);
       if (preserved->second.temporalTileSizes.size() != extents->size())
-        return fail<BaselineAttentionMaterializationSource>(
+        return fail<AttentionMaterializationSource>(
             failureReason, "preserved operation temporal tile rank changed");
       selectedTemporal = preserved->second.temporalTileSizes;
     }
@@ -980,7 +981,7 @@ prepareBaselineAttentionMaterializationSource(
   analysis::ExactDemandProof selectedDemand;
   {
     wafer::support::ScopedCompileTimingSpan demandTiming(
-        "query", "deterministic-baseline", "selected-attention-exact-demand");
+        "query", "complete-candidate", "selected-attention-exact-demand");
     mlir::FailureOr<DemandPlanningSession> demandSession =
         DemandPlanningSession::create(*dag, analysis::IndexRelationLimits(),
                                       failureReason);
@@ -990,8 +991,8 @@ prepareBaselineAttentionMaterializationSource(
     const analysis::ExactDemandProof *demand =
         analysis::getExactDemandProof(demandOutcome);
     if (!demand)
-      return fail<BaselineAttentionMaterializationSource>(
-          failureReason, demandDetail(demandOutcome));
+      return fail<AttentionMaterializationSource>(failureReason,
+                                                  demandDetail(demandOutcome));
     selectedDemand = *demand;
     demandSession->close();
   }
@@ -1002,7 +1003,7 @@ prepareBaselineAttentionMaterializationSource(
                           failureReason);
   if (mlir::failed(outputs))
     return mlir::failure();
-  CardBaselineAssignment assignment;
+  CardMaterializationPlan assignment;
   assignment.spatial = std::move(*spatial);
   assignment.demand = std::move(selectedDemand);
   mlir::FailureOr<llvm::SmallVector<StructuredDAGNodePlacement, 64>>
@@ -1021,7 +1022,7 @@ prepareBaselineAttentionMaterializationSource(
     return mlir::failure();
 
   // Selected attention actions are one semantic root execution, not a family
-  // of independently scheduled baseline roots. Keep every operation in one
+  // of independently scheduled candidate roots. Keep every operation in one
   // action scope under a shared materialization identity so its block states
   // remain in one TileRegion. Cross-scope and ordinary-root dependencies keep
   // explicit DDR/peer cuts below.
@@ -1053,18 +1054,18 @@ prepareBaselineAttentionMaterializationSource(
     auto [position, inserted] =
         rootsByNode.try_emplace(mapping.structuredNodeId, root->second);
     if (!inserted && position->second != root->second)
-      return fail<BaselineAttentionMaterializationSource>(
+      return fail<AttentionMaterializationSource>(
           failureReason,
           "one selected structured node maps to several semantic roots");
   }
-  llvm::SmallVector<BaselineNodeRootRelation, 64> nodeRoots;
+  llvm::SmallVector<CandidateNodeRootRelation, 64> nodeRoots;
   for (const auto &[node, root] : rootsByNode)
     nodeRoots.push_back({node, root});
   if (statistics) {
     ++statistics->spatialCoordinateQueries;
     statistics->exactDemandSatisfiedEdges = dag->getEdges().size();
   }
-  return BaselineAttentionMaterializationSource{
+  return AttentionMaterializationSource{
       std::move(selected), std::move(assignment), std::move(operationNodes),
       std::move(nodeRoots)};
 }

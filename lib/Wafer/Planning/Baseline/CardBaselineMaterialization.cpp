@@ -1,9 +1,8 @@
 //===- CardBaselineMaterialization.cpp --------------------------------===//
 
-#include "Wafer/Planning/Baseline/CardBaselineAssignment.h"
+#include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 
 #include "Wafer/Planning/Baseline/BaselineAttentionMaterialization.h"
-#include "Wafer/Planning/Baseline/CanonicalBaselinePlan.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -15,7 +14,7 @@
 namespace wafer::compiler::detail {
 namespace {
 
-mlir::FailureOr<llvm::SmallVector<BaselineNodeRootRelation, 64>>
+mlir::FailureOr<llvm::SmallVector<CandidateNodeRootRelation, 64>>
 buildSourceNodeRoots(
     llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes,
     llvm::ArrayRef<analysis::RootRegionWork> rootWorks) {
@@ -38,7 +37,7 @@ buildSourceNodeRoots(
     if (!inserted && position->second != root->second)
       return mlir::failure();
   }
-  llvm::SmallVector<BaselineNodeRootRelation, 64> result;
+  llvm::SmallVector<CandidateNodeRootRelation, 64> result;
   for (const auto &[node, root] : rootsByNode)
     result.push_back({node, root});
   return result;
@@ -46,9 +45,9 @@ buildSourceNodeRoots(
 
 mlir::FailureOr<llvm::SmallVector<StructuredNodeRootGroup, 64>>
 buildMaterializationRootGroups(
-    llvm::ArrayRef<BaselineNodeRootRelation> nodeRoots) {
+    llvm::ArrayRef<CandidateNodeRootRelation> nodeRoots) {
   std::map<SemanticRootKey, uint32_t> groupsByRoot;
-  for (const BaselineNodeRootRelation &relation : nodeRoots)
+  for (const CandidateNodeRootRelation &relation : nodeRoots)
     groupsByRoot.try_emplace(relation.root, 0);
   uint32_t nextGroup = 0;
   for (auto &[root, group] : groupsByRoot) {
@@ -57,11 +56,10 @@ buildMaterializationRootGroups(
   }
 
   std::map<uint32_t, uint32_t> groupsByNode;
-  for (const BaselineNodeRootRelation &relation : nodeRoots) {
+  for (const CandidateNodeRootRelation &relation : nodeRoots) {
     auto root = groupsByRoot.find(relation.root);
     if (root == groupsByRoot.end() ||
-        !groupsByNode
-             .try_emplace(relation.structuredNodeId, root->second)
+        !groupsByNode.try_emplace(relation.structuredNodeId, root->second)
              .second)
       return mlir::failure();
   }
@@ -74,30 +72,31 @@ buildMaterializationRootGroups(
 
 } // namespace
 
-mlir::FailureOr<CardBaselineModule> materializeCardBaseline(
-    mlir::ModuleOp tensorProgram, CardId cardId,
-    const CardProgramAnalysis &program, const CanonicalBaselinePlan &plan,
-    BaselineStatistics *statistics, llvm::raw_ostream &diagnostics) {
+mlir::FailureOr<MaterializedCardCandidate>
+materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
+                         const CardProgramAnalysis &program,
+                         const CompleteCandidatePlan &plan,
+                         CandidateMaterializationStatistics *statistics,
+                         llvm::raw_ostream &diagnostics) {
   std::string failureReason;
   mlir::ModuleOp materializationSource = tensorProgram;
   mlir::OwningOpRef<mlir::ModuleOp> selectedSource;
-  CardBaselineAssignment assignment;
+  CardMaterializationPlan assignment;
   llvm::SmallVector<StructuredOperationNodeMapping, 64> selectedNodes;
-  llvm::SmallVector<BaselineNodeRootRelation, 64> nodeRoots;
+  llvm::SmallVector<CandidateNodeRootRelation, 64> nodeRoots;
   llvm::ArrayRef<StructuredOperationNodeMapping> operationNodes =
       program.operationNodes;
   if (plan.preparedAttention.work.roots.empty()) {
-    mlir::FailureOr<CardBaselineAssignment> built =
-        buildCardBaselineMaterializationAssignment(program, plan, statistics,
-                                                   diagnostics);
+    mlir::FailureOr<CardMaterializationPlan> built =
+        buildCardMaterializationPlan(program, plan, statistics, diagnostics);
     if (mlir::failed(built))
       return mlir::failure();
     assignment = std::move(*built);
   } else {
-    mlir::FailureOr<BaselineAttentionMaterializationSource> selected =
-        prepareBaselineAttentionMaterializationSource(
-            tensorProgram, cardId, program, plan, program.availableTileIds,
-            statistics, &failureReason);
+    mlir::FailureOr<AttentionMaterializationSource> selected =
+        prepareAttentionMaterializationSource(tensorProgram, cardId, program,
+                                              plan, program.availableTileIds,
+                                              statistics, &failureReason);
     if (mlir::failed(selected)) {
       diagnostics << "wafer-compile: selected attention preparation failed: "
                   << failureReason << '\n';
@@ -113,7 +112,7 @@ mlir::FailureOr<CardBaselineModule> materializeCardBaseline(
   if (nodeRoots.empty()) {
     auto sourceNodeRoots = buildSourceNodeRoots(operationNodes, plan.rootWorks);
     if (mlir::failed(sourceNodeRoots)) {
-      diagnostics << "wafer-compile: baseline node/root relation failed\n";
+      diagnostics << "wafer-compile: candidate node/root relation failed\n";
       return mlir::failure();
     }
     nodeRoots = std::move(*sourceNodeRoots);
@@ -121,71 +120,70 @@ mlir::FailureOr<CardBaselineModule> materializeCardBaseline(
   mlir::FailureOr<llvm::SmallVector<StructuredNodeRootGroup, 64>> rootGroups =
       buildMaterializationRootGroups(nodeRoots);
   if (mlir::failed(rootGroups)) {
-    diagnostics << "wafer-compile: baseline node/root group failed\n";
+    diagnostics << "wafer-compile: candidate node/root group failed\n";
     return mlir::failure();
   }
   mlir::FailureOr<std::unique_ptr<TileMaterializationSourceSession>> source =
       [&]() {
         wafer::support::ScopedCompileTimingSpan timing(
-            "query", "deterministic-baseline",
+            "query", "complete-candidate",
             "prepare-tile-materialization-source");
         return TileMaterializationSourceSession::create(
             materializationSource, cardId, operationNodes, *rootGroups,
             &failureReason);
       }();
   if (mlir::failed(source)) {
-    diagnostics << "wafer-compile: baseline source analysis failed: "
+    diagnostics << "wafer-compile: candidate source analysis failed: "
                 << failureReason << '\n';
     return mlir::failure();
   }
   if (statistics)
-    ++statistics->baselineSourcePreparations;
+    ++statistics->sourcePreparations;
 
   mlir::FailureOr<std::unique_ptr<TileMaterializationSession>> materializer =
       [&]() {
         wafer::support::ScopedCompileTimingSpan timing(
-            "query", "deterministic-baseline",
-            "prepare-tile-materialization");
+            "query", "complete-candidate", "prepare-tile-materialization");
         return TileMaterializationSession::create(**source, assignment.mapping,
                                                   &failureReason);
       }();
   if (mlir::failed(materializer)) {
-    diagnostics << "wafer-compile: baseline mapping validation failed: "
+    diagnostics << "wafer-compile: candidate mapping validation failed: "
                 << failureReason << '\n';
     return mlir::failure();
   }
   if (statistics)
-    ++statistics->baselineMaterializationPreparations;
+    ++statistics->materializationPreparations;
 
-  CardBaselineModule result;
+  MaterializedCardCandidate result;
   result.materializationSource = std::move(selectedSource);
   result.assignment = std::move(assignment);
   result.nodeRoots = std::move(nodeRoots);
   CardModuleMaterializationStatistics materializationStatistics;
   wafer::support::ScopedCompileTimingSpan timing(
-      "conversion", "deterministic-baseline", "tensor-program-to-card-module");
+      "conversion", "complete-candidate", "tensor-program-to-card-module");
   if (mlir::failed((*materializer)
                        ->lowerCardModule(result.module, &result.relations,
                                          &failureReason,
                                          statistics ? &materializationStatistics
                                                     : nullptr))) {
-    diagnostics << "wafer-compile: baseline CardModule materialization "
+    diagnostics << "wafer-compile: candidate CardModule materialization "
                    "failed: "
                 << failureReason << '\n';
     return mlir::failure();
   }
   if (statistics) {
-    ++statistics->baselineCardModuleMaterializations;
-    statistics->baselineTileEntryMaterializations +=
+    ++statistics->cardModuleMaterializations;
+    statistics->tileEntryMaterializations +=
         materializationStatistics.tileEntryMaterializations;
-    statistics->baselineMaximumTileMaterializationWorkers =
+    statistics->maximumTileMaterializationWorkers =
         materializationStatistics.maximumTileMaterializationWorkers;
   }
   return result;
 }
 
-mlir::LogicalResult verifyCardBaselineMaterialization(
-    mlir::ModuleOp cardModule, const CardBaselineAssignment &assignment,
+mlir::LogicalResult verifyMaterializedCardCandidate(
+    mlir::ModuleOp cardModule, const CardMaterializationPlan &assignment,
     const StructuredDAGAnalysis &dag,
     const StructuredMaterializationRelations &relations,
     llvm::ArrayRef<TileId> expectedTileIds, std::string &failureReason) {
@@ -196,7 +194,7 @@ mlir::LogicalResult verifyCardBaselineMaterialization(
                      return strategy.action ==
                             SpatialEdgeAction::RecursiveProducerTiling;
                    })) {
-    failureReason = "baseline assignment contains recursive producer tiling";
+    failureReason = "candidate assignment contains recursive producer tiling";
     return mlir::failure();
   }
 
@@ -207,12 +205,12 @@ mlir::LogicalResult verifyCardBaselineMaterialization(
     return lhs.getTileIdAttr().getInt() < rhs.getTileIdAttr().getInt();
   });
   if (tileModules.size() != expectedTileIds.size()) {
-    failureReason = "baseline CardModule has an incomplete Tile domain";
+    failureReason = "candidate CardModule has an incomplete Tile domain";
     return mlir::failure();
   }
   for (auto [index, tileModule] : llvm::enumerate(tileModules)) {
     if (TileId(tileModule.getTileIdAttr().getInt()) != expectedTileIds[index]) {
-      failureReason = "baseline CardModule changed the Tile identity domain";
+      failureReason = "candidate CardModule changed the Tile identity domain";
       return mlir::failure();
     }
   }

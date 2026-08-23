@@ -8,7 +8,7 @@
 namespace wafer::compiler::detail {
 
 mlir::LogicalResult addCardBaselineDataMovement(
-    CardBaselineAssignment &assignment, const StructuredDAGAnalysis &dag,
+    CardMaterializationPlan &assignment, const StructuredDAGAnalysis &dag,
     std::string *failureReason) {
   if (mlir::failed(addCardBaselineConsumerInputs(
           assignment.mapping, assignment.demand, failureReason)))
