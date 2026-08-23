@@ -2,20 +2,13 @@
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSpatialAssignment.h"
 
-#include "Wafer/Planning/PhysicalDataflow/AttentionSpatialConstraints.h"
-
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
-#include "mlir/Interfaces/DestinationStyleOpInterface.h"
-#include "mlir/Interfaces/TilingInterface.h"
+#include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/StringRef.h"
 
 #include <algorithm>
 #include <array>
-#include <limits>
-#include <map>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -30,90 +23,7 @@ mlir::FailureOr<T> fail(std::string *failureReason, llvm::StringRef detail) {
   return mlir::failure();
 }
 
-struct RootFacts {
-  SemanticRootKey root;
-  mlir::Operation *operation = nullptr;
-  llvm::SmallVector<int64_t, 8> iteratorExtents;
-  llvm::SmallVector<mlir::utils::IteratorType, 8> iteratorTypes;
-  llvm::SmallBitVector resultParallelIterators;
-  std::optional<AttentionSpatialConstraints> attention;
-};
-
-mlir::FailureOr<RootFacts> deriveRootFacts(const SemanticRootBinding &binding,
-                                           std::string *failureReason) {
-  auto tiling = mlir::dyn_cast<mlir::TilingInterface>(binding.operation);
-  auto destination =
-      mlir::dyn_cast<mlir::DestinationStyleOpInterface>(binding.operation);
-  if (!tiling || !destination)
-    return fail<RootFacts>(
-        failureReason, "structured root lacks tiling or destination interface");
-
-  RootFacts facts;
-  facts.root = binding.key;
-  facts.operation = binding.operation;
-  facts.iteratorTypes = tiling.getLoopIteratorTypes();
-  llvm::SmallVector<mlir::AffineMap, 4> resultMaps;
-  if (auto linalg = mlir::dyn_cast<mlir::linalg::LinalgOp>(binding.operation)) {
-    facts.iteratorExtents = linalg.getStaticLoopRanges();
-    for (int64_t result = 0; result < destination.getNumDpsInits(); ++result)
-      resultMaps.push_back(
-          linalg.getMatchingIndexingMap(destination.getDpsInitOperand(result)));
-  } else if (auto attention = mlir::dyn_cast<wafer::LinalgExtAttentionOp>(
-                 binding.operation)) {
-    facts.iteratorExtents = attention.getStaticLoopRanges();
-    resultMaps.push_back(attention.getOutputMap());
-  } else {
-    return fail<RootFacts>(
-        failureReason,
-        "structured root lacks supported typed indexing semantics");
-  }
-  if (resultMaps.empty())
-    return fail<RootFacts>(failureReason,
-                           "structured root has no destination result map");
-  if (facts.iteratorExtents.size() != facts.iteratorTypes.size() ||
-      facts.iteratorExtents.size() >
-          static_cast<size_t>(std::numeric_limits<uint32_t>::max()) ||
-      llvm::any_of(facts.iteratorExtents,
-                   [](int64_t extent) { return extent <= 0; }))
-    return fail<RootFacts>(
-        failureReason,
-        "structured root requires positive static iterator extents");
-
-  const size_t rank = facts.iteratorExtents.size();
-  facts.resultParallelIterators.resize(rank, false);
-  for (mlir::AffineMap map : resultMaps) {
-    if (!map || map.getNumDims() != rank || map.getNumSymbols() != 0)
-      return fail<RootFacts>(failureReason,
-                             "structured result map has invalid loop domain");
-    for (mlir::AffineExpr expression : map.getResults()) {
-      auto dimension = mlir::dyn_cast<mlir::AffineDimExpr>(expression);
-      if (!dimension || dimension.getPosition() >= rank)
-        return fail<RootFacts>(
-            failureReason,
-            "canonical spatial assignment requires projected result maps");
-      if (facts.iteratorTypes[dimension.getPosition()] ==
-          mlir::utils::IteratorType::parallel)
-        facts.resultParallelIterators.set(dimension.getPosition());
-    }
-  }
-
-  for (mlir::utils::IteratorType type : facts.iteratorTypes)
-    if (type != mlir::utils::IteratorType::parallel &&
-        type != mlir::utils::IteratorType::reduction)
-      return fail<RootFacts>(failureReason,
-                             "structured root has unsupported iterator kind");
-
-  if (auto attention =
-          mlir::dyn_cast<wafer::LinalgExtAttentionOp>(binding.operation)) {
-    mlir::FailureOr<AttentionSpatialConstraints> constraints =
-        deriveAttentionSpatialConstraints(attention);
-    if (mlir::failed(constraints))
-      return fail<RootFacts>(failureReason,
-                             "cannot derive attention spatial constraints");
-    facts.attention = std::move(*constraints);
-  }
-  return facts;
-}
+using RootFacts = SpatialRootDomainFacts;
 
 struct FactorPrefix {
   llvm::SmallVector<int64_t, 8> factors;
@@ -151,8 +61,9 @@ deriveCanonicalFactors(const RootFacts &facts, size_t maximumParticipants,
        ++iterator) {
     States next(maximumParticipants + 1);
     const bool keyValue = isKeyValueIterator(facts, iterator);
-    const bool mayPartition = facts.resultParallelIterators.test(iterator) ||
-                              (requiresKeyValuePartition && keyValue);
+    const bool mayPartition =
+        facts.partitionableParallelIterators.test(iterator) ||
+        (requiresKeyValuePartition && keyValue);
     const size_t maximumFactor =
         mayPartition ? std::min<size_t>(maximumParticipants,
                                         facts.iteratorExtents[iterator])
@@ -205,71 +116,49 @@ getIntervalCounts(llvm::ArrayRef<int64_t> extents,
 }
 
 mlir::LogicalResult
-addCoupledReductionGroups(const RootFacts &facts,
-                          llvm::ArrayRef<int64_t> intervalCounts,
-                          NodeSpatialPlan &plan, std::string *failureReason) {
-  llvm::SmallVector<unsigned, 2> spatialReductions;
-  for (auto [iterator, type] : llvm::enumerate(facts.iteratorTypes))
-    if (type == mlir::utils::IteratorType::reduction &&
-        intervalCounts[iterator] > 1)
-      spatialReductions.push_back(iterator);
-  if (spatialReductions.empty())
+addReductionMergePlacements(const RootFacts &facts,
+                            llvm::ArrayRef<int64_t> intervalCounts,
+                            NodeSpatialPlan &plan, std::string *failureReason) {
+  mlir::FailureOr<llvm::SmallVector<ReductionGroupId, 8>> groups =
+      deriveSpatialReductionGroups(facts, plan.axes, failureReason);
+  if (mlir::failed(groups))
+    return mlir::failure();
+  if (groups->empty())
     return mlir::success();
 
-  auto coupled =
-      mlir::dyn_cast<wafer::WaferCoupledReductionOpInterface>(facts.operation);
-  if (!coupled) {
-    if (failureReason)
-      *failureReason = "spatial reduction lacks a coupled reduction interface";
-    return mlir::failure();
-  }
-  wafer::CoupledReductionDescription description =
-      coupled.getCoupledReductionDescription();
-  llvm::SmallBitVector coupledReductions(intervalCounts.size(), false);
-  for (unsigned iterator : description.reductionIterators) {
-    if (iterator >= intervalCounts.size() || coupledReductions.test(iterator)) {
+  for (const ReductionGroupId &group : *groups) {
+    if (group.resultGroup >= facts.resultParallelIteratorsByGroup.size()) {
       if (failureReason)
-        *failureReason = "coupled reduction has an invalid iterator domain";
+        *failureReason = "spatial reduction group has no result map";
       return mlir::failure();
     }
-    coupledReductions.set(iterator);
-  }
-  if (description.components.empty() ||
-      llvm::any_of(spatialReductions, [&](unsigned iterator) {
-        return !coupledReductions.test(iterator);
-      })) {
-    if (failureReason)
-      *failureReason =
-          "spatial reduction is not covered by coupled reduction semantics";
-    return mlir::failure();
-  }
-
-  std::map<std::vector<uint32_t>, TileId> firstContributors;
-  for (size_t cell = 0; cell < plan.embedding.size(); ++cell) {
-    size_t remainder = cell;
-    llvm::SmallVector<uint32_t, 8> coordinate(intervalCounts.size());
-    for (size_t reverse = 0; reverse < intervalCounts.size(); ++reverse) {
-      const size_t iterator = intervalCounts.size() - reverse - 1;
-      coordinate[iterator] = static_cast<uint32_t>(
-          remainder % static_cast<size_t>(intervalCounts[iterator]));
-      remainder /= static_cast<size_t>(intervalCounts[iterator]);
+    const llvm::SmallBitVector &resultParallel =
+        facts.resultParallelIteratorsByGroup[group.resultGroup];
+    std::optional<TileId> contributor;
+    for (size_t cell = 0; cell < plan.embedding.size(); ++cell) {
+      size_t remainder = cell;
+      llvm::SmallVector<uint32_t, 8> coordinate(intervalCounts.size());
+      for (size_t reverse = 0; reverse < intervalCounts.size(); ++reverse) {
+        const size_t iterator = intervalCounts.size() - reverse - 1;
+        coordinate[iterator] = static_cast<uint32_t>(
+            remainder % static_cast<size_t>(intervalCounts[iterator]));
+        remainder /= static_cast<size_t>(intervalCounts[iterator]);
+      }
+      llvm::SmallVector<uint32_t, 4> parallelCoordinate;
+      for (int iterator = resultParallel.find_first(); iterator >= 0;
+           iterator = resultParallel.find_next(iterator))
+        parallelCoordinate.push_back(coordinate[iterator]);
+      if (parallelCoordinate == group.parallelCoordinate) {
+        contributor = plan.embedding[cell];
+        break;
+      }
     }
-    std::vector<uint32_t> parallelCoordinate;
-    for (int iterator = facts.resultParallelIterators.find_first();
-         iterator >= 0;
-         iterator = facts.resultParallelIterators.find_next(iterator))
-      parallelCoordinate.push_back(coordinate[iterator]);
-    firstContributors.try_emplace(std::move(parallelCoordinate),
-                                  plan.embedding[cell]);
-  }
-
-  for (const auto &[parallelCoordinate, tile] : firstContributors) {
-    ReductionGroupId group;
-    group.root = facts.root;
-    group.resultGroup = 0;
-    group.parallelCoordinate.assign(parallelCoordinate.begin(),
-                                    parallelCoordinate.end());
-    plan.reductionMerges.push_back({std::move(group), tile});
+    if (!contributor) {
+      if (failureReason)
+        *failureReason = "spatial reduction group has no contributor";
+      return mlir::failure();
+    }
+    plan.reductionMerges.push_back({group, *contributor});
   }
   return mlir::success();
 }
@@ -296,39 +185,23 @@ mlir::FailureOr<CanonicalSpatialCoordinate>
 buildCanonicalSpatialAssignment(const StructuredDAGAnalysis &dag,
                                 llvm::ArrayRef<TileId> availableTiles,
                                 std::string *failureReason) {
-  mlir::FailureOr<SemanticRootAnalysis> semanticRoots =
-      SemanticRootAnalysis::create(dag, failureReason);
-  if (mlir::failed(semanticRoots))
+  SpatialDomainProblemResult domainProblem =
+      buildSpatialDomainProblem(dag, availableTiles);
+  if (!domainProblem.succeeded()) {
+    if (failureReason && domainProblem.failure)
+      *failureReason = domainProblem.failure->detail;
     return mlir::failure();
-
-  llvm::SmallVector<RootFacts, 16> facts;
-  llvm::SmallVector<NodeIterationSpace, 16> iterationSpaces;
-  facts.reserve(semanticRoots->getRoots().size());
-  iterationSpaces.reserve(semanticRoots->getRoots().size());
-  for (const SemanticRootBinding &binding : semanticRoots->getRoots()) {
-    mlir::FailureOr<RootFacts> root = deriveRootFacts(binding, failureReason);
-    if (mlir::failed(root))
-      return mlir::failure();
-    NodeIterationSpace iterationSpace;
-    iterationSpace.root = root->root;
-    iterationSpace.iteratorExtents.assign(root->iteratorExtents.begin(),
-                                          root->iteratorExtents.end());
-    iterationSpaces.push_back(std::move(iterationSpace));
-    facts.push_back(std::move(*root));
   }
-
-  mlir::FailureOr<SpatialPlanningProblem> problem =
-      SpatialPlanningProblem::create(iterationSpaces, availableTiles,
-                                     failureReason);
-  if (mlir::failed(problem))
-    return mlir::failure();
+  const SpatialDomainProblem &problem = *domainProblem.problem;
+  llvm::ArrayRef<RootFacts> facts = problem.getRoots();
 
   SpatialPlan plan;
   plan.nodes.reserve(facts.size());
   for (const RootFacts &root : facts) {
     mlir::FailureOr<llvm::SmallVector<int64_t, 8>> factors =
-        deriveCanonicalFactors(root, problem->getAvailableTiles().size(),
-                               failureReason);
+        deriveCanonicalFactors(
+            root, problem.getStructuralProblem().getAvailableTiles().size(),
+            failureReason);
     if (mlir::failed(factors))
       return mlir::failure();
 
@@ -340,8 +213,9 @@ buildCanonicalSpatialAssignment(const StructuredDAGAnalysis &dag,
                            IteratorPartitionScheme::BalancedParts, factor});
       cellCount *= static_cast<size_t>(factor);
     }
-    node.embedding.assign(problem->getAvailableTiles().begin(),
-                          problem->getAvailableTiles().begin() + cellCount);
+    llvm::ArrayRef<TileId> tiles =
+        problem.getStructuralProblem().getAvailableTiles();
+    node.embedding.assign(tiles.begin(), tiles.begin() + cellCount);
 
     if (root.attention) {
       AttentionSpatialConstraintViolation violation =
@@ -355,19 +229,19 @@ buildCanonicalSpatialAssignment(const StructuredDAGAnalysis &dag,
         getIntervalCounts(root.iteratorExtents, node.axes, failureReason);
     if (mlir::failed(intervalCounts))
       return mlir::failure();
-    if (mlir::failed(addCoupledReductionGroups(root, *intervalCounts, node,
-                                               failureReason)))
+    if (mlir::failed(addReductionMergePlacements(root, *intervalCounts, node,
+                                                 failureReason)))
       return mlir::failure();
     plan.nodes.push_back(std::move(node));
   }
 
-  mlir::FailureOr<SpatialAssignment> assignment =
-      closeSpatialPlanStructure(*problem, plan, failureReason);
+  mlir::FailureOr<SpatialAssignment> assignment = closeSpatialPlanStructure(
+      problem.getStructuralProblem(), plan, failureReason);
   if (mlir::failed(assignment))
     return mlir::failure();
-  return CanonicalSpatialCoordinate{std::move(*semanticRoots),
-                                    std::move(*problem), std::move(plan),
-                                    std::move(*assignment)};
+  return CanonicalSpatialCoordinate{problem.getSemanticRoots(),
+                                    problem.getStructuralProblem(),
+                                    std::move(plan), std::move(*assignment)};
 }
 
 } // namespace wafer::compiler::detail

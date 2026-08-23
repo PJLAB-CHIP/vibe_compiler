@@ -81,8 +81,8 @@ bool tileArrayLess(llvm::ArrayRef<TileId> lhs, llvm::ArrayRef<TileId> rhs) {
 }
 
 mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>>
-buildIntervals(int64_t extent, const IteratorPartition &partition,
-               size_t maximumIntervals, std::string *failureReason) {
+buildIntervalsImpl(int64_t extent, const IteratorPartition &partition,
+                   size_t maximumIntervals, std::string *failureReason) {
   mlir::FailureOr<int64_t> intervalCount =
       getIteratorPartitionIntervalCount(extent, partition, failureReason);
   if (mlir::failed(intervalCount))
@@ -108,8 +108,12 @@ buildIntervals(int64_t extent, const IteratorPartition &partition,
   }
   case IteratorPartitionScheme::UniformExtent: {
     const int64_t tileSize = partition.parameter;
-    for (int64_t offset = 0; offset < extent; offset += tileSize)
-      intervals.push_back({offset, std::min(tileSize, extent - offset)});
+    int64_t offset = 0;
+    while (offset < extent) {
+      const int64_t size = std::min(tileSize, extent - offset);
+      intervals.push_back({offset, size});
+      offset += size;
+    }
     break;
   }
   default:
@@ -130,7 +134,7 @@ validateCanonicalPartition(int64_t extent, const IteratorPartition &partition,
                              IteratorPartitionScheme::BalancedParts,
                              static_cast<int64_t>(intervals.size())};
   mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>> balancedIntervals =
-      buildIntervals(extent, balanced, maximumIntervals, failureReason);
+      buildIntervalsImpl(extent, balanced, maximumIntervals, failureReason);
   if (mlir::failed(balancedIntervals))
     return mlir::failure();
   if (llvm::equal(*balancedIntervals, intervals))
@@ -219,6 +223,14 @@ void enumerateCells(const SemanticRootKey &root,
 }
 
 } // namespace
+
+mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>>
+getIteratorPartitionIntervals(int64_t extent,
+                              const IteratorPartition &partition,
+                              size_t maximumIntervals,
+                              std::string *failureReason) {
+  return buildIntervalsImpl(extent, partition, maximumIntervals, failureReason);
+}
 
 bool operator<(const IteratorPartition &lhs, const IteratorPartition &rhs) {
   return std::tie(lhs.iterator, lhs.scheme, lhs.parameter) <
@@ -332,8 +344,8 @@ validateSpatialPlanStructure(const SpatialPlanningProblem &problem,
         return fail(failureReason,
                     "SpatialPlan iterator partitions must be ordered");
       mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>> intervals =
-          buildIntervals(problemNode.iteratorExtents[iterator], partition,
-                         problem.getAvailableTiles().size(), failureReason);
+          buildIntervalsImpl(problemNode.iteratorExtents[iterator], partition,
+                             problem.getAvailableTiles().size(), failureReason);
       if (mlir::failed(intervals) ||
           mlir::failed(validateCanonicalPartition(
               problemNode.iteratorExtents[iterator], partition, *intervals,
@@ -380,9 +392,9 @@ closeSpatialPlanStructure(const SpatialPlanningProblem &problem,
     axes.reserve(nodePlan.axes.size());
     for (size_t iterator = 0; iterator < nodePlan.axes.size(); ++iterator) {
       mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>> intervals =
-          buildIntervals(problemNode.iteratorExtents[iterator],
-                         nodePlan.axes[iterator],
-                         problem.getAvailableTiles().size(), failureReason);
+          buildIntervalsImpl(problemNode.iteratorExtents[iterator],
+                             nodePlan.axes[iterator],
+                             problem.getAvailableTiles().size(), failureReason);
       if (mlir::failed(intervals))
         return mlir::failure();
       axes.push_back(std::move(*intervals));

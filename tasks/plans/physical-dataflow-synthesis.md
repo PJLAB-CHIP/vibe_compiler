@@ -1430,6 +1430,54 @@ Pipeline position:
   partition不进入domain；完整assignment经Q50.A typed proof，旧single-axis/node-wide-merge/trial字段零残留，query无clone与默认统计。
 ```
 
+### Work Item `spatial-domain`覆盖矩阵
+
+本项只签发完整`SpatialPlan` successors、typed close/evaluation、独立reference set和proposal order；不提前实现Core、C--K或actual
+candidate。实现前后的逐行门禁为：
+
+| 等价类 | 真实规模输入 | exact断言 | 直接下游witness |
+| --- | --- | --- | --- |
+| 单root aligned/ragged | rank-3/4 FP16/BF16，parallel extent含1024及1025/1031 | BalancedParts与UniformExtent产生的全部非空interval序列按extensional equality只保留一个；每个shard all-and-only覆盖、无重叠、tail精确 | close后的`SpatialAssignment`由Q50.A得到typed demand/final owners，Q50.C canonical root work逐Tile读取 |
+| multi-axis与physical embedding | 两个以上parallel轴、16个available Tiles及non-contiguous Tile subset | cell product不超过16的全部scheme组合；每个cell到任意distinct Tile的injective embedding可达，扰动Tile输入顺序不改stable set | `RootRegionWork`的logical shard ID不随Tile置换改变，physical Tile绑定按embedding改变 |
+| scalar/zero-rank | rank-zero tensor与无iteratorstructured root | empty Cartesian product恰一个cell；每个available singleton Tile raw state可达 | exact demand与root work均保留empty coordinate，不伪造spatial axis |
+| ordinary reduction | rank-3 1024/1025，parallel+一个或多个reduction轴 | 只有完整`PartialReductionOpInterface`允许reduction scheme；每个parallel coordinate形成独立`ReductionGroupId`，每组全部merge Tile choices可达 | Q50.A contributions/init/final owner与group、merge Tile逐项一致 |
+| FA/FD | rank-5/6，1024与1025/1031，mask/no-mask、single/multi-K2 | FA所有K2 interval-count product恒1；FD恒大于1且二维fiber全覆盖；mode predicate与canonical owner共用 | attention-ready exact-demand proof保持Q/K/V/mask和coupled component group完整 |
+| graph结构 | 1024/1025 chain、independent branches、diamond/fanin/fanout、multi-result | program successor等于per-node raw domain Cartesian product；global topology equivalence只能整plan作用，不能per-node删状态 | search-control-foundation可直接以一个closed `SpatialPlan`建立首个真实state |
+| tiny独立oracle | extent和Tile count均2--4，覆盖两scheme、embedding、merge | test-only nested-loop reference不include/call production successor；逐plan stable key集合完全相等 | proposal首点属于exact set，关闭/反转proposal family不改变reference集合 |
+| typed failure | unsupported reduction mechanics、FA切K2、FD不切K2、duplicate/unavailable embedding、missing/duplicate merge、demand unsupported/resource/compiler failure | domain structural unsupported与plan compiler error区分；Q50.A typed outcome原样传播且不删除raw siblings、不修改source | 同session随后关闭合法sibling成功；无IR clone、无capacity/route/layout side effect |
+
+本项不把1024级shape带入tiny穷举；真实规模矩阵证明production query/close/downstream，tiny矩阵只证明有限域完整性。任一success case、
+proposal首点或旧factor count都不能代签上述集合相等与per-group merge覆盖。
+
+### Work Item `spatial-domain`闭合结果
+
+本项已经把完整raw spatial机制切到`Planning/PhysicalDataflow/SpatialDomain`，并把active search consumer原位改为只保存
+`SpatialPlan`。当前闭合边界如下：
+
+- `SpatialRootDomainFacts`是canonical constructor与完整domain共用的唯一typed source-semantics query；Linalg、attention、
+  all-result-mapped partitionable parallel iterator、per-result coordinate map、partial/coupled reduction和FA/FD约束不再分别推导。
+- per-node successor严格按partition scheme、injective embedding、per-group merge Tile推进，program successor是逐root lazy
+  Cartesian product；不预建point vector，不调用IR builder，不用exact demand、topology compactness或下游failure删除raw sibling。
+- `BalancedParts`和`UniformExtent`按exact ordered intervals做extensional dedup；zero-iterator定义一个cell；普通partial reduction按
+  result-mapped parallel coordinate和result group建组，attention同时覆盖rank-5单K2与rank-6多K2。
+- current proposal family只包含经`contains`复核的maximum-balanced compact point、首个uniform-tail边界点、independent-component
+  disjoint point和raw first point。它不声称局部最优，也不形成shortlist；同component overlap、非compact subset、任意Tile permutation
+  与任意merge Tile仍由raw successor可达。
+- `UnifiedPhysicalDataflowDomain`已经直接消费`SpatialPlanDomain`，旧`SpatialPlacementAssignment`、
+  `CardSpatialPlacementDomain`、source、CMake registration、test和test fixture reader全部删除；baseline只复用source facts和structural
+  close，不调用full domain或proposal。
+
+当前target topology尚未暴露link capacity、endpoint color或fixed program endpoint等完整colored-graph facts，因此本项不建立
+不完整的automorphism quotient：identity等价隐含成立，raw embedding一个不删。communication factor、verified nontrivial
+automorphism、QAP/recursive-bisection/DP、admissible transport bound和local improvement由`search-scalability`在Core及H/J坐标闭合后
+实现和测量；它们继续消费同一raw domain，不能反写本项legality。这是owner顺序，不是可选的第二条实现路径。
+
+fresh验证结果：`SpatialDomainTest` 14/14，覆盖FP16/BF16的1024/1025、KV=1031、scalar、ordinary/multi-result/multi-axis reduction、tiny
+scheme/embedding Cartesian reference、tiny/真实diamond、independent components、FA/FD及masked multi-K2；受影响consumer与完整普通
+host unit为816/816；隔离的rank-4 aligned/ragged actual-memory case分别为1/1（749.995s）与1/1（232.009s）；configured lit共266项，
+262 passed、4项按配置unsupported。`UnifiedPhysicalDataflowTest`继续证明current plan可被完整candidate materialization与Q50.0消费；
+Q50.C actual TileRegion的全域materialization仍由后续`root-work-domain`拥有，不在本项提前施工。
+
 ### B-1 专项调研与spatial表示边界
 
 本子任务核对了current `SpatialPlacement`、旧`StructuredDAGPlacementEnumeration`、Q50.A/S/D接口，以及OpenXLA Shardy和
@@ -1606,8 +1654,9 @@ current `nextFactorVector/nextDistinctTileSequence`可迁移为mixed-radix与k-p
 `EdgeTransitionLegalityCache`把full domains压成`partitioned/axis/participant count`会让不同tail、multi-axis和embedding碰撞，必须删除。
 old partial-state compute/transition/topology metrics可作为proposal features，但不能再形成live-boundary Pareto deletion。
 
-Q50.B把spatial问题建成factor graph，但不在本层选择winner：每个`NodeSpatialPlan`是variable，每条structured dependency和
-reduction group是constraint/cost factor。per-node exact domain由三个嵌套successor组成，均不预建point vector：
+Q50.B把每个`NodeSpatialPlan`定义为后续factor graph的typed variable，但本项本身只拥有raw domain和无剪枝proposal。
+structured dependency与reduction group在Q52才成为constraint/cost factor。per-node exact domain由三个嵌套successor组成，
+均不预建point vector：
 
 ```text
 nextNodeSpatialPlan(current):
@@ -1645,7 +1694,7 @@ canonicalSpatialKey(plan, automorphisms):
   return best
 ```
 
-初始实现只在完整`SpatialPlan`上做这个quotient，per-node exact successor仍覆盖raw embeddings。future若要在partial plan上提前
+Q52引入该能力时只在完整`SpatialPlan`上做这个quotient，per-node exact successor仍覆盖raw embeddings。future若要在partial plan上提前
 canonicalize，只能使用保持已固定semantic prefix和external colors不变的automorphism stabilizer，并用tiny orbit oracle证明；否则宁可
 多枚举。program inputs、fixed endpoints或unavailable Tiles会通过颜色自然打破对称。
 
@@ -1658,7 +1707,7 @@ graph partition、recursive bisection和swap/local search生成mapping。NCCL则
 等collective graph。这些方法共同说明：placement必须看完整communication graph和actual topology，但placement、route family与event
 schedule仍是三层不同决策。
 
-Q50.B从A的complete proof为一个已关闭或部分关闭的spatial plan建立query-local communication-demand graph：
+Q52从A的complete proof为一个已关闭的spatial plan建立query-local communication-demand graph：
 
 ```text
 CommunicationDemandGraph
@@ -1679,7 +1728,7 @@ unknown minimum bytes使用0作为admissible bound，同时可用logical element
 同一payload机械重复计费，reduction contributions则是不同信息，必须分别到达merge。precomputed scores、multi-result、tail和
 nonrectangular demand都沿A exact domain进入，不按op或tensor名字分类。
 
-对一个complete placement，B可计算下列route-independent lower bounds：
+对一个complete placement，Q52可在H/J所需target facts已闭合后计算下列route-independent lower bounds：
 
 ```text
 dilationLB:
@@ -1703,7 +1752,7 @@ directed links、asymmetric bandwidth和unavailable endpoints来自current topol
 这些bounds仍不选择path，也不声称多个transfers可重叠。H稍后在同一placement上枚举unicast/k-shortest、multicast arborescence、
 reduction tree/ring/split-tree及broadcast-based many-to-many reshard；J才按actual links/events判断contention和overlap。
 
-高质量placement proposals使用四个互补构造器，输出都只是exact domain中的完整points：
+Q52的高质量placement proposals使用四个互补构造器，输出都只是Q50.B exact domain中的完整points：
 
 1. **Topology-shaped seeds**：row/column/serpentine及最小内部hop的subsets，适合regular mesh但不限制domain。
 2. **Communication graph recursive bisection**：按weighted demand cut递归切logical work graph，同时按actual NoC minimum-capacity cut递归
@@ -1718,11 +1767,11 @@ chain/tree factor DP可以把上述per-node proposal sets与pair lower bounds联
 best-first比较。一个构造器失败或返回空不影响其它构造器，更不影响raw successor。对16 Tile，topology cut和small-QAP oracle可完整
 枚举；production仍有显式work limit，不能把“硬件只有16 Tile”变成无界`K_n` product的理由。
 
-边界示意：两个producer/consumer plan拥有相同Tile数量但embedding不同，B的QAP/hop/cut facts会给出不同proposal顺序；H可能为同一
+边界示意：两个producer/consumer plan拥有相同Tile数量但embedding不同，Q52的QAP/hop/cut facts会给出不同proposal顺序；H可能为同一
 placement选择不同unicast或multicast trees；J又可能因同时发生的其它traffic改变winner。任何一层都不能把自己的局部最优写成上一层
 legality。
 
-domain提供下列proposal顺序，但proposal不是legality：
+完整Q52 proposal层按下列顺序扩展本项的基础seeds，但proposal不是legality：
 
 1. unpartitioned/single-Tile、最大parallelism、balanced与uniform-tail的边界点；
 2. topology内部hop work较小的compact subsets/embeddings；
@@ -1730,7 +1779,7 @@ domain提供下列proposal顺序，但proposal不是legality：
 4. independent observable components优先使用disjoint Tile subsets；
 5. reduction merge优先在contributor或直接consumer participant上，但其它available Tile siblings仍可达。
 
-为chain和一般DAG产生较好的complete spatial proposals时，复用一个不物化IR的factor-graph lower-bound query：
+Q52为chain和一般DAG产生较好的complete spatial proposals时，复用一个不物化IR的factor-graph lower-bound query：
 
 ```text
 unary(nodePlan):
@@ -1762,7 +1811,7 @@ chain DP的recurrence为`DP[n,o]=unary(n,o)+min_p(DP[pred,p]+pair(pred,n,p,o))`�
 bag中联合计算所有incident pair factors。independent components可先分别求proposal frontiers，再用Tile-overlap lower bound做
 deterministic product merge；不能假设它们永远可并行，因为physical Tile是共享resource。
 
-这些bounds只能包含当前已知且单调的logical work、mandatory merge与最小transport；topology compactness、local-edge count、
+这些Q52 bounds只能包含当前已知且单调的logical work、mandatory merge与最小transport；topology compactness、local-edge count、
 component overlap等不能证明admissible的量只作tie-break/proposal priority。Q50.B不再像旧实现那样在region/fusion/layout/buffer/
 schedule未赋值时用live-boundary estimated metrics删除spatial states。只有以下两类在本层可删除：
 
@@ -1788,8 +1837,8 @@ graph work近似`O((V+E) log V)`加partitioner work；一次完整Tile-swap swee
 
 - exact domain由`IteratorPartition × injective embedding × per-group merge placement`的三个lazy successors组成；
 - structured iterator/result/reduction语义决定scheme eligibility，Q50.A只派生demand和availability，不作cross-edge placement filter；
-- compact、co-located、partial-overlap、disjoint与independent-component placements都是proposal siblings；全部verified-legal
-  subsets/embeddings仍由exact successor可达；
+- current compact、uniform-tail与independent-component disjoint placements是基础proposal siblings；Q52再加入co-located、
+  partial-overlap和graph-driven siblings。全部verified-legal subsets/embeddings始终由exact successor可达；
 - topology symmetry只通过verified automorphism quotient，启发式相似或resource renaming不能删state；
 - chain/tree/general-DAG算法只产生proposal order和admissible lower bound，不保留local winner，不混入movement、schedule或
   fixed-capacity结论。
@@ -1801,14 +1850,14 @@ Shardy verifier逐层检查tensor rank与dimension-sharding数量、mesh轴唯�
 上下文。对应到本项目，`SpatialPlan` verifier必须只验证自身closed structural contract，Q50.A验证derived logical proof，Q50.C验证
 actual work；不能让任何一层用下一层成功倒推自己正确。
 
-三个oracle彼此独立：
+三个oracle彼此独立并按其直接consumer顺序施工：
 
 1. `SpatialPlanReference`用普通nested loops直接枚举小域，不include production domain header，也不调用production successor、
    canonicalizer或proposal helper。
-2. `TopologyMappingReference`对小communication graph穷举embedding、merge placement、topology automorphism和route tree，验证B的
-   canonical set与bounds/proposals；它只在test中调用actual route enumeration。
-3. `SpatialMaterializationReference`逐iteration point计算期望`(LogicalShardId, TileId)`和merge group，再读Q50.C actual
-   TileRegion/operation relation比较all-and-only coverage；不以IR文本中出现多少Tile名字代签。
+2. `TopologyMappingReference`由`search-scalability`在H/J target facts闭合后施工，对小communication graph穷举embedding、merge
+   placement、topology automorphism和route tree，验证Q52 bounds/proposals；它只在test中调用actual route enumeration。
+3. `SpatialMaterializationReference`由`root-work-domain`施工，逐iteration point计算期望`(LogicalShardId, TileId)`和merge group，
+   再读Q50.C actual TileRegion/operation relation比较all-and-only coverage；不以IR文本中出现多少Tile名字代签。
 
 current及donor test的逐项迁移如下：
 
@@ -1819,13 +1868,13 @@ current及donor test的逐项迁移如下：
 | current remainder/reduction embedding | 拆成parallel tail domain与partial-interface structural domain，不再混入其它判断 |
 | old unsupported-reduction-combiner test | 删除该方向；只验证partial-reduction interface能否完整表示selected result group |
 | scalar empty-factor/every singleton Tile | zero-iterator singleton-cell定义；任一available Tile raw state可达，global automorphism只在整plan canonicalize |
-| current chain/branch/diamond Card Cartesian reference | 升级为program-levelraw product + global automorphism oracle，不能对node独立quotient |
+| current chain/branch/diamond Card Cartesian reference | Q50.B升级为program-level raw product；Q52加入global automorphism oracle，不能对node独立quotient |
 | current partial owner/one merge Tile | 改为M/N/K mixed的多个`ReductionGroupId`、每组全部merge Tile choices及A final-owner proof |
 | donor multi-result producer | per-result/coupled-result groups由interface声明，所有results进入A/C实际witness |
 | donor bounded partial/disjoint、same-group remap、three distinct groups | 保留为exact siblings；proposal顺序可不同，domain不能因local transition class删除 |
 | donor full-mesh rectangle/compact-first | rectangle/serpentine/compact成为topology-shaped seeds；任意subset/embedding仍由raw successor覆盖 |
 | donor independent branches use all Tiles | recursive-bisection/disjoint proposal正例，同时保留共享Tile sibling给Q51比较resource/schedule |
-| donor long-DAG nondominated states | 改为129-node lazy/proposal work test；不保留旧live-boundary pruning结论 |
+| donor long-DAG nondominated states | Q52改为129-node proposal/work test；Q50.B successor本身不保留旧live-boundary pruning结论 |
 | donor fanout/diamond/temporal-residency | fanout hyperedge、fanin pair factors与spatial/temporal轴独立性；B proposal不能固定E |
 | donor reduction transition exact fragments | logical fragments归A，placement/merge归B，actual route归H；一个混合test拆到三个owners |
 | donor deterministic order | 扰动DenseMap insertion、Tile input order、proposal family顺序和并行completion，raw/canonical keys保持确定 |
@@ -1849,12 +1898,12 @@ all-and-only coverage；Q50.A结果验证final owners和每个merge group的cont
 chain、independent branches、diamond/fanin/fanout、multi-result、scalar、multi-axis remainder、M/N/K mixed、两个reduction axes、
 same-group remap、partial overlap、disjoint和three-stage distinct groups。
 
-proposal验证与domain验证分开：在同一小域上，chain DP与treewidth DP的首个proposal cost等于flat factor-graph minimum；general
+Q52 proposal验证与Q50.B domain验证分开：在同一小域上，chain DP与treewidth DP的首个proposal cost等于flat factor-graph minimum；general
 DAG best-first的bound单调且不会让exact successor中的siblings不可达。关闭compact/component/merge proposals或反转它们的顺序，
 domain集合与Q51有界穷举oracle optimum不变。verified topology automorphism前后的canonical set相同；增加unavailable/fixed-color
 Tile只打破真实symmetry。
 
-NoC专项oracle覆盖line、ring、2-D mesh、directed/asymmetric link、broken link和heterogeneous endpoint colors，以及chain、star
+Q52/H的NoC专项oracle覆盖line、ring、2-D mesh、directed/asymmetric link、broken link和heterogeneous endpoint colors，以及chain、star
 multicast、all-to-all、diamond和reduction gather communication graphs。有界穷举reference枚举全部embeddings和route trees，检查：
 exact QAP/DP模式达到reference placement cost；heuristic模式只返回domain member；`dilation/hopWork/cutCongestion`从不超过actual
 route optimum；multicast payload不会按destination错误重复成lower bound；改变NCCL式ring/tree proposal family只影响H的顺序，不改变
@@ -1869,22 +1918,22 @@ Q50.B的actual downstream witness由Q50.C提供：complete assignment关闭后�
 TileRegion work。局部gate通过后删除旧single-axis/node-wide-merge/trial/observable-placement字段。“非最大参与、非compact
 physical subset或局部lower-bound较差的placement成为global winner”留给Q51跨轴gate。
 
-完成门禁还要求active source/test中旧`SpatialPlacementAssignment/CardSpatialPlacementDomain`、`iteratorFactors`、
+本项完成门禁要求active source/test中旧`SpatialPlacementAssignment/CardSpatialPlacementDomain`、`iteratorFactors`、
 `reductionMergeTile`、`getMaximumParticipantAssignment`作为winner、`EdgeTransitionLegalityCache`、`ObservablePlacement`和旧
-live-boundary state零残留；CMake只注册新owner。fresh实现验证依次运行B reference/property、A closure、C actual、NoC bounds、
-named/production parity和轻量FP16/BF16 source-to-package/no-card；测试必须实际执行而非unsupported。设计复核阶段不运行这些构建，
-也不运行LLaMA search。
+live-boundary state零残留；CMake只注册新owner。fresh实现验证运行B reference/property、A closure、current production consumer、
+named/production parity和FP16/BF16真实规模host gate；C actual、NoC bounds和完整source-to-package分别由后续直接owner施工。
+测试必须实际执行而非unsupported；Q51完整链前不运行LLaMA search。
 
 ### Current/donor能力迁移
 
 | Current / donor能力 | 终态owner | 保留或修正的witness | 退役条件 |
 | --- | --- | --- | --- |
-| current完整iterator factor与有序distinct-Tile successor | Q50.B lazy partition/embedding successors | all factors/tails/subsets/embeddings reference equality | 迁入两scheme、automorphism key和per-group merge后删除旧`iteratorFactors/tiles` API |
+| current完整iterator factor与有序distinct-Tile successor | Q50.B lazy partition/embedding successors | all factors/tails/subsets/embeddings reference equality | 迁入两scheme和per-group merge后删除旧`iteratorFactors/tiles` API；nontrivial automorphism归Q52 |
 | current maximum-participant constructive choice | Q50.B proposal ordering | proposal合法且关闭后domain不变 | 不再作为baseline fallback或local winner |
 | old physical rectangle/compactness catalog | Q50.B compact proposal generator | full mesh包含all rectangles、compact 2x2优先 | exact domain不再只含connected rectangles；hop work不作legality |
 | old `getNodeSpatialAxes` result0/parallel-axis恢复 | all-iterator interface query | multi-result、reduction、scalar与projected-result正负例 | result-axis/single-axis字段零残留 |
 | old independent-component placement | Q50.B proposal + Q51 resource-aware combination | disjoint branch proposal、overlap sibling仍可达 | 不用component shortcut删除共享Tile plans |
-| old chain/general-DAG partial states与live-boundary Pareto | Q50.B factor-graph proposal；full pruning归Q50.F/Q51 | long chain、diamond、three-stage proposal和tiny optimum | 删除基于未关闭movement/schedule metrics的state pruning |
+| old chain/general-DAG partial states与live-boundary Pareto | Q52 factor-graph proposal；full pruning归Q50.F/Q51 | long chain、diamond、three-stage proposal和tiny optimum | 删除基于未关闭movement/schedule metrics的state pruning |
 | old exact-demand transition cache | Q50.A func analysis/query memo | same assignment同proof、failure typed传播 | Q50.B不缓存legality bool、不按Tile relabel近似demand |
 | old observable result axis/support-chain mapping | Q50.A final availability + Q50.H selected output store | multi-output/view链actual output coverage | 无`ObservablePlacement`或名字/axis恢复 |
 | old edge carrier、residency、peer movement、schedule/resource signature | Q50.H、Q50.I/J与Q51 full state | 对应donor tests随各owner迁移 | Q50.B source/test不再include movement/schedule类型 |
@@ -6005,7 +6054,7 @@ Q50.0路径，防止计数漏埋点。IR dump只可查看accepted winner，不�
 | --- | --- | --- |
 | `Attention*`, `DecodeAttentionAnalysis`, `TensorProgramAlternative*` | Q50.S one attention op/classifier/work description/selected decomposition | Q/K/V detection、FA/FD、block/partition ownership、state merge、no root clone/algorithm axis |
 | `ComputeImplementation*` | 10号deterministic lowering；真正semantic alternative留给Q48 | Natural/reciprocal exact applicability逐项判定，不借Q50.S恢复generic algorithm registry |
-| `SpatialPlacement*` | Q50.B | factor/subset/embedding/merge、automorphism、proposal/reference |
+| `SpatialPlacement*` | Q50.B raw factor/subset/embedding/merge；Q52 automorphism与graph proposal | Q50.B raw/reference equality；Q52 topology equivalence、proposal quality与work witness |
 | `SingleRootRegion*` | Q50.C | exact RootRegionWork、multi-producer support cut、one subtree construction |
 | `CoupledRegion*` | Q50.D | connected partitions、execution/use/replica、nested relation |
 | `TemporalTiling*` | Q50.E | complete vectors/orders/tails/nested scopes |

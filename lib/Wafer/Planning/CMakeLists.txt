@@ -31,6 +31,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/MovementPlan.cpp
   Planning/PhysicalDataflow/TemporalPlan.cpp
   Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
+  Planning/PhysicalDataflow/SpatialDomain.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp
   Planning/PhysicalDataflow/TemporalTileShape.cpp
@@ -47,7 +48,6 @@ set(WAFER_PLANNING_SOURCES
   Planning/Search/InstructionSchedule.cpp
   Planning/Search/PhysicalRepresentation.cpp
   Planning/Search/SimpleRoute.cpp
-  Planning/Search/SpatialPlacement.cpp
   Planning/Search/StagePipeline.cpp
   Planning/Search/TemporalTiling.cpp
   Planning/Search/SingleRootRegion.cpp

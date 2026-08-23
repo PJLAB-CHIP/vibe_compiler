@@ -11,6 +11,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -40,6 +41,15 @@ mlir::FailureOr<int64_t>
 getIteratorPartitionIntervalCount(int64_t extent,
                                   const IteratorPartition &partition,
                                   std::string *failureReason = nullptr);
+
+/// Materializes one partition's exact ordered nonempty intervals. The result
+/// is a query value derived only from the typed scheme and extent; callers do
+/// not retain it in SpatialPlan identity.
+mlir::FailureOr<llvm::SmallVector<IteratorInterval, 4>>
+getIteratorPartitionIntervals(int64_t extent,
+                              const IteratorPartition &partition,
+                              size_t maximumIntervals,
+                              std::string *failureReason = nullptr);
 
 struct MergePlacement {
   ReductionGroupId group;

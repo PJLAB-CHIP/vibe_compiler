@@ -16,6 +16,7 @@ add_executable(WaferUnitTests
   TestSupport/CodeGen/CardExecutableTestSupport.cpp
   TestSupport/Planning/SpatialDemandTestSupport.cpp
   TestSupport/Planning/CanonicalPlanningTestSupport.cpp
+  TestSupport/Planning/SpatialPlanReference.cpp
   Planning/Baseline/CardBaselineCompilationTest.cpp
   Planning/Baseline/CanonicalBaselinePlanTest.cpp
   CodeGen/Executable/CardExecutableCompilationTest.cpp
@@ -41,6 +42,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/CanonicalSchedulePlanTest.cpp
   Planning/PhysicalDataflow/CanonicalPlanningCoverageTest.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecompositionTest.cpp
+  Planning/PhysicalDataflow/SpatialDomainTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
   Analysis/Executable/ProgramResourceVerificationTest.cpp
   Planning/Search/CardExecutableSearchTest.cpp
@@ -50,7 +52,6 @@ add_executable(WaferUnitTests
   Planning/Search/DataMovementTest.cpp
   Planning/Search/InstructionScheduleTest.cpp
   Planning/Search/PhysicalRepresentationTest.cpp
-  Planning/Search/SpatialPlacementTest.cpp
   Planning/Search/StagePipelineTest.cpp
   Planning/Search/TensorProgramAlternativeTest.cpp
   Planning/Search/UnifiedPhysicalDataflowTest.cpp

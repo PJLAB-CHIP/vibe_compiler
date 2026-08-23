@@ -595,6 +595,15 @@
   压成legality bool，也禁止analysis header反向依赖candidate schedule carrier。任务状态必须核对production调用链，不能只凭
   analysis单测标done。
 
+## 长度一的injective embedding successor也必须先处理已完成suffix
+
+- 现象：zero-rank/scalar spatial node从第一个Tile推进到第二个Tile时，`SmallVector`越界并触发assert；rank大于零的常用case未暴露。
+- 根因：k-permutation successor更新最后一个logical cell后，仍进入“填充后缀”循环并写`embedding[size()]`，遗漏了
+  `position + 1 == embedding.size()`的终止分支。
+- 修复模式：更新当前位置后先判断suffix是否已经完整；完整就直接返回success，只有确有后缀时才按未使用Tile填充。
+- 防复发：scalar/zero-iterator domain必须枚举每个available singleton Tile并正常到达end；tiny reference同时覆盖长度1和多cell
+  embedding，禁止只测首点或rank大于零的常见向量。
+
 ## 编译边界不能把typed allocator failure压成一个布尔值
 
 - 现象：CardModule编译入口只看到“SPM allocation failed”，会把unsupported lifetime误归为内部失败，或反过来把未分类的

@@ -2,15 +2,15 @@
 
 #pragma once
 
+#include "Wafer/Planning/PhysicalDataflow/SpatialDomain.h"
 #include "Wafer/Planning/Search/Buffering.h"
 #include "Wafer/Planning/Search/BufferingApply.h"
 #include "Wafer/Planning/Search/ComputeImplementation.h"
-#include "Wafer/Planning/Search/SpatialPlacement.h"
 
 namespace wafer::compiler::detail {
 
 struct UnifiedPhysicalDataflowAssignment {
-  CardSpatialPlacementAssignment spatial;
+  SpatialPlan spatial;
   CoupledRegionAssignment coupled;
   CardTemporalAssignment temporal;
   CardComputeImplementationAssignment implementation;
@@ -35,8 +35,9 @@ struct ClosedSpatialDemand {
 
 /// Complete dependent Cartesian domain for one immutable TensorProgram root.
 /// Downstream domains are rebuilt from the current parent assignment and never
-/// cached as semantic state. Spatial points that do not produce an exact
-/// satisfied logical trial are skipped without deleting their siblings.
+/// cached as semantic state. A spatial point whose exact demand or dependent
+/// suffix cannot close is skipped during traversal without being cached as
+/// spatial illegality or deleting its siblings.
 class UnifiedPhysicalDataflowDomain {
 public:
   static mlir::FailureOr<UnifiedPhysicalDataflowDomain>
@@ -45,9 +46,9 @@ public:
 
   mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
   getFirstAssignment(std::string *failureReason = nullptr) const;
-  /// A deterministic, fully legal proposal that distributes every node over
-  /// the largest participant set admitted by its spatial domain, then uses
-  /// the first assignment of each dependent axis.
+  /// Returns the first downstream-closed assignment from the spatial
+  /// domain's deterministic proposal order. Every proposal is also a raw
+  /// successor member; failure does not substitute another policy's result.
   mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
   getConstructiveAssignment(std::string *failureReason = nullptr) const;
   /// Rebuilds the complete dependent suffix after repairing every coupled
@@ -71,24 +72,21 @@ public:
 
 private:
   UnifiedPhysicalDataflowDomain(const CardProgramAnalysis &program,
-                                CardId cardId,
-                                CardSpatialPlacementDomain spatial,
+                                CardId cardId, SpatialPlanDomain spatial,
                                 CardComputeImplementationDomain implementation)
       : program(program), cardId(cardId), spatial(std::move(spatial)),
-        implementation(std::move(implementation)) {
-  }
+        implementation(std::move(implementation)) {}
 
   mlir::FailureOr<ClosedSpatialDemand>
-  getSpatialDemand(const CardSpatialPlacementAssignment &assignment,
+  getSpatialDemand(const SpatialPlan &assignment,
                    std::string *failureReason) const;
   mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
-  getFirstForSpatial(const CardSpatialPlacementAssignment &assignment,
-                     std::string *failureReason,
+  getFirstForSpatial(const SpatialPlan &assignment, std::string *failureReason,
                      bool fusionOriented = false) const;
 
   const CardProgramAnalysis &program;
   CardId cardId{0};
-  CardSpatialPlacementDomain spatial;
+  SpatialPlanDomain spatial;
   CardComputeImplementationDomain implementation;
 };
 

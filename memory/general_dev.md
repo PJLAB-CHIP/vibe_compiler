@@ -97,6 +97,12 @@ source program
 - spatial/temporal reuse从exact `IndexRelation`、selected placement、TileRegion/traversal与wave-loop order按IR epoch派生，保留
   per-axis/per-wave equivalence和invariance；不要压成aggregate bool attr或另建metadata事实源。它可以优先regular mapping、
   unicast/multicast与retain/hoist proposal，但不能选择winner或删除合法补集。
+- complete spatial domain以`IteratorPartition`、injective logical-cell→Tile embedding和per-reduction-group merge Tile三个嵌套
+  successor组成；`SpatialPlan`保存compact identity，`SpatialAssignment`与exact demand按需关闭。Balanced/Uniform产生相同ordered
+  intervals时只保留一个extensional key；scalar的空Cartesian product仍有一个cell，并可映到任一available Tile。
+- spatial proposal与raw successor使用同一`SpatialPlan` schema并逐点做domain membership检查。compact、uniform-tail和independent-component
+  disjoint点只改变访问优先级；共享Tile、非compact subset、任意embedding和任意merge Tile仍由raw successor可达。tiny完整性oracle用
+  独立nested loops枚举scheme/embedding/merge，不include或调用production successor。
 - cheap structural legality、coverage、topology symmetry和已证明performance bound可在partial-state expansion中应用；它们不能签发SPM
   capacity结论。
 - SPM legality只来自complete candidate actual IR上的`PlanSPMMemory`/MiniMalloc。footprint、working-set、shape公式、buffer-count、

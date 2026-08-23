@@ -4,34 +4,53 @@
 
 #include "Wafer/Planning/Search/BufferingApply.h"
 
+#include <type_traits>
+#include <variant>
+
 namespace wafer::compiler::detail {
 
 mlir::FailureOr<UnifiedPhysicalDataflowDomain>
 UnifiedPhysicalDataflowDomain::create(const CardProgramAnalysis &program,
                                       CardId cardId,
                                       std::string *failureReason) {
-  auto spatial =
-      CardSpatialPlacementDomain::create(program.dag, program.availableTileIds);
+  SpatialPlanDomainResult spatial =
+      buildSpatialPlanDomain(program.dag, program.topology, cardId);
   auto implementation =
       CardComputeImplementationDomain::create(program, failureReason);
-  if (mlir::failed(spatial) || mlir::failed(implementation))
+  if (!spatial.succeeded() || mlir::failed(implementation)) {
+    if (!spatial.succeeded() && failureReason && spatial.failure)
+      *failureReason = spatial.failure->detail;
     return mlir::failure();
+  }
   return UnifiedPhysicalDataflowDomain(
-      program, cardId, std::move(*spatial), std::move(*implementation));
+      program, cardId, std::move(*spatial.domain), std::move(*implementation));
 }
 
 mlir::FailureOr<ClosedSpatialDemand>
 UnifiedPhysicalDataflowDomain::getSpatialDemand(
-    const CardSpatialPlacementAssignment &assignment,
-    std::string *failureReason) const {
-  CardSpatialPlacementEvaluation evaluation =
+    const SpatialPlan &assignment, std::string *failureReason) const {
+  SpatialDomainEvaluation evaluation =
       spatial.evaluate(program.dag, assignment);
   const analysis::ExactDemandProof *proof =
       evaluation.demand ? analysis::getExactDemandProof(*evaluation.demand)
                         : nullptr;
   if (!evaluation.assignment || !proof) {
-    if (failureReason)
-      *failureReason = evaluation.detail;
+    if (failureReason) {
+      if (evaluation.failure)
+        *failureReason = evaluation.failure->detail;
+      else if (evaluation.demand)
+        *failureReason = std::visit(
+            [](const auto &value) -> std::string {
+              using T = std::decay_t<decltype(value)>;
+              if constexpr (std::is_same_v<T, analysis::ExactDemandProof>)
+                return "spatial demand proof is unavailable";
+              else
+                return value.detail;
+            },
+            *evaluation.demand);
+      else
+        *failureReason = "spatial demand evaluation produced no outcome";
+    }
     return mlir::failure();
   }
   return ClosedSpatialDemand{std::move(*evaluation.assignment), *proof};
@@ -39,13 +58,13 @@ UnifiedPhysicalDataflowDomain::getSpatialDemand(
 
 mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
 UnifiedPhysicalDataflowDomain::getFirstForSpatial(
-    const CardSpatialPlacementAssignment &spatialAssignment,
-    std::string *failureReason, bool fusionOriented) const {
+    const SpatialPlan &spatialAssignment, std::string *failureReason,
+    bool fusionOriented) const {
   auto closed = getSpatialDemand(spatialAssignment, failureReason);
   if (mlir::failed(closed))
     return mlir::failure();
-  auto coupled = CoupledRegionDomain::create(
-      program.dag, closed->spatial, closed->demand, failureReason);
+  auto coupled = CoupledRegionDomain::create(program.dag, closed->spatial,
+                                             closed->demand, failureReason);
   llvm::SmallVector<StructuredDAGNodePlacement, 16> placements =
       spatial.getNodePlacements(spatialAssignment);
   auto temporal =
@@ -75,8 +94,8 @@ UnifiedPhysicalDataflowDomain::getFirstForSpatial(
       movement->getFirstAssignment();
   auto buffering = CardBufferingDomain::create(
       program, closed->spatial, closed->demand, *coupled, coupledAssignment,
-      *temporal, temporalAssignment, *representation,
-      representationAssignment, *movement, movementAssignment, failureReason);
+      *temporal, temporalAssignment, *representation, representationAssignment,
+      *movement, movementAssignment, failureReason);
   if (mlir::failed(buffering))
     return mlir::failure();
   return UnifiedPhysicalDataflowAssignment{spatialAssignment,
@@ -91,37 +110,40 @@ UnifiedPhysicalDataflowDomain::getFirstForSpatial(
 mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
 UnifiedPhysicalDataflowDomain::getFirstAssignment(
     std::string *failureReason) const {
-  CardSpatialPlacementAssignment current = spatial.getFirstAssignment();
+  SpatialPlan current = spatial.getFirstPlan();
   while (true) {
     if (auto assignment = getFirstForSpatial(current, failureReason);
         mlir::succeeded(assignment))
       return assignment;
-    auto next = spatial.getNextAssignment(current);
-    if (mlir::failed(next) || !*next)
+    SpatialPlanSuccessor next = spatial.getNextPlan(current);
+    if (next.kind == SpatialPlanSuccessorKind::Failure && failureReason &&
+        next.failure)
+      *failureReason = next.failure->detail;
+    if (next.kind != SpatialPlanSuccessorKind::Successor || !next.plan)
       return mlir::failure();
-    current = std::move(**next);
+    current = std::move(*next.plan);
   }
 }
 
 mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
 UnifiedPhysicalDataflowDomain::getConstructiveAssignment(
     std::string *failureReason) const {
-  auto proposal =
-      spatial.getConstructiveAssignment(program.dag, failureReason);
-  if (mlir::failed(proposal))
-    return mlir::failure();
-  return getFirstForSpatial(*proposal, failureReason);
+  for (const SpatialPlan &proposal : spatial.getProposals())
+    if (auto assignment = getFirstForSpatial(proposal, failureReason);
+        mlir::succeeded(assignment))
+      return assignment;
+  return mlir::failure();
 }
 
 mlir::FailureOr<UnifiedPhysicalDataflowAssignment>
 UnifiedPhysicalDataflowDomain::getFusionOrientedAssignment(
     std::string *failureReason) const {
-  auto proposal =
-      spatial.getConstructiveAssignment(program.dag, failureReason);
-  if (mlir::failed(proposal))
-    return mlir::failure();
-  return getFirstForSpatial(*proposal, failureReason,
-                            /*fusionOriented=*/true);
+  for (const SpatialPlan &proposal : spatial.getProposals())
+    if (auto assignment = getFirstForSpatial(proposal, failureReason,
+                                             /*fusionOriented=*/true);
+        mlir::succeeded(assignment))
+      return assignment;
+  return mlir::failure();
 }
 
 bool UnifiedPhysicalDataflowDomain::contains(
@@ -132,8 +154,8 @@ bool UnifiedPhysicalDataflowDomain::contains(
   auto closed = getSpatialDemand(assignment.spatial, nullptr);
   if (mlir::failed(closed))
     return false;
-  auto coupled = CoupledRegionDomain::create(
-      program.dag, closed->spatial, closed->demand);
+  auto coupled =
+      CoupledRegionDomain::create(program.dag, closed->spatial, closed->demand);
   auto temporal = CardTemporalDomain::create(
       program.dag, spatial.getNodePlacements(assignment.spatial));
   if (mlir::failed(coupled) || mlir::failed(temporal) ||
@@ -141,8 +163,8 @@ bool UnifiedPhysicalDataflowDomain::contains(
       !temporal->contains(assignment.temporal))
     return false;
   auto representation = CardPhysicalRepresentationDomain::create(
-      program, closed->spatial, closed->demand, *coupled,
-      assignment.coupled, *temporal, assignment.temporal);
+      program, closed->spatial, closed->demand, *coupled, assignment.coupled,
+      *temporal, assignment.temporal);
   if (mlir::failed(representation) ||
       !representation->contains(assignment.representation))
     return false;
@@ -153,8 +175,8 @@ bool UnifiedPhysicalDataflowDomain::contains(
   if (mlir::failed(movement) || !movement->contains(assignment.movement))
     return false;
   auto buffering = CardBufferingDomain::create(
-      program, closed->spatial, closed->demand, *coupled,
-      assignment.coupled, *temporal, assignment.temporal, *representation,
+      program, closed->spatial, closed->demand, *coupled, assignment.coupled,
+      *temporal, assignment.temporal, *representation,
       assignment.representation, *movement, assignment.movement);
   return mlir::succeeded(buffering) &&
          buffering->contains(assignment.buffering);
@@ -167,23 +189,22 @@ UnifiedPhysicalDataflowDomain::getNextAssignment(
   if (!contains(assignment))
     return mlir::failure();
   auto closed = *getSpatialDemand(assignment.spatial, failureReason);
-  auto coupled = *CoupledRegionDomain::create(
-      program.dag, closed.spatial, closed.demand, failureReason);
+  auto coupled = *CoupledRegionDomain::create(program.dag, closed.spatial,
+                                              closed.demand, failureReason);
   auto temporal = *CardTemporalDomain::create(
       program.dag, spatial.getNodePlacements(assignment.spatial),
       failureReason);
   auto representation = *CardPhysicalRepresentationDomain::create(
       program, closed.spatial, closed.demand, coupled, assignment.coupled,
-      temporal,
-      assignment.temporal, failureReason);
+      temporal, assignment.temporal, failureReason);
   auto movement = *CardDataMovementDomain::create(
       program, cardId, closed.spatial, closed.demand, coupled,
       assignment.coupled, temporal, assignment.temporal, representation,
       assignment.representation, failureReason);
   auto buffering = *CardBufferingDomain::create(
       program, closed.spatial, closed.demand, coupled, assignment.coupled,
-      temporal, assignment.temporal, representation,
-      assignment.representation, movement, assignment.movement, failureReason);
+      temporal, assignment.temporal, representation, assignment.representation,
+      movement, assignment.movement, failureReason);
 
   UnifiedPhysicalDataflowAssignment next = assignment;
   if (auto advanced = buffering.getNextAssignment(assignment.buffering);
@@ -276,8 +297,8 @@ UnifiedPhysicalDataflowDomain::getNextAssignment(
     next.temporal = temporal.getFirstAssignment();
     next.implementation = implementation.getFirstAssignment();
     auto resetRepresentation = CardPhysicalRepresentationDomain::create(
-        program, closed.spatial, closed.demand, coupled, next.coupled,
-        temporal, next.temporal, failureReason);
+        program, closed.spatial, closed.demand, coupled, next.coupled, temporal,
+        next.temporal, failureReason);
     if (mlir::failed(resetRepresentation))
       return mlir::failure();
     next.representation = resetRepresentation->getFirstAssignment();
@@ -289,8 +310,8 @@ UnifiedPhysicalDataflowDomain::getNextAssignment(
       return mlir::failure();
     next.movement = resetMovement->getFirstAssignment();
     auto resetBuffering = CardBufferingDomain::create(
-        program, closed.spatial, closed.demand, coupled, next.coupled,
-        temporal, next.temporal, *resetRepresentation, next.representation,
+        program, closed.spatial, closed.demand, coupled, next.coupled, temporal,
+        next.temporal, *resetRepresentation, next.representation,
         *resetMovement, next.movement, failureReason);
     if (mlir::failed(resetBuffering))
       return mlir::failure();
@@ -298,12 +319,17 @@ UnifiedPhysicalDataflowDomain::getNextAssignment(
     return std::optional<UnifiedPhysicalDataflowAssignment>(std::move(next));
   }
 
-  CardSpatialPlacementAssignment spatialAssignment = assignment.spatial;
+  SpatialPlan spatialAssignment = assignment.spatial;
   while (true) {
-    auto advanced = spatial.getNextAssignment(spatialAssignment);
-    if (mlir::failed(advanced) || !*advanced)
+    SpatialPlanSuccessor advanced = spatial.getNextPlan(spatialAssignment);
+    if (advanced.kind == SpatialPlanSuccessorKind::Failure) {
+      if (failureReason && advanced.failure)
+        *failureReason = advanced.failure->detail;
+      return mlir::failure();
+    }
+    if (advanced.kind == SpatialPlanSuccessorKind::End || !advanced.plan)
       return std::optional<UnifiedPhysicalDataflowAssignment>{};
-    spatialAssignment = std::move(**advanced);
+    spatialAssignment = std::move(*advanced.plan);
     if (auto reset = getFirstForSpatial(spatialAssignment, failureReason);
         mlir::succeeded(reset))
       return std::optional<UnifiedPhysicalDataflowAssignment>(
@@ -321,8 +347,8 @@ UnifiedPhysicalDataflowDomain::materialize(
   auto closed = getSpatialDemand(assignment.spatial, failureReason);
   if (mlir::failed(closed))
     return mlir::failure();
-  auto coupled = CoupledRegionDomain::create(
-      program.dag, closed->spatial, closed->demand, failureReason);
+  auto coupled = CoupledRegionDomain::create(program.dag, closed->spatial,
+                                             closed->demand, failureReason);
   if (mlir::failed(coupled))
     return mlir::failure();
   auto temporal = CardTemporalDomain::create(
@@ -331,8 +357,8 @@ UnifiedPhysicalDataflowDomain::materialize(
   if (mlir::failed(temporal))
     return mlir::failure();
   auto representation = CardPhysicalRepresentationDomain::create(
-      program, closed->spatial, closed->demand, *coupled,
-      assignment.coupled, *temporal, assignment.temporal, failureReason);
+      program, closed->spatial, closed->demand, *coupled, assignment.coupled,
+      *temporal, assignment.temporal, failureReason);
   if (mlir::failed(representation))
     return mlir::failure();
   auto movement = CardDataMovementDomain::create(
@@ -342,9 +368,8 @@ UnifiedPhysicalDataflowDomain::materialize(
   if (mlir::failed(movement))
     return mlir::failure();
   return materializeCardCoupledRegionsWithImplementations(
-      tensorProgram, program, cardId, closed->spatial, closed->demand,
-      *coupled, assignment.coupled, *temporal, assignment.temporal,
-      *representation,
+      tensorProgram, program, cardId, closed->spatial, closed->demand, *coupled,
+      assignment.coupled, *temporal, assignment.temporal, *representation,
       assignment.representation, implementation, assignment.implementation,
       *movement, assignment.movement, failureReason);
 }
@@ -358,8 +383,8 @@ UnifiedPhysicalDataflowDomain::buildBufferingScopes(
   auto closed = getSpatialDemand(assignment.spatial, failureReason);
   if (mlir::failed(closed))
     return mlir::failure();
-  auto coupled = CoupledRegionDomain::create(
-      program.dag, closed->spatial, closed->demand, failureReason);
+  auto coupled = CoupledRegionDomain::create(program.dag, closed->spatial,
+                                             closed->demand, failureReason);
   if (mlir::failed(coupled))
     return mlir::failure();
   auto temporal = CardTemporalDomain::create(
@@ -368,8 +393,8 @@ UnifiedPhysicalDataflowDomain::buildBufferingScopes(
   if (mlir::failed(temporal))
     return mlir::failure();
   auto representation = CardPhysicalRepresentationDomain::create(
-      program, closed->spatial, closed->demand, *coupled,
-      assignment.coupled, *temporal, assignment.temporal, failureReason);
+      program, closed->spatial, closed->demand, *coupled, assignment.coupled,
+      *temporal, assignment.temporal, failureReason);
   if (mlir::failed(representation))
     return mlir::failure();
   auto movement = CardDataMovementDomain::create(
@@ -379,10 +404,9 @@ UnifiedPhysicalDataflowDomain::buildBufferingScopes(
   if (mlir::failed(movement))
     return mlir::failure();
   auto buffering = CardBufferingDomain::create(
-      program, closed->spatial, closed->demand, *coupled,
-      assignment.coupled, *temporal, assignment.temporal, *representation,
-      assignment.representation, *movement, assignment.movement,
-      failureReason);
+      program, closed->spatial, closed->demand, *coupled, assignment.coupled,
+      *temporal, assignment.temporal, *representation,
+      assignment.representation, *movement, assignment.movement, failureReason);
   if (mlir::failed(buffering))
     return mlir::failure();
   return buildSelectedBufferingScopes(program, *buffering, assignment.buffering,
