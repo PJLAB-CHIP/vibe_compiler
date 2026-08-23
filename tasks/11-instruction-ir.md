@@ -1269,8 +1269,8 @@ R3.2d.2 当前 mechanics 与 Q49.P/Q50/Q51 gap：
    copy、metadata view lowered to standard memref view、`Cx/NCx` block-major reshape、
    tail-only metadata reshape、nested `scf.if`、tile communication structured failure，以及
    padding layout materialization structured failure。
-9. conversion不在WDMA后、`scf.for` backedge、内部traversal/task boundary或仅因看到`wafer.tile.region`/
-   `func.return`就按结构插wait/join。
+9. conversion不在WDMA后、`scf.for` backedge、内部traversal/task boundary或仅因看到`wafer.tile.region`就按结构插
+   wait/join；`func.return`只在current pending set非空且属于observable Tile-entry completion时闭合，不因terminator名称本身插join。
    普通NCC op进入worker-aware ordered-pending set；统一completion placement只在value effect/root alias证明的
    NCC→Direct DTE/Kcore/call/return cut插入覆盖实际pending worker的latest typed join；其中region exit只闭合仍访问其SPM
    roots的work，tile-module entry completion闭合observable pending，空join和相邻冗余
@@ -1278,6 +1278,16 @@ R3.2d.2 当前 mechanics 与 Q49.P/Q50/Q51 gap：
    不逐edge drain；SPM仍独立按exact DTE token/wait跟踪communication lifetime。production只在每个finalized
    Tile entry的current worker/effect/range上erase-all后fresh重建completion；旧standalone task return builder及
    复制既有join的路径不存在。
+
+2026-08-23 implementation审计确认上述终态尚未完全实现：required-join reconstruction仍在每个`TileRegion` terminator
+闭合所有访问该region-local root的pending worker，并在compiler-managed materialization WDMA后及reload前固定闭合same worker。
+前一规则把residency ownership boundary直接当同步边界，后一规则把store/reload类别直接当同步理由；两者都没有证明latest
+consumer、actual reuse、cross-domain visibility或terminal observation，因此不能作为accepted normal form。current loop fixed-point中
+“无条件same-worker backedge零join”、cross-worker conflict和observable return completion可以保留，但region/materialization规则及
+对应lit期望必须由Q50.J selected lifetime/event placement替换。任何`wafer.instr.ncc_join`都会lower为CRT
+`wafer_tx81_ncc_join(participant_mask)`，实际逐participant执行阻塞的`TsmWaitfinish_bywork`，所以这不是无成本的结构标记。
+替换门禁必须在1024/1025/1031级same-worker region/store/reload case断言steady/non-terminal join为0，并用独立cross-worker、
+NCC→Kcore/DTE/host与terminal case证明minimum participant join仍存在；检查dynamic count、位置和pending mask，不能只FileCheck某个join。
 
 R3.2d.3 当前边界：
 

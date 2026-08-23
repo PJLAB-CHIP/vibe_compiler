@@ -160,6 +160,13 @@ source program
 ## Completion与resource lifetime
 
 - selected actual IR在Tile→Instr及worker/order已经物化后清除旧completion，再从final effects/tokens/control flow/reuse fresh重建；不要恢复独立worker/fixed-slot selector。
+- 插入、删除或移动join/wait前先读对应硬件校准、target lowering和current CRT/runtime；把事实标为supported、board-observed、unknown或
+  excluded。unknown保持typed deferred/unsupported，不能用“保守同步”、operation类别、region/loop/materialization边界或通用经验补结论。
+- TX81 same-worker普通NCC链只保持SSA/effect/range要求的issue order；WDMA、unconditional loop、TileRegion exit和managed store/reload
+  本身都不是join理由。cross-worker/domain crossing、actual release/reuse和observable terminal只在latest unavoidable位置完成真实pending
+  participant。
+- Direct DTE issue与wait是独立程序点。recv wait在first read/FSM reuse前，send/relay wait在last release/resource reuse前；4个receiver FSM
+  和全卡wait graph无环是hard constraints，但不推出所有endpoint都立即await。
 - loop backedge、branch merge、entry return、Direct-DTE exact event/wait和async resource reuse都必须闭合。
 - `ReturnAfterLocalDrain`表示该Tile entry返回前，本地发起且影响结果/reuse/status的work已收敛；它不是card-scoped barrier。
 - CardExecutable成功要求16个Tile entries和全部transport obligations完成。runtime不能用统一尾等待掩盖compiler缺失的local completion。
@@ -659,7 +666,8 @@ source program
   全部per-Tile/Card orders合成后重新做global cycle check；跨Tile hard edge/shared DDR不会因分scope而丢失。opaque NoC estimate既不绑定
   resource instance，也不产生sequence。
 - completion boundary由显式Completion EventId标识；NCC participant mask从selected issue worker或typed fixed obligation导出，DTE completion
-  不清NCC，NCC join也不清DTE。actual wait/join/order emission只能在accepted complete-candidate subtree中执行；bounds/proposals属于后续
+  不清NCC，NCC join也不清DTE。boundary必须位于issue之后、dependent first-read/last-release之前，并满足participant/FSM/resource事实；
+  missing contract不能默认Synchronous。actual wait/join/order emission只能在accepted complete-candidate subtree中执行；bounds/proposals属于后续
   search control/scalability，不得成为绕过exact domain的第二入口。
 
 ## Complete-candidate actual admission（stable，2026-08-23）

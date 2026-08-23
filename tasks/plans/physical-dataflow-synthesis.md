@@ -1,8 +1,9 @@
 # Physical Dataflow Planning 与 Selected Execution 实施计划
 
-状态：Q50.0 CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P deterministic baseline、Q50.B
-spatial-domain、Q51.Core search-control-foundation和Q50.C root-work-domain的当前输出已经闭合。完成状态复核撤回了原第5--17项的
-完成结论；当前下一项是`region-execution-domain`，随后按Temporal、partial readiness、layout、movement、storage、event/K/I/J、
+状态：Q50.0 CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q50.B spatial-domain、Q51.Core
+search-control-foundation和Q50.C root-work-domain的当前输出已经闭合。2026-08-23 completion审计撤回Q49.P
+`deterministic-baseline-closure`及原第5--17项的完成结论；当前下一项先在原Q49.P work item清除per-block/per-element/structural
+NCC join和unproved immediate DTE await，随后按Region、Temporal、partial readiness、layout、movement、storage、event/K/I/J、
 full-feasibility和Q51的顺序重新闭合selected construction与production consumer。Q50.S attention production、Q52与Q53继续等待这些
 直接前置并按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
@@ -166,7 +167,8 @@ Pipeline position:
 - Done criteria:
   Q50.0先建立共同CardExecutable compile/verification seam；Q54按19号合同收口MLIR infrastructure；Q58/Q56/Q59先闭合
   program data ownership、package data与compile commit。当前20个execution work items按`tasks/progress.md`唯一顺序逐项闭合：
-  先建立semantic/spatial/demand与canonical plan artifacts，再闭合deterministic baseline；随后建立完整physical domains、search controller、
+  已建立的semantic/spatial/demand与canonical plan artifacts继续作为输入；先重新闭合deterministic baseline的hardware-evidence-driven
+  completion normal form，随后建立完整physical domains、search controller、
   unified complete-candidate actual evaluation、唯一winner发布、attention production evidence和measured scalability。最后production-host-readiness从Q60产品入口生成
   fresh package、oracle、runner并通过no-card达到board-ready；真实matched板端A/B不在当前目标内。
 ```
@@ -254,36 +256,39 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 
 | 顺序 | Work item | 状态 | 设计owner | 单一输出责任 | 逐项执行门禁 | 下一work item |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | `deterministic-baseline-closure` | `done` | Q49.P | actual candidate materialization→SPM planning→typed feedback闭环及fresh none纵向 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | spatial-domain |
-| 2 | `spatial-domain` | `done` | Q50.B | complete spatial successors、reference enumerator及proposal | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-foundation |
-| 3 | `search-control-foundation` | `done` | Q51.Core | SpatialState frontier/continuation及public search routing | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | root-work-domain |
-| 4 | `root-work-domain` | `done` | Q50.C | full root/merge work domain、Core consumer及complete-candidate emitter输入 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
-| 5 | `region-execution-domain` | `next` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
-| 6 | `temporal-domain` | `queued` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
-| 7 | `partial-feasibility` | `queued` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
-| 8 | `layout-domain` | `queued` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
-| 9 | `movement-domain` | `queued` | Q50.H | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、selected construction/verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
-| 10 | `storage-domain` | `queued` | Q50.I | production alias/reuse/1..U requirements、selected object/rotation construction及lifetime verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
-| 11 | `event-resource-foundation` | `queued` | Q50.J | 完整EventGraph/resource/recurrence facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
-| 12 | `execution-structure-domain` | `queued` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
-| 13 | `structure-specific-storage` | `queued` | Q50.I | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | schedule-domain |
-| 14 | `schedule-domain` | `queued` | Q50.J | post-K EventGraph、slot-lifetime约束、worker/resource/completion完整域及selected schedule emission/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | full-feasibility |
-| 15 | `full-feasibility` | `queued` | Q50.F | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-closure |
-| 16 | `search-control-closure` | `queued` | Q51.Core | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | unified-search-closure |
-| 17 | `unified-search-closure` | `queued` | Q51 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | attention-production-closure |
-| 18 | `attention-production-closure` | `queued` | Q50.S | donor retirement及prefill/decode none/search package/no-card | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-scalability |
-| 19 | `search-scalability` | `queued` | Q52 | measured memo/DP/bound/LNS及有限预算LLaMA actual evaluation | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | production-host-readiness |
-| 20 | `production-host-readiness` | `queued` | Q53 | fresh source/IR/package/oracle/runner/no-card矩阵 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | Q53 board-ready |
+| 1 | `deterministic-baseline-closure` | `next` | Q49.P | 保留actual candidate→SPM→typed feedback闭环；删除per-block/per-element/structural join与unproved immediate await，fresh none满足最小completion及动态work gate | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
+| 2 | `spatial-domain` | `done` | Q50.B | complete spatial successors、reference enumerator及proposal | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-foundation |
+| 3 | `search-control-foundation` | `done` | Q51.Core | SpatialState frontier/continuation及public search routing | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | root-work-domain |
+| 4 | `root-work-domain` | `done` | Q50.C | full root/merge work domain、Core consumer及complete-candidate emitter输入 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
+| 5 | `region-execution-domain` | `queued` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
+| 6 | `temporal-domain` | `queued` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
+| 7 | `partial-feasibility` | `queued` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
+| 8 | `layout-domain` | `queued` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
+| 9 | `movement-domain` | `queued` | Q50.H | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、token-only selected construction/verifier及donor retirement；不在issue后立即await | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
+| 10 | `storage-domain` | `queued` | Q50.I | production alias/reuse/1..U requirements、selected object/rotation construction及first-read/last-release lifetime verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
+| 11 | `event-resource-foundation` | `queued` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
+| 12 | `execution-structure-domain` | `queued` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
+| 13 | `structure-specific-storage` | `queued` | Q50.I | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | schedule-domain |
+| 14 | `schedule-domain` | `queued` | Q50.J | post-K EventGraph、slot/FSM lifetime、worker/resource/completion完整域及minimum-participant/latest-unavoidable selected wait/join emission/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | full-feasibility |
+| 15 | `full-feasibility` | `queued` | Q50.F | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、plan/actual join-wait parity与动态work gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-closure |
+| 16 | `search-control-closure` | `queued` | Q51.Core | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | unified-search-closure |
+| 17 | `unified-search-closure` | `queued` | Q51 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | attention-production-closure |
+| 18 | `attention-production-closure` | `queued` | Q50.S | donor retirement及prefill/decode none/search package/no-card；attention algorithm层零固定worker、零per-K2-block completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-scalability |
+| 19 | `search-scalability` | `queued` | Q52 | measured memo/DP/bound/LNS及有限预算LLaMA actual evaluation | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | production-host-readiness |
+| 20 | `production-host-readiness` | `queued` | Q53 | fresh source/IR/package/oracle/runner/no-card矩阵 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | Q53 board-ready |
 
-表中“调研”指向仓库外已有知识与成熟实践：优先阅读原始论文、算法资料、官方设计文档和相关compiler的真实实现，比较候选算法的
+表中读取硬件/ABI事实源是算法调研之前的独立正确性门禁：涉及completion、resource、memory hierarchy或target行为时，必须先读
+对应`docs/`、current lowering和CRT/runtime实现，将结论标为`supported`、`board-observed`、`unknown`或`excluded`；不能用通用
+同步经验、operation类别或结构边界填补unknown。表中“调研”指向仓库外已有知识与成熟实践：优先阅读原始论文、算法资料、官方设计文档和相关compiler的真实实现，比较候选算法的
 完整性、最坏复杂度、正确性/近似边界、工程代价及与Wafer IR边界的适配。调研产出必须在对应owner小节记录采用方案、未采用方案和
 原因，然后才查询官方LLVM/MLIR文档及仓库pinned源码确认可用API。仅阅读本仓或pinned源码、找到一个可调用helper，不构成算法调研，
 也不能开始编码。
 
 ### 完成状态复核与重新打开边界
 
-当前状态复核以production call graph、实际candidate carrier和本轮执行的定向测试为依据。第1--4项的当前输出仍成立；后续局部
-domain、builder和typed failure测试继续保留，但下面事实使原第5--17项不能签发`done`：
+当前状态复核以production call graph、实际candidate carrier和本轮执行的定向测试为依据。第2--4项的当前输出仍成立；第1项的
+actual SPM反馈机制可保留，但其production completion normal form失效并已重新打开。后续局部domain、builder和typed failure测试
+继续保留，但下面事实使原第5--17项不能签发`done`：
 
 - current `CompleteCandidatePlan`只携带spatial assignment、exact demand、root work、TemporalPlan和prepared attention decomposition；
   selected RegionPlan、RepresentationPlan、MovementPlan、BufferPlan、ExecutionStructurePlan与ClosedSchedulePlan没有进入actual
@@ -307,7 +312,8 @@ actual current IR上的`PlanSPMMemory`/MiniMalloc结果；本次重新打开不�
 work item是唯一调度身份，Q50.*只表示设计owner。一个owner可以拥有多个work item，但每个work item只出现一次、只签发一个typed
 artifact或production gate；owner整体完成由`tasks/progress.md`的owner map汇总，不进入施工队列反复切状态。
 
-第1--4项当前已满足的foundational artifacts继续作为输入；历史状态、case ledger和fresh数字由
+第2--4项当前已满足的foundational artifacts继续作为输入；Q49.P中与同步无关的exact demand、actual SPM反馈和policy隔离实现可原位
+复用，但必须重新通过本节completion gate。历史状态、case ledger和fresh数字由
 `tasks/archive/completed-task-index.md`与Git记录。若复核发现某个current work item没有满足自己的production完成条件，就在
 `tasks/progress.md`中把同一semantic work item重新打开并重放直接后继；不得旁挂`*-closure`影子任务、复制动态状态表或以历史`done`
 阻止修复。真正已被后继吸收且不在current queue中的历史任务仍不恢复。
@@ -315,6 +321,70 @@ artifact或production gate；owner整体完成由`tasks/progress.md`的owner map
 每个current work item转为`doing`且写代码前，必须先完成上述算法/实现调研及取舍记录，并在自己的owner小节列出本项覆盖矩阵：
 1024级整除/非整除、适用的单轴/多轴与结构语义类别、positive/typed failure、exact输出字段和直接下游witness；不适用项写明理由。
 实现后逐行绑定fresh结果，并在复读owner设计与LLVM/MLIR工程合同后才能更新状态。全局shape规则、测试总数或一个success case都不能代签。
+
+### 2026-08-23 Completion、join与wait专项审计
+
+#### 硬件与ABI事实
+
+本轮只采用current硬件/ABI证据，不用通用异步编程经验补规则：
+
+- TX81 same-worker RAW/WAR/WAW/RAR的24个case、72个sample证明busytable与issue order能落实已存在的有界地址依赖；
+  wait-each相对wait-once稳定增加plan cycles。普通same-worker链、无条件loop backedge和跨迭代slot reuse不能逐edge drain。
+- `wafer.instr.ncc_join`经target lowering成为`wafer_tx81_ncc_join(participant_mask)`；CRT在fence/sync之间对每个mask participant
+  调用`TsmWaitfinish_bywork`。它是阻塞的worker-domain drain，不是无成本IR marker。
+- Direct DTE是独立completion domain。current target lowering发射prepare后显式发射issue；CRT issue路径执行peer-ready同步、
+  endpoint attach和真实`send_async`，wait路径负责completion与release。当前receiver资源只有4个FSM；structured whole-program
+  verification必须证明live-range四着色和wait graph无环。
+- 因此NCC join只允许出现在current effect/range/lifetime证明的cross-worker、NCC→Kcore/Direct-DTE/host、actual reuse/release或
+  observable terminal cut，并只完成真实pending participant；DTE wait必须位于recv first read、send/relay last release或实际FSM/slot
+  reuse之前。缺少证据时是unknown并typed defer/reject，不能插一个“保守”drain，也不能把所有token立即await。
+
+#### Current production偏差与owner
+
+| Current位置 | 已确认行为 | 为什么不符合合同 | 修正owner与必须输出 |
+| --- | --- | --- | --- |
+| `SelectedAttentionDecomposition.cpp`、`TensorControlFlowLowering.cpp` | 每个K2 block state update创建带worker0 participant的`TensorCompletionOp`，随后直接lower为`SyncNCCJoinOp` | algorithm decomposition在worker/order/lifetime尚未选择时固定schedule；join动态数随K2 block数增长并清空本可跨block保留的NCC窗口 | Q50.S decomposition只保留SSA running max/sum/accumulator依赖；Q50.J从selected actual effects在真实reuse/domain exit处放置completion。Q49.P与`attention-production-closure`均重验 |
+| `TensorControlFlowLowering.cpp` external/cache copy | copy tile固定为各维1；每个leaf分配1-element SPM，发射load、store、worker0 join并dealloc | 对rank-4 decode cache prefix，DMA/allocation/join按logical element数线性增长；这不是保守正确性，而是把结构化copy退化为逐元素阻塞程序 | Q49.P/E/H产生可循环或descriptor化的canonical actual movement，I拥有buffer lifetime，J在真实release/terminal处完成；actual SPM planner验证具体allocation，不用footprint猜tile |
+| `BodyEmitter.cpp` peer endpoint | streamed和non-streamed send/recv刚产生token就立即`async.await`；`PeerLowering`再lower为`InstrDTEWaitOp` | H在J选择order、first read、last release和FSM allocation前把通信串行化，合法overlap window消失 | `movement-domain`把token-only `MovementTransferBuilder`接入production；I提供source/destination/relay lifetime；J选择满足first-read/last-release、4-FSM与无环约束的wait，必要时可以早等但不能默认立即等 |
+| `WaferTileRegionToInstr.cpp` required-join reconstruction | 每个TileRegion terminator闭合仍访问region-local roots的worker；managed materialization WDMA后和reload前固定闭合same worker | region ownership、WDMA和store/reload类别本身都不是hardware completion event；current规则把结构边界当同步proof | Q50.J/Q50.0从actual root lifetime、crossing、reuse和terminal重建。保留正确的same-worker loop零join、cross-worker conflict和observable return逻辑；删除region/materialization特殊期望 |
+| `EventGraph.cpp` | execution contract缺失时默认`CompletionProtocol::Synchronous`；DDR/no-hop movement也默认Synchronous | missing typed fact被静默解释为同步完成，掩盖真实RDMA/WDMA async domain和Q63接线缺口 | `event-resource-foundation`必须从Q63和H typed action取得completion；缺失为typed malformed/deferred，不得default Synchronous |
+| `ScheduleDomain.cpp` | 每个completion obligation固定放在自己的completion event | 没有枚举或推导latest-unavoidable legal boundary，schedule axis实际未关闭 | `schedule-domain`在fixed K/I EventGraph上枚举有限EventBoundaryId，满足hard/lifetime/resource edge后选择最晚最弱合法点并生成actual IR |
+| canonical schedule/attention projection | canonical prefix把全部node绑定worker0，`CanonicalAttentionWorkProjection`也只接受该canonical coordinate | 对canonical `none`这是合法检查，但它证明该helper不能直接充当noncanonical selected-search consumer；worker0不能成为attention语义 | canonical helper继续只服务canonical producer；selected attention construction从worker-independent work facts与closed J plan分别取值，不复用canonical worker0检查缩小J合法域 |
+| target/cost/controller | 每个join都会发射真实target call；ExecutionCost已统计total/steady/nonterminal join与participant waits，但public search首个Accepted即停止 | cost计数本身不能消除已硬编码同步，也不能在没有候选比较时选择更好plan | 先由H/I/J构造合法最小completion，再由Q51比较actual cost；`full-feasibility`检查plan/actual join-wait parity和动态work |
+| donor/inactive路径 | `DataMovementApply`与selected-buffer donor仍含immediate await或同步surgery | 当前没有production caller不等于可作为后续迁移模板；直接接回会重新引入同类错误 | 迁移时只保留payload/lifetime/negative witness；wait/join placement统一交给J，随后删除donor |
+
+Q63保持`done`：pure target completion protocol、MLIR operation interface和current-IR pending analysis的分层是正确的。本轮不新增
+第二completion interface，也不让Q63选择worker/order；缺口是Q50.J没有完整消费这些facts，以及若干上游builder绕过J直接写同步。
+
+#### 测试审计与新门禁
+
+本轮fresh定向结果揭示“测试通过但合同错误”：attention decomposition测试通过时仍明确要求每个K2 block一个
+`TensorCompletionOp`；movement builder测试正确要求matching send/recv token且零immediate await；TileRegion-to-Instr lit同时包含正确的
+unconditional same-worker loop零join，以及要求每个region/materialization产生join的旧期望。前两组矛盾期望和后者旧期望必须随实现
+一起改，不能把现有绿灯当完成证明。
+
+每个受影响work item的覆盖矩阵增加以下exact gate：
+
+1. FA/FD aligned/ragged实际candidate在没有typed cross-domain cut时，`steadyStateNCCJoinCount == 0`且
+   `nonTerminalNCCJoinCount == 0`；K2 block数增加不增加join数。真实terminal或cross-worker正例仍保留minimum participant join。
+2. rank>=3、1024/1025/1031 external/cache copy检查DMA、allocation、join的static site和dynamic execution count；任何计数不得与
+   logical element count成正比，actual SPM offsets与tail coverage仍由MiniMalloc和IR witness证明。
+3. peer direct/relay/fanout/gather分别检查token-only issue window、recv-before-first-read、send/relay-before-last-release、最多4个overlap
+   receiver live ranges、全卡无环wait graph和matching dynamic occurrence；即时wait只在这些hard facts迫使时出现。
+4. required-join正负例分别覆盖unconditional/conditional same-worker loop、cross-worker RAW/WAR/WAW、NCC→Kcore、NCC→DTE、
+   host-observed writeback、TileRegion sibling residency、managed store/reload与terminal return；断言位置、participant和pending-set变化，
+   不只断言“有join”。
+5. `full-feasibility`与Q53 accepted-IR inspection从actual Instr重算total/steady/nonterminal join、participant wait和DTE wait，并与
+   `ClosedSchedulePlan`逐项parity；没有plan owner的同步是compiler bug，计划要求的同步缺失则typed reject。
+
+work item责任据此固定：Q49.P先关闭current production regression；D/E不得写同步；H只产生movement/token；I及post-K I拥有
+lifetime/reuse；J foundation取得完整typed completion facts，J closure拥有全部worker/order/wait/join placement；F检查actual gate；
+Q51按actual result比较；Q50.S删除attention per-block completion。后续任何本项开始编码前都要重新阅读本节、11/13号合同和对应
+硬件/ABI事实源。
+
+Q49.P先施工不意味着建立baseline-only completion算法。它给唯一policy-free completion constructor传入canonical actual
+order/worker、Q63 effects、H token和current lifetime，取得确定性的最小completion；后续J closure向同一constructor传selected
+order/worker/boundary。Q49.P只关闭这条shared primitive及`none`调用点，不签发J domain、worker alternatives或search schedule完成。
 
 ### Artifact producer / consumer 依赖审计
 
@@ -582,9 +652,9 @@ alignment/lifetime真实占用而溢出、经过多个合法breakpoint后fit并�
 capacity terminal的当前证明；typed capacity/unsupported terminal仍保留为fail-closed防御出口。测试同时断言每次trial重新计算
 workset/lifetime、没有beam/cap/budget截断fallback，且这些trial不进入candidate统计。
 
-### Q49.P闭合结果
+### Q49.P此前闭合结果与本轮失效边界
 
-`deterministic-baseline-closure`已经按上述合同闭合。`none`从normal TensorProgram建立一个deterministic coordinate，完整candidate
+以下记录保留此前已验证、且本轮仍可复用的actual-feedback机制，不再签发current `done`。`none`从normal TensorProgram建立一个deterministic coordinate，完整candidate
 各自只物化一次CardModule并调用一次Q50.0；actual SPM capacity rejection只有在每个allocation/conflict demand都能沿current
 result、operand、scratch、movement或output relation回到typed structured owner时才推进下一temporal coordinate。rejected owner立即
 销毁，accepted CardExecutable直接保留并进入target/package；baseline调用闭包不构造search state、candidate family、score、winner或
@@ -613,6 +683,9 @@ work-count证明四次相同exact layout query只执行三次descriptor planning
 
 完整增量构建和全部configured lit通过；lit中本项相关case均实际执行。Tensor层scheduled attention recurrence仍由后续
 `region-execution-domain`/`temporal-domain`统一设计，Q49.P不提前建立第二套region recurrence或dynamic-slice exact-demand合同。
+2026-08-23专项审计随后发现per-K2-block completion、逐元素external copy join、peer immediate await及结构化region/materialization
+join仍进入这一production链，因此上述fresh结果只能证明功能链和SPM反馈机制，不能证明completion normal form；current状态以本计划
+专项审计和`tasks/progress.md`的`next`为准。
 
 ### 已完成输入：Exact-Demand Boundary
 
@@ -4646,8 +4719,9 @@ CompletionObligation
 ```
 
 `EventId`从semantic action ID与exact occurrence class形成，不含operation ordinal、pointer、symbol、Location或未来start time。一个async
-action至少有issue和completion两个nodes；synchronous action可由zero-distance issue→completion表示。Direct-DTE completion只来自H token/
-wait contract，NCC issue/join只来自Q63 typed completion，二者绝不互相完成。
+action至少有issue和completion两个nodes；只有typed target/Q63/H contract明确声明synchronous的action才可用zero-distance
+issue→completion表示，missing contract或DDR/no-hop movement不得默认成Synchronous。Direct-DTE completion只来自H token/wait contract，
+NCC issue/join只来自Q63 typed completion，二者绝不互相完成。
 
 Q50.S semantic owner和每个B--I mechanism通过静态typed visitor贡献event descriptors；没有runtime provider registry、字符串operator type或一份event attr IR。
 query-local graph在candidate state变化后销毁；每个complete candidate materialization后，其actual IR是该transaction内唯一事实源，
@@ -4706,7 +4780,7 @@ event graph的最窄完整container是Card plan，因为peer matching和DDR可�
 builder的typed result。assignment-dependent event graph保持query-local，不伪装成MLIR analysis或跨session cache。
 extensionally相同component可在immutable session memo descriptor，但assignment仍独立。
 
-缺plan field返回F-style scoped Deferred；source/target action无event/resource contract为Unsupported；构图work limit为Indeterminate；malformed
+缺plan field或尚未接入的completion contract返回F-style scoped Deferred；source/target明确没有受支持event/resource contract为Unsupported；构图work limit为Indeterminate；malformed
 ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observed choice改变时，相关component graph、resource facts和后续J assignment全部失效；
 不比较operation snapshots或manual epoch。
 
@@ -4721,7 +4795,7 @@ ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observe
 | DDR边界与publication | rank-3，1024/1031，multi-piece transfer | external load、DDR stage、observable write；shared DDR只贡献resource/order choice | action/resource不一致、缺completion boundary | issue/completion、ready/publication依赖、CardDDR use和observable event逐项相等 | K不能通过source order恢复movement边界 |
 | peer direct/relay/gather | rank>=3，1025/1031，local与remote contribution | Direct DTE endpoint、每hop relay、gather local combine | malformed hop、endpoint不连续、unknown action | 每hopissue/completion链、source/destination DTE exact use；opaque route没有DirectedNoCLink | 后续schedule域在相同events上选择order/worker/wait |
 | alias、reuse与slot family | rank-3，1024/1025，fresh/identity alias/reuse、multiplicity>1 | alias共享object；ReuseAfterCompletion变成completion/release→later-ready hard edge | alias source缺失、reuse端点缺失、order cycle | object ready/release覆盖、slot backedge及order reason，不按shape猜lifetime | K改变occurrence后丢弃本graph并先重进I |
-| Q63 typed completion与resource facts | rank-3，1024/1025，worker-capable compute与participant join descriptor | issue→participant completion；NCC、Tile engine、DTE资源保持分层 | empty worker domain、invalid participant | obligation participants、worker domain和resource knowledge逐字段一致 | J closure只枚举foundation给出的closed typed domains |
+| Q63 typed completion与resource facts | rank-3，1024/1025，worker-capable compute与participant join descriptor | issue→participant completion；NCC、Tile engine、DTE资源保持分层 | missing contract为Deferred；empty worker domain、invalid participant分别typed失败 | obligation participants、worker domain和resource knowledge逐字段一致；无implicit Synchronous | J closure只枚举foundation给出的closed typed domains |
 | determinism与有界oracle | 2--7 event tiny oracle，加rank-3 1025输入顺序扰动 | stable Kahn/component划分、exact successor | hard cycle、work limit、unsupported resource contract、compiler bug分别分类 | graph全字段、最小cycle witness、输入反转结果一致，source IR byte-identical | Core cache只复用同一state的可重算结果 |
 
 - plan-level unit覆盖independent branches、chain/fanin/fanout、nested execution、multi-piece DDR、peer direct/relay/gather、slot rotation、
@@ -5342,7 +5416,8 @@ Card-scoped verifier从actual plan relations、SSA、MemoryEffects、Q63 complet
 3. every DTE issue token由exact selected wait一次消费，NCC pending masks与join participants逐点匹配，synchronous writeback正确清域；
 4. build global wait-for graph：event/resource/buffer/message preparation/issue/completion为nodes，hold/wait/ready为edges；acyclic scopes必须
    无cycle，periodic scopes在一个verified finite period加backedge上无unbroken wait cycle；
-5. receiver preparation precedes matching send requirement，relay/gather forward waits正确，resource instance/outstanding capacities不超；
+5. receiver preparation precedes matching send requirement；recv wait不晚于first read/FSM reuse，send/relay wait不晚于last release；
+   relay/gather forward waits正确，current receiver live range可在4个FSM内着色，resource instance/outstanding capacities不超；
 6. 每个region/function/entry terminal无未闭合observable、buffer、NCC或DTE obligation；opaque NoC routing不伪造link check。
 
 deadlock witness返回最小stable cycle及held resources/messages；不能靠插global barrier修复。Q50.0随后在memory-planned Instr上执行更低层

@@ -400,11 +400,14 @@
 
 - 现象：先发射一个Tile的全部recv再wait会超过有限receiver FSM；改成每个局部recv后立即wait后，多个Tile按各自SSA顺序
   又可能形成跨Tile循环等待。
-- 根因：通信endpoint只有局部发射顺序，没有所有参与Tile共同遵守的全局message顺序；FSM lifetime和全卡无环性被分别修补。
-- 修复模式：从explicit communication identity、round、payload slice、endpoint kind和peer构造稳定全序；每个Tile过滤与自己
-  无关的message后仍保持该全序，每个endpoint发射后立即exact wait。这样receiver实时占用为1，且所有依赖边按同一方向推进。
-- 防复发：多源fanin测试同时检查最大live recv为1、send/recv/wait exact配对和Direct-DTE binding；source-to-package transpose及
-  attention baseline必须产生fresh no-card package，不能只检查Tile IR文本。
+- 根因：communication emitter自行用局部issue顺序和immediate await修补resource/deadlock，却没有统一的actual token lifetime、
+  receiver FSM interval和card-scoped wait graph owner。把“立即等”写成协议虽然限制live recv为1，也会无条件丢失异步窗口。
+- 修复模式：从explicit communication identity、round、payload slice、endpoint kind和peer建立稳定message/event关系；H只发射
+  matching token，I给出source/destination/relay lifetime，J在recv first read/FSM reuse与send/relay last release之前选择wait，并统一验证
+  current 4个receiver FSM可着色和全卡wait graph无环。hard constraints确实要求时可以立即wait，但不能把它设为所有endpoint默认值。
+- 防复发：多源fanin测试同时检查最大live recv不超过4、send/recv/wait dynamic exact配对、first-read/last-release、全卡无环和
+  Direct-DTE binding；另有至少一个token-only issue window证明没有被emitter立即串行化。source-to-package transpose及attention baseline
+  必须产生fresh no-card package，不能只检查Tile IR文本。
 
 ## Baseline显式op边界不能无条件作用于search coupled region
 
@@ -1250,6 +1253,23 @@
   产生path ambiguity，才在backedge完成对应worker。unconditional same-worker stream保持busytable顺序，并在loop外observable return处join。
 - 防复发：分别覆盖cross-worker backedge、unconditional same-worker、conditional same-worker和dynamic potentially-empty loop；检查join
   的participant与内外位置，不只检查“存在某个join”。
+
+## 结构边界和逐元素展开不能替代硬件completion事实
+
+- 现象：attention每个K2 block更新后固定join worker0；external/cache copy按全1 tile为每个element执行load、store、join和dealloc；
+  TileRegion exit及managed WDMA store/reload又自动join；peer send/recv则在issue后立即await。小shape和只检查最终结果的测试全部通过，
+  真实shape下join/DMA数量却随block或element数线性增长，异步窗口被静默清空。
+- 根因：algorithm decomposition、BodyEmitter和lowering把operation类别、region/materialization结构及“保守同步”当成硬件completion
+  proof，在worker/order/storage/lifetime尚未关闭前选择participant和insertion point。测试只断言存在completion或程序成功，没有检查
+  dynamic work、位置和直接lifetime witness。
+- 修复模式：先读current硬件校准、target lowering和CRT/runtime，把结论区分为supported、board-observed、unknown、excluded。
+  上层只保留SSA/effect/token/lifetime；H发token，I给first-read/last-release与reuse，J foundation消费Q63/H facts，J closure在actual
+  selected control flow中生成minimum-participant、latest-unavoidable join/wait。missing contract保持typed unknown，不能默认
+  Synchronous或插全worker drain。same-worker普通链只保持issue order。
+- 防复发：1024/1025/1031级FA/FD与copy case检查steady/nonterminal join、participant wait、DMA/allocation和DTE wait的static site及
+  dynamic count；无typed cross-domain cut时前两类join为0，计数不随logical element或K2 block线性增长。正例同时覆盖cross-worker、
+  NCC→Kcore/DTE/host、terminal join、DTE first-read/last-release、4-FSM和无环wait graph。测试通过但期望per-block/per-element/
+  structural completion时，测试合同本身必须修正，不能作为回归依据。
 
 ## Current buffer relation引用不能指向可扩容容器元素
 

@@ -83,3 +83,15 @@ fresh completion/lifetime/cost/lowering/target定向unit 185/185、lit 216/216�
 `tasks/progress.md`由Q62统一拆除，Q63没有为它保留IR completion依赖或复制协议。
 feature-on SystemC DTE/NCC completion/event tests现已注册为`WaferSystemCModelTransportTest`；当前fresh build未启用SystemC，因此不把它们
 计入本轮执行通过数，后续Q53对应feature/board-ready gate负责实际运行。
+
+## 2026-08-23 placement审计边界
+
+后续production审计发现attention decomposition、external copy、peer emitter及required-join reconstruction存在per-block、
+per-element、structural join或issue后立即await。该结果不撤回Q63：pure target protocol、operation interface和current-IR pending
+analysis仍是唯一正确事实层。Q63从未拥有worker/order选择、wait/join insertion point或performance policy；错误来自上游builder绕过
+Q50.J直接写同步，以及J foundation没有完整消费Q63/H/effect facts。
+
+后续consumer必须把Q63结果与current硬件/ABI事实、H token、I lifetime和K control flow组合后，才由Q50.J选择
+minimum-participant、latest-unavoidable completion。缺少contract时返回typed Deferred/Unsupported，不能默认Synchronous，也不能以
+“conservative”全worker drain修补。任何同步最终都须在actual Instr上由Q63 analysis重算pending mask并与selected plan parity；这属于
+Q50.J/Q50.F gate，不新增Q63接口或恢复旧central classifier。

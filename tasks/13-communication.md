@@ -14,7 +14,8 @@ Pipeline position:
   communication/computation流水，chunk、movement、physical/rotating buffer、order和completion必须已经进入actual Tile/Instr IR；
   target topology给出available Tile与片内邻接，launch slot尚不属于structured IR。
 - Current stage responsibility:
-  将selected mapping差异显式物化为Tile peer ops、destination staging、local compute和token/wait；
+  将selected mapping差异显式物化为Tile peer ops、destination staging、local compute、async token和精确lifetime obligation；
+  Q50.J在selected order/storage/control flow上放置wait，本stage不把issue位置当成默认wait位置；
   在SPM/DDR
   offsets和completion确定后，对complete CardModule中的Tile modules原子匹配message、range、resource和transport binding。
 - Output IR / files:
@@ -74,7 +75,8 @@ root/alias或携带该alias的control token作为region I/O。
 current Tile IR不保留abstract collective request、algorithm selector或late topology shortcut。06的physical-dataflow planner在immutable
 TensorProgram和typed state上联合选择Tile placement、per-Tile work、TileRegion/execution、temporal scope、physical versions、explicit
 movement、buffer/slot和event order；partial plans不构造IR。每个complete candidate在自己的CardModule transaction中直接产生每个sender/receiver的
-`peer_send`、`peer_recv`、local movement/compute和selected wait，不先造DDR版本再post-hoc替换。message-ready/live set、root lifetime、
+`peer_send`、`peer_recv`、local movement/compute和async token；Q50.J再按receiver first read、sender/relay last release、slot/FSM reuse与
+全局无环event order产生selected wait，不先造DDR版本再post-hoc替换，也不由movement emitter立即await。message-ready/live set、root lifetime、
 resource calendar与cost从current assignments重算，最终message/range/resource/completion从candidate actual IR重证；rejected/loser
 transaction销毁，final winner不重建。
 
@@ -118,6 +120,11 @@ message identity不使用operation ordinal、symbol、buffer address、launch sl
 send/recv token必须由exact wait消费；wait是DTE buffer completion/release边界，不完成NCC worker domain。sender source
 root活到send wait，receiver staging在recv completion前不可被consumer读取或复用。loop backedge、TileRegion boundary、
 block order和function return都不能替代未证明的completion。
+
+wait位置不是固定在issue之后。对每个dynamic token，合法区间由actual lifetime确定：recv wait不得晚于destination first read或
+receiver FSM/slot reuse，send wait不得晚于source/relay last release或sender resource reuse；在这些边界之前可以保留异步窗口。
+current CRT只有4个receiver FSM，CardExecutable verifier还必须证明任意structured trace中重叠receiver live range可在4个FSM内着色，
+并且跨Tile wait graph无环。该resource/deadlock约束可以迫使某个wait更早，但不能推广成“每个send/recv都立即await”。
 
 ## 5. CardExecutable Direct DTE Verification
 
@@ -168,6 +175,8 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 - send/recv/message/bytes正反向唯一匹配及negative missing/duplicate cases；
 - general chain、branch、fanout/fanin的explicit edge cover和local compute；
 - rotating SPM slots、source-relative/selector-table binding、range conflict与exact wait；
+- token-only issue window、recv first-read、send/relay last-release、4-FSM live-range上界和跨Tile无环wait graph；没有实际resource/
+  lifetime约束的case不得被issue后立即await串行化；
 - different `tile_id`/`launch_slot` mapping仍按Tile正确通信；
 - package card/Tile resource scope、transport status和atomic readback；
 - source-to-CardModule-to-package真实链，而非只验证手写Instr fixture。
@@ -175,3 +184,9 @@ package/runtime不重新选择peer、route、algorithm或memory placement。
 CardExecutable integration gate还必须证明general chain、branch、fanout/fanin和mapping-changing DAG的selected CardModule确实生成
 这些communication ops，并在最终Instr中具备chunk、buffer、order和completion witness。当前已有lowering/verification能力
 不得被写成搜索已经完成；cross-card collective也继续是明确非目标，不能恢复partition-to-Tile旧接口绕过。
+
+2026-08-23 production审计发现，current `TileRegionBodyEmitter`的streamed与non-streamed peer路径仍在每个send/recv后立即创建
+`async.await`，而`MovementTransferBuilder`已经能产生不带wait的matching token但尚未接入production。前者不符合上述边界：
+它在J选择order、storage lifetime和FSM allocation之前就把通信串行化。该缺口归入`movement-domain`的production wiring和
+`schedule-domain`的wait placement；旧`DataMovementApply`/selected-buffer中的immediate-await逻辑只可作为待迁移donor，不能成为
+current合同或回归期望。

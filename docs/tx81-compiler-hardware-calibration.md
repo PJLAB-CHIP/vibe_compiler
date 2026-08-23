@@ -250,14 +250,19 @@ configured-board matched `search`/`none` A/B由Q53签发production evidence。Q4
   `TsmWaitfinish`。只有Kcore、Direct DTE source、cross-worker hazard、host-observed writeback或completion
   boundary等IR可证明的真实domain exit才在minimum-strength、latest-unavoidable位置显式join真实participant，
   并尽量跨slot/batch摊销。
+- operation类别、WDMA、loop/TileRegion、materialization和“保守同步”都不是硬件事实。compiler插入、删除或移动join/wait时必须
+  指向本表、current ABI/CRT或新一轮owner-backed evidence；没有证据的语义保持unknown并typed defer/reject，不能用全worker drain、
+  固定worker join或issue后立即wait填补。
 - Pipeline window由buffer、SPM、engine和dependency共同约束，不使用header queue depth。cross-engine
   correctness由typed instruction、range、dependency、completion和generic activation合同决定；表中10个same-worker
   pair与1个cross-worker placement key只证明对应行为边界，不建立独立profitability接口。未校准的performance term
   对整个cohort删除；candidate只能因proven legality失败被精确拒绝，未校准收益不得参与排序。Q52实测前不预设
   bounded shortlist；若以后启用有损策略，结果必须明确标为`budgeted-feasible`。
-- Raw Direct-DTE async correctness不能代签current production sender overlap：现行TargetCall send只prepare，
-  真实`send_async`发生在wait路径。只有typed DTE issue与exact wait/release、CRT及model issue point同批
-  闭合后，Q50.J/K才能生成并验证DTE+NCC overlap transition，再由Q51选择。
+- Current Direct-DTE target/CRT合同已经把sender生命周期拆成显式prepare、issue和wait/release：TargetCall lowering在
+  `DirectDTESendPrepare`后立即发射`DirectDTESendIssue`，CRT issue路径执行peer-ready同步、attach和真实
+  `direct_dte_send_async`，wait路径只负责matching completion与release。该实现事实证明issue与wait是两个不同程序点，
+  但不自动证明任意payload、buffer、worker或NCC组合都有收益。Q50.J/K只能在typed token、first-read/last-release lifetime和
+  current profile证据同时闭合后生成DTE+NCC overlap transition，再由Q51选择；未校准组合的profitability保持unknown。
 - Planner不做DDR coloring或hard SPM bank coloring，不写伪latency，不扩大default wait scope；fixed-capacity SPM planner
   只可在单次solve自然遇到、且hard outcome、actual high-water与planner work均相同的
   placements之间使用offset-derived bank phase最后tie-break，不新增query、physical-dataflow choice或relocation，且不得

@@ -128,6 +128,12 @@ Direct DTE token 的 terminal wait/finish。
 - `scf.for` 等控制流中的 token 需要显式携带，不能用 side table 或名字匹配恢复；
 - lowering 需要保持 `prepare → issue → wait/release → finish` 的目标 ABI 顺序。
 
+Current实现中，TargetCall lowering在send prepare后显式发射send issue；CRT的issue路径执行peer-ready同步、
+endpoint attach和真实`send_async`，matching wait负责完成与release。因此compiler不能把send当成“等到wait才issue”，
+也不能在send/recv刚产生token时无条件立即wait。具体wait位置必须由receiver first read、sender last release、relay forward和
+slot reuse的actual lifetime决定。该语义分离不等于已经证明所有DTE/NCC overlap都有性能收益；没有对应profile证据时收益仍为
+`unknown`。
+
 ![Slot reuse 与 DTE completion](presentations/2026-07-31-vibe-compiler-collaboration-review/assets/figures/06-slot-reuse-plate.png)
 
 当前 Direct DTE qualification 还给出了一个重要的运行时边界：
@@ -219,6 +225,8 @@ current physical-dataflow spatial/temporal/fusion selection。current 路径必�
 
 - 我使用的是逻辑范围还是物理访问范围？
 - completion 是否来自正确的 engine/token 域？
+- join/wait的位置、participant和scope是否有本profile、current ABI/CRT及actual lifetime的直接依据，还是来自operation类别或“保守同步”？
+- Direct DTE wait是否由first read、last release、FSM reuse或无环性迫使；若都不是，是否错误地紧跟issue？
 - overlap 收益是否真的有同时活跃证据，还是只省掉了 drain？
 - queue depth 是上界、cost input，还是被误当成正确性条件？
 - 地址/offset 结论是否超出了当前 profile 和 allocator 范围？

@@ -306,6 +306,28 @@ MLIR行为以官方文档为准；具体API以仓库pinned LLVM/MLIR源码和测
 - 测试必须用1024级整除/非整除实际候选覆盖“具体化→Instr→实际SPM规划→反馈”链路，并断言删除或扰动任何估算代码
   都不会改变SPM合法集合；只验证估算值、shape或局部pass成功不能作为SPM legality证据。
 
+### Completion、join和wait
+
+- **同步语义只能来自当前IR中的typed effect/token/control-flow/lifetime事实，以及对应硬件、runtime和ABI文档明确支持的
+  行为。** 插入、删除、合并或移动join/wait前，必须阅读相关`docs/`、current target lowering和CRT/runtime实现，并把证据
+  区分为`supported`、`board-observed`、`unknown`或`excluded`。禁止用通用编译器经验、operation名称、shape、循环、
+  `TileRegion`、materialization边界、WDMA类别或“保守一点”推测同步范围。
+- 文档和current实现无法证明同步语义时，结果是unknown。候选应typed defer/reject，或者先补硬件/ABI证据；不得为了让IR通过
+  而插入全worker drain、固定worker join、issue后立即await或其它猜测性同步，也不得在证据不足时删除已有completion。
+- 当前TX81合同下，同一NCC worker的普通RAW/WAR/WAW链，包括无条件循环中的跨迭代slot reuse，只保持SSA/effect/range要求的
+  issue order；不能仅因WDMA、loop backedge、traversal结束、TileRegion结束、state update或materialization store/reload插join。
+  只有current IR证明的cross-worker hazard、NCC到Kcore/Direct DTE/host的完成域 crossing、actual buffer release/reuse或observable
+  terminal，才允许在minimum-strength、latest-unavoidable边界完成实际仍pending的participant。
+- Direct DTE token和NCC participant是不同完成域。recv wait位于destination第一次读取或复用之前，send wait位于source最后一次
+  读取、转发、复用或释放之前；issue本身不是默认wait位置。wait必须精确消费对应dynamic token，NCC join不得代替DTE wait，
+  DTE wait也不得清除NCC pending state。
+- 上层算法归一化、attention decomposition、region/temporal construction和BodyEmitter只能保留SSA value、effect、token及lifetime
+  要求，不能选择worker、participant或completion placement。Q50.J/final completion owner在worker、order、movement、storage和
+  control flow均已选定后，从current actual IR清除旧同步并fresh构造最小join/wait；lowering只验证并发射这一结果，不自行repair。
+- 同步测试必须检查位置、participant、token、动态执行次数和直接lifetime witness。没有typed cross-domain cut的真实规模正例必须
+  断言可避免的steady-state/non-terminal NCC join为0；copy、attention block和logical element数增长时，join/wait数量不得随元素数
+  线性增长，除非算法合同明确要求同等数量的独立完成事件。测试中“存在某个join/wait”或最终结果正确都不能证明同步合理。
+
 ### 测试和实现迁移
 
 - 每个IR stage的测试集合应覆盖parser/printer roundtrip、verifier正负例、conversion失败、analysis失效、
