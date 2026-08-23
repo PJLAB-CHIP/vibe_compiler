@@ -11,6 +11,7 @@
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
 #include "Wafer/Planning/PhysicalDataflow/StorageDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/StructureSpecificStorageDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -52,6 +53,8 @@ struct PlanningWorkCounts {
   uint64_t eventGraphsBuilt = 0;
   uint64_t executionStructureQueries = 0;
   uint64_t executionStructureStatesQueued = 0;
+  uint64_t structureSpecificStorageQueries = 0;
+  uint64_t structureSpecificStorageStatesQueued = 0;
   uint64_t duplicateSpatialChoices = 0;
   uint64_t unsupportedSpatialChoices = 0;
   uint64_t indeterminateSpatialChoices = 0;
@@ -95,7 +98,7 @@ private:
 /// cannot be materialized or published.
 class IncompletePlanningDomain {
 public:
-  const ExecutionStructureState &getState() const { return state; }
+  const BufferState &getState() const { return state; }
   const EventGraph &getEventGraph() const { return eventGraph; }
   RequiredPlanningCoordinate getRequiredCoordinate() const {
     return requiredCoordinate;
@@ -104,17 +107,17 @@ public:
   const PlanningWorkCounts &getWork() const { return work; }
 
 private:
-  IncompletePlanningDomain(ExecutionStructureState state, EventGraph eventGraph,
+  IncompletePlanningDomain(BufferState state, EventGraph eventGraph,
                            RequiredPlanningCoordinate requiredCoordinate,
                            bool remainingSpatialWork, PlanningWorkCounts work)
       : state(std::move(state)), eventGraph(std::move(eventGraph)),
         requiredCoordinate(requiredCoordinate),
         remainingSpatialWork(remainingSpatialWork), work(work) {}
 
-  ExecutionStructureState state;
+  BufferState state;
   EventGraph eventGraph;
   RequiredPlanningCoordinate requiredCoordinate =
-      RequiredPlanningCoordinate::StructureSpecificStorage;
+      RequiredPlanningCoordinate::Schedule;
   bool remainingSpatialWork = false;
   PlanningWorkCounts work;
 
@@ -449,6 +452,15 @@ private:
   getOrCreateExecutionStructureDomain(const InitialBufferState &buffers,
                                       const EventGraph &eventGraph);
 
+  struct StructureSpecificStorageDomainLookup {
+    StructureSpecificStorageDomain *domain = nullptr;
+    std::optional<StructureSpecificStorageFailure> failure;
+  };
+
+  StructureSpecificStorageDomainLookup
+  getOrCreateStructureSpecificStorage(const ExecutionStructureState &structure,
+                                      const EventGraph &eventGraph);
+
   const PhysicalDataflowPlanningProblem &problem;
   CanonicalCursor canonicalCursor = CanonicalCursor::NotStarted;
   std::optional<SpatialPlan> lastCanonicalChoice;
@@ -465,6 +477,8 @@ private:
   std::map<InitialBufferState, EventGraph> eventGraphCache;
   std::map<InitialBufferState, ExecutionStructureDomain>
       executionStructureDomainCache;
+  std::map<ExecutionStructureState, StructureSpecificStorageDomain>
+      structureSpecificStorageDomainCache;
   PlanningWorkCounts work;
 };
 

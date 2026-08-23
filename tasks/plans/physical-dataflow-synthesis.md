@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I initial storage-domain、Q50.J event-resource-foundation及Q50.K execution-structure-domain已经闭合；当前下一项是`structure-specific-storage`。Q50.S attention vertical、Q50.J、Q50.I structure-specific-storage、Q50.F full-feasibility、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J event-resource-foundation及Q50.K execution-structure-domain已经闭合；当前下一项是`schedule-domain`。Q50.S attention vertical、Q50.J schedule closure、Q50.F full-feasibility、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -4156,12 +4156,13 @@ PhysicalVersionStorageBinding
   version: PhysicalVersionId
   object: StorageObjectId
   viewRelation: ExactPhysicalViewRelation
-  slotFamily: optional SlotFamilyId
+
+SlotFamilyId
+  objects: StorageObjectId[]
 
 SlotFamilyPlan
   id: SlotFamilyId
   occurrence: OccurrenceRelationId
-  members: PhysicalVersionId[]
   multiplicity: PositiveInteger
   rotation: SlotIndexExpr(iteration coordinates) mod multiplicity
 
@@ -4368,7 +4369,7 @@ typed unsupported，不把slot count减半、不切换single、不卡回search�
 - `StorageDomain`为每个version保留fresh sibling；G identity alias强制绑定source object，explicit proven-disjoint/schedule-dependent facts才增加
   reuse。后者携`ReuseAfterCompletion` version edge并做cycle check，unknown/incompatible resource不产生state。plan只选择object/family/order，
   不保存offset、timestamp或actual lifetime。
-- slot family requirement显式提供typed members、finite occurrence/selector upper bound和rotation iterator options；domain包含唯一single-slot点及
+- slot family requirement显式提供selected physical objects、exact occurrence、finite lower/upper bound和rotation iterator options；domain包含合法single-slot点及
   每个`2..U × rotation`，不固定2/3、不读取buffer bytes/SPM capacity。input顺序扰动不改集合，order-cycle combination被跳过而fresh
   siblings保留。pre-K `InitialBufferState`只表示Serialized occurrence eligibility，K变化后仍必须进入后续structure-specific-storage重闭。
 - `prepareStoragePlan`在mutation前关闭object/binding/family totality和multiplicity；`StorageObjectBuilder`按plan创建exact multiplicity
@@ -4378,7 +4379,7 @@ typed unsupported，不把slot count减半、不切换single、不卡回search�
   public search报告missing EventResource且actualization为0。old Buffering/SelectedBufferMaterialization的capacity裁剪、loop discovery、clone/
   wait splitting只作K/J/post-K donor保留，不进入new query/state。
 
-fresh证据：`StorageDomainTest` 4/4覆盖rank-3 1024/1025/1031、52点fresh/reuse/`1..5`×rotation oracle、identity alias、ordered reuse cycle、
+fresh证据：`StorageDomainTest` 4/4覆盖rank-3 1024/1025/1031、36点fresh/reuse/`1..5`×multi-axis rotation oracle、identity alias、ordered reuse cycle、
 incompatible resource与invalid U；`StorageObjectBuilderTest` 2/2覆盖5-slot modulo、alias SSA sharing和duplicate atomic failure；
 `PlanningSessionTest` 6/6、`SearchRoutingTest` 2/2及`CanonicalStoragePlanTest` 6/6共同证明Core、missing EventResource、source不变及zero
 actualization，direct集合20/20；ordinary host unit 863/863（6个独立heavy baseline cases不在本项重复）；core lit 227/227，
@@ -4409,6 +4410,28 @@ MustSeparate和ReuseAfterCompletion。`BufferState`携带typed structure generat
 完成门禁：K的每个Serialized/Pipelined有界穷举plan与独立occurrence/slot reference集合一致；故意复用pre-K plan稳定失败；I重闭后J EventGraph
 中的storage/reuse edges逐ID变化，unrelated scopes保持相同；query零IR，candidate construction只消费post-K plan。只有该checkpoint通过，
 Q50.J schedule closure才能开始。
+
+本work item在实现前冻结下面的覆盖矩阵。slot upper/lower bounds只来自fixed K的exact occurrence和ready→release stage distance；
+1024/1025/1031只验证整除、tail和多维recurrence共享同一算法，任何shape/bytes/SPM capacity都不进入admission。
+
+| 输入等价类 | 代表输入 | fixed-K storage路径 | typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- | --- |
+| Serialized重闭 | rank-3 1024/1025、single/multi-component、rank-zero | 清除pre-K extra families，保留fixed storage binding并规范成single occurrence | stale/missing structure scope | post-K BufferPlan无rotation/multiplicity旁路，generation来自parent state | schedule-domain只能接收新的BufferState |
+| Pipelined live distance | rank>=3 1024及1025/1031，2/3+ stages | 按每个physical object的BufferReady/BufferRelease stage推导minimum multiplicity，枚举`min..U` | missing ready/release、release早于ready | all-and-only object families、live distance、lower/upper bound和plan multiplicity | J按family occurrence/multiplicity建立slot backedge |
+| 多维rotation与tail | axis occurrences如`[2,8,1]`、`[2,9,1]`及两个active axes | 对全部active recurrence axes枚举稳定linearization permutation，tail使用同一modulo family | iterator越界/重复、occurrence overflow | rotation覆盖每个active axis一次，无空洞/duplicate，1025 tail仍映到合法slot | selected construction可直接按typed occurrence lookup |
+| alias/reuse/gather staging | identity alias、两个versions复用一object、remote gather staging | family identity基于selected physical StorageObjectId，semantic lifetimes可多对一但allocation family唯一 | unknown selected object、conflicting shared family | alias/reuse object只产生一个family；gather staging不因非version origin漏失 | storage object builder按object multiplicity创建exact slots |
+| 独立scopes与有界oracle | 2--6 objects、trip 2--7、两个independent components | family option做Cartesian product，unrelated Serialized scope不变 | successor work-limit为Indeterminate，malformed family为compiler bug | production plans与独立`multiplicity × rotation` reference逐key相等 | schedule-domain可逐state重建，不依赖proposal |
+| Core re-entry | public rank-3 1024/1025 search prefix | ExecutionStructureState→post-K BufferState→missing schedule | pre-K BufferPlan故意提交到post-K domain稳定失败 | work count、state identity、required coordinate和source byte identity精确 | 第14项消费BufferState及同generation derived lifetime facts |
+
+实现闭合：`OccurrenceRelationId`移到storage和structure共同使用的current typed合同；`SlotFamilyId`直接标识selected physical
+`StorageObjectId`集合，因此identity alias、reuse和reduction gather staging都按实际allocation family关闭，不再假定每个family成员必须是
+`PhysicalVersionId`。`StructureSpecificStorageDomain`保存完整K generation：Serialized清除pre-K extra families；Pipelined按每个semantic
+lifetime的ready/release stage distance推导physical object的minimum multiplicity，upper bound只取exact trip count与selector type范围，
+并lazy枚举全部active recurrence-axis permutations和`min..U`。domain同时发布typed `SlotLifetimeRequirement`给J建立backedge；不读取
+element bytes、SPM capacity、offset、footprint或actual loop。`BufferState`把exact `ExecutionStructureState`作为generation parent，domain和
+state factory双重拒绝K sibling/pre-K plan；Core已推进到missing `schedule`且zero actualization。fresh直接5/5（1024/1025/1031、
+Serialized、alias/reuse/gather、2--6 object product和typed failure），Storage/Builder回归6/6、Core/SearchRouting 8/8；ordinary host unit
+877/877、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source organization通过。
 
 ## Q50.J：Ready/Order/Worker/Resource Schedule
 

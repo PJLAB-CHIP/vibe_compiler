@@ -4,8 +4,7 @@
 #define WAFER_PLANNING_PHYSICALDATAFLOW_EXECUTIONSTRUCTUREPLAN_H
 
 #include "Wafer/Planning/PhysicalDataflow/EventGraph.h"
-
-#include "llvm/ADT/SmallVector.h"
+#include "Wafer/Planning/PhysicalDataflow/ExecutionOccurrence.h"
 
 #include <cstdint>
 #include <tuple>
@@ -13,24 +12,6 @@
 #include <vector>
 
 namespace wafer::compiler::detail {
-
-/// Exact finite occurrence class derived from one selected temporal scope.
-/// Per-axis counts retain a multi-dimensional recurrence without flattening
-/// its semantic identity into a loop ordinal.
-struct OccurrenceRelationId {
-  TraversalScopeId scope;
-  llvm::SmallVector<uint64_t, 4> axisOccurrences;
-
-  friend bool operator==(const OccurrenceRelationId &lhs,
-                         const OccurrenceRelationId &rhs) {
-    return lhs.scope == rhs.scope && lhs.axisOccurrences == rhs.axisOccurrences;
-  }
-  friend bool operator<(const OccurrenceRelationId &lhs,
-                        const OccurrenceRelationId &rhs) {
-    return std::tie(lhs.scope, lhs.axisOccurrences) <
-           std::tie(rhs.scope, rhs.axisOccurrences);
-  }
-};
 
 /// One connected event component and every temporal recurrence represented
 /// in it. A component with zero or multiple recurrences is a valid Serialized

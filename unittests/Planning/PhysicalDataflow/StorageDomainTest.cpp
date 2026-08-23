@@ -83,15 +83,22 @@ TEST(StorageDomainTest,
       {second, firstObject, StorageReuseProof::ProvenDisjoint},
       {third, secondObject, StorageReuseProof::RequiresOrder}};
   SlotFamilyRequirement family;
-  family.id.members = {first, second};
+  family.id.objects = {StorageObjectId{StorageObjectOrigin(first)},
+                       StorageObjectId{StorageObjectOrigin(second)}};
+  family.occurrence = OccurrenceRelationId{
+      TraversalScopeId{
+          RegionExecutionId{
+              std::get<ExecutionResultValueId>(first.logicalValue).execution},
+          TopLevelWorkPieceId{0}},
+      {2, 5, 1}};
   family.upperBound = 5;
-  family.rotationOptions = {{0}, {1}, {0, 1}};
+  family.rotationOptions = {{0, 1}, {1, 0}};
   StorageDomainResult result = buildStorageDomain(storage, reuse, {family});
   ASSERT_TRUE(result.succeeded())
       << (result.failure ? result.failure->detail : "");
   auto plans = enumerate(*result.domain);
   ASSERT_TRUE(plans);
-  EXPECT_EQ(plans->size(), 2u * 2u * (1u + 4u * 3u));
+  EXPECT_EQ(plans->size(), 2u * 2u * (1u + 4u * 2u));
 
   std::set<uint32_t> multiplicities;
   bool sawFresh = false;
@@ -187,7 +194,7 @@ TEST(StorageDomainTest, IncompatibleReuseAndInvalidSlotUpperFailTyped) {
             StorageDomainFailureKind::UnsupportedSemantics);
 
   SlotFamilyRequirement invalid;
-  invalid.id.members = {makeVersion(0)};
+  invalid.id.objects = {StorageObjectId{StorageObjectOrigin(makeVersion(0))}};
   invalid.upperBound = 0;
   StorageDomainResult broken = buildStorageDomain(storage, {}, {invalid});
   ASSERT_FALSE(broken.succeeded());

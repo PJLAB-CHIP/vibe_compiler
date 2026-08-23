@@ -25,6 +25,8 @@ stringifyRequiredPlanningCoordinate(RequiredPlanningCoordinate coordinate) {
     return "execution-structure";
   case RequiredPlanningCoordinate::StructureSpecificStorage:
     return "structure-specific-storage";
+  case RequiredPlanningCoordinate::Schedule:
+    return "schedule";
   }
   return "unknown";
 }

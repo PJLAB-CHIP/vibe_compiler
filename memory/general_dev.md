@@ -639,6 +639,17 @@ source program
   tail semantic witnesses必须迁入current owner。旧`StagePipeline`仍只是buffering scope触发的actual-IR wrapper，不是current K domain；在
   完整K→I→J plan的selected construction迁移前不能作为production owner。
 
+## Fixed-structure storage closure（stable，2026-08-23）
+
+- K固定后必须建立新的`BufferState`；state parent中的完整`ExecutionStructurePlan`就是generation identity。post-K domain也保存同一
+  structure并在state factory复验，不能因两个K siblings偶然得到相同BufferPlan就跨generation复用。
+- `SlotFamilyId`标识selected physical `StorageObjectId`，不是semantic version列表。多个identity-alias/reuse semantic lifetimes和
+  reduction gather staging可以归入一个实际allocation family；live distance先按各semantic ready→release区间计算，再对physical object取
+  maximum，不能用最早ready到最晚release的包络误删中间有gap的合法plan。
+- multiplicity lower bound只由selected stage live distance/launch distance推出，upper bound只由exact per-axis occurrence product与selector
+  type范围推出；rotation是全部active recurrence axes的typed permutation。Serialized清除pre-K extra family；Pipelined重新枚举`min..U`。
+  bytes、SPM capacity、offset和packing estimate均不进入本域，最终合法性仍由actual MiniMalloc签发。
+
 ## Physical search profile资格（Q51+重审期间暂停）
 
 - 普通编译不收集search统计。Q51+重审闭合前不执行重型search profile；旧`--search-max-candidate-evaluations`及对应public API已经退役，

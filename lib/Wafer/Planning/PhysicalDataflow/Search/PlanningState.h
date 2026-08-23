@@ -23,6 +23,7 @@ class PhysicalDataflowPlanningProblem;
 class MovementDomain;
 class StorageDomain;
 class ExecutionStructureDomain;
+class StructureSpecificStorageDomain;
 class RegionDomain;
 class RepresentationDomain;
 class TemporalDomain;
@@ -324,6 +325,59 @@ private:
 
   InitialBufferState buffers;
   ExecutionStructurePlan structure;
+};
+
+/// Storage reclosed for one exact execution structure. The parent structure
+/// is the generation identity; a plan from another K sibling cannot create
+/// this state even when its object bindings happen to compare equal.
+class BufferState {
+public:
+  static mlir::FailureOr<BufferState>
+  create(const StructureSpecificStorageDomain &domain,
+         ExecutionStructureState structure, BufferPlan buffers,
+         std::string *failureReason = nullptr);
+
+  const ExecutionStructureState &getExecutionStructureState() const {
+    return structure;
+  }
+  const SpatialPlan &getSpatialPlan() const {
+    return structure.getSpatialPlan();
+  }
+  const RegionPlan &getRegionPlan() const { return structure.getRegionPlan(); }
+  const TemporalPlan &getTemporalPlan() const {
+    return structure.getTemporalPlan();
+  }
+  const RepresentationPlan &getRepresentationPlan() const {
+    return structure.getRepresentationPlan();
+  }
+  const MovementPlan &getMovementPlan() const {
+    return structure.getMovementPlan();
+  }
+  const ExecutionStructurePlan &getExecutionStructurePlan() const {
+    return structure.getExecutionStructurePlan();
+  }
+  const BufferPlan &getBufferPlan() const { return buffers; }
+  RequiredPlanningCoordinate getRequiredCoordinate() const {
+    return RequiredPlanningCoordinate::Schedule;
+  }
+
+  friend bool operator==(const BufferState &lhs, const BufferState &rhs) {
+    return lhs.structure == rhs.structure && lhs.buffers == rhs.buffers;
+  }
+  friend bool operator<(const BufferState &lhs, const BufferState &rhs) {
+    if (lhs.structure < rhs.structure)
+      return true;
+    if (rhs.structure < lhs.structure)
+      return false;
+    return lhs.buffers < rhs.buffers;
+  }
+
+private:
+  BufferState(ExecutionStructureState structure, BufferPlan buffers)
+      : structure(std::move(structure)), buffers(std::move(buffers)) {}
+
+  ExecutionStructureState structure;
+  BufferPlan buffers;
 };
 
 } // namespace wafer::compiler::detail

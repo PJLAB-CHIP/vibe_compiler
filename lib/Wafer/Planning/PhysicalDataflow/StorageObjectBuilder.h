@@ -24,6 +24,7 @@ struct PreparedStorageObject {
 struct PreparedStoragePlan {
   std::vector<PreparedStorageObject> objects;
   std::vector<PhysicalVersionStorageBinding> bindings;
+  std::vector<SlotFamilyPlan> slotFamilies;
 };
 
 mlir::FailureOr<PreparedStoragePlan>

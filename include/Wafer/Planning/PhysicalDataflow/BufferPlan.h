@@ -3,6 +3,7 @@
 #ifndef WAFER_PLANNING_PHYSICALDATAFLOW_BUFFERPLAN_H
 #define WAFER_PLANNING_PHYSICALDATAFLOW_BUFFERPLAN_H
 
+#include "Wafer/Planning/PhysicalDataflow/ExecutionOccurrence.h"
 #include "Wafer/Planning/PhysicalDataflow/MovementPlan.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -107,28 +108,32 @@ struct ReductionGatherStorageBinding {
 };
 
 struct SlotFamilyId {
-  std::vector<PhysicalVersionId> members;
+  std::vector<StorageObjectId> objects;
 
   friend bool operator==(const SlotFamilyId &lhs, const SlotFamilyId &rhs) {
-    return lhs.members == rhs.members;
+    return lhs.objects == rhs.objects;
   }
   friend bool operator<(const SlotFamilyId &lhs, const SlotFamilyId &rhs) {
-    return lhs.members < rhs.members;
+    return lhs.objects < rhs.objects;
   }
 };
 
 struct SlotFamilyPlan {
   SlotFamilyId id;
+  OccurrenceRelationId occurrence;
   uint32_t multiplicity = 1;
   llvm::SmallVector<uint32_t, 4> rotationIterators;
 
   friend bool operator==(const SlotFamilyPlan &lhs, const SlotFamilyPlan &rhs) {
-    return lhs.id == rhs.id && lhs.multiplicity == rhs.multiplicity &&
+    return lhs.id == rhs.id && lhs.occurrence == rhs.occurrence &&
+           lhs.multiplicity == rhs.multiplicity &&
            lhs.rotationIterators == rhs.rotationIterators;
   }
   friend bool operator<(const SlotFamilyPlan &lhs, const SlotFamilyPlan &rhs) {
-    return std::tie(lhs.id, lhs.multiplicity, lhs.rotationIterators) <
-           std::tie(rhs.id, rhs.multiplicity, rhs.rotationIterators);
+    return std::tie(lhs.id, lhs.occurrence, lhs.multiplicity,
+                    lhs.rotationIterators) < std::tie(rhs.id, rhs.occurrence,
+                                                      rhs.multiplicity,
+                                                      rhs.rotationIterators);
   }
 };
 

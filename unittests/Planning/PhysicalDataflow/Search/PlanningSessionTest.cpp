@@ -226,7 +226,7 @@ TEST_F(PlanningSessionTest,
   auto incomplete = session.getFirstIncompleteState(&failureReason);
   ASSERT_TRUE(mlir::succeeded(incomplete)) << failureReason;
   EXPECT_EQ(incomplete->getRequiredCoordinate(),
-            RequiredPlanningCoordinate::StructureSpecificStorage);
+            RequiredPlanningCoordinate::Schedule);
   EXPECT_FALSE(incomplete->getEventGraph().getEvents().empty());
   EXPECT_FALSE(incomplete->getEventGraph().getHardDependencies().empty());
   EXPECT_TRUE(problem->getSpatialDomain().contains(
@@ -247,6 +247,8 @@ TEST_F(PlanningSessionTest,
   EXPECT_EQ(incomplete->getWork().eventGraphsBuilt, 1u);
   EXPECT_EQ(incomplete->getWork().executionStructureQueries, 1u);
   EXPECT_EQ(incomplete->getWork().executionStructureStatesQueued, 1u);
+  EXPECT_EQ(incomplete->getWork().structureSpecificStorageQueries, 1u);
+  EXPECT_EQ(incomplete->getWork().structureSpecificStorageStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().representationSuccessorSteps, 1u);
   EXPECT_EQ(incomplete->getWork().representationStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().unsupportedRepresentationChoices, 0u);
@@ -273,6 +275,7 @@ TEST_F(PlanningSessionTest,
       [](const ExecutionStructureChoice &choice) {
         return std::holds_alternative<SerializedExecutionStructure>(choice);
       }));
+  EXPECT_TRUE(incomplete->getState().getBufferPlan().slotFamilies.empty());
   EXPECT_EQ(print(module->getOperation()), before);
 
   auto secondModule = parse(kRealSource);

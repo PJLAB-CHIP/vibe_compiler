@@ -639,6 +639,36 @@ PhysicalDataflowPlanningSession::getOrCreateExecutionStructureDomain(
   return {&stored->second, {}};
 }
 
+PhysicalDataflowPlanningSession::StructureSpecificStorageDomainLookup
+PhysicalDataflowPlanningSession::getOrCreateStructureSpecificStorage(
+    const ExecutionStructureState &structure, const EventGraph &eventGraph) {
+  auto cached = structureSpecificStorageDomainCache.find(structure);
+  if (cached != structureSpecificStorageDomainCache.end())
+    return {&cached->second, {}};
+  StructureSpecificStorageDomainResult result =
+      buildStructureSpecificStorageDomain(structure.getExecutionStructurePlan(),
+                                          structure.getInitialBufferPlan(),
+                                          eventGraph);
+  if (!result.succeeded())
+    return {
+        nullptr,
+        result.failure
+            ? std::move(result.failure)
+            : std::optional<StructureSpecificStorageFailure>(
+                  StructureSpecificStorageFailure{
+                      StructureSpecificStorageFailureKind::BrokenContract,
+                      "structure-specific storage returned no typed outcome"})};
+  auto [stored, inserted] = structureSpecificStorageDomainCache.try_emplace(
+      structure, std::move(*result.domain));
+  if (!inserted)
+    return {
+        nullptr,
+        StructureSpecificStorageFailure{
+            StructureSpecificStorageFailureKind::BrokenContract,
+            "structure-specific storage cache changed during construction"}};
+  return {&stored->second, {}};
+}
+
 mlir::FailureOr<std::optional<RegionState>>
 PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
                                               std::string *failureReason) {
@@ -1056,10 +1086,39 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
     return mlir::failure();
   }
   ++work.executionStructureStatesQueued;
-  return IncompletePlanningDomain(
-      std::move(*structureState), *eventGraph.graph,
-      RequiredPlanningCoordinate::StructureSpecificStorage,
-      hasRemainingSpatialWork(), work);
+  ++work.structureSpecificStorageQueries;
+  StructureSpecificStorageDomainLookup fixedStorage =
+      getOrCreateStructureSpecificStorage(*structureState, *eventGraph.graph);
+  if (!fixedStorage.domain) {
+    if (failureReason)
+      *failureReason =
+          fixedStorage.failure
+              ? fixedStorage.failure->detail
+              : "structure-specific storage returned no typed outcome";
+    return mlir::failure();
+  }
+  StructureSpecificStorageSuccessor buffers =
+      fixedStorage.domain->getFirstPlan();
+  if (buffers.getKind() != StructureSpecificStorageSuccessorKind::Plan ||
+      !buffers.getPlan()) {
+    if (failureReason)
+      *failureReason = buffers.getDetail().empty()
+                           ? "structure-specific storage has no first plan"
+                           : buffers.getDetail().str();
+    return mlir::failure();
+  }
+  mlir::FailureOr<BufferState> bufferState =
+      BufferState::create(*fixedStorage.domain, std::move(*structureState),
+                          *buffers.getPlan(), &detail);
+  if (mlir::failed(bufferState)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  ++work.structureSpecificStorageStatesQueued;
+  return IncompletePlanningDomain(std::move(*bufferState), *eventGraph.graph,
+                                  RequiredPlanningCoordinate::Schedule,
+                                  hasRemainingSpatialWork(), work);
 }
 
 bool PhysicalDataflowPlanningSession::hasRemainingSpatialWork() const {

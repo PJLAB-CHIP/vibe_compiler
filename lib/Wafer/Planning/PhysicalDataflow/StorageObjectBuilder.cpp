@@ -47,17 +47,19 @@ prepareStoragePlan(const StorageDomain &domain, const BufferPlan &plan,
       return mlir::failure();
     }
   for (const SlotFamilyPlan &family : plan.slotFamilies) {
-    if (family.multiplicity == 0 || family.id.members.empty()) {
+    if (family.multiplicity == 0 || family.id.objects.empty() ||
+        family.occurrence.axisOccurrences.empty()) {
       setFailure(failureReason, "selected slot family is malformed");
       return mlir::failure();
     }
-    for (const PhysicalVersionId &member : family.id.members) {
-      auto binding = bindings.find(member);
-      if (binding == bindings.end()) {
-        setFailure(failureReason, "selected slot family has an unbound member");
+    for (const StorageObjectId &object : family.id.objects) {
+      auto multiplicity = multiplicities.find(object);
+      if (multiplicity == multiplicities.end()) {
+        setFailure(failureReason,
+                   "selected slot family has an unknown storage object");
         return mlir::failure();
       }
-      uint32_t &current = multiplicities[binding->second->object];
+      uint32_t &current = multiplicity->second;
       if (current != 1 && current != family.multiplicity) {
         setFailure(failureReason,
                    "one storage object has conflicting slot multiplicities");
@@ -79,11 +81,13 @@ prepareStoragePlan(const StorageDomain &domain, const BufferPlan &plan,
         {object, *resource, multiplicities.at(object.id)});
   }
   prepared.bindings = plan.versionBindings;
+  prepared.slotFamilies = plan.slotFamilies;
   llvm::sort(prepared.objects, [](const PreparedStorageObject &lhs,
                                   const PreparedStorageObject &rhs) {
     return lhs.plan < rhs.plan;
   });
   llvm::sort(prepared.bindings);
+  llvm::sort(prepared.slotFamilies);
   return prepared;
 }
 

@@ -5,6 +5,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 
@@ -78,7 +79,7 @@ StorageDomain::buildPlan(const StorageCursor &cursor) const {
     const FamilyOption &option =
         domain.options[cursor.familyOptionIndices[index]];
     plan.slotFamilies.push_back(
-        {domain.id, option.multiplicity, option.rotation});
+        {domain.id, domain.occurrence, option.multiplicity, option.rotation});
   }
 
   std::set<StorageObjectId> referenced;
@@ -162,7 +163,8 @@ StorageDomain::getCursor(const BufferPlan &plan) const {
   for (auto [index, domain] : llvm::enumerate(families)) {
     auto family =
         llvm::find_if(plan.slotFamilies, [&](const SlotFamilyPlan &candidate) {
-          return candidate.id == domain.id;
+          return candidate.id == domain.id &&
+                 candidate.occurrence == domain.occurrence;
         });
     if (family == plan.slotFamilies.end())
       return std::nullopt;
@@ -314,26 +316,55 @@ buildStorageDomain(const CanonicalStorageCoordinate &canonical,
   std::set<SlotFamilyId> familyIds;
   for (const SlotFamilyRequirement &requirement : familyRequirements) {
     SlotFamilyId id = requirement.id;
-    llvm::sort(id.members);
-    if (id.members.empty() || !familyIds.insert(id).second ||
-        requirement.upperBound == 0)
+    llvm::sort(id.objects);
+    if (id.objects.empty() ||
+        std::adjacent_find(id.objects.begin(), id.objects.end()) !=
+            id.objects.end() ||
+        !familyIds.insert(id).second || requirement.lowerBound == 0 ||
+        requirement.lowerBound > requirement.upperBound)
       return failed(StorageDomainFailureKind::BrokenContract,
-                    "slot family identity or upper bound is invalid");
-    for (const PhysicalVersionId &member : id.members)
-      if (!baseBindings.count(member))
+                    "slot family identity or multiplicity bounds are invalid");
+    for (const StorageObjectId &object : id.objects)
+      if (!objects.count(object))
         return failed(StorageDomainFailureKind::BrokenContract,
-                      "slot family references a missing version");
+                      "slot family references a missing storage object");
+    if (requirement.occurrence.axisOccurrences.empty() ||
+        llvm::is_contained(requirement.occurrence.axisOccurrences, uint64_t{0}))
+      return failed(StorageDomainFailureKind::BrokenContract,
+                    "slot family requires a finite exact recurrence");
+    llvm::SmallVector<uint32_t, 4> activeAxes;
+    for (auto [axis, count] :
+         llvm::enumerate(requirement.occurrence.axisOccurrences))
+      if (count > 1)
+        activeAxes.push_back(static_cast<uint32_t>(axis));
+    if (requirement.upperBound > 1 &&
+        (activeAxes.empty() || requirement.rotationOptions.empty()))
+      return failed(
+          StorageDomainFailureKind::BrokenContract,
+          "multi-slot family requires an exact recurrence and rotation");
+    for (const auto &rotation : requirement.rotationOptions) {
+      llvm::SmallVector<uint32_t, 4> covered(rotation.begin(), rotation.end());
+      llvm::sort(covered);
+      if (rotation.empty() || covered != activeAxes ||
+          std::adjacent_find(covered.begin(), covered.end()) != covered.end())
+        return failed(
+            StorageDomainFailureKind::BrokenContract,
+            "slot rotation must cover every active recurrence axis once");
+    }
     StorageDomain::FamilyDomain family;
     family.id = std::move(id);
-    family.options.push_back({1, {}});
-    for (uint32_t multiplicity = 2; multiplicity <= requirement.upperBound;
-         ++multiplicity)
-      for (const auto &rotation : requirement.rotationOptions) {
-        if (rotation.empty())
-          return failed(StorageDomainFailureKind::BrokenContract,
-                        "multi-slot family has an empty rotation");
-        family.options.push_back({multiplicity, rotation});
+    family.occurrence = requirement.occurrence;
+    for (uint32_t multiplicity = requirement.lowerBound;
+         multiplicity <= requirement.upperBound; ++multiplicity) {
+      if (multiplicity == 1) {
+        family.options.push_back({1, {}});
+        continue;
       }
+      for (const auto &rotation : requirement.rotationOptions)
+        family.options.push_back({multiplicity, rotation});
+      if (multiplicity == std::numeric_limits<uint32_t>::max())
+        break;
+    }
     families.push_back(std::move(family));
   }
   llvm::sort(families,

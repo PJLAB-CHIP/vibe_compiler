@@ -49,6 +49,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/SpatialPlan.cpp
   Planning/PhysicalDataflow/StorageDomain.cpp
   Planning/PhysicalDataflow/StorageObjectBuilder.cpp
+  Planning/PhysicalDataflow/StructureSpecificStorageDomain.cpp
   Planning/PhysicalDataflow/StructuralReadiness.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp
   Planning/PhysicalDataflow/TemporalTileShape.cpp

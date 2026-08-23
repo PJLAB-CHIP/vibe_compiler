@@ -8,6 +8,7 @@
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/StorageDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/StructureSpecificStorageDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 namespace wafer::compiler::detail {
@@ -90,6 +91,19 @@ mlir::FailureOr<ExecutionStructureState> ExecutionStructureState::create(
     return mlir::failure();
   }
   return ExecutionStructureState(std::move(buffers), std::move(structure));
+}
+
+mlir::FailureOr<BufferState>
+BufferState::create(const StructureSpecificStorageDomain &domain,
+                    ExecutionStructureState structure, BufferPlan buffers,
+                    std::string *failureReason) {
+  if (!domain.isForStructure(structure.getExecutionStructurePlan()) ||
+      !domain.contains(buffers)) {
+    if (failureReason)
+      *failureReason = "BufferState plan is outside the fixed structure domain";
+    return mlir::failure();
+  }
+  return BufferState(std::move(structure), std::move(buffers));
 }
 
 } // namespace wafer::compiler::detail

@@ -28,6 +28,8 @@ struct StorageReuseRequirement {
 
 struct SlotFamilyRequirement {
   SlotFamilyId id;
+  OccurrenceRelationId occurrence;
+  uint32_t lowerBound = 1;
   uint32_t upperBound = 1;
   std::vector<llvm::SmallVector<uint32_t, 4>> rotationOptions;
 };
@@ -107,6 +109,7 @@ private:
 
   struct FamilyDomain {
     SlotFamilyId id;
+    OccurrenceRelationId occurrence;
     std::vector<FamilyOption> options;
   };
 

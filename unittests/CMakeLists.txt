@@ -55,6 +55,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/StructuralReadinessTest.cpp
   Planning/PhysicalDataflow/StorageDomainTest.cpp
   Planning/PhysicalDataflow/StorageObjectBuilderTest.cpp
+  Planning/PhysicalDataflow/StructureSpecificStorageDomainTest.cpp
   Planning/PhysicalDataflow/TemporalDomainTest.cpp
   Planning/PhysicalDataflow/SpatialDomainTest.cpp
   Planning/PhysicalDataflow/SpatialPlanTest.cpp
