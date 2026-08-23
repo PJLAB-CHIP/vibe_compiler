@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain及Q50.H movement-domain已经闭合；当前下一项是`storage-domain`。Q50.S attention vertical、Q50.I–K、Q50.F full-feasibility、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain及Q50.I initial storage-domain已经闭合；当前下一项是`event-resource-foundation`。Q50.S attention vertical、Q50.J/K、Q50.I structure-specific-storage、Q50.F full-feasibility、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -4106,6 +4106,18 @@ Pipeline position:
 | support/multi-result/rank-zero/discard | pad/support、multiple result、1024/1025 insert overwrite、nonempty rank-zero、exact-empty/scalar | support/result各自一object并绑定正确execution；explicitly discarded result的definition/use为同一execution；rank-zero保留0-rank；empty/scalar不造object | schedule不为discard造伪action/edge；actual materialization只为真实nonempty object创建allocation并记录owner |
 | typed failure | duplicate/missing representation resource、unknown serialized execution、action/version binding mismatch、duplicate/missing movement resource、duplicate discard、carried-and-discarded冲突、未定义boundary或无合法disposition object | `BrokenStoragePlan`准确区分version/action/discard/execution/resource/lifetime合同错误；不返回partial plan | 修正输入可重新query，source IR byte-identical |
 
+`storage-domain`施工前覆盖矩阵如下。小version/occurrence graph只用于独立coloring/rotation oracle；production resource使用rank至少为3、
+主要维度1024/1025/1031，并且slot upper bound只来自typed occurrence/selector表示范围。
+
+| 覆盖类 | 代表输入 | exact断言 | Core / construction witness |
+| --- | --- | --- | --- |
+| fresh与identity alias | primary、layout conversion、G exact identity alias、rank-zero | 每个nonempty physical version恰一binding；fresh各自object，identity alias强制同一object/SSA且不造allocation | `MovementState -> InitialBufferState`，query零IR，public search推进到EventResource |
+| proven reuse与order requirement | 2--6 same-Tile versions、proven-disjoint与schedule-dependent pairs | fresh sibling始终存在；只有exact compatible/proven pair产生reuse；schedule-dependent reuse携typed MustPrecede requirement，不用current order判定 | J消费hard edge，I不选worker/order；unknown overlap无reuse state |
+| slot family `1..U` | single/multi-axis occurrence、trip upper 4/5/1025、rank-zero/one-trip | multiplicity每个`1..U`可达，rotation coordinate/linearization typed且tail同mod mapping；改变SPM capacity/bytes不改变域 | builder创建exact multiplicity objects并返回slot bindings，不搜索actual loop |
+| peer/relay/gather occurrence | direct、two-hop relay、remote ordinary/FD component、same-region DDR | common occurrence才形成family；relay/source/destination/last-use关系不完整则只有single fresh sibling | H tokens与I slot identity交给J completion/release，不immediate await |
+| input order与K invalidation | reverse objects/bindings/requirements，Serialized与future Pipelined structure | plan集合逐key相同；current pre-K domain不把future overlap写死，K改变occurrence后必须重建I | Core cache key包含observed MovementState；后续K state不复用pre-K family |
+| typed failure与资源隔离 | duplicate/missing binding/object、MustSeparate alias、incompatible type/range、reuse/order cycle、invalid U/rotation | 无partial plan；query不扫描loop、不物化、不按buffer bytes/SPM capacity裁剪、不选winner | preflight failure零IR，修正plan可重试；actual offset仍归Q50.0 |
+
 实现闭合：canonical `BufferPlan`为每个physical version建立一个独立fresh object，并只为remote reduction gather增加一个typed staging
 object；`StorageLifetimeDescription`仅保存execution/action definition与uses。后续coverage closure补齐了insert overwrite：H显式签发
 `ResultDiscardPlan`，I只给该version建立definition-local self-use，missing publication/transfer仍返回typed failure；duplicate discard与
@@ -4348,6 +4360,29 @@ typed unsupported，不把slot count减半、不切换single、不卡回search�
   builder和verifier独立files/libraries；
 - baseline single-slot和search complete candidates复用同一builder但policy独立；轻量source→CardModule→Q50.0→package/no-card通过，不运行重型LLaMA
   search。
+
+### `storage-domain`实现闭合
+
+- `BufferPlan`原位加入`StorageBindingKind`、typed `SlotFamilyPlan`和`BufferOrderRequirement`；canonical fresh/single point仍是同一合同成员，
+  没有parallel buffer schema。object identity继续来自PhysicalVersionId/ReductionGatherId，不使用ordinal、operation pointer或名字。
+- `StorageDomain`为每个version保留fresh sibling；G identity alias强制绑定source object，explicit proven-disjoint/schedule-dependent facts才增加
+  reuse。后者携`ReuseAfterCompletion` version edge并做cycle check，unknown/incompatible resource不产生state。plan只选择object/family/order，
+  不保存offset、timestamp或actual lifetime。
+- slot family requirement显式提供typed members、finite occurrence/selector upper bound和rotation iterator options；domain包含唯一single-slot点及
+  每个`2..U × rotation`，不固定2/3、不读取buffer bytes/SPM capacity。input顺序扰动不改集合，order-cycle combination被跳过而fresh
+  siblings保留。pre-K `InitialBufferState`只表示Serialized occurrence eligibility，K变化后仍必须进入后续structure-specific-storage重闭。
+- `prepareStoragePlan`在mutation前关闭object/binding/family totality和multiplicity；`StorageObjectBuilder`按plan创建exact multiplicity
+  allocations，caller用显式occurrence做modulo lookup，不扫描/改写actual loop。identity alias/reuse共享同一SSA object；duplicate object或
+  invalid physical type在零allocation mutation时失败。offset仍只由final Q50.0分配。
+- `InitialBufferState`、continuation和session cache已经接入production Core；first canonical G/H point重闭current Serialized/storage carrier后，
+  public search报告missing EventResource且actualization为0。old Buffering/SelectedBufferMaterialization的capacity裁剪、loop discovery、clone/
+  wait splitting只作K/J/post-K donor保留，不进入new query/state。
+
+fresh证据：`StorageDomainTest` 4/4覆盖rank-3 1024/1025/1031、52点fresh/reuse/`1..5`×rotation oracle、identity alias、ordered reuse cycle、
+incompatible resource与invalid U；`StorageObjectBuilderTest` 2/2覆盖5-slot modulo、alias SSA sharing和duplicate atomic failure；
+`PlanningSessionTest` 6/6、`SearchRoutingTest` 2/2及`CanonicalStoragePlanTest` 6/6共同证明Core、missing EventResource、source不变及zero
+actualization，direct集合20/20；ordinary host unit 863/863（6个独立heavy baseline cases不在本项重复）；core lit 227/227，
+Tools/Runtime lit 35 passed、4 configured unsupported；compiler public link、source organization和diff检查通过。
 
 ### I-closure：固定K后的structure-specific storage重闭
 

@@ -12,7 +12,7 @@ namespace {
 using namespace wafer::compiler::testing;
 
 TEST(SearchRoutingTest,
-     ExplicitSearchStopsAtStorageWithoutBaselineOrActualCandidate) {
+     ExplicitSearchStopsAtEventResourceWithoutBaselineOrActualCandidate) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
   std::string sourceBefore;
@@ -30,7 +30,7 @@ TEST(SearchRoutingTest,
   llvm::consumeError(executable.takeError());
   diagnostics.flush();
   EXPECT_NE(diagnosticsText.find("physical-search incomplete "
-                                 "required_coordinate=storage"),
+                                 "required_coordinate=event-resource"),
             std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("candidate_actualizations=0"),
@@ -57,6 +57,10 @@ TEST(SearchRoutingTest,
   EXPECT_NE(diagnosticsText.find("movement_states=1"), std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("movement_unsupported=0"), std::string::npos)
+      << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("storage_states=1"), std::string::npos)
+      << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("storage_unsupported=0"), std::string::npos)
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
             std::string::npos)

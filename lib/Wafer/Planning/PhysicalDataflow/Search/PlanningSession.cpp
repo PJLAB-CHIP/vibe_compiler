@@ -4,6 +4,8 @@
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalMovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalSerializedExecutionPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalStoragePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuralReadiness.h"
@@ -463,6 +465,82 @@ PhysicalDataflowPlanningSession::getOrCreateMovementDomain(
   return {&stored->second, {}};
 }
 
+PhysicalDataflowPlanningSession::StorageDomainLookup
+PhysicalDataflowPlanningSession::getOrCreateStorageDomain(
+    const MovementState &movement) {
+  auto cached = storageDomainCache.find(movement);
+  if (cached != storageDomainCache.end())
+    return {&cached->second, {}};
+  RepresentationDomainLookup representationDomain =
+      getOrCreateRepresentationDomain(
+          movement.getRepresentationState().getTemporalState());
+  MovementDomainLookup movementDomain =
+      getOrCreateMovementDomain(movement.getRepresentationState());
+  if (!representationDomain.domain || !movementDomain.domain)
+    return {nullptr,
+            StorageDomainFailure{StorageDomainFailureKind::BrokenContract,
+                                 "storage transition lost an upstream domain"}};
+  CanonicalRepresentationCoordinate representations;
+  representations.plan = movement.getRepresentationPlan();
+  for (const PhysicalVersionPlan &version :
+       representations.plan.physicalVersions) {
+    if (!version.id.derivation.empty())
+      return {nullptr, StorageDomainFailure{
+                           StorageDomainFailureKind::UnsupportedSemantics,
+                           "pre-structure storage currently requires primary "
+                           "physical versions"}};
+    const RepresentationResourceDescription *resource =
+        representationDomain.domain->findResource(version.id.logicalValue);
+    if (!resource)
+      return {nullptr,
+              StorageDomainFailure{
+                  StorageDomainFailureKind::BrokenContract,
+                  "storage transition has a missing version resource"}};
+    RepresentationResourceDescription selected = *resource;
+    selected.version = version.id;
+    selected.encoding = version.encoding;
+    representations.resources.push_back(std::move(selected));
+  }
+  CanonicalMovementCoordinate movements;
+  movements.plan = movement.getMovementPlan();
+  movements.resources.assign(movementDomain.domain->getResources().begin(),
+                             movementDomain.domain->getResources().end());
+  CanonicalSerializedExecutionPlanOutcome serializedOutcome =
+      buildCanonicalSerializedExecutionPlan(movement.getRegionPlan(),
+                                            movement.getTemporalPlan());
+  const SerializedExecutionPlan *serialized =
+      getSerializedExecutionPlan(serializedOutcome);
+  if (!serialized)
+    return {
+        nullptr,
+        StorageDomainFailure{
+            StorageDomainFailureKind::BrokenContract,
+            std::get<BrokenSerializedExecutionPlan>(serializedOutcome).detail}};
+  CanonicalStoragePlanOutcome canonical =
+      buildCanonicalStoragePlan(representations, movements, *serialized);
+  const CanonicalStorageCoordinate *coordinate =
+      getCanonicalStorageCoordinate(canonical);
+  if (!coordinate)
+    return {nullptr, StorageDomainFailure{
+                         StorageDomainFailureKind::BrokenContract,
+                         std::get<BrokenStoragePlan>(canonical).detail}};
+  StorageDomainResult result = buildStorageDomain(*coordinate);
+  if (!result.succeeded()) {
+    if (result.failure)
+      return {nullptr, std::move(result.failure)};
+    return {nullptr,
+            StorageDomainFailure{StorageDomainFailureKind::BrokenContract,
+                                 "storage domain returned no typed outcome"}};
+  }
+  auto [stored, inserted] =
+      storageDomainCache.try_emplace(movement, std::move(*result.domain));
+  if (!inserted)
+    return {nullptr, StorageDomainFailure{
+                         StorageDomainFailureKind::BrokenContract,
+                         "storage domain cache changed during construction"}};
+  return {&stored->second, {}};
+}
+
 mlir::FailureOr<std::optional<RegionState>>
 PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
                                               std::string *failureReason) {
@@ -666,6 +744,54 @@ MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
   return {MovementExpansionKind::State, std::move(*state)};
 }
 
+StorageExpansionResult PhysicalDataflowPlanningSession::resumeStorage(
+    StorageContinuation &continuation) {
+  if (continuation.exhausted)
+    return {StorageExpansionKind::ParentExhausted};
+  StorageDomainLookup lookup = getOrCreateStorageDomain(continuation.parent);
+  if (!lookup.domain) {
+    if (!lookup.failure)
+      return {StorageExpansionKind::CompilerBug,
+              {},
+              "storage domain lookup returned no typed outcome"};
+    if (lookup.failure->kind ==
+        StorageDomainFailureKind::UnsupportedSemantics) {
+      ++work.unsupportedStorageChoices;
+      return {StorageExpansionKind::Unsupported,
+              {},
+              std::move(lookup.failure->detail)};
+    }
+    return {StorageExpansionKind::CompilerBug,
+            {},
+            std::move(lookup.failure->detail)};
+  }
+  ++work.storageSuccessorSteps;
+  StorageSuccessor next = continuation.started
+                              ? lookup.domain->getNextPlan(*continuation.cursor)
+                              : lookup.domain->getFirstPlan();
+  if (next.getKind() == StorageSuccessorKind::End) {
+    continuation.exhausted = true;
+    continuation.cursor.reset();
+    return {StorageExpansionKind::ParentExhausted};
+  }
+  if (next.getKind() != StorageSuccessorKind::Plan || !next.getPlan() ||
+      !next.getCursor())
+    return {StorageExpansionKind::CompilerBug,
+            {},
+            next.getDetail().empty()
+                ? "storage successor omitted its plan or cursor"
+                : next.getDetail().str()};
+  std::string detail;
+  auto state = InitialBufferState::create(*lookup.domain, continuation.parent,
+                                          *next.getPlan(), &detail);
+  if (mlir::failed(state))
+    return {StorageExpansionKind::CompilerBug, {}, std::move(detail)};
+  continuation.cursor = *next.getCursor();
+  continuation.started = true;
+  ++work.storageStatesQueued;
+  return {StorageExpansionKind::State, std::move(*state)};
+}
+
 mlir::FailureOr<IncompletePlanningDomain>
 PhysicalDataflowPlanningSession::getFirstIncompleteState(
     std::string *failureReason) {
@@ -775,8 +901,24 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
       *failureReason = "movement state result lost its value";
     return mlir::failure();
   }
-  return IncompletePlanningDomain(std::move(*movementState),
-                                  RequiredPlanningCoordinate::Storage,
+  StorageContinuation storageContinuation =
+      createStorageContinuation(std::move(*movementState));
+  StorageExpansionResult storage = resumeStorage(storageContinuation);
+  if (storage.getKind() != StorageExpansionKind::State) {
+    if (failureReason)
+      *failureReason = storage.getDetail().empty()
+                           ? "storage planning domain has no supported state"
+                           : storage.getDetail().str();
+    return mlir::failure();
+  }
+  std::optional<InitialBufferState> storageState = storage.takeState();
+  if (!storageState) {
+    if (failureReason)
+      *failureReason = "storage state result lost its value";
+    return mlir::failure();
+  }
+  return IncompletePlanningDomain(std::move(*storageState),
+                                  RequiredPlanningCoordinate::EventResource,
                                   hasRemainingSpatialWork(), work);
 }
 

@@ -5,9 +5,12 @@
 
 #include "Wafer/Planning/PhysicalDataflow/MovementPlan.h"
 
+#include "llvm/ADT/SmallVector.h"
+
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -52,22 +55,124 @@ struct StorageObjectId {
 struct StorageObjectPlan {
   StorageObjectId id;
   TileId tile{0};
+
+  friend bool operator==(const StorageObjectPlan &lhs,
+                         const StorageObjectPlan &rhs) {
+    return lhs.id == rhs.id && lhs.tile == rhs.tile;
+  }
+  friend bool operator<(const StorageObjectPlan &lhs,
+                        const StorageObjectPlan &rhs) {
+    if (lhs.id != rhs.id)
+      return lhs.id < rhs.id;
+    return lhs.tile.getValue() < rhs.tile.getValue();
+  }
+};
+
+enum class StorageBindingKind : uint8_t {
+  Fresh,
+  IdentityAlias,
+  Reuse,
 };
 
 struct PhysicalVersionStorageBinding {
   PhysicalVersionId version;
   StorageObjectId object;
+  StorageBindingKind kind = StorageBindingKind::Fresh;
+
+  friend bool operator==(const PhysicalVersionStorageBinding &lhs,
+                         const PhysicalVersionStorageBinding &rhs) {
+    return lhs.version == rhs.version && lhs.object == rhs.object &&
+           lhs.kind == rhs.kind;
+  }
+  friend bool operator<(const PhysicalVersionStorageBinding &lhs,
+                        const PhysicalVersionStorageBinding &rhs) {
+    return std::tie(lhs.version, lhs.object, lhs.kind) <
+           std::tie(rhs.version, rhs.object, rhs.kind);
+  }
 };
 
 struct ReductionGatherStorageBinding {
   ReductionGatherId gather;
   StorageObjectId stagingObject;
+
+  friend bool operator==(const ReductionGatherStorageBinding &lhs,
+                         const ReductionGatherStorageBinding &rhs) {
+    return lhs.gather == rhs.gather && lhs.stagingObject == rhs.stagingObject;
+  }
+  friend bool operator<(const ReductionGatherStorageBinding &lhs,
+                        const ReductionGatherStorageBinding &rhs) {
+    return std::tie(lhs.gather, lhs.stagingObject) <
+           std::tie(rhs.gather, rhs.stagingObject);
+  }
+};
+
+struct SlotFamilyId {
+  std::vector<PhysicalVersionId> members;
+
+  friend bool operator==(const SlotFamilyId &lhs, const SlotFamilyId &rhs) {
+    return lhs.members == rhs.members;
+  }
+  friend bool operator<(const SlotFamilyId &lhs, const SlotFamilyId &rhs) {
+    return lhs.members < rhs.members;
+  }
+};
+
+struct SlotFamilyPlan {
+  SlotFamilyId id;
+  uint32_t multiplicity = 1;
+  llvm::SmallVector<uint32_t, 4> rotationIterators;
+
+  friend bool operator==(const SlotFamilyPlan &lhs, const SlotFamilyPlan &rhs) {
+    return lhs.id == rhs.id && lhs.multiplicity == rhs.multiplicity &&
+           lhs.rotationIterators == rhs.rotationIterators;
+  }
+  friend bool operator<(const SlotFamilyPlan &lhs, const SlotFamilyPlan &rhs) {
+    return std::tie(lhs.id, lhs.multiplicity, lhs.rotationIterators) <
+           std::tie(rhs.id, rhs.multiplicity, rhs.rotationIterators);
+  }
+};
+
+enum class BufferOrderKind : uint8_t { ReuseAfterCompletion };
+
+struct BufferOrderRequirement {
+  PhysicalVersionId earlier;
+  PhysicalVersionId later;
+  BufferOrderKind kind = BufferOrderKind::ReuseAfterCompletion;
+
+  friend bool operator==(const BufferOrderRequirement &lhs,
+                         const BufferOrderRequirement &rhs) {
+    return lhs.earlier == rhs.earlier && lhs.later == rhs.later &&
+           lhs.kind == rhs.kind;
+  }
+  friend bool operator<(const BufferOrderRequirement &lhs,
+                        const BufferOrderRequirement &rhs) {
+    return std::tie(lhs.earlier, lhs.later, lhs.kind) <
+           std::tie(rhs.earlier, rhs.later, rhs.kind);
+  }
 };
 
 struct BufferPlan {
   std::vector<StorageObjectPlan> storageObjects;
   std::vector<PhysicalVersionStorageBinding> versionBindings;
   std::vector<ReductionGatherStorageBinding> gatherStagingBindings;
+  std::vector<SlotFamilyPlan> slotFamilies;
+  std::vector<BufferOrderRequirement> orderRequirements;
+
+  friend bool operator==(const BufferPlan &lhs, const BufferPlan &rhs) {
+    return lhs.storageObjects == rhs.storageObjects &&
+           lhs.versionBindings == rhs.versionBindings &&
+           lhs.gatherStagingBindings == rhs.gatherStagingBindings &&
+           lhs.slotFamilies == rhs.slotFamilies &&
+           lhs.orderRequirements == rhs.orderRequirements;
+  }
+  friend bool operator<(const BufferPlan &lhs, const BufferPlan &rhs) {
+    return std::tie(lhs.storageObjects, lhs.versionBindings,
+                    lhs.gatherStagingBindings, lhs.slotFamilies,
+                    lhs.orderRequirements) <
+           std::tie(rhs.storageObjects, rhs.versionBindings,
+                    rhs.gatherStagingBindings, rhs.slotFamilies,
+                    rhs.orderRequirements);
+  }
 };
 
 using StorageAccessSite = std::variant<ExecutionInstanceId, MovementActionId>;

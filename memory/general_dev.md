@@ -431,6 +431,9 @@ source program
   relay Tiles的全部simple permutations；plan只保存逐hopphysical endpoints，不声称raw router path/link load。peer eligibility要求G selected
   source/destination encoding一致；prepare从actual SPM memref计算physical bytes并在mutation前验证全部hop，随后发出matching send/recv token。
   message ordinal只作candidate-local lowering carrier，不能从node/edge/operation地址恢复；SPM capacity仍不参与movement query。
+- initial storage domain始终保留fresh object sibling；identity alias只消费G proof，reuse只来自proven-disjoint或携J hard edge的explicit
+  requirement。slot multiplicity完整覆盖typed `1..U`与rotation options，U不读取bytes/capacity。selected builder按multiplicity创建objects，
+  version occurrence用modulo lookup，不扫描/clone loop、不分wait或改order；pre-K BufferPlan在execution structure变化后必须失效重闭。
 - canonical representation只给已经显式存在的nonempty shaped logical versions建立一对一Tensor primary version。boundary fragment、
   support result、execution result、ordinary partial和coupled component必须使用typed variant identity；empty/scalar不造假version。
   exact domain/type留在query-local resource description并用`PhysicalLayoutRelation`检查finite boxes，不能只写layout enum。

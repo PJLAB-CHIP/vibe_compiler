@@ -3,6 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 
+#include "Wafer/Planning/PhysicalDataflow/BufferPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/MovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningCoordinate.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
@@ -19,6 +20,7 @@ namespace wafer::compiler::detail {
 
 class PhysicalDataflowPlanningProblem;
 class MovementDomain;
+class StorageDomain;
 class RegionDomain;
 class RepresentationDomain;
 class TemporalDomain;
@@ -217,6 +219,54 @@ private:
 
   RepresentationState representations;
   MovementPlan movement;
+};
+
+/// Pre-structure storage coordinate. A later execution-structure choice may
+/// invalidate occurrence families and require a new BufferState.
+class InitialBufferState {
+public:
+  static mlir::FailureOr<InitialBufferState>
+  create(const StorageDomain &domain, MovementState movement,
+         BufferPlan buffers, std::string *failureReason = nullptr);
+
+  const MovementState &getMovementState() const { return movement; }
+  const SpatialPlan &getSpatialPlan() const {
+    return movement.getSpatialPlan();
+  }
+  const RegionPlan &getRegionPlan() const { return movement.getRegionPlan(); }
+  const TemporalPlan &getTemporalPlan() const {
+    return movement.getTemporalPlan();
+  }
+  const RepresentationPlan &getRepresentationPlan() const {
+    return movement.getRepresentationPlan();
+  }
+  const MovementPlan &getMovementPlan() const {
+    return movement.getMovementPlan();
+  }
+  const BufferPlan &getBufferPlan() const { return buffers; }
+  RequiredPlanningCoordinate getRequiredCoordinate() const {
+    return RequiredPlanningCoordinate::EventResource;
+  }
+
+  friend bool operator==(const InitialBufferState &lhs,
+                         const InitialBufferState &rhs) {
+    return lhs.movement == rhs.movement && lhs.buffers == rhs.buffers;
+  }
+  friend bool operator<(const InitialBufferState &lhs,
+                        const InitialBufferState &rhs) {
+    if (lhs.movement < rhs.movement)
+      return true;
+    if (rhs.movement < lhs.movement)
+      return false;
+    return lhs.buffers < rhs.buffers;
+  }
+
+private:
+  InitialBufferState(MovementState movement, BufferPlan buffers)
+      : movement(std::move(movement)), buffers(std::move(buffers)) {}
+
+  MovementState movement;
+  BufferPlan buffers;
 };
 
 } // namespace wafer::compiler::detail

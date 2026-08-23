@@ -6,6 +6,7 @@
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
+#include "Wafer/Planning/PhysicalDataflow/StorageDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 namespace wafer::compiler::detail {
@@ -65,6 +66,17 @@ MovementState::create(const MovementDomain &domain,
     return mlir::failure();
   }
   return MovementState(std::move(representations), std::move(movement));
+}
+
+mlir::FailureOr<InitialBufferState>
+InitialBufferState::create(const StorageDomain &domain, MovementState movement,
+                           BufferPlan buffers, std::string *failureReason) {
+  if (!domain.contains(buffers)) {
+    if (failureReason)
+      *failureReason = "InitialBufferState plan is outside the current domain";
+    return mlir::failure();
+  }
+  return InitialBufferState(std::move(movement), std::move(buffers));
 }
 
 } // namespace wafer::compiler::detail

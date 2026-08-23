@@ -8,6 +8,7 @@
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
+#include "Wafer/Planning/PhysicalDataflow/StorageDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -42,6 +43,9 @@ struct PlanningWorkCounts {
   uint64_t movementSuccessorSteps = 0;
   uint64_t movementStatesQueued = 0;
   uint64_t unsupportedMovementChoices = 0;
+  uint64_t storageSuccessorSteps = 0;
+  uint64_t storageStatesQueued = 0;
+  uint64_t unsupportedStorageChoices = 0;
   uint64_t duplicateSpatialChoices = 0;
   uint64_t unsupportedSpatialChoices = 0;
   uint64_t indeterminateSpatialChoices = 0;
@@ -85,7 +89,7 @@ private:
 /// cannot be materialized or published.
 class IncompletePlanningDomain {
 public:
-  const MovementState &getState() const { return state; }
+  const InitialBufferState &getState() const { return state; }
   RequiredPlanningCoordinate getRequiredCoordinate() const {
     return requiredCoordinate;
   }
@@ -93,15 +97,15 @@ public:
   const PlanningWorkCounts &getWork() const { return work; }
 
 private:
-  IncompletePlanningDomain(MovementState state,
+  IncompletePlanningDomain(InitialBufferState state,
                            RequiredPlanningCoordinate requiredCoordinate,
                            bool remainingSpatialWork, PlanningWorkCounts work)
       : state(std::move(state)), requiredCoordinate(requiredCoordinate),
         remainingSpatialWork(remainingSpatialWork), work(work) {}
 
-  MovementState state;
+  InitialBufferState state;
   RequiredPlanningCoordinate requiredCoordinate =
-      RequiredPlanningCoordinate::Storage;
+      RequiredPlanningCoordinate::EventResource;
   bool remainingSpatialWork = false;
   PlanningWorkCounts work;
 
@@ -253,6 +257,53 @@ private:
   friend class PhysicalDataflowPlanningSession;
 };
 
+class StorageContinuation {
+public:
+  const MovementState &getParent() const { return parent; }
+  bool isExhausted() const { return exhausted; }
+
+private:
+  explicit StorageContinuation(MovementState parent)
+      : parent(std::move(parent)) {}
+
+  MovementState parent;
+  std::optional<StorageCursor> cursor;
+  bool started = false;
+  bool exhausted = false;
+
+  friend class PhysicalDataflowPlanningSession;
+};
+
+enum class StorageExpansionKind : uint8_t {
+  State,
+  Unsupported,
+  ParentExhausted,
+  CompilerBug,
+};
+
+class StorageExpansionResult {
+public:
+  StorageExpansionKind getKind() const { return kind; }
+  std::optional<InitialBufferState> takeState() {
+    std::optional<InitialBufferState> result = std::move(state);
+    state.reset();
+    return result;
+  }
+  llvm::StringRef getDetail() const { return detail; }
+
+private:
+  StorageExpansionResult(StorageExpansionKind kind,
+                         std::optional<InitialBufferState> state = {},
+                         std::string detail = {})
+      : kind(kind), state(std::move(state)), detail(std::move(detail)) {}
+
+  StorageExpansionKind kind;
+  std::optional<InitialBufferState> state;
+  std::string detail;
+
+  friend class PhysicalDataflowPlanningSession;
+};
+
 /// Session-owned continuation for one validated SpatialState. The cursor is
 /// not part of RegionState identity and creates no IR.
 class RegionContinuation {
@@ -317,6 +368,11 @@ public:
   }
   MovementExpansionResult resumeMovement(MovementContinuation &continuation);
 
+  StorageContinuation createStorageContinuation(MovementState parent) const {
+    return StorageContinuation(std::move(parent));
+  }
+  StorageExpansionResult resumeStorage(StorageContinuation &continuation);
+
   /// Drives only far enough to prove that public search reached the deepest
   /// current prefix. Unsupported, indeterminate, or broken outcomes return
   /// without exhausting the preserved continuation.
@@ -361,6 +417,13 @@ private:
   MovementDomainLookup
   getOrCreateMovementDomain(const RepresentationState &representations);
 
+  struct StorageDomainLookup {
+    StorageDomain *domain = nullptr;
+    std::optional<StorageDomainFailure> failure;
+  };
+
+  StorageDomainLookup getOrCreateStorageDomain(const MovementState &movement);
+
   const PhysicalDataflowPlanningProblem &problem;
   CanonicalCursor canonicalCursor = CanonicalCursor::NotStarted;
   std::optional<SpatialPlan> lastCanonicalChoice;
@@ -373,6 +436,7 @@ private:
   std::map<RegionState, TemporalDomain> temporalDomainCache;
   std::map<TemporalState, RepresentationDomain> representationDomainCache;
   std::map<RepresentationState, MovementDomain> movementDomainCache;
+  std::map<MovementState, StorageDomain> storageDomainCache;
   PlanningWorkCounts work;
 };
 

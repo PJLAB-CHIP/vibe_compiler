@@ -226,7 +226,7 @@ TEST_F(PlanningSessionTest,
   auto incomplete = session.getFirstIncompleteState(&failureReason);
   ASSERT_TRUE(mlir::succeeded(incomplete)) << failureReason;
   EXPECT_EQ(incomplete->getRequiredCoordinate(),
-            RequiredPlanningCoordinate::Storage);
+            RequiredPlanningCoordinate::EventResource);
   EXPECT_TRUE(problem->getSpatialDomain().contains(
       incomplete->getState().getSpatialPlan()));
   EXPECT_FALSE(incomplete->getState().getRegionPlan().groups.empty());
@@ -247,6 +247,9 @@ TEST_F(PlanningSessionTest,
   EXPECT_EQ(incomplete->getWork().movementSuccessorSteps, 1u);
   EXPECT_EQ(incomplete->getWork().movementStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().unsupportedMovementChoices, 0u);
+  EXPECT_EQ(incomplete->getWork().storageSuccessorSteps, 1u);
+  EXPECT_EQ(incomplete->getWork().storageStatesQueued, 1u);
+  EXPECT_EQ(incomplete->getWork().unsupportedStorageChoices, 0u);
   EXPECT_FALSE(incomplete->getState().getTemporalPlan().scopes.empty());
   for (const TemporalScopePlan &scope :
        incomplete->getState().getTemporalPlan().scopes) {
@@ -256,6 +259,7 @@ TEST_F(PlanningSessionTest,
   EXPECT_FALSE(
       incomplete->getState().getRepresentationPlan().physicalVersions.empty());
   EXPECT_FALSE(incomplete->getState().getMovementPlan().externalLoads.empty());
+  EXPECT_FALSE(incomplete->getState().getBufferPlan().storageObjects.empty());
   EXPECT_EQ(print(module->getOperation()), before);
 
   auto secondModule = parse(kRealSource);
@@ -383,6 +387,17 @@ TEST_F(PlanningSessionTest,
             RequiredPlanningCoordinate::Storage);
   EXPECT_EQ(first.resumeMovement(movementContinuation).getKind(),
             MovementExpansionKind::ParentExhausted);
+  StorageContinuation storageContinuation =
+      first.createStorageContinuation(std::move(*movementState));
+  StorageExpansionResult storage = first.resumeStorage(storageContinuation);
+  ASSERT_EQ(storage.getKind(), StorageExpansionKind::State)
+      << storage.getDetail().str();
+  std::optional<InitialBufferState> storageState = storage.takeState();
+  ASSERT_TRUE(storageState);
+  EXPECT_EQ(storageState->getRequiredCoordinate(),
+            RequiredPlanningCoordinate::EventResource);
+  EXPECT_EQ(first.resumeStorage(storageContinuation).getKind(),
+            StorageExpansionKind::ParentExhausted);
 }
 
 TEST_F(PlanningSessionTest,

@@ -586,6 +586,11 @@ current A--E structural readiness只检查selected TemporalPlan的domain members
 typed transition验证，不在这里重复。result没有resource字段，也不新增无语义state variant。prior axis的unsupported/indeterminate
 保持原分类，readiness不重跑或改写该结论。
 
+current initial storage domain从G physical versions与H movement actions建立fresh/identity-alias/proven-reuse bindings、typed
+ReuseAfterCompletion edges及`1..U` slot families。U只来自显式occurrence/selector requirement，不读取SPM capacity或buffer bytes；builder
+按selected multiplicity直接创建objects并由caller occurrence做modulo lookup，不扫描actual loop。该plan属于pre-K
+`InitialBufferState`，execution structure变化后必须由structure-specific-storage重闭。
+
 完整assignment的唯一资源边界是actual candidate transaction：
 
 ```text
