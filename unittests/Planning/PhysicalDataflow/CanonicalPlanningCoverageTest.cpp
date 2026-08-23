@@ -252,7 +252,7 @@ protected:
     ASSERT_EQ(chain.schedule.plan.workerBindings.size(),
               chain.schedule.plan.order.size());
     std::set<ScheduleNodeId> workerNodes;
-    for (const ScheduleWorkerBinding &binding :
+    for (const CanonicalScheduleWorkerBinding &binding :
          chain.schedule.plan.workerBindings) {
       EXPECT_EQ(binding.worker, wafer::NCCWorker::Worker0);
       EXPECT_TRUE(workerNodes.insert(binding.node).second);

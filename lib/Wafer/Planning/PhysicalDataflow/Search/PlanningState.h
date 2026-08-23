@@ -9,6 +9,7 @@
 #include "Wafer/Planning/PhysicalDataflow/PlanningCoordinate.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/SchedulePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalPlan.h"
 
@@ -24,6 +25,7 @@ class MovementDomain;
 class StorageDomain;
 class ExecutionStructureDomain;
 class StructureSpecificStorageDomain;
+class ScheduleDomain;
 class RegionDomain;
 class RepresentationDomain;
 class TemporalDomain;
@@ -378,6 +380,54 @@ private:
 
   ExecutionStructureState structure;
   BufferPlan buffers;
+};
+
+/// Complete plan-level order/worker/resource/completion coordinate for one
+/// fixed K/I generation. Actual IR and feasibility evidence remain absent.
+class ScheduledState {
+public:
+  static mlir::FailureOr<ScheduledState>
+  create(const ScheduleDomain &domain, BufferState buffers,
+         ClosedSchedulePlan schedule, std::string *failureReason = nullptr);
+
+  const BufferState &getBufferState() const { return buffers; }
+  const SpatialPlan &getSpatialPlan() const { return buffers.getSpatialPlan(); }
+  const RegionPlan &getRegionPlan() const { return buffers.getRegionPlan(); }
+  const TemporalPlan &getTemporalPlan() const {
+    return buffers.getTemporalPlan();
+  }
+  const RepresentationPlan &getRepresentationPlan() const {
+    return buffers.getRepresentationPlan();
+  }
+  const MovementPlan &getMovementPlan() const {
+    return buffers.getMovementPlan();
+  }
+  const ExecutionStructurePlan &getExecutionStructurePlan() const {
+    return buffers.getExecutionStructurePlan();
+  }
+  const BufferPlan &getBufferPlan() const { return buffers.getBufferPlan(); }
+  const ClosedSchedulePlan &getSchedulePlan() const { return schedule; }
+  RequiredPlanningCoordinate getRequiredCoordinate() const {
+    return RequiredPlanningCoordinate::FullFeasibility;
+  }
+
+  friend bool operator==(const ScheduledState &lhs, const ScheduledState &rhs) {
+    return lhs.buffers == rhs.buffers && lhs.schedule == rhs.schedule;
+  }
+  friend bool operator<(const ScheduledState &lhs, const ScheduledState &rhs) {
+    if (lhs.buffers < rhs.buffers)
+      return true;
+    if (rhs.buffers < lhs.buffers)
+      return false;
+    return lhs.schedule < rhs.schedule;
+  }
+
+private:
+  ScheduledState(BufferState buffers, ClosedSchedulePlan schedule)
+      : buffers(std::move(buffers)), schedule(std::move(schedule)) {}
+
+  BufferState buffers;
+  ClosedSchedulePlan schedule;
 };
 
 } // namespace wafer::compiler::detail

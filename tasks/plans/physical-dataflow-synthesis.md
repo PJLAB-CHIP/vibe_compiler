@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J event-resource-foundation及Q50.K execution-structure-domain已经闭合；当前下一项是`schedule-domain`。Q50.S attention vertical、Q50.J schedule closure、Q50.F full-feasibility、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J schedule domain及Q50.K execution-structure-domain已经闭合；当前下一项是`full-feasibility`。Q50.S attention vertical、Q50.F full-feasibility、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -4471,10 +4471,11 @@ Q50.J由三个work items闭合：
   timestamp或wait placement。
 - `event-resource-foundation`在完整storage-domain后把semantic action展开为issue/completion/wait/release等`EventId`，建立hard DAG、
   resource facts、completion obligations、exact successors及Core consumer；不选择最终schedule。
-- `schedule-domain`在K→I重闭后枚举worker/resource/control order和completion boundary，形成最终`ClosedSchedulePlan`并提供selected apply。
-  它不能把当前canonical全序当作唯一domain或用worker0兜底其它失败。
+- `schedule-domain`在K→I重闭后枚举worker/resource/control order和completion boundary，形成最终`ClosedSchedulePlan`及selected apply
+  所需的完整typed合同。actual apply必须等full-feasibility和unified-search-closure拥有的winner transaction，不能在本项提前生成IR。
+  本域不能把canonical全序当作唯一domain或用worker0兜底其它失败。
 
-当前`ClosedSchedulePlan`只保存`order`和`workerBindings`；definition/use dependencies作为可重算的
+canonical checkpoint的`CanonicalSchedulePrefix`只保存`order`和`workerBindings`；definition/use dependencies作为可重算的
 `CanonicalScheduleCoordinate.dependencies`返回。`ScheduleNodeId`不是未来`EventId`：一个movement action在event foundation可展开成多个
 endpoint/issue/completion nodes，当前ID不能被后续误当成已关闭completion。
 
@@ -4487,7 +4488,7 @@ Pipeline position:
   验证object/lifetime和execution/action node coverage，建立definition→use dependency DAG，生成stable topological source-semantic order并为
   每个node绑定worker0。
 - Output IR / files:
-  query-local CanonicalScheduleCoordinate，其中ClosedSchedulePlan只含node order/worker bindings，dependencies为derived proof；不修改IR或
+  query-local CanonicalScheduleCoordinate，其中CanonicalSchedulePrefix只含node order/worker bindings，dependencies为derived proof；不修改IR或
   写文件。
 - Downstream consumer:
   attention-work-projection和canonical feasibility消费closed canonical prefix；deterministic baseline后续把同一order投影到selected
@@ -4512,7 +4513,7 @@ Pipeline position:
 | determinism | 反转serialized、objects、lifetimes和uses输入 | nodes/dependencies/order/worker逐字段相同，tie-break只用semantic ID | production none与test query共享一个canonical point |
 | typed failure | empty/duplicate storage object或lifetime、missing resource/lifetime、unknown execution site、dependency cycle | `BrokenSchedulePlan`准确分类且不返回partial order | 修正输入可重新query，source IR byte-identical |
 
-实现闭合：canonical `ClosedSchedulePlan`复用storage的execution/action sites，保存stable Kahn total order和node-level worker0 default；
+实现闭合：canonical `CanonicalSchedulePrefix`复用storage的execution/action sites，保存stable Kahn total order和node-level worker0 default；
 `ScheduleDependency`逐object保留definition→use evidence。同execution self-use不造edge，没有EventId、async completion、resource lane、
 timestamp、wait/join、pipeline或actual IR。fresh定向6/6、完整`WaferUnitTests` 791/791、default configured lit 224/224、compiler
 public link、完整configured build及IR/source organization通过。
@@ -4658,7 +4659,8 @@ ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observe
 disjunctive resource choices和connected components；`getReadyEvents`只返回hard/resource precedence下的exact ready set，不选择event。
 Core按`InitialBufferState`重建并缓存query-local graph，public `search`已推进到missing `execution-structure`，state identity和IR均不携带
 graph。opaque peer只产生endpoint/DTE exact facts与NoC estimate；只有显式`ExactMovementRoute`产生directed-link use。worker/resource
-sequence、control linearization、completion placement、calendar bound和proposal仍由后续`schedule-domain`拥有。
+sequence、control linearization和completion placement仍由后续`schedule-domain`拥有；calendar bound/proposal及其measured policy由
+search-control-closure与Q52拥有。
 fresh直接5/5、ordinary host unit 868/868、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public
 link closure及source organization通过。
 
@@ -5153,6 +5155,29 @@ failure，并列出all-and-only causal semantic/B--K/J choices。Unsupported/Ind
 不能删另一个worker/resource order、K Serialized、不同slot或movement sibling。
 
 #### J-closure-1 Gate
+
+本work item在实现前冻结下面的覆盖矩阵。1024/1025/1031只证明同一event/resource closure可消费整除、tail和多Tile输入；
+2--7 event仅用于完整worker×resource×control×completion reference oracle。schedule legality不读取cycle estimate、SPM footprint或actual op order。
+
+| 输入等价类 | 代表输入 | schedule路径 | typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- | --- |
+| worker/control domain | rank-3 1024/1025，2个independent worker-capable events及producer→fanout | closed worker set做Cartesian product；per-control scope枚举全部hard-ready linear extensions | empty worker domain、unknown event | 2-event `2!×3^2=18`、fanout `2!×3^3=54`且无duplicate | full-feasibility按EventId绑定selected worker，不从Instr默认恢复 |
+| shared resource sequence | rank>=3 1025/1031，DDR/DTE/Tile engine/SPM exact range | capacity-1 users枚举所有与hard DAG一致的resource sequence，并作为control predecessor | resource/hard cycle | sequence all-and-only、read-read不造冲突、opaque NoC无exact sequence | actual emitter按同一resource order创建operations |
+| multi-scope/cross-Tile | all-16 Tile independent scopes、cross-Tile transfer | Tile/Card control分别成序，cross dependency/shared DDR保持global DAG，不造card total order | local orders合成global cycle | component分解前后leaf集合一致，input反转plan集合相同 | selected construction可逐Tile发射而保留cross-Tile token relation |
+| completion与publication | Direct-DTE、NCC worker、synchronous completion、buffer release和observable write | completion boundary固定为显式Completion EventId，participant从typed obligation/selected worker导出 | unmatched issue/completion、terminal pending | every obligation恰一placement；DTE/NCC域不互相清除；observable terminal有前驱 | full-feasibility/prepare可生成minimum wait/join/release groups |
+| fixed K/I generation | Serialized与Pipelined、multiplicity/rotation/lifetime requirement | ClosedSchedulePlan携exact structure+BufferPlan，domain/state双重校验generation | stale pre-K buffer或K sibling | plan identity逐字段相等，slot lifetime lower/upper与selected family一致 | ScheduledState是full-feasibility唯一输入 |
+| exact successor与work limit | 2--7 event bounded oracle、hash/input扰动 | worker→control→resource的finite lazy successor覆盖每个leaf | work-limit Indeterminate、malformed problem compiler bug | 与独立enumerator逐plan相等；无timestamp/idle/calendar/default stats | Q51仍可直接调用exact successor，不依赖proposal |
+
+实现闭合：canonical高层点已更名为`CanonicalSchedulePrefix`，不再占用“closed schedule”名称。current `ClosedSchedulePlan`保存exact
+ExecutionStructurePlan和post-K BufferPlan generation、EventId worker bindings、每个exact resource use的typed instance、capacity-1 shared
+resource sequences、per-Tile/Card control orders及all-and-only completion placements；不保存timestamp、pending set、calendar、cost或actual
+operation。`ScheduleDomain`在hard/resource/control edges上lazy枚举finite linear extensions，worker domain做Cartesian product，合成后重新
+验证global DAG；opaque NoC estimate不进入binding/sequence。NCC participant mask从selected worker或typed fixed obligation导出，DTE
+completion保持独立。`ScheduledState`和domain双重验证K/I generation，Core已推进到missing `full-feasibility`且zero actualization。
+fresh直接5/5覆盖18/54、2--7 event oracle、shared resource/opaque route、NCC+DTE completion及generation/failure；canonical schedule 6/6、
+Core/SearchRouting 8/8；ordinary host unit 882/882、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public
+link closure及source organization通过。actual ScheduleEmitter/wait/join emission由unified-search-closure在accepted complete candidate中接入；
+calendar bounds/proposals由search-control-closure/Q52建立，不是本correctness domain的第二入口。
 
 - 2--7 event exhaustive oracle比较完整worker/resource/control/completion leaves、feasible set和fixed-knowledge optimum；component decomposition
   前后集合/optimum一致；

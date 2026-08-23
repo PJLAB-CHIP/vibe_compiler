@@ -6,6 +6,7 @@
 #include "Wafer/Planning/PhysicalDataflow/MovementDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/ScheduleDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningProblem.h"
 #include "Wafer/Planning/PhysicalDataflow/StorageDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/StructureSpecificStorageDomain.h"
@@ -104,6 +105,20 @@ BufferState::create(const StructureSpecificStorageDomain &domain,
     return mlir::failure();
   }
   return BufferState(std::move(structure), std::move(buffers));
+}
+
+mlir::FailureOr<ScheduledState>
+ScheduledState::create(const ScheduleDomain &domain, BufferState buffers,
+                       ClosedSchedulePlan schedule,
+                       std::string *failureReason) {
+  if (!domain.isForGeneration(buffers.getExecutionStructurePlan(),
+                              buffers.getBufferPlan()) ||
+      !domain.contains(schedule)) {
+    if (failureReason)
+      *failureReason = "ScheduledState plan is outside the fixed K/I domain";
+    return mlir::failure();
+  }
+  return ScheduledState(std::move(buffers), std::move(schedule));
 }
 
 } // namespace wafer::compiler::detail

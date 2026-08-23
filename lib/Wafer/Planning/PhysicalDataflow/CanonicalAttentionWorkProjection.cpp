@@ -233,7 +233,8 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
       return broken(BrokenAttentionWorkProjectionReason::DuplicateIdentity,
                     "attention projection received duplicate schedule node");
   std::set<ScheduleNodeId> workerNodes;
-  for (const ScheduleWorkerBinding &binding : schedule.plan.workerBindings)
+  for (const CanonicalScheduleWorkerBinding &binding :
+       schedule.plan.workerBindings)
     if (binding.worker != NCCWorker::Worker0 ||
         !workerNodes.insert(binding.node).second)
       return broken(BrokenAttentionWorkProjectionReason::MissingScheduleNode,
@@ -480,17 +481,15 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
       };
       auto score = addValueScratch(AttentionValueKind::ScoreBlock, *scoreDomain,
                                    queryType.getElementType(), *scoreMap);
-      auto scaled = addValueScratch(
-          AttentionValueKind::ScaledMaskedScoreBlock, *scoreDomain,
-          maximumType, *scoreMap);
+      auto scaled = addValueScratch(AttentionValueKind::ScaledMaskedScoreBlock,
+                                    *scoreDomain, maximumType, *scoreMap);
       auto probability =
           addValueScratch(AttentionValueKind::ProbabilityBlock, *scoreDomain,
                           valueType.getElementType(), *scoreMap);
-      auto blockMaximum =
-          addValueScratch(
-              AttentionValueKind::BlockMaximum, *rowDomain, maximumType,
-              componentByKind.at(CoupledReductionComponentKind::Maximum)
-                  .indexingMap);
+      auto blockMaximum = addValueScratch(
+          AttentionValueKind::BlockMaximum, *rowDomain, maximumType,
+          componentByKind.at(CoupledReductionComponentKind::Maximum)
+              .indexingMap);
       auto blockSum = addValueScratch(
           AttentionValueKind::BlockSum, *rowDomain, sumType,
           componentByKind.at(CoupledReductionComponentKind::Sum).indexingMap);
@@ -565,11 +564,11 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
         requiredRoles.push_back(AttentionOperandRole::Mask);
       for (AttentionOperandRole role : requiredRoles) {
         const unsigned index = operandIndex(role);
-        auto rootOperand = llvm::find_if(
-            scope.work->operands,
-            [&](const analysis::RootOperandWork &candidate) {
-              return candidate.operand == index;
-            });
+        auto rootOperand =
+            llvm::find_if(scope.work->operands,
+                          [&](const analysis::RootOperandWork &candidate) {
+                            return candidate.operand == index;
+                          });
         if (rootOperand == scope.work->operands.end())
           return broken(
               BrokenAttentionWorkProjectionReason::MissingOperandProjection,
@@ -583,15 +582,19 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
           return broken(
               BrokenAttentionWorkProjectionReason::MissingOperandProjection,
               "attention execution has no exact root operand demand", root);
-        auto shaped =
-            mlir::dyn_cast<mlir::ShapedType>(operandValue(attention, role).getType());
+        auto shaped = mlir::dyn_cast<mlir::ShapedType>(
+            operandValue(attention, role).getType());
         if (!shaped)
           return broken(
               BrokenAttentionWorkProjectionReason::InvalidAttentionSemantics,
               "attention operand is not shaped", root);
-        description.operands.push_back(
-            {scope.id, role, use->operandDemand, use->operandDemand,
-             shaped.getElementType(), operandMap(attention, role), {}});
+        description.operands.push_back({scope.id,
+                                        role,
+                                        use->operandDemand,
+                                        use->operandDemand,
+                                        shaped.getElementType(),
+                                        operandMap(attention, role),
+                                        {}});
       }
 
       for (const PhysicalVersionPlan &version :
@@ -624,9 +627,9 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
           return broken(
               BrokenAttentionWorkProjectionReason::MissingOperandProjection,
               "attention operand fragment has no logical requirement", root);
-        operand->fragments.push_back(
-            {version.id, binding->second, resource->second->exactDomain,
-             resource->second->elementType});
+        operand->fragments.push_back({version.id, binding->second,
+                                      resource->second->exactDomain,
+                                      resource->second->elementType});
       }
       for (AttentionOperandDescription &operand : description.operands)
         if (operand.scope == scope.id && operand.fragments.empty())
@@ -634,89 +637,81 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
               BrokenAttentionWorkProjectionReason::MissingOperandProjection,
               "attention logical operand has no physical fragments", root);
 
-      auto addLoweringScratch =
-          [&](AttentionScratchKind kind,
-              const analysis::ExactIndexSet &domain, mlir::Type type,
-              mlir::AffineMap map, AttentionActionKind definition,
-              llvm::ArrayRef<AttentionActionKind> uses) {
-            AttentionScratchId id{scope.id, kind};
-            if (!scratchIds.insert(id).second)
-              return false;
-            AttentionScratchDescription scratch{
-                id,
-                domain,
-                domain,
-                type,
-                map,
-                AttentionActionId{scope.id, definition},
-                {}};
-            for (AttentionActionKind use : uses)
-              scratch.uses.push_back(AttentionActionId{scope.id, use});
-            description.scratch.push_back(std::move(scratch));
-            return true;
-          };
-      const bool convertsScore =
-          queryType.getElementType() != maximumType;
+      auto addLoweringScratch = [&](AttentionScratchKind kind,
+                                    const analysis::ExactIndexSet &domain,
+                                    mlir::Type type, mlir::AffineMap map,
+                                    AttentionActionKind definition,
+                                    llvm::ArrayRef<AttentionActionKind> uses) {
+        AttentionScratchId id{scope.id, kind};
+        if (!scratchIds.insert(id).second)
+          return false;
+        AttentionScratchDescription scratch{
+            id,   domain, domain,
+            type, map,    AttentionActionId{scope.id, definition},
+            {}};
+        for (AttentionActionKind use : uses)
+          scratch.uses.push_back(AttentionActionId{scope.id, use});
+        description.scratch.push_back(std::move(scratch));
+        return true;
+      };
+      const bool convertsScore = queryType.getElementType() != maximumType;
       const bool convertsProbability =
           valueType.getElementType() != maximumType;
       const bool hasMask = static_cast<bool>(attention.getMask());
-      auto maskType = hasMask
-                          ? mlir::dyn_cast<mlir::ShapedType>(
-                                attention.getMask().getType())
-                          : mlir::ShapedType{};
+      auto maskType =
+          hasMask
+              ? mlir::dyn_cast<mlir::ShapedType>(attention.getMask().getType())
+              : mlir::ShapedType{};
       const bool convertsMask =
           maskType && maskType.getElementType() != maximumType;
       mlir::FailureOr<mlir::AffineMap> compressedMask = mlir::failure();
       if (hasMask)
-        compressedMask =
-            compressMapToAxes(*attention.getMaskMap(), scoreAxes);
+        compressedMask = compressMapToAxes(*attention.getMaskMap(), scoreAxes);
       if (hasMask && mlir::failed(compressedMask))
         return broken(
             BrokenAttentionWorkProjectionReason::ResourceMismatch,
             "attention mask cannot be projected into the score domain", root);
-      const bool broadcastsMask =
-          hasMask &&
-          (!compressedMask->isIdentity() ||
-           compressedMask->getNumResults() != scoreMap->getNumResults());
+      const bool broadcastsMask = hasMask && (!compressedMask->isIdentity() ||
+                                              compressedMask->getNumResults() !=
+                                                  scoreMap->getNumResults());
       if ((convertsScore &&
-           !addLoweringScratch(
-               AttentionScratchKind::ConvertedScoreBlock, *scoreDomain,
-               maximumType, *scoreMap, AttentionActionKind::ScaleMask,
-               {AttentionActionKind::Exponential})) ||
-          !addLoweringScratch(
-              AttentionScratchKind::ScaleBlock, *scoreDomain, maximumType,
-              *scoreMap, AttentionActionKind::ScaleMask,
-              {AttentionActionKind::Exponential}) ||
+           !addLoweringScratch(AttentionScratchKind::ConvertedScoreBlock,
+                               *scoreDomain, maximumType, *scoreMap,
+                               AttentionActionKind::ScaleMask,
+                               {AttentionActionKind::Exponential})) ||
+          !addLoweringScratch(AttentionScratchKind::ScaleBlock, *scoreDomain,
+                              maximumType, *scoreMap,
+                              AttentionActionKind::ScaleMask,
+                              {AttentionActionKind::Exponential}) ||
           (hasMask &&
-           (!addLoweringScratch(
-                AttentionScratchKind::ScaledScoreBlock, *scoreDomain,
-                maximumType, *scoreMap, AttentionActionKind::ScaleMask,
-                {AttentionActionKind::Exponential}) ||
+           (!addLoweringScratch(AttentionScratchKind::ScaledScoreBlock,
+                                *scoreDomain, maximumType, *scoreMap,
+                                AttentionActionKind::ScaleMask,
+                                {AttentionActionKind::Exponential}) ||
             (broadcastsMask &&
-             !addLoweringScratch(
-                 AttentionScratchKind::BroadcastMaskBlock, *scoreDomain,
-                 maskType.getElementType(), *scoreMap,
-                 AttentionActionKind::ScaleMask,
-                 {AttentionActionKind::Exponential})) ||
+             !addLoweringScratch(AttentionScratchKind::BroadcastMaskBlock,
+                                 *scoreDomain, maskType.getElementType(),
+                                 *scoreMap, AttentionActionKind::ScaleMask,
+                                 {AttentionActionKind::Exponential})) ||
             (convertsMask &&
-             !addLoweringScratch(
-                 AttentionScratchKind::ConvertedMaskBlock, *scoreDomain,
-                 maximumType, *scoreMap, AttentionActionKind::ScaleMask,
-                 {AttentionActionKind::Exponential})))) ||
-          !addLoweringScratch(
-              AttentionScratchKind::BroadcastMaximumBlock, *scoreDomain,
-              maximumType, *scoreMap, AttentionActionKind::Exponential,
-              {AttentionActionKind::Exponential}) ||
-          !addLoweringScratch(
-              AttentionScratchKind::ShiftedScoreBlock, *scoreDomain,
-              maximumType, *scoreMap, AttentionActionKind::Exponential,
-              {AttentionActionKind::Exponential}) ||
+             !addLoweringScratch(AttentionScratchKind::ConvertedMaskBlock,
+                                 *scoreDomain, maximumType, *scoreMap,
+                                 AttentionActionKind::ScaleMask,
+                                 {AttentionActionKind::Exponential})))) ||
+          !addLoweringScratch(AttentionScratchKind::BroadcastMaximumBlock,
+                              *scoreDomain, maximumType, *scoreMap,
+                              AttentionActionKind::Exponential,
+                              {AttentionActionKind::Exponential}) ||
+          !addLoweringScratch(AttentionScratchKind::ShiftedScoreBlock,
+                              *scoreDomain, maximumType, *scoreMap,
+                              AttentionActionKind::Exponential,
+                              {AttentionActionKind::Exponential}) ||
           (convertsProbability &&
-           !addLoweringScratch(
-               AttentionScratchKind::WideProbabilityBlock, *scoreDomain,
-               maximumType, *scoreMap, AttentionActionKind::Exponential,
-               {AttentionActionKind::Exponential,
-                AttentionActionKind::RowSum})))
+           !addLoweringScratch(AttentionScratchKind::WideProbabilityBlock,
+                               *scoreDomain, maximumType, *scoreMap,
+                               AttentionActionKind::Exponential,
+                               {AttentionActionKind::Exponential,
+                                AttentionActionKind::RowSum})))
         return broken(BrokenAttentionWorkProjectionReason::DuplicateIdentity,
                       "attention lowering scratch is duplicated", root);
 
@@ -984,20 +979,20 @@ CanonicalAttentionWorkProjectionOutcome buildCanonicalAttentionWorkProjection(
       return lhs.id < rhs.id;
     });
     llvm::sort(description.values, [](const AttentionValueDescription &lhs,
-                                     const AttentionValueDescription &rhs) {
+                                      const AttentionValueDescription &rhs) {
       return lhs.id < rhs.id;
     });
-    llvm::sort(description.scratch,
-               [](const AttentionScratchDescription &lhs,
-                  const AttentionScratchDescription &rhs) {
-                 return lhs.id < rhs.id;
-               });
-    llvm::sort(description.operands, [](const AttentionOperandDescription &lhs,
-                                        const AttentionOperandDescription &rhs) {
-      if (!(lhs.scope == rhs.scope))
-        return lhs.scope < rhs.scope;
-      return lhs.role < rhs.role;
+    llvm::sort(description.scratch, [](const AttentionScratchDescription &lhs,
+                                       const AttentionScratchDescription &rhs) {
+      return lhs.id < rhs.id;
     });
+    llvm::sort(description.operands,
+               [](const AttentionOperandDescription &lhs,
+                  const AttentionOperandDescription &rhs) {
+                 if (!(lhs.scope == rhs.scope))
+                   return lhs.scope < rhs.scope;
+                 return lhs.role < rhs.role;
+               });
     for (AttentionOperandDescription &operand : description.operands)
       llvm::sort(operand.fragments,
                  [](const AttentionOperandFragmentProjection &lhs,

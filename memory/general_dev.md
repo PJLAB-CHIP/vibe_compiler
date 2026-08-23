@@ -650,6 +650,18 @@ source program
   type范围推出；rotation是全部active recurrence axes的typed permutation。Serialized清除pre-K extra family；Pipelined重新枚举`min..U`。
   bytes、SPM capacity、offset和packing estimate均不进入本域，最终合法性仍由actual MiniMalloc签发。
 
+## Fixed-generation schedule closure（stable，2026-08-23）
+
+- canonical B--I checkpoint的高层worker0全序叫`CanonicalSchedulePrefix`；最终`ClosedSchedulePlan`只用于fixed K/I event schedule，二者
+  不是新旧schema。closed plan携structure/buffer generation、EventId worker/resource bindings、shared resource sequences、per-scope control
+  orders和completion placements，不携timestamp、calendar、pending cache、cost或actual operation。
+- exact schedule successor枚举closed worker sets和hard-ready linear extensions。capacity-1 resource sequence的相邻edge进入control DAG，
+  全部per-Tile/Card orders合成后重新做global cycle check；跨Tile hard edge/shared DDR不会因分scope而丢失。opaque NoC estimate既不绑定
+  resource instance，也不产生sequence。
+- completion boundary由显式Completion EventId标识；NCC participant mask从selected issue worker或typed fixed obligation导出，DTE completion
+  不清NCC，NCC join也不清DTE。actual wait/join/order emission只能在accepted complete-candidate subtree中执行；bounds/proposals属于后续
+  search control/scalability，不得成为绕过exact domain的第二入口。
+
 ## Physical search profile资格（Q51+重审期间暂停）
 
 - 普通编译不收集search统计。Q51+重审闭合前不执行重型search profile；旧`--search-max-candidate-evaluations`及对应public API已经退役，

@@ -669,6 +669,58 @@ PhysicalDataflowPlanningSession::getOrCreateStructureSpecificStorage(
   return {&stored->second, {}};
 }
 
+PhysicalDataflowPlanningSession::ScheduleDomainLookup
+PhysicalDataflowPlanningSession::getOrCreateScheduleDomain(
+    const BufferState &buffers, const EventGraph &eventGraph) {
+  auto cached = scheduleDomainCache.find(buffers);
+  if (cached != scheduleDomainCache.end())
+    return {&cached->second, {}};
+  StructureSpecificStorageDomainLookup fixedStorage =
+      getOrCreateStructureSpecificStorage(buffers.getExecutionStructureState(),
+                                          eventGraph);
+  if (!fixedStorage.domain)
+    return {nullptr,
+            ScheduleDomainFailure{
+                ScheduleDomainFailureKind::BrokenContract,
+                fixedStorage.failure
+                    ? fixedStorage.failure->detail
+                    : "schedule transition lost fixed-structure storage"}};
+  ScheduleDomainInput input;
+  input.structure = buffers.getExecutionStructurePlan();
+  input.buffers = buffers.getBufferPlan();
+  input.events.assign(eventGraph.getEvents().begin(),
+                      eventGraph.getEvents().end());
+  input.hardDependencies.assign(eventGraph.getHardDependencies().begin(),
+                                eventGraph.getHardDependencies().end());
+  input.orderChoices.assign(eventGraph.getOrderChoices().begin(),
+                            eventGraph.getOrderChoices().end());
+  input.completionObligations.assign(
+      eventGraph.getCompletionObligations().begin(),
+      eventGraph.getCompletionObligations().end());
+  input.resourceUses.assign(eventGraph.getResourceUses().begin(),
+                            eventGraph.getResourceUses().end());
+  input.components.assign(eventGraph.getComponents().begin(),
+                          eventGraph.getComponents().end());
+  input.slotLifetimes.assign(
+      fixedStorage.domain->getLifetimeRequirements().begin(),
+      fixedStorage.domain->getLifetimeRequirements().end());
+  ScheduleDomainResult result = buildScheduleDomain(std::move(input));
+  if (!result.succeeded())
+    return {nullptr,
+            result.failure
+                ? std::move(result.failure)
+                : std::optional<ScheduleDomainFailure>(ScheduleDomainFailure{
+                      ScheduleDomainFailureKind::BrokenContract,
+                      "schedule domain returned no typed outcome"})};
+  auto [stored, inserted] =
+      scheduleDomainCache.try_emplace(buffers, std::move(*result.domain));
+  if (!inserted)
+    return {nullptr, ScheduleDomainFailure{
+                         ScheduleDomainFailureKind::BrokenContract,
+                         "schedule domain cache changed during construction"}};
+  return {&stored->second, {}};
+}
+
 mlir::FailureOr<std::optional<RegionState>>
 PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
                                               std::string *failureReason) {
@@ -1116,8 +1168,35 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
     return mlir::failure();
   }
   ++work.structureSpecificStorageStatesQueued;
-  return IncompletePlanningDomain(std::move(*bufferState), *eventGraph.graph,
-                                  RequiredPlanningCoordinate::Schedule,
+  ++work.scheduleQueries;
+  ScheduleDomainLookup schedule =
+      getOrCreateScheduleDomain(*bufferState, *eventGraph.graph);
+  if (!schedule.domain) {
+    if (failureReason)
+      *failureReason = schedule.failure
+                           ? schedule.failure->detail
+                           : "schedule transition returned no typed outcome";
+    return mlir::failure();
+  }
+  ScheduleSuccessor scheduled = schedule.domain->getFirstPlan();
+  if (scheduled.getKind() != ScheduleSuccessorKind::Plan ||
+      !scheduled.getPlan()) {
+    if (failureReason)
+      *failureReason = scheduled.getDetail().empty()
+                           ? "schedule domain has no first plan"
+                           : scheduled.getDetail().str();
+    return mlir::failure();
+  }
+  mlir::FailureOr<ScheduledState> scheduledState = ScheduledState::create(
+      *schedule.domain, std::move(*bufferState), *scheduled.getPlan(), &detail);
+  if (mlir::failed(scheduledState)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  ++work.scheduleStatesQueued;
+  return IncompletePlanningDomain(std::move(*scheduledState), *eventGraph.graph,
+                                  RequiredPlanningCoordinate::FullFeasibility,
                                   hasRemainingSpatialWork(), work);
 }
 

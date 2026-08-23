@@ -11,7 +11,8 @@ namespace {
 
 using namespace wafer::compiler::testing;
 
-TEST(SearchRoutingTest, ExplicitSearchStopsAtScheduleWithoutActualCandidate) {
+TEST(SearchRoutingTest,
+     ExplicitSearchStopsAtFullFeasibilityWithoutActualCandidate) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
   std::string sourceBefore;
@@ -28,8 +29,8 @@ TEST(SearchRoutingTest, ExplicitSearchStopsAtScheduleWithoutActualCandidate) {
   EXPECT_FALSE(static_cast<bool>(executable));
   llvm::consumeError(executable.takeError());
   diagnostics.flush();
-  EXPECT_NE(diagnosticsText.find(
-                "physical-search incomplete required_coordinate=schedule"),
+  EXPECT_NE(diagnosticsText.find("physical-search incomplete "
+                                 "required_coordinate=full-feasibility"),
             std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("candidate_actualizations=0"),
@@ -76,6 +77,10 @@ TEST(SearchRoutingTest, ExplicitSearchStopsAtScheduleWithoutActualCandidate) {
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("structure_storage_states=1"),
             std::string::npos)
+      << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("schedule_queries=1"), std::string::npos)
+      << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("schedule_states=1"), std::string::npos)
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
             std::string::npos)

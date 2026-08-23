@@ -299,9 +299,8 @@ TEST_F(CanonicalAttentionWorkProjectionTest,
     int64_t valueExtent;
     bool withMask;
   };
-  for (const Case testCase :
-       {Case{false, 1024, 1024, 128, 64, false},
-        Case{true, 1025, 1031, 64, 128, true}}) {
+  for (const Case testCase : {Case{false, 1024, 1024, 128, 64, false},
+                              Case{true, 1025, 1031, 64, 128, true}}) {
     SCOPED_TRACE(testCase.decoding);
     std::string source =
         testCase.decoding
@@ -541,7 +540,7 @@ TEST_F(CanonicalAttentionWorkProjectionTest,
   ScheduleNodeId removedNode = *executionNode;
   missingSchedule.plan.order.erase(executionNode);
   llvm::erase_if(missingSchedule.plan.workerBindings,
-                 [&](const ScheduleWorkerBinding &binding) {
+                 [&](const CanonicalScheduleWorkerBinding &binding) {
                    return binding.node == removedNode;
                  });
   CanonicalAttentionWorkProjectionOutcome missingScheduleOutcome =

@@ -146,7 +146,7 @@ module {
   }
 
   static std::map<ScheduleNodeId, size_t>
-  positions(const ClosedSchedulePlan &plan) {
+  positions(const CanonicalSchedulePrefix &plan) {
     std::map<ScheduleNodeId, size_t> result;
     for (auto [position, node] : llvm::enumerate(plan.order))
       result.try_emplace(node, position);
@@ -188,7 +188,7 @@ TEST_F(CanonicalSchedulePlanTest,
     ASSERT_EQ(coordinate->plan.workerBindings.size(), 48u);
     ASSERT_EQ(coordinate->dependencies.size(), 32u);
     EXPECT_TRUE(llvm::all_of(coordinate->plan.workerBindings,
-                             [](const ScheduleWorkerBinding &binding) {
+                             [](const CanonicalScheduleWorkerBinding &binding) {
                                return binding.worker ==
                                       wafer::NCCWorker::Worker0;
                              }));
