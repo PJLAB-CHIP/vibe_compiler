@@ -26,30 +26,38 @@ pipeline contract、实验结论、测试数字、失败修复过程和历史复
 ## 当前调度
 
 当前执行队列只列一次性work item；顺序已经按artifact producer/consumer关系拓扑排序。Q50.0、Q54、Q55、Q56、Q59、Q60、Q62、
-Q63和Q64等前置已满足，不在当前队列中重复展开。
+Q63和Q64等前置已满足，不在当前队列中重复展开。完成状态复核确认：第1--4项的当前输出仍成立；原第5--17项只闭合了部分
+domain/API、canonical路径或单测mechanism，没有满足各自设计中的selected construction、直接production consumer或完整search门禁，
+因此在原语义身份上重新打开，不旁挂第二份closure任务。已经通过的局部单测继续作为实现素材，不能代签这些重新打开项的`done`。
 
-| 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 |
-| --- | --- | --- | --- | --- | --- |
-| 1 | `deterministic-baseline-closure` | `done` | Q49.P | canonical-plan-coverage-closure、Q59 | actual candidate materialization→SPM planning→typed feedback闭环及fresh `none`纵向 |
-| 2 | `spatial-domain` | `done` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal |
-| 3 | `search-control-foundation` | `done` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete |
-| 4 | `root-work-domain` | `done` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及complete-candidate emitter |
-| 5 | `region-execution-domain` | `done` | Q50.D | root-work-domain、canonical-region-plan | region/execution/use-binding domain及Core consumer |
-| 6 | `temporal-domain` | `done` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails及Core consumer |
-| 7 | `partial-feasibility` | `done` | Q50.F | temporal-domain、exact-demand-boundary | 只验证A–E结构完整性和missing coordinates；资源合法性保持unknown |
-| 8 | `layout-domain` | `done` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |
-| 9 | `movement-domain` | `done` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/DTE/relay/collective domain、proof及Core consumer |
-| 10 | `storage-domain` | `done` | Q50.I | movement-domain、canonical-storage-plan | fresh/alias/reuse与`1..U` slot domain及Core consumer |
-| 11 | `event-resource-foundation` | `done` | Q50.J | storage-domain、Q63 | EventGraph、resource/recurrence facts及Core consumer |
-| 12 | `execution-structure-domain` | `done` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |
-| 13 | `structure-specific-storage` | `done` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence、slot multiplicity、rotation及lifetime closure |
-| 14 | `schedule-domain` | `done` | Q50.J | structure-specific-storage、event-resource-foundation | fixed-K/I order、worker、resource与completion domain |
-| 15 | `full-feasibility` | `done` | Q50.F | schedule-domain及完整B–K→I→J plan | 完整候选actual materialization、SPM/DDR/transport gate、typed rejection及Core反馈 |
-| 16 | `search-control-closure` | `done` | Q51.Core | full-feasibility、全部domain work items | actual-result admission、cost/bound、causal feedback、coverage及controller oracle |
-| 17 | `unified-search-closure` | `done` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | bounded exhaustive oracle、完整候选actual evaluation及唯一winner发布 |
-| 18 | `attention-production-closure` | `next` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card |
-| 19 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy、有限预算LLaMA actual evaluation及唯一winner发布 |
-| 20 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` |
+每个work item都必须独立执行下面完整流程；表中逐行重复，不能用全局说明代替本项门禁：先读`AGENTS.md`和本表，再读编号设计及
+本项覆盖矩阵；随后调研与问题直接相关的论文、经典算法和成熟编译器实现，比较合法域完整性、复杂度、正确性依据、可维护性及本仓
+适用边界，并在本项设计中写清采用方案与未采用方案。只有算法方向明确后，才查官方文档和仓库pinned LLVM/MLIR源码确认具体API，
+不能用阅读本地源码代替算法调研。之后修改代码与测试并fresh验证；最后按编号设计以及LLVM/MLIR工程规范复审实现、完整diff和
+下游witness，确认无遗漏后才更新状态并提交。
+
+| 顺序 | Work item | 状态 | 设计owner | 直接输入 | 完成输出 | 本项执行流程 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `deterministic-baseline-closure` | `done` | Q49.P | canonical-plan-coverage-closure、Q59 | actual candidate materialization→SPM planning→typed feedback闭环及fresh `none`纵向 | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 2 | `spatial-domain` | `done` | Q50.B | spatial-plan-schema、attention-spatial-integration、attention-demand-integration、exact-demand-boundary、Q64 | complete spatial successors、reference enumerator及proposal | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 3 | `search-control-foundation` | `done` | Q51.Core | spatial-domain、exact-demand-boundary、attention-demand-integration | SpatialState frontier/continuation及public `search` routing；missing axis typed incomplete | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 4 | `root-work-domain` | `done` | Q50.C | search-control-foundation、canonical-root-work | full root/merge work domain、Core consumer及complete-candidate emitter输入 | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 5 | `region-execution-domain` | `next` | Q50.D | root-work-domain、canonical-region-plan | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 6 | `temporal-domain` | `queued` | Q50.E | region-execution-domain、canonical-temporal-plan | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 7 | `partial-feasibility` | `queued` | Q50.F | temporal-domain、exact-demand-boundary | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 8 | `layout-domain` | `queued` | Q50.G | partial-feasibility、canonical-representation-plan | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 9 | `movement-domain` | `queued` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、selected construction/verifier及donor retirement | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 10 | `storage-domain` | `queued` | Q50.I | movement-domain、canonical-storage-plan | production alias/reuse/`1..U` requirements、selected object/rotation construction及lifetime verifier | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 11 | `event-resource-foundation` | `queued` | Q50.J | storage-domain、Q63、target/effect facts | 完整EventGraph/resource/recurrence facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 12 | `execution-structure-domain` | `queued` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 13 | `structure-specific-storage` | `queued` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence/slot/lifetime重闭、actual rotating-slot construction，并触发post-K EventGraph重建 | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 14 | `schedule-domain` | `queued` | Q50.J | structure-specific-storage、event-resource-foundation | post-K EventGraph、slot-lifetime约束、worker/resource/completion完整域及selected schedule emission/verifier | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 15 | `full-feasibility` | `queued` | Q50.F | schedule-domain及完整B–K→I→J selected construction | 全字段complete-candidate materialization、actual SPM/DDR/transport/target gate、typed rejection及Core反馈 | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 16 | `search-control-closure` | `queued` | Q51.Core | full-feasibility、全部domain work items | all-axis CompleteCandidateKey、actual-result admission、cost/bound、causal no-good、coverage及independent controller oracle | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 17 | `unified-search-closure` | `queued` | Q51 | search-control-closure、attention-selected-decomposition、Q50.0 | parent-by-parent/full-plan oracle、可恢复完整遍历、每complete candidate一次actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 18 | `attention-production-closure` | `queued` | Q50.S | deterministic-baseline-closure、unified-search-closure | donor retirement及prefill/decode的none/search package/no-card | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 19 | `search-scalability` | `queued` | Q52 | unified-search-closure、attention-production-closure | measured memo/DP/bound/LNS policy、有限预算LLaMA actual evaluation及唯一winner发布 | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
+| 20 | `production-host-readiness` | `queued` | Q53 | search-scalability、Q60、Q55、Q56 board-ready | fresh source/IR/package/oracle/runner/no-card矩阵；Q53 `board-ready` | 读AGENTS/progress→读编号设计与本项矩阵→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→改代码/测试→fresh验证→按设计与LLVM/MLIR规范复审→更新状态并提交 |
 失败留在当前work item修复；不跳过、不fallback，也不把owner整体状态提前标为完成。
 
 ### 设计owner映射
@@ -60,17 +68,17 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | Q50.S | attention-normalization、attention-spatial-integration、attention-demand-integration、attention-work-projection、attention-selected-decomposition、attention-production-closure | 最后一项通过 |
 | Q50.A | exact-demand-boundary | work item通过且所有physical consumers迁移 |
 | Q50.C | canonical-root-work、root-work-domain | 两项通过且unified search取得selected witness |
-| Q50.D | canonical-region-plan、region-execution-domain | 两项通过且unified search取得selected witness |
-| Q50.E | canonical-temporal-plan、temporal-domain | 两项通过且unified search取得selected witness |
+| Q50.D | canonical-region-plan、region-execution-domain | domain与selected construction均通过且unified search取得nested/replica/coupled actual witness |
+| Q50.E | canonical-temporal-plan、temporal-domain | complete domain与top-level/nested/coupled actual loop construction通过且unified search取得selected witness |
 | Q50.F | partial-feasibility、full-feasibility | 两项均通过；前者只签发结构完整性，后者以actual candidate gate签发资源结果 |
-| Q50.G | canonical-representation-plan、layout-domain | 两项通过且unified search取得selected witness |
-| Q50.H | canonical-movement-plan、movement-domain | 两项通过且unified search取得selected witness |
-| Q50.I | canonical-storage-plan、storage-domain、structure-specific-storage | 三项通过且K re-entry witness闭合 |
-| Q50.J | canonical-schedule、event-resource-foundation、schedule-domain | 三项通过且completion/resource witness闭合 |
-| Q50.K | serialized-execution、execution-structure-domain | 两项通过且I/J re-entry闭合 |
+| Q50.G | canonical-representation-plan、layout-domain | solver、production constraint producer和selected construction均通过且unified search取得actual witness |
+| Q50.H | canonical-movement-plan、movement-domain | 完整domain、selected construction/verifier和donor迁移均通过且unified search取得actual witness |
+| Q50.I | canonical-storage-plan、storage-domain、structure-specific-storage | production requirement、selected slot construction、lifetime及K re-entry witness全部闭合 |
+| Q50.J | canonical-schedule、event-resource-foundation、schedule-domain | Q63/effect、post-K EventGraph、slot/resource/completion schedule及actual emitter/verifier闭合 |
+| Q50.K | serialized-execution、execution-structure-domain | sound domain、selected phase construction/verifier及I/J re-entry闭合 |
 | Q49.P | deterministic-baseline-closure | 对应work item通过 |
-| Q51.Core | search-control-foundation、search-control-closure | 两项通过 |
-| Q51 | unified-search-closure | 对应work item通过 |
+| Q51.Core | search-control-foundation、search-control-closure | 完整candidate key、actual controller、bound/no-good和coverage oracle通过 |
+| Q51 | unified-search-closure | 全轴独立oracle、可恢复遍历、一次actualization和唯一winner/publication通过 |
 | Q52 | search-scalability | 对应work item通过 |
 | Q53 | production-host-readiness | 对应work item通过即为`board-ready`；真实板端不在当前目标 |
 

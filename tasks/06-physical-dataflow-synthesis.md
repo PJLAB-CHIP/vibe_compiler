@@ -891,28 +891,33 @@ Q49.P已经闭合consumer-operand exact demand、structured-producer截断、sin
 每个closed temporal candidate只运行一次CardModule/Q50.0；capacity只来自actual SPM/MiniMalloc且每个demand有current typed owner，
 rejected candidate销毁、Accepted owner直接保留。局部probe、post-hoc support rebuild、plan-side footprint、allocator fallback和default
 statistics均不在baseline调用闭包；Q49.P不等待也不进入完整search domains。
-主线仍有下列设计差距：
 
-- `spatial-plan-schema`只定义schema、structural close与validator；`attention-normalization`先产生normalized semantic roots和fixed FA/FD fact，
-  `attention-spatial-integration`关闭K1/K2与spatial constraints后`canonical-spatial-assignment`才签发assignment；
-  `exact-demand-boundary`与`attention-demand-integration`随后关闭demand/final owner/
-  coupled merge；
-- placement production transition仍过早消费physical edge strategy；Q50.B尚未从all-iterator semantics生成完整multi-axis、
-  remainder、reduction/merge和非矩形physical placement域；
-- current旧search仍把candidate生成、shortlist、repair、字符串failure和actual evaluator耦在一个owner；Q51必须保留共同actual gate，
-  但把partial domain/control、typed result comparison和candidate transaction ownership拆到清晰边界；
-- spatial domain仍主要是单output axis与连通矩形Tile group；
-- region/temporal/fusion/layout/buffer/communication尚未由一个轻量state联合回溯；
-- 多个旧机制文件未进入current production build；
-- stage pipeline只有历史机制，未接入current common search。
+当前完成状态复核确认Q50.B spatial raw domain、Q51 control foundation和Q50.C root-work输入已经闭合，但从Q50.D开始仍有以下production
+差距；这些差距已经在`tasks/progress.md`和实施计划中按原work item线性重新打开：
+
+- RegionDomain与TemporalDomain的局部successor存在，但selected RegionPlan/nested/replica/coupled construction尚未成为完整candidate
+  materializer的输入；Temporal selected construction也必须对top-level、nested和coupled scopes形成actual verifier witness；
+- current `CompleteCandidatePlan`只携spatial、exact demand、root work、TemporalPlan和prepared attention decomposition。Representation、
+  Movement、Buffer、ExecutionStructure与ClosedSchedule选择只在full-feasibility中和canonical point比较，noncanonical member返回Unsupported；
+- Q50.G没有实现设计中的constraint graph、PBQP精确消元与residual search；production也没有产生operation tuple/alias constraints，
+  selected physical-version builder仍只有direct unit consumer；
+- Q50.H只枚举per-boundary DDR、end-to-end direct和simple software relay，fanout/multicast、generic collective、ring/tree state、selected
+  movement construction与actual verifier仍未迁完；
+- Q50.I production没有产生reuse/slot-family requirements，selected rotating-slot construction/lifetime verifier未接入；Q50.J EventGraph
+  没有接Q63 execution contracts和source effect/control facts，且fixed K后没有用post-K BufferPlan重建；
+- Q50.K Pipelined choice没有selected phase construction。ScheduleDomain只验证slot-lifetime generation，没有把它变成reuse/order约束，
+  completion boundary仍固定，selected order/worker/wait/join/release没有写入actual IR；
+- Q50.F因此只有canonical actual surface。Q51 controller只用ClosedSchedulePlan作为key，public search首个Accepted即停止；完整all-axis key、
+  parent-by-parent/full-plan oracle、可恢复遍历、production bound/cost比较与donor retirement均未闭合。
 
 任务按以下output闭环推进，具体状态以`tasks/progress.md`为准：
 
 1. 保持已经闭合的无repair CardExecutable compilation/verification边界；
 2. 按`tasks/progress.md`依次建立semantic/spatial/demand与canonical plan work items，再由`deterministic-baseline-closure`完成`none`；
-3. 依次建立全部domain work items、`search-control-foundation`与`search-control-closure`；partial state零IR，complete assignment逐项进入actual
-   gate，且search不消费baseline output；
-4. 以`unified-search-closure`关闭complete-candidate actual evaluation、唯一retained winner和一次publication，再经
+3. 从`region-execution-domain`开始按`tasks/progress.md`重新闭合每个domain、selected construction/verifier与直接下游；partial state
+   零IR，complete assignment全字段进入同一actual gate，且search不消费baseline output；
+4. 以`search-control-closure`和`unified-search-closure`关闭all-axis key、independent oracle、complete-candidate actual evaluation、
+   唯一retained winner和一次publication，再经
    `attention-production-closure`和`search-scalability`取得production search证据；
 5. `production-host-readiness`从Q60产品入口完成fresh workload/package/no-card/runner矩阵，使Q53达到`board-ready`。
 
