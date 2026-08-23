@@ -12,7 +12,7 @@ namespace {
 using namespace wafer::compiler::testing;
 
 TEST(SearchRoutingTest,
-     ExplicitSearchStopsAtExecutionStructureWithoutActualCandidate) {
+     ExplicitSearchStopsAtStructureSpecificStorageWithoutActualCandidate) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
   std::string sourceBefore;
@@ -29,9 +29,10 @@ TEST(SearchRoutingTest,
   EXPECT_FALSE(static_cast<bool>(executable));
   llvm::consumeError(executable.takeError());
   diagnostics.flush();
-  EXPECT_NE(diagnosticsText.find("physical-search incomplete "
-                                 "required_coordinate=execution-structure"),
-            std::string::npos)
+  EXPECT_NE(
+      diagnosticsText.find("physical-search incomplete "
+                           "required_coordinate=structure-specific-storage"),
+      std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("candidate_actualizations=0"),
             std::string::npos)
@@ -65,6 +66,12 @@ TEST(SearchRoutingTest,
   EXPECT_NE(diagnosticsText.find("event_graph_queries=1"), std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("event_graphs_built=1"), std::string::npos)
+      << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("execution_structure_queries=1"),
+            std::string::npos)
+      << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("execution_structure_states=1"),
+            std::string::npos)
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
             std::string::npos)

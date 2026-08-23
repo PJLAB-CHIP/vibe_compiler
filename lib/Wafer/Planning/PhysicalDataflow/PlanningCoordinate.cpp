@@ -23,6 +23,8 @@ stringifyRequiredPlanningCoordinate(RequiredPlanningCoordinate coordinate) {
     return "event-resource";
   case RequiredPlanningCoordinate::ExecutionStructure:
     return "execution-structure";
+  case RequiredPlanningCoordinate::StructureSpecificStorage:
+    return "structure-specific-storage";
   }
   return "unknown";
 }

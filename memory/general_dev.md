@@ -625,13 +625,19 @@ source program
 - node assignment随shard group进入同一次CardModule materialization；recomputed/unowned support node默认Natural。旧implementation donor
   只有在domain、actual IR和negative proof迁入active source并受测后才能删除。
 
-## Selected stage pipeline（目标边界，当前实现未闭合）
+## Execution structure与selected stage construction（stable，2026-08-23）
 
-- 每个scope无条件有Serialized；Pipelined由typed stage partition、launch distance和dependence distance表示，multi-slot本身不触发pipeline。
+- current K domain按J connected event component形成scope；每个scope无条件有Serialized。只有component恰有一个E exact recurrence、
+  trip count至少2且stageable events至少2时才有Pipelined。`OccurrenceRelationId`保留per-axis counts；stage ID是有序phase，交换nonempty
+  stages不是label symmetry。
+- Pipelined由all-and-only event stage partition和launch distance表示；hard dependency的destination stage不能早于source。domain只拒绝
+  stage空洞，不枚举timestamp/idle，不用multi-slot或estimated overlap触发pipeline。Core固定K后必须退回structure-specific storage，
+  不能把pre-K BufferPlan/EventGraph直送J。
 - K选择后先重建I的structure-specific occurrences/slot rotation，再由J关闭schedule；complete-candidate construction在新Card subtree构造SCF
   prologue/steady/epilogue。failure擦除subtree并终止，不在actual IR上寻找另一个structure。
 - memory planning只在selected stage/rotation完成后为全部slot分配offset。旧fixed-slot whole-Module clone不恢复，但其DTE/NCC/alias/periodic/
-  tail semantic witnesses必须迁入current owner。当前stage只是buffering scope触发的wrapper，不是联合search transition，不能标完成。
+  tail semantic witnesses必须迁入current owner。旧`StagePipeline`仍只是buffering scope触发的actual-IR wrapper，不是current K domain；在
+  完整K→I→J plan的selected construction迁移前不能作为production owner。
 
 ## Physical search profile资格（Q51+重审期间暂停）
 

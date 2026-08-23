@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I initial storage-domain及Q50.J event-resource-foundation已经闭合；当前下一项是`execution-structure-domain`。Q50.S attention vertical、Q50.J/K、Q50.I structure-specific-storage、Q50.F full-feasibility、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I initial storage-domain、Q50.J event-resource-foundation及Q50.K execution-structure-domain已经闭合；当前下一项是`structure-specific-storage`。Q50.S attention vertical、Q50.J、Q50.I structure-specific-storage、Q50.F full-feasibility、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -4774,9 +4774,10 @@ Q50.K由两个work items闭合：
   一个temporal scope一一对应；merge execution执行一次但不伪造temporal scope。ordinary/FD contribution及Maximum/Sum/Accumulator
   component仍属于其root execution和merge execution，不新增独立execution。该plan不含recurrence、stage、launch distance、slot、
   event、worker、resource或actual IR。
-- `execution-structure-domain`在event-resource-foundation和storage-domain之后建立完整Serialized/Pipelined结构域、Core consumer、
-  K→I→J re-entry和selected construction。此时才引入由E/I recurrence及connected J event component定义的`PipelineScopeId`；不得把
-  当前`ExecutionInstanceId`列表事后解释成pipeline scope。
+- `execution-structure-domain`在event-resource-foundation和storage-domain之后建立完整Serialized/Pipelined结构域、Core consumer及
+  K→I→J re-entry起点。此时才引入由E recurrence及connected J event component定义的`PipelineScopeId`；不得把当前
+  `ExecutionInstanceId`列表事后解释成pipeline scope。selected construction必须等structure-specific-storage和schedule-domain关闭
+  同一个K choice后，才由unified-search-closure接入完整candidate materialization。
 
 当前work item的pipeline contract为：
 
@@ -4885,8 +4886,9 @@ structureSuccessors(prefix):
     yield only plans whose structural/dependence checks close
 ```
 
-ordered partitions最坏为ordered Bell/Fubini number，乘launch-distance points；只能lazy。两个stage labels仅重编号时由无洞/first-use
-canonicalization去重。不同independent scopes分别选择，不为取得一个“card pipeline”合并loops。
+ordered partitions最坏为ordered Bell/Fubini number，乘launch-distance points；只能lazy。stage ID表示有序phase，交换两个nonempty
+stage会改变执行结构，不能当成label symmetry删除；canonicalization只拒绝空洞stage。不同independent scopes分别选择，不为取得一个
+“card pipeline”合并loops。
 
 Serialized与该scope未使用的extra rotating slots extensionally冗余；canonical Serialized要求相关I family回到multiplicity 1，Q51按
 K→I invalidation重建。Pipelined计划产生structure-specific occurrence/live distance，I重新选择/验证slot plan，再由J closure调度；若
@@ -4904,6 +4906,19 @@ Deferred；target不支持cyclic action为Unsupported；enumeration work-limit�
 
 #### K-1 Gate
 
+本work item在实现前冻结下面的覆盖矩阵。production structural eligibility只读E的exact occurrence facts和J foundation graph；initial I
+definition/use/release已体现在graph中，但structure-specific slot/live-distance compatibility必须由下一项在fixed K后重闭；
+1024/1025/1031是相同structure算法的coverage输入，不成为pipeline识别条件。2--6 event只用于完整finite reference oracle。
+
+| 输入等价类 | 代表输入 | structure路径 | typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- | --- |
+| Serialized identity | rank-3 1024/1025、single/multi-root、merge-only | 每个J connected component恰有一个Serialized choice；无recurrence的component仍保留 | missing component/event、duplicate scope | all-and-only scope/event coverage，plan不含stage/slot/order/worker | structure-specific-storage把相关family规范回single occurrence |
+| 单recurrence Pipelined | rank>=3，1024整除与1025/1031 tail，trip count>=2 | 2至bounded stage的无空洞ordered partitions；每个保持dependency的launch distance | unmapped recurrence/event、invalid stage/distance | stage map全覆盖、每stage非空、hard edge不后退、steady非空、tail事实不丢失 | I按同一recurrence/stage distance重建occurrence/live range |
+| independent components | 两个rank-3 1025 roots，共享/不共享Card resource | scope choice做Cartesian product，不合并成card-global pipeline | component overlap | exact plan数等于独立scope option数乘积，输入反转identity一致 | J foundation/shared resource在fixed K后重新连接components |
+| 不eligible结构 | one-trip/rank-zero、multi-recurrence component、unknown completion/effect、loop-external cut | 只保留Serialized，不通过先造IR再失败发现 | unsupported cyclic action保持typed且不删除Serialized | 关闭/反转proposal不改变domain；multi-slot本身不产生Pipelined | 后续I/J不接收伪pipeline requirement |
+| 有界oracle与确定性 | 2--6 events、trip 2--7，依赖chain/fanout/independent | independent surjection/launch-distance枚举与production逐plan相等 | successor work-limit为Indeterminate，malformed input为compiler bug | 无stage空洞、无duplicate、stable successor、source IR byte-identical | Core exact successor可继续，不依赖proposal |
+| Core invalidation/re-entry | public rank-3 1024/1025 search prefix | J foundation→K first Serialized/Pipelined state；固定K后required coordinate必须是structure-specific storage | 旧EventGraph或pre-K BufferPlan不得被当成closed I/J | work count、state identity和missing coordinate精确；零IR/clone/materialization | 第13项从ExecutionStructureState重闭I，禁止直达schedule |
+
 - independent有界穷举oracle对2--6 events平铺ordered stage partitions/launch distances并检查dependences，与production domain逐key一致、
   无stage-label duplicate；Serialized恰一；
 - eligibility覆盖single/multi-dimensional waves、nested scopes、one-trip、loop-external consumer、DDR/peer/relay、Direct-DTE token、NCC
@@ -4911,6 +4926,15 @@ Deferred；target不支持cyclic action为Unsupported；enumeration work-limit�
 - structure choice产生正确cyclic EventGraph、occurrence/live distance并精确invalidate I/J；Serialized重置相关extra slots，unrelated scope不变；
 - proposal关闭/反转不改变domain或Q51有界穷举optimum；work-limit不变NoSolution；source byte-identical、零actual IR/clone/default stats；
 - actual phase construction、periodic DTE和donor mechanics由K-2。
+
+实现闭合：`ExecutionStructurePlan`使用per-axis `OccurrenceRelationId`、connected-event `PipelineScopeId`、strong `StageId`和typed
+Serialized/Pipelined sum type。domain为每个component保留唯一Serialized identity；只有单一exact recurrence、trip count至少2且至少
+两个stageable events时，才lazy枚举全部无空洞ordered stage partitions和保持hard dependency的launch distances。独立components做
+Cartesian product，successor work-limit保持Indeterminate。Core从foundation graph和TemporalDomain descriptors重建domain，签发
+`ExecutionStructureState`后明确要求`structure-specific-storage`；pre-K BufferPlan/EventGraph没有被标成closed I/J，且没有IR、clone、
+stage attr、slot/order/worker或actual construction。K-2 mechanical construction仍须在第13/14项关闭同一K choice之后由unified search
+接入。fresh直接4/4（2--6 event独立oracle、1024/1025/1031 rank-3 occurrence、independent product及typed failure）、ordinary host unit
+872/872、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source organization通过。
 
 ### K-2 专项调研：phase construction、periodic transport与donor migration
 

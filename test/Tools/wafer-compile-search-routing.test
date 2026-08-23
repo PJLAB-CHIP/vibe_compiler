@@ -1,8 +1,8 @@
 # REQUIRES: stablehlo, shardy, xla-spmd-helper
 
-# Public search now enters the typed spatial frontier. Region and later axes
-# are deliberately absent at this checkpoint, so the request must fail as an
-# incomplete planning domain before CardModule construction or Q50.0.
+# Public search closes the typed B--K prefix. Structure-specific storage and
+# later coordinates are deliberately absent at this checkpoint, so the request
+# must fail as an incomplete planning domain before CardModule construction.
 
 # RUN: rm -rf %t.source %t.package %t.timed-package
 # RUN: mkdir -p %t.source/functions
@@ -14,8 +14,10 @@
 # RUN: not wafer-compile --input-program-dir %t.source --output-dir %t.timed-package --num-partitions=1 --optimization-policy=search --compile-timing 2>&1 | FileCheck %s --check-prefix=SEARCH-TIMED --implicit-check-not=deterministic-card-executable-baseline --implicit-check-not=card-executable-compilation\ outcome= --implicit-check-not=wrote\ verified\ package
 # RUN: test ! -e %t.timed-package
 
-# SEARCH: wafer-compile: physical-search incomplete required_coordinate=event-resource
+# SEARCH: wafer-compile: physical-search incomplete required_coordinate=structure-specific-storage
+# SEARCH-SAME: execution_structure_states=1
 # SEARCH-SAME: candidate_actualizations=0
 # SEARCH: wafer-compile: card executable search has an incomplete planning domain
-# SEARCH-TIMED: wafer-compile: physical-search incomplete required_coordinate=event-resource
+# SEARCH-TIMED: wafer-compile: physical-search incomplete required_coordinate=structure-specific-storage
+# SEARCH-TIMED-SAME: execution_structure_states=1
 # SEARCH-TIMED-SAME: candidate_actualizations=0

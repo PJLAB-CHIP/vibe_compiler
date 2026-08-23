@@ -288,37 +288,38 @@ compileTensorProgramModuleToCardExecutable(
     if (mlir::failed(incomplete))
       return fail("physical search foundation failed: " + failureReason);
     const detail::PlanningWorkCounts &work = incomplete->getWork();
-    diagnostics << "wafer-compile: physical-search incomplete"
-                << " required_coordinate="
-                << detail::stringifyRequiredPlanningCoordinate(
-                       incomplete->getRequiredCoordinate())
-                << " spatial_successor_steps=" << work.spatialSuccessorSteps
-                << " spatial_demand_queries=" << work.spatialDemandQueries
-                << " spatial_states=" << work.spatialStatesQueued
-                << " root_work_steps=" << work.rootWorkSuccessorSteps
-                << " root_works=" << work.rootWorksValidated
-                << " region_steps=" << work.regionSuccessorSteps
-                << " region_states=" << work.regionStatesQueued
-                << " temporal_steps=" << work.temporalSuccessorSteps
-                << " temporal_states=" << work.temporalStatesQueued
-                << " temporal_unsupported=" << work.unsupportedTemporalChoices
-                << " temporal_indeterminate="
-                << work.indeterminateTemporalChoices
-                << " structural_readiness_queries="
-                << work.structuralReadinessQueries
-                << " representation_steps=" << work.representationSuccessorSteps
-                << " representation_states=" << work.representationStatesQueued
-                << " representation_unsupported="
-                << work.unsupportedRepresentationChoices
-                << " movement_steps=" << work.movementSuccessorSteps
-                << " movement_states=" << work.movementStatesQueued
-                << " movement_unsupported=" << work.unsupportedMovementChoices
-                << " storage_steps=" << work.storageSuccessorSteps
-                << " storage_states=" << work.storageStatesQueued
-                << " storage_unsupported=" << work.unsupportedStorageChoices
-                << " event_graph_queries=" << work.eventGraphQueries
-                << " event_graphs_built=" << work.eventGraphsBuilt
-                << " candidate_actualizations=0\n";
+    diagnostics
+        << "wafer-compile: physical-search incomplete"
+        << " required_coordinate="
+        << detail::stringifyRequiredPlanningCoordinate(
+               incomplete->getRequiredCoordinate())
+        << " spatial_successor_steps=" << work.spatialSuccessorSteps
+        << " spatial_demand_queries=" << work.spatialDemandQueries
+        << " spatial_states=" << work.spatialStatesQueued
+        << " root_work_steps=" << work.rootWorkSuccessorSteps
+        << " root_works=" << work.rootWorksValidated
+        << " region_steps=" << work.regionSuccessorSteps
+        << " region_states=" << work.regionStatesQueued
+        << " temporal_steps=" << work.temporalSuccessorSteps
+        << " temporal_states=" << work.temporalStatesQueued
+        << " temporal_unsupported=" << work.unsupportedTemporalChoices
+        << " temporal_indeterminate=" << work.indeterminateTemporalChoices
+        << " structural_readiness_queries=" << work.structuralReadinessQueries
+        << " representation_steps=" << work.representationSuccessorSteps
+        << " representation_states=" << work.representationStatesQueued
+        << " representation_unsupported="
+        << work.unsupportedRepresentationChoices
+        << " movement_steps=" << work.movementSuccessorSteps
+        << " movement_states=" << work.movementStatesQueued
+        << " movement_unsupported=" << work.unsupportedMovementChoices
+        << " storage_steps=" << work.storageSuccessorSteps
+        << " storage_states=" << work.storageStatesQueued
+        << " storage_unsupported=" << work.unsupportedStorageChoices
+        << " event_graph_queries=" << work.eventGraphQueries
+        << " event_graphs_built=" << work.eventGraphsBuilt
+        << " execution_structure_queries=" << work.executionStructureQueries
+        << " execution_structure_states=" << work.executionStructureStatesQueued
+        << " candidate_actualizations=0\n";
     return fail("card executable search has an incomplete planning domain");
   } else {
     return fail("card executable compilation requires an optimization policy");

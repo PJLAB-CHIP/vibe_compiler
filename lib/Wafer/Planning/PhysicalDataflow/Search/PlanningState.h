@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 
 #include "Wafer/Planning/PhysicalDataflow/BufferPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/ExecutionStructurePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/MovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningCoordinate.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
@@ -21,6 +22,7 @@ namespace wafer::compiler::detail {
 class PhysicalDataflowPlanningProblem;
 class MovementDomain;
 class StorageDomain;
+class ExecutionStructureDomain;
 class RegionDomain;
 class RepresentationDomain;
 class TemporalDomain;
@@ -267,6 +269,61 @@ private:
 
   MovementState movement;
   BufferPlan buffers;
+};
+
+/// A fixed execution-structure coordinate. Pre-structure storage and the
+/// foundation EventGraph are upstream facts only; I and J must be rebuilt for
+/// this exact structure before the state can reach scheduling.
+class ExecutionStructureState {
+public:
+  static mlir::FailureOr<ExecutionStructureState>
+  create(const ExecutionStructureDomain &domain, InitialBufferState buffers,
+         ExecutionStructurePlan structure,
+         std::string *failureReason = nullptr);
+
+  const InitialBufferState &getInitialBufferState() const { return buffers; }
+  const SpatialPlan &getSpatialPlan() const { return buffers.getSpatialPlan(); }
+  const RegionPlan &getRegionPlan() const { return buffers.getRegionPlan(); }
+  const TemporalPlan &getTemporalPlan() const {
+    return buffers.getTemporalPlan();
+  }
+  const RepresentationPlan &getRepresentationPlan() const {
+    return buffers.getRepresentationPlan();
+  }
+  const MovementPlan &getMovementPlan() const {
+    return buffers.getMovementPlan();
+  }
+  const BufferPlan &getInitialBufferPlan() const {
+    return buffers.getBufferPlan();
+  }
+  const BufferPlan &getBufferPlan() const { return getInitialBufferPlan(); }
+  const ExecutionStructurePlan &getExecutionStructurePlan() const {
+    return structure;
+  }
+  RequiredPlanningCoordinate getRequiredCoordinate() const {
+    return RequiredPlanningCoordinate::StructureSpecificStorage;
+  }
+
+  friend bool operator==(const ExecutionStructureState &lhs,
+                         const ExecutionStructureState &rhs) {
+    return lhs.buffers == rhs.buffers && lhs.structure == rhs.structure;
+  }
+  friend bool operator<(const ExecutionStructureState &lhs,
+                        const ExecutionStructureState &rhs) {
+    if (lhs.buffers < rhs.buffers)
+      return true;
+    if (rhs.buffers < lhs.buffers)
+      return false;
+    return lhs.structure < rhs.structure;
+  }
+
+private:
+  ExecutionStructureState(InitialBufferState buffers,
+                          ExecutionStructurePlan structure)
+      : buffers(std::move(buffers)), structure(std::move(structure)) {}
+
+  InitialBufferState buffers;
+  ExecutionStructurePlan structure;
 };
 
 } // namespace wafer::compiler::detail

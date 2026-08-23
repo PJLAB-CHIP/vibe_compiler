@@ -158,6 +158,9 @@ public:
   /// or mutate IR.
   TemporalSuccessor completePrefix(const TemporalPlan &prefix) const;
   bool contains(const TemporalPlan &plan) const;
+  llvm::ArrayRef<TemporalScopeDescriptor> getScopeDescriptors() const {
+    return scopes;
+  }
 
 private:
   struct NestedTemporalFacts;

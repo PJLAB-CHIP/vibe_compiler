@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningState.h"
 
+#include "Wafer/Planning/PhysicalDataflow/ExecutionStructureDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/MovementDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
@@ -77,6 +78,18 @@ InitialBufferState::create(const StorageDomain &domain, MovementState movement,
     return mlir::failure();
   }
   return InitialBufferState(std::move(movement), std::move(buffers));
+}
+
+mlir::FailureOr<ExecutionStructureState> ExecutionStructureState::create(
+    const ExecutionStructureDomain &domain, InitialBufferState buffers,
+    ExecutionStructurePlan structure, std::string *failureReason) {
+  if (!domain.contains(structure)) {
+    if (failureReason)
+      *failureReason =
+          "ExecutionStructureState plan is outside the current domain";
+    return mlir::failure();
+  }
+  return ExecutionStructureState(std::move(buffers), std::move(structure));
 }
 
 } // namespace wafer::compiler::detail

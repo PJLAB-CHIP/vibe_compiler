@@ -601,6 +601,44 @@ PhysicalDataflowPlanningSession::getOrCreateEventGraph(
   return {&stored->second, {}};
 }
 
+PhysicalDataflowPlanningSession::ExecutionStructureDomainLookup
+PhysicalDataflowPlanningSession::getOrCreateExecutionStructureDomain(
+    const InitialBufferState &buffers, const EventGraph &eventGraph) {
+  auto cached = executionStructureDomainCache.find(buffers);
+  if (cached != executionStructureDomainCache.end())
+    return {&cached->second, {}};
+  const TemporalState &temporal =
+      buffers.getMovementState().getRepresentationState().getTemporalState();
+  TemporalDomainLookup temporalDomain =
+      getOrCreateTemporalDomain(temporal.getRegionState());
+  if (!temporalDomain.domain)
+    return {nullptr, ExecutionStructureDomainFailure{
+                         ExecutionStructureDomainFailureKind::BrokenContract,
+                         temporalDomain.failure
+                             ? temporalDomain.failure->detail
+                             : "execution structure lost its temporal domain"}};
+  ExecutionStructureDomainResult result = buildExecutionStructureDomain(
+      eventGraph, temporalDomain.domain->getScopeDescriptors(),
+      buffers.getTemporalPlan());
+  if (!result.succeeded())
+    return {
+        nullptr,
+        result.failure
+            ? std::move(result.failure)
+            : std::optional<ExecutionStructureDomainFailure>(
+                  ExecutionStructureDomainFailure{
+                      ExecutionStructureDomainFailureKind::BrokenContract,
+                      "execution-structure domain returned no typed outcome"})};
+  auto [stored, inserted] = executionStructureDomainCache.try_emplace(
+      buffers, std::move(*result.domain));
+  if (!inserted)
+    return {nullptr,
+            ExecutionStructureDomainFailure{
+                ExecutionStructureDomainFailureKind::BrokenContract,
+                "execution-structure cache changed during construction"}};
+  return {&stored->second, {}};
+}
+
 mlir::FailureOr<std::optional<RegionState>>
 PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
                                               std::string *failureReason) {
@@ -986,10 +1024,42 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
                            : "event graph transition returned no typed outcome";
     return mlir::failure();
   }
+  ++work.executionStructureQueries;
+  ExecutionStructureDomainLookup structureDomain =
+      getOrCreateExecutionStructureDomain(*storageState, *eventGraph.graph);
+  if (!structureDomain.domain) {
+    if (failureReason)
+      *failureReason =
+          structureDomain.failure
+              ? structureDomain.failure->detail
+              : "execution-structure transition returned no typed outcome";
+    return mlir::failure();
+  }
+  ExecutionStructureSuccessor structure =
+      structureDomain.domain->getFirstPlan();
+  if (structure.getKind() != ExecutionStructureSuccessorKind::Plan ||
+      !structure.getPlan()) {
+    if (failureReason)
+      *failureReason = structure.getDetail().empty()
+                           ? "execution-structure domain has no first plan"
+                           : structure.getDetail().str();
+    return mlir::failure();
+  }
+  std::string detail;
+  mlir::FailureOr<ExecutionStructureState> structureState =
+      ExecutionStructureState::create(*structureDomain.domain,
+                                      std::move(*storageState),
+                                      *structure.getPlan(), &detail);
+  if (mlir::failed(structureState)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  ++work.executionStructureStatesQueued;
   return IncompletePlanningDomain(
-      std::move(*storageState), *eventGraph.graph,
-      RequiredPlanningCoordinate::ExecutionStructure, hasRemainingSpatialWork(),
-      work);
+      std::move(*structureState), *eventGraph.graph,
+      RequiredPlanningCoordinate::StructureSpecificStorage,
+      hasRemainingSpatialWork(), work);
 }
 
 bool PhysicalDataflowPlanningSession::hasRemainingSpatialWork() const {
