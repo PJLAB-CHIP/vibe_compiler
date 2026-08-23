@@ -34,11 +34,13 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/SchedulePlan.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecomposition.cpp
   Planning/PhysicalDataflow/MovementPlan.cpp
+  Planning/PhysicalDataflow/PlanningCoordinate.cpp
   Planning/PhysicalDataflow/TemporalPlan.cpp
   Planning/PhysicalDataflow/TemporalDomain.cpp
   Planning/PhysicalDataflow/SemanticRootAnalysis.cpp
   Planning/PhysicalDataflow/SpatialDomain.cpp
   Planning/PhysicalDataflow/SpatialPlan.cpp
+  Planning/PhysicalDataflow/StructuralReadiness.cpp
   Planning/PhysicalDataflow/StructuredDemandView.cpp
   Planning/PhysicalDataflow/TemporalTileShape.cpp
   Planning/Search/AttentionAlternative.cpp

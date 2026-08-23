@@ -3,15 +3,13 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 
+#include "Wafer/Planning/PhysicalDataflow/PlanningCoordinate.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/SpatialPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalPlan.h"
 
 #include "mlir/Support/LogicalResult.h"
 
-#include "llvm/ADT/StringRef.h"
-
-#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -20,18 +18,6 @@ namespace wafer::compiler::detail {
 class PhysicalDataflowPlanningProblem;
 class RegionDomain;
 class TemporalDomain;
-
-/// Not-yet-closed coordinate immediately following the deepest current state.
-/// New coordinates extend the closed state sequence in their owning work item;
-/// they are not nullable fields in an earlier state.
-enum class RequiredPlanningCoordinate : uint8_t {
-  Region,
-  Temporal,
-  PartialFeasibility,
-};
-
-llvm::StringRef
-stringifyRequiredPlanningCoordinate(RequiredPlanningCoordinate coordinate);
 
 /// A validated spatial prefix. It owns only the compact semantic value: no
 /// parent, operation handle, proposal source, score, history, or derived

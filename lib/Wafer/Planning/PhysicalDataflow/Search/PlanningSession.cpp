@@ -4,6 +4,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/StructuralReadiness.h"
 
 #include <type_traits>
 #include <variant>
@@ -482,7 +483,29 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
       *failureReason = "temporal state result lost its value";
     return mlir::failure();
   }
+  TemporalDomainLookup temporalDomain =
+      getOrCreateTemporalDomain(temporalState->getRegionState());
+  if (!temporalDomain.domain) {
+    if (failureReason)
+      *failureReason = temporalDomain.failure
+                           ? temporalDomain.failure->detail
+                           : "structural readiness lost its temporal domain";
+    return mlir::failure();
+  }
+  ++work.structuralReadinessQueries;
+  StructuralReadinessResult readiness = checkStructuralReadiness(
+      *temporalDomain.domain, temporalState->getTemporalPlan());
+  if (readiness.getKind() != StructuralReadinessKind::ReadyForNextCoordinate ||
+      readiness.getRequiredCoordinate() !=
+          RequiredPlanningCoordinate::Representation) {
+    if (failureReason)
+      *failureReason = readiness.getDetail().empty()
+                           ? "closed prefix failed structural readiness"
+                           : readiness.getDetail().str();
+    return mlir::failure();
+  }
   return IncompletePlanningDomain(std::move(*temporalState),
+                                  RequiredPlanningCoordinate::Representation,
                                   hasRemainingSpatialWork(), work);
 }
 

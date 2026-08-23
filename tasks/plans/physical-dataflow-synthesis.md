@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain及Q50.E temporal-domain已经闭合；当前下一项是`partial-feasibility`。Q50.S attention vertical、Q50.F–K、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain及Q50.F partial-feasibility已经闭合；当前下一项是`layout-domain`。Q50.S attention vertical、Q50.G–K、Q50.F full-feasibility、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -3046,6 +3046,35 @@ Pipeline position:
 
 partial result没有resource lower-bound、footprint rejection或non-binding estimate字段。尚无actual candidate时资源状态就是unknown，
 不能把逻辑tensor payload、单buffer大小或任何保守值转换成rejection。
+
+`partial-feasibility`施工前覆盖矩阵如下。该query只消费closed typed prefix/domain membership；shape用于覆盖真实prefix结构，不进入
+readiness分支或资源判断。
+
+| 覆盖类 | 代表输入 | exact断言 | Core / 下游witness |
+| --- | --- | --- | --- |
+| closed A--E prefix | rank>=3、主要维度1024/1025、all-16 Tile及nested main/tail/halo | validated `TemporalState`返回`ReadyForNextCoordinate(Representation)`；重复query结果相同，source IR byte-identical | public search从missing partial-feasibility推进为missing representation，actualization仍为0 |
+| earlier closed prefix | valid `SpatialState`、valid `RegionState` | typed state自身分别要求Region与Temporal；partial readiness尚未调用且不补default suffix | 对应continuation仍由其axis owner展开，readiness query count保持0 |
+| rank-zero与merge-only | rank-zero execution scope、merge execution无scope | empty temporal vector是valid closed coordinate；merge-only不因无iterator被误判missing execution | layout-domain可继续消费typed logical versions，不收到假resource结论 |
+| domain/plan mismatch | 来自不同temporal domain的plan、删除或复制scope | `CompilerBug`且detail定位当前closed coordinate；不降级成MissingCoordinate | source和domain不变，修正plan后可重新query |
+| prior typed unsupported | region/temporal relation本身unsupported或indeterminate | 仍由对应axis transition分类并保留siblings；partial readiness不得重新分类、吞掉或转成resource rejection | Core work counts区分axis failure，readiness query count不增加 |
+| resource隔离 | 相同A--E prefix配任意不同target memory capacity/allocator环境 | readiness API没有bytes、footprint、capacity、packing、lower/upper bound字段；结果严格相同 | source scan及API type gate；只有full-feasibility可调用actual Q50.0 |
+
+### `partial-feasibility`实现闭合
+
+- `StructuralReadinessResult`只包含`MissingCoordinate`/`ReadyForNextCoordinate`/`Unsupported`/`CompilerBug`、下一坐标和detail；没有
+  resource bytes、bound、packing problem、capacity witness或rejection字段。query只验证current `TemporalPlan`是否属于对应typed domain，
+  重复调用不修改IR或domain；RegionPlan已由产生`TemporalState`的前一typed transition验证，不在这里重复。
+- planning coordinate identity移到独立`PlanningCoordinate` owner；Q50 structural query只依赖plan/domain schema，不反向include或拥有Q51
+  state/frontier。`SpatialState`与`RegionState`继续由各自axis owner报告missing Region/Temporal，不为readiness增加无内容state variant。
+- production session在first validated `TemporalState`上复用同一cached `TemporalDomain`执行一次readiness query，成功后public search报告
+  missing Representation；prior spatial/region/temporal unsupported或indeterminate仍由原axis transition分类，readiness count不增加。
+- query/API/source没有resource estimator或target-memory输入；partial state仍保持`candidate_actualizations=0`。只有后续完整assignment能进入
+  actual candidate admission，readiness不能签发SPM/DDR/transport结论。
+
+fresh证据：`StructuralReadinessTest` 2/2覆盖rank-3 1025、重复query、duplicate scope、rank-zero与merge-only；`PlanningSessionTest` 6/6和
+`SearchRoutingTest` 2/2证明closed state顺序、production readiness count=1、missing Representation、source不变及actualization=0；direct
+集合10/10；ordinary host unit 844/844（6个独立heavy baseline cases不在本项重复）；core lit 227/227，Tools/Runtime lit 35 passed、
+4 configured unsupported；compiler public link、source organization和diff检查通过。
 
 ### Actual resource admission boundary
 

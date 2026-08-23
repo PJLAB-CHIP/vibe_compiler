@@ -33,6 +33,7 @@ struct PlanningWorkCounts {
   uint64_t temporalStatesQueued = 0;
   uint64_t unsupportedTemporalChoices = 0;
   uint64_t indeterminateTemporalChoices = 0;
+  uint64_t structuralReadinessQueries = 0;
   uint64_t duplicateSpatialChoices = 0;
   uint64_t unsupportedSpatialChoices = 0;
   uint64_t indeterminateSpatialChoices = 0;
@@ -78,18 +79,21 @@ class IncompletePlanningDomain {
 public:
   const TemporalState &getState() const { return state; }
   RequiredPlanningCoordinate getRequiredCoordinate() const {
-    return state.getRequiredCoordinate();
+    return requiredCoordinate;
   }
   bool hasRemainingSpatialWork() const { return remainingSpatialWork; }
   const PlanningWorkCounts &getWork() const { return work; }
 
 private:
-  IncompletePlanningDomain(TemporalState state, bool remainingSpatialWork,
-                           PlanningWorkCounts work)
-      : state(std::move(state)), remainingSpatialWork(remainingSpatialWork),
-        work(work) {}
+  IncompletePlanningDomain(TemporalState state,
+                           RequiredPlanningCoordinate requiredCoordinate,
+                           bool remainingSpatialWork, PlanningWorkCounts work)
+      : state(std::move(state)), requiredCoordinate(requiredCoordinate),
+        remainingSpatialWork(remainingSpatialWork), work(work) {}
 
   TemporalState state;
+  RequiredPlanningCoordinate requiredCoordinate =
+      RequiredPlanningCoordinate::PartialFeasibility;
   bool remainingSpatialWork = false;
   PlanningWorkCounts work;
 

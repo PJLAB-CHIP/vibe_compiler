@@ -578,6 +578,10 @@ partial state没有SPM合法性。A--E只检查结构坐标和missing requiremen
 schedule choices，但不得用logical tensor bytes、buffer数量、shape公式、预测lifetime、synthetic demand、footprint estimate或保守
 upper/lower bound签发SPM admission、pruning、temporal refinement或winner。
 
+current A--E structural readiness只检查selected TemporalPlan的domain membership并返回下一representation coordinate；RegionPlan由前一
+typed transition验证，不在这里重复。result没有resource字段，也不新增无语义state variant。prior axis的unsupported/indeterminate
+保持原分类，readiness不重跑或改写该结论。
+
 完整assignment的唯一资源边界是actual candidate transaction：
 
 ```text

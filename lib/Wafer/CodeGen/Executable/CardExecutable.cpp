@@ -304,6 +304,8 @@ compileTensorProgramModuleToCardExecutable(
                 << " temporal_unsupported=" << work.unsupportedTemporalChoices
                 << " temporal_indeterminate="
                 << work.indeterminateTemporalChoices
+                << " structural_readiness_queries="
+                << work.structuralReadinessQueries
                 << " candidate_actualizations=0\n";
     return fail("card executable search has an incomplete planning domain");
   } else {

@@ -419,6 +419,10 @@ source program
   派生；main、tail、halo和producer internal iterators保留各自exact rectangles。parent改变即重建children，relation work超限返回
   indeterminate；不得用full producer、bounding box、wave ordinal或operation pointer补关系。baseline full-local初始点复用同一domain，
   仍只是合法起点而非default winner。
+- A--E闭合后的structural readiness只验证current TemporalPlan domain membership并返回下一representation coordinate；RegionPlan由前一
+  typed transition验证，不在这里重复query。
+  result type不含resource bytes、bound、packing、capacity或rejection。Q50 mechanism只依赖plan/domain与stable coordinate schema，
+  不反向依赖Q51 state/frontier；prior axis failure保持原分类，partial query不补suffix、不构造IR也不调用actual gate。
 - canonical representation只给已经显式存在的nonempty shaped logical versions建立一对一Tensor primary version。boundary fragment、
   support result、execution result、ordinary partial和coupled component必须使用typed variant identity；empty/scalar不造假version。
   exact domain/type留在query-local resource description并用`PhysicalLayoutRelation`检查finite boxes，不能只写layout enum。

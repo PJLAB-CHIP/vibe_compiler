@@ -12,7 +12,7 @@ namespace {
 using namespace wafer::compiler::testing;
 
 TEST(SearchRoutingTest,
-     ExplicitSearchStopsAtPartialFeasibilityWithoutBaselineOrActualCandidate) {
+     ExplicitSearchStopsAtRepresentationWithoutBaselineOrActualCandidate) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
   std::string sourceBefore;
@@ -30,7 +30,7 @@ TEST(SearchRoutingTest,
   llvm::consumeError(executable.takeError());
   diagnostics.flush();
   EXPECT_NE(diagnosticsText.find("physical-search incomplete "
-                                 "required_coordinate=partial-feasibility"),
+                                 "required_coordinate=representation"),
             std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("candidate_actualizations=0"),
@@ -45,6 +45,9 @@ TEST(SearchRoutingTest,
   EXPECT_NE(diagnosticsText.find("temporal_unsupported=0"), std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("temporal_indeterminate=0"), std::string::npos)
+      << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("structural_readiness_queries=1"),
+            std::string::npos)
       << diagnosticsText;
   EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
             std::string::npos)

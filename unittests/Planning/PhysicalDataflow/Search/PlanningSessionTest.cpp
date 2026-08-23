@@ -226,7 +226,7 @@ TEST_F(PlanningSessionTest,
   auto incomplete = session.getFirstIncompleteState(&failureReason);
   ASSERT_TRUE(mlir::succeeded(incomplete)) << failureReason;
   EXPECT_EQ(incomplete->getRequiredCoordinate(),
-            RequiredPlanningCoordinate::PartialFeasibility);
+            RequiredPlanningCoordinate::Representation);
   EXPECT_TRUE(problem->getSpatialDomain().contains(
       incomplete->getState().getSpatialPlan()));
   EXPECT_FALSE(incomplete->getState().getRegionPlan().groups.empty());
@@ -240,6 +240,7 @@ TEST_F(PlanningSessionTest,
   EXPECT_EQ(incomplete->getWork().regionStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().temporalSuccessorSteps, 1u);
   EXPECT_EQ(incomplete->getWork().temporalStatesQueued, 1u);
+  EXPECT_EQ(incomplete->getWork().structuralReadinessQueries, 1u);
   EXPECT_FALSE(incomplete->getState().getTemporalPlan().scopes.empty());
   for (const TemporalScopePlan &scope :
        incomplete->getState().getTemporalPlan().scopes) {
