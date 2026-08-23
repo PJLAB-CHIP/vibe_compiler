@@ -193,6 +193,7 @@ TileRegionBodyEmitter::TileRegionBodyEmitter(
   for (const StructuredNodePhysicalRepresentation &representation :
        representations) {
     SelectedNodeRepresentation selected{representation.operandLayouts,
+                                        representation.sharedOperands,
                                         representation.resultLayouts};
     if (!selectedRepresentations
              .try_emplace(representation.structuredNodeId, std::move(selected))
@@ -1030,6 +1031,8 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
         if (selected == selectedRepresentations.end() ||
             (representation && (representation->operandLayouts !=
                                     selected->second.operandLayouts ||
+                                representation->sharedOperands !=
+                                    selected->second.sharedOperands ||
                                 representation->resultLayouts !=
                                     selected->second.resultLayouts))) {
           activeStructuredNodes = std::move(previous);
@@ -1039,6 +1042,7 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
       }
       if (!representation ||
           representation->operandLayouts.size() != op->getNumOperands() ||
+          representation->sharedOperands.size() != op->getNumOperands() ||
           representation->resultLayouts.size() != op->getNumResults()) {
         activeStructuredNodes = std::move(previous);
         return fail("selected physical representation has inconsistent arity");
@@ -1090,10 +1094,11 @@ mlir::LogicalResult TileRegionBodyEmitter::convertOp(mlir::Operation *op,
         if (!layout)
           continue;
         auto existing = buffers.find(operand);
-        savedOperands.push_back(
-            {operand, existing == buffers.end()
-                          ? std::optional<BufferVersions>{}
-                          : std::optional<BufferVersions>(existing->second)});
+        if (!representation->sharedOperands[operandNumber])
+          savedOperands.push_back(
+              {operand, existing == buffers.end()
+                            ? std::optional<BufferVersions>{}
+                            : std::optional<BufferVersions>(existing->second)});
         mlir::FailureOr<mlir::Value> selected =
             getOrMaterialize(operand, *layout, builder);
         if (mlir::failed(selected)) {

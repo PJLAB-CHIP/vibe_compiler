@@ -44,6 +44,7 @@ struct CompleteCandidatePlan {
   std::vector<analysis::RootRegionWork> rootWorks;
   RegionPlan regions;
   TemporalPlan temporal;
+  RepresentationPlan representations;
   PreparedAttentionDecomposition preparedAttention;
 };
 
@@ -55,6 +56,7 @@ struct CardMaterializationPlan {
   /// Present only when RegionPlan, rather than the canonical source mapping,
   /// directly constructed the actual outer TileRegion groups.
   std::optional<RegionPlan> selectedRegions;
+  std::optional<RepresentationPlan> selectedRepresentations;
   /// Candidate-local execution instance to structured node relation used to
   /// verify actual groups and attribute replica buffers. It is never persisted
   /// or used as a semantic ordering key.

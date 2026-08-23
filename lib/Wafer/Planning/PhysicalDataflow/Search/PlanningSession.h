@@ -196,8 +196,10 @@ private:
 
   TemporalState parent;
   std::optional<RepresentationCursor> cursor;
+  std::set<RepresentationPlan> emitted;
+  bool proposalChecked = false;
   bool readinessChecked = false;
-  bool started = false;
+  bool rawStarted = false;
   bool exhausted = false;
 
   friend class PhysicalDataflowPlanningSession;

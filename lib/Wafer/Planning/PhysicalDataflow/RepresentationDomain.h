@@ -4,6 +4,7 @@
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_REPRESENTATIONDOMAIN_H
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/RepresentationPBQPSolver.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -79,6 +80,13 @@ struct RepresentationLayoutTupleConstraint {
   std::vector<std::vector<MemLayout>> legalTuples;
 };
 
+struct RepresentationProposalResult {
+  RepresentationPBQPStatus status = RepresentationPBQPStatus::BrokenContract;
+  std::optional<RepresentationPlan> plan;
+  std::optional<RepresentationPBQPCost> cost;
+  uint64_t work = 0;
+};
+
 /// Complete lazy domain of legal primary layouts and explicit use bindings.
 /// A use may bind its primary or one typed conversion at a shared/value or
 /// per-use anchor. Domain membership is determined only by exact logical
@@ -88,6 +96,7 @@ public:
   RepresentationSuccessor getFirstPlan() const;
   RepresentationSuccessor getNextPlan(const RepresentationCursor &cursor) const;
   bool contains(const RepresentationPlan &plan) const;
+  RepresentationProposalResult getPBQPProposal(uint64_t workLimit) const;
 
   const RepresentationResourceDescription *
   findResource(const RegionValueVersionId &value) const;

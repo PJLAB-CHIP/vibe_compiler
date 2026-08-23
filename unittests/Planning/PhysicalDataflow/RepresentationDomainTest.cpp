@@ -292,6 +292,15 @@ TEST(RepresentationDomainTest,
     ASSERT_NE(targetVersion, plan.physicalVersions.end());
     EXPECT_EQ(sourceVersion->encoding, targetVersion->encoding);
   }
+  RepresentationProposalResult proposal =
+      constrained.domain->getPBQPProposal(/*workLimit=*/100000);
+  ASSERT_EQ(proposal.status, RepresentationPBQPStatus::Optimal);
+  ASSERT_TRUE(proposal.plan);
+  EXPECT_TRUE(constrained.domain->contains(*proposal.plan));
+  ASSERT_TRUE(proposal.cost);
+  EXPECT_EQ(*proposal.cost, 0u);
+  EXPECT_EQ(constrained.domain->getPBQPProposal(/*workLimit=*/1).status,
+            RepresentationPBQPStatus::Indeterminate);
   RepresentationLayoutTupleConstraint different;
   different.values = matching.values;
   different.legalTuples = {{MemLayout::Tensor, MemLayout::NTensor},
@@ -302,6 +311,8 @@ TEST(RepresentationDomainTest,
       << (noSolution.failure ? noSolution.failure->detail : "");
   EXPECT_EQ(noSolution.domain->getFirstPlan().getKind(),
             RepresentationSuccessorKind::End);
+  EXPECT_EQ(noSolution.domain->getPBQPProposal(/*workLimit=*/100000).status,
+            RepresentationPBQPStatus::NoSolution);
 
   CanonicalRepresentationCoordinate mismatched = fixture.coordinate;
   mismatched.resources.back().exactDomain = makeBox({2, 1024, 128}, context);

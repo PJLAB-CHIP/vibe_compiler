@@ -51,7 +51,7 @@ struct SupportRegionValueId {
 };
 
 struct ExecutionResultValueId {
-  ExecutionInstanceId execution;
+  RegionExecutionId execution;
   uint32_t result = 0;
 
   friend bool operator==(const ExecutionResultValueId &lhs,

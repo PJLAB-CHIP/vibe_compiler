@@ -37,6 +37,7 @@ struct CoordinateBuilder {
   CanonicalRepresentationCoordinate coordinate;
   std::set<PhysicalVersionId> versions;
   std::set<RepresentationUseId> uses;
+  std::map<RegionValueVersionId, PhysicalVersionId> primaryByLogical;
   std::optional<CanonicalRepresentationPlanOutcome> failure;
 
   void add(RegionValueVersionId logicalValue,
@@ -84,7 +85,8 @@ struct CoordinateBuilder {
       }
     }
     PhysicalVersionId version{logicalValue};
-    if (!versions.insert(version).second) {
+    if (!versions.insert(version).second ||
+        !primaryByLogical.try_emplace(logicalValue, version).second) {
       failure = broken(BrokenRepresentationPlanReason::DuplicateLogicalValue,
                        "canonical representation has a duplicate logical "
                        "value",
@@ -106,6 +108,20 @@ struct CoordinateBuilder {
     }
     coordinate.resources.push_back({std::move(version), std::move(*normalized),
                                     elementType, MemLayout::Tensor});
+  }
+
+  void addUse(RepresentationUseId use, const RegionValueVersionId &logical,
+              std::optional<analysis::RootRegionWorkId> work) {
+    if (failure)
+      return;
+    auto primary = primaryByLogical.find(logical);
+    if (primary == primaryByLogical.end() || !uses.insert(use).second) {
+      failure = broken(BrokenRepresentationPlanReason::MissingValueDescriptor,
+                       "representation use has no unique logical value",
+                       std::move(work));
+      return;
+    }
+    coordinate.plan.uses.push_back({std::move(use), primary->second});
   }
 };
 
@@ -166,39 +182,45 @@ CanonicalRepresentationPlanOutcome buildCanonicalRepresentationPlan(
                       work.id);
   }
 
-  std::set<ExecutionInstanceId> temporalExecutions;
+  std::set<RegionExecutionId> temporalExecutions;
   for (const TemporalScopePlan &scope : temporal.scopes) {
-    const ExecutionInstanceId *execution = getRequiredExecution(scope.id);
-    if (!execution || !isTopLevelScope(scope.id) ||
-        !temporalExecutions.insert(*execution).second)
+    if (!temporalExecutions.insert(scope.id.execution).second &&
+        isTopLevelScope(scope.id))
       return broken(BrokenRepresentationPlanReason::PlanWorkMismatch,
                     "canonical temporal plan has duplicate execution scope");
   }
 
   std::map<analysis::RootRegionWorkId, const RegionGroupPlan *> groups;
-  std::set<ExecutionInstanceId> rootExecutions;
+  std::set<RegionExecutionId> rootExecutions;
   std::set<ExecutionInstanceId> mergeExecutions;
   for (const RegionGroupPlan &group : regions.groups) {
-    if (group.mandatoryRoots.size() != 1 ||
-        group.tile != group.mandatoryRoots.front().tile ||
-        !groups.try_emplace(group.mandatoryRoots.front(), &group).second)
+    if (group.mandatoryRoots.empty())
       return broken(BrokenRepresentationPlanReason::PlanWorkMismatch,
-                    "canonical representation input is not singleton regions");
+                    "representation input has an empty region group");
+    for (const analysis::RootRegionWorkId &work : group.mandatoryRoots)
+      if (group.tile != work.tile || !groups.try_emplace(work, &group).second)
+        return broken(BrokenRepresentationPlanReason::PlanWorkMismatch,
+                      "representation region/root ownership is inconsistent");
     for (const ExecutionInstancePlan &execution : group.executions)
       if (std::holds_alternative<RequiredRootExecution>(execution.id.source))
-        rootExecutions.insert(execution.id);
+        rootExecutions.insert(RegionExecutionId(execution.id));
       else
         mergeExecutions.insert(execution.id);
+    for (const ReplicaExecutionPlan &replica : group.replicas)
+      rootExecutions.insert(RegionExecutionId(replica.id));
   }
   if (rootExecutions != temporalExecutions || groups.size() != works.size())
     return broken(BrokenRepresentationPlanReason::PlanWorkMismatch,
                   "canonical region, temporal and root work do not agree");
 
   CoordinateBuilder builder;
+  std::vector<std::pair<analysis::RootRegionWorkId, LocalUseBinding>> localUses;
   for (const auto &[workId, work] : works) {
     const RegionGroupPlan &group = *groups.find(workId)->second;
 
     for (const ExternalUseBinding &binding : group.externalBindings) {
+      if (binding.fragment.use.destinationShard.root != workId.root)
+        continue;
       const analysis::RootBoundaryWork *boundary =
           findBoundary(*work, binding.fragment.source);
       const analysis::RootBoundaryUseWork *use =
@@ -238,6 +260,10 @@ CanonicalRepresentationPlanOutcome buildCanonicalRepresentationPlan(
     }
     if (builder.failure)
       break;
+
+    for (const LocalUseBinding &binding : group.localBindings)
+      if (binding.fragment.use.destinationShard.root == workId.root)
+        localUses.push_back({workId, binding});
 
     for (const analysis::RootSupportValueWork &support : work->supportValues) {
       if (!support.operation ||
@@ -281,7 +307,8 @@ CanonicalRepresentationPlanOutcome buildCanonicalRepresentationPlan(
                    "root result has no execution owner", workId);
         break;
       }
-      if ((!result.reductionGroup && !rootExecutions.count(execution)) ||
+      if ((!result.reductionGroup &&
+           !rootExecutions.count(RegionExecutionId(execution))) ||
           (result.reductionGroup && !mergeExecutions.count(execution))) {
         builder.failure = broken(
             BrokenRepresentationPlanReason::PlanWorkMismatch,
@@ -296,8 +323,9 @@ CanonicalRepresentationPlanOutcome buildCanonicalRepresentationPlan(
                    "root result is not a ranked shaped value", workId);
         break;
       }
-      builder.add(ExecutionResultValueId{execution, result.result},
-                  result.domain, *elementType, workId);
+      builder.add(
+          ExecutionResultValueId{RegionExecutionId(execution), result.result},
+          result.domain, *elementType, workId);
     }
     if (builder.failure)
       break;
@@ -306,7 +334,7 @@ CanonicalRepresentationPlanOutcome buildCanonicalRepresentationPlan(
          work->contributions) {
       ExecutionInstanceId execution{
           RequiredRootExecution{workId, contribution.contribution.shard}};
-      if (!rootExecutions.count(execution)) {
+      if (!rootExecutions.count(RegionExecutionId(execution))) {
         builder.failure = broken(
             BrokenRepresentationPlanReason::PlanWorkMismatch,
             "partial contribution execution is absent from the region plan",
@@ -386,6 +414,66 @@ CanonicalRepresentationPlanOutcome buildCanonicalRepresentationPlan(
   }
   if (builder.failure)
     return std::move(*builder.failure);
+
+  for (const RegionGroupPlan &group : regions.groups) {
+    for (const ReplicaExecutionPlan &replica : group.replicas) {
+      analysis::RootRegionWorkId consumerWorkId{
+          replica.id.fragment.use.destinationShard.root, group.tile};
+      auto consumerWork = works.find(consumerWorkId);
+      auto producerWork = works.find(replica.id.producer.work);
+      const analysis::RootBoundaryWork *boundary =
+          consumerWork == works.end()
+              ? nullptr
+              : findBoundary(*consumerWork->second, replica.id.fragment.source);
+      const analysis::RootBoundaryUseWork *use =
+          boundary ? findBoundaryUse(*boundary, replica.id.fragment.use)
+                   : nullptr;
+      const analysis::ExactIndexSet *domain =
+          use && use->requiredDomain ? &*use->requiredDomain : nullptr;
+      if (use && replica.id.fragment.ownerTile) {
+        const analysis::OwnerIntersection *owner =
+            findOwner(*use, replica.id.fragment);
+        domain = owner ? &owner->domain : nullptr;
+      }
+      mlir::Operation *producer = producerWork == works.end()
+                                      ? nullptr
+                                      : producerWork->second->rootOperation;
+      if (!boundary || !use || !domain || domain->isEmpty() || !producer ||
+          replica.id.fragment.source.index >= producer->getNumResults())
+        return broken(BrokenRepresentationPlanReason::MissingValueDescriptor,
+                      "replica result has no exact value descriptor",
+                      consumerWorkId);
+      std::optional<mlir::Type> elementType = getElementType(
+          producer->getResult(replica.id.fragment.source.index).getType());
+      if (!elementType)
+        return broken(BrokenRepresentationPlanReason::MissingValueDescriptor,
+                      "replica result is not a ranked shaped value",
+                      consumerWorkId);
+      builder.add(ExecutionResultValueId{RegionExecutionId(replica.id),
+                                         replica.id.fragment.source.index},
+                  *domain, *elementType, consumerWorkId);
+      if (builder.failure)
+        return std::move(*builder.failure);
+    }
+  }
+
+  for (const auto &[consumerWork, binding] : localUses) {
+    if (binding.fragment.source.kind !=
+        analysis::RootBoundaryKind::StructuredResult)
+      return broken(BrokenRepresentationPlanReason::MissingValueDescriptor,
+                    "local representation use is not a structured result",
+                    consumerWork);
+    RegionValueVersionId logical = std::visit(
+        [&](const auto &execution) -> RegionValueVersionId {
+          return ExecutionResultValueId{RegionExecutionId(execution),
+                                        binding.fragment.source.index};
+        },
+        binding.producer);
+    builder.addUse(LocalRepresentationUseId{consumerWork, binding.fragment},
+                   logical, consumerWork);
+    if (builder.failure)
+      return std::move(*builder.failure);
+  }
 
   llvm::sort(builder.coordinate.plan.logicalValues);
   llvm::sort(builder.coordinate.plan.physicalVersions,

@@ -204,11 +204,9 @@ getLabels(const TileDomain &domain, const CoupledRegionAssignment &assignment) {
 
 } // namespace
 
-mlir::FailureOr<CoupledRegionDomain>
-CoupledRegionDomain::create(const StructuredDAGAnalysis &dag,
-                            const SpatialAssignment &spatial,
-                            const analysis::ExactDemandProof &demand,
-                            std::string *failureReason) {
+mlir::FailureOr<CoupledRegionDomain> CoupledRegionDomain::create(
+    const StructuredDAGAnalysis &dag, const SpatialAssignment &spatial,
+    const analysis::ExactDemandProof &demand, std::string *failureReason) {
   auto fail =
       [&](llvm::StringRef message) -> mlir::FailureOr<CoupledRegionDomain> {
     if (failureReason)
@@ -263,11 +261,11 @@ CoupledRegionDomain::create(const StructuredDAGAnalysis &dag,
       if (producerPosition == tile.nodes.end() ||
           consumerPosition == tile.nodes.end())
         continue;
-      auto destination = llvm::find_if(
-          dependency->perDestination,
-          [&](const analysis::DestinationDemand &entry) {
-            return entry.destinationTile == tile.tile;
-          });
+      auto destination =
+          llvm::find_if(dependency->perDestination,
+                        [&](const analysis::DestinationDemand &entry) {
+                          return entry.destinationTile == tile.tile;
+                        });
       if (destination == dependency->perDestination.end())
         return fail("coupled-region edge omitted one destination demand");
       auto source = llvm::find_if(
@@ -412,8 +410,7 @@ bool CoupledRegionDomain::contains(
 mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
     mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
     CardId cardId, const SpatialAssignment &spatial,
-    const analysis::ExactDemandProof &demand,
-    const CoupledRegionDomain &domain,
+    const analysis::ExactDemandProof &demand, const CoupledRegionDomain &domain,
     const CoupledRegionAssignment &assignment,
     const CardTemporalDomain &temporalDomain,
     const CardTemporalAssignment &temporalAssignment,
@@ -431,17 +428,15 @@ mlir::FailureOr<CardCoupledRegionMaterialization> materializeCardCoupledRegions(
   return materializeCardCoupledRegionsWithImplementations(
       tensorProgram, program, cardId, spatial, demand, domain, assignment,
       temporalDomain, temporalAssignment, representationDomain,
-      representationAssignment, *implementationDomain,
-      implementationAssignment, movementDomain, movementAssignment,
-      failureReason);
+      representationAssignment, *implementationDomain, implementationAssignment,
+      movementDomain, movementAssignment, failureReason);
 }
 
 mlir::FailureOr<CardCoupledRegionMaterialization>
 materializeCardCoupledRegionsWithImplementations(
     mlir::ModuleOp tensorProgram, const CardProgramAnalysis &program,
     CardId cardId, const SpatialAssignment &spatial,
-    const analysis::ExactDemandProof &demand,
-    const CoupledRegionDomain &domain,
+    const analysis::ExactDemandProof &demand, const CoupledRegionDomain &domain,
     const CoupledRegionAssignment &assignment,
     const CardTemporalDomain &temporalDomain,
     const CardTemporalAssignment &temporalAssignment,
@@ -458,8 +453,8 @@ materializeCardCoupledRegionsWithImplementations(
       *failureReason = message.str();
     return mlir::failure();
   };
-  mlir::FailureOr<StructuredDemandView> view = StructuredDemandView::create(
-      program.dag, spatial, demand, failureReason);
+  mlir::FailureOr<StructuredDemandView> view =
+      StructuredDemandView::create(program.dag, spatial, demand, failureReason);
   if (!tensorProgram || mlir::failed(view) || !domain.contains(assignment) ||
       !temporalDomain.contains(temporalAssignment) ||
       !representationDomain.contains(representationAssignment) ||
@@ -524,8 +519,7 @@ materializeCardCoupledRegionsWithImplementations(
                             return entry.shard == execution->shard;
                           }))
           continue;
-        materialized.reductionGroups.push_back(
-            {merge.group, merge.mergeTile});
+        materialized.reductionGroups.push_back({merge.group, merge.mergeTile});
       }
       group.shards.push_back(std::move(materialized));
       auto temporal =
@@ -542,6 +536,7 @@ materializeCardCoupledRegionsWithImplementations(
       StructuredNodePhysicalRepresentation representation;
       representation.structuredNodeId = node;
       representation.operandLayouts.resize(operation->getNumOperands());
+      representation.sharedOperands.resize(operation->getNumOperands(), 0);
       representation.resultLayouts.resize(operation->getNumResults());
       for (const PhysicalRepresentationChoice &choice :
            representationAssignment.values) {

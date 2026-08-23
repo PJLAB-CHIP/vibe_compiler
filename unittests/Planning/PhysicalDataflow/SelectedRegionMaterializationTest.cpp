@@ -5,8 +5,10 @@
 #include "TestSupport/CodeGen/CardExecutableTestSupport.h"
 #include "TestSupport/Planning/CanonicalPlanningTestSupport.h"
 #include "Wafer/CodeGen/Executable/CardExecutableCompilation.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalDomain.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -402,11 +404,48 @@ selectTileZeroSplitReplicas(const RegionPlan &canonical,
   return result;
 }
 
+std::optional<RegionPlan>
+selectTileZeroSharedFanout(const RegionDomain &domain) {
+  for (const RegionPlan &proposal : domain.getProposals())
+    for (const RegionGroupPlan &group : proposal.groups) {
+      if (group.tile != TileId(0) || group.mandatoryRoots.size() < 3 ||
+          group.localBindings.size() < 2)
+        continue;
+      const RegionExecutionId &producer = group.localBindings.front().producer;
+      if (!std::holds_alternative<ExecutionInstanceId>(producer) ||
+          llvm::any_of(group.localBindings, [&](const auto &binding) {
+            return !(binding.producer == producer) ||
+                   binding.delivery != LocalUseDelivery::StoredRegionValue;
+          }))
+        continue;
+      return proposal;
+    }
+  return std::nullopt;
+}
+
 std::string print(mlir::Operation *operation) {
   std::string result;
   llvm::raw_string_ostream stream(result);
   operation->print(stream);
   return result;
+}
+
+template <typename OpT> unsigned countOps(mlir::Operation *operation) {
+  unsigned count = 0;
+  operation->walk([&](OpT) { ++count; });
+  return count;
+}
+
+std::optional<RepresentationPlan>
+buildRepresentation(llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
+                    const RegionPlan &regions, const TemporalPlan &temporal) {
+  CanonicalRepresentationPlanOutcome outcome =
+      buildCanonicalRepresentationPlan(regions, temporal, rootWorks);
+  const CanonicalRepresentationCoordinate *coordinate =
+      getCanonicalRepresentationCoordinate(outcome);
+  if (!coordinate)
+    return std::nullopt;
+  return coordinate->plan;
 }
 
 TEST(SelectedRegionMaterializationTest,
@@ -474,11 +513,17 @@ TEST(SelectedRegionMaterializationTest,
       EXPECT_EQ(tileZeroNodes, (std::set<uint32_t>{0, 1}));
       EXPECT_EQ(print(prepared->module->getOperation()), before);
 
+      auto representations = buildRepresentation(
+          prepared->prefix.rootWorks, *selected, *temporal.getPlan());
+      ASSERT_TRUE(representations);
       PreparedAttentionDecomposition noAttention;
-      CompleteCandidatePlan candidate{
-          prepared->prefix.spatial,   prepared->prefix.demand,
-          prepared->prefix.rootWorks, *selected,
-          *temporal.getPlan(),        noAttention};
+      CompleteCandidatePlan candidate{prepared->prefix.spatial,
+                                      prepared->prefix.demand,
+                                      prepared->prefix.rootWorks,
+                                      *selected,
+                                      *temporal.getPlan(),
+                                      *representations,
+                                      noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics materializationStatistics;
@@ -643,11 +688,17 @@ TEST(SelectedRegionMaterializationTest,
       ASSERT_NE(reclosed.getPlan(), nullptr);
       EXPECT_TRUE(temporalDomain.domain->contains(*reclosed.getPlan()));
 
+      auto representations = buildRepresentation(prepared->prefix.rootWorks,
+                                                 *selected, selectedTemporal);
+      ASSERT_TRUE(representations);
       PreparedAttentionDecomposition noAttention;
-      CompleteCandidatePlan candidate{
-          prepared->prefix.spatial,   prepared->prefix.demand,
-          prepared->prefix.rootWorks, *selected,
-          selectedTemporal,           noAttention};
+      CompleteCandidatePlan candidate{prepared->prefix.spatial,
+                                      prepared->prefix.demand,
+                                      prepared->prefix.rootWorks,
+                                      *selected,
+                                      selectedTemporal,
+                                      *representations,
+                                      noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;
@@ -730,6 +781,168 @@ TEST(SelectedRegionMaterializationTest,
 }
 
 TEST(SelectedRegionMaterializationTest,
+     SharedAndPerUseDerivedLayoutsMaterializeOnceAndTwice) {
+  for (int64_t extent : {1024, 1025}) {
+    SCOPED_TRACE(extent);
+    std::string failureReason;
+    const std::string programText = fanoutSource(extent);
+    auto prepared =
+        prepare(programText, fanoutMetadata(extent), &failureReason);
+    ASSERT_TRUE(mlir::succeeded(prepared)) << failureReason;
+    const std::string before = print(prepared->module->getOperation());
+    std::optional<RegionPlan> selected =
+        selectTileZeroSharedFanout(prepared->domain);
+    ASSERT_TRUE(selected);
+    ASSERT_TRUE(prepared->domain.contains(*selected));
+    TemporalDomainResult temporalDomain =
+        buildTemporalDomain(*selected, prepared->prefix.rootWorks);
+    ASSERT_TRUE(temporalDomain.succeeded());
+    TemporalSuccessor temporal = temporalDomain.domain->getFirstPlan();
+    ASSERT_EQ(temporal.getKind(), TemporalSuccessorKind::Plan);
+    ASSERT_NE(temporal.getPlan(), nullptr);
+    CanonicalRepresentationPlanOutcome inventory =
+        buildCanonicalRepresentationPlan(*selected, *temporal.getPlan(),
+                                         prepared->prefix.rootWorks);
+    const CanonicalRepresentationCoordinate *coordinate =
+        getCanonicalRepresentationCoordinate(inventory);
+    ASSERT_NE(coordinate, nullptr);
+    RepresentationDomainResult representationDomain =
+        buildRepresentationDomain(*coordinate);
+    ASSERT_TRUE(representationDomain.succeeded());
+
+    const RegionGroupPlan *fanoutGroup = nullptr;
+    for (const RegionGroupPlan &group : selected->groups)
+      if (group.tile == TileId(0) && group.localBindings.size() >= 2) {
+        fanoutGroup = &group;
+        break;
+      }
+    ASSERT_NE(fanoutGroup, nullptr);
+    llvm::SmallVector<RepresentationUseId, 2> uses;
+    for (const LocalUseBinding &binding : fanoutGroup->localBindings)
+      uses.push_back(LocalRepresentationUseId{
+          analysis::RootRegionWorkId{binding.fragment.use.destinationShard.root,
+                                     fanoutGroup->tile},
+          binding.fragment});
+    ASSERT_EQ(uses.size(), 2u);
+    llvm::sort(uses);
+
+    auto makeLayoutPlan =
+        [&](bool shared) -> std::optional<RepresentationPlan> {
+      RepresentationPlan plan = coordinate->plan;
+      PhysicalVersionId primary;
+      bool havePrimary = false;
+      llvm::SmallVector<PhysicalVersionPlan, 2> derived;
+      for (const RepresentationUseId &use : uses) {
+        auto binding =
+            llvm::find_if(plan.uses, [&](const PhysicalUseBinding &candidate) {
+              return candidate.use == use;
+            });
+        if (binding == plan.uses.end())
+          return std::nullopt;
+        if (!havePrimary) {
+          primary = binding->version;
+          havePrimary = true;
+        } else if (binding->version != primary) {
+          return std::nullopt;
+        }
+        PhysicalVersionId version = primary;
+        version.derivation.push_back(
+            {PhysicalVersionDerivationKind::LayoutConversion, MemLayout::Tensor,
+             MemLayout::NTensor,
+             shared ? RepresentationAnchorId(SharedRepresentationAnchor{})
+                    : RepresentationAnchorId(UseRepresentationAnchor{use})});
+        binding->version = version;
+        if (llvm::none_of(derived, [&](const auto &candidate) {
+              return candidate.id == version;
+            }))
+          derived.push_back({version, MemLayout::NTensor});
+      }
+      plan.physicalVersions.insert(plan.physicalVersions.end(), derived.begin(),
+                                   derived.end());
+      llvm::sort(plan.physicalVersions, [](const PhysicalVersionPlan &lhs,
+                                           const PhysicalVersionPlan &rhs) {
+        if (lhs.id.derivation.size() != rhs.id.derivation.size())
+          return lhs.id.derivation.size() < rhs.id.derivation.size();
+        return lhs.id < rhs.id;
+      });
+      return plan;
+    };
+
+    PreparedAttentionDecomposition noAttention;
+    CompleteCandidatePlan baselineCandidate{prepared->prefix.spatial,
+                                            prepared->prefix.demand,
+                                            prepared->prefix.rootWorks,
+                                            *selected,
+                                            *temporal.getPlan(),
+                                            coordinate->plan,
+                                            noAttention};
+    std::string baselineDiagnosticsText;
+    llvm::raw_string_ostream baselineDiagnostics(baselineDiagnosticsText);
+    auto baselineMaterialized = materializeCardCandidate(
+        *prepared->module, CardId(0), *prepared->program, baselineCandidate,
+        /*statistics=*/nullptr, baselineDiagnostics);
+    ASSERT_TRUE(mlir::succeeded(baselineMaterialized))
+        << baselineDiagnostics.str();
+    const unsigned baselineConversions = countOps<LayoutMaterializeOp>(
+        baselineMaterialized->module->getOperation());
+
+    for (bool shared : {true, false}) {
+      SCOPED_TRACE(shared);
+      std::optional<RepresentationPlan> representations =
+          makeLayoutPlan(shared);
+      ASSERT_TRUE(representations);
+      ASSERT_TRUE(representationDomain.domain->contains(*representations));
+      CompleteCandidatePlan candidate{prepared->prefix.spatial,
+                                      prepared->prefix.demand,
+                                      prepared->prefix.rootWorks,
+                                      *selected,
+                                      *temporal.getPlan(),
+                                      *representations,
+                                      noAttention};
+      std::string diagnosticsText;
+      llvm::raw_string_ostream diagnostics(diagnosticsText);
+      CandidateMaterializationStatistics statistics;
+      auto materialized = materializeCardCandidate(
+          *prepared->module, CardId(0), *prepared->program, candidate,
+          &statistics, diagnostics);
+      ASSERT_TRUE(mlir::succeeded(materialized)) << diagnostics.str();
+      unsigned selectedConversions = 0;
+      materialized->module->walk([&](LayoutMaterializeOp conversion) {
+        auto type =
+            mlir::dyn_cast<mlir::MemRefType>(conversion.getResult().getType());
+        MemoryAttr memory = type ? getWaferMemoryAttr(type) : MemoryAttr{};
+        if (memory && memory.getLayout() == MemLayout::NTensor)
+          ++selectedConversions;
+      });
+      EXPECT_EQ(selectedConversions, shared ? 1u : 2u);
+      EXPECT_GE(
+          countOps<LayoutMaterializeOp>(materialized->module->getOperation()),
+          baselineConversions + selectedConversions);
+      std::string verificationFailure;
+      ASSERT_TRUE(mlir::succeeded(verifyMaterializedCardCandidate(
+          *materialized->module, materialized->assignment,
+          prepared->program->dag, materialized->relations,
+          prepared->program->availableTileIds, verificationFailure)))
+          << verificationFailure;
+      compiler::ProgramDataHandoff programData;
+      CardExecutableCompilationResult compiled = compileCardModuleToExecutable(
+          std::move(materialized->module), CardId(0),
+          prepared->program->availableTileIds,
+          /*selectedBufferingScopes=*/{}, materialized->relations,
+          fanoutMetadata(extent), compiler::testing::executionConfig(),
+          diagnostics, programData, /*statistics=*/nullptr,
+          /*tilePipelineParallelism=*/0,
+          /*captureTileDataflowIRTrace=*/false);
+      ASSERT_TRUE(compiled.isAccepted())
+          << compiled.gate << ": " << compiled.detail << '\n'
+          << diagnostics.str();
+      EXPECT_EQ(statistics.cardModuleMaterializations, 1u);
+      EXPECT_EQ(print(prepared->module->getOperation()), before);
+    }
+  }
+}
+
+TEST(SelectedRegionMaterializationTest,
      StoredAndDirectReplicasRemainExplicitThroughActualAdmission) {
   for (int64_t extent : {1024, 1025}) {
     for (LocalUseDelivery delivery : {LocalUseDelivery::StoredRegionValue,
@@ -775,11 +988,17 @@ TEST(SelectedRegionMaterializationTest,
           *groups, directCard, &directRelations, &failureReason)))
           << failureReason;
 
+      auto representations = buildRepresentation(
+          prepared->prefix.rootWorks, *selected, *temporal.getPlan());
+      ASSERT_TRUE(representations);
       PreparedAttentionDecomposition noAttention;
-      CompleteCandidatePlan candidate{
-          prepared->prefix.spatial,   prepared->prefix.demand,
-          prepared->prefix.rootWorks, *selected,
-          *temporal.getPlan(),        noAttention};
+      CompleteCandidatePlan candidate{prepared->prefix.spatial,
+                                      prepared->prefix.demand,
+                                      prepared->prefix.rootWorks,
+                                      *selected,
+                                      *temporal.getPlan(),
+                                      *representations,
+                                      noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;
@@ -862,11 +1081,17 @@ TEST(SelectedRegionMaterializationTest,
       }
       EXPECT_EQ(replicaGroupCount, 2u);
 
+      auto representations = buildRepresentation(
+          prepared->prefix.rootWorks, *selected, *temporal.getPlan());
+      ASSERT_TRUE(representations);
       PreparedAttentionDecomposition noAttention;
-      CompleteCandidatePlan candidate{
-          prepared->prefix.spatial,   prepared->prefix.demand,
-          prepared->prefix.rootWorks, *selected,
-          *temporal.getPlan(),        noAttention};
+      CompleteCandidatePlan candidate{prepared->prefix.spatial,
+                                      prepared->prefix.demand,
+                                      prepared->prefix.rootWorks,
+                                      *selected,
+                                      *temporal.getPlan(),
+                                      *representations,
+                                      noAttention};
       std::string diagnosticsText;
       llvm::raw_string_ostream diagnostics(diagnosticsText);
       CandidateMaterializationStatistics statistics;

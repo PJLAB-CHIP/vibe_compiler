@@ -35,6 +35,7 @@ struct StructuredNodeNestedTemporalTile {
 struct StructuredNodePhysicalRepresentation {
   uint32_t structuredNodeId = 0;
   llvm::SmallVector<std::optional<MemLayout>, 4> operandLayouts;
+  llvm::SmallVector<uint8_t, 4> sharedOperands;
   llvm::SmallVector<std::optional<MemLayout>, 2> resultLayouts;
 };
 

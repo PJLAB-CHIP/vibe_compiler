@@ -38,6 +38,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/RegionDomain.cpp
   Planning/PhysicalDataflow/RepresentationPlan.cpp
   Planning/PhysicalDataflow/RepresentationDomain.cpp
+  Planning/PhysicalDataflow/RepresentationPBQPSolver.cpp
   Planning/PhysicalDataflow/SchedulePlan.cpp
   Planning/PhysicalDataflow/ScheduleDomain.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecomposition.cpp

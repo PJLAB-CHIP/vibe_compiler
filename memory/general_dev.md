@@ -583,16 +583,20 @@ source program
 - 每个Q50 mechanism完成必须同时有算法、production consumer、query/apply测试和donor能力映射；定义typed domain或direct apply不足以
   证明任务完成。
 
-## Physical version表示边界（mechanism可复用，算法重审中）
+## Physical version与PBQP proposal边界
 
 - physical representation identity按node/Tile的operand use与result value区分；producer result是fanout共享primary version，consumer
   operand是use-local要求。未读取DPS init和scalar不制造layout state。
 - layout合法域从actual temporal leaf shape和`PhysicalLayoutRelation`建立，不从op名、历史winner或shape默认猜测。compute固定需要的
   Cx/NCx与外部Tensor writeback是selected primary之外的显式derived versions，不能反写logical edge assignment。
-- apply期间consumer operand可暂时暴露selected use version；compute完成后必须恢复producer primary map。result selection则替换后续
-  consumer看到的primary map，确保同layout fanout只物化一个producer version。
-- 上述只说明current typed identity/apply边界可复用，不说明layout规划完成。PBQP/Top-4 constraint/cost solver在未迁能力时被删除，
-  Q50.G必须重新承接算法并接入production search后才能恢复完成状态。
+- apply期间per-use anchor只在当前consumer范围暴露selected use version；shared anchor在同一actual region保留该derived layout供后续
+  compatible uses复用。result primary不被consumer临时覆盖。required与replica result都使用`RegionExecutionId`，不能合并candidate-local
+  replica与原required execution。
+- PBQP proposal graph显式包含primary、use/alias-source equality和n-ary tuple auxiliary variables。R0/R1/R2只做保持最优值的exact
+  elimination，degree>=3 residual core稳定穷举并在原问题复验；不使用RN、spill ratio或fixed Top-k。work limit只返回
+  Indeterminate，不能删除raw RepresentationDomain successor或报告NoSolution。
+- production proposal当前只使用已证明的hard factors和nonnegative known cost；没有typed operation layout interface时不猜hard tuple。
+  solver、domain和selected construction均不读取SPM footprint/capacity/packing，实际layout候选仍由完整candidate的Q50.0判定。
 
 ## Explicit movement domain/apply（mechanism可复用，proof重审中）
 

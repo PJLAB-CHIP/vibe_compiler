@@ -190,6 +190,122 @@ bool RepresentationDomain::advanceCursor(RepresentationCursor &next) const {
   return false;
 }
 
+RepresentationProposalResult
+RepresentationDomain::getPBQPProposal(uint64_t workLimit) const {
+  RepresentationPBQPProblem problem;
+  problem.variables.reserve(values.size() + uses.size() + constraints.size());
+  for (const ValueDomain &value : values)
+    problem.variables.push_back(RepresentationPBQPVariable{
+        std::vector<RepresentationPBQPCost>(value.layouts.size(), 0)});
+
+  struct UseState {
+    uint32_t valueState = 0;
+    std::optional<uint32_t> aliasSourceState;
+    uint32_t option = 0;
+  };
+  std::vector<std::vector<UseState>> useStates(uses.size());
+  for (auto [useIndex, use] : llvm::enumerate(uses)) {
+    std::vector<uint32_t> primary(values.size(), 0);
+    const uint32_t aliasStates =
+        use.aliasSourceIndex ? static_cast<uint32_t>(
+                                   values[*use.aliasSourceIndex].layouts.size())
+                             : 1;
+    for (uint32_t valueState = 0;
+         valueState < values[use.valueIndex].layouts.size(); ++valueState) {
+      primary[use.valueIndex] = valueState;
+      for (uint32_t aliasState = 0; aliasState < aliasStates; ++aliasState) {
+        if (use.aliasSourceIndex)
+          primary[*use.aliasSourceIndex] = aliasState;
+        std::vector<UseOption> options = getUseOptions(useIndex, primary);
+        for (uint32_t option = 0; option < options.size(); ++option)
+          useStates[useIndex].push_back(
+              {valueState,
+               use.aliasSourceIndex ? std::optional<uint32_t>(aliasState)
+                                    : std::nullopt,
+               option});
+      }
+    }
+    if (useStates[useIndex].empty())
+      return {};
+    const uint32_t useVariable =
+        static_cast<uint32_t>(problem.variables.size());
+    problem.variables.push_back(RepresentationPBQPVariable{
+        std::vector<RepresentationPBQPCost>(useStates[useIndex].size(), 0)});
+    auto appendEqualityFactor = [&](size_t valueIndex, bool aliasSource) {
+      RepresentationPBQPBinaryFactor factor;
+      factor.lhs = static_cast<uint32_t>(valueIndex);
+      factor.rhs = useVariable;
+      factor.lhsStates =
+          static_cast<uint32_t>(values[valueIndex].layouts.size());
+      factor.rhsStates = static_cast<uint32_t>(useStates[useIndex].size());
+      for (uint32_t state = 0; state < factor.lhsStates; ++state)
+        for (const UseState &useState : useStates[useIndex]) {
+          const uint32_t selected =
+              aliasSource ? *useState.aliasSourceState : useState.valueState;
+          factor.costs.push_back(
+              state == selected ? 0 : kRepresentationPBQPInfinity);
+        }
+      problem.factors.push_back(std::move(factor));
+    };
+    appendEqualityFactor(use.valueIndex, /*aliasSource=*/false);
+    if (use.aliasSourceIndex)
+      appendEqualityFactor(*use.aliasSourceIndex, /*aliasSource=*/true);
+  }
+
+  for (const TupleConstraint &constraint : constraints) {
+    if (constraint.valueIndices.empty() || constraint.legalTuples.empty())
+      return {};
+    const uint32_t tupleVariable =
+        static_cast<uint32_t>(problem.variables.size());
+    problem.variables.push_back(RepresentationPBQPVariable{
+        std::vector<RepresentationPBQPCost>(constraint.legalTuples.size(), 0)});
+    for (auto [position, valueIndex] :
+         llvm::enumerate(constraint.valueIndices)) {
+      if (valueIndex >= values.size())
+        return {};
+      RepresentationPBQPBinaryFactor factor;
+      factor.lhs = static_cast<uint32_t>(valueIndex);
+      factor.rhs = tupleVariable;
+      factor.lhsStates =
+          static_cast<uint32_t>(values[valueIndex].layouts.size());
+      factor.rhsStates = static_cast<uint32_t>(constraint.legalTuples.size());
+      factor.costs.reserve(static_cast<size_t>(factor.lhsStates) *
+                           factor.rhsStates);
+      for (MemLayout layout : values[valueIndex].layouts)
+        for (const std::vector<MemLayout> &tuple : constraint.legalTuples)
+          factor.costs.push_back(
+              tuple[position] == layout ? 0 : kRepresentationPBQPInfinity);
+      problem.factors.push_back(std::move(factor));
+    }
+  }
+
+  RepresentationPBQPResult solved = solveRepresentationPBQP(problem, workLimit);
+  RepresentationProposalResult result;
+  result.status = solved.status;
+  result.cost = solved.cost;
+  result.work = solved.work;
+  if (solved.status != RepresentationPBQPStatus::Optimal ||
+      solved.assignment.size() < values.size())
+    return result;
+  RepresentationCursor cursor;
+  cursor.primaryLayoutIndices.assign(solved.assignment.begin(),
+                                     solved.assignment.begin() + values.size());
+  cursor.useOptionIndices.resize(uses.size());
+  for (size_t use = 0; use < uses.size(); ++use) {
+    const uint32_t state = solved.assignment[values.size() + use];
+    if (state >= useStates[use].size()) {
+      result.status = RepresentationPBQPStatus::BrokenContract;
+      result.plan.reset();
+      return result;
+    }
+    cursor.useOptionIndices[use] = useStates[use][state].option;
+  }
+  result.plan = buildPlan(cursor);
+  if (!result.plan)
+    result.status = RepresentationPBQPStatus::BrokenContract;
+  return result;
+}
+
 RepresentationSuccessor RepresentationDomain::getFirstPlan() const {
   RepresentationCursor cursor;
   cursor.primaryLayoutIndices.assign(values.size(), 0);

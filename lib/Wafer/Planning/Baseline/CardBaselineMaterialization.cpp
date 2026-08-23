@@ -4,6 +4,9 @@
 
 #include "Wafer/Planning/Baseline/BaselineAttentionMaterialization.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/PhysicalVersionBuilder.h"
+#include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/SelectedRegionMaterialization.h"
 
 #include "Wafer/IR/WaferDialect.h"
@@ -133,7 +136,34 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
     return mlir::failure();
   }
   const bool usesSelectedRegions = !(plan.regions == *canonical);
-  if (usesSelectedRegions) {
+  CanonicalRepresentationPlanOutcome canonicalRepresentation =
+      buildCanonicalRepresentationPlan(plan.regions, plan.temporal,
+                                       plan.rootWorks);
+  const CanonicalRepresentationCoordinate *representationCoordinate =
+      getCanonicalRepresentationCoordinate(canonicalRepresentation);
+  if (!representationCoordinate) {
+    diagnostics << "wafer-compile: candidate representation inventory "
+                   "validation failed\n";
+    return mlir::failure();
+  }
+  RepresentationDomainResult representationDomain =
+      buildRepresentationDomain(*representationCoordinate);
+  if (!representationDomain.succeeded() ||
+      !representationDomain.domain->contains(plan.representations)) {
+    diagnostics << "wafer-compile: candidate representation plan is outside "
+                   "its current domain\n";
+    return mlir::failure();
+  }
+  auto preparedRepresentation = prepareRepresentationPlan(
+      *representationDomain.domain, plan.representations, &failureReason);
+  if (mlir::failed(preparedRepresentation)) {
+    diagnostics << "wafer-compile: candidate representation preflight failed: "
+                << failureReason << '\n';
+    return mlir::failure();
+  }
+  const bool usesSelectedRepresentations =
+      !(plan.representations == representationCoordinate->plan);
+  if (usesSelectedRegions || usesSelectedRepresentations) {
     if (!plan.preparedAttention.work.roots.empty()) {
       diagnostics << "wafer-compile: selected attention region construction "
                      "is not yet representable\n";
@@ -156,9 +186,18 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
                   << failureReason << '\n';
       return mlir::failure();
     }
+    if (mlir::failed(applySelectedRegionRepresentations(
+            plan.regions, plan.rootWorks, plan.representations,
+            selectedSource->executionNodes, *groups, &failureReason))) {
+      diagnostics << "wafer-compile: selected representation preparation "
+                     "failed: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
     MaterializedCardCandidate result;
     result.assignment = std::move(assignment);
     result.assignment.selectedRegions = plan.regions;
+    result.assignment.selectedRepresentations = plan.representations;
     result.assignment.selectedRegionGroups = *groups;
     std::map<uint32_t, SemanticRootKey> rootsByNode;
     for (const SelectedRegionExecutionNode &execution :

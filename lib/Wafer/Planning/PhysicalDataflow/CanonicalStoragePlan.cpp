@@ -54,6 +54,7 @@ llvm::StringRef objectKind(const StorageObjectId &object) {
 }
 
 analysis::RootRegionWorkId workOf(const ExecutionInstanceId &execution);
+analysis::RootRegionWorkId workOf(const RegionExecutionId &execution);
 
 std::string objectDescription(const StorageObjectId &object) {
   std::string description = objectKind(object).str();
@@ -79,6 +80,12 @@ std::string objectDescription(const StorageObjectId &object) {
 analysis::RootRegionWorkId workOf(const ExecutionInstanceId &execution) {
   return std::visit([](const auto &source) { return source.work; },
                     execution.source);
+}
+
+analysis::RootRegionWorkId workOf(const RegionExecutionId &execution) {
+  if (const auto *required = std::get_if<ExecutionInstanceId>(&execution))
+    return workOf(*required);
+  return std::get<ReplicaExecutionId>(execution).producer.work;
 }
 
 TileId tileOf(const PhysicalVersionId &version) {
@@ -441,13 +448,18 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
             builder.define(*object, StorageAccessSite{roots->second.front()});
             builder.use(*object, StorageAccessSite{roots->second.front()});
           } else {
-            if (!executions.count(logical.execution)) {
+            const ExecutionInstanceId *execution = nullptr;
+            if constexpr (std::is_same_v<T, ExecutionResultValueId>)
+              execution = std::get_if<ExecutionInstanceId>(&logical.execution);
+            else
+              execution = &logical.execution;
+            if (!execution || !executions.count(*execution)) {
               builder.failure = broken(
                   BrokenStoragePlanReason::MissingSerializedExecution,
                   "physical version producer is not serialized", objectId);
               return;
             }
-            builder.define(*object, StorageAccessSite{logical.execution});
+            builder.define(*object, StorageAccessSite{*execution});
             if constexpr (std::is_same_v<T, CoupledComponentValueId>)
               if (std::holds_alternative<RequiredMergeExecution>(
                       logical.execution.source))
@@ -607,7 +619,13 @@ CanonicalStoragePlanOutcome buildCanonicalStoragePlan(
       PendingObject *object = builder.findVersion(version.id);
       if (!object)
         break;
-      builder.use(*object, StorageAccessSite{result->execution});
+      const auto *execution =
+          std::get_if<ExecutionInstanceId>(&result->execution);
+      if (!execution)
+        return broken(BrokenStoragePlanReason::MissingSerializedExecution,
+                      "replica result storage is not closed yet",
+                      objectForVersion(version.id));
+      builder.use(*object, StorageAccessSite{*execution});
     }
   }
   if (builder.failure)
@@ -770,7 +788,11 @@ CanonicalStoragePlanOutcome recloseCanonicalStorageForTemporal(
             }
             return maximum;
           } else if constexpr (std::is_same_v<T, ExecutionResultValueId>) {
-            execution = logical.execution;
+            const auto *required =
+                std::get_if<ExecutionInstanceId>(&logical.execution);
+            if (!required)
+              return std::nullopt;
+            execution = *required;
             workId = workOf(logical.execution);
             result = logical.result;
           } else if constexpr (std::is_same_v<T, ReductionPartialValueId>) {

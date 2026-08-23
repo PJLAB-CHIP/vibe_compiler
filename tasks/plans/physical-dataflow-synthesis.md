@@ -262,8 +262,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 5 | `region-execution-domain` | `done` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
 | 6 | `temporal-domain` | `done` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
 | 7 | `partial-feasibility` | `done` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
-| 8 | `layout-domain` | `doing` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
-| 9 | `movement-domain` | `queued` | Q50.H | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、token-only selected construction/verifier及donor retirement；不在issue后立即await | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
+| 8 | `layout-domain` | `done` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
+| 9 | `movement-domain` | `doing` | Q50.H | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、token-only selected construction/verifier及donor retirement；不在issue后立即await | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
 | 10 | `storage-domain` | `queued` | Q50.I | production alias/reuse/1..U requirements、selected object/rotation construction及first-read/last-release lifetime verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
 | 11 | `event-resource-foundation` | `queued` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
 | 12 | `execution-structure-domain` | `queued` | Q50.K | sound Serialized/Pipelined eligibility与完整有限域、selected phase/loop construction、structure verifier及donor retirement | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | structure-specific-storage |
@@ -3488,6 +3488,17 @@ LLVM pinned实现的R0/R1/R2分别删除degree 0/1/2节点、把被删节点的�
 高阶core上允许启发式断边，这适合register allocation，但不能为本任务证明完整搜索。Q50.G只复用前三种等价变换和反向恢复结构；
 高阶core必须由可证明的branch-and-bound处理，或者明确返回预算未完成，不能伪装成最优。
 
+本项采用的一手资料与实现边界如下：
+
+| 资料 | 可复用事实 | Wafer采用/不采用 |
+| --- | --- | --- |
+| [SSA-Based Register Allocation with PBQP](https://beza1e1.tuxen.de/pdfs/buchwald11cc.pdf) | RE/R1/R2把问题缩小且保持最优值；degree>=3的RN是质量启发式 | 采用degree-0/1/2 exact reduction及反向恢复；不采用RN、spill-cost ratio或early local choice |
+| [LLVM `ReductionRules.h`](https://www.llvm.org/doxygen/ReductionRules_8h_source.html) | pinned实现按neighbor state把R1最小值累加到unary，R2把被删变量的条件最小值累加到neighbor matrix | 逐式复核current R1/R2矩阵方向与choice record；不用LLVM mutable graph metadata作为Wafer state |
+| [LLVM `RegAllocPBQP.h`](https://llvm.org/doxygen/RegAllocPBQP_8h_source.html) | LLVM先耗尽R0/R1/R2，再对剩余节点使用conservatively-allocatable/spill启发式 | Wafer在R0/R1/R2后对residual core做稳定exact enumeration；work limit返回Indeterminate，不把启发式结果称Optimal/NoSolution |
+
+仓库pinned LLVM源码与上述公式一致；current solver使用checked nonnegative cost、显式infinity、stable state ID tie-break和最终原问题
+复验。proposal work limit只限制proposal生成，不进入RepresentationDomain legality或raw successor。
+
 #### 图的精确构造
 
 所有变量和状态先按`RegionValueVersionId`、`RegionUseId`、encoding及region中的稳定语义顺序编号，不用operation地址、walk偶然顺序
@@ -3751,6 +3762,34 @@ link、source organization和diff检查通过。
 tuple或alias constraints，没有本节规定的support propagation、PBQP R0/R1/R2、residual branch-and-bound和proposal lower bound；
 `PhysicalVersionBuilder`没有production caller，full-feasibility拒绝derived representation。`layout-domain`重新打开，必须完整实现并接入上述
 solver、constraint producer、selected construction/verifier与actual downstream witness。
+
+本轮closure在同一current schema上补齐：
+
+- `RepresentationPBQPSolver`使用checked nonnegative cost与显式infinity，先应用exact R0/R1/R2并保存逐neighbor-state choice record，
+  再对degree>=3 residual core按domain size/degree/semantic ID稳定穷举；最终在原factor graph复验assignment。path、cycle与clique同flat
+  oracle的cost/lexicographic optimum一致；无解、work-limit Indeterminate与broken graph保持不同typed状态，没有RN或fixed Top-k。
+- production factor graph为每个primary value、每个use option及每个n-ary legal tuple auxiliary建立变量；value/use与alias-source equality
+  是binary hard factors，高元tuple通过projection-equality factors保持一一对应。PBQP只先发一个普通domain member；Core随后恢复raw
+  cursor并跳过重复，因此proposal关闭或预算耗尽不改变exact leaf集合。
+- representation inventory不再要求singleton Region或top-level required-only Temporal。required/nested/replica execution、local use与external
+  boundary均进入同一logical/version/use inventory；replica result使用`RegionExecutionId`保持candidate-local identity，merge execution继续
+  没有假temporal scope。
+- `CompleteCandidatePlan`携带selected `RepresentationPlan`并在actual mutation前经current domain与
+  `prepareRepresentationPlan`复验。selected group emitter逐candidate-local node解析operand use version与result primary layout；shared anchor
+  让同一derived layout跨compatible fanout uses保留一次，per-use anchor分别物化。1024/1025 fanout实测selected NTensor conversion分别为
+  1与2，二者都进入一次Q50.0；required/replica stored/direct既有actual矩阵同时改为显式Tensor representation输入。
+- full-feasibility不再把derived representation预先标成Unsupported；它从selected plan重建primary/full exact resource coordinate后继续
+  movement/storage compatibility。当前没有Wafer-specific operation layout interface的structured op通过显式use conversion表达可达tuple；
+  已提供的typed tuple/identity-alias facts进入同一factor graph，不从operation名、shape或target猜额外hard tuple。
+- solver、domain、prepare和actual builder均不读取SPM bytes、footprint、capacity、packing或actual offset。布局改变后的实际SPM合法性仍只
+  能由后续完整candidate的Q50.0签发。
+
+本轮fresh验证：`RepresentationPBQPSolverTest` 3/3覆盖R0/R1/R2 path、degree>=3 cycle/clique residual、flat optimum、stable tie、
+NoSolution、Indeterminate与broken graph；`RepresentationDomainTest` 4/4继续覆盖完整raw primary/use/alias/tuple域，并验证PBQP proposal
+是普通member、预算不影响raw set。`SelectedRegionMaterializationTest` 6/6新增1024/1025 fanout shared/per-use NTensor actual witness，
+selected conversion定义分别为1/2且均通过Q50.0；required/replica、stored/direct、nested main/tail既有矩阵全部使用显式Tensor
+RepresentationPlan。完整build与排除future attention production case后的host unit 914/914通过；configured lit、source/IR organization及
+4个public-link smoke通过。future attention failure仍属于EventGraph merge-scope合同，不作为G证据。
 
 ## Q50.H：Explicit Data Movement
 

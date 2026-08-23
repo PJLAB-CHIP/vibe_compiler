@@ -9,8 +9,9 @@
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSerializedExecutionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalStoragePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
-#include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/ScheduleDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/SelectedAttentionDecomposition.h"
 
@@ -127,14 +128,65 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
     return {{},
             FullFeasibilityStatus::CompilerBug,
             "complete candidate cannot rebuild representation facts"};
-  if (!(representations->plan == state.getRepresentationPlan()))
+  RepresentationDomainResult representationDomain =
+      buildRepresentationDomain(*representations);
+  if (!representationDomain.succeeded() ||
+      !representationDomain.domain->contains(state.getRepresentationPlan()))
     return {{},
-            FullFeasibilityStatus::Unsupported,
-            "current Card materializer does not yet construct a derived "
-            "physical representation"};
+            FullFeasibilityStatus::CompilerBug,
+            "complete candidate representation is outside its rebuilt domain"};
+
+  CanonicalRepresentationCoordinate selectedPrimary;
+  for (const LogicalRepresentationPlan &logical :
+       state.getRepresentationPlan().logicalValues) {
+    auto version = llvm::find_if(state.getRepresentationPlan().physicalVersions,
+                                 [&](const PhysicalVersionPlan &candidate) {
+                                   return candidate.id == logical.primary;
+                                 });
+    const RepresentationResourceDescription *resource =
+        representationDomain.domain->findResource(logical.value);
+    if (version == state.getRepresentationPlan().physicalVersions.end() ||
+        !resource)
+      return {{},
+              FullFeasibilityStatus::CompilerBug,
+              "complete candidate primary representation is incomplete"};
+    selectedPrimary.plan.logicalValues.push_back(logical);
+    selectedPrimary.plan.physicalVersions.push_back(*version);
+    RepresentationResourceDescription selected = *resource;
+    selected.version = logical.primary;
+    selected.encoding = version->encoding;
+    selectedPrimary.resources.push_back(std::move(selected));
+  }
+  llvm::sort(selectedPrimary.plan.logicalValues);
+  llvm::sort(selectedPrimary.plan.physicalVersions);
+  llvm::sort(selectedPrimary.resources,
+             [](const RepresentationResourceDescription &lhs,
+                const RepresentationResourceDescription &rhs) {
+               return lhs.version < rhs.version;
+             });
+  CanonicalRepresentationCoordinate selectedRepresentations;
+  selectedRepresentations.plan = state.getRepresentationPlan();
+  for (const PhysicalVersionPlan &version :
+       state.getRepresentationPlan().physicalVersions) {
+    const RepresentationResourceDescription *resource =
+        representationDomain.domain->findResource(version.id.logicalValue);
+    if (!resource)
+      return {{},
+              FullFeasibilityStatus::CompilerBug,
+              "complete candidate physical version has no exact resource"};
+    RepresentationResourceDescription selected = *resource;
+    selected.version = version.id;
+    selected.encoding = version.encoding;
+    selectedRepresentations.resources.push_back(std::move(selected));
+  }
+  llvm::sort(selectedRepresentations.resources,
+             [](const RepresentationResourceDescription &lhs,
+                const RepresentationResourceDescription &rhs) {
+               return lhs.version < rhs.version;
+             });
 
   CanonicalMovementPlanOutcome movementOutcome = buildCanonicalMovementPlan(
-      state.getRegionPlan(), *representations, rootWorks->works);
+      state.getRegionPlan(), selectedPrimary, rootWorks->works);
   const CanonicalMovementCoordinate *movements =
       getCanonicalMovementCoordinate(movementOutcome);
   if (!movements)
@@ -167,8 +219,8 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
             "current Card materializer does not yet construct a Pipelined "
             "execution structure"};
 
-  CanonicalStoragePlanOutcome storageOutcome =
-      buildCanonicalStoragePlan(*representations, *movements, *serialized);
+  CanonicalStoragePlanOutcome storageOutcome = buildCanonicalStoragePlan(
+      selectedRepresentations, *movements, *serialized);
   const CanonicalStorageCoordinate *storage =
       getCanonicalStorageCoordinate(storageOutcome);
   if (!storage)
@@ -229,8 +281,12 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
             "complete candidate cannot prepare attention decomposition"};
 
   PreparedCandidate candidate;
-  candidate.materialization = {*spatial.assignment, *demand, rootWorks->works,
-                               state.getRegionPlan(), state.getTemporalPlan(),
+  candidate.materialization = {*spatial.assignment,
+                               *demand,
+                               rootWorks->works,
+                               state.getRegionPlan(),
+                               state.getTemporalPlan(),
+                               state.getRepresentationPlan(),
                                *prepared};
   return {std::move(candidate), FullFeasibilityStatus::Accepted, {}};
 }

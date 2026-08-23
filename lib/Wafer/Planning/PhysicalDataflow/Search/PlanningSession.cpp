@@ -758,9 +758,10 @@ PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
 
   while (true) {
     ++work.regionSuccessorSteps;
-    RegionSuccessor next = continuation.rawStarted
-                               ? (*regionDomain)->getNextPlan(*continuation.cursor)
-                               : (*regionDomain)->getFirstPlan();
+    RegionSuccessor next =
+        continuation.rawStarted
+            ? (*regionDomain)->getNextPlan(*continuation.cursor)
+            : (*regionDomain)->getFirstPlan();
     if (next.getKind() == RegionSuccessorKind::End) {
       continuation.exhausted = true;
       continuation.cursor.reset();
@@ -936,31 +937,55 @@ PhysicalDataflowPlanningSession::resumeRepresentation(
             {},
             std::move(lookup.failure->detail)};
   }
-  ++work.representationSuccessorSteps;
-  RepresentationSuccessor next =
-      continuation.started ? lookup.domain->getNextPlan(*continuation.cursor)
-                           : lookup.domain->getFirstPlan();
-  if (next.getKind() == RepresentationSuccessorKind::End) {
-    continuation.exhausted = true;
-    continuation.cursor.reset();
-    return {RepresentationExpansionKind::ParentExhausted};
+  auto makeState = [&](const RepresentationPlan &plan) {
+    std::string detail;
+    auto state = RepresentationState::create(
+        *lookup.domain, continuation.parent, plan, &detail);
+    if (mlir::failed(state))
+      return RepresentationExpansionResult{
+          RepresentationExpansionKind::CompilerBug, {}, std::move(detail)};
+    ++work.representationStatesQueued;
+    return RepresentationExpansionResult{RepresentationExpansionKind::State,
+                                         std::move(*state)};
+  };
+  if (!continuation.proposalChecked) {
+    continuation.proposalChecked = true;
+    RepresentationProposalResult proposal =
+        lookup.domain->getPBQPProposal(/*workLimit=*/UINT64_C(1048576));
+    if (proposal.status == RepresentationPBQPStatus::BrokenContract)
+      return {RepresentationExpansionKind::CompilerBug,
+              {},
+              "representation PBQP proposal has a broken factor graph"};
+    if (proposal.status == RepresentationPBQPStatus::Optimal && proposal.plan &&
+        continuation.emitted.insert(*proposal.plan).second) {
+      ++work.representationSuccessorSteps;
+      return makeState(*proposal.plan);
+    }
   }
-  if (next.getKind() != RepresentationSuccessorKind::Plan || !next.getPlan() ||
-      !next.getCursor())
-    return {RepresentationExpansionKind::CompilerBug,
-            {},
-            next.getDetail().empty()
-                ? "representation successor omitted its plan or cursor"
-                : next.getDetail().str()};
-  std::string detail;
-  auto state = RepresentationState::create(*lookup.domain, continuation.parent,
-                                           *next.getPlan(), &detail);
-  if (mlir::failed(state))
-    return {RepresentationExpansionKind::CompilerBug, {}, std::move(detail)};
-  continuation.cursor = *next.getCursor();
-  continuation.started = true;
-  ++work.representationStatesQueued;
-  return {RepresentationExpansionKind::State, std::move(*state)};
+  while (true) {
+    ++work.representationSuccessorSteps;
+    RepresentationSuccessor next =
+        continuation.rawStarted
+            ? lookup.domain->getNextPlan(*continuation.cursor)
+            : lookup.domain->getFirstPlan();
+    if (next.getKind() == RepresentationSuccessorKind::End) {
+      continuation.exhausted = true;
+      continuation.cursor.reset();
+      return {RepresentationExpansionKind::ParentExhausted};
+    }
+    if (next.getKind() != RepresentationSuccessorKind::Plan ||
+        !next.getPlan() || !next.getCursor())
+      return {RepresentationExpansionKind::CompilerBug,
+              {},
+              next.getDetail().empty()
+                  ? "representation successor omitted its plan or cursor"
+                  : next.getDetail().str()};
+    continuation.cursor = *next.getCursor();
+    continuation.rawStarted = true;
+    if (!continuation.emitted.insert(*next.getPlan()).second)
+      continue;
+    return makeState(*next.getPlan());
+  }
 }
 
 MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(

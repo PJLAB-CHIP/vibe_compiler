@@ -121,8 +121,9 @@ TEST(PhysicalVersionBuilderTest,
      ExactIdentityAliasBindsSourceWithoutMaterializingCopy) {
   IRFixture ir = makeIR(MemLayout::Tensor);
   PhysicalVersionId source = makePrimary();
-  const auto &execution =
+  const auto &regionExecution =
       std::get<ExecutionResultValueId>(source.logicalValue).execution;
+  const auto &execution = std::get<ExecutionInstanceId>(regionExecution);
   const auto &required = std::get<RequiredRootExecution>(execution.source);
   PhysicalVersionId target{SupportRegionValueId{
       required.work, SupportValueId{required.work.root, 0}}};

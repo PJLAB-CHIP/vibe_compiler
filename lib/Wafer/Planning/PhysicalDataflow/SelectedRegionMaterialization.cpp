@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/SelectedRegionMaterialization.h"
 
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 
@@ -62,6 +63,42 @@ bool isStructuredMember(const RegionGroupPlan &group,
   return llvm::any_of(group.mandatoryRoots, [&](const auto &work) {
     return work.root == fragment.source.semantic;
   });
+}
+
+std::optional<analysis::RootRegionWorkId>
+getExecutionWork(const RegionExecutionId &execution) {
+  if (const auto *required = std::get_if<ExecutionInstanceId>(&execution))
+    return std::visit([](const auto &source) { return source.work; },
+                      required->source);
+  return std::get<ReplicaExecutionId>(execution).producer.work;
+}
+
+const LogicalShardId *getExecutionShard(const RegionExecutionId &execution) {
+  if (const auto *required = std::get_if<ExecutionInstanceId>(&execution)) {
+    const auto *root = std::get_if<RequiredRootExecution>(&required->source);
+    return root ? &root->shard : nullptr;
+  }
+  return &std::get<ReplicaExecutionId>(execution).producer.shard;
+}
+
+const PhysicalVersionPlan *findPhysicalVersion(const RepresentationPlan &plan,
+                                               const PhysicalVersionId &id) {
+  auto version = llvm::find_if(
+      plan.physicalVersions,
+      [&](const PhysicalVersionPlan &candidate) { return candidate.id == id; });
+  return version == plan.physicalVersions.end() ? nullptr : &*version;
+}
+
+const PhysicalVersionPlan *
+findPrimaryVersion(const RepresentationPlan &plan,
+                   const RegionValueVersionId &logical) {
+  auto value = llvm::find_if(plan.logicalValues,
+                             [&](const LogicalRepresentationPlan &candidate) {
+                               return candidate.value == logical;
+                             });
+  return value == plan.logicalValues.end()
+             ? nullptr
+             : findPhysicalVersion(plan, value->primary);
 }
 
 } // namespace
@@ -493,6 +530,173 @@ prepareSelectedRegionGroups(
         failureReason,
         "selected temporal plan contains a scope outside its RegionPlan");
   return result;
+}
+
+mlir::LogicalResult applySelectedRegionRepresentations(
+    const RegionPlan &regions,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
+    const RepresentationPlan &representations,
+    llvm::ArrayRef<SelectedRegionExecutionNode> executionNodes,
+    std::vector<StructuredNodeShardGroup> &groups, std::string *failureReason) {
+  auto groupContainsExecution = [](const RegionGroupPlan &group,
+                                   const RegionExecutionId &execution) {
+    if (const auto *required = std::get_if<ExecutionInstanceId>(&execution))
+      return llvm::any_of(group.executions, [&](const auto &candidate) {
+        return candidate.id == *required;
+      });
+    const auto &replica = std::get<ReplicaExecutionId>(execution);
+    return llvm::any_of(group.replicas, [&](const auto &candidate) {
+      return candidate.id == replica;
+    });
+  };
+
+  auto getUseFragment = [](const RepresentationUseId &use)
+      -> std::pair<analysis::RootRegionWorkId, const DemandFragmentId *> {
+    if (const auto *boundary = std::get_if<BoundaryRepresentationUseId>(&use))
+      return {boundary->value.work, &boundary->value.fragment};
+    const auto &local = std::get<LocalRepresentationUseId>(use);
+    return {local.consumerWork, &local.fragment};
+  };
+
+  for (StructuredNodeShardGroup &group : groups) {
+    std::vector<uint32_t> actualNodes;
+    for (const StructuredNodeIterationShard &shard : group.shards)
+      actualNodes.push_back(shard.structuredNodeId);
+    llvm::sort(actualNodes);
+    const RegionGroupPlan *regionGroup = nullptr;
+    for (const RegionGroupPlan &candidate : regions.groups) {
+      if (candidate.tile != group.shards.front().tile)
+        continue;
+      std::vector<uint32_t> candidateNodes;
+      for (const SelectedRegionExecutionNode &execution : executionNodes)
+        if (groupContainsExecution(candidate, execution.execution))
+          candidateNodes.push_back(execution.structuredNodeId);
+      llvm::sort(candidateNodes);
+      candidateNodes.erase(
+          std::unique(candidateNodes.begin(), candidateNodes.end()),
+          candidateNodes.end());
+      if (candidateNodes != actualNodes)
+        continue;
+      if (regionGroup) {
+        if (failureReason)
+          *failureReason =
+              "selected representation group matches several RegionPlan groups";
+        return mlir::failure();
+      }
+      regionGroup = &candidate;
+    }
+    if (!regionGroup) {
+      if (failureReason)
+        *failureReason =
+            "selected representation group has no RegionPlan owner";
+      return mlir::failure();
+    }
+    group.representations.clear();
+    for (const StructuredNodeIterationShard &shard : group.shards) {
+      const SelectedRegionExecutionNode *execution = nullptr;
+      for (const SelectedRegionExecutionNode &candidate : executionNodes)
+        if (candidate.structuredNodeId == shard.structuredNodeId &&
+            groupContainsExecution(*regionGroup, candidate.execution)) {
+          if (execution) {
+            if (failureReason)
+              *failureReason =
+                  "selected node has several execution identities in one group";
+            return mlir::failure();
+          }
+          execution = &candidate;
+        }
+      std::optional<analysis::RootRegionWorkId> workId =
+          execution ? getExecutionWork(execution->execution) : std::nullopt;
+      const LogicalShardId *executionShard =
+          execution ? getExecutionShard(execution->execution) : nullptr;
+      const analysis::RootRegionWork *work =
+          workId ? findWork(rootWorks, *workId) : nullptr;
+      mlir::Operation *operation = work ? work->rootOperation : nullptr;
+      if (!operation || !executionShard) {
+        if (failureReason)
+          *failureReason =
+              "selected representation has no execution/root operation";
+        return mlir::failure();
+      }
+
+      StructuredNodePhysicalRepresentation selected;
+      selected.structuredNodeId = shard.structuredNodeId;
+      for (auto [operandNumber, operand] :
+           llvm::enumerate(operation->getOperands())) {
+        const bool ranked =
+            mlir::isa<mlir::RankedTensorType>(operand.getType());
+        const bool used = !mlir::isa<mlir::linalg::LinalgOp>(operation) ||
+                          mlir::cast<mlir::linalg::LinalgOp>(operation)
+                              .payloadUsesValueFromOperand(
+                                  &operation->getOpOperand(operandNumber));
+        if (!ranked || !used) {
+          selected.operandLayouts.push_back(std::nullopt);
+          selected.sharedOperands.push_back(0);
+          continue;
+        }
+        std::optional<MemLayout> layout;
+        std::optional<bool> shared;
+        for (const PhysicalUseBinding &binding : representations.uses) {
+          auto [consumerWork, fragment] = getUseFragment(binding.use);
+          if (consumerWork != *workId || !fragment ||
+              fragment->use.destinationShard != *executionShard ||
+              fragment->use.operand != operandNumber)
+            continue;
+          const PhysicalVersionPlan *version =
+              findPhysicalVersion(representations, binding.version);
+          const bool bindingShared =
+              !binding.version.derivation.empty() &&
+              std::holds_alternative<SharedRepresentationAnchor>(
+                  binding.version.derivation.back().anchor);
+          if (!version || (layout && *layout != version->encoding) ||
+              (shared && *shared != bindingShared)) {
+            if (failureReason)
+              *failureReason =
+                  "selected operand fragments disagree on physical layout";
+            return mlir::failure();
+          }
+          layout = version->encoding;
+          shared = bindingShared;
+        }
+        if (!layout) {
+          if (failureReason)
+            *failureReason =
+                "selected shaped operand has no physical use binding";
+          return mlir::failure();
+        }
+        selected.operandLayouts.push_back(*layout);
+        selected.sharedOperands.push_back(shared.value_or(false) ? 1 : 0);
+      }
+
+      for (unsigned result = 0; result < operation->getNumResults(); ++result) {
+        if (!mlir::isa<mlir::RankedTensorType>(
+                operation->getResult(result).getType())) {
+          selected.resultLayouts.push_back(std::nullopt);
+          continue;
+        }
+        const PhysicalVersionPlan *version = nullptr;
+        if (!shard.reductionGroups.empty()) {
+          RegionValueVersionId logical = ReductionPartialValueId{
+              std::get<ExecutionInstanceId>(execution->execution),
+              shard.reductionGroups.front().group, result};
+          version = findPrimaryVersion(representations, logical);
+        } else {
+          RegionValueVersionId logical =
+              ExecutionResultValueId{execution->execution, result};
+          version = findPrimaryVersion(representations, logical);
+        }
+        if (!version) {
+          if (failureReason)
+            *failureReason =
+                "selected shaped result has no primary physical version";
+          return mlir::failure();
+        }
+        selected.resultLayouts.push_back(version->encoding);
+      }
+      group.representations.push_back(std::move(selected));
+    }
+  }
+  return mlir::success();
 }
 
 } // namespace wafer::compiler::detail

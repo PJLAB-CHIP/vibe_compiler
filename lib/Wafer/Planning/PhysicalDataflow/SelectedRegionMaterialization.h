@@ -6,6 +6,7 @@
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
 #include "Wafer/Conversion/WaferTensorProgramToTileRegion/CoupledTileRegion.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/RepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/TemporalPlan.h"
 
 #include "mlir/Support/LogicalResult.h"
@@ -48,6 +49,18 @@ prepareSelectedRegionGroups(
     llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
     const TemporalPlan &temporal,
     llvm::ArrayRef<SelectedRegionExecutionNode> executionNodes = {},
+    std::string *failureReason = nullptr);
+
+/// Adds the selected per-node operand/result layouts consumed by the common
+/// TileRegion emitter. Every shaped payload/result must resolve through the
+/// typed RepresentationPlan; this function does not create IR or choose a
+/// fallback layout.
+mlir::LogicalResult applySelectedRegionRepresentations(
+    const RegionPlan &regions,
+    llvm::ArrayRef<analysis::RootRegionWork> rootWorks,
+    const RepresentationPlan &representations,
+    llvm::ArrayRef<SelectedRegionExecutionNode> executionNodes,
+    std::vector<StructuredNodeShardGroup> &groups,
     std::string *failureReason = nullptr);
 
 } // namespace wafer::compiler::detail

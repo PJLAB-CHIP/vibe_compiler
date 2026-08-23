@@ -575,7 +575,8 @@ TEST_F(CanonicalPlanningCoverageTest,
       ASSERT_EQ(lifetime->uses.size(), 1u);
       EXPECT_EQ(lifetime->definition, lifetime->uses.front());
       EXPECT_EQ(lifetime->definition,
-                StorageAccessSite{discard.id.source.execution});
+                StorageAccessSite{std::get<ExecutionInstanceId>(
+                    discard.id.source.execution)});
     }
     EXPECT_EQ(print(multiPiece->getOperation()), multiPieceBefore);
 
