@@ -8,6 +8,7 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
 #include <optional>
@@ -133,6 +134,9 @@ enum class SearchControllerCoverage : uint8_t {
   Failed,
 };
 
+llvm::StringRef
+stringifySearchControllerCoverage(SearchControllerCoverage coverage);
+
 struct SearchControllerStatistics {
   uint64_t reserved = 0;
   uint64_t accepted = 0;
@@ -162,6 +166,7 @@ public:
   const ExactCompleteRejection *
   findExactCompleteRejection(const ClosedSchedulePlan &plan) const;
   bool canPrune(const SearchObjective &lowerBound) const;
+  void markCompilerBug() { poisoned = true; }
   uint64_t getRemainingCredits() const { return remainingCredits; }
   const SearchControllerStatistics &getStatistics() const { return statistics; }
   size_t getExactCompleteRejectionCount() const { return forbidden.size(); }

@@ -2,7 +2,6 @@
 
 #include "TestSupport/CodeGen/CardExecutableTestSupport.h"
 
-#include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "gtest/gtest.h"
@@ -12,7 +11,7 @@ namespace {
 using namespace wafer::compiler::testing;
 
 TEST(SearchRoutingTest,
-     ExplicitSearchStopsAtFullFeasibilityWithoutActualCandidate) {
+     ExplicitSearchReturnsRetainedActualWinnerWithoutBaseline) {
   ParsedProgram parsed = parseProgram();
   ASSERT_TRUE(parsed.module);
   std::string sourceBefore;
@@ -26,14 +25,13 @@ TEST(SearchRoutingTest,
       parsed.context, *parsed.module, programMetadata(), executionConfig(),
       wafer::OptimizationConfig::search(), diagnostics, std::nullopt,
       programData);
-  EXPECT_FALSE(static_cast<bool>(executable));
-  llvm::consumeError(executable.takeError());
   diagnostics.flush();
-  EXPECT_NE(diagnosticsText.find("physical-search incomplete "
-                                 "required_coordinate=full-feasibility"),
+  ASSERT_TRUE(static_cast<bool>(executable)) << diagnosticsText;
+  EXPECT_NE(diagnosticsText.find("physical-search result "
+                                 "coverage=feasible-partial"),
             std::string::npos)
       << diagnosticsText;
-  EXPECT_NE(diagnosticsText.find("candidate_actualizations=0"),
+  EXPECT_NE(diagnosticsText.find("candidate_actualizations=1"),
             std::string::npos)
       << diagnosticsText;
   EXPECT_NE(diagnosticsText.find("root_works="), std::string::npos)
@@ -85,8 +83,9 @@ TEST(SearchRoutingTest,
   EXPECT_EQ(diagnosticsText.find("deterministic-card-executable-baseline"),
             std::string::npos)
       << diagnosticsText;
-  EXPECT_EQ(diagnosticsText.find("card-executable-compilation outcome="),
-            std::string::npos)
+  EXPECT_NE(
+      diagnosticsText.find("card-executable-compilation outcome=accepted"),
+      std::string::npos)
       << diagnosticsText;
   std::string sourceAfter;
   llvm::raw_string_ostream afterStream(sourceAfter);

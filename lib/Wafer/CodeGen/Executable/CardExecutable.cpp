@@ -6,6 +6,7 @@
 #include "Wafer/Driver/CompilationStatistics.h"
 #include "Wafer/Planning/Baseline/CardBaselineCompilation.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningSession.h"
+#include "Wafer/Planning/PhysicalDataflow/Search/UnifiedSearch.h"
 
 #include "Wafer/Support/CompileTiming.h"
 
@@ -280,19 +281,21 @@ compileTensorProgramModuleToCardExecutable(
     if (mlir::failed(problem))
       return fail("physical search problem failed: " + failureReason);
     detail::PhysicalDataflowPlanningSession session(*problem);
-    mlir::FailureOr<detail::IncompletePlanningDomain> incomplete = [&]() {
+    detail::UnifiedSearchResult searched = [&]() {
       wafer::support::ScopedCompileTimingSpan timing(
           "planning", "physical-search", "planning-frontier");
-      return session.getFirstIncompleteState(&failureReason);
+      detail::UnifiedSearchOptions options;
+      options.stopAfterFirstAccepted = true;
+      return detail::runUnifiedSearch(tensorModule, session, program,
+                                      executionConfig, diagnostics, programData,
+                                      options, /*tilePipelineParallelism=*/0,
+                                      requestTileIRTrace);
     }();
-    if (mlir::failed(incomplete))
-      return fail("physical search foundation failed: " + failureReason);
-    const detail::PlanningWorkCounts &work = incomplete->getWork();
+    const detail::PlanningWorkCounts &work = searched.planning;
     diagnostics
-        << "wafer-compile: physical-search incomplete"
-        << " required_coordinate="
-        << detail::stringifyRequiredPlanningCoordinate(
-               incomplete->getRequiredCoordinate())
+        << "wafer-compile: physical-search result"
+        << " coverage="
+        << detail::stringifySearchControllerCoverage(searched.control.coverage)
         << " spatial_successor_steps=" << work.spatialSuccessorSteps
         << " spatial_demand_queries=" << work.spatialDemandQueries
         << " spatial_states=" << work.spatialStatesQueued
@@ -324,8 +327,18 @@ compileTensorProgramModuleToCardExecutable(
         << work.structureSpecificStorageStatesQueued
         << " schedule_queries=" << work.scheduleQueries
         << " schedule_states=" << work.scheduleStatesQueued
-        << " candidate_actualizations=0\n";
-    return fail("card executable search has an incomplete planning domain");
+        << " scheduled_states=" << searched.work.scheduledStatesVisited
+        << " candidate_actualizations=" << searched.work.candidateActualizations
+        << '\n';
+    if (!searched.control.winner)
+      return fail(searched.failureDetail.empty()
+                      ? "physical search produced no accepted candidate"
+                      : "physical search failed: " + searched.failureDetail);
+    detail::RetainedSearchCandidate winner =
+        std::move(*searched.control.winner);
+    selected.emplace(PolicyCompilationResult{
+        winner.compilation.takeExecutable(),
+        std::move(winner.compilation.tileDataflowIRTrace)});
   } else {
     return fail("card executable compilation requires an optimization policy");
   }

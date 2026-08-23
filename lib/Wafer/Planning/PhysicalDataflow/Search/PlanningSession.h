@@ -54,10 +54,13 @@ struct PlanningWorkCounts {
   uint64_t eventGraphQueries = 0;
   uint64_t eventGraphsBuilt = 0;
   uint64_t executionStructureQueries = 0;
+  uint64_t executionStructureSuccessorSteps = 0;
   uint64_t executionStructureStatesQueued = 0;
   uint64_t structureSpecificStorageQueries = 0;
+  uint64_t structureSpecificStorageSuccessorSteps = 0;
   uint64_t structureSpecificStorageStatesQueued = 0;
   uint64_t scheduleQueries = 0;
+  uint64_t scheduleSuccessorSteps = 0;
   uint64_t scheduleStatesQueued = 0;
   uint64_t fullFeasibilityEvaluations = 0;
   uint64_t candidateActualizations = 0;
@@ -192,6 +195,7 @@ private:
 
   TemporalState parent;
   std::optional<RepresentationCursor> cursor;
+  bool readinessChecked = false;
   bool started = false;
   bool exhausted = false;
 
@@ -322,6 +326,57 @@ private:
   friend class PhysicalDataflowPlanningSession;
 };
 
+class ExecutionStructureContinuation {
+public:
+  const InitialBufferState &getParent() const { return parent; }
+  bool isExhausted() const { return exhausted; }
+
+private:
+  explicit ExecutionStructureContinuation(InitialBufferState parent)
+      : parent(std::move(parent)) {}
+
+  InitialBufferState parent;
+  std::optional<ExecutionStructureCursor> cursor;
+  bool started = false;
+  bool exhausted = false;
+
+  friend class PhysicalDataflowPlanningSession;
+};
+
+class StructureSpecificStorageContinuation {
+public:
+  const ExecutionStructureState &getParent() const { return parent; }
+  bool isExhausted() const { return exhausted; }
+
+private:
+  explicit StructureSpecificStorageContinuation(ExecutionStructureState parent)
+      : parent(std::move(parent)) {}
+
+  ExecutionStructureState parent;
+  std::optional<StructureSpecificStorageCursor> cursor;
+  bool started = false;
+  bool exhausted = false;
+
+  friend class PhysicalDataflowPlanningSession;
+};
+
+class ScheduleContinuation {
+public:
+  const BufferState &getParent() const { return parent; }
+  bool isExhausted() const { return exhausted; }
+
+private:
+  explicit ScheduleContinuation(BufferState parent)
+      : parent(std::move(parent)) {}
+
+  BufferState parent;
+  std::optional<ScheduleCursor> cursor;
+  bool started = false;
+  bool exhausted = false;
+
+  friend class PhysicalDataflowPlanningSession;
+};
+
 /// Session-owned continuation for one validated SpatialState. The cursor is
 /// not part of RegionState identity and creates no IR.
 class RegionContinuation {
@@ -390,6 +445,30 @@ public:
     return StorageContinuation(std::move(parent));
   }
   StorageExpansionResult resumeStorage(StorageContinuation &continuation);
+
+  ExecutionStructureContinuation
+  createExecutionStructureContinuation(InitialBufferState parent) const {
+    return ExecutionStructureContinuation(std::move(parent));
+  }
+  mlir::FailureOr<std::optional<ExecutionStructureState>>
+  resumeExecutionStructure(ExecutionStructureContinuation &continuation,
+                           std::string *failureReason = nullptr);
+
+  StructureSpecificStorageContinuation
+  createStructureSpecificStorageContinuation(
+      ExecutionStructureState parent) const {
+    return StructureSpecificStorageContinuation(std::move(parent));
+  }
+  mlir::FailureOr<std::optional<BufferState>> resumeStructureSpecificStorage(
+      StructureSpecificStorageContinuation &continuation,
+      std::string *failureReason = nullptr);
+
+  ScheduleContinuation createScheduleContinuation(BufferState parent) const {
+    return ScheduleContinuation(std::move(parent));
+  }
+  mlir::FailureOr<std::optional<ScheduledState>>
+  resumeSchedule(ScheduleContinuation &continuation,
+                 std::string *failureReason = nullptr);
 
   /// Drives only far enough to prove that public search reached the deepest
   /// current prefix. Unsupported, indeterminate, or broken outcomes return

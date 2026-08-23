@@ -224,4 +224,23 @@ SearchControllerResult ActualResultController::finish(bool frontierExhausted) {
   return result;
 }
 
+llvm::StringRef
+stringifySearchControllerCoverage(SearchControllerCoverage coverage) {
+  switch (coverage) {
+  case SearchControllerCoverage::ComparableBest:
+    return "comparable-best";
+  case SearchControllerCoverage::FeasibleUnranked:
+    return "feasible-unranked";
+  case SearchControllerCoverage::FeasiblePartial:
+    return "feasible-partial";
+  case SearchControllerCoverage::NoFeasible:
+    return "no-feasible";
+  case SearchControllerCoverage::IncompleteNoCandidate:
+    return "incomplete-no-candidate";
+  case SearchControllerCoverage::Failed:
+    return "failed";
+  }
+  return "unknown";
+}
+
 } // namespace wafer::compiler::detail

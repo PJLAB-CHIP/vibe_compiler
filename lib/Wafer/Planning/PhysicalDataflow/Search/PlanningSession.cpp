@@ -831,6 +831,29 @@ PhysicalDataflowPlanningSession::resumeRepresentation(
     RepresentationContinuation &continuation) {
   if (continuation.exhausted)
     return {RepresentationExpansionKind::ParentExhausted};
+  if (!continuation.readinessChecked) {
+    TemporalDomainLookup temporalDomain =
+        getOrCreateTemporalDomain(continuation.parent.getRegionState());
+    if (!temporalDomain.domain)
+      return {RepresentationExpansionKind::CompilerBug,
+              {},
+              temporalDomain.failure
+                  ? temporalDomain.failure->detail
+                  : "representation transition lost its temporal domain"};
+    ++work.structuralReadinessQueries;
+    StructuralReadinessResult readiness = checkStructuralReadiness(
+        *temporalDomain.domain, continuation.parent.getTemporalPlan());
+    if (readiness.getKind() !=
+            StructuralReadinessKind::ReadyForNextCoordinate ||
+        readiness.getRequiredCoordinate() !=
+            RequiredPlanningCoordinate::Representation)
+      return {RepresentationExpansionKind::CompilerBug,
+              {},
+              readiness.getDetail().empty()
+                  ? "closed prefix failed structural readiness"
+                  : readiness.getDetail().str()};
+    continuation.readinessChecked = true;
+  }
   RepresentationDomainLookup lookup =
       getOrCreateRepresentationDomain(continuation.parent);
   if (!lookup.domain) {
@@ -972,6 +995,171 @@ StorageExpansionResult PhysicalDataflowPlanningSession::resumeStorage(
   return {StorageExpansionKind::State, std::move(*state)};
 }
 
+mlir::FailureOr<std::optional<ExecutionStructureState>>
+PhysicalDataflowPlanningSession::resumeExecutionStructure(
+    ExecutionStructureContinuation &continuation, std::string *failureReason) {
+  if (continuation.exhausted)
+    return std::optional<ExecutionStructureState>{};
+  ++work.eventGraphQueries;
+  EventGraphLookup eventGraph = getOrCreateEventGraph(continuation.parent);
+  if (!eventGraph.graph) {
+    if (failureReason)
+      *failureReason = eventGraph.failure
+                           ? eventGraph.failure->detail
+                           : "execution structure lost its EventGraph";
+    return mlir::failure();
+  }
+  ++work.executionStructureQueries;
+  ExecutionStructureDomainLookup domain = getOrCreateExecutionStructureDomain(
+      continuation.parent, *eventGraph.graph);
+  if (!domain.domain) {
+    if (failureReason)
+      *failureReason = domain.failure
+                           ? domain.failure->detail
+                           : "execution-structure domain is unavailable";
+    return mlir::failure();
+  }
+  ++work.executionStructureSuccessorSteps;
+  ExecutionStructureSuccessor next =
+      continuation.started ? domain.domain->getNextPlan(*continuation.cursor)
+                           : domain.domain->getFirstPlan();
+  if (next.getKind() == ExecutionStructureSuccessorKind::End) {
+    continuation.exhausted = true;
+    continuation.cursor.reset();
+    return std::optional<ExecutionStructureState>{};
+  }
+  if (next.getKind() != ExecutionStructureSuccessorKind::Plan ||
+      !next.getPlan() || !next.getCursor()) {
+    if (failureReason)
+      *failureReason = next.getDetail().empty()
+                           ? "execution-structure successor has no plan"
+                           : next.getDetail().str();
+    return mlir::failure();
+  }
+  std::string detail;
+  auto state = ExecutionStructureState::create(
+      *domain.domain, continuation.parent, *next.getPlan(), &detail);
+  if (mlir::failed(state)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  continuation.cursor = *next.getCursor();
+  continuation.started = true;
+  ++work.executionStructureStatesQueued;
+  return std::optional<ExecutionStructureState>(std::move(*state));
+}
+
+mlir::FailureOr<std::optional<BufferState>>
+PhysicalDataflowPlanningSession::resumeStructureSpecificStorage(
+    StructureSpecificStorageContinuation &continuation,
+    std::string *failureReason) {
+  if (continuation.exhausted)
+    return std::optional<BufferState>{};
+  EventGraphLookup eventGraph =
+      getOrCreateEventGraph(continuation.parent.getInitialBufferState());
+  if (!eventGraph.graph) {
+    if (failureReason)
+      *failureReason = eventGraph.failure ? eventGraph.failure->detail
+                                          : "fixed storage lost its EventGraph";
+    return mlir::failure();
+  }
+  ++work.structureSpecificStorageQueries;
+  StructureSpecificStorageDomainLookup domain =
+      getOrCreateStructureSpecificStorage(continuation.parent,
+                                          *eventGraph.graph);
+  if (!domain.domain) {
+    if (failureReason)
+      *failureReason = domain.failure ? domain.failure->detail
+                                      : "fixed storage domain is unavailable";
+    return mlir::failure();
+  }
+  ++work.structureSpecificStorageSuccessorSteps;
+  StructureSpecificStorageSuccessor next =
+      continuation.started ? domain.domain->getNextPlan(*continuation.cursor)
+                           : domain.domain->getFirstPlan();
+  if (next.getKind() == StructureSpecificStorageSuccessorKind::End) {
+    continuation.exhausted = true;
+    continuation.cursor.reset();
+    return std::optional<BufferState>{};
+  }
+  if (next.getKind() != StructureSpecificStorageSuccessorKind::Plan ||
+      !next.getPlan() || !next.getCursor()) {
+    if (failureReason)
+      *failureReason = next.getDetail().empty()
+                           ? "fixed storage successor has no plan"
+                           : next.getDetail().str();
+    return mlir::failure();
+  }
+  std::string detail;
+  auto state = BufferState::create(*domain.domain, continuation.parent,
+                                   *next.getPlan(), &detail);
+  if (mlir::failed(state)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  continuation.cursor = *next.getCursor();
+  continuation.started = true;
+  ++work.structureSpecificStorageStatesQueued;
+  return std::optional<BufferState>(std::move(*state));
+}
+
+mlir::FailureOr<std::optional<ScheduledState>>
+PhysicalDataflowPlanningSession::resumeSchedule(
+    ScheduleContinuation &continuation, std::string *failureReason) {
+  if (continuation.exhausted)
+    return std::optional<ScheduledState>{};
+  const ExecutionStructureState &structure =
+      continuation.parent.getExecutionStructureState();
+  EventGraphLookup eventGraph =
+      getOrCreateEventGraph(structure.getInitialBufferState());
+  if (!eventGraph.graph) {
+    if (failureReason)
+      *failureReason = eventGraph.failure ? eventGraph.failure->detail
+                                          : "schedule lost its EventGraph";
+    return mlir::failure();
+  }
+  ++work.scheduleQueries;
+  ScheduleDomainLookup domain =
+      getOrCreateScheduleDomain(continuation.parent, *eventGraph.graph);
+  if (!domain.domain) {
+    if (failureReason)
+      *failureReason = domain.failure ? domain.failure->detail
+                                      : "schedule domain is unavailable";
+    return mlir::failure();
+  }
+  ++work.scheduleSuccessorSteps;
+  ScheduleSuccessor next =
+      continuation.started ? domain.domain->getNextPlan(*continuation.cursor)
+                           : domain.domain->getFirstPlan();
+  if (next.getKind() == ScheduleSuccessorKind::End) {
+    continuation.exhausted = true;
+    continuation.cursor.reset();
+    return std::optional<ScheduledState>{};
+  }
+  if (next.getKind() != ScheduleSuccessorKind::Plan || !next.getPlan() ||
+      !next.getCursor()) {
+    if (failureReason)
+      *failureReason = next.getDetail().empty()
+                           ? "schedule successor has no plan"
+                           : next.getDetail().str();
+    return mlir::failure();
+  }
+  std::string detail;
+  auto state = ScheduledState::create(*domain.domain, continuation.parent,
+                                      *next.getPlan(), &detail);
+  if (mlir::failed(state)) {
+    if (failureReason)
+      *failureReason = std::move(detail);
+    return mlir::failure();
+  }
+  continuation.cursor = *next.getCursor();
+  continuation.started = true;
+  ++work.scheduleStatesQueued;
+  return std::optional<ScheduledState>(std::move(*state));
+}
+
 mlir::FailureOr<IncompletePlanningDomain>
 PhysicalDataflowPlanningSession::getFirstIncompleteState(
     std::string *failureReason) {
@@ -1023,27 +1211,6 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
   if (!temporalState) {
     if (failureReason)
       *failureReason = "temporal state result lost its value";
-    return mlir::failure();
-  }
-  TemporalDomainLookup temporalDomain =
-      getOrCreateTemporalDomain(temporalState->getRegionState());
-  if (!temporalDomain.domain) {
-    if (failureReason)
-      *failureReason = temporalDomain.failure
-                           ? temporalDomain.failure->detail
-                           : "structural readiness lost its temporal domain";
-    return mlir::failure();
-  }
-  ++work.structuralReadinessQueries;
-  StructuralReadinessResult readiness = checkStructuralReadiness(
-      *temporalDomain.domain, temporalState->getTemporalPlan());
-  if (readiness.getKind() != StructuralReadinessKind::ReadyForNextCoordinate ||
-      readiness.getRequiredCoordinate() !=
-          RequiredPlanningCoordinate::Representation) {
-    if (failureReason)
-      *failureReason = readiness.getDetail().empty()
-                           ? "closed prefix failed structural readiness"
-                           : readiness.getDetail().str();
     return mlir::failure();
   }
   RepresentationContinuation representationContinuation =

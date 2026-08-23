@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F full-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J schedule domain、Q50.K execution-structure-domain及Q51.Core actual-result controller已经闭合；当前下一项是`unified-search-closure`。Q50.S attention vertical、Q51 unified closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F full-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J schedule domain、Q50.K execution-structure-domain及Q51 unified search已经闭合；当前下一项是`attention-production-closure`。Q50.S attention production、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -311,7 +311,7 @@ owner设计与MLIR工程合同后才能更新状态。全局shape规则、测试
 | structure-specific `BufferPlan` | structure-specific-storage | fixed structure occurrences/live distance | schedule-domain | structure sibling/stage/distance改变后重闭 |
 | `ClosedSchedulePlan` | schedule-domain | fixed structure/storage、event/resource facts | full-feasibility、Core Schedule state | structure/storage/worker/order改变后重闭 |
 | actual candidate result | full-feasibility | complete physical assignment具体化后的Card/Tile/Instr与current relations | search-control-closure | Accepted保留offset/IR；typed rejection反馈controller；indeterminate停止 |
-| search controller | search-control-foundation + search-control-closure | 已实现的真实domain APIs及actual candidate result | explicit public `search`、unified-search-closure | missing axis typed incomplete；不消费资源估算 |
+| search controller | search-control-foundation + search-control-closure | 已实现的真实domain APIs及actual candidate result | explicit public `search`、unified-search-closure | coverage typed；无默认cost cohort，不消费资源估算 |
 | retained actual winner | unified-search-closure | accepted actual candidate | package/target downstream | 直接保留，不重新materialize或重新规划offset |
 
 审查规则：一行没有producer、没有真实consumer、使用尚未产生的artifact，或绕过“失效/re-entry”列，顺序即不成立。test-only fixture
@@ -5176,7 +5176,8 @@ operation。`ScheduleDomain`在hard/resource/control edges上lazy枚举finite li
 completion保持独立。`ScheduledState`和domain双重验证K/I generation，Core已推进到missing `full-feasibility`且zero actualization。
 fresh直接5/5覆盖18/54、2--7 event oracle、shared resource/opaque route、NCC+DTE completion及generation/failure；canonical schedule 6/6、
 Core/SearchRouting 8/8；ordinary host unit 882/882、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public
-link closure及source organization通过。actual ScheduleEmitter/wait/join emission由unified-search-closure在accepted complete candidate中接入；
+link closure及source organization通过。canonical first schedule复用existing direct construction；noncanonical ScheduleEmitter/wait/join
+尚无逐EventId actual construction时由full-feasibility typed Unsupported，必须在Q52迁移后才能进入accepted set；
 calendar bounds/proposals由search-control-closure/Q52建立，不是本correctness domain的第二入口。
 
 - 2--7 event exhaustive oracle比较完整worker/resource/control/completion leaves、feasible set和fixed-knowledge optimum；component decomposition
@@ -5361,7 +5362,7 @@ fresh `FullFeasibilityTest` 4/4覆盖FP16 rank-3 1024/1025 accepted、1025×8192
 determinism/source identity、noncanonical schedule zero-actualization Unsupported；baseline共享materializerdirect回归2/2。ordinary host unit
 886/886、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source organization通过。
 当前actual constructor只接纳它已逐plan证明对应的canonical region/Tensor/DDR/fresh/Serialized/first-schedule surface；其它domain members的
-selected construction仍由unified-search-closure迁移，Unsupported不会被记成legality no-good。这是materialization capability缺口，不是
+selected construction仍由attention-production-closure/Q52按实际consumer迁移，Unsupported不会被记成legality no-good。这是materialization capability缺口，不是
 上游IR“不支持”或另一个policy的fallback。
 
 ## Work Item `search-control-closure`：Actual Result Controller（Q51.Core）
@@ -5410,6 +5411,38 @@ fresh direct 5/5覆盖zero/unknown/overflow、2--7 accepted输入反转、exact/
 strict bound及coverage；`FullFeasibilityTest`真实1024/1025 accepted executable已经走reserve→record→finish→take winner。ordinary host unit
 891/891、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source organization通过。
 全轴continuation/frontier和public routing仍由下一项`unified-search-closure`拥有；本项没有用mock domain声称完成遍历。
+
+## Work Item `unified-search-closure`：Typed Traversal and Winner Handoff（Q51）
+
+本work item施工前冻结覆盖矩阵。production traversal必须调用每个current domain自己的exact cursor，不从plan vector、variant index或
+actual IR恢复“下一个”选择；bounded只暂停continuation并降低coverage，不把未访问集合说成empty。
+
+| 输入等价类 | 代表输入 | traversal路径 | typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- | --- |
+| complete dependency chain | rank-3 1024/1025 ordinary single-root | Spatial→Region→Temporal→Representation→Movement→InitialBuffer→K→post-K I→J→actual | 任一axis compiler bug终止 | 每个child由parent domain contains；ScheduledState actualize一次 | public search直接take retained executable |
+| sibling continuation | 2--3 choices/axis tiny oracle、schedule 2--7 leaves | child返回后parent cursor继续，K sibling各自重建I/J | Unsupported/exact只丢当前complete point | visited semantic keys与flat reference相等、无duplicate | controller cache不删除合法sibling |
+| actual feedback | first accepted、actual SPM exact rejection、Unsupported schedule | Accepted进入controller；exact记录complete key；unsupported继续 | Indeterminate暂停并保留coverage | actualization count等于Granted keys；source byte-identical | result coverage准确而无baseline fallback |
+| work allowance | step前0/1/N credits、candidate边界耗尽 | 每个successor/actualization前reserve；耗尽不修改cursor | exhausted不是NoSolution | resume后visited前缀稳定；有winner为FeasiblePartial，无winnerIncomplete | Q52可替换measured policy而不改语义 |
+| deterministic handoff | proposal/input/Tile顺序扰动、无cost cohort | frontier按semantic key，controller按objective/semantic tie | incomparable不宣称best | winner key与输入顺序无关；只存在一个move-only executable | driver不重建Q50.0/offset |
+| public routing | explicit search与independent none，同一FP16 1024/1025 input | search只调用unified driver；none只调用baseline | search失败不返回none产物 | call-tree/diagnostic、candidate_actualizations、package path分离 | attention-production-closure复用同一路由 |
+
+实现闭合：session新增K、post-K I和J的typed continuation/cursor，全部后轴与既有Spatial/Region/Temporal/Representation/Movement/InitialBuffer
+形成同一静态依赖链。`UnifiedSearchRunner`在每次successor和actualization前消费统一planning credit，depth-first按各domain canonical order
+访问ScheduledState；exact/unsupported只处理当前point并保留外层cursor，Indeterminate或credit exhaustion以未穷尽coverage返回，compiler bug
+poison controller。每个Granted complete key调用full-feasibility一次，Accepted move给controller；winner直接携原Q50.0 executable/offset/IR
+下传，不重建。
+
+public `search`已删除missing-coordinate失败路由，改为unified traversal；当前production明确采用`stopAfterFirstAccepted` anytime checkpoint，
+因此无显式cost cohort时报告`coverage=feasible-partial`而不宣称best/optimal。它不是baseline incumbent：call tree只共享policy-free
+candidate materializer和Q50.0。`none`仍独立调用baseline controller。search diagnostic发布successor/state/actualization work，accepted
+result继续同一package transaction。fresh `UnifiedSearchTest` 3/3覆盖complete traversal→actual winner、credit exhaustion非NoSolution、重复
+session semantic/IR determinism；`SearchRoutingTest` 2/2和1025 StableHLO Tool lit证明search package成功、actualization=1且无baseline marker。
+ordinary host unit 894/894、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source
+organization通过。
+
+当前anytime checkpoint只发布FeasiblePartial；全frontier measured priority、persistent pause/resume和有界质量由`search-scalability`拥有。
+noncanonical region/layout/movement/pipeline/schedule members仍会由full-feasibility typed Unsupported而不会fallback；这些selected constructors必须
+在attention-production-closure与Q52继续迁移，不能把FeasiblePartial改写成全domain optimal。
 
 ## Q51 Planning and Search
 
