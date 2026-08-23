@@ -63,6 +63,10 @@ public:
   RegionSuccessor getFirstPlan() const;
   RegionSuccessor getNextPlan(const RegionCursor &cursor) const;
   bool contains(const RegionPlan &plan) const;
+  /// Deterministic checked seeds for search priority. Every proposal is an
+  /// ordinary member of the exact domain; disabling or reordering proposals
+  /// cannot remove a raw successor.
+  std::vector<RegionPlan> getProposals() const;
 
 private:
   struct Component {

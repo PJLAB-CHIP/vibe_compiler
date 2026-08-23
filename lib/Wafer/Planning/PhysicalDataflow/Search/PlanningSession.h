@@ -26,6 +26,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace wafer::compiler::detail {
 
@@ -390,7 +391,11 @@ private:
 
   SpatialState parent;
   std::optional<RegionCursor> cursor;
-  bool started = false;
+  std::vector<RegionPlan> proposals;
+  std::set<RegionPlan> emitted;
+  size_t nextProposal = 0;
+  bool proposalsInitialized = false;
+  bool rawStarted = false;
   bool exhausted = false;
 
   friend class PhysicalDataflowPlanningSession;

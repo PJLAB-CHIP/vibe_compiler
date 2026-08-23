@@ -13,7 +13,9 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 
 namespace wafer::tensor_program_to_tile_region {
 namespace {
@@ -53,6 +55,15 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     TileModuleOp tileOwner,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const StructuredNodeShardGroup &group, std::string *failureReason) {
+  llvm::StringRef currentStage = "validate selected coupled group";
+  bool completed = false;
+  auto diagnoseEmptyFailure = llvm::make_scope_exit([&] {
+    if (!completed && failureReason && failureReason->empty())
+      *failureReason =
+          (llvm::Twine("selected coupled construction failed while trying to ") +
+           currentStage)
+              .str();
+  });
   if (group.shards.size() < 2 && group.recomputedProducerNodes.empty())
     return fail<RootFragment>(failureReason,
                               "coupled region requires several node shards");
@@ -82,6 +93,31 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
     return fail<RootFragment>(
         failureReason,
         "recomputed producer identities are duplicated or already selected");
+  llvm::SmallVector<uint32_t, 4> independentlyMaterializedNodeIds(
+      group.independentlyMaterializedNodes.begin(),
+      group.independentlyMaterializedNodes.end());
+  llvm::sort(independentlyMaterializedNodeIds);
+  if (std::adjacent_find(independentlyMaterializedNodeIds.begin(),
+                         independentlyMaterializedNodeIds.end()) !=
+          independentlyMaterializedNodeIds.end() ||
+      llvm::any_of(independentlyMaterializedNodeIds, [&](uint32_t node) {
+        return !selectedNodeIds.contains(node) &&
+               !llvm::is_contained(recomputedNodeIds, node);
+      }))
+    return fail<RootFragment>(
+        failureReason,
+        "independent materialization identities are duplicated or not "
+        "scheduled in the group");
+  llvm::DenseMap<uint32_t, const StructuredNodeIterationShard *>
+      recomputedShardsByNode;
+  for (const StructuredNodeIterationShard &shard :
+       group.recomputedProducerShards)
+    if (!recomputedShardsByNode
+             .try_emplace(shard.structuredNodeId, &shard)
+             .second)
+      return fail<RootFragment>(
+          failureReason,
+          "recomputed producer work has a duplicate node identity");
 
   llvm::DenseMap<uint32_t, mlir::Operation *> sourceByNode;
   llvm::DenseSet<mlir::Operation *> seenOperations;
@@ -111,6 +147,10 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
              });
   llvm::DenseSet<mlir::Operation *> selectedOperationSet(
       selectedOperations.begin(), selectedOperations.end());
+  llvm::DenseSet<mlir::Operation *> independentSourceOperations;
+  for (uint32_t node : independentlyMaterializedNodeIds)
+    if (mlir::Operation *operation = sourceByNode.lookup(node))
+      independentSourceOperations.insert(operation);
   auto sourceFunction =
       selectedOperations.front()->getParentOfType<mlir::func::FuncOp>();
   mlir::FailureOr<compiler::detail::StructuredDAGAnalysis> sourceDAG =
@@ -142,7 +182,8 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
           return reachesObservableBoundary(result, selectedOperationSet,
                                            visited);
         });
-    if (!hasOutgoing || observable)
+    if (observable ||
+        (!hasOutgoing && !independentSourceOperations.contains(candidate)))
       sourceSinks.push_back(candidate);
   }
   if (sourceSinks.empty())
@@ -152,10 +193,12 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
   RootFragment result;
   llvm::SmallVector<StructuredOperationNodeMapping, 16> operationNodes;
   unsigned functionalArgumentCount = 0;
+  currentStage = "build the private coupled function";
   mlir::FailureOr<mlir::func::FuncOp> function = buildCoupledRootFunction(
       tileOwner.getBody().front(), sourceSinks, sourceOperationNodes,
-      orderedNodeIds, recomputedNodeIds, failureReason, operationNodes,
-      functionalArgumentCount, result.boundaries, result.results);
+      orderedNodeIds, recomputedNodeIds, independentlyMaterializedNodeIds,
+      failureReason, operationNodes, functionalArgumentCount, result.boundaries,
+      result.results);
   if (mlir::failed(function) ||
       mlir::failed(appendTileOutputDestinations(*function, failureReason)))
     return mlir::failure();
@@ -190,6 +233,133 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
   }
   unsigned outputIndex = 0;
   llvm::SmallVector<MaterializedCoupledProducerTile, 8> sharedProducerTiles;
+  auto materializeIndependentRoot =
+      [&](mlir::Operation *root,
+          const StructuredNodeIterationShard &shard) -> mlir::LogicalResult {
+    mlir::OpBuilder builder(root);
+    auto selectedTemporal = llvm::find_if(
+        mappedTemporalTiles, [&](const StructuredOpTemporalTile &temporal) {
+          return temporal.operation == root;
+        });
+    if (selectedTemporal != mappedTemporalTiles.end()) {
+      auto dps = mlir::dyn_cast<mlir::DestinationStyleOpInterface>(root);
+      if (!dps || dps.getNumDpsInits() != root->getNumResults()) {
+        setFailureReason(
+            failureReason,
+            "independent temporal root has no matching DPS destinations");
+        return mlir::failure();
+      }
+      llvm::SmallVector<mlir::Value, 2> destinations(
+          dps.getDpsInits().begin(), dps.getDpsInits().end());
+      mlir::FailureOr<llvm::SmallVector<mlir::Value, 2>> traversed =
+          materializeTemporalRegionTraversal(
+              root, scope, shard.offsets, shard.sizes, mappedTemporalTiles,
+              destinations, operationNodes, failureReason,
+              &sharedProducerTiles);
+      return mlir::succeeded(traversed) ? mlir::success() : mlir::failure();
+    }
+
+    llvm::SmallVector<mlir::OpFoldResult, 4> offsets;
+    llvm::SmallVector<mlir::OpFoldResult, 4> sizes;
+    for (auto [offset, size] : llvm::zip_equal(shard.offsets, shard.sizes)) {
+      offsets.push_back(builder.getIndexAttr(offset));
+      sizes.push_back(builder.getIndexAttr(size));
+    }
+    mlir::FailureOr<StructuredIterationTile> tile =
+        materializeStructuredIterationTile(root, builder, offsets, sizes,
+                                           failureReason);
+    if (mlir::failed(tile)) {
+      if (!failureReason || failureReason->empty())
+        setFailureReason(failureReason,
+                         "independent producer iterator tiling failed");
+      return mlir::failure();
+    }
+    reuseMaterializedProducerTiles(tile->generatedSlices, sharedProducerTiles);
+    llvm::SmallVector<mlir::LoopLikeOpInterface, 0> loops;
+    for (mlir::Operation *tiledOperation : tile->operations) {
+      recordStructuredOperationNodeMaterialization(root, tiledOperation,
+                                                   &operationNodes);
+      if (mlir::failed(fuseCandidateProducerSlicesWithCache(
+              tiledOperation, root, scope, loops, mappedTemporalTiles,
+              builder.getListener(), failureReason, &operationNodes,
+              sharedProducerTiles))) {
+        if (!failureReason || failureReason->empty())
+          setFailureReason(failureReason,
+                           "independent producer operand fusion failed");
+        return mlir::failure();
+      }
+    }
+    for (unsigned resultNumber = 0; resultNumber < tile->values.size();
+         ++resultNumber) {
+      llvm::SmallVector<mlir::OpFoldResult, 4> strides(
+          tile->resultOffsets[resultNumber].size(), builder.getIndexAttr(1));
+      auto remember = [&](mlir::OpResult producerResult) {
+        sharedProducerTiles.push_back(MaterializedCoupledProducerTile{
+            producerResult, tile->values[resultNumber].getParentBlock(),
+            tile->values[resultNumber].getType(),
+            llvm::to_vector<4>(tile->resultOffsets[resultNumber]),
+            llvm::to_vector<4>(tile->resultSizes[resultNumber]), strides,
+            tile->values[resultNumber]});
+      };
+      remember(mlir::cast<mlir::OpResult>(root->getResult(resultNumber)));
+      if (auto materialized =
+              mlir::dyn_cast<mlir::OpResult>(tile->values[resultNumber]);
+          materialized && materialized != root->getResult(resultNumber))
+        remember(materialized);
+    }
+    return mlir::success();
+  };
+
+  llvm::SmallVector<mlir::Operation *, 4> independentRoots;
+  for (uint32_t node : independentlyMaterializedNodeIds) {
+    mlir::Operation *source = sourceByNode.lookup(node);
+    if (!source || llvm::is_contained(sourceSinks, source))
+      continue;
+    auto mapped = llvm::find_if(
+        operationNodes, [&](const StructuredOperationNodeMapping &mapping) {
+          return mapping.structuredNodeId == node;
+        });
+    const StructuredNodeIterationShard *shard = shardsByNode.lookup(node);
+    if (!shard)
+      shard = recomputedShardsByNode.lookup(node);
+    if (mapped == operationNodes.end() || !mapped->operation || !shard)
+      return fail<RootFragment>(
+          failureReason,
+          "independent materialization has no cloned operation or shard");
+    independentRoots.push_back(mapped->operation);
+  }
+  llvm::sort(independentRoots,
+             [](mlir::Operation *lhs, mlir::Operation *rhs) {
+               return lhs->isBeforeInBlock(rhs);
+             });
+  currentStage = "materialize independent selected producers";
+  for (mlir::Operation *root : independentRoots) {
+    auto mapping = llvm::find_if(
+        operationNodes, [&](const StructuredOperationNodeMapping &candidate) {
+          return candidate.operation == root;
+        });
+    const StructuredNodeIterationShard *shard =
+        mapping == operationNodes.end()
+            ? nullptr
+            : shardsByNode.lookup(mapping->structuredNodeId);
+    if (!shard && mapping != operationNodes.end())
+      shard = recomputedShardsByNode.lookup(mapping->structuredNodeId);
+    if (!shard) {
+      setFailureReason(
+          failureReason,
+          "independent selected producer lost its exact iterator work");
+      return mlir::failure();
+    }
+    if (mlir::failed(materializeIndependentRoot(root, *shard))) {
+      if (!failureReason || failureReason->empty())
+        setFailureReason(
+            failureReason,
+            "independent selected producer materialization failed");
+      return mlir::failure();
+    }
+  }
+
+  currentStage = "materialize selected consumer sinks";
   for (mlir::Operation *sourceSink : sourceSinks) {
     auto sourceMapping =
         llvm::find_if(sourceOperationNodes,
@@ -365,6 +535,7 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
 
   eraseDeadCandidateSupportClosure(scope);
   retainLiveOperationNodes(*function, operationNodes);
+  currentStage = "lower the coupled function to TileRegion IR";
   TileRegionEmissionRelations emissionRelations;
   if (mlir::failed(convertTensorProgramToTileRegionFunctionInPlace(
           *function, functionalArgumentCount,
@@ -387,13 +558,23 @@ mlir::FailureOr<RootFragment> materializeCoupledRootFragment(
        emissionRelations.materializedBuffers.operationEmissions)
     if (relation.operation)
       emittedNodes.insert(relation.structuredNodeId);
-  if (regionCount != 1 || emittedNodes.size() != selectedNodeIds.size() ||
+  llvm::DenseSet<uint32_t> expectedNodes = selectedNodeIds;
+  if (regionCount != 1 || emittedNodes.size() != expectedNodes.size() ||
       llvm::any_of(selectedNodeIds,
                    [&](uint32_t node) { return !emittedNodes.contains(node); }))
-    return fail<RootFragment>(
-        failureReason,
-        "coupled function did not emit the exact selected node group");
+    {
+      std::string detail;
+      llvm::raw_string_ostream diagnostic(detail);
+      diagnostic << "coupled function did not emit the exact selected node "
+                    "group; expected=[";
+      llvm::interleaveComma(expectedNodes, diagnostic);
+      diagnostic << "], emitted=[";
+      llvm::interleaveComma(emittedNodes, diagnostic);
+      diagnostic << "], regions=" << regionCount;
+      return fail<RootFragment>(failureReason, diagnostic.str());
+    }
   result.relations = std::move(emissionRelations.materializedBuffers);
+  completed = true;
   return result;
 }
 

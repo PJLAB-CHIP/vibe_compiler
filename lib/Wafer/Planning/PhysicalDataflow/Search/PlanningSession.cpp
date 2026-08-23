@@ -730,35 +730,56 @@ PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
       getOrCreateRegionDomain(continuation.parent, failureReason);
   if (mlir::failed(regionDomain))
     return mlir::failure();
-  ++work.regionSuccessorSteps;
-  RegionSuccessor next =
-      continuation.started ? (*regionDomain)->getNextPlan(*continuation.cursor)
-                           : (*regionDomain)->getFirstPlan();
-  if (next.getKind() == RegionSuccessorKind::End) {
-    continuation.exhausted = true;
-    continuation.cursor.reset();
-    return std::optional<RegionState>{};
+  if (!continuation.proposalsInitialized) {
+    continuation.proposals = (*regionDomain)->getProposals();
+    continuation.proposalsInitialized = true;
   }
-  if (next.getKind() != RegionSuccessorKind::Plan || !next.getPlan() ||
-      !next.getCursor()) {
-    if (failureReason)
-      *failureReason = next.getDetail().empty()
-                           ? "region successor omitted its plan or cursor"
-                           : next.getDetail().str();
-    return mlir::failure();
+  auto makeState = [&](const RegionPlan &plan)
+      -> mlir::FailureOr<std::optional<RegionState>> {
+    std::string detail;
+    auto state =
+        RegionState::create(**regionDomain, continuation.parent, plan, &detail);
+    if (mlir::failed(state)) {
+      if (failureReason)
+        *failureReason = std::move(detail);
+      return mlir::failure();
+    }
+    ++work.regionStatesQueued;
+    return std::optional<RegionState>(std::move(*state));
+  };
+  while (continuation.nextProposal < continuation.proposals.size()) {
+    ++work.regionSuccessorSteps;
+    const RegionPlan &proposal =
+        continuation.proposals[continuation.nextProposal++];
+    if (!continuation.emitted.insert(proposal).second)
+      continue;
+    return makeState(proposal);
   }
-  std::string detail;
-  auto state = RegionState::create(**regionDomain, continuation.parent,
-                                   *next.getPlan(), &detail);
-  if (mlir::failed(state)) {
-    if (failureReason)
-      *failureReason = std::move(detail);
-    return mlir::failure();
+
+  while (true) {
+    ++work.regionSuccessorSteps;
+    RegionSuccessor next = continuation.rawStarted
+                               ? (*regionDomain)->getNextPlan(*continuation.cursor)
+                               : (*regionDomain)->getFirstPlan();
+    if (next.getKind() == RegionSuccessorKind::End) {
+      continuation.exhausted = true;
+      continuation.cursor.reset();
+      return std::optional<RegionState>{};
+    }
+    if (next.getKind() != RegionSuccessorKind::Plan || !next.getPlan() ||
+        !next.getCursor()) {
+      if (failureReason)
+        *failureReason = next.getDetail().empty()
+                             ? "region successor omitted its plan or cursor"
+                             : next.getDetail().str();
+      return mlir::failure();
+    }
+    continuation.cursor = *next.getCursor();
+    continuation.rawStarted = true;
+    if (!continuation.emitted.insert(*next.getPlan()).second)
+      continue;
+    return makeState(*next.getPlan());
   }
-  continuation.cursor = *next.getCursor();
-  continuation.started = true;
-  ++work.regionStatesQueued;
-  return std::optional<RegionState>(std::move(*state));
 }
 
 TemporalExpansionResult PhysicalDataflowPlanningSession::resumeTemporal(

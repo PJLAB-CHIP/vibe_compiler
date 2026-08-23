@@ -372,9 +372,6 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
   std::set<std::pair<int64_t, uint32_t>> seenShards;
   std::map<uint32_t, bool> nodePartialStates;
   std::map<uint32_t, StructuredComputeImplementation> nodeImplementations;
-  std::map<uint32_t, std::pair<llvm::SmallVector<int64_t, 4>,
-                               llvm::SmallVector<uint32_t, 4>>>
-      nodeTemporalTiles;
   llvm::SmallVector<const StructuredNodeShardGroup *, 32> orderedGroups;
   for (const StructuredNodeShardGroup &group : groups) {
     if (group.shards.empty())
@@ -394,6 +391,57 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
       return failResult(
           failureReason,
           "selected implementation group does not cover every node shard");
+    llvm::SmallVector<uint32_t, 4> independentlyMaterialized(
+        group.independentlyMaterializedNodes.begin(),
+        group.independentlyMaterializedNodes.end());
+    llvm::sort(independentlyMaterialized);
+    if (std::adjacent_find(independentlyMaterialized.begin(),
+                           independentlyMaterialized.end()) !=
+        independentlyMaterialized.end() ||
+        llvm::any_of(independentlyMaterialized, [&](uint32_t node) {
+          return llvm::none_of(group.shards, [&](const auto &shard) {
+                   return shard.structuredNodeId == node;
+                 }) &&
+                 !llvm::is_contained(group.recomputedProducerNodes, node);
+        }))
+      return failResult(
+          failureReason,
+          "independent group materialization names a missing or duplicate "
+          "scheduled node");
+    llvm::SmallVector<uint32_t, 4> recomputedShardNodes;
+    for (const StructuredNodeIterationShard &shard :
+         group.recomputedProducerShards) {
+      if (shard.tile != group.shards.front().tile ||
+          !llvm::is_contained(group.recomputedProducerNodes,
+                              shard.structuredNodeId) ||
+          shard.offsets.size() != shard.sizes.size() ||
+          llvm::any_of(shard.sizes, [](int64_t size) { return size <= 0; }))
+        return failResult(
+            failureReason,
+            "recomputed producer shard is malformed or outside its group");
+      recomputedShardNodes.push_back(shard.structuredNodeId);
+    }
+    llvm::sort(recomputedShardNodes);
+    llvm::SmallVector<uint32_t, 4> recomputedNodes(
+        group.recomputedProducerNodes.begin(),
+        group.recomputedProducerNodes.end());
+    llvm::sort(recomputedNodes);
+    if (std::adjacent_find(recomputedShardNodes.begin(),
+                           recomputedShardNodes.end()) !=
+            recomputedShardNodes.end() ||
+        llvm::any_of(recomputedShardNodes, [&](uint32_t node) {
+          return !llvm::is_contained(recomputedNodes, node);
+        }) ||
+        llvm::any_of(independentlyMaterialized, [&](uint32_t node) {
+          return !llvm::any_of(group.shards, [&](const auto &shard) {
+                   return shard.structuredNodeId == node;
+                 }) &&
+                 !llvm::is_contained(recomputedShardNodes, node);
+        }))
+      return failResult(
+          failureReason,
+          "recomputed producer work is duplicated, unknown, or missing for "
+          "an independent replica");
     const TileId groupTile = group.shards.front().tile;
     uint32_t previousNode = 0;
     bool firstNode = true;
@@ -438,15 +486,6 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
             }))
           return failResult(failureReason,
                             "selected temporal node assignment is malformed");
-        auto [stored, temporalInserted] = nodeTemporalTiles.try_emplace(
-            shard.structuredNodeId,
-            std::make_pair(temporal.iteratorTileSizes, temporal.waveLoopOrder));
-        if (!temporalInserted &&
-            (stored->second.first != temporal.iteratorTileSizes ||
-             stored->second.second != temporal.waveLoopOrder))
-          return failResult(
-              failureReason,
-              "one structured node has inconsistent temporal assignments");
       }
       if (!group.representations.empty() &&
           group.representations[index].structuredNodeId !=
@@ -537,8 +576,12 @@ mlir::LogicalResult wafer::lowerStructuredNodeGroupsToCardModule(
                                       failureReason)
             : materializeCoupledRootFragment(tile, operationNodes, *group,
                                              failureReason);
-    if (mlir::failed(fragment))
+    if (mlir::failed(fragment)) {
+      if (!failureReason || failureReason->empty())
+        setFailureReason(failureReason,
+                         "selected node-group fragment materialization failed");
       return mlir::failure();
+    }
     entryStages[firstShard.tile.getValue()].push_back(
         {fragment->function, fragment->boundaries, fragment->results});
     if (!firstShard.reductionGroups.empty()) {

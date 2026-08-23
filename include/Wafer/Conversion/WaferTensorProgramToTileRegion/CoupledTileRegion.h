@@ -47,6 +47,15 @@ struct StructuredNodeShardGroup {
   /// Pure structured producers selected for consumer-local recomputation.
   /// They enter the closure but are not scheduled-node/emission identities.
   llvm::SmallVector<uint32_t, 2> recomputedProducerNodes;
+  /// Exact iterator work for recomputed producers on this group's Tile.
+  /// Entries are keyed by `structuredNodeId`; they do not add mandatory
+  /// source executions or observable results.
+  llvm::SmallVector<StructuredNodeIterationShard, 2> recomputedProducerShards;
+  /// Selected scheduled nodes whose result tiles must be materialized once
+  /// before consumer traversal. Consumer slices reuse the exact cached tile;
+  /// scheduled nodes omitted here remain consumer-nested. This is a
+  /// query-local construction directive, not persisted IR metadata.
+  llvm::SmallVector<uint32_t, 2> independentlyMaterializedNodes;
 };
 
 /// Materializes a complete explicit node-shard partition. Multi-node groups

@@ -46,6 +46,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/ExecutionStructureDomainTest.cpp
   Planning/PhysicalDataflow/FullFeasibilityTest.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecompositionTest.cpp
+  Planning/PhysicalDataflow/SelectedRegionMaterializationTest.cpp
   Planning/PhysicalDataflow/Search/PlanningSessionTest.cpp
   Planning/PhysicalDataflow/Search/ActualResultControllerTest.cpp
   Planning/PhysicalDataflow/Search/UnifiedSearchTest.cpp

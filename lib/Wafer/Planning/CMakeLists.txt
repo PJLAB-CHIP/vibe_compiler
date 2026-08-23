@@ -41,6 +41,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/SchedulePlan.cpp
   Planning/PhysicalDataflow/ScheduleDomain.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecomposition.cpp
+  Planning/PhysicalDataflow/SelectedRegionMaterialization.cpp
   Planning/PhysicalDataflow/MovementPlan.cpp
   Planning/PhysicalDataflow/MovementDomain.cpp
   Planning/PhysicalDataflow/MovementTransferBuilder.cpp

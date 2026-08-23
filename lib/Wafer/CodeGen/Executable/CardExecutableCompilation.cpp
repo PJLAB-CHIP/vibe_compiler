@@ -10,6 +10,7 @@
 #include "Wafer/Conversion/WaferCardModuleToTileModules/WaferCardModuleToTileModules.h"
 #include "Wafer/Conversion/WaferTileRegionToInstr/WaferTileRegionToInstr.h"
 #include "Wafer/Support/CompileTiming.h"
+#include "Wafer/Transforms/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -51,6 +52,18 @@ lowerTileRegionsToInstructionIR(mlir::ModuleOp module,
                                                          relations))) {
     detail = "CardModule splitting produced buffer relations outside the "
              "current IR";
+    return mlir::failure();
+  }
+  if (mlir::failed(runPassPipeline(
+          module, "instr-function-boundary-bufferization",
+          wafer::buildBufferizeInstrFunctionsPipeline))) {
+    detail = "Instr function-boundary bufferization failed";
+    return mlir::failure();
+  }
+  if (mlir::failed(checkStructuredBufferRelationsCurrent(module.getOperation(),
+                                                         relations))) {
+    detail = "Instr function-boundary bufferization changed a selected "
+             "Tile buffer relation";
     return mlir::failure();
   }
 

@@ -4,13 +4,13 @@
 
 #include "Wafer/Planning/PhysicalDataflow/CanonicalAttentionWorkProjection.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalMovementPlan.h"
-#include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSchedulePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalSerializedExecutionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalStoragePlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
+#include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/ScheduleDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/SelectedAttentionDecomposition.h"
 
@@ -107,18 +107,16 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
             FullFeasibilityStatus::CompilerBug,
             "complete candidate has no root-work inventory"};
 
-  CanonicalRegionPlanOutcome canonicalRegion =
-      buildCanonicalRegionPlan(rootWorks->works);
-  const RegionPlan *regions = getRegionPlan(canonicalRegion);
-  if (!regions)
+  auto regionDomain = RegionDomain::create(rootWorks->works, &detail);
+  if (mlir::failed(regionDomain))
     return {{},
             FullFeasibilityStatus::CompilerBug,
-            std::get<BrokenRegionPlan>(canonicalRegion).detail};
-  if (!(*regions == state.getRegionPlan()))
+            detail.empty() ? "complete candidate cannot rebuild region domain"
+                           : std::move(detail)};
+  if (!regionDomain->contains(state.getRegionPlan()))
     return {{},
-            FullFeasibilityStatus::Unsupported,
-            "current Card materializer does not yet construct a noncanonical "
-            "region grouping"};
+            FullFeasibilityStatus::CompilerBug,
+            "complete candidate region plan is outside its rebuilt domain"};
 
   CanonicalRepresentationPlanOutcome representationOutcome =
       buildCanonicalRepresentationPlan(
@@ -232,7 +230,8 @@ prepareCandidate(const PhysicalDataflowPlanningProblem &problem,
 
   PreparedCandidate candidate;
   candidate.materialization = {*spatial.assignment, *demand, rootWorks->works,
-                               state.getTemporalPlan(), *prepared};
+                               state.getRegionPlan(), state.getTemporalPlan(),
+                               *prepared};
   return {std::move(candidate), FullFeasibilityStatus::Accepted, {}};
 }
 

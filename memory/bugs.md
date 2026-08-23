@@ -647,6 +647,18 @@
   不把dead entry重定向到同类型buffer。
 - 防复发：构造dead relation负例，断言retain后current检查通过；真实required relation被删时仍必须失败。
 
+## Function-boundary bufferization必须早于TileRegion relation listener
+
+- 现象：selected multi-root Region在Tensor/TileRegion阶段通过verifier，但进入Q50.0后报structured buffer relation不属于current IR；
+  单root canonical路径可能因bufferization形状恰好稳定而掩盖问题。
+- 根因：TileRegion-to-Instr先用listener把relation重绑到Instr SSA，随后function-boundary One-Shot Bufferize又改写function参数和
+  boundary SSA；后一个pass不使用该listener，已重绑的relation再次失效。
+- 修复模式：在收集TileRegion和安装replacement listener前完成function-boundary bufferization，并立即检查relation仍属于current
+  module；之后TileRegion-to-Instr的所有replacement只由同一个listener跟踪。memory-planning preparation在已有materialization
+  relations的production路径不得再次运行同一bufferization，只重建当前IR要求的completion结构。
+- 防复发：真实规模selected multi-root stored/direct与replica候选必须走完整CardModule→Instr→actual SPM gate；只验证TileRegion
+  或单root路径不能签发relation epoch正确性。
+
 ## PeerFragments的代表source不能代替逐fragment ownership
 
 - 现象：receive-only Tile被layout gate要求物化producer layout，导致已合法actualized的布局候选被错误拒绝。

@@ -17,8 +17,10 @@
 #include "Wafer/Transforms/MemoryPlanningPipelines.h"
 #include "Wafer/Transforms/Passes.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
@@ -269,9 +271,17 @@ planTileMemory(mlir::OwningOpRef<mlir::ModuleOp> module,
     return mlir::failure();
   }
 
-  if (mlir::failed(
-          runPassPipeline(*module, "instr-memory-planning-preparation",
-                          wafer::buildPrepareInstrForMemoryPlanningPipeline))) {
+  auto buildPreparationPipeline = [&](mlir::OpPassManager &manager) {
+    if (!materializationRelations) {
+      wafer::buildPrepareInstrForMemoryPlanningPipeline(manager);
+      return;
+    }
+    manager.nest<mlir::func::FuncOp>().addPass(
+        wafer::createRebuildRequiredNCCJoinsPass());
+  };
+  if (mlir::failed(runPassPipeline(*module,
+                                   "instr-memory-planning-preparation",
+                                   buildPreparationPipeline))) {
     recordFailure(
         TileMemoryPlanningFailureKind::InstrMemoryPlanningPreparation);
     return mlir::failure();

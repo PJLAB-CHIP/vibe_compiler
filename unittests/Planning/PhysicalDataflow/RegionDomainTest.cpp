@@ -230,6 +230,14 @@ TEST_F(RegionDomainTest, TwoNodeChainEnumeratesEveryCurrentUseForm) {
   auto plans = enumerate(*domain);
   ASSERT_TRUE(plans);
   ASSERT_EQ(plans->size(), 7u);
+  std::vector<RegionPlan> proposals = domain->getProposals();
+  EXPECT_GE(proposals.size(), 4u);
+  EXPECT_EQ(std::set<RegionPlan>(proposals.begin(), proposals.end()).size(),
+            proposals.size());
+  for (const RegionPlan &proposal : proposals) {
+    EXPECT_TRUE(domain->contains(proposal));
+    EXPECT_TRUE(llvm::is_contained(*plans, proposal));
+  }
 
   unsigned singletonExternal = 0;
   unsigned singletonReplica = 0;

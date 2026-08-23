@@ -7,6 +7,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 #include <tuple>
@@ -22,24 +23,6 @@ bool groupOrder(const RegionGroupPlan &lhs, const RegionGroupPlan &rhs) {
       rhs.mandatoryRoots.begin(), rhs.mandatoryRoots.end());
 }
 
-bool retreatRestrictedGrowth(llvm::MutableArrayRef<uint32_t> labels) {
-  if (labels.size() < 2)
-    return false;
-  for (size_t reverse = 0; reverse + 1 < labels.size(); ++reverse) {
-    const size_t index = labels.size() - reverse - 1;
-    if (labels[index] == 0)
-      continue;
-    --labels[index];
-    uint32_t maximumPrefix = 0;
-    for (uint32_t label : labels.take_front(index + 1))
-      maximumPrefix = std::max(maximumPrefix, label);
-    for (size_t suffix = index + 1; suffix < labels.size(); ++suffix)
-      labels[suffix] = ++maximumPrefix;
-    return true;
-  }
-  return false;
-}
-
 bool isCanonicalRestrictedGrowth(llvm::ArrayRef<uint32_t> labels) {
   if (labels.empty() || labels.front() != 0)
     return false;
@@ -50,6 +33,200 @@ bool isCanonicalRestrictedGrowth(llvm::ArrayRef<uint32_t> labels) {
     maximum = std::max(maximum, label);
   }
   return true;
+}
+
+using ConnectedGroup = llvm::SmallVector<uint32_t, 8>;
+using ConnectedPartition = llvm::SmallVector<ConnectedGroup, 8>;
+
+template <typename ComponentT>
+bool isConnectedGroup(const ComponentT &component,
+                      llvm::ArrayRef<uint32_t> group) {
+  if (group.empty() || !llvm::is_sorted(group) ||
+      std::adjacent_find(group.begin(), group.end()) != group.end() ||
+      llvm::any_of(group, [&](uint32_t vertex) {
+        return vertex >= component.works.size();
+      }))
+    return false;
+  if (group.size() == 1)
+    return true;
+  const size_t count = component.works.size();
+  if (component.potentialEdges.size() != count * count)
+    return false;
+  std::set<uint32_t> reached{group.front()};
+  llvm::SmallVector<uint32_t, 8> worklist{group.front()};
+  while (!worklist.empty()) {
+    const uint32_t current = worklist.pop_back_val();
+    for (uint32_t candidate : group) {
+      if (reached.count(candidate) ||
+          (!component.potentialEdges[current * count + candidate] &&
+           !component.potentialEdges[candidate * count + current]))
+        continue;
+      reached.insert(candidate);
+      worklist.push_back(candidate);
+    }
+  }
+  return reached.size() == group.size();
+}
+
+template <typename ComponentT>
+std::optional<ConnectedGroup>
+getConnectedParent(const ComponentT &component,
+                   llvm::ArrayRef<uint32_t> group) {
+  if (group.size() <= 1 || !isConnectedGroup(component, group))
+    return std::nullopt;
+  const uint32_t anchor = group.front();
+  for (uint32_t removable : llvm::reverse(group)) {
+    if (removable == anchor)
+      continue;
+    ConnectedGroup parent;
+    for (uint32_t vertex : group)
+      if (vertex != removable)
+        parent.push_back(vertex);
+    if (isConnectedGroup(component, parent))
+      return parent;
+  }
+  return std::nullopt;
+}
+
+template <typename ComponentT>
+llvm::SmallVector<ConnectedGroup, 8>
+getConnectedChildren(const ComponentT &component,
+                     llvm::ArrayRef<uint32_t> group,
+                     llvm::ArrayRef<uint32_t> allowed) {
+  llvm::SmallVector<ConnectedGroup, 8> children;
+  const size_t count = component.works.size();
+  for (uint32_t candidate : allowed) {
+    if (llvm::is_contained(group, candidate))
+      continue;
+    bool adjacent = llvm::any_of(group, [&](uint32_t member) {
+      return component.potentialEdges[member * count + candidate] ||
+             component.potentialEdges[candidate * count + member];
+    });
+    if (!adjacent)
+      continue;
+    ConnectedGroup child(group.begin(), group.end());
+    child.push_back(candidate);
+    llvm::sort(child);
+    std::optional<ConnectedGroup> parent =
+        getConnectedParent(component, child);
+    if (parent && *parent == group)
+      children.push_back(std::move(child));
+  }
+  llvm::sort(children);
+  return children;
+}
+
+template <typename ComponentT>
+std::optional<ConnectedGroup>
+getNextConnectedGroup(const ComponentT &component,
+                      llvm::ArrayRef<uint32_t> current,
+                      llvm::ArrayRef<uint32_t> allowed) {
+  if (current.empty() || allowed.empty() || current.front() != allowed.front() ||
+      !isConnectedGroup(component, current))
+    return std::nullopt;
+  ConnectedGroup node(current.begin(), current.end());
+  llvm::SmallVector<ConnectedGroup, 8> children =
+      getConnectedChildren(component, node, allowed);
+  if (!children.empty())
+    return children.front();
+  while (node.size() > 1) {
+    std::optional<ConnectedGroup> parent = getConnectedParent(component, node);
+    if (!parent)
+      return std::nullopt;
+    llvm::SmallVector<ConnectedGroup, 8> siblings =
+        getConnectedChildren(component, *parent, allowed);
+    auto currentSibling = llvm::find(siblings, node);
+    if (currentSibling == siblings.end())
+      return std::nullopt;
+    if (++currentSibling != siblings.end())
+      return *currentSibling;
+    node = std::move(*parent);
+  }
+  return std::nullopt;
+}
+
+ConnectedPartition getFirstConnectedPartition(llvm::ArrayRef<uint32_t> allowed) {
+  ConnectedPartition partition;
+  for (uint32_t vertex : allowed)
+    partition.push_back(ConnectedGroup{vertex});
+  return partition;
+}
+
+llvm::SmallVector<uint32_t, 8>
+subtractGroup(llvm::ArrayRef<uint32_t> allowed,
+              llvm::ArrayRef<uint32_t> group) {
+  llvm::SmallVector<uint32_t, 8> remaining;
+  for (uint32_t vertex : allowed)
+    if (!llvm::is_contained(group, vertex))
+      remaining.push_back(vertex);
+  return remaining;
+}
+
+template <typename ComponentT>
+std::optional<ConnectedPartition>
+advanceConnectedPartition(const ComponentT &component,
+                          llvm::ArrayRef<ConnectedGroup> current,
+                          llvm::ArrayRef<uint32_t> allowed) {
+  if (current.empty() || allowed.empty() ||
+      current.front().front() != allowed.front() ||
+      !isConnectedGroup(component, current.front()))
+    return std::nullopt;
+  llvm::SmallVector<uint32_t, 8> remaining =
+      subtractGroup(allowed, current.front());
+  if (!remaining.empty()) {
+    if (current.size() < 2)
+      return std::nullopt;
+    std::optional<ConnectedPartition> suffix = advanceConnectedPartition(
+        component, current.drop_front(), remaining);
+    if (suffix) {
+      ConnectedPartition result{current.front()};
+      result.append(suffix->begin(), suffix->end());
+      return result;
+    }
+  } else if (current.size() != 1) {
+    return std::nullopt;
+  }
+
+  std::optional<ConnectedGroup> next =
+      getNextConnectedGroup(component, current.front(), allowed);
+  if (!next)
+    return std::nullopt;
+  ConnectedPartition result{*next};
+  remaining = subtractGroup(allowed, *next);
+  ConnectedPartition suffix = getFirstConnectedPartition(remaining);
+  result.append(suffix.begin(), suffix.end());
+  return result;
+}
+
+ConnectedPartition labelsToPartition(llvm::ArrayRef<uint32_t> labels) {
+  ConnectedPartition result;
+  if (labels.empty())
+    return result;
+  const uint32_t count = *llvm::max_element(labels) + 1;
+  result.resize(count);
+  for (auto [vertex, label] : llvm::enumerate(labels)) {
+    if (label >= result.size())
+      return {};
+    result[label].push_back(static_cast<uint32_t>(vertex));
+  }
+  return result;
+}
+
+llvm::SmallVector<uint32_t, 8>
+partitionToLabels(size_t vertexCount,
+                  llvm::ArrayRef<ConnectedGroup> partition) {
+  llvm::SmallVector<uint32_t, 8> labels(vertexCount,
+                                        std::numeric_limits<uint32_t>::max());
+  for (auto [label, group] : llvm::enumerate(partition))
+    for (uint32_t vertex : group) {
+      if (vertex >= labels.size() ||
+          labels[vertex] != std::numeric_limits<uint32_t>::max())
+        return {};
+      labels[vertex] = static_cast<uint32_t>(label);
+    }
+  if (llvm::is_contained(labels, std::numeric_limits<uint32_t>::max()))
+    return {};
+  return labels;
 }
 
 template <typename ComponentT>
@@ -99,11 +276,21 @@ getInitialComponentLabels(const ComponentT &component) {
 template <typename ComponentT>
 std::optional<llvm::SmallVector<uint32_t, 8>>
 getNextLabels(const ComponentT &component, llvm::ArrayRef<uint32_t> current) {
-  llvm::SmallVector<uint32_t, 8> labels(current.begin(), current.end());
-  while (retreatRestrictedGrowth(labels))
-    if (isLegalPartition(component, labels))
-      return labels;
-  return std::nullopt;
+  if (!isLegalPartition(component, current))
+    return std::nullopt;
+  ConnectedPartition partition = labelsToPartition(current);
+  llvm::SmallVector<uint32_t, 8> allowed;
+  for (size_t vertex = 0; vertex < component.works.size(); ++vertex)
+    allowed.push_back(static_cast<uint32_t>(vertex));
+  std::optional<ConnectedPartition> next =
+      advanceConnectedPartition(component, partition, allowed);
+  if (!next)
+    return std::nullopt;
+  llvm::SmallVector<uint32_t, 8> labels =
+      partitionToLabels(component.works.size(), *next);
+  if (!isLegalPartition(component, labels))
+    return std::nullopt;
+  return labels;
 }
 
 const RegionGroupPlan *findBaseGroup(llvm::ArrayRef<RegionGroupPlan> groups,
@@ -641,6 +828,65 @@ RegionDomain::getCursor(const RegionPlan &plan) const {
 
 bool RegionDomain::contains(const RegionPlan &plan) const {
   return getCursor(plan).has_value();
+}
+
+std::vector<RegionPlan> RegionDomain::getProposals() const {
+  std::vector<RegionPlan> proposals;
+  std::set<RegionPlan> seen;
+  auto append = [&](std::optional<RegionPlan> plan) {
+    if (!plan || !contains(*plan) || !seen.insert(*plan).second)
+      return;
+    proposals.push_back(std::move(*plan));
+  };
+
+  llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8> singleton =
+      getFirstLabels();
+  append(buildPlan(singleton,
+                   llvm::SmallVector<uint8_t, 16>(
+                       getChoiceFragments(singleton).size(), 0)));
+
+  llvm::SmallVector<llvm::SmallVector<uint32_t, 8>, 8> maximal;
+  for (const Component &component : components)
+    maximal.push_back(
+        llvm::SmallVector<uint32_t, 8>(component.works.size(), 0));
+
+  auto makeChoices = [&](llvm::ArrayRef<llvm::SmallVector<uint32_t, 8>> labels,
+                         uint8_t requested) {
+    std::map<analysis::RootRegionWorkId, std::pair<size_t, uint32_t>> groups;
+    for (auto [componentIndex, values] :
+         llvm::enumerate(llvm::zip_equal(components, labels))) {
+      const auto &[component, componentLabels] = values;
+      for (auto [work, label] :
+           llvm::zip_equal(component.works, componentLabels))
+        groups[work] = {componentIndex, label};
+    }
+    std::vector<const LocalFragment *> fragments = getChoiceFragments(labels);
+    llvm::SmallVector<uint8_t, 16> choices;
+    choices.reserve(fragments.size());
+    for (const LocalFragment *fragment : fragments) {
+      auto producer = groups.find(fragment->producerWork);
+      auto consumer = groups.find(fragment->consumerWork);
+      const bool sameGroup = producer != groups.end() &&
+                             consumer != groups.end() &&
+                             producer->second == consumer->second;
+      uint8_t choice = 0;
+      if (requested <= 2 && sameGroup && fragment->allowsRequiredLocal) {
+        choice = requested == 2 && fragment->allowsDirect ? 2 : 1;
+      } else if (requested >= 3 && fragment->allowsReplica) {
+        choice = requested == 4 && fragment->allowsDirect ? 4 : 3;
+      }
+      choices.push_back(choice);
+    }
+    return choices;
+  };
+
+  append(buildPlan(maximal, makeChoices(maximal, /*stored required=*/1)));
+  append(buildPlan(maximal, makeChoices(maximal, /*direct required=*/2)));
+  append(buildPlan(singleton,
+                   makeChoices(singleton, /*stored replicas=*/3)));
+  append(buildPlan(singleton,
+                   makeChoices(singleton, /*direct replicas=*/4)));
+  return proposals;
 }
 
 } // namespace wafer::compiler::detail

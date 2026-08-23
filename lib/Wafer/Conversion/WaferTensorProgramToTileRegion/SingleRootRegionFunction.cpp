@@ -189,6 +189,7 @@ mlir::FailureOr<RootClosure> collectRootClosure(
 mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
     mlir::Block &destination, mlir::Operation *sourceRoot,
     llvm::ArrayRef<mlir::Operation *> sourceRoots,
+    llvm::ArrayRef<mlir::Operation *> closureRoots,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     const llvm::DenseSet<mlir::Operation *> &structuredOperations,
     const llvm::DenseSet<mlir::Operation *> &coupledOperations,
@@ -208,7 +209,7 @@ mlir::FailureOr<mlir::func::FuncOp> buildRegionFunction(
         "single-root region requires one defined single-block source function");
   mlir::Block &sourceBody = sourceFunction.getBody().front();
   mlir::FailureOr<RootClosure> closure =
-      collectRootClosure(sourceRoots, sourceBody, structuredOperations,
+      collectRootClosure(closureRoots, sourceBody, structuredOperations,
                          coupledOperations, failureReason);
   if (mlir::failed(closure))
     return mlir::failure();
@@ -317,6 +318,7 @@ mlir::FailureOr<mlir::func::FuncOp> buildRootFunction(
   std::string name =
       (llvm::Twine("execute_node_") + llvm::Twine(structuredNodeId)).str();
   return buildRegionFunction(destination, sourceRoot, {sourceRoot},
+                             {sourceRoot},
                              sourceOperationNodes, structuredOperations,
                              coupledOperations, coupledOperations, name,
                              failureReason, operationNodes,
@@ -327,7 +329,9 @@ mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
     mlir::Block &destination, llvm::ArrayRef<mlir::Operation *> sourceRoots,
     llvm::ArrayRef<StructuredOperationNodeMapping> sourceOperationNodes,
     llvm::ArrayRef<uint32_t> coupledNodeIds,
-    llvm::ArrayRef<uint32_t> recomputedNodeIds, std::string *failureReason,
+    llvm::ArrayRef<uint32_t> recomputedNodeIds,
+    llvm::ArrayRef<uint32_t> independentlyMaterializedNodeIds,
+    std::string *failureReason,
     llvm::SmallVectorImpl<StructuredOperationNodeMapping> &operationNodes,
     unsigned &functionalArgumentCount,
     llvm::SmallVectorImpl<RootValueKey> &boundaries,
@@ -359,7 +363,15 @@ mlir::FailureOr<mlir::func::FuncOp> buildCoupledRootFunction(
   const uint32_t firstNode = *llvm::min_element(coupledNodeIds);
   std::string name =
       (llvm::Twine("execute_group_") + llvm::Twine(firstNode)).str();
+  llvm::SmallVector<mlir::Operation *, 8> closureRoots(sourceRoots.begin(),
+                                                       sourceRoots.end());
+  for (const StructuredOperationNodeMapping &mapping : sourceOperationNodes)
+    if (llvm::is_contained(independentlyMaterializedNodeIds,
+                           mapping.structuredNodeId) &&
+        !llvm::is_contained(closureRoots, mapping.operation))
+      closureRoots.push_back(mapping.operation);
   return buildRegionFunction(destination, sourceRoots.front(), sourceRoots,
+                             closureRoots,
                              sourceOperationNodes, structuredOperations,
                              coupledOperations, emittedOperations, name,
                              failureReason, operationNodes,

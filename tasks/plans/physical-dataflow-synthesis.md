@@ -259,8 +259,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 2 | `spatial-domain` | `done` | Q50.B | complete spatial successors、reference enumerator及proposal | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | search-control-foundation |
 | 3 | `search-control-foundation` | `done` | Q51.Core | SpatialState frontier/continuation及public search routing | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | root-work-domain |
 | 4 | `root-work-domain` | `done` | Q50.C | full root/merge work domain、Core consumer及complete-candidate emitter输入 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
-| 5 | `region-execution-domain` | `next` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
-| 6 | `temporal-domain` | `queued` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
+| 5 | `region-execution-domain` | `done` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
+| 6 | `temporal-domain` | `doing` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
 | 7 | `partial-feasibility` | `queued` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
 | 8 | `layout-domain` | `queued` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
 | 9 | `movement-domain` | `queued` | Q50.H | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、token-only selected construction/verifier及donor retirement；不在issue后立即await | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
@@ -2523,8 +2523,9 @@ Pipeline position:
   per-Tile partition、execution-instance与use-binding domain和independent reference在chain、fanin、fanout、diamond、multiple sinks、
   disconnected图上集合相同；independent stored、consumer-nested、explicit replica和cross-group boundary均可达，temporal-dependent
   nesting明确deferred；singleton、maximal和intermediate groups的independent/production actualization各恰一region，mandatory work exact覆盖，
-  replica显式可数，direct nested SSA无中间DDR，stored value有独立producer traversal，fanout共享version只生成一次；旧
-  CompleteTraversal/ProducerTileFusion能力逐项迁移后退役。
+  replica显式可数，ordinary root的direct nested SSA无中间DDR，stored value有独立producer traversal，fanout共享version只生成一次；
+  merge与attention execution identity分别被Q50.E和Q50.S直接消费，不在D伪造低层action；旧CompleteTraversal/ProducerTileFusion能力
+  按E/G/H/S的直接consumer逐项迁移后退役。
 
 ### Q50.D work-item分界
 
@@ -2563,7 +2564,7 @@ partial query仍然零IR；actual builder只在完整suffix已关闭的caller-ow
 | mixed local/remote与replica | producer/consumer同Tile、不同Tile、同operand多owner pieces | required local只在same group；pure producer的stored/direct replica可跨group/Tile；effectful producer不产生direct/replica | boundary sibling始终保留；replica数量和consumer group归属逐项可数 |
 | fanout sharing | 一个producer供多个operands/consumers | 同一个required execution可由多个stored bindings共享；split plan显式产生多个`ReplicaExecutionId`；不同nested consumer不能误共享required execution | shared/split plans均为domain member，canonical key不依赖first-use/materialization order |
 | real-scale graph | rank-3/4 FP16/BF16，1024及1025/1031 | RootWork fragments、tail、multi-result/result number与RegionPlan identity完整；query前后source byte-identical | Core形成`RegionState`且partial actualization=0；test-only closed suffix与full-feasibility分别构造selected singleton/intermediate/maximal regions |
-| reduction/attention | ordinary contribution/per-group merge、FD coupled state | merge execution可stored/direct但不能伪造root replica；Maximum/Sum/Accumulator保持一个merge identity | selected contribution/merge、nested/replica execution和coupled state在actual region中逐ID对应，无中间DDR |
+| reduction/attention identity | ordinary contribution/per-group merge、FD coupled state | merge execution可stored/direct但不能伪造root replica；Maximum/Sum/Accumulator保持一个merge identity | D逐ID签发给E/S；partial merge的parent-dependent traversal由E构造，FA/FD action expansion由attention-production-closure构造，不在D伪造actual node |
 | selected construction | stored required、direct nested、stored/direct replica、fanout shared/split，1024/1025 | 每个selected execution和use binding all-and-only materialized；direct nested SSA、stored traversal、replica count与region boundary精确 | verifier从actual region/SSA/relations重建同一RegionPlan；后续G/H builder按typed IDs消费 |
 | typed failure | duplicate/missing group work、extra binding/replica、非法placement、domain cursor/plan错配、prepare/emit中途失败 | query `contains` fail closed；actual失败由candidate subtree guard回滚，不删除其它Region siblings | 修正plan可重新验证；source不变，失败subtree无残留 |
 | donor/owner | old `CoupledRegionDomain`与cross-layer apply | public/Core和actual materializer只消费current RegionPlan/selected builder | nested/replica/coupled能力及negative tests逐项迁移后删除旧domain/apply，不保留第二consumer |
@@ -2725,6 +2726,16 @@ cost-based plan问题；XLA GPU current priority fusion则按estimated benefit�
 这些实践对应本仓的结论是：exact successor必须lazy且承认指数规模；DP、priority fusion和最大group只能生成proposal，不能成为
 legality filter或局部winner。
 
+本项实现采用下列一手资料的共同边界：
+
+| 资料 | 可复用事实 | Wafer采用/不采用 |
+| --- | --- | --- |
+| [MLIR `fuse_into_containing_op`](https://github.com/llvm/llvm-project/blob/main/mlir/include/mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.td) | transform从consumer实际slice反推producer tile；同一producer有多个uses时当前实现可能重复tile/clone | 只复用selected use的tile-and-fuse mechanics；share/split、replica count和允许融合的`DemandFragmentId`必须先由RegionPlan决定 |
+| [MLIR One-Shot Bufferize](https://mlir.llvm.org/docs/Bufferization/) | 先在完整tensor SSA上分析alias/equivalence与RaW conflict，再统一rewrite | stored/direct语义先进入typed plan；不允许BodyEmitter根据当前users临时选择alias或allocation |
+| [SystemML operator-fusion planning](https://www.vldb.org/pvldb/vol11/p1755-boehm.pdf) | 明确分离valid candidate exploration、cost-based selection与code generation，DAG plan空间为指数级 | exact domain、proposal排序和selected construction使用三个边界；不把cost或materializer失败当legality filter |
+| [Coalition Structure Generation on Graphs](https://arxiv.org/abs/1410.6516) | 可行coalition是connected induced subgraph，完整connected partition仍需tree search/DP | 用canonical-parent reverse search逐个产生connected subsets/partitions，不扫描全部Bell partition再过滤 |
+| [XLA GPU PriorityFusion](https://github.com/openxla/xla/blob/main/xla/backends/gpu/transforms/priority_fusion.h) | priority为estimated unfused/fused收益差，并显式计入producer duplication | 只作为可关闭proposal队列；不采用greedy结果作为domain、local winner或correctness repair |
+
 #### Duplicate-free connected partition successor
 
 每个Tile先构造`PotentialRegionConnectionGraph`：vertex是mandatory `RootRegionWorkId`；某个nonempty `DemandFragmentId`存在local
@@ -2846,6 +2857,33 @@ SCF/TilingInterface tile-and-fuse的control callback只接受plan中列出的`De
 type/offset或first materialized tile恢复identity。DPS init rebasing、reshape/slice composition、windowed insert和observable result
 复用迁移后的typed builders；无法表达selected relation时返回commit bug/typed unsupported，不隐式assemble full producer、改为stored、
 切region或重选plan。atomicity仍由C的新CardModule subtree guard承担。
+
+#### 本轮实现结果与下游边界
+
+- production successor改为canonical-parent connected-subset reverse search，再递归组成connected partitions；它不再枚举全部Bell
+  partition后过滤。2--6 root的chain、fanin、fanout、diamond、multiple sinks与disconnected graph继续由独立flat oracle核对集合与
+  cardinality。singleton/maximal stored/direct及singleton stored/direct replica只作为checked proposals；Core先发proposal，再恢复同一
+  raw cursor并跳过重复，proposal开关或顺序不改变exact set。
+- `CompleteCandidatePlan`现在携带selected `RegionPlan`。ordinary structured root的candidate transaction先clone最近的source Module，
+  为每个`ReplicaExecutionId`创建独立candidate-local structured node并精确rewire对应consumer operand，再把required/replica execution、
+  shard与Temporal scope转换为common group materializer的typed descriptor。失败只销毁candidate clone，source保持不变。
+- common group materializer按selected top-level execution先物化并缓存exact producer tile；consumer-nested execution沿实际consumer
+  slice构造direct SSA。fanout split replica具有不同candidate-local node identity；shared required execution只物化一次。Q50.0在
+  function-boundary bufferization之后保留同一current-IR relation epoch，再执行TileRegion-to-Instr与实际SPM规划。
+- actual verifier从current `TileRegion` parent、operation emission与result-buffer relation重建每个`(Tile,node-set)`，逐组比较selected
+  RegionPlan和candidate-local execution relation；不读取group attr、symbol名、operation ordinal、shape或打印文本。
+- 本项只关闭normalized semantic-root层的Region/execution/use-binding与ordinary structured group construction。由Q50.S把一个attention
+  semantic root展开成多action current IR后，action/execution关系及FA/FD production actualization仍由
+  `attention-production-closure`关闭；partial-reduction merge的跨consumer nested traversal由Q50.E在完整parent-dependent temporal
+  scope中关闭。D已经保留merge execution与attention coupled identity，不能在本项用假node、固定worker或单wave特例代替这些直接
+  下游合同。
+
+本轮fresh验证：增量完整build通过；`SelectedRegionMaterializationTest` 4/4覆盖rank-3 FP16的1024/1025 stored/direct required、
+stored/direct replica、fanout split与atomic failure，并全部进入一次Q50.0 actual admission；`RegionDomainTest` 5/5、
+`PlanningSessionTest` 6/6及donor `DataMovementTest`定向回归通过。排除尚未闭合且未纳入本项提交的future
+`AttentionProductionClosureTest`后，host unit 908/908通过；configured lit、source/IR organization和4个public-link smoke全部通过。
+future attention case当前在decode search的merge execution缺少EventGraph temporal coverage处失败，这一失败属于E/J/S后续门禁，未被
+改写成D成功证据。
 
 ### Gate
 

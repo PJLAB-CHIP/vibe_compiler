@@ -22,8 +22,8 @@ namespace {
 
 wafer::compiler::detail::CompleteCandidatePlan makeMaterializationPlan(
     const wafer::compiler::detail::CanonicalBaselinePlan &plan) {
-  return {plan.spatial, plan.demand, plan.rootWorks, plan.temporal,
-          plan.preparedAttention};
+  return {plan.spatial, plan.demand, plan.rootWorks, plan.regions,
+          plan.temporal, plan.preparedAttention};
 }
 using namespace wafer::compiler::testing;
 

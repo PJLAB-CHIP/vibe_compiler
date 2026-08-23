@@ -3,6 +3,8 @@
 #include "Wafer/Planning/PhysicalDataflow/CompleteCandidateMaterialization.h"
 
 #include "Wafer/Planning/Baseline/BaselineAttentionMaterialization.h"
+#include "Wafer/Planning/PhysicalDataflow/CanonicalRegionPlan.h"
+#include "Wafer/Planning/PhysicalDataflow/SelectedRegionMaterialization.h"
 
 #include "Wafer/IR/WaferDialect.h"
 #include "Wafer/Support/CompileTiming.h"
@@ -10,6 +12,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <map>
+#include <set>
 
 namespace wafer::compiler::detail {
 namespace {
@@ -117,6 +120,77 @@ materializeCardCandidate(mlir::ModuleOp tensorProgram, CardId cardId,
     }
     nodeRoots = std::move(*sourceNodeRoots);
   }
+  CanonicalRegionPlanOutcome canonicalRegions =
+      buildCanonicalRegionPlan(plan.rootWorks);
+  const RegionPlan *canonical = getRegionPlan(canonicalRegions);
+  if (!canonical) {
+    diagnostics << "wafer-compile: candidate canonical region validation "
+                   "failed\n";
+    return mlir::failure();
+  }
+  const bool usesSelectedRegions = !(plan.regions == *canonical);
+  if (usesSelectedRegions) {
+    if (!plan.preparedAttention.work.roots.empty()) {
+      diagnostics << "wafer-compile: selected attention region construction "
+                     "is not yet representable\n";
+      return mlir::failure();
+    }
+    auto selectedSource = prepareSelectedRegionMaterializationSource(
+        tensorProgram, program, plan.regions, plan.rootWorks, &failureReason);
+    if (mlir::failed(selectedSource)) {
+      diagnostics << "wafer-compile: selected region source preparation "
+                     "failed: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+    mlir::FailureOr<std::vector<StructuredNodeShardGroup>> groups =
+        prepareSelectedRegionGroups(program, plan.regions, plan.rootWorks,
+                                    plan.temporal,
+                                    selectedSource->executionNodes,
+                                    &failureReason);
+    if (mlir::failed(groups)) {
+      diagnostics << "wafer-compile: selected region preparation failed: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+    MaterializedCardCandidate result;
+    result.assignment = std::move(assignment);
+    result.assignment.selectedRegions = plan.regions;
+    std::map<uint32_t, SemanticRootKey> rootsByNode;
+    for (const SelectedRegionExecutionNode &execution :
+         selectedSource->executionNodes) {
+      auto [position, inserted] = rootsByNode.try_emplace(
+          execution.structuredNodeId, execution.root);
+      if (!inserted && position->second != execution.root) {
+        diagnostics << "wafer-compile: selected execution node has several "
+                       "semantic roots\n";
+        return mlir::failure();
+      }
+      result.assignment.selectedRegionExecutions.push_back(
+          {execution.execution, execution.structuredNodeId});
+    }
+    for (const auto &[node, root] : rootsByNode)
+      result.nodeRoots.push_back({node, root});
+    result.materializationSource = std::move(selectedSource->module);
+    if (mlir::failed(lowerStructuredNodeGroupsToCardModule(
+            *result.materializationSource, cardId, program.availableTileIds,
+            selectedSource->operationNodes, *groups, result.module,
+            &result.relations, &failureReason))) {
+      diagnostics << "wafer-compile: selected region CardModule "
+                     "materialization failed: "
+                  << failureReason << '\n';
+      return mlir::failure();
+    }
+    if (statistics) {
+      ++statistics->sourcePreparations;
+      ++statistics->materializationPreparations;
+      ++statistics->cardModuleMaterializations;
+      statistics->tileEntryMaterializations +=
+          program.availableTileIds.size();
+      statistics->maximumTileMaterializationWorkers = 1;
+    }
+    return result;
+  }
   mlir::FailureOr<llvm::SmallVector<StructuredNodeRootGroup, 64>> rootGroups =
       buildMaterializationRootGroups(nodeRoots);
   if (mlir::failed(rootGroups)) {
@@ -188,7 +262,6 @@ mlir::LogicalResult verifyMaterializedCardCandidate(
     const StructuredMaterializationRelations &relations,
     llvm::ArrayRef<TileId> expectedTileIds, std::string &failureReason) {
   (void)dag;
-  (void)relations;
   if (llvm::any_of(assignment.mapping.edgeStrategies,
                    [](const SpatialEdgeStrategy &strategy) {
                      return strategy.action ==
@@ -211,6 +284,83 @@ mlir::LogicalResult verifyMaterializedCardCandidate(
   for (auto [index, tileModule] : llvm::enumerate(tileModules)) {
     if (TileId(tileModule.getTileIdAttr().getInt()) != expectedTileIds[index]) {
       failureReason = "candidate CardModule changed the Tile identity domain";
+      return mlir::failure();
+    }
+  }
+  if (assignment.selectedRegions) {
+    std::map<RegionExecutionId, uint32_t> nodesByExecution;
+    for (const auto &[execution, node] :
+         assignment.selectedRegionExecutions)
+      if (!nodesByExecution.try_emplace(execution, node).second) {
+        failureReason =
+            "selected region verifier has a duplicate execution/node relation";
+        return mlir::failure();
+      }
+    using RegionKey = std::pair<int64_t, std::vector<uint32_t>>;
+    std::vector<RegionKey> expected;
+    for (const RegionGroupPlan &group : assignment.selectedRegions->groups) {
+      std::set<uint32_t> nodes;
+      for (const ExecutionInstancePlan &execution : group.executions) {
+        auto node = nodesByExecution.find(execution.id);
+        if (node == nodesByExecution.end()) {
+          failureReason =
+              "selected region verifier lost one required execution node";
+          return mlir::failure();
+        }
+        nodes.insert(node->second);
+      }
+      for (const ReplicaExecutionPlan &replica : group.replicas) {
+        auto node = nodesByExecution.find(replica.id);
+        if (node == nodesByExecution.end()) {
+          failureReason =
+              "selected region verifier lost one replica execution node";
+          return mlir::failure();
+        }
+        nodes.insert(node->second);
+      }
+      if (!nodes.empty())
+        expected.push_back({group.tile.getValue(),
+                            std::vector<uint32_t>(nodes.begin(), nodes.end())});
+    }
+    llvm::sort(expected);
+
+    std::map<mlir::Operation *, std::set<uint32_t>> actualNodes;
+    for (const StructuredOperationEmissionRelation &relation :
+         relations.operationEmissions) {
+      TileRegionOp region =
+          relation.operation
+              ? relation.operation->getParentOfType<TileRegionOp>()
+              : TileRegionOp{};
+      if (region)
+        actualNodes[region.getOperation()].insert(relation.structuredNodeId);
+    }
+    for (const StructuredOperationBufferRelation &relation :
+         relations.operationResultBuffers) {
+      mlir::Operation *owner = relation.buffer.getDefiningOp();
+      if (!owner && mlir::isa<mlir::BlockArgument>(relation.buffer))
+        owner = mlir::cast<mlir::BlockArgument>(relation.buffer)
+                    .getOwner()
+                    ->getParentOp();
+      TileRegionOp region = owner ? owner->getParentOfType<TileRegionOp>()
+                                  : TileRegionOp{};
+      if (region)
+        actualNodes[region.getOperation()].insert(relation.structuredNodeId);
+    }
+    std::vector<RegionKey> actual;
+    for (const auto &[regionOperation, nodes] : actualNodes) {
+      auto region = mlir::cast<TileRegionOp>(regionOperation);
+      TileModuleOp tile = region->getParentOfType<TileModuleOp>();
+      if (!tile || nodes.empty()) {
+        failureReason = "selected region verifier found an unowned region";
+        return mlir::failure();
+      }
+      actual.push_back(
+          {tile.getTileIdAttr().getInt(),
+           std::vector<uint32_t>(nodes.begin(), nodes.end())});
+    }
+    llvm::sort(actual);
+    if (actual != expected) {
+      failureReason = "actual TileRegion/node groups differ from RegionPlan";
       return mlir::failure();
     }
   }

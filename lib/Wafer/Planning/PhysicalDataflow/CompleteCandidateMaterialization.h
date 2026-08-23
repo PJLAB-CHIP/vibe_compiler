@@ -5,13 +5,16 @@
 
 #include "Wafer/Analysis/PhysicalDataflow/ExactDemand.h"
 #include "Wafer/Analysis/Structured/CardProgramAnalysis.h"
+#include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/SelectedAttentionDecomposition.h"
 #include "Wafer/Planning/PhysicalDataflow/StructuredDAGPlacement.h"
 
 #include "Wafer/Conversion/WaferTensorProgramToCardModule/WaferTensorProgramToCardModule.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace wafer::compiler::detail {
@@ -38,6 +41,7 @@ struct CompleteCandidatePlan {
   SpatialAssignment spatial;
   analysis::ExactDemandProof demand;
   std::vector<analysis::RootRegionWork> rootWorks;
+  RegionPlan regions;
   TemporalPlan temporal;
   PreparedAttentionDecomposition preparedAttention;
 };
@@ -47,6 +51,13 @@ struct CardMaterializationPlan {
   analysis::ExactDemandProof demand;
   llvm::SmallVector<StructuredDAGNodePlacement, 16> nodePlacements;
   TileMapping mapping;
+  /// Present only when RegionPlan, rather than the canonical source mapping,
+  /// directly constructed the actual outer TileRegion groups.
+  std::optional<RegionPlan> selectedRegions;
+  /// Candidate-local execution instance to structured node relation used to
+  /// verify actual groups and attribute replica buffers. It is never persisted
+  /// or used as a semantic ordering key.
+  std::vector<std::pair<RegionExecutionId, uint32_t>> selectedRegionExecutions;
 };
 
 struct MaterializedCardCandidate {

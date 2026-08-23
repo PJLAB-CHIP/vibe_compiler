@@ -215,7 +215,8 @@ mlir::FailureOr<CardBaselineCompilationResult> compileCardBaseline(
 
   while (true) {
     CompleteCandidatePlan candidatePlan{resolved->spatial, resolved->demand,
-                                        resolved->rootWorks, resolved->temporal,
+                                        resolved->rootWorks, resolved->regions,
+                                        resolved->temporal,
                                         resolved->preparedAttention};
     CandidateMaterializationStatistics candidateStatistics;
     mlir::FailureOr<MaterializedCardCandidate> materialized =
