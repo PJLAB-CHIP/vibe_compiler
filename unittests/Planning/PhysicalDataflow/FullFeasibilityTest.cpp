@@ -1,6 +1,7 @@
 //===- FullFeasibilityTest.cpp ---------------------------------------===//
 
 #include "Wafer/Planning/PhysicalDataflow/FullFeasibility.h"
+#include "Wafer/Planning/PhysicalDataflow/Search/ActualResultController.h"
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningSession.h"
 
 #include "TestSupport/CodeGen/CardExecutableTestSupport.h"
@@ -157,9 +158,20 @@ TEST(FullFeasibilityTest,
     ASSERT_TRUE(evaluated.compilation);
     EXPECT_EQ(evaluated.compilation->tileDataflowIRTrace.size(), 16u);
     EXPECT_EQ(print(parsed.module->getOperation()), before);
-    CardExecutableLoweringResult executable = evaluated.takeExecutable();
-    expectCompleteTileDomain(executable,
-                             evaluated.compilation->tileDataflowIRTrace);
+    std::vector<std::string> traces =
+        evaluated.compilation->tileDataflowIRTrace;
+    ActualResultController controller(/*actualizationCredits=*/1);
+    const ClosedSchedulePlan &plan =
+        prefix.incomplete->getState().getSchedulePlan();
+    ASSERT_EQ(controller.reserve(plan), CandidateReservation::Granted);
+    ASSERT_EQ(controller.record(plan, std::move(evaluated)),
+              CandidateRecordOutcome::Accepted);
+    SearchControllerResult controlled = controller.finish(true);
+    ASSERT_TRUE(controlled.winner);
+    EXPECT_EQ(controlled.coverage, SearchControllerCoverage::FeasibleUnranked);
+    CardExecutableLoweringResult executable =
+        controlled.winner->takeExecutable();
+    expectCompleteTileDomain(executable, traces);
   }
 }
 

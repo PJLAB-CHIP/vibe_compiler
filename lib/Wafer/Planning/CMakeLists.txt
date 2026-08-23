@@ -30,6 +30,7 @@ set(WAFER_PLANNING_SOURCES
   Planning/PhysicalDataflow/RootRegionWorkAnalysis.cpp
   Planning/PhysicalDataflow/RootWorkDomain.cpp
   Planning/PhysicalDataflow/Search/PlanningProblem.cpp
+  Planning/PhysicalDataflow/Search/ActualResultController.cpp
   Planning/PhysicalDataflow/Search/PlanningSession.cpp
   Planning/PhysicalDataflow/Search/PlanningState.cpp
   Planning/PhysicalDataflow/RegionPlan.cpp

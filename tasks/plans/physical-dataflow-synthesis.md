@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F full-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J schedule domain及Q50.K execution-structure-domain已经闭合；当前下一项是`search-control-closure`。Q50.S attention vertical、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F full-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I storage closure、Q50.J schedule domain、Q50.K execution-structure-domain及Q51.Core actual-result controller已经闭合；当前下一项是`unified-search-closure`。Q50.S attention vertical、Q51 unified closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -5363,6 +5363,53 @@ determinism/source identity、noncanonical schedule zero-actualization Unsupport
 当前actual constructor只接纳它已逐plan证明对应的canonical region/Tensor/DDR/fresh/Serialized/first-schedule surface；其它domain members的
 selected construction仍由unified-search-closure迁移，Unsupported不会被记成legality no-good。这是materialization capability缺口，不是
 上游IR“不支持”或另一个policy的fallback。
+
+## Work Item `search-control-closure`：Actual Result Controller（Q51.Core）
+
+```text
+Pipeline position:
+- Upstream IR / input:
+  complete ScheduledState semantic key和full-feasibility typed actual result；Accepted结果拥有唯一actual executable/cost，尚无public winner。
+- Current stage responsibility:
+  预留一次actualization、拒绝duplicate key；只让Accepted进入同cohort comparison；记录exact-complete rejection，汇总Unsupported/
+  Indeterminate，按objective knowledge发布coverage和move-only incumbent。
+- Output IR / files:
+  controller不写IR/文件；返回一个retained accepted candidate或typed no-result，以及coverage/counters。loser/rejected executable由RAII销毁。
+- Downstream consumer:
+  unified-search-closure提供真实ScheduledState traversal并消费retained result；public driver只发布该winner，不重建。
+- User-level driver / named pipeline:
+  只属于public `search` controller；`none`不构造或调用本controller。
+- Explicit non-goals:
+  本项不补全轴continuation、不设默认cost rate、不按SPM high-water/bytes lexicographic选winner、不从owner roots推广prefix no-good、
+  不读取diagnostic字符串或actual IR pointer作为semantic key。
+- Done criteria:
+  reserve/evaluate exactly-once；Accepted/Exact/Unsupported/Indeterminate/CompilerBug转移正确；Known同cohort比较与Unknown/Incomparable coverage正确；
+  exact-complete cache on/off不改变accepted set；strict bound pruning只在Known bound > Known incumbent时成立。
+```
+
+| 输入等价类 | 代表输入 | controller路径 | typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- | --- |
+| exactly-once ownership | rank-3 1024/1025 accepted state及duplicate key | reserve→actual result→move-only incumbent；同key第二次reserve拒绝 | unreserved/duplicate finish为compiler bug | evaluations、actualizations、accepted计数逐项一致；winner只move一次 | unified-search可直接take retained executable |
+| actual result分类 | Accepted、SPM ExactRejection、其它exact、Unsupported、Indeterminate、CompilerBug | 只有Accepted比较；exact只记完整plan；unsupported/indeterminate只降coverage | compiler bug终止且无winner替换 | forbidden size、incumbent、coverage和各类count all-and-only | public result不会把unsupported当no-solution/fallback |
+| explicit cost cohort | actual instruction/DDR/NoC metrics Known/Unknown/overflow | 只有显式rates且所有required metrics Known时产生Known ticks；否则Unknown | rate zero/overflow/metric unavailable | Better/Worse/Equivalent/Incomparable及semantic tie确定 | Q52可替换cohort facts而不改domain |
+| admissible bound seam | Known/Unknown complete-plan lower bound和Known/Unknown incumbent | strict `bound > incumbent`才允许prune；equal继续 | cohort mismatch/unknown不prune | 关闭bound只增加work，不改变selected accepted key | unified frontier复用同一predicate |
+| exact-complete feedback | 两个schedule siblings、重复SPM witness、owner roots不同 | cache key为完整ClosedSchedulePlan；只做exact equality/subsumption duplicate | empty/stale key拒绝 | rejected point命中自身、不命中任一sibling；删除cache不改accepted set | item17 traversal保留parent continuation |
+| deterministic finish | 2--7 synthetic accepted results、输入反转、mixed comparable/incomparable | Known objective优先；Equivalent/Incomparable用完整semantic key确定commit但coverage区分 | 无accepted、allowance exhausted | winner key/order-independent，coverage为ComparableBest/FeasibleUnranked/NoFeasible | public search一次发布并准确报告coverage |
+
+实现闭合：`ActualResultController`以完整`ClosedSchedulePlan`为唯一candidate key，actualization credit在启动前预留；invalid、duplicate或
+exhausted reservation均不启动candidate。只有`FullFeasibilityStatus::Accepted`且携actual executable的结果进入incumbent；ExactRejection
+记录plan全字段的`ExactCompleteRejection`及typed SPM/executable proof kind，Unsupported/Indeterminate不写cache，CompilerBug poison
+controller。accepted executable在replace/finish中保持move-only，loser由RAII销毁。
+
+`SearchCostCohort`必须由caller显式给出四个positive target tick rates；actual instruction/DDR/min-hop metrics任一Unknown或checked arithmetic
+overflow即得到无value的`UnknownSearchObjective`。同cohort Known objective才比较Better/Worse/Equivalent；Unknown或cohort不同为
+Incomparable，commit只用完整semantic plan key确定，但coverage标`FeasibleUnranked`。strict bound predicate仅在Known同cohort且
+`bound > incumbent`时为true。finish区分ComparableBest、FeasibleUnranked、FeasiblePartial、NoFeasible、IncompleteNoCandidate和Failed。
+
+fresh direct 5/5覆盖zero/unknown/overflow、2--7 accepted输入反转、exact/unsupported/indeterminate cache、allowance/duplicate/compiler bug、
+strict bound及coverage；`FullFeasibilityTest`真实1024/1025 accepted executable已经走reserve→record→finish→take winner。ordinary host unit
+891/891、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public link closure及source organization通过。
+全轴continuation/frontier和public routing仍由下一项`unified-search-closure`拥有；本项没有用mock domain声称完成遍历。
 
 ## Q51 Planning and Search
 

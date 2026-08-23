@@ -673,6 +673,18 @@ source program
 - full-feasibility API没有footprint、predicted lifetime、candidate bytes或替代allocator输入。SPM合法性仍只来自actual Instr relations和唯一
   MiniMalloc路径；重复相同state用于test oracle时必须fresh materialize并得到相同accepted IR或typed witness，不能回放旧输出。
 
+## Actual-result controller（stable，2026-08-23）
+
+- complete candidate identity是完整`ClosedSchedulePlan`。actualization credit必须在启动transaction前按该key reserve；invalid/duplicate/
+  exhausted key不启动。只有Accepted actual result参与comparison；actual ExactRejection只缓存完整point，owner roots不授权扩大prefix no-good；
+  Unsupported/Indeterminate不写forbidden cache。
+- 没有默认winner cost。caller不提供显式positive target-rate `SearchCostCohort`时objective为Unknown；metric unavailable或checked arithmetic
+  overflow也为Unknown且没有可读value。同cohort Known objective才比较，Unknown/Incomparable只用完整semantic key决定single commit并标
+  `FeasibleUnranked`，不能宣称best。lower bound只有Known同cohort且严格大于Known incumbent时才允许prune。
+- controller保留一个move-only incumbent；Better或tie-key replacement自动销毁旧owner，finish直接移交该actual executable，不重建。
+  coverage必须区分ComparableBest、FeasibleUnranked、FeasiblePartial、NoFeasible、IncompleteNoCandidate和Failed，不能把预算耗尽或unsupported
+  写成NoSolution。
+
 ## Physical search profile资格（Q51+重审期间暂停）
 
 - 普通编译不收集search统计。Q51+重审闭合前不执行重型search profile；旧`--search-max-candidate-evaluations`及对应public API已经退役，
