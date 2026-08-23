@@ -226,7 +226,7 @@ TEST_F(PlanningSessionTest,
   auto incomplete = session.getFirstIncompleteState(&failureReason);
   ASSERT_TRUE(mlir::succeeded(incomplete)) << failureReason;
   EXPECT_EQ(incomplete->getRequiredCoordinate(),
-            RequiredPlanningCoordinate::Movement);
+            RequiredPlanningCoordinate::Storage);
   EXPECT_TRUE(problem->getSpatialDomain().contains(
       incomplete->getState().getSpatialPlan()));
   EXPECT_FALSE(incomplete->getState().getRegionPlan().groups.empty());
@@ -244,6 +244,9 @@ TEST_F(PlanningSessionTest,
   EXPECT_EQ(incomplete->getWork().representationSuccessorSteps, 1u);
   EXPECT_EQ(incomplete->getWork().representationStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().unsupportedRepresentationChoices, 0u);
+  EXPECT_EQ(incomplete->getWork().movementSuccessorSteps, 1u);
+  EXPECT_EQ(incomplete->getWork().movementStatesQueued, 1u);
+  EXPECT_EQ(incomplete->getWork().unsupportedMovementChoices, 0u);
   EXPECT_FALSE(incomplete->getState().getTemporalPlan().scopes.empty());
   for (const TemporalScopePlan &scope :
        incomplete->getState().getTemporalPlan().scopes) {
@@ -252,6 +255,7 @@ TEST_F(PlanningSessionTest,
   }
   EXPECT_FALSE(
       incomplete->getState().getRepresentationPlan().physicalVersions.empty());
+  EXPECT_FALSE(incomplete->getState().getMovementPlan().externalLoads.empty());
   EXPECT_EQ(print(module->getOperation()), before);
 
   auto secondModule = parse(kRealSource);
@@ -348,6 +352,7 @@ TEST_F(PlanningSessionTest,
   RepresentationContinuation representationContinuation =
       first.createRepresentationContinuation(std::move(*temporalState));
   std::set<RepresentationPlan> representationPlans;
+  std::optional<RepresentationState> firstRepresentation;
   while (true) {
     RepresentationExpansionResult representation =
         first.resumeRepresentation(representationContinuation);
@@ -358,12 +363,26 @@ TEST_F(PlanningSessionTest,
         << representation.getDetail().str();
     std::optional<RepresentationState> state = representation.takeState();
     ASSERT_TRUE(state);
+    if (!firstRepresentation)
+      firstRepresentation = *state;
     EXPECT_EQ(state->getRequiredCoordinate(),
               RequiredPlanningCoordinate::Movement);
     representationPlans.insert(state->getRepresentationPlan());
   }
   EXPECT_TRUE(representationContinuation.isExhausted());
   EXPECT_EQ(representationPlans.size(), 4u * 4u * 7u);
+  ASSERT_TRUE(firstRepresentation);
+  MovementContinuation movementContinuation =
+      first.createMovementContinuation(std::move(*firstRepresentation));
+  MovementExpansionResult movement = first.resumeMovement(movementContinuation);
+  ASSERT_EQ(movement.getKind(), MovementExpansionKind::State)
+      << movement.getDetail().str();
+  std::optional<MovementState> movementState = movement.takeState();
+  ASSERT_TRUE(movementState);
+  EXPECT_EQ(movementState->getRequiredCoordinate(),
+            RequiredPlanningCoordinate::Storage);
+  EXPECT_EQ(first.resumeMovement(movementContinuation).getKind(),
+            MovementExpansionKind::ParentExhausted);
 }
 
 TEST_F(PlanningSessionTest,

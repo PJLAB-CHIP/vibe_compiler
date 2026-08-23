@@ -2,6 +2,7 @@
 
 #include "Wafer/Planning/PhysicalDataflow/Search/PlanningSession.h"
 
+#include "Wafer/Planning/PhysicalDataflow/CanonicalMovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/CanonicalRepresentationPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RootWorkDomain.h"
@@ -377,6 +378,91 @@ PhysicalDataflowPlanningSession::getOrCreateRepresentationDomain(
   return {&stored->second, {}};
 }
 
+PhysicalDataflowPlanningSession::MovementDomainLookup
+PhysicalDataflowPlanningSession::getOrCreateMovementDomain(
+    const RepresentationState &representations) {
+  auto cached = movementDomainCache.find(representations);
+  if (cached != movementDomainCache.end())
+    return {&cached->second, {}};
+  RepresentationDomainLookup representationDomain =
+      getOrCreateRepresentationDomain(representations.getTemporalState());
+  if (!representationDomain.domain)
+    return {nullptr,
+            MovementDomainFailure{
+                MovementDomainFailureKind::BrokenContract,
+                representationDomain.failure
+                    ? representationDomain.failure->detail
+                    : "movement transition lost its representation domain"}};
+  auto rootWorks = rootWorkCache.find(representations.getSpatialPlan());
+  if (rootWorks == rootWorkCache.end())
+    return {nullptr, MovementDomainFailure{
+                         MovementDomainFailureKind::BrokenContract,
+                         "movement transition has no derived root work"}};
+
+  CanonicalRepresentationCoordinate primary;
+  for (const LogicalRepresentationPlan &logical :
+       representations.getRepresentationPlan().logicalValues) {
+    auto version =
+        llvm::find_if(representations.getRepresentationPlan().physicalVersions,
+                      [&](const PhysicalVersionPlan &candidate) {
+                        return candidate.id == logical.primary;
+                      });
+    const RepresentationResourceDescription *resource =
+        representationDomain.domain->findResource(logical.value);
+    if (version ==
+            representations.getRepresentationPlan().physicalVersions.end() ||
+        !resource)
+      return {nullptr, MovementDomainFailure{
+                           MovementDomainFailureKind::BrokenContract,
+                           "movement transition has an incomplete primary "
+                           "representation"}};
+    primary.plan.logicalValues.push_back(logical);
+    primary.plan.physicalVersions.push_back(*version);
+    RepresentationResourceDescription selected = *resource;
+    selected.version = logical.primary;
+    selected.encoding = version->encoding;
+    primary.resources.push_back(std::move(selected));
+  }
+  llvm::sort(primary.plan.logicalValues);
+  llvm::sort(primary.plan.physicalVersions);
+  llvm::sort(primary.resources,
+             [](const RepresentationResourceDescription &lhs,
+                const RepresentationResourceDescription &rhs) {
+               return lhs.version < rhs.version;
+             });
+  CanonicalMovementPlanOutcome canonical = buildCanonicalMovementPlan(
+      representations.getRegionPlan(), primary, rootWorks->second);
+  const CanonicalMovementCoordinate *coordinate =
+      getCanonicalMovementCoordinate(canonical);
+  if (!coordinate) {
+    if (const auto *unsupported =
+            std::get_if<UnsupportedMovementPlan>(&canonical))
+      return {nullptr, MovementDomainFailure{
+                           MovementDomainFailureKind::UnsupportedSemantics,
+                           unsupported->detail}};
+    return {nullptr, MovementDomainFailure{
+                         MovementDomainFailureKind::BrokenContract,
+                         std::get<BrokenMovementPlan>(canonical).detail}};
+  }
+  MovementDomainResult result =
+      buildMovementDomain(*coordinate, representations.getRepresentationPlan(),
+                          problem.getProgram().availableTileIds);
+  if (!result.succeeded()) {
+    if (result.failure)
+      return {nullptr, std::move(result.failure)};
+    return {nullptr,
+            MovementDomainFailure{MovementDomainFailureKind::BrokenContract,
+                                  "movement domain returned no typed outcome"}};
+  }
+  auto [stored, inserted] = movementDomainCache.try_emplace(
+      representations, std::move(*result.domain));
+  if (!inserted)
+    return {nullptr, MovementDomainFailure{
+                         MovementDomainFailureKind::BrokenContract,
+                         "movement domain cache changed during construction"}};
+  return {&stored->second, {}};
+}
+
 mlir::FailureOr<std::optional<RegionState>>
 PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
                                               std::string *failureReason) {
@@ -532,6 +618,54 @@ PhysicalDataflowPlanningSession::resumeRepresentation(
   return {RepresentationExpansionKind::State, std::move(*state)};
 }
 
+MovementExpansionResult PhysicalDataflowPlanningSession::resumeMovement(
+    MovementContinuation &continuation) {
+  if (continuation.exhausted)
+    return {MovementExpansionKind::ParentExhausted};
+  MovementDomainLookup lookup = getOrCreateMovementDomain(continuation.parent);
+  if (!lookup.domain) {
+    if (!lookup.failure)
+      return {MovementExpansionKind::CompilerBug,
+              {},
+              "movement domain lookup returned no typed outcome"};
+    if (lookup.failure->kind ==
+        MovementDomainFailureKind::UnsupportedSemantics) {
+      ++work.unsupportedMovementChoices;
+      return {MovementExpansionKind::Unsupported,
+              {},
+              std::move(lookup.failure->detail)};
+    }
+    return {MovementExpansionKind::CompilerBug,
+            {},
+            std::move(lookup.failure->detail)};
+  }
+  ++work.movementSuccessorSteps;
+  MovementSuccessor next =
+      continuation.started ? lookup.domain->getNextPlan(*continuation.cursor)
+                           : lookup.domain->getFirstPlan();
+  if (next.getKind() == MovementSuccessorKind::End) {
+    continuation.exhausted = true;
+    continuation.cursor.reset();
+    return {MovementExpansionKind::ParentExhausted};
+  }
+  if (next.getKind() != MovementSuccessorKind::Plan || !next.getPlan() ||
+      !next.getCursor())
+    return {MovementExpansionKind::CompilerBug,
+            {},
+            next.getDetail().empty()
+                ? "movement successor omitted its plan or cursor"
+                : next.getDetail().str()};
+  std::string detail;
+  auto state = MovementState::create(*lookup.domain, continuation.parent,
+                                     *next.getPlan(), &detail);
+  if (mlir::failed(state))
+    return {MovementExpansionKind::CompilerBug, {}, std::move(detail)};
+  continuation.cursor = *next.getCursor();
+  continuation.started = true;
+  ++work.movementStatesQueued;
+  return {MovementExpansionKind::State, std::move(*state)};
+}
+
 mlir::FailureOr<IncompletePlanningDomain>
 PhysicalDataflowPlanningSession::getFirstIncompleteState(
     std::string *failureReason) {
@@ -625,8 +759,24 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
       *failureReason = "representation state result lost its value";
     return mlir::failure();
   }
-  return IncompletePlanningDomain(std::move(*representationState),
-                                  RequiredPlanningCoordinate::Movement,
+  MovementContinuation movementContinuation =
+      createMovementContinuation(std::move(*representationState));
+  MovementExpansionResult movement = resumeMovement(movementContinuation);
+  if (movement.getKind() != MovementExpansionKind::State) {
+    if (failureReason)
+      *failureReason = movement.getDetail().empty()
+                           ? "movement planning domain has no supported state"
+                           : movement.getDetail().str();
+    return mlir::failure();
+  }
+  std::optional<MovementState> movementState = movement.takeState();
+  if (!movementState) {
+    if (failureReason)
+      *failureReason = "movement state result lost its value";
+    return mlir::failure();
+  }
+  return IncompletePlanningDomain(std::move(*movementState),
+                                  RequiredPlanningCoordinate::Storage,
                                   hasRemainingSpatialWork(), work);
 }
 

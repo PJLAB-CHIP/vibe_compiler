@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -94,23 +95,101 @@ struct ResultDiscardId {
 struct ExternalLoadPlan {
   ExternalLoadId id;
   PhysicalVersionId destination;
+
+  friend bool operator==(const ExternalLoadPlan &lhs,
+                         const ExternalLoadPlan &rhs) {
+    return lhs.id == rhs.id && lhs.destination == rhs.destination;
+  }
+  friend bool operator<(const ExternalLoadPlan &lhs,
+                        const ExternalLoadPlan &rhs) {
+    return std::tie(lhs.id, lhs.destination) <
+           std::tie(rhs.id, rhs.destination);
+  }
+};
+
+enum class MovementRealizationKind : uint8_t {
+  DDRStage,
+  TargetRoutedPeer,
+  SoftwareRelay,
+};
+
+struct MovementHop {
+  TileId source{0};
+  TileId destination{0};
+
+  friend bool operator==(const MovementHop &lhs, const MovementHop &rhs) {
+    return lhs.source == rhs.source && lhs.destination == rhs.destination;
+  }
+  friend bool operator<(const MovementHop &lhs, const MovementHop &rhs) {
+    return std::tuple(lhs.source.getValue(), lhs.destination.getValue()) <
+           std::tuple(rhs.source.getValue(), rhs.destination.getValue());
+  }
+};
+
+struct MovementRealization {
+  MovementRealizationKind kind = MovementRealizationKind::DDRStage;
+  std::vector<MovementHop> hops;
+
+  friend bool operator==(const MovementRealization &lhs,
+                         const MovementRealization &rhs) {
+    return lhs.kind == rhs.kind && lhs.hops == rhs.hops;
+  }
+  friend bool operator<(const MovementRealization &lhs,
+                        const MovementRealization &rhs) {
+    return std::tie(lhs.kind, lhs.hops) < std::tie(rhs.kind, rhs.hops);
+  }
 };
 
 struct DDRBoundaryTransferPlan {
   DDRBoundaryTransferId id;
   PhysicalVersionId source;
   PhysicalVersionId destination;
+  MovementRealization realization;
+
+  friend bool operator==(const DDRBoundaryTransferPlan &lhs,
+                         const DDRBoundaryTransferPlan &rhs) {
+    return lhs.id == rhs.id && lhs.source == rhs.source &&
+           lhs.destination == rhs.destination &&
+           lhs.realization == rhs.realization;
+  }
+  friend bool operator<(const DDRBoundaryTransferPlan &lhs,
+                        const DDRBoundaryTransferPlan &rhs) {
+    return std::tie(lhs.id, lhs.source, lhs.destination, lhs.realization) <
+           std::tie(rhs.id, rhs.source, rhs.destination, rhs.realization);
+  }
 };
 
 struct ReductionGatherPlan {
   ReductionGatherId id;
   PhysicalVersionId source;
   ExecutionInstanceId mergeExecution;
+  MovementRealization realization;
+
+  friend bool operator==(const ReductionGatherPlan &lhs,
+                         const ReductionGatherPlan &rhs) {
+    return lhs.id == rhs.id && lhs.source == rhs.source &&
+           lhs.mergeExecution == rhs.mergeExecution &&
+           lhs.realization == rhs.realization;
+  }
+  friend bool operator<(const ReductionGatherPlan &lhs,
+                        const ReductionGatherPlan &rhs) {
+    return std::tie(lhs.id, lhs.source, lhs.mergeExecution, lhs.realization) <
+           std::tie(rhs.id, rhs.source, rhs.mergeExecution, rhs.realization);
+  }
 };
 
 struct ResultPublicationPlan {
   ResultPublicationId id;
   PhysicalVersionId source;
+
+  friend bool operator==(const ResultPublicationPlan &lhs,
+                         const ResultPublicationPlan &rhs) {
+    return lhs.id == rhs.id && lhs.source == rhs.source;
+  }
+  friend bool operator<(const ResultPublicationPlan &lhs,
+                        const ResultPublicationPlan &rhs) {
+    return std::tie(lhs.id, lhs.source) < std::tie(rhs.id, rhs.source);
+  }
 };
 
 /// Explicit disposition for an execution result whose exact piece is produced
@@ -119,6 +198,15 @@ struct ResultPublicationPlan {
 struct ResultDiscardPlan {
   ResultDiscardId id;
   PhysicalVersionId source;
+
+  friend bool operator==(const ResultDiscardPlan &lhs,
+                         const ResultDiscardPlan &rhs) {
+    return lhs.id == rhs.id && lhs.source == rhs.source;
+  }
+  friend bool operator<(const ResultDiscardPlan &lhs,
+                        const ResultDiscardPlan &rhs) {
+    return std::tie(lhs.id, lhs.source) < std::tie(rhs.id, rhs.source);
+  }
 };
 
 struct MovementPlan {
@@ -127,6 +215,19 @@ struct MovementPlan {
   std::vector<ReductionGatherPlan> reductionGathers;
   std::vector<ResultPublicationPlan> publications;
   std::vector<ResultDiscardPlan> discards;
+
+  friend bool operator==(const MovementPlan &lhs, const MovementPlan &rhs) {
+    return lhs.externalLoads == rhs.externalLoads &&
+           lhs.ddrTransfers == rhs.ddrTransfers &&
+           lhs.reductionGathers == rhs.reductionGathers &&
+           lhs.publications == rhs.publications && lhs.discards == rhs.discards;
+  }
+  friend bool operator<(const MovementPlan &lhs, const MovementPlan &rhs) {
+    return std::tie(lhs.externalLoads, lhs.ddrTransfers, lhs.reductionGathers,
+                    lhs.publications, lhs.discards) <
+           std::tie(rhs.externalLoads, rhs.ddrTransfers, rhs.reductionGathers,
+                    rhs.publications, rhs.discards);
+  }
 };
 
 using MovementActionId = std::variant<ExternalLoadId, DDRBoundaryTransferId,

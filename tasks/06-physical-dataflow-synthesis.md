@@ -494,7 +494,9 @@ canonical movement coordinate为singleton regions建立显式correctness carrier
 version，structured fragments用owner primary→consumer boundary primary的DDR transfer；remote ordinary/coupled contributions按result/
 component逐项gather，同merge Tile的local contribution无action；沿pure non-structured SSA path到function return的final result显式
 publication。plan只保存typed action/version/execution IDs，exact domain/type进入resource description；peer/relay/reuse/collective仍由
-后续`movement-domain`扩展。
+current movement domain扩展成DDR、opaque target-routed peer和explicit simple software-relay realization。selected G version/layout不兼容时
+peer无state；current target没有qualified hardware collective/raw-route contract时不伪造state。跨boundary multicast/ring及其I/J
+storage/completion witness仍由保留donor后续迁移，不能把endpoint path写成hardware route。
 
 Movement proposal可以消费一个query-local、可失效的relation-derived reuse analysis：它从Q50.A exact demand、selected
 placement、TileRegion/traversal、wave-loop order和representation推导spatial-demand equivalence/invariance classes、

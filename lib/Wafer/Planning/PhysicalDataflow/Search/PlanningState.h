@@ -3,6 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSTATE_H
 
+#include "Wafer/Planning/PhysicalDataflow/MovementPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/PlanningCoordinate.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionPlan.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationPlan.h"
@@ -17,6 +18,7 @@
 namespace wafer::compiler::detail {
 
 class PhysicalDataflowPlanningProblem;
+class MovementDomain;
 class RegionDomain;
 class RepresentationDomain;
 class TemporalDomain;
@@ -167,6 +169,54 @@ private:
 
   TemporalState temporal;
   RepresentationPlan representations;
+};
+
+/// A validated movement coordinate extending one RepresentationState.
+class MovementState {
+public:
+  static mlir::FailureOr<MovementState>
+  create(const MovementDomain &domain, RepresentationState representations,
+         MovementPlan movement, std::string *failureReason = nullptr);
+
+  const RepresentationState &getRepresentationState() const {
+    return representations;
+  }
+  const SpatialPlan &getSpatialPlan() const {
+    return representations.getSpatialPlan();
+  }
+  const RegionPlan &getRegionPlan() const {
+    return representations.getRegionPlan();
+  }
+  const TemporalPlan &getTemporalPlan() const {
+    return representations.getTemporalPlan();
+  }
+  const RepresentationPlan &getRepresentationPlan() const {
+    return representations.getRepresentationPlan();
+  }
+  const MovementPlan &getMovementPlan() const { return movement; }
+  RequiredPlanningCoordinate getRequiredCoordinate() const {
+    return RequiredPlanningCoordinate::Storage;
+  }
+
+  friend bool operator==(const MovementState &lhs, const MovementState &rhs) {
+    return lhs.representations == rhs.representations &&
+           lhs.movement == rhs.movement;
+  }
+  friend bool operator<(const MovementState &lhs, const MovementState &rhs) {
+    if (lhs.representations < rhs.representations)
+      return true;
+    if (rhs.representations < lhs.representations)
+      return false;
+    return lhs.movement < rhs.movement;
+  }
+
+private:
+  MovementState(RepresentationState representations, MovementPlan movement)
+      : representations(std::move(representations)),
+        movement(std::move(movement)) {}
+
+  RepresentationState representations;
+  MovementPlan movement;
 };
 
 } // namespace wafer::compiler::detail

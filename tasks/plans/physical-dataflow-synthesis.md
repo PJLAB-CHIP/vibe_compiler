@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility及Q50.G layout-domain已经闭合；当前下一项是`movement-domain`。Q50.S attention vertical、Q50.H–K、Q50.F full-feasibility、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain及Q50.H movement-domain已经闭合；当前下一项是`storage-domain`。Q50.S attention vertical、Q50.I–K、Q50.F full-feasibility、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -3534,6 +3534,18 @@ Q50.H由两个work items完成：
 | rank-zero/empty/merge-only | nonempty rank-zero tensor、exact-empty fragment、merge-only Tile | rank-zero可有0-rank load/transfer；empty无action；merge-only只接remote gathers | storage plan不为empty创建slot，也不因无root scope漏merge payload |
 | typed failure | missing/duplicate physical version、fragment/resource domain不一致、owner/execution不存在、effectful output path | unsupported或compiler-contract failure且无partial plan，不fallback到peer/另一个owner | 修正输入可重新query，source IR byte-identical |
 
+`movement-domain`施工前覆盖矩阵如下。小endpoint graph只用于transfer-graph独立oracle；production payload使用rank至少为3、主要维度
+1024/1025/1031的exact resource，并区分target-routed endpoint transfer与compiler-emitted relay。
+
+| 覆盖类 | 代表输入 | exact断言 | Core / apply witness |
+| --- | --- | --- | --- |
+| DDR与same-region边界 | program/constant input、same-Tile cross-region、rank-zero与exact-empty | external load/publication保持显式DDR boundary；same-Tile boundary只有DDR sibling；empty无action | `RepresentationState -> MovementState`，query零IR，public search推进到Storage |
+| cross-Tile target-routed peer | rank-3 1024/1025、non-identity endpoints、opaque target routing | 每个cross-Tile payload保留DDR与direct peer siblings；direct只记录source/destination/message/version，不写raw path/link attr | selected emitter生成matching peer send/recv/wait obligations；opaque routing无per-link结论 |
+| software relay与fanout boundaries | tiny 3--5 Tile endpoint set、多个独立fanout boundaries | 每个boundary relay chain逐hop显式source/destination且acyclic；one/multi-relay simple paths逐key匹配flat permutation oracle | relay Tile有typed recv→forward chain，不冒充hardware route；跨boundary shared multicast仍由保留donor承接后续迁移 |
+| reduction与coupled components | ordinary remote partial、FD Maximum/Sum/Accumulator、local contribution | remote payload逐result/component完整枚举DDR/direct/relay；local contribution无movement；component不合并opaque payload | merge completion obligation逐payload存在，I/J可直接消费 |
+| representation/version一致性 | primary/shared/per-use conversion、identity alias、mismatched layouts | H只引用G selected source/destination IDs；不插layout conversion、不按first use换source；unsupported transfer encoding无state | G builder与H emitter definitions all-and-only，boundary load仍由H owner绑定 |
+| typed failure与资源隔离 | missing/duplicate action/version、coverage hole/overlap、unavailable endpoint、relay cycle/dead node、message mismatch | ExactRejection/Unsupported/Indeterminate/CompilerBug分类稳定；query不物化、不算SPM capacity、不选winner | failure零source mutation；修正plan可重试，actual gate后置 |
+
 ### H-1 专项调研：transport topology、movement boundary与payload合同
 
 MLIR async合同要求所有依赖显式进入token/value，且“可并发”不保证实际并发；因此send/recv token、consumer visibility和buffer release
@@ -3986,6 +3998,30 @@ remote offset、FSM/status/resource binding。两者消费不同IR层且共享ty
   package/no-card通过。H施工不运行重型LLaMA search。
 
 H只有上述query、actual和迁移gate全部闭合才完成；旧“current basic apply已存在”或若干send/recv计数不能代签alias/lifetime/slice proof。
+
+### `movement-domain`实现闭合
+
+- existing boundary/gather plan原位增加`MovementRealization`：DDR无hop，opaque target-routed peer只含一个physical endpoint transfer，
+  software relay含逐hopendpoint transfers。plan不保存raw router path、link load、cost或message ordinal；external load/publication/discard
+  继续保持原typed action identity。
+- `MovementDomain`从canonical action/resource与G selected versions重闭source/destination IDs。same-Tile或layout不兼容payload只保留DDR；
+  cross-Tile compatible payload保留DDR、direct peer及available relay Tiles的全部simple relay permutations。successor惰性推进relay count/
+  permutation，不预建path vectors，不删除DDR sibling；input Tile顺序扰动不改变plan集合。
+- remote ordinary/coupled gather复用同一realization domain；local contribution仍无action。current target没有qualified hardware collective或
+  programmable raw route，因此不伪造对应state。跨多个boundary的shared multicast/tree及ring donor仍保留在旧DataMovement owner，待J/I
+  completion/storage关系接入后迁移；new state不调用旧node/edge domain或SimpleRoute。
+- `preparePeerTransfer`用actual SPM memref type计算并逐hop验证physical bytes/layout、endpoint totality和acyclic chain，全部成功后
+  `emitPreparedPeerTransfer`生成matching `tile.peer_send/recv`及typed tokens。direct/relay source不由shape/name/first use查找；physical
+  mismatch与cycle在零communication mutation时失败。message integers只是candidate-local lowering carrier，不进入plan identity。
+- `MovementState`、continuation和session cache已经接入production Core；G first point经canonical movement重闭后进入new domain，public search
+  报告missing Storage且actualization为0。tiny no-cross-boundary case只有一个DDR point；old apply surgery与immediate-await scheduling只作为
+  H/I/J donor保留，不进入new query/state。
+
+fresh证据：`MovementDomainTest` 4/4覆盖rank-3 1024/1025/1031、6点simple-path oracle、input-order、same-Tile DDR、layout mismatch、
+remote reduction、rank-zero与endpoint failure；`MovementTransferBuilderTest` 2/2覆盖two-hop relay matching send/recv tokens且无immediate await、actual physical
+bytes、layout mismatch/cycle atomic failure；`PlanningSessionTest` 6/6、`SearchRoutingTest` 2/2及`CanonicalMovementPlanTest` 5/5共同证明
+Core、missing Storage、source不变及zero actualization，direct集合19/19；ordinary host unit 857/857（6个独立heavy baseline cases不在本项
+重复）；core lit 227/227，Tools/Runtime lit 35 passed、4 configured unsupported；compiler public link、source organization和diff检查通过。
 
 ## Q50.I：Buffer and Rotating Slots
 
