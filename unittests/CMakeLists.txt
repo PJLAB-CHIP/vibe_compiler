@@ -42,6 +42,7 @@ add_executable(WaferUnitTests
   Planning/PhysicalDataflow/CanonicalStoragePlanTest.cpp
   Planning/PhysicalDataflow/CanonicalSchedulePlanTest.cpp
   Planning/PhysicalDataflow/CanonicalPlanningCoverageTest.cpp
+  Planning/PhysicalDataflow/EventGraphTest.cpp
   Planning/PhysicalDataflow/SelectedAttentionDecompositionTest.cpp
   Planning/PhysicalDataflow/Search/PlanningSessionTest.cpp
   Planning/PhysicalDataflow/RootWorkDomainTest.cpp

@@ -21,6 +21,8 @@ stringifyRequiredPlanningCoordinate(RequiredPlanningCoordinate coordinate) {
     return "storage";
   case RequiredPlanningCoordinate::EventResource:
     return "event-resource";
+  case RequiredPlanningCoordinate::ExecutionStructure:
+    return "execution-structure";
   }
   return "unknown";
 }

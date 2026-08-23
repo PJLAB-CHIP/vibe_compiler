@@ -40,8 +40,8 @@ Q63和Q64等前置已满足，不在当前队列中重复展开。
 | 8 | `layout-domain` | `done` | Q50.G | partial-feasibility、canonical-representation-plan | representation constraint solver、Core consumer及apply |
 | 9 | `movement-domain` | `done` | Q50.H | layout-domain、canonical-movement-plan | local/DDR/DTE/relay/collective domain、proof及Core consumer |
 | 10 | `storage-domain` | `done` | Q50.I | movement-domain、canonical-storage-plan | fresh/alias/reuse与`1..U` slot domain及Core consumer |
-| 11 | `event-resource-foundation` | `next` | Q50.J | storage-domain、Q63 | EventGraph、resource/recurrence facts及Core consumer |
-| 12 | `execution-structure-domain` | `queued` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |
+| 11 | `event-resource-foundation` | `done` | Q50.J | storage-domain、Q63 | EventGraph、resource/recurrence facts及Core consumer |
+| 12 | `execution-structure-domain` | `next` | Q50.K | event-resource-foundation、storage-domain、serialized-execution | Serialized/Pipelined structure domain及Core consumer |
 | 13 | `structure-specific-storage` | `queued` | Q50.I | execution-structure-domain、storage-domain | fixed-K occurrence、slot multiplicity、rotation及lifetime closure |
 | 14 | `schedule-domain` | `queued` | Q50.J | structure-specific-storage、event-resource-foundation | fixed-K/I order、worker、resource与completion domain |
 | 15 | `full-feasibility` | `queued` | Q50.F | schedule-domain及完整B–K→I→J plan | 完整候选actual materialization、SPM/DDR/transport gate、typed rejection及Core反馈 |

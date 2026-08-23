@@ -226,7 +226,9 @@ TEST_F(PlanningSessionTest,
   auto incomplete = session.getFirstIncompleteState(&failureReason);
   ASSERT_TRUE(mlir::succeeded(incomplete)) << failureReason;
   EXPECT_EQ(incomplete->getRequiredCoordinate(),
-            RequiredPlanningCoordinate::EventResource);
+            RequiredPlanningCoordinate::ExecutionStructure);
+  EXPECT_FALSE(incomplete->getEventGraph().getEvents().empty());
+  EXPECT_FALSE(incomplete->getEventGraph().getHardDependencies().empty());
   EXPECT_TRUE(problem->getSpatialDomain().contains(
       incomplete->getState().getSpatialPlan()));
   EXPECT_FALSE(incomplete->getState().getRegionPlan().groups.empty());
@@ -241,6 +243,8 @@ TEST_F(PlanningSessionTest,
   EXPECT_EQ(incomplete->getWork().temporalSuccessorSteps, 1u);
   EXPECT_EQ(incomplete->getWork().temporalStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().structuralReadinessQueries, 1u);
+  EXPECT_EQ(incomplete->getWork().eventGraphQueries, 1u);
+  EXPECT_EQ(incomplete->getWork().eventGraphsBuilt, 1u);
   EXPECT_EQ(incomplete->getWork().representationSuccessorSteps, 1u);
   EXPECT_EQ(incomplete->getWork().representationStatesQueued, 1u);
   EXPECT_EQ(incomplete->getWork().unsupportedRepresentationChoices, 0u);

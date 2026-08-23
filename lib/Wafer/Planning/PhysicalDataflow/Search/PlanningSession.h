@@ -3,6 +3,7 @@
 #ifndef WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSESSION_H
 #define WAFER_COMPILER_PLANNING_PHYSICALDATAFLOW_SEARCH_PLANNINGSESSION_H
 
+#include "Wafer/Planning/PhysicalDataflow/EventGraph.h"
 #include "Wafer/Planning/PhysicalDataflow/MovementDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RegionDomain.h"
 #include "Wafer/Planning/PhysicalDataflow/RepresentationDomain.h"
@@ -46,6 +47,8 @@ struct PlanningWorkCounts {
   uint64_t storageSuccessorSteps = 0;
   uint64_t storageStatesQueued = 0;
   uint64_t unsupportedStorageChoices = 0;
+  uint64_t eventGraphQueries = 0;
+  uint64_t eventGraphsBuilt = 0;
   uint64_t duplicateSpatialChoices = 0;
   uint64_t unsupportedSpatialChoices = 0;
   uint64_t indeterminateSpatialChoices = 0;
@@ -90,6 +93,7 @@ private:
 class IncompletePlanningDomain {
 public:
   const InitialBufferState &getState() const { return state; }
+  const EventGraph &getEventGraph() const { return eventGraph; }
   RequiredPlanningCoordinate getRequiredCoordinate() const {
     return requiredCoordinate;
   }
@@ -97,15 +101,17 @@ public:
   const PlanningWorkCounts &getWork() const { return work; }
 
 private:
-  IncompletePlanningDomain(InitialBufferState state,
+  IncompletePlanningDomain(InitialBufferState state, EventGraph eventGraph,
                            RequiredPlanningCoordinate requiredCoordinate,
                            bool remainingSpatialWork, PlanningWorkCounts work)
-      : state(std::move(state)), requiredCoordinate(requiredCoordinate),
+      : state(std::move(state)), eventGraph(std::move(eventGraph)),
+        requiredCoordinate(requiredCoordinate),
         remainingSpatialWork(remainingSpatialWork), work(work) {}
 
   InitialBufferState state;
+  EventGraph eventGraph;
   RequiredPlanningCoordinate requiredCoordinate =
-      RequiredPlanningCoordinate::EventResource;
+      RequiredPlanningCoordinate::ExecutionStructure;
   bool remainingSpatialWork = false;
   PlanningWorkCounts work;
 
@@ -424,6 +430,13 @@ private:
 
   StorageDomainLookup getOrCreateStorageDomain(const MovementState &movement);
 
+  struct EventGraphLookup {
+    EventGraph *graph = nullptr;
+    std::optional<EventGraphFailure> failure;
+  };
+
+  EventGraphLookup getOrCreateEventGraph(const InitialBufferState &buffers);
+
   const PhysicalDataflowPlanningProblem &problem;
   CanonicalCursor canonicalCursor = CanonicalCursor::NotStarted;
   std::optional<SpatialPlan> lastCanonicalChoice;
@@ -437,6 +450,7 @@ private:
   std::map<TemporalState, RepresentationDomain> representationDomainCache;
   std::map<RepresentationState, MovementDomain> movementDomainCache;
   std::map<MovementState, StorageDomain> storageDomainCache;
+  std::map<InitialBufferState, EventGraph> eventGraphCache;
   PlanningWorkCounts work;
 };
 

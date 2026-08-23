@@ -2,7 +2,7 @@
 
 状态：Q50.0 complete-candidate CardExecutable实际编译/准入边界、Q50.A production exact-demand boundary、Q49.P
 deterministic baseline、Q50.B spatial-domain、Q51.Core search-control-foundation、Q50.C root-work-domain和Q50.D
-region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain及Q50.I initial storage-domain已经闭合；当前下一项是`event-resource-foundation`。Q50.S attention vertical、Q50.J/K、Q50.I structure-specific-storage、Q50.F full-feasibility、Q51 closure、Q52与Q53的
+region-execution-domain、Q50.E temporal-domain、Q50.F partial-feasibility、Q50.G layout-domain、Q50.H movement-domain、Q50.I initial storage-domain及Q50.J event-resource-foundation已经闭合；当前下一项是`execution-structure-domain`。Q50.S attention vertical、Q50.J/K、Q50.I structure-specific-storage、Q50.F full-feasibility、Q51 closure、Q52与Q53的
 search部分仍按`tasks/progress.md`线性施工。此前关于
 baseline incumbent、同一complete-candidate probe/rebuild与winner rematerialization、统一全轴search、scalability/LNS及model-scale search质量的完成声明均不再是
 current证据。
@@ -4608,6 +4608,18 @@ ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observe
 
 #### event-resource-foundation-1 Gate
 
+本work item在实现前冻结下面的覆盖矩阵。1024/1025/1031只用于证明同一通用event构造覆盖整除、ragged和tail，
+不进入EventId、dependency或resource合同；2--7 event小图只用于有界独立oracle。
+
+| 输入等价类 | 代表输入 | 结构路径 | typed failure | 精确断言 | 直接下游witness |
+| --- | --- | --- | --- | --- | --- |
+| execution与普通storage lifetime | rank-3，主维1024/1025，至少两个Tile | definition/ready→compute issue/completion→use/release，独立branch、chain、fanin/fanout | duplicate/missing execution、object、resource、lifetime | all-and-only EventId、每条data/lifetime edge reason、SPM range与Tile engine scope | execution-structure-domain直接读取同一graph的components和hard DAG |
+| DDR边界与publication | rank-3，1024/1031，multi-piece transfer | external load、DDR stage、observable write；shared DDR只贡献resource/order choice | action/resource不一致、缺completion boundary | issue/completion、ready/publication依赖、CardDDR use和observable event逐项相等 | K不能通过source order恢复movement边界 |
+| peer direct/relay/gather | rank>=3，1025/1031，local与remote contribution | Direct DTE endpoint、每hop relay、gather local combine | malformed hop、endpoint不连续、unknown action | 每hopissue/completion链、source/destination DTE exact use；opaque route没有DirectedNoCLink | 后续schedule域在相同events上选择order/worker/wait |
+| alias、reuse与slot family | rank-3，1024/1025，fresh/identity alias/reuse、multiplicity>1 | alias共享object；ReuseAfterCompletion变成completion/release→later-ready hard edge | alias source缺失、reuse端点缺失、order cycle | object ready/release覆盖、slot backedge及order reason，不按shape猜lifetime | K改变occurrence后丢弃本graph并先重进I |
+| Q63 typed completion与resource facts | rank-3，1024/1025，worker-capable compute与participant join descriptor | issue→participant completion；NCC、Tile engine、DTE资源保持分层 | empty worker domain、invalid participant | obligation participants、worker domain和resource knowledge逐字段一致 | J closure只枚举foundation给出的closed typed domains |
+| determinism与有界oracle | 2--7 event tiny oracle，加rank-3 1025输入顺序扰动 | stable Kahn/component划分、exact successor | hard cycle、work limit、unsupported resource contract、compiler bug分别分类 | graph全字段、最小cycle witness、输入反转结果一致，source IR byte-identical | Core cache只复用同一state的可重算结果 |
+
 - plan-level unit覆盖independent branches、chain/fanin/fanout、nested execution、multi-piece DDR、peer direct/relay/gather、slot rotation、
   release和observable output；每个selected action产生all-and-only events/completion；
 - hard-edge oracle逐reason比较SSA/effect/range/token/Q63关系；可交换WAW/共享resource形成两个order choices而非source-order edge，exact
@@ -4616,9 +4628,18 @@ ID/duplicate action是compiler bug。fixed semantic fact、B--I或K任一observe
   resource scope与capacity modes正确；
 - hard cycle返回最小causal witness且只拒绝相同fixed-semantic+B--I combination；missing/unsupported/work-limit/compiler-bug分类独立；
 - semantic/B--I/K mutation精确invalidate affected components，hash/input/parallel discovery不改变stable graph；source byte-identical、零Instr/module
-  construction、pointer snapshot、default statistics。order/worker算法由event-resource-foundation-2。
+  construction、pointer snapshot、default statistics。order/worker算法由schedule-domain。
 
-### event-resource-foundation-2 专项调研：ready/resource successor、list proposals与bounds
+实现闭合：current `EventGraph`从fixed Region/Temporal/Serialized、selected Movement/Buffer和canonical resource/lifetime facts
+建立stable typed issue/completion/ready/release/observable nodes、hard DAG、completion obligations、exact/estimate resource uses、
+disjunctive resource choices和connected components；`getReadyEvents`只返回hard/resource precedence下的exact ready set，不选择event。
+Core按`InitialBufferState`重建并缓存query-local graph，public `search`已推进到missing `execution-structure`，state identity和IR均不携带
+graph。opaque peer只产生endpoint/DTE exact facts与NoC estimate；只有显式`ExactMovementRoute`产生directed-link use。worker/resource
+sequence、control linearization、completion placement、calendar bound和proposal仍由后续`schedule-domain`拥有。
+fresh直接5/5、ordinary host unit 868/868、core lit 227/227、Tools/Runtime lit 35 passed/4 configured unsupported、完整build、public
+link closure及source organization通过。
+
+### schedule-domain 专项调研：ready/resource successor、list proposals与bounds
 
 CIRCT把scheduling problem的input/solution constraints分别`check`/`verify`，并为acyclic、cyclic、shared-resource和modulo problem使用
 不同模型；LLVM MachineScheduler也让ScheduleDAG与pick-node strategy分离。本仓不引入SSP dialect或字符串operator library，但复用该
@@ -4703,7 +4724,7 @@ operation/resource/Q63 contracts；profile profitability归Q52。registry、row 
   Indeterminate；malformed graph/plan为compiler bug；
 - no-good key只含实际参与witness的event/resource/upstream choices，不删其它worker/order/K siblings。
 
-#### event-resource-foundation-2 Gate
+#### schedule-domain Gate
 
 - independent reference对2--7 events平铺worker/resource instances、resource sequences、control topological orders和completion
   boundaries；与kernel plan集合一致、无lane/transitive duplicate；
@@ -5045,7 +5066,7 @@ solveSchedule(eventGraph, fixedStructure, fixedBuffers, constraints):
     return checked ClosedSchedulePlan plus query-local facts
 ```
 
-exact successor from event-resource-foundation-2 remains public toQ51, so solver/proposal不是唯一domain入口。component分解必须保留shared DDR、known exact
+exact successor from schedule-domain remains public toQ51, so solver/proposal不是唯一domain入口。component分解必须保留shared DDR、known exact
 NoC links、cross-Tile messages、card completion和publication edges；opaque NoC只有estimate，不能制造或删除component hard edge。
 
 resource capacity-1由selected sequence证明；capacity-k由canonical instance assignment和per-instance sequence证明。fully pipelined

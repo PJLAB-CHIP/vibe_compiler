@@ -316,6 +316,8 @@ compileTensorProgramModuleToCardExecutable(
                 << " storage_steps=" << work.storageSuccessorSteps
                 << " storage_states=" << work.storageStatesQueued
                 << " storage_unsupported=" << work.unsupportedStorageChoices
+                << " event_graph_queries=" << work.eventGraphQueries
+                << " event_graphs_built=" << work.eventGraphsBuilt
                 << " candidate_actualizations=0\n";
     return fail("card executable search has an incomplete planning domain");
   } else {

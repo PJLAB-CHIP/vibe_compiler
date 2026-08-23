@@ -17,6 +17,7 @@ enum class RequiredPlanningCoordinate : uint8_t {
   Movement,
   Storage,
   EventResource,
+  ExecutionStructure,
 };
 
 llvm::StringRef

@@ -84,6 +84,9 @@ public:
   bool contains(const BufferPlan &plan) const;
   const StorageResourceDescription *
   findResource(const StorageObjectId &object) const;
+  const CanonicalStorageCoordinate &getCanonicalCoordinate() const {
+    return base;
+  }
 
 private:
   struct BindingOption {

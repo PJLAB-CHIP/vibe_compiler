@@ -541,6 +541,66 @@ PhysicalDataflowPlanningSession::getOrCreateStorageDomain(
   return {&stored->second, {}};
 }
 
+PhysicalDataflowPlanningSession::EventGraphLookup
+PhysicalDataflowPlanningSession::getOrCreateEventGraph(
+    const InitialBufferState &buffers) {
+  auto cached = eventGraphCache.find(buffers);
+  if (cached != eventGraphCache.end())
+    return {&cached->second, {}};
+  StorageDomainLookup storageDomain =
+      getOrCreateStorageDomain(buffers.getMovementState());
+  MovementDomainLookup movementDomain = getOrCreateMovementDomain(
+      buffers.getMovementState().getRepresentationState());
+  if (!storageDomain.domain || !movementDomain.domain)
+    return {nullptr, EventGraphFailure{
+                         EventGraphFailureKind::Deferred,
+                         EventGraphFailureReason::MissingPlanFact,
+                         {},
+                         "event graph transition lost an upstream domain"}};
+
+  CanonicalSerializedExecutionPlanOutcome serializedOutcome =
+      buildCanonicalSerializedExecutionPlan(buffers.getRegionPlan(),
+                                            buffers.getTemporalPlan());
+  const SerializedExecutionPlan *serialized =
+      getSerializedExecutionPlan(serializedOutcome);
+  if (!serialized)
+    return {
+        nullptr,
+        EventGraphFailure{
+            EventGraphFailureKind::Deferred,
+            EventGraphFailureReason::MissingPlanFact,
+            {},
+            std::get<BrokenSerializedExecutionPlan>(serializedOutcome).detail}};
+
+  CanonicalMovementCoordinate movement;
+  movement.plan = buffers.getMovementPlan();
+  movement.resources.assign(movementDomain.domain->getResources().begin(),
+                            movementDomain.domain->getResources().end());
+  EventGraphBuildResult result = buildEventGraph(
+      problem.getCardId(), buffers.getRegionPlan(), buffers.getTemporalPlan(),
+      *serialized, movement, storageDomain.domain->getCanonicalCoordinate(),
+      buffers.getBufferPlan());
+  if (!result.succeeded())
+    return {nullptr,
+            result.failure
+                ? std::move(result.failure)
+                : std::optional<EventGraphFailure>(EventGraphFailure{
+                      EventGraphFailureKind::CompilerBug,
+                      EventGraphFailureReason::MalformedPlan,
+                      {},
+                      "event graph builder returned no typed outcome"})};
+  auto [stored, inserted] =
+      eventGraphCache.try_emplace(buffers, std::move(*result.graph));
+  if (!inserted)
+    return {nullptr,
+            EventGraphFailure{EventGraphFailureKind::CompilerBug,
+                              EventGraphFailureReason::MalformedPlan,
+                              {},
+                              "event graph cache changed during construction"}};
+  ++work.eventGraphsBuilt;
+  return {&stored->second, {}};
+}
+
 mlir::FailureOr<std::optional<RegionState>>
 PhysicalDataflowPlanningSession::resumeRegion(RegionContinuation &continuation,
                                               std::string *failureReason) {
@@ -917,9 +977,19 @@ PhysicalDataflowPlanningSession::getFirstIncompleteState(
       *failureReason = "storage state result lost its value";
     return mlir::failure();
   }
-  return IncompletePlanningDomain(std::move(*storageState),
-                                  RequiredPlanningCoordinate::EventResource,
-                                  hasRemainingSpatialWork(), work);
+  ++work.eventGraphQueries;
+  EventGraphLookup eventGraph = getOrCreateEventGraph(*storageState);
+  if (!eventGraph.graph) {
+    if (failureReason)
+      *failureReason = eventGraph.failure
+                           ? eventGraph.failure->detail
+                           : "event graph transition returned no typed outcome";
+    return mlir::failure();
+  }
+  return IncompletePlanningDomain(
+      std::move(*storageState), *eventGraph.graph,
+      RequiredPlanningCoordinate::ExecutionStructure, hasRemainingSpatialWork(),
+      work);
 }
 
 bool PhysicalDataflowPlanningSession::hasRemainingSpatialWork() const {

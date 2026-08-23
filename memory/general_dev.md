@@ -603,10 +603,14 @@ source program
 - cross-op pending事实由`Analysis/Scheduling/NCCCompletionAnalysis`从current Module重算；结果携per-operation before/after mask，
   只在未变化IR epoch内有效。structured if/for/TileRegion和defined direct call受支持，递归/indirect/unsupported CFG fail closed。
 
-## Event/order/worker planning（目标边界，当前实现未闭合）
+## Event/resource foundation与后续order/worker planning（stable，2026-08-23）
 
-- Q50.J foundation从S–I-initial typed plan构造EventGraph；hard DAG来自SSA/value-version、buffer RAW/WAR/WAW、DTE token/wait、
-  synchronous completion和typed resource uses，不借用actual Instr pointer/snapshot。
+- Q50.J foundation从B–I-initial typed plan构造query-local `EventGraph`；hard DAG来自typed execution nesting、movement
+  issue/completion、storage definition/use/release和explicit reuse order，不借用actual Instr pointer/snapshot。Core cache以完整
+  `InitialBufferState`为key，state变化即重建，graph不进入candidate identity或IR。
+- selected alias/reuse同时保留semantic object和physical storage object：前者定位definition/use lifetime，后者定位exact SPM range；
+  不能把复用后合并的allocation误当成只有一个semantic lifetime。opaque NoC只发布endpoint estimate，显式exact target route才发布
+  directed-link resource。
 - Q50.K只选择execution structure并改变occurrences；必须先由Q50.I post-K重闭slot/lifetime/reuse edges，随后J closure才枚举
   topological/resource order、typed worker和completion。顺序是`J-foundation → K → I-post-K → J-closure`。
 - calendar/timestamps保持query-local；selected emitter一次写order/worker并fresh构造wait/join，actual Instr只做plan parity。共享资源
