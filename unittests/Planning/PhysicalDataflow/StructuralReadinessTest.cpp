@@ -80,4 +80,73 @@ TEST(StructuralReadinessTest,
             RequiredPlanningCoordinate::Representation);
 }
 
+TEST(StructuralReadinessTest,
+     NestedAndReplicaRaggedPrefixRemainsPurelyStructural) {
+  TemporalScopeDescriptor parent = makeScope({2, 1025, 128});
+  SemanticRootKey producerRoot;
+  producerRoot.anchorIndex = 1;
+  RootRegionWorkId producerWork{producerRoot, TileId(0)};
+  LogicalShardId producerShard{producerRoot, {0, 0, 0}};
+  RequiredRootExecution producer{producerWork, producerShard};
+  DemandFragmentId fragment;
+  fragment.source.kind = RootBoundaryKind::StructuredResult;
+  fragment.source.semantic = producerRoot;
+  fragment.use.destinationShard =
+      std::get<RequiredRootExecution>(
+          std::get<ExecutionInstanceId>(parent.id.execution).source)
+          .shard;
+  fragment.ownerShard = producerShard;
+  fragment.ownerTile = TileId(0);
+
+  TemporalScopeDescriptor nested;
+  nested.id.execution = ExecutionInstanceId{producer};
+  NestedInvocationClassId invocation;
+  invocation.parent = parent.id.execution;
+  invocation.uses.push_back({fragment, /*requestedOffsets=*/{0, 0, 0},
+                             /*requestedExtents=*/{1, 128, 64}});
+  invocation.producerOffsets = {0, 0, 0};
+  invocation.producerExtents = {1, 128, 64};
+  nested.id.invocation = invocation;
+  nested.iterationOffsets = invocation.producerOffsets;
+  nested.iterationExtents = invocation.producerExtents;
+  nested.iteratorCapabilities.assign(3, IteratorTilingCapability::Tileable);
+  nested.parentScope = parent.id;
+
+  ReplicaExecutionId replicaId{producer, fragment};
+  TemporalScopeDescriptor replica;
+  replica.id.execution = replicaId;
+  replica.iterationOffsets = {0, 0, 0};
+  replica.iterationExtents = {2, 1024, 128};
+  replica.iteratorCapabilities.assign(3, IteratorTilingCapability::Tileable);
+
+  TemporalDomainResult domain = buildTemporalDomain({nested, replica, parent});
+  ASSERT_TRUE(domain.succeeded())
+      << (domain.failure ? domain.failure->detail : "");
+  TemporalSuccessor first = domain.domain->getFirstPlan();
+  ASSERT_EQ(first.getKind(), TemporalSuccessorKind::Plan);
+  ASSERT_NE(first.getPlan(), nullptr);
+  ASSERT_EQ(first.getPlan()->scopes.size(), 3u);
+  StructuralReadinessResult ready =
+      checkStructuralReadiness(*domain.domain, *first.getPlan());
+  EXPECT_EQ(ready.getKind(), StructuralReadinessKind::ReadyForNextCoordinate);
+  EXPECT_EQ(ready.getRequiredCoordinate(),
+            RequiredPlanningCoordinate::Representation);
+
+  TemporalScopeDescriptor incompatibleNested = nested;
+  auto &incompatibleInvocation =
+      std::get<NestedInvocationClassId>(incompatibleNested.id.invocation);
+  incompatibleInvocation.producerExtents[1] = 129;
+  incompatibleNested.iterationExtents[1] = 129;
+  TemporalDomainResult other =
+      buildTemporalDomain({incompatibleNested, replica, parent});
+  ASSERT_TRUE(other.succeeded());
+  TemporalSuccessor otherFirst = other.domain->getFirstPlan();
+  ASSERT_EQ(otherFirst.getKind(), TemporalSuccessorKind::Plan);
+  ASSERT_NE(otherFirst.getPlan(), nullptr);
+  StructuralReadinessResult mismatch =
+      checkStructuralReadiness(*domain.domain, *otherFirst.getPlan());
+  EXPECT_EQ(mismatch.getKind(), StructuralReadinessKind::CompilerBug);
+  EXPECT_FALSE(mismatch.getRequiredCoordinate());
+}
+
 } // namespace

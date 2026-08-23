@@ -15,9 +15,7 @@
 namespace wafer::compiler::detail {
 
 enum class StructuralReadinessKind : uint8_t {
-  MissingCoordinate,
   ReadyForNextCoordinate,
-  Unsupported,
   CompilerBug,
 };
 

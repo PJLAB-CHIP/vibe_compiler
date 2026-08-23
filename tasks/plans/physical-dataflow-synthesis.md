@@ -261,8 +261,8 @@ search failure，不能隐式运行baseline或伪造fallback。`none`对声明�
 | 4 | `root-work-domain` | `done` | Q50.C | full root/merge work domain、Core consumer及complete-candidate emitter输入 | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | region-execution-domain |
 | 5 | `region-execution-domain` | `done` | Q50.D | 完整region/execution/use-binding域、selected RegionPlan直接构造、nested/replica/coupled verifier及actual downstream witness；region builder不选择worker/participant/completion | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | temporal-domain |
 | 6 | `temporal-domain` | `done` | Q50.E | complete temporal sizes/orders/tails、top-level/nested/coupled actual loop construction、verifier及Core consumer | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | partial-feasibility |
-| 7 | `partial-feasibility` | `doing` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
-| 8 | `layout-domain` | `queued` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
+| 7 | `partial-feasibility` | `done` | Q50.F | 复核A–E结构完整性/missing coordinates及5/6新schema，资源合法性保持unknown | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | layout-domain |
+| 8 | `layout-domain` | `doing` | Q50.G | operation/interface constraint graph、PBQP精确消元+residual solver、production tuple/alias facts及selected physical-version construction/verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | movement-domain |
 | 9 | `movement-domain` | `queued` | Q50.H | local/DDR/direct/relay/fanout/gather/qualified collective完整域、payload proof、token-only selected construction/verifier及donor retirement；不在issue后立即await | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | storage-domain |
 | 10 | `storage-domain` | `queued` | Q50.I | production alias/reuse/1..U requirements、selected object/rotation construction及first-read/last-release lifetime verifier | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | event-resource-foundation |
 | 11 | `event-resource-foundation` | `queued` | Q50.J | 完整EventGraph/resource/recurrence/completion facts、Q63/effect接入及fixed-K后同一builder重建J的typed seam；missing contract保持typed unknown而非默认Synchronous | 读AGENTS/progress→读编号设计与本项覆盖矩阵→读相关硬件/ABI事实并把未证同步语义保留为unknown→调研论文/成熟编译器中的相关算法与实现并比较取舍→查官方文档及pinned LLVM/MLIR确认API→实现代码/测试→fresh验证→按设计与LLVM/MLIR规范复审实现、diff和下游witness→更新状态并提交 | execution-structure-domain |
@@ -3288,8 +3288,9 @@ Pipeline position:
 - Upstream IR / input:
   immutable TensorProgram、closed B–E assignments及其typed producer facts；G–K/I/J可能尚未产生。
 - Current stage responsibility:
-  验证已有坐标的identity、rank、scope、dependency和producer/consumer完整性；返回ReadyForNextCoordinate、MissingCoordinate、
-  Unsupported或CompilerBug。
+  验证closed A--E坐标的identity、rank、scope、dependency和producer/consumer完整性；只返回
+  `ReadyForNextCoordinate(Representation)`或`CompilerBug`。更早的missing coordinate及其Unsupported/Indeterminate由对应typed
+  state/continuation owner分类，本query不重复解释。
 - Output IR / files:
   query-local structural result；不写IR，不计算bytes，不产生resource rejection。
 - Downstream consumer:
@@ -3299,11 +3300,20 @@ Pipeline position:
 - Explicit non-goals:
   不计算footprint、lower/upper bound、residency estimate、synthetic demand、packing或capacity；不prune任何资源候选。
 - Done criteria:
-  missing coordinate与malformed current coordinate严格区分；任意target memory capacity变化不改变partial structural result。
+  earlier missing coordinate不会调用本query，malformed closed coordinate返回CompilerBug；任意target memory capacity变化不改变
+  partial structural result。
 ```
 
 partial result没有resource lower-bound、footprint rejection或non-binding estimate字段。尚无actual candidate时资源状态就是unknown，
 不能把逻辑tensor payload、单buffer大小或任何保守值转换成rejection。
+
+本项采用的一手实现边界如下：
+
+| 资料 | 可复用事实 | Wafer采用/不采用 |
+| --- | --- | --- |
+| [XLA `HloPassPipeline`](https://github.com/openxla/xla/blob/main/xla/hlo/pass/hlo_pass_pipeline.cc) | invariant checker在pass边界运行且必须自身不改图；失败保留原pass上下文 | readiness是pure invariant query，重复调用不修改IR/domain；不复制XLA hash作为Wafer语义identity |
+| [MLIR Dialect Conversion](https://mlir.llvm.org/docs/DialectConversion/) | full conversion与partial conversion对legal/illegal/unknown operation有明确不同合同 | closed prefix只验证自己已经拥有的typed coordinate；不把尚未进入本stage的坐标用unknown-op式规则默认为合法 |
+| [LLVM analysis invalidation](https://llvm.org/docs/NewPassManager.html#implementing-analysis-invalidation) | analysis默认随IR mutation失效，只有明确preserved才复用 | readiness只借用immutable TemporalDomain/Plan；不持久化epoch、resource cache或manual preservation side table |
 
 `partial-feasibility`施工前覆盖矩阵如下。该query只消费closed typed prefix/domain membership；shape用于覆盖真实prefix结构，不进入
 readiness分支或资源判断。
@@ -3319,23 +3329,22 @@ readiness分支或资源判断。
 
 ### `partial-feasibility`当前已实现子集与重新验证门禁
 
-- `StructuralReadinessResult`只包含`MissingCoordinate`/`ReadyForNextCoordinate`/`Unsupported`/`CompilerBug`、下一坐标和detail；没有
+- `StructuralReadinessResult`只包含`ReadyForNextCoordinate`/`CompilerBug`、下一坐标和detail；没有
   resource bytes、bound、packing problem、capacity witness或rejection字段。query只验证current `TemporalPlan`是否属于对应typed domain，
   重复调用不修改IR或domain；RegionPlan已由产生`TemporalState`的前一typed transition验证，不在这里重复。
 - planning coordinate identity移到独立`PlanningCoordinate` owner；Q50 structural query只依赖plan/domain schema，不反向include或拥有Q51
-  state/frontier。`SpatialState`与`RegionState`继续由各自axis owner报告missing Region/Temporal，不为readiness增加无内容state variant。
+  state/frontier。`SpatialState`与`RegionState`继续由各自axis owner报告missing Region/Temporal及其typed failure，不为readiness增加
+  永远不可达的`MissingCoordinate`/`Unsupported` result variant。
 - production session在first validated `TemporalState`上复用同一cached `TemporalDomain`执行一次readiness query，成功后public search报告
   missing Representation；prior spatial/region/temporal unsupported或indeterminate仍由原axis transition分类，readiness count不增加。
 - query/API/source没有resource estimator或target-memory输入；partial state仍保持`candidate_actualizations=0`。只有后续完整assignment能进入
   actual candidate admission，readiness不能签发SPM/DDR/transport结论。
 
-fresh证据：`StructuralReadinessTest` 2/2覆盖rank-3 1025、重复query、duplicate scope、rank-zero与merge-only；`PlanningSessionTest` 6/6和
+本轮fresh证据：`StructuralReadinessTest` 3/3覆盖rank-3 1025、重复query、duplicate scope、rank-zero、merge-only以及translation-normalized
+nested + top-level replica closed prefix；来自另一个nested domain的plan返回CompilerBug。`PlanningSessionTest` 6/6与
 `SearchRoutingTest` 2/2证明closed state顺序、production readiness count=1、missing Representation、source不变及actualization=0；direct
-集合10/10；ordinary host unit 844/844（6个独立heavy baseline cases不在本项重复）；core lit 227/227，Tools/Runtime lit 35 passed、
-4 configured unsupported；compiler public link、source organization和diff检查通过。
-
-StructuralReadiness本身没有资源估算回归，但它直接消费重新打开后的Region/Temporal schema。第5/6项完成后，本项必须重跑完整覆盖矩阵，
-确认nested/coupled/replica closed prefixes仍只返回结构状态且资源保持unknown，再恢复`done`；历史测试数不能自动继承完成状态。
+集合11/11通过。header/source scan确认result/API没有bytes、footprint、capacity、packing、allocator或target-memory字段；本项不创建IR、
+不调用Q50.0，也不保留永远不可达的Missing/Unsupported result variant。Region/Temporal schema重新验证门禁已经闭合。
 
 ### Actual resource admission boundary
 
